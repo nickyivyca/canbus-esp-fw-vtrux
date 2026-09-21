@@ -40,7 +40,12 @@ FB = 0x471
 SOC = 0x411
 SHIFT = 0x639
 FAULT = 0x617
-RELEVANT = (CMD, RPM, FB, SOC, SHIFT, FAULT)
+# Spec 7.1 (2026-09-20). 0x592 carries IgnitionKeyState in B0 bit 4 and gates
+# transmission. A replay built without it transmits nothing, because
+# never-seen reads key-off -- so it is not optional, and every scenario file
+# generated before this date needs regenerating rather than reusing.
+KEY = 0x592
+RELEVANT = (CMD, RPM, FB, SOC, SHIFT, FAULT, KEY)
 
 
 def load_parser(repo):
@@ -49,8 +54,18 @@ def load_parser(repo):
     return parse_file
 
 
-def frames(parse_file, path, ids=None, t0=None, t1=None):
-    """Yield (t_seconds, id, dlc, bytes), skipping untimestamped frames."""
+def frames(parse_file, path, ids=None, t0=None, t1=None, chan=None):
+    """Yield (t_seconds, id, dlc, bytes), skipping untimestamped frames.
+
+    `chan` pins the CAN channel number. It is not a nicety: an Android .log
+    can hold several disjoint recording windows, and the same physical wire
+    comes back under a DIFFERENT channel number after each reconnect --
+    vtrux_20260802_123318_T0 moves the powertrain bus from channel 2 to
+    channel 7 mid-file. Taking every channel then splices two buses into one
+    stream. Run bus_epochs.py to find the right (window, channel) pair and
+    pass both; never identify a bus by its channel number without doing that,
+    because the number is an artifact of dongle insertion order.
+    """
     for fr in parse_file(path):
         if fr.timestamp is None:
             continue
@@ -58,6 +73,8 @@ def frames(parse_file, path, ids=None, t0=None, t1=None):
             continue
         if t1 is not None and fr.timestamp >= t1:
             break
+        if chan is not None and fr.bus != chan:
+            continue
         ident = fr.arbitration_id          # NOT .can_id -- that attribute
                                            # does not exist and a broad except
                                            # once turned the AttributeError
@@ -68,13 +85,14 @@ def frames(parse_file, path, ids=None, t0=None, t1=None):
         yield fr.timestamp, ident, len(data), data
 
 
-def do_scan(parse_file, path, gap):
+def do_scan(parse_file, path, gap, chan=None):
     """Find points where 0x051 resumes after a silence -- i.e. key-on."""
     prev = None
     first = None
     hits = []
     n = 0
-    for t, ident, _dlc, _d in frames(parse_file, path, ids=(CMD,)):
+    for t, ident, _dlc, _d in frames(parse_file, path, ids=(CMD,),
+                                     chan=chan):
         n += 1
         if first is None:
             first = t
@@ -98,12 +116,13 @@ def do_scan(parse_file, path, gap):
               % (a, b, d, b - 0.5))
 
 
-def do_emit(parse_file, path, at, dur, out, ids, arm_at, mode):
+def do_emit(parse_file, path, at, dur, out, ids, arm_at, mode, chan=None):
     t0, t1 = at, at + dur
     lines = []
     kept = 0
     counts = {}
-    for t, ident, dlc, data in frames(parse_file, path, ids=ids, t0=t0, t1=t1):
+    for t, ident, dlc, data in frames(parse_file, path, ids=ids, t0=t0, t1=t1,
+                                     chan=chan):
         us = int(round((t - t0) * 1e6))
         lines.append("f %d %03X %d %s" % (us, ident, dlc, data.hex().upper()))
         counts[ident] = counts.get(ident, 0) + 1
@@ -117,6 +136,8 @@ def do_emit(parse_file, path, at, dur, out, ids, arm_at, mode):
     header = [
         "# replay of %s" % os.path.basename(path),
         "# window [%.3f, %.3f) s of the capture, rebased to 0" % (t0, t1),
+        "# channel: %s" % ("all (UNPINNED -- check bus_epochs.py)" if chan is None
+                          else str(chan)),
         "# %d frames; per-ID counts: %s" % (
             kept, ", ".join("0x%03X=%d" % (i, c)
                             for i, c in sorted(counts.items()))),
@@ -153,6 +174,9 @@ def main():
     ap.add_argument("--arm-at", type=float, default=0.0,
                     help="seconds into the WINDOW at which to arm")
     ap.add_argument("--mode", type=int, default=3, choices=(0, 1, 2, 3))
+    ap.add_argument("--channel", type=int, default=None,
+                    help="keep only this CAN channel. Get it from"
+                         " bus_epochs.py; see frames().")
     ap.add_argument("--all-ids", action="store_true",
                     help="keep every frame, not just the six the core reads."
                          " Slower and larger, but other_frames then means"
@@ -163,7 +187,7 @@ def main():
     parse_file = load_parser(args.repo)
 
     if args.scan:
-        do_scan(parse_file, args.log, args.gap)
+        do_scan(parse_file, args.log, args.gap, args.channel)
         return 0
 
     if args.at is None:
@@ -176,7 +200,7 @@ def main():
             os.path.splitext(os.path.basename(args.log))[0][:40], args.at))
     ids = None if args.all_ids else RELEVANT
     return do_emit(parse_file, args.log, args.at, args.dur, out, ids,
-                   args.arm_at, args.mode)
+                   args.arm_at, args.mode, args.channel)
 
 
 if __name__ == "__main__":

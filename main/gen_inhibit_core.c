@@ -103,6 +103,7 @@ const char *gi_block_name(gi_block_t b)
     case GI_BLOCK_VCM_TORQUE:          return "VCM commanding torque";
     case GI_BLOCK_SHUTDOWN_CMD:        return "VCM commanding 0x10";
     case GI_BLOCK_DISABLED:            return "latched disable";
+    case GI_BLOCK_ABORTED:             return "latched abort (key-on clears)";
     }
     return "?";
 }
@@ -145,6 +146,8 @@ const char *gi_event_name(gi_event_kind_t k)
     case GI_EV_TX_FAIL:             return "TX_FAIL";
     case GI_EV_RX_ERROR_DISARM:     return "RX_ERROR_DISARM";
     case GI_EV_MODE:                return "MODE";
+    case GI_EV_KEY:                 return "KEY";
+    case GI_EV_KEY_CLEAR:           return "KEY_CLEAR";
     }
     return "?";
 }
@@ -237,6 +240,32 @@ uint8_t gi_ctr(const uint8_t *d)
     return (uint8_t)(d[5] & 0x0F);
 }
 
+/*
+ * A one-bit extractor looks too simple to be worth naming, and that is the
+ * argument for naming it: it is a hand transcription of `SG_ IgnitionKeyState
+ * : 4|1@1+`, and an off-by-one in a bit position is exactly the class of
+ * error every other test in this suite would agree with. Exposed so
+ * test_signals.py can put it against cantools like the other four.
+ */
+bool gi_key_bit(const uint8_t *d)
+{
+    return (d[0] & GI_KEY_ON_MASK) != 0;
+}
+
+bool gi_key_on(const gi_state_t *st, int64_t now)
+{
+    /*
+     * Spec 7.1 rule 1, and note the order of the two terms is immaterial --
+     * both must hold. Never-seen reads OFF, which is the conservative answer
+     * and the literal spec: a device that has not heard 0x592 has not read
+     * the key on, so it does not transmit. That is not a hypothetical on the
+     * truck (0x592 was present in 1045 of 1045 powertrain epochs), but it IS
+     * the state a partial bench bus produces, which is why every synthetic
+     * scenario now carries a key train.
+     */
+    return st->key_on && gi_fresh(st, st->have_key, st->seen_key, now);
+}
+
 bool gi_fresh(const gi_state_t *st, bool have, int64_t stamp, int64_t now)
 {
     /*
@@ -276,6 +305,13 @@ void gi_reset_stats(gi_state_t *st)
     st->inhibit_live = false;
     st->arm_block    = GI_BLOCK_GATE_NOT_EVALUATED;
     st->abort_reason = GI_ABORT_NONE;
+    /*
+     * Spec 7.1: an explicit re-arm clears the section 7 latch, exactly as it
+     * always did -- a latched abort used to be expressed as mode OFF, and
+     * arming out of OFF is what cleared it. The flag is what carries that now.
+     * The section 6 `disabled` latch is still NOT cleared here.
+     */
+    st->abort_latched = false;
     st->rpm_over = false;
     st->rpm_over_since = 0;
     st->have_err_window = false;
@@ -359,12 +395,38 @@ void gi_notify_off(gi_state_t *st)
 
 /* ------------------------------------------------------------- interlocks -- */
 
+/*
+ * A section 7 abort is a LATCHED STAND-DOWN. It does NOT set mode = GI_OFF,
+ * and that is a change made for spec 7.1 (2026-09-20).
+ *
+ * WHY IT CHANGED. Rule 2 says a key-off -> key-on transition clears the
+ * latch. That is unimplementable against a mode-OFF abort: the worker's OFF
+ * branch in gen_inhibit.c does not call twai_receive() at all -- it parks,
+ * delays 50 ms and loops -- and the host runner reproduces that by DROPPING
+ * frames while OFF. A device that aborted would therefore be deaf to the key
+ * coming back, forever, which is precisely the end-of-every-drive case that
+ * finding 3 measured (100 of 100 key-offs would trip the section 7 inverter
+ * trip as it stood).
+ *
+ * WHAT DID NOT CHANGE. Nothing is less latched than it was. The gate does not
+ * run while abort_latched is set, inhibit_live is false, and the transmit
+ * dispatch tests both -- so the device transmits nothing, which is the whole
+ * content of the old mode-OFF. This is the same shape as the section 6
+ * `disabled` latch it now sits beside, and it has the same two exits: an
+ * explicit re-arm, or (new) a key-on.
+ *
+ * WHAT IT BUYS BESIDES. Diag keeps going out, because gi_tick() emits the
+ * heartbeat whenever mode != OFF. A latched device now says so on the wire
+ * for as long as it stays latched, instead of falling silent in a way that is
+ * indistinguishable from having been switched off.
+ */
 static void inhibit_abort(gi_state_t *st, gi_abort_t why, int64_t now,
                           gi_events_t *ev)
 {
-    st->abort_reason = why;
-    st->inhibit_live = false;
-    st->mode = GI_OFF;
+    st->abort_reason  = why;
+    st->inhibit_live  = false;
+    st->abort_latched = true;
+    st->arm_block     = GI_BLOCK_ABORTED;
     ev_add(ev, now, GI_EV_ABORT, (int32_t)why, 0, 0);
 }
 
@@ -572,7 +634,7 @@ static void interlock_runtime(gi_state_t *st, int64_t now, const gi_bus_t *bus,
 
 /* ------------------------------------------------------------------ diag -- */
 
-static void build_diag(const gi_state_t *st, const gi_bus_t *bus,
+static void build_diag(const gi_state_t *st, const gi_bus_t *bus, int64_t now,
                        uint8_t which, gi_frame_t *f)
 {
     memset(f, 0, sizeof(*f));
@@ -600,7 +662,23 @@ static void build_diag(const gi_state_t *st, const gi_bus_t *bus,
               * differ for the whole time the gate is waiting on the bus, and
               * that gap is the interesting thing to see in a log.
               */
-             | (st->inhibit_live             ? 0x20 : 0));
+             | (st->inhibit_live             ? 0x20 : 0)
+             /*
+              * bit6: spec 7.1 rule 1 -- the key reads on AND 0x592 is fresh,
+              * i.e. transmission is permitted. Reads 0 both for a key-off and
+              * for a bus where 0x592 never arrived, which is the same thing
+              * as far as this gate is concerned; bit1/bit2 separate them.
+              *
+              * Computed with the diag frame's own timestamp rather than
+              * stored, so it cannot go stale in the way it is reporting on.
+              */
+             | (gi_key_on(st, now)           ? 0x40 : 0)
+             /*
+              * bit7: spec 7.1 -- a section 7 abort has latched. Before 7.1
+              * this state was reported by diag going silent, because the
+              * abort set mode OFF; the device now stays armed and says so.
+              */
+             | (st->abort_latched            ? 0x80 : 0));
 
         f->id = GI_DIAG_ID_STATUS;
         f->data[0] = GI_DIAG_SCHEMA_VER;
@@ -659,7 +737,7 @@ void gi_tick(gi_state_t *st, int64_t now, const gi_bus_t *bus,
         gi_frame_t f;
         st->have_last_diag = true;
         st->last_diag = now;
-        build_diag(st, bus, st->diag_page, &f);
+        build_diag(st, bus, now, st->diag_page, &f);
         emit(out, &f);
         st->diag_page = (uint8_t)((st->diag_page + 1) % 3);
     }
@@ -676,18 +754,23 @@ void gi_tick(gi_state_t *st, int64_t now, const gi_bus_t *bus,
      * handled by arm_gate_ok(); absence AFTER going live is "the link we were
      * using has dropped". Do not merge these paths.
      */
-    if (st->mode == GI_INHIBIT && st->disabled)
+    if (st->mode == GI_INHIBIT && (st->disabled || st->abort_latched))
     {
         /*
-         * Latched off. latch_disable() already cleared the live flag at the
-         * instant of the latch; this covers the other route to the same
-         * state -- re-arming while a release is still latched, where
-         * gi_reset_stats() would otherwise leave arm_block reading
-         * "gate not yet evaluated" and hide the reason the gate will never
-         * run. Belt and braces on the flag too, since it is load-bearing.
+         * Latched off. latch_disable() and inhibit_abort() both already
+         * cleared the live flag at the instant of the latch; this covers the
+         * other route to the same state -- re-arming while a release is still
+         * latched, where gi_reset_stats() would otherwise leave arm_block
+         * reading "gate not yet evaluated" and hide the reason the gate will
+         * never run. Belt and braces on the flag too, since it is
+         * load-bearing.
+         *
+         * A section 6 disable outranks a section 7 abort in the reporting
+         * when both are set: it is the one that a key-on used to be unable to
+         * clear, and it is the one a human has to act on.
          */
         st->inhibit_live = false;
-        st->arm_block = GI_BLOCK_DISABLED;
+        st->arm_block = st->disabled ? GI_BLOCK_DISABLED : GI_BLOCK_ABORTED;
     }
     else if (st->mode == GI_INHIBIT)
     {
@@ -793,6 +876,86 @@ static void disable_monitor(gi_state_t *st, uint32_t id, uint8_t dlc,
             }
         }
     }
+}
+
+/*
+ * Spec 7.1 rule 2: a key-off -> key-on transition clears every latch and the
+ * device re-enters the normal arm gate.
+ *
+ * WHAT IS CLEARED, AND WHY IT IS "EVERY". The user's ruling was literal --
+ * "clears any latch. it does re enter the normal arm gate" -- and the reason
+ * it is safe to read it that way is that a key cycle is morally the reboot
+ * that these latches were always documented to wait for. The section 6
+ * comment says as much: cleared "only by a reboot, which the relay dropping
+ * at truck sleep provides". A re-key quick enough that the relay never opens
+ * is the same event with the power never interrupted, and leaving the device
+ * latched across it was recorded as a known consequence, not as a wish.
+ *
+ * Neither section 6 release survives on evidence, either: M mode has to be
+ * re-selected by the driver on the new drive before disable_monitor() can see
+ * it again, and a low SoC re-latches after cfg.soc_debounce valid samples of
+ * 0x411 -- about five frames. Clearing them is a re-evaluation, not an
+ * override.
+ *
+ * fb_ever IS reset, and that is not optional. The inverter powers up ~28 s
+ * after the bus does, so re-entering the gate with fb_ever still true would
+ * abort on GI_ABORT_INVERTER_LOST the instant the inhibit went live -- which
+ * is bug 2 from 2026-09-19 reintroduced through a different door.
+ *
+ * Statistics are deliberately NOT reset: tx_ok and the histograms span the
+ * device's whole powered life, and a re-key is not a new measurement.
+ */
+static void key_monitor(gi_state_t *st, uint32_t id, uint8_t dlc,
+                        const uint8_t *data, int64_t now, gi_events_t *ev)
+{
+    if (id != GI_KEY_ID || dlc < 1)
+    {
+        return;
+    }
+
+    bool on = gi_key_bit(data);
+
+    st->have_key = true;
+    st->seen_key = now;
+
+    if (on != st->key_on)
+    {
+        st->key_on = on;
+        ev_add(ev, now, GI_EV_KEY, on ? 1 : 0, 0, 0);
+    }
+
+    if (!on)
+    {
+        st->key_seen_off = true;
+        return;
+    }
+    if (!st->key_seen_off)
+    {
+        return;                 /* no transition -- nothing to clear */
+    }
+    st->key_seen_off = false;
+
+    if (!st->abort_latched && !st->disabled)
+    {
+        return;                 /* nothing was latched */
+    }
+
+    ev_add(ev, now, GI_EV_KEY_CLEAR, (int32_t)st->abort_reason,
+           (int32_t)st->disable_code, 0);
+
+    st->abort_latched = false;
+    st->abort_reason  = GI_ABORT_NONE;
+    st->disabled      = false;
+    st->disable_code  = GI_DISABLE_NONE;
+    st->soc_low_count = 0;
+
+    st->inhibit_live  = false;
+    st->arm_block     = GI_BLOCK_GATE_NOT_EVALUATED;
+    st->fb_ever       = false;
+    st->rpm_over      = false;
+    st->rpm_over_since = 0;
+    st->have_err_window = false;
+    st->err_window      = 0;
 }
 
 /*
@@ -911,6 +1074,14 @@ static void build_inhibit(const uint8_t *rx, int64_t t_rx, gi_frame_t *f)
 void gi_on_frame(gi_state_t *st, uint32_t id, uint8_t dlc, const uint8_t *data,
                  int64_t now, gi_emit_t *out, gi_events_t *ev)
 {
+    /*
+     * Spec 7.1 rule 2 first, so a key-on clears the section 6 latch before
+     * disable_monitor() gets its early return on it. Safe in the other
+     * direction too: the frame that clears is 0x592, which is not a frame
+     * disable_monitor() can re-latch from.
+     */
+    key_monitor(st, id, dlc, data, now, ev);
+
     /* Watch for M mode / low SoC on every frame -- latches the disable. */
     disable_monitor(st, id, dlc, data, now, ev);
 
@@ -976,8 +1147,22 @@ void gi_on_frame(gi_state_t *st, uint32_t id, uint8_t dlc, const uint8_t *data,
         build_probe(st, now, &f);
         emit(out, &f);
     }
-    else if (st->mode == GI_INHIBIT && !st->disabled
-             && !st->shutdown_suppressed && st->inhibit_live)
+    /*
+     * Spec 7.1 rule 1 adds gi_key_on() to this chain, and abort_latched
+     * beside `disabled` for the same reason that term is there: inhibit_live
+     * is already false in both cases, but a one-term margin that depends on
+     * the order of a boolean expression is exactly what a later edit breaks
+     * silently.
+     *
+     * The key gates ONLY this -- the real 0x051 onto a live powertrain bus.
+     * It does not gate the 0x7F0 timing probe or the 0x7F1-0x7F3 diag pages:
+     * those are IDs nothing on the truck consumes, and silencing the diag
+     * heartbeat at key-off would take away the telemetry precisely when the
+     * end-of-drive behaviour this rule exists for is happening.
+     */
+    else if (st->mode == GI_INHIBIT && !st->disabled && !st->abort_latched
+             && !st->shutdown_suppressed && st->inhibit_live
+             && gi_key_on(st, now))
     {
         gi_frame_t f;
         if (dlc < 6)

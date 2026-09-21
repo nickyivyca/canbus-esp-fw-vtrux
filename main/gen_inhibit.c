@@ -79,9 +79,17 @@ _Static_assert(GEN_INHIBIT_PROBE_ID == GI_PROBE_ID, "id drift");
  * inhibit_live, which is visible on the wire as diag_flags byte3 0x27 -> 0x07.
  * A bench log that cannot tell rev 1 from rev 2 cannot tell whether it is
  * looking at the bug or the fix, and diag_git_hash alone puts that behind a
- * lookup. */
+ * lookup.
+ *
+ * 3 is the first build with the spec 7.1 key-state rules: transmission gated
+ * on 0x592 B0 bit4, a key-on clearing every latch, and a section 7 abort
+ * latching in place rather than dropping the mode to OFF. On the wire that is
+ * diag_schema_ver 2 -> 3 and two new diag_flags bits. It matters for log
+ * reading because a rev 2 device latches GI_ABORT_INVERTER_LOST at the end of
+ * every drive and then goes silent, where a rev 3 device stays armed and says
+ * so. */
 #ifndef DIAG_FW_VERSION
-#define DIAG_FW_VERSION              2
+#define DIAG_FW_VERSION              3
 #endif
 #ifndef GIT_SHA
 #define GIT_SHA "unknown"
@@ -192,7 +200,19 @@ static void report_events(const gi_events_t *ev)
             ESP_LOGW(TAG, "INHIBIT LIVE -- interlocks passed");
             break;
         case GI_EV_ABORT:
-            ESP_LOGE(TAG, "INHIBIT ABORT: %s", gi_abort_name((gi_abort_t)e->a));
+            ESP_LOGE(TAG, "INHIBIT ABORT (latched): %s",
+                     gi_abort_name((gi_abort_t)e->a));
+            break;
+        case GI_EV_KEY:
+            ESP_LOGW(TAG, "key %s (0x%03X B0 bit4)",
+                     e->a ? "ON -- transmission permitted"
+                          : "OFF -- transmission gated", GI_KEY_ID);
+            break;
+        case GI_EV_KEY_CLEAR:
+            ESP_LOGW(TAG, "key-on cleared latches: abort '%s', disable '%s'"
+                          " -- re-entering the arm gate",
+                     gi_abort_name((gi_abort_t)e->a),
+                     gi_disable_name((gi_disable_t)e->b));
             break;
         case GI_EV_TX_FAIL:
             /* Counted in the core; only the inhibit case is worth a line. */
@@ -559,6 +579,7 @@ static int hist_json(const gi_hist_t *h, const char *name, char *buf, int buflen
 int gen_inhibit_get_stats_json(char *buf, int buflen)
 {
     const gi_state_t *st = &s_core;
+    const int64_t t_now = esp_timer_get_time();
 
     /*
      * arm_block reports the abort text once a run has ended, matching the
@@ -577,7 +598,8 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
                      "\"disabled\":%s,\"disable_reason\":\"%s\",\"soc_x100\":%lu,"
                      "\"shutdown_suppressed\":%s,"
                      "\"inhibit_live\":%s,\"arm_block\":\"%s\","
-                     "\"abort_reason\":\"%s\",\"gene_rpm\":%ld,"
+                     "\"abort_reason\":\"%s\",\"abort_latched\":%s,"
+                     "\"key_on\":%s,\"key_fresh\":%s,\"gene_rpm\":%ld,"
                      "\"vcm_torque\":%ld,\"vcm_fault\":%u,",
                      (int)st->mode, (unsigned long)st->offset_us, GI_PROBE_ID,
                      (unsigned long)st->tx_ok, (unsigned long)st->tx_fail,
@@ -592,7 +614,19 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
                      (unsigned long)st->soc_raw,
                      st->shutdown_suppressed ? "true" : "false",
                      st->inhibit_live ? "true" : "false", block,
-                     gi_abort_name(st->abort_reason), (long)st->gene_rpm,
+                     gi_abort_name(st->abort_reason),
+                     st->abort_latched ? "true" : "false",
+                     /*
+                      * Reported apart rather than as one gi_key_on(): "the
+                      * key is off" and "we have not heard 0x592" gate
+                      * transmission identically and mean entirely different
+                      * things, and a reader who cannot tell them apart will
+                      * chase the wrong one.
+                      */
+                     st->key_on ? "true" : "false",
+                     gi_fresh(st, st->have_key, st->seen_key, t_now)
+                         ? "true" : "false",
+                     (long)st->gene_rpm,
                      (long)st->vcm_torque, (unsigned)st->vcm_fault);
 
     n += hist_json(&st->rx_gap, "rx_gap", buf + n, buflen - n);

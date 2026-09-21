@@ -50,6 +50,16 @@ CASES = [
      ["bms_soc_hires"]),
     ("shift", "vtrux-powertrain-experimental.dbc", "VCM_ShiftPos_0639",
      ["shift_lever_pos"]),
+    # Spec 7.1, and NOTE which DBC this comes from. 0x592 is defined in BOTH
+    # epri-pt-bus.dbc (EPRI_HCU_Sensor_0592, which carries IgnitionKeyState)
+    # and vtrux-powertrain-experimental.dbc (VCM_Pedals_0592, which does not)
+    # -- the VCM and the HCU are the same module under two names. Loading both
+    # into one cantools Database silently keeps only the later one, and
+    # IgnitionKeyState then decodes as absent; that cost real time on
+    # 2026-09-20. This loop loads one file at a time, which is what makes it
+    # safe. Do not "simplify" it into a single Database.
+    ("key",   "epri-pt-bus.dbc", "EPRI_HCU_Sensor_0592",
+     ["IgnitionKeyState"]),
 ]
 
 

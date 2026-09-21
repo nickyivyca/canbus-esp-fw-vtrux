@@ -1,19 +1,21 @@
-# host_runner: 385 frames, 1 directives, t=[0,9000000]
-0 STATE mode=0 live=0 block=not armed abort= disabled=0 dcode= susp=0 fb_ever=0
+# host_runner: 455 frames, 1 directives, t=[0,9000000]
+0 STATE mode=0 live=0 block=not armed abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0
 0 EV MODE a=3 b=500 c=0
-0 STATE mode=3 live=0 block=gate not yet evaluated abort= disabled=0 dcode= susp=0 fb_ever=0
-0 TX DIAG id=7F1 dlc=8 data=0201030600FF0000 ok=1
-0 STATE mode=3 live=0 block=no fresh 0x051 abort= disabled=0 dcode= susp=0 fb_ever=0
+0 STATE mode=3 live=0 block=gate not yet evaluated abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0
+0 TX DIAG id=7F1 dlc=8 data=0301030600FF0000 ok=1
+0 STATE mode=3 live=0 block=no fresh 0x051 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0
 400000 TX DIAG id=7F2 dlc=8 data=0000000000000000 ok=1
-800000 TX DIAG id=7F3 dlc=8 data=0000000001000200 ok=1
+800000 TX DIAG id=7F3 dlc=8 data=0000000001000300 ok=1
 1000000 EV INHIBIT_LIVE a=0 b=0 c=0
-1000000 STATE mode=3 live=1 block= abort= disabled=0 dcode= susp=0 fb_ever=0
+1000000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0
+1000000 EV KEY a=1 b=0 c=0
+1000000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1
 1020000 TX INHIBIT id=051 dlc=6 data=080080FF7F02 ok=1
 1040000 TX INHIBIT id=051 dlc=6 data=080080FF7F03 ok=1
 1060000 TX INHIBIT id=051 dlc=6 data=080080FF7F04 ok=1
 1080000 TX INHIBIT id=051 dlc=6 data=080080FF7F05 ok=1
 1100000 TX INHIBIT id=051 dlc=6 data=080080FF7F06 ok=1
-1100000 TX DIAG id=7F1 dlc=8 data=0201032600FF0000 ok=1
+1100000 TX DIAG id=7F1 dlc=8 data=0301036600FF0000 ok=1
 1120000 TX INHIBIT id=051 dlc=6 data=080080FF7F07 ok=1
 1140000 TX INHIBIT id=051 dlc=6 data=080080FF7F08 ok=1
 1160000 TX INHIBIT id=051 dlc=6 data=080080FF7F09 ok=1
@@ -45,7 +47,7 @@
 1660000 TX INHIBIT id=051 dlc=6 data=080080FF7F02 ok=1
 1680000 TX INHIBIT id=051 dlc=6 data=080080FF7F03 ok=1
 1700000 TX INHIBIT id=051 dlc=6 data=080080FF7F04 ok=1
-1700000 TX DIAG id=7F3 dlc=8 data=0000000001000200 ok=1
+1700000 TX DIAG id=7F3 dlc=8 data=0000000001000300 ok=1
 1720000 TX INHIBIT id=051 dlc=6 data=080080FF7F05 ok=1
 1740000 TX INHIBIT id=051 dlc=6 data=080080FF7F06 ok=1
 1760000 TX INHIBIT id=051 dlc=6 data=080080FF7F07 ok=1
@@ -61,7 +63,7 @@
 1960000 TX INHIBIT id=051 dlc=6 data=080080FF7F01 ok=1
 1980000 TX INHIBIT id=051 dlc=6 data=080080FF7F02 ok=1
 2000000 TX INHIBIT id=051 dlc=6 data=080080FF7F03 ok=1
-2000000 TX DIAG id=7F1 dlc=8 data=0201032600FF0000 ok=1
+2000000 TX DIAG id=7F1 dlc=8 data=0301036600FF0000 ok=1
 2020000 TX INHIBIT id=051 dlc=6 data=080080FF7F04 ok=1
 2040000 TX INHIBIT id=051 dlc=6 data=080080FF7F05 ok=1
 2060000 TX INHIBIT id=051 dlc=6 data=080080FF7F06 ok=1
@@ -93,7 +95,7 @@
 2560000 TX INHIBIT id=051 dlc=6 data=080080FF7F0F ok=1
 2580000 TX INHIBIT id=051 dlc=6 data=080080FF7F00 ok=1
 2600000 TX INHIBIT id=051 dlc=6 data=080080FF7F01 ok=1
-2600000 TX DIAG id=7F3 dlc=8 data=0000000001000200 ok=1
+2600000 TX DIAG id=7F3 dlc=8 data=0000000001000300 ok=1
 2620000 TX INHIBIT id=051 dlc=6 data=080080FF7F02 ok=1
 2640000 TX INHIBIT id=051 dlc=6 data=080080FF7F03 ok=1
 2660000 TX INHIBIT id=051 dlc=6 data=080080FF7F04 ok=1
@@ -109,12 +111,32 @@
 2860000 TX INHIBIT id=051 dlc=6 data=080080FF7F0E ok=1
 2880000 TX INHIBIT id=051 dlc=6 data=080080FF7F0F ok=1
 2900000 TX INHIBIT id=051 dlc=6 data=080080FF7F00 ok=1
-2900000 TX DIAG id=7F1 dlc=8 data=0201032600FF0000 ok=1
+2900000 TX DIAG id=7F1 dlc=8 data=0301036600FF0000 ok=1
 2920000 TX INHIBIT id=051 dlc=6 data=080080FF7F01 ok=1
 2940000 TX INHIBIT id=051 dlc=6 data=080080FF7F02 ok=1
 2960000 TX INHIBIT id=051 dlc=6 data=080080FF7F03 ok=1
 2980000 TX INHIBIT id=051 dlc=6 data=080080FF7F04 ok=1
 3000000 TX INHIBIT id=051 dlc=6 data=080080FF7F05 ok=1
 3000000 EV ABORT a=2 b=0 c=0
-3000000 STATE mode=0 live=0 block= abort=0x617 B7 = 0xCA (VCM fault active) disabled=0 dcode= susp=0 fb_ever=0
-9020000 FINAL mode=0 live=0 tx_ok=100 tx_fail=0 other=11 ctr_ok=101 ctr_bad=0 rx_gap_n=101 resp_n=100 disabled=0 dcode= block= abort=0x617 B7 = 0xCA (VCM fault active) soc=0 shift=255
+3000000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 B7 = 0xCA (VCM fault active) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1
+3200000 TX DIAG id=7F2 dlc=8 data=6400000000000000 ok=1
+3500000 TX DIAG id=7F3 dlc=8 data=0000000001000300 ok=1
+3800000 TX DIAG id=7F1 dlc=8 data=030103C600FF0000 ok=1
+4100000 TX DIAG id=7F2 dlc=8 data=6400000000000000 ok=1
+4400000 TX DIAG id=7F3 dlc=8 data=0000000001000300 ok=1
+4700000 TX DIAG id=7F1 dlc=8 data=030103C600FF0000 ok=1
+5000000 TX DIAG id=7F2 dlc=8 data=6400000000000000 ok=1
+5300000 TX DIAG id=7F3 dlc=8 data=0000000001000300 ok=1
+5600000 TX DIAG id=7F1 dlc=8 data=030103C600FF0000 ok=1
+5900000 TX DIAG id=7F2 dlc=8 data=6400000000000000 ok=1
+6200000 TX DIAG id=7F3 dlc=8 data=0000000001000300 ok=1
+6500000 TX DIAG id=7F1 dlc=8 data=030103C600FF0000 ok=1
+6800000 TX DIAG id=7F2 dlc=8 data=6400000000000000 ok=1
+7100000 TX DIAG id=7F3 dlc=8 data=0000000001000300 ok=1
+7400000 TX DIAG id=7F1 dlc=8 data=030103C600FF0000 ok=1
+7700000 TX DIAG id=7F2 dlc=8 data=6400000000000000 ok=1
+8180000 TX DIAG id=7F3 dlc=8 data=0000000001000300 ok=1
+8580000 TX DIAG id=7F1 dlc=8 data=0301038600FF0000 ok=1
+8580000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 B7 = 0xCA (VCM fault active) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=0
+8980000 TX DIAG id=7F2 dlc=8 data=6400000000000000 ok=1
+9180000 FINAL mode=3 live=0 tx_ok=100 tx_fail=0 other=105 ctr_ok=349 ctr_bad=0 rx_gap_n=349 resp_n=100 disabled=0 dcode= block=latched abort (key-on clears) abort=0x617 B7 = 0xCA (VCM fault active) latched=1 soc=0 shift=255 key=0

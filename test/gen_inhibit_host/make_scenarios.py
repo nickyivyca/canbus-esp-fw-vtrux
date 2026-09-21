@@ -81,6 +81,22 @@ def fault(t, val):
     return _f(t, 0x617, d)
 
 
+def key(t, on):
+    """0x592 EPRI_HCU_Sensor_0592; IgnitionKeyState is B0 bit 4.
+
+    The DBC says `SG_ IgnitionKeyState : 4|1@1+` -- Intel start bit 4, width
+    1, so B0 & 0x10. Spec 7.1. The other bits of B0 are EVSESwitchState and
+    ExportPowerState and are left zero; nothing in the core reads them.
+    """
+    d = [0] * 8
+    d[0] = 0x10 if on else 0x00
+    return _f(t, 0x592, d)
+
+
+def key_train(t0, t1, on=True, period=100 * MS):
+    return periodic(t0, t1, period, lambda t: key(t, on))
+
+
 def cmd_train(t0, t1, period, ctr0=0, **kw):
     """A run of 0x051 at a fixed period, counter incrementing mod 16."""
     out = []
@@ -107,9 +123,23 @@ def periodic(t0, t1, period, fn, phase=0):
 SCEN = {}
 
 
-def scenario(name, why):
+def scenario(name, why, autokey=True):
+    """Register a scenario.
+
+    autokey=True (the default) injects a 10 Hz 0x592 key-ON train spanning the
+    whole scenario, and records that it did in the generated file's header.
+
+    WHY IT IS A DEFAULT RATHER THAN WRITTEN OUT 25 TIMES. Spec 7.1 gates
+    transmission on the key reading on, and "never seen" reads off -- so
+    without a key train every scenario written before 2026-09-20 would
+    transmit nothing and would be testing the key gate instead of whatever it
+    was written for. A key-on train is also what the truck actually presents:
+    0x592 was found in 1045 of 1045 powertrain epochs across the corpus.
+
+    Scenarios that are ABOUT the key pass autokey=False and build their own.
+    """
     def deco(fn):
-        SCEN[name] = (why, fn)
+        SCEN[name] = (why, fn, autokey)
         return fn
     return deco
 
@@ -265,19 +295,36 @@ def s_low_soc():
 A live inhibit loses the CAN link: 0x051 stops for longer than the freshness
 window, then comes back.
 
-EXPECT: abort "bus lost -- no 0x051 (latched; CAN link down)", mode drops to
-OFF, and -- the point of the scenario -- it does NOT re-arm when the frames
-return. Latching is deliberate (2026-09-19): a bus that drops and returns is
+EXPECT: abort "bus lost -- no 0x051 (latched; CAN link down)", latched=1, and
+-- the point of the scenario -- it does NOT re-arm when the frames return.
+
+The mode STAYS 3 (changed 2026-09-20, spec 7.1). It used to drop to OFF, and
+nothing is less latched for that having changed: the gate does not run while
+latched=1. What it buys is that the device keeps receiving, which is what
+makes a key-on able to clear the latch at all -- the worker's OFF branch does
+not call twai_receive(). The key here stays ON throughout, so no transition
+occurs and the latch correctly survives the frames returning.
+
+Latching is deliberate (2026-09-19): a bus that drops and returns is
 an unreliable environment, and this device steals the VCM's rolling counter
 and transmits a real 0x051 onto a live powertrain bus. Resuming across a link
 we already have evidence is unsound would mean doing that repeatedly, through
 a gate whose freshness checks a flapping bus can satisfy.
-""")
+""", autokey=False)
 def s_bus_loss():
     L = ["mode 0 3 500"]
     L += cmd_train(1 * S, 3 * S, 20 * MS)
     # 1.5 s of nothing -- three freshness windows.
     L += cmd_train(4500 * MS, 8 * S, 20 * MS)
+    # The key train goes with the bus and comes back with it. The default
+    # injection would have run 0x592 straight through the silence, which is a
+    # bus the truck cannot produce -- 0x592 is the VCM's, and the VCM is the
+    # thing that just went away. It also matters to what this scenario proves:
+    # the key returns reading ON without ever having been read OFF, so no
+    # transition occurs and the latch is shown surviving rather than assumed
+    # to.
+    L += key_train(1 * S, 3 * S, on=True)
+    L += key_train(4500 * MS, 8 * S, on=True)
     L += ["end %d" % (9 * S)]
     return sorted_directives(L)
 
@@ -289,11 +336,17 @@ freshness window.
 EXPECT: no abort at all. This is the scenario that says the freshness window
 is doing its job rather than the trip being hair-triggered, and it is the one
 that would catch a careless tightening of fresh_us.
-""")
+
+The key goes away with the bus and comes back with it, for the same reason as
+in bus-loss-latches -- and a 0.3 s absence is inside the key's freshness
+window too, so transmission never stops either.
+""", autokey=False)
 def s_bus_glitch():
     L = ["mode 0 3 500"]
     L += cmd_train(1 * S, 3 * S, 20 * MS)
     L += cmd_train(3300 * MS, 6 * S, 20 * MS)
+    L += key_train(1 * S, 3 * S, on=True)
+    L += key_train(3300 * MS, 6 * S, on=True)
     L += ["end %d" % (7 * S)]
     return sorted_directives(L)
 
@@ -477,8 +530,10 @@ def s_gate_vcm_wants():
 @scenario("vcm-fault", """
 0x617 B7 goes to 0xCA (fault active) while live, then clears.
 
-EXPECT: abort "0x617 B7 = 0xCA (VCM fault active)". Once aborted the mode is
-OFF and the clearing frame does not bring it back -- an abort is not a block.
+EXPECT: abort "0x617 B7 = 0xCA (VCM fault active)". Once aborted the device is
+latched and the clearing frame does not bring it back -- an abort is not a
+block. (Before spec 7.1 the latch was expressed as mode OFF; it is latched=1
+now, and the key never transitions here, so nothing clears it.)
 """)
 def s_vcm_fault():
     L = ["mode 0 3 500"]
@@ -604,6 +659,163 @@ def s_short_dlc():
     return sorted_directives(L)
 
 
+# ------------------------------------------------- spec 7.1: key state --
+#
+# Six scenarios, all autokey=False because they build their own 0x592. Between
+# them they pin both of spec 7.1's rules and the two things that are easy to
+# get wrong about them: that arming is NOT gated, and that a stale key is not
+# a key-off.
+
+
+@scenario("key-arms-while-off", """
+0x051 flows with the engine off and torque zero, and the key reads OFF for the
+whole scenario.
+
+EXPECT: the inhibit GOES LIVE -- arming is not gated on the key -- and
+transmits NOTHING. live=1 with tx_ok=0 is the whole assertion.
+
+This is spec 7.1's "armed but silent", and it is the half of the design that
+answers the user's requirement to be armed before the VCU asserts the enable
+flag and torque, rather than racing it. Every arm-gate condition is satisfied
+during a key-off on the real truck: 0x051 outlives the key by a median 77 s,
+the generator is stopped, gen_rpm_ref reads its engine-off null (raw 0x7FFF ->
+-1, which passes the >= 0 test) and torque is zero.
+""", autokey=False)
+def s_key_arms_while_off():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 6 * S, 20 * MS)
+    L += key_train(1 * S, 6 * S, on=False)
+    L += ["end %d" % (7 * S)]
+    return sorted_directives(L)
+
+
+@scenario("key-gates-tx", """
+Live and transmitting, then the key goes off for 2 s and comes back, with
+0x051 and 0x471 both running at full rate throughout.
+
+EXPECT: transmission stops at the key-off frame and resumes at the key-on
+frame. No abort, because nothing went quiet. No KEY_CLEAR either -- there was
+no latch to clear, and a key-on with nothing latched must be a no-op rather
+than a re-arm.
+
+This is rule 1 on its own, with every other input held still.
+""", autokey=False)
+def s_key_gates_tx():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 10 * S, 20 * MS)
+    L += periodic(1 * S, 10 * S, 100 * MS, fb)
+    L += key_train(1 * S, 4 * S, on=True)
+    L += key_train(4 * S, 6 * S, on=False)
+    L += key_train(6 * S, 10 * S, on=True)
+    L += ["end %d" % (11 * S)]
+    return sorted_directives(L)
+
+
+@scenario("key-on-clears-abort", """
+The end of a drive and the start of the next one, which is the case finding 3
+measured: 100 of 100 key-offs in the corpus would trip the section 7 inverter
+trip as it stood.
+
+  1 s  live, transmitting, 0x471 arriving
+  4 s  key off. Transmission stops at once (rule 1). 0x471 stops with it --
+       the inverter sleeps, leading the key by a median 0.302 s on the truck.
+       0x051 keeps running, because the VCM outlives the key.
+ ~4.5 s GI_ABORT_INVERTER_LOST latches. Correct: the inverter DID go quiet on
+       a live bus. Before 7.1 this was the end of the story and the device
+       stayed latched for the rest of the drive and the next one.
+  8 s  key on. KEY_CLEAR: the latch goes, fb_ever resets, the gate re-runs.
+  9 s  0x471 comes back, a second after we went live again.
+
+EXPECT: transmits, latches, clears on the key-on, transmits again. The gap
+between 8 s and 9 s is load-bearing -- going live with fb_ever still true
+would abort instantly on an inverter that has not powered up yet, which is
+bug 2 from 2026-09-19 reintroduced through a different door.
+""", autokey=False)
+def s_key_on_clears_abort():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 14 * S, 20 * MS)
+    L += periodic(1 * S, 4 * S, 100 * MS, fb)
+    L += key_train(1 * S, 4 * S, on=True)
+    L += key_train(4 * S, 8 * S, on=False)
+    L += key_train(8 * S, 14 * S, on=True)
+    L += periodic(9 * S, 14 * S, 100 * MS, fb)
+    L += ["end %d" % (15 * S)]
+    return sorted_directives(L)
+
+
+@scenario("key-on-clears-disable", """
+M mode latches the section 6 release, then the driver keys off and on.
+
+EXPECT: disabled at 3 s, transmission stops; KEY_CLEAR at the 6 s key-on;
+the device re-arms and transmits again.
+
+THIS IS THE LITERAL READING OF THE USER'S RULING ("clears any latch"), and it
+is worth being explicit that it extends to section 6. The justification is
+that a key cycle is the reboot these latches were always documented to wait
+for -- section 6 says cleared "only by a reboot, which the relay dropping at
+truck sleep provides", and a re-key quick enough that the relay never opens is
+that same event with the power never interrupted. Nothing survives on
+evidence either way: M mode has to be re-selected before disable_monitor()
+can see it again, and a low SoC re-latches after five valid 0x411 frames. The
+shift lever is back at P here, so nothing re-latches.
+""", autokey=False)
+def s_key_on_clears_disable():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 10 * S, 20 * MS)
+    L += key_train(1 * S, 5 * S, on=True)
+    L += key_train(5 * S, 6 * S, on=False)
+    L += key_train(6 * S, 10 * S, on=True)
+    L += periodic(1 * S, 3 * S, 200 * MS, lambda t: shift(t, 0))
+    L += periodic(3 * S, 4 * S, 200 * MS, lambda t: shift(t, 4))
+    L += periodic(4 * S, 10 * S, 200 * MS, lambda t: shift(t, 0))
+    L += ["end %d" % (11 * S)]
+    return sorted_directives(L)
+
+
+@scenario("key-stale-not-keyoff", """
+0x592 simply stops for 2 s while the key is ON, then resumes still reading ON.
+0x051 and 0x471 run throughout.
+
+EXPECT: transmission stops when the key goes STALE (rule 1 is freshness as
+well as value) and resumes when 0x592 comes back. No KEY event, because the
+value never changed. Crucially NO KEY_CLEAR: staleness is not a key-off.
+
+That distinction is what keeps the bus-loss latch meaningful. A key-off takes
+0x592 with it, but so does a dropped connector -- and if a stale key counted
+as an off, every flapping link would clear the very latch that exists because
+the link is flapping. Only an actual 0 followed by an actual 1 clears.
+""", autokey=False)
+def s_key_stale():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 10 * S, 20 * MS)
+    L += periodic(1 * S, 10 * S, 100 * MS, fb)
+    L += key_train(1 * S, 3 * S, on=True)
+    L += key_train(5 * S, 10 * S, on=True)
+    L += ["end %d" % (11 * S)]
+    return sorted_directives(L)
+
+
+@scenario("key-never-seen", """
+A bus with no 0x592 on it at all -- a partial bench harness, or a capture
+taken from the wrong segment.
+
+EXPECT: arms and goes live, and transmits NOTHING. Never-seen reads OFF.
+
+Fail-closed is the literal spec ("transmit only while the key reads on") and
+it is the safe direction, but it has a cost that this scenario exists to make
+visible: a bench that does not present 0x592 will see a device that looks
+armed and does nothing, with no error anywhere. That is the reason every
+other scenario in this file carries an injected key train, and the reason the
+bench harness has to send 0x592 too.
+""", autokey=False)
+def s_key_never_seen():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 6 * S, 20 * MS)
+    L += periodic(1 * S, 6 * S, 100 * MS, fb)
+    L += ["end %d" % (7 * S)]
+    return sorted_directives(L)
+
+
 # ------------------------------------------------------------- plumbing --
 
 def sorted_directives(lines):
@@ -623,6 +835,40 @@ def sorted_directives(lines):
     return [ln for _, ln in sorted(enumerate(lines), key=key)]
 
 
+def _frame_span(lines):
+    """(first, last) timestamp across the scenario's FRAMES.
+
+    Frames, not directives, and that distinction is load-bearing. The key
+    train must not outlive the rest of the traffic:
+
+      - physically, 0x592 comes from the VCM, which is the same module as the
+        HCU and the same transmitter as 0x051, so the key stops when the
+        command stops. A key train running into the trailing silence is a bus
+        the truck cannot produce.
+      - mechanically, the host runner consumes one frame per loop iteration
+        and ticks once per iteration, so frames arriving during a silence
+        make the interlocks evaluate on a finer grid than the 200 ms receive
+        timeout gives. That silently re-times every trailing abort, and in
+        one case (arm-gate-order-rpm-first) let the gate pass in a window
+        where 0x054 had gone stale but 0x051 had not -- a real behaviour of
+        the unchanged rules, but not the behaviour the scenario was written
+        to pin.
+    """
+    ts = [int(ln.split()[1]) for ln in lines if ln.split()[0] == "f"]
+    return (min(ts), max(ts)) if ts else (0, 0)
+
+
+def add_autokey(lines):
+    """Span the scenario's traffic with a key-ON train. See scenario().
+
+    Appended, then re-sorted: the sort is stable, so a key frame sharing a
+    timestamp with an existing line lands AFTER it, which makes the result
+    deterministic.
+    """
+    t0, t1 = _frame_span(lines)
+    return sorted_directives(lines + key_train(t0, t1 + 1, on=True))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", default="scenarios")
@@ -637,14 +883,24 @@ def main():
 
     os.makedirs(args.out, exist_ok=True)
     for name in sorted(SCEN):
-        why, fn = SCEN[name]
+        why, fn, autokey = SCEN[name]
         lines = fn()
+        if autokey:
+            lines = add_autokey(lines)
         path = os.path.join(args.out, name + ".scn")
         with open(path, "w", newline="\n") as fh:
             fh.write("# %s\n#\n" % name)
             for ln in why.strip().splitlines():
                 fh.write("# %s\n" % ln)
             fh.write("#\n")
+            if autokey:
+                fh.write("# KEY: a 10 Hz 0x592 key-ON train spanning the whole"
+                         " scenario was injected\n"
+                         "# automatically (spec 7.1 gates transmission on the"
+                         " key, and never-seen\n"
+                         "# reads off). Nothing below asserts on the key.\n#\n")
+            else:
+                fh.write("# KEY: this scenario builds its own 0x592 traffic.\n#\n")
             for ln in lines:
                 fh.write(ln + "\n")
         print("wrote %-40s %5d lines" % (path, len(lines)))

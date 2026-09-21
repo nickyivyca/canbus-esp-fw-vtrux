@@ -84,6 +84,20 @@ extern "C" {
 #define GI_FB_ID            0x471   /* GENE inverter feedback; liveness only */
 #define GI_RPM_ID           0x054   /* GENE_RotSpd */
 #define GI_FAULT_ID         0x617   /* VCM fault flag in B7 */
+/*
+ * Spec 7.1: key state. EPRI_HCU_Sensor_0592, IgnitionKeyState, which the DBC
+ * declares as `SG_ IgnitionKeyState : 4|1@1+` -- Intel start bit 4, one bit,
+ * i.e. B0 bit 4. The VCM and the HCU are the same module under two names, so
+ * this arrives from the SAME transmitter as 0x051: key state can never be
+ * less available than the anchor the whole design already depends on.
+ *
+ * THE NAME IS INFERRED, NOT CONFIRMED. The DBC comment says "not in plist
+ * sampling" -- it came from the decompile. What is measured is the behaviour
+ * (spec 7.1's table). If the bit turns out to mean "powertrain awake" rather
+ * than "key", the gate still works and the numbers still hold.
+ */
+#define GI_KEY_ID           0x592
+#define GI_KEY_ON_MASK      0x10
 
 #define GI_DIAG_ID_STATUS   0x7F1
 #define GI_DIAG_ID_COUNTERS 0x7F2
@@ -108,8 +122,12 @@ extern "C" {
 #define GI_RPM_ZERO         32767
 #define GI_CMD_ZERO         32768
 
-/* 2: added diag_flags bit4 (shutdown suppression) and bit5 (inhibit live). */
-#define GI_DIAG_SCHEMA_VER  2
+/*
+ * 2: added diag_flags bit4 (shutdown suppression) and bit5 (inhibit live).
+ * 3: added diag_flags bit6 (key on, fresh) and bit7 (latched by a section 7
+ *    abort). No field moved, so a v2 decoder still reads everything else.
+ */
+#define GI_DIAG_SCHEMA_VER  3
 
 /* ---------------------------------------------------------------- modes -- */
 
@@ -221,6 +239,8 @@ typedef enum
     GI_EV_TX_FAIL,              /* a = kind                                  */
     GI_EV_RX_ERROR_DISARM,      /* a = consecutive rx errors                 */
     GI_EV_MODE,                 /* a = new mode, b = offset_us               */
+    GI_EV_KEY,                  /* a = 1 on / 0 off (spec 7.1)               */
+    GI_EV_KEY_CLEAR,            /* a = gi_abort_t, b = gi_disable_t cleared  */
 } gi_event_kind_t;
 
 #define GI_EVENT_MAX 16
@@ -265,6 +285,7 @@ typedef enum
     GI_BLOCK_VCM_TORQUE,
     GI_BLOCK_SHUTDOWN_CMD,
     GI_BLOCK_DISABLED,          /* a section 6 release has latched */
+    GI_BLOCK_ABORTED,           /* a section 7 abort has latched (spec 7.1) */
 } gi_block_t;
 
 typedef enum
@@ -334,6 +355,30 @@ typedef struct
     bool       inhibit_live;
     gi_block_t arm_block;
     gi_abort_t abort_reason;
+    /*
+     * Spec 7.1. A section 7 abort used to set mode = GI_OFF, and that made
+     * rule 2 unimplementable: the worker's OFF branch does not receive, so a
+     * device that had aborted could never see the key come back. The abort is
+     * a LATCHED STAND-DOWN now, the same shape as the section 6 `disabled`
+     * latch beside it -- the mode is left alone, the worker keeps receiving,
+     * and nothing transmits because inhibit_live is false and the gate will
+     * not run while this is set. What is latched has not weakened; what has
+     * changed is that the device stays awake to hear the key.
+     */
+    bool       abort_latched;
+
+    /* --- key state (section 7.1) --- */
+    bool    have_key;   int64_t seen_key;
+    bool    key_on;                 /* last reading of 0x592 B0 bit 4 */
+    /*
+     * The edge detector, and it deliberately runs on READINGS, not on
+     * freshness. Staleness is not a key-off: if the bus drops while the key
+     * is on and returns with it still on, no transition happened and the
+     * section 7 latch must survive -- which is the whole point of the
+     * bus-loss trip latching in the first place. Only an actual 0 followed
+     * by an actual 1 clears anything.
+     */
+    bool    key_seen_off;
 
     /*
      * Freshness. Each stamp carries its own have_* flag; see the sentinel
@@ -448,9 +493,21 @@ int32_t gi_le16c(const uint8_t *d, int32_t zero);   /* LE 16-bit, centred */
 uint32_t gi_soc_raw(const uint8_t *d);              /* 0x411, 14-bit BE @ bit7 */
 uint8_t  gi_shift_pos(const uint8_t *d);            /* 0x639 B6 bits 6:4 */
 uint8_t  gi_ctr(const uint8_t *d);                  /* 0x051 B5 low nibble */
+bool     gi_key_bit(const uint8_t *d);              /* 0x592 B0 bit 4 */
 
 /* Freshness test, exposed so a test can drive it directly. */
 bool gi_fresh(const gi_state_t *st, bool have, int64_t stamp, int64_t now);
+
+/*
+ * Spec 7.1 rule 1: the key reads ON right now -- value AND freshness, never a
+ * last-known value. This gates TRANSMISSION only. Arming is deliberately not
+ * gated: the device arms during a key-off and sits armed but silent, because
+ * every arm-gate condition is satisfied there (0x051 outlives the key by a
+ * median 77 s, the generator is stopped, gen_rpm_ref reads its engine-off
+ * null and torque is zero) and because being already armed before the VCU
+ * asserts is the point.
+ */
+bool gi_key_on(const gi_state_t *st, int64_t now);
 
 /* Histogram helpers, pure. */
 void gi_hist_reset(gi_hist_t *h);

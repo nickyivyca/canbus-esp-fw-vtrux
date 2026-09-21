@@ -66,6 +66,11 @@ int main(void)
             /* 0x639: shift_lever_pos, B6 bits 6:4. */
             printf("%u\n", (unsigned)gi_shift_pos(d));
         }
+        else if (!strcmp(kind, "key"))
+        {
+            /* 0x592: IgnitionKeyState, B0 bit 4 (spec 7.1). */
+            printf("%u\n", gi_key_bit(d) ? 1u : 0u);
+        }
         else
         {
             fprintf(stderr, "unknown kind %s\n", kind);

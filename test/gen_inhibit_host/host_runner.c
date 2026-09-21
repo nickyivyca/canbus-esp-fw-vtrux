@@ -90,27 +90,42 @@ static void hexdump(const uint8_t *d, int n, char *out)
  * 100 Hz replay's trace readable and makes a diff point at the transition
  * that moved rather than at every frame after it.
  */
+static int g_last_key;
+
 static void state_line(const gi_state_t *st, int64_t now)
 {
+    /*
+     * `key` is the EFFECTIVE spec 7.1 gate -- value and freshness together --
+     * because that is the term the transmit dispatch actually tests. It is
+     * tracked outside g_last because it is not a field of the state: it
+     * depends on `now`, so a key that merely went stale moves it with no
+     * frame having arrived, and that transition is one worth seeing.
+     */
+    int key = gi_key_on(st, now) ? 1 : 0;
+
     if (g_last_valid
         && g_last.mode == st->mode
         && g_last.inhibit_live == st->inhibit_live
         && g_last.arm_block == st->arm_block
         && g_last.abort_reason == st->abort_reason
+        && g_last.abort_latched == st->abort_latched
         && g_last.disabled == st->disabled
         && g_last.disable_code == st->disable_code
         && g_last.shutdown_suppressed == st->shutdown_suppressed
-        && g_last.fb_ever == st->fb_ever)
+        && g_last.fb_ever == st->fb_ever
+        && g_last_key == key)
     {
         return;
     }
-    printf("%lld STATE mode=%d live=%d block=%s abort=%s disabled=%d"
-           " dcode=%s susp=%d fb_ever=%d\n",
+    printf("%lld STATE mode=%d live=%d block=%s abort=%s latched=%d disabled=%d"
+           " dcode=%s susp=%d fb_ever=%d key=%d\n",
            (long long)now, (int)st->mode, st->inhibit_live ? 1 : 0,
            gi_block_name(st->arm_block), gi_abort_name(st->abort_reason),
+           st->abort_latched ? 1 : 0,
            st->disabled ? 1 : 0, gi_disable_name(st->disable_code),
-           st->shutdown_suppressed ? 1 : 0, st->fb_ever ? 1 : 0);
+           st->shutdown_suppressed ? 1 : 0, st->fb_ever ? 1 : 0, key);
     g_last = *st;
+    g_last_key = key;
     g_last_valid = 1;
 }
 
@@ -350,14 +365,15 @@ int main(void)
 
     printf("%lld FINAL mode=%d live=%d tx_ok=%u tx_fail=%u other=%u"
            " ctr_ok=%u ctr_bad=%u rx_gap_n=%u resp_n=%u disabled=%d"
-           " dcode=%s block=%s abort=%s soc=%u shift=%u\n",
+           " dcode=%s block=%s abort=%s latched=%d soc=%u shift=%u key=%d\n",
            (long long)now, (int)st.mode, st.inhibit_live ? 1 : 0,
            st.tx_ok, st.tx_fail, st.other_frames,
            st.ctr_steps_ok, st.ctr_steps_bad,
            st.rx_gap.count, st.response.count, st.disabled ? 1 : 0,
            gi_disable_name(st.disable_code), gi_block_name(st.arm_block),
-           gi_abort_name(st.abort_reason), st.soc_raw,
-           (unsigned)st.last_shift_pos);
+           gi_abort_name(st.abort_reason), st.abort_latched ? 1 : 0,
+           st.soc_raw, (unsigned)st.last_shift_pos,
+           gi_key_on(&st, now) ? 1 : 0);
 
     free(g_f);
     return 0;

@@ -125,17 +125,40 @@ source moved out from under the suite.
 
 ```sh
 L=~/Seafile/NotGit/reverse-it/projects/vtrux/logs
-python3 from_capture.py $L/vtrux_20260719_190019_T4.log  --at 0 --for 220 \
+python3 from_capture.py $L/vtrux_20260719_190019_T4.log --channel 2 --at 0 --for 220 \
         --out scenarios/replay-genrun-stop.scn
-python3 from_capture.py $L/vtrux_20260323_220148_T0.log  --at 0 --for 300 \
+python3 from_capture.py $L/vtrux_20260323_220148_T0.log --channel 1 --at 0 --for 300 \
         --out scenarios/replay-healthy-engine-off.scn
-python3 from_capture.py $L/vtrux_20260322_165622_T1.log  --at 0 --for 64 \
+python3 from_capture.py $L/vtrux_20260322_165622_T1.log --channel 1 --at 0 --for 64 \
         --out scenarios/replay-mmode-genstart.scn
-python3 from_capture.py $L/vtrux_20260714_112312_T2.log  --at 0 --for 225 \
+python3 from_capture.py $L/vtrux_20260714_112312_T2.log --channel 2 --at 0 --for 225 \
         --out scenarios/replay-shutdown-at-keyon.scn
-python3 from_capture.py $L/vtrux_20260802_123318_T0.log  --at 0 --for 297 \
+python3 from_capture.py $L/vtrux_20260802_123318_T0.log --channel 2 --at 0 --for 161 \
         --out scenarios/replay-bus-sleeps.scn
+python3 from_capture.py $L/vtrux_20260403_194203_T2.log --channel 2 --at 0 --for 176 \
+        --out scenarios/replay-rekey-short.scn
+python3 from_capture.py $L/vtrux_20260513_174225_T4.log --channel 57 --at 0 --for 224 \
+        --out scenarios/replay-rekey-long.scn
+python3 from_capture.py $L/vtrux_20260714_112312_T2.log --channel 2 --at 20.5 --for 7.7 \
+        --out scenarios/replay-inverter-lost-keyon.scn
 ```
+
+**`--channel` is not optional, and every window above is one epoch.** Both
+were added 2026-09-20 with spec 7.1, and two of the five original commands
+were wrong:
+
+- `replay-bus-sleeps` ran `--for 297` over a capture with **three** epochs and
+  a channel shuffle — the powertrain bus moves from channel 2 to channel 7
+  mid-file — so it spliced separate recording windows into one stream.
+  Windowing it to epoch 1 changes no decision (it aborts at 11.67 s either
+  way, long before the first epoch break), but the old fixture was built the
+  exact way the section above warns against.
+- all five took every channel, which on a merged capture means taking frames
+  the device could never have seen on one wire.
+
+Channel numbers come from `bus_epochs.py` and are **per capture** — note that
+`replay-rekey-long`'s powertrain bus is channel **57**. Never carry a channel
+number from one capture to another.
 
 `--scan` finds key-on candidates in a capture you want to add. Two
 corpus-wide selectors live in
@@ -165,9 +188,37 @@ the planned `replay-rekey-short` uses `vtrux_20260403_194203_T2` epoch 1 only
 (0-176.44 s), because that file has a 7.7 s total-bus dropout at
 176.44-184.22 s which would otherwise replay as a bus-loss.
 
+## The key train, and why every scenario has one (spec 7.1)
+
+Since 2026-09-20 the core will not transmit unless `0x592` B0 bit 4 reads on
+and is fresh, and **never-seen reads off**. A scenario with no `0x592` in it
+therefore transmits nothing — it stops testing what it was written for and
+starts testing the key gate.
+
+So `make_scenarios.py` injects a 10 Hz key-ON train spanning each scenario's
+traffic, unless the scenario passes `autokey=False` and builds its own. The
+generated `.scn` says which it got, in a `# KEY:` header line. Two synthetics
+opt out because the key must go away *with* the bus: `bus-loss-latches` and
+`bus-glitch-short`. A key train that outlives the VCM's own `0x051` is a bus
+the truck cannot produce — `0x592` comes from the VCM, and the VCM is the
+thing that just went away.
+
+The six `key-*` scenarios are the spec 7.1 assertions themselves:
+
+| scenario | what it pins |
+|---|---|
+| `key-arms-while-off` | arming is **not** gated — `live=1` with `tx_ok=0` |
+| `key-never-seen` | no `0x592` at all: arms, transmits nothing (fail-closed) |
+| `key-gates-tx` | transmission stops and resumes on the key, no abort, no latch clear |
+| `key-on-clears-abort` | the end-of-drive story: latch, key-on, `fb_ever` reset, live again |
+| `key-on-clears-disable` | a key-on clears the **section 6** latch too |
+| `key-stale-not-keyoff` | a stale key gates transmission but clears nothing |
+
 ## Real-capture replays
 
-Five captures, five different correct outcomes.
+Eight captures. The five below were the original set; `replay-rekey-short`,
+`replay-rekey-long` and `replay-inverter-lost-keyon` were added for spec 7.1
+and are described after them.
 
 **`replay-genrun-stop`** — 220 s, 93,150 frames, SoC 77.2 %, and the only
 replay that shows the arm gate both holding and releasing:
@@ -194,7 +245,11 @@ captures with both properties are from the 2026-06-17/18 rig window
 (`projects/vtrux/notes/artifacts/gen-inhibit/replay_candidate_scan.py`). So
 the replacement keeps the generator-running block against real traffic and
 gives up the low-SoC latch, which `low-soc-debounce` already asserts
-synthetically. The low-SoC latch is no longer exercised against real traffic.
+synthetically. The low-SoC latch was then not exercised against real traffic
+at all — **until 2026-09-20**, when `replay-rekey-long` was added for spec 7.1
+and turned out to carry a pack at 18.77 %. It latches `low_soc` at 202.47 s.
+That was luck, not design, and it is worth knowing it is the only real-traffic
+cover that check has.
 
 **`replay-healthy-engine-off`** — 300 s, 127,082 frames, engine off at SoC
 84.6 %. Live at 7 ms, **held the whole capture**, 29,990 transmits, zero
@@ -220,5 +275,57 @@ synthetic one: the driver demanded the generator, the inhibitor stood down,
 and the generator started. SoC rises 43.3 % -> 54.9 % across the capture,
 which is the generator doing its job with the inhibitor out of the way.
 
-Across the replays the rolling counter stepped exactly +1 on every
-transition: `ctr_bad=0` in all five goldens.
+## The three spec 7.1 replays
+
+**`replay-rekey-long`** — `vtrux_20260513_174225_T4`, channel 57, 224 s,
+88,551 frames, and the fixture that carries spec 7.1 end to end against real
+traffic:
+
+| t | event | device |
+|---|---|---|
+| 0.004 s | engine off, bus alive | live |
+| 0.040 s | first `0x592`, key on | transmitting |
+| **167.230 s** | **key off** | transmission stops in the same frame |
+| **168.071 s** | `0x471` stops, 0.84 s later | `inverter lost`, **latched** |
+| **202.254 s** | **key on**, 34.2 s later | `KEY_CLEAR`, `fb_ever` reset, **live again** |
+| 202.471 s | SoC 18.77 %, below the 21 % floor | section 6 `low_soc` latches |
+| 220.279 s | key off again | — |
+
+16,737 transmits, `ctr_bad=0`. Two things worth naming. The inverter-lost trip
+firing 0.84 s after a key-off, on a healthy truck with nothing wrong, **is**
+finding 3 — and the key-on clearing it is the fix, measured rather than
+argued. And the low-SoC latch is back against real traffic: the README above
+records that it was lost when `replay-T20-drive` was removed, and this capture
+restores it by accident of having a low pack.
+
+**`replay-inverter-lost-keyon`** — `vtrux_20260714_112312_T2`, channel 2,
+20.5–28.2 s, 2,673 frames. The **key-ON** inverter loss, which must still
+trip: 41 transmits, then `inverter lost`, latched, with the key reading on
+throughout and no key transition to clear it. This is the population spec 7.1
+says the trip is actually for, and the scenario that would catch a key rule
+written so loosely it swallowed the real fault too.
+
+**`replay-rekey-short`** — `vtrux_20260403_194203_T2`, channel 2, epoch 1 only
+(0–176.44 s), 41,114 frames. Three key cycles, each about 10.3 s down, each
+one clearing a latch and re-arming. It is the only fixture that exercises rule
+2 repeatedly.
+
+**It is also the suite's only lossy capture, and that has to be read
+correctly.** `ctr_bad=4363` against `ctr_ok=6121` — 42 % of the `0x051`
+counter steps are not +1, `0x051` arrives at 59.6 Hz instead of 100, and
+`0x592` at 5.5 Hz instead of 10. Both IDs are down by the same fraction, so
+this is the **logger** dropping frames, not the truck. The visible consequence
+is the key gate flapping several times a minute in the trace, from freshness
+lapses with no change in the key's value.
+
+Do not read that as truck behaviour. Measured across the fixture captures
+(`projects/vtrux/notes/artifacts/gen-inhibit/key_cadence.py`), `0x592` runs at
+**9.97–9.99 Hz with a maximum gap of 0.117 s** on every clean epoch — four
+times inside the 0.5 s freshness window, with zero gaps over it. The flapping
+is this one capture. Keeping it is deliberate: it is the only fixture that
+says what the gate does under frame loss, and the answer is that it degrades
+by transmitting less, never by transmitting wrongly.
+
+Across the replays the rolling counter stepped exactly +1 on every transition
+in seven of the eight goldens; `replay-rekey-short` is the exception, for the
+reason above.

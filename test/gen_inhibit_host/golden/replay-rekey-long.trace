@@ -1,0 +1,25 @@
+# host_runner: 88551 frames, 1 directives, t=[0,225000000]
+0 STATE mode=0 live=0 block=not armed abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0
+0 EV MODE a=3 b=500 c=0
+0 STATE mode=3 live=0 block=gate not yet evaluated abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0
+0 STATE mode=3 live=0 block=no fresh 0x051 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0
+4000 EV INHIBIT_LIVE a=0 b=0 c=0
+4000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0
+6000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=0
+40000 EV KEY a=1 b=0 c=0
+40000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1
+167229900 EV KEY a=0 b=0 c=0
+167229900 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=0
+168070900 EV ABORT a=4 b=0 c=0
+168070900 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x471 stopped while 0x051 still live -- inverter lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=0
+202253900 EV KEY a=1 b=0 c=0
+202253900 EV KEY_CLEAR a=4 b=0 c=0
+202253900 STATE mode=3 live=0 block=gate not yet evaluated abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1
+202253900 EV INHIBIT_LIVE a=0 b=0 c=0
+202253900 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1
+202471000 EV DISABLED a=2 b=1877 c=0
+202471000 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=low_soc susp=0 fb_ever=0 key=1
+202995000 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=low_soc susp=0 fb_ever=1 key=1
+220278900 EV KEY a=0 b=0 c=0
+220278900 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=low_soc susp=0 fb_ever=1 key=0
+225170900 FINAL mode=3 live=0 tx_ok=16737 tx_fail=0 other=66178 ctr_ok=22372 ctr_bad=0 rx_gap_n=22372 resp_n=16737 disabled=1 dcode=low_soc block=latched disable abort= latched=0 soc=1877 shift=0 key=0
