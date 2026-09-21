@@ -148,6 +148,23 @@ with test equipment inline on the bus looks exactly like an ordinary drive,
 and one such capture was in this suite for a day before it was caught. The
 known rig dates are listed in the repo's `data-sources.md`.
 
+**Check its epoch structure too, and never feed a whole multi-epoch file to
+`from_capture.py`.** An Android `.log` can hold several *disjoint* recording
+windows: the logger drops, reconnects, and the same physical wire comes back
+under a **different channel number**. One capture in the corpus reconnects
+seven times in 300 s. Splicing those windows into one stream injects
+bus-losses the truck never had and invents inverter silences that were only
+the logger being away -- a 255 s "inverter lost" gap was manufactured exactly
+this way, and two proposed fixtures were sourced from it before it was caught.
+
+Run `projects/vtrux/notes/artifacts/gen-inhibit/bus_epochs.py <capture>`
+first. It prints each epoch, names each channel's physical bus from anchor
+content, and flags both channel shuffles and channels carrying more than one
+bus. Then set `--at`/`--for` to sit **inside a single epoch**. Worked example:
+the planned `replay-rekey-short` uses `vtrux_20260403_194203_T2` epoch 1 only
+(0-176.44 s), because that file has a 7.7 s total-bus dropout at
+176.44-184.22 s which would otherwise replay as a bus-loss.
+
 ## Real-capture replays
 
 Five captures, five different correct outcomes.
