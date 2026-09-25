@@ -543,11 +543,15 @@ static void interlock_runtime(gi_state_t *st, int64_t now, const gi_bus_t *bus,
      * bus can satisfy. Latching turns an intermittent connection into one
      * clean stand-down instead of an oscillation.
      *
-     * Latched like the section 6 releases: cleared only by a reboot, which
-     * the relay dropping at truck sleep provides. A consequence worth knowing
-     * is that a key-off/key-on quick enough that the relay never opens leaves
-     * the inhibit latched off for that second drive -- which is the intended
-     * reading of "do not resume", not an oversight.
+     * Latched like the section 6 releases, with the same two exits: an
+     * explicit re-arm, or a key-off -> key-on transition (spec 7.1 rule 2,
+     * key_monitor() below). Before 7.1 the only exit was a reboot, and a
+     * re-key quick enough that the relay never opened left the inhibit
+     * latched off for that second drive; that was recorded as an intended
+     * reading of "do not resume" and the user overruled it on 2026-09-20.
+     * What the latch still buys is that the bus coming back on its own
+     * clears nothing -- only the key does, and only on a real 0 -> 1
+     * reading, so a flapping link cannot clear the latch it caused.
      *
      * THIS REPLACES THE DEAD-MAN TIMER, which is removed (spec 7,
      * 2026-09-19). Every hazard the timer was still covering reduces to "the
@@ -794,9 +798,12 @@ void gi_tick(gi_state_t *st, int64_t now, const gi_bus_t *bus,
 /* ----------------------------------------------------------------- frames -- */
 
 /*
- * Conditions that DISABLE the inhibit, latched until reboot. Both mean the
+ * Conditions that DISABLE the inhibit, latched. Both mean the
  * engine/generator is legitimately wanted, so we stop transmitting and stay
- * stopped (power-cycle -- the relay drops at truck sleep -- to re-enable).
+ * stopped. Two exits, neither of them SoC or M mode going away again: an
+ * explicit re-arm, or a key-off -> key-on transition (spec 7.1 rule 2). A
+ * power cycle also clears them, the relay dropping at truck sleep being the
+ * ordinary case, but it is no longer the only way out.
  *
  *   M mode  -- driver manually commanding the engine (0x639 shift_lever_pos
  *              == 4, "Manual_generator_mode", confirmed in the powertrain
@@ -839,7 +846,7 @@ static void disable_monitor(gi_state_t *st, uint32_t id, uint8_t dlc,
 {
     if (st->disabled)
     {
-        return;     /* latched until reboot; nothing more to evaluate */
+        return;     /* latched; nothing more to evaluate until it is cleared */
     }
 
     if (id == GI_MMODE_ID && dlc >= 7)
@@ -885,11 +892,12 @@ static void disable_monitor(gi_state_t *st, uint32_t id, uint8_t dlc,
  * WHAT IS CLEARED, AND WHY IT IS "EVERY". The user's ruling was literal --
  * "clears any latch. it does re enter the normal arm gate" -- and the reason
  * it is safe to read it that way is that a key cycle is morally the reboot
- * that these latches were always documented to wait for. The section 6
- * comment says as much: cleared "only by a reboot, which the relay dropping
- * at truck sleep provides". A re-key quick enough that the relay never opens
- * is the same event with the power never interrupted, and leaving the device
- * latched across it was recorded as a known consequence, not as a wish.
+ * that these latches were always documented to wait for -- section 6 and the
+ * bus-loss trip both used to say they cleared only by a reboot, which the
+ * relay dropping at truck sleep provides. A re-key quick enough that the
+ * relay never opens is the same event with the power never interrupted, and
+ * leaving the device latched across it was recorded as a known consequence,
+ * not as a wish. Those comments now name this function as the second exit.
  *
  * Neither section 6 release survives on evidence, either: M mode has to be
  * re-selected by the driver on the new drive before disable_monitor() can see

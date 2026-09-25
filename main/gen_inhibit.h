@@ -1,8 +1,13 @@
 /*
- * gen_inhibit -- Vtrux generator-inhibit transmitter, first increment.
+ * gen_inhibit -- Vtrux generator-inhibit transmitter.
  *
- * This increment exists to MEASURE, not yet to inhibit. It answers the one
- * question the whole design turns on and that no capture so far could answer:
+ * INHIBIT (mode 3) transmits a real zero-torque 0x051 on the powertrain bus,
+ * rebuilt from each received VCM frame and stealing its next rolling counter.
+ * The measuring modes it grew out of are still here and still useful: OBSERVE
+ * (1) times 0x051 arrivals, RESPOND (2) answers each one with a 0x7F0 probe
+ * at a fixed offset, which is how the RX-to-TX trail is measured.
+ *
+ * The question those modes exist to answer, and that no capture could:
  * when a VCM 0x051 frame arrives, how long until a frame of ours is on the
  * wire, and how tightly is that bounded?
  *
@@ -18,13 +23,19 @@
  * high-priority task doing a blocking twai_receive(), which the driver ISR
  * wakes directly.
  *
- * SAFETY -- read before enabling RESPOND on a vehicle:
+ * SAFETY -- read before arming on a vehicle:
+ *
+ *   INHIBIT mode transmits a real 0x051 that the GENE inverter acts on. It is
+ *   gated by the spec section 7 arm interlocks, the section 6 releases and the
+ *   7.1 key rule, and mode 3 is deliberately a separate value from the
+ *   measuring modes so the real-ID transmit cannot be reached by accident.
+ *   Spec section 13 is the list of what is known to be missing; read it before
+ *   deciding a build is fit for the truck.
  *
  *   RESPOND mode transmits GEN_INHIBIT_PROBE_ID (0x7F0), never 0x051. It is a
  *   timing probe, not a command: nothing on the truck consumes that ID, so a
  *   probe frame emitted at the wrong instant cannot be mistaken for a torque
- *   command. Emitting real 0x051 is the NEXT increment and is deliberately
- *   not implemented here.
+ *   command.
  *
  *   OBSERVE mode never transmits. Note it cannot use transceiver standby to
  *   guarantee that: on MCP2561/2 the STBY pin disables the receiver as well,
@@ -43,7 +54,10 @@
 extern "C" {
 #endif
 
-/* The VCM's generator torque command. Observed only; never transmitted here. */
+/*
+ * The VCM's generator torque command: the ID this component both reads and,
+ * in INHIBIT, transmits. Section 4 of the spec is the frame layout.
+ */
 #define GEN_INHIBIT_VCM_ID      0x051
 
 /* Timing probe. Deliberately an ID nothing on the truck consumes. */
@@ -56,7 +70,8 @@ typedef enum
     GEN_INHIBIT_RESPOND,    /* also emit a probe frame (0x7F0) at a fixed offset */
     GEN_INHIBIT_INHIBIT,    /* THE REAL THING: on each 0x051 RX, transmit a
                              * zero-torque 0x051 with the stolen next counter.
-                             * Transmits the real command ID -- bench only. */
+                             * Transmits the real command ID, so everything in
+                             * spec sections 6, 7 and 7.1 gates it. */
 } gen_inhibit_mode_t;
 
 /* Start the worker. Call once, after can_init(). Starts in OFF. */

@@ -176,7 +176,7 @@ static void report_events(const gi_events_t *ev)
             if (e->a == (int32_t)GI_INHIBIT)
             {
                 ESP_LOGW(TAG, "INHIBIT ARMED -- transmitting real 0x%03X "
-                              "(zero torque). Bench only.", GI_VCM_ID);
+                              "(zero torque) on this bus", GI_VCM_ID);
             }
             break;
         case GI_EV_DISABLED:

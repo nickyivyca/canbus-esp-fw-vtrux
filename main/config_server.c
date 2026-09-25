@@ -1534,13 +1534,15 @@ static const httpd_uri_t ws = {
 static struct file_server_data server_data = {.base_path = FS_MOUNT_POINT""};
 //static struct file_server_data *server_data = NULL;
 
-/* ---- gen_inhibit bench control -------------------------------------------
- * GET  /gen_inhibit                       -> timing statistics as JSON
- * POST /gen_inhibit_set?mode=N&offset=N   -> 0 off, 1 observe, 2 respond
+/* ---- gen_inhibit control --------------------------------------------------
+ * GET  /gen_inhibit                       -> state and statistics as JSON
+ * POST /gen_inhibit_set?mode=N&offset=N   -> 0 off, 1 observe, 2 respond,
+ *                                            3 inhibit
  *
  * The setter is POST so that a browser prefetch or a stray GET cannot start
- * the device transmitting. RESPOND emits only GEN_INHIBIT_PROBE_ID (0x7F0),
- * never 0x051 -- see gen_inhibit.h.
+ * the device transmitting. `offset` applies to RESPOND only, which emits
+ * GEN_INHIBIT_PROBE_ID (0x7F0) and never 0x051. Mode 3 transmits the real
+ * command ID -- see gen_inhibit.h.
  */
 static esp_err_t gen_inhibit_get_handler(httpd_req_t *req)
 {
@@ -1560,7 +1562,7 @@ static esp_err_t gen_inhibit_set_handler(httpd_req_t *req)
 
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK)
     {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "expected ?mode=0|1|2[&offset=us]");
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "expected ?mode=0|1|2|3[&offset=us]");
         return ESP_FAIL;
     }
     if (httpd_query_key_value(query, "mode", val, sizeof(val)) == ESP_OK)
@@ -1576,9 +1578,21 @@ static esp_err_t gen_inhibit_set_handler(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "mode must be 0..3 (3=INHIBIT)");
         return ESP_FAIL;
     }
-    if (gen_inhibit_set_mode((gen_inhibit_mode_t)mode, offset_us) != ESP_OK)
+    /*
+     * Name the actual cause. This used to report "bad offset" for every
+     * failure, including the one that matters most on the bench -- the bus
+     * refusing to come up, which is how an arm attempt fails on an idle
+     * device -- so a real arm failure read as a typo in the query string.
+     */
+    const esp_err_t serr = gen_inhibit_set_mode((gen_inhibit_mode_t)mode,
+                                                offset_us);
+    if (serr != ESP_OK)
     {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad offset (max 4000 us)");
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            serr == ESP_ERR_INVALID_ARG
+                                ? "bad offset (max 4000 us)"
+                                : "cannot arm: bus would not come up, or "
+                                  "OBSERVE could not be made listen-only");
         return ESP_FAIL;
     }
 

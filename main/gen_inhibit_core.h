@@ -341,7 +341,13 @@ typedef struct
     gi_mode_t mode;
     uint32_t  offset_us;
 
-    /* --- latched disable (section 6): survives arm cycles, not reboots --- */
+    /*
+     * --- latched disable (section 6) ---
+     * Survives arm cycles and does not survive a reboot. Since spec 7.1 it is
+     * also cleared by a key-off -> key-on transition (key_monitor()), which is
+     * the only thing besides a power cycle that clears it -- SoC recovering or
+     * M mode being deselected does not.
+     */
     bool         disabled;
     gi_disable_t disable_code;
     uint32_t     soc_raw;           /* last valid SoC, percent * 100 */
@@ -434,7 +440,10 @@ void gi_init(gi_state_t *st, const gi_config_t *cfg);
  * Deliberately does NOT clear signal freshness -- that is a property of the
  * bus, not of this run, and dropping it would make every arm wait a fresh
  * round before the interlocks could pass. Deliberately does NOT clear the
- * section 6 latched disable, which is cleared only by a reboot.
+ * section 6 latched disable: that one is cleared by a reboot or by a key-on
+ * (spec 7.1), never by re-arming. It DOES clear the section 7 abort latch,
+ * which is what arming out of OFF used to do when an abort was expressed as
+ * mode OFF.
  */
 void gi_reset_stats(gi_state_t *st);
 
@@ -444,7 +453,10 @@ void gi_set_mode(gi_state_t *st, gi_mode_t mode, uint32_t offset_us,
 
 /*
  * Entering the OFF state from the worker loop. Separate from gi_set_mode()
- * because an abort also lands here, having set mode OFF from inside the core.
+ * because the worker also reaches OFF without a mode request -- the RX-error
+ * ceiling of gi_on_bus_error() forces it from inside the core. A section 7
+ * abort no longer comes through here at all: since spec 7.1 it is a latched
+ * stand-down that leaves the mode alone (see abort_latched).
  */
 void gi_notify_off(gi_state_t *st);
 
