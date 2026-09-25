@@ -68,14 +68,57 @@ and the head-of-queue clock restarted on every call — so case 3 reported a
 false `TX_LATE` that looked exactly like the firmware bug. **A model that errs
 the same way as the defect will confirm it.**
 
+## What E1 does NOT cover
+
+- **`main.c`'s SLCAN dispatch.** A3 disables the command parser on three
+  channels, and that code lives in `can_tx_task`, which this build does not
+  compile. Nothing here would notice if it came back. Bench or code review only.
+- **Races.** One runnable thread at a time by design; a race between the worker
+  and an HTTP handler is out of reach.
+- **Real timing.** Virtual clock. The trail measurement is the bench's job.
+
+`main/can.c` and `main/gen_inhibit.c` ARE compiled as shipped, which is the
+point of `fake_can.c` being platform stubs rather than a reimplementation.
+
 ## The negative control
 
-Reverting `gen_inhibit.c` to the `dc571cb` alert handling in full — no
-per-iteration poll, no pre-queue drain, a bounded read straight after
-queueing — makes cases 1 and 4 fail, with the invariant reporting `tx_ok=11
-but only 10 inhibit frames completed on the wire`.
+`mutate.py` is the standing one, adopted from the reviewing session. It applies
+seven mutations one at a time to a scratch copy and reports `rc`:
 
-**Run that before trusting a change here.** Partially reverting is not enough:
-an earlier attempt restored only the completion test and every case still
-passed, which is how a suite that cannot catch its own motivating bug looks
-from the outside.
+```sh
+BASE=~/gi_review python3 mutate.py
+```
+
+Six must come back `rc=1`. **M7 is expected to survive** and `gen_inhibit.c`
+says why: with completion decided by `msgs_to_tx == 0`, the pre-queue drain
+only clears a stale `TX_FAILED`, itself unreachable at `ss = 0`.
+
+**Read `rc`, not the text.** The original scraped lines containing `FAIL`,
+which also matches the harness's own `twai_receive failed: ESP_FAIL` logging —
+so a surviving mutation was reported as caught.
+
+### Four of the seven survived the first version of this suite
+
+Including **M1, the exact bug E1 was written for**. Each reason is worth
+keeping, because every one produced a green run:
+
+1. **Case 5 tested the fake.** `fake_can.c` had its own copy of the spec 3.2
+   refusal, so deleting the real one in `main/can.c` changed nothing. Fixed by
+   compiling `main/can.c` as shipped.
+2. **Case 6 drove only one of the two self-off paths.** The quiesce reason could
+   be deleted freely. Fixed by case 10.
+3. **Nothing asserted the diag deferral at all.** Fixed by case 9.
+4. **Case 4 never actually created the ordering it describes.** It set an air
+   time and hoped a diag page was in the buffer. Making it deterministic took
+   three further attempts, each of which *looked* like a firmware defect:
+   - one air time for everything, so the diag and the inhibit could not be
+     separated — either both completed or neither;
+   - a diag fast enough (1 ms) that it completed before the `0x051` arrived, so
+     the per-iteration poll consumed its alert while nothing was outstanding;
+   - a detection loop that fed five interlock signals per pass, letting up to
+     100 ms elapse between the diag being queued and the `0x051` — longer than
+     the diag's own air time.
+
+The invariant is checked as a **step hook** for the same reason: the early
+credit opens a window that closes again, and an end-of-case assertion sees
+nothing wrong.

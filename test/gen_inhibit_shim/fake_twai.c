@@ -95,9 +95,45 @@ const ft_frame_t *ft_sent(int i) { return &g_sent[i]; }
 int              ft_wire_count(void) { return g_nwire; }
 const ft_frame_t *ft_wire(int i) { return &g_wire[i]; }
 
+static void (*g_step_hook)(void);
+void ft_set_step_hook(void (*fn)(void)) { g_step_hook = fn; }
+
+/* Every step boundary, so an always-property is checked as one. */
+static void step(void)
+{
+    if (g_step_hook) g_step_hook();
+}
+
 void ft_set_air_time(int64_t us) { g_air_time = us; }
 void ft_stall_next(int n) { g_stall_n = n; }
 void ft_stall_id(uint32_t id, int n) { g_stall_id = id; g_stall_id_n = n; }
+
+#define AIRMAX 8
+static struct { uint32_t id; int64_t us; } g_air_id[AIRMAX];
+static int g_n_air_id;
+
+void ft_set_air_time_id(uint32_t id, int64_t us)
+{
+    for (int i = 0; i < g_n_air_id; i++)
+    {
+        if (g_air_id[i].id == id) { g_air_id[i].us = us; return; }
+    }
+    if (g_n_air_id < AIRMAX)
+    {
+        g_air_id[g_n_air_id].id = id;
+        g_air_id[g_n_air_id].us = us;
+        g_n_air_id++;
+    }
+}
+
+static int64_t air_time_for(uint32_t id)
+{
+    for (int i = 0; i < g_n_air_id; i++)
+    {
+        if (g_air_id[i].id == id) return g_air_id[i].us;
+    }
+    return g_air_time;
+}
 
 int ft_wire_count_id(uint32_t id)
 {
@@ -141,12 +177,12 @@ static void controller_advance(int64_t t)
             g_head_started = g_q[0].t_queued > g_last_done
                            ? g_q[0].t_queued : g_last_done;
         }
-        if (t < g_head_started + g_air_time)
+        if (t < g_head_started + air_time_for(g_q[0].id))
         {
             return;
         }
         ft_frame_t done = g_q[0];
-        done.t_done = g_head_started + g_air_time;
+        done.t_done = g_head_started + air_time_for(g_q[0].id);
         if (done.failed)
         {
             g_alerts |= TWAI_ALERT_TX_FAILED;
@@ -206,7 +242,26 @@ int xTaskCreate(TaskFunction_t fn, const char *name, uint32_t stack,
     return pdTRUE;
 }
 
-TaskHandle_t xTaskGetCurrentTaskHandle(void) { return (TaskHandle_t)1; }
+/*
+ * DISTINCT HANDLES PER THREAD, and this was a real mock-fidelity bug that
+ * case 10 caught.
+ *
+ * Returning one handle for both threads made the TEST thread look like the
+ * worker, so gen_inhibit_quiesce()'s "called from the worker itself, return
+ * immediately" guard fired on every call. The spec 8 handshake never ran, the
+ * quiesce reason was never set, and case 10 failed -- reporting a firmware
+ * defect that was actually a defect in the model. A mock that cannot tell two
+ * tasks apart cannot test code whose correctness turns on which task is
+ * calling.
+ */
+TaskHandle_t xTaskGetCurrentTaskHandle(void)
+{
+    if (g_worker_started && pthread_equal(pthread_self(), g_worker))
+    {
+        return (TaskHandle_t)1;         /* the worker */
+    }
+    return (TaskHandle_t)2;             /* anybody else */
+}
 
 void ft_start_worker(void)
 {
@@ -271,12 +326,15 @@ int64_t ft_run(int64_t us)
      */
     if (g_now < deadline) g_now = deadline;
     controller_advance(g_now);
+    step();
     return g_now;
 }
 
 /* ------------------------------------------------------------ the driver -- */
 
-esp_err_t twai_driver_install(const void *g, const void *t, const void *f)
+esp_err_t twai_driver_install(const twai_general_config_t *g,
+                              const twai_timing_config_t *t,
+                              const twai_filter_config_t *f)
 {
     (void)g; (void)t; (void)f;
     g_installed = true;
@@ -386,6 +444,7 @@ esp_err_t twai_receive(twai_message_t *message, TickType_t ticks)
     /* Nothing waiting: the call blocked for its timeout. */
     g_now += (int64_t)ticks * 1000;
     controller_advance(g_now);
+    step();
     return ESP_ERR_TIMEOUT;
 }
 
@@ -440,6 +499,7 @@ void ft_reset(void)
     g_alerts = 0;
     g_alerts_enabled = 0;
     g_air_time = 200;
+    g_n_air_id = 0;
     g_head_started = -1;
     g_last_done = 0;
     g_stall_n = g_refuse_n = g_rx_err_n = 0;

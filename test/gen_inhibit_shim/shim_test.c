@@ -120,9 +120,27 @@ static void go_live(void)
     }
 }
 
+/*
+ * The invariant as a STEP HOOK rather than an end-of-case assertion. See
+ * ft_set_step_hook(): 632af32's bug opens a window that closes again, so a
+ * check that only runs at the end sees nothing wrong.
+ */
+static void invariant_hook(void)
+{
+    const uint32_t claimed = json_u32("\"tx_ok\":");
+    const int on_wire = ft_wire_count_id(0x051);
+    if (claimed != 0xFFFFFFFFu && claimed > (uint32_t)on_wire)
+    {
+        printf("    FAIL: at %lld us tx_ok=%u but only %d inhibit frames had "
+               "completed on the wire\n", (long long)ft_now(), claimed, on_wire);
+        g_fail++;
+    }
+}
+
 static void setup(void)
 {
     ft_reset();
+    ft_set_step_hook(invariant_hook);
     ml_clear();
     gen_inhibit_init();
     ft_start_worker();
@@ -299,23 +317,104 @@ static void case_inhibit_behind_diag(void)
     setup();
     go_live();
 
-    const uint32_t before = json_u32("\"tx_ok\":");
+    static const uint8_t KEY[8]  = { 0x10 };
+    static const uint8_t CONT[8] = { 11 << 2 };
+    static const uint8_t SOC[8]  = { 0x4E, 0x20 };
+    static const uint8_t FLT[8]  = { 0, 0, 0, 0, 0, 0, 0, 0xC8 };
+    static const uint8_t SHF[8]  = { 0, 0, 0, 0, 0, 0, 2 << 4 };
 
     /*
-     * A slow controller, so the diag page the tick emits is still in the
-     * buffer when the next 0x051 arrives and the inhibit goes in behind it.
+     * THE ORDERING HAS TO BE BUILT, NOT HOPED FOR, and the first version of
+     * this case hoped. It set an 8 ms air time, fed one 0x051 and trusted that
+     * a diag page happened to be in the buffer -- so when the reviewing session
+     * reinstated 632af32's alert-based completion, this case stayed green. The
+     * core's diag deferral means a diag is queued only while NOTHING of ours is
+     * outstanding, so the diag-first order has to be constructed deliberately:
+     *
+     *   1. a long air time, so whatever is queued stays in flight;
+     *   2. hold the interlocks up WITHOUT 0x051 until a diag page is queued;
+     *   3. only then feed the 0x051, which queues the inhibit behind it.
+     *
+     * When the diag completes it latches TWAI_ALERT_TX_SUCCESS, and that is the
+     * bit 632af32 credited to the inhibit -- which is still in flight.
      */
-    ft_set_air_time(8000);
+    /*
+     * Asymmetric, and THE NUMBERS MATTER. The diag has to complete AFTER the
+     * inhibit is queued and BEFORE the inhibit itself completes -- that is the
+     * only window in which a latched alert shared by both can be
+     * mis-attributed.
+     *
+     * Too fast a diag (1 ms, tried first) completes before the 0x051 even
+     * arrives, so the per-iteration poll consumes its alert while nothing is
+     * outstanding and there is nothing left to mis-credit -- which is why the
+     * alert-based mutation survived this case twice. Too slow and it never
+     * completes inside the window at all. 30 ms against the inhibit's 400 ms
+     * puts the diag's completion squarely inside our frame's flight.
+     */
+    ft_set_air_time(30000);
+    ft_set_air_time_id(0x051, 400000);
+
+    /*
+     * ONE FRAME PER STEP, checking after each, so the 0x051 goes in within a
+     * single step of the diag being queued.
+     *
+     * The previous version fed five interlock signals per pass and only then
+     * looked, so up to 100 ms of virtual time elapsed between the diag being
+     * queued and the 0x051 arriving -- longer than the diag's own 30 ms air
+     * time. The diag had therefore already completed and the per-iteration
+     * poll had consumed its alert, leaving nothing to mis-credit. That is the
+     * third reason the alert-based mutation survived this case, and each time
+     * the failure looked like the firmware being right.
+     */
+    static const uint8_t *const CYCLE[5] = { KEY, CONT, SOC, FLT, SHF };
+    static const uint32_t CYCLE_ID[5] = { 0x592, 0x440, 0x411, 0x617, 0x639 };
+
+    int diag_at = -1;
+    const int64_t give_up = ft_now() + 900000;
+    for (int k = 0; diag_at < 0 && ft_now() < give_up; k++)
+    {
+        const int n = ft_sent_count();
+        feed(CYCLE_ID[k % 5], CYCLE[k % 5], 8, 10000);
+        for (int i = n; i < ft_sent_count(); i++)
+        {
+            const uint32_t id = ft_sent(i)->id;
+            if (id == 0x7F1 || id == 0x7F2 || id == 0x7F3 || id == 0x7F8)
+            {
+                diag_at = i;
+                break;
+            }
+        }
+    }
+    CHECK(diag_at >= 0,
+          "no diag page was queued within 900 ms, so the inhibit could not be "
+          "queued behind one and this case proved nothing");
+    CHECK(ft_wire_count_id(ft_sent(diag_at >= 0 ? diag_at : 0)->id) == 0
+          || diag_at < 0,
+          "the diag page had already completed before the 0x051 was fed, so "
+          "its alert was consumed while nothing was outstanding");
+
+    const uint32_t before = json_u32("\"tx_ok\":");
+    const int wire_before = ft_wire_count_id(0x051);
+
     uint8_t cmd[6];
     memcpy(cmd, VCM, sizeof(cmd));
     cmd[5] = 0x0C;
-    feed(0x051, cmd, 6, 1000);
+    feed(0x051, cmd, 6, 1000);      /* queues BEHIND the in-flight diag */
 
-    /* Immediately: the diag may have completed, ours cannot have. */
+    /*
+     * Now let the diag complete -- latching its alert -- while our frame is
+     * still in the queue behind it. The step hook watches the invariant
+     * throughout; this checks the same thing at the moment it matters.
+     */
+    ft_run(60000);
+    CHECK(ft_wire_count_id(0x051) == wire_before,
+          "our frame completed during the window, so the diag's completion was "
+          "not observed while ours was outstanding");
     CHECK(json_u32("\"tx_ok\":") == before,
-          "tx_ok moved to %u before our frame could have completed",
-          json_u32("\"tx_ok\":"));
-    ft_run(100000);
+          "tx_ok moved %u -> %u on the DIAG frame's completion while our frame "
+          "was still queued behind it", before, json_u32("\"tx_ok\":"));
+
+    ft_run(600000);
     check_tx_ok_invariant("case 4");
     teardown();
 }
@@ -435,6 +534,145 @@ static void case_passive_emits_nothing(void)
     teardown();
 }
 
+
+/*
+ * CASE 8 -- the next 0x051 lands while the inhibit is still behind the diag.
+ *
+ * Case 4 proves the inhibit is not credited early. This proves the other half:
+ * what the early credit MASKS. If the inhibit is credited when the diag
+ * completes, the frame is no longer outstanding and TX_LATE cannot fire -- so
+ * the device believes it inhibited a slot in which the VCM's torque is what the
+ * inverter acted on. The reviewing session noted that case 4 never let a second
+ * 0x051 arrive, so it never exercised the consequence.
+ */
+static void case_late_behind_diag_trips(void)
+{
+    printf("  case 8: the VCM's next 0x051 arrives with ours still queued\n");
+    setup();
+    go_live();
+
+    /*
+     * TWO 0x051 FRAMES 1 ms APART, with 50 ms of air time. keep_alive() is no
+     * use here: it interleaves the other interlock signals, each advancing
+     * virtual time, so 100 ms passes between consecutive 0x051 frames and any
+     * plausible air time completes in the gap. Two attempts failed that way --
+     * 9 ms and then 45 ms of air time -- each reporting a firmware defect while
+     * the firmware was right. The condition has to be built, not hoped for.
+     */
+    ft_set_air_time(50000);
+    uint8_t cmd[6];
+    for (int i = 0; i < 2; i++)
+    {
+        memcpy(cmd, VCM, sizeof(cmd));
+        cmd[5] = (uint8_t)(0x0C + i);
+        feed(0x051, cmd, 6, 1000);      /* 1 ms apart, 50 ms to complete */
+    }
+    ft_run(5000);
+
+    CHECK(json_has("still unsent when the VCM's next 0x051 arrived"),
+          "a frame that was still queued when the next 0x051 arrived did not "
+          "trip: %s", stats());
+    check_tx_ok_invariant("case 8");
+    teardown();
+}
+
+/*
+ * CASE 9 -- the diag page waits while an inhibit is outstanding.
+ *
+ * Nothing asserted this before, so removing the core's deferral survived as a
+ * mutation. It matters twice: spec 10 (the lowest-priority diag frames must not
+ * delay the inhibit) and, since completion is msgs_to_tx == 0, a diag queued
+ * BEHIND the inhibit would hold the count above zero after ours had gone and
+ * produce a false TX_LATE on a slow bus.
+ */
+static void case_diag_defers_to_pending(void)
+{
+    printf("  case 9: no diag frame is queued while an inhibit is outstanding\n");
+    setup();
+    go_live();
+
+    /*
+     * Stall our frame at the head, then hold the OTHER interlocks up without
+     * any further 0x051, so the frame stays outstanding while diag falls due
+     * at 300 ms.
+     *
+     * NO MORE 0x051, and that is the whole shape of the case. The first version
+     * used keep_alive(), which kept feeding 0x051 -- the next one tripped
+     * TX_LATE, that cleared tx_pending, and the five diag frames it then
+     * counted were all queued AFTER the abort, when deferring was neither
+     * required nor happening. The window has to be bounded by the abort, not
+     * span it.
+     *
+     * 400 ms: past the 300 ms diag period and inside the 500 ms freshness
+     * window, so the bus-loss trip has not fired either.
+     */
+    static const uint8_t KEY[8]  = { 0x10 };
+    static const uint8_t CONT[8] = { 11 << 2 };
+    static const uint8_t SOC[8]  = { 0x4E, 0x20 };
+    static const uint8_t FLT[8]  = { 0, 0, 0, 0, 0, 0, 0, 0xC8 };
+    static const uint8_t SHF[8]  = { 0, 0, 0, 0, 0, 0, 2 << 4 };
+
+    ft_stall_id(0x051, 1);
+    uint8_t cmd[6];
+    memcpy(cmd, VCM, sizeof(cmd));
+    cmd[5] = 0x0C;
+    feed(0x051, cmd, 6, 5000);          /* this one stalls at the head */
+
+    const int q_before = ft_sent_count();
+    const int64_t end = ft_now() + 400000;
+    while (ft_now() < end)
+    {
+        feed(0x592, KEY, 8, 20000);
+        feed(0x440, CONT, 8, 20000);
+        feed(0x411, SOC, 8, 20000);
+        feed(0x617, FLT, 8, 20000);
+        feed(0x639, SHF, 8, 20000);
+    }
+
+    int diag_queued = 0;
+    for (int i = q_before; i < ft_sent_count(); i++)
+    {
+        const uint32_t id = ft_sent(i)->id;
+        if (id == 0x7F1 || id == 0x7F2 || id == 0x7F3 || id == 0x7F8) diag_queued++;
+    }
+    /* The guard: if nothing was outstanding there was nothing to defer to. */
+    CHECK(json_has("\"abort_reason\":\"\""),
+          "the device aborted during the window, so the deferral was not what "
+          "was being tested: %s", stats());
+    CHECK(diag_queued == 0,
+          "%d diag frames were queued while an inhibit was outstanding -- spec "
+          "10, and they would hold msgs_to_tx above zero after ours had gone",
+          diag_queued);
+    teardown();
+}
+
+/*
+ * CASE 10 -- a forced quiesce names itself (spec 8, 11).
+ *
+ * Case 6 drives only the receive-error path, so removing the quiesce reason
+ * survived as a mutation. can_disable() from another task is the realistic
+ * trigger after A3 -- the inhibitor's own HTTP setter switching modes with the
+ * bus up -- and it forces mode OFF, in which the worker stops receiving and
+ * nothing more goes out on the wire.
+ */
+static void case_quiesce_names_itself(void)
+{
+    printf("  case 10: a forced quiesce says why\n");
+    setup();
+    go_live();
+
+    CHECK(json_has("\"self_off\":\"\""),
+          "self_off was set on a healthy armed device: %s", stats());
+
+    /* Another task takes the bus down. can_disable() quiesces us first. */
+    can_disable();
+    ft_run(10000);
+
+    CHECK(json_has("forced quiesce"),
+          "a forced quiesce did not name itself: %s", stats());
+    teardown();
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);   /* a hang must still show its trace */
@@ -446,6 +684,9 @@ int main(void)
     case_foreign_transmit_refused();
     case_self_off_names_itself();
     case_passive_emits_nothing();
+    case_late_behind_diag_trips();
+    case_diag_defers_to_pending();
+    case_quiesce_names_itself();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
     return g_fail ? 1 : 0;

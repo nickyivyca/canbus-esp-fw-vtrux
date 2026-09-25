@@ -64,6 +64,17 @@ void ft_stall_next(int n);
  */
 void ft_stall_id(uint32_t id, int n);
 
+/*
+ * Air time for ONE id, overriding ft_set_air_time().
+ *
+ * Needed to build the diag-ahead-of-inhibit ordering deterministically: the
+ * diag has to COMPLETE while the inhibit is still in flight, and with a single
+ * air time the two windows cannot be separated -- whatever value is chosen,
+ * either both complete or neither does, depending on when the diag happened to
+ * be queued. Case 4 failed twice that way.
+ */
+void ft_set_air_time_id(uint32_t id, int64_t us);
+
 /* How many frames of `id` have completed on the wire. */
 int ft_wire_count_id(uint32_t id);
 
@@ -111,6 +122,20 @@ const ft_frame_t *ft_wire(int i);
  * time by at most `us`. Returns the virtual time now.
  */
 int64_t ft_run(int64_t us);
+
+/*
+ * A hook run at EVERY step boundary -- after each ft_run(), and after each
+ * blocking call inside the worker resolves.
+ *
+ * WHY. tx_ok can never exceed the number of frames that completed on the wire.
+ * That is an ALWAYS-property, and checking it only at the end of a case misses
+ * a window that opens and closes: the reviewing session reinstated 632af32's
+ * completion logic and every case still passed, because the early credit
+ * happened at ~8 ms and the counts had agreed again by the time anything
+ * looked. A property that holds at the end is not the same as one that always
+ * holds.
+ */
+void ft_set_step_hook(void (*fn)(void));
 
 int64_t ft_now(void);
 void    ft_start_worker(void);

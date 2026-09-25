@@ -13,8 +13,12 @@ CFLAGS  ?= -std=c11 -O1 -g -Wall -Wextra -Wno-unused-parameter \
            -I. -Imock -I$(COREDIR)
 LDFLAGS ?= -pthread
 
+# main/can.c is compiled AS SHIPPED, not reimplemented: the reviewing session
+# mutated the spec 3.2 refusal out of the real file and every case stayed green,
+# because the old fake_can.c had its own copy of it.
 SRC := shim_test.c fake_twai.c fake_can.c \
-       $(COREDIR)/gen_inhibit.c $(COREDIR)/gen_inhibit_core.c
+       $(COREDIR)/gen_inhibit.c $(COREDIR)/gen_inhibit_core.c \
+       $(COREDIR)/can.c
 
 all: shim_test
 

@@ -1,85 +1,99 @@
 /*
- * fake_can -- wican-fw's can.c reduced to what the shim uses.
+ * Platform stubs so the REAL main/can.c compiles and runs here.
  *
- * NOT a copy of can.c. The real one drags in lwip, comm_server and the whole
- * client stack; compiling it would mean mocking half the firmware to test the
- * eight functions gen_inhibit.c actually calls. What is reproduced is the
- * BEHAVIOUR the shim depends on:
+ * WHY THIS REPLACED A REIMPLEMENTATION. The first version of this file WAS a
+ * reimplementation: can_enable/can_disable/can_send written out by hand, with
+ * the spec 3.2 refusal copied in. The reviewing session mutated the refusal out
+ * of the real main/can.c and every case stayed green -- because case 5 was
+ * exercising the copy. A test that passes when the shipped code is deleted is
+ * worse than no test: it reports safety it has not checked.
  *
- *   - can_enable() installs and starts the driver, honouring the silent flag;
- *   - can_disable() calls gen_inhibit_quiesce() FIRST and then uninstalls,
- *     which is the handshake spec 8 exists for -- the ordering is the whole
- *     point, so getting it wrong here would hide the bug it guards against;
- *   - can_send() refuses while gen_inhibit owns the bus (spec 3.2, review A3).
- *
- * can_send()'s refusal is reproduced rather than mocked away because E1 case 5
- * is about what happens when it is missing: a frame queued by another task
- * after the inhibit leaves msgs_to_tx above zero once ours has gone, which is
- * a false TX_LATE. A test can call ft_foreign_transmit() to bypass the refusal
- * and show that, or can_send() to show the refusal working.
+ * So main/can.c is compiled as-is now, and this file provides only what the
+ * platform would: an event group, a GPIO, and the queues it declares. If
+ * can.c's dependencies grow, add stubs here rather than copying behaviour.
  */
-#include "can.h"
-#include "fake_twai.h"
-#include "gen_inhibit.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
+#include "driver/gpio.h"
 
-#include "driver/twai.h"
-#include "esp_log.h"
+#include <stdint.h>
+#include <stddef.h>
 
-#include <stdbool.h>
+/* One event group is enough: can.c uses a single CAN_ENABLE_BIT. */
+static EventBits_t g_bits;
 
-static bool g_enabled;
-static uint8_t g_silent;
-static uint8_t g_bitrate;
-
-void can_init(uint8_t bitrate) { g_bitrate = bitrate; }
-
-void can_enable(void)
+EventGroupHandle_t xEventGroupCreate(void)
 {
-    if (g_enabled) return;
-    twai_driver_install(0, 0, 0);
-    twai_start();
-    g_enabled = true;
+    g_bits = 0;
+    return (EventGroupHandle_t)&g_bits;
 }
 
-void can_disable(void)
+EventBits_t xEventGroupSetBits(EventGroupHandle_t g, EventBits_t bits)
 {
-    if (!g_enabled) return;
-    /*
-     * Spec 8: the worker must be provably outside the driver before it is
-     * uninstalled, or it wakes in freed memory. The real can.c calls this
-     * first too; reproducing the ORDER is the point of having it here.
-     */
-    gen_inhibit_quiesce();
-    twai_stop();
-    twai_driver_uninstall();
-    g_enabled = false;
+    (void)g; g_bits |= bits; return g_bits;
 }
 
-void can_set_silent(uint8_t flag) { g_silent = flag; }
-uint8_t can_is_silent(void) { return g_silent; }
-bool can_is_enabled(void) { return g_enabled; }
-void can_set_bitrate(uint8_t rate) { g_bitrate = rate; }
-uint8_t can_get_bitrate(void) { return g_bitrate; }
-void can_flush_rx(void) { twai_clear_receive_queue(); }
-uint32_t can_msgs_to_rx(void) { return 0; }
-void can_set_loopback(uint8_t f) { (void)f; }
-void can_set_auto_retransmit(uint8_t f) { (void)f; }
-void can_set_filter(uint32_t f) { (void)f; }
-void can_set_mask(uint32_t m) { (void)m; }
-
-esp_err_t can_receive(twai_message_t *message, TickType_t ticks)
+EventBits_t xEventGroupClearBits(EventGroupHandle_t g, EventBits_t bits)
 {
-    return twai_receive(message, ticks);
+    (void)g; g_bits &= ~bits; return g_bits;
 }
 
-esp_err_t can_send(twai_message_t *message, TickType_t ticks)
+EventBits_t xEventGroupGetBits(EventGroupHandle_t g)
 {
-    /* Spec 3.2 (review A3). See can.c for the full reasoning. */
-    if (gen_inhibit_owns_bus())
-    {
-        ESP_LOGW(TAG, "can_send refused: gen_inhibit owns the bus (spec 3.2)");
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (!g_enabled) return ESP_ERR_INVALID_STATE;
-    return twai_transmit(message, ticks);
+    (void)g; return g_bits;
 }
+
+EventBits_t xEventGroupWaitBits(EventGroupHandle_t g, EventBits_t bits,
+                                int clear, int all, TickType_t wait)
+{
+    (void)g; (void)bits; (void)clear; (void)all; (void)wait;
+    return g_bits;
+}
+
+/* The transceiver standby line. Recorded so a case could assert on it. */
+static int g_gpio_level[64];
+
+int gpio_set_level(gpio_num_t pin, uint32_t level)
+{
+    if (pin >= 0 && pin < 64) g_gpio_level[pin] = (int)level;
+    return 0;
+}
+
+int gpio_get_level(gpio_num_t pin)
+{
+    return (pin >= 0 && pin < 64) ? g_gpio_level[pin] : 0;
+}
+
+/*
+ * FreeRTOS software timers. can.c creates one to re-enable the bus after a
+ * delay; nothing in E1 depends on it firing, and a timer that never fires is
+ * the honest model rather than one that fires at an invented moment.
+ */
+#include "freertos/timers.h"
+
+static int g_timer_active;
+
+TimerHandle_t xTimerCreate(const char *name, TickType_t period, int reload,
+                           void *id, TimerCallbackFunction_t cb)
+{
+    (void)name; (void)period; (void)reload; (void)id; (void)cb;
+    return (TimerHandle_t)&g_timer_active;
+}
+
+int xTimerStart(TimerHandle_t t, TickType_t wait)
+{
+    (void)t; (void)wait; g_timer_active = 1; return 1;
+}
+
+int xTimerStop(TimerHandle_t t, TickType_t wait)
+{
+    (void)t; (void)wait; g_timer_active = 0; return 1;
+}
+
+int xTimerReset(TimerHandle_t t, TickType_t wait)
+{
+    (void)t; (void)wait; g_timer_active = 1; return 1;
+}
+
+int xTimerIsTimerActive(TimerHandle_t t) { (void)t; return g_timer_active; }
+void *pvTimerGetTimerID(TimerHandle_t t) { (void)t; return NULL; }

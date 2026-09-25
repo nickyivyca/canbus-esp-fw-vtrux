@@ -299,6 +299,15 @@ static void dispatch_emits(const gi_emit_t *em, gi_events_t *ev)
             {
                 behind = (before.msgs_to_tx > 0);
             }
+            /*
+             * The drain now only clears a stale TX_FAILED -- completion is
+             * decided by msgs_to_tx == 0, which no leftover alert can affect,
+             * and TX_FAILED is itself unreachable at ss = 0. So removing this
+             * would not break anything today, which the reviewing session
+             * confirmed by mutation (M7, survives). It stays because it costs
+             * one call and it is the thing that would matter if the frame ever
+             * went out single-shot.
+             */
             uint32_t stale = 0;
             (void)twai_read_alerts(&stale, 0);
             s_tx_failed_latched = false;
