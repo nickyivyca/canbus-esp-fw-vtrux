@@ -97,6 +97,99 @@ only clears a stale `TX_FAILED`, itself unreachable at `ss = 0`.
 which also matches the harness's own `twai_receive failed: ESP_FAIL` logging —
 so a surviving mutation was reported as caught.
 
+### A sixth round found the layer every suite was watching the wrong side of
+
+V01-V07, against `accdb18`. **Five of seven survived** — and not because the
+suites were weak about the rules, but because all four of them watch the same
+thing: the **core's emit list**. Every one of these mutations lives in the four
+lines of `dispatch_emits()` that copy a `gi_frame_t` into a `twai_message_t`,
+which is *downstream* of that list. The core decided correctly in all five
+cases. The copy then got it wrong, and nothing anywhere looked.
+
+- **V04** (`tx.extd = 1`) is the worst defect this component has had on paper.
+  The inhibit goes out as a 29-bit identifier; the GENE inverter filters on the
+  11-bit `0x051` and never sees it. The VCM's torque command stands — while
+  `tx_ok` counts up, the completion logic reports success, and every diag page
+  says the inhibit is healthy. **Silently ineffective, with the instrumentation
+  agreeing.**
+- **V05** (`tx.self = 1`) makes the controller deliver our own frame back to
+  us. The worker reads its own `0x051`, cannot distinguish it from the VCM's,
+  and answers it with counter + 1 — which is received, and answered. A
+  self-sustaining transmit loop on a live powertrain bus.
+- **V02** (DLC 8 not 6), **V03** (`memcpy` 6 bytes of 8) and **V06** (the probe
+  ignores `offset_us`) are quieter. V06 is the one worth noting anyway: the
+  offset was configured, range-checked by case 12, and reported in the diag
+  JSON — and simply not obeyed. A value can be validated everywhere and used
+  nowhere.
+
+**The fix was one invariant, not five cases.** `fake_twai.c` now checks every
+frame handed to `twai_transmit()`: standard data frame, not extended, not
+self-receiving, not single-shot, DLC 6 for `0x051` and 8 for the diag and probe
+IDs, `B0` at `0x08`, torque bytes `00 80`, and the ID in the set the scenario
+declared with `ft_allow_ids()`. It is a property of the *fake*, in the shape of
+`ft_set_step_hook()` one layer lower, so it covers the paths no case walks.
+
+**Where the invariant is checked turned out to matter as much as what it
+checks.** The first version ran the whole thing before `twai_transmit()`'s
+early returns and immediately reported OBSERVE as broken. It is not:
+`gen_inhibit.c:495` says outright that the section 10 diag pages are handed to
+`twai_transmit()` in OBSERVE and that the listen-only controller refuses them,
+"the documented cost of a genuinely passive tap". So the check is split — the
+frame *flags and payload* are judged on what the firmware **built**, because a
+frame constructed with `extd` set is wrong whether or not the driver took it;
+the *ID rules* are judged on what the controller **accepted**, because a
+refused call never reaches the bus.
+
+**And that split exposed a model-fidelity gap of exactly the recorded kind.**
+The fake enqueued whatever it was handed, ignoring the installed mode. Case 11
+("OBSERVE queues nothing") had been passing because the driver happened not to
+be running at the instant the diag page was built — an accident of timing, not
+the mechanism the firmware depends on. It would have gone on passing if that
+mechanism were removed. `twai_transmit()` now returns `ESP_ERR_NOT_SUPPORTED`
+in listen-only, as ESP-IDF documents, so OBSERVE's silence rests on the real
+reason.
+
+**V05 also gets a behavioural check, not only a flag check.** The fake now
+*honours* `self`: a frame queued with it set is delivered back to the receive
+path, which needed the single receive slot to become a real queue — a 1-deep
+slot would have dropped the self-frame and swallowed the very evidence it
+exists to produce. `teardown()` then asserts that no more inhibit frames went
+out than commands came in, counting only frames the **test** delivered, so the
+loop cannot raise its own ceiling. That catches the runaway whatever set the
+bit.
+
+**Where it ended up.** 28 mutations, 24 caught, 4 survivors — and all three
+survivors are **equivalent mutants with the reason written down**, not gaps:
+
+| Survivor | Why it cannot be killed |
+|---|---|
+| `K21` | `disable_monitor()` returns early once a release has latched, so the branch K21 edits cannot run. Spec 6.2's "unconditional on SoC recovering" is enforced one level above it. |
+| `M7` | Completion is decided by `msgs_to_tx == 0`, which no leftover alert affects; and `poll_tx_completion()` runs immediately before `dispatch_emits()` in both worker paths, leaving no window for a stale `TX_FAILED`. At `ss = 0` the bit is never set on the device anyway. |
+| `V08`, `V09` | Each edits an outer guard standing in front of an inner one — `gi_on_tx_result()` returns early for `GI_TX_DIAG` on its own (`gen_inhibit_core.c:1753`), and the worker never calls `gi_tick()` in OFF on its own (`gen_inhibit.c:670`). |
+
+All four are kept in the set as **tripwires on the structure that makes them
+harmless**. The day an inner guard moves, its outer one stops being redundant
+and the mutation starts failing — which is precisely when someone needs to
+know.
+
+**One real gap is visible inside V09 and should not hide behind the
+equivalence.** `gi_tick()`'s OFF guard is unreachable from the driver, but the
+host harness calls the pure core directly and *could* reach it. No scenario
+there ticks in OFF, so nothing tests what the core does when asked to. That is
+a host-suite gap, small but real.
+
+**Two of the new checks fired on their first run, and both times the check was
+wrong rather than the firmware** — worth recording, because a new invariant's
+first failures are the ones most likely to be believed:
+
+- The schema-version check was applied to the whole diag family. Only the
+  STATUS page carries the version in byte 0; STATUS2's byte 0 is the abort
+  reason code.
+- Case 16 ran 360 ms and caught exactly one status page — emitted *before* the
+  interlocks established a SoC at 65 ms. It reported `soc_x100 = 0` against the
+  JSON's 5000, which reads exactly like the truncation defect the case exists to
+  catch. The case was simply too short to observe what it compares.
+
 ### A second round found five more, after all seven were being caught
 
 N1-N7, against `bea8d51`. **N2, N3, N4, N5 and N6 survived.** That is the

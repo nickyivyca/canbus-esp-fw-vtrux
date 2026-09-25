@@ -9,5 +9,12 @@ typedef int esp_err_t;
 #define ESP_ERR_INVALID_STATE   0x103
 #define ESP_ERR_TIMEOUT         0x107
 #define ESP_ERR_NOT_FOUND       0x105
+/*
+ * What the real twai_transmit() returns in listen-only: ESP-IDF documents
+ * "ESP_ERR_NOT_SUPPORTED: Listen Only Mode does not support transmissions".
+ * The value is ESP-IDF's own, not invented here -- a mock that renamed or
+ * renumbered anything would be testing a different program.
+ */
+#define ESP_ERR_NOT_SUPPORTED   0x106
 const char *esp_err_to_name(esp_err_t e);
 #endif

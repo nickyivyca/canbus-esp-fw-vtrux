@@ -109,6 +109,34 @@ typedef struct
     uint8_t  data[8];
     bool     foreign;       /* queued by a task other than the worker */
     bool     failed;
+
+    /*
+     * THE FRAME FLAGS, recorded because dropping them hid five defects at once.
+     *
+     * This struct used to keep id, dlc and data and discard everything else, so
+     * no test anywhere could see what the driver had actually been handed.
+     * Round 6 (2026-09-25) mutated dispatch_emits() to set extd, to set self,
+     * to send the wrong DLC, and to copy the wrong number of payload bytes --
+     * and all four suites stayed green, because the core's emit list, which is
+     * what invariants.py and the goldens read, was correct in every one of
+     * them. The defect was in the copy AFTER it.
+     *
+     * Two of them would matter on the truck:
+     *
+     *   extd = 1  sends the inhibit as a 29-bit identifier. The GENE inverter
+     *             filters on the 11-bit 0x051 and never sees it, so the VCM's
+     *             torque command stands -- while tx_ok still counts up and
+     *             every diag page reports a healthy inhibit. Silently
+     *             ineffective is the worst failure this firmware has.
+     *   self = 1  makes the controller deliver the frame back to our own
+     *             receive path. The worker reads its own 0x051, cannot tell it
+     *             from the VCM's, and answers it with counter + 1 -- a
+     *             self-sustaining transmit loop on a live powertrain bus.
+     */
+    bool     extd;
+    bool     self;
+    bool     rtr;
+    bool     ss;
 } ft_frame_t;
 
 /*
@@ -132,26 +160,81 @@ int ft_installed_mode(void);
 /* Make twai_reconfigure_alerts() fail, as a driver that will not arm would. */
 void ft_fail_alerts_config(bool fail);
 
+/* ------------------------------------------------- the wire invariant --- */
+
 /*
- * SPEC 8: was the driver torn down while a thread was inside twai_receive()?
+ * What may be handed to twai_transmit() AT ALL, checked on every frame.
  *
- * On the device that is a use-after-free -- twai_driver_uninstall() frees the
- * memory the blocked call is using -- and gen_inhibit_quiesce() exists to make
- * it impossible by waiting for the worker to park. A non-concurrent model
- * cannot produce the crash, but it CAN detect the violation, which is the
- * useful half: the fake knows whether anyone is inside the driver and records
- * every teardown that happened anyway.
+ * This is deliberately a property of the fake rather than of a test case. A
+ * case asserts what its scenario should produce; this asserts what no scenario
+ * may ever produce, so it covers the paths nobody thought to write a case for.
+ * Same argument as ft_set_step_hook(), one layer lower.
  *
- * Non-zero means the handshake was skipped. Removing the wait in
- * gen_inhibit_quiesce() left E1 green until this existed.
+ * SCOPE, and why it stops where it does. The fake checks only what a CAN
+ * controller can know: the frame flags, the DLC for the IDs the spec fixes,
+ * the two payload bytes that must never carry torque, and whether anything was
+ * transmitted at all while the driver is installed listen-only. It does NOT
+ * reach into the core for the current mode. The reviewing session asked for
+ * "ID in the allowed set for the current mode"; the mode lives a layer above
+ * the driver, and a fake that read it would be asserting the core's state
+ * against the core. ft_allow_ids() is the seam instead -- the TEST declares
+ * what this scenario may put on the wire, and the fake enforces it on every
+ * frame. Mode knowledge stays where it belongs and the check still runs
+ * everywhere.
  */
-int ft_unsafe_teardowns(void);
+int         ft_wire_violations(void);
+const char *ft_wire_violation(int i);
 
-/* The mode twai_driver_install() was last given (spec 3, OBSERVE). */
-int ft_installed_mode(void);
+/*
+ * Restrict the IDs that may reach the driver.
+ *
+ *   n  > 0   only these IDs may be queued
+ *   n == 0   no restriction (the default)
+ *   n  < 0   NOTHING may be queued -- spec 3's OBSERVE, where the allowed set
+ *            is empty rather than merely narrow
+ *
+ * The three cases are distinct on purpose. An API where "empty" and "unset"
+ * were the same value would make the strictest rule in the spec the one that
+ * checks nothing, which is the shape of a check that cannot fail.
+ *
+ * A frame outside the set is a violation, reported with the caller's label so
+ * the failure names the rule rather than the symptom.
+ */
+void ft_allow_ids(const uint32_t *ids, int n, const char *why);
 
-/* Make twai_reconfigure_alerts() fail, as a driver that will not arm would. */
-void ft_fail_alerts_config(bool fail);
+/*
+ * How many frames the controller delivered back to our own receive path
+ * because they were queued with self = 1.
+ *
+ * Non-zero is the loop, observed as behaviour rather than as a flag: the
+ * worker really does receive its own transmission here, and really does
+ * respond to it, which is what makes the cost legible.
+ */
+int ft_self_received(void);
+
+/*
+ * When the driver last handed a frame to the worker, in virtual time.
+ *
+ * This is the lower bound on the core's t_rx: gen_inhibit.c reads the clock
+ * immediately after twai_receive() returns, so its t_rx is this or a shade
+ * later. A probe due at t_rx + offset_us therefore cannot legitimately be
+ * queued before this + offset_us, which is what makes the spin testable
+ * without the test having to guess when the worker woke up.
+ */
+int64_t ft_last_rx_time(void);
+
+/*
+ * How many frames of `id` the TEST delivered -- ft_deliver() only.
+ *
+ * Deliberately NOT counting self-received frames. The one property that
+ * catches a self-reception loop by its behaviour is "no more responses went
+ * out than commands came in", and if the loop's own frames counted as
+ * commands it would raise its own ceiling and the check would pass while the
+ * queue ran away. This suite has already been fooled four times by a model
+ * that erred in the same direction as the defect; this is that trap exactly,
+ * so the counter is narrow on purpose.
+ */
+int ft_delivered_count_id(uint32_t id);
 
 int              ft_sent_count(void);
 const ft_frame_t *ft_sent(int i);

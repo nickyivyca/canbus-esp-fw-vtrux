@@ -155,12 +155,37 @@ static void go_live(void)
 }
 
 /*
+ * THE WIRE INVARIANT, drained rather than polled.
+ *
+ * The fake checks every frame handed to twai_transmit() and appends a sentence
+ * for each violation; this reports the ones not yet reported and counts them as
+ * failures. Draining rather than comparing a total means each violation is
+ * named once, at the step where it happened, with the virtual time -- and a
+ * case that ends early still has its violations reported by teardown().
+ */
+static int g_wv_reported;
+
+static void drain_wire_violations(void)
+{
+    while (g_wv_reported < ft_wire_violations())
+    {
+        printf("    FAIL: at %lld us the driver was handed a frame that must "
+               "never reach the wire:\n           %s\n",
+               (long long)ft_now(), ft_wire_violation(g_wv_reported));
+        g_fail++;
+        g_wv_reported++;
+    }
+}
+
+/*
  * The invariant as a STEP HOOK rather than an end-of-case assertion. See
  * ft_set_step_hook(): 632af32's bug opens a window that closes again, so a
  * check that only runs at the end sees nothing wrong.
  */
 static void invariant_hook(void)
 {
+    drain_wire_violations();
+
     const uint32_t claimed = json_u32("\"tx_ok\":");
 
     /*
@@ -190,6 +215,7 @@ static void invariant_hook(void)
 static void setup(void)
 {
     ft_reset();
+    g_wv_reported = 0;
     ft_set_step_hook(invariant_hook);
     ml_clear();
     gen_inhibit_init();
@@ -222,8 +248,45 @@ static void check_tx_ok_invariant(const char *where)
 
 static void teardown(void)
 {
+    /*
+     * BEFORE the mode change, so that a violation belonging to the case is
+     * reported against the case rather than against the shutdown.
+     */
+    drain_wire_violations();
+
+    /*
+     * NO MORE RESPONSES WENT OUT THAN COMMANDS CAME IN, checked in every case.
+     *
+     * The inhibit frame is reactive: spec 4 emits one in answer to a received
+     * 0x051 and never on its own schedule, so the count queued can never exceed
+     * the count delivered. Stating it as a count is what catches a
+     * self-reception loop BY ITS BEHAVIOUR rather than by the flag that caused
+     * it -- with self = 1 the worker answers its own frame, which it then
+     * receives and answers again, and this ratio runs away whatever set the
+     * bit. ft_delivered_count_id() counts only what the test delivered, so the
+     * loop cannot raise its own ceiling.
+     */
+    const int out = ft_sent_count_id(0x051);
+    const int in  = ft_delivered_count_id(0x051);
+    CHECK(out <= in,
+          "%d inhibit frames were queued in answer to %d commands -- the "
+          "inhibit is reactive, so something is generating frames of its own",
+          out, in);
+    CHECK(ft_self_received() == 0,
+          "the controller delivered %d of our own frames back to us: on this "
+          "bus our 0x051 is indistinguishable from the VCM's, so receiving it "
+          "means answering it", ft_self_received());
+
+    /*
+     * Spec 3: OFF is off. Nothing may reach the bus after this, diag pages
+     * included -- the device is not merely not-inhibiting, it is not talking.
+     * Declared here rather than in a case of its own so that EVERY case ends
+     * by asserting it, which is the only way it covers the paths no case walks.
+     */
     gen_inhibit_set_mode(GEN_INHIBIT_OFF, 500);
+    ft_allow_ids(NULL, -1, "OFF puts nothing at all on the bus (spec 3)");
     ft_run(100000);
+    drain_wire_violations();
     /*
      * SPEC 8, CHECKED IN EVERY CASE. The driver must never be torn down while a
      * thread is inside twai_receive() -- on the device that frees the memory the
@@ -583,6 +646,21 @@ static void case_passive_emits_nothing(void)
     static const uint8_t SHF[8]  = { 0, 0, 0, 0, 0, 0, 2 << 4 };
     uint8_t cmd[6];
 
+    /*
+     * Spec 3.1: PASSIVE decides everything and transmits none of it. The diag
+     * pages still go out -- that is what makes it useful as a shadow mode --
+     * so the allowed set is the diag IDs and nothing else.
+     *
+     * The loop below already counts 0x051 leaks, which is the property this
+     * case is named for. Declaring the set as well covers what the loop does
+     * not look at: a frame on some OTHER id, emitted from a path this
+     * scenario happens not to walk, at a moment nothing is counting.
+     */
+    static const uint32_t passive_ok[] = { 0x7F1, 0x7F2, 0x7F3, 0x7F8 };
+    ft_allow_ids(passive_ok, (int)(sizeof(passive_ok) / sizeof(passive_ok[0])),
+                 "PASSIVE decides everything and transmits none of it "
+                 "(spec 3.1) -- only the diag pages may go out");
+
     gen_inhibit_set_mode(GEN_INHIBIT_PASSIVE, 500);
     for (int i = 0; i < 20; i++)
     {
@@ -771,6 +849,14 @@ static void case_observe_is_listen_only(void)
     case_begin("case 11: OBSERVE installs the driver listen-only");
     setup();
 
+    /*
+     * Spec 3: OBSERVE is hardware listen-only, so the allowed set is EMPTY --
+     * not "no 0x051", nothing at all, diag pages included. The fake enforces
+     * it on every frame, which covers the paths this case does not walk.
+     */
+    ft_allow_ids(NULL, -1, "OBSERVE is hardware listen-only and may queue "
+                           "nothing at all");
+
     gen_inhibit_set_mode(GEN_INHIBIT_OBSERVE, 500);
     ft_run(50000);
     CHECK(ft_installed_mode() == (int)TWAI_MODE_LISTEN_ONLY,
@@ -789,7 +875,8 @@ static void case_observe_is_listen_only(void)
     CHECK(ft_sent_count() == n,
           "OBSERVE queued %d frames into the driver", ft_sent_count() - n);
 
-    /* Leaving OBSERVE must restore a transmitting mode. */
+    /* Leaving OBSERVE must restore a transmitting mode -- and may transmit. */
+    ft_allow_ids(NULL, 0, "");
     gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
     ft_run(50000);
     CHECK(ft_installed_mode() == (int)TWAI_MODE_NORMAL,
@@ -871,6 +958,15 @@ static void case_respond_probe(void)
     case_begin("case 14: RESPOND probes without hanging");
     setup();
 
+    /*
+     * Spec 3: RESPOND measures. It may emit the probe and the diag pages and
+     * nothing else -- above all not 0x051, which is what makes an accidental
+     * real command structurally impossible from a measuring mode.
+     */
+    static const uint32_t respond_ok[] = { 0x7F0, 0x7F1, 0x7F2, 0x7F3, 0x7F8 };
+    ft_allow_ids(respond_ok, (int)(sizeof(respond_ok) / sizeof(respond_ok[0])),
+                 "RESPOND may only emit the probe and the diag pages");
+
     gen_inhibit_set_mode(GEN_INHIBIT_RESPOND, 500);
     ft_run(20000);
 
@@ -897,6 +993,204 @@ static void case_respond_probe(void)
     case_end();
 }
 
+/*
+ * CASE 15 -- the probe really waits for its offset (spec 3, spec 12.4).
+ *
+ * THE POINT OF THE PROBE is placement. It goes out `offset_us` after the VCM's
+ * frame so the measurement says something about where in the gap a frame of
+ * ours would land; a probe queued immediately measures nothing, and case 12
+ * does not catch that -- it checks only that an offset ABOVE 4000 us is
+ * refused, which a firmware that ignores the offset entirely passes happily.
+ *
+ * Round 6 proved the gap with a mutation: deleting the `if (f->have_due)` spin
+ * in dispatch_emits() left every suite green. The offset was configured, was
+ * reported in the diag JSON, was range-checked here -- and was not obeyed, and
+ * nothing anywhere would have said so.
+ *
+ * THE BOUND IS ONE-SIDED AND SOUND. ft_last_rx_time() is when the driver handed
+ * the frame over; gen_inhibit.c reads the clock just after, so the core's t_rx
+ * is that or a shade later and the probe cannot honestly be queued before
+ * t_rx + offset. The upper bound is deliberately loose -- it is there to catch
+ * an offset applied twice or in the wrong units, not to measure jitter, which
+ * is the bench's job and not a model's.
+ */
+static void case_probe_waits_for_its_offset(void)
+{
+    case_begin("case 15: the RESPOND probe waits out its offset");
+    setup();
+
+    const uint32_t offset = 3000;
+    static const uint32_t respond_ok[] = { 0x7F0, 0x7F1, 0x7F2, 0x7F3, 0x7F8 };
+    ft_allow_ids(respond_ok, (int)(sizeof(respond_ok) / sizeof(respond_ok[0])),
+                 "RESPOND may only emit the probe and the diag pages");
+
+    CHECK(gen_inhibit_set_mode(GEN_INHIBIT_RESPOND, offset) == ESP_OK,
+          "RESPOND refused a %u us offset, which is inside the 4000 us limit",
+          (unsigned)offset);
+    ft_run(20000);
+
+    int checked = 0;
+    uint8_t cmd[6];
+    for (int i = 0; i < 6; i++)
+    {
+        const int before = ft_sent_count();
+        memcpy(cmd, VCM, sizeof(cmd));
+        cmd[5] = (uint8_t)i;
+        feed(0x051, cmd, 6, 20000);
+
+        const int64_t t_rx = ft_last_rx_time();
+        for (int j = before; j < ft_sent_count(); j++)
+        {
+            const ft_frame_t *f = ft_sent(j);
+            if (f->id != 0x7F0) continue;
+
+            CHECK(f->t_queued >= t_rx + (int64_t)offset,
+                  "the probe was queued at %lld us, %lld us after the frame "
+                  "arrived at %lld -- the offset is %u us, so it did not wait",
+                  (long long)f->t_queued, (long long)(f->t_queued - t_rx),
+                  (long long)t_rx, (unsigned)offset);
+
+            /* Loose: catches a doubled or mis-scaled offset, not jitter. */
+            CHECK(f->t_queued <= t_rx + (int64_t)offset * 2,
+                  "the probe was queued %lld us after the frame arrived, more "
+                  "than twice its %u us offset",
+                  (long long)(f->t_queued - t_rx), (unsigned)offset);
+
+            /*
+             * AND THE PROBE SAYS WHAT IT DID, which is a separate claim from
+             * having done it. Bytes 4-5 carry the offset so a capture can be
+             * read without knowing how the device was configured; a probe that
+             * waited correctly and then reported zero is useless for exactly
+             * the analysis it exists to support, and the timing assertions
+             * above pass happily while it does.
+             */
+            const uint32_t said =
+                (uint32_t)f->data[4] | ((uint32_t)f->data[5] << 8);
+            CHECK(said == offset,
+                  "the probe reports an offset of %u us in bytes 4-5 while it "
+                  "was configured for %u", said, (unsigned)offset);
+
+            checked++;
+        }
+    }
+
+    /*
+     * Without this the case passes by emitting no probe at all -- which is how
+     * four earlier cases in this file came to assert nothing. A bound checked
+     * zero times is not a bound.
+     */
+    CHECK(checked > 0,
+          "no probe was queued, so this case checked the offset zero times");
+
+    teardown();
+    case_end();
+}
+
+/*
+ * CASE 16 -- the diag page on the wire says what the diag JSON says.
+ *
+ * WHY A SECOND REPORT IS NEEDED. The wire invariant in fake_twai.c checks the
+ * bytes the spec fixes -- B0, the torque pair, the probe's sentinel, the
+ * schema version. It cannot check the bytes that carry measurements, because
+ * every value they can hold is legal. A status page whose soc_x100 was
+ * truncated to zero is a well-formed frame reporting a flat pack.
+ *
+ * Round 6 proved that with one character: `memcpy(tx.data, f->data, 6)` in
+ * dispatch_emits(). At DLC 6 the inhibit frame loses nothing, so the goldens,
+ * passive_diff, invariants.py and every E1 case stayed green -- while the
+ * status page went out with its SoC bytes zeroed and the probe lost its
+ * sentinel. A truck diagnosed from that capture would show a healthy inhibitor
+ * on an empty battery.
+ *
+ * So this compares the two paths that report the same state: the CAN frame and
+ * the JSON. They are built by different code from the same fields, which is
+ * exactly what makes the comparison worth anything -- a defect in the copy to
+ * the driver moves one and not the other.
+ *
+ * THE STATE IS HELD STILL on purpose. Both readings have to describe the same
+ * instant, so the interlock set is fed steadily and nothing is changed between
+ * the last diag frame and the JSON read.
+ */
+static void case_diag_wire_matches_json(void)
+{
+    case_begin("case 16: the diag page on the wire agrees with the JSON");
+    setup();
+
+    static const uint8_t KEY[8]  = { 0x10 };
+    static const uint8_t CONT[8] = { 11 << 2 };
+    static const uint8_t SOC[8]  = { 0x4E, 0x20 };
+    static const uint8_t FLT[8]  = { 0, 0, 0, 0, 0, 0, 0, 0xC8 };
+    static const uint8_t SHF[8]  = { 0, 0, 0, 0, 0, 0, 2 << 4 };
+    uint8_t cmd[6];
+
+    /*
+     * LONG ENOUGH FOR A STATUS PAGE TO FOLLOW THE SoC. Diag round-robins four
+     * pages at 300 ms, so 0x7F1 comes round about every 1.2 s. The first
+     * version ran 12 iterations -- 360 ms of virtual time -- and caught
+     * exactly one status page, emitted before the interlocks established a
+     * SoC at 65 ms. It reported soc_x100 = 0 against the JSON's 5000 and read
+     * exactly like the truncation defect this case exists to catch. It was
+     * the case being too short to observe the thing it compares.
+     */
+    gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
+    for (int i = 0; i < 140; i++)
+    {
+        memcpy(cmd, VCM, sizeof(cmd));
+        cmd[5] = (uint8_t)(i & 0x0F);
+        feed(0x051, cmd, 6, 5000);
+        feed(0x592, KEY, 8, 5000);
+        feed(0x440, CONT, 8, 5000);
+        feed(0x411, SOC, 8, 5000);
+        feed(0x617, FLT, 8, 5000);
+        feed(0x639, SHF, 8, 5000);
+    }
+
+    /* The last status page to reach the driver, which is the one the JSON
+     * read below describes. */
+    const ft_frame_t *page = NULL;
+    for (int i = ft_sent_count() - 1; i >= 0; i--)
+    {
+        if (ft_sent(i)->id == GI_DIAG_ID_STATUS) { page = ft_sent(i); break; }
+    }
+    CHECK(page != NULL,
+          "no status page was queued at all, so this case compared nothing");
+
+    if (page != NULL)
+    {
+        const uint32_t json_soc  = json_u32("\"soc_x100\":");
+        const uint32_t json_mode = json_u32("\"mode\":");
+
+        /* Spec 10: soc_x100 in bytes 6-7, little-endian. */
+        const uint32_t wire_soc =
+            (uint32_t)page->data[6] | ((uint32_t)page->data[7] << 8);
+
+        CHECK(wire_soc == json_soc,
+              "the status page on the wire reports soc_x100 = %u while the "
+              "JSON reports %u -- the two are built from the same field, so "
+              "they cannot legitimately differ",
+              wire_soc, json_soc);
+
+        CHECK((uint32_t)page->data[2] == json_mode,
+              "the status page on the wire reports mode %u while the JSON "
+              "reports %u", (unsigned)page->data[2], json_mode);
+
+        CHECK(page->dlc == 8,
+              "the status page went out with DLC %u", (unsigned)page->dlc);
+
+        /*
+         * A state that is all zeroes would satisfy the comparison above
+         * without proving anything, which is how several earlier cases in this
+         * file came to assert nothing.
+         */
+        CHECK(wire_soc > 0,
+              "soc_x100 is zero on both paths: the scenario never established "
+              "a SoC, so an agreement between them is not evidence");
+    }
+
+    teardown();
+    case_end();
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);   /* a hang must still show its trace */
@@ -915,6 +1209,8 @@ int main(void)
     case_offset_limit();
     case_arm_refused_without_alerts();
     case_respond_probe();
+    case_probe_waits_for_its_offset();
+    case_diag_wire_matches_json();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
     return g_fail ? 1 : 0;

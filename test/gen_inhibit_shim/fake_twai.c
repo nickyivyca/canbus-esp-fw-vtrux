@@ -18,6 +18,7 @@
 
 #include "driver/twai.h"
 #include "esp_log.h"
+#include "gen_inhibit_core.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -25,6 +26,77 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+
+/*
+ * A RECEIVE QUEUE, not a single slot.
+ *
+ * The slot was enough while only the test delivered frames, one at a time.
+ * Honouring self-reception breaks that: a self frame completing while a
+ * test-delivered frame is still pending would overwrite it, and the model
+ * would then be wrong in the SAME DIRECTION as the defect -- swallowing
+ * exactly the evidence of the loop it exists to expose. That failure has
+ * already happened four times in this suite (see README, "the model wrong in
+ * the same direction as the defect"), so it gets a queue.
+ *
+ * Depth 10 matches the driver config the firmware installs with. Overflow is
+ * counted rather than ignored, because a full RX queue on the device drops
+ * frames and that is a real behaviour, not a modelling artefact.
+ */
+#define RXMAX 10
+static twai_message_t g_rx_q[RXMAX];
+static int            g_rx_n;
+static int            g_rx_dropped;
+static int            g_self_received;
+static int64_t        g_last_rx_time = -1;
+
+#define DELIVMAX 16
+static struct { uint32_t id; int n; } g_deliv[DELIVMAX];
+static int g_ndeliv;
+
+int ft_self_received(void) { return g_self_received; }
+int64_t ft_last_rx_time(void) { return g_last_rx_time; }
+
+int ft_delivered_count_id(uint32_t id)
+{
+    for (int i = 0; i < g_ndeliv; i++)
+    {
+        if (g_deliv[i].id == id) return g_deliv[i].n;
+    }
+    return 0;
+}
+
+static void deliv_note(uint32_t id)
+{
+    for (int i = 0; i < g_ndeliv; i++)
+    {
+        if (g_deliv[i].id == id) { g_deliv[i].n++; return; }
+    }
+    if (g_ndeliv < DELIVMAX)
+    {
+        g_deliv[g_ndeliv].id = id;
+        g_deliv[g_ndeliv].n = 1;
+        g_ndeliv++;
+    }
+}
+
+static void rx_push(uint32_t id, const uint8_t *data, uint8_t dlc)
+{
+    if (g_rx_n >= RXMAX) { g_rx_dropped++; return; }
+    twai_message_t *m = &g_rx_q[g_rx_n++];
+    memset(m, 0, sizeof(*m));
+    m->identifier = id;
+    m->data_length_code = dlc;
+    memcpy(m->data, data, dlc > 8 ? 8 : dlc);
+}
+
+static bool rx_pop(twai_message_t *out)
+{
+    if (g_rx_n <= 0) return false;
+    *out = g_rx_q[0];
+    memmove(&g_rx_q[0], &g_rx_q[1], (size_t)(g_rx_n - 1) * sizeof(g_rx_q[0]));
+    g_rx_n--;
+    return true;
+}
 
 /* ------------------------------------------------------------ the clock -- */
 
@@ -111,6 +183,214 @@ static bool     g_in_receive;       /* a thread is blocked inside the driver */
 static int      g_unsafe_teardowns;
 static int      g_installed_mode = -1;
 static bool     g_fail_alerts_cfg;
+
+/* ------------------------------------------------- the wire invariant --- */
+
+#define WVMAX 32
+static char g_wv[WVMAX][200];
+static int  g_nwv;
+
+static uint32_t g_allow[8];
+static int      g_nallow;
+static char     g_allow_why[80];
+
+int ft_wire_violations(void) { return g_nwv; }
+
+const char *ft_wire_violation(int i)
+{
+    return (i >= 0 && i < g_nwv) ? g_wv[i] : "";
+}
+
+void ft_allow_ids(const uint32_t *ids, int n, const char *why)
+{
+    if (n > (int)(sizeof(g_allow) / sizeof(g_allow[0])))
+    {
+        n = (int)(sizeof(g_allow) / sizeof(g_allow[0]));
+    }
+    for (int i = 0; i < n; i++) g_allow[i] = ids[i];
+    g_nallow = n;              /* negative means the empty set, not "unset" */
+    snprintf(g_allow_why, sizeof(g_allow_why), "%s", why ? why : "");
+}
+
+static void wv(const char *fmt, ...)
+{
+    va_list ap;
+    if (g_nwv >= WVMAX) return;
+    va_start(ap, fmt);
+    vsnprintf(g_wv[g_nwv], sizeof(g_wv[0]), fmt, ap);
+    va_end(ap);
+    g_nwv++;
+}
+
+/*
+ * THE WIRE INVARIANT: everything the firmware hands to twai_transmit() passes
+ * through here.
+ *
+ * These are not restatements of what the core decided -- invariants.py already
+ * judges that, and judged all five round-6 mutations correct, because they
+ * were. These are statements about the frame that leaves the controller, which
+ * nothing had ever looked at.
+ */
+static void check_wire(const twai_message_t *m)
+{
+    const uint32_t id = m->identifier;
+
+    /* Spec 4: a standard 11-bit data frame, not extended, not remote. */
+    if (m->extd)
+    {
+        wv("0x%03X queued as a 29-bit extended identifier: the GENE inverter "
+           "filters on the 11-bit ID and would never see it, so the VCM's "
+           "torque stands while tx_ok still counts up", (unsigned)id);
+    }
+    if (m->rtr)
+    {
+        wv("0x%03X queued as a remote-transmission request, which carries no "
+           "data at all", (unsigned)id);
+    }
+
+    /*
+     * Self-reception off. On this bus our own 0x051 is indistinguishable from
+     * the VCM's, so receiving it means answering it: a transmit loop.
+     */
+    if (m->self)
+    {
+        wv("0x%03X queued with self-reception: the worker receives its own "
+           "frame, cannot tell it from the VCM's, and answers it", (unsigned)id);
+    }
+
+    /*
+     * Single-shot off. The user's decision of 2026-09-25, recorded in spec 4:
+     * retransmission stays, because in a regime producing 0.07-0.21 error
+     * frames per second a single bus error would otherwise abandon the frame,
+     * and a retry lands well inside the VCM's 4.69 ms gap.
+     */
+    if (m->ss)
+    {
+        wv("0x%03X queued single-shot: one bus error would abandon the frame "
+           "instead of retrying inside the 4.69 ms gap", (unsigned)id);
+    }
+
+    /* Spec 4: the inhibit frame matches the VCM's DLC of 6; everything else
+     * this firmware sends is a diag page or the probe, at 8. */
+    if (id == GI_VCM_ID)
+    {
+        if (m->data_length_code != 6)
+        {
+            wv("0x051 queued with DLC %u; spec 4 sends the VCM's own length, "
+               "which is 6", (unsigned)m->data_length_code);
+        }
+    }
+    else if (m->data_length_code != 8)
+    {
+        wv("0x%03X queued with DLC %u; the diag pages and the probe are 8",
+           (unsigned)id, (unsigned)m->data_length_code);
+    }
+
+    /*
+     * Spec 4.1, on the bytes as the controller received them. B0 is held at
+     * 0x08 so that transmitting the VCM's 0x10 shutdown value is structurally
+     * impossible, and the torque bytes are the whole point of the frame: a
+     * copy that truncated before byte 5 would leave the counter byte stale,
+     * which the inverter rejects, and one that mangled bytes 1-2 would command
+     * torque from a module whose job is to remove it.
+     */
+    if (id == GI_VCM_ID && m->data_length_code >= 3)
+    {
+        if (m->data[0] != GI_B0_ENGINE_OFF)
+        {
+            wv("0x051 queued with B0 = 0x%02X; spec 4.1 holds it at 0x08",
+               m->data[0]);
+        }
+        if (m->data[1] != 0x00 || m->data[2] != 0x80)
+        {
+            wv("0x051 queued with torque bytes %02X %02X; this module exists "
+               "to command zero, which is 00 80", m->data[1], m->data[2]);
+        }
+    }
+
+    /*
+     * THE FIXED BYTES OF THE OTHER TWO FRAME SHAPES.
+     *
+     * Only 0x051's payload was checked here at first, and a mutation copying
+     * six bytes instead of eight survived the whole suite because of it: at
+     * DLC 6 the inhibit frame loses nothing, while the diag pages and the
+     * probe are DLC 8 and their last two bytes carry content. The probe's
+     * trailing 0x5A went to zero and nothing anywhere noticed.
+     *
+     * These are constants, so the fake can assert them without reaching into
+     * the core for anything. What they cannot cover is the VARIABLE content --
+     * a truncated soc_x100 in the status page reads as a legitimate 0 %. That
+     * needs an independent second report of the same number to compare
+     * against, which is what case 16 does with the diag JSON.
+     */
+    if (id == GI_PROBE_ID && m->data_length_code == 8)
+    {
+        if (m->data[7] != 0x5A)
+        {
+            wv("the probe's trailing sentinel is 0x%02X, not 0x5A -- a capture "
+               "cannot tell this frame from anything else on 0x7F0, and the "
+               "bytes before it are equally suspect", m->data[7]);
+        }
+    }
+    else if (id == GI_DIAG_ID_STATUS && m->data_length_code == 8)
+    {
+        /*
+         * The STATUS page ALONE carries the schema version, in byte 0. The
+         * other three pages use byte 0 for content -- STATUS2's is the abort
+         * reason code -- so this check belongs to one ID and not to the
+         * family, which is what the first version got wrong.
+         */
+        if (m->data[0] != GI_DIAG_SCHEMA_VER)
+        {
+            wv("0x%03X queued with schema version %u; this build writes %u, "
+               "and a decoder reading the wrong schema misreads every byte "
+               "after it", (unsigned)id, m->data[0],
+               (unsigned)GI_DIAG_SCHEMA_VER);
+        }
+    }
+
+}
+
+/*
+ * WHICH IDs MAY REACH THE BUS -- judged on frames the controller ACCEPTED, not
+ * on every call the firmware made.
+ *
+ * The split from check_wire() above is the whole point, and it was found the
+ * hard way. The frame flags and the payload are properties of what the
+ * firmware BUILT: a frame constructed with extd set is wrong whether or not
+ * the driver happened to take it. Which IDs go out is a property of what
+ * reaches the BUS, and a call the controller refuses never does.
+ *
+ * Collapsing the two reported OBSERVE as broken on the first run. It is not.
+ * gen_inhibit.c:495 states the design outright: the section 10 diag pages are
+ * handed to twai_transmit() in OBSERVE and the listen-only controller refuses
+ * them, "the documented cost of a genuinely passive tap". The firmware really
+ * does construct a diag page there, on purpose, and really does rely on the
+ * driver to drop it.
+ */
+static void check_wire_accepted(const twai_message_t *m)
+{
+    const uint32_t id = m->identifier;
+
+    if (g_nallow < 0)
+    {
+        wv("0x%03X reached the bus, and %s", (unsigned)id,
+           g_allow_why[0] ? g_allow_why : "nothing may be queued here");
+    }
+    else if (g_nallow > 0)
+    {
+        bool ok = false;
+        for (int i = 0; i < g_nallow; i++)
+        {
+            if (g_allow[i] == id) { ok = true; break; }
+        }
+        if (!ok)
+        {
+            wv("0x%03X reached the bus, and %s", (unsigned)id,
+               g_allow_why[0] ? g_allow_why : "this scenario does not allow it");
+        }
+    }
+}
 
 int  ft_unsafe_teardowns(void) { return g_unsafe_teardowns; }
 int  ft_installed_mode(void)   { return g_installed_mode; }
@@ -226,6 +506,24 @@ static void controller_advance(int64_t t)
         }
         g_last_done = done.t_done;
         if (g_nwire < SENTMAX) g_wire[g_nwire++] = done;
+
+        /*
+         * HONOUR self, so the loop shows up as behaviour and not only as a
+         * flag the invariant objects to.
+         *
+         * A flag check alone would prove the firmware set a bit it should not
+         * have. Delivering the frame back proves what that bit COSTS: the
+         * worker receives its own 0x051, the core cannot distinguish it from
+         * the VCM's, and it responds -- which queues another self frame, which
+         * is received, which is responded to. The case watching ft_sent_count()
+         * sees it run away. That is the difference between "this flag is wrong"
+         * and "this is what happens on the truck".
+         */
+        if (!done.failed && done.self)
+        {
+            rx_push(done.id, done.data, done.dlc);
+            g_self_received++;
+        }
         memmove(&g_q[0], &g_q[1], (size_t)(g_qn - 1) * sizeof(g_q[0]));
         g_qn--;
         g_head_started = -1;
@@ -243,8 +541,8 @@ static TaskFunction_t g_worker_fn;
 static void *g_worker_arg;
 
 /* Rx mailbox: at most one frame waiting, posted by the test. */
-static bool           g_rx_have;
-static twai_message_t g_rx_msg;
+
+
 
 static void yield_to_test(void)
 {
@@ -402,7 +700,7 @@ esp_err_t twai_stop(void)
     g_running = false;
     return ESP_OK;
 }
-esp_err_t twai_clear_receive_queue(void) { g_rx_have = false; return ESP_OK; }
+esp_err_t twai_clear_receive_queue(void) { g_rx_n = 0; return ESP_OK; }
 
 esp_err_t twai_reconfigure_alerts(uint32_t alerts, uint32_t *prev)
 {
@@ -439,11 +737,12 @@ esp_err_t twai_get_status_info(twai_status_info_t *status)
     memset(status, 0, sizeof(*status));
     status->state = g_running ? TWAI_STATE_RUNNING : TWAI_STATE_STOPPED;
     status->msgs_to_tx = (uint32_t)g_qn;
-    status->msgs_to_rx = g_rx_have ? 1u : 0u;
+    status->msgs_to_rx = (uint32_t)g_rx_n;
     return ESP_OK;
 }
 
-static bool enqueue(uint32_t id, const uint8_t *data, uint8_t dlc, bool foreign)
+static bool enqueue(uint32_t id, const uint8_t *data, uint8_t dlc, bool foreign,
+                    const twai_message_t *m)
 {
     if (g_qn >= QMAX) return false;
     ft_frame_t *f = &g_q[g_qn++];
@@ -454,6 +753,13 @@ static bool enqueue(uint32_t id, const uint8_t *data, uint8_t dlc, bool foreign)
     f->dlc = dlc;
     memcpy(f->data, data, dlc > 8 ? 8 : dlc);
     f->foreign = foreign;
+    if (m != NULL)
+    {
+        f->extd = m->extd;
+        f->self = m->self;
+        f->rtr  = m->rtr;
+        f->ss   = m->ss;
+    }
     if (g_stall_n > 0) { g_stall_n--; f->t_done = -2; }
     if (g_stall_id_n > 0 && id == g_stall_id) { g_stall_id_n--; f->t_done = -2; }
     if (g_fail_next)   { g_fail_next = false; f->failed = true; }
@@ -464,28 +770,62 @@ static bool enqueue(uint32_t id, const uint8_t *data, uint8_t dlc, bool foreign)
 esp_err_t twai_transmit(const twai_message_t *message, TickType_t ticks)
 {
     (void)ticks;
+
+    /*
+     * BEFORE the running check, deliberately. A frame the firmware tried to
+     * send with extd set is wrong whether or not the driver happened to accept
+     * it, and putting this after the early returns would let a case that
+     * exercises the refusal path skip the invariant entirely.
+     */
+    check_wire(message);
+
     if (!g_running) return ESP_ERR_INVALID_STATE;
+
+    /*
+     * LISTEN-ONLY REFUSES TO TRANSMIT, which the model has to implement rather
+     * than assume, because OBSERVE's silence rests on nothing else.
+     *
+     * ESP-IDF: in TWAI_MODE_LISTEN_ONLY the controller "will not influence the
+     * bus", and transmission is not permitted. gen_inhibit.c builds a diag page
+     * in OBSERVE anyway and lets the call fail -- the comment at
+     * gen_inhibit.c:495 names that as the deliberate cost of a passive tap.
+     *
+     * Until this existed the fake enqueued whatever it was handed, and case 11
+     * passed because the driver happened not to be running at the instant the
+     * diag page was built. A silence produced by an accident of timing is not
+     * the silence the firmware relies on, and it would have gone on passing if
+     * the real mechanism were taken out.
+     */
+    if (g_installed_mode == TWAI_MODE_LISTEN_ONLY)
+    {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
     if (g_refuse_n > 0) { g_refuse_n--; return ESP_FAIL; }
     if (!enqueue(message->identifier, message->data,
-                 message->data_length_code, false))
+                 message->data_length_code, false, message))
     {
         return ESP_FAIL;
     }
+    check_wire_accepted(message);
     return ESP_OK;
 }
 
 bool ft_foreign_transmit(uint32_t id, const uint8_t *data, uint8_t dlc)
 {
-    return enqueue(id, data, dlc, true);
+    /*
+     * Not checked against the wire invariant: this models the SLCAN and MQTT
+     * paths, which are another component's frames. Spec 3.2's objection to
+     * them is that they exist at all while the inhibitor owns the bus, not
+     * that they are malformed.
+     */
+    return enqueue(id, data, dlc, true, NULL);
 }
 
 void ft_deliver(uint32_t id, const uint8_t *data, uint8_t dlc)
 {
-    memset(&g_rx_msg, 0, sizeof(g_rx_msg));
-    g_rx_msg.identifier = id;
-    g_rx_msg.data_length_code = dlc;
-    memcpy(g_rx_msg.data, data, dlc > 8 ? 8 : dlc);
-    g_rx_have = true;
+    deliv_note(id);
+    rx_push(id, data, dlc);
 }
 
 esp_err_t twai_receive(twai_message_t *message, TickType_t ticks)
@@ -534,10 +874,9 @@ esp_err_t twai_receive(twai_message_t *message, TickType_t ticks)
             g_in_receive = false;
             return ESP_FAIL;
         }
-        if (g_rx_have)
+        if (rx_pop(message))
         {
-            *message = g_rx_msg;
-            g_rx_have = false;
+            g_last_rx_time = g_now;
             g_in_receive = false;
             return ESP_OK;
         }
@@ -619,5 +958,11 @@ void ft_reset(void)
     g_installed_mode = -1;
     g_fail_alerts_cfg = false;
     g_fail_next = false;
-    g_rx_have = false;
+    g_rx_n = g_rx_dropped = 0;
+    g_self_received = 0;
+    g_last_rx_time = -1;
+    g_ndeliv = 0;
+    g_nwv = 0;
+    g_nallow = 0;
+    g_allow_why[0] = 0;
 }

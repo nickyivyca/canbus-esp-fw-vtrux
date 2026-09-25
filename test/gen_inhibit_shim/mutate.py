@@ -12,7 +12,20 @@ exact defect it was written to catch.
   M4  the quiesce self_off reason removed
   M5  the receive-error self_off reason removed
   M6  PASSIVE allowed to reach build_inhibit()
-  M7  the pre-queue alert drain removed
+  M7  the pre-queue alert drain removed -- SURVIVES, and accepted. Two reasons,
+      both structural. Completion is decided by msgs_to_tx == 0 since the C1
+      fix, so no leftover alert can affect it; and TWAI_ALERT_TX_FAILED is
+      documented "for single shot transmission", so at ss = 0 the bit the
+      drain clears is never set on the device at all. In the model it can be
+      set, by ft_fail_next() -- but poll_tx_completion() runs immediately
+      before dispatch_emits() in BOTH worker paths (gen_inhibit.c:689 and
+      :742), so a pending TX_FAILED is consumed into s_tx_failed_latched
+      first, and the assignment M7 leaves in place clears that. There is no
+      window between the two in which a stale alert can survive.
+      The call stays because it would matter if the frame ever went out
+      single-shot; gen_inhibit.c:302 says so at the site. Same category as
+      K21: kept as a tripwire on the structure that makes it harmless, not as
+      a coverage gap.
   N1  completion off-by-one, msgs_to_tx == 0 -> <= 1
   N2  `behind` forced false, so spec 5's tx_queued_behind never counts
   N3  a twai_reconfigure_alerts() failure ignored at arm
@@ -63,6 +76,19 @@ Usage, from a tree containing main/ and test/:
 
 import subprocess, shutil, sys, os, re
 BASE = os.path.expanduser(os.environ.get("BASE", "~/gi_review"))
+# The four lines dispatch_emits() uses to copy a core frame into a driver
+# frame. The round-6 mutations mostly APPEND to it rather than replace it, so
+# it is named once here instead of being retyped in each entry and drifting
+# from the firmware -- a mutation whose anchor no longer matches does not fail,
+# it silently does nothing, and a control that silently does nothing is the
+# failure this whole file exists to prevent.
+COPY = """        twai_message_t tx = { 0 };
+        tx.identifier = f->id;
+        tx.data_length_code = f->dlc;
+        memcpy(tx.data, f->data, 8);"""
+
+PREFIX = "\n        "
+
 MUT = {
  "M1_632af32_alert_completion": ("main/gen_inhibit.c", [(
   """    uint32_t alerts = 0;
@@ -139,6 +165,90 @@ MUT = {
  "K21_soc_recovery_unlatches": ("main/gen_inhibit_core.c", [(
   "            else\n            {\n                st->soc_low_count = 0;\n            }",
   "            else\n            {\n                st->soc_low_count = 0;\n                st->disabled = false;\n            }")]),
+ # ---- ROUND 6: the shim -> driver copy boundary ---------------------------
+ #
+ # Every one of these lives in dispatch_emits(), in the four lines that copy a
+ # gi_frame_t into a twai_message_t. Five of them survived EVERY suite on
+ # 2026-09-25 -- goldens, passive_diff, invariants and E1 alike -- because all
+ # four watch the CORE's emit list, which is upstream of the copy and was
+ # correct in every case. Nothing anywhere asserted what the driver was handed.
+ #
+ # V04 and V05 are the two that would matter on the truck. V04 sends the
+ # inhibit on a 29-bit identifier: the GENE inverter filters on the 11-bit
+ # 0x051 and never sees it, so the VCM's torque stands while tx_ok counts up
+ # and every diag page reports a healthy inhibit. V05 makes the controller
+ # deliver our own frame back to us; the worker cannot tell it from the VCM's
+ # and answers it, which is received, and answered.
+ #
+ # They are killed by the wire invariant in fake_twai.c, which checks every
+ # frame handed to twai_transmit(), and -- for V05 -- by the reactive-ratio
+ # check in shim_test.c's teardown, which catches the loop by its behaviour
+ # rather than by the flag that caused it.
+
+ "V01_rtr_set": ("main/gen_inhibit.c", [(
+  COPY, COPY + PREFIX + "tx.rtr = 1;")]),
+
+ "V02_dlc_8_not_6": ("main/gen_inhibit.c", [(
+  "        tx.data_length_code = f->dlc;",
+  "        tx.data_length_code = 8;")]),
+
+ "V03_memcpy_6_of_8": ("main/gen_inhibit.c", [(
+  "        memcpy(tx.data, f->data, 8);",
+  "        memcpy(tx.data, f->data, 6);")]),
+
+ "V04_extd_set": ("main/gen_inhibit.c", [(
+  COPY, COPY + PREFIX + "tx.extd = 1;")]),
+
+ "V05_self_set": ("main/gen_inhibit.c", [(
+  COPY, COPY + PREFIX + "tx.self = 1;")]),
+
+ "V06_probe_ignores_offset": ("main/gen_inhibit.c", [(
+  "        if (f->have_due)", "        if (0)")]),
+
+ "V07_single_shot": ("main/gen_inhibit.c", [(
+  COPY, COPY + PREFIX + "tx.ss = 1;")]),
+ # These three are the reviewing session's own round-6 mutations, carried over
+ # rather than paraphrased. They reach past the copy boundary into what the
+ # diag and probe frames SAY, and into which modes may emit at all.
+ #
+ # V08 AND V09 BOTH SURVIVE, and both are equivalent mutants rather than
+ # coverage gaps. They have the same shape: each edits an OUTER guard that sits
+ # in front of a standing INNER one, so removing it changes nothing.
+ #
+ #   V08  dispatch_emits() skips gi_on_tx_result() for a diag frame. Remove
+ #        that and gi_on_tx_result() STILL returns early for GI_TX_DIAG, at
+ #        gen_inhibit_core.c:1753. Nothing downstream can tell.
+ #   V09  gi_tick() returns immediately in OFF. Remove that and the worker
+ #        still never calls gi_tick() in OFF -- it `continue`s at
+ #        gen_inhibit.c:670, after parking and releasing the bus.
+ #
+ # Kept in the set for the reason K21 is: each is a tripwire on the inner
+ # guard. The day the inner one moves, the outer one stops being redundant and
+ # these two start failing, which is exactly when someone needs to know.
+ #
+ # ONE REAL GAP IS VISIBLE IN V09 and is worth stating rather than hiding
+ # behind the equivalence: gi_tick()'s OFF guard is unreachable from the
+ # DRIVER, but the host harness in ../gen_inhibit_host calls the pure core
+ # directly and could reach it. No scenario there ticks in OFF, so nothing
+ # tests what the core does if asked to. That is a host-suite gap, not a shim
+ # one, and it is small -- but it is a gap and not an equivalence.
+
+ # The `continue` that keeps a diag frame's result away from the core. Without
+ # it a diag completion is reported as an inhibit's -- the dc571cb
+ # mis-crediting class, arriving by a different route.
+ "V08_diag_fed_to_core": ("main/gen_inhibit.c", [(
+  "        if (f->kind == GI_TX_DIAG)", "        if (0)")]),
+
+ # Diag pages emitted in OFF. The device is meant to be silent there, not
+ # merely not-inhibiting; caught by the empty allowed set every teardown
+ # declares after the mode change.
+ "V09_diag_in_off_mode": ("main/gen_inhibit_core.c", [(
+  "    if (st->mode == GI_OFF)", "    if (0 && st->mode == GI_OFF)")]),
+
+ # The probe's offset field zeroed. It still waits the right length of time --
+ # only its report of that is wrong, which no timing assertion can see.
+ "V10_probe_offset_byte": ("main/gen_inhibit_core.c", [(
+  "    f->data[4] = (uint8_t)(st->offset_us);", "    f->data[4] = 0;")]),
 }
 # A GREEN MUTATION RUN MEANS NOTHING IF THE BASELINE IS RED: every mutant is
 # then reported caught by a failure that was already there. That happened once,
