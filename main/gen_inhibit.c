@@ -105,6 +105,15 @@ _Static_assert(GEN_INHIBIT_PROBE_ID == GI_PROBE_ID, "id drift");
 
 /* Receive timeout: 200 ms rather than a full second only so a disarm is
  * acted on promptly; a timeout costs nothing but a loop iteration. */
+/*
+ * How long to wait for the controller's verdict on an inhibit frame (spec 7
+ * trip 7). The VCM's tightest observed inter-frame gap is 4.69 ms and the
+ * frame's own air time at 500 kbit is ~0.2 ms, so 1 ms is generous for the
+ * answer and still an order below the gap. A timeout is not a failure: the
+ * frame stays outstanding and the next 0x051 decides.
+ */
+#define GEN_INHIBIT_TX_ALERT_MS 1
+
 #define GEN_INHIBIT_RX_TIMEOUT_MS   200
 
 /* ------------------------------------------------------------------------- */
@@ -283,6 +292,37 @@ static void dispatch_emits(const gi_emit_t *em, gi_events_t *ev)
             continue;   /* best-effort; fails silently in listen-only */
         }
         gi_on_tx_result(&s_core, f, err == ESP_OK, esp_timer_get_time(), ev);
+
+        /*
+         * Spec 7 trip 7 (review C1): queued is not sent. Ask the controller
+         * what actually happened to the inhibit frame.
+         *
+         * WHY A BOUNDED WAIT HERE rather than a separate alert task. The trail
+         * is reactive and the whole budget is the VCM's inter-frame gap (4.69
+         * ms at its tightest), so the answer is either along within a
+         * millisecond or the frame has already lost the race that matters --
+         * and a frame that has lost it must abort, which is what a timeout
+         * here produces via the TX_LATE path on the next 0x051. A second task
+         * would add a queue and a wakeup to a path whose entire point is not
+         * having either.
+         *
+         * twai_read_alerts() with a zero timeout returns ESP_ERR_TIMEOUT when
+         * nothing is pending; that is not an error and not a failure. Leaving
+         * the frame outstanding is the honest answer, and gi_on_frame() turns
+         * it into TX_LATE if the VCM's next frame beats it.
+         */
+        if (f->kind == GI_TX_INHIBIT)
+        {
+            uint32_t alerts = 0;
+            esp_err_t aerr = twai_read_alerts(&alerts,
+                                              pdMS_TO_TICKS(GEN_INHIBIT_TX_ALERT_MS));
+            if (aerr == ESP_OK && (alerts & (TWAI_ALERT_TX_SUCCESS
+                                             | TWAI_ALERT_TX_FAILED)))
+            {
+                gi_on_tx_done(&s_core, (alerts & TWAI_ALERT_TX_SUCCESS) != 0,
+                              esp_timer_get_time(), ev);
+            }
+        }
     }
     if (em->dropped)
     {
@@ -384,6 +424,20 @@ esp_err_t gen_inhibit_set_mode(gen_inhibit_mode_t mode, uint32_t offset_us)
         if (!can_is_enabled())
         {
             ESP_LOGE(TAG, "cannot arm: CAN bus would not come up");
+            return ESP_ERR_INVALID_STATE;
+        }
+        /*
+         * Spec 7 trip 7 (review C1). can.c installs the driver with
+         * TWAI_ALERT_NONE, so twai_read_alerts() would block for the timeout
+         * and report nothing -- every inhibit frame would then look
+         * outstanding and abort on the next 0x051. Turn on exactly the two we
+         * read. Done here rather than in can.c so the stock firmware's
+         * behaviour is untouched when the inhibitor is not armed.
+         */
+        if (twai_reconfigure_alerts(TWAI_ALERT_TX_SUCCESS | TWAI_ALERT_TX_FAILED,
+                                    NULL) != ESP_OK)
+        {
+            ESP_LOGE(TAG, "cannot arm: TX alerts would not enable");
             return ESP_ERR_INVALID_STATE;
         }
         /*

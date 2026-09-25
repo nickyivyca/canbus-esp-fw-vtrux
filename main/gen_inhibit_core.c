@@ -129,6 +129,8 @@ const char *gi_abort_name(gi_abort_t a)
     case GI_ABORT_STALE_SHIFT:     return "0x639 went stale while live -- shift position lost";
     case GI_ABORT_STALE_RPM:       return "0x054 stopped while live -- generator speed lost";
     case GI_ABORT_SHORT_VCM_FRAME: return "0x051 arrived with DLC < 6 -- cannot build a reply";
+    case GI_ABORT_TX_NOT_QUEUED:   return "inhibit frame could not be queued";
+    case GI_ABORT_TX_LATE:         return "inhibit frame still unsent when the VCM's next 0x051 arrived";
     }
     return "?";
 }
@@ -357,6 +359,15 @@ void gi_reset_stats(gi_state_t *st)
      */
     st->have_prev_051 = false;
     st->prev_051 = 0;
+
+    /*
+     * Spec 7 trip 7 (review C1): no frame of ours is outstanding across an arm
+     * cycle or a disarm. The previous run's frame either completed or the run
+     * ended with it; carrying the flag would make the first 0x051 of the next
+     * run abort on a transmit that was not this run's.
+     */
+    st->tx_pending = false;
+    st->tx_pending_have_rx = false;
 }
 
 void gi_init(gi_state_t *st, const gi_config_t *cfg)
@@ -421,6 +432,15 @@ void gi_notify_off(gi_state_t *st)
      */
     st->have_prev_051 = false;
     st->prev_051 = 0;
+
+    /*
+     * Spec 7 trip 7 (review C1): no frame of ours is outstanding across an arm
+     * cycle or a disarm. The previous run's frame either completed or the run
+     * ended with it; carrying the flag would make the first 0x051 of the next
+     * run abort on a transmit that was not this run's.
+     */
+    st->tx_pending = false;
+    st->tx_pending_have_rx = false;
 }
 
 /* ------------------------------------------------------------- interlocks -- */
@@ -1465,6 +1485,28 @@ void gi_on_frame(gi_state_t *st, uint32_t id, uint8_t dlc, const uint8_t *data,
         return;
     }
 
+    /*
+     * Spec 7 trip 7, third form (review C1): our previous inhibit frame is
+     * still outstanding and the VCM's next 0x051 has arrived.
+     *
+     * This is the case that matters most and the one "could not queue" never
+     * caught. The frame may still go out -- and a frame landing AFTER the
+     * VCM's next one is worse than one that never lands, because it loses the
+     * counter race: the inverter accepted the VCM's torque for that slot while
+     * we believed we were inhibiting it.
+     *
+     * Checked before the counter and gap bookkeeping below, so the abort is
+     * attributed to this frame's arrival rather than to the next one.
+     */
+    if (st->tx_pending && st->inhibit_live)
+    {
+        st->tx_fail++;
+        st->tx_pending = false;
+        ev_add(ev, now, GI_EV_TX_FAIL, (int32_t)GI_TX_INHIBIT, 0, 0);
+        inhibit_abort(st, GI_ABORT_TX_LATE, now, ev);
+        return;
+    }
+
     if (st->have_prev_051)
     {
         gi_hist_add(&st->rx_gap, (uint32_t)(now - st->prev_051));
@@ -1558,7 +1600,7 @@ void gi_on_frame(gi_state_t *st, uint32_t id, uint8_t dlc, const uint8_t *data,
     }
 }
 
-void gi_on_tx_result(gi_state_t *st, const gi_frame_t *f, bool ok,
+void gi_on_tx_result(gi_state_t *st, const gi_frame_t *f, bool queued,
                      int64_t t_tx, gi_events_t *ev)
 {
     if (f->kind == GI_TX_DIAG)
@@ -1567,12 +1609,34 @@ void gi_on_tx_result(gi_state_t *st, const gi_frame_t *f, bool ok,
         return;
     }
 
-    if (ok)
+    if (queued)
     {
-        st->tx_ok++;
-        if (f->have_t_rx)
+        /*
+         * Queued, not sent. Spec 7 trip 7: an inhibit frame counts only once
+         * the controller says it completed, which arrives later via
+         * gi_on_tx_done(). Until then it is outstanding, and if the VCM's next
+         * 0x051 turns up first it has lost the counter race (gi_on_frame()).
+         */
+        if (f->kind == GI_TX_INHIBIT)
         {
-            gi_hist_add(&st->response, (uint32_t)(t_tx - f->t_rx));
+            st->tx_pending = true;
+            st->tx_pending_since = t_tx;
+            st->tx_pending_t_rx = f->t_rx;
+            st->tx_pending_have_rx = f->have_t_rx;
+        }
+        else
+        {
+            /*
+             * The probe is a measurement, not a command: a late or lost one
+             * costs a data point, not a safety property. Counted at the queue
+             * as it always was, so the RESPOND timing sweeps stay comparable
+             * with every figure recorded before this change.
+             */
+            st->tx_ok++;
+            if (f->have_t_rx)
+            {
+                gi_hist_add(&st->response, (uint32_t)(t_tx - f->t_rx));
+            }
         }
         return;
     }
@@ -1592,8 +1656,47 @@ void gi_on_tx_result(gi_state_t *st, const gi_frame_t *f, bool ok,
      */
     if (f->kind == GI_TX_INHIBIT)
     {
-        inhibit_abort(st, GI_ABORT_TX_FAILED, t_tx, ev);
+        inhibit_abort(st, GI_ABORT_TX_NOT_QUEUED, t_tx, ev);
     }
+}
+
+void gi_on_tx_done(gi_state_t *st, bool ok, int64_t t_done, gi_events_t *ev)
+{
+    if (!st->tx_pending)
+    {
+        /*
+         * A verdict for a frame we are not waiting on. The alert watcher can
+         * deliver one for a diag frame, which is best-effort and uncounted, so
+         * this is not an error -- but it must not credit or fail an inhibit
+         * frame that is not outstanding.
+         */
+        return;
+    }
+    st->tx_pending = false;
+
+    if (ok)
+    {
+        st->tx_ok++;
+        if (st->tx_pending_have_rx)
+        {
+            /*
+             * RX to COMPLETION, where this used to be RX to queueing. The
+             * histogram therefore now includes the frame's time on the wire
+             * and reads higher than every figure recorded before this change
+             * by about one frame's air time -- which is exactly the constant
+             * offset section 12.1 says the independent witness should show
+             * against the device's own number. Comparing a post-C1 sweep with
+             * a pre-C1 one without allowing for that will look like a
+             * regression and is not one.
+             */
+            gi_hist_add(&st->response, (uint32_t)(t_done - st->tx_pending_t_rx));
+        }
+        return;
+    }
+
+    st->tx_fail++;
+    ev_add(ev, t_done, GI_EV_TX_FAIL, (int32_t)GI_TX_INHIBIT, 0, 0);
+    inhibit_abort(st, GI_ABORT_TX_FAILED, t_done, ev);
 }
 
 bool gi_on_rx_error(gi_state_t *st, int64_t now, gi_events_t *ev)

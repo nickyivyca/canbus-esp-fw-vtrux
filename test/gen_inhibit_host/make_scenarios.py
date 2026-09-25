@@ -624,7 +624,8 @@ def s_vcm_fault():
 
 
 @scenario("tx-fail-aborts", """
-Transmits start failing while the inhibit is live.
+Transmits start failing while the inhibit is live -- REFUSED BY THE QUEUE,
+which is only one of spec 7 trip 7's three forms (review C1).
 
 EXPECT: abort "transmit failed" on the FIRST failure, no averaging. Unlike an
 error frame, which is a property of the bus and is judged on a rate, a failed
@@ -1277,6 +1278,54 @@ def s_bus_glitch_very_short():
     L += ["end %d" % (7 * S)]
     return sorted_directives(L)
 
+
+@scenario("tx-late-loses-counter-race", """
+Spec 7 trip 7, third form (review C1), and the case "could not queue" never
+caught: the inhibit frame IS accepted by the driver, but the controller has not
+sent it by the time the VCM's next 0x051 arrives.
+
+This is worse than a frame that never goes out. It may still go out -- late --
+and a frame landing after the VCM's next one loses the counter race, so the
+GENE inverter accepted the VCM's torque for that slot while the device believed
+it was inhibiting.
+
+EXPECT: transmission normally until 3 s; then the controller stops answering,
+and on the VERY NEXT 0x051 a latched abort naming the race. tx_ok must stop
+climbing at the stall, not at the abort -- since C1 a frame counts only when
+the controller confirms it, so the queued-but-unconfirmed frame is never
+counted.
+
+Before C1 this ran to the end of the scenario transmitting happily, because
+twai_transmit() returning ESP_OK was recorded as a successful transmit.
+""", autobms=False)
+def s_tx_late():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 6 * S, 20 * MS)
+    L += _healthy_bg(1 * S, 6 * S)
+    L += ["txstall %d %d" % (3 * S, 9 * S)]
+    L += ["end %d" % (7 * S)]
+    return sorted_directives(L)
+
+
+@scenario("tx-controller-reports-failed", """
+Spec 7 trip 7, second form (review C1): the frame is queued, and the controller
+comes back and says the attempt FAILED -- arbitration lost repeatedly, no ACK,
+or bus-off.
+
+EXPECT: a latched abort naming the transmit, at the instant of the verdict
+rather than at the next 0x051. Distinct from tx-fail-aborts, where the driver
+refused the frame outright, and from tx-late-loses-counter-race, where nobody
+ever answered. All three end the inhibit; they differ in what a log says the
+truck did, which is the whole point of C1.
+""", autobms=False)
+def s_tx_controller_failed():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 6 * S, 20 * MS)
+    L += _healthy_bg(1 * S, 6 * S)
+    L += ["txdone %d %d" % (3 * S, 9 * S)]
+    L += ["end %d" % (7 * S)]
+    return sorted_directives(L)
+
 def sorted_directives(lines):
     """Stable-sort directive lines by their timestamp field.
 
@@ -1288,7 +1337,13 @@ def sorted_directives(lines):
     def key(item):
         i, ln = item
         p = ln.split()
-        if p[0] in ("f", "mode", "bus", "txfail", "end"):
+        # EVERY directive keyword must be listed here. One that is not gets
+        # the -1 key below and sorts to the FRONT of the file, ahead of the
+        # opening `mode` line -- and host_runner applies directives in file
+        # order, so everything behind it waits for its timestamp. A txstall at
+        # 3 s silently delayed arming from 0 s to 3 s before this was fixed,
+        # and the scenario still "worked", just not as written.
+        if p[0] in ("f", "mode", "bus", "txfail", "txstall", "txdone", "end"):
             return (int(p[1]), i)
         return (-1, i)
     return [ln for _, ln in sorted(enumerate(lines), key=key)]

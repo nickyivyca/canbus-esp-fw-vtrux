@@ -330,6 +330,19 @@ typedef enum
     GI_ABORT_STALE_SHIFT,       /* 0x639 */
     GI_ABORT_STALE_RPM,         /* 0x054, once heard this arm cycle */
     GI_ABORT_SHORT_VCM_FRAME,   /* spec 7 trip 8: 0x051 with DLC < 6 */
+    /*
+     * Spec 7 trip 7 (review C1). "Failed transmit" has three forms, worth
+     * telling apart in a log because they point at different things:
+     *   NOT_QUEUED -- twai_transmit() refused it. Our software.
+     *   TX_FAILED  -- the controller reported the attempt failed (arbitration
+     *                 lost repeatedly, no ACK, bus-off). The wire.
+     *   TX_LATE    -- still outstanding when the VCM's NEXT 0x051 arrived. It
+     *                 may yet go out, which is worse than not going out: it
+     *                 loses the counter race, so the inverter acted on the
+     *                 VCM's torque for that slot.
+     */
+    GI_ABORT_TX_NOT_QUEUED,
+    GI_ABORT_TX_LATE,
 } gi_abort_t;
 
 typedef enum
@@ -485,6 +498,18 @@ typedef struct
     bool    rpm_over;   int64_t rpm_over_since;
     bool    have_err_window; int64_t err_window; uint32_t err_base;
 
+    /*
+     * Spec 7 trip 7 (review C1). One inhibit frame may be outstanding at a
+     * time -- the controller has a single TX buffer -- so a flag and the
+     * frame's own timestamps are enough. tx_ok is incremented on COMPLETION,
+     * not on queueing: "accepted into the driver's queue" is what the previous
+     * implementation counted as a transmit.
+     */
+    bool     tx_pending;
+    int64_t  tx_pending_since;      /* when it was queued */
+    int64_t  tx_pending_t_rx;       /* the 0x051 it answers */
+    bool     tx_pending_have_rx;
+
     /* --- statistics --- */
     uint32_t tx_ok, tx_fail, other_frames;
     uint32_t ctr_steps_ok, ctr_steps_bad;
@@ -555,12 +580,29 @@ void gi_on_frame(gi_state_t *st, uint32_t id, uint8_t dlc, const uint8_t *data,
                  int64_t now, gi_emit_t *out, gi_events_t *ev);
 
 /*
- * Outcome of a frame the core emitted. `t_tx` is when it went on the wire.
- * Feeding this back is what keeps the response histogram and the
- * failed-transmit trip in the core rather than in the driver shim.
+ * The QUEUE attempt for a frame the core emitted: `queued` is whether
+ * twai_transmit() accepted it, and `t_tx` is when. Feeding this back is what
+ * keeps the response histogram and the failed-transmit trip in the core
+ * rather than in the driver shim.
+ *
+ * ACCEPTING A FRAME IS NOT SENDING IT (spec 7 trip 7, review C1). The
+ * controller has one TX buffer and the driver queues FIFO, so an inhibit
+ * frame can sit behind a diag frame waiting for an idle bus. The verdict
+ * comes separately, from gi_on_tx_done().
  */
-void gi_on_tx_result(gi_state_t *st, const gi_frame_t *f, bool ok,
+void gi_on_tx_result(gi_state_t *st, const gi_frame_t *f, bool queued,
                      int64_t t_tx, gi_events_t *ev);
+
+/*
+ * The CONTROLLER'S VERDICT on the inhibit frame it was given, from the
+ * driver's TX_SUCCESS / TX_FAILED alerts. This is what makes tx_ok mean "on
+ * the wire" rather than "handed to the driver".
+ *
+ * A caller with no way to know -- a host harness with no driver -- calls it
+ * with ok=true immediately, which models a controller that always completes
+ * and should be documented as the model it is.
+ */
+void gi_on_tx_done(gi_state_t *st, bool ok, int64_t t_done, gi_events_t *ev);
 
 /* A hard (non-timeout) receive error. Returns true if it self-disarmed. */
 bool gi_on_rx_error(gi_state_t *st, int64_t now, gi_events_t *ev);

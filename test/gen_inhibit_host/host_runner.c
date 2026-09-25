@@ -29,9 +29,16 @@
  *   - the TWAI driver, can_enable()/can_disable(), and the listen-only dance
  *     for OBSERVE. Those live in the shim and are hardware-only.
  *   - real latency. Every transmit is instantaneous and succeeds unless a
- *     txfail window says otherwise, so the response histogram is all zeros.
- *     Timing is what the bench ESP-to-ESP test measures; it is not something
- *     a host replay can speak to.
+ *     txfail or txstall window says otherwise, so the response histogram is
+ *     all zeros. Timing is what the bench ESP-to-ESP test measures; it is not
+ *     something a host replay can speak to.
+ *   - the controller. Since review C1 the core distinguishes "queued" from
+ *     "completed on the wire", and on the device the difference comes from
+ *     the driver's TX alerts. Here it is MODELLED: by default every queued
+ *     frame completes immediately, which is the friendliest possible
+ *     controller. `txstall` models one that never answers and `txdone`
+ *     models one that answers "failed"; neither is evidence about the real
+ *     peripheral, only about what the core does when told.
  *   - preemption and the races between the worker and the HTTP handlers.
  *
  * INPUT (stdin), one directive per line, times in microseconds, ascending:
@@ -40,7 +47,15 @@
  *   cfg <field> <value>            before anything else; see cfg_set()
  *   mode <t> <mode> <offset_us>    0 off, 1 observe, 2 respond, 3 inhibit
  *   bus  <t> <en> <ours> <errvalid> <errcount>
- *   txfail <t_from> <t_to>         transmits in [from,to) fail
+ *   txfail <t_from> <t_to>         transmits in [from,to) are REFUSED by
+ *                                  the queue (twai_transmit() != ESP_OK)
+ *   txstall <t_from> <t_to>        transmits in [from,to) are queued and the
+ *                                  controller never answers -- the case
+ *                                  review C1 exists for, where the frame is
+ *                                  outstanding when the VCM's next 0x051
+ *                                  arrives
+ *   txdone <t_from> <t_to>         transmits in [from,to) are queued and the
+ *                                  controller answers FAILED
  *   f <t> <id_hex> <dlc> <hexbytes>
  *   end <t>                        stop; defaults to last frame + 1 s
  *
@@ -58,7 +73,7 @@
 
 typedef struct { int64_t t; uint32_t id; uint8_t dlc; uint8_t data[8]; } rxf_t;
 
-typedef enum { D_MODE, D_BUS, D_TXFAIL } dkind_t;
+typedef enum { D_MODE, D_BUS, D_TXFAIL, D_TXSTALL, D_TXDONE } dkind_t;
 typedef struct { int64_t t; dkind_t k; int64_t a, b, c, d; } dir_t;
 
 static rxf_t *g_f;
@@ -67,6 +82,8 @@ static dir_t  g_d[MAX_DIRS];
 static int    g_nd, g_di;
 
 static int64_t g_txfail_from = -1, g_txfail_to = -1;
+static int64_t g_txstall_from = -1, g_txstall_to = -1;
+static int64_t g_txdone_from = -1, g_txdone_to = -1;
 static gi_bus_t g_bus;
 
 /* ------------------------------------------------------------ trace out -- */
@@ -175,6 +192,29 @@ static void dispatch(gi_state_t *st, const gi_emit_t *em, int64_t now)
         gi_events_t ev = { 0 };
         gi_on_tx_result(st, f, ok != 0, t_tx, &ev);
         dump_events(&ev);
+
+        /*
+         * Review C1: the controller's verdict, which on the device comes from
+         * the driver's TX alerts. Only the inhibit frame has one -- the probe
+         * is counted at the queue, as it always was.
+         *
+         * The DEFAULT is "completes immediately", which is deliberately the
+         * friendliest controller there is: it keeps every pre-C1 scenario
+         * measuring what it was written to measure instead of silently
+         * becoming a test of the new pending path. txstall and txdone are how
+         * a scenario asks for the other two.
+         */
+        if (f->kind == GI_TX_INHIBIT && ok) {
+            int stalled = (g_txstall_from >= 0 && t_tx >= g_txstall_from
+                           && t_tx < g_txstall_to);
+            if (!stalled) {
+                int failed = (g_txdone_from >= 0 && t_tx >= g_txdone_from
+                              && t_tx < g_txdone_to);
+                gi_events_t dev = { 0 };
+                gi_on_tx_done(st, !failed, t_tx, &dev);
+                dump_events(&dev);
+            }
+        }
     }
     if (em->dropped)
     {
@@ -261,6 +301,16 @@ int main(void)
             g_d[g_nd++] = (dir_t){ t, D_TXFAIL, t, x, 0, 0 };
             continue;
         }
+        if (sscanf(line, "txstall %lld %lld", &t, &x) == 2)
+        {
+            g_d[g_nd++] = (dir_t){ t, D_TXSTALL, t, x, 0, 0 };
+            continue;
+        }
+        if (sscanf(line, "txdone %lld %lld", &t, &x) == 2)
+        {
+            g_d[g_nd++] = (dir_t){ t, D_TXDONE, t, x, 0, 0 };
+            continue;
+        }
         if (sscanf(line, "end %lld", &t) == 1) { t_end = t; continue; }
 
         if (sscanf(line, "f %lld %63s %lld %63s", &t, a, &x, b) == 4)
@@ -314,6 +364,14 @@ int main(void)
             case D_TXFAIL:
                 g_txfail_from = d->a;
                 g_txfail_to = d->b;
+                break;
+            case D_TXSTALL:
+                g_txstall_from = d->a;
+                g_txstall_to = d->b;
+                break;
+            case D_TXDONE:
+                g_txdone_from = d->a;
+                g_txdone_to = d->b;
                 break;
             }
             dump_events(&ev);
