@@ -203,6 +203,64 @@ opt out because the key must go away *with* the bus: `bus-loss-latches` and
 the truck cannot produce — `0x592` comes from the VCM, and the VCM is the
 thing that just went away.
 
+## The contactor train, and why every scenario has one too (review A1)
+
+The same trap, one rule later. Since 2026-09-24 the core will not go live until
+`0x440 bcm_mainc_stat` has read 11 `MAIN_PN_CLOSED_DRIVE` or 12
+`MAIN_P_CLOSED_CHARGE` **and** an `0x411` has arrived since (spec 6.2's
+SoC-valid marker, spec 7 condition 2). A scenario with no `0x440` therefore
+transmits nothing.
+
+So `make_scenarios.py` also injects a 20 Hz `0x440` closed train spanning each
+scenario's traffic, plus a 20 Hz healthy `0x411` train, unless the scenario
+passes `autobms=False`. The generated `.scn` records it in a `# BMS:` header
+line. `bus-loss-latches` and `bus-glitch-short` opt out for the same reason they
+opt out of the key train — a pulled connector takes the BMS with it — and the
+four `soc-*` scenarios opt out because the marker is the thing under test.
+
+**The `0x411` train is withheld from any scenario that sends `0x411` itself**,
+and that is not a nicety: `low-soc-debounce` counts *consecutive* sub-threshold
+readings, so a competing healthy train at 20 Hz would reset the count every
+50 ms and the release could never latch. A scenario that owns `0x411` is then
+responsible for keeping it fresh for as long as it wants the marker to hold,
+which its trace shows.
+
+Two things worth knowing about the injection's side effects:
+
+- **Every scenario now shows one extra gate line** — `block=SoC not yet valid
+  (contactors)` for the loop iteration before going live, because `0x051`
+  arrives before `0x440`/`0x411`. 18 of the 39 pre-A1 goldens changed by exactly
+  that and nothing else.
+- **The added frames re-time the tick grid**, since `host_runner` ticks once per
+  loop iteration. That is what surfaced `arm-gate-generator-running`'s wrong
+  golden (below) and is the same hazard `_frame_span()` documents.
+
+The four `soc-*` scenarios are review A1's assertions:
+
+| scenario | what it pins |
+|---|---|
+| `soc-wake-transient-ignored` | a BMS wake reading of 18.77 % against a real 24.41 % latches **nothing**, because the contactors have not closed |
+| `soc-low-after-close` | the same readings *after* the close **do** latch — the release is still reachable |
+| `soc-never-closed-never-live` | contactors never closed: never live, `tx_ok=0`, no abort. "Not ready", not a fault |
+| `soc-marker-clears-on-bms-sleep` | the staleness half, and that the marker clearing does **not** end a live inhibit (that is trip 5) |
+
+### `arm-gate-generator-running` had the wrong behaviour blessed into it
+
+Found 2026-09-24, by A1 rather than by anyone looking. The scenario's header
+says *"blocked on generator running — a block, not an abort"*; its golden showed
+it going **live** and then aborting on engine-turning, with 16 transmits. The
+gate's `0x054` check is skipped when `0x051` arrives first (finding 1,
+`arm-gate-order-cmd-first`), and at a shared timestamp that is what happened.
+A1's extra gate condition delays the gate past `0x054`'s arrival, so the
+intended behaviour now appears.
+
+**The fragility is unchanged** — A1 moved this scenario to the other side of it,
+it did not fix it. And the lesson is the one `run_tests.py`'s own header states:
+a wrong rule blessed into a golden stays green forever. This is the second
+instance in two days, and it is the argument for the golden-independent
+invariant checker (review D9/E2): **a scenario's header and its golden
+disagreed, and only a rule change unrelated to either of them noticed.**
+
 The six `key-*` scenarios are the spec 7.1 assertions themselves:
 
 | scenario | what it pins |
@@ -245,11 +303,15 @@ captures with both properties are from the 2026-06-17/18 rig window
 (`projects/vtrux/notes/artifacts/gen-inhibit/replay_candidate_scan.py`). So
 the replacement keeps the generator-running block against real traffic and
 gives up the low-SoC latch, which `low-soc-debounce` already asserts
-synthetically. The low-SoC latch was then not exercised against real traffic
-at all — **until 2026-09-20**, when `replay-rekey-long` was added for spec 7.1
-and turned out to carry a pack at 18.77 %. It latches `low_soc` at 202.47 s.
-That was luck, not design, and it is worth knowing it is the only real-traffic
-cover that check has.
+synthetically. The low-SoC latch is **not exercised against real traffic at
+all**, and the one apparent exception was withdrawn on 2026-09-24. When
+`replay-rekey-long` was added for spec 7.1 it appeared to restore the cover by
+carrying a pack at 18.77 %, latching `low_soc` at 202.47 s. Review A1 showed
+that reading was the BMS wake transient -- the pack was really at 24.41 % --
+so the fixture was pinning a false release, and under the spec 6.2 SoC-valid
+marker it correctly latches nothing. The cover it seemed to give was never
+real. `low-soc-debounce` and `soc-low-after-close` assert the latch
+synthetically; nothing asserts it on real traffic.
 
 **`replay-healthy-engine-off`** — 300 s, 127,082 frames, engine off at SoC
 84.6 %. Live at 7 ms, **held the whole capture**, 29,990 transmits, zero
@@ -287,23 +349,64 @@ traffic:
 | 0.040 s | first `0x592`, key on | transmitting |
 | **167.230 s** | **key off** | transmission stops in the same frame |
 | **168.071 s** | `0x471` stops, 0.84 s later | `inverter lost`, **latched** |
-| **202.254 s** | **key on**, 34.2 s later | `KEY_CLEAR`, `fb_ever` reset, **live again** |
-| 202.471 s | SoC 18.77 %, below the 21 % floor | section 6 `low_soc` latches |
-| 220.279 s | key off again | — |
+| 202.254 s | **key on**, 34.2 s later | `KEY_CLEAR`, `fb_ever` reset, gate re-entered |
+| 202.289–203.3 s | `0x411` returns reading **18.77 %** — the BMS wake transient, against a real 24.41 % | **ignored**: `0x440` still walking its close sequence, so the SoC-valid marker is clear |
+| **203.459 s** | `bcm_mainc_stat` -> 11 `MAIN_PN_CLOSED_DRIVE` | marker set; first `0x411` after it 12 ms later |
+| 203.471 s | — | **live again**, on the real 24.41 % |
+| 220.279 s | key off again | transmission stops |
+| 220.985 s | `0x471` stops | `inverter lost` latched, the ordinary end of a drive |
 
-16,737 transmits, `ctr_bad=0`. Two things worth naming. The inverter-lost trip
-firing 0.84 s after a key-off, on a healthy truck with nothing wrong, **is**
-finding 3 — and the key-on clearing it is the fix, measured rather than
-argued. And the low-SoC latch is back against real traffic: the README above
-records that it was lost when `replay-T20-drive` was removed, and this capture
-restores it by accident of having a low pack.
+18,397 transmits, `ctr_bad=0`. Three things worth naming.
+
+The inverter-lost trip firing 0.84 s after a key-off, on a healthy truck with
+nothing wrong, **is** finding 3 — and the key-on clearing it is the fix,
+measured rather than argued.
+
+**This capture is the regression test for review A1**, and the rows above are
+the change. Until 2026-09-24 it went live the instant the key came back and
+latched `low_soc` 217 ms later on the 18.77 % wake reading, losing the rest of
+the drive; the golden blessed that. The new behaviour was predicted from the
+capture before the rule was written —
+`projects/vtrux/notes/artifacts/gen-inhibit/contactor_state_check.py` replays
+the marker rule over it — so the golden is not a reading of the
+implementation's own output.
+
+**It no longer provides real-traffic cover for the low-SoC latch**, and it
+never really did: what it was pinning was a false release. See the withdrawal
+above.
 
 **`replay-inverter-lost-keyon`** — `vtrux_20260714_112312_T2`, channel 2,
-20.5–28.2 s, 2,673 frames. The **key-ON** inverter loss, which must still
-trip: 41 transmits, then `inverter lost`, latched, with the key reading on
-throughout and no key transition to clear it. This is the population spec 7.1
-says the trip is actually for, and the scenario that would catch a key rule
+20.5–28.2 s, 2,673 frames. The **key-ON** inverter loss: the population spec
+7.1 says the trip is actually for, and the fixture that would catch a key rule
 written so loosely it swallowed the real fault too.
+
+**Since review A1 (2026-09-24) it does not go live, and so does not trip.**
+`0x440 bcm_mainc_stat` reads **14 `ALL_OPEN_SHUTDOWN` on all 154 frames** of
+this window — and before it — so the spec 6.2 SoC-valid marker is never set and
+arm-gate condition 2 never passes. It now transmits nothing (`tx_ok=0`) and
+blocks on `SoC not yet valid (contactors)`. That is the rule working: with the
+main contactors open the HV inverter cannot crank the engine, so there is
+nothing to inhibit. It used to show 41 transmits and then a latched
+`inverter lost`.
+
+**The consequence is a real loss of coverage, not a formality.** Checked across
+the whole clean corpus rather than inferred from this one window
+(`projects/vtrux/notes/artifacts/gen-inhibit/inverter_lost_contactor_sweep.py`,
+`keyon_inverter_loss_contactors.py`): all five key-ON events in this capture
+have the contactors open throughout, and of the 27 inverter-lost events
+`inverter_lost_prevalence.py` found in clean captures, **0 have the contactors
+closed inside the gap**. So no clean capture offers a replacement, and **the
+key-ON case of section 7 trip 3 now has only synthetic cover**
+(`inverter-lost`).
+
+Read that sweep carefully in one respect: contactors open during the gap does
+**not** mean the trip is dead. Liveness is not retracted when the contactors
+open, so every key-OFF end-of-drive event still fires it — which is exactly
+what `replay-rekey-long` shows at 220.985 s. What is gone is the key-ON case.
+
+Why every one of those events has the pack disconnected is **an open question
+put to the user on 2026-09-24 and not answered**; nothing here should be read as
+a claim about its cause.
 
 **`replay-rekey-short`** — `vtrux_20260403_194203_T2`, channel 2, epoch 1 only
 (0–176.44 s), 41,114 frames. Three key cycles, each about 10.3 s down, each

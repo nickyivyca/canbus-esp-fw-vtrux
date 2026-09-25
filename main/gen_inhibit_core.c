@@ -1160,7 +1160,9 @@ static void interlock_monitor(gi_state_t *st, uint32_t id, uint8_t dlc,
              *
              * soc_since_valid is armed false on the SET so the arm gate cannot
              * pass on a close with no reading behind it. The first 0x411 after
-             * the close is what sets it, in disable_monitor().
+             * the close is what sets it, in the GI_SOC_ID case above -- not in
+             * disable_monitor(), which returns early once a release has
+             * latched.
              */
             if ((st->mainc_stat == GI_MAINC_CLOSED_DRIVE
                  || st->mainc_stat == GI_MAINC_CLOSED_CHARGE)
