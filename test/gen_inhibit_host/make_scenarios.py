@@ -1386,6 +1386,148 @@ def s_passive_dry_run():
     L += ["end %d" % (9 * S)]
     return L
 
+
+# --------------------------------------------------------------------------
+# Round-3 mutation survivors (reviewing session, 2026-09-25). Each of these
+# rules was in the code with nothing asserting it.
+
+
+@scenario("keyon-clear-then-gene-late", """
+BUG 2 THROUGH A THIRD DOOR, and the one the mutation round found unguarded.
+
+The key-on clear resets fb_ever AND rpm_ever. If either survived the clear, the
+device would go live on the way back in -- correctly, since the gate does not
+require the GENE family -- and then immediately abort, because the GENE signal
+is stale and every arriving 0x051 satisfies the spec 7 evidence rule. Trip 3
+would fire on 0x471 and trip 5 on 0x054, on a healthy truck, every re-key,
+about 28 s before the inverter wakes.
+
+That is bug 2 of 2026-09-19 in a new place. It was fixed in the code from the
+start and the comment says so; nothing tested it. replay-rekey-long cannot: its
+inverter is already awake (fb_ever=1 at 202.995 s) before the device goes live
+at 203.471 s, so the flags are legitimately set either way.
+
+Here the GENE family runs for the first drive, stops at the key-off, and NEVER
+COMES BACK -- which is what the corpus shows for a drive that does not use the
+generator.
+
+EXPECT: a latched abort in the first drive (inverter lost, at the key-off), the
+key-on clearing it, live again -- and then NO abort for the rest of the run
+despite 0x054 and 0x471 never arriving again. If either _ever flag survives the
+clear, this aborts within a frame or two of going live.
+""", autokey=False, autobms=False)
+def s_keyon_clear_then_gene_late():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 20 * S, 20 * MS)
+    L += key_train(1 * S, 6 * S, on=True)
+    L += key_train(6 * S, 8 * S, on=False)      # key off at 6 s
+    L += key_train(8 * S, 20 * S, on=True)      # back on at 8 s
+    L += _healthy_bg(1 * S, 20 * S)
+    # The inverter is awake for the first drive only.
+    L += periodic(1 * S, 6 * S, 100 * MS, fb)
+    L += periodic(1 * S, 6 * S, 100 * MS, lambda t: gene(t, 0))
+    L += ["end %d" % (21 * S)]
+    return sorted_directives(L)
+
+
+@scenario("rearm-after-abort", """
+Spec 7.1 names TWO exits from a section 7 latch: a key-on, and an explicit
+re-arm. The key-on half is covered by key-on-clears-abort. The re-arm half was
+not covered at all -- rearm-after-disarm re-arms after an ORDINARY disarm, with
+no latch set.
+
+EXPECT: the bus-loss trip latches on the silence, and the re-arm at 7.1 s
+clears it -- the device goes live again on the returning traffic.
+
+NOTHING ELSE MAY BE LATCHED HERE, and that is the point of it being its own
+scenario. An earlier version also drove a low-SoC release first, to assert in
+one place that a re-arm clears the section 7 latch and NOT the section 6 one.
+That masked the thing it was testing: with `disabled` set, the gate reports
+"latched disable" whether or not the abort was cleared, so removing
+`abort_latched = false` from gi_reset_stats() passed. The section 6 half is
+rearm-keeps-section6-latch, below.
+""", autokey=False, autobms=False)
+def s_rearm_after_abort():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 3 * S, 20 * MS)
+    # 1.5 s of silence -> bus-loss latches.
+    L += cmd_train(6 * S, 12 * S, 20 * MS)
+    L += key_train(1 * S, 3 * S, on=True)
+    L += key_train(6 * S, 12 * S, on=True)
+    L += _healthy_bg(1 * S, 3 * S)
+    L += _healthy_bg(6 * S, 12 * S)
+    L += ["mode %d 0 500" % (7 * S)]            # disarm...
+    L += ["mode %d 3 500" % (7100 * MS)]        # ...and re-arm with the latch set
+    L += ["end %d" % (13 * S)]
+    return sorted_directives(L)
+
+
+@scenario("soc-threshold-boundary", """
+Spec 12.4 / review D2: the 21.00 % boundary itself. Every other SoC scenario
+uses values far from it -- 2050, 2500, 1877, 1500 -- so `raw < soc_min_raw`
+becoming `<=` changes nothing anywhere in the suite.
+
+2100 is 21.00 %, which must KEEP INHIBITING: spec 6.2 releases "below 21.00 %".
+2099 is 20.99 %, which must release.
+
+EXPECT: live through the 2100 run, then low_soc latches after soc_debounce
+readings of 2099. If the boundary moves by one count, the first half latches.
+""", autobms=False)
+def s_soc_threshold_boundary():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 10 * S, 20 * MS)
+    L += _healthy_bg(1 * S, 10 * S, skip=(0x411,))
+    L += periodic(1 * S, 5 * S, 50 * MS, lambda t: soc(t, 2100))
+    L += periodic(5 * S, 10 * S, 50 * MS, lambda t: soc(t, 2099))
+    L += ["end %d" % (11 * S)]
+    return sorted_directives(L)
+
+
+@scenario("soc-recovers-stays-latched", """
+Spec 6.2 and 6.4, review D1: "the latch is unconditional on SoC recovering."
+The spec spells the case out -- fall to 19 %, the engine runs, SoC climbs back
+to 22 %, and the inhibit does NOT resume -- and nothing tested it. Making the
+latch conditional on the current reading survived the whole suite.
+
+EXPECT: low_soc latches on the 19 % run and transmission stops; SoC returning
+to 22 % for five seconds changes nothing -- still disabled, still low_soc,
+tx_ok frozen at the value it had when the latch closed.
+""", autobms=False)
+def s_soc_recovers_stays_latched():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 12 * S, 20 * MS)
+    L += _healthy_bg(1 * S, 12 * S, skip=(0x411,))
+    L += periodic(1 * S, 3 * S, 50 * MS, lambda t: soc(t, 5000))
+    L += periodic(3 * S, 6 * S, 50 * MS, lambda t: soc(t, 1900))   # 19.00 %
+    L += periodic(6 * S, 12 * S, 50 * MS, lambda t: soc(t, 2200))  # back to 22 %
+    L += ["end %d" % (13 * S)]
+    return sorted_directives(L)
+
+
+@scenario("rearm-keeps-section6-latch", """
+The other half of rearm-after-abort, kept apart from it on purpose.
+
+gi_reset_stats() clears the section 7 abort latch and DELIBERATELY leaves the
+section 6 `disabled` latch alone: spec 6 gives that one only a key-on or a power
+cycle as exits, and spec 7.1 adds the re-arm to the section 7 one alone. The two
+are adjacent lines in the same function, which is exactly how they would come to
+be conflated by someone tidying it.
+
+EXPECT: low_soc latches, the re-arm at 7.1 s changes nothing, and the device
+never transmits again -- block "latched disable", dcode low_soc, tx_ok frozen.
+""", autokey=False, autobms=False)
+def s_rearm_keeps_section6():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 12 * S, 20 * MS)
+    L += key_train(1 * S, 12 * S, on=True)
+    L += _healthy_bg(1 * S, 12 * S, skip=(0x411,))
+    L += periodic(1 * S, 2 * S, 50 * MS, lambda t: soc(t, 5000))
+    L += periodic(2 * S, 12 * S, 50 * MS, lambda t: soc(t, 1500))   # low_soc
+    L += ["mode %d 0 500" % (7 * S)]
+    L += ["mode %d 3 500" % (7100 * MS)]
+    L += ["end %d" % (13 * S)]
+    return sorted_directives(L)
+
 def sorted_directives(lines):
     """Stable-sort directive lines by their timestamp field.
 

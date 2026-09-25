@@ -523,6 +523,17 @@ void gi_notify_off(gi_state_t *st)
  * `now` is not used: the test is between two arrival times, not against the
  * present. A signal that expired long ago and a bus that has been quiet ever
  * since still fails this test, which is the intended answer.
+ *
+ * `have_x` IS CURRENTLY REDUNDANT, and that is deliberate rather than
+ * overlooked. Dropping it survives every mutation test (K01, 2026-09-25):
+ * every call site is already behind !gi_fresh(), the arm gate requires 0x617,
+ * 0x639, 0x440 and 0x411 to have been seen before the inhibit can go live, and
+ * 0x054/0x471 are behind fb_ever/rpm_ever. So no caller can reach here with a
+ * never-seen signal today. It stays because that is a conjunction of four
+ * other rules, any one of which could be relaxed for a good reason -- and the
+ * failure if one were would be a stale timestamp of 0 comparing as an ancient
+ * arrival, which is precisely the sentinel trap this file's header exists to
+ * warn about.
  */
 static bool bus_alive_since(const gi_state_t *st, bool have_x, int64_t seen_x)
 {
@@ -1211,7 +1222,18 @@ static void disable_monitor(gi_state_t *st, uint32_t id, uint8_t dlc,
 {
     if (st->disabled)
     {
-        return;     /* latched; nothing more to evaluate until it is cleared */
+        /*
+         * Latched; nothing more to evaluate until it is cleared.
+         *
+         * THIS EARLY RETURN IS WHAT MAKES SPEC 6.2'S "UNCONDITIONAL ON SoC
+         * RECOVERING" STRUCTURAL rather than a rule someone has to remember.
+         * The recovery branch below cannot run once a release has latched, so
+         * even a mutation that explicitly clears `disabled` there is dead code
+         * -- confirmed by mutation on 2026-09-25 (K21: unkillable, because
+         * unreachable, not because untested). Move this guard and that stops
+         * being true.
+         */
+        return;
     }
 
     if (id == GI_MMODE_ID && dlc >= 7)

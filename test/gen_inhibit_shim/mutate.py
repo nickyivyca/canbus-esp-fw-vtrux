@@ -20,6 +20,27 @@ exact defect it was written to catch.
   N5  the spec 8 quiesce handshake does not wait -- the use-after-free guard
   N6  the probe offset limit relaxed from 4000 to 40000 us
   N7  the TX_LATE test removed from the core
+  K06 an explicit re-arm no longer clears the section 7 abort latch
+  K08 the key-on clear no longer resets rpm_ever -- the BUG 2 class
+  K17 the SoC threshold becomes <=, moving the 21.00 % boundary by one count
+  K21 SoC recovering above the threshold un-latches the release -- UNKILLABLE,
+      and not for want of a test: disable_monitor() returns early once a release
+      has latched, so the branch K21 edits cannot run. Spec 6.2's
+      "unconditional on SoC recovering" is enforced one level above it. Kept in
+      the set as a tripwire on that early return, which is the thing that would
+      have to move for K21 to become killable -- and dangerous.
+
+ROUND 3 MUTATED THE CORE, and its most useful finding was not a survivor: all
+15 of the mutations it DID catch were caught by the GOLDENS alone -- never by
+passive_diff's invariants and never by E1, and several by a single golden. The
+goldens are load-bearing in a way a regression harness is not supposed to be,
+which is the argument for E2 stating properties instead.
+
+K08 is the one to reread if any of this is ever simplified: with rpm_ever
+surviving a key-on clear, the device goes live on the way back in (correctly --
+the gate does not require the GENE family) and then aborts STALE_RPM
+immediately, about 28 s before the inverter wakes, on a healthy truck, every
+re-key. That is bug 2 of 2026-09-19 in a third place.
 
 N1-N7 were added by the reviewing session in a SECOND round against bea8d51,
 after M1-M6 were all being caught. Five of them survived: N2, N3, N4, N5 and
@@ -104,6 +125,20 @@ MUT = {
   "    if (offset_us > 4000)", "    if (offset_us > 40000)")]),
  "N7_no_tx_late": ("main/gen_inhibit_core.c", [(
   "    if (st->tx_pending && st->inhibit_live)", "    if (0)")]),
+ # Round 3 (reviewing session, 2026-09-25) mutated the CORE. These four were
+ # real survivors and now have scenarios; K01 and K12 were judged equivalent and
+ # are not here -- K01's reasoning is recorded in bus_alive_since()'s comment.
+ "K06_rearm_keeps_abort_latch": ("main/gen_inhibit_core.c", [(
+  "    st->abort_latched = false;\n    st->rpm_over = false;",
+  "    st->rpm_over = false;")]),
+ "K08_keyon_keeps_rpm_ever": ("main/gen_inhibit_core.c", [(
+  "    st->rpm_ever      = false;\n}", "}")]),
+ "K17_soc_threshold_le": ("main/gen_inhibit_core.c", [(
+  "            if (raw < st->cfg.soc_min_raw)",
+  "            if (raw <= st->cfg.soc_min_raw)")]),
+ "K21_soc_recovery_unlatches": ("main/gen_inhibit_core.c", [(
+  "            else\n            {\n                st->soc_low_count = 0;\n            }",
+  "            else\n            {\n                st->soc_low_count = 0;\n                st->disabled = false;\n            }")]),
 }
 # A GREEN MUTATION RUN MEANS NOTHING IF THE BASELINE IS RED: every mutant is
 # then reported caught by a failure that was already there. That happened once,
@@ -133,10 +168,28 @@ for name, (f, reps) in MUT.items():
     t = os.path.join(d, "test/gen_inhibit_shim")
     b = subprocess.run("make -s", shell=True, cwd=t, capture_output=True, text=True)
     if b.returncode: print(name, "BUILD FAIL", b.stderr[-300:]); continue
-    r = subprocess.run("./shim_test", shell=True, cwd=t, capture_output=True, text=True, timeout=300)
+    r = subprocess.run("./shim_test", shell=True, cwd=t, capture_output=True,
+                       text=True, timeout=300)
     out = r.stdout + r.stderr
+    rc = r.returncode
+
+    # THE CORE IS WHERE MOST OF THE LOGIC LIVES, so a mutation control that
+    # only runs E1 scores the wrong thing. Round 3 mutated the core and found
+    # that 15 of 15 caught mutations were caught by the GOLDENS alone -- never
+    # by an invariant and never by E1. Scoring all three suites together is the
+    # only honest total.
+    h = os.path.join(d, "test/gen_inhibit_host")
+    if os.path.isdir(os.path.join(h, "scenarios")):
+        for cmd in ("python3 run_tests.py", "python3 passive_diff.py"):
+            hr = subprocess.run(cmd, shell=True, cwd=h, capture_output=True,
+                                text=True, timeout=900)
+            if hr.returncode:
+                rc = rc or hr.returncode
+                out += "\n[%s] %s" % (cmd.split()[-1], hr.stdout[-400:])
+    else:
+        out += "\n[note] no scenarios/ in this copy: host suite NOT scored"
     # rc, not text: "FAIL" also matches the harness's own ESP_FAIL log lines,
     # which reported surviving mutations as caught.
     fails = [l.strip() for l in out.splitlines() if l.strip().startswith("FAIL:")][:3]
-    verdict = ("CAUGHT" if r.returncode else "*** SURVIVED ***")
-    print("%-32s rc=%d  %-16s %s" % (name, r.returncode, verdict, " | ".join(fails)))
+    verdict = ("CAUGHT" if rc else "*** SURVIVED ***")
+    print("%-32s rc=%d  %-16s %s" % (name, rc, verdict, " | ".join(fails)))
