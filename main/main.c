@@ -179,24 +179,69 @@ static void can_tx_task(void *pvParameters)
 		uint8_t* msg_ptr = ucTCP_RX_Buffer.ucElement;
 		int temp_len = ucTCP_RX_Buffer.usLen;
 
-		if(config_server_ws_connected())
+		/*
+		 * SPEC 3.2 (review A3): THE SLCAN COMMAND PARSER IS DISABLED ON EVERY
+		 * CHANNEL.
+		 *
+		 * Section 1 goal 2 -- a non-zero torque command must be structurally
+		 * impossible -- is a property of the WHOLE FIRMWARE, not of
+		 * gen_inhibit alone. slcan_parse_str() lets any client transmit an
+		 * arbitrary frame, including a 0x051 carrying real torque, and also
+		 * open or close the bus, switch silent/loopback and change the
+		 * bitrate. On a truck unit that auto-arms at wake, nobody is watching.
+		 *
+		 * THREE CHANNELS, NOT ONE, which is the part that is easy to get
+		 * wrong: the TCP port only when protocol == SLCAN, UART likewise, but
+		 * the WEB UI WEBSOCKET WHATEVER THE PROTOCOL SETTING. Reading the
+		 * config and concluding "we are not in SLCAN mode, so the parser is
+		 * unreachable" is false.
+		 *
+		 * Measured hazards this closes (2026-09-22): an SLCAN `C` called
+		 * can_disable(), which quiesced the worker and forced mode OFF with no
+		 * event and no diag -- and common SLCAN clients send `C` when they
+		 * OPEN a session, so an auto-armed unit would have been disarmed for
+		 * the rest of the power cycle by someone merely connecting. Loopback
+		 * (`Y`) made client-sent frames self-received by the worker, which
+		 * would have answered an injected 0x051 as though it were the VCM's.
+		 *
+		 * RECEIVE-ONLY MONITORING IS UNAFFECTED: frames still flow outward to
+		 * a connected client. What is gone is the inbound command path.
+		 *
+		 * Refused, not silently dropped (spec 3.2), but rate-limited: a client
+		 * that retries in a loop must not turn the log into the incident.
+		 */
 		{
-			if(ucTCP_RX_Buffer.dev_channel == DEV_WIFI_WS)
+			static int64_t s_last_refusal_log;
+			const int64_t now_us = esp_timer_get_time();
+			if (now_us - s_last_refusal_log > 5000000 || s_last_refusal_log == 0)
 			{
-				slcan_parse_str(msg_ptr, temp_len, &tx_msg, &xmsg_ws_tx_queue);
+				s_last_refusal_log = now_us;
+				ESP_LOGW(__func__, "SLCAN command refused on channel %d "
+						 "(%d bytes): the parser is disabled, spec 3.2",
+						 (int)ucTCP_RX_Buffer.dev_channel, temp_len);
 			}
 		}
-		if(protocol == SLCAN)
+		if(0)   /* spec 3.2: retained for diff-ability against upstream */
 		{
-			if(ucTCP_RX_Buffer.dev_channel == DEV_WIFI)
+			if(config_server_ws_connected())
 			{
-				slcan_parse_str(msg_ptr, temp_len, &tx_msg, &xMsg_Tx_Queue);
-			}
-			else if(ucTCP_RX_Buffer.dev_channel == DEV_UART)
-			{
-				if(!config_server_mqtt_en_config())
+				if(ucTCP_RX_Buffer.dev_channel == DEV_WIFI_WS)
 				{
-					slcan_parse_str(msg_ptr, temp_len, &tx_msg, &xmsg_uart_tx_queue);
+					slcan_parse_str(msg_ptr, temp_len, &tx_msg, &xmsg_ws_tx_queue);
+				}
+			}
+			if(protocol == SLCAN)
+			{
+				if(ucTCP_RX_Buffer.dev_channel == DEV_WIFI)
+				{
+					slcan_parse_str(msg_ptr, temp_len, &tx_msg, &xMsg_Tx_Queue);
+				}
+				else if(ucTCP_RX_Buffer.dev_channel == DEV_UART)
+				{
+					if(!config_server_mqtt_en_config())
+					{
+						slcan_parse_str(msg_ptr, temp_len, &tx_msg, &xmsg_uart_tx_queue);
+					}
 				}
 			}
 		}

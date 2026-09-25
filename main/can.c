@@ -30,6 +30,7 @@
 #include "esp_log.h"
 #include <string.h>
 #include "comm_server.h"
+#include "esp_timer.h"
 #include "lwip/sockets.h"
 #include "driver/twai.h"
 #include "can.h"
@@ -343,6 +344,37 @@ esp_err_t can_receive(twai_message_t *message, TickType_t ticks_to_wait)
 
 esp_err_t can_send(twai_message_t *message, TickType_t ticks_to_wait)
 {
+	/*
+	 * SPEC 3.2 (review A3): while gen_inhibit owns the bus, no other path may
+	 * transmit. Every caller of this function is a client path -- MQTT, the
+	 * ELM327 responder, whatever else upstream adds later. gen_inhibit does
+	 * NOT come through here; its worker calls twai_transmit() directly, so
+	 * refusing unconditionally here cannot starve the inhibit frame.
+	 *
+	 * THIS IS ALSO A CORRECTNESS REQUIREMENT FOR SPEC 7 TRIP 7, not only a
+	 * bus-ownership measure (raised by the reviewing session 2026-09-25).
+	 * The inhibit frame is judged complete when the controller reports
+	 * msgs_to_tx == 0, which proves OUR frame went out only because nothing
+	 * else can be queued behind it. A frame queued here by another task while
+	 * the inhibit is in flight leaves the count above zero after our frame has
+	 * gone, producing a FALSE late-transmit abort -- or credits the wrong
+	 * frame if they interleave. No build without this may go to the truck.
+	 *
+	 * Rate-limited log: a client retrying in a loop must not become the
+	 * incident in the log.
+	 */
+	if(gen_inhibit_owns_bus())
+	{
+		static int64_t s_last_refusal_log;
+		const int64_t now_us = esp_timer_get_time();
+		if(now_us - s_last_refusal_log > 5000000 || s_last_refusal_log == 0)
+		{
+			s_last_refusal_log = now_us;
+			ESP_LOGW(TAG, "can_send refused: gen_inhibit owns the bus (spec 3.2)");
+		}
+		return ESP_ERR_INVALID_STATE;
+	}
+
 //	xEventGroupWaitBits(s_can_event_group,
 //							CAN_ENABLE_BIT,
 //							pdFALSE,

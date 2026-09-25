@@ -18,6 +18,8 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include <ctype.h>
+/* Spec 3.2: bus-state changes are refused while the inhibitor owns it. */
+#include "gen_inhibit.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include  "freertos/queue.h"
@@ -489,6 +491,25 @@ static char* elm327_set_protocol(const char* command_str)
 	//
 	// In some cases Carscanner sends the header first and then changes
 	// the protocol.
+	/*
+	 * SPEC 3.2 (review A3): no client path may change bus state while
+	 * gen_inhibit owns the bus. ATSP tears the driver down and brings it back
+	 * at a different bitrate -- on an armed truck unit that is a disarm plus a
+	 * bus at the wrong speed, from a client that only meant to select a
+	 * protocol. can_disable() would also quiesce the worker into mode OFF with
+	 * no event and no diag.
+	 *
+	 * Refused rather than silently ignored, and the ELM327 layer still answers
+	 * OK, because a scan tool that gets an error here retries and the refusal
+	 * is about the BUS, not about the command being malformed.
+	 */
+	if(gen_inhibit_owns_bus())
+	{
+		ESP_LOGW(__func__, "ATSP bitrate change refused: gen_inhibit owns the "
+				 "bus (spec 3.2)");
+		return (char*)ok_str;
+	}
+
 	if(elm327_config.protocol == '6' || elm327_config.protocol == '7')
 	{
 		can_disable();

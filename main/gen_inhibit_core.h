@@ -404,6 +404,26 @@ typedef enum
     GI_ABORT_TX_LATE,
 } gi_abort_t;
 
+/*
+ * Why the device put ITSELF in OFF (spec 7's receive-error self-disarm, spec
+ * 8's forced quiesce), reported in the JSON per spec 11.
+ *
+ * WHY THIS EXISTS AT ALL. Both paths set mode OFF and, in OFF, the worker no
+ * longer receives -- so no key-on can clear it, no diag goes out, and the
+ * device is indistinguishable from one somebody disarmed on purpose. Recovery
+ * is a re-arm or a reboot, and a human deciding which needs to know which of
+ * the three it is looking at. Cleared when the device is next armed, so it
+ * describes the CURRENT OFF and not a previous one.
+ */
+typedef enum
+{
+    GI_SELF_OFF_NONE = 0,       /* not off, or off because someone asked */
+    GI_SELF_OFF_RX_ERRORS,      /* spec 7: the driver went out from under us */
+    GI_SELF_OFF_QUIESCE,        /* spec 8: another task is tearing the bus down */
+} gi_self_off_t;
+
+const char *gi_self_off_name(gi_self_off_t r);
+
 typedef enum
 {
     GI_DISABLE_NONE = 0,
@@ -592,6 +612,9 @@ typedef struct
      * any non-zero reading is a bug in gen_inhibit_core.c, not a bus event.
      */
     uint32_t emit_refused;
+
+    /* Spec 11: why the device is in OFF, when it was not asked to be. */
+    gi_self_off_t self_off;
     int64_t  tx_pending_t_rx;       /* the 0x051 it answers */
     bool     tx_pending_have_rx;
 

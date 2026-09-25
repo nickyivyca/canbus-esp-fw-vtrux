@@ -595,6 +595,13 @@ void gen_inhibit_quiesce(void)
         return;
     }
 
+    /*
+     * Spec 8 and 11: this is a mode OFF nobody asked for -- another task is
+     * about to uninstall the driver and the worker has to be out of it first.
+     * Record it, because in OFF the device goes silent on the wire and looks
+     * identical to one that was disarmed on purpose.
+     */
+    s_core.self_off = GI_SELF_OFF_QUIESCE;
     s_core.mode = GI_OFF;
     s_we_enabled_bus = false;   /* caller owns the teardown now, not us */
     s_release_bus = false;
@@ -781,7 +788,7 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
                      "\"key_on\":%s,\"key_fresh\":%s,\"gene_rpm\":%ld,"
                      "\"vcm_torque\":%ld,\"vcm_fault\":%u,"
                      "\"tx_queued_behind\":%lu,\"would_tx\":%lu,"
-                     "\"emit_refused\":%lu,"
+                     "\"emit_refused\":%lu,\"self_off\":\"%s\","
                      "\"soc_valid\":%s,\"soc_since_valid\":%s,"
                      "\"mainc_stat\":%u,\"soc_fresh\":%s,"
                      "\"contactor_fresh\":%s,\"cmd_fresh\":%s,"
@@ -829,6 +836,12 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
                      (unsigned long)st->would_tx,
                      /* Tripwire; any non-zero value is a bug in the core. */
                      (unsigned long)st->emit_refused,
+                     /*
+                      * Spec 11: an OFF the device imposed on itself names
+                      * itself. Empty means OFF because someone asked, or not
+                      * off at all.
+                      */
+                     gi_self_off_name(st->self_off),
                      /*
                       * Spec 11, spec 6.2: the SoC-valid marker, and the two
                       * freshness facts it is made of. Reported apart for the

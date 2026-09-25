@@ -135,6 +135,17 @@ const char *gi_abort_name(gi_abort_t a)
     return "?";
 }
 
+const char *gi_self_off_name(gi_self_off_t r)
+{
+    switch (r)
+    {
+    case GI_SELF_OFF_NONE:      return "";
+    case GI_SELF_OFF_RX_ERRORS: return "receive errors -- driver gone (spec 7)";
+    case GI_SELF_OFF_QUIESCE:   return "forced quiesce -- another task took the bus (spec 8)";
+    }
+    return "?";
+}
+
 const char *gi_disable_name(gi_disable_t d)
 {
     switch (d)
@@ -352,6 +363,8 @@ void gi_reset_stats(gi_state_t *st)
     st->inhibit_live = false;
     st->arm_block    = GI_BLOCK_GATE_NOT_EVALUATED;
     st->abort_reason = GI_ABORT_NONE;
+    /* A new arm answers the question; the reason described the previous OFF. */
+    st->self_off     = GI_SELF_OFF_NONE;
     /*
      * Spec 7.1: an explicit re-arm clears the section 7 latch, exactly as it
      * always did -- a latched abort used to be expressed as mode OFF, and
@@ -1817,6 +1830,13 @@ bool gi_on_rx_error(gi_state_t *st, int64_t now, gi_events_t *ev)
     if (st->rx_errors >= st->cfg.max_rx_errors)
     {
         ev_add(ev, now, GI_EV_RX_ERROR_DISARM, (int32_t)st->rx_errors, 0, 0);
+        /*
+         * Spec 11: say why. In OFF the worker stops receiving, so this cannot
+         * clear itself and nothing further goes out on the wire -- which makes
+         * it look exactly like a deliberate disarm to anyone reading the JSON
+         * afterwards.
+         */
+        st->self_off = GI_SELF_OFF_RX_ERRORS;
         st->mode = GI_OFF;
         st->rx_errors = 0;
         return true;
