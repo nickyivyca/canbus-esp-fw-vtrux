@@ -190,7 +190,13 @@ static void dispatch(gi_state_t *st, const gi_emit_t *em, int64_t now)
             continue;   /* best-effort on the device; not counted */
         }
         gi_events_t ev = { 0 };
-        gi_on_tx_result(st, f, ok != 0, t_tx, &ev);
+        /*
+          * `behind` is always false here: this harness has no model of the
+          * controller's TX queue, so it cannot know that a frame went in
+          * behind an unfinished one. That is spec 5's hazard and an E1
+          * mock-HAL case, not something a core-only replay can speak to.
+          */
+        gi_on_tx_result(st, f, ok != 0, false, t_tx, &ev);
         dump_events(&ev);
 
         /*

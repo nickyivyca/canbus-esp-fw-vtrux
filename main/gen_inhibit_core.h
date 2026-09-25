@@ -507,6 +507,15 @@ typedef struct
      */
     bool     tx_pending;
     int64_t  tx_pending_since;      /* when it was queued */
+    /*
+     * Spec 5 (review A4): how many inhibit frames were queued while something
+     * of ours was still in the controller's single TX buffer. The diag pages
+     * are the lowest-priority IDs on the bus, so one waiting for an idle gap
+     * on a loaded bus delays the inhibit behind it. This is that hazard
+     * happening, counted rather than assumed, and it is the number the
+     * full-replay bench run exists to put a value on.
+     */
+    uint32_t tx_queued_behind;
     int64_t  tx_pending_t_rx;       /* the 0x051 it answers */
     bool     tx_pending_have_rx;
 
@@ -591,12 +600,16 @@ void gi_on_frame(gi_state_t *st, uint32_t id, uint8_t dlc, const uint8_t *data,
  * comes separately, from gi_on_tx_done().
  */
 void gi_on_tx_result(gi_state_t *st, const gi_frame_t *f, bool queued,
-                     int64_t t_tx, gi_events_t *ev);
+                     bool behind, int64_t t_tx, gi_events_t *ev);
 
 /*
- * The CONTROLLER'S VERDICT on the inhibit frame it was given, from the
- * driver's TX_SUCCESS / TX_FAILED alerts. This is what makes tx_ok mean "on
- * the wire" rather than "handed to the driver".
+ * The CONTROLLER'S VERDICT on the inhibit frame it was given. This is what
+ * makes tx_ok mean "on the wire" rather than "handed to the driver".
+ *
+ * The caller decides HOW it knows. The shim does not use the TX_SUCCESS alert
+ * for this, because that alert is a latched bit shared by every frame and
+ * cannot say which frame it belongs to -- see poll_tx_completion() in
+ * gen_inhibit.c.
  *
  * A caller with no way to know -- a host harness with no driver -- calls it
  * with ok=true immediately, which models a controller that always completes

@@ -1625,8 +1625,18 @@ void gi_on_frame(gi_state_t *st, uint32_t id, uint8_t dlc, const uint8_t *data,
 }
 
 void gi_on_tx_result(gi_state_t *st, const gi_frame_t *f, bool queued,
-                     int64_t t_tx, gi_events_t *ev)
+                     bool behind, int64_t t_tx, gi_events_t *ev)
 {
+    if (behind && f->kind == GI_TX_INHIBIT)
+    {
+        /*
+         * Spec 5: this frame went into the queue behind something of ours that
+         * had not finished. Counted, not aborted -- it is a timing hazard, not
+         * a failure, and whether it actually cost anything shows up as tx_ok
+         * not rising or as a TX_LATE abort.
+         */
+        st->tx_queued_behind++;
+    }
     if (f->kind == GI_TX_DIAG)
     {
         /* Best-effort; fails silently in listen-only, and is not counted. */

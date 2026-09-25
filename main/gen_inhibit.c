@@ -124,6 +124,12 @@ static volatile bool s_release_bus; /* disarm asked us to hand the bus back */
 static TaskHandle_t  s_worker;      /* the worker task, for self-call detection */
 static volatile bool s_quiesce;     /* an external caller needs the driver freed */
 static volatile bool s_parked;      /* worker is provably outside twai_receive() */
+/*
+ * Spec 7 trip 7: TWAI_ALERT_TX_FAILED seen since the current inhibit frame
+ * was queued. Carried between polls because the alert can arrive before the
+ * frame leaves the controller, and cleared when the next inhibit is queued.
+ */
+static bool s_tx_failed_latched;
 
 /*
  * Spec 13 item 1: we put the controller into listen-only for OBSERVE.
@@ -278,16 +284,23 @@ static void dispatch_emits(const gi_emit_t *em, gi_events_t *ev)
         }
 
         /*
-         * Spec 7 trip 7 (review C1): clear any latched alert BEFORE queueing
-         * the inhibit frame, so the completion poll afterwards cannot credit
-         * it with somebody else's TX_SUCCESS. See poll_tx_alerts() for why
-         * that is not hypothetical. Discarded deliberately: anything latched
-         * at this instant belongs to a frame already accounted for.
+         * Is anything of ours still in the controller when this frame goes in?
+         * For an inhibit frame that is spec 5's hazard -- it will be
+         * transmitted behind whatever is ahead of it -- and it is worth
+         * counting rather than assuming. Also clear any stale TX_FAILED, which
+         * is the one alert bit still used.
          */
+        bool behind = false;
         if (f->kind == GI_TX_INHIBIT)
         {
+            twai_status_info_t before;
+            if (twai_get_status_info(&before) == ESP_OK)
+            {
+                behind = (before.msgs_to_tx > 0);
+            }
             uint32_t stale = 0;
             (void)twai_read_alerts(&stale, 0);
+            s_tx_failed_latched = false;
         }
 
         esp_err_t err = twai_transmit(&tx, 0);
@@ -295,7 +308,8 @@ static void dispatch_emits(const gi_emit_t *em, gi_events_t *ev)
         {
             continue;   /* best-effort; fails silently in listen-only */
         }
-        gi_on_tx_result(&s_core, f, err == ESP_OK, esp_timer_get_time(), ev);
+        gi_on_tx_result(&s_core, f, err == ESP_OK, behind,
+                        esp_timer_get_time(), ev);
     }
     if (em->dropped)
     {
@@ -340,28 +354,61 @@ static void dispatch_emits(const gi_emit_t *em, gi_events_t *ev)
  * observed whenever it happens rather than only inside a window -- and so the
  * reactive path carries no blocking call at all.
  */
-static void poll_tx_alerts(gi_events_t *ev)
+static void poll_tx_completion(gi_events_t *ev)
 {
+    /*
+     * Drain the alert bits on every call whether or not a frame is pending, so
+     * nothing accumulates to be misread later.
+     */
     uint32_t alerts = 0;
-    if (twai_read_alerts(&alerts, 0) != ESP_OK)
+    if (twai_read_alerts(&alerts, 0) == ESP_OK
+        && (alerts & TWAI_ALERT_TX_FAILED))
     {
-        return;     /* ESP_ERR_TIMEOUT: nothing pending. Not an error. */
+        s_tx_failed_latched = true;
     }
-    if (alerts & (TWAI_ALERT_TX_SUCCESS | TWAI_ALERT_TX_FAILED))
+
+    if (!s_core.tx_pending)
     {
-        /*
-         * TWAI_ALERT_TX_FAILED is documented in IDF 5.4.1 as being raised
-         * "for single shot transmission". These frames are queued with
-         * twai_message_t.ss = 0, so the controller RETRANSMITS on arbitration
-         * loss or a missing ACK rather than failing -- which means TX_FAILED
-         * is effectively unreachable here and the retry shows up instead as
-         * the frame still being outstanding when the VCM's next 0x051 arrives
-         * (TX_LATE). It is read anyway because it costs nothing and the
-         * semantics could change; do not read its absence as evidence the bus
-         * is healthy.
-         */
-        gi_on_tx_done(&s_core, (alerts & TWAI_ALERT_TX_SUCCESS) != 0,
-                      esp_timer_get_time(), ev);
+        return;
+    }
+
+    /*
+     * COMPLETION IS msgs_to_tx == 0, NOT TWAI_ALERT_TX_SUCCESS.
+     *
+     * The alert cannot answer the question. It is a latched bit shared by
+     * every frame -- "the previous transmission was successful", with no
+     * identity -- and 632af32's attempt to make it attributable by keeping one
+     * frame of ours in flight only closed the inhibit-first order. The
+     * diag-first order stayed open, and it is the likelier one on the truck: a
+     * diag page is the lowest-priority ID on the bus, so on a loaded bus it
+     * sits in the TX buffer waiting for an idle gap. The next 0x051 then
+     * queues the inhibit BEHIND it, the pre-queue drain finds nothing latched
+     * because the diag has not completed yet, the diag completes, and its
+     * TX_SUCCESS credits an inhibit frame that has not been sent. Found by the
+     * reviewing session, 2026-09-25.
+     *
+     * msgs_to_tx is "messages queued for transmission or awaiting transmission
+     * completion". The driver queues FIFO and our inhibit frame is queued
+     * last, so msgs_to_tx == 0 means everything ahead of it AND the frame
+     * itself are done. That is attributable BY CONSTRUCTION, whatever was in
+     * front of it, rather than by an invariant someone has to maintain.
+     *
+     * The alert is kept for TX_FAILED only -- which IDF 5.4.1 documents as
+     * being raised "for single shot transmission", and these frames go out
+     * with twai_message_t.ss = 0, so the controller retransmits rather than
+     * failing and TX_FAILED is effectively unreachable. A retry that pushes
+     * the frame past the VCM's next 0x051 is caught as TX_LATE instead. Do not
+     * read the absence of TX_FAILED as evidence the bus is healthy.
+     */
+    twai_status_info_t info;
+    if (twai_get_status_info(&info) != ESP_OK)
+    {
+        return;
+    }
+    if (info.msgs_to_tx == 0)
+    {
+        gi_on_tx_done(&s_core, !s_tx_failed_latched, esp_timer_get_time(), ev);
+        s_tx_failed_latched = false;
     }
 }
 
@@ -610,7 +657,7 @@ static void gen_inhibit_task(void *arg)
              * outstanding-frame flag: it withholds the diag page while one is
              * in flight, and a stale flag would withhold it for nothing.
              */
-            poll_tx_alerts(&ev);
+            poll_tx_completion(&ev);
             bus_snapshot(&bus);
             gi_tick(&s_core, esp_timer_get_time(), &bus, &em, &ev);
             dispatch_emits(&em, &ev);
@@ -663,7 +710,7 @@ static void gen_inhibit_task(void *arg)
              * frame that finished in good time is reported as having lost the
              * counter race.
              */
-            poll_tx_alerts(&ev);
+            poll_tx_completion(&ev);
 
             gi_on_frame(&s_core, rx.identifier, rx.data_length_code, rx.data,
                         esp_timer_get_time(), &em, &ev);
@@ -720,6 +767,7 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
                      "\"abort_reason\":\"%s\",\"abort_latched\":%s,"
                      "\"key_on\":%s,\"key_fresh\":%s,\"gene_rpm\":%ld,"
                      "\"vcm_torque\":%ld,\"vcm_fault\":%u,"
+                     "\"tx_queued_behind\":%lu,"
                      "\"soc_valid\":%s,\"soc_since_valid\":%s,"
                      "\"mainc_stat\":%u,\"soc_fresh\":%s,"
                      "\"contactor_fresh\":%s,\"cmd_fresh\":%s,"
@@ -753,6 +801,12 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
                          ? "true" : "false",
                      (long)st->gene_rpm,
                      (long)st->vcm_torque, (unsigned)st->vcm_fault,
+                     /*
+                      * Spec 5 (review A4): inhibit frames queued behind
+                      * something of ours that had not finished. The number the
+                      * full-replay bench run exists to put a value on.
+                      */
+                     (unsigned long)st->tx_queued_behind,
                      /*
                       * Spec 11, spec 6.2: the SoC-valid marker, and the two
                       * freshness facts it is made of. Reported apart for the
