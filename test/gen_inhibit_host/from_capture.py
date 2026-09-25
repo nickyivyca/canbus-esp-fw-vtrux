@@ -45,7 +45,13 @@ FAULT = 0x617
 # never-seen reads key-off -- so it is not optional, and every scenario file
 # generated before this date needs regenerating rather than reusing.
 KEY = 0x592
-RELEVANT = (CMD, RPM, FB, SOC, SHIFT, FAULT, KEY)
+# Review A1 (2026-09-24). 0x440 bcm_mainc_stat gates spec 6.2's SoC-valid
+# marker and arm-gate condition 2, so a replay built without it never goes live
+# at all -- the same trap 0x592 presented above, for the same reason, and every
+# scenario file generated before this date needs regenerating rather than
+# reusing.
+CONTACTOR = 0x440
+RELEVANT = (CMD, RPM, FB, SOC, SHIFT, FAULT, KEY, CONTACTOR)
 
 
 def load_parser(repo):

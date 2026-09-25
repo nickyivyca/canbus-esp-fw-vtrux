@@ -67,6 +67,25 @@ def soc(t, raw):
     return _f(t, 0x411, [(raw >> 6) & 0xFF, (raw & 0x3F) << 2, 0, 0, 0, 0, 0, 0])
 
 
+def contactor(t, stat=11):
+    """0x440 EPRI_BCM_Data2_0440; bcm_mainc_stat is 4 bits at bit 2 of B0.
+
+    Spec 6.2 / 7 condition 2 (review A1). 11 = MAIN_PN_CLOSED_DRIVE and
+    12 = MAIN_P_CLOSED_CHARGE are the two closed states; the names and the
+    layout are from epri-pt-bus.dbc and were cross-checked against cantools
+    over 15,188 real frames. The close sequence the truck actually walks is
+    0 -> 2 -> 5 -> 7 -> 8 -> 9 -> 11, and 13 -> 14 on the way down.
+    """
+    d = [0] * 8
+    d[0] = (stat & 0x0F) << 2
+    return _f(t, 0x440, d)
+
+
+def contactor_train(t0, t1, stat=11, period=50 * MS):
+    """0x440 at its measured ~20 Hz (16.85-20.0 Hz on four clean captures)."""
+    return periodic(t0, t1, period, lambda t: contactor(t, stat))
+
+
 def shift(t, pos):
     """0x639 shift_lever_pos in B6 bits 6:4. 4 = Manual_generator_mode."""
     d = [0] * 8
@@ -123,7 +142,7 @@ def periodic(t0, t1, period, fn, phase=0):
 SCEN = {}
 
 
-def scenario(name, why, autokey=True):
+def scenario(name, why, autokey=True, autobms=True):
     """Register a scenario.
 
     autokey=True (the default) injects a 10 Hz 0x592 key-ON train spanning the
@@ -137,9 +156,32 @@ def scenario(name, why, autokey=True):
     0x592 was found in 1045 of 1045 powertrain epochs across the corpus.
 
     Scenarios that are ABOUT the key pass autokey=False and build their own.
+
+    autobms=True (the default) does the same job for spec 6.2's SoC-valid
+    marker: a 20 Hz 0x440 MAIN_PN_CLOSED_DRIVE train spanning the scenario, and
+    a 20 Hz healthy 0x411 train alongside it unless the scenario sends 0x411 of
+    its own (see add_autobms()).
+
+    WHY THIS IS ALSO A DEFAULT, and it is the same argument as autokey. Since
+    review A1 the arm gate will not let the inhibit go live until the main
+    contactors have reported closed AND an 0x411 has arrived since -- so a
+    scenario with no 0x440 never transmits, and would be testing the new gate
+    condition instead of whatever it was written for. The truck presents the
+    contactors closed for the whole of any drive in which the engine could be
+    started, because the engine is cranked by the HV inverter and that cannot
+    run with them open.
+
+    The 0x411 train is withheld from a scenario that sends its own, because
+    low-soc-debounce counts CONSECUTIVE sub-threshold readings and a competing
+    healthy train would reset the count every 50 ms so the release could never
+    latch.
+
+    Scenarios about the bus going away pass autobms=False and build their own,
+    for the reason _frame_span() documents: background frames arriving during
+    a deliberate silence re-time every trailing abort.
     """
     def deco(fn):
-        SCEN[name] = (why, fn, autokey)
+        SCEN[name] = (why, fn, autokey, autobms)
         return fn
     return deco
 
@@ -310,12 +352,19 @@ an unreliable environment, and this device steals the VCM's rolling counter
 and transmits a real 0x051 onto a live powertrain bus. Resuming across a link
 we already have evidence is unsound would mean doing that repeatedly, through
 a gate whose freshness checks a flapping bus can satisfy.
-""", autokey=False)
+""", autokey=False, autobms=False)
 def s_bus_loss():
     L = ["mode 0 3 500"]
     L += cmd_train(1 * S, 3 * S, 20 * MS)
     # 1.5 s of nothing -- three freshness windows.
     L += cmd_train(4500 * MS, 8 * S, 20 * MS)
+    # The BMS goes with the bus too, for the same reason the key does: a
+    # pulled connector takes 0x440 and 0x411 with 0x051. Leaving them running
+    # through the silence would also put frames into it, which re-times the
+    # trailing abort (see _frame_span).
+    L += contactor_train(1 * S, 3 * S)
+    L += contactor_train(4500 * MS, 8 * S)
+    L += [soc(1 * S, 5000), soc(4500 * MS, 5000)]
     # The key train goes with the bus and comes back with it. The default
     # injection would have run 0x592 straight through the silence, which is a
     # bus the truck cannot produce -- 0x592 is the VCM's, and the VCM is the
@@ -340,11 +389,14 @@ that would catch a careless tightening of fresh_us.
 The key goes away with the bus and comes back with it, for the same reason as
 in bus-loss-latches -- and a 0.3 s absence is inside the key's freshness
 window too, so transmission never stops either.
-""", autokey=False)
+""", autokey=False, autobms=False)
 def s_bus_glitch():
     L = ["mode 0 3 500"]
     L += cmd_train(1 * S, 3 * S, 20 * MS)
     L += cmd_train(3300 * MS, 6 * S, 20 * MS)
+    L += contactor_train(1 * S, 3 * S)
+    L += contactor_train(3300 * MS, 6 * S)
+    L += [soc(1 * S, 5000), soc(3300 * MS, 5000)]
     L += key_train(1 * S, 3 * S, on=True)
     L += key_train(3300 * MS, 6 * S, on=True)
     L += ["end %d" % (7 * S)]
@@ -818,6 +870,113 @@ def s_key_never_seen():
 
 # ------------------------------------------------------------- plumbing --
 
+
+# --------------------------------------------------------------------------
+# Spec 6.2 / 7 condition 2 -- the SoC-valid marker (review A1, 2026-09-24).
+#
+# All four build their own 0x440/0x411 (autobms=False), because the marker is
+# the thing under test and an injected closed train would decide the answer.
+# The numbers are the corpus wake behaviour, not invented: the wake reading is
+# LOW by a median 13.8 % and corrects 0.32-1.15 s later, and in all 103 scanned
+# wakes where the contactors closed, SoC had already corrected before the first
+# closed state.
+
+
+@scenario("soc-wake-transient-ignored", """
+The BMS wake transient, which is what this rule exists for. The contactors are
+open, 0x411 comes up reading 18.77 % -- a real value from
+vtrux_20260513_174225_T4 against a real pack of 24.41 % -- holds it for 1.0 s,
+corrects, and only then do the contactors close.
+
+EXPECT: no low_soc latch, ever. Every sub-threshold reading arrives while the
+SoC-valid marker is clear and must not count toward the debounce; the trace
+shows socv=0 across them, then SOC_VALID a=1 at the close, and live only
+after that. Before A1 this capture latched low_soc for the whole drive and the
+golden blessed it.
+""", autobms=False)
+def s_soc_wake_transient():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 8 * S, 20 * MS)
+    # BMS wakes with the bus, contactors still open (0 = ALL_OPEN).
+    L += contactor_train(1 * S, 3 * S, stat=0)
+    L += periodic(1 * S, 2 * S, 50 * MS, lambda t: soc(t, 1877))
+    # ... corrects, still open. 24 readings of the false value have gone by.
+    L += periodic(2 * S, 3 * S, 50 * MS, lambda t: soc(t, 2441))
+    # ... and now the contactors walk their real sequence and close.
+    L += [contactor(3 * S, 2), contactor(3050 * MS, 5),
+          contactor(3100 * MS, 7), contactor(3150 * MS, 8),
+          contactor(3200 * MS, 9)]
+    L += contactor_train(3250 * MS, 8 * S, stat=11)
+    L += periodic(3 * S, 8 * S, 50 * MS, lambda t: soc(t, 2441))
+    L += ["end %d" % (9 * S)]
+    return sorted_directives(L)
+
+
+@scenario("soc-low-after-close", """
+A genuinely low pack, read after the contactors closed. The other half of A1:
+the rule must not have made the low-SoC release unreachable.
+
+EXPECT: live first, then low_soc latches after soc_debounce readings and
+transmission stops for good. Same readings as soc-wake-transient-ignored, in
+the other order relative to the close.
+""", autobms=False)
+def s_soc_low_after_close():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 8 * S, 20 * MS)
+    L += contactor_train(1 * S, 8 * S, stat=11)
+    L += periodic(1 * S, 3 * S, 50 * MS, lambda t: soc(t, 2441))
+    L += periodic(3 * S, 8 * S, 50 * MS, lambda t: soc(t, 1877))
+    L += ["end %d" % (9 * S)]
+    return sorted_directives(L)
+
+
+@scenario("soc-never-closed-never-live", """
+The contactors never report closed. A charging-only or LV-only wake, or a
+capture that starts after the drive.
+
+EXPECT: the inhibit NEVER goes live, and the block reads "SoC not yet valid
+(contactors)" rather than something that sounds like a fault. Nothing is
+transmitted and nothing aborts -- this is "not ready", not a failure. It costs
+no coverage: the engine is cranked by the HV inverter, which cannot run with
+the contactors open.
+""", autobms=False)
+def s_soc_never_closed():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 6 * S, 20 * MS)
+    L += contactor_train(1 * S, 6 * S, stat=7)    # WAIT_PRECHARGE, forever
+    L += periodic(1 * S, 6 * S, 50 * MS, lambda t: soc(t, 5000))
+    L += ["end %d" % (7 * S)]
+    return sorted_directives(L)
+
+
+@scenario("soc-marker-clears-on-bms-sleep", """
+The marker's staleness half, which is the end of every drive: the key goes
+off, the BMS stops, and the next thing it says is a wake reading.
+
+EXPECT: SOC_VALID a=0 within one freshness window of 0x440/0x411 stopping,
+then -- when they come back with the contactors still walking their sequence --
+the false low reading is ignored exactly as in soc-wake-transient-ignored. The
+0x051 and the key keep running throughout, so this isolates the BMS going away
+from the bus going away (which is bus-loss-latches).
+
+Note what does NOT happen here: the marker clearing does not end a live
+inhibit by itself. A stale interlock signal ending a live inhibit is spec 7
+trip 5, which is a separate rule.
+""", autobms=False)
+def s_soc_marker_clears():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 10 * S, 20 * MS)
+    L += contactor_train(1 * S, 4 * S, stat=11)
+    L += periodic(1 * S, 4 * S, 50 * MS, lambda t: soc(t, 5000))
+    # BMS asleep 4.0 -> 6.0 s. One freshness window in, the marker clears.
+    L += contactor_train(6 * S, 7 * S, stat=0)
+    L += periodic(6 * S, 7 * S, 50 * MS, lambda t: soc(t, 1500))
+    L += contactor_train(7 * S, 10 * S, stat=11)
+    L += periodic(7 * S, 10 * S, 50 * MS, lambda t: soc(t, 5000))
+    L += ["end %d" % (11 * S)]
+    return sorted_directives(L)
+
+
 def sorted_directives(lines):
     """Stable-sort directive lines by their timestamp field.
 
@@ -858,6 +1017,37 @@ def _frame_span(lines):
     return (min(ts), max(ts)) if ts else (0, 0)
 
 
+def add_autobms(lines):
+    """Span the scenario's traffic with a healthy, awake BMS. See scenario().
+
+    Both signals get a TRAIN, not a single frame, and that is not a detail: the
+    spec 6.2 marker clears when EITHER 0x411 or 0x440 stops being fresh, so one
+    0x411 at the start goes stale after 0.5 s and the marker then clears on
+    every tick and re-sets on every 0x440 -- a 20 Hz flap through the whole
+    trace. The first version of this function did exactly that.
+
+    The 0x411 train is SKIPPED when the scenario sends 0x411 of its own, which
+    is the only workable rule: a scenario that drives SoC owns that signal, and
+    an injected healthy train would reset low-soc-debounce's CONSECUTIVE
+    sub-threshold count every 50 ms so the release could never latch. Such a
+    scenario is then responsible for keeping 0x411 fresh for as long as it wants
+    the marker to hold, which is itself worth having visible in its trace.
+
+    The 0x411 frames are appended AFTER the 0x440 train so that, at a shared
+    timestamp, the stable sort puts the contactor frame first. That is the order
+    the marker needs: soc_valid is set by the 0x440, and only then does an
+    0x411 set soc_since_valid. 5000 raw = 50.00 %, well above the 21.00 %
+    threshold and not a value any scenario drives to.
+    """
+    t0, t1 = _frame_span(lines)
+    out = lines + contactor_train(t0, t1 + 1)
+    own_soc = any(len(p) > 2 and p[0] == "f" and p[2] == "411"
+                  for p in (ln.split() for ln in lines))
+    if not own_soc:
+        out += periodic(t0, t1 + 1, 50 * MS, lambda t: soc(t, 5000))
+    return sorted_directives(out)
+
+
 def add_autokey(lines):
     """Span the scenario's traffic with a key-ON train. See scenario().
 
@@ -883,8 +1073,10 @@ def main():
 
     os.makedirs(args.out, exist_ok=True)
     for name in sorted(SCEN):
-        why, fn, autokey = SCEN[name]
+        why, fn, autokey, autobms = SCEN[name]
         lines = fn()
+        if autobms:
+            lines = add_autobms(lines)
         if autokey:
             lines = add_autokey(lines)
         path = os.path.join(args.out, name + ".scn")
@@ -901,6 +1093,17 @@ def main():
                          "# reads off). Nothing below asserts on the key.\n#\n")
             else:
                 fh.write("# KEY: this scenario builds its own 0x592 traffic.\n#\n")
+            if autobms:
+                fh.write("# BMS: a 20 Hz 0x440 MAIN_PN_CLOSED_DRIVE train"
+                         " spanning the whole scenario,\n"
+                         "# and (unless 0x411 appears below) a 20 Hz 0x411 at"
+                         " 50.00%, were injected\n"
+                         "# automatically -- spec 6.2's SoC-valid marker gates"
+                         " going live. Nothing\n"
+                         "# below asserts on them.\n#\n")
+            else:
+                fh.write("# BMS: this scenario builds its own 0x440/0x411"
+                         " traffic.\n#\n")
             for ln in lines:
                 fh.write(ln + "\n")
         print("wrote %-40s %5d lines" % (path, len(lines)))

@@ -60,6 +60,12 @@ CASES = [
     # safe. Do not "simplify" it into a single Database.
     ("key",   "epri-pt-bus.dbc", "EPRI_HCU_Sensor_0592",
      ["IgnitionKeyState"]),
+    # Review A1. bcm_mainc_stat is an ENUMERATED signal -- the only one here --
+    # so it is the one case where the loop's decode_choices=False is doing real
+    # work: with choices on, cantools returns a NamedSignalValue and the int()
+    # below would raise rather than compare.
+    ("mainc", "epri-pt-bus.dbc", "EPRI_BCM_Data2_0440",
+     ["bcm_mainc_stat"]),
 ]
 
 

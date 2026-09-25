@@ -85,6 +85,16 @@ extern "C" {
 #define GI_RPM_ID           0x054   /* GENE_RotSpd */
 #define GI_FAULT_ID         0x617   /* VCM fault flag in B7 */
 /*
+ * BMS contactor state (spec 6.2, 7 condition 2; review A1). bcm_mainc_stat is
+ * a 4-bit enum at bit 2 of B0 -- confirmed against epri-pt-bus.dbc
+ * (EPRI_BCM_Data2_0440) with cantools over 15,188 real frames, and the two
+ * closed states are named there.
+ */
+#define GI_CONTACTOR_ID     0x440
+#define GI_MAINC_CLOSED_DRIVE   11  /* MAIN_PN_CLOSED_DRIVE */
+#define GI_MAINC_CLOSED_CHARGE  12  /* MAIN_P_CLOSED_CHARGE */
+#define GI_MAINC_NEVER_SEEN   0xFF
+/*
  * Spec 7.1: key state. EPRI_HCU_Sensor_0592, IgnitionKeyState, which the DBC
  * declares as `SG_ IgnitionKeyState : 4|1@1+` -- Intel start bit 4, one bit,
  * i.e. B0 bit 4. The VCM and the HCU are the same module under two names, so
@@ -241,6 +251,7 @@ typedef enum
     GI_EV_MODE,                 /* a = new mode, b = offset_us               */
     GI_EV_KEY,                  /* a = 1 on / 0 off (spec 7.1)               */
     GI_EV_KEY_CLEAR,            /* a = gi_abort_t, b = gi_disable_t cleared  */
+    GI_EV_SOC_VALID,            /* a = 1 set / 0 cleared, b = bcm_mainc_stat  */
 } gi_event_kind_t;
 
 #define GI_EVENT_MAX 16
@@ -284,6 +295,7 @@ typedef enum
     GI_BLOCK_VCM_REQ_ENGINE,
     GI_BLOCK_VCM_TORQUE,
     GI_BLOCK_SHUTDOWN_CMD,
+    GI_BLOCK_NO_SOC_VALID,      /* contactors not closed, or no 0x411 since */
     GI_BLOCK_DISABLED,          /* a section 6 release has latched */
     GI_BLOCK_ABORTED,           /* a section 7 abort has latched (spec 7.1) */
 } gi_block_t;
@@ -354,6 +366,35 @@ typedef struct
     uint32_t     soc_low_count;
     uint8_t      last_shift_pos;    /* 0xFF = never seen */
 
+    /*
+     * --- the SoC-valid marker (spec 6.2, review A1) ---
+     *
+     * WHY IT EXISTS. 0x411 is wrong for about a second every time the BMS
+     * wakes: 113 of 114 corpus wakes open on a false value, 112 of them LOW by
+     * a median 13.8 %, correcting 0.32-1.15 s later. A release that latches
+     * for the rest of the drive cannot be allowed to run on that. The spec
+     * used to call 0x411 "valid during startup"; that is withdrawn.
+     *
+     * WHY THE CONTACTORS ARE THE GATE and not a timer: in all 103 scanned
+     * wakes where the contactors closed, SoC had already corrected BEFORE the
+     * first closed state -- 0 after, smallest margin 0.07 s -- and the
+     * correction lands at ~1.03 s even where they never close, so the two are
+     * independent. Gating on the close makes a wake reading unusable by
+     * construction rather than by a timing window, and costs nothing: the
+     * engine is cranked by the HV generator inverter, so no start is possible
+     * before the contactors close and there is nothing to inhibit until then.
+     *
+     * soc_valid       -- set by a closed bcm_mainc_stat, cleared when 0x411 or
+     *                    0x440 stops being fresh (the BMS went away, so its
+     *                    next reading is a wake reading), on every key-on
+     *                    latch clear, and at init.
+     * soc_since_valid -- an 0x411 has arrived since it was set. The arm gate
+     *                    needs this as well, so the inhibit never goes live on
+     *                    a close with no reading behind it.
+     */
+    bool         soc_valid;
+    bool         soc_since_valid;
+
     /* --- non-latching shutdown suppression (section 6.3) --- */
     bool shutdown_suppressed;
 
@@ -394,11 +435,14 @@ typedef struct
     bool    have_fb;    int64_t seen_fb;
     bool    fb_ever;    /* 0x471 heard at least once THIS arm cycle */
     bool    have_rpm;   int64_t seen_rpm;
+    bool    have_soc;   int64_t seen_soc;
+    bool    have_cont;  int64_t seen_cont;
 
     int32_t vcm_torque;             /* 0x051 B1-B2, centred */
     int32_t vcm_rpm_ref;            /* 0x051 B3-B4, centred; -1 = engine off */
     int32_t gene_rpm;               /* 0x054 B0-B1, centred per the DBC */
     uint8_t vcm_fault;              /* 0x617 B7; 0xC8 = no fault */
+    uint8_t mainc_stat;             /* 0x440 bcm_mainc_stat; 0xFF = never seen */
 
     bool    rpm_over;   int64_t rpm_over_since;
     bool    have_err_window; int64_t err_window; uint32_t err_base;
@@ -503,6 +547,7 @@ void gi_on_rx_ok(gi_state_t *st);
  */
 int32_t gi_le16c(const uint8_t *d, int32_t zero);   /* LE 16-bit, centred */
 uint32_t gi_soc_raw(const uint8_t *d);              /* 0x411, 14-bit BE @ bit7 */
+uint8_t  gi_mainc_stat(const uint8_t *d);           /* 0x440 B0 bits 5:2 */
 uint8_t  gi_shift_pos(const uint8_t *d);            /* 0x639 B6 bits 6:4 */
 uint8_t  gi_ctr(const uint8_t *d);                  /* 0x051 B5 low nibble */
 bool     gi_key_bit(const uint8_t *d);              /* 0x592 B0 bit 4 */

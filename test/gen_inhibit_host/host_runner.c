@@ -113,17 +113,20 @@ static void state_line(const gi_state_t *st, int64_t now)
         && g_last.disable_code == st->disable_code
         && g_last.shutdown_suppressed == st->shutdown_suppressed
         && g_last.fb_ever == st->fb_ever
+        && g_last.soc_valid == st->soc_valid
+        && g_last.soc_since_valid == st->soc_since_valid
         && g_last_key == key)
     {
         return;
     }
     printf("%lld STATE mode=%d live=%d block=%s abort=%s latched=%d disabled=%d"
-           " dcode=%s susp=%d fb_ever=%d key=%d\n",
+           " dcode=%s susp=%d fb_ever=%d key=%d socv=%d socsince=%d\n",
            (long long)now, (int)st->mode, st->inhibit_live ? 1 : 0,
            gi_block_name(st->arm_block), gi_abort_name(st->abort_reason),
            st->abort_latched ? 1 : 0,
            st->disabled ? 1 : 0, gi_disable_name(st->disable_code),
-           st->shutdown_suppressed ? 1 : 0, st->fb_ever ? 1 : 0, key);
+           st->shutdown_suppressed ? 1 : 0, st->fb_ever ? 1 : 0, key,
+           st->soc_valid ? 1 : 0, st->soc_since_valid ? 1 : 0);
     g_last = *st;
     g_last_key = key;
     g_last_valid = 1;
@@ -365,7 +368,8 @@ int main(void)
 
     printf("%lld FINAL mode=%d live=%d tx_ok=%u tx_fail=%u other=%u"
            " ctr_ok=%u ctr_bad=%u rx_gap_n=%u resp_n=%u disabled=%d"
-           " dcode=%s block=%s abort=%s latched=%d soc=%u shift=%u key=%d\n",
+           " dcode=%s block=%s abort=%s latched=%d soc=%u shift=%u key=%d"
+           " socv=%d mainc=%u\n",
            (long long)now, (int)st.mode, st.inhibit_live ? 1 : 0,
            st.tx_ok, st.tx_fail, st.other_frames,
            st.ctr_steps_ok, st.ctr_steps_bad,
@@ -373,7 +377,8 @@ int main(void)
            gi_disable_name(st.disable_code), gi_block_name(st.arm_block),
            gi_abort_name(st.abort_reason), st.abort_latched ? 1 : 0,
            st.soc_raw, (unsigned)st.last_shift_pos,
-           gi_key_on(&st, now) ? 1 : 0);
+           gi_key_on(&st, now) ? 1 : 0,
+           st.soc_valid ? 1 : 0, (unsigned)st.mainc_stat);
 
     free(g_f);
     return 0;

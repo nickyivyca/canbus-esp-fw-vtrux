@@ -102,6 +102,7 @@ const char *gi_block_name(gi_block_t b)
     case GI_BLOCK_VCM_REQ_ENGINE:      return "VCM requesting engine";
     case GI_BLOCK_VCM_TORQUE:          return "VCM commanding torque";
     case GI_BLOCK_SHUTDOWN_CMD:        return "VCM commanding 0x10";
+    case GI_BLOCK_NO_SOC_VALID:        return "SoC not yet valid (contactors)";
     case GI_BLOCK_DISABLED:            return "latched disable";
     case GI_BLOCK_ABORTED:             return "latched abort (key-on clears)";
     }
@@ -148,6 +149,7 @@ const char *gi_event_name(gi_event_kind_t k)
     case GI_EV_MODE:                return "MODE";
     case GI_EV_KEY:                 return "KEY";
     case GI_EV_KEY_CLEAR:           return "KEY_CLEAR";
+    case GI_EV_SOC_VALID:           return "SOC_VALID";
     }
     return "?";
 }
@@ -222,6 +224,20 @@ void gi_hist_add(gi_hist_t *h, uint32_t us)
 int32_t gi_le16c(const uint8_t *d, int32_t zero)
 {
     return (int32_t)((uint32_t)d[0] | ((uint32_t)d[1] << 8)) - zero;
+}
+
+uint8_t gi_mainc_stat(const uint8_t *d)
+{
+    /*
+     * bcm_mainc_stat: 4-bit unsigned at bit 2 of B0, Intel (epri-pt-bus.dbc,
+     * EPRI_BCM_Data2_0440). Cross-checked against cantools over 15,188 real
+     * frames by artifacts/gen-inhibit/contactor_state_check.py, which also
+     * shows the whole close sequence the truck walks through:
+     * 0 ALL_OPEN -> 2 CLOSE_MAINR -> 5 CLOSE_MAINN -> 7 WAIT_PRECHARGE ->
+     * 8 CLOSE_MAINP -> 9 OPEN_MAINR -> 11 MAIN_PN_CLOSED_DRIVE, and
+     * 13 SHUTDOWN_REQUEST -> 14 ALL_OPEN_SHUTDOWN on the way down.
+     */
+    return (uint8_t)((d[0] >> 2) & 0x0F);
 }
 
 uint32_t gi_soc_raw(const uint8_t *d)
@@ -300,7 +316,10 @@ void gi_reset_stats(gi_state_t *st)
      * Spec 7: a new arm starts from a clean gate. Signal freshness is
      * deliberately NOT cleared -- it is a property of the bus, not of this
      * run, and dropping it would make every arm wait a fresh round before the
-     * interlocks could pass.
+     * interlocks could pass. The spec 6.2 SoC-valid marker is not cleared
+     * here for the same reason: it says whether the BMS has published since
+     * it last woke, which an arm cycle does not change. Contrast fb_ever
+     * below, which IS per-arm-cycle by definition.
      */
     st->inhibit_live = false;
     st->arm_block    = GI_BLOCK_GATE_NOT_EVALUATED;
@@ -346,6 +365,7 @@ void gi_init(gi_state_t *st, const gi_config_t *cfg)
     st->offset_us = 500;
     st->last_shift_pos = 0xFF;      /* never seen */
     st->vcm_fault = 0xC8;           /* no fault */
+    st->mainc_stat = GI_MAINC_NEVER_SEEN;
     st->disable_code = GI_DISABLE_NONE;
     gi_reset_stats(st);
     st->arm_block = GI_BLOCK_NOT_ARMED;
@@ -502,6 +522,29 @@ static bool arm_gate_ok(gi_state_t *st, int64_t now)
     if (st->shutdown_suppressed)
     {
         st->arm_block = GI_BLOCK_SHUTDOWN_CMD;
+        return false;
+    }
+    /*
+     * Spec 7 condition 2, spec 6.2 (review A1). The main contactors must
+     * report closed and an 0x411 must have arrived since, so the inhibit never
+     * goes live on a SoC the BMS has not published since waking.
+     *
+     * This costs nothing in coverage: the engine is cranked by the HV
+     * generator inverter, which cannot run with the contactors open, so there
+     * is no start to inhibit before the close. What it buys is that the
+     * low-SoC release -- which latches for the whole drive -- is never decided
+     * by a wake reading. Measured on vtrux_20260513_174225_T4: 0x411 comes
+     * back at 202.289 s reading 18.77 % against a real 24.41 %, and
+     * bcm_mainc_stat does not reach 11 until 203.459 s, so all 24 false
+     * readings fall outside the marker.
+     *
+     * The staleness half of the marker is maintained in interlock_runtime();
+     * the reason this is only a gate check is that the marker must also stop
+     * SoC from voting, which it does in disable_monitor().
+     */
+    if (!st->soc_valid || !st->soc_since_valid)
+    {
+        st->arm_block = GI_BLOCK_NO_SOC_VALID;
         return false;
     }
     st->arm_block = GI_BLOCK_NONE;
@@ -722,6 +765,48 @@ static void build_diag(const gi_state_t *st, const gi_bus_t *bus, int64_t now,
 
 /* ------------------------------------------------------------------ tick -- */
 
+/*
+ * The staleness half of the spec 6.2 SoC-valid marker.
+ *
+ * Why here and not in interlock_runtime(): this is not a trip. It runs in every
+ * non-OFF mode and whether or not the inhibit is live, because the marker's
+ * whole job is to say whether the next 0x411 can be believed -- a question that
+ * does not wait for the gate to pass. Trip 5 (spec 7, review B3) is the
+ * separate matter of a stale interlock ENDING a live inhibit.
+ *
+ * Only a signal that has been seen can stop being fresh. Spec 6.2 says the
+ * marker clears when 0x411 or 0x440 "stops being fresh", and never-seen never
+ * started: reading it the other way makes the marker set and clear in the same
+ * 15 ms at boot, which the replay in artifacts/gen-inhibit/
+ * contactor_state_check.py showed before this was settled.
+ */
+static void soc_marker_tick(gi_state_t *st, int64_t now, gi_events_t *ev)
+{
+    if (!st->soc_valid)
+    {
+        return;
+    }
+    const bool soc_gone  = st->have_soc
+                        && !gi_fresh(st, st->have_soc, st->seen_soc, now);
+    const bool cont_gone = st->have_cont
+                        && !gi_fresh(st, st->have_cont, st->seen_cont, now);
+    if (!soc_gone && !cont_gone)
+    {
+        return;
+    }
+    /*
+     * The BMS has gone away, so whatever it says next is a wake reading. On a
+     * key-off this is the ordinary case: measured on
+     * vtrux_20260513_174225_T4, 0x440 stops 0.45 s after the key reads 0 and
+     * 0x411 0.46 s after, and the marker clears 1.0 s later.
+     */
+    st->soc_valid = false;
+    st->soc_since_valid = false;
+    st->soc_low_count = 0;
+    ev_add(ev, now, GI_EV_SOC_VALID, 0, (int32_t)(soc_gone ? GI_SOC_ID
+                                                          : GI_CONTACTOR_ID), 0);
+}
+
 void gi_tick(gi_state_t *st, int64_t now, const gi_bus_t *bus,
              gi_emit_t *out, gi_events_t *ev)
 {
@@ -745,6 +830,8 @@ void gi_tick(gi_state_t *st, int64_t now, const gi_bus_t *bus,
         emit(out, &f);
         st->diag_page = (uint8_t)((st->diag_page + 1) % 3);
     }
+
+    soc_marker_tick(st, now, ev);
 
     /*
      * LOAD-BEARING INVARIANT: interlock_runtime() runs ONLY once the inhibit
@@ -861,14 +948,33 @@ static void disable_monitor(gi_state_t *st, uint32_t id, uint8_t dlc,
     else if (id == GI_SOC_ID && dlc >= 2)
     {
         uint32_t raw = gi_soc_raw(data);
+        /*
+         * Spec 6.2 (review A1): a reading only counts while the SoC-valid
+         * marker is set -- i.e. the main contactors have reported closed and
+         * the BMS has not slept since. Readings taken before that are BMS wake
+         * readings, wrong by a median 13.8 % and low in 112 of 113 corpus
+         * wakes, and this release latches for the rest of the drive.
+         *
+         * The reading is still recorded as soc_raw for telemetry: hiding what
+         * the BMS said would make a log unreadable. It just does not vote.
+         */
+        st->soc_raw = raw ? raw : st->soc_raw;
+        if (!st->soc_valid)
+        {
+            return;
+        }
         if (raw == 0)
         {
-            /* Startup sentinel, not 0 % -- treat as not-yet-valid. */
+            /*
+             * Startup sentinel, not 0 % -- treat as not-yet-valid. Kept even
+             * though the A1 scan found no raw 0 at any of 114 wakes: a reading
+             * of exactly 0 is not evidence of an empty pack whatever produced
+             * it, and the marker now covers the case this was guessing at.
+             */
             st->soc_low_count = 0;
         }
         else
         {
-            st->soc_raw = raw;
             if (raw < st->cfg.soc_min_raw)
             {
                 if (++st->soc_low_count >= st->cfg.soc_debounce)
@@ -957,6 +1063,25 @@ static void key_monitor(gi_state_t *st, uint32_t id, uint8_t dlc,
     st->disable_code  = GI_DISABLE_NONE;
     st->soc_low_count = 0;
 
+    /*
+     * Spec 6.2: the SoC-valid marker is cleared on every key-on latch clear.
+     *
+     * Deliberately inside the "something was latched" branch, which is the
+     * literal rule and also the right behaviour. A re-key where the BMS
+     * actually slept has already cleared the marker through staleness
+     * (soc_marker_tick()); a re-key quick enough that it did not sleep leaves
+     * genuinely valid readings, and spec 6.2 says the contactors merely
+     * opening does not invalidate them. What this covers is the case where a
+     * latch is being lifted: the device is about to re-enter the gate, and it
+     * must not do so on a reading it accepted before the key cycle.
+     *
+     * The cost when the contactors are still closed is about 100 ms -- the
+     * marker re-sets on the next 0x440 (~20 Hz) and soc_since_valid on the
+     * next 0x411 (~20 Hz).
+     */
+    st->soc_valid       = false;
+    st->soc_since_valid = false;
+
     st->inhibit_live  = false;
     st->arm_block     = GI_BLOCK_GATE_NOT_EVALUATED;
     st->fb_ever       = false;
@@ -973,7 +1098,8 @@ static void key_monitor(gi_state_t *st, uint32_t id, uint8_t dlc,
  * the request.
  */
 static void interlock_monitor(gi_state_t *st, uint32_t id, uint8_t dlc,
-                              const uint8_t *data, int64_t now)
+                              const uint8_t *data, int64_t now,
+                              gi_events_t *ev)
 {
     switch (id)
     {
@@ -1004,6 +1130,47 @@ static void interlock_monitor(gi_state_t *st, uint32_t id, uint8_t dlc,
         if (dlc >= 8)
         {
             st->vcm_fault = data[7];
+        }
+        break;
+    case GI_SOC_ID:
+        /*
+         * Freshness only; the value is disable_monitor()'s business. Kept here
+         * so that "we have heard the BMS recently" is answerable without
+         * reference to whether a release has latched -- disable_monitor()
+         * returns early once one has, and the spec 6.2 marker and spec 7
+         * trip 5 both need the freshness regardless.
+         */
+        st->have_soc = true;
+        st->seen_soc = now;
+        if (st->soc_valid)
+        {
+            st->soc_since_valid = true;
+        }
+        break;
+    case GI_CONTACTOR_ID:
+        st->have_cont = true;
+        st->seen_cont = now;
+        if (dlc >= 1)
+        {
+            st->mainc_stat = gi_mainc_stat(data);
+            /*
+             * Spec 6.2: the marker is SET by a closed reading. Only SET here
+             * -- clearing is staleness, which is a property of time and so
+             * belongs in the tick, and the key-on clear, which is 7.1's.
+             *
+             * soc_since_valid is armed false on the SET so the arm gate cannot
+             * pass on a close with no reading behind it. The first 0x411 after
+             * the close is what sets it, in disable_monitor().
+             */
+            if ((st->mainc_stat == GI_MAINC_CLOSED_DRIVE
+                 || st->mainc_stat == GI_MAINC_CLOSED_CHARGE)
+                && !st->soc_valid)
+            {
+                st->soc_valid = true;
+                st->soc_since_valid = false;
+                st->soc_low_count = 0;
+                ev_add(ev, now, GI_EV_SOC_VALID, 1, (int32_t)st->mainc_stat, 0);
+            }
         }
         break;
     default:
@@ -1099,7 +1266,7 @@ void gi_on_frame(gi_state_t *st, uint32_t id, uint8_t dlc, const uint8_t *data,
      * as far as the inhibit is concerned, and they are exactly the ones the
      * safety trips depend on.
      */
-    interlock_monitor(st, id, dlc, data, now);
+    interlock_monitor(st, id, dlc, data, now, ev);
 
     if (id != GI_VCM_ID)
     {

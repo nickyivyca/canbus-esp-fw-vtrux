@@ -1,14 +1,18 @@
-# host_runner: 95343 frames, 1 directives, t=[0,221000000]
-0 STATE mode=0 live=0 block=not armed abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0
+# host_runner: 99736 frames, 1 directives, t=[0,221000000]
+0 STATE mode=0 live=0 block=not armed abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
 0 EV MODE a=3 b=500 c=0
-0 STATE mode=3 live=0 block=gate not yet evaluated abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0
-0 STATE mode=3 live=0 block=no fresh 0x051 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0
-6000 STATE mode=3 live=0 block=no fresh 0x051 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=0
-7000 STATE mode=3 live=0 block=generator running abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=0
+0 STATE mode=3 live=0 block=gate not yet evaluated abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
+0 STATE mode=3 live=0 block=no fresh 0x051 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
+3000 EV SOC_VALID a=1 b=11 c=0
+3000 STATE mode=3 live=0 block=no fresh 0x051 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=1 socsince=0
+6000 STATE mode=3 live=0 block=no fresh 0x051 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=1 socsince=0
+7000 STATE mode=3 live=0 block=generator running abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=1 socsince=0
+19000 STATE mode=3 live=0 block=generator running abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=1 socsince=1
 68000 EV KEY a=1 b=0 c=0
-68000 STATE mode=3 live=0 block=generator running abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1
+68000 STATE mode=3 live=0 block=generator running abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
 92058000 EV INHIBIT_LIVE a=0 b=0 c=0
-92058000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1
+92058000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
+220476000 EV SOC_VALID a=0 b=1041 c=0
 220476000 EV ABORT a=3 b=0 c=0
-220476000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=0
-221076000 FINAL mode=3 live=0 tx_ok=12779 tx_fail=0 other=73360 ctr_ok=21982 ctr_bad=0 rx_gap_n=21982 resp_n=12779 disabled=0 dcode= block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 soc=7722 shift=3 key=0
+220476000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=0 socsince=0
+221076000 FINAL mode=3 live=0 tx_ok=12779 tx_fail=0 other=77753 ctr_ok=21982 ctr_bad=0 rx_gap_n=21982 resp_n=12779 disabled=0 dcode= block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 soc=7722 shift=3 key=0 socv=0 mainc=11

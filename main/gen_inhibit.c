@@ -208,6 +208,20 @@ static void report_events(const gi_events_t *ev)
                      e->a ? "ON -- transmission permitted"
                           : "OFF -- transmission gated", GI_KEY_ID);
             break;
+        case GI_EV_SOC_VALID:
+            if (e->a)
+            {
+                ESP_LOGW(TAG, "SoC valid -- contactors closed "
+                              "(0x%03X bcm_mainc_stat = %ld)",
+                         GI_CONTACTOR_ID, (long)e->b);
+            }
+            else
+            {
+                ESP_LOGW(TAG, "SoC no longer valid -- 0x%03lX went stale; "
+                              "readings ignored until the contactors close "
+                              "again", (unsigned long)e->b);
+            }
+            break;
         case GI_EV_KEY_CLEAR:
             ESP_LOGW(TAG, "key-on cleared latches: abort '%s', disable '%s'"
                           " -- re-entering the arm gate",
@@ -600,7 +614,10 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
                      "\"inhibit_live\":%s,\"arm_block\":\"%s\","
                      "\"abort_reason\":\"%s\",\"abort_latched\":%s,"
                      "\"key_on\":%s,\"key_fresh\":%s,\"gene_rpm\":%ld,"
-                     "\"vcm_torque\":%ld,\"vcm_fault\":%u,",
+                     "\"vcm_torque\":%ld,\"vcm_fault\":%u,"
+                     "\"soc_valid\":%s,\"soc_since_valid\":%s,"
+                     "\"mainc_stat\":%u,\"soc_fresh\":%s,"
+                     "\"contactor_fresh\":%s,",
                      (int)st->mode, (unsigned long)st->offset_us, GI_PROBE_ID,
                      (unsigned long)st->tx_ok, (unsigned long)st->tx_fail,
                      (unsigned long)st->other_frames,
@@ -627,7 +644,21 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
                      gi_fresh(st, st->have_key, st->seen_key, t_now)
                          ? "true" : "false",
                      (long)st->gene_rpm,
-                     (long)st->vcm_torque, (unsigned)st->vcm_fault);
+                     (long)st->vcm_torque, (unsigned)st->vcm_fault,
+                     /*
+                      * Spec 11, spec 6.2: the SoC-valid marker, and the two
+                      * freshness facts it is made of. Reported apart for the
+                      * same reason key_on and key_fresh are: "the contactors
+                      * have not closed" and "the BMS went quiet" both read as
+                      * an invalid marker and are different problems.
+                      */
+                     st->soc_valid ? "true" : "false",
+                     st->soc_since_valid ? "true" : "false",
+                     (unsigned)st->mainc_stat,
+                     gi_fresh(st, st->have_soc, st->seen_soc, t_now)
+                         ? "true" : "false",
+                     gi_fresh(st, st->have_cont, st->seen_cont, t_now)
+                         ? "true" : "false");
 
     n += hist_json(&st->rx_gap, "rx_gap", buf + n, buflen - n);
     if (n < buflen) n += snprintf(buf + n, buflen - n, ",");

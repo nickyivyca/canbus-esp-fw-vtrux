@@ -66,6 +66,11 @@ int main(void)
             /* 0x639: shift_lever_pos, B6 bits 6:4. */
             printf("%u\n", (unsigned)gi_shift_pos(d));
         }
+        else if (!strcmp(kind, "mainc"))
+        {
+            /* 0x440: bcm_mainc_stat, 4 bits at bit 2 of B0 (review A1). */
+            printf("%u\n", (unsigned)gi_mainc_stat(d));
+        }
         else if (!strcmp(kind, "key"))
         {
             /* 0x592: IgnitionKeyState, B0 bit 4 (spec 7.1). */
