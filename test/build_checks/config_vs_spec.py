@@ -31,19 +31,24 @@ PROBE = os.path.join(HERE, "config_probe")
 EXPECTED = [
     ("soc_min_raw", 2100, "6.2",
      "released the moment bms_soc_hires goes below 21.00 %"),
-    ("soc_debounce", 5, "6.2",
-     "the reading must persist across a debounce window (count not stated; 5 "
-     "is the implemented value)"),
+    # CODE-ONLY. Spec 6.2 requires a debounce and does not give a count, so
+    # there is nothing to compare against and this row must not pretend there
+    # is. Found by the reviewing session on 2026-09-25: the row cited 6.2 and
+    # printed "spec says 5", which is precisely the over-claim this check
+    # exists to prevent -- a traceability table whose rows do not all trace is
+    # worse than none, because the ones that do are no longer distinguishable.
+    ("soc_debounce", None, "6.2 (no number stated)",
+     "must persist across a debounce window; 5 is code-only"),
     ("start_abort_rpm", 300, "7 trip 4",
      "GENE_RotSpd >= 300 rpm"),
     ("rpm_debounce_us", 300000, "7 trip 4",
      "sustained for 0.3 s"),
     ("fresh_us", 500000, "7",
      "received within fresh_us (0.5 s) of now"),
-    ("err_window_us", 10000000, "7",
-     "10 errors in 10 s -- SEE BELOW, this was code-only until 2026-09-25"),
-    ("err_min_trip", 10, "7",
-     "as above"),
+    ("err_window_us", 10000000, "7 error-frame para",
+     "10 errors in 10 s"),
+    ("err_min_trip", 10, "7 error-frame para",
+     "10 errors in 10 s"),
     ("diag_period_ms", 300, "10",
      "round-robin at ~1 Hz each over four pages"),
     ("max_rx_errors", 20, "7",
@@ -66,18 +71,26 @@ def main():
         print("the probe printed nothing parseable -- this run proved nothing")
         return 2
 
-    bad = 0
-    print("%-18s %12s %12s   spec" % ("field", "built", "spec says"))
+    bad = untraced = 0
+    print("%-18s %12s %12s   %-22s %s"
+          % ("field", "built", "spec says", "section", "what it says"))
     for field, want, section, why in EXPECTED:
         have = got.get(field)
         if have is None:
-            print("%-18s %12s %12d   %-8s MISSING FROM THE BUILD"
-                  % (field, "-", want, section))
+            print("%-18s %12s %12s   %-22s MISSING FROM THE BUILD"
+                  % (field, "-", want if want is not None else "-", section))
             bad += 1
             continue
+        if want is None:
+            # No number in the spec: report the built value and say so. Never
+            # print a "spec says" column for a value the spec does not state.
+            untraced += 1
+            print("%-18s %12d %12s   %-22s %s"
+                  % (field, have, "CODE-ONLY", section, why[:40]))
+            continue
         mark = "" if have == want else "   <-- DISAGREES"
-        print("%-18s %12d %12d   %-8s %s%s"
-              % (field, have, want, section, why[:44], mark))
+        print("%-18s %12d %12d   %-22s %s%s"
+              % (field, have, want, section, why[:40], mark))
         if have != want:
             bad += 1
 
@@ -92,7 +105,11 @@ def main():
               "without the spec, or the spec changed without the code -- both "
               "are the bug this check exists for." % bad)
     else:
-        print("every configured value matches the section it cites")
+        print("every value that HAS a spec number matches the section it cites")
+    if untraced:
+        print("%d value(s) are code-only: the spec requires the behaviour but "
+              "states no number, so nothing here can check them. That is a gap "
+              "in the spec, not in this script." % untraced)
     return 1 if bad else 0
 
 
