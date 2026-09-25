@@ -165,7 +165,7 @@ extern "C" {
  * 2: added diag_flags bit4 (shutdown suppression) and bit5 (inhibit live).
  * 3: added diag_flags bit6 (key on, fresh) and bit7 (latched by a section 7
  *    abort). No field moved, so a v2 decoder still reads everything else.
- * 4: PASSIVE (diag_mode 4) and the new 0x7F4 page -- abort reason, the spec
+ * 4: PASSIVE (diag_mode 4) and the new 0x7F8 page -- abort reason, the spec
  *    6.2 SoC-valid marker, the would-transmit count and tx_queued_behind.
  *    Again no field moved; 0x7F1-0x7F3 are byte-identical to schema 3.
  *

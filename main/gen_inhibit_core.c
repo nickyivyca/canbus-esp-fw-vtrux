@@ -965,7 +965,7 @@ static void build_diag(const gi_state_t *st, const gi_bus_t *bus, int64_t now,
         f->data[6] = (uint8_t)st->soc_raw;          /* soc_x100, LE */
         f->data[7] = (uint8_t)(st->soc_raw >> 8);
     }
-    else if (which == 3)    /* STATUS2 -> 0x7F4 (schema 4) */
+    else if (which == 3)    /* STATUS2 -> 0x7F8 (schema 4) */
     {
         f->id = GI_DIAG_ID_STATUS2;
         /*
