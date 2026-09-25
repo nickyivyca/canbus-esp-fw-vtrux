@@ -174,6 +174,17 @@ static void teardown(void)
 {
     gen_inhibit_set_mode(GEN_INHIBIT_OFF, 500);
     ft_run(100000);
+    /*
+     * SPEC 8, CHECKED IN EVERY CASE. The driver must never be torn down while a
+     * thread is inside twai_receive() -- on the device that frees the memory the
+     * blocked call is using, and gen_inhibit_quiesce() exists to make it
+     * impossible. The model cannot crash, so the fake counts the violations
+     * instead; see ft_unsafe_teardowns(). Removing the quiesce wait left this
+     * suite green until the fake learned to watch for it.
+     */
+    CHECK(ft_unsafe_teardowns() == 0,
+          "%d teardown(s) happened while a thread was inside twai_receive() -- "
+          "the spec 8 handshake did not hold", ft_unsafe_teardowns());
     ft_stop_worker();
 }
 
@@ -339,20 +350,21 @@ static void case_inhibit_behind_diag(void)
      * bit 632af32 credited to the inhibit -- which is still in flight.
      */
     /*
-     * Asymmetric, and THE NUMBERS MATTER. The diag has to complete AFTER the
-     * inhibit is queued and BEFORE the inhibit itself completes -- that is the
-     * only window in which a latched alert shared by both can be
-     * mis-attributed.
+     * NO TIMING TO TUNE. Earlier versions of this case tried to arrange for the
+     * diag to complete inside a window while the inhibit was in flight, and it
+     * took four attempts -- each one a plausible-looking arrangement that let
+     * the alert-based mutation survive, and one of which broke again the moment
+     * the fake's receive model was made faithful. A case whose sensitivity
+     * depends on three durations lining up is a case that will silently stop
+     * testing.
      *
-     * Too fast a diag (1 ms, tried first) completes before the 0x051 even
-     * arrives, so the per-iteration poll consumes its alert while nothing is
-     * outstanding and there is nothing left to mis-credit -- which is why the
-     * alert-based mutation survived this case twice. Too slow and it never
-     * completes inside the window at all. 30 ms against the inhibit's 400 ms
-     * puts the diag's completion squarely inside our frame's flight.
+     * So: the inhibit is STALLED -- it never completes, whatever the clock does
+     * -- while the diag ahead of it completes normally. The diag's
+     * TWAI_ALERT_TX_SUCCESS is then latched with our frame demonstrably
+     * unsent, which is the whole condition, and it holds for any air time.
      */
-    ft_set_air_time(30000);
-    ft_set_air_time_id(0x051, 400000);
+    ft_set_air_time(200000);     /* the diag stays in flight for 200 ms */
+    ft_stall_id(0x051, 1);       /* ours never completes, whatever the clock does */
 
     /*
      * ONE FRAME PER STEP, checking after each, so the 0x051 goes in within a
@@ -402,17 +414,27 @@ static void case_inhibit_behind_diag(void)
     feed(0x051, cmd, 6, 1000);      /* queues BEHIND the in-flight diag */
 
     /*
-     * Now let the diag complete -- latching its alert -- while our frame is
-     * still in the queue behind it. The step hook watches the invariant
-     * throughout; this checks the same thing at the moment it matters.
+     * Let the diag complete -- latching its alert -- with our frame stalled
+     * behind it. The step hook watches the invariant throughout; these check
+     * the same thing where it matters.
      */
-    ft_run(60000);
+    ft_run(500000);
     CHECK(ft_wire_count_id(0x051) == wire_before,
-          "our frame completed during the window, so the diag's completion was "
-          "not observed while ours was outstanding");
+          "the stall did not take: our frame completed, so the diag's "
+          "completion was not observed while ours was outstanding");
     CHECK(json_u32("\"tx_ok\":") == before,
           "tx_ok moved %u -> %u on the DIAG frame's completion while our frame "
           "was still queued behind it", before, json_u32("\"tx_ok\":"));
+    /*
+     * Spec 5's hazard is happening RIGHT HERE -- our frame went into the
+     * controller behind an unfinished one -- so the counter that exists to
+     * measure it on the full-replay bench must have moved. A silent zero there
+     * would read as "hazard absent", which is the worst possible way for a
+     * measurement to fail.
+     */
+    CHECK(json_u32("\"tx_queued_behind\":") > 0,
+          "tx_queued_behind is still 0 although this case queued an inhibit "
+          "behind an in-flight diag frame: the spec 5 reading is dead");
 
     ft_run(600000);
     check_tx_ok_invariant("case 4");
@@ -673,6 +695,96 @@ static void case_quiesce_names_itself(void)
     teardown();
 }
 
+
+/*
+ * CASE 11 -- OBSERVE must be hardware listen-only (spec 3, spec 13 item 1).
+ *
+ * The TWAI API exposes no read-back of the controller's mode, so what
+ * gen_inhibit.c checks is the value handed to twai_driver_install() -- and the
+ * fake records exactly that. The hardware test (12.4: the WiCAN must be the
+ * only possible ACKer) is still needed and this does not replace it; what this
+ * catches is the forcing LOGIC being wrong, which is host-testable and was not
+ * tested.
+ */
+static void case_observe_is_listen_only(void)
+{
+    printf("  case 11: OBSERVE installs the driver listen-only\n");
+    setup();
+
+    gen_inhibit_set_mode(GEN_INHIBIT_OBSERVE, 500);
+    ft_run(50000);
+    CHECK(ft_installed_mode() == (int)TWAI_MODE_LISTEN_ONLY,
+          "OBSERVE installed the driver in mode %d, not listen-only (%d)",
+          ft_installed_mode(), (int)TWAI_MODE_LISTEN_ONLY);
+
+    /* And nothing may be queued: in listen-only even diag cannot go out. */
+    const int n = ft_sent_count();
+    uint8_t cmd[6];
+    for (int i = 0; i < 10; i++)
+    {
+        memcpy(cmd, VCM, sizeof(cmd));
+        cmd[5] = (uint8_t)i;
+        feed(0x051, cmd, 6, 20000);
+    }
+    CHECK(ft_sent_count() == n,
+          "OBSERVE queued %d frames into the driver", ft_sent_count() - n);
+
+    /* Leaving OBSERVE must restore a transmitting mode. */
+    gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
+    ft_run(50000);
+    CHECK(ft_installed_mode() == (int)TWAI_MODE_NORMAL,
+          "leaving OBSERVE left the driver in mode %d, not normal",
+          ft_installed_mode());
+    teardown();
+}
+
+/*
+ * CASE 12 -- the probe offset limit (spec 3, spec 12.4).
+ *
+ * A probe scheduled beyond the VCM's shortest observed inter-frame gap
+ * (4.69 ms) would land after the next genuine frame and make the measurement
+ * meaningless, so anything above 4000 us is refused. Listed in 12.4 as a host
+ * mock-HAL check; it had none.
+ */
+static void case_offset_limit(void)
+{
+    printf("  case 12: an offset above 4000 us is refused\n");
+    setup();
+
+    CHECK(gen_inhibit_set_mode(GEN_INHIBIT_RESPOND, 4000) == ESP_OK,
+          "4000 us was refused, but it is the limit and must be accepted");
+    CHECK(gen_inhibit_set_mode(GEN_INHIBIT_RESPOND, 4001) != ESP_OK,
+          "4001 us was accepted: a probe beyond the VCM's 4.69 ms gap would "
+          "land after the next genuine frame");
+    CHECK(gen_inhibit_set_mode(GEN_INHIBIT_RESPOND, 40000) != ESP_OK,
+          "40000 us was accepted");
+    teardown();
+}
+
+/*
+ * CASE 13 -- a driver that will not enable the TX alerts must not be armed.
+ *
+ * can.c installs with TWAI_ALERT_NONE, so arming turns on TX_SUCCESS/TX_FAILED
+ * itself. If that fails and the arm proceeds anyway, nothing ever observes a
+ * completion: every frame looks outstanding and the first VCM frame after it
+ * aborts TX_LATE. On the truck that is an inhibitor that stands down
+ * immediately, every time, for a reason no log would explain.
+ */
+static void case_arm_refused_without_alerts(void)
+{
+    printf("  case 13: no alerts, no arm\n");
+    setup();
+
+    ft_fail_alerts_config(true);
+    const esp_err_t err = gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
+    ft_run(20000);
+
+    CHECK(err != ESP_OK,
+          "the arm succeeded although the TX alerts could not be enabled");
+    ft_fail_alerts_config(false);
+    teardown();
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);   /* a hang must still show its trace */
@@ -687,6 +799,9 @@ int main(void)
     case_late_behind_diag_trips();
     case_diag_defers_to_pending();
     case_quiesce_names_itself();
+    case_observe_is_listen_only();
+    case_offset_limit();
+    case_arm_refused_without_alerts();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
     return g_fail ? 1 : 0;

@@ -97,6 +97,42 @@ only clears a stale `TX_FAILED`, itself unreachable at `ss = 0`.
 which also matches the harness's own `twai_receive failed: ESP_FAIL` logging —
 so a surviving mutation was reported as caught.
 
+### A second round found five more, after all seven were being caught
+
+N1-N7, against `bea8d51`. **N2, N3, N4, N5 and N6 survived.** That is the
+pattern worth internalising: every round of "all mutations caught" has been
+followed by a round that found more. **A green mutation run means "nothing in
+THIS set survives", never "the suite is adequate."**
+
+- **N5** was the one to fix first: the spec 8 quiesce handshake -- the
+  use-after-free guard -- could be deleted freely. Closing it needed a
+  **model-fidelity fix, not a new case**: the fake's `twai_receive()` returned
+  as soon as it got the CPU back, so the worker left the driver on any test
+  step. On the device it stays blocked until a frame arrives or the timeout
+  expires, and nothing a lower-priority task does shortens that. With the
+  eager model, `can_disable()`'s own short delay let the worker slip out and
+  park, so the teardown never saw anyone inside. Same class as the
+  task-handle finding: **a mock that is more forgiving than the hardware hides
+  exactly the bugs the hardware would punish.**
+- **N4** (OBSERVE not listen-only) and **N3** (an alerts-config failure ignored
+  at arm) needed the fake to record the install mode and to be able to fail
+  `twai_reconfigure_alerts()`.
+- **N2** (`behind` forced false) killed spec 5's `tx_queued_behind` reading
+  silently — a zero there reads as "hazard absent", which is the worst way for
+  a measurement to fail.
+- **N6** was simply untested: the 4000 us offset limit, listed in spec 12.4.
+
+### And once, all fourteen were "caught" while the baseline was red
+
+Fixing N5's fidelity broke case 4's timing, so the baseline failed two
+assertions — and every mutant then failed the same two. `mutate.py` now refuses
+to run on a red baseline. **A mutation score computed against a failing
+baseline is meaningless and looks perfect.**
+
+Case 4 was consequently rebuilt to be **timing-independent**: the inhibit is
+stalled so it can never complete, and only the diag's air time matters. Four
+earlier versions each depended on three durations lining up, and each broke.
+
 ### Four of the seven survived the first version of this suite
 
 Including **M1, the exact bug E1 was written for**. Each reason is worth

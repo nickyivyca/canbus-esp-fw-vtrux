@@ -108,6 +108,48 @@ typedef struct
     bool     failed;
 } ft_frame_t;
 
+/*
+ * SPEC 8: was the driver torn down while a thread was inside twai_receive()?
+ *
+ * On the device that is a use-after-free -- twai_driver_uninstall() frees the
+ * memory the blocked call is using -- and gen_inhibit_quiesce() exists to make
+ * it impossible by waiting for the worker to park. A non-concurrent model
+ * cannot produce the crash, but it CAN detect the violation, which is the
+ * useful half: the fake knows whether anyone is inside the driver and records
+ * every teardown that happened anyway.
+ *
+ * Non-zero means the handshake was skipped. Removing the wait in
+ * gen_inhibit_quiesce() left E1 green until this existed.
+ */
+int ft_unsafe_teardowns(void);
+
+/* The mode twai_driver_install() was last given (spec 3, OBSERVE). */
+int ft_installed_mode(void);
+
+/* Make twai_reconfigure_alerts() fail, as a driver that will not arm would. */
+void ft_fail_alerts_config(bool fail);
+
+/*
+ * SPEC 8: was the driver torn down while a thread was inside twai_receive()?
+ *
+ * On the device that is a use-after-free -- twai_driver_uninstall() frees the
+ * memory the blocked call is using -- and gen_inhibit_quiesce() exists to make
+ * it impossible by waiting for the worker to park. A non-concurrent model
+ * cannot produce the crash, but it CAN detect the violation, which is the
+ * useful half: the fake knows whether anyone is inside the driver and records
+ * every teardown that happened anyway.
+ *
+ * Non-zero means the handshake was skipped. Removing the wait in
+ * gen_inhibit_quiesce() left E1 green until this existed.
+ */
+int ft_unsafe_teardowns(void);
+
+/* The mode twai_driver_install() was last given (spec 3, OBSERVE). */
+int ft_installed_mode(void);
+
+/* Make twai_reconfigure_alerts() fail, as a driver that will not arm would. */
+void ft_fail_alerts_config(bool fail);
+
 int              ft_sent_count(void);
 const ft_frame_t *ft_sent(int i);
 

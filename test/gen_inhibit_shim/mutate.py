@@ -13,6 +13,19 @@ exact defect it was written to catch.
   M5  the receive-error self_off reason removed
   M6  PASSIVE allowed to reach build_inhibit()
   M7  the pre-queue alert drain removed
+  N1  completion off-by-one, msgs_to_tx == 0 -> <= 1
+  N2  `behind` forced false, so spec 5's tx_queued_behind never counts
+  N3  a twai_reconfigure_alerts() failure ignored at arm
+  N4  OBSERVE not forced listen-only
+  N5  the spec 8 quiesce handshake does not wait -- the use-after-free guard
+  N6  the probe offset limit relaxed from 4000 to 40000 us
+  N7  the TX_LATE test removed from the core
+
+N1-N7 were added by the reviewing session in a SECOND round against bea8d51,
+after M1-M6 were all being caught. Five of them survived: N2, N3, N4, N5 and
+N6. That is the pattern worth noticing -- each round of "all mutations caught"
+has been followed by a round that found more, so a green mutation run means
+"nothing in THIS set survives", never "the suite is adequate".
 
 M7 is EXPECTED to survive and that is documented in gen_inhibit.c: with
 completion decided by msgs_to_tx == 0 the drain only clears a stale TX_FAILED,
@@ -68,7 +81,45 @@ MUT = {
   "            st->would_tx++;\n            return;", "            st->would_tx++;")]),
  "M7_no_predrain": ("main/gen_inhibit.c", [(
   "            (void)twai_read_alerts(&stale, 0);", "            (void)stale;")]),
+ "N1_completion_off_by_one": ("main/gen_inhibit.c", [(
+  "    if (info.msgs_to_tx == 0)", "    if (info.msgs_to_tx <= 1)")]),
+ "N2_behind_forced_false": ("main/gen_inhibit.c", [(
+  "                behind = (before.msgs_to_tx > 0);", "                behind = false;")]),
+ "N3_alerts_config_failure_ignored": ("main/gen_inhibit.c", [(
+  """        if (twai_reconfigure_alerts(TWAI_ALERT_TX_SUCCESS | TWAI_ALERT_TX_FAILED,
+                                    NULL) != ESP_OK)
+        {
+            ESP_LOGE(TAG, "cannot arm: TX alerts would not enable");
+            return ESP_ERR_INVALID_STATE;
+        }""",
+  """        (void)twai_reconfigure_alerts(TWAI_ALERT_TX_SUCCESS | TWAI_ALERT_TX_FAILED,
+                                      NULL);""")]),
+ "N4_observe_not_listen_only": ("main/gen_inhibit.c", [(
+  "        const bool want_listen_only = (mode == GEN_INHIBIT_OBSERVE);",
+  "        const bool want_listen_only = false;")]),
+ "N5_quiesce_does_not_wait": ("main/gen_inhibit.c", [(
+  "    for (int i = 0; i < 100 && !s_parked; i++)",
+  "    for (int i = 0; i < 0 && !s_parked; i++)")]),
+ "N6_offset_limit_relaxed": ("main/gen_inhibit.c", [(
+  "    if (offset_us > 4000)", "    if (offset_us > 40000)")]),
+ "N7_no_tx_late": ("main/gen_inhibit_core.c", [(
+  "    if (st->tx_pending && st->inhibit_live)", "    if (0)")]),
 }
+# A GREEN MUTATION RUN MEANS NOTHING IF THE BASELINE IS RED: every mutant is
+# then reported caught by a failure that was already there. That happened once,
+# with all fourteen "caught" and two baseline assertions failing.
+_t = os.path.join(BASE, "test/gen_inhibit_shim")
+_b = subprocess.run("make -s && ./shim_test", shell=True, cwd=_t,
+                    capture_output=True, text=True)
+if _b.returncode:
+    print("BASELINE IS RED (rc=%d) -- fix it before reading anything below"
+          % _b.returncode)
+    for _l in _b.stdout.splitlines():
+        if _l.strip().startswith("FAIL:"):
+            print("   ", _l.strip()[:140])
+    sys.exit(2)
+print("baseline green")
+
 for name, (f, reps) in MUT.items():
     d = os.path.expanduser("~/gi_mut")
     shutil.rmtree(d, ignore_errors=True); shutil.copytree(BASE, d)

@@ -89,6 +89,14 @@ static uint32_t g_stall_id;
 static int      g_stall_id_n;
 static bool     g_fail_next;
 static bool     g_installed, g_running;
+static bool     g_in_receive;       /* a thread is blocked inside the driver */
+static int      g_unsafe_teardowns;
+static int      g_installed_mode = -1;
+static bool     g_fail_alerts_cfg;
+
+int  ft_unsafe_teardowns(void) { return g_unsafe_teardowns; }
+int  ft_installed_mode(void)   { return g_installed_mode; }
+void ft_fail_alerts_config(bool fail) { g_fail_alerts_cfg = fail; }
 
 int              ft_sent_count(void) { return g_nsent; }
 const ft_frame_t *ft_sent(int i) { return &g_sent[i]; }
@@ -336,24 +344,53 @@ esp_err_t twai_driver_install(const twai_general_config_t *g,
                               const twai_timing_config_t *t,
                               const twai_filter_config_t *f)
 {
-    (void)g; (void)t; (void)f;
+    (void)t; (void)f;
+    /*
+     * Record the MODE. Spec 3 requires OBSERVE to be hardware listen-only, and
+     * the TWAI API exposes no read-back of the controller's mode -- so the only
+     * thing that can be checked anywhere is the value handed to install, which
+     * is exactly what gen_inhibit.c's own comment says it is confirming.
+     */
+    g_installed_mode = g ? (int)g->mode : -1;
     g_installed = true;
     return ESP_OK;
 }
 
 esp_err_t twai_driver_uninstall(void)
 {
+    /*
+     * Spec 8. On the device this frees the memory a blocked twai_receive() is
+     * using. The model cannot crash, so it counts instead -- see
+     * ft_unsafe_teardowns().
+     */
+    if (g_in_receive) g_unsafe_teardowns++;
     g_installed = false;
     g_running = false;
+    g_installed_mode = -1;
     return ESP_OK;
 }
 
 esp_err_t twai_start(void) { g_running = true; return ESP_OK; }
-esp_err_t twai_stop(void)  { g_running = false; return ESP_OK; }
+esp_err_t twai_stop(void)
+{
+    if (g_in_receive) g_unsafe_teardowns++;
+    g_running = false;
+    return ESP_OK;
+}
 esp_err_t twai_clear_receive_queue(void) { g_rx_have = false; return ESP_OK; }
 
 esp_err_t twai_reconfigure_alerts(uint32_t alerts, uint32_t *prev)
 {
+    if (g_fail_alerts_cfg)
+    {
+        /*
+         * A driver that will not enable the alerts. Without them every frame
+         * looks outstanding for ever and aborts TX_LATE on the first VCM frame,
+         * so spec 7 trip 7 requires the arm to be refused rather than attempted
+         * blind.
+         */
+        return ESP_ERR_INVALID_STATE;
+    }
     if (prev) *prev = g_alerts_enabled;
     g_alerts_enabled = alerts;
     return ESP_OK;
@@ -428,24 +465,72 @@ void ft_deliver(uint32_t id, const uint8_t *data, uint8_t dlc)
 
 esp_err_t twai_receive(twai_message_t *message, TickType_t ticks)
 {
-    pthread_mutex_lock(&g_m);
-    yield_to_test();
-    pthread_mutex_unlock(&g_m);
-    if (g_worker_stop) pthread_exit(NULL);
+    /*
+     * A REAL BLOCKED RECEIVE, and the first version was not one.
+     *
+     * It yielded once, then returned as soon as it got the CPU back -- so the
+     * worker left the driver on any test step. On the device it stays inside
+     * twai_receive() until a frame arrives or the timeout expires, and nothing
+     * a lower-priority task does shortens that: it is blocked on the driver's
+     * queue, not on a delay.
+     *
+     * That difference hid a whole class of bug. Removing the spec 8 quiesce
+     * wait left the suite green, because can_disable()'s own short vTaskDelay
+     * let the model's worker slip out of the driver and park, so the teardown
+     * never saw anyone inside. The real worker would still have been blocked
+     * there, which is precisely the use-after-free the handshake prevents.
+     *
+     * So: stay in, yielding repeatedly, until a frame is posted or the deadline
+     * passes. g_in_receive is true for that whole span, which is what makes
+     * ft_unsafe_teardowns() meaningful.
+     */
+    const int64_t deadline = g_now + (int64_t)ticks * 1000;
 
-    if (!g_installed) return ESP_ERR_INVALID_STATE;
-    if (g_rx_err_n > 0) { g_rx_err_n--; return ESP_FAIL; }
-    if (g_rx_have)
+    for (;;)
     {
-        *message = g_rx_msg;
-        g_rx_have = false;
-        return ESP_OK;
+        g_in_receive = true;
+        pthread_mutex_lock(&g_m);
+        yield_to_test();
+        pthread_mutex_unlock(&g_m);
+        if (g_worker_stop) { g_in_receive = false; pthread_exit(NULL); }
+
+        if (!g_installed)
+        {
+            /*
+             * The driver went away underneath us. On the device this is the
+             * ESP_ERR_INVALID_STATE the worker's error path is written for.
+             */
+            g_in_receive = false;
+            return ESP_ERR_INVALID_STATE;
+        }
+        if (g_rx_err_n > 0)
+        {
+            g_rx_err_n--;
+            g_in_receive = false;
+            return ESP_FAIL;
+        }
+        if (g_rx_have)
+        {
+            *message = g_rx_msg;
+            g_rx_have = false;
+            g_in_receive = false;
+            return ESP_OK;
+        }
+        if (g_now >= deadline)
+        {
+            g_in_receive = false;
+            controller_advance(g_now);
+            step();
+            return ESP_ERR_TIMEOUT;
+        }
+        /* Still blocked. Let the clock reach the deadline if nothing else does. */
+        if (g_now < deadline)
+        {
+            g_now = deadline;
+            controller_advance(g_now);
+            step();
+        }
     }
-    /* Nothing waiting: the call blocked for its timeout. */
-    g_now += (int64_t)ticks * 1000;
-    controller_advance(g_now);
-    step();
-    return ESP_ERR_TIMEOUT;
 }
 
 /*
@@ -504,6 +589,10 @@ void ft_reset(void)
     g_last_done = 0;
     g_stall_n = g_refuse_n = g_rx_err_n = 0;
     g_stall_id_n = 0;
+    g_in_receive = false;
+    g_unsafe_teardowns = 0;
+    g_installed_mode = -1;
+    g_fail_alerts_cfg = false;
     g_fail_next = false;
     g_rx_have = false;
 }
