@@ -1007,7 +1007,31 @@ void gi_tick(gi_state_t *st, int64_t now, const gi_bus_t *bus,
      * before the blocking receive so it still fires on a quiet bus. Armed
      * only.
      */
-    if (!st->have_last_diag
+    /*
+     * Spec 10 and spec 7 trip 7: the diag page waits while an inhibit frame is
+     * outstanding. Two reasons, and both are load-bearing.
+     *
+     * TIMING (spec 10, review A4): the diag frames are the lowest-priority IDs
+     * on the bus and share the controller's single TX buffer with the inhibit
+     * frame, so a diag page queued behind one delays it -- and the whole
+     * design is a reactive trail inside the VCM's inter-frame gap.
+     *
+     * ATTRIBUTION (review C1, 2026-09-25): the driver's TX alerts are latched
+     * bits shared by every frame, and TWAI_ALERT_TX_SUCCESS does not say which
+     * frame completed. If a diag frame can complete while an inhibit is in
+     * flight, the shim cannot tell whose completion it is holding, and the
+     * inhibit gets credited for the diag frame's success -- masking the exact
+     * case trip 7 exists to catch. Keeping at most one of our frames in flight
+     * is what makes the alert attributable at all.
+     *
+     * Deferring costs nothing: diag is a ~1 Hz heartbeat per page and the
+     * outstanding frame resolves within one VCM gap or aborts.
+     */
+    if (st->tx_pending)
+    {
+        /* fall through to the interlocks; the page goes out next tick */
+    }
+    else if (!st->have_last_diag
         || (now - st->last_diag) >= (int64_t)st->cfg.diag_period_ms * 1000)
     {
         gi_frame_t f;

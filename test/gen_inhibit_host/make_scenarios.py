@@ -1326,6 +1326,41 @@ def s_tx_controller_failed():
     L += ["end %d" % (7 * S)]
     return sorted_directives(L)
 
+
+@scenario("diag-defers-to-pending-tx", """
+The core half of the 2026-09-25 alert-attribution fix: while an inhibit frame
+is outstanding, the diag page waits.
+
+Two reasons, both load-bearing. TIMING (spec 10): the diag IDs are the lowest
+priority on the bus and share the controller's single TX buffer with the
+inhibit frame. ATTRIBUTION (review C1): the driver's TX alerts are latched bits
+shared by every frame and TWAI_ALERT_TX_SUCCESS does not say WHICH frame
+completed, so if a diag frame can complete while an inhibit is in flight the
+shim credits the inhibit with the diag frame's success -- masking the very case
+trip 7 exists to catch. Keeping one frame of ours in flight is what makes the
+alert attributable.
+
+Here the controller stops answering at 3 s and 0x051 pauses for 0.4 s, inside
+the freshness window, so several ticks run with a frame outstanding.
+
+EXPECT: no TX DIAG line between the stalled transmit and the abort, and then a
+TX_LATE abort on the first 0x051 after the pause. The host harness cannot test
+the shim half of this -- that is an E1 mock-HAL case (latched shared alert
+bits, a diag frame completing ahead of an inhibit, a completion at 1.2 ms).
+""", autobms=False)
+def s_diag_defers():
+    L = ["mode 0 3 500"]
+    # 0x051 stops 40 ms after the stall begins, so the outstanding frame
+    # survives several ticks instead of being caught by the next 0x051 20 ms
+    # later -- that gap is the whole observation window. The pause is 0.4 s,
+    # inside the 0.5 s freshness window, so nothing trips on absence.
+    L += cmd_train(1 * S, 2940 * MS, 20 * MS)
+    L += cmd_train(3340 * MS, 5 * S, 20 * MS)
+    L += _healthy_bg(1 * S, 5 * S)
+    L += ["txstall %d %d" % (2900 * MS, 9 * S)]
+    L += ["end %d" % (6 * S)]
+    return sorted_directives(L)
+
 def sorted_directives(lines):
     """Stable-sort directive lines by their timestamp field.
 

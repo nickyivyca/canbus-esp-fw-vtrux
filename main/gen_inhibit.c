@@ -105,15 +105,6 @@ _Static_assert(GEN_INHIBIT_PROBE_ID == GI_PROBE_ID, "id drift");
 
 /* Receive timeout: 200 ms rather than a full second only so a disarm is
  * acted on promptly; a timeout costs nothing but a loop iteration. */
-/*
- * How long to wait for the controller's verdict on an inhibit frame (spec 7
- * trip 7). The VCM's tightest observed inter-frame gap is 4.69 ms and the
- * frame's own air time at 500 kbit is ~0.2 ms, so 1 ms is generous for the
- * answer and still an order below the gap. A timeout is not a failure: the
- * frame stays outstanding and the next 0x051 decides.
- */
-#define GEN_INHIBIT_TX_ALERT_MS 1
-
 #define GEN_INHIBIT_RX_TIMEOUT_MS   200
 
 /* ------------------------------------------------------------------------- */
@@ -286,48 +277,91 @@ static void dispatch_emits(const gi_emit_t *em, gi_events_t *ev)
             }
         }
 
+        /*
+         * Spec 7 trip 7 (review C1): clear any latched alert BEFORE queueing
+         * the inhibit frame, so the completion poll afterwards cannot credit
+         * it with somebody else's TX_SUCCESS. See poll_tx_alerts() for why
+         * that is not hypothetical. Discarded deliberately: anything latched
+         * at this instant belongs to a frame already accounted for.
+         */
+        if (f->kind == GI_TX_INHIBIT)
+        {
+            uint32_t stale = 0;
+            (void)twai_read_alerts(&stale, 0);
+        }
+
         esp_err_t err = twai_transmit(&tx, 0);
         if (f->kind == GI_TX_DIAG)
         {
             continue;   /* best-effort; fails silently in listen-only */
         }
         gi_on_tx_result(&s_core, f, err == ESP_OK, esp_timer_get_time(), ev);
-
-        /*
-         * Spec 7 trip 7 (review C1): queued is not sent. Ask the controller
-         * what actually happened to the inhibit frame.
-         *
-         * WHY A BOUNDED WAIT HERE rather than a separate alert task. The trail
-         * is reactive and the whole budget is the VCM's inter-frame gap (4.69
-         * ms at its tightest), so the answer is either along within a
-         * millisecond or the frame has already lost the race that matters --
-         * and a frame that has lost it must abort, which is what a timeout
-         * here produces via the TX_LATE path on the next 0x051. A second task
-         * would add a queue and a wakeup to a path whose entire point is not
-         * having either.
-         *
-         * twai_read_alerts() with a zero timeout returns ESP_ERR_TIMEOUT when
-         * nothing is pending; that is not an error and not a failure. Leaving
-         * the frame outstanding is the honest answer, and gi_on_frame() turns
-         * it into TX_LATE if the VCM's next frame beats it.
-         */
-        if (f->kind == GI_TX_INHIBIT)
-        {
-            uint32_t alerts = 0;
-            esp_err_t aerr = twai_read_alerts(&alerts,
-                                              pdMS_TO_TICKS(GEN_INHIBIT_TX_ALERT_MS));
-            if (aerr == ESP_OK && (alerts & (TWAI_ALERT_TX_SUCCESS
-                                             | TWAI_ALERT_TX_FAILED)))
-            {
-                gi_on_tx_done(&s_core, (alerts & TWAI_ALERT_TX_SUCCESS) != 0,
-                              esp_timer_get_time(), ev);
-            }
-        }
     }
     if (em->dropped)
     {
         ESP_LOGE(TAG, "emit list overflow (%u dropped) -- GI_EMIT_MAX too small",
                  (unsigned)em->dropped);
+    }
+}
+
+/*
+ * Spec 7 trip 7 (review C1). Feed the controller's TX verdict to the core.
+ *
+ * WHY THIS IS A POLL AND NOT A WAIT, and why it is careful about WHICH frame
+ * it is talking about.
+ *
+ * TWAI alerts are LATCHED BITS SHARED BY EVERY FRAME. TWAI_ALERT_TX_SUCCESS
+ * says "the previous transmission succeeded" -- it does not say which
+ * transmission, and twai_read_alerts() clears the bits it returns. The first
+ * version of this code read alerts only after queueing an inhibit frame, with
+ * a 1 ms timeout, and credited whatever frame was pending. That is wrong three
+ * ways, all of them invisible to the host suite because they live here:
+ *
+ *   - a diag frame (every 300 ms) or a RESPOND probe also completes and
+ *     latches TX_SUCCESS, and nothing consumed it. The next inhibit's read
+ *     returned that stale bit IMMEDIATELY and credited the inhibit as complete
+ *     at queue time -- masking precisely the "inhibit queued behind a diag
+ *     frame" case C1 exists to catch;
+ *   - once one completion arrived after its own 1 ms window had expired, its
+ *     bit stayed latched and credited the NEXT inhibit at queue time, and so
+ *     on for ever: TX_LATE could never fire again and the response histogram
+ *     silently reverted to queue time;
+ *   - and in the other direction, a completion at, say, 1.2 ms on a loaded bus
+ *     went unobserved, leaving the frame pending and producing a FALSE TX_LATE
+ *     abort on the next 0x051.
+ *
+ * Found by the reviewing session, 2026-09-25. What makes the alert
+ * attributable now is that only one frame of ours can be in flight: stale
+ * alerts are drained immediately before the inhibit frame is queued
+ * (dispatch_emits), and gi_tick() will not emit a diag page while an inhibit
+ * is outstanding. So any TX_SUCCESS/TX_FAILED seen after that queue is ours.
+ *
+ * Called on every loop iteration rather than at one point, so a completion is
+ * observed whenever it happens rather than only inside a window -- and so the
+ * reactive path carries no blocking call at all.
+ */
+static void poll_tx_alerts(gi_events_t *ev)
+{
+    uint32_t alerts = 0;
+    if (twai_read_alerts(&alerts, 0) != ESP_OK)
+    {
+        return;     /* ESP_ERR_TIMEOUT: nothing pending. Not an error. */
+    }
+    if (alerts & (TWAI_ALERT_TX_SUCCESS | TWAI_ALERT_TX_FAILED))
+    {
+        /*
+         * TWAI_ALERT_TX_FAILED is documented in IDF 5.4.1 as being raised
+         * "for single shot transmission". These frames are queued with
+         * twai_message_t.ss = 0, so the controller RETRANSMITS on arbitration
+         * loss or a missing ACK rather than failing -- which means TX_FAILED
+         * is effectively unreachable here and the retry shows up instead as
+         * the frame still being outstanding when the VCM's next 0x051 arrives
+         * (TX_LATE). It is read anyway because it costs nothing and the
+         * semantics could change; do not read its absence as evidence the bus
+         * is healthy.
+         */
+        gi_on_tx_done(&s_core, (alerts & TWAI_ALERT_TX_SUCCESS) != 0,
+                      esp_timer_get_time(), ev);
     }
 }
 
@@ -571,6 +605,12 @@ static void gen_inhibit_task(void *arg)
             gi_bus_t bus;
             gi_emit_t em = { 0 };
             gi_events_t ev = { 0 };
+            /*
+             * Collect any TX completion FIRST, so gi_tick() sees an accurate
+             * outstanding-frame flag: it withholds the diag page while one is
+             * in flight, and a stale flag would withhold it for nothing.
+             */
+            poll_tx_alerts(&ev);
             bus_snapshot(&bus);
             gi_tick(&s_core, esp_timer_get_time(), &bus, &em, &ev);
             dispatch_emits(&em, &ev);
@@ -614,6 +654,17 @@ static void gen_inhibit_task(void *arg)
         {
             gi_emit_t em = { 0 };
             gi_events_t ev = { 0 };
+
+            /*
+             * Collect a TX completion again before the frame reaches the core,
+             * because gi_on_frame() turns an outstanding frame into a TX_LATE
+             * abort. A completion that landed while we were blocked inside
+             * twai_receive() has to be credited before that test runs, or a
+             * frame that finished in good time is reported as having lost the
+             * counter race.
+             */
+            poll_tx_alerts(&ev);
+
             gi_on_frame(&s_core, rx.identifier, rx.data_length_code, rx.data,
                         esp_timer_get_time(), &em, &ev);
             dispatch_emits(&em, &ev);
