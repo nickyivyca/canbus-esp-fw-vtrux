@@ -329,6 +329,7 @@ typedef enum
     GI_ABORT_STALE_FAULT,       /* 0x617 */
     GI_ABORT_STALE_SHIFT,       /* 0x639 */
     GI_ABORT_STALE_RPM,         /* 0x054, once heard this arm cycle */
+    GI_ABORT_SHORT_VCM_FRAME,   /* spec 7 trip 8: 0x051 with DLC < 6 */
 } gi_abort_t;
 
 typedef enum

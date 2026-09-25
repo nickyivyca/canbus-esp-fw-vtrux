@@ -721,11 +721,23 @@ def s_rearm():
 
 
 @scenario("short-dlc-0x051", """
-A 0x051 arrives with DLC 4 -- too short to rebuild an inhibit frame from.
+A 0x051 arrives with DLC 4 -- too short to rebuild an inhibit frame from,
+because B5 carries the rolling counter this device exists to steal.
 
-EXPECT: no transmit, tx_fail increments, no abort. Also confirms the
-interlock monitor's own DLC guards hold: torque and rpm_ref need DLC >= 5 and
-must keep their previous values rather than read past the end.
+EXPECT, SINCE REVIEW C2b (spec 7 trip 8): a LATCHED abort on the first short
+frame, naming it. tx_fail still increments, but it is no longer the only
+record -- and note the counter's name is misleading here, since no transmit was
+ever attempted: this is a fault in what the VCM SENT.
+
+Before 2026-09-24 the device skipped the frame and carried on inhibiting, with
+no abort and no event. A VCM emitting short 0x051 on a bus we are actively
+transmitting onto is a state nobody has observed and nobody can explain, and
+continuing while not understanding what the truck is doing is the wrong
+default.
+
+Also confirms the interlock monitor's own DLC guards hold: torque and rpm_ref
+need DLC >= 5 and must keep their previous values rather than read past the
+end.
 """)
 def s_short_dlc():
     L = ["mode 0 3 500"]

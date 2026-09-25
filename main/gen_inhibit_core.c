@@ -128,6 +128,7 @@ const char *gi_abort_name(gi_abort_t a)
     case GI_ABORT_STALE_FAULT:     return "0x617 went stale while live -- VCM fault flag lost";
     case GI_ABORT_STALE_SHIFT:     return "0x639 went stale while live -- shift position lost";
     case GI_ABORT_STALE_RPM:       return "0x054 stopped while live -- generator speed lost";
+    case GI_ABORT_SHORT_VCM_FRAME: return "0x051 arrived with DLC < 6 -- cannot build a reply";
     }
     return "?";
 }
@@ -1530,9 +1531,26 @@ void gi_on_frame(gi_state_t *st, uint32_t id, uint8_t dlc, const uint8_t *data,
              && gi_key_on(st, now))
     {
         gi_frame_t f;
+        /*
+         * Spec 7 trip 8 (review C2b). This is ON RECEIVE: the VCM's frame
+         * arrived too short to carry the rolling counter, so there is nothing
+         * to steal and no reply can be built.
+         *
+         * It used to increment tx_fail and return -- no abort, no event, and a
+         * counter whose name says the failure was ours. It is not: we never
+         * attempted a transmit. A VCM emitting short 0x051 on a bus we are
+         * inhibiting is a state nobody has seen and nobody can explain, and
+         * quietly skipping frames while continuing to inhibit is the wrong
+         * response to not understanding what the truck is doing.
+         *
+         * Aborting before emit() matters: the inhibit frame is built from THIS
+         * frame, so standing down here is what guarantees no malformed reply
+         * reaches the wire.
+         */
         if (dlc < 6)
         {
             st->tx_fail++;
+            inhibit_abort(st, GI_ABORT_SHORT_VCM_FRAME, now, ev);
             return;
         }
         build_inhibit(data, now, &f);
