@@ -78,6 +78,9 @@ void ft_set_air_time_id(uint32_t id, int64_t us);
 /* How many frames of `id` have completed on the wire. */
 int ft_wire_count_id(uint32_t id);
 
+/* How many frames of `id` were QUEUED (the probe is counted there). */
+int ft_sent_count_id(uint32_t id);
+
 /* Make twai_transmit() refuse the next `n` frames (queue full / not running). */
 void ft_refuse_next(int n);
 

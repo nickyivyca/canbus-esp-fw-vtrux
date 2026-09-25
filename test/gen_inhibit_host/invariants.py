@@ -173,6 +173,51 @@ class Checker:
             self.fail(t, "transmitted in mode %d; only INHIBIT may"
                          % st["mode"])
 
+    def on_tx_any(self, t, kind, ident, post):
+        """Spec 3: what each mode is allowed to put on the wire at all.
+
+        OBSERVE emits no probe and no inhibit frame. invariants.py used to
+        check only the inhibit frame, so a round-5 mutation that made OBSERVE
+        emit the RESPOND probe survived this file and rested on one golden.
+
+        THE DIAG HEARTBEAT IS THE EXCEPTION, AND IT IS A LAYER DISTINCTION
+        RATHER THAN A LOOPHOLE. gi_tick() emits diag whenever the mode is not
+        OFF, OBSERVE included -- this file watches the CORE's emit list, and
+        those frames are really in it. What stops them reaching the wire is the
+        controller: the shim forces TWAI_MODE_LISTEN_ONLY for OBSERVE, so
+        twai_transmit() fails and nothing is sent. The schema doc's "Note on
+        OBSERVE" records that as the reason no diag appears in an OBSERVE log.
+
+        So the wire-level guarantee is not this file's to make, and pretending
+        otherwise would mean asserting something the core does not do. E1's
+        case 11 makes it at the layer that can: it arms OBSERVE and asserts
+        that NOTHING at all is queued into the driver.
+
+        RESPOND emits the probe and diag, never 0x051 -- that is what makes an
+        accidental real-ID transmit impossible from a measuring mode.
+        """
+        st = self.state
+        mode = None
+        for cand in (st, post):
+            if cand is not None:
+                mode = cand["mode"]
+                break
+        if mode is None:
+            return
+        # A mode change is reported at the same timestamp as the frames the old
+        # mode emitted on its way out, so a transition instant is not evidence.
+        if st is not None and post is not None and st["mode"] != post["mode"]:
+            return
+
+        if mode == 1 and kind != "DIAG":
+            self.fail(t, "OBSERVE emitted a %s frame on 0x%03X -- only the "
+                         "diag heartbeat may leave the core in OBSERVE, and "
+                         "even that never reaches the wire" % (kind, ident))
+        elif mode == 2 and ident == VCM_ID:
+            self.fail(t, "RESPOND emitted the real command ID 0x051")
+        elif mode == 0:
+            self.fail(t, "OFF emitted a %s frame on 0x%03X" % (kind, ident))
+
     def on_state(self, t, st):
         prev = self.state
         self.state = st
@@ -246,7 +291,7 @@ def check(name, verbose=False):
             c.on_state(t, payload)
         elif kind == "EV":
             c.on_event(t, *payload)
-        elif payload[0] == "INHIBIT":
+        else:
             post = None
             for t2, k2, p2 in parsed[i + 1:]:
                 if t2 != t:
@@ -254,8 +299,10 @@ def check(name, verbose=False):
                 if k2 == "STATE":
                     post = p2
                     break
-            c.on_tx_inhibit(t, payload[1], payload[2], payload[3], payload[4],
-                            post)
+            c.on_tx_any(t, payload[0], payload[1], post)
+            if payload[0] == "INHIBIT":
+                c.on_tx_inhibit(t, payload[1], payload[2], payload[3],
+                                payload[4], post)
 
     if c.problems:
         print("[VIOLATION] %-32s" % name)

@@ -30,7 +30,25 @@
 
 static int64_t g_now;
 
-int64_t esp_timer_get_time(void) { return g_now; }
+/*
+ * READING THE CLOCK COSTS TIME, and modelling that is not a nicety -- without
+ * it the suite HANGS.
+ *
+ * gen_inhibit.c's probe path spins: `while (esp_timer_get_time() < f->due_us)`.
+ * With a clock that only moved when the test moved it, that loop could never
+ * terminate: the worker held the CPU, the test never ran, and nothing advanced
+ * g_now. Found by the reviewing session on 2026-09-25, when a mutation made
+ * OBSERVE emit a probe -- shim_test then ran at 100 % CPU for 11 minutes until
+ * it was killed by PID. A HANG REPORTS NOTHING; it is worse than a failure,
+ * because a failure names the rule.
+ *
+ * One microsecond per call is the honest model: on the device that spin really
+ * does consume time, at priority 18, which is exactly why spec 3 caps the probe
+ * offset at 4000 us. Determinism is unaffected -- the same sequence of calls
+ * produces the same drift -- and the scale is irrelevant beside the
+ * millisecond quantities everything here is measured in.
+ */
+int64_t esp_timer_get_time(void) { return g_now++; }
 int64_t ft_now(void) { return g_now; }
 
 /* -------------------------------------------------------------- logging -- */
@@ -141,6 +159,13 @@ static int64_t air_time_for(uint32_t id)
         if (g_air_id[i].id == id) return g_air_id[i].us;
     }
     return g_air_time;
+}
+
+int ft_sent_count_id(uint32_t id)
+{
+    int n = 0;
+    for (int i = 0; i < g_nsent; i++) if (g_sent[i].id == id) n++;
+    return n;
 }
 
 int ft_wire_count_id(uint32_t id)

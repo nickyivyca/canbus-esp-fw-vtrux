@@ -21,8 +21,42 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static int g_fail;
+
+/*
+ * A WALL-CLOCK BUDGET PER CASE, so a hang is a failure rather than a silence.
+ *
+ * Every other guard here is about virtual time. This one is not: it exists
+ * because a case that never finishes produces no output at all, and the only
+ * evidence is a process to kill. The budget is absurdly generous -- the whole
+ * suite runs in well under a second -- so it cannot fire on a slow machine
+ * without something being genuinely stuck.
+ */
+#define CASE_BUDGET_S 20
+
+static time_t g_case_start;
+static const char *g_case_name = "";
+
+static void case_begin(const char *name)
+{
+    g_case_name = name;
+    g_case_start = time(NULL);
+    printf("  %s\n", name);
+}
+
+static void case_end(void)
+{
+    const double took = difftime(time(NULL), g_case_start);
+    if (took > CASE_BUDGET_S)
+    {
+        printf("    FAIL: %s took %.0f s of wall clock (budget %d s) -- "
+               "something is spinning, not merely slow\n",
+               g_case_name, took, CASE_BUDGET_S);
+        g_fail++;
+    }
+}
 
 #define CHECK(cond, ...)                                                      \
     do {                                                                      \
@@ -128,11 +162,27 @@ static void go_live(void)
 static void invariant_hook(void)
 {
     const uint32_t claimed = json_u32("\"tx_ok\":");
-    const int on_wire = ft_wire_count_id(0x051);
-    if (claimed != 0xFFFFFFFFu && claimed > (uint32_t)on_wire)
+
+    /*
+     * tx_ok COUNTS TWO DIFFERENT THINGS, deliberately, and the invariant has to
+     * know it. Spec 7 trip 7 made the inhibit frame count only on COMPLETION,
+     * because "handed to the driver" is not "on the wire". The RESPOND probe is
+     * still counted at QUEUE time: it is a measurement, not a command, so a late
+     * one costs a data point rather than a safety property, and keeping it there
+     * leaves every timing figure recorded before that change comparable.
+     *
+     * So the ceiling is "inhibit frames completed, plus probes queued". Using
+     * only the first reported every RESPOND probe as a violation, which is how
+     * case 14 failed when it was written -- the invariant was right about
+     * INHIBIT and simply did not describe RESPOND.
+     */
+    const int ceiling = ft_wire_count_id(0x051) + ft_sent_count_id(0x7F0);
+    if (claimed != 0xFFFFFFFFu && claimed > (uint32_t)ceiling)
     {
-        printf("    FAIL: at %lld us tx_ok=%u but only %d inhibit frames had "
-               "completed on the wire\n", (long long)ft_now(), claimed, on_wire);
+        printf("    FAIL: at %lld us tx_ok=%u exceeds the %d frames that can "
+               "have been counted (%d inhibit completions + %d probes queued)\n",
+               (long long)ft_now(), claimed, ceiling,
+               ft_wire_count_id(0x051), ft_sent_count_id(0x7F0));
         g_fail++;
     }
 }
@@ -164,9 +214,9 @@ static void setup(void)
 static void check_tx_ok_invariant(const char *where)
 {
     const uint32_t claimed = json_u32("\"tx_ok\":");
-    const int on_wire = ft_wire_count_id(0x051);
+    const int on_wire = ft_wire_count_id(0x051) + ft_sent_count_id(0x7F0);
     CHECK(claimed <= (uint32_t)on_wire,
-          "%s: tx_ok=%u but only %d inhibit frames completed on the wire",
+          "%s: tx_ok=%u but only %d frames can have been counted",
           where, claimed, on_wire);
 }
 
@@ -201,7 +251,7 @@ static void teardown(void)
  */
 static void case_diag_completion_not_credited(void)
 {
-    printf("  case 1: a diag frame's completion must not credit an inhibit\n");
+    case_begin("case 1: a diag frame's completion must not credit an inhibit");
     setup();
     go_live();
 
@@ -239,6 +289,7 @@ static void case_diag_completion_not_credited(void)
           "never completed", tx_before, tx_after);
     check_tx_ok_invariant("case 1");
     teardown();
+    case_end();
 }
 
 /*
@@ -250,7 +301,7 @@ static void case_diag_completion_not_credited(void)
  */
 static void case_late_completion_not_carried(void)
 {
-    printf("  case 2: a late completion must not credit the next inhibit\n");
+    case_begin("case 2: a late completion must not credit the next inhibit");
     setup();
     go_live();
 
@@ -280,6 +331,7 @@ static void case_late_completion_not_carried(void)
           json_u32("\"tx_ok\":"), completed);
     check_tx_ok_invariant("case 2");
     teardown();
+    case_end();
 }
 
 /*
@@ -292,7 +344,7 @@ static void case_late_completion_not_carried(void)
  */
 static void case_slow_completion_is_not_late(void)
 {
-    printf("  case 3: a completion at 1.2 ms is observed, not called late\n");
+    case_begin("case 3: a completion at 1.2 ms is observed, not called late");
     setup();
     go_live();
 
@@ -311,6 +363,7 @@ static void case_slow_completion_is_not_late(void)
           "counter race");
     check_tx_ok_invariant("case 3");
     teardown();
+    case_end();
 }
 
 /*
@@ -324,7 +377,7 @@ static void case_slow_completion_is_not_late(void)
  */
 static void case_inhibit_behind_diag(void)
 {
-    printf("  case 4: an inhibit queued behind an unfinished diag frame\n");
+    case_begin("case 4: an inhibit queued behind an unfinished diag frame");
     setup();
     go_live();
 
@@ -439,6 +492,7 @@ static void case_inhibit_behind_diag(void)
     ft_run(600000);
     check_tx_ok_invariant("case 4");
     teardown();
+    case_end();
 }
 
 /*
@@ -451,7 +505,7 @@ static void case_inhibit_behind_diag(void)
  */
 static void case_foreign_transmit_refused(void)
 {
-    printf("  case 5: can_send() refuses while the inhibitor owns the bus\n");
+    case_begin("case 5: can_send() refuses while the inhibitor owns the bus");
     setup();
     go_live();
 
@@ -473,6 +527,7 @@ static void case_foreign_transmit_refused(void)
     CHECK(ml_count("can_send refused") > 0,
           "the refusal was not logged (spec 3.2 requires it)");
     teardown();
+    case_end();
 }
 
 /*
@@ -485,7 +540,7 @@ static void case_foreign_transmit_refused(void)
  */
 static void case_self_off_names_itself(void)
 {
-    printf("  case 6: a self-imposed OFF says why\n");
+    case_begin("case 6: a self-imposed OFF says why");
     setup();
     go_live();
 
@@ -506,6 +561,7 @@ static void case_self_off_names_itself(void)
           "self_off survived a re-arm and now describes a previous OFF: %s",
           stats());
     teardown();
+    case_end();
 }
 
 /*
@@ -517,7 +573,7 @@ static void case_self_off_names_itself(void)
  */
 static void case_passive_emits_nothing(void)
 {
-    printf("  case 7: PASSIVE reaches the driver with no 0x051\n");
+    case_begin("case 7: PASSIVE reaches the driver with no 0x051");
     setup();
 
     static const uint8_t KEY[8]  = { 0x10 };
@@ -554,6 +610,7 @@ static void case_passive_emits_nothing(void)
           "0x051 from PASSIVE");
     check_tx_ok_invariant("case 7");
     teardown();
+    case_end();
 }
 
 
@@ -569,7 +626,7 @@ static void case_passive_emits_nothing(void)
  */
 static void case_late_behind_diag_trips(void)
 {
-    printf("  case 8: the VCM's next 0x051 arrives with ours still queued\n");
+    case_begin("case 8: the VCM's next 0x051 arrives with ours still queued");
     setup();
     go_live();
 
@@ -596,6 +653,7 @@ static void case_late_behind_diag_trips(void)
           "trip: %s", stats());
     check_tx_ok_invariant("case 8");
     teardown();
+    case_end();
 }
 
 /*
@@ -609,7 +667,7 @@ static void case_late_behind_diag_trips(void)
  */
 static void case_diag_defers_to_pending(void)
 {
-    printf("  case 9: no diag frame is queued while an inhibit is outstanding\n");
+    case_begin("case 9: no diag frame is queued while an inhibit is outstanding");
     setup();
     go_live();
 
@@ -666,6 +724,7 @@ static void case_diag_defers_to_pending(void)
           "10, and they would hold msgs_to_tx above zero after ours had gone",
           diag_queued);
     teardown();
+    case_end();
 }
 
 /*
@@ -679,7 +738,7 @@ static void case_diag_defers_to_pending(void)
  */
 static void case_quiesce_names_itself(void)
 {
-    printf("  case 10: a forced quiesce says why\n");
+    case_begin("case 10: a forced quiesce says why");
     setup();
     go_live();
 
@@ -693,6 +752,7 @@ static void case_quiesce_names_itself(void)
     CHECK(json_has("forced quiesce"),
           "a forced quiesce did not name itself: %s", stats());
     teardown();
+    case_end();
 }
 
 
@@ -708,7 +768,7 @@ static void case_quiesce_names_itself(void)
  */
 static void case_observe_is_listen_only(void)
 {
-    printf("  case 11: OBSERVE installs the driver listen-only\n");
+    case_begin("case 11: OBSERVE installs the driver listen-only");
     setup();
 
     gen_inhibit_set_mode(GEN_INHIBIT_OBSERVE, 500);
@@ -736,6 +796,7 @@ static void case_observe_is_listen_only(void)
           "leaving OBSERVE left the driver in mode %d, not normal",
           ft_installed_mode());
     teardown();
+    case_end();
 }
 
 /*
@@ -748,7 +809,7 @@ static void case_observe_is_listen_only(void)
  */
 static void case_offset_limit(void)
 {
-    printf("  case 12: an offset above 4000 us is refused\n");
+    case_begin("case 12: an offset above 4000 us is refused");
     setup();
 
     CHECK(gen_inhibit_set_mode(GEN_INHIBIT_RESPOND, 4000) == ESP_OK,
@@ -759,6 +820,7 @@ static void case_offset_limit(void)
     CHECK(gen_inhibit_set_mode(GEN_INHIBIT_RESPOND, 40000) != ESP_OK,
           "40000 us was accepted");
     teardown();
+    case_end();
 }
 
 /*
@@ -772,7 +834,7 @@ static void case_offset_limit(void)
  */
 static void case_arm_refused_without_alerts(void)
 {
-    printf("  case 13: no alerts, no arm\n");
+    case_begin("case 13: no alerts, no arm");
     setup();
 
     ft_fail_alerts_config(true);
@@ -783,6 +845,56 @@ static void case_arm_refused_without_alerts(void)
           "the arm succeeded although the TX alerts could not be enabled");
     ft_fail_alerts_config(false);
     teardown();
+    case_end();
+}
+
+
+/*
+ * CASE 14 -- RESPOND, which nothing here exercised and which HUNG the suite.
+ *
+ * gen_inhibit.c's probe path spins on esp_timer_get_time() until the frame is
+ * due. Against a clock that only moved when the test moved it, that loop could
+ * never end: the worker held the CPU and nothing advanced time. No case emitted
+ * a probe, so the baseline was fine -- until a round-5 mutation made OBSERVE
+ * emit one and shim_test ran at 100 % CPU for 11 minutes before being killed.
+ *
+ * A HANG REPORTS NOTHING. The clock now advances on every read, which is also
+ * the truthful model (that spin really does burn time at priority 18, which is
+ * why spec 3 caps the offset at 4000 us), and every case carries a wall-clock
+ * budget so a future spin FAILS instead of stopping the world.
+ *
+ * EXPECT: a probe on 0x7F0 for each 0x051, never on 0x051, and the case
+ * finishes.
+ */
+static void case_respond_probe(void)
+{
+    case_begin("case 14: RESPOND probes without hanging");
+    setup();
+
+    gen_inhibit_set_mode(GEN_INHIBIT_RESPOND, 500);
+    ft_run(20000);
+
+    const int before = ft_sent_count();
+    uint8_t cmd[6];
+    for (int i = 0; i < 10; i++)
+    {
+        memcpy(cmd, VCM, sizeof(cmd));
+        cmd[5] = (uint8_t)i;
+        feed(0x051, cmd, 6, 20000);
+    }
+
+    int probes = 0, inhibits = 0;
+    for (int i = before; i < ft_sent_count(); i++)
+    {
+        if (ft_sent(i)->id == 0x7F0) probes++;
+        if (ft_sent(i)->id == 0x051) inhibits++;
+    }
+    CHECK(probes > 0, "RESPOND emitted no probe at all, so this case proved "
+                      "nothing about the path that hung");
+    CHECK(inhibits == 0, "RESPOND queued %d frames on 0x051 -- it must only "
+                         "ever emit the probe ID", inhibits);
+    teardown();
+    case_end();
 }
 
 int main(void)
@@ -802,6 +914,7 @@ int main(void)
     case_observe_is_listen_only();
     case_offset_limit();
     case_arm_refused_without_alerts();
+    case_respond_probe();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
     return g_fail ? 1 : 0;
