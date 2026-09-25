@@ -1,4 +1,4 @@
-# host_runner: 442 frames, 1 directives, t=[0,9000000]
+# host_runner: 682 frames, 1 directives, t=[0,9000000]
 0 STATE mode=0 live=0 block=not armed abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
 0 EV MODE a=3 b=500 c=0
 0 STATE mode=3 live=0 block=gate not yet evaluated abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
@@ -6,10 +6,11 @@
 0 STATE mode=3 live=0 block=no fresh 0x051 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
 400000 TX DIAG id=7F2 dlc=8 data=0000000000000000 ok=1
 800000 TX DIAG id=7F3 dlc=8 data=0000000001000300 ok=1
-1000000 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
+1000000 STATE mode=3 live=0 block=no fresh 0x617 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
 1000000 EV SOC_VALID a=1 b=11 c=0
-1000000 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=1 socsince=0
-1000000 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=1 socsince=1
+1000000 STATE mode=3 live=0 block=no fresh 0x617 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=1 socsince=0
+1000000 STATE mode=3 live=0 block=no fresh 0x617 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=1 socsince=1
+1000000 STATE mode=3 live=0 block=no fresh 0x639 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=1 socsince=1
 1000000 EV INHIBIT_LIVE a=0 b=0 c=0
 1000000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=1 socsince=1
 1000000 EV KEY a=1 b=0 c=0
@@ -19,7 +20,7 @@
 1060000 TX INHIBIT id=051 dlc=6 data=080080FF7F04 ok=1
 1080000 TX INHIBIT id=051 dlc=6 data=080080FF7F05 ok=1
 1100000 TX INHIBIT id=051 dlc=6 data=080080FF7F06 ok=1
-1100000 TX DIAG id=7F1 dlc=8 data=0301036600FF8813 ok=1
+1100000 TX DIAG id=7F1 dlc=8 data=0301036600028813 ok=1
 1120000 TX INHIBIT id=051 dlc=6 data=080080FF7F07 ok=1
 1140000 TX INHIBIT id=051 dlc=6 data=080080FF7F08 ok=1
 1160000 TX INHIBIT id=051 dlc=6 data=080080FF7F09 ok=1
@@ -41,212 +42,91 @@
 1460000 TX INHIBIT id=051 dlc=6 data=080080FF7F08 ok=1
 1480000 TX INHIBIT id=051 dlc=6 data=080080FF7F09 ok=1
 1500000 TX INHIBIT id=051 dlc=6 data=080080FF7F0A ok=1
-1500000 EV SOC_VALID a=0 b=1041 c=0
-1500000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-1500000 EV SOC_VALID a=1 b=11 c=0
-1500000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-1500000 EV SOC_VALID a=0 b=1041 c=0
-1500000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 1520000 TX INHIBIT id=051 dlc=6 data=080080FF7F0B ok=1
 1540000 TX INHIBIT id=051 dlc=6 data=080080FF7F0C ok=1
-1550000 EV SOC_VALID a=1 b=11 c=0
-1550000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-1550000 EV SOC_VALID a=0 b=1041 c=0
-1550000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 1560000 TX INHIBIT id=051 dlc=6 data=080080FF7F0D ok=1
 1580000 TX INHIBIT id=051 dlc=6 data=080080FF7F0E ok=1
 1600000 TX INHIBIT id=051 dlc=6 data=080080FF7F0F ok=1
-1600000 EV SOC_VALID a=1 b=11 c=0
-1600000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-1600000 EV SOC_VALID a=0 b=1041 c=0
-1600000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 1620000 TX INHIBIT id=051 dlc=6 data=080080FF7F00 ok=1
 1640000 TX INHIBIT id=051 dlc=6 data=080080FF7F01 ok=1
-1650000 EV SOC_VALID a=1 b=11 c=0
-1650000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-1650000 EV SOC_VALID a=0 b=1041 c=0
-1650000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 1660000 TX INHIBIT id=051 dlc=6 data=080080FF7F02 ok=1
 1680000 TX INHIBIT id=051 dlc=6 data=080080FF7F03 ok=1
 1700000 TX INHIBIT id=051 dlc=6 data=080080FF7F04 ok=1
 1700000 TX DIAG id=7F3 dlc=8 data=0000000001000300 ok=1
-1700000 EV SOC_VALID a=1 b=11 c=0
-1700000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-1700000 EV SOC_VALID a=0 b=1041 c=0
-1700000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 1720000 TX INHIBIT id=051 dlc=6 data=080080FF7F05 ok=1
 1740000 TX INHIBIT id=051 dlc=6 data=080080FF7F06 ok=1
-1750000 EV SOC_VALID a=1 b=11 c=0
-1750000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-1750000 EV SOC_VALID a=0 b=1041 c=0
-1750000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 1760000 TX INHIBIT id=051 dlc=6 data=080080FF7F07 ok=1
 1780000 TX INHIBIT id=051 dlc=6 data=080080FF7F08 ok=1
 1800000 TX INHIBIT id=051 dlc=6 data=080080FF7F09 ok=1
-1800000 EV SOC_VALID a=1 b=11 c=0
-1800000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-1800000 EV SOC_VALID a=0 b=1041 c=0
-1800000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 1820000 TX INHIBIT id=051 dlc=6 data=080080FF7F0A ok=1
 1840000 TX INHIBIT id=051 dlc=6 data=080080FF7F0B ok=1
-1850000 EV SOC_VALID a=1 b=11 c=0
-1850000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-1850000 EV SOC_VALID a=0 b=1041 c=0
-1850000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 1860000 TX INHIBIT id=051 dlc=6 data=080080FF7F0C ok=1
 1880000 TX INHIBIT id=051 dlc=6 data=080080FF7F0D ok=1
 1900000 TX INHIBIT id=051 dlc=6 data=080080FF7F0E ok=1
-1900000 EV SOC_VALID a=1 b=11 c=0
-1900000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-1900000 EV SOC_VALID a=0 b=1041 c=0
-1900000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 1920000 TX INHIBIT id=051 dlc=6 data=080080FF7F0F ok=1
 1940000 TX INHIBIT id=051 dlc=6 data=080080FF7F00 ok=1
-1950000 EV SOC_VALID a=1 b=11 c=0
-1950000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-1950000 EV SOC_VALID a=0 b=1041 c=0
-1950000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 1960000 TX INHIBIT id=051 dlc=6 data=080080FF7F01 ok=1
 1980000 TX INHIBIT id=051 dlc=6 data=080080FF7F02 ok=1
 2000000 TX INHIBIT id=051 dlc=6 data=080080FF7F03 ok=1
-2000000 TX DIAG id=7F1 dlc=8 data=0301036600FF8813 ok=1
-2000000 EV SOC_VALID a=1 b=11 c=0
-2000000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-2000000 EV SOC_VALID a=0 b=1041 c=0
-2000000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
+2000000 TX DIAG id=7F1 dlc=8 data=0301036600028813 ok=1
 2020000 TX INHIBIT id=051 dlc=6 data=080080FF7F04 ok=1
 2040000 TX INHIBIT id=051 dlc=6 data=080080FF7F05 ok=1
-2050000 EV SOC_VALID a=1 b=11 c=0
-2050000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-2050000 EV SOC_VALID a=0 b=1041 c=0
-2050000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 2060000 TX INHIBIT id=051 dlc=6 data=080080FF7F06 ok=1
 2080000 TX INHIBIT id=051 dlc=6 data=080080FF7F07 ok=1
 2100000 TX INHIBIT id=051 dlc=6 data=080080FF7F08 ok=1
-2100000 EV SOC_VALID a=1 b=11 c=0
-2100000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-2100000 EV SOC_VALID a=0 b=1041 c=0
-2100000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 2120000 TX INHIBIT id=051 dlc=6 data=080080FF7F09 ok=1
 2140000 TX INHIBIT id=051 dlc=6 data=080080FF7F0A ok=1
-2150000 EV SOC_VALID a=1 b=11 c=0
-2150000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-2150000 EV SOC_VALID a=0 b=1041 c=0
-2150000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 2160000 TX INHIBIT id=051 dlc=6 data=080080FF7F0B ok=1
 2180000 TX INHIBIT id=051 dlc=6 data=080080FF7F0C ok=1
 2200000 TX INHIBIT id=051 dlc=6 data=080080FF7F0D ok=1
-2200000 EV SOC_VALID a=1 b=11 c=0
-2200000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-2200000 EV SOC_VALID a=0 b=1041 c=0
-2200000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 2220000 TX INHIBIT id=051 dlc=6 data=080080FF7F0E ok=1
 2240000 TX INHIBIT id=051 dlc=6 data=080080FF7F0F ok=1
-2250000 EV SOC_VALID a=1 b=11 c=0
-2250000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-2250000 EV SOC_VALID a=0 b=1041 c=0
-2250000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 2260000 TX INHIBIT id=051 dlc=6 data=080080FF7F00 ok=1
 2280000 TX INHIBIT id=051 dlc=6 data=080080FF7F01 ok=1
 2300000 TX INHIBIT id=051 dlc=6 data=080080FF7F02 ok=1
 2300000 TX DIAG id=7F2 dlc=8 data=4100000000000000 ok=1
-2300000 EV SOC_VALID a=1 b=11 c=0
-2300000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-2300000 EV SOC_VALID a=0 b=1041 c=0
-2300000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 2320000 TX INHIBIT id=051 dlc=6 data=080080FF7F03 ok=1
 2340000 TX INHIBIT id=051 dlc=6 data=080080FF7F04 ok=1
-2350000 EV SOC_VALID a=1 b=11 c=0
-2350000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-2350000 EV SOC_VALID a=0 b=1041 c=0
-2350000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 2360000 TX INHIBIT id=051 dlc=6 data=080080FF7F05 ok=1
 2380000 TX INHIBIT id=051 dlc=6 data=080080FF7F06 ok=1
 2400000 TX INHIBIT id=051 dlc=6 data=080080FF7F07 ok=1
-2400000 EV SOC_VALID a=1 b=11 c=0
-2400000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-2400000 EV SOC_VALID a=0 b=1041 c=0
-2400000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 2420000 TX INHIBIT id=051 dlc=6 data=080080FF7F08 ok=1
 2440000 TX INHIBIT id=051 dlc=6 data=080080FF7F09 ok=1
-2450000 EV SOC_VALID a=1 b=11 c=0
-2450000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-2450000 EV SOC_VALID a=0 b=1041 c=0
-2450000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 2460000 TX INHIBIT id=051 dlc=6 data=080080FF7F0A ok=1
 2480000 TX INHIBIT id=051 dlc=6 data=080080FF7F0B ok=1
 2500000 TX INHIBIT id=051 dlc=6 data=080080FF7F0C ok=1
-2500000 EV SOC_VALID a=1 b=11 c=0
-2500000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-2500000 EV SOC_VALID a=0 b=1041 c=0
-2500000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 2520000 TX INHIBIT id=051 dlc=6 data=080080FF7F0D ok=1
 2540000 TX INHIBIT id=051 dlc=6 data=080080FF7F0E ok=1
-2550000 EV SOC_VALID a=1 b=11 c=0
-2550000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-2550000 EV SOC_VALID a=0 b=1041 c=0
-2550000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 2560000 TX INHIBIT id=051 dlc=6 data=080080FF7F0F ok=1
 2580000 TX INHIBIT id=051 dlc=6 data=080080FF7F00 ok=1
 2600000 TX INHIBIT id=051 dlc=6 data=080080FF7F01 ok=1
 2600000 TX DIAG id=7F3 dlc=8 data=0000000001000300 ok=1
-2600000 EV SOC_VALID a=1 b=11 c=0
-2600000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-2600000 EV SOC_VALID a=0 b=1041 c=0
-2600000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 2620000 TX INHIBIT id=051 dlc=6 data=080080FF7F02 ok=1
 2640000 TX INHIBIT id=051 dlc=6 data=080080FF7F03 ok=1
-2650000 EV SOC_VALID a=1 b=11 c=0
-2650000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-2650000 EV SOC_VALID a=0 b=1041 c=0
-2650000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 2660000 TX INHIBIT id=051 dlc=6 data=080080FF7F04 ok=1
 2680000 TX INHIBIT id=051 dlc=6 data=080080FF7F05 ok=1
 2700000 TX INHIBIT id=051 dlc=6 data=080080FF7F06 ok=1
-2700000 EV SOC_VALID a=1 b=11 c=0
-2700000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-2700000 EV SOC_VALID a=0 b=1041 c=0
-2700000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 2720000 TX INHIBIT id=051 dlc=6 data=080080FF7F07 ok=1
 2740000 TX INHIBIT id=051 dlc=6 data=080080FF7F08 ok=1
-2750000 EV SOC_VALID a=1 b=11 c=0
-2750000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-2750000 EV SOC_VALID a=0 b=1041 c=0
-2750000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 2760000 TX INHIBIT id=051 dlc=6 data=080080FF7F09 ok=1
 2780000 TX INHIBIT id=051 dlc=6 data=080080FF7F0A ok=1
 2800000 TX INHIBIT id=051 dlc=6 data=080080FF7F0B ok=1
-2800000 EV SOC_VALID a=1 b=11 c=0
-2800000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-2800000 EV SOC_VALID a=0 b=1041 c=0
-2800000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 2820000 TX INHIBIT id=051 dlc=6 data=080080FF7F0C ok=1
 2840000 TX INHIBIT id=051 dlc=6 data=080080FF7F0D ok=1
-2850000 EV SOC_VALID a=1 b=11 c=0
-2850000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-2850000 EV SOC_VALID a=0 b=1041 c=0
-2850000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 2860000 TX INHIBIT id=051 dlc=6 data=080080FF7F0E ok=1
 2880000 TX INHIBIT id=051 dlc=6 data=080080FF7F0F ok=1
 2900000 TX INHIBIT id=051 dlc=6 data=080080FF7F00 ok=1
-2900000 TX DIAG id=7F1 dlc=8 data=0301036600FF8813 ok=1
-2900000 EV SOC_VALID a=1 b=11 c=0
-2900000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-2900000 EV SOC_VALID a=0 b=1041 c=0
-2900000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
+2900000 TX DIAG id=7F1 dlc=8 data=0301036600028813 ok=1
 2920000 TX INHIBIT id=051 dlc=6 data=080080FF7F01 ok=1
 2940000 TX INHIBIT id=051 dlc=6 data=080080FF7F02 ok=1
-2950000 EV SOC_VALID a=1 b=11 c=0
-2950000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-2950000 EV SOC_VALID a=0 b=1041 c=0
-2950000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 2960000 TX INHIBIT id=051 dlc=6 data=080080FF7F03 ok=1
 2980000 TX INHIBIT id=051 dlc=6 data=080080FF7F04 ok=1
 3380000 TX DIAG id=7F2 dlc=8 data=6300000000000000 ok=1
+3580000 EV SOC_VALID a=0 b=1041 c=0
 3580000 EV ABORT a=3 b=0 c=0
 3580000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
 3780000 TX DIAG id=7F3 dlc=8 data=0000000001000300 ok=1
-4180000 TX DIAG id=7F1 dlc=8 data=0301038600FF8813 ok=1
+4180000 TX DIAG id=7F1 dlc=8 data=0301038600028813 ok=1
 4500000 TX DIAG id=7F2 dlc=8 data=6300000000010000 ok=1
 4500000 EV SOC_VALID a=1 b=11 c=0
 4500000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=1 socsince=0
@@ -255,261 +135,21 @@
 4500000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 4550000 EV SOC_VALID a=1 b=11 c=0
 4550000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
+4550000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=1
 4800000 TX DIAG id=7F3 dlc=8 data=0000000001000300 ok=1
-5000000 EV SOC_VALID a=0 b=1041 c=0
-5000000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-5000000 EV SOC_VALID a=1 b=11 c=0
-5000000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-5000000 EV SOC_VALID a=0 b=1041 c=0
-5000000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-5050000 EV SOC_VALID a=1 b=11 c=0
-5050000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-5050000 EV SOC_VALID a=0 b=1041 c=0
-5050000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-5100000 TX DIAG id=7F1 dlc=8 data=030103C600FF8813 ok=1
-5100000 EV SOC_VALID a=1 b=11 c=0
-5100000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-5100000 EV SOC_VALID a=0 b=1041 c=0
-5100000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-5150000 EV SOC_VALID a=1 b=11 c=0
-5150000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-5150000 EV SOC_VALID a=0 b=1041 c=0
-5150000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-5200000 EV SOC_VALID a=1 b=11 c=0
-5200000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-5200000 EV SOC_VALID a=0 b=1041 c=0
-5200000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-5250000 EV SOC_VALID a=1 b=11 c=0
-5250000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-5250000 EV SOC_VALID a=0 b=1041 c=0
-5250000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-5300000 EV SOC_VALID a=1 b=11 c=0
-5300000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-5300000 EV SOC_VALID a=0 b=1041 c=0
-5300000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-5350000 EV SOC_VALID a=1 b=11 c=0
-5350000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-5350000 EV SOC_VALID a=0 b=1041 c=0
-5350000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
+5100000 TX DIAG id=7F1 dlc=8 data=030103C600028813 ok=1
 5400000 TX DIAG id=7F2 dlc=8 data=6300000000010000 ok=1
-5400000 EV SOC_VALID a=1 b=11 c=0
-5400000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-5400000 EV SOC_VALID a=0 b=1041 c=0
-5400000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-5450000 EV SOC_VALID a=1 b=11 c=0
-5450000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-5450000 EV SOC_VALID a=0 b=1041 c=0
-5450000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-5500000 EV SOC_VALID a=1 b=11 c=0
-5500000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-5500000 EV SOC_VALID a=0 b=1041 c=0
-5500000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-5550000 EV SOC_VALID a=1 b=11 c=0
-5550000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-5550000 EV SOC_VALID a=0 b=1041 c=0
-5550000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-5600000 EV SOC_VALID a=1 b=11 c=0
-5600000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-5600000 EV SOC_VALID a=0 b=1041 c=0
-5600000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-5650000 EV SOC_VALID a=1 b=11 c=0
-5650000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-5650000 EV SOC_VALID a=0 b=1041 c=0
-5650000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 5700000 TX DIAG id=7F3 dlc=8 data=0000000001000300 ok=1
-5700000 EV SOC_VALID a=1 b=11 c=0
-5700000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-5700000 EV SOC_VALID a=0 b=1041 c=0
-5700000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-5750000 EV SOC_VALID a=1 b=11 c=0
-5750000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-5750000 EV SOC_VALID a=0 b=1041 c=0
-5750000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-5800000 EV SOC_VALID a=1 b=11 c=0
-5800000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-5800000 EV SOC_VALID a=0 b=1041 c=0
-5800000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-5850000 EV SOC_VALID a=1 b=11 c=0
-5850000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-5850000 EV SOC_VALID a=0 b=1041 c=0
-5850000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-5900000 EV SOC_VALID a=1 b=11 c=0
-5900000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-5900000 EV SOC_VALID a=0 b=1041 c=0
-5900000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-5950000 EV SOC_VALID a=1 b=11 c=0
-5950000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-5950000 EV SOC_VALID a=0 b=1041 c=0
-5950000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-6000000 TX DIAG id=7F1 dlc=8 data=030103C600FF8813 ok=1
-6000000 EV SOC_VALID a=1 b=11 c=0
-6000000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-6000000 EV SOC_VALID a=0 b=1041 c=0
-6000000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-6050000 EV SOC_VALID a=1 b=11 c=0
-6050000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-6050000 EV SOC_VALID a=0 b=1041 c=0
-6050000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-6100000 EV SOC_VALID a=1 b=11 c=0
-6100000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-6100000 EV SOC_VALID a=0 b=1041 c=0
-6100000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-6150000 EV SOC_VALID a=1 b=11 c=0
-6150000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-6150000 EV SOC_VALID a=0 b=1041 c=0
-6150000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-6200000 EV SOC_VALID a=1 b=11 c=0
-6200000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-6200000 EV SOC_VALID a=0 b=1041 c=0
-6200000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-6250000 EV SOC_VALID a=1 b=11 c=0
-6250000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-6250000 EV SOC_VALID a=0 b=1041 c=0
-6250000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
+6000000 TX DIAG id=7F1 dlc=8 data=030103C600028813 ok=1
 6300000 TX DIAG id=7F2 dlc=8 data=6300000000010000 ok=1
-6300000 EV SOC_VALID a=1 b=11 c=0
-6300000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-6300000 EV SOC_VALID a=0 b=1041 c=0
-6300000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-6350000 EV SOC_VALID a=1 b=11 c=0
-6350000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-6350000 EV SOC_VALID a=0 b=1041 c=0
-6350000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-6400000 EV SOC_VALID a=1 b=11 c=0
-6400000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-6400000 EV SOC_VALID a=0 b=1041 c=0
-6400000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-6450000 EV SOC_VALID a=1 b=11 c=0
-6450000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-6450000 EV SOC_VALID a=0 b=1041 c=0
-6450000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-6500000 EV SOC_VALID a=1 b=11 c=0
-6500000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-6500000 EV SOC_VALID a=0 b=1041 c=0
-6500000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-6550000 EV SOC_VALID a=1 b=11 c=0
-6550000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-6550000 EV SOC_VALID a=0 b=1041 c=0
-6550000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 6600000 TX DIAG id=7F3 dlc=8 data=0000000001000300 ok=1
-6600000 EV SOC_VALID a=1 b=11 c=0
-6600000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-6600000 EV SOC_VALID a=0 b=1041 c=0
-6600000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-6650000 EV SOC_VALID a=1 b=11 c=0
-6650000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-6650000 EV SOC_VALID a=0 b=1041 c=0
-6650000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-6700000 EV SOC_VALID a=1 b=11 c=0
-6700000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-6700000 EV SOC_VALID a=0 b=1041 c=0
-6700000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-6750000 EV SOC_VALID a=1 b=11 c=0
-6750000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-6750000 EV SOC_VALID a=0 b=1041 c=0
-6750000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-6800000 EV SOC_VALID a=1 b=11 c=0
-6800000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-6800000 EV SOC_VALID a=0 b=1041 c=0
-6800000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-6850000 EV SOC_VALID a=1 b=11 c=0
-6850000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-6850000 EV SOC_VALID a=0 b=1041 c=0
-6850000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-6900000 TX DIAG id=7F1 dlc=8 data=030103C600FF8813 ok=1
-6900000 EV SOC_VALID a=1 b=11 c=0
-6900000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-6900000 EV SOC_VALID a=0 b=1041 c=0
-6900000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-6950000 EV SOC_VALID a=1 b=11 c=0
-6950000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-6950000 EV SOC_VALID a=0 b=1041 c=0
-6950000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-7000000 EV SOC_VALID a=1 b=11 c=0
-7000000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-7000000 EV SOC_VALID a=0 b=1041 c=0
-7000000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-7050000 EV SOC_VALID a=1 b=11 c=0
-7050000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-7050000 EV SOC_VALID a=0 b=1041 c=0
-7050000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-7100000 EV SOC_VALID a=1 b=11 c=0
-7100000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-7100000 EV SOC_VALID a=0 b=1041 c=0
-7100000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-7150000 EV SOC_VALID a=1 b=11 c=0
-7150000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-7150000 EV SOC_VALID a=0 b=1041 c=0
-7150000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
+6900000 TX DIAG id=7F1 dlc=8 data=030103C600028813 ok=1
 7200000 TX DIAG id=7F2 dlc=8 data=6300000000010000 ok=1
-7200000 EV SOC_VALID a=1 b=11 c=0
-7200000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-7200000 EV SOC_VALID a=0 b=1041 c=0
-7200000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-7250000 EV SOC_VALID a=1 b=11 c=0
-7250000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-7250000 EV SOC_VALID a=0 b=1041 c=0
-7250000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-7300000 EV SOC_VALID a=1 b=11 c=0
-7300000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-7300000 EV SOC_VALID a=0 b=1041 c=0
-7300000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-7350000 EV SOC_VALID a=1 b=11 c=0
-7350000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-7350000 EV SOC_VALID a=0 b=1041 c=0
-7350000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-7400000 EV SOC_VALID a=1 b=11 c=0
-7400000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-7400000 EV SOC_VALID a=0 b=1041 c=0
-7400000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-7450000 EV SOC_VALID a=1 b=11 c=0
-7450000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-7450000 EV SOC_VALID a=0 b=1041 c=0
-7450000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
 7500000 TX DIAG id=7F3 dlc=8 data=0000000001000300 ok=1
-7500000 EV SOC_VALID a=1 b=11 c=0
-7500000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-7500000 EV SOC_VALID a=0 b=1041 c=0
-7500000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-7550000 EV SOC_VALID a=1 b=11 c=0
-7550000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-7550000 EV SOC_VALID a=0 b=1041 c=0
-7550000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-7600000 EV SOC_VALID a=1 b=11 c=0
-7600000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-7600000 EV SOC_VALID a=0 b=1041 c=0
-7600000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-7650000 EV SOC_VALID a=1 b=11 c=0
-7650000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-7650000 EV SOC_VALID a=0 b=1041 c=0
-7650000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-7700000 EV SOC_VALID a=1 b=11 c=0
-7700000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-7700000 EV SOC_VALID a=0 b=1041 c=0
-7700000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-7750000 EV SOC_VALID a=1 b=11 c=0
-7750000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-7750000 EV SOC_VALID a=0 b=1041 c=0
-7750000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-7800000 TX DIAG id=7F1 dlc=8 data=030103C600FF8813 ok=1
-7800000 EV SOC_VALID a=1 b=11 c=0
-7800000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-7800000 EV SOC_VALID a=0 b=1041 c=0
-7800000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-7850000 EV SOC_VALID a=1 b=11 c=0
-7850000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-7850000 EV SOC_VALID a=0 b=1041 c=0
-7850000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-7900000 EV SOC_VALID a=1 b=11 c=0
-7900000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-7900000 EV SOC_VALID a=0 b=1041 c=0
-7900000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-7950000 EV SOC_VALID a=1 b=11 c=0
-7950000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
-7950000 EV SOC_VALID a=0 b=1041 c=0
-7950000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
+7800000 TX DIAG id=7F1 dlc=8 data=030103C600028813 ok=1
 8180000 TX DIAG id=7F2 dlc=8 data=6300000000010000 ok=1
 8580000 TX DIAG id=7F3 dlc=8 data=0000000001000300 ok=1
+8580000 EV SOC_VALID a=0 b=1041 c=0
 8580000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
-8980000 TX DIAG id=7F1 dlc=8 data=0301038600FF8813 ok=1
-9180000 FINAL mode=3 live=0 tx_ok=99 tx_fail=0 other=167 ctr_ok=273 ctr_bad=1 rx_gap_n=274 resp_n=99 disabled=0 dcode= block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 soc=5000 shift=255 key=0 socv=0 mainc=11
+8980000 TX DIAG id=7F1 dlc=8 data=0301038600028813 ok=1
+9180000 FINAL mode=3 live=0 tx_ok=99 tx_fail=0 other=407 ctr_ok=273 ctr_bad=1 rx_gap_n=274 resp_n=99 disabled=0 dcode= block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 soc=5000 shift=2 key=0 socv=0 mainc=11

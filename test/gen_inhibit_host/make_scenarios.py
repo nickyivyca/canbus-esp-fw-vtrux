@@ -157,24 +157,25 @@ def scenario(name, why, autokey=True, autobms=True):
 
     Scenarios that are ABOUT the key pass autokey=False and build their own.
 
-    autobms=True (the default) does the same job for spec 6.2's SoC-valid
-    marker: a 20 Hz 0x440 MAIN_PN_CLOSED_DRIVE train spanning the scenario, and
-    a 20 Hz healthy 0x411 train alongside it unless the scenario sends 0x411 of
-    its own (see add_autobms()).
+    autobms=True (the default) does the same job for the interlock signals that
+    gate going live: 0x440 closed, 0x411 healthy, 0x617 no-fault and 0x639,
+    each skipped if the scenario sends that ID itself (see add_autobms()).
 
     WHY THIS IS ALSO A DEFAULT, and it is the same argument as autokey. Since
-    review A1 the arm gate will not let the inhibit go live until the main
-    contactors have reported closed AND an 0x411 has arrived since -- so a
-    scenario with no 0x440 never transmits, and would be testing the new gate
-    condition instead of whatever it was written for. The truck presents the
+    reviews A1 and B3 the arm gate will not let the inhibit go live until the
+    main contactors have reported closed with an 0x411 since (condition 2) and
+    0x617 and 0x639 are fresh (conditions 3 and 4) -- so a scenario missing any
+    of them never transmits, and would be testing the new gate conditions
+    instead of whatever it was written for. The truck presents the
     contactors closed for the whole of any drive in which the engine could be
     started, because the engine is cranked by the HV inverter and that cannot
     run with them open.
 
-    The 0x411 train is withheld from a scenario that sends its own, because
+    Each train is withheld from a scenario that sends that ID itself, because
     low-soc-debounce counts CONSECUTIVE sub-threshold readings and a competing
     healthy train would reset the count every 50 ms so the release could never
-    latch.
+    latch -- and vcm-fault would never see 0xCA, and m-mode-latch never see
+    position 4.
 
     Scenarios about the bus going away pass autobms=False and build their own,
     for the reason _frame_span() documents: background frames arriving during
@@ -364,7 +365,12 @@ def s_bus_loss():
     # trailing abort (see _frame_span).
     L += contactor_train(1 * S, 3 * S)
     L += contactor_train(4500 * MS, 8 * S)
-    L += [soc(1 * S, 5000), soc(4500 * MS, 5000)]
+    L += periodic(1 * S, 3 * S, 50 * MS, lambda t: soc(t, 5000))
+    L += periodic(4500 * MS, 8 * S, 50 * MS, lambda t: soc(t, 5000))
+    L += periodic(1 * S, 3 * S, 250 * MS, lambda t: fault(t, 0xC8))
+    L += periodic(4500 * MS, 8 * S, 250 * MS, lambda t: fault(t, 0xC8))
+    L += periodic(1 * S, 3 * S, 50 * MS, lambda t: shift(t, 2))
+    L += periodic(4500 * MS, 8 * S, 50 * MS, lambda t: shift(t, 2))
     # The key train goes with the bus and comes back with it. The default
     # injection would have run 0x592 straight through the silence, which is a
     # bus the truck cannot produce -- 0x592 is the VCM's, and the VCM is the
@@ -379,16 +385,31 @@ def s_bus_loss():
 
 
 @scenario("bus-glitch-short", """
-The same shape as bus-loss-latches but the gap is 0.3 s -- INSIDE the 0.5 s
-freshness window.
+The same shape as bus-loss-latches but the gap is 0.3 s -- inside the 0.5 s
+freshness window for 0x051.
 
-EXPECT: no abort at all. This is the scenario that says the freshness window
-is doing its job rather than the trip being hair-triggered, and it is the one
-that would catch a careless tightening of fresh_us.
+EXPECT, SINCE REVIEW B3 (2026-09-24): a latched abort naming 0x617, at the
+moment the bus returns. This scenario used to expect no abort at all, and the
+change is not a regression -- it is the arithmetic of trip 5 meeting a 4 Hz
+signal, and it is worth understanding before anyone "fixes" it.
+
+0x617 arrives every 250 ms. A whole-bus interruption therefore leaves it
+absent for the glitch PLUS up to a further 250 ms, so a 0.3 s glitch produces
+an absence of up to 0.55 s -- past the 0.5 s window. The bus then returns,
+0x051 arrives after 0x617's window closed, the spec 7 evidence rule is
+satisfied, and trip 5 fires. Here the last 0x617 before the gap is at 2.75 s
+and the bus returns at 3.3 s: 0.55 s.
+
+SO THE DEVICE'S TOLERANCE OF A BRIEF DROPOUT IS NOW SET BY THE SLOWEST
+INTERLOCK, NOT BY fresh_us. A whole-bus glitch survives if it is shorter than
+0.5 s minus however long ago 0x617 last spoke -- between 0.25 s and 0.5 s
+depending on phase. bus-glitch-very-short pins the surviving end of that
+range. Flagged to the user 2026-09-25; the rules producing it are all ones
+they have already ruled on.
 
 The key goes away with the bus and comes back with it, for the same reason as
-in bus-loss-latches -- and a 0.3 s absence is inside the key's freshness
-window too, so transmission never stops either.
+in bus-loss-latches, and a 0.3 s absence is inside the key's own freshness
+window -- so the key gate is not what stops transmission here.
 """, autokey=False, autobms=False)
 def s_bus_glitch():
     L = ["mode 0 3 500"]
@@ -396,7 +417,12 @@ def s_bus_glitch():
     L += cmd_train(3300 * MS, 6 * S, 20 * MS)
     L += contactor_train(1 * S, 3 * S)
     L += contactor_train(3300 * MS, 6 * S)
-    L += [soc(1 * S, 5000), soc(3300 * MS, 5000)]
+    L += periodic(1 * S, 3 * S, 50 * MS, lambda t: soc(t, 5000))
+    L += periodic(3300 * MS, 6 * S, 50 * MS, lambda t: soc(t, 5000))
+    L += periodic(1 * S, 3 * S, 250 * MS, lambda t: fault(t, 0xC8))
+    L += periodic(3300 * MS, 6 * S, 250 * MS, lambda t: fault(t, 0xC8))
+    L += periodic(1 * S, 3 * S, 50 * MS, lambda t: shift(t, 2))
+    L += periodic(3300 * MS, 6 * S, 50 * MS, lambda t: shift(t, 2))
     L += key_train(1 * S, 3 * S, on=True)
     L += key_train(3300 * MS, 6 * S, on=True)
     L += ["end %d" % (7 * S)]
@@ -897,6 +923,9 @@ golden blessed it.
 def s_soc_wake_transient():
     L = ["mode 0 3 500"]
     L += cmd_train(1 * S, 8 * S, 20 * MS)
+    # 0x617/0x639 are arm-gate conditions since review B3; the BMS half
+    # of the background is what this scenario drives itself.
+    L += _healthy_bg(1 * S, 8 * S, skip=(0x440, 0x411))
     # BMS wakes with the bus, contactors still open (0 = ALL_OPEN).
     L += contactor_train(1 * S, 3 * S, stat=0)
     L += periodic(1 * S, 2 * S, 50 * MS, lambda t: soc(t, 1877))
@@ -923,6 +952,7 @@ the other order relative to the close.
 def s_soc_low_after_close():
     L = ["mode 0 3 500"]
     L += cmd_train(1 * S, 8 * S, 20 * MS)
+    L += _healthy_bg(1 * S, 8 * S, skip=(0x440, 0x411))
     L += contactor_train(1 * S, 8 * S, stat=11)
     L += periodic(1 * S, 3 * S, 50 * MS, lambda t: soc(t, 2441))
     L += periodic(3 * S, 8 * S, 50 * MS, lambda t: soc(t, 1877))
@@ -943,6 +973,7 @@ the contactors open.
 def s_soc_never_closed():
     L = ["mode 0 3 500"]
     L += cmd_train(1 * S, 6 * S, 20 * MS)
+    L += _healthy_bg(1 * S, 6 * S, skip=(0x440, 0x411))
     L += contactor_train(1 * S, 6 * S, stat=7)    # WAIT_PRECHARGE, forever
     L += periodic(1 * S, 6 * S, 50 * MS, lambda t: soc(t, 5000))
     L += ["end %d" % (7 * S)]
@@ -959,13 +990,17 @@ the false low reading is ignored exactly as in soc-wake-transient-ignored. The
 0x051 and the key keep running throughout, so this isolates the BMS going away
 from the bus going away (which is bus-loss-latches).
 
-Note what does NOT happen here: the marker clearing does not end a live
-inhibit by itself. A stale interlock signal ending a live inhibit is spec 7
-trip 5, which is a separate rule.
+Two rules meet here and it is worth keeping them apart. The marker clearing
+does not end a live inhibit BY ITSELF -- it governs whether the next 0x411 can
+be believed. What ends it is spec 7 trip 5, which fires on the same staleness
+because 0x051 keeps arriving and so satisfies the evidence rule. Before B3
+this scenario transmitted straight through the BMS's absence (449 frames);
+now it stands down at it.
 """, autobms=False)
 def s_soc_marker_clears():
     L = ["mode 0 3 500"]
     L += cmd_train(1 * S, 10 * S, 20 * MS)
+    L += _healthy_bg(1 * S, 10 * S, skip=(0x440, 0x411))
     L += contactor_train(1 * S, 4 * S, stat=11)
     L += periodic(1 * S, 4 * S, 50 * MS, lambda t: soc(t, 5000))
     # BMS asleep 4.0 -> 6.0 s. One freshness window in, the marker clears.
@@ -976,6 +1011,259 @@ def s_soc_marker_clears():
     L += ["end %d" % (11 * S)]
     return sorted_directives(L)
 
+
+
+# --------------------------------------------------------------------------
+# Spec 7 trip 5 and arm-gate conditions 3-4 (review B3, decided 2026-09-24).
+#
+# A stale interlock signal while LIVE is a latched abort. These build their own
+# background (autobms=False) because the signal under test is exactly the one
+# the injector would keep healthy.
+
+
+def _healthy_bg(t0, t1, skip=()):
+    """Healthy 0x440/0x411/0x617/0x639 over [t0, t1), minus `skip`."""
+    out = []
+    if 0x440 not in skip:
+        out += contactor_train(t0, t1)
+    if 0x411 not in skip:
+        out += periodic(t0, t1, 50 * MS, lambda t: soc(t, 5000))
+    if 0x617 not in skip:
+        out += periodic(t0, t1, 250 * MS, lambda t: fault(t, 0xC8))
+    if 0x639 not in skip:
+        out += periodic(t0, t1, 50 * MS, lambda t: shift(t, 2))
+    return out
+
+
+def _stale_one(ident, fn, period):
+    """Live on a healthy bus, then ONE signal stops while 0x051 keeps running."""
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 8 * S, 20 * MS)
+    L += _healthy_bg(1 * S, 8 * S, skip=(ident,))
+    L += periodic(1 * S, 4 * S, period, fn)      # the signal under test, then gone
+    L += ["end %d" % (9 * S)]
+    return sorted_directives(L)
+
+
+@scenario("stale-soc-aborts", """
+0x411 stops while the inhibit is live and 0x051 keeps arriving. The BMS has
+dropped off a bus that is otherwise healthy -- which the LV-connector
+disconnect test shows really happens, and which the pre-B3 text claimed had
+"no plausible cause".
+
+EXPECT: a LATCHED abort naming 0x411, on the first 0x051 after its freshness
+window expires. Not a block, not a pause: spec 7 trip 5 is option (c), because
+if the BMS is gone the truck is either stopping or we have lost sight of it.
+
+This is also the half of the spec 7 EVIDENCE RULE that must keep working. Its
+companion bus-stop-reports-link-loss pins the other half -- everything stopping
+at once must read as the link. If this scenario ever stops aborting, the
+evidence rule has been written too strictly and trip 5 is dead.
+""", autobms=False)
+def s_stale_soc():
+    return _stale_one(0x411, lambda t: soc(t, 5000), 50 * MS)
+
+
+@scenario("stale-contactor-aborts", """
+0x440 stops while live. Same shape as stale-soc-aborts, different signal, and
+worth its own scenario because 0x440 also drives the spec 6.2 SoC-valid marker
+-- so the trace shows SOC_VALID clearing and the abort landing together.
+
+EXPECT: a latched abort naming 0x440.
+""", autobms=False)
+def s_stale_contactor():
+    return _stale_one(0x440, lambda t: contactor(t, 11), 50 * MS)
+
+
+@scenario("stale-fault-aborts", """
+0x617 stops while live. This is the tightest signal against the 0.5 s window
+-- 4 Hz, worst measured gap 308 ms -- so it is the one a careless tightening of
+fresh_us would break first.
+
+EXPECT: a latched abort naming 0x617. Note what this is NOT: the VCM-fault trip
+(0x617 B7 = 0xCA) is trip 1 and fires on a value. This fires on absence, which
+before B3 read as "no fault" for ever.
+""", autobms=False)
+def s_stale_fault():
+    return _stale_one(0x617, lambda t: fault(t, 0xC8), 250 * MS)
+
+
+@scenario("stale-shift-aborts", """
+0x639 stops while live. Without it the M-mode release of section 6.1 is
+evaluating last_shift_pos, a last-known value that a silent bus can no longer
+contradict.
+
+EXPECT: a latched abort naming 0x639.
+""", autobms=False)
+def s_stale_shift():
+    return _stale_one(0x639, lambda t: shift(t, 2), 50 * MS)
+
+
+@scenario("stale-rpm-once-heard", """
+0x054 is heard, then stops. It carries the same once-heard qualification as
+0x471, so this pins the ARMED half of it; keyon-normal and keyon-gene-late pin
+the other half, where 0x054 never arrives and must not trip anything.
+
+EXPECT: live at ~1 s with no 0x054 anywhere (never-seen is not stale), no abort
+when 0x054 starts at 3 s, and a latched abort naming 0x054 one freshness window
+after it stops at 5 s. If this aborts before 3 s, bug 2 has been reintroduced
+through trip 5.
+""", autobms=False)
+def s_stale_rpm():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 8 * S, 20 * MS)
+    L += _healthy_bg(1 * S, 8 * S)
+    L += periodic(3 * S, 5 * S, 100 * MS, lambda t: gene(t, 0))
+    L += ["end %d" % (9 * S)]
+    return sorted_directives(L)
+
+
+@scenario("gate-needs-fresh-fault", """
+0x617 never arrives at all. Before B3 the gate passed: vcm_fault is initialised
+to 0xC8, so a bus that had never mentioned the fault flag read as "no fault" --
+a silent bus answering a safety question in the reassuring direction.
+
+EXPECT: never live, tx_ok=0, blocked on "no fresh 0x617". A block, not an
+abort: this is "not ready", and it clears by itself if the VCM starts talking.
+""", autobms=False)
+def s_gate_needs_fault():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 6 * S, 20 * MS)
+    L += _healthy_bg(1 * S, 6 * S, skip=(0x617,))
+    L += ["end %d" % (7 * S)]
+    return sorted_directives(L)
+
+
+@scenario("gate-needs-fresh-shift", """
+0x639 never arrives. The same argument for the M-mode release: last_shift_pos
+reads its 0xFF never-seen sentinel, and the gate used to pass anyway.
+
+EXPECT: never live, tx_ok=0, blocked on "no fresh 0x639".
+""", autobms=False)
+def s_gate_needs_shift():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 6 * S, 20 * MS)
+    L += _healthy_bg(1 * S, 6 * S, skip=(0x639,))
+    L += ["end %d" % (7 * S)]
+    return sorted_directives(L)
+
+
+@scenario("stale-at-keyoff-then-keyon", """
+THE ORDERING SPEC 7 REQUIRES A TEST FOR. At the end of a drive the key reads 0
+and the BMS stops about a quarter-second later, so trip 5 fires AFTER the
+key-off -- and the next key-on must clear it, exactly as it clears the
+inverter-lost trip. Measured on vtrux_20260513_174225_T4: key 0 at 167.230 s,
+last 0x411 at 167.692 s, last 0x440 at 167.680 s.
+
+EXPECT, in this order: transmission stops the moment the key reads 0 (rule 1,
+no abort); a latched trip-5 abort one freshness window after the BMS stops; and
+on the key-on at 8 s, KEY_CLEAR, the gate re-entered, and live again once the
+contactors have closed and an 0x411 has followed. If the abort came BEFORE the
+key-off this scenario would be pinning the wrong thing, so the timestamps in
+the trace are the assertion.
+""", autokey=False, autobms=False)
+def s_stale_at_keyoff():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 12 * S, 20 * MS)        # the VCM never stops talking
+    L += key_train(1 * S, 5 * S, on=True)
+    L += key_train(5 * S, 8 * S, on=False)        # key off at 5 s
+    L += key_train(8 * S, 12 * S, on=True)        # back on at 8 s
+    L += _healthy_bg(1 * S, 5300 * MS)            # BMS stops 0.3 s after the key
+    L += _healthy_bg(8 * S, 12 * S)
+    L += ["end %d" % (13 * S)]
+    return sorted_directives(L)
+
+
+@scenario("gate-contactors-open-now", """
+Spec 7 condition 2 as the user resolved it on 2026-09-25: the contactors must
+read closed NOW, not merely have done.
+
+The bus is fully healthy and the SoC-valid marker is SET -- 0x440 reads 11 for
+the first two seconds with 0x411 alongside it, so the readings are valid and
+stay valid, because spec 6.2 says the contactors merely opening while the BMS
+stays awake does not invalidate them. Then 0x440 goes to 13 SHUTDOWN_REQUEST
+and 14 ALL_OPEN_SHUTDOWN and keeps arriving. This is an arm during a key-off
+with the BMS still talking.
+
+EXPECT: live while 0x440 reads 11; the moment it reads 13 the device is no
+longer eligible -- but note it is ALREADY live by then, and going open does not
+retract liveness, so what this scenario pins is the GATE. The re-arm at 5 s is
+the assertion: with the marker still set and 0x440 reading 14, the gate must
+refuse with "main contactors not closed" and never go live again.
+
+Without the 2026-09-25 ruling the re-arm would pass the gate on soc_valid
+alone and transmit onto a bus with no HV behind it.
+""", autobms=False)
+def s_gate_contactors_open_now():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 9 * S, 20 * MS)
+    L += _healthy_bg(1 * S, 9 * S, skip=(0x440,))
+    L += contactor_train(1 * S, 3 * S, stat=11)
+    L += contactor_train(3 * S, 3500 * MS, stat=13)
+    L += contactor_train(3500 * MS, 9 * S, stat=14)
+    # The disarm/re-arm window is deliberately SHORT (100 ms). host_runner
+    # drops frames while OFF, so a longer one would let 0x411/0x440 go stale,
+    # clear the SoC-valid marker, and leave the re-arm blocking on
+    # "SoC not yet valid" -- testing the marker instead of the new condition.
+    # The whole point here is a re-arm with the marker still SET.
+    L += ["mode %d 0 500" % (5 * S)]          # disarm
+    L += ["mode %d 3 500" % (5100 * MS)]      # and re-arm, contactors open
+    L += ["end %d" % (10 * S)]
+    return sorted_directives(L)
+
+
+@scenario("bus-stop-reports-link-loss", """
+The evidence rule of spec 7 (decided 2026-09-25), and the case that prompted
+it. EVERYTHING stops at once -- the pulled connector.
+
+0x617 runs at 4 Hz, so its last frame precedes 0x051's by up to 250 ms and its
+freshness window closes that much earlier. Before the rule, this aborted
+naming 0x617 about 100 ms before trip 2 would have fired, so a pulled connector
+reported "VCM fault flag lost" and would have sent someone after the VCM.
+
+EXPECT: exactly one abort, and it names the LINK -- "bus lost -- no 0x051".
+No trip-5 abort at any point, because once 0x051 has stopped no 0x051 can
+arrive after any other signal's expiry, which is precisely what the evidence
+rule tests.
+
+This is a reporting rule, not a safety one: the device stands down identically
+either way. It matters because the reason goes on the wire.
+""", autokey=False, autobms=False)
+def s_bus_stop_link_loss():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 6 * S, 20 * MS)
+    L += key_train(1 * S, 6 * S, on=True)
+    L += _healthy_bg(1 * S, 6 * S)
+    L += ["end %d" % (8 * S)]
+    return sorted_directives(L)
+
+
+
+
+@scenario("bus-glitch-very-short", """
+A 0.15 s whole-bus glitch -- short enough that even 0x617, the slowest
+interlock at 4 Hz, stays inside its window.
+
+EXPECT: no abort at all, and transmission resuming when the bus does. This is
+now the scenario that says the freshness window is doing its job rather than
+the trips being hair-triggered; bus-glitch-short stopped being able to say it
+when review B3 gave trip 5 teeth, because a 0.3 s glitch can leave 0x617
+absent for 0.55 s.
+
+Pairs with bus-glitch-short as the two ends of the tolerance range: the device
+survives a whole-bus interruption shorter than 0.5 s minus 0x617's phase, and
+latches for one longer than that.
+""", autokey=False, autobms=False)
+def s_bus_glitch_very_short():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 3 * S, 20 * MS)
+    L += cmd_train(3150 * MS, 6 * S, 20 * MS)
+    L += key_train(1 * S, 3 * S, on=True)
+    L += key_train(3150 * MS, 6 * S, on=True)
+    L += _healthy_bg(1 * S, 3 * S)
+    L += _healthy_bg(3150 * MS, 6 * S)
+    L += ["end %d" % (7 * S)]
+    return sorted_directives(L)
 
 def sorted_directives(lines):
     """Stable-sort directive lines by their timestamp field.
@@ -1017,8 +1305,21 @@ def _frame_span(lines):
     return (min(ts), max(ts)) if ts else (0, 0)
 
 
+# The background interlock signals, and the cadence each is injected at. The
+# rates are the measured ones (review B3/B4, four clean captures) rather than
+# round numbers, because 0x617 at 4 Hz has the least margin of any of them
+# against the 0.5 s freshness window and a scenario should not be quietly
+# kinder to the core than the truck is.
+BACKGROUND = (
+    (0x440, 50 * MS,  lambda t: contactor(t, 11)),   # ~20 Hz measured
+    (0x411, 50 * MS,  lambda t: soc(t, 5000)),       # ~20 Hz measured
+    (0x617, 250 * MS, lambda t: fault(t, 0xC8)),     # 4 Hz measured
+    (0x639, 50 * MS,  lambda t: shift(t, 2)),        # 100 Hz; 20 Hz keeps
+)                                                    # traces small
+
+
 def add_autobms(lines):
-    """Span the scenario's traffic with a healthy, awake BMS. See scenario().
+    """Span the scenario's traffic with healthy interlock signals.
 
     Both signals get a TRAIN, not a single frame, and that is not a detail: the
     spec 6.2 marker clears when EITHER 0x411 or 0x440 stops being fresh, so one
@@ -1026,12 +1327,20 @@ def add_autobms(lines):
     every tick and re-sets on every 0x440 -- a 20 Hz flap through the whole
     trace. The first version of this function did exactly that.
 
-    The 0x411 train is SKIPPED when the scenario sends 0x411 of its own, which
-    is the only workable rule: a scenario that drives SoC owns that signal, and
-    an injected healthy train would reset low-soc-debounce's CONSECUTIVE
-    sub-threshold count every 50 ms so the release could never latch. Such a
-    scenario is then responsible for keeping 0x411 fresh for as long as it wants
-    the marker to hold, which is itself worth having visible in its trace.
+EACH signal is SKIPPED when the scenario sends that ID of its own, which is
+    the only workable rule: a scenario that drives a signal owns it, and an
+    injected healthy train would fight it. low-soc-debounce counts CONSECUTIVE
+    sub-threshold 0x411 readings, so a healthy train at 20 Hz would reset the
+    count every 50 ms and the release could never latch; vcm-fault would never
+    see 0xCA; m-mode-latch would never see position 4. Such a scenario is then
+    responsible for keeping that signal fresh for as long as it wants the
+    inhibit live, which is itself worth having visible in its trace.
+
+    0x617 and 0x639 joined the list on 2026-09-24: review B3 made them arm-gate
+    conditions 3 and 4, so a scenario without them never goes live, exactly as
+    with 0x592 and 0x440 before them. The scenarios that already drove them
+    happen to do so at 200 ms, inside the window, so none of them needed
+    changing.
 
     The 0x411 frames are appended AFTER the 0x440 train so that, at a shared
     timestamp, the stable sort puts the contactor frame first. That is the order
@@ -1040,11 +1349,13 @@ def add_autobms(lines):
     threshold and not a value any scenario drives to.
     """
     t0, t1 = _frame_span(lines)
-    out = lines + contactor_train(t0, t1 + 1)
-    own_soc = any(len(p) > 2 and p[0] == "f" and p[2] == "411"
-                  for p in (ln.split() for ln in lines))
-    if not own_soc:
-        out += periodic(t0, t1 + 1, 50 * MS, lambda t: soc(t, 5000))
+    own = {p[2] for p in (ln.split() for ln in lines)
+           if len(p) > 2 and p[0] == "f"}
+    out = list(lines)
+    for ident, period, fn in BACKGROUND:
+        if ("%03X" % ident) in own:
+            continue
+        out += periodic(t0, t1 + 1, period, fn)
     return sorted_directives(out)
 
 
@@ -1094,16 +1405,19 @@ def main():
             else:
                 fh.write("# KEY: this scenario builds its own 0x592 traffic.\n#\n")
             if autobms:
-                fh.write("# BMS: a 20 Hz 0x440 MAIN_PN_CLOSED_DRIVE train"
-                         " spanning the whole scenario,\n"
-                         "# and (unless 0x411 appears below) a 20 Hz 0x411 at"
-                         " 50.00%, were injected\n"
-                         "# automatically -- spec 6.2's SoC-valid marker gates"
-                         " going live. Nothing\n"
-                         "# below asserts on them.\n#\n")
+                fh.write("# BACKGROUND: healthy 0x440 (closed), 0x411"
+                         " (50.00%), 0x617 (no fault) and\n"
+                         "# 0x639 (position 2) trains spanning the whole"
+                         " scenario were injected\n"
+                         "# automatically, EXCEPT any of those IDs that appear"
+                         " below -- a scenario\n"
+                         "# that drives a signal owns it. All four gate going"
+                         " live (spec 6.2, spec 7\n"
+                         "# conditions 2-4). Nothing below asserts on the"
+                         " injected ones.\n#\n")
             else:
-                fh.write("# BMS: this scenario builds its own 0x440/0x411"
-                         " traffic.\n#\n")
+                fh.write("# BACKGROUND: this scenario builds its own"
+                         " 0x440/0x411/0x617/0x639 traffic.\n#\n")
             for ln in lines:
                 fh.write(ln + "\n")
         print("wrote %-40s %5d lines" % (path, len(lines)))

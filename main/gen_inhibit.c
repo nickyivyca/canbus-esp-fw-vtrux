@@ -617,7 +617,10 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
                      "\"vcm_torque\":%ld,\"vcm_fault\":%u,"
                      "\"soc_valid\":%s,\"soc_since_valid\":%s,"
                      "\"mainc_stat\":%u,\"soc_fresh\":%s,"
-                     "\"contactor_fresh\":%s,",
+                     "\"contactor_fresh\":%s,\"cmd_fresh\":%s,"
+                     "\"fault_fresh\":%s,\"shift_fresh\":%s,"
+                     "\"fb_fresh\":%s,\"rpm_fresh\":%s,"
+                     "\"fb_ever\":%s,\"rpm_ever\":%s,",
                      (int)st->mode, (unsigned long)st->offset_us, GI_PROBE_ID,
                      (unsigned long)st->tx_ok, (unsigned long)st->tx_fail,
                      (unsigned long)st->other_frames,
@@ -658,7 +661,31 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
                      gi_fresh(st, st->have_soc, st->seen_soc, t_now)
                          ? "true" : "false",
                      gi_fresh(st, st->have_cont, st->seen_cont, t_now)
-                         ? "true" : "false");
+                         ? "true" : "false",
+                     /*
+                      * Spec 11 (review B3): the freshness of each interlock
+                      * signal, because since trip 5 every one of them can end
+                      * a drive on its own and "which one went away" is the
+                      * first question anyone reading this will have.
+                      *
+                      * fb_ever and rpm_ever go with them. A GENE signal reads
+                      * not-fresh both before the inverter wakes and after it
+                      * dies, and those are opposite situations -- the *_ever
+                      * flags are what separate them, and they are the reason
+                      * neither trip fires in the first case.
+                      */
+                     gi_fresh(st, st->have_cmd, st->seen_cmd, t_now)
+                         ? "true" : "false",
+                     gi_fresh(st, st->have_fault, st->seen_fault, t_now)
+                         ? "true" : "false",
+                     gi_fresh(st, st->have_shift, st->seen_shift, t_now)
+                         ? "true" : "false",
+                     gi_fresh(st, st->have_fb, st->seen_fb, t_now)
+                         ? "true" : "false",
+                     gi_fresh(st, st->have_rpm, st->seen_rpm, t_now)
+                         ? "true" : "false",
+                     st->fb_ever ? "true" : "false",
+                     st->rpm_ever ? "true" : "false");
 
     n += hist_json(&st->rx_gap, "rx_gap", buf + n, buflen - n);
     if (n < buflen) n += snprintf(buf + n, buflen - n, ",");

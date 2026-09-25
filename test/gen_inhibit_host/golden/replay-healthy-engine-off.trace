@@ -4,15 +4,15 @@
 0 STATE mode=3 live=0 block=gate not yet evaluated abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
 0 STATE mode=3 live=0 block=no fresh 0x051 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
 5000 STATE mode=3 live=0 block=no fresh 0x051 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=0 socsince=0
-7000 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=0 socsince=0
+7000 STATE mode=3 live=0 block=no fresh 0x617 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=0 socsince=0
 15000 EV KEY a=1 b=0 c=0
-15000 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=0 socsince=0
+15000 STATE mode=3 live=0 block=no fresh 0x617 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=0 socsince=0
 47000 EV SOC_VALID a=1 b=11 c=0
-47000 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=0
-59000 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
-59000 EV INHIBIT_LIVE a=0 b=0 c=0
-59000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
+47000 STATE mode=3 live=0 block=no fresh 0x617 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=0
+59000 STATE mode=3 live=0 block=no fresh 0x617 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
+182000 EV INHIBIT_LIVE a=0 b=0 c=0
+182000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
 300568000 EV SOC_VALID a=0 b=1041 c=0
 300568000 EV ABORT a=3 b=0 c=0
 300568000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=0 socsince=0
-301168000 FINAL mode=3 live=0 tx_ok=29985 tx_fail=0 other=106079 ctr_ok=29990 ctr_bad=0 rx_gap_n=29990 resp_n=29985 disabled=0 dcode= block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 soc=8435 shift=0 key=0 socv=0 mainc=11
+301168000 FINAL mode=3 live=0 tx_ok=29973 tx_fail=0 other=106079 ctr_ok=29990 ctr_bad=0 rx_gap_n=29990 resp_n=29973 disabled=0 dcode= block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 soc=8435 shift=0 key=0 socv=0 mainc=11

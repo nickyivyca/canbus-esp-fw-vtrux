@@ -103,6 +103,9 @@ const char *gi_block_name(gi_block_t b)
     case GI_BLOCK_VCM_TORQUE:          return "VCM commanding torque";
     case GI_BLOCK_SHUTDOWN_CMD:        return "VCM commanding 0x10";
     case GI_BLOCK_NO_SOC_VALID:        return "SoC not yet valid (contactors)";
+    case GI_BLOCK_CONTACTORS_OPEN:     return "main contactors not closed";
+    case GI_BLOCK_NO_FRESH_FAULT:      return "no fresh 0x617";
+    case GI_BLOCK_NO_FRESH_SHIFT:      return "no fresh 0x639";
     case GI_BLOCK_DISABLED:            return "latched disable";
     case GI_BLOCK_ABORTED:             return "latched abort (key-on clears)";
     }
@@ -120,6 +123,11 @@ const char *gi_abort_name(gi_abort_t a)
     case GI_ABORT_INVERTER_LOST:   return "0x471 stopped while 0x051 still live -- inverter lost";
     case GI_ABORT_ENGINE_TURNING:  return "engine turning while armed -- the inhibit did not hold";
     case GI_ABORT_ERROR_RATE:      return "error-frame rate exceeded";
+    case GI_ABORT_STALE_SOC:       return "0x411 went stale while live -- BMS lost";
+    case GI_ABORT_STALE_CONTACTOR: return "0x440 went stale while live -- BMS lost";
+    case GI_ABORT_STALE_FAULT:     return "0x617 went stale while live -- VCM fault flag lost";
+    case GI_ABORT_STALE_SHIFT:     return "0x639 went stale while live -- shift position lost";
+    case GI_ABORT_STALE_RPM:       return "0x054 stopped while live -- generator speed lost";
     }
     return "?";
 }
@@ -336,6 +344,7 @@ void gi_reset_stats(gi_state_t *st)
     st->have_err_window = false;
     st->err_window = 0;
     st->fb_ever = false;
+    st->rpm_ever = false;
 
     /*
      * Not in the pre-refactor reset, but it was reset in the worker's OFF
@@ -440,6 +449,36 @@ void gi_notify_off(gi_state_t *st)
  * for as long as it stays latched, instead of falling silent in a way that is
  * indistinguishable from having been switched off.
  */
+/*
+ * Spec 7's EVIDENCE RULE for trips 3 and 5 (decided 2026-09-25).
+ *
+ * A signal going stale counts as that signal being lost only if an 0x051 has
+ * arrived AFTER its freshness window expired -- i.e. the bus was demonstrably
+ * alive at the moment the missing signal should have been there.
+ *
+ * WITHOUT IT, A WHOLE-BUS LOSS IS ALWAYS MISREPORTED. One 0.5 s window across
+ * signals of different cadence means the SLOWEST expires first when everything
+ * stops together: 0x617 runs at 4 Hz, so its last frame precedes 0x051's by up
+ * to 250 ms and its window closes that much earlier. Measured on the host
+ * suite before this rule: a trailing silence aborted at 8.380 s naming 0x617,
+ * where trip 2 would have fired at 8.480 s naming the link. A pulled connector
+ * would have reported "VCM fault flag lost" and sent someone after the VCM.
+ *
+ * Note what this is NOT. It is not a safety change -- every trip ends the
+ * inhibit and latches identically, and the device stands down either way. It
+ * is about the reason, which goes on the wire in section 10 and is what a log
+ * gets read for.
+ *
+ * `now` is not used: the test is between two arrival times, not against the
+ * present. A signal that expired long ago and a bus that has been quiet ever
+ * since still fails this test, which is the intended answer.
+ */
+static bool bus_alive_since(const gi_state_t *st, bool have_x, int64_t seen_x)
+{
+    return st->have_cmd && have_x
+        && st->seen_cmd > seen_x + st->cfg.fresh_us;
+}
+
 static void inhibit_abort(gi_state_t *st, gi_abort_t why, int64_t now,
                           gi_events_t *ev)
 {
@@ -454,6 +493,24 @@ static void inhibit_abort(gi_state_t *st, gi_abort_t why, int64_t now,
  * Spec 7: may the inhibit go live right now? Every check is against FRESHNESS
  * as well as value -- a silent bus otherwise answers every question you ask
  * it, and answers them all reassuringly.
+ */
+/*
+ * Spec 7's arm gate. Every condition must hold before the inhibit goes live.
+ *
+ * The checks below are NOT in the spec's numbered order, and that is on
+ * purpose: the order decides which reason gets reported when several conditions
+ * fail at once, so reordering it would rewrite arm_block in a pile of goldens
+ * without changing whether anything goes live. The mapping is:
+ *
+ *   spec 1 (0x051 fresh)          first check
+ *   spec 3 (0x617 fresh, no fault) second and third
+ *   spec 4 (0x639 fresh)           fourth
+ *   spec 5 (generator stopped)     fifth
+ *   spec 6 (VCM not asking)        sixth and seventh
+ *   spec 7 (not 0x10-suppressed)   eighth
+ *   spec 2 (contactors + 0x411)    last
+ *   spec 8 (no latch)              not here -- gi_tick() does not call this
+ *                                  function at all while a latch is set
  */
 static bool arm_gate_ok(gi_state_t *st, int64_t now)
 {
@@ -485,9 +542,32 @@ static bool arm_gate_ok(gi_state_t *st, int64_t now)
      * going. The runtime trip below honours that by firing only once it has
      * been seen.
      */
+    /*
+     * Spec 7 condition 3 (review B2/B3). Freshness FIRST, then the value: a
+     * never-seen 0x617 used to read as "no fault" because vcm_fault is
+     * initialised to 0xC8, which is a silent bus answering a safety question
+     * in the reassuring direction. 0x617 is the tightest signal here against
+     * the 0.5 s window -- 4 Hz, worst measured gap 308 ms -- so this is the
+     * condition most likely to block on a marginal bus, which is the intended
+     * direction.
+     */
+    if (!gi_fresh(st, st->have_fault, st->seen_fault, now))
+    {
+        st->arm_block = GI_BLOCK_NO_FRESH_FAULT;
+        return false;
+    }
     if (st->vcm_fault == GI_FAULT_ACTIVE)
     {
         st->arm_block = GI_BLOCK_VCM_FAULT;
+        return false;
+    }
+    /*
+     * Spec 7 condition 4: 0x639 fresh, so the section 6.1 M-mode release is
+     * evaluating a real reading rather than last_shift_pos's 0xFF sentinel.
+     */
+    if (!gi_fresh(st, st->have_shift, st->seen_shift, now))
+    {
+        st->arm_block = GI_BLOCK_NO_FRESH_SHIFT;
         return false;
     }
     /*
@@ -547,6 +627,29 @@ static bool arm_gate_ok(gi_state_t *st, int64_t now)
         st->arm_block = GI_BLOCK_NO_SOC_VALID;
         return false;
     }
+    /*
+     * ...and the contactors must read closed NOW, not merely have done
+     * (user, 2026-09-25, resolving spec 6.2 against spec 7 condition 2).
+     *
+     * The marker deliberately survives the contactors opening while the BMS
+     * stays awake -- no wake has happened, so the readings are still good, and
+     * that is spec 6.2's rule for the VALIDITY of a reading. But validity is
+     * not permission: with the contactors open there is no HV, the inverter
+     * cannot crank, and an arm evaluated in that window (a POST during a
+     * key-off with the BMS still talking) would go live with nothing to
+     * inhibit. Spec 7 is the stricter of the two and it wins.
+     *
+     * Freshness comes free: soc_marker_tick() clears the marker on a stale
+     * 0x440 and runs earlier in the same gi_tick(), so reaching here with
+     * soc_valid set means 0x440 was fresh this tick. The reading is what still
+     * has to be tested.
+     */
+    if (st->mainc_stat != GI_MAINC_CLOSED_DRIVE
+        && st->mainc_stat != GI_MAINC_CLOSED_CHARGE)
+    {
+        st->arm_block = GI_BLOCK_CONTACTORS_OPEN;
+        return false;
+    }
     st->arm_block = GI_BLOCK_NONE;
     return true;
 }
@@ -598,16 +701,73 @@ static void interlock_runtime(gi_state_t *st, int64_t now, const gi_bus_t *bus,
      *
      * THIS REPLACES THE DEAD-MAN TIMER, which is removed (spec 7,
      * 2026-09-19). Every hazard the timer was still covering reduces to "the
-     * signals that would release us stopped arriving", and losing the VCU's
-     * 0x051 and the BCM's 0x411 together has no plausible cause on a healthy
-     * link -- it IS link loss, which this catches directly and by evidence
-     * rather than by elapsed time.
+     * signals that would release us stopped arriving", which is now split
+     * between this trip and trip 5 above.
+     *
+     * The original text here said losing 0x051 and 0x411 together "has no
+     * plausible cause on a healthy link". Review B3 withdrew that on
+     * 2026-09-24: they are different transmitters, and the BMS LV-connector
+     * disconnect test (projects/vtrux/README.md, "PT Bus Disconnect Test
+     * Evidence", T2) shows 0x411 stopping while the VCM keeps broadcasting.
+     * That case is trip 5, not this one.
      */
     if (!gi_fresh(st, st->have_cmd, st->seen_cmd, now))
     {
         inhibit_abort(st, GI_ABORT_BUS_LOST, now, ev);
         return;
     }
+    /*
+     * Spec 7 trip 5 (review B3, option c). A stale interlock signal while live
+     * is a LATCHED abort.
+     *
+     * The user's reasoning for that severity: if the VCM or the BMS genuinely
+     * goes offline the truck stops, or the inhibitor has lost the truck --
+     * either way there is nothing left to protect by continuing to transmit a
+     * real 0x051 built from readings we can no longer see.
+     *
+     * ORDER MATTERS HERE, and not for correctness but for what a log says.
+     * This runs AFTER the 0x617-fault and 0x051-link tests above, so a whole
+     * bus going away is still reported as link loss rather than as whichever
+     * signal this function happens to check first. At the end of a drive the
+     * BMS stops ~0.26 s after the key reads 0, so on a healthy truck this trip
+     * is usually beaten to it by the inverter-lost trip (measured on
+     * vtrux_20260513_174225_T4: inverter lost at 168.071 s, 0x440 stale at
+     * 168.18 s) -- whichever fires, the next key-on clears it.
+     *
+     * 0x054 carries the once-heard qualification; the other four cannot be
+     * never-seen while live, because the arm gate requires all of them.
+     */
+    if (!gi_fresh(st, st->have_soc, st->seen_soc, now)
+        && bus_alive_since(st, st->have_soc, st->seen_soc))
+    {
+        inhibit_abort(st, GI_ABORT_STALE_SOC, now, ev);
+        return;
+    }
+    if (!gi_fresh(st, st->have_cont, st->seen_cont, now)
+        && bus_alive_since(st, st->have_cont, st->seen_cont))
+    {
+        inhibit_abort(st, GI_ABORT_STALE_CONTACTOR, now, ev);
+        return;
+    }
+    if (!gi_fresh(st, st->have_fault, st->seen_fault, now)
+        && bus_alive_since(st, st->have_fault, st->seen_fault))
+    {
+        inhibit_abort(st, GI_ABORT_STALE_FAULT, now, ev);
+        return;
+    }
+    if (!gi_fresh(st, st->have_shift, st->seen_shift, now)
+        && bus_alive_since(st, st->have_shift, st->seen_shift))
+    {
+        inhibit_abort(st, GI_ABORT_STALE_SHIFT, now, ev);
+        return;
+    }
+    if (st->rpm_ever && !gi_fresh(st, st->have_rpm, st->seen_rpm, now)
+        && bus_alive_since(st, st->have_rpm, st->seen_rpm))
+    {
+        inhibit_abort(st, GI_ABORT_STALE_RPM, now, ev);
+        return;
+    }
+
 
     /*
      * "Disarm if the inverter goes QUIET (0x471 STOPS)" -- so this can only
@@ -617,12 +777,18 @@ static void interlock_runtime(gi_state_t *st, int64_t now, const gi_bus_t *bus,
      * after key-on and is permanent in sessions where the generator is never
      * used. Never-seen is not the same as stopped.
      *
-     * 0x051 is known fresh by this point, so this is unambiguously the
-     * inverter specifically dropping off a live bus -- the alarming case, and
-     * the distinction the laptop tool could not make. Whole-bus loss was
-     * handled above and is not a fault.
+     * 0x051 is known fresh by this point, AND bus_alive_since() requires an
+     * 0x051 to have arrived after 0x471's window closed -- so this is
+     * unambiguously the inverter specifically dropping off a live bus, the
+     * alarming case and the distinction the laptop tool could not make.
+     *
+     * The freshness test alone was not enough, and that is not theoretical
+     * even here where both signals run at ~100 Hz: if 0x471's last frame
+     * straddles a tick boundary before 0x051's, a whole-bus loss reports the
+     * inverter. Rarer than the 0x617 case that prompted the rule, same shape.
      */
-    if (st->fb_ever && !gi_fresh(st, st->have_fb, st->seen_fb, now))
+    if (st->fb_ever && !gi_fresh(st, st->have_fb, st->seen_fb, now)
+        && bus_alive_since(st, st->have_fb, st->seen_fb))
     {
         inhibit_abort(st, GI_ABORT_INVERTER_LOST, now, ev);
         return;
@@ -1089,6 +1255,14 @@ static void key_monitor(gi_state_t *st, uint32_t id, uint8_t dlc,
     st->rpm_over_since = 0;
     st->have_err_window = false;
     st->err_window      = 0;
+    /*
+     * rpm_ever goes with fb_ever, and for the same reason: the key-on clear
+     * re-enters the arm gate, and the inverter powers up ~28 s after the bus.
+     * Carrying either flag across the clear would abort the instant the
+     * inhibit went live -- bug 2 of 2026-09-19 through a third door, this one
+     * via trip 5.
+     */
+    st->rpm_ever      = false;
 }
 
 /*
@@ -1121,16 +1295,30 @@ static void interlock_monitor(gi_state_t *st, uint32_t id, uint8_t dlc,
     case GI_RPM_ID:
         st->have_rpm = true;
         st->seen_rpm = now;
+        st->rpm_ever = true;
         if (dlc >= 2)
         {
             st->gene_rpm = gi_le16c(&data[0], GI_RPM_ZERO);
         }
         break;
     case GI_FAULT_ID:
+        /*
+         * Stamp freshness on ARRIVAL, not on a long-enough frame. A 0x617 that
+         * arrives too short to carry B7 still proves the VCM is talking, which
+         * is what the freshness test is asking; treating it as absence would
+         * abort a live inhibit over a truncated frame.
+         */
+        st->have_fault = true;
+        st->seen_fault = now;
         if (dlc >= 8)
         {
             st->vcm_fault = data[7];
         }
+        break;
+    case GI_MMODE_ID:
+        /* Freshness only; the value is disable_monitor()'s business. */
+        st->have_shift = true;
+        st->seen_shift = now;
         break;
     case GI_SOC_ID:
         /*

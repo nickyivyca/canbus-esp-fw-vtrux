@@ -1,4 +1,4 @@
-# host_runner: 400 frames, 1 directives, t=[0,6000000]
+# host_runner: 496 frames, 1 directives, t=[0,6000000]
 0 STATE mode=0 live=0 block=not armed abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
 0 EV MODE a=3 b=500 c=0
 0 STATE mode=3 live=0 block=gate not yet evaluated abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
@@ -6,19 +6,21 @@
 0 STATE mode=3 live=0 block=no fresh 0x051 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
 400000 TX DIAG id=7F2 dlc=8 data=0000000000000000 ok=1
 800000 TX DIAG id=7F3 dlc=8 data=0000000001000300 ok=1
-1000000 STATE mode=3 live=0 block=VCM requesting engine abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
+1000000 STATE mode=3 live=0 block=no fresh 0x617 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
 1000000 EV SOC_VALID a=1 b=11 c=0
-1000000 STATE mode=3 live=0 block=VCM requesting engine abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=1 socsince=0
+1000000 STATE mode=3 live=0 block=no fresh 0x617 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=1 socsince=0
+1000000 STATE mode=3 live=0 block=no fresh 0x617 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=1 socsince=1
+1000000 STATE mode=3 live=0 block=no fresh 0x639 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=1 socsince=1
 1000000 STATE mode=3 live=0 block=VCM requesting engine abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=1 socsince=1
 1000000 EV KEY a=1 b=0 c=0
 1000000 STATE mode=3 live=0 block=VCM requesting engine abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=1
-1100000 TX DIAG id=7F1 dlc=8 data=0301034600FF8813 ok=1
+1100000 TX DIAG id=7F1 dlc=8 data=0301034600028813 ok=1
 1400000 TX DIAG id=7F2 dlc=8 data=0000000000000000 ok=1
 1700000 TX DIAG id=7F3 dlc=8 data=0000000001000300 ok=1
-2000000 TX DIAG id=7F1 dlc=8 data=0301034600FF8813 ok=1
+2000000 TX DIAG id=7F1 dlc=8 data=0301034600028813 ok=1
 2300000 TX DIAG id=7F2 dlc=8 data=0000000000000000 ok=1
 2600000 TX DIAG id=7F3 dlc=8 data=0000000001000300 ok=1
-2900000 TX DIAG id=7F1 dlc=8 data=0301034600FF8813 ok=1
+2900000 TX DIAG id=7F1 dlc=8 data=0301034600028813 ok=1
 3000000 EV INHIBIT_LIVE a=0 b=0 c=0
 3000000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=1
 3020000 TX INHIBIT id=051 dlc=6 data=080080FF7F02 ok=1
@@ -63,7 +65,7 @@
 3760000 TX INHIBIT id=051 dlc=6 data=080080FF7F07 ok=1
 3780000 TX INHIBIT id=051 dlc=6 data=080080FF7F08 ok=1
 3800000 TX INHIBIT id=051 dlc=6 data=080080FF7F09 ok=1
-3800000 TX DIAG id=7F1 dlc=8 data=0301036600FF8813 ok=1
+3800000 TX DIAG id=7F1 dlc=8 data=0301036600028813 ok=1
 3820000 TX INHIBIT id=051 dlc=6 data=080080FF7F0A ok=1
 3840000 TX INHIBIT id=051 dlc=6 data=080080FF7F0B ok=1
 3860000 TX INHIBIT id=051 dlc=6 data=080080FF7F0C ok=1
@@ -111,7 +113,7 @@
 4660000 TX INHIBIT id=051 dlc=6 data=080080FF7F04 ok=1
 4680000 TX INHIBIT id=051 dlc=6 data=080080FF7F05 ok=1
 4700000 TX INHIBIT id=051 dlc=6 data=080080FF7F06 ok=1
-4700000 TX DIAG id=7F1 dlc=8 data=0301036600FF8813 ok=1
+4700000 TX DIAG id=7F1 dlc=8 data=0301036600028813 ok=1
 4720000 TX INHIBIT id=051 dlc=6 data=080080FF7F07 ok=1
 4740000 TX INHIBIT id=051 dlc=6 data=080080FF7F08 ok=1
 4760000 TX INHIBIT id=051 dlc=6 data=080080FF7F09 ok=1
@@ -131,5 +133,5 @@
 5580000 EV SOC_VALID a=0 b=1041 c=0
 5580000 EV ABORT a=3 b=0 c=0
 5580000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
-5980000 TX DIAG id=7F1 dlc=8 data=0301038600FF8813 ok=1
-6180000 FINAL mode=3 live=0 tx_ok=99 tx_fail=0 other=200 ctr_ok=198 ctr_bad=1 rx_gap_n=199 resp_n=99 disabled=0 dcode= block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 soc=5000 shift=255 key=0 socv=0 mainc=11
+5980000 TX DIAG id=7F1 dlc=8 data=0301038600028813 ok=1
+6180000 FINAL mode=3 live=0 tx_ok=99 tx_fail=0 other=296 ctr_ok=198 ctr_bad=1 rx_gap_n=199 resp_n=99 disabled=0 dcode= block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 soc=5000 shift=2 key=0 socv=0 mainc=11

@@ -295,7 +295,10 @@ typedef enum
     GI_BLOCK_VCM_REQ_ENGINE,
     GI_BLOCK_VCM_TORQUE,
     GI_BLOCK_SHUTDOWN_CMD,
-    GI_BLOCK_NO_SOC_VALID,      /* contactors not closed, or no 0x411 since */
+    GI_BLOCK_NO_SOC_VALID,      /* no closed reading yet, or no 0x411 since */
+    GI_BLOCK_CONTACTORS_OPEN,   /* marker set, but 0x440 reads open now */
+    GI_BLOCK_NO_FRESH_FAULT,    /* 0x617 stale (spec 7 condition 3) */
+    GI_BLOCK_NO_FRESH_SHIFT,    /* 0x639 stale (spec 7 condition 4) */
     GI_BLOCK_DISABLED,          /* a section 6 release has latched */
     GI_BLOCK_ABORTED,           /* a section 7 abort has latched (spec 7.1) */
 } gi_block_t;
@@ -309,6 +312,23 @@ typedef enum
     GI_ABORT_INVERTER_LOST,
     GI_ABORT_ENGINE_TURNING,
     GI_ABORT_ERROR_RATE,
+    /*
+     * Spec 7 trip 5 (review B3, decided 2026-09-24 as option c): an interlock
+     * signal going stale while the inhibit is LIVE is a latched abort, not a
+     * non-latching gate on transmission.
+     *
+     * ONE REASON PER SIGNAL, deliberately. Spec 7 requires every trip to name
+     * itself in the JSON and on the wire, and "a signal went stale" would send
+     * a reader to the logs to find out which -- the BMS dropping off while the
+     * VCM keeps talking (which the LV-connector disconnect test shows happens)
+     * is a different event from the VCM going quiet, and the whole point of
+     * option (c) over (b) is that these are worth stopping the drive for.
+     */
+    GI_ABORT_STALE_SOC,         /* 0x411 */
+    GI_ABORT_STALE_CONTACTOR,   /* 0x440 */
+    GI_ABORT_STALE_FAULT,       /* 0x617 */
+    GI_ABORT_STALE_SHIFT,       /* 0x639 */
+    GI_ABORT_STALE_RPM,         /* 0x054, once heard this arm cycle */
 } gi_abort_t;
 
 typedef enum
@@ -435,8 +455,25 @@ typedef struct
     bool    have_fb;    int64_t seen_fb;
     bool    fb_ever;    /* 0x471 heard at least once THIS arm cycle */
     bool    have_rpm;   int64_t seen_rpm;
+    /*
+     * Spec 7 trip 5. 0x054 gets the same once-heard qualification as 0x471:
+     * the GENE family is legitimately absent until the inverter wakes (~28 s
+     * after key-on, or never on a drive that does not use the generator), so
+     * a never-seen-is-stale rule would reintroduce bug 2 of 2026-09-19 through
+     * a second door. Per arm cycle, like fb_ever.
+     */
+    bool    rpm_ever;
     bool    have_soc;   int64_t seen_soc;
     bool    have_cont;  int64_t seen_cont;
+    /*
+     * 0x617 and 0x639 were read as last-known values until 2026-09-24, which
+     * is what review B2/B3 objected to: a silent bus otherwise answers every
+     * question you ask it, and a never-seen 0x617 read as "no fault".
+     * 0x617 is the tightest of all of them against the 0.5 s window -- 4 Hz,
+     * worst measured gap 308 ms.
+     */
+    bool    have_fault; int64_t seen_fault;
+    bool    have_shift; int64_t seen_shift;
 
     int32_t vcm_torque;             /* 0x051 B1-B2, centred */
     int32_t vcm_rpm_ref;            /* 0x051 B3-B4, centred; -1 = engine off */

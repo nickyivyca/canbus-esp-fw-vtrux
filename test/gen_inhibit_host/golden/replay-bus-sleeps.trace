@@ -5,7 +5,8 @@
 0 STATE mode=3 live=0 block=no fresh 0x051 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
 5900 EV SHUTDOWN_SUPPRESS a=1 b=16 c=0
 5900 STATE mode=3 live=0 block=no fresh 0x051 abort= latched=0 disabled=0 dcode= susp=1 fb_ever=0 key=0 socv=0 socsince=0
-5900 STATE mode=3 live=0 block=VCM commanding 0x10 abort= latched=0 disabled=0 dcode= susp=1 fb_ever=0 key=0 socv=0 socsince=0
+5900 STATE mode=3 live=0 block=no fresh 0x617 abort= latched=0 disabled=0 dcode= susp=1 fb_ever=0 key=0 socv=0 socsince=0
+169000 STATE mode=3 live=0 block=VCM commanding 0x10 abort= latched=0 disabled=0 dcode= susp=1 fb_ever=0 key=0 socv=0 socsince=0
 10613900 EV SHUTDOWN_SUPPRESS a=0 b=8 c=0
 10613900 STATE mode=3 live=0 block=VCM commanding 0x10 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
 10613900 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
@@ -17,7 +18,8 @@
 48967900 STATE mode=3 live=0 block=no fresh 0x051 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
 63611000 EV SHUTDOWN_SUPPRESS a=1 b=16 c=0
 63611000 STATE mode=3 live=0 block=no fresh 0x051 abort= latched=0 disabled=0 dcode= susp=1 fb_ever=0 key=0 socv=0 socsince=0
-63611000 STATE mode=3 live=0 block=VCM fault active abort= latched=0 disabled=0 dcode= susp=1 fb_ever=0 key=0 socv=0 socsince=0
+63611000 STATE mode=3 live=0 block=no fresh 0x617 abort= latched=0 disabled=0 dcode= susp=1 fb_ever=0 key=0 socv=0 socsince=0
 63709000 STATE mode=3 live=0 block=VCM commanding 0x10 abort= latched=0 disabled=0 dcode= susp=1 fb_ever=0 key=0 socv=0 socsince=0
+79024900 STATE mode=3 live=0 block=no fresh 0x639 abort= latched=0 disabled=0 dcode= susp=1 fb_ever=0 key=0 socv=0 socsince=0
 79058900 STATE mode=3 live=0 block=no fresh 0x051 abort= latched=0 disabled=0 dcode= susp=1 fb_ever=0 key=0 socv=0 socsince=0
 162199900 FINAL mode=3 live=0 tx_ok=0 tx_fail=0 other=13232 ctr_ok=6336 ctr_bad=1 rx_gap_n=6337 resp_n=0 disabled=0 dcode= block=no fresh 0x051 abort= latched=0 soc=10000 shift=0 key=0 socv=0 mainc=14
