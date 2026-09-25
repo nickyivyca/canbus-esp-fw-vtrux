@@ -21,7 +21,7 @@
 1060000 TX INHIBIT id=051 dlc=6 data=080080FF7F04 ok=1
 1080000 TX INHIBIT id=051 dlc=6 data=080080FF7F05 ok=1
 1100000 TX INHIBIT id=051 dlc=6 data=080080FF7F06 ok=1
-1100000 TX DIAG id=7F4 dlc=8 data=0003000000000000 ok=1
+1100000 TX DIAG id=7F8 dlc=8 data=0003000000000000 ok=1
 1120000 TX INHIBIT id=051 dlc=6 data=080080FF7F07 ok=1
 1140000 TX INHIBIT id=051 dlc=6 data=080080FF7F08 ok=1
 1160000 TX INHIBIT id=051 dlc=6 data=080080FF7F09 ok=1
@@ -85,7 +85,7 @@
 2260000 TX INHIBIT id=051 dlc=6 data=080080FF7F00 ok=1
 2280000 TX INHIBIT id=051 dlc=6 data=080080FF7F01 ok=1
 2300000 TX INHIBIT id=051 dlc=6 data=080080FF7F02 ok=1
-2300000 TX DIAG id=7F4 dlc=8 data=0003000000000000 ok=1
+2300000 TX DIAG id=7F8 dlc=8 data=0003000000000000 ok=1
 2320000 TX INHIBIT id=051 dlc=6 data=080080FF7F03 ok=1
 2340000 TX INHIBIT id=051 dlc=6 data=080080FF7F04 ok=1
 2360000 TX INHIBIT id=051 dlc=6 data=080080FF7F05 ok=1
@@ -149,7 +149,7 @@
 3460000 TX INHIBIT id=051 dlc=6 data=080080FF7F0C ok=1
 3480000 TX INHIBIT id=051 dlc=6 data=080080FF7F0D ok=1
 3500000 TX INHIBIT id=051 dlc=6 data=080080FF7F0E ok=1
-3500000 TX DIAG id=7F4 dlc=8 data=0003000000000000 ok=1
+3500000 TX DIAG id=7F8 dlc=8 data=0003000000000000 ok=1
 3520000 TX INHIBIT id=051 dlc=6 data=080080FF7F0F ok=1
 3540000 TX INHIBIT id=051 dlc=6 data=080080FF7F00 ok=1
 3560000 TX INHIBIT id=051 dlc=6 data=080080FF7F01 ok=1
@@ -205,30 +205,30 @@
 4460000 TX INHIBIT id=051 dlc=6 data=080080FF7F0E ok=1
 4460000 EV ABORT a=7 b=0 c=0
 4460000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x411 went stale while live -- BMS lost latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-4700000 TX DIAG id=7F4 dlc=8 data=07000E0000000000 ok=1
+4700000 TX DIAG id=7F8 dlc=8 data=07000E0000000000 ok=1
 5000000 TX DIAG id=7F1 dlc=8 data=040103C600028813 ok=1
 5300000 TX DIAG id=7F2 dlc=8 data=AD00000000000000 ok=1
 5600000 TX DIAG id=7F3 dlc=8 data=0000000001000400 ok=1
-5900000 TX DIAG id=7F4 dlc=8 data=07000E0000000000 ok=1
+5900000 TX DIAG id=7F8 dlc=8 data=07000E0000000000 ok=1
 6200000 TX DIAG id=7F1 dlc=8 data=040103C60002DC05 ok=1
 6500000 TX DIAG id=7F2 dlc=8 data=AD00000000000000 ok=1
 6800000 TX DIAG id=7F3 dlc=8 data=0000000001000400 ok=1
 7000000 EV SOC_VALID a=1 b=11 c=0
 7000000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x411 went stale while live -- BMS lost latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=0
 7000000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x411 went stale while live -- BMS lost latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=1
-7100000 TX DIAG id=7F4 dlc=8 data=07030E0000000000 ok=1
+7100000 TX DIAG id=7F8 dlc=8 data=07030E0000000000 ok=1
 7400000 TX DIAG id=7F1 dlc=8 data=040103C600028813 ok=1
 7700000 TX DIAG id=7F2 dlc=8 data=AD00000000000000 ok=1
 8000000 TX DIAG id=7F3 dlc=8 data=0000000001000400 ok=1
-8300000 TX DIAG id=7F4 dlc=8 data=07030E0000000000 ok=1
+8300000 TX DIAG id=7F8 dlc=8 data=07030E0000000000 ok=1
 8600000 TX DIAG id=7F1 dlc=8 data=040103C600028813 ok=1
 8900000 TX DIAG id=7F2 dlc=8 data=AD00000000000000 ok=1
 9200000 TX DIAG id=7F3 dlc=8 data=0000000001000400 ok=1
-9500000 TX DIAG id=7F4 dlc=8 data=07030E0000000000 ok=1
+9500000 TX DIAG id=7F8 dlc=8 data=07030E0000000000 ok=1
 9800000 TX DIAG id=7F1 dlc=8 data=040103C600028813 ok=1
 10180000 TX DIAG id=7F2 dlc=8 data=AD00000000000000 ok=1
 10580000 TX DIAG id=7F3 dlc=8 data=0000000001000400 ok=1
 10580000 EV SOC_VALID a=0 b=1041 c=0
 10580000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x411 went stale while live -- BMS lost latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
-10980000 TX DIAG id=7F4 dlc=8 data=07000E0000000000 ok=1
+10980000 TX DIAG id=7F8 dlc=8 data=07000E0000000000 ok=1
 11180000 FINAL mode=3 live=0 tx_ok=173 tx_fail=0 other=586 ctr_ok=449 ctr_bad=0 rx_gap_n=449 resp_n=173 disabled=0 dcode= block=latched abort (key-on clears) abort=0x411 went stale while live -- BMS lost latched=1 soc=5000 shift=2 key=0 socv=0 mainc=11 would_tx=0 emit_refused=0

@@ -119,12 +119,27 @@ extern "C" {
  * read at all. Appending leaves 0x7F1-0x7F3 byte-identical, so a schema-3
  * decoder still reads everything it used to and simply does not see this page.
  *
- * 0x7F4 is in the same range nothing on the truck consumes, and it does not
- * collide with the interposer bench's physics IDs (0x7F0 current, 0x7F1
- * voltage in projects/vtrux/tools/interposer/bus.py) any worse than 0x7F1
- * already does -- checked rather than assumed.
+ * 0x7F8, AND NOT 0x7F4, WHICH THIS FIRST SHIPPED AS. The standing allocation
+ * on this truck is WiCAN 0x7F1-0x7F3, charge interposer 0x7F4-0x7F7, and both
+ * devices transmit on the powertrain bus and may be fitted at once. 0x7F4 is
+ * the interposer's INTP_Status: two transmitters on one ID with differing
+ * data, which is arbitration with bit errors, error frames feeding this
+ * component's own error-rate trip, and a log in which no frame can be
+ * attributed to a device.
+ *
+ * Caught in review, 2026-09-25. The check that missed it was run against the
+ * interposer's VIRTUAL BENCH physics ids (tools/interposer/bus.py) while the
+ * authoritative list is vtrux-interposer-diag.dbc and
+ * interposer_diag_schema.md -- and the agreement itself is written in
+ * wican_diag_schema.md, the file being edited at the time. Checking the wrong
+ * artifact produced a confident "checked rather than assumed".
+ *
+ * The WiCAN's range is now 0x7F1-0x7F3 plus 0x7F8, and the next page on either
+ * side comes out of the allocation table in both schema docs.
+ * artifacts/gen-inhibit/diag_id_allocation.py reports what every Vtrux DBC
+ * declares and what the corpus actually carries.
  */
-#define GI_DIAG_ID_STATUS2  0x7F4
+#define GI_DIAG_ID_STATUS2  0x7F8
 #define GI_DIAG_PAGES       4
 
 #define GI_MMODE_VALUE      4
