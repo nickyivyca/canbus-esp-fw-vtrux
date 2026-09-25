@@ -167,10 +167,27 @@ const char *gi_event_name(gi_event_kind_t k)
 
 /* -------------------------------------------------------------- plumbing -- */
 
-static void emit(gi_emit_t *out, const gi_frame_t *f)
+static void emit(gi_state_t *st, gi_emit_t *out, const gi_frame_t *f)
 {
     if (out == NULL)
     {
+        return;
+    }
+    /*
+     * THE CHOKE POINT. Every frame this core emits passes through here, so
+     * this is where "PASSIVE transmits no 0x051" (spec 3.1) is made true
+     * regardless of what any caller does. The dispatch already never builds
+     * the frame outside INHIBIT; this is the second wall, and it is cheap.
+     *
+     * emit_refused must always read zero. A non-zero value means a code path
+     * tried to transmit a real command from a mode that must not, which is a
+     * bug in this file -- reported rather than silently corrected, because
+     * "it never happened" and "it happened and we hid it" have to look
+     * different in the JSON.
+     */
+    if (f->kind == GI_TX_INHIBIT && st->mode != GI_INHIBIT)
+    {
+        st->emit_refused++;
         return;
     }
     if (out->n >= GI_EMIT_MAX)
@@ -924,6 +941,43 @@ static void build_diag(const gi_state_t *st, const gi_bus_t *bus, int64_t now,
         f->data[6] = (uint8_t)st->soc_raw;          /* soc_x100, LE */
         f->data[7] = (uint8_t)(st->soc_raw >> 8);
     }
+    else if (which == 3)    /* STATUS2 -> 0x7F4 (schema 4) */
+    {
+        f->id = GI_DIAG_ID_STATUS2;
+        /*
+         * Spec 10: the abort reason on the wire. diag_flags bit7 says THAT a
+         * section 7 trip latched; with the trips now numbering eight, a log
+         * has to say WHICH, and the PASSIVE dry run depends on it -- a dry run
+         * that reports "something tripped" is not a dry run of anything.
+         */
+        f->data[0] = (uint8_t)st->abort_reason;
+        /*
+         * Spec 6.2's SoC-valid marker, so a log shows when SoC started
+         * counting, plus the arm block so a reader can see WHY it was not
+         * live rather than only that it was not.
+         */
+        f->data[1] = (uint8_t)((st->soc_valid       ? 0x01 : 0)
+                             | (st->soc_since_valid ? 0x02 : 0)
+                             | (st->tx_pending      ? 0x04 : 0)
+                             | (st->emit_refused    ? 0x08 : 0));
+        f->data[2] = (uint8_t)st->arm_block;
+        /*
+         * The would-transmit count (spec 3.1), as its OWN field rather than
+         * tx_ok reinterpreted by mode. Spec 10 allowed either; a separate
+         * field is chosen because a decoder that ignores diag_mode then cannot
+         * silently read a dry run as a drive in which the device transmitted
+         * 18,000 times. The two counters are mutually exclusive by mode, and
+         * that is a property worth being able to CHECK rather than one a
+         * reader has to apply.
+         */
+        f->data[3] = (uint8_t)st->would_tx;
+        f->data[4] = (uint8_t)(st->would_tx >> 8);
+        f->data[5] = (uint8_t)(st->would_tx >> 16);
+        f->data[6] = (uint8_t)(st->would_tx >> 24);
+        /* Spec 5's hazard, saturating: any non-zero value is the point. */
+        f->data[7] = (uint8_t)(st->tx_queued_behind > 255 ? 255
+                                                          : st->tx_queued_behind);
+    }
     else if (which == 1)    /* COUNTERS -> 0x7F2 */
     {
         uint32_t v = st->tx_ok;
@@ -1038,8 +1092,8 @@ void gi_tick(gi_state_t *st, int64_t now, const gi_bus_t *bus,
         st->have_last_diag = true;
         st->last_diag = now;
         build_diag(st, bus, now, st->diag_page, &f);
-        emit(out, &f);
-        st->diag_page = (uint8_t)((st->diag_page + 1) % 3);
+        emit(st, out, &f);
+        st->diag_page = (uint8_t)((st->diag_page + 1) % GI_DIAG_PAGES);
     }
 
     soc_marker_tick(st, now, ev);
@@ -1056,7 +1110,7 @@ void gi_tick(gi_state_t *st, int64_t now, const gi_bus_t *bus,
      * handled by arm_gate_ok(); absence AFTER going live is "the link we were
      * using has dropped". Do not merge these paths.
      */
-    if (st->mode == GI_INHIBIT && (st->disabled || st->abort_latched))
+    if (gi_mode_decides(st->mode) && (st->disabled || st->abort_latched))
     {
         /*
          * Latched off. latch_disable() and inhibit_abort() both already
@@ -1074,7 +1128,7 @@ void gi_tick(gi_state_t *st, int64_t now, const gi_bus_t *bus,
         st->inhibit_live = false;
         st->arm_block = st->disabled ? GI_BLOCK_DISABLED : GI_BLOCK_ABORTED;
     }
-    else if (st->mode == GI_INHIBIT)
+    else if (gi_mode_decides(st->mode))
     {
         if (st->inhibit_live)
         {
@@ -1577,7 +1631,7 @@ void gi_on_frame(gi_state_t *st, uint32_t id, uint8_t dlc, const uint8_t *data,
     {
         gi_frame_t f;
         build_probe(st, now, &f);
-        emit(out, &f);
+        emit(st, out, &f);
     }
     /*
      * Spec 7.1 rule 1 adds gi_key_on() to this chain, and abort_latched
@@ -1592,7 +1646,7 @@ void gi_on_frame(gi_state_t *st, uint32_t id, uint8_t dlc, const uint8_t *data,
      * heartbeat at key-off would take away the telemetry precisely when the
      * end-of-drive behaviour this rule exists for is happening.
      */
-    else if (st->mode == GI_INHIBIT && !st->disabled && !st->abort_latched
+    else if (gi_mode_decides(st->mode) && !st->disabled && !st->abort_latched
              && !st->shutdown_suppressed && st->inhibit_live
              && gi_key_on(st, now))
     {
@@ -1615,12 +1669,36 @@ void gi_on_frame(gi_state_t *st, uint32_t id, uint8_t dlc, const uint8_t *data,
          */
         if (dlc < 6)
         {
+            /*
+             * Trip 8 fires in PASSIVE too. It is about the frame the VCM SENT,
+             * not about a transmit of ours -- spec 3.1 excuses PASSIVE only
+             * from the trips that concern our own transmission, which is trip
+             * 7 alone.
+             */
             st->tx_fail++;
             inhibit_abort(st, GI_ABORT_SHORT_VCM_FRAME, now, ev);
             return;
         }
+
+        /*
+         * SPEC 3.1: THE ONE PLACE THE TWO MODES DIFFER, and the only place a
+         * 0x051 of ours is ever constructed.
+         *
+         * PASSIVE does not build a frame and then decline to send it -- it
+         * never builds one. That is the same shape as goal 2, where commanding
+         * a non-zero torque is impossible because no code path writes anything
+         * but 00 80 into B1-B2: the guarantee is the absence of a code path,
+         * not a check somebody has to remember to keep. emit() enforces the
+         * same thing again at the choke point, so even a future edit that
+         * reached here in PASSIVE could not put the frame on the wire.
+         */
+        if (st->mode == GI_PASSIVE)
+        {
+            st->would_tx++;
+            return;
+        }
         build_inhibit(data, now, &f);
-        emit(out, &f);
+        emit(st, out, &f);
     }
 }
 

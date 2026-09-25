@@ -1361,6 +1361,31 @@ def s_diag_defers():
     L += ["end %d" % (6 * S)]
     return sorted_directives(L)
 
+
+@scenario("passive-dry-run", """
+PASSIVE (spec 3.1, review B1) on an ordinary drive: arm in mode 4, the bus
+wakes, the gate passes, and the device counts would-transmits instead of
+transmitting.
+
+EXPECT: the same trace as keyon-normal in every decision -- live at the same
+instant, the same trailing bus-loss abort -- with tx_ok=0, would_tx equal to
+the number of 0x051 frames that arrived while live, and NOT ONE `TX INHIBIT`
+line. emit_refused must read 0: it is a tripwire on the choke point in emit(),
+and a non-zero value means a code path tried to put a real 0x051 on the wire
+from a mode that must not.
+
+This golden pins the mode-4 trace format. The PROPERTY -- that PASSIVE decides
+exactly as INHIBIT does -- is not pinned here and cannot be, because a golden
+can only agree with itself; passive_diff.py replays every scenario in both
+modes and compares them, which is a check that has no golden to be blessed
+into.
+""")
+def s_passive_dry_run():
+    L = ["mode 0 4 500"]
+    L += cmd_train(3 * S, 8 * S, 20 * MS)
+    L += ["end %d" % (9 * S)]
+    return L
+
 def sorted_directives(lines):
     """Stable-sort directive lines by their timestamp field.
 

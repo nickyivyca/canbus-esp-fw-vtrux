@@ -1537,7 +1537,7 @@ static struct file_server_data server_data = {.base_path = FS_MOUNT_POINT""};
 /* ---- gen_inhibit control --------------------------------------------------
  * GET  /gen_inhibit                       -> state and statistics as JSON
  * POST /gen_inhibit_set?mode=N&offset=N   -> 0 off, 1 observe, 2 respond,
- *                                            3 inhibit
+ *                                            3 inhibit, 4 passive
  *
  * The setter is POST so that a browser prefetch or a stray GET cannot start
  * the device transmitting. `offset` applies to RESPOND only, which emits
@@ -1562,7 +1562,7 @@ static esp_err_t gen_inhibit_set_handler(httpd_req_t *req)
 
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK)
     {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "expected ?mode=0|1|2|3[&offset=us]");
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "expected ?mode=0|1|2|3|4[&offset=us]");
         return ESP_FAIL;
     }
     if (httpd_query_key_value(query, "mode", val, sizeof(val)) == ESP_OK)
@@ -1573,9 +1573,10 @@ static esp_err_t gen_inhibit_set_handler(httpd_req_t *req)
     {
         offset_us = (uint32_t)atoi(val);
     }
-    if (mode < 0 || mode > 3)
+    if (mode < 0 || mode > 4)
     {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "mode must be 0..3 (3=INHIBIT)");
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            "mode must be 0..4 (3=INHIBIT, 4=PASSIVE)");
         return ESP_FAIL;
     }
     /*

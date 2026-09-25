@@ -36,6 +36,7 @@ _Static_assert((int)GEN_INHIBIT_OFF     == (int)GI_OFF,     "mode enum drift");
 _Static_assert((int)GEN_INHIBIT_OBSERVE == (int)GI_OBSERVE, "mode enum drift");
 _Static_assert((int)GEN_INHIBIT_RESPOND == (int)GI_RESPOND, "mode enum drift");
 _Static_assert((int)GEN_INHIBIT_INHIBIT == (int)GI_INHIBIT, "mode enum drift");
+_Static_assert((int)GEN_INHIBIT_PASSIVE == (int)GI_PASSIVE, "mode enum drift");
 _Static_assert(GEN_INHIBIT_VCM_ID   == GI_VCM_ID,   "id drift");
 _Static_assert(GEN_INHIBIT_PROBE_ID == GI_PROBE_ID, "id drift");
 
@@ -89,7 +90,7 @@ _Static_assert(GEN_INHIBIT_PROBE_ID == GI_PROBE_ID, "id drift");
  * every drive and then goes silent, where a rev 3 device stays armed and says
  * so. */
 #ifndef DIAG_FW_VERSION
-#define DIAG_FW_VERSION              3
+#define DIAG_FW_VERSION              4
 #endif
 #ifndef GIT_SHA
 #define GIT_SHA "unknown"
@@ -438,7 +439,7 @@ bool gen_inhibit_owns_bus(void)
 
 esp_err_t gen_inhibit_set_mode(gen_inhibit_mode_t mode, uint32_t offset_us)
 {
-    if (mode > GEN_INHIBIT_INHIBIT)
+    if (mode > GEN_INHIBIT_PASSIVE)
     {
         return ESP_ERR_INVALID_ARG;
     }
@@ -779,7 +780,8 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
                      "\"abort_reason\":\"%s\",\"abort_latched\":%s,"
                      "\"key_on\":%s,\"key_fresh\":%s,\"gene_rpm\":%ld,"
                      "\"vcm_torque\":%ld,\"vcm_fault\":%u,"
-                     "\"tx_queued_behind\":%lu,"
+                     "\"tx_queued_behind\":%lu,\"would_tx\":%lu,"
+                     "\"emit_refused\":%lu,"
                      "\"soc_valid\":%s,\"soc_since_valid\":%s,"
                      "\"mainc_stat\":%u,\"soc_fresh\":%s,"
                      "\"contactor_fresh\":%s,\"cmd_fresh\":%s,"
@@ -819,6 +821,14 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
                       * full-replay bench run exists to put a value on.
                       */
                      (unsigned long)st->tx_queued_behind,
+                     /*
+                      * Spec 3.1: what PASSIVE counted where INHIBIT would have
+                      * transmitted. Its own field, never folded into tx_ok --
+                      * a dry run and a drive must not be able to look alike.
+                      */
+                     (unsigned long)st->would_tx,
+                     /* Tripwire; any non-zero value is a bug in the core. */
+                     (unsigned long)st->emit_refused,
                      /*
                       * Spec 11, spec 6.2: the SoC-valid marker, and the two
                       * freshness facts it is made of. Reported apart for the

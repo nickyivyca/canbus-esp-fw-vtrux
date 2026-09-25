@@ -19,4 +19,4 @@
 62289900 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
 63183900 EV SOC_VALID a=0 b=1088 c=0
 63183900 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=0 socsince=0
-65199000 FINAL mode=3 live=0 tx_ok=2947 tx_fail=0 other=20133 ctr_ok=6399 ctr_bad=0 rx_gap_n=6399 resp_n=2947 disabled=1 dcode=m_mode block=latched disable abort= latched=0 soc=5485 shift=4 key=0 socv=0 mainc=14
+65199000 FINAL mode=3 live=0 tx_ok=2947 tx_fail=0 other=20133 ctr_ok=6399 ctr_bad=0 rx_gap_n=6399 resp_n=2947 disabled=1 dcode=m_mode block=latched disable abort= latched=0 soc=5485 shift=4 key=0 socv=0 mainc=14 would_tx=0 emit_refused=0

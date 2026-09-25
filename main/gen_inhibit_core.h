@@ -112,6 +112,20 @@ extern "C" {
 #define GI_DIAG_ID_STATUS   0x7F1
 #define GI_DIAG_ID_COUNTERS 0x7F2
 #define GI_DIAG_ID_BUILD    0x7F3
+/*
+ * Schema 4 (review B1). A fourth page rather than a repacking of the first
+ * three: 0x7F1 is full to B7 and diag_flags has no spare bit, and moving a
+ * field would make every recorded log need its schema version consulted to be
+ * read at all. Appending leaves 0x7F1-0x7F3 byte-identical, so a schema-3
+ * decoder still reads everything it used to and simply does not see this page.
+ *
+ * 0x7F4 is in the same range nothing on the truck consumes, and it does not
+ * collide with the interposer bench's physics IDs (0x7F0 current, 0x7F1
+ * voltage in projects/vtrux/tools/interposer/bus.py) any worse than 0x7F1
+ * already does -- checked rather than assumed.
+ */
+#define GI_DIAG_ID_STATUS2  0x7F4
+#define GI_DIAG_PAGES       4
 
 #define GI_MMODE_VALUE      4
 #define GI_FAULT_ACTIVE     0xCA
@@ -136,8 +150,15 @@ extern "C" {
  * 2: added diag_flags bit4 (shutdown suppression) and bit5 (inhibit live).
  * 3: added diag_flags bit6 (key on, fresh) and bit7 (latched by a section 7
  *    abort). No field moved, so a v2 decoder still reads everything else.
+ * 4: PASSIVE (diag_mode 4) and the new 0x7F4 page -- abort reason, the spec
+ *    6.2 SoC-valid marker, the would-transmit count and tx_queued_behind.
+ *    Again no field moved; 0x7F1-0x7F3 are byte-identical to schema 3.
+ *
+ * artifacts/gen-inhibit/wican_diag_schema.md is the source of truth for the
+ * layout and vtrux-wican-diag.dbc is the decoder; all three change together
+ * or a log becomes unreadable.
  */
-#define GI_DIAG_SCHEMA_VER  3
+#define GI_DIAG_SCHEMA_VER  4
 
 /* ---------------------------------------------------------------- modes -- */
 
@@ -152,7 +173,30 @@ typedef enum
     GI_OBSERVE,
     GI_RESPOND,
     GI_INHIBIT,
+    /*
+     * Spec 3.1 (review B1). The complete INHIBIT decision path -- arm gate,
+     * section 6 releases, 6.3 suppression, section 7 trips, 7.1 key rules --
+     * on the live bus, transmitting no 0x051 and counting a would-transmit
+     * where INHIBIT would transmit. Diag still goes out, reporting the state
+     * the device WOULD be in, so a log of a PASSIVE drive reads as a dry run
+     * of an INHIBIT drive.
+     *
+     * Appended rather than inserted: the numbering is on the wire (diag_mode)
+     * and in the HTTP setter, and renumbering OBSERVE/RESPOND/INHIBIT would
+     * silently change what every recorded log means.
+     */
+    GI_PASSIVE,
 } gi_mode_t;
+
+/*
+ * The two modes that run the decision path. Everything the gate and the trips
+ * do is identical in both; the ONE difference is what happens at the moment a
+ * frame would go out, and that lives in exactly one place (gi_on_frame()).
+ */
+static inline bool gi_mode_decides(gi_mode_t m)
+{
+    return m == GI_INHIBIT || m == GI_PASSIVE;
+}
 
 /* --------------------------------------------------------------- config -- */
 
@@ -516,6 +560,23 @@ typedef struct
      * full-replay bench run exists to put a value on.
      */
     uint32_t tx_queued_behind;
+
+    /*
+     * Spec 3.1: what PASSIVE counts where INHIBIT would transmit. Deliberately
+     * NOT tx_ok -- a reader of a log has to be able to tell a would-transmit
+     * from a frame that really went on the wire, and conflating them would make
+     * a PASSIVE drive indistinguishable from an INHIBIT drive in exactly the
+     * dimension the mode exists to report on.
+     */
+    uint32_t would_tx;
+
+    /*
+     * A tripwire, not a statistic. emit() increments it when a code path tries
+     * to transmit a real 0x051 from a mode that must not, which cannot happen
+     * and therefore has to be visible if it ever does. Reported in the JSON;
+     * any non-zero reading is a bug in gen_inhibit_core.c, not a bus event.
+     */
+    uint32_t emit_refused;
     int64_t  tx_pending_t_rx;       /* the 0x051 it answers */
     bool     tx_pending_have_rx;
 

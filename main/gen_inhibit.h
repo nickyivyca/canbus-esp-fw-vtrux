@@ -72,6 +72,14 @@ typedef enum
                              * zero-torque 0x051 with the stolen next counter.
                              * Transmits the real command ID, so everything in
                              * spec sections 6, 7 and 7.1 gates it. */
+    GEN_INHIBIT_PASSIVE,    /* spec 3.1: the whole INHIBIT decision path, with
+                             * no 0x051 on the wire. Counts a would-transmit
+                             * where INHIBIT would transmit, and broadcasts
+                             * diag reporting the state it WOULD be in, so a
+                             * log of a PASSIVE drive reads as a dry run.
+                             * NOT silent -- the controller ACKs and diag goes
+                             * out; use OBSERVE when nothing may reach the
+                             * wire at all. */
 } gen_inhibit_mode_t;
 
 /* Start the worker. Call once, after can_init(). Starts in OFF. */

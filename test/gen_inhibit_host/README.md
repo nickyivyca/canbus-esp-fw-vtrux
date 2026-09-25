@@ -41,6 +41,7 @@ stays green forever.
 | `extract_probe.c` | Exposes the core's four hand-rolled extractors for the cantools cross-check |
 | `Makefile` | `make` builds both; `make asan` rebuilds under ASan/UBSan |
 | `make_scenarios.py` | Generates the synthetic scenarios into `scenarios/` |
+| `passive_diff.py` | Replays every scenario in INHIBIT **and** PASSIVE and proves they decided alike (spec 3.1). Has no golden -- see below |
 | `from_capture.py` | Turns a real capture into a scenario; `--scan` finds key-on points |
 | `run_tests.py` | Builds, replays every scenario, diffs against `golden/` |
 | `test_signals.py` | 2000 randomised frames per signal, C extractors vs cantools |
@@ -187,6 +188,51 @@ bus. Then set `--at`/`--for` to sit **inside a single epoch**. Worked example:
 the planned `replay-rekey-short` uses `vtrux_20260403_194203_T2` epoch 1 only
 (0-176.44 s), because that file has a 7.7 s total-bus dropout at
 176.44-184.22 s which would otherwise replay as a bus-loss.
+
+## `passive_diff.py` -- the first check with no golden (spec 3.1, review D9)
+
+`run_tests.py` is a REGRESSION harness. It pins each trace against a recorded
+copy of itself, so a rule that is wrong in the code is wrong in the golden too
+and stays green for ever. Its own header says as much. That is not a
+hypothetical: four defects this month were found by a person reading a diff
+rather than by the suite --
+
+- `arm-gate-generator-running`'s header and golden disagreed for five days;
+- four `soc-*` scenarios silently stopped going live when `0x617`/`0x639`
+  became gate conditions, and would have blessed cleanly as "never live";
+- a new directive keyword sorted itself ahead of the opening `mode` line and
+  delayed arming from 0 s to 3 s, with the scenario still passing;
+- and two shim defects the suite cannot see at all, because it compiles only
+  the core.
+
+`passive_diff.py` is the other kind of check. It runs every scenario twice
+against the SAME build -- once in INHIBIT, once in PASSIVE -- and asserts a
+property the spec states: that the two decide identically and differ only at
+the moment of transmission. There is nothing to bless, so it cannot be blessed
+into agreement.
+
+```sh
+python3 passive_diff.py          # every scenario
+python3 passive_diff.py -v       # with the per-scenario counts
+```
+
+It checks that the decision sequences are byte-identical, that PASSIVE emits
+**no** `0x051` at all, that PASSIVE's would-transmit count equals INHIBIT's
+transmit count exactly, and that the `emit_refused` tripwire is clear in both.
+The transmission-counting FINAL fields are excluded from the comparison, since
+those are precisely what spec 3.1 exempts, and are checked separately.
+
+**The one permitted divergence** is spec 3.1's own: trip 7 is unreachable in
+PASSIVE, because a transmit that never happens cannot fail. A scenario that
+drives it is compared only up to the instant INHIBIT's trip fires. That is
+detected from the trace (INHIBIT emitted an `EV TX_FAIL`) rather than from a
+list of names, so a new trip-7 scenario is covered without anyone remembering.
+
+**It was checked against a deliberate break before being trusted.** Removing
+the `return` that stops PASSIVE reaching `build_inhibit()` made it fail 47 of
+55 scenarios, reporting `emit_refused=199` -- and the choke-point guard in
+`emit()` meant not one frame reached the wire even then. A check nobody has
+seen fail is not yet a check.
 
 ## The key train, and why every scenario has one (spec 7.1)
 

@@ -433,7 +433,7 @@ int main(void)
     printf("%lld FINAL mode=%d live=%d tx_ok=%u tx_fail=%u other=%u"
            " ctr_ok=%u ctr_bad=%u rx_gap_n=%u resp_n=%u disabled=%d"
            " dcode=%s block=%s abort=%s latched=%d soc=%u shift=%u key=%d"
-           " socv=%d mainc=%u\n",
+           " socv=%d mainc=%u would_tx=%u emit_refused=%u\n",
            (long long)now, (int)st.mode, st.inhibit_live ? 1 : 0,
            st.tx_ok, st.tx_fail, st.other_frames,
            st.ctr_steps_ok, st.ctr_steps_bad,
@@ -442,7 +442,8 @@ int main(void)
            gi_abort_name(st.abort_reason), st.abort_latched ? 1 : 0,
            st.soc_raw, (unsigned)st.last_shift_pos,
            gi_key_on(&st, now) ? 1 : 0,
-           st.soc_valid ? 1 : 0, (unsigned)st.mainc_stat);
+           st.soc_valid ? 1 : 0, (unsigned)st.mainc_stat,
+           st.would_tx, st.emit_refused);
 
     free(g_f);
     return 0;
