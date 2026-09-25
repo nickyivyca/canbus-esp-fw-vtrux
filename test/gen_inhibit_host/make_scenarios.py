@@ -1528,6 +1528,48 @@ def s_rearm_keeps_section6():
     L += ["end %d" % (13 * S)]
     return sorted_directives(L)
 
+
+@scenario("arm-gate-torque-only", """
+Spec 7 condition 6 requires BOTH halves: gen_rpm_ref at its engine-off null AND
+gen_torque_cmd zero. Nothing presented the second half on its own, so the
+rpm_ref check always blocked first and removing the torque check entirely
+changed no trace in the suite (round-4 mutation R09).
+
+Not hypothetical. Spec 4.1 records real frames with B0 = 0x08 and non-zero
+torque, and spec 7.1's unresolved note is about exactly this state -- B0 0x0B
+spanning motoring and generating, separated by the SIGN of the torque, with the
+present test blocking both.
+
+EXPECT: rpm_ref at the null (-1) with torque +200 blocks on "VCM commanding
+torque" -- NOT on "VCM requesting engine", which would mean the other half
+caught it -- and the device goes live once torque returns to 0.
+""", autobms=False)
+def s_arm_gate_torque_only():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 4 * S, 20 * MS, torque=200, rpm_ref=-1)
+    L += cmd_train(4 * S, 7 * S, 20 * MS, torque=0, rpm_ref=-1)
+    L += _healthy_bg(1 * S, 7 * S)
+    L += ["end %d" % (8 * S)]
+    return sorted_directives(L)
+
+
+@scenario("arm-gate-torque-negative", """
+The other sign, which spec 7.1 says is the one the interlock was written for:
+negative torque is a LOADED, generating machine, and taking that over with a
+zero command sheds the engine's whole load in one frame.
+
+EXPECT: identical blocking to arm-gate-torque-only. The pair exists because
+spec 7.1 records that the sign distinction is unresolved -- if the test is ever
+made sign-aware, these two scenarios are what will show which way.
+""", autobms=False)
+def s_arm_gate_torque_negative():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 4 * S, 20 * MS, torque=-200, rpm_ref=-1)
+    L += cmd_train(4 * S, 7 * S, 20 * MS, torque=0, rpm_ref=-1)
+    L += _healthy_bg(1 * S, 7 * S)
+    L += ["end %d" % (8 * S)]
+    return sorted_directives(L)
+
 def sorted_directives(lines):
     """Stable-sort directive lines by their timestamp field.
 

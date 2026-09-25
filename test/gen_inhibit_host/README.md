@@ -189,6 +189,52 @@ the planned `replay-rekey-short` uses `vtrux_20260403_194203_T2` epoch 1 only
 (0-176.44 s), because that file has a 7.7 s total-bus dropout at
 176.44-184.22 s which would otherwise replay as a bus-loss.
 
+## `invariants.py` -- the rules as properties, not as blessed traces (E2, D9)
+
+```sh
+python3 invariants.py        # every scenario, no golden involved
+python3 invariants.py -v
+```
+
+**Why it exists, in one number.** Four rounds of mutation testing have been run
+against this component. Of the mutations that were caught, *every single one was
+caught by the goldens* — never by an invariant, never by E1 — and **six of them
+by exactly one golden each**: B0 held at `0x08`, the error-rate boundary, the
+gate's `rpm_ref` check, the short-DLC abort, the `mainc`-12 pair, and the gate's
+fault check. When a rule's only witness is a single trace, the distance between
+"correct" and "unchecked" is one `--bless`.
+
+So the same rules are stated as properties over every trace of every scenario:
+spec 4's frame shape (DLC 6, B0 `0x08`, torque `00 80`, the stolen counter, one
+reply per received frame) and every term that gates transmission (live, no
+section 6 release, no section 7 abort, not suppressed, key on and fresh, mode 3),
+plus "a latch clears only on a `KEY_CLEAR` or a mode change". 91,891 inhibit
+frames are checked across 65 scenarios.
+
+**Verified against deliberate breakage, with the goldens excluded**: B0
+mirrored, the counter not stolen, non-zero torque, transmitting while suppressed,
+transmitting with the key gate closed — all five caught by `invariants.py` alone.
+
+### One subtlety worth reading before changing it
+
+A transmit is judged against the state **before and at** its own timestamp, and
+a term counts as violated only if it forbids transmission in *both*.
+`host_runner` prints the TX line during dispatch and the STATE line after, so
+neither state alone is the one that authorised the frame:
+
+- the 6.3 suppression is recomputed from the arriving frame, so a frame that
+  *lifts* it transmits legitimately while the preceding state still reads
+  `susp=1` — using the pre-state alone reported `shutdown-suppress` as a
+  violation;
+- a failed transmit latches an abort *as a consequence* of transmitting, so the
+  same-timestamp state reads `latched=1` on a frame that was authorised when it
+  went out — using the post-state alone would flag every `tx-fail` scenario.
+
+Deliberately **not** asserted here: anything depending on a threshold's exact
+position or on timing — the debounce lengths, the freshness window, the
+error-rate limit. Those would mean encoding the same constants twice and calling
+the agreement a test.
+
 ## `passive_diff.py` -- the first check with no golden (spec 3.1, review D9)
 
 `run_tests.py` is a REGRESSION harness. It pins each trace against a recorded

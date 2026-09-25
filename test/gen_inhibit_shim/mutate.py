@@ -180,7 +180,8 @@ for name, (f, reps) in MUT.items():
     # only honest total.
     h = os.path.join(d, "test/gen_inhibit_host")
     if os.path.isdir(os.path.join(h, "scenarios")):
-        for cmd in ("python3 run_tests.py", "python3 passive_diff.py"):
+        for cmd in ("python3 run_tests.py", "python3 passive_diff.py",
+                    "python3 invariants.py"):
             hr = subprocess.run(cmd, shell=True, cwd=h, capture_output=True,
                                 text=True, timeout=900)
             if hr.returncode:
