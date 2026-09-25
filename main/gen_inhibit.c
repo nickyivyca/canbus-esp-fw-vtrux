@@ -393,6 +393,18 @@ static void poll_tx_completion(gi_events_t *ev)
      * itself are done. That is attributable BY CONSTRUCTION, whatever was in
      * front of it, rather than by an invariant someone has to maintain.
      *
+     * THIS DEPENDS ON A3, AND THAT DEPENDENCY IS LOAD-BEARING. msgs_to_tx == 0
+     * proves OUR inhibit completed only if nothing can be queued AFTER it
+     * while it is in flight. gi_tick() withholds diag, which covers this
+     * component -- but until review A3 lands, an SLCAN, ELM327 or MQTT
+     * can_send() from another task can queue a frame behind the inhibit. The
+     * count then stays above zero after our frame has gone out, producing a
+     * FALSE TX_LATE abort, or credits the wrong frame if they interleave. A3's
+     * "can_send() refused from every non-inhibitor path while gen_inhibit owns
+     * the bus" is therefore a correctness requirement for trip 7, not only the
+     * bus-ownership measure it was written as. Raised by the reviewing session,
+     * 2026-09-25. No build without A3 may go to the truck.
+     *
      * The alert is kept for TX_FAILED only -- which IDF 5.4.1 documents as
      * being raised "for single shot transmission", and these frames go out
      * with twai_message_t.ss = 0, so the controller retransmits rather than
