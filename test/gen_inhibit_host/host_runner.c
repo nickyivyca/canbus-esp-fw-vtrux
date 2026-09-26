@@ -54,6 +54,17 @@
  *                                  review C1 exists for, where the frame is
  *                                  outstanding when the VCM's next 0x051
  *                                  arrives
+ *   load <t> <rx_depth> <kbit>     E4: model the bus and the controller --
+ *                                  frames through an rx_depth-deep RX queue,
+ *                                  transmits through a single-buffer FIFO
+ *                                  behind a bus made busy by the capture's own
+ *                                  traffic. OFF unless a scenario asks, because
+ *                                  it re-times everything.
+ *   preempt <t_from> <t_to>        the worker is off-CPU in [from,to) -- as a
+ *                                  WiFi burst does on the device (measured
+ *                                  worst 2.39 ms). Frames keep arriving into
+ *                                  the RX queue and are dropped once it fills.
+ *                                  Only meaningful with `load`.
  *   txdone <t_from> <t_to>         transmits in [from,to) are queued and the
  *                                  controller answers FAILED
  *   f <t> <id_hex> <dlc> <hexbytes>
@@ -73,13 +84,117 @@
 
 typedef struct { int64_t t; uint32_t id; uint8_t dlc; uint8_t data[8]; } rxf_t;
 
-typedef enum { D_MODE, D_BUS, D_TXFAIL, D_TXSTALL, D_TXDONE } dkind_t;
+typedef enum { D_MODE, D_BUS, D_TXFAIL, D_TXSTALL, D_TXDONE,
+               D_LOAD, D_PREEMPT } dkind_t;
 typedef struct { int64_t t; dkind_t k; int64_t a, b, c, d; } dir_t;
 
 static rxf_t *g_f;
 static long   g_nf, g_fi;
 static dir_t  g_d[MAX_DIRS];
 static int    g_nd, g_di;
+
+/* ------------------------------------------------------- E4: the load -- */
+
+/*
+ * THE BUS AND THE CONTROLLER, modelled only when a scenario asks.
+ *
+ * `load <rx_depth> <bitrate_kbit>` switches it on. Without it every frame is
+ * delivered the instant it is due and every transmit completes immediately,
+ * which is what all 70 existing goldens were blessed against.
+ *
+ * WHAT IS MODELLED
+ *
+ *   Air time. A standard data frame is 47 bits of overhead plus 8*DLC of data,
+ *   plus worst-case bit stuffing on the 34 + 8*DLC stuffable bits, plus the
+ *   3-bit intermission. At 500 kbit that is ~236 us for DLC 6 and ~276 us for
+ *   DLC 8. Worst-case stuffing is chosen over average because the question
+ *   this model exists to answer is a deadline question.
+ *
+ *   Bus occupancy, taken from the CAPTURE rather than invented. Every replayed
+ *   frame really was on the wire, so each one occupies it for its own air
+ *   time; our transmit waits for the bus to go idle. On a 2250 fps capture that
+ *   is ~56 % occupancy, and it comes from measured traffic instead of a
+ *   guessed load factor -- which is the one thing a host model can do honestly
+ *   here.
+ *
+ *   The RX queue, `rx_depth` deep (5 on the device -- the
+ *   TWAI_GENERAL_CONFIG_DEFAULT the build uses). A frame arriving at a full
+ *   queue is DROPPED, and a dropped 0x051 is an unanswered one: the inverter
+ *   acts on the VCM's torque for that slot.
+ *
+ *   The TX FIFO. A frame queued while another is still going out is `behind`
+ *   -- spec 5's hazard, which this harness previously hard-coded to false
+ *   because it had no controller model. Completion is deferred to the air
+ *   time, so the core's own trip 7 decides whether a frame arrived late.
+ *
+ * WHAT IS NOT. Arbitration is not modelled: a frame waits for the bus to be
+ * idle but does not lose arbitration to a higher-priority ID mid-attempt. Nor
+ * is the real driver's ISR, nor error frames and their retransmissions. This
+ * is A MODEL, and review A4 is explicit that the full-replay bench run is what
+ * calibrates it. Treat a green run here as "the deadline holds under the
+ * modelled load", never as "the deadline holds on the truck".
+ */
+static int     g_load;              /* 0 = model off, the default */
+static int     g_rx_depth = 5;
+static int     g_bitrate_kbit = 500;
+
+static int64_t g_preempt_from = -1, g_preempt_to = -1;
+
+#define RXQ_MAX 64
+static rxf_t  g_rxq[RXQ_MAX];
+static int    g_rxq_n;
+
+#define TXQ_MAX 32
+typedef struct
+{
+    gi_frame_t f;
+    int64_t    t_queued;
+    int64_t    t_done;
+    int        ok;
+    int        behind;
+} txq_t;
+static txq_t g_txq[TXQ_MAX];
+static int   g_txq_n;
+
+static int64_t g_bus_free_until;    /* the wire is busy until here */
+static int64_t g_tx_free_until;     /* our controller is busy until here */
+
+static unsigned g_rx_dropped;
+static unsigned g_rx_dropped_cmd;
+static unsigned g_tx_late_past_next;
+static unsigned g_tx_behind;
+static unsigned g_rxq_high_water;
+
+/*
+ * Air time in microseconds for a standard data frame of `dlc` bytes.
+ *
+ * 47 bits of frame overhead (SOF, 11-bit ID, RTR, IDE, r0, DLC, CRC + delim,
+ * ACK slot + delim, EOF) + 8*dlc data bits + worst-case stuffing of one bit
+ * per five identical on the 34 + 8*dlc stuffable bits + 3 bits intermission.
+ */
+static int64_t air_time_us(uint8_t dlc)
+{
+    const int stuffable = 34 + 8 * (int)dlc;
+    const int bits = 47 + 8 * (int)dlc + (stuffable - 1) / 4 + 3;
+    return ((int64_t)bits * 1000) / (int64_t)g_bitrate_kbit;
+}
+
+static int preempted(int64_t now)
+{
+    return g_preempt_from >= 0 && now >= g_preempt_from && now < g_preempt_to;
+}
+
+/*
+ * A replayed frame really was on the wire, so it occupied it. Advancing the
+ * bus clock from the capture is what makes the transmit-delay figures mean
+ * anything: at truck load our frame waits because the truck's own traffic is
+ * there, not because a load factor was picked.
+ */
+static void bus_occupy(int64_t t, uint8_t dlc)
+{
+    const int64_t start = t > g_bus_free_until ? t : g_bus_free_until;
+    g_bus_free_until = start + air_time_us(dlc);
+}
 
 static int64_t g_txfail_from = -1, g_txfail_to = -1;
 static int64_t g_txstall_from = -1, g_txstall_to = -1;
@@ -185,18 +300,76 @@ static void dispatch(gi_state_t *st, const gi_emit_t *em, int64_t now)
                (long long)t_tx, KIND[f->kind], f->id, (unsigned)f->dlc,
                hex, ok);
 
+        /*
+         * `behind` was hard-coded false here until E4, because a core-only
+         * replay had no controller to be behind. With the load model on it is
+         * the real thing: our own frame still going out when this one is
+         * queued, which is spec 5's hazard.
+         */
+        int behind = 0;
+        if (g_load && ok)
+        {
+            behind = t_tx < g_tx_free_until;
+            if (behind && f->kind == GI_TX_INHIBIT) g_tx_behind++;
+        }
+
+        /*
+         * EVERY FRAME ENTERS THE MODEL'S QUEUE, DIAG INCLUDED, and getting
+         * this wrong made spec 5's transmit hazard structurally invisible.
+         *
+         * The first version skipped diag before reaching here -- correctly, as
+         * far as the CORE is concerned: a diag frame's outcome is best-effort
+         * and is not counted (gi_on_tx_result returns early for it anyway). But
+         * "not counted" is not "not transmitted". The diag page still occupies
+         * the single TX buffer and still occupies the wire, and spec 5's hazard
+         * is precisely "a diag frame sitting in the buffer waiting for an idle
+         * bus delays an inhibit 0x051 queued behind it".
+         *
+         * With diag skipped, g_tx_free_until never advanced for it, so no
+         * inhibit could ever be behind one and tx_behind read 0 across 510 diag
+         * pages and 496 inhibits. A measurement that cannot move is worse than
+         * no measurement: a zero there reads as "hazard absent".
+         */
+        if (g_load && ok && g_txq_n < TXQ_MAX)
+        {
+            /*
+             * Start when the controller is free AND the wire is idle. The wire
+             * clock comes from the capture's own frames (bus_occupy), so the
+             * wait here is the truck's traffic rather than an invented load.
+             */
+            int64_t start = t_tx;
+            if (start < g_tx_free_until) start = g_tx_free_until;
+            if (start < g_bus_free_until) start = g_bus_free_until;
+
+            txq_t *q = &g_txq[g_txq_n++];
+            q->f = *f;
+            q->t_queued = t_tx;
+            q->t_done = start + air_time_us(f->dlc);
+            q->ok = ok;
+            q->behind = behind;
+
+            g_tx_free_until = q->t_done;
+            g_bus_free_until = q->t_done;   /* our frame occupies the wire too */
+
+            /*
+             * The core still learns the queue result now, for everything but
+             * diag; only COMPLETION is deferred to tx_drain().
+             */
+            if (f->kind != GI_TX_DIAG)
+            {
+                gi_events_t ev = { 0 };
+                gi_on_tx_result(st, f, ok != 0, behind != 0, t_tx, &ev);
+                dump_events(&ev);
+            }
+            continue;
+        }
+
         if (f->kind == GI_TX_DIAG)
         {
             continue;   /* best-effort on the device; not counted */
         }
         gi_events_t ev = { 0 };
-        /*
-          * `behind` is always false here: this harness has no model of the
-          * controller's TX queue, so it cannot know that a frame went in
-          * behind an unfinished one. That is spec 5's hazard and an E1
-          * mock-HAL case, not something a core-only replay can speak to.
-          */
-        gi_on_tx_result(st, f, ok != 0, false, t_tx, &ev);
+        gi_on_tx_result(st, f, ok != 0, behind != 0, t_tx, &ev);
         dump_events(&ev);
 
         /*
@@ -230,6 +403,94 @@ static void dispatch(gi_state_t *st, const gi_emit_t *em, int64_t now)
 }
 
 /* ---------------------------------------------------------------- input -- */
+
+/*
+ * Complete every queued transmit whose air time has elapsed.
+ *
+ * Deferring this is the point. The core decides trip 7 for itself: an inhibit
+ * frame that has not completed by the time the VCM's next 0x051 arrives loses
+ * the counter race, and gi_on_frame() trips it. So this does not judge
+ * lateness -- it just tells the truth about when the frame left, and lets the
+ * rule under test do the judging.
+ */
+static void tx_drain(gi_state_t *st, int64_t now)
+{
+    while (g_txq_n > 0 && g_txq[0].t_done <= now)
+    {
+        const txq_t q = g_txq[0];
+        memmove(&g_txq[0], &g_txq[1], (size_t)(g_txq_n - 1) * sizeof(g_txq[0]));
+        g_txq_n--;
+
+        if (q.f.kind == GI_TX_DIAG) continue;
+
+        /*
+         * The next VCM frame after ours was queued. If our frame was still
+         * going out when it arrived, the VCM won the counter race for that
+         * slot -- counted here as well as tripped by the core, because the
+         * count is the number spec 5 asks for and a trip only fires once.
+         */
+        if (q.f.kind == GI_TX_INHIBIT)
+        {
+            for (long i = 0; i < g_nf; i++)
+            {
+                if (g_f[i].t <= q.t_queued) continue;
+                if (g_f[i].id != GI_VCM_ID) continue;
+                if (q.t_done > g_f[i].t)
+                {
+                    g_tx_late_past_next++;
+                    printf("%lld !! TX LATE id=%03X queued=%lld done=%lld "
+                           "but the VCM's next 0x051 arrived at %lld\n",
+                           (long long)now, q.f.id, (long long)q.t_queued,
+                           (long long)q.t_done, (long long)g_f[i].t);
+                }
+                break;
+            }
+
+            int stalled = (g_txstall_from >= 0 && q.t_queued >= g_txstall_from
+                           && q.t_queued < g_txstall_to);
+            if (!stalled)
+            {
+                int failed = (g_txdone_from >= 0 && q.t_queued >= g_txdone_from
+                              && q.t_queued < g_txdone_to);
+                gi_events_t dev = { 0 };
+                gi_on_tx_done(st, !failed, q.t_done, &dev);
+                dump_events(&dev);
+            }
+        }
+    }
+}
+
+/*
+ * A frame arrives at the controller. With the model off it is handed straight
+ * to the worker; with it on it joins the RX queue, and a full queue DROPS it.
+ *
+ * A dropped 0x051 is the outcome that matters and it is reported by name: the
+ * inverter acts on the VCM's torque for that slot, because there was no
+ * answer. That is the whole reason spec 5 calls "late but never lossy"
+ * unproven at truck load.
+ */
+static void rx_arrive(const rxf_t *f)
+{
+    if (g_rxq_n >= g_rx_depth)
+    {
+        g_rx_dropped++;
+        if (f->id == GI_VCM_ID)
+        {
+            g_rx_dropped_cmd++;
+            printf("%lld !! RX DROPPED id=%03X -- the RX queue was full at "
+                   "depth %d, so this command went UNANSWERED\n",
+                   (long long)f->t, f->id, g_rx_depth);
+        }
+        else
+        {
+            printf("%lld !! RX DROPPED id=%03X (queue full, depth %d)\n",
+                   (long long)f->t, f->id, g_rx_depth);
+        }
+        return;
+    }
+    g_rxq[g_rxq_n++] = *f;
+    if ((unsigned)g_rxq_n > g_rxq_high_water) g_rxq_high_water = (unsigned)g_rxq_n;
+}
 
 static int cfg_set(gi_config_t *c, const char *k, long long v)
 {
@@ -295,6 +556,18 @@ int main(void)
             g_d[g_nd++] = (dir_t){ t, D_MODE, x, y, 0, 0 };
             continue;
         }
+        if (sscanf(line, "load %lld %lld %lld", &t, &x, &y) == 3)
+        {
+            if (g_nd >= MAX_DIRS) { fprintf(stderr, "too many dirs\n"); return 2; }
+            g_d[g_nd++] = (dir_t){ t, D_LOAD, x, y, 0, 0 };
+            continue;
+        }
+        if (sscanf(line, "preempt %lld %lld", &t, &x) == 2)
+        {
+            if (g_nd >= MAX_DIRS) { fprintf(stderr, "too many dirs\n"); return 2; }
+            g_d[g_nd++] = (dir_t){ t, D_PREEMPT, t, x, 0, 0 };
+            continue;
+        }
         if (sscanf(line, "bus %lld %lld %lld %lld %lld", &t, &x, &y, &z, &w) == 5)
         {
             if (g_nd >= MAX_DIRS) { fprintf(stderr, "too many dirs\n"); return 2; }
@@ -338,6 +611,35 @@ int main(void)
         return 2;
     }
 
+    /*
+     * DIRECTIVES IN TIME ORDER, whatever order the file lists them in.
+     *
+     * The replay loop consumes them with a single advancing index and stops at
+     * the first one whose time is in the future -- so a directive listed out of
+     * order silently blocks every directive after it. That is a footgun, and it
+     * fired the first time a new directive type was added: make_scenarios
+     * emitted `load`(t=0), `preempt`(t=2507010), `mode`(t=0) in that order, and
+     * the `mode` line behind the preemption never ran. The device sat in OFF for
+     * the first 2.5 s of a scenario whose whole subject was the RX queue, and
+     * reported a perfectly clean queue because nothing was armed to fill it.
+     *
+     * Sorting here rather than teaching the generator about each new keyword
+     * puts the fix where the assumption lives. Stable, so directives that share
+     * a timestamp keep their listed order -- `load` before `mode` at t=0 still
+     * means the model is on before the arm.
+     */
+    for (int i = 1; i < g_nd; i++)
+    {
+        dir_t key = g_d[i];
+        int j = i - 1;
+        while (j >= 0 && g_d[j].t > key.t)
+        {
+            g_d[j + 1] = g_d[j];
+            j--;
+        }
+        g_d[j + 1] = key;
+    }
+
     gi_init(&st, &cfg);
 
     int64_t now = 0;
@@ -379,6 +681,20 @@ int main(void)
                 g_txdone_from = d->a;
                 g_txdone_to = d->b;
                 break;
+            case D_LOAD:
+                g_load = 1;
+                if (d->a > 0) g_rx_depth = (int)d->a;
+                if (g_rx_depth > RXQ_MAX) g_rx_depth = RXQ_MAX;
+                if (d->b > 0) g_bitrate_kbit = (int)d->b;
+                printf("# E4 load model ON: rx_depth=%d bitrate=%d kbit "
+                       "(air time: DLC6 %lld us, DLC8 %lld us)\n",
+                       g_rx_depth, g_bitrate_kbit,
+                       (long long)air_time_us(6), (long long)air_time_us(8));
+                break;
+            case D_PREEMPT:
+                g_preempt_from = d->a;
+                g_preempt_to = d->b;
+                break;
             }
             dump_events(&ev);
             state_line(&st, now);
@@ -401,6 +717,13 @@ int main(void)
             continue;
         }
 
+        /*
+         * Completions BEFORE the tick, for the same reason the device collects
+         * them before gi_tick(): the tick withholds a diag page while an
+         * inhibit is outstanding, and a stale flag withholds it for nothing.
+         */
+        if (g_load) tx_drain(&st, now);
+
         {
             gi_emit_t em = { 0 };
             gi_events_t ev = { 0 };
@@ -414,16 +737,77 @@ int main(void)
         int64_t nxt = deadline;
         if (g_fi < g_nf && g_f[g_fi].t < nxt) nxt = g_f[g_fi].t;
         if (g_di < g_nd && g_d[g_di].t < nxt) nxt = g_d[g_di].t;
+
+        if (g_load)
+        {
+            /*
+             * A BACKLOG MUST DRAIN AT THE WORKER'S PACE, not at the pace of
+             * the next scheduled event. Without this the queue emptied one
+             * frame per 200 ms timeout and the model reported floods of
+             * drops that the device would never see -- a model wrong in the
+             * same direction as the defect, which this suite has been caught
+             * by before.
+             *
+             * 40 us is the measured RX->TX turnaround's order (spec 5: 5 us
+             * mean, 38 us max on the device's own clock), so it stands in for
+             * one pass round the worker loop.
+             */
+            if (g_rxq_n > 0 && !preempted(now) && nxt > now + 40)
+            {
+                nxt = now + 40;
+            }
+            /* Nor may the clock jump past a pending completion. */
+            if (g_txq_n > 0 && g_txq[0].t_done < nxt) nxt = g_txq[0].t_done;
+            /* Or past the end of a preemption. */
+            if (g_preempt_to > now && g_preempt_to < nxt) nxt = g_preempt_to;
+        }
+
         if (nxt < now) nxt = now;
         now = nxt;
 
-        if (g_fi < g_nf && g_f[g_fi].t <= now)
+        if (!g_load)
+        {
+            if (g_fi < g_nf && g_f[g_fi].t <= now)
+            {
+                const rxf_t *f = &g_f[g_fi++];
+                gi_emit_t em = { 0 };
+                gi_events_t ev = { 0 };
+                gi_on_rx_ok(&st);
+                gi_on_frame(&st, f->id, f->dlc, f->data, now, &em, &ev);
+                dispatch(&st, &em, now);
+                dump_events(&ev);
+                state_line(&st, now);
+            }
+            continue;
+        }
+
+        /*
+         * WITH THE LOAD MODEL ON, arrival and consumption are separate events.
+         *
+         * Everything due by `now` lands in the RX queue -- including while the
+         * worker is preempted, which is exactly when the queue fills. Then the
+         * worker takes ONE frame, because that is what it does per pass round
+         * its loop, and a queue that grows faster than one frame per pass is
+         * the receive-loss hazard spec 5 describes.
+         */
+        while (g_fi < g_nf && g_f[g_fi].t <= now)
         {
             const rxf_t *f = &g_f[g_fi++];
+            bus_occupy(f->t, f->dlc);   /* it really was on the wire */
+            rx_arrive(f);
+        }
+
+        if (!preempted(now) && g_rxq_n > 0)
+        {
+            const rxf_t f = g_rxq[0];
+            memmove(&g_rxq[0], &g_rxq[1],
+                    (size_t)(g_rxq_n - 1) * sizeof(g_rxq[0]));
+            g_rxq_n--;
+
             gi_emit_t em = { 0 };
             gi_events_t ev = { 0 };
             gi_on_rx_ok(&st);
-            gi_on_frame(&st, f->id, f->dlc, f->data, now, &em, &ev);
+            gi_on_frame(&st, f.id, f.dlc, f.data, now, &em, &ev);
             dispatch(&st, &em, now);
             dump_events(&ev);
             state_line(&st, now);
@@ -444,6 +828,17 @@ int main(void)
            gi_key_on(&st, now) ? 1 : 0,
            st.soc_valid ? 1 : 0, (unsigned)st.mainc_stat,
            st.would_tx, st.emit_refused);
+
+    if (g_load)
+    {
+        printf("%lld E4 rx_dropped=%u rx_dropped_cmd=%u rxq_high_water=%u"
+               " tx_behind=%u tx_late_past_next=%u\n",
+               (long long)now, g_rx_dropped, g_rx_dropped_cmd,
+               g_rxq_high_water, g_tx_behind, g_tx_late_past_next);
+        printf("# E4 is a MODEL. Review A4: the full-replay bench run is what "
+               "calibrates it. A green line above means the deadline held "
+               "under the modelled load, not on the truck.\n");
+    }
 
     free(g_f);
     return 0;

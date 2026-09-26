@@ -97,6 +97,15 @@ def decisions(trace, mode_from, mode_to):
     for ln in trace.splitlines():
         if " TX " in ln or ln.startswith("#"):
             continue
+        # The E4 load line counts what the CONTROLLER did -- frames dropped,
+        # frames queued behind one of ours, frames late past the VCM's next
+        # 0x051. PASSIVE transmits nothing, so it cannot have a frame behind
+        # another and its tx_behind is 0 by construction. That is the moment of
+        # transmission, which spec 3.1 explicitly allows the two modes to
+        # differ in; comparing it would make PASSIVE look divergent for doing
+        # exactly what PASSIVE is for.
+        if " E4 " in ln:
+            continue
         ln = ln.replace("mode=%d" % mode_from, "mode=%d" % mode_to)
         # EV MODE carries the mode number as its `a` field, and that is the
         # one thing the two runs are SUPPOSED to differ in. Rewrite only the

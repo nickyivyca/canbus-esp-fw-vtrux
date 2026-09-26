@@ -1884,5 +1884,205 @@ def s_gene_rpm_stale_fb_fresh():
     return sorted_directives(L)
 
 
+# ---------------------------------------------------------------------------
+# E4 / spec 5: the loaded bus. The model is OFF unless a scenario says `load`,
+# so these are the only scenarios whose timing it touches.
+# ---------------------------------------------------------------------------
+
+def filler(t, n=8):
+    """Traffic the core reads as nothing, to occupy the wire and the RX queue.
+
+    0x3FF is in none of the sets the inhibitor reads, so these frames cost
+    exactly what the truck's other ~2000 fps costs: air time on the wire and a
+    slot in a 5-deep RX queue. That is the whole mechanism of spec 5's receive
+    hazard, and it does not need the frames to mean anything.
+    """
+    return _f(t, 0x3FF, [0] * n)
+
+
+def cmd_train_jittered(t0, t1, ctr0=0):
+    """0x051 at the truck's MEASURED spread, not a fixed period.
+
+    Spec 5: the inter-arrival range is 4.69-16.4 ms, median 9.4-10.5 ms. A fixed
+    period is the wrong model for this harness in a specific and costly way --
+    it PHASE-LOCKS the command train against everything else. With diag and
+    0x051 both on 10 ms, the gap between them is constant for the whole run, so
+    a collision between them either never happens or always does. Raising the
+    diag rate to "sample it more often" (the first attempt here) makes it worse,
+    because equal periods lock exactly.
+
+    On the truck the relative phase drifts continuously, so our diag page lands
+    inside an 0x051's air time about 3 % of the time. The gap pattern below is
+    fixed and repeating -- no RNG, so the scenario stays reproducible -- but its
+    period is incommensurate with every other train, which reproduces the drift.
+    """
+    gaps = [4690, 9400, 16400, 10500, 6300, 13100, 8200, 11900]
+    L, t, ctr, i = [], t0, ctr0, 0
+    while t < t1:
+        L.append(cmd(t, ctr & 0x0F))
+        ctr += 1
+        t += gaps[i % len(gaps)]
+        i += 1
+    return L
+
+
+def _at_truck_rate(t0, t1, cmd_period=10 * MS):
+    """0x051 + interlocks + filler, totalling ~2250 fps (section 9.3).
+
+    EVERY TRAIN IS PHASED, and the first version was not. Starting them all on
+    exact multiples put NINE frames on the same microsecond at t0 and eight at
+    every 100 ms after it, which overflowed a 5-deep queue on its own: the
+    control scenario reported 102 drops with no preemption at all.
+
+    That is a model wrong in the same direction as the defect -- the trap this
+    suite keeps rediscovering. Had only the preemption scenario been read, spec
+    5's receive hazard would have looked confirmed by a mechanism the truck does
+    not have. Real ECUs are independent and unsynchronised; the offsets below
+    are deliberately not multiples of each other, so the trains drift against
+    one another the way measured traffic does.
+    """
+    L = []
+    L += cmd_train_jittered(t0, t1)
+    L += periodic(t0, t1, 50 * MS, lambda t: contactor(t, 11), phase=3 * MS)
+    L += periodic(t0, t1, 50 * MS, lambda t: soc(t, 5000), phase=7 * MS)
+    L += periodic(t0, t1, 50 * MS, lambda t: shift(t, 2), phase=11 * MS)
+    L += periodic(t0, t1, 250 * MS, lambda t: fault(t, 0xC8), phase=17 * MS)
+    L += periodic(t0, t1, 100 * MS, fb, phase=23 * MS)
+    L += periodic(t0, t1, 100 * MS, lambda t: gene(t, 0), phase=29 * MS)
+    L += periodic(t0, t1, 100 * MS, lambda t: key(t, True), phase=31 * MS)
+    # Everything above is ~250 fps. Fill to ~2250.
+    L += periodic(t0, t1, 500, filler, phase=211)
+    return L
+
+
+@scenario("load-truck-rate-holds", """
+E4 / spec 5. ~2250 fps -- the truck's measured powertrain load (section 9.3) --
+through a 5-deep RX queue and a single-buffer FIFO TX, with diag interleaved.
+No preemption.
+
+EXPECT: rx_dropped=0 and tx_late_past_next=0. Every inhibit frame answers its
+0x051 inside the VCM's next-frame deadline even with the wire ~56 % occupied.
+
+THIS IS THE CONTROL, and it is the more important half. Spec 5's numbers were
+all taken on a near-idle bus (~100 fps, VCM-only) and review A4 flagged that as
+not the truck. If this scenario ever starts dropping or running late, the
+question "does the reactive trail hold at load" has changed its answer -- and
+the E4 line in the output is where it says so.
+
+A green run here is NOT proof about the truck. The model has no arbitration, no
+ISR, and no error frames; review A4 is explicit that the full-replay bench run
+is what calibrates it.
+""", autokey=False, autobms=False)
+def s_load_truck_rate():
+    L = ["mode 0 3 500", "load 0 5 500"]
+    L += _at_truck_rate(1 * S, 4 * S)
+    L += ["end %d" % (5 * S)]
+    return sorted_directives(L)
+
+
+@scenario("load-preempt-overflows-queue", """
+E4 / spec 5, the receive hazard made to happen. The same truck load, with the
+worker off-CPU for 2.4 ms -- the measured worst WiFi-preemption delay is
+2.39 ms (spec 5).
+
+EXPECT: the RX queue reaches full depth and a frame is DROPPED. The output
+names a dropped 0x051 as an unanswered command if one is lost -- and at this
+phase one is not, which is the finding rather than a shortfall.
+
+THE ARITHMETIC IS THE POINT, and it is spec 5's own: the RX queue is 5 frames
+deep, which at 2250 fps is ~2.2 ms of buffer, against a 2.39 ms worst
+preemption. The margin is negative. A dropped 0x051 is one the device never
+answered, so the inverter acted on the VCM's torque for that slot -- and
+nothing in the device's own counters distinguishes that from a slot where the
+VCM was not commanding torque at all.
+
+WHAT IT ACTUALLY MEASURES, stated precisely, because the first name for this
+scenario was "loses-command" and it does not reliably lose one. At ~2250 fps
+the five slots fill in ~2.5 ms of surrounding traffic, so a 2.39 ms preemption
+overflows by well under a single frame: exactly one frame is lost, and WHICH
+one is a phase lottery across ~2000 fps of other traffic and ~100 fps of
+0x051. Roughly one time in twenty the loser is the command.
+
+So the honest claim is the one in the name: the buffer overflows at the
+measured worst preemption. That the truck would then lose a command only
+sometimes is worse news than losing one every time, not better -- an
+intermittent unanswered frame is the kind that gets attributed to anything
+else. Naming the scenario after what it demonstrates keeps it from being a
+golden that passes while showing something other than its title.
+
+It exists to make the margin concrete rather than arithmetic, and to fail
+loudly if a future change to queue depth, filtering or task priority is
+believed to have fixed it without measurement.
+""", autokey=False, autobms=False)
+def s_load_preempt():
+    L = ["mode 0 3 500", "load 0 5 500"]
+    frames = _at_truck_rate(1 * S, 4 * S)
+    L += frames
+
+    """
+    THE WINDOW IS PLACED AGAINST A REAL 0x051 ARRIVAL, and the phase is chosen
+    deliberately rather than left to luck. Both halves of that need saying.
+
+    The arithmetic is MARGINAL by design of the hardware, not of this test: five
+    queue slots at ~2250 fps is ~2.2 ms of buffer against a measured worst
+    preemption of 2.39 ms. That is an overflow of roughly a third of one frame.
+    So whether anything is lost at all -- and whether the lost frame is the
+    0x051 or one of the ~2000 fps of traffic around it -- depends entirely on
+    where in the phase the preemption falls. An earlier version of this scenario
+    put the window at a round 2.5 s and reported zero drops, which would have
+    read as "the buffer is sufficient". It is not; it is marginal.
+
+    So the window starts 2.2 ms before a command and ends just after it: the
+    queue fills on the surrounding traffic, and the command arrives to a full
+    queue. That is a real phase the truck will hit, not a manufactured one, and
+    pinning it makes the scenario deterministic instead of a coin toss.
+
+    What this does NOT claim is a rate. How often the truck lands on this phase
+    is a question for the bench run (review A4), not for a model.
+    """
+    cmd_t = None
+    for line in frames:
+        parts = line.split()
+        if len(parts) >= 3 and parts[0] == "f" and parts[2].upper() == "051":
+            t = int(parts[1])
+            if t >= 2500 * MS:
+                cmd_t = t
+                break
+    assert cmd_t is not None, "no 0x051 after 2.5 s to place the preemption against"
+
+    L += ["preempt %d %d" % (cmd_t - 2200, cmd_t + 190)]
+    L += ["end %d" % (5 * S)]
+    return sorted_directives(L)
+
+
+@scenario("load-diag-delays-inhibit", """
+E4 / spec 5, the transmit-ordering hazard. Truck load with the model on, run
+long enough for the 300 ms diag round-robin to put a page in the TX buffer just
+as an inhibit is queued behind it.
+
+EXPECT: tx_behind > 0 on the E4 line -- our own diag frame delaying our own
+inhibit, which is exactly what spec 5 describes and what `tx_queued_behind`
+counts on the device.
+
+WHY IT MATTERS THAT THIS IS COUNTED AND NOT ABORTED: being behind is a timing
+hazard, not a failure. Whether it cost anything shows up as tx_ok not rising or
+as a trip-7 abort. A zero here would read as "hazard absent", which is the worst
+way for a measurement to fail -- and before E4 this harness hard-coded `behind`
+to false, so it read zero always.
+""", autokey=False, autobms=False)
+def s_load_diag_behind():
+    # 20 ms diag, not the shipped 300 ms. At 300 ms a page lands inside one
+    # frame's air time of an 0x051 roughly 3 % of the time, so a 5 s run expects
+    # well under one occurrence and would pass by observing nothing. The hazard
+    # is not rate-dependent -- only how often it is SAMPLED -- so the rate is
+    # raised to sample it. 20 ms rather than 10: with the command train
+    # jittered, an equal period no longer locks, but a period that is a clean
+    # divisor of the median gap still under-samples the drift.
+    L = ["mode 0 3 500", "load 0 5 500", "cfg diag_period_ms 20"]
+    L += _at_truck_rate(1 * S, 6 * S)
+    L += ["end %d" % (7 * S)]
+    return sorted_directives(L)
+
+
 if __name__ == "__main__":
     main()
