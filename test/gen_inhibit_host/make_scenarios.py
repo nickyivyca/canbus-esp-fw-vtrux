@@ -1416,9 +1416,53 @@ def s_diag_cadence_inhibit_to_passive():
     L += _healthy_bg(1 * S, 8 * S)
     # The switch lands mid-stream, 20 ms after a 0x051 and so within a
     # millisecond or two of that frame's completion -- the worst moment for the
-    # defect, because `completion_recent` is freshly true and the wait is a full
-    # second.
+    # defect, because the completion was freshly on record.
     L += ["mode %d 4 500" % (4 * S)]
+    L += ["end %d" % (8 * S)]
+    return sorted_directives(L)
+
+
+@scenario("diag-cadence-after-keycycle", """
+A stale completion record must not gate the next transmitting episode.
+
+Spec 5.1 item 4 (amended 2026-09-26, user) clears the device's record of its
+last inhibit completion whenever it stops being able to transmit, so a device
+that has just gone live has none on record and takes the normal diag cadence
+until its first one. Until that change the record was set in gi_on_tx_done() and
+cleared NOWHERE -- not on a disarm, not on an abort, not on a mode change -- so a
+device carried a completion timestamp across a trip or a key cycle.
+
+WHY THE CLEARING NEEDS ITS OWN SCENARIO. The change is invisible in every other
+trace: it only bites where a stale record exists AND a diag page falls due before
+the first new completion. Adding a guard that no test distinguishes is how the 1 s
+fallback this replaces came to sit unexercised through 74 goldens and 200
+randomised sequences, so this scenario exists to make the difference observable.
+
+HOW IT IS MADE OBSERVABLE. Live and transmitting to 3 s, so completions are on
+record. The key goes off for a second -- spec 7.1 keeps the device armed and
+live, it just stops transmitting -- and comes back at 4 s. `0x051` then pauses
+for 0.4 s, inside the 0.5 s freshness window so nothing trips (the same trick
+diag-defers-to-pending-tx uses), which means no new completion can arrive until
+4.4 s. That 0.4 s is the window in which the two behaviours differ, and it is
+long enough to hold a page at the 300 ms cadence rather than relying on one
+landing in a 10 ms gap.
+
+EXPECT: diag pages continue at their ordinary cadence across the key cycle and
+through the 0x051 pause. With the clearing removed, the stale record makes
+`in_window` false and the pages are held until the first completion at 4.4 s.
+""", autokey=False)
+def s_diag_cadence_after_keycycle():
+    L = ["mode 0 3 500"]
+    # The VCM never stops talking through a key-off; only the 0.4 s pause after
+    # the key returns is a gap, and that is the measurement window.
+    L += cmd_train(1 * S, 4 * S, 20 * MS)
+    L += cmd_train(4400 * MS, 8 * S, 20 * MS)
+    L += key_train(1 * S, 3 * S, on=True)
+    L += key_train(3 * S, 4 * S, on=False)
+    L += key_train(4 * S, 8 * S, on=True)
+    # Healthy throughout: this scenario is about the diag record, and a stale
+    # trip on a supporting signal would end the episode before the window.
+    L += _healthy_bg(1 * S, 8 * S)
     L += ["end %d" % (8 * S)]
     return sorted_directives(L)
 

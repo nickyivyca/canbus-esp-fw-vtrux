@@ -675,10 +675,17 @@ typedef struct
      * find an idle slot at ~56 % occupancy, instead of landing wherever the
      * wall clock happened to put it.
      *
-     * `last_tx_done` is when that last happened, and it is what lets the
-     * normal cadence resume after 1 s with no completion: a device that has
-     * stopped transmitting must still report, or the diagnostics go quiet
-     * exactly when something has gone wrong.
+     * `last_tx_done` is when that last happened, and `have_tx_done` says
+     * whether it has happened AT ALL IN THIS TRANSMITTING EPISODE. Both are
+     * cleared the moment the device stops being able to transmit, so a device
+     * that has just gone live has no completion on record and takes the normal
+     * cadence until its first one -- a device that has stopped transmitting must
+     * still report, or the diagnostics go quiet exactly when something has gone
+     * wrong.
+     *
+     * The clearing is the whole of that guarantee as of 2026-09-26. It used to
+     * be a 1 s bound on `last_tx_done` instead, which is withdrawn: see the long
+     * note at the clearing site in gen_inhibit_core.c, and spec 5.1 item 4.
      */
     bool    diag_after_tx;
     bool    have_tx_done; int64_t last_tx_done;

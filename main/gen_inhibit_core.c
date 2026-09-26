@@ -1211,13 +1211,49 @@ void gi_tick(gi_state_t *st, int64_t now, const gi_bus_t *bus,
     const bool suppressed = st->shutdown_suppressed;
     const bool sending = st->mode == GI_INHIBIT
         && st->inhibit_live && gi_key_on(st, now) && !suppressed;
-    const bool completion_recent = st->have_tx_done
-        && (now - st->last_tx_done) < 1000000;
+
+    /*
+     * THE COMPLETION RECORD BELONGS TO ONE TRANSMITTING EPISODE, and until
+     * 2026-09-26 it belonged to the device's whole life: `have_tx_done` was set
+     * in gi_on_tx_done() and cleared NOWHERE -- not on a disarm, not on a
+     * section 7 abort, not on a mode change. A device that tripped and then came
+     * back on a key cycle went live again carrying a timestamp from before the
+     * trip.
+     *
+     * Clearing it here, on the one condition that matters, rather than at each
+     * transition that produces it. `sending` false means no inhibit frame can be
+     * going out, so any completion on record is from a previous episode and must
+     * not gate the next one. Doing it this way needs no enumeration of the ways
+     * a device can stop transmitting -- disarm, abort, key off, PASSIVE, 6.3
+     * suppression all arrive here identically -- and cannot be left stale by a
+     * route somebody forgets to add.
+     *
+     * `last_tx_done` is deliberately not cleared: it is only ever read behind
+     * `have_tx_done`, so zeroing it would add a write that no reader can observe
+     * and invite the reader to think otherwise.
+     *
+     * Spec 5.1 item 4 was amended for this, and the 1 s fallback it used to
+     * carry is withdrawn in the same change (user, 2026-09-26). That fallback
+     * read `(now - last_tx_done) < 1000000` here. What it was really covering
+     * was the PASSIVE defect above -- with no mode term, PASSIVE waited for a
+     * completion that could never come, and only the 1 s bound broke the wait.
+     * Naming the mode fixes that at the cause, and clearing the record fixes the
+     * staleness directly, which leaves the bound redundant: removing it changed
+     * none of the 74 host goldens and none of 200 randomised sequences. The
+     * worst case it now guards against is a diag hold from going live to the
+     * first completion -- one 0x051 gap, 4.69-16.4 ms -- not silence.
+     */
+    if (!sending)
+    {
+        st->have_tx_done  = false;
+        st->diag_after_tx = false;
+    }
+
     const bool in_window = st->have_tx_done
         && (now - st->last_tx_done) <= GI_DIAG_AFTER_TX_US;
 
     bool diag_ok = true;
-    if (diag_due && sending && completion_recent)
+    if (diag_due && sending && st->have_tx_done)
     {
         diag_ok = st->diag_after_tx && in_window;
     }
