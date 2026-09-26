@@ -177,9 +177,17 @@ void can_enable(void)
 	 * even linked. So accept-all holds today by a chain of three other facts,
 	 * any one of which could change. This makes it a property of the install
 	 * instead.
+	 *
+	 * NOT THE PRIMARY GUARANTEE, and it never was, though this comment used to
+	 * read as if it were. gen_inhibit_set_mode() calls can_enable() before
+	 * gi_set_mode() records the mode, so on the arming path ownership is still
+	 * false here and this block cannot fire; and an already-up driver is not
+	 * reinstalled while arming, so nothing here would see the narrowing at all.
+	 * gen_inhibit.c now clears it before the bus comes up and refuses to arm if
+	 * it is still narrowed. What remains here covers the one case that path does
+	 * not: a re-enable while already owned. Review, 2026-09-26.
 	 */
-	if(gen_inhibit_owns_bus()
-	   && (can_cfg.filter != 0 || can_cfg.mask != 0xFFFFFFFF))
+	if(gen_inhibit_owns_bus() && can_filter_narrowed())
 	{
 		ESP_LOGE(TAG, "acceptance filter is narrowed (code 0x%08lX mask 0x%08lX) "
 		              "while the inhibitor owns the bus -- forcing accept-all "
@@ -282,6 +290,25 @@ void can_set_mask(uint32_t m)
 		return;
 	}
 	can_cfg.mask = m;
+}
+
+/*
+ * Is the configured acceptance filter anything other than accept-all?
+ *
+ * Exists so gen_inhibit.c can clear a narrowed filter BEFORE bringing the bus
+ * up, rather than relying on the install-time override below to notice. The
+ * override could not fire on the arming path at all: gen_inhibit_set_mode()
+ * calls can_enable() before gi_set_mode() records the mode, so
+ * gen_inhibit_owns_bus() was still false inside twai_driver_install(). Found by
+ * review 2026-09-26; the override's comment claimed an assertion the code did
+ * not make.
+ *
+ * Accept-all is mask 0xFFFFFFFF with code 0 -- the TWAI mask is
+ * dont-care-bits-set, so an all-ones mask accepts every ID.
+ */
+bool can_filter_narrowed(void)
+{
+	return can_cfg.filter != 0 || can_cfg.mask != 0xFFFFFFFF;
 }
 
 void can_set_bitrate(uint8_t rate)

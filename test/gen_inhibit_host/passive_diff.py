@@ -221,6 +221,31 @@ def main():
                 print("[skip  ] %-32s never arms INHIBIT" % name)
             continue
 
+        # A SCENARIO THAT ALREADY ENTERS PASSIVE CANNOT BE REWRITTEN INTO IT.
+        #
+        # to_passive() maps `mode <t> 3` to `mode <t> 4` and leaves every other
+        # mode directive alone, so a scenario that arms INHIBIT and later
+        # switches to PASSIVE -- diag-cadence-inhibit-to-passive, at 4 s --
+        # becomes PASSIVE followed by a switch from PASSIVE to PASSIVE. The two
+        # runs are then different experiments rather than one experiment in two
+        # modes, and it showed up as a spurious difference at exactly the switch
+        # instant (EV MODE at 4000000).
+        #
+        # DELIBERATELY NARROW. An earlier attempt skipped every scenario with
+        # any mid-run mode directive, which would also have dropped
+        # disarm-clears-live and disable-freezes-live -- those switch to mode 0,
+        # which to_passive does not touch, so they stay genuinely comparable and
+        # were passing. Recognised by shape, not by name, so the next scenario
+        # of this kind is covered without anyone remembering.
+        modes = [ln.split()[2] for ln in text.splitlines()
+                 if ln.split()[:1] == ["mode"] and len(ln.split()) >= 3]
+        if "4" in modes:
+            skipped += 1
+            if args.verbose:
+                print("[skip  ] %-32s already enters PASSIVE, so rewriting "
+                      "INHIBIT into PASSIVE is not a comparison" % name)
+            continue
+
         a = run(text)
         b = run(passive_text)
 
@@ -290,7 +315,11 @@ def main():
                       % (name, n_tx, n_would, note))
 
     print()
-    print("%d identical, %d differing, %d skipped (never arm INHIBIT)"
+    # Two reasons for a skip now, so the summary no longer names only one of
+    # them: a scenario that never arms INHIBIT, and one that already enters
+    # PASSIVE itself. --verbose says which for each.
+    print("%d identical, %d differing, %d skipped (never arm INHIBIT, or "
+          "already enter PASSIVE -- --verbose says which)"
           % (ok, bad, skipped))
     if bad:
         print("Spec 3.1: PASSIVE must run exactly the INHIBIT decision path,")

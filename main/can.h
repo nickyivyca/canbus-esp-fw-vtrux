@@ -58,6 +58,7 @@ void can_set_loopback(uint8_t flag);
 void can_set_auto_retransmit(uint8_t flag);
 void can_set_filter(uint32_t f);
 void can_set_mask(uint32_t m);
+bool can_filter_narrowed(void);
 void can_set_bitrate(uint8_t rate);
 esp_err_t can_receive(twai_message_t *message, TickType_t ticks_to_wait);
 esp_err_t can_send(twai_message_t *message, TickType_t ticks_to_wait);

@@ -1387,6 +1387,42 @@ def s_passive_dry_run():
     return L
 
 
+@scenario("diag-cadence-inhibit-to-passive", """
+Switching a LIVE INHIBIT to PASSIVE must not hold the diagnostics, and before
+2026-09-26 it held them for up to a second.
+
+Spec 5.1 item 4 schedules a due diag page to the moment just after an inhibit
+frame completes, and names the cases where the normal cadence applies instead:
+"not live, key off, PASSIVE, RESPOND". The implementation tested
+`inhibit_live && key_on && !suppressed` with NO MODE TERM, and `inhibit_live` is
+set in PASSIVE exactly as in INHIBIT -- that is the whole point of spec 3.1, one
+decision path, differing only at the moment of transmission. So on the switch
+the core went on waiting for a completion that by construction could never
+arrive, and diag stopped until the 1 s fallback rescued it.
+
+WHY NO EXISTING SCENARIO CAUGHT IT: none switches a live INHIBIT to PASSIVE.
+`passive-dry-run` arms in PASSIVE from t=0 and never transmits, so
+`have_tx_done` stays false, `completion_recent` is false, and the normal cadence
+applies for a different reason. The defect needed a device that HAD completed a
+frame and then stopped being able to.
+
+EXPECT: diag pages at their ordinary cadence across the 4 s switch, with no gap
+around it -- and tx_ok stops advancing while would_tx starts, because PASSIVE
+decides everything and transmits nothing.
+""")
+def s_diag_cadence_inhibit_to_passive():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 8 * S, 20 * MS)
+    L += _healthy_bg(1 * S, 8 * S)
+    # The switch lands mid-stream, 20 ms after a 0x051 and so within a
+    # millisecond or two of that frame's completion -- the worst moment for the
+    # defect, because `completion_recent` is freshly true and the wait is a full
+    # second.
+    L += ["mode %d 4 500" % (4 * S)]
+    L += ["end %d" % (8 * S)]
+    return sorted_directives(L)
+
+
 # --------------------------------------------------------------------------
 # Round-3 mutation survivors (reviewing session, 2026-09-25). Each of these
 # rules was in the code with nothing asserting it.

@@ -18,6 +18,13 @@ WHAT ROW 22 ASKS FOR, and each is a separate check below:
     9  GIT_SHA embedded
     10 DIAG_FW_VERSION, the schema doc and the DBC consistent
 
+Added 2026-09-26 from review, as the source-check half of two spec 12.4 rows
+that nothing implemented:
+
+    11 CAN_RX_QUEUE_LEN >= 32, the override actually applied, and E4's own
+       RX_DEPTH equal to it (spec 5.1 item 1)
+    12 esp_wifi_set_storage(WIFI_STORAGE_RAM) genuinely called (spec 5.1 item 3)
+
 THE VERSION IS READ FROM THE IMAGE, NOT THE FILENAME. ESP-IDF fixes the output
 filename at *configure* time, so `wican-fw_obd_37addf4-dirty.bin` can contain a
 build of something else entirely -- a trap already recorded once in this
@@ -409,6 +416,93 @@ def _decode_emitted(db, defined):
            "" if not errs else "; %d problem(s): %s" % (len(errs), errs[0])))
 
 
+def check_source():
+    """Spec 5.1 items 1 and 3: two facts that live only in the source.
+
+    Neither can be read from the image, and both are things the host suite is
+    structurally unable to see -- so without these rows they rest on nobody
+    having changed a constant.
+
+    RX QUEUE DEPTH, TWICE OVER. Spec 12.4 asks for ">= 32 whenever the driver
+    is installed (E1 reads the depth the driver was installed with; E3 or a
+    source check pins it)". This is the pinning half, and it also closes a gap
+    that existed in the other direction: E4's load model carries its own
+    RX_DEPTH in make_scenarios.py, independent of the firmware's
+    CAN_RX_QUEUE_LEN, with nothing requiring them to agree. If they drifted, the
+    model would quietly stop describing the device and every E4 result would
+    still pass. Review 2026-09-26 confirmed both mutations survived every suite:
+    removing the override line, and setting 32 back to 5.
+
+    WIFI STORAGE. Spec 5.1 item 3's argument that no flash write happens while
+    the inhibitor owns the bus depends on the WiFi driver keeping its
+    configuration in RAM -- the spec says "asserted, not assumed". This asserts
+    it.
+    """
+    can_c = os.path.join(REPO, "main", "can.c")
+    ms_py = os.path.join(REPO, "test", "gen_inhibit_host", "make_scenarios.py")
+    wifi_c = os.path.join(REPO, "main", "wifi_network.c")
+
+    fw_depth = None
+    if os.path.exists(can_c):
+        text = open(can_c, encoding="utf-8", errors="replace").read()
+        m = re.search(r"^#define\s+CAN_RX_QUEUE_LEN\s+(\d+)", text, re.M)
+        if m:
+            fw_depth = int(m.group(1))
+        # The constant existing is not the same as it reaching the driver.
+        applied = re.search(r"rx_queue_len\s*=\s*CAN_RX_QUEUE_LEN", text) is not None
+        row("rx_queue_len override applied", applied,
+            "main/can.c assigns g_config.rx_queue_len = CAN_RX_QUEUE_LEN"
+            if applied else
+            "main/can.c does not assign rx_queue_len from CAN_RX_QUEUE_LEN, so "
+            "the driver gets TWAI_GENERAL_CONFIG_DEFAULT's 5")
+    else:
+        row("rx_queue_len override applied", None,
+            "no main/can.c at %s" % can_c, ref_missing=True)
+
+    if fw_depth is None:
+        row("CAN_RX_QUEUE_LEN >= 32", None,
+            "could not read CAN_RX_QUEUE_LEN from main/can.c", ref_missing=True)
+    else:
+        row("CAN_RX_QUEUE_LEN >= 32", fw_depth >= 32,
+            "CAN_RX_QUEUE_LEN is %d (spec 5.1 item 1 requires at least 32)"
+            % fw_depth)
+
+    model_depth = None
+    if os.path.exists(ms_py):
+        m = re.search(r"^RX_DEPTH\s*=\s*(\d+)",
+                      open(ms_py, encoding="utf-8", errors="replace").read(), re.M)
+        if m:
+            model_depth = int(m.group(1))
+    if fw_depth is None or model_depth is None:
+        row("E4 RX_DEPTH matches firmware", None,
+            "firmware=%r model=%r -- one of them could not be read"
+            % (fw_depth, model_depth), ref_missing=True)
+    else:
+        row("E4 RX_DEPTH matches firmware", model_depth == fw_depth,
+            "make_scenarios.RX_DEPTH=%d, CAN_RX_QUEUE_LEN=%d"
+            % (model_depth, fw_depth))
+
+    if not os.path.exists(wifi_c):
+        row("WiFi storage is RAM-only", None,
+            "no main/wifi_network.c", ref_missing=True)
+    else:
+        text = open(wifi_c, encoding="utf-8", errors="replace").read()
+        # Called, not merely mentioned: the argument must be WIFI_STORAGE_RAM and
+        # the line must not be commented out.
+        hit = None
+        for ln in text.splitlines():
+            s = ln.strip()
+            if s.startswith("//") or s.startswith("*") or s.startswith("/*"):
+                continue
+            if "esp_wifi_set_storage" in s and "WIFI_STORAGE_RAM" in s:
+                hit = s
+                break
+        row("WiFi storage is RAM-only", hit is not None,
+            "main/wifi_network.c calls %s" % hit if hit else
+            "no live esp_wifi_set_storage(WIFI_STORAGE_RAM) call found, so spec "
+            "5.1 item 3's claim that the WiFi driver writes no NVS is unbacked")
+
+
 def check_schema_doc(doc_path):
     """The schema doc's stated version against the core's."""
     ver = core_schema_ver()
@@ -478,6 +572,7 @@ def main():
     check_partitions()
     check_diag(args.dbc)
     check_schema_doc(args.schema_doc)
+    check_source()
 
     print()
     bad = 0

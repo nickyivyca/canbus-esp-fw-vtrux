@@ -1192,8 +1192,25 @@ void gi_tick(gi_state_t *st, int64_t now, const gi_bus_t *bus,
      * idle slot at ~56 % occupancy. A page that misses the window waits for the
      * next completion, which is at most one VCM gap away.
      */
+    /*
+     * PASSIVE IS NOT SENDING, and the first version of this got it wrong in a
+     * way the comment above already contradicted.
+     *
+     * `inhibit_live` is set in PASSIVE as much as in INHIBIT -- gi_mode_decides()
+     * is the whole point of spec 3.1, the two modes run one decision path and
+     * differ only at the moment of transmission. So a test of inhibit_live and
+     * the key says "this device has decided to inhibit", not "this device is
+     * putting frames on the wire", and PASSIVE puts none there.
+     *
+     * Without the mode term, switching INHIBIT -> PASSIVE within a second of a
+     * completion held diag for up to that second, waiting for a completion that
+     * by construction could never arrive. Spec 5.1 item 4 names PASSIVE in its
+     * list of cases that keep the normal cadence, so this was a conformance
+     * defect and not a judgement call. Found by review, 2026-09-26.
+     */
     const bool suppressed = st->shutdown_suppressed;
-    const bool sending = st->inhibit_live && gi_key_on(st, now) && !suppressed;
+    const bool sending = st->mode == GI_INHIBIT
+        && st->inhibit_live && gi_key_on(st, now) && !suppressed;
     const bool completion_recent = st->have_tx_done
         && (now - st->last_tx_done) < 1000000;
     const bool in_window = st->have_tx_done

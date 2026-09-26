@@ -45,8 +45,20 @@ MS = 1000
 WORST_PREEMPT_US = 2390
 ERASE_BLOCK_US = 20000
 
+# Spec 5.1 item 5: the sweep must report its first loss at "at least 3x the
+# measured worst (>= 7.2 ms)". 3 x 2390 is 7170; the spec states 7200 and that
+# is the figure this enforces.
+REQUIRED_MARGIN_US = 7200
+
 sys.path.insert(0, HERE)
 import make_scenarios as mk                                    # noqa: E402
+
+# The depth the requirement is about is the FIRMWARE's, not whichever depths the
+# sweep happens to be asked for. Taken from make_scenarios.RX_DEPTH because that
+# is what is synced to the machine this runs on; main/can.c's CAN_RX_QUEUE_LEN is
+# the real article and test/build_checks/build_output.py pins the two together,
+# which is the only reason reading one here is sound.
+FIRMWARE_DEPTH = mk.RX_DEPTH
 
 
 def build(depth, kind, length_us):
@@ -104,6 +116,11 @@ def main():
                     help="RX queue depth to sweep (repeatable)")
     args = ap.parse_args()
     depths = args.depth or [5, 8, 16, 32]
+    # The firmware's depth is always swept, whatever was asked for: the spec
+    # 5.1 item 5 verdict below is about that depth and nothing else, and a
+    # --depth list that omitted it would otherwise skip the check silently.
+    if FIRMWARE_DEPTH not in depths:
+        depths = sorted(depths + [FIRMWARE_DEPTH])
 
     # Fine near the interesting region, coarse after it.
     lengths = ([500 * i for i in range(1, 12)]
@@ -137,11 +154,20 @@ def main():
     base = next((r for r in rows if r[0] == 5), None)
     deep = rows[-1]
 
+    step = lengths[1] - lengths[0]
     if base and base[1] is not None:
-        print("At the shipped depth of 5, preemption loses a frame from %d us "
-              "-- inside the %d us worst measured preemption, which is why "
-              "load-preempt-overflows-queue loses one."
-              % (base[1], WORST_PREEMPT_US))
+        # STATED AS A BRACKET, because that is all a sweep on a fixed grid can
+        # say. The previous wording -- "loses a frame from 2500 us, inside the
+        # 2390 us worst measured preemption" -- read as though 2500 had been
+        # found to be below 2390. What the sweep establishes is that the
+        # boundary lies between the last clean step and the first lossy one,
+        # and 2390 falls inside that interval rather than above it.
+        print("At the stock depth of %d, the preemption boundary is between "
+              "%d and %d us. The %d us worst measured preemption falls INSIDE "
+              "that interval, so whether it loses a frame is not resolved at "
+              "this grid -- which is why load-preempt-rides-through is written "
+              "about the deeper queue and not about this one."
+              % (base[0], max(0, base[1] - step), base[1], WORST_PREEMPT_US))
     if deep[1] is None or (base and base[1] and deep[1] and deep[1] > base[1]):
         print("A deeper software queue moves the PREEMPTION boundary out, as "
               "expected: the ISR keeps filling the queue, so depth is the "
@@ -154,8 +180,46 @@ def main():
 
     print()
     print("This is a MODEL. Review A4: the full-replay bench run is what "
-          "calibrates it.")
-    return 0
+          "calibrates it. The rig half of that calibration ran 2026-09-26 and "
+          "found this model's air time conservative at every DLC and its bus "
+          "occupancy slightly above the truck's; the device half, which is what "
+          "would revise WORST_PREEMPT_US, has not run.")
+
+    # ---------------------------------------------------------------- verdict
+    #
+    # SPEC 5.1 ITEM 5 IS A REQUIREMENT, AND UNTIL NOW NOTHING ENFORCED IT.
+    # This script always exited 0 and no suite invoked it, so the margin was
+    # a number a person had to read and compare by eye. Mutations that moved
+    # the boundary -- removing the queue-depth override, or setting it back to
+    # 5 -- survived every suite for exactly that reason (review Q1/Q2,
+    # 2026-09-26).
+    row = next((r for r in rows if r[0] == FIRMWARE_DEPTH), None)
+    print()
+    if row is None:
+        print("FAIL: the firmware depth (%d) was not swept, so spec 5.1 item 5 "
+              "is unchecked." % FIRMWARE_DEPTH)
+        return 1
+
+    got = row[1]
+    if got is None:
+        print("PASS (spec 5.1 item 5): at the firmware's depth of %d no "
+              "preemption up to %d us loses a frame, against the >= %d us "
+              "required." % (FIRMWARE_DEPTH, lengths[-1], REQUIRED_MARGIN_US))
+        return 0
+    if got >= REQUIRED_MARGIN_US:
+        print("PASS (spec 5.1 item 5): at the firmware's depth of %d the first "
+              "loss is at %d us, %.1fx the %d us worst measured preemption, "
+              "against the >= %d us (3x) required."
+              % (FIRMWARE_DEPTH, got, got / float(WORST_PREEMPT_US),
+                 WORST_PREEMPT_US, REQUIRED_MARGIN_US))
+        return 0
+
+    print("FAIL (spec 5.1 item 5): at the firmware's depth of %d the first "
+          "loss is at %d us, only %.1fx the %d us worst measured preemption. "
+          "The spec requires at least 3x (>= %d us)."
+          % (FIRMWARE_DEPTH, got, got / float(WORST_PREEMPT_US),
+             WORST_PREEMPT_US, REQUIRED_MARGIN_US))
+    return 1
 
 
 if __name__ == "__main__":

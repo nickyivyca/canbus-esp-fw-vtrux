@@ -513,6 +513,42 @@ esp_err_t gen_inhibit_set_mode(gen_inhibit_mode_t mode, uint32_t offset_us)
             can_disable();
         }
 
+        /*
+         * SPEC 5.1 ITEM 2: the controller keeps accept-all while we own the bus,
+         * and this is where that is made true.
+         *
+         * can.c forces accept-all at install time when gen_inhibit_owns_bus(),
+         * which READ CORRECTLY AND DID NOTHING ON THIS PATH. The mode is not
+         * recorded in the core until gi_set_mode() below, well after
+         * can_enable() above, so ownership was still false inside
+         * twai_driver_install() and the override could only ever fire on a
+         * re-enable while already armed. Worse, an already-up driver is not
+         * reinstalled by the block below at all, so a narrowed filter simply
+         * survived arming. Found by review 2026-09-26.
+         *
+         * Clearing it at the source fixes both. The acceptance filter is a
+         * property of the install, so a live driver has to come down for the
+         * change to reach the hardware -- and can_set_filter()/can_set_mask()
+         * refuse while ON_BUS, which is why the teardown comes first. Neither
+         * writes flash; they touch can_cfg in RAM only, so this is not a spec
+         * 5.1 item 3 concern.
+         *
+         * Latent today -- slcan.c holds the only callers and its dispatch is
+         * not linked in this build -- so this is about the guarantee not
+         * resting on that, which is exactly what item 2 asks for.
+         */
+        if (can_filter_narrowed())
+        {
+            ESP_LOGW(TAG, "clearing narrowed acceptance filter before arming "
+                          "mode %d (spec 5.1 item 2)", (int)mode);
+            if (can_is_enabled())
+            {
+                can_disable();
+            }
+            can_set_filter(0);
+            can_set_mask(0xFFFFFFFF);
+        }
+
         if (!can_is_enabled())
         {
             if (!s_forced_silent)
@@ -523,6 +559,18 @@ esp_err_t gen_inhibit_set_mode(gen_inhibit_mode_t mode, uint32_t offset_us)
             s_forced_silent = want_listen_only;
             can_enable();
             s_we_enabled_bus = true;
+        }
+        /*
+         * Belt and braces, and it must hold whatever happened above: if the
+         * filter is still narrowed the bus is not ours to use, because every
+         * gate and trip in section 7 reads IDs the filter may have dropped and
+         * a dropped ID fails silently -- a device that never goes live, or one
+         * that trips stale.
+         */
+        if (can_filter_narrowed())
+        {
+            ESP_LOGE(TAG, "cannot arm: acceptance filter still narrowed");
+            return ESP_ERR_INVALID_STATE;
         }
         if (!can_is_enabled())
         {

@@ -196,27 +196,63 @@ static unsigned g_rxq_high_water;
 /*
  * Air time in microseconds for a standard data frame of `dlc` bytes.
  *
- * 47 bits of frame overhead (SOF, 11-bit ID, RTR, IDE, r0, DLC, CRC + delim,
- * ACK slot + delim, EOF) + 8*dlc data bits + worst-case stuffing of one bit
- * per five identical on the 34 + 8*dlc stuffable bits + 3 bits intermission.
+ * The fields listed here -- SOF, 11-bit ID, RTR, IDE, r0, DLC, CRC + delim,
+ * ACK slot + delim, EOF -- come to 44 bits, not the 47 the expression uses, and
+ * the difference is a 3-bit interframe space already folded in. The `+ 3` below
+ * therefore counts the intermission a second time; see air_time_us().
+ *
+ * Plus 8*dlc data bits and worst-case stuffing of one bit per five identical
+ * over the 34 + 8*dlc stuffable bits.
  */
 static int64_t air_time_us(uint8_t dlc)
 {
     /*
-     * CORROBORATED AGAINST HARDWARE, which matters because this formula is the
-     * one number in the load model that is calculated rather than measured.
+     * MEASURED AGAINST HARDWARE, which matters because this formula is the one
+     * number in the load model that is calculated rather than measured.
      *
-     * The bench Kvaser sat a constant ~266 us above the device's own timestamp
-     * in every arm, and that offset is one 0x7F0 frame's air time on the wire
-     * at 500 kbit (the device timestamps at queue, the Kvaser at the wire) --
-     * gen-inhibit-wican-firmware.md, the RX-to-probe overhead table. 0x7F0 is
-     * DLC 8, and this returns 276 us for DLC 8.
+     * Bench segment, IXXAT witness, 300-frame back-to-back bursts per DLC,
+     * three runs agreeing to ~2 us, 2026-09-26. Against a 0x00 payload, the
+     * more heavily stuffed of the two arms:
      *
-     * So the model runs ~4 % long: worst-case stuffing against the real
-     * stuffing of real payloads. That is the right direction for a deadline
+     *     DLC        4      5      6      7      8
+     *     wire   177.9  196.0  214.1  239.8  254.2 us   (IXXAT, p50)
+     *     here     196    216    236    256    276 us
+     *
+     * So the model runs 7-11 % long at every DLC, not the ~4 % an earlier
+     * revision of this comment claimed. Two reasons, and the first is a plain
+     * mistake left in place deliberately:
+     *
+     *   - THE INTERFRAME SPACE IS COUNTED TWICE. A standard frame is 44 bits
+     *     SOF..EOF, so the 47 below is already 44 + 3 bits of intermission, and
+     *     the trailing `+ 3` adds it again -- 6 us per frame before stuffing.
+     *   - Worst-case stuffing against the real stuffing of a real payload.
+     *
+     * KEPT AS IT IS, on purpose. Long is the right direction for a deadline
      * model -- it can report a frame late that was not, never on time one that
-     * was -- and 4 % is small enough that it is not doing the work in any
-     * result here.
+     * was -- and this margin is not doing the work in any result here: the
+     * preemption sweep's first loss sits at 20 ms against the 7.2 ms spec 5.1
+     * item 5 requires, which 6 us a frame cannot account for. Changing it would
+     * churn every golden for no fidelity that matters.
+     *
+     * Two further calibration figures, same run. Truck-rate bus occupancy
+     * measured 49.3-59.9 % of the wire against the 62.1 % this model implies at
+     * 2250 frames/s, so the model loads the bus slightly harder than the
+     * capture's busiest sustained epoch. And 4.8 % of that epoch's frames are
+     * 29-bit extended, whose arbitration field is 20 bits longer than anything
+     * this function can express -- the scenarios here are all standard IDs.
+     *
+     * The earlier corroboration, kept because it is still true and is the only
+     * cross-check taken on the device itself: the bench Kvaser sat a constant
+     * ~266 us above the device's own timestamp in every arm, one 0x7F0 frame's
+     * air time at 500 kbit (the device timestamps at queue, the Kvaser at the
+     * wire) -- gen-inhibit-wican-firmware.md, the RX-to-probe overhead table.
+     * Read it knowing the same calibration found python-can hardcodes the
+     * Kvaser's timestamp resolution to 10 us and caught it reporting gaps of
+     * 79.9 us, where a DLC-4 frame cannot occupy less than 158 us. Sound at
+     * millisecond scale, weak at this one.
+     *
+     * Artifact: projects/vtrux/notes/artifacts/gen-inhibit/e4_rig_calibration.py
+     * (phase `airtime`), runs/e4_rig_airtime.json, in the reverse-it repo.
      */
     const int stuffable = 34 + 8 * (int)dlc;
     const int bits = 47 + 8 * (int)dlc + (stuffable - 1) / 4 + 3;
