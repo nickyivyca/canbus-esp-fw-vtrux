@@ -1734,5 +1734,155 @@ def main():
         print("wrote %-40s %5d lines" % (path, len(lines)))
 
 
+# ---------------------------------------------------------------------------
+# Spec 12.4: the whole-bus dropout row, and 0x617's own freshness window.
+# ---------------------------------------------------------------------------
+
+def _dropout(gap_us, fault_lead_us, fault_resume_us):
+    """Every signal stops for `gap_us` at t = 3 s, then all resume.
+
+    The two `fault_*` arguments place 0x617's PHASE either side of the gap,
+    which is the whole point of this family. 0x617 runs at 4 Hz, so its total
+    absence is the gap plus however long before it the last frame fell plus
+    however long after the bus returns the next one takes -- up to 250 ms at
+    each end. A window that only just covers the gap itself is therefore not
+    enough, and the failure depends on nothing the device can see or control.
+
+      fault_lead_us    the last pre-gap 0x617 lands this long BEFORE the stop
+      fault_resume_us  the first post-gap 0x617 lands this long AFTER the
+                       bus returns
+    """
+    T = 3 * S                       # the bus stops
+    T2 = T + gap_us                 # the bus returns
+    END = T2 + 3 * S
+    L = ["mode 0 3 500"]
+
+    L += cmd_train(1 * S, T, 20 * MS)
+    L += cmd_train(T2, END, 20 * MS)
+    L += contactor_train(1 * S, T)
+    L += contactor_train(T2, END)
+    L += periodic(1 * S, T, 50 * MS, lambda t: soc(t, 5000))
+    L += periodic(T2, END, 50 * MS, lambda t: soc(t, 5000))
+    L += periodic(1 * S, T, 50 * MS, lambda t: shift(t, 2))
+    L += periodic(T2, END, 50 * MS, lambda t: shift(t, 2))
+    L += key_train(1 * S, T, on=True)
+    L += key_train(T2, END, on=True)
+
+    # 0x617 backwards from its placed last pre-gap frame, so the phase is
+    # exact rather than whatever a forward train happens to land on.
+    t = T - fault_lead_us
+    while t >= 1 * S:
+        L.append(fault(t, 0xC8))
+        t -= 250 * MS
+    L += periodic(T2, END, 250 * MS, lambda t: fault(t, 0xC8),
+                  phase=fault_resume_us)
+
+    L += ["end %d" % (END + 1 * S)]
+    return sorted_directives(L)
+
+
+@scenario("bus-dropout-450-fault-aligned", """
+A 450 ms whole-bus dropout with 0x617 arriving right up to the stop and again
+right after the return -- the kindest phase for it.
+
+EXPECT: no abort at all. 0x051's gap is under its own 0.5 s window, so the link
+never reads lost, and every other signal is fresh again before the first 0x051
+comes back. The easy case, kept as the control for the two below: if this one
+ever aborts, the dropout family is measuring something other than phase.
+""", autokey=False, autobms=False)
+def s_bus_dropout_450_aligned():
+    return _dropout(450 * MS, 0, 0)
+
+
+@scenario("bus-dropout-450-fault-worst-phase", """
+The same 450 ms dropout with 0x617's phase against us at BOTH ends: its last
+frame 240 ms before the stop, its first 240 ms after the return. Total absence
+~930 ms.
+
+EXPECT: still no abort. This is the case that decided 0x617's window (user,
+2026-09-25). On the old single 0.5 s window a dropout as short as 300 ms
+latched the inhibit off for the rest of the key cycle AND blamed 0x617 -- the
+old bus-glitch-short golden recorded exactly that, aborting with "0x617 went
+stale while live". The evidence rule did not save it, because on the return
+0x051 comes back within 20 ms while 0x617 can take another 250, and in that
+window 0x617 is genuinely stale with a live bus to prove it.
+
+930 ms against a 1000 ms window is a 70 ms margin, and that is the design
+margin rather than slack: spec 7 puts the ride-through bound at 0x051's own
+0.5 s window, so this is meant to be tight. If a future change moves either
+number this scenario is the one that should fail.
+""", autokey=False, autobms=False)
+def s_bus_dropout_450_worst():
+    return _dropout(450 * MS, 240 * MS, 240 * MS)
+
+
+@scenario("bus-dropout-600-reports-link", """
+A 600 ms dropout -- past 0x051's own 0.5 s window -- with 0x617's phase still
+against us.
+
+EXPECT: a latched abort naming the LINK (trip 2, "bus lost"), never a stale
+0x617. This is the other half of the ruling: the wider window is not there to
+hide a real bus loss, it is there so the device blames the right thing. 0x617's
+total absence here is ~1080 ms, so it IS stale by its own window -- and trip 2
+must still win, because 0x051 expired first and a link that has gone down is
+the honest report.
+""", autokey=False, autobms=False)
+def s_bus_dropout_600_link():
+    return _dropout(600 * MS, 240 * MS, 240 * MS)
+
+
+# ---------------------------------------------------------------------------
+# Spec 12.4: the GENE family, trips 3 and 5.
+# ---------------------------------------------------------------------------
+
+@scenario("gene-family-quiet-together", """
+0x054 and 0x471 both arrive, then BOTH stop while 0x051 keeps running.
+
+EXPECT: a latched abort naming the INVERTER (trip 3), not a stale 0x054.
+
+WHY THIS SCENARIO HAD TO BE WRITTEN. Neither existing scenario constrained the
+order, and that is why the bug was invisible: inverter-lost sends 0x471 and no
+0x054 at all, so trip 5 cannot fire in it; stale-rpm-once-heard sends 0x054 and
+no 0x471, so trip 3 cannot fire in it. Each tested one trip with the other
+structurally unreachable, and both passed under either ordering.
+
+On the truck the two always go together -- same module, both ~100 Hz -- so they
+expire within a tick of each other and whichever test ran first won. The
+reported reason therefore depended on nothing but which frame happened to
+arrive last, and the two identical end-of-drive events in replay-rekey-long
+reported one each, from the same capture, for the same physical event.
+""", autobms=False)
+def s_gene_family_together():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 8 * S, 20 * MS)
+    L += _healthy_bg(1 * S, 8 * S)
+    L += periodic(2 * S, 5 * S, 100 * MS, fb)
+    L += periodic(2 * S, 5 * S, 100 * MS, lambda t: gene(t, 0))
+    L += ["end %d" % (9 * S)]
+    return sorted_directives(L)
+
+
+@scenario("gene-rpm-stale-while-fb-fresh", """
+0x054 and 0x471 both arrive, then 0x054 alone stops -- 0x471 keeps running at
+full rate to the end.
+
+EXPECT: a latched abort naming 0x054 (trip 5, "generator speed lost").
+
+This is the other half of the rule and the reason it is an ordering and not
+simply "always report trip 3". The inverter is demonstrably still there, so
+saying it was lost would be wrong; what has gone is the speed signal alone.
+Together with gene-family-quiet-together this pins both directions, which is
+what the single-signal scenarios could not do.
+""", autobms=False)
+def s_gene_rpm_stale_fb_fresh():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 8 * S, 20 * MS)
+    L += _healthy_bg(1 * S, 8 * S)
+    L += periodic(2 * S, 8 * S, 100 * MS, fb)                   # 0x471 stays
+    L += periodic(2 * S, 5 * S, 100 * MS, lambda t: gene(t, 0))  # 0x054 stops
+    L += ["end %d" % (9 * S)]
+    return sorted_directives(L)
+
+
 if __name__ == "__main__":
     main()

@@ -81,6 +81,88 @@ where the bugs live. It does **not** emulate:
   cannot speak to it;
 - preemption, and the races between the worker task and the HTTP handlers.
 
+## The 2026-09-25 rulings, and the ten goldens they moved
+
+The user settled three open questions; spec 7 and 6.2 now state them. Between
+them they changed **ten existing goldens** and added **five scenarios**. Every
+one of the ten diffs was read and attributed before being blessed — the
+discipline this file's own header argues for.
+
+**1. `0x617` gets its own 1.0 s freshness window**; every other signal stays on
+`fresh_us` (0.5 s). `gi_config_t.fault_fresh_us`, traced by
+`config_vs_spec.py` to spec 7's "Freshness" paragraph.
+
+With one shared window the *slowest* signal set the device's whole tolerance of
+a brief bus dropout. `0x617` runs at 4 Hz, so after a glitch it is absent for
+the glitch plus up to 250 ms either side — and a dropout as short as **300 ms**
+latched the inhibit off until the next key cycle *and blamed `0x617` for it*.
+The old `bus-glitch-short` golden recorded exactly that abort; it now rides
+through, which is what that scenario should always have shown.
+
+The evidence rule did not save it, and the reason is worth keeping: on the
+return `0x051` comes back within 20 ms while `0x617` can take another 250, so
+there really is a window where `0x617` is stale *with a live bus to prove it*.
+The rule is working correctly; the window was simply too narrow for the signal.
+
+**2. The GENE family quiet together is trip 3, not a stale `0x054`.**
+Implemented by checking `0x471` before `0x054` — the ordering *is* the rule.
+
+Both frames come from the same module at ~100 Hz, so when the inverter drops
+they expire within a tick of each other and **whichever test ran first won**.
+The reported reason therefore depended on nothing but which frame happened to
+arrive last: the two identical end-of-drive events in `replay-rekey-long`
+reported one each, from the same capture, for the same physical event. The
+first is now `a=4` like the second.
+
+**Neither existing scenario constrained the order, which is why this was
+invisible.** `inverter-lost` sends `0x471` and no `0x054` at all, so trip 5
+cannot fire in it; `stale-rpm-once-heard` sends `0x054` and no `0x471`, so
+trip 3 cannot fire in it. Each tested one trip with the other *structurally
+unreachable*, and both passed under either ordering. That is the shape to watch
+for: two scenarios that look like they cover a pair of rules, neither of which
+can observe the interaction.
+
+**3. The SoC debounce is 5 consecutive valid readings**, now stated in spec
+6.2 rather than living only in code. **No new scenario** —
+`low-soc-debounce` already pins all four parts of the 12.4 row, including that
+a reading at or above the threshold restarts the count. What changed is that
+`config_vs_spec.py` can trace the number; it had spent a day honestly reported
+as CODE-ONLY.
+
+### The other eight goldens
+
+Five of them (`arm-gate-order-rpm-first`, `gate-contactors-open-now`,
+`gate-needs-fresh-shift`, `soc-never-closed-never-live`, `rearm-after-disarm`)
+changed for one reason: they had been reporting **`no fresh 0x617`** as the arm
+block, and with the wider window the gate now gets past it and names the
+condition the scenario is actually about — `gate-contactors-open-now` says
+"main contactors not closed", `rearm-after-disarm` says "no fresh 0x639".
+
+**Those five were passing while demonstrating the wrong blocker.** A golden
+records what happened, not what the scenario meant, so a scenario can sit green
+for weeks proving something other than its name. Worth remembering the next
+time a gate scenario looks fine.
+
+`keyon-clear-then-gene-late` is ruling 2 again (`a=11` to `a=4`).
+`stale-fault-aborts` and `replay-rekey-short` are ruling 1's timing moving out
+by the extra half second — in `replay-rekey-short` the device now stays live
+through what used to be an abort at 23.017 s and trips at 25.783 s instead.
+
+### The five new scenarios
+
+| Scenario | Pins |
+|---|---|
+| `bus-dropout-450-fault-aligned` | a 450 ms dropout with `0x617` at its kindest phase rides through — the control |
+| `bus-dropout-450-fault-worst-phase` | the same dropout with `0x617` 240 ms adrift at **both** ends (~930 ms absent) still rides through |
+| `bus-dropout-600-reports-link` | a 600 ms dropout reports **trip 2, bus lost** — never a stale `0x617`, even though `0x617` is stale by its own window |
+| `gene-family-quiet-together` | both GENE frames stop together → trip 3 |
+| `gene-rpm-stale-while-fb-fresh` | `0x054` alone stops, `0x471` still running → trip 5 |
+
+`bus-dropout-450-fault-worst-phase` sits **70 ms inside** the 1.0 s window and
+that is the design margin, not slack: spec 7 bounds the ride-through by
+`0x051`'s own 0.5 s window, so it is meant to be tight. If either number moves,
+this is the scenario that should fail first.
+
 ## Findings
 
 Both were produced by this harness on its first run. Both are **pre-refactor

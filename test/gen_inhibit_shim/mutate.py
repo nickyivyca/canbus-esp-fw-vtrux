@@ -249,6 +249,47 @@ MUT = {
  # only its report of that is wrong, which no timing assertion can see.
  "V10_probe_offset_byte": ("main/gen_inhibit_core.c", [(
   "    f->data[4] = (uint8_t)(st->offset_us);", "    f->data[4] = 0;")]),
+ # ---- THE 2026-09-25 RULINGS ----------------------------------------------
+ #
+ # Each ruling changed behaviour, so each needs a mutation showing that a test
+ # would notice it going away. W01 and W02 are the two that produced golden
+ # changes; W03 and W04 guard the numbers rather than the shape.
+
+ # Ruling 1: 0x617 back on the common 0.5 s window. This is the state the
+ # firmware was in yesterday, and the one that latched the inhibit off for a
+ # whole key cycle on a 300 ms bus glitch while blaming 0x617 for it.
+ # Caught by bus-dropout-450-fault-worst-phase, which is written to sit 70 ms
+ # inside the 1.0 s window at 0x617's worst phase.
+ "W01_fault_window_back_to_fresh_us": ("main/gen_inhibit_core.c", [(
+  'c->fault_fresh_us = 1000000;    /* 0x617 only; spec 7 "Freshness" */',
+  'c->fault_fresh_us = 500000;')]),
+
+ # Ruling 1, the subtler half: stale judged on 1.0 s but the EVIDENCE test
+ # still asking for an 0x051 after 0.5 s. That is a different and much weaker
+ # rule than spec 7 states, and it is the mistake the call site's comment
+ # exists to warn against -- so it needs a mutation rather than a comment.
+ "W02_evidence_window_mismatch": ("main/gen_inhibit_core.c", [(
+  """        && bus_alive_since_w(st, st->have_fault, st->seen_fault,
+                             (int64_t)st->cfg.fault_fresh_us))""",
+  """        && bus_alive_since_w(st, st->have_fault, st->seen_fault,
+                             (int64_t)st->cfg.fresh_us))""")]),
+
+ # Ruling 2: the GENE family ordering put back the way it was, by making the
+ # inverter trip fire only when 0x054 is ALSO still fresh -- which is the
+ # behaviour the old ordering produced whenever both went quiet together.
+ # Caught by gene-family-quiet-together; gene-rpm-stale-while-fb-fresh proves
+ # the other direction is not broken by the fix.
+ "W03_gene_order_reverted": ("main/gen_inhibit_core.c", [(
+  "    if (st->fb_ever && !gi_fresh(st, st->have_fb, st->seen_fb, now)",
+  """    if (st->fb_ever && gi_fresh(st, st->have_rpm, st->seen_rpm, now)
+        && !gi_fresh(st, st->have_fb, st->seen_fb, now)""")]),
+
+ # Ruling 3: the debounce count. The behaviour was already pinned by
+ # low-soc-debounce; what changed today is that spec 6.2 states the number, so
+ # config_vs_spec can trace it. Both should object -- the scenario because four
+ # readings now release, the build check because 4 != 5.
+ "W04_soc_debounce_4": ("main/gen_inhibit_core.c", [(
+  "c->soc_debounce = 5;", "c->soc_debounce = 4;")]),
 }
 # A GREEN MUTATION RUN MEANS NOTHING IF THE BASELINE IS RED: every mutant is
 # then reported caught by a failure that was already there. That happened once,

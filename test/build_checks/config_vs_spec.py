@@ -31,20 +31,22 @@ PROBE = os.path.join(HERE, "config_probe")
 EXPECTED = [
     ("soc_min_raw", 2100, "6.2",
      "released the moment bms_soc_hires goes below 21.00 %"),
-    # CODE-ONLY. Spec 6.2 requires a debounce and does not give a count, so
-    # there is nothing to compare against and this row must not pretend there
-    # is. Found by the reviewing session on 2026-09-25: the row cited 6.2 and
-    # printed "spec says 5", which is precisely the over-claim this check
-    # exists to prevent -- a traceability table whose rows do not all trace is
-    # worse than none, because the ones that do are no longer distinguishable.
-    ("soc_debounce", None, "6.2 (no number stated)",
-     "must persist across a debounce window; 5 is code-only"),
+    # NOW TRACEABLE. Spec 6.2 states the count as of 2026-09-25 -- "the reading
+    # must persist for 5 consecutive valid 0x411 readings" -- so this row goes
+    # back to comparing against a number the document actually gives. It spent
+    # a day as CODE-ONLY, which was the honest state to be in: the check said
+    # the gap was in the spec rather than in the firmware, and the spec is where
+    # it got closed.
+    ("soc_debounce", 5, "6.2",
+     "must persist for 5 consecutive valid 0x411 readings"),
     ("start_abort_rpm", 300, "7 trip 4",
      "GENE_RotSpd >= 300 rpm"),
     ("rpm_debounce_us", 300000, "7 trip 4",
      "sustained for 0.3 s"),
     ("fresh_us", 500000, "7",
      "received within fresh_us (0.5 s) of now"),
+    ("fault_fresh_us", 1000000, "7 (Freshness)",
+     "0x617 gets 1.0 s; every other signal stays on 0.5 s"),
     ("err_window_us", 10000000, "7 error-frame para",
      "10 errors in 10 s"),
     ("err_min_trip", 10, "7 error-frame para",

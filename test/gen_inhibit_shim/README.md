@@ -158,7 +158,7 @@ out than commands came in, counting only frames the **test** delivered, so the
 loop cannot raise its own ceiling. That catches the runaway whatever set the
 bit.
 
-**Where it ended up.** 28 mutations, 24 caught, 4 survivors — and all three
+**Where it ended up.** 32 mutations, 28 caught, 4 survivors — and all three
 survivors are **equivalent mutants with the reason written down**, not gaps:
 
 | Survivor | Why it cannot be killed |
@@ -166,6 +166,12 @@ survivors are **equivalent mutants with the reason written down**, not gaps:
 | `K21` | `disable_monitor()` returns early once a release has latched, so the branch K21 edits cannot run. Spec 6.2's "unconditional on SoC recovering" is enforced one level above it. |
 | `M7` | Completion is decided by `msgs_to_tx == 0`, which no leftover alert affects; and `poll_tx_completion()` runs immediately before `dispatch_emits()` in both worker paths, leaving no window for a stale `TX_FAILED`. At `ss = 0` the bit is never set on the device anyway. |
 | `V08`, `V09` | Each edits an outer guard standing in front of an inner one — `gi_on_tx_result()` returns early for `GI_TX_DIAG` on its own (`gen_inhibit_core.c:1753`), and the worker never calls `gi_tick()` in OFF on its own (`gen_inhibit.c:670`). |
+
+The four `W` mutations were added with the 2026-09-25 rulings and all four are
+caught: `0x617`'s window back on `fresh_us`, the evidence test left on the old
+window while staleness moved to the new one, the GENE ordering reverted, and the
+SoC debounce at 4. A ruling that lands without a mutation showing something
+would notice it going away is a ruling nobody is checking.
 
 All four are kept in the set as **tripwires on the structure that makes them
 harmless**. The day an inner guard moves, its outer one stops being redundant

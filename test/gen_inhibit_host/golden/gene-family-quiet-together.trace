@@ -1,4 +1,4 @@
-# host_runner: 852 frames, 1 directives, t=[0,9000000]
+# host_runner: 928 frames, 1 directives, t=[0,9000000]
 0 STATE mode=0 live=0 block=not armed abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
 0 EV MODE a=3 b=500 c=0
 0 STATE mode=3 live=0 block=gate not yet evaluated abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
@@ -10,6 +10,7 @@
 1000000 EV SOC_VALID a=1 b=11 c=0
 1000000 STATE mode=3 live=0 block=no fresh 0x617 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=1 socsince=0
 1000000 STATE mode=3 live=0 block=no fresh 0x617 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=1 socsince=1
+1000000 STATE mode=3 live=0 block=no fresh 0x639 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=1 socsince=1
 1000000 EV INHIBIT_LIVE a=0 b=0 c=0
 1000000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=1 socsince=1
 1000000 EV KEY a=1 b=0 c=0
@@ -68,6 +69,7 @@
 1980000 TX INHIBIT id=051 dlc=6 data=080080FF7F02 ok=1
 2000000 TX INHIBIT id=051 dlc=6 data=080080FF7F03 ok=1
 2000000 TX DIAG id=7F3 dlc=8 data=0000000001000400 ok=1
+2000000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
 2020000 TX INHIBIT id=051 dlc=6 data=080080FF7F04 ok=1
 2040000 TX INHIBIT id=051 dlc=6 data=080080FF7F05 ok=1
 2060000 TX INHIBIT id=051 dlc=6 data=080080FF7F06 ok=1
@@ -215,21 +217,54 @@
 4720000 TX INHIBIT id=051 dlc=6 data=080080FF7F0B ok=1
 4740000 TX INHIBIT id=051 dlc=6 data=080080FF7F0C ok=1
 4760000 TX INHIBIT id=051 dlc=6 data=080080FF7F0D ok=1
-4760000 EV ABORT a=9 b=0 c=0
-4760000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=1
-5000000 TX DIAG id=7F1 dlc=8 data=040103C600028813 ok=1
-5300000 TX DIAG id=7F2 dlc=8 data=BC00000000000000 ok=1
+4780000 TX INHIBIT id=051 dlc=6 data=080080FF7F0E ok=1
+4800000 TX INHIBIT id=051 dlc=6 data=080080FF7F0F ok=1
+4820000 TX INHIBIT id=051 dlc=6 data=080080FF7F00 ok=1
+4840000 TX INHIBIT id=051 dlc=6 data=080080FF7F01 ok=1
+4860000 TX INHIBIT id=051 dlc=6 data=080080FF7F02 ok=1
+4880000 TX INHIBIT id=051 dlc=6 data=080080FF7F03 ok=1
+4900000 TX INHIBIT id=051 dlc=6 data=080080FF7F04 ok=1
+4920000 TX INHIBIT id=051 dlc=6 data=080080FF7F05 ok=1
+4940000 TX INHIBIT id=051 dlc=6 data=080080FF7F06 ok=1
+4960000 TX INHIBIT id=051 dlc=6 data=080080FF7F07 ok=1
+4980000 TX INHIBIT id=051 dlc=6 data=080080FF7F08 ok=1
+5000000 TX INHIBIT id=051 dlc=6 data=080080FF7F09 ok=1
+5000000 TX DIAG id=7F1 dlc=8 data=0401036600028813 ok=1
+5020000 TX INHIBIT id=051 dlc=6 data=080080FF7F0A ok=1
+5040000 TX INHIBIT id=051 dlc=6 data=080080FF7F0B ok=1
+5060000 TX INHIBIT id=051 dlc=6 data=080080FF7F0C ok=1
+5080000 TX INHIBIT id=051 dlc=6 data=080080FF7F0D ok=1
+5100000 TX INHIBIT id=051 dlc=6 data=080080FF7F0E ok=1
+5120000 TX INHIBIT id=051 dlc=6 data=080080FF7F0F ok=1
+5140000 TX INHIBIT id=051 dlc=6 data=080080FF7F00 ok=1
+5160000 TX INHIBIT id=051 dlc=6 data=080080FF7F01 ok=1
+5180000 TX INHIBIT id=051 dlc=6 data=080080FF7F02 ok=1
+5200000 TX INHIBIT id=051 dlc=6 data=080080FF7F03 ok=1
+5220000 TX INHIBIT id=051 dlc=6 data=080080FF7F04 ok=1
+5240000 TX INHIBIT id=051 dlc=6 data=080080FF7F05 ok=1
+5260000 TX INHIBIT id=051 dlc=6 data=080080FF7F06 ok=1
+5280000 TX INHIBIT id=051 dlc=6 data=080080FF7F07 ok=1
+5300000 TX INHIBIT id=051 dlc=6 data=080080FF7F08 ok=1
+5300000 TX DIAG id=7F2 dlc=8 data=D700000000000000 ok=1
+5320000 TX INHIBIT id=051 dlc=6 data=080080FF7F09 ok=1
+5340000 TX INHIBIT id=051 dlc=6 data=080080FF7F0A ok=1
+5360000 TX INHIBIT id=051 dlc=6 data=080080FF7F0B ok=1
+5380000 TX INHIBIT id=051 dlc=6 data=080080FF7F0C ok=1
+5400000 TX INHIBIT id=051 dlc=6 data=080080FF7F0D ok=1
+5420000 TX INHIBIT id=051 dlc=6 data=080080FF7F0E ok=1
+5420000 EV ABORT a=4 b=0 c=0
+5420000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x471 stopped while 0x051 still live -- inverter lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
 5600000 TX DIAG id=7F3 dlc=8 data=0000000001000400 ok=1
-5900000 TX DIAG id=7F8 dlc=8 data=09030E0000000000 ok=1
+5900000 TX DIAG id=7F8 dlc=8 data=04030E0000000000 ok=1
 6200000 TX DIAG id=7F1 dlc=8 data=040103C600028813 ok=1
-6500000 TX DIAG id=7F2 dlc=8 data=BC00000000000000 ok=1
+6500000 TX DIAG id=7F2 dlc=8 data=DD00000000000000 ok=1
 6800000 TX DIAG id=7F3 dlc=8 data=0000000001000400 ok=1
-7100000 TX DIAG id=7F8 dlc=8 data=09030E0000000000 ok=1
+7100000 TX DIAG id=7F8 dlc=8 data=04030E0000000000 ok=1
 7400000 TX DIAG id=7F1 dlc=8 data=040103C600028813 ok=1
-7700000 TX DIAG id=7F2 dlc=8 data=BC00000000000000 ok=1
+7700000 TX DIAG id=7F2 dlc=8 data=DD00000000000000 ok=1
 8180000 TX DIAG id=7F3 dlc=8 data=0000000001000400 ok=1
-8580000 TX DIAG id=7F8 dlc=8 data=09030E0000000000 ok=1
+8580000 TX DIAG id=7F8 dlc=8 data=04030E0000000000 ok=1
 8580000 EV SOC_VALID a=0 b=1041 c=0
-8580000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
+8580000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x471 stopped while 0x051 still live -- inverter lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=0 socsince=0
 8980000 TX DIAG id=7F1 dlc=8 data=0401038600028813 ok=1
-9180000 FINAL mode=3 live=0 tx_ok=188 tx_fail=0 other=502 ctr_ok=349 ctr_bad=0 rx_gap_n=349 resp_n=188 disabled=0 dcode= block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 soc=5000 shift=2 key=0 socv=0 mainc=11 would_tx=0 emit_refused=0
+9180000 FINAL mode=3 live=0 tx_ok=221 tx_fail=0 other=578 ctr_ok=349 ctr_bad=0 rx_gap_n=349 resp_n=221 disabled=0 dcode= block=latched abort (key-on clears) abort=0x471 stopped while 0x051 still live -- inverter lost latched=1 soc=5000 shift=2 key=0 socv=0 mainc=11 would_tx=0 emit_refused=0

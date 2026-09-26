@@ -232,6 +232,32 @@ typedef struct
     int32_t  start_abort_rpm;   /* GENE rpm that counts as "engine turning" */
     int64_t  rpm_debounce_us;   /* how long it must hold before it trips */
     int64_t  fresh_us;          /* a signal older than this is not evidence */
+
+    /*
+     * 0x617's OWN FRESHNESS WINDOW: 1.0 s, where every other signal uses
+     * fresh_us (0.5 s). Spec 7's "Freshness" paragraph, decided by the user
+     * 2026-09-25.
+     *
+     * WHY ONE SIGNAL GETS ITS OWN. With a single window the SLOWEST signal
+     * sets the whole device's tolerance of a brief bus dropout. 0x617 runs at
+     * 4 Hz with a worst measured gap of 308 ms, so after a dropout it is
+     * absent for the dropout plus up to 250 ms more -- meaning any dropout
+     * over roughly 0.25-0.5 s, depending on nothing but 0x617's phase,
+     * latched the inhibit off until the next key cycle AND reported it as
+     * "0x617 stale" rather than as the link going down.
+     *
+     * At 1.0 s -- four periods, more than three times the worst measured gap
+     * -- a whole-bus dropout of up to ~0.5 s rides through, bounded by
+     * 0x051's own window, and anything longer is reported as trip 2 because
+     * 0x051 now expires first. The cost is up to 0.5 s longer before a VCM
+     * that has genuinely gone silent is noticed through 0x617; in that case
+     * the truck stops anyway, and 0x051's window catches a silent VCM first.
+     *
+     * This does NOT replace the evidence rule. The rule still guards every
+     * other signal whose window can expire before 0x051's -- 0x471, 0x054,
+     * 0x639, 0x411, 0x440 -- and spec 7 says so explicitly.
+     */
+    int64_t  fault_fresh_us;   /* 0x617 only -- spec 7 "Freshness" */
     int64_t  err_window_us;     /* sliding window for the error-frame rate */
     uint32_t err_min_trip;      /* errors within that window that trip it */
     uint32_t diag_period_ms;    /* per-page diag cadence, round-robin over 3 */
@@ -746,6 +772,19 @@ bool     gi_key_bit(const uint8_t *d);              /* 0x592 B0 bit 4 */
 
 /* Freshness test, exposed so a test can drive it directly. */
 bool gi_fresh(const gi_state_t *st, bool have, int64_t stamp, int64_t now);
+
+/*
+ * Freshness against an EXPLICIT window, for the signals that do not use
+ * fresh_us. Today that is 0x617 alone (cfg.fault_fresh_us).
+ *
+ * The window is passed rather than looked up from the signal, so that every
+ * call site states which window it means. A lookup table would put that choice
+ * somewhere other than where the decision is made, and a signal silently
+ * falling through to the default is exactly the failure this split exists to
+ * fix.
+ */
+bool gi_fresh_w(const gi_state_t *st, bool have, int64_t stamp, int64_t now,
+                int64_t window_us);
 
 /*
  * Spec 7.1 rule 1: the key reads ON right now -- value AND freshness, never a

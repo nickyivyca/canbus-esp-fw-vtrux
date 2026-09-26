@@ -55,6 +55,7 @@ void gi_config_defaults(gi_config_t *c)
      * question you ask it. 0.5 s matches the reference tool's gene_alive().
      */
     c->fresh_us = 500000;
+    c->fault_fresh_us = 1000000;    /* 0x617 only; spec 7 "Freshness" */
 
     /*
      * Error frames are rate-based, never first-strike. Aborting on the first
@@ -321,14 +322,21 @@ bool gi_key_on(const gi_state_t *st, int64_t now)
     return st->key_on && gi_fresh(st, st->have_key, st->seen_key, now);
 }
 
-bool gi_fresh(const gi_state_t *st, bool have, int64_t stamp, int64_t now)
+bool gi_fresh_w(const gi_state_t *st, bool have, int64_t stamp, int64_t now,
+                int64_t window_us)
 {
+    (void)st;
     /*
      * Plain signed comparison, deliberately. See the time note in the header:
      * this is int64 microseconds and does not wrap, so the unsigned-
      * subtraction idiom the interposer core needs would be wrong here.
      */
-    return have && (now - stamp) < st->cfg.fresh_us;
+    return have && (now - stamp) < window_us;
+}
+
+bool gi_fresh(const gi_state_t *st, bool have, int64_t stamp, int64_t now)
+{
+    return gi_fresh_w(st, have, stamp, now, (int64_t)st->cfg.fresh_us);
 }
 
 /* ------------------------------------------------------------ lifecycle -- */
@@ -535,10 +543,16 @@ void gi_notify_off(gi_state_t *st)
  * arrival, which is precisely the sentinel trap this file's header exists to
  * warn about.
  */
-static bool bus_alive_since(const gi_state_t *st, bool have_x, int64_t seen_x)
+static bool bus_alive_since_w(const gi_state_t *st, bool have_x,
+                             int64_t seen_x, int64_t window_us)
 {
     return st->have_cmd && have_x
-        && st->seen_cmd > seen_x + st->cfg.fresh_us;
+        && st->seen_cmd > seen_x + window_us;
+}
+
+static bool bus_alive_since(const gi_state_t *st, bool have_x, int64_t seen_x)
+{
+    return bus_alive_since_w(st, have_x, seen_x, (int64_t)st->cfg.fresh_us);
 }
 
 static void inhibit_abort(gi_state_t *st, gi_abort_t why, int64_t now,
@@ -613,7 +627,9 @@ static bool arm_gate_ok(gi_state_t *st, int64_t now)
      * condition most likely to block on a marginal bus, which is the intended
      * direction.
      */
-    if (!gi_fresh(st, st->have_fault, st->seen_fault, now))
+    /* 0x617 on its own 1.0 s window -- spec 7 "Freshness". */
+    if (!gi_fresh_w(st, st->have_fault, st->seen_fault, now,
+                    (int64_t)st->cfg.fault_fresh_us))
     {
         st->arm_block = GI_BLOCK_NO_FRESH_FAULT;
         return false;
@@ -811,8 +827,18 @@ static void interlock_runtime(gi_state_t *st, int64_t now, const gi_bus_t *bus,
         inhibit_abort(st, GI_ABORT_STALE_CONTACTOR, now, ev);
         return;
     }
-    if (!gi_fresh(st, st->have_fault, st->seen_fault, now)
-        && bus_alive_since(st, st->have_fault, st->seen_fault))
+    /*
+     * 0x617 on its own 1.0 s window, BOTH here and in the evidence test. The
+     * rule is "an 0x051 arrived after this signal's window expired", so the
+     * window used to judge staleness and the window used to judge the
+     * evidence have to be the same one -- mixing them would ask for an 0x051
+     * after 0.5 s while calling the signal stale at 1.0 s, which is a
+     * different and much weaker rule than the spec states.
+     */
+    if (!gi_fresh_w(st, st->have_fault, st->seen_fault, now,
+                    (int64_t)st->cfg.fault_fresh_us)
+        && bus_alive_since_w(st, st->have_fault, st->seen_fault,
+                             (int64_t)st->cfg.fault_fresh_us))
     {
         inhibit_abort(st, GI_ABORT_STALE_FAULT, now, ev);
         return;
@@ -823,14 +849,6 @@ static void interlock_runtime(gi_state_t *st, int64_t now, const gi_bus_t *bus,
         inhibit_abort(st, GI_ABORT_STALE_SHIFT, now, ev);
         return;
     }
-    if (st->rpm_ever && !gi_fresh(st, st->have_rpm, st->seen_rpm, now)
-        && bus_alive_since(st, st->have_rpm, st->seen_rpm))
-    {
-        inhibit_abort(st, GI_ABORT_STALE_RPM, now, ev);
-        return;
-    }
-
-
     /*
      * "Disarm if the inverter goes QUIET (0x471 STOPS)" -- so this can only
      * fire once 0x471 has actually been heard. Without fb_ever the trip would
@@ -855,6 +873,34 @@ static void interlock_runtime(gi_state_t *st, int64_t now, const gi_bus_t *bus,
         inhibit_abort(st, GI_ABORT_INVERTER_LOST, now, ev);
         return;
     }
+
+    /*
+     * 0x054 IS CHECKED AFTER 0x471, AND THE ORDER IS THE RULE.
+     *
+     * Spec 7, trip 5, decided by the user 2026-09-25: when the GENE family
+     * goes quiet TOGETHER -- 0x054 and 0x471 both stale -- it is reported as
+     * trip 3, inverter lost, and not as a stale 0x054. A stale 0x054 is trip 5
+     * only while 0x471 is still fresh.
+     *
+     * Checking 0x471 first is the whole implementation. Both frames run at
+     * ~100 Hz off the same module, so when the inverter drops they expire
+     * within a tick of each other and WHICHEVER TEST RAN FIRST WON -- which
+     * made the reported reason depend on nothing but which frame happened to
+     * arrive last. The two identical end-of-drive events in replay-rekey-long
+     * reported one each, from the same capture, for the same physical event.
+     *
+     * Trip 3 is the better of the two answers: 0x471 stopping IS the inverter
+     * going away, whereas 0x054 stopping is a symptom of it. A reader who sees
+     * "generator speed lost" has to work out that the inverter went with it.
+     */
+    if (st->rpm_ever && !gi_fresh(st, st->have_rpm, st->seen_rpm, now)
+        && bus_alive_since(st, st->have_rpm, st->seen_rpm))
+    {
+        inhibit_abort(st, GI_ABORT_STALE_RPM, now, ev);
+        return;
+    }
+
+
 
     /*
      * Note this reads gene_rpm WITHOUT a freshness test, where the arm gate

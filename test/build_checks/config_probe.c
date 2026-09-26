@@ -19,6 +19,7 @@ int main(void)
     printf("start_abort_rpm %d\n", (int)c.start_abort_rpm);
     printf("rpm_debounce_us %lld\n", (long long)c.rpm_debounce_us);
     printf("fresh_us %lld\n", (long long)c.fresh_us);
+    printf("fault_fresh_us %lld\n", (long long)c.fault_fresh_us);
     printf("err_window_us %lld\n", (long long)c.err_window_us);
     printf("err_min_trip %u\n", (unsigned)c.err_min_trip);
     printf("diag_period_ms %u\n", (unsigned)c.diag_period_ms);

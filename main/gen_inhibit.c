@@ -879,7 +879,8 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
                       */
                      gi_fresh(st, st->have_cmd, st->seen_cmd, t_now)
                          ? "true" : "false",
-                     gi_fresh(st, st->have_fault, st->seen_fault, t_now)
+                     gi_fresh_w(st, st->have_fault, st->seen_fault, t_now,
+                                (int64_t)st->cfg.fault_fresh_us)
                          ? "true" : "false",
                      gi_fresh(st, st->have_shift, st->seen_shift, t_now)
                          ? "true" : "false",
