@@ -440,7 +440,7 @@ static void case_slow_completion_is_not_late(void)
  */
 static void case_inhibit_behind_diag(void)
 {
-    case_begin("case 4: an inhibit queued behind an unfinished diag frame");
+    case_begin("case 4: an inhibit queued behind an unfinished foreign frame");
     setup();
     go_live();
 
@@ -494,32 +494,41 @@ static void case_inhibit_behind_diag(void)
      * third reason the alert-based mutation survived this case, and each time
      * the failure looked like the firmware being right.
      */
-    static const uint8_t *const CYCLE[5] = { KEY, CONT, SOC, FLT, SHF };
-    static const uint32_t CYCLE_ID[5] = { 0x592, 0x440, 0x411, 0x617, 0x639 };
+    (void)KEY; (void)CONT; (void)SOC; (void)FLT; (void)SHF;
 
-    int diag_at = -1;
-    const int64_t give_up = ft_now() + 900000;
-    for (int k = 0; diag_at < 0 && ft_now() < give_up; k++)
-    {
-        const int n = ft_sent_count();
-        feed(CYCLE_ID[k % 5], CYCLE[k % 5], 8, 10000);
-        for (int i = n; i < ft_sent_count(); i++)
-        {
-            const uint32_t id = ft_sent(i)->id;
-            if (id == 0x7F1 || id == 0x7F2 || id == 0x7F3 || id == 0x7F8)
-            {
-                diag_at = i;
-                break;
-            }
-        }
-    }
-    CHECK(diag_at >= 0,
-          "no diag page was queued within 900 ms, so the inhibit could not be "
-          "queued behind one and this case proved nothing");
-    CHECK(ft_wire_count_id(ft_sent(diag_at >= 0 ? diag_at : 0)->id) == 0
-          || diag_at < 0,
-          "the diag page had already completed before the 0x051 was fed, so "
-          "its alert was consumed while nothing was outstanding");
+    /*
+     * THE VEHICLE CHANGED ON 2026-09-26, and the reason is that the firmware
+     * got better.
+     *
+     * This case used to hold the interlocks up without 0x051 until a diag page
+     * happened to be queued, then feed the 0x051 so the inhibit went in behind
+     * it. Spec 5.1 item 4 makes that ordering IMPOSSIBLE while live: a diag page
+     * is now queued only in the millisecond after an inhibit completes, which is
+     * when the VCM's next 0x051 is at least 4.69 ms away. The old construction
+     * ran for 900 ms, never saw a diag, and aborted on bus-loss -- correctly,
+     * and while proving nothing.
+     *
+     * A FOREIGN FRAME IS THE BETTER VEHICLE ANYWAY, and it is the purer form of
+     * the same hazard. TWAI_ALERT_TX_SUCCESS is a latched bit shared by every
+     * frame the controller sends, including frames this component never emitted
+     * -- an SLCAN or MQTT path, which is what spec 3.2 is about. If a foreign
+     * frame's completion can credit our outstanding inhibit, the attribution is
+     * broken in the most general way there is, and a diag page was only ever a
+     * convenient instance of it.
+     *
+     * So: a foreign frame occupies the single TX buffer, our inhibit is queued
+     * behind it and stalled so it cannot complete, and the foreign frame's
+     * alert latches with ours demonstrably unsent. Same condition, no dependence
+     * on diag scheduling, and it keeps tx_queued_behind measurable -- which
+     * mutation N2 exists to check.
+     */
+    static const uint8_t FOREIGN[8] = { 0xDE, 0xAD, 0xBE, 0xEF, 0, 0, 0, 0 };
+    CHECK(ft_foreign_transmit(0x123, FOREIGN, 8),
+          "the foreign frame was not accepted, so nothing occupies the TX "
+          "buffer and this case proves nothing");
+    CHECK(ft_wire_count_id(0x123) == 0,
+          "the foreign frame completed before the 0x051 was fed, so its alert "
+          "was consumed while nothing of ours was outstanding");
 
     const uint32_t before = json_u32("\"tx_ok\":");
     const int wire_before = ft_wire_count_id(0x051);
@@ -527,19 +536,19 @@ static void case_inhibit_behind_diag(void)
     uint8_t cmd[6];
     memcpy(cmd, VCM, sizeof(cmd));
     cmd[5] = 0x0C;
-    feed(0x051, cmd, 6, 1000);      /* queues BEHIND the in-flight diag */
+    feed(0x051, cmd, 6, 1000);      /* queues BEHIND the in-flight foreign frame */
 
     /*
-     * Let the diag complete -- latching its alert -- with our frame stalled
-     * behind it. The step hook watches the invariant throughout; these check
-     * the same thing where it matters.
+     * Let the foreign frame complete -- latching its alert -- with our frame
+     * stalled behind it. The step hook watches the invariant throughout; these
+     * check the same thing where it matters.
      */
     ft_run(500000);
     CHECK(ft_wire_count_id(0x051) == wire_before,
           "the stall did not take: our frame completed, so the diag's "
           "completion was not observed while ours was outstanding");
     CHECK(json_u32("\"tx_ok\":") == before,
-          "tx_ok moved %u -> %u on the DIAG frame's completion while our frame "
+          "tx_ok moved %u -> %u on a FOREIGN frame's completion while our frame "
           "was still queued behind it", before, json_u32("\"tx_ok\":"));
     /*
      * Spec 5's hazard is happening RIGHT HERE -- our frame went into the

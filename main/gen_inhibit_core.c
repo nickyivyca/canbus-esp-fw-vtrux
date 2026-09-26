@@ -1151,16 +1151,70 @@ void gi_tick(gi_state_t *st, int64_t now, const gi_bus_t *bus,
      * Deferring costs nothing: diag is a ~1 Hz heartbeat per page and the
      * outstanding frame resolves within one VCM gap or aborts.
      */
+    const bool diag_due = !st->have_last_diag
+        || (now - st->last_diag) >= (int64_t)st->cfg.diag_period_ms * 1000;
+
+    /*
+     * SPEC 5.1 ITEM 4: WHERE in the gap the page goes, not just whether it is
+     * due.
+     *
+     * While inhibit frames are actually being transmitted, a due page waits for
+     * the moment just after an inhibit completes -- which is when the VCM's next
+     * 0x051 is furthest away. Queued anywhere else, the lowest-priority frame on
+     * the bus can still be in the controller's single TX buffer when the next
+     * 0x051 arrives, and the inhibit answering it goes in behind. E4 measured
+     * that as tx_behind = 2 over a 5 s run before this existed.
+     *
+     * "Being transmitted" is live AND key on, because those are the two things
+     * that make an inhibit frame happen at all. In every other case -- not live,
+     * key off, PASSIVE, RESPOND -- no inhibit is competing for the buffer, so
+     * the normal cadence applies and nothing is gained by waiting.
+     *
+     * AND IT MUST NOT BE ABLE TO GO QUIET. If no completion has been observed
+     * for a second, the normal cadence resumes regardless: a device that has
+     * stopped transmitting is exactly when the diagnostics are worth having, and
+     * a rule that silenced them then would be worse than the timing it fixes.
+     */
+    /*
+     * "IMMEDIATELY after" IS THE OPERATIVE WORD, and the first version of this
+     * dropped it.
+     *
+     * A flag that stays open until a page uses it is not a window: a page that
+     * falls due ten milliseconds after a completion still fires at once, and by
+     * then the VCM's next 0x051 may be 179 us away. That is exactly what
+     * happened -- load-diag-delays-inhibit still reported tx_behind = 2, with
+     * the diag at 1060211 us and an inhibit queued behind it at 1060390 us.
+     *
+     * So the window is BOUNDED IN TIME. 1 ms is comfortably more than one pass
+     * round the worker loop (the measured RX-to-TX turnaround is 5 us mean,
+     * 38 us max) and comfortably less than the VCM's 4.69 ms minimum gap, which
+     * is the whole point: a page queued inside it has ~3.7 ms of room to find an
+     * idle slot at ~56 % occupancy. A page that misses the window waits for the
+     * next completion, which is at most one VCM gap away.
+     */
+    const bool suppressed = st->shutdown_suppressed;
+    const bool sending = st->inhibit_live && gi_key_on(st, now) && !suppressed;
+    const bool completion_recent = st->have_tx_done
+        && (now - st->last_tx_done) < 1000000;
+    const bool in_window = st->have_tx_done
+        && (now - st->last_tx_done) <= GI_DIAG_AFTER_TX_US;
+
+    bool diag_ok = true;
+    if (diag_due && sending && completion_recent)
+    {
+        diag_ok = st->diag_after_tx && in_window;
+    }
+
     if (st->tx_pending)
     {
         /* fall through to the interlocks; the page goes out next tick */
     }
-    else if (!st->have_last_diag
-        || (now - st->last_diag) >= (int64_t)st->cfg.diag_period_ms * 1000)
+    else if (diag_due && diag_ok)
     {
         gi_frame_t f;
         st->have_last_diag = true;
         st->last_diag = now;
+        st->diag_after_tx = false;      /* one page per completion */
         build_diag(st, bus, now, st->diag_page, &f);
         emit(st, out, &f);
         st->diag_page = (uint8_t)((st->diag_page + 1) % GI_DIAG_PAGES);
@@ -1866,6 +1920,20 @@ void gi_on_tx_done(gi_state_t *st, bool ok, int64_t t_done, gi_events_t *ev)
         return;
     }
     st->tx_pending = false;
+
+    /*
+     * SPEC 5.1 ITEM 4: the window for a diag page opens here and nowhere else.
+     *
+     * This is the moment an inhibit frame has left the controller, which is the
+     * moment the VCM's next 0x051 is furthest away. gi_tick() spends it on a
+     * page if one is due. Recording the TIME as well as the flag is what lets
+     * the normal cadence resume after a second of silence, so a device that has
+     * stopped transmitting still reports -- which is exactly when a reader
+     * needs it to.
+     */
+    st->diag_after_tx = true;
+    st->have_tx_done = true;
+    st->last_tx_done = t_done;
 
     if (ok)
     {

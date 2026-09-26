@@ -173,6 +173,15 @@ extern "C" {
  * layout and vtrux-wican-diag.dbc is the decoder; all three change together
  * or a log becomes unreadable.
  */
+/*
+ * Spec 5.1 item 4: how long after an inhibit completion a diag page may still
+ * be queued. Longer than one pass round the worker loop (5 us mean, 38 us max
+ * measured RX-to-TX turnaround) and far shorter than the VCM's 4.69 ms minimum
+ * inter-frame gap, so a page queued inside it cannot still be in the
+ * controller when the next 0x051 arrives.
+ */
+#define GI_DIAG_AFTER_TX_US 1000
+
 #define GI_DIAG_SCHEMA_VER  4
 
 /* ---------------------------------------------------------------- modes -- */
@@ -655,6 +664,24 @@ typedef struct
 
     /* --- diag scheduling --- */
     bool    have_last_diag; int64_t last_diag;
+
+    /*
+     * SPEC 5.1 ITEM 4: diag is scheduled around the inhibit.
+     *
+     * `diag_after_tx` opens when an inhibit frame is observed COMPLETE, and
+     * closes as soon as a page uses it -- so at most one page per completion,
+     * queued at the moment the VCM's next 0x051 is furthest away (>= 4.69 ms).
+     * That gives the lowest-priority frame on the bus several milliseconds to
+     * find an idle slot at ~56 % occupancy, instead of landing wherever the
+     * wall clock happened to put it.
+     *
+     * `last_tx_done` is when that last happened, and it is what lets the
+     * normal cadence resume after 1 s with no completion: a device that has
+     * stopped transmitting must still report, or the diagnostics go quiet
+     * exactly when something has gone wrong.
+     */
+    bool    diag_after_tx;
+    bool    have_tx_done; int64_t last_tx_done;
     uint8_t diag_page;
 } gi_state_t;
 

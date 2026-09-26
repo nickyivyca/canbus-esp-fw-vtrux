@@ -86,7 +86,7 @@ def run(text):
     return r.stdout
 
 
-def decisions(trace, mode_from, mode_to):
+def decisions(trace, mode_from, mode_to, drop_timestamps=False):
     """The decision sequence, with the mode number normalised away.
 
     `mode=N` appears in STATE and FINAL and differs by construction, so it is
@@ -115,8 +115,38 @@ def decisions(trace, mode_from, mode_to):
         ln = ln.replace("EV MODE a=%d " % mode_from, "EV MODE a=ARMED ")
         if " FINAL " in ln:
             ln = strip_tx_counts(ln)
+        if drop_timestamps:
+            # WITH THE LOAD MODEL ON, the two modes legitimately differ in
+            # TIMING by the air time of the frames one of them sends and the
+            # other does not.
+            #
+            # INHIBIT's own frames occupy the wire (host_runner's bus_occupy);
+            # PASSIVE sends none, so its bus clock runs ahead and every later
+            # event lands one or two frame air times earlier -- measured at 276
+            # and 552 us, which is exactly one and two DLC-8 frames at 500 kbit.
+            #
+            # Spec 3.1 requires PASSIVE to run the same DECISION path, differing
+            # only at the moment of transmission. A shift caused BY transmission
+            # is that difference, not a divergence from it. So here the sequence
+            # and the content are compared and the clock is not, which keeps the
+            # check that matters -- same decisions, same order -- without
+            # asserting something spec 3.1 does not claim.
+            ln = re.sub(r"^\d+ ", "", ln)
         keep.append(ln)
     return keep
+
+
+def scenario_uses_load(path):
+    """Does this scenario switch the E4 load model on?
+
+    Only those scenarios model the wire, and only a wire model can make the two
+    modes differ in timing at all.
+    """
+    with open(path) as fh:
+        for line in fh:
+            if line.startswith("load "):
+                return True
+    return False
 
 
 def before(lines, t_limit):
@@ -196,7 +226,11 @@ def main():
 
         problems = []
 
-        da, db = decisions(a, 3, 0), decisions(b, 4, 0)
+        # Only a wire model can make the two modes differ in timing; see
+        # decisions()'s drop_timestamps note.
+        loose = scenario_uses_load(os.path.join(SCN, name + ".scn"))
+        da = decisions(a, 3, 0, drop_timestamps=loose)
+        db = decisions(b, 4, 0, drop_timestamps=loose)
 
         # Spec 3.1's one permitted parting of the ways: trip 7 is unreachable
         # in PASSIVE, so a scenario that drives it is compared only up to the

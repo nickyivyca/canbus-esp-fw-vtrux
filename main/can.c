@@ -85,6 +85,37 @@ static const twai_general_config_t g_config_silent = TWAI_GENERAL_CONFIG_DEFAULT
 
 static twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
+/*
+ * SPEC 5.1 ITEM 1: the software RX queue holds at least 32 frames whenever the
+ * driver is installed.
+ *
+ * TWAI_GENERAL_CONFIG_DEFAULT gives 5, which is ~2.2 ms of traffic at the
+ * truck's measured ~2250 frames/s -- against a worst measured WiFi preemption
+ * of 2.39 ms. The margin is negative, and the E4 load model shows a frame lost
+ * at the shipped depth.
+ *
+ * 32 is ~14 ms, about 6x that preemption. THIS IS THE REMEDY THAT MAKES THE
+ * MARGIN POSITIVE rather than smaller, and the reason is that WiFi/lwIP
+ * preemption blocks the WORKER TASK, not the TWAI interrupt: the ISR keeps
+ * moving frames from the controller into this queue while the task is off-CPU,
+ * so the queue depth is the buffer that has to cover preemption x frame rate.
+ * A deeper queue turns loss into lateness, and lateness past the VCM's next
+ * 0x051 is already caught by section 7 trip 7.
+ *
+ * Measured with the E4 sweep (test/gen_inhibit_host/load_margin.py): the
+ * shortest preemption that loses a frame moves from 2.5 ms at depth 5 to 20 ms
+ * at depth 32 -- 8.4x the measured worst, against the spec's >= 3x requirement.
+ *
+ * WHAT IT DOES NOT FIX, and the reason spec 5.1 item 3 exists: while the flash
+ * cache is disabled for a write, the ISR cannot run at all (the ISR is not in
+ * IRAM, section 5), so nothing reaches this queue and only the controller's
+ * hardware FIFO buffers. The same sweep shows the cache-stall boundary does not
+ * move with depth at all.
+ *
+ * Cost: 32 x sizeof(twai_message_t) is well under 1 KB.
+ */
+#define CAN_RX_QUEUE_LEN    32
+
 //block tx/rx
 void can_block(void)
 {
@@ -130,15 +161,44 @@ void can_enable(void)
 	f_config.acceptance_mask = can_cfg.mask;
 	f_config.single_filter = 1;
 
-	if(can_cfg.silent)
+	/*
+	 * SPEC 5.1 ITEM 2: accept-all stays, and it is ASSERTED here rather than
+	 * assumed.
+	 *
+	 * Narrowing the filter cannot close the receive-loss hazard on its own --
+	 * the IDs that remain still fill a 5-deep queue in ~2.5 ms -- the C3's
+	 * single/dual filter masks cannot express the core's ID set exactly, and a
+	 * mask that drops one of those IDs FAILS SILENTLY: the device simply never
+	 * goes live, or trips stale, for a reason no log would explain.
+	 *
+	 * The defaults are accept-all (mask 0xFFFFFFFF, code 0) and the only
+	 * callers of can_set_filter()/can_set_mask() are in slcan.c, whose dispatch
+	 * is disabled in this build -- elf_checks.py asserts slcan_parse_str is not
+	 * even linked. So accept-all holds today by a chain of three other facts,
+	 * any one of which could change. This makes it a property of the install
+	 * instead.
+	 */
+	if(gen_inhibit_owns_bus()
+	   && (can_cfg.filter != 0 || can_cfg.mask != 0xFFFFFFFF))
 	{
-		ESP_ERROR_CHECK(twai_driver_install(&g_config_silent, (const twai_timing_config_t *)t_config, &f_config));
+		ESP_LOGE(TAG, "acceptance filter is narrowed (code 0x%08lX mask 0x%08lX) "
+		              "while the inhibitor owns the bus -- forcing accept-all "
+		              "per spec 5.1 item 2",
+		         (unsigned long)can_cfg.filter, (unsigned long)can_cfg.mask);
+		f_config.acceptance_code = 0;
+		f_config.acceptance_mask = 0xFFFFFFFF;
 	}
-	else
-	{
-//		ESP_LOGW(TAG, "start normal mode");
-		ESP_ERROR_CHECK(twai_driver_install(&g_config_normal, (const twai_timing_config_t *)t_config, &f_config));
-	}
+
+	/*
+	 * A LOCAL COPY so the RX queue depth can be overridden at the point of
+	 * install. The two configs stay const, and the override cannot be missed by
+	 * an initialisation-order change the way a boot-time assignment could.
+	 */
+	twai_general_config_t g_config = can_cfg.silent ? g_config_silent
+	                                                : g_config_normal;
+	g_config.rx_queue_len = CAN_RX_QUEUE_LEN;
+
+	ESP_ERROR_CHECK(twai_driver_install(&g_config, (const twai_timing_config_t *)t_config, &f_config));
 
 	ESP_ERROR_CHECK(twai_start());
 	twai_clear_receive_queue();

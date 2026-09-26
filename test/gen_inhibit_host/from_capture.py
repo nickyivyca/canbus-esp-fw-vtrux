@@ -122,7 +122,8 @@ def do_scan(parse_file, path, gap, chan=None):
               % (a, b, d, b - 0.5))
 
 
-def do_emit(parse_file, path, at, dur, out, ids, arm_at, mode, chan=None):
+def do_emit(parse_file, path, at, dur, out, ids, arm_at, mode, chan=None,
+            note=None):
     t0, t1 = at, at + dur
     lines = []
     kept = 0
@@ -154,8 +155,14 @@ def do_emit(parse_file, path, at, dur, out, ids, arm_at, mode, chan=None):
         " transmit",
         "# in the harness is instantaneous.",
         "#",
-        "mode %d %d 500" % (arm_us, mode),
     ]
+    if note:
+        # A .scn is generated and gitignored, so a note in the README does not
+        # travel with the file. Anyone regenerating this replay sees here that
+        # it carries specific spec coverage, and does not quietly narrow the
+        # window and take the coverage with it.
+        header += ["# COVERAGE: " + ln for ln in note.splitlines()] + ["#"]
+    header += ["mode %d %d 500" % (arm_us, mode)]
     with open(out, "w", newline="\n") as fh:
         fh.write("\n".join(header) + "\n")
         fh.write("\n".join(lines) + "\n")
@@ -188,6 +195,12 @@ def main():
                          " Slower and larger, but other_frames then means"
                          " what it means on the device.")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--note", default=None,
+                    help="a line written into the generated header. Use it when "
+                         "a replay carries a specific piece of spec coverage, so "
+                         "the file says so where someone regenerating it will "
+                         "see it -- a .scn is generated and gitignored, so a "
+                         "note in the README alone does not travel with it.")
     args = ap.parse_args()
 
     parse_file = load_parser(args.repo)
@@ -206,7 +219,7 @@ def main():
             os.path.splitext(os.path.basename(args.log))[0][:40], args.at))
     ids = None if args.all_ids else RELEVANT
     return do_emit(parse_file, args.log, args.at, args.dur, out, ids,
-                   args.arm_at, args.mode, args.channel)
+                   args.arm_at, args.mode, args.channel, note=args.note)
 
 
 if __name__ == "__main__":

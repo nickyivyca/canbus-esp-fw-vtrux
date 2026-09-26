@@ -341,8 +341,52 @@ static esp_err_t index_handler(httpd_req_t *req)
 }
 
 
+/*
+ * SPEC 5.1 ITEM 3: no flash write while gen_inhibit owns the bus.
+ *
+ * WHY A SPIFFS WRITE IS A CAN HAZARD, which is not obvious from the call site.
+ * CONFIG_SPI_FLASH_YIELD_DURING_ERASE is set with ERASE_YIELD_DURATION_MS=20,
+ * so an erase disables the instruction cache in blocks of up to 20 ms. The TWAI
+ * ISR is not in IRAM (CONFIG_TWAI_ISR_IN_IRAM unset, section 5's decision), so
+ * during those blocks it cannot run: nothing moves frames out of the
+ * controller, and its hardware FIFO -- a few frames, ~2 ms at the truck's
+ * ~2250 frames/s -- is the only buffer. At 20 ms that is ~45 unserviced frames
+ * and two consecutive missed 10 ms slots. A dropped 0x051 is an unanswered one,
+ * and the inverter acts on the VCM's torque for that slot.
+ *
+ * DEEPENING THE SOFTWARE RX QUEUE DOES NOT HELP HERE, which is the whole reason
+ * this guard exists alongside item 1's depth of 32. The E4 sweep measures it:
+ * the shortest preemption that loses a frame moves from 2.5 ms to 20 ms as the
+ * queue goes 5 -> 32, while the cache-stall boundary does not move at all.
+ *
+ * Section 9.3 already refuses OTA for exactly this reason and states that the
+ * refusal "excludes the one case where an IRAM-resident ISR would have
+ * mattered". That was incomplete: OTA is not the only flash writer. The audit of
+ * 2026-09-26 found five HTTP handlers that write SPIFFS files, and this is the
+ * gate for all of them. The IRAM decision stands only with these refusals in
+ * place.
+ *
+ * Boot-time writes (config_server_load_cfg, config_server_init) are allowed and
+ * deliberately not gated: they run before the inhibitor can arm.
+ */
+static bool flash_write_refused(httpd_req_t *req, const char *what)
+{
+    if(!gen_inhibit_owns_bus())
+    {
+        return false;
+    }
+    ESP_LOGE(TAG, "%s refused: gen_inhibit owns the bus, and a flash erase "
+                  "stalls the TWAI ISR for up to 20 ms (spec 5.1 item 3)", what);
+    httpd_resp_send_err(req, HTTPD_403_FORBIDDEN,
+                        "gen_inhibit is armed; a flash write would stall CAN "
+                        "receive. POST /gen_inhibit_set?mode=0 first");
+    return true;
+}
+
 static esp_err_t store_config_handler(httpd_req_t *req)
 {
+    if(flash_write_refused(req, "/store_config")) return ESP_FAIL;
+
     char *buf = NULL;
     size_t buf_size = req->content_len;
 
@@ -398,6 +442,8 @@ static esp_err_t store_config_handler(httpd_req_t *req)
 
 static esp_err_t store_canflt_handler(httpd_req_t *req)
 {
+    if(flash_write_refused(req, "/store_canflt")) return ESP_FAIL;
+
     char *buf = NULL;
     size_t buf_size = req->content_len;
 
@@ -644,6 +690,8 @@ static esp_err_t logo_handler(httpd_req_t *req)
 
 static esp_err_t store_auto_data_handler(httpd_req_t *req)
 {
+    if(flash_write_refused(req, "/store_auto_data")) return ESP_FAIL;
+
     if (!req)
 	{
         return ESP_ERR_INVALID_ARG;
@@ -743,6 +791,8 @@ cleanup:
 
 static esp_err_t store_car_data_handler(httpd_req_t *req)
 {
+    if(flash_write_refused(req, "/store_car_data")) return ESP_FAIL;
+
     int total_len = req->content_len;
     int received = 0;
 	const char *filepath = FS_MOUNT_POINT"/car_data.json";
@@ -1254,6 +1304,8 @@ static esp_err_t upload_post_handler(httpd_req_t *req)
 
 static esp_err_t upload_car_data_handler(httpd_req_t *req)
 {
+    if(flash_write_refused(req, "/upload/car_data.json")) return ESP_FAIL;
+
     char filepath[FILE_PATH_MAX];
     uint32_t total_size = 0;
 
@@ -2797,6 +2849,21 @@ int8_t config_server_get_ap_auto_disable(void)
 
 void config_server_set_ble_config(uint8_t b)
 {
+	/*
+	 * Spec 5.1 item 3, and this one has no HTTP request to answer with a 403.
+	 *
+	 * It has NO CALLERS as of 2026-09-26 -- confirmed by the audit, and expected
+	 * since the BLE strip -- but it is declared in config_server.h, so it is
+	 * reachable the moment anyone wires it up. Guarding a dead function costs
+	 * nothing and stops it becoming the one unguarded writer later.
+	 */
+	if(gen_inhibit_owns_bus())
+	{
+		ESP_LOGE(TAG, "BLE config write refused: gen_inhibit owns the bus "
+		              "(spec 5.1 item 3)");
+		return;
+	}
+
 	cJSON * root;
 	root = cJSON_Parse(device_config_file);
 	if(b == 1)

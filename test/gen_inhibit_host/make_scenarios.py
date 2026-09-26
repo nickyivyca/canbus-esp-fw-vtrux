@@ -1889,6 +1889,14 @@ def s_gene_rpm_stale_fb_fresh():
 # so these are the only scenarios whose timing it touches.
 # ---------------------------------------------------------------------------
 
+# The RX depth the scenarios model is the depth the FIRMWARE installs: spec 5.1
+# item 1, can.c's CAN_RX_QUEUE_LEN. They said 5 while the firmware said 5, and
+# they have to move together or the model stops describing the device. The
+# depth-5 behaviour is not lost -- load_margin.py sweeps depths, which is where
+# a comparison between them belongs.
+RX_DEPTH = 32
+
+
 def filler(t, n=8):
     """Traffic the core reads as nothing, to occupy the wire and the RX queue.
 
@@ -1974,20 +1982,26 @@ ISR, and no error frames; review A4 is explicit that the full-replay bench run
 is what calibrates it.
 """, autokey=False, autobms=False)
 def s_load_truck_rate():
-    L = ["mode 0 3 500", "load 0 5 500"]
+    L = ["mode 0 3 500", "load 0 %d 500" % RX_DEPTH]
     L += _at_truck_rate(1 * S, 4 * S)
     L += ["end %d" % (5 * S)]
     return sorted_directives(L)
 
 
-@scenario("load-preempt-overflows-queue", """
+@scenario("load-preempt-rides-through", """
 E4 / spec 5, the receive hazard made to happen. The same truck load, with the
 worker off-CPU for 2.4 ms -- the measured worst WiFi-preemption delay is
 2.39 ms (spec 5).
 
-EXPECT: the RX queue reaches full depth and a frame is DROPPED. The output
-names a dropped 0x051 as an unanswered command if one is lost -- and at this
-phase one is not, which is the finding rather than a shortfall.
+EXPECT: nothing dropped, nothing late, at a queue high-water mark of about 6
+of the 32 slots spec 5.1 item 1 installs.
+
+THIS SCENARIO HAS BEEN RENAMED TWICE, and both renames were the point. It began
+as "loses-command" and did not reliably lose one; it became
+"overflows-queue" and did overflow, at the shipped depth of 5; with the spec 5.1
+fix it overflows nothing, so it is now named for riding through. A golden that
+passes while demonstrating something other than its title is the failure mode
+this suite keeps rediscovering, and a name is the cheapest place to keep honest.
 
 THE ARITHMETIC IS THE POINT, and it is spec 5's own: the RX queue is 5 frames
 deep, which at 2250 fps is ~2.2 ms of buffer, against a 2.39 ms worst
@@ -1996,26 +2010,20 @@ answered, so the inverter acted on the VCM's torque for that slot -- and
 nothing in the device's own counters distinguishes that from a slot where the
 VCM was not commanding torque at all.
 
-WHAT IT ACTUALLY MEASURES, stated precisely, because the first name for this
-scenario was "loses-command" and it does not reliably lose one. At ~2250 fps
-the five slots fill in ~2.5 ms of surrounding traffic, so a 2.39 ms preemption
-overflows by well under a single frame: exactly one frame is lost, and WHICH
-one is a phase lottery across ~2000 fps of other traffic and ~100 fps of
-0x051. Roughly one time in twenty the loser is the command.
+WHAT IT MEASURED BEFORE THE FIX, kept because it is the reason the fix exists.
+At ~2250 fps five slots fill in ~2.5 ms of surrounding traffic, so a 2.39 ms
+preemption overflowed by well under a single frame: exactly one lost, and WHICH
+one a phase lottery across ~2000 fps of other traffic and ~100 fps of 0x051 --
+roughly one time in twenty the command itself. Intermittent is worse news than
+deterministic, not better: an occasional unanswered frame is the kind that gets
+attributed to anything else.
 
-So the honest claim is the one in the name: the buffer overflows at the
-measured worst preemption. That the truck would then lose a command only
-sometimes is worse news than losing one every time, not better -- an
-intermittent unanswered frame is the kind that gets attributed to anything
-else. Naming the scenario after what it demonstrates keeps it from being a
-golden that passes while showing something other than its title.
-
-It exists to make the margin concrete rather than arithmetic, and to fail
-loudly if a future change to queue depth, filtering or task priority is
-believed to have fixed it without measurement.
+At depth 32 the same preemption is absorbed with 26 slots to spare. This
+scenario now exists to fail loudly if the depth is ever reduced, and
+load_margin.py exists because "clean at 2.39 ms" is one point and not a margin.
 """, autokey=False, autobms=False)
 def s_load_preempt():
-    L = ["mode 0 3 500", "load 0 5 500"]
+    L = ["mode 0 3 500", "load 0 %d 500" % RX_DEPTH]
     frames = _at_truck_rate(1 * S, 4 * S)
     L += frames
 
@@ -2078,7 +2086,7 @@ def s_load_diag_behind():
     # raised to sample it. 20 ms rather than 10: with the command train
     # jittered, an equal period no longer locks, but a period that is a clean
     # divisor of the median gap still under-samples the drift.
-    L = ["mode 0 3 500", "load 0 5 500", "cfg diag_period_ms 20"]
+    L = ["mode 0 3 500", "load 0 %d 500" % RX_DEPTH, "cfg diag_period_ms 20"]
     L += _at_truck_rate(1 * S, 6 * S)
     L += ["end %d" % (7 * S)]
     return sorted_directives(L)

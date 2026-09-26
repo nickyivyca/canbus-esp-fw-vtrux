@@ -238,10 +238,9 @@
 7940000 TX INHIBIT id=051 dlc=6 data=080080FF7F0C ok=1
 7960000 TX INHIBIT id=051 dlc=6 data=080080FF7F0D ok=1
 7980000 TX INHIBIT id=051 dlc=6 data=080080FF7F0E ok=1
-8180000 TX DIAG id=7F3 dlc=8 data=0000000001000400 ok=1
-8580000 TX DIAG id=7F8 dlc=8 data=0003000000000000 ok=1
+8580000 TX DIAG id=7F3 dlc=8 data=0000000001000400 ok=1
 8580000 EV SOC_VALID a=0 b=1041 c=0
 8580000 EV ABORT a=3 b=0 c=0
 8580000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
-8980000 TX DIAG id=7F1 dlc=8 data=0401038600028813 ok=1
+8980000 TX DIAG id=7F8 dlc=8 data=03000E0000000000 ok=1
 9180000 FINAL mode=3 live=0 tx_ok=199 tx_fail=0 other=588 ctr_ok=349 ctr_bad=0 rx_gap_n=349 resp_n=199 disabled=0 dcode= block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 soc=5000 shift=2 key=0 socv=0 mainc=11 would_tx=0 emit_refused=0

@@ -215,7 +215,8 @@ python3 from_capture.py $L/vtrux_20260323_220148_T0.log --channel 1 --at 0 --for
 python3 from_capture.py $L/vtrux_20260322_165622_T1.log --channel 1 --at 0 --for 64 \
         --out scenarios/replay-mmode-genstart.scn
 python3 from_capture.py $L/vtrux_20260714_112312_T2.log --channel 2 --at 0 --for 225 \
-        --out scenarios/replay-shutdown-at-keyon.scn
+        --out scenarios/replay-shutdown-at-keyon.scn \
+        --note 'spec 7.1 key-ON case of trip 3 (decision 2, 2026-09-26): live at 16.2 s, inverter lost 21.0 s latched, cleared at 49.1 s. Do NOT narrow this window: replay-inverter-lost-keyon starts at 20.5 s and misses the event entirely.'
 python3 from_capture.py $L/vtrux_20260802_123318_T0.log --channel 2 --at 0 --for 161 \
         --out scenarios/replay-bus-sleeps.scn
 python3 from_capture.py $L/vtrux_20260403_194203_T2.log --channel 2 --at 0 --for 176 \
@@ -246,7 +247,9 @@ number from one capture to another.
 `--scan` finds key-on candidates in a capture you want to add. Two
 corpus-wide selectors live in
 `projects/vtrux/notes/artifacts/gen-inhibit/`: `shutdown_and_wake_scan.py`
-found `replay-shutdown-at-keyon` and `replay-bus-sleeps`, and
+found `replay-shutdown-at-keyon` (which since decision 2 also carries the
+real-traffic cover for the key-ON case of section 7 trip 3 — see below) and
+`replay-bus-sleeps`, and
 `replay_candidate_scan.py` found `replay-genrun-stop`.
 
 **Check a candidate's provenance before you adopt it.** A capture recorded
@@ -589,9 +592,14 @@ never really did: what it was pinning was a false release. See the withdrawal
 above.
 
 **`replay-inverter-lost-keyon`** — `vtrux_20260714_112312_T2`, channel 2,
-20.5–28.2 s, 2,673 frames. The **key-ON** inverter loss: the population spec
-7.1 says the trip is actually for, and the fixture that would catch a key rule
-written so loosely it swallowed the real fault too.
+20.5–28.2 s, 2,673 frames. **Must never go live**: the window starts after the
+contactors opened at 20.1 s, so HV is down throughout it (spec 7.1, changed
+2026-09-26 by decision 2; it previously read "must still trip").
+
+It is kept, and its value is now the opposite of what was intended: it pins that
+the arm gate **refuses** with the contactors open. The key-ON trip-3 cover it was
+originally meant to provide comes from `replay-shutdown-at-keyon` instead, which
+contains the same event with the live window included.
 
 **Since review A1 (2026-09-24) it does not go live, and so does not trip.**
 `0x440 bcm_mainc_stat` reads **14 `ALL_OPEN_SHUTDOWN` on all 154 frames** of
@@ -608,9 +616,27 @@ the whole clean corpus rather than inferred from this one window
 `keyon_inverter_loss_contactors.py`): all five key-ON events in this capture
 have the contactors open throughout, and of the 27 inverter-lost events
 `inverter_lost_prevalence.py` found in clean captures, **0 have the contactors
-closed inside the gap**. So no clean capture offers a replacement, and **the
-key-ON case of section 7 trip 3 now has only synthetic cover**
-(`inverter-lost`).
+closed inside the gap**. So no clean capture offers a replacement **inside a 0x10
+episode**, which is what that sweep was looking for.
+
+**Superseded 2026-09-26 (decision 2, user): the real-traffic cover exists, in
+the same capture, and was missed because the search was framed too narrowly.**
+`replay-shutdown-at-keyon` replays the whole 0–225 s window of
+`vtrux_20260714_112312_T2` and shows the key-ON inverter loss end to end: live
+at 16.2 s with the contactors reading 12 and the key on, the BMS opening the
+contactors at 20.1 s, the device staying live, the inverter dropping, and a
+latched `inverter lost` at **21.0 s** — cleared by the key cycle at 49.1 s.
+
+The sweep above was not wrong; it answered a narrower question. It asked whether
+any clean capture had the contactors **closed inside the inverter-loss gap**, and
+none does. What matters for trip 3 is whether the device was **live when the
+inverter dropped**, and liveness is not retracted when the contactors open — a
+point this file already makes two paragraphs down. `replay-inverter-lost-keyon`
+misses it only because its window starts at 20.5 s, after HV was already down.
+
+So the key-ON case of trip 3 has **real-traffic cover**, and no doctored capture
+is to be built. `replay-shutdown-at-keyon` is load-bearing for spec 7.1 now, not
+merely a long replay.
 
 Read that sweep carefully in one respect: contactors open during the gap does
 **not** mean the trip is dead. Liveness is not retracted when the contactors
