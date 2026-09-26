@@ -246,8 +246,16 @@ class Checker:
         self.tx_since_vcm = 0
 
 
-def check(name, verbose=False):
-    scn_path = os.path.join(SCN, name + ".scn")
+def check(name, verbose=False, scn_path=None):
+    """Check one scenario.
+
+    `scn_path` overrides the scenarios/ lookup, so a generated sequence can be
+    checked without being written into the suite's own directory -- which is
+    what fuzz_sequences.py needs. The properties are the same either way; that
+    is the whole point of stating them as properties.
+    """
+    if scn_path is None:
+        scn_path = os.path.join(SCN, name + ".scn")
     trace = run(scn_path)
     c = Checker(name, scn_path)
 
@@ -310,10 +318,10 @@ def check(name, verbose=False):
             print("    " + p)
         if len(c.problems) > 6:
             print("    ... and %d more" % (len(c.problems) - 6))
-        return False, c.saw_tx
+        return False, c.saw_tx, c
     if verbose:
         print("[ok        ] %-32s %d inhibit frames checked" % (name, c.saw_tx))
-    return True, c.saw_tx
+    return True, c.saw_tx, c
 
 
 def main():
@@ -328,7 +336,7 @@ def main():
 
     good = bad = frames = 0
     for name in names:
-        ok, n = check(name, args.verbose)
+        ok, n, _ = check(name, args.verbose)
         frames += n
         if ok:
             good += 1

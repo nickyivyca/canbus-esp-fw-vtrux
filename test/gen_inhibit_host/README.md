@@ -317,6 +317,45 @@ position or on timing — the debounce lengths, the freshness window, the
 error-rate limit. Those would mean encoding the same constants twice and calling
 the agreement a test.
 
+## `fuzz_sequences.py` -- the invariants against sequences nobody wrote
+
+Spec 12.4 row 21 asks for the golden-independent invariants over *every trace*
+**and a randomised sequence**. `invariants.py` is the first half; this is the
+second. Same properties, applied to seeded random input, so a failure is
+replayable byte for byte (`--replay`).
+
+**Its first version was dead and reported success.** It printed the number of
+`0x051` frames the *scenario* contained -- a property of the generator, not of
+the device -- and ran 30 sequences past a core deliberately rebuilt to transmit
+the VCM's `0x10` shutdown value while reporting zero violations. The device had
+never gone live: the six spec 7 arm-gate conditions are a conjunction, and
+uniformly random payloads almost never satisfy all of them at the same instant,
+so every property about a transmitted frame was checked against no transmitted
+frames. `invariants.py` catches that same break on the same tree, in one
+scenario.
+
+Two things came out of that, both load-bearing:
+
+- **The number reported is frames TRANSMITTED**, and a run where too few
+  sequences went live is a **failure**, not a pass (floor = `checked // 4`).
+  This is the per-case lesson the hand-written scenarios learned one at a time
+  -- "no probe was queued, so this case checked the offset zero times" --
+  applied once, in a place where it cannot be forgotten again.
+- **Three sequences in four are biased toward a live device**; the fourth is
+  left unbiased so the gate's own refusal paths and OFF/OBSERVE still get
+  covered. Biasing is not a weakening: without it the run fuzzes the arm gate's
+  refusal over and over and never reaches the decision logic behind it.
+
+**And the negative control needed a third B0 value before it worked at all.**
+With the generator sending only `0x08` and `0x10`, a core rebuilt to mirror B0
+from the VCM is *equivalent*: `0x10` triggers spec 6.3 suppression, so the
+device stops transmitting and the mirrored value can never reach the wire. The
+sane payloads now include B0 values that are neither, and the control fires on
+14 of 30 sequences. **A mutation that cannot be observed is not evidence that
+the rule holds.**
+
+Current: 200 sequences, 13,219 transmitted inhibit frames, 0 violations.
+
 ## `passive_diff.py` -- the first check with no golden (spec 3.1, review D9)
 
 `run_tests.py` is a REGRESSION harness. It pins each trace against a recorded

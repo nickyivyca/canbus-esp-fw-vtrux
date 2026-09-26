@@ -80,3 +80,7 @@ tools/wican-log-viewer/*.pdb
 tools/wican-log-viewer/*.dll
 tools/wican-log-viewer/*.exe
 
+
+# Fuzz inputs are regenerated from a seed; only a kept failure is worth saving
+# by hand, and it should be copied somewhere deliberate if so.
+test/gen_inhibit_host/artifacts/fuzz-*.scn
