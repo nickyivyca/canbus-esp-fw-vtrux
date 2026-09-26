@@ -174,6 +174,22 @@ static unsigned g_rxq_high_water;
  */
 static int64_t air_time_us(uint8_t dlc)
 {
+    /*
+     * CORROBORATED AGAINST HARDWARE, which matters because this formula is the
+     * one number in the load model that is calculated rather than measured.
+     *
+     * The bench Kvaser sat a constant ~266 us above the device's own timestamp
+     * in every arm, and that offset is one 0x7F0 frame's air time on the wire
+     * at 500 kbit (the device timestamps at queue, the Kvaser at the wire) --
+     * gen-inhibit-wican-firmware.md, the RX-to-probe overhead table. 0x7F0 is
+     * DLC 8, and this returns 276 us for DLC 8.
+     *
+     * So the model runs ~4 % long: worst-case stuffing against the real
+     * stuffing of real payloads. That is the right direction for a deadline
+     * model -- it can report a frame late that was not, never on time one that
+     * was -- and 4 % is small enough that it is not doing the work in any
+     * result here.
+     */
     const int stuffable = 34 + 8 * (int)dlc;
     const int bits = 47 + 8 * (int)dlc + (stuffable - 1) / 4 + 3;
     return ((int64_t)bits * 1000) / (int64_t)g_bitrate_kbit;
