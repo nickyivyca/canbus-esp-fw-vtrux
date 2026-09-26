@@ -43,6 +43,7 @@ import hashlib
 import os
 import re
 import struct
+import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -416,6 +417,72 @@ def _decode_emitted(db, defined):
            "" if not errs else "; %d problem(s): %s" % (len(errs), errs[0])))
 
 
+def git(*args):
+    """Run git in the repo, or return None if that is not possible."""
+    try:
+        r = subprocess.run(("git",) + args, cwd=REPO, capture_output=True,
+                           text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    return r.stdout.strip()
+
+
+def check_image_identity(img_ver):
+    """Was this image built from the commit that is checked out now?
+
+    ADDED 2026-09-26 AFTER THIS EXACT TRAP CAUGHT US. ESP-IDF fixes the output
+    filename and the esp_app_desc_t version at *configure* time, so a rebuild
+    after a commit -- without `idf.py reconfigure` -- produces new bytes carrying
+    the PREVIOUS commit's name. It happened between 4b28547 and 3a1f9b8: the
+    binary changed size and was written 20 s before 3a1f9b8 was committed, while
+    still embedding "4b28547" and no `-dirty`. Every row above passed on it, and
+    the image of the commit it claimed to be no longer existed anywhere.
+
+    The rows above cannot see this. `no -dirty` and `git sha embedded` read the
+    same configure-time string, and the config-applies-to-this-image comparison
+    reads build/project_description.json, which is written at configure time too
+    -- so it agrees with the stale name and confirms nothing. Every instrument
+    in this file was downstream of the same moment. The repo's HEAD is the one
+    reference that is not.
+
+    A mismatch is a FAIL rather than a NO REF: the file's whole premise is that
+    it is run on the image about to be flashed, and an image whose provenance is
+    misstated must not be flashed whatever else is true of it. Auditing an older
+    image on purpose (--bin) is expected to fail this row, and says why.
+    """
+    head = git("rev-parse", "--short", "HEAD")
+    if head is None:
+        row("image built from HEAD", None,
+            "not a git repository, or git is unavailable", ref_missing=True)
+        return
+    if img_ver is None:
+        row("image built from HEAD", None,
+            "no version could be read from the image", ref_missing=True)
+        return
+
+    # A dirty tree cannot be identified by a commit at all, and ESP-IDF's own
+    # `-dirty` suffix is itself configure-time, so it is no help here.
+    dirty = git("status", "--porcelain")
+    if dirty:
+        n = len(dirty.splitlines())
+        row("working tree clean", False,
+            "%d uncommitted change(s), so no commit identifies these bytes" % n)
+    else:
+        row("working tree clean", True, "no uncommitted changes")
+
+    # The embedded string is `git describe`-shaped, so HEAD's short sha may be a
+    # prefix of it rather than equal to it.
+    ok = img_ver.startswith(head) or head.startswith(img_ver)
+    row("image built from HEAD", ok,
+        "embedded %r, HEAD is %r" % (img_ver, head) if ok else
+        "embedded %r but HEAD is %r -- run `idf.py reconfigure` and rebuild; "
+        "the filename and embedded version are fixed at configure time, so "
+        "these bytes are almost certainly a later commit wearing an earlier "
+        "name" % (img_ver, head))
+
+
 def check_source():
     """Spec 5.1 items 1 and 3: two facts that live only in the source.
 
@@ -449,12 +516,26 @@ def check_source():
         if m:
             fw_depth = int(m.group(1))
         # The constant existing is not the same as it reaching the driver.
-        applied = re.search(r"rx_queue_len\s*=\s*CAN_RX_QUEUE_LEN", text) is not None
-        row("rx_queue_len override applied", applied,
-            "main/can.c assigns g_config.rx_queue_len = CAN_RX_QUEUE_LEN"
-            if applied else
-            "main/can.c does not assign rx_queue_len from CAN_RX_QUEUE_LEN, so "
-            "the driver gets TWAI_GENERAL_CONFIG_DEFAULT's 5")
+        #
+        # LINE BY LINE, SKIPPING COMMENTS. The first version of this row matched
+        # the whole file with a regex, so a COMMENTED-OUT
+        # `// g_config.rx_queue_len = CAN_RX_QUEUE_LEN;` satisfied it -- the
+        # reviewer demonstrated the mutation passing on 2026-09-26. A check that
+        # a comment can satisfy is not a check, and the same discipline was
+        # already being used two rows down for the WiFi storage call, which is
+        # what makes the miss embarrassing rather than subtle.
+        applied = None
+        for ln in text.splitlines():
+            s = ln.strip()
+            if s.startswith("//") or s.startswith("*") or s.startswith("/*"):
+                continue
+            if re.search(r"rx_queue_len\s*=\s*CAN_RX_QUEUE_LEN", s):
+                applied = s
+                break
+        row("rx_queue_len override applied", applied is not None,
+            "main/can.c assigns %s" % applied if applied else
+            "no live assignment of rx_queue_len from CAN_RX_QUEUE_LEN in "
+            "main/can.c, so the driver gets TWAI_GENERAL_CONFIG_DEFAULT's 5")
     else:
         row("rx_queue_len override applied", None,
             "no main/can.c at %s" % can_c, ref_missing=True)
@@ -573,6 +654,7 @@ def main():
     check_diag(args.dbc)
     check_schema_doc(args.schema_doc)
     check_source()
+    check_image_identity(img_ver)
 
     print()
     bad = 0

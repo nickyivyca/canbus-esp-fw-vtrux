@@ -184,6 +184,22 @@ static int      g_unsafe_teardowns;
 static int      g_installed_mode = -1;
 static bool     g_fail_alerts_cfg;
 
+/*
+ * THE REST OF THE INSTALL CONFIG, recorded because spec 5.1 items 1 and 2 are
+ * both statements about what twai_driver_install() was handed and nothing was
+ * keeping it. The driver exposes no read-back for any of these, so the value
+ * passed at install is the only thing any test can ever check -- the same
+ * argument the mode above is recorded under.
+ *
+ * Until 2026-09-26 this function took `t` and `f` and threw them away, which is
+ * why the reviewing session's Q1, Q2 and F1 mutations all survived E1: the queue
+ * depth and the acceptance filter simply were not observable here.
+ */
+static int      g_install_n;
+static uint32_t g_installed_rxq;
+static uint32_t g_installed_acc_code, g_installed_acc_mask;
+static int      g_installed_single_filter = -1;
+
 /* ------------------------------------------------- the wire invariant --- */
 
 #define WVMAX 32
@@ -394,6 +410,11 @@ static void check_wire_accepted(const twai_message_t *m)
 
 int  ft_unsafe_teardowns(void) { return g_unsafe_teardowns; }
 int  ft_installed_mode(void)   { return g_installed_mode; }
+int      ft_install_count(void)          { return g_install_n; }
+uint32_t ft_installed_rx_queue_len(void) { return g_installed_rxq; }
+uint32_t ft_installed_acc_code(void)     { return g_installed_acc_code; }
+uint32_t ft_installed_acc_mask(void)     { return g_installed_acc_mask; }
+int      ft_installed_single_filter(void) { return g_installed_single_filter; }
 void ft_fail_alerts_config(bool fail) { g_fail_alerts_cfg = fail; }
 
 int              ft_sent_count(void) { return g_nsent; }
@@ -667,7 +688,7 @@ esp_err_t twai_driver_install(const twai_general_config_t *g,
                               const twai_timing_config_t *t,
                               const twai_filter_config_t *f)
 {
-    (void)t; (void)f;
+    (void)t;
     /*
      * Record the MODE. Spec 3 requires OBSERVE to be hardware listen-only, and
      * the TWAI API exposes no read-back of the controller's mode -- so the only
@@ -675,6 +696,14 @@ esp_err_t twai_driver_install(const twai_general_config_t *g,
      * is exactly what gen_inhibit.c's own comment says it is confirming.
      */
     g_installed_mode = g ? (int)g->mode : -1;
+
+    /* Spec 5.1 item 1 (queue depth) and item 2 (accept-all): same argument. */
+    g_installed_rxq = g ? g->rx_queue_len : 0;
+    g_installed_acc_code = f ? f->acceptance_code : 0;
+    g_installed_acc_mask = f ? f->acceptance_mask : 0;
+    g_installed_single_filter = f ? (int)f->single_filter : -1;
+
+    g_install_n++;
     g_installed = true;
     return ESP_OK;
 }
@@ -956,6 +985,10 @@ void ft_reset(void)
     g_in_receive = false;
     g_unsafe_teardowns = 0;
     g_installed_mode = -1;
+    g_install_n = 0;
+    g_installed_rxq = 0;
+    g_installed_acc_code = g_installed_acc_mask = 0;
+    g_installed_single_filter = -1;
     g_fail_alerts_cfg = false;
     g_fail_next = false;
     g_rx_n = g_rx_dropped = 0;

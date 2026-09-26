@@ -779,13 +779,53 @@ static void case_diag_defers_to_pending(void)
     static const uint8_t FLT[8]  = { 0, 0, 0, 0, 0, 0, 0, 0xC8 };
     static const uint8_t SHF[8]  = { 0, 0, 0, 0, 0, 0, 2 << 4 };
 
-    ft_stall_id(0x051, 1);
+    /*
+     * A LONG AIR TIME, NOT ft_stall_id(), and the difference is the whole case.
+     *
+     * This used to call ft_stall_id(0x051, 1) and feed one frame, and the
+     * precondition check added below showed the result: 11 queued, 11 completed,
+     * nothing ever outstanding. The case passed for four weeks while exercising
+     * nothing, which is why the reviewing session found M2 -- the core's
+     * deferral deleted -- surviving the entire suite.
+     *
+     * Case 8 already recorded the mechanism that works and the reason: the
+     * interlock feeding below advances virtual time by 100 ms per round, so any
+     * short air time completes in the gap. 600 ms exceeds the 400 ms window, so
+     * the frame is still at the head when the window ends.
+     */
+    ft_set_air_time(600000);
     uint8_t cmd[6];
     memcpy(cmd, VCM, sizeof(cmd));
     cmd[5] = 0x0C;
-    feed(0x051, cmd, 6, 5000);          /* this one stalls at the head */
+    feed(0x051, cmd, 6, 5000);
+
+    /*
+     * GIVE THE WORKER A TICK TO DISPATCH before sampling anything. The feed
+     * above advances 5 ms, which does not always get the worker as far as
+     * twai_transmit() -- the frame is accepted by the core and counted in its
+     * `response` histogram while no queue attempt has been made yet, so a
+     * precondition sampled here reads "nothing outstanding" for a frame that is
+     * about to be queued. With the 600 ms air time above it stays outstanding
+     * once it is queued, so waiting costs nothing.
+     */
+    ft_run(20000);
 
     const int q_before = ft_sent_count();
+
+    /*
+     * THE PRECONDITION, CHECKED RATHER THAN DESCRIBED. Everything above is
+     * arranged so an inhibit frame is sitting at the head of the queue,
+     * uncompleted, while diag falls due -- and until 2026-09-26 nothing here
+     * confirmed that it was. If the frame is not outstanding, "no diag was
+     * queued" is true for an uninteresting reason and the case passes without
+     * exercising the rule. That is the shape the reviewing session found M2
+     * surviving through.
+     */
+    CHECK(ft_sent_count_id(0x051) > ft_wire_count_id(0x051),
+          "no inhibit is outstanding (%d queued, %d completed), so the "
+          "deferral has nothing to defer to and this case proves nothing",
+          ft_sent_count_id(0x051), ft_wire_count_id(0x051));
+
     const int64_t end = ft_now() + 400000;
     while (ft_now() < end)
     {
@@ -1200,6 +1240,213 @@ static void case_diag_wire_matches_json(void)
     case_end();
 }
 
+/*
+ * CASE 17 -- arming forces accept-all, whatever the filter was set to
+ * (spec 5.1 item 2).
+ *
+ * THE MUTATION THAT MADE THIS NECESSARY SURVIVED BECAUSE NOTHING NARROWED THE
+ * FILTER. The rule was implemented and had no test at all -- review 2026-09-26
+ * found F1 (the forcing disabled) passing every suite -- and then found the
+ * implementation could not have worked on this path anyway:
+ * gen_inhibit_set_mode() called can_enable() before gi_set_mode() recorded the
+ * mode, so gen_inhibit_owns_bus() was false inside twai_driver_install().
+ *
+ * Why it matters rather than being tidiness: every condition in the section 7
+ * arm gate and every trip reads an ID, and an acceptance mask that drops one of
+ * them FAILS SILENTLY -- a device that never goes live, or one that trips stale,
+ * for a reason no log would explain.
+ *
+ * The check is on the value handed to twai_driver_install(), because the TWAI
+ * driver exposes no read-back of the installed filter. That is the same ground
+ * case 11 checks the listen-only mode on.
+ */
+static void case_arm_forces_accept_all(void)
+{
+    case_begin("case 17: arming forces accept-all however the filter was set");
+    setup();
+
+    /*
+     * THE BUS IS ALREADY UP after setup(), and that silently defeated the first
+     * version of this case: can_set_filter() and can_set_mask() return early
+     * while can_cfg.bus_state is ON_BUS, so the filter never narrowed and the
+     * case checked that an already-accept-all filter was still accept-all.
+     */
+    can_disable();
+
+    /*
+     * Narrow it the way slcan.c would, while the bus is down -- can_set_filter()
+     * and can_set_mask() refuse while ON_BUS, which is itself part of why the
+     * fix has to tear a live driver down rather than just rewrite the config.
+     * 0x051 with an 11-bit mask is the worst realistic case: it keeps the one ID
+     * an inhibit answers and drops every signal the gate needs.
+     */
+    can_set_filter(0x051);
+    can_set_mask(0x7FF);
+    CHECK(can_filter_narrowed(),
+          "the filter did not narrow, so this case cannot show it being "
+          "widened again and proves nothing");
+
+    go_live();
+
+    CHECK(ft_installed_acc_mask() == 0xFFFFFFFFu && ft_installed_acc_code() == 0,
+          "the driver was installed with code 0x%08X mask 0x%08X -- spec 5.1 "
+          "item 2 requires accept-all (code 0, mask 0xFFFFFFFF) while the "
+          "inhibitor owns the bus",
+          (unsigned)ft_installed_acc_code(), (unsigned)ft_installed_acc_mask());
+    CHECK(!can_filter_narrowed(),
+          "the configuration is still narrowed after arming, so the next "
+          "install would narrow the controller again");
+
+    teardown();
+    case_end();
+}
+
+/*
+ * CASE 18 -- the driver is installed with a receive queue at least 32 deep
+ * (spec 5.1 item 1, and the E1 half of the spec 12.4 row that asks for exactly
+ * this: "E1 reads the depth the driver was installed with").
+ *
+ * Q1 (the override line deleted) and Q2 (32 put back to 5) both survived every
+ * suite until 2026-09-26, because the depth was not observable anywhere: the
+ * fake driver took the general config and kept only the mode.
+ *
+ * The depth is the remedy that makes the receive margin positive rather than
+ * merely smaller. WiFi/lwIP preemption blocks the worker task, not the TWAI
+ * interrupt, so the ISR keeps moving frames into this queue and its depth is
+ * what has to cover preemption x frame rate. E4 measures the margin that buys
+ * -- first loss at 20 ms against a 2.39 ms worst preemption -- and this is what
+ * ties that model to the number the firmware actually installs.
+ */
+static void case_rx_queue_depth(void)
+{
+    case_begin("case 18: the driver is installed with an RX queue >= 32");
+    setup();
+
+    /*
+     * Bring the bus down so that arming has to install the driver. Without this
+     * no install happens inside the case at all, and the accessor returns
+     * ft_reset()'s zero -- which the first version of this case reported as a
+     * firmware failure to set the depth. The install count below is what makes
+     * the difference visible rather than guessable.
+     */
+    can_disable();
+    go_live();
+
+    CHECK(ft_install_count() > 0,
+          "the driver was never installed during this case, so the recorded "
+          "queue depth is the reset value and says nothing about the firmware");
+    CHECK(ft_installed_rx_queue_len() >= 32,
+          "the driver was installed with rx_queue_len = %u; spec 5.1 item 1 "
+          "requires at least 32, about 14 ms of truck traffic at ~2250 "
+          "frames/s and ~6x the worst measured WiFi preemption",
+          (unsigned)ft_installed_rx_queue_len());
+
+    teardown();
+    case_end();
+}
+
+/*
+ * CASE 19 -- an outstanding inhibit still defers diag after the key goes off
+ * (spec 10, and the case that makes the core's deferral load-bearing).
+ *
+ * CASE 9 STOPPED COVERING THIS on 2026-09-26. It holds the interlocks up with
+ * the key ON, and spec 5.1 item 4 now keeps diag off the bus in that situation
+ * for its own reason -- the device is "sending", so a due page waits for a
+ * completion. So case 9 passes whether or not the core's separate
+ * "no diag while an inhibit is outstanding" rule exists, and M2 (that rule
+ * deleted) survived the whole suite including 200 randomised sequences.
+ *
+ * Key OFF is what separates them. It makes `sending` false, so item 4's
+ * scheduling steps aside and the normal cadence applies -- while the frame
+ * already handed to the controller is still outstanding, because a key-off does
+ * not clear tx_pending. The section 10 rule is then the only thing standing
+ * between a diag page and the single TX buffer, which is exactly the condition
+ * the rule exists for: a page queued behind our frame holds msgs_to_tx above
+ * zero after ours has gone, and the shim would read that as our frame never
+ * completing.
+ */
+static void case_diag_defers_after_keyoff(void)
+{
+    case_begin("case 19: an outstanding inhibit defers diag with the key off");
+    setup();
+    go_live();
+
+    static const uint8_t KEYOFF[8] = { 0x00 };     /* IgnitionKeyState clear */
+    static const uint8_t CONT[8] = { 11 << 2 };
+    static const uint8_t SOC[8]  = { 0x4E, 0x20 };
+    static const uint8_t FLT[8]  = { 0, 0, 0, 0, 0, 0, 0, 0xC8 };
+    static const uint8_t SHF[8]  = { 0, 0, 0, 0, 0, 0, 2 << 4 };
+
+    /* Case 8's mechanism, for case 9's reason -- see the note there. */
+    ft_set_air_time(600000);
+    uint8_t cmd[6];
+    memcpy(cmd, VCM, sizeof(cmd));
+    cmd[5] = 0x0C;
+    feed(0x051, cmd, 6, 5000);
+
+    /*
+     * GIVE THE WORKER A TICK TO DISPATCH before sampling anything. The feed
+     * above advances 5 ms, which does not always get the worker as far as
+     * twai_transmit() -- the frame is accepted by the core and counted in its
+     * `response` histogram while no queue attempt has been made yet, so a
+     * precondition sampled here reads "nothing outstanding" for a frame that is
+     * about to be queued. With the 600 ms air time above it stays outstanding
+     * once it is queued, so waiting costs nothing.
+     */
+    ft_run(20000);
+
+    /*
+     * THE GUARD, and it has to be taken here rather than asserted at the end.
+     * If our frame is not actually outstanding when the key goes off there is
+     * nothing for the section 10 rule to defer to, and "no diag was queued"
+     * would then be true for an uninteresting reason.
+     */
+    const int sent_051 = ft_sent_count_id(0x051);
+    const int wire_051 = ft_wire_count_id(0x051);
+
+    const int q_before = ft_sent_count();
+
+    /*
+     * No further 0x051, for case 9's reason: the next one would trip TX_LATE,
+     * clear tx_pending, and every diag page counted after that would have been
+     * queued when deferring was neither required nor happening. 400 ms is past
+     * the 300 ms diag period and inside the 500 ms freshness window, so the
+     * bus-loss trip has not fired either.
+     */
+    const int64_t end = ft_now() + 400000;
+    while (ft_now() < end)
+    {
+        feed(0x592, KEYOFF, 8, 20000);
+        feed(0x440, CONT, 8, 20000);
+        feed(0x411, SOC, 8, 20000);
+        feed(0x617, FLT, 8, 20000);
+        feed(0x639, SHF, 8, 20000);
+    }
+
+    int diag_queued = 0;
+    for (int i = q_before; i < ft_sent_count(); i++)
+    {
+        const uint32_t id = ft_sent(i)->id;
+        if (id == 0x7F1 || id == 0x7F2 || id == 0x7F3 || id == 0x7F8) diag_queued++;
+    }
+
+    CHECK(sent_051 > wire_051,
+          "no inhibit was outstanding when the key went off (%d queued, %d on "
+          "the wire), so there was nothing for the section 10 rule to defer "
+          "to: %s", sent_051, wire_051, stats());
+    CHECK(json_has("\"abort_reason\":\"\""),
+          "the device aborted during the window, so the deferral was not what "
+          "was being tested: %s", stats());
+    CHECK(diag_queued == 0,
+          "%d diag frames were queued while an inhibit was outstanding and the "
+          "key was off -- spec 10. With the key off, spec 5.1 item 4's "
+          "scheduling does not apply, so this rule is the only guard",
+          diag_queued);
+
+    teardown();
+    case_end();
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);   /* a hang must still show its trace */
@@ -1220,6 +1467,9 @@ int main(void)
     case_respond_probe();
     case_probe_waits_for_its_offset();
     case_diag_wire_matches_json();
+    case_arm_forces_accept_all();
+    case_rx_queue_depth();
+    case_diag_defers_after_keyoff();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
     return g_fail ? 1 : 0;

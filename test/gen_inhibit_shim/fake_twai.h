@@ -157,6 +157,34 @@ int ft_unsafe_teardowns(void);
 /* The mode twai_driver_install() was last given (spec 3, OBSERVE). */
 int ft_installed_mode(void);
 
+/*
+ * The rest of what twai_driver_install() was last given.
+ *
+ * The TWAI driver exposes no read-back of any of these, so the value handed to
+ * install is the only thing a test can check -- the same argument the mode
+ * above is recorded under. Added 2026-09-26: the queue depth and the acceptance
+ * filter were not observable here at all, which is why the review's Q1, Q2 and
+ * F1 mutations survived E1.
+ *
+ * `rx_queue_len` is spec 5.1 item 1 (at least 32 whenever the driver is
+ * installed). The acceptance pair is item 2: accept-all is code 0 with mask
+ * 0xFFFFFFFF, the TWAI mask being don't-care-bits-set.
+ */
+/*
+ * How many times twai_driver_install() has been called since ft_reset().
+ *
+ * Needed because zero is also what the accessors below report when no
+ * install has happened, so without this a case cannot tell "the firmware
+ * installed a queue of 0" from "nothing installed and you are reading the
+ * reset value". Case 18 failed that way first time out.
+ */
+int ft_install_count(void);
+
+uint32_t ft_installed_rx_queue_len(void);
+uint32_t ft_installed_acc_code(void);
+uint32_t ft_installed_acc_mask(void);
+int      ft_installed_single_filter(void);
+
 /* Make twai_reconfigure_alerts() fail, as a driver that will not arm would. */
 void ft_fail_alerts_config(bool fail);
 
