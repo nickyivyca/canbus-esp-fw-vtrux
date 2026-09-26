@@ -93,12 +93,45 @@ def load_sdkconfig():
     return cfg, p
 
 
-def check_config(cfg):
+def build_dir_version():
+    """The version the current build directory produced, or None."""
+    p = os.path.join(REPO, "build", "project_description.json")
+    if not os.path.exists(p):
+        return None
+    import json
+    try:
+        with open(p) as fh:
+            return json.load(fh).get("project_version")
+    except (ValueError, OSError):
+        return None
+
+
+def check_config(cfg, trusted, why):
+    """The sdkconfig rows.
+
+    `trusted` is False when the config on disk is not the config that produced
+    the image under test. In that case every row here is reported NO REFERENCE
+    rather than as a pass, because a pass would be a statement about a
+    different build.
+
+    THIS IS THE DEFECT THE REVIEWING SESSION FOUND on 2026-09-26, and it is the
+    same shape as the one config_vs_spec.py was corrected for: a row that looks
+    like it checked something, against a reference that does not describe the
+    thing being checked. The honest answer to "is secure boot off in this
+    image?" when the config belongs to another build is "this cannot tell you",
+    not "yes".
+    """
     def on(key):
         return cfg.get(key) is True
 
+    def crow(name, ok, detail):
+        if not trusted:
+            row(name, None, "%s (%s)" % (detail, why), ref_missing=True)
+        else:
+            row(name, ok, detail)
+
     # 1 -- rollback must be enabled.
-    row("rollback enabled", on("BOOTLOADER_APP_ROLLBACK_ENABLE"),
+    crow("rollback enabled", on("BOOTLOADER_APP_ROLLBACK_ENABLE"),
         "CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=%s"
         % ("y" if on("BOOTLOADER_APP_ROLLBACK_ENABLE") else "NOT SET"))
 
@@ -110,22 +143,22 @@ def check_config(cfg):
     # enables are SECURE_BOOT and SECURE_FLASH_ENC_ENABLED.
     sb = on("SECURE_BOOT")
     fe = on("SECURE_FLASH_ENC_ENABLED") or on("FLASH_ENCRYPTION_ENABLED")
-    row("secure boot unset", not sb,
+    crow("secure boot unset", not sb,
         "CONFIG_SECURE_BOOT=%s (the _SUPPORTED/_PREFERRED flags are ignored "
         "on purpose: they are a capability, not the feature)"
         % ("y -- ENABLED" if sb else "not set"))
-    row("flash encryption unset", not fe,
+    crow("flash encryption unset", not fe,
         "CONFIG_SECURE_FLASH_ENC_ENABLED=%s"
         % ("y -- ENABLED" if fe else "not set"))
 
     # 3 -- virtual eFuses off. On a real device this being on means eFuse writes
     # go nowhere, so anything that looks burned is not.
-    row("EFUSE_VIRTUAL off", not on("EFUSE_VIRTUAL"),
+    crow("EFUSE_VIRTUAL off", not on("EFUSE_VIRTUAL"),
         "CONFIG_EFUSE_VIRTUAL=%s" % ("y -- ON" if on("EFUSE_VIRTUAL") else "not set"))
 
     # 4 -- spec 5: stays at the stock setting; three runs put the flash build
     # inside the IRAM build's own spread.
-    row("TWAI_ISR_IN_IRAM unset", not on("TWAI_ISR_IN_IRAM"),
+    crow("TWAI_ISR_IN_IRAM unset", not on("TWAI_ISR_IN_IRAM"),
         "CONFIG_TWAI_ISR_IN_IRAM=%s"
         % ("y -- SET" if on("TWAI_ISR_IN_IRAM") else "not set"))
 
@@ -136,11 +169,11 @@ def check_config(cfg):
     # and it fails if someone changes it silently in either direction.
     wdt_user = on("BOOTLOADER_WDT_DISABLE_IN_USER_CODE")
     wdt_panic = on("ESP_TASK_WDT_PANIC")
-    row("bootloader WDT still boot-only", not wdt_user,
+    crow("bootloader WDT still boot-only", not wdt_user,
         "CONFIG_BOOTLOADER_WDT_DISABLE_IN_USER_CODE=%s -- section 9.1 records "
         "it NOT set, so the 9 s RTC watchdog covers boot only"
         % ("y -- CHANGED" if wdt_user else "not set"))
-    row("task WDT still log-only", not wdt_panic,
+    crow("task WDT still log-only", not wdt_panic,
         "CONFIG_ESP_TASK_WDT_PANIC=%s -- section 9.1 records it unset, so a "
         "timeout warns and continues"
         % ("y -- CHANGED" if wdt_panic else "not set"))
@@ -405,14 +438,41 @@ def main():
     args = ap.parse_args()
 
     cfg, cfg_src = load_sdkconfig()
-    print("sdkconfig from %s" % os.path.relpath(cfg_src, REPO))
-    check_config(cfg)
 
     b = pick_bin(args.bin)
+    img_ver = None
+    if b is not None:
+        d = app_desc(b)
+        if d:
+            img_ver = d[0]
+
+    # DOES THE CONFIG ON DISK DESCRIBE THIS IMAGE? The build directory records
+    # what it produced, so the two can be compared instead of assumed.
+    bd_ver = build_dir_version()
+    trusted = True
+    why = ""
+    if img_ver is None:
+        trusted = False
+        why = "no version could be read from the image"
+    elif bd_ver is None:
+        trusted = False
+        why = "build/project_description.json is missing, so the config cannot "\
+              "be tied to this image"
+    elif bd_ver != img_ver:
+        trusted = False
+        why = "the build directory holds %r but this image is %r" % (bd_ver, img_ver)
+
+    print("sdkconfig from %s" % os.path.relpath(cfg_src, REPO))
+    if b is not None:
+        print("image      %s" % os.path.relpath(b, REPO))
+    print("config applies to this image: %s%s"
+          % ("yes" if trusted else "NO", "" if trusted else " -- " + why))
+
+    check_config(cfg, trusted, why)
+
     if b is None:
         row("an image to check", False, "no build/wican-fw_obd_*.bin found")
     else:
-        print("image      %s" % os.path.relpath(b, REPO))
         check_image(b)
 
     check_partitions()

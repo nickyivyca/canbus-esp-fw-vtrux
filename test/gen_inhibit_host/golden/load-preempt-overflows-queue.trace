@@ -328,5 +328,5 @@
 4599987 EV ABORT a=3 b=0 c=0
 4599987 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=0 socsince=0
 5000263 FINAL mode=3 live=0 tx_ok=295 tx_fail=0 other=6281 ctr_ok=298 ctr_bad=0 rx_gap_n=298 resp_n=295 disabled=0 dcode= block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 soc=5000 shift=2 key=0 socv=0 mainc=11 would_tx=0 emit_refused=0
-5000263 E4 rx_dropped=1 rx_dropped_cmd=0 rxq_high_water=5 tx_behind=0 tx_late_past_next=0
+5000263 E4 rx_dropped=1 rx_dropped_cmd=0 rxq_high_water=5 tx_behind=0 tx_late_past_next=0 stall_dropped=0 stall_dropped_cmd=0
 # E4 is a MODEL. Review A4: the full-replay bench run is what calibrates it. A green line above means the deadline held under the modelled load, not on the truck.

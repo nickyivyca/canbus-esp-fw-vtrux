@@ -60,6 +60,10 @@
  *                                  behind a bus made busy by the capture's own
  *                                  traffic. OFF unless a scenario asks, because
  *                                  it re-times everything.
+ *   cachestall <t_from> <t_to>     the instruction cache is off in [from,to),
+ *                                  so the TWAI ISR cannot run either and the
+ *                                  only buffer is the hardware FIFO. Spec 9.3:
+ *                                  a flash erase does this for up to 20 ms.
  *   preempt <t_from> <t_to>        the worker is off-CPU in [from,to) -- as a
  *                                  WiFi burst does on the device (measured
  *                                  worst 2.39 ms). Frames keep arriving into
@@ -85,7 +89,7 @@
 typedef struct { int64_t t; uint32_t id; uint8_t dlc; uint8_t data[8]; } rxf_t;
 
 typedef enum { D_MODE, D_BUS, D_TXFAIL, D_TXSTALL, D_TXDONE,
-               D_LOAD, D_PREEMPT } dkind_t;
+               D_LOAD, D_PREEMPT, D_CACHESTALL } dkind_t;
 typedef struct { int64_t t; dkind_t k; int64_t a, b, c, d; } dir_t;
 
 static rxf_t *g_f;
@@ -139,6 +143,30 @@ static int     g_rx_depth = 5;
 static int     g_bitrate_kbit = 500;
 
 static int64_t g_preempt_from = -1, g_preempt_to = -1;
+
+/*
+ * THE FLASH-CACHE STALL, which is a different hazard from task preemption and
+ * has a different remedy.
+ *
+ * Spec 9.3: CONFIG_SPI_FLASH_YIELD_DURING_ERASE=y with
+ * ERASE_YIELD_DURATION_MS=20 disables the instruction cache in blocks of up to
+ * 20 ms, which at 2250 fps is ~45 unserviced frames.
+ *
+ * During task preemption the ISR still runs, so frames keep reaching the
+ * driver's software queue and its depth is the buffer. During a cache stall the
+ * ISR cannot run at all -- it is not in IRAM -- so the software queue is not
+ * being filled and the ONLY buffer is the controller's hardware FIFO. The
+ * ESP32-C3's TWAI FIFO is 64 bytes, which is about five standard data frames.
+ *
+ * That asymmetry is the whole reason this is modelled separately: deepening the
+ * software queue removes the preemption hazard and does nothing whatever for
+ * this one.
+ */
+static int64_t g_stall_from = -1, g_stall_to = -1;
+static int     g_fifo_depth = 5;
+
+static unsigned g_stall_dropped;
+static unsigned g_stall_dropped_cmd;
 
 #define RXQ_MAX 64
 static rxf_t  g_rxq[RXQ_MAX];
@@ -195,9 +223,28 @@ static int64_t air_time_us(uint8_t dlc)
     return ((int64_t)bits * 1000) / (int64_t)g_bitrate_kbit;
 }
 
+static int cache_stalled(int64_t now)
+{
+    return g_stall_from >= 0 && now >= g_stall_from && now < g_stall_to;
+}
+
 static int preempted(int64_t now)
 {
+    if (cache_stalled(now)) return 1;    /* the task is not running either */
     return g_preempt_from >= 0 && now >= g_preempt_from && now < g_preempt_to;
+}
+
+/*
+ * How many frames can be buffered right now.
+ *
+ * Under a cache stall the ISR is not moving frames into the software queue, so
+ * the hardware FIFO is the ceiling however deep the software queue is. This one
+ * function is what makes "a deeper queue fixes preemption but not this"
+ * measurable rather than asserted.
+ */
+static int effective_depth(int64_t now)
+{
+    return cache_stalled(now) ? g_fifo_depth : g_rx_depth;
 }
 
 /*
@@ -487,20 +534,28 @@ static void tx_drain(gi_state_t *st, int64_t now)
  */
 static void rx_arrive(const rxf_t *f)
 {
-    if (g_rxq_n >= g_rx_depth)
+    const int depth = effective_depth(f->t);
+    const int stalled = cache_stalled(f->t);
+
+    if (g_rxq_n >= depth)
     {
         g_rx_dropped++;
+        if (stalled) g_stall_dropped++;
         if (f->id == GI_VCM_ID)
         {
             g_rx_dropped_cmd++;
-            printf("%lld !! RX DROPPED id=%03X -- the RX queue was full at "
-                   "depth %d, so this command went UNANSWERED\n",
-                   (long long)f->t, f->id, g_rx_depth);
+            if (stalled) g_stall_dropped_cmd++;
+            printf("%lld !! RX DROPPED id=%03X -- %s was full at depth %d, so "
+                   "this command went UNANSWERED\n",
+                   (long long)f->t, f->id,
+                   stalled ? "the hardware FIFO (cache stalled, ISR cannot run)"
+                           : "the RX queue", depth);
         }
         else
         {
-            printf("%lld !! RX DROPPED id=%03X (queue full, depth %d)\n",
-                   (long long)f->t, f->id, g_rx_depth);
+            printf("%lld !! RX DROPPED id=%03X (%s full, depth %d)\n",
+                   (long long)f->t, f->id,
+                   stalled ? "hardware FIFO, cache stalled" : "queue", depth);
         }
         return;
     }
@@ -582,6 +637,12 @@ int main(void)
         {
             if (g_nd >= MAX_DIRS) { fprintf(stderr, "too many dirs\n"); return 2; }
             g_d[g_nd++] = (dir_t){ t, D_PREEMPT, t, x, 0, 0 };
+            continue;
+        }
+        if (sscanf(line, "cachestall %lld %lld", &t, &x) == 2)
+        {
+            if (g_nd >= MAX_DIRS) { fprintf(stderr, "too many dirs\n"); return 2; }
+            g_d[g_nd++] = (dir_t){ t, D_CACHESTALL, t, x, 0, 0 };
             continue;
         }
         if (sscanf(line, "bus %lld %lld %lld %lld %lld", &t, &x, &y, &z, &w) == 5)
@@ -711,6 +772,15 @@ int main(void)
                 g_preempt_from = d->a;
                 g_preempt_to = d->b;
                 break;
+            case D_CACHESTALL:
+                g_stall_from = d->a;
+                g_stall_to = d->b;
+                printf("# E4 cache stall %lld..%lld us: the ISR cannot run, so "
+                       "the buffer is the %d-frame hardware FIFO, not the "
+                       "%d-deep software queue\n",
+                       (long long)d->a, (long long)d->b, g_fifo_depth,
+                       g_rx_depth);
+                break;
             }
             dump_events(&ev);
             state_line(&st, now);
@@ -774,8 +844,9 @@ int main(void)
             }
             /* Nor may the clock jump past a pending completion. */
             if (g_txq_n > 0 && g_txq[0].t_done < nxt) nxt = g_txq[0].t_done;
-            /* Or past the end of a preemption. */
+            /* Or past the end of a preemption, or of a cache stall. */
             if (g_preempt_to > now && g_preempt_to < nxt) nxt = g_preempt_to;
+            if (g_stall_to > now && g_stall_to < nxt) nxt = g_stall_to;
         }
 
         if (nxt < now) nxt = now;
@@ -848,9 +919,11 @@ int main(void)
     if (g_load)
     {
         printf("%lld E4 rx_dropped=%u rx_dropped_cmd=%u rxq_high_water=%u"
-               " tx_behind=%u tx_late_past_next=%u\n",
+               " tx_behind=%u tx_late_past_next=%u"
+               " stall_dropped=%u stall_dropped_cmd=%u\n",
                (long long)now, g_rx_dropped, g_rx_dropped_cmd,
-               g_rxq_high_water, g_tx_behind, g_tx_late_past_next);
+               g_rxq_high_water, g_tx_behind, g_tx_late_past_next,
+               g_stall_dropped, g_stall_dropped_cmd);
         printf("# E4 is a MODEL. Review A4: the full-replay bench run is what "
                "calibrates it. A green line above means the deadline held "
                "under the modelled load, not on the truck.\n");
