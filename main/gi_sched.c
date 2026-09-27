@@ -122,6 +122,14 @@ bool gs_queue_frame(gs_t *s, gs_class_t cls, const gi_frame_t *f, int64_t now)
     {
         return false;
     }
+    if (cls == GS_CLASS_INHIBIT && s->inhibit_outstanding)
+    {
+        /*
+         * The deadline was not evaluated before this frame was queued. See
+         * gs_stats_t::order_violations -- counted, never refused.
+         */
+        s->st.order_violations++;
+    }
     s->st.cls[cls].queued++;
     if (!q_push(&s->q[cls], f, now, s->next_seq))
     {
@@ -625,7 +633,8 @@ int gs_json(const gs_t *s, char *buf, int buflen)
         "\"ontime\":%lu,\"ontime_unverified\":%lu,"
         "\"unverified_max_backlog\":%lu,"
         "\"tx_failed\":%lu,\"tx_refused\":%lu,\"late_on_wire\":%lu,"
-        "\"ambiguous_departures\":%lu,\"cls\":{",
+        "\"ambiguous_departures\":%lu,\"order_violations\":%lu,"
+        "\"cls\":{",
         (unsigned long)s->st.skipped, (unsigned long)s->st.skip_window,
         (unsigned long)s->st.aborts, (unsigned long)s->st.abort_cmds,
         (unsigned long)s->st.abort_bound_hit,
@@ -634,7 +643,8 @@ int gs_json(const gs_t *s, char *buf, int buflen)
         (unsigned long)s->st.unverified_max_backlog,
         (unsigned long)s->st.tx_failed, (unsigned long)s->st.tx_refused,
         (unsigned long)s->st.late_on_wire,
-        (unsigned long)s->st.ambiguous_departures), buflen);
+        (unsigned long)s->st.ambiguous_departures,
+        (unsigned long)s->st.order_violations), buflen);
 
     for (int c = 0; c < GS_CLASS_N; c++)
     {

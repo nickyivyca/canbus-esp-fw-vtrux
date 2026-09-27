@@ -180,6 +180,24 @@ typedef struct
     uint32_t ambiguous_departures;
 
     /*
+     * THE INTEGRATION-ORDER INVARIANT, and the only thing that pins an ordering
+     * this file cannot see.
+     *
+     * Spec item 5 requires the deadline (gs_command_received) to be evaluated
+     * when the VCM's next 0x051 is dequeued, BEFORE the answer to that command is
+     * queued. A correctly ordered deadline leaves no inhibit outstanding, because
+     * it withdraws any that was. So queueing an inhibit while one is STILL
+     * outstanding means the deadline was not evaluated first -- the
+     * contrapositive, not a heuristic.
+     *
+     * Counted and not refused: refusing would turn a caller-ordering bug into a
+     * missed inhibit on the truck, which is worse than sending the frame and
+     * saying loudly that the order was wrong. A mock-HAL case asserts this stays
+     * 0, and that is what a mutation of the call order in gen_inhibit.c moves.
+     */
+    uint32_t order_violations;
+
+    /*
      * Aborts, and how hard they were (item 4's loop). `abort_cmds` counts
      * commands issued, so abort_cmds > aborts means the loop had to go round.
      * `abort_bound_hit` is the case the spec says leaves the inhibit at the
