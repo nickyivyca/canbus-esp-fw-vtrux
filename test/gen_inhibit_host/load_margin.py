@@ -42,6 +42,36 @@ S = 1000000
 MS = 1000
 
 # Spec 5 and 9.3, the two numbers the sweep is judged against.
+#
+# CHECKED ON HARDWARE AT TRUCK RATE, 2026-09-26, AND LEFT ALONE BECAUSE IT IS
+# CONSERVATIVE. This constant used to rest entirely on a bench run at ~100
+# frames/s on a near-idle bus, which spec 5 flagged as not being the truck.
+#
+# A 30 s full-bus truck replay at 2364.7 frames/s into the device (on debfeca,
+# Kvaser witnessing) measured the scheduling delay directly, using RESPOND --
+# whose probe is counted AT QUEUEING (spec 12.1), so it excludes frame air time
+# and completion observation. Worst RX-to-queue under an adversarial WiFi load
+# was 1611 us, and 500 us of that is the programmed probe offset, so the
+# scheduling component is ~1111 us. Less than half the 2390 below.
+#
+# THE FIRST READING SAID THE OPPOSITE, and the reason is worth keeping. The
+# INHIBIT arm's `response` -- RX to OBSERVED COMPLETION since 2026-09-25 --
+# reached 6796 us, which looks like a preemption three times worse than assumed.
+# It is not preemption: the device queued the frame in ~0.5 ms while the WIRE
+# figure reached 3.5 ms with WiFi IDLE, which is the lowest-priority frame
+# waiting for an idle slot on a bus at 50-60 % occupancy. Arbitration, not
+# scheduling, and a deeper receive queue does nothing about it. Taking the
+# completion figure for a preemption figure would have consumed a margin that
+# was never at risk -- and would have made the verdict below fail.
+#
+# Limitations, because the maxima are what gets quoted: ~3000 samples per arm,
+# and the loaded wire maximum came in below the idle one, so the extreme tail is
+# not pinned. The percentiles are the trustworthy part and they move the right
+# way under load (p95 1360 -> 1540 us at the wire).
+#
+# Artifact: projects/vtrux/notes/artifacts/gen-inhibit/e4_device_calibration.py,
+# runs/e4_device_{calibration,loaded,respond}.json, in the reverse-it repo.
+# Spec 5 carries the table.
 WORST_PREEMPT_US = 2390
 ERASE_BLOCK_US = 20000
 
@@ -179,11 +209,15 @@ def main():
               "and not sufficient." % (base[2], base[0], deep[0]))
 
     print()
-    print("This is a MODEL. Review A4: the full-replay bench run is what "
-          "calibrates it. The rig half of that calibration ran 2026-09-26 and "
-          "found this model's air time conservative at every DLC and its bus "
-          "occupancy slightly above the truck's; the device half, which is what "
-          "would revise WORST_PREEMPT_US, has not run.")
+    print("This is a MODEL, and review A4 asked for the full-replay bench run "
+          "that calibrates it. BOTH HALVES HAVE NOW RUN (2026-09-26). The rig "
+          "half found this model's air time conservative at every DLC and its "
+          "bus occupancy slightly above the truck's. The device half, at 2364.7 "
+          "frames/s into the device, measured the scheduling delay directly at "
+          "~1111 us against the %d us assumed here -- so the constant is "
+          "conservative and was left alone. See the note beside it; the 6796 us "
+          "figure some output carries is RX-to-COMPLETION and is arbitration on "
+          "a busy bus, not preemption." % WORST_PREEMPT_US)
 
     # ---------------------------------------------------------------- verdict
     #
