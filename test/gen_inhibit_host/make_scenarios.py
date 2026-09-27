@@ -1337,7 +1337,7 @@ The `skip` directive supplies the scheduler's 3-within-1s verdict rather than
 recomputing it: that window lives in gi_sched, which this harness does not compile,
 and a copy here could disagree with the real one.
 
-EXPECT: skips = 1, the mode stays 3, live stays 1, no abort, and transmission
+EXPECT: one SKIP event, the mode stays 3, live stays 1, no abort, and transmission
 continues to the end.
 """, autobms=False)
 def s_skip_single():
@@ -1363,7 +1363,7 @@ scenarios showing the device transmitting happily, which is correct now -- and w
 have left the core's half of trip 7 with no golden whatsoever. The suite would have
 gone green over the change.
 
-EXPECT: two skips with no abort, then on the third a latched abort naming
+EXPECT: two SKIP events with no abort, then on the third a latched abort naming
 "3 inhibit frames skipped within 1 s", and transmission stopping there.
 """, autobms=False)
 def s_skip_third():

@@ -218,4 +218,4 @@
 8580000 TX DIAG id=7F8 dlc=8 data=08000E0000000000 ok=1
 8580000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x440 went stale while live -- BMS lost latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
 8980000 TX DIAG id=7F1 dlc=8 data=0401038600028813 ok=1
-9180000 FINAL mode=3 live=0 tx_ok=171 tx_fail=0 other=438 skips=0 ctr_ok=349 ctr_bad=0 rx_gap_n=349 resp_n=171 disabled=0 dcode= block=latched abort (key-on clears) abort=0x440 went stale while live -- BMS lost latched=1 soc=5000 shift=2 key=0 socv=0 mainc=11 would_tx=0 emit_refused=0
+9180000 FINAL mode=3 live=0 tx_ok=171 tx_fail=0 other=438 ctr_ok=349 ctr_bad=0 rx_gap_n=349 resp_n=171 disabled=0 dcode= block=latched abort (key-on clears) abort=0x440 went stale while live -- BMS lost latched=1 soc=5000 shift=2 key=0 socv=0 mainc=11 would_tx=0 emit_refused=0

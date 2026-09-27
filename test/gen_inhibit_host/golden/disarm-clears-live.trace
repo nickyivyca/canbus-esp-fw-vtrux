@@ -125,4 +125,4 @@
 3000000 STATE mode=0 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=1
 3000000 STATE mode=0 live=0 block=not armed abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=1 socsince=1
 3400000 STATE mode=0 live=0 block=not armed abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=1 socsince=1
-5000000 FINAL mode=0 live=0 tx_ok=99 tx_fail=0 other=149 skips=0 ctr_ok=99 ctr_bad=0 rx_gap_n=99 resp_n=99 disabled=0 dcode= block=not armed abort= latched=0 soc=5000 shift=2 key=0 socv=1 mainc=11 would_tx=0 emit_refused=0
+5000000 FINAL mode=0 live=0 tx_ok=99 tx_fail=0 other=149 ctr_ok=99 ctr_bad=0 rx_gap_n=99 resp_n=99 disabled=0 dcode= block=not armed abort= latched=0 soc=5000 shift=2 key=0 socv=1 mainc=11 would_tx=0 emit_refused=0

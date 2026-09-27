@@ -75,4 +75,4 @@
 2900000 TX DIAG id=7F2 dlc=8 data=3100000001010000 ok=1
 3200000 TX DIAG id=7F3 dlc=8 data=0000000001000400 ok=1
 3680000 TX DIAG id=7F8 dlc=8 data=0C030E0000000000 ok=1
-4080000 FINAL mode=3 live=0 tx_ok=49 tx_fail=1 other=185 skips=0 ctr_ok=98 ctr_bad=1 rx_gap_n=124 resp_n=49 disabled=0 dcode= block=latched abort (key-on clears) abort=0x051 arrived with DLC < 6 -- cannot build a reply latched=1 soc=5000 shift=2 key=0 socv=1 mainc=11 would_tx=0 emit_refused=0
+4080000 FINAL mode=3 live=0 tx_ok=49 tx_fail=1 other=185 ctr_ok=98 ctr_bad=1 rx_gap_n=124 resp_n=49 disabled=0 dcode= block=latched abort (key-on clears) abort=0x051 arrived with DLC < 6 -- cannot build a reply latched=1 soc=5000 shift=2 key=0 socv=1 mainc=11 would_tx=0 emit_refused=0

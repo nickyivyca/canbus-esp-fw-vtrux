@@ -72,3 +72,30 @@ Two of the three needed more than a re-point:
 **Read the match counts, not just the verdicts.** `(pattern found 0 times)` and
 `(pattern found 2 times)` are the same shape of failure as a filter returning
 nothing because its premise is wrong.
+
+### Round 15: D8, and the third case of mine that argued with the spec
+
+`case_rearm_keeps_what_the_hardware_holds` pins `gs_rearm()` itself: a mode
+change while the controller still holds a frame must not forget it.
+
+**Its first version failed on correct code**, and the code was right. It held a
+telemetry page AWAITING, re-armed, queued an **inhibit**, and asserted that
+nothing more had been handed over. But an inhibit behind an AWAITING lower-class
+frame is exactly what item 6 preemption is for -- abort the page, hand the
+inhibit over -- so two submits is the correct answer and that scenario cannot
+ask D8's question at all. The successor has to be the **same class**, where no
+preemption is available and the only thing deciding whether the scheduler waits
+is whether it still knows the controller is busy.
+
+That is the third time a case here asserted against intended behaviour rather
+than finding a defect (the other two are in the section above). All three had the
+same tell: the assertion was written from what the case was *about* rather than
+from what the spec *says* happens.
+
+**How the defect shows up here is not how it shows up on the device.**
+`fb_submit()` refuses while the buffer is occupied -- "the scheduler must never
+do this: item 3" -- so `gs_init()` in place of `gs_rearm()` produces a *refusal*
+in this model, while on the device `twai_transmit()` would accept the frame into
+the driver's FIFO behind the old one. Same fault, two symptoms; E1's case 27
+covers the FIFO form, this one covers the refusal form, and both are written down
+at the call site so neither reads as the whole story.

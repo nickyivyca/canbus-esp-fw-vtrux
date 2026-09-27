@@ -113,4 +113,4 @@
 4100000 TX DIAG id=7F2 dlc=8 data=5000000000000000 ok=1
 4400000 TX DIAG id=7F3 dlc=8 data=0000000001000400 ok=1
 4700000 TX DIAG id=7F8 dlc=8 data=0F030E0000000000 ok=1
-5180000 FINAL mode=3 live=0 tx_ok=80 tx_fail=0 other=296 skips=3 ctr_ok=199 ctr_bad=0 rx_gap_n=199 resp_n=80 disabled=0 dcode= block=latched abort (key-on clears) abort=3 inhibit frames skipped within 1 s latched=1 soc=5000 shift=2 key=1 socv=1 mainc=11 would_tx=0 emit_refused=0
+5180000 FINAL mode=3 live=0 tx_ok=80 tx_fail=0 other=296 ctr_ok=199 ctr_bad=0 rx_gap_n=199 resp_n=80 disabled=0 dcode= block=latched abort (key-on clears) abort=3 inhibit frames skipped within 1 s latched=1 soc=5000 shift=2 key=1 socv=1 mainc=11 would_tx=0 emit_refused=0

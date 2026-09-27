@@ -2002,7 +2002,6 @@ const char *gi_skip_name(gi_skip_kind_t k)
 void gi_on_inhibit_skip(gi_state_t *st, gi_skip_kind_t kind, bool trip,
                         int64_t now, gi_events_t *ev)
 {
-    st->skips++;
     st->tx_pending = false;
     st->tx_pending_have_rx = false;
     /*

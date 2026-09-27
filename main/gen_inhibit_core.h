@@ -660,19 +660,6 @@ typedef struct
      * full-replay bench run exists to put a value on.
      */
     uint32_t tx_queued_behind;
-    /*
-     * Inhibit frames the scheduler skipped: withdrawn at the deadline, or gone
-     * out late. Spec 5.2 item 5 / trip 7 as amended. The scheduler owns the
-     * breakdown and the 1 s window; this is the core's own total, so a trip that
-     * names skips can be read against a count in the same JSON.
-     *
-     * NOT CURRENTLY TRUE, and flagged to the user 2026-09-27 rather than fixed
-     * here: this counter reaches no JSON at all. The status page's count comes
-     * from the scheduler (`sched.skipped`), which is the number spec 11 asks
-     * for, so there is nothing missing from the page -- but two counters for one
-     * quantity is worse than one, so which of them survives is the user's call.
-     */
-    uint32_t skips;
 
     /*
      * Spec 3.1: what PASSIVE counts where INHIBIT would transmit. Deliberately

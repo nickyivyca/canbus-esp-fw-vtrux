@@ -116,6 +116,9 @@ static uint32_t json_need(const char *key)
 
 static const uint8_t VCM[6] = { 0x08, 0x00, 0x80, 0xFF, 0x7F, 0x00 };
 
+/* The diag page IDs, for cases that need to know one is in flight. */
+static const uint32_t DIAG[] = { 0x7F1, 0x7F2, 0x7F3, 0x7F8 };
+
 static void feed(uint32_t id, const uint8_t *d, uint8_t dlc, int64_t budget)
 {
     ft_deliver(id, d, dlc);
@@ -1930,6 +1933,89 @@ static void case_status_page_fits_the_handler_buffer(void)
     case_end();
 }
 
+/*
+ * CASE 27 -- D8's wiring: a mode change while a frame is really in the
+ * controller.
+ *
+ * sched_test pins gs_rearm() itself. This pins that gen_inhibit.c CALLS it: the
+ * reviewing session's round 13 swapped gs_rearm() for gs_init() at the mode
+ * change and every suite stayed green, here included.
+ *
+ * A diag page with a long air time is in the controller when the mode changes. If
+ * the scheduler forgets it, the next frame is handed to twai_transmit() while the
+ * old one is still there -- which is the FIFO inversion item 3 exists to prevent
+ * -- and the departure of the old frame is credited to the new one.
+ *
+ * ft_ll_removed() and the wire log are what can see this; tx_ok alone cannot,
+ * because a mis-credited completion still looks like a completion.
+ */
+static void case_mode_change_keeps_the_held_frame(void)
+{
+    case_begin("case 27: a mode change does not forget a frame in the driver");
+    setup();
+    go_live();
+
+    /*
+     * Long enough that the page is unambiguously still in the driver when the
+     * mode changes below: the diag IDs are the only frames whose air time a test
+     * can stretch without touching the inhibit path.
+     */
+    ft_set_air_time_id(0x7F1, 120000);
+    ft_set_air_time_id(0x7F2, 120000);
+    ft_set_air_time_id(0x7F3, 120000);
+    ft_set_air_time_id(0x7F8, 120000);
+
+    /*
+     * DRIVEN TO THE CONDITION, NOT TIMED INTO IT. The mode change has to land
+     * while a page is genuinely in the driver, and "queued but not yet on the
+     * wire" is that condition exactly. A fixed keep_alive would make this case
+     * pass or fail on scheduling luck.
+     */
+    uint8_t ctr = 0x70;
+    bool in_driver = false;
+    for (int i = 0; i < 60 && !in_driver; i++)
+    {
+        keep_alive(10000, &ctr);
+        for (unsigned k = 0; k < sizeof(DIAG) / sizeof(DIAG[0]); k++)
+        {
+            if (ft_sent_count_id(DIAG[k]) > ft_wire_count_id(DIAG[k]))
+            {
+                in_driver = true;
+                break;
+            }
+        }
+    }
+    CHECK(in_driver,
+          "no diag page was ever in the driver un-completed, so the mode change "
+          "below cannot land on one and the case is vacuous: %s", stats());
+
+    /*
+     * THE MODE CHANGE, with the page still in the controller. Back into INHIBIT,
+     * which is the INHIBIT->INHIBIT re-arm gi_sched.h names: the counters and
+     * queues are per-arm, what the hardware holds is not.
+     */
+    gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
+    keep_alive(400000, &ctr);
+
+    /*
+     * ITEM 3, AND IT IS THE WHOLE CASE. fake_twai models the driver's real FIFO,
+     * so a frame handed over while the controller still holds one is ACCEPTED and
+     * queues behind it -- no refusal, no lost frame, no wire violation, and the
+     * inhibit delayed by the page's air time. The first version of this case
+     * asserted all the things that stay true through that, and D8a survived it.
+     */
+    CHECK(ft_max_inflight() <= 1,
+          "%d of our frames were in the driver at once. A mode change that "
+          "forgets the frame the controller is holding hands the next one over "
+          "immediately, and twai_transmit queues it BEHIND the old one -- the "
+          "priority inversion spec 5.2 item 3 exists to prevent (defect D8): %s",
+          ft_max_inflight(), stats());
+    CHECK(ft_wire_violations() == 0,
+          "the driver was handed a frame that must never reach the wire");
+    teardown();
+    case_end();
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);   /* a hang must still show its trace */
@@ -1960,6 +2046,7 @@ int main(void)
     case_skip_kind_is_reported();
     case_no_abort_while_transmitting();
     case_status_page_fits_the_handler_buffer();
+    case_mode_change_keeps_the_held_frame();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
     return g_fail ? 1 : 0;

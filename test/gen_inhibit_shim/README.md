@@ -315,3 +315,39 @@ arithmetic on the device side is defect D10, which case 26 pins.
 `ft_refuse_next()` marks whichever frame is queued next, and `gi_tick()` may emit
 a telemetry page first, so a case meaning "the inhibit was refused" has to say
 so or it passes and fails by timing.
+
+### Round 15: D8, and a case that asserted everything except the defect
+
+Case 27 pins that `gen_inhibit.c` calls `gs_rearm()` and not `gs_init()` at a
+mode change. The reviewing session's round 13 left that swap as its only
+survivor: it passed every suite, here and in `gen_inhibit_sched`.
+
+**The first version of case 27 survived it too, and the reason is worth keeping.**
+It asserted that frames still went out, that nothing was refused, that no frame
+was dropped, and that there were no wire violations. Every one of those stays
+true through the defect, because **`fake_twai` models the driver's real FIFO
+(depth 16), not a single slot** -- so a frame handed over while the controller
+still holds one is simply *accepted*, and queues behind it. That is precisely
+the device's behaviour, and precisely the priority inversion item 3 forbids, and
+nothing in the fake was counting it.
+
+`ft_max_inflight()` now does: the high-water mark of **our** frames in the driver
+at once. Item 3 says at most one, so the assertion is `<= 1` and the mutation
+takes it to 2. Foreign frames are excluded, because `ft_foreign_transmit()`
+models the SLCAN and MQTT paths that item 3 is about refusing, and counting them
+would conflate "the scheduler double-submitted" with "another task transmitted" --
+which case 5 already covers.
+
+The case is also **driven to its precondition rather than timed into it**: it
+feeds in 10 ms steps until `ft_sent_count_id() > ft_wire_count_id()` for a diag
+page, which is exactly "a page is in the driver, not yet on the wire", and only
+then changes mode. A fixed `keep_alive()` would have made it pass or fail on
+scheduling luck.
+
+**`gi_state_t.skips` is gone** (user, 2026-09-27: "leave in only 'skipped'").
+The scheduler's `skipped`, with its per-kind split, is the reported number. The
+core's own tally reached no JSON at all. All 77 goldens lost the ` skips=N` token
+from their FINAL line and were re-blessed; the re-bless was verified mechanically
+-- stripping that token from the old goldens reproduces the new ones **exactly**,
+all 77, so nothing else changed. The skip count stays pinned in the goldens by
+the `GI_EV_SKIP` event lines, one per skip.

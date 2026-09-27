@@ -179,6 +179,7 @@ static uint32_t g_stall_id;
 static int      g_stall_id_n;
 static uint32_t g_refuse_id;
 static int      g_refuse_id_n;
+static int      g_max_inflight;     /* item 3's high-water mark, ours only */
 static bool     g_fail_next;
 static bool     g_installed, g_running;
 static bool     g_in_receive;       /* a thread is blocked inside the driver */
@@ -477,6 +478,7 @@ int ft_wire_count_id(uint32_t id)
     for (int i = 0; i < g_nwire; i++) if (g_wire[i].id == id) n++;
     return n;
 }
+int ft_max_inflight(void) { return g_max_inflight; }
 void ft_refuse_next(int n) { g_refuse_n = n; }
 void ft_refuse_id(uint32_t id, int n) { g_refuse_id = id; g_refuse_id_n = n; }
 void ft_fail_next(void) { g_fail_next = true; }
@@ -873,6 +875,18 @@ static bool enqueue(uint32_t id, const uint8_t *data, uint8_t dlc, bool foreign,
     if (g_stall_id_n > 0 && id == g_stall_id) { g_stall_id_n--; f->t_done = -2; }
     if (g_fail_next)   { g_fail_next = false; f->failed = true; }
     if (g_nsent < SENTMAX) g_sent[g_nsent++] = *f;
+
+    /*
+     * ITEM 3'S HIGH-WATER MARK, taken here because this is the only place a frame
+     * enters the driver. Counted rather than inferred from g_qn so that a foreign
+     * transmit sitting in the queue does not read as the scheduler having
+     * double-submitted.
+     */
+    {
+        int ours = 0;
+        for (int i = 0; i < g_qn; i++) { if (!g_q[i].foreign) { ours++; } }
+        if (ours > g_max_inflight) { g_max_inflight = ours; }
+    }
     return true;
 }
 
@@ -1072,6 +1086,7 @@ void ft_reset(void)
     g_stall_id_n = 0;
     g_refuse_id = 0;
     g_refuse_id_n = 0;
+    g_max_inflight = 0;
     g_in_receive = false;
     g_unsafe_teardowns = 0;
     g_installed_mode = -1;

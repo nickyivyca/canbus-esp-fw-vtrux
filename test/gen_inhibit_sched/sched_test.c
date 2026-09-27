@@ -712,6 +712,79 @@ static void order_once(bool correct_order, bool prev_outstanding,
     *violations = gs_stats(&s)->order_violations;
 }
 
+/*
+ * D8. A RE-ARM MUST NOT FORGET WHAT THE CONTROLLER IS HOLDING.
+ *
+ * gs_init() memsets the whole struct, `held`, `held_f` and `aborting` included,
+ * and a mode change can land while a diag page is still in the buffer. A
+ * scheduler that has forgotten it will hand over the next frame at once: on the
+ * device twai_transmit() queues it BEHIND the old one in the driver's FIFO, which
+ * is the priority inversion item 3 exists to prevent, and the old frame's
+ * departure gets credited to the new one.
+ *
+ * THE MODEL SHOWS THIS AS A REFUSAL, NOT AS TWO FRAMES IN THE BUFFER.
+ * fb_submit() refuses while occupied -- "the scheduler must never do this: item
+ * 3" -- so the fault surfaces as a handover that should never have been
+ * attempted. Same fault, different symptom, and the assertion is on the attempt.
+ *
+ * The reviewing session's round 13 left this as its one survivor: gs_rearm()
+ * swapped for gs_init() passed every suite, in both this file and E1.
+ */
+static void case_rearm_keeps_what_the_hardware_holds(void)
+{
+    g_case = "D8: a re-arm does not forget a frame in the controller";
+    fb_reset();
+    fb_set_contended(true);     /* STRESS: the page sits AWAITING, not gone */
+    gs_t s;
+    gs_init(&s, fb_hal());
+
+    /* The first diag page is handed over and is still in the buffer. */
+    gi_frame_t page_a = mk(ID_DIAG, GI_TX_DIAG);
+    gs_queue_frame(&s, GS_CLASS_TELEMETRY, &page_a, fb_now());
+    run(&s, 50, 10, 0);
+    ck_eq(fb_submit_count(), 1, "the first page was handed over");
+    ck(fb_outstanding_now(), "and the controller still holds it");
+
+    /* The mode change. This is the call under test. */
+    gs_rearm(&s, fb_hal());
+
+    /*
+     * THE SECOND FRAME IS THE SAME CLASS, DELIBERATELY. The first version of this
+     * case queued an INHIBIT here and asserted that nothing more was handed over
+     * -- which fails on correct code, because an inhibit behind an AWAITING
+     * telemetry frame is precisely what item 6 preemption is for: abort the page,
+     * hand the inhibit over. Two submits is the right answer there, so that
+     * scenario cannot ask D8's question at all.
+     *
+     * With a same-class successor there is no preemption to reach for, and the
+     * only thing deciding whether the scheduler waits is whether it still knows
+     * the controller is holding something.
+     */
+    gi_frame_t page_b = mk(ID_DIAG, GI_TX_DIAG);
+    gs_queue_frame(&s, GS_CLASS_TELEMETRY, &page_b, fb_now());
+    run(&s, 100, 10, 0);
+
+    const gs_stats_t *st = gs_stats(&s);
+    ck_eq(st->cls[GS_CLASS_TELEMETRY].refused, 0,
+          "the second page was NOT offered to a driver still holding the first");
+    ck_eq(fb_submit_count(), 1, "still only the first page has been handed over");
+
+    /*
+     * Let the first page lose arbitration and leave, then the second go. Both
+     * must be on the wire, and every frame on the wire must be one the scheduler
+     * counted as sent -- which is the form "the departure is not credited to the
+     * wrong frame" takes here, because gs_init() clears `held` and so credits the
+     * first page's departure to nobody at all.
+     */
+    fb_set_contended(false);
+    run(&s, 3000, 10, 0);
+
+    ck_eq(fb_wire_count(), 2, "both pages reached the wire");
+    ck_eq(st->cls[GS_CLASS_TELEMETRY].sent, 2,
+          "and both were counted as sent; a forgotten held frame is a frame on "
+          "the wire that nothing credited");
+}
+
 static void case_integration_order(void)
 {
     uint32_t v;
@@ -759,6 +832,7 @@ int main(void)
     case_skip_window_boundary_exactly_one_second();
     case_race_between_read_and_abort();
     case_integration_order();
+    case_rearm_keeps_what_the_hardware_holds();
 
     if (g_fail == 0)
     {

@@ -973,12 +973,11 @@ int main(void)
     }
 
     printf("%lld FINAL mode=%d live=%d tx_ok=%u tx_fail=%u other=%u"
-           " skips=%u ctr_ok=%u ctr_bad=%u rx_gap_n=%u resp_n=%u disabled=%d"
+           " ctr_ok=%u ctr_bad=%u rx_gap_n=%u resp_n=%u disabled=%d"
            " dcode=%s block=%s abort=%s latched=%d soc=%u shift=%u key=%d"
            " socv=%d mainc=%u would_tx=%u emit_refused=%u\n",
            (long long)now, (int)st.mode, st.inhibit_live ? 1 : 0,
            st.tx_ok, st.tx_fail, st.other_frames,
-           st.skips,
            st.ctr_steps_ok, st.ctr_steps_bad,
            st.rx_gap.count, st.response.count, st.disabled ? 1 : 0,
            gi_disable_name(st.disable_code), gi_block_name(st.arm_block),

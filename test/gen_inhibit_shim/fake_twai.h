@@ -202,6 +202,23 @@ int      ft_installed_single_filter(void);
  * `removed` counts frames the abort actually took out, which is NOT the same as
  * frames that left the controller, because a completion looks identical.
  */
+/*
+ * The most OUR frames that were in the driver at once -- item 3's quantity.
+ *
+ * Item 3 says at most one frame is with the driver at a time, and until this
+ * existed nothing counted it: the fake models the driver's real FIFO (depth 16),
+ * so a frame handed over while the controller still holds one is ACCEPTED and
+ * queues behind it. That is the device's behaviour and it is the priority
+ * inversion item 3 forbids, and it looked identical to correct operation from
+ * every other counter here. The D8 mutation (gs_rearm -> gs_init at a mode
+ * change) survived E1 for exactly that reason.
+ *
+ * Foreign frames are NOT counted: ft_foreign_transmit() models the SLCAN and MQTT
+ * paths, and mixing them in would conflate "the scheduler double-submitted" with
+ * "another task transmitted", which case 5 covers separately.
+ */
+int ft_max_inflight(void);
+
 int ft_ll_aborts(void);
 int ft_ll_aborts_while_tx(void);
 int ft_ll_removed(void);

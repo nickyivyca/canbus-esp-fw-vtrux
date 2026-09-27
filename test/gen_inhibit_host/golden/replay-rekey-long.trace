@@ -34,4 +34,4 @@
 220985000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x471 stopped while 0x051 still live -- inverter lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=1 socsince=1
 221181900 EV SOC_VALID a=0 b=1088 c=0
 221181900 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x471 stopped while 0x051 still live -- inverter lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=0 socsince=0
-225170900 FINAL mode=3 live=0 tx_ok=18396 tx_fail=0 other=69896 skips=0 ctr_ok=22372 ctr_bad=0 rx_gap_n=22372 resp_n=18396 disabled=0 dcode= block=latched abort (key-on clears) abort=0x471 stopped while 0x051 still live -- inverter lost latched=1 soc=2436 shift=0 key=0 socv=0 mainc=14 would_tx=0 emit_refused=0
+225170900 FINAL mode=3 live=0 tx_ok=18396 tx_fail=0 other=69896 ctr_ok=22372 ctr_bad=0 rx_gap_n=22372 resp_n=18396 disabled=0 dcode= block=latched abort (key-on clears) abort=0x471 stopped while 0x051 still live -- inverter lost latched=1 soc=2436 shift=0 key=0 socv=0 mainc=14 would_tx=0 emit_refused=0
