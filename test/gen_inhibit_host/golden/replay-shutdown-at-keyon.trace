@@ -36,4 +36,4 @@
 225239000 EV SOC_VALID a=0 b=1041 c=0
 225239000 EV ABORT a=3 b=0 c=0
 225239000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=0 socsince=0
-226039000 FINAL mode=3 live=0 tx_ok=17899 tx_fail=0 other=72396 ctr_ok=22460 ctr_bad=0 rx_gap_n=22460 resp_n=17899 disabled=0 dcode= block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 soc=5030 shift=3 key=0 socv=0 mainc=11 would_tx=0 emit_refused=0
+226039000 FINAL mode=3 live=0 tx_ok=17899 tx_fail=0 other=72396 skips=0 ctr_ok=22460 ctr_bad=0 rx_gap_n=22460 resp_n=17899 disabled=0 dcode= block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 soc=5030 shift=3 key=0 socv=0 mainc=11 would_tx=0 emit_refused=0

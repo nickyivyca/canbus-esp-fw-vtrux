@@ -1371,8 +1371,8 @@ def s_skip_third():
     L += cmd_train(1 * S, 5 * S, 20 * MS)
     L += _healthy_bg(1 * S, 5 * S)
     L += ["skip %d 0" % (2 * S)]
-    L += ["skip %d 0" % (2 * S + 300 * MS)]
-    L += ["skip %d 1" % (2 * S + 600 * MS)]
+    L += ["skip %d 0 2" % (2 * S + 300 * MS)]
+    L += ["skip %d 1 1" % (2 * S + 600 * MS)]
     L += ["end %d" % (5 * S)]
     return sorted_directives(L)
 

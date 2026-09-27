@@ -142,4 +142,4 @@
 170376000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
 176595000 EV SOC_VALID a=0 b=1041 c=0
 176595000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=0 socsince=0
-177195000 FINAL mode=3 live=0 tx_ok=614 tx_fail=0 other=32295 ctr_ok=6121 ctr_bad=4363 rx_gap_n=10484 resp_n=614 disabled=0 dcode= block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 soc=5486 shift=1 key=0 socv=0 mainc=11 would_tx=0 emit_refused=0
+177195000 FINAL mode=3 live=0 tx_ok=614 tx_fail=0 other=32295 skips=0 ctr_ok=6121 ctr_bad=4363 rx_gap_n=10484 resp_n=614 disabled=0 dcode= block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 soc=5486 shift=1 key=0 socv=0 mainc=11 would_tx=0 emit_refused=0

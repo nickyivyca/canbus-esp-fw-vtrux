@@ -719,6 +719,12 @@ int main(void)
          * and abort only when told the window is met -- is exactly what this
          * exercises.
          */
+        /* skip <t> <trip> [kind]  -- kind defaults to 0 (withdrawn). */
+        if (sscanf(line, "skip %lld %lld %lld", &t, &x, &y) == 3)
+        {
+            g_d[g_nd++] = (dir_t){ t, D_SKIP, x, y, 0, 0 };
+            continue;
+        }
         if (sscanf(line, "skip %lld %lld", &t, &x) == 2)
         {
             g_d[g_nd++] = (dir_t){ t, D_SKIP, x, 0, 0, 0 };
@@ -818,7 +824,8 @@ int main(void)
             case D_SKIP:
             {
                 gi_events_t ev = { 0 };
-                gi_on_inhibit_skip(&st, d->a != 0, d->t, &ev);
+                gi_on_inhibit_skip(&st, (gi_skip_kind_t)d->b, d->a != 0, d->t,
+                                   &ev);
                 dump_events(&ev);
                 break;
             }
@@ -966,11 +973,12 @@ int main(void)
     }
 
     printf("%lld FINAL mode=%d live=%d tx_ok=%u tx_fail=%u other=%u"
-           " ctr_ok=%u ctr_bad=%u rx_gap_n=%u resp_n=%u disabled=%d"
+           " skips=%u ctr_ok=%u ctr_bad=%u rx_gap_n=%u resp_n=%u disabled=%d"
            " dcode=%s block=%s abort=%s latched=%d soc=%u shift=%u key=%d"
            " socv=%d mainc=%u would_tx=%u emit_refused=%u\n",
            (long long)now, (int)st.mode, st.inhibit_live ? 1 : 0,
            st.tx_ok, st.tx_fail, st.other_frames,
+           st.skips,
            st.ctr_steps_ok, st.ctr_steps_bad,
            st.rx_gap.count, st.response.count, st.disabled ? 1 : 0,
            gi_disable_name(st.disable_code), gi_block_name(st.arm_block),

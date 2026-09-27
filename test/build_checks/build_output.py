@@ -719,6 +719,126 @@ def check_private_abort_confined():
               "nowhere else" % ", ".join("%s x%d" % h for h in hits)))
 
 
+def check_abort_reason_parity(dbc_path):
+    """Every gi_abort_t value has a VAL_ entry for diag_abort_reason.
+
+    Counts VALUES, not names. The DBC's CM_ for this signal says APPEND ONLY --
+    position is meaning, because reordering changes what every recorded log means --
+    so if the enum has N values the VAL_ table must define 0..N-1. Names are
+    deliberately not compared: the DBC shortens them, so a name check would be noisy
+    and the row would get loosened. A missing VALUE is unambiguous.
+
+    This exists because "DBC defines every diag page" covers MESSAGES and nothing
+    covered this enum, so GI_ABORT_SKIPS = 15 reached the core while the DBC stopped
+    at 14 -- a capture would have decoded it as a bare integer beside a column of
+    names, which reads like a data problem rather than a missing definition.
+    """
+    hdr = os.path.join(REPO, "main", "gen_inhibit_core.h")
+    if not os.path.exists(hdr):
+        row("abort reasons are all in the DBC", None,
+            "main/gen_inhibit_core.h is missing", ref_missing=True)
+        return
+    src = open(hdr, encoding="utf-8", errors="replace").read()
+    i = src.find("GI_ABORT_NONE")
+    j = src.find("} gi_abort_t;", i)
+    if i < 0 or j < 0:
+        row("abort reasons are all in the DBC", None,
+            "could not find the gi_abort_t enum", ref_missing=True)
+        return
+    names = []
+    for line in src[i:j].split("\n"):
+        t = line.strip()
+        if t.startswith("GI_ABORT_"):
+            names.append(t.split(",")[0].split()[0])
+    if not names:
+        row("abort reasons are all in the DBC", None,
+            "no GI_ABORT_ names parsed", ref_missing=True)
+        return
+
+    if not dbc_path or not os.path.exists(dbc_path):
+        row("abort reasons are all in the DBC", None,
+            "no DBC at %s" % dbc_path, ref_missing=True)
+        return
+    val_line = None
+    for line in open(dbc_path, encoding="utf-8", errors="replace"):
+        if line.startswith("VAL_ ") and "diag_abort_reason" in line:
+            val_line = line
+            break
+    if val_line is None:
+        row("abort reasons are all in the DBC", False,
+            "the DBC has no VAL_ table for diag_abort_reason at all")
+        return
+
+    defined = set()
+    toks = val_line.split()
+    for k in range(len(toks) - 1):
+        if toks[k].isdigit() and toks[k + 1].startswith('"'):
+            defined.add(int(toks[k]))
+
+    missing = [v for v in range(len(names)) if v not in defined]
+    row("abort reasons are all in the DBC", not missing,
+        "the enum has %d values and the DBC defines %d; MISSING %s (%s)"
+        % (len(names), len(defined), missing,
+           ", ".join(names[v] for v in missing if v < len(names)))
+        if missing else
+        "all %d gi_abort_t values have a VAL_ entry" % len(names))
+
+
+def check_lateness_has_a_detector():
+    """Something must actually call gi_on_inhibit_skip().
+
+    Spec 7 trip 7 as amended moved lateness detection out of the core: the core no
+    longer trips when an inhibit is still outstanding at the VCM's next 0x051, and
+    the transmit scheduler is what withdraws the frame and reports a skip. Between
+    those two changes there is a window in which the core has stopped checking and
+    nothing has started -- and an image built there detects NO late or withdrawn
+    inhibit at all. No trip, no skip, no count. That is worse than the build before
+    the rework began.
+
+    So this row fails until gen_inhibit.c calls gi_on_inhibit_skip(), which refuses
+    every image built in that window. It replaces remembering, and the bench counts:
+    the bench is exactly where an image gets flashed without thinking.
+    """
+    gi = os.path.join(REPO, "main", "gen_inhibit.c")
+    core = os.path.join(REPO, "main", "gen_inhibit_core.c")
+    if not (os.path.exists(gi) and os.path.exists(core)):
+        row("lateness has a detector", None, "main sources missing",
+            ref_missing=True)
+        return
+
+    def calls(path, needle):
+        for line in open(path, encoding="utf-8", errors="replace"):
+            t = line.strip()
+            if t.startswith("*") or t.startswith("//") or t.startswith("/*"):
+                continue
+            if needle + "(" in t:
+                return True
+        return False
+
+    core_trips = "GI_ABORT_TX_LATE," in open(
+        core, encoding="utf-8", errors="replace").read().replace(" ", "")
+    shim_reports = calls(gi, "gi_on_inhibit_skip")
+
+    # The core's own TX_LATE abort: present only if something still raises it.
+    raises_tx_late = False
+    for line in open(core, encoding="utf-8", errors="replace"):
+        t = line.strip()
+        if t.startswith("*") or t.startswith("//"):
+            continue
+        if "inhibit_abort(" in t and "GI_ABORT_TX_LATE" in t:
+            raises_tx_late = True
+
+    ok = shim_reports or raises_tx_late
+    row("lateness has a detector", ok,
+        "gen_inhibit.c calls gi_on_inhibit_skip()" if shim_reports else
+        ("the core still raises GI_ABORT_TX_LATE itself" if raises_tx_late else
+         "NOTHING DETECTS A LATE OR WITHDRAWN INHIBIT. The core's TX_LATE abort is "
+         "gone (spec 7 trip 7, amended) and gen_inhibit.c does not call "
+         "gi_on_inhibit_skip(), so this image has no lateness check of any kind -- "
+         "no trip, no skip, no count. Do not flash it anywhere, bench included."))
+    del core_trips
+
+
 def check_sources_older_than_image(path):
     """Row 22: no tracked source may be newer than the image.
 
@@ -952,6 +1072,8 @@ def main():
     check_schema_doc(args.schema_doc)
     check_source()
     check_one_transmit_owner()
+    check_lateness_has_a_detector()
+    check_abort_reason_parity(args.dbc)
     check_private_abort_confined()
     check_image_identity(img_ver)
     if b is not None:

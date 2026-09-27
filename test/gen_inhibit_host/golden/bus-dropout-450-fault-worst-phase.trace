@@ -295,4 +295,4 @@
 7040000 EV ABORT a=3 b=0 c=0
 7040000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
 7440000 TX DIAG id=7F2 dlc=8 data=F800000000010000 ok=1
-7640000 FINAL mode=3 live=0 tx_ok=248 tx_fail=0 other=370 ctr_ok=248 ctr_bad=1 rx_gap_n=249 resp_n=248 disabled=0 dcode= block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 soc=5000 shift=2 key=0 socv=0 mainc=11 would_tx=0 emit_refused=0
+7640000 FINAL mode=3 live=0 tx_ok=248 tx_fail=0 other=370 skips=0 ctr_ok=248 ctr_bad=1 rx_gap_n=249 resp_n=248 disabled=0 dcode= block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 soc=5000 shift=2 key=0 socv=0 mainc=11 would_tx=0 emit_refused=0

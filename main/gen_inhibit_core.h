@@ -333,6 +333,20 @@ typedef struct
  * allocation -- so it appends fixed records and the caller renders them.
  * Payload slots a/b/c are per-kind and documented at gi_event_name().
  */
+/*
+ * Which kind of skip (spec 5.2 item 5). Reported as GI_EV_SKIP's `a` argument, so a
+ * log says what happened to the frame rather than only that something did.
+ */
+typedef enum
+{
+    GI_SKIP_WITHDRAWN = 0,  /* removed at the deadline; never on the wire */
+    GI_SKIP_MAYBE_LATE,     /* still in the buffer at the deadline: the device
+                             * cannot tell a late completion from a successful
+                             * abort, because both report TX_SUCCESS */
+    GI_SKIP_SEEN_LATE,      /* its completion was observed only after the VCM's
+                             * next 0x051 had been dequeued */
+} gi_skip_kind_t;
+
 typedef enum
 {
     GI_EV_NONE = 0,
@@ -341,6 +355,12 @@ typedef enum
     GI_EV_INHIBIT_LIVE,         /* interlocks passed; now transmitting       */
     GI_EV_ABORT,                /* a = gi_abort_t                            */
     GI_EV_TX_FAIL,              /* a = kind                                  */
+    GI_EV_SKIP,                 /* a = gi_skip_kind_t. Spec 5.2 item 5: an
+                                 * inhibit frame the scheduler skipped.
+                                 * DELIBERATELY NOT GI_EV_TX_FAIL, which
+                                 * trips at once and increments tx_fail --
+                                 * a skip does neither, so sharing the name
+                                 * gave two severities one label.         */
     GI_EV_RX_ERROR_DISARM,      /* a = consecutive rx errors                 */
     GI_EV_MODE,                 /* a = new mode, b = offset_us               */
     GI_EV_KEY,                  /* a = 1 on / 0 off (spec 7.1)               */
@@ -799,7 +819,8 @@ void gi_on_tx_done(gi_state_t *st, bool ok, int64_t t_done, gi_events_t *ev);
  * window, the core owns the abort. A single skip is counted and reported and does
  * NOT end the inhibit.
  */
-void gi_on_inhibit_skip(gi_state_t *st, bool trip, int64_t now, gi_events_t *ev);
+void gi_on_inhibit_skip(gi_state_t *st, gi_skip_kind_t kind, bool trip,
+                        int64_t now, gi_events_t *ev);
 
 /* A hard (non-timeout) receive error. Returns true if it self-disarmed. */
 bool gi_on_rx_error(gi_state_t *st, int64_t now, gi_events_t *ev);

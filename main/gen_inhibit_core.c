@@ -169,6 +169,7 @@ const char *gi_event_name(gi_event_kind_t k)
     case GI_EV_INHIBIT_LIVE:        return "INHIBIT_LIVE";
     case GI_EV_ABORT:               return "ABORT";
     case GI_EV_TX_FAIL:             return "TX_FAIL";
+    case GI_EV_SKIP:                return "SKIP";
     case GI_EV_RX_ERROR_DISARM:     return "RX_ERROR_DISARM";
     case GI_EV_MODE:                return "MODE";
     case GI_EV_KEY:                 return "KEY";
@@ -1987,12 +1988,20 @@ void gi_on_tx_result(gi_state_t *st, const gi_frame_t *f, bool queued,
  * Passing the verdict in rather than the timestamps keeps the sliding window in one
  * place instead of two that could disagree.
  */
-void gi_on_inhibit_skip(gi_state_t *st, bool trip, int64_t now, gi_events_t *ev)
+void gi_on_inhibit_skip(gi_state_t *st, gi_skip_kind_t kind, bool trip,
+                        int64_t now, gi_events_t *ev)
 {
     st->skips++;
     st->tx_pending = false;
     st->tx_pending_have_rx = false;
-    ev_add(ev, now, GI_EV_TX_FAIL, (int32_t)GI_TX_INHIBIT, 0, 0);
+    /*
+     * ITS OWN EVENT, not GI_EV_TX_FAIL. A skip is counted and tolerated; TX_FAILED
+     * trips at once. Emitting one under the other's name gave two severities a
+     * single label AND left tx_fail unincremented, so the event contradicted its own
+     * counter and a reader had to know which call site produced it. Raised by the
+     * reviewing session, 2026-09-27.
+     */
+    ev_add(ev, now, GI_EV_SKIP, (int32_t)kind, 0, 0);
     if (trip && st->inhibit_live)
     {
         inhibit_abort(st, GI_ABORT_SKIPS, now, ev);

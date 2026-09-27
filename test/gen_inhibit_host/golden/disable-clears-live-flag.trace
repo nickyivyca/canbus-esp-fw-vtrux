@@ -159,4 +159,4 @@
 9580000 EV SOC_VALID a=0 b=1041 c=0
 9580000 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=0 key=0 socv=0 socsince=0
 9980000 TX DIAG id=7F1 dlc=8 data=0401030701048813 ok=1
-10180000 FINAL mode=3 live=0 tx_ok=0 tx_fail=0 other=177 ctr_ok=149 ctr_bad=0 rx_gap_n=149 resp_n=0 disabled=1 dcode=m_mode block=latched disable abort= latched=0 soc=5000 shift=4 key=0 socv=0 mainc=11 would_tx=0 emit_refused=0
+10180000 FINAL mode=3 live=0 tx_ok=0 tx_fail=0 other=177 skips=0 ctr_ok=149 ctr_bad=0 rx_gap_n=149 resp_n=0 disabled=1 dcode=m_mode block=latched disable abort= latched=0 soc=5000 shift=4 key=0 socv=0 mainc=11 would_tx=0 emit_refused=0
