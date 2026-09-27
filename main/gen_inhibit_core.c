@@ -119,6 +119,7 @@ const char *gi_abort_name(gi_abort_t a)
     {
     case GI_ABORT_NONE:            return "";
     case GI_ABORT_TX_FAILED:       return "transmit failed";
+    case GI_ABORT_SKIPS:           return "3 inhibit frames skipped within 1 s";
     case GI_ABORT_VCM_FAULT:       return "0x617 B7 = 0xCA (VCM fault active)";
     case GI_ABORT_BUS_LOST:        return "bus lost -- no 0x051 (latched; CAN link down)";
     case GI_ABORT_INVERTER_LOST:   return "0x471 stopped while 0x051 still live -- inverter lost";
@@ -1798,14 +1799,21 @@ void gi_on_frame(gi_state_t *st, uint32_t id, uint8_t dlc, const uint8_t *data,
         st->have_last_ctr = true;
     }
 
-    if (st->tx_pending && st->inhibit_live)
-    {
-        st->tx_fail++;
-        st->tx_pending = false;
-        ev_add(ev, now, GI_EV_TX_FAIL, (int32_t)GI_TX_INHIBIT, 0, 0);
-        inhibit_abort(st, GI_ABORT_TX_LATE, now, ev);
-        return;
-    }
+    /*
+     * THE TX_LATE ABORT USED TO BE HERE and is gone (spec 7 trip 7, amended
+     * 2026-09-27, user). A frame still outstanding when the VCM's next 0x051
+     * arrives is no longer a trip on its own: the transmit scheduler evaluates
+     * that deadline BEFORE the frame reaches the core, withdraws the frame, and
+     * reports a skip, which arrives here through gi_on_inhibit_skip(). Three
+     * within a second trip.
+     *
+     * The ordering matters and is checked on the other side: gi_sched counts an
+     * `order_violations` if an inhibit is queued without a deadline having been
+     * evaluated for that command first.
+     *
+     * `tx_pending` is still maintained -- gi_tick() reads it to place a diag page
+     * after a completion (5.1 item 4), which item 6 keeps as an optimisation.
+     */
 
     /*
      * Spec 6.3: track the VCM's shutdown command live, on every 0x051.
@@ -1967,6 +1975,27 @@ void gi_on_tx_result(gi_state_t *st, const gi_frame_t *f, bool queued,
     if (f->kind == GI_TX_INHIBIT)
     {
         inhibit_abort(st, GI_ABORT_TX_NOT_QUEUED, t_tx, ev);
+    }
+}
+
+/*
+ * The scheduler skipped an inhibit frame (spec 5.2 item 5). `trip` is the
+ * scheduler's 3-within-1 s verdict, which it owns because it owns the window.
+ *
+ * WHY THE DECISION IS STILL HERE. Every trip in section 7 ends a live inhibit and
+ * latches, and that is the core's job -- the scheduler measures, the core decides.
+ * Passing the verdict in rather than the timestamps keeps the sliding window in one
+ * place instead of two that could disagree.
+ */
+void gi_on_inhibit_skip(gi_state_t *st, bool trip, int64_t now, gi_events_t *ev)
+{
+    st->skips++;
+    st->tx_pending = false;
+    st->tx_pending_have_rx = false;
+    ev_add(ev, now, GI_EV_TX_FAIL, (int32_t)GI_TX_INHIBIT, 0, 0);
+    if (trip && st->inhibit_live)
+    {
+        inhibit_abort(st, GI_ABORT_SKIPS, now, ev);
     }
 }
 

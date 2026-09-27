@@ -69,6 +69,11 @@
  *                                  worst 2.39 ms). Frames keep arriving into
  *                                  the RX queue and are dropped once it fills.
  *                                  Only meaningful with `load`.
+ *   skip <t> <trip>                the transmit scheduler skipped an inhibit
+ *                                 frame; `trip` is its 3-within-1s verdict.
+ *                                 Supplied rather than computed -- the window
+ *                                 lives in gi_sched, and a copy here could
+ *                                 disagree with it.
  *   txdone <t_from> <t_to>         transmits in [from,to) are queued and the
  *                                  controller answers FAILED
  *   f <t> <id_hex> <dlc> <hexbytes>
@@ -88,7 +93,7 @@
 
 typedef struct { int64_t t; uint32_t id; uint8_t dlc; uint8_t data[8]; } rxf_t;
 
-typedef enum { D_MODE, D_BUS, D_TXFAIL, D_TXSTALL, D_TXDONE,
+typedef enum { D_MODE, D_BUS, D_TXFAIL, D_TXSTALL, D_TXDONE, D_SKIP,
                D_LOAD, D_PREEMPT, D_CACHESTALL } dkind_t;
 typedef struct { int64_t t; dkind_t k; int64_t a, b, c, d; } dir_t;
 
@@ -703,6 +708,22 @@ int main(void)
             g_d[g_nd++] = (dir_t){ t, D_TXDONE, t, x, 0, 0 };
             continue;
         }
+        /*
+         * skip <t> <trip>  -- the transmit scheduler skipped an inhibit frame at
+         * `t`, and `trip` is its "3 within 1 s" verdict.
+         *
+         * THE VERDICT IS SUPPLIED, NOT COMPUTED. The sliding window belongs to
+         * gi_sched, which this harness does not compile; recomputing it here would
+         * be a second implementation that could disagree with the real one, and
+         * then a golden would pin the copy. What the core owns -- count the skip,
+         * and abort only when told the window is met -- is exactly what this
+         * exercises.
+         */
+        if (sscanf(line, "skip %lld %lld", &t, &x) == 2)
+        {
+            g_d[g_nd++] = (dir_t){ t, D_SKIP, x, 0, 0, 0 };
+            continue;
+        }
         if (sscanf(line, "end %lld", &t) == 1) { t_end = t; continue; }
 
         if (sscanf(line, "f %lld %63s %lld %63s", &t, a, &x, b) == 4)
@@ -794,6 +815,13 @@ int main(void)
                 g_txdone_from = d->a;
                 g_txdone_to = d->b;
                 break;
+            case D_SKIP:
+            {
+                gi_events_t ev = { 0 };
+                gi_on_inhibit_skip(&st, d->a != 0, d->t, &ev);
+                dump_events(&ev);
+                break;
+            }
             case D_LOAD:
                 g_load = 1;
                 if (d->a > 0) g_rx_depth = (int)d->a;

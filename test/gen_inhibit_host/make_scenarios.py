@@ -1289,11 +1289,18 @@ and a frame landing after the VCM's next one loses the counter race, so the
 GENE inverter accepted the VCM's torque for that slot while the device believed
 it was inhibiting.
 
-EXPECT: transmission normally until 3 s; then the controller stops answering,
-and on the VERY NEXT 0x051 a latched abort naming the race. tx_ok must stop
-climbing at the stall, not at the abort -- since C1 a frame counts only when
-the controller confirms it, so the queued-but-unconfirmed frame is never
-counted.
+EXPECT, AMENDED 2026-09-27 with spec 7 trip 7: transmission normally until 3 s;
+then the controller stops answering and tx_ok stops climbing -- and NO ABORT.
+The lateness this scenario is named for is now detected by the transmit
+scheduler, which withdraws the frame and reports a skip, and only three skips
+within one second trip. This harness compiles the core and not the scheduler, so
+nothing here produces a skip and the core correctly does not latch.
+
+WHAT THAT COSTS, STATED RATHER THAN LEFT IMPLICIT: this scenario no longer
+covers lateness at all. It now pins the absence of the old trip. The behaviour
+moved to gi_sched's own cases (the deadline, the withdraw-and-skip, the sliding
+window) and to `skip-single-no-trip` / `skip-third-trips` for the core's half.
+Re-blessing this golden without those would have left the rework untested.
 
 Before C1 this ran to the end of the scenario transmitting happily, because
 twai_transmit() returning ESP_OK was recorded as a successful transmit.
@@ -1312,6 +1319,61 @@ def s_tx_late():
     L += _healthy_bg(1 * S, 6 * S)
     L += ["txstall %d %d" % (3 * S, 9 * S)]
     L += ["end %d" % (7 * S)]
+    return sorted_directives(L)
+
+
+
+@scenario("skip-single-no-trip", """
+Spec 7 trip 7 as amended 2026-09-27 (user): ONE skipped inhibit frame is counted
+and reported and does NOT end the inhibit.
+
+The user's reasoning: the generator inverter has already acted on the VCM's command
+carrying that counter, so it ignores a late or withdrawn frame. One skip costs one
+slot. A stuck transmit path costs every slot, and the 3-in-1s window is what tells
+those apart -- so a single skip must not latch, or every momentary hiccup would end
+the inhibit for the rest of the drive.
+
+The `skip` directive supplies the scheduler's 3-within-1s verdict rather than
+recomputing it: that window lives in gi_sched, which this harness does not compile,
+and a copy here could disagree with the real one.
+
+EXPECT: skips = 1, the mode stays 3, live stays 1, no abort, and transmission
+continues to the end.
+""", autobms=False)
+def s_skip_single():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 4 * S, 20 * MS)
+    L += _healthy_bg(1 * S, 4 * S)
+    L += ["skip %d 0" % (2 * S)]
+    L += ["end %d" % (4 * S)]
+    return sorted_directives(L)
+
+
+@scenario("skip-third-trips", """
+Spec 7 trip 7 as amended: the THIRD skipped frame inside one second ends the
+inhibit and latches, naming skips.
+
+This is the core's half of the rework. The sliding window is the scheduler's (its
+own suite has 3-in-1s and 2-in-1s cases, and the exactly-1.000s boundary); what the
+core owns is counting the skip and aborting when it is told the window is met, and
+that is what this pins.
+
+WHY IT NEEDS TO EXIST AT ALL. Removing the TX_LATE abort left the two old lateness
+scenarios showing the device transmitting happily, which is correct now -- and would
+have left the core's half of trip 7 with no golden whatsoever. The suite would have
+gone green over the change.
+
+EXPECT: two skips with no abort, then on the third a latched abort naming
+"3 inhibit frames skipped within 1 s", and transmission stopping there.
+""", autobms=False)
+def s_skip_third():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 5 * S, 20 * MS)
+    L += _healthy_bg(1 * S, 5 * S)
+    L += ["skip %d 0" % (2 * S)]
+    L += ["skip %d 0" % (2 * S + 300 * MS)]
+    L += ["skip %d 1" % (2 * S + 600 * MS)]
+    L += ["end %d" % (5 * S)]
     return sorted_directives(L)
 
 
@@ -1351,10 +1413,13 @@ alert attributable.
 Here the controller stops answering at 3 s and 0x051 pauses for 0.4 s, inside
 the freshness window, so several ticks run with a frame outstanding.
 
-EXPECT: no TX DIAG line between the stalled transmit and the abort, and then a
-TX_LATE abort on the first 0x051 after the pause. The host harness cannot test
-the shim half of this -- that is an E1 mock-HAL case (latched shared alert
-bits, a diag frame completing ahead of an inhibit, a completion at 1.2 ms).
+EXPECT, AMENDED 2026-09-27: no TX DIAG line between the stalled transmit and the
+resumption -- the deferral itself is unchanged and is what this scenario is for --
+and NO abort, because the TX_LATE trip is gone (spec 7 trip 7 as amended). The
+host harness cannot test the shim half of this: that is an E1 mock-HAL case
+(latched shared alert bits, a diag frame completing ahead of an inhibit, a
+completion at 1.2 ms), and with the scheduler wired in it is also 5.2 item 10's
+preemption case.
 
 ctr_bad = 1 HERE IS CORRECT, and is a property of the stimulus rather than a
 fault. The two trains above both start from cmd_train's default ctr0 = 0, so

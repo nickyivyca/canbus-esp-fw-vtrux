@@ -711,9 +711,10 @@ static void case_passive_emits_nothing(void)
  * inverter acted on. The reviewing session noted that case 4 never let a second
  * 0x051 arrive, so it never exercised the consequence.
  */
-static void case_late_behind_diag_trips(void)
+static void case_late_behind_diag_counted(void)
 {
-    case_begin("case 8: the VCM's next 0x051 arrives with ours still queued");
+    case_begin("case 8: the VCM's next 0x051 arrives with ours still queued "
+               "-- counted, NOT a trip (spec 7 trip 7, amended)");
     setup();
     go_live();
 
@@ -735,9 +736,29 @@ static void case_late_behind_diag_trips(void)
     }
     ft_run(5000);
 
-    CHECK(json_has("still unsent when the VCM's next 0x051 arrived"),
-          "a frame that was still queued when the next 0x051 arrived did not "
-          "trip: %s", stats());
+    /*
+     * AMENDED 2026-09-27 with spec 7 trip 7. This used to require a TX_LATE trip
+     * here. It must NOT trip now: the scheduler withdraws such a frame and reports
+     * a skip, and only three within one second end the inhibit. This shim drives
+     * gen_inhibit.c, which is not yet wired to the scheduler, so nothing here
+     * produces a skip -- and the correct behaviour of the code as it stands is no
+     * trip at all.
+     *
+     * What the shim CAN still see of the hazard is tx_queued_behind, the count
+     * spec 5 keeps for exactly this condition, and it is asserted instead of the
+     * trip. The consequence this case used to cover -- an early credit making the
+     * frame look complete -- now lives in the scheduler's cases and returns here
+     * as a 5.2 item 10 preemption case once the scheduler is wired in.
+     */
+    CHECK(!json_has("still unsent when the VCM's next 0x051 arrived"),
+          "the retired TX_LATE trip fired; a late frame is a skip now "
+          "(spec 7 trip 7, amended): %s", stats());
+    CHECK(!json_has("\"abort_latched\":true"),
+          "a frame outstanding at the next 0x051 must not latch an abort on its "
+          "own: %s", stats());
+    CHECK(json_has("\"tx_queued_behind\":1"),
+          "the queued-behind hazard was not counted, so nothing records that "
+          "this happened: %s", stats());
     check_tx_ok_invariant("case 8");
     teardown();
     case_end();
@@ -1536,7 +1557,7 @@ int main(void)
     case_foreign_transmit_refused();
     case_self_off_names_itself();
     case_passive_emits_nothing();
-    case_late_behind_diag_trips();
+    case_late_behind_diag_counted();
     case_diag_defers_to_pending();
     case_quiesce_names_itself();
     case_observe_is_listen_only();

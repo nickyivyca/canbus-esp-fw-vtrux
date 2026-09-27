@@ -430,13 +430,23 @@ typedef enum
      *   NOT_QUEUED -- twai_transmit() refused it. Our software.
      *   TX_FAILED  -- the controller reported the attempt failed (arbitration
      *                 lost repeatedly, no ACK, bus-off). The wire.
-     *   TX_LATE    -- still outstanding when the VCM's NEXT 0x051 arrived. It
-     *                 may yet go out, which is worse than not going out: it
-     *                 loses the counter race, so the inverter acted on the
-     *                 VCM's torque for that slot.
+     *   TX_LATE    -- RETIRED 2026-09-27 as an immediate trip. It is kept in
+     *                 the enum so an older log or golden naming it still
+     *                 decodes, and nothing sets it any more. What it used to
+     *                 catch -- still outstanding when the VCM's next 0x051
+     *                 arrived -- is now a SKIP, detected by the transmit
+     *                 scheduler (spec 5.2 item 5) and tripped only when three
+     *                 fall within one second.
+     *   SKIPS      -- three skipped inhibit frames within 1 s (spec 7 trip 7 as
+     *                 amended). The single skip is not a trip because the
+     *                 inverter has already acted on the VCM's command carrying
+     *                 that counter and ignores ours, so one skip costs one
+     *                 slot; a stuck transmit path costs every slot, and this is
+     *                 what tells them apart.
      */
     GI_ABORT_TX_NOT_QUEUED,
     GI_ABORT_TX_LATE,
+    GI_ABORT_SKIPS,
 } gi_abort_t;
 
 /*
@@ -630,6 +640,13 @@ typedef struct
      * full-replay bench run exists to put a value on.
      */
     uint32_t tx_queued_behind;
+    /*
+     * Inhibit frames the scheduler skipped: withdrawn at the deadline, or gone
+     * out late. Spec 5.2 item 5 / trip 7 as amended. The scheduler owns the
+     * breakdown and the 1 s window; this is the core's own total, so a trip that
+     * names skips can be read against a count in the same JSON.
+     */
+    uint32_t skips;
 
     /*
      * Spec 3.1: what PASSIVE counts where INHIBIT would transmit. Deliberately
@@ -775,6 +792,14 @@ void gi_on_tx_result(gi_state_t *st, const gi_frame_t *f, bool queued,
  * and should be documented as the model it is.
  */
 void gi_on_tx_done(gi_state_t *st, bool ok, int64_t t_done, gi_events_t *ev);
+
+/*
+ * The transmit scheduler skipped an inhibit frame (spec 5.2 item 5, trip 7 as
+ * amended). `trip` is the scheduler's "3 within 1 s" verdict: it owns the sliding
+ * window, the core owns the abort. A single skip is counted and reported and does
+ * NOT end the inhibit.
+ */
+void gi_on_inhibit_skip(gi_state_t *st, bool trip, int64_t now, gi_events_t *ev);
 
 /* A hard (non-timeout) receive error. Returns true if it self-disarmed. */
 bool gi_on_rx_error(gi_state_t *st, int64_t now, gi_events_t *ev);
