@@ -163,6 +163,13 @@ typedef struct
      * reached the wire by the VCM's next 0x051. Never sent, always counted.
      * `skip_window` is the count inside the current 1 s trip-7 window.
      */
+    /*
+     * `skipped` IS THE TOTAL OF EVERY SKIP, and `late_on_wire` below is a SUBSET
+     * of it, not an addition. Never sum them. Trip 7's window counts every skip,
+     * because a frame that went out late and a frame that never went have the
+     * same effect -- the inverter acted on one real VCM command either way -- and
+     * a persistently late transmitter has to reach the 3-in-1 s window.
+     */
     uint32_t skipped;
     uint32_t skip_window;   /* skips inside the last GS_SKIP_WINDOW_US */
 
@@ -241,6 +248,13 @@ typedef struct
     /* Trip causes, reported rather than acted on: the core owns the trips. */
     uint32_t tx_failed;     /* the controller reported a failure */
     uint32_t tx_refused;    /* the driver would not take the frame */
+    /*
+     * A SUBSET OF `skipped`: the frame went out late, or may have. Spec trip 7 as
+     * amended 2026-09-27 makes this a skip rather than an immediate trip, because
+     * the inverter has already acted on the VCM's command with that counter and
+     * ignores ours. Counted separately so the status page shows which kind of skip
+     * it was.
+     */
     uint32_t late_on_wire;  /* completion observed AFTER the next 0x051 was
                              * dequeued: unambiguously late, trips at once */
 
@@ -359,8 +373,15 @@ typedef enum
 {
     GS_DEADLINE_OK = 0,     /* the inhibit had already left the controller */
     GS_DEADLINE_SKIPPED,    /* withdrawn while awaiting: never on the wire */
-    GS_DEADLINE_MAYBE_LATE, /* withdrawn while TRANSMITTING -- see below */
+    GS_DEADLINE_MAYBE_LATE, /* it went out late, or may have -- see below */
 } gs_deadline_t;
+
+/*
+ * BOTH NON-OK VERDICTS ARE SKIPS and both move trip 7's window (spec trip 7,
+ * amended 2026-09-27). They are distinct only so the caller and the status page
+ * can say WHICH kind: never sent, or sent late. Neither trips on its own; only
+ * TX_FAILED and a driver refusal still do.
+ */
 
 /*
  * The worker dequeued a VCM 0x051. This is the inhibit's DEADLINE (item 5).

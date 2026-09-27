@@ -684,16 +684,39 @@ def check_private_abort_confined():
         if n:
             hits.append((f, n))
 
-    if not hits:
-        row("the private TWAI abort is confined", True,
-            "no shipping source calls twai_ll_set_cmd_abort_tx yet (the "
-            "scheduler is not wired in)")
+    # IS THE SCHEDULER WIRED IN? Keyed on gen_inhibit.c including gi_sched.h,
+    # because that is what makes the abort site mandatory rather than merely
+    # permitted. Before integration zero sites is correct; after it, zero would
+    # mean the abort had been LOST -- an inhibit that can never preempt telemetry,
+    # which is the whole point of section 5.2. So the requirement flips with the
+    # integration instead of needing someone to remember to tighten it.
+    gi = os.path.join(REPO, "main", "gen_inhibit.c")
+    wired = False
+    if os.path.exists(gi):
+        for line in open(gi, encoding="utf-8", errors="replace"):
+            if line.strip().startswith('#include "gi_sched.h"'):
+                wired = True
+                break
+
+    if not wired:
+        ok = (len(hits) == 0)
+        row("the private TWAI abort is confined", ok,
+            "no shipping source calls twai_ll_set_cmd_abort_tx, and the scheduler "
+            "is not wired in yet" if ok else
+            "called from %s, but gen_inhibit.c does not include gi_sched.h -- the "
+            "private abort has no business here yet"
+            % ", ".join("%s x%d" % h for h in hits))
         return
+
     ok = (len(hits) == 1 and hits[0][0] == "gen_inhibit.c" and hits[0][1] == 1)
     row("the private TWAI abort is confined", ok,
-        "called from %s" % ", ".join("%s x%d" % h for h in hits)
-        + ("" if ok else " -- it may appear ONCE, in gen_inhibit.c, and nowhere "
-                         "else"))
+        "exactly one site, in gen_inhibit.c (the scheduler's device HAL)" if ok
+        else ("the scheduler IS wired in but NOTHING calls "
+              "twai_ll_set_cmd_abort_tx -- the abort has been lost, so an inhibit "
+              "can never preempt telemetry"
+              if not hits else
+              "called from %s -- it may appear ONCE, in gen_inhibit.c, and "
+              "nowhere else" % ", ".join("%s x%d" % h for h in hits)))
 
 
 def check_sources_older_than_image(path):

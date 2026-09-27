@@ -446,8 +446,17 @@ static void case_transmitting_at_deadline_is_maybe_late(void)
     ck(v == GS_DEADLINE_MAYBE_LATE, "the verdict is MAYBE_LATE");
     const gs_stats_t *st = gs_stats(&s);
     ck_eq(st->late_on_wire, 1, "late_on_wire counted");
-    ck_eq(st->skipped, 0, "and it is NOT counted as a skip");
-    ck_eq(st->skip_window, 0, "so the 3-in-1s window did not move");
+    /*
+     * UPDATED for spec trip 7 as amended 2026-09-27. This case used to assert
+     * that a late frame was NOT a skip and did not move the window, because the
+     * spec then said it tripped at once. The user changed that: the inverter has
+     * already acted on the VCM's command with that counter and ignores ours, so
+     * the effect is one real command acted on -- the same as a skip -- and only
+     * TX_FAILED and a driver refusal still trip immediately. `skipped` is now the
+     * TOTAL and `late_on_wire` a subset of it; they are never summed.
+     */
+    ck_eq(st->skipped, 1, "it IS counted as a skip (trip 7, amended)");
+    ck_eq(st->skip_window, 1, "and it moves the 3-in-1s window");
 }
 
 /*

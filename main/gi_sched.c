@@ -564,24 +564,45 @@ gs_deadline_t gs_command_received(gs_t *s, int64_t now, uint32_t rx_backlog)
     const gs_buf_t b = s->hal->buf_state(s->hal->ctx);
     gs_deadline_t verdict;
 
+    /*
+     * EVERY PATH HERE IS A SKIP, and note_skip() is called on all of them so trip
+     * 7's window sees them. The three differ only in what can honestly be said
+     * about where the frame went.
+     *
+     * Spec trip 7, amended 2026-09-27: a frame that went out late, or may have, is
+     * a skip and not an immediate trip. The inverter has already acted on the
+     * VCM's command carrying that counter and ignores ours, so the effect is one
+     * real command acted on -- the same as a skip -- and the 3-in-1 s window is
+     * the safety net if the transmitter is persistently late.
+     */
     if (b == GS_BUF_TRANSMITTING)
     {
         /*
          * It may reach the wire late, and the device cannot tell that from the
-         * abort succeeding -- both end as TX_SUCCESS with msgs_to_tx 0. Trip 7
-         * says a frame on the wire after the VCM's next command trips at once,
-         * so the ambiguous case is reported as the trip. Under-reporting here
-         * would let a silently ineffective inhibit look healthy.
+         * abort succeeding: both end as TX_SUCCESS with msgs_to_tx 0.
+         */
+        s->st.late_on_wire++;
+        verdict = GS_DEADLINE_MAYBE_LATE;
+    }
+    else if (b == GS_BUF_EMPTY)
+    {
+        /*
+         * THE BUFFER IS EMPTY AND THE FRAME IS STILL OUTSTANDING, so it LEFT the
+         * buffer -- and the only two ways out are the wire and an abort, which we
+         * had not issued. It went out, late. Scored as a clean skip until
+         * 2026-09-27, which said it never reached the wire when the evidence says
+         * the opposite.
          */
         s->st.late_on_wire++;
         verdict = GS_DEADLINE_MAYBE_LATE;
     }
     else
     {
-        note_skip(s, now);
-        s->st.skip_window = skips_in_window(s, now);
+        /* AWAITING: the loop will remove it, and it never reaches the wire. */
         verdict = GS_DEADLINE_SKIPPED;
     }
+    note_skip(s, now);
+    s->st.skip_window = skips_in_window(s, now);
 
     /* Withdraw it. The loop runs on subsequent ticks; the frame is never
      * requeued, because a skipped frame is never sent (item 5). */
