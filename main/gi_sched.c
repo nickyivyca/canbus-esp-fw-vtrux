@@ -492,9 +492,11 @@ void gs_tick(gs_t *s, int64_t now, uint32_t rx_backlog)
              * is why it is counted but not dropped.
              */
             s->st.tx_refused++;
+            s->st.cls[c].refused++;
             return;
         }
 
+        s->st.cls[c].handed++;
         s->held = true;
         s->held_class = c;
         s->held_seq = sl->seq;
@@ -690,14 +692,17 @@ int gs_json(const gs_t *s, char *buf, int buflen)
     {
         n = clamp(n + snprintf(buf + n, buflen - n,
             "%s\"%s\":{\"queued\":%lu,\"sent\":%lu,\"aborted\":%lu,"
-            "\"requeued\":%lu,\"dropped\":%lu,"
+            "\"handed\":%lu,\"requeued\":%lu,\"dropped\":%lu,"
+            "\"refused\":%lu,"
             "\"max_queue_us\":%lu,\"max_hold_us\":%lu,\"depth\":%u}",
             (c == 0) ? "" : ",", NAMES[c],
             (unsigned long)s->st.cls[c].queued,
             (unsigned long)s->st.cls[c].sent,
             (unsigned long)s->st.cls[c].aborted,
+            (unsigned long)s->st.cls[c].handed,
             (unsigned long)s->st.cls[c].requeued,
             (unsigned long)s->st.cls[c].dropped,
+            (unsigned long)s->st.cls[c].refused,
             (unsigned long)s->st.cls[c].max_queue_us,
             (unsigned long)s->st.cls[c].max_hold_us,
             (unsigned)s->q[c].n), buflen);

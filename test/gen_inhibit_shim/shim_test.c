@@ -342,14 +342,40 @@ static void case_diag_completion_not_credited(void)
      * diag completion and failed, correctly: it was describing something the
      * hardware cannot do.
      */
-    CHECK(ft_wire_count_id(0x051) == wire_before,
-          "the stall did not take: %d inhibit frames completed anyway",
-          ft_wire_count_id(0x051) - wire_before);
+    /*
+     * RE-POINTED 2026-09-27 with the transmit scheduler, and the case's PURPOSE is
+     * unchanged: a diag frame's completion must not credit an inhibit.
+     *
+     * What changed is what a stall does. It used to wedge the transmit path -- the
+     * stalled frame sat at the head of the driver's FIFO for ever and nothing behind
+     * it could go out -- so the case could assert that NOTHING reached the wire and
+     * tx_ok never moved. Spec 5.2 item 5 replaces that: the stalled frame is
+     * WITHDRAWN at the VCM's next 0x051, counted as a skip, and the next command is
+     * answered normally.
+     *
+     * So the stall is now a skip, and the property that matters is stated directly
+     * instead of via a frozen counter: tx_ok moves by EXACTLY the number of inhibit
+     * frames that reached the wire. The stalled one did not reach it and must not be
+     * credited, whatever completed in the controller -- which is the item 5 hazard
+     * the 2026-09-27 measurement found on hardware, where an aborted frame is
+     * reported identically to a transmitted one.
+     *
+     * WHAT THIS CASE STOPPED COVERING: "a stall wedges the transmit path". It cannot,
+     * by design. The withdraw-and-skip behaviour is covered here and in
+     * test/gen_inhibit_sched's "D1: a queued inhibit is purged at the deadline" and
+     * "R8: a withdrawn HELD inhibit never comes back".
+     */
+    CHECK(json_u32("\"skipped\":") >= 1,
+          "the stalled inhibit was not withdrawn and counted as a skip: %s",
+          stats());
 
     const uint32_t tx_after = json_u32("\"tx_ok\":");
-    CHECK(tx_after == tx_before,
-          "tx_ok moved %u -> %u while the inhibit at the head of the queue "
-          "never completed", tx_before, tx_after);
+    const int wire_delta = ft_wire_count_id(0x051) - wire_before;
+    CHECK((int)(tx_after - tx_before) == wire_delta,
+          "tx_ok moved by %d while %d inhibit frames reached the wire -- a frame "
+          "that never went out has been credited, which is the spec 5.2 item 5 "
+          "hazard: %s",
+          (int)(tx_after - tx_before), wire_delta, stats());
     check_tx_ok_invariant("case 1");
     teardown();
     case_end();
@@ -551,15 +577,28 @@ static void case_inhibit_behind_diag(void)
           "tx_ok moved %u -> %u on a FOREIGN frame's completion while our frame "
           "was still queued behind it", before, json_u32("\"tx_ok\":"));
     /*
-     * Spec 5's hazard is happening RIGHT HERE -- our frame went into the
-     * controller behind an unfinished one -- so the counter that exists to
-     * measure it on the full-replay bench must have moved. A silent zero there
-     * would read as "hazard absent", which is the worst possible way for a
-     * measurement to fail.
+     * INVERTED 2026-09-27 with the transmit scheduler, and the inversion is the point
+     * rather than a concession.
+     *
+     * This used to require tx_queued_behind > 0. Spec 5's hazard was an inhibit going
+     * into the controller BEHIND something of ours that had not finished, and a silent
+     * zero would have read as "hazard absent" -- the worst way for a measurement to
+     * fail. Spec 5.2 item 3 makes that state unreachable: at most one frame is handed
+     * to the driver at a time. So the counter is now STRUCTURALLY ZERO, and a non-zero
+     * value would mean the scheduler had handed over a second frame.
+     *
+     * The same stimulus therefore pins the opposite fact, and item 10's full-replay
+     * case checks the same property on hardware.
+     *
+     * WHAT THIS CASE STOPPED COVERING: that the hazard is measurable. It is no longer
+     * producible, which is better than measured. That the inhibit really does go
+     * first is covered by test/gen_inhibit_sched's "preempt: telemetry awaiting,
+     * inhibit wins".
      */
-    CHECK(json_u32("\"tx_queued_behind\":") > 0,
-          "tx_queued_behind is still 0 although this case queued an inhibit "
-          "behind an in-flight diag frame: the spec 5 reading is dead");
+    CHECK(json_u32("\"tx_queued_behind\":") == 0,
+          "tx_queued_behind is %u: the scheduler handed over a second frame while "
+          "one was still in the controller, which spec 5.2 item 3 forbids",
+          json_u32("\"tx_queued_behind\":"));
 
     ft_run(600000);
     check_tx_ok_invariant("case 4");
@@ -756,9 +795,19 @@ static void case_late_behind_diag_counted(void)
     CHECK(!json_has("\"abort_latched\":true"),
           "a frame outstanding at the next 0x051 must not latch an abort on its "
           "own: %s", stats());
-    CHECK(json_has("\"tx_queued_behind\":1"),
-          "the queued-behind hazard was not counted, so nothing records that "
-          "this happened: %s", stats());
+    /*
+     * AMENDED AGAIN 2026-09-27, after the switchover. The first amendment asserted
+     * tx_queued_behind == 1, which was right while dispatch_emits() still handed
+     * frames to the driver itself. The scheduler makes that impossible (item 3), so
+     * the honest assertion is that the frame was WITHDRAWN and counted as a skip --
+     * the behaviour spec 5.2 item 5 specifies for exactly this stimulus.
+     */
+    CHECK(json_u32("\"tx_queued_behind\":") == 0,
+          "tx_queued_behind is %u; item 3 permits one frame in the controller: %s",
+          json_u32("\"tx_queued_behind\":"), stats());
+    CHECK(json_u32("\"skipped\":") >= 1,
+          "the outstanding inhibit was not withdrawn and counted as a skip at the "
+          "VCM's next 0x051: %s", stats());
     check_tx_ok_invariant("case 8");
     teardown();
     case_end();

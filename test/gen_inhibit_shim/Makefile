@@ -16,8 +16,13 @@ LDFLAGS ?= -pthread
 # main/can.c is compiled AS SHIPPED, not reimplemented: the reviewing session
 # mutated the spec 3.2 refusal out of the real file and every case stayed green,
 # because the old fake_can.c had its own copy of it.
+# gi_sched.c is compiled AS SHIPPED for the same reason can.c is: spec 5.2 item 8
+# says the scheduler is platform-free and compiles unchanged on the host, and a
+# reimplementation here would test the copy. mock/hal/twai_ll.h supplies the two
+# private calls its device HAL reaches for, backed by fake_twai's own queue.
 SRC := shim_test.c fake_twai.c fake_can.c \
        $(COREDIR)/gen_inhibit.c $(COREDIR)/gen_inhibit_core.c \
+       $(COREDIR)/gi_sched.c \
        $(COREDIR)/can.c
 
 all: shim_test

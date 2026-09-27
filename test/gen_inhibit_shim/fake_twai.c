@@ -479,6 +479,83 @@ void ft_refuse_next(int n) { g_refuse_n = n; }
 void ft_fail_next(void) { g_fail_next = true; }
 void ft_rx_error_next(int n) { g_rx_err_n = n; }
 
+/* ------------------------------------- the private HAL the scheduler uses -- */
+
+#include "hal/twai_ll.h"
+
+static int g_ll_aborts;         /* abort commands issued */
+static int g_ll_aborts_while_tx;/* ... while the head was transmitting */
+static int g_ll_removed;        /* frames the abort took out of the queue */
+
+/*
+ * The status register, DERIVED FROM THE QUEUE and not tracked alongside it. Two
+ * sources of truth for "is the buffer busy" is how a model starts disagreeing with
+ * itself, and this one already answers that question through msgs_to_tx.
+ *
+ *   empty queue            TBS set              -- nothing to abort
+ *   head stalled           TBS clear, TS clear  -- awaiting arbitration
+ *   head not stalled       TBS clear, TS set    -- transmitting
+ *
+ * A stalled frame is fake_twai's model of a frame that will not get out, which is
+ * what a busy bus looks like from here, so it IS the awaiting case.
+ */
+uint32_t twai_ll_get_status(twai_dev_t *hw)
+{
+    uint32_t st = 0;
+    (void)hw;
+    if (g_qn == 0)
+    {
+        return TWAI_LL_STATUS_TBS;
+    }
+    if (g_q[0].t_done != -2)
+    {
+        st |= TWAI_LL_STATUS_TS;
+    }
+    return st;
+}
+
+/*
+ * The abort, as measured on the C3 (2026-09-27, artifacts/gen-inhibit/runs/
+ * txabort_full.json):
+ *
+ *   awaiting     removed, NEVER on the wire -- and TX_SUCCESS is raised anyway,
+ *                which is the whole reason spec 5.2 item 5 exists.
+ *   transmitting a no-op. Counted, so a case can assert the scheduler did not
+ *                issue one here: item 4 says it waits for TS to fall instead.
+ *   empty        nothing, and no alert.
+ */
+void twai_ll_set_cmd_abort_tx(twai_dev_t *hw)
+{
+    (void)hw;
+    g_ll_aborts++;
+    if (g_qn == 0)
+    {
+        return;
+    }
+    if (g_q[0].t_done != -2)
+    {
+        g_ll_aborts_while_tx++;
+        return;
+    }
+    /*
+     * Remove the head. The wire log is deliberately NOT touched: the frame never
+     * reached the bus, and the only thing the device can see is that msgs_to_tx
+     * fell -- indistinguishable from a real completion.
+     */
+    for (int i = 1; i < g_qn; i++)
+    {
+        g_q[i - 1] = g_q[i];
+    }
+    g_qn--;
+    g_head_started = -1;
+    g_ll_removed++;
+    g_alerts |= TWAI_ALERT_TX_SUCCESS | TWAI_ALERT_TX_IDLE;
+}
+
+int ft_ll_aborts(void)            { return g_ll_aborts; }
+int ft_ll_aborts_while_tx(void)   { return g_ll_aborts_while_tx; }
+int ft_ll_removed(void)           { return g_ll_removed; }
+
 /*
  * Advance the controller to `t`: complete whatever is at the head of the queue
  * if its air time has elapsed, and start the next one. A stalled frame never
@@ -980,6 +1057,9 @@ void ft_reset(void)
     g_n_air_id = 0;
     g_head_started = -1;
     g_last_done = 0;
+    g_ll_aborts = 0;
+    g_ll_aborts_while_tx = 0;
+    g_ll_removed = 0;
     g_stall_n = g_refuse_n = g_rx_err_n = 0;
     g_stall_id_n = 0;
     g_in_receive = false;

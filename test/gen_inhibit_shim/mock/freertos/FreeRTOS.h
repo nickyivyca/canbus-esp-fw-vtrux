@@ -22,4 +22,26 @@ typedef uint32_t TickType_t;
  */
 #include "freertos/timers.h"
 
+
+/*
+ * CRITICAL SECTIONS, for the transmit scheduler's device HAL (spec 5.2 item 4).
+ *
+ * A NO-OP HERE, AND THE REASON MATTERS. On the device this pair disables the TWAI
+ * interrupt so that the status read and the abort command-register write are
+ * indivisible -- the controller can otherwise enter arbitration between them and the
+ * command lands where the measurement showed it has no effect. This harness cannot
+ * reproduce that at all: fake_twai advances only when the test advances virtual time,
+ * so nothing runs "between" two statements and there is no race to exclude.
+ *
+ * So these are empty rather than modelled, and a shim case must NOT be read as
+ * evidence that the atomicity works. What covers the race is fb_race_next() in
+ * test/gen_inhibit_sched, which forces the interleaving the hardware can produce.
+ * Recording that here because an empty macro is exactly the kind of thing a later
+ * session mistakes for "tested".
+ */
+typedef int portMUX_TYPE;
+#define portMUX_INITIALIZER_UNLOCKED 0
+#define taskENTER_CRITICAL(mux)  ((void)(mux))
+#define taskEXIT_CRITICAL(mux)   ((void)(mux))
+
 #endif

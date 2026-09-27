@@ -14,6 +14,14 @@
  */
 #include "gen_inhibit.h"
 #include "gen_inhibit_core.h"
+#include "gi_sched.h"
+/*
+ * PRIVATE HAL, in the shipping image, sanctioned by spec 5.2 items 4 and 9 and
+ * cleared by the user 2026-09-27. twai_ll_set_cmd_abort_tx() is below the public
+ * driver API and E3 confines it to exactly one site -- the abort inside
+ * dev_abort_if_awaiting() below -- because it is the kind of call that spreads.
+ */
+#include "hal/twai_ll.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -404,16 +412,221 @@ static void report_events(const gi_events_t *ev)
  * it. vTaskDelay cannot express it either -- the tick is 1 ms and we are
  * aiming at sub-millisecond placement.
  */
+/* ------------------------------------------------ the scheduler's device HAL -- */
+
+/*
+ * The four operations spec 5.2 item 8 names, and nothing else. Everything that
+ * decides WHAT goes next and WHEN is in gi_sched.c, compiled unchanged on the host.
+ */
+static gs_t       s_sched;
+static portMUX_TYPE s_abort_lock = portMUX_INITIALIZER_UNLOCKED;
+
+/* Counter watermarks, so the scheduler's totals become the core's events. */
+static uint32_t s_seen_inh_sent;
+static uint32_t s_seen_inh_refused;
+static uint32_t s_seen_probe_handed;
+static uint32_t s_seen_probe_lost;
+static gi_frame_t s_last_inhibit;
+static bool     s_have_last_inhibit;
+static gi_frame_t s_last_probe;
+static bool     s_have_last_probe;
+
+static bool dev_submit(void *ctx, const gi_frame_t *f)
+{
+    twai_message_t tx = { 0 };
+    (void)ctx;
+    tx.identifier = f->id;
+    tx.data_length_code = f->dlc;
+    memcpy(tx.data, f->data, 8);
+    /*
+     * THE ONLY twai_transmit IN THIS COMPONENT (spec 5.2 item 1, checked by E3's
+     * "one transmit owner" row). Zero timeout: the scheduler hands over only when
+     * the controller is free, so a wait here would mean its own bookkeeping was
+     * wrong and blocking would hide that.
+     */
+    return twai_transmit(&tx, 0) == ESP_OK;
+}
+
+static gs_buf_t buf_from_status(uint32_t st)
+{
+    if (st & TWAI_LL_STATUS_TBS) { return GS_BUF_EMPTY; }
+    /*
+     * TS covers the ARBITRATION FIELD as well as the data phase, so this does not
+     * mean the frame is certain to reach the wire -- which is why item 4 waits here
+     * instead of issuing a command that the measurement showed has no effect.
+     */
+    if (st & TWAI_LL_STATUS_TS)  { return GS_BUF_TRANSMITTING; }
+    return GS_BUF_AWAITING;
+}
+
+static gs_buf_t dev_buf_state(void *ctx)
+{
+    (void)ctx;
+    return buf_from_status(twai_ll_get_status(TWAI_LL_GET_HW(0)));
+}
+
+/*
+ * Read the state and, if AWAITING, issue the abort -- INDIVISIBLY.
+ *
+ * The controller is independent hardware and does not stop between a read and a
+ * write, so doing this as two calls lets it enter arbitration in between and the
+ * command then lands at TS = 1, where 7 of 8 measured aborts had no effect at all.
+ * One critical section narrows that to a few cycles; it cannot close it, because the
+ * controller keeps running, and item 4's loop is what recovers from the residual.
+ * This is exactly what gi_txabort_probe.c did for the measurement.
+ *
+ * The interrupt register is never touched: reading it clears interrupts and would
+ * steal them from the driver.
+ */
+static gs_buf_t dev_abort_if_awaiting(void *ctx)
+{
+    twai_dev_t *hw = TWAI_LL_GET_HW(0);
+    gs_buf_t seen;
+    (void)ctx;
+
+    taskENTER_CRITICAL(&s_abort_lock);
+    seen = buf_from_status(twai_ll_get_status(hw));
+    if (seen == GS_BUF_AWAITING)
+    {
+        twai_ll_set_cmd_abort_tx(hw);
+    }
+    taskEXIT_CRITICAL(&s_abort_lock);
+    return seen;
+}
+
+static bool dev_outstanding(void *ctx)
+{
+    twai_status_info_t info;
+    (void)ctx;
+    if (twai_get_status_info(&info) != ESP_OK)
+    {
+        /*
+         * UNKNOWN MEANS YES. If we cannot tell, saying "outstanding" stops the
+         * scheduler handing over another frame, which is the safe direction: two
+         * frames of ours in the controller is the one state under which trip 7's
+         * completion test means nothing.
+         */
+        return true;
+    }
+    return info.msgs_to_tx != 0;
+}
+
+static const gs_hal_t DEV_HAL = {
+    .submit = dev_submit,
+    .abort_if_awaiting = dev_abort_if_awaiting,
+    .buf_state = dev_buf_state,
+    .outstanding = dev_outstanding,
+    .ctx = NULL,
+};
+
+/*
+ * Turn the scheduler's monotonic counters into the core's events.
+ *
+ * WHY COUNTERS AND NOT A CALLBACK: gi_sched is platform-free and hands out no
+ * function pointers, and deltas cannot lose an event to a callback nobody
+ * registered. They can lag by one tick, and a tick is every worker iteration.
+ */
+static void sched_pump(int64_t now, gi_events_t *ev)
+{
+    /*
+     * DRAIN THE ALERTS FIRST, and keep TX_FAILED latched until it is consumed.
+     *
+     * This is spec 7 trip 7's second form -- "a frame the controller reports as
+     * failed still trips at once" -- and after the switchover this is its ONLY
+     * reader. poll_tx_completion() used to do it; deleting that function without
+     * moving this would have made the form unreachable, and nothing would have
+     * complained for a long time, because IDF documents TX_FAILED as raised for
+     * single-shot transmission and these frames go out with ss = 0.
+     *
+     * The alert is read HERE and not in the scheduler's HAL on purpose: alerts are
+     * latched bits shared by every frame, which is exactly what gi_sched must not
+     * have to reason about, and the shim already knows which frame it handed over.
+     */
+    uint32_t alerts = 0;
+    if (twai_read_alerts(&alerts, 0) == ESP_OK && (alerts & TWAI_ALERT_TX_FAILED))
+    {
+        s_tx_failed_latched = true;
+    }
+
+    gs_tick(&s_sched, now, can_msgs_to_rx());
+
+    const gs_stats_t *st = gs_stats(&s_sched);
+
+    while (s_seen_inh_sent < st->cls[GS_CLASS_INHIBIT].sent)
+    {
+        s_seen_inh_sent++;
+        /*
+         * ok = false makes this trip 7's TX_FAILED form. The latch is consumed
+         * here so one failure reports once rather than condemning every later
+         * frame -- the defect the shared-alert-bit comment in the old
+         * poll_tx_completion() recorded.
+         */
+        gi_on_tx_done(&s_core, !s_tx_failed_latched, now, ev);
+        s_tx_failed_latched = false;
+    }
+    while (s_seen_inh_refused < st->cls[GS_CLASS_INHIBIT].refused)
+    {
+        s_seen_inh_refused++;
+        if (s_have_last_inhibit)
+        {
+            /* Spec 7 trip 7: the driver refused it. Trips at once. */
+            gi_on_tx_result(&s_core, &s_last_inhibit, false, false, now, ev);
+        }
+    }
+
+    /*
+     * THE PROBE IS COUNTED WHEN IT REACHES THE DRIVER, not when it is queued.
+     *
+     * Spec 12.1 says the probe is counted at queueing -- and when that was written,
+     * queueing WAS twai_transmit. Putting a queue in the path made those two
+     * different instants, and the probe's whole purpose is to measure the delay
+     * between a received 0x051 and our frame reaching the controller. Counting at
+     * handover is what keeps the figure comparable with the 626 us / 1611 us record;
+     * counting at queueing would have reported a latency the old numbers never
+     * included and made every RESPOND sweep incomparable without saying so.
+     *
+     * It also leaves the tx_ok step invariant untouched -- tx_ok <= inhibit
+     * completions + probes handed to the driver -- where bounding by probes
+     * ACCEPTED would let tx_ok credit one that was queued and then dropped.
+     */
+    while (s_seen_probe_handed < st->cls[GS_CLASS_PROBE].handed)
+    {
+        s_seen_probe_handed++;
+        if (s_have_last_probe)
+        {
+            gi_on_tx_result(&s_core, &s_last_probe, true, false, now, ev);
+        }
+    }
+    /*
+     * A probe the scheduler dropped or the driver refused is a lost measurement, and
+     * tx_fail counted it before the switchover. It does not abort -- spec 7 is
+     * explicit that a dropped probe costs a data point and not a safety property.
+     */
+    const uint32_t probe_lost = st->cls[GS_CLASS_PROBE].dropped
+                              + st->cls[GS_CLASS_PROBE].refused;
+    while (s_seen_probe_lost < probe_lost)
+    {
+        s_seen_probe_lost++;
+        if (s_have_last_probe)
+        {
+            gi_on_tx_result(&s_core, &s_last_probe, false, false, now, ev);
+        }
+    }
+}
+
 static void dispatch_emits(const gi_emit_t *em, gi_events_t *ev)
 {
     for (int i = 0; i < em->n; i++)
     {
         const gi_frame_t *f = &em->f[i];
-        twai_message_t tx = { 0 };
-        tx.identifier = f->id;
-        tx.data_length_code = f->dlc;
-        memcpy(tx.data, f->data, 8);
 
+        /*
+         * THE PROBE'S DUE TIME IS STILL HONOURED HERE, not in the scheduler. The
+         * core's contract says spinning is a platform behaviour and the host
+         * harness must not do it, and gi_sched is compiled by that harness. The
+         * scheduler additionally refuses to hand over a not-yet-due frame, so the
+         * offset holds even if this spin is ever removed.
+         */
         if (f->have_due)
         {
             /* At priority 18 this spins for at most `offset_us`. */
@@ -424,41 +637,64 @@ static void dispatch_emits(const gi_emit_t *em, gi_events_t *ev)
         }
 
         /*
-         * Is anything of ours still in the controller when this frame goes in?
-         * For an inhibit frame that is spec 5's hazard -- it will be
-         * transmitted behind whatever is ahead of it -- and it is worth
-         * counting rather than assuming. Also clear any stale TX_FAILED, which
-         * is the one alert bit still used.
+         * QUEUE IT. Nothing here transmits any more: the scheduler is the one
+         * transmit owner (item 1), it hands over at most one frame at a time
+         * (item 3), and priority is inhibit > probe > telemetry (item 2).
+         *
+         * `behind` IS NOW STRUCTURALLY ZERO and is passed as false. Spec 5's
+         * hazard was an inhibit queued behind something of ours still in the
+         * controller; the scheduler cannot do that, which is the point of item 3.
+         * tx_queued_behind staying 0 is therefore an assertion about the
+         * scheduler rather than a measurement of the bus, and item 10's
+         * full-replay case checks exactly that.
          */
-        bool behind = false;
+        const gs_class_t cls = (f->kind == GI_TX_INHIBIT) ? GS_CLASS_INHIBIT
+                             : (f->kind == GI_TX_PROBE)   ? GS_CLASS_PROBE
+                                                          : GS_CLASS_TELEMETRY;
+        const int64_t t_now = esp_timer_get_time();
+        const bool queued = gs_queue_frame(&s_sched, cls, f, t_now);
+
         if (f->kind == GI_TX_INHIBIT)
         {
-            twai_status_info_t before;
-            if (twai_get_status_info(&before) == ESP_OK)
-            {
-                behind = (before.msgs_to_tx > 0);
-            }
+            s_last_inhibit = *f;
+            s_have_last_inhibit = true;
             /*
-             * The drain now only clears a stale TX_FAILED -- completion is
-             * decided by msgs_to_tx == 0, which no leftover alert can affect,
-             * and TX_FAILED is itself unreachable at ss = 0. So removing this
-             * would not break anything today, which the reviewing session
-             * confirmed by mutation (M7, survives). It stays because it costs
-             * one call and it is the thing that would matter if the frame ever
-             * went out single-shot.
+             * Clear a stale TX_FAILED, as the old path did. Completion is decided
+             * by msgs_to_tx and no leftover alert can affect it, but the bit is
+             * read for trip 7's "controller reported failed" form.
              */
             uint32_t stale = 0;
             (void)twai_read_alerts(&stale, 0);
             s_tx_failed_latched = false;
         }
 
-        esp_err_t err = twai_transmit(&tx, 0);
-        if (f->kind == GI_TX_DIAG)
+        if (f->kind == GI_TX_PROBE)
         {
-            continue;   /* best-effort; fails silently in listen-only */
+            /*
+             * Remembered, not reported. sched_pump() reports it when it reaches the
+             * driver, so its tx_ok and its response histogram measure RX-to-driver
+             * exactly as they did before the scheduler existed.
+             */
+            s_last_probe = *f;
+            s_have_last_probe = true;
         }
-        gi_on_tx_result(&s_core, f, err == ESP_OK, behind,
-                        esp_timer_get_time(), ev);
+
+        /*
+         * TICK IMMEDIATELY. The scheduler is reactive, not polled: with an empty
+         * buffer this hands the frame over in the same few microseconds the old
+         * direct twai_transmit took. Without it the frame waited for the next worker
+         * iteration, which for the RESPOND probe is the measurement itself.
+         *
+         * For every class, not only the probe -- giving one class its own path is how
+         * a second transmit owner comes back, and item 1 allows exactly one.
+         */
+        sched_pump(esp_timer_get_time(), ev);
+
+        if (f->kind == GI_TX_DIAG || f->kind == GI_TX_PROBE)
+        {
+            continue;   /* diag is best-effort; the probe is reported at handover */
+        }
+        gi_on_tx_result(&s_core, f, queued, false, t_now, ev);
     }
     if (em->dropped)
     {
@@ -468,110 +704,20 @@ static void dispatch_emits(const gi_emit_t *em, gi_events_t *ev)
 }
 
 /*
- * Spec 7 trip 7 (review C1). Feed the controller's TX verdict to the core.
+ * poll_tx_completion() LIVED HERE and is gone with the switchover (spec 5.2).
  *
- * WHY THIS IS A POLL AND NOT A WAIT, and why it is careful about WHICH frame
- * it is talking about.
+ * It decided completion from msgs_to_tx == 0 and carried the reasoning for why
+ * that, and not TWAI_ALERT_TX_SUCCESS, is the attributable signal: alerts are
+ * latched bits shared by every frame, so a diag page completing could credit an
+ * inhibit that had not been sent. That reasoning did not go away -- it moved into
+ * gi_sched, where `outstanding` is msgs_to_tx != 0 and the scheduler's own record
+ * of what it handed over is what attributes the completion. The 2026-09-27
+ * measurement then showed the same thing from the hardware side: an ABORTED frame
+ * is reported identically to a transmitted one, 169 times out of 169.
  *
- * TWAI alerts are LATCHED BITS SHARED BY EVERY FRAME. TWAI_ALERT_TX_SUCCESS
- * says "the previous transmission succeeded" -- it does not say which
- * transmission, and twai_read_alerts() clears the bits it returns. The first
- * version of this code read alerts only after queueing an inhibit frame, with
- * a 1 ms timeout, and credited whatever frame was pending. That is wrong three
- * ways, all of them invisible to the host suite because they live here:
- *
- *   - a diag frame (every 300 ms) or a RESPOND probe also completes and
- *     latches TX_SUCCESS, and nothing consumed it. The next inhibit's read
- *     returned that stale bit IMMEDIATELY and credited the inhibit as complete
- *     at queue time -- masking precisely the "inhibit queued behind a diag
- *     frame" case C1 exists to catch;
- *   - once one completion arrived after its own 1 ms window had expired, its
- *     bit stayed latched and credited the NEXT inhibit at queue time, and so
- *     on for ever: TX_LATE could never fire again and the response histogram
- *     silently reverted to queue time;
- *   - and in the other direction, a completion at, say, 1.2 ms on a loaded bus
- *     went unobserved, leaving the frame pending and producing a FALSE TX_LATE
- *     abort on the next 0x051.
- *
- * Found by the reviewing session, 2026-09-25. What makes the alert
- * attributable now is that only one frame of ours can be in flight: stale
- * alerts are drained immediately before the inhibit frame is queued
- * (dispatch_emits), and gi_tick() will not emit a diag page while an inhibit
- * is outstanding. So any TX_SUCCESS/TX_FAILED seen after that queue is ours.
- *
- * Called on every loop iteration rather than at one point, so a completion is
- * observed whenever it happens rather than only inside a window -- and so the
- * reactive path carries no blocking call at all.
+ * Its TWAI_ALERT_TX_FAILED read moved into sched_pump(), which is now trip 7's
+ * only route to the "controller reported failed" form.
  */
-static void poll_tx_completion(gi_events_t *ev)
-{
-    /*
-     * Drain the alert bits on every call whether or not a frame is pending, so
-     * nothing accumulates to be misread later.
-     */
-    uint32_t alerts = 0;
-    if (twai_read_alerts(&alerts, 0) == ESP_OK
-        && (alerts & TWAI_ALERT_TX_FAILED))
-    {
-        s_tx_failed_latched = true;
-    }
-
-    if (!s_core.tx_pending)
-    {
-        return;
-    }
-
-    /*
-     * COMPLETION IS msgs_to_tx == 0, NOT TWAI_ALERT_TX_SUCCESS.
-     *
-     * The alert cannot answer the question. It is a latched bit shared by
-     * every frame -- "the previous transmission was successful", with no
-     * identity -- and 632af32's attempt to make it attributable by keeping one
-     * frame of ours in flight only closed the inhibit-first order. The
-     * diag-first order stayed open, and it is the likelier one on the truck: a
-     * diag page is the lowest-priority ID on the bus, so on a loaded bus it
-     * sits in the TX buffer waiting for an idle gap. The next 0x051 then
-     * queues the inhibit BEHIND it, the pre-queue drain finds nothing latched
-     * because the diag has not completed yet, the diag completes, and its
-     * TX_SUCCESS credits an inhibit frame that has not been sent. Found by the
-     * reviewing session, 2026-09-25.
-     *
-     * msgs_to_tx is "messages queued for transmission or awaiting transmission
-     * completion". The driver queues FIFO and our inhibit frame is queued
-     * last, so msgs_to_tx == 0 means everything ahead of it AND the frame
-     * itself are done. That is attributable BY CONSTRUCTION, whatever was in
-     * front of it, rather than by an invariant someone has to maintain.
-     *
-     * THIS DEPENDS ON A3, AND THAT DEPENDENCY IS LOAD-BEARING. msgs_to_tx == 0
-     * proves OUR inhibit completed only if nothing can be queued AFTER it
-     * while it is in flight. gi_tick() withholds diag, which covers this
-     * component -- but until review A3 lands, an SLCAN, ELM327 or MQTT
-     * can_send() from another task can queue a frame behind the inhibit. The
-     * count then stays above zero after our frame has gone out, producing a
-     * FALSE TX_LATE abort, or credits the wrong frame if they interleave. A3's
-     * "can_send() refused from every non-inhibitor path while gen_inhibit owns
-     * the bus" is therefore a correctness requirement for trip 7, not only the
-     * bus-ownership measure it was written as. Raised by the reviewing session,
-     * 2026-09-25. No build without A3 may go to the truck.
-     *
-     * The alert is kept for TX_FAILED only -- which IDF 5.4.1 documents as
-     * being raised "for single shot transmission", and these frames go out
-     * with twai_message_t.ss = 0, so the controller retransmits rather than
-     * failing and TX_FAILED is effectively unreachable. A retry that pushes
-     * the frame past the VCM's next 0x051 is caught as TX_LATE instead. Do not
-     * read the absence of TX_FAILED as evidence the bus is healthy.
-     */
-    twai_status_info_t info;
-    if (twai_get_status_info(&info) != ESP_OK)
-    {
-        return;
-    }
-    if (info.msgs_to_tx == 0)
-    {
-        gi_on_tx_done(&s_core, !s_tx_failed_latched, esp_timer_get_time(), ev);
-        s_tx_failed_latched = false;
-    }
-}
 
 /* ------------------------------------------------------------ public API -- */
 
@@ -750,6 +896,18 @@ esp_err_t gen_inhibit_set_mode(gen_inhibit_mode_t mode, uint32_t offset_us)
 
     gi_events_t ev = { 0 };
     rxq_reset();
+    /*
+     * A fresh scheduler for every mode change. Its counters are per-arm like every
+     * other figure on the status page, and a stale `held` flag from a previous arm
+     * would stop the first frame of this one going out.
+     */
+    gs_init(&s_sched, &DEV_HAL);
+    s_seen_inh_sent = 0;
+    s_seen_inh_refused = 0;
+    s_seen_probe_handed = 0;
+    s_seen_probe_lost = 0;
+    s_have_last_inhibit = false;
+    s_have_last_probe = false;
     gi_set_mode(&s_core, (gi_mode_t)mode, offset_us, esp_timer_get_time(), &ev);
     report_events(&ev);
 
@@ -870,11 +1028,12 @@ static void gen_inhibit_task(void *arg)
             gi_emit_t em = { 0 };
             gi_events_t ev = { 0 };
             /*
-             * Collect any TX completion FIRST, so gi_tick() sees an accurate
-             * outstanding-frame flag: it withholds the diag page while one is
-             * in flight, and a stale flag would withhold it for nothing.
+             * Drive the scheduler FIRST, so gi_tick() sees an accurate
+             * outstanding-frame flag: it withholds the diag page while one is in
+             * flight, and a stale flag would withhold it for nothing. This is also
+             * where a completion or a refusal becomes a core event.
              */
-            poll_tx_completion(&ev);
+            sched_pump(esp_timer_get_time(), &ev);
             bus_snapshot(&bus);
             gi_tick(&s_core, esp_timer_get_time(), &bus, &em, &ev);
             dispatch_emits(&em, &ev);
@@ -924,18 +1083,45 @@ static void gen_inhibit_task(void *arg)
             gi_emit_t em = { 0 };
             gi_events_t ev = { 0 };
 
+            const int64_t t_rx = esp_timer_get_time();
+
             /*
-             * Collect a TX completion again before the frame reaches the core,
-             * because gi_on_frame() turns an outstanding frame into a TX_LATE
-             * abort. A completion that landed while we were blocked inside
-             * twai_receive() has to be credited before that test runs, or a
-             * frame that finished in good time is reported as having lost the
-             * counter race.
+             * Collect a completion before anything judges the frame. One that
+             * landed while we were blocked inside twai_receive() has to be
+             * credited first, or a frame that finished in good time is scored
+             * against the deadline below.
              */
-            poll_tx_completion(&ev);
+            sched_pump(t_rx, &ev);
+
+            /*
+             * THE DEADLINE (spec 5.2 item 5), and it runs BEFORE gi_on_frame()
+             * queues the answer to this command. That ordering is not a comment:
+             * gs_command_received() sets a token which gs_queue_frame() consumes,
+             * so getting it wrong increments `order_violations` instead of failing
+             * silently, and E1 asserts that counter stays 0.
+             *
+             * The backlog is read here because an on-time verdict reached with
+             * frames already waiting cannot be verified -- the dequeue lags the
+             * arrival by the backlog, so the VCM's next command may already have
+             * been on the wire. gi_sched counts those separately as
+             * `ontime_unverified` rather than letting them pass as proof.
+             */
+            if (rx.identifier == GI_VCM_ID)
+            {
+                const gs_deadline_t v =
+                    gs_command_received(&s_sched, t_rx, can_msgs_to_rx());
+                if (v != GS_DEADLINE_OK)
+                {
+                    const gi_skip_kind_t kind =
+                        (v == GS_DEADLINE_MAYBE_LATE) ? GI_SKIP_MAYBE_LATE
+                                                      : GI_SKIP_WITHDRAWN;
+                    gi_on_inhibit_skip(&s_core, kind, gs_skip_trip(&s_sched),
+                                       t_rx, &ev);
+                }
+            }
 
             gi_on_frame(&s_core, rx.identifier, rx.data_length_code, rx.data,
-                        esp_timer_get_time(), &em, &ev);
+                        t_rx, &em, &ev);
             dispatch_emits(&em, &ev);
             report_events(&ev);
         }
@@ -1126,6 +1312,16 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
      */
     n = gi_clamp(n + snprintf(buf + n, buflen - n, ",\"inf\"]"), buflen);
     n = gi_clamp(n + drv_json(buf + n, buflen - n), buflen);
+    /*
+     * The transmit scheduler's counters (spec 5.2 item 6, section 11): per class
+     * queued/sent/aborted/requeued/dropped/refused and the two waits, plus the
+     * skips, the aborts and how hard they were, and the two on-time counts --
+     * `ontime` and `ontime_unverified`, WHICH ARE NEVER SUMMED. An unverified
+     * verdict is one reached with frames already in the receive queue, where the
+     * dequeue lags the arrival and a physically late frame can score as on time.
+     */
+    n = gi_clamp(n + snprintf(buf + n, buflen - n, ","), buflen);
+    n = gi_clamp(n + gs_json(&s_sched, buf + n, buflen - n), buflen);
     n = gi_clamp(n + rxq_json(buf + n, buflen - n), buflen);
     n = gi_clamp(n + snprintf(buf + n, buflen - n, "}\n"), buflen);
 

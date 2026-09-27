@@ -185,6 +185,19 @@ uint32_t ft_installed_acc_code(void);
 uint32_t ft_installed_acc_mask(void);
 int      ft_installed_single_filter(void);
 
+/*
+ * THE PRIVATE HAL THE TRANSMIT SCHEDULER USES (spec 5.2 item 8, 12.3 item 5).
+ *
+ * `aborts` counts commands issued; `aborts_while_tx` counts those that landed on a
+ * TRANSMITTING head, which item 4 says the scheduler must never do -- and which the
+ * scheduler's own statistics cannot distinguish from a command it did not send;
+ * `removed` counts frames the abort actually took out, which is NOT the same as
+ * frames that left the controller, because a completion looks identical.
+ */
+int ft_ll_aborts(void);
+int ft_ll_aborts_while_tx(void);
+int ft_ll_removed(void);
+
 /* Make twai_reconfigure_alerts() fail, as a driver that will not arm would. */
 void ft_fail_alerts_config(bool fail);
 

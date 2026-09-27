@@ -141,10 +141,25 @@ typedef enum
 typedef struct
 {
     uint32_t queued;
+    /*
+     * HANDED TO THE DRIVER. Distinct from `queued` (accepted into the class queue)
+     * and from `sent` (seen to leave the controller), and all three are needed: the
+     * RESPOND probe is counted at handover so its figure stays comparable with the
+     * pre-scheduler record, where queueing and handing over were the same call.
+     */
+    uint32_t handed;
     uint32_t sent;          /* handed over AND seen to leave the controller */
     uint32_t aborted;
     uint32_t requeued;
     uint32_t dropped;       /* queue full */
+    /*
+     * The driver would not take the frame at handover. PER CLASS, because the
+     * consequence differs: a refused INHIBIT is spec 7 trip 7's
+     * GI_ABORT_TX_NOT_QUEUED and trips at once, while a refused telemetry page
+     * stays queued and is retried. A single global count could not tell the
+     * caller which had happened.
+     */
+    uint32_t refused;
     /*
      * TWO WAITS, because they answer different questions and one field could
      * only answer neither. `max_queue_us` is the spec's "longest wait" -- from
