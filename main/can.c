@@ -86,8 +86,12 @@ static const twai_general_config_t g_config_silent = TWAI_GENERAL_CONFIG_DEFAULT
 static twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
 /*
- * SPEC 5.1 ITEM 1: the software RX queue holds at least 32 frames whenever the
- * driver is installed.
+ * SPEC 5.1 ITEM 1: the software RX queue holds at least 64 frames whenever the
+ * driver is installed. (This line said 32 until 2026-09-27, which is what the
+ * spec required when it was written and has not been since 2026-09-26 -- the
+ * amendment is recorded in the second comment block below, but the sentence
+ * stating the REQUIREMENT was left behind, so the file contradicted the spec at
+ * its most quotable line.)
  *
  * TWAI_GENERAL_CONFIG_DEFAULT gives 5, which is ~2.2 ms of traffic at the
  * truck's measured ~2250 frames/s -- against a worst measured WiFi preemption

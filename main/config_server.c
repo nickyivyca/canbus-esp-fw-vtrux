@@ -69,6 +69,12 @@
 #include "esp_ota_ops.h"
 #include "ota_health.h"
 #include "gen_inhibit.h"
+#if GI_INSTRUMENT_TXABORT
+/* Measurement build only, spec 5.2 item 9. The source is not in the component
+ * unless the flag is set -- see main/CMakeLists.txt -- so this include and the
+ * two registrations below are the whole of its footprint in shipping code. */
+#include "gi_txabort_probe.h"
+#endif
 #include "can.h"
 #include "sleep_mode.h"
 #include "autopid.h"
@@ -2418,6 +2424,9 @@ static httpd_handle_t config_server_init(void)
         /* OTA endpoint is live -- the channel we would recover through. */
         httpd_register_uri_handler(server, &gen_inhibit_uri);
         httpd_register_uri_handler(server, &gen_inhibit_set_uri);
+#if GI_INSTRUMENT_TXABORT
+        gi_txabort_register(server);
+#endif
         ota_health_report(OTA_HEALTH_HTTPD);
 		httpd_register_uri_handler(server, &system_reboot);
 		httpd_register_uri_handler(server, &store_canflt_uri);
@@ -2457,6 +2466,9 @@ void config_server_restart(void)
         /* OTA endpoint is live -- the channel we would recover through. */
         httpd_register_uri_handler(server, &gen_inhibit_uri);
         httpd_register_uri_handler(server, &gen_inhibit_set_uri);
+#if GI_INSTRUMENT_TXABORT
+        gi_txabort_register(server);
+#endif
         ota_health_report(OTA_HEALTH_HTTPD);
 		httpd_register_uri_handler(server, &system_reboot);
 		httpd_register_uri_handler(server, &store_canflt_uri);

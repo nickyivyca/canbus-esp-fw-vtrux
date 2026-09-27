@@ -484,7 +484,7 @@ def check_image_identity(img_ver):
 
 
 def check_no_instrument(path):
-    """Row 26: this image must NOT be a GI_INSTRUMENT_RXQ measurement build.
+    """Row 26: this image must NOT be ANY measurement build.
 
     ADDED 2026-09-26. The measurement build (spec 12.4's backlog row) reads the
     TWAI driver's queue state on every dequeue, which perturbs what it measures --
@@ -497,6 +497,16 @@ def check_no_instrument(path):
     string is emitted into .rodata verbatim and has to be there if the code is; the
     statics show up as ELF symbols, which is the check that keeps working if the
     JSON is ever restructured.
+
+    EXTENDED 2026-09-27 to GI_INSTRUMENT_TXABORT (spec 5.2 item 9), and the
+    reason it is now a TABLE is the gap the extension exposed. The first version
+    looked only for the backlog instrument's markers, so a TX-abort measurement
+    image -- one that writes the TWAI abort command register directly from
+    outside the driver and exposes an HTTP endpoint to do it -- passed a row
+    whose name says there is no measurement instrument in the image. A row that
+    cannot fail on the thing it is named after is worse than no row, because it
+    reads as coverage. Adding a second instrument to the table is now one line
+    in one place instead of an edit in two.
     """
     try:
         img = open(path, "rb").read()
@@ -506,12 +516,27 @@ def check_no_instrument(path):
             ref_missing=True)
         return
 
-    marker = b'"rxq":{'
-    row("no measurement instrument in the image", marker not in img,
-        "image carries %r -- this is a GI_INSTRUMENT_RXQ measurement build and "
-        "must not be flashed to the truck" % marker.decode()
-        if marker in img else
-        "no %r in the image" % marker.decode())
+    # (flag, image markers, ELF symbols). Every entry is an instrument that
+    # must not reach a vehicle; a hit on ANY marker fails the row.
+    instruments = (
+        ("GI_INSTRUMENT_RXQ",
+         (b'"rxq":{',),
+         ("s_rxq_max", "s_rxq_samples", "rxq_sample", "rxq_reset")),
+        ("GI_INSTRUMENT_TXABORT",
+         (b'"probe":"gi_txabort"', b"/gi_txabort"),
+         ("gi_txabort_register", "txab_handler", "txab_trial")),
+    )
+
+    img_hits = []
+    for flag, markers, _syms in instruments:
+        for m in markers:
+            if m in img:
+                img_hits.append("%s (%r)" % (flag, m.decode("latin-1")))
+    row("no measurement instrument in the image", not img_hits,
+        "image carries " + "; ".join(img_hits) + " -- a measurement build, and "
+        "must not be flashed to the truck" if img_hits else
+        "none of the %d instruments' markers are in the image"
+        % len(instruments))
 
     # The ELF, where the statics live. Absent on a downloaded image, which is a
     # missing reference rather than a pass.
@@ -545,12 +570,16 @@ def check_no_instrument(path):
             ref_missing=True)
         return
     nm = r.stdout
-    hits = [sym for sym in ("s_rxq_max", "s_rxq_samples", "rxq_sample",
-                            "rxq_reset")
-            if sym in nm]
+    hits = []
+    nsym = 0
+    for flag, _markers, syms in instruments:
+        nsym += len(syms)
+        for sym in syms:
+            if sym in nm:
+                hits.append("%s:%s" % (flag, sym))
     row("no instrument symbols in the ELF", not hits,
         "ELF defines %s" % ", ".join(hits) if hits
-        else "none of the s_rxq_/rxq_ symbols are defined")
+        else "none of the %d instrument symbols are defined" % nsym)
 
 
 def check_source():
@@ -749,7 +778,10 @@ def main():
     if bad:
         print("%d check(s) FAILED. This image must not be flashed to the truck "
               "until each is understood -- row 22 exists because every one of "
-              "them is a way to brick a device with no USB port and no factory "
+              "them is a way to brick a device with no EXTERNAL USB port and no "
+              "factory reset: recovery is bootloader rollback, or taking "
+              "the case off to reach the C3's native USB "
+              "(user, 2026-09-27)."
               "reset." % bad)
     else:
         print("every check with a reference passed")
