@@ -122,13 +122,24 @@ bool gs_queue_frame(gs_t *s, gs_class_t cls, const gi_frame_t *f, int64_t now)
     {
         return false;
     }
-    if (cls == GS_CLASS_INHIBIT && s->inhibit_outstanding)
+    if (cls == GS_CLASS_INHIBIT)
     {
         /*
-         * The deadline was not evaluated before this frame was queued. See
-         * gs_stats_t::order_violations -- counted, never refused.
+         * THE DEADLINE TOKEN, consumed here. Absent means gs_command_received()
+         * was not called for this command before its answer was queued.
+         *
+         * This is EXACT, unlike the `inhibit_outstanding` test it replaced: that
+         * one fired only when the PREVIOUS inhibit was still in flight, which is
+         * the rare case. With the calls swapped the previous frame had normally
+         * completed milliseconds earlier, so nothing was outstanding, no violation
+         * was counted, and the deadline purge silently withdrew the NEW inhibit on
+         * every command. Caught by the reviewing session, 2026-09-27.
          */
-        s->st.order_violations++;
+        if (!s->deadline_token)
+        {
+            s->st.order_violations++;
+        }
+        s->deadline_token = false;
     }
     s->st.cls[cls].queued++;
     if (!q_push(&s->q[cls], f, now, s->next_seq))
@@ -501,6 +512,14 @@ void gs_tick(gs_t *s, int64_t now, uint32_t rx_backlog)
 
 gs_deadline_t gs_command_received(gs_t *s, int64_t now, uint32_t rx_backlog)
 {
+    /*
+     * The deadline has been evaluated for this command. Set before anything else,
+     * so every return path below leaves it set: a deadline that found nothing to
+     * withdraw is still a deadline, and the ordering check asks whether it RAN,
+     * not what it found.
+     */
+    s->deadline_token = true;
+
     /*
      * Observe a completion FIRST. A frame that finished before this dequeue is
      * on time in the only sense the device can evaluate, and checking after the

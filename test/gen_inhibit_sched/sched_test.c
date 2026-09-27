@@ -652,6 +652,83 @@ static void case_race_between_read_and_abort(void)
     ck_eq(st->skipped, 0, "and nothing was skipped");
 }
 
+
+/*
+ * THE INTEGRATION ORDER, all four combinations. Spec item 5: the deadline is
+ * evaluated when the VCM's next 0x051 is dequeued, BEFORE the answer to that
+ * command is queued.
+ *
+ * Each ordering is run twice, with the previous inhibit COMPLETE and with it still
+ * OUTSTANDING, because that is the variable the weak version of this check turned
+ * on: testing `inhibit_outstanding` caught the swap only when the previous frame
+ * was still in flight, which is the rare case. The common case -- previous frame
+ * long finished -- went entirely undetected, and the reviewing session found it.
+ */
+static void order_once(bool correct_order, bool prev_outstanding,
+                       uint32_t *violations)
+{
+    fb_reset();
+    gs_t s;
+    gs_init(&s, fb_hal());
+
+    /* One command and answer, so there IS a previous inhibit. */
+    gs_command_received(&s, fb_now(), 0);
+    gi_frame_t first = mk(ID_INHIBIT, GI_TX_INHIBIT);
+    gs_queue_frame(&s, GS_CLASS_INHIBIT, &first, fb_now());
+
+    if (prev_outstanding)
+    {
+        /* Contended: it is handed over and sits AWAITING, never completing. */
+        fb_set_contended(true);
+        run(&s, 50, 10, 0);
+    }
+    else
+    {
+        /* Idle: it completes long before the next command. */
+        run(&s, 600, 10, 0);
+    }
+
+    /* The next command arrives, and its answer is queued. */
+    gi_frame_t second = mk(ID_INHIBIT, GI_TX_INHIBIT);
+    if (correct_order)
+    {
+        gs_command_received(&s, fb_now(), 0);
+        gs_queue_frame(&s, GS_CLASS_INHIBIT, &second, fb_now());
+    }
+    else
+    {
+        gs_queue_frame(&s, GS_CLASS_INHIBIT, &second, fb_now());
+        gs_command_received(&s, fb_now(), 0);
+    }
+    *violations = gs_stats(&s)->order_violations;
+}
+
+static void case_integration_order(void)
+{
+    uint32_t v;
+
+    g_case = "order: correct, previous complete";
+    order_once(true, false, &v);
+    ck_eq(v, 0, "no violation");
+
+    g_case = "order: correct, previous still outstanding";
+    order_once(true, true, &v);
+    ck_eq(v, 0, "no violation");
+
+    /*
+     * THE CASE THE WEAK CHECK MISSED. Previous frame complete, calls swapped: the
+     * old `inhibit_outstanding` test saw nothing outstanding and counted nothing,
+     * while the deadline purge quietly withdrew the new inhibit on every command.
+     */
+    g_case = "order: SWAPPED, previous complete (the missed case)";
+    order_once(false, false, &v);
+    ck_eq(v, 1, "ONE violation counted");
+
+    g_case = "order: SWAPPED, previous still outstanding";
+    order_once(false, true, &v);
+    ck_eq(v, 1, "ONE violation counted");
+}
+
 int main(void)
 {
     printf("scheduler cases (spec 5.2 item 10, emulation half)\n");
@@ -672,6 +749,7 @@ int main(void)
     case_probe_is_preempted_by_inhibit();
     case_skip_window_boundary_exactly_one_second();
     case_race_between_read_and_abort();
+    case_integration_order();
 
     if (g_fail == 0)
     {

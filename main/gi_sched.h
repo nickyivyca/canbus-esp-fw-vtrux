@@ -185,10 +185,18 @@ typedef struct
      *
      * Spec item 5 requires the deadline (gs_command_received) to be evaluated
      * when the VCM's next 0x051 is dequeued, BEFORE the answer to that command is
-     * queued. A correctly ordered deadline leaves no inhibit outstanding, because
-     * it withdraws any that was. So queueing an inhibit while one is STILL
-     * outstanding means the deadline was not evaluated first -- the
-     * contrapositive, not a heuristic.
+     * queued. gs_command_received() sets a DEADLINE TOKEN;
+     * gs_queue_frame(GS_CLASS_INHIBIT) requires it, counts a violation if it is
+     * absent, and clears it. One command, one deadline, one inhibit.
+     *
+     * AN EARLIER VERSION TESTED `inhibit_outstanding` INSTEAD AND DID NOT FIRE IN
+     * THE COMMON CASE. It caught the ordering only when the PREVIOUS inhibit was
+     * still outstanding; normally that one completed milliseconds earlier, so with
+     * the calls swapped nothing was outstanding, no violation was counted, and the
+     * deadline purge then withdrew the NEW inhibit as a skip on every command.
+     * Trip 7 would have fired after three -- loud, but not through the counter
+     * named as the pin, so the pin was not one. Caught by the reviewing session,
+     * 2026-09-27.
      *
      * Counted and not refused: refusing would turn a caller-ordering bug into a
      * missed inhibit on the truck, which is worse than sending the frame and
@@ -290,6 +298,14 @@ typedef struct
     bool       inhibit_outstanding;
     uint32_t   inhibit_seq;
     int64_t    inhibit_handed;
+
+    /*
+     * THE DEADLINE TOKEN. Set by gs_command_received(), consumed by queueing an
+     * inhibit. One bit, because the property is one bit: "has a deadline been
+     * evaluated since the last inhibit was queued". A counter would invite
+     * reasoning about how far apart the two calls are, which is not the question.
+     */
+    bool       deadline_token;
 
     /*
      * TRIP 7'S SLIDING WINDOW. A ring of recent skip timestamps, because "3

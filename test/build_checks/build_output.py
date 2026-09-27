@@ -601,6 +601,101 @@ def check_no_instrument(path):
         else "none of the %d instrument symbols are defined" % nsym)
 
 
+def _count_calls(rel, needle):
+    """How many times `needle(` is called in main/<rel>, comments excluded.
+
+    Crude on purpose. A real parser would be better and is not available here; what
+    matters is that the count is CONSERVATIVE -- a commented-out call is skipped, so
+    the row cannot pass because a real call hid behind a comment marker.
+    """
+    p = os.path.join(REPO, "main", rel)
+    if not os.path.exists(p):
+        return None
+    n = 0
+    for line in open(p, encoding="utf-8", errors="replace"):
+        t = line.strip()
+        if t.startswith("*") or t.startswith("//") or t.startswith("/*"):
+            continue
+        n += t.count(needle + "(")
+    return n
+
+
+def check_one_transmit_owner():
+    """Spec 5.2 item 1: one transmit owner, asserted in the source.
+
+    The image cannot show this -- a call is a call -- so it lives with the other
+    source rows. Two callers of twai_transmit() are allowed and no more:
+
+      can.c        can_send(), the client path (SLCAN / ELM327 / MQTT), which is
+                   refused whenever gen_inhibit owns the bus (spec 3.2, review A3).
+                   That refusal is ALSO a trip-7 correctness requirement: the
+                   inhibit is judged complete from msgs_to_tx == 0, which proves our
+                   frame went out only because nothing else can be queued behind it.
+      gen_inhibit.c the scheduler's device HAL, the single site item 1 names.
+
+    A third caller anywhere would break trip 7 silently, which is why this is a
+    check and not a comment.
+    """
+    allowed = {"can.c": 1, "gen_inhibit.c": 1}
+    bad = []
+    total = 0
+    for rel, limit in sorted(allowed.items()):
+        n = _count_calls(rel, "twai_transmit")
+        if n is None:
+            row("one transmit owner", None, "main/%s is missing" % rel,
+                ref_missing=True)
+            return
+        total += n
+        if n > limit:
+            bad.append("%s has %d (at most %d)" % (rel, n, limit))
+
+    # Anything else under main/ must not call it at all.
+    for f in sorted(os.listdir(os.path.join(REPO, "main"))):
+        if not f.endswith(".c") or f in allowed or f == "gi_txabort_probe.c":
+            continue
+        n = _count_calls(f, "twai_transmit")
+        if n:
+            bad.append("%s calls it %d time(s) and must not" % (f, n))
+            total += n
+
+    row("one transmit owner (spec 5.2 item 1)", not bad,
+        "; ".join(bad) if bad else
+        "twai_transmit is called only by can_send() and the scheduler's device "
+        "HAL (%d call sites)" % total)
+
+
+def check_private_abort_confined():
+    """The private HAL abort appears at most ONCE, and only in gen_inhibit.c.
+
+    twai_ll_set_cmd_abort_tx() is below the public driver API. Spec 5.2 items 4 and
+    9 sanction its use -- item 4's abort-and-recheck loop is built on it -- so it
+    legitimately ships. But it is exactly the kind of call that spreads, and the
+    measurement build existed specifically to keep it OUT of a shipping image, so
+    the no-instrument rows say nothing about it.
+
+    One site, in gen_inhibit.c, inside the critical section that makes the read and
+    the write indivisible. Anywhere else is a finding.
+    """
+    hits = []
+    for f in sorted(os.listdir(os.path.join(REPO, "main"))):
+        if not f.endswith(".c") or f == "gi_txabort_probe.c":
+            continue
+        n = _count_calls(f, "twai_ll_set_cmd_abort_tx")
+        if n:
+            hits.append((f, n))
+
+    if not hits:
+        row("the private TWAI abort is confined", True,
+            "no shipping source calls twai_ll_set_cmd_abort_tx yet (the "
+            "scheduler is not wired in)")
+        return
+    ok = (len(hits) == 1 and hits[0][0] == "gen_inhibit.c" and hits[0][1] == 1)
+    row("the private TWAI abort is confined", ok,
+        "called from %s" % ", ".join("%s x%d" % h for h in hits)
+        + ("" if ok else " -- it may appear ONCE, in gen_inhibit.c, and nowhere "
+                         "else"))
+
+
 def check_sources_older_than_image(path):
     """Row 22: no tracked source may be newer than the image.
 
@@ -833,6 +928,8 @@ def main():
     check_diag(args.dbc)
     check_schema_doc(args.schema_doc)
     check_source()
+    check_one_transmit_owner()
+    check_private_abort_confined()
     check_image_identity(img_ver)
     if b is not None:
         check_no_instrument(b)

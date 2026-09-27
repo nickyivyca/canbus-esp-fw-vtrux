@@ -121,6 +121,26 @@ MUTATIONS = [
      """        if (newest - s->skip_ts[i] < GS_SKIP_WINDOW_US) { k++; }""",
      """        if (newest - s->skip_ts[i] <= GS_SKIP_WINDOW_US) { k++; }""",
      "R11: exactly 1.000 s apart does NOT trip"),
+
+    ("the ordering check reverts to the weak inhibit_outstanding test",
+     "gi_sched.c",
+     """        if (!s->deadline_token)
+        {
+            s->st.order_violations++;
+        }
+        s->deadline_token = false;""",
+     """        if (s->inhibit_outstanding)
+        {
+            s->st.order_violations++;
+        }
+        s->deadline_token = false;""",
+     "order: SWAPPED, previous complete (the missed case)"),
+
+    ("the deadline stops setting its token",
+     "gi_sched.c",
+     """    s->deadline_token = true;""",
+     """    s->deadline_token = s->deadline_token;""",
+     "order: correct, previous complete"),
 ]
 
 
