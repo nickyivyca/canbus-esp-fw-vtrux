@@ -202,6 +202,10 @@ typedef struct
     uint8_t  next_tx_err;   /* the follow-up transmit: does the buffer work? */
     int      next_done_us;  /* until the follow-up completed; -1 = never */
     uint8_t  skip;
+    uint8_t  cleanup;       /* the follow-up frame had to be aborted to leave the
+                             * buffer free for the next trial. Counted, because it
+                             * uses the mechanism under test and because it says
+                             * the bus never gave our ID a slot. */
 } txab_rec_t;
 
 static txab_rec_t s_rec[TXAB_MAX_TRIALS];
@@ -547,6 +551,42 @@ static void txab_trial(int phase, int gate, uint16_t trial, uint16_t req_us,
         }
         (void)twai_read_alerts(&junk, 0);
     }
+
+    /*
+     * LEAVE THE BUFFER FREE, OR THE NEXT TRIAL IS NOT A TRIAL.
+     *
+     * The follow-up frame is 0x7FE, the lowest priority on the segment. Under a
+     * flood it never wins arbitration, so it sits in the buffer and the NEXT
+     * trial's precondition (msgs_to_tx == 0) fails -- and then the one after
+     * that, and so on. Measured 2026-09-27: the first RS-gated run got 1 live
+     * row out of 20, with 19 "driver busy" skips, and the cause was this frame
+     * rather than anything about the abort.
+     *
+     * So the trial cleans up after itself. This uses the mechanism under test,
+     * which is why it is COUNTED rather than silent: `cleanup` non-zero means the
+     * bus never offered our ID a slot inside the window, which is information
+     * about the bus and not a defect.
+     */
+    twai_status_info_t sc;
+    if (twai_get_status_info(&sc) == ESP_OK && sc.msgs_to_tx != 0)
+    {
+        twai_clear_transmit_queue();
+        taskENTER_CRITICAL(&s_abort_lock);
+        twai_ll_set_cmd_abort_tx(hw);
+        taskEXIT_CRITICAL(&s_abort_lock);
+        const int64_t cd = esp_timer_get_time() + 5000;
+        while (esp_timer_get_time() < cd)
+        {
+            twai_status_info_t s2;
+            if (twai_get_status_info(&s2) == ESP_OK && s2.msgs_to_tx == 0
+                && (twai_ll_get_status(hw) & TWAI_LL_STATUS_TBS))
+            {
+                break;
+            }
+        }
+        (void)twai_read_alerts(&junk, 0);
+        r->cleanup = 1;
+    }
 }
 
 /* ------------------------------------------------------------- reporting -- */
@@ -581,6 +621,7 @@ static esp_err_t send_rec(httpd_req_t *req, const txab_rec_t *r, bool first)
         "\"txalert_us\":%d,\"txalerts\":%lu,"
         "\"d_tx_failed\":%u,\"d_bus_err\":%u,\"d_arb_lost\":%u,"
         "\"tx_err\":%u,\"next_tx_err\":%u,\"next_done_us\":%d,"
+        "\"cleanup\":%u,"
         "\"skip\":\"%s\"}",
         first ? "" : ",",
         (unsigned)r->trial, (unsigned)r->req_us, (int)r->act_us,
@@ -603,6 +644,7 @@ static esp_err_t send_rec(httpd_req_t *req, const txab_rec_t *r, bool first)
         (unsigned)r->d_tx_failed, (unsigned)r->d_bus_err,
         (unsigned)r->d_arb_lost,
         (unsigned)r->tx_err, (unsigned)r->next_tx_err, (int)r->next_done_us,
+        (unsigned)r->cleanup,
         skip_name(r->skip));
     if (n < 0 || n >= (int)sizeof(b))
     {
