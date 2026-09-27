@@ -1058,9 +1058,17 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
         n += snprintf(buf + n, buflen - n, "%s%lu", (i ? "," : ""),
                       (unsigned long)gi_bucket_us[i]);
     }
-    if (n < buflen) n += snprintf(buf + n, buflen - n, ",\"inf\"]}");
+    /*
+     * THAT CLOSING BRACE IS THE STATUS OBJECT'S, not the array's -- the "]"
+     * closes bucket_edges and the "}" closes the whole page. The first
+     * version of this appended the rxq object AFTER it, producing a valid
+     * document followed by a stray fragment. json.loads called that "Extra
+     * data", which reads like a transport problem rather than a missing
+     * brace. Anything added here goes BEFORE the brace.
+     */
+    if (n < buflen) n += snprintf(buf + n, buflen - n, ",\"inf\"]");
     n += rxq_json(buf + n, buflen - n);
-    if (n < buflen) n += snprintf(buf + n, buflen - n, "\n");
+    if (n < buflen) n += snprintf(buf + n, buflen - n, "}\n");
     return n;
 }
 

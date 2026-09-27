@@ -545,7 +545,7 @@ def check_source():
             "could not read CAN_RX_QUEUE_LEN from main/can.c", ref_missing=True)
     else:
         row("CAN_RX_QUEUE_LEN >= 64", fw_depth >= 64,
-            "CAN_RX_QUEUE_LEN is %d (spec 5.1 item 1 requires at least 32)"
+            "CAN_RX_QUEUE_LEN is %d (spec 5.1 item 1 requires at least 64)"
             % fw_depth)
 
     model_depth = None
