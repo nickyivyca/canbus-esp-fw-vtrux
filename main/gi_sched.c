@@ -1,0 +1,533 @@
+/*
+ * gi_sched -- the one transmit owner. See gi_sched.h for the contract and for
+ * the hardware measurements every decision here rests on.
+ *
+ * NO PLATFORM CALLS. No printf, no allocation, no clock of its own, no spinning:
+ * time arrives as an argument and the controller is reached only through
+ * gs_hal_t. That is what lets the host suite compile this file unchanged and
+ * drive it from a virtual clock (spec 5.2 item 8).
+ */
+
+#include <string.h>
+#include <stdio.h>
+
+#include "gi_sched.h"
+
+/*
+ * Item 4's bound, from the user: 1 ms. The measurement put the loop's worst case
+ * at 36 us over 78 trials, so 1 ms is ~28x the observed worst and is a backstop
+ * rather than an operating parameter. Reaching it is counted, and the spec says
+ * the inhibit then stays at the head of its class and the scheduler keeps
+ * trying -- so the bound ends the LOOP, not the attempt.
+ */
+#define GS_ABORT_BOUND_US   1000
+
+/* Trip 7: 3 skips within 1 s (spec 7 trip 7, amended 2026-09-27). */
+#define GS_SKIP_WINDOW_US   1000000
+#define GS_SKIP_TRIP_N      3
+
+/* ------------------------------------------------------------- queueing --- */
+
+static uint8_t cap_for(gs_class_t c)
+{
+    switch (c)
+    {
+    case GS_CLASS_INHIBIT:   return GS_Q_INHIBIT;
+    case GS_CLASS_PROBE:     return GS_Q_PROBE;
+    case GS_CLASS_TELEMETRY: return GS_Q_TELEMETRY;
+    default:                 return 0;
+    }
+}
+
+static bool q_push(gs_queue_t *q, const gi_frame_t *f, int64_t now, uint32_t seq)
+{
+    if (q->n >= q->cap)
+    {
+        return false;
+    }
+    const int i = (q->head + q->n) % q->cap;
+    q->q[i].f = *f;
+    q->q[i].t_queued = now;
+    q->q[i].seq = seq;
+    q->n++;
+    return true;
+}
+
+/*
+ * Put a frame back AT THE HEAD, which is what item 4 requires of an aborted
+ * telemetry frame: "requeues it at the head of the telemetry class". Ordinary
+ * FIFO would send it behind pages queued while it was being aborted, so a page
+ * could be starved by its own preemption.
+ */
+static bool q_push_head(gs_queue_t *q, const gs_slot_t *sl)
+{
+    if (q->n >= q->cap)
+    {
+        return false;
+    }
+    q->head = (uint8_t)((q->head + q->cap - 1) % q->cap);
+    q->q[q->head] = *sl;
+    q->n++;
+    return true;
+}
+
+static const gs_slot_t *q_peek(const gs_queue_t *q)
+{
+    return (q->n == 0) ? NULL : &q->q[q->head];
+}
+
+static void q_pop(gs_queue_t *q)
+{
+    if (q->n == 0)
+    {
+        return;
+    }
+    q->head = (uint8_t)((q->head + 1) % q->cap);
+    q->n--;
+}
+
+/* ---------------------------------------------------------------- set-up --- */
+
+void gs_init(gs_t *s, const gs_hal_t *hal)
+{
+    memset(s, 0, sizeof(*s));
+    s->hal = hal;
+    for (int c = 0; c < GS_CLASS_N; c++)
+    {
+        s->q[c].cap = cap_for((gs_class_t)c);
+        s->q[c].head = 0;
+        s->q[c].n = 0;
+    }
+    s->next_seq = 1;
+}
+
+void gs_reset(gs_t *s)
+{
+    const gs_hal_t *hal = s->hal;
+    gs_init(s, hal);
+}
+
+bool gs_queue_frame(gs_t *s, gs_class_t cls, const gi_frame_t *f, int64_t now)
+{
+    if (cls >= GS_CLASS_N)
+    {
+        return false;
+    }
+    s->st.cls[cls].queued++;
+    if (!q_push(&s->q[cls], f, now, s->next_seq))
+    {
+        /*
+         * Item 6: telemetry is never lost SILENTLY. A full queue drops the
+         * newest, and the drop is counted per class. Dropping the newest rather
+         * than the oldest keeps the oldest page's wait bounded by its own
+         * position instead of letting a burst starve it indefinitely.
+         */
+        s->st.cls[cls].dropped++;
+        return false;
+    }
+    s->next_seq++;
+    return true;
+}
+
+/* ------------------------------------------------------------ the engine --- */
+
+static void note_left_controller(gs_t *s, int64_t now, uint32_t rx_backlog)
+{
+    const gs_class_t c = s->held_class;
+    const int64_t held_us = now - s->held_since;
+
+    s->st.cls[c].sent++;
+    if (held_us > 0 && (uint32_t)held_us > s->st.cls[c].max_wait_us)
+    {
+        /* Not the queue wait -- that is recorded at handover. This is how long
+         * the controller held it, which is the number item 4's guarantee is
+         * about. Kept in the same field deliberately: one "how long did this
+         * class wait" figure per class, and the handover path takes the max
+         * with it. */
+        s->st.cls[c].max_wait_us = (uint32_t)held_us;
+    }
+
+    if (c == GS_CLASS_INHIBIT)
+    {
+        /*
+         * AN ON-TIME CLAIM IS ONLY AS GOOD AS THE RECEIVE QUEUE WAS EMPTY.
+         *
+         * This completion happened before the worker dequeued the VCM's next
+         * 0x051 -- that is what makes it "on time" in the only sense the device
+         * can evaluate. But the dequeue lags the arrival by the backlog, so if
+         * frames were already waiting here, the VCM's next command may ALREADY
+         * have been on the wire when this frame completed, and the frame was
+         * physically late. An empty queue rules that out, because an arrived
+         * frame would be in it.
+         *
+         * Exact only up to the ISR latency between a frame reaching the
+         * controller's hardware FIFO and the ISR moving it to the software
+         * queue. Microseconds against a 4.69 ms minimum truck gap, but stated
+         * rather than glossed.
+         */
+        if (rx_backlog == 0)
+        {
+            s->st.ontime++;
+        }
+        else
+        {
+            s->st.ontime_unverified++;
+            if (rx_backlog > s->st.unverified_max_backlog)
+            {
+                s->st.unverified_max_backlog = rx_backlog;
+            }
+        }
+        s->inhibit_outstanding = false;
+    }
+
+    s->held = false;
+    s->aborting = false;
+}
+
+/*
+ * Start withdrawing whatever the controller holds. Item 4: re-abort while the
+ * buffer is AWAITING, wait while it is TRANSMITTING. The first command is issued
+ * here so that the common case -- the buffer already awaiting -- costs one tick
+ * rather than two.
+ */
+static void begin_abort(gs_t *s, int64_t now)
+{
+    s->aborting = true;
+    s->abort_since = now;
+    s->abort_cmds_this = 0;
+    s->st.aborts++;
+
+    if (s->hal->buf_state(s->hal->ctx) == GS_BUF_AWAITING)
+    {
+        s->hal->abort(s->hal->ctx);
+        s->abort_cmds_this++;
+        s->st.abort_cmds++;
+    }
+}
+
+/*
+ * One turn of item 4's loop. Returns true when the abort is finished with --
+ * either the buffer is free, or the bound was reached.
+ *
+ * IT DOES NOT RE-ISSUE THE COMMAND WHILE TRANSMITTING. That is the case the
+ * measurement showed has no effect (7 of 8 under contention), and repeating it
+ * there would burn the bound on a no-op instead of waiting for the window where
+ * the abort works -- which is the instant the frame loses arbitration and TS
+ * falls to 0.
+ */
+static bool abort_step(gs_t *s, int64_t now)
+{
+    const gs_buf_t b = s->hal->buf_state(s->hal->ctx);
+
+    if (b == GS_BUF_EMPTY)
+    {
+        const int64_t took = now - s->abort_since;
+        if (took > 0 && (uint32_t)took > s->st.abort_max_us)
+        {
+            s->st.abort_max_us = (uint32_t)took;
+        }
+        return true;
+    }
+    if (b == GS_BUF_AWAITING)
+    {
+        s->hal->abort(s->hal->ctx);
+        s->abort_cmds_this++;
+        s->st.abort_cmds++;
+    }
+    /* GS_BUF_TRANSMITTING: wait. Deliberately no command. */
+
+    if (now - s->abort_since >= GS_ABORT_BOUND_US)
+    {
+        s->st.abort_bound_hit++;
+        return true;
+    }
+    return false;
+}
+
+static gs_class_t next_class(const gs_t *s, bool *found)
+{
+    for (int c = 0; c < GS_CLASS_N; c++)
+    {
+        if (s->q[c].n > 0)
+        {
+            *found = true;
+            return (gs_class_t)c;
+        }
+    }
+    *found = false;
+    return GS_CLASS_N;
+}
+
+void gs_tick(gs_t *s, int64_t now, uint32_t rx_backlog)
+{
+    /* Advance trip 7's window before anything can add to it. */
+    if (s->skip_window_start != 0
+        && now - s->skip_window_start >= GS_SKIP_WINDOW_US)
+    {
+        s->skip_window_start = 0;
+        s->st.skip_window = 0;
+    }
+
+    /*
+     * 1. Has what the controller held left it? This is the only completion
+     *    signal available, and it cannot distinguish a real transmission from an
+     *    aborted one -- the driver reports both as TX_SUCCESS. The scheduler's
+     *    own record of WHAT it handed over is what makes the credit correct
+     *    (item 5), which is why held_class is consulted and not the alert.
+     */
+    /*
+     *    THE `!s->aborting` GUARD IS LOAD-BEARING. The driver reports an aborted
+     *    frame exactly as it reports a real transmission, so "it left the
+     *    controller" alone would credit an ABORTED frame as sent -- which is the
+     *    same confusion item 5 exists to prevent, one level down in the class
+     *    statistics. While an abort is in progress the departure belongs to step
+     *    3, which counts it as aborted and requeues it.
+     */
+    if (s->held && !s->aborting && !s->hal->outstanding(s->hal->ctx))
+    {
+        note_left_controller(s, now, rx_backlog);
+    }
+
+    /*
+     * 2. Preemption. An inhibit is waiting and the controller holds something
+     *    of a lower class: abort it (item 4) and put it back at the head of its
+     *    class (item 6 -- aborted and requeued, both counted).
+     */
+    if (!s->aborting && s->held && s->held_class != GS_CLASS_INHIBIT
+        && s->q[GS_CLASS_INHIBIT].n > 0)
+    {
+        begin_abort(s, now);
+    }
+
+    /*
+     * 3. Turn the abort loop. Nothing is handed over while it runs: item 3 says
+     *    at most one frame is with the driver at a time, and handing over during
+     *    an abort would put the new frame behind the one being removed.
+     */
+    if (s->aborting)
+    {
+        if (!abort_step(s, now))
+        {
+            return;
+        }
+        s->aborting = false;
+        if (s->held && !s->hal->outstanding(s->hal->ctx))
+        {
+            /*
+             * The aborted frame is gone. Requeue it at the head of its class --
+             * unless it was the inhibit being withdrawn at its deadline, which
+             * gs_command_received() has already accounted for as a skip and
+             * must NOT be sent later.
+             */
+            const gs_class_t c = s->held_class;
+            if (c != GS_CLASS_INHIBIT)
+            {
+                gs_slot_t sl;
+                sl.f = s->held_f;
+                sl.t_queued = s->held_since;
+                sl.seq = s->held_seq;
+                s->st.cls[c].aborted++;
+                if (q_push_head(&s->q[c], &sl))
+                {
+                    s->st.cls[c].requeued++;
+                }
+                else
+                {
+                    s->st.cls[c].dropped++;
+                }
+            }
+            else
+            {
+                s->st.cls[GS_CLASS_INHIBIT].aborted++;
+                s->inhibit_outstanding = false;
+            }
+            s->held = false;
+        }
+        else if (s->held)
+        {
+            /* The bound was reached and the frame is still there. Item 4: keep
+             * trying. Nothing is handed over, and the next tick starts again. */
+            return;
+        }
+    }
+
+    /*
+     * 4. Hand over the next frame, highest class first, FIFO within a class.
+     *    Item 7 falls out of this rather than being a separate rule: while an
+     *    inhibit is outstanding, `held` is true, so nothing else can go.
+     */
+    if (!s->held)
+    {
+        bool found = false;
+        const gs_class_t c = next_class(s, &found);
+        if (!found)
+        {
+            return;
+        }
+        const gs_slot_t *sl = q_peek(&s->q[c]);
+        if (sl == NULL)
+        {
+            return;
+        }
+        /*
+         * A probe honours its due time; the caller owns the wait (the core's
+         * `have_due` contract says spinning is a platform behaviour). If it is
+         * not due yet, nothing else may jump it: the classes are a priority
+         * order, not a race.
+         */
+        if (sl->f.have_due && now < sl->f.due_us)
+        {
+            return;
+        }
+
+        const int64_t wait_us = now - sl->t_queued;
+        if (wait_us > 0 && (uint32_t)wait_us > s->st.cls[c].max_wait_us)
+        {
+            s->st.cls[c].max_wait_us = (uint32_t)wait_us;
+        }
+
+        if (!s->hal->submit(s->hal->ctx, &sl->f))
+        {
+            /*
+             * The driver refused. Trip 7 counts this at once for an inhibit;
+             * for anything else it stays queued and is retried next tick, which
+             * is why it is counted but not dropped.
+             */
+            s->st.tx_refused++;
+            return;
+        }
+
+        s->held = true;
+        s->held_class = c;
+        s->held_seq = sl->seq;
+        s->held_f = sl->f;
+        s->held_since = now;
+        if (c == GS_CLASS_INHIBIT)
+        {
+            s->inhibit_outstanding = true;
+            s->inhibit_seq = sl->seq;
+            s->inhibit_handed = now;
+        }
+        q_pop(&s->q[c]);
+    }
+}
+
+gs_deadline_t gs_command_received(gs_t *s, int64_t now, uint32_t rx_backlog)
+{
+    /*
+     * Observe a completion FIRST. A frame that finished before this dequeue is
+     * on time in the only sense the device can evaluate, and checking after the
+     * withdrawal decision would score it as a skip.
+     */
+    if (s->held && !s->hal->outstanding(s->hal->ctx))
+    {
+        note_left_controller(s, now, rx_backlog);
+    }
+
+    if (!s->inhibit_outstanding)
+    {
+        return GS_DEADLINE_OK;
+    }
+
+    /*
+     * Still outstanding at the deadline. The frame is withdrawn either way; what
+     * differs is what we can honestly say happened to it.
+     */
+    const gs_buf_t b = s->hal->buf_state(s->hal->ctx);
+    gs_deadline_t verdict;
+
+    if (b == GS_BUF_TRANSMITTING)
+    {
+        /*
+         * It may reach the wire late, and the device cannot tell that from the
+         * abort succeeding -- both end as TX_SUCCESS with msgs_to_tx 0. Trip 7
+         * says a frame on the wire after the VCM's next command trips at once,
+         * so the ambiguous case is reported as the trip. Under-reporting here
+         * would let a silently ineffective inhibit look healthy.
+         */
+        s->st.late_on_wire++;
+        verdict = GS_DEADLINE_MAYBE_LATE;
+    }
+    else
+    {
+        s->st.skipped++;
+        if (s->skip_window_start == 0)
+        {
+            s->skip_window_start = now;
+        }
+        s->st.skip_window++;
+        verdict = GS_DEADLINE_SKIPPED;
+    }
+
+    /* Withdraw it. The loop runs on subsequent ticks; the frame is never
+     * requeued, because a skipped frame is never sent (item 5). */
+    if (!s->aborting)
+    {
+        begin_abort(s, now);
+    }
+    return verdict;
+}
+
+bool gs_inhibit_outstanding(const gs_t *s)
+{
+    return s->inhibit_outstanding;
+}
+
+bool gs_skip_trip(const gs_t *s)
+{
+    return s->st.skip_window >= GS_SKIP_TRIP_N;
+}
+
+const gs_stats_t *gs_stats(const gs_t *s)
+{
+    return &s->st;
+}
+
+/* --------------------------------------------------------------- the JSON -- */
+
+static int clamp(int n, int buflen)
+{
+    if (n < 0)      { return 0; }
+    if (n > buflen) { return buflen; }
+    return n;
+}
+
+int gs_json(const gs_t *s, char *buf, int buflen)
+{
+    static const char *NAMES[GS_CLASS_N] = { "inhibit", "probe", "telemetry" };
+    int n = 0;
+
+    n = clamp(n + snprintf(buf + n, buflen - n,
+        "\"sched\":{\"skipped\":%lu,\"skip_window\":%lu,"
+        "\"aborts\":%lu,\"abort_cmds\":%lu,\"abort_bound_hit\":%lu,"
+        "\"abort_max_us\":%lu,"
+        "\"ontime\":%lu,\"ontime_unverified\":%lu,"
+        "\"unverified_max_backlog\":%lu,"
+        "\"tx_failed\":%lu,\"tx_refused\":%lu,\"late_on_wire\":%lu,\"cls\":{",
+        (unsigned long)s->st.skipped, (unsigned long)s->st.skip_window,
+        (unsigned long)s->st.aborts, (unsigned long)s->st.abort_cmds,
+        (unsigned long)s->st.abort_bound_hit,
+        (unsigned long)s->st.abort_max_us,
+        (unsigned long)s->st.ontime, (unsigned long)s->st.ontime_unverified,
+        (unsigned long)s->st.unverified_max_backlog,
+        (unsigned long)s->st.tx_failed, (unsigned long)s->st.tx_refused,
+        (unsigned long)s->st.late_on_wire), buflen);
+
+    for (int c = 0; c < GS_CLASS_N; c++)
+    {
+        n = clamp(n + snprintf(buf + n, buflen - n,
+            "%s\"%s\":{\"queued\":%lu,\"sent\":%lu,\"aborted\":%lu,"
+            "\"requeued\":%lu,\"dropped\":%lu,\"max_wait_us\":%lu,\"depth\":%u}",
+            (c == 0) ? "" : ",", NAMES[c],
+            (unsigned long)s->st.cls[c].queued,
+            (unsigned long)s->st.cls[c].sent,
+            (unsigned long)s->st.cls[c].aborted,
+            (unsigned long)s->st.cls[c].requeued,
+            (unsigned long)s->st.cls[c].dropped,
+            (unsigned long)s->st.cls[c].max_wait_us,
+            (unsigned)s->q[c].n), buflen);
+    }
+
+    n = clamp(n + snprintf(buf + n, buflen - n, "}}"), buflen);
+    return (buflen > 0 && n >= buflen) ? buflen - 1 : n;
+}
