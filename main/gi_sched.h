@@ -124,7 +124,11 @@ typedef enum
 #define GS_Q_INHIBIT    2   /* one live, one arriving: a third would mean the
                              * deadline logic failed, and a bigger queue would
                              * hide that instead of reporting it */
-#define GS_Q_PROBE      2
+#define GS_Q_PROBE      1   /* ONE. A probe measures one 0x051, so a second
+                             * queued behind it is stale by definition -- and a
+                             * queue of 2 let the shim's single "last probe"
+                             * record carry the wrong frame's identity. A drop is
+                             * counted, which is the honest report. */
 #define GS_Q_TELEMETRY  6   /* 5.2 item 6 requires drops to be COUNTED, so the
                              * depth is a tuning choice and not a guarantee */
 
@@ -187,6 +191,18 @@ typedef struct
      */
     uint32_t skipped;
     uint32_t skip_window;   /* skips inside the last GS_SKIP_WINDOW_US */
+    /*
+     * THE SAME TOTAL, BROKEN DOWN BY KIND, and the breakdown is what the caller
+     * reports to the core -- one call per skip, with its kind. The first version
+     * had the worker call gi_on_inhibit_skip() once per DEADLINE, so a purge that
+     * withdrew two queued frames counted two skips here and reported one there,
+     * and the two numbers disagreed with nothing saying why. Reported through
+     * counters like everything else the caller derives, so they cannot.
+     *
+     * skipped == skipped_withdrawn + skipped_late, always.
+     */
+    uint32_t skipped_withdrawn; /* removed at the deadline, never on the wire */
+    uint32_t skipped_late;      /* went out late, or may have (late_on_wire) */
 
     /*
      * D6. A telemetry frame that COMPLETES GENUINELY while an abort is in
@@ -364,6 +380,37 @@ void gs_init(gs_t *s, const gs_hal_t *hal);
  * controller: the caller owns bus bring-up and teardown.
  */
 void gs_reset(gs_t *s);
+
+/*
+ * Re-arm: clear the queues and the counters, KEEP the hardware-facing state.
+ *
+ * Use this on a mode change, never gs_init(). gs_init() memsets everything
+ * including `held`, `held_f` and `aborting`, and the controller may still be
+ * holding a frame from the previous arm -- a diag page awaiting arbitration, or an
+ * inhibit on an INHIBIT->INHIBIT re-arm. A scheduler that has forgotten what the
+ * hardware holds will hand over the next frame, twai_transmit will queue it BEHIND
+ * the old one in the driver's FIFO, and that is the priority inversion item 3
+ * exists to prevent -- with the old frame's departure credited to the new one.
+ *
+ * THE HAL IS A PARAMETER AND NOT PRESERVED FROM THE STRUCT. The first version took
+ * only `s` and kept the existing pointer, which is NULL on a statically-allocated
+ * scheduler that has never been gs_init()ed -- so the very first arm produced a
+ * scheduler with no HAL and segfaulted on the first submit. Passing it makes that
+ * state unreachable instead of relying on an init call nobody can see from here.
+ */
+void gs_rearm(gs_t *s, const gs_hal_t *hal);
+
+/*
+ * Withdraw every inhibit: purge the class queue and start the abort loop on a held
+ * one. Each purged frame is counted as a skip.
+ *
+ * CALL THIS WHENEVER THE CORE STOPS BEING LIVE -- any abort, any disable, any mode
+ * change out of INHIBIT. Without it a refused inhibit stays queued and is retried
+ * every tick: the core latches off on the refusal, the retry then succeeds, and an
+ * inhibit frame reaches the wire AFTER the trip that was supposed to stop us
+ * transmitting.
+ */
+void gs_withdraw_inhibits(gs_t *s, int64_t now);
 
 /*
  * Enqueue one frame. false = the class queue was full and the frame was

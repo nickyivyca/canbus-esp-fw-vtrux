@@ -426,6 +426,9 @@ static uint32_t s_seen_inh_sent;
 static uint32_t s_seen_inh_refused;
 static uint32_t s_seen_probe_handed;
 static uint32_t s_seen_probe_lost;
+static uint32_t s_seen_skip_withdrawn;
+static uint32_t s_seen_skip_late;
+static bool     s_was_live;
 static gi_frame_t s_last_inhibit;
 static bool     s_have_last_inhibit;
 static gi_frame_t s_last_probe;
@@ -552,6 +555,30 @@ static void sched_pump(int64_t now, gi_events_t *ev)
 
     const gs_stats_t *st = gs_stats(&s_sched);
 
+    /*
+     * SKIPS, ONE CORE CALL PER SKIP, with its kind. Derived from the counters for
+     * the same reason every other event here is: the worker used to call
+     * gi_on_inhibit_skip() once per DEADLINE, so the D1 purge withdrawing two
+     * queued frames counted two skips in the scheduler and reported one to the
+     * core, and the two numbers disagreed with nothing saying why.
+     *
+     * The trip verdict is read fresh on each call, so the third skip inside a
+     * second is the one that carries `trip` -- which is what spec 7 trip 7 as
+     * amended requires.
+     */
+    while (s_seen_skip_withdrawn < st->skipped_withdrawn)
+    {
+        s_seen_skip_withdrawn++;
+        gi_on_inhibit_skip(&s_core, GI_SKIP_WITHDRAWN,
+                           gs_skip_trip(&s_sched), now, ev);
+    }
+    while (s_seen_skip_late < st->skipped_late)
+    {
+        s_seen_skip_late++;
+        gi_on_inhibit_skip(&s_core, GI_SKIP_MAYBE_LATE,
+                           gs_skip_trip(&s_sched), now, ev);
+    }
+
     while (s_seen_inh_sent < st->cls[GS_CLASS_INHIBIT].sent)
     {
         s_seen_inh_sent++;
@@ -612,6 +639,26 @@ static void sched_pump(int64_t now, gi_events_t *ev)
             gi_on_tx_result(&s_core, &s_last_probe, false, false, now, ev);
         }
     }
+
+    /*
+     * D7: THE MOMENT THE CORE STOPS BEING LIVE, EVERY QUEUED INHIBIT GOES.
+     *
+     * Without this a refused inhibit stays queued for a retry, the core latches off
+     * on the refusal, and the retry on the next tick succeeds -- putting an inhibit
+     * frame on the wire AFTER the trip that was supposed to stop us transmitting.
+     * The same shape applies to any trip landing while an inhibit sits behind an
+     * abort loop. Found by the reviewing session, 2026-09-27; verified in the source
+     * before fixing: a refused submit returns with the frame still in its queue.
+     *
+     * On the falling edge only, so a device that is simply not live does not re-run
+     * the purge every tick and pile up skips it never had.
+     */
+    const bool live_now = s_core.inhibit_live;
+    if (s_was_live && !live_now)
+    {
+        gs_withdraw_inhibits(&s_sched, now);
+    }
+    s_was_live = live_now;
 }
 
 static void dispatch_emits(const gi_emit_t *em, gi_events_t *ev)
@@ -901,11 +948,22 @@ esp_err_t gen_inhibit_set_mode(gen_inhibit_mode_t mode, uint32_t offset_us)
      * other figure on the status page, and a stale `held` flag from a previous arm
      * would stop the first frame of this one going out.
      */
-    gs_init(&s_sched, &DEV_HAL);
+    /*
+     * D8: gs_rearm(), NOT gs_init(). The counters and the queues are per-arm; what
+     * the CONTROLLER is holding is not, and a diag page may still be awaiting
+     * arbitration in it. A scheduler that forgot that would hand over the next frame
+     * and twai_transmit would queue it behind the old one in the driver's FIFO --
+     * the priority inversion item 3 exists to prevent, with the old frame's
+     * departure credited to the new one.
+     */
+    gs_rearm(&s_sched, &DEV_HAL);
     s_seen_inh_sent = 0;
     s_seen_inh_refused = 0;
     s_seen_probe_handed = 0;
     s_seen_probe_lost = 0;
+    s_seen_skip_withdrawn = 0;
+    s_seen_skip_late = 0;
+    s_was_live = false;
     s_have_last_inhibit = false;
     s_have_last_probe = false;
     gi_set_mode(&s_core, (gi_mode_t)mode, offset_us, esp_timer_get_time(), &ev);
@@ -1108,16 +1166,14 @@ static void gen_inhibit_task(void *arg)
              */
             if (rx.identifier == GI_VCM_ID)
             {
-                const gs_deadline_t v =
-                    gs_command_received(&s_sched, t_rx, can_msgs_to_rx());
-                if (v != GS_DEADLINE_OK)
-                {
-                    const gi_skip_kind_t kind =
-                        (v == GS_DEADLINE_MAYBE_LATE) ? GI_SKIP_MAYBE_LATE
-                                                      : GI_SKIP_WITHDRAWN;
-                    gi_on_inhibit_skip(&s_core, kind, gs_skip_trip(&s_sched),
-                                       t_rx, &ev);
-                }
+                /*
+                 * The verdict is not reported here. sched_pump() derives one core
+                 * call per skip from the per-kind counters, so a deadline that
+                 * withdraws TWO queued frames reports two -- which reporting from
+                 * this return value could not do, and did not.
+                 */
+                (void)gs_command_received(&s_sched, t_rx, can_msgs_to_rx());
+                sched_pump(t_rx, &ev);
             }
 
             gi_on_frame(&s_core, rx.identifier, rx.data_length_code, rx.data,

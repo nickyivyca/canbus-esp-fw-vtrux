@@ -32,7 +32,8 @@
  * inhibit frame must go through note_skip() so the counters and trip 7's window
  * cannot disagree about what happened.
  */
-static void     note_skip(gs_t *s, int64_t now);
+static void     note_skip(gs_t *s, int64_t now, bool late);
+static void     begin_abort(gs_t *s, int64_t now);
 static uint32_t skips_in_window(const gs_t *s, int64_t now);
 
 /* ------------------------------------------------------------- queueing --- */
@@ -116,6 +117,54 @@ void gs_reset(gs_t *s)
     gs_init(s, hal);
 }
 
+void gs_rearm(gs_t *s, const gs_hal_t *hal)
+{
+    /*
+     * KEEP WHAT THE HARDWARE IS HOLDING. Everything else is per-arm and is cleared.
+     * See the header for why gs_init() is the wrong call here: it forgets a frame
+     * that is really in the controller, and the next handover then queues behind it
+     * in the driver's FIFO.
+     */
+    const bool       held       = s->held;
+    const gs_class_t held_class = s->held_class;
+    const uint32_t   held_seq   = s->held_seq;
+    const int64_t    held_since = s->held_since;
+    const gi_frame_t held_f     = s->held_f;
+    const bool       aborting   = s->aborting;
+    const int64_t    abort_since = s->abort_since;
+    const uint32_t   abort_cmds_this = s->abort_cmds_this;
+
+    gs_init(s, hal);
+
+    s->held = held;
+    s->held_class = held_class;
+    s->held_seq = held_seq;
+    s->held_since = held_since;
+    s->held_f = held_f;
+    s->aborting = aborting;
+    s->abort_since = abort_since;
+    s->abort_cmds_this = abort_cmds_this;
+    /*
+     * `inhibit_outstanding` is deliberately NOT restored: a new arm has no inhibit
+     * of its own outstanding, and leaving it set would make the first
+     * gs_queue_frame() of this arm look like an ordering violation.
+     */
+}
+
+void gs_withdraw_inhibits(gs_t *s, int64_t now)
+{
+    while (s->q[GS_CLASS_INHIBIT].n > 0)
+    {
+        q_pop(&s->q[GS_CLASS_INHIBIT]);
+        note_skip(s, now, false);
+    }
+    if (s->held && s->held_class == GS_CLASS_INHIBIT && !s->aborting)
+    {
+        begin_abort(s, now);
+    }
+    s->st.skip_window = skips_in_window(s, now);
+}
+
 bool gs_queue_frame(gs_t *s, gs_class_t cls, const gi_frame_t *f, int64_t now)
 {
     if (cls >= GS_CLASS_N)
@@ -160,7 +209,7 @@ bool gs_queue_frame(gs_t *s, gs_class_t cls, const gi_frame_t *f, int64_t now)
         s->st.cls[cls].dropped++;
         if (cls == GS_CLASS_INHIBIT)
         {
-            note_skip(s, now);
+            note_skip(s, now, false);   /* never went out */
         }
         return false;
     }
@@ -174,9 +223,11 @@ bool gs_queue_frame(gs_t *s, gs_class_t cls, const gi_frame_t *f, int64_t now)
  * Record one skip. Every path that loses an inhibit frame comes here, so the
  * window and the counters cannot disagree about what happened.
  */
-static void note_skip(gs_t *s, int64_t now)
+static void note_skip(gs_t *s, int64_t now, bool late)
 {
     s->st.skipped++;
+    if (late) { s->st.skipped_late++; }
+    else      { s->st.skipped_withdrawn++; }
     s->skip_ts[s->skip_ts_head] = now;
     s->skip_ts_head = (uint8_t)((s->skip_ts_head + 1) % GS_SKIP_RING);
     if (s->skip_ts_n < GS_SKIP_RING)
@@ -549,7 +600,7 @@ gs_deadline_t gs_command_received(gs_t *s, int64_t now, uint32_t rx_backlog)
     while (s->q[GS_CLASS_INHIBIT].n > 0)
     {
         q_pop(&s->q[GS_CLASS_INHIBIT]);
-        note_skip(s, now);
+        note_skip(s, now, false);       /* never handed over, never on the wire */
         purged++;
     }
     s->st.skip_window = skips_in_window(s, now);
@@ -603,7 +654,7 @@ gs_deadline_t gs_command_received(gs_t *s, int64_t now, uint32_t rx_backlog)
         /* AWAITING: the loop will remove it, and it never reaches the wire. */
         verdict = GS_DEADLINE_SKIPPED;
     }
-    note_skip(s, now);
+    note_skip(s, now, verdict == GS_DEADLINE_MAYBE_LATE);
     s->st.skip_window = skips_in_window(s, now);
 
     /* Withdraw it. The loop runs on subsequent ticks; the frame is never
@@ -670,6 +721,7 @@ int gs_json(const gs_t *s, char *buf, int buflen)
 
     n = clamp(n + snprintf(buf + n, buflen - n,
         "\"sched\":{\"skipped\":%lu,\"skip_window\":%lu,"
+        "\"skipped_withdrawn\":%lu,\"skipped_late\":%lu,"
         "\"aborts\":%lu,\"abort_cmds\":%lu,\"abort_bound_hit\":%lu,"
         "\"abort_max_us\":%lu,"
         "\"ontime\":%lu,\"ontime_unverified\":%lu,"
@@ -678,6 +730,8 @@ int gs_json(const gs_t *s, char *buf, int buflen)
         "\"ambiguous_departures\":%lu,\"order_violations\":%lu,"
         "\"cls\":{",
         (unsigned long)s->st.skipped, (unsigned long)s->st.skip_window,
+        (unsigned long)s->st.skipped_withdrawn,
+        (unsigned long)s->st.skipped_late,
         (unsigned long)s->st.aborts, (unsigned long)s->st.abort_cmds,
         (unsigned long)s->st.abort_bound_hit,
         (unsigned long)s->st.abort_max_us,
