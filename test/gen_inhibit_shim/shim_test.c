@@ -1447,6 +1447,84 @@ static void case_diag_defers_after_keyoff(void)
     case_end();
 }
 
+static void case_status_json_bounds(void)
+{
+    case_begin("case 20: the status page truncates instead of overrunning");
+    setup();
+
+    /*
+     * A populated page, so the sizes below are crossing a REAL length rather
+     * than a nearly empty object. go_live() gives it histograms with content and
+     * a mode, which is most of the page's bulk.
+     */
+    go_live();
+    ft_run(20000);
+
+    /*
+     * Sizes chosen to straddle the page: far too small, around the truncation
+     * boundary, and comfortably larger. 1400 is what config_server.c actually
+     * passes.
+     */
+    static const int sizes[] = { 1, 2, 8, 40, 200, 600, 1100, 1219, 1220,
+                                 1221, 1400, 1600 };
+
+    for (unsigned i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++)
+    {
+        const int cap = sizes[i];
+        /*
+         * A CANARY AFTER THE BUFFER, because the bug writes past it and a
+         * returned length cannot show that. Checked byte by byte so a partial
+         * overrun is caught, not only a large one.
+         */
+        enum { PAD = 64 };
+        char *area = malloc((size_t)cap + PAD);
+        CHECK(area != NULL, "out of memory building the %d-byte case", cap);
+        if (area == NULL) { continue; }
+        memset(area + cap, 0x5A, PAD);
+
+        const int n = gen_inhibit_get_stats_json(area, cap);
+
+        int clean = 1;
+        for (int k = 0; k < PAD; k++)
+        {
+            if ((unsigned char)area[cap + k] != 0x5A) { clean = 0; break; }
+        }
+        CHECK(clean,
+              "gen_inhibit_get_stats_json wrote PAST a %d-byte buffer. snprintf "
+              "returns the length it WOULD have written, so one truncated "
+              "append leaves the offset past the end and the next append is "
+              "handed a negative size that converts to a huge size_t",
+              cap);
+
+        CHECK(n >= 0 && n < cap,
+              "with a %d-byte buffer the returned length was %d; it must be "
+              "less than the capacity, because config_server.c hands it "
+              "straight to httpd_resp_send() and would otherwise read the "
+              "terminator or past it",
+              cap, n);
+
+        /*
+         * And the bytes it claims must be inside what it wrote: a NUL at or
+         * before n proves the return is not counting phantom content.
+         */
+        if (n >= 0 && n < cap)
+        {
+            /* memchr, not strnlen: strnlen needs a POSIX feature macro the
+             * shim does not define, and the failure is a link-time surprise. */
+            const char *nul = memchr(area, ' ', (size_t)cap);
+            CHECK(nul != NULL && (nul - area) >= n,
+                  "the %d-byte case returned %d but the string ends at %ld, so "
+                  "the length does not describe the content",
+                  cap, n, nul ? (long)(nul - area) : -1L);
+        }
+
+        free(area);
+    }
+
+    teardown();
+    case_end();
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);   /* a hang must still show its trace */
@@ -1470,6 +1548,7 @@ int main(void)
     case_arm_forces_accept_all();
     case_rx_queue_depth();
     case_diag_defers_after_keyoff();
+    case_status_json_bounds();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
     return g_fail ? 1 : 0;

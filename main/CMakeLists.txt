@@ -27,3 +27,22 @@ if(GI_INSTRUMENT_RXQ)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE GI_INSTRUMENT_RXQ=1)
     message(STATUS "gen_inhibit: RX backlog instrument ENABLED (measurement build)")
 endif()
+
+# AUTO-ARM BUILD, for spec 12.4's auto-arm row.
+#
+#   idf.py -B build-autoarm -DGEN_INHIBIT_AUTOARM=GEN_INHIBIT_INHIBIT build
+#
+# A plain `idf.py -D` sets a CMake cache variable, not a preprocessor macro,
+# which is why gen_inhibit.c's own comment says the override has to come through
+# target_compile_definitions. The value is an enum name from gen_inhibit.h and is
+# compared at run time, not by the preprocessor, so the name works directly.
+#
+# This is the DEPLOYED configuration (relay power -> boot -> inhibiting, no human
+# in the loop), not a measurement hack -- but it is not the current default, so it
+# gets its own build directory for the same reason build-rxq does: two
+# configurations of one commit produce the same image filename.
+if(GEN_INHIBIT_AUTOARM)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        GEN_INHIBIT_AUTOARM_MODE=${GEN_INHIBIT_AUTOARM})
+    message(STATUS "gen_inhibit: AUTO-ARM build, mode ${GEN_INHIBIT_AUTOARM}")
+endif()

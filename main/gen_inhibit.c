@@ -944,6 +944,26 @@ static void gen_inhibit_task(void *arg)
 
 /* ------------------------------------------------------------------ JSON -- */
 
+/*
+ * Keep an append offset inside its buffer.
+ *
+ * snprintf returns the length it WOULD have written, so a truncated append
+ * leaves `n` past the end. Then `buflen - n` is negative, converts to an
+ * enormous size_t at the next call, and that call writes past the buffer --
+ * and a caller that sends `n` bytes reads past it as well. Clamping after
+ * every append makes `buf + n` a valid pointer and `buflen - n` non-negative
+ * throughout, so an overlong page truncates instead of corrupting memory.
+ *
+ * Found by review 2026-09-26, latent: the page was ~1220 bytes of 1400, so the
+ * NEXT field added would have been the one to do damage.
+ */
+static int gi_clamp(int n, int buflen)
+{
+    if (n < 0)      { return 0; }
+    if (n > buflen) { return buflen; }
+    return n;
+}
+
 static int hist_json(const gi_hist_t *h, const char *name, char *buf, int buflen)
 {
     int n = snprintf(buf, buflen,
@@ -952,15 +972,14 @@ static int hist_json(const gi_hist_t *h, const char *name, char *buf, int buflen
                      (unsigned long)(h->count ? h->min_us : 0),
                      (unsigned long)h->max_us,
                      (unsigned long)(h->count ? (uint32_t)(h->sum_us / h->count) : 0));
-    for (int i = 0; i < GI_NBUCKETS && n < buflen; i++)
+    n = gi_clamp(n, buflen);
+    for (int i = 0; i < GI_NBUCKETS; i++)
     {
-        n += snprintf(buf + n, buflen - n, "%s%lu",
-                      (i ? "," : ""), (unsigned long)h->buckets[i]);
+        n = gi_clamp(n + snprintf(buf + n, buflen - n, "%s%lu",
+                                  (i ? "," : ""),
+                                  (unsigned long)h->buckets[i]), buflen);
     }
-    if (n < buflen)
-    {
-        n += snprintf(buf + n, buflen - n, "]}");
-    }
+    n = gi_clamp(n + snprintf(buf + n, buflen - n, "]}"), buflen);
     return n;
 }
 
@@ -1084,14 +1103,18 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
                      st->fb_ever ? "true" : "false",
                      st->rpm_ever ? "true" : "false");
 
-    n += hist_json(&st->rx_gap, "rx_gap", buf + n, buflen - n);
-    if (n < buflen) n += snprintf(buf + n, buflen - n, ",");
-    n += hist_json(&st->response, "response", buf + n, buflen - n);
-    if (n < buflen) n += snprintf(buf + n, buflen - n, ",\"bucket_edges_us\":[");
-    for (int i = 0; i < GI_NBUCKETS - 1 && n < buflen; i++)
+    n = gi_clamp(n, buflen);
+    n = gi_clamp(n + hist_json(&st->rx_gap, "rx_gap", buf + n, buflen - n),
+                 buflen);
+    n = gi_clamp(n + snprintf(buf + n, buflen - n, ","), buflen);
+    n = gi_clamp(n + hist_json(&st->response, "response", buf + n, buflen - n),
+                 buflen);
+    n = gi_clamp(n + snprintf(buf + n, buflen - n, ",\"bucket_edges_us\":["),
+                 buflen);
+    for (int i = 0; i < GI_NBUCKETS - 1; i++)
     {
-        n += snprintf(buf + n, buflen - n, "%s%lu", (i ? "," : ""),
-                      (unsigned long)gi_bucket_us[i]);
+        n = gi_clamp(n + snprintf(buf + n, buflen - n, "%s%lu", (i ? "," : ""),
+                                  (unsigned long)gi_bucket_us[i]), buflen);
     }
     /*
      * THAT CLOSING BRACE IS THE STATUS OBJECT'S, not the array's -- the "]"
@@ -1101,11 +1124,16 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
      * data", which reads like a transport problem rather than a missing
      * brace. Anything added here goes BEFORE the brace.
      */
-    if (n < buflen) n += snprintf(buf + n, buflen - n, ",\"inf\"]");
-    n += drv_json(buf + n, buflen - n);
-    n += rxq_json(buf + n, buflen - n);
-    if (n < buflen) n += snprintf(buf + n, buflen - n, "}\n");
-    return n;
+    n = gi_clamp(n + snprintf(buf + n, buflen - n, ",\"inf\"]"), buflen);
+    n = gi_clamp(n + drv_json(buf + n, buflen - n), buflen);
+    n = gi_clamp(n + rxq_json(buf + n, buflen - n), buflen);
+    n = gi_clamp(n + snprintf(buf + n, buflen - n, "}\n"), buflen);
+
+    /*
+     * The CONTENT length, never the buffer length: a caller that hands `n` to
+     * httpd_resp_send() must not be told to read the terminator or past it.
+     */
+    return (buflen > 0 && n >= buflen) ? buflen - 1 : n;
 }
 
 /* ------------------------------------------------------------------ init -- */
