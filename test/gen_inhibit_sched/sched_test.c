@@ -386,6 +386,272 @@ static void case_inhibit_queue_full_is_a_skip(void)
     ck_eq(st->skipped, refused, "AND each counted as a SKIP, feeding trip 7");
 }
 
+
+/*
+ * R8. A HELD inhibit withdrawn at its deadline must NEVER be requeued, and must
+ * never reach the wire. The mutant that requeues it (post-abort path,
+ * `c != GS_CLASS_INHIBIT` -> `1`) sends the frame LATE, which is the failure the
+ * whole skip rule exists to prevent -- and the suite was green through it,
+ * because D1's case covers a QUEUED inhibit and nothing covered a held one.
+ */
+static void case_withdrawn_held_inhibit_never_returns(void)
+{
+    g_case = "R8: a withdrawn HELD inhibit never comes back";
+    fb_reset();
+    fb_set_contended(true);     /* STRESS: it sits AWAITING, never gets out */
+    gs_t s;
+    gs_init(&s, fb_hal());
+
+    gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
+    gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
+    run(&s, 50, 10, 0);
+    ck_eq(fb_submit_count(), 1, "the inhibit was handed over");
+    ck(fb_state_now() == GS_BUF_AWAITING, "and is awaiting arbitration");
+
+    const gs_deadline_t v = gs_command_received(&s, fb_now(), 0);
+    ck(v == GS_DEADLINE_SKIPPED, "the deadline skips it");
+    ck_eq(gs_stats(&s)->skipped, 1, "one skip");
+
+    /* Let the bus go quiet and run a long time. It must not reappear. */
+    fb_set_contended(false);
+    run(&s, 5000, 10, 0);
+    for (int i = 0; i < fb_wire_count(); i++)
+    {
+        ck(fb_wire_id(i) != ID_INHIBIT,
+           "THE WITHDRAWN INHIBIT NEVER REACHED THE WIRE");
+    }
+    ck_eq(fb_submit_count(), 1, "and was never handed over a second time");
+}
+
+/*
+ * R5. TRANSMITTING at the deadline is GS_DEADLINE_MAYBE_LATE, not a skip. The
+ * device cannot tell a late completion from a successful abort, so the ambiguous
+ * case is reported as the immediate trip and the skip window does NOT move --
+ * mixing it into the skips would both understate the severity and pollute the
+ * 3-in-1 s count.
+ */
+static void case_transmitting_at_deadline_is_maybe_late(void)
+{
+    g_case = "R5: transmitting at the deadline is MAYBE_LATE";
+    fb_reset();
+    gs_t s;
+    gs_init(&s, fb_hal());
+
+    gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
+    gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
+    run(&s, 100, 10, 0);        /* idle bus: transmitting, ~249 us to go */
+    ck(fb_state_now() == GS_BUF_TRANSMITTING, "the inhibit is transmitting");
+
+    const gs_deadline_t v = gs_command_received(&s, fb_now(), 0);
+    ck(v == GS_DEADLINE_MAYBE_LATE, "the verdict is MAYBE_LATE");
+    const gs_stats_t *st = gs_stats(&s);
+    ck_eq(st->late_on_wire, 1, "late_on_wire counted");
+    ck_eq(st->skipped, 0, "and it is NOT counted as a skip");
+    ck_eq(st->skip_window, 0, "so the 3-in-1s window did not move");
+}
+
+/*
+ * R4. An aborted telemetry page goes back at the HEAD of its class, so it is not
+ * starved behind pages queued during its own preemption. Three distinct diag IDs
+ * make the order readable.
+ */
+static void case_requeue_at_head(void)
+{
+    g_case = "R4: an aborted page requeues at the HEAD";
+    fb_reset();
+    fb_set_contended(true);     /* STRESS */
+    gs_t s;
+    gs_init(&s, fb_hal());
+
+    gi_frame_t a = mk(0x7F1, GI_TX_DIAG);
+    gs_queue_frame(&s, GS_CLASS_TELEMETRY, &a, fb_now());
+    run(&s, 50, 10, 0);
+    ck_eq(fb_submit_count(), 1, "0x7F1 was handed over");
+
+    /* Two more pages queue up behind it while it is in the buffer. */
+    gi_frame_t b = mk(0x7F2, GI_TX_DIAG);
+    gi_frame_t c = mk(0x7F3, GI_TX_DIAG);
+    gs_queue_frame(&s, GS_CLASS_TELEMETRY, &b, fb_now());
+    gs_queue_frame(&s, GS_CLASS_TELEMETRY, &c, fb_now());
+
+    /* An inhibit preempts 0x7F1. */
+    gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
+    gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
+    fb_set_contended(false);
+    run(&s, 4000, 10, 0);
+
+    ck(fb_wire_count() >= 3, "several frames reached the wire");
+    ck_eq(fb_wire_id(0), ID_INHIBIT, "the inhibit went first");
+    ck_eq(fb_wire_id(1), 0x7F1, "THE PREEMPTED PAGE WENT NEXT, not 0x7F2");
+}
+
+/*
+ * R1. Item 4's 1 ms bound is reached. The only way there: the buffer stays
+ * TRANSMITTING longer than the bound, as an error-retransmit storm would, because
+ * the loop correctly refuses to issue a command while transmitting and just waits.
+ * The race mode gets us into that state from an abort that was authorised while
+ * AWAITING.
+ *
+ * Spec item 4 on reaching the bound: the inhibit "stays queued at the head of its
+ * class and the scheduler keeps trying until the deadline in item 5".
+ */
+static void case_abort_bound_is_reached(void)
+{
+    g_case = "R1: the 1 ms abort bound is reached and counted";
+    fb_reset();
+    fb_set_contended(true);     /* STRESS */
+    gs_t s;
+    gs_init(&s, fb_hal());
+
+    gi_frame_t d = mk(ID_DIAG, GI_TX_DIAG);
+    gs_queue_frame(&s, GS_CLASS_TELEMETRY, &d, fb_now());
+    run(&s, 50, 10, 0);
+    ck(fb_state_now() == GS_BUF_AWAITING, "the diag is awaiting");
+
+    /* The abort will be authorised at AWAITING and land at TS = 1 anyway, and
+     * the frame then transmits for 4 ms -- far past the bound. */
+    fb_stick_transmitting(4000);
+    fb_race_next(3500);
+    gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
+    gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
+
+    run(&s, 2000, 10, 0);
+    const gs_stats_t *st = gs_stats(&s);
+    ck(fb_aborts_with_no_effect() >= 1, "the race produced a no-effect abort");
+    ck(st->abort_bound_hit >= 1, "THE 1 MS BOUND WAS REACHED AND COUNTED");
+    ck_eq(fb_wire_count(), 0, "nothing has reached the wire yet");
+    ck(gs_inhibit_outstanding(&s) || s.q[GS_CLASS_INHIBIT].n > 0,
+       "and the inhibit is still pending, not dropped");
+}
+
+/*
+ * R9. The probe class sits between inhibit and telemetry, and a probe in the
+ * buffer must be preempted by an inhibit just as telemetry is. No case had a probe
+ * in the buffer at all, so the whole middle class was untested.
+ */
+static void case_probe_is_preempted_by_inhibit(void)
+{
+    g_case = "R9: a probe in the buffer is preempted";
+    fb_reset();
+    fb_set_contended(true);     /* STRESS */
+    gs_t s;
+    gs_init(&s, fb_hal());
+
+    gi_frame_t p = mk(ID_PROBE, GI_TX_PROBE);
+    gs_queue_frame(&s, GS_CLASS_PROBE, &p, fb_now());
+    run(&s, 50, 10, 0);
+    ck_eq(fb_submit_count(), 1, "the probe was handed over");
+
+    gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
+    gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
+    fb_set_contended(false);
+    run(&s, 3000, 10, 0);
+
+    const gs_stats_t *st = gs_stats(&s);
+    ck_eq(st->cls[GS_CLASS_PROBE].aborted, 1, "the probe was aborted");
+    ck(fb_wire_count() >= 1, "something reached the wire");
+    ck_eq(fb_wire_id(0), ID_INHIBIT, "and the INHIBIT was first");
+
+    /* And priority order with nothing held: inhibit before probe. */
+    fb_reset();
+    gs_t s2;
+    gs_init(&s2, fb_hal());
+    gi_frame_t p2 = mk(ID_PROBE, GI_TX_PROBE);
+    gi_frame_t i2 = mk(ID_INHIBIT, GI_TX_INHIBIT);
+    gs_queue_frame(&s2, GS_CLASS_PROBE, &p2, fb_now());
+    gs_queue_frame(&s2, GS_CLASS_INHIBIT, &i2, fb_now());
+    run(&s2, 2000, 10, 0);
+    ck_eq(fb_submit_id(0), ID_INHIBIT, "queued together, the inhibit goes first");
+}
+
+/*
+ * R11, THE BOUNDARY, AND THE ANSWER IS STATED RATHER THAN LEFT TO THE OPERATOR.
+ * "3 skips within 1 s" is read as STRICTLY LESS THAN one second apart, so three
+ * skips exactly 1.000 s apart end to end do NOT trip. Chosen that way because the
+ * trip is a safety response and the spec's own numbers elsewhere (the 4.69 ms
+ * guard band, the 0.3 s crank debounce) are all read as thresholds to be exceeded,
+ * not met.
+ */
+static void case_skip_window_boundary_exactly_one_second(void)
+{
+    g_case = "R11: exactly 1.000 s apart does NOT trip";
+    fb_reset();
+    gs_t s;
+    gs_init(&s, fb_hal());
+    fb_refuse_next(1000);
+
+    const int64_t at[3] = { 0, 500000, 1000000 };
+    for (int i = 0; i < 3; i++)
+    {
+        while (fb_now() < at[i]) { fb_advance(1000); gs_tick(&s, fb_now(), 0); }
+        gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
+        gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
+        gs_tick(&s, fb_now(), 0);
+        gs_command_received(&s, fb_now(), 0);
+    }
+    ck_eq(gs_stats(&s)->skipped, 3, "three skips");
+    ck(!gs_skip_trip(&s),
+       "and NO trip: the outer two are exactly 1.000 s apart");
+
+    /* One microsecond closer and it trips, which is what makes the boundary a
+     * boundary rather than an accident. */
+    gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
+    gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
+    gs_tick(&s, fb_now(), 0);
+    gs_command_received(&s, fb_now(), 0);
+    ck(gs_skip_trip(&s), "a fourth skip at the same instant DOES trip");
+}
+
+
+/*
+ * THE RACE, and the reason item 4 is a loop rather than a single abort.
+ *
+ * The atomic HAL op reads the buffer state and issues the command as one step, so
+ * the scheduler never *decides* to abort a transmitting frame. But the controller
+ * is independent hardware and does not stop for a critical section: it can enter
+ * arbitration between the read and the write taking effect, and the command then
+ * lands at TS = 1, where the measurement says it has no effect (7 of 8 contended
+ * trials). The frame keeps contending, loses, TS falls to 0, and the loop's next
+ * pass aborts it for real.
+ *
+ * I ASSERTED THIS OUTCOME WAS UNREACHABLE FROM THE SCHEDULER AND WAS WRONG. The
+ * reviewing session pointed out the race, 2026-09-27. It is why
+ * fb_abort_cmds_while_transmitting() == 0 is a property of the non-racing path
+ * only, and not an invariant.
+ */
+static void case_race_between_read_and_abort(void)
+{
+    g_case = "the read/abort race: the loop still recovers";
+    fb_reset();
+    fb_set_contended(true);     /* STRESS: saturated-bus figure, spec 12.2 */
+    gs_t s;
+    gs_init(&s, fb_hal());
+
+    gi_frame_t d = mk(ID_DIAG, GI_TX_DIAG);
+    gs_queue_frame(&s, GS_CLASS_TELEMETRY, &d, fb_now());
+    run(&s, 50, 10, 0);
+    ck(fb_state_now() == GS_BUF_AWAITING, "the diag is awaiting");
+
+    /* The next abort is authorised at AWAITING and lands at TS = 1 anyway. The
+     * frame loses arbitration 120 us later. */
+    fb_race_next(120);
+    gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
+    gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
+    fb_set_contended(false);
+    run(&s, 3000, 10, 0);
+
+    ck_eq(fb_aborts_with_no_effect(), 1, "one abort really had no effect");
+    ck(fb_abort_cmds_while_transmitting() >= 1,
+       "and it was issued while transmitting -- via the race, not by choice");
+    ck(fb_abort_cmds() >= 2, "the LOOP issued a further command");
+
+    const gs_stats_t *st = gs_stats(&s);
+    ck_eq(st->abort_bound_hit, 0, "the 1 ms bound was not reached");
+    ck(fb_wire_count() >= 1, "something reached the wire");
+    ck_eq(fb_wire_id(0), ID_INHIBIT, "THE INHIBIT WAS STILL FIRST");
+    ck_eq(st->skipped, 0, "and nothing was skipped");
+}
+
 int main(void)
 {
     printf("scheduler cases (spec 5.2 item 10, emulation half)\n");
@@ -399,6 +665,13 @@ int main(void)
     case_telemetry_overflow();
     case_nothing_behind_an_inhibit();
     case_inhibit_queue_full_is_a_skip();
+    case_withdrawn_held_inhibit_never_returns();
+    case_transmitting_at_deadline_is_maybe_late();
+    case_requeue_at_head();
+    case_abort_bound_is_reached();
+    case_probe_is_preempted_by_inhibit();
+    case_skip_window_boundary_exactly_one_second();
+    case_race_between_read_and_abort();
 
     if (g_fail == 0)
     {

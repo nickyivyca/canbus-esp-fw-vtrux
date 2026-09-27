@@ -65,6 +65,27 @@ void fb_abort_no_effect_next(int64_t lose_after_us);
 /* Refuse the next `n` submits, as a full driver queue would. */
 void fb_refuse_next(int n);
 
+/*
+ * THE RACE THE ATOMIC OP NARROWS AND CANNOT CLOSE. On the next
+ * abort_if_awaiting(), the controller enters arbitration between the state read
+ * and the register write: the call sees AWAITING, issues the command, and the
+ * command lands at TS = 1 where the measurement says it has no effect. The frame
+ * then loses arbitration after `lose_after_us` and returns to AWAITING, which is
+ * the window where a re-abort works.
+ *
+ * This exists because the outcome is REACHABLE and I had claimed it was not. The
+ * hardware does not stop for a critical section; it only becomes very unlikely to
+ * interleave.
+ */
+void fb_race_next(int64_t lose_after_us);
+
+/*
+ * Keep the frame TRANSMITTING for `us` instead of one air time, as an
+ * error-retransmit storm would. The only way to reach item 4's 1 ms bound, since
+ * the loop refuses to issue a command while transmitting and simply waits.
+ */
+void fb_stick_transmitting(int64_t us);
+
 /* The HAL the scheduler is given. */
 const gs_hal_t *fb_hal(void);
 
@@ -88,11 +109,16 @@ int fb_abort_cmds(void);
 int fb_aborts_with_no_effect(void);
 
 /*
- * Abort commands issued while the buffer was TRANSMITTING. The scheduler must
- * never issue one there -- that is the case the measurement showed has no effect
- * (7 of 8 under contention), and item 4 waits for TS to fall instead. This
- * counter is how a test pins that, because the SCHEDULER's own statistics cannot
- * distinguish a command it did not send from one that did nothing.
+ * Abort commands that LANDED while the buffer was TRANSMITTING.
+ *
+ * NOT AN INVARIANT, and the correction matters. The scheduler never *chooses* to
+ * abort a transmitting frame -- item 4 waits for TS to fall -- so on the
+ * non-racing path this is 0, and a mutant that aborts regardless is caught by it.
+ * But the controller can enter arbitration between the state read and the
+ * register write inside abort_if_awaiting(), and the command then lands at TS = 1
+ * anyway. fb_race_next() produces exactly that. So read this as a property of
+ * the non-racing path, never as "the scheduler cannot reach the no-effect case".
+ * I claimed it could not, and the reviewing session showed the race, 2026-09-27.
  */
 int fb_abort_cmds_while_transmitting(void);
 

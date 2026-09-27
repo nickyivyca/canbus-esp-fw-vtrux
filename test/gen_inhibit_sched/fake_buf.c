@@ -61,6 +61,11 @@ static struct
 
     int      refuse;
 
+    /* the race inside abort_if_awaiting, and a frame that will not finish */
+    bool     race_armed;
+    int64_t  race_lose_after;
+    int64_t  stick_us;
+
     fb_frame_t wire[FB_MAX];
     int        wire_n;
     fb_frame_t sub[FB_MAX];
@@ -88,6 +93,20 @@ void fb_abort_no_effect_next(int64_t lose_after_us)
 
 void fb_refuse_next(int n) { g.refuse = n; }
 
+void fb_race_next(int64_t lose_after_us)
+{
+    g.race_armed = true;
+    g.race_lose_after = lose_after_us;
+}
+
+void fb_stick_transmitting(int64_t us) { g.stick_us = us; }
+
+/* How long the current frame will transmit for. */
+static int64_t fb_air(void)
+{
+    return (g.stick_us > 0) ? g.stick_us : FB_AIR_US;
+}
+
 /*
  * Advance virtual time, stepping the buffer. Done in one-microsecond-resolution
  * jumps to the next interesting instant rather than by looping, so a long
@@ -111,7 +130,7 @@ void fb_advance(int64_t us)
         }
         if (g.occupied && g.transmitting && !g.in_noeffect)
         {
-            const int64_t done = g.t_start_tx + FB_AIR_US;
+            const int64_t done = g.t_start_tx + fb_air();
             if (done < next) { next = done; }
         }
         if (g.in_noeffect)
@@ -140,7 +159,7 @@ void fb_advance(int64_t us)
             continue;
         }
 
-        if (g.in_noeffect
+        if (g.in_noeffect && g.noeffect_lose_after > 0
             && g.now >= g.noeffect_since + g.noeffect_lose_after)
         {
             /*
@@ -161,7 +180,7 @@ void fb_advance(int64_t us)
             continue;
         }
         if (g.occupied && g.transmitting
-            && g.now >= g.t_start_tx + FB_AIR_US)
+            && g.now >= g.t_start_tx + fb_air())
         {
             /* IT REACHED THE WIRE. This is the only path that appends to the
              * wire log; an abort never does. */
@@ -197,43 +216,56 @@ static bool fb_submit(void *ctx, const gi_frame_t *f)
     return true;
 }
 
-static void fb_abort(void *ctx)
+/*
+ * The HAL's one atomic operation: read the state and, if AWAITING, issue the
+ * command. Returns the state it acted on.
+ */
+static gs_buf_t fb_abort_if_awaiting(void *ctx)
 {
+    const gs_buf_t seen = (!g.occupied) ? GS_BUF_EMPTY
+                        : ((g.transmitting || g.in_noeffect)
+                           ? GS_BUF_TRANSMITTING : GS_BUF_AWAITING);
     (void)ctx;
-    g.abort_cmds++;
 
-    if (!g.occupied)
+    if (seen != GS_BUF_AWAITING)
     {
-        return;         /* the control case: no alert, nothing happens */
+        /* No command is issued. The control case (EMPTY) raises no alert, and a
+         * TRANSMITTING buffer is left alone. */
+        return seen;
     }
-    if (g.transmitting)
-    {
-        g.abort_cmds_while_tx++;
-        if (g.noeffect_armed)
-        {
-            /* 7 of 8 under contention: the command does nothing and the frame
-             * keeps contending until it loses. */
-            g.noeffect_armed = false;
-            g.in_noeffect = true;
-            g.noeffect_since = g.now;
-            g.aborts_no_effect++;
-            return;
-        }
-        /* The measured no-op on an idle bus: the frame finishes. Time does the
-         * rest; nothing changes here. */
-        return;
-    }
+
     /*
-     * AWAITING: the abort takes effect, but NOT INSTANTLY. The measurement puts
-     * the buffer free 6-21 us later, and until then the frame is still there and
-     * still outstanding. That latency is what makes the scheduler's
-     * "an aborted frame is not a completed frame" guard reachable at all.
+     * THE RACE. The read said AWAITING; the controller now enters arbitration
+     * before the register write takes effect, so the command lands at TS = 1 and
+     * has no effect. That is the outcome the measurement found on 7 of 8
+     * contended trials, and the reason item 4 is a loop.
+     */
+    if (g.race_armed)
+    {
+        g.race_armed = false;
+        g.transmitting = true;
+        g.t_start_tx = g.now;
+        g.abort_cmds++;
+        g.abort_cmds_while_tx++;
+        g.in_noeffect = true;
+        g.noeffect_since = g.now;
+        g.noeffect_lose_after = g.race_lose_after;
+        g.aborts_no_effect++;
+        return GS_BUF_AWAITING;     /* what the caller observed */
+    }
+
+    g.abort_cmds++;
+    /*
+     * The abort takes effect, but NOT INSTANTLY: 6-21 us measured. Until then the
+     * frame is still there and still outstanding, which is what makes the
+     * scheduler's "an aborted frame is not a completed frame" guard reachable.
      */
     if (!g.abort_pending)
     {
         g.abort_pending = true;
         g.abort_free_at = g.now + FB_ABORT_FREE_US;
     }
+    return GS_BUF_AWAITING;
 }
 
 static gs_buf_t fb_state(void *ctx)
@@ -252,7 +284,7 @@ static bool fb_outstanding(void *ctx)
 
 static const gs_hal_t HAL = {
     .submit = fb_submit,
-    .abort = fb_abort,
+    .abort_if_awaiting = fb_abort_if_awaiting,
     .buf_state = fb_state,
     .outstanding = fb_outstanding,
     .ctx = NULL,

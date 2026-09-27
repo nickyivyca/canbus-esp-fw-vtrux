@@ -67,12 +67,26 @@ typedef struct
     bool     (*submit)(void *ctx, const gi_frame_t *f);
 
     /*
-     * Issue the abort command. Deliberately returns nothing: the measurement
-     * shows the command can have no effect, so a return value would be a lie
-     * either way. The caller re-reads buf_state() and decides.
+     * READ THE BUFFER STATE AND, IF IT IS AWAITING, ISSUE THE ABORT -- AS ONE
+     * INDIVISIBLE STEP. Returns the state it found.
+     *
+     * WHY THIS IS ONE OPERATION AND NOT TWO. An earlier version had a separate
+     * abort() and let the caller decide from buf_state(). That is unsafe on
+     * hardware: the controller is independent and does not stop between the two
+     * calls, so it can enter arbitration after the read and before the write, and
+     * the command then lands at TS = 1 -- the measured no-effect case. On the
+     * device this is the status read and the register write inside one critical
+     * section, which is exactly what the item 9 probe did and for the same reason.
+     *
+     * It NARROWS the race; it cannot close it, because the controller keeps
+     * running while our few cycles execute. The residual is the no-effect
+     * outcome, and item 4's loop is what recovers from it. Raised by the
+     * reviewing session, 2026-09-27, correcting my claim that the scheduler could
+     * not reach that outcome at all.
      */
-    void     (*abort)(void *ctx);
+    gs_buf_t (*abort_if_awaiting)(void *ctx);
 
+    /* A plain read, for decisions that do not issue a command. */
     gs_buf_t (*buf_state)(void *ctx);
 
     /*

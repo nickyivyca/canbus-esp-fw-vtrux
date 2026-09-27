@@ -242,14 +242,13 @@ static void begin_abort(gs_t *s, int64_t now)
     s->st.aborts++;
 
     /*
-     * The command goes out only if the buffer is AWAITING. Preemption only calls
-     * this when it already is; a deadline WITHDRAWAL can call it while the buffer
-     * is transmitting, and there the loop waits for TS to fall exactly as it does
-     * everywhere else.
+     * ONE call, which reads the state and issues the command only if it is
+     * AWAITING. Doing it as two calls let the controller slip into arbitration
+     * in between, putting the command exactly where the measurement says it has
+     * no effect.
      */
-    if (s->hal->buf_state(s->hal->ctx) == GS_BUF_AWAITING)
+    if (s->hal->abort_if_awaiting(s->hal->ctx) == GS_BUF_AWAITING)
     {
-        s->hal->abort(s->hal->ctx);
         s->abort_cmds_this++;
         s->st.abort_cmds++;
     }
@@ -267,7 +266,12 @@ static void begin_abort(gs_t *s, int64_t now)
  */
 static bool abort_step(gs_t *s, int64_t now)
 {
-    const gs_buf_t b = s->hal->buf_state(s->hal->ctx);
+    /*
+     * The read and the conditional command are one operation, so there is no
+     * window here for the controller to enter arbitration between deciding and
+     * acting. What it returns is the state it actually acted on.
+     */
+    const gs_buf_t b = s->hal->abort_if_awaiting(s->hal->ctx);
 
     if (b == GS_BUF_EMPTY)
     {
@@ -280,11 +284,10 @@ static bool abort_step(gs_t *s, int64_t now)
     }
     if (b == GS_BUF_AWAITING)
     {
-        s->hal->abort(s->hal->ctx);
         s->abort_cmds_this++;
         s->st.abort_cmds++;
     }
-    /* GS_BUF_TRANSMITTING: wait. Deliberately no command. */
+    /* GS_BUF_TRANSMITTING: no command was issued. Wait for TS to fall. */
 
     if (now - s->abort_since >= GS_ABORT_BOUND_US)
     {

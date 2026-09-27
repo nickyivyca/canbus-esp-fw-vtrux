@@ -73,6 +73,54 @@ MUTATIONS = [
             (void)now;
         }""",
      "D3: an inhibit that cannot be queued is a skip"),
+
+    # ---- review round 12's survivors, each now with a case ------------------
+    ("R8: a withdrawn HELD inhibit gets requeued",
+     "gi_sched.c",
+     """            if (c != GS_CLASS_INHIBIT)
+            {
+                gs_slot_t sl;""",
+     """            if (1)
+            {
+                gs_slot_t sl;""",
+     "R8: a withdrawn HELD inhibit never comes back"),
+
+    ("R5: TRANSMITTING at the deadline reported as a skip",
+     "gi_sched.c",
+     """        s->st.late_on_wire++;
+        verdict = GS_DEADLINE_MAYBE_LATE;""",
+     """        note_skip(s, now);
+        verdict = GS_DEADLINE_SKIPPED;""",
+     "R5: transmitting at the deadline is MAYBE_LATE"),
+
+    ("R4: requeue an aborted page at the TAIL",
+     "gi_sched.c",
+     """    q->head = (uint8_t)((q->head + q->cap - 1) % q->cap);
+    q->q[q->head] = *sl;
+    q->n++;
+    return true;""",
+     """    q->q[(q->head + q->n) % q->cap] = *sl;
+    q->n++;
+    return true;""",
+     "R4: an aborted page requeues at the HEAD"),
+
+    ("R1: the abort bound 1 ms -> 100 ms",
+     "gi_sched.c",
+     """#define GS_ABORT_BOUND_US   1000""",
+     """#define GS_ABORT_BOUND_US   100000""",
+     "R1: the 1 ms abort bound is reached and counted"),
+
+    ("R9: a probe is never preempted",
+     "gi_sched.c",
+     """    if (!s->aborting && s->held && s->held_class != GS_CLASS_INHIBIT""",
+     """    if (!s->aborting && s->held && s->held_class == GS_CLASS_TELEMETRY""",
+     "R9: a probe in the buffer is preempted"),
+
+    ("R11: the 1 s window becomes inclusive",
+     "gi_sched.c",
+     """        if (newest - s->skip_ts[i] < GS_SKIP_WINDOW_US) { k++; }""",
+     """        if (newest - s->skip_ts[i] <= GS_SKIP_WINDOW_US) { k++; }""",
+     "R11: exactly 1.000 s apart does NOT trip"),
 ]
 
 
@@ -102,6 +150,25 @@ def main():
     survived = []
     uncovered = []
     build_failed = []
+
+    # BASELINE FIRST. Without it, a suite that fails for an unrelated reason
+    # reports every mutation as caught -- the same "failure looks like success"
+    # shape this harness already had once, one level up. The reviewing session
+    # runs its own baseline for exactly this reason.
+    print("[baseline] the unmutated suite must PASS")
+    rc = subprocess.run(["make", "-s", "-C", HERE], capture_output=True,
+                        text=True)
+    if rc.returncode != 0:
+        print("  the baseline does not even build; nothing below means anything")
+        return 2
+    rc = subprocess.run([os.path.join(HERE, "sched_test")], capture_output=True,
+                        text=True, cwd=HERE)
+    if rc.returncode != 0:
+        print("  THE BASELINE FAILS. Every 'caught' below would be meaningless.")
+        for line in rc.stdout.splitlines()[-10:]:
+            print("  %s" % line)
+        return 2
+    print("  baseline passes\n")
 
     for name, fname, old, new, expect_case in MUTATIONS:
         tmp = tempfile.mkdtemp(prefix="gsmut_")
