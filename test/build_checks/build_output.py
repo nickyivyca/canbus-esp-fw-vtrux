@@ -601,6 +601,62 @@ def check_no_instrument(path):
         else "none of the %d instrument symbols are defined" % nsym)
 
 
+def check_sources_older_than_image(path):
+    """Row 22: no tracked source may be newer than the image.
+
+    WHY THIS EXISTS AND WHY THE VERSION STRING IS NOT ENOUGH. GIT_SHA and the app
+    descriptor both come from `git describe --dirty` inside execute_process() in
+    the top-level CMakeLists.txt, which CMake evaluates at CONFIGURE time. Editing
+    a .c file and rebuilding does not re-run CMake, so the version string stays
+    exactly as it was -- clean, with no -dirty marker -- while the image contains
+    uncommitted code. Editing a CMakeLists DOES force a re-run, so the marker
+    works or not depending on which files changed. Measured on a real artifact
+    2026-09-27: build-txabort/wican-fw_obd_bff3c21.bin reported version 'bff3c21'
+    while carrying code that existed only in an uncommitted diff, and the
+    measurement records it produced claimed that commit.
+
+    Mtimes are independent of every version string and of whether CMake re-ran,
+    and the failure names the offending files instead of being a silent pass.
+    This is the check tools-reference.md already prescribes for the interposer
+    board, which has no git checkout to ask.
+    """
+    if not os.path.exists(path):
+        row("sources older than the image", None, "no image", ref_missing=True)
+        return
+    try:
+        img_mtime = os.path.getmtime(path)
+    except OSError as e:
+        row("sources older than the image", None, "cannot stat the image (%s)" % e,
+            ref_missing=True)
+        return
+    r = subprocess.run(("git", "-C", REPO, "ls-files", "main", "components",
+                        "CMakeLists.txt", "sdkconfig",
+                        "wican_partitions_table.csv"),
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        row("sources older than the image", None,
+            "git ls-files failed (%d)" % r.returncode, ref_missing=True)
+        return
+    newer = []
+    for rel in r.stdout.split("\n"):
+        rel = rel.strip()
+        if not rel:
+            continue
+        p = os.path.join(REPO, rel)
+        try:
+            if os.path.getmtime(p) > img_mtime + 1.0:
+                newer.append(rel)
+        except OSError:
+            continue
+    row("sources older than the image", not newer,
+        "%d tracked source(s) are NEWER than the image, so it was not built from "
+        "them: %s%s" % (len(newer), ", ".join(sorted(newer)[:6]),
+                        " ..." if len(newer) > 6 else "")
+        if newer else
+        "every tracked source under main/, components/ and the build files is "
+        "older than the image")
+
+
 def check_source():
     """Spec 5.1 items 1 and 3: two facts that live only in the source.
 
@@ -780,6 +836,7 @@ def main():
     check_image_identity(img_ver)
     if b is not None:
         check_no_instrument(b)
+        check_sources_older_than_image(b)
     else:
         row("no measurement instrument in the image", None,
             "no image to inspect", ref_missing=True)

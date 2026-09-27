@@ -132,6 +132,7 @@ static const char *TAG = "gi_txabort";
                                      * observation, so a LATE alert is caught
                                      * rather than missed by an early exit */
 #define TXAB_RS_WAIT_US     50000   /* how long to wait for each RS transition */
+#define TXAB_RETRY_US       2000    /* hard bound on the abort-and-recheck loop */
 
 /*
  * The alert bits an abort could plausibly raise, kept apart from the rest.
@@ -206,6 +207,35 @@ typedef struct
                              * buffer free for the next trial. Counted, because it
                              * uses the mechanism under test and because it says
                              * the bus never gave our ID a slot. */
+    int      cleanup_us;    /* how long the cleanup took to free the buffer, or
+                             * -1 if it NEVER DID. The first version recorded only
+                             * that cleanup was attempted, so a cleanup that
+                             * failed looked exactly like one that worked -- and
+                             * the 19 skipped trials it was meant to fix stayed
+                             * skipped with nothing saying why. */
+    uint8_t  cleanup_mtx;   /* msgs_to_tx after the cleanup gave up */
+    uint8_t  pre_cleanup;   /* the trial found the buffer busy on ENTRY and
+                             * cleaned it before deciding to skip */
+
+    /*
+     * The abort-and-recheck loop (retry mode). `att` counts abort COMMANDS
+     * issued, including the first, so att == 1 means the first abort was enough.
+     * `ts1` counts polls that found TS = 1, where a re-abort would be the very
+     * no-op that produced the stuck rows and is therefore skipped rather than
+     * repeated. `tbs_us` is from the FIRST abort to a free buffer -- the number
+     * that says whether item 4's one-frame bound survives.
+     */
+    uint16_t att;
+    uint16_t ts1;
+    int      tbs_us;
+    uint8_t  retry_bound_hit;
+
+    /* Counter deltas over the WHOLE trial, cleanup included. The d_* above stop
+     * at the poll loop, which left the back half of each trial attributable to
+     * nothing -- contend's phase total showed a bus error no trial claimed. */
+    uint8_t  d_tx_failed_trial;
+    uint8_t  d_bus_err_trial;
+    uint8_t  d_arb_lost_trial;
 } txab_rec_t;
 
 static txab_rec_t s_rec[TXAB_MAX_TRIALS];
@@ -263,8 +293,47 @@ static void txab_fill(twai_message_t *m, uint16_t trial, uint8_t tag_lo,
  * legible in one place; the phases differ only in what happens between the
  * submit and the poll.
  */
-static void txab_trial(int phase, int gate, uint16_t trial, uint16_t req_us,
-                       txab_rec_t *r)
+/*
+ * Clear anything of ours out of the controller, and say how long it took.
+ *
+ * Returns the microseconds to a free buffer, or -1 if it never freed. The return
+ * value is the point: a cleanup whose failure is indistinguishable from success
+ * is the defect this whole probe keeps finding in itself.
+ */
+static int txab_drain(twai_dev_t *hw, uint32_t *mtx_out)
+{
+    uint32_t junk = 0;
+    const int64_t t0 = esp_timer_get_time();
+    twai_clear_transmit_queue();
+    taskENTER_CRITICAL(&s_abort_lock);
+    twai_ll_set_cmd_abort_tx(hw);
+    taskEXIT_CRITICAL(&s_abort_lock);
+    int out = -1;
+    const int64_t cd = t0 + 5000;
+    for (;;)
+    {
+        const int64_t now = esp_timer_get_time();
+        twai_status_info_t s2;
+        const bool have = (twai_get_status_info(&s2) == ESP_OK);
+        if (have && s2.msgs_to_tx == 0
+            && (twai_ll_get_status(hw) & TWAI_LL_STATUS_TBS))
+        {
+            out = (int)(now - t0);
+            if (mtx_out != NULL) { *mtx_out = 0; }
+            break;
+        }
+        if (now >= cd)
+        {
+            if (mtx_out != NULL) { *mtx_out = have ? s2.msgs_to_tx : 0xFF; }
+            break;
+        }
+    }
+    (void)twai_read_alerts(&junk, 0);
+    return out;
+}
+
+static void txab_trial(int phase, int gate, int retry, uint16_t trial,
+                       uint16_t req_us, txab_rec_t *r)
 {
     twai_dev_t *hw = TWAI_LL_GET_HW(0);
     twai_status_info_t s0, s1;
@@ -282,6 +351,8 @@ static void txab_trial(int phase, int gate, uint16_t trial, uint16_t req_us,
     r->alert_us = -1;
     r->txalert_us = -1;
     r->next_done_us = -1;
+    r->cleanup_us = -1;
+    r->tbs_us = -1;
 
     /*
      * Start from a known state. The RX queue is drained because nothing else is
@@ -292,10 +363,24 @@ static void txab_trial(int phase, int gate, uint16_t trial, uint16_t req_us,
     can_flush_rx();
     (void)twai_read_alerts(&junk, 0);
 
+    /*
+     * BUSY ON ENTRY IS CLEANED, NOT JUST REFUSED. One frame of ours stuck in the
+     * controller used to take out every remaining trial in the phase: the first
+     * RS-gated run skipped 19 of 20 that way. Clean it, then decide -- and record
+     * that it happened, because needing a clean on entry means the previous
+     * trial's own cleanup did not work.
+     */
     if (twai_get_status_info(&s0) != ESP_OK || s0.msgs_to_tx != 0)
     {
-        r->skip = TXAB_SKIP_BUSY_MTX;
-        return;
+        uint32_t left = 0;
+        r->pre_cleanup = 1;
+        r->cleanup_us = txab_drain(hw, &left);
+        r->cleanup_mtx = (uint8_t)left;
+        if (twai_get_status_info(&s0) != ESP_OK || s0.msgs_to_tx != 0)
+        {
+            r->skip = TXAB_SKIP_BUSY_MTX;
+            return;
+        }
     }
     r->st_pre = (uint16_t)twai_ll_get_status(hw);
     if (phase != TXAB_PHASE_CONTROL && !(r->st_pre & TWAI_LL_STATUS_TBS))
@@ -432,6 +517,48 @@ static void txab_trial(int phase, int gate, uint16_t trial, uint16_t req_us,
             if (gate == TXAB_GATE_RS)
             {
                 r->edge_us = (int)(t_abort - t_edge);
+            }
+            r->att = 1;
+
+            /*
+             * ABORT AND RECHECK, bounded. Measured 2026-09-27: a single abort
+             * issued while TS = 1 had no effect on 14 of 19 trials -- the frame
+             * stayed in the buffer with no completion event at all. A second
+             * abort cleared all 14 in 6-9 us. This loop is the remedy being
+             * measured rather than assumed, per the same rule as item 9 itself.
+             *
+             * It does not re-issue the command while TS = 1: that is the no-op
+             * that caused the problem, and repeating it would measure the no-op
+             * instead of waiting for the window where the abort works.
+             */
+            if (retry)
+            {
+                const int64_t rb = t_abort + TXAB_RETRY_US;
+                for (;;)
+                {
+                    const uint32_t st = twai_ll_get_status(hw);
+                    if (st & TWAI_LL_STATUS_TBS)
+                    {
+                        r->tbs_us = (int)(esp_timer_get_time() - t_abort);
+                        break;
+                    }
+                    if (st & TWAI_LL_STATUS_TS)
+                    {
+                        r->ts1++;
+                    }
+                    else
+                    {
+                        taskENTER_CRITICAL(&s_abort_lock);
+                        twai_ll_set_cmd_abort_tx(hw);
+                        taskEXIT_CRITICAL(&s_abort_lock);
+                        r->att++;
+                    }
+                    if (esp_timer_get_time() >= rb)
+                    {
+                        r->retry_bound_hit = 1;
+                        break;
+                    }
+                }
             }
             t_ref = t_abort;
 
@@ -570,22 +697,26 @@ static void txab_trial(int phase, int gate, uint16_t trial, uint16_t req_us,
     twai_status_info_t sc;
     if (twai_get_status_info(&sc) == ESP_OK && sc.msgs_to_tx != 0)
     {
-        twai_clear_transmit_queue();
-        taskENTER_CRITICAL(&s_abort_lock);
-        twai_ll_set_cmd_abort_tx(hw);
-        taskEXIT_CRITICAL(&s_abort_lock);
-        const int64_t cd = esp_timer_get_time() + 5000;
-        while (esp_timer_get_time() < cd)
-        {
-            twai_status_info_t s2;
-            if (twai_get_status_info(&s2) == ESP_OK && s2.msgs_to_tx == 0
-                && (twai_ll_get_status(hw) & TWAI_LL_STATUS_TBS))
-            {
-                break;
-            }
-        }
-        (void)twai_read_alerts(&junk, 0);
+        uint32_t left = 0;
         r->cleanup = 1;
+        r->cleanup_us = txab_drain(hw, &left);
+        r->cleanup_mtx = (uint8_t)left;
+    }
+
+    /*
+     * The whole-trial counter window. Same baseline as the d_* above, read AFTER
+     * the cleanup, so between the two nothing in a trial is unattributable.
+     */
+    twai_status_info_t s2;
+    if (twai_get_status_info(&s2) == ESP_OK)
+    {
+        uint32_t d;
+        d = s2.tx_failed_count - s0.tx_failed_count;
+        r->d_tx_failed_trial = (d > 255) ? 255 : (uint8_t)d;
+        d = s2.bus_error_count - s0.bus_error_count;
+        r->d_bus_err_trial = (d > 255) ? 255 : (uint8_t)d;
+        d = s2.arb_lost_count - s0.arb_lost_count;
+        r->d_arb_lost_trial = (d > 255) ? 255 : (uint8_t)d;
     }
 }
 
@@ -621,7 +752,11 @@ static esp_err_t send_rec(httpd_req_t *req, const txab_rec_t *r, bool first)
         "\"txalert_us\":%d,\"txalerts\":%lu,"
         "\"d_tx_failed\":%u,\"d_bus_err\":%u,\"d_arb_lost\":%u,"
         "\"tx_err\":%u,\"next_tx_err\":%u,\"next_done_us\":%d,"
-        "\"cleanup\":%u,"
+        "\"cleanup\":%u,\"cleanup_us\":%d,\"cleanup_mtx\":%u,"
+        "\"pre_cleanup\":%u,"
+        "\"att\":%u,\"ts1\":%u,\"tbs_us\":%d,\"retry_bound_hit\":%u,"
+        "\"d_tx_failed_trial\":%u,\"d_bus_err_trial\":%u,"
+        "\"d_arb_lost_trial\":%u,"
         "\"skip\":\"%s\"}",
         first ? "" : ",",
         (unsigned)r->trial, (unsigned)r->req_us, (int)r->act_us,
@@ -644,7 +779,12 @@ static esp_err_t send_rec(httpd_req_t *req, const txab_rec_t *r, bool first)
         (unsigned)r->d_tx_failed, (unsigned)r->d_bus_err,
         (unsigned)r->d_arb_lost,
         (unsigned)r->tx_err, (unsigned)r->next_tx_err, (int)r->next_done_us,
-        (unsigned)r->cleanup,
+        (unsigned)r->cleanup, (int)r->cleanup_us,
+        (unsigned)r->cleanup_mtx, (unsigned)r->pre_cleanup,
+        (unsigned)r->att, (unsigned)r->ts1, (int)r->tbs_us,
+        (unsigned)r->retry_bound_hit,
+        (unsigned)r->d_tx_failed_trial, (unsigned)r->d_bus_err_trial,
+        (unsigned)r->d_arb_lost_trial,
         skip_name(r->skip));
     if (n < 0 || n >= (int)sizeof(b))
     {
@@ -706,6 +846,7 @@ static esp_err_t txab_handler(httpd_req_t *req)
     char phase_s[16] = "abort";
     char gate_s[8] = "off";
     char label[32] = "";
+    char retry_s[8] = "0";
     const char *bad = NULL;
     int reps = 3;
     int d0 = 0, d1 = 0, step = 20, settle_ms = 2;
@@ -759,6 +900,11 @@ static esp_err_t txab_handler(httpd_req_t *req)
         {
             bad = "label";
         }
+        g = arg_get(query, "retry", val, sizeof(val));
+        if (g < 0 || (g > 0 && !copy_arg(retry_s, sizeof(retry_s), val)))
+        {
+            bad = "retry";
+        }
 
         /*
          * The numeric bounds are not tidiness. req_us is uint16_t and the timing
@@ -811,6 +957,7 @@ static esp_err_t txab_handler(httpd_req_t *req)
 
     const int phase = phase_from(phase_s);
     const int gate = (strcmp(gate_s, "rs") == 0) ? TXAB_GATE_RS : TXAB_GATE_OFF;
+    const int retry = (strcmp(retry_s, "1") == 0) ? 1 : 0;
     if (phase < 0)
     {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
@@ -820,6 +967,11 @@ static esp_err_t txab_handler(httpd_req_t *req)
     if (strcmp(gate_s, "rs") != 0 && strcmp(gate_s, "off") != 0)
     {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "gate must be off|rs");
+        return ESP_FAIL;
+    }
+    if (strcmp(retry_s, "0") != 0 && strcmp(retry_s, "1") != 0)
+    {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "retry must be 0|1");
         return ESP_FAIL;
     }
     if (d1 < d0)
@@ -931,7 +1083,7 @@ static esp_err_t txab_handler(httpd_req_t *req)
     for (int i = 0; i < want; i++)
     {
         const uint16_t req_us = (uint16_t)(d0 + (i / reps) * step);
-        txab_trial(phase, gate, (uint16_t)i, req_us, &s_rec[s_n]);
+        txab_trial(phase, gate, retry, (uint16_t)i, req_us, &s_rec[s_n]);
         s_n++;
         vTaskDelay(pdMS_TO_TICKS(settle_ms));
     }
@@ -954,7 +1106,7 @@ static esp_err_t txab_handler(httpd_req_t *req)
     char head[640];
     int n = snprintf(head, sizeof(head),
         "{\"probe\":\"gi_txabort\",\"git\":\"%s\",\"phase\":\"%s\","
-        "\"gate\":\"%s\",\"label\":\"%s\","
+        "\"gate\":\"%s\",\"label\":\"%s\",\"retry\":\"%s\","
         "\"id\":\"0x%03X\",\"dlc\":%d,\"tag\":\"AB7E trial, AB7F follow-up\","
         "\"reps\":%d,\"d0\":%d,\"d1\":%d,\"step\":%d,\"steps\":%d,"
         "\"settle_ms\":%d,\"query_given\":%s,"
@@ -965,7 +1117,7 @@ static esp_err_t txab_handler(httpd_req_t *req)
         "\"arb_lost\":%lu,\"rx_missed\":%lu,\"rx_overrun\":%lu,"
         "\"tec\":%lu,\"rec\":%lu},"
         "\"trials\":[",
-        GIT_SHA, phase_s, gate_s, label, TXAB_ID, TXAB_DLC,
+        GIT_SHA, phase_s, gate_s, label, retry_s, TXAB_ID, TXAB_DLC,
         reps, d0, d1, step, steps, settle_ms,
         have_query ? "true" : "false",
         s_n, (long long)(esp_timer_get_time() - t_run0),
