@@ -1764,6 +1764,40 @@ void gi_on_frame(gi_state_t *st, uint32_t id, uint8_t dlc, const uint8_t *data,
      * Checked before the counter and gap bookkeeping below, so the abort is
      * attributed to this frame's arrival rather than to the next one.
      */
+    /*
+     * BOOKKEEPING FIRST, FOR EVERY RECEIVED 0x051 (spec 11, changed 2026-09-26
+     * by the user). This used to sit after the TX_LATE check below, which
+     * returns -- so the frame that triggered an abort was received and never
+     * counted, the NEXT frame failed the +1 test, and ctr_bad reported a
+     * dropped frame that was never dropped. rx_gap recorded one doubled gap in
+     * place of two real ones.
+     *
+     * Measured on hardware before the fix: a 300 s arm reported ctr_bad 1 with
+     * the driver's rx_missed and rx_overrun both 0. 29,992 commands on the wire,
+     * 29,990 steps counted, one skipped here.
+     *
+     * The abort below is still attributed to the frame that triggered it, which
+     * is what the early return was for. Only the counting moved.
+     */
+    if (st->have_prev_051)
+    {
+        gi_hist_add(&st->rx_gap, (uint32_t)(now - st->prev_051));
+    }
+    st->have_prev_051 = true;
+    st->prev_051 = now;
+
+    if (dlc >= 6)
+    {
+        uint8_t ctr_now = gi_ctr(data);
+        if (st->have_last_ctr)
+        {
+            if (((st->last_ctr + 1) & 0x0F) == ctr_now) st->ctr_steps_ok++;
+            else                                       st->ctr_steps_bad++;
+        }
+        st->last_ctr = ctr_now;
+        st->have_last_ctr = true;
+    }
+
     if (st->tx_pending && st->inhibit_live)
     {
         st->tx_fail++;
@@ -1772,13 +1806,6 @@ void gi_on_frame(gi_state_t *st, uint32_t id, uint8_t dlc, const uint8_t *data,
         inhibit_abort(st, GI_ABORT_TX_LATE, now, ev);
         return;
     }
-
-    if (st->have_prev_051)
-    {
-        gi_hist_add(&st->rx_gap, (uint32_t)(now - st->prev_051));
-    }
-    st->have_prev_051 = true;
-    st->prev_051 = now;
 
     /*
      * Spec 6.3: track the VCM's shutdown command live, on every 0x051.
@@ -1796,23 +1823,6 @@ void gi_on_frame(gi_state_t *st, uint32_t id, uint8_t dlc, const uint8_t *data,
             ev_add(ev, now, GI_EV_SHUTDOWN_SUPPRESS,
                    now_shutdown ? 1 : 0, (int32_t)data[0], 0);
         }
-    }
-
-    /*
-     * B5 is the VCM's rolling counter -- 6422 of 6422 steps were exactly +1
-     * in the reference capture. Tracking it here is a cheap check that we are
-     * seeing every frame rather than silently dropping some.
-     */
-    if (dlc >= 6)
-    {
-        uint8_t ctr = gi_ctr(data);
-        if (st->have_last_ctr)
-        {
-            if (((st->last_ctr + 1) & 0x0F) == ctr) st->ctr_steps_ok++;
-            else                                    st->ctr_steps_bad++;
-        }
-        st->last_ctr = ctr;
-        st->have_last_ctr = true;
     }
 
     if (st->mode == GI_RESPOND)

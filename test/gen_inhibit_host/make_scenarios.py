@@ -1297,6 +1297,14 @@ counted.
 
 Before C1 this ran to the end of the scenario transmitting happily, because
 twai_transmit() returning ESP_OK was recorded as a successful transmit.
+
+ALSO PINS SPEC 11 (12.4, added 2026-09-26): a TX_LATE abort must leave ctr_bad at
+0 and rx_gap with no doubled gap, because no 0x051 was missed here -- one
+continuous train. Until the fix this golden recorded ctr_ok=247 ctr_bad=1
+rx_gap_n=248, against 249/0/249 for the same train without a stall: the TX_LATE
+path returned before the bookkeeping, so the triggering frame was received and
+never counted and the NEXT frame failed the +1 test. THE DEFECT WAS THE BLESSED
+VALUE, which is what the README warns a regression suite will happily preserve.
 """, autobms=False)
 def s_tx_late():
     L = ["mode 0 3 500"]
@@ -1347,6 +1355,15 @@ EXPECT: no TX DIAG line between the stalled transmit and the abort, and then a
 TX_LATE abort on the first 0x051 after the pause. The host harness cannot test
 the shim half of this -- that is an E1 mock-HAL case (latched shared alert
 bits, a diag frame completing ahead of an inhibit, a completion at 1.2 ms).
+
+ctr_bad = 1 HERE IS CORRECT, and is a property of the stimulus rather than a
+fault. The two trains above both start from cmd_train's default ctr0 = 0, so
+train 1 ends on counter 0 (97 frames, 96 & 0x0F) and train 2 restarts at 0 --
+two consecutive 0x051 carrying the same counter, which is a real non-+1 step on
+the wire. It was invisible until 2026-09-26 because the frame that exposes it is
+the one the TX_LATE path skipped (spec 11). Left as it is: this scenario tests
+diag deferral, and continuing the counter to tidy the figure would change what it
+pins.
 """, autobms=False)
 def s_diag_defers():
     L = ["mode 0 3 500"]
