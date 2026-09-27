@@ -1979,6 +1979,17 @@ void gi_on_tx_result(gi_state_t *st, const gi_frame_t *f, bool queued,
     }
 }
 
+const char *gi_skip_name(gi_skip_kind_t k)
+{
+    switch (k)
+    {
+    case GI_SKIP_WITHDRAWN:  return "withdrawn before the wire";
+    case GI_SKIP_MAYBE_LATE: return "may have gone out late";
+    case GI_SKIP_SEEN_LATE:  return "seen late";
+    default:                 return "unknown";
+    }
+}
+
 /*
  * The scheduler skipped an inhibit frame (spec 5.2 item 5). `trip` is the
  * scheduler's 3-within-1 s verdict, which it owns because it owns the window.

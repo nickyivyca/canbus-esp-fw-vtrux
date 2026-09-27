@@ -257,3 +257,61 @@ keeping, because every one produced a green run:
 The invariant is checked as a **step hook** for the same reason: the early
 credit opens a window that closes again, and an end-of-case assertion sees
 nothing wrong.
+
+### Round 14: six cases for the switchover, and two of them could not fail
+
+Cases 21-26, added 2026-09-27 for the mutants that survived the reviewing
+session's round 13 against the scheduler switchover. Every one is a form of
+section 7 trip 7 that the switchover left unpinned: three skips inside a second
+trip and one does not (I2), the controller reporting a failed transmit trips at
+once (I3, I8), a refused inhibit trips and is not retried afterwards (I7, and
+defect D7), a withdrawn skip is reported as withdrawn (I9), and the HAL issues no
+abort command while the buffer is transmitting (I6). Case 26 is defect D10 and is
+not anyone's mutant.
+
+**Mutation I9 could not have been caught by any test, because the output it
+corrupts did not exist.** It reports every skip under the maybe-late kind. The
+kind reached the core, the core put it in a `GI_EV_SKIP` event -- and
+`report_events()` had no case for that event, so the `default: break;` swallowed
+it with no `-Wswitch` warning. Nothing on the device could tell a withdrawn
+inhibit from one that may have gone out late, or either from nothing happening.
+Fixing that (defect D9) came first; the case came second. **When a mutation
+survives, ask whether anything reads the value before writing a test that claims
+to.**
+
+**Case 23's D7 half was written twice before it could fail.** D7 is the defect
+where a refused inhibit stays in the scheduler's queue, the core latches off on
+the refusal, and the retry puts an inhibit frame on the wire after the trip.
+
+* v1 compared `ft_wire_count_id(0x051)` across a 120 ms window. The scheduler
+  retries on the very next received frame, so the retry was already inside the
+  "before" sample.
+* v2 moved that into a step hook armed on first seeing `abort_latched`. The trip
+  and the retry fall inside a single worker iteration, so the hook's baseline
+  again contained the frame it was watching for.
+
+Both passed with D7 put back. What settled it was running both builds and
+printing the counters:
+
+| | correct | D7 removed |
+|---|---|---|
+| inhibit `queued` | 12 | 12 |
+| inhibit `sent` | 11 | 12 |
+| `0x051` on the wire | 11 | 12 |
+| `skipped_withdrawn` | 1 | 0 |
+
+So the case asserts what happened to the frame rather than when it went out --
+from two independent places, the fake's wire log and the scheduler's own
+counters. Neither needs to resolve the instant of the trip, which is the part the
+harness cannot do.
+
+**`stats()` was reading a truncated page.** Its buffer was 1600 bytes and the
+page is 1761, so every `json_u32()` of a key in the scheduler block returned
+`0xFFFFFFFF` for "absent" -- which satisfies every `>=` assertion written against
+it. `json_need()` now fails on absence, and the window is 4096. The same
+arithmetic on the device side is defect D10, which case 26 pins.
+
+**`ft_refuse_id()` exists for the reason `ft_stall_id()` does.**
+`ft_refuse_next()` marks whichever frame is queued next, and `gi_tick()` may emit
+a telemetry page first, so a case meaning "the inhibit was refused" has to say
+so or it passes and fails by timing.

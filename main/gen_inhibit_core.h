@@ -665,6 +665,12 @@ typedef struct
      * out late. Spec 5.2 item 5 / trip 7 as amended. The scheduler owns the
      * breakdown and the 1 s window; this is the core's own total, so a trip that
      * names skips can be read against a count in the same JSON.
+     *
+     * NOT CURRENTLY TRUE, and flagged to the user 2026-09-27 rather than fixed
+     * here: this counter reaches no JSON at all. The status page's count comes
+     * from the scheduler (`sched.skipped`), which is the number spec 11 asks
+     * for, so there is nothing missing from the page -- but two counters for one
+     * quantity is worse than one, so which of them survives is the user's call.
      */
     uint32_t skips;
 
@@ -819,6 +825,13 @@ void gi_on_tx_done(gi_state_t *st, bool ok, int64_t t_done, gi_events_t *ev);
  * window, the core owns the abort. A single skip is counted and reported and does
  * NOT end the inhibit.
  */
+/*
+ * The name of a skip kind. In the core because the core owns the enum, like
+ * gi_abort_name() and gi_disable_name() -- and because a renderer that has to
+ * spell the kinds itself is a second table that can disagree with this one.
+ */
+const char *gi_skip_name(gi_skip_kind_t k);
+
 void gi_on_inhibit_skip(gi_state_t *st, gi_skip_kind_t kind, bool trip,
                         int64_t now, gi_events_t *ev);
 

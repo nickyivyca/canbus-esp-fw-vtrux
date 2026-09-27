@@ -84,6 +84,14 @@ int ft_sent_count_id(uint32_t id);
 /* Make twai_transmit() refuse the next `n` frames (queue full / not running). */
 void ft_refuse_next(int n);
 
+/*
+ * Refuse by ID instead, for the same reason ft_stall_id() exists: ft_refuse_next()
+ * marks whichever frame is queued next, and gi_tick() may emit a telemetry page
+ * before the inhibit, so the refusal lands wherever the timing put it. A case
+ * that means "the INHIBIT frame was refused" has to say so.
+ */
+void ft_refuse_id(uint32_t id, int n);
+
 /* Raise TWAI_ALERT_TX_FAILED when the next completing frame finishes. */
 void ft_fail_next(void);
 

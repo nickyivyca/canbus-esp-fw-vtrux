@@ -1602,9 +1602,12 @@ static struct file_server_data server_data = {.base_path = FS_MOUNT_POINT""};
  * GEN_INHIBIT_PROBE_ID (0x7F0) and never 0x051. Mode 3 transmits the real
  * command ID -- see gen_inhibit.h.
  */
+/*
+ * D10: the size comes from gen_inhibit.h, which records why it is not 1400.
+ */
 static esp_err_t gen_inhibit_get_handler(httpd_req_t *req)
 {
-    static char out[1400];
+    static char out[GI_STATUS_PAGE_CAP];
     int n = gen_inhibit_get_stats_json(out, sizeof(out));
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, out, n);
@@ -1655,7 +1658,7 @@ static esp_err_t gen_inhibit_set_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    static char out[1400];
+    static char out[GI_STATUS_PAGE_CAP];    /* D10, as above */
     int n = gen_inhibit_get_stats_json(out, sizeof(out));
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, out, n);

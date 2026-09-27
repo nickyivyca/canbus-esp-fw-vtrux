@@ -24,16 +24,17 @@ MAIN = os.path.normpath(os.path.join(HERE, "..", "..", "main"))
 
 # (name, file, old, new, the case that must fail)
 MUTATIONS = [
+    # THE ANCHOR STOPS AT THE LOOP HEAD, deliberately. Spelling the whole body
+    # meant spelling the end-of-line comment on the note_skip() call too, and a
+    # reworded comment then disarms the mutation with no sign that it did -- which
+    # is how this one came to be skipped for two commits. Killing the loop by its
+    # condition breaks the same property with nothing prose-shaped in the anchor.
     ("D1: drop the deadline purge of queued inhibits",
      "gi_sched.c",
      """    uint32_t purged = 0;
-    while (s->q[GS_CLASS_INHIBIT].n > 0)
-    {
-        q_pop(&s->q[GS_CLASS_INHIBIT]);
-        note_skip(s, now);
-        purged++;
-    }""",
-     """    uint32_t purged = 0;""",
+    while (s->q[GS_CLASS_INHIBIT].n > 0)""",
+     """    uint32_t purged = 0;
+    while (0)""",
      "D1: a queued inhibit is purged at the deadline"),
 
     ("D2: make the skip window fixed instead of sliding",
@@ -66,7 +67,7 @@ MUTATIONS = [
      "gi_sched.c",
      """        if (cls == GS_CLASS_INHIBIT)
         {
-            note_skip(s, now);
+            note_skip(s, now, false);   /* never went out */
         }""",
      """        if (cls == GS_CLASS_INHIBIT)
         {
@@ -85,11 +86,23 @@ MUTATIONS = [
                 gs_slot_t sl;""",
      "R8: a withdrawn HELD inhibit never comes back"),
 
+    # THE ANCHOR HAS TO NAME ITS BRANCH. `late_on_wire++` is raised twice now
+    # -- once for TRANSMITTING and once for BUF_EMPTY, which is also a frame that
+    # went out late -- so the bare two lines match in two places and the mutation
+    # is skipped as ambiguous rather than applied. Carrying the `if` in makes it
+    # unique and says which branch is being broken.
     ("R5: TRANSMITTING at the deadline reported as a skip",
      "gi_sched.c",
-     """        s->st.late_on_wire++;
+     """    if (b == GS_BUF_TRANSMITTING)
+    {
+        /*
+         * It may reach the wire late, and the device cannot tell that from the
+         * abort succeeding: both end as TX_SUCCESS with msgs_to_tx 0.
+         */
+        s->st.late_on_wire++;
         verdict = GS_DEADLINE_MAYBE_LATE;""",
-     """        note_skip(s, now);
+     """    if (b == GS_BUF_TRANSMITTING)
+    {
         verdict = GS_DEADLINE_SKIPPED;""",
      "R5: transmitting at the deadline is MAYBE_LATE"),
 

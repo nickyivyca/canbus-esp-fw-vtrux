@@ -392,6 +392,24 @@ static void report_events(const gi_events_t *ev)
         case GI_EV_RX_ERROR_DISARM:
             ESP_LOGE(TAG, "disarming after %ld receive errors", (long)e->a);
             break;
+        /*
+         * D9. THIS CASE WAS MISSING, and the `default` below swallowed it, so
+         * -Wswitch never said a word. The kind is the whole point of
+         * gi_skip_kind_t: "withdrawn" means the frame never reached the wire,
+         * "may have gone out late" means it may have reached it after the VCM's
+         * next command. Without a line here the device cannot tell those apart,
+         * or tell either from nothing having happened -- and the reviewer's
+         * mutation I9, which corrupts exactly this kind, survived because the
+         * output it corrupts did not exist.
+         *
+         * A skip is tolerated (three within 1 s is what trips, spec 7 trip 7 as
+         * amended), so it is a warning and not an error. The trip itself arrives
+         * separately as GI_EV_ABORT with GI_ABORT_SKIPS.
+         */
+        case GI_EV_SKIP:
+            ESP_LOGW(TAG, "inhibit frame skipped: %s",
+                     gi_skip_name((gi_skip_kind_t)e->a));
+            break;
         case GI_EV_NONE:
         default:
             break;

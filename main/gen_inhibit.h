@@ -105,6 +105,22 @@ bool gen_inhibit_owns_bus(void);
 void gen_inhibit_quiesce(void);
 
 /* JSON stats into `buf`. Returns bytes written. */
+/*
+ * The buffer gen_inhibit_get_stats_json() must be given.
+ *
+ * DEFECT D10, 2026-09-27: the scheduler block (gs_json) is appended to the end of
+ * the page and took it to 1761 bytes, while both HTTP handlers in
+ * config_server.c passed 1400. The page was cut mid-token, so the per-class
+ * counters spec 11 requires were missing AND the body was not valid JSON --
+ * returned with a 200, which is why it went unnoticed.
+ *
+ * Here rather than at each call site because a length and a capacity kept in
+ * separate files with nothing comparing them is what produced the defect. E1
+ * case 26 asserts the page fits this, so appending to the page fails a test
+ * rather than truncating it.
+ */
+#define GI_STATUS_PAGE_CAP 2048
+
 int gen_inhibit_get_stats_json(char *buf, int buflen);
 
 /* Discard all accumulated samples. */

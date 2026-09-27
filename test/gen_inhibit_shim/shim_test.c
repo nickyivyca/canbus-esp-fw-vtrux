@@ -71,7 +71,14 @@ static void case_end(void)
 /* The JSON is the shim's own report, and several checks are about it. */
 static const char *stats(void)
 {
-    static char buf[1600];
+    /*
+     * BIGGER THAN THE PAGE, deliberately -- 1761 bytes as of the scheduler
+     * switchover. At 1600 this window cut the scheduler block off, and every
+     * json_u32() of a key inside it returned "absent" while looking exactly like
+     * a zero-or-more answer. This is the TEST's view and is not what the device
+     * passes; case 26 is what checks the handler's buffer.
+     */
+    static char buf[4096];
     gen_inhibit_get_stats_json(buf, sizeof(buf));
     return buf;
 }
@@ -87,6 +94,22 @@ static uint32_t json_u32(const char *key)
     if (!p) return 0xFFFFFFFFu;
     p += strlen(key);
     return (uint32_t)strtoul(p, NULL, 10);
+}
+
+/*
+ * A counter that MUST be on the page. json_u32() returns 0xFFFFFFFF for a key it
+ * cannot find, which satisfies every `>=` assertion ever written against it -- so
+ * a missing counter reads as a large one and the test passes. Asserting presence
+ * separately, with its own message, is the difference between a check and a
+ * decoration.
+ */
+static uint32_t json_need(const char *key)
+{
+    const uint32_t v = json_u32(key);
+    CHECK(v != 0xFFFFFFFFu,
+          "the status page has no %s, so every threshold test on it would pass "
+          "for the wrong reason", key);
+    return v;
 }
 
 /* ---------------------------------------------------------- the fixture -- */
@@ -1595,6 +1618,318 @@ static void case_status_json_bounds(void)
     case_end();
 }
 
+
+/*
+ * CASE 21 -- three skips inside one second trip; one does not.
+ *
+ * Mutation I2 survived without this: the scheduler's 3-in-1 s verdict never
+ * reached the core and nothing noticed, because E1 had no case with three skips
+ * inside a second at all. Both halves matter. Asserting only that three trip
+ * would also pass if EVERY skip tripped, which is the behaviour the user's
+ * amendment of 2026-09-27 replaced.
+ *
+ * The skips come from stalling 0x051, not from refusing it: a refusal trips at
+ * once through trip 7's not-queued form (case 23) and would mask the skip path
+ * entirely.
+ */
+static void case_skip_window_trips_at_three(void)
+{
+    case_begin("case 21: three skips within 1 s trip, one does not");
+    setup();
+    go_live();
+
+    uint8_t ctr = 0x20;
+
+    /* ONE skip. The stall is spent on the first inhibit; the rest complete. */
+    ft_stall_id(0x051, 1);
+    keep_alive(200000, &ctr);
+
+    CHECK(json_need("\"skipped\":") == 1,
+          "expected exactly one skip from one stalled inhibit, page says %u: %s",
+          json_u32("\"skipped\":"), stats());
+    CHECK(!json_has("\"abort_latched\":true"),
+          "a SINGLE skip latched an abort. Spec 7 trip 7 as amended (user, "
+          "2026-09-27) says three within 1 s trip and fewer do not: %s",
+          stats());
+    CHECK(json_has("\"inhibit_live\":true"),
+          "the device stopped inhibiting after one tolerated skip: %s", stats());
+
+    /* Now enough of them, close enough together. */
+    ft_stall_id(0x051, 8);
+    keep_alive(400000, &ctr);
+
+    CHECK(json_need("\"skipped\":") >= 3,
+          "fewer than three skips after 0.4 s of stalled inhibits, so the trip "
+          "below would not be the one being tested: %s", stats());
+    CHECK(json_has("\"abort_latched\":true"),
+          "three skips inside a second did not trip: %s", stats());
+    CHECK(json_has("3 inhibit frames skipped within 1 s"),
+          "the trip did not name the skip window, so it was a different trip: "
+          "%s", stats());
+    teardown();
+    case_end();
+}
+
+/*
+ * CASE 22 -- the controller reporting a FAILED transmit trips at once.
+ *
+ * Mutations I3 and I8 both survived without this. I3 stops the TWAI_ALERT_TX_FAILED
+ * latch being set; I8 credits the completion regardless of it. Either way an
+ * inhibit the controller could not get out is counted as sent.
+ *
+ * This is the alert read that moved into sched_pump() when poll_tx_completion()
+ * was deleted. The compiler's unused-function warning is what stopped it being
+ * lost then, and a warning is not a test.
+ */
+static void case_controller_failed_trips(void)
+{
+    case_begin("case 22: the controller reporting a failed transmit trips");
+    setup();
+    go_live();
+
+    uint8_t ctr = 0x30;
+    ft_fail_next();                 /* the next completing frame raises it */
+    keep_alive(200000, &ctr);
+
+    CHECK(json_has("\"abort_latched\":true"),
+          "a controller-reported transmit failure did not latch an abort: %s",
+          stats());
+    CHECK(json_has("transmit failed"),
+          "an abort latched but did not name the transmit failure: %s", stats());
+    /*
+     * AND IT WAS THIS TRIP, not a skip that happened along the way. Without
+     * this the case would also pass on a build that tripped for the wrong
+     * reason, which is the failure it exists to distinguish.
+     */
+    CHECK(json_need("\"skipped\":") == 0,
+          "the trip came with %u skips, so it may have been the skip window "
+          "rather than the reported failure: %s",
+          json_u32("\"skipped\":"), stats());
+    teardown();
+    case_end();
+}
+
+/*
+ * CASE 23 -- a REFUSED inhibit trips at once, and nothing follows it onto the
+ * wire.
+ *
+ * Mutation I7 survived without the first half. The second half is defect D7,
+ * found by the reviewing session by reading the switchover: a refused submit
+ * counts `refused` and returns WITH THE FRAME STILL QUEUED, so the core latched
+ * off on the refusal and the scheduler's retry on the next tick could put an
+ * inhibit frame on the wire AFTER the trip that was supposed to stop us.
+ *
+ * ft_refuse_id(), not ft_refuse_next(): the refusal has to land on the inhibit
+ * rather than on whichever frame the tick happened to queue first.
+ */
+static void case_refusal_trips_and_nothing_follows(void)
+{
+    case_begin("case 23: a refused inhibit trips, and is not sent afterwards");
+    setup();
+    go_live();
+
+    uint8_t ctr = 0x40;
+    ft_refuse_id(0x051, 1);
+    keep_alive(120000, &ctr);
+
+    CHECK(json_has("\"abort_latched\":true"),
+          "a refused inhibit did not latch an abort: %s", stats());
+    CHECK(json_has("could not be queued"),
+          "the abort did not name the refusal: %s", stats());
+
+    /* The driver accepts frames again from here, so a frame still sitting in the
+     * scheduler's queue would be retried and WOULD go out. */
+    keep_alive(500000, &ctr);
+
+    /*
+     * D7, STATED AS WHAT HAPPENED TO THE FRAME rather than as when it went out.
+     *
+     * Two earlier versions of this check could not fail. One compared wire counts
+     * across a 120 ms window, by which time the retry had already happened; one
+     * moved that into a step hook, and the trip and the retry turned out to fall
+     * inside a single worker iteration, so the hook's baseline already contained
+     * the frame it was watching for. Measuring both builds settled it:
+     *
+     *                     correct   D7 removed
+     *   inhibit queued      12         12
+     *   inhibit sent        11         12
+     *   0x051 on the wire   11         12
+     *   skipped_withdrawn    1          0
+     *
+     * Neither of the two checks below needs to know WHEN the trip landed, which
+     * is the part the harness cannot resolve. They come from two independent
+     * places -- the fake's wire log and the scheduler's own counters -- so a
+     * defect has to fool both to pass.
+     */
+    const uint32_t queued = json_need("\"inhibit\":{\"queued\":");
+    CHECK((uint32_t)ft_wire_count_id(0x051) < queued,
+          "all %u queued inhibit frames reached the wire, so the one the driver "
+          "refused was retried after the trip instead of being withdrawn "
+          "(defect D7): %s", queued, stats());
+    CHECK(json_need("\"skipped_withdrawn\":") >= 1,
+          "the refused inhibit was never counted as withdrawn, so it stayed in "
+          "the scheduler's queue for a retry -- and a retry after the trip puts "
+          "an inhibit frame on the wire after the thing that stopped us "
+          "(defect D7): %s", stats());
+    teardown();
+    case_end();
+}
+
+/*
+ * CASE 24 -- the KIND of a skip is reported, and it is the right kind.
+ *
+ * Mutation I9 reports every skip as maybe-late. It survived for a reason worth
+ * recording: before defect D9 was fixed the kind was visible NOWHERE. The core
+ * raised GI_EV_SKIP carrying it, report_events() had no case for that event, and
+ * the `default: break;` swallowed it without a -Wswitch warning. So the mutation
+ * corrupted a value that nothing read, and no test could have caught it --
+ * the observer had to exist first.
+ *
+ * The distinction is not cosmetic. WITHDRAWN means the frame never reached the
+ * wire; MAYBE_LATE means it may have arrived after the VCM's next command, which
+ * is a different thing to see in a truck log.
+ */
+static void case_skip_kind_is_reported(void)
+{
+    case_begin("case 24: a withdrawn skip is reported as withdrawn");
+    setup();
+    go_live();
+
+    uint8_t ctr = 0x50;
+    /*
+     * Cleared right before the action, not at setup(): the log holds 512 lines
+     * and go_live() plus a stretch of keep_alive() can fill it, at which point
+     * ml_note() silently drops the line this case is looking for.
+     */
+    ml_clear();
+    ft_stall_id(0x051, 1);
+    keep_alive(200000, &ctr);
+
+    CHECK(ml_count("withdrawn before the wire") >= 1,
+          "a stalled inhibit was withdrawn at the deadline and nothing said so. "
+          "The kind reaches the log through GI_EV_SKIP in report_events()");
+    CHECK(ml_count("may have gone out late") == 0,
+          "%d skip(s) were reported as possibly late, but the frame was still "
+          "AWAITING arbitration and the abort removed it -- it cannot have "
+          "reached the wire",
+          ml_count("may have gone out late"));
+
+    /*
+     * And the scheduler's own breakdown adds up. These are two independent
+     * statements: the log says what the CORE was told, this says the SCHEDULER's
+     * counters agree with their own total.
+     */
+    CHECK(json_need("\"skipped\":")
+              == json_need("\"skipped_withdrawn\":")
+               + json_need("\"skipped_late\":"),
+          "the skip total and its per-kind breakdown disagree, so at least one "
+          "of them is wrong: %s", stats());
+    CHECK(json_need("\"skipped_withdrawn\":") >= 1,
+          "the withdrawn skip was not counted as withdrawn: %s", stats());
+    teardown();
+    case_end();
+}
+
+/*
+ * CASE 25 -- no abort command is issued while the buffer is TRANSMITTING.
+ *
+ * Spec 5.2 item 4 waits for TS to fall instead, because the measurement said the
+ * command does nothing there: 7 of 8 contended trials, artifacts/gen-inhibit/
+ * runs/txabort_full.json. Mutation I6 makes the HAL command an abort whatever the
+ * buffer state, and ft_ll_aborts_while_tx() is the only thing that can see it --
+ * the scheduler's own statistics cannot tell a command it never sent from one
+ * that had no effect.
+ *
+ * THE AIR TIME GOES ON 0x051, NOT ON THE DIAG IDS. An earlier draft of this case
+ * put it on the diag pages and relied on preemption reaching the abort, but
+ * preemption is guarded by `buf_state() == AWAITING` and never enters the abort
+ * state while transmitting -- so the assertion held no matter what the HAL did.
+ * Making the INHIBIT slow puts a genuinely mid-transmission frame in front of the
+ * deadline's withdrawal, which is the one path that calls the HAL there.
+ */
+static void case_no_abort_while_transmitting(void)
+{
+    case_begin("case 25: no abort command while the buffer is transmitting");
+    setup();
+    go_live();
+
+    /* Longer than the VCM's period, so the frame is still on the air at the
+     * deadline that withdraws it. */
+    ft_set_air_time_id(0x051, 150000);
+
+    uint8_t ctr = 0x60;
+    keep_alive(600000, &ctr);
+
+    /*
+     * THE TWO GUARDS COME FIRST. Without them the assertion below passes on any
+     * build where no abort was ever attempted, or where the deadline never found
+     * a transmitting frame -- and both of those look exactly like success.
+     */
+    CHECK(json_need("\"late_on_wire\":") >= 1,
+          "no deadline found the inhibit still in the buffer, so the "
+          "transmitting branch was never reached and the check below is "
+          "vacuous: %s", stats());
+    CHECK(json_need("\"aborts\":") >= 1,
+          "no abort was started at all, so the check below cannot fail: %s",
+          stats());
+
+    CHECK(ft_ll_aborts_while_tx() == 0,
+          "%d abort command(s) were issued while the buffer was TRANSMITTING. "
+          "Spec 5.2 item 4 waits for TS to fall, because the measurement showed "
+          "the command has no effect there (7 of 8 contended trials): %s",
+          ft_ll_aborts_while_tx(), stats());
+    teardown();
+    case_end();
+}
+
+/*
+ * CASE 26 -- the status page fits the buffer the HTTP handlers give it.
+ *
+ * DEFECT D10, and it was live. gs_json() appends the scheduler block to the END
+ * of the page, which took it to 1761 bytes while both handlers in
+ * config_server.c passed 1400. The page was therefore cut mid-token --
+ *
+ *     ..."cls":{"inhibit":{"queued":11,"sent":11,"aborted":0,"handed":1
+ *
+ * -- so the whole per-class block was missing AND the body was not valid JSON,
+ * returned with a 200. Spec 11 requires those counters on this page.
+ *
+ * Case 20 already proves the truncation is memory-SAFE. Safe and silently wrong
+ * is what let this sit there, so this case asserts the page is WHOLE: it ends
+ * where it says it ends, and its braces balance. Counting braces rather than
+ * checking the last byte is what catches a cut in the middle of a number, which
+ * is what actually happened.
+ */
+static void case_status_page_fits_the_handler_buffer(void)
+{
+    case_begin("case 26: the status page fits the buffer the handler passes");
+    setup();
+    go_live();
+    ft_run(20000);
+
+    static char page[GI_STATUS_PAGE_CAP];
+    const int n = gen_inhibit_get_stats_json(page, sizeof(page));
+
+    CHECK(n > 0 && n < (int)sizeof(page) - 1,
+          "the status page needs more than the %d bytes config_server.c gives "
+          "it (returned %d). Raise GI_STATUS_PAGE_CAP -- until then the tail of "
+          "the page is cut off and the body is not valid JSON",
+          (int)sizeof(page), n);
+
+    int depth = 0, lowest = 0;
+    for (int i = 0; i < n; i++)
+    {
+        if (page[i] == '{') { depth++; }
+        else if (page[i] == '}') { depth--; if (depth < lowest) lowest = depth; }
+    }
+    CHECK(depth == 0 && lowest == 0,
+          "the status page's braces do not balance (ends at depth %d, lowest "
+          "%d), so it was truncated part-way through and no consumer can parse "
+          "it: %s", depth, lowest, page);
+    teardown();
+    case_end();
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);   /* a hang must still show its trace */
@@ -1619,6 +1954,12 @@ int main(void)
     case_rx_queue_depth();
     case_diag_defers_after_keyoff();
     case_status_json_bounds();
+    case_skip_window_trips_at_three();
+    case_controller_failed_trips();
+    case_refusal_trips_and_nothing_follows();
+    case_skip_kind_is_reported();
+    case_no_abort_while_transmitting();
+    case_status_page_fits_the_handler_buffer();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
     return g_fail ? 1 : 0;

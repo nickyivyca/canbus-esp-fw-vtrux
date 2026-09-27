@@ -177,6 +177,8 @@ static int64_t  g_last_done;   /* when the previous frame left the head */
 static int      g_stall_n, g_refuse_n, g_rx_err_n;
 static uint32_t g_stall_id;
 static int      g_stall_id_n;
+static uint32_t g_refuse_id;
+static int      g_refuse_id_n;
 static bool     g_fail_next;
 static bool     g_installed, g_running;
 static bool     g_in_receive;       /* a thread is blocked inside the driver */
@@ -476,6 +478,7 @@ int ft_wire_count_id(uint32_t id)
     return n;
 }
 void ft_refuse_next(int n) { g_refuse_n = n; }
+void ft_refuse_id(uint32_t id, int n) { g_refuse_id = id; g_refuse_id_n = n; }
 void ft_fail_next(void) { g_fail_next = true; }
 void ft_rx_error_next(int n) { g_rx_err_n = n; }
 
@@ -908,6 +911,11 @@ esp_err_t twai_transmit(const twai_message_t *message, TickType_t ticks)
     }
 
     if (g_refuse_n > 0) { g_refuse_n--; return ESP_FAIL; }
+    if (g_refuse_id_n > 0 && message->identifier == g_refuse_id)
+    {
+        g_refuse_id_n--;
+        return ESP_FAIL;
+    }
     if (!enqueue(message->identifier, message->data,
                  message->data_length_code, false, message))
     {
@@ -1062,6 +1070,8 @@ void ft_reset(void)
     g_ll_removed = 0;
     g_stall_n = g_refuse_n = g_rx_err_n = 0;
     g_stall_id_n = 0;
+    g_refuse_id = 0;
+    g_refuse_id_n = 0;
     g_in_receive = false;
     g_unsafe_teardowns = 0;
     g_installed_mode = -1;

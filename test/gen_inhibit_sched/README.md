@@ -46,3 +46,29 @@ avoidance. Chasing that one found a real wart: preemption used to enter the abor
 state even when the buffer was transmitting, wait for the frame to complete on the
 wire, and then requeue it — **sending every preempted-but-completed telemetry page
 twice.**
+
+### Three mutations were skipped for two commits, and the count said 13
+
+`note_skip()` gained a `late` argument when skips were split by kind, and three
+anchors still spelled the one-argument call. `mutate.py` reported them as `SKIP`
+with the match count, which is the honest behaviour -- and the run was still
+being read as "13 mutations caught" when it was **10 caught and 3 skipped**. A
+skipped mutation is an unpinned property that looks like a passing one at a
+glance, because the summary line underneath says every mutation with a matching
+case was caught, and that sentence is true.
+
+Two of the three needed more than a re-point:
+
+* **R5's anchor now matched twice.** `late_on_wire++` is raised for
+  `GS_BUF_TRANSMITTING` and again for `GS_BUF_EMPTY` -- both are frames that went
+  out late -- so the bare two lines were ambiguous. The anchor carries the `if`
+  in, which also makes it say which branch it breaks.
+* **D1's anchor was broken by an end-of-line comment**, a `/* never handed over,
+  never on the wire */` added next to the call. Re-pointing it at the whole body
+  would leave prose in the anchor for the next comment edit to disarm again, so
+  it is cut back to the loop head and the mutation kills the loop by its
+  condition.
+
+**Read the match counts, not just the verdicts.** `(pattern found 0 times)` and
+`(pattern found 2 times)` are the same shape of failure as a filter returning
+nothing because its premise is wrong.
