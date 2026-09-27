@@ -781,8 +781,7 @@ def main():
               "them is a way to brick a device with no EXTERNAL USB port and no "
               "factory reset: recovery is bootloader rollback, or taking "
               "the case off to reach the C3's native USB "
-              "(user, 2026-09-27)."
-              "reset." % bad)
+              "(user, 2026-09-27)." % bad)
     else:
         print("every check with a reference passed")
     if noref:

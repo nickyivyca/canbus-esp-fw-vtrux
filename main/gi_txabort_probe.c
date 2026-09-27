@@ -121,7 +121,12 @@ static const char *TAG = "gi_txabort";
 #define TXAB_TAG_TRIAL_LO   0x7E
 #define TXAB_TAG_FOLLOW_LO  0x7F
 
-#define TXAB_MAX_TRIALS     200
+/*
+ * 128 rather than 200 because the timing fields below are `int` and not
+ * int16_t. The largest phase this bench runs is 78 trials, and a width that
+ * cannot wrap is worth more than 72 rows nothing uses.
+ */
+#define TXAB_MAX_TRIALS     128
 #define TXAB_POLL_US        20000   /* 20 ms: far past one frame at 500 kbit/s */
 #define TXAB_TRAIL_US       2000    /* keep watching this long after the first
                                      * observation, so a LATE alert is caught
@@ -172,9 +177,9 @@ typedef struct
 {
     uint16_t trial;
     uint16_t req_us;        /* requested abort delay after twai_transmit() */
-    int16_t  act_us;        /* achieved delay, -1 when no abort was issued */
-    int16_t  gate_us;       /* how long the RS gate waited, -1 if not gated */
-    int16_t  edge_us;       /* RS 0->1 edge to the abort; -1 if not gated. This
+    int      act_us;        /* achieved delay, -1 when no abort was issued */
+    int      gate_us;       /* how long the RS gate waited, -1 if not gated */
+    int      edge_us;       /* RS 0->1 edge to the abort; -1 if not gated. This
                              * is the number that says the abort landed inside
                              * the frame our own was queued behind. */
     uint16_t st_pre;        /* status register before twai_transmit() */
@@ -182,10 +187,10 @@ typedef struct
     uint16_t st_after;      /* ... immediately after, same critical section */
     uint8_t  mtx_before;    /* msgs_to_tx before the abort */
     uint8_t  mtx_after;     /* ... right after */
-    int16_t  free_us;       /* until TBS set, from the abort; -1 = never */
-    int16_t  mtx0_us;       /* until msgs_to_tx == 0; -1 = never */
-    int16_t  alert_us;      /* until the first alert of ANY kind; -1 = none */
-    int16_t  txalert_us;    /* until the first TXAB_TX_ALERTS bit; -1 = none.
+    int      free_us;       /* until TBS set, from the abort; -1 = never */
+    int      mtx0_us;       /* until msgs_to_tx == 0; -1 = never */
+    int      alert_us;      /* until the first alert of ANY kind; -1 = none */
+    int      txalert_us;    /* until the first TXAB_TX_ALERTS bit; -1 = none.
                              * THIS is the one the report reads -- alert_us is
                              * dominated by RX_DATA whenever the bus is busy. */
     uint32_t alerts;        /* every alert bit seen during the poll */
@@ -195,7 +200,7 @@ typedef struct
     uint8_t  d_arb_lost;
     uint8_t  tx_err;        /* 0 = ESP_OK */
     uint8_t  next_tx_err;   /* the follow-up transmit: does the buffer work? */
-    int16_t  next_done_us;  /* until the follow-up completed; -1 = never */
+    int      next_done_us;  /* until the follow-up completed; -1 = never */
     uint8_t  skip;
 } txab_rec_t;
 
@@ -367,7 +372,7 @@ static void txab_trial(int phase, int gate, uint16_t trial, uint16_t req_us,
                 }
             }
             t_edge = esp_timer_get_time();
-            r->gate_us = (int16_t)(t_edge - g0);
+            r->gate_us = (int)(t_edge - g0);
             r->st_pre = (uint16_t)twai_ll_get_status(hw);
         }
 
@@ -419,10 +424,10 @@ static void txab_trial(int phase, int gate, uint16_t trial, uint16_t req_us,
             r->st_after = (uint16_t)twai_ll_get_status(hw);
             taskEXIT_CRITICAL(&s_abort_lock);
 
-            r->act_us = (int16_t)(t_abort - t_ref);
+            r->act_us = (int)(t_abort - t_ref);
             if (gate == TXAB_GATE_RS)
             {
-                r->edge_us = (int16_t)(t_abort - t_edge);
+                r->edge_us = (int)(t_abort - t_edge);
             }
             t_ref = t_abort;
 
@@ -448,14 +453,14 @@ static void txab_trial(int phase, int gate, uint16_t trial, uint16_t req_us,
 
         if (r->free_us < 0 && (st & TWAI_LL_STATUS_TBS))
         {
-            r->free_us = (int16_t)(now - t_ref);
+            r->free_us = (int)(now - t_ref);
         }
 
         twai_status_info_t sp;
         if (r->mtx0_us < 0 && twai_get_status_info(&sp) == ESP_OK
             && sp.msgs_to_tx == 0)
         {
-            r->mtx0_us = (int16_t)(now - t_ref);
+            r->mtx0_us = (int)(now - t_ref);
         }
 
         uint32_t a = 0;
@@ -464,14 +469,14 @@ static void txab_trial(int phase, int gate, uint16_t trial, uint16_t req_us,
             r->alerts |= a;
             if (r->alert_us < 0)
             {
-                r->alert_us = (int16_t)(now - t_ref);
+                r->alert_us = (int)(now - t_ref);
             }
             if (a & TXAB_TX_ALERTS)
             {
                 r->txalerts |= (a & TXAB_TX_ALERTS);
                 if (r->txalert_us < 0)
                 {
-                    r->txalert_us = (int16_t)(now - t_ref);
+                    r->txalert_us = (int)(now - t_ref);
                 }
             }
         }
@@ -532,7 +537,7 @@ static void txab_trial(int phase, int gate, uint16_t trial, uint16_t req_us,
             twai_status_info_t sp;
             if (twai_get_status_info(&sp) == ESP_OK && sp.msgs_to_tx == 0)
             {
-                r->next_done_us = (int16_t)(now - t_next);
+                r->next_done_us = (int)(now - t_next);
                 break;
             }
             if (now >= nd)
@@ -606,6 +611,44 @@ static esp_err_t send_rec(httpd_req_t *req, const txab_rec_t *r, bool first)
     return httpd_resp_send_chunk(req, b, n);
 }
 
+/*
+ * Fetch one query argument, or say why not.
+ *
+ * Returns 1 found, 0 absent, -1 present but unusable. The -1 case is the whole
+ * point: httpd_query_key_value() returns ESP_ERR_HTTPD_RESULT_TRUNC rather than
+ * ESP_OK when the value does not fit, so testing `== ESP_OK` treats an over-long
+ * value exactly like an absent one and runs the DEFAULT. That is a guard whose
+ * bypass path is indistinguishable from its ordinary path.
+ */
+static int arg_get(const char *query, const char *key, char *val, size_t vn)
+{
+    const esp_err_t e = httpd_query_key_value(query, key, val, vn);
+    if (e == ESP_OK)              { return 1; }
+    if (e == ESP_ERR_NOT_FOUND)   { return 0; }
+    return -1;
+}
+
+/*
+ * strtol with the end pointer checked, because atoi("abc") is 0 -- so `d0=abc`
+ * would run as d0 = 0, which is the same silent-default failure in a different
+ * coat. Returns false if the text is not a whole number in [lo, hi].
+ */
+static bool arg_int(const char *val, long lo, long hi, int *out)
+{
+    char *end = NULL;
+    const long v = strtol(val, &end, 10);
+    if (end == val || (end != NULL && *end != '\0'))
+    {
+        return false;
+    }
+    if (v < lo || v > hi)
+    {
+        return false;
+    }
+    *out = (int)v;
+    return true;
+}
+
 static int phase_from(const char *s)
 {
     if (strcmp(s, "abort") == 0)    { return TXAB_PHASE_ABORT; }
@@ -621,67 +664,106 @@ static esp_err_t txab_handler(httpd_req_t *req)
     char phase_s[16] = "abort";
     char gate_s[8] = "off";
     char label[32] = "";
-    const char *too_long = NULL;
+    const char *bad = NULL;
     int reps = 3;
     int d0 = 0, d1 = 0, step = 20, settle_ms = 2;
 
-    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK)
+    /*
+     * THE QUERY STRING ITSELF FIRST. A query over sizeof(query) returns
+     * RESULT_TRUNC, and the old `== ESP_OK` test then skipped ALL parsing and ran
+     * the whole measurement on defaults -- the worst version of this failure,
+     * because every argument is wrong at once and nothing says so.
+     */
+    bool have_query = false;
     {
-        if (httpd_query_key_value(query, "phase", val, sizeof(val)) == ESP_OK)
+        const esp_err_t qe = httpd_req_get_url_query_str(req, query,
+                                                         sizeof(query));
+        if (qe == ESP_OK)
         {
-            if (!copy_arg(phase_s, sizeof(phase_s), val))
-            {
-                too_long = "phase";
-            }
+            have_query = true;
         }
-        if (httpd_query_key_value(query, "gate", val, sizeof(val)) == ESP_OK)
+        else if (qe != ESP_ERR_NOT_FOUND)
         {
-            if (!copy_arg(gate_s, sizeof(gate_s), val))
-            {
-                too_long = "gate";
-            }
-        }
-        if (httpd_query_key_value(query, "label", val, sizeof(val)) == ESP_OK)
-        {
-            if (!copy_arg(label, sizeof(label), val))
-            {
-                too_long = "label";
-            }
-        }
-        if (httpd_query_key_value(query, "reps", val, sizeof(val)) == ESP_OK)
-        {
-            reps = atoi(val);
-        }
-        if (httpd_query_key_value(query, "d0", val, sizeof(val)) == ESP_OK)
-        {
-            d0 = atoi(val);
-        }
-        if (httpd_query_key_value(query, "d1", val, sizeof(val)) == ESP_OK)
-        {
-            d1 = atoi(val);
-        }
-        if (httpd_query_key_value(query, "step", val, sizeof(val)) == ESP_OK)
-        {
-            step = atoi(val);
-        }
-        if (httpd_query_key_value(query, "settle", val, sizeof(val)) == ESP_OK)
-        {
-            settle_ms = atoi(val);
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                "the query string did not fit and would have "
+                                "been truncated -- refused, because every "
+                                "argument would silently have taken its default");
+            ESP_LOGE(TAG, "refused: query string too long (%d)", (int)qe);
+            return ESP_FAIL;
         }
     }
 
-    if (too_long != NULL)
+    if (have_query)
+    {
+        /*
+         * Each argument: 1 found, 0 absent, -1 present but unusable. Only 0 falls
+         * through to the default. `bad` names the first argument that was
+         * supplied and could not be honoured, and nothing runs until it is NULL.
+         */
+        int g;
+
+        g = arg_get(query, "phase", val, sizeof(val));
+        if (g < 0 || (g > 0 && !copy_arg(phase_s, sizeof(phase_s), val)))
+        {
+            bad = "phase";
+        }
+        g = arg_get(query, "gate", val, sizeof(val));
+        if (g < 0 || (g > 0 && !copy_arg(gate_s, sizeof(gate_s), val)))
+        {
+            bad = "gate";
+        }
+        g = arg_get(query, "label", val, sizeof(val));
+        if (g < 0 || (g > 0 && !copy_arg(label, sizeof(label), val)))
+        {
+            bad = "label";
+        }
+
+        /*
+         * The numeric bounds are not tidiness. req_us is uint16_t and the timing
+         * fields are int, so d0 = 70000 used to truncate to 4464 and a sweep
+         * would have run at a delay nobody asked for, labelled with the one they
+         * did. 20000 us leaves room for a preemption outlier on top without any
+         * result field wrapping.
+         */
+        struct { const char *key; int *dst; long lo, hi; } nums[] = {
+            { "reps",   &reps,      1, TXAB_MAX_TRIALS },
+            { "d0",     &d0,        0, 20000 },
+            { "d1",     &d1,        0, 20000 },
+            { "step",   &step,      1, 20000 },
+            { "settle", &settle_ms, 1, 1000 },
+        };
+        for (unsigned i = 0; i < sizeof(nums) / sizeof(nums[0]); i++)
+        {
+            g = arg_get(query, nums[i].key, val, sizeof(val));
+            if (g < 0
+                || (g > 0 && !arg_int(val, nums[i].lo, nums[i].hi,
+                                      nums[i].dst)))
+            {
+                bad = nums[i].key;
+            }
+        }
+    }
+
+    if (bad != NULL)
     {
         /*
          * Refuse rather than run something adjacent to what was asked for. A
          * measurement whose configuration was quietly altered is worse than no
          * measurement, because the results look like an answer.
          */
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                            "a query argument is too long and would have been "
-                            "truncated -- refused rather than run with a "
-                            "different configuration than was asked for");
-        ESP_LOGE(TAG, "refused: argument '%s' too long", too_long);
+        /*
+         * 256, because the fixed text alone is 155 bytes and `bad` is a key name
+         * on top -- at 160 this was a -Werror=format-truncation error, and the
+         * compiler was right: a refusal that silently loses its own explanation
+         * is the same class of defect as the truncation it is refusing.
+         */
+        char msg[256];
+        snprintf(msg, sizeof(msg),
+                 "query argument '%s' was supplied but is unusable (too long, "
+                 "not a whole number, or out of range) -- refused rather than "
+                 "run with a different configuration than was asked for", bad);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, msg);
+        ESP_LOGE(TAG, "refused: argument '%s' unusable", bad);
         return ESP_FAIL;
     }
 
@@ -710,11 +792,19 @@ static esp_err_t txab_handler(httpd_req_t *req)
      * starts logging in the middle of the measurement. Caught by the reviewing
      * session, 2026-09-27.
      */
-    if (reps < 1 || step < 1 || settle_ms < 1 || settle_ms > 1000)
+    /*
+     * Ranges are enforced by the table above; what is left is the relation
+     * between d0 and d1, and the trial budget. settle >= 1 is in the table with
+     * the reason recorded here: each trial busy-polls and never blocks, at
+     * priority 18, so with no delay between trials the IDLE task never runs and
+     * the task watchdog (5 s, CHECK_IDLE_TASK_CPU0=y, no panic) starts logging in
+     * the middle of the measurement.
+     */
+    if ((long)(((d1 - d0) / step) + 1) * reps > TXAB_MAX_TRIALS)
     {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                            "bad reps/step/settle (settle must be >= 1 ms so "
-                            "the idle task runs and the task WDT stays quiet)");
+                            "steps x reps exceeds the record budget -- refused "
+                            "rather than silently truncating the sweep");
         return ESP_FAIL;
     }
 
@@ -770,11 +860,7 @@ static esp_err_t txab_handler(httpd_req_t *req)
     }
 
     const int steps = ((d1 - d0) / step) + 1;
-    int want = steps * reps;
-    if (want > TXAB_MAX_TRIALS)
-    {
-        want = TXAB_MAX_TRIALS;
-    }
+    const int want = steps * reps;
 
     const int64_t t_run0 = esp_timer_get_time();
 
@@ -819,7 +905,7 @@ static esp_err_t txab_handler(httpd_req_t *req)
         "\"gate\":\"%s\",\"label\":\"%s\","
         "\"id\":\"0x%03X\",\"dlc\":%d,\"tag\":\"AB7E trial, AB7F follow-up\","
         "\"reps\":%d,\"d0\":%d,\"d1\":%d,\"step\":%d,\"steps\":%d,"
-        "\"settle_ms\":%d,"
+        "\"settle_ms\":%d,\"query_given\":%s,"
         "\"n\":%d,\"run_us\":%lld,\"uptime_us\":%lld,"
         "\"silent\":%s,\"alerts_enabled\":\"TWAI_ALERT_ALL\","
         "\"rx_queue_len\":%lu,\"filter_narrowed\":%s,"
@@ -829,6 +915,7 @@ static esp_err_t txab_handler(httpd_req_t *req)
         "\"trials\":[",
         GIT_SHA, phase_s, gate_s, label, TXAB_ID, TXAB_DLC,
         reps, d0, d1, step, steps, settle_ms,
+        have_query ? "true" : "false",
         s_n, (long long)(esp_timer_get_time() - t_run0),
         (long long)esp_timer_get_time(),
         can_is_silent() ? "true" : "false",
