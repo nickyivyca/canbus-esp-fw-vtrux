@@ -10,3 +10,20 @@ idf_component_register(
     PRIV_REQUIRES       # optional, list the private requirements
     EMBED_FILES "homepage.html"
 )
+
+# MEASUREMENT-ONLY INSTRUMENT, OFF UNLESS ASKED FOR EXPLICITLY.
+#
+#   idf.py -B build-rxq -DGI_INSTRUMENT_RXQ=1 build
+#
+# Enables the RX-backlog instrument in gen_inhibit.c, which measures the one
+# quantity neither device timing instrument can see: how many frames were waiting
+# in the driver's queue when the worker dequeued one. Build it into a SEPARATE
+# directory -- ESP-IDF names the image from the commit, so an instrument build
+# and a shipping build of the same commit produce the same filename, and this
+# project has already been caught once by a mislabelled image.
+#
+# Never flash a build configured this way to the truck.
+if(GI_INSTRUMENT_RXQ)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE GI_INSTRUMENT_RXQ=1)
+    message(STATUS "gen_inhibit: RX backlog instrument ENABLED (measurement build)")
+endif()

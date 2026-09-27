@@ -140,6 +140,110 @@ static bool s_tx_failed_latched;
 static bool     s_forced_silent;
 static uint8_t  s_silent_saved;
 
+/* ------------------------------------------- RX backlog instrument (opt) -- */
+/*
+ * MEASUREMENT-ONLY. NEVER FLASH A GI_INSTRUMENT_RXQ BUILD TO THE TRUCK.
+ *
+ * WHAT IT MEASURES AND WHY NOTHING ELSE HERE DOES. `response` and RESPOND's
+ * probe both take their timestamp from esp_timer_get_time() AFTER
+ * twai_receive() returns, in the worker. Time a frame spent waiting in the
+ * driver's software queue is therefore already gone before either clock starts
+ * -- and that wait is exactly what the receive queue's depth buffers, and
+ * exactly what load_margin.py's WORST_PREEMPT_US is supposed to bound. On
+ * 2026-09-26 that gap let a 6796 us RX-to-completion reading be attributed to
+ * bus arbitration, which a 0x051 on this bus cannot suffer for more than about
+ * 590 us; the reviewer caught it.
+ *
+ * The driver already counts what is wanted. twai_get_status_info() reports
+ * msgs_to_rx, the frames still queued; read at a dequeue, the backlog that
+ * moment is msgs_to_rx + 1 for the frame just taken. Divided by the arrival
+ * rate it IS the worker's off-CPU time, measured rather than inferred:
+ * ~423 us per slot at the 2364 frames/s truck replay.
+ *
+ * DEPTH IS LEFT AT THE SHIPPING 32, against the suggestion to widen it to 128
+ * for headroom. Censoring is not yet in play: the 2026-09-26 arms lost nothing
+ * at all (every replayed 0x051 answered, ctr_bad 0), which already bounds the
+ * backlog they reached below 32 -- and the observed stall is ~16 slots' worth.
+ * Measuring at the shipping depth means this build differs from the shipping
+ * image in one respect only, which is worth more than headroom nothing has
+ * reached. If the high-water comes back at or near the depth it IS censored,
+ * frames were lost, and the 128-deep variant becomes the next run.
+ *
+ * COUNTS AS WELL AS THE MAXIMUM, because one extreme sample and a recurring
+ * tail read identically through a maximum alone -- and the maxima from the last
+ * run are already known to be unpinned.
+ */
+#if GI_INSTRUMENT_RXQ
+
+static const uint32_t s_rxq_edges[] = { 2, 4, 8, 16, 32, 64 };
+#define RXQ_NEDGES ((int)(sizeof(s_rxq_edges) / sizeof(s_rxq_edges[0])))
+
+static uint32_t s_rxq_samples;
+static uint32_t s_rxq_max;
+static uint32_t s_rxq_ge[RXQ_NEDGES];
+
+static void rxq_sample(void)
+{
+    twai_status_info_t info;
+    if (twai_get_status_info(&info) != ESP_OK)
+    {
+        return;
+    }
+    /* msgs_to_rx is what is STILL waiting; the frame just dequeued counts too. */
+    uint32_t backlog = (uint32_t)info.msgs_to_rx + 1;
+
+    s_rxq_samples++;
+    if (backlog > s_rxq_max)
+    {
+        s_rxq_max = backlog;
+    }
+    for (int i = 0; i < RXQ_NEDGES; i++)
+    {
+        if (backlog >= s_rxq_edges[i])
+        {
+            s_rxq_ge[i]++;
+        }
+    }
+}
+
+/* Reset with the other per-arm statistics, so an arm's figure is that arm's. */
+static void rxq_reset(void)
+{
+    s_rxq_samples = 0;
+    s_rxq_max = 0;
+    for (int i = 0; i < RXQ_NEDGES; i++)
+    {
+        s_rxq_ge[i] = 0;
+    }
+}
+
+static int rxq_json(char *buf, int buflen)
+{
+    int n = snprintf(buf, buflen,
+                     ",\"rxq\":{\"depth\":%d,\"samples\":%lu,\"max\":%lu,\"ge\":[",
+                     (int)can_rx_queue_len(),
+                     (unsigned long)s_rxq_samples, (unsigned long)s_rxq_max);
+    for (int i = 0; i < RXQ_NEDGES && n < buflen; i++)
+    {
+        n += snprintf(buf + n, buflen - n, "%s%lu", (i ? "," : ""),
+                      (unsigned long)s_rxq_ge[i]);
+    }
+    if (n < buflen) n += snprintf(buf + n, buflen - n, "],\"ge_edges\":[");
+    for (int i = 0; i < RXQ_NEDGES && n < buflen; i++)
+    {
+        n += snprintf(buf + n, buflen - n, "%s%lu", (i ? "," : ""),
+                      (unsigned long)s_rxq_edges[i]);
+    }
+    if (n < buflen) n += snprintf(buf + n, buflen - n, "]}");
+    return n;
+}
+
+#else
+#define rxq_sample()            do { } while (0)
+#define rxq_reset()             do { } while (0)
+#define rxq_json(buf, buflen)   (0)
+#endif
+
 static uint32_t fnv1a32(const char *s)
 {
     uint32_t h = 2166136261u;
@@ -610,6 +714,7 @@ esp_err_t gen_inhibit_set_mode(gen_inhibit_mode_t mode, uint32_t offset_us)
     }
 
     gi_events_t ev = { 0 };
+    rxq_reset();
     gi_set_mode(&s_core, (gi_mode_t)mode, offset_us, esp_timer_get_time(), &ev);
     report_events(&ev);
 
@@ -773,6 +878,11 @@ static void gen_inhibit_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
+        /*
+         * FIRST THING AFTER THE DEQUEUE. Anything between the receive and this
+         * read lets the queue drain further and understates the backlog.
+         */
+        rxq_sample();
         gi_on_rx_ok(&s_core);
 
         {
@@ -948,7 +1058,9 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
         n += snprintf(buf + n, buflen - n, "%s%lu", (i ? "," : ""),
                       (unsigned long)gi_bucket_us[i]);
     }
-    if (n < buflen) n += snprintf(buf + n, buflen - n, ",\"inf\"]}\n");
+    if (n < buflen) n += snprintf(buf + n, buflen - n, ",\"inf\"]}");
+    n += rxq_json(buf + n, buflen - n);
+    if (n < buflen) n += snprintf(buf + n, buflen - n, "\n");
     return n;
 }
 

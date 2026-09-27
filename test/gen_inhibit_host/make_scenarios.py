@@ -1974,7 +1974,7 @@ def s_gene_rpm_stale_fb_fresh():
 # they have to move together or the model stops describing the device. The
 # depth-5 behaviour is not lost -- load_margin.py sweeps depths, which is where
 # a comparison between them belongs.
-RX_DEPTH = 32
+RX_DEPTH = 64
 
 
 def filler(t, n=8):

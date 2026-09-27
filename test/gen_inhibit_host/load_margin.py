@@ -43,35 +43,46 @@ MS = 1000
 
 # Spec 5 and 9.3, the two numbers the sweep is judged against.
 #
-# CHECKED ON HARDWARE AT TRUCK RATE, 2026-09-26, AND LEFT ALONE BECAUSE IT IS
-# CONSERVATIVE. This constant used to rest entirely on a bench run at ~100
-# frames/s on a near-idle bus, which spec 5 flagged as not being the truck.
+# THE DESIGN-CASE WORST PREEMPTION (user's ruling, 2026-09-26): normal truck
+# operation, in which nothing is driving heavy WiFi traffic to this device while
+# it is inhibiting. Spec 5.1 item 5 measures its 3x margin against this figure.
 #
-# A 30 s full-bus truck replay at 2364.7 frames/s into the device (on debfeca,
-# Kvaser witnessing) measured the scheduling delay directly, using RESPOND --
-# whose probe is counted AT QUEUEING (spec 12.1), so it excludes frame air time
-# and completion observation. Worst RX-to-queue under an adversarial WiFi load
-# was 1611 us, and 500 us of that is the programmed probe offset, so the
-# scheduling component is ~1111 us. Less than half the 2390 below.
+# ITS PROVENANCE IS STILL THE ~100 FRAMES/S BENCH RUN, and the truck-rate replay
+# of 2026-09-26 did not change that. An earlier revision of this comment claimed
+# the replay had checked the constant on hardware and found it conservative by
+# better than 2x. THAT CLAIM IS WITHDRAWN. The reason is worth the space, because
+# the mistake was invisible from inside the measurement:
 #
-# THE FIRST READING SAID THE OPPOSITE, and the reason is worth keeping. The
-# INHIBIT arm's `response` -- RX to OBSERVED COMPLETION since 2026-09-25 --
-# reached 6796 us, which looks like a preemption three times worse than assumed.
-# It is not preemption: the device queued the frame in ~0.5 ms while the WIRE
-# figure reached 3.5 ms with WiFi IDLE, which is the lowest-priority frame
-# waiting for an idle slot on a bus at 50-60 % occupancy. Arbitration, not
-# scheduling, and a deeper receive queue does nothing about it. Taking the
-# completion figure for a preemption figure would have consumed a margin that
-# was never at risk -- and would have made the verdict below fail.
+#   NEITHER DEVICE INSTRUMENT CAN SEE THE WAIT THIS CONSTANT MODELS. The worker
+#   timestamps a frame with esp_timer_get_time() only after twai_receive() has
+#   returned it (main/gen_inhibit.c). Time the frame spent waiting in the
+#   driver's receive queue -- which is precisely the wait the queue depth buffers
+#   and precisely what "preemption" means here -- has already passed before
+#   either clock starts. RESPOND's RX-to-queue (1611 us worst) and INHIBIT's
+#   RX-to-completion (6796 us worst) are both blind to it, so neither is a
+#   preemption figure and the 1111 us that was quoted as one is not.
 #
-# Limitations, because the maxima are what gets quoted: ~3000 samples per arm,
-# and the loaded wire maximum came in below the idle one, so the extreme tail is
-# not pinned. The percentiles are the trustworthy part and they move the right
-# way under load (p95 1360 -> 1540 us at the wire).
+# WHAT THE REPLAY DID ESTABLISH, and it argued the other way. Under a WiFi flood
+# -- ~50 status-JSON requests/s, outside the design case -- the INHIBIT arm
+# reached 6796 us RX-to-completion. On this bus a 0x051 can lose at most ~590 us
+# to arbitration (only 0x050 outranks it, never more than one frame in any 7 ms;
+# see e4_arbitration_check.py in the reverse-it repo), so at least ~6.2 ms of it
+# was the worker off the CPU after dequeue: a LOWER BOUND on one stall. With WiFi
+# idle the same figure was 690 us. Nothing was lost in either arm.
 #
-# Artifact: projects/vtrux/notes/artifacts/gen-inhibit/e4_device_calibration.py,
-# runs/e4_device_{calibration,loaded,respond}.json, in the reverse-it repo.
-# Spec 5 carries the table.
+# That is what moved the receive queue from 32 to 64 (spec 5.1 item 1, amended):
+# headroom taken against a stall larger than the design case, for about 1 KB.
+#
+# WHAT WILL SETTLE IT is the direct measurement, spec 12.4's measurement-only
+# build: the driver's own RX backlog at each dequeue (msgs_to_rx + 1), high-water
+# and large-backlog counts, on a full-replay bus in the design case. Backlog
+# divided by arrival rate IS the off-CPU time -- ~423 us per slot at 2364
+# frames/s -- so it measures the quantity instead of a proxy for it. Until that
+# has run, this number is an assumption and this comment says so.
+#
+# Artifacts: projects/vtrux/notes/artifacts/gen-inhibit/e4_device_calibration.py,
+# e4_arbitration_check.py, runs/e4_device_{calibration,loaded,respond}.json, in
+# the reverse-it repo. Spec 5 carries the table and the withdrawal.
 WORST_PREEMPT_US = 2390
 ERASE_BLOCK_US = 20000
 
@@ -210,14 +221,17 @@ def main():
 
     print()
     print("This is a MODEL, and review A4 asked for the full-replay bench run "
-          "that calibrates it. BOTH HALVES HAVE NOW RUN (2026-09-26). The rig "
-          "half found this model's air time conservative at every DLC and its "
-          "bus occupancy slightly above the truck's. The device half, at 2364.7 "
-          "frames/s into the device, measured the scheduling delay directly at "
-          "~1111 us against the %d us assumed here -- so the constant is "
-          "conservative and was left alone. See the note beside it; the 6796 us "
-          "figure some output carries is RX-to-COMPLETION and is arbitration on "
-          "a busy bus, not preemption." % WORST_PREEMPT_US)
+          "that calibrates it. The rig half (2026-09-26) found this model's air "
+          "time conservative at every DLC and its bus occupancy slightly above "
+          "the truck's. THE DEVICE HALF DID NOT CALIBRATE THE %d us ABOVE, "
+          "though an earlier version of this line said it had: both device "
+          "instruments start their clock after twai_receive() returns, so the "
+          "queue wait this model is about is invisible to them. Spec 12.4's "
+          "measurement-only build measures the backlog directly and is what "
+          "confirms or revises it. The figure is the DESIGN CASE -- normal truck "
+          "operation, no heavy WiFi while inhibiting; a >= 6.2 ms device-side "
+          "stall was seen under a WiFi flood outside that case, which is why the "
+          "queue is now %d deep." % (WORST_PREEMPT_US, FIRMWARE_DEPTH))
 
     # ---------------------------------------------------------------- verdict
     #

@@ -21,7 +21,7 @@ WHAT ROW 22 ASKS FOR, and each is a separate check below:
 Added 2026-09-26 from review, as the source-check half of two spec 12.4 rows
 that nothing implemented:
 
-    11 CAN_RX_QUEUE_LEN >= 32, the override actually applied, and E4's own
+    11 CAN_RX_QUEUE_LEN >= 64, the override actually applied, and E4's own
        RX_DEPTH equal to it (spec 5.1 item 1)
     12 esp_wifi_set_storage(WIFI_STORAGE_RAM) genuinely called (spec 5.1 item 3)
 
@@ -490,7 +490,7 @@ def check_source():
     structurally unable to see -- so without these rows they rest on nobody
     having changed a constant.
 
-    RX QUEUE DEPTH, TWICE OVER. Spec 12.4 asks for ">= 32 whenever the driver
+    RX QUEUE DEPTH, TWICE OVER. Spec 12.4 asks for ">= 64 whenever the driver
     is installed (E1 reads the depth the driver was installed with; E3 or a
     source check pins it)". This is the pinning half, and it also closes a gap
     that existed in the other direction: E4's load model carries its own
@@ -541,10 +541,10 @@ def check_source():
             "no main/can.c at %s" % can_c, ref_missing=True)
 
     if fw_depth is None:
-        row("CAN_RX_QUEUE_LEN >= 32", None,
+        row("CAN_RX_QUEUE_LEN >= 64", None,
             "could not read CAN_RX_QUEUE_LEN from main/can.c", ref_missing=True)
     else:
-        row("CAN_RX_QUEUE_LEN >= 32", fw_depth >= 32,
+        row("CAN_RX_QUEUE_LEN >= 64", fw_depth >= 64,
             "CAN_RX_QUEUE_LEN is %d (spec 5.1 item 1 requires at least 32)"
             % fw_depth)
 

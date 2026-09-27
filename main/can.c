@@ -114,7 +114,16 @@ static twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
  *
  * Cost: 32 x sizeof(twai_message_t) is well under 1 KB.
  */
-#define CAN_RX_QUEUE_LEN    32
+/*
+ * Spec 5.1 item 1, amended 2026-09-26 from 32 to AT LEAST 64 (~27 ms of truck
+ * traffic at 2364 frames/s). The move was the user's call after the device
+ * calibration showed that neither device timing instrument can see the wait this
+ * queue buffers -- the worker stamps a frame only once twai_receive() has
+ * returned it -- so the depth was being sized against a number no measurement
+ * supported. 64 is headroom taken while the direct backlog measurement (12.4)
+ * settles what the wait actually is.
+ */
+#define CAN_RX_QUEUE_LEN    64
 
 //block tx/rx
 void can_block(void)
@@ -309,6 +318,17 @@ void can_set_mask(uint32_t m)
 bool can_filter_narrowed(void)
 {
 	return can_cfg.filter != 0 || can_cfg.mask != 0xFFFFFFFF;
+}
+
+/*
+ * The depth the driver is installed with. Read by the GI_INSTRUMENT_RXQ backlog
+ * instrument so a high-water mark can be compared against its own ceiling: a
+ * maximum equal to the depth is a CENSORED reading with frames already lost, not
+ * a stall measured at that length.
+ */
+uint32_t can_rx_queue_len(void)
+{
+	return CAN_RX_QUEUE_LEN;
 }
 
 void can_set_bitrate(uint8_t rate)

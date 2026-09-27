@@ -1319,7 +1319,7 @@ static void case_arm_forces_accept_all(void)
  */
 static void case_rx_queue_depth(void)
 {
-    case_begin("case 18: the driver is installed with an RX queue >= 32");
+    case_begin("case 18: the driver is installed with an RX queue >= 64");
     setup();
 
     /*
@@ -1335,10 +1335,10 @@ static void case_rx_queue_depth(void)
     CHECK(ft_install_count() > 0,
           "the driver was never installed during this case, so the recorded "
           "queue depth is the reset value and says nothing about the firmware");
-    CHECK(ft_installed_rx_queue_len() >= 32,
+    CHECK(ft_installed_rx_queue_len() >= 64,
           "the driver was installed with rx_queue_len = %u; spec 5.1 item 1 "
-          "requires at least 32, about 14 ms of truck traffic at ~2250 "
-          "frames/s and ~6x the worst measured WiFi preemption",
+          "requires at least 64, about 27 ms of truck traffic at the measured "
+          "2364 frames/s",
           (unsigned)ft_installed_rx_queue_len());
 
     teardown();

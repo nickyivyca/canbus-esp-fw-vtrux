@@ -1,6 +1,6 @@
 # host_runner: 10968 frames, 2 directives, t=[0,7000000]
 0 STATE mode=0 live=0 block=not armed abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
-# E4 load model ON: rx_depth=32 bitrate=500 kbit (air time: DLC6 236 us, DLC8 276 us)
+# E4 load model ON: rx_depth=64 bitrate=500 kbit (air time: DLC6 236 us, DLC8 276 us)
 0 EV MODE a=3 b=500 c=0
 0 STATE mode=3 live=0 block=gate not yet evaluated abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
 0 TX DIAG id=7F1 dlc=8 data=0401030600FF0000 ok=1

@@ -1,4 +1,8 @@
 build/
+# Measurement/variant builds get their own directory: ESP-IDF names the
+# image from the commit, so two configurations of one commit would otherwise
+# produce the same filename in the same place.
+build-*/
 esp_idf_components/
 # Prerequisites
 *.d
