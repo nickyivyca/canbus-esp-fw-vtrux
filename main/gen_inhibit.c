@@ -140,6 +140,41 @@ static bool s_tx_failed_latched;
 static bool     s_forced_silent;
 static uint8_t  s_silent_saved;
 
+/*
+ * The driver's own loss and error counters, read once per status page.
+ *
+ * ctr_bad tells you a frame went missing; these tell you where. rx_missed is a
+ * full SOFTWARE queue (the preempt case, which queue depth fixes); rx_overrun is
+ * a HARDWARE FIFO overrun, meaning the ISR did not run (the cache-stall case,
+ * which queue depth does not fix). Keeping them apart is the whole point of
+ * load_margin.py's two columns, and until now nothing on the device could tell
+ * them apart at all.
+ *
+ * Once per status request, not per frame: a per-dequeue read of this same
+ * structure measurably perturbed TX completion observation in the measurement
+ * build.
+ */
+static int drv_json(char *buf, int buflen)
+{
+    twai_status_info_t info;
+    if (twai_get_status_info(&info) != ESP_OK)
+    {
+        /* Not installed is a normal state when disarmed, and is not an error. */
+        return snprintf(buf, buflen, ",\"drv\":null");
+    }
+    return snprintf(buf, buflen,
+                    ",\"drv\":{\"rx_missed\":%lu,\"rx_overrun\":%lu,"
+                    "\"arb_lost\":%lu,\"bus_error\":%lu,\"tx_failed\":%lu,"
+                    "\"msgs_to_rx\":%lu,\"msgs_to_tx\":%lu}",
+                    (unsigned long)info.rx_missed_count,
+                    (unsigned long)info.rx_overrun_count,
+                    (unsigned long)info.arb_lost_count,
+                    (unsigned long)info.bus_error_count,
+                    (unsigned long)info.tx_failed_count,
+                    (unsigned long)info.msgs_to_rx,
+                    (unsigned long)info.msgs_to_tx);
+}
+
 /* ------------------------------------------- RX backlog instrument (opt) -- */
 /*
  * MEASUREMENT-ONLY. NEVER FLASH A GI_INSTRUMENT_RXQ BUILD TO THE TRUCK.
@@ -1067,6 +1102,7 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
      * brace. Anything added here goes BEFORE the brace.
      */
     if (n < buflen) n += snprintf(buf + n, buflen - n, ",\"inf\"]");
+    n += drv_json(buf + n, buflen - n);
     n += rxq_json(buf + n, buflen - n);
     if (n < buflen) n += snprintf(buf + n, buflen - n, "}\n");
     return n;

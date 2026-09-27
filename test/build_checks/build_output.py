@@ -483,6 +483,76 @@ def check_image_identity(img_ver):
         "name" % (img_ver, head))
 
 
+def check_no_instrument(path):
+    """Row 26: this image must NOT be a GI_INSTRUMENT_RXQ measurement build.
+
+    ADDED 2026-09-26. The measurement build (spec 12.4's backlog row) reads the
+    TWAI driver's queue state on every dequeue, which perturbs what it measures --
+    tx_queued_behind went from 0 to 1 on the bench -- and it has no business on a
+    vehicle. Two builds of one commit share a filename AND an embedded version, so
+    NONE of the provenance rows above can tell them apart: "embedded 69ecae3, HEAD
+    69ecae3" is equally true of both. Only the content can.
+
+    Checked two ways because they can fail independently. The snprintf format
+    string is emitted into .rodata verbatim and has to be there if the code is; the
+    statics show up as ELF symbols, which is the check that keeps working if the
+    JSON is ever restructured.
+    """
+    try:
+        img = open(path, "rb").read()
+    except OSError as e:
+        row("no measurement instrument", None,
+            "cannot read %s (%s)" % (os.path.basename(path), e),
+            ref_missing=True)
+        return
+
+    marker = b'"rxq":{'
+    row("no measurement instrument in the image", marker not in img,
+        "image carries %r -- this is a GI_INSTRUMENT_RXQ measurement build and "
+        "must not be flashed to the truck" % marker.decode()
+        if marker in img else
+        "no %r in the image" % marker.decode())
+
+    # The ELF, where the statics live. Absent on a downloaded image, which is a
+    # missing reference rather than a pass.
+    elf = os.path.splitext(path)[0] + ".elf"
+    if not os.path.exists(elf):
+        row("no instrument symbols in the ELF", None,
+            "no ELF beside the image, so the symbol check has no reference",
+            ref_missing=True)
+        return
+    # elf_checks.py already knows where the toolchain nm is, including the
+    # ~/.espressif path that is absent from PATH outside an exported IDF shell.
+    # Searching separately here found nothing and quietly reported NO REFERENCE.
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from elf_checks import find_nm
+    except ImportError as e:
+        row("no instrument symbols in the ELF", None,
+            "cannot import elf_checks.find_nm (%s)" % e, ref_missing=True)
+        return
+    exe = find_nm()
+    if exe is None:
+        row("no instrument symbols in the ELF", None,
+            "no riscv32-esp-elf-nm found, so the symbol check has no reference",
+            ref_missing=True)
+        return
+    r = subprocess.run((exe, "--defined-only", elf),
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        row("no instrument symbols in the ELF", None,
+            "nm exited %d on %s" % (r.returncode, os.path.basename(elf)),
+            ref_missing=True)
+        return
+    nm = r.stdout
+    hits = [sym for sym in ("s_rxq_max", "s_rxq_samples", "rxq_sample",
+                            "rxq_reset")
+            if sym in nm]
+    row("no instrument symbols in the ELF", not hits,
+        "ELF defines %s" % ", ".join(hits) if hits
+        else "none of the s_rxq_/rxq_ symbols are defined")
+
+
 def check_source():
     """Spec 5.1 items 1 and 3: two facts that live only in the source.
 
@@ -655,6 +725,11 @@ def main():
     check_schema_doc(args.schema_doc)
     check_source()
     check_image_identity(img_ver)
+    if b is not None:
+        check_no_instrument(b)
+    else:
+        row("no measurement instrument in the image", None,
+            "no image to inspect", ref_missing=True)
 
     print()
     bad = 0
