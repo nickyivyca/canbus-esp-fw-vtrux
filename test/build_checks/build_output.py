@@ -66,14 +66,24 @@ def row(name, ok, detail, ref_missing=False):
 
 # ----------------------------------------------------------------- sdkconfig --
 
-def load_sdkconfig():
+def load_sdkconfig(build_dir=None):
     """Prefer the build's own sdkconfig over the checked-in one.
 
-    build/config/sdkconfig.json is what the image was actually built from;
+    <build_dir>/config/sdkconfig.json is what the image was actually built from;
     ./sdkconfig is what the next build would use. They drift, and the image to
     be flashed is what row 22 asks about.
+
+    `build_dir` COMES FROM THE IMAGE'S OWN PATH (2026-09-27). It used to be
+    hard-coded to build/, so checking an image from build-txabort or build-rxq
+    read the SHIPPING build's config and still printed "config applies to this
+    image: yes" -- true only because those directories happened to be built from
+    the same commit with the same sdkconfig. The trust flag exists precisely so
+    that a pass is a statement about THIS image, and coincidence is not the
+    mechanism it is supposed to rest on. Raised by the reviewing session.
     """
-    j = os.path.join(REPO, "build", "config", "sdkconfig.json")
+    if build_dir is None:
+        build_dir = os.path.join(REPO, "build")
+    j = os.path.join(build_dir, "config", "sdkconfig.json")
     if os.path.exists(j):
         import json
         with open(j) as fh:
@@ -101,9 +111,11 @@ def load_sdkconfig():
     return cfg, p
 
 
-def build_dir_version():
-    """The version the current build directory produced, or None."""
-    p = os.path.join(REPO, "build", "project_description.json")
+def build_dir_version(build_dir=None):
+    """The version the given build directory produced, or None."""
+    if build_dir is None:
+        build_dir = os.path.join(REPO, "build")
+    p = os.path.join(build_dir, "project_description.json")
     if not os.path.exists(p):
         return None
     import json
@@ -524,7 +536,14 @@ def check_no_instrument(path):
          ("s_rxq_max", "s_rxq_samples", "rxq_sample", "rxq_reset")),
         ("GI_INSTRUMENT_TXABORT",
          (b'"probe":"gi_txabort"', b"/gi_txabort"),
-         ("gi_txabort_register", "txab_handler", "txab_trial")),
+         # txab_trial is NOT in this list, and the omission is the point: it
+         # is static and the compiler inlines it away, so a table containing it
+         # would claim coverage it does not have. The reviewer's mutation M5
+         # (2026-09-27) proved it -- with only txab_trial left, the row passes on
+         # a measurement image. These three are what nm actually reports:
+         # gi_txabort_register (T), txab_handler (t, address taken by the uri
+         # struct), txab_uri (d, registered with the server).
+         ("gi_txabort_register", "txab_handler", "txab_uri")),
     )
 
     img_hits = []
@@ -711,9 +730,14 @@ def main():
     ap.add_argument("--schema-doc", default=DEFAULT_SCHEMA_DOC)
     args = ap.parse_args()
 
-    cfg, cfg_src = load_sdkconfig()
-
     b = pick_bin(args.bin)
+
+    # The build directory is the image's own parent, so every config row below is
+    # about the image that was handed in rather than about whatever build/ holds.
+    build_dir = (os.path.dirname(os.path.abspath(b)) if b is not None
+                 else os.path.join(REPO, "build"))
+    cfg, cfg_src = load_sdkconfig(build_dir)
+
     img_ver = None
     if b is not None:
         d = app_desc(b)
@@ -722,7 +746,7 @@ def main():
 
     # DOES THE CONFIG ON DISK DESCRIBE THIS IMAGE? The build directory records
     # what it produced, so the two can be compared instead of assumed.
-    bd_ver = build_dir_version()
+    bd_ver = build_dir_version(build_dir)
     trusted = True
     why = ""
     if img_ver is None:
@@ -730,8 +754,8 @@ def main():
         why = "no version could be read from the image"
     elif bd_ver is None:
         trusted = False
-        why = "build/project_description.json is missing, so the config cannot "\
-              "be tied to this image"
+        why = "%s/project_description.json is missing, so the config cannot "\
+              "be tied to this image" % os.path.relpath(build_dir, REPO)
     elif bd_ver != img_ver:
         trusted = False
         why = "the build directory holds %r but this image is %r" % (bd_ver, img_ver)

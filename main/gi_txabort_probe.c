@@ -782,7 +782,17 @@ static esp_err_t txab_handler(httpd_req_t *req)
     }
     if (d1 < d0)
     {
-        d1 = d0;
+        /*
+         * REFUSED, not quietly set equal to d0. Rewriting a supplied argument is
+         * the same defect as truncating one: the sweep runs over a range nobody
+         * asked for and the results are labelled with the range that was. Raised
+         * by the reviewing session, 2026-09-27, as another instance of the
+         * silent-default class.
+         */
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            "d1 is below d0, which would have silently become "
+                            "a single-step sweep at d0 -- say what you mean");
+        return ESP_FAIL;
     }
     /*
      * settle >= 1 ms IS NOT TIDINESS. Each trial busy-polls for up to
