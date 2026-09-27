@@ -114,6 +114,14 @@ typedef enum
 #define GS_Q_TELEMETRY  6   /* 5.2 item 6 requires drops to be COUNTED, so the
                              * depth is a tuning choice and not a guarantee */
 
+/*
+ * Skip timestamps kept for trip 7's sliding window. Larger than GS_SKIP_TRIP_N
+ * so `skip_window` can report the true count in the last second rather than
+ * saturating at the trip threshold -- the status page is meant to show how close
+ * a run came, not just whether it crossed.
+ */
+#define GS_SKIP_RING    8
+
 /* --------------------------------------------------------------- counters -- */
 
 typedef struct
@@ -123,7 +131,15 @@ typedef struct
     uint32_t aborted;
     uint32_t requeued;
     uint32_t dropped;       /* queue full */
-    uint32_t max_wait_us;   /* longest time from queued to handed over */
+    /*
+     * TWO WAITS, because they answer different questions and one field could
+     * only answer neither. `max_queue_us` is the spec's "longest wait" -- from
+     * queued to handed to the controller. `max_hold_us` is how long the
+     * CONTROLLER held it, which is the quantity item 4's one-frame guarantee is
+     * about. D5 of the 2026-09-27 design review.
+     */
+    uint32_t max_queue_us;
+    uint32_t max_hold_us;
 } gs_class_stats_t;
 
 typedef struct
@@ -134,7 +150,20 @@ typedef struct
      * `skip_window` is the count inside the current 1 s trip-7 window.
      */
     uint32_t skipped;
-    uint32_t skip_window;
+    uint32_t skip_window;   /* skips inside the last GS_SKIP_WINDOW_US */
+
+    /*
+     * D6. A telemetry frame that COMPLETES GENUINELY while an abort is in
+     * progress -- the measured no-op at TS = 1 -- is indistinguishable from one
+     * the abort removed, because the driver reports both as TX_SUCCESS with
+     * msgs_to_tx falling to 0. The scheduler requeues it, so the page goes out
+     * twice. Harmless for a diag page and NOT harmless for the statistics, so
+     * this counts every departure whose cause could not be determined:
+     * `aborted` and `requeued` may each include up to this many double-sends.
+     * A number that states what it does not know beats one that implies
+     * precision it lacks.
+     */
+    uint32_t ambiguous_departures;
 
     /*
      * Aborts, and how hard they were (item 4's loop). `abort_cmds` counts
@@ -230,8 +259,21 @@ typedef struct
     uint32_t   inhibit_seq;
     int64_t    inhibit_handed;
 
-    /* Trip-7's 1 s skip window. */
-    int64_t    skip_window_start;
+    /*
+     * TRIP 7'S SLIDING WINDOW. A ring of recent skip timestamps, because "3
+     * within 1 s" is a sliding window and the first implementation made it a
+     * fixed one: it started at the first skip and reset a second later, so three
+     * skips inside 0.15 s that straddled the reset never tripped. D2 of the
+     * 2026-09-27 review.
+     *
+     * There is no sentinel. The old code used `start == 0` for "not started",
+     * which is a legal timestamp on a virtual clock that begins at 0 -- the same
+     * trap gen_inhibit_core.h records for due_us, in a file that had just
+     * quoted it.
+     */
+    int64_t    skip_ts[GS_SKIP_RING];
+    uint8_t    skip_ts_n;   /* valid entries, saturating at GS_SKIP_RING */
+    uint8_t    skip_ts_head;
 
     gs_stats_t st;
 } gs_t;

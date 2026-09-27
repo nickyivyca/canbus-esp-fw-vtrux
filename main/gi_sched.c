@@ -26,6 +26,15 @@
 #define GS_SKIP_WINDOW_US   1000000
 #define GS_SKIP_TRIP_N      3
 
+/*
+ * Forward declarations. note_skip() is used by gs_queue_frame(), which sits above
+ * it because the queue helpers belong together -- every path that loses an
+ * inhibit frame must go through note_skip() so the counters and trip 7's window
+ * cannot disagree about what happened.
+ */
+static void     note_skip(gs_t *s, int64_t now);
+static uint32_t skips_in_window(const gs_t *s, int64_t now);
+
 /* ------------------------------------------------------------- queueing --- */
 
 static uint8_t cap_for(gs_class_t c)
@@ -121,8 +130,19 @@ bool gs_queue_frame(gs_t *s, gs_class_t cls, const gi_frame_t *f, int64_t now)
          * newest, and the drop is counted per class. Dropping the newest rather
          * than the oldest keeps the oldest page's wait bounded by its own
          * position instead of letting a burst starve it indefinitely.
+         *
+         * D3: FOR THE INHIBIT CLASS A DROP IS A MISSED INHIBIT, so it is also a
+         * skip and feeds trip 7 -- counting it only as `dropped` would lose it
+         * from the trip that exists to catch a stuck transmit path. With the
+         * deadline purge below this should be unreachable, and saying so is the
+         * point: if `dropped` ever moves for the inhibit class, the purge is not
+         * doing its job.
          */
         s->st.cls[cls].dropped++;
+        if (cls == GS_CLASS_INHIBIT)
+        {
+            note_skip(s, now);
+        }
         return false;
     }
     s->next_seq++;
@@ -131,20 +151,44 @@ bool gs_queue_frame(gs_t *s, gs_class_t cls, const gi_frame_t *f, int64_t now)
 
 /* ------------------------------------------------------------ the engine --- */
 
+/*
+ * Record one skip. Every path that loses an inhibit frame comes here, so the
+ * window and the counters cannot disagree about what happened.
+ */
+static void note_skip(gs_t *s, int64_t now)
+{
+    s->st.skipped++;
+    s->skip_ts[s->skip_ts_head] = now;
+    s->skip_ts_head = (uint8_t)((s->skip_ts_head + 1) % GS_SKIP_RING);
+    if (s->skip_ts_n < GS_SKIP_RING)
+    {
+        s->skip_ts_n++;
+    }
+}
+
+/* How many skips fall inside the last GS_SKIP_WINDOW_US, ending now. */
+static uint32_t skips_in_window(const gs_t *s, int64_t now)
+{
+    uint32_t k = 0;
+    for (uint8_t i = 0; i < s->skip_ts_n; i++)
+    {
+        if (now - s->skip_ts[i] < GS_SKIP_WINDOW_US)
+        {
+            k++;
+        }
+    }
+    return k;
+}
+
 static void note_left_controller(gs_t *s, int64_t now, uint32_t rx_backlog)
 {
     const gs_class_t c = s->held_class;
     const int64_t held_us = now - s->held_since;
 
     s->st.cls[c].sent++;
-    if (held_us > 0 && (uint32_t)held_us > s->st.cls[c].max_wait_us)
+    if (held_us > 0 && (uint32_t)held_us > s->st.cls[c].max_hold_us)
     {
-        /* Not the queue wait -- that is recorded at handover. This is how long
-         * the controller held it, which is the number item 4's guarantee is
-         * about. Kept in the same field deliberately: one "how long did this
-         * class wait" figure per class, and the handover path takes the max
-         * with it. */
-        s->st.cls[c].max_wait_us = (uint32_t)held_us;
+        s->st.cls[c].max_hold_us = (uint32_t)held_us;
     }
 
     if (c == GS_CLASS_INHIBIT)
@@ -197,6 +241,12 @@ static void begin_abort(gs_t *s, int64_t now)
     s->abort_cmds_this = 0;
     s->st.aborts++;
 
+    /*
+     * The command goes out only if the buffer is AWAITING. Preemption only calls
+     * this when it already is; a deadline WITHDRAWAL can call it while the buffer
+     * is transmitting, and there the loop waits for TS to fall exactly as it does
+     * everywhere else.
+     */
     if (s->hal->buf_state(s->hal->ctx) == GS_BUF_AWAITING)
     {
         s->hal->abort(s->hal->ctx);
@@ -260,13 +310,8 @@ static gs_class_t next_class(const gs_t *s, bool *found)
 
 void gs_tick(gs_t *s, int64_t now, uint32_t rx_backlog)
 {
-    /* Advance trip 7's window before anything can add to it. */
-    if (s->skip_window_start != 0
-        && now - s->skip_window_start >= GS_SKIP_WINDOW_US)
-    {
-        s->skip_window_start = 0;
-        s->st.skip_window = 0;
-    }
+    /* Trip 7's window slides; nothing to advance, only to recompute. */
+    s->st.skip_window = skips_in_window(s, now);
 
     /*
      * 1. Has what the controller held left it? This is the only completion
@@ -294,8 +339,30 @@ void gs_tick(gs_t *s, int64_t now, uint32_t rx_backlog)
      *    class (item 6 -- aborted and requeued, both counted).
      */
     if (!s->aborting && s->held && s->held_class != GS_CLASS_INHIBIT
-        && s->q[GS_CLASS_INHIBIT].n > 0)
+        && s->q[GS_CLASS_INHIBIT].n > 0
+        && s->hal->buf_state(s->hal->ctx) == GS_BUF_AWAITING)
     {
+        /*
+         * ONLY WHEN THE BUFFER IS AWAITING. If it is TRANSMITTING we simply
+         * WAIT -- we do not enter the abort state at all -- and step 1 credits
+         * the frame as sent when it finishes.
+         *
+         * THE FIRST VERSION ENTERED THE ABORT STATE REGARDLESS, and a test
+         * caught what that costs. With the buffer transmitting, no command can
+         * be issued (item 4 waits), so the scheduler sat in the abort state until
+         * the frame COMPLETED ON THE WIRE -- and then, because the `!aborting`
+         * guard had skipped the completion path, treated the departure as an
+         * abort and REQUEUED it. Every preempted-but-completed telemetry page
+         * went out TWICE. That is worse than a statistics error: it doubles
+         * telemetry traffic in exactly the contended situation where the
+         * scheduler exists to protect the bus.
+         *
+         * Waiting instead is also what spec 5.2 item 4 actually says: "A frame
+         * already being transmitted cannot be aborted (the controller finishes
+         * it); the inhibit waits for it." If the frame later loses arbitration
+         * the buffer returns to AWAITING and the next tick aborts it -- which is
+         * the only window where the command works.
+         */
         begin_abort(s, now);
     }
 
@@ -320,6 +387,15 @@ void gs_tick(gs_t *s, int64_t now, uint32_t rx_backlog)
              * must NOT be sent later.
              */
             const gs_class_t c = s->held_class;
+            /*
+             * D6. The frame left during an abort, and the device CANNOT tell
+             * whether the abort removed it or it completed on the wire -- the
+             * driver reports both as TX_SUCCESS with msgs_to_tx 0. Requeueing is
+             * the safe choice for telemetry (a page sent twice is harmless; one
+             * silently lost is not), but it means `aborted` and `requeued` may
+             * include double-sends, bounded by this counter.
+             */
+            s->st.ambiguous_departures++;
             if (c != GS_CLASS_INHIBIT)
             {
                 gs_slot_t sl;
@@ -381,9 +457,9 @@ void gs_tick(gs_t *s, int64_t now, uint32_t rx_backlog)
         }
 
         const int64_t wait_us = now - sl->t_queued;
-        if (wait_us > 0 && (uint32_t)wait_us > s->st.cls[c].max_wait_us)
+        if (wait_us > 0 && (uint32_t)wait_us > s->st.cls[c].max_queue_us)
         {
-            s->st.cls[c].max_wait_us = (uint32_t)wait_us;
+            s->st.cls[c].max_queue_us = (uint32_t)wait_us;
         }
 
         if (!s->hal->submit(s->hal->ctx, &sl->f))
@@ -424,9 +500,31 @@ gs_deadline_t gs_command_received(gs_t *s, int64_t now, uint32_t rx_backlog)
         note_left_controller(s, now, rx_backlog);
     }
 
+    /*
+     * D1, THE ONE THAT LOST A SKIP AND A TRIP. Purge every inhibit still sitting
+     * in its class queue. The first version asked only about
+     * `inhibit_outstanding`, which is set at HANDOVER, so an inhibit that had
+     * never been handed over was invisible here: it stayed queued and went out
+     * AFTER the VCM's next command, with no skip counted and no trip -- exactly
+     * the scenario the skip rule was written for, inverted.
+     *
+     * It gets into that state three ways, all reachable: the abort loop is still
+     * freeing a telemetry frame, the 1 ms bound was hit, or the driver refused
+     * the frame and it was left queued for a retry. Found by the reviewing
+     * session, 2026-09-27.
+     */
+    uint32_t purged = 0;
+    while (s->q[GS_CLASS_INHIBIT].n > 0)
+    {
+        q_pop(&s->q[GS_CLASS_INHIBIT]);
+        note_skip(s, now);
+        purged++;
+    }
+    s->st.skip_window = skips_in_window(s, now);
+
     if (!s->inhibit_outstanding)
     {
-        return GS_DEADLINE_OK;
+        return (purged > 0) ? GS_DEADLINE_SKIPPED : GS_DEADLINE_OK;
     }
 
     /*
@@ -450,12 +548,8 @@ gs_deadline_t gs_command_received(gs_t *s, int64_t now, uint32_t rx_backlog)
     }
     else
     {
-        s->st.skipped++;
-        if (s->skip_window_start == 0)
-        {
-            s->skip_window_start = now;
-        }
-        s->st.skip_window++;
+        note_skip(s, now);
+        s->st.skip_window = skips_in_window(s, now);
         verdict = GS_DEADLINE_SKIPPED;
     }
 
@@ -475,7 +569,31 @@ bool gs_inhibit_outstanding(const gs_t *s)
 
 bool gs_skip_trip(const gs_t *s)
 {
-    return s->st.skip_window >= GS_SKIP_TRIP_N;
+    /*
+     * A GENUINE SLIDING WINDOW: the newest GS_SKIP_TRIP_N skips must span less
+     * than a second. The fixed-window version missed three skips inside 0.15 s
+     * that straddled its reset.
+     *
+     * Read from the ring rather than from `skip_window`, so the trip does not
+     * depend on gs_tick() having run since the last skip.
+     */
+    if (s->skip_ts_n < GS_SKIP_TRIP_N)
+    {
+        return false;
+    }
+    int64_t newest = s->skip_ts[0];
+    for (uint8_t i = 1; i < s->skip_ts_n; i++)
+    {
+        if (s->skip_ts[i] > newest) { newest = s->skip_ts[i]; }
+    }
+    /* The GS_SKIP_TRIP_N newest: count how many fall inside the window ending
+     * at the newest skip. */
+    uint32_t k = 0;
+    for (uint8_t i = 0; i < s->skip_ts_n; i++)
+    {
+        if (newest - s->skip_ts[i] < GS_SKIP_WINDOW_US) { k++; }
+    }
+    return k >= GS_SKIP_TRIP_N;
 }
 
 const gs_stats_t *gs_stats(const gs_t *s)
@@ -503,7 +621,8 @@ int gs_json(const gs_t *s, char *buf, int buflen)
         "\"abort_max_us\":%lu,"
         "\"ontime\":%lu,\"ontime_unverified\":%lu,"
         "\"unverified_max_backlog\":%lu,"
-        "\"tx_failed\":%lu,\"tx_refused\":%lu,\"late_on_wire\":%lu,\"cls\":{",
+        "\"tx_failed\":%lu,\"tx_refused\":%lu,\"late_on_wire\":%lu,"
+        "\"ambiguous_departures\":%lu,\"cls\":{",
         (unsigned long)s->st.skipped, (unsigned long)s->st.skip_window,
         (unsigned long)s->st.aborts, (unsigned long)s->st.abort_cmds,
         (unsigned long)s->st.abort_bound_hit,
@@ -511,20 +630,23 @@ int gs_json(const gs_t *s, char *buf, int buflen)
         (unsigned long)s->st.ontime, (unsigned long)s->st.ontime_unverified,
         (unsigned long)s->st.unverified_max_backlog,
         (unsigned long)s->st.tx_failed, (unsigned long)s->st.tx_refused,
-        (unsigned long)s->st.late_on_wire), buflen);
+        (unsigned long)s->st.late_on_wire,
+        (unsigned long)s->st.ambiguous_departures), buflen);
 
     for (int c = 0; c < GS_CLASS_N; c++)
     {
         n = clamp(n + snprintf(buf + n, buflen - n,
             "%s\"%s\":{\"queued\":%lu,\"sent\":%lu,\"aborted\":%lu,"
-            "\"requeued\":%lu,\"dropped\":%lu,\"max_wait_us\":%lu,\"depth\":%u}",
+            "\"requeued\":%lu,\"dropped\":%lu,"
+            "\"max_queue_us\":%lu,\"max_hold_us\":%lu,\"depth\":%u}",
             (c == 0) ? "" : ",", NAMES[c],
             (unsigned long)s->st.cls[c].queued,
             (unsigned long)s->st.cls[c].sent,
             (unsigned long)s->st.cls[c].aborted,
             (unsigned long)s->st.cls[c].requeued,
             (unsigned long)s->st.cls[c].dropped,
-            (unsigned long)s->st.cls[c].max_wait_us,
+            (unsigned long)s->st.cls[c].max_queue_us,
+            (unsigned long)s->st.cls[c].max_hold_us,
             (unsigned)s->q[c].n), buflen);
     }
 
