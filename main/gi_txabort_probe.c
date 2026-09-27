@@ -738,7 +738,14 @@ static const char *skip_name(uint8_t s)
 
 static esp_err_t send_rec(httpd_req_t *req, const txab_rec_t *r, bool first)
 {
-    char b[480];
+    /*
+     * 800, because every field added to the record adds to this line and the
+     * compiler counts. It has been enlarged twice now; -Werror=format-truncation
+     * catches it each time, which is the right outcome -- a record silently
+     * losing its last few fields would be a measurement quietly missing the
+     * columns most recently thought worth adding.
+     */
+    char b[800];
     int n = snprintf(b, sizeof(b),
         "%s{\"t\":%u,\"req\":%u,\"act\":%d,\"gate_us\":%d,"
         "\"edge_us\":%d,"
