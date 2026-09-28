@@ -1607,7 +1607,7 @@ static void case_status_json_bounds(void)
         {
             /* memchr, not strnlen: strnlen needs a POSIX feature macro the
              * shim does not define, and the failure is a link-time surprise. */
-            const char *nul = memchr(area, ' ', (size_t)cap);
+            const char *nul = memchr(area, '\0', (size_t)cap);
             CHECK(nul != NULL && (nul - area) >= n,
                   "the %d-byte case returned %d but the string ends at %ld, so "
                   "the length does not describe the content",
@@ -1680,7 +1680,7 @@ static void case_skip_window_trips_at_three(void)
  * latch being set; I8 credits the completion regardless of it. Either way an
  * inhibit the controller could not get out is counted as sent.
  *
- * This is the alert read that moved into sched_pump() when poll_tx_completion()
+ * This is the alert read that moved into sched_advance() when poll_tx_completion()
  * was deleted. The compiler's unused-function warning is what stopped it being
  * lost then, and a warning is not a test.
  */

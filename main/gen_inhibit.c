@@ -547,8 +547,26 @@ static const gs_hal_t DEV_HAL = {
  * function pointers, and deltas cannot lose an event to a callback nobody
  * registered. They can lag by one tick, and a tick is every worker iteration.
  */
-static void sched_pump(int64_t now, gi_events_t *ev)
+static void sched_advance(int64_t now, gi_events_t *ev)
 {
+    /*
+     * Called sched_pump() until 2026-09-27 (user: the name "reads like we are
+     * working with the pumps on the truck"). It is not a pump of anything -- it
+     * advances the transmit scheduler one iteration and turns the counter deltas
+     * that iteration produced into core events.
+     *
+     * `now` IS READ BY THE CALLER, ONCE, AND USED FOR EVERYTHING BELOW, including
+     * gs_tick()'s time base and the probe's reported figure. So the probe's
+     * `response` is RX-to-this-instant, not RX-to-twai_transmit: the alert read,
+     * can_msgs_to_rx() and gs_tick's own buf_state round trips all happen after
+     * the clock was read. Spec 12.1 defines the figure as handover to the driver,
+     * so it under-reports by that much -- measured at ~9 us on the 2026-09-27
+     * bench (Kvaser wire idle mean +9 us against pre-scheduler runs, while the
+     * device figure moved -1 us; the device cannot see its own pre-submit cost).
+     * LEFT AS IS DELIBERATELY (user, 2026-09-27: "close enough to not matter").
+     * A queue wait is NOT lost this way -- a probe deferred to a later iteration
+     * is stamped with that iteration's entry -- only the within-iteration cost.
+     */
     /*
      * DRAIN THE ALERTS FIRST, and keep TX_FAILED latched until it is consumed.
      *
@@ -736,7 +754,7 @@ static void dispatch_emits(const gi_emit_t *em, gi_events_t *ev)
         if (f->kind == GI_TX_PROBE)
         {
             /*
-             * Remembered, not reported. sched_pump() reports it when it reaches the
+             * Remembered, not reported. sched_advance() reports it when it reaches the
              * driver, so its tx_ok and its response histogram measure RX-to-driver
              * exactly as they did before the scheduler existed.
              */
@@ -753,7 +771,7 @@ static void dispatch_emits(const gi_emit_t *em, gi_events_t *ev)
          * For every class, not only the probe -- giving one class its own path is how
          * a second transmit owner comes back, and item 1 allows exactly one.
          */
-        sched_pump(esp_timer_get_time(), ev);
+        sched_advance(esp_timer_get_time(), ev);
 
         if (f->kind == GI_TX_DIAG || f->kind == GI_TX_PROBE)
         {
@@ -780,7 +798,7 @@ static void dispatch_emits(const gi_emit_t *em, gi_events_t *ev)
  * measurement then showed the same thing from the hardware side: an ABORTED frame
  * is reported identically to a transmitted one, 169 times out of 169.
  *
- * Its TWAI_ALERT_TX_FAILED read moved into sched_pump(), which is now trip 7's
+ * Its TWAI_ALERT_TX_FAILED read moved into sched_advance(), which is now trip 7's
  * only route to the "controller reported failed" form.
  */
 
@@ -1109,7 +1127,7 @@ static void gen_inhibit_task(void *arg)
              * flight, and a stale flag would withhold it for nothing. This is also
              * where a completion or a refusal becomes a core event.
              */
-            sched_pump(esp_timer_get_time(), &ev);
+            sched_advance(esp_timer_get_time(), &ev);
             bus_snapshot(&bus);
             gi_tick(&s_core, esp_timer_get_time(), &bus, &em, &ev);
             dispatch_emits(&em, &ev);
@@ -1167,7 +1185,7 @@ static void gen_inhibit_task(void *arg)
              * credited first, or a frame that finished in good time is scored
              * against the deadline below.
              */
-            sched_pump(t_rx, &ev);
+            sched_advance(t_rx, &ev);
 
             /*
              * THE DEADLINE (spec 5.2 item 5), and it runs BEFORE gi_on_frame()
@@ -1185,13 +1203,13 @@ static void gen_inhibit_task(void *arg)
             if (rx.identifier == GI_VCM_ID)
             {
                 /*
-                 * The verdict is not reported here. sched_pump() derives one core
+                 * The verdict is not reported here. sched_advance() derives one core
                  * call per skip from the per-kind counters, so a deadline that
                  * withdraws TWO queued frames reports two -- which reporting from
                  * this return value could not do, and did not.
                  */
                 (void)gs_command_received(&s_sched, t_rx, can_msgs_to_rx());
-                sched_pump(t_rx, &ev);
+                sched_advance(t_rx, &ev);
             }
 
             gi_on_frame(&s_core, rx.identifier, rx.data_length_code, rx.data,

@@ -424,11 +424,20 @@ static void case_withdrawn_held_inhibit_never_returns(void)
 }
 
 /*
- * R5. TRANSMITTING at the deadline is GS_DEADLINE_MAYBE_LATE, not a skip. The
- * device cannot tell a late completion from a successful abort, so the ambiguous
- * case is reported as the immediate trip and the skip window does NOT move --
- * mixing it into the skips would both understate the severity and pollute the
- * 3-in-1 s count.
+ * R5. TRANSMITTING at the deadline is GS_DEADLINE_MAYBE_LATE, which IS a skip and
+ * DOES move the 3-in-1 s window. The device cannot tell a late completion from a
+ * successful abort, so the verdict records that ambiguity -- but MAYBE_LATE is a
+ * skip KIND, not an immediate trip. Only TX_FAILED and a driver refusal trip at
+ * once. The reasoning is in the note on the assertions below, and every deadline
+ * path in gs_command_received() calls note_skip() accordingly.
+ *
+ * THIS COMMENT SAID THE OPPOSITE UNTIL 2026-09-27, contradicting the very
+ * assertions beneath it, which had already been updated for the amended trip 7.
+ * It cost a session a wrong reading of spec 5.2 item 10's catalogue: item 9 says
+ * "a skip, not an immediate trip", this header said "the immediate trip", and the
+ * two were reported to the user as a contradiction in the spec when the only
+ * stale thing was this paragraph. A header comment that disagrees with its own
+ * assertions is worse than none -- it is read first and trusted most.
  */
 static void case_transmitting_at_deadline_is_maybe_late(void)
 {
