@@ -451,6 +451,12 @@ static gi_frame_t s_last_inhibit;
 static bool     s_have_last_inhibit;
 static gi_frame_t s_last_probe;
 static bool     s_have_last_probe;
+/*
+ * The instant the probe actually reached the driver, set in dev_submit().
+ * Spec 12.1 defines RESPOND's figure as RX to handover, and this is the only
+ * site that knows when handover happened -- see the note in sched_advance().
+ */
+static int64_t  s_probe_submit_us;
 
 static bool dev_submit(void *ctx, const gi_frame_t *f)
 {
@@ -465,7 +471,22 @@ static bool dev_submit(void *ctx, const gi_frame_t *f)
      * the controller is free, so a wait here would mean its own bookkeeping was
      * wrong and blocking would hide that.
      */
-    return twai_transmit(&tx, 0) == ESP_OK;
+    const bool ok = (twai_transmit(&tx, 0) == ESP_OK);
+
+    /*
+     * THE HANDOVER INSTANT, for the probe only (spec 12.1). Read immediately
+     * after the call that performs the handover, because everything between
+     * sched_advance()'s single clock reading and this line -- the alert read,
+     * can_msgs_to_rx(), gs_tick's buf_state round trips -- used to be omitted
+     * from the reported figure. Filtered on the kind because dev_submit runs
+     * for every class and an unfiltered stamp would sometimes describe an
+     * inhibit or a diag page instead.
+     */
+    if (ok && f->kind == GI_TX_PROBE)
+    {
+        s_probe_submit_us = esp_timer_get_time();
+    }
+    return ok;
 }
 
 static gs_buf_t buf_from_status(uint32_t st)
@@ -555,17 +576,24 @@ static void sched_advance(int64_t now, gi_events_t *ev)
      * advances the transmit scheduler one iteration and turns the counter deltas
      * that iteration produced into core events.
      *
-     * `now` IS READ BY THE CALLER, ONCE, AND USED FOR EVERYTHING BELOW, including
-     * gs_tick()'s time base and the probe's reported figure. So the probe's
-     * `response` is RX-to-this-instant, not RX-to-twai_transmit: the alert read,
-     * can_msgs_to_rx() and gs_tick's own buf_state round trips all happen after
-     * the clock was read. Spec 12.1 defines the figure as handover to the driver,
-     * so it under-reports by that much -- measured at ~9 us on the 2026-09-27
-     * bench (Kvaser wire idle mean +9 us against pre-scheduler runs, while the
-     * device figure moved -1 us; the device cannot see its own pre-submit cost).
-     * LEFT AS IS DELIBERATELY (user, 2026-09-27: "close enough to not matter").
-     * A queue wait is NOT lost this way -- a probe deferred to a later iteration
-     * is stamped with that iteration's entry -- only the within-iteration cost.
+     * `now` IS READ BY THE CALLER, ONCE, and it is the time base for gs_tick()
+     * and for every event reported below EXCEPT the probe's own figure.
+     *
+     * THE PROBE IS THE EXCEPTION, because spec 12.1 defines its figure as RX to
+     * handing the probe to the driver, and this function does real work between
+     * that single clock reading and the handover: the alert read,
+     * can_msgs_to_rx(), and gs_tick's buf_state round trips. Using `now` therefore
+     * UNDER-reported the figure -- measured at ~9 us on the 2026-09-27 bench,
+     * where the Kvaser's wire idle mean sat +9 us above three pre-scheduler runs
+     * whose own idle means span 2.6 us, while the device's figure moved -1 us. The
+     * device could not see its own pre-submit cost, which is exactly the interval
+     * `now` omitted. dev_submit() now records the handover instant and the probe
+     * is reported against that (user: "just do it", 2026-09-28).
+     *
+     * A QUEUE WAIT WAS NEVER LOST THIS WAY, before or after: a probe deferred to a
+     * later iteration is reported against that later iteration, so waiting behind
+     * a telemetry frame has always shown in the figure. Only the within-iteration
+     * cost was missing.
      */
     /*
      * DRAIN THE ALERTS FIRST, and keep TX_FAILED latched until it is consumed.
@@ -657,7 +685,18 @@ static void sched_advance(int64_t now, gi_events_t *ev)
         s_seen_probe_handed++;
         if (s_have_last_probe)
         {
-            gi_on_tx_result(&s_core, &s_last_probe, true, false, now, ev);
+            /*
+             * THE HANDOVER INSTANT, NOT THIS ITERATION'S ENTRY. dev_submit()
+             * set it during the gs_tick() above, so it is fresh: `handed`
+             * advancing is precisely the evidence that a submit happened.
+             * Falls back to `now` only if no probe has ever been submitted,
+             * which cannot coexist with `handed` advancing and is here so the
+             * figure can never be computed against a zero clock.
+             */
+            const int64_t t_handover =
+                (s_probe_submit_us != 0) ? s_probe_submit_us : now;
+            gi_on_tx_result(&s_core, &s_last_probe, true, false,
+                            t_handover, ev);
         }
     }
     /*
