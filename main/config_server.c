@@ -677,7 +677,19 @@ static esp_err_t load_car_config_handler(httpd_req_t *req)
 
 static esp_err_t system_reboot_handler(httpd_req_t *req)
 {
-	const char *resp_str = "Configuration saved! Rebooting...";
+	/*
+	 * THIS ENDPOINT SAVES NOTHING. It shared its reply with the config-saving
+	 * endpoints, which is where "Configuration saved!" came from; the device's
+	 * configuration was captured before and after a call and was unchanged.
+	 *
+	 * The reply also does NOT mean the device rebooted. It is sent here, and
+	 * only then does xTimerStart() below schedule esp_restart() onto a software
+	 * timer that fires 2 s later. So a reboot that never happens looks exactly
+	 * like one that does, from the client's side -- which is how a reboot fault
+	 * was once recorded against a cause it did not have. The wording now says
+	 * what was actually promised: the reboot was scheduled, not performed.
+	 */
+	const char *resp_str = "Reboot scheduled (2 s); no configuration was saved.";
     httpd_resp_send(req, resp_str, HTTPD_RESP_USE_STRLEN);
 
 	ESP_LOGI(TAG, "reboot");
