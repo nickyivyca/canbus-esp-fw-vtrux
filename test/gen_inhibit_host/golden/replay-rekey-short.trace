@@ -3,143 +3,143 @@
 0 EV MODE a=3 b=500 c=0
 0 STATE mode=3 live=0 block=gate not yet evaluated abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
 0 STATE mode=3 live=0 block=no fresh 0x051 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
-5000 EV DISABLED a=1 b=0 c=0
-5000 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=0 key=0 socv=0 socsince=0
-8000 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=0 socsince=0
-25000 EV SOC_VALID a=1 b=11 c=0
-25000 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=0
-39000 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
-47000 EV KEY a=1 b=0 c=0
-47000 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
-4286900 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
-4392900 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
-7458900 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
-7474000 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
-11279900 EV KEY a=0 b=0 c=0
-11279900 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
-12175000 EV SOC_VALID a=0 b=1088 c=0
-12175000 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=0 socsince=0
-21775900 EV KEY a=1 b=0 c=0
-21775900 EV KEY_CLEAR a=0 b=1 c=0
-21775900 STATE mode=3 live=0 block=gate not yet evaluated abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-21775900 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-22342900 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=0 socsince=0
-22806900 EV SOC_VALID a=1 b=11 c=0
-22806900 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=0
-22817000 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
-22817000 EV INHIBIT_LIVE a=0 b=0 c=0
-22817000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
-24259000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=1 socsince=1
-24370000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
-25568900 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=1 socsince=1
-25783000 EV ABORT a=9 b=0 c=0
-25783000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=1 socsince=1
-25891900 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
-30301900 EV SOC_VALID a=0 b=1088 c=0
-30301900 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=0 socsince=0
-30317000 EV SOC_VALID a=1 b=11 c=0
-30317000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=0
-30341900 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
-32770000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=1 socsince=1
-32893900 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
-44786000 EV SOC_VALID a=0 b=1088 c=0
-44786000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=0 socsince=0
-44810900 EV SOC_VALID a=1 b=11 c=0
-44810900 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=0
-44871000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
-52281900 EV DISABLED a=1 b=0 c=0
-52281900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
-53243000 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
-53439000 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
-56948000 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
-57465000 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
-57972900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
-57975000 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
-64168900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
-64575000 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
-66418000 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
-66722900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
-67899000 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
-67906000 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
-71915000 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
-72018000 EV SOC_VALID a=0 b=1088 c=0
-72018000 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=0 socsince=0
-72052900 EV SOC_VALID a=1 b=11 c=0
-72052900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=0
-72064900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=0
-72121900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
-73525900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
-73743900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
-75522900 EV KEY a=0 b=0 c=0
-75522900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
-76376000 EV SOC_VALID a=0 b=1088 c=0
-76376000 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=0 socsince=0
-85787900 EV KEY a=1 b=0 c=0
-85787900 EV KEY_CLEAR a=9 b=1 c=0
-85787900 STATE mode=3 live=0 block=gate not yet evaluated abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-85787900 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-86590900 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=0 socsince=0
-87049900 EV SOC_VALID a=1 b=11 c=0
-87049900 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=0
-87167000 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
-87167000 EV INHIBIT_LIVE a=0 b=0 c=0
-87167000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
-88135900 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=1 socsince=1
-88480900 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
-89287900 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=1 socsince=1
-89311000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
-92322000 EV ABORT a=9 b=0 c=0
-92322000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
-92450900 EV SOC_VALID a=0 b=1088 c=0
-92450900 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=0 socsince=0
-92686900 EV SOC_VALID a=1 b=11 c=0
-92686900 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=0
-92700900 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
-95311000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=1 socsince=1
-95319000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
-96239900 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=1 socsince=1
-96257000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
-98409000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=1 socsince=1
-98826900 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
-116522900 EV DISABLED a=1 b=0 c=0
-116522900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
-116784900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
-116862900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
-120873900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
-121281900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
-123784000 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
-124060000 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
-135235900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
-135237900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
-139780000 EV KEY a=0 b=0 c=0
-139780000 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
-140575900 EV SOC_VALID a=0 b=1088 c=0
-140575900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=0 socsince=0
-150032900 EV KEY a=1 b=0 c=0
-150032900 EV KEY_CLEAR a=9 b=1 c=0
-150032900 STATE mode=3 live=0 block=gate not yet evaluated abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-150032900 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-150807900 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=0 socsince=0
-151324900 EV SOC_VALID a=1 b=11 c=0
-151324900 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=0
-151344900 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
-151344900 EV INHIBIT_LIVE a=0 b=0 c=0
-151344900 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
-152717000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=1 socsince=1
-152764900 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
-153503900 EV ABORT a=9 b=0 c=0
-153503900 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
-155691000 EV SOC_VALID a=0 b=1088 c=0
-155691000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=0 socsince=0
-155729000 EV SOC_VALID a=1 b=11 c=0
-155729000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=0
-155745000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
-165769000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=1 socsince=1
-165855900 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
-167043000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=1 socsince=1
-167282000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
-170375000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=1 socsince=1
-170376000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
-176595000 EV SOC_VALID a=0 b=1041 c=0
-176595000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=0 socsince=0
-177195000 FINAL mode=3 live=0 tx_ok=614 tx_fail=0 other=32295 ctr_ok=6121 ctr_bad=4363 rx_gap_n=10484 resp_n=614 disabled=0 dcode= block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 soc=5486 shift=1 key=0 socv=0 mainc=11 would_tx=0 emit_refused=0
+7000 EV DISABLED a=1 b=0 c=0
+7000 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=0 key=0 socv=0 socsince=0
+10000 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=0 socsince=0
+27000 EV SOC_VALID a=1 b=11 c=0
+27000 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=0
+41000 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
+49000 EV KEY a=1 b=0 c=0
+49000 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
+4288900 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
+4394900 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
+7460900 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
+7476000 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
+11281900 EV KEY a=0 b=0 c=0
+11281900 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
+12177000 EV SOC_VALID a=0 b=1088 c=0
+12177000 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=0 socsince=0
+21777900 EV KEY a=1 b=0 c=0
+21777900 EV KEY_CLEAR a=0 b=1 c=0
+21777900 STATE mode=3 live=0 block=gate not yet evaluated abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
+21777900 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
+22344900 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=0 socsince=0
+22808900 EV SOC_VALID a=1 b=11 c=0
+22808900 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=0
+22819000 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
+22819000 EV INHIBIT_LIVE a=0 b=0 c=0
+22819000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
+24261000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=1 socsince=1
+24372000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
+25570900 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=1 socsince=1
+25785000 EV ABORT a=9 b=0 c=0
+25785000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=1 socsince=1
+25893900 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
+30303900 EV SOC_VALID a=0 b=1088 c=0
+30303900 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=0 socsince=0
+30319000 EV SOC_VALID a=1 b=11 c=0
+30319000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=0
+30343900 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
+32772000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=1 socsince=1
+32895900 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
+44788000 EV SOC_VALID a=0 b=1088 c=0
+44788000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=0 socsince=0
+44812900 EV SOC_VALID a=1 b=11 c=0
+44812900 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=0
+44873000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
+52283900 EV DISABLED a=1 b=0 c=0
+52283900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
+53245000 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
+53441000 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
+56950000 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
+57467000 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
+57974900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
+57977000 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
+64170900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
+64577000 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
+66420000 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
+66724900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
+67901000 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
+67908000 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
+71917000 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
+72020000 EV SOC_VALID a=0 b=1088 c=0
+72020000 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=0 socsince=0
+72054900 EV SOC_VALID a=1 b=11 c=0
+72054900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=0
+72066900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=0
+72123900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
+73527900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
+73745900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
+75524900 EV KEY a=0 b=0 c=0
+75524900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
+76378000 EV SOC_VALID a=0 b=1088 c=0
+76378000 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=0 socsince=0
+85789900 EV KEY a=1 b=0 c=0
+85789900 EV KEY_CLEAR a=9 b=1 c=0
+85789900 STATE mode=3 live=0 block=gate not yet evaluated abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
+85789900 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
+86592900 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=0 socsince=0
+87051900 EV SOC_VALID a=1 b=11 c=0
+87051900 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=0
+87169000 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
+87169000 EV INHIBIT_LIVE a=0 b=0 c=0
+87169000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
+88137900 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=1 socsince=1
+88482900 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
+89289900 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=1 socsince=1
+89313000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
+92324000 EV ABORT a=9 b=0 c=0
+92324000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
+92452900 EV SOC_VALID a=0 b=1088 c=0
+92452900 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=0 socsince=0
+92688900 EV SOC_VALID a=1 b=11 c=0
+92688900 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=0
+92702900 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
+95313000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=1 socsince=1
+95321000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
+96241900 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=1 socsince=1
+96259000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
+98411000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=1 socsince=1
+98828900 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
+116524900 EV DISABLED a=1 b=0 c=0
+116524900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
+116786900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
+116864900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
+120875900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
+121283900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
+123786000 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
+124062000 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
+135237900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
+135239900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
+139782000 EV KEY a=0 b=0 c=0
+139782000 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
+140577900 EV SOC_VALID a=0 b=1088 c=0
+140577900 STATE mode=3 live=0 block=latched disable abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=0 socsince=0
+150034900 EV KEY a=1 b=0 c=0
+150034900 EV KEY_CLEAR a=9 b=1 c=0
+150034900 STATE mode=3 live=0 block=gate not yet evaluated abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
+150034900 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
+150809900 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=0 socsince=0
+151326900 EV SOC_VALID a=1 b=11 c=0
+151326900 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=0
+151346900 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
+151346900 EV INHIBIT_LIVE a=0 b=0 c=0
+151346900 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
+152719000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=1 socsince=1
+152766900 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
+153505900 EV ABORT a=9 b=0 c=0
+153505900 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
+155693000 EV SOC_VALID a=0 b=1088 c=0
+155693000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=0 socsince=0
+155731000 EV SOC_VALID a=1 b=11 c=0
+155731000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=0
+155747000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
+165771000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=1 socsince=1
+165857900 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
+167045000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=1 socsince=1
+167284000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
+170377000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=1 socsince=1
+170378000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
+176597000 EV SOC_VALID a=0 b=1041 c=0
+176597000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=0 socsince=0
+177197000 FINAL mode=3 live=0 tx_ok=614 tx_fail=0 other=32295 ctr_ok=6121 ctr_bad=4363 rx_gap_n=10484 resp_n=614 disabled=0 dcode= block=latched abort (key-on clears) abort=0x617 went stale while live -- VCM fault flag lost latched=1 soc=5486 shift=1 key=0 socv=0 mainc=11 would_tx=0 emit_refused=0

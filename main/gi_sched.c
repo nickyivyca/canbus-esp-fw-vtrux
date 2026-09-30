@@ -804,7 +804,7 @@ int gs_json(const gs_t *s, char *buf, int buflen)
              * here in gs_json() and not in the core's build_diag().
              *
              * `held` IS PER CLASS, so the balance closes inside one object:
-             *   queued + carried_in == sent + dropped + depth + held
+             *   queued + carried_in == sent + dropped + withdrawn + depth + held
              * At most one class can read 1, because the controller holds at most
              * one frame -- and which class that is is the "with its class" half
              * of the spec's wording.

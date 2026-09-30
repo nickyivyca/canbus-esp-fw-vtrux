@@ -1,12 +1,12 @@
-# host_runner: 2827 frames, 1 directives, t=[0,8700000]
+# host_runner: 2823 frames, 1 directives, t=[0,8700000]
 0 STATE mode=0 live=0 block=not armed abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
 0 EV MODE a=3 b=500 c=0
 0 STATE mode=3 live=0 block=gate not yet evaluated abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
 0 STATE mode=3 live=0 block=no fresh 0x051 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
-1000 STATE mode=3 live=0 block=no fresh 0x051 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=0 socsince=0
-1900 STATE mode=3 live=0 block=no fresh 0x617 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=0 socsince=0
-94900 EV KEY a=1 b=0 c=0
-94900 STATE mode=3 live=0 block=no fresh 0x617 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=0 socsince=0
-100000 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=0 socsince=0
-8298000 STATE mode=3 live=0 block=no fresh 0x051 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=0 socsince=0
-8898000 FINAL mode=3 live=0 tx_ok=0 tx_fail=0 other=2057 ctr_ok=769 ctr_bad=0 rx_gap_n=769 resp_n=0 disabled=0 dcode= block=no fresh 0x051 abort= latched=0 soc=5108 shift=0 key=0 socv=0 mainc=14 would_tx=0 emit_refused=0
+5000 STATE mode=3 live=0 block=no fresh 0x051 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=0 socsince=0
+5900 STATE mode=3 live=0 block=no fresh 0x617 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=0 socsince=0
+98900 EV KEY a=1 b=0 c=0
+98900 STATE mode=3 live=0 block=no fresh 0x617 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=0 socsince=0
+104000 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=0 socsince=0
+8299000 STATE mode=3 live=0 block=no fresh 0x051 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=0 socsince=0
+8899000 FINAL mode=3 live=0 tx_ok=0 tx_fail=0 other=2053 ctr_ok=769 ctr_bad=0 rx_gap_n=769 resp_n=0 disabled=0 dcode= block=no fresh 0x051 abort= latched=0 soc=5108 shift=0 key=0 socv=0 mainc=14 would_tx=0 emit_refused=0

@@ -43,6 +43,8 @@ stays green forever.
 | `make_scenarios.py` | Generates the synthetic scenarios into `scenarios/` |
 | `passive_diff.py` | Replays every scenario in INHIBIT **and** PASSIVE and proves they decided alike (spec 3.1). Has no golden -- see below |
 | `from_capture.py` | Turns a real capture into a scenario; `--scan` finds key-on points |
+| `replay_stimulus_delta.py` | **Run this before re-blessing a replay golden.** `scenarios/` is not tracked in git, so a clean checkout rebuilds it -- and a change in canre's parser then changes the stimulus from the same log. This reports the delta per scenario: frame counts, per-ID changes, whether the offsets are still monotonic, and whether the emitted DECISION sequence is the same sequence with different timestamps, a reordering of the same events, or a genuinely different one. `--regen` rebuilds the eight replays first, keeping the old ones in `scenarios/_pre_regen/`. |
+| `golden_delta_check.py` | Structural check on a whole-suite re-bless: no non-diag line changed, no diag timestamp changed, which diag IDs are new or gone. **It does not rebuild `host_runner`** -- do that first, or it compares against a stale binary and reports no change. |
 | `run_tests.py` | Builds, replays every scenario, diffs against `golden/` |
 | `test_signals.py` | 2000 randomised frames per signal, C extractors vs cantools |
 | `scenarios/` | Generated inputs. Not hand-edited |
@@ -199,6 +201,19 @@ defect class as the disarm bug fixed by hand earlier the same day.
 `scenarios/` is gitignored — the replays are 25k–127k lines each. The goldens
 are committed (summary only; TX lines are filtered, since `FINAL` already
 carries `tx_ok`/`tx_fail`/`ctr_ok`/`ctr_bad`). To rebuild the inputs:
+
+**The scenarios are NOT tracked in git, and that let a stimulus change go
+unnoticed.** On 2026-09-30 six replay goldens failed on a clean checkout: canre's
+BUSMASTER parser was fixed on 2026-09-27 (`_DATA_RE` could not match a negative
+timestamp component, so lines the Android logger wrote with a pre-origin offset
+were dropped silently -- 4.8 M lines, 0.203 %, across 1,715 corpus files, worst
+single file 44 %), and rebuilding the replays therefore produced a different
+stimulus from the same log. The suite was green on scenarios generated before the
+fix, so nothing complained. `replay_stimulus_delta.py` is what makes that
+visible; the goldens were re-blessed on 2026-09-30 after checking that **no
+scenario gains or loses a decision event** -- seven are pure timestamp shifts and
+`replay-shutdown-at-keyon` reorders two same-microsecond events without adding or
+dropping any.
 
 All five captures are copied into the project repo so this suite has one
 stable source instead of reaching into the Android auto-capture store. They

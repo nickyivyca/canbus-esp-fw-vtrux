@@ -1355,6 +1355,133 @@ static void case_saturation_skip_is_counted(void)
     ck_eq(s.st.order_violations, 0, "and no ordering violation anywhere in the run");
 }
 
+/*
+ * THE REQUEUE HALF OF THE CARRIED-IN EXCLUSION (spec 5.2 item 6's "the longest
+ * hold and the longest wait both exclude a carried-in frame").
+ *
+ * case_identity_carried_across_rearm covers the HOLD. This covers the WAIT, and it
+ * exists because three separate mutations survived the whole suite: dropping the
+ * `!sl->carried` guard on max_queue_us, dropping q_push's reset of that flag, and
+ * requeueing with the flag cleared. max_queue_us was asserted nowhere with a
+ * carried frame in play.
+ *
+ * THE PATH. A telemetry page is in the controller when the mode changes, so the new
+ * arm inherits it. An inhibit then arrives, preempts it, and the abort requeues it
+ * -- with `t_queued` taken from `held_since`, a timestamp from the PREVIOUS arm,
+ * because there is nowhere else to get one and the frame really has been waiting
+ * that long. Its next handover must book nothing: the new arm cannot know how long
+ * it waited, and clamping it to the re-arm instant would be a figure the device
+ * never measured.
+ */
+static void case_identity_carried_requeue_sets_no_wait(void)
+{
+    g_case = "item 6: a carried-in frame's REQUEUED wait is not booked either";
+    fb_reset();
+    fb_set_contended(true);     /* STRESS: the page stays AWAITING, so it is held */
+    gs_t s;
+    gs_init(&s, fb_hal());
+
+    gi_frame_t page_a = mk(ID_DIAG, GI_TX_DIAG);
+    gs_queue_frame(&s, GS_CLASS_TELEMETRY, &page_a, fb_now());
+    run(&s, 50, 10, 0);
+    ck(fb_outstanding_now(), "the controller holds the page");
+
+    /*
+     * RE-ARM AT ONCE, and the window is short for a reason worth recording: the
+     * model cannot hold a frame AWAITING for long. Contention costs 400 us of
+     * arbitration and then the frame starts transmitting, so advancing virtual
+     * time to make the carried frame "old" instead lets it COMPLETE -- the first
+     * version of this case advanced 500 ms and the page was sent, not carried,
+     * so the preemption it was written to drive never happened.
+     *
+     * The figure a mutation books is therefore a few hundred microseconds rather
+     * than half a second. That is still unambiguous against an expected 0, which
+     * is what makes the assertion work; it is the SIGN of the bug that matters,
+     * not its size.
+     */
+    gs_rearm(&s, fb_hal());
+
+    const gs_class_stats_t *telem = &s.st.cls[GS_CLASS_TELEMETRY];
+    ck_eq(telem->carried_in, 1, "the new arm inherited it");
+    ck_eq(telem->max_queue_us, 0, "and starts with no wait booked");
+
+    /*
+     * An inhibit in the new arm preempts it. The buffer is AWAITING, so item 6's
+     * preemption aborts the page and requeues it at the head of its class.
+     */
+    (void)gs_command_received(&s, fb_now(), 0);
+    gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
+    gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
+    run(&s, 5000, 10, 0);
+
+    ck_eq(telem->aborted, 1, "the page was aborted");
+    ck_eq(telem->requeued, 1, "and requeued rather than dropped");
+
+    /*
+     * THE FLAG TRAVELLED WITH THE FRAME. Asserted on the slot directly, because
+     * the behavioural consequence below cannot distinguish "the flag was lost" from
+     * "the frame happened not to wait".
+     */
+    int carried_slots = 0;
+    int carried_slot_ix = -1;
+    for (int i = 0; i < GS_Q_TELEMETRY; i++)
+    {
+        if (s.q[GS_CLASS_TELEMETRY].q[i].carried)
+        {
+            carried_slots++;
+            carried_slot_ix = i;
+        }
+    }
+    ck_eq(carried_slots, 1, "exactly one queued slot is marked carried");
+    ck(carried_slot_ix >= 0, "and its index was found");
+
+    /* Let the inhibit go, then the requeued page. */
+    fb_set_contended(false);
+    run(&s, 5000, 10, 0);
+    ck_eq(s.st.cls[GS_CLASS_INHIBIT].sent, 1, "the inhibit went first");
+    ck_eq(telem->sent, 1, "then the carried page");
+
+    /*
+     * THE POINT. Its `t_queued` is 500 ms+ in the past and in another arm, so the
+     * handover must have booked nothing. Without the guard, or with the flag lost
+     * at the requeue, this reads about half a second.
+     */
+    ck_eq(telem->max_queue_us, 0,
+          "the requeued carried frame's wait is NOT booked into the new arm");
+    ck_eq(residual(&s, GS_CLASS_TELEMETRY), 0, "and the balance still closes");
+
+    /*
+     * AND THE SLOT IS CLEAN FOR THE NEXT FRAME. q_pop() does not clear the slot it
+     * leaves, so if q_push() did not reset the flag, the next frame to land in that
+     * index would inherit `carried` and have its genuine wait silently suppressed.
+     * Filling every slot is what makes this deterministic -- which index the next
+     * push lands in is not something a test should have to predict.
+     */
+    fb_set_contended(true);
+    gi_frame_t fresh[GS_Q_TELEMETRY];
+    for (int i = 0; i < GS_Q_TELEMETRY; i++)
+    {
+        fresh[i] = mk(ID_DIAG, GI_TX_DIAG);
+        ck(gs_queue_frame(&s, GS_CLASS_TELEMETRY, &fresh[i], fb_now()),
+           "the fresh page was accepted");
+    }
+    int still_carried = 0;
+    for (int i = 0; i < GS_Q_TELEMETRY; i++)
+    {
+        if (s.q[GS_CLASS_TELEMETRY].q[i].carried) { still_carried++; }
+    }
+    ck_eq(still_carried, 0,
+          "no slot still reads `carried` once fresh frames have been pushed into "
+          "every one; a stale flag would suppress a real wait figure");
+
+    /* And a fresh frame that really waits DOES book it -- the exclusion is
+     * per-frame, not a blanket silencing of the counter. */
+    run(&s, 20000, 10, 0);
+    ck(telem->max_queue_us > 0,
+       "a fresh frame's genuine wait IS booked, so the exclusion did not just "
+       "turn the counter off");
+}
+
 static void case_integration_order(void)
 {
     uint32_t v;
@@ -1410,6 +1537,7 @@ int main(void)
     case_identity_withdraw_api_balances();
     case_saturation_sustained();
     case_saturation_skip_is_counted();
+    case_identity_carried_requeue_sets_no_wait();
 
     if (g_fail == 0)
     {

@@ -1,22 +1,22 @@
-# host_runner: 26533 frames, 1 directives, t=[0,65000000]
+# host_runner: 26534 frames, 1 directives, t=[0,65000000]
 0 STATE mode=0 live=0 block=not armed abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
 0 EV MODE a=3 b=500 c=0
 0 STATE mode=3 live=0 block=gate not yet evaluated abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
 0 STATE mode=3 live=0 block=no fresh 0x051 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
 6000 STATE mode=3 live=0 block=no fresh 0x617 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
-37000 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
-8313000 EV KEY a=1 b=0 c=0
-8313000 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
-9103900 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=0 socsince=0
-9564900 EV SOC_VALID a=1 b=11 c=0
-9564900 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=0
-9577000 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
-9577000 EV INHIBIT_LIVE a=0 b=0 c=0
-9577000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
-39057000 EV DISABLED a=1 b=0 c=0
-39057000 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
-62289900 EV KEY a=0 b=0 c=0
-62289900 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
-63183900 EV SOC_VALID a=0 b=1088 c=0
-63183900 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=0 socsince=0
-65199000 FINAL mode=3 live=0 tx_ok=2947 tx_fail=0 other=20133 ctr_ok=6399 ctr_bad=0 rx_gap_n=6399 resp_n=2947 disabled=1 dcode=m_mode block=latched disable abort= latched=0 soc=5485 shift=4 key=0 socv=0 mainc=14 would_tx=0 emit_refused=0
+55000 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
+8331000 EV KEY a=1 b=0 c=0
+8331000 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
+9121900 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=0 socsince=0
+9582900 EV SOC_VALID a=1 b=11 c=0
+9582900 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=0
+9595000 STATE mode=3 live=0 block=SoC not yet valid (contactors) abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
+9595000 EV INHIBIT_LIVE a=0 b=0 c=0
+9595000 STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= susp=0 fb_ever=1 key=1 socv=1 socsince=1
+39075000 EV DISABLED a=1 b=0 c=0
+39075000 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=1 socv=1 socsince=1
+62307900 EV KEY a=0 b=0 c=0
+62307900 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=1 socsince=1
+63201900 EV SOC_VALID a=0 b=1088 c=0
+63201900 STATE mode=3 live=0 block=latched disable abort= latched=0 disabled=1 dcode=m_mode susp=0 fb_ever=1 key=0 socv=0 socsince=0
+65194900 FINAL mode=3 live=0 tx_ok=2947 tx_fail=0 other=20133 ctr_ok=6400 ctr_bad=0 rx_gap_n=6400 resp_n=2947 disabled=1 dcode=m_mode block=latched disable abort= latched=0 soc=5485 shift=4 key=0 socv=0 mainc=14 would_tx=0 emit_refused=0

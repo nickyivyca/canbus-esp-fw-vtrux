@@ -2112,6 +2112,91 @@ static void case_status_page_always_balances(void)
 }
 
 /*
+ * CASE 29 -- the 0x7F9 skip counts are SINCE ARMING (spec section 10).
+ *
+ * The reset lives in gi_reset_stats(), which only runs when arming, so gi_init()'s
+ * memset hides it on the first arm and only a RE-ARM exercises it. Deleting the
+ * reset left every suite green, which is how this case came to exist.
+ *
+ * It matters for a reader of a truck log rather than for the device: 0x7F9 is
+ * differenced across time, and a count that survived a re-arm would make the first
+ * page of a new drive carry the previous drive's skips.
+ */
+static void case_skips_are_since_arming(void)
+{
+    case_begin("case 29: 0x7F9 skip counts reset on a re-arm (since arming)");
+    setup();
+    go_live();
+
+    /* Stall an inhibit so it is withdrawn at the VCM's next command -- the same
+     * mechanism case 1 uses, and the only way to make a skip here. */
+    ft_stall_id(0x051, 1);
+    uint8_t ctr = 0x20;
+    keep_alive(1500000, &ctr);
+
+    const uint32_t core_w = json_u32("\"skips_withdrawn\":");
+    const uint32_t core_l = json_u32("\"skips_late\":");
+    CHECK(core_w + core_l >= 1,
+          "no skip was produced, so this case proves nothing about the reset: %s",
+          stats());
+
+    /*
+     * THE PAGE, not just the counter. Find the last 0x7F9 on the wire and check it
+     * carries a non-zero count, so the reset below is tested against what a log
+     * actually shows rather than against an internal.
+     */
+    int last_7f9 = -1;
+    for (int i = 0; i < ft_wire_count(); i++)
+    {
+        if (ft_wire(i)->id == 0x7F9) { last_7f9 = i; }
+    }
+    CHECK(last_7f9 >= 0, "no 0x7F9 page reached the wire at all");
+    const uint8_t *d = ft_wire(last_7f9)->data;
+    const uint32_t page_w = (uint32_t)d[0] | ((uint32_t)d[1] << 8)
+                          | ((uint32_t)d[2] << 16) | ((uint32_t)d[3] << 24);
+    const uint32_t page_l = (uint32_t)d[4] | ((uint32_t)d[5] << 8)
+                          | ((uint32_t)d[6] << 16) | ((uint32_t)d[7] << 24);
+    CHECK(page_w + page_l >= 1,
+          "0x7F9 reads 0/0 while the status page reports %u/%u, so the page is not "
+          "carrying the counts at all", core_w, core_l);
+
+    /* THE RE-ARM. */
+    const int wire_before_rearm = ft_wire_count();
+    gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
+    ft_run(10000);
+
+    CHECK(json_u32("\"skips_withdrawn\":") == 0,
+          "skips_withdrawn survived the re-arm, so 0x7F9 is not 'since arming' and "
+          "a new drive's first page carries the previous drive's skips: %s",
+          stats());
+    CHECK(json_u32("\"skips_late\":") == 0,
+          "skips_late survived the re-arm: %s", stats());
+
+    /* And the next page on the wire says so too. */
+    go_live();
+    uint8_t ctr2 = 0x40;
+    keep_alive(1600000, &ctr2);
+
+    int found_after = -1;
+    for (int i = wire_before_rearm; i < ft_wire_count(); i++)
+    {
+        if (ft_wire(i)->id == 0x7F9) { found_after = i; }
+    }
+    CHECK(found_after >= 0,
+          "no 0x7F9 page was emitted after the re-arm, so the page-level half of "
+          "this case did not run");
+    const uint8_t *e = ft_wire(found_after)->data;
+    uint32_t after = 0;
+    for (int i = 0; i < 8; i++) { after |= e[i]; }
+    CHECK(after == 0,
+          "the 0x7F9 page after a re-arm is not zero: %02X%02X%02X%02X%02X%02X"
+          "%02X%02X", e[0], e[1], e[2], e[3], e[4], e[5], e[6], e[7]);
+
+    teardown();
+    case_end();
+}
+
+/*
  * CASE 27 -- D8's wiring: a mode change while a frame is really in the
  * controller.
  *
@@ -2226,6 +2311,7 @@ int main(void)
     case_status_page_fits_the_handler_buffer();
     case_mode_change_keeps_the_held_frame();
     case_status_page_always_balances();
+    case_skips_are_since_arming();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
     return g_fail ? 1 : 0;
