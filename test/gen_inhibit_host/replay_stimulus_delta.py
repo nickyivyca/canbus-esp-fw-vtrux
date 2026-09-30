@@ -190,9 +190,21 @@ def main(argv):
             continue
 
         # Decision lines only -- EV/LOG/FINAL. That is what a reviewer reads.
+        #
+        # STATE LINES COUNT, and leaving them out made this tool under-report. A
+        # replay trace is MOSTLY STATE -- 11 STATE against 6 EV in genrun-stop,
+        # 105 against 38 in rekey-short -- so a verdict of "timestamps only"
+        # computed over EV alone covered a third of the record. Caught by the
+        # reviewing session, 2026-09-30: genrun-stop and shutdown-at-keyon each
+        # have 2 STATE lines whose CONTENT changes, inside the first 6 ms, where
+        # the gate reason reported first swaps with the arrival order. Benign --
+        # and a tool whose output justifies a re-bless must not be what decides
+        # that by not looking.
+        #
         def keyline(ln):
-            return " EV " in ln or " LOG " in ln or ln.startswith("FINAL") \
-                   or " FINAL " in ln
+            return (" EV " in ln or " LOG " in ln
+                    or " STATE " in ln
+                    or ln.startswith("FINAL") or " FINAL " in ln)
         gk = [l for l in gold if keyline(l)]
         tk = [l for l in tr if keyline(l)]
         print("  BEHAVIOUR DIFFERS. decision lines %d -> %d" % (len(gk), len(tk)))
@@ -217,8 +229,13 @@ def main(argv):
         # whether the EV/LOG sequence -- the decisions -- is the same sequence with
         # different timestamps, or a different sequence.
         #
+        # Every decision line; see keyline() for why STATE belongs here.
         def ev_only(ls):
-            return [l for l in ls if " EV " in l or " LOG " in l]
+            return [l for l in ls
+                    if " EV " in l or " LOG " in l or " STATE " in l]
+
+        def by_class(ls, k):
+            return [l for l in ls if (" %s " % k) in l]
 
         def detime(ls):
             return [re.sub(r"^\s*-?\d+\s+", "", l) for l in ls]
@@ -244,6 +261,35 @@ def main(argv):
             if sorted(dg) == sorted(dt):
                 print("      ...but the same events, REORDERED -- no event gained "
                       "or lost")
+            #
+            # PER CLASS, AND WHERE. "2 of 22 STATE lines, both inside 6 ms" is a
+            # different finding from "the run diverges at 40 s", and one verdict
+            # over the pooled lines cannot tell them apart.
+            #
+            for k in ("STATE", "EV", "LOG"):
+                ka, kb = by_class(ge, k), by_class(te, k)
+                if not ka and not kb:
+                    continue
+                da, db = detime(ka), detime(kb)
+                if ka == kb:
+                    verdict = "identical"
+                elif da == db:
+                    verdict = "timestamps only"
+                elif sorted(da) == sorted(db):
+                    verdict = "same lines reordered, none gained or lost"
+                else:
+                    n = sum(1 for x, y in zip(da, db) if x != y)
+                    ts = []
+                    for x, y in zip(ka, kb):
+                        if detime(x) == detime(y):
+                            continue
+                        mm = re.match(r"^\s*(-?\d+)", y)
+                        if mm:
+                            ts.append(int(mm.group(1)))
+                    span = ("  spanning %d..%d us" % (min(ts), max(ts))) if ts else ""
+                    verdict = ("CONTENT CHANGED in %d of %d lines%s"
+                               % (n, len(kb), span))
+                print("      %-5s %4d -> %4d  %s" % (k, len(ka), len(kb), verdict))
 
         gf = [l for l in gold if l.startswith("FINAL")]
         tf = [l for l in tr if l.startswith("FINAL")]
