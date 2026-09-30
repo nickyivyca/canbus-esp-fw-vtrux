@@ -39,6 +39,19 @@ typedef uint32_t TickType_t;
  * Recording that here because an empty macro is exactly the kind of thing a later
  * session mistakes for "tested".
  */
+/*
+ * THE TARGET IS UNICORE, AND SAYING SO IS PART OF THE MODEL.
+ *
+ * gen_inhibit.c's status snapshot argues that a critical section excludes the CAN
+ * worker WITHOUT the worker taking the same mux -- true only because
+ * taskENTER_CRITICAL masks interrupts and suspends preemption on a single-core
+ * part, which the ESP32-C3 is (CONFIG_FREERTOS_UNICORE=y in sdkconfig). It guards
+ * that with an #error. Declaring it here keeps the guard meaningful on the device
+ * instead of weakening it to tolerate an absent define, which would let a
+ * dual-core port compile and tear every reading silently.
+ */
+#define CONFIG_FREERTOS_UNICORE 1
+
 typedef int portMUX_TYPE;
 #define portMUX_INITIALIZER_UNLOCKED 0
 #define taskENTER_CRITICAL(mux)  ((void)(mux))

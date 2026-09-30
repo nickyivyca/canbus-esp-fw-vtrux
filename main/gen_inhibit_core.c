@@ -68,7 +68,14 @@ void gi_config_defaults(gi_config_t *c)
     c->err_window_us = 10000000LL;
     c->err_min_trip  = 10;
 
-    c->diag_period_ms = 300;
+    /*
+     * 240 ms, not 300 (user, 2026-09-29). Section 10's rule is 1.2 s per full
+     * rotation, so the per-page period is 1.2 s / GI_DIAG_PAGES -- five pages at
+     * the old 300 ms took 1.5 s, and the measured cost of that was abort_reason
+     * coverage: a reason that clears before 0x7F8's turn never reaches the wire.
+     * A sixth page means 200 ms.
+     */
+    c->diag_period_ms = 240;
 
     /*
      * A run of hard receive errors means the driver is gone underneath us --
@@ -408,6 +415,14 @@ void gi_reset_stats(gi_state_t *st)
      */
     st->tx_pending = false;
     st->tx_pending_have_rx = false;
+
+    /*
+     * Spec section 10: the 0x7F9 page reports the count SINCE ARMING, so it is
+     * cleared here and nowhere else. A reader differencing two pages across an
+     * arm boundary would otherwise see a negative step.
+     */
+    st->skips_withdrawn = 0;
+    st->skips_late = 0;
 }
 
 void gi_init(gi_state_t *st, const gi_config_t *cfg)
@@ -1049,6 +1064,30 @@ static void build_diag(const gi_state_t *st, const gi_bus_t *bus, int64_t now,
         /* Spec 5's hazard, saturating: any non-zero value is the point. */
         f->data[7] = (uint8_t)(st->tx_queued_behind > 255 ? 255
                                                           : st->tx_queued_behind);
+    }
+    else if (which == 4)    /* SKIPS -> 0x7F9 (schema 5) */
+    {
+        /*
+         * Spec 5.2 item 5 and section 10: the skip count since arming, split
+         * into withdrawn and late. Two u32 fields fill the page exactly.
+         *
+         * NOT SATURATED AND NOT SUMMED. A stuck transmit path skips every
+         * command -- ~360,000 in an hour at 100 Hz -- so a u16 would report the
+         * worst case and the tenth-worst identically; and the two kinds mean
+         * different things to a reader deciding whether the inverter ever saw
+         * our frame, which a total would destroy.
+         */
+        uint32_t w = st->skips_withdrawn;
+        uint32_t l = st->skips_late;
+        f->id = GI_DIAG_ID_SKIPS;
+        f->data[0] = (uint8_t)w;
+        f->data[1] = (uint8_t)(w >> 8);
+        f->data[2] = (uint8_t)(w >> 16);
+        f->data[3] = (uint8_t)(w >> 24);
+        f->data[4] = (uint8_t)l;
+        f->data[5] = (uint8_t)(l >> 8);
+        f->data[6] = (uint8_t)(l >> 16);
+        f->data[7] = (uint8_t)(l >> 24);
     }
     else if (which == 1)    /* COUNTERS -> 0x7F2 */
     {
@@ -2011,6 +2050,29 @@ void gi_on_inhibit_skip(gi_state_t *st, gi_skip_kind_t kind, bool trip,
      * counter and a reader had to know which call site produced it. Raised by the
      * reviewing session, 2026-09-27.
      */
+    /*
+     * THREE KINDS, TWO FIELDS, AND THE SPLIT IS BY MEANING NOT BY ONE EQUALITY.
+     * An earlier version tested `kind == GI_SKIP_MAYBE_LATE` and put everything
+     * else in `withdrawn`, which filed GI_SKIP_SEEN_LATE -- a frame whose
+     * completion was observed AFTER the VCM's next 0x051, i.e. unambiguously on
+     * the wire late -- under "never reached the wire". The skip-third-trips
+     * scenario emits all three kinds and the page read withdrawn 2 / late 1 where
+     * the truth was 1 / 2.
+     *
+     * Only GI_SKIP_WITHDRAWN is a certainty that the inverter never saw our
+     * frame, so it is the narrow case and everything else is `late`. A kind added
+     * later therefore defaults to the uncertain side, which is the honest
+     * direction: reporting "it may have gone out" when it did not is a smaller
+     * error than reporting "it never went out" when it did.
+     */
+    if (kind == GI_SKIP_WITHDRAWN)
+    {
+        st->skips_withdrawn++;
+    }
+    else
+    {
+        st->skips_late++;
+    }
     ev_add(ev, now, GI_EV_SKIP, (int32_t)kind, 0, 0);
     if (trip && st->inhibit_live)
     {

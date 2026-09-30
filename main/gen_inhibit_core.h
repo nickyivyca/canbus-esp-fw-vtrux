@@ -140,7 +140,32 @@ extern "C" {
  * declares and what the corpus actually carries.
  */
 #define GI_DIAG_ID_STATUS2  0x7F8
-#define GI_DIAG_PAGES       4
+
+/*
+ * SKIPS -> 0x7F9, schema 5 (spec section 10, user 2026-09-29; the ruling of
+ * 2026-09-27 that no page met).
+ *
+ * WHY A CAN PAGE AND NOT ONLY THE STATUS PAGE. A skipped inhibit means the
+ * generator inverter acted on the VCM's real command for one cycle. The existing
+ * pages show only the TRIP that three skips within a second cause -- abort reason
+ * 15 -- so an isolated skip leaves no trace whatever in a truck log, and nobody is
+ * connected to the HTTP status page during a drive.
+ *
+ * 0x7F9 IS THE NEXT FREE ID and not a guess: 0x7F4-0x7F7 are the charge
+ * interposer's, which transmits on the same powertrain bus, and the allocation
+ * table in both schema docs is the authority. That nothing on the truck transmits
+ * in 0x7F0-0x7FF is measured across all 2,204 captures
+ * (artifacts/gen-inhibit/diag_id_allocation.txt), not assumed -- the assumption
+ * had been repeated six times before anyone ran the scan.
+ *
+ * THE REST OF THE SCHEDULER'S COUNTERS STAY ON THE STATUS PAGE ONLY (spec section
+ * 11, same ruling): the per-class telemetry counts, item 6's carried_in and held,
+ * the on-time counts and the abort-loop figures. They check the scheduler on the
+ * bench; on the truck, lost telemetry already shows in the CAN log as a gap in the
+ * diag pages themselves.
+ */
+#define GI_DIAG_ID_SKIPS    0x7F9
+#define GI_DIAG_PAGES       5
 
 #define GI_MMODE_VALUE      4
 #define GI_FAULT_ACTIVE     0xCA
@@ -168,6 +193,16 @@ extern "C" {
  * 4: PASSIVE (diag_mode 4) and the new 0x7F8 page -- abort reason, the spec
  *    6.2 SoC-valid marker, the would-transmit count and tx_queued_behind.
  *    Again no field moved; 0x7F1-0x7F3 are byte-identical to schema 3.
+ * 5: the new 0x7F9 SKIPS page (spec 5.2 item 5, section 10). Again no field
+ *    moved, so a schema-4 decoder reads every page it used to and simply does
+ *    not see this one.
+ *
+ *    THE PERIOD MOVED WITH IT, 300 -> 240 ms (user, 2026-09-29), so five pages
+ *    still repeat about every 1.2 s. Five pages at the old 300 ms would have made
+ *    it 1.5 s, and the measured cost was coverage: six host scenarios stopped
+ *    reporting a TRANSIENT abort_reason on 0x7F8 because its turn no longer fell
+ *    inside the window before the reason cleared. Section 10's rule is written as
+ *    1.2 s / pages, so a sixth page changes this number again.
  *
  * artifacts/gen-inhibit/wican_diag_schema.md is the source of truth for the
  * layout and vtrux-wican-diag.dbc is the decoder; all three change together
@@ -182,7 +217,7 @@ extern "C" {
  */
 #define GI_DIAG_AFTER_TX_US 1000
 
-#define GI_DIAG_SCHEMA_VER  4
+#define GI_DIAG_SCHEMA_VER  5
 
 /* ---------------------------------------------------------------- modes -- */
 
@@ -269,7 +304,10 @@ typedef struct
     int64_t  fault_fresh_us;   /* 0x617 only -- spec 7 "Freshness" */
     int64_t  err_window_us;     /* sliding window for the error-frame rate */
     uint32_t err_min_trip;      /* errors within that window that trip it */
-    uint32_t diag_period_ms;    /* per-page diag cadence, round-robin over 3 */
+    uint32_t diag_period_ms;    /* per-page diag cadence; section 10 fixes the
+                                 * FULL ROTATION at ~1.2 s, so this is
+                                 * 1.2 s / GI_DIAG_PAGES and both move
+                                 * together when a page is added */
     uint32_t max_rx_errors;     /* consecutive hard RX errors -> self-disarm */
     uint16_t fw_version;        /* reported in diag */
     uint32_t git_hash;          /* reported in diag; FNV-1a of GIT_SHA */
@@ -677,6 +715,22 @@ typedef struct
      * any non-zero reading is a bug in gen_inhibit_core.c, not a bus event.
      */
     uint32_t emit_refused;
+
+    /*
+     * SKIPPED INHIBIT FRAMES SINCE ARMING (spec 5.2 item 5), split by kind for
+     * the 0x7F9 page. Counted here rather than read from the scheduler because
+     * gi_on_inhibit_skip() is already called once per skip with its kind, so the
+     * page and the status page cannot disagree about the count -- the failure
+     * that made the split necessary in the first place, when the worker reported
+     * one skip per deadline and the scheduler counted one per frame.
+     *
+     * skips_withdrawn -- removed at the deadline, never on the wire.
+     * skips_late      -- went out late, or may have (the device cannot tell).
+     * Never summed into a single field on the wire: they have different
+     * meanings for a reader deciding whether the inverter saw our frame.
+     */
+    uint32_t skips_withdrawn;
+    uint32_t skips_late;
 
     /* Spec 11: why the device is in OFF, when it was not asked to be. */
     gi_self_off_t self_off;

@@ -73,6 +73,25 @@ def main():
         print("no scenarios matched")
         sys.exit(2)
 
+    #
+    # A GOLDEN WITH NO SCENARIO RUNS NOTHING, AND THE SUITE USED TO PASS ANYWAY.
+    # On 2026-09-29 this directory held 77 goldens against 70 .scn files --
+    # make_scenarios.py had not been run -- so seven cases including BOTH skip
+    # cases were never executed, and the summary said "70 passed, 0 without
+    # goldens" because that line only reports the other direction. A suite that
+    # cannot tell you it did not run something is the silent filter this project's
+    # notes open with, so this is an error rather than a note.
+    #
+    orphans = sorted(n[:-6] for n in os.listdir(GOLD) if n.endswith(".trace")
+                     and not os.path.exists(os.path.join(SCN, n[:-6] + ".scn")))
+    if orphans and not args.only:
+        print("ERROR: %d golden(s) have no scenario, so nothing runs them:"
+              % len(orphans))
+        for n in orphans:
+            print("    %s" % n)
+        print("Run make_scenarios.py first, or delete the stale goldens.")
+        sys.exit(2)
+
     npass = nfail = nnew = 0
     failed = []
     for name in names:

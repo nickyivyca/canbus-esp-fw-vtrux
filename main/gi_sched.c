@@ -59,6 +59,13 @@ static bool q_push(gs_queue_t *q, const gi_frame_t *f, int64_t now, uint32_t seq
     q->q[i].f = *f;
     q->q[i].t_queued = now;
     q->q[i].seq = seq;
+    /*
+     * EXPLICITLY FALSE, because q_pop() does not clear the slot it leaves behind.
+     * A slot reused after a requeue would otherwise still carry that frame's
+     * `carried` flag and suppress this frame's max_queue_us -- a wait figure
+     * reading 0 for a frame that really waited.
+     */
+    q->q[i].carried = false;
     q->n++;
     return true;
 }
@@ -145,6 +152,19 @@ void gs_rearm(gs_t *s, const gs_hal_t *hal)
     s->abort_since = abort_since;
     s->abort_cmds_this = abort_cmds_this;
     /*
+     * SPEC 5.2 ITEM 6 (2026-09-29): declare the carried-over frame, because this
+     * arm will see it leave and did not queue it.
+     *
+     * `held_carried` is set from `held` rather than preserved, so a frame carried
+     * across two re-arms in a row is declared in each arm it survives into -- each
+     * arm sees one departure it did not queue.
+     */
+    s->held_carried = held;
+    if (held)
+    {
+        s->st.cls[held_class].carried_in++;
+    }
+    /*
      * `inhibit_outstanding` is deliberately NOT restored: a new arm has no inhibit
      * of its own outstanding, and leaving it set would make the first
      * gs_queue_frame() of this arm look like an ordering violation.
@@ -156,6 +176,7 @@ void gs_withdraw_inhibits(gs_t *s, int64_t now)
     while (s->q[GS_CLASS_INHIBIT].n > 0)
     {
         q_pop(&s->q[GS_CLASS_INHIBIT]);
+        s->st.cls[GS_CLASS_INHIBIT].withdrawn++;
         note_skip(s, now, false);
     }
     if (s->held && s->held_class == GS_CLASS_INHIBIT && !s->aborting)
@@ -256,7 +277,16 @@ static void note_left_controller(gs_t *s, int64_t now, uint32_t rx_backlog)
     const int64_t held_us = now - s->held_since;
 
     s->st.cls[c].sent++;
-    if (held_us > 0 && (uint32_t)held_us > s->st.cls[c].max_hold_us)
+    /*
+     * THE COMPLETION IS COUNTED; THE DURATION IS NOT, for a frame carried in
+     * across a re-arm (spec 5.2 item 6, 2026-09-29). `sent` has to move or the
+     * frame vanishes from the balance -- `carried_in` is the term that pays for
+     * it -- but `held_since` is in the previous arm, so this arm cannot say how
+     * long the hold was. It is not clamped to the re-arm instant either: that
+     * would be a figure the device never measured, reported as if it had.
+     */
+    if (!s->held_carried
+        && held_us > 0 && (uint32_t)held_us > s->st.cls[c].max_hold_us)
     {
         s->st.cls[c].max_hold_us = (uint32_t)held_us;
     }
@@ -295,6 +325,7 @@ static void note_left_controller(gs_t *s, int64_t now, uint32_t rx_backlog)
     }
 
     s->held = false;
+    s->held_carried = false;
     s->aborting = false;
 }
 
@@ -475,6 +506,12 @@ void gs_tick(gs_t *s, int64_t now, uint32_t rx_backlog)
                 sl.f = s->held_f;
                 sl.t_queued = s->held_since;
                 sl.seq = s->held_seq;
+                /*
+                 * `t_queued` here is the handover instant of an EARLIER ARM when
+                 * the frame was carried in, so the flag travels with the frame
+                 * and the next handover leaves max_queue_us alone.
+                 */
+                sl.carried = s->held_carried;
                 s->st.cls[c].aborted++;
                 if (q_push_head(&s->q[c], &sl))
                 {
@@ -488,9 +525,18 @@ void gs_tick(gs_t *s, int64_t now, uint32_t rx_backlog)
             else
             {
                 s->st.cls[GS_CLASS_INHIBIT].aborted++;
+                /*
+                 * An inhibit only ever reaches the abort loop to be WITHDRAWN:
+                 * preemption (step 2) aborts lower classes, never this one, so
+                 * the only callers are gs_withdraw_inhibits() and the deadline.
+                 * Item 5 forbids sending it later, so this is where the frame
+                 * leaves the accounting and the identity's term is booked.
+                 */
+                s->st.cls[GS_CLASS_INHIBIT].withdrawn++;
                 s->inhibit_outstanding = false;
             }
             s->held = false;
+            s->held_carried = false;
         }
         else if (s->held)
         {
@@ -530,7 +576,8 @@ void gs_tick(gs_t *s, int64_t now, uint32_t rx_backlog)
         }
 
         const int64_t wait_us = now - sl->t_queued;
-        if (wait_us > 0 && (uint32_t)wait_us > s->st.cls[c].max_queue_us)
+        if (!sl->carried
+            && wait_us > 0 && (uint32_t)wait_us > s->st.cls[c].max_queue_us)
         {
             s->st.cls[c].max_queue_us = (uint32_t)wait_us;
         }
@@ -553,6 +600,7 @@ void gs_tick(gs_t *s, int64_t now, uint32_t rx_backlog)
         s->held_seq = sl->seq;
         s->held_f = sl->f;
         s->held_since = now;
+        s->held_carried = sl->carried;
         if (c == GS_CLASS_INHIBIT)
         {
             s->inhibit_outstanding = true;
@@ -600,6 +648,7 @@ gs_deadline_t gs_command_received(gs_t *s, int64_t now, uint32_t rx_backlog)
     while (s->q[GS_CLASS_INHIBIT].n > 0)
     {
         q_pop(&s->q[GS_CLASS_INHIBIT]);
+        s->st.cls[GS_CLASS_INHIBIT].withdrawn++;
         note_skip(s, now, false);       /* never handed over, never on the wire */
         purged++;
     }
@@ -748,7 +797,19 @@ int gs_json(const gs_t *s, char *buf, int buflen)
             "%s\"%s\":{\"queued\":%lu,\"sent\":%lu,\"aborted\":%lu,"
             "\"handed\":%lu,\"requeued\":%lu,\"dropped\":%lu,"
             "\"refused\":%lu,"
-            "\"max_queue_us\":%lu,\"max_hold_us\":%lu,\"depth\":%u}",
+            "\"max_queue_us\":%lu,\"max_hold_us\":%lu,\"depth\":%u,"
+            /*
+             * SPEC 5.2 ITEM 6's TWO NEW TERMS (2026-09-29), status page only --
+             * section 11 keeps them off the diag CAN page, which is why they are
+             * here in gs_json() and not in the core's build_diag().
+             *
+             * `held` IS PER CLASS, so the balance closes inside one object:
+             *   queued + carried_in == sent + dropped + depth + held
+             * At most one class can read 1, because the controller holds at most
+             * one frame -- and which class that is is the "with its class" half
+             * of the spec's wording.
+             */
+            "\"carried_in\":%lu,\"withdrawn\":%lu,\"held\":%u}",
             (c == 0) ? "" : ",", NAMES[c],
             (unsigned long)s->st.cls[c].queued,
             (unsigned long)s->st.cls[c].sent,
@@ -759,7 +820,11 @@ int gs_json(const gs_t *s, char *buf, int buflen)
             (unsigned long)s->st.cls[c].refused,
             (unsigned long)s->st.cls[c].max_queue_us,
             (unsigned long)s->st.cls[c].max_hold_us,
-            (unsigned)s->q[c].n), buflen);
+            (unsigned)s->q[c].n,
+            (unsigned long)s->st.cls[c].carried_in,
+            (unsigned long)s->st.cls[c].withdrawn,
+            (unsigned)((s->held && s->held_class == (gs_class_t)c) ? 1 : 0)),
+            buflen);
     }
 
     n = clamp(n + snprintf(buf + n, buflen - n, "}}"), buflen);

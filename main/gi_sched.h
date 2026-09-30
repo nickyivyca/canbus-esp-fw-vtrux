@@ -173,6 +173,43 @@ typedef struct
      */
     uint32_t max_queue_us;
     uint32_t max_hold_us;
+    /*
+     * FRAMES THIS ARM DID NOT QUEUE BUT MAY STILL SEE LEAVE. Spec 5.2 item 6 as
+     * amended 2026-09-29.
+     *
+     * gs_rearm() deliberately keeps whatever the controller is holding -- the
+     * hardware may really still have it, and forgetting it is the priority
+     * inversion item 3 exists to prevent. The per-arm counters are cleared, so
+     * without this term that frame's completion lands in the new arm as a `sent`
+     * with nothing queued against it, and the balance reads one over. Measured on
+     * 3 bench arms, +1 each.
+     *
+     * It is 0 or 1 in practice: only one frame can be in the controller. A
+     * counter and not a flag because a frame carried across two re-arms in a row
+     * is carried in twice, and a flag would report the second as the first.
+     */
+    uint32_t carried_in;
+    /*
+     * FRAMES GIVEN UP AT THE DEADLINE AND NEVER TO BE SENT (spec 5.2 item 6,
+     * 2026-09-29). Only the inhibit class can have any: item 5 forbids sending a
+     * skipped inhibit later, so the frame leaves the accounting without ever
+     * reaching `sent`, and without this term `queued` moves and nothing on the
+     * right does.
+     *
+     * IT INCLUDES A FRAME THAT MAY HAVE REACHED THE WIRE LATE, which is the part
+     * that reads wrong at first glance. At the deadline every outstanding inhibit
+     * is handed to the abort loop -- the MAYBE_LATE verdict too -- and from then
+     * on the `!aborting` guard in gs_tick() step 1 keeps the departure out of
+     * note_left_controller(), so step 3 books it as aborted whether the abort
+     * removed it or the controller finished it. "Withdrawn" here means withdrawn
+     * from OUR accounting, not proven off the wire; the device cannot prove the
+     * latter, which is what `skipped_late` and `late_on_wire` exist to say.
+     *
+     * So: cls[INHIBIT].withdrawn + cls[INHIBIT].dropped == skipped, once any
+     * in-progress abort has completed. While one is still running the frame is
+     * counted in `held` instead, which is what keeps the identity closed.
+     */
+    uint32_t withdrawn;
 } gs_class_stats_t;
 
 typedef struct
@@ -299,6 +336,16 @@ typedef struct
     gi_frame_t f;
     int64_t    t_queued;
     uint32_t   seq;         /* identity, so a completion can be attributed */
+    /*
+     * THIS FRAME'S WAIT STARTED IN AN EARLIER ARM, so no wait figure in this arm
+     * may be computed from `t_queued`. Set when a carried-in frame is aborted and
+     * requeued: the requeue puts the OLD arm's timestamp back into the slot
+     * (there is nowhere else to get one from -- the frame really has been waiting
+     * that long), and the next handover would otherwise book an arm-length
+     * max_queue_us. Same argument the spec makes for max_hold_us: it would be a
+     * measurement the device did not make.
+     */
+    bool       carried;
 } gs_slot_t;
 
 typedef struct
@@ -328,6 +375,14 @@ typedef struct
      * scheduler knows which frame it aborted, because the driver cannot tell it.
      */
     gi_frame_t held_f;
+    /*
+     * THE HELD FRAME WAS HANDED OVER IN AN EARLIER ARM (spec 5.2 item 6, 2026-09-29).
+     * Its hold began before this arm's counters existed, so its completion is
+     * counted -- in `sent`, balanced by `carried_in` -- but contributes to no
+     * duration. Booking it into max_hold_us produced 142-310 s figures on 90 s
+     * arms, which is what put the whole identity in doubt.
+     */
+    bool       held_carried;
 
     /*
      * THE ABORT LOOP's state, kept across ticks so the loop does not block the

@@ -1919,6 +1919,39 @@ static void case_status_page_fits_the_handler_buffer(void)
           "the page is cut off and the body is not valid JSON",
           (int)sizeof(page), n);
 
+    /*
+     * THE WORST CASE, NOT THIS CASE. The assertion above is about the page this
+     * shim happens to render, whose counters are in the tens -- and it passed
+     * happily while the real page was being cut on the bench, because a 90 s arm
+     * puts five-figure numbers in the same fields and the widest u32 is ten
+     * digits. A check that can only fail on values the harness never produces is
+     * the trap this project's notes name: its failure looks like its success.
+     *
+     * So: rewrite every integer in the rendered page to full u32 width and
+     * require THAT to fit. It is an over-estimate by construction (no arm makes
+     * every counter 4294967295 at once), which is the right direction for a
+     * buffer bound.
+     */
+    int widened = 0;
+    for (int i = 0; i < n; i++)
+    {
+        if (page[i] == ':' && i + 1 < n
+            && (page[i + 1] >= '0' && page[i + 1] <= '9'))
+        {
+            int j = i + 1;
+            while (j < n && page[j] >= '0' && page[j] <= '9') { j++; }
+            const int have = j - (i + 1);
+            widened += (have < 10) ? (10 - have) : 0;
+            i = j - 1;
+        }
+    }
+    CHECK(n + widened < (int)sizeof(page) - 1,
+          "the page is %d bytes now, but %d with every integer at u32 width, "
+          "against a %d-byte buffer. A long arm will cut it mid-number, the "
+          "device will answer HTTP 200 with unparseable JSON, and the harness "
+          "will report that as an unreachable device. Raise GI_STATUS_PAGE_CAP",
+          n, n + widened, (int)sizeof(page));
+
     int depth = 0, lowest = 0;
     for (int i = 0; i < n; i++)
     {
@@ -1929,6 +1962,151 @@ static void case_status_page_fits_the_handler_buffer(void)
           "the status page's braces do not balance (ends at depth %d, lowest "
           "%d), so it was truncated part-way through and no consumer can parse "
           "it: %s", depth, lowest, page);
+    teardown();
+    case_end();
+}
+
+
+/*
+ * CASE 28 -- spec section 11 and 5.2 item 6: every status reading balances.
+ *
+ * The page is read at EVERY worker step boundary and each reading is checked for
+ *
+ *     queued + carried_in == sent + dropped + depth + held
+ *
+ * per class. An always-property, checked always, for the reason fake_twai.h's
+ * step-hook comment gives: a window that opens and closes is invisible to a check
+ * that only runs at the end, and this is precisely such a window -- a frame is in
+ * the controller for a few hundred microseconds out of every cycle.
+ *
+ * WHAT IT DOES NOT PROVE. Not that the critical section excludes anything.
+ * mock/freertos/FreeRTOS.h's macros are empty and its header says why: the worker
+ * here advances only when the test advances virtual time, so nothing runs between
+ * two statements of the page builder and there is no race to lose. What covers
+ * the exclusion is the unicore #error in gen_inhibit.c and the bench, where the
+ * worker really does preempt the web server -- sched_identity_check.py applies
+ * this same balance to every recorded arm's end-of-arm page.
+ */
+static int g_bal_readings;
+static int g_bal_failures;
+static char g_bal_first[GI_STATUS_PAGE_CAP];
+
+/* Pull one unsigned field out of a JSON object fragment, or -1 if absent. */
+static long jnum(const char *obj, const char *key)
+{
+    char pat[64];
+    snprintf(pat, sizeof(pat), "\"%s\":", key);
+    const char *p = strstr(obj, pat);
+    if (p == NULL) { return -1; }
+    p += strlen(pat);
+    long v = 0;
+    if (*p < '0' || *p > '9') { return -1; }
+    while (*p >= '0' && *p <= '9') { v = v * 10 + (*p - '0'); p++; }
+    return v;
+}
+
+static void balance_one_class(const char *page, const char *cls)
+{
+    char pat[48];
+    snprintf(pat, sizeof(pat), "\"%s\":{", cls);
+    const char *p = strstr(page, pat);
+    if (p == NULL) { return; }
+    const char *end = strchr(p, '}');
+    if (end == NULL) { return; }
+
+    static char obj[512];
+    size_t len = (size_t)(end - p) + 1;
+    if (len >= sizeof(obj)) { len = sizeof(obj) - 1; }
+    memcpy(obj, p, len);
+    obj[len] = 0;
+
+    const long q  = jnum(obj, "queued");
+    const long se = jnum(obj, "sent");
+    const long dr = jnum(obj, "dropped");
+    const long de = jnum(obj, "depth");
+    const long ci = jnum(obj, "carried_in");
+    const long wd = jnum(obj, "withdrawn");
+    const long he = jnum(obj, "held");
+    if (q < 0 || se < 0 || dr < 0 || de < 0 || ci < 0 || wd < 0 || he < 0)
+    {
+        if (g_bal_failures++ == 0)
+        {
+            snprintf(g_bal_first, sizeof(g_bal_first),
+                     "%s is missing a balance field: %s", cls, obj);
+        }
+        return;
+    }
+    if (q + ci != se + dr + wd + de + he)
+    {
+        if (g_bal_failures++ == 0)
+        {
+            snprintf(g_bal_first, sizeof(g_bal_first),
+                     "%s does not balance: queued %ld + carried_in %ld != sent "
+                     "%ld + dropped %ld + withdrawn %ld + depth %ld + held %ld "
+                     " (%s)",
+                     cls, q, ci, se, dr, wd, de, he, obj);
+        }
+    }
+}
+
+static void balance_step_hook(void)
+{
+    static char page[GI_STATUS_PAGE_CAP];
+    const int n = gen_inhibit_get_stats_json(page, sizeof(page));
+    if (n <= 0) { return; }
+    g_bal_readings++;
+    /*
+     * The inhibit class is checked too, including `withdrawn` -- so a reading
+     * taken after a skip balances as well. test/gen_inhibit_sched's
+     * case_identity_withdrawn_inhibit_balances drives that term directly.
+     */
+    balance_one_class(page, "inhibit");
+    balance_one_class(page, "probe");
+    balance_one_class(page, "telemetry");
+}
+
+static void case_status_page_always_balances(void)
+{
+    case_begin("case 28: every status reading balances (5.2 item 6, sec 11)");
+    setup();
+    go_live();
+
+    g_bal_readings = 0;
+    g_bal_failures = 0;
+    g_bal_first[0] = 0;
+    /*
+     * MANY SHORT STEPS, NOT ONE LONG ONE. ft_run() returns as soon as the worker
+     * blocks in twai_receive(), so a single ft_run(400000) fires the hook ONCE --
+     * which the population check below caught, and which would otherwise have
+     * read as a clean pass over one reading.
+     */
+    ft_set_step_hook(balance_step_hook);
+    for (int i = 0; i < 400; i++)
+    {
+        ft_run(1000);
+    }
+    ft_set_step_hook(NULL);
+
+    /*
+     * THE POPULATION FIRST. A balance check over zero readings passes, and that
+     * is indistinguishable from a clean run -- the empty-filter trap this
+     * project's notes open with.
+     */
+    CHECK(g_bal_readings > 20,
+          "only %d status readings were taken, so this case proved nothing; the "
+          "step hook is not firing", g_bal_readings);
+    CHECK(g_bal_failures == 0,
+          "%d of %d status readings did not balance. First: %s",
+          g_bal_failures, g_bal_readings, g_bal_first);
+
+    /* And the section 11 requirement that the copy be short is a MEASUREMENT on
+     * the page, not a claim in a comment -- so the field has to be there. */
+    static char page[GI_STATUS_PAGE_CAP];
+    gen_inhibit_get_stats_json(page, sizeof(page));
+    CHECK(strstr(page, "\"snapshot_us\":") != NULL,
+          "the page does not report snapshot_us, so section 11's "
+          "\"short enough not to move any 5.2 timing bound\" cannot be checked");
+
     teardown();
     case_end();
 }
@@ -2047,6 +2225,7 @@ int main(void)
     case_no_abort_while_transmitting();
     case_status_page_fits_the_handler_buffer();
     case_mode_change_keeps_the_held_frame();
+    case_status_page_always_balances();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
     return g_fail ? 1 : 0;

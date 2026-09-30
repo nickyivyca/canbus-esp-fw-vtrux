@@ -162,10 +162,10 @@ static uint8_t  s_silent_saved;
  * structure measurably perturbed TX completion observation in the measurement
  * build.
  */
-static int drv_json(char *buf, int buflen)
+static int drv_json(const twai_status_info_t *info, bool ok,
+                    char *buf, int buflen)
 {
-    twai_status_info_t info;
-    if (twai_get_status_info(&info) != ESP_OK)
+    if (!ok)
     {
         /* Not installed is a normal state when disarmed, and is not an error. */
         return snprintf(buf, buflen, ",\"drv\":null");
@@ -174,13 +174,13 @@ static int drv_json(char *buf, int buflen)
                     ",\"drv\":{\"rx_missed\":%lu,\"rx_overrun\":%lu,"
                     "\"arb_lost\":%lu,\"bus_error\":%lu,\"tx_failed\":%lu,"
                     "\"msgs_to_rx\":%lu,\"msgs_to_tx\":%lu}",
-                    (unsigned long)info.rx_missed_count,
-                    (unsigned long)info.rx_overrun_count,
-                    (unsigned long)info.arb_lost_count,
-                    (unsigned long)info.bus_error_count,
-                    (unsigned long)info.tx_failed_count,
-                    (unsigned long)info.msgs_to_rx,
-                    (unsigned long)info.msgs_to_tx);
+                    (unsigned long)info->rx_missed_count,
+                    (unsigned long)info->rx_overrun_count,
+                    (unsigned long)info->arb_lost_count,
+                    (unsigned long)info->bus_error_count,
+                    (unsigned long)info->tx_failed_count,
+                    (unsigned long)info->msgs_to_rx,
+                    (unsigned long)info->msgs_to_tx);
 }
 
 /* ------------------------------------------- RX backlog instrument (opt) -- */
@@ -260,16 +260,22 @@ static void rxq_reset(void)
     }
 }
 
-static int rxq_json(char *buf, int buflen)
+/*
+ * Section 11's one-snapshot rule reaches here too: these come from the copy taken
+ * in the critical section, not from the live instrument counters, or a histogram
+ * could show more samples than its own maximum was drawn from.
+ */
+static int rxq_json(uint32_t samples, uint32_t maxv, const uint32_t *ge,
+                    char *buf, int buflen)
 {
     int n = snprintf(buf, buflen,
                      ",\"rxq\":{\"depth\":%d,\"samples\":%lu,\"max\":%lu,\"ge\":[",
                      (int)can_rx_queue_len(),
-                     (unsigned long)s_rxq_samples, (unsigned long)s_rxq_max);
+                     (unsigned long)samples, (unsigned long)maxv);
     for (int i = 0; i < RXQ_NEDGES && n < buflen; i++)
     {
         n += snprintf(buf + n, buflen - n, "%s%lu", (i ? "," : ""),
-                      (unsigned long)s_rxq_ge[i]);
+                      (unsigned long)ge[i]);
     }
     if (n < buflen) n += snprintf(buf + n, buflen - n, "],\"ge_edges\":[");
     for (int i = 0; i < RXQ_NEDGES && n < buflen; i++)
@@ -284,7 +290,8 @@ static int rxq_json(char *buf, int buflen)
 #else
 #define rxq_sample()            do { } while (0)
 #define rxq_reset()             do { } while (0)
-#define rxq_json(buf, buflen)   (0)
+#define RXQ_NEDGES              1
+#define rxq_json(samples, maxv, ge, buf, buflen)    (0)
 #endif
 
 static uint32_t fnv1a32(const char *s)
@@ -1300,10 +1307,81 @@ static int hist_json(const gi_hist_t *h, const char *name, char *buf, int buflen
     return n;
 }
 
+/*
+ * SPEC SECTION 11 (2026-09-29): THE PAGE IS BUILT FROM A COPY, NEVER FROM THE
+ * LIVE STATE.
+ *
+ * File-scope and not locals: together these are over a kilobyte, and the httpd
+ * task's stack is not the place for it. Safe as statics because the web server
+ * runs one task that serves sockets in turn, so two status pages are never built
+ * at once -- if that ever changes these have to become per-request storage.
+ */
+static gi_state_t s_snap_core;
+static gs_t       s_snap_sched;
+static uint32_t   s_snap_us;            /* the last copy's duration */
+static uint32_t   s_snap_us_max;        /* the worst since boot */
+#if GI_INSTRUMENT_RXQ
+static uint32_t   s_snap_rxq_samples;
+static uint32_t   s_snap_rxq_max;
+static uint32_t   s_snap_rxq_ge[RXQ_NEDGES];
+#endif
+
+/*
+ * THE SNAPSHOT'S EXCLUSION IS SINGLE-CORE-ONLY AND IT IS LOAD-BEARING. The CAN
+ * worker does not take s_abort_lock; what stops it running mid-copy is that
+ * taskENTER_CRITICAL masks interrupts and suspends preemption on a unicore
+ * target. On a dual-core part the worker would keep running on the other core and
+ * every reading could tear again -- silently, and looking exactly like a real
+ * imbalance in 5.2 item 6. A build failure is the only honest outcome there.
+ */
+#if !CONFIG_FREERTOS_UNICORE
+#error "gen_inhibit status snapshot assumes a unicore critical section excludes the CAN worker"
+#endif
+
 int gen_inhibit_get_stats_json(char *buf, int buflen)
 {
-    const gi_state_t *st = &s_core;
     const int64_t t_now = esp_timer_get_time();
+
+    /*
+     * Read OUTSIDE the section, and this is the one value on the page that is not
+     * in the same copy as the rest. twai_get_status_info() takes the TWAI
+     * driver's own spinlock; nesting that inside ours would create a lock
+     * ordering this component does not otherwise have, for counters that are
+     * cumulative since the driver was installed and are terms in no balance.
+     */
+    twai_status_info_t drv;
+    const bool drv_ok = (twai_get_status_info(&drv) == ESP_OK);
+    /* Same reason: can_is_enabled() reaches into the CAN layer. */
+    const bool bus_on = can_is_enabled();
+
+    const int64_t t_snap0 = esp_timer_get_time();
+    taskENTER_CRITICAL(&s_abort_lock);
+    s_snap_core  = s_core;
+    s_snap_sched = s_sched;
+#if GI_INSTRUMENT_RXQ
+    s_snap_rxq_samples = s_rxq_samples;
+    s_snap_rxq_max     = s_rxq_max;
+    for (int i = 0; i < RXQ_NEDGES; i++)
+    {
+        s_snap_rxq_ge[i] = s_rxq_ge[i];
+    }
+#endif
+    taskEXIT_CRITICAL(&s_abort_lock);
+    const int64_t t_snap1 = esp_timer_get_time();
+
+    /*
+     * MEASURED, NOT ASSERTED. Section 11 requires the section to be short enough
+     * not to move any 5.2 timing bound; reporting how long it actually took makes
+     * that a number the bench can check against the 4.69 ms minimum inter-frame
+     * gap rather than a claim in a comment.
+     */
+    s_snap_us = (uint32_t)(t_snap1 - t_snap0);
+    if (s_snap_us > s_snap_us_max)
+    {
+        s_snap_us_max = s_snap_us;
+    }
+
+    const gi_state_t *st = &s_snap_core;
 
     /*
      * arm_block reports the abort text once a run has ended, matching the
@@ -1338,7 +1416,7 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
                      (unsigned long)st->other_frames,
                      (unsigned long)st->ctr_steps_ok,
                      (unsigned long)st->ctr_steps_bad,
-                     can_is_enabled() ? "true" : "false",
+                     bus_on ? "true" : "false",
                      s_we_enabled_bus ? "true" : "false",
                      (unsigned long)st->rx_errors,
                      st->disabled ? "true" : "false",
@@ -1420,7 +1498,34 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
                      st->fb_ever ? "true" : "false",
                      st->rpm_ever ? "true" : "false");
 
+    /*
+     * CLAMP BEFORE ANYTHING ELSE IS APPENDED. snprintf returns what it WOULD have
+     * written, so on a short buffer `n` above is larger than `buflen` -- and the
+     * next snprintf would then get `buf + n` past the end and a negative size
+     * that converts to a huge size_t. That is a heap overflow, not a truncation,
+     * and it is what case 20 of the shim suite caught when these two fields were
+     * first appended here.
+     */
     n = gi_clamp(n, buflen);
+
+    /*
+     * Spec 5.2 item 5 / section 10: the same skip counts the 0x7F9 page carries,
+     * from the CORE. The scheduler's own `sched.skipped_withdrawn` and
+     * `sched.skipped_late` are below, and the two are derived along different
+     * paths -- the core's from one gi_on_inhibit_skip() per skip, the
+     * scheduler's from its own counters. They must agree, and a bench check that
+     * they do is worth more than either number alone.
+     *
+     * `snapshot_us` is section 11's critical section, measured.
+     */
+    n = gi_clamp(n + snprintf(buf + n, buflen - n,
+                     "\"skips_withdrawn\":%lu,\"skips_late\":%lu,"
+                     "\"snapshot_us\":%lu,\"snapshot_us_max\":%lu,",
+                     (unsigned long)st->skips_withdrawn,
+                     (unsigned long)st->skips_late,
+                     (unsigned long)s_snap_us,
+                     (unsigned long)s_snap_us_max), buflen);
+
     n = gi_clamp(n + hist_json(&st->rx_gap, "rx_gap", buf + n, buflen - n),
                  buflen);
     n = gi_clamp(n + snprintf(buf + n, buflen - n, ","), buflen);
@@ -1442,7 +1547,7 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
      * brace. Anything added here goes BEFORE the brace.
      */
     n = gi_clamp(n + snprintf(buf + n, buflen - n, ",\"inf\"]"), buflen);
-    n = gi_clamp(n + drv_json(buf + n, buflen - n), buflen);
+    n = gi_clamp(n + drv_json(&drv, drv_ok, buf + n, buflen - n), buflen);
     /*
      * The transmit scheduler's counters (spec 5.2 item 6, section 11): per class
      * queued/sent/aborted/requeued/dropped/refused and the two waits, plus the
@@ -1452,8 +1557,13 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
      * dequeue lags the arrival and a physically late frame can score as on time.
      */
     n = gi_clamp(n + snprintf(buf + n, buflen - n, ","), buflen);
-    n = gi_clamp(n + gs_json(&s_sched, buf + n, buflen - n), buflen);
-    n = gi_clamp(n + rxq_json(buf + n, buflen - n), buflen);
+    n = gi_clamp(n + gs_json(&s_snap_sched, buf + n, buflen - n), buflen);
+#if GI_INSTRUMENT_RXQ
+    n = gi_clamp(n + rxq_json(s_snap_rxq_samples, s_snap_rxq_max,
+                              s_snap_rxq_ge, buf + n, buflen - n), buflen);
+#else
+    n = gi_clamp(n + rxq_json(0, 0, NULL, buf + n, buflen - n), buflen);
+#endif
     n = gi_clamp(n + snprintf(buf + n, buflen - n, "}\n"), buflen);
 
     /*

@@ -119,7 +119,20 @@ void gen_inhibit_quiesce(void);
  * case 26 asserts the page fits this, so appending to the page fails a test
  * rather than truncating it.
  */
-#define GI_STATUS_PAGE_CAP 2048
+/*
+ * 3072 SINCE 2026-09-29, measured rather than chosen. The page with every counter
+ * at 0 is 1830 bytes; the same page with every integer widened to a full u32 is
+ * 2507. At 2048 a long arm's page was cut mid-number, and because
+ * config_server.c truncates instead of overrunning, the device answered HTTP 200
+ * with a body that would not parse -- which read as "the device did not answer"
+ * and voided two 90 s bench arms.
+ *
+ * Anything appended to gen_inhibit_get_stats_json() has to be checked against
+ * this, and shim case 26 does it: it widens every integer in the rendered page to
+ * u32 and requires that to fit, so the bound is enforced without needing an arm
+ * that reaches those values.
+ */
+#define GI_STATUS_PAGE_CAP 3072
 
 int gen_inhibit_get_stats_json(char *buf, int buflen);
 

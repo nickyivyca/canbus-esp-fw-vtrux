@@ -794,6 +794,567 @@ static void case_rearm_keeps_what_the_hardware_holds(void)
           "the wire that nothing credited");
 }
 
+
+/* ------------------------------------------- spec 5.2 item 6's balance --- */
+
+/*
+ * `held` FOR ONE CLASS, read straight off the struct as the status page does.
+ * Spec 5.2 item 6 (2026-09-29) makes this a term of the per-class balance:
+ *
+ *     queued + carried_in == sent + dropped + withdrawn + depth + held
+ *
+ * At most one class can read 1, because the controller holds at most one frame.
+ */
+static long held_in(const gs_t *s, gs_class_t c)
+{
+    return (s->held && s->held_class == c) ? 1 : 0;
+}
+
+/* The residual the two new terms exist to remove. 0 means the class balances. */
+static long residual(const gs_t *s, gs_class_t c)
+{
+    const gs_class_stats_t *k = &s->st.cls[c];
+    return (long)k->queued + (long)k->carried_in
+         - ((long)k->sent + (long)k->dropped + (long)k->withdrawn
+            + (long)s->q[c].n + held_in(s, c));
+}
+
+/*
+ * Spec 12.4: "with a frame in flight at the reading". Four bench arms read -1
+ * here and the frame was in the controller, not lost -- which is the one gap
+ * "telemetry is never lost silently" cannot be allowed to leave open.
+ */
+static void case_identity_frame_in_flight(void)
+{
+    g_case = "item 6: the balance closes with a frame in the controller";
+    fb_reset();
+    /* STRESS: contention keeps the frame AWAITING, so it is still held at the
+     * reading. That is exactly the state the bench arms were read in. */
+    fb_set_contended(true);
+    gs_t s;
+    gs_init(&s, fb_hal());
+
+    gi_frame_t page = mk(ID_DIAG, GI_TX_DIAG);
+    gs_queue_frame(&s, GS_CLASS_TELEMETRY, &page, fb_now());
+    run(&s, 50, 10, 0);
+
+    ck(fb_outstanding_now(), "the controller is holding the page");
+    const gs_class_stats_t *c = &s.st.cls[GS_CLASS_TELEMETRY];
+    ck_eq(c->queued, 1, "queued 1");
+    ck_eq(c->sent, 0, "not sent yet");
+    ck_eq(c->dropped, 0, "not dropped");
+    ck_eq(s.q[GS_CLASS_TELEMETRY].n, 0, "not in the class queue either");
+    ck_eq(c->carried_in, 0, "nothing was carried into this arm");
+    ck_eq(held_in(&s, GS_CLASS_TELEMETRY), 1, "held reads 1");
+    ck_eq(residual(&s, GS_CLASS_TELEMETRY), 0,
+          "the balance closes WITH the held term");
+    ck_eq(c->withdrawn, 0, "and nothing was withdrawn: this is not an inhibit");
+
+    /* And it still closes once the frame really goes. */
+    fb_set_contended(false);
+    run(&s, 3000, 10, 0);
+    ck_eq(fb_wire_count(), 1, "the page reached the wire");
+    ck_eq(c->sent, 1, "and was counted as sent");
+    ck_eq(held_in(&s, GS_CLASS_TELEMETRY), 0, "nothing is held now");
+    ck_eq(residual(&s, GS_CLASS_TELEMETRY), 0, "the balance still closes");
+}
+
+/*
+ * Spec 12.4: "across a re-arm with a frame held". Three bench arms read +1 here
+ * -- one more frame left than this arm ever queued -- and all three also carried
+ * an impossible max_hold_us of 142-310 s on a 90 s arm, which is the same frame
+ * seen from the other side.
+ */
+static void case_identity_carried_across_rearm(void)
+{
+    g_case = "item 6: carried_in closes the balance across a re-arm";
+    fb_reset();
+    fb_set_contended(true);     /* STRESS: the page is still AWAITING at the re-arm */
+    gs_t s;
+    gs_init(&s, fb_hal());
+
+    gi_frame_t page_a = mk(ID_DIAG, GI_TX_DIAG);
+    gs_queue_frame(&s, GS_CLASS_TELEMETRY, &page_a, fb_now());
+    run(&s, 50, 10, 0);
+    ck(fb_outstanding_now(), "the controller holds the first page");
+
+    /* Let real time pass before the re-arm, so a hold booked into the new arm
+     * would be obvious rather than a rounding artefact. */
+    fb_advance(200000);         /* 200 ms */
+    gs_rearm(&s, fb_hal());
+
+    const gs_class_stats_t *c = &s.st.cls[GS_CLASS_TELEMETRY];
+    ck_eq(c->queued, 0, "the new arm has queued nothing");
+    ck_eq(c->carried_in, 1, "and declares the frame it inherited");
+    ck_eq(held_in(&s, GS_CLASS_TELEMETRY), 1, "which is still held");
+    ck_eq(residual(&s, GS_CLASS_TELEMETRY), 0,
+          "so a reading taken right after the re-arm balances");
+
+    /* Now let it complete. */
+    fb_set_contended(false);
+    run(&s, 3000, 10, 0);
+
+    ck_eq(c->sent, 1, "the inherited frame was counted as sent");
+    ck_eq(residual(&s, GS_CLASS_TELEMETRY), 0,
+          "queued 0 + carried_in 1 == sent 1, so the arm still balances");
+    /*
+     * THE POINT OF (A). Its hold began 200 ms+ before this arm existed, and the
+     * arm cannot know how long it really was, so it books nothing -- not the
+     * elapsed figure, and not a value clamped to the re-arm instant either,
+     * because that would be a measurement the device never made.
+     */
+    ck_eq(c->max_hold_us, 0,
+          "the carried frame's hold is NOT booked into the new arm");
+
+    /*
+     * AND THE EXCLUSION IS NOT A BLANKET SUPPRESSION. A frame this arm really
+     * did hand over must still have its hold measured, or the fix would have
+     * silenced the counter instead of correcting it -- a failure that looks
+     * exactly like a healthy 0.
+     */
+    fb_set_contended(true);
+    gi_frame_t page_b = mk(ID_DIAG, GI_TX_DIAG);
+    gs_queue_frame(&s, GS_CLASS_TELEMETRY, &page_b, fb_now());
+    run(&s, 500, 10, 0);
+    fb_set_contended(false);
+    run(&s, 3000, 10, 0);
+    ck_eq(c->sent, 2, "the second page went too");
+    ck(c->max_hold_us > 0,
+       "and ITS hold WAS measured; the exclusion is per-frame, not per-arm");
+}
+
+/*
+ * A WITHDRAWN INHIBIT, which item 6 balances through `withdrawn` (user,
+ * 2026-09-29). This case first shipped asserting a residual of exactly 1, because
+ * the identity as originally written had no term for a frame popped at its
+ * deadline and counted only as a skip -- so the inhibit class read one over on any
+ * arm with a skip. That went unnoticed because NO RECORDED BENCH READING HAS A
+ * NON-ZERO `skipped` (checked: 31 readings across every run file), so the missing
+ * term was never exercised on hardware.
+ *
+ * It now asserts the balance, and also the invariant that ties the per-class term
+ * to trip 7's counter:
+ *
+ *     cls[INHIBIT].withdrawn + cls[INHIBIT].dropped == skipped
+ *
+ * That holds once any in-progress abort has completed. While one is still running
+ * the frame has had note_skip() called but not yet been booked as withdrawn, and
+ * in exactly that state it is still counted in `held` -- which is what keeps the
+ * identity closed in the meantime. This case withdraws a frame that was never
+ * handed over, so there is no abort to wait for.
+ */
+static void case_identity_withdrawn_inhibit_balances(void)
+{
+    g_case = "item 6: a withdrawn inhibit balances through `withdrawn`";
+    fb_reset();
+    gs_t s;
+    gs_init(&s, fb_hal());
+
+    /* One command, one answer, queued but not yet handed over. */
+    (void)gs_command_received(&s, fb_now(), 0);
+    gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
+    gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
+
+    /* The VCM's NEXT command arrives before it went: the deadline withdraws it. */
+    const gs_deadline_t v = gs_command_received(&s, fb_now(), 0);
+    ck_eq((long)v, (long)GS_DEADLINE_SKIPPED, "it was withdrawn, never on the wire");
+
+    const gs_class_stats_t *c = &s.st.cls[GS_CLASS_INHIBIT];
+    ck_eq(c->queued, 1, "it was queued");
+    ck_eq(c->sent, 0, "never sent");
+    ck_eq(c->dropped, 0, "not dropped -- a withdrawal is not a drop");
+    ck_eq(s.q[GS_CLASS_INHIBIT].n, 0, "and it is no longer in the queue");
+    ck_eq(held_in(&s, GS_CLASS_INHIBIT), 0, "nothing is held");
+    ck_eq(c->carried_in, 0, "nothing was carried in");
+    ck_eq(s.st.skipped, 1, "it is counted as a skip");
+    ck_eq(s.st.skipped_withdrawn, 1, "and as a withdrawn one");
+    ck_eq(c->withdrawn, 1, "and the class books the identity's term");
+    ck_eq(residual(&s, GS_CLASS_INHIBIT), 0, "so the balance closes");
+    ck_eq((long)(c->withdrawn + c->dropped), (long)s.st.skipped,
+          "withdrawn + dropped == skipped");
+    ck_eq(fb_wire_count(), 0, "nothing reached the wire, which is the point");
+}
+
+/*
+ * THE OTHER withdrawn SITE: the frame the CONTROLLER was holding.
+ *
+ * The case above withdraws a frame that never left its class queue, so it books
+ * `withdrawn` at the purge. A held frame is given up in a different place -- the
+ * abort-completion branch of gs_tick() step 3 -- and dropping that increment left
+ * the entire suite green, which is how this case came to exist.
+ *
+ * It also pins the window where `withdrawn + dropped == skipped` is NOT yet true:
+ * note_skip() runs at the deadline, but the frame is not booked as withdrawn until
+ * the abort completes, and in between it is still counted in `held`. That is what
+ * keeps the identity closed meanwhile, so both states are asserted rather than
+ * only the settled one.
+ */
+static void case_identity_withdrawn_held_inhibit_balances(void)
+{
+    g_case = "item 6: a WITHDRAWN HELD inhibit balances too";
+    fb_reset();
+    /* STRESS: contention keeps the frame awaiting arbitration, so the deadline
+     * finds it in the buffer and the abort can actually remove it. */
+    fb_set_contended(true);
+    gs_t s;
+    gs_init(&s, fb_hal());
+
+    (void)gs_command_received(&s, fb_now(), 0);
+    gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
+    gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
+    run(&s, 50, 10, 0);
+
+    const gs_class_stats_t *c = &s.st.cls[GS_CLASS_INHIBIT];
+    ck_eq(c->handed, 1, "the inhibit was handed to the controller");
+    ck_eq(held_in(&s, GS_CLASS_INHIBIT), 1, "and is held");
+    ck_eq(residual(&s, GS_CLASS_INHIBIT), 0, "the balance closes while held");
+
+    /* The VCM's next command: the deadline gives the frame up. */
+    const gs_deadline_t v = gs_command_received(&s, fb_now(), 0);
+    ck_eq((long)v, (long)GS_DEADLINE_SKIPPED,
+          "awaiting arbitration at the deadline: withdrawn, never on the wire");
+    ck_eq(s.st.skipped, 1, "counted as a skip immediately");
+
+    /*
+     * MID-WITHDRAWAL. The skip is counted and `withdrawn` is not yet, so the
+     * invariant below does not hold here -- and the identity still does, because
+     * the frame is counted in `held`. Asserting this state is the point: a later
+     * change that booked `withdrawn` at the deadline instead of at the abort would
+     * balance at the end and be wrong in between.
+     */
+    if (held_in(&s, GS_CLASS_INHIBIT) == 1)
+    {
+        ck_eq(residual(&s, GS_CLASS_INHIBIT), 0,
+              "still balances mid-withdrawal, through `held`");
+    }
+
+    /* Let the abort loop finish. */
+    run(&s, 3000, 10, 0);
+
+    ck_eq(fb_wire_count(), 0, "the frame never reached the wire");
+    ck_eq(c->sent, 0, "and was never credited as sent");
+    ck_eq(c->dropped, 0, "a withdrawal is not a drop");
+    ck_eq(s.q[GS_CLASS_INHIBIT].n, 0, "nothing is queued");
+    ck_eq(held_in(&s, GS_CLASS_INHIBIT), 0, "nothing is held");
+    ck_eq(c->withdrawn, 1, "the abort branch booked the term");
+    ck_eq(residual(&s, GS_CLASS_INHIBIT), 0, "so the balance closes");
+    ck_eq((long)(c->withdrawn + c->dropped), (long)s.st.skipped,
+          "withdrawn + dropped == skipped, once the abort has completed");
+}
+
+/*
+ * gs_withdraw_inhibits()'s OWN purge, the third and last site that books
+ * `withdrawn`. The core calls it whenever it stops being live -- any section 7
+ * abort, any disable, any mode change out of INHIBIT -- so it is the path that
+ * runs precisely when someone goes looking at the counters to find out what
+ * happened. Deleting its increment left every other case green.
+ *
+ * The frame is withdrawn straight out of the class queue with no gs_tick() in
+ * between, so it is never handed over and there is no abort to wait for: the
+ * purge is the whole of it.
+ */
+static void case_identity_withdraw_api_balances(void)
+{
+    g_case = "item 6: gs_withdraw_inhibits' purge books `withdrawn`";
+    fb_reset();
+    gs_t s;
+    gs_init(&s, fb_hal());
+
+    (void)gs_command_received(&s, fb_now(), 0);
+    gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
+    gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
+
+    const gs_class_stats_t *c = &s.st.cls[GS_CLASS_INHIBIT];
+    ck_eq(c->queued, 1, "queued");
+    ck_eq(s.q[GS_CLASS_INHIBIT].n, 1, "and sitting in its class queue");
+    ck_eq(residual(&s, GS_CLASS_INHIBIT), 0, "the balance closes while queued");
+
+    /* The core stops being live. */
+    gs_withdraw_inhibits(&s, fb_now());
+
+    ck_eq(s.q[GS_CLASS_INHIBIT].n, 0, "the queue was purged");
+    ck_eq(held_in(&s, GS_CLASS_INHIBIT), 0, "nothing was handed over");
+    ck_eq(c->sent, 0, "nothing was sent");
+    ck_eq(c->dropped, 0, "and a withdrawal is not a drop");
+    ck_eq(s.st.skipped, 1, "it is counted as a skip");
+    ck_eq(s.st.skipped_withdrawn, 1, "a withdrawn one");
+    ck_eq(c->withdrawn, 1, "and the class books the identity's term");
+    ck_eq(residual(&s, GS_CLASS_INHIBIT), 0, "so the balance closes");
+    ck_eq((long)(c->withdrawn + c->dropped), (long)s.st.skipped,
+          "withdrawn + dropped == skipped");
+
+    /* Nothing may come back later: item 5 forbids sending a skipped frame. */
+    run(&s, 3000, 10, 0);
+    ck_eq(fb_wire_count(), 0, "and it never reaches the wire afterwards");
+    ck_eq(c->sent, 0, "nor is it ever credited as sent");
+}
+
+/* ------------------------------------ item 10 case 3: sustained saturation --- */
+
+/*
+ * Count what actually reached the wire, by class -- the check the device cannot
+ * make, because the driver reports an aborted frame and a real transmission
+ * identically (169 of 169 measured).
+ *
+ * BOUNDED BY THE MODEL: fake_buf logs the wire into a fixed 64-entry array and
+ * stops recording silently when it is full. So every use of this must first
+ * establish the log is not saturated -- otherwise "the count did not increase"
+ * passes however the scheduler behaved, which is the failure-looks-like-success
+ * shape this project's notes warn about. wire_log_sane() is that guard.
+ */
+static int wire_count_id(uint32_t id)
+{
+    int n = 0;
+    for (int i = 0; i < fb_wire_count(); i++)
+    {
+        if (fb_wire_id(i) == id) { n++; }
+    }
+    return n;
+}
+
+static void wire_log_sane(void)
+{
+    ck(fb_wire_count() < 64,
+       "the model's 64-frame wire log is FULL, so the wire counts in this phase "
+       "prove nothing -- shorten the phase");
+}
+
+/*
+ * ITEM 10 CASE 3, EMULATION HALF: "sustained bus saturation: no inhibit late,
+ * telemetry delayed and counted, never silently lost."
+ *
+ * The bench half passes (runs/e4_case3_withdrawn.json, 92.5 % carried). Item 10
+ * requires both runners with the same pass criteria, and until this case existed
+ * saturation appeared in this suite only as fb_set_contended(true) used as a
+ * stress knob inside cases about something else -- never as the subject.
+ *
+ * WHAT ONLY THIS RUNNER CAN DO. The third criterion is "never silently LOST", and
+ * on the bench nothing can be made to lose on purpose: you saturate the wire and
+ * observe that it did not. `skipped` is 0 in all 31 readings this project has ever
+ * recorded, so the loss paths are unexercised on hardware. Here a loss is staged
+ * and then required to be counted, which is what the criterion says -- losses are
+ * permitted, silence is not.
+ *
+ * WHAT ONLY THE BENCH CAN DO, so this is not over-read: the arbitration wait here
+ * is one calibrated constant (FB_ARB_WAIT_US 400 us, from a flood two witnesses
+ * measured at ~3978 frames/s), not a bus. The agreement is worth having -- 400 +
+ * 249 us puts a frame's hold at ~649 us against the bench arm's measured
+ * max_hold_us of 730 us -- but this suite's README records a model erring in the
+ * defect's own direction and proving nothing, which is why both halves are
+ * required.
+ *
+ * STRESS throughout, per spec 12.2.
+ */
+static void case_saturation_sustained(void)
+{
+    g_case = "item 10 case 3: sustained saturation (emulation half)";
+    fb_reset();
+    fb_set_contended(true);         /* STRESS: saturated bus, spec 12.2 */
+    gs_t s;
+    gs_init(&s, fb_hal());
+
+    const int64_t VCM_PERIOD_US = 10000;        /* the truck's 100 Hz */
+    const gs_class_stats_t *inhib = &s.st.cls[GS_CLASS_INHIBIT];
+    const gs_class_stats_t *telem = &s.st.cls[GS_CLASS_TELEMETRY];
+
+    /* --- phase 0: short enough that the wire log is still evidence --------- */
+    const int N_SHORT = 40;
+    const int TELEM_EVERY = 12;
+    int pages_offered = 0;
+    for (int i = 0; i < N_SHORT; i++)
+    {
+        (void)gs_command_received(&s, fb_now(), 0);
+        gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
+        gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
+        if (i % TELEM_EVERY == 0)
+        {
+            gi_frame_t page = mk(ID_DIAG, GI_TX_DIAG);
+            (void)gs_queue_frame(&s, GS_CLASS_TELEMETRY, &page, fb_now());
+            pages_offered++;
+        }
+        run(&s, VCM_PERIOD_US, 250, 0);
+    }
+
+    wire_log_sane();
+    ck_eq(wire_count_id(ID_INHIBIT), (int)inhib->sent,
+          "every inhibit counted as sent really reached the wire");
+    ck_eq(wire_count_id(ID_DIAG), (int)telem->sent,
+          "and every telemetry frame counted as sent did too");
+    ck_eq(inhib->sent, N_SHORT, "all of them, under saturation");
+
+    /* --- phase 1: sustain it -----------------------------------------------
+     * No absolute wire assertions past here: the log saturates at 64 and would
+     * make them meaningless rather than false. The counters and the identity have
+     * no such ceiling.
+     */
+    const int N_MORE = 200;
+    int deadlines_ok = 0;
+    for (int i = 0; i < N_MORE; i++)
+    {
+        const gs_deadline_t v = gs_command_received(&s, fb_now(), 0);
+        if (v == GS_DEADLINE_OK) { deadlines_ok++; }
+        gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
+        gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
+        if (i % TELEM_EVERY == 0)
+        {
+            gi_frame_t page = mk(ID_DIAG, GI_TX_DIAG);
+            (void)gs_queue_frame(&s, GS_CLASS_TELEMETRY, &page, fb_now());
+            pages_offered++;
+        }
+        run(&s, VCM_PERIOD_US, 250, 0);
+    }
+
+    /* 1. NO INHIBIT LATE. */
+    ck_eq(deadlines_ok, N_MORE, "every deadline found the inhibit already out");
+    ck_eq(s.st.late_on_wire, 0, "no inhibit went out late");
+    ck_eq(s.st.skipped, 0, "and none was skipped");
+    ck_eq(inhib->withdrawn, 0, "so nothing was withdrawn");
+    ck_eq(s.st.order_violations, 0, "the deadline ran before each answer");
+    ck_eq(inhib->queued, N_SHORT + N_MORE, "one answer queued per command");
+    ck_eq(inhib->sent, N_SHORT + N_MORE, "and every one was sent");
+    ck_eq(inhib->dropped, 0, "no inhibit was dropped");
+    ck_eq(s.st.ontime, N_SHORT + N_MORE,
+          "all verified on time (the receive queue was empty throughout)");
+    ck_eq(s.st.ontime_unverified, 0, "none unverified");
+
+    /* 2. TELEMETRY DELAYED, and measurably -- it yields to the inhibit. */
+    ck(telem->max_queue_us > 0, "telemetry waited");
+    ck(telem->max_queue_us > inhib->max_queue_us,
+       "and waited LONGER than the inhibit, which is what the classes are for; an "
+       "equal wait would mean the priority never bit");
+
+    /* 3. NEVER SILENTLY LOST. */
+    ck_eq(residual(&s, GS_CLASS_TELEMETRY), 0, "the telemetry balance closes");
+    ck_eq(residual(&s, GS_CLASS_INHIBIT), 0, "and so does the inhibit's");
+    ck_eq((long)telem->queued, (long)pages_offered,
+          "`queued` counts every page offered");
+
+    /* --- phase 2: a staged loss, which only this runner can force ---------- */
+    /*
+     * A run that loses nothing cannot test a criterion about losses. GS_Q_TELEMETRY
+     * is 6, so ten pages in one window overflows it while the buffer is busy.
+     */
+    const uint32_t dropped_before = telem->dropped;
+    const uint32_t sent_before = telem->sent;
+    for (int i = 0; i < 10; i++)
+    {
+        gi_frame_t page = mk(ID_DIAG, GI_TX_DIAG);
+        (void)gs_queue_frame(&s, GS_CLASS_TELEMETRY, &page, fb_now());
+        pages_offered++;
+    }
+    ck(telem->dropped > dropped_before,
+       "the overflow really dropped pages -- without that this phase tests "
+       "nothing");
+
+    for (int i = 0; i < 40; i++)
+    {
+        (void)gs_command_received(&s, fb_now(), 0);
+        gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
+        gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
+        run(&s, VCM_PERIOD_US, 250, 0);
+    }
+
+    ck_eq(residual(&s, GS_CLASS_TELEMETRY), 0,
+          "after a drop episode every page offered is still accounted for: sent, "
+          "dropped, queued or held -- none vanished");
+    ck_eq((long)telem->queued, (long)pages_offered,
+          "and the drops are counted in `queued` too");
+    ck(telem->sent > sent_before, "pages kept flowing after the overflow");
+    ck_eq(s.st.late_on_wire, 0, "and no inhibit went late through any of it");
+    ck_eq(s.st.skipped, 0, "nor was one skipped");
+}
+
+/*
+ * THE SKIP PATH, UNDER SATURATION -- the state combination that exists nowhere
+ * else. `skipped` is 0 in all 31 recorded bench readings, so nothing on hardware
+ * has ever driven this, and case 3's "no inhibit late" clause is only meaningful
+ * if a frame that cannot get out is withdrawn rather than sent late.
+ *
+ * Its own case, and its own fb_reset(), so the 64-frame wire log is still evidence
+ * when it matters: the whole point is that the skipped frame NEVER appears on the
+ * wire, and on a saturated log that assertion would pass regardless.
+ */
+static void case_saturation_skip_is_counted(void)
+{
+    g_case = "item 10 case 3: a skip under saturation is counted, never sent";
+    fb_reset();
+    fb_set_contended(true);         /* STRESS: saturated bus, spec 12.2 */
+    gs_t s;
+    gs_init(&s, fb_hal());
+
+    const int64_t VCM_PERIOD_US = 10000;
+    const gs_class_stats_t *inhib = &s.st.cls[GS_CLASS_INHIBIT];
+
+    /* A few normal cycles first, so this is a skip DURING traffic. */
+    for (int i = 0; i < 6; i++)
+    {
+        (void)gs_command_received(&s, fb_now(), 0);
+        gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
+        gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
+        run(&s, VCM_PERIOD_US, 250, 0);
+    }
+    ck_eq(inhib->sent, 6, "six answers out before the interesting part");
+
+    /*
+     * Put a telemetry page in the buffer and make it un-abortable for longer than
+     * the VCM's period. Item 4 says a frame already transmitting cannot be
+     * aborted -- the inhibit waits for it -- so our answer cannot get out.
+     */
+    gi_frame_t page = mk(ID_DIAG, GI_TX_DIAG);
+    gs_queue_frame(&s, GS_CLASS_TELEMETRY, &page, fb_now());
+    run(&s, 500, 250, 0);
+    fb_stick_transmitting(30000);
+
+    (void)gs_command_received(&s, fb_now(), 0);
+    gi_frame_t stuck = mk(ID_INHIBIT, GI_TX_INHIBIT);
+    gs_queue_frame(&s, GS_CLASS_INHIBIT, &stuck, fb_now());
+    run(&s, VCM_PERIOD_US, 250, 0);
+    ck_eq(inhib->sent, 6, "it did not get out: the buffer is still transmitting");
+
+    const int wire_inh_before = wire_count_id(ID_INHIBIT);
+    const uint32_t skipped_before = s.st.skipped;
+
+    /* The VCM's next command arrives with our answer still queued. */
+    const gs_deadline_t v = gs_command_received(&s, fb_now(), 0);
+    ck_eq((long)v, (long)GS_DEADLINE_SKIPPED,
+          "never handed over, so it is a clean skip and not a maybe-late");
+    ck(s.st.skipped > skipped_before, "the skip is counted");
+    ck_eq(s.st.skipped_withdrawn, s.st.skipped, "as a withdrawn one");
+    ck_eq(inhib->sent, 6, "and it is NOT credited as sent");
+    ck_eq(inhib->withdrawn, 1, "the class books the identity's term");
+    ck_eq(residual(&s, GS_CLASS_INHIBIT), 0, "so the balance closes");
+    ck_eq((long)(inhib->withdrawn + inhib->dropped), (long)s.st.skipped,
+          "withdrawn + dropped == skipped (nothing is mid-abort: it was never "
+          "handed over)");
+
+    /*
+     * RELEASE THE KNOB BEFORE ASKING FOR NORMAL BEHAVIOUR. fb_stick_transmitting()
+     * sets a sticky global that fb_air() returns for EVERY later frame, not just
+     * the one in the buffer -- so leaving it at 30 ms made the next inhibit take
+     * 30 ms of air time and it was still transmitting, uncredited, when the 10 ms
+     * window closed. That read as "the command after a skip was not answered",
+     * which is a serious-looking failure with a harness cause.
+     */
+    fb_stick_transmitting(0);
+
+    /* Item 5: a skipped frame is never sent later. Let everything drain. */
+    run(&s, 80000, 250, 0);
+    wire_log_sane();
+    ck_eq(wire_count_id(ID_INHIBIT), wire_inh_before,
+          "the skipped inhibit never reaches the wire, then or afterwards");
+
+    /* AND THE NEXT COMMAND IS ANSWERED NORMALLY (item 10's skip bullet). A skip
+     * that poisoned the following cycle would be far worse than the skip. */
+    const uint32_t sent_before_next = inhib->sent;
+    (void)gs_command_received(&s, fb_now(), 0);
+    gi_frame_t next = mk(ID_INHIBIT, GI_TX_INHIBIT);
+    gs_queue_frame(&s, GS_CLASS_INHIBIT, &next, fb_now());
+    run(&s, VCM_PERIOD_US, 250, 0);
+    ck_eq(inhib->sent, sent_before_next + 1,
+          "the command after a skip is answered normally");
+    ck_eq(s.st.order_violations, 0, "and no ordering violation anywhere in the run");
+}
+
 static void case_integration_order(void)
 {
     uint32_t v;
@@ -842,6 +1403,13 @@ int main(void)
     case_race_between_read_and_abort();
     case_integration_order();
     case_rearm_keeps_what_the_hardware_holds();
+    case_identity_frame_in_flight();
+    case_identity_carried_across_rearm();
+    case_identity_withdrawn_inhibit_balances();
+    case_identity_withdrawn_held_inhibit_balances();
+    case_identity_withdraw_api_balances();
+    case_saturation_sustained();
+    case_saturation_skip_is_counted();
 
     if (g_fail == 0)
     {

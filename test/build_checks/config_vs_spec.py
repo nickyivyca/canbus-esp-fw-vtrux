@@ -51,8 +51,8 @@ EXPECTED = [
      "10 errors in 10 s"),
     ("err_min_trip", 10, "7 error-frame para",
      "10 errors in 10 s"),
-    ("diag_period_ms", 300, "10",
-     "round-robin at ~1 Hz each over four pages"),
+    ("diag_period_ms", 240, "10",
+     "1.2 s per full rotation / 5 pages = 240 ms per page"),
     ("max_rx_errors", 20, "7",
      "a run of 20 consecutive hard receive errors"),
 ]
