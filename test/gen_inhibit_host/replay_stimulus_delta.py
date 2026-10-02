@@ -37,16 +37,33 @@ OLD = os.path.join(SCN, "_pre_regen")
 GOLD = os.path.join(HERE, "golden")
 RUNNER = os.path.join(HERE, "host_runner")
 
-# The README's table, one entry per replay: (name, log, channel, at, dur).
+#
+# The README's table, one entry per replay: (name, log, channel, at, dur, note).
+#
+# THE NOTE IS PART OF THE RECIPE AND THIS TABLE USED TO OMIT IT. from_capture.py
+# writes a --note into the scenario as a `# COVERAGE:` block precisely because a
+# .scn is generated and gitignored, so "a note in the README does not travel with
+# it" -- and regenerating without it silently deleted a warning that says do not
+# narrow this window. Caught 2026-10-02 only because the stimulus pin hashed the
+# whole file and the reviewing session rebuilt from the README. Any --note added to
+# the README has to be added here too, or the next regeneration drops it again.
+#
+NOTE_SHUTDOWN_AT_KEYON = (
+    "spec 7.1 key-ON case of trip 3 (decision 2, 2026-09-26): live at 16.2 s, "
+    "inverter lost 21.0 s latched, cleared at 49.1 s. Do NOT narrow this window: "
+    "replay-inverter-lost-keyon starts at 20.5 s and misses the event entirely.")
+
 REPLAYS = [
-    ("replay-genrun-stop", "vtrux_20260719_190019_T4.log", 2, 0, 220),
-    ("replay-healthy-engine-off", "vtrux_20260323_220148_T0.log", 1, 0, 300),
-    ("replay-mmode-genstart", "vtrux_20260322_165622_T1.log", 1, 0, 64),
-    ("replay-shutdown-at-keyon", "vtrux_20260714_112312_T2.log", 2, 0, 225),
-    ("replay-bus-sleeps", "vtrux_20260802_123318_T0.log", 2, 0, 161),
-    ("replay-rekey-short", "vtrux_20260403_194203_T2.log", 2, 0, 176),
-    ("replay-rekey-long", "vtrux_20260513_174225_T4.log", 57, 0, 224),
-    ("replay-inverter-lost-keyon", "vtrux_20260714_112312_T2.log", 2, 20.5, 7.7),
+    ("replay-genrun-stop", "vtrux_20260719_190019_T4.log", 2, 0, 220, None),
+    ("replay-healthy-engine-off", "vtrux_20260323_220148_T0.log", 1, 0, 300, None),
+    ("replay-mmode-genstart", "vtrux_20260322_165622_T1.log", 1, 0, 64, None),
+    ("replay-shutdown-at-keyon", "vtrux_20260714_112312_T2.log", 2, 0, 225,
+     NOTE_SHUTDOWN_AT_KEYON),
+    ("replay-bus-sleeps", "vtrux_20260802_123318_T0.log", 2, 0, 161, None),
+    ("replay-rekey-short", "vtrux_20260403_194203_T2.log", 2, 0, 176, None),
+    ("replay-rekey-long", "vtrux_20260513_174225_T4.log", 57, 0, 224, None),
+    ("replay-inverter-lost-keyon", "vtrux_20260714_112312_T2.log", 2, 20.5, 7.7,
+     None),
 ]
 
 FRAME_RE = re.compile(r"^\s*(\d+)\s+(?:RX|rx)?\s*0?x?([0-9A-Fa-f]{3,8})\b")
@@ -88,11 +105,13 @@ def read_scn(path):
     return head, rows
 
 
-def regen(name, log, chan, at, dur, ldir):
+def regen(name, log, chan, at, dur, note, ldir):
     out = os.path.join(SCN, name + ".scn")
     cmd = [sys.executable, os.path.join(HERE, "from_capture.py"),
            os.path.join(ldir, log), "--channel", str(chan),
            "--at", str(at), "--for", str(dur), "--out", out]
+    if note:
+        cmd += ["--note", note]
     r = subprocess.run(cmd, capture_output=True, text=True, cwd=HERE)
     return r.returncode, (r.stdout + r.stderr)[-400:]
 
@@ -123,17 +142,17 @@ def main(argv):
                   "path.")
             return 2
         os.makedirs(OLD, exist_ok=True)
-        for name, _l, _c, _a, _d in REPLAYS:
+        for name, _l, _c, _a, _d, _n in REPLAYS:
             src = os.path.join(SCN, name + ".scn")
             if os.path.exists(src):
                 shutil.copy2(src, os.path.join(OLD, name + ".scn"))
         print("existing replay scenarios copied to %s" % OLD)
-        for name, log, chan, at, dur in REPLAYS:
-            rc, tail = regen(name, log, chan, at, dur, ldir)
+        for name, log, chan, at, dur, note in REPLAYS:
+            rc, tail = regen(name, log, chan, at, dur, note, ldir)
             print("  regen %-30s %s" % (name, "ok" if rc == 0 else "FAILED " + tail))
         print("")
 
-    for name, _log, _chan, _at, _dur in REPLAYS:
+    for name, _log, _chan, _at, _dur, _note in REPLAYS:
         newp = os.path.join(SCN, name + ".scn")
         oldp = os.path.join(OLD, name + ".scn")
         _nh, new_rows = read_scn(newp)

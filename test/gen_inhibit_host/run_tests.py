@@ -50,17 +50,41 @@ RUNNER = os.path.join(HERE, "host_runner")
 STIMULUS_PIN = os.path.join(GOLD, "stimulus.sha256")
 
 
-def scn_sha256(path):
-    h = hashlib.sha256()
+def scn_hashes(path):
+    """(stimulus_sha, header_sha) for a scenario.
+
+    TWO HASHES, BECAUSE THEY MEAN DIFFERENT THINGS AND DESERVE DIFFERENT OUTCOMES.
+
+    stimulus  every non-comment line: the frames and the `mode` directive. This is
+              the pin. A mismatch means the device under test would see something
+              different, so the golden proves nothing and the suite FAILS.
+    header    the `#` lines, including from_capture.py's `# COVERAGE:` block. A
+              mismatch is reported as a NOTICE, not a failure: the stimulus is
+              identical, only the documentation moved.
+
+    Whole-file hashing was the first implementation and it failed a reworded note
+    exactly as it failed a moved frame, which teaches re-pinning without reading --
+    the habit spec 12.4 exists to stop (reviewing session, 2026-10-02). Hashing the
+    stimulus alone would have been worse in the other direction: it would have
+    missed a regeneration that silently DROPPED the `# COVERAGE:` warning from
+    replay-shutdown-at-keyon, which is the defect that whole-file hashing caught the
+    day it landed. Keeping both facts, with the right severity each, is the only
+    version that catches both.
+    """
+    stim = hashlib.sha256()
+    head = hashlib.sha256()
     with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
+        for line in fh:
+            if line.lstrip().startswith(b"#"):
+                head.update(line)
+            else:
+                stim.update(line)
+    return stim.hexdigest(), head.hexdigest()
 
 
 def load_pins():
-    """name -> sha256, from the manifest. Absent file is an empty dict, which the
-    caller must treat as "nothing is pinned" rather than "everything matches"."""
+    """name -> (stimulus_sha, header_sha). An absent file is an empty dict, which
+    the caller must treat as "nothing is pinned" rather than "all matched"."""
     pins = {}
     if not os.path.exists(STIMULUS_PIN):
         return pins
@@ -70,21 +94,27 @@ def load_pins():
             if not ln or ln.startswith("#"):
                 continue
             parts = ln.split()
-            if len(parts) == 2:
-                pins[parts[1]] = parts[0]
+            if len(parts) == 3:
+                pins[parts[2]] = (parts[0], parts[1])
     return pins
 
 
 def save_pins(pins):
     with open(STIMULUS_PIN, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write("# sha256 of the scenario each golden was blessed from "
-                 "(spec 12.4).\n")
-        fh.write("# Regenerate the scenarios and re-run; a mismatch means the "
-                 "stimulus moved,\n")
-        fh.write("# not the firmware. replay_stimulus_delta.py shows what "
+        fh.write("# <stimulus sha256>  <header sha256>  <scenario>   "
+                 "(spec 12.4)\n")
+        fh.write("# stimulus = every non-comment line, the frames and `mode`. A "
+                 "mismatch FAILS the\n")
+        fh.write("#            suite: the device would see something else, so the "
+                 "golden proves\n")
+        fh.write("#            nothing. replay_stimulus_delta.py shows what "
                  "changed.\n")
+        fh.write("# header   = the `#` lines, including from_capture.py's "
+                 "`# COVERAGE:` block. A\n")
+        fh.write("#            mismatch is a NOTICE, not a failure -- the "
+                 "stimulus is identical.\n")
         for name in sorted(pins):
-            fh.write("%s  %s\n" % (pins[name], name))
+            fh.write("%s  %s  %s\n" % (pins[name][0], pins[name][1], name))
 
 
 def sh(cmd, **kw):
@@ -160,7 +190,7 @@ def main():
         n_pinned = 0
         for name in names:
             if os.path.exists(os.path.join(GOLD, name + ".trace")):
-                newpins[name + ".scn"] = scn_sha256(
+                newpins[name + ".scn"] = scn_hashes(
                     os.path.join(SCN, name + ".scn"))
                 n_pinned += 1
         save_pins(newpins)
@@ -184,6 +214,7 @@ def main():
     npass = nfail = nnew = 0
     failed = []
     stale = []
+    headnote = []
     for name in names:
         spath = os.path.join(SCN, name + ".scn")
         gpath_pre = os.path.join(GOLD, name + ".trace")
@@ -194,7 +225,7 @@ def main():
             # it as a firmware change is exactly the wrong conclusion -- so the
             # comparison is skipped rather than reported alongside.
             #
-            have = scn_sha256(spath)
+            have_stim, have_head = scn_hashes(spath)
             want = pins.get(name + ".scn")
             if want is None:
                 print("[UNPIN ] %-30s golden is not pinned to any stimulus"
@@ -203,15 +234,26 @@ def main():
                 failed.append(name)
                 stale.append(name)
                 continue
-            if have != want:
-                print("[STIM  ] %-30s scenario does not match the one this golden "
+            if have_stim != want[0]:
+                print("[STIM  ] %-30s the FRAMES differ from the ones this golden "
                       "was blessed from" % name)
-                print("           blessed from %s" % want[:16])
-                print("           on disk      %s" % have[:16])
+                print("           blessed from %s" % want[0][:16])
+                print("           on disk      %s" % have_stim[:16])
                 nfail += 1
                 failed.append(name)
                 stale.append(name)
                 continue
+            if have_head != want[1]:
+                #
+                # A NOTICE, NOT A FAILURE, and the distinction is the point: the
+                # frames are identical, so the golden is still evidence. Only the
+                # header text moved -- which can still matter, because
+                # from_capture.py's `# COVERAGE:` block is the only place a --note
+                # survives into a generated, gitignored scenario.
+                #
+                print("[note  ] %-30s same frames, header text differs (coverage "
+                      "note reworded or lost)" % name)
+                headnote.append(name)
 
         with open(spath) as fh:
             r = subprocess.run([RUNNER], stdin=fh, capture_output=True,
@@ -241,7 +283,7 @@ def main():
         if args.bless:
             with open(gpath, "w", newline="\n") as fh:
                 fh.write(out)
-            pins[name + ".scn"] = scn_sha256(os.path.join(SCN, name + ".scn"))
+            pins[name + ".scn"] = scn_hashes(os.path.join(SCN, name + ".scn"))
             print("[BLESS ] %-30s %d lines" % (name, out.count("\n")))
             continue
 
@@ -287,6 +329,16 @@ def main():
               "whether any decision moved")
         print("Re-bless only after reading that, and never to make the suite "
               "green.")
+    if headnote:
+        print()
+        print("%d scenario(s) have identical frames and a changed header: %s"
+              % (len(headnote), ", ".join(headnote)))
+        print("  Not a failure. But if a `# COVERAGE:` note went missing, the "
+              "README's --note and")
+        print("  replay_stimulus_delta.py's REPLAYS table have to agree -- that is "
+              "how one was")
+        print("  silently dropped before 2026-10-02. Re-pin with --pin-stimulus "
+              "once checked.")
     sys.exit(1 if nfail else 0)
 
 
