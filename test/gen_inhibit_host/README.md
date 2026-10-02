@@ -43,7 +43,7 @@ stays green forever.
 | `make_scenarios.py` | Generates the synthetic scenarios into `scenarios/` |
 | `passive_diff.py` | Replays every scenario in INHIBIT **and** PASSIVE and proves they decided alike (spec 3.1). Has no golden -- see below |
 | `from_capture.py` | Turns a real capture into a scenario; `--scan` finds key-on points |
-| `golden/stimulus.sha256` | **Spec 12.4: every golden is pinned to the stimulus it was blessed from.** One sha256 per scenario, written at bless time. The suite FAILS on a mismatch (`[STIM  ]`), on a golden with no entry (`[UNPIN ]`), and refuses to run at all if the file is missing -- an empty pin would make every check pass vacuously, which is the failure it exists to prevent. `--pin-stimulus` records the checksums without re-blessing any trace; use it only after confirming by hand that the regenerated stimulus produces the goldens already present. A `[STIM  ]` failure is NOT a firmware failure: read `replay_stimulus_delta.py` before touching anything. |
+| `golden/stimulus.sha256` | **Spec 12.4: every golden is pinned to the stimulus it was blessed from.** TWO sha256 per scenario, written at bless time: the **stimulus** (every non-comment line -- the frames and `mode`) and the **header** (the `#` lines). A stimulus mismatch is `[STIM  ]` and FAILS, because the device would see something else and the golden proves nothing. A header mismatch is `[note  ]` and does NOT fail -- the frames are identical, only documentation moved. Whole-file hashing failed a reworded note exactly as it failed a moved frame, which teaches re-pinning without reading; hashing the stimulus alone would have missed a regeneration that silently dropped `replay-shutdown-at-keyon`'s `# COVERAGE:` warning, which is what whole-file hashing caught the day it landed. The suite FAILS on a mismatch (`[STIM  ]`), on a golden with no entry (`[UNPIN ]`), and refuses to run at all if the file is missing -- an empty pin would make every check pass vacuously, which is the failure it exists to prevent. `--pin-stimulus` records the checksums without re-blessing any trace; use it only after confirming by hand that the regenerated stimulus produces the goldens already present. A `[STIM  ]` failure is NOT a firmware failure: read `replay_stimulus_delta.py` before touching anything. |
 | `replay_stimulus_delta.py` | **Run this before re-blessing a replay golden.** `scenarios/` is not tracked in git, so a clean checkout rebuilds it -- and a change in canre's parser then changes the stimulus from the same log. This reports the delta per scenario: frame counts, per-ID changes, whether the offsets are still monotonic, and whether the emitted DECISION sequence is the same sequence with different timestamps, a reordering of the same events, or a genuinely different one. `--regen` rebuilds the eight replays first, keeping the old ones in `scenarios/_pre_regen/`. |
 | `golden_delta_check.py` | Structural check on a whole-suite re-bless: no non-diag line changed, no diag timestamp changed, which diag IDs are new or gone. **It does not rebuild `host_runner`** -- do that first, or it compares against a stale binary and reports no change. |
 | `run_tests.py` | Builds, replays every scenario, diffs against `golden/` |
@@ -242,6 +242,16 @@ python3 from_capture.py $L/vtrux_20260513_174225_T4.log --channel 57 --at 0 --fo
 python3 from_capture.py $L/vtrux_20260714_112312_T2.log --channel 2 --at 20.5 --for 7.7 \
         --out scenarios/replay-inverter-lost-keyon.scn
 ```
+
+**A `--note` here must be mirrored in `replay_stimulus_delta.py`'s `REPLAYS`
+table.** `from_capture.py` writes it into the scenario as a `# COVERAGE:` block
+precisely because a `.scn` is generated and gitignored, so the note in this README
+does not travel with it. The regeneration table omitted the note until 2026-10-02
+and `replay-shutdown-at-keyon` had been rebuilt without its "do NOT narrow this
+window" warning -- and `scenarios/_pre_regen/` shows it had already been lost
+before that, so nothing had carried it for some time. The stimulus pin is what
+surfaced it, and the `[note  ]` severity exists so the next one is visible without
+being a suite failure.
 
 **`--channel` is not optional, and every window above is one epoch.** Both
 were added 2026-09-20 with spec 7.1, and two of the five original commands
