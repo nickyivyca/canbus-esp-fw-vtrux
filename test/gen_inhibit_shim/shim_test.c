@@ -2197,6 +2197,100 @@ static void case_skips_are_since_arming(void)
 }
 
 /*
+ * CASE 30 -- the RESPOND figure is consistent with its offset (spec 12.1).
+ *
+ * Nothing asserted the VALUE of the `response` histogram anywhere before this: the
+ * three earlier mentions are all about it being empty. So a figure that is nonsense
+ * relative to the configured offset -- in the one mode whose entire purpose is to
+ * measure -- had no cover at all.
+ *
+ * WHAT THIS CASE DOES NOT COVER, AND CANNOT. It does NOT pin that the probe is
+ * stamped at the HANDOVER rather than at the worker iteration entry (422293a). That
+ * case was owed and this is not it. MEASURED: with the handover stamp the smallest
+ * reported figure is 4003 us against a 4000 us offset; with the iteration-entry
+ * stamp it is 4002 us. One microsecond -- one read of the mock clock, which is
+ * `g_now++` per call -- and the mutation passes every assertion below.
+ *
+ * The reasoning that suggested otherwise was wrong in a way worth recording: the
+ * iteration entry does NOT precede the due-time wait. gen_inhibit.c spins to the due
+ * time in the REACTIVE path, before the probe is queued, so by the time any later
+ * iteration reads its clock the due time is already past. Both stamps land after the
+ * wait and differ only by the reads between them.
+ *
+ * An assertion of `>= 4003` would discriminate and would be worse than no test: it
+ * would be pinned to the number of clock reads in the mock rather than to anything
+ * the firmware guarantees, it would break on any unrelated edit that adds a read,
+ * and it would be believed while it did. THE PROPERTY IS TESTABLE ON THE BENCH, not
+ * here: the Kvaser hardware-timestamps the probe on the wire, and
+ * wican_timing_bench.py already saves its raw frames per arm so the device's figure
+ * can be checked against a clock that is not the device's.
+ */
+static void case_respond_figure_matches_its_offset(void)
+{
+    case_begin("case 30: the RESPOND figure is consistent with its offset");
+    setup();
+
+    const uint32_t offset = 4000;    /* well above the per-read clock granularity */
+    gen_inhibit_set_mode(GEN_INHIBIT_RESPOND, offset);
+    ft_run(20000);
+
+    uint8_t cmd[6];
+    for (int i = 0; i < 12; i++)
+    {
+        memcpy(cmd, VCM, sizeof(cmd));
+        cmd[5] = (uint8_t)i;
+        feed(0x051, cmd, 6, 20000);
+    }
+
+    /*
+     * Read inside the `response` object. json_u32() keys on the first match and
+     * "min_us" appears in rx_gap as well, so scoping matters -- an unscoped read
+     * would silently answer about the wrong histogram.
+     */
+    static char page[GI_STATUS_PAGE_CAP];
+    gen_inhibit_get_stats_json(page, sizeof(page));
+    const char *resp = strstr(page, "\"response\":{");
+    CHECK(resp != NULL, "the status page has no response histogram: %s", page);
+    if (resp == NULL) { teardown(); case_end(); return; }
+
+    unsigned long count = 0, min_us = 0, max_us = 0;
+    const char *p;
+    if ((p = strstr(resp, "\"count\":")) != NULL)  { count = strtoul(p + 8, NULL, 10); }
+    if ((p = strstr(resp, "\"min_us\":")) != NULL) { min_us = strtoul(p + 9, NULL, 10); }
+    if ((p = strstr(resp, "\"max_us\":")) != NULL) { max_us = strtoul(p + 9, NULL, 10); }
+
+    /*
+     * THE POPULATION FIRST. An empty histogram satisfies any inequality below, and
+     * that is indistinguishable from a pass -- the empty-filter trap this project
+     * opens with.
+     */
+    CHECK(count >= 5,
+          "only %lu probe measurements were recorded, so the inequality below "
+          "proves nothing", count);
+
+    CHECK(min_us >= offset,
+          "the smallest reported RESPOND figure is %lu us against an offset of "
+          "%u us. The probe is not queued until its due time has passed, so no "
+          "measurement can be shorter than the offset -- a figure below it means "
+          "the figure and the offset are not measuring the same interval. %s",
+          min_us, offset, stats());
+
+    /*
+     * And an upper bound, so the case also fails if the stamp drifts far past the
+     * handover (a later iteration, say). One VCM period of slack over the offset is
+     * generous on a virtual clock and still an order of magnitude tighter than a
+     * whole-iteration error.
+     */
+    CHECK(max_us < offset + 20000,
+          "the largest reported RESPOND figure is %lu us against an offset of "
+          "%u us -- too late to be the handover instant: %s",
+          max_us, offset, stats());
+
+    teardown();
+    case_end();
+}
+
+/*
  * CASE 27 -- D8's wiring: a mode change while a frame is really in the
  * controller.
  *
@@ -2312,6 +2406,7 @@ int main(void)
     case_mode_change_keeps_the_held_frame();
     case_status_page_always_balances();
     case_skips_are_since_arming();
+    case_respond_figure_matches_its_offset();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
     return g_fail ? 1 : 0;
