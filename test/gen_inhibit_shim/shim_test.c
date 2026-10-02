@@ -2291,6 +2291,95 @@ static void case_respond_figure_matches_its_offset(void)
 }
 
 /*
+ * CASE 31 -- the RESPOND figure INCLUDES the wait for the transmit buffer
+ * (spec 12.1, "timed at driver handover"). Design from the reviewing session.
+ *
+ * A diag page is given a long air time and is therefore transmitting when a probe
+ * falls due. Item 4 is explicit that a frame already transmitting cannot be aborted
+ * and the waiting frame waits for it, so the probe's handover is milliseconds after
+ * its due time -- and a figure timed at the handover has to show that, while a
+ * figure timed when the probe was QUEUED cannot.
+ *
+ * WHICH REGRESSIONS THIS CATCHES, measured by mutation rather than assumed:
+ *
+ *   stamp at the instant the probe is QUEUED (the reactive path, before the wait)
+ *       CAUGHT -- the figure collapses to about the offset.
+ *   stamp at the entry of the iteration that HANDS OVER (the pre-422293a code,
+ *   `gi_on_tx_result(..., now, ...)`)
+ *       NOT caught, and nothing in emulation catches it. The submit happens inside
+ *       the same gs_tick() that advances `handed`, so that iteration's entry and the
+ *       submit instant are separated only by the clock reads between them -- 1 us on
+ *       a mock whose clock is `g_now++` per call. Delaying the handover moves BOTH
+ *       stamps together, which is why this design does not separate them. See
+ *       case 30 for the measurement.
+ *
+ * So this case pins the guarantee, and the 422293a stamp itself remains unpinned in
+ * emulation. Both facts are recorded where someone will read them.
+ */
+static void case_respond_figure_includes_the_buffer_wait(void)
+{
+    case_begin("case 31: the RESPOND figure includes the wait for the buffer");
+    setup();
+
+    /*
+     * A diag page that occupies the controller for 20 ms. The pages are the only
+     * other frames RESPOND emits, so they are the only thing that can hold the
+     * buffer against a probe.
+     */
+    const int64_t air = 20000;
+    ft_set_air_time_id(0x7F1, air);
+
+    const uint32_t offset = 1000;
+    gen_inhibit_set_mode(GEN_INHIBIT_RESPOND, offset);
+    ft_run(20000);
+
+    uint8_t cmd[6];
+    for (int i = 0; i < 90; i++)
+    {
+        memcpy(cmd, VCM, sizeof(cmd));
+        cmd[5] = (uint8_t)(i & 0x0F);
+        feed(0x051, cmd, 6, 20000);
+    }
+
+    static char page[GI_STATUS_PAGE_CAP];
+    gen_inhibit_get_stats_json(page, sizeof(page));
+    const char *resp = strstr(page, "\"response\":{");
+    CHECK(resp != NULL, "the status page has no response histogram");
+    if (resp == NULL) { teardown(); case_end(); return; }
+
+    unsigned long count = 0, max_us = 0;
+    const char *p;
+    if ((p = strstr(resp, "\"count\":")) != NULL)  { count = strtoul(p + 8, NULL, 10); }
+    if ((p = strstr(resp, "\"max_us\":")) != NULL) { max_us = strtoul(p + 9, NULL, 10); }
+
+    /*
+     * THE POPULATION, AND THE PRECONDITION. Measurements alone are not enough: the
+     * case means nothing unless a probe actually waited behind a page, so the
+     * figure itself is the evidence that the contention happened. A run where no
+     * probe ever coincided with a page would satisfy any floor at the offset.
+     */
+    CHECK(count >= 10,
+          "only %lu probe measurements, so this case proves nothing", count);
+
+    CHECK(max_us > offset + air / 2,
+          "the largest RESPOND figure is %lu us, with an offset of %u us and a "
+          "page occupying the controller for %lld us. A probe that waited for the "
+          "buffer must report that wait -- a figure near the offset means the "
+          "measurement was timed when the probe was QUEUED, not when it was handed "
+          "to the driver, which is not what spec 12.1 defines. %s",
+          max_us, offset, (long long)air, stats());
+
+    CHECK(max_us < offset + air * 2,
+          "the largest RESPOND figure is %lu us, more than twice the page's air "
+          "time past the offset -- too late to be a handover delayed by one "
+          "frame: %s", max_us, stats());
+
+    ft_set_air_time_id(0x7F1, 0);
+    teardown();
+    case_end();
+}
+
+/*
  * CASE 27 -- D8's wiring: a mode change while a frame is really in the
  * controller.
  *
@@ -2407,6 +2496,7 @@ int main(void)
     case_status_page_always_balances();
     case_skips_are_since_arming();
     case_respond_figure_matches_its_offset();
+    case_respond_figure_includes_the_buffer_wait();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
     return g_fail ? 1 : 0;

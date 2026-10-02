@@ -1482,6 +1482,85 @@ static void case_identity_carried_requeue_sets_no_wait(void)
        "turn the counter off");
 }
 
+/*
+ * A WITHDRAWAL MUST CLEAR `inhibit_outstanding`, and nothing caught it when it did
+ * not (reviewing session, 2026-10-02).
+ *
+ * THE FAILURE IT PINS. After a held inhibit is given up at its deadline the flag has
+ * to be cleared, because the frame is gone. Left set, it survives until some later
+ * completion happens to clear it -- and gs_command_received() consults it before
+ * looking at the buffer. A later deadline then finds the flag true with an EMPTY
+ * buffer, which that function reads as "the frame left the buffer and we had not
+ * issued an abort, so it went out late": a second, FALSE skip, with late_on_wire++.
+ * Three of those are trip 7, so a stale flag can abort a live inhibit over frames
+ * that never existed.
+ *
+ * WHY EVERY OTHER SKIP CASE MISSES IT. In all of them the next command's answer is
+ * handed over and completes, which clears the flag before any deadline can misread
+ * it. The ingredient that exposes it is A COMMAND THAT PRODUCES NO ANSWER -- which
+ * is a real state: the core stops queueing inhibits the moment it stops being live,
+ * on any trip, any disable, a stale key.
+ */
+static void case_withdrawal_clears_inhibit_outstanding(void)
+{
+    g_case = "a withdrawal clears inhibit_outstanding (no phantom late skip)";
+    fb_reset();
+    fb_set_contended(true);     /* STRESS: the frame sits AWAITING, so it is held */
+    gs_t s;
+    gs_init(&s, fb_hal());
+
+    /* One command, one answer, handed to the controller. */
+    (void)gs_command_received(&s, fb_now(), 0);
+    gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
+    gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
+    run(&s, 50, 10, 0);
+    ck_eq(s.st.cls[GS_CLASS_INHIBIT].handed, 1, "the inhibit was handed over");
+    ck(gs_inhibit_outstanding(&s), "and is outstanding");
+
+    /* Its deadline: awaiting arbitration, so it is withdrawn and never reaches the
+     * wire. */
+    const gs_deadline_t v1 = gs_command_received(&s, fb_now(), 0);
+    ck_eq((long)v1, (long)GS_DEADLINE_SKIPPED, "withdrawn at the deadline");
+
+    /* Let the abort loop finish, so the frame is really gone. */
+    run(&s, 3000, 10, 0);
+    ck_eq(s.st.cls[GS_CLASS_INHIBIT].withdrawn, 1, "and booked as withdrawn");
+    ck_eq(fb_wire_count(), 0, "nothing reached the wire");
+
+    /*
+     * THE ASSERTION THE MUTANT BREAKS. The frame is gone, so nothing of ours is
+     * outstanding. Checked directly as well as through its consequence below,
+     * because the consequence needs two more commands to appear and a direct
+     * reading says which of the two is wrong when it does.
+     */
+    ck(!gs_inhibit_outstanding(&s),
+       "a withdrawn inhibit must not leave `inhibit_outstanding` set: the frame is "
+       "gone, and the next deadline would read the flag against an empty buffer");
+
+    /*
+     * A COMMAND WITH NO ANSWER. The core does this whenever it has stopped being
+     * live, which is exactly when a stale flag is most likely to be read.
+     */
+    const gs_deadline_t v2 = gs_command_received(&s, fb_now(), 0);
+    ck_eq((long)v2, (long)GS_DEADLINE_OK,
+          "a deadline with nothing outstanding and nothing queued is OK");
+    run(&s, 1000, 10, 0);
+
+    /* And the command after that -- the one that reads the flag. */
+    const gs_deadline_t v3 = gs_command_received(&s, fb_now(), 0);
+    ck_eq((long)v3, (long)GS_DEADLINE_OK, "and so is the next");
+
+    ck_eq(s.st.skipped, 1,
+          "exactly ONE skip happened; a second is a phantom, booked because the "
+          "deadline read a stale `inhibit_outstanding` against an empty buffer");
+    ck_eq(s.st.skipped_late, 0, "and none of it was a late skip");
+    ck_eq(s.st.late_on_wire, 0,
+          "late_on_wire must stay 0: no frame of ours went out late, and three "
+          "phantom skips in a second would be trip 7 on frames that never existed");
+    ck_eq(s.st.cls[GS_CLASS_INHIBIT].withdrawn, 1, "still one withdrawal");
+    ck_eq(residual(&s, GS_CLASS_INHIBIT), 0, "and the balance still closes");
+}
+
 static void case_integration_order(void)
 {
     uint32_t v;
@@ -1537,6 +1616,7 @@ int main(void)
     case_identity_withdraw_api_balances();
     case_saturation_sustained();
     case_saturation_skip_is_counted();
+    case_withdrawal_clears_inhibit_outstanding();
     case_identity_carried_requeue_sets_no_wait();
 
     if (g_fail == 0)
