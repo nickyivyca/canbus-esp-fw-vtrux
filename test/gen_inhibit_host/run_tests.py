@@ -24,6 +24,7 @@ Two consequences worth keeping in mind:
 
 import argparse
 import difflib
+import hashlib
 import os
 import subprocess
 import sys
@@ -32,6 +33,58 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SCN = os.path.join(HERE, "scenarios")
 GOLD = os.path.join(HERE, "golden")
 RUNNER = os.path.join(HERE, "host_runner")
+
+#
+# SPEC 12.4 (user, 2026-10-02): "every golden is pinned to the stimulus it was
+# blessed from". One sha256 per scenario, written at bless time, checked on every
+# run. The scenarios themselves stay out of git -- the replays are rebuilt from
+# captures through the project's parser -- so this is what makes a stale or
+# regenerated stimulus fail instead of passing quietly.
+#
+# IT EXISTS BECAUSE THAT HAPPENED. canre's BUSMASTER parser was fixed on
+# 2026-09-27 (a negative timestamp component could not match, so pre-origin lines
+# were dropped silently) and six replay scenarios changed. The goldens stopped
+# reproducing from a clean checkout while a stale local scenarios/ kept the suite
+# green at 77/77, and nothing complained for three days.
+#
+STIMULUS_PIN = os.path.join(GOLD, "stimulus.sha256")
+
+
+def scn_sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def load_pins():
+    """name -> sha256, from the manifest. Absent file is an empty dict, which the
+    caller must treat as "nothing is pinned" rather than "everything matches"."""
+    pins = {}
+    if not os.path.exists(STIMULUS_PIN):
+        return pins
+    with open(STIMULUS_PIN, encoding="utf-8") as fh:
+        for ln in fh:
+            ln = ln.strip()
+            if not ln or ln.startswith("#"):
+                continue
+            parts = ln.split()
+            if len(parts) == 2:
+                pins[parts[1]] = parts[0]
+    return pins
+
+
+def save_pins(pins):
+    with open(STIMULUS_PIN, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("# sha256 of the scenario each golden was blessed from "
+                 "(spec 12.4).\n")
+        fh.write("# Regenerate the scenarios and re-run; a mismatch means the "
+                 "stimulus moved,\n")
+        fh.write("# not the firmware. replay_stimulus_delta.py shows what "
+                 "changed.\n")
+        for name in sorted(pins):
+            fh.write("%s  %s\n" % (pins[name], name))
 
 
 def sh(cmd, **kw):
@@ -58,6 +111,12 @@ def main():
     ap.add_argument("--bless", action="store_true")
     ap.add_argument("--only", default="")
     ap.add_argument("--context", type=int, default=3)
+    ap.add_argument("--pin-stimulus", action="store_true",
+                    help="record the current scenarios' checksums against the "
+                         "existing goldens WITHOUT re-blessing any trace. Use this "
+                         "once when the pin file is first introduced, or after "
+                         "confirming by hand that a regenerated stimulus produces "
+                         "the goldens that are already there.")
     args = ap.parse_args()
 
     build()
@@ -92,10 +151,69 @@ def main():
         print("Run make_scenarios.py first, or delete the stale goldens.")
         sys.exit(2)
 
+    pins = load_pins()
+
+    if args.pin_stimulus:
+        # Only pin scenarios that HAVE a golden: a scenario with no golden has not
+        # blessed anything yet, so there is nothing to pin it to.
+        newpins = dict(pins)
+        n_pinned = 0
+        for name in names:
+            if os.path.exists(os.path.join(GOLD, name + ".trace")):
+                newpins[name + ".scn"] = scn_sha256(
+                    os.path.join(SCN, name + ".scn"))
+                n_pinned += 1
+        save_pins(newpins)
+        print("pinned %d scenario checksum(s) to %s" % (n_pinned, STIMULUS_PIN))
+        print("No trace was re-blessed. Run the suite to confirm it still passes.")
+        return
+
+    if not pins and not args.bless:
+        #
+        # NOT A WARNING. An empty pin file would make every comparison below pass
+        # vacuously, which is the whole failure this check exists to prevent --
+        # the suite was green for three days against a stimulus that no longer
+        # reproduced.
+        #
+        print("ERROR: no stimulus pin file at %s, so the goldens are not tied to "
+              "any stimulus." % STIMULUS_PIN)
+        print("Run with --pin-stimulus once (records checksums, re-blesses "
+              "nothing), or --bless.")
+        sys.exit(2)
+
     npass = nfail = nnew = 0
     failed = []
+    stale = []
     for name in names:
-        with open(os.path.join(SCN, name + ".scn")) as fh:
+        spath = os.path.join(SCN, name + ".scn")
+        gpath_pre = os.path.join(GOLD, name + ".trace")
+        if not args.bless and os.path.exists(gpath_pre):
+            #
+            # THE STIMULUS FIRST. Diffing a trace against a golden blessed from a
+            # DIFFERENT stimulus tells you nothing about the firmware, and reading
+            # it as a firmware change is exactly the wrong conclusion -- so the
+            # comparison is skipped rather than reported alongside.
+            #
+            have = scn_sha256(spath)
+            want = pins.get(name + ".scn")
+            if want is None:
+                print("[UNPIN ] %-30s golden is not pinned to any stimulus"
+                      % name)
+                nfail += 1
+                failed.append(name)
+                stale.append(name)
+                continue
+            if have != want:
+                print("[STIM  ] %-30s scenario does not match the one this golden "
+                      "was blessed from" % name)
+                print("           blessed from %s" % want[:16])
+                print("           on disk      %s" % have[:16])
+                nfail += 1
+                failed.append(name)
+                stale.append(name)
+                continue
+
+        with open(spath) as fh:
             r = subprocess.run([RUNNER], stdin=fh, capture_output=True,
                                text=True, cwd=HERE)
         if r.returncode != 0:
@@ -123,6 +241,7 @@ def main():
         if args.bless:
             with open(gpath, "w", newline="\n") as fh:
                 fh.write(out)
+            pins[name + ".scn"] = scn_sha256(os.path.join(SCN, name + ".scn"))
             print("[BLESS ] %-30s %d lines" % (name, out.count("\n")))
             continue
 
@@ -152,11 +271,22 @@ def main():
             failed.append(name)
 
     if args.bless:
+        save_pins(pins)
+        print("stimulus checksums written to %s" % STIMULUS_PIN)
         return
     print()
     print("%d passed, %d failed, %d without goldens" % (npass, nfail, nnew))
     if failed:
         print("failed: %s" % ", ".join(failed))
+    if stale:
+        print()
+        print("%d of those are STIMULUS failures, not firmware failures: the "
+              "scenario on disk is not the one the golden was blessed from."
+              % len(stale))
+        print("  python3 replay_stimulus_delta.py     shows what changed and "
+              "whether any decision moved")
+        print("Re-bless only after reading that, and never to make the suite "
+              "green.")
     sys.exit(1 if nfail else 0)
 
 
