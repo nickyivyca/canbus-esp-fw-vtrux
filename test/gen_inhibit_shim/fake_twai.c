@@ -423,6 +423,11 @@ void ft_fail_alerts_config(bool fail) { g_fail_alerts_cfg = fail; }
 int              ft_sent_count(void) { return g_nsent; }
 const ft_frame_t *ft_sent(int i) { return &g_sent[i]; }
 int              ft_wire_count(void) { return g_nwire; }
+
+bool ft_logs_saturated(void)
+{
+    return g_nwire >= SENTMAX || g_nsent >= SENTMAX;
+}
 const ft_frame_t *ft_wire(int i) { return &g_wire[i]; }
 
 static void (*g_step_hook)(void);

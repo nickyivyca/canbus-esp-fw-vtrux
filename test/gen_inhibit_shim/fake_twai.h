@@ -309,6 +309,16 @@ const ft_frame_t *ft_sent(int i);
 int              ft_wire_count(void);
 const ft_frame_t *ft_wire(int i);
 
+/*
+ * HAVE THE FRAME LOGS STOPPED RECORDING? They hold at most SENTMAX entries and then
+ * drop everything after, silently. Any count taken from them is a LOWER BOUND once
+ * this is true, so a check that compares a device counter against one of them stops
+ * being a check -- and is wrong in a fixed direction, because the device's counter
+ * keeps rising while the log's ceiling does not. A long arm must consult this before
+ * trusting ft_wire_count_id() or ft_sent_count_id().
+ */
+bool             ft_logs_saturated(void);
+
 /* ------------------------------------------------------------- driving --- */
 
 /*

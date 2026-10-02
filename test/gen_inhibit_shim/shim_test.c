@@ -208,9 +208,33 @@ static void drain_wire_violations(void)
  * ft_set_step_hook(): 632af32's bug opens a window that closes again, so a
  * check that only runs at the end sees nothing wrong.
  */
+/* Shared with check_tx_ok_invariant(): the notice is printed once,
+ * not once per worker iteration. */
+static bool g_txok_unbounded_warned;
+
 static void invariant_hook(void)
 {
     drain_wire_violations();
+
+    /*
+     * THE COUNT CEILING IS BOUNDED BY THE FRAME LOGS and the wire ORDER is not, so
+     * only the comparison below is skipped once they saturate. See
+     * check_tx_ok_invariant(): past SENTMAX the ceiling freezes while tx_ok keeps
+     * rising, and this hook then reported a violation on every iteration of the long
+     * arm -- 10209 against a frozen 3994. drain_wire_violations() above still runs.
+     */
+    if (ft_logs_saturated())
+    {
+        if (!g_txok_unbounded_warned)
+        {
+            g_txok_unbounded_warned = true;
+            printf("    NOTE: the frame logs are full (%d entries), so the tx_ok "
+                   "ceiling is a lower bound and that invariant is no longer "
+                   "evaluated from here. Counter-based assertions still hold.\n",
+                   ft_wire_count());
+        }
+        return;
+    }
 
     const uint32_t claimed = json_u32("\"tx_ok\":");
 
@@ -263,8 +287,34 @@ static void setup(void)
  * A case that reproduces one defect's exact shape passes the moment the shape
  * changes; this one fails for any future way of getting the same thing wrong.
  */
+/*
+ * THE SUITE'S ALWAYS-PROPERTY: tx_ok can never exceed the frames that actually went.
+ *
+ * IT IS BOUNDED BY THE FRAME LOGS, and past SENTMAX those stop recording silently --
+ * so the ceiling freezes while tx_ok keeps rising and the check reports a violation
+ * that did not happen. The long-arm case (32) hit exactly that: tx_ok 10209 against a
+ * frozen ceiling of 3994, reported from the step hook on every iteration. A confident
+ * false failure is the most expensive kind here, because the natural response is to go
+ * looking in the firmware.
+ *
+ * So it stops asserting once the logs saturate, and SAYS SO ONCE. It does not go
+ * quiet: a check that can no longer be evaluated has to announce that, or its silence
+ * reads as evidence that it held.
+ */
 static void check_tx_ok_invariant(const char *where)
 {
+    if (ft_logs_saturated())
+    {
+        if (!g_txok_unbounded_warned)
+        {
+            g_txok_unbounded_warned = true;
+            printf("    NOTE: %s: the frame logs are full (%d entries), so the "
+                   "tx_ok ceiling is a lower bound and this invariant is no longer "
+                   "evaluated. Counter-based assertions still hold.\n",
+                   where, ft_wire_count());
+        }
+        return;
+    }
     const uint32_t claimed = json_u32("\"tx_ok\":");
     const int on_wire = ft_wire_count_id(0x051) + ft_sent_count_id(0x7F0);
     CHECK(claimed <= (uint32_t)on_wire,
@@ -2380,6 +2430,160 @@ static void case_respond_figure_includes_the_buffer_wait(void)
 }
 
 /*
+ * CASE 32 -- item 10 catalogue bullet 10, EMULATION HALF: the long arm.
+ *
+ * "No inhibit after the VCM's next command, tx_queued_behind 0, telemetry present
+ * throughout." The bench half is runs/e4_long_arm_422293a.json and the 300 s
+ * saturated arms; this is duration with the whole shipped stack in the loop.
+ *
+ * WHY HERE AND NOT IN THE REPLAY HARNESS. test/gen_inhibit_host's host_runner links
+ * gen_inhibit_core.c and nothing else, so the replay scenarios -- the real captures,
+ * the 300 s ones included -- never exercise the transmit scheduler. Only this harness
+ * compiles gi_sched.c and gen_inhibit.c together with a wire model. "Full-replay"
+ * names the bench half; the emulation half can have the duration and the full stack
+ * but not the captured traffic, and saying so is better than implying this replays
+ * anything.
+ *
+ * "THROUGHOUT" IS PER WINDOW. A total count of diag pages would pass if every page
+ * came out in the first second and none afterwards -- which is the failure the
+ * criterion exists for, and precisely what a starved telemetry class looks like. So
+ * the arm is divided and every window must carry at least one page.
+ *
+ * The wire log stops recording silently at 4096 entries, so the long-run assertions
+ * use the device's own counters and the wire is read only in a guarded prefix.
+ */
+static void case_long_arm(void)
+{
+    case_begin("case 32: the long arm (item 10 bullet 10, emulation half)");
+    setup();
+    go_live();
+
+    static const uint8_t KEY[8]  = { 0x10 };
+    static const uint8_t CONT[8] = { 11 << 2 };
+    static const uint8_t SOC[8]  = { 0x4E, 0x20 };
+    static const uint8_t FLT[8]  = { 0, 0, 0, 0, 0, 0, 0, 0xC8 };
+    static const uint8_t SHF[8]  = { 0, 0, 0, 0, 0, 0, 2 << 4 };
+
+    /* --- a guarded prefix where the wire log is still evidence ------------- */
+    const uint32_t tx_at_prefix_start = json_u32("\"tx_ok\":");
+    const int wire_at_prefix_start = ft_wire_count_id(0x051);
+    uint8_t ctr = 0;
+    uint8_t cmd[6];
+    for (int i = 0; i < 200; i++)
+    {
+        memcpy(cmd, VCM, sizeof(cmd));
+        cmd[5] = (uint8_t)(ctr++ & 0x0F);
+        feed(0x051, cmd, 6, 10000);
+        if ((i % 20) == 0)
+        {
+            feed(0x592, KEY, 8, 200);
+            feed(0x440, CONT, 8, 200);
+            feed(0x411, SOC, 8, 200);
+            feed(0x617, FLT, 8, 200);
+            feed(0x639, SHF, 8, 200);
+        }
+    }
+    CHECK(ft_wire_count() < 4096,
+          "the wire log is already full in the prefix, so its counts below prove "
+          "nothing");
+    const uint32_t tx_prefix = json_u32("\"tx_ok\":") - tx_at_prefix_start;
+    const int wire_prefix = ft_wire_count_id(0x051) - wire_at_prefix_start;
+    /*
+     * AN INEQUALITY, NOT EQUALITY, AND THE DIRECTION IS THE WHOLE POINT. tx_ok may
+     * LAG the wire by one frame: the scheduler credits a departure when it observes
+     * it, on a worker iteration, so a frame that has left the controller but not yet
+     * been observed is on the wire and not yet counted. That is the same lag `held`
+     * accounts for in spec 5.2 item 6, and the first version of this assertion
+     * demanded equality and failed on it at 198 against 199.
+     *
+     * What must never happen is the other direction: tx_ok ahead of the wire means a
+     * frame that never went out has been credited, which is the item 5 hazard.
+     */
+    CHECK((int)tx_prefix <= wire_prefix,
+          "tx_ok moved by %u while only %d inhibit frames reached the wire: a frame "
+          "that never went out has been credited", tx_prefix, wire_prefix);
+    CHECK(wire_prefix - (int)tx_prefix <= 1,
+          "the wire is %d frames ahead of tx_ok; at most one frame can be awaiting "
+          "its completion observation, so a larger gap means departures are going "
+          "uncredited", wire_prefix - (int)tx_prefix);
+
+    /* --- the long part, on the unbounded counters -------------------------- */
+    const int WINDOWS = 20;
+    const int CMD_PER_WINDOW = 500;         /* 5 s of virtual truck time each */
+    int quiet_windows = 0;
+    uint32_t telem_prev = 0;
+    {
+        const char *p = strstr(stats(), "\"telemetry\":{");
+        if (p != NULL) { p = strstr(p, "\"sent\":"); }
+        if (p != NULL) { telem_prev = (uint32_t)strtoul(p + 7, NULL, 10); }
+    }
+
+    for (int w = 0; w < WINDOWS; w++)
+    {
+        for (int i = 0; i < CMD_PER_WINDOW; i++)
+        {
+            memcpy(cmd, VCM, sizeof(cmd));
+            cmd[5] = (uint8_t)(ctr++ & 0x0F);
+            feed(0x051, cmd, 6, 10000);
+            if ((i % 20) == 0)
+            {
+                feed(0x592, KEY, 8, 200);
+                feed(0x440, CONT, 8, 200);
+                feed(0x411, SOC, 8, 200);
+                feed(0x617, FLT, 8, 200);
+                feed(0x639, SHF, 8, 200);
+            }
+        }
+        uint32_t telem_now = telem_prev;
+        const char *p = strstr(stats(), "\"telemetry\":{");
+        if (p != NULL) { p = strstr(p, "\"sent\":"); }
+        if (p != NULL) { telem_now = (uint32_t)strtoul(p + 7, NULL, 10); }
+        if (telem_now == telem_prev) { quiet_windows++; }
+        telem_prev = telem_now;
+    }
+
+    /* 3. TELEMETRY PRESENT THROUGHOUT. */
+    CHECK(quiet_windows == 0,
+          "%d of %d five-second windows carried NO diag page. A total would have "
+          "hidden this: telemetry present at the start and absent later is exactly "
+          "what the criterion is about. %s", quiet_windows, WINDOWS, stats());
+
+    /* 1. NO INHIBIT AFTER THE VCM'S NEXT COMMAND. */
+    CHECK(json_u32("\"skipped\":") == 0,
+          "the long arm skipped %u inhibit frames: %s",
+          json_u32("\"skipped\":"), stats());
+    CHECK(json_u32("\"late_on_wire\":") == 0,
+          "the long arm reported %u late frames: %s",
+          json_u32("\"late_on_wire\":"), stats());
+    CHECK(json_u32("\"order_violations\":") == 0,
+          "the deadline did not run before every answer: %s", stats());
+
+    /* 2. tx_queued_behind STRUCTURALLY ZERO (spec 5.2 item 3). */
+    CHECK(json_u32("\"tx_queued_behind\":") == 0,
+          "tx_queued_behind is %u over the long arm: the scheduler handed a second "
+          "frame to the driver while one was still there: %s",
+          json_u32("\"tx_queued_behind\":"), stats());
+
+    /*
+     * AND THE POPULATION, last so the figures above are not a pass over nothing.
+     * 10,200 commands at 10 ms is 102 s of virtual truck time.
+     */
+    const uint32_t tx_total = json_u32("\"tx_ok\":");
+    CHECK(tx_total > 9000,
+          "only %u inhibit frames went out over the whole arm, so this case did not "
+          "run long enough to be a long arm: %s", tx_total, stats());
+    /*
+     * check_tx_ok_invariant() is deliberately NOT called here: it is bounded by the
+     * frame logs and this arm runs past them. The counter-based assertions above are
+     * what hold over a long arm, and the guarded prefix is where the wire was
+     * compared against tx_ok while that comparison still meant something.
+     */
+
+    teardown();
+    case_end();
+}
+
+/*
  * CASE 27 -- D8's wiring: a mode change while a frame is really in the
  * controller.
  *
@@ -2497,6 +2701,7 @@ int main(void)
     case_skips_are_since_arming();
     case_respond_figure_matches_its_offset();
     case_respond_figure_includes_the_buffer_wait();
+    case_long_arm();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
     return g_fail ? 1 : 0;
