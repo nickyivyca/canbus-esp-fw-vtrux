@@ -68,6 +68,59 @@ and the head-of-queue clock restarted on every call — so case 3 reported a
 false `TX_LATE` that looked exactly like the firmware bug. **A model that errs
 the same way as the defect will confirm it.**
 
+## Replaying a real capture
+
+Spec 5.2 item 10 (user, 2026-10-03): **emulation replays recorded traffic for its
+stimulus, not for bus load.** A replay gives real command timing and jitter, real
+arrival ordering, and the arm and key transitions the truck actually produced. It
+gives *no* bus load: `controller_advance()` completes our frames from our own queue
+head plus `air_time_for(id)`, and a delivered frame enters that calculation nowhere.
+A load-dependent criterion needs the bench.
+
+`replay_scn(name, &result, window_us, on_window)` reads a scenario and delivers it at
+the recorded timestamps. It looks in this harness's `scenarios/` first and falls back
+to `../gen_inhibit_host/scenarios/`, so the eight host replays are reusable here
+without being copied. Neither directory is in git.
+
+**Building the long-arm stimulus** (case 33). Not in git, ~12 MB, rebuilt from a
+capture that *is* in the project repo:
+
+```sh
+L=~/Seafile/NotGit/reverse-it/projects/vtrux/notes/artifacts/gen-inhibit/runs
+cd ../gen_inhibit_host
+python3 from_capture.py $L/scottsvalley_armable_300s.log --channel 0 --at 0 --for 300 \
+        --out ../gen_inhibit_shim/scenarios/replay-longarm-300s-ids.scn
+```
+
+**Do not pass `--all-ids`.** Two reasons, both measured: `host_runner` exits 2 on the
+resulting per-ID comment line, and the shim cannot sustain it (below).
+
+**The pin.** `stimulus.fnv` records two FNV-1a 64 checksums per scenario — the
+stimulus lines and the comment lines — because a replay-driven case has no golden to
+hang a checksum on (spec 12.4, widened 2026-10-03). A stimulus mismatch **fails** the
+case; a comment-only change is a **notice**. `./shim_test --pin-stimulus` writes the
+file; run it only after checking the scenario is the one you mean.
+
+**Every case declares its transmit timing** (spec 12.4), printed as a `timing:` line:
+default air time, per-ID overrides, stalls armed. It is a *high-water* record over the
+whole case, not the state at the end, so a case that sets an override and clears it
+still reports having used it — case 31 does exactly that.
+
+### What the replay cannot do, measured
+
+| configuration | result |
+|---|---|
+| all 706,283 frames at recorded timing | **unusable.** The capture allows 425 us per frame; the mock worker costs ~1235 us. The 64-deep receive queue fills, the core sees **34 %** of frames, and the device latches off on a stale `0x411`. |
+| the 136,016 relevant-ID frames at recorded timing | **what case 33 runs.** Timing reproduced to **6 us**, 27,462 inhibits over 300 s, every bullet-10 criterion met. But `ctr_bad` 2,279 — about 8 % of commands lost, against the bench's 0. |
+| stretching the timeline 2x / 4x / 8x to give the worker headroom | **worse.** `tx_ok` collapses to 558 / 25 / 7. The interlock freshness windows are in *absolute* time, so slowing the stimulus makes every signal stale and the device latches off. The gates cannot be slowed down. |
+
+**So the verified-on-time path is not reachable here**, and the spec row's stated
+reason for preferring a replay is not achieved: `ontime` reads **10 of 27,462** against
+the bench's **8,976 of 8,983**. Reaching it needs the worker to keep up at truck rate
+with an empty receive queue, and this harness's clock — one microsecond per read,
+deliberately, to break the probe's busy-wait — makes the worker's per-frame cost
+comparable to the truck's inter-frame gap. No scenario fixes that; it is the model.
+
 ## What E1 does NOT cover
 
 - **`main.c`'s SLCAN dispatch.** A3 disables the command parser on three

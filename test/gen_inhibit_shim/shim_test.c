@@ -36,6 +36,20 @@ static int g_fail;
  */
 #define CASE_BUDGET_S 20
 
+/*
+ * A case may DECLARE a larger budget, for one reason only: it really does that much
+ * work. The default is NOT raised, because it is the hang detector for every other
+ * case and one long case is not a reason to blind the other thirty-two. Reset per
+ * case, so a declaration cannot leak into the next one.
+ */
+static int g_case_budget_s = CASE_BUDGET_S;
+
+static void case_budget(int seconds, const char *why)
+{
+    g_case_budget_s = seconds;
+    printf("           budget: %d s -- %s\n", seconds, why);
+}
+
 static time_t g_case_start;
 static const char *g_case_name = "";
 
@@ -46,16 +60,30 @@ static void case_begin(const char *name)
     printf("  %s\n", name);
 }
 
+/*
+ * SPEC 12.4 (2026-10-03): the case declares what transmit timing it ran with. Printed
+ * at the END, because a knob set mid-case has to appear even if the case cleared it
+ * again -- ft_timing_config() keeps the high-water record for exactly that reason.
+ */
+static void print_timing_config(void)
+{
+    char cfg[256];
+    ft_timing_config(cfg, (int)sizeof(cfg));
+    printf("           timing: %s\n", cfg);
+}
+
 static void case_end(void)
 {
+    print_timing_config();
     const double took = difftime(time(NULL), g_case_start);
-    if (took > CASE_BUDGET_S)
+    if (took > g_case_budget_s)
     {
         printf("    FAIL: %s took %.0f s of wall clock (budget %d s) -- "
                "something is spinning, not merely slow\n",
-               g_case_name, took, CASE_BUDGET_S);
+               g_case_name, took, g_case_budget_s);
         g_fail++;
     }
+    g_case_budget_s = CASE_BUDGET_S;
 }
 
 #define CHECK(cond, ...)                                                      \
@@ -2583,6 +2611,386 @@ static void case_long_arm(void)
     case_end();
 }
 
+
+/* ------------------------------------------------ replaying a real capture --- */
+
+/*
+ * SPEC 5.2 ITEM 10 (2026-10-03): "Emulation replays recorded traffic for its stimulus,
+ * not for bus load." This is the reader. It gives real command timing and jitter, real
+ * arrival ordering, real arm and key transitions, and the receive-side pressure of
+ * dense traffic. IT GIVES NO BUS LOAD: controller_advance() completes our frames from
+ * our own queue head plus air_time_for(id), and a delivered frame enters that
+ * calculation nowhere. A load-dependent criterion needs the bench.
+ *
+ * THE PIN (spec 12.4, widened 2026-10-03): the scenario is rebuilt from a capture
+ * through the project's parser and is not in git, so the case records a checksum of
+ * what it ran on. FNV-1a 64 rather than sha256 -- it runs here in C, the spec says
+ * "checksum", and FNV-1a is already what this firmware hashes GIT_SHA with for 0x7F3.
+ * Stimulus lines FAIL on a mismatch; comment lines are a notice, exactly as
+ * run_tests.py's pin behaves.
+ */
+/*
+ * The shim's own stimulus first, then the host harness's. Two directories because
+ * run_tests.py enumerates everything in ITS scenarios/ -- a file there with no golden
+ * is reported as missing one, and the all-IDs long-arm scenario made host_runner exit
+ * 2 on the length of its per-ID comment line. The fallback keeps the eight existing
+ * replays usable from here without copying them.
+ */
+#define SCN_DIR  "scenarios/"
+#define SCN_DIR2 "../gen_inhibit_host/scenarios/"
+#define PIN_FILE "stimulus.fnv"
+
+static uint64_t fnv1a_init(void) { return 1469598103934665603ULL; }
+
+static uint64_t fnv1a_add(uint64_t h, const char *s)
+{
+    while (*s)
+    {
+        h ^= (unsigned char)*s++;
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+typedef struct
+{
+    long     frames;            /* `f` lines delivered */
+    /*
+     * HOW FAR THE REPLAY FELL BEHIND, in microseconds, not how often the clock had
+     * moved past a target. The capture delivers many frames at the same instant, so
+     * "already passed" fires for all but the first of each burst -- 463,307 of 706,283
+     * steps, nearly all of them behind by a microsecond or two. The maximum is what
+     * says whether recorded timing is being reproduced.
+     */
+    int64_t  max_late_us;
+    int64_t  span_us;           /* last frame's offset */
+    uint64_t stim_fnv;
+    uint64_t head_fnv;
+} scn_result_t;
+
+static uint8_t hexnib(char c)
+{
+    if (c >= '0' && c <= '9') { return (uint8_t)(c - '0'); }
+    if (c >= 'a' && c <= 'f') { return (uint8_t)(c - 'a' + 10); }
+    if (c >= 'A' && c <= 'F') { return (uint8_t)(c - 'A' + 10); }
+    return 0;
+}
+
+/*
+ * Replay `name`.scn. Returns false if the file is missing, which the caller must treat
+ * as a failure rather than an empty run -- a replay case over no frames would satisfy
+ * every criterion it checks.
+ */
+static bool replay_scn(const char *name, scn_result_t *out,
+                       int64_t window_us, void (*on_window)(int w))
+{
+    char path[512];
+    snprintf(path, sizeof(path), "%s%s.scn", SCN_DIR, name);
+    FILE *fh = fopen(path, "r");
+    if (fh == NULL)
+    {
+        snprintf(path, sizeof(path), "%s%s.scn", SCN_DIR2, name);
+        fh = fopen(path, "r");
+    }
+    if (fh == NULL) { return false; }
+
+    memset(out, 0, sizeof(*out));
+    out->stim_fnv = fnv1a_init();
+    out->head_fnv = fnv1a_init();
+
+    const int64_t base = ft_now();
+    int next_window = 1;
+    static char line[512];
+    while (fgets(line, (int)sizeof(line), fh) != NULL)
+    {
+        if (line[0] == '#')
+        {
+            out->head_fnv = fnv1a_add(out->head_fnv, line);
+            continue;
+        }
+        if (line[0] == 'm')                 /* mode <at_us> <mode> <offset_us> */
+        {
+            long at = 0, mode = 0, off = 0;
+            if (sscanf(line, "mode %ld %ld %ld", &at, &mode, &off) == 3)
+            {
+                out->stim_fnv = fnv1a_add(out->stim_fnv, line);
+                const int64_t target = base + at;
+                if (target > ft_now()) { ft_run(target - ft_now()); }
+                gen_inhibit_set_mode((gen_inhibit_mode_t)mode, (uint32_t)off);
+            }
+            continue;
+        }
+        if (line[0] != 'f') { continue; }
+
+        long us = 0, dlc = 0;
+        char idbuf[16], hexbuf[33];
+        if (sscanf(line, "f %ld %15s %ld %32s", &us, idbuf, &dlc, hexbuf) != 4)
+        {
+            continue;
+        }
+        out->stim_fnv = fnv1a_add(out->stim_fnv, line);
+
+        const uint32_t id = (uint32_t)strtoul(idbuf, NULL, 16);
+        uint8_t data[8] = { 0 };
+        const size_t hl = strlen(hexbuf);
+        for (size_t i = 0; i + 1 < hl && i / 2 < 8; i += 2)
+        {
+            data[i / 2] = (uint8_t)((hexnib(hexbuf[i]) << 4) | hexnib(hexbuf[i + 1]));
+        }
+
+        const int64_t target = base + us;
+        if (target > ft_now())
+        {
+            ft_run(target - ft_now());
+        }
+        else
+        {
+            const int64_t behind = ft_now() - target;
+            if (behind > out->max_late_us) { out->max_late_us = behind; }
+        }
+        ft_deliver(id, data, (uint8_t)(dlc > 8 ? 8 : dlc));
+        out->frames++;
+        out->span_us = us;
+
+        /* Window boundaries by REPLAY time, not by frame count: the criterion is
+         * about telemetry over the arm's duration, and the frame rate varies. */
+        if (on_window != NULL && window_us > 0
+            && us >= (int64_t)next_window * window_us)
+        {
+            on_window(next_window - 1);
+            next_window++;
+        }
+    }
+    fclose(fh);
+    return true;
+}
+
+/*
+ * Check the replayed stimulus against the pin, or write it. The pin lives beside the
+ * harness because a replay-driven case has no golden to hang a checksum on -- spec 12.4
+ * as widened on 2026-10-03.
+ */
+static bool g_pin_write_mode;
+
+static void pin_stimulus(const char *name, const scn_result_t *r)
+{
+    char want_stim[32] = { 0 }, want_head[32] = { 0 };
+    char nm[128];
+    bool found = false;
+    FILE *fh = fopen(PIN_FILE, "r");
+    if (fh != NULL)
+    {
+        static char line[256];
+        while (fgets(line, (int)sizeof(line), fh) != NULL)
+        {
+            if (line[0] == '#') { continue; }
+            if (sscanf(line, "%31s %31s %127s", want_stim, want_head, nm) == 3
+                && strcmp(nm, name) == 0)
+            {
+                found = true;
+                break;
+            }
+        }
+        fclose(fh);
+    }
+
+    char have_stim[32], have_head[32];
+    snprintf(have_stim, sizeof(have_stim), "%016llx",
+             (unsigned long long)r->stim_fnv);
+    snprintf(have_head, sizeof(have_head), "%016llx",
+             (unsigned long long)r->head_fnv);
+
+    if (g_pin_write_mode)
+    {
+        FILE *w = fopen(PIN_FILE, "a");
+        if (w != NULL)
+        {
+            fprintf(w, "%s  %s  %s\n", have_stim, have_head, name);
+            fclose(w);
+        }
+        printf("           pinned %s stimulus=%s header=%s\n",
+               name, have_stim, have_head);
+        return;
+    }
+
+    CHECK(found,
+          "%s is not pinned. A replay-driven case records a checksum of the stimulus "
+          "it ran on (spec 12.4): run `./shim_test --pin-stimulus` once, after "
+          "checking the scenario is the one you mean", name);
+    if (!found) { return; }
+    CHECK(strcmp(have_stim, want_stim) == 0,
+          "%s STIMULUS does not match the pin: ran %s, pinned %s. The scenario was "
+          "regenerated and the frames differ, so this case is not measuring what it "
+          "was written against. replay_stimulus_delta.py shows what moved",
+          name, have_stim, want_stim);
+    if (strcmp(have_head, want_head) != 0)
+    {
+        printf("           NOTE: %s header text differs from the pin (frames "
+               "identical) -- a coverage note may have been reworded or lost\n",
+               name);
+    }
+}
+
+/*
+ * CASE 33 -- item 10 bullet 10's EMULATION HALF, as a replay of real traffic
+ * (spec 5.2 item 10, ruled 2026-10-03).
+ *
+ * 300 s of scottsvalley_armable_300s.log -- the capture the bench long arm replays --
+ * through core + gi_sched + the device HAL, at the recorded timing, reproduced to
+ * within 6 us. Case 32 is the synthetic equivalent and stays; this one exists because
+ * a synthetic run misses real command timing and jitter, real arrival ordering, and
+ * the arm and key transitions the truck actually produced.
+ *
+ * IT REPLAYS THE IDS THE DEVICE READS, NOT ALL 706,283 FRAMES, and that is a limit of
+ * the harness rather than a choice. Measured: with every ID, the capture allows 425 us
+ * per frame and the mock worker costs about 1235 us, so the 64-deep receive queue
+ * fills, the core sees 34 % of the frames and the device latches off on a stale 0x411.
+ * Stretching the timeline to give the worker headroom is worse, not better -- at 2x,
+ * 4x and 8x, tx_ok collapses to 558, 25 and 7, because the interlock freshness windows
+ * are in ABSOLUTE time and slowing the stimulus makes every signal stale. The gates
+ * cannot be slowed down.
+ *
+ * SO THIS CASE DOES NOT REACH THE VERIFIED-ON-TIME PATH, and the spec row's stated
+ * reason for preferring a replay is not achieved: ontime reads 10 of 27,462 here
+ * against the bench's 8,976 of 8,983. Reaching it needs the worker to keep up at truck
+ * rate with an empty receive queue, and the mock's clock -- one microsecond per read,
+ * deliberately, to break the probe's busy-wait -- makes the worker's per-frame cost
+ * comparable to the truck's inter-frame gap. No scenario fixes that; it is the model.
+ * Raised with the user rather than papered over.
+ *
+ * WHAT IT DOES NOT TEST: bus load. Spec item 10 is explicit -- a replay gives stimulus
+ * and no load, because controller_advance() completes our frames from our own queue
+ * head plus air_time_for(id) and a delivered frame enters that nowhere. The timing
+ * line printed with this case shows the defaults, which is the honest declaration: no
+ * contention was configured. A load-dependent criterion needs the bench.
+ */
+static int g_la_quiet_windows;
+static uint32_t g_la_telem_prev;
+static int g_la_windows_seen;
+
+static uint32_t telem_sent_now(void)
+{
+    const char *p = strstr(stats(), "\"telemetry\":{");
+    if (p != NULL) { p = strstr(p, "\"sent\":"); }
+    return (p != NULL) ? (uint32_t)strtoul(p + 7, NULL, 10) : 0;
+}
+
+static void la_window(int w)
+{
+    (void)w;
+    const uint32_t now = telem_sent_now();
+    if (now == g_la_telem_prev) { g_la_quiet_windows++; }
+    g_la_telem_prev = now;
+    g_la_windows_seen++;
+}
+
+static void case_long_arm_replay(void)
+{
+    case_begin("case 33: the long arm, replaying real traffic (bullet 10)");
+    case_budget(240, "replays 136,016 frames of a real 300 s capture");
+    setup();
+
+    g_la_quiet_windows = 0;
+    g_la_windows_seen = 0;
+    g_la_telem_prev = 0;
+
+    scn_result_t r;
+    const bool ok = replay_scn("replay-longarm-300s-ids", &r, 15000000, la_window);
+    CHECK(ok,
+          "test/gen_inhibit_shim/scenarios/replay-longarm-300s-ids.scn is "
+          "missing. It is generated, not in git -- see this harness's README "
+          "for the from_capture.py line that builds it");
+    if (!ok) { teardown(); case_end(); return; }
+
+    /*
+     * THE POPULATION AND THE PIN, before any criterion. A replay over no frames
+     * satisfies everything below, and a replay over the WRONG frames satisfies it
+     * just as well while measuring something else.
+     */
+    CHECK(r.frames > 130000,
+          "only %ld frames were replayed; the relevant-ID scenario has 136,016, so this did not "
+          "run the arm it claims to", r.frames);
+    CHECK(r.span_us > 295000000,
+          "the replay spans only %lld us; the capture is 300 s, so the arm is short",
+          (long long)r.span_us);
+    pin_stimulus("replay-longarm-300s-ids", &r);
+
+    /*
+     * The clock advances on every read, so a frame's instant can already have passed
+     * by the time we reach it. A few is noise; many would mean the replay is
+     * compressing its own timeline and the "real timing" claim is false.
+     */
+    CHECK(r.max_late_us < 20000,
+          "the replay fell up to %lld us behind the recorded timing, which is more "
+          "than a VCM period -- the stimulus is being compressed rather than "
+          "reproduced", (long long)r.max_late_us);
+
+    /* 3. TELEMETRY PRESENT THROUGHOUT, per 15 s window. */
+    CHECK(g_la_windows_seen >= 15,
+          "only %d windows were sampled over a 300 s arm", g_la_windows_seen);
+    CHECK(g_la_quiet_windows == 0,
+          "%d of %d windows carried no diag page: telemetry present at the start and "
+          "absent later is what this criterion is about, and a total would hide it",
+          g_la_quiet_windows, g_la_windows_seen);
+
+    /* 1. NO INHIBIT AFTER THE VCM'S NEXT COMMAND. */
+    CHECK(json_u32("\"late_on_wire\":") == 0,
+          "%u inhibit frames went out late over the replay: %s",
+          json_u32("\"late_on_wire\":"), stats());
+    CHECK(json_u32("\"order_violations\":") == 0,
+          "the deadline did not run before every answer: %s", stats());
+
+    /* 2. tx_queued_behind STRUCTURALLY ZERO (spec 5.2 item 3). */
+    CHECK(json_u32("\"tx_queued_behind\":") == 0,
+          "tx_queued_behind is %u: the scheduler handed a second frame to the driver "
+          "while one was still there: %s",
+          json_u32("\"tx_queued_behind\":"), stats());
+
+    /*
+     * COMMAND LOSS IS BOUNDED, NOT IGNORED. The bench receives every command with
+     * ctr_bad 0; here about 8 % of the counter steps are bad because the mock worker
+     * cannot always keep up and the receive queue overflows in bursts. That does not
+     * invalidate the criteria above -- they are about what WE transmitted, and a
+     * missed command simply means one fewer answer -- but it is a fidelity gap that
+     * must not be allowed to grow quietly into a case that replays almost nothing.
+     */
+    const uint32_t ctr_bad = json_u32("\"ctr_bad\":");
+    const uint32_t ctr_ok = json_u32("\"ctr_ok\":");
+    CHECK(ctr_bad < (ctr_ok + ctr_bad) / 5,
+          "%u of %u counter steps were bad -- the harness is losing more than a fifth "
+          "of the commands, so this replay is no longer reproducing the capture",
+          ctr_bad, ctr_ok + ctr_bad);
+
+    /*
+     * AND THE DEVICE ACTUALLY TRANSMITTED. Real traffic drives the gate, so a capture
+     * whose window never satisfies the interlocks would run all 706,283 frames and
+     * assert nothing -- every criterion above is vacuous at tx_ok 0.
+     */
+    const uint32_t tx = json_u32("\"tx_ok\":");
+    CHECK(tx > 25000,
+          "only %u inhibit frames went out over 300 s of real traffic (the capture "
+          "carries 29,992 commands on 0x051), so the gate did not stay open and the "
+          "criteria above were not exercised: %s", tx, stats());
+
+    /*
+     * REPORT WHAT IT RAN, not just that it passed. A case this large whose only
+     * output is a pass tells a reader nothing about whether the arm was healthy,
+     * and these figures are the first thing anyone comparing it against the bench
+     * long arm will want.
+     */
+    printf("           replayed %ld frames over %lld s, max %lld us behind\n",
+           r.frames, (long long)(r.span_us / 1000000),
+           (long long)r.max_late_us);
+    printf("           tx_ok %u, ctr_ok %u, ctr_bad %u, ontime %u + unverified "
+           "%u, diag %u\n",
+           json_u32("\"tx_ok\":"), json_u32("\"ctr_ok\":"),
+           json_u32("\"ctr_bad\":"), json_u32("\"ontime\":"),
+           json_u32("\"ontime_unverified\":"), telem_sent_now());
+
+    teardown();
+    case_end();
+}
+
 /*
  * CASE 27 -- D8's wiring: a mode change while a frame is really in the
  * controller.
@@ -2666,8 +3074,30 @@ static void case_mode_change_keeps_the_held_frame(void)
     case_end();
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    /*
+     * THE MOCK'S RECEIVE QUEUE MUST BE THE DEVICE'S. fake_twai's RXMAX was 10 against
+     * the firmware's 64 until 2026-10-03, with a comment claiming they matched, and
+     * the only thing that revealed it was replaying a real capture -- synthetic cases
+     * never queue enough to notice. Checked here rather than commented, because a
+     * comment is what was wrong.
+     */
+    if (ft_rx_queue_depth() != (int)can_rx_queue_len())
+    {
+        printf("FAIL: the mock receive queue is %d deep and the firmware's is %d. "
+               "A shallower model drops frames the device would have buffered, which "
+               "makes every replay case measure the wrong thing.\n",
+               ft_rx_queue_depth(), (int)can_rx_queue_len());
+        return 1;
+    }
+    for (int i = 1; i < argc; i++)
+    {
+        if (strcmp(argv[i], "--pin-stimulus") == 0)
+        {
+            g_pin_write_mode = true;
+        }
+    }
     setvbuf(stdout, NULL, _IONBF, 0);   /* a hang must still show its trace */
     printf("E1 -- shim tests against a fake TWAI driver\n\n");
     case_diag_completion_not_credited();
@@ -2702,6 +3132,7 @@ int main(void)
     case_respond_figure_matches_its_offset();
     case_respond_figure_includes_the_buffer_wait();
     case_long_arm();
+    case_long_arm_replay();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
     return g_fail ? 1 : 0;

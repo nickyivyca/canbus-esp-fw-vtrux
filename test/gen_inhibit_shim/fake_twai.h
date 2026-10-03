@@ -319,6 +319,22 @@ const ft_frame_t *ft_wire(int i);
  */
 bool             ft_logs_saturated(void);
 
+/* The model's receive queue depth, so a test can check it against the firmware's
+ * rather than trust a comment. See RXMAX in fake_twai.c. */
+int              ft_rx_queue_depth(void);
+
+/*
+ * THE TRANSMIT-TIMING CONFIGURATION THIS CASE RAN WITH (spec 12.4, 2026-10-03):
+ * default air time, every per-ID override, and how many stalls were armed. Writes a
+ * one-line summary into `buf`.
+ *
+ * It is a HIGH-WATER MARK over everything set since ft_reset(), not the state at the
+ * moment of the call. A case that sets an override and clears it again would otherwise
+ * report a clean default, which is the misreading the spec row exists to prevent --
+ * a load-dependent claim read next to a setting that was not the one in force.
+ */
+void             ft_timing_config(char *buf, int len);
+
 /* ------------------------------------------------------------- driving --- */
 
 /*

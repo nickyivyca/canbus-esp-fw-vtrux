@@ -38,11 +38,23 @@
  * already happened four times in this suite (see README, "the model wrong in
  * the same direction as the defect"), so it gets a queue.
  *
- * Depth 10 matches the driver config the firmware installs with. Overflow is
- * counted rather than ignored, because a full RX queue on the device drops
- * frames and that is a real behaviour, not a modelling artefact.
+ * DEPTH 64, WHICH IS THE DEVICE'S. can.c sets g_config.rx_queue_len =
+ * CAN_RX_QUEUE_LEN = 64, and spec 5.1 item 1 requires at least that -- E3 has a row
+ * asserting the firmware side. This said 10 and claimed to match the firmware until
+ * 2026-10-03; it did not, and the error was in the direction that destroys evidence.
+ *
+ * It only ever showed under a real capture. Synthetic cases deliver one frame every
+ * 10 ms and never queue anything; the 300 s replay delivers several frames at the same
+ * instant, overflowed a 10-deep queue, and the device received 7,121 of 29,992
+ * commands with ctr_bad 5385. A model that loses frames the device would have buffered
+ * is the "wrong in the same direction as the defect" failure this file's own header
+ * warns about.
+ *
+ * shim_test checks this against can_rx_queue_len() at startup so the two cannot drift
+ * apart again in silence. Overflow is still counted rather than ignored, because a
+ * full RX queue on the device really does drop frames.
  */
-#define RXMAX 10
+#define RXMAX 64
 static twai_message_t g_rx_q[RXMAX];
 static int            g_rx_n;
 static int            g_rx_dropped;
@@ -424,6 +436,8 @@ int              ft_sent_count(void) { return g_nsent; }
 const ft_frame_t *ft_sent(int i) { return &g_sent[i]; }
 int              ft_wire_count(void) { return g_nwire; }
 
+int ft_rx_queue_depth(void) { return RXMAX; }
+
 bool ft_logs_saturated(void)
 {
     return g_nwire >= SENTMAX || g_nsent >= SENTMAX;
@@ -439,16 +453,77 @@ static void step(void)
     if (g_step_hook) g_step_hook();
 }
 
-void ft_set_air_time(int64_t us) { g_air_time = us; }
-void ft_stall_next(int n) { g_stall_n = n; }
-void ft_stall_id(uint32_t id, int n) { g_stall_id = id; g_stall_id_n = n; }
-
+/* Bound on per-ID air-time overrides. Declared here because the high-water record
+ * below is the first user; the live table further down shares it. */
 #define AIRMAX 8
+
+/*
+ * HIGH-WATER RECORD OF THE TIMING KNOBS, for ft_timing_config(). Separate from the
+ * live values because a case that clears a knob must still report having used it.
+ */
+static int64_t g_air_time_set;          /* non-default default-air-time, if any */
+static int     g_stalls_armed;
+static struct { uint32_t id; int64_t us; } g_air_id_ever[AIRMAX];
+static int     g_n_air_id_ever;
+
+static void note_air_id(uint32_t id, int64_t us)
+{
+    if (us == 0) { return; }            /* clearing is not a use */
+    for (int i = 0; i < g_n_air_id_ever; i++)
+    {
+        if (g_air_id_ever[i].id == id)
+        {
+            if (us > g_air_id_ever[i].us) { g_air_id_ever[i].us = us; }
+            return;
+        }
+    }
+    if (g_n_air_id_ever < AIRMAX)
+    {
+        g_air_id_ever[g_n_air_id_ever].id = id;
+        g_air_id_ever[g_n_air_id_ever].us = us;
+        g_n_air_id_ever++;
+    }
+}
+
+void ft_timing_config(char *buf, int len)
+{
+    int n = snprintf(buf, (size_t)len, "air=%lldus",
+                     (long long)(g_air_time_set ? g_air_time_set : g_air_time));
+    if (g_air_time_set)
+    {
+        n += snprintf(buf + n, (size_t)(len - n), " (set)");
+    }
+    for (int i = 0; i < g_n_air_id_ever && n < len - 24; i++)
+    {
+        n += snprintf(buf + n, (size_t)(len - n), ", 0x%03X=%lldus",
+                      g_air_id_ever[i].id, (long long)g_air_id_ever[i].us);
+    }
+    if (g_stalls_armed && n < len - 20)
+    {
+        n += snprintf(buf + n, (size_t)(len - n), ", stalls=%d", g_stalls_armed);
+    }
+    if (g_n_air_id_ever == 0 && !g_stalls_armed && !g_air_time_set
+        && n < len - 12)
+    {
+        snprintf(buf + n, (size_t)(len - n), ", defaults");
+    }
+}
+
+void ft_set_air_time(int64_t us) { g_air_time = us; g_air_time_set = us; }
+void ft_stall_next(int n) { g_stall_n = n; g_stalls_armed += n; }
+void ft_stall_id(uint32_t id, int n)
+{
+    g_stall_id = id;
+    g_stall_id_n = n;
+    g_stalls_armed += n;
+}
+
 static struct { uint32_t id; int64_t us; } g_air_id[AIRMAX];
 static int g_n_air_id;
 
 void ft_set_air_time_id(uint32_t id, int64_t us)
 {
+    note_air_id(id, us);
     for (int i = 0; i < g_n_air_id; i++)
     {
         if (g_air_id[i].id == id) { g_air_id[i].us = us; return; }
@@ -1078,6 +1153,9 @@ void ft_reset(void)
 {
     g_now = 0;
     g_qn = g_nsent = g_nwire = g_nlog = 0;
+    g_air_time_set = 0;
+    g_stalls_armed = 0;
+    g_n_air_id_ever = 0;
     g_alerts = 0;
     g_alerts_enabled = 0;
     g_air_time = 200;
