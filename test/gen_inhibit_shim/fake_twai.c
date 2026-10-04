@@ -183,6 +183,32 @@ static int        g_nwire;
 
 static uint32_t g_alerts;           /* LATCHED, shared by every frame */
 static uint32_t g_alerts_enabled;
+/*
+ * AIR TIME IS UNIFORM AND DOES NOT DEPEND ON DLC -- 200 us for every frame
+ * whatever its length. A deliberate simplification, commented so it is not
+ * rediscovered as a bug.
+ *
+ * Real air time on this bench is ~16 us per byte, measured per DLC by
+ * e4_rig_calibration.py's airtime phase (IXXAT readings tracked unstuffed
+ * theory to +4 us, in exact 16 us steps). So a DLC-6 0x051 really is shorter
+ * than a DLC-8 diag page, and this model does not represent that.
+ *
+ * WHAT IT COSTS: the model will not make a longer frame likelier to be caught
+ * mid-transmission than a short one. Anything turning on that -- the
+ * TRANSMITTING-versus-AWAITING distinction an abort depends on (item 4), and
+ * so the shape of a preemption -- is not exercised faithfully by the default.
+ * ft_set_air_time_id() gives one ID its own air time when a case needs it;
+ * case 28 drives 400 ms on the five diag IDs for exactly that reason.
+ *
+ * Prompted 2026-10-04 by the interposer session's MCP2515 fake, where a
+ * fixed-length assumption -- a TX buffer counted as loaded only at exactly 13
+ * clocked bytes, while the driver clocks 5 + DLC -- silently wedged every
+ * frame with DLC < 8, invisible because every synthetic test there used
+ * 8-byte payloads. This suite is not exposed that way: it is no DLC
+ * monoculture (12,946 uses of DLC 6 against 2,514 of DLC 8 and one of 0) and
+ * ft_queue() validates DLC per ID rather than assuming one. The exposure here
+ * is timing, not framing -- but it is the same family.
+ */
 static int64_t  g_air_time = 200;
 static int64_t  g_head_started = -1;
 static int64_t  g_last_done;   /* when the previous frame left the head */
