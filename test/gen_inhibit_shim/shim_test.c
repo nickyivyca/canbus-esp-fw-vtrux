@@ -3366,10 +3366,12 @@ static void case_backlog_reaches_the_scheduler(void)
      * with frames queued behind it.
      *
      * WHAT THIS PHASE DOES NOT DO, stated because an earlier version of this comment
-     * claimed it did: it does not isolate gs_command_received's call site. The intent
-     * was that, the worker loop running gs_tick() near the top and twai_receive()
-     * below it, a frame completing while the worker is PARKED would be seen first by
-     * gs_command_received when the parked call returns the next command.
+     * claimed it did: it does not isolate gs_command_received's call site, and it
+     * cannot. THE ORDER IS sched_advance() AT gen_inhibit.c:1234 FIRST, THEN
+     * gs_command_received() AT :1257 -- so the tick inside sched_advance() sees every
+     * completion before the command path does. I originally had that the other way
+     * round and built this phase on it, expecting a frame completing while the worker
+     * was parked to be seen first by gs_command_received.
      *
      * Measured, and the trace is IDENTICAL on a clean build and with
      * gs_command_received's backlog forced to 0:
@@ -3380,16 +3382,28 @@ static void case_backlog_reaches_the_scheduler(void)
      *   t=415789  unver=12  pending=7   next command + 6 filler delivered
      *   t=416298  unver=13  pending=6   the completion is credited HERE
      *
-     * The credit lands at the dequeue step, but gs_command_received is not what takes
-     * it: it found `outstanding` still true and declined, and the frame became free
-     * before the gs_tick that sched_advance() runs a moment later. What frees it in
-     * that gap is NOT established -- twai_read_alerts() does not advance the
-     * controller, and the blocked receive's own controller_advance() had already run
-     * with the clock well past the air time.
+     * THE CREDIT LANDS AT THE DEQUEUE STEP, AND gs_tick IS WHAT TAKES IT -- because of
+     * the call ORDER, which I first had backwards. gen_inhibit.c:1234 runs
+     * sched_advance(t_rx), and that tick credits the completion, BEFORE
+     * gs_command_received at :1257; the comment at :1228 states it outright ("collect a
+     * completion before anything judges the frame"). fake_twai's controller moves only
+     * at turn boundaries, so by the time :1257 runs, `held` is already false and its
+     * completion branch is never entered at all.
      *
-     * CONSEQUENCE: zeroing the backlog at gs_command_received's call site survives
-     * this phase, and is an open gap rather than a covered one. Zeroing it at
-     * gs_tick's call site is caught, here and in phase A.
+     * So there is no mystery and nothing "frees the frame in the gap" -- there is no
+     * gap. An earlier version of this comment said the frame became free between the
+     * two calls and that what freed it was not established. That was the reversed
+     * order, and it is wrong.
+     *
+     * CONSEQUENCE: zeroing the backlog at gs_command_received's call site is a
+     * DOCUMENTED SURVIVOR BY CALL ORDER, not an open gap -- that branch is unreachable
+     * from E1, and on the device it is entered only when the controller finishes a
+     * frame in the microseconds between the two status reads. Zeroing it at gs_tick's
+     * call site IS caught, here and in phase A.
+     *
+     * A hook completing the head on the Nth twai_get_status_info would reach it, and is
+     * deliberately NOT added: it would exist only to reach a branch no test can
+     * otherwise reach, which shapes the model to the test rather than to the device.
      */
     const uint32_t unver_b_start = json_u32("\"ontime_unverified\":");
 
