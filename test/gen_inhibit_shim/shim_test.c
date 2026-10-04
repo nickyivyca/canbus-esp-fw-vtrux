@@ -76,6 +76,18 @@ static void case_end(void)
 {
     print_timing_config();
     const double took = difftime(time(NULL), g_case_start);
+    /*
+     * SAY WHAT IT COST, for anything that cost anything. The budget check below only
+     * speaks when it is exceeded, so until now the cost of every case was invisible
+     * and a stale figure in the spec ("case 33 costs roughly 55 s of host time",
+     * against a measured 13.3 s for the WHOLE suite) could not be noticed by anyone
+     * reading the output.
+     */
+    if (took >= 1.0)
+    {
+        printf("           took %.0f s of wall clock (budget %d s)\n",
+               took, g_case_budget_s);
+    }
     if (took > g_case_budget_s)
     {
         printf("    FAIL: %s took %.0f s of wall clock (budget %d s) -- "
@@ -2067,6 +2079,17 @@ static void case_status_page_fits_the_handler_buffer(void)
  */
 static int g_bal_readings;
 static int g_bal_failures;
+/*
+ * READINGS THAT ACTUALLY EXERCISED THE TERM, not readings taken.
+ *
+ * `held` and `depth` are the two balance terms that are 0 on an idle device,
+ * so a run with no frame ever in flight balances trivially and reads exactly
+ * like a clean pass. That is how mutation H1 -- held always reported 0 on the
+ * page -- survived once case 28's virtual-time span shrank: 799 readings, none
+ * of them with held set, and a population check that counted the 799.
+ */
+static int g_bal_held_seen;
+static int g_bal_depth_seen;
 static char g_bal_first[GI_STATUS_PAGE_CAP];
 
 /* Pull one unsigned field out of a JSON object fragment, or -1 if absent. */
@@ -2114,6 +2137,9 @@ static void balance_one_class(const char *page, const char *cls)
         }
         return;
     }
+    if (he > 0) { g_bal_held_seen++; }
+    if (de > 0) { g_bal_depth_seen++; }
+
     if (q + ci != se + dr + wd + de + he)
     {
         if (g_bal_failures++ == 0)
@@ -2151,14 +2177,67 @@ static void case_status_page_always_balances(void)
 
     g_bal_readings = 0;
     g_bal_failures = 0;
+    g_bal_held_seen = 0;
+    g_bal_depth_seen = 0;
     g_bal_first[0] = 0;
     /*
      * MANY SHORT STEPS, NOT ONE LONG ONE. ft_run() returns as soon as the worker
      * blocks in twai_receive(), so a single ft_run(400000) fires the hook ONCE --
      * which the population check below caught, and which would otherwise have
      * read as a clean pass over one reading.
+     *
+     * AND IT MUST BE REAL TRAFFIC, not bare turns on an idle bus. This case used to
+     * be 400 x ft_run(1000) and nothing else. That covered 40 s of virtual time only
+     * because every step rode the blocked receive's 200 ms deadline jump; when that
+     * jump was bounded to the turn's grant (g_turn_grant in fake_twai.c) the same
+     * loop covered 0.81 s, and the number of readings with `held` set went from 395
+     * to ZERO. The case still passed, and mutation H1 -- `held` always reported 0 on
+     * the page -- went from caught to surviving. Nothing in the suite said so,
+     * because the loop's own cost was what had been providing the coverage.
+     *
+     * So: feed the interlocks and real VCM commands, which puts inhibit frames in
+     * flight and makes `held` and `depth` non-zero at some of the readings, and
+     * ASSERT that below rather than assuming it.
      */
     ft_set_step_hook(balance_step_hook);
+    uint8_t bal_ctr = 0x40;
+    keep_alive(2000000, &bal_ctr);
+
+    /*
+     * AND THE `depth` TERM, which real traffic alone does not reach: at this rate a
+     * frame is handed to the controller immediately and the queue never holds one, so
+     * every reading above has depth 0.
+     *
+     * AND THE ABORT-AND-REQUEUE ROUTE DOES NOT EXIST IN THIS HARNESS, which cost two
+     * wrong attempts and is a fact about the mock worth stating. fake_twai's
+     * controller is a FIFO with an air time, NOT a single TX buffer: an inhibit is
+     * handed over and completes regardless of a telemetry frame already in flight.
+     * Measured -- with a page held for 20 ms, the inhibit's max_queue_us stayed at
+     * 1 us and `aborted` stayed 0. So telemetry cannot block an inhibit here and no
+     * abort can be provoked. Single-buffer contention is fake_buf's model, over in
+     * test/gen_inhibit_sched, and that is where the abort cases live.
+     *
+     * What reaches `depth` here is two TELEMETRY frames outstanding at once, so the
+     * air time has to exceed diag_period_ms and let the next page come due while the
+     * current one is still going. Measured at 400 ms: depth 4, held 1, and 1083 of
+     * 1303 readings with depth set.
+     *
+     * 400 ms IS A STRESS VALUE, labelled per spec 12.2: a real 8-byte frame is about
+     * 200 us at 500 kbit. It is a knob for reaching a state the identity has to
+     * survive, not a rate anything on the truck does, and print_timing_config()
+     * prints it with the case so it cannot be quoted as one.
+     */
+    static const uint32_t DIAG_IDS[] = { 0x7F1, 0x7F2, 0x7F3, 0x7F8, 0x7F9 };
+    for (size_t k = 0; k < sizeof(DIAG_IDS) / sizeof(DIAG_IDS[0]); k++)
+    {
+        ft_set_air_time_id(DIAG_IDS[k], 400000);
+    }
+    keep_alive(3000000, &bal_ctr);
+    for (size_t k = 0; k < sizeof(DIAG_IDS) / sizeof(DIAG_IDS[0]); k++)
+    {
+        ft_set_air_time_id(DIAG_IDS[k], 0);
+    }
+
     for (int i = 0; i < 400; i++)
     {
         ft_run(1000);
@@ -2173,6 +2252,19 @@ static void case_status_page_always_balances(void)
     CHECK(g_bal_readings > 20,
           "only %d status readings were taken, so this case proved nothing; the "
           "step hook is not firing", g_bal_readings);
+    /*
+     * AND THE POPULATION HAS TO EXERCISE THE TERMS, which counting readings does not
+     * establish. `held` and `depth` are 0 on an idle device, so a balance over
+     * readings that never saw a frame in flight is arithmetic on zeroes. These two
+     * are what make H1 fail here instead of passing.
+     */
+    CHECK(g_bal_held_seen > 0,
+          "not one of %d readings reported held > 0, so the identity's `held` term was "
+          "never exercised and a page that always reports held 0 would pass this case; "
+          "the case needs frames in flight, not just readings", g_bal_readings);
+    CHECK(g_bal_depth_seen > 0,
+          "not one of %d readings reported depth > 0, so the `depth` term was never "
+          "exercised either", g_bal_readings);
     CHECK(g_bal_failures == 0,
           "%d of %d status readings did not balance. First: %s",
           g_bal_failures, g_bal_readings, g_bal_first);
@@ -2908,11 +3000,15 @@ static void pin_stimulus(const char *name, const scn_result_t *r)
  * which is how I got "1235 us per frame" wrong and sent a spec requirement after a
  * clock that was fine.
  *
- * ALL FIVE ACCEPTANCE CRITERIA HOLD: the full capture with every ID, mock loss zero
- * (ctr_ok 29,991 and ctr_bad 0), every case passing, the verified-on-time proportion
- * below, and the criteria below.
+ * THE SPEC'S FIVE ACCEPTANCE CRITERIA for the emulation half, in its order (:1035):
+ * every ID; mock loss 0; verified-on-time comparable to the bench; every existing case
+ * passes; the latest mutation rounds still catch what they caught. The first four hold.
+ * The fifth is the reviewing session's to score, and it is NOT a number this file can
+ * claim -- H1 went from caught to surviving once this case's clock behaviour changed,
+ * which is exactly what that criterion exists to notice.
  *
- * THE FIFTH TOOK A MOCK FIX, and it is worth knowing which way it now leans. `ontime`
+ * THE VERIFIED-ON-TIME ONE -- the THIRD, not the fifth, which an earlier version of this
+ * comment got wrong -- took a mock fix, and it is worth knowing which way it now leans. `ontime`
  * is credited only when the receive queue is empty at the completion. The drain used
  * to leave one frame pending on purpose -- the only way to stop the 200 ms clock jump
  * -- so rx_backlog >= 1 at most completions BY CONSTRUCTION and the proportion sat at
@@ -2923,11 +3019,14 @@ static void pin_stimulus(const char *name, const scn_result_t *r)
  * READ THAT NUMBER WITH CARE: IT IS NOW CONSTRUCTED THE OPPOSITE WAY. The drain empties
  * the queue before each completion is judged, so rx_backlog is 0 by construction and
  * this case can no longer produce an unverified completion at all. The bench produces 7
- * of them, and the device's unverified accounting -- the count and its largest backlog,
- * which trip 7 reads -- therefore has NO cover here any more, where it previously had
- * 22,966 samples of it. 100 % verified is not a better result than the bench's 99.92 %;
- * it is a different question being asked. A case that drains to a known backlog and
- * asserts the unverified counts is owed, and is NOT in this suite yet.
+ * of them, and the device's unverified accounting -- the count and its largest backlog
+ * -- therefore has NO cover HERE any more, where it previously had 22,966 samples.
+ * (Those counters are status-page telemetry and feed no trip: rx_backlog's only effect
+ * is the ontime / ontime_unverified / unverified_max_backlog split in
+ * note_left_controller. An earlier version of this comment said trip 7 read them, which
+ * is wrong -- trip 7 reads skips, TX_FAILED and refusal.) 100 % verified is not a better
+ * result than the bench's 99.92 %; it is a different question being asked. Case 34
+ * builds the non-empty-backlog condition this one cannot.
  *
  * WHAT IT DOES NOT TEST: bus load. Spec item 10 is explicit -- a replay gives stimulus
  * and no load, because controller_advance() completes our frames from our own queue
@@ -3016,6 +3115,36 @@ static void case_long_arm_replay(void)
           "tx_queued_behind is %u: the scheduler handed a second frame to the driver "
           "while one was still there: %s",
           json_u32("\"tx_queued_behind\":"), stats());
+
+    /*
+     * 4. THE VERIFIED-ON-TIME FIGURE, ASSERTED RATHER THAN PRINTED.
+     *
+     * This is the spec's THIRD acceptance criterion for the emulation half (~:1037),
+     * not the fifth -- the fifth is the mutation rounds. It was only ever printed
+     * here, which is why two mutations survived while the suite stayed green: the
+     * drain reverted to leaving one frame pending (ontime 7,011 + 22,966), and both
+     * backlog call sites forced to 1 (ontime 0 + unverified 29,977). A figure nobody
+     * asserts is not a criterion, it is a log line.
+     *
+     * The construction makes it exactly checkable: the reader drains the receive
+     * queue to EMPTY before each completion is judged, so every completion must be
+     * verifiable and `unverified` must be 0. If that ever stops holding, either the
+     * drain changed or the backlog stopped reaching the scheduler -- both of which
+     * are things this case should fail for.
+     */
+    const uint32_t la_ontime = json_u32("\"ontime\":");
+    const uint32_t la_unver  = json_u32("\"ontime_unverified\":");
+    const uint32_t la_sent   = json_u32("\"tx_ok\":");
+    CHECK(la_unver == 0,
+          "%u of %u completions could not be verified on time, but the reader drains "
+          "the receive queue empty before judging one, so the backlog should be 0 at "
+          "every completion: either the drain no longer empties it or msgs_to_rx is "
+          "not reaching the scheduler: %s",
+          la_unver, la_ontime + la_unver, stats());
+    CHECK(la_ontime == la_sent,
+          "%u completions were credited on time against %u frames transmitted; under "
+          "an empty-queue drain every transmitted inhibit must be verifiable: %s",
+          la_ontime, la_sent, stats());
 
     /*
      * COMMAND LOSS IS BOUNDED, NOT IGNORED. The bench receives every command with
@@ -3150,6 +3279,148 @@ static void case_mode_change_keeps_the_held_frame(void)
     case_end();
 }
 
+/*
+ * CASE 34 -- A KNOWN RECEIVE BACKLOG IS COUNTED, AND AT BOTH CALL SITES.
+ *
+ * Spec 5.2's on-time counts are split: `ontime` is a completion the device could
+ * verify because its receive queue was empty at that instant, `ontime_unverified` one
+ * it could not, with `unverified_max_backlog` the worst backlog behind one. The split
+ * is the only thing rx_backlog does (gi_sched.c, note_left_controller) -- it feeds no
+ * trip and no abort. It is status-page telemetry, and its value is that a reader can
+ * tell "we answered in time" from "we think we answered in time".
+ *
+ * WHY THIS CASE EXISTS. The reviewing session's round 15 showed that zeroing the
+ * backlog at EITHER call site left the entire shim suite green:
+ *   U1  gs_command_received(..., 0)  -- survived
+ *   U2  gs_tick(..., 0)              -- survived
+ * Nothing checked that can_msgs_to_rx() reaches the scheduler at all. Case 33 cannot
+ * see it: it drains the queue empty before judging a completion, so a backlog forced
+ * to zero is indistinguishable from the truth there. This case builds the opposite
+ * condition on purpose.
+ *
+ * AN ALWAYS-ZERO BACKLOG IS THE DANGEROUS DIRECTION. It makes every completion read as
+ * verified, which is the flattering answer: a log would claim the device confirmed
+ * every answer against an empty queue when it had frames waiting and could confirm
+ * nothing.
+ *
+ * TWO PHASES, one per call site. note_left_controller() is reached from gs_tick() on
+ * the periodic path and from gs_command_received() when the next command is dequeued,
+ * and one assertion cannot tell which credited a completion -- so each phase is
+ * arranged to be noticed by one of them and asserted on its own.
+ */
+static void case_backlog_reaches_the_scheduler(void)
+{
+    case_begin("case 34: a known receive backlog is counted (both call sites)");
+    setup();
+    go_live();
+
+    static const uint8_t FLT[8] = { 0, 0, 0, 0, 0, 0, 0, 0xC8 };
+    uint8_t cmd[6];
+    uint8_t ctr = 0x60;
+
+    const uint32_t unver_start = json_u32("\"ontime_unverified\":");
+
+    /*
+     * PHASE A -- the completion is noticed on the PERIODIC path (gs_tick).
+     *
+     * Queue a command with filler BEHIND it, so the worker takes the 0x051 first and
+     * frames are still waiting when our answer completes. The answer's air time is
+     * the default 200 us, far shorter than the gap to any next command, so the tick
+     * is what finds it.
+     */
+    memcpy(cmd, VCM, sizeof(cmd));
+    cmd[5] = (uint8_t)(ctr++ & 0x0F);
+    ft_deliver(0x051, cmd, 6);
+    for (int i = 0; i < 6; i++) { ft_deliver(0x617, FLT, 8); }
+
+    /*
+     * Turns, not time: each one lets the worker take exactly one frame, so the
+     * backlog falls by one per turn and is still non-zero when the answer completes.
+     */
+    for (int i = 0; i < 8; i++) { ft_run(500); }
+
+    const uint32_t unver_a = json_u32("\"ontime_unverified\":");
+    const uint32_t backlog_a = json_u32("\"unverified_max_backlog\":");
+    CHECK(unver_a > unver_start,
+          "a command was answered with %d frames still queued behind it and the "
+          "device counted the completion as verified on time; msgs_to_rx is not "
+          "reaching gs_tick: %s", 6, stats());
+    CHECK(backlog_a >= 1,
+          "the completion was booked unverified but the largest backlog reads %u, so "
+          "the depth itself is not being carried: %s", backlog_a, stats());
+
+    /*
+     * PHASE B -- a completion credited at the step where the NEXT COMMAND is dequeued,
+     * with frames queued behind it.
+     *
+     * WHAT THIS PHASE DOES NOT DO, stated because an earlier version of this comment
+     * claimed it did: it does not isolate gs_command_received's call site. The intent
+     * was that, the worker loop running gs_tick() near the top and twai_receive()
+     * below it, a frame completing while the worker is PARKED would be seen first by
+     * gs_command_received when the parked call returns the next command.
+     *
+     * Measured, and the trace is IDENTICAL on a clean build and with
+     * gs_command_received's backlog forced to 0:
+     *
+     *   t=414262  unver=12  pending=1   command delivered
+     *   t=414771  unver=12  pending=0   our answer handed to the controller
+     *   t=415783  unver=12  pending=0   worker parked; the 200 us air time elapses
+     *   t=415789  unver=12  pending=7   next command + 6 filler delivered
+     *   t=416298  unver=13  pending=6   the completion is credited HERE
+     *
+     * The credit lands at the dequeue step, but gs_command_received is not what takes
+     * it: it found `outstanding` still true and declined, and the frame became free
+     * before the gs_tick that sched_advance() runs a moment later. What frees it in
+     * that gap is NOT established -- twai_read_alerts() does not advance the
+     * controller, and the blocked receive's own controller_advance() had already run
+     * with the clock well past the air time.
+     *
+     * CONSEQUENCE: zeroing the backlog at gs_command_received's call site survives
+     * this phase, and is an open gap rather than a covered one. Zeroing it at
+     * gs_tick's call site is caught, here and in phase A.
+     */
+    const uint32_t unver_b_start = json_u32("\"ontime_unverified\":");
+
+    memcpy(cmd, VCM, sizeof(cmd));
+    cmd[5] = (uint8_t)(ctr++ & 0x0F);
+    ft_deliver(0x051, cmd, 6);
+    ft_run(500);        /* dequeued; our answer is handed to the controller */
+    ft_run(1000);       /* that tick saw it outstanding; the worker then parks in the
+                         * receive and the 200 us air time elapses while it is there */
+
+    /*
+     * The next command, with filler behind it so the backlog is non-zero. The parked
+     * receive returns this inside the iteration whose tick has already run, so
+     * gs_command_received is the first to see the completion.
+     */
+    memcpy(cmd, VCM, sizeof(cmd));
+    cmd[5] = (uint8_t)(ctr++ & 0x0F);
+    ft_deliver(0x051, cmd, 6);
+    for (int i = 0; i < 6; i++) { ft_deliver(0x617, FLT, 8); }
+    ft_run(500);
+
+    CHECK(json_u32("\"ontime_unverified\":") > unver_b_start,
+          "an answer that completed while the worker was parked, and was credited at "
+          "the step that dequeued the next command, was booked verified on time with "
+          "6 frames still queued behind it; the backlog is not reaching the scheduler "
+          "on that path: %s",
+          stats());
+
+    /*
+     * AND THE PAGE STILL BALANCES through all of it -- the terms above are only
+     * meaningful if the identity they sit in holds.
+     */
+    g_bal_readings = 0;
+    g_bal_failures = 0;
+    g_bal_first[0] = 0;
+    balance_step_hook();
+    CHECK(g_bal_failures == 0,
+          "the status page does not balance after a backlogged arm: %s", g_bal_first);
+
+    teardown();
+    case_end();
+}
+
 int main(int argc, char **argv)
 {
     /*
@@ -3209,6 +3480,7 @@ int main(int argc, char **argv)
     case_respond_figure_includes_the_buffer_wait();
     case_long_arm();
     case_long_arm_replay();
+    case_backlog_reaches_the_scheduler();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
     return g_fail ? 1 : 0;

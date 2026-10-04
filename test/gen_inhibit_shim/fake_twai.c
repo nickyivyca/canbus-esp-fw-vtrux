@@ -1127,11 +1127,20 @@ esp_err_t twai_receive(twai_message_t *message, TickType_t ticks)
          * now costs as many turns as the granted time needs instead of arriving in
          * a single jump, which is what a real blocked receive does.
          *
-         * Keeping SOME advance is deliberate. With none at all, a case that grants
-         * time only through ft_run() could leave the receive blocked forever and a
-         * test waiting on a timeout would hang -- which is what the original
-         * comment was protecting against. The intent was right; the magnitude was
-         * not.
+         * WHY ANY ADVANCE AT ALL, with the first answer corrected. This comment used
+         * to say a bounded advance was needed or "a test waiting on a timeout would
+         * hang". That is NOT what prevents the hang: ft_run() advances g_now to its
+         * own deadline after every turn and calls controller_advance() and step()
+         * itself, so time moves whether or not the receive moves it. Measured -- a
+         * mutant whose blocked receive advances NOTHING, and one where ft_run never
+         * records the grant, both pass the whole suite, with case 33 differing only
+         * in worst lateness: 69 us against 72.
+         *
+         * The advance is kept because it moves the controller BEFORE the worker
+         * yields, so a frame whose air time elapsed during the block is visible to
+         * the scheduler on this pass rather than the next. That is a real difference
+         * of one pass, not a hang; the two are equivalent in this suite to within
+         * 3 us, and nothing in the spec distinguishes them.
          */
         {
             const int64_t to = (deadline < g_turn_grant) ? deadline : g_turn_grant;

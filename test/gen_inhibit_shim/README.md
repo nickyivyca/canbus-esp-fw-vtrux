@@ -141,8 +141,12 @@ as an average: **3.5 us per turn**, 1.62 s across 463,307 turns of a 300 s repla
 clock is cheap. A spec requirement to rebuild it was raised and then withdrawn on this
 correction; the wrong figure is kept here so nobody re-derives it.
 
-**The fifth criterion holds, and it took a fix to the mock rather than to the
-firmware.** `ontime` is credited only when the receive queue is empty at the
+**The verified-on-time criterion holds, and it took a fix to the mock rather than to
+the firmware.** (It is the spec's **third** acceptance criterion for the emulation half,
+not the fifth — the order is every ID, mock loss 0, verified-on-time, every case
+passes, the mutation rounds still catch. An earlier revision of this section and the
+commit that landed it both called it the fifth; names are used here instead of numbers
+for that reason.) `ontime` is credited only when the receive queue is empty at the
 completion. The drain used to leave one frame pending deliberately — the only way to
 stop the 200 ms clock jump — so `rx_backlog >= 1` at most completions *by
 construction*, and the verified-on-time proportion sat at **7,011 of 29,977** against
@@ -154,10 +158,16 @@ empties the queue and the proportion is **29,977 of 29,977**.
 bench's 99.92 %.** The drain empties the queue before each completion is judged, so
 `rx_backlog` is now 0 by construction and this case **cannot produce an unverified
 completion at all**. The bench produces 7, and the device's unverified accounting — the
-count and the largest backlog behind one, which trip 7 reads — therefore has **no cover
-here any more**, where the old construction gave it 22,966 samples. One question
-replaced another. **A case that drains to a known backlog and asserts the unverified
-counts is owed and is not in this suite yet.**
+count and the largest backlog behind one — therefore has **no cover in case 33 any
+more**, where the old construction gave it 22,966 samples. One question replaced
+another. **Case 34 builds the non-empty-backlog condition instead**, and catches a
+backlog forced to zero at `gs_tick`'s call site or forced to one at both.
+
+**Those counters are status-page telemetry and no trip depends on them.** `rx_backlog`'s
+only effect is the `ontime` / `ontime_unverified` / `unverified_max_backlog` split in
+`note_left_controller`; trip 7 reads skips, `TX_FAILED` and refusal. An earlier revision
+of this section said trip 7 read the unverified counts, and that was wrong — the lost
+cover matters for telemetry, not for any latch.
 
 **What the fix cost elsewhere, measured:** the replay now takes one worker turn per
 frame rather than per timestamp — 706,284 turns against 463,307, 2.46 s of virtual time
