@@ -625,8 +625,28 @@ gs_deadline_t gs_command_received(gs_t *s, int64_t now, uint32_t rx_backlog)
      * Observe a completion FIRST. A frame that finished before this dequeue is
      * on time in the only sense the device can evaluate, and checking after the
      * withdrawal decision would score it as a skip.
+     *
+     * `!s->aborting` IS THE SAME LOAD-BEARING GUARD AS IN gs_tick (step 1), AND
+     * IT WAS MISSING HERE. The driver reports an aborted frame exactly as it
+     * reports a real transmission, so "it left the controller" alone credits an
+     * ABORTED frame as SENT -- and on this path that lost the frame outright:
+     * booked sent, `aborted` and `requeued` never incremented, and the page never
+     * on the wire. The identity still closed (queued 1 = sent 1), which is why no
+     * balance check in the suite noticed a page that had vanished.
+     *
+     * Found 2026-10-03 by the reviewing session while tracing why a mutation of
+     * this call site survived; spec 5.2 item 6 requires aborted and requeued to
+     * both be counted. A departure during an abort belongs to gs_tick's step 3,
+     * which is the code that knows how to book it.
+     *
+     * The window on the device is narrow but real: gen_inhibit.c runs
+     * sched_advance() at :1234 and this function at :1257, so an abort command
+     * issued in that tick and taking effect between the two status reads -- 6-21
+     * us, measured in item 9's table -- arrives here with a frame held
+     * mid-abort. It needs a contended bus, which is the condition the scheduler
+     * exists for.
      */
-    if (s->held && !s->hal->outstanding(s->hal->ctx))
+    if (s->held && !s->aborting && !s->hal->outstanding(s->hal->ctx))
     {
         note_left_controller(s, now, rx_backlog);
     }

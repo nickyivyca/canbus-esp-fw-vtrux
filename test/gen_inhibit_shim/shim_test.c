@@ -3345,9 +3345,21 @@ static void case_backlog_reaches_the_scheduler(void)
           "a command was answered with %d frames still queued behind it and the "
           "device counted the completion as verified on time; msgs_to_rx is not "
           "reaching gs_tick: %s", 6, stats());
-    CHECK(backlog_a >= 1,
-          "the completion was booked unverified but the largest backlog reads %u, so "
-          "the depth itself is not being carried: %s", backlog_a, stats());
+    /*
+     * THE DEPTH, EXACTLY, not just "non-zero". A mutation flattening the backlog to 1
+     * at both call sites passed an earlier `>= 1` here: it kept the unverified verdict
+     * while discarding the depth, which is the only thing unverified_max_backlog is
+     * for -- how far behind the dequeue actually was.
+     *
+     * 5 = the 6 filler frames delivered behind the command, less the one consumed by
+     * the turn that carries the credit. If the harness's turn accounting changes, this
+     * is to be re-derived from the new accounting and re-stated, NOT relaxed to an
+     * inequality; the inequality is what let the mutation through.
+     */
+    CHECK(backlog_a == 5,
+          "the largest unverified backlog reads %u, expected 5 (6 frames delivered "
+          "behind the command, less the one the crediting turn consumed); the depth is "
+          "not being carried faithfully: %s", backlog_a, stats());
 
     /*
      * PHASE B -- a completion credited at the step where the NEXT COMMAND is dequeued,

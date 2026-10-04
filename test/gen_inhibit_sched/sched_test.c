@@ -1120,6 +1120,93 @@ static void wire_log_sane(void)
 }
 
 /*
+ * A DEPARTURE OBSERVED BY gs_command_received WHILE AN ABORT IS IN PROGRESS.
+ *
+ * Found 2026-10-03 by the reviewing session while tracing why mutation U1 survived.
+ * gs_tick() guards its completion check with `!s->aborting` (gi_sched.c:435) and its
+ * comment calls the guard load-bearing: the driver reports an aborted frame exactly as
+ * it reports a real transmission, so "it left the controller" alone credits an ABORTED
+ * frame as SENT. gs_command_received() did not have that guard.
+ *
+ * The consequence is a silently lost telemetry page: booked sent, never counted as
+ * aborted, never requeued, never on the wire. Spec 5.2 item 6 requires aborted and
+ * requeued to both be counted.
+ *
+ * NOTHING IN THE SUITE CAUGHT IT because the identity still closes -- queued 1 = sent 1
+ * -- with `aborted` and `requeued` simply never incremented. The balance checks are
+ * satisfied by a page that has vanished. What shows it is the wire and the per-class
+ * terms, which is what this case asserts.
+ *
+ * ON THE DEVICE the window is real but narrow: gen_inhibit.c runs sched_advance() at
+ * :1234 and gs_command_received() at :1257, so an abort command issued in that tick
+ * taking effect between the two status reads -- 6-21 us, measured in item 9's table --
+ * lands here. It needs a contended bus, which is the condition the scheduler exists for.
+ */
+static void case_departure_during_abort_is_not_sent(void)
+{
+    g_case = "abort: a departure seen by gs_command_received is not credited as sent";
+    fb_reset();
+    fb_set_contended(true);         /* STRESS: saturated bus, spec 12.2 */
+    gs_t s;
+    gs_init(&s, fb_hal());
+
+    const gs_class_stats_t *telem = &s.st.cls[GS_CLASS_TELEMETRY];
+
+    /* A diag page in the buffer, awaiting arbitration. */
+    gi_frame_t d = mk(ID_DIAG, GI_TX_DIAG);
+    ck(gs_queue_frame(&s, GS_CLASS_TELEMETRY, &d, fb_now()), "diag queued");
+    run(&s, 50, 10, 0);
+    ck_eq(fb_submit_count(), 1, "the diag was handed over");
+    ck(fb_state_now() == GS_BUF_AWAITING, "and is awaiting arbitration");
+
+    /* An inhibit arrives, so the next tick must preempt: abort the page. */
+    gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
+    ck(gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now()), "inhibit queued");
+
+    /*
+     * ONE tick: it begins the abort and issues the command. fake_buf then frees the
+     * buffer a few microseconds later, modelling the measured 6-21 us.
+     */
+    gs_tick(&s, fb_now(), 0);
+    ck(s.st.aborts >= 1, "the abort was issued");
+    fb_advance(10);
+
+    /*
+     * AND NOW THE VCM'S NEXT COMMAND, which is the path under test. The buffer is free
+     * because the abort took effect, and the page is still held mid-abort.
+     */
+    (void)gs_command_received(&s, fb_now(), 3);
+
+    ck_eq(telem->sent, 0,
+          "the aborted diag page was credited as SENT by gs_command_received -- the "
+          "driver reports an abort exactly like a transmission, which is what gs_tick's "
+          "`!s->aborting` guard exists to prevent");
+    ck_eq(residual(&s, GS_CLASS_TELEMETRY), 0, "the identity still closes");
+
+    /*
+     * THE BOOKING BELONGS TO THE NEXT TICK, not to the command path, and that is the
+     * point of the guard rather than a gap in it: gs_command_received declines a
+     * departure it cannot classify, and gs_tick's step 3 counts it as aborted and puts
+     * it back. So these are asserted after a tick has run, not before.
+     */
+    gs_tick(&s, fb_now(), 0);
+    ck_eq(telem->aborted, 1, "the abort is counted (spec 5.2 item 6)");
+    ck_eq(telem->requeued, 1, "and the page is put back, not dropped");
+    ck_eq(telem->sent, 0, "and still not credited as sent");
+    ck_eq(residual(&s, GS_CLASS_TELEMETRY), 0, "the identity closes after the booking");
+
+    /*
+     * THE PAGE MUST REACH THE WIRE. This is the assertion the balance checks cannot
+     * make: a page booked sent but never transmitted satisfies the identity and is
+     * gone.
+     */
+    fb_set_contended(false);
+    run(&s, 5000, 10, 0);
+    ck(wire_count_id(ID_DIAG) >= 1,
+       "the requeued diag page never reached the wire: it was booked as sent and lost");
+}
+
+/*
  * ITEM 10 CASE 3, EMULATION HALF: "sustained bus saturation: no inhibit late,
  * telemetry delayed and counted, never silently lost."
  *
@@ -1591,6 +1678,7 @@ int main(void)
 {
     printf("scheduler cases (spec 5.2 item 10, emulation half)\n");
     case_preempt_awaiting_telemetry();
+    case_departure_during_abort_is_not_sent();
     case_never_aborts_while_transmitting();
     case_deadline_purges_queued_inhibit();
     case_three_skips_sliding_window();
