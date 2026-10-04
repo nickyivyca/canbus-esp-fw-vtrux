@@ -650,11 +650,28 @@ void gs_tick(gs_t *s, int64_t now, uint32_t rx_backlog)
  *              not an observed event. It is evaluated only when gs_tick() runs,
  *              so the real cap is 1 ms plus the wait for the next tick.
  *
- * WHAT IS UNTESTED: `skipped` is 0 on every recorded arm, so no arm has ever had
- * an inhibit still queued or held when the next 0x051 was dequeued. The bound
- * argument above covers that case too, but it has never been exercised -- if an
- * arm ever reports a skip, build this instrument again rather than reasoning
- * about it.
+ * THE CAP DOES NOT COVER THE SKIP REGIME, and an earlier revision of this
+ * comment wrongly said it did. The cap limits how OLD an abort can get. The
+ * abort that matters in a skip is brand new: step 2 at :470 calls begin_abort()
+ * BEFORE step 3's abort block at :478, step 3 steps it at once, and if
+ * abort_step() has not seen EMPTY yet it returns false and gs_tick() returns
+ * early with `aborting` and `held` still true -- so this function is entered
+ * microseconds later with an abort ~0 us old, which no 1 ms cap touches.
+ *
+ * What excludes the NON-skip arms is the minimum command gap, not the cap: at
+ * the :1234 tick an inhibit is queued only if a stale one survives, because
+ * gi_on_frame() queues the new command's inhibit only after this function
+ * returns. So step 2 cannot fire there, and any older abort is >= 2503 us old
+ * and long gone.
+ *
+ * UNTESTED, therefore: `skipped` is 0 on every recorded arm, so no arm has ever
+ * had an inhibit still queued when the next 0x051 was dequeued, and the skip
+ * regime is where a fresh step-2 abort could appear at :1234. Whether it occurs
+ * physically is unknown. If an arm ever reports a skip, build this instrument
+ * again rather than reasoning about it. Post-fix this is moot for correctness --
+ * the `!s->aborting` guard handles it, and
+ * case_departure_during_abort_is_not_sent in the sched suite builds exactly this
+ * sequence -- but the historical account needs it.
  */
 void gs_abortwin_note(gs_t *s)
 {
