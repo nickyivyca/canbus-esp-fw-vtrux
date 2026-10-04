@@ -291,6 +291,19 @@ typedef struct
     uint32_t abort_bound_hit;
     uint32_t abort_max_us;
 
+#if GI_INSTRUMENT_ABORTWIN
+    /*
+     * MEASUREMENT ONLY -- how often the device reaches the window the pre-fix
+     * `note_left_controller()` defect needed. `reached` is the precondition
+     * (`held && aborting` at the gs_command_received call site); `free` adds
+     * the live `outstanding()` test, which is the exact condition the pre-fix
+     * code acted on. See gs_abortwin_note() for why the split matters and why
+     * the shipping build cannot observe this without being asked to.
+     */
+    uint32_t abortwin_reached;
+    uint32_t abortwin_free;
+#endif
+
     /*
      * ON-TIME CLAIMS THAT CANNOT BE VERIFIED, and this counter is the whole
      * point of the honesty in the deadline note below. An inhibit's completion
@@ -542,5 +555,10 @@ const gs_stats_t *gs_stats(const gs_t *s);
 
 /* Rendered by the caller; the scheduler has no printf. */
 int gs_json(const gs_t *s, char *buf, int buflen);
+
+#if GI_INSTRUMENT_ABORTWIN
+/* Measurement build only. See the definition in gi_sched.c. */
+void gs_abortwin_note(gs_t *s);
+#endif
 
 #endif /* GI_SCHED_H */

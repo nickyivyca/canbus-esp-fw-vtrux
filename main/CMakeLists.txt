@@ -55,6 +55,23 @@ if(GI_INSTRUMENT_TXABORT)
                    "writes the TWAI abort command register directly")
 endif()
 
+# ABORT-WINDOW MEASUREMENT BUILD.
+#
+#   idf.py -B build-abortwin -DGI_INSTRUMENT_ABORTWIN=1 build
+#
+# Counts how often gs_command_received() is entered with `held && aborting`,
+# and how often the controller had ALSO freed the frame by then -- the window
+# the pre-fix note_left_controller() defect needed. Read-only: it makes no
+# scheduling decision. Unlike the TXABORT probe it adds no source file and
+# touches no private header, so the guard lives inside gi_sched.c; what it adds
+# is one twai_get_status_info() read inside an already-rare state.
+#
+# Never flash a build configured this way to the truck. E3 refuses it.
+if(GI_INSTRUMENT_ABORTWIN)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE GI_INSTRUMENT_ABORTWIN=1)
+    message(STATUS "gen_inhibit: ABORT WINDOW counters ENABLED (measurement build)")
+endif()
+
 # AUTO-ARM BUILD, for spec 12.4's auto-arm row.
 #
 #   idf.py -B build-autoarm -DGEN_INHIBIT_AUTOARM=GEN_INHIBIT_INHIBIT build

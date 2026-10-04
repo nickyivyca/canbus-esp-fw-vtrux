@@ -544,6 +544,11 @@ def check_no_instrument(path):
          # gi_txabort_register (T), txab_handler (t, address taken by the uri
          # struct), txab_uri (d, registered with the server).
          ("gi_txabort_register", "txab_handler", "txab_uri")),
+        # Added 2026-10-03 with the instrument. `gs_abortwin_note` is non-static
+        # precisely so that nm reports it -- see M5 above.
+        ("GI_INSTRUMENT_ABORTWIN",
+         (b'"abortwin":{',),
+         ("gs_abortwin_note",)),
     )
 
     img_hits = []

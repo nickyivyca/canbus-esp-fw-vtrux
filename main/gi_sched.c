@@ -611,6 +611,38 @@ void gs_tick(gs_t *s, int64_t now, uint32_t rx_backlog)
     }
 }
 
+#if GI_INSTRUMENT_ABORTWIN
+/*
+ * Count how often this call is entered in the state the pre-fix defect needed.
+ *
+ * NOT static, deliberately: a static helper is inlined away and then an ELF
+ * symbol check naming it passes on a measurement image, which is the exact gap
+ * the reviewer's M5 mutation found in the txabort row of E3.
+ *
+ * The early return is what keeps this free. `outstanding()` is a
+ * twai_get_status_info() call on the device, and the shipping code never makes
+ * it while aborting -- `!s->aborting` short-circuits ahead of it -- so the read
+ * has to be added here, and it is added ONLY inside the state being measured.
+ */
+void gs_abortwin_note(gs_t *s)
+{
+    if (!s->held || !s->aborting)
+    {
+        return;
+    }
+    s->st.abortwin_reached++;
+    if (!s->hal->outstanding(s->hal->ctx))
+    {
+        /*
+         * Pre-fix, THIS is the instant the frame was credited as sent while an
+         * abort was removing it. Post-fix the guard declines and step 3 books
+         * it. Either way nothing here decides anything -- this counts only.
+         */
+        s->st.abortwin_free++;
+    }
+}
+#endif
+
 gs_deadline_t gs_command_received(gs_t *s, int64_t now, uint32_t rx_backlog)
 {
     /*
@@ -646,6 +678,9 @@ gs_deadline_t gs_command_received(gs_t *s, int64_t now, uint32_t rx_backlog)
      * mid-abort. It needs a contended bus, which is the condition the scheduler
      * exists for.
      */
+#if GI_INSTRUMENT_ABORTWIN
+    gs_abortwin_note(s);
+#endif
     if (s->held && !s->aborting && !s->hal->outstanding(s->hal->ctx))
     {
         note_left_controller(s, now, rx_backlog);
@@ -847,6 +882,26 @@ int gs_json(const gs_t *s, char *buf, int buflen)
             buflen);
     }
 
+    /*
+     * `}` closes `cls`; `}` closes `sched`. The measurement object, when it
+     * exists at all, goes BETWEEN them -- a sibling of `cls`, never a member of
+     * it. An earlier revision of this instrument appended it straight after
+     * `"cls":{` was opened, which is valid JSON and therefore silent: it put a
+     * counter inside the map of transmit classes, where anything iterating the
+     * classes meets a record that is not one. (`case3_run_compare.py` iterates
+     * the three class names explicitly, so it would not have caught it either.)
+     *
+     * Done here rather than before `"cls":{` so that the instrument-off build's
+     * format literal stays the `"}}"` it always was, and gs_json() gains no call
+     * on the shipping path. The whole instrument is then additive inside #if.
+     */
+#if GI_INSTRUMENT_ABORTWIN
+    n = clamp(n + snprintf(buf + n, buflen - n,
+        "},\"abortwin\":{\"reached\":%lu,\"free\":%lu}}",
+        (unsigned long)s->st.abortwin_reached,
+        (unsigned long)s->st.abortwin_free), buflen);
+#else
     n = clamp(n + snprintf(buf + n, buflen - n, "}}"), buflen);
+#endif
     return (buflen > 0 && n >= buflen) ? buflen - 1 : n;
 }
