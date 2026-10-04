@@ -623,6 +623,38 @@ void gs_tick(gs_t *s, int64_t now, uint32_t rx_backlog)
  * twai_get_status_info() call on the device, and the shipping code never makes
  * it while aborting -- `!s->aborting` short-circuits ahead of it -- so the read
  * has to be added here, and it is added ONLY inside the state being measured.
+ *
+ * WHAT IT MEASURED, 2026-10-04, bench WiCAN, 90 s saturated case 3 arm:
+ * reached 0, free 0, against 1463 aborts / 8997 commands / 8983 transmissions.
+ * The precondition was never reached. Since `reached` was 0 the added
+ * twai_get_status_info() never ran either, so the arm cannot have been
+ * perturbed by its own instrument.
+ *
+ * WHY IT IS 0, AND THIS CORRECTS 19577a8's COMMIT MESSAGE, which says the 1 ms
+ * bound closes each abort before the next command arrives. IT DOES NOT, and the
+ * counters say so: abort_step() tests GS_BUF_EMPTY *before* it tests the bound,
+ * `abort_bound_hit` is 0 in every recorded arm, and `abort_max_us` -- which is
+ * `now - abort_since` at the EMPTY exit -- is 0 in all but one (f977d81's single
+ * 73 us sample). So every abort closed inside the tick that opened it; the bound
+ * never engaged. Two distinct claims, both true, which that message conflated:
+ *
+ *   OBSERVED   aborts open and close within one tick, having begun 17-161 us
+ *              after the inhibit was queued (inhibit max_queue_us across the
+ *              arms, i.e. just after a command), while the next command is
+ *              >= 2503 us away (rx_gap min). Nothing survives to the
+ *              gs_command_received() call, so `reached` is 0.
+ *   GUARANTEED abort_step() closes ANY abort at `now - abort_since >= 1000 us`
+ *              whatever opened it -- preemption, the deadline path below, or
+ *              gs_withdraw_inhibits() -- so an abort's life is capped near 1 ms
+ *              even if in-tick resolution stopped happening. The bound is a cap,
+ *              not an observed event. It is evaluated only when gs_tick() runs,
+ *              so the real cap is 1 ms plus the wait for the next tick.
+ *
+ * WHAT IS UNTESTED: `skipped` is 0 on every recorded arm, so no arm has ever had
+ * an inhibit still queued or held when the next 0x051 was dequeued. The bound
+ * argument above covers that case too, but it has never been exercised -- if an
+ * arm ever reports a skip, build this instrument again rather than reasoning
+ * about it.
  */
 void gs_abortwin_note(gs_t *s)
 {
