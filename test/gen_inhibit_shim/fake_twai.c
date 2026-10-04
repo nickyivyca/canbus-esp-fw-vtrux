@@ -438,6 +438,8 @@ int              ft_wire_count(void) { return g_nwire; }
 
 int ft_rx_queue_depth(void) { return RXMAX; }
 
+int ft_rx_pending(void) { return g_rx_n; }
+
 bool ft_logs_saturated(void)
 {
     return g_nwire >= SENTMAX || g_nsent >= SENTMAX;

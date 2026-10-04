@@ -324,6 +324,14 @@ bool             ft_logs_saturated(void);
 int              ft_rx_queue_depth(void);
 
 /*
+ * Frames waiting in the model's receive queue. A replay needs this to know when the
+ * worker has caught up: the worker consumes ONE frame per turn, so a burst delivered at
+ * one timestamp needs one turn per frame, and giving it a turn on an EMPTY queue makes
+ * it block in twai_receive and burn a whole receive timeout of virtual time.
+ */
+int              ft_rx_pending(void);
+
+/*
  * THE TRANSMIT-TIMING CONFIGURATION THIS CASE RAN WITH (spec 12.4, 2026-10-03):
  * default air time, every per-ID override, and how many stalls were armed. Writes a
  * one-line summary into `buf`.

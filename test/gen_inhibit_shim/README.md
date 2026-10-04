@@ -89,11 +89,12 @@ capture that *is* in the project repo:
 L=~/Seafile/NotGit/reverse-it/projects/vtrux/notes/artifacts/gen-inhibit/runs
 cd ../gen_inhibit_host
 python3 from_capture.py $L/scottsvalley_armable_300s.log --channel 0 --at 0 --for 300 \
-        --out ../gen_inhibit_shim/scenarios/replay-longarm-300s-ids.scn
+        --all-ids --out ../gen_inhibit_shim/scenarios/replay-longarm-300s-all.scn
 ```
 
-**Do not pass `--all-ids`.** Two reasons, both measured: `host_runner` exits 2 on the
-resulting per-ID comment line, and the shim cannot sustain it (below).
+**Pass `--all-ids`** — case 33 replays the whole capture. Do not generate it into the
+host harness's `scenarios/`: `run_tests.py` enumerates everything there, and
+`host_runner` exits 2 on the length of the resulting per-ID comment line.
 
 **The pin.** `stimulus.fnv` records two FNV-1a 64 checksums per scenario — the
 stimulus lines and the comment lines — because a replay-driven case has no golden to
@@ -106,20 +107,52 @@ default air time, per-ID overrides, stalls armed. It is a *high-water* record ov
 whole case, not the state at the end, so a case that sets an override and clears it
 still reports having used it — case 31 does exactly that.
 
-### What the replay cannot do, measured
+### Replaying the full capture: what it took, and the one thing still short
 
-| configuration | result |
-|---|---|
-| all 706,283 frames at recorded timing | **unusable.** The capture allows 425 us per frame; the mock worker costs ~1235 us. The 64-deep receive queue fills, the core sees **34 %** of frames, and the device latches off on a stale `0x411`. |
-| the 136,016 relevant-ID frames at recorded timing | **what case 33 runs.** Timing reproduced to **6 us**, 27,462 inhibits over 300 s, every bullet-10 criterion met. But `ctr_bad` 2,279 — about 8 % of commands lost, against the bench's 0. |
-| stretching the timeline 2x / 4x / 8x to give the worker headroom | **worse.** `tx_ok` collapses to 558 / 25 / 7. The interlock freshness windows are in *absolute* time, so slowing the stimulus makes every signal stale and the device latches off. The gates cannot be slowed down. |
+**The full capture replays.** All 706,283 frames, every ID, over 299 s, with the
+recorded timing reproduced to **63 us** and no excursion over a millisecond. Mock loss
+is **zero**: `ctr_ok` 29,991, `ctr_bad` 0. `tx_ok` 29,977 of the capture's 29,992
+commands.
 
-**So the verified-on-time path is not reachable here**, and the spec row's stated
-reason for preferring a replay is not achieved: `ontime` reads **10 of 27,462** against
-the bench's **8,976 of 8,983**. Reaching it needs the worker to keep up at truck rate
-with an empty receive queue, and this harness's clock — one microsecond per read,
-deliberately, to break the probe's busy-wait — makes the worker's per-frame cost
-comparable to the truck's inter-frame gap. No scenario fixes that; it is the model.
+**The drain condition is the whole trick, and three of my diagnoses were wrong before
+it.** The worker consumes **one frame per turn**, and the capture delivers 706,283
+frames at 242,977 distinct timestamps — bursts of up to 12. One turn per timestamp
+therefore lost all but the first frame of each burst, which is why the core first saw
+242,974 frames: one per timestamp, to within three.
+
+But draining to **empty** is just as wrong, and worse to diagnose. `fake_twai`'s blocked
+receive advances `g_now` to *its own* deadline "if nothing else does", and the worker's
+is `GEN_INHIBIT_RX_TIMEOUT_MS` = 200 ms. So emptying the queue let the worker re-enter a
+blocking receive, the clock jumped 200 ms, the next ~470 frames of capture had targets
+already in the past and arrived as one clump of ~20 commands inside 50 us, and the device
+tripped 7 on four phantom skips. The `rx_gap` histogram said it plainly: 28,495 gaps
+under 50 us against 1,496 over 12.8 ms, with a perfectly correct mean of 10,003 us, and
+1,496 x 200 ms = 299 s.
+
+So the reader leaves **one frame pending**. The worker never re-enters a blocking
+receive, and at 2354 frames/s that is the more faithful model anyway — the device's
+receive queue is essentially never empty.
+
+**A figure this file previously stated, and it was wrong.** It said the mock worker
+"costs ~1235 us per frame", and concluded the clock model could not sustain truck rate.
+That number was 300 s divided by the frames that survived — a *consequence* of the loss
+read as its cause. Measured properly, by summing the turns rather than reading a maximum
+as an average: **3.5 us per turn**, 1.62 s across 463,307 turns of a 300 s replay. The
+clock is cheap. A spec requirement to rebuild it was raised and then withdrawn on this
+correction; the wrong figure is kept here so nobody re-derives it.
+
+**The one criterion still short, and it is this harness, not the firmware.** `ontime`
+requires an **empty** receive queue at the completion, and the drain deliberately leaves
+one frame pending — so `rx_backlog >= 1` at most completions by construction. The
+verified-on-time proportion is **7,011 of 29,977** against the bench's **8,976 of
+8,983**. The fix is for a blocked receive not to advance virtual time beyond the turn
+the test granted it. That is a change to the hand-off protocol, it can silently move
+every timing assertion in the suite, and it gets its own cycle.
+
+**Stretching the timeline does not help** and is worth knowing before anyone tries it:
+at 2x, 4x and 8x, `tx_ok` collapses to 558, 25 and 7. The interlock freshness windows
+are in *absolute* time, so a slowed stimulus makes every signal stale and the device
+latches off. The gates cannot be slowed down.
 
 ## What E1 does NOT cover
 

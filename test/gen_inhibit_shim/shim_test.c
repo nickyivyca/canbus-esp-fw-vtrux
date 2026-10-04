@@ -2663,6 +2663,16 @@ typedef struct
      * says whether recorded timing is being reproduced.
      */
     int64_t  max_late_us;
+    int64_t  max_late_at_us;    /* capture offset where the worst one happened */
+    long     late_over_1ms;     /* how many excursions exceeded a millisecond */
+    long     max_late_frame;    /* frame index of the worst one */
+    /*
+     * WHAT THE WORKER'S TURNS COST, summed, with the count beside it. Measured rather
+     * than inferred: the per-turn figure is these two divided, not a maximum reread as
+     * an average, which is the mistake that sent the whole clock investigation wrong.
+     */
+    int64_t  drain_cost_us;
+    long     drain_turns;
     int64_t  span_us;           /* last frame's offset */
     uint64_t stim_fnv;
     uint64_t head_fnv;
@@ -2746,11 +2756,55 @@ static bool replay_scn(const char *name, scn_result_t *out,
         else
         {
             const int64_t behind = ft_now() - target;
-            if (behind > out->max_late_us) { out->max_late_us = behind; }
+            if (behind > 1000) { out->late_over_1ms++; }
+            if (behind > out->max_late_us)
+            {
+                out->max_late_us = behind;
+                out->max_late_at_us = us;
+                out->max_late_frame = out->frames;
+            }
         }
         ft_deliver(id, data, (uint8_t)(dlc > 8 ? 8 : dlc));
         out->frames++;
         out->span_us = us;
+
+        /*
+         * DRAIN BEFORE TIME MOVES ON. The worker consumes one frame per turn, and the
+         * capture delivers 706,283 frames at 242,977 distinct timestamps -- bursts of
+         * up to 12. Advancing after one turn left the rest of each burst in the queue
+         * to be overwritten, which is why the core saw 242,974 frames: exactly one per
+         * timestamp.
+         *
+         * The condition matters as much as the loop. A turn on a NON-EMPTY queue
+         * returns a frame immediately and costs nothing; a turn on an empty one makes
+         * the worker block in twai_receive and burn a full receive timeout of virtual
+         * time. An unconditional turn per frame reported 353,141 diag pages and
+         * 140,959 s of drift over a 300 s capture.
+         */
+        /*
+         * ONE FRAME IS LEFT PENDING, DELIBERATELY. Draining to empty lets the worker
+         * re-enter a blocking twai_receive, and fake_twai advances g_now to THAT
+         * call's deadline -- GEN_INHIBIT_RX_TIMEOUT_MS, 200 ms -- "if nothing else
+         * does". The clock then jumped 200 ms, the next ~470 frames of capture had
+         * targets already in the past and arrived as one clump of ~20 commands inside
+         * 50 us, and the device tripped 7 on four phantom skips. The rx_gap histogram
+         * showed it: 28,495 gaps under 50 us against 1,496 over 12.8 ms, with a
+         * correct mean of 10,003 us.
+         *
+         * It is also the more faithful model: at 2354 frames/s the device's receive
+         * queue is essentially never empty.
+         *
+         * THE COST is that rx_backlog >= 1 at most completions by construction, so the
+         * verified-on-time proportion stays well below the bench's. See the case
+         * comment.
+         */
+        while (ft_rx_pending() > 1)
+        {
+            const int64_t before = ft_now();
+            ft_run(0);
+            out->drain_cost_us += ft_now() - before;
+            out->drain_turns++;
+        }
 
         /* Window boundaries by REPLAY time, not by frame count: the criterion is
          * about telemetry over the arm's duration, and the frame rate varies. */
@@ -2841,22 +2895,25 @@ static void pin_stimulus(const char *name, const scn_result_t *r)
  * a synthetic run misses real command timing and jitter, real arrival ordering, and
  * the arm and key transitions the truck actually produced.
  *
- * IT REPLAYS THE IDS THE DEVICE READS, NOT ALL 706,283 FRAMES, and that is a limit of
- * the harness rather than a choice. Measured: with every ID, the capture allows 425 us
- * per frame and the mock worker costs about 1235 us, so the 64-deep receive queue
- * fills, the core sees 34 % of the frames and the device latches off on a stale 0x411.
- * Stretching the timeline to give the worker headroom is worse, not better -- at 2x,
- * 4x and 8x, tx_ok collapses to 558, 25 and 7, because the interlock freshness windows
- * are in ABSOLUTE time and slowing the stimulus makes every signal stale. The gates
- * cannot be slowed down.
+ * IT REPLAYS ALL 706,283 FRAMES, every ID, and reproduces the recorded timing to
+ * within 63 us with no excursion over a millisecond. Getting there took three wrong
+ * diagnoses of mine, and the one that matters is recorded in the drain loop below: the
+ * worker consumes ONE frame per turn, and draining to EMPTY let it re-enter a blocking
+ * receive that advances the clock 200 ms. The mock clock itself is cheap -- 3.5 us per
+ * turn, measured by summing the turns rather than reading a maximum as an average,
+ * which is how I got "1235 us per frame" wrong and sent a spec requirement after a
+ * clock that was fine.
  *
- * SO THIS CASE DOES NOT REACH THE VERIFIED-ON-TIME PATH, and the spec row's stated
- * reason for preferring a replay is not achieved: ontime reads 10 of 27,462 here
- * against the bench's 8,976 of 8,983. Reaching it needs the worker to keep up at truck
- * rate with an empty receive queue, and the mock's clock -- one microsecond per read,
- * deliberately, to break the probe's busy-wait -- makes the worker's per-frame cost
- * comparable to the truck's inter-frame gap. No scenario fixes that; it is the model.
- * Raised with the user rather than papered over.
+ * FOUR OF THE FIVE ACCEPTANCE CRITERIA HOLD: the full capture with every ID, mock loss
+ * zero (ctr_ok 29,991 and ctr_bad 0), every case passing, and the criteria below.
+ *
+ * THE FIFTH IS SHORT AND THE REASON IS IN THIS FILE, NOT THE FIRMWARE. `ontime` needs
+ * an EMPTY receive queue at the completion, and the drain below deliberately leaves one
+ * frame pending to stop the 200 ms clock jump -- so rx_backlog >= 1 at most completions
+ * by construction. The proportion is 7,011 of 29,977 against the bench's 8,976 of
+ * 8,983. The fix is for a blocked receive not to advance virtual time beyond the turn
+ * the test granted it; that is a change to the hand-off protocol which can move every
+ * timing assertion in the suite, so it gets its own cycle.
  *
  * WHAT IT DOES NOT TEST: bus load. Spec item 10 is explicit -- a replay gives stimulus
  * and no load, because controller_advance() completes our frames from our own queue
@@ -2887,7 +2944,7 @@ static void la_window(int w)
 static void case_long_arm_replay(void)
 {
     case_begin("case 33: the long arm, replaying real traffic (bullet 10)");
-    case_budget(240, "replays 136,016 frames of a real 300 s capture");
+    case_budget(240, "replays 706,283 frames of a real 300 s capture");
     setup();
 
     g_la_quiet_windows = 0;
@@ -2895,7 +2952,7 @@ static void case_long_arm_replay(void)
     g_la_telem_prev = 0;
 
     scn_result_t r;
-    const bool ok = replay_scn("replay-longarm-300s-ids", &r, 15000000, la_window);
+    const bool ok = replay_scn("replay-longarm-300s-all", &r, 15000000, la_window);
     CHECK(ok,
           "test/gen_inhibit_shim/scenarios/replay-longarm-300s-ids.scn is "
           "missing. It is generated, not in git -- see this harness's README "
@@ -2907,13 +2964,13 @@ static void case_long_arm_replay(void)
      * satisfies everything below, and a replay over the WRONG frames satisfies it
      * just as well while measuring something else.
      */
-    CHECK(r.frames > 130000,
-          "only %ld frames were replayed; the relevant-ID scenario has 136,016, so this did not "
+    CHECK(r.frames > 700000,
+          "only %ld frames were replayed; the capture has 706,283, so this did not "
           "run the arm it claims to", r.frames);
     CHECK(r.span_us > 295000000,
           "the replay spans only %lld us; the capture is 300 s, so the arm is short",
           (long long)r.span_us);
-    pin_stimulus("replay-longarm-300s-ids", &r);
+    pin_stimulus("replay-longarm-300s-all", &r);
 
     /*
      * The clock advances on every read, so a frame's instant can already have passed
@@ -2978,9 +3035,14 @@ static void case_long_arm_replay(void)
      * and these figures are the first thing anyone comparing it against the bench
      * long arm will want.
      */
-    printf("           replayed %ld frames over %lld s, max %lld us behind\n",
+    printf("           replayed %ld frames over %lld s, max %lld us behind "
+           "(at capture offset %lld us, frame %ld; %ld excursions over 1 ms)\n",
            r.frames, (long long)(r.span_us / 1000000),
-           (long long)r.max_late_us);
+           (long long)r.max_late_us, (long long)r.max_late_at_us,
+           r.max_late_frame, r.late_over_1ms);
+    printf("           worker turns %ld costing %lld us total, %.1f us per turn\n",
+           r.drain_turns, (long long)r.drain_cost_us,
+           r.drain_turns ? (double)r.drain_cost_us / (double)r.drain_turns : 0.0);
     printf("           tx_ok %u, ctr_ok %u, ctr_bad %u, ontime %u + unverified "
            "%u, diag %u\n",
            json_u32("\"tx_ok\":"), json_u32("\"ctr_ok\":"),
