@@ -720,6 +720,15 @@ static void controller_advance(int64_t t)
 static pthread_mutex_t g_m = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  g_cv = PTHREAD_COND_INITIALIZER;
 static int  g_turn;                 /* 0 = test runs, 1 = worker runs */
+/*
+ * THE FURTHEST THE CLOCK MAY RUN INSIDE THE TURN THE TEST GRANTED.
+ *
+ * A blocked twai_receive() used to advance g_now to its OWN deadline --
+ * 200 ms for the worker -- on any turn where no frame was waiting, so one
+ * empty turn jumped virtual time 200 ms however little the test had given
+ * it. Set by ft_run() on every hand-over; read only by the blocked receive.
+ */
+static int64_t g_turn_grant;
 static bool g_worker_started, g_worker_stop;
 static pthread_t g_worker;
 static TaskFunction_t g_worker_fn;
@@ -818,6 +827,11 @@ void ft_stop_worker(void)
 int64_t ft_run(int64_t us)
 {
     const int64_t deadline = g_now + us;
+    /*
+     * Record the grant before the worker can look at it. A blocked receive may
+     * advance the clock no further than this; see g_turn_grant.
+     */
+    g_turn_grant = deadline;
     pthread_mutex_lock(&g_m);
     g_turn = 1;
     pthread_cond_broadcast(&g_cv);
@@ -1097,12 +1111,36 @@ esp_err_t twai_receive(twai_message_t *message, TickType_t ticks)
             step();
             return ESP_ERR_TIMEOUT;
         }
-        /* Still blocked. Let the clock reach the deadline if nothing else does. */
-        if (g_now < deadline)
+        /*
+         * Still blocked. Let the clock reach the deadline if nothing else does --
+         * BUT NO FURTHER THAN THE TURN THE TEST GRANTED.
+         *
+         * This used to be `g_now = deadline`, the receive's own deadline, which for
+         * the worker is GEN_INHIBIT_RX_TIMEOUT_MS = 200 ms. One turn with an empty
+         * queue therefore jumped virtual time 200 ms whatever the test had asked
+         * for. In the full-capture replay that put the next ~470 frames' targets in
+         * the past, delivered them as one clump of ~20 commands inside 50 us, and
+         * tripped 7 on skips the truck cannot produce.
+         *
+         * The timeout still happens: granted time accumulates turn by turn until
+         * g_now reaches `deadline` and the branch above returns ESP_ERR_TIMEOUT. It
+         * now costs as many turns as the granted time needs instead of arriving in
+         * a single jump, which is what a real blocked receive does.
+         *
+         * Keeping SOME advance is deliberate. With none at all, a case that grants
+         * time only through ft_run() could leave the receive blocked forever and a
+         * test waiting on a timeout would hang -- which is what the original
+         * comment was protecting against. The intent was right; the magnitude was
+         * not.
+         */
         {
-            g_now = deadline;
-            controller_advance(g_now);
-            step();
+            const int64_t to = (deadline < g_turn_grant) ? deadline : g_turn_grant;
+            if (to > g_now)
+            {
+                g_now = to;
+                controller_advance(g_now);
+                step();
+            }
         }
     }
 }
@@ -1154,6 +1192,7 @@ const char *esp_err_to_name(esp_err_t e)
 void ft_reset(void)
 {
     g_now = 0;
+    g_turn_grant = 0;
     g_qn = g_nsent = g_nwire = g_nlog = 0;
     g_air_time_set = 0;
     g_stalls_armed = 0;

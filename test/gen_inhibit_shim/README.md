@@ -141,13 +141,32 @@ as an average: **3.5 us per turn**, 1.62 s across 463,307 turns of a 300 s repla
 clock is cheap. A spec requirement to rebuild it was raised and then withdrawn on this
 correction; the wrong figure is kept here so nobody re-derives it.
 
-**The one criterion still short, and it is this harness, not the firmware.** `ontime`
-requires an **empty** receive queue at the completion, and the drain deliberately leaves
-one frame pending — so `rx_backlog >= 1` at most completions by construction. The
-verified-on-time proportion is **7,011 of 29,977** against the bench's **8,976 of
-8,983**. The fix is for a blocked receive not to advance virtual time beyond the turn
-the test granted it. That is a change to the hand-off protocol, it can silently move
-every timing assertion in the suite, and it gets its own cycle.
+**The fifth criterion holds, and it took a fix to the mock rather than to the
+firmware.** `ontime` is credited only when the receive queue is empty at the
+completion. The drain used to leave one frame pending deliberately — the only way to
+stop the 200 ms clock jump — so `rx_backlog >= 1` at most completions *by
+construction*, and the verified-on-time proportion sat at **7,011 of 29,977** against
+the bench's **8,976 of 8,983**. A blocked receive now advances virtual time no further
+than the turn the test granted it (`g_turn_grant` in `fake_twai.c`), so the drain
+empties the queue and the proportion is **29,977 of 29,977**.
+
+**That 100 % is constructed the opposite way, and is not a better result than the
+bench's 99.92 %.** The drain empties the queue before each completion is judged, so
+`rx_backlog` is now 0 by construction and this case **cannot produce an unverified
+completion at all**. The bench produces 7, and the device's unverified accounting — the
+count and the largest backlog behind one, which trip 7 reads — therefore has **no cover
+here any more**, where the old construction gave it 22,966 samples. One question
+replaced another. **A case that drains to a known backlog and asserts the unverified
+counts is owed and is not in this suite yet.**
+
+**What the fix cost elsewhere, measured:** the replay now takes one worker turn per
+frame rather than per timestamp — 706,284 turns against 463,307, 2.46 s of virtual time
+against 1.62 s, the per-turn cost unchanged at 3.5 us — and the worst lateness moved
+from 63 us to **72 us**, still with **0 excursions over 1 ms**. Every other figure is
+unchanged: 706,283 frames, `tx_ok` 29,977, `ctr_ok` 29,991, `ctr_bad` 0, diag 1,210.
+All 33 cases pass, and no timing assertion in the suite moved — checked by landing the
+mock fix alone first, with the drain untouched, which reproduced every case 33 figure
+byte for byte.
 
 **Stretching the timeline does not help** and is worth knowing before anyone tries it:
 at 2x, 4x and 8x, `tx_ok` collapses to 558, 25 and 7. The interlock freshness windows

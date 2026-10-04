@@ -2782,23 +2782,27 @@ static bool replay_scn(const char *name, scn_result_t *out,
          * 140,959 s of drift over a 300 s capture.
          */
         /*
-         * ONE FRAME IS LEFT PENDING, DELIBERATELY. Draining to empty lets the worker
-         * re-enter a blocking twai_receive, and fake_twai advances g_now to THAT
-         * call's deadline -- GEN_INHIBIT_RX_TIMEOUT_MS, 200 ms -- "if nothing else
-         * does". The clock then jumped 200 ms, the next ~470 frames of capture had
+         * DRAINS TO EMPTY, which it could not safely do before the mock was fixed.
+         *
+         * It used to leave ONE frame pending on purpose: draining to empty let the
+         * worker re-enter a blocking twai_receive, and fake_twai then advanced g_now
+         * to THAT call's deadline -- GEN_INHIBIT_RX_TIMEOUT_MS, 200 ms -- "if nothing
+         * else does". The clock jumped 200 ms, the next ~470 frames of capture had
          * targets already in the past and arrived as one clump of ~20 commands inside
          * 50 us, and the device tripped 7 on four phantom skips. The rx_gap histogram
          * showed it: 28,495 gaps under 50 us against 1,496 over 12.8 ms, with a
          * correct mean of 10,003 us.
          *
-         * It is also the more faithful model: at 2354 frames/s the device's receive
-         * queue is essentially never empty.
+         * THAT COST A CRITERION. `ontime` is credited only when the receive queue is
+         * empty at the completion, so a frame deliberately left pending held
+         * rx_backlog >= 1 at most completions BY CONSTRUCTION and the verified-on-time
+         * proportion sat at 7,011 of 29,977 against the bench's 8,976 of 8,983.
          *
-         * THE COST is that rx_backlog >= 1 at most completions by construction, so the
-         * verified-on-time proportion stays well below the bench's. See the case
-         * comment.
+         * A blocked receive now advances the clock no further than the turn the test
+         * granted it (see g_turn_grant in fake_twai.c), so emptying the queue is safe
+         * and the device is asked the same question the bench asks it.
          */
-        while (ft_rx_pending() > 1)
+        while (ft_rx_pending() > 0)
         {
             const int64_t before = ft_now();
             ft_run(0);
@@ -2904,16 +2908,26 @@ static void pin_stimulus(const char *name, const scn_result_t *r)
  * which is how I got "1235 us per frame" wrong and sent a spec requirement after a
  * clock that was fine.
  *
- * FOUR OF THE FIVE ACCEPTANCE CRITERIA HOLD: the full capture with every ID, mock loss
- * zero (ctr_ok 29,991 and ctr_bad 0), every case passing, and the criteria below.
+ * ALL FIVE ACCEPTANCE CRITERIA HOLD: the full capture with every ID, mock loss zero
+ * (ctr_ok 29,991 and ctr_bad 0), every case passing, the verified-on-time proportion
+ * below, and the criteria below.
  *
- * THE FIFTH IS SHORT AND THE REASON IS IN THIS FILE, NOT THE FIRMWARE. `ontime` needs
- * an EMPTY receive queue at the completion, and the drain below deliberately leaves one
- * frame pending to stop the 200 ms clock jump -- so rx_backlog >= 1 at most completions
- * by construction. The proportion is 7,011 of 29,977 against the bench's 8,976 of
- * 8,983. The fix is for a blocked receive not to advance virtual time beyond the turn
- * the test granted it; that is a change to the hand-off protocol which can move every
- * timing assertion in the suite, so it gets its own cycle.
+ * THE FIFTH TOOK A MOCK FIX, and it is worth knowing which way it now leans. `ontime`
+ * is credited only when the receive queue is empty at the completion. The drain used
+ * to leave one frame pending on purpose -- the only way to stop the 200 ms clock jump
+ * -- so rx_backlog >= 1 at most completions BY CONSTRUCTION and the proportion sat at
+ * 7,011 of 29,977 against the bench's 8,976 of 8,983. Since a blocked receive stops at
+ * the turn's grant (g_turn_grant in fake_twai.c) the drain empties the queue and the
+ * proportion is 29,977 of 29,977.
+ *
+ * READ THAT NUMBER WITH CARE: IT IS NOW CONSTRUCTED THE OPPOSITE WAY. The drain empties
+ * the queue before each completion is judged, so rx_backlog is 0 by construction and
+ * this case can no longer produce an unverified completion at all. The bench produces 7
+ * of them, and the device's unverified accounting -- the count and its largest backlog,
+ * which trip 7 reads -- therefore has NO cover here any more, where it previously had
+ * 22,966 samples of it. 100 % verified is not a better result than the bench's 99.92 %;
+ * it is a different question being asked. A case that drains to a known backlog and
+ * asserts the unverified counts is owed, and is NOT in this suite yet.
  *
  * WHAT IT DOES NOT TEST: bus load. Spec item 10 is explicit -- a replay gives stimulus
  * and no load, because controller_advance() completes our frames from our own queue
@@ -2954,9 +2968,9 @@ static void case_long_arm_replay(void)
     scn_result_t r;
     const bool ok = replay_scn("replay-longarm-300s-all", &r, 15000000, la_window);
     CHECK(ok,
-          "test/gen_inhibit_shim/scenarios/replay-longarm-300s-ids.scn is "
+          "test/gen_inhibit_shim/scenarios/replay-longarm-300s-all.scn is "
           "missing. It is generated, not in git -- see this harness's README "
-          "for the from_capture.py line that builds it");
+          "for the from_capture.py line that builds it, and pass --all-ids");
     if (!ok) { teardown(); case_end(); return; }
 
     /*
