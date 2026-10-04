@@ -54,6 +54,31 @@ def find_nm():
     return None
 
 
+def head_rev(elf):
+    """The revision git would stamp, read from the tree the ELF was built in.
+
+    Returned so the caller can ask whether the image actually carries it. Any failure
+    gives None and the caller says it cannot tell, rather than printing something that
+    looks like an answer.
+    """
+    d = os.path.dirname(os.path.abspath(elf))
+    for _ in range(6):
+        if os.path.isdir(os.path.join(d, ".git")):
+            try:
+                r = subprocess.run(
+                    ["git", "-C", d, "describe", "--tags", "--always", "--dirty"],
+                    capture_output=True, text=True)
+                v = r.stdout.strip()
+                return v or None
+            except OSError:
+                return None
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    return None
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
@@ -78,13 +103,56 @@ def main():
             syms.add(p[-1])
 
     # What rev is actually IN the image, since the filename cannot say.
+    #
+    # THIS USED TO PRINT sorted(...)[:6] AND SO NEVER SHOWED THE REVISION. On the
+    # ae7b3cb ELF the six alphabetically-first 7-hex strings are 0573f0d..56b5fed and
+    # 'ae7b3cb' sorts after all of them -- the one rev the line existed to show was the
+    # one it could not show, while six strings that are NOT the image's revision read
+    # like provenance. Found by the reviewing session, 2026-10-03.
+    #
+    # It now answers the actual question: is the EXPECTED revision in this image, and
+    # how many times does it appear. The expectation comes from argv[2] if given, else
+    # from git HEAD; if neither is available it says so rather than guessing.
+    #
+    # IT IS NOT A GATE and must not be read as one. A 7-character hex string in a binary
+    # is weak evidence -- the regex matches any 7-hex run, so most hits are noise. The
+    # check that actually holds is build_output.py reading the version out of
+    # esp_app_desc and comparing it against HEAD.
     blob = open(elf, "rb").read()
-    shas = sorted(set(re.findall(rb"\b[0-9a-f]{7}(?:-dirty)?\b", blob)))
     print("ELF:      %s" % os.path.basename(elf))
     print("symbols:  %d" % len(syms))
-    if shas:
-        print("rev-like strings in the image: %s"
-              % ", ".join(s.decode() for s in shas[:6]))
+
+    expect = sys.argv[2] if len(sys.argv) > 2 else head_rev(elf)
+    if expect:
+        #
+        # THE REVISION AND THE TREE'S STATE ARE TWO FACTS, reported separately. Asking
+        # for 'ae7b3cb-dirty' in an image built from a clean tree correctly finds
+        # nothing, and printing that as "NOT FOUND IN THE IMAGE" reads as a provenance
+        # failure on the image when all it means is that the tree moved after the
+        # build. The first run of this code did exactly that.
+        #
+        dirty = expect.endswith("-dirty")
+        rev = expect[: -len("-dirty")] if dirty else expect
+        hits = len(re.findall(re.escape(rev.encode()), blob))
+        print("revision %s: %s (%d hit%s) -- corroboration only; "
+              "build_output.py's esp_app_desc row is the gate"
+              % (rev,
+                 "present in the image" if hits else "NOT FOUND IN THE IMAGE",
+                 hits, "" if hits == 1 else "s"))
+        if dirty:
+            print("working tree: DIRTY now, so it has moved since this image was "
+                  "built -- the image itself is not implicated, but it is no longer "
+                  "the current sources")
+    else:
+        print("revision: no expectation available (pass one as argv[2], or run "
+              "inside the git tree) -- cannot say what rev this image carries")
+
+    shas = sorted(set(re.findall(rb"\b[0-9a-f]{7}(?:-dirty)?\b", blob)))
+    if shas and len(shas) <= 12:
+        print("all rev-like strings: %s" % ", ".join(s.decode() for s in shas))
+    elif shas:
+        print("rev-like strings: %d distinct (not listed; most are not revisions)"
+              % len(shas))
 
     bad = 0
     for name, why in FORBIDDEN:
