@@ -623,7 +623,7 @@ def check_not_rollback_rehearsal(path):
     subsystem's health report so the gate times out and the image rolls back,
     which is exactly right on a bench and catastrophic on a truck: the image
     would roll back 60 s after every boot, forever, and with no console record
-    of why (main.c:621 silences all logging at the end of app_main, so the
+    of why (main.c:623 silences all logging at the end of app_main, so the
     gate's own UNHEALTHY and "rolling back" lines never appear -- measured).
 
     It is a SEPARATE row from "no measurement instrument" rather than a fourth
