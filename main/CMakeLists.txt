@@ -90,3 +90,41 @@ if(GEN_INHIBIT_AUTOARM)
         GEN_INHIBIT_AUTOARM_MODE=${GEN_INHIBIT_AUTOARM})
     message(STATUS "gen_inhibit: AUTO-ARM build, mode ${GEN_INHIBIT_AUTOARM}")
 endif()
+
+# ROLLBACK REHEARSAL BUILD -- an image that deliberately fails its health gate.
+#
+#   idf.py -B build-otafault -DOTA_HEALTH_FAULT_INJECT=1 build
+#
+# `ota_health.c` has carried the OTA_HEALTH_FAULT_INJECT hook since a22da84 and
+# its own docstring tells you to pass `-DOTA_HEALTH_FAULT_INJECT=<bits>`, but
+# until now NOTHING WIRED IT TO THE BUILD. A bare `idf.py -D` sets a CMake cache
+# variable, not a preprocessor macro -- the same trap GEN_INHIBIT_AUTOARM
+# documents directly above -- so following that docstring produced an ordinary
+# image with no fault in it, silently. That is the worst outcome this flag has
+# available: a rehearsal that reports "it did not roll back" about an image that
+# was never faulty, which reads as a broken safety net rather than a broken test.
+#
+# The value is the BIT MASK of subsystems whose report is suppressed
+# (OTA_HEALTH_WIFI_AP = 1, OTA_HEALTH_HTTPD = 2, from ota_health.h).
+#
+# SUPPRESS EXACTLY ONE. The gate then logs `have 0x02, need 0x03 (missing 0x01)`,
+# which separates a gate that waited for a specific missing bit from a gate that
+# received nothing at all. Suppress both and `have 0x00` is equally consistent
+# with an event group that never worked, so the rehearsal loses the one reading
+# that tells a working gate from a gate that always trips.
+#
+# IT SUPPRESSES THE REPORT, NOT THE SUBSYSTEM. `ota_health_report()` is
+# intercepted at its entry; the SoftAP has already started (wifi_network.c:149
+# reports from the WIFI_EVENT_AP_START handler) and the HTTP server is already
+# listening (config_server.c:2445). So a fault-injected image stays reachable
+# over HTTP for its whole 60 s gate window and after it, and can be replaced
+# over the air. Serial is a fallback here, not the only way back.
+#
+# Never flash a build configured this way to the truck.
+if(OTA_HEALTH_FAULT_INJECT)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        OTA_HEALTH_FAULT_INJECT=${OTA_HEALTH_FAULT_INJECT})
+    message(STATUS "ota_health: FAULT INJECTION ENABLED, mask "
+                   "${OTA_HEALTH_FAULT_INJECT} -- this image is built to fail "
+                   "its health gate and roll back")
+endif()

@@ -98,7 +98,32 @@ if(GEN_INHIBIT_AUTOARM)
 else()
     set(GI_ARM_SUFFIX "_man")
 endif()
-set(PRJ_BIN "${PROJECT_PREF}_${HW_PREF}_${GIT_SHA}${GI_ARM_SUFFIX}")
+
+# THE FAULT INJECTION IS IN THE NAME TOO, and for a sharper reason than the arm
+# state. Both `git_version` over HTTP and the 0x7F3 wire hash are derived from
+# GIT_SHA, so a rollback-rehearsal build and a good build AT THE SAME COMMIT are
+# indistinguishable through every channel the device exposes. The only static
+# discriminator that survives into the image is esp_app_desc.project_name; the
+# only runtime one is the `FAULT INJECT:` console line, which requires a serial
+# capture to be running at the right moment to be seen at all.
+#
+# THIS ONE IS MARKED BY ABSENCE AND THE ARM STATE IS NOT, which contradicts the
+# block above unless the difference is stated. Two reasons. (1) Both arm states
+# are legitimate things to deploy, so a bare name is ambiguous between two live
+# options; a fault-injected image must never ship, so absence means "an ordinary
+# build" and is ambiguous between nothing. (2) The 31-character budget: spelling
+# out the good case as "_ok" costs 3 characters on EVERY build, which takes a
+# dirty tree to 33 and so breaks the ordinary edit-and-build loop -- exactly the
+# arithmetic that chose "_man" over "_manual". A fault build at 28 clean fits;
+# at 34 dirty it does not, and the FATAL_ERROR below is the right answer there,
+# because a rehearsal image whose provenance is "some uncommitted tree" is
+# worthless regardless of its name.
+if(OTA_HEALTH_FAULT_INJECT)
+    set(GI_FAULT_SUFFIX "_flt")
+else()
+    set(GI_FAULT_SUFFIX "")
+endif()
+set(PRJ_BIN "${PROJECT_PREF}_${HW_PREF}_${GIT_SHA}${GI_ARM_SUFFIX}${GI_FAULT_SUFFIX}")
 
 #
 # esp_app_desc.project_name is a 32-byte field -- 31 characters plus the NUL -- and
@@ -123,6 +148,10 @@ if(PRJ_BIN_LEN GREATER 31)
         "esp_app_desc.project_name holds 31 plus a NUL.\n"
         "  Commit the working tree (that drops '-dirty', 6 characters), or shorten "
         "GI_ARM_SUFFIX in CMakeLists.txt.\n"
+        "  A rollback-rehearsal build adds GI_FAULT_SUFFIX ('_flt', 4 more) and so "
+        "needs a CLEAN tree: 13 + 7 + 4 + 4 = 28 fits, 13 + 13 + 4 + 4 = 34 does "
+        "not. Commit rather than shortening -- an image built to be flashed over "
+        "the live one must have a commit behind it.\n"
         "  Left unchecked this surfaces as a _Static_assert in "
         "components/esp_app_format/esp_app_desc.c, which does not point here.")
 endif()

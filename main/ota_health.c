@@ -12,10 +12,26 @@ static EventGroupHandle_t s_health_group = NULL;
 static volatile EventBits_t s_pending_bits = 0;
 
 /*
- * Fault injection for the rollback rehearsal. Built with
- * -DOTA_HEALTH_FAULT_INJECT=<bits>, the named subsystems never report in, so
- * the gate times out and the image rolls back. This is how we prove the safety
- * net catches before we rely on it, rather than trusting the Kconfig alone.
+ * Fault injection for the rollback rehearsal. The named subsystems never report
+ * in, so the gate times out and the image rolls back. This is how we prove the
+ * safety net catches before we rely on it, rather than trusting the Kconfig
+ * alone.
+ *
+ * Build it with:
+ *
+ *   idf.py -B build-otafault -DOTA_HEALTH_FAULT_INJECT=1 build
+ *
+ * and NOT by passing -DOTA_HEALTH_FAULT_INJECT to the compiler yourself. This
+ * comment used to say the latter; `idf.py -D` sets a CMake cache variable, so
+ * the macro below stayed at 0 and the build produced an ordinary image with no
+ * warning. main/CMakeLists.txt now forwards the value as a real compile
+ * definition and puts "_flt" in the image name, so a fault build is visible in
+ * the filename and in esp_app_desc.project_name rather than only in behaviour.
+ *
+ * NOTE WHAT THIS DOES NOT DO: it suppresses the REPORT, not the subsystem. The
+ * SoftAP and HTTP server are already up by the time their reports are
+ * intercepted, so a fault-injected image is still reachable and can be replaced
+ * over the air.
  */
 #ifndef OTA_HEALTH_FAULT_INJECT
 #define OTA_HEALTH_FAULT_INJECT 0
