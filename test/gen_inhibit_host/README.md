@@ -222,7 +222,30 @@ are described in `projects/vtrux/logs/README.md` there. The copy is not
 ceremony: the original `replay-T20-drive` fixture broke precisely because its
 source moved out from under the suite.
 
+**`make_scenarios.py` DOES NOT WRITE THESE EIGHT.** It generates the synthetic
+scenarios only; the `replay-*` files come from the table below and from nowhere
+else. Running `make_scenarios.py` and counting `scenarios/*.scn` therefore gives
+a total that includes whatever `replay-*` files were already on disk, however
+old they are — which reads as a freshly regenerated set and is not one. *Spelled
+out 2026-10-04 after exactly that: a session regenerated the synthetics, saw the
+file count reach the number it expected, carried the eight 2026-09-25 replays to
+another machine unchanged, and read the resulting six `[STIM ]` failures as the
+goldens having gone stale. The pin was right and the scenarios were old. A total
+that reconciles is not evidence that the population is what you think it is.*
+
+**`$L` and `--repo` below are machine-specific and the defaults do not fit every
+machine.** `from_capture.py`'s `DEFAULT_REPO` is `~/Seafile/NotGit/reverse-it`,
+which does not exist on `NICKY-XPS` — SeaDrive puts the project under
+`seadrive_root/<library>/...` — so the recipe cannot be pasted there unchanged.
+Set `GEN_INHIBIT_REPO`, or pass `--repo <project root>`. Since 2026-10-04
+`from_capture.py` refuses with a message naming the path it tried rather than
+letting the import fail as `No module named canre`, which points at Python
+instead of at the flag.
+
 ```sh
+# Adjust both paths for the machine. On NICKY-XPS:
+#   L=~/seadrive_root/<library>/NotGit/reverse-it/projects/vtrux/logs
+#   add --repo ~/seadrive_root/<library>/NotGit/reverse-it to every line below
 L=~/Seafile/NotGit/reverse-it/projects/vtrux/logs
 python3 from_capture.py $L/vtrux_20260719_190019_T4.log --channel 2 --at 0 --for 220 \
         --out scenarios/replay-genrun-stop.scn

@@ -275,6 +275,55 @@ def s_shutdown_suppress():
     return sorted_directives(L)
 
 
+@scenario("shutdown-suppress-twice", """
+TWO 0x10 episodes in one power cycle, transmission resuming in between, and no
+re-arm at any point. Spec 12.4's D3 row ("0x10 suppression, two episodes in one
+power cycle").
+
+EXPECT: both episodes suppress and both release by themselves. Four
+GI_EV_SHUTDOWN_SUPPRESS edges in the order 1, 0, 1, 0, and inhibit frames
+present in all three non-0x10 stretches -- including the LAST one, which is the
+part shutdown-suppress cannot show.
+
+WHY A SECOND EPISODE IS ITS OWN CASE. shutdown-suppress drives exactly one, so
+a ONE-SHOT suppression passes it: a flag consumed on first use, an
+"already handled" guard, or an edge counter that stops arming after the first
+fall would all go green there and fail on a truck, where the state is entered
+repeatedly -- 40,697 frames of 0x10 in the corpus, up to four episodes in one
+capture, 100 % of them with the shifter in Park.
+
+It is a REGRESSION GUARD rather than a bug hunt, and that is worth saying
+plainly so nobody reads a green run as having found something: the
+implementation recomputes shutdown_suppressed from data[0] on every 0x051 and
+reports only on the transition (gen_inhibit_core.c, the spec 6.3 block in the
+command path), so nothing structural distinguishes the second episode from the
+first. This case exists to keep that true.
+
+THE RE-ARM PATH IS DELIBERATELY NOT EXERCISED. gi_arm() clears the flag
+(gen_inhibit_core.c:369) precisely so that disarming mid-0x10 and re-arming
+does not start suppressed; that is a different requirement, and mixing it in
+here would mean a pass could come from the clear-on-arm path rather than from
+the recompute. D3 says one power cycle, so there is one arm.
+
+THE TRACE ENDS IN A BUS-LOST LATCH, AND IT IS NOT PART OF D3. The command
+train stops at 10 s and the scenario runs to 11 s, so 0x051 goes stale and
+spec 7 trip 2 latches at ~10.58 s -- exactly as shutdown-suppress ends, for
+the same reason. Do not read that final abort as the second episode failing
+to release: the release is the susp=0 edge at 8 s, with 100 inhibit frames
+after it. `ctr_bad` reaching 4 is likewise expected, 2 per episode, matching
+shutdown-suppress's 2 for its one.
+""")
+def s_shutdown_suppress_twice():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 2 * S, 20 * MS)
+    L += cmd_train(2 * S, 4 * S, 20 * MS, b0=0x10)
+    L += cmd_train(4 * S, 6 * S, 20 * MS)
+    L += cmd_train(6 * S, 8 * S, 20 * MS, b0=0x10)
+    L += cmd_train(8 * S, 10 * S, 20 * MS)
+    L += ["end %d" % (11 * S)]
+    return sorted_directives(L)
+
+
 @scenario("shutdown-at-keyon", """
 0x10 is the normal state at key-on, so the device arms straight into it.
 

@@ -55,6 +55,33 @@ RELEVANT = (CMD, RPM, FB, SOC, SHIFT, FAULT, KEY, CONTACTOR)
 
 
 def load_parser(repo):
+    #
+    # REFUSE AN ABSENT REPO, BY NAME (2026-10-04). DEFAULT_REPO is a Seafile
+    # path that does not exist on every machine holding this firmware repo --
+    # on NICKY-XPS the project tree is under `seadrive_root/<library>/...`, so
+    # the default misses and the bare import below raised
+    # `ModuleNotFoundError: No module named 'canre'`. That is loud, but it
+    # names the wrong thing: it reads as a missing Python package, so the fix
+    # looks like `pip install` rather than `--repo`.
+    #
+    if not os.path.isdir(repo):
+        sys.exit(
+            "--repo %r does not exist.\n"
+            "  It defaults to $GEN_INHIBIT_REPO, else ~/Seafile/NotGit/"
+            "reverse-it, and the project tree is NOT at that path on every\n"
+            "  machine -- SeaDrive puts it under seadrive_root/<library>/...\n"
+            "  Pass --repo <project root> or set GEN_INHIBIT_REPO.\n"
+            "  Left to the import below, this surfaces as 'No module named "
+            "canre', which points at Python rather than at this flag."
+            % repo)
+    if not os.path.isdir(os.path.join(repo, "canre")):
+        sys.exit(
+            "--repo %r exists but contains no canre/, so it is not the "
+            "project root.\n"
+            "  Worth refusing rather than letting the import decide: a "
+            "capture replayed through the WRONG parser still produces a\n"
+            "  .scn file, and the only symptom is that it disagrees with the "
+            "goldens later -- which reads as a firmware change." % repo)
     sys.path.insert(0, repo)
     from canre.parsers import parse_file
     return parse_file
