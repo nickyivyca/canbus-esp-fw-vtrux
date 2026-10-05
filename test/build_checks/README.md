@@ -13,7 +13,7 @@ is the kind that gets discounted when it matters.*
 
 | File | What it checks |
 |---|---|
-| `build_output.py` | The whole of row 22: sdkconfig assertions, the embedded version, image size against the OTA slot, the partition table against stock, and the diag schema/DBC agreement. |
+| `build_output.py` | The whole of row 22: sdkconfig assertions, the embedded version, image size against the OTA slot, the partition table against stock, and the diag schema/DBC agreement. Also **refuses non-shipping builds**: the three measurement instruments, and (since 2026-10-04) the `OTA_HEALTH_FAULT_INJECT` rollback-rehearsal image, which rolls itself back 60 s after every boot. Those have to be content checks, because two configurations of one commit share both the filename and the embedded version. |
 | `config_vs_spec.py` + `config_probe.c` | `gi_config_defaults()` against the numbers the **spec** states, each row citing its section. |
 | `elf_checks.py` | `slcan_parse_str` is not linked into the image. |
 | `reference/` | Fixtures a check compares against — see below. |

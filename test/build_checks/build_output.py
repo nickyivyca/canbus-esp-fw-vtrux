@@ -25,6 +25,15 @@ that nothing implemented:
        RX_DEPTH equal to it (spec 5.1 item 1)
     12 esp_wifi_set_storage(WIFI_STORAGE_RAM) genuinely called (spec 5.1 item 3)
 
+BEYOND ROW 22, this file also REFUSES images that are not shipping builds,
+because two configurations of one commit share a filename and an embedded
+version and so defeat every provenance row above -- only content separates
+them. `check_no_instrument` refuses the three measurement builds
+(GI_INSTRUMENT_RXQ, _TXABORT, _ABORTWIN); `check_not_rollback_rehearsal`,
+added 2026-10-04 after the rehearsal was run, refuses the
+OTA_HEALTH_FAULT_INJECT build, which would otherwise roll itself back 60 s
+after every boot on the truck.
+
 THE VERSION IS READ FROM THE IMAGE, NOT THE FILENAME. ESP-IDF fixes the output
 filename at *configure* time, so `wican-fw_obd_37addf4-dirty.bin` can contain a
 build of something else entirely -- a trap already recorded once in this
@@ -606,6 +615,71 @@ def check_no_instrument(path):
         else "none of the %d instrument symbols are defined" % nsym)
 
 
+def check_not_rollback_rehearsal(path):
+    """This image must NOT be the rollback-rehearsal build.
+
+    ADDED 2026-10-04, after running the rehearsal (gap 6) exposed that nothing
+    here could refuse its image. `OTA_HEALTH_FAULT_INJECT` suppresses a
+    subsystem's health report so the gate times out and the image rolls back,
+    which is exactly right on a bench and catastrophic on a truck: the image
+    would roll back 60 s after every boot, forever, and with no console record
+    of why (main.c:621 silences all logging at the end of app_main, so the
+    gate's own UNHEALTHY and "rolling back" lines never appear -- measured).
+
+    It is a SEPARATE row from "no measurement instrument" rather than a fourth
+    entry in that table, because it is not an instrument -- it changes what the
+    firmware DOES, not what it reports -- and a row's name has to describe what
+    it refuses or it stops being readable as coverage.
+
+    TWO INDEPENDENT CHECKS, because the name and the content can diverge. The
+    CMake plumbing adds "_flt" to the project name whenever the mask is set, so
+    the name is the cheap check and the one that survives into
+    esp_app_desc.project_name on the device. But the name comes from a CMake
+    variable and the behaviour from a preprocessor macro, so a macro reaching
+    the compiler by some other route would produce a faulty image with an
+    innocent name. The format string is the check that cannot be fooled that
+    way: with the mask at 0 the `if (0 & bits)` body is dead code and the
+    string is not emitted at all, so its presence means the fault branch is
+    live in this image. Verified on the pair built that day -- the good image
+    does not contain it, the _flt image does.
+
+    There is deliberately NO symbol check. `ota_health_report` is defined in
+    both builds and nothing on the fault path is a separate symbol, so a symbol
+    row here would pass on a faulty image -- the shape mutation M5 caught in
+    the instrument table, and the reason that table's comment singles out
+    `txab_trial`.
+    """
+    try:
+        img = open(path, "rb").read()
+    except OSError as e:
+        row("no OTA fault injection in the image", None,
+            "cannot read %s (%s)" % (os.path.basename(path), e),
+            ref_missing=True)
+        return
+
+    marker = b"FAULT INJECT: suppressing report of"
+    has_marker = marker in img
+    row("no OTA fault injection in the image", not has_marker,
+        ("image carries %r -- built with OTA_HEALTH_FAULT_INJECT, so it fails "
+         "its health gate and rolls back on every boot; never flash this to "
+         "the truck" % marker.decode("ascii")) if has_marker
+        else "the fault-injection format string is absent, so that branch is "
+             "dead code in this image")
+
+    d = app_desc(path)
+    if d is None:
+        row("project name is not a rehearsal build", None,
+            "no app descriptor to read the project name from",
+            ref_missing=True)
+        return
+    project = d[1]
+    flt = project.endswith("_flt")
+    row("project name is not a rehearsal build", not flt,
+        "project_name=%r%s"
+        % (project, "  <-- the _flt suffix marks a fault-injected "
+                    "rollback-rehearsal image" if flt else ""))
+
+
 def _count_calls(rel, needle):
     """How many times `needle(` is called in main/<rel>, comments excluded.
 
@@ -1083,9 +1157,12 @@ def main():
     check_image_identity(img_ver)
     if b is not None:
         check_no_instrument(b)
+        check_not_rollback_rehearsal(b)
         check_sources_older_than_image(b)
     else:
         row("no measurement instrument in the image", None,
+            "no image to inspect", ref_missing=True)
+        row("no OTA fault injection in the image", None,
             "no image to inspect", ref_missing=True)
 
     print()
