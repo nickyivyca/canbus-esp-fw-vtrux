@@ -49,6 +49,7 @@ table whose rows do not all mean the same thing is worse than no table.
 import argparse
 import glob
 import hashlib
+import json
 import os
 import re
 import struct
@@ -974,6 +975,65 @@ def check_sources_older_than_image(path):
         "older than the image")
 
 
+def check_prod_record(path):
+    """Spec 12.3 item 3: a truck image must carry its prod-build record.
+
+    `tools/prod_build.py` writes `<image>.prod.json` after refusing to build on
+    a dirty tree or against a modified `managed_components/`, and after forcing
+    a reconfigure. The record is the only evidence that those refusals ran, and
+    the spec says the build-output checks refuse an image that has no such
+    record.
+
+    WHY THE RECORD RATHER THAN RE-CHECKING HERE. The conditions are about the
+    MOMENT OF THE BUILD and cannot be reconstructed afterwards: the tree can be
+    committed after a dirty build, a component can be restored after being
+    modified, and `git describe` has already been baked in at configure time.
+    Re-running the checks now would pass on an image that was built when they
+    would have failed -- which is the same trap `check_sources_older_than_image`
+    exists for, one level up.
+
+    A BENCH IMAGE WILL FAIL THIS, and that is intended rather than noise. The
+    row answers "is this an image meant for the truck", and the honest answer
+    for a bench build is no. Spec 13 requires the flown image to be the latest
+    HEAD built as a prod build.
+    """
+    rec_path = path + ".prod.json"
+    if not os.path.exists(rec_path):
+        row("prod-build record present", False,
+            "no %s beside the image, so nothing establishes it was built on a "
+            "clean tree with verified components after a reconfigure. Build it "
+            "with tools/prod_build.py. (A bench image is expected to fail this "
+            "row.)" % os.path.basename(rec_path))
+        return
+    try:
+        with open(rec_path, encoding="utf-8") as fh:
+            rec = json.load(fh)
+    except Exception as e:
+        row("prod-build record present", False,
+            "%s is unreadable: %s" % (os.path.basename(rec_path), e))
+        return
+
+    data = open(path, "rb").read()
+    got_md5 = hashlib.md5(data).hexdigest()
+    problems = []
+    if rec.get("md5") != got_md5:
+        problems.append("md5 %s != recorded %s" % (got_md5, rec.get("md5")))
+    if rec.get("size") != len(data):
+        problems.append("size %d != recorded %s" % (len(data), rec.get("size")))
+    if not rec.get("clean_tree"):
+        problems.append("record does not assert a clean tree")
+    if not rec.get("reconfigured"):
+        problems.append("record does not assert a reconfigure")
+    for name, c in (rec.get("components") or {}).items():
+        if c.get("problems"):
+            problems.append("component %s had %d problem(s) at build time"
+                            % (name, len(c["problems"])))
+    row("prod-build record present", not problems,
+        "; ".join(problems) if problems else
+        "built from %s on a clean tree, components verified, md5 %s"
+        % ((rec.get("commit") or "?")[:7], got_md5))
+
+
 def check_source():
     """Spec 5.1 items 1 and 3: two facts that live only in the source.
 
@@ -1159,10 +1219,13 @@ def main():
         check_no_instrument(b)
         check_not_rollback_rehearsal(b)
         check_sources_older_than_image(b)
+        check_prod_record(b)
     else:
         row("no measurement instrument in the image", None,
             "no image to inspect", ref_missing=True)
         row("no OTA fault injection in the image", None,
+            "no image to inspect", ref_missing=True)
+        row("prod-build record present", None,
             "no image to inspect", ref_missing=True)
 
     print()
