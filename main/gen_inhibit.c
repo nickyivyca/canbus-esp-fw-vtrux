@@ -162,6 +162,22 @@ static uint8_t  s_silent_saved;
  * structure measurably perturbed TX completion observation in the measurement
  * build.
  */
+/*
+ * The controller's state as a word, not the raw enum. A log read months later
+ * should not need the IDF header to say whether 2 meant bus-off.
+ */
+static const char *drv_state_name(twai_state_t s)
+{
+    switch (s)
+    {
+        case TWAI_STATE_STOPPED:    return "stopped";
+        case TWAI_STATE_RUNNING:    return "running";
+        case TWAI_STATE_BUS_OFF:    return "bus_off";
+        case TWAI_STATE_RECOVERING: return "recovering";
+        default:                    return "unknown";
+    }
+}
+
 static int drv_json(const twai_status_info_t *info, bool ok,
                     char *buf, int buflen)
 {
@@ -170,10 +186,28 @@ static int drv_json(const twai_status_info_t *info, bool ok,
         /* Not installed is a normal state when disarmed, and is not an error. */
         return snprintf(buf, buflen, ",\"drv\":null");
     }
+    /*
+     * `state`, `tec` and `rec` are INSTANTANEOUS, unlike every other field in
+     * this object, which is cumulative since the driver was installed. Do not
+     * difference them across a run (spec 11, 2026-10-06).
+     *
+     * They are here because nothing else on the page can stand in for them.
+     * `bus_on` is can_is_enabled() -- driver installed, not bus-on -- and
+     * `bus_error` counts error EVENTS without saying whether any of them moved
+     * the controller towards bus-off. Bus-off keys on TEC, which rises only on
+     * transmit errors, so a device merely receiving a corrupted bus and a
+     * device being driven to bus-off look identical in `bus_error`. The
+     * 2026-10-05 tx_failed probe read 1,012,036 bus errors in 40 s and still
+     * could not say which of the two it had produced.
+     */
     return snprintf(buf, buflen,
-                    ",\"drv\":{\"rx_missed\":%lu,\"rx_overrun\":%lu,"
+                    ",\"drv\":{\"state\":\"%s\",\"tec\":%lu,\"rec\":%lu,"
+                    "\"rx_missed\":%lu,\"rx_overrun\":%lu,"
                     "\"arb_lost\":%lu,\"bus_error\":%lu,\"tx_failed\":%lu,"
                     "\"msgs_to_rx\":%lu,\"msgs_to_tx\":%lu}",
+                    drv_state_name(info->state),
+                    (unsigned long)info->tx_error_counter,
+                    (unsigned long)info->rx_error_counter,
                     (unsigned long)info->rx_missed_count,
                     (unsigned long)info->rx_overrun_count,
                     (unsigned long)info->arb_lost_count,
