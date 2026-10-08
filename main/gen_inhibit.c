@@ -101,9 +101,18 @@ _Static_assert(GEN_INHIBIT_PROBE_ID == GI_PROBE_ID, "id drift");
  * 5 is the bus_on change (spec 11, 2026-10-06): diag_flags bit1 and the status
  * page's bus_on report the CONTROLLER running rather than the driver being
  * installed. No field moves, which is exactly why this rev exists -- a rev 4
- * log and a rev 5 log are byte-identical in layout, and a reader holding the
- * old meaning would take a bus-off device for one on the bus. The accompanying
- * diag_schema_ver 5 -> 6 guards decoders; this guards the human. */
+ * log and a rev 5 log are byte-identical in layout, so a reader holding the
+ * old meaning would read the bit correctly and interpret it wrongly.
+ *
+ * On the wire the bit reads 1 under both meanings in practice, since a
+ * controller that is not running sends no pages; the difference shows on the
+ * status page, where the old meaning read true through 42.1 s of bus-off on
+ * 2026-10-06. (Corrected 2026-10-07: this comment previously said a reader
+ * would take a bus-off device for one on the bus, which cannot happen in a CAN
+ * log -- the witness counted 0 WiCAN diag frames across that bus-off.)
+ *
+ * The accompanying diag_schema_ver 5 -> 6 guards decoders; this guards the
+ * human. */
 #ifndef DIAG_FW_VERSION
 #define DIAG_FW_VERSION              5
 #endif
