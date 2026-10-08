@@ -3,10 +3,10 @@
 # E4 load model ON: rx_depth=64 bitrate=500 kbit (air time: DLC6 236 us, DLC8 276 us)
 0 EV MODE a=3 b=500 c=0
 0 STATE mode=3 live=0 block=gate not yet evaluated abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
-0 TX DIAG id=7F1 dlc=8 data=0501030600FF0000 ok=1
+0 TX DIAG id=7F1 dlc=8 data=0601030600FF0000 ok=1
 0 STATE mode=3 live=0 block=no fresh 0x051 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
 400276 TX DIAG id=7F2 dlc=8 data=0000000000000000 ok=1
-800552 TX DIAG id=7F3 dlc=8 data=0000000001000500 ok=1
+800552 TX DIAG id=7F3 dlc=8 data=0000000001000600 ok=1
 1000000 STATE mode=3 live=0 block=no fresh 0x617 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
 1003000 EV SOC_VALID a=1 b=11 c=0
 1003000 STATE mode=3 live=0 block=no fresh 0x617 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=1 socsince=0
@@ -67,7 +67,7 @@
 1497030 TX INHIBIT id=051 dlc=6 data=080080FF7F03 ok=1
 1513430 TX INHIBIT id=051 dlc=6 data=080080FF7F04 ok=1
 1523930 TX INHIBIT id=051 dlc=6 data=080080FF7F05 ok=1
-1524459 TX DIAG id=7F1 dlc=8 data=0501036600028813 ok=1
+1524459 TX DIAG id=7F1 dlc=8 data=0601036600028813 ok=1
 1530230 TX INHIBIT id=051 dlc=6 data=080080FF7F06 ok=1
 1543330 TX INHIBIT id=051 dlc=6 data=080080FF7F07 ok=1
 1551530 TX INHIBIT id=051 dlc=6 data=080080FF7F08 ok=1
@@ -117,7 +117,7 @@
 1979970 TX INHIBIT id=051 dlc=6 data=080080FF7F03 ok=1
 1996370 TX INHIBIT id=051 dlc=6 data=080080FF7F04 ok=1
 2006870 TX INHIBIT id=051 dlc=6 data=080080FF7F05 ok=1
-2007459 TX DIAG id=7F3 dlc=8 data=0000000001000500 ok=1
+2007459 TX DIAG id=7F3 dlc=8 data=0000000001000600 ok=1
 2013170 TX INHIBIT id=051 dlc=6 data=080080FF7F06 ok=1
 2026270 TX INHIBIT id=051 dlc=6 data=080080FF7F07 ok=1
 2034470 TX INHIBIT id=051 dlc=6 data=080080FF7F08 ok=1
@@ -192,7 +192,7 @@
 2704380 TX INHIBIT id=051 dlc=6 data=080080FF7F0B ok=1
 2720780 TX INHIBIT id=051 dlc=6 data=080080FF7F0C ok=1
 2731280 TX INHIBIT id=051 dlc=6 data=080080FF7F0D ok=1
-2732024 TX DIAG id=7F1 dlc=8 data=0501036600028813 ok=1
+2732024 TX DIAG id=7F1 dlc=8 data=0601036600028813 ok=1
 2737580 TX INHIBIT id=051 dlc=6 data=080080FF7F0E ok=1
 2750680 TX INHIBIT id=051 dlc=6 data=080080FF7F0F ok=1
 2758880 TX INHIBIT id=051 dlc=6 data=080080FF7F00 ok=1
@@ -242,7 +242,7 @@
 3187320 TX INHIBIT id=051 dlc=6 data=080080FF7F0B ok=1
 3203720 TX INHIBIT id=051 dlc=6 data=080080FF7F0C ok=1
 3214220 TX INHIBIT id=051 dlc=6 data=080080FF7F0D ok=1
-3214959 TX DIAG id=7F3 dlc=8 data=0000000001000500 ok=1
+3214959 TX DIAG id=7F3 dlc=8 data=0000000001000600 ok=1
 3220520 TX INHIBIT id=051 dlc=6 data=080080FF7F0E ok=1
 3233620 TX INHIBIT id=051 dlc=6 data=080080FF7F0F ok=1
 3241820 TX INHIBIT id=051 dlc=6 data=080080FF7F00 ok=1
@@ -317,7 +317,7 @@
 3911730 TX INHIBIT id=051 dlc=6 data=080080FF7F03 ok=1
 3928130 TX INHIBIT id=051 dlc=6 data=080080FF7F04 ok=1
 3938630 TX INHIBIT id=051 dlc=6 data=080080FF7F05 ok=1
-3939102 TX DIAG id=7F1 dlc=8 data=0501036600028813 ok=1
+3939102 TX DIAG id=7F1 dlc=8 data=0601036600028813 ok=1
 3944930 TX INHIBIT id=051 dlc=6 data=080080FF7F06 ok=1
 3958030 TX INHIBIT id=051 dlc=6 data=080080FF7F07 ok=1
 3966230 TX INHIBIT id=051 dlc=6 data=080080FF7F08 ok=1
@@ -328,7 +328,7 @@
 4599711 EV SOC_VALID a=0 b=1041 c=0
 4599711 EV ABORT a=3 b=0 c=0
 4599711 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=1 key=0 socv=0 socsince=0
-4999987 TX DIAG id=7F3 dlc=8 data=0000000001000500 ok=1
+4999987 TX DIAG id=7F3 dlc=8 data=0000000001000600 ok=1
 5000263 FINAL mode=3 live=0 tx_ok=295 tx_fail=0 other=6282 ctr_ok=298 ctr_bad=0 rx_gap_n=298 resp_n=295 disabled=0 dcode= block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 soc=5000 shift=2 key=0 socv=0 mainc=11 would_tx=0 emit_refused=0
 5000263 E4 rx_dropped=0 rx_dropped_cmd=0 rxq_high_water=6 tx_behind=1 tx_late_past_next=0 stall_dropped=0 stall_dropped_cmd=0
 # E4 is a MODEL. Review A4: the full-replay bench run is what calibrates it. A green line above means the deadline held under the modelled load, not on the truck.

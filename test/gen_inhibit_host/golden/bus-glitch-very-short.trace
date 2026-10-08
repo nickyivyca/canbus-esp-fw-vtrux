@@ -2,10 +2,10 @@
 0 STATE mode=0 live=0 block=not armed abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
 0 EV MODE a=3 b=500 c=0
 0 STATE mode=3 live=0 block=gate not yet evaluated abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
-0 TX DIAG id=7F1 dlc=8 data=0501030600FF0000 ok=1
+0 TX DIAG id=7F1 dlc=8 data=0601030600FF0000 ok=1
 0 STATE mode=3 live=0 block=no fresh 0x051 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
 400000 TX DIAG id=7F2 dlc=8 data=0000000000000000 ok=1
-800000 TX DIAG id=7F3 dlc=8 data=0000000001000500 ok=1
+800000 TX DIAG id=7F3 dlc=8 data=0000000001000600 ok=1
 1000000 STATE mode=3 live=0 block=no fresh 0x617 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
 1000000 EV KEY a=1 b=0 c=0
 1000000 STATE mode=3 live=0 block=no fresh 0x617 abort= latched=0 disabled=0 dcode= susp=0 fb_ever=0 key=1 socv=0 socsince=0
@@ -43,7 +43,7 @@
 1480000 TX INHIBIT id=051 dlc=6 data=080080FF7F09 ok=1
 1500000 TX INHIBIT id=051 dlc=6 data=080080FF7F0A ok=1
 1520000 TX INHIBIT id=051 dlc=6 data=080080FF7F0B ok=1
-1520000 TX DIAG id=7F1 dlc=8 data=0501036600028813 ok=1
+1520000 TX DIAG id=7F1 dlc=8 data=0601036600028813 ok=1
 1540000 TX INHIBIT id=051 dlc=6 data=080080FF7F0C ok=1
 1560000 TX INHIBIT id=051 dlc=6 data=080080FF7F0D ok=1
 1580000 TX INHIBIT id=051 dlc=6 data=080080FF7F0E ok=1
@@ -69,7 +69,7 @@
 1960000 TX INHIBIT id=051 dlc=6 data=080080FF7F01 ok=1
 1980000 TX INHIBIT id=051 dlc=6 data=080080FF7F02 ok=1
 2000000 TX INHIBIT id=051 dlc=6 data=080080FF7F03 ok=1
-2000000 TX DIAG id=7F3 dlc=8 data=0000000001000500 ok=1
+2000000 TX DIAG id=7F3 dlc=8 data=0000000001000600 ok=1
 2020000 TX INHIBIT id=051 dlc=6 data=080080FF7F04 ok=1
 2040000 TX INHIBIT id=051 dlc=6 data=080080FF7F05 ok=1
 2060000 TX INHIBIT id=051 dlc=6 data=080080FF7F06 ok=1
@@ -108,7 +108,7 @@
 2680000 TX INHIBIT id=051 dlc=6 data=080080FF7F05 ok=1
 2700000 TX INHIBIT id=051 dlc=6 data=080080FF7F06 ok=1
 2720000 TX INHIBIT id=051 dlc=6 data=080080FF7F07 ok=1
-2720000 TX DIAG id=7F1 dlc=8 data=0501036600028813 ok=1
+2720000 TX DIAG id=7F1 dlc=8 data=0601036600028813 ok=1
 2740000 TX INHIBIT id=051 dlc=6 data=080080FF7F08 ok=1
 2760000 TX INHIBIT id=051 dlc=6 data=080080FF7F09 ok=1
 2780000 TX INHIBIT id=051 dlc=6 data=080080FF7F0A ok=1
@@ -127,7 +127,7 @@
 3170000 TX INHIBIT id=051 dlc=6 data=080080FF7F02 ok=1
 3190000 TX INHIBIT id=051 dlc=6 data=080080FF7F03 ok=1
 3210000 TX INHIBIT id=051 dlc=6 data=080080FF7F04 ok=1
-3210000 TX DIAG id=7F3 dlc=8 data=0000000001000500 ok=1
+3210000 TX DIAG id=7F3 dlc=8 data=0000000001000600 ok=1
 3230000 TX INHIBIT id=051 dlc=6 data=080080FF7F05 ok=1
 3250000 TX INHIBIT id=051 dlc=6 data=080080FF7F06 ok=1
 3270000 TX INHIBIT id=051 dlc=6 data=080080FF7F07 ok=1
@@ -166,7 +166,7 @@
 3890000 TX INHIBIT id=051 dlc=6 data=080080FF7F06 ok=1
 3910000 TX INHIBIT id=051 dlc=6 data=080080FF7F07 ok=1
 3930000 TX INHIBIT id=051 dlc=6 data=080080FF7F08 ok=1
-3930000 TX DIAG id=7F1 dlc=8 data=0501036600028813 ok=1
+3930000 TX DIAG id=7F1 dlc=8 data=0601036600028813 ok=1
 3950000 TX INHIBIT id=051 dlc=6 data=080080FF7F09 ok=1
 3970000 TX INHIBIT id=051 dlc=6 data=080080FF7F0A ok=1
 3990000 TX INHIBIT id=051 dlc=6 data=080080FF7F0B ok=1
@@ -192,7 +192,7 @@
 4370000 TX INHIBIT id=051 dlc=6 data=080080FF7F0E ok=1
 4390000 TX INHIBIT id=051 dlc=6 data=080080FF7F0F ok=1
 4410000 TX INHIBIT id=051 dlc=6 data=080080FF7F00 ok=1
-4410000 TX DIAG id=7F3 dlc=8 data=0000000001000500 ok=1
+4410000 TX DIAG id=7F3 dlc=8 data=0000000001000600 ok=1
 4430000 TX INHIBIT id=051 dlc=6 data=080080FF7F01 ok=1
 4450000 TX INHIBIT id=051 dlc=6 data=080080FF7F02 ok=1
 4470000 TX INHIBIT id=051 dlc=6 data=080080FF7F03 ok=1
@@ -231,7 +231,7 @@
 5090000 TX INHIBIT id=051 dlc=6 data=080080FF7F02 ok=1
 5110000 TX INHIBIT id=051 dlc=6 data=080080FF7F03 ok=1
 5130000 TX INHIBIT id=051 dlc=6 data=080080FF7F04 ok=1
-5130000 TX DIAG id=7F1 dlc=8 data=0501036600028813 ok=1
+5130000 TX DIAG id=7F1 dlc=8 data=0601036600028813 ok=1
 5150000 TX INHIBIT id=051 dlc=6 data=080080FF7F05 ok=1
 5170000 TX INHIBIT id=051 dlc=6 data=080080FF7F06 ok=1
 5190000 TX INHIBIT id=051 dlc=6 data=080080FF7F07 ok=1
@@ -257,7 +257,7 @@
 5570000 TX INHIBIT id=051 dlc=6 data=080080FF7F0A ok=1
 5590000 TX INHIBIT id=051 dlc=6 data=080080FF7F0B ok=1
 5610000 TX INHIBIT id=051 dlc=6 data=080080FF7F0C ok=1
-5610000 TX DIAG id=7F3 dlc=8 data=0000000001000500 ok=1
+5610000 TX DIAG id=7F3 dlc=8 data=0000000001000600 ok=1
 5630000 TX INHIBIT id=051 dlc=6 data=080080FF7F0D ok=1
 5650000 TX INHIBIT id=051 dlc=6 data=080080FF7F0E ok=1
 5670000 TX INHIBIT id=051 dlc=6 data=080080FF7F0F ok=1
@@ -282,5 +282,5 @@
 6590000 EV SOC_VALID a=0 b=1041 c=0
 6590000 EV ABORT a=3 b=0 c=0
 6590000 STATE mode=3 live=0 block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 disabled=0 dcode= susp=0 fb_ever=0 key=0 socv=0 socsince=0
-6990000 TX DIAG id=7F1 dlc=8 data=0501038600028813 ok=1
+6990000 TX DIAG id=7F1 dlc=8 data=0601038600028813 ok=1
 7190000 FINAL mode=3 live=0 tx_ok=242 tx_fail=0 other=360 ctr_ok=241 ctr_bad=1 rx_gap_n=242 resp_n=242 disabled=0 dcode= block=latched abort (key-on clears) abort=bus lost -- no 0x051 (latched; CAN link down) latched=1 soc=5000 shift=2 key=0 socv=0 mainc=11 would_tx=0 emit_refused=0

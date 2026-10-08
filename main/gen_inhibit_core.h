@@ -217,7 +217,7 @@ extern "C" {
  */
 #define GI_DIAG_AFTER_TX_US 1000
 
-#define GI_DIAG_SCHEMA_VER  5
+#define GI_DIAG_SCHEMA_VER  6
 
 /* ---------------------------------------------------------------- modes -- */
 
@@ -784,7 +784,7 @@ typedef struct
  */
 typedef struct
 {
-    bool     can_enabled;       /* driver installed and on-bus */
+    bool     can_enabled;       /* controller RUNNING, as spec 11 bus_on; name is a misnomer */
     bool     bus_ours;          /* we were the ones who enabled it */
     bool     err_valid;         /* bus_error_count below is meaningful */
     uint32_t bus_error_count;   /* controller's own counter, free-running */

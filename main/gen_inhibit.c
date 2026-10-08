@@ -192,13 +192,18 @@ static int drv_json(const twai_status_info_t *info, bool ok,
      * difference them across a run (spec 11, 2026-10-06).
      *
      * They are here because nothing else on the page can stand in for them.
-     * `bus_on` is can_is_enabled() -- driver installed, not bus-on -- and
+     * `bus_on` now reports the controller's state as well, but only as one
+     * bool, so it cannot separate bus-off from stopped or recovering -- and
      * `bus_error` counts error EVENTS without saying whether any of them moved
      * the controller towards bus-off. Bus-off keys on TEC, which rises only on
      * transmit errors, so a device merely receiving a corrupted bus and a
-     * device being driven to bus-off look identical in `bus_error`. The
-     * 2026-10-05 tx_failed probe read 1,012,036 bus errors in 40 s and still
-     * could not say which of the two it had produced.
+     * device being driven to bus-off look identical in `bus_error`.
+     *
+     * The conclusive run is the 2026-10-06 TEC sweep
+     * (artifacts/gen-inhibit/runs/tec_busoff_sweep.json), which reached bus-off
+     * and read the state directly. The 2026-10-05 tx_failed probe before it
+     * read 1,012,036 bus errors in 40 s and could not say which of the two it
+     * had produced.
      */
     return snprintf(buf, buflen,
                     ",\"drv\":{\"state\":\"%s\",\"tec\":%lu,\"rec\":%lu,"
@@ -343,11 +348,23 @@ static void bus_snapshot(gi_bus_t *b)
 {
     twai_status_info_t st;
     memset(b, 0, sizeof(*b));
-    b->can_enabled = can_is_enabled();
-    b->bus_ours    = s_we_enabled_bus;
+    b->bus_ours = s_we_enabled_bus;
+    /*
+     * can_enabled carries the CONTROLLER's state, the same meaning spec 11
+     * gives `bus_on` -- this field is the 0x02 bit on 0x7F1, and the spec says
+     * the bit and the status-page field mean the same thing. It is taken from
+     * the status read this function already makes for the section 7 error-rate
+     * trip, so the new meaning costs no additional driver call. The memset
+     * above leaves it false when that read fails, which is what the driver not
+     * being installed looks like from here.
+     *
+     * The field keeps its old name: renaming it reaches into the host runner,
+     * whose owner is not settled. The name is now a misnomer -- asked.
+     */
     if (twai_get_status_info(&st) == ESP_OK)
     {
-        b->err_valid = true;
+        b->can_enabled     = (st.state == TWAI_STATE_RUNNING);
+        b->err_valid       = true;
         b->bus_error_count = st.bus_error_count;
     }
 }
@@ -1385,8 +1402,20 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
      */
     twai_status_info_t drv;
     const bool drv_ok = (twai_get_status_info(&drv) == ESP_OK);
-    /* Same reason: can_is_enabled() reaches into the CAN layer. */
-    const bool bus_on = can_is_enabled();
+    /*
+     * bus_on is the CONTROLLER's state, not the driver's installation (spec 11,
+     * changed 2026-10-06): false when the controller is stopped, bus-off or
+     * recovering, and false when the status read itself fails -- which is what
+     * the driver not being installed looks like from here. "Driver installed"
+     * stays readable as `drv` being non-null in the JSON, so nothing is lost.
+     * It comes from the read above, so it is in that read's snapshot and not
+     * the critical section's -- the same caveat as the rest of `drv`.
+     *
+     * It was can_is_enabled() until now, which read `true` for the whole 42.1 s
+     * the device sat bus-off and silent on 2026-10-06. Mode switching still
+     * keys on the driver being installed; only the reported value changes.
+     */
+    const bool bus_on = drv_ok && (drv.state == TWAI_STATE_RUNNING);
 
     const int64_t t_snap0 = esp_timer_get_time();
     taskENTER_CRITICAL(&s_abort_lock);
