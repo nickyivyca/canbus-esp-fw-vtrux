@@ -839,17 +839,24 @@ def s_err_edge_10p5():
 
 @scenario("err-rate-two-spans", """
 Nine errors at 1 per second from 2 s (2..10 s), then nothing for over two
-window spans, then ten at 1 per second from 32 s (32..41 s). Runs the
+window spans, then ten at 1 per second from 33.5 s (33.5..42.5 s). Runs the
 window-expiry path, which nothing else in the suite reaches.
 
-EXPECT: no trip 6 before 41 s (the first nine never share a 10 s window with
-the later ten), and trip 6 by the tenth error of the second batch at 41 s
-(10 in 9 s).
+EXPECT: no trip 6 before 42.5 s (the first nine never share a 10 s window
+with the later ten), and trip 6 by the tenth error of the second batch at
+42.5 s (10 in 9 s).
+
+WHY 33.5 s AND NOT 32 s (2026-10-08, reviewer). The first version started the
+second batch at 32 s, which put its tenth error at 41.0 s -- within one tick
+(~20 ms) of where a window tumbling from go-live would have its edge. It
+latched at 41.0 s, but that could not tell a sliding window from a tumbling
+one. At 33.5 s every error is at least 0.5 s from such an edge, and the
+readings disagree (sliding: trip at 42.5 s; tumbling: never).
 """)
 def s_err_two_spans():
     first = [2 * S + k * S for k in range(9)]
-    second = [32 * S + k * S for k in range(10)]
-    return live_run(err_bus(first + second), 47)
+    second = [33500 * MS + k * S for k in range(10)]
+    return live_run(err_bus(first + second), 49)
 
 
 @scenario("err-rate-sustained-4", """
@@ -880,10 +887,12 @@ at 11.0 s, then one more error at 11.5 s: ten errors in 9.5 s across the
 re-arm. The controller's count is left cumulative (10), as the 'bus'
 directive models it.
 
-EXPECT: PENDING. The implementor proposed "must not latch" (the re-arm clears
-the window). Spec 7 says a re-arm clears a LATCH; whether it also clears the
-error count is asked of the reviewer. Without a clearing rule, a sliding
-window would latch here, so the scenario tells the two apart.
+EXPECT: PENDING a new rule (reviewer, 2026-10-08: it does not follow from
+spec 7, which says a re-arm clears a LATCH and nothing about the error count
+or window; it is with the user as two options). If the window counts errors
+over wall time regardless of arming, a sliding window requires trip 6 at
+11.5 s. If a re-arm starts it fresh, there is never a trip here. The
+scenario tells the two apart.
 """)
 def s_err_rearm_clears():
     errs = err_bus([2 * S + k * S for k in range(9)] + [11500 * MS])

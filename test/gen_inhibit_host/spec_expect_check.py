@@ -45,6 +45,12 @@ TRIP6 = "error-frame rate exceeded"
 THRESHOLD = 10              # spec 7
 WINDOW_US = 10 * 1000000    # spec 7
 TICK_SLACK_US = 100000      # a latch may trail its due error by one poll
+# A tumbling window's origin is "go-live", known here only to about one tick
+# (the trace's INHIBIT_LIVE time; the first tick after it is ~20 ms later). An
+# error this close to a tumble edge makes the row unable to tell the readings
+# apart: the first err-rate-two-spans put its tenth error 0-20 ms from one
+# (reviewer, 2026-10-08), so such rows are flagged EDGE.
+EDGE_US = 50000
 READINGS = ("sliding-strict", "sliding-inclusive", "tumbling-from-live")
 
 ROWS = [
@@ -58,10 +64,12 @@ ROWS = [
     ("err-rate-spread-10-at-11p5", "latch", "10 at 1/s from 11.5 s"),
     ("err-rate-edge-9p5", "pending", "10 over 9.5 s from 5 s"),
     ("err-rate-edge-10p5", "pending", "10 over 10.5 s from 5 s"),
-    ("err-rate-two-spans", "latch", "9 early, 10 at 1/s from 32 s"),
+    ("err-rate-two-spans", "latch", "9 early, 10 at 1/s from 33.5 s"),
     ("err-rate-sustained-4", "pending", "4 in every 10 s for 60 s"),
     ("err-rate-jump-12", "latch", "+12 in one reading at 5 s"),
-    ("err-rate-rearm-clears", "pending", "9, disarm, re-arm, 1 (re-arm rule asked of the reviewer)"),
+    ("err-rate-rearm-clears", "pending",
+     "9, disarm, re-arm, 1: new rule with the user; a re-arm that starts the window "
+     "fresh requires never"),
 ]
 STATE_RE = re.compile(r"^(\d+) (?:STATE|FINAL) .* abort=(.*?) latched=(\d)")
 LIVE_RE = re.compile(r"^(\d+) EV INHIBIT_LIVE ")
@@ -105,6 +113,20 @@ def due(errs, reading, live_us):
     return None
 
 
+def near_tumble_edge(errs, live_us):
+    """Errors within EDGE_US of a window edge tumbling from go-live."""
+    if live_us is None:
+        return []
+    out = []
+    for t in errs:
+        if t < live_us:
+            continue
+        r = (t - live_us) % WINDOW_US
+        if min(r, WINDOW_US - r) <= EDGE_US:
+            out.append(t)
+    return out
+
+
 def selftest():
     ten_9s = [k * 1000000 for k in range(10)]
     ten_10s = [k * 1000000 * 10 // 9 for k in range(10)]   # last exactly 10.0 s after first
@@ -120,9 +142,19 @@ def selftest():
         ("scn parse: cumulative +12", errors_from_scn("bus 5000000 1 1 1 12\n"), "sliding-strict",
          0, 5000000),
     ]
+    edge_cases = [
+        ("41.0 s with go-live at 1.0 s is on a tumble edge", [41000000], 1000000, [41000000]),
+        ("41.0 s with go-live at 1.02 s is within 20 ms", [41000000], 1020000, [41000000]),
+        ("42.5 s with go-live at 1.0 s is clear of it", [42500000], 1000000, []),
+    ]
     bad = 0
     for label, errs, rd, live, want in cases:
         got = due(errs, rd, live)
+        ok = got == want
+        bad += not ok
+        print("  %-4s %-44s %s" % ("ok" if ok else "FAIL", label, got))
+    for label, errs, live, want in edge_cases:
+        got = near_tumble_edge(errs, live)
         ok = got == want
         bad += not ok
         print("  %-4s %-44s %s" % ("ok" if ok else "FAIL", label, got))
@@ -199,8 +231,12 @@ def main():
         bad += v not in ("PASS", "PENDING")
         pending += v == "PENDING"
         print("[%-12s] %-26s %s | %s" % (v, name, detail, why))
-        print("               %-26s due under: %s" % ("", ", ".join(
-            "%s %s" % (r, "never" if d is None else "%.2f s" % (d / 1e6)) for r, d in dues.items())))
+        errs = errors_from_scn(text)
+        edge = near_tumble_edge(errs, first_live(out))
+        print("               %-26s due under: %s%s" % ("", ", ".join(
+            "%s %s" % (r, "never" if d is None else "%.2f s" % (d / 1e6)) for r, d in dues.items()),
+            ("  EDGE: %d error(s) within %d ms of a tumble edge, the readings cannot be told apart"
+             % (len(edge), EDGE_US // 1000)) if edge else ""))
     print("\n%d of %d rows pass, %d pending a ruling, %d fail or inconclusive"
           % (len(ROWS) - bad - pending, len(ROWS), pending, bad))
     return 1 if bad else 0
