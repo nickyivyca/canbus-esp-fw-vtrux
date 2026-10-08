@@ -766,6 +766,131 @@ def s_err_rate_spread_9():
     return sorted_directives(L)
 
 
+# ---- trip 6 window cases (tester, 2026-10-08) -------------------------------
+#
+# Each is a list of bus-error TIMES; spec_expect_check.py reads them back out
+# of the .scn ("bus" directives, cumulative count) and works out what each
+# candidate reading of spec 7's "10 or more error frames within a 10 s window"
+# requires. The window parameters live there, in one place, not here. Cases
+# suggested by the implementor via the reviewer; expectations are the spec's.
+
+
+def err_bus(times_us, count0=0, step=1):
+    """bus directives raising the controller's error count by `step` at each time."""
+    out, c = [], count0
+    for t in times_us:
+        c += step
+        out.append("bus %d 1 1 1 %d" % (t, c))
+    return out
+
+
+def spread(t0_us, n, span_us):
+    """n error times from t0, evenly spaced so the last is span_us after the first."""
+    return [t0_us + (k * span_us) // (n - 1) for k in range(n)]
+
+
+def live_run(errs, end_s, extra=()):
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, end_s * S, 20 * MS)
+    L += list(extra)
+    L += errs
+    L += ["end %d" % (end_s * S)]
+    return sorted_directives(L)
+
+
+def _spread_at(offset_us):
+    return lambda: live_run(err_bus(spread(offset_us, 10, 9 * S)), (offset_us + 15 * S) // S + 1)
+
+
+for _off, _tag in ((1500 * MS, "1p5"), (2500 * MS, "2p5"), (9 * S, "9p0"), (11500 * MS, "11p5")):
+    scenario("err-rate-spread-10-at-%s" % _tag, """
+err-rate-spread-10 with the first error %.1f s after arming instead of 5 s:
+ten errors at 1 per second, the tenth 9.0 s after the first. One offset can
+pass by luck; 11.5 s puts the burst in a second window if the window is not
+sliding.
+
+EXPECT: trip 6 latched by the tenth error (spec 7; the reviewer: 10 errors in
+9 s must latch under any reading of the window).
+""" % (_off / S))(_spread_at(_off))
+
+
+@scenario("err-rate-edge-9p5", """
+Ten errors from 5 s, evenly spaced over 9.5 s. Half of the window-boundary
+pair; err-rate-edge-10p5 is the other half, at the same start.
+
+EXPECT: PENDING the user's ruling on the window (sliding or tumbling, and
+whether exactly 10.0 s counts). spec_expect_check.py shows what each reading
+requires. A sliding 10 s window requires trip 6 at the tenth error.
+""")
+def s_err_edge_9p5():
+    return live_run(err_bus(spread(5 * S, 10, 9500 * MS)), 21)
+
+
+@scenario("err-rate-edge-10p5", """
+Ten errors from 5 s, evenly spaced over 10.5 s: never ten inside any 10 s.
+
+EXPECT: PENDING the user's ruling, as err-rate-edge-9p5. A sliding 10 s
+window requires NO trip 6. With 9p5 this pins the window length from both
+sides, and catches a window that shrinks or grows.
+""")
+def s_err_edge_10p5():
+    return live_run(err_bus(spread(5 * S, 10, 10500 * MS)), 22)
+
+
+@scenario("err-rate-two-spans", """
+Nine errors at 1 per second from 2 s (2..10 s), then nothing for over two
+window spans, then ten at 1 per second from 32 s (32..41 s). Runs the
+window-expiry path, which nothing else in the suite reaches.
+
+EXPECT: no trip 6 before 41 s (the first nine never share a 10 s window with
+the later ten), and trip 6 by the tenth error of the second batch at 41 s
+(10 in 9 s).
+""")
+def s_err_two_spans():
+    first = [2 * S + k * S for k in range(9)]
+    second = [32 * S + k * S for k in range(10)]
+    return live_run(err_bus(first + second), 47)
+
+
+@scenario("err-rate-sustained-4", """
+Spec 7's worst observed burst, sustained: one error every 2.5 s for 60 s
+(2..62 s), so four in every 10 s.
+
+EXPECT: PENDING the user's ruling (reviewer, 2026-10-08), though no reading
+listed in spec_expect_check.py ever puts ten in one window. It must never
+latch under spec 7's 2.5x headroom.
+""")
+def s_err_sustained_4():
+    return live_run(err_bus([2 * S + k * 2500 * MS for k in range(25)]), 66)
+
+
+@scenario("err-rate-jump-12", """
+The controller's error count jumps by 12 between two readings, at 5 s.
+
+EXPECT: trip 6 latched at 5 s. Twelve error frames inside one 10 s window
+under any reading.
+""")
+def s_err_jump_12():
+    return live_run(["bus %d 1 1 1 12" % (5 * S)], 12)
+
+
+@scenario("err-rate-rearm-clears", """
+Nine errors at 1 per second from 2 s (2..10 s), a disarm at 10.5 s, a re-arm
+at 11.0 s, then one more error at 11.5 s: ten errors in 9.5 s across the
+re-arm. The controller's count is left cumulative (10), as the 'bus'
+directive models it.
+
+EXPECT: PENDING. The implementor proposed "must not latch" (the re-arm clears
+the window). Spec 7 says a re-arm clears a LATCH; whether it also clears the
+error count is asked of the reviewer. Without a clearing rule, a sliding
+window would latch here, so the scenario tells the two apart.
+""")
+def s_err_rearm_clears():
+    errs = err_bus([2 * S + k * S for k in range(9)] + [11500 * MS])
+    return live_run(errs, 18, extra=["mode %d 0 500" % (10500 * MS),
+                                     "mode %d 3 500" % (11 * S)])
+
+
 @scenario("observe-never-transmits", """
 Mode OBSERVE with a fully live bus.
 
