@@ -96,9 +96,16 @@ _Static_assert(GEN_INHIBIT_PROBE_ID == GI_PROBE_ID, "id drift");
  * diag_schema_ver 2 -> 3 and two new diag_flags bits. It matters for log
  * reading because a rev 2 device latches GI_ABORT_INVERTER_LOST at the end of
  * every drive and then goes silent, where a rev 3 device stays armed and says
- * so. */
+ * so.
+ *
+ * 5 is the bus_on change (spec 11, 2026-10-06): diag_flags bit1 and the status
+ * page's bus_on report the CONTROLLER running rather than the driver being
+ * installed. No field moves, which is exactly why this rev exists -- a rev 4
+ * log and a rev 5 log are byte-identical in layout, and a reader holding the
+ * old meaning would take a bus-off device for one on the bus. The accompanying
+ * diag_schema_ver 5 -> 6 guards decoders; this guards the human. */
 #ifndef DIAG_FW_VERSION
-#define DIAG_FW_VERSION              4
+#define DIAG_FW_VERSION              5
 #endif
 #ifndef GIT_SHA
 #define GIT_SHA "unknown"
