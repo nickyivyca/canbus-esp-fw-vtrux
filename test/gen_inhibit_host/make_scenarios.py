@@ -722,6 +722,50 @@ def s_err_under():
     return sorted_directives(L)
 
 
+@scenario("err-rate-spread-10", """
+Ten bus errors spread out: the first 5 s after arming, then one per second, so
+the tenth lands 9.0 s after the first (5 s .. 14 s). The inhibit is live from
+1 s throughout.
+
+EXPECT: abort "error-frame rate exceeded", latched, by the tenth error at
+14 s. Spec 7, trip 6: "10 or more error frames within a 10 s window". Nine
+seconds is inside a 10 s window under any sliding reading, and the inclusive
+edge (exactly 10.0 s) is not in play here.
+
+Why it exists (gen-inhibit tester, 2026-10-08): it is the host side of the
+bench result in gen-inhibit-test-evidence.md, section 7, "Trip 6 at the trip
+threshold". There, 10 pulses at 1 s on a live arm, starting ~5 s after it went
+live, were each counted by the device (drv.bus_error +1 per pulse), and trip 6
+did not latch. err-rate-trip puts its 12 errors inside 1.2 s, so it cannot see
+a window that restarts or forgets errors spread over seconds. The timing here
+comes from the spec and the bench, not from the core's code.
+""")
+def s_err_rate_spread_10():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 20 * S, 20 * MS)
+    for i in range(1, 11):
+        L.append("bus %d 1 1 1 %d" % (5 * S + (i - 1) * S, i))
+    L += ["end %d" % (20 * S)]
+    return sorted_directives(L)
+
+
+@scenario("err-rate-spread-9", """
+The control for err-rate-spread-10: nine bus errors from 5 s, one per 1.1 s
+(5.0 s .. 13.8 s), never ten in any window.
+
+EXPECT: no abort. With err-rate-spread-10, it pins the spread threshold from
+both sides, as err-rate-trip / err-rate-under do for a burst. Bench
+counterpart: the 9-pulse control arms (section 7), which did not trip.
+""")
+def s_err_rate_spread_9():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 20 * S, 20 * MS)
+    for i in range(1, 10):
+        L.append("bus %d 1 1 1 %d" % (5 * S + (i - 1) * 1100 * MS, i))
+    L += ["end %d" % (20 * S)]
+    return sorted_directives(L)
+
+
 @scenario("observe-never-transmits", """
 Mode OBSERVE with a fully live bus.
 
