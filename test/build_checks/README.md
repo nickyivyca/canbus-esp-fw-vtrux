@@ -16,6 +16,7 @@ is the kind that gets discounted when it matters.*
 | `build_output.py` | The whole of row 22: sdkconfig assertions, the embedded version, image size against the OTA slot, the partition table against stock, and the diag schema/DBC agreement. Also **refuses non-shipping builds**: the three measurement instruments, and (since 2026-10-04) the `OTA_HEALTH_FAULT_INJECT` rollback-rehearsal image, which rolls itself back 60 s after every boot. Those have to be content checks, because two configurations of one commit share both the filename and the embedded version. |
 | `config_vs_spec.py` + `config_probe.c` | `gi_config_defaults()` against the numbers the **spec** states, each row citing its section. |
 | `elf_checks.py` | `slcan_parse_str` is not linked into the image. |
+| `test_prod_record.py` | Tests `check_prod_record()` against spec 12.3 item 3: no `<image>.prod.json` is NO REFERENCE ("not a prod build"), a present record that disagrees with the image or cannot be read is a FAIL. Fails against the pre-2026-10-07 behaviour, where a missing record was a FAIL. Owned by the gen-inhibit tester. |
 | `reference/` | Fixtures a check compares against — see below. |
 
 ## Running them
@@ -25,6 +26,7 @@ python3 build_output.py                  # newest build/wican-fw_obd_*.bin
 python3 build_output.py --bin build/wican-fw_obd_abc1234.bin
 make config_probe && python3 config_vs_spec.py
 python3 elf_checks.py
+python3 test_prod_record.py             # tests the prod-record row itself
 ```
 
 `build_output.py` takes `--dbc` and `--schema-doc` because both live in the

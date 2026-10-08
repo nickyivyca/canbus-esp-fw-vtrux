@@ -992,18 +992,22 @@ def check_prod_record(path):
     would have failed -- which is the same trap `check_sources_older_than_image`
     exists for, one level up.
 
-    A BENCH IMAGE WILL FAIL THIS, and that is intended rather than noise. The
-    row answers "is this an image meant for the truck", and the honest answer
-    for a bench build is no. Spec 13 requires the flown image to be the latest
-    HEAD built as a prod build.
+    NO RECORD IS NO REFERENCE, NOT A FAILURE (spec 12.3 item 3, changed
+    2026-10-07, user). An image with no record is "not a prod build". A bench
+    image is normally built on a dirty tree, so a FAIL here fired on every
+    bench run and meant nothing. The truck pre-flash checklist is what refuses
+    such an image (bring-up row 1.3b), not this row. A record that IS present
+    but unreadable or disagrees with the image is still a FAIL: that is a
+    claim to be a prod build that does not hold.
     """
     rec_path = path + ".prod.json"
     if not os.path.exists(rec_path):
-        row("prod-build record present", False,
-            "no %s beside the image, so nothing establishes it was built on a "
-            "clean tree with verified components after a reconfigure. Build it "
-            "with tools/prod_build.py. (A bench image is expected to fail this "
-            "row.)" % os.path.basename(rec_path))
+        row("prod-build record present", None,
+            "not a prod build: no %s beside the image, so nothing establishes "
+            "it was built on a clean tree with verified components after a "
+            "reconfigure. A truck image must be built with tools/prod_build.py "
+            "(spec 12.3 item 3); the pre-flash checklist refuses this one."
+            % os.path.basename(rec_path), ref_missing=True)
         return
     try:
         with open(rec_path, encoding="utf-8") as fh:
