@@ -49,7 +49,8 @@ TICK_SLACK_US = 100000      # a latch may trail its due error by one poll
 # (the trace's INHIBIT_LIVE time; the first tick after it is ~20 ms later). An
 # error this close to a tumble edge makes the row unable to tell the readings
 # apart: the first err-rate-two-spans put its tenth error 0-20 ms from one
-# (reviewer, 2026-10-08), so such rows are flagged EDGE.
+# (reviewer, 2026-10-08). A row is flagged EDGE when shifting the origin by
+# EDGE_US changes what the tumbling reading requires.
 EDGE_US = 50000
 READINGS = ("sliding-strict", "sliding-inclusive", "tumbling-from-live")
 
@@ -113,18 +114,15 @@ def due(errs, reading, live_us):
     return None
 
 
-def near_tumble_edge(errs, live_us):
-    """Errors within EDGE_US of a window edge tumbling from go-live."""
+def edge_sensitive(errs, live_us):
+    """True if moving the tumble origin by +/- EDGE_US changes what the
+    tumbling reading requires. An error merely sitting near an edge is not
+    enough: the first version of this flag fired on rows whose outcome no
+    origin shift could change."""
     if live_us is None:
-        return []
-    out = []
-    for t in errs:
-        if t < live_us:
-            continue
-        r = (t - live_us) % WINDOW_US
-        if min(r, WINDOW_US - r) <= EDGE_US:
-            out.append(t)
-    return out
+        return False
+    outs = {due(errs, "tumbling-from-live", live_us + d) for d in (-EDGE_US, 0, EDGE_US)}
+    return len(outs) > 1
 
 
 def selftest():
@@ -142,10 +140,13 @@ def selftest():
         ("scn parse: cumulative +12", errors_from_scn("bus 5000000 1 1 1 12\n"), "sliding-strict",
          0, 5000000),
     ]
+    ten_32 = [32000000 + k * 1000000 for k in range(10)]      # the old two-spans batch
+    ten_33p5 = [33500000 + k * 1000000 for k in range(10)]    # the new one
+    on_edge_harmless = [5000000 + k * 1000000 for k in range(10)]  # 11.0 s on an edge
     edge_cases = [
-        ("41.0 s with go-live at 1.0 s is on a tumble edge", [41000000], 1000000, [41000000]),
-        ("41.0 s with go-live at 1.02 s is within 20 ms", [41000000], 1020000, [41000000]),
-        ("42.5 s with go-live at 1.0 s is clear of it", [42500000], 1000000, []),
+        ("old two-spans (32..41 s), origin 1.0 s: sensitive", ten_32, 1000000, True),
+        ("new two-spans (33.5..42.5 s): not sensitive", ten_33p5, 1000000, False),
+        ("5..14 s: an error on an edge, outcome unchanged", on_edge_harmless, 1000000, False),
     ]
     bad = 0
     for label, errs, rd, live, want in cases:
@@ -154,7 +155,7 @@ def selftest():
         bad += not ok
         print("  %-4s %-44s %s" % ("ok" if ok else "FAIL", label, got))
     for label, errs, live, want in edge_cases:
-        got = near_tumble_edge(errs, live)
+        got = edge_sensitive(errs, live)
         ok = got == want
         bad += not ok
         print("  %-4s %-44s %s" % ("ok" if ok else "FAIL", label, got))
@@ -232,11 +233,11 @@ def main():
         pending += v == "PENDING"
         print("[%-12s] %-26s %s | %s" % (v, name, detail, why))
         errs = errors_from_scn(text)
-        edge = near_tumble_edge(errs, first_live(out))
+        edge = edge_sensitive(errs, first_live(out))
         print("               %-26s due under: %s%s" % ("", ", ".join(
             "%s %s" % (r, "never" if d is None else "%.2f s" % (d / 1e6)) for r, d in dues.items()),
-            ("  EDGE: %d error(s) within %d ms of a tumble edge, the readings cannot be told apart"
-             % (len(edge), EDGE_US // 1000)) if edge else ""))
+            ("  EDGE: a %d ms shift of the tumble origin changes the tumbling outcome"
+             % (EDGE_US // 1000)) if edge else ""))
     print("\n%d of %d rows pass, %d pending a ruling, %d fail or inconclusive"
           % (len(ROWS) - bad - pending, len(ROWS), pending, bad))
     return 1 if bad else 0
