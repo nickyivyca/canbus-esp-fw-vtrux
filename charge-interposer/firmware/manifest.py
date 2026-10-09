@@ -52,24 +52,56 @@ MANIFEST = "manifest.json"
 
 
 def elf_sha256_from_esptool(bin_path):
-    """The ELF SHA-256 as `esptool image-info` reports it, or None.
+    """The ELF SHA-256 `esptool image-info` reports, and why not.
 
-    Returns None rather than guessing. A missing hash must leave the
-    row visibly incomplete; inventing one would put a wrong answer in
-    the one table a bench arm trusts.
+    Returns (hash, error): exactly one of the two is None. Never a
+    guess. A missing hash must leave the row visibly incomplete, and
+    inventing one would put a wrong answer in the one table a bench arm
+    trusts -- but a bare None was not visible enough, which is the
+    defect below.
+
+    THE ESPTOOL IS THE BUILD'S OWN, from $PROJECT_PACKAGES_DIR, the way
+    reproducible.py takes its prefix map (reviewer, 2026-10-08). Until
+    then this hardcoded ~/.platformio/packages/tool-esptoolpy, which is
+    the build's own core ONLY when PLATFORMIO_CORE_DIR is unset. On
+    madhouse-debian it is set elsewhere, so the hardcoded path reached a
+    DIFFERENT, older esptool whose subcommand is `image_info`;
+    `image-info` failed, the regex matched nothing, and every row built
+    there silently recorded elf_sha256 null. The tester's E3 evidence
+    and the reviewer's own madhouse row both show it.
+
+    Taking it from the build's packages directory also fixes the
+    subcommand, and not by accident: platformio.ini pins the platform to
+    an immutable release asset, so the esptool beside the build is the
+    one that made the image. That is why there is no fallback to
+    `image_info` here -- a fallback would guess at a version instead of
+    using the pinned one, and would hide the next version skew the way
+    the null hid this one.
+
+    EVERY FAILURE CARRIES ITS REASON, like toolchain() and
+    git_identity(). A field that is null with no reason reads as
+    "nothing to report" when it means "could not tell", and this one is
+    read while someone works out which image is on a board.
     """
-    esptool = os.path.join(
-        os.path.expanduser("~"), ".platformio", "packages",
-        "tool-esptoolpy", "esptool.py")
+    packages = env.subst("$PROJECT_PACKAGES_DIR")       # noqa: F821
+    esptool = os.path.join(packages, "tool-esptoolpy", "esptool.py")
     if not os.path.exists(esptool):
-        return None
+        return None, "no esptool at %s" % esptool
     try:
         r = subprocess.run([sys.executable, esptool, "image-info", bin_path],
                            capture_output=True, text=True, timeout=120)
-    except Exception:
-        return None
-    m = re.search(r"ELF file SHA256:\s*([0-9a-fA-F]{64})", r.stdout + r.stderr)
-    return m.group(1).lower() if m else None
+    except Exception as exc:
+        return None, "esptool did not run: %s" % exc
+    if r.returncode != 0:
+        tail = " ".join((r.stderr or "").split())[-200:]
+        return None, ("esptool image-info exited %d: %s"
+                      % (r.returncode, tail or "no stderr"))
+    m = re.search(r"ELF file SHA256:\s*([0-9a-fA-F]{64})",
+                  (r.stdout or "") + (r.stderr or ""))
+    if m is None:
+        return None, ("esptool image-info exited 0 but printed no "
+                      "'ELF file SHA256:' line")
+    return m.group(1).lower(), None
 
 
 def fw_ver16():
@@ -399,6 +431,8 @@ def record(source, target, env):                          # noqa: F841
     with open(bin_path, "rb") as f:
         blob = f.read()
 
+    elf_sha256, elf_sha256_error = elf_sha256_from_esptool(bin_path)
+
     entry = {
         "image": base,
         "env": env_name,
@@ -409,7 +443,7 @@ def record(source, target, env):                          # noqa: F841
         # them again, and only if git_dirty is false.
         "git_commit": None,
         "git_dirty": None,
-        "elf_sha256": elf_sha256_from_esptool(bin_path),
+        "elf_sha256": elf_sha256,
         "intp_fw_ver16": fw_ver16(),
         "md5": hashlib.md5(blob).hexdigest(),
         "size": len(blob),
@@ -420,6 +454,11 @@ def record(source, target, env):                          # noqa: F841
     # What 0x7F7 B0-B3 will actually carry, spelled out rather than
     # left for a reader to slice off the full hash and hope they took
     # it from the right end.
+    if elf_sha256_error is not None:
+        entry["elf_sha256_error"] = elf_sha256_error
+        print("manifest.py: ELF SHA-256 NOT RECORDED for %s -- %s"
+              % (base, elf_sha256_error))
+
     entry.update(git_identity(fw_dir))
     if entry.get("git_commit") is None:
         entry.pop("git_commit", None)
