@@ -1,0 +1,17 @@
+# Dependencies for the generator-inhibit bench and on-vehicle runner.
+#   python3.13 -m pip install -r projects/vtrux/tools/gen_inhibit/requirements.txt
+
+# CAN transport, for live_bench.py / bench_vehicle.py (virtual udp_multicast)
+# and vehicle_runner.py (real dongle). The offline bench and the unit tests
+# need nothing at all -- sync.py, inhibit.py and models.py import nothing.
+python-can>=4.0
+
+# Real-dongle auto-detection (--interface auto) goes through
+# canbench.live.receiver, which is in this repo. Some brands need extra
+# system-level drivers rather than Python packages:
+#   kvaser    Kvaser CANlib
+#   pcan      PEAK PCAN-Basic / kernel module
+#   ixxat     VCI driver
+#   socketcan Linux kernel (no extra install)
+# libusb-package   # only for gs_usb
+# pyusb            # only for gs_usb
