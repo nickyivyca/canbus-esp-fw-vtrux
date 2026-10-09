@@ -146,7 +146,14 @@ endif()
 # is the right outcome: a diagnostic image whose provenance is "some
 # uncommitted tree" tells the reader nothing when its console output is read
 # back days later.
-set(GI_DIAG_SUFFIX "_DIAG")
+# "_DGTX" ON THIS BRANCH, not "_DIAG": this is the diag image PLUS a reduced
+# WiFi TX power (CONFIG_ESP_PHY_MAX_WIFI_TX_POWER 20 -> 10 dBm), and both facts
+# have to be in the name because both change what the image is.
+#
+# ONE five-character marker and not two, because of the budget checked below:
+# 13 ("wican-fw_obd_") + 7 (clean sha) + 4 ("_man") leaves 7, and "_DIAG"
+# plus "_TX" would be 8. "_DGTX" reads as diag + TX and fits at 29.
+set(GI_DIAG_SUFFIX "_DGTX")
 
 # GI_DIAG_SUFFIX GOES BEFORE GI_FAULT_SUFFIX, so that "_flt" stays the LAST
 # thing in the name. `test/build_checks/build_output.py` tested
