@@ -116,12 +116,88 @@ def toolchain():
     return out
 
 
+def porcelain_paths(line):
+    """Every path one `git status --porcelain` line refers to, or None.
+
+    None means "this line was not understood", and the caller treats
+    that as dirty. The direction is deliberate: under-reporting a dirty
+    tree puts a wrong provenance claim in the manifest, while
+    over-reporting only loses the exclusion below.
+
+    The format is two status columns, a space, then the path -- and for
+    a rename or copy, `old -> new`, in which case BOTH paths are
+    returned, so a line is ignorable only when everything it names is
+    ignorable. Every form below was captured from git itself on
+    2026-10-08 rather than written from the documentation, including the
+    one fact the exclusion depends on: porcelain paths are relative to
+    the REPOSITORY ROOT, not to the directory git ran in, whatever `-C`
+    says.
+
+        " M charge-interposer/firmware/builds/manifest.json"
+        "M  charge-interposer/firmware/builds/manifest.json"
+        "?? charge-interposer/firmware/builds/scratch_probe.tmp"
+        "R  charge-interposer/firmware/src/machine.cpp -> ...moved.cpp"
+
+    A path git had to quote starts with a double quote and is rejected
+    here rather than unquoted. `builds/manifest.json` is plain ASCII
+    with no space, so git never quotes the one path this function exists
+    to recognise; anything quoted is some other file, which is dirty.
+    """
+    if len(line) < 4 or line[2] != " ":
+        return None
+    rest = line[3:]
+    parts = rest.split(" -> ") if " -> " in rest else [rest]
+    for p in parts:
+        if not p or p.startswith('"'):
+            return None
+    return parts
+
+
+def porcelain_is_dirty(out, excluded):
+    """True if the porcelain output names any path but `excluded`.
+
+    Spec 8.2 (user, 2026-10-08): a row records "whether the working
+    tree had uncommitted changes other than to `builds/manifest.json`,
+    which the build itself writes".
+
+    WHY THE EXCLUSION EXISTS (reviewer, 2026-10-08). record() writes
+    builds/manifest.json as a post-action of the build, so that write
+    lands after `git status` has run for that build and is still
+    uncommitted when the NEXT build asks. Under the rule this replaced
+    -- any `--porcelain` output at all means dirty -- a second build of
+    an untouched tree recorded dirty=true, and committing the manifest
+    between builds was the only thing keeping the flag honest. A flag
+    that reads true whatever the tree looks like carries no
+    information, and this one is read by someone trying to find the
+    sources an image came from.
+
+    The two rows that carried git identity before this change happen
+    not to show it: both were built from a tree whose state the flag
+    described correctly, the second after a commit. The defect is in
+    what `git status` returns between those builds, which is what the
+    offline test feeds this function.
+
+    EXACTLY THAT ONE PATH, not the builds/ directory and not *.json:
+    builds/ also holds README.md, which describes this very field, and
+    an uncommitted edit to it is a real difference between the tree and
+    its commit.
+    """
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        paths = porcelain_paths(line)
+        if paths is None or any(p != excluded for p in paths):
+            return True
+    return False
+
+
 def git_identity(fw_dir):
     """The commit this tree is at, and whether anything is uncommitted.
 
     Spec 8.2 (user, 2026-10-08): "Each manifest row also records the git
     commit the image was built from and whether the working tree had
-    uncommitted changes. This sits beside the source digest, not in its
+    uncommitted changes other than to `builds/manifest.json`, which the
+    build itself writes. This sits beside the source digest, not in its
     place: a build with uncommitted changes shares its commit with one
     that has none."
 
@@ -135,12 +211,23 @@ def git_identity(fw_dir):
     has no git sha in the image name.
 
     DIRTY MEANS THE WHOLE WORKING TREE, not just the files that feed the
-    image. The narrower check is more informative when it is right and
-    silently wrong when it is not: it would report clean while an
-    uncommitted edit sat in a file it had not thought to look at, and a
-    provenance field that under-reports is worse than one that
-    over-reports. `--porcelain` output is non-empty for staged,
+    image, with exactly one exclusion -- builds/manifest.json, which
+    this script itself writes (porcelain_is_dirty above). A check
+    narrowed to the image's own inputs is more informative when it is
+    right and silently wrong when it is not: it would report clean
+    while an uncommitted edit sat in a file it had not thought to look
+    at, and a provenance field that under-reports is worse than one
+    that over-reports. `--porcelain` output is non-empty for staged,
     unstaged and untracked changes alike.
+
+    THE EXCLUDED PATH IS DERIVED, NOT SPELLED OUT, because porcelain
+    paths are relative to the repository root while MANIFEST_DIR is
+    relative to the firmware directory; `rev-parse --show-prefix`
+    supplies the difference. A literal would have gone stale when this
+    tree moved from projects/vtrux/tools/interposer/ to
+    charge-interposer/ earlier the same week, and it would have gone
+    stale in the direction that is hardest to see: the exclusion
+    matching nothing, so the flag silently returning to always-true.
     """
     def run(args):
         try:
@@ -156,11 +243,18 @@ def git_identity(fw_dir):
     if out is None:
         return {"git_error": "no commit: %s" % err}
     commit = out.strip()
+    prefix, err = run(["rev-parse", "--show-prefix"])
+    if prefix is None:
+        return {"git_commit": commit,
+                "git_error": "dirty state unknown: %s" % err}
+    excluded = prefix.strip() + MANIFEST_DIR + "/" + MANIFEST
+
     out, err = run(["status", "--porcelain"])
     if out is None:
         return {"git_commit": commit,
                 "git_error": "dirty state unknown: %s" % err}
-    return {"git_commit": commit, "git_dirty": bool(out.strip())}
+    return {"git_commit": commit,
+            "git_dirty": porcelain_is_dirty(out, excluded)}
 
 
 def row_key(e):
@@ -169,12 +263,20 @@ def row_key(e):
     THE IMAGE NAME IS NOT ENOUGH, and that is not a style preference --
     it lost a flashed image's provenance on 2026-10-08. The name is
     `interposer_<src_digest>_<tag>.bin` and the digest hashes the
-    SOURCES, so rebuilding unchanged sources reuses the name. These
-    builds are not reproducible (spec 8.2, re-measured that day: two
-    clean builds of identical source, same toolchain, both digest
+    SOURCES, so rebuilding unchanged sources reuses the name. Builds
+    were not reproducible when that happened (re-measured the same day:
+    two clean builds of identical source, same toolchain, both digest
     111342c1dd0f, both 357,648 bytes, gave ELF c190275a... then
-    b1b23f81...), so one name legitimately covers MANY different
+    b1b23f81...), so one name legitimately covered MANY different
     binaries.
+
+    REPRODUCIBLE BUILDS LANDED LATER THE SAME DAY (spec 8.2) AND THIS
+    RULE STAYS, because they removed one of three reasons a name can
+    cover several ELFs and left the other two: a build on a different
+    host OS still produces its own ELF from the same sources (8.2 says
+    so explicitly), and every row recorded before 8.2 landed is still
+    in the table. Keying on the name again would begin by deleting
+    those.
 
     The rule this replaced kept one row per name and justified it as
     not appending "a near-duplicate". Given the above they are not

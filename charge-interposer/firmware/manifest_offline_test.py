@@ -22,7 +22,7 @@ nothing interesting, and a reverted merge_entry would have to be caught
 by inspection rather than by the test. With it, reverting manifest.py to
 the name-only rule fails case 3 and case 2 keeps documenting why.
 
-    py -3.14 projects/vtrux/tools/interposer/firmware/manifest_offline_test.py
+    py -3.14 charge-interposer/firmware/manifest_offline_test.py
 """
 
 import os
@@ -90,6 +90,59 @@ OTHER = "interposer_f28781c9de97_witness.bin"
 
 ELF_BOARD = "7f197bfd0177cf63b2463426fe9cf0739efc68de1a5e2a88492c536c828af9b0"
 ELF_REBUILD = "c190275a11119a71621e37d3ca11b19ba4421d6c221c6c32bf467009dcdebb3b"
+
+
+# Paths exactly as `git status --porcelain` prints them: relative to the
+# REPOSITORY ROOT, not to the firmware directory git was pointed at with
+# -C. Captured from this repository on 2026-10-08 rather than written
+# from the documentation, because that spelling is the whole of what the
+# exclusion has to match -- a check built from a guessed spelling would
+# agree with itself and with nothing else.
+MJ = "charge-interposer/firmware/builds/manifest.json"
+SRC = "charge-interposer/firmware/src/machine.cpp"
+UNTRACKED = "charge-interposer/firmware/builds/scratch_probe.tmp"
+MOVED = "charge-interposer/firmware/src/machine_moved.cpp"
+
+COMMIT = "3eb9a8faf3c8ae98bfb01e79a579e69ced6b1190"
+PREFIX = "charge-interposer/firmware/"
+
+
+class FakeProc(object):
+    def __init__(self, out):
+        self.returncode = 0
+        self.stdout = out
+        self.stderr = ""
+
+
+class FakeSubprocess(object):
+    """Enough of subprocess for git_identity, with canned git output.
+
+    git_identity runs three git commands and builds the excluded path
+    out of two of them, so testing it needs the commands answered, not
+    the logic restated. Stubbing the module the way load_manifest_module
+    stubs SCons keeps the function under test the real one.
+    """
+
+    def __init__(self, replies):
+        self.replies = replies
+        self.calls = []
+
+    def run(self, argv, **kw):
+        self.calls.append(tuple(argv[3:]))
+        return FakeProc(self.replies[tuple(argv[3:])])
+
+
+def identity(ns, porcelain):
+    saved = ns["subprocess"]
+    ns["subprocess"] = FakeSubprocess({
+        ("rev-parse", "HEAD"): COMMIT + "\n",
+        ("rev-parse", "--show-prefix"): PREFIX + "\n",
+        ("status", "--porcelain"): porcelain,
+    })
+    try:
+        return ns["git_identity"](HERE)
+    finally:
+        ns["subprocess"] = saved
 
 
 def row(image, elf, when, tag="witness"):
@@ -169,6 +222,62 @@ def main():
           "merging a different image name adds its own row")
     check(len(elfs(elsewhere, NAME)) == 3,
           "and touches nothing under the first name, even sharing an ELF")
+
+
+    print("\nthe dirty flag -- what counts as an uncommitted change:")
+    is_dirty = ns["porcelain_is_dirty"]
+    check(is_dirty("", MJ) is False,
+          "a clean tree is clean")
+    check(is_dirty(" M " + MJ + "\n", MJ) is False,
+          "the build's OWN write to builds/manifest.json is not dirt -- "
+          "this is the whole state the next build sees")
+    check(is_dirty("M  " + MJ + "\n", MJ) is False,
+          "nor is it when staged rather than merely modified")
+    check(is_dirty(" M " + SRC + "\n", MJ) is True,
+          "an edited source IS dirt")
+    check(is_dirty(" M " + MJ + "\n M " + SRC + "\n", MJ) is True,
+          "and it is still dirt alongside the excluded write, so the "
+          "exclusion cannot swallow a real edit")
+    check(is_dirty("?? " + UNTRACKED + "\n", MJ) is True,
+          "an untracked file is dirt")
+    check(is_dirty("R  " + SRC + " -> " + MOVED + "\n", MJ) is True,
+          "a rename is dirt")
+    check(is_dirty("R  " + SRC + " -> " + MJ + "\n", MJ) is True,
+          "including a rename whose DESTINATION is the excluded path -- "
+          "both sides of the arrow have to be ignorable")
+
+    print("\nthe exclusion is one path, not a pattern:")
+    sibling = "charge-interposer/firmware/builds/README.md"
+    check(is_dirty(" M " + sibling + "\n", MJ) is True,
+          "builds/README.md is not excluded -- builds/ is not the unit")
+    check(is_dirty(" M " + MJ + ".bak\n", MJ) is True,
+          "and the match is the whole path, not a prefix of it")
+
+    print("\nan unreadable line counts as dirty, never as clean:")
+    check(is_dirty('?? "charge-interposer/firmware/builds/odd name"\n', MJ)
+          is True,
+          "a path git had to quote is some other file, so it is dirt")
+    check(is_dirty("xx\n", MJ) is True,
+          "and a line that does not parse at all is dirt, because "
+          "under-reporting puts a false provenance claim in the manifest")
+
+    print("\nthe excluded path is DERIVED, and that is load-bearing:")
+    check(is_dirty(" M " + MJ + "\n", "builds/manifest.json") is True,
+          "a firmware-relative spelling matches nothing, so the flag "
+          "returns to always-true -- this is what a hardcoded literal "
+          "would have done when the tree moved")
+    check(ns["porcelain_paths"]("R  " + SRC + " -> " + MOVED)
+          == [SRC, MOVED],
+          "a rename line yields both of its paths")
+
+    print("\ngit_identity itself, with git's answers canned:")
+    clean = identity(ns, " M " + MJ + "\n")
+    check(clean == {"git_commit": COMMIT, "git_dirty": False},
+          "commit recorded and dirty=false when only the build's own "
+          "manifest write is outstanding")
+    dirty = identity(ns, " M " + MJ + "\n M " + SRC + "\n")
+    check(dirty == {"git_commit": COMMIT, "git_dirty": True},
+          "and dirty=true once a source file is edited")
 
     if failures:
         print("\nmanifest_offline_test: %d FAILURE(S)" % failures)

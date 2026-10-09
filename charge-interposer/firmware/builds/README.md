@@ -32,6 +32,16 @@ So `toolchain` is recorded in every row: identical sources under a different
 platform or compiler version give different bytes, and without those versions
 a hash mismatch would be unexplainable.
 
+**Whether two images are the same is decided by `elf_sha256`, never by
+`src_digest`** (user, 2026-10-08). The digest hashes whole files, comments
+included, and covers inputs that cannot change the image at all, so it moves
+while the bytes stay identical: in this manifest ELF `2e7ae2ef` appears under
+two digests and ELF `18cec2dc` under eleven, because every source edit
+anywhere in the tree moves the digest while an environment that compiles none
+of the edited files relinks the same image. The digest stays in use and stays
+in the filename -- it answers which sources went in, which is a different
+question and still worth a row.
+
 **`src_digest` covers** every `.c/.cpp/.h/.hpp/.S` under `src/`, plus
 `platformio.ini`, `build_name.py`, `build_identity.py`, `manifest.py`
 and `reproducible.py`, hashed by path relative to `firmware/` and by
@@ -45,8 +55,14 @@ is a copy and the code is the source of truth.
 2026-10-08), beside `src_digest` and not in its place: a build with
 uncommitted changes shares its commit with one that has none, so the
 commit says where to find the sources again and the digest says which
-sources they were. `git_dirty` reflects the whole working tree, and a
-row carries an explicit `git_error` rather than a blank when git cannot
+sources they were. `git_dirty` reflects the whole working tree with exactly one exclusion:
+`builds/manifest.json`, which the build itself writes. Without that, every
+build after the first recorded `dirty=true` on a clean tree -- this file is
+written as a post-action, so the write lands after that build has already
+asked `git status` and is still uncommitted when the next build asks (found
+by the reviewer, reproduced by measurement, 2026-10-08). Nothing else is
+excluded, not the rest of `builds/` and not other `.json` files. A row
+carries an explicit `git_error` rather than a blank when git cannot
 answer.
 
 *Corrected 2026-10-08.* This section used to say "There is **no git
@@ -70,6 +86,9 @@ rows have carried both fields since.
 | `intp_fw_ver16` | `DIAG_FW_VER` from `machine.h`, as `0x7F7` B4-B5 reports it |
 | `md5`, `size` | of the `.bin` |
 | `built_utc` | build time |
+| `git_commit` | the commit the working tree was at |
+| `git_dirty` | uncommitted changes anywhere except to this file |
+| `git_error` | present instead of those two when git could not answer |
 | `toolchain` | platform and package versions |
 
 `elf_sha256` is read from `esptool image-info` rather than derived another way

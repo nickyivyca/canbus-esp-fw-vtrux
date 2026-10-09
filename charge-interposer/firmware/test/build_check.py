@@ -390,7 +390,10 @@ def check_manifest(envs):
     # Every image on disk must have a row -- for ITS bytes, not just its
     # name (tester, 2026-10-07). The filename comes from the source digest,
     # and two clean rebuilds of one digest gave two different ELFs under the
-    # same name, so a name match can describe a different binary. Rows are
+    # same name, so a name match can describe a different binary. That cause
+    # went away on a single host OS when reproducible builds landed
+    # (2026-10-08, spec 8.2); a build on another host OS still does it, and
+    # every row recorded before that day is still in the table. Rows are
     # matched on (image, elf_sha256), the ELF read out of the image itself.
     # Several rows per image name are fine; none for these bytes is not.
     sys.path.insert(0, os.path.normpath(os.path.join(HERE, "..", "..")))
