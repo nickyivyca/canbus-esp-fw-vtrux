@@ -116,6 +116,53 @@ def toolchain():
     return out
 
 
+def git_identity(fw_dir):
+    """The commit this tree is at, and whether anything is uncommitted.
+
+    Spec 8.2 (user, 2026-10-08): "Each manifest row also records the git
+    commit the image was built from and whether the working tree had
+    uncommitted changes. This sits beside the source digest, not in its
+    place: a build with uncommitted changes shares its commit with one
+    that has none."
+
+    NEVER A GUESS. If git is missing or this is not a repository the row
+    carries an explicit `git_error` and no commit, the same rule
+    `toolchain()` follows above and for the same reason: a blank in a
+    provenance field is read as "nothing to report" when it means "could
+    not tell", and this one would be read while someone tried to find
+    the sources an image came from. It mattered until today -- the tree
+    lived on SeaDrive outside any repository, which is why build_name.py
+    has no git sha in the image name.
+
+    DIRTY MEANS THE WHOLE WORKING TREE, not just the files that feed the
+    image. The narrower check is more informative when it is right and
+    silently wrong when it is not: it would report clean while an
+    uncommitted edit sat in a file it had not thought to look at, and a
+    provenance field that under-reports is worse than one that
+    over-reports. `--porcelain` output is non-empty for staged,
+    unstaged and untracked changes alike.
+    """
+    def run(args):
+        try:
+            r = subprocess.run(["git", "-C", fw_dir] + args,
+                               capture_output=True, text=True, timeout=60)
+        except Exception as exc:
+            return None, str(exc)
+        if r.returncode != 0:
+            return None, (r.stderr or "").strip()[:200] or "git failed"
+        return r.stdout, None
+
+    out, err = run(["rev-parse", "HEAD"])
+    if out is None:
+        return {"git_error": "no commit: %s" % err}
+    commit = out.strip()
+    out, err = run(["status", "--porcelain"])
+    if out is None:
+        return {"git_commit": commit,
+                "git_error": "dirty state unknown: %s" % err}
+    return {"git_commit": commit, "git_dirty": bool(out.strip())}
+
+
 def row_key(e):
     """What makes a manifest row the same row as another.
 
@@ -255,6 +302,11 @@ def record(source, target, env):                          # noqa: F841
         "env": env_name,
         "tag": tag_for(env_name),
         "src_digest": digest_of(base),
+        # Beside src_digest, never instead of it (8.2). The digest
+        # answers which sources; the commit answers where to find
+        # them again, and only if git_dirty is false.
+        "git_commit": None,
+        "git_dirty": None,
         "elf_sha256": elf_sha256_from_esptool(bin_path),
         "intp_fw_ver16": fw_ver16(),
         "md5": hashlib.md5(blob).hexdigest(),
@@ -266,6 +318,11 @@ def record(source, target, env):                          # noqa: F841
     # What 0x7F7 B0-B3 will actually carry, spelled out rather than
     # left for a reader to slice off the full hash and hope they took
     # it from the right end.
+    entry.update(git_identity(fw_dir))
+    if entry.get("git_commit") is None:
+        entry.pop("git_commit", None)
+    if entry.get("git_dirty") is None:
+        entry.pop("git_dirty", None)
     if entry["elf_sha256"]:
         entry["build_id_0x7F7"] = entry["elf_sha256"][:8]
 

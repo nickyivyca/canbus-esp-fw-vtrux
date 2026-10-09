@@ -41,12 +41,13 @@ sha in it -- this project is not a git repository.
 # board reports in 0x7F7 B0-B3 -- answers that, and the build manifest
 # records both along with the toolchain versions.
 DIGEST_INPUTS = ("src/*.{c,cpp,h,hpp,S}", "platformio.ini",
-                 "build_name.py", "build_identity.py", "manifest.py")
+                 "build_name.py", "build_identity.py", "manifest.py",
+                 "reproducible.py")
 
 # The two halves of DIGEST_INPUTS, in the form the walk needs.
 SRC_SUFFIXES = (".c", ".cpp", ".h", ".hpp", ".S")
 EXTRA_INPUTS = ("platformio.ini", "build_name.py", "build_identity.py",
-                "manifest.py")
+                "manifest.py", "reproducible.py")
 
 
 def source_digest(fw_dir):

@@ -12,14 +12,26 @@ bench bridge by a filename.
 Output name:  interposer_<srcdigest>_<tag>.bin
 
 THERE IS NO GIT SHA IN THAT NAME, and the omission is deliberate rather
-than an oversight. This project is not a git repository -- the
-containing folder is literally `NotGit`, it lives on SeaDrive, and
-`git rev-parse` fails at every level. So there is no commit to record
-and, just as importantly, no committed baseline against which a tree
-could be called "dirty": every build is from the working tree by
-definition, and a `-dirty` marker that is always present says nothing.
+than an oversight, though the reason has changed.
 
-What replaces it is a digest of the sources that actually went in --
+*Corrected 2026-10-08.* This paragraph used to say the omission was
+forced: "This project is not a git repository -- the containing folder
+is literally `NotGit`, it lives on SeaDrive, and `git rev-parse` fails
+at every level. So there is no commit to record." That was true when
+written and is not any more: the tree moved into
+`canbus-esp-fw-vtrux` as `charge-interposer/` on 2026-10-08, and there
+is now both a commit and a committed baseline to call a tree dirty
+against. manifest.py records both, per spec 8.2.
+
+THE NAME STILL CARRIES THE DIGEST AND NOT THE COMMIT, now by choice.
+Spec 8.2 puts the commit "beside the source digest, not in its place:
+a build with uncommitted changes shares its commit with one that has
+none." A commit does not identify the sources of a build made from a
+working tree, and most builds here are; the digest does, saved or not.
+So the name answers which sources, and the manifest row adds where to
+find them again.
+
+What the name carries is a digest of the sources that actually went in --
 every file under `src/` plus `platformio.ini`, hashed by name and
 content. That is strictly what a commit id is wanted FOR here: telling
 two images apart and saying which sources produced one. Two builds of
