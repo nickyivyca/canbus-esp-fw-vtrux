@@ -10,12 +10,17 @@ sitting between the Bel Fuse charger and the rest of the Vtrux powertrain bus.
 `machine.cpp` is a port of the parent folder's `machine.py`, which stays the
 reference implementation. Everything else here exists to feed it frames. What
 the core is required to do is specified in
-**`../../../notes/charge-interposer-spec.md`**; this README is the board, the
+**`projects/vtrux/notes/charge-interposer-spec.md`**; this README is the board, the
 build and the bring-up.
+
+Paths beginning `projects/vtrux/` are in the `reverse-it` project on
+SeaDrive, not in this repository. The spec, the bring-up log and the
+bench artifacts stayed there when this folder moved into
+`charge-interposer/`; see `../README.md`.
 
 > **Status:** Stage 0 (2026-09-10), Stage 1 and Stage 2 have all passed on
 > hardware; the running log of every result is
-> `../../../notes/interposer-firmware-bringup.md`. The logic is separately
+> `projects/vtrux/notes/interposer-firmware-bringup.md`. The logic is separately
 > verified against the Python reference over real captures (below).
 
 ## Layout
@@ -52,7 +57,7 @@ Six environments.
 **Flashing `slcan` or `esp32-can-x2-witness` replaces the bridge**; restore it
 with `-e esp32-can-x2 -t upload`, and there is a byte-exact image of the flash
 as it was before `slcan` first went on in
-`../../../notes/artifacts/interposer-firmware/flash-backup/`.
+`projects/vtrux/notes/artifacts/interposer-firmware/flash-backup/`.
 
 **No image is called `firmware.bin`.** Each environment writes
 `interposer_<src_digest>_<tag>.bin`, so six images cannot be told apart only
@@ -91,12 +96,12 @@ nothing attached on this board. Without the flag every `Serial.printf` is lost
 and the board looks like it crashed on boot.
 
 ```bash
-py -3.14 -m platformio run -d projects/vtrux/tools/interposer/firmware     # all
-py -3.14 -m platformio run -d projects/vtrux/tools/interposer/firmware -e esp32-can-x2 -t upload
-py -3.14 -m platformio run -d projects/vtrux/tools/interposer/firmware -e slcan -t upload
-py -3.14 -m platformio run -d projects/vtrux/tools/interposer/firmware -e truck   # no serial
+py -3.14 -m platformio run -d charge-interposer/firmware     # all
+py -3.14 -m platformio run -d charge-interposer/firmware -e esp32-can-x2 -t upload
+py -3.14 -m platformio run -d charge-interposer/firmware -e slcan -t upload
+py -3.14 -m platformio run -d charge-interposer/firmware -e truck   # no serial
 # BENCH ONLY -- replaces the bridge with the instrumented build:
-py -3.14 -m platformio run -d projects/vtrux/tools/interposer/firmware -e esp32-can-x2-witness -t upload
+py -3.14 -m platformio run -d charge-interposer/firmware -e esp32-can-x2-witness -t upload
 py -3.14 -m platformio device monitor -b 115200
 ```
 
@@ -153,7 +158,7 @@ Two corollaries worth stating separately:
 - **A board that has stopped transmitting also reports zero errors.** The two
   are indistinguishable in the board's own counters, so a zero needs a second
   instrument on the wire to mean anything.
-  `../../../notes/artifacts/interposer-firmware/bench_vehicle_errors.py`
+  `projects/vtrux/notes/artifacts/interposer-firmware/bench_vehicle_errors.py`
   refuses to give a verdict unless its acknowledger actually heard the board.
 
 ## Bringing it up on hardware
@@ -185,8 +190,8 @@ wiring), nothing else connected. Termination works out by accident: 120 ohm on
 each port in parallel is the 60 ohm a segment wants.
 
 ```bash
-py -3.14 -m platformio run -d projects/vtrux/tools/interposer/firmware -e selftest -t upload
-py -3.14 ../../../notes/artifacts/interposer-firmware/capture_serial.py \
+py -3.14 -m platformio run -d charge-interposer/firmware -e selftest -t upload
+py -3.14 projects/vtrux/notes/artifacts/interposer-firmware/capture_serial.py \
     --port COM3 --out stage0.txt --until "checks,"
 ```
 
@@ -210,7 +215,7 @@ driver: coryjfowler's blocking `sendMsg()` costs ~300-350 us per call at
 
 #### Stage 0 result, 2026-09-10 -- 18 checks, 0 failed
 
-Full capture in `../../../notes/artifacts/interposer-firmware/stage0_selftest.txt`.
+Full capture in `projects/vtrux/notes/artifacts/interposer-firmware/stage0_selftest.txt`.
 
 Identity passed in both directions for every probe, including the two most
 likely to expose a hand-written driver: `0x1FFFFFFF` (max extended ID) and
@@ -243,7 +248,7 @@ design rationale confirmed on silicon rather than inferred.
 ### Stage 0a -- controller and physical-layer diagnostic
 
 ```bash
-py -3.14 -m platformio run -d projects/vtrux/tools/interposer/firmware -e diag -t upload
+py -3.14 -m platformio run -d charge-interposer/firmware -e diag -t upload
 ```
 
 Flash this when Stage 0 fails. On a two-node bus a single break makes **both**
@@ -261,7 +266,7 @@ driver from a loose wire. This separates them:
   nothing ACKing on the bus.
 
 Result 2026-09-10: 18 checks, 0 failed, in
-`../../../notes/artifacts/interposer-firmware/stage0a_diag.txt`. The bit-level
+`projects/vtrux/notes/artifacts/interposer-firmware/stage0a_diag.txt`. The bit-level
 sample showed 8689 transitions in 50 ms, and the one-way frame test delivered
 10 of 10.
 
@@ -273,7 +278,7 @@ different drivers, so they coexist. An earlier version of this file named the
 Innomaker `gs_usb`; that dongle is not on this bench. Both are auto-detected by
 `bus.py`, which already carries the pcan bus-off `auto_reset` handling.
 
-Driven by `../../../notes/artifacts/interposer-firmware/stage1_transparency.py`,
+Driven by `projects/vtrux/notes/artifacts/interposer-firmware/stage1_transparency.py`,
 which has four phases:
 
 | Phase | What it does |
@@ -368,11 +373,11 @@ run cannot be reconstructed. Both rates do imply the same delivered ceiling of
 about 4000 fps. The host model puts a single-buffer `drainTx()` at 3396 fps
 with DLC 8 and 4465 fps with DLC 4, bracketing that, and identifier count makes
 no difference -- consistent with the figures, but not a validation of them
-(`../../../notes/artifacts/interposer-firmware/sameid-hold-model/`).
+(`projects/vtrux/notes/artifacts/interposer-firmware/sameid-hold-model/`).
 
 **The same-identifier row is not evidence yet** (corrected 2026-10-04,
 spec 2). It read "never -- 30,000 frames, zero swaps". The archive holds one
-run, `../../../notes/artifacts/interposer-firmware/stage1_sameid_regress.txt`:
+run, `projects/vtrux/notes/artifacts/interposer-firmware/stage1_sameid_regress.txt`:
 **10,000 frames in each direction, not 30,000**, and only the
 vehicle-to-charger direction is the one that transposes, so 10,000 bear on
 the question. The DLC *was* varied -- `phase_regress` does that
@@ -408,7 +413,7 @@ inversions even without the hold, so a run whose bursts were smoothed would be
 the check that cannot fail -- which is why the shape is confirmed from the
 wire), and the sequence counter must fit the DLC -- 50,000 frames needs three
 payload bytes, so DLC 3 is the floor. Raw output:
-`../../../notes/artifacts/interposer-firmware/sameid-hold-model/`.
+`projects/vtrux/notes/artifacts/interposer-firmware/sameid-hold-model/`.
 
 **THE MECHANISM IS ESTABLISHED** (2026-10-04; this section previously said
 it was not). DS20001801J p15 s3.2, confirmed in the extracted text and on
@@ -461,7 +466,7 @@ vehicle_sim --[Kvaser]--> CAN1 | BOARD | CAN2 <--[Innomaker]-- charger_sim
 but does not spawn `interposer_sim.py`, leaving the middle to the board:
 
 ```bash
-py -3.14 projects/vtrux/tools/interposer/run_scenario.py evap-override \
+py -3.14 charge-interposer/run_scenario.py evap-override \
     --external-interposer --serial-port COM3 \
     --vehicle-transport kvaser --charger-transport gs_usb
 ```
@@ -489,7 +494,7 @@ both most likely and most silent (a mistyped threshold compiles fine and just
 charges to the wrong voltage):
 
 ```bash
-py -3.12 projects/vtrux/tools/interposer/firmware/test/host_diff/check_port.py
+py -3.12 charge-interposer/firmware/test/host_diff/check_port.py
 ```
 
 > 21 config fields, 22 identifiers, 2 payloads, 15 extractors -- all agree.
@@ -670,7 +675,7 @@ session and swallowed the charger fault at t=178138
 (`030101ff3b240000`, inverterFault). `charging45` keeps its `S 178138 SAFE`
 under the flag-only rule, and `syn_source_11_plug_in` is the synthetic
 case that holds that line. Measured population:
-`../../../notes/artifacts/interposer-review-2026-09-22/handle_pull_trigger_population.txt`.
+`projects/vtrux/notes/artifacts/interposer-review-2026-09-22/handle_pull_trigger_population.txt`.
 
 ### The earlier result (2026-09-30) -- 19 of 19 byte-identical
 
@@ -764,7 +769,7 @@ Ticks are written into the trace rather than re-derived by each runner, so a
 divergence can only be a real difference in the state machine and not a
 difference in how the two harnesses decided when to tick.
 
-The trace/golden pairs live in `../../../notes/artifacts/interposer-firmware/`
+The trace/golden pairs live in `projects/vtrux/notes/artifacts/interposer-firmware/`
 and are committed, so the diff is reproducible without re-parsing the source
 captures. `evap80` came from a 1.8 GB capture via the same pre-filter `regress.py`
 uses; the 245 MB intermediate is **not** kept. To rebuild it:
@@ -875,14 +880,14 @@ construction**, in three ways:
   `main.cpp`.
 
 ```
-py -3.14 projects/vtrux/tools/interposer/firmware/test/hw_mechanics.py
+py -3.14 charge-interposer/firmware/test/hw_mechanics.py
 py -3.14 .../hw_mechanics.py --record 2026-10-04-truck    # at each truck flash
 py -3.14 .../hw_mechanics.py --list                       # what is watched, and why
 ```
 
 This folder is not under git, so the baseline is a manifest written at each
 truck flash and kept in
-`../../../notes/artifacts/interposer-firmware/flash-manifests/`. Manifests
+`projects/vtrux/notes/artifacts/interposer-firmware/flash-manifests/`. Manifests
 are a record of what was flashed: the script refuses to overwrite one.
 
 **It does not replace the procedure and cannot.** A change anywhere can
@@ -911,6 +916,6 @@ and watching the output:
 
 ## Before this goes in a truck
 
-`../../../notes/plans/can-bus-fault-injection-test.md` is on the books and not
+`projects/vtrux/notes/plans/can-bus-fault-injection-test.md` is on the books and not
 yet run. Every claim we hold about what a fault here costs is inference from
 datasheets, not measurement on this vehicle.
