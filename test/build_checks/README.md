@@ -18,6 +18,8 @@ is the kind that gets discounted when it matters.*
 | `elf_checks.py` | `slcan_parse_str` is not linked into the image. |
 | `test_partition_row.py` | Tests `check_partitions()`: it reads the table from the IMAGE'S OWN build dir (as the sdkconfig rows do), so a `-B build-<x>` image is judged by its own table. A matching table passes, a one-byte change fails, a missing one fails naming that dir. Fails against the pre-2026-10-08 code, which read `build/` whatever image it was given. Owned by the gen-inhibit tester. |
 | `test_prod_record.py` | Tests `check_prod_record()` against spec 12.3 item 3: no `<image>.prod.json` is NO REFERENCE ("not a prod build"), a present record that disagrees with the image or cannot be read is a FAIL. Fails against the pre-2026-10-07 behaviour, where a missing record was a FAIL. Owned by the gen-inhibit tester. |
+| `test_fw_version_row.py` | Tests `check_fw_version()`: `DIAG_FW_VERSION` in `main/gen_inhibit.c` against the highest rev in the schema doc's rev table (row 22 item 10's other half; the host suite cannot see it, since every golden carries the default 1). A source bump the doc lacks, and a doc row the source never reached, each FAIL; no table or no define is NO REF. Owned by the gen-inhibit tester. |
+| `test_sources_row.py` | Tests `check_sources_older_than_image()`: a source newer than the image whose content (by `git hash-object`) equals the commit the image names is NO REFERENCE -- a branch switch, or an edit-build-revert, which mtimes cannot tell apart -- and a newer source with different content, or an image naming no readable commit, still FAILs. Fails against a comparison that always says same and one that always says different. Owned by the gen-inhibit tester. |
 | `test_flt_row.py` | Tests the "project name is not a rehearsal build" row: `_flt` is refused as a `_`-delimited token anywhere in `project_name`, not only as the last suffix (a `_DIAG` after it hid it from the old `endswith`). Fails against the old predicate. Owned by the gen-inhibit tester. |
 | `reference/` | Fixtures a check compares against — see below. |
 
@@ -31,6 +33,8 @@ python3 elf_checks.py
 python3 test_prod_record.py             # tests the prod-record row itself
 python3 test_partition_row.py           # tests the partition-table row itself
 python3 test_flt_row.py                 # tests the rehearsal-name row itself
+python3 test_fw_version_row.py          # tests the DIAG_FW_VERSION row itself
+python3 test_sources_row.py             # tests the sources-older row itself
 ```
 
 `build_output.py` takes `--dbc` and `--schema-doc` because both live in the
