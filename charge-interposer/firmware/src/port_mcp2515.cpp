@@ -670,15 +670,87 @@ void Mcp2515Port::service(uint32_t t_ms) {
   // The IRQ line is level-triggered and stays asserted while any enabled flag
   // is set, so draining until it releases costs nothing when idle and cannot
   // miss a frame that arrived during the drain.
+  //
+  // RECEIVE ORDER (spec 2: "every frame is forwarded to the other port
+  // unmodified, in order"; charger-to-vehicle has no accepted reordering).
+  // The chip gives no arrival sequence, so the order has to be DERIVED from
+  // how the two buffers fill. With RXM = 11 and BUKT set (begin()), every
+  // frame lands in RXB0 if it is free and otherwise rolls into RXB1
+  // (DS20001801J p23 s4.2.1, p27 Figure 4-3); RXB1 is never filled by its
+  // own filters here, because there are none. So the ONLY way RXB1 fills is
+  // a rollover from a full RXB0, and the only thing that empties RXB0 is the
+  // READ RX BUFFER below.
+  //
+  // That gives one rule: a frame in RXB1 is older than whatever is in RXB0
+  // if and only if it rolled over BEFORE RXB0 was last freed. Each case:
+  //
+  //   both flags set and RXB0 not freed since -- RXB0 holds the frame the
+  //       rollover rolled off, so RXB0 is older. Read RXB0, then RXB1.
+  //   RXB1 filled while we were reading RXB0 -- it rolled off the frame we
+  //       are taking, so it is older than anything that lands in RXB0 next.
+  //       Read RXB1 before going round again.
+  //
+  // The second case is why the status is re-read IMMEDIATELY after the RXB0
+  // read and before any other traffic. READ RX BUFFER clears RX0IF on CS
+  // release, so a frame can land in the freed RXB0 in the microseconds after
+  // it; without the re-read the next pass sees both flags set with no way to
+  // tell that case from the first, and taking RXB0 first put the newer frame
+  // out ahead of the older one. That was the defect: reviewer's tracker
+  // entry "RX rollover order", confirmed through main.cpp in 6 of 6 runs
+  // (A,C,B on the vehicle side), run folder runs/rxorder_20261008T234609/.
+  //
+  // WHAT THIS ORDERS CORRECTLY, and why:
+  //   A -> RXB0, B rolls into RXB1, C lands in the freed RXB0 while B is
+  //       still unread (test_l2_bridge rx-rollover-order). A, B, C.
+  //   A -> RXB0, A taken, C refills RXB0, B taken, D rolls into RXB1 beside
+  //       C -- the NEWER frame in RXB1, the reverse interleaving
+  //       (rx-rollover-refill). A, B, C, D. Neither "RXB0 first" nor "RXB1
+  //       first" as a standing preference gets both of these; what gets
+  //       both is reading RXB1 exactly when its frame rolled off a frame
+  //       already taken.
+  //   A -> RXB0 with RXB1 empty, B rolling in DURING the read of RXB0, then
+  //       C into the freed RXB0. A, B, C. REASONED, NOT MEASURED: it is the
+  //       same code path as the case above -- the re-read sees RX1IF -- and
+  //       it holds for any arrival of B before CS release, because the flag
+  //       is set when RXB1 fills and is the lockout (C12 E.RXB1D0). The
+  //       fake has no hook that fires mid-read, so there is no case for it;
+  //       it would need one that delivers during a READ RX BUFFER.
+  //
+  // WHAT IT CANNOT ORDER, AND THE ASSUMPTION THAT RULES IT OUT. For RX1IF
+  // to be set at the re-read by a frame NEWER than RXB0's, two frames would
+  // have to arrive in the gap between the CS release of the RXB0 read and
+  // the re-read's CS low: the first into the freed RXB0, the second rolling
+  // into RXB1 beside it. Two shortest extended frames and their interframe
+  // spacing are about 140 bit times -- ~280 us at 500 kbit/s, the port's
+  // normal rate, and ~140 us at 1 Mbit/s; bit stuffing only lengthens them,
+  // so those are lower bounds.
+  //
+  // THE GAP IS NOT ONE SPI INSTRUCTION, and an earlier version of this note
+  // said it was (reviewer, 2026-10-09). It is ordinary task code -- the
+  // deselect, the frame's push into the rx ring, the return, then the next
+  // select -- with nothing stopping an ISR or a task switch in the middle of
+  // it. So this is an ASSUMPTION, not a proof: the order above holds while
+  // that gap stays under two frame times, and if a preemption stretches it
+  // past that, D can roll into RXB1 beside C and be read ahead of it. There
+  // is deliberately no critical section around it: the worst gap has not
+  // been measured on silicon, and guarding a path whose cost is unknown
+  // trades a reordering nobody has observed for interrupt latency on the
+  // bridge's hottest path. The tester measures the worst gap with C12.
+  //
+  // Frames lost to RX1OVR are a separate matter either way: the survivors
+  // stay in order and the loss is counted below.
   uint8_t guard = 0;
   while (digitalRead(int_) == LOW && guard++ < 8) {
-    const uint8_t st = readStatus();
+    uint8_t st = readStatus();
+    if (!(st & (ST_RX0IF | ST_RX1IF))) {
+      break;  // IRQ asserted by something we did not enable
+    }
     if (st & ST_RX0IF) {
       readRxBuffer(0, t_ms);
-    } else if (st & ST_RX1IF) {
+      st = readStatus();   // see RECEIVE ORDER above -- not optional
+    }
+    if (st & ST_RX1IF) {
       readRxBuffer(1, t_ms);
-    } else {
-      break;  // IRQ asserted by something we did not enable
     }
   }
 
