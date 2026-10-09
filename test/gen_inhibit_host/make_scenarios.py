@@ -769,10 +769,11 @@ def s_err_rate_spread_9():
 # ---- trip 6 window cases (tester, 2026-10-08) -------------------------------
 #
 # Each is a list of bus-error TIMES; spec_expect_check.py reads them back out
-# of the .scn ("bus" directives, cumulative count) and works out what each
-# candidate reading of spec 7's "10 or more error frames within a 10 s window"
-# requires. The window parameters live there, in one place, not here. Cases
-# suggested by the implementor via the reviewer; expectations are the spec's.
+# of the .scn ("bus" directives, cumulative count), together with the arming
+# ("mode") and the key (0x592), and works out from spec 7 "How the window
+# moves" (user, 2026-10-08) when trip 6 is due. The window parameters live
+# there, in one place, not here. Each row there also carries the expectation
+# worked out by hand, and the two must agree before anything is judged.
 
 
 def err_bus(times_us, count0=0, step=1):
@@ -818,19 +819,29 @@ EXPECT: trip 6 latched by the tenth error (spec 7; the reviewer: 10 errors in
 Ten errors from 5 s, evenly spaced over 9.5 s. Half of the window-boundary
 pair; err-rate-edge-10p5 is the other half, at the same start.
 
-EXPECT: PENDING the user's ruling on the window (sliding or tumbling, and
-whether exactly 10.0 s counts). spec_expect_check.py shows what each reading
-requires. A sliding 10 s window requires trip 6 at the tenth error.
+EXPECT: trip 6 at the tenth error, 14.5 s (spec 7: the window slides, and
+9.5 s is inside it).
 """)
 def s_err_edge_9p5():
     return live_run(err_bus(spread(5 * S, 10, 9500 * MS)), 21)
 
 
+@scenario("err-rate-edge-10p0", """
+Ten errors from 5 s, evenly spaced so the tenth is EXACTLY 10.0 s after the
+first (5.0 .. 15.0 s).
+
+EXPECT: trip 6 at the tenth error, 15.0 s. Spec 7, "Exactly 10.0 s counts":
+the 1st and 10th may be up to and including 10 s apart. With 9p5 and 10p5
+this pins the inclusive edge itself.
+""")
+def s_err_edge_10p0():
+    return live_run(err_bus(spread(5 * S, 10, 10 * S)), 21)
+
+
 @scenario("err-rate-edge-10p5", """
 Ten errors from 5 s, evenly spaced over 10.5 s: never ten inside any 10 s.
 
-EXPECT: PENDING the user's ruling, as err-rate-edge-9p5. A sliding 10 s
-window requires NO trip 6. With 9p5 this pins the window length from both
+EXPECT: no trip 6. With 9p5 and 10p0 this pins the window length from both
 sides, and catches a window that shrinks or grows.
 """)
 def s_err_edge_10p5():
@@ -863,9 +874,8 @@ def s_err_two_spans():
 Spec 7's worst observed burst, sustained: one error every 2.5 s for 60 s
 (2..62 s), so four in every 10 s.
 
-EXPECT: PENDING the user's ruling (reviewer, 2026-10-08), though no reading
-listed in spec_expect_check.py ever puts ten in one window. It must never
-latch under spec 7's 2.5x headroom.
+EXPECT: no trip 6, ever. Never ten in any 10 s, and spec 7's 2.5x headroom
+is over exactly this rate.
 """)
 def s_err_sustained_4():
     return live_run(err_bus([2 * S + k * 2500 * MS for k in range(25)]), 66)
@@ -881,23 +891,135 @@ def s_err_jump_12():
     return live_run(["bus %d 1 1 1 12" % (5 * S)], 12)
 
 
-@scenario("err-rate-rearm-clears", """
+@scenario("err-rate-rearm-carries", """
 Nine errors at 1 per second from 2 s (2..10 s), a disarm at 10.5 s, a re-arm
 at 11.0 s, then one more error at 11.5 s: ten errors in 9.5 s across the
 re-arm. The controller's count is left cumulative (10), as the 'bus'
 directive models it.
 
-EXPECT: PENDING a new rule (reviewer, 2026-10-08: it does not follow from
-spec 7, which says a re-arm clears a LATCH and nothing about the error count
-or window; it is with the user as two options). If the window counts errors
-over wall time regardless of arming, a sliding window requires trip 6 at
-11.5 s. If a re-arm starts it fresh, there is never a trip here. The
-scenario tells the two apart.
+EXPECT: trip 6 at 11.5 s. Spec 7: "Only a key-on (7.1) clears the error
+history. Arming, an explicit re-arm and going live do not." The tenth error
+completes ten in 9.5 s, and it is the newest, so the burst is recent.
+
+Named err-rate-rearm-clears until the user's ruling of 2026-10-08: it was
+written to ask whether a re-arm clears the count, and the answer is no.
 """)
 def s_err_rearm_clears():
     errs = err_bus([2 * S + k * S for k in range(9)] + [11500 * MS])
     return live_run(errs, 18, extra=["mode %d 0 500" % (10500 * MS),
                                      "mode %d 3 500" % (11 * S)])
+
+
+def _key_off_on(t_off, t_on, t_end):
+    """A 10 Hz 0x592 train: on from 1 s (as autokey), off from t_off, on from t_on."""
+    return (key_train(1 * S, t_off, on=True) + key_train(t_off, t_on, on=False)
+            + key_train(t_on, t_end, on=True))
+
+
+@scenario("err-rate-keyon-clears", """
+Nine errors at 1 per second from 2 s (2..10 s), the key off from 10.2 s and
+on again from 10.8 s, then one more error at 11.5 s. Without the key cycle
+that would be ten in 9.5 s (err-rate-keyon-control).
+
+EXPECT: no trip 6. Spec 7: "Only a key-on (7.1) clears the error history",
+so after the key-on at 10.8 s the history holds one error. Spec 7.1: the
+device stays armed through the key-off, and a device already live stays
+live. spec_expect_check.py requires the trace to show the key reading off
+and then on (key=0 then key=1) between the ninth and tenth errors, or the
+row is INCONCLUSIVE rather than a pass.
+""", autokey=False)
+def s_err_keyon_clears():
+    errs = err_bus([2 * S + k * S for k in range(9)] + [11500 * MS])
+    return live_run(errs, 18, extra=_key_off_on(10200 * MS, 10800 * MS, 18 * S + 1))
+
+
+@scenario("err-rate-keyon-control", """
+The control for err-rate-keyon-clears: the same ten errors (2..10 s, then
+11.5 s) with the key on throughout.
+
+EXPECT: trip 6 at 11.5 s (ten in 9.5 s). Without it, err-rate-keyon-clears
+would pass on a core that never trips at all.
+""")
+def s_err_keyon_control():
+    return live_run(err_bus([2 * S + k * S for k in range(9)] + [11500 * MS]), 18)
+
+
+def _held_by_617(errs, t_617, end_s):
+    """Armed from 0, VCM talking from 1 s, but 0x617 withheld until t_617.
+
+    Spec 7 arm gate condition 3 ("0x617 fresh") holds the inhibit back from
+    going live, so the device is armed and not live while the errors land.
+    The key is NOT used to hold it: spec 7.1, the key gates transmission,
+    not liveness. Sending 0x617 here also stops add_autobms() from injecting
+    its own 0x617 train (a scenario that drives a signal owns it).
+    """
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, end_s * S, 20 * MS)
+    L += periodic(t_617, end_s * S, 250 * MS, lambda t: fault(t, 0xC8))
+    L += errs
+    L += ["end %d" % (end_s * S)]
+    return sorted_directives(L)
+
+
+@scenario("err-rate-armed-not-live", """
+Armed from 0 s, but the inhibit is held back from going live by withholding
+0x617 until 8 s. Ten errors land while armed and not live, 0.5 s apart
+(2.0 .. 6.5 s).
+
+EXPECT: trip 6 at the first live check, at go-live (~8 s). Spec 7: "Error
+frames are recorded whenever the device is armed ... if 10 error frames fell
+in the 10 s before going live, it fires at the first live check." The newest
+error is 1.5 s before go-live, so the burst is recent. spec_expect_check.py
+requires the trace to show the gate blocked on 0x617 while the errors land;
+otherwise the row would be exercising the ordinary live path.
+""")
+def s_err_armed_not_live():
+    return _held_by_617(err_bus([2 * S + k * 500 * MS for k in range(10)]), 8 * S, 14)
+
+
+@scenario("err-rate-stale-burst", """
+As err-rate-armed-not-live, but 0x617 is withheld until 18 s, so the newest
+error (6.5 s) is 11.5 s before go-live.
+
+EXPECT: no trip 6. Spec 7, "Only a recent burst trips": a burst trips only
+while its newest error frame is no more than 10 s before the live check, and
+not one that expired before going live. With err-rate-armed-not-live, this
+pins the recency test from both sides.
+""")
+def s_err_stale_burst():
+    return _held_by_617(err_bus([2 * S + k * 500 * MS for k in range(10)]), 18 * S, 24)
+
+
+def _trip_then_rearm(t_rearm, end_s):
+    """Trip 6 from twelve errors (2.1 .. 3.2 s), disarm at 5 s, re-arm at t_rearm."""
+    L = err_bus([2 * S + i * 100 * MS for i in range(1, 13)])
+    return live_run(L, end_s, extra=["mode %d 0 500" % (5 * S),
+                                     "mode %d 3 500" % t_rearm])
+
+
+@scenario("err-rate-rearm-after-trip-expired", """
+Trip 6 from twelve errors (2.1 .. 3.2 s; the tenth at 3.0 s), a disarm at
+5 s and a re-arm at 14 s, when the newest error is 10.8 s old. No more
+errors.
+
+EXPECT: trip 6 at 3.0 s, then after the re-arm the inhibit goes live and
+does NOT trip again. Spec 7: "After a trip 6 latch, a re-arm can therefore
+go live once the bus has been free of a qualifying burst for 10 s."
+""")
+def s_err_rearm_after_trip_expired():
+    return _trip_then_rearm(14 * S, 20)
+
+
+@scenario("err-rate-rearm-after-trip-recent", """
+As err-rate-rearm-after-trip-expired, but the re-arm is at 8 s, when the
+newest error is 4.8 s old.
+
+EXPECT: trip 6 at 3.0 s, and again at the first live check after the
+re-arm (~8 s): the history carries across the re-arm and the burst is still
+recent. With the expired case, this pins the recency test across a re-arm.
+""")
+def s_err_rearm_after_trip_recent():
+    return _trip_then_rearm(8 * S, 14)
 
 
 @scenario("observe-never-transmits", """
