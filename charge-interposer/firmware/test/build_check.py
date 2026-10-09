@@ -35,6 +35,7 @@ Usage (from the repo root):
 """
 
 import argparse
+import calendar
 import glob
 import hashlib
 import json
@@ -479,8 +480,67 @@ def _copy_firmware(dst):
     shutil.copytree(FW, dst, ignore=ignore)
 
 
+def _one_fresh(fw_dir, env, ext, t0):
+    """The one interposer_*.<ext> in .pio/build/<env>, written after t0
+    -> (path, None) or (None, why)."""
+    hits = glob.glob(os.path.join(fw_dir, ".pio", "build", env,
+                                  build_identity.PREFIX + "*." + ext))
+    if len(hits) != 1:
+        return None, "%d %s file(s) in .pio/build/%s" % (len(hits), ext, env)
+    if os.path.getmtime(hits[0]) < t0:
+        return None, "%s predates this build" % os.path.basename(hits[0])
+    return hits[0], None
+
+
+def _utc_seconds(stamp):
+    """'2026-10-08T20:31:13Z' -> POSIX seconds, or None."""
+    try:
+        return calendar.timegm(time.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ"))
+    except (TypeError, ValueError):
+        return None
+
+
+def fresh_row_problem(rows, env, elf, t0):
+    """Spec 8.2 (a): proof the build RAN. A manifest row for `env` with
+    these ELF bytes whose built_utc is not before t0 (to the second; the
+    stamp has no fraction) -> None, else why. A cached build writes no row
+    (manifest.py's record() runs only when the image is linked), so a copy
+    that starts with no manifest and ends with no fresh row was not
+    built."""
+    mine = [r for r in rows if r.get("env") == env
+            and (r.get("elf_sha256") or "").lower() == elf]
+    if not mine:
+        return ("no manifest row for [env:%s] with ELF %s -- the build "
+                "recorded nothing" % (env, elf[:16]))
+    stamps = [_utc_seconds(r.get("built_utc")) for r in mine]
+    if not any(t is not None and t >= int(t0) for t in stamps):
+        return ("[env:%s] ELF %s: built_utc %s, not after the build started "
+                "(%s) -- a row this build did not write"
+                % (env, elf[:16], ", ".join(str(r.get("built_utc"))
+                                             for r in mine),
+                   time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0))))
+    return None
+
+
+def _manifest_rows(fw_dir):
+    path = os.path.join(fw_dir, "builds", "manifest.json")
+    try:
+        with open(path) as f:
+            m = json.load(f)
+    except (IOError, OSError, ValueError):
+        return []
+    rows = m.get("builds", []) if isinstance(m, dict) else m
+    return rows if isinstance(rows, list) else []
+
+
+def _sha256_file(path):
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
 def _build_one(fw_dir, env):
-    """Clean, then build `env` in `fw_dir` -> (elf sha256 or None, why)."""
+    """Clean, then build `env` in `fw_dir` -> (result or None, why), where
+    result = {"elf": sha256, "bin": sha256, "bin_path": path}."""
     base = [sys.executable, "-m", "platformio", "run", "-d", fw_dir, "-e", env]
     t0 = time.time()
     for cmd in (base + ["-t", "clean"], base):
@@ -491,17 +551,20 @@ def _build_one(fw_dir, env):
                                                   "\n      ".join(tail))
     # build_name.py names the program interposer_<digest>_<tag>, so the ELF
     # is that, not firmware.elf (the first version looked for the latter
-    # and found nothing). Exactly one, and written by THIS build: a cached
-    # .pio would hand back a file neither build produced.
-    elfs = glob.glob(os.path.join(fw_dir, ".pio", "build", env,
-                                  build_identity.PREFIX + "*.elf"))
-    if len(elfs) != 1:
-        return None, "%d ELF(s) in .pio/build/%s" % (len(elfs), env)
-    elf = elfs[0]
-    if os.path.getmtime(elf) < t0:
-        return None, "%s predates this build" % os.path.basename(elf)
-    with open(elf, "rb") as f:
-        return hashlib.sha256(f.read()).hexdigest(), "ok"
+    # and found nothing). Exactly one of each, and written by THIS build: a
+    # cached .pio would hand back files neither build produced.
+    elf, why = _one_fresh(fw_dir, env, "elf", t0)
+    if elf is None:
+        return None, why
+    binp, why = _one_fresh(fw_dir, env, "bin", t0)
+    if binp is None:
+        return None, why
+    res = {"elf": _sha256_file(elf), "bin": _sha256_file(binp),
+           "bin_path": binp}
+    why = fresh_row_problem(_manifest_rows(fw_dir), env, res["elf"], t0)
+    if why:
+        return None, why
+    return res, "ok"
 
 
 # The control's code change: a line of real code, not a comment, so the
@@ -512,15 +575,20 @@ CONTROL_LINE = ("\nextern \"C\" __attribute__((used)) volatile int "
 CONTROL_ENV = "esp32-can-x2"
 
 
-def check_reproducible(envs, workdir):
-    """Spec 8.2 (user, 2026-10-08): the build is reproducible. Two copies of
-    the firmware tree at DIFFERENT absolute paths, each environment cleaned
-    and built in both: the ELF SHA-256s must be identical.
+def check_reproducible(envs, workdir, keep_bins=None):
+    """Spec 8.2 (a), same host (spec f757777709802e8b): the same sources in
+    any folder on the same host OS give the same ELF -- and so the same
+    .bin. Two copies of the firmware tree at DIFFERENT absolute paths, each
+    environment cleaned and built in both: the ELF SHA-256s AND the .bin
+    SHA-256s must be identical, and each build must prove it ran (a fresh
+    manifest row; see fresh_row_problem).
 
     Identical could be luck or a comparison that sees nothing, so a CONTROL
     must fail: a third copy with one line of code added to src/machine.cpp
-    must give a different ELF for CONTROL_ENV. Copies live under `workdir`
-    and are removed afterwards."""
+    must give a different ELF and .bin for CONTROL_ENV. Copies live under
+    `workdir` and are removed afterwards; with `keep_bins` (a folder) copy
+    a's .bin files are kept there for a cross-host comparison
+    (--diff-bins)."""
     problems = []
     a_dir = os.path.join(workdir, "a", "firmware")
     b_dir = os.path.join(workdir, "b_other", "deeper", "firmware")
@@ -532,37 +600,109 @@ def check_reproducible(envs, workdir):
             f.write(CONTROL_LINE)
         results = {}
         for e in envs:
-            ha, wa = _build_one(a_dir, e)
-            hb, wb = _build_one(b_dir, e)
-            results[e] = (ha, hb)
-            if ha is None or hb is None:
-                problems.append("reproducible: [env:%s] did not build in "
-                                "both folders (%s / %s)" % (e, wa, wb))
-            elif ha != hb:
-                problems.append("reproducible: [env:%s] ELF %s in %s but %s "
-                                "in %s -- not reproducible (spec 8.2)"
-                                % (e, ha[:16], a_dir, hb[:16], b_dir))
-            print("  repro %-24s %s  %s  %s" % (
-                e, (ha or "-")[:16], (hb or "-")[:16],
-                "SAME" if ha and ha == hb else "DIFFERENT"))
-        hc, wc = _build_one(c_dir, CONTROL_ENV)
-        ha = results.get(CONTROL_ENV, (None, None))[0]
-        print("  control %-22s %s (vs %s)" % (CONTROL_ENV, (hc or "-")[:16],
-                                             (ha or "-")[:16]))
-        if hc is None:
+            ra, wa = _build_one(a_dir, e)
+            rb, wb = _build_one(b_dir, e)
+            results[e] = ra
+            if ra is None or rb is None:
+                problems.append("reproducible: [env:%s] did not build (and "
+                                "record) in both folders (%s / %s)"
+                                % (e, wa, wb))
+                print("  repro %-24s DID NOT BUILD" % e)
+                continue
+            for k in ("elf", "bin"):
+                if ra[k] != rb[k]:
+                    problems.append(
+                        "reproducible: [env:%s] %s %s in %s but %s in %s -- "
+                        "not reproducible (spec 8.2)"
+                        % (e, k.upper(), ra[k][:16], a_dir, rb[k][:16],
+                           b_dir))
+            same = ra["elf"] == rb["elf"] and ra["bin"] == rb["bin"]
+            print("  repro %-24s elf %s %s  bin %s %s  %s" % (
+                e, ra["elf"][:16], rb["elf"][:16], ra["bin"][:16],
+                rb["bin"][:16], "SAME" if same else "DIFFERENT"))
+            if keep_bins:
+                os.makedirs(keep_bins, exist_ok=True)
+                shutil.copy2(ra["bin_path"], os.path.join(
+                    keep_bins, "%s__%s" % (e, os.path.basename(
+                        ra["bin_path"]))))
+        rc, wc = _build_one(c_dir, CONTROL_ENV)
+        ra = results.get(CONTROL_ENV)
+        print("  control %-22s elf %s bin %s (vs elf %s bin %s)" % (
+            CONTROL_ENV, (rc or {}).get("elf", "-")[:16],
+            (rc or {}).get("bin", "-")[:16], (ra or {}).get("elf", "-")[:16],
+            (ra or {}).get("bin", "-")[:16]))
+        if rc is None:
             problems.append("reproducible: the control copy did not build "
                             "(%s)" % wc)
-        elif ha is not None and hc == ha:
-            problems.append("reproducible: the CONTROL (a line of code added "
-                            "to %s) gave the same ELF %s -- the comparison "
-                            "cannot see a code change, so 'identical' proves "
-                            "nothing" % (CONTROL_FILE, hc[:16]))
+        elif ra is None:
+            problems.append("reproducible: the control has nothing to differ "
+                            "from -- [env:%s] was not built (pass it in "
+                            "--envs)" % CONTROL_ENV)
+        else:
+            for k in ("elf", "bin"):
+                if rc[k] == ra[k]:
+                    problems.append(
+                        "reproducible: the CONTROL (a line of code added to "
+                        "%s) gave the same %s %s -- the comparison cannot "
+                        "see a code change, so 'identical' proves nothing"
+                        % (CONTROL_FILE, k.upper(), rc[k][:16]))
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
     if not problems:
-        print("reproducible: %d environment(s) identical across two folders; "
-              "the control differs" % len(envs))
+        print("reproducible: %d environment(s) give identical ELF and .bin "
+              "across two folders, each build fresh; the control differs"
+              % len(envs))
     return problems
+
+
+# Spec 8.2 (b): across host OSes the .bin may differ ONLY in the ELF hash at
+# offset 0xb0 (32 bytes) and in the trailing checksum byte + appended
+# SHA-256 that cover it (33 bytes).
+ELF_HASH_FIELD = (0xb0, 0xb0 + 32)
+TRAILER_LEN = 33
+
+
+def diff_runs(a, b):
+    """Every run of differing bytes between two equal-length byte strings
+    -> [(start, end_exclusive)]."""
+    runs = []
+    start = None
+    for i in range(len(a)):
+        if a[i] != b[i]:
+            if start is None:
+                start = i
+        elif start is not None:
+            runs.append((start, i))
+            start = None
+    if start is not None:
+        runs.append((start, len(a)))
+    return runs
+
+
+def cross_host_problems(a, b):
+    """Spec 8.2 (b) -> (runs, problems). `runs` lists EVERY differing byte
+    run, whether allowed or not, so the report shows what differs rather
+    than only whether a prediction held."""
+    if len(a) != len(b):
+        return [], ["cross-host: the .bin files differ in length (%d vs %d) "
+                    "-- a different image, not a different ELF hash"
+                    % (len(a), len(b))]
+    runs = diff_runs(a, b)
+    allowed = (ELF_HASH_FIELD, (len(a) - TRAILER_LEN, len(a)))
+    problems = []
+    for s0, s1 in runs:
+        if not any(lo <= s0 and s1 <= hi for lo, hi in allowed):
+            problems.append(
+                "cross-host: bytes 0x%x-0x%x (%d) differ outside the ELF "
+                "hash at 0x%x and the trailing %d bytes -- a build defect "
+                "(spec 8.2)" % (s0, s1 - 1, s1 - s0, ELF_HASH_FIELD[0],
+                                TRAILER_LEN))
+    if not runs:
+        problems.append("cross-host: the two .bin files are IDENTICAL -- "
+                        "either both came from one host OS or the "
+                        "comparison was handed one file twice; spec 8.2 "
+                        "expects the ELF hash to differ across host OSes")
+    return runs, problems
 
 
 def check_witness_marker(envs):
@@ -758,17 +898,48 @@ def main():
                          "the tree at different paths and require identical "
                          "ELFs, with a control copy that must differ (slow: "
                          "three trees of clean builds)")
+    ap.add_argument("--keep-bins", default="",
+                    help="with --reproducible: copy each environment's .bin "
+                         "here, for --diff-bins against another host")
+    ap.add_argument("--diff-bins", nargs=2, metavar=("THIS_HOST", "OTHER"),
+                    help="spec 8.2 (b): list every differing byte run "
+                         "between two .bin files of one commit built on two "
+                         "host OSes; only the ELF hash at 0xb0 and the "
+                         "trailing 33 bytes may differ")
     ap.add_argument("--envs", default="",
                     help="comma-separated subset of environments for "
                          "--reproducible (default: all)")
     a = ap.parse_args()
+
+    if a.diff_bins:
+        bins = []
+        for path in a.diff_bins:
+            with open(path, "rb") as f:
+                bins.append(f.read())
+        runs, probs = cross_host_problems(bins[0], bins[1])
+        print("cross-host: %s (%d bytes) vs %s (%d bytes)" % (
+            a.diff_bins[0], len(bins[0]), a.diff_bins[1], len(bins[1])))
+        for s0, s1 in runs:
+            print("  differs 0x%06x-0x%06x  %3d byte(s)" % (s0, s1 - 1,
+                                                          s1 - s0))
+        print("  %d run(s), %d byte(s) differ in all" % (
+            len(runs), sum(s1 - s0 for s0, s1 in runs)))
+        if probs:
+            print("\nFAIL -- %d problem(s):" % len(probs))
+            for p_ in probs:
+                print("  - " + p_)
+            return 1
+        print("\nOK -- cross-host (spec 8.2 b): only the ELF hash and the "
+              "trailer differ")
+        return 0
 
     if a.reproducible:
         envs = [e for e in a.envs.split(",") if e] or environments()
         # OUTSIDE the firmware tree: a work folder inside it (the first
         # version used test/) makes copytree copy the copies into themselves
         work = tempfile.mkdtemp(prefix="repro_", dir=os.path.dirname(FW))
-        probs = check_reproducible(envs, work)
+        probs = check_reproducible(envs, work,
+                                   keep_bins=a.keep_bins or None)
         if probs:
             print("\nFAIL -- %d problem(s):" % len(probs))
             for p_ in probs:

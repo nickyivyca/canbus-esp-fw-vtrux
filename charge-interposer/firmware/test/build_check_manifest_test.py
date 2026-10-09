@@ -145,6 +145,66 @@ def main():
           "check_manifest itself fails a build whose only row has no git "
           "fields -> %s" % p)
 
+    # spec 8.2 (a): a build proves it ran by a fresh manifest row
+    f = BC.fresh_row_problem
+    t0 = BC._utc_seconds("2026-10-08T20:31:13Z") + 0.6
+    fresh = {"env": "truck", "elf_sha256": ELF_A,
+             "built_utc": "2026-10-08T20:31:13Z"}
+    stale = dict(fresh, built_utc="2026-10-08T20:31:12Z")
+    check(f([fresh], "truck", ELF_A, t0) is None,
+          "a row stamped in the build's starting second passes (the stamp "
+          "has no fraction)")
+    p = f([stale], "truck", ELF_A, t0)
+    check(p is not None and "did not write" in p,
+          "a row stamped before the build started FAILS -> %s" % p)
+    check(f([], "truck", ELF_A, t0) is not None,
+          "no row at all (a cached build records nothing) FAILS")
+    check(f([dict(fresh, env="slcan")], "truck", ELF_A, t0) is not None,
+          "a fresh row for another environment FAILS")
+    check(f([dict(fresh, elf_sha256=ELF_B)], "truck", ELF_A, t0) is not None,
+          "a fresh row for other bytes FAILS")
+    check(f([stale, fresh], "truck", ELF_A, t0) is None,
+          "an old row beside a fresh one passes")
+    check(f([dict(fresh, built_utc="yesterday")], "truck", ELF_A, t0)
+          is not None, "an unparseable built_utc FAILS")
+
+    # spec 8.2 (b): every differing byte run is listed; only the ELF hash
+    # at 0xb0 and the trailing 33 bytes may differ
+    base = bytes(range(256)) * 4
+
+    def flip(b, spans):
+        b = bytearray(b)
+        for lo, hi in spans:
+            for i in range(lo, hi):
+                b[i] ^= 0xFF
+        return bytes(b)
+    n = len(base)
+    check(BC.diff_runs(base, flip(base, [(3, 5), (9, 10)]))
+          == [(3, 5), (9, 10)], "diff_runs lists each run with its bounds")
+    check(BC.diff_runs(base, flip(base, [(n - 2, n)])) == [(n - 2, n)],
+          "diff_runs closes a run that reaches the end")
+    other = flip(base, [(0xb0, 0xd0), (n - 33, n)])
+    runs, p = BC.cross_host_problems(base, other)
+    check(not p and runs == [(0xb0, 0xd0), (n - 33, n)],
+          "the measured 3eb9a8f shape (32 B at 0xb0 + 33 B trailer, 65 "
+          "bytes) passes and is listed -> %s %s" % (runs, p))
+    runs, p = BC.cross_host_problems(base, flip(base, [(0xb4, 0xb6)]))
+    check(not p, "a partial difference inside the hash field passes")
+    runs, p = BC.cross_host_problems(base, flip(other, [(n - 40, n - 39)]))
+    check(len(p) == 1 and "outside" in p[0] and len(runs) == 3,
+          "one byte just before the trailer FAILS and is listed -> %s" % p)
+    runs, p = BC.cross_host_problems(base, flip(base, [(0xaf, 0xb2)]))
+    check(len(p) == 1 and "outside" in p[0],
+          "a run straddling the start of the hash field FAILS -> %s" % p)
+    runs, p = BC.cross_host_problems(base, flip(base, [(0x20, 0x21)]))
+    check(len(p) == 1 and "0x20-0x20" in p[0],
+          "a loaded-section byte FAILS, with its offset -> %s" % p)
+    runs, p = BC.cross_host_problems(base, base + b"\0")
+    check(p and "length" in p[0], "different lengths FAIL")
+    runs, p = BC.cross_host_problems(base, base)
+    check(p and "IDENTICAL" in p[0],
+          "two identical files FAIL (one host twice, or one file twice)")
+
     if failures:
         print("\n%d failure(s)" % failures)
         return 1
