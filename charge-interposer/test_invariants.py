@@ -845,6 +845,18 @@ def _pilot(minutes):
 
 # --- tests -----------------------------------------------------------------
 
+def test_capture_traces_are_pinned():
+    """Spec 9.1: the traces judged below include capture-derived ones; each
+    must match its pin in capture_pins.py, and none may be unpinned."""
+    import capture_pins
+    probs, n = capture_pins.check_traces(TRACES)
+    ok(n == len(capture_pins.TRACE_PINS),
+       "checked %d of %d pinned capture traces" % (n,
+                                                   len(capture_pins.TRACE_PINS)))
+    for p in probs:
+        ok(False, p)
+
+
 def test_invariants_hold_over_every_trace():
     names = sorted(n for n in os.listdir(TRACES) if n.endswith(".trace"))
     ok(len(names) >= 20,

@@ -28,6 +28,18 @@ else
   grep -v ' unchanged ' "${BIN}.chk" | head -12
   fail=1
 fi
+
+# spec 9.1 pinned stimulus: the capture-derived traces must match the pins
+# held in the repo (charge-interposer/capture_pins.py), and no trace may be
+# capture-derived without one.
+echo "capture pins:"
+if python3 "$HERE/../../../capture_pins.py" --dir "$ART" > "${BIN}.pin" 2>&1; then
+  echo "  $(tail -1 "${BIN}.pin")"
+else
+  sed 's/^/  /' "${BIN}.pin"
+  fail=1
+fi
+rm -f "${BIN}.pin"
 rm -f "${BIN}.chk"
 
 # Negative control: a diff that cannot report DIFFERS is not a check. One

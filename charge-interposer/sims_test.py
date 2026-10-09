@@ -307,7 +307,36 @@ def guard_problems():
 
 # --- tests ---------------------------------------------------------------------
 
+def measured():
+    """The observed values the checks below judge, printed so a run file
+    shows observed against the spec and not only ok."""
+    out = []
+    for src, lo, hi in ((11, 0.8, 1.1), (3, 0.2, 0.7), (14, 2.9, 2.9),
+                        (4, 0.1, 0.2)):
+        drop, gap = vcu_reaction(src, 0)
+        out.append("vehicle_sim source %d, plug out: flow 0 after %s s (spec "
+                   "%.2f-%.2f s), STAND_BY %s s after it"
+                   % (src, _f(drop), lo, hi, _f(gap)))
+    drop, gap = vcu_reaction(11, 1, horizon=120.0)
+    out.append("vehicle_sim source 11, plug in: flow 0 after %s s (spec 84 s), "
+               "then its own STAND_BY %s s after it" % (_f(drop), _f(gap)))
+    seen = charger_run(standby_at=101.0)
+    held = sorted(set(m for t, m in seen if 100.0 <= t < 101.0))
+    z = first_zero(seen)
+    out.append("charger_sim pilot timer: %s min between the pull (100.0 s) "
+               "and the STAND_BY (101.0 s); 0 at %s s, %s s after the "
+               "STAND_BY (spec 0.2-1.3 s)"
+               % (held, _f(z), _f(None if z is None else z - 101.0)))
+    return out
+
+
+def _f(x):
+    return "-" if x is None else "%.2f" % x
+
+
 def main():
+    for line in measured():
+        print("  --  " + line)
     for p in vcu_problems():
         check(False, "vehicle_sim: " + p)
     check(not vcu_problems(), "vehicle_sim reacts per shutdownSource as spec 9 "

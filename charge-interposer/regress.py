@@ -40,6 +40,7 @@ import paths                                                # noqa: E402
 
 VTRUX = Path(paths.data_dir())          # SeaDrive projects/vtrux (paths.py)
 
+import capture_pins
 import machine as M
 import replay
 
@@ -195,6 +196,16 @@ def check_state_events(events, want):
     return (True, "in order: " + "; ".join(got))
 
 
+def source_hashes(case):
+    """{path under logs/ (posix): sha256} for the case's raw captures."""
+    out = {}
+    for pat in case.sources:
+        for p in sorted(LOGS.glob(pat)):
+            out[p.relative_to(LOGS).as_posix()] = capture_pins.sha256_file(
+                str(p))
+    return out
+
+
 def run_case(case, args):
     path, err = prepare(case, args.keep_filtered)
     if err:
@@ -214,6 +225,17 @@ def run_case(case, args):
     evtext = "\n".join("%8.1fs [%s] %s" % (t / 1000.0, st, tx)
                        for t, st, tx in res["events"])
     checks = []
+    # spec 9.1: the raw captures and the stream the core was fed must match
+    # the pins held in capture_pins.py
+    raw = source_hashes(case)
+    probs = capture_pins.check_regress(case.name, raw,
+                                       res["stimulus_sha256"],
+                                       res["frames_in"])
+    checks.append((not probs, "; ".join(probs) if probs else
+                   "pinned stimulus (spec 9.1): %d raw file(s) and the %d-frame "
+                   "stream %s match their pins"
+                   % (len(raw), res["frames_in"],
+                      res["stimulus_sha256"][:16])))
     e = case.expect
     if "modified" in e:
         checks.append((res["modified"] == e["modified"],

@@ -19,6 +19,13 @@ if [ -z "${L3_STIMULUS:-}" ]; then
   export L3_STIMULUS="$VTRUX_DATA/notes/artifacts/interposer-firmware/l3_stimulus.txt"
 fi
 fail=0
+# spec 9.1 pinned stimulus: the L3 file must match the pin HELD IN THE REPO
+# (charge-interposer/capture_pins.py). l3_replay.cpp's own check compares the
+# body with the hash in the file's header, which a regenerated file carries
+# along with it; this one does not move with the file.
+if ! python3 "$HERE/../../../capture_pins.py" --file "$L3_STIMULUS"; then
+  fail=1
+fi
 for t in "$HERE"/test_*.cpp; do
   name="$(basename "$t" .cpp)"
   bin="${TMPDIR:-/tmp}/${name}_$$"

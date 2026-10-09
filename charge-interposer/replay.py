@@ -24,6 +24,7 @@ capture down to the charge-control IDs in seconds, and the result replays here
 unchanged.
 """
 
+import hashlib
 import os
 import sys
 import time
@@ -132,13 +133,17 @@ def replay_offline(path, core, bus_filter=None, progress=None,
         synthesized      frames the core originated (the release burst)
         first_modified   (t_s, hex_in, hex_out) of the first modification
         events           the core's own event log
+        stimulus_sha256  sha256 over every frame fed to the core, as fed
+                         (ms time, id, extended flag, data) -- the spec 9.1
+                         pin of the input (capture_pins.py)
     """
     if bus_filter is None:
         bus_filter = detect_pt_bus(path)
     known = VEHICLE_IDS | CHARGER_IDS
     res = dict(frames_in=0, to_charger=0, to_vehicle=0, modified=0,
                synthesized=0, first_modified=None, events=None,
-               bus=bus_filter)
+               bus=bus_filter, stimulus_sha256=None)
+    stim = hashlib.sha256()
     last_tick_ms = -1
     for t, arb, ext, data in iter_pt(path, bus_filter, known):
         if t < start_s:
@@ -147,6 +152,8 @@ def replay_offline(path, core, bus_filter=None, progress=None,
             break
         t_ms = int(t * 1000)
         res["frames_in"] += 1
+        stim.update(b"%d %x %d %s\n" % (t_ms, arb, 1 if ext else 0,
+                                         bytes(data).hex().encode()))
         if arb in CHARGER_IDS:
             out = core.on_charger_frame(arb, ext, data, t_ms)
         else:
@@ -169,4 +176,5 @@ def replay_offline(path, core, bus_filter=None, progress=None,
             print("  ...%d frames, t=%.0fs, state=%s"
                   % (res["frames_in"], t, M.STATE_NAMES[core.state]))
     res["events"] = list(core.events)
+    res["stimulus_sha256"] = stim.hexdigest()
     return res
