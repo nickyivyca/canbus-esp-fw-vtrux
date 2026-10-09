@@ -221,6 +221,12 @@ def main():
           "other-bytes rows")
     check(br([stale], "truck", ELF_A, t0) is None,
           "build_row finds nothing when the only row predates the build")
+    nulled = dict(fresh, elf_sha256=None)
+    check(br([stale, nulled], "truck", ELF_A, t0) is nulled,
+          "build_row falls back to this build's fresh row when its "
+          "elf_sha256 is null, so the git fields are still judged")
+    check(br([nulled, fresh], "truck", ELF_A, t0) is fresh,
+          "build_row prefers the row with the built ELF over the fallback")
     head = "a" * 40
     clean = {"git_commit": head, "git_dirty": False}
     dirty = {"git_commit": head, "git_dirty": True}

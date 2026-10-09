@@ -678,15 +678,20 @@ def check_reproducible(envs, workdir, keep_bins=None):
 
 
 def build_row(rows, env, elf, t0):
-    """The manifest row the build of `env` that started at t0 wrote for
-    ELF `elf`, or None. The newest when several qualify."""
-    best = None
+    """The manifest row the build of `env` that started at t0 wrote, or
+    None: the newest fresh row for `env` recording ELF `elf`, else the
+    newest fresh row for `env` whatever ELF it records. The fallback keeps
+    the git fields judgeable when a row's elf_sha256 is wrong (null on
+    madhouse-debian, 2026-10-08) -- that is fresh_row_problem's finding,
+    reported separately, not a reason to hide this one."""
+    exact = loose = None
     for r in rows:
         t = _utc_seconds(r.get("built_utc"))
-        if (r.get("env") == env and t is not None and t >= int(t0)
-                and (r.get("elf_sha256") or "").lower() == elf):
-            best = r
-    return best
+        if r.get("env") == env and t is not None and t >= int(t0):
+            loose = r
+            if (r.get("elf_sha256") or "").lower() == elf:
+                exact = r
+    return exact or loose
 
 
 def dirty_problems(steps, head):
@@ -757,6 +762,9 @@ def check_dirty_flag(workdir, env=None):
                                 % (label, why))
                 return
             r = build_row(_manifest_rows(fw), env, res["elf"], t0)
+            if res["row_problem"]:
+                problems.append("dirty flag: %s -- %s" % (label,
+                                                         res["row_problem"]))
             print("  dirty %-34s git_commit %s  git_dirty %r" % (
                 label, ((r or {}).get("git_commit") or "-")[:12],
                 (r or {}).get("git_dirty")))
