@@ -123,7 +123,32 @@ if(OTA_HEALTH_FAULT_INJECT)
 else()
     set(GI_FAULT_SUFFIX "")
 endif()
-set(PRJ_BIN "${PROJECT_PREF}_${HW_PREF}_${GIT_SHA}${GI_ARM_SUFFIX}${GI_FAULT_SUFFIX}")
+# THE DIAGNOSTIC BUILD IS IN THE NAME, unconditionally, because this branch
+# (`gen-inhibit/diag-reset`) exists only to produce one and must never be
+# merged. There is no good-case build to leave unmarked here, so there is no
+# marker-by-absence to argue about: every image this tree can produce is a diag
+# image.
+#
+# "_DIAG" AND NOT "_DIAG_NOT_FOR_VEHICLE", which is what was asked for. The
+# budget checked below is 31 characters, and it is esp_app_desc.project_name's,
+# not a convention: 13 ("wican-fw_obd_") + 7 (clean sha) + 4 ("_man") + 5
+# ("_DIAG") = 29, while "_DIAG_NOT_FOR_VEHICLE" is 21 and would make 45 -- a
+# _Static_assert, not a truncation, so the full string cannot go in the image
+# at all. The full warning therefore lives on the BUILD DIRECTORY
+# (`build-DIAG_NOT_FOR_VEHICLE/`), and "_DIAG" is the part that survives into
+# the image, where `build_output.py`'s project-name row and anything else
+# reading esp_app_desc can see it without flashing. A directory name alone
+# would be exactly the "separated only by a directory name" failure the arm
+# suffix above was added to end; this is a directory name PLUS a static marker
+# inside the image.
+#
+# Note that "_DIAG" takes a DIRTY tree to 35 and so fails the check below. That
+# is the right outcome: a diagnostic image whose provenance is "some
+# uncommitted tree" tells the reader nothing when its console output is read
+# back days later.
+set(GI_DIAG_SUFFIX "_DIAG")
+
+set(PRJ_BIN "${PROJECT_PREF}_${HW_PREF}_${GIT_SHA}${GI_ARM_SUFFIX}${GI_FAULT_SUFFIX}${GI_DIAG_SUFFIX}")
 
 #
 # esp_app_desc.project_name is a 32-byte field -- 31 characters plus the NUL -- and

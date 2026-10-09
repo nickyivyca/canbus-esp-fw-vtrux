@@ -1,6 +1,10 @@
 # See the build system documentation in IDF programming guide
 # for more information about component CMakeLists.txt files.
-set(srcs "main.c" "comm_server.c" "config_server.c" "slcan.c" "can.c" "wifi_network.c" "wc_uart.c" "elm327.c" "mqtt.c" "sleep_mode.c" "autopid.c" "expression_parser.c" "wc_mdns.c" "wc_timer.c" "dev_status.c" "ota_health.c" "gen_inhibit.c" "gen_inhibit_core.c" "gi_sched.c")
+set(srcs "main.c" "comm_server.c" "config_server.c" "slcan.c" "can.c" "wifi_network.c" "wc_uart.c" "elm327.c" "mqtt.c" "sleep_mode.c" "autopid.c" "expression_parser.c" "wc_mdns.c" "wc_timer.c" "dev_status.c" "ota_health.c" "gen_inhibit.c" "gen_inhibit_core.c" "gi_sched.c" "gi_diag_boot.c")
+
+# DIAG BUILD ONLY -- `gi_diag_boot.c` is listed unconditionally because this
+# branch (`gen-inhibit/diag-reset`) exists only to produce a diagnostic image
+# and must never be merged. See the file's own header.
 # hal and soc: the scheduler reaches the TWAI status register and the abort
 # command through the private HAL (spec 5.2 items 4 and 9, cleared by the user
 # 2026-09-27). E3 confines that call to one site.

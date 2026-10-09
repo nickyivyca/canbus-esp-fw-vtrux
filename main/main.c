@@ -54,6 +54,7 @@
 #include "dev_status.h"
 #include "ota_health.h"
 #include "gen_inhibit.h"
+#include "gi_diag_boot.h"	/* DIAG BUILD ONLY, not for the vehicle */
 #include "debug_logs.h"
 #include "debug_logs_config.h"
 
@@ -380,6 +381,9 @@ static void can_rx_task(void *pvParameters)
 
 void app_main(void)
 {
+	/* DIAG BUILD ONLY, not for the vehicle. See main/gi_diag_boot.c. */
+	gi_diag_boot_init();
+
 	dev_status_init();
 	dev_status_set_bits(DEV_AWAKE_BIT);
 	ota_health_init();
