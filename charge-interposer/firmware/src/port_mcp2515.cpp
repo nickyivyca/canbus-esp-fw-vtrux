@@ -709,12 +709,13 @@ void Mcp2515Port::service(uint32_t t_ms) {
   //       both is reading RXB1 exactly when its frame rolled off a frame
   //       already taken.
   //   A -> RXB0 with RXB1 empty, B rolling in DURING the read of RXB0, then
-  //       C into the freed RXB0. A, B, C. REASONED, NOT MEASURED: it is the
-  //       same code path as the case above -- the re-read sees RX1IF -- and
-  //       it holds for any arrival of B before CS release, because the flag
-  //       is set when RXB1 fills and is the lockout (C12 E.RXB1D0). The
-  //       fake has no hook that fires mid-read, so there is no case for it;
-  //       it would need one that delivers during a READ RX BUFFER.
+  //       C into the freed RXB0. A, B, C. MEASURED since c69fdaa
+  //       (test_l2_bridge rx-rollover-midread, on the fake chip's
+  //       deliverDuringRead() hook): A,B,C in 6 of 6 runs, for three
+  //       identifiers and for one repeated, with the interleaving itself
+  //       asserted rather than assumed. This note said REASONED, NOT
+  //       MEASURED until then, on the grounds that the fake had no hook
+  //       firing mid-read; the tester built one.
   //
   // WHAT IT CANNOT ORDER, AND THE ASSUMPTION THAT RULES IT OUT. For RX1IF
   // to be set at the re-read by a frame NEWER than RXB0's, two frames would
