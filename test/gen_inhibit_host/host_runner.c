@@ -823,10 +823,12 @@ int main(void)
                 break;
             case D_SKIP:
             {
-                gi_events_t ev = { 0 };
+                /* Its own events, not the directive loop's `ev` (gcc 14
+                 * -Wshadow, 2026-10-09). */
+                gi_events_t skip_ev = { 0 };
                 gi_on_inhibit_skip(&st, (gi_skip_kind_t)d->b, d->a != 0, d->t,
-                                   &ev);
-                dump_events(&ev);
+                                   &skip_ev);
+                dump_events(&skip_ev);
                 break;
             }
             case D_LOAD:
