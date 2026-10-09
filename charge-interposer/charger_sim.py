@@ -174,6 +174,24 @@ class Charger(object):
         # (chargingafterturningaroundandnotusingextension). Set by
         # --stop11-at; None = never.
         self.stop11_t = None
+        # The Bel's 0x18FFD4C0 status pages, measured 2026-10-08 on 12 raw
+        # captures (artifacts/interposer-firmware/charger_fault_flag_timing.txt):
+        # ONE frame every 100 ms rotating statusMultiplexer 0 -> 1 -> 2 -> 3,
+        # so each page repeats every 0.400 s and mux 3 (the fault flags)
+        # lands 0.1 s before mux 0. Until 2026-10-08 the sim sent mux 0
+        # every 100 ms and mux 3 in its 0.9 s slow frames.
+        self._status_rot = 0
+        # What mux 3 REPORTS, kept apart from `faults` (what drives the
+        # state machine), because on the Bel the flag and the state edge do
+        # not change together: in 16 of 19 source-3 endings inverterFault
+        # was already up on the mux-3 page before the 12 -> 15 edge (it rose
+        # 0.1-0.5 s before it); in 3 it first showed on the page after it.
+        self.fault_flags = dict(inverter=0, buckboost=0, hv_over=0,
+                                over_temp=0)
+        # Seconds the flag leads the state edge (negative = it follows it).
+        # Default inside the measured majority; --fault-flag-lead-s.
+        self.fault_flag_lead_s = 0.3
+        self._fault_plan = []          # [(t, "flag" | "state", kind)]
 
     def unplug(self, t):
         """The handle is pulled: proximity gone, state 15 with source 11, both
@@ -204,6 +222,9 @@ class Charger(object):
         self.unplugged_t = None
         self.fault_t = None
         self.faults = dict(inverter=0, buckboost=0, hv_over=0, over_temp=0)
+        self.fault_flags = dict(inverter=0, buckboost=0, hv_over=0,
+                                over_temp=0)
+        self._fault_plan = []
         self.shutdown_source = 0
         self.evse_connected = 1
         self.vehicle_connected = 1
@@ -218,6 +239,16 @@ class Charger(object):
         self.veh_state = P.VEH_STATE_B
         log.warning("charger: HANDLE REPLUGGED at t=%.0fs, pilot timer back "
                     "to 0 (new session)", t)
+
+    def inject_fault(self, kind, t):
+        """An internal fault: the reported flag (mux 3) and the state edge
+        (12 -> 15, source 3) are scheduled fault_flag_lead_s apart, flag
+        first by default, as the Bel shows it."""
+        lead = self.fault_flag_lead_s
+        if lead >= 0:
+            self._fault_plan += [(t, "flag", kind), (t + lead, "state", kind)]
+        else:
+            self._fault_plan += [(t, "state", kind), (t - lead, "flag", kind)]
 
     @property
     def max_avail(self):
@@ -249,6 +280,17 @@ class Charger(object):
 
     def update(self, dt, t=0.0):
         prev_state = self.state
+        if self._fault_plan:
+            due = [x for x in self._fault_plan if t >= x[0]]
+            for x in due:
+                _t, what, kind = x
+                if what == "flag":
+                    self.fault_flags[kind] = 1
+                    log.warning("charger: fault flag %s raised at t=%.2fs",
+                                kind, t)
+                else:
+                    self.faults[kind] = 1
+            self._fault_plan = [x for x in self._fault_plan if x not in due]
 
         # The pilot timer runs whenever the plug is in, counted in seconds
         # here and reported in whole minutes.
@@ -378,9 +420,37 @@ class Charger(object):
         self.current += (target - self.current) * k
 
     def frames(self):
+        """The 100 ms frames. 0x18FFD4C0 carries ONE status page per call,
+        rotating mux 0 -> 1 -> 2 -> 3 (the Bel's own cadence, see
+        _status_rot). Mux 1 and 2 (buck-boost and inverter state) are not
+        modelled: they go out with their fields at 0."""
         ac_i = abs(self.current) * self.pack_v / max(1.0, self.ac_v) / 0.92
         out = {}
-        out[0x18FFD4C0] = P.encode(P.BEL, 0x18FFD4C0, {
+        mux = self._status_rot % 4
+        self._status_rot += 1
+        if mux == 3:
+            out[0x18FFD4C0] = self.fault_page()
+        elif mux in (1, 2):
+            out[0x18FFD4C0] = P.encode(P.BEL, 0x18FFD4C0, {},
+                                       "BELINV_statusMultiplexer", mux)
+        else:
+            out[0x18FFD4C0] = self.status_page()
+        out.update(self._fast_rest(ac_i))
+        return out
+
+    def fault_page(self):
+        """0x18FFD4C0 mux 3: the fault register, as REPORTED (fault_flags)."""
+        return P.encode(P.BEL, 0x18FFD4C0, {
+            "BELINV_acOk": 1,
+            "BELINV_inverterFault": self.fault_flags["inverter"],
+            "BELINV_buckBoostFault": self.fault_flags["buckboost"],
+            "BELINV_hvBatteryOverVoltage": self.fault_flags["hv_over"],
+            "BELINV_overTemperature": self.fault_flags["over_temp"],
+        }, "BELINV_statusMultiplexer", 3)
+
+    def status_page(self):
+        """0x18FFD4C0 mux 0: state, shutdown source, connected flags."""
+        return P.encode(P.BEL, 0x18FFD4C0, {
             "BELINV_keySwitch": 1, "BELINV_pilotControlSignal": 1,
             "BELINV_proxEnabled": self.vehicle_connected,
             "BELINV_evseConnected": self.evse_connected,
@@ -396,6 +466,9 @@ class Charger(object):
             "BELINV_shutdownSource": self.shutdown_source,
             "BELINV_stateBeforeLastShutdown": self.state_before,
         }, "BELINV_statusMultiplexer", 0)
+
+    def _fast_rest(self, ac_i):
+        out = {}
         out[0x18FFD7C0] = P.encode(P.BEL, 0x18FFD7C0, {
             "BELINV_hvBatteryVoltage": max(0.0, self.pack_v),
             # NEGATIVE while charging -- see the DBC comment on this message
@@ -421,14 +494,8 @@ class Charger(object):
             # spec 3 (A3): whole minutes, from 0, back to 0 at the handle pull
             "BELINV_chargePilotOnlineTime":
                 self.pilot_start_min + int(self.pilot_online_s // 60)})
-        # mux 3 carries the fault register
-        out[0x18FFD4C0] = P.encode(P.BEL, 0x18FFD4C0, {
-            "BELINV_acOk": 1,
-            "BELINV_inverterFault": self.faults["inverter"],
-            "BELINV_buckBoostFault": self.faults["buckboost"],
-            "BELINV_hvBatteryOverVoltage": self.faults["hv_over"],
-            "BELINV_overTemperature": self.faults["over_temp"],
-        }, "BELINV_statusMultiplexer", 3)
+        # mux 3 (the fault register) is no longer here: it rotates with the
+        # other status pages in frames(), every 0.4 s, as on the Bel.
         return out
 
 
@@ -485,6 +552,12 @@ def main():
                          "it, so in an override scenario this is 'N s after "
                          "the interposer released' -- the truck's own ending "
                          "of the hold the release leaves behind (spec 5, 9).")
+    ap.add_argument("--fault-flag-lead-s", type=float, default=0.3,
+                    help="how long the reported fault flag (mux 3) leads the "
+                         "12 -> 15 edge on --fault-at; negative = it follows "
+                         "the edge. Measured 2026-10-08: the flag rose 0.1-0.5 "
+                         "s BEFORE the edge in 16 of 19 source-3 endings and "
+                         "first showed on the page 0.3 s after it in 3")
     ap.add_argument("--pilot-reset-after-standby-s", type=float, default=0.6,
                     help="spec 9 (2026-10-08): after a handle pull the pilot "
                          "timer holds, then returns to 0 this long after the "
@@ -512,6 +585,7 @@ def main():
     c = Charger(evse_a=evse_a, hold_a=args.hold_a, pilot_duty=args.pilot_duty)
     c.pilot_start_min = args.pilot_start_min
     c.pilot_reset_after_standby_s = args.pilot_reset_after_standby_s
+    c.fault_flag_lead_s = args.fault_flag_lead_s
 
     t = 0.0
     charging_since = None
@@ -560,9 +634,10 @@ def main():
                     and t - charging_since >= args.fault_at
                     and not c.faults[args.fault_kind]):
                 fired["fault"] = True
-                c.faults[args.fault_kind] = 1
-                log.warning("charger: INJECTED FAULT %s at t=%.0fs",
-                            args.fault_kind, t)
+                c.inject_fault(args.fault_kind, t)
+                log.warning("charger: INJECTED FAULT %s at t=%.0fs (flag "
+                            "leads the state edge by %.2f s)",
+                            args.fault_kind, t, c.fault_flag_lead_s)
             if (args.unplug_at and charging_since is not None
                     and not fired["unplug"]
                     and t - charging_since >= args.unplug_at):

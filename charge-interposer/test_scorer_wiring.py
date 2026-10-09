@@ -110,6 +110,96 @@ def main():
         check("veh_current_max" not in kinds,
               "it no longer scores the charger sim's clamped current")
 
+    print("\nfault vs flow drop, either order (reviewer, 2026-10-08)")
+    for name in ("charger-fault-stop", "charger-fault-stop-flow-first",
+                 "fault-during-override", "fault-during-override-flow-first"):
+        sc = [s for s in R.SCENARIOS if s.name == name]
+        kinds = [k for k, _v in sc[0].expect] if sc else []
+        check(sc and "fault_or_flow_first" in kinds
+              and ("intp_event", r"TRIP: charger fault") not in sc[0].expect,
+              "%s judges either order and no longer demands the trip" % name)
+
+    def diag_frozen(state, mods):
+        st = {"SAFE": 5, "TERMINATED": 4}[state]   # run_scenario.DIAG_STATES
+        rows = [(0.0, 0x7F4, bytes([3, 4, 1, 0, 0, 0, 0, 0]))]
+        rows.append((10.0, 0x7F4, bytes([3, 4, st, 0, 0, 0, 0, 0])))
+        for i, m in enumerate(mods):
+            rows.append((10.0 + i, 0x7F6,
+                         m.to_bytes(4, "little") + bytes(4)))
+        return rows
+    intp_trip = ("10:00:00 intp [SAFE] TRIP: charger fault\n"
+                 "10:00:01 intp [PASSTHROUGH] VCU mode 2, session over\n")
+    intp_flow = ("10:00:00 intp [TERMINATED] VCU dropped the flow bit: "
+                 "transparent\n"
+                 "10:00:01 intp [PASSTHROUGH] VCU mode 2, session over\n")
+    fz_safe = diag_frozen("SAFE", [5, 5, 5])
+    fz_term = diag_frozen("TERMINATED", [5, 5, 5])
+    flag_first, drop_first = (600000, 600450), (600500, 600450)
+    F = R._fault_or_flow_first
+    ok, why = F(intp_trip, "", "", fz_safe, False, flag_first)
+    check(ok and why.startswith("trip first"),
+          "trip first, with the flag reaching the core first, passes -> %s"
+          % why)
+    ok, why = F(intp_trip, "", "", fz_safe, False, drop_first)
+    check(not ok and "flow drop reached it first" in why,
+          "a trip although the flow drop reached the core first FAILS -> %s"
+          % why)
+    ok, why = F(intp_flow, "", "", fz_term, False, drop_first)
+    check(ok and why.startswith("flow drop first"),
+          "transparent first, with the drop reaching the core first, passes "
+          "-> %s" % why)
+    ok, why = F(intp_flow, "", "", fz_term, False, flag_first)
+    check(not ok and "fault flag reached it first" in why,
+          "transparent although the fault flag reached the core first FAILS "
+          "-> %s" % why)
+    ok, why = F(intp_flow + "10:00:02 intp [SAFE] TRIP: charger fault\n",
+                "", "", fz_term, False, drop_first)
+    check(not ok and "TRIP after" in why,
+          "a trip after going transparent FAILS -> %s" % why)
+    ok, why = F(intp_trip, "", "", diag_frozen("SAFE", [5, 6, 7]), False,
+                flag_first)
+    check(not ok and "modified moved" in why,
+          "rewriting after the trip FAILS -> %s" % why)
+    ok, why = F(intp_trip, "", "", fz_safe, True, flag_first)
+    check(not ok and "repeat" in why,
+          "in an override, a trip with no 4.1 repeat FAILS -> %s" % why)
+    ok, why = F(intp_flow, "", "", fz_term, True, drop_first)
+    check(ok and "no repeat needed" in why,
+          "in an override, transparent first needs no repeat -> %s" % why)
+    ok, why = F(intp_trip, "", "", fz_safe, False, None)
+    check(not ok and "input order is unknown" in why,
+          "with no flight trace the order is not guessed: FAILS -> %s" % why)
+
+    # the order comes from the core's own flight trace, one clock
+    import tempfile
+    tmp = tempfile.mkdtemp(dir=str(HERE))
+    try:
+        import protocol as P
+        tr = os.path.join(tmp, "x.l1.trace")
+        flagged = P.encode(P.BEL, 0x18FFD4C0, {"BELINV_inverterFault": 1},
+                           "BELINV_statusMultiplexer", 3)
+        clear = P.encode(P.BEL, 0x18FFD4C0, {},
+                         "BELINV_statusMultiplexer", 3)
+        rows = ["V 1000 18EFC000 1 %s" % P.enc_master(1, 1).hex(),
+                "C 1100 18FFD4C0 1 %s" % bytes(clear).hex(),
+                "C 1500 18FFD4C0 1 %s" % bytes(flagged).hex(),
+                "V 1700 18EFC000 1 %s" % P.enc_master(0, 1).hex(),
+                "T 1800"]
+        with open(tr, "w") as f:
+            f.write("\n".join(rows) + "\n")
+        got = R.fault_and_drop_order(tr)
+        check(got == (1500, 1700),
+              "fault_and_drop_order reads the first flagged mux-3 page and "
+              "the first flow 1 -> 0 off the trace (%s)" % (got,))
+        with open(tr, "w") as f:
+            f.write("\n".join(rows[:2] + rows[3:]) + "\n")
+        got = R.fault_and_drop_order(tr)
+        check(got == (None, 1700), "a trace with no flagged page gives no "
+              "flag time (%s)" % (got,))
+    finally:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+
     if failures:
         print("\n%d failure(s)" % failures)
         return 1

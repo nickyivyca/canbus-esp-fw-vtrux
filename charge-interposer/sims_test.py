@@ -200,6 +200,62 @@ def stop11_problems():
     return probs
 
 
+# --- charger_sim: the Bel's status-page cadence and fault-flag timing -------------
+
+def cadence_problems(n=12):
+    """0x18FFD4C0 goes out one page per 100 ms frame, rotating mux 0-3, so
+    each page every 0.4 s with mux 3 just before mux 0 (measured on the Bel,
+    charger_fault_flag_timing.txt); none of it in the slow frames."""
+    c = CS.Charger()
+    seq = []
+    for _ in range(n):
+        d = c.frames().get(0x18FFD4C0)
+        seq.append(None if d is None else
+                   P.decode(P.BEL, 0x18FFD4C0, d)["BELINV_statusMultiplexer"])
+    probs = []
+    if seq != [i % 4 for i in range(n)]:
+        probs.append("0x18FFD4C0 pages %s, not 0,1,2,3 repeating" % seq)
+    if 0x18FFD4C0 in c.slow_frames():
+        probs.append("0x18FFD4C0 still in the slow frames")
+    return probs
+
+
+def fault_timing(lead):
+    """-> (t flag raised, t state left 12) for a fault injected at 10 s."""
+    c = CS.Charger()
+    c.fault_flag_lead_s = lead
+    c.on_command(P.enc_master(1, P.MODE_CHARGER), 0.0)
+    c.pack_v = 400.0
+    t = 0.0
+    t_flag = t_edge = None
+    injected = False
+    while t < 13.0:
+        if not injected and t >= 10.0:
+            c.inject_fault("inverter", t)
+            injected = True
+        c.update(STEP, t)
+        if t_flag is None and c.fault_flags["inverter"]:
+            t_flag = t
+        if (t_edge is None and injected and c.state == P.CHG_STATE_FAULT
+                and c.shutdown_source == 3):
+            t_edge = t
+        t += STEP
+    return t_flag, t_edge
+
+
+def fault_flag_problems(lead=None, want_lo=0.1, want_hi=0.5):
+    """Default: the flag leads the state edge by 0.1-0.5 s (16 of 19 source-3
+    endings). want_lo/hi negative express the minority (flag after edge)."""
+    t_flag, t_edge = fault_timing(0.3 if lead is None else lead)
+    if t_flag is None or t_edge is None:
+        return ["flag at %s, edge at %s" % (t_flag, t_edge)]
+    d = t_edge - t_flag
+    if not want_lo - STEP <= d <= want_hi + STEP:
+        return ["flag leads the edge by %.2f s, wanted %.2f-%.2f s"
+                % (d, want_lo, want_hi)]
+    return []
+
+
 # --- bus.py's multicast guard ----------------------------------------------------
 
 def guard_problems():
@@ -277,6 +333,20 @@ def main():
         check(False, "charger_sim: " + p)
     check(not stop11_problems(), "charger_sim --stop11-at stops with source "
           "11, plug in, delivering nothing")
+
+    for p in cadence_problems() + fault_flag_problems():
+        check(False, "charger_sim: " + p)
+    check(not cadence_problems(), "charger_sim rotates 0x18FFD4C0 mux 0-3, "
+          "one page per 100 ms frame, none in the slow frames")
+    check(not fault_flag_problems(), "charger_sim raises the fault flag 0.1-"
+          "0.5 s before the state edge by default")
+    check(not fault_flag_problems(lead=-0.2, want_lo=-0.25, want_hi=-0.15),
+          "--fault-flag-lead-s -0.2 gives the minority order (flag after the "
+          "edge)")
+    check(bool(fault_flag_problems(lead=0.0)),
+          "can fail: a flag raised with the state edge is caught")
+    check(bool(fault_flag_problems(lead=-0.2)),
+          "can fail: the minority order is not mistaken for the default")
 
     for p in guard_problems():
         check(False, "bus.py guard: " + p)

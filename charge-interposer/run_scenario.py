@@ -217,6 +217,33 @@ def repeat_bursts_of_20():
     return ("intp_repeat_20", None)
 
 
+def fault_or_flow_first(override=False):
+    """A charger internal fault that the VCU also closes out (spec 6, the
+    reviewer's reading of 2026-10-08): EITHER order is spec-correct.
+
+    The fault flags trip the core; the VCU's flow drop makes it transparent;
+    whichever reaches the core first decides, and the scenario must follow
+    the inputs rather than pick a winner. On the truck the flags come first
+    in 18 of 19 source-3 endings (charger_fault_flag_timing.txt), so that is
+    the sim's default; the "-flow-first" variants force the other order.
+    Judged from the logs:
+      - which came first in the core's own log: "TRIP: charger fault" or
+        "VCU dropped the flow bit";
+      - that it fits the inputs as they reached the core: a TRIP needs the
+        flagged mux-3 page to have arrived before the flow drop; going
+        transparent needs the flow drop to have arrived first -- and nothing
+        may trip after it;
+      - nothing rewritten after that first event (0x7F6 frozen from the
+        first 0x7F4 reporting SAFE or TERMINATED);
+      - with `override`, the 4.1 repeat is required only when the trip came
+        first (a flow drop needs no repeat, A5).
+    The end in PASSTHROUGH at the STAND_BY is the scenario's own
+    final_state / veh_ev checks. The input order is read from the core's
+    own flight trace (fault_and_drop_order), the one clock both inputs share;
+    a board run has no trace and fails this check rather than guess."""
+    return ("fault_or_flow_first", bool(override))
+
+
 def diag_frames_ok():
     """Spec 8.2: the diagnostics, decoded from the CAN FRAMES.
 
@@ -494,8 +521,30 @@ SCENARIOS = [
         timeout=750,
         expect=[no_ev(r"LOW_POWER overridden"),
                 no_ev(r"LOW_POWER accepted"),
-                ev(r"TRIP: charger fault"),
+                # either order is spec-correct (reviewer, 2026-10-08); the
+                # flag leads by default, as in 18 of 19 truck endings
+                fault_or_flow_first(),
                 veh_ev(r"dropping energy flow, mode left at CHARGER"),
+                veh_ev(r"commanding STAND_BY"),
+                final_state("PASSTHROUGH"),
+                diag_frames_ok()]),
+
+    Scenario(
+        "charger-fault-stop-flow-first",
+        "charger-fault-stop with the fault flag raised 0.5 s AFTER the "
+        "state edge, so the VCU's flow drop (0.45 s, source 3) reaches the "
+        "core first: the minority order (1 of 19 truck endings), forced. "
+        "The core must go transparent on the flow drop, trip on nothing "
+        "after it, and end in PASSTHROUGH at the STAND_BY.",
+        vehicle=["--soc", "88", "--imbalance", "0.3", "--stop-on-done",
+                 "--max-sim-s", "30000"],
+        charger=["--fault-at", "600", "--fault-flag-lead-s", "-0.5"],
+        timeout=750,
+        expect=[no_ev(r"LOW_POWER overridden"),
+                no_ev(r"LOW_POWER accepted"),
+                fault_or_flow_first(),
+                ev(r"VCU dropped the flow bit"),
+                no_ev(r"TRIP"),
                 veh_ev(r"commanding STAND_BY"),
                 final_state("PASSTHROUGH"),
                 diag_frames_ok()]),
@@ -509,12 +558,30 @@ SCENARIOS = [
         charger=["--fault-at", "2500"],
         timeout=420,
         expect=[ev(r"LOW_POWER overridden"),
-                ev(r"TRIP: charger fault"),
                 no_ev(r"RELEASE"),
-                # Spec 4.1: a trip DURING an override repeats the VCU's
-                # standing command too, so the charger hears the Low Power
-                # we had been rewriting away.
-                repeat_bursts_of_20(),
+                # Either order is spec-correct (reviewer, 2026-10-08). When
+                # the trip comes first, spec 4.1's repeat of the VCU's
+                # standing command is required (checked inside); after a
+                # flow drop none is needed (A5).
+                fault_or_flow_first(override=True),
+                veh_ev(r"commanding STAND_BY"),
+                final_state("PASSTHROUGH")]),
+
+    Scenario(
+        "fault-during-override-flow-first",
+        "fault-during-override with the fault flag raised 0.5 s AFTER the "
+        "state edge, so the VCU's flow drop reaches the core first (the "
+        "minority truck order, forced): transparent on the flow drop, no "
+        "trip and no repeat after it, PASSTHROUGH at the STAND_BY.",
+        vehicle=["--evap", "--soc", "79", "--imbalance", "0.4",
+                 "--stop-on-done", "--max-sim-s", "6000"],
+        charger=["--fault-at", "2500", "--fault-flag-lead-s", "-0.5"],
+        timeout=420,
+        expect=[ev(r"LOW_POWER overridden"),
+                no_ev(r"RELEASE"),
+                fault_or_flow_first(override=True),
+                ev(r"VCU dropped the flow bit"),
+                no_ev(r"TRIP"),
                 veh_ev(r"commanding STAND_BY"),
                 final_state("PASSTHROUGH")]),
 
@@ -858,6 +925,7 @@ def run_one(sc, args, outdir):
 
     l1 = None
     inv = None
+    order = None
     if args.external_interposer or args.no_l1:
         # Said out loud (tester, 2026-10-07): rev 1 appended nothing here,
         # so a run with the flight core unchecked printed the same PASS as
@@ -889,8 +957,12 @@ def run_one(sc, args, outdir):
             l1 = (True, "not applicable: the scenario runs the core in "
                         "bypass, so there are no core decisions to replay")
         else:
+            # read before check_flight_core(), which deletes the trace
+            if any(k == "fault_or_flow_first" for k, _v in sc.expect):
+                order = fault_and_drop_order(trace_path)
             l1 = check_flight_core(trace_path)
-    return evaluate(sc, veh_log, chg_log, int_log, timed_out, l1, inv)
+    return evaluate(sc, veh_log, chg_log, int_log, timed_out, l1, inv,
+                    order=order)
 
 
 VEH_ROW = re.compile(
@@ -1473,6 +1545,123 @@ def _no_rewrite_after_terminated(diag):
                   "modified=%d" % (len(mods), t_term, mods[0]))
 
 
+def fault_and_drop_order(trace_path):
+    """-> (t_flag_ms, t_drop_ms) from the core's own flight trace: when the
+    first 0x18FFD4C0 mux-3 page with a spec 6 fault flag set, and the first
+    VCU page 00 with the flow bit 0 after a 1, REACHED THE CORE, on the
+    core's one clock. Either may be None. The sims' logs cannot give this:
+    charger_sim and vehicle_sim each keep their own sim clock, started at
+    different moments, and a first version comparing them read a 7 s offset
+    as the order."""
+    import protocol as P                # local: run_scenario stays light
+    t_flag = t_drop = None
+    flow_seen = False
+    try:
+        f = open(str(trace_path), "r")
+    except (IOError, OSError):
+        return None
+    with f:
+        for line in f:
+            k = line[:1]
+            if k not in ("V", "C"):
+                continue
+            parts = line[1:].split()
+            if len(parts) < 4:
+                continue
+            t, fid, data = (int(parts[0]), int(parts[1], 16),
+                            bytes.fromhex(parts[3]))
+            if (k == "C" and fid == 0x18FFD4C0 and t_flag is None
+                    and data and data[0] == 3):
+                d = P.decode(P.BEL, 0x18FFD4C0, data)
+                if any(d.get(n) for n in FAULT_FLAGS):
+                    t_flag = t
+            elif (k == "V" and fid == 0x18EFC000 and len(data) >= 3
+                    and data[0] == 0x00):
+                flow, _mode = P.dec_master(data)
+                if flow:
+                    flow_seen = True
+                elif flow_seen and t_drop is None:
+                    t_drop = t
+            if t_flag is not None and t_drop is not None:
+                break
+    return (t_flag, t_drop)
+
+
+FAULT_FLAGS = ("BELINV_inverterFault", "BELINV_buckBoostFault",
+               "BELINV_hvBatteryOverVoltage", "BELINV_overTemperature")
+
+
+def _no_rewrite_after_state(diag, states):
+    """-> (ok, why). `modified` (0x7F6 B0-B3) stops moving once 0x7F4 first
+    reports any of `states`."""
+    t0 = None
+    for t, fid, body in diag:
+        if fid == 0x7F4 and DIAG_STATES.get(body[2]) in states:
+            t0 = (t, DIAG_STATES.get(body[2]))
+            break
+    if t0 is None:
+        return (False, "the core never reported %s" % "/".join(states))
+    mods = [int.from_bytes(body[0:4], "little")
+            for t, fid, body in diag if fid == 0x7F6 and t >= t0[0]]
+    if len(mods) < 2:
+        return (False, "only %d counter frame(s) after %s at t=%.0fs"
+                % (len(mods), t0[1], t0[0]))
+    if len(set(mods)) != 1:
+        return (False, "modified moved after %s: %s"
+                % (t0[1], sorted(set(mods))))
+    return (True, "modified=%d frozen over %d counter frames after %s"
+            % (mods[0], len(mods), t0[1]))
+
+
+def _fault_or_flow_first(intp, veh, chg, diag, override, order):
+    """-> (ok, why). See fault_or_flow_first(). `order` is
+    fault_and_drop_order() of this run's flight trace."""
+    first = None
+    for line in intp.splitlines():
+        if "TRIP: charger fault" in line:
+            first = "trip"
+            break
+        if "VCU dropped the flow bit" in line:
+            first = "flow"
+            break
+    if first is None:
+        return (False, "neither a charger-fault TRIP nor the flow drop in "
+                       "the interposer log")
+    if order is None:
+        return (False, "the input order is unknown: no flight trace (a "
+                       "board run, or the trace was not written), so which "
+                       "input reached the core first cannot be judged")
+    t_flag, t_drop = order
+    seen = "core saw the fault flag at %s, the flow drop at %s" % (
+        "-" if t_flag is None else "%.3f s" % (t_flag / 1000.0),
+        "-" if t_drop is None else "%.3f s" % (t_drop / 1000.0))
+    if first == "trip":
+        if t_flag is None or (t_drop is not None and t_drop < t_flag):
+            return (False, "the core tripped on the fault first, but the "
+                           "flow drop reached it first (%s)" % seen)
+    else:
+        if t_drop is None or (t_flag is not None and t_flag < t_drop):
+            return (False, "the core went transparent on the flow drop, but "
+                           "the fault flag reached it first (%s)" % seen)
+        rest = intp.split("VCU dropped the flow bit", 1)[1]
+        if "TRIP" in rest:
+            return (False, "a TRIP after going transparent on the flow drop "
+                           "(%s)" % seen)
+    okm, whym = _no_rewrite_after_state(diag, ("SAFE", "TERMINATED"))
+    if not okm:
+        return (False, "%s first (%s), but %s" % (first, seen, whym))
+    why = "%s first (%s); %s" % ("trip" if first == "trip" else "flow drop",
+                                 seen, whym)
+    if override and first == "trip":
+        okr, whyr = _repeat_bursts(intp, veh, chg_text=chg)
+        if not okr:
+            return (False, why + "; but spec 4.1 repeat: " + whyr)
+        why += "; spec 4.1 repeat: " + whyr
+    elif override:
+        why += "; no repeat needed after a flow drop (A5)"
+    return (True, why)
+
+
 def check_invariants(trace_path):
     """-> (ok, why). test_invariants.py's rules over THIS scenario's trace.
 
@@ -1575,7 +1764,8 @@ def _wsl_path(p):
     return sp
 
 
-def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None):
+def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
+             order=None):
     veh = veh_log.read_text(errors="replace")
     chg = chg_log.read_text(errors="replace")
     intp = int_log.read_text(errors="replace")
@@ -1680,6 +1870,10 @@ def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None):
         elif kind == "diag_frames_ok":
             ok, why = _diag_frames_ok(diag, fstate)
             results.append((ok, "diag frames: %s" % why))
+        elif kind == "fault_or_flow_first":
+            ok, why = _fault_or_flow_first(intp, veh, chg, diag, val,
+                                           order)
+            results.append((ok, "fault vs flow drop: %s" % why))
         elif kind == "diag_no_rewrite_after_release":
             ok, why = _no_rewrite_after_terminated(diag)
             results.append((ok, "no frame rewritten after the release: %s"
