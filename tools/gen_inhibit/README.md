@@ -1,4 +1,4 @@
-# projects/vtrux/tools/gen_inhibit/
+# tools/gen_inhibit/
 
 A prototype of the generator-inhibit idea: transmit 0x051 frames carrying zero
 generator torque, timed against the VCM's own 0x051 slot, so the GENE MCU never
@@ -86,18 +86,18 @@ machine. Each refuses or falls back loudly rather than guessing.
 ## Quick start
 
 ```bash
-python3.13 projects/vtrux/tools/gen_inhibit/test_core.py
-python3.13 projects/vtrux/tools/gen_inhibit/replay_inhibit.py --run
-python3.13 projects/vtrux/tools/gen_inhibit/replay_inhibit.py --sweep
-python3.13 projects/vtrux/tools/gen_inhibit/live_bench.py
+python3.13 tools/gen_inhibit/test_core.py
+python3.13 tools/gen_inhibit/replay_inhibit.py --run
+python3.13 tools/gen_inhibit/replay_inhibit.py --sweep
+python3.13 tools/gen_inhibit/live_bench.py
 
 # rehearse the on-vehicle tool against a simulated truck, two terminals
-python3.13 projects/vtrux/tools/gen_inhibit/bench_vehicle.py --receiver counter
-python3.13 projects/vtrux/tools/gen_inhibit/vehicle_runner.py \
+python3.13 tools/gen_inhibit/bench_vehicle.py --receiver counter
+python3.13 tools/gen_inhibit/vehicle_runner.py \
     --interface udp_multicast --channel 239.0.2.4 --port 43217 --live
 
 # on the truck: observe first, always
-python3.13 projects/vtrux/tools/gen_inhibit/vehicle_runner.py --channel can0
+python3.13 tools/gen_inhibit/vehicle_runner.py --channel can0
 ```
 
 Saved output is in `../../notes/artifacts/gen-inhibit/`.

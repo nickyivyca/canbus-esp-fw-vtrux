@@ -2,8 +2,8 @@
 On-vehicle runner for the generator inhibitor. One dongle, one connection to
 the powertrain bus, no cutting into the harness.
 
-    python3.13 projects/vtrux/tools/gen_inhibit/vehicle_runner.py            # observe only
-    python3.13 projects/vtrux/tools/gen_inhibit/vehicle_runner.py --live     # will transmit
+    python3.13 tools/gen_inhibit/vehicle_runner.py            # observe only
+    python3.13 tools/gen_inhibit/vehicle_runner.py --live     # will transmit
 
 READ THIS BEFORE THE FIRST LIVE RUN
 -----------------------------------

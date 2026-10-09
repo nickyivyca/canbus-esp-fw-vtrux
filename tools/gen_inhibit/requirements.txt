@@ -1,5 +1,5 @@
 # Dependencies for the generator-inhibit bench and on-vehicle runner.
-#   python3.13 -m pip install -r projects/vtrux/tools/gen_inhibit/requirements.txt
+#   python3.13 -m pip install -r tools/gen_inhibit/requirements.txt
 
 # CAN transport, for live_bench.py / bench_vehicle.py (virtual udp_multicast)
 # and vehicle_runner.py (real dongle). The offline bench and the unit tests

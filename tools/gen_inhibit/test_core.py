@@ -1,6 +1,14 @@
 """Unit tests for the inhibitor core. No CAN, no captures, ~1 s."""
+import os
 import sys
-sys.path.insert(0, "projects/vtrux/tools/gen_inhibit")
+
+# This folder, not a path relative to the caller's cwd. It used to be
+# "projects/vtrux/tools/gen_inhibit", which stopped existing when these tools
+# moved into this repo -- and the tests kept passing, because Python puts the
+# script's own directory on sys.path anyway and an insert of a non-existent
+# directory is silently ignored. A dead line that cannot fail is worse than no
+# line: it reads as the thing making the imports work.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from sync import SlotSync
 from inhibit import Inhibitor, TORQUE_ZERO
