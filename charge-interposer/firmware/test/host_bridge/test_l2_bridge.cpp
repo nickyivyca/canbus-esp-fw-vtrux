@@ -752,9 +752,86 @@ void caseFailedStart() {
           "...and the state reads PASSTHROUGH, because the core has seen "
           "no frames");
   }
+  // Spec 2.1 (B-7d): "the board bridges nothing in either direction"
+  // (2026-10-09). Tagged frames both ways, with the bridge running: the
+  // vehicle side carries nothing but 0x7F4, and nothing at all reaches the
+  // charger wire.
+  {
+    const size_t v0 = vehSent().size();
+    const size_t w0 = g_chip->wire().size();
+    for (int k = 0; k < 5; k++) {
+      const uint8_t d[8] = {0xF0, (uint8_t)k, 0, 0, 0, 0, 0, 0};
+      fake().deliver(0x18FF78E5, true, d, 8);
+      mcpfake::CanFrame f;
+      std::memset(&f, 0, sizeof(f));
+      f.id = 0x18FF79E5; f.ext = true; f.len = 8;
+      f.data[0] = 0xF1; f.data[1] = (uint8_t)k;
+      g_chip->deliverFrame(f);
+      runBridge(20);
+    }
+    feed(5);
+    uint32_t veh_non_status = 0;
+    const std::vector<twaifake::Frame>& s = vehSent();
+    for (size_t i = v0; i < s.size(); i++)
+      if (s[i].id != DIAG_STATUS) veh_non_status++;
+    uint32_t chg_any = 0;
+    const std::vector<mcpfake::WireEvent>& w = g_chip->wire();
+    for (size_t i = w0; i < w.size(); i++)
+      if (w[i].delivered) chg_any++;
+    std::printf("  --  failed start, bridging: vehicle side non-0x7F4 "
+                "frames %u, charger wire frames %u\n",
+                veh_non_status, chg_any);
+    check(veh_non_status == 0,
+          "spec 2.1: nothing from the charger side is bridged to the "
+          "vehicle -- the vehicle side carries 0x7F4 only");
+    check(chg_any == 0,
+          "spec 2.1: nothing reaches the charger side at all -- no "
+          "half-open bridge");
+  }
   // Deliberately NO assertPathsExercised() here: nothing is bridged in
   // this case and that is the point of it. Saying so explicitly so the
   // omission reads as a decision rather than an oversight.
+}
+
+// Spec 2.1 (B-7d), the other controller: the VEHICLE side's TWAI fails
+// to start. With it down the board cannot send its status frame (spec 2.1
+// sends it only "if the vehicle-side controller did start").
+//
+// WHAT THIS CAN AND CANNOT SHOW. It checks the setup (vehicle down,
+// charger up) and that the board puts nothing on either wire. It CANNOT
+// show "bridges nothing": with the vehicle controller down there is no
+// vehicle traffic for a half-open bridge to forward, so a board that ran
+// one would look identical. Shown 2026-10-09: l2_mutations' half-open
+// mutation (healthy = v_ok || c_ok) survives here, while failed-start
+// catches it. So this guards only against the board transmitting on the
+// charger side of its own accord, and is not counted as coverage of B-7d.
+// (2026-10-09.)
+void caseFailedStartVehicle() {
+  boot(/*charger_starts=*/true, /*vehicle_starts=*/false);
+  check(!fake().installed() || fake().state() != TWAI_STATE_RUNNING,
+        "setup: the vehicle controller did NOT come up");
+  check((g_chip->reg(mcpfake::R_CANSTAT) & mcpfake::MODE_MASK) !=
+            mcpfake::MODE_CONFIG,
+        "setup: the charger controller DID come up (left configuration "
+        "mode), so silence on its wire is the bridge's choice");
+  const size_t w0 = g_chip->wire().size();
+  for (int k = 0; k < 25; k++) {
+    chargerStatus();
+    vehicleFrame(0x18FF4AE5);
+    runBridge(100);
+  }
+  uint32_t chg_any = 0;
+  const std::vector<mcpfake::WireEvent>& w = g_chip->wire();
+  for (size_t i = w0; i < w.size(); i++)
+    if (w[i].delivered) chg_any++;
+  std::printf("  --  vehicle failed start: charger wire frames %u, vehicle "
+              "frames sent %u\n", chg_any, (unsigned)vehSent().size());
+  check(chg_any == 0,
+        "spec 2.1: the board bridges nothing -- nothing reaches the "
+        "charger wire");
+  check(vehSent().empty(),
+        "and nothing goes out on the vehicle side, whose controller is "
+        "down");
 }
 
 // Spec 2.2: failed transmissions TOWARD THE CHARGER, counted only while
@@ -1428,6 +1505,7 @@ const Case kCases[] = {
     {"rtr-not-forwarded", caseRtrNotForwarded},
     {"busoff-charger", caseBusOffCharger},
     {"busoff-vehicle", caseBusOffVehicle},
+    {"failed-start-vehicle", caseFailedStartVehicle},
 };
 
 }  // namespace
