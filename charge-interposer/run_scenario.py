@@ -267,6 +267,214 @@ def diag_frames_ok():
 
 
 
+def hold_follows_loads(band=(2.6, 3.3), settle_s=120.0, drop_exempt_s=2.0):
+    """Spec 9, the hold after the release on the parts truck (user,
+    2026-10-08; tester, 2026-10-09). Three assertions, all read from the
+    scenario's flight trace -- the core's one clock -- replayed through
+    machine.py (hold_series_from_trace):
+
+      1. "the pack current is never above bcm_chg_max except within 2 s of
+         a load drop the scenario injects": every 0x410 bcm_ibat in HOLD
+         against the latest 0x420 bcm_chg_max, a drop exempting
+         [drop, drop + drop_exempt_s];
+      2. "the setpoint moves only in 0.1 A steps, at least 0.3 s apart, and
+         is never 0 A": every page 01 sent to the charger in HOLD;
+      3. "once bcm_chg_max is 0 A ... the setpoint is within 0.3 A of the
+         VCU's own 2.9-3.0 A [`band`] within 2 min [`settle_s`], and stays
+         there until the first injected load step. A run in which
+         bcm_chg_max never reaches 0 A fails."
+
+    The injected steps are vehicle_sim's --aux-step lines ("aux load
+    step: X -> Y A ... (+D s after chg_max reached 0 A)"); a step DOWN is a
+    load drop. Their times on the trace's clock are the trace's first
+    bcm_chg_max of 0 A plus D -- the same anchor vehicle_sim times them
+    from, seen up to one 0x420 period (100 ms) later by the core.
+    test_scorer_wiring drives each clause to fail."""
+    return ("hold_follows_loads", dict(band=band, settle_s=settle_s,
+                                       drop_exempt_s=drop_exempt_s))
+
+
+AUX_STEP = re.compile(r"aux load step: ([\d.]+) -> ([\d.]+) A at t=[\d.]+s "
+                      r"\(\+([\d.]+)s after chg_max reached 0 A\)")
+
+
+def hold_series_from_trace(trace_path):
+    """-> dict of the series hold_follows_loads judges, from a flight trace
+    replayed through machine.py, or None if there is no trace:
+      hold    [(t0_ms, t1_ms)] spans the core was in HOLD
+      sp      [(t_ms, amps)] every page 01 sent to the charger in HOLD
+      ibat    [(t_ms, A)] every 0x410 bcm_ibat
+      chgmax  [(t_ms, A)] every 0x420 bcm_chg_max
+      t_last  the trace's last time"""
+    import machine as M                 # local: run_scenario stays light
+    import protocol as P
+    if not Path(str(trace_path)).exists():
+        return None
+    cfg = M.Config()
+    lines = Path(str(trace_path)).read_text().splitlines()
+    for line in lines:
+        if line.startswith("K"):
+            k, v = line[1:].split()
+            setattr(cfg, k, int(v))
+    core = M.InterposerCore(cfg, 0)
+    out = dict(hold=[], sp=[], ibat=[], chgmax=[], t_last=None)
+    h0 = None
+    t = 0
+    for line in lines:
+        p = line.split()
+        if not p or p[0] == "K":
+            continue
+        t = int(p[1])
+        if p[0] == "T":
+            emitted = core.tick(t)
+        else:
+            arb, ext, d = int(p[2], 16), p[3] == "1", bytes.fromhex(p[4])
+            if arb == 0x410:
+                v = P.decode(P.EPRI, 0x410, d).get("bcm_ibat")
+                if v is not None:
+                    out["ibat"].append((t, float(v)))
+            elif arb == 0x420:
+                v = P.decode(P.EPRI, 0x420, d).get("bcm_chg_max")
+                if v is not None:
+                    out["chgmax"].append((t, float(v)))
+            emitted = (core.on_charger_frame(arb, ext, d, t) if p[0] == "C"
+                       else core.on_vehicle_frame(arb, ext, d, t))
+        hold_now = M.STATE_NAMES[core.state] == "HOLD"
+        if hold_now and h0 is None:
+            h0 = t
+        elif not hold_now and h0 is not None:
+            out["hold"].append((h0, t))
+            h0 = None
+        if hold_now:
+            for side, oid, _e, od in emitted:
+                if side == M.TO_CHARGER and oid == M.CMD_ID and od and \
+                        od[0] == 0x01:
+                    out["sp"].append((t, P.dec_setpoint(od)[1]))
+    if h0 is not None:
+        out["hold"].append((h0, t))
+    out["t_last"] = t
+    return out
+
+
+def _hold_follows_loads(series, veh_text, band=(2.6, 3.3), settle_s=120.0,
+                        drop_exempt_s=2.0):
+    """-> (ok, why). See hold_follows_loads()."""
+    if series is None:
+        return (False, "no flight trace -- the hold cannot be judged (a "
+                       "board run has none)")
+    if not series["hold"]:
+        return (False, "the core was never in HOLD")
+    import bisect
+    probs, notes = [], []
+    tol = 1e-6
+    c0 = next((t for t, a in series["chgmax"] if a <= 0.0), None)
+    if c0 is None:
+        return (False, "bcm_chg_max never reached 0 A -- spec 9: such a run "
+                       "fails")
+    steps = [(c0 + int(round(float(d) * 1000)), float(a), float(b))
+             for a, b, d in AUX_STEP.findall(veh_text)]
+    drops = [t for t, a, b in steps if b < a]
+    first_step = min([t for t, _a, _b in steps], default=None)
+
+    def in_hold(t):
+        return any(a <= t <= b for a, b in series["hold"])
+
+    # 1. pack current vs permission, exempting 2 s after each drop
+    ct = [t for t, _a in series["chgmax"]]
+    over = []
+    for t, ib in series["ibat"]:
+        if not in_hold(t):
+            continue
+        i = bisect.bisect_right(ct, t) - 1
+        if i < 0:
+            continue
+        cm = series["chgmax"][i][1]
+        if ib > cm + tol and not any(d <= t <= d + drop_exempt_s * 1000
+                                     for d in drops):
+            over.append((t, ib - cm))
+    if over:
+        probs.append("1: pack current above bcm_chg_max outside a load "
+                     "drop's %.0f s on %d 0x410 frame(s), first at t=%.1f s, "
+                     "by up to %.3f A" % (drop_exempt_s, len(over),
+                                          over[0][0] / 1000.0,
+                                          max(e for _t, e in over)))
+    else:
+        notes.append("1: pack current never above chg_max outside the %d "
+                     "load drop(s)' %.0f s" % (len(drops), drop_exempt_s))
+    # 2. 0.1 A steps, >= 0.3 s apart, never 0 A
+    bad2 = []
+    last_step = None
+    nsteps = 0
+    for (ta, a), (tb, b) in zip(series["sp"], series["sp"][1:]):
+        same_hold = any(h0 <= ta and tb <= h1 for h0, h1 in series["hold"])
+        if not same_hold or abs(b - a) <= 0.025:
+            continue
+        nsteps += 1
+        if abs(abs(b - a) - 0.1) > 0.025:
+            bad2.append("a %.2f A step at t=%.1f s" % (b - a, tb / 1000.0))
+        if last_step is not None and tb - last_step < 300:
+            bad2.append("steps %d ms apart at t=%.1f s"
+                        % (tb - last_step, tb / 1000.0))
+        last_step = tb
+    zero = [t for t, a in series["sp"] if a <= 0.025]
+    if zero:
+        bad2.append("0 A on %d frame(s), first at t=%.1f s"
+                    % (len(zero), zero[0] / 1000.0))
+    if bad2:
+        probs.append("2: " + "; ".join(bad2[:4]))
+    else:
+        notes.append("2: %d steps, each 0.1 A and >= 0.3 s apart, never "
+                     "0 A" % nsteps)
+    # 3. settled in band within settle_s of chg_max 0, until the first step
+    hold_c0 = [(a, b) for a, b in series["hold"] if a <= c0 <= b]
+    if not hold_c0:
+        probs.append("3: not in HOLD when bcm_chg_max reached 0 A at t=%.1f "
+                     "s" % (c0 / 1000.0))
+    else:
+        end = first_step if first_step is not None else hold_c0[0][1]
+        end = min(end, hold_c0[0][1])
+        if end - c0 < settle_s * 1000:
+            probs.append("3: the window from chg_max 0 A (t=%.1f s) to %s "
+                         "is %.1f s, shorter than the %.0f s allowed to "
+                         "settle" % (c0 / 1000.0, "the first load step"
+                                     if first_step is not None and
+                                     first_step <= hold_c0[0][1]
+                                     else "the hold's end",
+                                     (end - c0) / 1000.0, settle_s))
+        else:
+            lo, hi = band
+            win = [(t, a) for t, a in series["sp"] if c0 <= t <= end]
+            outs = [t for t, a in win if not lo - tol <= a <= hi + tol]
+            if not win:
+                probs.append("3: no page 01 sent between chg_max 0 A and "
+                             "the window's end")
+            else:
+                if outs:
+                    after = [t for t, a in win if t > outs[-1]]
+                    t_in = after[0] if after else None
+                else:
+                    t_in = c0
+                if t_in is None:
+                    probs.append("3: the setpoint was outside %.1f-%.1f A at "
+                                 "the window's end (t=%.1f s)"
+                                 % (lo, hi, end / 1000.0))
+                elif t_in - c0 > settle_s * 1000:
+                    probs.append("3: the setpoint settled in %.1f-%.1f A "
+                                 "%.1f s after chg_max reached 0 A, later "
+                                 "than %.0f s" % (lo, hi, (t_in - c0) / 1000.0,
+                                                  settle_s))
+                else:
+                    notes.append("3: in %.1f-%.1f A %.1f s after chg_max 0 A "
+                                 "(t=%.1f s), held to %s"
+                                 % (lo, hi, (t_in - c0) / 1000.0,
+                                    c0 / 1000.0, "the first load step"
+                                    if first_step is not None else
+                                    "the hold's end"))
+    if probs:
+        return (False, "; ".join(probs))
+    return (True, "; ".join(notes))
+
+
 def no_rewrite_after_release():
     """Spec 5.2 / 9: after the hold ends at the handle pull, nothing is
     rewritten -- "the core going to TERMINATED with all modification stopped
@@ -939,6 +1147,7 @@ def run_one(sc, args, outdir):
     l1 = None
     inv = None
     order = None
+    hold = None
     if args.external_interposer or args.no_l1:
         # Said out loud (tester, 2026-10-07): rev 1 appended nothing here,
         # so a run with the flight core unchecked printed the same PASS as
@@ -973,9 +1182,11 @@ def run_one(sc, args, outdir):
             # read before check_flight_core(), which deletes the trace
             if any(k == "fault_or_flow_first" for k, _v in sc.expect):
                 order = fault_and_drop_order(trace_path)
+            if any(k == "hold_follows_loads" for k, _v in sc.expect):
+                hold = hold_series_from_trace(trace_path)
             l1 = check_flight_core(trace_path)
     return evaluate(sc, veh_log, chg_log, int_log, timed_out, l1, inv,
-                    order=order)
+                    order=order, hold=hold)
 
 
 VEH_ROW = re.compile(
@@ -1816,7 +2027,7 @@ def _wsl_path(p):
 
 
 def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
-             order=None):
+             order=None, hold=None):
     veh = veh_log.read_text(errors="replace")
     chg = chg_log.read_text(errors="replace")
     intp = int_log.read_text(errors="replace")
@@ -1929,6 +2140,9 @@ def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
             ok, why = _no_rewrite_after_terminated(diag)
             results.append((ok, "no frame rewritten after the release: %s"
                             % why))
+        elif kind == "hold_follows_loads":
+            ok, why = _hold_follows_loads(hold, veh, **val)
+            results.append((ok, "spec 9 hold on the parts truck: %s" % why))
 
         else:
             # A kind with no branch used to append nothing, so the check

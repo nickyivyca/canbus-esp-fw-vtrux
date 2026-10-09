@@ -125,6 +125,47 @@ AUX_A_DEFAULT = 2.4       # HV-side draw of the 12 V system: charger reported
                           # -2.9 A in the hold while the pack saw +0.31-0.49 A
 
 
+class AuxSchedule(object):
+    """The 12 V system's HV-side draw over the run, with load steps (spec 9,
+    the hold after the release: "a load drop the scenario injects").
+
+    Steps are timed from the moment the BMS's chg_max FIRST reaches 0 A --
+    the anchor spec 9's hold assertions use ("once bcm_chg_max is 0 A ...
+    until the first injected load step") -- so a scenario can place a step
+    in the settled hold without knowing in advance when the release comes.
+    `steps` is [(delay_s, amps)]; each applies once, in delay order.
+    update() returns the draw now and the log lines for anything that
+    happened on this call (tester, 2026-10-09)."""
+
+    def __init__(self, base_a, steps=()):
+        self.aux_a = base_a
+        self.steps = sorted(steps)
+        self.t_chg0 = None
+
+    def update(self, t, chg_max):
+        lines = []
+        if self.t_chg0 is None and chg_max is not None and chg_max <= 0.0:
+            self.t_chg0 = t
+            lines.append("BMS: chg_max reached 0 A at t=%.1fs" % t)
+        while (self.steps and self.t_chg0 is not None
+               and t >= self.t_chg0 + self.steps[0][0]):
+            delay, amps = self.steps.pop(0)
+            lines.append("aux load step: %.2f -> %.2f A at t=%.1fs (+%.1fs "
+                         "after chg_max reached 0 A)"
+                         % (self.aux_a, amps, t, delay))
+            self.aux_a = amps
+        return self.aux_a, lines
+
+
+def parse_aux_step(s):
+    """'DELAY:AMPS' -> (delay_s, amps), both floats, both >= 0."""
+    d, a = s.split(":")
+    d, a = float(d), float(a)
+    if d < 0 or a < 0:
+        raise ValueError("--aux-step %r: delay and amps must be >= 0" % s)
+    return d, a
+
+
 
 # A sender that stalls for longer than the interposer's staleness window
 # (500 ms of SIMULATED time, i.e. 500/--time-scale ms of wall clock) trips the
@@ -670,6 +711,8 @@ def run_model(args, b, phys):
               fault_at=args.bms_fault_at, fault_kind=args.bms_fault_kind,
               hvil_early=args.hvil_before_flow_drop)
 
+    aux = AuxSchedule(args.aux_a, [parse_aux_step(s)
+                                   for s in (args.aux_step or [])])
     charger_i = 0.0             # last current the charger reported (A, + = charging)
     t = 0.0                     # simulated seconds
     wall0 = time.time()
@@ -750,7 +793,11 @@ def run_model(args, b, phys):
 
         # The pack sees the charger's current less the 12 V system's HV-side
         # draw (spec 9), and nothing at all once the contactors are open.
-        i_pack = (charger_i - args.aux_a) if bms.contactors_closed else 0.0
+        # The draw follows --aux-step's schedule (AuxSchedule).
+        aux_now, aux_lines = aux.update(t, bms.chg_max)
+        for line in aux_lines:
+            log.info(line)
+        i_pack = (charger_i - aux_now) if bms.contactors_closed else 0.0
         pk.step(dt, i_pack)
         peak["n"] += 1
         for key, v in (("i", charger_i), ("vmax", pk.vmax),
@@ -905,6 +952,14 @@ def main():
                          "charger's current before it reaches the pack "
                          "(default %(default)s A, from the hold-current "
                          "measurement). 0 disables it.")
+    ap.add_argument("--aux-step", action="append", default=None,
+                    metavar="DELAY:AMPS",
+                    help="spec 9 hold scenario: set the 12 V system's HV-side "
+                         "draw to AMPS, DELAY simulated seconds after the "
+                         "BMS's chg_max first reaches 0 A. Repeatable; each "
+                         "step is logged ('aux load step: ...') so the scorer "
+                         "can find it. A step DOWN is the 'load drop' of "
+                         "spec 9's 2 s exception.")
     ap.add_argument("--post-standby-s", type=float, default=30.0,
                     help="simulated seconds to keep broadcasting after "
                          "STAND_BY before --stop-on-done ends the run, so the "

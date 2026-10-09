@@ -334,7 +334,80 @@ def _f(x):
     return "-" if x is None else "%.2f" % x
 
 
+def aux_problems(sched=None):
+    """vehicle_sim.AuxSchedule (2026-10-09, spec 9's injected load steps):
+    the draw is the base until chg_max first reaches 0 A, each step applies
+    at its delay after THAT moment (not after the start, not after any
+    later 0 A), once, in delay order, and each is logged. `sched` replaces
+    the class, for the can-fail."""
+    import vehicle_sim as VS
+    cls = sched or VS.AuxSchedule
+    probs = []
+    s = cls(2.9, [(120.0, 1.0), (60.0, 2.2)])
+    a, lines = s.update(0.0, 300.0)
+    if a != 2.9 or lines:
+        probs.append("before chg_max 0: %.2f A, %r" % (a, lines))
+    a, _l = s.update(500.0, 50.0)
+    if a != 2.9:
+        probs.append("a step applied before chg_max reached 0 A (%.2f)" % a)
+    a, lines = s.update(1000.0, 0.0)
+    if a != 2.9 or not any("reached 0 A at t=1000.0" in x for x in lines):
+        probs.append("at chg_max 0: %.2f A, %r" % (a, lines))
+    a, _l = s.update(1059.9, 0.0)
+    if a != 2.9:
+        probs.append("the 60 s step applied early (%.2f at +59.9 s)" % a)
+    a, lines = s.update(1060.0, 0.25)       # chg_max moving off 0 is ignored
+    if a != 2.2 or not any("2.90 -> 2.20" in x for x in lines):
+        probs.append("the 60 s step not applied at +60 s: %.2f %r"
+                     % (a, lines))
+    a, _l = s.update(1100.0, 0.0)           # a later 0 A is not a new anchor
+    if a != 2.2:
+        probs.append("a second chg_max 0 moved the schedule (%.2f)" % a)
+    a, lines = s.update(1120.0, 0.0)
+    if a != 1.0 or not any("2.20 -> 1.00" in x for x in lines):
+        probs.append("the 120 s step not applied at +120 s: %.2f %r"
+                     % (a, lines))
+    a, lines = s.update(5000.0, 0.0)
+    if a != 1.0 or lines:
+        probs.append("a step applied twice, or something logged late: %.2f "
+                     "%r" % (a, lines))
+    try:
+        VS.parse_aux_step("10:-1")
+        probs.append("parse_aux_step accepted a negative draw")
+    except ValueError:
+        pass
+    if VS.parse_aux_step("90:1.5") != (90.0, 1.5):
+        probs.append("parse_aux_step('90:1.5') != (90.0, 1.5)")
+    return probs
+
+
 def main():
+    for p in aux_problems():
+        check(False, "vehicle_sim: " + p)
+    check(not aux_problems(), "vehicle_sim --aux-step: steps timed from the "
+          "first chg_max 0 A, each once, in order, logged")
+
+    import vehicle_sim as _VS
+
+    class FromStart(_VS.AuxSchedule):
+        def update(self, t, chg_max):
+            if self.t_chg0 is None:
+                self.t_chg0 = 0.0           # anchored at the start instead
+            return _VS.AuxSchedule.update(self, t, chg_max)
+
+    class ReAnchors(_VS.AuxSchedule):
+        def update(self, t, chg_max):
+            if chg_max is not None and chg_max <= 0.0 and \
+                    self.t_chg0 is not None and t - self.t_chg0 > 50:
+                self.t_chg0 = t             # every 0 A restarts the clock
+            return _VS.AuxSchedule.update(self, t, chg_max)
+    check(bool(aux_problems(FromStart)),
+          "can fail: a schedule timed from the start, not from chg_max 0 A, "
+          "is caught")
+    check(bool(aux_problems(ReAnchors)),
+          "can fail: a schedule that re-anchors on a later chg_max 0 A is "
+          "caught")
+
     for line in measured():
         print("  --  " + line)
     for p in vcu_problems():

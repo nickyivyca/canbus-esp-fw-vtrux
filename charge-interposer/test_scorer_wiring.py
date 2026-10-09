@@ -69,6 +69,120 @@ def _diag(fw7f4=5, sch7f4=4, fw7f7=(5, 5, 5), sch7f7=4, state=0,
     return out
 
 
+C0 = 100000                      # chg_max reaches 0 A here (ms)
+DROP_LINE = ("aux load step: 2.90 -> 2.20 A at t=900.0s (+200.0s after "
+             "chg_max reached 0 A)")
+
+
+def _sp_path(hold0, hold1, start_a, legs, every=300):
+    """Page-01 setpoints every `every` ms over the hold: `start_a` until the
+    first leg, then each (t_from, target) leg walks 0.1 A per frame toward
+    its target and stays there."""
+    out, a, legs = [], start_a, list(legs)
+    target = None
+    t = hold0
+    while t <= hold1:
+        while legs and t >= legs[0][0]:
+            target = legs.pop(0)[1]
+        if target is not None and abs(target - a) > 1e-6:
+            a = round(a + (0.1 if target > a else -0.1), 2)
+        out.append((t, a))
+        t += every
+    return out
+
+
+def _hs(hold=(50000, 500000), chg0=C0, sp=None, ibat=None):
+    """A series in hold_series_from_trace()'s shape: chg_max 2.0 A, then
+    0 A from chg0 (None: never); pack current -0.1 A every second; the
+    setpoint 2.0 A walking up to 2.9 A from chg0."""
+    h0, h1 = hold
+    chg = [(0, 2.0)] + ([(chg0, 0.0)] if chg0 is not None else [])
+    return dict(hold=[hold], chgmax=chg,
+                ibat=ibat if ibat is not None else
+                [(t, -0.1) for t in range(h0, h1 + 1, 1000)],
+                sp=sp if sp is not None else
+                _sp_path(h0, h1, 2.0, [(chg0 or h1 + 1, 2.9)]),
+                t_last=h1)
+
+
+def hold_follows_loads_cases():
+    def run(series, veh=""):
+        return R._hold_follows_loads(series, veh)
+
+    ok, why = run(_hs())
+    check(ok, "a hold that settles at 2.9 A 2.7 s after chg_max 0 passes "
+          "-> %s" % why)
+    base_ib = [(t, -0.1) for t in range(50000, 500001, 1000)]
+    ok, why = run(_hs(ibat=base_ib + [(C0 + 201000, 0.5)]), DROP_LINE)
+    check(ok, "pack current above chg_max 1 s after an injected load DROP "
+          "passes (the 2 s exception) -> %s" % why)
+    ok, why = run(_hs(ibat=base_ib + [(C0 + 202500, 0.5)]), DROP_LINE)
+    check(not ok and why.startswith("1:"),
+          "...2.5 s after the drop fails on clause 1 -> %s" % why)
+    ok, why = run(_hs(ibat=base_ib + [(C0 + 50000, 0.3)]))
+    check(not ok and "1:" in why,
+          "pack current above chg_max with no drop fails on clause 1 -> %s"
+          % why)
+    up_line = DROP_LINE.replace("2.90 -> 2.20", "2.20 -> 2.90")
+    ok, why = run(_hs(ibat=base_ib + [(C0 + 201000, 0.5)]), up_line)
+    check(not ok and "1:" in why,
+          "...and a load step UP is not a drop: no exception -> %s" % why)
+    sp = _hs()["sp"]
+    k = len(sp) // 2
+    jump = sp[:k] + [(t, round(a + 0.2, 2)) for t, a in sp[k:k + 1]] + \
+        [(t, round(a + 0.2, 2)) for t, a in sp[k + 1:]]
+    ok, why = run(_hs(sp=jump))
+    check(not ok and "2:" in why and "0.20 A step" in why,
+          "a 0.2 A step fails on clause 2 -> %s" % why)
+    fast = _sp_path(50000, 500000, 2.0, [(C0, 2.9)], every=200)
+    ok, why = run(_hs(sp=fast))
+    check(not ok and "ms apart" in why,
+          "steps 200 ms apart fail on clause 2 -> %s" % why)
+    zero = _sp_path(50000, 500000, 0.3, [(60000, 0.0), (C0, 2.9)])
+    ok, why = run(_hs(sp=zero))
+    check(not ok and "0 A on" in why, "a 0 A setpoint fails on clause 2 "
+          "-> %s" % why)
+    ok, why = run(_hs(chg0=None))
+    check(not ok and "never reached 0 A" in why,
+          "a run where chg_max never reaches 0 A fails -> %s" % why)
+    late = _sp_path(50000, 500000, 2.0, [(C0 + 125000, 2.9)])
+    ok, why = run(_hs(sp=late))
+    check(not ok and "3:" in why and "later than 120" in why,
+          "settling 125+ s after chg_max 0 fails on clause 3 -> %s" % why)
+    leaves = _sp_path(50000, 500000, 2.0, [(C0, 2.9), (C0 + 150000, 2.0)])
+    ok, why = run(_hs(sp=leaves), DROP_LINE)
+    check(not ok and "3:" in why,
+          "leaving the band BEFORE the first load step fails on clause 3 "
+          "-> %s" % why)
+    after = _sp_path(50000, 500000, 2.0, [(C0, 2.9), (C0 + 205000, 2.0)])
+    ok, why = run(_hs(sp=after), DROP_LINE)
+    check(ok, "leaving the band AFTER the first load step passes -> %s"
+          % why)
+    ok, why = run(_hs(hold=(50000, C0 + 60000)))
+    check(not ok and "shorter than" in why,
+          "a hold that ends 60 s after chg_max 0 fails (no 2 min to "
+          "settle) -> %s" % why)
+    ok, why = run(_hs(hold=(50000, C0 - 1000)))
+    check(not ok and "not in HOLD when" in why,
+          "chg_max reaching 0 A after the hold ended fails -> %s" % why)
+    ok, why = run(None)
+    check(not ok and "no flight trace" in why, "no trace fails -> %s" % why)
+    # The trace reader on a real trace: HOLD found, chg_max never 0 there.
+    s = R.hold_series_from_trace(TRACES / "syn_override_release.trace")
+    check(s is not None and s["hold"] and len(s["sp"]) > 10
+          and s["ibat"] and s["chgmax"],
+          "hold_series_from_trace reads HOLD spans, setpoints, ibat and "
+          "chg_max off syn_override_release (%d span(s), %d page-01 frames "
+          "in HOLD)" % (len(s["hold"]) if s else 0,
+                        len(s["sp"]) if s else 0))
+    ok, why = R._hold_follows_loads(s, "")
+    check(not ok and "never reached 0 A" in why,
+          "...where chg_max stays at 2.75 A, so the assertion refuses it "
+          "-> %s" % why)
+    check(R.hold_series_from_trace(TRACES / "no_such.l1.trace") is None,
+          "a missing trace gives None, not an empty pass")
+
+
 def main():
     print("spec 9: every scenario decodes the diag frames")
     for sc in R.SCENARIOS:
@@ -197,6 +311,9 @@ def main():
         check(n >= 3 and bad == 0,
               "%s: B5 in HOLD equals the page-01 setpoint sent (%d frames "
               "compared, %d off by more than 0.1 A)" % (name, n, bad))
+
+    print("\nspec 9 hold on the parts truck: hold_follows_loads (2026-10-09)")
+    hold_follows_loads_cases()
 
     print("\ncheck_invariants over a scenario trace")
     ok, why = R.check_invariants(TRACES / "no_such_scenario.l1.trace")
