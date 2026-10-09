@@ -38,11 +38,13 @@ included, and covers inputs that cannot change the image at all, so it moves
 while the bytes stay identical: in this manifest ELF `2e7ae2ef` appears under
 four digests and ELF `18cec2dc` under eleven, because every source edit
 anywhere in the tree moves the digest while an environment that compiles none
-of the edited files relinks the same image. Measured directly on 2026-10-09:
+of the edited files relinks the same image. Measured directly on 2026-10-08:
 appending one comment line to `src/machine.cpp` and rebuilding `esp32-can-x2`
 with `-t clean` moved the digest from `bcd9518a1a10` to `08b6a5c1e49f` and
 left the ELF at `2e7ae2ef` -- one image, two names, no difference in what
-would be flashed. The digest stays in use and stays in the filename; it
+would be flashed. (Those rows' `built_utc` reads `2026-10-09` because it is
+UTC and this bench is UTC-7; dates in prose here are the local working date.
+Reading the date off a row is what put the wrong one in this file first.) The digest stays in use and stays in the filename; it
 answers which sources went in, which is a different question and still worth
 a row.
 
