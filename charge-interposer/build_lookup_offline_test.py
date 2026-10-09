@@ -11,14 +11,23 @@ would send someone to check the firmware when the dongle is on the
 wrong segment -- and the wrong conclusion would be delivered with a
 build id attached, which makes it worse, not better.
 
-    py -3.14 projects/vtrux/tools/interposer/build_lookup_offline_test.py
+    python charge-interposer/build_lookup_offline_test.py   (from any cwd)
+
+2026-10-09: imports build_lookup from THIS file's folder. It imported
+`projects.vtrux.tools.interposer.build_lookup` from the cwd, the pre-move
+SeaDrive copy. So from the cutover (2026-10-08) until that copy was removed,
+a run from the SeaDrive root tested the stale SeaDrive build_lookup.py,
+not the repo's, and passed. After the removal it failed from every root.
+The first check below asserts which file was imported.
 """
 
+import os
 import sys
 
-sys.path.insert(0, ".")
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
 
-from projects.vtrux.tools.interposer import build_lookup as bl  # noqa: E402
+import build_lookup as bl  # noqa: E402
 
 failures = 0
 
@@ -49,6 +58,10 @@ GOOD = [WITNESS, BRIDGE]
 
 def main():
     print("--- build_lookup offline ---")
+    got = os.path.normcase(os.path.abspath(bl.__file__))
+    want = os.path.normcase(os.path.join(HERE, "build_lookup.py"))
+    check(got == want, "the build_lookup under test is this folder's (%s)"
+          % bl.__file__)
 
     # KNOWN
     r = bl.identify(["c4bcb52b"], entries=GOOD)
@@ -179,7 +192,6 @@ def main():
           "one image name on two ELFs resolves to the ELF on the wire")
 
     # elf_sha256_of_bin: the hash out of the image's own bytes.
-    import os
     import tempfile
     head = bytearray(256)
     head[32:36] = (0xABCD5432).to_bytes(4, "little")
