@@ -16,6 +16,7 @@ is the kind that gets discounted when it matters.*
 | `build_output.py` | The whole of row 22: sdkconfig assertions, the embedded version, image size against the OTA slot, the partition table against stock, and the diag schema/DBC agreement. Also **refuses non-shipping builds**: the three measurement instruments, and (since 2026-10-04) the `OTA_HEALTH_FAULT_INJECT` rollback-rehearsal image, which rolls itself back 60 s after every boot. Those have to be content checks, because two configurations of one commit share both the filename and the embedded version. |
 | `config_vs_spec.py` + `config_probe.c` | `gi_config_defaults()` against the numbers the **spec** states, each row citing its section. |
 | `elf_checks.py` | `slcan_parse_str` is not linked into the image. |
+| `test_partition_row.py` | Tests `check_partitions()`: it reads the table from the IMAGE'S OWN build dir (as the sdkconfig rows do), so a `-B build-<x>` image is judged by its own table. A matching table passes, a one-byte change fails, a missing one fails naming that dir. Fails against the pre-2026-10-08 code, which read `build/` whatever image it was given. Owned by the gen-inhibit tester. |
 | `test_prod_record.py` | Tests `check_prod_record()` against spec 12.3 item 3: no `<image>.prod.json` is NO REFERENCE ("not a prod build"), a present record that disagrees with the image or cannot be read is a FAIL. Fails against the pre-2026-10-07 behaviour, where a missing record was a FAIL. Owned by the gen-inhibit tester. |
 | `test_flt_row.py` | Tests the "project name is not a rehearsal build" row: `_flt` is refused as a `_`-delimited token anywhere in `project_name`, not only as the last suffix (a `_DIAG` after it hid it from the old `endswith`). Fails against the old predicate. Owned by the gen-inhibit tester. |
 | `reference/` | Fixtures a check compares against — see below. |
@@ -28,6 +29,7 @@ python3 build_output.py --bin build/wican-fw_obd_abc1234.bin
 make config_probe && python3 config_vs_spec.py
 python3 elf_checks.py
 python3 test_prod_record.py             # tests the prod-record row itself
+python3 test_partition_row.py           # tests the partition-table row itself
 python3 test_flt_row.py                 # tests the rehearsal-name row itself
 ```
 
