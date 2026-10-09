@@ -506,19 +506,34 @@ def fresh_row_problem(rows, env, elf, t0):
     stamp has no fraction) -> None, else why. A cached build writes no row
     (manifest.py's record() runs only when the image is linked), so a copy
     that starts with no manifest and ends with no fresh row was not
-    built."""
-    mine = [r for r in rows if r.get("env") == env
-            and (r.get("elf_sha256") or "").lower() == elf]
-    if not mine:
-        return ("no manifest row for [env:%s] with ELF %s -- the build "
-                "recorded nothing" % (env, elf[:16]))
-    stamps = [_utc_seconds(r.get("built_utc")) for r in mine]
-    if not any(t is not None and t >= int(t0) for t in stamps):
+    built.
+
+    A fresh row that records some other elf_sha256 (null included) is its
+    own failure, named as such: the build ran, but its row does not
+    identify the image it built. The first version reported that as "the
+    build recorded nothing" (madhouse-debian, 2026-10-08: rows with
+    elf_sha256 null)."""
+    def is_fresh(r):
+        t = _utc_seconds(r.get("built_utc"))
+        return t is not None and t >= int(t0)
+    fresh = [r for r in rows if r.get("env") == env and is_fresh(r)]
+    if not fresh:
+        mine = [r for r in rows if r.get("env") == env
+                and (r.get("elf_sha256") or "").lower() == elf]
+        if not mine:
+            return ("no manifest row for [env:%s] written by this build -- "
+                    "the build recorded nothing" % env)
         return ("[env:%s] ELF %s: built_utc %s, not after the build started "
                 "(%s) -- a row this build did not write"
                 % (env, elf[:16], ", ".join(str(r.get("built_utc"))
                                              for r in mine),
                    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0))))
+    if not any((r.get("elf_sha256") or "").lower() == elf for r in fresh):
+        return ("[env:%s]: this build's manifest row records elf_sha256 %s, "
+                "but the ELF it built is %s -- the row does not identify the "
+                "image (spec 8.2)"
+                % (env, ", ".join(repr(r.get("elf_sha256")) for r in fresh),
+                   elf[:16]))
     return None
 
 
@@ -540,7 +555,10 @@ def _sha256_file(path):
 
 def _build_one(fw_dir, env):
     """Clean, then build `env` in `fw_dir` -> (result or None, why), where
-    result = {"elf": sha256, "bin": sha256, "bin_path": path}."""
+    result = {"elf": sha256, "bin": sha256, "bin_path": path,
+    "row_problem": fresh_row_problem() or None}. A row problem is reported
+    beside the result, not instead of it, so the images are still compared
+    and kept."""
     base = [sys.executable, "-m", "platformio", "run", "-d", fw_dir, "-e", env]
     t0 = time.time()
     for cmd in (base + ["-t", "clean"], base):
@@ -561,10 +579,9 @@ def _build_one(fw_dir, env):
         return None, why
     res = {"elf": _sha256_file(elf), "bin": _sha256_file(binp),
            "bin_path": binp}
-    why = fresh_row_problem(_manifest_rows(fw_dir), env, res["elf"], t0)
-    if why:
-        return None, why
-    return res, "ok"
+    res["row_problem"] = fresh_row_problem(_manifest_rows(fw_dir), env,
+                                           res["elf"], t0)
+    return res, res["row_problem"] or "ok"
 
 
 # The control's code change: a line of real code, not a comment, so the
@@ -604,11 +621,14 @@ def check_reproducible(envs, workdir, keep_bins=None):
             rb, wb = _build_one(b_dir, e)
             results[e] = ra
             if ra is None or rb is None:
-                problems.append("reproducible: [env:%s] did not build (and "
-                                "record) in both folders (%s / %s)"
-                                % (e, wa, wb))
+                problems.append("reproducible: [env:%s] did not build in "
+                                "both folders (%s / %s)" % (e, wa, wb))
                 print("  repro %-24s DID NOT BUILD" % e)
                 continue
+            for r_, d_ in ((ra, a_dir), (rb, b_dir)):
+                if r_["row_problem"]:
+                    problems.append("manifest row in %s: %s"
+                                    % (d_, r_["row_problem"]))
             for k in ("elf", "bin"):
                 if ra[k] != rb[k]:
                     problems.append(
@@ -634,6 +654,8 @@ def check_reproducible(envs, workdir, keep_bins=None):
         if rc is None:
             problems.append("reproducible: the control copy did not build "
                             "(%s)" % wc)
+        # the control's own row is not judged: it is a copy built only to
+        # differ, and its images, not its manifest, are what it proves
         elif ra is None:
             problems.append("reproducible: the control has nothing to differ "
                             "from -- [env:%s] was not built (pass it in "

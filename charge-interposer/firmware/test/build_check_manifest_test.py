@@ -167,6 +167,13 @@ def main():
           "an old row beside a fresh one passes")
     check(f([dict(fresh, built_utc="yesterday")], "truck", ELF_A, t0)
           is not None, "an unparseable built_utc FAILS")
+    p = f([dict(fresh, elf_sha256=None)], "truck", ELF_A, t0)
+    check(p is not None and "None" in p and "does not identify" in p,
+          "a fresh row whose elf_sha256 is null FAILS as a row that does not "
+          "identify the image, not as 'recorded nothing' -> %s" % p)
+    p = f([dict(stale, env="truck")], "truck", ELF_A, t0)
+    check(p is not None and "did not write" in p,
+          "only an older row with the right bytes FAILS as not this build's")
 
     # spec 8.2 (b): every differing byte run is listed; only the ELF hash
     # at 0xb0 and the trailing 33 bytes may differ
