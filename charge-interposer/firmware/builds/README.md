@@ -33,17 +33,29 @@ platform or compiler version give different bytes, and without those versions
 a hash mismatch would be unexplainable.
 
 **`src_digest` covers** every `.c/.cpp/.h/.hpp/.S` under `src/`, plus
-`platformio.ini`, `build_name.py`, `build_identity.py` and `manifest.py`,
-hashed by path relative to `firmware/` and by content. **It does not cover**
+`platformio.ini`, `build_name.py`, `build_identity.py`, `manifest.py`
+and `reproducible.py`, hashed by path relative to `firmware/` and by
+content. **It does not cover**
 docs, tests or notes — they cannot change the image, and hashing them would
 churn the digest on every comment edit. `DIGEST_INPUTS` in
 `../build_identity.py` is the authoritative statement of this; this paragraph
 is a copy and the code is the source of truth.
 
-There is **no git commit** in any of this, and no `-dirty` marker. This project
-is not a git repository (the containing folder is literally `NotGit`), so there
-is no commit to record and no committed baseline against which a tree could be
-called dirty. The source digest does what a commit id was wanted for here.
+**Each row also carries `git_commit` and `git_dirty`** (spec 8.2, user
+2026-10-08), beside `src_digest` and not in its place: a build with
+uncommitted changes shares its commit with one that has none, so the
+commit says where to find the sources again and the digest says which
+sources they were. `git_dirty` reflects the whole working tree, and a
+row carries an explicit `git_error` rather than a blank when git cannot
+answer.
+
+*Corrected 2026-10-08.* This section used to say "There is **no git
+commit** in any of this, and no `-dirty` marker. This project is not a
+git repository (the containing folder is literally `NotGit`), so there
+is no commit to record and no committed baseline against which a tree
+could be called dirty." That was true while the tree lived on
+SeaDrive; it moved into `canbus-esp-fw-vtrux` on 2026-10-08 and the
+rows have carried both fields since.
 
 ## Fields
 

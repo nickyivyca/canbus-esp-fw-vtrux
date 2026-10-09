@@ -9,7 +9,11 @@ exactly that with a duplicated offline-test helper.)
 
 The names look like `interposer_<srcdigest12>_<tag>.bin`. See
 `build_name.py` for how the digest is computed and why there is no git
-sha in it -- this project is not a git repository.
+sha in it. *Corrected 2026-10-08:* that used to read "-- this project
+is not a git repository", which was true on SeaDrive and is not since
+the move into `canbus-esp-fw-vtrux`. The name still carries the digest
+rather than a commit by choice, and the commit is recorded in the
+manifest row instead (spec 8.2).
 """
 
 # WHAT THE SOURCE DIGEST COVERS. Stated here because this is the file
