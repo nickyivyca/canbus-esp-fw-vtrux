@@ -192,6 +192,7 @@ InterposerCore::InterposerCore(const Config& cfg, uint32_t now_ms)
       burst_sent_(0),
       burst_next_ms_(0),
       pilot_min_(0),
+      pilot_min_valid_(false),
       pilot_seen_(false),
       boot_locked_(false),
       chg_veh_conn_(-1),
@@ -393,7 +394,8 @@ void InterposerCore::wait(uint32_t t_ms, uint8_t key, uint8_t code, int32_t a,
 // command is repeated as CHARGER (spec 4.1); one decided on a frame rewrites
 // that frame.
 void InterposerCore::sessionBoundary(uint32_t t_ms, uint8_t ev, int32_t a,
-                                     int32_t b, bool clear_safe) {
+                                     int32_t b, bool clear_safe,
+                                     bool forget_pilot) {
   // Spec 6.1: ONE reset path for all three boundaries. The defect this
   // replaced was the STAND_BY path clearing only part of the session state,
   // while 11 of the 49 terminations in the survey do not end on STAND_BY --
@@ -433,6 +435,22 @@ void InterposerCore::sessionBoundary(uint32_t t_ms, uint8_t ev, int32_t a,
   }
   burst_left_ = 0;
   boot_locked_ = false;
+  if (forget_pilot) {
+    // Spec 6.1: "The charger-silence boundary also forgets the last
+    // pilot-timer reading. The first reading after the silence is not
+    // compared with the last one before it, so a timer that comes
+    // back lower is not a step-back and does not clear SAFE."
+    //
+    // Without this the core trips on the silence, the Bel unit
+    // restarts with the handle still in, its timer resumes from a
+    // lower minute count, and that reads as a replug and clears the
+    // latch the silence set -- the exact outcome the 20 s row exists
+    // to prevent.
+    //
+    // pilot_seen_ is deliberately NOT reset: it gates arming (spec 3,
+    // A3), not the comparison.
+    pilot_min_valid_ = false;
+  }
 }
 
 void InterposerCore::evaluateHold(uint32_t t_ms, bool from_frame) {
@@ -660,13 +678,14 @@ void InterposerCore::onChargerFrame(uint32_t id, bool ext, const uint8_t* d,
         boot_locked_ = true;
         log(t_ms, EV_BOOT_LOCKED, (int32_t)mins);
       }
-    } else if (mins < pilot_min_) {
+    } else if (pilot_min_valid_ && mins < pilot_min_) {
       // Spec 6.1: it returns to 0 at every handle pull, so a step backwards
       // is a new plug-in. Clears SAFE.
       sessionBoundary(t_ms, EV_PILOT_BACK, (int32_t)pilot_min_, (int32_t)mins,
                       true);
     }
     pilot_min_ = mins;
+    pilot_min_valid_ = true;
   } else if (id == CHG_INFO && len >= 8) {
     max_avail_ = maxAvailCa(d);
 
@@ -769,7 +788,8 @@ void InterposerCore::tick(uint32_t t_ms, EmitList& out) {
   // staleness row trips the core to SAFE long before 20 s elapses, and from
   // SAFE that return would skip this entirely.
   if (have_t_chg_ && (uint32_t)(t_ms - t_chg_) >= cfg_.chg_silence_ms) {
-    sessionBoundary(t_ms, EV_CHG_SILENCE, (int32_t)(t_ms - t_chg_), 0, false);
+    sessionBoundary(t_ms, EV_CHG_SILENCE, (int32_t)(t_ms - t_chg_), 0,
+                    false, true);
     have_t_chg_ = false;  // one boundary per silence, not one a tick
   }
 

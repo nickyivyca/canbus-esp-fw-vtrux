@@ -1096,6 +1096,48 @@ def test_charger_silence_boundary_does_not_clear_safe():
        "but it does reset the rest of the session state")
 
 
+def test_charger_silence_forgets_the_pilot_timer():
+    """Spec 6.1: "The charger-silence boundary also forgets the last
+    pilot-timer reading. The first reading after the silence is not compared
+    with the last one before it, so a timer that comes back lower is not a
+    step-back and does not clear SAFE."
+
+    A Bel unit that restarts with the handle still in resumes its timer from
+    a lower minute count, which on the wire is indistinguishable from a
+    replug. Without the forgetting, that reading would clear the very latch
+    the unit's own silence had set.
+    """
+    b = Bench()
+    b.chg(M.CHG_PILOT, pilot(0))
+    b.arm(vmax=3.340, chg_max=300.0, pilot_min=None)
+    b.chg(M.CHG_PILOT, pilot(9))
+    b.low_power()
+    ok(b.state() == "OVERRIDE", "overriding, pilot timer at 9 min")
+    ok(b.core.pilot_min == 9, "the core is holding 9 as the last reading")
+
+    b.t = 1000
+    b.tick()
+    ok(b.state() == "SAFE", "500 ms of silence trips")
+    b.t = 30000
+    b.tick()
+    ok(b.state() == "SAFE", "20 s of silence does not clear SAFE")
+    ok(b.core.pilot_min is None,
+       "and the boundary forgot the last pilot reading")
+
+    b.chg(M.CHG_PILOT, pilot(1))
+    ok(b.state() == "SAFE",
+       "1 min after a 9 min reading is NOT a step-back across the silence")
+    ok(b.core.trip_reason is not None, "so the latch is still intact")
+
+    # The forgetting is scoped to the first reading after the silence. Without
+    # this the test would also pass if step-back detection had been deleted
+    # outright, which is the same shape of mistake as a check that cannot
+    # fail: 1 -> 0 is a genuine step-back and must still end the session.
+    b.chg(M.CHG_PILOT, pilot(0))
+    ok(b.state() == "PASSTHROUGH",
+       "but a step back from the POST-silence reading still clears SAFE")
+
+
 def test_charger_state_debounce_is_five_seconds():
     """Spec 6 (A8a): raised from 2 s. Measured non-terminal dips out of state
     12 reach 1.2 s, and a Low Power / CHARGER change -- which the core own

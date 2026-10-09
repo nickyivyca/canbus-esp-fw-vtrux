@@ -508,7 +508,7 @@ class InterposerCore {
   void wait(uint32_t t_ms, uint8_t key, uint8_t code, int32_t a, int32_t b);
   void evaluateHold(uint32_t t_ms, bool from_frame);
   void sessionBoundary(uint32_t t_ms, uint8_t ev, int32_t a, int32_t b,
-                       bool clear_safe);
+                       bool clear_safe, bool forget_pilot = false);
   void repeatMaster(uint32_t t_ms, uint8_t mode);
   void emitRepeat(uint32_t t_ms, EmitList& out);
 
@@ -574,6 +574,11 @@ class InterposerCore {
   // read after power-up decides whether we may join the session at all; a
   // backwards step afterwards is a session boundary (6.1).
   uint32_t pilot_min_;
+  // Spec 6.1: false means "no reading to compare against" -- the
+  // charger-silence boundary forgets the last one. machine.py expresses
+  // the same thing as pilot_min = None; pilot_min_ is unsigned here, so
+  // it has no spare value to mean unset and needs this flag to mirror it.
+  bool pilot_min_valid_;
   bool pilot_seen_;
   bool boot_locked_;
 

@@ -523,7 +523,7 @@ class InterposerCore(object):
             self._emit_repeat(t_ms, out)
         return out
 
-    def _session_boundary(self, t_ms, why, clear_safe):
+    def _session_boundary(self, t_ms, why, clear_safe, forget_pilot=False):
         """Spec 6.1: reset everything this session learned.
 
         ONE path, used by all three boundaries, because the defect this
@@ -538,6 +538,14 @@ class InterposerCore(object):
         `clear_safe` is False for the charger-silence boundary alone: silence
         trips the core at 500 ms, and the same silence continuing must not
         undo the latch it set.
+
+        `forget_pilot` is True for that same boundary and no other, and it
+        is a SEPARATE flag rather than `not clear_safe` on purpose. The
+        two say different things -- one is about the latch, one about the
+        pilot timer -- and they coincide today only because the
+        charger-silence boundary is the only one needing either. A fourth
+        boundary wanting one and not the other would otherwise inherit the
+        wrong behaviour silently.
         """
         if clear_safe:
             self.trip_reason = None
@@ -572,6 +580,24 @@ class InterposerCore(object):
             self._end_repeat(t_ms, "abandoned on session reset")
         self._burst_left = 0
         self.boot_locked = False
+        if forget_pilot:
+            # Spec 6.1: "The charger-silence boundary also forgets the
+            # last pilot-timer reading. The first reading after the
+            # silence is not compared with the last one before it, so a
+            # timer that comes back lower is not a step-back and does not
+            # clear SAFE."
+            #
+            # Without this the core trips on the silence, the Bel unit
+            # restarts with the handle still in, its timer resumes from a
+            # lower minute count, and that reads as a replug and clears
+            # the latch the silence set -- the exact outcome the 20 s row
+            # above exists to prevent.
+            #
+            # `pilot_seen` is deliberately NOT reset. It gates arming
+            # (spec 3, A3), not the comparison; clearing it would stop the
+            # core re-arming until a new pilot frame arrived, which 6.1
+            # does not ask for.
+            self.pilot_min = None
 
     def _repeat_master(self, t_ms, mode):
         """Spec 4.1: repeat the VCU's standing page-00 command toward the
@@ -1097,7 +1123,8 @@ class InterposerCore(object):
                 and t_ms - self.t_chg >= cfg.chg_silence_ms):
             self._session_boundary(
                 t_ms, "no charger status frame for %d ms: Bel unit offline"
-                % (t_ms - self.t_chg), clear_safe=False)
+                % (t_ms - self.t_chg), clear_safe=False,
+                forget_pilot=True)
             self.t_chg = None      # one boundary per silence, not one a tick
 
         if self.state not in (S_MONITOR, S_OVERRIDE):
