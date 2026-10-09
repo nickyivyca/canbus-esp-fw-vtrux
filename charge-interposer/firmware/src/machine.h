@@ -304,6 +304,11 @@ enum EventCode : uint8_t {
   // are not on the wire, but renumbering them would still invalidate
   // every serial log anyone has already captured.
   EV_REPEAT_END,
+  // Spec 6 (user, 2026-10-09): a CHARGER command with the flow bit on
+  // during the hold. Appended for the reason EV_REPEAT_END gives: the
+  // codes are not on the wire, but they are in every serial log already
+  // captured, and renumbering would re-read all of them silently.
+  EV_HOLD_ENDED_BY_VCU,
 };
 
 // Why a spec 4.1 repeat stopped, reported as EV_REPEAT_END's `c`.

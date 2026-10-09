@@ -41,6 +41,8 @@ const char* eventName(uint8_t c) {
   switch (c) {
     case EV_ARMED: return "charge established";
     case EV_VCU_CHARGE_AGAIN: return "VCU commanded CHARGE again";
+    case EV_HOLD_ENDED_BY_VCU:
+      return "VCU commanded CHARGE during the hold: hold ended, transparent";
     case EV_OVERRIDE_ENDED_BY_VCU:
       return "VCU commanded CHARGE during the override: override ended, transparent";
     case EV_SESSION_OVER: return "session over";
@@ -686,6 +688,29 @@ void InterposerCore::onCommand(const uint8_t* d, uint32_t t_ms, EmitList& out) {
       // for the session.
       have_t_full_ = false;
       gotoState(t_ms, S_PASSTHROUGH, EV_VCU_CHARGE_AGAIN);
+    } else if (mode == MODE_CHARGER && state_ == S_HOLD && vcu_flow_) {
+      // Spec 6 (user, 2026-10-09): the hold ends at once and the core goes
+      // STRAIGHT to PASSTHROUGH -- re-armable as after a TERMINATED, with
+      // arming still waiting for an observed charge. Not via TERMINATED:
+      // the arm above would not catch it on this frame (the chain tests the
+      // state as it was on entry, which is HOLD), but the VCU sends a
+      // page-00 change as a ~20-frame burst, so frame 2 would hit that arm
+      // ~50 ms later and reach PASSTHROUGH anyway. Routing through
+      // TERMINATED would look latched without being it.
+      //
+      // THE FLOW BIT IS REQUIRED, and with it off this branch must not
+      // fire: that is the first frame of a handle pull (00 00 01), which
+      // the flow-drop row covers. It cannot fire, for two reasons -- the
+      // flow-drop check above runs BEFORE this chain and has already taken
+      // the core to TERMINATED on that frame, so state_ == S_HOLD is false
+      // here; and the vcu_flow_ test fails independently.
+      //
+      // Defined, not expected: the VCU has never left its hold except at a
+      // handle pull.
+      have_t_full_ = false;
+      hold_valid_ = false;
+      have_t_hold_step_ = false;
+      gotoState(t_ms, S_PASSTHROUGH, EV_HOLD_ENDED_BY_VCU);
     } else if (mode == MODE_CHARGER && state_ == S_OVERRIDE) {
       // Spec 6: defined, not expected -- the VCU has never left a hold except
       // at a handle pull. The override ends at once and the next Low Power is
@@ -922,12 +947,12 @@ void InterposerCore::tick(uint32_t t_ms, EmitList& out) {
     // nothing periodic left to do. The release has already happened and
     // HOLD is not re-evaluated.
     //
-    // THE 6 H CAP BELOW IS THE OVERRIDE'S. Section 6's row reads "override
-    // longer than 6 hours", and 5.2 says the hold "lasts until the handle
-    // is pulled"; tripping the hold on a timer would hand the pack back to
-    // the VCU's own hold, which is the thing 5.2 exists to replace. Raised
-    // with the reviewer in this batch: 5.2's "trips apply throughout" does
-    // not settle it either way.
+    // THE 6 H CAP BELOW IS THE OVERRIDE'S, and the hold has no time limit
+    // at all (user, 2026-10-09). Section 6's row now says so in as many
+    // words -- "override longer than 6 hours (OVERRIDE only; the hold has
+    // no time limit, 5.2)" -- and 5.2 repeats it. Tripping the hold on a
+    // timer would hand the pack back to the VCU's own hold, which is the
+    // thing 5.2 exists to replace.
     return;
   }
 
@@ -1005,7 +1030,11 @@ void InterposerCore::diagFrames(uint32_t t_ms, uint8_t rx_overflow,
   if (mainc_closed_) flags |= 4;
   if (cap >= 0) flags |= 8;
   if (vcu_flow_) flags |= 16;
-  if (state_ == S_OVERRIDE) flags |= 32;
+  // Spec 8.2 / schema 4 (user, 2026-10-09): bit 5 is 1 "while the core is
+  // rewriting the VCU's commands: OVERRIDE, pages 00/01/03, and HOLD, page
+  // 01". It read 0 in HOLD, where the core is rewriting page 01, which is
+  // the one thing the bit is for.
+  if (state_ == S_OVERRIDE || state_ == S_HOLD) flags |= 32;
   if (bridge_ok) flags |= 64;
   if (serial) flags |= 128;
 

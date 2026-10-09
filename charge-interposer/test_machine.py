@@ -888,6 +888,113 @@ def test_the_hold_reports_its_own_setpoint_in_the_diagnostics():
     ok("1.5" in line, "and carries the same setpoint (%s)" % line)
 
 
+def test_the_hold_has_no_time_limit():
+    """Spec 6 (user, 2026-10-09): "override longer than 6 hours (OVERRIDE
+    only; the hold has no time limit, 5.2)".
+
+    The cap is counted from t_enter, which _goto resets, so entering HOLD
+    restarts that clock -- this has to be checked past the cap measured from
+    the HOLD entry, not from the start of the session, or it passes on the
+    reset rather than on the rule. Config'd down to 2 s, as
+    test_session_cap_trips does, so the case runs in milliseconds.
+    """
+    b = Bench(override_max_ms=2000)
+    b.arm(vmax=3.340, chg_max=300.0)
+    b.low_power()
+    b.hold_fresh(34, vmax=3.593, chg_max=2.75, ibat=0.3,
+                 resend_low_power=False)
+    ok(b.state() == "HOLD", "released into HOLD")
+    t_entered = b.t
+    for _ in range(40):
+        _hold_frame(b, 2.75, 2.7)
+    ok(b.t - t_entered > 2000 * 3,
+       "the bench is now %d ms into the hold, past three times the cap"
+       % (b.t - t_entered))
+    ok(b.state() == "HOLD", "and the hold has not tripped")
+    ok(b.core.trip_reason is None, "with no trip reason recorded")
+
+
+def test_charge_during_the_hold_ends_it_into_passthrough():
+    """Spec 6 (user, 2026-10-09): a CHARGER command with the flow bit on
+    during the hold ends it at once -- page 01 forwarded untouched, the core
+    straight to PASSTHROUGH, re-armable as after a TERMINATED.
+
+    STRAIGHT to PASSTHROUGH, not via TERMINATED: the VCU sends a page-00
+    change as a ~20-frame burst, so a route through TERMINATED would hit the
+    "CHARGE again" branch on frame 2 and land in PASSTHROUGH ~50 ms later
+    anyway -- latched in appearance only. This checks the FIRST frame.
+    """
+    b = _released()
+    out = b.veh(0x18EFC000, P.enc_master(1, P.MODE_CHARGER))
+    ok(b.state() == "PASSTHROUGH",
+       "the first CHARGER frame takes the hold to PASSTHROUGH, not "
+       "TERMINATED (%s)" % b.state())
+    ok(out[0][3] == P.enc_master(1, P.MODE_CHARGER),
+       "and that frame itself reaches the charger unmodified")
+    ok(b.core.hold_ca is None, "the hold setpoint is forgotten")
+    n_mod = b.core.stats["modified"]
+    i = b.commanded_ilim(19.0)
+    ok(b.core.stats["modified"] == n_mod,
+       "page 01 is forwarded untouched from here on")
+    ok(abs(i - 19.0) < 0.06,
+       "the VCU's own 19 A reaches the charger (%.2f A)" % i)
+    ok(any("hold ended" in e[2] for e in b.core.events),
+       "and the end of the hold is logged")
+
+
+def test_charge_with_the_flow_bit_off_in_the_hold_is_a_handle_pull():
+    """Spec 6: with the flow bit off it is the first frame of a handle pull
+    (00 00 01) -- about three in four pulls still read mode CHARGER -- and
+    the flow-drop row covers it, to TERMINATED.
+
+    This is the case the new branch must NOT catch. It cannot, twice over:
+    the flow-drop check runs before the page-00 chain and has already left
+    HOLD, and the branch tests the flow bit anyway.
+
+    WHAT THIS CASE CANNOT SEE, measured rather than assumed: deleting the
+    branch's `and self.vcu_flow` leaves the whole suite green, because the
+    upstream flow-drop check has already taken the core out of HOLD by the
+    time the chain runs. So this case pins the OUTCOME, not either guard.
+    The flow test stays anyway -- it makes the branch correct on its own
+    terms instead of correct because of a check eighty lines earlier, and
+    that is the kind of coupling the A5 teardown defect was made of.
+    """
+    b = _released()
+    out = b.veh(0x18EFC000, P.enc_master(0, P.MODE_CHARGER))
+    ok(b.state() == "TERMINATED",
+       "a CHARGER frame with the flow bit off ends the hold as a handle "
+       "pull, in TERMINATED (%s)" % b.state())
+    ok(out[0][3] == P.enc_master(0, P.MODE_CHARGER),
+       "forwarded unmodified, no repeat (A5)")
+    b.t += 100
+    b.bms(vmax=3.593, chg_max=2.75, ibat=0.3)
+    b.tick()
+    ok(b.state() == "TERMINATED",
+       "and it stays there: the teardown that follows re-arms nothing")
+
+
+def test_the_hold_sets_the_override_active_flag():
+    """Spec 8.2 / schema 4 (user, 2026-10-09): 0x7F4 B4 bit 5 is 1 "while
+    the core is rewriting the VCU's commands: OVERRIDE, pages 00/01/03, and
+    HOLD, page 01". It read 0 in HOLD until this ruling."""
+    def bit5(bench):
+        return (dict(bench.core.diag_frames(bench.t, 0, 0))[M.DIAG_STATUS_ID][4]
+                >> 5) & 1
+
+    b = Bench()
+    b.arm(vmax=3.340, chg_max=300.0)
+    ok(bit5(b) == 0, "clear in MONITOR, where nothing is rewritten")
+    b.low_power()
+    ok(b.state() == "OVERRIDE" and bit5(b) == 1, "set in OVERRIDE")
+    b.hold_fresh(34, vmax=3.593, chg_max=2.75, ibat=0.3,
+                 resend_low_power=False)
+    ok(b.state() == "HOLD" and bit5(b) == 1,
+       "and still set in HOLD, where page 01 is ours")
+    b.veh(0x18EFC000, P.enc_master(0, P.MODE_STANDBY))
+    ok(b.state() == "PASSTHROUGH" and bit5(b) == 0,
+       "clear again once the core is transparent")
+
+
 # --- spec 6: trips and the vehicle's commands --------------------------------
 
 def test_trip_during_override_goes_transparent_and_latches_safe():
