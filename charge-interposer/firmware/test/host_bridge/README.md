@@ -15,7 +15,7 @@ generator-inhibit session built against old headers three times.
 | `mcp2515_fake.h` / `.cpp` | Constants, the status table, and the bit-modifiable register set. **The status table is the source of truth for what every L2 result rests on**, and the run-time marking is generated from it |
 | `mcp2515_fake_chip.h` / `.cpp` | The chip: register file, SPI instruction decode, transmit engine, error counters, virtual clock |
 | `test_mcp2515_fake.cpp` | The model checked against the datasheet behaviours it claims |
-| `conformance.h` / `.cpp` | **The conformance sequence: one script, two subjects.** Eleven steps (C1-C11) driven entirely over raw SPI, emitting a diffable transcript |
+| `conformance.h` / `.cpp` | **The conformance sequence: one script, two subjects.** Twelve steps (C1-C12) driven entirely over raw SPI, emitting a diffable transcript |
 | `test_conformance.cpp` | Runs the sequence against the fake, prints the transcript, and asserts the DATASHEET-grade lines |
 | `driver/twai.h` | The ESP-IDF TWAI API, host side, so `port_twai.cpp` compiles unmodified. Types and documented return values taken from the toolchain's own header |
 | `twai_fake.h` / `.cpp` | The TWAI driver model: four states, `ESP_ERR_INVALID_STATE` on every wrong-state call, config-sized RX queue, injectable FIFO overruns, bus errors and bus-off |
@@ -210,6 +210,38 @@ a buffer tag in `data[0]` and the observable is the order of tags.
 | C9 | A segment with nothing acknowledging: the TEC trajectory and whether bus-off is reached (**DEFERRED**, the highest-value bench item) |
 | C10 | Aborting a buffer that has not started |
 | C11 | Receive-overrun flags and clearing them |
+| C12 | Receive rollover and buffer order (reviewer, tracker "RX rollover order", 2026-10-08): A and B unread land in RXB0 / RXB1; after A is taken, C lands in RXB0, **newer than the B beside it**; a rollover into a full RXB1 sets RX1OVR; clearing RXnIF by BIT MODIFY frees a buffer; READ RX `0x96` starts at RXB1D0. Needs a sender on the segment (`Target::injectFrame`); every action is sequenced by the script, so the bench needs no timing precision |
+
+### Receive order through the bridge (`test_l2_bridge rx-rollover-order`)
+
+C12 settles only where the chip puts each frame. Whether the bridge then
+forwards A, B, C (spec 2) or A, C, B is judged through `main.cpp` in the
+L2 case `rx-rollover-order`. C is placed with
+`Mcp2515Fake::deliverWhenFreed()`: it arrives at the instant RXB0's RX0IF
+is cleared, by whatever means the driver uses, which is a window the
+driver's own SPI timing opens and no time chosen in advance can hit. Two
+variants (three identifiers; one identifier three times), three reps each,
+and a control where C arrives only after B is taken, which must read
+A, B, C -- so the case is shown able to pass. The hook's own checks are in
+`test_mcp2515_fake` and are mutation-tested by
+`$VTRUX_DATA/notes/artifacts/interposer-firmware/rx_hook_mutations.sh`.
+
+### Three receive-model corrections (2026-10-08)
+
+Found while writing C12, from DS20001801J read as text **and** rendered:
+
+- **A buffer is full exactly while its RXnIF is set** (p23 s4.1.3, p26
+  Fig 4-3). The model kept a separate "full" flag that only READ RX
+  cleared, so a driver clearing RXnIF by BIT MODIFY would have met a
+  buffer that never took another frame.
+- **A rollover into a full RXB1 sets RX1OVR** (p26 Fig 4-3), not RX0OVR.
+  The status table carried this as UNKNOWN; the flowchart settles it.
+- **READ RX's m bit starts the read at Dn0** (p68 Fig 12-3), and received
+  frames now live in the RXBn registers, so a plain READ returns them
+  without freeing the buffer. m was ignored.
+
+None of the three changed any earlier result: the suite's output before
+and after differs only by the new checks and the retired UNKNOWN entry.
 
 **The assertions say what the FAKE must do, and never predict silicon.**
 Freezing a guess about the real chip into a test means the bench can no
@@ -223,9 +255,13 @@ model's RTS handling -- its transcript line stays UNKNOWN.
 `$VTRUX_DATA/notes/artifacts/interposer-firmware/conformance_mutations.sh` (SeaDrive)
 breaks one DATASHEET behaviour at a time and requires the sequence to fail
 **on the line that behaviour belongs to** -- a failure somewhere else is
-incidental coverage and the script says so. Five mutations, all caught:
-inverted tie-break, BIT MODIFY honouring the mask everywhere, TXP ignored,
-the no-ACK limit removed, and TXREQ left set after a successful send. Each
+incidental coverage and the script says so. Ten mutations: inverted
+tie-break, BIT MODIFY honouring the mask everywhere, TXP ignored, the
+no-ACK limit removed, TXREQ left set after a successful send, and (rev 3,
+2026-10-08, C12) RX0OVR on a rollover overflow, READ RX ignoring m, only
+READ RX freeing a buffer, READ RX leaving RXnIF set, and BUKT ignored.
+All are caught on their own line except **D, the no-ACK limit, which has
+survived since rev 2 (2026-10-07)** -- an open coverage gap, not a pass. Each
 mutation also verifies that it applied, because a `sed` that matches
 nothing produces a clean run that reads exactly like the test passing.
 
@@ -290,7 +326,6 @@ it accordingly.
 | **DEFERRED** | A transmitter with nothing acknowledging stays error-passive and never reaches bus-off. p47 §6.7 gives the thresholds and hands every increment rule to "the CAN bus specification". **Modelled that way.** If it is wrong, a silent charger segment cycles bus-off every ~2.8 ms, `busOffEvents()` climbs all through every drive, and spec 8.2's `bridge_ok` reads clear on every status frame of every journey — a flag that is always false says nothing. The 100 ms age-out exists for this case, so it is the most valuable item to settle |
 | **UNKNOWN** | When ABTF/MLOA/TXERR are cleared: p15 §3.3 says "when TXREQ is set", the p17 flowchart clears them at the top of every attempt. Decides whether TXERR can read 1 on a frame that eventually went out. Modelled as the flowchart |
 | **UNKNOWN** | Reloading a buffer whose aborted frame is still on the wire. p15 says only to write when TXREQ is clear, and our abort clears it early |
-| **UNKNOWN** | Which overflow flag a BUKT rollover sets |
 | **UNKNOWN** | Whether frames sharing an identifier keep their order (spec 2, corrected 2026-10-04) |
 | **RECALLED** | CNF1-3 writable only in Configuration mode; mode-change latency; CS high aborting an instruction mid-way |
 | **ASSUMED** | SPI byte time; arbitration against other nodes — the fake has no shared medium, so **any load-dependent result needs the bench whatever this shows** |

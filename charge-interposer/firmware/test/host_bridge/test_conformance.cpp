@@ -76,6 +76,18 @@ struct FakeTarget : mcpconf::Target {
   bool canWithholdAck() override { return true; }
   void setAcknowledged(bool yes) override { chip.setAcknowledged(yes); }
 
+  bool canInject() override { return true; }
+  void injectFrame(uint32_t id, bool ext, uint8_t tag,
+                   uint8_t dlc) override {
+    CanFrame f;
+    std::memset(&f, 0, sizeof(f));
+    f.id = id;
+    f.ext = ext;
+    f.len = dlc;
+    f.data[0] = tag;
+    chip.deliverFrame(f);
+  }
+
   const char* subjectName() override { return "fake (mcp2515_fake_chip)"; }
 };
 
@@ -168,6 +180,28 @@ int main() {
   // got out.
   expect(rec, "C10-abort", "wire.after-abort-of-waiting", "1");
 
+  // C12. Receive rollover and buffer order (reviewer, tracker "RX rollover
+  // order"). After A is taken, C sits in RXB0 and the OLDER B in RXB1:
+  // the chip state in which a reader taking RXB0 first delivers A, C, B.
+  expect(rec, "C12-rx-rollover", "AB.rx-flags", "0x03");
+  expect(rec, "C12-rx-rollover", "AB.RXB0D0", "0xA0");
+  expect(rec, "C12-rx-rollover", "AB.RXB1D0", "0xB0");
+  expect(rec, "C12-rx-rollover", "AB.overflow", "0x00");
+  expect(rec, "C12-rx-rollover", "takeA.D0-read", "0xA0");
+  expect(rec, "C12-rx-rollover", "takeA.rx-flags", "0x02");
+  expect(rec, "C12-rx-rollover", "C.rx-flags", "0x03");
+  expect(rec, "C12-rx-rollover", "C.RXB0D0", "0xC0");
+  expect(rec, "C12-rx-rollover", "C.RXB1D0", "0xB0");
+  expect(rec, "C12-rx-rollover", "D.overflow", "0x80");
+  expect(rec, "C12-rx-rollover", "D.RXB0D0", "0xC0");
+  expect(rec, "C12-rx-rollover", "D.RXB1D0", "0xB0");
+  expect(rec, "C12-rx-rollover", "E.RXB1D0", "0xE0");
+  expect(rec, "C12-rx-rollover", "E.read96-first-byte", "0xE0");
+  expect(rec, "C12-rx-rollover", "E.read96-rx-flags", "0x01");
+  expect(rec, "C12-rx-rollover", "noBUKT.overflow", "0x40");
+  expect(rec, "C12-rx-rollover", "noBUKT.rx-flags", "0x01");
+  expect(rec, "C12-rx-rollover", "noBUKT.RXB0D0", "0xF0");
+
   // --- the transcript must stay diffable --------------------------------
   //
   // A step that silently stopped emitting its lines would quietly shrink
@@ -177,7 +211,7 @@ int main() {
       "C1-reset-defaults", "C2-bit-modify", "C3-read-status-map",
       "C4-txflags-on-request", "C5-rts-one-instruction",
       "C6-rts-per-buffer", "C7-txp-priority", "C8-same-id-varying-dlc",
-      "C9-no-ack", "C10-abort", "C11-rx-overrun"};
+      "C9-no-ack", "C10-abort", "C11-rx-overrun", "C12-rx-rollover"};
   for (size_t i = 0; i < sizeof(steps) / sizeof(steps[0]); i++) {
     size_t n = 0;
     const std::vector<mcpconf::Observation>& all = rec.all();

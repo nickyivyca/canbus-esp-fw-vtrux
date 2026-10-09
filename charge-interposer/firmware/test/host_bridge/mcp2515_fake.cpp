@@ -105,8 +105,21 @@ static const Assumption kAssumptions[] = {
     {UNKNOWN, "not in the document",
      "reloading a buffer whose aborted frame is still on the wire (p15 says "
      "only to write when TXREQ is clear, and our abort clears it early)"},
-    {UNKNOWN, "not established",
-     "which overflow flag a BUKT rollover sets"},
+    {DATASHEET, "p26 Fig 4-3, rendered page (text order does not carry "
+                "a flowchart's edges)",
+     "a frame that rolls over (BUKT=1) into a full RXB1 sets RX1OVR; with "
+     "BUKT=0 a frame for a full RXB0 sets RX0OVR. UNKNOWN until 2026-10-08, "
+     "and modelled as RX0OVR in both cases until then"},
+    {DATASHEET, "p23 s4.1.3, p26 Fig 4-3 'RXnIF = 0?'",
+     "a receive buffer is full exactly while its RXnIF is set: clearing the "
+     "flag by READ RX (at CS high), BIT MODIFY or WRITE frees it. Until "
+     "2026-10-08 only READ RX freed a buffer"},
+    {DATASHEET, "p68 Fig 12-3, p65 s12.4",
+     "READ RX BUFFER: n (bit 2) picks the buffer, m (bit 1) starts at Dn0 "
+     "instead of SIDH (0x61/0x66/0x71/0x76), then reads sequentially like "
+     "READ. Received frames live in the RXBn registers, so a plain READ "
+     "returns them without freeing the buffer. Until 2026-10-08 m was "
+     "ignored"},
     {MEASURED, "firmware/README.md, Stage 1 2026-09-11",
      "egress transposes adjacent frames of DIFFERENT ids, ~1 in 10^4 at "
      "2,250 fps, always by one position; uniform DLC never reproduces it"},

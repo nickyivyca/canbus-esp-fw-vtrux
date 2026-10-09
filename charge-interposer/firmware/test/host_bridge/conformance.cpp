@@ -457,6 +457,97 @@ void stepRxOverrun(Target& t, Recorder& r) {
          "p63 Table 11-1: EFLG is bit-modifiable");
 }
 
+// --- C12: receive rollover and buffer order -------------------------------
+//
+// Reviewer request (tracker "RX rollover order", sent 2026-10-07): frames A
+// and B arrive back to back, B while A is still unread; C arrives after A
+// has been taken but before B has. This step settles, on each subject,
+// WHERE each frame sits at every point -- which is all the chip decides.
+// Whether a driver then delivers A, B, C or A, C, B is the driver's doing,
+// and is judged through main.cpp in test_l2_bridge's rx-rollover-order
+// case, not here.
+//
+// Observed by plain READ of RXBnD0 (0x66 / 0x76), which does not free a
+// buffer, so looking does not change what is looked at. Every step is
+// sequenced by the script; nothing is raced.
+uint8_t rxFlags(Target& t) {
+  return (uint8_t)(readReg(t, R_CANINTF) & (INTF_RX0IF | INTF_RX1IF));
+}
+uint8_t ovrFlags(Target& t) {
+  return (uint8_t)(readReg(t, R_EFLG) & (EFLG_RX0OVR | EFLG_RX1OVR));
+}
+
+void stepRxRollover(Target& t, Recorder& r) {
+  const char* S = "C12-rx-rollover";
+  const char* P23 = "p23 s4.1.3 + s4.2.1";
+  const char* P26 = "p26 Fig 4-3 (rendered)";
+  const char* P68 = "p65 s12.4, p68 Fig 12-3";
+  if (!t.canInject()) {
+    r.note(S, "not-run", "no sender on the segment", UNKNOWN,
+           "Target::canInject");
+    return;
+  }
+  const uint32_t ID = 0x18FF60E5;
+  reset(t);
+  writeReg(t, R_RXB0CTRL, 0x64);     // RXM = 11 (any frame), BUKT
+  writeReg(t, (uint8_t)(R_RXB0CTRL + 0x10), 0x60);   // RXB1CTRL, RXM = 11
+  intoNormalMode(t);
+
+  t.injectFrame(ID, true, 0xA0, 8);
+  t.injectFrame(ID, true, 0xB0, 8);
+  r.hex8(S, "AB.rx-flags", rxFlags(t), DATASHEET, P23);
+  r.hex8(S, "AB.RXB0D0", readReg(t, 0x66), DATASHEET, P23);
+  r.hex8(S, "AB.RXB1D0", readReg(t, 0x76), DATASHEET,
+         "p23 s4.2.1: rolls over into RXB1");
+  r.hex8(S, "AB.overflow", ovrFlags(t), DATASHEET, P26);
+
+  // Take A as the driver would, with READ RX BUFFER on RXB0.
+  t.csLow();
+  t.transfer(OP_READ_RX);
+  uint8_t got[13];
+  for (int i = 0; i < 13; i++) got[i] = t.transfer(0);
+  t.csHigh();
+  r.hex8(S, "takeA.D0-read", got[5], DATASHEET, P68);
+  r.hex8(S, "takeA.rx-flags", rxFlags(t), DATASHEET,
+         "p65 s12.4: RX0IF cleared at CS high");
+
+  t.injectFrame(ID, true, 0xC0, 8);
+  r.hex8(S, "C.rx-flags", rxFlags(t), DATASHEET, P23);
+  r.hex8(S, "C.RXB0D0", readReg(t, 0x66), DATASHEET,
+         "p23 s4.1.3 / p26: RXB0 free, so it takes C");
+  r.hex8(S, "C.RXB1D0", readReg(t, 0x76), DATASHEET,
+         "B is still in RXB1, OLDER than C in RXB0");
+
+  // Both full: D rolls to a full RXB1 and is lost.
+  t.injectFrame(ID, true, 0xD0, 8);
+  r.hex8(S, "D.overflow", ovrFlags(t), DATASHEET, P26);
+  r.hex8(S, "D.RXB0D0", readReg(t, 0x66), DATASHEET, P26);
+  r.hex8(S, "D.RXB1D0", readReg(t, 0x76), DATASHEET, P26);
+
+  // Clearing RX1IF by BIT MODIFY frees RXB1 just as READ RX would.
+  bitModify(t, R_CANINTF, INTF_RX1IF, 0x00);
+  t.injectFrame(ID, true, 0xE0, 8);
+  r.hex8(S, "E.RXB1D0", readReg(t, 0x76), DATASHEET,
+         "p23 s4.1.3: the flag is the lockout");
+  // READ RX with n=1, m=1 (0x96) starts at RXB1D0 and frees RXB1 only.
+  t.csLow();
+  t.transfer((uint8_t)(OP_READ_RX | 0x06));
+  const uint8_t e0 = t.transfer(0);
+  t.csHigh();
+  r.hex8(S, "E.read96-first-byte", e0, DATASHEET, P68);
+  r.hex8(S, "E.read96-rx-flags", rxFlags(t), DATASHEET, P68);
+
+  // BUKT clear: no rollover; the second frame is lost with RX0OVR.
+  writeReg(t, R_EFLG, 0x00);
+  writeReg(t, R_CANINTF, 0x00);
+  writeReg(t, R_RXB0CTRL, 0x60);
+  t.injectFrame(ID, true, 0xF0, 8);
+  t.injectFrame(ID, true, 0xF1, 8);
+  r.hex8(S, "noBUKT.overflow", ovrFlags(t), DATASHEET, P26);
+  r.hex8(S, "noBUKT.rx-flags", rxFlags(t), DATASHEET, P26);
+  r.hex8(S, "noBUKT.RXB0D0", readReg(t, 0x66), DATASHEET, P26);
+}
+
 }  // namespace
 
 void run(Target& t, Recorder& rec) {
@@ -471,6 +562,7 @@ void run(Target& t, Recorder& rec) {
   stepNoAck(t, rec);
   stepAbort(t, rec);
   stepRxOverrun(t, rec);
+  stepRxRollover(t, rec);
 }
 
 }  // namespace mcpconf

@@ -253,6 +253,133 @@ void caseBridgeOk() {
   assertPathsExercised();
 }
 
+// Spec 2: "Every frame is forwarded to the other port unmodified, in
+// order"; the only accepted reordering is vehicle-to-charger across
+// identifiers, so charger-to-vehicle has none. Reviewer request (tracker
+// "RX rollover order", 2026-10-07): A and B arrive back to back, B while A
+// is still unread, so B rolls into RXB1 (p23 s4.2.1); C arrives after the
+// board has taken A but before it has taken B, so C lands in the freed
+// RXB0 and is NEWER than the B beside it (C12 settles that chip state).
+// Spec 2 requires A, B, C on the vehicle side.
+//
+// C is placed with deliverWhenFreed(): it arrives at the instant RXB0's
+// RX0IF is cleared, by whatever means the driver uses -- the window the
+// driver's own SPI timing opens, which no time chosen in advance can hit.
+// On a wire this needs A, B and C within about three frame times (~330 us
+// at 500 kbit for short frames) while one bridge pass runs long, which
+// the replay case's pass-time tail shows passes do.
+//
+// Two variants: three different identifiers, and one identifier three
+// times (same-identifier order carries sequence meaning, spec 2).
+void caseRxRolloverOrder() {
+  boot();
+  feed(12);
+
+  struct Variant {
+    const char* name;
+    uint32_t id[3];
+  };
+  const Variant variants[] = {
+      {"three identifiers", {0x18FF60E5, 0x18FF61E5, 0x18FF62E5}},
+      {"one identifier", {0x18FF60E5, 0x18FF60E5, 0x18FF60E5}},
+  };
+  const uint8_t tag[3] = {0xA0, 0xB0, 0xC0};
+  for (int rep = 0; rep < 3; rep++) {
+    for (const Variant& v : variants) {
+      char msg[200];
+      // Precondition: both buffers empty, so A lands in RXB0 and B in RXB1.
+      runBridge(5);
+      const bool empty = !g_chip->rxFull(0) && !g_chip->rxFull(1);
+      const size_t mark = vehSent().size();
+      mcpfake::CanFrame f[3];
+      for (int k = 0; k < 3; k++) {
+        std::memset(&f[k], 0, sizeof(f[k]));
+        f[k].id = v.id[k];
+        f[k].ext = true;
+        f[k].len = 8;
+        f[k].data[0] = tag[k];
+        f[k].data[1] = (uint8_t)rep;
+      }
+      g_chip->deliverFrame(f[0]);               // A -> RXB0
+      g_chip->deliverFrame(f[1]);               // B -> RXB1 (rollover)
+      const bool placed = g_chip->rxFull(0) && g_chip->rxFull(1);
+      g_chip->deliverWhenFreed(0, f[2]);        // C when A is taken
+      runBridge(20);
+      const bool fired = g_chip->firedWhenFreed(0);
+
+      // The vehicle side, in send order, restricted to these three frames.
+      std::string order;
+      std::vector<uint8_t> got;
+      const std::vector<twaifake::Frame>& s = vehSent();
+      for (size_t i = mark; i < s.size(); i++) {
+        if (!s[i].ext || s[i].len < 2 || s[i].data[1] != (uint8_t)rep)
+          continue;
+        bool ours = false;
+        for (int k = 0; k < 3; k++)
+          if (s[i].id == v.id[k] && s[i].data[0] == tag[k]) ours = true;
+        if (!ours) continue;
+        got.push_back(s[i].data[0]);
+        char b[8];
+        std::snprintf(b, sizeof(b), "%s%c", order.empty() ? "" : ",",
+                      "ABC"[(s[i].data[0] >> 4) - 0xA]);
+        order += b;
+      }
+      std::printf("  --  rep %d, %s: vehicle side %s\n", rep, v.name,
+                  order.empty() ? "(none)" : order.c_str());
+      std::snprintf(msg, sizeof(msg),
+                    "rep %d, %s: setup held (buffers empty, then A in RXB0 "
+                    "and B in RXB1, and C arrived when RXB0 was freed)",
+                    rep, v.name);
+      check(empty && placed && fired, msg);
+      std::snprintf(msg, sizeof(msg),
+                    "rep %d, %s: all three forwarded once (got %u)", rep,
+                    v.name, (unsigned)got.size());
+      check(got.size() == 3, msg);
+      std::snprintf(msg, sizeof(msg),
+                    "rep %d, %s: vehicle side A,B,C per spec 2 (observed "
+                    "%s)", rep, v.name, order.empty() ? "none" : order.c_str());
+      check(order == "A,B,C", msg);
+    }
+  }
+
+  // CONTROL: the same three frames, but C arrives only when RXB1 is freed,
+  // i.e. after B has been taken. The case above can then be shown to
+  // report A,B,C when the window it targets is closed -- so its failure,
+  // if it fails, comes from that window and not from the harness's
+  // collection or naming of frames.
+  {
+    runBridge(5);
+    const size_t mark = vehSent().size();
+    const uint32_t id = 0x18FF60E5;
+    mcpfake::CanFrame f[3];
+    for (int k = 0; k < 3; k++) {
+      std::memset(&f[k], 0, sizeof(f[k]));
+      f[k].id = id;
+      f[k].ext = true;
+      f[k].len = 8;
+      f[k].data[0] = tag[k];
+      f[k].data[1] = 0x7C;
+    }
+    g_chip->deliverFrame(f[0]);
+    g_chip->deliverFrame(f[1]);
+    g_chip->deliverWhenFreed(1, f[2]);
+    runBridge(20);
+    std::string order;
+    const std::vector<twaifake::Frame>& s = vehSent();
+    for (size_t i = mark; i < s.size(); i++) {
+      if (s[i].id != id || s[i].len < 2 || s[i].data[1] != 0x7C) continue;
+      if (!order.empty()) order += ",";
+      order += "ABC"[(s[i].data[0] >> 4) - 0xA];
+    }
+    std::printf("  --  control (C after B is taken): vehicle side %s\n",
+                order.empty() ? "(none)" : order.c_str());
+    check(g_chip->firedWhenFreed(1) && order == "A,B,C",
+          "control: with C arriving after B is taken, the harness reports "
+          "A,B,C -- it can pass");
+  }
+  assertPathsExercised();
+}
+
 // Spec 2.1 / 8.2, B-7d. Needs a boot where the charger controller does
 // not start, which is why one process per case is not a convenience.
 void caseFailedStart() {
@@ -958,6 +1085,7 @@ const Case kCases[] = {
     {"tx-fail", caseTxFail},
     {"failed-start", caseFailedStart},
     {"replay", caseReplay},
+    {"rx-rollover-order", caseRxRolloverOrder},
 };
 
 }  // namespace

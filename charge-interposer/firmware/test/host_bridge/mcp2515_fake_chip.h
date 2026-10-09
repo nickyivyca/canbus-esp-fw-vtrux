@@ -110,8 +110,38 @@ class Mcp2515Fake {
   // if both are full the frame is LOST and an overrun flag is set. That
   // last path is the real mechanism behind rxDropped(), as opposed to the
   // injected one below.
+  //
+  // A buffer is FULL exactly while its RXnIF flag is set: p23 s4.1.3,
+  // "This bit must be cleared by the MCU in order to allow a new message
+  // to be received into the buffer", and p26 Figure 4-3 decides on
+  // "RXnIF = 0?" alone. So clearing the flag frees the buffer however it
+  // is cleared -- READ RX BUFFER at CS high (p65 s12.4), BIT MODIFY or
+  // WRITE of CANINTF. Until 2026-10-08 the model kept a separate "full"
+  // flag that only READ RX cleared, so a driver clearing RXnIF by BIT
+  // MODIFY would have seen a buffer that never took another frame.
+  // The frame is stored INTO the RXBn registers (0x61-0x6D, 0x71-0x7D):
+  // the p23 note says the whole buffer is overwritten with the MAB, and a
+  // READ of those addresses must return it -- the conformance sequence
+  // observes a buffer that way without freeing it.
   void deliverFrame(const CanFrame& f);
-  bool rxFull(int n) const { return rxb_full_[n & 1]; }
+  bool rxFull(int n) const {
+    return (regs_[R_CANINTF] & (n & 1 ? INTF_RX1IF : INTF_RX0IF)) != 0;
+  }
+
+  // Deliver `f` at the instant RXBn is next FREED (its RXnIF cleared by
+  // any means), and not before. This is how a test places a frame in the
+  // window between the driver taking one buffer and taking the other --
+  // a window the driver's own SPI timing decides, so it cannot be hit
+  // by choosing a time in advance. One pending frame per buffer; arming
+  // again replaces it. firedWhenFreed() says whether it was delivered,
+  // so a test whose window never opened fails instead of passing on an
+  // ordering it never set up.
+  void deliverWhenFreed(int n, const CanFrame& f) {
+    pend_[n & 1] = f;
+    pend_armed_[n & 1] = true;
+    pend_fired_[n & 1] = false;
+  }
+  bool firedWhenFreed(int n) const { return pend_fired_[n & 1]; }
 
   // A controller-level receive overrun: a frame reached the wire
   // and the host did not read it in time. Distinct from our own
@@ -343,10 +373,14 @@ class Mcp2515Fake {
   uint8_t load_i_ = 0;
   uint8_t load_[13];
 
-  CanFrame rxb_[2];
-  bool rxb_full_[2];
-  uint8_t rx_read_[13];
-  uint8_t rx_read_i_ = 0;
+  // RXBn lives in regs_ (see deliverFrame); these are only the
+  // deliverWhenFreed() hook and the helpers around CANINTF changes.
+  void storeRx(int n, const CanFrame& f);
+  void rxFlagsChanged(uint8_t before);
+  CanFrame pend_[2];
+  bool pend_armed_[2] = {false, false};
+  bool pend_fired_[2] = {false, false};
+  uint8_t rx_which_ = 0;      // the buffer the current READ RX names
 };
 
 // Bits a frame occupies on the wire, exact stuffing from the bit

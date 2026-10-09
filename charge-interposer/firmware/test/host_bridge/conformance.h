@@ -64,6 +64,18 @@ struct Target {
   virtual bool canWithholdAck() = 0;
   virtual void setAcknowledged(bool yes) = 0;
 
+  // --- frames TO the chip (added 2026-10-08, C12) ---------------------
+  // Put one frame on the segment for the chip to receive, carrying `tag`
+  // in data[0], and return once it has been received. The fake delivers
+  // it into the receive path at once; the bench sends it from a dongle
+  // and waits at least one frame time. Every C12 action is sequenced by
+  // the script, never raced, so the bench needs no timing precision for
+  // it. canInject() is false where no sender is attached, and C12 then
+  // records that it did not run rather than recording nothing.
+  virtual bool canInject() = 0;
+  virtual void injectFrame(uint32_t id, bool ext, uint8_t tag,
+                           uint8_t dlc) = 0;
+
   virtual const char* subjectName() = 0;
 };
 

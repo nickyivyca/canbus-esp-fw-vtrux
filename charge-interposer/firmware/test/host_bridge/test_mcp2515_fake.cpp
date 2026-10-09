@@ -523,6 +523,103 @@ int main() {
             "was there at SOF (a named choice -- the outcome is UNKNOWN)");
   }
 
+  // --- receive buffers: occupancy, rollover, READ RX addressing ----------
+  //
+  // Added 2026-10-08 with the rollover conformance step (C12). Each case
+  // asserts a datasheet behaviour on the chip directly, as this file's
+  // rule requires. The A/B/C case is the reviewer's receive-order case
+  // (tracker "RX rollover order") at chip level: after A is taken, C lands
+  // in RXB0 while the OLDER B sits in RXB1.
+  {
+    Mcp2515Fake c;
+    Spi s(c);
+    s.writeReg(R_RXB0CTRL, 0x64);          // RXM = 11, BUKT
+    s.writeReg(R_CANCTRL, MODE_NORMAL);
+    CanFrame f = ext8Frame();
+    f.id = 0x18FF60E5;
+    // A plain READ of data byte 0 of RXB0 (0x66) / RXB1 (0x76): looks
+    // without freeing.
+    f.data[0] = 0xA0; c.deliverFrame(f);
+    f.data[0] = 0xB0; c.deliverFrame(f);
+    check(c.rxFull(0) && c.rxFull(1) && s.readReg(0x66) == 0xA0 &&
+          s.readReg(0x76) == 0xB0,
+          "A then B, neither read: A in RXB0, B rolled into RXB1 (p23 "
+          "s4.2.1), and a plain READ of 0x66 / 0x76 returns them");
+    check(c.rxFull(0) && c.rxFull(1),
+          "...and READ did not free either buffer (only RXnIF does)");
+
+    // READ RX with n=0, m=1 (0x92) starts at RXB0D0.
+    c.csLow();
+    c.transfer((uint8_t)(OP_READ_RX | 0x02));
+    const uint8_t d0 = c.transfer(0);
+    c.csHigh();
+    check(d0 == 0xA0, "READ RX 0x92 (n=0, m=1) starts at RXB0D0 (p68 "
+                      "Fig 12-3); before 2026-10-08 m was ignored");
+    check(!c.rxFull(0) && c.rxFull(1),
+          "...and raising CS cleared RX0IF only, freeing RXB0 alone "
+          "(p65 s12.4)");
+    f.data[0] = 0xC0; c.deliverFrame(f);
+    check(s.readReg(0x66) == 0xC0 && s.readReg(0x76) == 0xB0,
+          "C arriving now lands in RXB0, NEWER than the B in RXB1 -- the "
+          "chip state the receive-order case turns on");
+
+    // Overflow flags (p26 Fig 4-3).
+    f.data[0] = 0xD0; c.deliverFrame(f);
+    check((s.readReg(R_EFLG) & (EFLG_RX0OVR | EFLG_RX1OVR)) == EFLG_RX1OVR,
+          "both full, BUKT set: the frame rolls to a full RXB1 and sets "
+          "RX1OVR, not RX0OVR (p26 Fig 4-3)");
+    check(s.readReg(0x66) == 0xC0 && s.readReg(0x76) == 0xB0 &&
+          c.rxOverflowCount() == 1,
+          "...and D is lost: neither buffer overwritten, one counted");
+
+    // BIT MODIFY clearing RX1IF frees RXB1 (p23 s4.1.3).
+    s.bitModify(R_CANINTF, INTF_RX1IF, 0x00);
+    check(c.rxFull(0) && !c.rxFull(1),
+          "BIT MODIFY clearing RX1IF frees RXB1 without a READ RX "
+          "(p23 s4.1.3: the flag IS the lockout)");
+    f.data[0] = 0xE0; c.deliverFrame(f);
+    check(s.readReg(0x76) == 0xE0,
+          "...so the next frame rolls into it");
+
+    // BUKT = 0: a frame for a full RXB0 is lost and sets RX0OVR.
+    s.writeReg(R_EFLG, 0x00);
+    s.writeReg(R_CANINTF, 0x00);
+    s.writeReg(R_RXB0CTRL, 0x60);          // BUKT clear
+    f.data[0] = 0xF0; c.deliverFrame(f);
+    f.data[0] = 0xF1; c.deliverFrame(f);
+    check((s.readReg(R_EFLG) & (EFLG_RX0OVR | EFLG_RX1OVR)) == EFLG_RX0OVR &&
+          !c.rxFull(1) && s.readReg(0x66) == 0xF0,
+          "BUKT clear: the second frame does not roll over, it is lost and "
+          "sets RX0OVR (p26 Fig 4-3)");
+  }
+
+  // --- the deliverWhenFreed() hook, which the L2 order case relies on ----
+  {
+    Mcp2515Fake c;
+    Spi s(c);
+    s.writeReg(R_RXB0CTRL, 0x64);
+    s.writeReg(R_CANCTRL, MODE_NORMAL);
+    CanFrame f = ext8Frame();
+    f.id = 0x18FF60E5;
+    f.data[0] = 0xA0; c.deliverFrame(f);
+    f.data[0] = 0xC0; c.deliverWhenFreed(0, f);
+    s.readReg(0x66);
+    s.status();
+    check(!c.firedWhenFreed(0) && s.readReg(0x66) == 0xA0,
+          "hook: a READ or READ STATUS does not free RXB0, so C waits");
+    s.bitModify(R_CANINTF, INTF_RX0IF, 0x00);
+    check(c.firedWhenFreed(0) && c.rxFull(0) && s.readReg(0x66) == 0xC0,
+          "hook: clearing RX0IF by BIT MODIFY delivers C at that instant");
+    f.data[0] = 0xC1; c.deliverWhenFreed(0, f);
+    c.csLow();
+    c.transfer(OP_READ_RX);
+    c.transfer(0);
+    check(!c.firedWhenFreed(0), "hook: not yet while CS is still low");
+    c.csHigh();
+    check(c.firedWhenFreed(0) && s.readReg(0x66) == 0xC1,
+          "hook: READ RX delivers it when CS is raised");
+  }
+
   // --- what this run rests on, printed from the model's own table --------
   std::printf("\nWhat this model rests on:\n");
   int n = 0;

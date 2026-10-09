@@ -11,8 +11,6 @@ void Mcp2515Fake::reset(bool power_on) {
   for (uint8_t a = 0x0F; a < 0x80; a = (uint8_t)(a + 0x10))
     regs_[a] = MODE_CONFIG | 0x07;
   for (int n = 0; n < 3; n++) tx_[n] = TxBuf();
-  rxb_full_[0] = rxb_full_[1] = false;
-  rx_read_i_ = 0;
   rx_reads_ = 0;
   tx_loads_ = 0;
   tx_never_started_ = 0;
@@ -167,25 +165,66 @@ void Mcp2515Fake::deliverFrame(const CanFrame& f) {
   // controller simply was not listening.
   if (regs_[R_EFLG] & EFLG_TXBO) return;
 
-  if (!rxb_full_[0]) {
-    rxb_[0] = f;
-    rxb_full_[0] = true;
+  // Acceptance filtering is not modelled: every frame meets RXB0's
+  // criteria, as with RXM = 11 (p27 Register 4-1).
+  if (!rxFull(0)) {
+    storeRx(0, f);
     regs_[R_CANINTF] |= INTF_RX0IF;
     return;
   }
-  if ((regs_[R_RXB0CTRL] & RXB0_BUKT) && !rxb_full_[1]) {
-    rxb_[1] = f;
-    rxb_full_[1] = true;
+  // p26 Figure 4-3: RX0IF = 1 -> "BUKT = 1?" -- No sets RX0OVR; Yes joins
+  // the RXB1 path, where "RX1IF = 0?" -- No sets RX1OVR. So a frame that
+  // rolled over into a full RXB1 sets RX1OVR. (Until 2026-10-08 this set
+  // RX0OVR and the status table called the flag UNKNOWN; the flowchart
+  // settles it, read from the rendered page.) The driver sums both bits,
+  // so rxDropped() is unchanged either way.
+  if (!(regs_[R_RXB0CTRL] & RXB0_BUKT)) {
+    rx_overflow_count_++;
+    regs_[R_EFLG] |= EFLG_RX0OVR;
+    return;
+  }
+  if (!rxFull(1)) {
+    storeRx(1, f);
     regs_[R_CANINTF] |= INTF_RX1IF;
     return;
   }
-  // Both full: the frame is gone. WHICH overflow flag a BUKT rollover
-  // sets is the UNKNOWN in the status table -- RX0OVR is modelled here
-  // because the frame was destined for RXB0 and rolled, but the bench
-  // is what settles it. Either way rxDropped() must count it, and the
-  // driver sums both bits, so the choice does not change that result.
   rx_overflow_count_++;
-  regs_[R_EFLG] |= EFLG_RX0OVR;
+  regs_[R_EFLG] |= EFLG_RX1OVR;
+}
+
+// The MAB's content written into RXBn's registers, SIDH..D7 (p23 note:
+// "the entire receive buffer is overwritten with the MAB contents").
+// RXB0 is 0x61-0x6D and RXB1 0x71-0x7D (p68 Figure 12-3's address table).
+// The encoding is the one READ RX staged before 2026-10-08, unchanged.
+void Mcp2515Fake::storeRx(int n, const CanFrame& f) {
+  uint8_t* r = &regs_[n ? 0x71 : 0x61];
+  memset(r, 0, 13);
+  if (f.ext) {
+    r[0] = (uint8_t)(f.id >> 21);
+    r[1] = (uint8_t)(((f.id >> 13) & 0xE0) | 0x08 | ((f.id >> 16) & 0x03));
+    r[2] = (uint8_t)(f.id >> 8);
+    r[3] = (uint8_t)f.id;
+    r[4] = (uint8_t)((f.len & 0x0F) | (f.rtr ? 0x40 : 0x00));
+  } else {
+    r[0] = (uint8_t)(f.id >> 3);
+    r[1] = (uint8_t)(((f.id & 0x07) << 5) | (f.rtr ? 0x10 : 0));
+    r[4] = (uint8_t)(f.len & 0x0F);
+  }
+  for (uint8_t i = 0; i < f.len && i < 8; i++) r[5 + i] = f.data[i];
+}
+
+// Called after anything that can change CANINTF. A buffer whose RXnIF
+// went 1 -> 0 is free from this instant (p23 s4.1.3), which is when a
+// deliverWhenFreed() frame for it arrives.
+void Mcp2515Fake::rxFlagsChanged(uint8_t before) {
+  const uint8_t after = regs_[R_CANINTF];
+  for (int n = 0; n < 2; n++) {
+    const uint8_t bit = n ? INTF_RX1IF : INTF_RX0IF;
+    if (!(before & bit) || (after & bit) || !pend_armed_[n]) continue;
+    pend_armed_[n] = false;
+    pend_fired_[n] = true;
+    deliverFrame(pend_[n]);
+  }
 }
 
 void Mcp2515Fake::enterBusOff() {
@@ -248,7 +287,9 @@ void Mcp2515Fake::writeReg(uint8_t a, uint8_t v) {
     }
     return;
   }
+  const uint8_t intf_before = regs_[R_CANINTF];
   regs_[a] = v;
+  if (a == R_CANINTF) rxFlagsChanged(intf_before);
 }
 
 uint8_t Mcp2515Fake::statusByte() const {
@@ -461,11 +502,15 @@ void Mcp2515Fake::csHigh() {
   // whatever was clocked -- see finishLoadTx() for why that matters.
   if (cs_ && op_ == OP_LOAD_TX) finishLoadTx();
   if (cs_ && op_ == OP_READ_RX) {
-    // p67 Table 12-1 note: RXnIF is cleared after bringing CS high.
-    const uint8_t which = (uint8_t)((addr_ >> 2) & 1);
+    // p67 Table 12-1 note / p65 s12.4: RXnIF is cleared when CS is
+    // raised, and with it the buffer is free (p23 s4.1.3).
+    const uint8_t which = rx_which_;
+    const uint8_t before = regs_[R_CANINTF];
+    if (rxFull(which)) rx_reads_++;   // only count a read that had one
     regs_[R_CANINTF] &= (uint8_t)~(which ? INTF_RX1IF : INTF_RX0IF);
-    if (rxb_full_[which]) rx_reads_++;   // only count a read that had one
-    rxb_full_[which] = false;   // the buffer is free for the next frame
+    cs_ = false;                      // the instruction is over
+    op_ = 0;
+    rxFlagsChanged(before);
   }
   cs_ = false;
   op_ = 0;
@@ -503,30 +548,12 @@ uint8_t Mcp2515Fake::transfer(uint8_t out) {
       return 0;
     } else if ((out & 0xF9) == OP_READ_RX) {
       op_ = OP_READ_RX;
-      addr_ = out;
-      // p67 Table 12-1: "1001 0nm0". Bit 2 picks the buffer. Stage the
-      // 13 bytes the driver is about to clock out: SIDH, SIDL, EID8,
-      // EID0, DLC, then eight data bytes.
-      const uint8_t which = (uint8_t)((out >> 2) & 1);
-      const CanFrame& f = rxb_[which];
-      memset(rx_read_, 0, sizeof(rx_read_));
-      if (rxb_full_[which]) {
-        if (f.ext) {
-          rx_read_[0] = (uint8_t)(f.id >> 21);
-          rx_read_[1] = (uint8_t)(((f.id >> 13) & 0xE0) | 0x08 |
-                                  ((f.id >> 16) & 0x03));
-          rx_read_[2] = (uint8_t)(f.id >> 8);
-          rx_read_[3] = (uint8_t)f.id;
-          rx_read_[4] = (uint8_t)((f.len & 0x0F) | (f.rtr ? 0x40 : 0x00));
-        } else {
-          rx_read_[0] = (uint8_t)(f.id >> 3);
-          rx_read_[1] = (uint8_t)(((f.id & 0x07) << 5) | (f.rtr ? 0x10 : 0));
-          rx_read_[4] = (uint8_t)(f.len & 0x0F);
-        }
-        for (uint8_t i = 0; i < f.len && i < 8; i++)
-          rx_read_[5 + i] = f.data[i];
-      }
-      rx_read_i_ = 0;
+      // p68 Figure 12-3: "1001 0nm0". n (bit 2) picks the buffer, m
+      // (bit 1) starts at Dn0 instead of SIDH: 0x61, 0x66, 0x71, 0x76.
+      // Then sequential, "the same as the READ instruction" (p65 s12.4).
+      // Until 2026-10-08 m was ignored and a read always began at SIDH.
+      rx_which_ = (uint8_t)((out >> 2) & 1);
+      addr_ = (uint8_t)((rx_which_ ? 0x71 : 0x61) + ((out & 0x02) ? 5 : 0));
     } else if (out == OP_RESET) {
       reset(false);
     }
@@ -535,7 +562,7 @@ uint8_t Mcp2515Fake::transfer(uint8_t out) {
 
   switch (op_) {
     case OP_READ_RX:
-      return rx_read_i_ < 13 ? rx_read_[rx_read_i_++] : (uint8_t)0;
+      return readReg(addr_++);
     case OP_READ_STATUS:
       return statusByte();
     case OP_RX_STATUS:
