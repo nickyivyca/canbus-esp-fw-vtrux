@@ -401,6 +401,80 @@ int main() {
           "contended is distinguishable from one that did");
   }
 
+  // --- HEAD OF LINE: NOTHING BEHIND A HELD FRAME IS LOADED ------------
+  //
+  // Spec 2: "A frame whose identifier is in any transmit buffer stays at
+  // the head of the driver's queue, AND NOTHING BEHIND IT IS LOADED,
+  // until that buffer is free." The cases above check the first half
+  // (one buffer per identifier, order kept). This checks the second: X1
+  // and X2 share an identifier, Y and Z are other identifiers queued
+  // after X2. While X1 occupies a buffer, X2 must wait -- and Y and Z,
+  // behind it, must not be loaded into the two free buffers. Sampled on
+  // the chip every pass, LOADED (written into a buffer, TXREQ or not).
+  // (Tester, 2026-10-09; 1b "the hold's head-of-line rule".)
+  {
+    Rig r;
+    const uint32_t I = ONE_ID, J = 0x18FF60E5, K = 0x18FF61E5;
+    sendSeq(r.mcp, I, 1);      // X1
+    sendSeq(r.mcp, I, 2);      // X2: held behind X1
+    sendSeq(r.mcp, J, 3);      // Y: behind X2
+    sendSeq(r.mcp, K, 4);      // Z: behind X2
+
+    auto loadedTag = [&](uint32_t id, uint8_t tag) {
+      for (int b = 0; b < 3; b++)
+        if (r.chip.txLoaded(b) && r.chip.txFrameId(b) == id &&
+            r.chip.txFrameByte0(b) == tag)
+          return true;
+      return false;
+    };
+    auto onWire = [&](uint32_t id, uint8_t tag) {
+      const std::vector<mcpfake::WireEvent>& w = r.chip.wire();
+      for (size_t k = 0; k < w.size(); k++)
+        if (w[k].delivered && w[k].frame.id == id &&
+            w[k].frame.data[0] == tag)
+          return true;
+      return false;
+    };
+
+    uint32_t waiting_passes = 0, violations = 0, passes = 0;
+    for (uint32_t k = 0; k < 20000; k++) {
+      // sampled BEFORE each service, so the state the sends left is seen
+      const bool x2_waiting = !loadedTag(I, 2) && !onWire(I, 2);
+      const bool x1_holding = loadedTag(I, 1);
+      if (x2_waiting && x1_holding) {
+        waiting_passes++;
+        if (loadedTag(J, 3) || loadedTag(K, 4) || onWire(J, 3) ||
+            onWire(K, 4))
+          violations++;
+      }
+      r.mcp.service(r.chip.millis());
+      passes++;
+      r.chip.advance(20);
+      if (r.chip.delivered() >= 4) break;
+    }
+    r.mcp.service(r.chip.millis());
+
+    std::vector<uint8_t> order;
+    const std::vector<mcpfake::WireEvent>& w = r.chip.wire();
+    for (size_t k = 0; k < w.size(); k++)
+      if (w[k].delivered) order.push_back(w[k].frame.data[0]);
+    std::printf("  --  head of line: X2 waited behind X1 on %u of %u "
+                "samples; Y/Z loaded meanwhile on %u; wire order",
+                waiting_passes, passes, violations);
+    for (size_t k = 0; k < order.size(); k++) std::printf(" %u", order[k]);
+    std::printf("\n");
+
+    check(waiting_passes > 0,
+          "setup: X2 really did wait behind X1 with Y and Z queued -- "
+          "otherwise the rule below was never exercised");
+    check(violations == 0,
+          "spec 2: nothing behind the held X2 is loaded while it waits "
+          "(Y and Z stay out of the free buffers)");
+    check(order.size() == 4 && order[0] == 1 && order[1] == 2,
+          "all four reach the wire, X1 then X2 first -- Y and Z cannot "
+          "overtake the frame they were queued behind");
+  }
+
   if (failures) {
     std::printf("\n%d failure(s)\n", failures);
     return 1;

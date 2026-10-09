@@ -287,6 +287,9 @@ class Mcp2515Fake {
   // purpose: asking the driver whether it kept its own promise lets a
   // bug in that bookkeeping answer for itself.
   uint32_t txFrameId(int n) const { return tx_[n].frame.id; }
+  // Byte 0 of the frame in buffer n, so a case can tell two frames of one
+  // identifier apart by the tag it put there (2026-10-09, head of line).
+  uint8_t txFrameByte0(int n) const { return tx_[n].frame.data[0]; }
   bool txFrameExt(int n) const { return tx_[n].frame.ext; }
   // Every transmit ATTEMPT that reached the wire, delivered or not.
   // delivered() counts only the acknowledged ones.
