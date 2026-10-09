@@ -72,6 +72,22 @@ Spec 5.2 HOLD (spec eb9b9d135939af17, tester, 2026-10-09):
   * the non-trips hold from HOLD as well, and chg_max 0 from OVERRIDE now
     ends in HOLD (the release), not TERMINATED.
 
+Spec 3 arming on the charger's LATEST status (spec 8a66ac010db8279a, the
+user 2026-10-09; E5, tester 2026-10-09), the reviewer's cases:
+  * re-arm: the charger out of 12 when CHARGER flow on arrives, after a
+    TERMINATED (from MONITOR and from HOLD) and after a hold the VCU ends:
+    PASSTHROUGH, transparent, until a 12, then MONITOR. This judges the
+    half rev 4 printed as OPEN (charger_on_rearm_problems, now gone);
+  * teardown: STAND_BY / EXPORT 20 ms after a 12, the BMS reporting the
+    contactors closed for 400 ms after it: no arm (6.1 resets the 12);
+  * stale 12: the charger silent 1-2.5 s after its 12 (spec 6: 500 ms)
+    with the contactors closed: no arm, at a join and after a TERMINATED.
+  Each wait is judged after every frame and tick (Bench.states), so an arm
+  followed by a trip in the same step is seen. Can-fail:
+  test_arming_checks_can_fail, three wrapped wrong cores installed before
+  arming, each caught by its own check; E4's real core against the same
+  checks is in SeaDrive e5_arming_controls.py.
+
 Run:  py -3.14 projects/vtrux/tools/interposer/test_trips.py
 """
 
@@ -131,6 +147,7 @@ class Bench(object):
         self.t = 0
         self.out = []
         self.log = []
+        self.states = []            # the core's state after every step
         # Every step, in make_golden.py's trace format, so the same sequence
         # can be replayed through machine.cpp (host_diff/make_unit_traces.py).
         self.trace = []
@@ -144,18 +161,21 @@ class Bench(object):
                              bytes(data).hex()))
         self.out = self.core.on_vehicle_frame(fid, fid > 0x7FF, data, self.t)
         self.log.append(("V", fid, bytes(data), list(self.out)))
+        self.states.append((self.t, M.STATE_NAMES[self.core.state]))
         return self.out
 
     def chg(self, fid, data):
         self.trace.append("C %d %X 1 %s" % (self.t, fid, bytes(data).hex()))
         self.out = self.core.on_charger_frame(fid, True, data, self.t)
         self.log.append(("C", fid, bytes(data), list(self.out)))
+        self.states.append((self.t, M.STATE_NAMES[self.core.state]))
         return self.out
 
     def tick(self):
         self.trace.append("T %d" % self.t)
         self.out = self.core.tick(self.t)
         self.log.append(("T", None, None, list(self.out)))
+        self.states.append((self.t, M.STATE_NAMES[self.core.state]))
         return self.out
 
     def charge_info(self, max_avail_a=16.0):
@@ -712,52 +732,315 @@ def test_hold_exits_can_fail():
            % (label, other, spec_state))
 
 
-def charger_on_rearm_problems():
-    """Ruling 2 (2026-10-09): after a CHARGER command with the flow bit on
-    ends the hold, the core is "re-armable as after a TERMINATED; arming
-    still waits for an observed charge" -- spec 3: charger in state 12 and
-    contactors closed. Not judged here: whether a charge that simply
-    CONTINUES re-arms at once. This case removes the observed charge
-    first (charger out of 12 for 3 s, contactors closed): it must stay
-    PASSTHROUGH and transparent. Then charger 12 with contactors closed:
-    it must re-arm into MONITOR."""
-    probs = []
-    b = _armed()
+# --- spec 3 arming on the charger's LATEST status (E5) ----------------------
+#
+# Spec 3 at 8a66ac010db8279a (user, 2026-10-09): "Observed means the
+# charger's latest status is state 12 and the contactors are closed now, not
+# that it reached 12 earlier in the session; this applies equally to
+# re-arming after a TERMINATED or a hold ended by the VCU." With 6.1 (a
+# boundary resets "the 'charger has reached 12' ... observations") and 6
+# (the charger status is stale at 500 ms), the reviewer's four cases
+# (2026-10-09). While it must wait, the core must be PASSTHROUGH after every
+# frame and tick: MONITOR is the arm, and SAFE there means it armed and then
+# tripped.
+
+
+def _armed_as(wrong):
+    """_armed(), with the wrong core (if any) in place BEFORE arming, so it
+    has heard everything the real core has."""
+    b = Bench()
+    if wrong is not None:
+        wrong(b)
+    b.arm(vmax=3.340, chg_max=300.0)
+    return b
+
+
+def _bms_only(b):
+    b.bms(vmax=3.340, chg_max=300.0)
+
+
+def _charger_out(b):
+    b.charger_status(15, shutdown_src=1)
+    b.bms(vmax=3.340, chg_max=300.0)
+
+
+def _charger_in(b):
+    b.charger_status(12)
+    b.bms(vmax=3.340, chg_max=300.0)
+
+
+def _watch(b, hold, steps, step_ms=100):
+    """_drain, but -> every (t, state) other than PASSTHROUGH that the core
+    was in after any frame or tick. Read per step, not at the end: a core
+    that arms on a stale 12 trips on that staleness within the same step,
+    so its MONITOR shows only there, and SAFE after it."""
+    n = len(b.states)
+    for _ in range(steps):
+        b.t += step_ms
+        hold(b)
+        b.tick()
+    return [(t, s) for t, s in b.states[n:] if s != "PASSTHROUGH"]
+
+
+def _to_terminated_from_monitor(b):
+    b.veh(M.CMD_ID, P.enc_master(0, P.MODE_CHARGER))     # handle pull, 1st
+
+
+def _to_terminated_from_hold(b):
     b.low_power()
     if not _to_hold(b):
-        return ["never reached HOLD (%s)" % b.state()]
-    b.veh(M.CMD_ID, P.enc_master(1, P.MODE_CHARGER))
-    if b.state() != "PASSTHROUGH":
-        return ["CHARGER flow on in HOLD went to %s" % b.state()]
-    mark = len(b.log)
-    _drain(b, lambda bb: (bb.charger_status(15, shutdown_src=1),
-                          bb.bms(vmax=3.340, chg_max=300.0)), 30)
-    # OPEN (asked of the reviewer, 2026-10-09): E4 re-arms here, on the
-    # first BMS frame with the contactors closed, 100 ms after a charger
-    # frame reporting state 15 -- it treats "the charger has reached 12" as
-    # a session observation (6.1 lists it among what a boundary resets),
-    # and does the same after TERMINATED -> CHARGER flow on. Spec 3's
-    # "charger in state 12 and contactors closed" may mean either. Until
-    # ruled this half is printed, not judged.
-    if b.state() != "PASSTHROUGH":
-        print("  --  OPEN (with the reviewer): with the charger out of 12 "
-              "after CHARGER flow on in HOLD, the core re-armed to %s"
-              % b.state())
-    bad = _bus_unchanged(b.log[mark:])
-    if bad is not None:
-        probs.append("not transparent while waiting to re-arm (%s)" % bad)
-    _drain(b, lambda bb: (bb.charger_status(12),
-                          bb.bms(vmax=3.340, chg_max=300.0)), 30)
-    if b.state() != "MONITOR":
-        probs.append("charger back in 12 with contactors closed: %s, not "
-                     "MONITOR -- re-armable as after a TERMINATED"
-                     % b.state())
+        return
+    b.veh(M.CMD_ID, P.enc_master(0, P.MODE_LOW_POWER))   # flow drop
+
+
+def _ended_by_vcu(b):
+    b.low_power()
+    _to_hold(b)
+
+
+# (label, how the core is brought to the moment, the state that must be
+# there before the CHARGER command)
+REARM_FROM = (
+    ("after a TERMINATED from MONITOR", _to_terminated_from_monitor,
+     "TERMINATED"),
+    ("after a TERMINATED from HOLD", _to_terminated_from_hold, "TERMINATED"),
+    ("after a hold the VCU ends", _ended_by_vcu, "HOLD"),
+)
+
+
+def rearm_problems(wrong=None):
+    """Spec 3 re-arming (reviewer's case 1). The charger leaves 12 one
+    second BEFORE the CHARGER command with the flow bit on arrives (inside
+    the 5 s debounce, so the hold does not trip), and stays out of 12 for 3
+    s after it with the contactors closed: the core must be PASSTHROUGH on
+    the command and stay there, transparent. Then the charger reports 12:
+    it must arm (MONITOR)."""
+    probs = []
+    for label, reach, before in REARM_FROM:
+        b = _armed_as(wrong)
+        reach(b)
+        if b.state() != before:
+            probs.append("re-arm %s: did not reach %s (%s)"
+                         % (label, before, b.state()))
+            continue
+        _drain(b, _charger_out, 10)
+        if b.state() != before:
+            probs.append("re-arm %s: the charger out of 12 for 1 s moved the "
+                         "core to %s before the command" % (label, b.state()))
+            continue
+        mark = len(b.log)
+        t_cmd = b.t
+        b.veh(M.CMD_ID, P.enc_master(1, P.MODE_CHARGER))
+        if b.state() != "PASSTHROUGH":
+            probs.append("re-arm %s: CHARGER flow on with the charger out of "
+                         "12 went to %s, not PASSTHROUGH" % (label, b.state()))
+        seen = _watch(b, _charger_out, 30)
+        if seen:
+            probs.append("re-arm %s: left PASSTHROUGH (%s at +%d ms) with "
+                         "the charger's latest status 15 -- spec 3: latest "
+                         "status 12, not a 12 seen earlier"
+                         % (label, seen[0][1], seen[0][0] - t_cmd))
+        bad = _bus_unchanged(b.log[mark:])
+        if bad is not None:
+            probs.append("re-arm %s: not transparent while waiting (%s)"
+                         % (label, bad))
+        _drain(b, _charger_in, 10)
+        if b.state() != "MONITOR":
+            probs.append("re-arm %s: the charger back in 12 with the "
+                         "contactors closed left the core in %s, not MONITOR"
+                         % (label, b.state()))
     return probs
 
 
-def test_charger_on_in_hold_rearms_on_an_observed_charge():
-    for p in charger_on_rearm_problems():
-        FAILS.append("P5: " + p)
+def _tear_monitor(b):
+    pass
+
+
+def _tear_hold(b):
+    b.low_power()
+    _to_hold(b)
+
+
+def _tear_terminated(b):
+    b.veh(M.CMD_ID, P.enc_master(0, P.MODE_LOW_POWER))   # flow drop first
+
+
+# (label, how the state is reached, that state, the boundary's mode)
+TEARDOWNS = (
+    ("STAND_BY from MONITOR", _tear_monitor, "MONITOR", P.MODE_STANDBY),
+    ("EXPORT from MONITOR", _tear_monitor, "MONITOR", P.MODE_EXPORT),
+    ("STAND_BY from HOLD", _tear_hold, "HOLD", P.MODE_STANDBY),
+    ("STAND_BY from TERMINATED", _tear_terminated, "TERMINATED",
+     P.MODE_STANDBY),
+)
+
+
+def teardown_problems(wrong=None):
+    """Spec 3 + 6.1 (reviewer's case 2): a STAND_BY (or EXPORT) 20 ms after
+    a charger status of 12. The boundary resets "the 'charger has reached
+    12' ... observations", so that 12 is gone; the BMS then keeps reporting
+    the contactors closed for 400 ms -- inside the 500 ms in which that 12
+    would still be fresh -- with no new charger status. The core must not
+    arm. Control: a fresh session afterwards (CHARGER flow on, a NEW status
+    12, the BMS) arms, as in the 6.1 boundary test."""
+    probs = []
+    for label, reach, state, mode in TEARDOWNS:
+        b = _armed_as(wrong)
+        b.chg(M.CHG_PILOT, pilot(30))
+        reach(b)
+        if b.state() != state:
+            probs.append("teardown %s: did not reach %s (%s)"
+                         % (label, state, b.state()))
+            continue
+        b.t += 100
+        b.charger_status(12)
+        b.t += 20
+        t_b = b.t
+        b.veh(M.CMD_ID, P.enc_master(0, mode))
+        if b.state() != "PASSTHROUGH":
+            probs.append("teardown %s: %s at the boundary, not PASSTHROUGH"
+                         % (label, b.state()))
+        seen = _watch(b, _bms_only, 8, step_ms=50)
+        if seen:
+            probs.append("teardown %s: left PASSTHROUGH (%s, %d ms after "
+                         "the boundary) on the 12 heard 20 ms before it -- "
+                         "6.1 resets that observation"
+                         % (label, seen[0][1], seen[0][0] - t_b))
+        b.t += 100
+        b.arm(vmax=3.340, chg_max=300.0, pilot_min=None)
+        if b.state() != "MONITOR":
+            probs.append("teardown %s: control -- a fresh session (CHARGER "
+                         "flow on, a new 12) did not arm (%s)"
+                         % (label, b.state()))
+    return probs
+
+
+def stale_problems(wrong=None):
+    """Spec 3 + 6 (reviewer's case 3): the charger's status 12 heard, then
+    the charger silent for 1-2.5 s (past the 500 ms staleness of spec 6,
+    well short of the 20 s silence boundary) while the BMS reports the
+    contactors closed. That 12 is not the charger's status "now": the core
+    must not arm. Control: the charger's next status 12 arms it. Two
+    starts: a fresh core joining a session, and a CHARGER flow on after a
+    TERMINATED."""
+    probs = []
+    # fresh core: everything Bench.arm sends except the BMS, then silence
+    b = Bench()
+    if wrong is not None:
+        wrong(b)
+    b.veh(M.CMD_ID, P.enc_master(1, P.MODE_CHARGER))
+    b.chg(M.CHG_PILOT, pilot(0))
+    b.charger_status(12)
+    b.charge_info(16.0)
+    b.evap(1)
+    b.t += 1000                     # nothing at all for 1 s
+    b.tick()
+    seen = _watch(b, _bms_only, 15)
+    if seen:
+        probs.append("stale 12 at join: left PASSTHROUGH (%s) %d ms after "
+                     "the charger's last status, with no status since"
+                     % (seen[0][1], seen[0][0]))
+    _drain(b, _charger_in, 3)
+    if b.state() != "MONITOR":
+        probs.append("stale 12 at join: control -- the charger's next 12 did "
+                     "not arm (%s)" % b.state())
+    # after a TERMINATED: the last status 12 before the flow drop, then the
+    # charger silent; CHARGER flow on 1 s later; BMS for 1.5 s
+    b = _armed_as(wrong)
+    b.charger_status(12)
+    t12 = b.t
+    b.veh(M.CMD_ID, P.enc_master(0, P.MODE_LOW_POWER))
+    _drain(b, lambda bb: None, 10)
+    b.veh(M.CMD_ID, P.enc_master(1, P.MODE_CHARGER))
+    if b.state() != "PASSTHROUGH":
+        probs.append("stale 12 after a TERMINATED: CHARGER flow on went to "
+                     "%s, not PASSTHROUGH" % b.state())
+    seen = _watch(b, _bms_only, 15)
+    if seen:
+        probs.append("stale 12 after a TERMINATED: left PASSTHROUGH (%s) "
+                     "%d ms after the charger's last status, with no status "
+                     "since"
+                     % (seen[0][1], seen[0][0] - t12))
+    _drain(b, _charger_in, 3)
+    if b.state() != "MONITOR":
+        probs.append("stale 12 after a TERMINATED: control -- the charger's "
+                     "next 12 did not arm (%s)" % b.state())
+    return probs
+
+
+def test_rearm_waits_for_the_charger_latest_12():
+    for p in rearm_problems():
+        FAILS.append("spec 3: " + p)
+
+
+def test_teardown_does_not_arm():
+    for p in teardown_problems():
+        FAILS.append("spec 3/6.1: " + p)
+
+
+def test_stale_12_does_not_arm():
+    for p in stale_problems():
+        FAILS.append("spec 3/6: " + p)
+
+
+def _wrong_arming(kind):
+    """A wrong core, made by wrapping the real one (machine.py untouched):
+    whenever a 0x410 / 0x440 arrives with the core in PASSTHROUGH and the
+    contactors last reported closed, it is put into MONITOR if
+      'session'   a status 12 was heard since the last STAND_BY / EXPORT
+                  (E4's reading: a 12 seen earlier in the session);
+      'ageless'   the latest status is 12, however old (cleared at a
+                  STAND_BY / EXPORT);
+      'boundary'  the latest status is 12 and under 500 ms old, NOT cleared
+                  at a STAND_BY / EXPORT."""
+    def wrap(b):
+        st = {"seen12": False, "last": None, "last_t": None, "mainc": None}
+        chg, veh = b.core.on_charger_frame, b.core.on_vehicle_frame
+
+        def c(fid, ext, data, now):
+            out = chg(fid, ext, data, now)
+            if fid == 0x18FFD4C0:
+                v = P.decode(P.BEL, fid, bytes(data)).get("BELINV_state")
+                if v is not None:
+                    st["last"], st["last_t"] = int(v), now
+                    st["seen12"] = st["seen12"] or int(v) == 12
+            return out
+
+        def v(fid, ext, data, now):
+            out = veh(fid, ext, data, now)
+            if fid == M.CMD_ID and data and data[0] == 0x00 and \
+                    P.dec_master(data)[1] in (P.MODE_STANDBY, P.MODE_EXPORT) \
+                    and kind != "boundary":
+                st["seen12"], st["last"] = False, None
+            if fid == 0x440:
+                m = P.decode(P.EPRI, 0x440, bytes(data)).get("bcm_mainc_stat")
+                st["mainc"] = None if m is None else int(m)
+            if fid in (0x410, 0x440) and \
+                    b.core.state == M.S_PASSTHROUGH and \
+                    st["mainc"] in (11, 12):
+                if ((kind == "session" and st["seen12"])
+                        or (kind == "ageless" and st["last"] == 12)
+                        or (kind == "boundary" and st["last"] == 12
+                            and now - st["last_t"] < STALE_MS)):
+                    b.core.state = M.S_MONITOR
+            return out
+        b.core.on_charger_frame, b.core.on_vehicle_frame = c, v
+    return wrap
+
+
+def test_arming_checks_can_fail():
+    """Each wrong core must be caught by the check that names its error;
+    the unwrapped core must pass all three (the controls)."""
+    for kind, fn, want in (
+            ("session", rearm_problems, "with the charger's latest status 15"),
+            ("ageless", stale_problems, "with no status since"),
+            ("boundary", teardown_problems, "6.1 resets that observation")):
+        probs = fn(wrong=_wrong_arming(kind))
+        ok(any(want in p for p in probs),
+           "the arming checks catch the '%s' wrong core on '%s' (%s)"
+           % (kind, want, probs[:2]))
+    for fn in (rearm_problems, teardown_problems, stale_problems):
+        ok(not fn(), "control: %s passes the unwrapped core" % fn.__name__)
 
 
 def test_every_fault_source_trips_from_monitor():
