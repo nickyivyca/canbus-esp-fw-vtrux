@@ -460,6 +460,121 @@ void caseRxRolloverRefill() {
   assertPathsExercised();
 }
 
+// Spec 2, B-8 (accepted exception): "Remote-request (RTR) frames are not
+// forwarded by either driver." Through main.cpp itself, both directions,
+// extended and standard identifiers, each RTR between data frames of
+// other identifiers. Asserted:
+//   - the data frames around them ARE forwarded (the path ran);
+//   - no frame carrying an RTR frame's identifier appears on the other
+//     side at all -- not as an RTR, and not turned into a data frame;
+//   - CONTROL: the same identifiers sent afterwards as DATA frames are
+//     forwarded, so the absence check is shown able to fail -- it is
+//     looking in the place the frames would be.
+// Not asserted: whether an RTR is counted anywhere (spec 2 says nothing).
+void caseRtrNotForwarded() {
+  boot();
+  feed(12);
+
+  const uint32_t V_DATA1 = 0x18FF70E5, V_RTR_X = 0x18FF71E5,
+                 V_DATA2 = 0x18FF72E5, V_RTR_S = 0x321;
+  const uint32_t C_DATA1 = 0x18FF73E5, C_RTR_X = 0x18FF74E5,
+                 C_DATA2 = 0x18FF75E5, C_RTR_S = 0x322;
+
+  auto vehFrame = [](uint32_t id, bool ext, bool rtr, uint8_t tag) {
+    twaifake::Frame f;
+    std::memset(&f, 0, sizeof(f));
+    f.id = id;
+    f.ext = ext;
+    f.rtr = rtr;
+    f.len = 8;
+    if (!rtr) f.data[0] = tag;
+    fake().deliver(f);
+  };
+  auto chgFrame = [](uint32_t id, bool ext, bool rtr, uint8_t tag) {
+    mcpfake::CanFrame f;
+    std::memset(&f, 0, sizeof(f));
+    f.id = id;
+    f.ext = ext;
+    f.rtr = rtr;
+    f.len = 8;
+    if (!rtr) f.data[0] = tag;
+    g_chip->deliverFrame(f);
+  };
+  // On the charger wire, delivered frames only; on the vehicle side,
+  // everything the bridge sent.
+  auto onChargerWire = [](uint32_t id, size_t from) {
+    uint32_t n = 0;
+    const std::vector<mcpfake::WireEvent>& w = g_chip->wire();
+    for (size_t i = from; i < w.size(); i++)
+      if (w[i].delivered && w[i].frame.id == id) n++;
+    return n;
+  };
+  auto onVehicleSide = [](uint32_t id, size_t from) {
+    uint32_t n = 0;
+    const std::vector<twaifake::Frame>& s = vehSent();
+    for (size_t i = from; i < s.size(); i++)
+      if (s[i].id == id) n++;
+    return n;
+  };
+
+  const size_t w0 = g_chip->wire().size();
+  const size_t v0 = vehSent().size();
+  // One at a time with the bridge running between, so no frame is lost
+  // to a full buffer and an absence means the bridge chose it.
+  vehFrame(V_DATA1, true, false, 0x11); runBridge(5);
+  vehFrame(V_RTR_X, true, true, 0);     runBridge(5);
+  vehFrame(V_RTR_S, false, true, 0);    runBridge(5);
+  vehFrame(V_DATA2, true, false, 0x12); runBridge(5);
+  chgFrame(C_DATA1, true, false, 0x21); runBridge(5);
+  chgFrame(C_RTR_X, true, true, 0);     runBridge(5);
+  chgFrame(C_RTR_S, false, true, 0);    runBridge(5);
+  chgFrame(C_DATA2, true, false, 0x22); runBridge(30);
+
+  char msg[200];
+  std::snprintf(msg, sizeof(msg),
+                "vehicle->charger: the data frames around the RTRs are "
+                "forwarded (%u, %u)", onChargerWire(V_DATA1, w0),
+                onChargerWire(V_DATA2, w0));
+  check(onChargerWire(V_DATA1, w0) == 1 && onChargerWire(V_DATA2, w0) == 1,
+        msg);
+  std::snprintf(msg, sizeof(msg),
+                "vehicle->charger: no RTR forwarded, extended or standard "
+                "(%u, %u frames with their ids)", onChargerWire(V_RTR_X, w0),
+                onChargerWire(V_RTR_S, w0));
+  check(onChargerWire(V_RTR_X, w0) == 0 && onChargerWire(V_RTR_S, w0) == 0,
+        msg);
+  std::snprintf(msg, sizeof(msg),
+                "charger->vehicle: the data frames around the RTRs are "
+                "forwarded (%u, %u)", onVehicleSide(C_DATA1, v0),
+                onVehicleSide(C_DATA2, v0));
+  check(onVehicleSide(C_DATA1, v0) == 1 && onVehicleSide(C_DATA2, v0) == 1,
+        msg);
+  std::snprintf(msg, sizeof(msg),
+                "charger->vehicle: no RTR forwarded, extended or standard "
+                "(%u, %u frames with their ids)", onVehicleSide(C_RTR_X, v0),
+                onVehicleSide(C_RTR_S, v0));
+  check(onVehicleSide(C_RTR_X, v0) == 0 && onVehicleSide(C_RTR_S, v0) == 0,
+        msg);
+
+  // CONTROL: the same four identifiers as DATA frames must get through.
+  const size_t w1 = g_chip->wire().size();
+  const size_t v1 = vehSent().size();
+  vehFrame(V_RTR_X, true, false, 0x31);  runBridge(5);
+  vehFrame(V_RTR_S, false, false, 0x32); runBridge(5);
+  chgFrame(C_RTR_X, true, false, 0x41);  runBridge(5);
+  chgFrame(C_RTR_S, false, false, 0x42); runBridge(30);
+  std::snprintf(msg, sizeof(msg),
+                "control: the same four identifiers as DATA frames ARE "
+                "forwarded (%u %u %u %u) -- the absence above is not the "
+                "check looking in the wrong place",
+                onChargerWire(V_RTR_X, w1), onChargerWire(V_RTR_S, w1),
+                onVehicleSide(C_RTR_X, v1), onVehicleSide(C_RTR_S, v1));
+  check(onChargerWire(V_RTR_X, w1) == 1 && onChargerWire(V_RTR_S, w1) == 1 &&
+            onVehicleSide(C_RTR_X, v1) == 1 && onVehicleSide(C_RTR_S, v1) == 1,
+        msg);
+  assertPathsExercised();
+}
+
 // Spec 2.1 / 8.2, B-7d. Needs a boot where the charger controller does
 // not start, which is why one process per case is not a convenience.
 void caseFailedStart() {
@@ -1167,6 +1282,7 @@ const Case kCases[] = {
     {"replay", caseReplay},
     {"rx-rollover-order", caseRxRolloverOrder},
     {"rx-rollover-refill", caseRxRolloverRefill},
+    {"rtr-not-forwarded", caseRtrNotForwarded},
 };
 
 }  // namespace
