@@ -56,6 +56,23 @@ population and test_checker_catches_hold_and_gap_mutations proves both can
 fail. The randomised traffic also carries 03.02 / 03.07 now, from its own
 generator so the main stream -- and the path the core walks -- is unchanged.
 
+Rev 4 (tester, 2026-10-09), for spec 5.2's hold after the release (spec
+eb9b9d135939af17, schema 4: 0x7F4 B2 6 = HOLD):
+  - rule 2 now reads "nothing is rewritten unless the core is overriding,
+    or holding (HOLD) and then only page 01's setpoint";
+  - rule 6: in HOLD every page 01 follows the hold law -- 0.1 A steps,
+    down while bcm_ibat > bcm_chg_max, up while bcm_ibat < bcm_chg_max -
+    0.25 A, held in that band, at most one step per 0.3 s, between 0 A and
+    the EVSE cap, starting from the override's last setpoint, only the
+    current bytes changed. Inputs from the Oracle (0x410 bcm_ibat added).
+    Per-frame counts (up / down / held / clamped) are kept for P2;
+  - a Low Power repeat is allowed OVERRIDE -> HOLD (the release); a repeat
+    out of HOLD is still refused (a trip in HOLD repeats nothing, spec 6).
+  - OPEN: whether the 0.3 s gate runs from the hold's entry (asked of the
+    reviewer, with the user). A missing step in a hold's first 0.3 s is
+    counted as entry_window, not judged.
+Each has a mutation in _mutations() ("hold: ...").
+
 The randomised sequence matters as much as the traces. Every trace here was
 generated to exercise something, so all of them are well-formed charges; the
 random one is not, and the invariants hold on malformed traffic too or they
@@ -106,6 +123,15 @@ GAP_STEP_MS = 10                 # step density at which a gap is judged
 # 2026-10-07), whatever the VCU sends
 HELD = {0x02: bytes.fromhex("0302000000000000"),
         0x07: bytes.fromhex("0307026404320000")}
+# spec 5.2, the hold after the release (spec eb9b9d135939af17): the state
+# byte is the schema doc's (0x7F4 B2 6 = HOLD), the law the spec's literals
+S_HOLD = 6
+HOLD_STEP_A = 0.1                # "steps the setpoint down / up 0.1 A"
+HOLD_BAND_A = 0.25               # up while ibat is "more than 0.25 A below"
+HOLD_GAP_MS = 300                # "at most one step per 0.3 s"
+# Half an LSB of bcm_ibat (0.025 A): a reading this close to a band edge
+# may be taken either way, so either answer is accepted there.
+HOLD_EDGE_A = 0.0125
 
 
 class Oracle(object):
@@ -120,6 +146,7 @@ class Oracle(object):
 
     def __init__(self):
         self.perm_a = None
+        self.ibat_a = None          # 0x410 bcm_ibat, + = charging (5.2)
         self.cap_raw_a = None
         # Spec 4 (F item 31, ruled 2026-10-08): the learned CC command is
         # the LARGEST page-01 setpoint >= 5 A seen in MONITOR since the last
@@ -146,6 +173,10 @@ class Oracle(object):
                 d = P.decode(P.EPRI, 0x420, data)
                 if "bcm_chg_max" in d:
                     self.perm_a = float(d["bcm_chg_max"])
+            elif fid == M.BMS_STATUS:
+                d = P.decode(P.EPRI, 0x410, data)
+                if "bcm_ibat" in d:
+                    self.ibat_a = float(d["bcm_ibat"])
             elif fid == M.CMD_ID and len(data) >= 3 and data[0] == 0x00:
                 if data[2] in (P.MODE_STANDBY, P.MODE_EXPORT):
                     self._reset()
@@ -240,6 +271,13 @@ class Checker(object):
         self.n_gaps_judged = 0      # repeat gaps judged against 50 +/- 10
         self.n_gaps_unjudged = 0    # ... and not: no step offered a send
         self.step_t = []            # every step's time, for the gap rule
+        # spec 5.2 hold: the setpoint the charger last received on page 01
+        # (any state), when the hold last stepped, and what it did per frame
+        self.last_sp_a = None
+        self.hold_step_t = None
+        self.hold_entry_t = None
+        self.hold_counts = {"up": 0, "down": 0, "hold": 0, "clamped": 0,
+                            "unjudged": 0, "entry_window": 0}
         self._t = 0
         self.bursts = []            # {"mode", "sent", "closed", "cut"}
         self._new_bursts = []
@@ -308,6 +346,10 @@ class Checker(object):
         after = self.core.state
         if after == M.S_OVERRIDE:
             self.n_overrode += 1
+        if after != S_HOLD:
+            self.hold_step_t = None     # a new hold starts with no step
+        elif before != S_HOLD:
+            self.hold_entry_t = t_ms
         for b in self._new_bursts:
             b["after"] = after
 
@@ -339,10 +381,20 @@ class Checker(object):
                 self.fail("id 0x%X forwarded %d times, not once"
                           % (arb_id, len(fwd)))
             elif fwd[0] != data:
-                # --- 2. and only rewritten while overriding ---------------
-                if after != M.S_OVERRIDE:
-                    self.fail("id 0x%X rewritten in %s, not OVERRIDE"
-                              % (arb_id, M.STATE_NAMES[after]))
+                # --- 2. and only rewritten while overriding -- or, in the
+                # hold (5.2), page 01 and nothing else ---------------------
+                if (after == S_HOLD and arb_id == M.CMD_ID
+                        and len(data) >= 5 and data[0] == 0x01):
+                    pass                    # judged by rule 6 below
+                elif after == S_HOLD:
+                    self.fail("id 0x%X page %s rewritten in HOLD -- the hold "
+                              "replaces page 01's setpoint and changes "
+                              "nothing else (spec 5.2)"
+                              % (arb_id, ("%02X" % data[0]) if data else "-"))
+                elif after != M.S_OVERRIDE:
+                    self.fail("id 0x%X rewritten in %s, not OVERRIDE or the "
+                              "hold's page 01" % (arb_id,
+                                                  M.STATE_NAMES[after]))
                 elif arb_id != M.CMD_ID:
                     self.fail("id 0x%X rewritten -- only 0x%X may be"
                               % (arb_id, M.CMD_ID))
@@ -353,6 +405,14 @@ class Checker(object):
                     and len(data) >= 5 and data[0] == 0x01
                     and after == M.S_OVERRIDE):
                 self._check_page01(data, fwd[0])
+            # --- 6. in the hold, page 01 follows the hold law (5.2) -------
+            if (len(fwd) == 1 and kind == "V" and arb_id == M.CMD_ID
+                    and len(data) >= 5 and data[0] == 0x01):
+                if after == S_HOLD:
+                    if before != S_HOLD:
+                        self.hold_step_t = None
+                    self._check_hold(t_ms, data, fwd[0])
+                self.last_sp_a = P.dec_setpoint(fwd[0])[1]
             # --- 4. pages 03.02 / 03.07 held during an override -----------
             if (len(fwd) == 1 and kind == "V" and arb_id == M.CMD_ID
                     and len(data) >= 2 and data[0] == 0x03
@@ -457,12 +517,16 @@ class Checker(object):
                           "(spec 4.1)" % (kind, M.STATE_NAMES[before],
                                           M.STATE_NAMES[after]))
         elif mode == P.MODE_LOW_POWER:
+            # The release goes OVERRIDE -> HOLD (5.2, spec eb9b9d13); a trip
+            # out of an override -> SAFE; a flow drop / plug-out needs no
+            # repeat (A5) but is not forbidden one by 4.1's table. A trip
+            # in HOLD repeats nothing (6: "page 00 is already the VCU's").
             if not (before == M.S_OVERRIDE
-                    and after in (M.S_TERMINATED, M.S_SAFE)):
+                    and after in (M.S_TERMINATED, M.S_SAFE, S_HOLD)):
                 self.fail("a Low Power repeat %s -> %s: only a release or a "
                           "trip out of an override repeats Low Power "
-                          "(spec 4.1)" % (M.STATE_NAMES[before],
-                                          M.STATE_NAMES[after]))
+                          "(spec 4.1, 5.2, 6)"
+                          % (M.STATE_NAMES[before], M.STATE_NAMES[after]))
 
     def _check_rewrite(self, orig, sent):
         """Section 4: pages 00, 01 and 03.02 / 03.07, and nothing else."""
@@ -526,6 +590,114 @@ class Checker(object):
             self.fail("commanded %.2f A, not the permission %.2f A capped by "
                       "the EVSE %s A (spec 4)"
                       % (amps, perm, "/".join("%.2f" % c for c in caps)))
+
+    def _check_hold(self, t_ms, orig, sent):
+        """Spec 5.2: the hold's page-01 setpoint, frame by frame.
+
+        - It starts from our last override setpoint, then on each page-01
+          frame steps 0.1 A down while bcm_ibat > bcm_chg_max, up while
+          bcm_ibat < bcm_chg_max - 0.25, and holds inside that band.
+        - At most one step per 0.3 s.
+        - Between 0 A and the EVSE cap of section 4.
+        - Only the current changes.
+        All inputs are the Oracle's (the bus), never the core's. Each frame
+        is counted as up / down / hold / clamped / unjudged, the counts P2
+        reports. Readings within half an ibat LSB of a band edge accept
+        either answer there. A frame's 'previous setpoint' is the one the
+        charger last received, so the first hold frame is judged against
+        the override's last setpoint.
+        """
+        tol = PAGE01_COUNT_A / 2.0
+        cnt = self.hold_counts
+        if bytes(sent[:3]) != bytes(orig[:3]) or \
+                bytes(sent[5:]) != bytes(orig[5:]):
+            self.fail("hold: page 01 bytes other than the current changed: "
+                      "%s -> %s" % (bytes(orig).hex(), bytes(sent).hex()))
+        amps = P.dec_setpoint(sent)[1]
+        caps = self.bus.caps()
+        cap = caps[0] if caps else None
+        if amps < -tol or (cap is not None and amps > cap + tol):
+            self.fail("hold: setpoint %.2f A outside 0 A .. the EVSE cap %s "
+                      "(spec 5.2)" % (amps, "-" if cap is None
+                                      else "%.2f A" % cap))
+        prev = self.last_sp_a
+        if prev is None:
+            cnt["unjudged"] += 1
+            self.fail("hold: a page 01 in HOLD with no earlier setpoint sent "
+                      "-- the hold starts from the override's (spec 5.2)")
+            return
+        delta = amps - prev
+        at_floor = amps <= tol
+        at_cap = cap is not None and abs(amps - cap) <= tol
+        if abs(delta) <= tol:
+            step = 0
+        elif abs(abs(delta) - HOLD_STEP_A) <= tol:
+            step = 1 if delta > 0 else -1
+        elif (delta < 0 and (at_floor or at_cap)) or (delta > 0 and at_cap):
+            step = 2                    # brought to a bound, not a 0.1 step
+        else:
+            self.fail("hold: setpoint moved %.2f -> %.2f A, a %.2f A step; "
+                      "the hold steps 0.1 A (spec 5.2)"
+                      % (prev, amps, delta))
+            return
+        ib, perm = self.bus.ibat_a, self.bus.perm_a
+        if ib is None or perm is None:
+            if step:
+                self.fail("hold: stepped %.2f -> %.2f A with no bcm_ibat or "
+                          "bcm_chg_max heard (spec 5.2)" % (prev, amps))
+            cnt["unjudged"] += 1
+            return
+        down_ok = ib > perm - HOLD_EDGE_A
+        down_must = ib > perm + HOLD_EDGE_A
+        up_ok = ib < perm - HOLD_BAND_A + HOLD_EDGE_A
+        up_must = ib < perm - HOLD_BAND_A - HOLD_EDGE_A
+        since = (None if self.hold_step_t is None
+                 else t_ms - self.hold_step_t)
+        what = ("ibat %.3f A, chg_max %.2f A, setpoint %.2f -> %.2f A"
+                % (ib, perm, prev, amps))
+        if step == 2:
+            cnt["clamped"] += 1
+            self.hold_step_t = t_ms
+            return
+        if step:
+            if since is not None and since < HOLD_GAP_MS:
+                self.fail("hold: two steps %d ms apart, at most one per "
+                          "0.3 s (spec 5.2; %s)" % (since, what))
+            elif step < 0 and not down_ok:
+                self.fail("hold: stepped DOWN with ibat not above chg_max "
+                          "(spec 5.2; %s)" % what)
+            elif step > 0 and not up_ok:
+                self.fail("hold: stepped UP with ibat not more than 0.25 A "
+                          "below chg_max (spec 5.2; %s)" % what)
+            cnt["up" if step > 0 else "down"] += 1
+            self.hold_step_t = t_ms
+            return
+        # no step
+        # OPEN (asked of the reviewer, 2026-10-09): whether the 0.3 s gate
+        # runs from the hold's entry. Spec 5.2 says "at most one step per
+        # 0.3 s" and is silent on the entry; E4 holds the override's
+        # setpoint for 0.3 s after it. Until ruled, a missing step in the
+        # first 0.3 s of a hold is counted, not judged. A step there is
+        # still judged for its direction.
+        if (since is None and self.hold_entry_t is not None
+                and t_ms - self.hold_entry_t < HOLD_GAP_MS
+                and (down_must or up_must)):
+            cnt["entry_window"] += 1
+            return
+        due = (since is None or since >= HOLD_GAP_MS)
+        if due and down_must:
+            if at_floor:
+                cnt["clamped"] += 1
+                return
+            self.fail("hold: held while ibat was above chg_max and a step "
+                      "was allowed (spec 5.2; %s)" % what)
+        elif due and up_must:
+            if cap is not None and amps + HOLD_STEP_A > cap + tol:
+                cnt["clamped"] += 1
+                return
+            self.fail("hold: held while ibat was more than 0.25 A below "
+                      "chg_max and a step was allowed (spec 5.2; %s)" % what)
+        cnt["hold"] += 1
 
     def _check_gaps(self):
         """Spec 4.1: each gap between a repeat's frames is 50 +/- 10 ms.
@@ -863,8 +1035,12 @@ def test_invariants_hold_over_every_trace():
        "found %d traces in %s -- the glob is looking in the right place"
        % (len(names), TRACES))
     total = p01 = mirrors = full = cut = sep = 0
+    hold = dict.fromkeys(("up", "down", "hold", "clamped", "unjudged",
+                          "entry_window"), 0)
     for name in names:
         c = replay_trace(os.path.join(TRACES, name))
+        for k in hold:
+            hold[k] += c.hold_counts[k]
         total += c.n_steps
         p01 += c.n_page01_checked
         sep += c.n_cc_separating
@@ -891,6 +1067,17 @@ def test_invariants_hold_over_every_trace():
        "at exactly 20" % full)
     ok(cut >= 2, "%d cut-short bursts were seen (replaced, superseded)"
        % cut)
+    # Rule 6 (spec 5.2): the hold law judged in both directions and in the
+    # band, or it passes by never running.
+    print("  --  traces: hold page-01 frames up %(up)d, down %(down)d, held "
+          "%(hold)d, clamped %(clamped)d, unjudged %(unjudged)d, entry "
+          "window (pending ruling) %(entry_window)d" % hold)
+    ok(hold["up"] >= 5 and hold["down"] >= 5 and hold["hold"] >= 5,
+       "rule 6 judged hold steps up (%d), down (%d) and held frames (%d)"
+       % (hold["up"], hold["down"], hold["hold"]))
+    ok(M.STATE_NAMES.get(S_HOLD) == "HOLD",
+       "the core names state %d HOLD, as the schema doc's 0x7F4 B2 does"
+       % S_HOLD)
 
 
 def test_invariants_hold_over_randomised_traffic():
@@ -1069,7 +1256,103 @@ def _mutations():
         return _rewrite(out, lambda it: kind == "V" and arb_id == M.BMS_LIMITS
                         and it[1] == M.BMS_LIMITS, lambda it: None)
 
+    # --- spec 5.2 hold (2026-10-09). The mutate hook runs before the checker
+    # judges the step, so c.last_sp_a is still the setpoint before it.
+    def in_hold_p01(c, kind, arb_id):
+        p = fwd_cmd(kind, arb_id, 0x01)
+        return lambda it: c.core.state == S_HOLD and p(it)
+
+    def counts(a):
+        return int(round(a / P.UNIT))
+
+    def with_i(it, i):
+        # only the current bytes (B3-B4, protocol.setpoint_counts) change,
+        # so a mutation is not also caught as "other bytes changed"
+        i = max(i, 0)
+        return (it[0], it[1], it[2],
+                setb(setb(it[3], 3, i & 0xFF), 4, i >> 8))
+
+    def m_hold_frozen(c, kind, arb_id, data, out):
+        if c.last_sp_a is None:
+            return out, 0
+        pi = counts(c.last_sp_a)
+        pred = in_hold_p01(c, kind, arb_id)
+        return _rewrite(out, lambda it: pred(it)
+                        and P.setpoint_counts(it[3])[1] != pi,
+                        lambda it: with_i(it, pi))
+
+    def m_hold_double_step(c, kind, arb_id, data, out):
+        if c.last_sp_a is None:
+            return out, 0
+        pi = counts(c.last_sp_a)
+        pred = in_hold_p01(c, kind, arb_id)
+        return _rewrite(out, lambda it: pred(it)
+                        and P.setpoint_counts(it[3])[1] != pi,
+                        lambda it: with_i(it, pi + 2 * (
+                            P.setpoint_counts(it[3])[1] - pi)))
+
+    def m_hold_reversed(c, kind, arb_id, data, out):
+        if c.last_sp_a is None:
+            return out, 0
+        pi = counts(c.last_sp_a)
+        pred = in_hold_p01(c, kind, arb_id)
+        return _rewrite(out, lambda it: pred(it)
+                        and P.setpoint_counts(it[3])[1] not in (pi, 0),
+                        lambda it: with_i(it, pi - (
+                            P.setpoint_counts(it[3])[1] - pi)))
+
+    def m_hold_every_frame(c, kind, arb_id, data, out):
+        # the right direction, but on every page 01: no 0.3 s gate
+        ib, perm = c.bus.ibat_a, c.bus.perm_a
+        if c.last_sp_a is None or ib is None or perm is None:
+            return out, 0
+        pi = counts(c.last_sp_a)
+        step = counts(HOLD_STEP_A)
+        if ib > perm + HOLD_EDGE_A and pi >= step:
+            want = pi - step
+        elif ib < perm - HOLD_BAND_A - HOLD_EDGE_A:
+            want = pi + step
+        else:
+            return out, 0
+        pred = in_hold_p01(c, kind, arb_id)
+        return _rewrite(out, lambda it: pred(it)
+                        and P.setpoint_counts(it[3])[1] != want,
+                        lambda it: with_i(it, want))
+
+    def m_hold_above_cap(c, kind, arb_id, data, out):
+        caps = c.bus.caps()
+        if not caps:
+            return out, 0
+        return _rewrite(out, in_hold_p01(c, kind, arb_id),
+                        lambda it: with_i(it, counts(caps[0]) + 20))
+
+    def m_hold_vlim(c, kind, arb_id, data, out):
+        return _rewrite(out, in_hold_p01(c, kind, arb_id),
+                        lambda it: (it[0], it[1], it[2],
+                                    setb(it[3], 1, it[3][1] ^ 0x01)))
+
+    def m_hold_other_frame(c, kind, arb_id, data, out):
+        # 5.2: the hold "changes nothing else". No VCU page 00 arrives
+        # inside a hold in these traces (one would end it), so the frame
+        # changed is the BMS permission the charger also receives.
+        if c.core.state != S_HOLD:
+            return out, 0
+        return _rewrite(out, lambda it: kind == "V"
+                        and arb_id == M.BMS_LIMITS and it[1] == M.BMS_LIMITS,
+                        lambda it: (it[0], it[1], it[2],
+                                    setb(it[3], 7, it[3][7] ^ 0x01)))
+
     return {
+        "hold: the override's setpoint frozen": (m_hold_frozen, "held while"),
+        "hold: steps of 0.2 A": (m_hold_double_step, "the hold steps 0.1 A"),
+        "hold: each step reversed": (m_hold_reversed, "with ibat not"),
+        "hold: a step on every page 01": (m_hold_every_frame, "two steps"),
+        "hold: setpoint 1 A above the EVSE cap":
+            (m_hold_above_cap, "outside 0 A"),
+        "hold: page 01 Vlim byte changed":
+            (m_hold_vlim, "hold: page 01 bytes other than the current"),
+        "hold: a 0x420 byte changed":
+            (m_hold_other_frame, "rewritten in HOLD"),
         "page 01 forwarded unrewritten in an override":
             (m_p01_unrewritten, "commanded"),
         "page 01 two amps above ours": (m_p01_over, "commanded"),

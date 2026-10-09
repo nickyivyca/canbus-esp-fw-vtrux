@@ -61,6 +61,17 @@ boundary forgets the last pilot-timer reading, so a lower timer after the
 silence keeps SAFE; SAFE then clears on STAND_BY / EXPORT or a later
 step-back (test_silence_forgets_the_pilot_reading, with a can-fail test).
 
+Spec 5.2 HOLD (spec eb9b9d135939af17, tester, 2026-10-09):
+  * every fault source (all but the 6 h cap) trips from HOLD too: SAFE,
+    the trip's reason, NO repeat toward the charger, page 01 untouched
+    after (test_every_fault_source_trips_from_hold; can-fail
+    test_hold_trips_can_fail, three wrapped wrong cores);
+  * the hold has no time limit: a 2 s cap held 3x from the hold's entry
+    does not trip, while the same span in OVERRIDE does (the control), and
+    a hold past 6 h on the default Config does not trip;
+  * the non-trips hold from HOLD as well, and chg_max 0 from OVERRIDE now
+    ends in HOLD (the release), not TERMINATED.
+
 Run:  py -3.14 projects/vtrux/tools/interposer/test_trips.py
 """
 
@@ -421,6 +432,185 @@ def check_from_override(label, reason, fire, hold, steps, cap_ms=None):
     ok(bad is None, "%s: nothing rewritten after the trip (%s)" % (label, bad))
 
 
+def _to_hold(b, limit=60):
+    """OVERRIDE -> HOLD by spec 5.1 / 5.2: chg_max at or below 3.0 A for the
+    debounce releases into the hold. Then lets the release's own Low Power
+    repeat (4.1, 20 x 50 ms) run out, so nothing a later step sends toward
+    the charger is that burst. -> True if the core is in HOLD."""
+    for _ in range(limit):
+        if b.state() == "HOLD":
+            break
+        b.t += 100
+        b.charger_status(12)
+        b.bms(vmax=3.340, chg_max=2.0)
+        b.tick()
+    if b.state() != "HOLD":
+        return False
+    _drain(b, lambda bb: (bb.charger_status(12),
+                          bb.bms(vmax=3.340, chg_max=2.0)), 25)
+    return b.state() == "HOLD"
+
+
+def _hold_rewrites_page01(b):
+    """True if a VCU page 01 sent now reaches the charger changed -- the
+    hold's page-01 rewrite (5.2) that a trip must stop."""
+    out = b.veh(M.CMD_ID, P.enc_setpoint(P.VLIM_DEFAULT_COUNTS, 380))
+    fw = [d for side, fid, _e, d in out
+          if side == M.TO_CHARGER and fid == M.CMD_ID]
+    return len(fw) == 1 and bytes(fw[0]) != P.enc_setpoint(
+        P.VLIM_DEFAULT_COUNTS, 380)
+
+
+def hold_trip_problems(label, reason, fire, hold, steps, wrong=None):
+    """Spec 5.2: "The trips of section 6 apply throughout" the hold, and "a
+    trip in HOLD goes to SAFE". Spec 6: a trip stops "the page-01 rewrite at
+    once if we were holding (5.2; page 00 is already the VCU's, so nothing
+    is repeated)". So: SAFE, the trip's reason, NO frame originated toward
+    the charger, and later page 01 passes byte-identical.
+
+    `wrong(b)`, for test_hold_trips_can_fail only, turns the Bench's core
+    into a wrong one after it is built."""
+    probs = []
+    b = _armed()
+    if wrong is not None:
+        wrong(b)
+    b.low_power()
+    if not _to_hold(b):
+        return ["%s: did not release into HOLD (%s)" % (label, b.state())]
+    if not _hold_rewrites_page01(b):
+        probs.append("%s: the hold was not rewriting page 01" % label)
+    sent = _originated(fire(b))
+    sent += _drain(b, hold, steps)
+    got = b.core.trip_reason or ""
+    if reason not in got:
+        probs.append("%s: no trip from HOLD with reason %r (got %r)"
+                     % (label, reason, got))
+    if b.state() != "SAFE":
+        probs.append("%s: not SAFE after a trip in HOLD (%s)"
+                     % (label, b.state()))
+    sent += _drain(b, hold, 25)
+    if sent:
+        probs.append("%s: a trip in HOLD repeated %d frame(s) toward the "
+                     "charger; spec 6 repeats nothing" % (label, len(sent)))
+    mark = len(b.log)
+    b.veh(M.CMD_ID, P.enc_setpoint(P.VLIM_DEFAULT_COUNTS, 380))
+    bad = _bus_unchanged(b.log[mark:])
+    if bad is not None:
+        probs.append("%s: page 01 changed after the trip in HOLD (%s)"
+                     % (label, bad))
+    return probs
+
+
+def test_every_fault_source_trips_from_hold():
+    for label, reason, fire, hold, steps, override_only in CASES:
+        if override_only:
+            continue                    # the 6 h cap: OVERRIDE only (5.2)
+        for p in hold_trip_problems(label, reason, fire, hold, steps):
+            FAILS.append(p)
+
+
+def test_hold_trips_can_fail():
+    """Three wrong cores, each made by wrapping the real one (machine.py is
+    untouched); each must be caught on its own check, using the first fault
+    source (any would do: the wrongs are in what follows the trip)."""
+    label, reason, fire, hold, steps, _o = [c for c in CASES if not c[5]][0]
+
+    def repeats_on_trip(b):
+        tick = b.core.tick
+
+        def t(now):
+            out = list(tick(now))
+            if b.core.trip_reason:
+                out.append((M.TO_CHARGER, M.CMD_ID, True,
+                            P.enc_master(1, P.MODE_LOW_POWER)))
+            return out
+        b.core.tick = t
+
+    def keeps_rewriting(b):
+        veh = b.core.on_vehicle_frame
+
+        def v(fid, ext, data, now):
+            out = list(veh(fid, ext, data, now))
+            if (b.core.trip_reason and fid == M.CMD_ID and data[0] == 0x01):
+                out = [(s, f, e, P.enc_setpoint(P.VLIM_DEFAULT_COUNTS, 40))
+                       if f == M.CMD_ID else (s, f, e, d)
+                       for s, f, e, d in out]
+            return out
+        b.core.on_vehicle_frame = v
+
+    def ignores_trips_in_hold(b):
+        if not hasattr(b.core, "_trip"):
+            raise SystemExit("test_hold_trips_can_fail: the core has no "
+                             "_trip() to wrap -- rebuild this wrong core")
+        trip = b.core._trip
+
+        def tr(*a, **kw):
+            if M.STATE_NAMES[b.core.state] == "HOLD":
+                return []                   # the trip's frames: none
+            return trip(*a, **kw)
+        b.core._trip = tr
+
+    for name, wrong, want in (
+            ("repeats Low Power after a trip in HOLD", repeats_on_trip,
+             "repeated"),
+            ("keeps rewriting page 01 after the trip", keeps_rewriting,
+             "page 01 changed after the trip"),
+            ("ignores trips in HOLD", ignores_trips_in_hold,
+             "no trip from HOLD")):
+        probs = hold_trip_problems(label, reason, fire, hold, steps,
+                                   wrong=wrong)
+        ok(any(want in p for p in probs),
+           "the from-HOLD trip check catches a core that %s (%s)"
+           % (name, probs[:2]))
+    ok(not hold_trip_problems(label, reason, fire, hold, steps),
+       "control: the same check passes the unwrapped core")
+
+
+def hold_no_time_limit_problems(state, cap_ms=2000, span_ms=None):
+    """Spec 5.2 / 6 (user, 2026-10-09): "The hold has no time limit: the
+    6 h cap of section 6 is the override's". The span is counted from the
+    entry into `state` and is three times the cap, so a cap counted from the
+    hold's entry, or from the session start, both show. Run with
+    state="OVERRIDE" as the control: the same span there MUST trip -- which
+    is what makes a HOLD that does not trip mean anything."""
+    probs = []
+    b = _armed(cap_ms=cap_ms)
+    b.low_power()
+    if state == "HOLD" and not _to_hold(b):
+        return ["did not reach HOLD (%s)" % b.state()]
+    if b.state() != state:
+        return ["did not reach %s (%s)" % (state, b.state())]
+    span = span_ms if span_ms is not None else 3 * cap_ms
+    step = 400 if span > 60000 else 100      # BMS fresh within 500 ms
+    hold = (_hold_all if state == "OVERRIDE" else
+            (lambda bb: (bb.charger_status(12),
+                         bb.bms(vmax=3.340, chg_max=2.0))))
+    _drain(b, hold, span // step + 1, step_ms=step)
+    if b.core.trip_reason is not None or b.state() != state:
+        probs.append("%s held %d ms past entry (cap %s ms): %s (%r)"
+                     % (state, span, cap_ms, b.state(), b.core.trip_reason))
+    return probs
+
+
+def test_hold_has_no_time_limit():
+    p = hold_no_time_limit_problems("HOLD")
+    ok(not p, "spec 5.2: a hold with a 2 s cap configured, held 6 s from its "
+       "entry, does not trip (%s)" % p)
+    ctl = hold_no_time_limit_problems("OVERRIDE")
+    ok(ctl and "session cap" in ctl[0],
+       "control: the same span in OVERRIDE trips on the cap (%s)" % ctl)
+
+
+def test_hold_past_six_hours():
+    """The same with the default Config: a hold held 6 h 5 min from its
+    entry, with no trip (P5, 2026-10-09)."""
+    six_h = 6 * 3600 * 1000
+    p = hold_no_time_limit_problems("HOLD", cap_ms=None,
+                                    span_ms=six_h + 5 * 60 * 1000)
+    ok(not p, "spec 5.2: a hold past 6 h (default Config) does not trip "
+       "(%s)" % p)
+
+
 def test_every_fault_source_trips_from_monitor():
     for label, reason, fire, hold, steps, override_only in CASES:
         if override_only:
@@ -461,8 +651,10 @@ def test_no_source_trips_a_healthy_core():
 
 def _entry(state, **cfg):
     b = _armed(**cfg)
-    if state == "OVERRIDE":
+    if state in ("OVERRIDE", "HOLD"):
         b.low_power()
+    if state == "HOLD":
+        _to_hold(b)
     return b
 
 
@@ -988,8 +1180,10 @@ def test_silence_forgets_pilot_can_fail():
 
 def test_spec_non_trips():
     """Spec 6 (B-5, B-7a, B-7b) and "cell temperature is not a trip": none
-    of these trips from MONITOR or from OVERRIDE, and the core stays in its
-    state -- except chg_max = 0 from OVERRIDE, which is the release (5.1)."""
+    of these trips from MONITOR, OVERRIDE or HOLD, and the core stays in its
+    state -- except chg_max = 0 from OVERRIDE, which is the release (5.1)
+    into HOLD (5.2, spec eb9b9d13; it was TERMINATED before HOLD existed).
+    In HOLD chg_max 0 is what the hold follows down, not a trip (5.2)."""
     cases = (
         ("alarm TYPE2", dict(alarm=2)),
         ("cell_undervolt", dict(undervolt=1)),
@@ -998,8 +1192,10 @@ def test_spec_non_trips():
         ("chg_max 0", dict(chg_max=0.0)),
     )
     for label, kw in cases:
-        for state in ("MONITOR", "OVERRIDE"):
+        for state in ("MONITOR", "OVERRIDE", "HOLD"):
             b = _entry(state)
+            ok(b.state() == state, "%s: reached %s (was %s)"
+               % (label, state, b.state()))
             for _ in range(100):               # 10 s
                 b.t += 100
                 b.charger_status(12)
@@ -1012,7 +1208,7 @@ def test_spec_non_trips():
                                              b.core.trip_reason))
             want = state
             if label == "chg_max 0" and state == "OVERRIDE":
-                want = "TERMINATED"
+                want = "HOLD"
             ok(b.state() == want, "%s from %s: ends in %s (was %s)"
                % (label, state, want, b.state()))
 

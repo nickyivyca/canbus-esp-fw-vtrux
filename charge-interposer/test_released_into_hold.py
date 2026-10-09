@@ -59,9 +59,26 @@ def check(cond, what):
         failures += 1
 
 
-def logs(name):
+PRE_HOLD = "[TERMINATED] RELEASE"
+HOLD_REL = "[HOLD] RELEASE"
+
+
+def logs(name, raw=False):
+    """The saved run's charger and interposer logs.
+
+    These runs (2026-10-04) PREDATE spec 5.2's HOLD: their core logged the
+    release as "[TERMINATED] RELEASE". Rev 3 of the check (2026-10-09)
+    requires the release to enter HOLD ("core in HOLD", spec 9), so unless
+    `raw`, the interposer log is presented with that one tag as a HOLD-era
+    core writes it. Nothing else changes: the charger's log -- what the
+    check judges -- is the real one. The rev 3 clause itself is tested on
+    the raw log ("a release into TERMINATED"). Replace these fixtures with
+    E4-era runs after acceptance step 3 (1x on madhouse)."""
     c = (RUN / ("%s.charger.log" % name)).read_text(errors="replace")
     i = (RUN / ("%s.interposer.log" % name)).read_text(errors="replace")
+    if not raw:
+        assert PRE_HOLD in i, "%s: no pre-HOLD RELEASE line" % name
+        i = i.replace(PRE_HOLD, HOLD_REL)
     return c, i
 
 
@@ -138,14 +155,19 @@ def main():
             "the hold setpoint is 9.00 A, above the band")
 
     refuses(chg, "\n".join(l for l in intp.splitlines()
-                           if "[TERMINATED] RELEASE" not in l),
+                           if HOLD_REL not in l),
             "never logged a RELEASE",
             "no RELEASE in the interposer log")
 
-    # ... and that last one must NOT be reported as a charger fault.
+    # Rev 3 (spec 5.2 / 9): a release that left the core in TERMINATED --
+    # the pre-HOLD behaviour, on the real, unedited log.
+    refuses(chg, logs("evap-override-above-ceiling", raw=True)[1],
+            "not HOLD", "a release into TERMINATED, not HOLD")
+
+    # ... and the missing RELEASE must NOT be reported as a charger fault.
     _ok, why = R._released_into_hold(
         chg, "\n".join(l for l in intp.splitlines()
-                       if "[TERMINATED] RELEASE" not in l), 1.0, 4.0)
+                       if HOLD_REL not in l), 1.0, 4.0)
     check("never entered mode 3" not in why,
           "a missing RELEASE is its own refusal, NOT 'the charger never "
           "entered mode 3' -- those send you to different files")

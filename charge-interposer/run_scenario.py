@@ -150,8 +150,12 @@ def chg_ev(pattern):
 def released_into_hold(lo_a=1.0, hi_a=4.0):
     """Spec 5.2 / 9: the release put the charger into the VCU's own hold.
 
+    Rev 3 (2026-10-09, spec 5.2 HOLD): the release is the interposer log's
+    [HOLD] RELEASE, and a RELEASE logged in any other state is refused
+    ("core in HOLD", spec 9).
+
     ANCHORED TO THE CORE'S RELEASE (rev 2, 2026-10-05). Take the
-    interposer log's [TERMINATED] RELEASE; from the CHARGER's log, at or
+    interposer log's RELEASE; from the CHARGER's log, at or
     after that second and before the handle pull, there must be exactly
     ONE entry into mode 3, from mode CHARGER, in state 12, at the hold
     current, with no further mode change until the pull.
@@ -264,7 +268,16 @@ def diag_frames_ok():
 
 
 def no_rewrite_after_release():
-    """Spec 5.2: from the release on, nothing is rewritten.
+    """Spec 5.2 / 9: after the hold ends at the handle pull, nothing is
+    rewritten -- "the core going to TERMINATED with all modification stopped
+    at the flow drop or the plug-out report" (spec 9, eb9b9d13).
+
+    NOT from the release itself (2026-10-09): since spec 5.2 the release
+    enters HOLD, which rewrites page 01, so `modified` keeps moving through
+    the hold by design. What the hold may rewrite (page 01 only, by the
+    hold law) is judged frame by frame on the scenario's trace by
+    check_invariants (test_invariants rules 2 and 6). The name is kept so
+    the scenarios' expect lists and the goldens stay comparable.
 
     Read off `0x7F6` (the running `modified` count) in the vehicle log's
     diagnostic frames, from the first `0x7F4` that reports TERMINATED. Both
@@ -988,9 +1001,9 @@ CHG_ANY = re.compile(
     r"charger: (?:mode (?P<mf>\w+) -> (?P<mt>\w+) \(setpoint (?P<sp>[\d.]+) A\)"
     r"|state (?P<sf>\d+) -> (?P<st>\d+) )")
 
-# machine.py STATE_NAMES, by the byte 0x7F4 B2 carries.
+# The schema doc's 0x7F4 B2 values (schema 4 adds 6 = HOLD, spec 5.2).
 DIAG_STATES = {0: "PASSTHROUGH", 1: "MONITOR", 2: "OVERRIDE",
-               4: "TERMINATED", 5: "SAFE"}
+               4: "TERMINATED", 5: "SAFE", 6: "HOLD"}
 
 
 def parse_diag_frames(veh_text):
@@ -1020,7 +1033,7 @@ LOG_TS = re.compile(r"^(\d\d):(\d\d):(\d\d) ")
 # with the check that produced it.
 #   1  the first entry into mode 3 anywhere in the log
 #   2  (2026-10-05) anchored to the core's RELEASE
-RELEASED_INTO_HOLD_REV = 2
+RELEASED_INTO_HOLD_REV = 3
 
 
 def _stamped(text):
@@ -1048,23 +1061,40 @@ def _stamped(text):
     return out
 
 
+RELEASE_LINE = re.compile(r"\[(\w+)\] RELEASE")
+
+
+def _release_event(intp_text):
+    """-> (seconds of day, state the core logged it in) at the core's first
+    RELEASE, or (None, None) if it never came. The state is the one the
+    core was in after the event: spec 5.2 (eb9b9d13) releases into HOLD;
+    before HOLD existed it was TERMINATED."""
+    for t, line in _stamped(intp_text):
+        m = RELEASE_LINE.search(line)
+        if m:
+            return t, m.group(1)
+    return None, None
+
+
 def _release_time(intp_text):
     """Seconds of day at the core's RELEASE, or None if it never came."""
-    for t, line in _stamped(intp_text):
-        if "[TERMINATED] RELEASE" in line:
-            return t
-    return None
+    return _release_event(intp_text)[0]
 
 
 def _released_into_hold(chg_text, intp_text, lo_a, hi_a):
     """-> (ok, why). See released_into_hold()."""
-    rel = _release_time(intp_text)
+    rel, rel_state = _release_event(intp_text)
     if rel is None:
         return (False, "the core never logged a RELEASE, so there is no "
                        "release for the charger's behaviour to be measured "
                        "against. This is a DIFFERENT failure from the "
                        "charger mishandling a release, and it is not "
                        "evidence about the charger at all")
+    # Spec 9 (eb9b9d13): "the core released into our hold (... core in
+    # HOLD ...)". The core's own event carries the state it entered.
+    if rel_state != "HOLD":
+        return (False, "the core's RELEASE left it in %s, not HOLD -- spec "
+                       "5.2 releases into our hold" % rel_state)
 
     state = None
     before = []          # entries into mode 3 BEFORE the release
@@ -1134,10 +1164,11 @@ def _released_into_hold(chg_text, intp_text, lo_a, hi_a):
 BURST_FRAMES = 20
 BURST_MS = BURST_FRAMES * 50
 
-# Spec 8.2 and the schema doc's version table: firmware version 4 carries
-# the section A and B behaviour, schema 3. Literals for the same reason.
-SPEC_FW_VER = 4
-SPEC_SCHEMA_VER = 3
+# Spec 8.2 and the schema doc's version table (7c866acd6f804161): firmware
+# version 5 carries spec 5.2's HOLD and the spec 2 receive-order fix,
+# schema 4. Literals for the same reason.
+SPEC_FW_VER = 5
+SPEC_SCHEMA_VER = 4
 
 # A timestamped REPEAT, and the vehicle-side markers of the VCU changing
 # page 00: a mode command, or the energy-flow bit going to 0. "VCU: charger
@@ -1512,6 +1543,26 @@ def _diag_frames_ok(diag, fstate):
             return (False, "0x7F7 reports fw %d schema %d, spec fw %d "
                            "schema %d" % (fw16, b[6], SPEC_FW_VER,
                                           SPEC_SCHEMA_VER))
+
+    # Schema 4 (7c866acd6f804161), 0x7F4: B4 bit 5 override_active is "1
+    # while the core is rewriting the VCU's commands: OVERRIDE ... and HOLD"
+    # (user, 2026-10-09), so 0 in every other state; B5 is "our commanded
+    # current on page 01 ... (255 = not commanding): the override command
+    # in OVERRIDE, the hold setpoint in HOLD".
+    rewriting = ("OVERRIDE", "HOLD")
+    for body in by_id[0x7F4]:
+        st = DIAG_STATES.get(body[2], "?%d" % body[2])
+        bit5 = (body[4] >> 5) & 1
+        if bit5 != (1 if st in rewriting else 0):
+            return (False, "0x7F4 in %s has override_active (B4 bit 5) = %d"
+                           "; schema 4: 1 in OVERRIDE and HOLD, else 0"
+                    % (st, bit5))
+        if st in rewriting and body[5] == 255:
+            return (False, "0x7F4 in %s reports B5 = 255 (not commanding); "
+                           "schema 4: our page-01 current" % st)
+        if st not in rewriting and body[5] != 255:
+            return (False, "0x7F4 in %s reports B5 = %d; schema 4: 255 when "
+                           "not commanding" % (st, body[5]))
 
     last_state = DIAG_STATES.get(by_id[0x7F4][-1][2], "?%d"
                                  % by_id[0x7F4][-1][2])
