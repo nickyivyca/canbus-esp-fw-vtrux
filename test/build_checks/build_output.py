@@ -952,6 +952,18 @@ def check_sources_older_than_image(path):
     and the failure names the offending files instead of being a silent pass.
     This is the check tools-reference.md already prescribes for the interposer
     board, which has no git checkout to ask.
+
+    A NEWER FILE IS NOT ALWAYS A CHANGED ONE (2026-10-09, reviewer). A branch
+    switch rewrites every file that differs between the branches, so switching
+    away and back leaves files newer than the image with exactly the content it
+    was built from, and the row failed on them. So each newer file is compared,
+    through git's own hashing (line-ending filters included), with the same
+    path at the commit the image names:
+      - content differs, or the image's commit cannot be read (no version,
+        `-dirty`, not in this repo)          -> FAIL, as before;
+      - content identical                    -> NO REFERENCE, not a pass: an
+        edit, a build and then a revert looks exactly the same, and mtimes
+        cannot tell it from a branch switch.
     """
     if not os.path.exists(path):
         row("sources older than the image", None, "no image", ref_missing=True)
@@ -970,6 +982,8 @@ def check_sources_older_than_image(path):
         row("sources older than the image", None,
             "git ls-files failed (%d)" % r.returncode, ref_missing=True)
         return
+    d = app_desc(path)
+    ver = d[0] if d else None
     newer = []
     for rel in r.stdout.split("\n"):
         rel = rel.strip()
@@ -981,13 +995,42 @@ def check_sources_older_than_image(path):
                 newer.append(rel)
         except OSError:
             continue
-    row("sources older than the image", not newer,
-        "%d tracked source(s) are NEWER than the image, so it was not built from "
-        "them: %s%s" % (len(newer), ", ".join(sorted(newer)[:6]),
-                        " ..." if len(newer) > 6 else "")
-        if newer else
-        "every tracked source under main/, components/ and the build files is "
-        "older than the image")
+    changed = [rel for rel in newer if not _blob_same(rel, ver)]
+    same = [rel for rel in newer if rel not in changed]
+    if changed:
+        row("sources older than the image", False,
+            "%d tracked source(s) are NEWER than the image and differ from (or cannot "
+            "be compared with) %s, so it was not built from them: %s%s"
+            % (len(changed), ver if _commitish(ver) else "any commit the image names",
+               ", ".join(sorted(changed)[:6]), " ..." if len(changed) > 6 else ""))
+    elif same:
+        row("sources older than the image", None,
+            "%d tracked source(s) are newer than the image but byte-identical to %s "
+            "(a branch switch, or an edit-build-revert -- mtimes cannot tell which): "
+            "%s%s" % (len(same), ver, ", ".join(sorted(same)[:6]),
+                      " ..." if len(same) > 6 else ""),
+            ref_missing=True)
+    else:
+        row("sources older than the image", True,
+            "every tracked source under main/, components/ and the build files is "
+            "older than the image")
+
+
+def _commitish(ver):
+    """A version string that names one commit: hex, no -dirty."""
+    return bool(ver) and re.fullmatch(r"[0-9a-f]{7,40}", ver) is not None
+
+
+def _blob_same(rel, ver):
+    """Is the working file's content the blob at `ver`:`rel`? False if unknowable."""
+    if not _commitish(ver):
+        return False
+    a = subprocess.run(("git", "-C", REPO, "rev-parse", "--verify", "-q",
+                        "%s:%s" % (ver, rel)), capture_output=True, text=True)
+    b = subprocess.run(("git", "-C", REPO, "hash-object", "--path", rel,
+                        os.path.join(REPO, rel)), capture_output=True, text=True)
+    return (a.returncode == 0 and b.returncode == 0
+            and a.stdout.strip() == b.stdout.strip() != "")
 
 
 def check_prod_record(path):
@@ -1174,6 +1217,65 @@ def check_schema_doc(doc_path):
         "doc says %d, GI_DIAG_SCHEMA_VER is %s" % (doc_ver, ver))
 
 
+def source_fw_version(path=None):
+    """DIAG_FW_VERSION as main/gen_inhibit.c defines it, or None."""
+    path = path or os.path.join(REPO, "main", "gen_inhibit.c")
+    if not os.path.exists(path):
+        return None
+    m = re.search(r"#define\s+DIAG_FW_VERSION\s+(\d+)", open(path, encoding="utf-8").read())
+    return int(m.group(1)) if m else None
+
+
+def doc_latest_fw_rev(text):
+    """The highest diag_fw_ver in the schema doc's rev table, or None.
+
+    The table is the one whose header row starts "| diag_fw_ver | git rev |";
+    its rows run until the first line that is not a table line. The highest
+    number is taken rather than the last row, so the row order cannot matter.
+    """
+    lines = text.splitlines()
+    try:
+        i = next(k for k, x in enumerate(lines)
+                 if re.match(r"\|\s*diag_fw_ver\s*\|\s*git rev\s*\|", x))
+    except StopIteration:
+        return None
+    revs = []
+    for x in lines[i + 1:]:
+        if not x.startswith("|"):
+            break
+        m = re.match(r"\|\s*(\d+)\s*\|", x)
+        if m:
+            revs.append(int(m.group(1)))
+    return max(revs) if revs else None
+
+
+def check_fw_version(doc_path, src_path=None):
+    """Row 10's other half: DIAG_FW_VERSION against the schema doc's rev table.
+
+    Added 2026-10-09 (reviewer): the host suite cannot see this value, because
+    the core's default config carries fw_version 1 and no scenario overrides
+    it, so every golden reads 01 and only a device read checked it. A bump
+    the doc does not record, or a doc row the source never reached, fails.
+    The value can also be set with -DDIAG_FW_VERSION (the define is under
+    #ifndef); this row reads the source default, which is what a normal build
+    uses.
+    """
+    src = source_fw_version(src_path)
+    if not doc_path or not os.path.exists(doc_path):
+        row("DIAG_FW_VERSION is the schema doc's latest rev", None,
+            "no schema doc at %s" % doc_path, ref_missing=True)
+        return
+    doc = doc_latest_fw_rev(open(doc_path, encoding="utf-8").read())
+    if src is None or doc is None:
+        row("DIAG_FW_VERSION is the schema doc's latest rev", None,
+            "could not read %s" % ("DIAG_FW_VERSION in main/gen_inhibit.c"
+                                   if src is None else "the doc's rev table"),
+            ref_missing=True)
+        return
+    row("DIAG_FW_VERSION is the schema doc's latest rev", src == doc,
+        "main/gen_inhibit.c defines %d, the doc's rev table ends at %d" % (src, doc))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1228,6 +1330,7 @@ def main():
     check_partitions(build_dir)
     check_diag(args.dbc)
     check_schema_doc(args.schema_doc)
+    check_fw_version(args.schema_doc)
     check_source()
     check_one_transmit_owner()
     check_lateness_has_a_detector()

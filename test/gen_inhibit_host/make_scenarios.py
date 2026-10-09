@@ -2192,6 +2192,43 @@ def add_autokey(lines):
     return sorted_directives(lines + key_train(t0, t1 + 1, on=True))
 
 
+# ---------------------------------------------------------------------------
+# Spec 11 / section 10: bus_on means the CONTROLLER is running (tester,
+# 2026-10-09). No golden had 0x7F1 diag_flags bit1 clear, so the meaning was
+# unchecked on the host. The "bus" directive's first field is the core's
+# can_enabled input, which the shim sets from twai_get_status_info() ==
+# TWAI_STATE_RUNNING; here it is driven directly. These are judged by
+# bus_on_check.py against the spec, and have no goldens on purpose.
+# ---------------------------------------------------------------------------
+
+@scenario("bus-on-stopped-live", """
+Live INHIBIT on a healthy bus; at 5 s the controller stops running (the driver
+still installed and ours) and at 8 s it runs again.
+
+EXPECT: every 0x7F1 has diag_flags (B3) bit1 bus_on SET while the controller
+runs and CLEAR while it does not (spec 11: true only in TWAI_STATE_RUNNING;
+section 10: the 0x7F1 bit has the same meaning). Judged by bus_on_check.py.
+Whatever else the core does about the stopped controller is not asserted here.
+""")
+def s_bus_on_stopped_live():
+    return live_run([], 11, extra=["bus %d 0 1 1 0" % (5 * S),
+                                   "bus %d 1 1 1 0" % (8 * S)])
+
+
+@scenario("bus-on-stopped-armed", """
+Armed INHIBIT with only the background interlock traffic, no 0x051, so never
+live; the controller stops running from 3 s to 6 s.
+
+EXPECT: as bus-on-stopped-live -- bit1 follows the controller, armed or live.
+Judged by bus_on_check.py.
+""")
+def s_bus_on_stopped_armed():
+    return sorted_directives(["mode 0 3 500",
+                              "bus %d 0 1 1 0" % (3 * S),
+                              "bus %d 1 1 1 0" % (6 * S),
+                              "end %d" % (9 * S)])
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", default="scenarios")
