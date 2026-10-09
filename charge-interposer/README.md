@@ -1,4 +1,4 @@
-# projects/vtrux/tools/interposer/
+# charge-interposer/
 
 Three-way CAN bench for the Vtrux charge interposer: a board that sits between
 the Bel Fuse charger and the rest of the powertrain bus so the truck can be
@@ -31,16 +31,60 @@ charger, then `vehicle_sim.py` for the real truck.
 
 ---
 
+## Where this tree lives, and what not to build from it
+
+This folder is `charge-interposer/` at the root of
+`nickyivyca/canbus-esp-fw-vtrux`. It moved here on 2026-10-08 from
+`projects/vtrux/tools/interposer/` in the `reverse-it` SeaDrive project;
+that copy is frozen and is being replaced by a pointer.
+
+**Never build or flash WiCAN firmware from this clone.** The WiCAN tree
+around this folder is `gen-inhibit/rollback-fix` at `45b6871`, 92 commits
+behind: schema 4, and no transmit scheduler. Nothing here depends on it
+and nothing here should be used to produce a WiCAN image. The gen-inhibit
+component builds only from `~/Git/wican-fw-vtrux`.
+
+**The spec and its paperwork did not move.** They stay in `reverse-it`
+under `projects/vtrux/notes/`:
+
+| What | Where, in `reverse-it` |
+|---|---|
+| Spec -- the source of truth for behaviour | `projects/vtrux/notes/charge-interposer-spec.md` |
+| Review tracker | `projects/vtrux/notes/charge-interposer/charge-interposer-review.md` |
+| Test evidence | `projects/vtrux/notes/charge-interposer-test-evidence.md` |
+| Bench harnesses and captures | `projects/vtrux/notes/artifacts/interposer-firmware/` |
+
+So every `projects/vtrux/...` path in this README is a path in
+`reverse-it`, not in this repo. Relative links to them went stale the
+moment this folder moved and have been rewritten to say so.
+
+**Captures and DBCs are reached through two harness settings.**
+`VTRUX_DATA` points at `reverse-it`'s `projects/vtrux` (the captures and
+`canre`); `VTRUX_PUBLIC_REPO` points at a clone of the public
+`nickyivyca/canbus-reveng-vtrux-coda` for the vehicle DBCs, defaulting to
+`../canbus-reveng-vtrux-coda` from the repo root. Both are the tester's.
+They are described in
+`projects/vtrux/notes/plans/charge-interposer-acceptance-round-1.md` and
+move into the harness docs when the tester's path-fix commit lands.
+
+**Until that commit lands, not every command below runs from this clone.**
+The paths in them have been rewritten to this location, but `protocol.py`,
+`replay.py`, `bus.py` and `regress.py` still reach for the DBCs, `canre`
+and the captures by their old relative paths. Fixing those is a tester
+commit, not an implementor one.
+
+---
+
 ## What the interposer does
 
-Specified in **`../../notes/charge-interposer-spec.md`**, the single source of
+Specified in **`projects/vtrux/notes/charge-interposer-spec.md`**, the single source of
 truth for arming, the override, the release, the trips and the diagnostics.
 This README covers only the bench. One design fact the bench code leans on
 directly and is easy to get wrong: page 00 `cmd_Mode` 3 is a **hold**, not a
 completion state -- the charger keeps delivering ~2.4 A in it, and 3 -> 1
 restarts full current. The enum (0 Export, 1 Charger, 2 Stand-By, 3 Charger
 Low Power, 4 Invalid) is confirmed from the EPRI binary and on the bus; see
-`../../notes/epri-decompile.md`.
+`projects/vtrux/notes/epri-decompile.md`.
 
 ---
 
@@ -59,7 +103,7 @@ Low Power, 4 Invalid) is confirmed from the EPRI binary and on the bus; see
 | `run_scenario.py` | Runs the live three-way bench through named scenarios and checks the outcome. |
 | `regress.py` | Offline regression against the three real charge captures. |
 | `build_lookup.py` | **Which firmware image is the board actually running?** The identity is the ELF hash (reviewer, 2026-10-07): an OK result carries EVERY manifest row matching it, and `elf_sha256_of_bin()` reads the hash out of an image file so what is flashed is identified by its bytes, never its name. Reads `0x7F7` off the wire, decodes it with `cantools`, and resolves the 4-byte build id against `firmware/builds/manifest.json`. Imported by bench harnesses, never copied. Refuses rather than guessing, with a distinct reason for each failure: unknown id, no `0x7F7` frames at all, an ambiguous prefix, and a missing or empty manifest -- four different problems that must not collapse into one. `require_witness()` is the guard for arms that are only meaningful on the instrumented build. |
-| `build_lookup_offline_test.py` | Offline test for the above: every reason code, no bus and no board. Modelled on the gen-inhibit `autoarm_bit_offline_test.py`, and it IMPORTS the helper rather than reimplementing it -- a test that re-derives the logic it checks agrees only with itself. `py -3.14 projects/vtrux/tools/interposer/build_lookup_offline_test.py` |
+| `build_lookup_offline_test.py` | Offline test for the above: every reason code, no bus and no board. Modelled on the gen-inhibit `autoarm_bit_offline_test.py`, and it IMPORTS the helper rather than reimplementing it -- a test that re-derives the logic it checks agrees only with itself. `py -3.14 charge-interposer/build_lookup_offline_test.py` |
 | `test_signals.py` | Cross-checks `machine.py`'s hand-rolled bit extraction against cantools over randomised frames. |
 | `test_machine.py` | Unit tests for the core's decisions: accept/override/guard-band, the startup transient, release, trips, TYPE2 vs TYPE3, staleness, byte-exact idle forwarding. |
 | `test_trips.py` | One test per fault source in spec 6, from MONITOR **and** from OVERRIDE, each driving exactly one source with every other input held healthy so it cannot pass on a different one. Plus the control: a healthy bus must not trip. Rev 2 (tester, 2026-10-07): the thresholds at their edges (3609/3610 mV, the 5 s debounce, 500 ms staleness per message, the 6 h cap counted from the override's start), the spec's non-trips (TYPE2, undervolt, temperature, `chg_max` 0), "nothing changed on the bus" judged byte by byte, the literal 20, and `test_thresholds_can_fail` against cores built with wrong thresholds. Carries its own copy of the `Bench` driver, since `test_machine.py` is the implementor's. **Rev 3 (tester, 2026-10-08):** spec 6's definitions of 2026-10-07 -- every `bcm_mainc_stat` value alone (only 11 and 12 do not trip) and every `0x18FFD4C0` mux-3 flag alone (only the four named faults trip), from MONITOR and OVERRIDE, recorded as `unit_def_*` traces for the port; MONITOR past 6 h does not trip; each with a can-fail test. |
@@ -75,22 +119,22 @@ Low Power, 4 Invalid) is confirmed from the EPRI binary and on the bus; see
 
 ```bash
 # the fast tests -- run these after every edit  (~10 s, no CAN, no captures)
-python3.13 projects/vtrux/tools/interposer/test_machine.py
-python3.13 projects/vtrux/tools/interposer/test_signals.py
-python3.13 projects/vtrux/tools/interposer/test_trips.py
-python3.13 projects/vtrux/tools/interposer/test_invariants.py
-python3.13 projects/vtrux/tools/interposer/test_released_into_hold.py
-python3.13 projects/vtrux/tools/interposer/test_repeat_bursts.py
+python3.13 charge-interposer/test_machine.py
+python3.13 charge-interposer/test_signals.py
+python3.13 charge-interposer/test_trips.py
+python3.13 charge-interposer/test_invariants.py
+python3.13 charge-interposer/test_released_into_hold.py
+python3.13 charge-interposer/test_repeat_bursts.py
 
 # offline regression against the real truck captures  (~4 min, no CAN)
-python3.13 projects/vtrux/tools/interposer/regress.py --all
+python3.13 charge-interposer/regress.py --all
 
 # the live three-way bench
-python3.13 projects/vtrux/tools/interposer/run_scenario.py --list
-python3.13 projects/vtrux/tools/interposer/run_scenario.py evap-override
+python3.13 charge-interposer/run_scenario.py --list
+python3.13 charge-interposer/run_scenario.py evap-override
 
 # the same bench with the REAL BOARD in the middle (Stage 2)
-py -3.12 projects/vtrux/tools/interposer/run_scenario.py evap-override     --external-interposer --serial-port COM7     --vehicle-transport kvaser --charger-transport pcan
+py -3.12 charge-interposer/run_scenario.py evap-override     --external-interposer --serial-port COM7     --vehicle-transport kvaser --charger-transport pcan
 ```
 
 ### Running against the real board
@@ -146,7 +190,7 @@ found by its anchor IDs (`0x051`, the BMS `0x4xx` cluster, the J1939 charger
 family), because channel numbers vary per capture with dongle insertion order.
 
 Large captures are filtered first by
-`../../notes/artifacts/charge_cmd_filter.sh`, which strips a multi-GB log down
+`projects/vtrux/notes/artifacts/charge_cmd_filter.sh`, which strips a multi-GB log down
 to the charge-control IDs in seconds. `regress.py` does this automatically and
 deletes the filtered copy afterwards unless `--keep-filtered`.
 
@@ -275,7 +319,7 @@ and may never be seen at all if the capture or the board starts mid-session.
 
 The table below is from the original vmax-based release and predates the
 2026-09-16 spec; it is kept as the bench's baseline. Hardware results and
-everything since live in `../../notes/interposer-firmware-bringup.md`.
+everything since live in `projects/vtrux/notes/interposer-firmware-bringup.md`.
 
 All seven scenarios and all three offline regressions passed, on this machine, at
 `--time-scale 25`.
@@ -283,7 +327,7 @@ All seven scenarios and all three offline regressions passed, on this machine, a
 | | result | key evidence |
 |---|---|---|
 | `regress.py charge_M1` | PASS | 4.06 M frames forwarded **byte-identical**. Since 2026-09-30 this is the real-capture case for the spec 3 boot fallback: the capture opens 99 minutes into the session, so the core stays PASSTHROUGH throughout and never reaches the accept. It used to recognise the genuine stop at vmax 3594 mV / chg_max 2.75 A, which is what its expectation asserted before the fallback existed. |
-| `regress.py evap_80pct` | PASS | override fires at t=7427.0 s, `00 01 03` -> `00 01 01`, vmax 3340 mV, chg_max 300 A, 18,735 frames modified (re-measured 2026-10-03; it was 18,753 on 2026-09-30). The reduction is the spec 6 plug-out rule: the override now ends at t=9297.9650 s on the charger's `vehicleConnected` 1 -> 0 report instead of at the VCU's flow drop 1.1286 s later, and the 18 are rewrites the core no longer makes in that gap. Established by controlled replay -- disabling that rule alone restores 18,753 -- see `../../notes/artifacts/evap80_rewrite_delta.py` (regenerate the filtered capture first with `regress.py evap_80pct --keep-filtered`). **This is where real-frame override coverage lives** -- no capture-derived differential case reaches an override any more, see `firmware/README.md`. |
+| `regress.py evap_80pct` | PASS | override fires at t=7427.0 s, `00 01 03` -> `00 01 01`, vmax 3340 mV, chg_max 300 A, 18,735 frames modified (re-measured 2026-10-03; it was 18,753 on 2026-09-30). The reduction is the spec 6 plug-out rule: the override now ends at t=9297.9650 s on the charger's `vehicleConnected` 1 -> 0 report instead of at the VCU's flow drop 1.1286 s later, and the 18 are rewrites the core no longer makes in that gap. Established by controlled replay -- disabling that rule alone restores 18,753 -- see `projects/vtrux/notes/artifacts/evap80_rewrite_delta.py` (regenerate the filtered capture first with `regress.py evap_80pct --keep-filtered`). **This is where real-frame override coverage lives** -- no capture-derived differential case reaches an override any more, see `firmware/README.md`. |
 | `regress.py partstruck` | PASS | 16.3 M frames **byte-identical**; startup transient at t=31 s ignored; genuine stop accepted at vmax 3590 mV / chg_max 0 A |
 | `evap-bypass` | PASS | SoC pinned at 82.3 % -- the truck's behaviour today |
 | `evap-override` | PASS | override at 80 %, release at vmax 3595 mV, SoC 100 %, vmax peak 3.596 V |
@@ -307,7 +351,7 @@ threshold were ever moved close to a genuinely damaging voltage.
 
 ## Status and caveats
 
-`0x18EFC000` is now defined in `../../vtrux-powertrain-experimental.dbc` as
+`0x18EFC000` is now defined in `projects/vtrux/vtrux-powertrain-experimental.dbc` as
 `VCU_ChargerCmd_18EFC000`. Page 00's `cmd_Enable`/`cmd_Mode` are declared as real signals
 with a `VAL_` table — confirmed by two independent methods. **Every other page remains a
 hypothesis** and is deliberately declared positionally only (one byte per multiplexer id, so
@@ -339,7 +383,7 @@ than to a dead bus -- a normally-closed bypass relay across the two CAN
 segments, or store-and-forward with a hard forwarding deadline -- so that a
 hung micro degraded to a plain wire.
 
-**That is no longer a requirement. See spec 2.1** (`../../notes/charge-interposer-spec.md`),
+**That is no longer a requirement. See spec 2.1** (`projects/vtrux/notes/charge-interposer-spec.md`),
 which supersedes this paragraph: the specification governs the program while
 it is running, the board does not degrade to a wire when it fails, and
 nothing requires it to. The expected truck-level consequence of the board
