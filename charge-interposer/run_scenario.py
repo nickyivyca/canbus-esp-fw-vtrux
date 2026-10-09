@@ -274,9 +274,11 @@ def hold_follows_loads(band=(2.6, 3.3), settle_s=120.0, drop_exempt_s=2.0):
     machine.py (hold_series_from_trace):
 
       1. "the pack current is never above bcm_chg_max except within 2 s of
-         a load drop the scenario injects": every 0x410 bcm_ibat in HOLD
-         against the latest 0x420 bcm_chg_max, a drop exempting
-         [drop, drop + drop_exempt_s];
+         a load drop the scenario injects, or of a fall in bcm_chg_max"
+         (the fall added by the user, spec 75b154da86487dc1): every 0x410
+         bcm_ibat in HOLD against the latest 0x420 bcm_chg_max, a drop or
+         a fall exempting [t, t + drop_exempt_s]. A fall is a 0x420 whose
+         value is below the previous 0x420's;
       2. "the setpoint moves only in 0.1 A steps, at least 0.3 s apart, and
          is never 0 A": every page 01 sent to the charger in HOLD;
       3. "once bcm_chg_max is 0 A ... the setpoint is within 0.3 A of the
@@ -379,8 +381,15 @@ def _hold_follows_loads(series, veh_text, band=(2.6, 3.3), settle_s=120.0,
     def in_hold(t):
         return any(a <= t <= b for a, b in series["hold"])
 
-    # 1. pack current vs permission, exempting 2 s after each drop
+    # 1. pack current vs permission, exempting 2 s after each injected load
+    # drop and (spec 75b154da) each fall in bcm_chg_max: the frame where
+    # the value goes below the one before it, not every frame of the lower
+    # value, so a pack held above a fallen chg_max past 2 s still fails
     ct = [t for t, _a in series["chgmax"]]
+    falls = [t for (_ta, a), (t, b) in zip(series["chgmax"],
+                                           series["chgmax"][1:])
+             if b < a - tol]
+    exempt = sorted(drops + falls)
     over = []
     for t, ib in series["ibat"]:
         if not in_hold(t):
@@ -390,17 +399,18 @@ def _hold_follows_loads(series, veh_text, band=(2.6, 3.3), settle_s=120.0,
             continue
         cm = series["chgmax"][i][1]
         if ib > cm + tol and not any(d <= t <= d + drop_exempt_s * 1000
-                                     for d in drops):
+                                     for d in exempt):
             over.append((t, ib - cm))
     if over:
-        probs.append("1: pack current above bcm_chg_max outside a load "
-                     "drop's %.0f s on %d 0x410 frame(s), first at t=%.1f s, "
-                     "by up to %.3f A" % (drop_exempt_s, len(over),
-                                          over[0][0] / 1000.0,
-                                          max(e for _t, e in over)))
+        probs.append("1: pack current above bcm_chg_max outside %.0f s of a "
+                     "load drop or a chg_max fall on %d 0x410 frame(s), "
+                     "first at t=%.1f s, by up to %.3f A"
+                     % (drop_exempt_s, len(over), over[0][0] / 1000.0,
+                        max(e for _t, e in over)))
     else:
-        notes.append("1: pack current never above chg_max outside the %d "
-                     "load drop(s)' %.0f s" % (len(drops), drop_exempt_s))
+        notes.append("1: pack current never above chg_max outside %.0f s "
+                     "of the %d load drop(s) and %d chg_max fall(s)"
+                     % (drop_exempt_s, len(drops), len(falls)))
     # 2. 0.1 A steps, >= 0.3 s apart, never 0 A
     bad2 = []
     last_step = None

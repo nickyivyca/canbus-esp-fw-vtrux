@@ -91,12 +91,17 @@ def _sp_path(hold0, hold1, start_a, legs, every=300):
     return out
 
 
-def _hs(hold=(50000, 500000), chg0=C0, sp=None, ibat=None):
+def _hs(hold=(50000, 500000), chg0=C0, sp=None, ibat=None, chg_after=None):
     """A series in hold_series_from_trace()'s shape: chg_max 2.0 A, then
     0 A from chg0 (None: never); pack current -0.1 A every second; the
     setpoint 2.0 A walking up to 2.9 A from chg0."""
     h0, h1 = hold
     chg = [(0, 2.0)] + ([(chg0, 0.0)] if chg0 is not None else [])
+    if chg_after:
+        # a 0x420 every 100 ms, as on a trace, with extra (t, A) changes
+        pts = sorted(chg + list(chg_after))
+        chg = [(t, [a for tp, a in pts if tp <= t][-1])
+               for t in range(0, h1 + 1, 100)]
     return dict(hold=[hold], chgmax=chg,
                 ibat=ibat if ibat is not None else
                 [(t, -0.1) for t in range(h0, h1 + 1, 1000)],
@@ -123,6 +128,34 @@ def hold_follows_loads_cases():
     check(not ok and "1:" in why,
           "pack current above chg_max with no drop fails on clause 1 -> %s"
           % why)
+    # Clause 1's fall in bcm_chg_max (spec 75b154da): 0 -> 0.5 A (a rise)
+    # at R1, then 0.5 -> 0.25 A (a fall) at F1, 0x420 every 100 ms.
+    r1, f1 = C0 + 300000, C0 + 310000
+    legs = [(r1, 0.5), (f1, 0.25)]
+    ok, why = run(_hs(ibat=base_ib + [(C0 + 1000, 0.5)]))
+    check(ok, "pack current above chg_max 1 s after chg_max FALLS to 0 A "
+          "passes (the amendment) -> %s" % why)
+    ok, why = run(_hs(ibat=base_ib + [(f1 + 1000, 0.4)], chg_after=legs))
+    check(ok, "...and 1 s after a 0.5 -> 0.25 A fall, 0x420 every 100 ms "
+          "-> %s" % why)
+    ok, why = run(_hs(ibat=base_ib + [(f1 + 2500, 0.4)], chg_after=legs))
+    check(not ok and why.startswith("1:"),
+          "...2.5 s after that fall fails on clause 1 -> %s" % why)
+    held = [(t, 0.4) for t in range(f1, f1 + 5001, 100)]
+    ok, why = run(_hs(ibat=base_ib + held, chg_after=legs))
+    check(not ok and why.startswith("1:")
+          and "first at t=%.1f s" % ((f1 + 2100) / 1000.0) in why,
+          "the pack held above a fallen chg_max for 5 s fails, from the "
+          "first frame past 2 s: the later 0x420s at 0.25 A are not falls "
+          "-> %s" % why)
+    ok, why = run(_hs(ibat=base_ib + [(f1 - 500, 0.6)], chg_after=legs))
+    check(not ok and why.startswith("1:"),
+          "above chg_max 0.5 s BEFORE a fall fails (the 2 s run after it) "
+          "-> %s" % why)
+    ok, why = run(_hs(ibat=base_ib + [(r1 + 1000, 0.75)], chg_after=legs))
+    check(not ok and why.startswith("1:"),
+          "above chg_max 1 s after a RISE in chg_max fails (a rise is not "
+          "a fall) -> %s" % why)
     up_line = DROP_LINE.replace("2.90 -> 2.20", "2.20 -> 2.90")
     ok, why = run(_hs(ibat=base_ib + [(C0 + 201000, 0.5)]), up_line)
     check(not ok and "1:" in why,
