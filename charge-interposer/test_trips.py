@@ -904,6 +904,38 @@ def _charger_back(b, pilot_min, ms=1000):
         b.tick()
 
 
+SILENCE_CASES = [(st, cb) for st in ("MONITOR", "OVERRIDE")
+                 for cb in ("later step-back", "STAND_BY")]
+
+
+def run_silence_case(state, clear_by):
+    """One spec 6.1 silence sequence, run to the end whatever the core does
+    -> (bench, setup problem or None, state after the silence and the lower
+    timer, state after `clear_by`). host_diff/make_unit_traces.py records
+    each as a unit trace so the same inputs reach machine.cpp."""
+    b = Bench()
+    b.arm(vmax=3.340, chg_max=300.0, pilot_min=0)
+    b.chg(M.CHG_PILOT, pilot(30))
+    if state == "OVERRIDE":
+        b.low_power()
+    if b.state() != state:
+        return b, "did not reach %s (%s)" % (state, b.state()), None, None
+    b.bms_410(epo=1)
+    _drain(b, _hold_all, 30)
+    if b.state() != "SAFE":
+        return b, "the EPO did not latch SAFE (%s)" % b.state(), None, None
+    _boundary_silence(b)                         # 20.5 s, BMS fresh
+    _charger_back(b, 0)                          # 30 -> 0 across the silence
+    b.arm(vmax=3.340, chg_max=300.0, pilot_min=None)
+    after = b.state()
+    if clear_by == "STAND_BY":
+        _boundary_standby(b)
+    else:
+        _charger_back(b, 5)                      # counting on after it ...
+        b.chg(M.CHG_PILOT, pilot(0))             # ... then a real step-back
+    return b, None, after, b.state()
+
+
 def silence_forgets_pilot_problems(kept=True):
     """Spec 6.1 (user, 2026-10-08): the charger-silence boundary forgets the
     last pilot-timer reading, so a timer that comes back LOWER after the
@@ -914,45 +946,22 @@ def silence_forgets_pilot_problems(kept=True):
     `kept=False` inverts the expectation for the comparison, for
     test_silence_forgets_pilot_can_fail."""
     probs = []
-    for state in ("MONITOR", "OVERRIDE"):
-        for clear_by in ("later step-back", "STAND_BY"):
-            tag = "%s, then %s" % (state, clear_by)
-            b = Bench()
-            b.arm(vmax=3.340, chg_max=300.0, pilot_min=0)
-            b.chg(M.CHG_PILOT, pilot(30))
-            if state == "OVERRIDE":
-                b.low_power()
-            if b.state() != state:
-                probs.append("%s: did not reach %s (%s)" % (tag, state,
-                                                           b.state()))
-                continue
-            b.bms_410(epo=1)
-            _drain(b, _hold_all, 30)
-            if b.state() != "SAFE":
-                probs.append("%s: the EPO did not latch SAFE (%s)"
-                             % (tag, b.state()))
-                continue
-            _boundary_silence(b)                 # 20.5 s, BMS fresh
-            _charger_back(b, 0)                  # 30 -> 0 across the silence
-            b.arm(vmax=3.340, chg_max=300.0, pilot_min=None)
-            got_kept = b.state() == "SAFE"
-            if got_kept != kept:
-                probs.append("%s: a pilot timer back at 0 min after 20 s of "
-                             "silence (30 min before it) left the core %s -- "
-                             "spec 6.1: the silence forgets the last reading, "
-                             "so it is not a step-back and SAFE stays"
-                             % (tag, b.state()))
-                continue
-            if not kept:
-                continue
-            if clear_by == "STAND_BY":
-                _boundary_standby(b)
-            else:
-                _charger_back(b, 5)              # counting on after it ...
-                b.chg(M.CHG_PILOT, pilot(0))     # ... then a real step-back
-            if b.state() != "PASSTHROUGH":
-                probs.append("%s: still %s -- after the silence, SAFE clears "
-                             "on %s (spec 6.1)" % (tag, b.state(), clear_by))
+    for state, clear_by in SILENCE_CASES:
+        tag = "%s, then %s" % (state, clear_by)
+        _b, setup, after, final = run_silence_case(state, clear_by)
+        if setup:
+            probs.append("%s: %s" % (tag, setup))
+            continue
+        if (after == "SAFE") != kept:
+            probs.append("%s: a pilot timer back at 0 min after 20 s of "
+                         "silence (30 min before it) left the core %s -- "
+                         "spec 6.1: the silence forgets the last reading, "
+                         "so it is not a step-back and SAFE stays"
+                         % (tag, after))
+            continue
+        if kept and final != "PASSTHROUGH":
+            probs.append("%s: still %s -- after the silence, SAFE clears "
+                         "on %s (spec 6.1)" % (tag, final, clear_by))
     return probs
 
 

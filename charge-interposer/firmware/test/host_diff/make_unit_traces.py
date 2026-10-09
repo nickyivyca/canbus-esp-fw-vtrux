@@ -162,6 +162,26 @@ def dense_traces(outdir, src_dir):
     return made
 
 
+def silence_traces(outdir):
+    """Spec 6.1 (user, 2026-10-08): the charger-silence boundary forgets the
+    last pilot reading (test_trips.run_silence_case), one trace per entry
+    state and per way SAFE is then cleared. Added by the tester after the
+    fix landed, so the golden records the spec's behaviour."""
+    made = []
+    for state, clear_by in T.SILENCE_CASES:
+        b, setup, after, final = T.run_silence_case(state, clear_by)
+        if setup or after != "SAFE" or final != "PASSTHROUGH":
+            raise SystemExit("silence case %s/%s: %s, %s after the silence, "
+                             "%s after %s -- not the spec 6.1 behaviour, so "
+                             "recording it would bake that in"
+                             % (state, clear_by, setup, after, final,
+                                clear_by))
+        made.append(write(outdir, "%ssilence_forgets_pilot_%s_%s"
+                          % (PREFIX, state.lower(), _slug(clear_by)),
+                          b.cfg_overrides, b.trace))
+    return made
+
+
 def random_traces(outdir):
     made = []
     for seed, rate, junk in RANDOM_SEEDS:
@@ -192,7 +212,7 @@ def main():
         os.makedirs(a.outdir)
 
     made = (trip_traces(a.outdir) + control_trace(a.outdir)
-            + definition_traces(a.outdir))
+            + definition_traces(a.outdir) + silence_traces(a.outdir))
     for path, n in made:
         print("  %-52s %6d steps" % (os.path.basename(path), n))
 
