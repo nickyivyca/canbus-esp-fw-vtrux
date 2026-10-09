@@ -1385,10 +1385,11 @@ def _released_into_hold(chg_text, intp_text, lo_a, hi_a):
 BURST_FRAMES = 20
 BURST_MS = BURST_FRAMES * 50
 
-# Spec 8.2 and the schema doc's version table (7c866acd6f804161): firmware
-# version 5 carries spec 5.2's HOLD and the spec 2 receive-order fix,
-# schema 4. Literals for the same reason.
-SPEC_FW_VER = 5
+# Spec 8.2 and the schema doc's version table (1c40018cd60b4da9): firmware
+# version 6 is spec 3's arming on the charger's latest status (5 was spec
+# 5.2's HOLD and the spec 2 receive-order fix), schema 4. Literals for the
+# same reason.
+SPEC_FW_VER = 6
 SPEC_SCHEMA_VER = 4
 
 # A timestamped REPEAT, and the vehicle-side markers of the VCU changing

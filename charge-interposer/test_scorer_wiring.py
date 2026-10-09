@@ -7,8 +7,8 @@ core, so each gets a case here that would fail if the change were undone:
   * spec 9 "every scenario decodes the diagnostic CAN frames": every
     scenario asks for diag_frames_ok(), and every termination scenario for
     no_rewrite_after_release();
-  * the spec literals -- 20 frames, 50 ms, firmware 5, schema 4 (since
-    2026-10-09; 4 / 3 before) -- are the harness's own, not read from
+  * the spec literals -- 20 frames, 50 ms, firmware 6, schema 4 (fw 6
+    since E5, 2026-10-09; 5 / 4 at E4, 4 / 3 before) -- are the harness's own, not read from
     machine.py, and 0x7F4 B2 6 decodes as HOLD;
   * 0x7F4 B4 bit 5 override_active is 1 in OVERRIDE and HOLD and 0
     otherwise, and B5 is a setpoint there and 255 otherwise (schema 4);
@@ -45,7 +45,7 @@ def check(cond, name):
         failures += 1
 
 
-def _diag(fw7f4=5, sch7f4=4, fw7f7=(5, 5, 5), sch7f7=4, state=0,
+def _diag(fw7f4=6, sch7f4=4, fw7f7=(6, 6, 6), sch7f7=4, state=0,
           flags=None, b5=None):
     """A minimal decoded diag stream in parse_diag_frames()'s shape.
     B4 bit 5 and B5 follow schema 4 for `state` unless given: bit 5 set and
@@ -231,8 +231,8 @@ def main():
     check(R.BURST_FRAMES == 20 and R.BURST_MS == 1000,
           "a burst is 20 frames x 50 ms (got %d, %d ms)"
           % (R.BURST_FRAMES, R.BURST_MS))
-    check(R.SPEC_FW_VER == 5 and R.SPEC_SCHEMA_VER == 4,
-          "firmware 5, schema 4 -- the schema doc 7c866acd6f804161 (got "
+    check(R.SPEC_FW_VER == 6 and R.SPEC_SCHEMA_VER == 4,
+          "firmware 6, schema 4 -- the schema doc 1c40018cd60b4da9 (got "
           "%d, %d)" % (R.SPEC_FW_VER, R.SPEC_SCHEMA_VER))
     check(R.DIAG_STATES.get(6) == "HOLD",
           "0x7F4 B2 6 decodes as HOLD (schema 4)")
@@ -243,15 +243,16 @@ def main():
 
     print("\ndiag versions in every frame (reading 15)")
     ok, why = R._diag_frames_ok(_diag(), "PASSTHROUGH")
-    check(ok, "a clean fw 5 / schema 4 stream passes -> %s" % why)
-    ok, why = R._diag_frames_ok(_diag(fw7f7=(5, 6, 5)), "PASSTHROUGH")
+    check(ok, "a clean fw 6 / schema 4 stream passes -> %s" % why)
+    ok, why = R._diag_frames_ok(_diag(fw7f7=(6, 5, 6)), "PASSTHROUGH")
     check(not ok and "0x7F7" in why,
-          "a MIDDLE 0x7F7 reporting fw 6 fails (rev 1 read only the last) "
+          "a MIDDLE 0x7F7 reporting fw 5 (E4's) fails (rev 1 read only the last) "
           "-> %s" % why)
     ok, why = R._diag_frames_ok(_diag(sch7f4=3), "PASSTHROUGH")
     check(not ok and "schema" in why, "0x7F4 schema 3 fails -> %s" % why)
-    ok, why = R._diag_frames_ok(_diag(fw7f4=4), "PASSTHROUGH")
-    check(not ok and "firmware" in why, "0x7F4 firmware 4 fails -> %s" % why)
+    ok, why = R._diag_frames_ok(_diag(fw7f4=5), "PASSTHROUGH")
+    check(not ok and "firmware" in why,
+          "0x7F4 firmware 5 (E4's) fails -> %s" % why)
     ok, why = R._diag_frames_ok(_diag(state=2), "PASSTHROUGH")
     check(not ok and "OVERRIDE" in why,
           "a last 0x7F4 disagreeing with the final state fails -> %s" % why)
