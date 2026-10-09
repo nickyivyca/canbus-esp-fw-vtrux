@@ -148,7 +148,23 @@ endif()
 # back days later.
 set(GI_DIAG_SUFFIX "_DIAG")
 
-set(PRJ_BIN "${PROJECT_PREF}_${HW_PREF}_${GIT_SHA}${GI_ARM_SUFFIX}${GI_FAULT_SUFFIX}${GI_DIAG_SUFFIX}")
+# GI_DIAG_SUFFIX GOES BEFORE GI_FAULT_SUFFIX, so that "_flt" stays the LAST
+# thing in the name. `test/build_checks/build_output.py` tested
+# `project.endswith("_flt")` to catch a fault-injected rollback-rehearsal
+# image, and appending "_DIAG" after it broke that row's precondition:
+# "..._man_flt_DIAG" does not end in "_flt".
+#
+# It was not reachable as an image -- "wican-fw_obd_<sha>_man_flt_DIAG" is 33
+# characters and the FATAL_ERROR below fires above 31, so that combination is a
+# configure error rather than a faulty image with an innocent name. The
+# gen-inhibit tester has since made the row match "_flt" as a token anywhere in
+# the name, which does not depend on order at all and is the better fix.
+#
+# The order is kept anyway, because the ONLY thing standing between those two
+# suffixes now is the 31-character budget, and a shorter sha or a shorter arm
+# suffix would quietly make the combination buildable again. For an ordinary
+# diag build the name is byte-identical either way, so this costs nothing.
+set(PRJ_BIN "${PROJECT_PREF}_${HW_PREF}_${GIT_SHA}${GI_ARM_SUFFIX}${GI_DIAG_SUFFIX}${GI_FAULT_SUFFIX}")
 
 #
 # esp_app_desc.project_name is a 32-byte field -- 31 characters plus the NUL -- and

@@ -17,14 +17,18 @@
  * cannot recover:
  *
  *   1. esp_reset_reason(), by name. This separates causes that look identical
- *      from the outside. ESP_RST_PANIC or ESP_RST_INT_WDT or ESP_RST_TASK_WDT
- *      is a firmware path and the panic handler's backtrace (this build halts
- *      rather than rebooting, see sdkconfig) says where. ESP_RST_BROWNOUT is
- *      the USB 5 V supply, which on this rig cannot be metered (the bench is
- *      USB-powered, user 2026-10-08). ESP_RST_USB or ESP_RST_JTAG is the
- *      USB-Serial-JTAG console resetting the chip, i.e. the host end, not the
- *      firmware at all. ESP_RST_SW is a deliberate esp_restart() somewhere in
- *      the image.
+ *      from the outside. ESP_RST_BROWNOUT is the USB 5 V supply, which on this
+ *      rig cannot be metered (the bench is USB-powered, user 2026-10-08).
+ *      ESP_RST_USB or ESP_RST_JTAG is the USB-Serial-JTAG console resetting the
+ *      chip, i.e. the host end, not the firmware at all. ESP_RST_SW is a
+ *      deliberate esp_restart() somewhere in the image. ESP_RST_INT_WDT or
+ *      ESP_RST_TASK_WDT is a firmware path -- though on THIS image a panic or
+ *      watchdog halts instead of resetting, so it shows up as a dump and a
+ *      hang rather than as a reason code on the next boot. Measured
+ *      2026-10-08: after a halt and a USB-JTAG hard reset the reason reads
+ *      ESP_RST_USB (11), NOT ESP_RST_PANIC, because with PANIC_PRINT_HALT the
+ *      panic never becomes a reset and the reason register never learns of it.
+ *      The backtrace is the whole record of a panic here.
  *
  *   2. An uptime line once a second for the first 30 s. A reset inside the
  *      first second prints no uptime line at all, which distinguishes "it died
@@ -32,19 +36,40 @@
  *      that opens late still learns the reset reason, because every line
  *      carries it.
  *
+ * WHY esp_rom_printf AND NOT ESP_LOGx, which is what this file used first.
+ * `main/main.c` runs `esp_log_level_set("*", ESP_LOG_NONE)` as the LAST
+ * statement of `app_main`, so once startup finishes no ESP_LOGx from any
+ * component in this firmware reaches the console. Only ROM-path output does:
+ * the boot banner, panic dumps, watchdog dumps. (Line 627 on this branch, 623
+ * at `a71b90a` -- this file's own four lines in main.c move it. Grep for the
+ * call rather than trusting either number.)
+ *
+ * With ESP_LOGW the instrument failed in the one direction that matters.
+ * Measured on the bench 2026-10-08: between a boot and a deliberate abort()
+ * 180 s later the console recorded ZERO lines -- not sparse output, none --
+ * and then the panic dump arrived in full, because the panic handler writes by
+ * this path instead. The reset-reason line survived only because
+ * gi_diag_boot_init() runs at the top of app_main, before line 627. So the
+ * image printed its reason once at 231 ms and then went quiet for 30 s, which
+ * is EXACTLY what a chip that died during startup looks like -- the one
+ * distinction item 2 exists to make, destroyed by the instrument itself.
+ *
+ * esp_rom_printf cannot be silenced by a log level, needs no tag registration
+ * and was just proven to reach the console minutes after boot. Its printf is
+ * the cut-down ROM one: no 64-bit conversions and no width or precision, so
+ * the uptime is printed as an unsigned long of milliseconds (which wraps after
+ * ~49 days and so cannot wrap inside a 30 s window).
+ *
  * The uptime task prints and nothing else: it touches no gen-inhibit state, no
  * CAN peripheral and no NVS, so it cannot be the thing that makes the reset
  * appear or disappear.
  */
-#include <inttypes.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_system.h"
 #include "esp_timer.h"
-#include "esp_log.h"
+#include "esp_rom_sys.h"
 #include "gi_diag_boot.h"
-
-#define TAG "GI_DIAG"
 
 /* Seconds of uptime to report, one line per second. */
 #define GI_DIAG_BOOT_SECONDS 30
@@ -82,12 +107,14 @@ static void gi_diag_boot_task(void *arg)
     for (int s = 1; s <= GI_DIAG_BOOT_SECONDS; s++)
     {
         vTaskDelay(pdMS_TO_TICKS(1000));
-        ESP_LOGW(TAG, "up %d s, uptime %" PRId64 " us, last reset %s (%d)",
-                 s, esp_timer_get_time(), name, (int)reason);
+        esp_rom_printf("GI_DIAG: up %d s, uptime %u ms, last reset %s (%d)\n",
+                       s, (unsigned)(esp_timer_get_time() / 1000),
+                       name, (int)reason);
     }
 
-    ESP_LOGW(TAG, "boot diagnostic done after %d s; last reset %s (%d)",
-             GI_DIAG_BOOT_SECONDS, name, (int)reason);
+    esp_rom_printf("GI_DIAG: boot diagnostic done after %d s; "
+                   "last reset %s (%d)\n",
+                   GI_DIAG_BOOT_SECONDS, name, (int)reason);
     vTaskDelete(NULL);
 }
 
@@ -97,8 +124,8 @@ void gi_diag_boot_init(void)
 
     /* Printed before the task is created, so it appears even if the task
      * cannot be created or the chip dies in the first second. */
-    ESP_LOGW(TAG, "DIAG BUILD, NOT FOR VEHICLE. reset reason %s (%d)",
-             reset_reason_name(reason), (int)reason);
+    esp_rom_printf("GI_DIAG: DIAG BUILD, NOT FOR VEHICLE. reset reason %s "
+                   "(%d)\n", reset_reason_name(reason), (int)reason);
 
     /* Low priority on purpose: this must not displace the gen-inhibit worker
      * or the TWAI driver, or the thing being measured changes. */
