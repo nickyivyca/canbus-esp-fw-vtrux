@@ -677,6 +677,114 @@ def check_reproducible(envs, workdir, keep_bins=None):
     return problems
 
 
+def build_row(rows, env, elf, t0):
+    """The manifest row the build of `env` that started at t0 wrote for
+    ELF `elf`, or None. The newest when several qualify."""
+    best = None
+    for r in rows:
+        t = _utc_seconds(r.get("built_utc"))
+        if (r.get("env") == env and t is not None and t >= int(t0)
+                and (r.get("elf_sha256") or "").lower() == elf):
+            best = r
+    return best
+
+
+def dirty_problems(steps, head):
+    """steps: [(label, row or None, expect_dirty)] -> problems. Each row
+    must name `head` as its commit and carry the expected git_dirty."""
+    problems = []
+    for label, r, want in steps:
+        if r is None:
+            problems.append("dirty flag: %s -- no manifest row for this "
+                            "build" % label)
+            continue
+        if r.get("git_error"):
+            problems.append("dirty flag: %s -- git_error %r in a git clone"
+                            % (label, r.get("git_error")))
+            continue
+        if (r.get("git_commit") or "").lower() != head:
+            problems.append("dirty flag: %s -- git_commit %r, the clone is "
+                            "at %s" % (label, r.get("git_commit"), head))
+        if r.get("git_dirty") is not want:
+            problems.append("dirty flag: %s -- git_dirty %r, expected %r "
+                            "(spec 8.2)" % (label, r.get("git_dirty"), want))
+    return problems
+
+
+def _git(args, cwd):
+    r = subprocess.run(["git"] + args, cwd=cwd, capture_output=True,
+                       text=True)
+    return r.returncode, (r.stdout + r.stderr).strip()
+
+
+def check_dirty_flag(workdir, env=None):
+    """Spec 8.2 (user, 2026-10-08): a manifest row records the commit and
+    whether the working tree had uncommitted changes OTHER THAN to
+    builds/manifest.json, which the build itself writes.
+
+    In a clone of this repository's HEAD under `workdir` (never the tree
+    itself), three clean, forced builds of `env`:
+      1. nothing edited -> git_dirty false. This build writes
+         builds/manifest.json, so the clone now has exactly that change,
+         which is confirmed with git status before step 2 -- otherwise
+         step 2 would not exercise the exclusion;
+      2. nothing else edited -> git_dirty false;
+      3. a line appended to src/machine.cpp -> git_dirty TRUE. The
+         control: a flag that is never true would pass 1 and 2.
+    Every row must name the clone's HEAD."""
+    env = env or CONTROL_ENV
+    problems = []
+    rc, root = _git(["rev-parse", "--show-toplevel"], FW)
+    if rc != 0:
+        return ["dirty flag: %s is not in a git repository (%s)" % (FW, root)]
+    rel = os.path.relpath(FW, root)
+    clone = os.path.join(workdir, "repo")
+    try:
+        rc, out = _git(["clone", "-q", "--no-hardlinks", root, clone],
+                       workdir)
+        if rc != 0:
+            return ["dirty flag: git clone failed: %s" % out]
+        _rc, head = _git(["rev-parse", "HEAD"], clone)
+        head = head.lower()
+        fw = os.path.join(clone, rel)
+        steps = []
+
+        def one(label, want):
+            t0 = time.time()
+            res, why = _build_one(fw, env)
+            if res is None:
+                problems.append("dirty flag: %s -- did not build (%s)"
+                                % (label, why))
+                return
+            r = build_row(_manifest_rows(fw), env, res["elf"], t0)
+            print("  dirty %-34s git_commit %s  git_dirty %r" % (
+                label, ((r or {}).get("git_commit") or "-")[:12],
+                (r or {}).get("git_dirty")))
+            steps.append((label, r, want))
+
+        one("1 nothing edited", False)
+        _rc, st = _git(["status", "--porcelain"], clone)
+        lines = [x for x in st.splitlines() if x.strip()]
+        manifest_rel = (rel.replace(os.sep, "/") + "/builds/manifest.json")
+        print("  dirty after step 1, git status: %s" % (lines or "clean"))
+        if not (len(lines) == 1 and lines[0].endswith(manifest_rel)):
+            problems.append("dirty flag: after step 1 the clone's only "
+                            "change should be %s, git status shows %s -- "
+                            "step 2 would not test the exclusion"
+                            % (manifest_rel, lines or "nothing"))
+        one("2 only builds/manifest.json changed", False)
+        with open(os.path.join(fw, CONTROL_FILE), "a") as f:
+            f.write(CONTROL_LINE)
+        one("3 src/machine.cpp edited (control)", True)
+        problems += dirty_problems(steps, head)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+    if not problems:
+        print("dirty flag: false, false with only the manifest changed, "
+              "true with src/ edited; every row names %s" % head[:12])
+    return problems
+
+
 # Spec 8.2 (b): across host OSes the .bin may differ ONLY in the ELF hash at
 # offset 0xb0 (32 bytes) and in the trailing checksum byte + appended
 # SHA-256 that cover it (33 bytes).
@@ -928,10 +1036,25 @@ def main():
                          "between two .bin files of one commit built on two "
                          "host OSes; only the ELF hash at 0xb0 and the "
                          "trailing 33 bytes may differ")
+    ap.add_argument("--dirty-flag", action="store_true",
+                    help="spec 8.2: in a clone of HEAD, build twice with "
+                         "nothing edited (git_dirty false), then with "
+                         "src/machine.cpp edited (git_dirty true)")
     ap.add_argument("--envs", default="",
                     help="comma-separated subset of environments for "
                          "--reproducible (default: all)")
     a = ap.parse_args()
+
+    if a.dirty_flag:
+        work = tempfile.mkdtemp(prefix="dirty_", dir=os.path.dirname(FW))
+        probs = check_dirty_flag(work)
+        if probs:
+            print("\nFAIL -- %d problem(s):" % len(probs))
+            for p_ in probs:
+                print("  - " + p_)
+            return 1
+        print("\nOK -- dirty flag (spec 8.2)")
+        return 0
 
     if a.diff_bins:
         bins = []

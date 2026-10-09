@@ -212,6 +212,38 @@ def main():
     check(p and "IDENTICAL" in p[0],
           "two identical files FAIL (one host twice, or one file twice)")
 
+    # spec 8.2 dirty flag: the build's row is found by env, time and bytes
+    br = BC.build_row
+    rows = [fresh, stale, dict(fresh, env="slcan"),
+            dict(fresh, elf_sha256=ELF_B)]
+    check(br(rows, "truck", ELF_A, t0) is fresh,
+          "build_row picks this build's row out of stale, other-env and "
+          "other-bytes rows")
+    check(br([stale], "truck", ELF_A, t0) is None,
+          "build_row finds nothing when the only row predates the build")
+    head = "a" * 40
+    clean = {"git_commit": head, "git_dirty": False}
+    dirty = {"git_commit": head, "git_dirty": True}
+    d = BC.dirty_problems
+    good = [("1", clean, False), ("2", clean, False), ("3", dirty, True)]
+    check(not d(good, head), "false, false, true passes")
+    p = d([("1", clean, False), ("2", dirty, False), ("3", dirty, True)],
+          head)
+    check(len(p) == 1 and "2" in p[0],
+          "the build's own manifest write counted as dirty FAILS -> %s" % p)
+    p = d([("1", clean, False), ("2", clean, False), ("3", clean, True)],
+          head)
+    check(len(p) == 1 and "expected True" in p[0],
+          "a flag that never goes true FAILS on the control -> %s" % p)
+    p = d([("1", dict(clean, git_commit="b" * 40), False)], head)
+    check(p and "git_commit" in p[0], "a row naming another commit FAILS")
+    p = d([("1", None, False)], head)
+    check(p and "no manifest row" in p[0], "a missing row FAILS")
+    p = d([("1", {"git_error": "no commit"}, False)], head)
+    check(p and "git_error" in p[0], "a git_error inside a git clone FAILS")
+    p = d([("1", dict(clean, git_dirty=0), False)], head)
+    check(p and "git_dirty" in p[0], "git_dirty 0 (not a bool) FAILS")
+
     if failures:
         print("\n%d failure(s)" % failures)
         return 1
