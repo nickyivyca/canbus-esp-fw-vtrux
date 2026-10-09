@@ -444,8 +444,22 @@ void InterposerCore::maybeArm(uint32_t t_ms) {
   // MONITOR and a later value of 5 set the flag without changing anything.
   // A charger that never sends 0x18FFD8C0 is therefore never overridden,
   // which errs toward the truck's normal charging.
-  if (state_ == S_PASSTHROUGH && chg_seen_charging_ && mainc_closed_ &&
-      pilot_seen_ && !boot_locked_) {
+  // Spec 3 (user, 2026-10-09): the charger's LATEST status is state 12 and
+  // the contactors are closed NOW, not a 12 it reached earlier in the
+  // session -- re-arming after a TERMINATED or a VCU-ended hold included.
+  // chg_seen_charging_ alone is latched for the session, so re-arming read a
+  // fact about the past and armed over a charger that was still restarting;
+  // a restart outlasting the 5 s state-12 debounce then tripped the core
+  // into SAFE, and the 83 % start of spec 7 took 9.1 s.
+  //
+  // BOTH terms are needed: chg_state_ == 12 and fresh says the charger is
+  // charging now, chg_seen_charging_ says no session boundary has intervened
+  // since the frame that said so. Nothing clears chg_state_ and nothing may.
+  // See machine.py's _maybe_arm() for the three goldens that measured a
+  // teardown re-arming the core without the flag.
+  if (state_ == S_PASSTHROUGH && chg_seen_charging_ &&
+      chg_state_ == CHG_STATE_CHARGING && chgReadingFresh(t_ms) &&
+      mainc_closed_ && pilot_seen_ && !boot_locked_) {
     gotoState(t_ms, S_MONITOR, EV_ARMED, ibat_);
   }
 }
@@ -837,6 +851,7 @@ void InterposerCore::onChargerFrame(uint32_t id, bool ext, const uint8_t* d,
       } else if (chg_state_ == CHG_STATE_CHARGING) {
         chg_seen_charging_ = true;
         have_chg_bad_ = false;
+        // NOT a maybeArm() call site, deliberately -- see machine.py.
       } else if (chg_seen_charging_ && active()) {
         // Only a departure FROM charging counts, and only a SUSTAINED one --
         // see chg_state_debounce_ms. The trip itself is raised in tick().
@@ -978,7 +993,10 @@ void InterposerCore::tick(uint32_t t_ms, EmitList& out) {
       // setpoint from here on, changing nothing else.
       //
       // It starts from our last override setpoint, which is what the
-      // charger already has, so the entry is not a step.
+      // charger already has, so the entry changes nothing on the wire. It
+      // still COUNTS as a step (spec 5.2, user 2026-10-09): t_hold_step_ is
+      // set here, so the first real step comes no sooner than one cadence
+      // after the release rather than on the next page-01 frame.
       hold_ca_ = ourIlimCounts() * 5;
       hold_valid_ = true;
       t_hold_step_ = t_ms;

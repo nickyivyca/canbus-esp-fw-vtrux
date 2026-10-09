@@ -879,8 +879,8 @@ def test_the_hold_reports_its_own_setpoint_in_the_diagnostics():
        "the status frame reports state %d, HOLD" % status[2])
     ok(status[5] == 15,
        "and 1.50 A as 15 in the 0.1 A field (%d)" % status[5])
-    ok((status[0], status[1]) == (4, 5),
-       "under diag schema 4 / fw 5, which is what the new state code and "
+    ok((status[0], status[1]) == (4, 6),
+       "under diag schema 4 / fw 6, which is what the new state code and "
        "this field's new meaning are published as (%d/%d)"
        % (status[0], status[1]))
     line = b.core.diag_line(b.t, 0, 0)
@@ -1397,8 +1397,14 @@ def test_pilot_timer_stepping_back_is_a_session_boundary():
     ok(b.state() == "PASSTHROUGH", "the backwards step clears SAFE")
     ok(b.core.trip_reason is None, "and clears the trip reason")
     ok(not b.core.chg_seen_charging,
-       "and the charger-reached-12 observation, so the next session must "
-       "re-arm on its own charger")
+       "and the charger-reached-12 observation")
+    # That flag no longer gates arming (spec 3, 2026-10-09) -- the latest
+    # charger status does -- so clearing it here is no longer what stops the
+    # next session arming on this one's charger. It still matters: the
+    # departure debounce counts only a departure FROM charging, and STATUS
+    # B4 bit 1 publishes it. The arming protection is now that the status
+    # has to be a current 12, which
+    # test_a_state_12_the_charger_has_stopped_refreshing_does_not_arm pins.
 
 
 def test_a_boundary_that_changes_no_state_is_still_logged():
@@ -1645,6 +1651,188 @@ def test_accepted_stop_is_not_rewritten():
        "the VCU's hold keeps passing through after an accepted stop")
     b.veh(0x18EFC000, P.enc_master(1, P.MODE_CHARGER))
     ok(b.state() == "PASSTHROUGH", "CHARGER after TERMINATED is re-armable")
+
+
+def test_rearm_after_a_terminated_waits_for_the_chargers_own_state_12():
+    """Spec 3 (user, 2026-10-09): "Observed means the charger's latest status
+    is state 12 and the contactors are closed now, not that it reached 12
+    earlier in the session; this applies equally to re-arming after a
+    TERMINATED or a hold ended by the VCU."
+
+    The defect this pins: arming read `chg_seen_charging`, which is latched
+    for the session, so the core re-armed the instant CHARGER-with-flow
+    returned it to PASSTHROUGH -- even with the charger mid-restart. If the
+    restart then outlasted the 5 s state-12 debounce the core tripped itself
+    into SAFE over a charger that was coming back. The 83 % start of spec 7
+    took 9.1 s, so the wait here is driven past that.
+    """
+    b = Bench()
+    b.arm(vmax=3.340, chg_max=300.0, soc=80.0, evap=0)
+    b.low_power()
+    ok(b.state() == "TERMINATED", "the evap flag was clear, so the stop was "
+                                  "accepted (%s)" % b.state())
+    b.t += 100
+    b.charger_status(15)
+    b.veh(0x18EFC000, P.enc_master(1, P.MODE_CHARGER))
+    ok(b.state() == "PASSTHROUGH", "CHARGER after TERMINATED is re-armable")
+    ok(b.core.chg_seen_charging,
+       "and the session-latched observation is still set -- it is what used "
+       "to arm the core here")
+    for _ in range(100):
+        b.t += 100
+        b.charger_status(15)
+        b.bms()
+        b.tick()
+    ok(b.state() == "PASSTHROUGH",
+       "10 s of charger restart does not arm the core (%s)" % b.state())
+    ok(b.core.trip_reason is None,
+       "and nothing trips while it waits: %s" % b.core.trip_reason)
+    b.t += 100
+    b.charger_status(12)
+    ok(b.state() == "PASSTHROUGH",
+       "the charger's own 12 is not itself an arming trigger: arming is "
+       "evaluated on 0x410 and 0x440, as it always was (%s)" % b.state())
+    b.bms()
+    ok(b.state() == "MONITOR",
+       "and the next BMS frame arms it (%s)" % b.state())
+
+
+def test_rearm_after_a_vcu_ended_hold_waits_for_the_chargers_own_state_12():
+    """Spec 3 (user, 2026-10-09), the other half of the same sentence: a hold
+    the VCU ended with CHARGER and the flow bit on re-arms on the same terms
+    as a TERMINATED, so it must wait for a current state 12 too.
+
+    Driven separately rather than parameterised with the TERMINATED case
+    because the two reach PASSTHROUGH by different arms of the page-00 chain
+    (5.2's hold-ended branch and 6.1's CHARGE-again branch), and the point is
+    that the wait is in `_maybe_arm` and so covers both.
+    """
+    b = _released()
+    b.veh(0x18EFC000, P.enc_master(1, P.MODE_CHARGER))
+    ok(b.state() == "PASSTHROUGH", "the VCU's CHARGER ended the hold (%s)"
+       % b.state())
+    ok(b.core.chg_seen_charging, "with the observation still latched")
+    for _ in range(100):
+        b.t += 100
+        b.charger_status(15)
+        b.bms(vmax=3.593, chg_max=2.75, ibat=0.3)
+        b.tick()
+    ok(b.state() == "PASSTHROUGH",
+       "10 s of charger restart does not arm the core (%s)" % b.state())
+    ok(b.core.trip_reason is None,
+       "and nothing trips while it waits: %s" % b.core.trip_reason)
+    b.t += 100
+    b.charger_status(12)
+    b.bms(vmax=3.593, chg_max=2.75, ibat=0.3)
+    ok(b.state() == "MONITOR",
+       "and the charger's own 12 arms it (%s)" % b.state())
+
+
+def test_a_teardown_does_not_rearm_the_core_on_the_ended_sessions_12():
+    """Spec 6.1 and spec 3 together: a boundary must keep the core out, and
+    after the 2026-10-09 ruling the thing the boundary clears is only half
+    of the arming condition.
+
+    `_session_boundary` clears `chg_seen_charging` on every frame of the
+    VCU's burst, and that is what keeps the core out while the VCU commands
+    STAND_BY -- `_maybe_arm` does not look at the VCU's mode. Nothing clears
+    `chg_state`, and nothing may: 0x7F5 B5 is documented as the last
+    BELINV_state. So a latest-status term on its own stays satisfied right
+    through a teardown, on the 12 the charger sent before it, and the core
+    arms with section 6 live in exactly the traffic A5 says must not trip
+    anything.
+
+    This case exists because the differential found that and the unit suite
+    did not: dropping `chg_seen_charging` from the condition left all 81
+    other tests green and made three goldens stale
+    (syn_above_ceiling_start at t=100100, syn_balance_hold, charging45).
+    """
+    b = Bench()
+    b.chg(M.CHG_PILOT, pilot(0))
+    b.arm(vmax=3.340, chg_max=300.0, pilot_min=None)
+    ok(b.state() == "MONITOR", "armed (%s)" % b.state())
+    b.t += 100
+    b.veh(0x18EFC000, P.enc_master(0, P.MODE_STANDBY))
+    ok(b.state() == "PASSTHROUGH", "STAND_BY ends the session (%s)"
+       % b.state())
+    b.t += 100
+    b.bms(vmax=3.340, chg_max=300.0)
+    ok(b.core.chg_state == M.CHG_STATE_CHARGING,
+       "the charger's last word is still 12 (%d)" % b.core.chg_state)
+    ok(b.core._chg_reading_fresh(b.t),
+       "and it is only %d ms old, so the latest-status term alone would be "
+       "satisfied" % (b.t - b.core.t_chg))
+    ok(b.state() == "PASSTHROUGH",
+       "yet the core does not re-arm on the ended session's 12 (%s)"
+       % b.state())
+    b.charger_status(12)
+    b.bms(vmax=3.340, chg_max=300.0)
+    ok(b.state() == "MONITOR",
+       "a 12 sent after the boundary arms it again (%s)" % b.state())
+
+
+def test_a_state_12_the_charger_has_stopped_refreshing_does_not_arm():
+    """Spec 3: the latest status, which a level nothing clears is not.
+
+    `chg_state` is set from every mux-0 frame and reset by nothing -- not
+    even a session boundary, which must leave it alone because 0x7F5 B5 is
+    documented as the last BELINV_state. So reading it without a freshness
+    gate would let a charger that reported 12 and went quiet arm the core
+    minutes later, which is the defect the boundary was written to stop
+    `chg_seen_charging` causing. This is the case that would catch the fix
+    for one defect reintroducing the other.
+    """
+    b = Bench()
+    b.chg(M.CHG_PILOT, pilot(0))
+    b.veh(0x18EFC000, P.enc_master(1, P.MODE_CHARGER))
+    b.charge_info(16.0)
+    b.charger_status(12)
+    b.bms(mainc=0, ibat=0.0)
+    ok(b.state() == "PASSTHROUGH", "open contactors do not arm")
+    b.t += M.Config().chg_stale_ms + 100
+    b.bms(mainc=12, ibat=0.0)
+    ok(b.state() == "PASSTHROUGH",
+       "and a state 12 the charger stopped refreshing %d ms ago is not its "
+       "status now (%s)"
+       % (M.Config().chg_stale_ms + 100, b.state()))
+    b.charger_status(12)
+    b.bms(mainc=12, ibat=0.0)
+    ok(b.state() == "MONITOR",
+       "a current 12, with the contactors already closed, arms it (%s)"
+       % b.state())
+
+
+def test_the_first_hold_step_waits_a_full_cadence_after_the_release():
+    """Spec 5.2 (user, 2026-10-09): "Entering the hold counts as a step, so
+    the first step comes no sooner than 0.3 s after the release."
+
+    This cannot use `_released()`, which runs on past the release and leaves
+    the cadence timer old enough that a step is already due -- the whole
+    quantity under test. It stops on the frame that released instead, and
+    pins that the entry set the timer before measuring anything.
+    """
+    b = Bench()
+    b.arm(max_avail_a=16.0, vmax=3.340, chg_max=300.0)
+    b.low_power()
+    ok(b.state() == "OVERRIDE", "overridden first (%s)" % b.state())
+    for _ in range(40):
+        b.hold_fresh(1, vmax=3.593, chg_max=2.75, ibat=5.0,
+                     resend_low_power=False)
+        if b.core.state == M.S_HOLD:
+            break
+    ok(b.state() == "HOLD", "released into HOLD (%s)" % b.state())
+    ok(b.core.t_hold_step == b.t,
+       "and the entry counted as a step, at the release itself")
+    sp0 = b.core.hold_ca
+    ok(sp0 is not None and sp0 > 0, "with a setpoint of %s" % sp0)
+    _hold_frame(b, 2.75, 5.0, dt_ms=100)
+    ok(b.core.hold_ca == sp0,
+       "0.1 s later the setpoint has not moved, though ibat is 2.25 A over "
+       "the permission and a step is otherwise due (%s)" % b.core.hold_ca)
+    _hold_frame(b, 2.75, 5.0, dt_ms=250)
+    ok(b.core.hold_ca == sp0 - M.Config().hold_step_ca,
+       "and the first step lands once 0.3 s has passed (%s -> %s)"
+       % (sp0, b.core.hold_ca))
 
 
 def test_passthrough_is_byte_exact_when_idle():

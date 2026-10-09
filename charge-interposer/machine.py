@@ -80,7 +80,12 @@ DIAG_SCHEMA_VER = 4
 #   4  sections A and B: the per-message BMS staleness, no cell_undervolt
 #      trip, 20 repeat frames from every path, the flow-gated charger
 #      transmit-failure counter and the charger-silence flag.
-DIAG_FW_VER = 5
+#   5  spec 5.2's HOLD: the release keeps the page-01 setpoint instead of
+#      handing it back, and the section 6 trips now run in that state.
+#   6  spec 3: arming, re-arming included, needs the charger's LATEST status
+#      to be state 12 with the contactors closed, not a 12 seen earlier in
+#      the session.
+DIAG_FW_VER = 6
 
 
 def mirror_id(arb_id):
@@ -697,6 +702,26 @@ class InterposerCore(object):
         self._log(t_ms, "REPEAT ended: %d of %d, %s"
                   % (self._burst_sent, self.cfg.burst_frames, why))
 
+    def _chg_reading_fresh(self, t_ms):
+        """Is `chg_state` what the charger says now, or the last thing it
+        said before it went quiet?
+
+        Spec 3 asks for the latest status, and `chg_state` is a level that
+        nothing clears: a charger that reported 12 and then stopped sending
+        leaves it reading 12 for ever. `_session_boundary` does not reset it
+        either, and must not -- the diagnostics document 0x7F5 B5 as "last
+        BELINV_state", so faking it back to 0 would make that byte lie. So
+        without this gate a stale 12 would arm the NEXT session, which is
+        the defect the boundary was written to stop `chg_seen_charging`
+        causing, reintroduced by the fix for the one above.
+
+        Same threshold as the staleness trip and the spec 2.2 silence flag,
+        so the core has one notion of a current charger reading rather than
+        three.
+        """
+        return (self.t_chg is not None
+                and t_ms - self.t_chg <= self.cfg.chg_stale_ms)
+
     def _maybe_arm(self, t_ms):
         """Arm on an OBSERVED charge, never on the VCU's command alone.
 
@@ -717,6 +742,9 @@ class InterposerCore(object):
         a net charging current -- the 83 % start (spec 7) drained the pack at
         2.7 A through its whole hold because the Low Power output did not
         cover the aux load -- and it must still arm.
+
+        And it means NOW, not earlier in the session (spec 3, user,
+        2026-10-09) -- see the condition.
         """
         # Spec 3 (A3): do not arm before the first pilot value has been read.
         #
@@ -732,7 +760,45 @@ class InterposerCore(object):
         # The cost is that a charger which never sends 0x18FFD8C0 is never
         # overridden. That errs toward the truck's normal charging, and no
         # session in the corpus has status frames without pilot frames.
+        # Spec 3 (user, 2026-10-09): "the charger's latest status is state
+        # 12 and the contactors are closed now, not that it reached 12
+        # earlier in the session; this applies equally to re-arming after a
+        # TERMINATED or a hold ended by the VCU".
+        #
+        # `chg_seen_charging` alone is latched for the session, so re-arming
+        # read a fact about the past. After a TERMINATED, or after a hold the
+        # VCU ended with CHARGER and the flow bit on, the core re-armed on
+        # the first BMS frame even with the charger mid-restart -- and if the
+        # restart then outlasted the 5 s state-12 debounce, the core tripped
+        # itself into SAFE over a charger that was coming back. The 83 %
+        # start of spec 7 took 9.1 s.
+        #
+        # THE FLAG IS STILL IN THE CONDITION, and not as a leftover. The two
+        # terms say different things and the core needs both:
+        #
+        #   chg_state == 12, fresh : the charger is charging NOW.
+        #   chg_seen_charging      : no session boundary since the frame that
+        #                            said so.
+        #
+        # Nothing clears `chg_state` -- 0x7F5 B5 is documented as the last
+        # BELINV_state, so nothing may -- while a boundary clears the flag on
+        # every frame of the VCU's burst. Dropping the flag therefore let a
+        # teardown re-arm the core, which the level-triggered reset in
+        # _session_boundary exists to prevent, and it is MEASURED: in
+        # syn_above_ceiling_start the VCU commands STAND_BY at t=100000, the
+        # charger's last 12 was t=99800 and it reports 11 from t=100100, and
+        # the core armed into MONITOR on the 0x440 at t=100100 -- armed, with
+        # section 6 live, in the middle of a teardown whose traffic A5 says
+        # must not trip anything. charging45 and syn_balance_hold did the
+        # same. Within a session the conjunction reduces to the ruling: the
+        # frame that makes chg_state 12 sets the flag in the same branch.
+        #
+        # The flag's other two jobs are unchanged: the departure debounce in
+        # on_charger_frame counts only a departure FROM charging, and STATUS
+        # B4 bit 1 publishes it as the session-latched fact it is.
         if (self.state == S_PASSTHROUGH and self.chg_seen_charging
+                and self.chg_state == CHG_STATE_CHARGING
+                and self._chg_reading_fresh(t_ms)
                 and self.mainc_closed and self.pilot_seen
                 and not self.boot_locked):
             self._goto(t_ms, S_MONITOR,
@@ -1211,6 +1277,16 @@ class InterposerCore(object):
                 elif self.chg_state == CHG_STATE_CHARGING:
                     self.chg_seen_charging = True
                     self.chg_bad_since = None
+                    # NOT a _maybe_arm() call site, deliberately. Arming on
+                    # the frame that establishes the condition would be the
+                    # obvious reading of spec 3's "now", and it moves arming
+                    # up to one BMS period (100 ms on the truck) earlier than
+                    # the 0x410 and 0x440 call sites do. No spec section asks
+                    # for it, and it changes the arming instant on every
+                    # trace in the differential corpus. Left out as a
+                    # behaviour change that would have to go to the spec
+                    # first; the condition is a level and the next BMS frame
+                    # tests it again.
                 elif self.chg_seen_charging and self._active():
                     # Only a departure FROM charging counts, and only a
                     # SUSTAINED one -- see chg_state_debounce_ms. The trip
@@ -1348,8 +1424,12 @@ class InterposerCore(object):
                 # So the core enters HOLD and replaces the page-01 setpoint
                 # from here on, changing nothing else.
                 #
-                # It starts from our last override setpoint, which is what
-                # the charger already has, so the entry is not a step.
+                # It starts from our last override setpoint, which is
+                # what the charger already has, so the entry changes
+                # nothing on the wire. It still COUNTS as a step (spec 5.2,
+                # user 2026-10-09): t_hold_step is set here, so the first
+                # real step comes no sooner than one cadence after the
+                # release rather than on the next page-01 frame.
                 self.hold_ca = self._our_ilim_counts() * 5
                 self.t_hold_step = t_ms
                 self._goto(t_ms, S_HOLD,

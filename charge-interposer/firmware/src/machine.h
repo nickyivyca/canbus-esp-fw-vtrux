@@ -103,7 +103,10 @@ static const uint8_t DIAG_SCHEMA_VER = 4;
 //      transmit-failure counter and the charger-silence flag.
 //   5  spec 5.2's HOLD: the release keeps the page-01 setpoint instead of
 //      handing it back, and the section 6 trips now run in that state.
-static const uint8_t DIAG_FW_VER = 5;
+//   6  spec 3: arming, re-arming included, needs the charger's LATEST status
+//      to be state 12 with the contactors closed, not a 12 seen earlier in
+//      the session.
+static const uint8_t DIAG_FW_VER = 6;
 
 // The 29-bit id with its source-address byte replaced by DIAG_SA.
 inline uint32_t mirrorId(uint32_t id) { return (id & 0x1FFFFF00u) | DIAG_SA; }
@@ -546,6 +549,15 @@ class InterposerCore {
   // `b` rides into the TRIP event's second field: the stale message's
   // identifier for TRIP_BMS_STALE (B-6), 0 for every other reason.
   void trip(uint32_t t_ms, uint8_t reason, EmitList& out, int32_t b = 0);
+  // Is chg_state_ what the charger says now, or the last thing it said
+  // before it went quiet? Spec 3 wants the latest status and chg_state_ is a
+  // level nothing clears, not even a session boundary -- it must not be,
+  // since 0x7F5 B5 is documented as the last BELINV_state. See machine.py's
+  // _chg_reading_fresh() for why a stale 12 would otherwise arm the next
+  // session.
+  bool chgReadingFresh(uint32_t t_ms) const {
+    return have_t_chg_ && (uint32_t)(t_ms - t_chg_) <= cfg_.chg_stale_ms;
+  }
   void maybeArm(uint32_t t_ms);
   void wait(uint32_t t_ms, uint8_t key, uint8_t code, int32_t a, int32_t b);
   void evaluateHold(uint32_t t_ms, bool from_frame);
