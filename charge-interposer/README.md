@@ -40,7 +40,10 @@ that copy is frozen and is being replaced by a pointer.
 
 **Never build or flash WiCAN firmware from this clone.** The WiCAN tree
 around this folder is `gen-inhibit/rollback-fix` at `45b6871`, 92 commits
-behind: schema 4, and no transmit scheduler. Nothing here depends on it
+behind: diag schema 2, four versions behind the bench's 6, and no
+transmit scheduler. (Verified in this clone: `GI_DIAG_SCHEMA_VER 2` at
+`main/gen_inhibit_core.h:112` here, against 6 at :220 in
+`~/Git/wican-fw-vtrux`.) Nothing here depends on it
 and nothing here should be used to produce a WiCAN image. The gen-inhibit
 component builds only from `~/Git/wican-fw-vtrux`.
 
