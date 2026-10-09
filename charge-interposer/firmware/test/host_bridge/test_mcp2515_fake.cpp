@@ -651,6 +651,62 @@ int main() {
           "hook: otherFullWhenFired is false when the other buffer was "
           "empty -- it is not a constant");
   }
+  {
+    // deliverDuringRead(): a frame arriving while RXB0 is being read.
+    // RX0IF is still set until CS rises (p65 s12.4), so with BUKT the
+    // frame rolls into RXB1 (p23 s4.2.1); A is read intact.
+    Mcp2515Fake c;
+    Spi s(c);
+    s.writeReg(R_RXB0CTRL, 0x64);
+    s.writeReg(R_CANCTRL, MODE_NORMAL);
+    CanFrame f = ext8Frame();
+    f.id = 0x18FF60E5;
+    f.data[0] = 0xA0; c.deliverFrame(f);
+    f.data[0] = 0xB0; c.deliverDuringRead(0, f);
+    s.readReg(0x66);
+    s.status();
+    s.bitModify(R_CANINTF, INTF_RX1IF, 0x00);
+    check(!c.firedDuringRead() && !c.rxFull(1),
+          "midread: a READ, a READ STATUS or a BIT MODIFY is not a READ RX, "
+          "so B waits");
+    c.csLow();
+    c.transfer((uint8_t)(OP_READ_RX | 0x04));     // READ RX names RXB1
+    c.transfer(0);
+    c.csHigh();
+    check(!c.firedDuringRead(),
+          "midread: a READ RX of the OTHER buffer does not fire it");
+    c.csLow();
+    c.transfer(OP_READ_RX);                       // READ RX RXB0, from SIDH
+    check(!c.firedDuringRead(),
+          "midread: not on the instruction byte alone");
+    uint8_t got[13];
+    for (int i = 0; i < 13; i++) got[i] = c.transfer(0);
+    check(c.firedDuringRead() && !c.otherFullBeforeMid() &&
+              c.otherFullAfterMid() && c.rxFull(0),
+          "midread: fires during the read, RXB1 empty before and full after, "
+          "RX0IF still set (CS is low)");
+    c.csHigh();
+    check(got[5] == 0xA0 && !c.rxFull(0) && s.readReg(0x76) == 0xB0,
+          "midread: A is read intact, RXB0 freed at CS high, B sits in RXB1");
+    // Not armed again: with RXB1 freed, the next READ RX of a full RXB0
+    // delivers nothing (RXB1 stays empty -- a second delivery would land
+    // there, not vanish into an overflow).
+    s.bitModify(R_CANINTF, INTF_RX1IF, 0x00);
+    f.data[0] = 0xC0; c.deliverFrame(f);
+    c.csLow(); c.transfer(OP_READ_RX); c.transfer(0); c.transfer(0);
+    const bool other = c.rxFull(1);
+    c.csHigh();
+    check(!other && !c.rxFull(1),
+          "midread: one-shot -- a later read delivers nothing more");
+    // And it does not fire on an EMPTY RXB0 (there is no read in flight).
+    Mcp2515Fake c2;
+    Spi s2(c2);
+    s2.writeReg(R_RXB0CTRL, 0x64);
+    c2.deliverDuringRead(0, f);
+    c2.csLow(); c2.transfer(OP_READ_RX); c2.transfer(0); c2.csHigh();
+    check(!c2.firedDuringRead() && !c2.rxFull(0) && !c2.rxFull(1),
+          "midread: a READ RX of an empty RXB0 does not fire it");
+  }
 
   // --- what this run rests on, printed from the model's own table --------
   std::printf("\nWhat this model rests on:\n");

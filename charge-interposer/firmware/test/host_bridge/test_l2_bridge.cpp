@@ -461,6 +461,83 @@ void caseRxRolloverRefill() {
   assertPathsExercised();
 }
 
+// The mid-read interleaving (tester, 2026-10-09). be4c921 names it as
+// ordered but had no case ("the fake has no hook that fires mid-read"):
+// A sits alone in RXB0; B arrives WHILE the board reads A, so RXB1 was
+// empty beforehand and B rolls into it (RX0IF is still set until CS
+// rises); then C lands in the freed RXB0 beside B. B is older than C, so
+// spec 2 requires A, B, C. The setup assertion is strict: B delivered
+// mid-read with RXB1 empty before and full after, and C delivered at the
+// freeing of RXB0 with B resident.
+void caseRxRolloverMidread() {
+  boot();
+  feed(12);
+  const uint8_t tag[3] = {0xA0, 0xB0, 0xC0};
+  const struct {
+    const char* name;
+    uint32_t id[3];
+  } variants[] = {
+      {"three identifiers", {0x18FF60E5, 0x18FF61E5, 0x18FF62E5}},
+      {"one identifier", {0x18FF60E5, 0x18FF60E5, 0x18FF60E5}},
+  };
+  for (int rep = 0; rep < 3; rep++) {
+    for (const auto& v : variants) {
+      char msg[240];
+      runBridge(5);
+      const bool empty = !g_chip->rxFull(0) && !g_chip->rxFull(1);
+      const size_t mark = vehSent().size();
+      mcpfake::CanFrame f[3];
+      for (int k = 0; k < 3; k++) {
+        std::memset(&f[k], 0, sizeof(f[k]));
+        f[k].id = v.id[k];
+        f[k].ext = true;
+        f[k].len = 8;
+        f[k].data[0] = tag[k];
+        f[k].data[1] = (uint8_t)(0x50 + rep);
+      }
+      g_chip->deliverFrame(f[0]);               // A -> RXB0, RXB1 empty
+      g_chip->deliverDuringRead(0, f[1]);       // B while A is being read
+      g_chip->deliverWhenFreed(0, f[2]);        // C when A's read ends
+      runBridge(20);
+      const bool setup = empty && g_chip->firedDuringRead() &&
+                         !g_chip->otherFullBeforeMid() &&
+                         g_chip->otherFullAfterMid() &&
+                         g_chip->firedWhenFreed(0) &&
+                         g_chip->otherFullWhenFired(0);
+
+      std::string order;
+      const std::vector<twaifake::Frame>& s = vehSent();
+      for (size_t i = mark; i < s.size(); i++) {
+        if (!s[i].ext || s[i].len < 2 || s[i].data[1] != (uint8_t)(0x50 + rep))
+          continue;
+        for (int k = 0; k < 3; k++) {
+          if (s[i].id != v.id[k] || s[i].data[0] != tag[k]) continue;
+          if (!order.empty()) order += ",";
+          order += "ABC"[k];
+        }
+      }
+      std::printf("  --  rep %d, %s: B mid-read=%d (RXB1 before %d, after %d), "
+                  "C when freed=%d (B resident %d); vehicle side %s\n",
+                  rep, v.name, g_chip->firedDuringRead() ? 1 : 0,
+                  g_chip->otherFullBeforeMid() ? 1 : 0,
+                  g_chip->otherFullAfterMid() ? 1 : 0,
+                  g_chip->firedWhenFreed(0) ? 1 : 0,
+                  g_chip->otherFullWhenFired(0) ? 1 : 0,
+                  order.empty() ? "(none)" : order.c_str());
+      std::snprintf(msg, sizeof(msg),
+                    "rep %d, %s: the interleaving happened (B into an empty "
+                    "RXB1 during A's read, then C into RXB0 beside B)",
+                    rep, v.name);
+      check(setup, msg);
+      std::snprintf(msg, sizeof(msg),
+                    "rep %d, %s: vehicle side A,B,C per spec 2 (observed %s)",
+                    rep, v.name, order.empty() ? "none" : order.c_str());
+      check(order == "A,B,C", msg);
+    }
+  }
+  assertPathsExercised();
+}
+
 // Spec 2, B-8 (accepted exception): "Remote-request (RTR) frames are not
 // forwarded by either driver." Through main.cpp itself, both directions,
 // extended and standard identifiers, each RTR between data frames of
@@ -1518,6 +1595,7 @@ const Case kCases[] = {
     {"replay", caseReplay},
     {"rx-rollover-order", caseRxRolloverOrder},
     {"rx-rollover-refill", caseRxRolloverRefill},
+    {"rx-rollover-midread", caseRxRolloverMidread},
     {"rtr-not-forwarded", caseRtrNotForwarded},
     {"busoff-charger", caseBusOffCharger},
     {"busoff-vehicle", caseBusOffVehicle},

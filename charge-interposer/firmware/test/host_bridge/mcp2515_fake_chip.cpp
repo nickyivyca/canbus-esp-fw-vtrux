@@ -555,6 +555,7 @@ uint8_t Mcp2515Fake::transfer(uint8_t out) {
       // Then sequential, "the same as the READ instruction" (p65 s12.4).
       // Until 2026-10-08 m was ignored and a read always began at SIDH.
       rx_which_ = (uint8_t)((out >> 2) & 1);
+      rx_bytes_ = 0;
       addr_ = (uint8_t)((rx_which_ ? 0x71 : 0x61) + ((out & 0x02) ? 5 : 0));
     } else if (out == OP_RESET) {
       reset(false);
@@ -563,8 +564,19 @@ uint8_t Mcp2515Fake::transfer(uint8_t out) {
   }
 
   switch (op_) {
-    case OP_READ_RX:
-      return readReg(addr_++);
+    case OP_READ_RX: {
+      const uint8_t v = readReg(addr_++);
+      // deliverDuringRead(): after the first data byte, with CS still low.
+      if (++rx_bytes_ == 1 && mid_armed_ && rx_which_ == mid_buf_ &&
+          rxFull(mid_buf_)) {
+        mid_armed_ = false;
+        mid_fired_ = true;
+        mid_other_before_ = rxFull(1 - mid_buf_);
+        deliverFrame(mid_);
+        mid_other_after_ = rxFull(1 - mid_buf_);
+      }
+      return v;
+    }
     case OP_READ_STATUS:
       return statusByte();
     case OP_RX_STATUS:

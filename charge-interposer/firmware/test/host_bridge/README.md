@@ -237,6 +237,32 @@ Its setup assertion uses the hook's `firedSeq()` and
 is resident. A build that takes C before B never puts D beside C. That is
 reported as a setup failure, never as a pass.
 
+`rx-rollover-midread` (2026-10-09) is the third interleaving the rollover
+fix (`be4c921`) names as ordered, which it could not test:
+- A sits alone in RXB0, and RXB1 is empty;
+- B arrives WHILE the board reads A, so (RX0IF still set until CS rises)
+  it rolls into RXB1;
+- C lands in the freed RXB0 beside B, so spec 2 requires A, B, C.
+
+B is placed with `Mcp2515Fake::deliverDuringRead()`, which fires after the
+first data byte of the next READ RX naming a full RXBn, before CS rises.
+The setup assertion requires B delivered mid-read with RXB1 empty before
+and full after, and C delivered with B resident. Its checks are the
+`midread:` lines in `test_mcp2515_fake` (mutations P, Q, R in
+`rx_hook_mutations.sh`).
+
+**Can-fail for all three cases:**
+`$VTRUX_DATA/notes/artifacts/interposer-firmware/rx_order_prefix_control.sh`
+builds `test_l2_bridge` with the current driver (all three must pass) and
+then with `port_mcp2515.cpp` from a commit before the fix (default
+`9021d5e`). There `rx-rollover-order` and `rx-rollover-midread` must fail
+on their order check with their setup met; refill is only reported.
+
+**Not a host case:** be4c921's stated assumption, that two frames cannot
+both arrive between the RXB0 read's CS release and the status re-read.
+The fake has no time between instructions to put them in. It is a silicon
+measurement (C12, acceptance step 4).
+
 ### Three receive-model corrections (2026-10-08)
 
 Found while writing C12, from DS20001801J read as text **and** rendered:

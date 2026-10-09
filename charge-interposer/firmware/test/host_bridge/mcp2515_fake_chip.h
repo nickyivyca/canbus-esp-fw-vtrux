@@ -149,6 +149,23 @@ class Mcp2515Fake {
   bool otherFullWhenFired(int n) const { return pend_other_full_[n & 1]; }
   uint32_t firedSeq(int n) const { return pend_seq_[n & 1]; }
 
+  // Deliver `f` in the MIDDLE of the next READ RX BUFFER that names RXBn
+  // while RXBn is full: after the first data byte, before CS rises. RXnIF
+  // is still set then (it clears at CS high, p65 s12.4), so the chip
+  // routes `f` as any frame arriving at that moment (p23 s4.2.1, p26
+  // Fig 4-3). otherFullBeforeMid()/otherFullAfterMid() let a case assert
+  // "RXB1 was empty and took it". Added 2026-10-09 for the interleaving
+  // be4c921 names as ordered but could not test.
+  void deliverDuringRead(int n, const CanFrame& f) {
+    mid_ = f;
+    mid_buf_ = (uint8_t)(n & 1);
+    mid_armed_ = true;
+    mid_fired_ = false;
+  }
+  bool firedDuringRead() const { return mid_fired_; }
+  bool otherFullBeforeMid() const { return mid_other_before_; }
+  bool otherFullAfterMid() const { return mid_other_after_; }
+
   // A controller-level receive overrun: a frame reached the wire
   // and the host did not read it in time. Distinct from our own
   // ring overflowing, and the chip records it in EFLG rather than
@@ -393,6 +410,13 @@ class Mcp2515Fake {
   uint32_t pend_seq_[2] = {0, 0};
   uint32_t fire_seq_ = 0;
   uint8_t rx_which_ = 0;      // the buffer the current READ RX names
+  uint8_t rx_bytes_ = 0;      // data bytes clocked in the current READ RX
+  CanFrame mid_;              // the deliverDuringRead() frame
+  uint8_t mid_buf_ = 0;
+  bool mid_armed_ = false;
+  bool mid_fired_ = false;
+  bool mid_other_before_ = false;
+  bool mid_other_after_ = false;
 };
 
 // Bits a frame occupies on the wire, exact stuffing from the bit
