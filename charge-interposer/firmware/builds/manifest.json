@@ -83,6 +83,28 @@
       }
     },
     {
+      "build_id_0x7F7": "2e7ae2ef",
+      "built_utc": "2026-10-09T03:12:34Z",
+      "elf_sha256": "2e7ae2efa06ea442321b1a7a41b6c57feae2d340eb46d93814ec796730925f8c",
+      "env": "esp32-can-x2",
+      "git_commit": "079ac8be7cbec773e874aee17766034f6bf884c5",
+      "git_dirty": false,
+      "image": "interposer_56a3aab0ac46_bridge.bin",
+      "intp_fw_ver16": 4,
+      "md5": "f6a3ef2c64caa8df0fa42314169bf0d1",
+      "size": 355040,
+      "src_digest": "56a3aab0ac46",
+      "tag": "bridge",
+      "toolchain": {
+        "framework-arduinoespressif32": "3.2.1",
+        "framework-arduinoespressif32-libs": "5.4.0+sha.858a988d6e",
+        "platform": "espressif32@54.03.21",
+        "tool-esptoolpy": "5.0.2",
+        "tool-mklittlefs": "3.2.0",
+        "toolchain-xtensa-esp-elf": "14.2.0+20241119"
+      }
+    },
+    {
       "build_id_0x7F7": "e873eb86",
       "built_utc": "2026-10-05T05:19:10Z",
       "elf_sha256": "e873eb86a5076d43cfe276d73ed096ddcaaa966362ec9bd37dc3a2b7a63cdd68",
