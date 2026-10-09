@@ -121,17 +121,24 @@ class Oracle(object):
     def __init__(self):
         self.perm_a = None
         self.cap_raw_a = None
-        self.cc_a = None            # learned CC, latest setpoint >= 5 A
+        # Spec 4 (F item 31, ruled 2026-10-08): the learned CC command is
+        # the LARGEST page-01 setpoint >= 5 A seen in MONITOR since the last
+        # session boundary. The other readings are kept only to measure how
+        # often they would give a different limit (the population check).
+        self.cc_max_a = None        # THE learned CC (spec 4)
+        self.cc_a = None            # latest setpoint >= 5 A in MONITOR
         self.cc_prev_a = None       # the value before the current frame
-        self.cc_first_a = None      # first CC since the last boundary
-        self.cc_max_a = None        # largest CC since the last boundary
+        self.cc_first_a = None      # first CC in MONITOR since the boundary
         self.p00 = None             # the VCU's standing page 00, raw bytes
         self.pilot = None
         self.chg_t = None
         self.silent = False
         self.boundary = False       # a 6.1 boundary on THIS step
 
-    def observe(self, kind, t, fid, data):
+    def observe(self, kind, t, fid, data, monitor=False):
+        """`monitor`: the core was in MONITOR when this frame arrived. Only
+        then is a page-01 setpoint >= 5 A learned (spec 4). The state is
+        public (0x7F4 B2), so this is not the core's belief about the bus."""
         self.boundary = False
         self.cc_prev_a = self.cc_a
         if kind == "V":
@@ -145,7 +152,7 @@ class Oracle(object):
                 self.p00 = bytes(data)
             elif fid == M.CMD_ID and len(data) >= 5 and data[0] == 0x01:
                 _v, amps = P.dec_setpoint(data)
-                if amps >= CC_MIN_A:
+                if amps >= CC_MIN_A and monitor:
                     self.cc_a = amps
                     if self.cc_first_a is None:
                         self.cc_first_a = amps
@@ -180,24 +187,28 @@ class Oracle(object):
         self.cap_raw_a = None
 
     def caps(self):
-        """Every EVSE cap the spec text allows for this frame.
+        """The EVSE cap for this frame, as a one-element list (or [] when no
+        maxAvailableChargingCurrent has been heard): the latest
+        maxAvailableChargingCurrent (item 6), never above the learned CC
+        command -- the largest page-01 setpoint >= 5 A seen in MONITOR since
+        the last boundary (spec 4, F item 31 ruled 2026-10-08). Until that
+        ruling every reading (latest, latest-before, first, largest) was
+        accepted."""
+        if self.cap_raw_a is None:
+            return []
+        cc = self.cc_max_a
+        return [self.cap_raw_a if cc is None else min(self.cap_raw_a, cc)]
 
-        The cap itself is the latest maxAvailableChargingCurrent (item 6).
-        WHICH CC command is "the VCU's own learned CC command" (spec 4) is
-        not stated -- the latest before this frame, the latest including it
-        if it is itself >= 5 A, the first since the boundary, or the largest
-        -- and is with the reviewer (raised 2026-10-07). Until it is ruled
-        every one of those readings is accepted; a value matching none of
-        them still fails, and so does anything above the permission or above
-        the latest maxAvailableChargingCurrent."""
+    def alt_caps(self):
+        """The caps the OTHER readings of "learned CC" would give -- latest
+        before this frame, latest including it, first -- for counting how
+        often the ruled reading is actually being separated from them."""
         if self.cap_raw_a is None:
             return []
         out = []
-        for cc in (self.cc_prev_a, self.cc_a, self.cc_first_a,
-                   self.cc_max_a):
-            c = self.cap_raw_a if cc is None else min(self.cap_raw_a, cc)
-            if c not in out:
-                out.append(c)
+        for cc in (self.cc_prev_a, self.cc_a, self.cc_first_a):
+            out.append(self.cap_raw_a if cc is None
+                       else min(self.cap_raw_a, cc))
         return out
 
 
@@ -221,6 +232,8 @@ class Checker(object):
         self.n_repeat_frames = 0
         self.n_overrode = 0
         self.n_page01_checked = 0
+        self.n_cc_separating = 0    # page 01 where "largest" differs from
+                                    # another reading of the learned CC
         self.n_mirrors = 0
         self.n_held = 0             # override 03.02 / 03.07 judged
         self.n_held_differed = 0    # ... of which the VCU sent other bytes
@@ -281,7 +294,8 @@ class Checker(object):
         before = self.core.state
         self._step_kind = kind
         self._step_before = before
-        self.bus.observe(kind, t_ms, arb_id, data)
+        self.bus.observe(kind, t_ms, arb_id, data,
+                         monitor=(before == M.S_MONITOR))
 
         if kind == "T":
             out = self.core.tick(t_ms)
@@ -479,6 +493,14 @@ class Checker(object):
         """Spec 4: page 01's current is ours -- the BMS's permission capped
         by the EVSE -- and only the current changes (item 6 reading)."""
         self.n_page01_checked += 1
+        # how often the ruled reading (largest) gives a different limit from
+        # some other reading, at this frame: the population that makes the
+        # narrowing a check rather than a relabelling
+        if self.bus.perm_a is not None and self.bus.caps():
+            want = min(self.bus.perm_a, self.bus.caps()[0])
+            if any(abs(min(self.bus.perm_a, c) - want) > PAGE01_COUNT_A
+                   for c in self.bus.alt_caps()):
+                self.n_cc_separating += 1
         if bytes(sent[:3]) != bytes(orig[:3]) or \
                 bytes(sent[5:]) != bytes(orig[5:]):
             self.fail("page 01 bytes other than the current changed: %s -> "
@@ -828,11 +850,12 @@ def test_invariants_hold_over_every_trace():
     ok(len(names) >= 20,
        "found %d traces in %s -- the glob is looking in the right place"
        % (len(names), TRACES))
-    total = p01 = mirrors = full = cut = 0
+    total = p01 = mirrors = full = cut = sep = 0
     for name in names:
         c = replay_trace(os.path.join(TRACES, name))
         total += c.n_steps
         p01 += c.n_page01_checked
+        sep += c.n_cc_separating
         mirrors += c.n_mirrors
         # Per trace, only that it was read at all -- the unit traces are
         # deliberately a few dozen steps each. The population check is the
@@ -848,6 +871,9 @@ def test_invariants_hold_over_every_trace():
     # Rev 2 population guards: each rule must actually have been exercised,
     # or it passes by never running (the shape AGENTS.md calls Mode 1).
     ok(p01 >= 1000, "rule 5 judged %d override page-01 frames" % p01)
+    print("  --  traces: %d override page-01 frames judged, %d where the "
+          "largest learned CC gives a different limit from another reading"
+          % (p01, sep))
     ok(mirrors >= 1000, "rule 8.1 judged %d mirror frames" % mirrors)
     ok(full >= 10, "%d repeat bursts ran to completion and were judged "
        "at exactly 20" % full)
@@ -858,6 +884,7 @@ def test_invariants_hold_over_every_trace():
 def test_invariants_hold_over_randomised_traffic():
     total_repeats = 0
     overrode = 0
+    p01 = sep = 0
     # Two regimes. The calm one is the only one that reaches OVERRIDE at all,
     # so it is the only one that exercises the rewrite and repeat rules; the
     # chaotic one is where the core spends its time tripping, re-arming and
@@ -868,11 +895,16 @@ def test_invariants_hold_over_randomised_traffic():
         c = random_sequence(seed, fault_rate=rate, garbage=junk)
         total_repeats += c.n_repeat_frames
         overrode += c.n_overrode
+        p01 += c.n_page01_checked
+        sep += c.n_cc_separating
         for p in c.finish():
             FAILS.append(p)
     ok(overrode > 0,
        "the random sequences reached OVERRIDE at least once (%d steps)"
        % overrode)
+    print("  --  random: %d override page-01 frames judged, %d where the "
+          "largest learned CC gives a different limit from another reading"
+          % (p01, sep))
     # Without this the whole random test passes on a core that never does
     # anything at all, which is the shape most of these checks have.
     ok(total_repeats > 0,
@@ -1213,6 +1245,100 @@ def test_checker_catches_hold_and_gap_mutations():
         ok(any(text in q for q in probs),
            "mutation '%s' rejected for its own reason ('%s'); got %s"
            % (name, text, probs[:2]))
+
+
+# --- spec 4, the learned CC command (F item 31) ------------------------------
+
+LEARNED_CC_A = (10.0, 18.0, 8.0)     # first, largest, latest -- all distinct
+LEARNED_CC_CAP_A = 25.0              # the charger's cap, above all three
+
+
+def learned_cc_steps():
+    """A charge in which the three readings of "learned CC" disagree: the
+    VCU sends CC commands of 10, 18 and 8 A in MONITOR under a 25 A
+    maxAvailableChargingCurrent and a 300 A permission, then Low Power;
+    through the override its hold setpoints (2 A) keep coming. Spec 4 (F
+    item 31): the override commands min(permission, cap, LARGEST) = 18 A;
+    "latest" would give 8 A and "first" 10 A. Built with test_trips' Bench
+    (arm delay 0) and returned as trace steps."""
+    import test_trips as T
+    b = T.Bench()
+    b.arm(vmax=3.340, chg_max=300.0, max_avail_a=LEARNED_CC_CAP_A)
+    for amps in LEARNED_CC_A:
+        b.veh(M.CMD_ID, P.enc_setpoint(P.VLIM_DEFAULT_COUNTS,
+                                       int(round(amps / P.UNIT))))
+        T._drain(b, T._hold_all, 5)
+    b.low_power()
+    hold = P.enc_setpoint(P.VLIM_DEFAULT_COUNTS, int(round(2.0 / P.UNIT)))
+    for i in range(200):                 # 20 s of override
+        b.t += 100
+        T._hold_all(b)
+        if i % 3 == 0:
+            b.veh(M.CMD_ID, hold)
+        b.tick()
+    steps = []
+    for line in b.trace:
+        k = line[:1]
+        if k == "T":
+            steps.append(("T", int(line[1:].strip()), None, None, None))
+        else:
+            parts = line[1:].split()
+            steps.append((k, int(parts[0]), int(parts[1], 16),
+                          parts[2] != "0", bytes.fromhex(parts[3])))
+    return dict(b.cfg_overrides), steps, list(b.trace)
+
+
+def _learned_cc_checker(mutate=None):
+    overrides, steps, _lines = learned_cc_steps()
+    cfg = M.Config()
+    for k, v in overrides.items():
+        setattr(cfg, k, v)
+    c = Checker("learned_cc", cfg, mutate=mutate)
+    for st in steps:
+        c.step(*st)
+    return c
+
+
+def test_learned_cc_is_the_largest():
+    c = _learned_cc_checker()
+    for p in c.finish():
+        FAILS.append(p)
+    print("  --  learned CC: %d override page-01 frames judged, %d where "
+          "'largest' gives a different limit from another reading"
+          % (c.n_page01_checked, c.n_cc_separating))
+    ok(c.n_page01_checked >= 50 and c.n_cc_separating >= 50,
+       "the learned-CC sequence judged %d page-01 frames, %d separating "
+       "the readings" % (c.n_page01_checked, c.n_cc_separating))
+
+
+def test_learned_cc_can_fail():
+    """A core that caps by the LATEST CC command (8 A), not the largest
+    (18 A), must be rejected -- and so must one that caps by the first."""
+    for label, pick in (("latest", lambda bus: bus.cc_a),
+                        ("first", lambda bus: bus.cc_first_a)):
+        hits = [0]
+
+        def mut(c, kind, arb_id, data, out, pick=pick):
+            if (kind != "V" or arb_id != M.CMD_ID or not data
+                    or data[0] != 0x01 or c.core.state != M.S_OVERRIDE):
+                return out
+            cc = pick(c.bus)
+            if cc is None or c.bus.perm_a is None or c.bus.cap_raw_a is None:
+                return out
+            amps = min(c.bus.perm_a, c.bus.cap_raw_a, cc)
+            new = []
+            for side, fid, ext, payload in out:
+                if side == M.TO_CHARGER and fid == M.CMD_ID                         and payload[0] == 0x01:
+                    v, _i = P.setpoint_counts(payload)
+                    payload = P.enc_setpoint(v, int(round(amps / P.UNIT)))
+                    hits[0] += 1
+                new.append((side, fid, ext, payload))
+            return new
+        c = _learned_cc_checker(mutate=mut)
+        probs = c.finish()
+        ok(hits[0] > 0 and any("commanded" in q for q in probs),
+           "a core capping by the %s CC command is rejected (%d frames "
+           "rewritten; %s)" % (label, hits[0], probs[:1]))
 
 
 def main():

@@ -182,6 +182,22 @@ def silence_traces(outdir):
     return made
 
 
+def learned_cc_traces(outdir):
+    """Spec 4 (F item 31, ruled 2026-10-08): the learned CC command is the
+    largest page-01 setpoint >= 5 A seen in MONITOR since the boundary.
+    test_invariants.learned_cc_steps sends 10, 18 and 8 A, so "largest",
+    "first" and "latest" give different limits; recorded so the port is
+    held to it too. Refuses to record a run the invariants reject."""
+    c = I._learned_cc_checker()
+    problems = c.finish()
+    if problems or c.n_cc_separating == 0:
+        raise SystemExit("learned-CC sequence: %s, %d separating frames -- "
+                         "not recording it" % (problems[:1],
+                                               c.n_cc_separating))
+    overrides, _steps, lines = I.learned_cc_steps()
+    return [write(outdir, PREFIX + "learned_cc_largest", overrides, lines)]
+
+
 def random_traces(outdir):
     made = []
     for seed, rate, junk in RANDOM_SEEDS:
@@ -212,7 +228,8 @@ def main():
         os.makedirs(a.outdir)
 
     made = (trip_traces(a.outdir) + control_trace(a.outdir)
-            + definition_traces(a.outdir) + silence_traces(a.outdir))
+            + definition_traces(a.outdir) + silence_traces(a.outdir)
+            + learned_cc_traces(a.outdir))
     for path, n in made:
         print("  %-52s %6d steps" % (os.path.basename(path), n))
 

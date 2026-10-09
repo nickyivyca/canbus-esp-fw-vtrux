@@ -169,8 +169,10 @@ class Charger(object):
         self.pilot_reset_after_standby_s = 0.6
         self.pilot_reset_at = None
         # Spec 9 (user, 2026-10-08): the original Bel unit's stop with
-        # shutdownSource 11 and the plug still IN (vehicleConnected 1),
-        # 84-162 s in the corpus. Set by --stop11-at; None = never.
+        # shutdownSource 11 and the plug still IN (vehicleConnected 1); the
+        # VCU kept flow on for 84 s in the one clean capture
+        # (chargingafterturningaroundandnotusingextension). Set by
+        # --stop11-at; None = never.
         self.stop11_t = None
 
     def unplug(self, t):
