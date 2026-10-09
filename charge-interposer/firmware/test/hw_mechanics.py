@@ -47,9 +47,10 @@ import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 FW = os.path.normpath(os.path.join(_HERE, ".."))
-MANIFESTS = os.path.normpath(os.path.join(
-    FW, "..", "..", "..", "notes", "artifacts", "interposer-firmware",
-    "flash-manifests"))
+sys.path.insert(0, os.path.normpath(os.path.join(FW, "..")))
+import paths                                                # noqa: E402
+
+MANIFESTS = os.path.join(paths.fixtures(), "flash-manifests")
 
 # path -> the spec 10 item it is a mechanic for.
 WHOLE_FILES = {

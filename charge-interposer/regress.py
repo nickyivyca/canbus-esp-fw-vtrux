@@ -36,7 +36,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-VTRUX = HERE.parents[1]
+import paths                                                # noqa: E402
+
+VTRUX = Path(paths.data_dir())          # SeaDrive projects/vtrux (paths.py)
 
 import machine as M
 import replay

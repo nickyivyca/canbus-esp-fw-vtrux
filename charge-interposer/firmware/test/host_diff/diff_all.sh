@@ -5,7 +5,10 @@
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 FW="$HERE/../.."
-ART="$FW/../../../notes/artifacts/interposer-firmware"
+# The traces and goldens stay in SeaDrive; VTRUX_DATA is its projects/vtrux
+# (see charge-interposer/paths.py). Under WSL: WSLENV=VTRUX_DATA/p.
+: "${VTRUX_DATA:?VTRUX_DATA is not set -- see charge-interposer/paths.py}"
+ART="$VTRUX_DATA/notes/artifacts/interposer-firmware"
 BIN="${TMPDIR:-/tmp}/hr_$$"
 g++ -std=c++11 -O2 -I "$FW/src" -o "$BIN" "$HERE/host_runner.cpp" "$FW/src/machine.cpp" || exit 1
 fail=0

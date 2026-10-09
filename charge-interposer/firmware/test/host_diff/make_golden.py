@@ -126,12 +126,13 @@ def main():
     # repointed on 2026-10-05, and golden/ was deleted the same day
     # (user's call). Leaving this default behind would recreate the dead
     # directory the first time anyone ran it without --outdir.
-    ap.add_argument("--outdir", default=os.path.normpath(
-        os.path.join(_HERE, "..", "..", "..", "..", "..",
-                     "notes", "artifacts", "interposer-firmware")),
-                    help="default: notes/artifacts/interposer-firmware/, "
-                         "which is what diff_all.sh reads")
+    ap.add_argument("--outdir", default=None,
+                    help="default: notes/artifacts/interposer-firmware/ "
+                         "under VTRUX_DATA, which is what diff_all.sh reads")
     a = ap.parse_args()
+    if a.outdir is None:
+        import paths
+        a.outdir = paths.fixtures()
 
     outdir = a.outdir
     if not os.path.isdir(outdir):

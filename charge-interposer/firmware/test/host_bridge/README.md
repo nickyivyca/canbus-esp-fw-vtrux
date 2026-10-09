@@ -111,7 +111,7 @@ have sent the next reader looking for a conflict that is not there.
 
 ### Mutation-tested
 
-`../../../../notes/artifacts/interposer-firmware/busoff_mutations.sh`.
+`$VTRUX_DATA/notes/artifacts/interposer-firmware/busoff_mutations.sh` (SeaDrive).
 B (transmitting while bus-off), C (recovery not clearing TEC), D (a 128-bit
 instead of 128x11 window) and E (removing the no-ACK pin, so the two error
 sources collapse into one) are each caught on their own check.
@@ -164,7 +164,7 @@ Fixed by ending the episode on a successful restart.
 
 ### Mutation-tested, including one mutation that must SURVIVE
 
-`../../../../notes/artifacts/interposer-firmware/twai_mutations.sh` puts
+`$VTRUX_DATA/notes/artifacts/interposer-firmware/twai_mutations.sh` (SeaDrive) puts
 each defect back. A and B (the max-form, and the unclosed bus-off episode)
 are caught on their own checks, as is D (dropping `rx_overrun_count` from
 the loss figure).
@@ -189,7 +189,7 @@ an **UNKNOWN** or **DEFERRED** line that differs is the bench answering
 what the document would not.
 
 The fake's transcript is kept at
-`../../../../notes/artifacts/interposer-firmware/mcp2515_conformance_fake.txt`.
+`$VTRUX_DATA/notes/artifacts/interposer-firmware/mcp2515_conformance_fake.txt` (SeaDrive).
 
 **It does not name buffer numbers on the wire, and that is deliberate.** A
 dongle cannot see which of TXB0-2 a frame came from, so a sequence that
@@ -220,7 +220,7 @@ model's RTS handling -- its transcript line stays UNKNOWN.
 
 ### It was mutation-tested before being trusted
 
-`../../../../notes/artifacts/interposer-firmware/conformance_mutations.sh`
+`$VTRUX_DATA/notes/artifacts/interposer-firmware/conformance_mutations.sh` (SeaDrive)
 breaks one DATASHEET behaviour at a time and requires the sequence to fail
 **on the line that behaviour belongs to** -- a failure somewhere else is
 incidental coverage and the script says so. Five mutations, all caught:
@@ -247,7 +247,8 @@ Both are the recurring shape -- a check that passes while testing nothing:
 
 ## Where the model comes from
 
-Microchip **DS20001801J**, in `../../datasheets/`, never from
+Microchip **DS20001801J**, in reverse-it's `projects/vtrux/tools/interposer/firmware/datasheets/`
+(not moved to this repo), never from
 `port_mcp2515.cpp`. A fake that borrows the driver's opcode map agrees with
 the driver's mistakes, and a conformance sequence written from the same
 borrowed map then agrees with both.

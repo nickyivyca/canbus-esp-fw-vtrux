@@ -27,24 +27,12 @@ from pathlib import Path
 
 import can
 
-def _repo_root():
-    """Walk up until we find the directory that holds `canre`.
+# canre's location comes from paths.py (VTRUX_DATA) since the move to git;
+# nothing here imports canre, so a missing setting is not an error.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import paths                                                # noqa: E402
 
-    Counting `.parents[N]` is how this breaks -- AGENTS.md flags it, and it
-    broke here anyway: from a file inside projects/vtrux/tools/interposer/,
-    parents[3] is projects/, not the repo root. Searching for the marker cannot
-    be off by one.
-    """
-    from pathlib import Path as _P
-    here = _P(__file__).resolve()
-    for d in here.parents:
-        if (d / "canre").is_dir():
-            return d
-    return here.parents[-1]
-
-REPO_ROOT = _repo_root()
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+REPO_ROOT = paths.add_canre(required=False)
 
 VEHICLE_SEGMENT = "239.0.2.1"
 CHARGER_SEGMENT = "239.0.2.2"

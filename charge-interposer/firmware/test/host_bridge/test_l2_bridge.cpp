@@ -391,8 +391,9 @@ void caseReplay() {
   // test of whether the charger RX overflows are the logger's 1 ms
   // timestamp quantisation or something else. Printed either way, so a
   // run under the override cannot be mistaken for the default one.
-  const char* kPath =
-      "../../../../../notes/artifacts/interposer-firmware/l3_stimulus.txt";
+  // No repo-relative default since the move to git: l3::load() finds
+  // the stimulus through $VTRUX_DATA (charge-interposer/paths.py).
+  const char* kPath = NULL;
   if (const char* over = std::getenv("L3_STIMULUS")) {
     kPath = over;
     std::printf("  --  L3_STIMULUS override in effect: %s\n", over);

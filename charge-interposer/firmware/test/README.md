@@ -17,7 +17,7 @@ behavioural tests of the core live one level up (`../../test_machine.py`,
 ## `build_check.py`
 
 ```
-py -3.11 projects/vtrux/tools/interposer/firmware/test/build_check.py
+py -3.11 charge-interposer/firmware/test/build_check.py
 py -3.11 .../build_check.py --no-build      # check existing .pio images
 ```
 
@@ -82,7 +82,8 @@ would have recreated the dead directory the first time anyone ran it without
 `--outdir`. All 44 files had live counterparts in the artifacts directory
 before deletion.
 
-The pairs themselves live in `../../../../notes/artifacts/interposer-firmware/`,
+The pairs themselves live in SeaDrive, in
+`$VTRUX_DATA/notes/artifacts/interposer-firmware/` (see `../../paths.py`),
 with their own README covering what each one exists for and the two
 regeneration traps.
 

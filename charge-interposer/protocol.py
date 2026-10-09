@@ -33,6 +33,7 @@ Two halves:
 """
 
 import os
+import sys
 
 import cantools
 
@@ -143,7 +144,11 @@ def enc_03_07(complete):
 # --------------------------------------------------------------------------
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_VTRUX = os.path.normpath(os.path.join(_HERE, "..", ".."))
+sys.path.insert(0, _HERE)
+import paths                                                # noqa: E402
+
+# The vehicle DBCs, from the public canbus-reveng-vtrux-coda clone (paths.py).
+_VTRUX = paths.dbc_dir()
 
 EPRI_PT_DBC = os.path.join(_VTRUX, "epri-pt-bus.dbc")
 BEL_DBC = os.path.join(_VTRUX, "BelInverter-v2.dbc")

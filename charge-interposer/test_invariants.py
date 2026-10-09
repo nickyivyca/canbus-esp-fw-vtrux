@@ -73,10 +73,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import machine as M
 import protocol as P
 
+import paths                                                # noqa: E402
+
 HERE = os.path.dirname(os.path.abspath(__file__))
-TRACES = os.path.normpath(
-    os.path.join(HERE, "..", "..", "notes", "artifacts",
-                 "interposer-firmware"))
+TRACES = paths.fixtures()               # SeaDrive, via VTRUX_DATA
 
 FAILS = []
 

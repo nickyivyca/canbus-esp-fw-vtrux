@@ -1758,8 +1758,9 @@ def main():
     ap.add_argument("--charger-port", type=int, default=43214)
     ap.add_argument("--phys-port", type=int, default=43215,
                     help="UDP port for the HV physics link (see bus.py)")
-    ap.add_argument("--outdir", default=str(
-        Path(__file__).resolve().parents[2] / "notes" / "artifacts" / "interposer-runs"))
+    ap.add_argument("--outdir", default=None,
+                    help="default: interposer-runs/ under VTRUX_DATA "
+                         "(paths.py)")
     args = ap.parse_args()
 
     if args.external_interposer and args.time_scale != 1.0:
@@ -1807,6 +1808,9 @@ def main():
         if n not in BY_NAME:
             ap.error("unknown scenario %r (see --list)" % n)
 
+    if args.outdir is None:
+        import paths
+        args.outdir = paths.runs_dir()
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 

@@ -1,7 +1,9 @@
 // A model of the MCP2515, driven through the SPI byte stream (spec 9.1 L2).
 //
-// Written from Microchip DS20001801J, in
-// `../../datasheets/MCP2515-Stand-Alone-CAN-Controller-with-SPI-20001801J.pdf`,
+// Written from Microchip DS20001801J,
+// `MCP2515-Stand-Alone-CAN-Controller-with-SPI-20001801J.pdf` in
+// reverse-it's projects/vtrux/tools/interposer/firmware/datasheets/
+// (not moved to this repo),
 // NOT from `port_mcp2515.cpp`. A fake that borrows the driver's opcode map
 // agrees with the driver's mistakes, and then the conformance run -- written
 // from the same borrowed map -- agrees with both. The constants below were
@@ -14,7 +16,8 @@
 // 100 ms age-out, the no-ACK counting and the transmit-buffer ordering live.
 //
 // EVERY CITATION IS "p<n>" = the PDF page number printed by
-// `../../../../notes/artifacts/interposer-firmware/mcp2515_datasheet_extract.py`,
+// `$VTRUX_DATA/notes/artifacts/interposer-firmware/mcp2515_datasheet_extract.py`
+// (SeaDrive),
 // which is 1-based over the file and runs one ahead of the page number
 // printed in the document's own footer for most of the book. Each one below
 // was confirmed BOTH by text extraction AND by looking at the rendered page

@@ -10,6 +10,14 @@
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SRC="$HERE/../../src"
+# test_l2_bridge replays l3_stimulus.txt, which stays in SeaDrive; its
+# relative candidates in l3_replay.cpp no longer reach it from this repo,
+# so the runner hands it over through L3_STIMULUS (an explicit setting
+# still wins). VTRUX_DATA: see charge-interposer/paths.py.
+if [ -z "${L3_STIMULUS:-}" ]; then
+  : "${VTRUX_DATA:?VTRUX_DATA is not set -- see charge-interposer/paths.py}"
+  export L3_STIMULUS="$VTRUX_DATA/notes/artifacts/interposer-firmware/l3_stimulus.txt"
+fi
 fail=0
 for t in "$HERE"/test_*.cpp; do
   name="$(basename "$t" .cpp)"

@@ -181,9 +181,13 @@ def random_traces(outdir):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--outdir", default=os.path.normpath(os.path.join(
-        _INTERPOSER, "..", "..", "notes", "artifacts", "interposer-firmware")))
+    import paths
+    ap.add_argument("--outdir", default=None,
+                    help="default: notes/artifacts/interposer-firmware/ "
+                         "under VTRUX_DATA")
     a = ap.parse_args()
+    if a.outdir is None:
+        a.outdir = paths.fixtures()
     if not os.path.isdir(a.outdir):
         os.makedirs(a.outdir)
 
@@ -192,8 +196,7 @@ def main():
     for path, n in made:
         print("  %-52s %6d steps" % (os.path.basename(path), n))
 
-    src_dir = os.path.normpath(os.path.join(
-        _INTERPOSER, "..", "..", "notes", "artifacts", "interposer-firmware"))
+    src_dir = paths.fixtures()
     dense = dense_traces(a.outdir, src_dir)
     for path, n, n_held, n_gaps in dense:
         print("  %-52s %6d steps  (%d held frames differing, %d gaps judged)"

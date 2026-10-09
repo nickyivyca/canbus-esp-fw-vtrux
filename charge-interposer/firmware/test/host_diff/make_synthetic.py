@@ -883,10 +883,13 @@ def main():
     # already does. Anyone regenerating "the goldens" with the obvious
     # command updated a directory the gate never looks at and got a clean
     # run from stale files. Changed 2026-10-05 after exactly that.
-    ap.add_argument("--outdir", default=os.path.normpath(
-        os.path.join(_HERE, "..", "..", "..", "..", "..",
-                     "notes", "artifacts", "interposer-firmware")))
+    ap.add_argument("--outdir", default=None,
+                    help="default: notes/artifacts/interposer-firmware/ "
+                         "under VTRUX_DATA")
     a = ap.parse_args()
+    if a.outdir is None:
+        import paths
+        a.outdir = paths.fixtures()
     if not os.path.isdir(a.outdir):
         os.makedirs(a.outdir)
     kd = os.path.join(a.outdir, "known-divergence")

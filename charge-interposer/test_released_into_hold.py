@@ -35,8 +35,9 @@ sys.path.insert(0, str(HERE))
 
 import run_scenario as R                                    # noqa: E402
 
-RUN = (HERE.parents[1] / "notes" / "artifacts" / "interposer-runs"
-       / "acceptance-1x-2026-10-04")
+import paths                                                # noqa: E402
+
+RUN = Path(paths.runs_dir()) / "acceptance-1x-2026-10-04"
 
 # The scenarios that declare released_into_hold() and have finished.
 REAL = ["evap-override", "evap-override-above-ceiling",

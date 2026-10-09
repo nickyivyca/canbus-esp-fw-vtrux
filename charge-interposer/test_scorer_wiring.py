@@ -28,8 +28,9 @@ sys.path.insert(0, str(HERE))
 
 import run_scenario as R
 
-TRACES = (HERE / ".." / ".." / "notes" / "artifacts"
-          / "interposer-firmware").resolve()
+import paths                                                # noqa: E402
+
+TRACES = Path(paths.fixtures())
 
 failures = 0
 

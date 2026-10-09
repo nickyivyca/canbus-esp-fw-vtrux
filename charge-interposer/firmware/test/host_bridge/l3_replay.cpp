@@ -37,11 +37,17 @@ Stimulus load(const char* path) {
   // from the CALLER's cwd, not from host_bridge, so a single relative
   // path works by hand and fails under the runner -- which is how this
   // first shipped.
+  // Since the move to git the file is not under this repo at all: it
+  // stays in SeaDrive, at $VTRUX_DATA/notes/artifacts/interposer-firmware/
+  // (charge-interposer/paths.py). run.sh hands it over as L3_STIMULUS.
+  std::string from_data;
+  if (const char* vd = std::getenv("VTRUX_DATA"))
+    if (*vd)
+      from_data = std::string(vd) +
+                  "/notes/artifacts/interposer-firmware/l3_stimulus.txt";
   const char* candidates[] = {
       path,
-      "../../../../../notes/artifacts/interposer-firmware/l3_stimulus.txt",
-      "projects/vtrux/notes/artifacts/interposer-firmware/l3_stimulus.txt",
-      "../notes/artifacts/interposer-firmware/l3_stimulus.txt",
+      from_data.empty() ? NULL : from_data.c_str(),
   };
   const char* env = std::getenv("L3_STIMULUS");
   std::FILE* fh = NULL;
@@ -57,9 +63,9 @@ Stimulus load(const char* path) {
     if (fh) used = candidates[ci];
   }
   if (!fh) {
-    st.why = std::string("cannot open the stimulus. Tried $L3_STIMULUS and ")
-             + "the relative candidates in l3_replay.cpp; run from the "
-               "project root or set L3_STIMULUS.";
+    st.why = std::string("cannot open the stimulus. Tried $L3_STIMULUS, ")
+             + "the caller's path and $VTRUX_DATA's copy; set VTRUX_DATA "
+               "(charge-interposer/paths.py) or L3_STIMULUS.";
     return st;
   }
   st.source_line = "(" + used + ")";

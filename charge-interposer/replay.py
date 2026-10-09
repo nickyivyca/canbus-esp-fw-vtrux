@@ -30,24 +30,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-def _repo_root():
-    """Walk up until we find the directory that holds `canre`.
-
-    Counting `.parents[N]` is how this breaks -- AGENTS.md flags it, and it
-    broke here anyway: from a file inside projects/vtrux/tools/interposer/,
-    parents[3] is projects/, not the repo root. Searching for the marker cannot
-    be off by one.
-    """
-    from pathlib import Path as _P
-    here = _P(__file__).resolve()
-    for d in here.parents:
-        if (d / "canre").is_dir():
-            return d
-    return here.parents[-1]
-
-REPO_ROOT = _repo_root()
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+import paths                                                # noqa: E402
 
 import can
 
@@ -66,6 +49,7 @@ PT_ANCHORS = {0x051, CMD_ID, 0x410, 0x420, 0x430, 0x440,
 
 
 def _frames(path):
+    paths.add_canre()                  # canre from VTRUX_DATA (paths.py)
     from canre.parsers import parse_file
     return parse_file(path)
 

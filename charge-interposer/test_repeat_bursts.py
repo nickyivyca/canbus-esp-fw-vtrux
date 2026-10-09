@@ -34,8 +34,9 @@ sys.path.insert(0, str(HERE))
 
 import run_scenario as R                                    # noqa: E402
 
-DEFAULT_RUN = (HERE.parents[1] / "notes" / "artifacts" / "interposer-runs"
-               / "acceptance-1x-2026-10-04")
+import paths                                                # noqa: E402
+
+DEFAULT_RUN = Path(paths.runs_dir()) / "acceptance-1x-2026-10-04"
 
 # Every scenario that declares repeat_bursts_of_20().
 REAL = ["evap-override", "evap-override-above-ceiling",
