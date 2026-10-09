@@ -83,6 +83,22 @@ PHYS_PERIOD = 0.020              # physics-link update interval, simulated s
 # measured delays (artifacts/interposer-firmware/termination_ordering_raw.txt):
 REACT_HOLD_S = 1.0        # charger out of 12 -> flow 0, from a mode-3 hold (1.02-1.13 s)
 REACT_DIRECT_S = 0.5      # same, in CHARGER mode (charger faults: 0.23-0.58 s)
+# Spec 9 (user, 2026-10-07): the reaction depends on the charger's
+# shutdownSource, from section 6's handle-pull table -- not on the VCU's
+# mode, which is what REACT_HOLD_S / REACT_DIRECT_S keyed on until
+# 2026-10-08 (they are kept only for the comments that cite them). Each
+# delay is a point inside the measured range:
+REACT_BY_SOURCE = {
+    11: 0.95,   # handle pull, once vehicleConnected has dropped (0.8-1.1 s)
+    3: 0.45,    # charger stops first (0.2-0.7 s)
+    14: 2.9,    # charger fault (2.9 s)
+    4: 0.15,    # battery-led: the BMS's EPO leads the flow drop by ~0.15 s
+}
+# Spec 9 (user, 2026-10-08): source 11 with the plug still IN
+# (vehicleConnected 1) -- the original Bel unit -- the VCU keeps flow on, as
+# it did for 84 s in `chargingafterturningaroundandnotusingextension`, then
+# ends the session itself with flow 0 and STAND_BY.
+SOURCE11_PLUG_IN_S = 84.0
 # Spec 9 (A5): how long after the handle goes back in the VCU starts the
 # NEXT session. This is a BENCH NUMBER, not a measurement -- no capture in
 # the corpus contains two sessions on one recording, which is precisely
@@ -257,14 +273,37 @@ class VCU(object):
         # both hold if the VCU discriminates.
         if shutdown_src in (0, 1):
             return
+        if shutdown_src not in REACT_BY_SOURCE:
+            # Spec 9: "a departure with no source is a simulator error, not a
+            # case". Said loudly, once per departure, and not reacted to.
+            if self.chg_out_since is None:
+                self.chg_out_since = t
+                log.error("VCU: SIMULATOR ERROR -- charger left state 12 "
+                          "(now %d) with shutdownSource %r, which no spec 9 "
+                          "reaction covers; not reacting", state, shutdown_src)
+            return
+        if shutdown_src == 11 and self.chg_veh_conn == 1:
+            due = t + SOURCE11_PLUG_IN_S
+            why = ("charger stopped with source 11 and the plug still in; "
+                   "VCU ending the session itself")
+        else:
+            due = t + REACT_BY_SOURCE[shutdown_src]
+            why = ("charger left state 12, now %d, shutdownSource %d"
+                   % (state, shutdown_src))
         if self.chg_out_since is None:
             self.chg_out_since = t
-            react = (REACT_HOLD_S if self.mode == P.MODE_LOW_POWER
-                     else REACT_DIRECT_S)
-            self.closeout_due = t + react
-            self.closeout_why = "charger left state 12, now %d" % state
-            log.info("VCU: charger left state 12 (now %d) at t=%.1fs; "
-                     "dropping energy flow in %.2f s", state, t, react)
+            self.closeout_due = due
+            self.closeout_why = why
+            log.info("VCU: charger left state 12 (now %d, shutdownSource %d) "
+                     "at t=%.1fs; dropping energy flow in %.2f s",
+                     state, shutdown_src, t, due - t)
+        elif self.closeout_due is not None and due < self.closeout_due:
+            # e.g. source 11 with the plug in, and then the plug comes out:
+            # the handle-pull reaction runs from that edge
+            self.closeout_due = due
+            self.closeout_why = why
+            log.info("VCU: %s at t=%.1fs; dropping energy flow in %.2f s",
+                     why, t, due - t)
 
     def update(self, t, dt, soc_pct, chg_max, spread_mv=None, vmin=None):
         """Run the cutoff logic, the reaction to the charger, and the Ilim

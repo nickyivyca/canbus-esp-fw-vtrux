@@ -1092,15 +1092,19 @@ VCU_PAGE00 = re.compile(
 # burst that ends "abandoned on session reset" (spec 4.1: a repeat ends early
 # on "a session boundary (6.1), which resets any repeat"):
 #  - the VCU commands STAND_BY or EXPORT (vehicle log);
-#  - the pilot timer steps back: charger_sim zeroes it at a handle pull and
-#    at a replug (charger log);
+#  - the pilot timer steps back: charger_sim logs PILOT TIMER BACK TO 0
+#    after the VCU's STAND_BY that follows a handle pull (spec 9,
+#    2026-10-08; until then it zeroed the timer at the pull itself, so a
+#    HANDLE PULLED line no longer witnesses a step-back), and a replug
+#    restarts it from 0 (charger log);
 #  - no charger status for 20 s: the boundary falls 20 s after the charger
 #    log's GOING SILENT line. Like _burst_window, this assumes 1x, where a
 #    log stamp is sim time.
 VCU_BOUNDARY = re.compile(
     r"^(\d\d:\d\d:\d\d) .*?VCU: commanding (?:STAND_BY|EXPORT)", re.M)
 CHG_PILOT_BACK = re.compile(
-    r"^(\d\d:\d\d:\d\d) .*?charger: HANDLE (?:PULLED|REPLUGGED)", re.M)
+    r"^(\d\d:\d\d:\d\d) .*?charger: (?:PILOT TIMER BACK TO 0|HANDLE REPLUGGED)",
+    re.M)
 CHG_SILENT = re.compile(r"^(\d\d:\d\d:\d\d) .*?charger: GOING SILENT", re.M)
 CHG_SILENCE_S = 20                 # spec 6.1
 

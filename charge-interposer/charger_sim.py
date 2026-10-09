@@ -161,6 +161,17 @@ class Charger(object):
         # Spec 9 (6.1): stop transmitting entirely from this sim time, so the
         # charger-silence boundary can be exercised. None = never.
         self.silent_at = None
+        # Spec 9 (user, 2026-10-08): the pilot timer's first 0 after a handle
+        # pull arrives AFTER the VCU's STAND_BY -- 0.2-1.3 s after it in 29
+        # of the 30 pulls where the corpus shows the reset, 15.7 s in the
+        # other (pilot_timer_reset_order.txt). Until then it holds its value
+        # (it counts only while vehicleConnected is 1).
+        self.pilot_reset_after_standby_s = 0.6
+        self.pilot_reset_at = None
+        # Spec 9 (user, 2026-10-08): the original Bel unit's stop with
+        # shutdownSource 11 and the plug still IN (vehicleConnected 1),
+        # 84-162 s in the corpus. Set by --stop11-at; None = never.
+        self.stop11_t = None
 
     def unplug(self, t):
         """The handle is pulled: proximity gone, state 15 with source 11, both
@@ -172,14 +183,11 @@ class Charger(object):
         self.shutdown_source = 11
         self.evse_connected = 0
         self.vehicle_connected = 0
-        # spec 3: the pilot timer returns to 0 at every handle pull, which is
-        # the backwards step the core treats as a session boundary (6.1).
-        # --pilot-start-min goes with it: that offset exists only to place
-        # the BOOT part-way into a session, and a handle pull ends the
-        # session it was pretending to be in. Leaving it set made the bench
-        # report "34 -> 30 min" at a pull, a value no charger can produce.
-        self.pilot_online_s = 0.0
-        self.pilot_start_min = 0
+        # The pilot timer is NOT reset here (spec 9, user 2026-10-08): it
+        # holds its value, and its first 0 arrives after the VCU's STAND_BY
+        # (see pilot_reset_after_standby_s), so the core's transparency on
+        # the STAND_BY itself is what gets exercised, not a step-back that
+        # had already come first. Until 2026-10-08 it was zeroed right here.
         log.warning("charger: HANDLE PULLED at t=%.0fs (shutdownSource 11)", t)
 
     def replug(self, t):
@@ -199,6 +207,8 @@ class Charger(object):
         self.vehicle_connected = 1
         self.pilot_online_s = 0.0
         self.pilot_start_min = 0
+        self.pilot_reset_at = None
+        self.stop11_t = None
         self.first_charging_t = None
         self.startup_dip_done = False
         self.dip_until = None
@@ -223,6 +233,10 @@ class Charger(object):
                     self.low_power_since = t
                 else:
                     self.low_power_since = None
+            if (mode == P.MODE_STANDBY and self.unplugged_t is not None
+                    and self.pilot_reset_at is None
+                    and (self.pilot_online_s > 0 or self.pilot_start_min)):
+                self.pilot_reset_at = t + self.pilot_reset_after_standby_s
             self.flow, self.mode = flow, mode
         elif key == P.PAGE_SETPOINT:
             self.vlim, self.ilim = P.dec_setpoint(data)
@@ -238,6 +252,15 @@ class Charger(object):
         # here and reported in whole minutes.
         if self.vehicle_connected:
             self.pilot_online_s += dt
+        if self.pilot_reset_at is not None and t >= self.pilot_reset_at:
+            # --pilot-start-min goes too: that offset only places the BOOT
+            # part-way into a session, and this session is over.
+            self.pilot_online_s = 0.0
+            self.pilot_start_min = 0
+            log.warning("charger: PILOT TIMER BACK TO 0 at t=%.1fs, %.1f s "
+                        "after the VCU's STAND_BY", t,
+                        self.pilot_reset_after_standby_s)
+            self.pilot_reset_at = None
 
         # A mode change between Low Power and CHARGER resets the charger for
         # ~1 s with shutdownSource 1 (spec 7). Detected here rather than in
@@ -308,6 +331,12 @@ class Charger(object):
             else:
                 self.dip_until = None
 
+        if (self.stop11_t is not None and self.unplugged_t is None
+                and not any(self.faults.values())
+                and self.mode != P.MODE_STANDBY):
+            self.state = P.CHG_STATE_FAULT          # 15, plug still in
+            self.shutdown_source = 11
+
         if any(self.faults.values()):
             # Internal fault: 15 with shutdownSource 3, then 14 once the
             # vehicle has closed the session out (the truck's own sequence).
@@ -319,7 +348,7 @@ class Charger(object):
                 self.shutdown_source = 14
             self.state = P.CHG_STATE_FAULT
             target = 0.0
-        elif self.unplugged_t is not None:
+        elif self.unplugged_t is not None or self.stop11_t is not None:
             target = 0.0
         elif self.state != P.CHG_STATE_CHARGING or self.pack_v <= 0:
             target = 0.0   # covers the dips: out of 12 means not delivering
@@ -454,6 +483,16 @@ def main():
                          "it, so in an override scenario this is 'N s after "
                          "the interposer released' -- the truck's own ending "
                          "of the hold the release leaves behind (spec 5, 9).")
+    ap.add_argument("--pilot-reset-after-standby-s", type=float, default=0.6,
+                    help="spec 9 (2026-10-08): after a handle pull the pilot "
+                         "timer holds, then returns to 0 this long after the "
+                         "VCU's STAND_BY (0.2-1.3 s in 29 of 30 corpus pulls, "
+                         "15.7 s in one)")
+    ap.add_argument("--stop11-at", type=float, default=0.0,
+                    help="spec 9 (2026-10-08): stop this many simulated seconds "
+                         "after charging starts with shutdownSource 11 and the "
+                         "plug still IN (vehicleConnected stays 1), the "
+                         "original Bel unit's behaviour (0 = never)")
     ap.add_argument("--debug", action="store_true")
     args = ap.parse_args()
 
@@ -470,6 +509,7 @@ def main():
               else round(args.pilot_duty * (8.0 / 26.0), 2))
     c = Charger(evse_a=evse_a, hold_a=args.hold_a, pilot_duty=args.pilot_duty)
     c.pilot_start_min = args.pilot_start_min
+    c.pilot_reset_after_standby_s = args.pilot_reset_after_standby_s
 
     t = 0.0
     charging_since = None
@@ -526,6 +566,13 @@ def main():
                     and t - charging_since >= args.unplug_at):
                 fired["unplug"] = True
                 c.unplug(t)
+            if (args.stop11_at and charging_since is not None
+                    and not fired.get("stop11")
+                    and t - charging_since >= args.stop11_at):
+                fired["stop11"] = True
+                c.stop11_t = t
+                log.warning("charger: STOPPED with shutdownSource 11, plug "
+                            "still in, at t=%.0fs", t)
             if (args.unplug_after_hold_s and c.low_power_since is not None
                     and t - c.low_power_since >= args.unplug_after_hold_s):
                 c.unplug(t)

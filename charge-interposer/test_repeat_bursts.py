@@ -226,7 +226,10 @@ def main():
                 .replace("REPEAT ended: 3 of 20, X",
                          "REPEAT ended a=3 b=20 c=2"))
     veh_sb2 = veh_b1 + "15:12:48 veh VCU: commanding STAND_BY (session over)\n"
-    chg_pull = "15:12:48 chg charger: HANDLE PULLED at t=900s (shutdownSource 11)\n"
+    chg_pull = ("15:12:48 chg charger: PILOT TIMER BACK TO 0 at t=900.6s, "
+                "0.6 s after the VCU's STAND_BY\n")
+    chg_pulled_only = ("15:12:48 chg charger: HANDLE PULLED at t=900s "
+                       "(shutdownSource 11)\n")
     chg_silent = "15:12:27 chg charger: GOING SILENT at t=880s -- no further\n"
 
     refuses(ab, veh_b1, "neither log shows",
@@ -241,8 +244,17 @@ def main():
               "15:12:48 inside the window -> %s" % (form, why))
     ok, why = R._repeat_bursts(ab, veh_b1, chg_text=chg_pull)
     check(ok and "pilot timer back to 0" in why,
-          "ABANDONED passes with a handle pull (pilot timer to 0) in the "
-          "charger log inside the window -> %s" % why)
+          "ABANDONED passes with the pilot timer back to 0 in the charger "
+          "log inside the window -> %s" % why)
+    refuses(ab, veh_b1, "neither log shows",
+            "a HANDLE PULLED line alone no longer witnesses a step-back: "
+            "since spec 9 of 2026-10-08 the timer holds at the pull and "
+            "returns to 0 after the STAND_BY", chg=chg_pulled_only)
+    ok, why = R._repeat_bursts(ab, veh_b1, chg_text=(
+        "15:12:48 chg charger: HANDLE REPLUGGED at t=900s, pilot timer back "
+        "to 0 (new session)\n"))
+    check(ok and "pilot timer back to 0" in why,
+          "a replug (timer restarted from 0) witnesses it -> %s" % why)
     refuses(ab, veh_b1, "neither log shows",
             "the same log with the charger log withheld -- the witness has "
             "to come from the charger log, not appear by accident")

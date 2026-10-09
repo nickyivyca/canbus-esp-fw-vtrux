@@ -101,12 +101,18 @@ CASES = [
          "0 A setpoint, Low Power 3 s after it, the pack draining through the "
          "hold, handle pulled at 58 s. The core must arm without a net "
          "charging current, see the hold with the gate satisfied, wait out "
-         "the 75 s arm delay (which the handle pull cuts short), and go "
-         "transparent on the real STAND_BY -- nothing modified.",
+         "the 75 s arm delay (which the handle pull cuts short), go "
+         "transparent on the charger's plug-out report at 57.9 s and to "
+         "PASSTHROUGH on the real STAND_BY at 59 s -- nothing modified "
+         "(spec 9, user 2026-10-08).",
          ["unidentified-bus/vtrux_partstruck_chargeagain3.log"],
          dict(modified=0, synthesized=0,
               must_event=r"waiting out the arm delay",
               must_not_event=r"LOW_POWER (?:overridden|accepted)",
+              # spec 9 (2026-10-08): the two transitions, in order, each
+              # within +/- 0.5 s of the spec's time (capture time)
+              state_events=[("TERMINATED", r"plug out", 57.4, 58.4),
+                            ("PASSTHROUGH", r"session over", 58.5, 59.5)],
               final_state=("PASSTHROUGH",))),
 ]
 
@@ -166,6 +172,29 @@ def prepare(case, keep, verbose=True):
     return out, None
 
 
+def check_state_events(events, want):
+    """-> (ok, why). `events` is the replay's [(t_ms, state, text)]; `want`
+    a list of (state, regex, t_lo_s, t_hi_s) that must occur IN ORDER: for
+    each, the first event after the previous match whose state is `state`
+    and whose text matches must fall inside [t_lo_s, t_hi_s]."""
+    i = 0
+    got = []
+    for st, rx, lo, hi in want:
+        while i < len(events) and not (events[i][1] == st
+                                       and re.search(rx, events[i][2])):
+            i += 1
+        if i >= len(events):
+            return (False, "no %s event matching /%s/ after %s"
+                    % (st, rx, "; ".join(got) or "the start"))
+        t = events[i][0] / 1000.0
+        if not lo <= t <= hi:
+            return (False, "%s /%s/ at %.1f s, outside %.1f-%.1f s"
+                    % (st, rx, t, lo, hi))
+        got.append("%s at %.1f s" % (st, t))
+        i += 1
+    return (True, "in order: " + "; ".join(got))
+
+
 def run_case(case, args):
     path, err = prepare(case, args.keep_filtered)
     if err:
@@ -203,6 +232,9 @@ def run_case(case, args):
     if "must_not_event" in e:
         checks.append((re.search(e["must_not_event"], evtext) is None,
                        "no event matches /%s/" % e["must_not_event"]))
+    if "state_events" in e:
+        ok, why = check_state_events(res["events"], e["state_events"])
+        checks.append((ok, "state transitions: %s" % why))
     if "final_state" in e:
         want = e["final_state"]
         got = M.STATE_NAMES[core.state]
