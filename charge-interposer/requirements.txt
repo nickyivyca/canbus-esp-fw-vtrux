@@ -1,0 +1,24 @@
+# Dependencies for the Vtrux charge-interposer bench.
+#   python3.13 -m pip install -r projects/vtrux/tools/interposer/requirements.txt
+
+# CAN transport. The default 'virtual' transport uses python-can's built-in
+# udp_multicast backend -- no hardware, no admin rights.
+python-can>=4.0
+
+# Required by python-can's udp_multicast backend, which is what the default
+# 'virtual' transport uses. python-can does NOT pull it in: without it every
+# simulator dies at startup with
+#   CanInterfaceNotImplementedError: msgpack not installed
+# and the scenario fails every expectation in about two seconds.
+# Found on NICKY-XPS, 2026-09-19.
+msgpack
+
+# DBC encode/decode for the BMS and charger frames in protocol.py, and the
+# reference implementation test_signals.py checks machine.py against.
+# machine.py itself imports nothing.
+cantools>=39
+
+# Only needed for the real-dongle transports (ixxat / kvaser / pcan /
+# socketcan / gs_usb), which auto-detect via canbench.live.receiver.
+# libusb-package
+# pyusb
