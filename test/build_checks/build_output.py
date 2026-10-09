@@ -285,13 +285,23 @@ def check_image(path):
 
 # ------------------------------------------------------------ partition table --
 
-def check_partitions():
-    built = os.path.join(REPO, "build", "partition_table", "partition-table.bin")
+def check_partitions(build_dir=None):
+    """The table the image's OWN build produced, against stock.
+
+    `build_dir` comes from the image's path, as for load_sdkconfig() (tester,
+    2026-10-08). It used to be hard-coded to build/, so an image built with
+    -B build-tester-<sha> FAILED this row for a file it never looked for --
+    and, worse, an image checked while build/ held some other build would
+    have been judged by that build's table.
+    """
+    if build_dir is None:
+        build_dir = os.path.join(REPO, "build")
+    built = os.path.join(build_dir, "partition_table", "partition-table.bin")
     stock = os.path.join(REF, "stock-v4.13-partition-table.bin")
 
     if not os.path.exists(built):
         row("partition table matches stock", False,
-            "no build/partition_table/partition-table.bin to check")
+            "no %s to check" % os.path.relpath(built, REPO).replace("\\", "/"))
         return
     if not os.path.exists(stock):
         row("partition table matches stock", None,
@@ -1210,7 +1220,7 @@ def main():
     else:
         check_image(b)
 
-    check_partitions()
+    check_partitions(build_dir)
     check_diag(args.dbc)
     check_schema_doc(args.schema_doc)
     check_source()
