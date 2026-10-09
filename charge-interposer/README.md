@@ -352,9 +352,9 @@ All seven scenarios and all three offline regressions passed, on this machine, a
 | `imbalanced-full` | PASS | genuine stop, no intervention, CV tail passes through |
 | `fault-during-override` | PASS | inverterFault -> stop burst emitted -> latched SAFE |
 | `hard-ceiling-failsafe` | PASS | with a stuck BMS limit, trips at vmax 3610 mV; peak 3.62 V |
-| `test_machine.py` | 74/74 | core decisions incl. J1772 caps and spec 5.2's HOLD (15 cases, 2026-10-08) |
-| `test_trips.py` | 1 FAIL | 14 fault sources, each from MONITOR and from OVERRIDE. `test_spec_non_trips` asserts `chg_max` 0 from OVERRIDE ends in TERMINATED; spec 5.2 made it HOLD. Awaiting the tester's rev. |
-| `test_invariants.py` | FAILS | 24 traces + randomised traffic, no golden. Two invariants predate spec 5.2: "nothing rewritten outside an override" (33 hits) and "only a release or a trip out of an override repeats Low Power" (3). Awaiting the tester's rev. |
+| `test_machine.py` | 78/78 | core decisions incl. J1772 caps and spec 5.2's HOLD -- 19 cases: the entry, both step directions, both band edges, the 0.3 s cadence, the EVSE cap and a mid-hold derate, the floor at 0 A, byte-exact forwarding of every other page, the mirror, each exit, a trip, `0x410` staleness, the 3610 mV backstop, the diagnostics, and the three rulings of 2026-10-09 (no time limit, CHARGER with flow on, bit 5) |
+| `test_trips.py` | 24 tests OK | 14 fault sources, each from MONITOR and from OVERRIDE. Rev 4 (tester) carries spec 5.2: `chg_max` 0 from OVERRIDE now ends in HOLD, and partstruck P5 covers how the hold ends |
+| `test_invariants.py` | 8 tests OK | traces + randomised traffic, no golden. Rev 4 (tester) carries spec 5.2: the page-01 rewrite in HOLD and the release's OVERRIDE -> HOLD repeat are no longer violations of "nothing rewritten outside an override" |
 | `test_signals.py` | PASS | bit extraction matches cantools |
 | `test_released_into_hold.py` | PASS | 5 saved logs + 6 mutations + 2 clock cases, rev 2 |
 | `test_repeat_bursts.py` | PASS | 7 saved logs + 6 mutations + 2 window cases |
