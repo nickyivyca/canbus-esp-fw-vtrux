@@ -66,6 +66,8 @@ OTA_SLOT_BYTES = 1781760
 # esp_app_desc_t, at offset 0x20 of an ESP-IDF app image.
 APP_DESC_OFF = 0x20
 APP_DESC_MAGIC = 0xABCD5432
+# The rollback-rehearsal marker as a "_"-delimited token of project_name.
+FLT_TOKEN = re.compile(r"_flt(?=_|$)")
 
 rows = []
 
@@ -674,7 +676,10 @@ def check_not_rollback_rehearsal(path):
             ref_missing=True)
         return
     project = d[1]
-    flt = project.endswith("_flt")
+    # "_flt" as a whole suffix token ANYWHERE in the name, not only at the end:
+    # nothing makes it the last suffix, and on the 2026-10-08 diag branch a
+    # "_DIAG" appended after it would have hidden it from an endswith().
+    flt = FLT_TOKEN.search(project) is not None
     row("project name is not a rehearsal build", not flt,
         "project_name=%r%s"
         % (project, "  <-- the _flt suffix marks a fault-injected "
