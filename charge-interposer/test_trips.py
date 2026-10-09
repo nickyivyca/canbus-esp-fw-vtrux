@@ -611,6 +611,155 @@ def test_hold_past_six_hours():
        "(%s)" % p)
 
 
+# --- P5: how the hold ends (spec 5.2, 6, 6.1; user rulings 2026-10-09) ----
+#
+# (label, action(b) applied once in HOLD, hold(b) for the 3 s after it, the
+# state spec 5.2 / 6 / 6.1 puts the core in at once). After the action the
+# bus must be byte-transparent -- the exit frame itself forwarded
+# unmodified, no repeat (A5: none is needed; spec 6 for a trip), page 01
+# untouched -- except for the one case that stays in HOLD.
+
+def _hold_healthy(b):
+    b.charger_status(12)
+    b.bms(vmax=3.340, chg_max=2.0)
+
+
+def _hold_unplugged(b):
+    b.charger_status(15, shutdown_src=11, vehicle_connected=0)
+    b.bms(vmax=3.340, chg_max=2.0)
+
+
+def _pilot_back(b):
+    b.chg(M.CHG_PILOT, pilot(30))
+    return b.chg(M.CHG_PILOT, pilot(0))
+
+
+HOLD_EXITS = (
+    # 6: CHARGER with the flow bit ON during the hold (ruling 2): the hold
+    # ends at once, page 01 forwarded untouched, straight to PASSTHROUGH
+    ("CHARGER, flow on", lambda b: b.veh(M.CMD_ID, P.enc_master(
+        1, P.MODE_CHARGER)), _hold_healthy, "PASSTHROUGH"),
+    # 6: CHARGER with the flow bit OFF is a handle pull's first frame: the
+    # flow-drop row, TERMINATED
+    ("CHARGER, flow off (handle pull)", lambda b: b.veh(M.CMD_ID,
+        P.enc_master(0, P.MODE_CHARGER)), _hold_healthy, "TERMINATED"),
+    # 6: the flow drop with the mode still Low Power
+    ("flow drop, Low Power", lambda b: b.veh(M.CMD_ID, P.enc_master(
+        0, P.MODE_LOW_POWER)), _hold_healthy, "TERMINATED"),
+    # 6: the charger's plug-out report, an observed 1 -> 0 edge
+    ("plug-out report", lambda b: b.charger_status(
+        15, shutdown_src=11, vehicle_connected=0), _hold_unplugged,
+     "TERMINATED"),
+    # 6.1 boundaries: transparent, session cleared
+    ("VCU STAND_BY", lambda b: b.veh(M.CMD_ID, P.enc_master(
+        0, P.MODE_STANDBY)), _hold_healthy, "PASSTHROUGH"),
+    ("VCU EXPORT", lambda b: b.veh(M.CMD_ID, P.enc_master(
+        0, P.MODE_EXPORT)), _hold_healthy, "PASSTHROUGH"),
+    ("pilot timer steps back", _pilot_back, _hold_healthy, "PASSTHROUGH"),
+    # not an exit: the VCU repeating its Low Power keeps the hold (5.2:
+    # "The hold lasts until the handle is pulled")
+    ("VCU repeats Low Power", lambda b: b.veh(M.CMD_ID, P.enc_master(
+        1, P.MODE_LOW_POWER)), _hold_healthy, "HOLD"),
+)
+
+
+def hold_exit_problems(want=None):
+    """-> problems. `want` overrides the expected state per label, for
+    test_hold_exits_can_fail only."""
+    probs = []
+    for label, action, hold, spec_state in HOLD_EXITS:
+        exp = (want or {}).get(label, spec_state)
+        b = _armed()
+        b.low_power()
+        if not _to_hold(b):
+            probs.append("%s: never reached HOLD (%s)" % (label, b.state()))
+            continue
+        if not _hold_rewrites_page01(b):
+            probs.append("%s: the hold was not rewriting page 01" % label)
+        mark = len(b.log)
+        action(b)
+        got = b.state()
+        if got != exp:
+            probs.append("%s in HOLD: the core went to %s, expected %s"
+                         % (label, got, exp))
+        if b.core.trip_reason is not None:
+            probs.append("%s in HOLD: tripped (%r)"
+                         % (label, b.core.trip_reason))
+        if spec_state == "HOLD":
+            continue
+        _drain(b, hold, 30)
+        b.veh(M.CMD_ID, P.enc_setpoint(P.VLIM_DEFAULT_COUNTS, 380))
+        bad = _bus_unchanged(b.log[mark:])
+        if bad is not None:
+            probs.append("%s in HOLD: the bus was not transparent from the "
+                         "exit frame on (%s)" % (label, bad))
+    return probs
+
+
+def test_hold_exits():
+    for p in hold_exit_problems():
+        FAILS.append("P5: " + p)
+
+
+def test_hold_exits_can_fail():
+    """Each expected state flipped, one at a time: the check must report it.
+    Whatever the core does, the spec's expectation and a wrong one cannot
+    both pass."""
+    for label, _a, _h, spec_state in HOLD_EXITS:
+        other = "HOLD" if spec_state != "HOLD" else "TERMINATED"
+        ok(any(label in p for p in hold_exit_problems({label: other})),
+           "the hold-exit check reports '%s' expected as %s instead of %s"
+           % (label, other, spec_state))
+
+
+def charger_on_rearm_problems():
+    """Ruling 2 (2026-10-09): after a CHARGER command with the flow bit on
+    ends the hold, the core is "re-armable as after a TERMINATED; arming
+    still waits for an observed charge" -- spec 3: charger in state 12 and
+    contactors closed. Not judged here: whether a charge that simply
+    CONTINUES re-arms at once. This case removes the observed charge
+    first (charger out of 12 for 3 s, contactors closed): it must stay
+    PASSTHROUGH and transparent. Then charger 12 with contactors closed:
+    it must re-arm into MONITOR."""
+    probs = []
+    b = _armed()
+    b.low_power()
+    if not _to_hold(b):
+        return ["never reached HOLD (%s)" % b.state()]
+    b.veh(M.CMD_ID, P.enc_master(1, P.MODE_CHARGER))
+    if b.state() != "PASSTHROUGH":
+        return ["CHARGER flow on in HOLD went to %s" % b.state()]
+    mark = len(b.log)
+    _drain(b, lambda bb: (bb.charger_status(15, shutdown_src=1),
+                          bb.bms(vmax=3.340, chg_max=300.0)), 30)
+    # OPEN (asked of the reviewer, 2026-10-09): E4 re-arms here, on the
+    # first BMS frame with the contactors closed, 100 ms after a charger
+    # frame reporting state 15 -- it treats "the charger has reached 12" as
+    # a session observation (6.1 lists it among what a boundary resets),
+    # and does the same after TERMINATED -> CHARGER flow on. Spec 3's
+    # "charger in state 12 and contactors closed" may mean either. Until
+    # ruled this half is printed, not judged.
+    if b.state() != "PASSTHROUGH":
+        print("  --  OPEN (with the reviewer): with the charger out of 12 "
+              "after CHARGER flow on in HOLD, the core re-armed to %s"
+              % b.state())
+    bad = _bus_unchanged(b.log[mark:])
+    if bad is not None:
+        probs.append("not transparent while waiting to re-arm (%s)" % bad)
+    _drain(b, lambda bb: (bb.charger_status(12),
+                          bb.bms(vmax=3.340, chg_max=300.0)), 30)
+    if b.state() != "MONITOR":
+        probs.append("charger back in 12 with contactors closed: %s, not "
+                     "MONITOR -- re-armable as after a TERMINATED"
+                     % b.state())
+    return probs
+
+
+def test_charger_on_in_hold_rearms_on_an_observed_charge():
+    for p in charger_on_rearm_problems():
+        FAILS.append("P5: " + p)
+
+
 def test_every_fault_source_trips_from_monitor():
     for label, reason, fire, hold, steps, override_only in CASES:
         if override_only:
@@ -1025,7 +1174,8 @@ def boundary_problems(clears=None):
     probs = []
     for label, boundary, spec_clears in BOUNDARIES:
         want = spec_clears if clears is None else clears[label]
-        for state in ("MONITOR", "OVERRIDE"):
+        # HOLD added 2026-10-09 (P5): SAFE entered by a trip in the hold.
+        for state in ("MONITOR", "OVERRIDE", "HOLD"):
             b = Bench()
             # Armed at 0 min and moved on to 30 afterwards: a core whose
             # first pilot reading is 2 min or more booted mid-session and
@@ -1033,8 +1183,10 @@ def boundary_problems(clears=None):
             # walked into.
             b.arm(vmax=3.340, chg_max=300.0, pilot_min=0)
             b.chg(M.CHG_PILOT, pilot(30))
-            if state == "OVERRIDE":
+            if state in ("OVERRIDE", "HOLD"):
                 b.low_power()
+            if state == "HOLD":
+                _to_hold(b)
             if b.state() != state:
                 probs.append("%s: did not reach %s (%s)"
                              % (label, state, b.state()))
