@@ -219,6 +219,18 @@ extern "C" {
 
 #define GI_DIAG_SCHEMA_VER  6
 
+/*
+ * Slots in the trip 6 error-frame history. It only ever has to hold
+ * err_min_trip entries -- the spec's threshold is 10 -- and gi_init() clamps
+ * err_min_trip to this, so a fixed ring is enough and there is no allocation.
+ * Larger than 10 so a moderate threshold bump stays a config change rather
+ * than a layout change.
+ *
+ * The clamp is a real behaviour change if anyone configures past it, so it is
+ * deliberately loud rather than silent: see gi_init().
+ */
+#define GI_ERR_RING 16
+
 /* ---------------------------------------------------------------- modes -- */
 
 /*
@@ -678,7 +690,29 @@ typedef struct
     uint8_t mainc_stat;             /* 0x440 bcm_mainc_stat; 0xFF = never seen */
 
     bool    rpm_over;   int64_t rpm_over_since;
-    bool    have_err_window; int64_t err_window; uint32_t err_base;
+
+    /*
+     * Spec 7 trip 6, the error-frame rate, as the user ruled it 2026-10-08
+     * ("How the window moves"). The window SLIDES: the trip fires when any
+     * err_min_trip error frames fall within err_window_us of each other. To
+     * decide that, the only thing needed is the time of the Nth most recent
+     * error frame, so this is a ring of the last GI_ERR_RING arrival times and
+     * nothing else -- no window origin, no re-based count. aaab89a kept a
+     * fixed 10 s block that re-based its count on expiry, which split any
+     * burst straddling a block edge; 10 errors at 1 s spacing tripped from
+     * only about 1 start phase in 10.
+     *
+     * err_last is the last bus_error_count this device saw while armed, and
+     * have_err_last says whether it means anything yet. The counter is
+     * cumulative since the driver was installed, so only its delta is an
+     * event count. Seeding on the first armed read is what stops the whole
+     * pre-arm history arriving as one burst.
+     */
+    int64_t  err_at[GI_ERR_RING];   /* arrival times, newest at err_head-1 */
+    uint8_t  err_head;              /* next slot to write */
+    uint8_t  err_n;                 /* valid entries, saturating at the ring */
+    uint32_t err_last;              /* last bus_error_count seen while armed */
+    bool     have_err_last;
 
     /*
      * Spec 7 trip 7 (review C1). One inhibit frame may be outstanding at a

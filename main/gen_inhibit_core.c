@@ -391,8 +391,14 @@ void gi_reset_stats(gi_state_t *st)
     st->abort_latched = false;
     st->rpm_over = false;
     st->rpm_over_since = 0;
-    st->have_err_window = false;
-    st->err_window = 0;
+    /*
+     * The trip 6 error history is NOT cleared here, and that is the point of
+     * the 2026-10-08 ruling. The error rate is a property of the bus, not of
+     * this device's arm, so a history cleared on arming would let repeated
+     * re-arms hide a real rate indefinitely. Only a key-on (7.1) clears it.
+     * The trip's LATCH is still cleared, by abort_latched above, as for every
+     * trip -- it is only the history that carries over.
+     */
     st->fb_ever = false;
     st->rpm_ever = false;
 
@@ -435,6 +441,20 @@ void gi_init(gi_state_t *st, const gi_config_t *cfg)
     else
     {
         gi_config_defaults(&st->cfg);
+    }
+
+    /*
+     * Spec 7 trip 6: the error history is a fixed ring of GI_ERR_RING slots,
+     * so a threshold above that could never be reached and the trip would
+     * silently never fire -- the failure mode the 2026-10-08 ruling exists to
+     * remove. Clamp instead, so an over-large config trips at GI_ERR_RING
+     * rather than at infinity. The build check in test/build_checks compares
+     * the configured value against the spec's 10, which is what catches the
+     * mis-configuration itself; this only bounds the damage.
+     */
+    if (st->cfg.err_min_trip > GI_ERR_RING)
+    {
+        st->cfg.err_min_trip = GI_ERR_RING;
     }
 
     st->mode = GI_OFF;
@@ -753,8 +773,15 @@ static bool arm_gate_ok(gi_state_t *st, int64_t now)
  * Spec 7: the trips that end a live run. Called every loop, not only on an
  * 0x051, so a bus that goes quiet is caught by the receive timeout.
  */
-static void interlock_runtime(gi_state_t *st, int64_t now, const gi_bus_t *bus,
-                              gi_events_t *ev)
+/*
+ * No `bus` parameter since 2026-10-08: the only thing it was used for was the
+ * trip 6 error counter, and that moved to err_history_tick(), which runs on
+ * every armed loop rather than only on the live ones this function is called
+ * from. Taking the argument away is deliberate -- it makes the split between
+ * recording and judging visible in the signature instead of leaving a
+ * parameter that a future reader would assume is still consulted.
+ */
+static void interlock_runtime(gi_state_t *st, int64_t now, gi_events_t *ev)
 {
     if (st->vcm_fault == GI_FAULT_ACTIVE)
     {
@@ -947,25 +974,98 @@ static void interlock_runtime(gi_state_t *st, int64_t now, const gi_bus_t *bus,
     }
 
     /*
-     * Error frames, rate-based over a sliding window. Note this counts the
-     * controller's own bus_error_count rather than anything payload-derived,
-     * so it is distinct from the failed-transmit trip, which is unambiguously
-     * about a frame of ours.
+     * Error frames, rate-based over a TRULY sliding window (user,
+     * 2026-10-08). Recording happens in err_history_tick(), which runs on
+     * every armed loop whether or not the inhibit is live; this is only the
+     * verdict, and it is reached only while live, per the invariant at the
+     * caller.
+     *
+     * The comparison is between the NEWEST and the err_min_trip'th most
+     * recent arrival -- not between `now` and the oldest. That difference is
+     * load-bearing and not cosmetic: the spec requires 10 error frames that
+     * fell in the 10 s BEFORE going live to trip at the first live check, and
+     * measuring from `now` would let them age out before that check ever ran.
+     *
+     * `<=`, not `<`: the spec reads "within", and the user ruled that exactly
+     * 10.0 s counts. Trip 7's 1 s window is strict and this one is not -- the
+     * two are deliberately different, so do not "harmonise" them.
+     *
+     * This counts the controller's own bus_error_count rather than anything
+     * payload-derived, so it stays distinct from the failed-transmit trip,
+     * which is unambiguously about a frame of ours.
      */
-    if (bus != NULL && bus->err_valid)
+    if (st->err_n >= st->cfg.err_min_trip)
     {
-        if (!st->have_err_window
-            || (now - st->err_window) > st->cfg.err_window_us)
-        {
-            st->have_err_window = true;
-            st->err_window = now;
-            st->err_base = bus->bus_error_count;
-        }
-        else if ((uint32_t)(bus->bus_error_count - st->err_base)
-                 >= st->cfg.err_min_trip)
+        /*
+         * All unsigned, deliberately. gi_init() clamps err_min_trip to the
+         * ring, so `ring - err_min_trip` cannot go negative, and keeping the
+         * arithmetic in uint32_t avoids the signed/unsigned mixing that
+         * -Wconversion exists to catch here.
+         */
+        const uint32_t ring  = (uint32_t)GI_ERR_RING;
+        const uint8_t newest = (uint8_t)(((uint32_t)st->err_head
+                                          + ring - 1u) % ring);
+        const uint8_t nth    = (uint8_t)(((uint32_t)st->err_head
+                                          + ring - st->cfg.err_min_trip)
+                                         % ring);
+        if ((st->err_at[newest] - st->err_at[nth]) <= st->cfg.err_window_us)
         {
             inhibit_abort(st, GI_ABORT_ERROR_RATE, now, ev);
             return;
+        }
+    }
+}
+
+/*
+ * Spec 7 trip 6, the recording half. Runs on every armed loop, live or not,
+ * because the user ruled 2026-10-08 that error frames are recorded whenever
+ * the device is armed while the trip is evaluated only while live.
+ *
+ * WHAT ONE READ SHOWING SEVERAL NEW ERRORS MEANS. bus_error_count is a
+ * counter, not a stream, so a delta of N tells us N error frames happened
+ * since the last read but not when. They are recorded as N entries at this
+ * read's time. That is the honest reading at this resolution -- the loop runs
+ * every 20 ms, far finer than the 10 s window -- and it is the conservative
+ * one for the trip: bunching them at one instant can only make a burst look
+ * tighter, never looser, so the trip cannot be missed by it.
+ *
+ * The delta is clamped to the ring. More than GI_ERR_RING errors in one read
+ * already means the window is saturated, and pushing the surplus would only
+ * overwrite entries with copies of the same timestamp.
+ */
+static void err_history_tick(gi_state_t *st, int64_t now, const gi_bus_t *bus)
+{
+    if (bus == NULL || !bus->err_valid)
+    {
+        return;
+    }
+
+    if (!st->have_err_last)
+    {
+        /*
+         * First armed read. Seed only -- the counter is cumulative since the
+         * driver was installed, so treating its whole value as a delta would
+         * arrive as one enormous burst and trip instantly.
+         */
+        st->have_err_last = true;
+        st->err_last = bus->bus_error_count;
+        return;
+    }
+
+    uint32_t d = bus->bus_error_count - st->err_last;
+    st->err_last = bus->bus_error_count;
+    if (d > GI_ERR_RING)
+    {
+        d = GI_ERR_RING;
+    }
+
+    for (uint32_t i = 0; i < d; i++)
+    {
+        st->err_at[st->err_head] = now;
+        st->err_head = (uint8_t)((st->err_head + 1) % GI_ERR_RING);
+        if (st->err_n < GI_ERR_RING)
+        {
+            st->err_n++;
         }
     }
 }
@@ -1317,6 +1417,28 @@ void gi_tick(gi_state_t *st, int64_t now, const gi_bus_t *bus,
     soc_marker_tick(st, now, ev);
 
     /*
+     * Spec 7 trip 6 recording, deliberately OUTSIDE the live branch below and
+     * governed by a different rule from the trips. The user ruled 2026-10-08
+     * that error frames are recorded whenever the device is armed, while the
+     * trip is still evaluated only while live, so that 10 error frames in the
+     * 10 s before going live fire at the first live check. Recording here and
+     * judging in interlock_runtime() is what separates the two.
+     *
+     * Not recorded while unarmed: `have_err_last` is dropped in that case so
+     * the next arm re-seeds. Without that, errors accumulated across a long
+     * disarmed gap would all arrive as one burst at the moment of re-arming.
+     * The arrival history itself survives, because only a key-on clears it.
+     */
+    if (gi_mode_decides(st->mode))
+    {
+        err_history_tick(st, now, bus);
+    }
+    else
+    {
+        st->have_err_last = false;
+    }
+
+    /*
      * LOAD-BEARING INVARIANT: interlock_runtime() runs ONLY once the inhibit
      * is live, never on the path to going live. The bus-loss trip inside it
      * latches, and before key-on there is legitimately no 0x051 at all
@@ -1350,15 +1472,21 @@ void gi_tick(gi_state_t *st, int64_t now, const gi_bus_t *bus,
     {
         if (st->inhibit_live)
         {
-            interlock_runtime(st, now, bus, ev);
+            interlock_runtime(st, now, ev);
         }
         else if (arm_gate_ok(st, now))
         {
             st->inhibit_live = true;
             st->rpm_over = false;
             st->rpm_over_since = 0;
-            st->have_err_window = false;
-            st->err_window = 0;
+            /*
+             * The trip 6 history is NOT cleared on going live either (user,
+             * 2026-10-08). Clearing it here is precisely what made the old
+             * window's origin the moment of going live, and it is what the
+             * spec now forbids: 10 error frames in the 10 s before going live
+             * must trip at the first live check, which cannot happen if going
+             * live throws them away.
+             */
             st->abort_reason = GI_ABORT_NONE;
             ev_add(ev, now, GI_EV_INHIBIT_LIVE, 0, 0, 0);
         }
@@ -1581,8 +1709,16 @@ static void key_monitor(gi_state_t *st, uint32_t id, uint8_t dlc,
     st->fb_ever       = false;
     st->rpm_over      = false;
     st->rpm_over_since = 0;
-    st->have_err_window = false;
-    st->err_window      = 0;
+    /*
+     * THE ONLY PLACE the trip 6 error history is cleared (user, 2026-10-08).
+     * Arming, re-arming and going live all carry it over; a key-on does not.
+     * have_err_last goes with it so the first armed read after the key cycle
+     * re-seeds rather than arriving as a delta across the whole key-off.
+     */
+    st->err_head      = 0;
+    st->err_n         = 0;
+    st->err_last      = 0;
+    st->have_err_last = false;
     /*
      * rpm_ever goes with fb_ever, and for the same reason: the key-on clear
      * re-enters the arm gate, and the inverter powers up ~28 s after the bus.
