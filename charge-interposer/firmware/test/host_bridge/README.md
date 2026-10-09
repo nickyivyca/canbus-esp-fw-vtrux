@@ -271,10 +271,25 @@ tie-break, BIT MODIFY honouring the mask everywhere, TXP ignored, the
 no-ACK limit removed, TXREQ left set after a successful send, and (rev 3,
 2026-10-08, C12) RX0OVR on a rollover overflow, READ RX ignoring m, only
 READ RX freeing a buffer, READ RX leaving RXnIF set, and BUKT ignored.
-All are caught on their own line except **D, the no-ACK limit, which has
-survived since rev 2 (2026-10-07)** -- an open coverage gap, not a pass. Each
-mutation also verifies that it applied, because a `sed` that matches
-nothing produces a clean run that reads exactly like the test passing.
+All ten are caught on their own line. Each mutation also verifies that it
+applied, because a `sed` that matches nothing produces a clean run that
+reads exactly like the test passing.
+
+**That check was itself too weak, and it hid a no-op for days.** Until rev
+4 (2026-10-09) it confirmed only that the pattern was absent *after* the
+sed. D's pattern had been rewritten out of the fake on 2026-10-04 (TEC
+moved behind `tecSet`), so D mutated nothing, "survived", and was carried
+as a coverage gap. The script now requires:
+- the pattern to be in the source first;
+- the file to change.
+
+A self-test shows that a stale pattern is refused. Retargeted, D is caught
+on C9. The same check is in `rx_hook_mutations.sh`.
+
+`l2_mutations.sh`'s B (INT ignoring CANINTE) "survived" for a different
+reason: it ran against the L2 cadence case, though the behaviour is asserted
+on the chip directly (the INT block in `test_mcp2515_fake`). It now runs as
+O in `rx_hook_mutations.sh` and is caught there.
 
 Inverting the tie-break (A) is the one worth knowing: it collapses C5 and
 C6 onto the same order, which is precisely the distinction the TX-ordering
