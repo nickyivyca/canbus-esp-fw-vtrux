@@ -68,10 +68,16 @@ eb9b9d135939af17, schema 4: 0x7F4 B2 6 = HOLD):
     Per-frame counts (up / down / held / clamped) are kept for P2;
   - a Low Power repeat is allowed OVERRIDE -> HOLD (the release); a repeat
     out of HOLD is still refused (a trip in HOLD repeats nothing, spec 6).
-  - OPEN: whether the 0.3 s gate runs from the hold's entry (asked of the
-    reviewer, with the user). A missing step in a hold's first 0.3 s is
-    counted as entry_window, not judged.
 Each has a mutation in _mutations() ("hold: ...").
+
+Rev 5 (tester, 2026-10-09), the user's ruling at spec 8a66ac010db8279a:
+"Entering the hold counts as a step, so the first step comes no sooner than
+0.3 s after the release." Rev 4 started each hold with no step, so its first
+step was never gap-judged: the mutation "hold: the first step 0.1 s after the
+release" got through rev 4 with no gap failure of its own. Rule 6 now measures the
+first gap from the release step; a frame in that first 0.3 s where the law
+points but the gate holds is counted as release_gate (rev 4's entry_window,
+which was counted and not judged, is gone).
 
 The randomised sequence matters as much as the traces. Every trace here was
 generated to exercise something, so all of them are well-formed charges; the
@@ -276,8 +282,9 @@ class Checker(object):
         self.last_sp_a = None
         self.hold_step_t = None
         self.hold_entry_t = None
+        self.hold_stepped = False
         self.hold_counts = {"up": 0, "down": 0, "hold": 0, "clamped": 0,
-                            "unjudged": 0, "entry_window": 0}
+                            "unjudged": 0, "release_gate": 0}
         self._t = 0
         self.bursts = []            # {"mode", "sent", "closed", "cut"}
         self._new_bursts = []
@@ -347,9 +354,13 @@ class Checker(object):
         if after == M.S_OVERRIDE:
             self.n_overrode += 1
         if after != S_HOLD:
-            self.hold_step_t = None     # a new hold starts with no step
+            self.hold_step_t = None
         elif before != S_HOLD:
+            # spec 5.2 (8a66ac01): "entering the hold counts as a step", so
+            # the first step's 0.3 s runs from the release, this step
             self.hold_entry_t = t_ms
+            self.hold_step_t = t_ms
+            self.hold_stepped = False
         for b in self._new_bursts:
             b["after"] = after
 
@@ -409,8 +420,6 @@ class Checker(object):
             if (len(fwd) == 1 and kind == "V" and arb_id == M.CMD_ID
                     and len(data) >= 5 and data[0] == 0x01):
                 if after == S_HOLD:
-                    if before != S_HOLD:
-                        self.hold_step_t = None
                     self._check_hold(t_ms, data, fwd[0])
                 self.last_sp_a = P.dec_setpoint(fwd[0])[1]
             # --- 4. pages 03.02 / 03.07 held during an override -----------
@@ -597,7 +606,8 @@ class Checker(object):
         - It starts from our last override setpoint, then on each page-01
           frame steps 0.1 A down while bcm_ibat > bcm_chg_max, up while
           bcm_ibat < bcm_chg_max - 0.25, and holds inside that band.
-        - At most one step per 0.3 s.
+        - At most one step per 0.3 s, and entering the hold counts as a
+          step: the first gap is measured from the release (spec 8a66ac01).
         - Between 0 A and the EVSE cap of section 4.
         - Only the current changes.
         All inputs are the Oracle's (the bus), never the core's. Each frame
@@ -655,12 +665,19 @@ class Checker(object):
                  else t_ms - self.hold_step_t)
         what = ("ibat %.3f A, chg_max %.2f A, setpoint %.2f -> %.2f A"
                 % (ib, perm, prev, amps))
+        first = not self.hold_stepped
         if step == 2:
             cnt["clamped"] += 1
             self.hold_step_t = t_ms
+            self.hold_stepped = True
             return
         if step:
-            if since is not None and since < HOLD_GAP_MS:
+            if since is not None and since < HOLD_GAP_MS and first:
+                self.fail("hold: the first step %d ms after the release; "
+                          "entering the hold counts as a step, so the first "
+                          "comes no sooner than 0.3 s after it (spec 5.2; %s)"
+                          % (since, what))
+            elif since is not None and since < HOLD_GAP_MS:
                 self.fail("hold: two steps %d ms apart, at most one per "
                           "0.3 s (spec 5.2; %s)" % (since, what))
             elif step < 0 and not down_ok:
@@ -671,20 +688,15 @@ class Checker(object):
                           "below chg_max (spec 5.2; %s)" % what)
             cnt["up" if step > 0 else "down"] += 1
             self.hold_step_t = t_ms
+            self.hold_stepped = True
             return
-        # no step
-        # OPEN (asked of the reviewer, 2026-10-09): whether the 0.3 s gate
-        # runs from the hold's entry. Spec 5.2 says "at most one step per
-        # 0.3 s" and is silent on the entry; E4 holds the override's
-        # setpoint for 0.3 s after it. Until ruled, a missing step in the
-        # first 0.3 s of a hold is counted, not judged. A step there is
-        # still judged for its direction.
-        if (since is None and self.hold_entry_t is not None
-                and t_ms - self.hold_entry_t < HOLD_GAP_MS
-                and (down_must or up_must)):
-            cnt["entry_window"] += 1
-            return
+        # no step. Ruled 2026-10-09 (spec 8a66ac01): the release counts as
+        # a step, so in the first 0.3 s a hold is right even where the law
+        # points; counted as release_gate so P2 can report how often.
         due = (since is None or since >= HOLD_GAP_MS)
+        if not due and first and (down_must or up_must):
+            cnt["release_gate"] += 1
+            return
         if due and down_must:
             if at_floor:
                 cnt["clamped"] += 1
@@ -1036,7 +1048,7 @@ def test_invariants_hold_over_every_trace():
        % (len(names), TRACES))
     total = p01 = mirrors = full = cut = sep = 0
     hold = dict.fromkeys(("up", "down", "hold", "clamped", "unjudged",
-                          "entry_window"), 0)
+                          "release_gate"), 0)
     for name in names:
         c = replay_trace(os.path.join(TRACES, name))
         for k in hold:
@@ -1070,11 +1082,15 @@ def test_invariants_hold_over_every_trace():
     # Rule 6 (spec 5.2): the hold law judged in both directions and in the
     # band, or it passes by never running.
     print("  --  traces: hold page-01 frames up %(up)d, down %(down)d, held "
-          "%(hold)d, clamped %(clamped)d, unjudged %(unjudged)d, entry "
-          "window (pending ruling) %(entry_window)d" % hold)
+          "%(hold)d, clamped %(clamped)d, unjudged %(unjudged)d, held by "
+          "the release's 0.3 s %(release_gate)d" % hold)
     ok(hold["up"] >= 5 and hold["down"] >= 5 and hold["hold"] >= 5,
        "rule 6 judged hold steps up (%d), down (%d) and held frames (%d)"
        % (hold["up"], hold["down"], hold["hold"]))
+    ok(hold["release_gate"] >= 1,
+       "rule 6 judged %d frames inside a release's 0.3 s where the law "
+       "pointed (spec 5.2: the release counts as a step)"
+       % hold["release_gate"])
     ok(M.STATE_NAMES.get(S_HOLD) == "HOLD",
        "the core names state %d HOLD, as the schema doc's 0x7F4 B2 does"
        % S_HOLD)
@@ -1319,6 +1335,31 @@ def _mutations():
                         and P.setpoint_counts(it[3])[1] != want,
                         lambda it: with_i(it, want))
 
+    def m_hold_early_step(c, kind, arb_id, data, out):
+        # 5.2 (spec 8a66ac01): entering the hold counts as a step. One step,
+        # the law's own direction, on the first page 01 that comes 0.1 s or
+        # more after the release and before 0.3 s; nothing else wrong
+        ib, perm, t0 = c.bus.ibat_a, c.bus.perm_a, c.hold_entry_t
+        if (c.core.state != S_HOLD or c._step_before != S_HOLD
+                or t0 is None or c.last_sp_a is None
+                or ib is None or perm is None
+                or not 100 <= c._t - t0 < HOLD_GAP_MS
+                or c.__dict__.get("_m_early") == t0):
+            return out, 0
+        pi = counts(c.last_sp_a)
+        step = counts(HOLD_STEP_A)
+        if ib > perm + HOLD_EDGE_A and pi >= step:
+            want = pi - step
+        elif ib < perm - HOLD_BAND_A - HOLD_EDGE_A:
+            want = pi + step
+        else:
+            return out, 0
+        out, hit = _rewrite(out, in_hold_p01(c, kind, arb_id),
+                            lambda it: with_i(it, want))
+        if hit:
+            c._m_early = t0
+        return out, hit
+
     def m_hold_above_cap(c, kind, arb_id, data, out):
         caps = c.bus.caps()
         if not caps:
@@ -1347,6 +1388,8 @@ def _mutations():
         "hold: steps of 0.2 A": (m_hold_double_step, "the hold steps 0.1 A"),
         "hold: each step reversed": (m_hold_reversed, "with ibat not"),
         "hold: a step on every page 01": (m_hold_every_frame, "two steps"),
+        "hold: the first step 0.1 s after the release":
+            (m_hold_early_step, "after the release"),
         "hold: setpoint 1 A above the EVSE cap":
             (m_hold_above_cap, "outside 0 A"),
         "hold: page 01 Vlim byte changed":
