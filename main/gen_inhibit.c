@@ -111,10 +111,27 @@ _Static_assert(GEN_INHIBIT_PROBE_ID == GI_PROBE_ID, "id drift");
  * would take a bus-off device for one on the bus, which cannot happen in a CAN
  * log -- the witness counted 0 WiCAN diag frames across that bus-off.)
  *
+ * 6 is spec 7's recency rule for trip 6 (user, 2026-10-08). Another rev with
+ * no layout change, and for the same reason as 5: WHEN the error-frame rate
+ * trip fires has changed, so diag_abort_reason 6 means something different
+ * across the boundary and two captures of the same bus can disagree.
+ *
+ * A rev 5 device trips on any burst of 10 error frames within 10 s of each
+ * other that has occurred since the last key-on, at every later live check,
+ * which makes trip 6 a latch until key-on -- measured: a re-arm re-latched
+ * 50 ms later with no new error frames, and a burst 32 s stale still blocked
+ * going live. A rev 6 device additionally requires the burst's newest error
+ * frame to be no more than 10 s before the check, so an expired burst causes
+ * no trip and a re-arm can go live once the bus has been quiet for 10 s.
+ *
+ * Note 477171a reports 5 while implementing the burst test without the
+ * recency test, so it is neither a rev 5 device nor a rev 6 one. It was never
+ * flashed or released; the schema doc's rev table records it.
+ *
  * The accompanying diag_schema_ver 5 -> 6 guards decoders; this guards the
  * human. */
 #ifndef DIAG_FW_VERSION
-#define DIAG_FW_VERSION              5
+#define DIAG_FW_VERSION              6
 #endif
 #ifndef GIT_SHA
 #define GIT_SHA "unknown"

@@ -980,15 +980,32 @@ static void interlock_runtime(gi_state_t *st, int64_t now, gi_events_t *ev)
      * verdict, and it is reached only while live, per the invariant at the
      * caller.
      *
-     * The comparison is between the NEWEST and the err_min_trip'th most
-     * recent arrival -- not between `now` and the oldest. That difference is
-     * load-bearing and not cosmetic: the spec requires 10 error frames that
-     * fell in the 10 s BEFORE going live to trip at the first live check, and
-     * measuring from `now` would let them age out before that check ever ran.
+     * TWO SEPARATE TESTS, and keeping them separate is the whole design
+     * (spec 7, "Only a recent burst trips", user 2026-10-08):
      *
-     * `<=`, not `<`: the spec reads "within", and the user ruled that exactly
-     * 10.0 s counts. Trip 7's 1 s window is strict and this one is not -- the
-     * two are deliberately different, so do not "harmonise" them.
+     *   newest - Nth-most-recent <= err_window_us    is the burst tight enough
+     *   now    - newest          <= err_window_us    is the burst still recent
+     *
+     * The tightness test compares error frames with each other and never
+     * consults `now`, which is what keeps the inclusive 10.0 s edge exact. A
+     * single `now - oldest` test would have blurred the two questions together
+     * and moved the edge with the phase of the tick.
+     *
+     * The recency test is what stops a burst tripping forever. 477171a had the
+     * tightness test alone, so any qualifying burst since the last key-on
+     * tripped at every later live check: a re-arm re-latched 50 ms later on
+     * history alone, and a burst 32 s stale still blocked going live. Both are
+     * measured, both now pass only because of the second line above.
+     *
+     * `<=` in BOTH, not `<`: the spec reads "within", and the user ruled the
+     * edge inclusive at the recency test as well as the tightness one. Trip
+     * 7's 1 s window is strict and this one is not -- the two are deliberately
+     * different, so do not "harmonise" them.
+     *
+     * Note what the recency test does NOT do: it does not forget the history.
+     * The ring still holds the arrivals, so a burst that has expired becomes
+     * live again only if new error frames arrive and form a fresh qualifying
+     * burst. Only a key-on clears the ring.
      *
      * This counts the controller's own bus_error_count rather than anything
      * payload-derived, so it stays distinct from the failed-transmit trip,
@@ -1008,7 +1025,8 @@ static void interlock_runtime(gi_state_t *st, int64_t now, gi_events_t *ev)
         const uint8_t nth    = (uint8_t)(((uint32_t)st->err_head
                                           + ring - st->cfg.err_min_trip)
                                          % ring);
-        if ((st->err_at[newest] - st->err_at[nth]) <= st->cfg.err_window_us)
+        if ((st->err_at[newest] - st->err_at[nth]) <= st->cfg.err_window_us
+            && (now - st->err_at[newest]) <= st->cfg.err_window_us)
         {
             inhibit_abort(st, GI_ABORT_ERROR_RATE, now, ev);
             return;
