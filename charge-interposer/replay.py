@@ -194,6 +194,11 @@ def replay_offline(path, core, bus_filter=None, progress=None,
         stimulus_sha256  sha256 over every frame fed to the core, as fed
                          (ms time, id, extended flag, data) -- the spec 9.1
                          pin of the input (capture_pins.py)
+        states           [(t_ms, state name)]: the core's state when the
+                         first frame is fed, then every change, sampled
+                         after each frame and each tick. Read from
+                         core.state, not from the event log, so a state
+                         change the core does not log is still seen.
     """
     bus_why = "channel %s, given by the caller" % bus_filter
     if bus_filter is None:
@@ -201,15 +206,26 @@ def replay_offline(path, core, bus_filter=None, progress=None,
     known = VEHICLE_IDS | CHARGER_IDS
     res = dict(frames_in=0, to_charger=0, to_vehicle=0, modified=0,
                synthesized=0, first_modified=None, events=None,
-               bus=bus_filter, bus_why=bus_why, stimulus_sha256=None)
+               bus=bus_filter, bus_why=bus_why, stimulus_sha256=None,
+               states=[])
     stim = hashlib.sha256()
     last_tick_ms = -1
+    last_state = None
+
+    def sample(t_ms):
+        nonlocal last_state
+        if core.state != last_state:
+            last_state = core.state
+            res["states"].append((t_ms, M.STATE_NAMES[core.state]))
+
     for t, arb, ext, data in iter_pt(path, bus_filter, known):
         if t < start_s:
             continue
         if end_s is not None and t > end_s:
             break
         t_ms = int(t * 1000)
+        if last_state is None:
+            sample(t_ms)                 # the state the capture starts in
         res["frames_in"] += 1
         stim.update(b"%d %x %d %s\n" % (t_ms, arb, 1 if ext else 0,
                                          bytes(data).hex().encode()))
@@ -226,11 +242,13 @@ def replay_offline(path, core, bus_filter=None, progress=None,
                 res["modified"] += 1
                 if res["first_modified"] is None:
                     res["first_modified"] = (t, data.hex(" "), odata.hex(" "))
+        sample(t_ms)
         # tick at most once per simulated 10 ms
         if t_ms - last_tick_ms >= 10:
             last_tick_ms = t_ms
             for side, oid, oext, odata in core.tick(t_ms):
                 res["synthesized"] += 1
+            sample(t_ms)
         if progress and res["frames_in"] % progress == 0:
             print("  ...%d frames, t=%.0fs, state=%s"
                   % (res["frames_in"], t, M.STATE_NAMES[core.state]))

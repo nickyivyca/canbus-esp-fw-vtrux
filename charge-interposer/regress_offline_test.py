@@ -45,6 +45,74 @@ REAL = [
 ]
 
 
+def path_cases(RG):
+    """regress.check_state_path (2026-10-09, partstruck P1): the whole path
+    from core.state, exactly, each transition in its window."""
+    want = RG.BY_NAME["partstruck"].expect["state_path"]
+    real = [(0, "PASSTHROUGH"), (27870, "MONITOR"),
+            (6582624, "TERMINATED"), (34217348, "PASSTHROUGH")]
+    ok, why = RG.check_state_path(real, want)
+    check(ok, "the decoded partstruck path passes -> %s" % why)
+
+    def bad(states, what):
+        ok, why = RG.check_state_path(states, want)
+        check(not ok, "%s fails -> %s" % (what, why))
+
+    bad(real[:2] + [(3000000, "SAFE"), (3000100, "MONITOR")] + real[2:],
+        "a SAFE and back inside the MONITOR stretch (unlogged)")
+    bad(real[:2] + [(6582624, "OVERRIDE")] + real[2:],
+        "an OVERRIDE before the TERMINATED")
+    bad([x for x in real if x[1] != "TERMINATED"],
+        "TERMINATED missing")
+    bad(real[:2] + [(6584000, "TERMINATED")] + real[3:],
+        "TERMINATED at 6584.0 s, outside its window")
+    bad(real[:3] + [(34219000, "PASSTHROUGH")],
+        "PASSTHROUGH at 34219.0 s, after the STAND_BY window")
+    bad([(0, "MONITOR")] + real[1:], "a wrong starting state")
+    bad([], "an empty path")
+
+
+def states_sampling_cases():
+    """replay.replay_offline's `states` is read from core.state after every
+    frame and tick, so a change the core never logs is still recorded."""
+    import machine as MM
+    import replay as RP
+
+    class Quiet(object):
+        """A core that changes state and logs nothing."""
+        def __init__(self):
+            self.state = 0
+            self.events = []
+            self.n = 0
+
+        def on_vehicle_frame(self, arb, ext, data, t_ms):
+            self.n += 1
+            if self.n == 3:
+                self.state = 5          # SAFE, unlogged
+            if self.n == 4:
+                self.state = 1          # MONITOR, unlogged
+            return [(MM.TO_CHARGER, arb, ext, data)]
+
+        on_charger_frame = on_vehicle_frame
+
+        def tick(self, t_ms):
+            if t_ms == 100:
+                self.state = 4          # TERMINATED on a tick, unlogged
+            return []
+
+    frames = [(i * 0.02, 0x410, False, bytes(8)) for i in range(8)]
+    saved = RP.iter_pt
+    RP.iter_pt = lambda path, bus_filter=None, ids=None: iter(frames)
+    try:
+        res = RP.replay_offline("unused", Quiet(), bus_filter=2)
+    finally:
+        RP.iter_pt = saved
+    got = [s for _, s in res["states"]]
+    check(got == ["PASSTHROUGH", "SAFE", "MONITOR", "TERMINATED"],
+          "unlogged changes on frames and on a tick are all recorded, with "
+          "the starting state first -> %s" % res["states"])
+
+
 def bus_cases():
     """replay.choose_pt_bus (rev 2): the powertrain bus is identified only
     when the evidence separates, else refused with the reason."""
@@ -120,6 +188,8 @@ def main():
         ok, why = mut(lambda e: e[:4] + [(61000,) + e[4][1:]])
         check(not ok and "outside" in why,
               "PASSTHROUGH at 61.0 s fails -> %s" % why)
+        path_cases(RG)
+        states_sampling_cases()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
         if saved is None:

@@ -93,9 +93,37 @@ CASES = [
          "ignored as a startup blip) and a genuine stop at vmax 3590 mV "
          "followed by a 6 h balancing tail (must pass through).",
          ["big-logs/vtrux_partstruck_charge.log"],
+         # Partstruck test set P1 (user-approved via the reviewer,
+         # 2026-10-09; spec 26f2940b). The times come from an independent
+         # cantools decode of this pinned stream on the same time base
+         # (interposer-firmware/capture_timeline.py; the run folder's
+         # timeline_partstruck.txt), never from the core:
+         #   27.870 s    charge established (Bel state 12, 0x440 mainc 12)
+         #   31.102 s    Low Power, evap 0, inside the arm delay (ends
+         #               102.870 s); back to CHARGER at 94.324 s
+         #   6582.624 s  Low Power, evap 0, chg_max 0.0 A, soc 100 -> accepted
+         #   34215.969 s handle pull (plug flags drop, shutdown source 11)
+         #   34217.348 s STAND_BY
+         # P1a: the transient changes nothing (MONITOR from establishment
+         # until the accept). P1b: the accept, TERMINATED. P1c: the VCU's
+         # 7.7 h hold passes byte-identical in TERMINATED, no trip (spec 3:
+         # every Low Power after the arm delay with the flag clear is
+         # accepted and forwarded untouched). P1d: the handle pull leaves
+         # it TERMINATED with no trip, PASSTHROUGH on the STAND_BY (6.1).
+         # Windows +/- 0.5 s, as on above_ceiling_start.
          dict(modified=0, synthesized=0,
               must_event=r"LOW_POWER accepted",
-              must_not_event=r"LOW_POWER overridden")),
+              must_not_event=r"LOW_POWER overridden",
+              state_events=[("MONITOR", r"charge established", 27.4, 28.4),
+                            ("TERMINATED", r"LOW_POWER accepted",
+                             6582.1, 6583.1),
+                            ("PASSTHROUGH", r"session over",
+                             34216.8, 34217.9)],
+              state_path=[("PASSTHROUGH", None, None),
+                          ("MONITOR", 27.4, 28.4),
+                          ("TERMINATED", 6582.1, 6583.1),
+                          ("PASSTHROUGH", 34216.8, 34217.9)],
+              final_state=("PASSTHROUGH",))),
 
     Case("above_ceiling_start",
          "Plugged in at 83 % with the evap flag up (spec 7): CHARGER with a "
@@ -114,6 +142,12 @@ CASES = [
               # within +/- 0.5 s of the spec's time (capture time)
               state_events=[("TERMINATED", r"plug out", 57.4, 58.4),
                             ("PASSTHROUGH", r"session over", 58.5, 59.5)],
+              # 2026-10-09: the same, read from core.state; established
+              # at 9.101 s by capture_timeline.py
+              state_path=[("PASSTHROUGH", None, None),
+                          ("MONITOR", 8.6, 9.6),
+                          ("TERMINATED", 57.4, 58.4),
+                          ("PASSTHROUGH", 58.5, 59.5)],
               final_state=("PASSTHROUGH",))),
 ]
 
@@ -196,6 +230,26 @@ def check_state_events(events, want):
     return (True, "in order: " + "; ".join(got))
 
 
+def check_state_path(states, want):
+    """-> (ok, why). `states` is the replay's [(t_ms, state)] -- the state
+    the capture starts in, then every change, read from core.state.
+    `want` is the WHOLE path: [(state, t_lo_s, t_hi_s)], the first entry
+    being the starting state (its window ignored, give None). The path must
+    match exactly -- no state added, none missing -- and each entry after
+    the first must begin inside its window. Unlike check_state_events this
+    does not read the core's own log, so a transition the core makes
+    without logging it (a stray SAFE, a brief OVERRIDE) fails the path."""
+    got = " -> ".join("%s@%.1f" % (s, t / 1000.0) for t, s in states)
+    if [s for _, s in states] != [w[0] for w in want]:
+        return (False, "path %s, want %s"
+                % (got or "(empty)", " -> ".join(w[0] for w in want)))
+    for (t, s), (ws, lo, hi) in list(zip(states, want))[1:]:
+        if not lo <= t / 1000.0 <= hi:
+            return (False, "%s began at %.3f s, outside %.1f-%.1f s (path %s)"
+                    % (s, t / 1000.0, lo, hi, got))
+    return (True, "path " + got)
+
+
 def source_hashes(case):
     """{path under logs/ (posix): sha256} for the case's raw captures."""
     out = {}
@@ -260,6 +314,10 @@ def run_case(case, args):
     if "state_events" in e:
         ok, why = check_state_events(res["events"], e["state_events"])
         checks.append((ok, "state transitions: %s" % why))
+    if "state_path" in e:
+        ok, why = check_state_path(res["states"], e["state_path"])
+        checks.append((ok, "state path (core.state, not the log): %s"
+                       % why))
     if "final_state" in e:
         want = e["final_state"]
         got = M.STATE_NAMES[core.state]
