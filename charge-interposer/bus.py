@@ -239,7 +239,17 @@ def _confine_to_host(b, logger=None):
     import struct
     sock = getattr(getattr(b, "_multicast", None), "_socket", None)
     if sock is None:
-        return
+        # FAIL CLOSED (2026-10-08, found by the gen-inhibit reviewer). This
+        # used to `return`, so a python-can that renamed these private
+        # attributes skipped both the TTL-0 set and the readback with no
+        # message, and the bench ran on python-can's own hop_limit with
+        # nothing verifying it.
+        raise SystemExit(
+            "refusing to start: cannot reach the multicast socket to verify "
+            "TTL 0 (python-can's\nudp_multicast bus has no _multicast._socket "
+            "-- its internals changed?). Without the\ncheck nothing proves "
+            "the simulated CAN frames stay off the real network. See\nthe "
+            "simulator rules in reverse-it's firmware/esp-development.md.")
     try:
         # TTL 0 only. Do NOT also pin IP_MULTICAST_IF to loopback: python-can
         # joins the group with INADDR_ANY, which the kernel resolves to the
@@ -258,8 +268,8 @@ def _confine_to_host(b, logger=None):
         raise SystemExit(
             "refusing to start: multicast TTL is %d, not 0. Every simulated "
             "CAN frame would be\nput on the real network (239.0.0.0/8 routes "
-            "out the default interface). See the\n'Simulators, Virtual CAN "
-            "Buses' section of AGENTS.md." % ttl)
+            "out the default interface). See the\nsimulator rules in "
+            "reverse-it's firmware/esp-development.md." % ttl)
     if logger:
         logger.debug("multicast TTL=0 verified -- traffic confined to this host")
 

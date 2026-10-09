@@ -200,6 +200,55 @@ def stop11_problems():
     return probs
 
 
+# --- bus.py's multicast guard ----------------------------------------------------
+
+def guard_problems():
+    """bus._confine_to_host must FAIL CLOSED (2026-10-08): no reachable
+    socket, or a TTL it cannot get to 0, is a SystemExit, never a silent
+    return. A real UDP socket (never sent on) must pass and read TTL 0."""
+    import socket
+    import types
+    import bus as B
+    probs = []
+
+    def refuses(b, fragment):
+        try:
+            B._confine_to_host(b)
+        except SystemExit as e:
+            return fragment in str(e), str(e)
+        return False, "returned without raising"
+
+    ns = types.SimpleNamespace
+    for label, b in (("no _multicast", ns()),
+                     ("_multicast without _socket", ns(_multicast=ns()))):
+        okk, why = refuses(b, "cannot reach the multicast socket")
+        if not okk:
+            probs.append("a bus with %s: %s" % (label, why))
+
+    class StuckTTL(object):
+        def setsockopt(self, *a):
+            pass
+
+        def getsockopt(self, *a):
+            return 1
+    okk, why = refuses(ns(_multicast=ns(_socket=StuckTTL())),
+                       "firmware/esp-development.md")
+    if not okk or "TTL is 1" not in why:
+        probs.append("a socket stuck at TTL 1: %s" % why)
+
+    real = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        try:
+            B._confine_to_host(ns(_multicast=ns(_socket=real)))
+        except SystemExit as e:
+            probs.append("a real UDP socket was refused: %s" % e)
+        if real.getsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL) != 0:
+            probs.append("a real UDP socket did not end at TTL 0")
+    finally:
+        real.close()
+    return probs
+
+
 # --- tests ---------------------------------------------------------------------
 
 def main():
@@ -228,6 +277,12 @@ def main():
         check(False, "charger_sim: " + p)
     check(not stop11_problems(), "charger_sim --stop11-at stops with source "
           "11, plug in, delivering nothing")
+
+    for p in guard_problems():
+        check(False, "bus.py guard: " + p)
+    check(not guard_problems(), "bus.py's multicast guard fails closed: no "
+          "socket or a TTL stuck at 1 refuses to start, a real socket passes "
+          "at TTL 0")
 
     if failures:
         print("\n%d failure(s)" % failures)
