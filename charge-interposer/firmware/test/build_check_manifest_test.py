@@ -68,8 +68,11 @@ def run_case(disk_elf, rows, magic=0xABCD5432):
         shutil.rmtree(root, ignore_errors=True)
 
 
-def row(elf, name=NAME):
-    return {"image": name, "elf_sha256": elf, "env": "esp32-can-x2-witness"}
+def row(elf, name=NAME, git=True):
+    r = {"image": name, "elf_sha256": elf, "env": "esp32-can-x2-witness"}
+    if git:                    # spec 8.2 fields, as the build writes them
+        r.update(git_commit="c380d61" + "0" * 33, git_dirty=False)
+    return r
 
 
 def main():
@@ -118,6 +121,29 @@ def main():
             BC.image = saved
     finally:
         shutil.rmtree(root, ignore_errors=True)
+
+    # spec 8.2 (2026-10-08): the rows for this build carry the git commit
+    # and dirty flag, or an explicit git_error -- never neither
+    g = BC.check_git_fields
+    check(not g(NAME, [row(ELF_A)]),
+          "a row with a commit and git_dirty false passes")
+    check(not g(NAME, [{"git_error": "no commit: not a git repository"}]),
+          "a row with an explicit git_error passes")
+    check(any("spec 8.2" in x for x in g(NAME, [row(ELF_A, git=False)])),
+          "a matching row with neither a commit nor a git_error FAILS")
+    check(any("git_dirty" in x for x in g(NAME, [{"git_commit": "abc1234",
+                                                   "git_dirty": None}])),
+          "a row whose git_dirty is not true/false FAILS")
+    check(any("no git commit" in x for x in g(NAME, [{"git_commit": "HEAD",
+                                                       "git_dirty": True}])),
+          "a commit that is not a hex sha FAILS")
+    check(not g(NAME, [row(ELF_A, git=False), row(ELF_A)]),
+          "an old pre-8.2 row beside this build's complete row passes "
+          "(reproducible builds put both on the same bytes)")
+    p = run_case(ELF_A, [row(ELF_A, git=False)])
+    check(any("spec 8.2" in x for x in p),
+          "check_manifest itself fails a build whose only row has no git "
+          "fields -> %s" % p)
 
     if failures:
         print("\n%d failure(s)" % failures)

@@ -36,11 +36,14 @@ Usage (from the repo root):
 
 import argparse
 import glob
+import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 # REFUSE TO RUN UNDER PYTHON < 3.10, before doing anything else.
@@ -419,10 +422,146 @@ def check_manifest(envs):
                 "image with those bytes (rows under that name: %s) -- the "
                 "manifest describes a different binary"
                 % (base, elf[:16], ", ".join(named) or "none"))
+        else:
+            problems += check_git_fields(
+                base, [x for x in entries if x.get("image") == base
+                       and (x.get("elf_sha256") or "").lower() == elf])
 
     if not problems:
         print("manifest: %d entries, %d distinct 0x7F7 build ids, no "
               "collisions" % (len(entries), len(by_prefix)))
+    return problems
+
+
+GIT_HEX = re.compile(r"^[0-9a-f]{7,40}$")
+
+
+def check_git_fields(base, rows):
+    """Spec 8.2 (user, 2026-10-08): the build records the git commit it came
+    from and whether the working tree was dirty -- or says explicitly why it
+    cannot (git_error), never a blank.
+
+    Judged on the rows matching this build's image AND bytes, and satisfied
+    if ANY of them is complete. Since builds are reproducible, a row written
+    before 8.2 can match the same bytes as this build's row; requiring the
+    fields on every matching row would fail on history, not on this
+    build."""
+    why = []
+    for r in rows:
+        commit, dirty, err = (r.get("git_commit"), r.get("git_dirty"),
+                              r.get("git_error"))
+        if err:
+            if isinstance(err, str):
+                return []
+            why.append("git_error is not a message (%r)" % err)
+            continue
+        bad = []
+        if not (isinstance(commit, str) and GIT_HEX.match(commit)):
+            bad.append("no git commit (%r) and no git_error" % commit)
+        if not isinstance(dirty, bool):
+            bad.append("git_dirty is %r, not true/false" % dirty)
+        if not bad:
+            return []
+        why.append("; ".join(bad))
+    return ["%s: no manifest row for these bytes records the git commit and "
+            "dirty flag or a git_error (spec 8.2): %s"
+            % (base, " | ".join(why) or "no rows")]
+
+
+def _copy_firmware(dst):
+    """The firmware tree without build output or the manifest, at `dst`."""
+    def ignore(d, names):
+        rel = os.path.relpath(d, FW).replace(os.sep, "/")
+        out = [n for n in names if n in (".pio", "__pycache__")]
+        if rel == "builds":
+            out += [n for n in names if n == "manifest.json"]
+        return out
+    shutil.copytree(FW, dst, ignore=ignore)
+
+
+def _build_one(fw_dir, env):
+    """Clean, then build `env` in `fw_dir` -> (elf sha256 or None, why)."""
+    base = [sys.executable, "-m", "platformio", "run", "-d", fw_dir, "-e", env]
+    t0 = time.time()
+    for cmd in (base + ["-t", "clean"], base):
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode != 0:
+            tail = (r.stdout + r.stderr).splitlines()[-12:]
+            return None, "exit %d:\n      %s" % (r.returncode,
+                                                  "\n      ".join(tail))
+    # build_name.py names the program interposer_<digest>_<tag>, so the ELF
+    # is that, not firmware.elf (the first version looked for the latter
+    # and found nothing). Exactly one, and written by THIS build: a cached
+    # .pio would hand back a file neither build produced.
+    elfs = glob.glob(os.path.join(fw_dir, ".pio", "build", env,
+                                  build_identity.PREFIX + "*.elf"))
+    if len(elfs) != 1:
+        return None, "%d ELF(s) in .pio/build/%s" % (len(elfs), env)
+    elf = elfs[0]
+    if os.path.getmtime(elf) < t0:
+        return None, "%s predates this build" % os.path.basename(elf)
+    with open(elf, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest(), "ok"
+
+
+# The control's code change: a line of real code, not a comment, so the
+# compiled bytes must move. It is appended to a copy, never to the tree.
+CONTROL_FILE = os.path.join("src", "machine.cpp")
+CONTROL_LINE = ("\nextern \"C\" __attribute__((used)) volatile int "
+                "build_check_repro_control = 0x5A5A;\n")
+CONTROL_ENV = "esp32-can-x2"
+
+
+def check_reproducible(envs, workdir):
+    """Spec 8.2 (user, 2026-10-08): the build is reproducible. Two copies of
+    the firmware tree at DIFFERENT absolute paths, each environment cleaned
+    and built in both: the ELF SHA-256s must be identical.
+
+    Identical could be luck or a comparison that sees nothing, so a CONTROL
+    must fail: a third copy with one line of code added to src/machine.cpp
+    must give a different ELF for CONTROL_ENV. Copies live under `workdir`
+    and are removed afterwards."""
+    problems = []
+    a_dir = os.path.join(workdir, "a", "firmware")
+    b_dir = os.path.join(workdir, "b_other", "deeper", "firmware")
+    c_dir = os.path.join(workdir, "control", "firmware")
+    try:
+        for d in (a_dir, b_dir, c_dir):
+            _copy_firmware(d)
+        with open(os.path.join(c_dir, CONTROL_FILE), "a") as f:
+            f.write(CONTROL_LINE)
+        results = {}
+        for e in envs:
+            ha, wa = _build_one(a_dir, e)
+            hb, wb = _build_one(b_dir, e)
+            results[e] = (ha, hb)
+            if ha is None or hb is None:
+                problems.append("reproducible: [env:%s] did not build in "
+                                "both folders (%s / %s)" % (e, wa, wb))
+            elif ha != hb:
+                problems.append("reproducible: [env:%s] ELF %s in %s but %s "
+                                "in %s -- not reproducible (spec 8.2)"
+                                % (e, ha[:16], a_dir, hb[:16], b_dir))
+            print("  repro %-24s %s  %s  %s" % (
+                e, (ha or "-")[:16], (hb or "-")[:16],
+                "SAME" if ha and ha == hb else "DIFFERENT"))
+        hc, wc = _build_one(c_dir, CONTROL_ENV)
+        ha = results.get(CONTROL_ENV, (None, None))[0]
+        print("  control %-22s %s (vs %s)" % (CONTROL_ENV, (hc or "-")[:16],
+                                             (ha or "-")[:16]))
+        if hc is None:
+            problems.append("reproducible: the control copy did not build "
+                            "(%s)" % wc)
+        elif ha is not None and hc == ha:
+            problems.append("reproducible: the CONTROL (a line of code added "
+                            "to %s) gave the same ELF %s -- the comparison "
+                            "cannot see a code change, so 'identical' proves "
+                            "nothing" % (CONTROL_FILE, hc[:16]))
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+    if not problems:
+        print("reproducible: %d environment(s) identical across two folders; "
+              "the control differs" % len(envs))
     return problems
 
 
@@ -614,7 +753,29 @@ def main():
                     help="skip the build and check the images already in "
                          ".pio/build (they may be stale -- say so if it "
                          "matters)")
+    ap.add_argument("--reproducible", action="store_true",
+                    help="spec 8.2: build every environment in two copies of "
+                         "the tree at different paths and require identical "
+                         "ELFs, with a control copy that must differ (slow: "
+                         "three trees of clean builds)")
+    ap.add_argument("--envs", default="",
+                    help="comma-separated subset of environments for "
+                         "--reproducible (default: all)")
     a = ap.parse_args()
+
+    if a.reproducible:
+        envs = [e for e in a.envs.split(",") if e] or environments()
+        # OUTSIDE the firmware tree: a work folder inside it (the first
+        # version used test/) makes copytree copy the copies into themselves
+        work = tempfile.mkdtemp(prefix="repro_", dir=os.path.dirname(FW))
+        probs = check_reproducible(envs, work)
+        if probs:
+            print("\nFAIL -- %d problem(s):" % len(probs))
+            for p_ in probs:
+                print("  - " + p_)
+            return 1
+        print("\nOK -- reproducible (spec 8.2): %s" % ", ".join(envs))
+        return 0
 
     envs = environments()
     print("platformio.ini declares: %s" % ", ".join(envs))
