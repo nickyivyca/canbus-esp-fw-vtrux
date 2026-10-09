@@ -27,6 +27,7 @@ void TwaiFake::hardReset() {
   tx_failed_count_ = 0;
   bus_error_count_ = 0;
   invalid_state_calls_ = 0;
+  transmit_calls_ = 0;
   frames_handed_out_ = 0;
   install_fails_ = false;
 }
@@ -124,6 +125,7 @@ esp_err_t TwaiFake::stop() {
 }
 
 esp_err_t TwaiFake::transmit(const twai_message_t* m) {
+  transmit_calls_++;            // counted before any state check
   // "TWAI driver is not in running state, or is not installed."
   if (!installed_ || state_ != TWAI_STATE_RUNNING)
     return ESP_ERR_INVALID_STATE;

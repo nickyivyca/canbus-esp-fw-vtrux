@@ -803,9 +803,11 @@ void caseFailedStart() {
 // vehicle traffic for a half-open bridge to forward, so a board that ran
 // one would look identical. Shown 2026-10-09: l2_mutations' half-open
 // mutation (healthy = v_ok || c_ok) survives here, while failed-start
-// catches it. So this guards only against the board transmitting on the
-// charger side of its own accord, and is not counted as coverage of B-7d.
-// (2026-10-09.)
+// catches it. It survives the twai_transmit-ATTEMPT count too (added at
+// the reviewer's suggestion, self-checked below): the attempt is refused
+// before the driver API. So this guards only against the board
+// transmitting of its own accord, or a future path that reaches the
+// driver, and is not counted as coverage of B-7d. (2026-10-09.)
 void caseFailedStartVehicle() {
   boot(/*charger_starts=*/true, /*vehicle_starts=*/false);
   check(!fake().installed() || fake().state() != TWAI_STATE_RUNNING,
@@ -832,6 +834,20 @@ void caseFailedStartVehicle() {
   check(vehSent().empty(),
         "and nothing goes out on the vehicle side, whose controller is "
         "down");
+  // Transmit ATTEMPTS toward the vehicle (reviewer's suggestion,
+  // 2026-10-09): a half-open bridge would try to forward the charger
+  // traffic above and be refused, which no wire shows.
+  const uint32_t attempts = fake().transmitCalls();
+  std::printf("  --  twai_transmit calls toward the vehicle: %u\n", attempts);
+  check(attempts == 0,
+        "spec 2.1: the board does not even TRY to bridge -- zero "
+        "twai_transmit calls, accepted or refused");
+  // The counter counts a refused call, so the zero above is a reading.
+  twai_message_t m;
+  std::memset(&m, 0, sizeof(m));
+  const esp_err_t e = twai_transmit(&m, 0);
+  check(fake().transmitCalls() == attempts + 1 && e != ESP_OK,
+        "counter self-check: a refused twai_transmit is counted");
 }
 
 // Spec 2.2: failed transmissions TOWARD THE CHARGER, counted only while

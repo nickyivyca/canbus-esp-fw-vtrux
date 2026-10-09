@@ -104,6 +104,11 @@ class TwaiFake {
   // ignoring a rejected call looks identical to the call succeeding.
   uint32_t invalidStateCalls() const { return invalid_state_calls_; }
   void noteInvalidState() { invalid_state_calls_++; }
+  // Every twai_transmit() call, in ANY state, accepted or rejected. A
+  // board whose vehicle controller never started cannot put a frame on
+  // the wire, so wire silence cannot show that it tried; this can
+  // (failed-start-vehicle, 2026-10-09, reviewer's suggestion).
+  uint32_t transmitCalls() const { return transmit_calls_; }
 
   // Everything the ESP-IDF entry points need.
   esp_err_t install(const twai_general_config_t* g);
@@ -145,6 +150,7 @@ class TwaiFake {
   uint32_t tx_failed_count_ = 0;
   uint32_t bus_error_count_ = 0;
   uint32_t invalid_state_calls_ = 0;
+  uint32_t transmit_calls_ = 0;
   uint32_t frames_handed_out_ = 0;
   bool install_fails_ = false;
 };
