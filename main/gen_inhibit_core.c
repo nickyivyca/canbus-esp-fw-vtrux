@@ -1689,6 +1689,35 @@ static void key_monitor(gi_state_t *st, uint32_t id, uint8_t dlc,
     }
     st->key_seen_off = false;
 
+    /*
+     * THE ONLY PLACE the trip 6 error history is cleared (spec 7, user
+     * 2026-10-08), and it is UNCONDITIONAL on the key-off -> key-on
+     * transition. Arming, re-arming and going live all carry the history
+     * over; a key cycle does not.
+     *
+     * It sits BEFORE the "nothing was latched" return on purpose, and that
+     * placement is the whole of the bug the tester found on 3b8117c
+     * (err-rate-keyon-clears): with the clear below that return, the history
+     * survived a key cycle whenever no latch happened to be set, so a key-on
+     * cleared nothing and the control case with no key cycle behaved
+     * identically.
+     *
+     * Why this differs from the two clears after the return. Those are about
+     * LIFTING A LATCH -- spec 7.1's re-entry into the arm gate, and spec 6.2's
+     * rule that a device about to re-enter the gate must not do so on an SoC
+     * reading it accepted before the key cycle. Both are meaningless when
+     * nothing was latched. The error history is not about a latch at all: it
+     * is a record of what the bus did, and spec 7 ties its lifetime to the key
+     * cycle rather than to whether this device happened to trip.
+     *
+     * have_err_last goes with it, so the first armed read after the key cycle
+     * re-seeds rather than arriving as one delta spanning the whole key-off.
+     */
+    st->err_head      = 0;
+    st->err_n         = 0;
+    st->err_last      = 0;
+    st->have_err_last = false;
+
     if (!st->abort_latched && !st->disabled)
     {
         return;                 /* nothing was latched */
@@ -1728,15 +1757,10 @@ static void key_monitor(gi_state_t *st, uint32_t id, uint8_t dlc,
     st->rpm_over      = false;
     st->rpm_over_since = 0;
     /*
-     * THE ONLY PLACE the trip 6 error history is cleared (user, 2026-10-08).
-     * Arming, re-arming and going live all carry it over; a key-on does not.
-     * have_err_last goes with it so the first armed read after the key cycle
-     * re-seeds rather than arriving as a delta across the whole key-off.
+     * The trip 6 error history was cleared earlier in this function, above the
+     * "nothing was latched" return, because spec 7 makes it unconditional on
+     * the key transition. It is deliberately NOT repeated here.
      */
-    st->err_head      = 0;
-    st->err_n         = 0;
-    st->err_last      = 0;
-    st->have_err_last = false;
     /*
      * rpm_ever goes with fb_ever, and for the same reason: the key-on clear
      * re-enters the arm gate, and the inverter powers up ~28 s after the bus.
