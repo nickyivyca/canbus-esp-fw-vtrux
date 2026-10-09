@@ -45,6 +45,50 @@ REAL = [
 ]
 
 
+def bus_cases():
+    """replay.choose_pt_bus (rev 2): the powertrain bus is identified only
+    when the evidence separates, else refused with the reason."""
+    import replay as RP
+    A = sorted(RP.PT_ANCHORS)
+    k = RP.PT_MIN_ANCHORS
+
+    def ev(**chans):
+        # chans: name -> (ids seen, total frames); as pt_bus_evidence does,
+        # only PT_ANCHORS ids are recorded in the set
+        out = {}
+        for b, (ids, tot) in chans.items():
+            got = set(ids) & RP.PT_ANCHORS
+            out[b] = (len(got) * 10, got, tot)
+        return out
+
+    def refused(e):
+        try:
+            RP.choose_pt_bus(e)
+        except RP.BusUnresolved as exc:
+            return str(exc)
+        return None
+
+    bus, why = RP.choose_pt_bus(ev(c1=(A, 5000), c2=([0x1E5, 0x500], 4000)))
+    check(bus == "c1" and "8 of 8" in why,
+          "all anchors on one channel, none on the other -> that channel")
+    bus, _ = RP.choose_pt_bus(ev(c3=(A[:k], 900)))
+    check(bus == "c3", "a single-channel capture with %d distinct anchors "
+                       "-> accepted on its own evidence" % k)
+    r = refused(ev(c3=(A[:k - 1], 900)))
+    check(r is not None and "fewer than %d" % k in r,
+          "one anchor short of the threshold -> refused, not selected "
+          "(the single-candidate null discriminator) -> %s" % r)
+    r = refused(ev(c1=(A, 5000), c2=([A[0]], 4000)))
+    check(r is not None and "do not separate" in r,
+          "one stray anchor on a second channel -> refused, not decided by "
+          "frame count")
+    r = refused(ev(c1=([0x1E5], 100), c2=([0x500], 100)))
+    check(r is not None and "no powertrain anchor" in r,
+          "no anchor anywhere -> refused; rev 1 returned None and fed every "
+          "bus to the core")
+    check(refused({}) is not None, "an empty capture -> refused")
+
+
 def main():
     tmp = tempfile.mkdtemp(dir=HERE, prefix="regress_test_")
     saved = os.environ.get("VTRUX_DATA")
@@ -82,6 +126,8 @@ def main():
             os.environ.pop("VTRUX_DATA", None)
         else:
             os.environ["VTRUX_DATA"] = saved
+
+    bus_cases()
 
     if failures:
         print("\n%d failure(s)" % failures)

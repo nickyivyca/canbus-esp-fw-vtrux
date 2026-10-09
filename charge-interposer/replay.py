@@ -55,19 +55,76 @@ def _frames(path):
     return parse_file(path)
 
 
-def detect_pt_bus(path, sample=400000):
-    """Pick the capture's powertrain bus by anchor-ID content."""
-    counts = {}
+# A powertrain channel must carry at least this many DISTINCT anchor ids.
+# One stray frame must not name a bus (AGENTS.md, "A discriminator that
+# cannot fail"): the threshold is what makes a single-channel capture
+# evidence rather than a selection among one candidate.
+PT_MIN_ANCHORS = 5
+
+
+class BusUnresolved(Exception):
+    """The powertrain bus could not be identified from content."""
+
+
+def pt_bus_evidence(path, sample=400000):
+    """{bus: (frames, set of PT_ANCHORS ids seen, all frames)} over the
+    first `sample` frames, for every channel present."""
+    ev = {}
     n = 0
     for fr in _frames(path):
+        frames, ids, total = ev.get(fr.bus, (0, set(), 0))
         if fr.arbitration_id in PT_ANCHORS:
-            counts[fr.bus] = counts.get(fr.bus, 0) + 1
+            frames += 1
+            ids.add(fr.arbitration_id)
+        ev[fr.bus] = (frames, ids, total + 1)
         n += 1
         if n >= sample:
             break
-    if not counts:
-        return None
-    return max(counts, key=counts.get)
+    return ev
+
+
+def choose_pt_bus(ev, min_anchors=None):
+    """-> (bus, why), or raise BusUnresolved saying why.
+
+    Rev 2 (tester, 2026-10-08). Rev 1 took the channel with the most anchor
+    FRAMES, which always returns a winner: a capture whose anchors sit on
+    two channels was decided by frame count, and a capture with no anchor
+    at all returned None, which iter_pt read as "no filter" and fed EVERY
+    bus to the core. Now:
+      - exactly one channel may carry anchors -- anchors on two channels do
+        not separate, and that is refused, not resolved by count;
+      - that channel must carry >= min_anchors distinct anchor ids;
+      - no anchors anywhere is refused."""
+    k = PT_MIN_ANCHORS if min_anchors is None else min_anchors
+    claim = {b: v for b, v in ev.items() if v[1]}
+    desc = ", ".join("channel %s: %d of %d anchors, %d frames"
+                     % (b, len(v[1]), len(PT_ANCHORS), v[2])
+                     for b, v in sorted(ev.items(), key=lambda x: str(x[0])))
+    if not claim:
+        raise BusUnresolved("no powertrain anchor on any channel (%s)"
+                            % (desc or "no frames"))
+    if len(claim) > 1:
+        raise BusUnresolved("UNRESOLVED -- powertrain anchors on %d channels, "
+                            "so they do not separate (%s)" % (len(claim), desc))
+    bus, (frames, ids, total) = next(iter(claim.items()))
+    if len(ids) < k:
+        raise BusUnresolved("channel %s carries only %d distinct powertrain "
+                            "anchor(s) (%s), fewer than %d -- not evidence of "
+                            "the bus (%s)" % (bus, len(ids), ", ".join(
+                                "0x%X" % i for i in sorted(ids)), k, desc))
+    return bus, ("channel %s by content: %d of %d anchors; %s"
+                 % (bus, len(ids), len(PT_ANCHORS), desc))
+
+
+def detect_pt_bus(path, sample=400000):
+    """The capture's powertrain bus by anchor-ID content, or raise
+    BusUnresolved (see choose_pt_bus)."""
+    return choose_pt_bus(pt_bus_evidence(path, sample))[0]
+
+
+def detect_pt_bus_why(path, sample=400000):
+    """(bus, why) -- the evidence line for a run file."""
+    return choose_pt_bus(pt_bus_evidence(path, sample))
 
 
 def iter_pt(path, bus_filter=None, ids=None):
@@ -133,16 +190,18 @@ def replay_offline(path, core, bus_filter=None, progress=None,
         synthesized      frames the core originated (the release burst)
         first_modified   (t_s, hex_in, hex_out) of the first modification
         events           the core's own event log
+        bus_why          how the powertrain bus was chosen (choose_pt_bus)
         stimulus_sha256  sha256 over every frame fed to the core, as fed
                          (ms time, id, extended flag, data) -- the spec 9.1
                          pin of the input (capture_pins.py)
     """
+    bus_why = "channel %s, given by the caller" % bus_filter
     if bus_filter is None:
-        bus_filter = detect_pt_bus(path)
+        bus_filter, bus_why = detect_pt_bus_why(path)
     known = VEHICLE_IDS | CHARGER_IDS
     res = dict(frames_in=0, to_charger=0, to_vehicle=0, modified=0,
                synthesized=0, first_modified=None, events=None,
-               bus=bus_filter, stimulus_sha256=None)
+               bus=bus_filter, bus_why=bus_why, stimulus_sha256=None)
     stim = hashlib.sha256()
     last_tick_ms = -1
     for t, arb, ext, data in iter_pt(path, bus_filter, known):

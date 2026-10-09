@@ -215,6 +215,9 @@ def run_case(case, args):
     try:
         res = replay.replay_offline(str(path), core,
                                     progress=args.progress or None)
+    except replay.BusUnresolved as exc:
+        # refused, not guessed: the powertrain bus is not identified
+        return [(False, "powertrain bus: %s" % exc)], None
     finally:
         if not args.keep_filtered:
             try:
@@ -295,6 +298,7 @@ def main():
         checks, info = run_case(c, args)
         if info:
             r = info["res"]
+            print("   powertrain bus: %s" % r["bus_why"])
             print("   %d frames in, %d->charger, %d->vehicle, %.0f s"
                   % (r["frames_in"], r["to_charger"], r["to_vehicle"], info["secs"]))
             for line in info["events"].splitlines():
