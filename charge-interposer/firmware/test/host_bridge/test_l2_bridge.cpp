@@ -31,6 +31,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <map>
 #include <vector>
 
@@ -572,6 +573,148 @@ void caseRtrNotForwarded() {
   check(onChargerWire(V_RTR_X, w1) == 1 && onChargerWire(V_RTR_S, w1) == 1 &&
             onVehicleSide(C_RTR_X, v1) == 1 && onVehicleSide(C_RTR_S, v1) == 1,
         msg);
+  assertPathsExercised();
+}
+
+// Spec 2 (B-7c) through main.cpp: "A controller that goes bus-off
+// recovers automatically and resumes bridging. While a controller is
+// bus-off the status frame's bridge_ok flag is clear (8.2)", where
+// bridge_ok covers the interval "since the previous status frame".
+// Port-level bus-off is in test_mcp2515_busoff / test_twai_port; these
+// two check the bridge's own behaviour around it. (Tester, 2026-10-09.)
+
+// Tagged frames each way after recovery; -> (to charger, to vehicle).
+static std::pair<uint32_t, uint32_t> bridgesBothWays(uint8_t tag) {
+  const size_t w0 = g_chip->wire().size();
+  const size_t v0 = vehSent().size();
+  const uint8_t d[8] = {tag, 0x5A, 0, 0, 0, 0, 0, 0};
+  fake().deliver(0x18FF76E5, true, d, 8);
+  mcpfake::CanFrame f;
+  std::memset(&f, 0, sizeof(f));
+  f.id = 0x18FF77E5; f.ext = true; f.len = 8;
+  f.data[0] = tag; f.data[1] = 0x5A;
+  g_chip->deliverFrame(f);
+  runBridge(30);
+  uint32_t tc = 0, tv = 0;
+  const std::vector<mcpfake::WireEvent>& w = g_chip->wire();
+  for (size_t i = w0; i < w.size(); i++)
+    if (w[i].delivered && w[i].frame.id == 0x18FF76E5 &&
+        w[i].frame.data[0] == tag)
+      tc++;
+  const std::vector<twaifake::Frame>& s = vehSent();
+  for (size_t i = v0; i < s.size(); i++)
+    if (s[i].id == 0x18FF77E5 && s[i].data[0] == tag) tv++;
+  return std::make_pair(tc, tv);
+}
+
+// bridge_ok of every 0x7F4 sent from index `from`, in order.
+static std::vector<int> bridgeOkFrom(size_t from) {
+  std::vector<int> out;
+  const std::vector<twaifake::Frame>& s = vehSent();
+  for (size_t i = from; i < s.size(); i++)
+    if (s[i].id == DIAG_STATUS)
+      out.push_back((s[i].data[4] & FLAG_BRIDGE_OK) ? 1 : 0);
+  return out;
+}
+
+static std::string okList(const std::vector<int>& v) {
+  std::string s;
+  for (size_t i = 0; i < v.size() && i < 12; i++) s += v[i] ? "1" : "0";
+  return s.empty() ? "(none)" : s;
+}
+
+void caseBusOffCharger() {
+  boot();
+  feed(15);
+  const twaifake::Frame* st = lastFrom(DIAG_STATUS);
+  check(st && (st->data[4] & FLAG_BRIDGE_OK),
+        "precondition: bridge_ok is set on the healthy bridge");
+
+  // Form/bit/stuff errors on every charger-side transmit attempt until the
+  // chip goes bus-off; the bridge transmits toward the charger whenever a
+  // vehicle frame arrives. Stepped one loop() at a time so the entry is
+  // seen within 100 us of happening.
+  const uint32_t entries0 = g_chip->busOffEntries();
+  g_chip->setBusErrors(true);
+  size_t mark = vehSent().size();
+  bool entered = false;
+  for (int i = 0; i < 200000 && !entered; i++) {
+    if (i % 50 == 0) vehicleFrame(0x18FF4AE5);
+    loop();
+    g_chip->advance(100);
+    if (g_chip->busOffEntries() > entries0) {
+      entered = true;
+      mark = vehSent().size();     // status frames from the entry on
+    }
+  }
+  g_chip->setBusErrors(false);
+  check(entered, "setup: the charger controller really went bus-off");
+
+  feed(15);                         // >= 1 status interval after entry
+  const bool back_on = !g_chip->busOff();
+  feed(25);
+  const std::vector<int> ok = bridgeOkFrom(mark);
+  std::printf("  --  charger bus-off: entries %u, back on the bus %d, "
+              "bridge_ok of the 0x7F4s from the entry on: %s\n",
+              g_chip->busOffEntries() - entries0, back_on ? 1 : 0,
+              okList(ok).c_str());
+  check(back_on, "it recovers on its own (no MCU action on the MCP2515)");
+  check(!ok.empty() && ok[0] == 0,
+        "spec 8.2: the first status frame after the bus-off reports "
+        "bridge_ok CLEAR");
+  bool set_later = false;
+  for (size_t i = 1; i < ok.size(); i++) if (ok[i]) set_later = true;
+  check(set_later, "...and a later one reports it SET again: current health, "
+                   "not a latch");
+  const std::pair<uint32_t, uint32_t> b = bridgesBothWays(0xB1);
+  char msg[160];
+  std::snprintf(msg, sizeof(msg), "spec 2: it resumes bridging, both ways "
+                "(to charger %u, to vehicle %u)", b.first, b.second);
+  check(b.first == 1 && b.second == 1, msg);
+  assertPathsExercised();
+}
+
+void caseBusOffVehicle() {
+  boot();
+  feed(15);
+  const twaifake::Frame* st = lastFrom(DIAG_STATUS);
+  check(st && (st->data[4] & FLAG_BRIDGE_OK),
+        "precondition: bridge_ok is set on the healthy bridge");
+
+  // The status frames go out on THIS controller, so none can be sent while
+  // it is bus-off; the first one after recovery is the one that reports.
+  const size_t mark = vehSent().size();
+  fake().enterBusOff();
+  bool left_running = false;
+  for (int i = 0; i < 200; i++) {
+    runBridge(1);
+    if (fake().state() != TWAI_STATE_RUNNING) left_running = true;
+  }
+  const size_t sent_during = vehSent().size() - mark;
+  fake().completeRecovery();        // the 128 bus-free occurrences
+  runBridge(50);
+  const bool running = fake().state() == TWAI_STATE_RUNNING;
+  feed(15);
+  feed(25);
+  const std::vector<int> ok = bridgeOkFrom(mark);
+  std::printf("  --  vehicle bus-off: frames sent while off %u, running "
+              "again %d, bridge_ok of the 0x7F4s after it: %s\n",
+              (unsigned)sent_during, running ? 1 : 0, okList(ok).c_str());
+  check(left_running, "setup: the vehicle controller really left RUNNING");
+  check(sent_during == 0, "nothing was sent while it was bus-off");
+  check(running, "it recovers and is RUNNING again -- the restart after "
+                 "recovery (which ends in STOPPED) happened without help");
+  check(!ok.empty() && ok[0] == 0,
+        "spec 8.2: the first status frame after recovery reports bridge_ok "
+        "CLEAR");
+  bool set_later = false;
+  for (size_t i = 1; i < ok.size(); i++) if (ok[i]) set_later = true;
+  check(set_later, "...and a later one reports it SET again");
+  const std::pair<uint32_t, uint32_t> b = bridgesBothWays(0xB2);
+  char msg[160];
+  std::snprintf(msg, sizeof(msg), "spec 2: it resumes bridging, both ways "
+                "(to charger %u, to vehicle %u)", b.first, b.second);
+  check(b.first == 1 && b.second == 1, msg);
   assertPathsExercised();
 }
 
@@ -1283,6 +1426,8 @@ const Case kCases[] = {
     {"rx-rollover-order", caseRxRolloverOrder},
     {"rx-rollover-refill", caseRxRolloverRefill},
     {"rtr-not-forwarded", caseRtrNotForwarded},
+    {"busoff-charger", caseBusOffCharger},
+    {"busoff-vehicle", caseBusOffVehicle},
 };
 
 }  // namespace
