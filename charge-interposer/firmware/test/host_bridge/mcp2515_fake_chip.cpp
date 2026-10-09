@@ -223,6 +223,8 @@ void Mcp2515Fake::rxFlagsChanged(uint8_t before) {
     if (!(before & bit) || (after & bit) || !pend_armed_[n]) continue;
     pend_armed_[n] = false;
     pend_fired_[n] = true;
+    pend_other_full_[n] = rxFull(1 - n);
+    pend_seq_[n] = ++fire_seq_;
     deliverFrame(pend_[n]);
   }
 }

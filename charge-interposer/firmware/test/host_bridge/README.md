@@ -226,6 +226,17 @@ A, B, C -- so the case is shown able to pass. The hook's own checks are in
 `test_mcp2515_fake` and are mutation-tested by
 `$VTRUX_DATA/notes/artifacts/interposer-firmware/rx_hook_mutations.sh`.
 
+`rx-rollover-refill` is the reverse interleaving, which the reviewer asked
+for ahead of the fix:
+- A is taken, and C refills RXB0;
+- B is taken, and D rolls into RXB1 while C still sits in RXB0;
+- so the NEWER frame is in RXB1, and spec 2 requires A, B, C, D.
+
+Its setup assertion uses the hook's `firedSeq()` and
+`otherFullWhenFired()`: C must arrive while B is resident, then D while C
+is resident. A build that takes C before B never puts D beside C. That is
+reported as a setup failure, never as a pass.
+
 ### Three receive-model corrections (2026-10-08)
 
 Found while writing C12, from DS20001801J read as text **and** rendered:

@@ -619,6 +619,38 @@ int main() {
     check(c.firedWhenFreed(0) && s.readReg(0x66) == 0xC1,
           "hook: READ RX delivers it when CS is raised");
   }
+  {
+    // Both buffers armed: the refill interleaving (C into RXB0, then D
+    // into RXB1 beside it). The hook records the other buffer's state
+    // and the firing order, which is how a case proves its setup.
+    Mcp2515Fake c;
+    Spi s(c);
+    s.writeReg(R_RXB0CTRL, 0x64);
+    s.writeReg(R_CANCTRL, MODE_NORMAL);
+    CanFrame f = ext8Frame();
+    f.id = 0x18FF60E5;
+    f.data[0] = 0xA0; c.deliverFrame(f);
+    f.data[0] = 0xB0; c.deliverFrame(f);
+    f.data[0] = 0xC0; c.deliverWhenFreed(0, f);
+    f.data[0] = 0xD0; c.deliverWhenFreed(1, f);
+    s.bitModify(R_CANINTF, INTF_RX0IF, 0x00);     // take A
+    s.bitModify(R_CANINTF, INTF_RX1IF, 0x00);     // take B
+    check(c.firedSeq(0) == 1 && c.firedSeq(1) == 2,
+          "hook: firedSeq orders the deliveries (C first, then D)");
+    check(c.otherFullWhenFired(0) && c.otherFullWhenFired(1),
+          "hook: C arrived with B in RXB1, D arrived with C in RXB0");
+    check(s.readReg(0x66) == 0xC0 && s.readReg(0x76) == 0xD0,
+          "hook: so RXB0 holds C and the NEWER D sits in RXB1");
+    Mcp2515Fake c2;
+    Spi s2(c2);
+    s2.writeReg(R_RXB0CTRL, 0x64);
+    f.data[0] = 0xA0; c2.deliverFrame(f);
+    f.data[0] = 0xC0; c2.deliverWhenFreed(0, f);
+    s2.bitModify(R_CANINTF, INTF_RX0IF, 0x00);
+    check(c2.firedWhenFreed(0) && !c2.otherFullWhenFired(0),
+          "hook: otherFullWhenFired is false when the other buffer was "
+          "empty -- it is not a constant");
+  }
 
   // --- what this run rests on, printed from the model's own table --------
   std::printf("\nWhat this model rests on:\n");

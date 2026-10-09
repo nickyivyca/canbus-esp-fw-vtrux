@@ -142,6 +142,12 @@ class Mcp2515Fake {
     pend_fired_[n & 1] = false;
   }
   bool firedWhenFreed(int n) const { return pend_fired_[n & 1]; }
+  // At the moment buffer n's frame was delivered: whether the OTHER
+  // buffer was full, and a sequence number counting deliveries by this
+  // hook. Together they let a case assert it set up the interleaving it
+  // names (e.g. D arriving in RXB1 while C still sits in RXB0).
+  bool otherFullWhenFired(int n) const { return pend_other_full_[n & 1]; }
+  uint32_t firedSeq(int n) const { return pend_seq_[n & 1]; }
 
   // A controller-level receive overrun: a frame reached the wire
   // and the host did not read it in time. Distinct from our own
@@ -380,6 +386,9 @@ class Mcp2515Fake {
   CanFrame pend_[2];
   bool pend_armed_[2] = {false, false};
   bool pend_fired_[2] = {false, false};
+  bool pend_other_full_[2] = {false, false};
+  uint32_t pend_seq_[2] = {0, 0};
+  uint32_t fire_seq_ = 0;
   uint8_t rx_which_ = 0;      // the buffer the current READ RX names
 };
 

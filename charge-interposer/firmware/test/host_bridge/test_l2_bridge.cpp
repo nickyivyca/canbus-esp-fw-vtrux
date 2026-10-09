@@ -380,6 +380,86 @@ void caseRxRolloverOrder() {
   assertPathsExercised();
 }
 
+// The refill interleaving (reviewer, 2026-10-08, asked for ahead of the
+// rollover fix): A and B arrive with A unread; A is taken and C refills
+// RXB0; B is taken and D rolls into RXB1 while C still sits in RXB0. Now
+// the NEWER frame is in RXB1 -- the reverse of rx-rollover-order -- so
+// spec 2 requires A, B, C, D, and neither "RXB0 first" nor "RXB1 first"
+// as a fixed rule delivers both cases in order.
+//
+// The setup assertion is strict: C must have been delivered first, with B
+// still in RXB1, and D second, with C still in RXB0. If a build takes C
+// before B is taken, D never lands beside C and the interleaving did not
+// happen; that is reported as a setup failure, never passed.
+void caseRxRolloverRefill() {
+  boot();
+  feed(12);
+  const uint8_t tag[4] = {0xA0, 0xB0, 0xC0, 0xD0};
+  const struct {
+    const char* name;
+    uint32_t id[4];
+  } variants[] = {
+      {"four identifiers", {0x18FF60E5, 0x18FF61E5, 0x18FF62E5, 0x18FF63E5}},
+      {"one identifier", {0x18FF60E5, 0x18FF60E5, 0x18FF60E5, 0x18FF60E5}},
+  };
+  for (int rep = 0; rep < 3; rep++) {
+    for (const auto& v : variants) {
+      char msg[240];
+      runBridge(5);
+      const bool empty = !g_chip->rxFull(0) && !g_chip->rxFull(1);
+      const size_t mark = vehSent().size();
+      mcpfake::CanFrame f[4];
+      for (int k = 0; k < 4; k++) {
+        std::memset(&f[k], 0, sizeof(f[k]));
+        f[k].id = v.id[k];
+        f[k].ext = true;
+        f[k].len = 8;
+        f[k].data[0] = tag[k];
+        f[k].data[1] = (uint8_t)(0x40 + rep);
+      }
+      g_chip->deliverFrame(f[0]);
+      g_chip->deliverFrame(f[1]);
+      g_chip->deliverWhenFreed(0, f[2]);
+      g_chip->deliverWhenFreed(1, f[3]);
+      runBridge(20);
+      const bool setup =
+          empty && g_chip->firedWhenFreed(0) && g_chip->firedWhenFreed(1) &&
+          g_chip->firedSeq(0) < g_chip->firedSeq(1) &&
+          g_chip->otherFullWhenFired(0) && g_chip->otherFullWhenFired(1);
+
+      std::string order;
+      const std::vector<twaifake::Frame>& s = vehSent();
+      for (size_t i = mark; i < s.size(); i++) {
+        if (!s[i].ext || s[i].len < 2 || s[i].data[1] != (uint8_t)(0x40 + rep))
+          continue;
+        for (int k = 0; k < 4; k++) {
+          if (s[i].id != v.id[k] || s[i].data[0] != tag[k]) continue;
+          if (!order.empty()) order += ",";
+          order += "ABCD"[k];
+        }
+      }
+      std::printf("  --  rep %d, %s: setup fired C=%d(seq %u, B resident %d) "
+                  "D=%d(seq %u, C resident %d); vehicle side %s\n",
+                  rep, v.name, g_chip->firedWhenFreed(0) ? 1 : 0,
+                  (unsigned)g_chip->firedSeq(0),
+                  g_chip->otherFullWhenFired(0) ? 1 : 0,
+                  g_chip->firedWhenFreed(1) ? 1 : 0,
+                  (unsigned)g_chip->firedSeq(1),
+                  g_chip->otherFullWhenFired(1) ? 1 : 0,
+                  order.empty() ? "(none)" : order.c_str());
+      std::snprintf(msg, sizeof(msg),
+                    "rep %d, %s: the interleaving happened (C into RXB0 "
+                    "beside B, then D into RXB1 beside C)", rep, v.name);
+      check(setup, msg);
+      std::snprintf(msg, sizeof(msg),
+                    "rep %d, %s: vehicle side A,B,C,D per spec 2 (observed "
+                    "%s)", rep, v.name, order.empty() ? "none" : order.c_str());
+      check(order == "A,B,C,D", msg);
+    }
+  }
+  assertPathsExercised();
+}
+
 // Spec 2.1 / 8.2, B-7d. Needs a boot where the charger controller does
 // not start, which is why one process per case is not a convenience.
 void caseFailedStart() {
@@ -1086,6 +1166,7 @@ const Case kCases[] = {
     {"failed-start", caseFailedStart},
     {"replay", caseReplay},
     {"rx-rollover-order", caseRxRolloverOrder},
+    {"rx-rollover-refill", caseRxRolloverRefill},
 };
 
 }  // namespace
