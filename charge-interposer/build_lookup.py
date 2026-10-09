@@ -41,8 +41,9 @@ included, while each environment compiles only a subset, so one ELF can
 carry several rows -- the witness ELF 7f197bfd has four src_digests -- and
 one image NAME can carry several ELFs (two clean rebuilds of 111342c1dd0f
 gave c190275a and b1b23f81 under the same filename; reproducible builds
-removed that cause on one host OS on 2026-10-08, but a build on another
-host OS still does it and the older rows are still in the table). Rev 1 returned `hits[0]`,
+removed that cause on a single host OS on 2026-10-08, but a build on
+another host OS still does it and the older rows are still in the
+table). Rev 1 returned `hits[0]`,
 so the src_digest it reported depended on row order. An OK result now
 carries every row that matches the full hash (`entries`), and refuses if
 those rows disagree on the environment, which the same bytes cannot.

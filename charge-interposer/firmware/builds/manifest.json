@@ -1,6 +1,28 @@
 {
   "builds": [
     {
+      "build_id_0x7F7": "2e7ae2ef",
+      "built_utc": "2026-10-09T03:53:34Z",
+      "elf_sha256": "2e7ae2efa06ea442321b1a7a41b6c57feae2d340eb46d93814ec796730925f8c",
+      "env": "esp32-can-x2",
+      "git_commit": "08d4d33a60df1a52142952ce810fbfd2b121be6a",
+      "git_dirty": true,
+      "image": "interposer_08b6a5c1e49f_bridge.bin",
+      "intp_fw_ver16": 4,
+      "md5": "f6a3ef2c64caa8df0fa42314169bf0d1",
+      "size": 355040,
+      "src_digest": "08b6a5c1e49f",
+      "tag": "bridge",
+      "toolchain": {
+        "framework-arduinoespressif32": "3.2.1",
+        "framework-arduinoespressif32-libs": "5.4.0+sha.858a988d6e",
+        "platform": "espressif32@54.03.21",
+        "tool-esptoolpy": "5.0.2",
+        "tool-mklittlefs": "3.2.0",
+        "toolchain-xtensa-esp-elf": "14.2.0+20241119"
+      }
+    },
+    {
       "build_id_0x7F7": "9a6d3547",
       "built_utc": "2026-10-06T06:03:44Z",
       "elf_sha256": "9a6d3547515c54059e7e0b72390225c76849819fb2ef3a031279ce70c50e1d2d",
@@ -198,6 +220,28 @@
       "md5": "1ddf572c628760e7c6190ee54cfc62f9",
       "size": 355376,
       "src_digest": "b8d54a1bcab2",
+      "tag": "bridge",
+      "toolchain": {
+        "framework-arduinoespressif32": "3.2.1",
+        "framework-arduinoespressif32-libs": "5.4.0+sha.858a988d6e",
+        "platform": "espressif32@54.03.21",
+        "tool-esptoolpy": "5.0.2",
+        "tool-mklittlefs": "3.2.0",
+        "toolchain-xtensa-esp-elf": "14.2.0+20241119"
+      }
+    },
+    {
+      "build_id_0x7F7": "2e7ae2ef",
+      "built_utc": "2026-10-09T03:53:00Z",
+      "elf_sha256": "2e7ae2efa06ea442321b1a7a41b6c57feae2d340eb46d93814ec796730925f8c",
+      "env": "esp32-can-x2",
+      "git_commit": "08d4d33a60df1a52142952ce810fbfd2b121be6a",
+      "git_dirty": false,
+      "image": "interposer_bcd9518a1a10_bridge.bin",
+      "intp_fw_ver16": 4,
+      "md5": "f6a3ef2c64caa8df0fa42314169bf0d1",
+      "size": 355040,
+      "src_digest": "bcd9518a1a10",
       "tag": "bridge",
       "toolchain": {
         "framework-arduinoespressif32": "3.2.1",

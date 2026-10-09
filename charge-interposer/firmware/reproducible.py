@@ -2,8 +2,25 @@
 
 Spec 8.2: "The image depends only on its sources and the toolchain: the
 same sources built with the same pinned platform version, in any folder
-on any machine, give the same ELF and the same id. [...] A rebuild that
-does not reproduce the id is a build defect."
+on the same host OS, give the same ELF and the same id. [...] A rebuild
+on the same host OS that does not reproduce the id is a build defect."
+
+ON THE SAME HOST OS -- those words were added to the spec on 2026-10-08,
+after this file had been measured across two of them, and they are the
+limit of what it can deliver. The platform ships a prebuilt toolchain
+per host OS, and each one records its own internal paths and header
+layout in the ELF's debug information; -ffile-prefix-map cannot reach
+those, because they were baked in before the toolchain arrived here.
+Commit 3eb9a8f built on NICKY-XPS and on madhouse-debian gave two ELFs
+differing only in the seven .debug_* sections -- every loaded section
+identical, and `objcopy --strip-debug` of both giving one file -- and
+two .bin files differing in 65 of 355,040 bytes: the ELF hash at 0xb0
+plus the one-byte checksum and appended SHA-256 that cover it. Because
+the id hashes the whole ELF, it differs too.
+
+The user ruled that such a build gets its own manifest row and that the
+id is never patched to match, so there is nothing here to fix. A build
+on another host OS that differs anywhere ELSE is a build defect.
 
 Two things made the ELF differ on every build until 2026-10-08, and they
 are independent:

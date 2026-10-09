@@ -9,10 +9,12 @@ destroyed the manifest row of the image that was on the board. The row
 pairing src_digest 111342c1dd0f with elf_sha256 7f197bfd... -- the image
 the board reports in 0x7F7 -- was overwritten and could not be restored,
 because builds/ archives no binaries. The cause was manifest.py keying
-one row per image NAME while these builds are NOT reproducible, so one
-name legitimately covers many different binaries (spec 8.2; measured
-three times that day, two clean builds of identical source giving
-different ELFs each time).
+one row per image NAME while these builds were not yet reproducible, so
+one name legitimately covered many different binaries (measured three
+times that day, two clean builds of identical source giving different
+ELFs each time). Spec 8.2's reproducible builds landed later the same
+day and the rule stays: a name can still cover several ELFs across host
+OSes, and every row recorded before that day is still in the table.
 
 THE OLD RULE IS REIMPLEMENTED HERE ON PURPOSE, and only here. `case 2`
 runs the name-only rule that caused the loss and asserts that it DOES

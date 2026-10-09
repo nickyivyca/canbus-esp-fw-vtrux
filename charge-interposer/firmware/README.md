@@ -27,7 +27,7 @@ bench artifacts stayed there when this folder moved into
 
 | Path | What |
 |------|------|
-| `platformio.ini` | Build config. Arduino framework, `esp32-s3-devkitc-1` board (there is no PlatformIO definition for the CAN-X2). Five environments: `esp32-can-x2` (the bench bridge), **`truck`** (the same with serial compiled out, spec 8.3), `selftest`, `diag`, `slcan`. **Each one must exclude every other env's `*_main.cpp`** -- `slcan_main.cpp` was added on 2026-09-29 without updating the others, and `esp32-can-x2` did not link at all from then until 2026-10-03. Nothing caught it because nothing built it in between. |
+| `platformio.ini` | Build config. Arduino framework, `esp32-s3-devkitc-1` board (there is no PlatformIO definition for the CAN-X2). Six environments: `esp32-can-x2` (the bench bridge), **`truck`** (the same with serial compiled out, spec 8.3), **`esp32-can-x2-witness`** (the bridge plus completion-order instrumentation), `selftest`, `diag`, `slcan`. **Each one must exclude every other env's `*_main.cpp`** -- `slcan_main.cpp` was added on 2026-09-29 without updating the others, and `esp32-can-x2` did not link at all from then until 2026-10-03. Nothing caught it because nothing built it in between. |
 | `src/machine.h` / `.cpp` | **The state machine.** Pure: no Arduino, no ESP-IDF, integer-only, time as a parameter. The only file whose behaviour matters. |
 | `src/can_port.h` | `CanPort` interface + a fixed-capacity `FrameRing`. Separates "queued" from "on the wire" deliberately. |
 | `src/port_twai.h` / `.cpp` | CAN1, the vehicle segment, on the S3's built-in controller. |
@@ -59,6 +59,19 @@ with `-e esp32-can-x2 -t upload`, and there is a byte-exact image of the flash
 as it was before `slcan` first went on in
 `projects/vtrux/notes/artifacts/interposer-firmware/flash-backup/`.
 
+**The build is reproducible on one host OS** (spec 8.2, 2026-10-08).
+`reproducible.py` is a `pre:` extra_script that fixes `SOURCE_DATE_EPOCH` to a
+constant -- not the commit time, which would make the image depend on when the
+tree was committed -- and adds `-ffile-prefix-map` for the project and package
+directories, in both path spellings and on both SCons environments, since the
+Arduino framework's own sources compile in the default one. `platformio.ini`
+pins the platform to an immutable release-asset URL for the same reason. Read
+that file's header before changing any of it: a prefix map that matches
+nothing fails in a way that looks exactly like success, because the build
+still works and only the embedded strings differ. Across host OSes the flashed
+code is the same and the id is not, which is expected rather than a defect --
+the measurement is in `reproducible.py`.
+
 **No image is called `firmware.bin`.** Each environment writes
 `interposer_<src_digest>_<tag>.bin`, so six images cannot be told apart only
 by their parent directory -- the same collision the generator-inhibit project
@@ -85,7 +98,8 @@ read.
 > verified 2026-10-04), so no install is needed either way. `py -3.14` is the
 > machine's primary interpreter since 2026-10-04
 > (`python-executables-reference.md`) and is what `build_check.py` uses to
-> build all five environments; **`py -3.11` still works** and is kept because
+> build every environment in `platformio.ini` -- six of them, a list it reads
+> from the file rather than keeping its own copy; **`py -3.11` still works** and is kept because
 > the ESP-IDF venv was built from it. The version on PATH is the only one
 > that does not work.
 
