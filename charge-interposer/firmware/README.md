@@ -36,7 +36,7 @@ bench artifacts stayed there when this folder moved into
 | `src/slcan_main.cpp` | **Bench only, and not part of the bridge.** Turns the board into a plain SLCAN transmitter on CAN1 so the generator-inhibit bench has a SECOND transmitter on the powertrain segment. Frames queued in one adapter do not arbitrate against each other, so filler from the bench's PCAN delays the replay's `0x051` whatever its CAN priority; from this board's own controller arbitration places it, `0x7E0` loses to every truck id, and it cannot delay a command. Silent until it receives an `O`. Read its header before flashing it -- it lists the protocol subset and four deliberate refusals. |
 | `src/selftest_main.cpp` | Stage 0. Cross-port identity, DLC and throughput over the loopback jumpers. |
 | `src/diag_main.cpp` | Stage 0a. Controller internal loopback + physical-layer probes. Flash this when Stage 0 fails and the cause could be either wiring or driver. |
-| `datasheets/` | Vendor data sheets (MCP2515 DS20001801J). Findings taken from them need both text extraction and the rendered page -- see `datasheets/README.md`. |
+| `datasheets/` | **Not in this repo.** The vendor data sheets (MCP2515 DS20001801J) were deliberately left out of the move and stay in the reverse-it project, at `projects/vtrux/tools/interposer/firmware/datasheets/`. Findings taken from them need both text extraction and the rendered page -- see that folder's `README.md`. |
 | `test/host_diff/make_golden.py` | Freezes what `machine.py` does over a real capture into a trace + golden pair. |
 | `test/host_diff/host_runner.cpp` | Drives `machine.cpp` over the same trace, same output format. |
 | `test/host_diff/check_port.py` | Cross-checks every constant against `machine.py`. Needs no compiler. |
