@@ -13,6 +13,7 @@ const char* stateName(uint8_t s) {
     case S_OVERRIDE: return "OVERRIDE";
     case S_TERMINATED: return "TERMINATED";
     case S_SAFE: return "SAFE";
+    case S_HOLD: return "HOLD";
     default: return "?";
   }
 }
@@ -54,7 +55,9 @@ const char* eventName(uint8_t c) {
     case EV_OVERRIDE: return "LOW_POWER overridden";
     case EV_TOP_OF_CHARGE: return "top of charge reached";
     case EV_RELEASE:
-      return "RELEASE: transparent -- the VCU's Low Power hold now reaches the charger";
+      // Spec 5.2 (2026-10-08): no longer transparent. run_scenario.py
+      // matches on the "RELEASE" substring, which is preserved.
+      return "RELEASE: the VCU's Low Power now reaches the charger; the setpoint is ours";
     case EV_TRIP: return "TRIP";
     case EV_REPEAT: return "REPEAT: the VCU's standing page-00 command to the charger";
     case EV_REPEAT_END: return "REPEAT ended";
@@ -111,6 +114,11 @@ void configDefaults(Config& c) {
   c.chg_stale_ms = 500;
   c.chg_silence_ms = 20000;  // spec 6.1
   c.override_max_ms = 6u * 3600u * 1000u;
+
+  // Spec 5.2: the hold after the release.
+  c.hold_step_ca = 10;        // 0.1 A per step
+  c.hold_band_ca = 25;        // hold while within 0.25 A below
+  c.hold_step_min_ms = 300;   // at most one step per 0.3 s
 
   c.revert_aux_pages = true;
   c.mask_charger_telemetry = false;
@@ -182,10 +190,14 @@ InterposerCore::InterposerCore(const Config& cfg, uint32_t now_ms)
       have_t_chg_(false),
       have_chg_bad_(false),
       have_t_full_(false),
+      hold_valid_(false),
+      have_t_hold_step_(false),
 
       t_chg_(0),
       chg_bad_since_(0),
       t_full_since_(0),
+      hold_ca_(0),
+      t_hold_step_(0),
       t_enter_(now_ms),
       wait_reason_(0),
       burst_left_(0),
@@ -278,6 +290,60 @@ int32_t InterposerCore::ourIlimCounts() const {
   return ca / 5;  // centi-amps -> 0.05 A counts
 }
 
+// What we are telling the charger right now, in page-01 counts.
+//
+// Spec 8.2 says the status frame carries "our commanded current", and since
+// 2026-10-08 that is the HOLD setpoint while in HOLD -- the number actually
+// going out on page 01. ourIlimCounts() is the OVERRIDE command, the BMS
+// permission capped by the EVSE, and in HOLD it is not what the charger is
+// being told: the hold tracks the permission in 0.1 A steps rather than
+// following it exactly.
+int32_t InterposerCore::commandedIlimCounts() const {
+  if (state_ == S_HOLD && hold_valid_) return hold_ca_ / 5;
+  return ourIlimCounts();
+}
+
+// Spec 5.2: move the hold setpoint one step toward the permission.
+//
+// Called on each page-01 frame from the VCU, which is what the hold
+// rewrites; the cadence of the loop is therefore the VCU's own frame
+// cadence, limited to one step per hold_step_min_ms.
+//
+// bcm_ibat is the PACK current, which nets out every other load on the bus
+// -- that is why the loop is closed on it rather than on our own setpoint.
+// The truck's own hold does not do this: with bcm_chg_max at 0 A it puts
+// +0.85 to +2.55 A into the pack for the first hour.
+//
+// Above the permission it steps down; more than hold_band_ca below it, up;
+// inside the band it holds. The result sits at or just under the BMS's
+// permission, and is above it only for the steps a sudden load drop takes to
+// remove -- about 2 s for 0.7 A.
+void InterposerCore::stepHold(uint32_t t_ms) {
+  if (!hold_valid_) return;
+  if (have_t_hold_step_ &&
+      (uint32_t)(t_ms - t_hold_step_) < cfg_.hold_step_min_ms) {
+    return;
+  }
+  int32_t want = hold_ca_;
+  if (ibat_ > chg_max_) {
+    want = hold_ca_ - cfg_.hold_step_ca;
+  } else if (ibat_ < chg_max_ - cfg_.hold_band_ca) {
+    want = hold_ca_ + cfg_.hold_step_ca;
+  }
+  // Spec 5.2: "It stays between 0 A and the EVSE cap of section 4." The cap
+  // is clamped even when the step did not move, because the cap itself can
+  // fall: max_avail is learned from the charger and a lower one must bring
+  // the hold down with it.
+  const int32_t cap = evseCapCa();
+  if (cap >= 0 && want > cap) want = cap;
+  if (want < 0) want = 0;
+  if (want != hold_ca_) {
+    hold_ca_ = want;
+    t_hold_step_ = t_ms;
+    have_t_hold_step_ = true;
+  }
+}
+
 // --------------------------------------------------------------------------
 // trips and arming
 // --------------------------------------------------------------------------
@@ -285,8 +351,12 @@ int32_t InterposerCore::ourIlimCounts() const {
 // Bail to transparent forwarding and latch SAFE (spec 6). A trip is the same
 // action as a release: we stop rewriting, and if we were overriding we repeat
 // the VCU's standing command to the charger (spec 4.1) -- its Low Power hold.
+// Out of HOLD nothing is repeated, and that is spec 6 in as many words: "the
+// page-01 rewrite stopped at once if we were holding (5.2; page 00 is already
+// the VCU's, so nothing is repeated)". The charger is already in Low Power
+// because the release put it there.
 //
-// Only meaningful while armed. Outside MONITOR/OVERRIDE we are already a wire,
+// Only meaningful while armed. Outside MONITOR/OVERRIDE/HOLD we are a wire,
 // and half of these conditions are NORMAL off-charge traffic -- EPO and the
 // alarm bits fire during every ordinary charge shutdown, and HVIL is open
 // before precharge. Tripping on those merely fills the log and latches SAFE
@@ -425,6 +495,13 @@ void InterposerCore::sessionBoundary(uint32_t t_ms, uint8_t ev, int32_t a,
   }
   have_t_full_ = false;
   learned_ilim_ = 0;
+  // Spec 6.1: a boundary resets "the HOLD or TERMINATED state" and
+  // everything the session learned, so the hold setpoint goes too -- it is
+  // the most session-specific number the core holds, and a second charge
+  // inheriting the first one's setpoint would command the previous pack
+  // state.
+  hold_valid_ = false;
+  have_t_hold_step_ = false;
   chg_seen_charging_ = false;
   mainc_closed_ = false;
   have_chg_bad_ = false;
@@ -632,6 +709,16 @@ void InterposerCore::onCommand(const uint8_t* d, uint32_t t_ms, EmitList& out) {
       modified_++;
     }
 
+  } else if (is_page_01 && state_ == S_HOLD) {
+    // Spec 5.2: in HOLD every page-01 setpoint from the VCU is replaced
+    // with ours. Nothing else is touched -- page 00 and with it Low Power
+    // mode, and every other frame, reach the charger as the VCU sent them,
+    // which is why this branch sits before the 03.02 / 03.07 one and that
+    // one stays gated on S_OVERRIDE.
+    stepHold(t_ms);
+    encSetpointIlim(d, hold_ca_ / 5, emit);
+    modified_++;
+
   } else if (is_page_01 && (state_ == S_MONITOR || state_ == S_OVERRIDE)) {
     if (state_ == S_MONITOR) {
       // learn the VCU's own CC command while it is still charging
@@ -793,7 +880,14 @@ void InterposerCore::tick(uint32_t t_ms, EmitList& out) {
     have_t_chg_ = false;  // one boundary per silence, not one a tick
   }
 
-  if (state_ != S_MONITOR && state_ != S_OVERRIDE) return;
+  // Spec 5.2: "The trips of section 6 apply throughout, including 0x410
+  // staleness, since the hold reads bcm_ibat from it." The staleness and
+  // charger-state trips are raised HERE, on the clock, so a gate naming
+  // MONITOR and OVERRIDE alone left the hold with no timers at all -- the
+  // one state that reads a BMS value continuously would have been the only
+  // armed state that could not notice the value going stale. active() is
+  // the same set every trip caller gates on, so the two cannot drift.
+  if (!active()) return;
 
   if (have_chg_bad_ &&
       (uint32_t)(t_ms - chg_bad_since_) >= cfg_.chg_state_debounce_ms) {
@@ -822,6 +916,21 @@ void InterposerCore::tick(uint32_t t_ms, EmitList& out) {
     return;
   }
 
+  if (state_ == S_HOLD) {
+    // Spec 5.2: the hold steps on the VCU's page-01 frames, not on the
+    // clock, so once the section 6 trips above have been checked there is
+    // nothing periodic left to do. The release has already happened and
+    // HOLD is not re-evaluated.
+    //
+    // THE 6 H CAP BELOW IS THE OVERRIDE'S. Section 6's row reads "override
+    // longer than 6 hours", and 5.2 says the hold "lasts until the handle
+    // is pulled"; tripping the hold on a timer would hand the pack back to
+    // the VCU's own hold, which is the thing 5.2 exists to replace. Raised
+    // with the reviewer in this batch: 5.2's "trips apply throughout" does
+    // not settle it either way.
+    return;
+  }
+
   // OVERRIDE
   if ((uint32_t)(t_ms - t_enter_) > cfg_.override_max_ms) {
     trip(t_ms, TRIP_OVERRIDE_CAP, out);
@@ -835,10 +944,21 @@ void InterposerCore::tick(uint32_t t_ms, EmitList& out) {
       // c = vmin, so the release can be judged on the pack's spread
       // at the moment it happened (spec 9, C2).
       log(t_ms, EV_TOP_OF_CHARGE, vmax_, chg_max_, vmin_);
-      // spec 5.2: release is transparency, plus one repeat of the VCU's
-      // standing Low Power command so the charger, which only ever heard our
-      // rewrite of it, enters the hold.
-      gotoState(t_ms, S_TERMINATED, EV_RELEASE);
+      // Spec 5.2 (user, 2026-10-08): the release stops rewriting page 00
+      // and repeats the VCU's standing Low Power command once, so the
+      // charger -- which only ever heard our rewrite of it -- drops into
+      // Low Power, state 12. THE HOLD AFTER IT IS OURS: the VCU holds at 0
+      // or 2.9 A, and on the parts truck, whose loads need ~2.9-3.0 A, that
+      // drains the pack. So the core enters HOLD and replaces the page-01
+      // setpoint from here on, changing nothing else.
+      //
+      // It starts from our last override setpoint, which is what the
+      // charger already has, so the entry is not a step.
+      hold_ca_ = ourIlimCounts() * 5;
+      hold_valid_ = true;
+      t_hold_step_ = t_ms;
+      have_t_hold_step_ = true;
+      gotoState(t_ms, S_HOLD, EV_RELEASE, hold_ca_);
       repeatMaster(t_ms, vcu_mode_);
       emitRepeat(t_ms, out);
     }
@@ -869,8 +989,8 @@ static void put32(uint8_t* p, uint32_t v) {
 }
 
 uint8_t InterposerCore::ourIlimX10() const {
-  if (state_ != S_OVERRIDE) return 255;
-  const int32_t x = (ourIlimCounts() * 5 + 5) / 10;
+  if (state_ != S_OVERRIDE && state_ != S_HOLD) return 255;
+  const int32_t x = (commandedIlimCounts() * 5 + 5) / 10;
   return x > 254 ? 254 : clamp8(x);
 }
 

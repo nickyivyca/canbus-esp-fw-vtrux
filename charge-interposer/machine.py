@@ -68,7 +68,7 @@ DIAG_BUILD_ID = 0x7F7
 #      0x7F6 B7 counts transmit failures toward the charger ONLY while the
 #      VCU's flow bit is 1. The byte is in the same place and means a
 #      different quantity, which is exactly what this guard is for.
-DIAG_SCHEMA_VER = 3
+DIAG_SCHEMA_VER = 4
 # Firmware version (spec 8.2, B-2). The two cores must agree; check_port.py
 # fails if they do not.
 #   2  the section A behaviour, Python's value until 2026-10-03
@@ -80,7 +80,7 @@ DIAG_SCHEMA_VER = 3
 #   4  sections A and B: the per-message BMS staleness, no cell_undervolt
 #      trip, 20 repeat frames from every path, the flow-gated charger
 #      transmit-failure counter and the charger-silence flag.
-DIAG_FW_VER = 4
+DIAG_FW_VER = 5
 
 
 def mirror_id(arb_id):
@@ -89,14 +89,19 @@ def mirror_id(arb_id):
 
 # states. 3 is reserved: it was RELEASING, the synthesised charger stop
 # removed on 2026-09-19 (spec 5.2); the on-wire codes of the others are kept.
+# 6 is HOLD, added 2026-10-08 with diag schema 4. It did NOT reuse 3: the
+# code is on the wire, old captures and old DBCs carry it, and a reader that
+# saw 3 mean two different things across two schema versions would decode
+# the earlier ones as the later behaviour without any sign of it.
 S_PASSTHROUGH = 0   # not charging (or not yet armed)
 S_MONITOR = 1       # charging, watching for the VCU's Low Power command
 S_OVERRIDE = 2      # VCU holds at the evap ceiling; we are driving the charge
 S_TERMINATED = 4    # the VCU's hold reaches the charger; latched for the session
 S_SAFE = 5          # a trip fired; transparent forwarding, latched
+S_HOLD = 6          # spec 5.2: released, and the page-01 setpoint is ours
 
 STATE_NAMES = {0: "PASSTHROUGH", 1: "MONITOR", 2: "OVERRIDE",
-               4: "TERMINATED", 5: "SAFE"}
+               4: "TERMINATED", 5: "SAFE", 6: "HOLD"}
 
 # page 00 cmd_Mode. CONFIRMED by two independent methods -- the EPRI app binary's
 # literal pool and log correlation on this vehicle. Mode 3 is a LOW POWER mode,
@@ -130,6 +135,7 @@ class Config(object):
                  "arm_delay_ms", "full_debounce_ms", "chg_state_debounce_ms",
                  "bms_stale_ms", "chg_stale_ms", "chg_silence_ms",
                  "override_max_ms",
+                 "hold_step_ca", "hold_band_ca", "hold_step_min_ms",
                  "revert_aux_pages", "mask_charger_telemetry", "diag_mirror")
 
     def __init__(self):
@@ -177,6 +183,22 @@ class Config(object):
         self.arm_delay_ms = 75000
 
         self.full_debounce_ms = 1000
+
+        # --- the hold after the release (spec 5.2, user 2026-10-08) --------
+        # The setpoint follows the vehicle's loads the way the truck's own
+        # full-charge hold does (vcu_hold_character.txt, nine holds at
+        # 100 %): 0.1 A steps, no faster than one per 0.3 s, which is the
+        # truck's own fastest step cadence.
+        #
+        # THE BAND IS WHAT STOPS IT OSCILLATING. Stepping down above the
+        # permission and up below it, with nothing in between, would step on
+        # every frame forever: ibat is never exactly chg_max. Holding while
+        # ibat is within 0.25 A below the permission gives the loop somewhere
+        # to rest, and 0.25 A is 2.5 steps, so a step cannot cross the band
+        # and reverse.
+        self.hold_step_ca = 10               # 0.1 A per step
+        self.hold_band_ca = 25               # hold while within 0.25 A below
+        self.hold_step_min_ms = 300          # at most one step per 0.3 s
 
         # The charger dips out of state 12 for a single frame during normal
         # operation -- measured on vtruxchargeafterexportchargetest-80pctcv,
@@ -424,6 +446,10 @@ class InterposerCore(object):
         self.soc_half = 0
         self.chg_state = 0
         self.ibat = 0
+        # spec 5.2: the hold setpoint in centi-amps, None unless in HOLD,
+        # and the time of its last step. Both reset by a session boundary.
+        self.hold_ca = None
+        self.t_hold_step = None
         self.mainc_closed = False
         self.chg_bad_since = None
         self.max_avail = -1          # charger's pilot-derived cap, cA (-1 = unseen)
@@ -488,7 +514,16 @@ class InterposerCore(object):
         self._log(t_ms, why)
 
     def _active(self):
-        return self.state in (S_MONITOR, S_OVERRIDE)
+        """Armed and answerable: the states where section 6 can trip.
+
+        HOLD IS ACTIVE (spec 5.2, 2026-10-08): "The trips of section 6 apply
+        throughout, including 0x410 staleness, since the hold reads bcm_ibat
+        from it." The flow-drop and plug-out rows of the section 6 table name
+        HOLD too, and both of those gate on this. TERMINATED and SAFE are not
+        active -- the core is a wire in both, and half the trip conditions are
+        ordinary teardown traffic.
+        """
+        return self.state in (S_MONITOR, S_OVERRIDE, S_HOLD)
 
     def _trip(self, t_ms, reason):
         """Bail to transparent forwarding and latch SAFE (spec 6).
@@ -496,9 +531,13 @@ class InterposerCore(object):
         A trip is the same action as a release: we stop rewriting, and if we
         were overriding we repeat the VCU's standing command to the charger
         (spec 4.1) -- its Low Power hold, the truck's normal state at full.
+        Out of HOLD nothing is repeated, and that is spec 6 in as many words:
+        "the page-01 rewrite stopped at once if we were holding (5.2; page 00
+        is already the VCU's, so nothing is repeated)". The charger is
+        already in Low Power because the release put it there.
 
-        Only meaningful while we are armed. Outside MONITOR/OVERRIDE we are
-        already a wire, and half of these conditions are NORMAL off-charge
+        Only meaningful while we are armed. Outside MONITOR/OVERRIDE/HOLD we
+        are already a wire, and half of these conditions are NORMAL off-charge
         traffic -- EPO and the alarm bits fire during every ordinary charge
         shutdown, and HVIL is open before precharge. Tripping on those merely
         fills the log and latches SAFE before the session even starts. Callers
@@ -571,6 +610,13 @@ class InterposerCore(object):
 
         self.t_full_since = None
         self.learned_ilim = 0
+        # spec 6.1: a boundary resets "the HOLD or TERMINATED state" and
+        # everything the session learned, so the hold setpoint goes too --
+        # it is the most session-specific number the core holds, and a
+        # second charge inheriting the first one's setpoint would command
+        # the previous pack state.
+        self.hold_ca = None
+        self.t_hold_step = None
         self.chg_seen_charging = False
         self.mainc_closed = False
         self.chg_bad_since = None
@@ -737,6 +783,20 @@ class InterposerCore(object):
             caps.append(self.learned_ilim)
         return min(caps) if caps else -1
 
+    def _commanded_ilim_counts(self):
+        """What we are telling the charger right now, in page-01 counts.
+
+        Spec 8.2 says the status frame carries "our commanded current", and
+        since 2026-10-08 that is the HOLD setpoint while in HOLD -- the
+        number actually going out on page 01. _our_ilim_counts() is the
+        OVERRIDE command, the BMS permission capped by the EVSE, and in HOLD
+        it is not what the charger is being told: the hold tracks the
+        permission in 0.1 A steps rather than following it exactly.
+        """
+        if self.state == S_HOLD and self.hold_ca is not None:
+            return self.hold_ca // 5
+        return self._our_ilim_counts()
+
     def _our_ilim_counts(self):
         """Our current command while overriding, in page-01 counts (0.05 A).
 
@@ -898,6 +958,16 @@ class InterposerCore(object):
                 emit = enc_master(self.vcu_flow, MODE_CHARGER)
                 self.stats["modified"] += 1
 
+        elif key == (0x01,) and self.state == S_HOLD:
+            # Spec 5.2: in HOLD every page-01 setpoint from the VCU is
+            # replaced with ours. Nothing else is touched -- page 00 and with
+            # it Low Power mode, and every other frame, reach the charger as
+            # the VCU sent them, which is why this branch sits before the
+            # 03.02 / 03.07 one and that one stays gated on S_OVERRIDE.
+            self._step_hold(t_ms)
+            emit = enc_setpoint_ilim(d, self.hold_ca // 5)
+            self.stats["modified"] += 1
+
         elif key == (0x01,) and self.state in (S_MONITOR, S_OVERRIDE):
             if self.state == S_MONITOR:
                 # learn the VCU's own CC command while it is still charging
@@ -923,6 +993,47 @@ class InterposerCore(object):
             # spec 8.1: the frame as the charger received it
             out.append((TO_VEHICLE, mirror_id(CMD_ID), True, emit))
         return out
+
+    def _step_hold(self, t_ms):
+        """Spec 5.2: move the hold setpoint one step toward the permission.
+
+        Called on each page-01 frame from the VCU, which is what the hold
+        rewrites; the cadence of the loop is therefore the VCU's own frame
+        cadence, limited to one step per hold_step_min_ms.
+
+        bcm_ibat is the PACK current, which nets out every other load on the
+        bus -- that is why the loop is closed on it rather than on our own
+        setpoint. The truck's own hold does not do this: with bcm_chg_max at
+        0 A it puts +0.85 to +2.55 A into the pack for the first hour.
+
+        Above the permission it steps down; more than hold_band_ca below it,
+        up; inside the band it holds. The result sits at or just under the
+        BMS's permission, and is above it only for the steps a sudden load
+        drop takes to remove -- about 2 s for 0.7 A.
+        """
+        c = self.cfg
+        if self.hold_ca is None:
+            return
+        if (self.t_hold_step is not None
+                and t_ms - self.t_hold_step < c.hold_step_min_ms):
+            return
+        want = self.hold_ca
+        if self.ibat > self.chg_max:
+            want = self.hold_ca - c.hold_step_ca
+        elif self.ibat < self.chg_max - c.hold_band_ca:
+            want = self.hold_ca + c.hold_step_ca
+        # Spec 5.2: "It stays between 0 A and the EVSE cap of section 4."
+        # The cap is clamped even when the step did not move, because the cap
+        # itself can fall: max_avail is learned from the charger and a lower
+        # one must bring the hold down with it.
+        cap = self._evse_cap_ca()
+        if cap >= 0 and want > cap:
+            want = cap
+        if want < 0:
+            want = 0
+        if want != self.hold_ca:
+            self.hold_ca = want
+            self.t_hold_step = t_ms
 
     def _wait(self, t_ms, key, text):
         """Still MONITOR; log the reason once per change of reason (the text
@@ -1127,7 +1238,15 @@ class InterposerCore(object):
                 forget_pilot=True)
             self.t_chg = None      # one boundary per silence, not one a tick
 
-        if self.state not in (S_MONITOR, S_OVERRIDE):
+        if not self._active():
+            # Spec 5.2: "The trips of section 6 apply throughout, including
+            # 0x410 staleness, since the hold reads bcm_ibat from it." The
+            # staleness and charger-state trips are raised HERE, on the
+            # clock, so a gate naming MONITOR and OVERRIDE alone left the
+            # hold with no timers at all -- the one state that reads a BMS
+            # value continuously would have been the only armed state that
+            # could not notice the value going stale. _active() is the same
+            # set every trip caller gates on, so the two cannot drift.
             return out
 
         # Every _trip() below must have its output COLLECTED (B-1). _trip()
@@ -1162,6 +1281,20 @@ class InterposerCore(object):
                     self._emit_repeat(t_ms, out)
             return out
 
+        if self.state == S_HOLD:
+            # Spec 5.2: the hold steps on the VCU's page-01 frames, not on
+            # the clock, so once the section 6 trips above have been checked
+            # there is nothing periodic left to do. The release has already
+            # happened and HOLD is not re-evaluated.
+            #
+            # THE 6 H CAP BELOW IS THE OVERRIDE'S. Section 6's row reads
+            # "override longer than 6 hours", and 5.2 says the hold "lasts
+            # until the handle is pulled"; tripping the hold on a timer would
+            # hand the pack back to the VCU's own hold, which is the thing
+            # 5.2 exists to replace. Raised with the reviewer in this batch:
+            # 5.2's "trips apply throughout" does not settle it either way.
+            return out
+
         # OVERRIDE
         if t_ms - self.t_enter > cfg.override_max_ms:
             out.extend(self._trip(t_ms, "override exceeded session cap"))
@@ -1177,12 +1310,23 @@ class InterposerCore(object):
                 self._log(t_ms, "top of charge reached: vmax=%d mV "
                                 "vmin=%d mV chg_max=%.2f A"
                           % (self.vmax, self.vmin, self.chg_max / 100.0))
-                # spec 5.2: release is transparency, plus one repeat of the
-                # VCU's standing Low Power command so the charger, which
-                # only ever heard our rewrite of it, enters the hold.
-                self._goto(t_ms, S_TERMINATED,
-                           "RELEASE: transparent -- the VCU's Low Power hold "
-                           "now reaches the charger")
+                # Spec 5.2 (user, 2026-10-08): the release stops rewriting
+                # page 00 and repeats the VCU's standing Low Power command
+                # once, so the charger -- which only ever heard our rewrite
+                # of it -- drops into Low Power, state 12. THE HOLD AFTER IT
+                # IS OURS: the VCU holds at 0 or 2.9 A, and on the parts
+                # truck, whose loads need ~2.9-3.0 A, that drains the pack.
+                # So the core enters HOLD and replaces the page-01 setpoint
+                # from here on, changing nothing else.
+                #
+                # It starts from our last override setpoint, which is what
+                # the charger already has, so the entry is not a step.
+                self.hold_ca = self._our_ilim_counts() * 5
+                self.t_hold_step = t_ms
+                self._goto(t_ms, S_HOLD,
+                           "RELEASE: the VCU's Low Power now reaches the "
+                           "charger; the setpoint is ours, holding at "
+                           "%.2f A" % (self.hold_ca / 100.0))
                 self._repeat_master(t_ms, self.vcu_mode)
                 self._emit_repeat(t_ms, out)
         else:
@@ -1241,8 +1385,8 @@ class InterposerCore(object):
                  | (32 if self.state == S_OVERRIDE else 0)
                  | (64 if bridge_ok else 0)
                  | (128 if serial else 0))
-        if self.state == S_OVERRIDE:
-            ilim_x10 = u8((self._our_ilim_counts() * 5 + 5) // 10)
+        if self.state in (S_OVERRIDE, S_HOLD):
+            ilim_x10 = u8((self._commanded_ilim_counts() * 5 + 5) // 10)
             if ilim_x10 > 254:
                 ilim_x10 = 254
         else:
@@ -1295,8 +1439,8 @@ class InterposerCore(object):
                 "silent=%d fw=%d schema=%d"
                 % (STATE_NAMES[self.state], self.trip_reason_code(),
                    self.diag_frames(t_ms, rx_overflow, tx_fail)[0][1][4],
-                   ("%.1f" % (self._our_ilim_counts() * 0.05)
-                    if self.state == S_OVERRIDE else "-"),
+                   ("%.1f" % (self._commanded_ilim_counts() * 0.05)
+                    if self.state in (S_OVERRIDE, S_HOLD) else "-"),
                    self.vmax, self.chg_max, self.soc_half / 2.0, self.evap,
                    self.chg_state, self.stats["modified"], self.stats["synth"],
                    rx_overflow, tx_fail,

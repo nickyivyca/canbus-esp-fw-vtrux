@@ -533,15 +533,24 @@ def test_ilim_rewrite_preserves_vlim():
 
 # --- spec 5: release ---------------------------------------------------------
 
-def test_release_is_transparency_on_chgmax_collapse():
+def test_release_hands_page_00_back_and_takes_the_setpoint():
+    """Spec 5.2 (changed 2026-10-08): the release stops rewriting page 00 and
+    repeats the VCU's standing Low Power once, so the charger drops into Low
+    Power -- and the core enters HOLD, where the page-01 setpoint is OURS.
+
+    It used to enter TERMINATED and hand the whole command back. That is the
+    behaviour this test asserted until 2026-10-08, and it is what 5.2
+    replaced: the VCU holds at 0 or 2.9 A, which on the parts truck drains
+    the pack.
+    """
     b = Bench()
     b.arm(vmax=3.340, chg_max=300.0)
     b.low_power()
     ok(b.state() == "OVERRIDE", "override engaged")
-    originated = b.hold_fresh(30, vmax=3.593, chg_max=2.8, ibat=0.3,
+    originated = b.hold_fresh(30, vmax=3.593, chg_max=2.75, ibat=0.3,
                               resend_low_power=False)
-    ok(b.state() == "TERMINATED",
-       "chg_max 2.8 A with vmax pinned at 3593 mV releases into TERMINATED")
+    ok(b.state() == "HOLD",
+       "chg_max 2.75 A with vmax pinned at 3593 mV releases into HOLD")
     # spec 4.1 / 5.2: the only frames originated are the repeat of the
     # VCU's standing Low Power command, so the charger enters the hold
     ok(len(originated) == b.core.cfg.burst_frames,
@@ -553,17 +562,26 @@ def test_release_is_transparency_on_chgmax_collapse():
     ok(any("RELEASE" in e[2] for e in b.core.events), "the release is logged")
     ok(any("top of charge reached" in e[2] for e in b.core.events),
        "the top of charge is logged")
-    # spec 5.2: from here the VCU's hold reaches the charger untouched
-    n_mod = b.core.stats["modified"]
+    # spec 5.2: page 00 -- and with it Low Power mode -- is the VCU's again
     out = b.low_power()
     ok(emitted_mode(out) == P.MODE_LOW_POWER,
        "after the release the VCU's 00 01 03 reaches the charger as-is")
-    b.commanded_ilim(2.9)
-    ok(b.core.stats["modified"] == n_mod, "and its setpoint is not rewritten")
+    ok(b.out[0][3] == P.enc_master(1, P.MODE_LOW_POWER),
+       "byte-exact, not merely the same mode")
+    # spec 5.2: the page-01 setpoint is not
+    n_mod = b.core.stats["modified"]
+    i = b.commanded_ilim(19.0)
+    ok(b.core.stats["modified"] == n_mod + 1,
+       "every page-01 setpoint IS rewritten -- the hold is ours")
+    ok(abs(i - b.core.hold_ca / 100.0) < 1e-6,
+       "and what the charger is told is our hold setpoint, not the VCU's "
+       "19 A (%.2f A)" % i)
     # spec 6: the VCU's own STAND_BY is obeyed and ends everything
     out = b.veh(0x18EFC000, P.enc_master(0, P.MODE_STANDBY))
     ok(b.state() == "PASSTHROUGH" and emitted_mode(out) == P.MODE_STANDBY,
        "the VCU's STAND_BY drops us to PASSTHROUGH, forwarded untouched")
+    ok(b.core.hold_ca is None,
+       "and the boundary forgets the hold setpoint (6.1)")
 
 
 def test_no_release_while_bms_still_permits():
@@ -585,7 +603,289 @@ def test_release_needs_the_debounce():
     b.hold_fresh(8, vmax=3.590, chg_max=2.0)
     ok(b.state() == "OVERRIDE", "the debounce restarts when permission returns")
     b.hold_fresh(5, vmax=3.590, chg_max=2.0)
-    ok(b.state() == "TERMINATED", "1 s continuously below 3 A releases")
+    ok(b.state() == "HOLD", "1 s continuously below 3 A releases")
+
+
+# --- spec 5.2: the hold after the release ------------------------------------
+
+def _released(ibat=0.3, chg_max=2.75, max_avail_a=16.0):
+    """A core in HOLD, entered the way 5.1 says: the BMS's permission at or
+    below 3 A for the full debounce, with the leader cell pinned at 3593 mV
+    so the old vmax trigger would never have fired."""
+    b = Bench()
+    b.arm(max_avail_a=max_avail_a, vmax=3.340, chg_max=300.0)
+    b.low_power()
+    b.hold_fresh(34, vmax=3.593, chg_max=chg_max, ibat=ibat,
+                 resend_low_power=False)
+    # Long enough for the release's own repeat burst (4.1) to finish: 20
+    # frames at 50 ms, started ~1.1 s in. A test that read `synth` with the
+    # burst still in flight was reading the release and calling it the trip.
+    assert b.core._burst_left == 0, "the release burst is still in flight"
+    assert b.core.state == M.S_HOLD, "the bench did not reach HOLD"
+    return b
+
+
+def _hold_frame(b, chg_max, ibat, dt_ms=400, vcu_a=19.0):
+    """One page-01 frame dt_ms later, with the BMS refreshed first. Returns
+    what the charger is told, in amps."""
+    b.t += dt_ms
+    b.bms(vmax=3.593, chg_max=chg_max, ibat=ibat)
+    return b.commanded_ilim(vcu_a)
+
+
+def test_the_hold_starts_from_our_own_last_setpoint():
+    """Spec 5.2: "It starts from our last override setpoint, which is what
+    the charger already has" -- so the entry into HOLD is not a step."""
+    b = Bench()
+    b.arm(vmax=3.340, chg_max=300.0)
+    b.low_power()
+    before = b.commanded_ilim(19.0)
+    b.hold_fresh(34, vmax=3.593, chg_max=2.75, ibat=0.3,
+                 resend_low_power=False)
+    ok(b.core.chg_max == 275,
+       "the BMS field cannot express 2.80 A; 275 cA is what it sends (%d)"
+       % b.core.chg_max)
+    ok(b.state() == "HOLD", "released into HOLD")
+    ok(before > 15.0,
+       "we were commanding the full 16 A EVSE rate (%.2f A)" % before)
+    ok(abs(b.core.hold_ca / 100.0 - 2.75) < 1e-6,
+       "and the hold starts at the permission we were last commanding, "
+       "2.75 A, not at that 16 A (%.2f A)" % (b.core.hold_ca / 100.0))
+
+
+def test_the_hold_steps_down_above_the_permission():
+    """Spec 5.2: 0.1 A down while bcm_ibat is above bcm_chg_max. ibat is the
+    PACK current, which nets out the other loads, so this is the pack being
+    pushed harder than the BMS permits."""
+    b = _released(ibat=0.3, chg_max=2.75)
+    start = b.core.hold_ca
+    seen = [_hold_frame(b, 2.75, 5.0) for _ in range(6)]
+    ok(abs(seen[0] - (start - 10) / 100.0) < 1e-6,
+       "the first frame steps down 0.1 A (%.2f A)" % seen[0])
+    ok(abs(seen[-1] - (start - 60) / 100.0) < 1e-6,
+       "six frames, six steps, no faster and no larger (%.2f A)" % seen[-1])
+
+
+def test_the_hold_steps_up_toward_the_permission():
+    """Spec 5.2: 0.1 A up while bcm_ibat is more than 0.25 A below it. The
+    setpoint can end up ABOVE the permission and that is the point -- the
+    parts truck's loads take ~2.9-3.0 A before any of it reaches the pack."""
+    b = _released(ibat=0.3, chg_max=2.75)
+    start = b.core.hold_ca
+    for _ in range(4):
+        i = _hold_frame(b, 2.75, 0.3)
+    ok(abs(i - (start + 40) / 100.0) < 1e-6,
+       "0.3 A of pack current against a 2.75 A permission steps up (%.2f A)"
+       % i)
+    ok(b.core.hold_ca > 275,
+       "past the permission itself, which is where the loads live")
+
+
+def test_the_hold_rests_inside_the_band():
+    """Spec 5.2: inside the 0.25 A band below the permission it holds.
+
+    THIS IS WHAT STOPS IT OSCILLATING: ibat is never exactly chg_max, so a
+    loop that stepped down above and up below with nothing between would
+    step on every frame for the whole hold.
+    """
+    b = _released(ibat=0.3, chg_max=2.75)
+    b.core.hold_ca = 275
+    for _ in range(5):
+        _hold_frame(b, 2.75, 2.7)
+    ok(b.core.hold_ca == 275,
+       "2.70 A of pack current against a 2.75 A permission does not step "
+       "(%d cA)" % b.core.hold_ca)
+    _hold_frame(b, 2.75, 2.5)
+    ok(b.core.hold_ca == 275,
+       "nor does exactly 0.25 A below it -- the band edge is inclusive "
+       "(%d cA)" % b.core.hold_ca)
+    _hold_frame(b, 2.75, 2.4)
+    ok(b.core.hold_ca == 285,
+       "0.35 A below it, past the edge, does (%d cA)" % b.core.hold_ca)
+
+
+def test_the_hold_steps_no_faster_than_the_truck():
+    """Spec 5.2: at most one step per 0.3 s, the truck's own fastest step
+    cadence. The VCU's page-01 cadence is faster than that, so the limit is
+    load-bearing rather than decorative."""
+    b = _released(ibat=5.0, chg_max=2.75)
+    _hold_frame(b, 2.75, 5.0)
+    first = b.core.hold_ca
+    for _ in range(2):
+        _hold_frame(b, 2.75, 5.0, dt_ms=100)
+    ok(b.core.hold_ca == first,
+       "two more frames 0.1 s apart make no further step (%d cA)"
+       % b.core.hold_ca)
+    _hold_frame(b, 2.75, 5.0, dt_ms=100)
+    ok(b.core.hold_ca == first - 10,
+       "and the next step comes once 0.3 s has passed (%d cA)"
+       % b.core.hold_ca)
+
+
+def test_the_hold_stays_inside_the_evse_cap():
+    """Spec 5.2: "It stays between 0 A and the EVSE cap of section 4", and
+    the cap is instantaneous -- an EVSE with load management genuinely
+    reduces the pilot mid-session."""
+    b = _released(ibat=0.3, chg_max=2.75, max_avail_a=16.0)
+    for _ in range(160):
+        i = _hold_frame(b, 300.0, 0.3)
+    ok(abs(i - 16.0) < 1e-6,
+       "the hold climbs no further than maxAvail 16 A (%.2f A)" % i)
+    b.t += 400
+    b.charge_info(6.0)                    # the EVSE derates mid-hold
+    i = _hold_frame(b, 300.0, 0.3)
+    ok(abs(i - 6.0) < 1e-6,
+       "and a derate brings the hold straight down with it, not one step "
+       "per 0.3 s (%.2f A)" % i)
+
+
+def test_the_hold_follows_the_permission_to_zero():
+    """Spec 5.2: between 0 A and the cap -- "following it down to 0 A if it
+    has not reached 0 A by the release"."""
+    b = _released(ibat=5.0, chg_max=2.75)
+    for _ in range(60):
+        i = _hold_frame(b, 0.0, 5.0)
+    ok(abs(i) < 1e-6, "the hold reaches 0 A (%.2f A)" % i)
+    ok(b.core.hold_ca == 0,
+       "and stops there rather than going negative (%d cA)" % b.core.hold_ca)
+
+
+def test_the_hold_touches_only_the_page_01_setpoint():
+    """Spec 5.2: it "changes nothing else: page 00 -- and with it Low Power
+    mode -- and every other frame reach the charger as the VCU sends them".
+
+    The 03.02 / 03.07 reverts of section 4 are part of the override and stop
+    at the release with everything else.
+    """
+    b = _released()
+    for data in (P.enc_master(1, P.MODE_LOW_POWER),
+                 bytes((0x03, 0x02, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66)),
+                 bytes((0x03, 0x07, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66)),
+                 bytes((0x02, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06))):
+        out = b.veh(0x18EFC000, data)
+        sent = [d for s, f, _e, d in out
+                if s == M.TO_CHARGER and f == M.CMD_ID]
+        ok(sent == [data],
+           "page %02X %02X reaches the charger byte-exact in HOLD"
+           % (data[0], data[1]))
+    ok(b.core.hold_ca is not None, "and the hold is still ours throughout")
+
+
+def test_the_hold_rewrites_the_setpoint_and_mirrors_it():
+    """Spec 5.2: "The interposer's mirror traffic (section 8) continues for
+    the hold's page-01 frames and ends when the core is transparent"."""
+    b = _released()
+    asked = P.enc_setpoint(P.VLIM_DEFAULT_COUNTS, 380)
+    out = b.veh(0x18EFC000, asked)
+    mirrored = [d for _s, f, _e, d in out if f == M.mirror_id(M.CMD_ID)]
+    sent = [d for s, f, _e, d in out
+            if s == M.TO_CHARGER and f == M.CMD_ID]
+    ok(len(mirrored) == 1 and mirrored == sent,
+       "the page-01 frame is mirrored as the charger received it")
+    ok(abs(P.dec_setpoint(sent[0])[0] - P.dec_setpoint(asked)[0]) < 1e-6,
+       "and Vlim is forwarded verbatim -- only Ilim is ours")
+
+
+def test_the_hold_ends_at_a_flow_drop():
+    """Spec 6: the flow-drop row names HOLD. From TERMINATED the core is a
+    wire and the handle-pull signals that follow cannot trip anything."""
+    b = _released()
+    out = b.veh(0x18EFC000, P.enc_master(0, P.MODE_LOW_POWER))
+    ok(b.state() == "TERMINATED", "the flow drop ends the hold")
+    ok(out[0][3] == P.enc_master(0, P.MODE_LOW_POWER),
+       "and that frame itself reaches the charger unmodified (A5)")
+    n_mod = b.core.stats["modified"]
+    b.commanded_ilim(2.9)
+    ok(b.core.stats["modified"] == n_mod,
+       "the page-01 rewrite has stopped: the core is transparent")
+
+
+def test_the_hold_ends_at_the_chargers_plug_out_report():
+    """Spec 6: `vehicleConnected` 1 -> 0 while holding does what a flow drop
+    does. The handle is out; the VCU's own flow drop follows ~1.4 s later."""
+    b = _released()
+    b.charger_status(12, vehicle_connected=0)
+    ok(b.state() == "TERMINATED", "the plug-out report ends the hold")
+    n_mod = b.core.stats["modified"]
+    b.commanded_ilim(2.9)
+    ok(b.core.stats["modified"] == n_mod,
+       "and the setpoint is the VCU's again")
+
+
+def test_a_trip_in_the_hold_latches_safe_and_repeats_nothing():
+    """Spec 6: "the page-01 rewrite stopped at once if we were holding (5.2;
+    page 00 is already the VCU's, so nothing is repeated)"."""
+    b = _released()
+    synth_before = b.core.stats["synth"]
+    out = b.charger_fault(BELINV_inverterFault=1)
+    ok(b.state() == "SAFE", "a charger fault in HOLD trips to SAFE")
+    ok("inv=1" in (b.core.trip_reason or ""), "the reason is recorded")
+    ok([o for o in out if o[0] == M.TO_CHARGER] == [],
+       "and NOTHING is repeated toward the charger")
+    b.hold_fresh(25, vmax=3.593, chg_max=2.75, ibat=0.3,
+                 resend_low_power=False)
+    ok(b.core.stats["synth"] == synth_before,
+       "not on the following ticks either (%d frames)"
+       % (b.core.stats["synth"] - synth_before))
+    n_mod = b.core.stats["modified"]
+    b.commanded_ilim(2.9)
+    ok(b.core.stats["modified"] == n_mod, "the rewrite stopped at the trip")
+
+
+def test_the_hold_still_watches_for_stale_bms_frames():
+    """Spec 5.2: "The trips of section 6 apply throughout, including 0x410
+    staleness, since the hold reads bcm_ibat from it."
+
+    0x410 is the message that carries ibat, so this is the hold reading a
+    number that has stopped arriving -- the case 5.2 calls out by name. The
+    trips are raised on the clock, in tick(), which until 2026-10-08 returned
+    early for every state but MONITOR and OVERRIDE.
+    """
+    b = _released()
+    for _ in range(4):
+        b.t += 100
+        b.charger_status(12)
+        b.bms(vmax=3.593, chg_max=2.75, ibat=0.3, skip=(0x410,))
+        b.tick()
+    ok(b.state() == "HOLD", "400 ms without 0x410 is inside the threshold")
+    b.t += 200
+    b.charger_status(12)
+    b.bms(vmax=3.593, chg_max=2.75, ibat=0.3, skip=(0x410,))
+    b.tick()
+    ok(b.state() == "SAFE", "past 500 ms it trips")
+    ok("0x410" in (b.core.trip_reason or ""),
+       "naming the message that went stale (%s)" % b.core.trip_reason)
+
+
+def test_the_hold_still_watches_the_hard_ceiling():
+    """Spec 6: the 3610 mV backstop has no debounce and no state condition.
+    It is the last defence while we are the one commanding current."""
+    b = _released()
+    b.t += 100
+    b.bms_430(vmax=3.611)
+    ok(b.state() == "SAFE", "3611 mV in HOLD trips at once")
+    ok("hard ceiling" in (b.core.trip_reason or ""),
+       "with the ceiling named (%s)" % b.core.trip_reason)
+
+
+def test_the_hold_reports_its_own_setpoint_in_the_diagnostics():
+    """Spec 8.2: the status frame carries OUR COMMANDED CURRENT. In HOLD that
+    is the hold setpoint, not the BMS permission capped by the EVSE -- the
+    two differ by up to a step, and by much more just after the entry."""
+    b = _released()
+    b.core.hold_ca = 150
+    status = dict(b.core.diag_frames(b.t, 0, 0))[M.DIAG_STATUS_ID]
+    ok(status[2] == M.S_HOLD and M.STATE_NAMES[status[2]] == "HOLD",
+       "the status frame reports state %d, HOLD" % status[2])
+    ok(status[5] == 15,
+       "and 1.50 A as 15 in the 0.1 A field (%d)" % status[5])
+    ok((status[0], status[1]) == (4, 5),
+       "under diag schema 4 / fw 5, which is what the new state code and "
+       "this field's new meaning are published as (%d/%d)"
+       % (status[0], status[1]))
+    line = b.core.diag_line(b.t, 0, 0)
+    ok("HOLD" in line, "the human diag line says HOLD too")
+    ok("1.5" in line, "and carries the same setpoint (%s)" % line)
 
 
 # --- spec 6: trips and the vehicle's commands --------------------------------

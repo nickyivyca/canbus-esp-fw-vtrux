@@ -99,6 +99,8 @@ Low Power, 4 Invalid) is confirmed from the EPRI binary and on the bus; see
 | `protocol.py` | The `0x18EFC000` page map plus DBC-backed encode/decode for the BMS (`epri-pt-bus.dbc`) and charger (`BelInverter-v2.dbc`) frames. |
 | `pack.py` | 116-cell LFP pack model: OCV curve, IR drop, per-cell imbalance, passive balancing, and the BMS charge-current taper. Fitted to three real captures. |
 | `bus.py` | Transport factory (virtual `udp_multicast` or a real dongle brand) + `EchoSuppressor` + the segment-isolation guard. |
+| `paths.py` | **Where the data that is not in this repo lives.** The captures, the DBCs, the harness fixtures and `canre` are in SeaDrive, outside this clone, and this resolves them from `VTRUX_DATA`. Raises `PathsError` naming the variable rather than returning a wrong path, so a missing setting fails at the first call instead of producing an empty result set. Measured 2026-10-08 with it unset: `regress.py --all`, `test_invariants.py`, `test_released_into_hold.py`, `test_repeat_bursts.py` and `test_scorer_wiring.py` fail; `test_machine.py`, `test_signals.py`, `test_trips.py`, `paths_test.py`, `sims_test.py` and `run_scenario.py --list` do not need it. Under WSL pass it with `WSLENV=VTRUX_DATA/p`. |
+| `paths_test.py` | Offline test for the above: every resolver, and the refusal when `VTRUX_DATA` is unset. Needs nothing set itself. |
 | `vehicle_sim.py` | VCU + A123 BMS + the VCM's evap flag (0x649). `--mode model` (closed loop) or `--mode replay` (real capture). |
 | `charger_sim.py` | Bel Fuse charger/inverter, including fault injection. |
 | `interposer_sim.py` | The board, as a process. I/O only -- all logic is in `machine.py`. |
@@ -107,6 +109,12 @@ Low Power, 4 Invalid) is confirmed from the EPRI binary and on the bus; see
 | `regress.py` | Offline regression against the three real charge captures. |
 | `build_lookup.py` | **Which firmware image is the board actually running?** The identity is the ELF hash (reviewer, 2026-10-07): an OK result carries EVERY manifest row matching it, and `elf_sha256_of_bin()` reads the hash out of an image file so what is flashed is identified by its bytes, never its name. Reads `0x7F7` off the wire, decodes it with `cantools`, and resolves the 4-byte build id against `firmware/builds/manifest.json`. Imported by bench harnesses, never copied. Refuses rather than guessing, with a distinct reason for each failure: unknown id, no `0x7F7` frames at all, an ambiguous prefix, and a missing or empty manifest -- four different problems that must not collapse into one. `require_witness()` is the guard for arms that are only meaningful on the instrumented build. |
 | `build_lookup_offline_test.py` | Offline test for the above: every reason code, no bus and no board. Modelled on the gen-inhibit `autoarm_bit_offline_test.py`, and it IMPORTS the helper rather than reimplementing it -- a test that re-derives the logic it checks agrees only with itself. `py -3.14 charge-interposer/build_lookup_offline_test.py` |
+| `regress_offline_test.py` | Offline test for `regress.py`'s own machinery -- no captures, so it runs anywhere. |
+| `sims_test.py` | Offline test for the simulators' pure parts (`vehicle_sim.py`, `charger_sim.py`, `pack.py`): no bus, no processes. |
+| `stop_all.sh` | Stops every simulator process of a bench run. Read `firmware/esp-development.md` before running any of them -- killing processes on Windows does not work the way this script's Linux recipe suggests. |
+| `capture_pins.py` | **Spec 9.1 pinned stimulus.** Every capture-derived input -- the three real-capture differential traces, the two host-bridge L3 stimulus files, and `regress.py`'s captures -- is pinned by a hash HELD IN THIS REPO, never read from the input it covers: a hash stored inside its own file moves when a changed parser regenerates both. A trace that is neither pinned nor in a synthetic family fails, so a new capture-derived trace cannot join the suite unpinned. |
+| `capture_pins_test.py` | Tests for the above, and most of its cases must FAIL: a changed byte, a missing file, an unpinned capture-derived trace, and a stimulus regenerated together with its own header hash. Needs no `VTRUX_DATA`. |
+| `requirements.txt` | `cantools` and `python-can`, the only dependencies outside the standard library. |
 | `test_signals.py` | Cross-checks `machine.py`'s hand-rolled bit extraction against cantools over randomised frames. |
 | `test_machine.py` | Unit tests for the core's decisions: accept/override/guard-band, the startup transient, release, trips, TYPE2 vs TYPE3, staleness, byte-exact idle forwarding. |
 | `test_trips.py` | One test per fault source in spec 6, from MONITOR **and** from OVERRIDE, each driving exactly one source with every other input held healthy so it cannot pass on a different one. Plus the control: a healthy bus must not trip. Rev 2 (tester, 2026-10-07): the thresholds at their edges (3609/3610 mV, the 5 s debounce, 500 ms staleness per message, the 6 h cap counted from the override's start), the spec's non-trips (TYPE2, undervolt, temperature, `chg_max` 0), "nothing changed on the bus" judged byte by byte, the literal 20, and `test_thresholds_can_fail` against cores built with wrong thresholds. Carries its own copy of the `Bench` driver, since `test_machine.py` is the implementor's. **Rev 3 (tester, 2026-10-08):** spec 6's definitions of 2026-10-07 -- every `bcm_mainc_stat` value alone (only 11 and 12 do not trip) and every `0x18FFD4C0` mux-3 flag alone (only the four named faults trip), from MONITOR and OVERRIDE, recorded as `unit_def_*` traces for the port; MONITOR past 6 h does not trip; each with a can-fail test. |
@@ -210,11 +218,16 @@ to go there. That is what the closed-loop model is for.
 ## Scenarios
 
 The simulated VCU never ends a session on its own (spec 7), and since
-2026-09-19 neither does the interposer: a release is transparency plus one
-repeat of the VCU's standing Low Power command (spec 4.1, 5.2 -- the VCU
+2026-09-19 neither does the interposer: a release hands page 00 back and
+repeats the VCU's standing Low Power command once (spec 4.1, 5.2 -- the VCU
 sends page 00 only on change, so the charger would otherwise never hear it),
-after which the VCU's hold reaches the charger and lasts until the handle is
-pulled. At a handle pull the simulated BMS drops HVIL 30 ms after the VCU's
+after which the charger sits in Low Power until the handle is pulled.
+**The hold after the release is ours (spec 5.2, user, 2026-10-08):** the
+core enters HOLD and replaces the page-01 setpoint from there on, following
+the pack current in 0.1 A steps, because the VCU's own hold puts 0.85-2.55 A
+into the pack for the first hour and on the parts truck, whose loads need
+~2.9-3.0 A, that drains it. Page 00 and every other frame are the VCU's
+again from the release. At a handle pull the simulated BMS drops HVIL 30 ms after the VCU's
 flow drop, as the truck does, and the core must not trip on it (spec 6). The truck's real endings come from `charger_sim
 --unplug-at` (handle pull N s after charging starts, `shutdownSource` 11),
 `--unplug-after-hold-s` (handle pull N s after the charger last entered mode 3
@@ -339,9 +352,9 @@ All seven scenarios and all three offline regressions passed, on this machine, a
 | `imbalanced-full` | PASS | genuine stop, no intervention, CV tail passes through |
 | `fault-during-override` | PASS | inverterFault -> stop burst emitted -> latched SAFE |
 | `hard-ceiling-failsafe` | PASS | with a stuck BMS limit, trips at vmax 3610 mV; peak 3.62 V |
-| `test_machine.py` | 58/58 | core decisions incl. J1772 caps (17 when this table was written) |
-| `test_trips.py` | PASS | 14 fault sources, each from MONITOR and from OVERRIDE |
-| `test_invariants.py` | PASS | 24 traces + randomised traffic, no golden |
+| `test_machine.py` | 74/74 | core decisions incl. J1772 caps and spec 5.2's HOLD (15 cases, 2026-10-08) |
+| `test_trips.py` | 1 FAIL | 14 fault sources, each from MONITOR and from OVERRIDE. `test_spec_non_trips` asserts `chg_max` 0 from OVERRIDE ends in TERMINATED; spec 5.2 made it HOLD. Awaiting the tester's rev. |
+| `test_invariants.py` | FAILS | 24 traces + randomised traffic, no golden. Two invariants predate spec 5.2: "nothing rewritten outside an override" (33 hits) and "only a release or a trip out of an override repeats Low Power" (3). Awaiting the tester's rev. |
 | `test_signals.py` | PASS | bit extraction matches cantools |
 | `test_released_into_hold.py` | PASS | 5 saved logs + 6 mutations + 2 clock cases, rev 2 |
 | `test_repeat_bursts.py` | PASS | 7 saved logs + 6 mutations + 2 window cases |

@@ -83,7 +83,13 @@ static const uint32_t DIAG_BUILD_ID = 0x7F7;
 //      0x7F6 B7 counts transmit failures toward the charger ONLY while the
 //      VCU's flow bit is 1. The byte is in the same place and means a
 //      different quantity, which is exactly what this guard is for.
-static const uint8_t DIAG_SCHEMA_VER = 3;
+//   4  state 6 = HOLD (spec 5.2, 2026-10-08), and 0x7F4 B5 carries OUR
+//      COMMANDED CURRENT in it -- the hold setpoint, which tracks the BMS
+//      permission in 0.1 A steps rather than following it exactly. A
+//      schema-3 decoder reads 6 as an unknown state and B5 as the override
+//      command; both are wrong in the same direction, which is why this is
+//      a schema bump and not a quiet addition.
+static const uint8_t DIAG_SCHEMA_VER = 4;
 // Firmware version (spec 8.2, B-2). The two cores must agree; check_port.py
 // fails if they do not.
 //   2  the section A behaviour, Python's value until 2026-10-03
@@ -95,7 +101,9 @@ static const uint8_t DIAG_SCHEMA_VER = 3;
 //   4  sections A and B: the per-message BMS staleness, no cell_undervolt
 //      trip, 20 repeat frames from every path, the flow-gated charger
 //      transmit-failure counter and the charger-silence flag.
-static const uint8_t DIAG_FW_VER = 4;
+//   5  spec 5.2's HOLD: the release keeps the page-01 setpoint instead of
+//      handing it back, and the section 6 trips now run in that state.
+static const uint8_t DIAG_FW_VER = 5;
 
 // The 29-bit id with its source-address byte replaced by DIAG_SA.
 inline uint32_t mirrorId(uint32_t id) { return (id & 0x1FFFFF00u) | DIAG_SA; }
@@ -108,6 +116,11 @@ enum State : uint8_t {
   S_OVERRIDE = 2,     // VCU holds at the evap ceiling; we are driving the charge
   S_TERMINATED = 4,   // the VCU's hold reaches the charger; latched for the session
   S_SAFE = 5,         // a trip fired; transparent forwarding, latched
+  // 6, not 3 (spec 5.2, 2026-10-08). The code is on the wire: old captures
+  // and old DBCs carry 3 as RELEASING, and a reader meeting 3 with two
+  // meanings across two schema versions would decode the earlier logs as
+  // the later behaviour with nothing to mark it.
+  S_HOLD = 6,         // released, and the page-01 setpoint is ours (5.2)
 };
 
 const char* stateName(uint8_t s);
@@ -187,6 +200,20 @@ struct Config {
   uint32_t chg_silence_ms;
   uint32_t override_max_ms;  // spec 6: 6 hours
 
+  // --- the hold after the release (spec 5.2, user 2026-10-08) ------------
+  // The setpoint follows the vehicle's loads the way the truck's own
+  // full-charge hold does (vcu_hold_character.txt, nine holds at 100 %):
+  // 0.1 A steps, no faster than one per 0.3 s, the truck's own fastest
+  // step cadence.
+  //
+  // THE BAND IS WHAT STOPS IT OSCILLATING. Stepping down above the
+  // permission and up below it, with nothing in between, would step on
+  // every frame forever: ibat is never exactly chg_max. 0.25 A is 2.5
+  // steps, so a step cannot cross the band and reverse.
+  int32_t hold_step_ca;
+  int32_t hold_band_ca;
+  uint32_t hold_step_min_ms;
+
   // Spec 4: hold pages 03.02 / 03.07 at their charging-time values while
   // overriding, so the charger sees a self-consistent picture.
   //
@@ -262,7 +289,7 @@ enum EventCode : uint8_t {
   EV_WAIT_NO_EVSE_LIMIT,        // a=soc_half
   EV_OVERRIDE,                  // a=vmax, b=chg_max, c=soc_half
   EV_TOP_OF_CHARGE,             // a=vmax, b=chg_max, c=vmin
-  EV_RELEASE,
+  EV_RELEASE,                   // a=the hold setpoint we enter with, cA
   EV_TRIP,                      // a=TripReason
   EV_REPEAT,                    // a=flow, b=mode, c=frames (spec 4.1)
   EV_FLOW_DROP,                 // flow bit dropped: the override ends (spec 6)
@@ -500,7 +527,17 @@ class InterposerCore {
            int32_t c = 0);
   void gotoState(uint32_t t_ms, uint8_t st, uint8_t code, int32_t a = 0,
                  int32_t b = 0, int32_t c = 0);
-  bool active() const { return state_ == S_MONITOR || state_ == S_OVERRIDE; }
+  // Armed and answerable: the states where section 6 can trip.
+  //
+  // HOLD IS ACTIVE (spec 5.2, 2026-10-08): "The trips of section 6 apply
+  // throughout, including 0x410 staleness, since the hold reads bcm_ibat
+  // from it." The flow-drop and plug-out rows of the section 6 table name
+  // HOLD too, and both gate on this. TERMINATED and SAFE are not active --
+  // the core is a wire in both, and half the trip conditions are ordinary
+  // teardown traffic.
+  bool active() const {
+    return state_ == S_MONITOR || state_ == S_OVERRIDE || state_ == S_HOLD;
+  }
   // `b` rides into the TRIP event's second field: the stale message's
   // identifier for TRIP_BMS_STALE (B-6), 0 for every other reason.
   void trip(uint32_t t_ms, uint8_t reason, EmitList& out, int32_t b = 0);
@@ -515,6 +552,11 @@ class InterposerCore {
   bool isGenuinelyFull() const;
   int32_t evseCapCa() const;
   int32_t ourIlimCounts() const;
+  // What we are telling the charger right now, in page-01 counts: the hold
+  // setpoint in HOLD, the override command otherwise (spec 5.2, 8.2).
+  int32_t commandedIlimCounts() const;
+  // Spec 5.2: move the hold setpoint one step toward the permission.
+  void stepHold(uint32_t t_ms);
 
   void onCommand(const uint8_t* d, uint32_t t_ms, EmitList& out);
 
@@ -552,9 +594,17 @@ class InterposerCore {
   bool have_t_chg_;
   bool have_chg_bad_;
   bool have_t_full_;
+  // Spec 5.2: the hold setpoint in cA and the time of its last step.
+  // Python carries None in both; the flags are separate for the same
+  // reason pilot_min_valid_ is its own flag -- these are unsigned here and
+  // have no spare value to mean unset.
+  bool hold_valid_;
+  bool have_t_hold_step_;
   uint32_t t_chg_;
   uint32_t chg_bad_since_;
   uint32_t t_full_since_;
+  int32_t hold_ca_;
+  uint32_t t_hold_step_;
   uint32_t t_enter_;
 
   // spec 3: the last reason the hold decision was still waiting (0 = none),
