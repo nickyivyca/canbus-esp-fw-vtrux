@@ -104,6 +104,38 @@ independently would record a number that *ought* to agree instead of the one
 that does. If esptool does not report it the field is `null` and the row is
 visibly incomplete — `build_check.py` fails on that rather than inventing one.
 
+## A row is written only when an image is rebuilt
+
+`manifest.py` writes through `AddPostAction` on `$BUILD_DIR/${PROGNAME}.bin`
+(`manifest.py:507`), so a row appears only when an environment actually
+rebuilds that image. **An ordinary `platformio run` on a tree that has not
+changed rebuilds nothing, writes no row, and still reports every environment
+`SUCCESS`.** Nothing in the output says the manifest was untouched.
+
+Measured 2026-10-09, mid-batch: a run after a rebase reported
+`6 succeeded in 00:00:57.929` and wrote **zero** rows. The sources were
+identical to the previous build -- only the commit the tree sat on had
+changed -- so there was nothing to rebuild. Forcing it with
+`platformio run -t clean` first, then `platformio run`, took 00:04:51 and
+wrote all six.
+
+So: **to record rows at a particular commit, clean first.** And whatever the
+build prints, judge it by counting the rows:
+
+    py -3.14 -c "import json,io; m=json.load(io.open('charge-interposer/firmware/builds/manifest.json',encoding='utf-8')); print(len([e for e in m['builds'] if (e.get('git_commit') or '').startswith('<sha>')]))"
+
+Zero means no row was written, whatever `SUCCESS` suggested. That count is
+what found this; the build output never showed it, and `build_check.py`'s
+"every built image has a manifest row" does its own clean build first, so it
+passes on a tree where a plain run would have recorded nothing.
+
+Rebasing alone needs no rebuild to stay *honest*, only to stay *current*:
+the commit is recorded in the row, never compiled into the image. The same
+sources were built at three successive commits across this batch's rebases
+and gave the same six `elf_sha256` values each time. Only `git_commit`
+moves, so a row at a rebased-away commit is stale in that one field and
+correct about the image.
+
 ## Checks
 
 `test/build_check.py` asserts, every run:
