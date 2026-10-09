@@ -56,6 +56,11 @@ closed tracker F items 4 and 5, which rev 2 left untested):
 Each has a can-fail test: the definition check against a wrong definition,
 and the 6 h MONITOR check with a fault injected after 6 h.
 
+Spec 6.1 text of 2026-10-08 (tester, in the repo): the charger-silence
+boundary forgets the last pilot-timer reading, so a lower timer after the
+silence keeps SAFE; SAFE then clears on STAND_BY / EXPORT or a later
+step-back (test_silence_forgets_the_pilot_reading, with a can-fail test).
+
 Run:  py -3.14 projects/vtrux/tools/interposer/test_trips.py
 """
 
@@ -886,6 +891,88 @@ def test_boundaries_can_fail():
         ok(boundary_problems(clears=wrong),
            "the boundary test catches a core where '%s' %s SAFE"
            % (label, "keeps" if spec_clears else "clears"))
+
+
+def _charger_back(b, pilot_min, ms=1000):
+    """The charger answering again after a silence: status, a pilot reading
+    and the BMS, for `ms`."""
+    b.chg(M.CHG_PILOT, pilot(pilot_min))
+    for _ in range(ms // 100):
+        b.t += 100
+        b.charger_status(12)
+        b.bms(vmax=3.340, chg_max=300.0)
+        b.tick()
+
+
+def silence_forgets_pilot_problems(kept=True):
+    """Spec 6.1 (user, 2026-10-08): the charger-silence boundary forgets the
+    last pilot-timer reading, so a timer that comes back LOWER after the
+    silence is not a step-back and does not clear SAFE. SAFE then clears on
+    the VCU's STAND_BY or EXPORT, or on a later step-back measured from the
+    readings after the silence.
+
+    `kept=False` inverts the expectation for the comparison, for
+    test_silence_forgets_pilot_can_fail."""
+    probs = []
+    for state in ("MONITOR", "OVERRIDE"):
+        for clear_by in ("later step-back", "STAND_BY"):
+            tag = "%s, then %s" % (state, clear_by)
+            b = Bench()
+            b.arm(vmax=3.340, chg_max=300.0, pilot_min=0)
+            b.chg(M.CHG_PILOT, pilot(30))
+            if state == "OVERRIDE":
+                b.low_power()
+            if b.state() != state:
+                probs.append("%s: did not reach %s (%s)" % (tag, state,
+                                                           b.state()))
+                continue
+            b.bms_410(epo=1)
+            _drain(b, _hold_all, 30)
+            if b.state() != "SAFE":
+                probs.append("%s: the EPO did not latch SAFE (%s)"
+                             % (tag, b.state()))
+                continue
+            _boundary_silence(b)                 # 20.5 s, BMS fresh
+            _charger_back(b, 0)                  # 30 -> 0 across the silence
+            b.arm(vmax=3.340, chg_max=300.0, pilot_min=None)
+            got_kept = b.state() == "SAFE"
+            if got_kept != kept:
+                probs.append("%s: a pilot timer back at 0 min after 20 s of "
+                             "silence (30 min before it) left the core %s -- "
+                             "spec 6.1: the silence forgets the last reading, "
+                             "so it is not a step-back and SAFE stays"
+                             % (tag, b.state()))
+                continue
+            if not kept:
+                continue
+            if clear_by == "STAND_BY":
+                _boundary_standby(b)
+            else:
+                _charger_back(b, 5)              # counting on after it ...
+                b.chg(M.CHG_PILOT, pilot(0))     # ... then a real step-back
+            if b.state() != "PASSTHROUGH":
+                probs.append("%s: still %s -- after the silence, SAFE clears "
+                             "on %s (spec 6.1)" % (tag, b.state(), clear_by))
+    return probs
+
+
+def test_silence_forgets_the_pilot_reading():
+    for p in silence_forgets_pilot_problems():
+        FAILS.append("spec 6.1 (2026-10-08): " + p)
+
+
+def test_silence_forgets_pilot_can_fail():
+    """The check discriminates: run with the spec's expectation and with the
+    opposite one, exactly one of the two reports a problem -- whichever way
+    the core under test behaves. (Asking only that the inverted run fail
+    would itself fail on a core that gets 6.1 wrong, which is not the
+    harness's fault.)"""
+    right = silence_forgets_pilot_problems(kept=True)
+    wrong = silence_forgets_pilot_problems(kept=False)
+    ok(bool(right) != bool(wrong),
+       "the silence-forgets-pilot check separates the two behaviours "
+       "(spec expectation: %d problem(s); inverted: %d)"
+       % (len(right), len(wrong)))
 
 
 # --- the non-trips ----------------------------------------------------------
