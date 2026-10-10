@@ -2017,10 +2017,20 @@ static void case_status_page_fits_the_handler_buffer(void)
      * digits. A check that can only fail on values the harness never produces is
      * the trap this project's notes name: its failure looks like its success.
      *
-     * So: rewrite every integer in the rendered page to full u32 width and
-     * require THAT to fit. It is an over-estimate by construction (no arm makes
-     * every counter 4294967295 at once), which is the right direction for a
-     * buffer bound.
+     * So: rewrite every integer in the rendered page to the full width of ITS
+     * OWN type and require THAT to fit. It is an over-estimate by construction
+     * (no arm makes every counter 4294967295 at once), which is the right
+     * direction for a buffer bound.
+     *
+     * THE WIDTH IS PER TYPE, NOT A FLAT TEN. Every integer on the page is a u32
+     * except spec 11's `uptime_ms`, which is a u64 and so runs to twenty digits
+     * -- ten more than this used to allow it. Widening EVERYTHING to twenty
+     * instead would be simpler and wrong in the expensive direction: there are
+     * on the order of seventy-five integer fields here, so it would claim the
+     * page needs about 3250 bytes, fail against the 3072-byte cap, and demand a
+     * bigger buffer to satisfy a bound no device can reach. A bound has to be
+     * loose enough to never fire wrongly and tight enough that firing means
+     * something.
      */
     int widened = 0;
     for (int i = 0; i < n; i++)
@@ -2031,15 +2041,20 @@ static void case_status_page_fits_the_handler_buffer(void)
             int j = i + 1;
             while (j < n && page[j] >= '0' && page[j] <= '9') { j++; }
             const int have = j - (i + 1);
-            widened += (have < 10) ? (10 - have) : 0;
+            /* The key, with its quotes, ends at i-1: `"uptime_ms"` is 11. */
+            const int is_u64 = (i >= 11
+                                && memcmp(page + i - 11, "\"uptime_ms\"", 11) == 0);
+            const int want = is_u64 ? 20 : 10;
+            widened += (have < want) ? (want - have) : 0;
             i = j - 1;
         }
     }
     CHECK(n + widened < (int)sizeof(page) - 1,
-          "the page is %d bytes now, but %d with every integer at u32 width, "
-          "against a %d-byte buffer. A long arm will cut it mid-number, the "
-          "device will answer HTTP 200 with unparseable JSON, and the harness "
-          "will report that as an unreachable device. Raise GI_STATUS_PAGE_CAP",
+          "the page is %d bytes now, but %d with every integer at its type's "
+          "full width, against a %d-byte buffer. A long arm will cut it "
+          "mid-number, the device will answer HTTP 200 with unparseable JSON, "
+          "and the harness will report that as an unreachable device. Raise "
+          "GI_STATUS_PAGE_CAP",
           n, n + widened, (int)sizeof(page));
 
     int depth = 0, lowest = 0;
@@ -3447,6 +3462,73 @@ static void case_backlog_reaches_the_scheduler(void)
     case_end();
 }
 
+
+/*
+ * CASES 35 AND 36 -- spec section 11, "Uptime and reset reason are reported"
+ * (user, 2026-10-09).
+ *
+ * WHY A SHIM CASE AT ALL, when the tester checks both fields on hardware. The
+ * bench can see that uptime rises and that a forced reset reads as a drop; what
+ * it cannot practically reach is the NAMING, because producing a BROWNOUT or a
+ * CPU_LOCKUP on demand means abusing the supply or crashing the chip. So the
+ * device proves the field moves and these two prove it is spelled right, which
+ * is the half a bench run would quietly skip.
+ *
+ * The unknown-value case is the one that earns its keep. `reset_reason_name()`
+ * has no `default:` that maps to a name, deliberately -- a reason ESP-IDF adds
+ * later must surface as a number rather than be filed under "UNKNOWN" -- and
+ * that is a rule about code nobody has written yet, so nothing on the bench can
+ * ever exercise it. If someone adds a tidy-looking `default: "UNKNOWN"`, this is
+ * what objects.
+ */
+static void case_uptime_rises_and_the_reason_is_named(void)
+{
+    case_begin("case 35: uptime rises and the reset reason is named (spec 11)");
+    ft_set_reset_reason(ESP_RST_BROWNOUT);
+    setup();
+    go_live();
+    ft_run(20000);
+
+    CHECK(json_has("\"reset_reason\":\"BROWNOUT\""),
+          "the page does not name this boot's reset reason BROWNOUT. Without "
+          "the name, an uptime drop says a reboot happened and nothing says "
+          "whether the supply or the firmware caused it -- which is the "
+          "question spec 11 added the field for");
+
+    const uint32_t first = json_need("\"uptime_ms\":");
+    ft_run(50000);
+    const uint32_t second = json_u32("\"uptime_ms\":");
+    CHECK(second > first,
+          "uptime_ms did not rise across 50 ms of virtual time (%lu, then "
+          "%lu). A field that does not rise cannot make a DROP mean a reboot, "
+          "and a frozen counter reads exactly like a device that never "
+          "rebooted", (unsigned long)first, (unsigned long)second);
+
+    teardown();
+    case_end();
+    ft_set_reset_reason(ESP_RST_POWERON);
+}
+
+static void case_unknown_reset_reason_is_a_number(void)
+{
+    case_begin("case 36: an unrecognised reset reason reports its number");
+    ft_set_reset_reason((esp_reset_reason_t)99);
+    setup();
+    go_live();
+    ft_run(20000);
+
+    CHECK(json_has("\"reset_reason\":\"99\""),
+          "a reset reason this firmware does not know must be reported as its "
+          "NUMBER (spec 11). Folding it into \"UNKNOWN\" would file a new cause "
+          "under an existing one, so the page would read 'the chip could not "
+          "determine the reason' at the one moment the chip determined it "
+          "exactly");
+
+    teardown();
+    case_end();
+    ft_set_reset_reason(ESP_RST_POWERON);
+}
+
 int main(int argc, char **argv)
 {
     /*
@@ -3507,6 +3589,8 @@ int main(int argc, char **argv)
     case_long_arm();
     case_long_arm_replay();
     case_backlog_reaches_the_scheduler();
+    case_uptime_rises_and_the_reason_is_named();
+    case_unknown_reset_reason_is_a_number();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
     return g_fail ? 1 : 0;

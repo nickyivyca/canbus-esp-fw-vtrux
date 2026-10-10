@@ -30,6 +30,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_system.h"      /* esp_reset_reason(), spec 11 */
 #include "driver/twai.h"
 
 #include "can.h"
@@ -1422,6 +1423,78 @@ static uint32_t   s_snap_rxq_ge[RXQ_NEDGES];
 #error "gen_inhibit status snapshot assumes a unicore critical section excludes the CAN worker"
 #endif
 
+/*
+ * Spec 11: the reset that started this boot, read ONCE at boot rather than once
+ * per page. esp_reset_reason() latches its value before app_main runs, so a
+ * per-page call would return the same thing -- but reading it once is what the
+ * spec says, and it makes the value trivially part of the page's one snapshot:
+ * an immutable cannot be torn.
+ *
+ * ESP_RST_UNKNOWN AS THE INITIAL VALUE IS DELIBERATE, AND IT IS NOT A SENTINEL.
+ * config_server_start() runs at main.c:427, six lines BEFORE
+ * gen_inhibit_init(), so there is a window in which the HTTP handler exists and
+ * this has not been latched yet. Nothing can reach it today --
+ * wifi_network_init() is at main.c:516, so there is no network to ask -- but
+ * that is an ordering in another file, and if it ever is reached the honest
+ * answer is the enum's own "cannot be determined", which the spec already
+ * covers. An invented marker like "UNREAD" would put a state on the page that
+ * no reader could look up.
+ */
+static esp_reset_reason_t s_reset_reason = ESP_RST_UNKNOWN;
+
+/*
+ * Longest name below is 10 ("PWR_GLITCH", "CPU_LOCKUP") and the number fallback
+ * is at most 11 ("-2147483648"), so 12 would do; 16 leaves room for a longer
+ * name arriving from ESP-IDF without this becoming a truncation.
+ */
+#define GI_RESET_REASON_LEN 16
+
+/*
+ * Spec 11: the enum name without its ESP_RST_ prefix, or the NUMBER when this
+ * firmware does not know the value.
+ *
+ * THERE IS DELIBERATELY NO `default:` THAT MAPS TO A NAME. A value this switch
+ * does not list is a reason ESP-IDF added since this was written, and reporting
+ * it as "UNKNOWN" would file a new cause under an existing one -- the page would
+ * read "the chip could not determine the reset reason" at exactly the moment the
+ * chip determined it precisely. The bare number is unlovely and unambiguous, and
+ * it can be looked up in esp_system.h.
+ */
+static void reset_reason_name(esp_reset_reason_t r, char *out, int n)
+{
+    const char *name = NULL;
+
+    switch (r)
+    {
+        case ESP_RST_UNKNOWN:    name = "UNKNOWN";    break;
+        case ESP_RST_POWERON:    name = "POWERON";    break;
+        case ESP_RST_EXT:        name = "EXT";        break;
+        case ESP_RST_SW:         name = "SW";         break;
+        case ESP_RST_PANIC:      name = "PANIC";      break;
+        case ESP_RST_INT_WDT:    name = "INT_WDT";    break;
+        case ESP_RST_TASK_WDT:   name = "TASK_WDT";   break;
+        case ESP_RST_WDT:        name = "WDT";        break;
+        case ESP_RST_DEEPSLEEP:  name = "DEEPSLEEP";  break;
+        case ESP_RST_BROWNOUT:   name = "BROWNOUT";   break;
+        case ESP_RST_SDIO:       name = "SDIO";       break;
+        case ESP_RST_USB:        name = "USB";        break;
+        case ESP_RST_JTAG:       name = "JTAG";       break;
+        case ESP_RST_EFUSE:      name = "EFUSE";      break;
+        case ESP_RST_PWR_GLITCH: name = "PWR_GLITCH"; break;
+        case ESP_RST_CPU_LOCKUP: name = "CPU_LOCKUP"; break;
+        default:                 break;
+    }
+
+    if (name != NULL)
+    {
+        snprintf(out, (size_t)n, "%s", name);
+    }
+    else
+    {
+        snprintf(out, (size_t)n, "%d", (int)r);
+    }
+}
+
 int gen_inhibit_get_stats_json(char *buf, int buflen)
 {
     const int64_t t_now = esp_timer_get_time();
@@ -1614,13 +1687,37 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
      *
      * `snapshot_us` is section 11's critical section, measured.
      */
+    /*
+     * Spec 11, "Uptime and reset reason are reported" (user, 2026-10-09).
+     *
+     * uptime_ms comes from `t_now` -- the SAME esp_timer_get_time() reading that
+     * every freshness field on this page is computed against, not a fresh call
+     * here. That is what puts it inside the one-snapshot rule: a reader
+     * comparing uptime_ms against key_fresh is comparing two statements about
+     * one instant rather than two instants a page-build apart.
+     *
+     * 64-BIT, NOT 32. A u32 millisecond counter wraps after 49.7 days, and a
+     * wrap presents as uptime going DOWN -- which is exactly and only what this
+     * field exists to mean. A field whose single job is "a drop is a reboot"
+     * must not be able to drop for any other reason, so it gets the width that
+     * cannot. Spec 11 says it only rises while the device stays up; at u32 that
+     * sentence would be false roughly every seven weeks on a device left
+     * powered, and the false reading would be indistinguishable from the true
+     * one.
+     */
+    char reason[GI_RESET_REASON_LEN];
+    reset_reason_name(s_reset_reason, reason, (int)sizeof(reason));
+
     n = gi_clamp(n + snprintf(buf + n, buflen - n,
                      "\"skips_withdrawn\":%lu,\"skips_late\":%lu,"
-                     "\"snapshot_us\":%lu,\"snapshot_us_max\":%lu,",
+                     "\"snapshot_us\":%lu,\"snapshot_us_max\":%lu,"
+                     "\"uptime_ms\":%llu,\"reset_reason\":\"%s\",",
                      (unsigned long)st->skips_withdrawn,
                      (unsigned long)st->skips_late,
                      (unsigned long)s_snap_us,
-                     (unsigned long)s_snap_us_max), buflen);
+                     (unsigned long)s_snap_us_max,
+                     (unsigned long long)(t_now / 1000),
+                     reason), buflen);
 
     n = gi_clamp(n + hist_json(&st->rx_gap, "rx_gap", buf + n, buflen - n),
                  buflen);
@@ -1673,6 +1770,9 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
 
 void gen_inhibit_init(void)
 {
+    /* Spec 11: read once at boot, not once per page. See reset_reason_name(). */
+    s_reset_reason = esp_reset_reason();
+
     gi_config_t cfg;
     gi_config_defaults(&cfg);
 #ifdef GEN_INHIBIT_SOC_MIN_PCT

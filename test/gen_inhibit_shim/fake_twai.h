@@ -36,6 +36,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "esp_system.h"
 
 /* ------------------------------------------------------------ the model -- */
 
@@ -368,5 +369,12 @@ void ft_set_step_hook(void (*fn)(void));
 int64_t ft_now(void);
 void    ft_start_worker(void);
 void    ft_stop_worker(void);
+
+/*
+ * Stage the boot reset reason spec 11's `reset_reason` field reports. Set it
+ * BEFORE setup(), which is where gen_inhibit_init() latches it, and put it back
+ * afterwards -- ft_reset() does not clear it, and fake_twai.c says why.
+ */
+void    ft_set_reset_reason(esp_reset_reason_t r);
 
 #endif /* FAKE_TWAI_H */

@@ -18,6 +18,7 @@
 
 #include "driver/twai.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "gen_inhibit_core.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -134,6 +135,21 @@ static int64_t g_now;
  */
 int64_t esp_timer_get_time(void) { return g_now++; }
 int64_t ft_now(void) { return g_now; }
+
+/*
+ * Spec 11's reset reason. gen_inhibit_init() latches it once, and setup() calls
+ * gen_inhibit_init(), so a case that wants a particular boot reason sets this
+ * BEFORE setup().
+ *
+ * DELIBERATELY NOT CLEARED BY ft_reset(). ft_reset() is the first statement of
+ * setup(), so a reason cleared there could never be staged by a case at all --
+ * the window between the two does not exist from the outside. The cost is that
+ * the value persists across cases, so a case that changes it puts it back.
+ */
+static esp_reset_reason_t g_reset_reason = ESP_RST_POWERON;
+
+esp_reset_reason_t esp_reset_reason(void) { return g_reset_reason; }
+void ft_set_reset_reason(esp_reset_reason_t r) { g_reset_reason = r; }
 
 /* -------------------------------------------------------------- logging -- */
 
