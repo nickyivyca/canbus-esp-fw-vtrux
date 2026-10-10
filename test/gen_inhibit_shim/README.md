@@ -101,16 +101,16 @@ py -3.14 from_capture.py \
 
 **`--repo` is not optional on this machine, and the recipe above omitted it
 until 2026-10-09.** `from_capture.py:35` defaults the project repo to
-`$GEN_INHIBIT_REPO`, else `~/Seafile/NotGit/reverse-it` -- a path that does not
-exist on every machine holding this firmware repo, this one included. The script
-refuses an absent repo by name rather than guessing (`:67`), so the old recipe
-did not produce a bad fixture, it stopped; but it stopped with a message about a
-Seafile path that nothing here explained. Pass `--repo <project root>` or set
+`$GEN_INHIBIT_REPO`, else a sync-client path under the user's home that does
+not exist on every machine holding this firmware repo -- this one included. The
+script refuses an absent repo by name rather than guessing (`:67`), so the old
+recipe did not produce a bad fixture, it stopped; but it stopped naming a
+directory that nothing here explained. Pass `--repo <project root>` or set
 `GEN_INHIBIT_REPO`.
 
-**`python3` was also wrong here** and is now `py -3.14`: on NICKY-XPS a bare
-`python3` opens the Microsoft Store rather than an interpreter. The project's
-`python-executables-reference.md` is the per-machine table.
+**`python3` was also wrong here** and is now `py -3.14`: on the Windows bench
+laptop a bare `python3` opens the Microsoft Store rather than an interpreter.
+The project's `python-executables-reference.md` is the per-machine table.
 
 **Pass `--all-ids`** — case 33 replays the whole capture. Do not generate it into the
 host harness's `scenarios/`: `run_tests.py` enumerates everything there, and
