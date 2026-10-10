@@ -21,6 +21,7 @@ is the kind that gets discounted when it matters.*
 | `test_fw_version_row.py` | Tests `check_fw_version()`: `DIAG_FW_VERSION` in `main/gen_inhibit.c` against the highest rev in the schema doc's rev table (row 22 item 10's other half; the host suite cannot see it, since every golden carries the default 1). A source bump the doc lacks, and a doc row the source never reached, each FAIL; no table or no define is NO REF. Owned by the gen-inhibit tester. |
 | `test_sources_row.py` | Tests `check_sources_older_than_image()`: a source newer than the image whose content (by `git hash-object`) equals the commit the image names is NO REFERENCE -- a branch switch, or an edit-build-revert, which mtimes cannot tell apart -- and a newer source with different content, or an image naming no readable commit, still FAILs. Fails against a comparison that always says same and one that always says different. Owned by the gen-inhibit tester. |
 | `test_flt_row.py` | Tests the "project name is not a rehearsal build" row: `_flt` is refused as a `_`-delimited token anywhere in `project_name`, not only as the last suffix (a `_DIAG` after it hid it from the old `endswith`). Fails against the old predicate. Owned by the gen-inhibit tester. |
+| `test_prod_build_refusals.py` | Tests `tools/prod_build.py`'s refusals against spec 12.3 item 3, in a throwaway `git worktree` at `--commit` (never a tree anyone uses; removed afterwards), with a copy of a verified `managed_components/` (`--components`). Its `--check-only` must pass the clean tree, then refuse each of: a tracked file edited, staged, or deleted; an untracked file; a component file edited, missing, or added; a `.component_hash` that differs from the lock. Each refusal is undone and must pass again, so it is shown to come from that change. `--check-only` must create no build directory. `--self-test` runs the same cases against fakes that always pass, always refuse, or exit 1 on a dirty tree without saying so; each must be caught. Owned by the gen-inhibit tester (2026-10-10). |
 | `reference/` | Fixtures a check compares against — see below. |
 
 ## Running them
@@ -35,6 +36,7 @@ python3 test_partition_row.py           # tests the partition-table row itself
 python3 test_flt_row.py                 # tests the rehearsal-name row itself
 python3 test_fw_version_row.py          # tests the DIAG_FW_VERSION row itself
 python3 test_sources_row.py             # tests the sources-older row itself
+python3 test_prod_build_refusals.py --components <a verified managed_components/> [--self-test]
 ```
 
 `build_output.py` takes `--dbc` and `--schema-doc` because both live in the
