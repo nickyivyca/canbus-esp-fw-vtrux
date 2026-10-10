@@ -82,15 +82,35 @@ the recorded timestamps. It looks in this harness's `scenarios/` first and falls
 to `../gen_inhibit_host/scenarios/`, so the eight host replays are reusable here
 without being copied. Neither directory is in git.
 
-**Building the long-arm stimulus** (case 33). Not in git, ~12 MB, rebuilt from a
-capture that *is* in the project repo:
+**Building the long-arm stimulus** (case 33). Not in git, rebuilt from a capture
+that *is* in the project repo. **23,241,533 bytes with LF line endings**, and
+706,283 frames (gen-inhibit tester's measurement of their own regeneration,
+2026-10-09, reported to the implementor; not independently checked here, because
+the file is generated and absent on this machine. The "~12 MB" this said until
+then was wrong by a factor of two and so could not have been used to notice a
+truncated rebuild).
 
 ```sh
-L=~/Seafile/NotGit/reverse-it/projects/vtrux/notes/artifacts/gen-inhibit/runs
+R=<project root>          # NOT a default: see below
 cd ../gen_inhibit_host
-python3 from_capture.py $L/scottsvalley_armable_300s.log --channel 0 --at 0 --for 300 \
+py -3.14 from_capture.py \
+        $R/projects/vtrux/notes/artifacts/gen-inhibit/runs/scottsvalley_armable_300s.log \
+        --repo $R --channel 0 --at 0 --for 300 \
         --all-ids --out ../gen_inhibit_shim/scenarios/replay-longarm-300s-all.scn
 ```
+
+**`--repo` is not optional on this machine, and the recipe above omitted it
+until 2026-10-09.** `from_capture.py:35` defaults the project repo to
+`$GEN_INHIBIT_REPO`, else `~/Seafile/NotGit/reverse-it` -- a path that does not
+exist on every machine holding this firmware repo, this one included. The script
+refuses an absent repo by name rather than guessing (`:67`), so the old recipe
+did not produce a bad fixture, it stopped; but it stopped with a message about a
+Seafile path that nothing here explained. Pass `--repo <project root>` or set
+`GEN_INHIBIT_REPO`.
+
+**`python3` was also wrong here** and is now `py -3.14`: on NICKY-XPS a bare
+`python3` opens the Microsoft Store rather than an interpreter. The project's
+`python-executables-reference.md` is the per-machine table.
 
 **Pass `--all-ids`** — case 33 replays the whole capture. Do not generate it into the
 host harness's `scenarios/`: `run_tests.py` enumerates everything there, and
@@ -101,6 +121,13 @@ stimulus lines and the comment lines — because a replay-driven case has no gol
 hang a checksum on (spec 12.4, widened 2026-10-03). A stimulus mismatch **fails** the
 case; a comment-only change is a **notice**. `./shim_test --pin-stimulus` writes the
 file; run it only after checking the scenario is the one you mean.
+
+**The recipe above is known to reproduce the pin.** The 2026-10-09 regeneration
+came back with both of `stimulus.fnv`'s recorded checksums for this scenario --
+`0ec984c308821e55` for the stimulus lines and `d2bf76277d4595d4` for the
+comments (gen-inhibit tester; the two hashes are the ones in the file, checked
+here). So a rebuilt fixture that *fails* the pin is a changed recipe, a changed
+capture or a truncated write, not drift in the generator.
 
 **Every case declares its transmit timing** (spec 12.4), printed as a `timing:` line:
 default air time, per-ID overrides, stalls armed. It is a *high-water* record over the
