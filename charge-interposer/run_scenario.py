@@ -1736,6 +1736,20 @@ def _repeat_bursts(intp_text, veh_text, frames=None, chg_text=""):
                          for s in superseded)))
 
 
+def _diag_check(sc, diag, fstate):
+    """-> (ok, why) for diag_frames_ok(). Spec 9 at c383868a834b6158 (user,
+    2026-10-10): every scenario decodes the diagnostic CAN frames "except a
+    scenario that runs the core in bypass, which is exempt by its own
+    declaration (`--bypass`, as in 9.1); a scenario that does not declare it
+    and shows no diagnostic frames fails". So the exemption is keyed off the
+    scenario DECLARING --bypass, never off its name or off no frames having
+    appeared -- the same rule as the L1 replay."""
+    if "--bypass" in sc.interposer:
+        return (True, "not applicable: the scenario declares --bypass, so "
+                      "there is no core to report (spec 9)")
+    return _diag_frames_ok(diag, fstate)
+
+
 def _diag_frames_ok(diag, fstate):
     """-> (ok, why). Every frame carries the schema and firmware version the
     harness was built against, and the last 0x7F4 agrees with the final
@@ -2141,7 +2155,7 @@ def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
             ok, why = _repeat_bursts(intp, veh, chg_text=chg)
             results.append((ok, "spec 4.1 repeats: %s" % why))
         elif kind == "diag_frames_ok":
-            ok, why = _diag_frames_ok(diag, fstate)
+            ok, why = _diag_check(sc, diag, fstate)
             results.append((ok, "diag frames: %s" % why))
         elif kind == "fault_or_flow_first":
             ok, why = _fault_or_flow_first(intp, veh, chg, diag, val,

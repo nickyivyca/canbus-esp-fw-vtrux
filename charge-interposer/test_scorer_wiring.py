@@ -216,6 +216,33 @@ def hold_follows_loads_cases():
           "a missing trace gives None, not an empty pass")
 
 
+def bypass_diag_cases():
+    """Spec 9 at c383868a834b6158 (user, 2026-10-10): the diag check is
+    waived only for a scenario DECLARING --bypass; one that declares nothing
+    and shows no diagnostic frames fails."""
+    bypassed = [sc.name for sc in R.SCENARIOS if "--bypass" in sc.interposer]
+    check(bypassed == ["evap-bypass"],
+          "exactly one scenario declares --bypass: %s" % bypassed)
+
+    def fake(name, interposer):
+        return R.Scenario(name, "", vehicle=[], interposer=interposer)
+    ok, why = R._diag_check(fake("x", ["--bypass"]), [], "PASSTHROUGH")
+    check(ok and "not applicable" in why,
+          "a scenario declaring --bypass with no diag frames: not "
+          "applicable -> %s" % why)
+    ok, why = R._diag_check(fake("x", []), [], "PASSTHROUGH")
+    check(not ok and "none seen" in why,
+          "a scenario declaring nothing with no diag frames FAILS -> %s"
+          % why)
+    ok, why = R._diag_check(fake("evap-bypass", []), [], "PASSTHROUGH")
+    check(not ok and "none seen" in why,
+          "...even one NAMED evap-bypass: the exemption is the declaration, "
+          "not the name -> %s" % why)
+    ok, why = R._diag_check(fake("x", ["--other"]), _diag(), "PASSTHROUGH")
+    check(ok, "a scenario declaring nothing, with clean frames, passes -> %s"
+          % why)
+
+
 def main():
     print("spec 9: every scenario decodes the diag frames")
     for sc in R.SCENARIOS:
@@ -226,6 +253,9 @@ def main():
             check("diag_no_rewrite_after_release" in kinds,
                   "%s (a termination scenario) asks for "
                   "no_rewrite_after_release" % sc.name)
+
+    print("\nspec 9 (c383868a): a declared --bypass is exempt, nothing else")
+    bypass_diag_cases()
 
     print("\nthe spec's literals, not machine.py's")
     check(R.BURST_FRAMES == 20 and R.BURST_MS == 1000,
