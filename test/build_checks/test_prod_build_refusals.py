@@ -19,6 +19,11 @@ throwaway `git worktree` at --commit, never in a working tree anyone uses:
     come from that change and not from the tree.
   - --check-only must never create a build directory.
 
+IT TESTS THE SCRIPT AS COMMITTED at --commit, never anyone's working tree, so an
+uncommitted fix to prod_build.py is invisible to it and the run reports the old
+behaviour (the implementor hit exactly this, 2026-10-10). Commit first, then run;
+the first output line names the commit tested.
+
 The population is checked before anything is judged: the component must have
 a CHECKSUMS.json listing at least one file, and the first listed file must
 exist, or the component cases would pass on nothing.
@@ -185,17 +190,27 @@ def check_all(tree, script, comp):
 
 
 def wrong_directory(tree, script):
-    """The script, copied into a directory that is not the repo, must refuse by identity."""
-    other = os.path.join(tree, "build_not_a_repo_probe")
+    """The script, copied into a directory that is not the repo, must refuse by identity.
+
+    The directory is a SIBLING of the throwaway tree and must be outside every git
+    repository: inside one, git knows the markers and the script rightly reads their
+    absence as a dirty tree (the first version put it inside the throwaway tree and
+    went red against ddddfea for that reason, 2026-10-10)."""
+    label = "refused: run from a directory that is not the repo, by identity"
+    other = tree + "-not-a-repo"
     os.makedirs(os.path.join(other, "tools"))
     try:
+        inside = git(["rev-parse", "--show-toplevel"], other)
+        if inside.returncode == 0:
+            return (label, False, "probe dir is inside a git repo (%s); case not run"
+                    % inside.stdout.strip())
         copy = os.path.join(other, "tools", os.path.basename(script))
         shutil.copyfile(script, copy)
         r = subprocess.run([sys.executable, copy, "--check-only"], cwd=other,
                            capture_output=True, text=True)
         txt = r.stdout + r.stderr
         why = [ln.strip()[:110] for ln in txt.splitlines() if ln.startswith("REFUSED")]
-        return ("refused: run from a directory that is not the repo, by identity",
+        return (label,
                 refused_for("identity", r.returncode, txt),
                 "rc %d; %s" % (r.returncode, why[0] if why else "no REFUSED line"))
     finally:
