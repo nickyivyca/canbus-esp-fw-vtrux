@@ -87,15 +87,48 @@ def fail(msg):
     return False
 
 
+def tracked_at_head(rel):
+    """Does HEAD have this path? False if this is not a git repo at all."""
+    # Forward slashes: git's path syntax, not the platform's.
+    r = run(["git", "cat-file", "-e", "HEAD:%s" % rel.replace(os.sep, "/")])
+    return r.returncode == 0
+
+
 def check_repo():
     """This has to be the firmware repo, not whatever directory we are in."""
-    need = [os.path.join(REPO, "CMakeLists.txt"),
-            os.path.join(REPO, "main", "gen_inhibit.c"),
-            os.path.join(REPO, "dependencies.lock")]
-    missing = [p for p in need if not os.path.exists(p)]
-    if missing:
+    need = ["CMakeLists.txt",
+            os.path.join("main", "gen_inhibit.c"),
+            "dependencies.lock"]
+    missing = [rel for rel in need
+               if not os.path.exists(os.path.join(REPO, rel))]
+    if not missing:
+        return True
+
+    #
+    # A MARKER CAN BE MISSING FOR TWO OPPOSITE REASONS, and until 2026-10-10
+    # this reported both as the first one.
+    #
+    # Wrong directory: the file is not here and git has never heard of it.
+    # Deleted file: the file is not here, HEAD has it, and the tree is simply
+    # dirty -- which check_clean_tree() below refuses, by name and with the
+    # spec bullet.
+    #
+    # Reporting a deletion as "this is not the wican-fw-vtrux repo" sends a
+    # reader to look for a wrong path when what they have is an uncommitted
+    # delete. Both cases still refuse, in exactly the cases spec 12.3 item 3
+    # names; only the reason changes, and one of the two reasons was false.
+    #
+    # Found 2026-10-10 by the tester's test_prod_build_refusals.py, whose
+    # deleted-source case used main/gen_inhibit.c -- one of these very markers
+    # -- so it was passing on the identity guard and would have passed with
+    # the clean-tree check removed entirely. Reviewer's ruling the same day:
+    # make the reason true, since the spec fixes when the script refuses and
+    # not the wording.
+    #
+    unknown = [rel for rel in missing if not tracked_at_head(rel)]
+    if unknown:
         return fail("%s is not the wican-fw-vtrux repo (missing %s)"
-                    % (REPO, ", ".join(os.path.basename(m) for m in missing)))
+                    % (REPO, ", ".join(os.path.basename(m) for m in unknown)))
     return True
 
 
