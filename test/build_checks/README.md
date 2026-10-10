@@ -4,7 +4,7 @@ These run on **the image that will be flashed**, not on the source. The WiCAN
 OBD has **no external USB port** and no factory reset, so a bad image is
 recoverable only by bootloader rollback or by opening the case -- the ESP32-C3's
 native USB-serial/JTAG is on the board and reachable once it is off, which is how
-the bench unit is flashed (over that USB console). Neither is a field
+the bench unit is flashed (COM4, MAC d4:f9:8d:1d:0d:74). Neither is a field
 option on a dongle plugged into a truck, which is what makes every one of these
 checks a guard against a way to lose a device. *Corrected 2026-09-27 (user): this
 said "no USB port ... recoverable only by soldering to UART0 or by bootloader
