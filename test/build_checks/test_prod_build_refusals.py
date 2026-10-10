@@ -19,6 +19,11 @@ throwaway `git worktree` at --commit, never in a working tree anyone uses:
     come from that change and not from the tree.
   - --check-only must never create a build directory.
 
+IT TESTS THE SCRIPT AS COMMITTED at --commit, never anyone's working tree, so an
+uncommitted fix to prod_build.py is invisible to it and the run reports the old
+behaviour (the implementor hit exactly this, 2026-10-10). Commit first, then run;
+the first output line names the commit tested.
+
 The population is checked before anything is judged: the component must have
 a CHECKSUMS.json listing at least one file, and the first listed file must
 exist, or the component cases would pass on nothing.
@@ -47,6 +52,14 @@ FAKE_REFUSE = ('import sys\nprint("NOT BUILT. (fake)")\nsys.exit(1)\n')
 # Passes a clean tree, and on a dirty one exits 1 WITHOUT saying it refused (a crash
 # looks like this). Only components then pass, so every tree row must fail: a
 # non-zero exit alone is not a refusal.
+# Refuses a dirty tree, but by the WRONG rule (as if the clean-tree check were gone
+# and only the repo-identity check were left). Every tree row must fail.
+FAKE_WRONG_RULE = ('import subprocess, sys\n'
+                   'r = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)\n'
+                   'lines = [l for l in r.stdout.splitlines() if "fake_prod_build" not in l]\n'
+                   'if lines:\n    print("REFUSED: this is not the repo")\n'
+                   '    print("NOT BUILT.")\n    sys.exit(1)\n'
+                   'print("CHECK ONLY: every refusal passed. Nothing was built.")\n')
 FAKE_SILENT = ('import subprocess, sys\n'
                'r = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)\n'
                'lines = [l for l in r.stdout.splitlines() if "fake_prod_build" not in l]\n'
@@ -64,12 +77,16 @@ def run_script(tree, script):
     return r.returncode, r.stdout + r.stderr
 
 
-def refused(rc, txt):
-    """A refusal is a non-zero exit that says so. The script ends a refusal of the
-    tree or a component with "NOT BUILT"; a tree it does not recognise as the repo
-    (e.g. main/gen_inhibit.c gone) is refused earlier, with a "REFUSED:" line and no
-    summary, which is a refusal all the same (2026-10-10)."""
-    return rc != 0 and ("NOT BUILT" in txt or "REFUSED" in txt)
+RULE_WORDS = {"tree": ("uncommitted",), "component": ("component",),
+              "identity": ("not the", "repo")}
+
+
+def refused_for(rule, rc, txt):
+    """A refusal by the named rule: non-zero exit and a REFUSED line carrying every
+    word of that rule's cause phrase (case-insensitive)."""
+    return rc != 0 and any(ln.startswith("REFUSED")
+                           and all(w in ln.lower() for w in RULE_WORDS[rule])
+                           for ln in txt.splitlines())
 
 
 def build_dirs(tree):
@@ -78,10 +95,19 @@ def build_dirs(tree):
 
 
 class Edit:
-    """One change to the tree, and its undo."""
+    """One change to the tree, its undo, and the rule that must refuse it.
 
-    def __init__(self, name, apply, undo):
-        self.name, self.apply, self.undo = name, apply, undo
+    rule "tree": the refusal must name uncommitted changes; "component": it must name
+    the downloaded component; "identity": it must say the directory is not the repo.
+    Matching the cause phrase (never the exact text) is what lets a case fail for the
+    wrong reason: deleting main/gen_inhibit.c, a file the script used to recognise the
+    repo, passed on the identity refusal and would have passed with the clean-tree
+    check gone (implementor, 2026-10-10). Reviewer ruling the same day: a tracked file
+    deleted is a dirty tree and must be refused as one, whichever file it is; a
+    directory that is not the repo is refused by identity."""
+
+    def __init__(self, name, apply, undo, rule):
+        self.name, self.apply, self.undo, self.rule = name, apply, undo, rule
 
 
 def append_byte(path):
@@ -99,9 +125,10 @@ def cases(tree, comp):
     listed = json.load(open(os.path.join(comp, "CHECKSUMS.json"), encoding="utf-8"))["files"]
     first = os.path.join(comp, listed[0]["path"])
     tracked = os.path.join(tree, "main", "gen_inhibit.c")
+    can_c = os.path.join(tree, "main", "can.c")
     chash = os.path.join(comp, ".component_hash")
     readme = os.path.join(tree, "README.md")
-    keep = {p: open(p, "rb").read() for p in (first, tracked, chash, readme)}
+    keep = {p: open(p, "rb").read() for p in (first, tracked, chash, readme, can_c)}
     extra_main = os.path.join(tree, "main", "untracked_probe.c")
     extra_comp = os.path.join(comp, "unlisted_probe.c")
     moved = first + ".moved_by_test"
@@ -112,24 +139,26 @@ def cases(tree, comp):
 
     return [
         Edit("tracked file edited", lambda: append_byte(tracked),
-             lambda: restore_bytes(tracked, keep[tracked])),
+             lambda: restore_bytes(tracked, keep[tracked]), "tree"),
         Edit("tracked edit staged", lambda: (append_byte(tracked), git(["add", tracked], tree)),
              lambda: (git(["reset", "-q", "--", tracked], tree),
-                      restore_bytes(tracked, keep[tracked]))),
+                      restore_bytes(tracked, keep[tracked])), "tree"),
         Edit("tracked file deleted (README.md)", lambda: os.remove(readme),
-             lambda: restore_bytes(readme, keep[readme])),
-        Edit("tracked source deleted (main/gen_inhibit.c)", lambda: os.remove(tracked),
-             lambda: restore_bytes(tracked, keep[tracked])),
+             lambda: restore_bytes(readme, keep[readme]), "tree"),
+        Edit("tracked source deleted (main/can.c)", lambda: os.remove(can_c),
+             lambda: restore_bytes(can_c, keep[can_c]), "tree"),
+        Edit("tracked source deleted (main/gen_inhibit.c)",
+             lambda: os.remove(tracked), lambda: restore_bytes(tracked, keep[tracked]), "tree"),
         Edit("untracked file added", lambda: restore_bytes(extra_main, b"int x;\n"),
-             lambda: os.remove(extra_main)),
+             lambda: os.remove(extra_main), "tree"),
         Edit("component file edited (one byte appended)", lambda: append_byte(first),
-             lambda: restore_bytes(first, keep[first])),
+             lambda: restore_bytes(first, keep[first]), "component"),
         Edit("component file missing", lambda: os.rename(first, moved),
-             lambda: os.rename(moved, first)),
+             lambda: os.rename(moved, first), "component"),
         Edit("component carries an unlisted file", lambda: restore_bytes(extra_comp, b"int y;\n"),
-             lambda: os.remove(extra_comp)),
+             lambda: os.remove(extra_comp), "component"),
         Edit(".component_hash differs from dependencies.lock", flip_hash,
-             lambda: restore_bytes(chash, keep[chash])),
+             lambda: restore_bytes(chash, keep[chash]), "component"),
     ]
 
 
@@ -150,13 +179,42 @@ def check_all(tree, script, comp):
         finally:
             e.undo()
         why = [ln.strip()[:110] for ln in txt.splitlines() if ln.startswith("REFUSED")]
-        out.append(("refused: %s" % e.name, refused(rc, txt),
+        out.append(("refused: %s" % e.name, refused_for(e.rule, rc, txt),
                     "rc %d; %s" % (rc, why[0] if why else "no REFUSED line")))
         rc2, _ = run_script(tree, script)
         out.append(("  passes again once undone", rc2 == 0, "rc %d" % rc2))
     out.append(("--check-only created no build directory", build_dirs(tree) == [],
                 str(build_dirs(tree))))
+    out.append(wrong_directory(tree, script))
     return out
+
+
+def wrong_directory(tree, script):
+    """The script, copied into a directory that is not the repo, must refuse by identity.
+
+    The directory is a SIBLING of the throwaway tree and must be outside every git
+    repository: inside one, git knows the markers and the script rightly reads their
+    absence as a dirty tree (the first version put it inside the throwaway tree and
+    went red against ddddfea for that reason, 2026-10-10)."""
+    label = "refused: run from a directory that is not the repo, by identity"
+    other = tree + "-not-a-repo"
+    os.makedirs(os.path.join(other, "tools"))
+    try:
+        inside = git(["rev-parse", "--show-toplevel"], other)
+        if inside.returncode == 0:
+            return (label, False, "probe dir is inside a git repo (%s); case not run"
+                    % inside.stdout.strip())
+        copy = os.path.join(other, "tools", os.path.basename(script))
+        shutil.copyfile(script, copy)
+        r = subprocess.run([sys.executable, copy, "--check-only"], cwd=other,
+                           capture_output=True, text=True)
+        txt = r.stdout + r.stderr
+        why = [ln.strip()[:110] for ln in txt.splitlines() if ln.startswith("REFUSED")]
+        return (label,
+                refused_for("identity", r.returncode, txt),
+                "rc %d; %s" % (r.returncode, why[0] if why else "no REFUSED line"))
+    finally:
+        shutil.rmtree(other, ignore_errors=True)
 
 
 def make_tree(repo, commit, components, where):
@@ -208,7 +266,9 @@ def main():
             for name, body, must in (("always passes", FAKE_PASS, "refused:"),
                                      ("always refuses", FAKE_REFUSE, "baseline:"),
                                      ("exits 1 on a dirty tree without saying so",
-                                      FAKE_SILENT, "refused: tracked")):
+                                      FAKE_SILENT, "refused: tracked"),
+                                     ("refuses a dirty tree by the wrong rule",
+                                      FAKE_WRONG_RULE, "refused: tracked")):
                 fake = os.path.join(where, "fake_prod_build.py")
                 restore_bytes(fake, body.encode())
                 git(["update-index", "--add", "--cacheinfo", "100644",
