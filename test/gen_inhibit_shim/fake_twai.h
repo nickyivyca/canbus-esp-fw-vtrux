@@ -161,6 +161,7 @@ typedef struct
  * Non-zero means the handshake was skipped. Removing the wait in
  * gen_inhibit_quiesce() left E1 green until this existed.
  */
+bool ft_in_receive(void);
 int ft_unsafe_teardowns(void);
 
 /* The mode twai_driver_install() was last given (spec 3, OBSERVE). */
@@ -365,6 +366,16 @@ int64_t ft_run(int64_t us);
  * holds.
  */
 void ft_set_step_hook(void (*fn)(void));
+
+/*
+ * Spec 3's wake on a mode change. Read the long note in fake_twai.c before
+ * writing a case on these: what is modelled is that the wake LATCHES and
+ * reaches the worker, NOT that it shortens a sleep in progress. The latter has
+ * no observable consequence in this harness and belongs on the bench.
+ */
+int ft_wakes_sent(void);
+int ft_wakes_misdirected(void);
+int ft_wakes_taken_pending(void);
 
 int64_t ft_now(void);
 void    ft_start_worker(void);

@@ -130,9 +130,30 @@ _Static_assert(GEN_INHIBIT_PROBE_ID == GI_PROBE_ID, "id drift");
  * flashed or released; the schema doc's rev table records it.
  *
  * The accompanying diag_schema_ver 5 -> 6 guards decoders; this guards the
- * human. */
+ * human.
+ *
+ * A REV 7 DEVICE (the 2026-10-10 go-live batch, user) differs in three ways a
+ * log reader has to know about, and none of them moves a field.
+ *
+ * It will not go live while its receive queue still holds a frame, and says
+ * so as diag_arm_block 15 (spec 7 condition 9). A rev 7 log can therefore
+ * show a gap between the gate's conditions being satisfied and the inhibit
+ * going live where a rev 6 log shows none.
+ *
+ * It evaluates trip 6 at the moment the gate passes rather than after the
+ * first answer (spec 7, "Checked before going live"). A rev 6 log of a re-arm
+ * into a recent burst carries exactly one inhibit frame before the latch; a
+ * rev 7 log of the same bus carries none. Reason 6 still means what it meant.
+ *
+ * A mode change wakes its worker (spec 3), so the up-to-50 ms window on an
+ * arm from OFF and the up-to-100 ms window on a re-arm from OBSERVE, in which
+ * earlier revs went live behind a queue that was already filling, are gone.
+ * This is the change that makes the two above rarely visible in practice,
+ * which is the reason all three are in one rev rather than three.
+ *
+ * diag_schema_ver goes 6 -> 7 with this rev, for arm_block 15. */
 #ifndef DIAG_FW_VERSION
-#define DIAG_FW_VERSION              6
+#define DIAG_FW_VERSION              7
 #endif
 #ifndef GIT_SHA
 #define GIT_SHA "unknown"
@@ -164,9 +185,60 @@ static gi_state_t s_core;
 static bool     s_we_enabled_bus;   /* we called can_enable(), so we may disable */
 static volatile bool s_release_bus; /* disarm asked us to hand the bus back */
 
-static TaskHandle_t  s_worker;      /* the worker task, for self-call detection */
+static TaskHandle_t  s_worker;      /* the worker task: self-call detection, and the wake */
 static volatile bool s_quiesce;     /* an external caller needs the driver freed */
 static volatile bool s_parked;      /* worker is provably outside twai_receive() */
+
+/*
+ * SPEC 3, "A mode change takes effect at once" (user, 2026-10-10).
+ *
+ * The worker used to poll for a mode change every 50 ms in its OFF branch and
+ * every 100 ms on its receive-error path. Both sleeps happen with the driver
+ * already installed and already receiving into the queue, so the queue filled
+ * for the rest of the sleep and the device went live answering commands the
+ * VCM had already passed: about 120 frames on every re-arm from OBSERVE, and
+ * 1 boot in 3 on the auto-arm path (review tracker, re-arm stale frames).
+ *
+ * A task notification rather than a flag or a semaphore, for one property: it
+ * LATCHES. gen_inhibit_set_mode() can run before the worker ever reaches a
+ * sleep -- it does on an auto-arm boot -- and the notification then sits in
+ * the TCB and makes the first ulTaskNotifyTake() return at once. A condition
+ * variable or a flag checked at the top of the sleep has a window where the
+ * wake is lost; this has none, which is the half of the spec paragraph that
+ * says the wake must survive arriving early.
+ *
+ * Index 0 is shared with anything else that notifies this task. Nothing does:
+ * the TWAI driver hands frames over a queue, which does not touch the
+ * notification value, and nothing else holds the handle. A spurious
+ * notification from a future caller would shorten one sleep, which is why
+ * every sleep below is still bounded and the loop still re-reads the mode.
+ *
+ * NOT a cure for twai_receive() blocking up to GEN_INHIBIT_RX_TIMEOUT_MS in
+ * the old mode: a notification cannot interrupt that call. It does not have
+ * to. The driver is up and this worker is draining it in that case, so the
+ * queue is not growing, and spec 7 condition 9 holds back the go-live if it
+ * is.
+ */
+static void worker_sleep(uint32_t ms)
+{
+    (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(ms));
+}
+
+static void worker_wake(void)
+{
+    /*
+     * NULL before gen_inhibit_init() runs, and that window is real:
+     * config_server_start() is six lines ahead of gen_inhibit_init() in
+     * app_main(), so a POST can reach gen_inhibit_set_mode() before the
+     * worker exists. There is nothing to wake then -- the worker reads the
+     * mode in its first iteration anyway.
+     */
+    if (s_worker != NULL)
+    {
+        xTaskNotifyGive(s_worker);
+    }
+}
+
 /*
  * Spec 7 trip 7: TWAI_ALERT_TX_FAILED seen since the current inhibit frame
  * was queued. Carried between polls because the alert can arrive before the
@@ -300,16 +372,14 @@ static uint32_t s_rxq_samples;
 static uint32_t s_rxq_max;
 static uint32_t s_rxq_ge[RXQ_NEDGES];
 
-static void rxq_sample(void)
+/*
+ * Takes the backlog rather than reading it: spec 7 condition 9 needs the same
+ * figure unconditionally, so the status call moved to rx_backlog_sample()
+ * below and this is now only the histogram. `backlog` counts the frame just
+ * dequeued, as it always did.
+ */
+static void rxq_note(uint32_t backlog)
 {
-    twai_status_info_t info;
-    if (twai_get_status_info(&info) != ESP_OK)
-    {
-        return;
-    }
-    /* msgs_to_rx is what is STILL waiting; the frame just dequeued counts too. */
-    uint32_t backlog = (uint32_t)info.msgs_to_rx + 1;
-
     s_rxq_samples++;
     if (backlog > s_rxq_max)
     {
@@ -363,11 +433,60 @@ static int rxq_json(uint32_t samples, uint32_t maxv, const uint32_t *ge,
 }
 
 #else
-#define rxq_sample()            do { } while (0)
+#define rxq_note(backlog)       do { (void)(backlog); } while (0)
 #define rxq_reset()             do { } while (0)
 #define RXQ_NEDGES              1
 #define rxq_json(samples, maxv, ge, buf, buflen)    (0)
 #endif
+
+/*
+ * SPEC 7 CONDITION 9 (user, 2026-10-10): how many frames were STILL WAITING
+ * when this worker last took one. Zero means the frame in hand was the last
+ * one waiting, which is the condition for going live.
+ *
+ * PRODUCT STATE, NOT INSTRUMENTATION. It lives outside GI_INSTRUMENT_RXQ
+ * because a build without the instrument must gate identically -- those are
+ * the builds that go to the truck.
+ *
+ * STARTS AT 1, AND THAT IS THE WHOLE ARM-ENTRY QUESTION. Until this worker
+ * has actually taken a frame in this arm there is no "frame just taken", so
+ * the condition is not satisfied and the honest reading is not-drained.
+ * Reporting drained instead would leave the window the condition exists to
+ * close wide open: gi_set_mode() deliberately does NOT clear signal
+ * freshness, so a 0x051 seen 100 ms before a re-arm is still fresh and the
+ * gate could otherwise pass on the first tick after arming -- before the
+ * worker had looked at the queue even once. On a live bus the cost is the one
+ * frame it takes to find out, a couple of milliseconds; on a bus that has
+ * gone silent the device does not go live, which is correct for other reasons
+ * as well.
+ */
+static uint32_t s_rx_waiting = 1;
+
+/*
+ * FIRST THING AFTER THE DEQUEUE, and that is the point of it. Anything between
+ * the receive and this read lets the queue drain further and understates the
+ * backlog -- and reading it at the top of the loop instead, where the gate
+ * runs, asks a different question entirely ("is anything waiting now"), which
+ * on a 400 frame/s bus is routinely yes and stops the device ever going live.
+ * Measured: 31 checks across 18 shim cases, every one of them because nothing
+ * went live.
+ */
+static void rx_backlog_sample(void)
+{
+    twai_status_info_t info;
+    if (twai_get_status_info(&info) != ESP_OK)
+    {
+        /*
+         * No reading. Not evidence of a backlog, so it does not block the
+         * gate -- and a driver that cannot be interrogated is not a driver
+         * this device is going live behind for other reasons.
+         */
+        s_rx_waiting = 0;
+        return;
+    }
+    s_rx_waiting = (uint32_t)info.msgs_to_rx;
+    rxq_note(s_rx_waiting + 1);
+}
 
 static uint32_t fnv1a32(const char *s)
 {
@@ -403,6 +522,14 @@ static void bus_snapshot(gi_bus_t *b)
         b->err_valid       = true;
         b->bus_error_count = st.bus_error_count;
     }
+    /*
+     * Spec 7 condition 9 (user, 2026-10-10). NOT st.msgs_to_rx from the read
+     * above: that is the queue as it stands at the top of the worker loop,
+     * and the condition is about the moment the last frame was taken. See
+     * rx_backlog_sample(). Set outside the ESP_OK branch because it is our
+     * own record either way.
+     */
+    b->rx_waiting = s_rx_waiting;
 }
 
 /*
@@ -1113,6 +1240,11 @@ esp_err_t gen_inhibit_set_mode(gen_inhibit_mode_t mode, uint32_t offset_us)
     gi_events_t ev = { 0 };
     rxq_reset();
     /*
+     * Back to not-drained for the new arm: this arm has taken no frames, and
+     * last arm's reading says nothing about this one. See s_rx_waiting.
+     */
+    s_rx_waiting = 1;
+    /*
      * A fresh scheduler for every mode change. Its counters are per-arm like every
      * other figure on the status page, and a stale `held` flag from a previous arm
      * would stop the first frame of this one going out.
@@ -1149,6 +1281,13 @@ esp_err_t gen_inhibit_set_mode(gen_inhibit_mode_t mode, uint32_t offset_us)
     {
         s_release_bus = true;
     }
+    /*
+     * SPEC 3, "A MODE CHANGE TAKES EFFECT AT ONCE" (user, 2026-10-10). Last
+     * thing in the function, after s_release_bus above: the worker acts on
+     * everything this function set, so waking it before the last write would
+     * have it read half of them.
+     */
+    worker_wake();
     return ESP_OK;
 }
 
@@ -1205,7 +1344,12 @@ static void gen_inhibit_task(void *arg)
 {
     twai_message_t rx;
 
-    s_worker = xTaskGetCurrentTaskHandle();
+    /*
+     * s_worker is set by gen_inhibit_init() from xTaskCreate(), NOT here.
+     * Spec 3's wake needs a handle that exists before this task's first
+     * instruction, because gen_inhibit_init() arms an auto-arm build
+     * immediately after creating it and the wake must not be lost.
+     */
     ESP_LOGI(TAG, "worker started (prio %d)", GEN_INHIBIT_TASK_PRIO);
 
     while (1)
@@ -1239,7 +1383,7 @@ static void gen_inhibit_task(void *arg)
                 }
                 ESP_LOGW(TAG, "bus released");
             }
-            vTaskDelay(pdMS_TO_TICKS(50));
+            worker_sleep(50);
             continue;
         }
 
@@ -1296,14 +1440,29 @@ static void gen_inhibit_task(void *arg)
             }
             gi_on_rx_error(&s_core, esp_timer_get_time(), &ev);
             report_events(&ev);
-            vTaskDelay(pdMS_TO_TICKS(100));
+            /*
+             * Interruptible for spec 3, and this path is the one that
+             * MEASURED worst. A re-arm from OBSERVE tears the driver down and
+             * reinstalls it in normal mode from the caller's task, so this
+             * worker's twai_receive() returns ESP_ERR_INVALID_STATE and lands
+             * here -- then slept 100 ms while the new driver was already
+             * filling the queue. That is the 120 frames the spec 3 paragraph
+             * cites, and a wake that only covered the OFF branch would not
+             * have touched it.
+             *
+             * Still a yield in every other case: the notification is
+             * consumed, so at most one iteration per mode change skips the
+             * delay, and the busy-wait at priority 18 that this delay exists
+             * to prevent cannot come back.
+             */
+            worker_sleep(100);
             continue;
         }
         /*
          * FIRST THING AFTER THE DEQUEUE. Anything between the receive and this
          * read lets the queue drain further and understates the backlog.
          */
-        rxq_sample();
+        rx_backlog_sample();
         gi_on_rx_ok(&s_core);
 
         {
@@ -1779,8 +1938,20 @@ void gen_inhibit_init(void)
 
     gi_init(&s_core, &cfg);
 
+    /*
+     * The handle comes out of xTaskCreate() rather than out of the task
+     * itself, which is what makes the wake below safe to send: FreeRTOS
+     * writes *pxCreatedTask before the new task can be scheduled, so
+     * s_worker is valid here even though the worker has not run a single
+     * instruction, and a notification sent now is latched in its TCB and
+     * ends its first sleep.
+     *
+     * The auto-arm boot path is exactly that race: xTaskCreate() then
+     * gen_inhibit_set_mode() a few lines below. It was 1 in 3 boots going
+     * live with a backlog.
+     */
     xTaskCreate(gen_inhibit_task, "gen_inhibit", GEN_INHIBIT_STACK, NULL,
-                GEN_INHIBIT_TASK_PRIO, NULL);
+                GEN_INHIBIT_TASK_PRIO, &s_worker);
 
     if (GEN_INHIBIT_AUTOARM_MODE != GEN_INHIBIT_OFF)
     {

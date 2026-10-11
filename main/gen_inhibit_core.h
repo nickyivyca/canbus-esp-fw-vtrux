@@ -217,7 +217,16 @@ extern "C" {
  */
 #define GI_DIAG_AFTER_TX_US 1000
 
-#define GI_DIAG_SCHEMA_VER  6
+/*
+ * 6 -> 7 on 2026-10-10 (user): `diag_arm_block` gains value 15, "receive
+ * queue not drained" (spec 7 condition 9). An appended enum value is a schema
+ * change because a decoder holding the old table reads 15 as unknown, so the
+ * version is what tells it to fetch a newer table rather than to guess.
+ *
+ * wican_diag_schema.md's Version 7 entry and the DBC's VERSION line carry the
+ * same number; the three move together or a log becomes unreadable.
+ */
+#define GI_DIAG_SCHEMA_VER  7
 
 /*
  * Slots in the trip 6 error-frame history. It only ever has to hold
@@ -465,6 +474,17 @@ typedef enum
     GI_BLOCK_NO_FRESH_SHIFT,    /* 0x639 stale (spec 7 condition 4) */
     GI_BLOCK_DISABLED,          /* a section 6 release has latched */
     GI_BLOCK_ABORTED,           /* a section 7 abort has latched (spec 7.1) */
+    /*
+     * Spec 7 condition 9 (added 2026-10-10, user). The receive queue was not
+     * drained at the moment the gate was evaluated, so going live would
+     * answer a command the VCM has already passed.
+     *
+     * APPEND ONLY, and this one is published twice over: `diag_arm_block` 15
+     * in wican_diag_schema.md and `VAL_ 2040 diag_arm_block ... 15
+     * "rx_not_drained"` in vtrux-wican-diag.dbc. Both are spec. Inserting a
+     * value above this one renumbers a published wire field.
+     */
+    GI_BLOCK_RX_NOT_DRAINED,
 } gi_block_t;
 
 typedef enum
@@ -822,6 +842,24 @@ typedef struct
     bool     bus_ours;          /* we were the ones who enabled it */
     bool     err_valid;         /* bus_error_count below is meaningful */
     uint32_t bus_error_count;   /* controller's own counter, free-running */
+    /*
+     * Frames STILL WAITING in the receive queue, not counting the one the
+     * caller has just taken (spec 7 condition 9, added 2026-10-10, user).
+     * Zero means drained, and the gate requires zero before going live.
+     *
+     * ZERO IS THE SAFE DEFAULT ON PURPOSE. A caller that memsets this struct
+     * and fills only the fields it cares about -- which is what the host
+     * runner does -- reads as "drained" and behaves exactly as it did before
+     * condition 9 existed. The alternative, a separate validity flag whose
+     * false reading blocks the gate, would stop such a caller going live at
+     * all and would report a queue depth it never measured.
+     *
+     * The cost of that choice is that condition 9 is unexercised, not failed,
+     * in a harness that leaves the field alone: it can only ever read
+     * "drained" there. fake_twai reports its own queue depth, so the shim
+     * exercises it for real.
+     */
+    uint32_t rx_waiting;
 } gi_bus_t;
 
 /* Full initialisation. `cfg` is copied; pass NULL for gi_config_defaults(). */

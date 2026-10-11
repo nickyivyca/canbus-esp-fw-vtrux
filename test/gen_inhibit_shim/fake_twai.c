@@ -465,6 +465,14 @@ static void check_wire_accepted(const twai_message_t *m)
     }
 }
 
+/*
+ * Is the worker parked inside twai_receive() right now? For feed(), which may
+ * grant it one more turn to take a frame it has not taken -- but must not do
+ * that to a worker parked anywhere else, because a turn in the OFF branch
+ * costs that branch's whole 50 ms sleep.
+ */
+bool ft_in_receive(void) { return g_in_receive; }
+
 int  ft_unsafe_teardowns(void) { return g_unsafe_teardowns; }
 int  ft_installed_mode(void)   { return g_installed_mode; }
 int      ft_install_count(void)          { return g_install_n; }
@@ -1238,6 +1246,82 @@ void vTaskDelay(TickType_t ticks)
     if (g_worker_stop) pthread_exit(NULL);
 }
 
+/*
+ * TASK NOTIFICATIONS, for spec 3's wake on a mode change (user, 2026-10-10).
+ *
+ * WHAT THIS MODELS, AND IT IS LESS THAN THE FEATURE. The property the firmware
+ * depends on is that a notification LATCHES: gen_inhibit_set_mode() may run
+ * before the worker has executed a single instruction -- it does on an
+ * auto-arm boot -- and the wake must still end the worker's first sleep. That
+ * is modelled: a pending notification makes the take return at once, with no
+ * virtual time passing at all.
+ *
+ * WHAT IT DOES NOT MODEL: a notification arriving PART WAY THROUGH a sleep and
+ * cutting it short. It cannot be modelled here and it must not be claimed.
+ * This harness single-steps -- the worker runs only when the test yields to it
+ * -- so the test thread can only call gen_inhibit_set_mode() while the worker
+ * is already parked at the yield inside its sleep, after vTaskDelay has
+ * advanced the clock by the whole interval. And ft_run() then drags the clock
+ * to its own deadline regardless. The shortened sleep has no observable
+ * consequence in this model, and no shim case may be read as evidence for it:
+ * on the device it is the difference between going live behind 120 queued
+ * frames and going live behind none. What covers it is the bench, replaying a
+ * full bus across every entry path into INHIBIT.
+ *
+ * So the counters below exist to check the one thing that IS checkable: that
+ * the wake was sent, and sent to the worker.
+ */
+static uint32_t g_notify;               /* pending notifications for the worker */
+static int      g_wakes_sent;
+static int      g_wakes_misdirected;    /* sent to something that is not the worker */
+static int      g_wakes_taken_pending;  /* takes that returned on a latched wake */
+
+int ft_wakes_sent(void)         { return g_wakes_sent; }
+int ft_wakes_misdirected(void)  { return g_wakes_misdirected; }
+int ft_wakes_taken_pending(void) { return g_wakes_taken_pending; }
+
+int xTaskNotifyGive(TaskHandle_t task)
+{
+    g_wakes_sent++;
+    /*
+     * The handle the firmware holds must be the WORKER's. xTaskCreate() hands
+     * out (TaskHandle_t)1 for it, and xTaskGetCurrentTaskHandle() answers 2
+     * for anyone else -- so a firmware that captured the wrong handle (the
+     * caller's, say, or NULL) is caught here rather than silently waking
+     * nobody.
+     */
+    if (task != (TaskHandle_t)1)
+    {
+        g_wakes_misdirected++;
+        return pdTRUE;
+    }
+    g_notify++;
+    return pdTRUE;
+}
+
+uint32_t ulTaskNotifyTake(int clear_on_exit, TickType_t ticks)
+{
+    if (g_notify != 0)
+    {
+        /*
+         * THE LATCHED CASE, and no time passes. This is the half of spec 3
+         * that says the wake must survive arriving before the worker blocks.
+         */
+        const uint32_t v = g_notify;
+        g_notify = clear_on_exit ? 0 : g_notify - 1;
+        g_wakes_taken_pending++;
+        return v;
+    }
+    vTaskDelay(ticks);
+    if (g_notify != 0)
+    {
+        const uint32_t v = g_notify;
+        g_notify = clear_on_exit ? 0 : g_notify - 1;
+        return v;
+    }
+    return 0;
+}
+
 const char *esp_err_to_name(esp_err_t e)
 {
     static char buf[32];
@@ -1286,6 +1370,13 @@ void ft_reset(void)
     g_fail_alerts_cfg = false;
     g_fail_next = false;
     g_rx_n = g_rx_dropped = 0;
+    /*
+     * Cleared here, unlike the reset reason and the error count: nothing sets
+     * a notification before setup(), and a wake left over from the previous
+     * case would shorten this one's first sleep.
+     */
+    g_notify = 0;
+    g_wakes_sent = g_wakes_misdirected = g_wakes_taken_pending = 0;
     g_self_received = 0;
     g_last_rx_time = -1;
     g_ndeliv = 0;

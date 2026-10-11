@@ -11,6 +11,12 @@
 typedef void *TaskHandle_t;
 typedef void (*TaskFunction_t)(void *);
 void vTaskDelay(TickType_t ticks);
+/*
+ * Task notifications, for spec 3's wake on a mode change. Declared with int
+ * where the real API uses BaseType_t, which this mock does not define.
+ */
+uint32_t ulTaskNotifyTake(int clear_on_exit, TickType_t ticks);
+int xTaskNotifyGive(TaskHandle_t task);
 TaskHandle_t xTaskGetCurrentTaskHandle(void);
 int xTaskCreate(TaskFunction_t fn, const char *name, uint32_t stack,
                 void *arg, uint32_t prio, TaskHandle_t *out);

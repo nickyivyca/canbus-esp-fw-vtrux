@@ -116,6 +116,7 @@ const char *gi_block_name(gi_block_t b)
     case GI_BLOCK_NO_FRESH_SHIFT:      return "no fresh 0x639";
     case GI_BLOCK_DISABLED:            return "latched disable";
     case GI_BLOCK_ABORTED:             return "latched abort (key-on clears)";
+    case GI_BLOCK_RX_NOT_DRAINED:      return "receive queue not drained";
     }
     return "?";
 }
@@ -654,11 +655,12 @@ static void inhibit_abort(gi_state_t *st, gi_abort_t why, int64_t now,
  *   spec 5 (generator stopped)     fifth
  *   spec 6 (VCM not asking)        sixth and seventh
  *   spec 7 (not 0x10-suppressed)   eighth
- *   spec 2 (contactors + 0x411)    last
+ *   spec 2 (contactors + 0x411)    second to last
+ *   spec 9 (receive queue drained) last, and last on purpose: see there
  *   spec 8 (no latch)              not here -- gi_tick() does not call this
  *                                  function at all while a latch is set
  */
-static bool arm_gate_ok(gi_state_t *st, int64_t now)
+static bool arm_gate_ok(gi_state_t *st, int64_t now, const gi_bus_t *bus)
 {
     if (!gi_fresh(st, st->have_cmd, st->seen_cmd, now))
     {
@@ -798,14 +800,116 @@ static bool arm_gate_ok(gi_state_t *st, int64_t now)
         st->arm_block = GI_BLOCK_CONTACTORS_OPEN;
         return false;
     }
+    /*
+     * SPEC 7 CONDITION 9, the receive queue is drained (user, 2026-10-10).
+     * Going live with frames still queued answers commands the VCM has
+     * already passed: the first frames we send carry stale counters, and the
+     * device scores its own answers as on time because it judges the deadline
+     * at the dequeue and the dequeue lags the arrival by the backlog (trip 7,
+     * "What the device can see of lateness").
+     *
+     * LAST, so it never masks another reason. Every condition above is a fact
+     * about the truck that a human reads off arm_block and acts on; this one
+     * is about us, it is expected to be true within a few milliseconds, and
+     * reporting it ahead of, say, open contactors would send someone looking
+     * at the wrong thing.
+     *
+     * Spec 3's wake on a mode change removes the two measured causes of a
+     * backlog at this moment (a re-arm from OBSERVE, an auto-arm boot). This
+     * is the backstop for every other cause -- WiFi or lwIP preemption at our
+     * own priority -- which is why it stays even though the wake landed in
+     * the same batch.
+     *
+     * A backlog that builds once live is NOT this condition's business: trip
+     * 7 and the unverified count own that, and the gate is not re-run.
+     *
+     * bus == NULL means the platform told us nothing this tick, which is not
+     * evidence of a backlog, so it reads as drained -- the same reading as a
+     * caller that does not fill the field.
+     */
+    if (bus != NULL && bus->rx_waiting != 0)
+    {
+        st->arm_block = GI_BLOCK_RX_NOT_DRAINED;
+        return false;
+    }
     st->arm_block = GI_BLOCK_NONE;
     return true;
 }
 
 /*
- * Spec 7: the trips that end a live run. Called every loop, not only on an
- * 0x051, so a bus that goes quiet is caught by the receive timeout.
+ * Spec 7 trip 6's VERDICT, with no side effects: does the recorded history
+ * hold a burst that is both tight enough and recent enough to trip right
+ * now? Lifted out of interlock_runtime() on 2026-10-10 because spec 7's
+ * "Checked before going live" needs the same verdict at the arm gate, and
+ * two copies of a safety trip's window test is one copy too many.
  */
+static bool err_burst_qualifies(const gi_state_t *st, int64_t now)
+{
+    /*
+     * Error frames, rate-based over a TRULY sliding window (user,
+     * 2026-10-08). Recording happens in err_history_tick(), which runs on
+     * every armed loop whether or not the inhibit is live; this is only the
+     * verdict.
+     *
+     * TWO CALLERS SINCE 2026-10-10 (spec 7, "Checked before going live"):
+     * interlock_runtime() while live, and gi_tick() at the moment the arm
+     * gate passes, before anything is live. So it must not assume a live
+     * inhibit, and it reads nothing but the ring and `now`.
+     *
+     * TWO SEPARATE TESTS, and keeping them separate is the whole design
+     * (spec 7, "Only a recent burst trips", user 2026-10-08):
+     *
+     *   newest - Nth-most-recent <= err_window_us    is the burst tight enough
+     *   now    - newest          <= err_window_us    is the burst still recent
+     *
+     * The tightness test compares error frames with each other and never
+     * consults `now`, which is what keeps the inclusive 10.0 s edge exact. A
+     * single `now - oldest` test would have blurred the two questions together
+     * and moved the edge with the phase of the tick.
+     *
+     * The recency test is what stops a burst tripping forever. 477171a had the
+     * tightness test alone, so any qualifying burst since the last key-on
+     * tripped at every later live check: a re-arm re-latched 50 ms later on
+     * history alone, and a burst 32 s stale still blocked going live. Both are
+     * measured, both now pass only because of the second line above.
+     *
+     * `<=` in BOTH, not `<`: the spec reads "within", and the user ruled the
+     * edge inclusive at the recency test as well as the tightness one. Trip
+     * 7's 1 s window is strict and this one is not -- the two are deliberately
+     * different, so do not "harmonise" them.
+     *
+     * Note what the recency test does NOT do: it does not forget the history.
+     * The ring still holds the arrivals, so a burst that has expired becomes
+     * live again only if new error frames arrive and form a fresh qualifying
+     * burst. Only a key-on clears the ring.
+     *
+     * This counts the controller's own bus_error_count rather than anything
+     * payload-derived, so it stays distinct from the failed-transmit trip,
+     * which is unambiguously about a frame of ours.
+     */
+    if (st->err_n >= st->cfg.err_min_trip)
+    {
+        /*
+         * All unsigned, deliberately. gi_init() clamps err_min_trip to the
+         * ring, so `ring - err_min_trip` cannot go negative, and keeping the
+         * arithmetic in uint32_t avoids the signed/unsigned mixing that
+         * -Wconversion exists to catch here.
+         */
+        const uint32_t ring  = (uint32_t)GI_ERR_RING;
+        const uint8_t newest = (uint8_t)(((uint32_t)st->err_head
+                                          + ring - 1u) % ring);
+        const uint8_t nth    = (uint8_t)(((uint32_t)st->err_head
+                                          + ring - st->cfg.err_min_trip)
+                                         % ring);
+        if ((st->err_at[newest] - st->err_at[nth]) <= st->cfg.err_window_us
+            && (now - st->err_at[newest]) <= st->cfg.err_window_us)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 /*
  * No `bus` parameter since 2026-10-08: the only thing it was used for was the
  * trip 6 error counter, and that moved to err_history_tick(), which runs on
@@ -813,6 +917,10 @@ static bool arm_gate_ok(gi_state_t *st, int64_t now)
  * from. Taking the argument away is deliberate -- it makes the split between
  * recording and judging visible in the signature instead of leaving a
  * parameter that a future reader would assume is still consulted.
+ */
+/*
+ * Spec 7: the trips that end a live run. Called every loop, not only on an
+ * 0x051, so a bus that goes quiet is caught by the receive timeout.
  */
 static void interlock_runtime(gi_state_t *st, int64_t now, gi_events_t *ev)
 {
@@ -1007,63 +1115,13 @@ static void interlock_runtime(gi_state_t *st, int64_t now, gi_events_t *ev)
     }
 
     /*
-     * Error frames, rate-based over a TRULY sliding window (user,
-     * 2026-10-08). Recording happens in err_history_tick(), which runs on
-     * every armed loop whether or not the inhibit is live; this is only the
-     * verdict, and it is reached only while live, per the invariant at the
-     * caller.
-     *
-     * TWO SEPARATE TESTS, and keeping them separate is the whole design
-     * (spec 7, "Only a recent burst trips", user 2026-10-08):
-     *
-     *   newest - Nth-most-recent <= err_window_us    is the burst tight enough
-     *   now    - newest          <= err_window_us    is the burst still recent
-     *
-     * The tightness test compares error frames with each other and never
-     * consults `now`, which is what keeps the inclusive 10.0 s edge exact. A
-     * single `now - oldest` test would have blurred the two questions together
-     * and moved the edge with the phase of the tick.
-     *
-     * The recency test is what stops a burst tripping forever. 477171a had the
-     * tightness test alone, so any qualifying burst since the last key-on
-     * tripped at every later live check: a re-arm re-latched 50 ms later on
-     * history alone, and a burst 32 s stale still blocked going live. Both are
-     * measured, both now pass only because of the second line above.
-     *
-     * `<=` in BOTH, not `<`: the spec reads "within", and the user ruled the
-     * edge inclusive at the recency test as well as the tightness one. Trip
-     * 7's 1 s window is strict and this one is not -- the two are deliberately
-     * different, so do not "harmonise" them.
-     *
-     * Note what the recency test does NOT do: it does not forget the history.
-     * The ring still holds the arrivals, so a burst that has expired becomes
-     * live again only if new error frames arrive and form a fresh qualifying
-     * burst. Only a key-on clears the ring.
-     *
-     * This counts the controller's own bus_error_count rather than anything
-     * payload-derived, so it stays distinct from the failed-transmit trip,
-     * which is unambiguously about a frame of ours.
+     * Spec 7 trip 6, the verdict -- see err_burst_qualifies() for the two
+     * tests and why they are two.
      */
-    if (st->err_n >= st->cfg.err_min_trip)
+    if (err_burst_qualifies(st, now))
     {
-        /*
-         * All unsigned, deliberately. gi_init() clamps err_min_trip to the
-         * ring, so `ring - err_min_trip` cannot go negative, and keeping the
-         * arithmetic in uint32_t avoids the signed/unsigned mixing that
-         * -Wconversion exists to catch here.
-         */
-        const uint32_t ring  = (uint32_t)GI_ERR_RING;
-        const uint8_t newest = (uint8_t)(((uint32_t)st->err_head
-                                          + ring - 1u) % ring);
-        const uint8_t nth    = (uint8_t)(((uint32_t)st->err_head
-                                          + ring - st->cfg.err_min_trip)
-                                         % ring);
-        if ((st->err_at[newest] - st->err_at[nth]) <= st->cfg.err_window_us
-            && (now - st->err_at[newest]) <= st->cfg.err_window_us)
-        {
-            inhibit_abort(st, GI_ABORT_ERROR_RATE, now, ev);
-            return;
-        }
+        inhibit_abort(st, GI_ABORT_ERROR_RATE, now, ev);
+        return;
     }
 }
 
@@ -1525,8 +1583,36 @@ void gi_tick(gi_state_t *st, int64_t now, const gi_bus_t *bus,
         {
             interlock_runtime(st, now, ev);
         }
-        else if (arm_gate_ok(st, now))
+        else if (arm_gate_ok(st, now, bus))
         {
+            /*
+             * SPEC 7, "CHECKED BEFORE GOING LIVE" (user, 2026-10-10). The
+             * order at this moment is conditions 1-9, then trip 6, then live.
+             *
+             * Before this the first trip 6 check was interlock_runtime()'s,
+             * which runs only once live -- so a device re-armed into a recent
+             * burst went live, answered one 0x051, and latched on the next
+             * tick. One inhibit frame on the wire that the spec did not want
+             * (bench trip6_rearm_check A3 on fb61892, shim case 38).
+             *
+             * Latching HERE means inhibit_live is never set, so nothing is
+             * queued and nothing goes out: inhibit_abort() clears the flag,
+             * but the point is that it was never true. The return is what
+             * keeps it never true -- the lines below it would set the flag on
+             * a device that has just latched -- and it is the tail of
+             * gi_tick(), so it skips nothing else.
+             *
+             * Trip 6 is the only trip that moves. The gate above covers 1-5
+             * (0x051 fresh, 0x617 without the fault code, 0x639 fresh, the
+             * generator stopped, and the VCM not asking), and trips 7 and 8
+             * are judged per answered frame, so neither has anything to say
+             * before the first answer exists.
+             */
+            if (err_burst_qualifies(st, now))
+            {
+                inhibit_abort(st, GI_ABORT_ERROR_RATE, now, ev);
+                return;
+            }
             st->inhibit_live = true;
             st->rpm_over = false;
             st->rpm_over_since = 0;

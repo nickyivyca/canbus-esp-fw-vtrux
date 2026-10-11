@@ -163,6 +163,33 @@ static void feed(uint32_t id, const uint8_t *d, uint8_t dlc, int64_t budget)
 {
     ft_deliver(id, d, dlc);
     ft_run(budget);
+    /*
+     * IF THE FRAME WAS NOT TAKEN, GIVE THE WORKER ONE MORE TURN. It costs no
+     * virtual time and it fires only when there is something to fix.
+     *
+     * WHY, and this one was expensive to find. A turn ends where the worker
+     * next yields, which is at the TOP of twai_receive() -- before it looks at
+     * the queue. So a turn spent getting from somewhere else to that point
+     * takes no frame, and the frame delivered for it waits. That happens once
+     * per arm, because the worker is parked in the OFF branch's sleep when a
+     * case arms. From then on each turn took one frame while the test
+     * delivered one, so the queue never emptied again: every dequeue in every
+     * case had exactly one frame behind it.
+     *
+     * That was invisible until spec 7 condition 9 made the queue depth AT THE
+     * DEQUEUE something the device acts on, and then the device could never
+     * go live at all -- 31 checks across 18 cases. The model was wrong, not
+     * the firmware: on the truck the worker reaches its blocking receive
+     * within microseconds of a mode change, which spec 3's wake now
+     * guarantees, and the next frame is ~2.4 ms away.
+     *
+     * A case that builds a backlog with ft_deliver() on purpose is not
+     * affected -- this is feed(), one frame at a time.
+     */
+    if (ft_rx_pending() > 0 && ft_in_receive())
+    {
+        ft_run(0);
+    }
 }
 
 /*
@@ -401,6 +428,33 @@ static void teardown(void)
      */
     gen_inhibit_set_mode(GEN_INHIBIT_OFF, 500);
     ft_allow_ids(NULL, -1, "OFF puts nothing at all on the bus (spec 3)");
+    /*
+     * ONE FRAME, TO GET THE WORKER OUT OF twai_receive() AND ROUND TO THE TOP
+     * OF ITS LOOP, so that the bus release this mode change asked for happens
+     * in THIS case.
+     *
+     * Without it the release leaked into the next case. The worker is blocked
+     * in the receive for up to GEN_INHIBIT_RX_TIMEOUT_MS (200 ms), which spec
+     * 3's wake deliberately cannot interrupt, so the 100 ms below never got it
+     * to the mode check; ft_stop_worker() killed it with s_release_bus still
+     * set, and ft_reset() cannot clear a firmware static. The flag then fired
+     * in the next case -- on case 6 one line after it had armed, uninstalling
+     * the driver underneath it and turning the rest of the case into
+     * ESP_ERR_INVALID_STATE.
+     *
+     * A frame rather than a longer grant: this does not depend on the receive
+     * timeout's value, and an arithmetic fix against that timeout broke the
+     * spec 8 quiesce handshake in case 10.
+     *
+     * An unused ID, so no gate or trip reads it, and the device is OFF in any
+     * case -- the ft_allow_ids(NULL) check above still holds for everything
+     * that follows.
+     */
+    {
+        static const uint8_t PAD[8] = { 0 };
+        ft_deliver(0x7FF, PAD, 8);
+        ft_run(1000);
+    }
     ft_run(100000);
     drain_wire_violations();
     /*
@@ -3820,13 +3874,239 @@ static void case_errors_before_live_still_trip(void)
     ft_run(100000);
 
     CHECK(json_has("\"abort_reason\":\"error-frame rate exceeded\""),
-          "ten error frames in the 10 s before going live did NOT trip at the "
-          "first live check. Re-seeding the baseline must not clear the "
-          "history: %s", stats());
+          "ten error frames in the 10 s before going live did NOT trip. "
+          "Re-seeding the baseline must not clear the history: %s", stats());
+
+    /*
+     * AND NOTHING WENT OUT (spec 7, "Checked before going live", user
+     * 2026-10-10). This is the amendment of 2026-10-10: the trip is now
+     * evaluated at the moment the gate passes, so the device never goes live
+     * and never answers. Through fb61892 the first check came from
+     * interlock_runtime(), which runs only once live, so exactly one inhibit
+     * frame went out before the latch -- measured on the bench as
+     * trip6_rearm_check A3.
+     *
+     * ft_wire_count_id() rather than a status counter on purpose: the
+     * question is what reached the wire, and that is the thing the VCM would
+     * have acted on.
+     */
+    CHECK(ft_wire_count_id(0x051) == 0,
+          "%d inhibit frame(s) went out before the trip 6 latch; spec 7 says "
+          "the device never goes live, so none may: %s",
+          ft_wire_count_id(0x051), stats());
 
     teardown();
     case_end();
     ft_set_bus_errors(0);
+}
+
+/*
+ * SPEC 3, the half of the wake that this harness can check: that an arm which
+ * happens before the worker's first instruction still has a handle to wake.
+ *
+ * This is the auto-arm boot ordering, reproduced exactly -- gen_inhibit_init()
+ * creates the worker and then arms it, and on the device the worker may not
+ * have been scheduled in between. It was measured as 1 boot in 3 going live
+ * behind a queue.
+ *
+ * It is red on fb61892 for a precise reason: s_worker was assigned by the
+ * worker itself, from inside the task, so at the moment of the arm it was
+ * still NULL and the wake went nowhere. It is green once the handle comes out
+ * of xTaskCreate().
+ *
+ * What it does NOT show is the sleep being cut short -- see the note on the
+ * counters in fake_twai.c. The case asserts the wake was sent and correctly
+ * addressed, and then that the device still arms and goes live, so it cannot
+ * pass on a device that merely does nothing.
+ */
+static void case_wake_has_a_target_before_the_worker_runs(void)
+{
+    case_begin("case 39: an arm before the worker's first instruction still "
+               "has a worker to wake");
+    ft_reset();
+    g_wv_reported = 0;
+    ft_set_step_hook(invariant_hook);
+    ml_clear();
+
+    gen_inhibit_init();
+    /* Deliberately NOT ft_start_worker() yet: that is the boot ordering. */
+
+    CHECK(ft_wakes_sent() == 0,
+          "a wake was sent before anything asked for a mode change");
+
+    gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
+
+    CHECK(ft_wakes_sent() == 1,
+          "arming before the worker ran sent %d wakes, expected 1 -- a wake "
+          "sent to a NULL handle is the 1-in-3 auto-arm boot",
+          ft_wakes_sent());
+    CHECK(ft_wakes_misdirected() == 0,
+          "%d wake(s) went to something other than the worker",
+          ft_wakes_misdirected());
+
+    ft_start_worker();
+    ft_run(1000);
+
+    /* And it still arms and goes live, so the case cannot pass on a corpse. */
+    static const uint8_t KEY[8]  = { 0x10 };
+    static const uint8_t CONT[8] = { 11 << 2 };
+    static const uint8_t SOC[8]  = { 0x4E, 0x20 };
+    static const uint8_t FLT[8]  = { 0, 0, 0, 0, 0, 0, 0, 0xC8 };
+    static const uint8_t SHF[8]  = { 0, 0, 0, 0, 0, 0, 2 << 4 };
+    uint8_t cmd[6];
+
+    for (int i = 0; i < 12; i++)
+    {
+        memcpy(cmd, VCM, sizeof(cmd));
+        cmd[5] = (uint8_t)(i & 0x0F);
+        feed(0x051, cmd, 6, 5000);
+        feed(0x592, KEY, 8, 5000);
+        feed(0x440, CONT, 8, 5000);
+        feed(0x411, SOC, 8, 5000);
+        feed(0x617, FLT, 8, 5000);
+        feed(0x639, SHF, 8, 5000);
+    }
+
+    CHECK(json_has("\"inhibit_live\":true"),
+          "armed before the worker started and never went live: %s", stats());
+
+    teardown();
+    case_end();
+}
+
+/*
+ * SPEC 7 CONDITION 9: the receive queue is drained (user, 2026-10-10).
+ *
+ * The device must not go live while frames are still waiting, because it
+ * judges its own deadline at the dequeue -- so it would answer commands the
+ * VCM has already passed and score itself on time doing it.
+ *
+ * THE SHAPE OF THE CASE. Every interlock but 0x639 is fed one frame at a time,
+ * which leaves the queue drained, so the gate sits blocked on the shift
+ * signal. Then a burst is QUEUED without running the worker: the shift frame
+ * first, then four commands behind it. From the second worker iteration on,
+ * every condition holds except this one, and the device must sit there
+ * reporting it until the queue empties.
+ *
+ * Red on fb61892: it goes live on the iteration that dequeues the shift frame
+ * and answers the three commands behind it.
+ *
+ * The last two checks are what stop this passing for the wrong reason. A
+ * device that never goes live at all would satisfy "no answers behind the
+ * backlog" perfectly, so the case also requires the block to be REPORTED as
+ * condition 9 rather than as something else, and requires the device to go
+ * live once the queue drains.
+ */
+static void case_no_going_live_behind_a_backlog(void)
+{
+    case_begin("case 40: the inhibit does not go live while frames are queued");
+    setup();
+
+    static const uint8_t KEY[8]  = { 0x10 };
+    static const uint8_t CONT[8] = { 11 << 2 };
+    static const uint8_t SOC[8]  = { 0x4E, 0x20 };
+    static const uint8_t FLT[8]  = { 0, 0, 0, 0, 0, 0, 0, 0xC8 };
+    static const uint8_t SHF[8]  = { 0, 0, 0, 0, 0, 0, 2 << 4 };
+    uint8_t cmd[6];
+
+    gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
+
+    /* Everything but the shift signal, one frame at a time: queue drained. */
+    for (int i = 0; i < 6; i++)
+    {
+        memcpy(cmd, VCM, sizeof(cmd));
+        cmd[5] = (uint8_t)(i & 0x0F);
+        feed(0x051, cmd, 6, 5000);
+        feed(0x592, KEY, 8, 5000);
+        feed(0x440, CONT, 8, 5000);
+        feed(0x411, SOC, 8, 5000);
+        feed(0x617, FLT, 8, 5000);
+    }
+    CHECK(!json_has("\"inhibit_live\":true"),
+          "live before the shift signal arrived: %s", stats());
+
+    /*
+     * ESTABLISH A DRAINED QUEUE RATHER THAN ASSUME ONE. A worker turn ends at
+     * its next yield, and twai_receive() is not the only place it yields: a
+     * turn that hands a diag page to the driver can end with the frame the
+     * test just delivered still waiting. The first version of this case
+     * assumed every feed() left the queue empty and found 6 waiting where it
+     * asserted 5 -- which would have made the backlog below one frame deeper
+     * than the case claimed, with the numbers in the messages wrong.
+     */
+    for (int i = 0; i < 20 && ft_rx_pending() > 0; i++)
+    {
+        ft_run(2000);
+    }
+    CHECK(ft_rx_pending() == 0,
+          "could not reach a drained queue to start from: %d waiting",
+          ft_rx_pending());
+
+    const int wire_before = ft_wire_count_id(0x051);
+
+    /* THE BACKLOG, queued in one go with the worker standing still. */
+    ft_deliver(0x639, SHF, 8);
+    for (int i = 6; i < 10; i++)
+    {
+        memcpy(cmd, VCM, sizeof(cmd));
+        cmd[5] = (uint8_t)(i & 0x0F);
+        ft_deliver(0x051, cmd, 6);
+    }
+    CHECK(ft_rx_pending() == 5,
+          "the backlog did not build: %d frames waiting, expected 5",
+          ft_rx_pending());
+
+    /*
+     * Step the worker until the queue is empty, watching every intermediate
+     * state rather than two chosen ones -- one frame per turn is the usual
+     * case but not a guarantee, for the reason above.
+     */
+    bool saw_condition_9 = false;
+    int  live_with_backlog = 0;
+    for (int i = 0; i < 20 && ft_rx_pending() > 0; i++)
+    {
+        ft_run(2000);
+        if (json_has("\"arm_block\":\"receive queue not drained\""))
+        {
+            saw_condition_9 = true;
+        }
+        if (ft_rx_pending() > 0 && json_has("\"inhibit_live\":true"))
+        {
+            live_with_backlog++;
+        }
+    }
+
+    CHECK(saw_condition_9,
+          "the gate never reported condition 9 while draining a 5-frame "
+          "backlog -- it was blocked for some other reason, or not at all: %s",
+          stats());
+    CHECK(live_with_backlog == 0,
+          "live with frames still in the receive queue on %d of the steps: %s",
+          live_with_backlog, stats());
+    CHECK(ft_wire_count_id(0x051) == wire_before,
+          "answered %d of the queued commands; a frame dequeued behind a "
+          "backlog must not be answered: %s",
+          ft_wire_count_id(0x051) - wire_before, stats());
+
+    /* And once drained it goes live, so condition 9 is a delay, not a block. */
+    for (int i = 10; i < 16; i++)
+    {
+        memcpy(cmd, VCM, sizeof(cmd));
+        cmd[5] = (uint8_t)(i & 0x0F);
+        feed(0x051, cmd, 6, 5000);
+        feed(0x592, KEY, 8, 5000);
+        feed(0x440, CONT, 8, 5000);
+        feed(0x411, SOC, 8, 5000);
+        feed(0x617, FLT, 8, 5000);
+        feed(0x639, SHF, 8, 5000);
+    }
+    CHECK(json_has("\"inhibit_live\":true"),
+          "never went live after the queue drained: %s", stats());
+    CHECK(ft_wire_count_id(0x051) > wire_before,
+          "live but answered nothing after the queue drained: %s", stats());
+
+    teardown();
+    case_end();
 }
 
 int main(int argc, char **argv)
@@ -3892,6 +4172,8 @@ int main(int argc, char **argv)
     case_uptime_rises_and_the_reason_is_named();
     case_unknown_reset_reason_is_a_number();
     case_rearm_does_not_trip_on_a_stale_baseline();
+    case_wake_has_a_target_before_the_worker_runs();
+    case_no_going_live_behind_a_backlog();
     case_errors_before_live_still_trip();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
