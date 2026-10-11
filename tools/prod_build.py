@@ -87,8 +87,31 @@ def fail(msg):
     return False
 
 
+def repo_is_work_tree_root():
+    """
+    Is REPO itself the TOP of a git work tree?
+
+    This question has to be asked before "is the path tracked at HEAD?" means
+    anything, because git discovery walks UP. From a directory nested inside
+    some other repository, `git cat-file -e HEAD:CMakeLists.txt` answers about
+    THAT repository, so a copy of this script in a subdirectory of any tree
+    whose HEAD happens to carry these three markers would be taken for the
+    firmware repo. The nested case is not hypothetical: it is what the
+    tester's identity probe did on 2026-10-10 when it lived inside the
+    throwaway worktree, and the script refused it for a dirty tree rather
+    than by identity -- the same false reason the fix in ddddfea removed,
+    arrived at by nesting instead of by deletion.
+    """
+    r = run(["git", "rev-parse", "--show-toplevel"])
+    top = r.stdout.strip()
+    if r.returncode != 0 or not top:
+        return False
+    return (os.path.normcase(os.path.realpath(top))
+            == os.path.normcase(os.path.realpath(REPO)))
+
+
 def tracked_at_head(rel):
-    """Does HEAD have this path? False if this is not a git repo at all."""
+    """Does HEAD have this path? Only ask once REPO is known to be the root."""
     # Forward slashes: git's path syntax, not the platform's.
     r = run(["git", "cat-file", "-e", "HEAD:%s" % rel.replace(os.sep, "/")])
     return r.returncode == 0
@@ -125,6 +148,13 @@ def check_repo():
     # make the reason true, since the spec fixes when the script refuses and
     # not the wording.
     #
+    # Not the top of a work tree at all: a wrong directory, whatever any
+    # enclosing repository's HEAD may happen to contain. See
+    # repo_is_work_tree_root() for why this is asked first.
+    if not repo_is_work_tree_root():
+        return fail("%s is not the wican-fw-vtrux repo (missing %s)"
+                    % (REPO, ", ".join(os.path.basename(m) for m in missing)))
+
     unknown = [rel for rel in missing if not tracked_at_head(rel)]
     if unknown:
         return fail("%s is not the wican-fw-vtrux repo (missing %s)"
