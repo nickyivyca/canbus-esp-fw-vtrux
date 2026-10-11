@@ -106,7 +106,11 @@ static const uint8_t DIAG_SCHEMA_VER = 4;
 //   6  spec 3: arming, re-arming included, needs the charger's LATEST status
 //      to be state 12 with the contactors closed, not a 12 seen earlier in
 //      the session.
-static const uint8_t DIAG_FW_VER = 6;
+//   7  spec 4, 5.1 and 5.2 of 2026-10-10: the override's command is not
+//      below a 6.10 A floor from 98 % SoC up, the release fires on
+//      bcm_cell_vmax >= 3585 mV for 1 s instead of bcm_chg_max <= 3.0 A, and
+//      the hold steps down at 3600 mV and up only below 3595 mV.
+static const uint8_t DIAG_FW_VER = 7;
 
 // The 29-bit id with its source-address byte replaced by DIAG_SA.
 inline uint32_t mirrorId(uint32_t id) { return (id & 0x1FFFFF00u) | DIAG_SA; }
@@ -158,8 +162,11 @@ inline bool maincClosed(uint8_t ms) { return ms == 11u || ms == 12u; }
 
 struct Config {
   // --- where WE release, when we are the one driving the charge -----------
-  // Spec 5.1: the BMS's permission collapsing. No vmax trigger.
-  int32_t chgmax_full_ca;
+  // Spec 5.1 (user, 2026-10-10): the LEADER CELL reaching the truck's own
+  // cut, held for full_debounce_ms. Replaced chgmax_full_ca, which is gone
+  // rather than retired in place -- see machine.py for why a field still
+  // accepting `--chgmax-full-a -1` would have been worse than none.
+  int32_t vmax_full_mv;
 
   // --- the override gate (spec 3) -----------------------------------------
   // A Low Power command is the evap ceiling only with the VCM's evap flag set
@@ -169,6 +176,16 @@ struct Config {
 
   // --- hard safety ---------------------------------------------------------
   int32_t vmax_hard_mv;  // no debounce, trips immediately
+
+  // --- the override command's floor (spec 4, user 2026-10-10) -------------
+  // min(EVSE cap, max(chg_max, floor)), the floor applying from
+  // ilim_floor_soc_half up and 0 below it. Near the top the BMS walks
+  // chg_max down on SoC, not on the leader, and following it alone stalls
+  // short of any release; the truck's own VCU holds 6.10-6.15 A against the
+  // leader instead, and ours is the LOWEST of that range so it is at or
+  // below the VCU's setpoint at every leader voltage. See machine.py.
+  int32_t ilim_floor_ca;
+  int32_t ilim_floor_soc_half;
 
   // A page-01 setpoint counts as the VCU's CC command (spec 4) only from
   // here up: real CC commands are 9.7-19.8 A, hold setpoints 0-2.9 A.
@@ -216,6 +233,15 @@ struct Config {
   int32_t hold_step_ca;
   int32_t hold_band_ca;
   uint32_t hold_step_min_ms;
+
+  // Spec 5.2 (user, 2026-10-10): the hold's own cell limits, for a release by
+  // a high cell with chg_max still above 0 A, where following ibat alone
+  // would charge the leader into the 3610 mV trip. The truck's own holds sit
+  // at 3593-3598 mV with chg_max at 0 A, so the up limit is deliberately
+  // ABOVE those and the down limit above the up: a 5 mV band in which
+  // neither cell rule speaks and ibat decides, as it did before this existed.
+  int32_t hold_vmax_down_mv;
+  int32_t hold_vmax_up_mv;
 
   // Spec 4: hold pages 03.02 / 03.07 at their charging-time values while
   // overriding, so the charger sees a self-consistent picture.

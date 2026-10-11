@@ -449,9 +449,70 @@ def test_command_is_the_bms_permission_capped_by_the_evse():
     b.bms(vmax=3.578, chg_max=3.3)
     ok(abs(b.commanded_ilim() - 3.3) < 0.06,
        "the 2026-09-17 stall point: 3.3 A permitted, 3.3 A commanded")
-    b.bms(vmax=3.590, chg_max=2.0)
+    b.bms(vmax=3.560, chg_max=2.0)
     ok(abs(b.commanded_ilim() - 2.0) < 0.06,
-       "no floor: 2.0 A permitted, 2.0 A commanded")
+       "2.0 A permitted, 2.0 A commanded -- at SoC 80 % the floor of spec 4 "
+       "does not apply, so the permission is still obeyed in full")
+
+
+def test_the_command_floor_applies_from_98_percent_soc():
+    """Spec 4 (user, 2026-10-10): min(EVSE cap, max(bcm_chg_max, floor)),
+    the floor 6.10 A from `bcm_soc` 98 % up and 0 below it -- the lowest
+    floor the main truck held (6.10 A on vtrux_20260503_192242), so it is at
+    or below the VCU's own setpoint at every leader voltage.
+
+    Why it exists: near the top the BMS walks `chg_max` down on its own SoC,
+    to 3.0 A at 99.46-99.64 % and 0 A at 100 %, with the leader still at
+    3.36-3.49 V. Following that alone STALLS -- at about 3 A the charger
+    delivers no more than the parts truck's loads take, so the SoC stops
+    moving and the leader never reaches the release. The truck's own VCU
+    holds 6.10-6.15 A against the leader instead.
+
+    THE 97.5 % CASE IS THE POINT OF THE GATE, not a boundary nicety: below
+    it the permission is obeyed in full, which is what a cold or hot pack's
+    low permission depends on.
+    """
+    b = Bench()
+    b.arm(vmax=3.340, chg_max=300.0)
+    b.low_power()
+    b.t = 5000
+    b.charger_status(12)
+    b.bms(vmax=3.560, chg_max=3.0, soc=97.5)
+    ok(b.core.soc_half == 195, "SoC 97.5 %% is 195 half-percent counts (%d)"
+       % b.core.soc_half)
+    ok(abs(b.commanded_ilim() - 3.0) < 0.06,
+       "at 97.5 %% a 3.0 A permission is obeyed in full (%.2f A)"
+       % b.commanded_ilim())
+    b.bms(vmax=3.560, chg_max=3.0, soc=98.0)
+    ok(b.core.soc_half == 196, "SoC 98.0 %% is 196 (%d)" % b.core.soc_half)
+    ok(abs(b.commanded_ilim() - 6.10) < 0.06,
+       "at 98.0 %% the same 3.0 A permission is floored to 6.10 A (%.2f A)"
+       % b.commanded_ilim())
+    b.bms(vmax=3.560, chg_max=9.0, soc=99.0)
+    ok(abs(b.commanded_ilim() - 9.0) < 0.06,
+       "a permission ABOVE the floor still governs (%.2f A)"
+       % b.commanded_ilim())
+    b.bms(vmax=3.560, chg_max=0.0, soc=100.0)
+    ok(abs(b.commanded_ilim() - 6.10) < 0.06,
+       "and at SoC 100 %% with the permission at 0 A we still command the "
+       "floor -- which is the stall this exists to break (%.2f A)"
+       % b.commanded_ilim())
+
+
+def test_the_evse_cap_binds_over_the_command_floor():
+    """Spec 4: the floor sits inside the cap -- min(EVSE cap, max(chg_max,
+    floor)) -- so a small EVSE still binds. J1772 compliance is not
+    something the floor may override, which is why the cap is applied last
+    rather than the floor."""
+    b = Bench()
+    b.arm(max_avail_a=4.0, vmax=3.340, chg_max=300.0)
+    b.low_power()
+    b.t = 5000
+    b.charger_status(12)
+    b.bms(vmax=3.560, chg_max=0.0, soc=100.0)
+    ok(abs(b.commanded_ilim() - 4.0) < 0.06,
+       "a 4 A EVSE caps the 6.10 A floor to 4 A (%.2f A)"
+       % b.commanded_ilim())
 
 
 def test_zero_setpoint_start_is_capped_by_the_pilot_alone():
@@ -540,8 +601,8 @@ def test_release_hands_page_00_back_and_takes_the_setpoint():
 
     It used to enter TERMINATED and hand the whole command back. That is the
     behaviour this test asserted until 2026-10-08, and it is what 5.2
-    replaced: the VCU holds at 0 or 2.9 A, which on the parts truck drains
-    the pack.
+    replaced: the VCU holds at setpoints of 0/2.9 A, which on the parts truck
+    drains the pack (setpoints, not currents -- user, 2026-10-10).
     """
     b = Bench()
     b.arm(vmax=3.340, chg_max=300.0)
@@ -584,34 +645,105 @@ def test_release_hands_page_00_back_and_takes_the_setpoint():
        "and the boundary forgets the hold setpoint (6.1)")
 
 
-def test_no_release_while_bms_still_permits():
+def test_a_high_leader_releases_with_the_permission_still_high():
+    """Spec 5.1 (user, 2026-10-10): the release is the leader cell reaching
+    the truck's own cut, and `chg_max` takes no part.
+
+    THIS CASE WAS THE EXACT OPPOSITE UNTIL 2026-10-10. It read "vmax 3599 mV
+    with the BMS still granting 20 A does NOT release", which was the old
+    rule's defining property -- the release keyed on the permission, and a
+    pack whose leader was high while the BMS still permitted current carried
+    on charging. The captures since show the truck ending on the leader with
+    `chg_max` anywhere from 0 to 2.71 A, so that is now the defect and this
+    is the case that would catch a revert.
+
+    It also drives the second half of the ruling: once in the hold with
+    `chg_max` still at 20 A, the pack-current rule alone would step the
+    setpoint UP and charge the leader into the 3610 mV trip. The cell rule
+    has to pull it down instead.
+    """
     b = Bench()
     b.arm(vmax=3.340, chg_max=300.0)
     b.low_power()
-    b.hold_fresh(30, vmax=3.599, chg_max=20.0, ibat=5.0)
-    ok(b.state() == "OVERRIDE",
-       "vmax 3599 mV with the BMS still granting 20 A does NOT release")
+    ok(b.state() == "OVERRIDE", "overridden first (%s)" % b.state())
+    b.hold_fresh(30, vmax=3.601, chg_max=20.0, ibat=5.0,
+                 resend_low_power=False)
+    ok(b.state() == "HOLD",
+       "the leader at 3601 mV releases though the BMS still grants 20 A (%s)"
+       % b.state())
+    sp0 = b.core.hold_ca
+    ok(sp0 is not None and sp0 > 0, "with a setpoint of %s cA" % sp0)
+    i0 = _hold_frame(b, 20.0, 5.0, vmax=3.601)
+    ok(b.core.hold_ca == sp0 - M.Config().hold_step_ca,
+       "and the hold steps DOWN on the leader alone, with ibat 5 A a long "
+       "way under the 20 A permission (%s -> %s cA)" % (sp0, b.core.hold_ca))
+    for _ in range(5):
+        _hold_frame(b, 20.0, 5.0, vmax=3.601)
+    ok(b.core.hold_ca == sp0 - 6 * M.Config().hold_step_ca,
+       "and keeps stepping down while the leader stays there (%s cA)"
+       % b.core.hold_ca)
+    ok(b.core.trip_reason is None,
+       "without tripping: %s" % b.core.trip_reason)
+    i1 = _hold_frame(b, 20.0, 5.0, vmax=3.601)
+    ok(i1 < i0, "so what the charger is told keeps falling (%.2f -> %.2f A)"
+       % (i0, i1))
 
 
 def test_release_needs_the_debounce():
+    """Spec 5.1: `bcm_cell_vmax` at or above 3585 mV "continuously for 1 s"."""
     b = Bench()
     b.arm(vmax=3.340, chg_max=300.0)
     b.low_power()
-    b.hold_fresh(5, vmax=3.590, chg_max=2.0)     # 500 ms below 3 A
-    ok(b.state() == "OVERRIDE", "500 ms below the threshold is not enough")
-    b.hold_fresh(3, vmax=3.590, chg_max=20.0)    # permission back up
-    b.hold_fresh(8, vmax=3.590, chg_max=2.0)
-    ok(b.state() == "OVERRIDE", "the debounce restarts when permission returns")
-    b.hold_fresh(5, vmax=3.590, chg_max=2.0)
-    ok(b.state() == "HOLD", "1 s continuously below 3 A releases")
+    b.hold_fresh(5, vmax=3.590, chg_max=20.0)
+    ok(b.state() == "OVERRIDE", "500 ms over the threshold is not enough")
+    b.hold_fresh(3, vmax=3.580, chg_max=20.0)    # the leader falls back
+    b.hold_fresh(8, vmax=3.590, chg_max=20.0)
+    ok(b.state() == "OVERRIDE",
+       "the debounce restarts when the leader drops under it")
+    b.hold_fresh(5, vmax=3.590, chg_max=20.0)
+    ok(b.state() == "HOLD", "1 s continuously at or over 3585 mV releases")
+
+
+def test_the_old_release_trigger_is_retired():
+    """Spec 5.1 (user, 2026-10-10): `chg_max` is not the trigger.
+
+    Driven at the old trigger's extreme -- `chg_max` 0 A, which is the most
+    collapsed the permission can be and was a release the moment it was seen
+    for a second -- with the leader one millivolt under the new threshold.
+    The core must stay in OVERRIDE however long that is held. A core that
+    still read `chg_max` would release almost at once, and nothing else in
+    the suite would notice, because every other release case now has a
+    leader above 3585 mV.
+    """
+    b = Bench()
+    b.arm(vmax=3.340, chg_max=300.0)
+    b.low_power()
+    b.hold_fresh(60, vmax=3.584, chg_max=0.0, ibat=0.1)
+    ok(b.state() == "OVERRIDE",
+       "6 s at chg_max 0 A with the leader at 3584 mV does not release (%s)"
+       % b.state())
+    ok(b.core.trip_reason is None, "and does not trip: %s" % b.core.trip_reason)
+    b.hold_fresh(15, vmax=3.585, chg_max=0.0, ibat=0.1)
+    ok(b.state() == "HOLD",
+       "one more millivolt, held a second, does (%s)" % b.state())
 
 
 # --- spec 5.2: the hold after the release ------------------------------------
 
 def _released(ibat=0.3, chg_max=2.75, max_avail_a=16.0):
-    """A core in HOLD, entered the way 5.1 says: the BMS's permission at or
-    below 3 A for the full debounce, with the leader cell pinned at 3593 mV
-    so the old vmax trigger would never have fired."""
+    """A core in HOLD, entered the way 5.1 says: the leader cell at or above
+    3585 mV for the full debounce.
+
+    REWRITTEN 2026-10-10, and the helper's behaviour changed under it without
+    the bench noticing, which is worth recording. It used to say "the BMS's
+    permission at or below 3 A for the full debounce, with the leader cell
+    pinned at 3593 mV so the old vmax trigger would never have fired" -- the
+    3593 mV was chosen precisely to show the release did NOT key on vmax. Now
+    it is the only thing that releases: 3593 >= 3585, and the `chg_max`
+    argument has no part in reaching HOLD at all. Every hold case built on
+    this helper therefore passed before and after the change, for opposite
+    reasons. `chg_max` still matters once inside the hold, which is what it
+    is passed for."""
     b = Bench()
     b.arm(max_avail_a=max_avail_a, vmax=3.340, chg_max=300.0)
     b.low_power()
@@ -625,11 +757,16 @@ def _released(ibat=0.3, chg_max=2.75, max_avail_a=16.0):
     return b
 
 
-def _hold_frame(b, chg_max, ibat, dt_ms=400, vcu_a=19.0):
+def _hold_frame(b, chg_max, ibat, dt_ms=400, vcu_a=19.0, vmax=3.593):
     """One page-01 frame dt_ms later, with the BMS refreshed first. Returns
-    what the charger is told, in amps."""
+    what the charger is told, in amps.
+
+    The default leader of 3593 mV is inside spec 5.2's 5 mV band, below the
+    3595 mV up limit and the 3600 mV down limit, so every case that does not
+    pass `vmax` is exercising the pack-current rule alone.
+    """
     b.t += dt_ms
-    b.bms(vmax=3.593, chg_max=chg_max, ibat=ibat)
+    b.bms(vmax=vmax, chg_max=chg_max, ibat=ibat)
     return b.commanded_ilim(vcu_a)
 
 
@@ -667,9 +804,12 @@ def test_the_hold_steps_down_above_the_permission():
 
 
 def test_the_hold_steps_up_toward_the_permission():
-    """Spec 5.2: 0.1 A up while bcm_ibat is more than 0.25 A below it. The
-    setpoint can end up ABOVE the permission and that is the point -- the
-    parts truck's loads take ~2.9-3.0 A before any of it reaches the pack."""
+    """Spec 5.2: 0.1 A up while bcm_ibat is more than 0.25 A below it AND the
+    leader is below the up limit. The setpoint can end up ABOVE the
+    permission and that is the point -- the parts truck's loads take a
+    setpoint of ~2.9-3.0 A before any of it reaches the pack (setpoints, not
+    currents -- user, 2026-10-10). The leader sits at 3593 mV here, in the
+    5 mV band where neither cell rule speaks."""
     b = _released(ibat=0.3, chg_max=2.75)
     start = b.core.hold_ca
     for _ in range(4):
@@ -679,6 +819,29 @@ def test_the_hold_steps_up_toward_the_permission():
        % i)
     ok(b.core.hold_ca > 275,
        "past the permission itself, which is where the loads live")
+
+
+def test_the_hold_will_not_step_up_with_the_leader_at_the_up_limit():
+    """Spec 5.2 (user, 2026-10-10): up only while ibat is more than 0.25 A
+    below the permission AND the leader is below 3595 mV.
+
+    The asymmetry is deliberate and this is the half that is easy to lose:
+    the cell rule must be able to veto a step up without being able to cause
+    one. Driven with the pack DRAINING at 0.3 A against a 2.75 A permission,
+    which is the clearest "step up" the pack-current rule has, and with the
+    leader at exactly the limit.
+    """
+    b = _released(ibat=0.3, chg_max=2.75)
+    start = b.core.hold_ca
+    for _ in range(4):
+        _hold_frame(b, 2.75, 0.3, vmax=3.595)
+    ok(b.core.hold_ca == start,
+       "at 3595 mV the setpoint does not move, though ibat is 2.45 A under "
+       "the permission (%s -> %s cA)" % (start, b.core.hold_ca))
+    for _ in range(2):
+        _hold_frame(b, 2.75, 0.3, vmax=3.594)
+    ok(b.core.hold_ca > start,
+       "one millivolt lower and it steps up again (%s cA)" % b.core.hold_ca)
 
 
 def test_the_hold_rests_inside_the_band():
@@ -879,8 +1042,8 @@ def test_the_hold_reports_its_own_setpoint_in_the_diagnostics():
        "the status frame reports state %d, HOLD" % status[2])
     ok(status[5] == 15,
        "and 1.50 A as 15 in the 0.1 A field (%d)" % status[5])
-    ok((status[0], status[1]) == (4, 6),
-       "under diag schema 4 / fw 6, which is what the new state code and "
+    ok((status[0], status[1]) == (4, 7),
+       "under diag schema 4 / fw 7, which is what the new state code and "
        "this field's new meaning are published as (%d/%d)"
        % (status[0], status[1]))
     line = b.core.diag_line(b.t, 0, 0)

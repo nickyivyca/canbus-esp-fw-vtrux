@@ -85,7 +85,11 @@ DIAG_SCHEMA_VER = 4
 #   6  spec 3: arming, re-arming included, needs the charger's LATEST status
 #      to be state 12 with the contactors closed, not a 12 seen earlier in
 #      the session.
-DIAG_FW_VER = 6
+#   7  spec 4, 5.1 and 5.2 of 2026-10-10: the override's command is not
+#      below a 6.10 A floor from 98 % SoC up, the release fires on
+#      bcm_cell_vmax >= 3585 mV for 1 s instead of bcm_chg_max <= 3.0 A, and
+#      the hold steps down at 3600 mV and up only below 3595 mV.
+DIAG_FW_VER = 7
 
 
 def mirror_id(arb_id):
@@ -135,24 +139,44 @@ MAINC_CLOSED = (11, 12)
 class Config(object):
     """Thresholds. Units: mV, centi-amps (cA = 0.01 A), ms, half-percent."""
 
-    __slots__ = ("chgmax_full_ca", "soc_arm_half", "vmax_hard_mv",
+    __slots__ = ("vmax_full_mv", "soc_arm_half", "vmax_hard_mv",
+                 "ilim_floor_ca", "ilim_floor_soc_half",
                  "learned_ilim_min_ca", "burst_frames", "burst_period_ms",
                  "arm_delay_ms", "full_debounce_ms", "chg_state_debounce_ms",
                  "bms_stale_ms", "chg_stale_ms", "chg_silence_ms",
                  "override_max_ms",
                  "hold_step_ca", "hold_band_ca", "hold_step_min_ms",
+                 "hold_vmax_down_mv", "hold_vmax_up_mv",
                  "revert_aux_pages", "mask_charger_telemetry", "diag_mirror")
 
     def __init__(self):
         # --- where WE release, when we are the one driving the charge -------
-        # Spec 5.1: release when the BMS's permission has collapsed -- the
-        # VCU's own top-of-charge criterion (it commanded Low Power at 2.75 A
-        # on vtrux_charge_M1 and at 0 A on vtrux_partstruck_charge). Modelled
-        # at 3.0 A from those two captures. vmax is NOT a release trigger:
-        # under real imbalance the BMS pins the leaders at 3593 mV while
-        # still permitting 2.8 A, and a vmax threshold never fires
-        # (evap-override-imbalanced, 2026-09-14).
-        self.chgmax_full_ca = 300            # 3.00 A
+        # Spec 5.1 (user, 2026-10-10): the LEADER CELL reaching the truck's
+        # own cut, held for full_debounce_ms. At all five tops of charge in
+        # the corpus the VCU cut its setpoint with the leader at
+        # 3584-3589 mV and commanded Low Power 60-82 s later.
+        #
+        # THIS REPLACED `chgmax_full_ca`, which was the release input from
+        # 2026-09-19 to 2026-10-10, and the field is gone rather than left
+        # unused: `hard-ceiling-failsafe` disables the release with
+        # `--chgmax-full-a -1`, and a retired field still accepting that
+        # value would have left the scenario disabling nothing while still
+        # passing. The release was keyed on chg_max because the two captures
+        # then in hand showed it at 2.75 A and 0 A at the cut; with five it
+        # is clear that chg_max follows the BMS's SoC, reaching 0 A at SoC
+        # 100 % with the leader anywhere in 3.37-3.49 V, and the leader is
+        # what the truck ends on (artifacts/vcu_top_of_charge_summary.txt,
+        # artifacts/partstruck_top_of_charge_p2.txt).
+        #
+        # The old comment here said "vmax is NOT a release trigger: under
+        # real imbalance the BMS pins the leaders at 3593 mV while still
+        # permitting 2.8 A, and a vmax threshold never fires". The
+        # observation stands and is now an argument FOR this trigger: a
+        # threshold at 3585 mV fires there, where one keyed on the
+        # permission waits for a collapse the BMS is in no hurry to make.
+        # The bench case it came from, evap-override-imbalanced, is the one
+        # that stalled.
+        self.vmax_full_mv = 3585
 
         # --- the override gate (spec 3) --------------------------------------
         # A Low Power command is the evap ceiling only with the VCM's evap
@@ -163,6 +187,31 @@ class Config(object):
 
         # --- hard safety ---------------------------------------------------
         self.vmax_hard_mv = 3610             # no debounce, trips immediately
+
+        # --- the override command's floor (spec 4, user 2026-10-10) ---------
+        # Near the top the BMS walks chg_max down on its own SoC, not on the
+        # leader: to 3.0 A at SoC 99.46-99.64 % and 0 A at SoC 100 %, with
+        # the leader at 3.36-3.49 V. Following it alone STALLS -- at about
+        # 3 A the charger delivers no more than the parts truck's loads take,
+        # so SoC, and with it chg_max, stops moving short of any release
+        # (P3 smoke, 2026-10-10). The truck's own VCU does not follow it
+        # either: it tapers with the leader to a floor of 6.10-6.15 A at
+        # 3.495 V and holds that until its cut at 3.585 V, with chg_max
+        # already at 0 A.
+        #
+        # OURS IS THE LOWEST THE MAIN TRUCK HELD, 6.10 A on
+        # vtrux_20260503_192242 (user, 2026-10-10), not the middle of that
+        # range: at 6.10 A the floor is at or below the VCU's own setpoint
+        # at every leader voltage, so goal 2 -- never trip a protection --
+        # holds exactly rather than within 0.05 A. The parts truck's own
+        # floor is higher still, 6.65 A.
+        #
+        # It applies ONLY from 98 % SoC up. Below that the BMS's permission
+        # is still obeyed in full -- a cold or hot pack's especially, which
+        # is the case the gate exists for. There is no taper and no
+        # controller of ours.
+        self.ilim_floor_ca = 610             # 6.10 A
+        self.ilim_floor_soc_half = 196       # 98.0 %
 
         # --- the VCU's learned CC command (spec 4) --------------------------
         # A page-01 setpoint counts as the VCU's CC command only from here
@@ -204,6 +253,17 @@ class Config(object):
         self.hold_step_ca = 10               # 0.1 A per step
         self.hold_band_ca = 25               # hold while within 0.25 A below
         self.hold_step_min_ms = 300          # at most one step per 0.3 s
+
+        # Spec 5.2 (user, 2026-10-10): the hold's own cell limits, for a
+        # release by a high cell with chg_max still above 0 A, where the
+        # pack-current rule alone would charge the leader into the 3610 mV
+        # trip. The truck's own holds sit at 3593-3598 mV with chg_max at
+        # 0 A, where the pack-current rule governs -- so the up limit is
+        # deliberately ABOVE those holds and the down limit above the up,
+        # leaving a 5 mV band in which neither cell rule speaks and ibat
+        # decides, exactly as it did before this was added.
+        self.hold_vmax_down_mv = 3600
+        self.hold_vmax_up_mv = 3595
 
         # The charger dips out of state 12 for a single frame during normal
         # operation -- measured on vtruxchargeafterexportchargetest-80pctcv,
@@ -740,8 +800,10 @@ class InterposerCore(object):
         Observed means the charger in state 12 with the contactors closed.
         NOT pack current: a charge that starts above the ceiling never shows
         a net charging current -- the 83 % start (spec 7) drained the pack at
-        2.7 A through its whole hold because the Low Power output did not
-        cover the aux load -- and it must still arm.
+        about 2.9 A through its whole hold because the Low Power output did
+        not cover the aux load -- and it must still arm. (2.9 A since the
+        spec's figure was remeasured on 2026-10-10; it read 2.7 A before.
+        A larger drain only makes the point stronger.)
 
         And it means NOW, not earlier in the session (spec 3, user,
         2026-10-09) -- see the condition.
@@ -806,13 +868,19 @@ class InterposerCore(object):
                        "closed, ibat %.1f A)" % (self.ibat / 100.0))
 
     def _is_genuinely_full(self):
-        """Are WE done charging? Spec 5.1: the BMS's permission has collapsed.
+        """Are WE done charging? Spec 5.1: the LEADER CELL has reached the
+        truck's own cut.
 
-        Only chg_max. A vmax threshold is unreachable under real imbalance
-        (the BMS pins the leaders below it while still permitting current)
-        and the truck never keys on one; the 3610 mV hard trip is the backstop.
+        Only vmax, and the caller debounces it for full_debounce_ms, which is
+        5.1's "continuously for 1 s". `chg_max` takes no part: it follows the
+        BMS's SoC and reaches 0 A at SoC 100 % with the leader anywhere from
+        3.37 to 3.49 V, so a pack with a high cell would charge on past the
+        truck's cut waiting for it. Keyed on the leader, a high cell releases
+        at a lower pack SoC and a low cell cannot hold the release back --
+        the parts truck's low cell sat about 120 mV under the leader at its
+        own cut. The 3610 mV hard trip remains the backstop.
         """
-        return self.chg_max <= self.cfg.chgmax_full_ca
+        return self.vmax >= self.cfg.vmax_full_mv
 
     def _evse_cap_ca(self):
         """The EVSE current ceiling we must not command past, in cA.
@@ -866,16 +934,32 @@ class InterposerCore(object):
     def _our_ilim_counts(self):
         """Our current command while overriding, in page-01 counts (0.05 A).
 
-        Spec 4: the BMS's permission, capped by the EVSE. No floor and no
-        taper of our own: a voltage taper starved the last millivolts on the
-        bench (2026-09-17), the BMS already tapers on the leader cell, and the
-        2.4 A "aux floor" written as "never above the permission" was a no-op
-        (2026-09-19).
+        Spec 4 (user, 2026-10-10): `min(EVSE cap, max(bcm_chg_max, floor))`,
+        where the floor is ilim_floor_ca from ilim_floor_soc_half up and 0
+        below it. THE COMMAND CAN THEREFORE EXCEED THE BMS'S PERMISSION, and
+        only there: between 98 % SoC and the leader-cell release, which is
+        where the BMS walks chg_max down on SoC while the truck's own VCU
+        holds 6.1 A against the leader. Below 98 % the permission is obeyed
+        in full. See the floor's config comment for why following chg_max
+        alone stalls, and 5.2 for the hold that follows the release.
+
+        There is still no taper of our own: one starved the last millivolts
+        on the bench (2026-09-17). The floor is not a taper -- it is a single
+        value the truck itself holds -- and it is not the 2.4 A "aux floor"
+        of 2026-09-19 either, which was written as "never above what the BMS
+        permits" and was consequently a no-op.
+
+        The EVSE cap is applied LAST, so it still binds absolutely: J1772
+        compliance is not something the floor may override.
         """
+        c = self.cfg
         cap = self._evse_cap_ca()
         if cap < 0:
             return 0
         ca = self.chg_max
+        floor = c.ilim_floor_ca if self.soc_half >= c.ilim_floor_soc_half else 0
+        if ca < floor:
+            ca = floor
         if cap < ca:
             ca = cap
         if ca < 0:
@@ -1105,6 +1189,12 @@ class InterposerCore(object):
         up; inside the band it holds. The result sits at or just under the
         BMS's permission, and is above it only for the steps a sudden load
         drop takes to remove -- about 2 s for 0.7 A.
+
+        Since 2026-10-10 the leader cell can also force a step down, and can
+        veto a step up, independently of the pack current: the release now
+        fires on the leader, so the hold can be entered with chg_max still
+        well above 0 A, where following ibat alone would charge the leader
+        into the 3610 mV trip.
         """
         c = self.cfg
         if self.hold_ca is None:
@@ -1112,10 +1202,15 @@ class InterposerCore(object):
         if (self.t_hold_step is not None
                 and t_ms - self.t_hold_step < c.hold_step_min_ms):
             return
+        # Spec 5.2 (user, 2026-10-10): down on pack current OR a high
+        # leader; up only on pack current AND a leader below the up limit.
+        # The asymmetry is the point -- the cell rule must be able to pull
+        # the setpoint down on its own, and must never push it up.
         want = self.hold_ca
-        if self.ibat > self.chg_max:
+        if self.ibat > self.chg_max or self.vmax >= c.hold_vmax_down_mv:
             want = self.hold_ca - c.hold_step_ca
-        elif self.ibat < self.chg_max - c.hold_band_ca:
+        elif (self.ibat < self.chg_max - c.hold_band_ca
+              and self.vmax < c.hold_vmax_up_mv):
             want = self.hold_ca + c.hold_step_ca
         # Spec 5.2: "It stays between 0 A and the EVSE cap of section 4."
         # The cap is clamped even when the step did not move, because the cap
@@ -1419,8 +1514,14 @@ class InterposerCore(object):
                 # page 00 and repeats the VCU's standing Low Power command
                 # once, so the charger -- which only ever heard our rewrite
                 # of it -- drops into Low Power, state 12. THE HOLD AFTER IT
-                # IS OURS: the VCU holds at 0 or 2.9 A, and on the parts
-                # truck, whose loads need ~2.9-3.0 A, that drains the pack.
+                # IS OURS: the VCU holds as it does at the ceiling
+                # (SETPOINTS of 0/2.9 A, or 0 A after an 83 % start), and on
+                # the parts truck, whose loads need a SETPOINT of ~2.9-3.0 A
+                # (user, 2026-10-10), that drains the pack. Setpoints, not
+                # currents: by the efficiency fit a ~2.9 A setpoint delivers
+                # about 1.6 A, so read as a current the figure overstates
+                # what the charger puts out. The conclusion is unchanged --
+                # the VCU's dither sits below what the truck needs.
                 # So the core enters HOLD and replaces the page-01 setpoint
                 # from here on, changing nothing else.
                 #

@@ -225,8 +225,10 @@ after which the charger sits in Low Power until the handle is pulled.
 **The hold after the release is ours (spec 5.2, user, 2026-10-08):** the
 core enters HOLD and replaces the page-01 setpoint from there on, following
 the pack current in 0.1 A steps, because the VCU's own hold puts 0.85-2.55 A
-into the pack for the first hour and on the parts truck, whose loads need
-~2.9-3.0 A, that drains it. Page 00 and every other frame are the VCU's
+into the pack for the first hour and on the parts truck, whose loads need a
+**setpoint** of ~2.9-3.0 A (user, 2026-10-10), that drains it. Setpoints, not
+currents: by the efficiency fit a ~2.9 A setpoint delivers about 1.6 A.
+Page 00 and every other frame are the VCU's
 again from the release. At a handle pull the simulated BMS drops HVIL 30 ms after the VCU's
 flow drop, as the truck does, and the core must not trip on it (spec 6). The truck's real endings come from `charger_sim
 --unplug-at` (handle pull N s after charging starts, `shutdownSource` 11),

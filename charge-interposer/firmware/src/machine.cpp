@@ -97,13 +97,17 @@ void EmitList::push(uint8_t port, uint32_t id, bool ext, const uint8_t* d,
 }
 
 void configDefaults(Config& c) {
-  // Spec 5.1: release when the BMS's permission has collapsed (3.00 A).
-  c.chgmax_full_ca = 300;  // 3.00 A
+  // Spec 5.1 (user, 2026-10-10): release on the leader cell reaching the
+  // truck's own cut, debounced by full_debounce_ms.
+  c.vmax_full_mv = 3585;
 
   // Spec 3: the override gate. 78 % in bcm_soc's half-percent counts.
   c.soc_arm_half = 156;
 
   c.vmax_hard_mv = 3610;
+  // Spec 4 (user, 2026-10-10): the override command's floor, from 98 % SoC.
+  c.ilim_floor_ca = 610;        // 6.10 A, the lowest the main truck held
+  c.ilim_floor_soc_half = 196;  // 98.0 %
   c.learned_ilim_min_ca = 500;  // 5.00 A
   c.burst_frames = 20;
   c.burst_period_ms = 50;
@@ -121,6 +125,8 @@ void configDefaults(Config& c) {
   c.hold_step_ca = 10;        // 0.1 A per step
   c.hold_band_ca = 25;        // hold while within 0.25 A below
   c.hold_step_min_ms = 300;   // at most one step per 0.3 s
+  c.hold_vmax_down_mv = 3600;
+  c.hold_vmax_up_mv = 3595;
 
   c.revert_aux_pages = true;
   c.mask_charger_telemetry = false;
@@ -248,11 +254,14 @@ void InterposerCore::gotoState(uint32_t t_ms, uint8_t st, uint8_t code,
 // decisions
 // --------------------------------------------------------------------------
 
-// Are WE done charging? Spec 5.1: the BMS's permission has collapsed. Only
-// chg_max -- a vmax threshold is unreachable under real imbalance and the
-// truck never keys on one; the 3610 mV hard trip is the backstop.
+// Are WE done charging? Spec 5.1 (user, 2026-10-10): the LEADER CELL has
+// reached the truck's own cut. Only vmax, debounced by the caller for
+// full_debounce_ms. chg_max takes no part: it follows the BMS's SoC and
+// reaches 0 A at SoC 100 % with the leader anywhere in 3.37-3.49 V, so a
+// pack with a high cell would charge past the truck's cut waiting for it.
+// The 3610 mV hard trip remains the backstop. See machine.py.
 bool InterposerCore::isGenuinelyFull() const {
-  return chg_max_ <= cfg_.chgmax_full_ca;
+  return vmax_ >= cfg_.vmax_full_mv;
 }
 
 // The EVSE current ceiling we must not command past, in cA.
@@ -283,10 +292,18 @@ int32_t InterposerCore::evseCapCa() const {
 
 // Our current command while overriding, in page-01 counts (0.05 A each).
 // Spec 4: the BMS's permission, capped by the EVSE. No floor, no taper.
+// Spec 4 (user, 2026-10-10): min(EVSE cap, max(chg_max, floor)), the floor
+// applying from ilim_floor_soc_half up. THE COMMAND CAN THEREFORE EXCEED THE
+// BMS'S PERMISSION, and only between 98 % SoC and the leader-cell release.
+// The EVSE cap is applied last, so J1772 compliance still binds absolutely.
+// See machine.py's ourIlimCounts equivalent for the reasoning.
 int32_t InterposerCore::ourIlimCounts() const {
   const int32_t cap = evseCapCa();
   if (cap < 0) return 0;
   int32_t ca = chg_max_;
+  const int32_t floor_ca =
+      soc_half_ >= cfg_.ilim_floor_soc_half ? cfg_.ilim_floor_ca : 0;
+  if (ca < floor_ca) ca = floor_ca;
   if (cap < ca) ca = cap;
   if (ca < 0) ca = 0;
   return ca / 5;  // centi-amps -> 0.05 A counts
@@ -326,10 +343,14 @@ void InterposerCore::stepHold(uint32_t t_ms) {
       (uint32_t)(t_ms - t_hold_step_) < cfg_.hold_step_min_ms) {
     return;
   }
+  // Spec 5.2 (user, 2026-10-10): down on pack current OR a high leader; up
+  // only on pack current AND a leader below the up limit. The asymmetry is
+  // the point -- the cell rule pulls down on its own and never pushes up.
   int32_t want = hold_ca_;
-  if (ibat_ > chg_max_) {
+  if (ibat_ > chg_max_ || vmax_ >= cfg_.hold_vmax_down_mv) {
     want = hold_ca_ - cfg_.hold_step_ca;
-  } else if (ibat_ < chg_max_ - cfg_.hold_band_ca) {
+  } else if (ibat_ < chg_max_ - cfg_.hold_band_ca &&
+             vmax_ < cfg_.hold_vmax_up_mv) {
     want = hold_ca_ + cfg_.hold_step_ca;
   }
   // Spec 5.2: "It stays between 0 A and the EVSE cap of section 4." The cap
@@ -987,10 +1008,12 @@ void InterposerCore::tick(uint32_t t_ms, EmitList& out) {
       // Spec 5.2 (user, 2026-10-08): the release stops rewriting page 00
       // and repeats the VCU's standing Low Power command once, so the
       // charger -- which only ever heard our rewrite of it -- drops into
-      // Low Power, state 12. THE HOLD AFTER IT IS OURS: the VCU holds at 0
-      // or 2.9 A, and on the parts truck, whose loads need ~2.9-3.0 A, that
-      // drains the pack. So the core enters HOLD and replaces the page-01
-      // setpoint from here on, changing nothing else.
+      // Low Power, state 12. THE HOLD AFTER IT IS OURS: the VCU holds as
+      // it does at the ceiling (SETPOINTS of 0/2.9 A, or 0 A after an 83 %
+      // start), and on the parts truck, whose loads need a SETPOINT of
+      // ~2.9-3.0 A (user, 2026-10-10), that drains the pack. Setpoints, not
+      // currents -- see machine.py. So the core enters HOLD and replaces
+      // the page-01 setpoint from here on, changing nothing else.
       //
       // It starts from our last override setpoint, which is what the
       // charger already has, so the entry changes nothing on the wire. It
