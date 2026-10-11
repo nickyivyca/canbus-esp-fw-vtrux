@@ -377,4 +377,12 @@ void    ft_stop_worker(void);
  */
 void    ft_set_reset_reason(esp_reset_reason_t r);
 
+/*
+ * The controller's cumulative error-frame count (spec 7 trip 6). Cumulative
+ * since the driver was installed, so a case models a REINSTALL by setting it
+ * back to 0. Not cleared by ft_reset(), for the same reason the reset reason
+ * is not: setup() calls ft_reset() first, so a case could not stage it.
+ */
+void    ft_set_bus_errors(uint32_t n);
+
 #endif /* FAKE_TWAI_H */

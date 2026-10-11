@@ -981,12 +981,26 @@ esp_err_t twai_read_alerts(uint32_t *alerts, TickType_t ticks)
     return ESP_OK;
 }
 
+/*
+ * The controller's cumulative error-frame count, for spec 7 trip 6.
+ *
+ * IT IS CUMULATIVE SINCE THE DRIVER WAS INSTALLED, which is the property the
+ * trip's baseline arithmetic depends on, so a test that wants to model a
+ * reinstall sets it back to 0 by hand. This fake does not model driver
+ * instances, and pretending otherwise would hide exactly the case worth
+ * testing.
+ */
+static uint32_t g_bus_errors;
+
+void ft_set_bus_errors(uint32_t n) { g_bus_errors = n; }
+
 esp_err_t twai_get_status_info(twai_status_info_t *status)
 {
     memset(status, 0, sizeof(*status));
     status->state = g_running ? TWAI_STATE_RUNNING : TWAI_STATE_STOPPED;
     status->msgs_to_tx = (uint32_t)g_qn;
     status->msgs_to_rx = (uint32_t)g_rx_n;
+    status->bus_error_count = g_bus_errors;
     return ESP_OK;
 }
 

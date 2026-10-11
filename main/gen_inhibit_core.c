@@ -480,6 +480,39 @@ void gi_set_mode(gi_state_t *st, gi_mode_t mode, uint32_t offset_us,
     if (mode != GI_OFF)
     {
         gi_reset_stats(st);
+
+        /*
+         * SPEC 7 TRIP 6: RE-SEED THE BASELINE ON EVERY ARM. The baseline is
+         * err_last, the controller's cumulative error count at the last armed
+         * read; the HISTORY is the err_at ring. The spec ties only the
+         * history's lifetime to the key cycle, and this does not touch it.
+         *
+         * WHY IT HAS TO BE HERE. bus_error_count is cumulative SINCE THE
+         * DRIVER WAS INSTALLED, and arming from OFF reinstalls the driver, so
+         * the count restarts at 0 while err_last still holds the previous
+         * arm's value. `count - err_last` is unsigned (err_history_tick()),
+         * so it WRAPS to about four billion, the clamp turns that into a full
+         * ring, and every entry is stamped at this instant -- a burst of
+         * exactly err_min_trip with zero width and zero age, which is the most
+         * trippable value the window test can be given. One error frame in the
+         * previous armed arm was enough.
+         *
+         * gi_tick()'s unarmed branch already tries to do this, and its comment
+         * states the hazard precisely. It cannot work: gi_tick() has one call
+         * site and the worker's OFF branch returns before reaching it, so the
+         * drop never ran in mode 0 -- the one state it was written for. Found
+         * 2026-10-10 from the tester's trip6_rearm_check arms; reviewer ruled
+         * it a defect against spec 7 as written, not a spec change. That
+         * branch is kept: it is correct for OBSERVE and RESPOND, which do
+         * reach gi_tick.
+         *
+         * HERE RATHER THAN IN THE OFF BRANCH because this runs synchronously
+         * with the mode POST, before the worker can take an armed tick, so no
+         * loop structure can skip it -- which is the mistake being fixed.
+         * gi_notify_off() clears have_prev_051 for the identical reason one
+         * field over, and that is the shape to copy.
+         */
+        st->have_err_last = false;
     }
     st->mode = mode;
     ev_add(ev, now, GI_EV_MODE, (int32_t)mode, (int32_t)offset_us, 0);

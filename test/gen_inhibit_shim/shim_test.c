@@ -3685,6 +3685,150 @@ static void case_unknown_reset_reason_is_a_number(void)
     ft_set_reset_reason(ESP_RST_POWERON);
 }
 
+/*
+ * CASES 37 AND 38 -- spec 7 trip 6, "How the window moves" (user, 2026-10-08).
+ *
+ * Case 37 is the regression. The trip's BASELINE (err_last, the controller's
+ * cumulative error count at the last armed read) is separate from its HISTORY
+ * (the ring of arrival times), and the spec ties only the history's lifetime to
+ * the key cycle. The baseline has to be re-seeded on every arm, because the
+ * driver's count restarts whenever the driver is reinstalled -- which is what
+ * arming from OFF does -- and an unsigned `count - err_last` then WRAPS.
+ *
+ * gen_inhibit_core.c has code to drop the baseline while unarmed, and its
+ * comment states the hazard exactly. It lives in gi_tick()'s unarmed branch,
+ * gi_tick() has one call site, and the worker's OFF branch continues before
+ * reaching it -- so it never ran in mode 0, the one state it was written for.
+ * One error frame in the previous armed arm was enough: the wrap clamps to a
+ * full ring stamped at one instant, which is the most trippable value the
+ * window test can be given.
+ *
+ * Case 38 is the over-correction guard, and it is the reason the two are
+ * written together. Re-seeding the baseline must NOT forget the history: a real
+ * burst recorded while armed and not yet live must still trip at the first live
+ * check, which is the behaviour the user ruled on 2026-10-08.
+ */
+static void case_rearm_does_not_trip_on_a_stale_baseline(void)
+{
+    case_begin("case 37: a re-arm after errors does not trip on a phantom burst");
+    ft_set_bus_errors(0);
+    setup();
+
+    /* ONE error frame is enough to make the baseline non-zero. */
+    ft_set_bus_errors(1);
+    go_live();
+    ft_run(200000);
+    CHECK(!json_has("\"abort_latched\":true"),
+          "one error frame tripped the first arm, so this case cannot say "
+          "anything about the re-arm: %s", stats());
+
+    /*
+     * Disarm through the REAL worker path -- the OFF branch the drop never
+     * reaches -- and leave it there long enough to run several times.
+     */
+    gen_inhibit_set_mode(GEN_INHIBIT_OFF, 500);
+    ft_run(300000);
+
+    /*
+     * Arming from OFF reinstalls the driver, so its cumulative count restarts
+     * at 0. fake_twai does not model driver instances, so the test states the
+     * fact rather than simulating it.
+     */
+    ft_set_bus_errors(0);
+
+    go_live();
+    ft_run(200000);
+
+    CHECK(!json_has("\"abort_reason\":\"error-frame rate exceeded\""),
+          "the re-arm tripped trip 6 with no error frames since arming. The "
+          "baseline was carried over from the previous arm and the driver's "
+          "count restarted, so `count - err_last` wrapped and stamped a whole "
+          "ring at this instant -- a burst that never happened: %s", stats());
+    CHECK(!json_has("\"abort_latched\":true"),
+          "the re-arm latched an abort on a quiet bus: %s", stats());
+
+    teardown();
+    case_end();
+    ft_set_bus_errors(0);
+}
+
+static void case_errors_before_live_still_trip(void)
+{
+    case_begin("case 38: a real burst before going live still trips (not over-corrected)");
+    ft_set_bus_errors(0);
+    setup();
+
+    static const uint8_t KEY[8]  = { 0x10 };
+    static const uint8_t CONT[8] = { 11 << 2 };
+    static const uint8_t SOC[8]  = { 0x4E, 0x20 };      /* 50.00 % */
+    static const uint8_t FLT[8]  = { 0, 0, 0, 0, 0, 0, 0, 0xC8 };
+    static const uint8_t SHF[8]  = { 0, 0, 0, 0, 0, 0, 2 << 4 };
+    uint8_t cmd[6];
+
+    /*
+     * Armed, key on, and NOT live: the contactor, SoC, fault and shift
+     * signals are withheld, so interlock_runtime() -- which holds the trip --
+     * does not run yet, while the recording half does. That split is the
+     * behaviour the user ruled on 2026-10-08.
+     *
+     * FRAMES HAVE TO KEEP ARRIVING FOR A TICK TO HAPPEN. On a quiet bus the
+     * worker blocks in twai_receive() for GEN_INHIBIT_RX_TIMEOUT_MS, so the
+     * first version of this case advanced 50 ms twice, took no second tick at
+     * all, and never recorded the burst -- it then read as the fix having
+     * eaten the history when nothing had been recorded to eat.
+     */
+    gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
+    for (int i = 0; i < 4; i++)
+    {
+        memcpy(cmd, VCM, sizeof(cmd));
+        cmd[5] = (uint8_t)(i & 0x0F);
+        feed(0x051, cmd, 6, 5000);
+        feed(0x592, KEY, 8, 5000);      /* key on, before the burst */
+    }
+
+    ft_set_bus_errors(10);              /* err_min_trip, in one read */
+    for (int i = 4; i < 8; i++)
+    {
+        memcpy(cmd, VCM, sizeof(cmd));
+        cmd[5] = (uint8_t)(i & 0x0F);
+        feed(0x051, cmd, 6, 5000);      /* a tick here records the burst */
+        feed(0x592, KEY, 8, 5000);
+    }
+
+    /*
+     * RE-POST THE MODE NOW THAT THE RING IS POPULATED. This is what makes the
+     * case a guard rather than a decoration: the baseline re-seed happens
+     * here, with ten entries already recorded, so a fix that also cleared the
+     * history would lose them and the trip below would not fire. Verified by
+     * mutation on 2026-10-10 -- adding `st->err_n = 0` beside the re-seed
+     * turns this case red and leaves case 37 green.
+     */
+    gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
+
+    /* Then the remaining interlocks arrive and the gate opens. */
+    for (int i = 8; i < 20; i++)
+    {
+        memcpy(cmd, VCM, sizeof(cmd));
+        cmd[5] = (uint8_t)(i & 0x0F);
+        feed(0x051, cmd, 6, 5000);
+        feed(0x592, KEY, 8, 5000);
+        feed(0x440, CONT, 8, 5000);
+        feed(0x411, SOC, 8, 5000);
+        feed(0x617, FLT, 8, 5000);
+        feed(0x639, SHF, 8, 5000);
+    }
+    ft_run(100000);
+
+    CHECK(json_has("\"abort_reason\":\"error-frame rate exceeded\""),
+          "ten error frames in the 10 s before going live did NOT trip at the "
+          "first live check. Re-seeding the baseline must not clear the "
+          "history: %s", stats());
+
+    teardown();
+    case_end();
+    ft_set_bus_errors(0);
+}
+
 int main(int argc, char **argv)
 {
     /*
@@ -3747,6 +3891,8 @@ int main(int argc, char **argv)
     case_backlog_reaches_the_scheduler();
     case_uptime_rises_and_the_reason_is_named();
     case_unknown_reset_reason_is_a_number();
+    case_rearm_does_not_trip_on_a_stale_baseline();
+    case_errors_before_live_still_trip();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
     return g_fail ? 1 : 0;
