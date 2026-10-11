@@ -185,25 +185,35 @@ def check_all(tree, script, comp):
         out.append(("  passes again once undone", rc2 == 0, "rc %d" % rc2))
     out.append(("--check-only created no build directory", build_dirs(tree) == [],
                 str(build_dirs(tree))))
-    out.append(wrong_directory(tree, script))
+    out.append(wrong_directory(tree, script, nested=False))
+    out.append(wrong_directory(tree, script, nested=True))
     return out
 
 
-def wrong_directory(tree, script):
+def wrong_directory(tree, script, nested):
     """The script, copied into a directory that is not the repo, must refuse by identity.
 
-    The directory is a SIBLING of the throwaway tree and must be outside every git
-    repository: inside one, git knows the markers and the script rightly reads their
-    absence as a dirty tree (the first version put it inside the throwaway tree and
-    went red against ddddfea for that reason, 2026-10-10)."""
-    label = "refused: run from a directory that is not the repo, by identity"
-    other = tree + "-not-a-repo"
+    Two placements, both must refuse by identity (reviewer ruling 2026-10-10: a
+    directory that is not the repo is refused by identity):
+      - SIBLING of the throwaway tree, outside every git repository (the harness
+        refuses to judge if git still finds one there);
+      - NESTED inside the throwaway tree, a git work tree whose HEAD carries every
+        marker the script looks for. Git discovery walks up, so a script that asks
+        git whether a missing marker is tracked gets the outer tree's answer. The
+        first version of this case put its probe there by accident, went red against
+        ddddfea, and was moved out with a docstring calling the refusal "rightly" a
+        dirty tree; it was a defect in prod_build.py's check_repo(), fixed in 13709ab
+        (implementor). Red against ddddfea, green from 13709ab."""
+    where = "nested inside the throwaway tree" if nested else "sibling, outside any repo"
+    label = "refused: run from a directory that is not the repo (%s), by identity" % where
+    other = os.path.join(tree, "nested_not_a_repo_probe") if nested else tree + "-not-a-repo"
     os.makedirs(os.path.join(other, "tools"))
     try:
         inside = git(["rev-parse", "--show-toplevel"], other)
-        if inside.returncode == 0:
-            return (label, False, "probe dir is inside a git repo (%s); case not run"
-                    % inside.stdout.strip())
+        top = os.path.normcase(os.path.normpath(inside.stdout.strip())) if inside.returncode == 0 else None
+        want = os.path.normcase(os.path.normpath(tree)) if nested else None
+        if top != want:
+            return (label, False, "probe dir's git top is %r, wanted %r; case not run" % (top, want))
         copy = os.path.join(other, "tools", os.path.basename(script))
         shutil.copyfile(script, copy)
         r = subprocess.run([sys.executable, copy, "--check-only"], cwd=other,
