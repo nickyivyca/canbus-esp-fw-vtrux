@@ -1993,6 +1993,59 @@ static void case_no_abort_while_transmitting(void)
  * checking the last byte is what catches a cut in the middle of a number, which
  * is what actually happened.
  */
+/*
+ * The longest value a text field's source table can put on the page, found by
+ * ASKING THE TABLE over its whole index range rather than copying its strings
+ * here. A case that hard-codes 60 for the trip-7 abort text is a second copy of
+ * a table that will not be updated alongside the first, and the bound would
+ * silently stop being a bound.
+ *
+ * The range is walked well past each enum's last member on purpose: an added
+ * name is then inside the bound from the moment it exists, and an out-of-range
+ * index simply takes the switch's default. Nothing here depends on the enum
+ * counts, which these headers do not publish.
+ */
+#define NAME_PROBE_RANGE 64
+
+static size_t longest_from(const char *(*name)(int))
+{
+    size_t m = 0;
+    for (int i = 0; i < NAME_PROBE_RANGE; i++)
+    {
+        const char *s = name(i);
+        const size_t n = (s != NULL) ? strlen(s) : 0;
+        if (n > m) { m = n; }
+    }
+    return m;
+}
+
+static const char *name_abort(int i)   { return gi_abort_name((gi_abort_t)i); }
+static const char *name_block(int i)   { return gi_block_name((gi_block_t)i); }
+static const char *name_selfoff(int i) { return gi_self_off_name((gi_self_off_t)i); }
+static const char *name_disable(int i) { return gi_disable_name((gi_disable_t)i); }
+static const char *name_drvstate(int i){ return drv_state_name((twai_state_t)i); }
+
+/*
+ * How many bytes `"<key>":"<value>"` would grow by if the value were the
+ * longest its table can return. Returns 0 if the key is absent, which the
+ * caller checks separately -- a missing key here would silently remove a term
+ * from the bound.
+ */
+static int text_field_slack(const char *page, const char *key, size_t longest,
+                            bool *found)
+{
+    char needle[48];
+    snprintf(needle, sizeof(needle), "\"%s\":\"", key);
+    const char *p = strstr(page, needle);
+    *found = (p != NULL);
+    if (p == NULL) { return 0; }
+    p += strlen(needle);
+    const char *end = strchr(p, '"');
+    if (end == NULL) { return 0; }
+    const size_t cur = (size_t)(end - p);
+    return (longest > cur) ? (int)(longest - cur) : 0;
+}
+
 static void case_status_page_fits_the_handler_buffer(void)
 {
     case_begin("case 26: the status page fits the buffer the handler passes");
@@ -2033,29 +2086,132 @@ static void case_status_page_fits_the_handler_buffer(void)
      * something.
      */
     int widened = 0;
+    int arr_ints = 0;
+    bool in_edges = false;
     for (int i = 0; i < n; i++)
     {
-        if (page[i] == ':' && i + 1 < n
-            && (page[i + 1] >= '0' && page[i + 1] <= '9'))
+        /*
+         * `bucket_edges_us` is built from compile-time constants, so its
+         * elements are the one group of integers on this page that CANNOT
+         * grow. Every other array holds counters.
+         */
+        if (page[i] == '[')
         {
-            int j = i + 1;
-            while (j < n && page[j] >= '0' && page[j] <= '9') { j++; }
-            const int have = j - (i + 1);
-            /* The key, with its quotes, ends at i-1: `"uptime_ms"` is 11. */
-            const int is_u64 = (i >= 11
-                                && memcmp(page + i - 11, "\"uptime_ms\"", 11) == 0);
-            const int want = is_u64 ? 20 : 10;
-            widened += (have < want) ? (want - have) : 0;
-            i = j - 1;
+            in_edges = (i >= 18
+                        && memcmp(page + i - 18,
+                                  "\"bucket_edges_us\":[", 19) == 0);
         }
+        else if (page[i] == ']')
+        {
+            in_edges = false;
+        }
+
+        const char c = page[i];
+        const bool starts = (c >= '0' && c <= '9')
+                            || (c == '-' && i + 1 < n
+                                && page[i + 1] >= '0' && page[i + 1] <= '9');
+        if (!starts) { continue; }
+
+        /*
+         * A number begins only after ':' (a field), '[' (first element) or ','
+         * (a later element). Anything else means these digits are INSIDE a
+         * string -- "0x051" in an abort text, the probe id -- or mid-run, and
+         * widening those would inflate the bound with characters no counter
+         * controls. The ':' form was all the first version matched, which is
+         * why the histogram buckets went unwidened: array elements never
+         * follow a colon.
+         */
+        const char prev = (i > 0) ? page[i - 1] : '\0';
+        if (prev != ':' && prev != '[' && prev != ',') { continue; }
+
+        int j = (c == '-') ? i + 1 : i;
+        while (j < n && page[j] >= '0' && page[j] <= '9') { j++; }
+        const int have = j - i;             /* the sign counts as a character */
+
+        int want;
+        if (c == '-')
+        {
+            want = 11;                      /* "-2147483648" */
+        }
+        else if (prev == ':')
+        {
+            /* `"uptime_ms":` is 12 characters and ends at i-1. */
+            const int is_u64 = (i >= 12
+                                && memcmp(page + i - 12,
+                                          "\"uptime_ms\":", 12) == 0);
+            want = is_u64 ? 20 : 10;
+        }
+        else
+        {
+            if (in_edges) { i = j - 1; continue; }
+            arr_ints++;
+            want = 10;
+        }
+        widened += (have < want) ? (want - have) : 0;
+        i = j - 1;
     }
-    CHECK(n + widened < (int)sizeof(page) - 1,
-          "the page is %d bytes now, but %d with every integer at its type's "
-          "full width, against a %d-byte buffer. A long arm will cut it "
-          "mid-number, the device will answer HTTP 200 with unparseable JSON, "
-          "and the harness will report that as an unreachable device. Raise "
-          "GI_STATUS_PAGE_CAP",
-          n, n + widened, (int)sizeof(page));
+
+    /*
+     * TEXT FIELDS AND BOOLEANS, which no amount of integer widening reaches.
+     *
+     * The page this shim renders happens to carry empty or short strings in
+     * every text field -- no abort latched, no self-imposed OFF -- and the
+     * longest value some of those tables can return is 60 characters. So the
+     * integer bound above passed at 2,822 bytes while the real worst case is
+     * over the 3,072 cap, and nothing said so (gen-inhibit tester, 2026-10-10,
+     * runs/case26_worst_case_ddddfea_20261010.txt: 3,197 against 3,072).
+     *
+     * Each term is (longest the table can return) - (what is on the page now),
+     * and the longest comes from the table itself. `false` is one byte longer
+     * than `true`, so every boolean reading true can still grow by one.
+     */
+    bool found[6];
+    int text = 0;
+    text += text_field_slack(page, "abort_reason",
+                             longest_from(name_abort), &found[0]);
+    /*
+     * arm_block carries the ABORT name while an abort is latched and the block
+     * name otherwise -- see the `block` ternary in gen_inhibit_get_stats_json
+     * -- so its worst case is the longer of the two tables, not its own.
+     */
+    text += text_field_slack(page, "arm_block",
+                             longest_from(name_block) > longest_from(name_abort)
+                                 ? longest_from(name_block)
+                                 : longest_from(name_abort), &found[1]);
+    text += text_field_slack(page, "self_off",
+                             longest_from(name_selfoff), &found[2]);
+    text += text_field_slack(page, "disable_reason",
+                             longest_from(name_disable), &found[3]);
+    text += text_field_slack(page, "state",
+                             longest_from(name_drvstate), &found[4]);
+    text += text_field_slack(page, "reset_reason",
+                             GI_RESET_REASON_LEN - 1, &found[5]);
+    for (int k = 0; k < 6; k++)
+    {
+        CHECK(found[k],
+              "case 26 could not find text field %d on the page, so its term "
+              "is missing from the bound and the bound is too small by however "
+              "long that field can get", k);
+    }
+
+    int bools = 0;
+    for (int i = 0; i + 5 <= n; i++)
+    {
+        if (page[i] == ':' && memcmp(page + i + 1, "true", 4) == 0) { bools++; }
+    }
+
+    const int worst = n + widened + text + bools;
+    printf("           case 26 bound: n %d, +%d integers (%d in arrays), "
+           "+%d text, +%d bool -> %d against cap %d\n",
+           n, widened, arr_ints, text, bools, worst, (int)sizeof(page));
+    CHECK(worst < (int)sizeof(page) - 1,
+          "the page is %d bytes now, but %d at its worst case -- every integer "
+          "at its type's full width, every text field at the longest its table "
+          "can return, every boolean false -- against a %d-byte buffer. A long "
+          "arm with an abort latched will cut it mid-token, the device will "
+          "answer HTTP 200 with unparseable JSON, and the harness will report "
+          "that as an unreachable device. Raise GI_STATUS_PAGE_CAP",
+          n, worst, (int)sizeof(page));
 
     int depth = 0, lowest = 0;
     for (int i = 0; i < n; i++)

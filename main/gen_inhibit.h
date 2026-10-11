@@ -49,6 +49,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "esp_err.h"
+#include "driver/twai.h"    /* twai_state_t, for drv_state_name() below */
 
 #ifdef __cplusplus
 extern "C" {
@@ -120,21 +121,74 @@ void gen_inhibit_quiesce(void);
  * rather than truncating it.
  */
 /*
- * 3072 SINCE 2026-09-29, measured rather than chosen. The page with every counter
- * at 0 is 1830 bytes; the same page with every integer widened to a full u32 is
- * 2507. At 2048 a long arm's page was cut mid-number, and because
- * config_server.c truncates instead of overrunning, the device answered HTTP 200
- * with a body that would not parse -- which read as "the device did not answer"
- * and voided two 90 s bench arms.
+ * 4096 SINCE 2026-10-10, sized from the bound rather than chosen. 3072 was NOT
+ * BIG ENOUGH and had not been since the balance terms landed; the bound that
+ * was meant to catch it was only looking at part of the page.
+ *
+ * The history, because each step was reactive and the pattern is the point.
+ * 1400 cut the scheduler block off (defect D10). 2048 cut a long arm's page
+ * mid-number, and because config_server.c truncates instead of overrunning,
+ * the device answered HTTP 200 with a body that would not parse -- which read
+ * as "the device did not answer" and voided two 90 s bench arms. 3072 was set
+ * on 2026-09-29 from a worst case of 2507, computed by widening every integer
+ * to a full u32.
+ *
+ * THAT WORST CASE WAS INCOMPLETE IN THREE WAYS, found by the gen-inhibit tester
+ * on 2026-10-10 (runs/case26_worst_case_ddddfea_20261010.txt) and now computed
+ * inside shim case 26:
+ *
+ *   - the 20 histogram bucket counts are integers inside ARRAYS, and the
+ *     widening only matched integers following a ':' (+178 at u32 width);
+ *   - the text fields were left at whatever the shim's own page happened to
+ *     carry, which is empty or short in every one of them, while the tables
+ *     behind abort_reason and arm_block can return 60 characters and self_off
+ *     52 (+190);
+ *   - `false` is a byte longer than `true` (+11).
+ *
+ * With those, the page's worst case is 3201 against a 3072 cap: over by 129,
+ * and over since the 5.2 item 6 balance terms were added. Nothing had failed on
+ * the bench because reaching it needs a long arm AND a latched abort AND
+ * five-figure counters at the same moment.
+ *
+ * 4096 leaves 894 bytes of headroom over that -- roughly a dozen more u32
+ * fields at full width, or one more 60-character text field with room to
+ * spare. THE COST IS STATIC RAM AND NOT STACK: both page buffers are
+ * function-local statics in config_server.c (:1622, :1673), so this is
+ * 2 x 1024 bytes of .bss and nothing on the httpd task's stack. Measured:
+ * .bss 41,824 -> 43,872 bytes, DRAM 43.29% -> 43.93% used on esp32c3.
  *
  * Anything appended to gen_inhibit_get_stats_json() has to be checked against
- * this, and shim case 26 does it: it widens every integer in the rendered page to
- * u32 and requires that to fit, so the bound is enforced without needing an arm
- * that reaches those values.
+ * this, and shim case 26 does it: it renders the page, then widens every
+ * integer to its type's full width, every text field to the longest its own
+ * table can return, and every boolean to `false`. It asks the tables rather
+ * than copying their strings, so a longer name added later is inside the bound
+ * from the moment it exists.
  */
-#define GI_STATUS_PAGE_CAP 3072
+#define GI_STATUS_PAGE_CAP 4096
 
 int gen_inhibit_get_stats_json(char *buf, int buflen);
+
+/*
+ * The buffer reset_reason_name() is given, and therefore the widest string
+ * spec 11's `reset_reason` field can carry: GI_RESET_REASON_LEN - 1.
+ *
+ * Longest name is 10 ("PWR_GLITCH", "CPU_LOCKUP") and the number fallback is at
+ * most 11 ("-2147483648"), so 12 would do; 16 leaves room for a longer name
+ * arriving from ESP-IDF without that becoming a truncation.
+ *
+ * HERE RATHER THAN IN THE .c SO THE BOUND CAN BE ASKED FOR, not copied. Shim
+ * case 26 has to know the longest value every text field on the page can take,
+ * and a case that hard-codes 10 for "PWR_GLITCH" is a second copy of a table
+ * that will not be updated with the first. The four core name tables are
+ * reachable through gi_abort_name() and friends; these two were not.
+ */
+#define GI_RESET_REASON_LEN 16
+
+/*
+ * The driver-state name the page's `drv.state` carries. Exported for the same
+ * reason: case 26 asks it for its longest value.
+ */
+const char *drv_state_name(twai_state_t s);
 
 /* Discard all accumulated samples. */
 void gen_inhibit_reset_stats(void);

@@ -200,7 +200,9 @@ static uint8_t  s_silent_saved;
  * The controller's state as a word, not the raw enum. A log read months later
  * should not need the IDF header to say whether 2 meant bus-off.
  */
-static const char *drv_state_name(twai_state_t s)
+/* Non-static: declared in gen_inhibit.h so shim case 26 can ask it for its
+ * longest value rather than keeping a second copy of this table. */
+const char *drv_state_name(twai_state_t s)
 {
     switch (s)
     {
@@ -1441,13 +1443,6 @@ static uint32_t   s_snap_rxq_ge[RXQ_NEDGES];
  * no reader could look up.
  */
 static esp_reset_reason_t s_reset_reason = ESP_RST_UNKNOWN;
-
-/*
- * Longest name below is 10 ("PWR_GLITCH", "CPU_LOCKUP") and the number fallback
- * is at most 11 ("-2147483648"), so 12 would do; 16 leaves room for a longer
- * name arriving from ESP-IDF without this becoming a truncation.
- */
-#define GI_RESET_REASON_LEN 16
 
 /*
  * Spec 11: the enum name without its ESP_RST_ prefix, or the NUMBER when this
