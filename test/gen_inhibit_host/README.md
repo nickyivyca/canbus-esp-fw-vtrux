@@ -440,7 +440,9 @@ python3 passive_diff.py -v       # with the per-scenario counts
 
 It checks that the decision sequences are byte-identical, that PASSIVE emits
 **no** `0x051` at all, that PASSIVE's would-transmit count equals INHIBIT's
-transmit count exactly, and that the `emit_refused` tripwire is clear in both.
+transmit count since its last arm exactly (since 2026-10-12: spec 3.1 rule 2 resets
+the count on every arm, so the whole-trace total read every re-arm scenario as a
+difference on `dace947`), and that the `emit_refused` tripwire is clear in both.
 The transmission-counting FINAL fields are excluded from the comparison, since
 those are precisely what spec 3.1 exempts, and are checked separately.
 
