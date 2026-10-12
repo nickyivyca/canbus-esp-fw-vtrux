@@ -862,6 +862,33 @@ typedef struct
     uint32_t rx_waiting;
 } gi_bus_t;
 
+/*
+ * Spec 11, "Trip 6's error history is reported" (user, 2026-10-12). What the
+ * status page says about the trip 6 ring, taken from one state copy at one
+ * time so the three values cannot disagree with each other.
+ *
+ * WHY A VIEW AND NOT THREE READS. `burst` is the trip's own verdict and the
+ * page must not carry a second copy of the window test -- the whole point of
+ * the user's 2026-10-08 ruling is that tightness and recency are two separate
+ * comparisons, and a paraphrase on the page would drift from the trip it is
+ * supposed to predict. So this calls the same err_burst_qualifies() the trip
+ * calls.
+ *
+ * `n` is NOT gi_state_t's err_n. That one is how many entries the ring holds
+ * since key-on; this is how many of them fall within the trip window of
+ * `now`, which is what the spec asks for and what a reader will compare
+ * against err_min_trip.
+ */
+typedef struct
+{
+    uint32_t n;             /* entries within err_window_us of `now` */
+    bool     have_newest;   /* false when nothing has been recorded since key-on */
+    int64_t  newest_us;     /* arrival time of the newest entry */
+    bool     burst;         /* the trip 6 verdict evaluated at `now` */
+} gi_err_view_t;
+
+void gi_err_view(const gi_state_t *st, int64_t now, gi_err_view_t *out);
+
 /* Full initialisation. `cfg` is copied; pass NULL for gi_config_defaults(). */
 void gi_init(gi_state_t *st, const gi_config_t *cfg);
 

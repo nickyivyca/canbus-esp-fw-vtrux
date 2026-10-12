@@ -1106,6 +1106,35 @@ void gen_inhibit_reset_stats(void)
     gi_reset_stats(&s_core);
 }
 
+/*
+ * SPEC 3.2: A REFUSED ATTEMPT IS COUNTED, NEVER SILENTLY DROPPED (user,
+ * 2026-10-12, replacing "logged"). The counters live here rather than at the
+ * refusal sites because this is the file that reports them, and because the
+ * sites are in upstream code that should carry as little of ours as possible.
+ *
+ * INSIDE THE CRITICAL SECTION, which for a counter looks like overkill and is
+ * not. `x++` is read-modify-write, the refusing paths are ordinary tasks that
+ * preempt each other on a unicore part, and a lost increment is exactly the
+ * silently-dropped refusal the spec change exists to stop. The cost is a few
+ * microseconds on a path that is already refusing an attempt.
+ */
+static uint32_t s_refused_slcan;
+static uint32_t s_refused_can_send;
+
+void gen_inhibit_note_refused_slcan(void)
+{
+    taskENTER_CRITICAL(&s_abort_lock);
+    s_refused_slcan++;
+    taskEXIT_CRITICAL(&s_abort_lock);
+}
+
+void gen_inhibit_note_refused_can_send(void)
+{
+    taskENTER_CRITICAL(&s_abort_lock);
+    s_refused_can_send++;
+    taskEXIT_CRITICAL(&s_abort_lock);
+}
+
 bool gen_inhibit_owns_bus(void)
 {
     return s_core.mode != GI_OFF;
@@ -1599,6 +1628,14 @@ static int hist_json(const gi_hist_t *h, const char *name, char *buf, int buflen
  * runs one task that serves sockets in turn, so two status pages are never built
  * at once -- if that ever changes these have to become per-request storage.
  */
+/*
+ * Spec 3.2's refusal counters (user, 2026-10-12), copied with everything else
+ * so the page is one reading. They are written by whichever task was refused
+ * -- httpd, the SLCAN dispatch, MQTT -- and read here.
+ */
+static uint32_t   s_snap_refused_slcan;
+static uint32_t   s_snap_refused_can_send;
+
 static gi_state_t s_snap_core;
 static gs_t       s_snap_sched;
 static uint32_t   s_snap_us;            /* the last copy's duration */
@@ -1718,6 +1755,8 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
     taskENTER_CRITICAL(&s_abort_lock);
     s_snap_core  = s_core;
     s_snap_sched = s_sched;
+    s_snap_refused_slcan    = s_refused_slcan;
+    s_snap_refused_can_send = s_refused_can_send;
 #if GI_INSTRUMENT_RXQ
     s_snap_rxq_samples = s_rxq_samples;
     s_snap_rxq_max     = s_rxq_max;
@@ -1909,6 +1948,49 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
                      (unsigned long)s_snap_us_max,
                      (unsigned long long)(t_now / 1000),
                      reason), buflen);
+
+    /*
+     * SPEC 11, "TRIP 6's ERROR HISTORY IS REPORTED" (user, 2026-10-12). From
+     * the snapshot copy, at the reading's time, through the trip's own test.
+     *
+     * The reason this exists: on 2026-10-10 a re-arm latched trip 6 with the
+     * controller's bus_error reading 0, and nothing on the page showed the
+     * history the trip had acted on, so every answer about it was inference.
+     *
+     * err_age_ms is null rather than 0 when nothing has been recorded since
+     * key-on, because 0 would read as "an error frame just now", which is the
+     * opposite.
+     */
+    {
+        gi_err_view_t ev6;
+        gi_err_view(st, t_now, &ev6);
+
+        n = gi_clamp(n + snprintf(buf + n, buflen - n,
+                         "\"err_n\":%lu,\"err_burst\":%s,\"err_age_ms\":",
+                         (unsigned long)ev6.n,
+                         ev6.burst ? "true" : "false"), buflen);
+        if (ev6.have_newest)
+        {
+            n = gi_clamp(n + snprintf(buf + n, buflen - n, "%llu,",
+                             (unsigned long long)((t_now - ev6.newest_us)
+                                                  / 1000)), buflen);
+        }
+        else
+        {
+            n = gi_clamp(n + snprintf(buf + n, buflen - n, "null,"), buflen);
+        }
+    }
+
+    /*
+     * SPEC 3.2 + 11, "REFUSED TRANSMITS ARE COUNTED" (user, 2026-10-12). Since
+     * boot, and from the snapshot like everything else. 3.2 used to say a
+     * refusal was logged, which recorded nothing: every log is muted after
+     * boot on a truck unit.
+     */
+    n = gi_clamp(n + snprintf(buf + n, buflen - n,
+                     "\"refused_slcan\":%lu,\"refused_can_send\":%lu,",
+                     (unsigned long)s_snap_refused_slcan,
+                     (unsigned long)s_snap_refused_can_send), buflen);
 
     n = gi_clamp(n + hist_json(&st->rx_gap, "rx_gap", buf + n, buflen - n),
                  buflen);

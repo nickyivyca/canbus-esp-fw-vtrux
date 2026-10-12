@@ -94,6 +94,15 @@ esp_err_t gen_inhibit_set_mode(gen_inhibit_mode_t mode, uint32_t offset_us);
 bool gen_inhibit_owns_bus(void);
 
 /*
+ * Spec 3.2: count an attempt refused because the inhibitor owns the bus. Both
+ * appear on the status page as `refused_slcan` and `refused_can_send`, since
+ * boot (spec 11, user 2026-10-12). Call once per refused ATTEMPT, not once per
+ * log line -- the logs at both sites are rate-limited and the counts are not.
+ */
+void gen_inhibit_note_refused_slcan(void);
+void gen_inhibit_note_refused_can_send(void);
+
+/*
  * Force the worker out of the TWAI driver and keep it out until re-armed.
  *
  * can_disable() uninstalls the driver; doing that while the worker is blocked

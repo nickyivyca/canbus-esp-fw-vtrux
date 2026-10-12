@@ -798,6 +798,7 @@ static void case_foreign_transmit_refused(void)
     m.data[2] = 0x92;
 
     const int sent_before = ft_sent_count();
+    const uint32_t refused_before = json_u32("\"refused_can_send\":");
     const esp_err_t err = can_send(&m, 0);
 
     CHECK(err != ESP_OK, "can_send() accepted a frame while the inhibitor "
@@ -807,6 +808,16 @@ static void case_foreign_transmit_refused(void)
           sent_before, ft_sent_count());
     CHECK(ml_count("can_send refused") > 0,
           "the refusal was not logged (spec 3.2 requires it)");
+    /*
+     * AND COUNTED (spec 3.2 + 11, user 2026-10-12). The log above is what the
+     * spec used to require and it records nothing on a truck unit, where
+     * every log is muted after boot -- which is why the counter replaced it.
+     * The log assertion stays because the log is still there.
+     */
+    CHECK(json_u32("\"refused_can_send\":") == refused_before + 1,
+          "refused_can_send reads %u after one refused attempt, expected %u: "
+          "%s", json_u32("\"refused_can_send\":"), refused_before + 1,
+          stats());
     teardown();
     case_end();
 }
@@ -4212,6 +4223,102 @@ static void case_rearm_from_observe_goes_live_clean(void)
     case_end();
 }
 
+/*
+ * CASE 42 -- trip 6's error history on the status page (spec 11, user
+ * 2026-10-12).
+ *
+ * WHY IT EXISTS. On 2026-10-10 a re-arm latched trip 6 with the controller's
+ * bus_error reading 0, and nothing on the page showed the history the trip
+ * had acted on, so every answer about it was inference. These three fields
+ * are what make it answerable.
+ *
+ * The case walks the three states that distinguish them, because any one
+ * field alone is ambiguous:
+ *
+ *   nothing recorded      err_n 0, err_age_ms null,   err_burst false
+ *   a qualifying burst    err_n 10, err_age_ms small, err_burst true
+ *   the same burst, aged  err_n 0, err_age_ms large,  err_burst false
+ *
+ * The third is the one that matters: err_n returns to 0 because the entries
+ * have left the window, while err_age_ms keeps rising, and err_burst follows
+ * the trip rather than either of them.
+ */
+static void case_trip6_history_is_reported(void)
+{
+    case_begin("case 42: the trip 6 error history is on the status page");
+    ft_set_bus_errors(0);
+    setup();
+
+    static const uint8_t KEY[8]  = { 0x10 };
+    static const uint8_t SHF[8]  = { 0, 0, 0, 0, 0, 0, 2 << 4 };
+    uint8_t cmd[6];
+
+    gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
+
+    /* Armed, nothing recorded yet. */
+    for (int i = 0; i < 3; i++)
+    {
+        memcpy(cmd, VCM, sizeof(cmd));
+        cmd[5] = (uint8_t)(i & 0x0F);
+        feed(0x051, cmd, 6, 5000);
+        feed(0x592, KEY, 8, 5000);
+    }
+    CHECK(json_has("\"err_age_ms\":null"),
+          "with no error frame recorded since key-on, err_age_ms must be null "
+          "-- 0 would read as one having just happened: %s", stats());
+    CHECK(json_u32("\"err_n\":") == 0,
+          "err_n reads %u with no error frames recorded: %s",
+          json_u32("\"err_n\":"), stats());
+    CHECK(json_has("\"err_burst\":false"),
+          "err_burst is true with nothing recorded: %s", stats());
+
+    /* A qualifying burst, recorded on the tick that sees the count move. */
+    ft_set_bus_errors(10);
+    for (int i = 3; i < 7; i++)
+    {
+        memcpy(cmd, VCM, sizeof(cmd));
+        cmd[5] = (uint8_t)(i & 0x0F);
+        feed(0x051, cmd, 6, 5000);
+        feed(0x639, SHF, 8, 5000);
+    }
+
+    CHECK(json_u32("\"err_n\":") == 10,
+          "err_n reads %u after ten error frames in one read: %s",
+          json_u32("\"err_n\":"), stats());
+    CHECK(!json_has("\"err_age_ms\":null"),
+          "err_age_ms is still null after ten error frames: %s", stats());
+    CHECK(json_has("\"err_burst\":true"),
+          "ten error frames at one instant is a qualifying burst and "
+          "err_burst says otherwise: %s", stats());
+
+    /*
+     * Now age it past the window with no new error frames. GI_ERR_RING
+     * entries all carry the same timestamp, so the whole burst leaves the
+     * window together.
+     */
+    for (int i = 7; i < 40; i++)
+    {
+        memcpy(cmd, VCM, sizeof(cmd));
+        cmd[5] = (uint8_t)(i & 0x0F);
+        feed(0x051, cmd, 6, 200000);
+        feed(0x592, KEY, 8, 200000);
+    }
+
+    CHECK(json_u32("\"err_n\":") == 0,
+          "err_n reads %u after the burst aged out of the 10 s window: %s",
+          json_u32("\"err_n\":"), stats());
+    CHECK(!json_has("\"err_age_ms\":null"),
+          "err_age_ms went back to null after the burst aged out -- the ring "
+          "still holds it, and only a key-on clears it: %s", stats());
+    CHECK(json_has("\"err_burst\":false"),
+          "an expired burst still reads as a qualifying one, so the page "
+          "disagrees with the trip it is supposed to predict: %s", stats());
+
+    teardown();
+    case_end();
+    ft_set_bus_errors(0);
+}
+
 int main(int argc, char **argv)
 {
     /*
@@ -4278,6 +4385,7 @@ int main(int argc, char **argv)
     case_wake_has_a_target_before_the_worker_runs();
     case_no_going_live_behind_a_backlog();
     case_rearm_from_observe_goes_live_clean();
+    case_trip6_history_is_reported();
     case_errors_before_live_still_trip();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");

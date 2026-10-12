@@ -476,6 +476,9 @@ esp_err_t can_send(twai_message_t *message, TickType_t ticks_to_wait)
 	 */
 	if(gen_inhibit_owns_bus())
 	{
+		/* Spec 3.2: every refused attempt counts, and the log is rate-limited. */
+		gen_inhibit_note_refused_can_send();
+
 		static int64_t s_last_refusal_log;
 		const int64_t now_us = esp_timer_get_time();
 		if(now_us - s_last_refusal_log > 5000000 || s_last_refusal_log == 0)

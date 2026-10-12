@@ -211,6 +211,31 @@ static void can_tx_task(void *pvParameters)
 		 * that retries in a loop must not turn the log into the incident.
 		 */
 		{
+			/*
+			 * Spec 3.2's counter (user, 2026-10-12), and it counts the
+			 * attempts the disable actually suppressed -- the ones that
+			 * would have reached slcan_parse_str() in the block below.
+			 *
+			 * NARROWER THAN THE LOG ABOVE IT ON PURPOSE. That log fires for
+			 * every inbound buffer on every channel, an ELM327 command
+			 * included, which as a log is merely noisy; as a count it would
+			 * be wrong, because an ELM327 command is not a refused SLCAN
+			 * attempt. The conditions below mirror the if(0) block exactly
+			 * and must be changed with it.
+			 */
+			const bool slcan_would_have_run =
+				(config_server_ws_connected()
+				 && ucTCP_RX_Buffer.dev_channel == DEV_WIFI_WS)
+				|| (protocol == SLCAN
+					&& ucTCP_RX_Buffer.dev_channel == DEV_WIFI)
+				|| (protocol == SLCAN
+					&& ucTCP_RX_Buffer.dev_channel == DEV_UART
+					&& !config_server_mqtt_en_config());
+			if(slcan_would_have_run)
+			{
+				gen_inhibit_note_refused_slcan();
+			}
+
 			static int64_t s_last_refusal_log;
 			const int64_t now_us = esp_timer_get_time();
 			if (now_us - s_last_refusal_log > 5000000 || s_last_refusal_log == 0)

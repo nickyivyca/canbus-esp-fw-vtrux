@@ -1125,6 +1125,41 @@ static void interlock_runtime(gi_state_t *st, int64_t now, gi_events_t *ev)
     }
 }
 
+void gi_err_view(const gi_state_t *st, int64_t now, gi_err_view_t *out)
+{
+    out->n           = 0;
+    out->have_newest = false;
+    out->newest_us   = 0;
+    out->burst       = err_burst_qualifies(st, now);
+
+    if (st->err_n == 0)
+    {
+        return;
+    }
+
+    const uint32_t ring = (uint32_t)GI_ERR_RING;
+    const uint8_t newest = (uint8_t)(((uint32_t)st->err_head + ring - 1u) % ring);
+
+    out->have_newest = true;
+    out->newest_us   = st->err_at[newest];
+
+    /*
+     * Walk back from the newest and stop at the first entry outside the
+     * window. The ring is in arrival order, so everything older than a
+     * too-old entry is also too old -- no need to scan the rest.
+     */
+    for (uint32_t i = 0; i < (uint32_t)st->err_n; i++)
+    {
+        const uint8_t idx = (uint8_t)(((uint32_t)st->err_head + ring - 1u - i)
+                                      % ring);
+        if ((now - st->err_at[idx]) > st->cfg.err_window_us)
+        {
+            break;
+        }
+        out->n++;
+    }
+}
+
 /*
  * Spec 7 trip 6, the recording half. Runs on every armed loop, live or not,
  * because the user ruled 2026-10-08 that error frames are recorded whenever
