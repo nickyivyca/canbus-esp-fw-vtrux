@@ -94,9 +94,16 @@ Rev 6 (tester, 2026-10-10), option B (spec 47c31278f6146c31, user
     to the cap at once, as a clamp rather than a 0.1 A step". So when the
     setpoint the charger last had is above the cap, the next hold frame
     must be AT the cap; that is a clamp, exempt from the law and the gate.
-    Whether a clamp then counts as a step for the 0.3 s gate is with the
-    user, so both readings pass: the gate runs from the last 0.1 A step or
-    the release, and a hold within 0.3 s after a clamp is not failed.
+  - rule 6, the gate after a clamp (spec 96dd37033d4bb763, user,
+    2026-10-12): "the clamp is not a step for the 0.3 s cadence either: it
+    neither waits for it nor restarts it, and the next 0.1 A step is timed
+    from the last step or the release". So a step that is due 0.3 s after
+    the last step or the release must be taken even 0.1 s after a clamp;
+    holding there fails, and the message names the clamp. Steps taken
+    inside 0.3 s after a clamp are counted (step_after_clamp). The
+    directed sequence sends page 01 every 400 ms and cannot tell the two
+    readings apart, so the can-fail runs on syn_hold_cap_clamp (page 01
+    every 100 ms).
 No trace or random sequence reaches either part (no trace has SoC >= 98
 with a low permission in an override, none holds near 3595 mV), so each
 has a directed sequence (floor_steps, hold_cell_steps), a population guard,
@@ -342,9 +349,9 @@ class Checker(object):
                             "unjudged": 0, "release_gate": 0,
                             # rev 6: frames the cell limits decided
                             "cell_down": 0, "cell_held": 0,
-                            # e5d62c90: clamps to the cap from above it,
-                            # and holds inside 0.3 s after one
-                            "cap_clamp": 0, "clamp_gate": 0}
+                            # e5d62c90: clamps to the cap from above it;
+                            # 96dd3703: 0.1 A steps inside 0.3 s after one
+                            "cap_clamp": 0, "step_after_clamp": 0}
         self._t = 0
         self.bursts = []            # {"mode", "sent", "closed", "cut"}
         self._new_bursts = []
@@ -791,6 +798,9 @@ class Checker(object):
             cnt["up" if step > 0 else "down"] += 1
             if step < 0 and cell_down:
                 cnt["cell_down"] += 1
+            if self.hold_clamp_t is not None and \
+                    t_ms - self.hold_clamp_t < HOLD_GAP_MS:
+                cnt["step_after_clamp"] += 1    # what 96dd3703 rules on
             self.hold_step_t = t_ms
             self.hold_stepped = True
             return
@@ -801,26 +811,29 @@ class Checker(object):
         if not due and first and (down_must or up_must):
             cnt["release_gate"] += 1
             return
-        # a clamp may or may not count as a step for the gate (with the
-        # user): a hold within 0.3 s after one is accepted either way
-        if (due and (down_must or up_must) and self.hold_clamp_t is not None
-                and t_ms - self.hold_clamp_t < HOLD_GAP_MS):
-            cnt["clamp_gate"] += 1
-            return
+        # Ruled 2026-10-12 (spec 96dd3703): a clamp is not a step for the
+        # 0.3 s cadence and does not restart it, so a step due from the
+        # last step or the release is due even just after a clamp
+        after = ""
+        if self.hold_clamp_t is not None and \
+                t_ms - self.hold_clamp_t < HOLD_GAP_MS:
+            after = (" -- %d ms after a clamp to the cap, which is not a "
+                     "step for the 0.3 s cadence and does not restart it "
+                     "(96dd3703)" % (t_ms - self.hold_clamp_t))
         if due and down_must:
             if at_floor:
                 cnt["clamped"] += 1
                 return
             self.fail("hold: held while ibat was above chg_max or the "
                       "leader at / above 3600 mV, and a step was allowed "
-                      "(spec 5.2; %s)" % what)
+                      "(spec 5.2; %s)%s" % (what, after))
         elif due and up_must:
             if cap is not None and amps + HOLD_STEP_A > cap + tol:
                 cnt["clamped"] += 1
                 return
             self.fail("hold: held while ibat was more than 0.25 A below "
                       "chg_max with the leader below 3595 mV, and a step "
-                      "was allowed (spec 5.2; %s)" % what)
+                      "was allowed (spec 5.2; %s)%s" % (what, after))
         cnt["hold"] += 1
         if due and cell_held:
             cnt["cell_held"] += 1
@@ -1162,7 +1175,7 @@ def test_invariants_hold_over_every_trace():
        % (len(names), TRACES))
     total = p01 = mirrors = full = cut = sep = 0
     hold = dict.fromkeys(("up", "down", "hold", "clamped", "unjudged",
-                          "release_gate", "cap_clamp", "clamp_gate"), 0)
+                          "release_gate", "cap_clamp", "step_after_clamp"), 0)
     for name in names:
         c = replay_trace(os.path.join(TRACES, name))
         for k in hold:
@@ -1198,8 +1211,8 @@ def test_invariants_hold_over_every_trace():
     print("  --  traces: hold page-01 frames up %(up)d, down %(down)d, held "
           "%(hold)d, clamped %(clamped)d, unjudged %(unjudged)d, held by "
           "the release's 0.3 s %(release_gate)d; clamps to the cap from "
-          "above it %(cap_clamp)d, holds inside 0.3 s after one "
-          "%(clamp_gate)d" % hold)
+          "above it %(cap_clamp)d, 0.1 A steps inside 0.3 s after one "
+          "%(step_after_clamp)d" % hold)
     ok(hold["up"] >= 5 and hold["down"] >= 5 and hold["hold"] >= 5,
        "rule 6 judged hold steps up (%d), down (%d) and held frames (%d)"
        % (hold["up"], hold["down"], hold["hold"]))
@@ -2043,9 +2056,13 @@ def test_floor_rule_can_fail():
 
 
 def _hold_law(cell=True, up_below=HOLD_VMAX_UP_V, down_at=HOLD_VMAX_DOWN_V,
-              clamp=True):
+              clamp=True, clamp_restarts=False):
     """The spec 5.2 hold setpoint for this frame, from the Oracle and the
-    Checker's own step clock, with knobs for the wrong versions."""
+    Checker's own step clock, with knobs for the wrong versions.
+    `clamp_restarts`: a clamp restarts the 0.3 s cadence (96dd3703 rules
+    that it does not)."""
+    last_clamp = [None]
+
     def f(c):
         prev = c.last_sp_a
         ib, perm, vm = c.bus.ibat_a, c.bus.perm_a, c.bus.vmax_v
@@ -2053,8 +2070,12 @@ def _hold_law(cell=True, up_below=HOLD_VMAX_UP_V, down_at=HOLD_VMAX_DOWN_V,
             return None
         caps0 = c.bus.caps()
         if clamp and caps0 and prev > caps0[0] + 1e-6:
+            last_clamp[0] = c._t
             return caps0[0]              # e5d62c90: to the cap at once
         if c.hold_step_t is not None and c._t - c.hold_step_t < HOLD_GAP_MS:
+            return prev
+        if clamp_restarts and last_clamp[0] is not None and \
+                c._t - last_clamp[0] < HOLD_GAP_MS:
             return prev
         down = ib > perm or (cell and vm >= down_at)
         up = ib < perm - HOLD_BAND_A and (not cell or vm < up_below)
@@ -2105,7 +2126,8 @@ def test_hold_cell_limits_can_fail():
             print("  --  hold_cell_steps: up %(up)d, down %(down)d, held "
                   "%(hold)d, of which the leader decided down %(cell_down)d "
                   "and held %(cell_held)d; clamps to the cap %(cap_clamp)d, "
-                  "holds inside 0.3 s after one %(clamp_gate)d" % hc)
+                  "0.1 A steps inside 0.3 s after one %(step_after_clamp)d"
+                  % hc)
             ok(hc["cell_down"] >= 5 and hc["cell_held"] >= 5
                and hc["up"] >= 5 and hc["cap_clamp"] >= 2,
                "hold_cell_steps judged %d down and %d held frames that the "
@@ -2115,6 +2137,44 @@ def test_hold_cell_limits_can_fail():
             continue
         ok(any(text in q for q in probs),
            "rule 6 rev 6 rejects '%s' (%d frames changed): %s"
+           % (name, hits[0], probs[:1]))
+
+
+CLAMP_GATE_TRACE = "syn_hold_cap_clamp.trace"
+
+
+def test_clamp_gate_can_fail():
+    """Rule 6, the gate after a clamp (spec 96dd3703): on syn_hold_cap_clamp
+    -- page 01 every 100 ms, a clamp to 6.00 A 100 ms after the release,
+    the pack above chg_max -- the reference law steps 0.3 s after the
+    release, 0.2 s after the clamp, and passes; a law whose clamp restarts
+    the cadence holds there and is rejected, naming the clamp."""
+    cfg, steps = _read_trace(os.path.join(TRACES, CLAMP_GATE_TRACE))
+    for name, fn, text in (
+            ("reference", _hold_law(), None),
+            ("a clamp restarts the 0.3 s cadence",
+             _hold_law(clamp_restarts=True), "after a clamp to the cap")):
+        hits = [0]
+
+        def mut(c, kind, arb_id, data, out, fn=fn):
+            new, h = _rewrite_p01(c, kind, arb_id, out, S_HOLD, fn)
+            hits[0] += h
+            return new
+        c = Checker("clamp_gate/" + name, cfg, mutate=mut)
+        for st in steps:
+            c.step(*st)
+        probs = c.finish()
+        hc = c.hold_counts
+        if text is None:
+            ok(not probs, "rule 6 passes the reference hold over %s: %s"
+               % (CLAMP_GATE_TRACE, probs[:2]))
+            ok(hc["step_after_clamp"] >= 1 and hc["cap_clamp"] >= 2,
+               "the reference took %d 0.1 A step(s) inside 0.3 s after a "
+               "clamp, over %d clamps -- the case the ruling is about"
+               % (hc["step_after_clamp"], hc["cap_clamp"]))
+            continue
+        ok(any(text in q for q in probs),
+           "rule 6 rejects '%s' (%d frames changed): %s"
            % (name, hits[0], probs[:1]))
 
 

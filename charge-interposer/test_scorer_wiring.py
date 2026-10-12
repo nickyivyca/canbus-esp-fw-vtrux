@@ -216,6 +216,126 @@ def hold_follows_loads_cases():
           "a missing trace gives None, not an empty pass")
 
 
+def _with_cap(series, caps):
+    """`series` plus a spcap list aligned with its sp: `caps` is
+    [(t_from, A)], the cap in force from each t."""
+    def cap_at(t):
+        return [a for tf, a in caps if tf <= t][-1]
+    out = dict(series)
+    out["spcap"] = [(t, cap_at(t)) for t, _a in series["sp"]]
+    return out
+
+
+def p3_anchor_cases():
+    """Spec 9 at 96dd37033d4bb763 (user, 2026-10-12), clauses 2 and 3, each
+    shown against the rule before it (`_clamp_move` / `_anchor_later`
+    False). Clause 1's 30 s entry grace waits on the user (its length)."""
+    def run(series, veh="", **kw):
+        return R._hold_follows_loads(series, veh, **kw)
+
+    h0 = 50000
+    # the hold entered at the 6.10 A floor, the cap at 16 A until it falls
+    # to 6.00 A 100 ms in: the clamp, then 0.1 A steps every 300 ms from
+    # 200 ms after the clamp (not restarted by it) down to 2.0 A, and up to
+    # 2.9 A from chg_max 0
+    walk = _sp_path(h0 + 300, 500000, 6.0, [(h0 + 300, 2.0), (C0, 2.9)])
+    entry = _with_cap(_hs(sp=[(h0, 6.1), (h0 + 100, 6.0)] + walk),
+                      [(0, 16.0), (h0 + 100, 6.0)])
+    ok, why = run(entry)
+    check(ok and "1 clamp(s)" in why,
+          "clause 2: a clamp 6.10 -> 6.00 A at the cap, then a step 200 ms "
+          "later, passes (the clamp is not a step and does not restart the "
+          "0.3 s) -> %s" % why)
+    ok, why = run(entry, _clamp_move=False)
+    check(not ok and "2:" in why and "ms apart" in why,
+          "...and fails with no clamp allowed: the clamp counts as a step "
+          "200 ms before the next -> %s" % why)
+    # a mid-hold clamp 2.9 -> 2.0 A, back up once the cap returns
+    t1 = C0 + 30000
+    mid_sp = [(t, a) for t, a in _hs()["sp"] if t < t1] + [(t1, 2.0)] + \
+        _sp_path(t1 + 3000, 500000, 2.0, [(t1 + 3000, 2.9)])
+    mid = _with_cap(_hs(sp=mid_sp), [(0, 16.0), (t1, 2.0), (t1 + 3000, 6.0)])
+    ok, why = run(mid)
+    check(ok and "1 clamp(s)" in why,
+          "clause 2: a 0.9 A clamp mid-hold to a 2.0 A cap, then 0.1 A steps "
+          "back once the cap returns, passes -> %s" % why)
+    ok, why = run(mid, _clamp_move=False)
+    check(not ok and "2:" in why and "-0.90 A step" in why,
+          "...and with no clamp allowed it is a -0.90 A step -> %s" % why)
+    # not clamps: below the cap but not at it; up to the cap from below
+    short = _with_cap(_hs(sp=[(h0, 6.1), (h0 + 100, 5.5)] +
+                           _sp_path(h0 + 400, 500000, 5.5,
+                                    [(h0 + 400, 2.0), (C0, 2.9)])),
+                      [(0, 16.0), (h0 + 100, 6.0)])
+    ok, why = run(short)
+    check(not ok and "2:" in why and "-0.60 A step" in why,
+          "clause 2: 6.10 -> 5.50 A with the cap at 6.00 A is not a clamp "
+          "(not AT the cap) -> %s" % why)
+    rise = _with_cap(_hs(sp=[(h0, 2.0), (h0 + 300, 6.0)] +
+                          _sp_path(h0 + 600, 500000, 6.0,
+                                   [(h0 + 600, 2.0), (C0, 2.9)])),
+                     [(0, 6.0)])
+    ok, why = run(rise)
+    check(not ok and "2:" in why and "4.00 A step" in why,
+          "clause 2: 2.00 -> 6.00 A up to the cap from below is not a "
+          "clamp -> %s" % why)
+
+    # clause 3: chg_max 0 A at C0, the hold entered 60 s later
+    late0 = C0 + 60000
+    in2 = _hs(hold=(late0, 500000),
+              sp=_sp_path(late0, 500000, 2.0, [(late0 + 300, 2.9)]))
+    ok, why = run(in2)
+    check(ok and "the hold's entry after chg_max 0 A" in why,
+          "clause 3: chg_max 0 A 60 s BEFORE the hold, in band 3 s after "
+          "the entry, passes (anchored on the later) -> %s" % why)
+    ok, why = run(in2, _anchor_later=False)
+    check(not ok and "not in HOLD when" in why,
+          "...and fails when anchored on chg_max 0 alone -> %s" % why)
+    slow = _hs(hold=(late0, 500000),
+               sp=_sp_path(late0, 500000, 2.0, [(late0 + 125000, 2.9)]))
+    ok, why = run(slow)
+    check(not ok and "3:" in why and "later than 120" in why
+          and "the hold's entry" in why,
+          "clause 3: in band 125+ s after that entry fails, timed from the "
+          "entry -> %s" % why)
+    ok, why = run(_hs())
+    check(ok and "after chg_max 0 A (t=" in why,
+          "clause 3: HOLD first, chg_max 0 A later: still anchored on chg_max "
+          "0 -> %s" % why)
+    # the trace reader's cap, on the trace built to clamp twice
+    s = R.hold_series_from_trace(TRACES / "syn_hold_cap_clamp.trace")
+    pairs = list(zip(s["sp"], s["sp"][1:], s["spcap"][1:])) if s else []
+    clamps = [(tb, a, b, cap) for (_ta, a), (tb, b), (_tc, cap) in pairs
+              if cap is not None and a > cap + 0.025 and abs(b - cap) <= 0.025]
+    check(s is not None and len(s["spcap"]) == len(s["sp"]) and
+          [round(cap, 2) for _t, _a, _b, cap in clamps] == [6.0, 2.0],
+          "hold_series_from_trace gives the spec 4 cap at every hold page 01 "
+          "of syn_hold_cap_clamp, where the core clamps to 6.00 then 2.00 A: "
+          "%s" % ["t=%.1f %.2f->%.2f cap %.2f" % (t / 1000.0, a, b, c)
+                  for t, a, b, c in clamps])
+
+
+def keep_trace_cases():
+    """--keep-traces (2026-10-12): after a clean L1 replay the trace is
+    kept with keep=True and deleted without it, on a copy of a small
+    differential trace."""
+    import shutil
+    import tempfile
+    tmp = tempfile.mkdtemp(dir=str(HERE))
+    try:
+        src = TRACES / "unit_no_trip_control.trace"
+        for keep in (True, False):
+            tr = Path(tmp) / ("keep_%s.l1.trace" % keep)
+            shutil.copyfile(str(src), str(tr))
+            ok, why = R.check_flight_core(tr, keep=keep)
+            check(ok and tr.exists() == keep and
+                  ("trace kept" if keep else "trace deleted") in why,
+                  "a clean L1 replay with keep=%s %s the trace -> %s"
+                  % (keep, "keeps" if keep else "deletes", why))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def p3a_cases():
     """Spec 9, P3a (user, 2026-10-10): each of the three checks run against
     a wrong simulation must fail on its own number, and the sims as built
@@ -486,6 +606,12 @@ def main():
 
     print("\nspec 9 hold on the parts truck: hold_follows_loads (2026-10-09)")
     hold_follows_loads_cases()
+
+    print("\nspec 9 at 96dd3703: clause 2's clamp, clause 3's later anchor")
+    p3_anchor_cases()
+
+    print("\n--keep-traces: the L1 replay keeps the trace only when asked")
+    keep_trace_cases()
 
     print("\ncheck_invariants over a scenario trace")
     ok, why = R.check_invariants(TRACES / "no_such_scenario.l1.trace")

@@ -302,12 +302,20 @@ def hold_follows_loads(band=(2.6, 3.3), settle_s=120.0, drop_exempt_s=2.0):
          bcm_ibat in HOLD against the latest 0x420 bcm_chg_max, a drop or
          a fall exempting [t, t + drop_exempt_s]. A fall is a 0x420 whose
          value is below the previous 0x420's;
-      2. "the setpoint moves only in 0.1 A steps, at least 0.3 s apart, and
-         is never 0 A": every page 01 sent to the charger in HOLD;
-      3. "once bcm_chg_max is 0 A ... the setpoint is within 0.3 A of the
-         VCU's own 2.9-3.0 A [`band`] within 2 min [`settle_s`], and stays
-         there until the first injected load step. A run in which
-         bcm_chg_max never reaches 0 A fails."
+         Spec 96dd3703 adds "or within 30 s of the hold's entry, while the
+         setpoint comes down from the override's last command"; how long
+         that grace lasts (the whole 30 s, or until the walk-down stops) is
+         with the user, so it is NOT yet applied here;
+      2. "the setpoint moves only in 0.1 A steps, at least 0.3 s apart, or
+         by a clamp to the EVSE cap (5.2), and is never 0 A" (96dd3703):
+         every page 01 sent to the charger in HOLD. A clamp is a move from
+         above the spec 4 cap (test_invariants' Oracle, as rule 6) to
+         exactly the cap; it is not a step and does not restart the 0.3 s;
+      3. "once bcm_chg_max is 0 A and the core is in HOLD, from whichever
+         comes later, the setpoint is within 0.3 A of the VCU's own 2.9-3.0
+         A [`band`] within 2 min [`settle_s`], and stays there until the
+         first injected load step. A run in which bcm_chg_max never reaches
+         0 A fails." (96dd3703)
 
     The injected steps are vehicle_sim's --aux-step lines ("12 V load
     step: X -> Y W ... (+D s after chg_max reached 0 A)"); a step DOWN is a
@@ -408,11 +416,17 @@ def hold_series_from_trace(trace_path):
       sp      [(t_ms, amps)] every page 01 sent to the charger in HOLD
       ibat    [(t_ms, A)] every 0x410 bcm_ibat
       chgmax  [(t_ms, A)] every 0x420 bcm_chg_max
+      spcap   [(t_ms, A or None)] the EVSE cap of spec 4 at each `sp`
+              frame, by test_invariants' Oracle (the cap rule 6 uses):
+              what clause 2's clamp is judged against (spec 96dd3703)
       t_last  the trace's last time"""
     import machine as M                 # local: run_scenario stays light
     import protocol as P
     if not Path(str(trace_path)).exists():
         return None
+    sys.path.insert(0, str(HERE))
+    import test_invariants as TI
+    bus = TI.Oracle()
     cfg = M.Config()
     lines = Path(str(trace_path)).read_text().splitlines()
     for line in lines:
@@ -420,7 +434,7 @@ def hold_series_from_trace(trace_path):
             k, v = line[1:].split()
             setattr(cfg, k, int(v))
     core = M.InterposerCore(cfg, 0)
-    out = dict(hold=[], sp=[], ibat=[], chgmax=[], t_last=None)
+    out = dict(hold=[], sp=[], ibat=[], chgmax=[], spcap=[], t_last=None)
     h0 = None
     t = 0
     for line in lines:
@@ -429,9 +443,11 @@ def hold_series_from_trace(trace_path):
             continue
         t = int(p[1])
         if p[0] == "T":
+            bus.observe("T", t, None, None)
             emitted = core.tick(t)
         else:
             arb, ext, d = int(p[2], 16), p[3] == "1", bytes.fromhex(p[4])
+            bus.observe(p[0], t, arb, d, monitor=(core.state == M.S_MONITOR))
             if arb == 0x410:
                 v = P.decode(P.EPRI, 0x410, d).get("bcm_ibat")
                 if v is not None:
@@ -453,6 +469,8 @@ def hold_series_from_trace(trace_path):
                 if side == M.TO_CHARGER and oid == M.CMD_ID and od and \
                         od[0] == 0x01:
                     out["sp"].append((t, P.dec_setpoint(od)[1]))
+                    caps = bus.caps()
+                    out["spcap"].append((t, caps[0] if caps else None))
     if h0 is not None:
         out["hold"].append((h0, t))
     out["t_last"] = t
@@ -460,8 +478,12 @@ def hold_series_from_trace(trace_path):
 
 
 def _hold_follows_loads(series, veh_text, band=(2.6, 3.3), settle_s=120.0,
-                        drop_exempt_s=2.0):
-    """-> (ok, why). See hold_follows_loads()."""
+                        drop_exempt_s=2.0, _clamp_move=True,
+                        _anchor_later=True):
+    """-> (ok, why). See hold_follows_loads(). The underscored switches
+    exist only for test_scorer_wiring's can-fail: False is the rule before
+    spec 96dd3703 (no clamp allowed as a move in clause 2; clause 3
+    anchored on chg_max 0 alone)."""
     if series is None:
         return (False, "no flight trace -- the hold cannot be judged (a "
                        "board run has none)")
@@ -512,13 +534,23 @@ def _hold_follows_loads(series, veh_text, band=(2.6, 3.3), settle_s=120.0,
         notes.append("1: pack current never above chg_max outside %.0f s "
                      "of the %d load drop(s) and %d chg_max fall(s)"
                      % (drop_exempt_s, len(drops), len(falls)))
-    # 2. 0.1 A steps, >= 0.3 s apart, never 0 A
+    # 2. 0.1 A steps, >= 0.3 s apart, or a clamp to the EVSE cap (spec
+    # 96dd3703), never 0 A. A clamp -- from above the cap to exactly the
+    # cap -- is not a step: it is not size-checked and does not restart
+    # the 0.3 s (5.2, user 2026-10-12)
     bad2 = []
     last_step = None
-    nsteps = 0
-    for (ta, a), (tb, b) in zip(series["sp"], series["sp"][1:]):
+    nsteps = nclamps = 0
+    spcap = series.get("spcap") or []
+    for i, ((ta, a), (tb, b)) in enumerate(zip(series["sp"],
+                                                series["sp"][1:])):
         same_hold = any(h0 <= ta and tb <= h1 for h0, h1 in series["hold"])
         if not same_hold or abs(b - a) <= 0.025:
+            continue
+        cap_b = spcap[i + 1][1] if i + 1 < len(spcap) else None
+        if (_clamp_move and cap_b is not None and a > cap_b + 0.025
+                and abs(b - cap_b) <= 0.025):
+            nclamps += 1
             continue
         nsteps += 1
         if abs(abs(b - a) - 0.1) > 0.025:
@@ -534,31 +566,41 @@ def _hold_follows_loads(series, veh_text, band=(2.6, 3.3), settle_s=120.0,
     if bad2:
         probs.append("2: " + "; ".join(bad2[:4]))
     else:
-        notes.append("2: %d steps, each 0.1 A and >= 0.3 s apart, never "
-                     "0 A" % nsteps)
-    # 3. settled in band within settle_s of chg_max 0, until the first step
-    hold_c0 = [(a, b) for a, b in series["hold"] if a <= c0 <= b]
+        notes.append("2: %d steps, each 0.1 A and >= 0.3 s apart, and %d "
+                     "clamp(s) to the EVSE cap; never 0 A" % (nsteps, nclamps))
+    # 3. settled in band within settle_s of the LATER of chg_max 0 and the
+    # core in HOLD (spec 96dd3703, user 2026-10-12), until the first step.
+    # `_anchor_later` False is the rule before it: anchored on chg_max 0,
+    # which must find the core already in HOLD.
+    if _anchor_later:
+        hold_c0 = [(a, b) for a, b in series["hold"] if b >= c0]
+    else:
+        hold_c0 = [(a, b) for a, b in series["hold"] if a <= c0 <= b]
     if not hold_c0:
         probs.append("3: not in HOLD when bcm_chg_max reached 0 A at t=%.1f "
-                     "s" % (c0 / 1000.0))
+                     "s, nor after it" % (c0 / 1000.0))
     else:
+        a0 = max(c0, hold_c0[0][0])
+        what0 = ("chg_max 0 A" if a0 == c0 else
+                 "the hold's entry after chg_max 0 A")
         end = first_step if first_step is not None else hold_c0[0][1]
         end = min(end, hold_c0[0][1])
-        if end - c0 < settle_s * 1000:
-            probs.append("3: the window from chg_max 0 A (t=%.1f s) to %s "
+        if end - a0 < settle_s * 1000:
+            probs.append("3: the window from %s (t=%.1f s) to %s "
                          "is %.1f s, shorter than the %.0f s allowed to "
-                         "settle" % (c0 / 1000.0, "the first load step"
+                         "settle" % (what0, a0 / 1000.0, "the first load step"
                                      if first_step is not None and
                                      first_step <= hold_c0[0][1]
                                      else "the hold's end",
-                                     (end - c0) / 1000.0, settle_s))
+                                     (end - a0) / 1000.0, settle_s))
         else:
+            c0 = a0                     # the settle clock runs from here
             lo, hi = band
             win = [(t, a) for t, a in series["sp"] if c0 <= t <= end]
             outs = [t for t, a in win if not lo - tol <= a <= hi + tol]
             if not win:
-                probs.append("3: no page 01 sent between chg_max 0 A and "
-                             "the window's end")
+                probs.append("3: no page 01 sent between %s and the "
+                             "window's end" % what0)
             else:
                 if outs:
                     after = [t for t, a in win if t > outs[-1]]
@@ -571,13 +613,13 @@ def _hold_follows_loads(series, veh_text, band=(2.6, 3.3), settle_s=120.0,
                                  % (lo, hi, end / 1000.0))
                 elif t_in - c0 > settle_s * 1000:
                     probs.append("3: the setpoint settled in %.1f-%.1f A "
-                                 "%.1f s after chg_max reached 0 A, later "
-                                 "than %.0f s" % (lo, hi, (t_in - c0) / 1000.0,
-                                                  settle_s))
+                                 "%.1f s after %s (t=%.1f s), later than "
+                                 "%.0f s" % (lo, hi, (t_in - c0) / 1000.0,
+                                             what0, c0 / 1000.0, settle_s))
                 else:
-                    notes.append("3: in %.1f-%.1f A %.1f s after chg_max 0 A "
+                    notes.append("3: in %.1f-%.1f A %.1f s after %s "
                                  "(t=%.1f s), held to %s"
-                                 % (lo, hi, (t_in - c0) / 1000.0,
+                                 % (lo, hi, (t_in - c0) / 1000.0, what0,
                                     c0 / 1000.0, "the first load step"
                                     if first_step is not None else
                                     "the hold's end"))
@@ -775,9 +817,12 @@ SCENARIOS = [
         "truck's 12 V load (266 W). The simulation is first checked against "
         "the truck's nine full-charge holds (P3a); then the hold must keep "
         "the pack at or under bcm_chg_max (2 s grace after a load drop or a "
-        "fall in chg_max), step 0.1 A at least 0.3 s apart and never to 0 A, "
-        "and settle in 2.6-3.3 A within 2 min of chg_max reaching 0 A, until "
-        "the first injected load step. The 12 V load drops 266 -> 136 W 300 s "
+        "fall in chg_max; the 30 s entry grace of spec 96dd3703 not yet "
+        "applied, its length is with the user), step 0.1 A at least 0.3 s "
+        "apart or clamp to the EVSE cap, never to 0 A, and settle in "
+        "2.6-3.3 A within 2 min of the later of chg_max reaching 0 A and "
+        "HOLD, until the first injected load step. The 12 V load drops "
+        "266 -> 136 W 300 s "
         "after chg_max first reaches 0 A and returns to 266 W at 600 s.",
         vehicle=["--evap", "--soc", "79", "--imbalance", "1.0",
                  "--outlier-cell", "7", "--outlier-pct", "2.5",
@@ -1373,7 +1418,8 @@ def run_one(sc, args, outdir):
                 order = fault_and_drop_order(trace_path)
             if any(k == "hold_follows_loads" for k, _v in sc.expect):
                 hold = hold_series_from_trace(trace_path)
-            l1 = check_flight_core(trace_path)
+            l1 = check_flight_core(trace_path,
+                                   keep=getattr(args, "keep_traces", False))
     return evaluate(sc, veh_log, chg_log, int_log, timed_out, l1, inv,
                     order=order, hold=hold)
 
@@ -2185,14 +2231,17 @@ def check_invariants(trace_path):
                len(c.bursts), c.n_mirrors))
 
 
-def check_flight_core(trace_path):
+def check_flight_core(trace_path, keep=False):
     """-> (ok, why). Replay the recorded trace through machine.cpp.
 
     `diff_one.sh` builds the runner (cached) and diffs both sides, which it
     generates now -- there is no golden on disk, because a recording is not
     reproducible between runs and a stored one would be stale.
 
-    The trace is removed after a clean diff and KEPT when it diverged.
+    The trace is removed after a clean diff and KEPT when it diverged, or
+    always with `keep` (--keep-traces, 2026-10-12: P3's clause 1 grace was
+    still with the user when the 1x run started, so its trace is kept to
+    re-score that clause once ruled).
     """
     script = (HERE / "firmware" / "test" / "host_diff" / "diff_one.sh")
     if not trace_path.exists():
@@ -2210,6 +2259,10 @@ def check_flight_core(trace_path):
                        "cannot run is a failed check, not a skipped one; "
                        "pass --no-l1 to say so deliberately." % exc)
     if r.returncode == 0:
+        if keep:
+            return (True, "%.0f MB replayed through machine.cpp, identical "
+                          "to machine.py (trace kept at %s)"
+                    % (size_mb, trace_path))
         try:
             trace_path.unlink()
         except OSError:
@@ -2443,6 +2496,11 @@ def main():
                          "compiler (WSL on Windows); without this flag a "
                          "machine that cannot run it FAILS the scenario "
                          "rather than quietly passing it.")
+    ap.add_argument("--keep-traces", action="store_true",
+                    help="keep each scenario's flight trace after a clean "
+                         "L1 replay (by default it is deleted then), so a "
+                         "check whose spec reading is still open can be "
+                         "re-scored from the trace once it is ruled.")
     ap.add_argument("--timeout-scale", type=float, default=None,
                     help="multiply every scenario timeout by this. Each "
                          "scenario's timeout was written against the default "
