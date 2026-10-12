@@ -227,9 +227,9 @@ def _with_cap(series, caps):
 
 
 def p3_anchor_cases():
-    """Spec 9 at 96dd37033d4bb763 (user, 2026-10-12), clauses 2 and 3, each
-    shown against the rule before it (`_clamp_move` / `_anchor_later`
-    False). Clause 1's 30 s entry grace waits on the user (its length)."""
+    """Spec 9 at 96dd37033d4bb763 / 05999682eddd3a50 (user, 2026-10-12),
+    clauses 1, 2 and 3, each shown against the rule before it
+    (`_entry_grace` / `_clamp_move` / `_anchor_later` False)."""
     def run(series, veh="", **kw):
         return R._hold_follows_loads(series, veh, **kw)
 
@@ -302,6 +302,19 @@ def p3_anchor_cases():
     check(ok and "after chg_max 0 A (t=" in why,
           "clause 3: HOLD first, chg_max 0 A later: still anchored on chg_max "
           "0 -> %s" % why)
+    # clause 1's entry grace (spec 05999682, reading A): the hold enters at
+    # 50 s; the pack 0.8 A above chg_max on one frame
+    base_ib = [(t, -0.1) for t in range(h0, 500001, 1000)]
+    for dt, passes in ((29000, True), (31000, False)):
+        ok, why = run(_hs(ibat=base_ib + [(h0 + dt, 2.7)]))
+        check(ok == passes and (passes or why.startswith("1:")),
+              "clause 1: above chg_max %.0f s after the hold's entry %s -> %s"
+              % (dt / 1000.0, "is exempt (the 30 s grace)" if passes
+                 else "fails", why))
+    ok, why = run(_hs(ibat=base_ib + [(h0 + 29000, 2.7)]), _entry_grace=False)
+    check(not ok and why.startswith("1:"),
+          "...and 29 s after the entry fails under the rule before 05999682 "
+          "(no entry grace) -> %s" % why)
     # the trace reader's cap, on the trace built to clamp twice
     s = R.hold_series_from_trace(TRACES / "syn_hold_cap_clamp.trace")
     pairs = list(zip(s["sp"], s["sp"][1:], s["spcap"][1:])) if s else []

@@ -302,10 +302,10 @@ def hold_follows_loads(band=(2.6, 3.3), settle_s=120.0, drop_exempt_s=2.0):
          bcm_ibat in HOLD against the latest 0x420 bcm_chg_max, a drop or
          a fall exempting [t, t + drop_exempt_s]. A fall is a 0x420 whose
          value is below the previous 0x420's;
-         Spec 96dd3703 adds "or within 30 s of the hold's entry, while the
-         setpoint comes down from the override's last command"; how long
-         that grace lasts (the whole 30 s, or until the walk-down stops) is
-         with the user, so it is NOT yet applied here;
+         Spec 05999682 (user, 2026-10-12) adds "or within 30 s of the
+         hold's entry ...: every frame in that window is exempt, however
+         soon the walk-down ends": [entry, entry + 30 s] of every HOLD
+         span, inclusive;
       2. "the setpoint moves only in 0.1 A steps, at least 0.3 s apart, or
          by a clamp to the EVSE cap (5.2), and is never 0 A" (96dd3703):
          every page 01 sent to the charger in HOLD. A clamp is a move from
@@ -478,12 +478,13 @@ def hold_series_from_trace(trace_path):
 
 
 def _hold_follows_loads(series, veh_text, band=(2.6, 3.3), settle_s=120.0,
-                        drop_exempt_s=2.0, _clamp_move=True,
-                        _anchor_later=True):
+                        drop_exempt_s=2.0, entry_grace_s=30.0,
+                        _clamp_move=True, _anchor_later=True,
+                        _entry_grace=True):
     """-> (ok, why). See hold_follows_loads(). The underscored switches
     exist only for test_scorer_wiring's can-fail: False is the rule before
-    spec 96dd3703 (no clamp allowed as a move in clause 2; clause 3
-    anchored on chg_max 0 alone)."""
+    spec 96dd3703 / 05999682 (no clamp allowed as a move in clause 2;
+    clause 3 anchored on chg_max 0 alone; no entry grace in clause 1)."""
     if series is None:
         return (False, "no flight trace -- the hold cannot be judged (a "
                        "board run has none)")
@@ -513,7 +514,11 @@ def _hold_follows_loads(series, veh_text, band=(2.6, 3.3), settle_s=120.0,
                                            series["chgmax"][1:])
              if b < a - tol]
     exempt = sorted(drops + falls)
+    # spec 05999682 (user, 2026-10-12, reading A): every frame within 30 s
+    # of a hold's entry is exempt, however soon the walk-down ends
+    entries = [h0 for h0, _h1 in series["hold"]] if _entry_grace else []
     over = []
+    n_grace = 0
     for t, ib in series["ibat"]:
         if not in_hold(t):
             continue
@@ -523,17 +528,24 @@ def _hold_follows_loads(series, veh_text, band=(2.6, 3.3), settle_s=120.0,
         cm = series["chgmax"][i][1]
         if ib > cm + tol and not any(d <= t <= d + drop_exempt_s * 1000
                                      for d in exempt):
+            if any(e <= t <= e + entry_grace_s * 1000 for e in entries):
+                n_grace += 1
+                continue
             over.append((t, ib - cm))
+    grace = (", nor %.0f s of the hold's entry" % entry_grace_s
+             if _entry_grace else "")
     if over:
         probs.append("1: pack current above bcm_chg_max outside %.0f s of a "
-                     "load drop or a chg_max fall on %d 0x410 frame(s), "
+                     "load drop or a chg_max fall%s on %d 0x410 frame(s), "
                      "first at t=%.1f s, by up to %.3f A"
-                     % (drop_exempt_s, len(over), over[0][0] / 1000.0,
+                     % (drop_exempt_s, grace, len(over), over[0][0] / 1000.0,
                         max(e for _t, e in over)))
     else:
         notes.append("1: pack current never above chg_max outside %.0f s "
-                     "of the %d load drop(s) and %d chg_max fall(s)"
-                     % (drop_exempt_s, len(drops), len(falls)))
+                     "of the %d load drop(s) and %d chg_max fall(s)%s (%d "
+                     "frame(s) above it inside the entry grace)"
+                     % (drop_exempt_s, len(drops), len(falls), grace,
+                        n_grace))
     # 2. 0.1 A steps, >= 0.3 s apart, or a clamp to the EVSE cap (spec
     # 96dd3703), never 0 A. A clamp -- from above the cap to exactly the
     # cap -- is not a step: it is not size-checked and does not restart
@@ -817,8 +829,8 @@ SCENARIOS = [
         "truck's 12 V load (266 W). The simulation is first checked against "
         "the truck's nine full-charge holds (P3a); then the hold must keep "
         "the pack at or under bcm_chg_max (2 s grace after a load drop or a "
-        "fall in chg_max; the 30 s entry grace of spec 96dd3703 not yet "
-        "applied, its length is with the user), step 0.1 A at least 0.3 s "
+        "fall in chg_max, and 30 s after the hold's entry), step 0.1 A at "
+        "least 0.3 s "
         "apart or clamp to the EVSE cap, never to 0 A, and settle in "
         "2.6-3.3 A within 2 min of the later of chg_max reaching 0 A and "
         "HOLD, until the first injected load step. The 12 V load drops "
