@@ -104,8 +104,40 @@ def ocv(q):
 
 
 def bms_chg_max(vmax):
-    """The BMS charge-current permission the real pack broadcasts on 0x420."""
+    """The leader-voltage permission the sims used until 2026-10-10.
+
+    No longer what the BMS sim broadcasts (see bms_chg_max_soc). Kept so the
+    harness can show the difference: under P3a's charger and loads it holds
+    the parts truck at chg_max 3.00-3.25 A with the leader pinned at 3.584 V,
+    a state no capture shows (runs/p3_smoke_20261010T2123/)."""
     return _interp(_CHGMAX_V, _CHGMAX_A, vmax)
+
+
+# --- fitted BMS charge-current permission: BMS SoC -> amps (P3, 2026-10-10) --
+# On all four genuine tops of charge (charge_M0, full-charge-then-fail,
+# vtrux_20260503_192242, vtrux_partstruck_charge) bcm_chg_max follows the
+# BMS's SoC, not the leader cell: about 30 A per % of SoC, a step to 10-11 A
+# at SoC 98.2-98.4 %, then about 6 x (100 - SoC), reaching 3.0 A at
+# 99.46-99.64 % and 0 A at 99.95-100.00 %. The leader at chg_max 3.0 A was
+# 3.364-3.473 V across the four. FITTED by the reviewer on those four
+# captures (artifacts/partstruck_top_of_charge_p2.txt; user approved,
+# 2026-10-10); residuals per row in
+# artifacts/interposer-firmware/bms_soc_chgmax_fit.py.
+CHGMAX_CAP_A = 300.0
+CHGMAX_RAMP_A_PER_PCT = 30.0
+CHGMAX_STEP_SOC = 98.2
+CHGMAX_TAIL_A_PER_PCT = 6.0
+
+
+def bms_chg_max_soc(soc_pct):
+    """The BMS charge-current permission the real pack broadcasts on 0x420,
+    from the SoC it reports (clamped at 100, so 0 A from there on)."""
+    head = 100.0 - soc_pct
+    if head <= 0.0:
+        return 0.0
+    if soc_pct >= CHGMAX_STEP_SOC:
+        return CHGMAX_TAIL_A_PER_PCT * head
+    return min(CHGMAX_CAP_A, CHGMAX_RAMP_A_PER_PCT * head)
 
 
 class Pack:

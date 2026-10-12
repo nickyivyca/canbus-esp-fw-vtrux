@@ -121,24 +121,46 @@ HVIL_AFTER_FLOW_DROP = 0.03      # VCU flow 0 -> bcm_hvil_mon 0 (27 ms, chargeag
 # trip. This is the case that proves the plug-out rule earns its keep.
 HVIL_BEFORE_FLOW_DROP = 0.02
 MAINC_CLOSED = (11, 12)   # 0x440 states with the main contactors closed (machine.py)
-AUX_A_DEFAULT = 2.4       # HV-side draw of the 12 V system: charger reported
-                          # -2.9 A in the hold while the pack saw +0.31-0.49 A
+# The truck's HV-side draw (spec 9, P3a; user 2026-10-10). Calibrated on
+# pack current at the nine full-charge holds, with the charger's delivered
+# current from charger_sim.delivered_a() (artifacts/interposer-firmware/
+# p3a_calibration.py, phase fit3; runs/p3a_calibration_20261010T1130/):
+#   HV draw = HV_FIXED_A + P12_GAIN * P12 / Vpack
+# HV_FIXED_A is what is not on the 12 V side; P12_GAIN is HV W per 12 V W.
+# All eight holds' model pack current falls inside their settled p10-p90
+# widened by 0.08 A. The default 12 V load is the main truck's median at
+# the holds (44-72 W); the parts truck's is 266 W (pump at full speed).
+HV_FIXED_A = 0.559
+P12_GAIN = 1.512
+P12_MAIN_W = 54.0
+P12_PARTS_W = 266.0
+
+
+# Logged once, when bcm_soc first reads 100 on the bus (spec 9's high-cell
+# scenarios release before it; run_scenario.SOC100 reads it).
+SOC100_FMT = "BMS: bcm_soc reads 100 %% on the bus at t=%.1fs"
+
+
+def hv_draw_a(p12_w, pack_v):
+    """The truck's HV-side draw (A) with the 12 V side at p12_w (W)."""
+    return HV_FIXED_A + P12_GAIN * p12_w / max(1.0, pack_v)
 
 
 class AuxSchedule(object):
-    """The 12 V system's HV-side draw over the run, with load steps (spec 9,
-    the hold after the release: "a load drop the scenario injects").
+    """The 12 V side's load (W) over the run, with load steps (spec 9, the
+    hold after the release: "a load drop the scenario injects"). The HV-side
+    draw it causes is hv_draw_a(), at the pack voltage of the moment.
 
     Steps are timed from the moment the BMS's chg_max FIRST reaches 0 A --
     the anchor spec 9's hold assertions use ("once bcm_chg_max is 0 A ...
     until the first injected load step") -- so a scenario can place a step
     in the settled hold without knowing in advance when the release comes.
-    `steps` is [(delay_s, amps)]; each applies once, in delay order.
-    update() returns the draw now and the log lines for anything that
-    happened on this call (tester, 2026-10-09)."""
+    `steps` is [(delay_s, watts)]; each applies once, in delay order.
+    update() returns the 12 V load now and the log lines for anything that
+    happened on this call (tester, 2026-10-09; watts since P3a, 2026-10-10)."""
 
-    def __init__(self, base_a, steps=()):
-        self.aux_a = base_a
+    def __init__(self, base_w, steps=()):
+        self.p12_w = base_w
         self.steps = sorted(steps)
         self.t_chg0 = None
 
@@ -149,20 +171,20 @@ class AuxSchedule(object):
             lines.append("BMS: chg_max reached 0 A at t=%.1fs" % t)
         while (self.steps and self.t_chg0 is not None
                and t >= self.t_chg0 + self.steps[0][0]):
-            delay, amps = self.steps.pop(0)
-            lines.append("aux load step: %.2f -> %.2f A at t=%.1fs (+%.1fs "
+            delay, watts = self.steps.pop(0)
+            lines.append("12 V load step: %.1f -> %.1f W at t=%.1fs (+%.1fs "
                          "after chg_max reached 0 A)"
-                         % (self.aux_a, amps, t, delay))
-            self.aux_a = amps
-        return self.aux_a, lines
+                         % (self.p12_w, watts, t, delay))
+            self.p12_w = watts
+        return self.p12_w, lines
 
 
 def parse_aux_step(s):
-    """'DELAY:AMPS' -> (delay_s, amps), both floats, both >= 0."""
+    """'DELAY:WATTS' -> (delay_s, watts), both floats, both >= 0."""
     d, a = s.split(":")
     d, a = float(d), float(a)
     if d < 0 or a < 0:
-        raise ValueError("--aux-step %r: delay and amps must be >= 0" % s)
+        raise ValueError("--aux-step %r: delay and watts must be >= 0" % s)
     return d, a
 
 
@@ -528,11 +550,10 @@ class VCU(object):
 class BMS(object):
     """The A123 BMS half: derives its broadcasts from the pack model."""
 
-    def __init__(self, pk, stuck_chg_max=None, taper_shift_v=0.0,
+    def __init__(self, pk, stuck_chg_max=None,
                  fault_at=0.0, fault_kind=None, hvil_early=False):
         self.pack = pk
         self.stuck_chg_max = stuck_chg_max
-        self.taper_shift_v = taper_shift_v
         self.chg_done = 0
         self.mainc_stat = 11
         self.epo = 0
@@ -625,7 +646,13 @@ class BMS(object):
 
     @property
     def chg_max(self):
-        """Normally derived from max cell voltage.
+        """Derived from the SoC the BMS reports (pack.bms_chg_max_soc).
+
+        Since 2026-10-10 (P3, user via the reviewer): on all four genuine
+        tops of charge bcm_chg_max follows the BMS's SoC, not the leader
+        cell. The leader-voltage curve this replaced (pack.bms_chg_max) held
+        the parts truck at 3.00-3.25 A with the leader pinned at 3.584 V
+        under P3a's charger and loads, which no capture shows.
 
         `stuck_chg_max` pins it instead, simulating a BMS whose charge-current
         permission fails to taper at the top of charge. That is the only way to
@@ -635,13 +662,7 @@ class BMS(object):
         """
         if self.stuck_chg_max is not None:
             return self.stuck_chg_max
-        # `taper_shift_v` evaluates the permission curve at a higher cell
-        # voltage than the pack is really at, so the BMS calls the pack full
-        # EARLIER than the interposer's own thresholds expect -- as a BMS with
-        # one high cell, or a different calibration, would. The interposer must
-        # then terminate at the BMS's point, not its own. Verification round 2,
-        # step 1.
-        return packmod.bms_chg_max(self.pack.vmax + self.taper_shift_v)
+        return packmod.bms_chg_max_soc(self.pack.soc_pct)
 
     def frames(self):
         pk = self.pack
@@ -707,11 +728,11 @@ def run_model(args, b, phys):
     vcu.no_standby = args.no_standby_on_unplug
     vcu.restart_on_replug = args.restart_on_replug
     bms = BMS(pk, stuck_chg_max=args.bms_stuck_chg_max,
-              taper_shift_v=args.bms_taper_shift_mv / 1000.0,
               fault_at=args.bms_fault_at, fault_kind=args.bms_fault_kind,
               hvil_early=args.hvil_before_flow_drop)
 
-    aux = AuxSchedule(args.aux_a, [parse_aux_step(s)
+    soc100_t = None
+    aux = AuxSchedule(args.p12_w, [parse_aux_step(s)
                                    for s in (args.aux_step or [])])
     charger_i = 0.0             # last current the charger reported (A, + = charging)
     t = 0.0                     # simulated seconds
@@ -791,10 +812,13 @@ def run_model(args, b, phys):
         ph["n_phys"] = n_p
         _pt = time.perf_counter()
 
-        # The pack sees the charger's current less the 12 V system's HV-side
-        # draw (spec 9), and nothing at all once the contactors are open.
-        # The draw follows --aux-step's schedule (AuxSchedule).
-        aux_now, aux_lines = aux.update(t, bms.chg_max)
+        # The pack sees the charger's DELIVERED current (charger_sim sends it
+        # on the physics link) less the truck's HV-side draw, and nothing at
+        # all once the contactors are open. The 12 V load follows
+        # --aux-step's schedule (AuxSchedule); hv_draw_a() turns it into HV
+        # amps at the pack voltage of the moment (spec 9, P3a).
+        p12_now, aux_lines = aux.update(t, bms.chg_max)
+        aux_now = hv_draw_a(p12_now, pk.pack_v)
         for line in aux_lines:
             log.info(line)
         i_pack = (charger_i - aux_now) if bms.contactors_closed else 0.0
@@ -830,6 +854,14 @@ def run_model(args, b, phys):
             for fid, data in bms.frames().items():
                 b.send(can.Message(arbitration_id=fid, is_extended_id=False,
                                    data=data))
+                # Spec 9 (user, 2026-10-10): the high-cell scenarios release
+                # "before the BMS's SoC reaches 100 %" -- the SoC ON THE BUS,
+                # which reads 100 from a pack mean of 99.75 % (0.5 % LSB,
+                # rounded), so it is read back from the frame just sent.
+                if fid == 0x410 and soc100_t is None and P.decode(
+                        P.EPRI, 0x410, data).get("bcm_soc", 0.0) >= 100.0:
+                    soc100_t = t
+                    log.info(SOC100_FMT, t)
             next_bms += 0.100
             n += 1
         if n >= MAX_CATCHUP:
@@ -882,23 +914,24 @@ def main():
                     help="cell-to-cell charge spread, %% of capacity "
                          "(parts truck was ~1.0 with a 2.5 %% outlier)")
     ap.add_argument("--outlier-cell", type=int, default=None)
-    ap.add_argument("--outlier-pct", type=float, default=0.0)
+    ap.add_argument("--outlier-pct", type=float, default=0.0,
+                    help="charge (%% of Q100) the outlier cell is BELOW the "
+                         "rest; negative makes it a HIGH cell (spec 9's "
+                         "high-cell scenarios, 2026-10-10)")
     ap.add_argument("--balance-model", choices=("hybrid", "absolute"),
                     default="hybrid")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--bms-stuck-chg-max", type=float, default=None,
                     metavar="AMPS",
                     help="fault injection: pin bcm_chg_max at this value "
-                         "instead of tapering it with cell voltage, "
+                         "instead of scheduling it on the BMS's SoC, "
                          "simulating a BMS whose charge-current permission "
                          "fails at the top of charge")
     ap.add_argument("--bms-taper-shift-mv", type=float, default=0.0,
-                    help="evaluate the BMS chg_max taper at vmax plus this "
-                         "many mV, so the BMS withdraws permission EARLIER "
-                         "than the interposer's own release point. +50 makes "
-                         "it call the pack full at a ~3.55 V leader cell. "
-                         "The interposer must follow chg_max down and stop "
-                         "there. 0 (default) = the fitted curve as observed.")
+                    help="REMOVED 2026-10-10: it shifted the leader-voltage "
+                         "chg_max curve, and chg_max now follows the BMS's "
+                         "SoC (pack.bms_chg_max_soc). Any value but 0 is "
+                         "refused rather than silently ignored.")
     ap.add_argument("--time-scale", type=float, default=20.0,
                     help="simulated seconds per wall second (default 60)")
     ap.add_argument("--speed", type=float, default=1.0,
@@ -947,19 +980,20 @@ def main():
                          "--stop-on-done, which ends the run at the FIRST "
                          "STAND_BY and so cuts the second session off before "
                          "it begins.")
-    ap.add_argument("--aux-a", type=float, default=AUX_A_DEFAULT,
-                    help="HV-side draw of the 12 V system, subtracted from the "
-                         "charger's current before it reaches the pack "
-                         "(default %(default)s A, from the hold-current "
-                         "measurement). 0 disables it.")
+    ap.add_argument("--p12-w", type=float, default=P12_MAIN_W,
+                    help="the 12 V side's load in W (default %%(default)s, the "
+                         "main truck's median at its full-charge holds; the "
+                         "parts truck's is %.0f). The truck's HV-side draw is "
+                         "%.3f A + %.3f x P12 / Vpack (spec 9, P3a)."
+                         % (P12_PARTS_W, HV_FIXED_A, P12_GAIN))
     ap.add_argument("--aux-step", action="append", default=None,
-                    metavar="DELAY:AMPS",
-                    help="spec 9 hold scenario: set the 12 V system's HV-side "
-                         "draw to AMPS, DELAY simulated seconds after the "
-                         "BMS's chg_max first reaches 0 A. Repeatable; each "
-                         "step is logged ('aux load step: ...') so the scorer "
-                         "can find it. A step DOWN is the 'load drop' of "
-                         "spec 9's 2 s exception.")
+                    metavar="DELAY:WATTS",
+                    help="spec 9 hold scenario: set the 12 V side's load to "
+                         "WATTS, DELAY simulated seconds after the BMS's "
+                         "chg_max first reaches 0 A. Repeatable; each step is "
+                         "logged ('12 V load step: ...') so the scorer can "
+                         "find it. A step DOWN is the 'load drop' of spec 9's "
+                         "2 s exception.")
     ap.add_argument("--post-standby-s", type=float, default=30.0,
                     help="simulated seconds to keep broadcasting after "
                          "STAND_BY before --stop-on-done ends the run, so the "
@@ -978,6 +1012,10 @@ def main():
                          "--max-sim-s there.")
     ap.add_argument("--debug", action="store_true")
     args = ap.parse_args()
+    if args.bms_taper_shift_mv:
+        ap.error("--bms-taper-shift-mv was removed 2026-10-10: chg_max now "
+                 "follows the BMS's SoC, so a leader-voltage shift means "
+                 "nothing")
 
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.INFO,

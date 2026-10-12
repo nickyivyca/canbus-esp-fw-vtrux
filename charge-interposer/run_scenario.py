@@ -140,6 +140,20 @@ def vmin_at_release_at_most(v):
     return ("intp_vmin_at_release_max", v)
 
 
+def release_on_leader(before_soc_100=False):
+    """Spec 5.1 (47c31278): the release is on the leader cell, bcm_cell_vmax
+    at or above 3585 mV -- read from the core's own "top of charge reached"
+    line, which carries the vmax it released on.
+
+    `before_soc_100` (spec 9, the high-cell scenarios, user 2026-10-10):
+    and it came "before the BMS's SoC reaches 100 %". The SoC is the one on
+    the bus (vehicle_sim logs the first bcm_soc of 100); the release is
+    bounded by the first 0x7F4 reporting HOLD, which can only be later than
+    the release itself. So the check is conservative: it can fail a release
+    in the last diag period before 100 %, never pass one after it."""
+    return ("leader_release", bool(before_soc_100))
+
+
 def chg_ev(pattern):
     """A CHARGER-sim log line must match. The harness ignored this log
     entirely until 2026-10-03 (C2), so nothing checked what the charger
@@ -147,8 +161,17 @@ def chg_ev(pattern):
     return ("chg_event", pattern)
 
 
-def released_into_hold(lo_a=1.0, hi_a=4.0):
+def released_into_hold():
     """Spec 5.2 / 9: the release put the charger into the VCU's own hold.
+
+    Rev 4 (2026-10-10, spec 47c31278, agreed with the reviewer): the
+    setpoint at the charger's mode-3 entry is no longer held to a 1.0-4.0 A
+    "hold band". The band was the harness's own, set when the release came
+    at chg_max <= 3.0 A; spec 9 does not ask for it, and since the release
+    keys on the leader the entry setpoint is the override's last command --
+    at least the 6.10 A floor -- so it failed every release. Every hold
+    frame's setpoint is judged by test_invariants rule 6 instead (0 A to
+    the cap, the stepping law, the 0.3 s gate).
 
     Rev 3 (2026-10-09, spec 5.2 HOLD): the release is the interposer log's
     [HOLD] RELEASE, and a RELEASE logged in any other state is refused
@@ -157,8 +180,8 @@ def released_into_hold(lo_a=1.0, hi_a=4.0):
     ANCHORED TO THE CORE'S RELEASE (rev 2, 2026-10-05). Take the
     interposer log's RELEASE; from the CHARGER's log, at or
     after that second and before the handle pull, there must be exactly
-    ONE entry into mode 3, from mode CHARGER, in state 12, at the hold
-    current, with no further mode change until the pull.
+    ONE entry into mode 3, from mode CHARGER, in state 12, with no
+    further mode change until the pull.
 
     Entries BEFORE the release are legal, and are reported in the
     why-string rather than skipped. Above the ceiling (spec 7, the 83 %
@@ -193,7 +216,7 @@ def released_into_hold(lo_a=1.0, hi_a=4.0):
     test_released_into_hold.py mutates a real charger log once per clause
     and requires each to be rejected for its own reason.
     """
-    return ("chg_released_into_hold", (lo_a, hi_a))
+    return ("chg_released_into_hold", None)
 
 
 def repeat_bursts_of_20():
@@ -286,8 +309,8 @@ def hold_follows_loads(band=(2.6, 3.3), settle_s=120.0, drop_exempt_s=2.0):
          there until the first injected load step. A run in which
          bcm_chg_max never reaches 0 A fails."
 
-    The injected steps are vehicle_sim's --aux-step lines ("aux load
-    step: X -> Y A ... (+D s after chg_max reached 0 A)"); a step DOWN is a
+    The injected steps are vehicle_sim's --aux-step lines ("12 V load
+    step: X -> Y W ... (+D s after chg_max reached 0 A)"); a step DOWN is a
     load drop. Their times on the trace's clock are the trace's first
     bcm_chg_max of 0 A plus D -- the same anchor vehicle_sim times them
     from, seen up to one 0x420 period (100 ms) later by the core.
@@ -296,7 +319,85 @@ def hold_follows_loads(band=(2.6, 3.3), settle_s=120.0, drop_exempt_s=2.0):
                                        drop_exempt_s=drop_exempt_s))
 
 
-AUX_STEP = re.compile(r"aux load step: ([\d.]+) -> ([\d.]+) A at t=[\d.]+s "
+# --- spec 9, P3a: the simulation against the truck's own holds ------------
+#
+# Spec 9 (user, 2026-10-10): before the parts-truck hold scenario judges the
+# core, the simulation is checked against the nine full-charge holds of
+# vcu_hold_character.txt, with the charger held at each hold's settled
+# setpoint and the 12 V load set to that hold's. Each hold: name, settled
+# setpoint (A, median of the 5-min rows at >= 20 min), P12 (W), pack V,
+# and the settled bcm_ibat 10th / 90th percentile (A) -- from SeaDrive
+# interposer-firmware/p3a_calibration.py phase fit3 over
+# hold_load_fit_windows.json (runs/p3a_calibration_20261010T1130/). The
+# spread is that p10-p90 widened by P3A_WIDEN_A (user, 2026-10-10).
+# vtruxchargeafterexportchargetest-80pctcv has no settled windows there.
+P3A_HOLDS = (
+    ("another_M0", 2.30, 61.0, 422.8, 0.013, 0.158),
+    ("charge_M0", 2.30, 72.0, 422.6, 0.015, 0.139),
+    ("vtrux_20260503_192242", 2.40, 52.0, 416.5, 0.054, 0.425),
+    ("vtrux_20260726_191901", 2.10, 44.0, 416.3, 0.013, 0.115),
+    ("vtrux_20260816_111915", 2.20, 54.0, 416.3, 0.019, 0.175),
+    ("vtrux_20260912_192748", 2.20, 52.0, 416.4, 0.014, 0.113),
+    ("vtrux_charge_M1", 2.30, 69.0, 422.3, 0.020, 0.095),
+    ("vtrux_partstruck_charge", 2.90, 266.0, 416.8, 0.021, 0.391),
+)
+P3A_WIDEN_A = 0.08
+P3A_PARTS_V = 416.8
+
+
+def p3a_sim_matches_holds():
+    """Spec 9, P3a: the scenario fails before the core is judged if the
+    simulation does not match the truck's holds (_p3a_check)."""
+    return ("p3a", None)
+
+
+def _p3a_check(cs=None, vs=None):
+    """-> (ok, why). The three checks of spec 9's P3a, through the sims' own
+    functions: charger_sim.mode3_report_a (what it reports for a setpoint),
+    charger_sim.delivered_a (what it delivers for a report) and
+    vehicle_sim.hv_draw_a (the truck's HV-side draw for a 12 V load). `cs`
+    and `vs` replace the modules, for test_scorer_wiring's wrong models."""
+    if cs is None:
+        import charger_sim as cs
+    if vs is None:
+        import vehicle_sim as vs
+    probs, rows = [], []
+    for name, sp, p12, v, lo, hi in P3A_HOLDS:
+        rep_a = cs.mode3_report_a(sp)
+        pack = cs.delivered_a(rep_a) - vs.hv_draw_a(p12, v)
+        wl, wh = lo - P3A_WIDEN_A, hi + P3A_WIDEN_A
+        ok = wl <= pack <= wh
+        rows.append("%s %.2f A/%.0f W -> %+.3f A in %+.3f..%+.3f "
+                    "(p10..p90 %+.3f..%+.3f) %s"
+                    % (name, sp, p12, pack, wl, wh, lo, hi,
+                       "ok" if ok else "OUTSIDE"))
+        if not ok:
+            probs.append("1: %s: pack %+.3f A outside its spread %+.3f..%+.3f "
+                         "A (p10..p90 %+.3f..%+.3f, +/-%.2f)"
+                         % (name, pack, wl, wh, lo, hi, P3A_WIDEN_A))
+        if abs(rep_a - sp) > 1e-6:
+            probs.append("2: at a %.2f A setpoint the charger reports %.3f A, "
+                         "not its setpoint" % (sp, rep_a))
+    rep0 = cs.mode3_report_a(0.0)
+    del0 = cs.delivered_a(rep0)
+    drain = del0 - vs.hv_draw_a(vs.P12_PARTS_W, P3A_PARTS_V)
+    if del0 > 1e-9:
+        probs.append("3: at a 0 A setpoint in mode 3 the charger delivers "
+                     "%.3f A (it reports %.2f A); spec 9: it delivers nothing"
+                     % (del0, rep0))
+    if not drain < 0.0:
+        probs.append("3: at a 0 A setpoint the parts truck's pack takes "
+                     "%+.3f A; it must drain" % drain)
+    if probs:
+        return (False, "; ".join(probs))
+    return (True, "8 holds inside their spreads (p10..p90 +/-%.2f A): %s; "
+                  "reports = setpoint at %s A; 0 A setpoint: reports %.2f A, "
+                  "delivers 0, the parts truck's pack drains at %.3f A"
+                  % (P3A_WIDEN_A, "; ".join(rows),
+                     "/".join("%.2f" % h[1] for h in P3A_HOLDS), rep0, drain))
+
+
+AUX_STEP = re.compile(r"12 V load step: ([\d.]+) -> ([\d.]+) W at t=[\d.]+s "
                       r"\(\+([\d.]+)s after chg_max reached 0 A\)")
 
 
@@ -534,9 +635,9 @@ SCENARIOS = [
     Scenario(
         "evap-override",
         "The point of the whole exercise: evap ceiling overridden, charge "
-        "continues to a real top of charge, the interposer goes transparent "
-        "on the BMS's permission collapsing (spec 5), the VCU's own hold "
-        "reaches the charger, and the handle pull closes the session out.",
+        "continues to a real top of charge, the core releases into our hold "
+        "when the leader cell reaches 3585 mV (spec 5.1), and the handle "
+        "pull closes the session out.",
         vehicle=["--evap", "--soc", "79", "--imbalance", "0.4",
                  "--stop-on-done", "--max-sim-s", "9000"],
         charger=["--unplug-after-hold-s", "600"],
@@ -583,36 +684,71 @@ SCENARIOS = [
                 soc_at_least(99.5),
                 vmax_at_most(3.610)]),
 
+    # Spec 9 (user, 2026-10-10): "one with a slightly high cell and one with
+    # a cell far out of family on the high side. Each asserts the release on
+    # the leader (5.1) before the BMS's SoC reaches 100 %, no trip, and the
+    # leader below 3610 mV through the hold." The sizes are the tester's: a
+    # high cell releases before the bus SoC reads 100 only from about +1.2 %
+    # (offline estimate, runs/p3_bms_soc_20261010T2240/), so +1.5 % is the
+    # slight one; +5 % releases at ~96 % with the full 16 A still flowing.
     Scenario(
-        "evap-override-early-bms",
-        "Obey the BMS. Its chg_max taper is shifted +50 mV, so it calls the "
-        "pack full at a ~3.54 V leader cell. The release must land there. A "
-        "release line reading vmax=35xx proves it was the BMS's number.",
+        "evap-override-high-cell",
+        "Spec 9 / 5.1: one cell slightly high (+1.5 % of charge, on a 0.4 % "
+        "family). The leader reaches 3585 mV before the BMS's SoC reads "
+        "100 %, so the release is on it, with no trip and the leader under "
+        "3610 mV through the hold.",
         vehicle=["--evap", "--soc", "79", "--imbalance", "0.4",
-                 "--bms-taper-shift-mv", "50",
-                 "--stop-on-done", "--max-sim-s", "7000"],
+                 "--outlier-cell", "7", "--outlier-pct", "-1.5",
+                 "--stop-on-done", "--max-sim-s", "9000"],
         charger=["--unplug-after-hold-s", "600"],
         timeout=600,
         expect=[ev(r"LOW_POWER overridden"),
-                ev(r"top of charge reached.*(?:vmax|a)=35[0-6]\d(?!\d)"),
+                ev(r"top of charge reached"),
                 ev(r"RELEASE"),
                 no_ev(r"TRIP"),
+                release_on_leader(before_soc_100=True),
+                no_rewrite_after_release(),
                 released_into_hold(),
                 repeat_bursts_of_20(),
                 chg_ev(r"HANDLE PULLED"),
                 veh_ev(r"commanding STAND_BY"),
                 final_state("PASSTHROUGH"),
-                soc_at_least(85.0),
-                vmax_at_most(3.570)]),
+                diag_frames_ok(),
+                vmax_at_most(3.610)]),
+
+    Scenario(
+        "evap-override-high-cell-far",
+        "Spec 9 / 5.1: one cell far out of family on the high side (+5 % of "
+        "charge, on a 0.4 % family), which no truck has shown. The leader "
+        "reaches 3585 mV at ~96 % SoC with the full override current "
+        "flowing; the release is on it, before the BMS's SoC reads 100 %, "
+        "with no trip and the leader under 3610 mV through the hold.",
+        vehicle=["--evap", "--soc", "79", "--imbalance", "0.4",
+                 "--outlier-cell", "7", "--outlier-pct", "-5.0",
+                 "--stop-on-done", "--max-sim-s", "9000"],
+        charger=["--unplug-after-hold-s", "600"],
+        timeout=600,
+        expect=[ev(r"LOW_POWER overridden"),
+                ev(r"top of charge reached"),
+                ev(r"RELEASE"),
+                no_ev(r"TRIP"),
+                release_on_leader(before_soc_100=True),
+                no_rewrite_after_release(),
+                released_into_hold(),
+                repeat_bursts_of_20(),
+                chg_ev(r"HANDLE PULLED"),
+                veh_ev(r"commanding STAND_BY"),
+                final_state("PASSTHROUGH"),
+                diag_frames_ok(),
+                vmax_at_most(3.610)]),
 
     Scenario(
         "evap-override-imbalanced",
         "The parts-truck pack under our override: 1.0 % spread with one cell "
-        "2.5 % low. The leaders reach the top while the weak cell is behind, so "
-        "the BMS tapers on a pack that is not full. We must release there: the "
-        "lower than expected termination point, visible as the spread and the "
-        "weakest cell AT THE RELEASE (the reported SoC is clamped and cannot "
-        "show it), with vmax never past 3.610 V.",
+        "2.5 % low (out of family on the low side, spec 9). The release is on "
+        "the leader (5.1) with the weak cell still behind, visible as the "
+        "spread and the weakest cell AT THE RELEASE (the reported SoC is "
+        "clamped and cannot show it), with vmax never past 3.610 V.",
         vehicle=["--evap", "--soc", "79", "--imbalance", "1.0",
                  "--outlier-cell", "7", "--outlier-pct", "2.5",
                  "--stop-on-done", "--max-sim-s", "9000"],
@@ -627,9 +763,49 @@ SCENARIOS = [
                 chg_ev(r"HANDLE PULLED"),
                 veh_ev(r"commanding STAND_BY"),
                 final_state("PASSTHROUGH"),
+                release_on_leader(),
                 spread_at_release_at_least(50.0),
                 vmin_at_release_at_most(3.500),
                 vmax_at_most(3.610)]),
+
+    Scenario(
+        "evap-override-imbalanced-hold",
+        "Spec 9, the hold after the release (P3): the imbalanced parts-truck "
+        "charge continues past the release into our hold, with the parts "
+        "truck's 12 V load (266 W). The simulation is first checked against "
+        "the truck's nine full-charge holds (P3a); then the hold must keep "
+        "the pack at or under bcm_chg_max (2 s grace after a load drop or a "
+        "fall in chg_max), step 0.1 A at least 0.3 s apart and never to 0 A, "
+        "and settle in 2.6-3.3 A within 2 min of chg_max reaching 0 A, until "
+        "the first injected load step. The 12 V load drops 266 -> 136 W 300 s "
+        "after chg_max first reaches 0 A and returns to 266 W at 600 s.",
+        vehicle=["--evap", "--soc", "79", "--imbalance", "1.0",
+                 "--outlier-cell", "7", "--outlier-pct", "2.5",
+                 "--p12-w", "266", "--aux-step", "300:136",
+                 "--aux-step", "600:266",
+                 "--stop-on-done", "--max-sim-s", "16000"],
+        # The hold runs from the release (the charger entering mode 3). In
+        # the 5x smoke at c800ad3 (obsmoke, 2026-10-11) chg_max reached 0 A
+        # at t=3843 s and the release came at ~3901 s; the load steps fall
+        # at +300 and +600 s from chg_max 0, so 900 s of hold covers both
+        # and ~4 min after the return to 266 W.
+        charger=["--unplug-after-hold-s", "900"],
+        timeout=900,
+        expect=[p3a_sim_matches_holds(),
+                ev(r"LOW_POWER overridden"),
+                ev(r"top of charge reached"),
+                ev(r"RELEASE"),
+                no_ev(r"TRIP"),
+                released_into_hold(),
+                repeat_bursts_of_20(),
+                chg_ev(r"HANDLE PULLED"),
+                veh_ev(r"commanding STAND_BY"),
+                final_state("PASSTHROUGH"),
+                release_on_leader(),
+                spread_at_release_at_least(50.0),
+                vmin_at_release_at_most(3.500),
+                vmax_at_most(3.610),
+                hold_follows_loads()]),
 
     Scenario(
         "evap-override-16a",
@@ -823,14 +999,17 @@ SCENARIOS = [
         "300 A so it never tapers. Only the interposer's own 3.610 V cell "
         "ceiling is left to stop the override; the trip is transparency, so "
         "what follows is the VCU's own hold, ended by the handle pull. Note "
-        "what this took to set up -- while the BMS behaves, bcm_chg_max "
-        "collapsing already releases. Must start BELOW the 80 % ceiling so "
+        "what this took to set up -- while the core behaves, the leader "
+        "reaching 3585 mV already releases (spec 5.1), so the release is "
+        "turned off. Must start BELOW the 80 % ceiling so "
         "the VCU's stop comes after a charge is established.",
         vehicle=["--evap", "--soc", "79", "--imbalance", "0.4",
                  "--bms-stuck-chg-max", "300", "--stop-on-done",
                  "--max-sim-s", "16000"],
         charger=["--unplug-after-hold-s", "300"],
-        interposer=["--chgmax-full-a", "-1"],
+        # spec 5.1 (47c31278) releases on the leader at 3585 mV; 9999 mV
+        # is beyond any cell (vehicle_sim caps bcm_cell_vmax at 3.799 V)
+        interposer=["--vmax-full-mv", "9999"],
         timeout=800,
         expect=[ev(r"LOW_POWER overridden"),
                 ev(r"TRIP: vmax \d+ mV over hard ceiling"),
@@ -1214,6 +1393,9 @@ DIAG_FRAME = re.compile(
 TOC_NAMED = re.compile(
     r"top of charge reached: vmax=(\d+) mV vmin=(\d+) mV")
 TOC_BOARD = re.compile(r"top of charge reached a=(\d+) b=-?\d+ c=(\d+)")
+# vehicle_sim, once: the first bcm_soc of 100 on the bus (spec 9).
+SOC100 = re.compile(r"BMS: bcm_soc reads 100 % on the bus at t=([\d.]+)s")
+RELEASE_VMAX_MV = 3585          # spec 5.1 (47c31278)
 REPEAT_EV = re.compile(r"REPEAT: .*?, (\d+) frames")
 FINAL_SYNTH = re.compile(r"final state=\w+.*synth=(\d+)")
 CHG_MODE = re.compile(r"charger: mode (\w+) -> (\w+) \(setpoint ([\d.]+) A\)")
@@ -1235,6 +1417,33 @@ def parse_diag_frames(veh_text):
     return out
 
 
+def _leader_release_check(intp, veh, diag, before_soc_100):
+    """-> (ok, why) for release_on_leader()."""
+    vmax, _vmin = release_vmax_vmin(intp)
+    if vmax is None:
+        return (False, "no release event")
+    if vmax < RELEASE_VMAX_MV:
+        return (False, "released at vmax %d mV, below the leader's %d mV "
+                       "(spec 5.1)" % (vmax, RELEASE_VMAX_MV))
+    if not before_soc_100:
+        return (True, "released at vmax %d mV (spec 5.1: >= %d)"
+                % (vmax, RELEASE_VMAX_MV))
+    hold = [t for t, fid, body in diag
+            if fid == 0x7F4 and len(body) > 2 and body[2] == 6]
+    if not hold:
+        return (False, "released at vmax %d mV but no 0x7F4 ever reported "
+                       "HOLD, so the release time is unknown" % vmax)
+    m = SOC100.search(veh)
+    t100 = float(m.group(1)) if m else None
+    if t100 is not None and hold[0] >= t100:
+        return (False, "the first HOLD frame at t=%.1f s is not before "
+                       "bcm_soc read 100 %% on the bus at t=%.1f s"
+                % (hold[0], t100))
+    return (True, "released at vmax %d mV; first HOLD frame at t=%.1f s, %s"
+            % (vmax, hold[0], "bcm_soc never read 100 %" if t100 is None
+               else "%.1f s before bcm_soc read 100 %%" % (t100 - hold[0])))
+
+
 def release_vmax_vmin(intp_text):
     """(vmax_mV, vmin_mV) at the release, or (None, None)."""
     m = TOC_NAMED.search(intp_text) or TOC_BOARD.search(intp_text)
@@ -1254,7 +1463,9 @@ LOG_TS = re.compile(r"^(\d\d):(\d\d):(\d\d) ")
 # with the check that produced it.
 #   1  the first entry into mode 3 anywhere in the log
 #   2  (2026-10-05) anchored to the core's RELEASE
-RELEASED_INTO_HOLD_REV = 3
+#   3  (2026-10-09) the release must enter HOLD
+#   4  (2026-10-10) no 1.0-4.0 A band on the entry setpoint (rule 6 judges it)
+RELEASED_INTO_HOLD_REV = 4
 
 
 def _stamped(text):
@@ -1302,7 +1513,7 @@ def _release_time(intp_text):
     return _release_event(intp_text)[0]
 
 
-def _released_into_hold(chg_text, intp_text, lo_a, hi_a):
+def _released_into_hold(chg_text, intp_text):
     """-> (ok, why). See released_into_hold()."""
     rel, rel_state = _release_event(intp_text)
     if rel is None:
@@ -1370,10 +1581,6 @@ def _released_into_hold(chg_text, intp_text, lo_a, hi_a):
         return (False, "the VCU's Low Power reached the charger after the "
                        "release, but it was in state %s, not 12"
                        % st + earlier)
-    if not (lo_a <= sp <= hi_a):
-        return (False, "charger in mode 3 in state 12 after the release, "
-                       "but at %.2f A, outside the hold band %.1f-%.1f A"
-                % (sp, lo_a, hi_a) + earlier)
     return (True, "mode 3 in state 12 at %.2f A, entered at or after the "
                   "release and held to the handle pull%s" % (sp, earlier))
 
@@ -1385,11 +1592,11 @@ def _released_into_hold(chg_text, intp_text, lo_a, hi_a):
 BURST_FRAMES = 20
 BURST_MS = BURST_FRAMES * 50
 
-# Spec 8.2 and the schema doc's version table (1c40018cd60b4da9): firmware
-# version 6 is spec 3's arming on the charger's latest status (5 was spec
-# 5.2's HOLD and the spec 2 receive-order fix), schema 4. Literals for the
-# same reason.
-SPEC_FW_VER = 6
+# Spec 8.2 and the schema doc's version table (c42bc96535aed3b2): firmware
+# version 7 is the spec of 2026-10-10 -- the 6.10 A floor, the release on
+# the leader, the hold's cell limits (6 was spec 3's arming on the
+# charger's latest status) -- schema 4. Literals for the same reason.
+SPEC_FW_VER = 7
 SPEC_SCHEMA_VER = 4
 
 # A timestamped REPEAT, and the vehicle-side markers of the VCU changing
@@ -2138,6 +2345,11 @@ def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
                             % (val, "no release event" if spread is None
                                else "%.0f mV, vmax %d vmin %d"
                                % (spread, rel_vmax, rel_vmin))))
+        elif kind == "leader_release":
+            ok, why = _leader_release_check(intp, veh, diag, val)
+            results.append((ok, "spec 5.1 release on the leader%s: %s"
+                            % (" before bcm_soc reads 100 %" if val else "",
+                               why)))
         elif kind == "intp_vmin_at_release_max":
             v = None if rel_vmin is None else rel_vmin / 1000.0
             ok = v is not None and v <= val
@@ -2148,12 +2360,16 @@ def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
             ok = re.search(val, chg) is not None
             results.append((ok, "charger log matches /%s/" % val))
         elif kind == "chg_released_into_hold":
-            ok, why = _released_into_hold(chg, intp, val[0], val[1])
+            ok, why = _released_into_hold(chg, intp)
             results.append((ok, "the release landed in the VCU's hold: %s"
                             % why))
         elif kind == "intp_repeat_20":
             ok, why = _repeat_bursts(intp, veh, chg_text=chg)
             results.append((ok, "spec 4.1 repeats: %s" % why))
+        elif kind == "p3a":
+            ok, why = _p3a_check()
+            results.append((ok, "P3a, the simulation against the truck's "
+                                "holds: %s" % why))
         elif kind == "diag_frames_ok":
             ok, why = _diag_check(sc, diag, fstate)
             results.append((ok, "diag frames: %s" % why))
@@ -2308,6 +2524,15 @@ def main():
         print("\n=== %s ===" % n)
         print(sc.why)
         t0 = time.time()
+        if "p3a" in [k for k, _v in sc.expect]:
+            p_ok, p_why = _p3a_check()
+            if not p_ok:
+                print("   [FAIL] P3a, the simulation against the truck's "
+                      "holds: %s" % p_why)
+                print("   -> FAIL  (the simulation does not match the "
+                      "truck's holds, so the core is not judged)")
+                allok = False
+                continue
         res = run_one(sc, args, outdir)
         for line in res["events"]:
             print("   " + line.split("intp ", 1)[-1])

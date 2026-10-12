@@ -59,7 +59,11 @@ bool setConfigField(Config& c, const char* n, int32_t v) {
   if (std::strcmp(n, "bms_stale_ms") == 0) { c.bms_stale_ms = (uint32_t)v; return true; }
   if (std::strcmp(n, "chg_stale_ms") == 0) { c.chg_stale_ms = (uint32_t)v; return true; }
   if (std::strcmp(n, "chg_silence_ms") == 0) { c.chg_silence_ms = (uint32_t)v; return true; }
-  if (std::strcmp(n, "chgmax_full_ca") == 0) { c.chgmax_full_ca = v; return true; }
+  if (std::strcmp(n, "vmax_full_mv") == 0) { c.vmax_full_mv = v; return true; }
+  if (std::strcmp(n, "ilim_floor_ca") == 0) { c.ilim_floor_ca = v; return true; }
+  if (std::strcmp(n, "ilim_floor_soc_half") == 0) { c.ilim_floor_soc_half = v; return true; }
+  if (std::strcmp(n, "hold_vmax_down_mv") == 0) { c.hold_vmax_down_mv = v; return true; }
+  if (std::strcmp(n, "hold_vmax_up_mv") == 0) { c.hold_vmax_up_mv = v; return true; }
   if (std::strcmp(n, "soc_arm_half") == 0) { c.soc_arm_half = v; return true; }
   if (std::strcmp(n, "vmax_hard_mv") == 0) { c.vmax_hard_mv = v; return true; }
   if (std::strcmp(n, "learned_ilim_min_ca") == 0) { c.learned_ilim_min_ca = v; return true; }

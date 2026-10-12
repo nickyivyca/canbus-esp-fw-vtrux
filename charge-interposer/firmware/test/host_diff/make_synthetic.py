@@ -196,6 +196,12 @@ def scen_override_release():
     charger 20 times (spec 4.1) and from then on rewrite NOTHING: the VCU's
     setpoint reaches the charger as sent. Then the VCU closes out with
     STAND_BY: the core goes PASSTHROUGH and a later 00 01 03 passes untouched.
+
+    Since spec 47c31278 (option B, 2026-10-10) the release is on the leader,
+    vmax >= 3585 mV for 1 s, so it releases on the walk up (t=132.1 s, vmax
+    3592 mV, chg_max still 54 A), before the permission collapses, and the
+    release enters HOLD (spec 5.2) rather than pure transparency; the trace is
+    unchanged, its golden regenerated (golden_regen_log.txt).
     """
     s = Scenario("syn_override_release")
     # 0-90 s: ordinary charging at 79 % with the evap flag up. Arms almost at
@@ -783,6 +789,64 @@ def scen_plug_out_then_pilot_reset():
     return s
 
 
+def scen_hold_cap_clamp():
+    """arm -> override on the 6.10 A floor -> release on the leader into
+    HOLD -> the EVSE cap drops below the hold setpoint, twice.
+
+    Spec 5.2 at e5d62c90fd0c4cec: the hold setpoint stays in 0 .. the EVSE
+    cap of section 4 (the charger's maxAvailableChargingCurrent), and
+    "whenever the cap is below the hold setpoint, at entry or later, the
+    setpoint moves to the cap at once, as a clamp rather than a 0.1 A step".
+    The differential had no trace in which the cap was ever below the hold
+    setpoint (reviewer request, 2026-10-11), so a port that walked down to
+    the cap, or ignored it, agreed with machine.py by default.
+
+    The override runs at SoC 98.5 % with chg_max 4.00 A, so spec 4 commands
+    the 6.10 A floor; the leader at 3590 mV releases it (spec 5.1, >= 3585
+    mV for 1 s) and the hold starts at 6.10 A. Then the charger reports
+    6.00 A available, as the real one does in Low Power
+    (lowpower_maxavail.txt) -- the clamp at entry; the pack above chg_max
+    walks the hold down in 0.1 A steps; the cap drops to 2.00 A, below the
+    setpoint -- the clamp later on; the cap returns to 6.00 A and the hold
+    steps back up. vmax stays at 3590 mV, inside the 3595 / 3600 mV cell
+    limits, so neither of them decides a frame.
+    """
+    s = Scenario("syn_hold_cap_clamp")
+    # 0-90 s: ordinary charging at 79 % with the evap flag up; arms, then
+    # sits out arm_delay_ms.
+    s.steady(0, 90000, vmax=3340, chg_max=30000, soc_half=158, evap=1)
+    # 90 s: the evap ceiling -> overridden.
+    s.veh(90000, M.CMD_ID, f_cmd_master(0x01, M.MODE_LOW_POWER))
+    # 90-120 s: SoC 98.5 % (soc_half 197), chg_max 4.00 A, leader 3400 mV:
+    # the floor binds, so the override commands 6.10 A (spec 4, 47c31278).
+    s.steady(90100, 120000, vmax=3400, chg_max=400, soc_half=197, ibat=600,
+             evap=1)
+    # 120-121.1 s: the leader at 3590 mV for 1 s -> the release into HOLD at
+    # the override's last setpoint, 6.10 A.
+    s.steady(120000, 121100, vmax=3590, chg_max=400, soc_half=197, ibat=600,
+             evap=1)
+    # 121.1-127 s: the charger reports 6.00 A available (the clamp at entry),
+    # and the pack at 6.0 A is above chg_max 5.00 A, so the hold steps down.
+    s.steady(121100, 127000, vmax=3590, chg_max=500, soc_half=197, ibat=600,
+             evap=1, max_avail=600)
+    # 127-130 s: the cap drops to 2.00 A, below the setpoint (the clamp
+    # later on); the pack follows it down.
+    s.steady(127000, 130000, vmax=3590, chg_max=500, soc_half=197, ibat=100,
+             evap=1, max_avail=200)
+    # 130-135 s: the cap back at 6.00 A, the pack under chg_max: steps up.
+    s.steady(130000, 135000, vmax=3590, chg_max=500, soc_half=197, ibat=100,
+             evap=1, max_avail=600)
+    # 135 s: handle pull -> the VCU closes out -> PASSTHROUGH; its next hold
+    # command passes untouched.
+    s.veh(135000, M.CMD_ID, f_cmd_master(0x00, M.MODE_STANDBY))
+    s.steady(135100, 138000, vmax=3590, chg_max=500, soc_half=197, ibat=0,
+             chg_state=11, evap=1, max_avail=600)
+    s.veh(138000, M.CMD_ID, f_cmd_master(0x01, M.MODE_LOW_POWER))
+    s.steady(138100, 140000, vmax=3590, chg_max=500, soc_half=197, ibat=0,
+             chg_state=11, evap=1, max_avail=600)
+    return s
+
+
 SCENARIOS = [scen_override_release, scen_trip_during_override,
              scen_repeat_superseded, scen_repeat_replaced,
              scen_charger_fault, scen_stale_bms, scen_evap_clear_accept,
@@ -793,7 +857,8 @@ SCENARIOS = [scen_override_release, scen_trip_during_override,
              scen_boot_mid_session, scen_pilot_restart_clears_safe,
              scen_charger_silence_keeps_safe, scen_boot_lock_arm_first,
              scen_charger_handle_pull, scen_charger_stop_source_3,
-             scen_source_11_plug_in, scen_plug_out_then_pilot_reset]
+             scen_source_11_plug_in, scen_plug_out_then_pilot_reset,
+             scen_hold_cap_clamp]
 
 
 # --- run --------------------------------------------------------------------

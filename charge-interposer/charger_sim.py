@@ -18,13 +18,22 @@ Consumes the VCU command frame `0x18EFC000` and broadcasts the charger's own
     setpoint untouched at 19.5 A, via a reset 12 -> 15 -> 12); below that cap
     it follows the setpoint, which the VCU ramps to 0 and then dithers 0/2.9 A
     for the ~2.4 A hold. With the setpoint held at 0 A (the 83 % start) it
-    delivers ~1.4 A: LOW_POWER_FLOOR_A.
+    reports ~1.4 A: LOW_POWER_FLOOR_A.
+  * what it REPORTS is not what it DELIVERS (spec 9, P3a; user 2026-10-10).
+    It reports about its setpoint; it delivers delivered_a(reported) =
+    max(0, (reported - 1.51) / 0.891), the line fitted on the main truck's
+    charging windows plus one short parts-truck start
+    (artifacts/charger_dc_error_fit.txt). So below ~1.5 A it reports 1.4 A
+    and delivers nothing. The report goes out on CAN; the delivered current
+    goes to the pack over the physics link.
   * mode 3 -> 1 restarts it. vtrux_partstruck_charge sent `00 01 03` at t=31 s
     (a startup transient) and `00 01 01` at t=94 s, and the current went
     straight back to -15 A. This is the behaviour the interposer relies on.
-  * delivered current is min(page-01 Ilim, maxAvailableChargingCurrent, CV
-    loop). During CC the VCU commanded ~19 A, maxAvail read 16 A and the pack
-    took 14.8-15.5 A -- so maxAvail, not Ilim, was binding.
+  * the REPORTED current is min(page-01 Ilim, maxAvailableChargingCurrent,
+    CV loop), and the delivered current follows from it (delivered_a).
+    During CC the VCU commanded ~19 A, maxAvail read 16 A and the pack
+    took 14.8-15.5 A -- so maxAvail, not Ilim, was binding. (The "delivered"
+    figures quoted here from captures are the charger's own reports.)
   * maxAvailableChargingCurrent is the charger's own pilot-derived DC ceiling,
     and it is what actually binds during CC. Measured on the same truck at two
     EVSE settings:
@@ -69,11 +78,28 @@ R_PACK = 116 * 0.0006            # series resistance seen by the CV loop
 # charger does no such thing: it follows the VCU's setpoint under a ~6 A cap,
 # and the ~2.4 A hold is the VCU commanding it (spec 4). What keeps the pack
 # from running away in the hold is that the hold current mostly feeds the
-# aux load (vehicle_sim --aux-a) and the BMS bleeds the leaders.
+# truck's HV-side load (vehicle_sim --p12-w) and the BMS bleeds the leaders.
 N_CELLS = 116
-# What mode 3 delivers with a 0 A setpoint: 1.4-1.45 A DC, dead steady, in
-# vtrux_partstruck_chargeagain3 (above_ceiling_start_timeline.txt).
+# What mode 3 REPORTS with a 0 A setpoint: 1.4-1.45 A DC, dead steady, in
+# vtrux_partstruck_chargeagain3 (above_ceiling_start_timeline.txt). It
+# delivers nothing there (delivered_a; spec 9, P3a).
 LOW_POWER_FLOOR_A = 1.4
+# reported = ERR_GAIN * delivered + ERR_OFF (charger_dc_error_fit.txt, main
+# truck, RMSE 0.23 A); spec 9 (user, 2026-10-10)
+ERR_GAIN = 0.891
+ERR_OFF = 1.51
+
+
+def delivered_a(reported_a):
+    """The DC current the charger delivers when it reports reported_a
+    (spec 9, P3a): (reported - 1.51) / 0.891, floored at 0, per sample."""
+    return max(0.0, (reported_a - ERR_OFF) / ERR_GAIN)
+
+
+def mode3_report_a(setpoint_a, cap_a=6.0, cv_a=1e9):
+    """What mode 3 reports for a setpoint: the setpoint under the ~6 A cap,
+    never below the 1.4 A floor -- the target Charger.step() uses."""
+    return max(LOW_POWER_FLOOR_A, min(setpoint_a, cap_a, cv_a))
 MAX_CATCHUP = 8
 PHYS_PERIOD = 0.020              # physics-link update interval, simulated s
 
@@ -399,11 +425,10 @@ class Charger(object):
         elif self.mode == P.MODE_LOW_POWER:
             # Two-step hold (spec 4): capped at hold_a by the mode alone,
             # following the setpoint below that, never under the floor the
-            # real charger delivers at a 0 A setpoint. The CV limit against
+            # real charger REPORTS at a 0 A setpoint. The CV limit against
             # the commanded Vlim still applies, as in CHARGER mode.
             cv = max(0.0, (self.vlim - self.pack_v) / R_PACK)
-            target = max(LOW_POWER_FLOOR_A,
-                         min(self.ilim, self.max_avail, cv))
+            target = mode3_report_a(self.ilim, self.max_avail, cv)
         else:
             # CC, with a CV limit against the commanded Vlim (429.2 V -- never
             # actually reached on this pack, but modelled so the loop is real)
@@ -661,7 +686,8 @@ def main():
             if t >= next_phys:
                 phys.send(can.Message(arbitration_id=busmod.PHYS_CURRENT_ID,
                                       is_extended_id=False,
-                                      data=busmod.encode_phys(c.current)))
+                                      data=busmod.encode_phys(
+                                          delivered_a(c.current))))
                 next_phys = t + PHYS_PERIOD
 
             # Spec 9 (6.1): --silent-at stops the charger transmitting

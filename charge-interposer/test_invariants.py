@@ -79,6 +79,32 @@ first gap from the release step; a frame in that first 0.3 s where the law
 points but the gate holds is counted as release_gate (rev 4's entry_window,
 which was counted and not judged, is gone).
 
+Rev 6 (tester, 2026-10-10), option B (spec 47c31278f6146c31, user
+2026-10-10):
+  - rule 5 now reads: page 01 in an override carries min(EVSE cap,
+    max(bcm_chg_max, floor)), the floor 6.10 A while the latest bcm_soc is
+    98 % or more and 0 below it -- "never above the EVSE cap, nor above the
+    BMS's permission except at the floor of section 4, at SoC >= 98 %";
+  - rule 6: the hold also steps down while bcm_cell_vmax is at or above
+    3600 mV, and steps up only while it is below 3595 mV (spec 5.2), on top
+    of the pack-current rules. Inputs from the Oracle (0x410 bcm_soc and
+    0x430 bcm_cell_vmax added).
+  - rule 6, spec 5.2 at e5d62c90fd0c4cec (user, 2026-10-10): "whenever the
+    cap is below the hold setpoint, at entry or later, the setpoint moves
+    to the cap at once, as a clamp rather than a 0.1 A step". So when the
+    setpoint the charger last had is above the cap, the next hold frame
+    must be AT the cap; that is a clamp, exempt from the law and the gate.
+    Whether a clamp then counts as a step for the 0.3 s gate is with the
+    user, so both readings pass: the gate runs from the last 0.1 A step or
+    the release, and a hold within 0.3 s after a clamp is not failed.
+No trace or random sequence reaches either part (no trace has SoC >= 98
+with a low permission in an override, none holds near 3595 mV), so each
+has a directed sequence (floor_steps, hold_cell_steps), a population guard,
+and a can-fail test that rewrites the core's output to the rule (the
+REFERENCE) and then breaks it four ways. The reference exists because the
+core under test may implement the old rules (E5 does): the rule must be
+shown to pass a right answer, not only to fail a wrong one.
+
 The randomised sequence matters as much as the traces. Every trace here was
 generated to exercise something, so all of them are well-formed charges; the
 random one is not, and the invariants hold on malformed traffic too or they
@@ -138,6 +164,15 @@ HOLD_GAP_MS = 300                # "at most one step per 0.3 s"
 # Half an LSB of bcm_ibat (0.025 A): a reading this close to a band edge
 # may be taken either way, so either answer is accepted there.
 HOLD_EDGE_A = 0.0125
+# spec 4 (47c31278, user 2026-10-10): the floor under the override's command
+FLOOR_A = 6.10                   # "a floor of 6.10 A"
+FLOOR_SOC = 98.0                 # "once the BMS's SoC reads 98 % or more"
+# spec 5.2 (47c31278): the hold's cell limits
+HOLD_VMAX_DOWN_V = 3.600         # "steps ... down ... while ... at or above 3600 mV"
+HOLD_VMAX_UP_V = 3.595           # "up ... while ... below 3595 mV"
+# bcm_cell_vmax decodes in whole mV, so 3600 / 3595 mV are exact readings
+# and are judged strictly (spec: "at or above", "below"); this is float slop.
+HOLD_EDGE_V = 1e-6
 
 
 class Oracle(object):
@@ -153,6 +188,8 @@ class Oracle(object):
     def __init__(self):
         self.perm_a = None
         self.ibat_a = None          # 0x410 bcm_ibat, + = charging (5.2)
+        self.soc_pct = None         # 0x410 bcm_soc (spec 4's floor gate)
+        self.vmax_v = None          # 0x430 bcm_cell_vmax (5.2 cell limits)
         self.cap_raw_a = None
         # Spec 4 (F item 31, ruled 2026-10-08): the learned CC command is
         # the LARGEST page-01 setpoint >= 5 A seen in MONITOR since the last
@@ -183,6 +220,12 @@ class Oracle(object):
                 d = P.decode(P.EPRI, 0x410, data)
                 if "bcm_ibat" in d:
                     self.ibat_a = float(d["bcm_ibat"])
+                if "bcm_soc" in d:
+                    self.soc_pct = float(d["bcm_soc"])
+            elif fid == M.BMS_DATA1:
+                d = P.decode(P.EPRI, 0x430, data)
+                if "bcm_cell_vmax" in d:
+                    self.vmax_v = float(d["bcm_cell_vmax"])
             elif fid == M.CMD_ID and len(data) >= 3 and data[0] == 0x00:
                 if data[2] in (P.MODE_STANDBY, P.MODE_EXPORT):
                     self._reset()
@@ -222,6 +265,14 @@ class Oracle(object):
         self.cc_first_a = None
         self.cc_max_a = None
         self.cap_raw_a = None
+
+    def floor_a(self):
+        """Spec 4: 6.10 A while the latest bcm_soc reads 98 % or more, else
+        0. bcm_soc's 0.5 % steps put no reading within rounding of 98, so
+        no edge allowance is needed."""
+        if self.soc_pct is not None and self.soc_pct >= FLOOR_SOC:
+            return FLOOR_A
+        return 0.0
 
     def caps(self):
         """The EVSE cap for this frame, as a one-element list (or [] when no
@@ -271,6 +322,9 @@ class Checker(object):
         self.n_page01_checked = 0
         self.n_cc_separating = 0    # page 01 where "largest" differs from
                                     # another reading of the learned CC
+        self.n_floor_binding = 0    # override page 01 where the floor is
+                                    # above the permission (rule 5, rev 6)
+        self.n_floor_below_soc = 0  # ... low permission, SoC under 98
         self.n_mirrors = 0
         self.n_held = 0             # override 03.02 / 03.07 judged
         self.n_held_differed = 0    # ... of which the VCU sent other bytes
@@ -283,8 +337,14 @@ class Checker(object):
         self.hold_step_t = None
         self.hold_entry_t = None
         self.hold_stepped = False
+        self.hold_clamp_t = None    # the last clamp to the cap (e5d62c90)
         self.hold_counts = {"up": 0, "down": 0, "hold": 0, "clamped": 0,
-                            "unjudged": 0, "release_gate": 0}
+                            "unjudged": 0, "release_gate": 0,
+                            # rev 6: frames the cell limits decided
+                            "cell_down": 0, "cell_held": 0,
+                            # e5d62c90: clamps to the cap from above it,
+                            # and holds inside 0.3 s after one
+                            "cap_clamp": 0, "clamp_gate": 0}
         self._t = 0
         self.bursts = []            # {"mode", "sent", "closed", "cut"}
         self._new_bursts = []
@@ -361,6 +421,7 @@ class Checker(object):
             self.hold_entry_t = t_ms
             self.hold_step_t = t_ms
             self.hold_stepped = False
+            self.hold_clamp_t = None
         for b in self._new_bursts:
             b["after"] = after
 
@@ -563,8 +624,9 @@ class Checker(object):
                           "%s" % (bytes(orig).hex(), bytes(sent).hex()))
 
     def _check_page01(self, orig, sent):
-        """Spec 4: page 01's current is ours -- the BMS's permission capped
-        by the EVSE -- and only the current changes (item 6 reading)."""
+        """Spec 4: page 01's current is ours -- min(EVSE cap,
+        max(bcm_chg_max, floor)), the floor 6.10 A at bcm_soc >= 98 % and 0
+        below (rev 6) -- and only the current changes (item 6 reading)."""
         self.n_page01_checked += 1
         # how often the ruled reading (largest) gives a different limit from
         # some other reading, at this frame: the population that makes the
@@ -588,17 +650,27 @@ class Checker(object):
             self.fail("overriding with no EVSE cap known (spec 3)")
             return
         tol = PAGE01_COUNT_A + 1e-6
-        wants = [min(perm, c) for c in caps]
-        if amps > perm + tol:
-            self.fail("commanded %.2f A, above the BMS's permission %.2f A"
-                      % (amps, perm))
+        floor = self.bus.floor_a()
+        lim = max(perm, floor)
+        if floor > perm + tol:
+            self.n_floor_binding += 1
+        elif perm < FLOOR_A - tol:
+            self.n_floor_below_soc += 1
+        wants = [min(lim, c) for c in caps]
+        soc = ("-" if self.bus.soc_pct is None
+               else "%.1f %%" % self.bus.soc_pct)
+        if amps > lim + tol:
+            self.fail("commanded %.2f A, above the BMS's permission %.2f A "
+                      "and not the floor (floor %.2f A at SoC %s; spec 4)"
+                      % (amps, perm, floor, soc))
         elif all(amps > c + tol for c in caps):
             self.fail("commanded %.2f A, above the EVSE cap %s A"
                       % (amps, "/".join("%.2f" % c for c in caps)))
         elif not any(abs(amps - w) <= tol for w in wants):
-            self.fail("commanded %.2f A, not the permission %.2f A capped by "
-                      "the EVSE %s A (spec 4)"
-                      % (amps, perm, "/".join("%.2f" % c for c in caps)))
+            self.fail("commanded %.2f A, not min(EVSE cap %s A, max("
+                      "permission %.2f A, floor %.2f A at SoC %s)) (spec 4)"
+                      % (amps, "/".join("%.2f" % c for c in caps), perm,
+                         floor, soc))
 
     def _check_hold(self, t_ms, orig, sent):
         """Spec 5.2: the hold's page-01 setpoint, frame by frame.
@@ -636,9 +708,22 @@ class Checker(object):
             self.fail("hold: a page 01 in HOLD with no earlier setpoint sent "
                       "-- the hold starts from the override's (spec 5.2)")
             return
-        delta = amps - prev
         at_floor = amps <= tol
         at_cap = cap is not None and abs(amps - cap) <= tol
+        if cap is not None and prev > cap + tol:
+            # spec 5.2 at e5d62c90: above the cap, the setpoint "moves to
+            # the cap at once, as a clamp rather than a 0.1 A step"
+            if at_cap:
+                cnt["clamped"] += 1
+                cnt["cap_clamp"] += 1
+                self.hold_clamp_t = t_ms
+                return
+            self.fail("hold: the charger had %.2f A with the EVSE cap at "
+                      "%.2f A, and this frame sends %.2f A; above the cap "
+                      "the setpoint moves to the cap at once, as a clamp "
+                      "(spec 5.2)" % (prev, cap, amps))
+            return
+        delta = amps - prev
         if abs(delta) <= tol:
             step = 0
         elif abs(abs(delta) - HOLD_STEP_A) <= tol:
@@ -650,21 +735,36 @@ class Checker(object):
                       "the hold steps 0.1 A (spec 5.2)"
                       % (prev, amps, delta))
             return
-        ib, perm = self.bus.ibat_a, self.bus.perm_a
-        if ib is None or perm is None:
+        ib, perm, vm = self.bus.ibat_a, self.bus.perm_a, self.bus.vmax_v
+        if ib is None or perm is None or vm is None:
             if step:
-                self.fail("hold: stepped %.2f -> %.2f A with no bcm_ibat or "
-                          "bcm_chg_max heard (spec 5.2)" % (prev, amps))
+                self.fail("hold: stepped %.2f -> %.2f A with no bcm_ibat, "
+                          "bcm_chg_max or bcm_cell_vmax heard (spec 5.2)"
+                          % (prev, amps))
             cnt["unjudged"] += 1
             return
-        down_ok = ib > perm - HOLD_EDGE_A
-        down_must = ib > perm + HOLD_EDGE_A
-        up_ok = ib < perm - HOLD_BAND_A + HOLD_EDGE_A
-        up_must = ib < perm - HOLD_BAND_A - HOLD_EDGE_A
+        # rev 6 (spec 5.2 at 47c31278): down while ibat > chg_max OR the
+        # leader is at / above 3600 mV; up only while ibat is more than
+        # 0.25 A below chg_max AND the leader is below 3595 mV
+        p_down_ok = ib > perm - HOLD_EDGE_A
+        p_down_must = ib > perm + HOLD_EDGE_A
+        p_up_ok = ib < perm - HOLD_BAND_A + HOLD_EDGE_A
+        p_up_must = ib < perm - HOLD_BAND_A - HOLD_EDGE_A
+        # exact whole-mV readings: "at or above 3600", "below 3595"
+        v_down_ok = v_down_must = vm >= HOLD_VMAX_DOWN_V - HOLD_EDGE_V
+        v_up_ok = v_up_must = vm < HOLD_VMAX_UP_V - HOLD_EDGE_V
+        down_ok = p_down_ok or v_down_ok
+        down_must = p_down_must or v_down_must
+        up_ok = p_up_ok and v_up_ok and not down_must
+        up_must = p_up_must and v_up_must and not down_ok
+        # the cell limits decided this frame: down on the leader alone, or
+        # an up the pack current asked for that the leader blocked
+        cell_down = v_down_must and not p_down_ok
+        cell_held = p_up_must and not v_up_ok and not down_ok
         since = (None if self.hold_step_t is None
                  else t_ms - self.hold_step_t)
-        what = ("ibat %.3f A, chg_max %.2f A, setpoint %.2f -> %.2f A"
-                % (ib, perm, prev, amps))
+        what = ("ibat %.3f A, chg_max %.2f A, vmax %.3f V, setpoint %.2f -> "
+                "%.2f A" % (ib, perm, vm, prev, amps))
         first = not self.hold_stepped
         if step == 2:
             cnt["clamped"] += 1
@@ -682,11 +782,15 @@ class Checker(object):
                           "0.3 s (spec 5.2; %s)" % (since, what))
             elif step < 0 and not down_ok:
                 self.fail("hold: stepped DOWN with ibat not above chg_max "
-                          "(spec 5.2; %s)" % what)
+                          "and the leader below 3600 mV (spec 5.2; %s)"
+                          % what)
             elif step > 0 and not up_ok:
                 self.fail("hold: stepped UP with ibat not more than 0.25 A "
-                          "below chg_max (spec 5.2; %s)" % what)
+                          "below chg_max, or the leader not below 3595 mV "
+                          "(spec 5.2; %s)" % what)
             cnt["up" if step > 0 else "down"] += 1
+            if step < 0 and cell_down:
+                cnt["cell_down"] += 1
             self.hold_step_t = t_ms
             self.hold_stepped = True
             return
@@ -697,19 +801,29 @@ class Checker(object):
         if not due and first and (down_must or up_must):
             cnt["release_gate"] += 1
             return
+        # a clamp may or may not count as a step for the gate (with the
+        # user): a hold within 0.3 s after one is accepted either way
+        if (due and (down_must or up_must) and self.hold_clamp_t is not None
+                and t_ms - self.hold_clamp_t < HOLD_GAP_MS):
+            cnt["clamp_gate"] += 1
+            return
         if due and down_must:
             if at_floor:
                 cnt["clamped"] += 1
                 return
-            self.fail("hold: held while ibat was above chg_max and a step "
-                      "was allowed (spec 5.2; %s)" % what)
+            self.fail("hold: held while ibat was above chg_max or the "
+                      "leader at / above 3600 mV, and a step was allowed "
+                      "(spec 5.2; %s)" % what)
         elif due and up_must:
             if cap is not None and amps + HOLD_STEP_A > cap + tol:
                 cnt["clamped"] += 1
                 return
             self.fail("hold: held while ibat was more than 0.25 A below "
-                      "chg_max and a step was allowed (spec 5.2; %s)" % what)
+                      "chg_max with the leader below 3595 mV, and a step "
+                      "was allowed (spec 5.2; %s)" % what)
         cnt["hold"] += 1
+        if due and cell_held:
+            cnt["cell_held"] += 1
 
     def _check_gaps(self):
         """Spec 4.1: each gap between a repeat's frames is 50 +/- 10 ms.
@@ -1048,7 +1162,7 @@ def test_invariants_hold_over_every_trace():
        % (len(names), TRACES))
     total = p01 = mirrors = full = cut = sep = 0
     hold = dict.fromkeys(("up", "down", "hold", "clamped", "unjudged",
-                          "release_gate"), 0)
+                          "release_gate", "cap_clamp", "clamp_gate"), 0)
     for name in names:
         c = replay_trace(os.path.join(TRACES, name))
         for k in hold:
@@ -1083,10 +1197,17 @@ def test_invariants_hold_over_every_trace():
     # band, or it passes by never running.
     print("  --  traces: hold page-01 frames up %(up)d, down %(down)d, held "
           "%(hold)d, clamped %(clamped)d, unjudged %(unjudged)d, held by "
-          "the release's 0.3 s %(release_gate)d" % hold)
+          "the release's 0.3 s %(release_gate)d; clamps to the cap from "
+          "above it %(cap_clamp)d, holds inside 0.3 s after one "
+          "%(clamp_gate)d" % hold)
     ok(hold["up"] >= 5 and hold["down"] >= 5 and hold["hold"] >= 5,
        "rule 6 judged hold steps up (%d), down (%d) and held frames (%d)"
        % (hold["up"], hold["down"], hold["hold"]))
+    # e5d62c90: the clamp is judged only where the cap falls below the hold
+    # setpoint, which before syn_hold_cap_clamp (2026-10-11) no trace did
+    ok(hold["cap_clamp"] >= 2,
+       "rule 6 judged %d clamps to the EVSE cap from above it (spec 5.2, "
+       "e5d62c90)" % hold["cap_clamp"])
     ok(hold["release_gate"] >= 1,
        "rule 6 judged %d frames inside a release's 0.3 s where the law "
        "pointed (spec 5.2: the release counts as a step)"
@@ -1329,6 +1450,12 @@ def _mutations():
         elif ib < perm - HOLD_BAND_A - HOLD_EDGE_A:
             want = pi + step
         else:
+            return out, 0
+        # inside the bounds, so only the missing gate is wrong (E6's hold
+        # can sit at the cap, where an up step would be caught as "above
+        # the cap" instead)
+        caps = c.bus.caps()
+        if caps and want > counts(caps[0]):
             return out, 0
         pred = in_hold_p01(c, kind, arb_id)
         return _rewrite(out, lambda it: pred(it)
@@ -1677,6 +1804,318 @@ def test_learned_cc_can_fail():
         ok(hits[0] > 0 and any("commanded" in q for q in probs),
            "a core capping by the %s CC command is rejected (%d frames "
            "rewritten; %s)" % (label, hits[0], probs[:1]))
+
+
+# --- rev 6: spec 4's floor and spec 5.2's cell limits (47c31278) ------------
+#
+# Directed sequences, because nothing else reaches either rule. Both are
+# built on test_trips' Bench and run by a Checker exactly as the traces are.
+# Neither can release a core that keeps E5's chg_max <= 3.0 A release (its
+# permissions stay above 3.0 A, the leader at 3.400 V), so the can-fail
+# tests below keep their population whichever core is in.
+
+def _bench_steps(b):
+    steps = []
+    for line in b.trace:
+        k = line[:1]
+        if k == "T":
+            steps.append(("T", int(line[1:].strip()), None, None, None))
+        else:
+            parts = line[1:].split()
+            steps.append((k, int(parts[0]), int(parts[1], 16),
+                          parts[2] != "0", bytes.fromhex(parts[3])))
+    return dict(b.cfg_overrides), steps
+
+
+# (label, seconds, SoC, chg_max, maxAvailableChargingCurrent, the command
+# spec 4 gives). The VCU sends page 01 every 300 ms.
+FLOOR_SEGMENTS = (
+    ("SoC 97.5, permission 4.0", 3, 97.5, 4.0, 16.0, 4.0),
+    ("SoC 98.0, permission 4.0", 3, 98.0, 4.0, 16.0, FLOOR_A),
+    ("SoC 99.5, permission 5.5", 3, 99.5, 5.5, 16.0, FLOOR_A),
+    ("SoC 99.0, permission 8.0", 3, 99.0, 8.0, 16.0, 8.0),
+    ("SoC 99.5, permission 4.0, cap 5.0", 3, 99.5, 4.0, 5.0, 5.0),
+    ("SoC 100, permission 0 (short: no release on chg_max)", 0.6, 100.0,
+     0.0, 16.0, FLOOR_A),
+    ("SoC 97.5, permission 5.0", 3, 97.5, 5.0, 16.0, 5.0),
+)
+
+
+def floor_steps():
+    """An override walked through FLOOR_SEGMENTS, each followed by 1 s at a
+    300 A permission (which also resets any chg_max release debounce)."""
+    import test_trips as T
+    b = T.Bench()
+    b.arm(vmax=3.400, chg_max=300.0, soc=95.0)
+    b.low_power()
+    # 19.8 A, the VCU's CC command: never what the core commands in an
+    # override or a hold (cap 16 A), so every rewritten frame is modified
+    # and mirrored (spec 8.1), whatever the setpoint does
+    vcu = P.enc_setpoint(P.VLIM_DEFAULT_COUNTS, int(round(19.8 / P.UNIT)))
+    for _label, secs, soc, perm, cap, _want in FLOOR_SEGMENTS:
+        for seg, n in (((soc, perm, cap), int(secs * 10)),
+                       ((95.0, 300.0, 16.0), 10)):
+            for i in range(n):
+                b.t += 100
+                b.charger_status(12)
+                if i == 0:
+                    b.charge_info(seg[2])
+                b.bms(vmax=3.400, chg_max=seg[1], soc=seg[0])
+                if i % 3 == 0:
+                    b.veh(M.CMD_ID, vcu)
+                b.tick()
+    return _bench_steps(b)
+
+
+# (label, seconds, vmax, ibat, chg_max, what spec 5.2 does each due frame,
+# maxAvailableChargingCurrent). The VCU sends page 01 every 400 ms, so every
+# frame may step. chg_max stays above 3 A and the release is behind us. The
+# cap is the real charger's 6.00 A in Low Power (lowpower_maxavail.txt),
+# with one drop to 2.0 A below the setpoint and back (spec 5.2, e5d62c90).
+HOLD_CELL_PHASES = (
+    ("leader 3.600 V, ibat 0 under chg_max 5", 4, 3.600, 0.0, 5.0, "down"),
+    ("leader 3.597 V, ibat 0 under chg_max 5", 4, 3.597, 0.0, 5.0, "hold"),
+    ("leader 3.590 V, ibat 0 under chg_max 5", 3, 3.590, 0.0, 5.0, "up"),
+    ("leader 3.590 V, ibat 8 over chg_max 5", 3, 3.590, 8.0, 5.0, "down"),
+    ("leader 3.605 V, ibat 0 under chg_max 5", 2, 3.605, 0.0, 5.0, "down"),
+    ("leader 3.595 V, ibat 0 under chg_max 5", 3, 3.595, 0.0, 5.0, "hold"),
+    ("leader 3.594 V, ibat 0 under chg_max 5", 3, 3.594, 0.0, 5.0, "up"),
+    ("cap 2.0 A below the setpoint", 2, 3.590, 0.0, 5.0, "clamp", 2.0),
+    ("cap back to 6.0 A", 3, 3.590, 0.0, 5.0, "up", 6.0),
+)
+
+
+def hold_cell_steps():
+    """An override at SoC 99 with a 4.0 A permission -- the 6.10 A floor
+    under spec 4 -- released into HOLD, where the charger's
+    maxAvailableChargingCurrent drops to 6.0 A as it does in Low Power, so
+    the hold enters above the cap; then HOLD_CELL_PHASES."""
+    import test_trips as T
+    b = T.Bench()
+    b.arm(vmax=3.400, chg_max=300.0, soc=95.0)
+    b.low_power()
+    # 19.8 A, the VCU's CC command: never what the core commands in an
+    # override or a hold (cap 16 A), so every rewritten frame is modified
+    # and mirrored (spec 8.1), whatever the setpoint does
+    vcu = P.enc_setpoint(P.VLIM_DEFAULT_COUNTS, int(round(19.8 / P.UNIT)))
+    for i in range(10):                  # the floor: 6.10 A (E5: 4.0 A)
+        b.t += 100
+        b.charger_status(12)
+        b.bms(vmax=3.400, chg_max=4.0, soc=99.0)
+        if i % 3 == 0:
+            b.veh(M.CMD_ID, vcu)
+        b.tick()
+    # the release, with the VCU's page 01 passing so the charger has the
+    # override's 2.0 A when the hold starts from it (spec 5.2); 3.590 V and
+    # 2.0 A release either rule (test_trips.RELEASE_VMAX_V)
+    # chg_max stays 4.0 A (above E5's 3.0 A release): the leader releases
+    # E6; E5 needs chg_max <= 3.0, so it gets 2.0 for the release only
+    for i in range(60):
+        if b.state() == "HOLD":
+            break
+        b.t += 100
+        b.charger_status(12)
+        b.bms(vmax=T.RELEASE_VMAX_V, chg_max=2.0, soc=99.0)
+        if i % 3 == 0:
+            b.veh(M.CMD_ID, vcu)
+        b.tick()
+    # the charger's Low Power figure, at once, then the VCU's next page 01:
+    # the first hold frame comes from the 6.10 A floor with the cap at 6.0
+    b.charge_info(6.0)
+    b.veh(M.CMD_ID, vcu)
+    T._drain(b, lambda bb: (bb.charger_status(12),
+                            bb.bms(vmax=T.RELEASE_VMAX_V, chg_max=5.0,
+                                   soc=99.0, ibat=5.5)), 25)
+    for ph in HOLD_CELL_PHASES:
+        _label, secs, vmax, ibat, perm, _what = ph[:6]
+        if len(ph) > 6:
+            b.charge_info(ph[6])
+        for i in range(int(secs * 10)):
+            b.t += 100
+            b.charger_status(12)
+            b.bms(vmax=vmax, chg_max=perm, soc=99.0, ibat=ibat)
+            if i % 4 == 0:
+                b.veh(M.CMD_ID, vcu)
+            b.tick()
+    return _bench_steps(b)
+
+
+def _directed(steps_fn, mutate=None, label="directed"):
+    overrides, steps = steps_fn()
+    cfg = M.Config()
+    for k, v in overrides.items():
+        setattr(cfg, k, v)
+    c = Checker(label, cfg, mutate=mutate)
+    for st in steps:
+        c.step(*st)
+    return c
+
+
+def _rewrite_p01(c, kind, arb_id, out, state, amps_fn):
+    """Rewrite the core's page 01 toward the charger, in `state`, to
+    amps_fn(c) (None = leave it). -> (out, hits)"""
+    if kind != "V" or arb_id != M.CMD_ID or c.core.state != state:
+        return out, 0
+    new, hits, swap = [], 0, {}
+    for side, fid, ext, payload in out:
+        if side == M.TO_CHARGER and fid == M.CMD_ID and payload[0] == 0x01:
+            amps = amps_fn(c)
+            if amps is not None:
+                v, i = P.setpoint_counts(payload)
+                want = int(round(amps / P.UNIT))
+                if want != i:
+                    hits += 1
+                    # P.enc_setpoint rebuilds only the current; keep the
+                    # VCU's other bytes as the core sent them
+                    b = bytearray(payload)
+                    b[3] = want & 0xFF
+                    b[4] = want >> 8
+                    swap[bytes(payload)] = bytes(b)
+                    payload = bytes(b)
+        new.append((side, fid, ext, payload))
+    # spec 8.1: the mirror carries exactly what the charger was sent
+    new = [(s_, f_, e_, swap.get(bytes(d_), d_)) if f_ == MIRROR_CMD
+           else (s_, f_, e_, d_) for s_, f_, e_, d_ in new]
+    return new, hits
+
+
+def _floor_cmd(floor_a=FLOOR_A, soc_gate=FLOOR_SOC, capped=True):
+    """The spec 4 command, with knobs for the wrong versions."""
+    def f(c):
+        perm, caps = c.bus.perm_a, c.bus.caps()
+        if perm is None or not caps:
+            return None
+        soc = c.bus.soc_pct
+        floor = floor_a if soc is not None and soc >= soc_gate else 0.0
+        lim = max(perm, floor)
+        return min(lim, caps[0]) if capped else lim
+    return f
+
+
+def _floor_mutations():
+    """name -> (amps_fn, failure text). The first is the REFERENCE."""
+    return {
+        "reference": (_floor_cmd(), None),
+        "no floor (E5's command)": (_floor_cmd(floor_a=0.0), "commanded"),
+        "the floor from SoC 97 %": (_floor_cmd(soc_gate=97.0), "commanded"),
+        "the floor not capped by the EVSE": (_floor_cmd(capped=False),
+                                             "above the EVSE cap"),
+        # 6.15 A (spec 6d6b851a) is ONE page-01 count from 6.10, inside
+        # rule 5's one-count tolerance (tracker F item 6), so rule 5 cannot
+        # tell those two apart; two counts low it must.
+        "a floor of 6.00 A": (_floor_cmd(floor_a=6.00), "commanded"),
+    }
+
+
+def test_floor_rule():
+    """Rule 5 rev 6 over floor_steps, on the core under test."""
+    c = _directed(floor_steps, label="floor")
+    for p in c.finish():
+        FAILS.append(p)
+
+
+def test_floor_rule_can_fail():
+    for name, (fn, text) in sorted(_floor_mutations().items()):
+        hits = [0]
+
+        def mut(c, kind, arb_id, data, out, fn=fn):
+            new, h = _rewrite_p01(c, kind, arb_id, out, M.S_OVERRIDE, fn)
+            hits[0] += h
+            return new
+        c = _directed(floor_steps, mutate=mut, label="floor/" + name)
+        probs = c.finish()
+        if text is None:
+            ok(not probs, "rule 5 rev 6 passes the reference command over "
+               "floor_steps: %s" % probs[:2])
+            print("  --  floor_steps: %d override page-01 frames judged, %d "
+                  "with the floor above the permission, %d with a low "
+                  "permission under SoC 98" % (c.n_page01_checked,
+                                               c.n_floor_binding,
+                                               c.n_floor_below_soc))
+            ok(c.n_floor_binding >= 30 and c.n_floor_below_soc >= 15,
+               "floor_steps judged %d frames where the floor binds and %d "
+               "where it must not" % (c.n_floor_binding,
+                                      c.n_floor_below_soc))
+            continue
+        ok(any(text in q for q in probs),
+           "rule 5 rev 6 rejects '%s' (%d frames changed): %s"
+           % (name, hits[0], probs[:1]))
+
+
+def _hold_law(cell=True, up_below=HOLD_VMAX_UP_V, down_at=HOLD_VMAX_DOWN_V,
+              clamp=True):
+    """The spec 5.2 hold setpoint for this frame, from the Oracle and the
+    Checker's own step clock, with knobs for the wrong versions."""
+    def f(c):
+        prev = c.last_sp_a
+        ib, perm, vm = c.bus.ibat_a, c.bus.perm_a, c.bus.vmax_v
+        if prev is None or ib is None or perm is None or vm is None:
+            return None
+        caps0 = c.bus.caps()
+        if clamp and caps0 and prev > caps0[0] + 1e-6:
+            return caps0[0]              # e5d62c90: to the cap at once
+        if c.hold_step_t is not None and c._t - c.hold_step_t < HOLD_GAP_MS:
+            return prev
+        down = ib > perm or (cell and vm >= down_at)
+        up = ib < perm - HOLD_BAND_A and (not cell or vm < up_below)
+        caps = c.bus.caps()
+        cap = caps[0] if caps else 1e9
+        if down:
+            return max(0.0, round(prev - HOLD_STEP_A, 2))
+        if up:
+            return min(cap, round(prev + HOLD_STEP_A, 2))
+        return prev
+    return f
+
+
+def _hold_cell_mutations():
+    return {
+        "reference": (_hold_law(), None),
+        "no cell limits (E5's hold)": (_hold_law(cell=False), "hold: "),
+        "steps up until 3600 mV": (_hold_law(up_below=3.600),
+                                   "or the leader not below 3595 mV"),
+        "steps down only from 3605 mV": (_hold_law(down_at=3.605),
+                                         "held while"),
+        "walks down to the cap in 0.1 A steps (no clamp)":
+            (_hold_law(clamp=False), "moves to the cap at once"),
+    }
+
+
+def test_hold_cell_limits():
+    """Rule 6 rev 6 over hold_cell_steps, on the core under test."""
+    c = _directed(hold_cell_steps, label="hold_cell")
+    for p in c.finish():
+        FAILS.append(p)
+
+
+def test_hold_cell_limits_can_fail():
+    for name, (fn, text) in sorted(_hold_cell_mutations().items()):
+        hits = [0]
+
+        def mut(c, kind, arb_id, data, out, fn=fn):
+            new, h = _rewrite_p01(c, kind, arb_id, out, S_HOLD, fn)
+            hits[0] += h
+            return new
+        c = _directed(hold_cell_steps, mutate=mut, label="hold_cell/" + name)
+        probs = c.finish()
+        hc = c.hold_counts
+        if text is None:
+            ok(not probs, "rule 6 rev 6 passes the reference hold over "
+               "hold_cell_steps: %s" % probs[:2])
+            print("  --  hold_cell_steps: up %(up)d, down %(down)d, held "
+                  "%(hold)d, of which the leader decided down %(cell_down)d "
+                  "and held %(cell_held)d; clamps to the cap %(cap_clamp)d, "
+                  "holds inside 0.3 s after one %(clamp_gate)d" % hc)
+            ok(hc["cell_down"] >= 5 and hc["cell_held"] >= 5
+               and hc["up"] >= 5 and hc["cap_clamp"] >= 2,
+               "hold_cell_steps judged %d down and %d held frames that the "
+               "cell limits decided, %d up, and %d clamps to the cap"
+               % (hc["cell_down"], hc["cell_held"], hc["up"],
+                  hc["cap_clamp"]))
+            continue
+        ok(any(text in q for q in probs),
+           "rule 6 rev 6 rejects '%s' (%d frames changed): %s"
+           % (name, hits[0], probs[:1]))
 
 
 def main():

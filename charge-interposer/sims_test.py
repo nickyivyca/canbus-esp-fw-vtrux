@@ -336,56 +336,204 @@ def _f(x):
 
 def aux_problems(sched=None):
     """vehicle_sim.AuxSchedule (2026-10-09, spec 9's injected load steps):
-    the draw is the base until chg_max first reaches 0 A, each step applies
+    the 12 V load (W, since P3a 2026-10-10) is the base until chg_max
+    first reaches 0 A, each step applies
     at its delay after THAT moment (not after the start, not after any
     later 0 A), once, in delay order, and each is logged. `sched` replaces
     the class, for the can-fail."""
     import vehicle_sim as VS
     cls = sched or VS.AuxSchedule
     probs = []
-    s = cls(2.9, [(120.0, 1.0), (60.0, 2.2)])
+    s = cls(266.0, [(120.0, 60.0), (60.0, 136.0)])
     a, lines = s.update(0.0, 300.0)
-    if a != 2.9 or lines:
-        probs.append("before chg_max 0: %.2f A, %r" % (a, lines))
+    if a != 266.0 or lines:
+        probs.append("before chg_max 0: %.1f W, %r" % (a, lines))
     a, _l = s.update(500.0, 50.0)
-    if a != 2.9:
-        probs.append("a step applied before chg_max reached 0 A (%.2f)" % a)
+    if a != 266.0:
+        probs.append("a step applied before chg_max reached 0 A (%.1f)" % a)
     a, lines = s.update(1000.0, 0.0)
-    if a != 2.9 or not any("reached 0 A at t=1000.0" in x for x in lines):
-        probs.append("at chg_max 0: %.2f A, %r" % (a, lines))
+    if a != 266.0 or not any("reached 0 A at t=1000.0" in x for x in lines):
+        probs.append("at chg_max 0: %.1f W, %r" % (a, lines))
     a, _l = s.update(1059.9, 0.0)
-    if a != 2.9:
-        probs.append("the 60 s step applied early (%.2f at +59.9 s)" % a)
+    if a != 266.0:
+        probs.append("the 60 s step applied early (%.1f at +59.9 s)" % a)
     a, lines = s.update(1060.0, 0.25)       # chg_max moving off 0 is ignored
-    if a != 2.2 or not any("2.90 -> 2.20" in x for x in lines):
-        probs.append("the 60 s step not applied at +60 s: %.2f %r"
+    if a != 136.0 or not any("266.0 -> 136.0 W" in x for x in lines):
+        probs.append("the 60 s step not applied at +60 s: %.1f %r"
                      % (a, lines))
     a, _l = s.update(1100.0, 0.0)           # a later 0 A is not a new anchor
-    if a != 2.2:
-        probs.append("a second chg_max 0 moved the schedule (%.2f)" % a)
+    if a != 136.0:
+        probs.append("a second chg_max 0 moved the schedule (%.1f)" % a)
     a, lines = s.update(1120.0, 0.0)
-    if a != 1.0 or not any("2.20 -> 1.00" in x for x in lines):
-        probs.append("the 120 s step not applied at +120 s: %.2f %r"
+    if a != 60.0 or not any("136.0 -> 60.0 W" in x for x in lines):
+        probs.append("the 120 s step not applied at +120 s: %.1f %r"
                      % (a, lines))
     a, lines = s.update(5000.0, 0.0)
-    if a != 1.0 or lines:
-        probs.append("a step applied twice, or something logged late: %.2f "
+    if a != 60.0 or lines:
+        probs.append("a step applied twice, or something logged late: %.1f "
                      "%r" % (a, lines))
     try:
         VS.parse_aux_step("10:-1")
-        probs.append("parse_aux_step accepted a negative draw")
+        probs.append("parse_aux_step accepted a negative load")
     except ValueError:
         pass
-    if VS.parse_aux_step("90:1.5") != (90.0, 1.5):
-        probs.append("parse_aux_step('90:1.5') != (90.0, 1.5)")
+    if VS.parse_aux_step("90:136") != (90.0, 136.0):
+        probs.append("parse_aux_step('90:136') != (90.0, 136.0)")
+    # the HV-side draw the load causes (spec 9, P3a): 0.559 + 1.512 P12/V
+    d = VS.hv_draw_a(266.0, 416.8)
+    if abs(d - (0.559 + 1.512 * 266.0 / 416.8)) > 1e-9:
+        probs.append("hv_draw_a(266 W, 416.8 V) = %.4f A" % d)
+    if not VS.hv_draw_a(136.0, 416.8) < d:
+        probs.append("a lower 12 V load does not lower the HV draw")
+    if AuxCheckLine.search(lines_of(cls)) is None:
+        probs.append("the step line does not match run_scenario.AUX_STEP")
+    return probs
+
+
+def lines_of(cls):
+    s = cls(266.0, [(10.0, 136.0)])
+    s.update(0.0, 0.0)
+    _a, lines = s.update(10.0, 0.0)
+    return "\n".join(lines)
+
+
+import run_scenario as _RS                                  # noqa: E402
+AuxCheckLine = _RS.AUX_STEP
+
+
+def bms_problems(rule=None, bms_cls=None):
+    """bcm_chg_max follows the BMS's SoC (P3, user via the reviewer,
+    2026-10-10), checked against the landmarks of the four genuine tops of
+    charge, not against pack.py's own constants: about 30 A per % (the
+    captures' 27-30), a step to 10-11 A at SoC 98.2-98.4 %, 3.0 A reached at
+    99.46-99.64 %, 0 A at 99.95-100.00 %. And the BMS sim broadcasts that
+    rule of its pack's reported SoC, whatever the leader cell is doing."""
+    import pack as PK
+    rule = rule or PK.bms_chg_max_soc
+    bms_cls = bms_cls or VS.BMS
+    probs = []
+    socs = [s / 100.0 for s in range(9000, 10001)]      # 90.00 .. 100.00
+    vals = [rule(s) for s in socs]
+    slope = (rule(92.0) - rule(97.0)) / 5.0
+    if not 27.0 <= slope <= 33.0:
+        probs.append("ramp %.1f A/%% between SoC 92 and 97, not 27-33" % slope)
+    drops = [(vals[i] - vals[i + 1], i) for i in range(len(vals) - 1)]
+    big, i = max(drops)
+    if big < 20.0:
+        probs.append("no step: the largest drop per 0.01 %% SoC is %.1f A"
+                     % big)
+    elif not (98.15 <= socs[i + 1] <= 98.4 and 10.0 <= vals[i + 1] <= 11.0):
+        probs.append("the step lands at %.2f A at SoC %.2f, not 10-11 A at "
+                     "98.2-98.4" % (vals[i + 1], socs[i + 1]))
+    at3 = next((s for s, v in zip(socs, vals) if v <= 3.0), None)
+    if at3 is None or not 99.46 <= at3 <= 99.64:
+        probs.append("3.0 A first reached at SoC %s, not 99.46-99.64" % at3)
+    at0 = next((s for s, v in zip(socs, vals) if v <= 0.0), None)
+    if at0 is None or not 99.95 <= at0 <= 100.0:
+        probs.append("0 A first reached at SoC %s, not 99.95-100.00" % at0)
+    if rule(100.0) != 0.0:
+        probs.append("not 0 A at SoC 100 (%.2f)" % rule(100.0))
+    # the BMS sim: the same rule of the pack's SoC, the leader irrelevant.
+    # The imbalanced packs put the leader well up the knee at SoC 99.5.
+    for soc in (95.0, 99.0, 99.5):
+        pk = PK.Pack(soc_pct=soc, imbalance_pct=1.0, outlier_cell=7,
+                     outlier_pct=2.5)
+        got = bms_cls(pk).chg_max
+        want = rule(pk.soc_pct)
+        if abs(got - want) > 1e-9:
+            probs.append("BMS sim at SoC %.2f (leader %.3f V) broadcasts "
+                         "%.2f A, the rule says %.2f" % (pk.soc_pct, pk.vmax,
+                                                         got, want))
+    return probs
+
+
+def high_cell_problems(fmt=None, outlier_pct=-5.0):
+    """Spec 9's high-cell scenarios (2026-10-10): a negative --outlier-pct
+    makes that cell the pack's leader, and vehicle_sim's bus-SoC-100 line is
+    the one run_scenario.SOC100 reads. The line is logged when bcm_soc on the
+    bus first reads 100, which is from a pack mean of 99.75 % (0.5 % LSB)."""
+    import pack as PK
+    probs = []
+    pk = PK.Pack(soc_pct=95.0, imbalance_pct=0.4, outlier_cell=7,
+                 outlier_pct=outlier_pct)
+    v = pk.cell_voltages()
+    if max(range(len(v)), key=lambda i: v[i]) != 7:
+        probs.append("--outlier-pct %.1f: cell 7 is not the leader (%.3f V "
+                     "vs vmax %.3f V)" % (outlier_pct, v[7], max(v)))
+    line = (fmt or VS.SOC100_FMT) % 1234.5
+    m = _RS.SOC100.search(line)
+    if m is None or float(m.group(1)) != 1234.5:
+        probs.append("vehicle_sim's SoC-100 line %r is not what "
+                     "run_scenario.SOC100 reads" % line)
+    for soc, want in ((99.74, False), (99.76, True)):
+        got = P.decode(P.EPRI, 0x410, P.encode(P.EPRI, 0x410, {
+            "bcm_soc": soc}))["bcm_soc"] >= 100.0
+        if got != want:
+            probs.append("bcm_soc %.2f reads %s100 on the bus"
+                         % (soc, "" if got else "below "))
+    return probs
+
+
+def help_problems():
+    """Each sim's argument parser builds: `--help` exits 0. A broken help
+    string (argparse formats it lazily) otherwise only shows when a
+    scenario starts the sim, as a crash in its log (2026-10-10)."""
+    import subprocess
+    probs = []
+    for sim in ("vehicle_sim.py", "charger_sim.py", "interposer_sim.py"):
+        r = subprocess.run([sys.executable, os.path.join(HERE, sim),
+                            "--help"], capture_output=True, text=True)
+        if r.returncode != 0:
+            probs.append("%s --help exited %d: %s"
+                         % (sim, r.returncode, r.stderr.strip()[-200:]))
     return probs
 
 
 def main():
+    hp = help_problems()
+    for p in hp:
+        check(False, p)
+    check(not hp, "every sim's --help exits 0 (its argument parser builds)")
+
+    for p in bms_problems():
+        check(False, "vehicle_sim BMS: " + p)
+    check(not bms_problems(), "vehicle_sim's bcm_chg_max follows the BMS's "
+          "SoC: ~30 A/%, a step to 10-11 A at 98.2-98.4 %, 3.0 A at "
+          "99.46-99.64 %, 0 A at 99.95-100 % (the four tops of charge)")
+    import pack as _PK
+
+    class LeaderBMS(VS.BMS):
+        @property
+        def chg_max(self):
+            return _PK.bms_chg_max(self.pack.vmax)
+    check(bool(bms_problems(bms_cls=LeaderBMS)),
+          "can fail: the leader-voltage chg_max of before 2026-10-10 is "
+          "caught")
+    check(bool(bms_problems(rule=lambda s: max(0.0, min(300.0, 6.0 * (100.0 - s)))
+                            )),
+          "can fail: a rule with no ramp and no step (6 x (100 - SoC) "
+          "throughout) is caught")
+    check(bool(bms_problems(rule=lambda s: (
+        0.0 if s >= 99.5 else _PK.bms_chg_max_soc(s)))),
+          "can fail: a rule that reaches 0 A at SoC 99.5 is caught")
+    check(bool(bms_problems(rule=lambda s: (
+        _PK.bms_chg_max_soc(s) if s < 98.2 else 8.0 * (100.0 - s)))),
+          "can fail: a tail of 8 x (100 - SoC) (3.0 A at 99.63, but the step "
+          "lands at 14 A) is caught")
+    for p in high_cell_problems():
+        check(False, "vehicle_sim: " + p)
+    check(not high_cell_problems(), "vehicle_sim: a negative --outlier-pct "
+          "is the pack's leader, and its bus-SoC-100 line is the form "
+          "run_scenario reads")
+    check(bool(high_cell_problems(outlier_pct=5.0)),
+          "can fail: a positive (low) outlier is not taken for the leader")
+    check(bool(high_cell_problems(fmt="BMS: SoC 100 at t=%.1fs")),
+          "can fail: a reworded SoC-100 line is caught")
     for p in aux_problems():
         check(False, "vehicle_sim: " + p)
-    check(not aux_problems(), "vehicle_sim --aux-step: steps timed from the "
-          "first chg_max 0 A, each once, in order, logged")
+    check(not aux_problems(), "vehicle_sim --aux-step: 12 V load steps "
+          "timed from the first chg_max 0 A, each once, in order, logged in "
+          "the form run_scenario reads; hv_draw_a is the P3a line")
 
     import vehicle_sim as _VS
 

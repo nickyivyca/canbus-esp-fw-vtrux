@@ -45,7 +45,7 @@ def check(cond, name):
         failures += 1
 
 
-def _diag(fw7f4=6, sch7f4=4, fw7f7=(6, 6, 6), sch7f7=4, state=0,
+def _diag(fw7f4=7, sch7f4=4, fw7f7=(7, 7, 7), sch7f7=4, state=0,
           flags=None, b5=None):
     """A minimal decoded diag stream in parse_diag_frames()'s shape.
     B4 bit 5 and B5 follow schema 4 for `state` unless given: bit 5 set and
@@ -70,7 +70,7 @@ def _diag(fw7f4=6, sch7f4=4, fw7f7=(6, 6, 6), sch7f7=4, state=0,
 
 
 C0 = 100000                      # chg_max reaches 0 A here (ms)
-DROP_LINE = ("aux load step: 2.90 -> 2.20 A at t=900.0s (+200.0s after "
+DROP_LINE = ("12 V load step: 266.0 -> 136.0 W at t=900.0s (+200.0s after "
              "chg_max reached 0 A)")
 
 
@@ -156,7 +156,7 @@ def hold_follows_loads_cases():
     check(not ok and why.startswith("1:"),
           "above chg_max 1 s after a RISE in chg_max fails (a rise is not "
           "a fall) -> %s" % why)
-    up_line = DROP_LINE.replace("2.90 -> 2.20", "2.20 -> 2.90")
+    up_line = DROP_LINE.replace("266.0 -> 136.0", "136.0 -> 266.0")
     ok, why = run(_hs(ibat=base_ib + [(C0 + 201000, 0.5)]), up_line)
     check(not ok and "1:" in why,
           "...and a load step UP is not a drop: no exception -> %s" % why)
@@ -216,6 +216,56 @@ def hold_follows_loads_cases():
           "a missing trace gives None, not an empty pass")
 
 
+def p3a_cases():
+    """Spec 9, P3a (user, 2026-10-10): each of the three checks run against
+    a wrong simulation must fail on its own number, and the sims as built
+    must pass. The wrong ones replace charger_sim / vehicle_sim's three
+    functions only."""
+    from types import SimpleNamespace as NS
+    import charger_sim as CS
+    import vehicle_sim as VS
+    ok, why = R._p3a_check()
+    check(ok and "8 holds inside" in why and "delivers 0" in why,
+          "P3a passes the sims as built -> %s" % why[:160])
+    names = [s.name for s in R.SCENARIOS
+             if "p3a" in [k for k, _v in s.expect]]
+    check(names == ["evap-override-imbalanced-hold"]
+          and "hold_follows_loads" in [k for k, _v in
+                                       R.BY_NAME[names[0]].expect],
+          "exactly the P3 scenario asks for P3a and the hold checks (%s)"
+          % names)
+
+    def run(cs=CS, vs=VS):
+        return R._p3a_check(cs, vs)
+    today_cs = NS(mode3_report_a=CS.mode3_report_a,
+                  delivered_a=lambda r: r)
+    today_vs = NS(hv_draw_a=lambda p12, v: 2.4, P12_PARTS_W=VS.P12_PARTS_W)
+    ok, why = run(today_cs, today_vs)
+    check(not ok and "1:" in why and "3:" in why,
+          "today's model (delivered = reported, a flat 2.4 A draw) fails "
+          "checks 1 and 3 -> %s" % why[:200])
+    ok, why = run(NS(mode3_report_a=lambda sp: CS.delivered_a(
+        CS.mode3_report_a(sp)), delivered_a=CS.delivered_a))
+    check(not ok and "2:" in why,
+          "a charger that reports what it delivers fails check 2 -> %s"
+          % why[:160])
+    ok, why = run(vs=NS(hv_draw_a=lambda p12, v: VS.hv_draw_a(p12, v) + 0.2,
+                        P12_PARTS_W=VS.P12_PARTS_W))
+    check(not ok and "1:" in why and "2:" not in why,
+          "a fixed HV draw 0.2 A too high fails check 1 alone -> %s"
+          % why[:160])
+    ok, why = run(NS(mode3_report_a=CS.mode3_report_a,
+                     delivered_a=lambda r: max(CS.delivered_a(r), 0.3)))
+    check(not ok and "3: at a 0 A setpoint in mode 3 the charger delivers"
+          in why, "a charger delivering 0.3 A at a 0 A setpoint fails check "
+          "3 -> %s" % why[:200])
+    ok, why = run(vs=NS(hv_draw_a=lambda p12, v: 0.0,
+                        P12_PARTS_W=VS.P12_PARTS_W))
+    check(not ok and "must drain" in why,
+          "a truck with no HV draw (the pack would not drain) fails check 3 "
+          "-> %s" % why[-160:])
+
+
 def bypass_diag_cases():
     """Spec 9 at c383868a834b6158 (user, 2026-10-10): the diag check is
     waived only for a scenario DECLARING --bypass; one that declares nothing
@@ -243,6 +293,57 @@ def bypass_diag_cases():
           % why)
 
 
+def leader_release_cases():
+    """Spec 5.1 / 9 (47c31278, user 2026-10-10): the release is on the
+    leader (vmax >= 3585 mV); the high-cell scenarios also release before
+    the bus SoC reads 100 %, bounded by the first HOLD frame."""
+    want = {sc.name: v for sc in R.SCENARIOS for k, v in sc.expect
+            if k == "leader_release"}
+    check(sorted(n for n, v in want.items() if v)
+          == ["evap-override-high-cell", "evap-override-high-cell-far"],
+          "exactly the two high-cell scenarios ask for the release before "
+          "SoC 100: %s" % sorted(n for n, v in want.items() if v))
+    check(want.get("evap-override-imbalanced") is False
+          and want.get("evap-override-imbalanced-hold") is False,
+          "the low-cell scenarios ask for the release on the leader")
+    check(not any("--bms-taper-shift-mv" in sc.vehicle for sc in R.SCENARIOS),
+          "no scenario passes the removed --bms-taper-shift-mv")
+
+    def toc(vmax):
+        return "top of charge reached: vmax=%d mV vmin=3440 mV\n" % vmax
+
+    def hold_at(t):
+        return [(t - 5.0, 0x7F4, bytes([4, 7, 2, 0, 0x20, 61, 0, 0])),
+                (t, 0x7F4, bytes([4, 7, 6, 0, 0x20, 60, 0, 0]))]
+
+    def soc100(t):
+        return "BMS: bcm_soc reads 100 %% on the bus at t=%.1fs\n" % t
+
+    for label, intp, veh, diag, flag, good, frag in (
+            ("no release", "", "", [], False, False, "no release event"),
+            ("released at 3584 mV", toc(3584), "", [], False, False,
+             "below the leader"),
+            ("released at 3585 mV", toc(3585), "", [], False, True,
+             "3585 mV"),
+            ("before: HOLD at 1000 s, SoC 100 at 1005 s", toc(3586),
+             soc100(1005.0), hold_at(1000.0), True, True, "5.0 s before"),
+            ("before: HOLD at 1005 s, SoC 100 at 1000 s", toc(3586),
+             soc100(1000.0), hold_at(1005.0), True, False, "is not before"),
+            ("before: HOLD and SoC 100 at the same moment", toc(3586),
+             soc100(1000.0), hold_at(1000.0), True, False, "is not before"),
+            ("before: SoC never read 100", toc(3586), "", hold_at(1000.0),
+             True, True, "never read 100"),
+            ("before: no HOLD frame", toc(3586), soc100(1000.0), [], True,
+             False, "no 0x7F4 ever reported HOLD"),
+            ("before: but released at 3584 mV", toc(3584), "",
+             hold_at(1000.0), True, False, "below the leader")):
+        ok, why = R._leader_release_check(intp, veh, diag, flag)
+        check(ok == good and frag in why, "%s -> %s: %s"
+              % (label, "pass" if ok else "FAIL", why))
+    check(R.SOC100.search(soc100(12.5)) is not None,
+          "SOC100 reads vehicle_sim's line")
+
+
 def main():
     print("spec 9: every scenario decodes the diag frames")
     for sc in R.SCENARIOS:
@@ -257,12 +358,19 @@ def main():
     print("\nspec 9 (c383868a): a declared --bypass is exempt, nothing else")
     bypass_diag_cases()
 
+    print("\nspec 5.1 / 9 (47c31278): the release on the leader, before "
+          "SoC 100 on the high-cell scenarios")
+    leader_release_cases()
+
+    print("\nspec 9, P3a: the simulation against the truck's holds")
+    p3a_cases()
+
     print("\nthe spec's literals, not machine.py's")
     check(R.BURST_FRAMES == 20 and R.BURST_MS == 1000,
           "a burst is 20 frames x 50 ms (got %d, %d ms)"
           % (R.BURST_FRAMES, R.BURST_MS))
-    check(R.SPEC_FW_VER == 6 and R.SPEC_SCHEMA_VER == 4,
-          "firmware 6, schema 4 -- the schema doc 1c40018cd60b4da9 (got "
+    check(R.SPEC_FW_VER == 7 and R.SPEC_SCHEMA_VER == 4,
+          "firmware 7, schema 4 -- the schema doc c42bc96535aed3b2 (got "
           "%d, %d)" % (R.SPEC_FW_VER, R.SPEC_SCHEMA_VER))
     check(R.DIAG_STATES.get(6) == "HOLD",
           "0x7F4 B2 6 decodes as HOLD (schema 4)")
@@ -273,16 +381,16 @@ def main():
 
     print("\ndiag versions in every frame (reading 15)")
     ok, why = R._diag_frames_ok(_diag(), "PASSTHROUGH")
-    check(ok, "a clean fw 6 / schema 4 stream passes -> %s" % why)
-    ok, why = R._diag_frames_ok(_diag(fw7f7=(6, 5, 6)), "PASSTHROUGH")
+    check(ok, "a clean fw 7 / schema 4 stream passes -> %s" % why)
+    ok, why = R._diag_frames_ok(_diag(fw7f7=(7, 6, 7)), "PASSTHROUGH")
     check(not ok and "0x7F7" in why,
-          "a MIDDLE 0x7F7 reporting fw 5 (E4's) fails (rev 1 read only the last) "
+          "a MIDDLE 0x7F7 reporting fw 6 (E5's) fails (rev 1 read only the last) "
           "-> %s" % why)
     ok, why = R._diag_frames_ok(_diag(sch7f4=3), "PASSTHROUGH")
     check(not ok and "schema" in why, "0x7F4 schema 3 fails -> %s" % why)
-    ok, why = R._diag_frames_ok(_diag(fw7f4=5), "PASSTHROUGH")
+    ok, why = R._diag_frames_ok(_diag(fw7f4=6), "PASSTHROUGH")
     check(not ok and "firmware" in why,
-          "0x7F4 firmware 5 (E4's) fails -> %s" % why)
+          "0x7F4 firmware 6 (E5's) fails -> %s" % why)
     ok, why = R._diag_frames_ok(_diag(state=2), "PASSTHROUGH")
     check(not ok and "OVERRIDE" in why,
           "a last 0x7F4 disagreeing with the final state fails -> %s" % why)
@@ -384,7 +492,18 @@ def main():
     check(not ok, "a missing trace FAILS -> %s" % why)
     good = TRACES / "syn_override_release.trace"
     ok, why = R.check_invariants(good)
-    check(ok and "0 override page-01" not in why,
+    # "no page-01 judged" as a whole number: a plain substring test read
+    # "420 override page-01" as zero (2026-10-10, once E6's earlier release
+    # put 420 there)
+    import re as _re
+
+    def judged_none(text):
+        return _re.search(r"(?<!\d)0 override page-01", text) is not None
+    check(judged_none("14546 steps, 0 override page-01 frames judged")
+          and not judged_none("14546 steps, 420 override page-01 frames "
+                              "judged"),
+          "the zero-page-01 test reads 0 as zero and 420 as not")
+    check(ok and not judged_none(why),
           "a known-good trace passes, having judged page-01 frames -> %s"
           % why)
     check(good.exists(), "and check_invariants did not delete it")

@@ -106,6 +106,16 @@ STALE_MS = 500              # spec 6
 DEBOUNCE_MS = 5000          # spec 6 (A8a)
 VMAX_HARD_V = 3.610         # spec 6
 CAP_MS = 6 * 3600 * 1000    # spec 6
+# spec 5.1 (47c31278, user 2026-10-10): release at bcm_cell_vmax >= 3585 mV
+# held continuously for 1 s
+REL_MV = 3585
+REL_HOLD_MS = 1000
+# The benches that only need A release (to test what follows it) give both
+# the leader's 3.590 V and the old chg_max 2.0 A, so they reach HOLD whether
+# the core implements 5.1 as written (47c31278) or the chg_max <= 3.0 A
+# release before it (E5 and earlier); 5.1 itself is judged on its own in
+# test_release_on_the_leader.
+RELEASE_VMAX_V = 3.590
 
 
 def ok(cond, name):
@@ -453,8 +463,9 @@ def check_from_override(label, reason, fire, hold, steps, cap_ms=None):
 
 
 def _to_hold(b, limit=60):
-    """OVERRIDE -> HOLD by spec 5.1 / 5.2: chg_max at or below 3.0 A for the
-    debounce releases into the hold. Then lets the release's own Low Power
+    """OVERRIDE -> HOLD by spec 5.1 / 5.2: the leader at 3.590 V (and
+    chg_max 2.0 A, see RELEASE_VMAX_V) releases into the hold. Then lets
+    the release's own Low Power
     repeat (4.1, 20 x 50 ms) run out, so nothing a later step sends toward
     the charger is that burst. -> True if the core is in HOLD."""
     for _ in range(limit):
@@ -462,12 +473,12 @@ def _to_hold(b, limit=60):
             break
         b.t += 100
         b.charger_status(12)
-        b.bms(vmax=3.340, chg_max=2.0)
+        b.bms(vmax=RELEASE_VMAX_V, chg_max=2.0)
         b.tick()
     if b.state() != "HOLD":
         return False
     _drain(b, lambda bb: (bb.charger_status(12),
-                          bb.bms(vmax=3.340, chg_max=2.0)), 25)
+                          bb.bms(vmax=RELEASE_VMAX_V, chg_max=2.0)), 25)
     return b.state() == "HOLD"
 
 
@@ -604,7 +615,7 @@ def hold_no_time_limit_problems(state, cap_ms=2000, span_ms=None):
     step = 400 if span > 60000 else 100      # BMS fresh within 500 ms
     hold = (_hold_all if state == "OVERRIDE" else
             (lambda bb: (bb.charger_status(12),
-                         bb.bms(vmax=3.340, chg_max=2.0))))
+                         bb.bms(vmax=RELEASE_VMAX_V, chg_max=2.0))))
     _drain(b, hold, span // step + 1, step_ms=step)
     if b.core.trip_reason is not None or b.state() != state:
         probs.append("%s held %d ms past entry (cap %s ms): %s (%r)"
@@ -641,12 +652,12 @@ def test_hold_past_six_hours():
 
 def _hold_healthy(b):
     b.charger_status(12)
-    b.bms(vmax=3.340, chg_max=2.0)
+    b.bms(vmax=RELEASE_VMAX_V, chg_max=2.0)
 
 
 def _hold_unplugged(b):
     b.charger_status(15, shutdown_src=11, vehicle_connected=0)
-    b.bms(vmax=3.340, chg_max=2.0)
+    b.bms(vmax=RELEASE_VMAX_V, chg_max=2.0)
 
 
 def _pilot_back(b):
@@ -1611,14 +1622,115 @@ def test_silence_forgets_pilot_can_fail():
        % (len(right), len(wrong)))
 
 
+# --- spec 5.1: the release on the leader (47c31278, user 2026-10-10) -------
+#
+# "Release when bcm_cell_vmax has been at or above 3585 mV continuously for
+# 1 s." Each case runs from OVERRIDE with the charger in 12 and the BMS
+# fresh every 100 ms, chg_max 300 A and SoC 95 % unless the case says
+# otherwise, so nothing but the leader can release it. The timing edge is
+# the debounce test's shape (a 4.8 s dip against a 5.0-5.15 s trip): the
+# release comes 1.0-1.15 s after the first 3585 mV frame of an unbroken run,
+# and a 0.8 s run broken by one 3584 mV frame never releases.
+
+REL_WINDOW_MS = (REL_HOLD_MS, REL_HOLD_MS + 150)
+
+RELEASE_CASES = (
+    # (label, [(duration_ms, bms kwargs)], released?)
+    ("3585 mV held, chg_max 300 A",
+     [(3000, dict(vmax=3.585, chg_max=300.0, soc=95.0))], True),
+    ("3600 mV held, chg_max 300 A",
+     [(3000, dict(vmax=3.600, chg_max=300.0, soc=95.0))], True),
+    ("3584 mV held 10 s",
+     [(10000, dict(vmax=3.584, chg_max=300.0, soc=95.0))], False),
+    ("3585 mV for 0.8 s, broken by one 3584 mV frame, eight times",
+     [(800, dict(vmax=3.585, chg_max=300.0, soc=95.0)),
+      (100, dict(vmax=3.584, chg_max=300.0, soc=95.0))] * 8, False),
+    ("chg_max 2.0 A for 10 s, leader 3.400 V (the release before 47c31278)",
+     [(10000, dict(vmax=3.400, chg_max=2.0, soc=99.5))], False),
+    ("chg_max 0 A for 10 s at SoC 100, leader 3.470 V",
+     [(10000, dict(vmax=3.470, chg_max=0.0, soc=100.0))], False),
+)
+
+
+def release_run(segments, wrong=None):
+    """-> (t of the first frame of the last unbroken run at or above 3585
+    mV, or None; t the core was first seen in HOLD, or None)."""
+    b = _entry("OVERRIDE")
+    if wrong is not None:
+        wrong(b)
+    start = None
+    hold_t = None
+    for dur, kw in segments:
+        for _ in range(dur // 100):
+            b.t += 100
+            b.charger_status(12)
+            b.bms(**kw)
+            if int(round(kw["vmax"] * 1000)) >= REL_MV:
+                start = b.t if start is None else start
+            else:
+                start = None
+            b.tick()
+            if hold_t is None and any(s == "HOLD" for _t, s in b.states):
+                hold_t = next(t for t, s in b.states if s == "HOLD")
+    return start, hold_t
+
+
+def release_problems(label, released, start, hold_t):
+    """The judgement, apart from the bench, so the can-fail test can hand it
+    wrong timings."""
+    if not released:
+        if hold_t is not None:
+            return ["%s: released into HOLD at t=%d; spec 5.1 releases only "
+                    "on 3585 mV held 1 s" % (label, hold_t)]
+        return []
+    if hold_t is None:
+        return ["%s: never released; spec 5.1 releases on bcm_cell_vmax >= "
+                "3585 mV held 1 s" % label]
+    lo, hi = REL_WINDOW_MS
+    if start is None or not lo <= hold_t - start <= hi:
+        return ["%s: released %s ms after the first 3585 mV frame, not "
+                "%d-%d (spec 5.1: held continuously for 1 s)"
+                % (label, "?" if start is None else hold_t - start, lo, hi)]
+    return []
+
+
+def test_release_on_the_leader():
+    for label, segments, released in RELEASE_CASES:
+        start, hold_t = release_run(segments)
+        for p in release_problems(label, released, start, hold_t):
+            FAILS.append(p)
+
+
+def test_release_check_can_fail():
+    """The judgement against wrong timings, one per way a core could get
+    5.1 wrong; the bench's real core is the control. (A core that keeps the
+    chg_max release is a real wrong core: E5's, until E6.)"""
+    lo, hi = REL_WINDOW_MS
+    for name, label, released, start, hold_t in (
+            ("releases at once", "held", True, 1000, 1000),
+            ("releases after 0.5 s", "held", True, 1000, 1500),
+            ("releases after 2 s", "held", True, 1000, 3000),
+            ("never releases", "held", True, 1000, None),
+            ("releases at 3584 mV", "3584", False, None, 5000),
+            ("counts a broken run as unbroken", "broken", False, None, 2800),
+            ("releases on chg_max", "chg_max", False, None, 2100)):
+        ok(release_problems(label, released, start, hold_t),
+           "the 5.1 judgement fails a core that %s" % name)
+    ok(not release_problems("held", True, 1000, 1000 + lo)
+       and not release_problems("held", True, 1000, 1000 + hi),
+       "...and passes a release at either end of %d-%d ms" % (lo, hi))
+
+
 # --- the non-trips ----------------------------------------------------------
 
 def test_spec_non_trips():
     """Spec 6 (B-5, B-7a, B-7b) and "cell temperature is not a trip": none
     of these trips from MONITOR, OVERRIDE or HOLD, and the core stays in its
-    state -- except chg_max = 0 from OVERRIDE, which is the release (5.1)
-    into HOLD (5.2, spec eb9b9d13; it was TERMINATED before HOLD existed).
-    In HOLD chg_max 0 is what the hold follows down, not a trip (5.2)."""
+    state. chg_max = 0 from OVERRIDE included: since 47c31278 it is not the
+    release (5.1 keys on the leader) and "the override carries on at the
+    floor (section 4) until the release" (spec 6, B-5); until then it
+    released into HOLD. In HOLD chg_max 0 is what the hold follows down,
+    not a trip (5.2)."""
     cases = (
         ("alarm TYPE2", dict(alarm=2)),
         ("cell_undervolt", dict(undervolt=1)),
@@ -1642,8 +1754,6 @@ def test_spec_non_trips():
                "%s from %s: no trip (%r)" % (label, state,
                                              b.core.trip_reason))
             want = state
-            if label == "chg_max 0" and state == "OVERRIDE":
-                want = "HOLD"
             ok(b.state() == want, "%s from %s: ends in %s (was %s)"
                % (label, state, want, b.state()))
 

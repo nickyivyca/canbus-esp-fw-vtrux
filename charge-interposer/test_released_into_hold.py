@@ -84,7 +84,7 @@ def logs(name, raw=False):
 
 def refuses(chg, intp, fragment, what):
     """The check must say no, and say no FOR THE STATED REASON."""
-    ok, why = R._released_into_hold(chg, intp, 1.0, 4.0)
+    ok, why = R._released_into_hold(chg, intp)
     if ok:
         check(False, "%s -- but the check PASSED it: %s" % (what, why))
     else:
@@ -108,16 +108,16 @@ def main():
     print("\nreal logs -- every scenario that declares the check:")
     for name in REAL:
         chg, intp = logs(name)
-        ok, why = R._released_into_hold(chg, intp, 1.0, 4.0)
+        ok, why = R._released_into_hold(chg, intp)
         check(ok, "%-30s %s" % (name, why))
 
     # The regression itself, stated as its own assertion.
     chg, intp = logs("evap-override-above-ceiling")
-    ok, why = R._released_into_hold(chg, intp, 1.0, 4.0)
+    ok, why = R._released_into_hold(chg, intp)
     check(ok and "earlier entry into mode 3" in why,
           "above-ceiling passes AND the pre-release entry is reported, not "
           "skipped -- it is visible in the why-string")
-    ok2, why2 = R._released_into_hold(*logs("evap-override"), 1.0, 4.0)
+    ok2, why2 = R._released_into_hold(*logs("evap-override"))
     check(ok2 and "earlier entry" not in why2,
           "a 79 % start reports NO earlier entry, so the clause is not "
           "boilerplate that appears either way")
@@ -149,10 +149,13 @@ def main():
             intp, "state 15, not 12",
             "the charger is in state 15 at the release entry")
 
-    refuses(chg.replace(REL_LINE,
-                        REL_LINE.replace("3.00 A", "9.00 A")),
-            intp, "outside the hold band",
-            "the hold setpoint is 9.00 A, above the band")
+    # Rev 4 (2026-10-10): the 1.0-4.0 A band is gone -- under spec 47c31278
+    # the release enters at the override's last command, at least 6.10 A --
+    # so an entry at 9.00 A is accepted here; rule 6 judges the setpoint.
+    ok9, why9 = R._released_into_hold(
+        chg.replace(REL_LINE, REL_LINE.replace("3.00 A", "9.00 A")), intp)
+    check(ok9, "an entry setpoint of 9.00 A is no longer refused (rev 4: no "
+          "band) -> %s" % why9)
 
     refuses(chg, "\n".join(l for l in intp.splitlines()
                            if HOLD_REL not in l),
@@ -167,7 +170,7 @@ def main():
     # ... and the missing RELEASE must NOT be reported as a charger fault.
     _ok, why = R._released_into_hold(
         chg, "\n".join(l for l in intp.splitlines()
-                       if HOLD_REL not in l), 1.0, 4.0)
+                       if HOLD_REL not in l))
     check("never entered mode 3" not in why,
           "a missing RELEASE is its own refusal, NOT 'the charger never "
           "entered mode 3' -- those send you to different files")

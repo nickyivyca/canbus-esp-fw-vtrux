@@ -130,9 +130,14 @@ def definition_traces(outdir):
 # 03.02 / 03.07 and to the 4.1 repeat spacing through the differential, not
 # only machine.py. The recorded traces tick every 100 ms and carry neither
 # page in an override. Reviewer request, 2026-10-08.
+#
+# syn_hold_cap_clamp added 2026-10-11 (reviewer request: the spec 5.2 clamp
+# to the EVSE cap, e5d62c90). Its twin can be recorded only on a build that
+# clamps: on c800ad3 the trace breaks rule 6 at the hold entry, so
+# dense_traces() refuses it and this script stops there until that build.
 DENSE_SOURCES = ("syn_override_release", "syn_above_ceiling_start",
                  "syn_repeat_replaced", "syn_trip_during_override",
-                 "syn_hard_ceiling_trip")
+                 "syn_hard_ceiling_trip", "syn_hold_cap_clamp")
 
 
 def dense_traces(outdir, src_dir):

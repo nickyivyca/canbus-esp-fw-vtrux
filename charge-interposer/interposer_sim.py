@@ -49,10 +49,12 @@ def main():
                     help="also mask charger->vehicle telemetry while "
                          "overriding (UNVERIFIED: only enable if the bench "
                          "shows the VCU misbehaves without it)")
-    ap.add_argument("--chgmax-full-a", type=float, default=None,
-                    help="release threshold on bcm_chg_max (spec 5.1); "
-                         "negative disables the release, for the hard-ceiling "
-                         "negative test")
+    ap.add_argument("--vmax-full-mv", type=int, default=None,
+                    help="release threshold on bcm_cell_vmax (spec 5.1, "
+                         "3585 by default); a value no cell can reach "
+                         "disables the release, for the hard-ceiling "
+                         "negative test. Replaces --chgmax-full-a (E6, "
+                         "2026-10-10: the release no longer reads chg_max)")
     ap.add_argument("--tick-interval-ms", type=float, default=10.0,
                     help="simulated ms between core.tick() calls. "
                          "Default 10 matches main.cpp's "
@@ -76,8 +78,8 @@ def main():
         format="%(asctime)s intp %(message)s", datefmt="%H:%M:%S")
 
     cfg = M.Config()
-    if args.chgmax_full_a is not None:
-        cfg.chgmax_full_ca = int(args.chgmax_full_a * 100)
+    if args.vmax_full_mv is not None:
+        cfg.vmax_full_mv = args.vmax_full_mv
     cfg.mask_charger_telemetry = args.stealth
 
     busmod.assert_segments_isolated(args)
@@ -108,8 +110,8 @@ def main():
     trace = None
     if args.trace_out and not args.bypass:
         trace = open(args.trace_out, "w", newline="\n")
-        if args.chgmax_full_a is not None:
-            trace.write("K chgmax_full_ca %d\n" % cfg.chgmax_full_ca)
+        if args.vmax_full_mv is not None:
+            trace.write("K vmax_full_mv %d\n" % cfg.vmax_full_mv)
         if args.stealth:
             trace.write("K mask_charger_telemetry 1\n")
 
