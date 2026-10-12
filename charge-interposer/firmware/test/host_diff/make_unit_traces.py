@@ -133,8 +133,8 @@ def definition_traces(outdir):
 #
 # syn_hold_cap_clamp added 2026-10-11 (reviewer request: the spec 5.2 clamp
 # to the EVSE cap, e5d62c90). Its twin can be recorded only on a build that
-# clamps: on c800ad3 the trace breaks rule 6 at the hold entry, so
-# dense_traces() refuses it and this script stops there until that build.
+# clamps: on c800ad3 the trace broke rule 6 at the hold entry and
+# dense_traces() refused it. Recorded on E6a (f4e60ce), 2026-10-12.
 DENSE_SOURCES = ("syn_override_release", "syn_above_ceiling_start",
                  "syn_repeat_replaced", "syn_trip_during_override",
                  "syn_hard_ceiling_trip", "syn_hold_cap_clamp")
