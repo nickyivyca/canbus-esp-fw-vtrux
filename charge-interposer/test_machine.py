@@ -885,6 +885,94 @@ def test_the_hold_steps_no_faster_than_the_truck():
        % b.core.hold_ca)
 
 
+def _released_at_entry(vmax=3.590, chg_max=0.0, ibat=0.1, soc=80.0,
+                       max_avail_a=16.0):
+    """A core that has JUST entered HOLD, stopped on the releasing frame.
+
+    `_released()` runs on past the release, which leaves the cadence timer
+    old enough that a step is already due -- fine for the step cases, fatal
+    for any case about what happens INSIDE the 0.3 s gate, because the frame
+    under test then takes a step as well as whatever is being measured. This
+    stops at the release, so `t_hold_step` is `b.t` and the next frame 100 ms
+    later is genuinely gated.
+    """
+    b = Bench()
+    b.arm(max_avail_a=max_avail_a, vmax=3.340, chg_max=300.0, soc=soc)
+    b.low_power()
+    assert b.core.state == M.S_OVERRIDE, "the bench did not override"
+    for _ in range(40):
+        b.hold_fresh(1, vmax=vmax, chg_max=chg_max, ibat=ibat, soc=soc,
+                     resend_low_power=False)
+        if b.core.state == M.S_HOLD:
+            break
+    assert b.core.state == M.S_HOLD, "the bench did not reach HOLD"
+    assert b.core.t_hold_step == b.t, "the entry did not set the cadence timer"
+    return b
+
+
+def test_the_hold_clamps_to_a_cap_that_falls_under_it():
+    """Spec 5.2 (user, 2026-10-10): "Whenever the cap is below the hold
+    setpoint, at entry or later, the setpoint moves to the cap at once." A
+    clamp, not a 0.1 A step, and it does not wait for the 0.3 s gate.
+
+    This is the defect the tester's smoke run found. In Low Power the charger
+    reports maxAvailableChargingCurrent as 6.00 A -- the same in all six
+    captures checked -- while E6 enters the hold at the section 4 floor of
+    6.10 A or higher, up to 16 A with a far-high cell. The clamp used to sit
+    AFTER the cadence gate, so for the first 0.3 s of every hold, and for
+    0.3 s after every step, the cap was not applied at all.
+
+    Both cases drive the frame 100 ms after the entry, with the gate live, so
+    the move cannot be a step: a 0.1 A step would read 6.00 A only after a
+    second or more of frames, and these assert the value exactly.
+    """
+    # 1. entry at the 6.10 A floor, the charger then in Low Power at 6.00 A
+    b = _released_at_entry(soc=98.0)
+    ok(b.core.hold_ca == 610,
+       "entered at the 6.10 A floor, the EVSE cap being 16 A (%s cA)"
+       % b.core.hold_ca)
+    b.charge_info(6.0)          # the charger is in Low Power now
+    i = _hold_frame(b, 0.0, 0.1, dt_ms=100, vmax=3.590)
+    ok(b.core.hold_ca == 600,
+       "and goes straight to the 6.00 A cap on the next page-01 frame, "
+       "100 ms in and inside the 0.3 s gate (%s cA)" % b.core.hold_ca)
+    ok(abs(i - 6.00) < 0.03,
+       "which is what the charger is told (%.2f A)" % i)
+    ok(b.core.t_hold_step == b.t - 100,
+       "and the clamp did not touch the cadence timer, so the next 0.1 A "
+       "step is still due 0.3 s after the release")
+
+    # 2. the far-high-cell entry at the full 16 A cap, which then falls
+    b = _released_at_entry(vmax=3.601, chg_max=300.0, ibat=5.0)
+    ok(b.core.hold_ca == 1600,
+       "entered at the 16 A cap with chg_max still 300 A (%s cA)"
+       % b.core.hold_ca)
+    _hold_frame(b, 300.0, 5.0, dt_ms=100, vmax=3.601)
+    ok(b.core.hold_ca == 1600,
+       "the cap has not moved, so neither does the setpoint -- and the gate "
+       "blocks the cell rule's step (%s cA)" % b.core.hold_ca)
+    b.charge_info(6.0)
+    i = _hold_frame(b, 300.0, 5.0, dt_ms=100, vmax=3.601)
+    ok(b.core.hold_ca == 600,
+       "then the cap falls to 6.00 A and the setpoint goes there in ONE "
+       "move, not in 100 steps of 0.1 A (%s cA)" % b.core.hold_ca)
+    ok(abs(i - 6.00) < 0.03,
+       "and that is what the charger is told (%.2f A)" % i)
+
+
+def test_a_cap_above_the_hold_setpoint_does_not_move_it():
+    """Spec 5.2: the clamp is one-directional. The cap is a ceiling, so a cap
+    above the setpoint says nothing -- only the pack-current and cell rules
+    may raise it, and only in 0.1 A steps."""
+    b = _released_at_entry(soc=98.0)
+    start = b.core.hold_ca
+    ok(start == 610, "the setpoint starts at 6.10 A (%s cA)" % start)
+    b.charge_info(16.0)
+    _hold_frame(b, 0.0, 0.1, dt_ms=100, vmax=3.590)
+    ok(b.core.hold_ca == start,
+       "a cap well above it does not pull it up (%s cA)" % b.core.hold_ca)
+
+
 def test_the_hold_stays_inside_the_evse_cap():
     """Spec 5.2: "It stays between 0 A and the EVSE cap of section 4", and
     the cap is instantaneous -- an EVSE with load management genuinely

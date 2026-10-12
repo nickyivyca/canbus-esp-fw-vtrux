@@ -1195,10 +1195,40 @@ class InterposerCore(object):
         fires on the leader, so the hold can be entered with chg_max still
         well above 0 A, where following ibat alone would charge the leader
         into the 3610 mV trip.
+
+        The EVSE cap is not part of that loop at all. It is a clamp applied
+        before the cadence gate, so a cap that falls under the setpoint takes
+        effect on the next page-01 frame rather than one 0.1 A step at a
+        time.
         """
         c = self.cfg
         if self.hold_ca is None:
             return
+        # Spec 5.2 (user, 2026-10-10): "Whenever the cap is below the hold
+        # setpoint, at entry or later, the setpoint moves to the cap at
+        # once." A CLAMP, NOT A STEP -- it is not 0.1 A and it does not wait
+        # for the 0.3 s gate.
+        #
+        # IT HAS TO COME BEFORE THE GATE'S EARLY RETURN, and that was the
+        # defect. The clamp below used to be the only one, after the gate, so
+        # for the first 0.3 s of the hold -- and for 0.3 s after every step --
+        # the cap was not applied at all. That window is exactly when it
+        # matters: the hold is entered at the section 4 floor or higher, up to
+        # 16 A with a far-high cell, and the charger reports
+        # maxAvailableChargingCurrent as 6.00 A once it is in Low Power (6.00
+        # in all six captures,
+        # artifacts/interposer-firmware/lowpower_maxavail.txt), so the entry
+        # setpoint sat ABOVE the cap until some later step happened to pull it
+        # under. Caught by the tester's smoke run as an invariant failure; the
+        # unit suite had no case where the cap fell during a hold.
+        #
+        # The clamp does not set t_hold_step, so it neither consumes nor
+        # restarts the step cadence (reviewer, 2026-10-10: the gate's timing
+        # under a clamp is the user's to rule; leaving it alone is the
+        # interim).
+        cap = self._evse_cap_ca()
+        if cap >= 0 and self.hold_ca > cap:
+            self.hold_ca = cap
         if (self.t_hold_step is not None
                 and t_ms - self.t_hold_step < c.hold_step_min_ms):
             return
@@ -1212,11 +1242,10 @@ class InterposerCore(object):
         elif (self.ibat < self.chg_max - c.hold_band_ca
               and self.vmax < c.hold_vmax_up_mv):
             want = self.hold_ca + c.hold_step_ca
-        # Spec 5.2: "It stays between 0 A and the EVSE cap of section 4."
-        # The cap is clamped even when the step did not move, because the cap
-        # itself can fall: max_avail is learned from the charger and a lower
-        # one must bring the hold down with it.
-        cap = self._evse_cap_ca()
+        # The SECOND clamp, and it is not redundant with the one above: a
+        # step UP must not cross the cap either. The one above catches a cap
+        # that fell under a standing setpoint; this one catches a setpoint
+        # trying to rise through a standing cap.
         if cap >= 0 and want > cap:
             want = cap
         if want < 0:

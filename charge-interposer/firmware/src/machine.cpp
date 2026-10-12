@@ -339,6 +339,15 @@ int32_t InterposerCore::commandedIlimCounts() const {
 // remove -- about 2 s for 0.7 A.
 void InterposerCore::stepHold(uint32_t t_ms) {
   if (!hold_valid_) return;
+  // Spec 5.2 (user, 2026-10-10): whenever the cap is below the hold setpoint,
+  // at entry or later, the setpoint moves to the cap AT ONCE. A clamp, not a
+  // 0.1 A step, and ungated -- so it must precede the cadence gate's early
+  // return. It does not set t_hold_step_, so it neither consumes nor
+  // restarts the cadence. See machine.py for the defect this fixes: in Low
+  // Power the charger reports maxAvailableChargingCurrent as 6.00 A, below
+  // every setpoint the hold is entered at.
+  const int32_t cap = evseCapCa();
+  if (cap >= 0 && hold_ca_ > cap) hold_ca_ = cap;
   if (have_t_hold_step_ &&
       (uint32_t)(t_ms - t_hold_step_) < cfg_.hold_step_min_ms) {
     return;
@@ -353,11 +362,9 @@ void InterposerCore::stepHold(uint32_t t_ms) {
              vmax_ < cfg_.hold_vmax_up_mv) {
     want = hold_ca_ + cfg_.hold_step_ca;
   }
-  // Spec 5.2: "It stays between 0 A and the EVSE cap of section 4." The cap
-  // is clamped even when the step did not move, because the cap itself can
-  // fall: max_avail is learned from the charger and a lower one must bring
-  // the hold down with it.
-  const int32_t cap = evseCapCa();
+  // The SECOND clamp, not redundant with the one above: that one catches a
+  // cap that fell under a standing setpoint, this one a step up trying to
+  // rise through a standing cap.
   if (cap >= 0 && want > cap) want = cap;
   if (want < 0) want = 0;
   if (want != hold_ca_) {

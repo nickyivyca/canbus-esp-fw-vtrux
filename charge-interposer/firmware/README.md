@@ -771,9 +771,18 @@ regenerated on 2026-09-17.
 | `syn_above_ceiling_start` | the same hold kept past 75 s -> overridden from a tick at the delay, the VCU's Low Power repeated as CHARGER (synth=20), setpoint rewritten to the pilot cap, STAND_BY -> PASSTHROUGH |
 | `syn_balance_hold` | genuine stop (flag clear), 60 s hold, flow 0 + STAND_BY, nothing touched |
 | `syn_direct_stop` | flow 0 in CHARGER mode, STAND_BY 1 s later, nothing touched |
+| `syn_hard_ceiling_trip` | the BMS never tapers (`chg_max` pinned at 300 A) and vmax climbs to 3610 mV -> the hard ceiling trips, immediately and with no debounce. The backstop of spec 5, and the one path nothing else here reaches: the next highest vmax in the set is 3593 mV. Until it existed the C++ ceiling branch had never been compared against machine.py at all |
+| `syn_hold_cap_clamp` | spec 5.2 at e5d62c90: override on the 6.10 A floor at SoC 98.5 %, release on the leader into HOLD at 6.10 A, then the EVSE cap drops below the hold setpoint TWICE -- to 6.00 A (what a real charger reports in Low Power) and later to 2.00 A -- and back to 6.00 A. The cap is a clamp, not a 0.1 A walk. No other trace ever puts the cap under the setpoint, so a port that walked down to it, or ignored it, agreed with machine.py by default |
+| `syn_repeat_replaced` | spec 4.1: a repeat starting over one still in flight REPLACES it. Based on the above-ceiling start, because only a TICK-decided override opens a burst a later event can interrupt; the fault lands at a fixed 500 ms into the burst, not on its 1,000 ms boundary, so the frame count is deterministic rather than scheduling jitter |
+| `syn_repeat_superseded` | spec 4.1: the VCU's own page 00 lands inside the repeat and ends it. Every other trace lets the burst run its full 20 frames, so the superseding clause had no trace at all -- the bench hits it every time and this corpus never did |
+| `syn_charger_silence_keeps_safe` | spec 6.1: 20 s of charger silence resets the session but NOT SAFE. The 500 ms staleness row has already tripped on the same silence, and silence continuing must not undo the latch it set |
+| `syn_charger_stop_source_3` | spec 6: only source 11 is a handle pull. Source 3 is the charger stopping itself -- 24 endings in the corpus, connected flags staying up -- and must reach the 5 s state debounce and trip there, not read as an unplug |
+| `syn_plug_out_then_pilot_reset` | spec 6.1: the boundary that arrives when the session is ALREADY over. The charger reports the plug out, the VCU follows with STAND_BY, and the pilot timer returns to 0 only afterwards, so the boundary must be logged in PASSTHROUGH. `syn_pilot_restart_clears_safe` reaches the same boundary from SAFE, which takes the state-changing path, so until this trace existed the differential never ran a clear_safe boundary that changes no state |
 
-The Python side's own suites also pass: `test_machine.py` 20 tests,
-`test_signals.py` over 2000 randomised frames per message.
+The Python side's own suites also pass: `test_machine.py` 89 tests,
+`test_signals.py` over 2000 randomised frames per message. (The count is
+refreshed when this file is touched, not on every batch -- `test_machine.py`'s
+own run prints the current one.)
 
 Build footprint: **RAM 7.6 % (24,972 B), Flash 10.7 % (357,710 B)**.
 `pio run` leaves ~23 MB in `.pio/`, which is regenerable -- delete it if the
