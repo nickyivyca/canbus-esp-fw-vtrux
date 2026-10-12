@@ -69,7 +69,18 @@
  *                                  worst 2.39 ms). Frames keep arriving into
  *                                  the RX queue and are dropped once it fills.
  *                                  Only meaningful with `load`.
- *   skip <t> <trip>                the transmit scheduler skipped an inhibit
+ *                                  With `load` on, each dequeue also sets
+ *                                  gi_bus_t.rx_waiting to the frames still
+ *                                  queued behind the one taken (spec 7
+ *                                  condition 9), and the trace prints
+ *                                  `<t> RXW n=<k>` whenever that value
+ *                                  changes, 0 included. Without `load` every
+ *                                  frame is consumed as it arrives, so the
+ *                                  field stays 0 (drained) and no RXW line
+ *                                  is printed. -DGI_NO_RX_WAITING builds
+ *                                  without it, for a core that predates the
+ *                                  field (the control in drained_check.py).
+ *   skip <t> <trip>               the transmit scheduler skipped an inhibit
  *                                 frame; `trip` is its 3-within-1s verdict.
  *                                 Supplied rather than computed -- the window
  *                                 lives in gi_sched, and a copy here could
@@ -963,6 +974,18 @@ int main(void)
             memmove(&g_rxq[0], &g_rxq[1],
                     (size_t)(g_rxq_n - 1) * sizeof(g_rxq[0]));
             g_rxq_n--;
+
+#ifndef GI_NO_RX_WAITING
+            /*
+             * Read where the device reads it: at the dequeue, counting what
+             * is still behind this frame. The next gi_tick() gates on it.
+             */
+            if (g_bus.rx_waiting != (uint32_t)g_rxq_n)
+            {
+                g_bus.rx_waiting = (uint32_t)g_rxq_n;
+                printf("%lld RXW n=%d\n", (long long)now, g_rxq_n);
+            }
+#endif
 
             gi_emit_t em = { 0 };
             gi_events_t ev = { 0 };

@@ -966,10 +966,12 @@ Armed from 0 s, but the inhibit is held back from going live by withholding
 0x617 until 8 s. Ten errors land while armed and not live, 0.5 s apart
 (2.0 .. 6.5 s).
 
-EXPECT: trip 6 at the first live check, at go-live (~8 s). Spec 7: "Error
-frames are recorded whenever the device is armed ... if 10 error frames fell
-in the 10 s before going live, it fires at the first live check." The newest
-error is 1.5 s before go-live, so the burst is recent. spec_expect_check.py
+EXPECT: trip 6 latches when the gate passes (~8 s), the device never goes
+live and sends no inhibit frame. Spec 7: "Error frames are recorded whenever
+the device is armed ... Each time the arm gate passes, trip 6 is checked
+first, and if a recent qualifying burst exists it latches there" ("Checked
+before going live", user, 2026-10-10). The newest error is 1.5 s before the
+gate passes, so the burst is recent. spec_expect_check.py
 requires the trace to show the gate blocked on 0x617 while the errors land;
 otherwise the row would be exercising the ordinary live path.
 """)
@@ -1014,9 +1016,11 @@ def s_err_rearm_after_trip_expired():
 As err-rate-rearm-after-trip-expired, but the re-arm is at 8 s, when the
 newest error is 4.8 s old.
 
-EXPECT: trip 6 at 3.0 s, and again at the first live check after the
-re-arm (~8 s): the history carries across the re-arm and the burst is still
-recent. With the expired case, this pins the recency test across a re-arm.
+EXPECT: trip 6 at 3.0 s, and again when the gate passes after the re-arm
+(~8 s), without going live and without an inhibit frame ("Checked before
+going live", user, 2026-10-10): the history carries across the re-arm and the
+burst is still recent. With the expired case, this pins the recency test
+across a re-arm.
 """)
 def s_err_rearm_after_trip_recent():
     return _trip_then_rearm(8 * S, 14)
@@ -2637,6 +2641,56 @@ def s_load_diag_behind():
     L = ["mode 0 3 500", "load 0 %d 500" % RX_DEPTH, "cfg diag_period_ms 20"]
     L += _at_truck_rate(1 * S, 6 * S)
     L += ["end %d" % (7 * S)]
+    return sorted_directives(L)
+
+
+def _vcm_times(frames):
+    return [int(ln.split()[1]) for ln in frames
+            if ln.startswith("f ") and ln.split()[2] == "051"]
+
+
+@scenario("golive-backlog-held", """
+Spec 7 gate condition 9 and the 12.4 row "no stale answers on going live"
+(added 2026-10-10, user): "the first inhibit frame after going live answers
+the VCM's newest 0x051, never one it has already passed". The row asks for a
+host case with frames waiting at go-live; this is it.
+
+THE BACKLOG IS CONSTRUCTED, not a measured preemption. Truck load with the
+load model on; 0x617 (the last gate condition to arrive) is withheld until the
+instant in 2-4 s where TWO VCM 0x051s follow it soonest, and the worker is
+preempted from 0.5 ms before that 0x617 until 0.3 ms after the second 0x051.
+At the end of the preemption the queue holds the 0x617 with both commands
+behind it. Two, not one: a single waiting command is still the newest when it
+is answered, so a device that went live early would pass anyway.
+
+EXPECT: block "receive queue not drained" while the backlog drains, live only
+once the dequeue reports nothing waiting, and the first inhibit frame carries
+the newest command's counter plus one. drained_check.py judges this against
+the spec, and it has no golden on purpose, like the trip 6 rows. A core
+without condition 9 goes live on the 0x617 and answers the older command after
+the newer one has arrived (drained_check.py --control).
+""", autokey=False, autobms=False)
+def s_golive_backlog_held():
+    L = ["mode 0 3 500", "load 0 %d 500" % RX_DEPTH]
+    frames = _at_truck_rate(1 * S, 4 * S)
+    vcm = _vcm_times(frames)
+    best = None
+    for ln in frames:
+        p = ln.split()
+        if p[0] != "f" or p[2] != "617" or not 2 * S <= int(p[1]) < 4 * S - 100 * MS:
+            continue
+        t617 = int(p[1])
+        after = [t for t in vcm if t > t617]
+        if len(after) < 2:
+            continue
+        if best is None or after[1] - t617 < best[1] - best[0]:
+            best = (t617, after[1])
+    assert best is not None, "no 0x617 with two 0x051s after it"
+    t617, t_second = best
+    L += [ln for ln in frames
+          if not (ln.split()[2] == "617" and int(ln.split()[1]) < t617)]
+    L += ["preempt %d %d" % (t617 - 500, t_second + 300)]
+    L += ["end %d" % (5 * S)]
     return sorted_directives(L)
 
 
