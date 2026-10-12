@@ -516,6 +516,14 @@ def scen_hard_ceiling_trip():
     The trip is transparency rather than a command: the core stops rewriting,
     the VCU's own hold reaches the charger untouched, and the handle pull
     clears it back to PASSTHROUGH.
+
+    Since spec 47c31278 (2026-10-10) the release is on the leader, vmax >=
+    3585 mV for 1 s, which chg_max cannot hold off. So the trace now
+    releases into HOLD first (t=132.1 s, vmax 3592 mV) and trips from HOLD
+    at 3610 mV (t=135.1 s). It still reaches the ceiling, through the hold,
+    where the cell limit steps the setpoint down while vmax rises. The
+    hard-ceiling path with no release is `hard-ceiling-failsafe`'s, with
+    `interposer_sim --vmax-full-mv 9999`.
     """
     s = Scenario("syn_hard_ceiling_trip")
     # 0-90 s: ordinary charging at 79 % with the evap flag up. Arms at once,
