@@ -473,19 +473,56 @@ static uint32_t s_rx_waiting = 1;
  */
 static void rx_backlog_sample(void)
 {
+    /*
+     * ONLY WHILE ARMED AND NOT YET LIVE, because that is the only state in
+     * which anything reads the answer: condition 9 is checked for going live
+     * and the gate is not re-run afterwards.
+     *
+     * THE READ IS NOT FREE, and this is measured rather than supposed. It is
+     * the same twai_get_status_info() the RXQ instrument made per dequeue,
+     * and that instrument is recorded as perturbing the device: tx_queued_behind
+     * read 1 in both instrumented runs and 0 in every shipping run (evidence
+     * doc, "The instrument perturbs the device"). On the truck the filter is
+     * accept-all, so a per-dequeue read is ~2,400 of them a second on top of
+     * the per-command can_msgs_to_rx() and the per-tick snapshot. Going live
+     * costs a few frames' worth; staying live costs nothing.
+     */
+    const bool needed = gi_mode_decides(s_core.mode) && !s_core.inhibit_live;
+
+#if GI_INSTRUMENT_RXQ
+    /*
+     * The instrumented build still reads on every dequeue, so its histogram
+     * keeps covering the whole arm rather than only the frames before going
+     * live. That build is not a shipping build and is already known to
+     * perturb; what matters is that it GATES identically, which is why the
+     * figure below is still forced to not-drained when the shipping build
+     * would not have looked.
+     */
+    const bool read_it = true;
+#else
+    const bool read_it = needed;
+#endif
+
     twai_status_info_t info;
-    if (twai_get_status_info(&info) != ESP_OK)
+    if (!read_it || twai_get_status_info(&info) != ESP_OK)
     {
         /*
-         * No reading. Not evidence of a backlog, so it does not block the
-         * gate -- and a driver that cannot be interrogated is not a driver
-         * this device is going live behind for other reasons.
+         * FAILS CLOSED, in both cases. An arm that has not measured has not
+         * satisfied condition 9 -- the spec's words are "the frame the worker
+         * has just taken was the last one waiting" -- so not-drained is the
+         * honest reading, and reporting drained here would be the permissive
+         * direction in the one place the device is deciding to go live.
+         *
+         * It also matters on the way OUT of live: this leaves 1 behind while
+         * live, so if a trip or a key-on puts the device back in front of the
+         * gate, it blocks until a dequeue has actually measured rather than
+         * passing on a reading taken before it went live.
          */
-        s_rx_waiting = 0;
+        s_rx_waiting = 1;
         return;
     }
-    s_rx_waiting = (uint32_t)info.msgs_to_rx;
-    rxq_note(s_rx_waiting + 1);
+    rxq_note((uint32_t)info.msgs_to_rx + 1);
+    s_rx_waiting = needed ? (uint32_t)info.msgs_to_rx : 1u;
 }
 
 static uint32_t fnv1a32(const char *s)

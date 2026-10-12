@@ -4109,6 +4109,109 @@ static void case_no_going_live_behind_a_backlog(void)
     case_end();
 }
 
+/*
+ * CASE 41 -- the OBSERVE -> INHIBIT re-arm, through to going live.
+ *
+ * THE PATH THAT MEASURED. Re-arming out of OBSERVE is the one entry that
+ * tears the driver down and brings it back up from the CALLER's task
+ * (gen_inhibit.c:1140 can_disable(), :1188 can_enable()), with
+ * gen_inhibit_quiesce() forcing the core to OFF at :1326 so the worker parks
+ * in the OFF branch while it happens. Between can_enable() and the worker's
+ * first armed pass the driver is receiving and nobody is draining it: about
+ * 120 frames on a full bus, which is what spec 3's wake and spec 7 condition
+ * 9 were written for.
+ *
+ * Case 11 already walks this re-arm and asserts the driver comes back in
+ * normal mode, and teardown() checks ft_unsafe_teardowns() in every case, so
+ * spec 8 on this path was covered. What was not covered is GOING LIVE
+ * afterwards with the bus running.
+ *
+ * The burst is queued with the worker standing still, which is the model's
+ * version of "the queue filled while the worker was parked". None of those
+ * commands may be answered: each is dequeued with others behind it, so the
+ * device cannot judge its own deadline against them.
+ */
+static void case_rearm_from_observe_goes_live_clean(void)
+{
+    case_begin("case 41: a re-arm from OBSERVE goes live, and answers nothing "
+               "that was queued behind it");
+    setup();
+
+    static const uint8_t KEY[8]  = { 0x10 };
+    static const uint8_t CONT[8] = { 11 << 2 };
+    static const uint8_t SOC[8]  = { 0x4E, 0x20 };
+    static const uint8_t FLT[8]  = { 0, 0, 0, 0, 0, 0, 0, 0xC8 };
+    static const uint8_t SHF[8]  = { 0, 0, 0, 0, 0, 0, 2 << 4 };
+    uint8_t cmd[6];
+
+    /* OBSERVE, with the whole interlock set alive and the device silent. */
+    ft_allow_ids(NULL, -1, "OBSERVE is hardware listen-only (spec 3)");
+    gen_inhibit_set_mode(GEN_INHIBIT_OBSERVE, 500);
+    for (int i = 0; i < 6; i++)
+    {
+        memcpy(cmd, VCM, sizeof(cmd));
+        cmd[5] = (uint8_t)(i & 0x0F);
+        feed(0x051, cmd, 6, 5000);
+        feed(0x592, KEY, 8, 5000);
+        feed(0x440, CONT, 8, 5000);
+        feed(0x411, SOC, 8, 5000);
+        feed(0x617, FLT, 8, 5000);
+        feed(0x639, SHF, 8, 5000);
+    }
+    CHECK(ft_installed_mode() == (int)TWAI_MODE_LISTEN_ONLY,
+          "OBSERVE installed the driver in mode %d, not listen-only",
+          ft_installed_mode());
+    ft_allow_ids(NULL, 0, "");
+
+    /*
+     * THE RE-ARM, and the backlog it used to go live behind. Queued before
+     * the worker gets a turn, so these are the frames that arrived while it
+     * was parked.
+     */
+    gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
+    const int wire_before = ft_wire_count_id(0x051);
+    for (int i = 6; i < 11; i++)
+    {
+        memcpy(cmd, VCM, sizeof(cmd));
+        cmd[5] = (uint8_t)(i & 0x0F);
+        ft_deliver(0x051, cmd, 6);
+    }
+    CHECK(ft_rx_pending() == 5,
+          "the backlog did not build: %d waiting, expected 5", ft_rx_pending());
+
+    for (int i = 0; i < 20 && ft_rx_pending() > 0; i++)
+    {
+        ft_run(2000);
+    }
+    CHECK(ft_wire_count_id(0x051) == wire_before,
+          "answered %d command(s) that were queued behind others across the "
+          "re-arm: %s", ft_wire_count_id(0x051) - wire_before, stats());
+
+    CHECK(ft_installed_mode() == (int)TWAI_MODE_NORMAL,
+          "leaving OBSERVE left the driver in mode %d, not normal",
+          ft_installed_mode());
+
+    /* Then an ordinary bus, and it must go live and answer. */
+    for (int i = 11; i < 24; i++)
+    {
+        memcpy(cmd, VCM, sizeof(cmd));
+        cmd[5] = (uint8_t)(i & 0x0F);
+        feed(0x051, cmd, 6, 5000);
+        feed(0x592, KEY, 8, 5000);
+        feed(0x440, CONT, 8, 5000);
+        feed(0x411, SOC, 8, 5000);
+        feed(0x617, FLT, 8, 5000);
+        feed(0x639, SHF, 8, 5000);
+    }
+    CHECK(json_has("\"inhibit_live\":true"),
+          "never went live after the re-arm from OBSERVE: %s", stats());
+    CHECK(ft_wire_count_id(0x051) > wire_before,
+          "live after the re-arm but answered nothing: %s", stats());
+
+    teardown();
+    case_end();
+}
+
 int main(int argc, char **argv)
 {
     /*
@@ -4174,6 +4277,7 @@ int main(int argc, char **argv)
     case_rearm_does_not_trip_on_a_stale_baseline();
     case_wake_has_a_target_before_the_worker_runs();
     case_no_going_live_behind_a_backlog();
+    case_rearm_from_observe_goes_live_clean();
     case_errors_before_live_still_trip();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
