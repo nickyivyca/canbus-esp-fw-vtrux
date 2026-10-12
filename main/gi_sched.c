@@ -49,7 +49,8 @@ static uint8_t cap_for(gs_class_t c)
     }
 }
 
-static bool q_push(gs_queue_t *q, const gi_frame_t *f, int64_t now, uint32_t seq)
+static bool q_push(gs_queue_t *q, const gi_frame_t *f, int64_t now,
+                   uint32_t seq, uint32_t deadline_n)
 {
     if (q->n >= q->cap)
     {
@@ -66,6 +67,7 @@ static bool q_push(gs_queue_t *q, const gi_frame_t *f, int64_t now, uint32_t seq
      * reading 0 for a frame that really waited.
      */
     q->q[i].carried = false;
+    q->q[i].deadline_n = deadline_n;
     q->n++;
     return true;
 }
@@ -116,6 +118,12 @@ void gs_init(gs_t *s, const gs_hal_t *hal)
         s->q[c].n = 0;
     }
     s->next_seq = 1;
+    /*
+     * The default is the mode the scheduler was written for, and it is also
+     * what memset leaves behind -- written out so a reader does not have to
+     * know that GS_CLASS_INHIBIT is 0. gs_rearm() overrides it per arm.
+     */
+    s->timed_class = GS_CLASS_INHIBIT;
 }
 
 void gs_reset(gs_t *s)
@@ -124,7 +132,7 @@ void gs_reset(gs_t *s)
     gs_init(s, hal);
 }
 
-void gs_rearm(gs_t *s, const gs_hal_t *hal)
+void gs_rearm(gs_t *s, const gs_hal_t *hal, gs_class_t timed)
 {
     /*
      * KEEP WHAT THE HARDWARE IS HOLDING. Everything else is per-arm and is cleared.
@@ -142,6 +150,7 @@ void gs_rearm(gs_t *s, const gs_hal_t *hal)
     const uint32_t   abort_cmds_this = s->abort_cmds_this;
 
     gs_init(s, hal);
+    s->timed_class = timed;
 
     s->held = held;
     s->held_class = held_class;
@@ -212,7 +221,7 @@ bool gs_queue_frame(gs_t *s, gs_class_t cls, const gi_frame_t *f, int64_t now)
         s->deadline_token = false;
     }
     s->st.cls[cls].queued++;
-    if (!q_push(&s->q[cls], f, now, s->next_seq))
+    if (!q_push(&s->q[cls], f, now, s->next_seq, s->deadline_n))
     {
         /*
          * Item 6: telemetry is never lost SILENTLY. A full queue drops the
@@ -291,7 +300,7 @@ static void note_left_controller(gs_t *s, int64_t now, uint32_t rx_backlog)
         s->st.cls[c].max_hold_us = (uint32_t)held_us;
     }
 
-    if (c == GS_CLASS_INHIBIT)
+    if (c == s->timed_class && s->held_deadline_n == s->deadline_n)
     {
         /*
          * AN ON-TIME CLAIM IS ONLY AS GOOD AS THE RECEIVE QUEUE WAS EMPTY.
@@ -308,6 +317,21 @@ static void note_left_controller(gs_t *s, int64_t now, uint32_t rx_backlog)
          * controller's hardware FIFO and the ISR moving it to the software
          * queue. Microseconds against a 4.69 ms minimum truck gap, but stated
          * rather than glossed.
+         *
+         * THE CLASS IS THE ARM'S, NOT ALWAYS INHIBIT (spec 11, user
+         * 2026-10-12). The deadline is the same in either case -- the VCM's
+         * next 0x051 -- and so is everything above it; what changes is which
+         * answer to that command is being timed. See `timed_class`.
+         *
+         * AND IT MUST STILL BE THIS FRAME'S DEADLINE (reviewer, 2026-10-12).
+         * The argument above is about a completion observed BEFORE the next
+         * command was dequeued. A frame that outlived that command is timed
+         * by neither counter: the empty queue it completed against says
+         * nothing about whether it was punctual. The inhibit class cannot
+         * reach here in that state -- the deadline withdraws it and books a
+         * skip or late_on_wire -- but a probe can, because nothing withdraws
+         * a probe and nothing should: it is not the frame the inverter acts
+         * on, so it is never a skip and never a trip.
          */
         if (rx_backlog == 0)
         {
@@ -321,6 +345,16 @@ static void note_left_controller(gs_t *s, int64_t now, uint32_t rx_backlog)
                 s->st.unverified_max_backlog = rx_backlog;
             }
         }
+    }
+
+    /*
+     * SEPARATE FROM THE BOOKING ABOVE, and it stays keyed on INHIBIT whatever
+     * the arm times. This flag is the deadline machinery's -- "an inhibit of
+     * ours is in the controller" -- and clearing it on a probe's completion
+     * would tell gs_command_received() that an outstanding inhibit had gone.
+     */
+    if (c == GS_CLASS_INHIBIT)
+    {
         s->inhibit_outstanding = false;
     }
 
@@ -512,6 +546,12 @@ void gs_tick(gs_t *s, int64_t now, uint32_t rx_backlog)
                  * and the next handover leaves max_queue_us alone.
                  */
                 sl.carried = s->held_carried;
+                /*
+                 * The frame still answers the command it was queued for; an
+                 * abort and a requeue do not give it a new deadline. Without
+                 * this the field is whatever was on the stack.
+                 */
+                sl.deadline_n = s->held_deadline_n;
                 s->st.cls[c].aborted++;
                 if (q_push_head(&s->q[c], &sl))
                 {
@@ -601,6 +641,7 @@ void gs_tick(gs_t *s, int64_t now, uint32_t rx_backlog)
         s->held_f = sl->f;
         s->held_since = now;
         s->held_carried = sl->carried;
+        s->held_deadline_n = sl->deadline_n;
         if (c == GS_CLASS_INHIBIT)
         {
             s->inhibit_outstanding = true;
@@ -734,6 +775,14 @@ gs_deadline_t gs_command_received(gs_t *s, int64_t now, uint32_t rx_backlog)
     {
         note_left_controller(s, now, rx_backlog);
     }
+
+    /*
+     * THE DEADLINE HAS NOW PASSED, and the increment goes here rather than at
+     * the top of the function for the reason gs_t.deadline_n gives: everything
+     * above is about a completion that beat this dequeue, and every frame
+     * queued below answers THIS command. See gs_slot_t.deadline_n.
+     */
+    s->deadline_n++;
 
     /*
      * D1, THE ONE THAT LOST A SKIP AND A TRIP. Purge every inhibit still sitting

@@ -4314,9 +4314,329 @@ static void case_trip6_history_is_reported(void)
           "an expired burst still reads as a qualifying one, so the page "
           "disagrees with the trip it is supposed to predict: %s", stats());
 
+    /*
+     * AND IT IS STILL THERE IN OFF (reviewer, 2026-10-12). The three fields
+     * are evaluated at the time of the reading in every mode, and the history
+     * survives a disarm -- only a key-on clears it (spec 7.1). The reading
+     * that matters most is often taken after someone has disarmed the device,
+     * and a history that vanished then would make the trip unanswerable at
+     * exactly that moment.
+     */
+    CHECK(gen_inhibit_set_mode(GEN_INHIBIT_OFF, 500) == ESP_OK,
+          "the device would not disarm, so the OFF reading below did not run");
+    ft_run(100000);
+    CHECK(!json_has("\"err_age_ms\":null"),
+          "the error history went back to never-recorded on disarm. It is a "
+          "property of the bus, not of the arm, and only a key-on clears "
+          "it: %s", stats());
+    CHECK(json_u32("\"err_n\":") == 0,
+          "err_n reads %u in OFF, with the burst long outside the window -- "
+          "the field is evaluated at the time of the reading in every mode: "
+          "%s", json_u32("\"err_n\":"), stats());
+
     teardown();
     case_end();
     ft_set_bus_errors(0);
+}
+
+/*
+ * CASE 43 -- RESPOND times its probe (spec 11, user 2026-10-12).
+ *
+ * WHY IT EXISTS. The on-time counters were booked for the inhibit class in
+ * every mode. RESPOND sends no inhibit frame, so `ontime` and
+ * `ontime_unverified` read 0 on every RESPOND arm -- a STRUCTURAL zero,
+ * indistinguishable from a measurement of perfect punctuality, in the one
+ * mode whose whole purpose is to measure. RESPOND's clock starts after the
+ * dequeue, so without this the backlog behind its figures is invisible.
+ *
+ * Two halves, because either alone would pass for the wrong reason:
+ *
+ *   RESPOND   probes complete, and every completion is timed: the two counts
+ *             add up to the probe class's own `sent`.
+ *   PASSIVE   diag pages complete and NOT ONE of them is timed, so both
+ *             counts stay 0 against a non-empty telemetry population. Spec 11
+ *             asks for 0 in OBSERVE and PASSIVE; this half is what tells that
+ *             apart from an arm in which nothing completed at all, and it is
+ *             what would fail if the class test were dropped rather than
+ *             redirected.
+ */
+static unsigned long cls_sent(const char *page, const char *cls)
+{
+    const char *p = strstr(page, cls);
+    if (p == NULL) { return 0xFFFFFFFFul; }
+    p = strstr(p, "\"sent\":");
+    if (p == NULL) { return 0xFFFFFFFFul; }
+    return strtoul(p + 7, NULL, 10);
+}
+
+static void case_respond_times_its_probe(void)
+{
+    case_begin("case 43: RESPOND books its on-time counts for the probe");
+    setup();
+
+    static const uint8_t KEY[8]  = { 0x10 };
+    static const uint8_t CONT[8] = { 11 << 2 };
+    static const uint8_t SOC[8]  = { 0x4E, 0x20 };
+    static const uint8_t FLT[8]  = { 0, 0, 0, 0, 0, 0, 0, 0xC8 };
+    static const uint8_t SHF[8]  = { 0, 0, 0, 0, 0, 0, 2 << 4 };
+    uint8_t cmd[6];
+
+    gen_inhibit_set_mode(GEN_INHIBIT_RESPOND, 500);
+    ft_run(20000);
+
+    for (int i = 0; i < 12; i++)
+    {
+        memcpy(cmd, VCM, sizeof(cmd));
+        cmd[5] = (uint8_t)(i & 0x0F);
+        feed(0x051, cmd, 6, 20000);
+    }
+
+    {
+        static char page[GI_STATUS_PAGE_CAP];
+        gen_inhibit_get_stats_json(page, sizeof(page));
+        const unsigned long probes = cls_sent(page, "\"probe\":{");
+        const uint32_t ontime = json_need("\"ontime\":");
+        const uint32_t unver  = json_need("\"ontime_unverified\":");
+
+        /*
+         * THE POPULATION FIRST. With no probe completed, every equality below
+         * holds at 0 and the case proves nothing -- which is precisely the
+         * state the old code left RESPOND in permanently.
+         */
+        CHECK(probes >= 5,
+              "only %lu probes completed, so the counts below prove nothing: "
+              "%s", probes, stats());
+        CHECK(ontime + unver == probes,
+              "RESPOND completed %lu probes and timed %u of them (%u verified "
+              "+ %u not). In RESPOND the probe answers the VCM's command "
+              "against the same deadline an inhibit would, so every completion "
+              "is timed: %s",
+              probes, ontime + unver, ontime, unver, stats());
+        CHECK(ontime > 0,
+              "every one of RESPOND's %lu timed completions was unverifiable, "
+              "with the shim feeding one frame at a time and the queue empty "
+              "at each dequeue: %s", probes, stats());
+    }
+
+    /*
+     * PASSIVE NOW, and the arm clears the scheduler's counters -- so the zeros
+     * below are only worth reading because telemetry.sent is not zero beside
+     * them.
+     */
+    CHECK(gen_inhibit_set_mode(GEN_INHIBIT_PASSIVE, 500) == ESP_OK,
+          "PASSIVE would not arm, so its half of this case did not run");
+    for (int i = 0; i < 20; i++)
+    {
+        memcpy(cmd, VCM, sizeof(cmd));
+        cmd[5] = (uint8_t)(i & 0x0F);
+        feed(0x051, cmd, 6, 5000);
+        feed(0x592, KEY, 8, 5000);
+        feed(0x440, CONT, 8, 5000);
+        feed(0x411, SOC, 8, 5000);
+        feed(0x617, FLT, 8, 5000);
+        feed(0x639, SHF, 8, 5000);
+    }
+
+    {
+        static char page[GI_STATUS_PAGE_CAP];
+        gen_inhibit_get_stats_json(page, sizeof(page));
+        const unsigned long telem = cls_sent(page, "\"telemetry\":{");
+        const uint32_t ontime = json_need("\"ontime\":");
+        const uint32_t unver  = json_need("\"ontime_unverified\":");
+
+        CHECK(telem >= 2,
+              "only %lu telemetry frames completed in PASSIVE, so the zeros "
+              "below are the zeros of an arm in which nothing happened: %s",
+              telem, stats());
+        CHECK(ontime == 0 && unver == 0,
+              "PASSIVE timed %u completions (%u verified + %u not) against %lu "
+              "telemetry frames. Spec 11 reads 0 in PASSIVE: nothing it sends "
+              "answers the VCM's command, so there is no deadline to be on "
+              "time for: %s", ontime + unver, ontime, unver, telem, stats());
+    }
+
+    teardown();
+    case_end();
+}
+
+/*
+ * CASE 44 -- the would-transmit count is per arm (spec 3.1 item 2, user
+ * 2026-10-12).
+ *
+ * WHY IT EXISTS. `would_tx` counted since boot across every arm while `tx_ok`
+ * beside it counted since the last arm, so a PASSIVE dry run could not be read
+ * on its own terms: the only way to get this arm's count was to difference two
+ * pages across the arm boundary, and a reader who did not know that compared a
+ * since-boot figure against a since-arm one. It is also 0x7F8 B3-B6, which is
+ * why the change is part of schema 7.
+ *
+ * THREE READINGS, because the first two alone are satisfied by a counter that
+ * is simply always 0:
+ *
+ *   after arm 1   non-zero, so there is something for the reset to clear
+ *   after arm 2   zero, with no command yet seen
+ *   later in arm 2  non-zero again and BELOW arm 1's total, which a
+ *                 since-boot counter cannot be
+ */
+static void case_would_tx_is_per_arm(void)
+{
+    case_begin("case 44: the would-transmit count restarts on every arm");
+    setup();
+
+    static const uint8_t KEY[8]  = { 0x10 };
+    static const uint8_t CONT[8] = { 11 << 2 };
+    static const uint8_t SOC[8]  = { 0x4E, 0x20 };
+    static const uint8_t FLT[8]  = { 0, 0, 0, 0, 0, 0, 0, 0xC8 };
+    static const uint8_t SHF[8]  = { 0, 0, 0, 0, 0, 0, 2 << 4 };
+    uint8_t cmd[6];
+
+    gen_inhibit_set_mode(GEN_INHIBIT_PASSIVE, 500);
+    for (int i = 0; i < 20; i++)
+    {
+        memcpy(cmd, VCM, sizeof(cmd));
+        cmd[5] = (uint8_t)(i & 0x0F);
+        feed(0x051, cmd, 6, 5000);
+        feed(0x592, KEY, 8, 5000);
+        feed(0x440, CONT, 8, 5000);
+        feed(0x411, SOC, 8, 5000);
+        feed(0x617, FLT, 8, 5000);
+        feed(0x639, SHF, 8, 5000);
+    }
+
+    const uint32_t first = json_need("\"would_tx\":");
+    CHECK(first >= 5,
+          "the first arm counted %u would-transmits, so it barely went live "
+          "and there is nothing here for a reset to clear: %s", first, stats());
+
+    CHECK(gen_inhibit_set_mode(GEN_INHIBIT_PASSIVE, 500) == ESP_OK,
+          "the re-arm was refused, so this case did not test the reset");
+    CHECK(json_u32("\"would_tx\":") == 0,
+          "would_tx reads %u immediately after a re-arm, before this arm has "
+          "seen a single 0x051. It is carrying the previous arm's %u: a reader "
+          "comparing it against tx_ok beside it, which did reset, is "
+          "differencing a since-boot count against a since-arm one (spec 3.1 "
+          "item 2): %s", json_u32("\"would_tx\":"), first, stats());
+
+    for (int i = 0; i < 8; i++)
+    {
+        memcpy(cmd, VCM, sizeof(cmd));
+        cmd[5] = (uint8_t)(i & 0x0F);
+        feed(0x051, cmd, 6, 5000);
+        feed(0x592, KEY, 8, 5000);
+        feed(0x440, CONT, 8, 5000);
+        feed(0x411, SOC, 8, 5000);
+        feed(0x617, FLT, 8, 5000);
+        feed(0x639, SHF, 8, 5000);
+    }
+
+    const uint32_t second = json_need("\"would_tx\":");
+    CHECK(second > 0,
+          "the second arm counted no would-transmits at all, so the zero above "
+          "was a counter that had stopped rather than one that had reset: %s",
+          stats());
+    CHECK(second < first,
+          "the second arm reports %u would-transmits against the first arm's "
+          "%u, on a third of the commands. A per-arm count cannot rise past "
+          "the arm that fed it more (spec 3.1 item 2): %s",
+          second, first, stats());
+
+    teardown();
+    case_end();
+}
+
+/*
+ * CASE 45 -- a probe that outlives its deadline is timed by neither counter,
+ * and is not a skip (spec 11; reviewer's reading, 2026-10-12).
+ *
+ * WHY IT EXISTS. Case 43 books a probe's completion because the receive queue
+ * was empty when it finished. That test says nothing about WHEN it finished:
+ * a probe still in the controller when the VCM's next 0x051 is dequeued
+ * completes later, into an empty queue, and would be credited as on time --
+ * in the mode whose figures exist to measure exactly that. It is the same
+ * frame the device could not get out in time, scored as punctual.
+ *
+ * And it must stay out of the skip machinery. A skip means the inverter acted
+ * on the VCM's command with ours withdrawn, which is a statement about the
+ * inhibit frame; a probe commands nothing, so a late one is not a skip and
+ * three of them are not trip 7.
+ *
+ * THE CONDITION IS BUILT, NOT HOPED FOR, as case 8 had to learn: two commands
+ * 1 ms apart against 50 ms of air time, so the first probe is certainly still
+ * in the controller when the second command arrives.
+ */
+static void case_late_probe_is_not_timed(void)
+{
+    case_begin("case 45: a probe that misses its deadline is not timed");
+    setup();
+
+    /*
+     * THE PROBE ALONE IS SLOW. A global air time makes the diag pages slow
+     * too, and one of them then holds the controller through the probe's due
+     * time: the probe is never handed over, the second is dropped behind it,
+     * and the case tests nothing -- measured, first attempt.
+     */
+    ft_set_air_time_id(GI_PROBE_ID, 50000);
+    gen_inhibit_set_mode(GEN_INHIBIT_RESPOND, 500);
+    ft_run(20000);
+
+    uint8_t cmd[6];
+    for (int i = 0; i < 2; i++)
+    {
+        memcpy(cmd, VCM, sizeof(cmd));
+        cmd[5] = (uint8_t)(0x0C + i);
+        feed(0x051, cmd, 6, 1000);      /* 1 ms apart, 50 ms to complete */
+    }
+    /*
+     * SEVERAL TURNS, NOT ONE BIG ONE. A turn can end INSIDE the blocked
+     * receive -- it advances the clock towards its timeout and yields there --
+     * so a single large grant moves time past the probe's air time without the
+     * worker ever reaching the top of its loop, where the completion is
+     * observed. The first version did exactly that and reported 0 probes sent
+     * with the frame already off the wire.
+     */
+    for (int k = 0; k < 20; k++)
+    {
+        ft_run(50000);
+    }
+
+    static char page[GI_STATUS_PAGE_CAP];
+    gen_inhibit_get_stats_json(page, sizeof(page));
+    const unsigned long probes = cls_sent(page, "\"probe\":{");
+    const uint32_t ontime = json_need("\"ontime\":");
+    const uint32_t unver  = json_need("\"ontime_unverified\":");
+
+    CHECK(probes >= 2,
+          "only %lu probes completed, so there is no straggler here and the "
+          "inequality below would hold for the wrong reason: %s",
+          probes, stats());
+    /*
+     * BOTH DIRECTIONS. The second probe meets no deadline after it, so it IS
+     * timed -- without that half, a build that simply stopped timing probes
+     * would pass this case and fail nothing here.
+     */
+    CHECK(ontime + unver >= 1,
+          "not one of %lu probes was timed, so this case would also pass on a "
+          "build that books nothing at all: %s", probes, stats());
+    CHECK(ontime + unver < probes,
+          "%lu probes completed and %u were timed. The first was still in the "
+          "controller when the VCM's next 0x051 was dequeued, so it finished "
+          "after the command it was racing -- the empty receive queue it "
+          "completed against says nothing about its punctuality: %s",
+          probes, ontime + unver, stats());
+
+    CHECK(json_u32("\"skipped\":") == 0 &&
+          json_u32("\"skipped_withdrawn\":") == 0 &&
+          json_u32("\"skipped_late\":") == 0,
+          "a late probe was counted as a skip (%u / %u withdrawn / %u late). "
+          "A skip means the inverter acted on the VCM's command with ours "
+          "withdrawn, and a probe commands nothing: %s",
+          json_u32("\"skipped\":"), json_u32("\"skipped_withdrawn\":"),
+          json_u32("\"skipped_late\":"), stats());
+    CHECK(!json_has("\"abort_latched\":true"),
+          "a late probe reached a trip: %s", stats());
+
+    teardown();
+    case_end();
 }
 
 int main(int argc, char **argv)
@@ -4386,6 +4706,9 @@ int main(int argc, char **argv)
     case_no_going_live_behind_a_backlog();
     case_rearm_from_observe_goes_live_clean();
     case_trip6_history_is_reported();
+    case_respond_times_its_probe();
+    case_would_tx_is_per_arm();
+    case_late_probe_is_not_timed();
     case_errors_before_live_still_trip();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");

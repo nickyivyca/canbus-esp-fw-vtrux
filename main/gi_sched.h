@@ -359,6 +359,22 @@ typedef struct
      * measurement the device did not make.
      */
     bool       carried;
+    /*
+     * WHICH DEADLINE THIS FRAME ANSWERS (spec 11, user 2026-10-12; reviewer's
+     * reading, same day). `gs_t.deadline_n` as it stood when the frame was
+     * QUEUED. Its completion is timed only while the two still agree, i.e.
+     * while no further 0x051 has been dequeued since -- so a frame that
+     * completed after the command it was racing is neither on time nor
+     * unverified. It is not a skip either, and reaches no trip: the withdrawal
+     * and trip 7 are the inhibit class's, and this only decides whether the
+     * three timing figures take the completion.
+     *
+     * STAMPED AT QUEUE TIME AND NOT AT HANDOVER. A frame handed over after the
+     * next command was dequeued would carry THAT command's number and be timed
+     * against a deadline it was never racing -- which is the case this stamp
+     * exists to catch, scored as a pass.
+     */
+    uint32_t   deadline_n;
 } gs_slot_t;
 
 typedef struct
@@ -396,6 +412,8 @@ typedef struct
      * arms, which is what put the whole identity in doubt.
      */
     bool       held_carried;
+    /* The held frame's gs_slot_t.deadline_n, carried across the handover. */
+    uint32_t   held_deadline_n;
 
     /*
      * THE ABORT LOOP's state, kept across ticks so the loop does not block the
@@ -406,6 +424,33 @@ typedef struct
     bool       aborting;
     int64_t    abort_since;
     uint32_t   abort_cmds_this;
+
+    /*
+     * WHICH CLASS'S COMPLETIONS ARE TIMED (spec 11, user 2026-10-12).
+     * `ontime`, `ontime_unverified` and `unverified_max_backlog` are booked
+     * for this class and for no other. Every other per-class figure, and the
+     * whole skip and deadline machinery, is unaffected: those are about an
+     * inhibit frame that may have reached the wire after the command it
+     * answers, and spec 11 moves these three figures only.
+     *
+     * INHIBIT in every mode but RESPOND, where it is PROBE. RESPOND sends no
+     * inhibit frame, so with the class fixed at INHIBIT its timing figures
+     * read 0 -- a structural zero indistinguishable from a measurement of
+     * perfect punctuality, which is the failure this ruling removes. The
+     * probe answers the same command against the same deadline (the VCM's
+     * next 0x051), so booking it is what lets RESPOND report the receive
+     * backlog behind its own timing figures. RESPOND's clock starts after the
+     * dequeue, so time a frame spent queued is otherwise invisible there.
+     *
+     * OBSERVE and PASSIVE keep INHIBIT and so read 0, which spec 11 asks for
+     * and which is honest in those modes: neither puts a 0x051 on the wire,
+     * so there is no completion to time.
+     *
+     * A PARAMETER OF gs_rearm() rather than a setter, for the same reason the
+     * HAL is one: a mode change that forgot the setter would report that
+     * structural zero again and nothing in the output would say so.
+     */
+    gs_class_t timed_class;
 
     /* The inhibit's deadline is the VCM's next 0x051 (item 5). */
     bool       inhibit_outstanding;
@@ -419,6 +464,24 @@ typedef struct
      * reasoning about how far apart the two calls are, which is not the question.
      */
     bool       deadline_token;
+
+    /*
+     * HOW MANY DEADLINES THIS ARM HAS EVALUATED. Incremented by
+     * gs_command_received(), AFTER it has observed a completion -- a frame
+     * that finished before this dequeue is on time in the only sense the
+     * device can evaluate, and incrementing first would score every on-time
+     * completion as a straggler.
+     *
+     * A counter and not the one-bit token beside it: the question here is
+     * "which deadline", not "has one been evaluated", and the token is
+     * consumed by a queueing while this must outlive one.
+     *
+     * Per arm, like every other figure. gs_rearm() leaves both this and
+     * held_deadline_n at 0, so a frame carried in across the re-arm is timed
+     * against the new arm's first command -- which is the behaviour an
+     * outstanding frame had before this field existed.
+     */
+    uint32_t   deadline_n;
 
     /*
      * TRIP 7'S SLIDING WINDOW. A ring of recent skip timestamps, because "3
@@ -460,13 +523,18 @@ void gs_reset(gs_t *s);
  * the old one in the driver's FIFO, and that is the priority inversion item 3
  * exists to prevent -- with the old frame's departure credited to the new one.
  *
+ * `timed` NAMES THE CLASS WHOSE COMPLETIONS ARE TIMED -- GS_CLASS_PROBE in
+ * RESPOND, GS_CLASS_INHIBIT everywhere else (spec 11, user 2026-10-12). It is
+ * a parameter and not a setter so that a mode change cannot leave the previous
+ * arm's answer in place; see `timed_class`.
+ *
  * THE HAL IS A PARAMETER AND NOT PRESERVED FROM THE STRUCT. The first version took
  * only `s` and kept the existing pointer, which is NULL on a statically-allocated
  * scheduler that has never been gs_init()ed -- so the very first arm produced a
  * scheduler with no HAL and segfaulted on the first submit. Passing it makes that
  * state unreachable instead of relying on an init call nobody can see from here.
  */
-void gs_rearm(gs_t *s, const gs_hal_t *hal);
+void gs_rearm(gs_t *s, const gs_hal_t *hal, gs_class_t timed);
 
 /*
  * Withdraw every inhibit: purge the class queue and start the abort loop on a held

@@ -356,6 +356,20 @@ void gi_reset_stats(gi_state_t *st)
     gi_hist_reset(&st->rx_gap);
     gi_hist_reset(&st->response);
     st->tx_ok = st->tx_fail = st->other_frames = 0;
+    /*
+     * SPEC 3.1 ITEM 2 (user, 2026-10-12): the would-transmit count resets on
+     * every arm, as tx_ok does. It had counted since boot across every arm,
+     * so a PASSIVE dry run could not be read on its own terms: the figure a
+     * reader compares against this arm's tx_ok carried every previous arm's
+     * too, and differencing two pages across an arm boundary was the only way
+     * to get the arm's own count.
+     *
+     * This changes what 0x7F8 B3-B6 means, which is why it is a schema 7
+     * change and why it must reach a bench in the same image as the rest of
+     * 7: a reader holding the schema 6 meaning would difference a per-arm
+     * count. The schema doc's version 7 entry records it.
+     */
+    st->would_tx = 0;
     st->ctr_steps_ok = st->ctr_steps_bad = 0;
     st->have_last_ctr = false;
     st->rx_errors = 0;

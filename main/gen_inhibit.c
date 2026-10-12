@@ -1323,7 +1323,14 @@ esp_err_t gen_inhibit_set_mode(gen_inhibit_mode_t mode, uint32_t offset_us)
      * the priority inversion item 3 exists to prevent, with the old frame's
      * departure credited to the new one.
      */
-    gs_rearm(&s_sched, &DEV_HAL);
+    /*
+     * RESPOND times its probe; every other mode times its inhibit frame (spec
+     * 11, user 2026-10-12). Passed per arm because the mode is what decides
+     * it -- see gs_t's timed_class for why this is not a setter.
+     */
+    gs_rearm(&s_sched, &DEV_HAL,
+             (mode == GEN_INHIBIT_RESPOND) ? GS_CLASS_PROBE
+                                           : GS_CLASS_INHIBIT);
     s_seen_inh_sent = 0;
     s_seen_inh_refused = 0;
     s_seen_probe_handed = 0;

@@ -755,7 +755,7 @@ static void case_rearm_keeps_what_the_hardware_holds(void)
     ck(fb_outstanding_now(), "and the controller still holds it");
 
     /* The mode change. This is the call under test. */
-    gs_rearm(&s, fb_hal());
+    gs_rearm(&s, fb_hal(), GS_CLASS_INHIBIT);
 
     /*
      * THE SECOND FRAME IS THE SAME CLASS, DELIBERATELY. The first version of this
@@ -881,7 +881,7 @@ static void case_identity_carried_across_rearm(void)
     /* Let real time pass before the re-arm, so a hold booked into the new arm
      * would be obvious rather than a rounding artefact. */
     fb_advance(200000);         /* 200 ms */
-    gs_rearm(&s, fb_hal());
+    gs_rearm(&s, fb_hal(), GS_CLASS_INHIBIT);
 
     const gs_class_stats_t *c = &s.st.cls[GS_CLASS_TELEMETRY];
     ck_eq(c->queued, 0, "the new arm has queued nothing");
@@ -1486,7 +1486,7 @@ static void case_identity_carried_requeue_sets_no_wait(void)
      * is what makes the assertion work; it is the SIGN of the bug that matters,
      * not its size.
      */
-    gs_rearm(&s, fb_hal());
+    gs_rearm(&s, fb_hal(), GS_CLASS_INHIBIT);
 
     const gs_class_stats_t *telem = &s.st.cls[GS_CLASS_TELEMETRY];
     ck_eq(telem->carried_in, 1, "the new arm inherited it");
