@@ -97,7 +97,7 @@ void Recorder::hex8(const char* step, const char* key, uint8_t v,
 void Recorder::dec(const char* step, const char* key, uint32_t v,
                    Status status, const char* cite) {
   char buf[16];
-  std::snprintf(buf, sizeof(buf), "%u", v);
+  std::snprintf(buf, sizeof(buf), "%u", (unsigned)v);
   note(step, key, buf, status, cite);
 }
 
@@ -147,7 +147,24 @@ std::string tagList(const std::vector<uint8_t>& tags) {
   return s;
 }
 
+// Bit timing, written in Configuration mode before Normal (2026-10-13, for
+// the bench image firmware/test/c12_bench). RESET leaves CNF1-3 at 0, a
+// timing no real chip can talk at, and nothing here set them because the
+// fake does not model timing. 500 kbit/s from the X2's 16 MHz crystal
+// (bringup notes, "The board"): BRP 0, so TQ = 2 x (BRP + 1) / Fosc =
+// 125 ns and 16 TQ a bit (p40 eq 5-1, p44 Register 5-1); sync 1 + PRSEG 6
+// + PHSEG1 7 + PHSEG2 2, sample point 87.5 % -- the Innomaker's own
+// (python-can gs_usb samples at 87.5 %); SJW 1 TQ. Meets p43's rules
+// (PropSeg + PS1 >= PS2, PS2 > SJW) and p45's PS2 minimum of 2 TQ
+// (Registers 5-2 p44, 5-3 p45).
+const uint8_t CNF1_500K = 0x00;   // SJW 1 TQ, BRP 0
+const uint8_t CNF2_500K = 0xB5;   // BTLMODE, PHSEG1 = 7 TQ, PRSEG = 6 TQ
+const uint8_t CNF3_500K = 0x01;   // PHSEG2 = 2 TQ
+
 void intoNormalMode(Target& t) {
+  writeReg(t, R_CNF1, CNF1_500K);
+  writeReg(t, R_CNF2, CNF2_500K);
+  writeReg(t, R_CNF3, CNF3_500K);
   writeReg(t, R_CANCTRL, MODE_NORMAL);
   t.advanceUs(100);
 }
@@ -563,6 +580,31 @@ void run(Target& t, Recorder& rec) {
   stepAbort(t, rec);
   stepRxOverrun(t, rec);
   stepRxRollover(t, rec);
+}
+
+bool runNamed(Target& t, Recorder& rec, const char* name) {
+  struct Named {
+    const char* name;
+    void (*fn)(Target&, Recorder&);
+  };
+  static const Named steps[] = {
+      {"C1", stepResetDefaults},    {"C2", stepBitModify},
+      {"C3", stepReadStatusMap},    {"C4", stepTxFlagsOnRequest},
+      {"C5", stepRtsTogether},      {"C6", stepRtsSeparately},
+      {"C7", stepTxPriority},       {"C8", stepSameIdVaryingDlc},
+      {"C9", stepNoAck},            {"C10", stepAbort},
+      {"C11", stepRxOverrun},       {"C12", stepRxRollover}};
+  if (std::strcmp(name, "all") == 0) {
+    run(t, rec);
+    return true;
+  }
+  for (size_t i = 0; i < sizeof(steps) / sizeof(steps[0]); i++) {
+    if (std::strcmp(name, steps[i].name) == 0) {
+      steps[i].fn(t, rec);
+      return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace mcpconf

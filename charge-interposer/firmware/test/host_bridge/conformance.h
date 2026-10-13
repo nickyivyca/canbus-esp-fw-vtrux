@@ -118,6 +118,12 @@ class Recorder {
 // recorder, so a caller can run it against anything implementing Target.
 void run(Target& t, Recorder& rec);
 
+// Run one step by its number ("C1" .. "C12"), or the whole sequence for
+// "all". False, with nothing recorded, for any other name. Added for the
+// bench image (firmware/test/c12_bench, 2026-10-13), which runs C12 on its
+// own: the single-adapter C12 the reviewer accepted.
+bool runNamed(Target& t, Recorder& rec, const char* name);
+
 // --- helpers shared with the tests, exposed so a test can drive one step
 // --- without replaying the entire sequence.
 uint8_t readReg(Target& t, uint8_t addr);

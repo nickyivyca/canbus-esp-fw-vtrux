@@ -238,6 +238,45 @@ int main() {
     check(open > 0, msg);
   }
 
+  // --- runNamed, the bench image's entry point (2026-10-13) -------------
+  {
+    const size_t full = rec.all().size();
+    FakeTarget t12;
+    mcpconf::Recorder r12;
+    const bool ok12 = mcpconf::runNamed(t12, r12, "C12");
+    size_t other = 0;
+    for (size_t j = 0; j < r12.all().size(); j++)
+      if (r12.all()[j].step != "C12-rx-rollover") other++;
+    char msg[160];
+    std::snprintf(msg, sizeof(msg),
+                  "runNamed(\"C12\") records %u C12 lines and %u others",
+                  (unsigned)(r12.all().size() - other), (unsigned)other);
+    check(ok12 && other == 0 && r12.all().size() > 0, msg);
+    check(valueOf(r12, "C12-rx-rollover", "noBUKT.RXB0D0") ==
+              valueOf(rec, "C12-rx-rollover", "noBUKT.RXB0D0"),
+          "...and C12 alone reads what C12 reads at the end of the run");
+    FakeTarget ta;
+    mcpconf::Recorder ra;
+    std::snprintf(msg, sizeof(msg),
+                  "runNamed(\"all\") records the whole sequence (%u lines)",
+                  (unsigned)full);
+    check(mcpconf::runNamed(ta, ra, "all") && ra.all().size() == full, msg);
+    FakeTarget tb;
+    mcpconf::Recorder rb;
+    check(!mcpconf::runNamed(tb, rb, "C13") && rb.all().empty(),
+          "runNamed(\"C13\") is refused and records nothing");
+    // The bench needs a real bit timing: RESET leaves CNF1-3 at 0. After
+    // C12 (which goes to Normal mode) the chip must hold 500 kbit/s at
+    // 16 MHz, sample point 87.5 %.
+    const uint8_t c1 = mcpconf::readReg(t12, R_CNF1);
+    const uint8_t c2 = mcpconf::readReg(t12, R_CNF2);
+    const uint8_t c3 = mcpconf::readReg(t12, R_CNF3);
+    std::snprintf(msg, sizeof(msg),
+                  "Normal mode is entered with CNF1-3 = %02X %02X %02X "
+                  "(want 00 B5 01: 500 kbit/s, 16 TQ, 87.5 %%)", c1, c2, c3);
+    check(c1 == 0x00 && c2 == 0xB5 && c3 == 0x01, msg);
+  }
+
   if (failures) {
     std::printf("\n%d failure(s)\n", failures);
     return 1;
