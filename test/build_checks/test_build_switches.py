@@ -122,8 +122,11 @@ def main():
          B.classify({"A": [], "B": [], "C": [], "D": []}, t_ok, TRG)[0] == ["D"], ""),
         ("classify: a stale entry (no longer tested) is reported",
          B.classify({"A": [], "B": []}, t_ok, TRG)[1] == ["C"], ""),
-        ("classify: 'not a switch' needs one of the three kinds",
-         len(B.classify({"A": []}, {"A": (B.NOT, "a guess", "why", None)}, {})[2]) == 1, ""),
+        ("classify: 'not a switch' needs a kind",
+         len(B.classify({"A": []}, {"A": (B.NOT, " ", "why", None)}, {})[2]) == 1
+         and len(B.classify({"A": []}, {"A": (B.NOT, None, "why", None)}, {})[2]) == 1, ""),
+        ("classify: a kind beyond the spec's three examples is accepted (reviewer, 2026-10-13)",
+         B.classify({"A": []}, {"A": (B.NOT, "computed value", "why", None)}, {})[2] == [], ""),
         ("classify: a test-only switch needs a refusal row",
          len(B.classify({"A": []}, {"A": (B.TEST, None, "why", None)}, {"A": PRB})[2]) == 1, ""),
         ("classify: an entry needs a reason",

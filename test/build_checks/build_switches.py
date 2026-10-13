@@ -11,7 +11,9 @@ every build option the project's CMakeLists.txt files test, is listed as one of:
     test-only          must never reach a vehicle; has a refusal row in
                        build_output.py that judges the image and the ELF;
     not a switch       a default value, a value the build injects, or a
-                       library macro -- each with its reason.
+                       library macro -- each with its reason. Those three are
+                       the spec's examples, not a closed list (reviewer's
+                       reading, 2026-10-13).
 
 An unlisted one fails the build checks. So does a listed one the source no
 longer tests: a renamed switch would otherwise leave a stale entry beside an
@@ -48,8 +50,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
 
 SHIP, TEST, NOT = "shipping variant", "test-only", "not a switch"
-# The three kinds of "not a switch" the spec names; a NOT entry must use one.
-NOT_KINDS = ("default value", "injected value", "library macro")
+# A "not a switch" entry carries a kind and a reason. The spec's kinds (default
+# value, injected value, library macro) are examples, not a closed list
+# (reviewer's reading, 2026-10-13), so the kind is checked for presence only.
 
 # symbol -> (class, kind or None, reason, refusal row or None)
 # A test-only entry names the build_output.py row that refuses its image. A
@@ -105,6 +108,15 @@ SWITCHES = {
     "WICAN_PRO": (SHIP, None,
         "the board id HARDWARE_VER is compared with (stock's other board); "
         "reviewer's ruling 2026-10-13", None),
+    "WICAN_USB_V100": (SHIP, None,
+        "a board id HARDWARE_VER is compared with in the top-level CMakeLists.txt, "
+        "as WICAN_PRO; reviewer's ruling 2026-10-13", None),
+    "WICAN_V210": (SHIP, None,
+        "a board id HARDWARE_VER is compared with in the top-level CMakeLists.txt, "
+        "as WICAN_PRO; reviewer's ruling 2026-10-13", None),
+    "PRJ_BIN_LEN": (NOT, "computed value",
+        "computed by the build from the project name, used only to refuse a name "
+        "over 31 characters; reviewer's ruling 2026-10-13", None),
     "MIN": (NOT, "library macro", "#ifndef fallback definition in ftp.h", None),
     "MAX": (NOT, "library macro", "#ifndef fallback definition in ftp.h", None),
     "ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED": (NOT, "library macro",
@@ -314,8 +326,8 @@ def classify(found, table=None, triggers=None):
         cls, kind, reason, refusal = entry
         if cls not in (SHIP, TEST, NOT):
             bad.append("%s: class %r is not one of the three" % (s, cls))
-        if cls == NOT and kind not in NOT_KINDS:
-            bad.append("%s: 'not a switch' needs one of %s, has %r" % (s, NOT_KINDS, kind))
+        if cls == NOT and not (kind or "").strip():
+            bad.append("%s: 'not a switch' needs a kind" % s)
         if not (reason or "").strip():
             bad.append("%s: no reason" % s)
         if cls == TEST and not refusal:
