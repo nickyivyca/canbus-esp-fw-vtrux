@@ -11,7 +11,9 @@ behavioural tests of the core live one level up (`../../test_machine.py`,
 | `build_check_manifest_test.py` | Tests the harness (tester, 2026-10-07): `build_check.check_manifest` must find, for each image on disk, a manifest row with that name AND the ELF read from its bytes -- a row with the name but other bytes fails, as does an image with no application descriptor. Runs against a throwaway tree. |
 | `digest_recheck_check.py` | Proves the source-digest re-check can fail. Test 1: `source_digest()` moves on a one-byte change to any hashed input and returns when it is reverted, and does *not* move on a file that is not hashed. Test 2: starts a real build, edits a hashed input while it runs, and requires the build to **fail** with `SOURCE DIGEST MISMATCH`; then requires an untouched build to pass. It deletes the environment's `.bin`/`.elf` first, because the post-action is attached to the image target and a `pio run` with nothing to do never reaches it -- the first version of this test omitted that and reported the check broken when the probe had simply never run |
 | `host_diff/` | The Python/C++ differential: `machine.py` makes the golden, `machine.cpp` is replayed through `host_runner` and the two are diffed byte for byte |
-| `host_unit/` | C++ unit tests for firmware logic pure enough to compile on a PC without faking a peripheral. Today: spec 8.2's `bridge_ok` interval rule |
+| `c12_bench/` | A standalone ESP-IDF test image (no Arduino, no PlatformIO, no product code) that runs `host_bridge/conformance.cpp` on the X2's real MCP2515 over SPI and asks the host (SeaDrive `bench_c12.py`) for what it cannot do itself: inject a frame, report the wire, withhold ACK. Its transcript diffs line for line against the fake's. Tester, 2026-10-13; see its README |
+| `host_bridge/` | Spec 9.1 L2: `main.cpp`, both ports and the core against fake chips (`mcp2515_fake_chip`, `twai_fake`, fake `Arduino.h` / `SPI.h` / `esp_app_desc.h` / `esp_log.h`), plus the MCP2515 conformance sequence (`conformance.cpp`) that the fake and the bench image both run. Tester-owned, whole directory; see its README |
+| `host_unit/` | C++ unit tests for the firmware pieces pure enough to compile on a PC with no peripheral faked at all. Two of them: spec 8.2's `bridge_ok` interval rule (`src/bridge_health.h`) and spec 2.2's `0x7F6` B7 counter (`src/charger_tx_failures.h`) |
 | `hw_mechanics.py` | Reports which spec 10 hardware mechanics a change has touched, against a manifest recorded at the last truck flash. The written procedure in `../README.md` is the authority; this closes the one gap worth automating |
 
 ## `build_check.py`
@@ -43,19 +45,33 @@ control those pass as success.
 wsl bash ".../firmware/test/host_unit/run.sh"
 ```
 
-Builds and runs every `test_*.cpp` in the folder with plain `g++ -std=c++11`.
-The one test so far covers `src/bridge_health.h`, which is spec 8.2's
-`bridge_ok` rule: health **since the previous status frame**, not since
-boot. That rule was kept out of `main.cpp` precisely so it could be tested
-here -- the rest of `main.cpp` needs the fake ports of spec 9.1 L2, which
-will live beside this rather than in it.
+Builds and runs every `test_*.cpp` in the folder with plain `g++ -std=c++11`,
+and needs no environment set (unlike `host_bridge/run.sh`, which wants
+`VTRUX_DATA`). Both rules below were kept out of `main.cpp` so they could be
+tested here; the rest of `main.cpp` needs the fake ports of spec 9.1 L2,
+which live in `host_bridge/` rather than in this folder.
 
-Both halves of the claim are tested, because each is a different defect: a
-failure inside one interval must clear the flag for **that frame**, and a
-clean interval afterwards must set it again. Shown failing against both --
-ignoring the vehicle-side input (the pre-2026-10-04 behaviour) fails 2
-checks, and never advancing the baselines (the "since boot" defect of
-review item B-3) fails 7.
+| test | covers |
+|---|---|
+| `test_bridge_health.cpp` | spec 8.2's `bridge_ok`: health **since the previous status frame**, not since boot. Both halves, because each is a different defect -- a failure inside one interval must clear the flag for **that frame**, and a clean interval afterwards must set it again. Shown failing against both: ignoring the vehicle-side input (the pre-2026-10-04 behaviour) fails 2 checks, and never advancing the baselines (the "since boot" defect of review item B-3) fails 7. 20 checks |
+| `test_charger_tx_failures.cpp` | spec 2.2's `0x7F6` B7, "charger not acknowledging while expected": the SUM of the charger port's three disjoint tallies -- queue full, controller failure, and the 100 ms age-out that discards a frame at the head without ever loading it (user, 2026-10-13) -- accrued only while the VCU's flow bit is 1, with a delta that arrives outside a session DISCARDED rather than banked for the next one. 18 checks: one per tally, the three together in one pass, both sides of the gate, the mid-session boot of 2.2's last sentence, and the unsigned subtraction that makes a counter wrap harmless |
+
+(Check counts measured by the tester, 2026-10-13, at 9c42964: 20 and 18,
+all OK.)
+
+**`test_charger_tx_failures.cpp` is not a smaller copy of `test_l2_bridge`'s
+`tx-fail` arm.** That arm drives the same field end to end through
+`main.cpp` and is much the stronger test of the wiring -- the frames in it
+fail by aging out, so it reaches the 2026-10-13 clause too. What it cannot
+discriminate is the shape of the number: its flow-1 assertion is
+`gated > 0`, which an implementation that banks failures from outside the
+session and adds them to the next one also satisfies, reporting a bigger
+number rather than a wrong-looking one. The unit case "and they are NOT
+banked: the session starts at 0 even though the tallies stand at 1,000" is
+an equality. *The implementor reports (2026-10-13, not re-run by the
+tester) that six mutations of the header were run against these cases and
+none survived, the baseline-only-when-counting mutation failing exactly
+that case first.*
 
 ## `host_diff/`
 

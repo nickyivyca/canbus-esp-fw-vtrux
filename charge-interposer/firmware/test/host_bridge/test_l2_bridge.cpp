@@ -957,8 +957,12 @@ void caseTxFail() {
   // Nothing acknowledges on the charger segment, so every forwarded
   // frame ages out at 100 ms and the PORT's own counters climb. The
   // spec 2.2 field must stay at zero regardless.
+  // Long (60 passes) against the short flow-1 phase below (15), so that
+  // failures from here, if they were BANKED and added once flow is 1,
+  // would show as a count far above what 15 passes can produce (2026-10-13;
+  // the implementor's note that "gated > 0" could not tell).
   g_chip->setAcknowledged(false);
-  for (int i = 0; i < 20; i++) {
+  for (int i = 0; i < 60; i++) {
     vcuCommand(0, interposer::MODE_CHARGER);
     chargerStatus();
     runBridge(100);
@@ -970,7 +974,7 @@ void caseTxFail() {
         "-- the field means 'failed while expected' (spec 2.2)");
 
   // --- (b) flow 1: now it IS expected --------------------------------
-  for (int i = 0; i < 25; i++) {
+  for (int i = 0; i < 15; i++) {
     vcuCommand(1, interposer::MODE_CHARGER);
     chargerStatus();
     runBridge(100);
@@ -980,6 +984,13 @@ void caseTxFail() {
   check(gated > 0,
         "...and with flow 1 they ARE counted, so the gate is a gate and "
         "not simply a counter that never increments");
+  // Spec 2.2 counts failures WHILE flow is 1: 15 passes of 100 ms forward
+  // about 15 page-00 frames toward the charger (25 passes gave 18), so the
+  // count is bounded by what this phase sent, never by the 60 passes of
+  // flow 0 before it.
+  check(gated <= 30,
+        "...and only those of the flow-1 phase: the flow-0 failures before "
+        "it are not banked into the session (spec 2.2)");
 
   // --- (c) and it stops again when the charger comes back ------------
   g_chip->setAcknowledged(true);
