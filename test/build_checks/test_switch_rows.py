@@ -62,12 +62,15 @@ def main():
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
 
-    real_scan, real_table = BS.scan, BS.SWITCHES
+    real_scan, real_table, real_triggers = BS.scan, BS.SWITCHES, BS.TRIGGERS
     ok_t = {"A": (BS.SHIP, None, "why", None), "B": (BS.TEST, None, "why", "row b")}
     try:
         def drive(found, table):
+            # classify() reads TRIGGERS too, so a substituted table needs triggers
+            # that match it: one per test-only entry, as the real tables have
             BS.scan = lambda repo=None: found
             BS.SWITCHES = table
+            BS.TRIGGERS = {s: {"probes": (("GET", "/x"),)} for s, e in table.items() if e[0] == BS.TEST}
             return rows_of(BO.check_switches_classified)
         r = drive({"A": ["x:1"], "B": ["y:2"]}, ok_t)
         checks.append(("classified: a full, clean table passes all three rows",
@@ -105,7 +108,7 @@ def main():
         checks.append(("refused: a shipping variant needs no refusal row",
                        got.get("every test-only switch has a refusal row") is True))
     finally:
-        BS.scan, BS.SWITCHES = real_scan, real_table
+        BS.scan, BS.SWITCHES, BS.TRIGGERS = real_scan, real_table, real_triggers
         BO.rows.clear()
 
     # The real pair: images of one commit built with and without the switch, each
