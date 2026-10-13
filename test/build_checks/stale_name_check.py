@@ -30,6 +30,14 @@ is an uncommitted change, and a commit touching only README.md is a git-state
 change. In those steps nothing compiled changes, so a build that does not
 re-run the naming writes no image at all -- and that fails, as "re-runs the
 naming before the build" requires (reviewer).
+    nogit/ninja          git cannot answer, `ninja -C build`    -> the build fails
+                                                                   and writes no image
+The last step is the 12.3 text's "if the naming can't be re-run, the build fails
+rather than producing an image under a stale name" (reviewer: show it once).
+The worktree's .git is moved aside, GIT_CEILING_DIRECTORIES stops git looking
+above the tree (checked: git rev-parse must fail there first), and a source
+edit is made so that a build that ignored git's failure would recompile and
+write an image. Then .git and the edit are put back.
 
 WHAT IS JUDGED, for each step: the image this build wrote (a top-level
 build/*.bin of this project, modified during the step -- exactly one, or the
@@ -125,17 +133,29 @@ def judge(rc, images, desc, full_sha, dirty):
     return True, "all three read %s" % readings["version"]
 
 
-def git(args, cwd):
-    return subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True)
+def judge_nogit(git_answered, rc, images):
+    """(ok, detail) for the step where git cannot answer: the build must fail and
+    write no image. If git still answered, the step proves nothing and fails."""
+    if git_answered:
+        return False, "git still answered in the tree, so this step tests nothing"
+    if images:
+        return False, "an image was written (%s)" % ", ".join(os.path.basename(p) for p in images)
+    if rc == 0:
+        return False, "the build succeeded without git"
+    return True, "the build failed (rc %d) and wrote no image" % rc
 
 
-def build(tree, how, log):
+def git(args, cwd, env=None):
+    return subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True, env=env)
+
+
+def build(tree, how, log, env=None):
     if how == "idf":
         cmd = [sys.executable, os.path.join(os.environ["IDF_PATH"], "tools", "idf.py"), "build"]
     else:
         cmd = ["ninja", "-C", "build"]
     t0 = time.time()
-    r = subprocess.run(cmd, cwd=tree, capture_output=True, text=True)
+    r = subprocess.run(cmd, cwd=tree, capture_output=True, text=True, env=env)
     with open(log, "a", encoding="utf-8") as fh:
         fh.write("\n===== %s (rc %d, %.1f s)\n" % (" ".join(cmd[-2:]), r.returncode, time.time() - t0))
         fh.write(r.stdout[-20000:])
@@ -220,8 +240,30 @@ def main():
             if name == "clean" and not ok:
                 print("  the clean build is the precondition; stopping")
                 break
+        else:
+            dotgit, hidden = os.path.join(tree, ".git"), os.path.join(tree, ".git.stale-name-off")
+            env = dict(os.environ, GIT_CEILING_DIRECTORIES=os.path.dirname(tree))
+            before = open(os.path.join(tree, EDIT_FILE), "rb").read()
+            append_probe(tree, 6)
+            os.rename(dotgit, hidden)
+            try:
+                answered = git(["rev-parse", "HEAD"], tree, env).returncode == 0
+                since = step_start()
+                rc, secs = build(tree, "ninja", log, env)
+                images = written_images(os.path.join(tree, "build"), since)
+            finally:
+                os.rename(hidden, dotgit)
+                with open(os.path.join(tree, EDIT_FILE), "wb") as fh:
+                    fh.write(before)
+            ok, detail = judge_nogit(answered, rc, images)
+            record["steps"].append({"step": "nogit/ninja", "build": "ninja", "git_answered": answered,
+                                    "rc": rc, "seconds": round(secs, 1),
+                                    "images": [os.path.basename(p) for p in images], "ok": ok, "detail": detail})
+            print("  %-4s %-13s %s" % ("ok" if ok else "FAIL", "nogit/ninja", detail), flush=True)
+            if not ok:
+                fails.append("nogit/ninja")
     finally:
-        record["verdict"] = "PASS" if not fails and len(record["steps"]) == len(steps) else "FAIL"
+        record["verdict"] = "PASS" if not fails and len(record["steps"]) == len(steps) + 1 else "FAIL"
         record["failed"] = fails
         with open(a.out, "w", encoding="utf-8") as fh:
             json.dump(record, fh, indent=1)
