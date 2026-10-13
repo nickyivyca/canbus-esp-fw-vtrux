@@ -328,6 +328,67 @@ def p3_anchor_cases():
                   for t, a, b, c in clamps])
 
 
+def p3_clamp_step_cases():
+    """Spec 5.2 at 1d1fae8d2aad1a38 (user, 2026-10-13) in P3 clause 2: a
+    frame from above the cap to the cap less 0.1 A is one clamp plus one
+    0.1 A down step taken from the cap, held to the 0.3 s like any step and
+    timing the next; shown against the rule before it (`_clamp_step`
+    False)."""
+    def run(series, veh="", **kw):
+        return R._hold_follows_loads(series, veh, **kw)
+
+    h0 = 50000
+    caps = [(0, 16.0), (h0 + 400, 6.0)]
+
+    def walk(t, a):
+        return _sp_path(t, 500000, a, [(t, 2.0), (C0, 2.9)])
+    # entered at 6.10 A, the cap falls to 6.00 A 400 ms in with a step due:
+    # 5.90 A, then 0.1 A steps from 300 ms after it
+    comb = _with_cap(_hs(sp=[(h0, 6.1), (h0 + 400, 5.9)] +
+                         walk(h0 + 700, 5.9)), caps)
+    ok, why = run(comb)
+    check(ok and "1 of them with a down step taken from the cap" in why,
+          "clause 2: 6.10 -> 5.90 A as the cap falls to 6.00 A, then steps "
+          "300 ms apart, passes as a clamp plus a step -> %s" % why)
+    ok, why = run(comb, _clamp_step=False)
+    check(not ok and "2:" in why and "-0.20 A step" in why,
+          "...and under the rule before 1d1fae8d it is a -0.20 A step -> %s"
+          % why)
+    deep = _with_cap(_hs(sp=[(h0, 6.1), (h0 + 400, 5.8)] +
+                         walk(h0 + 700, 5.8)), caps)
+    ok, why = run(deep)
+    check(not ok and "2:" in why and "-0.30 A step" in why,
+          "clause 2: 6.10 -> 5.80 A (the cap less 0.2 A) is neither a clamp "
+          "nor a clamp plus a step -> %s" % why)
+    soon = _with_cap(_hs(sp=[(h0, 6.1), (h0 + 400, 5.9)] +
+                         walk(h0 + 600, 5.9)), caps)
+    ok, why = run(soon)
+    check(not ok and "2:" in why and "steps 200 ms apart" in why,
+          "clause 2: a step 200 ms after the combined frame fails, the "
+          "cadence timed from it -> %s" % why)
+    early = _with_cap(_hs(sp=[(h0, 6.3), (h0 + 300, 6.2), (h0 + 400, 5.9)] +
+                          walk(h0 + 700, 5.9)), caps)
+    ok, why = run(early)
+    check(not ok and "2:" in why and "steps 100 ms apart" in why,
+          "clause 2: a combined frame 100 ms after a step fails: its step "
+          "is held to the 0.3 s too -> %s" % why)
+    # the trace reader on the trace built for it: one combined frame
+    s = R.hold_series_from_trace(TRACES / "syn_hold_cap_clamp_step.trace")
+    pairs = list(zip(s["sp"], s["sp"][1:], s["spcap"][1:])) if s else []
+    comb_t = [(tb, a, b, cap) for (_ta, a), (tb, b), (_tc, cap) in pairs
+              if cap is not None and a > cap + 0.025
+              and abs(b - (cap - 0.1)) <= 0.025]
+    clamp_t = [(tb, a, b, cap) for (_ta, a), (tb, b), (_tc, cap) in pairs
+               if cap is not None and a > cap + 0.025
+               and abs(b - cap) <= 0.025]
+    check([(t, round(a, 2), round(b, 2)) for t, a, b, _c in comb_t]
+          == [(121400, 6.1, 5.9)] and
+          [round(c, 2) for _t, _a, _b, c in clamp_t] == [3.0],
+          "hold_series_from_trace on syn_hold_cap_clamp_step: one clamp plus "
+          "a step (6.10 -> 5.90 A at 121.4 s) and one clamp to 3.00 A: %s / "
+          "%s" % (comb_t, clamp_t))
+
+
 def keep_trace_cases():
     """--keep-traces (2026-10-12): after a clean L1 replay the trace is
     kept with keep=True and deleted without it, on a copy of a small
@@ -622,6 +683,7 @@ def main():
 
     print("\nspec 9 at 96dd3703: clause 2's clamp, clause 3's later anchor")
     p3_anchor_cases()
+    p3_clamp_step_cases()
 
     print("\n--keep-traces: the L1 replay keeps the trace only when asked")
     keep_trace_cases()

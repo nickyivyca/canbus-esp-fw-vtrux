@@ -855,6 +855,71 @@ def scen_hold_cap_clamp():
     return s
 
 
+def scen_hold_cap_clamp_step():
+    """arm -> override on the 6.10 A floor -> release into HOLD -> the EVSE
+    cap falls below the setpoint on a frame where a 0.1 A step is due: once
+    with the law pointing down, once pointing up.
+
+    Spec 5.2 at 1d1fae8d2aad1a38 (user, 2026-10-13): "when a step is due on
+    the frame that clamps, the step is taken from the cap: a down step sends
+    the cap less 0.1 A and is the step from which the 0.3 s cadence is
+    timed, and an up step is never taken past the cap". In
+    syn_hold_cap_clamp the first clamp falls 100 ms after the release, with
+    no step due, so no trace had a down step due on a clamp frame until two
+    1x closed-loop runs did (evap-override-above-ceiling and -imbalanced,
+    step 3 at E6a, 2026-10-12).
+
+    The law is held in its band (ibat 0.10 A under chg_max) before each
+    clamp, so the setpoint is still above the cap when the step comes due --
+    a warm-up that let the hold walk down would leave it at the cap and
+    test nothing. Page 01 every 100 ms:
+      - 121.0 s: release at 6.10 A; 121.1-121.4 s in band, held.
+      - 121.4 s: cap 6.00 A, ibat above chg_max, 400 ms since the release:
+        a down step is due on the clamp frame -> 5.90 A, and the cadence
+        runs from it (121.5 / 121.6 s hold, 121.7 s steps).
+      - 123-124 s: in band again, held (at 5.40 A).
+      - 124.0 s: cap 3.00 A, ibat far under chg_max, an up step due: the
+        frame lands on the cap, never past it, and it is not a step.
+      - 124.1 s: the cap back at 6.00 A with the up step still due, 100 ms
+        after the clamp: a core whose clamp restarted the cadence would
+        hold here, so the cadence is judged as well as the value.
+    vmax 3590 mV throughout, inside the 3595 / 3600 mV cell limits.
+    """
+    s = Scenario("syn_hold_cap_clamp_step")
+    s.steady(0, 90000, vmax=3340, chg_max=30000, soc_half=158, evap=1)
+    s.veh(90000, M.CMD_ID, f_cmd_master(0x01, M.MODE_LOW_POWER))
+    # 90-120 s: the floor binds (SoC 98.5 %, chg_max 4.00 A) -> 6.10 A
+    s.steady(90100, 120000, vmax=3400, chg_max=400, soc_half=197, ibat=600,
+             evap=1)
+    # 120-121.1 s: the leader at 3590 mV for 1 s -> release at 121.0 s
+    s.steady(120000, 121100, vmax=3590, chg_max=400, soc_half=197, ibat=600,
+             evap=1)
+    # 121.1-121.4 s: ibat 5.90 A under chg_max 6.00 A, in the band: held
+    s.steady(121100, 121400, vmax=3590, chg_max=600, soc_half=197, ibat=590,
+             evap=1)
+    # 121.4-123 s: the cap falls to 6.00 A with ibat above chg_max 5.00 A
+    # and a step due -> the cap less 0.1 A, then 0.1 A steps down
+    s.steady(121400, 123000, vmax=3590, chg_max=500, soc_half=197, ibat=600,
+             evap=1, max_avail=600)
+    # 123-124 s: in the band again: held
+    s.steady(123000, 124000, vmax=3590, chg_max=500, soc_half=197, ibat=490,
+             evap=1, max_avail=600)
+    # 124.0 s: the cap falls to 3.00 A with an up step due -> the cap
+    s.steady(124000, 124100, vmax=3590, chg_max=500, soc_half=197, ibat=100,
+             evap=1, max_avail=300)
+    # 124.1-126 s: the cap back at 6.00 A, the up step still due: steps up
+    s.steady(124100, 126000, vmax=3590, chg_max=500, soc_half=197, ibat=100,
+             evap=1, max_avail=600)
+    # 126 s: handle pull -> close-out -> PASSTHROUGH
+    s.veh(126000, M.CMD_ID, f_cmd_master(0x00, M.MODE_STANDBY))
+    s.steady(126100, 129000, vmax=3590, chg_max=500, soc_half=197, ibat=0,
+             chg_state=11, evap=1, max_avail=600)
+    s.veh(129000, M.CMD_ID, f_cmd_master(0x01, M.MODE_LOW_POWER))
+    s.steady(129100, 131000, vmax=3590, chg_max=500, soc_half=197, ibat=0,
+             chg_state=11, evap=1, max_avail=600)
+    return s
+
+
 SCENARIOS = [scen_override_release, scen_trip_during_override,
              scen_repeat_superseded, scen_repeat_replaced,
              scen_charger_fault, scen_stale_bms, scen_evap_clear_accept,
@@ -866,7 +931,7 @@ SCENARIOS = [scen_override_release, scen_trip_during_override,
              scen_charger_silence_keeps_safe, scen_boot_lock_arm_first,
              scen_charger_handle_pull, scen_charger_stop_source_3,
              scen_source_11_plug_in, scen_plug_out_then_pilot_reset,
-             scen_hold_cap_clamp]
+             scen_hold_cap_clamp, scen_hold_cap_clamp_step]
 
 
 # --- run --------------------------------------------------------------------

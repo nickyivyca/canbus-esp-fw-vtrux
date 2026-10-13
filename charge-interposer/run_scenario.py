@@ -480,11 +480,12 @@ def hold_series_from_trace(trace_path):
 def _hold_follows_loads(series, veh_text, band=(2.6, 3.3), settle_s=120.0,
                         drop_exempt_s=2.0, entry_grace_s=30.0,
                         _clamp_move=True, _anchor_later=True,
-                        _entry_grace=True):
+                        _entry_grace=True, _clamp_step=True):
     """-> (ok, why). See hold_follows_loads(). The underscored switches
     exist only for test_scorer_wiring's can-fail: False is the rule before
-    spec 96dd3703 / 05999682 (no clamp allowed as a move in clause 2;
-    clause 3 anchored on chg_max 0 alone; no entry grace in clause 1)."""
+    spec 96dd3703 / 05999682 / 1d1fae8d (no clamp allowed as a move in
+    clause 2; clause 3 anchored on chg_max 0 alone; no entry grace in
+    clause 1; no clamp-plus-step frame in clause 2)."""
     if series is None:
         return (False, "no flight trace -- the hold cannot be judged (a "
                        "board run has none)")
@@ -549,10 +550,13 @@ def _hold_follows_loads(series, veh_text, band=(2.6, 3.3), settle_s=120.0,
     # 2. 0.1 A steps, >= 0.3 s apart, or a clamp to the EVSE cap (spec
     # 96dd3703), never 0 A. A clamp -- from above the cap to exactly the
     # cap -- is not a step: it is not size-checked and does not restart
-    # the 0.3 s (5.2, user 2026-10-12)
+    # the 0.3 s (5.2, user 2026-10-12). A frame from above the cap to the
+    # cap less 0.1 A is a clamp plus a down step taken from the cap (spec
+    # 1d1fae8d, user 2026-10-13): one clamp and one 0.1 A step, held to the
+    # 0.3 s like any step, and the next step is timed from it
     bad2 = []
     last_step = None
-    nsteps = nclamps = 0
+    nsteps = nclamps = ncombined = 0
     spcap = series.get("spcap") or []
     for i, ((ta, a), (tb, b)) in enumerate(zip(series["sp"],
                                                 series["sp"][1:])):
@@ -564,8 +568,13 @@ def _hold_follows_loads(series, veh_text, band=(2.6, 3.3), settle_s=120.0,
                 and abs(b - cap_b) <= 0.025):
             nclamps += 1
             continue
+        combined = (_clamp_step and cap_b is not None and a > cap_b + 0.025
+                    and abs(b - (cap_b - 0.1)) <= 0.025)
+        if combined:
+            nclamps += 1
+            ncombined += 1
         nsteps += 1
-        if abs(abs(b - a) - 0.1) > 0.025:
+        if not combined and abs(abs(b - a) - 0.1) > 0.025:
             bad2.append("a %.2f A step at t=%.1f s" % (b - a, tb / 1000.0))
         if last_step is not None and tb - last_step < 300:
             bad2.append("steps %d ms apart at t=%.1f s"
@@ -579,7 +588,9 @@ def _hold_follows_loads(series, veh_text, band=(2.6, 3.3), settle_s=120.0,
         probs.append("2: " + "; ".join(bad2[:4]))
     else:
         notes.append("2: %d steps, each 0.1 A and >= 0.3 s apart, and %d "
-                     "clamp(s) to the EVSE cap; never 0 A" % (nsteps, nclamps))
+                     "clamp(s) to the EVSE cap, %d of them with a down step "
+                     "taken from the cap in the same frame; never 0 A"
+                     % (nsteps, nclamps, ncombined))
     # 3. settled in band within settle_s of the LATER of chg_max 0 and the
     # core in HOLD (spec 96dd3703, user 2026-10-12), until the first step.
     # `_anchor_later` False is the rule before it: anchored on chg_max 0,

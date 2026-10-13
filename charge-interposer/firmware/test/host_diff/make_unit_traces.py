@@ -135,9 +135,14 @@ def definition_traces(outdir):
 # to the EVSE cap, e5d62c90). Its twin can be recorded only on a build that
 # clamps: on c800ad3 the trace broke rule 6 at the hold entry and
 # dense_traces() refused it. Recorded on E6a (f4e60ce), 2026-10-12.
+#
+# syn_hold_cap_clamp_step added 2026-10-13 (spec 5.2 at 1d1fae8d: a step due
+# on the frame that clamps, down and up). Recorded on E6a (machine.py
+# 1cd45364e81f105e), 2026-10-13.
 DENSE_SOURCES = ("syn_override_release", "syn_above_ceiling_start",
                  "syn_repeat_replaced", "syn_trip_during_override",
-                 "syn_hard_ceiling_trip", "syn_hold_cap_clamp")
+                 "syn_hard_ceiling_trip", "syn_hold_cap_clamp",
+                 "syn_hold_cap_clamp_step")
 
 
 def dense_traces(outdir, src_dir):
