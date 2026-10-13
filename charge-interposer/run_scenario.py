@@ -307,6 +307,14 @@ def hold_follows_loads(band=(2.6, 3.3), settle_s=120.0, drop_exempt_s=2.0):
          hold's entry ...: every frame in that window is exempt, however
          soon the walk-down ends": [entry, entry + 30 s] of every HOLD
          span, inclusive;
+         Spec 826925f461768701 (user, 2026-10-13) replaces a load drop's
+         fixed 2 s with its walk-down, read per the reviewer's rulings the
+         same day: exempt from the drop until the first page-01 frame on
+         which the setpoint holds or steps up (that frame is judged), or
+         until no down step has come within 0.3 s plus one page-01 frame
+         (inclusive) of the drop or the step before it
+         (_walk_down_window); a fall in bcm_chg_max keeps its 2 s. And one
+         count of bcm_ibat over chg_max passes (IBAT_COUNT_A, 0.025 A);
       2. "the setpoint moves only in 0.1 A steps, at least 0.3 s apart, or
          by a clamp to the EVSE cap (5.2), and is never 0 A" (96dd3703):
          every page 01 sent to the charger in HOLD. A clamp is a move from
@@ -423,7 +431,44 @@ AUX_STEP_AT = re.compile(r"12 V load step: ([\d.]+) -> ([\d.]+) W at "
 # A 130 W step is ~0.49 A on the HV side (vehicle_sim.hv_draw_a); the
 # hold's own walk moves bcm_ibat 0.025 A a frame
 IBAT_STEP_A = 0.1
+# clause 1's tolerance (spec 826925f4, user 2026-10-13): one count of
+# bcm_ibat, so +0.025 A over chg_max passes and +0.050 A fails
+IBAT_COUNT_A = 0.025
 IBAT_STEP_WINDOW_MS = 100 + 500
+
+
+# One page-01 frame period in HOLD: the VCU's, 300 ms (2,999 of 2,999 gaps
+# on P3's trace at E6a). Spec 826925f4's walk-down allows each down step
+# 0.3 s plus one such frame; it matters only when a frame goes missing.
+PAGE01_PERIOD_MS = 300
+WALK_STEP_MS = 300 + PAGE01_PERIOD_MS
+
+
+def _walk_down_window(sp, drop):
+    """-> (start, end, why): spec 826925f4's exemption after an injected
+    load drop at `drop` (trace ms), read per the reviewer's 2026-10-13
+    rulings: from the drop until the first page-01 frame on which the
+    setpoint HOLDS or STEPS UP (that frame is judged, not exempt), or until
+    no down step has come within WALK_STEP_MS of the drop or of the step
+    before it (a gap of exactly WALK_STEP_MS still counts). `sp` is the
+    hold's page-01 series [(t_ms, A)]."""
+    i = bisect.bisect_right([t for t, _a in sp], drop)
+    prev = sp[i - 1][1] if i else None
+    last = drop
+    for t, a in sp[i:]:
+        if t - last > WALK_STEP_MS:
+            return (drop, last + WALK_STEP_MS + 1,
+                    "no down step within %.1f s of the %s"
+                    % (WALK_STEP_MS / 1000.0,
+                       "drop" if last == drop else "last step"))
+        if prev is not None and a < prev - 0.025:
+            last = t
+        elif prev is not None and a > prev + 0.025:
+            return (drop, t, "an up step")
+        else:
+            return (drop, t, "a hold frame")
+        prev = a
+    return (drop, last + WALK_STEP_MS + 1, "the setpoint series ends")
 
 
 def _aux_steps_on_trace(series, veh_text, c0, wire_anchor=True):
@@ -555,14 +600,17 @@ def _hold_follows_loads(series, veh_text, band=(2.6, 3.3), settle_s=120.0,
                         drop_exempt_s=2.0, entry_grace_s=30.0,
                         _clamp_move=True, _anchor_later=True,
                         _entry_grace=True, _clamp_step=True,
-                        _wire_anchor=True):
+                        _wire_anchor=True, _one_count=True,
+                        _walk_down=True):
     """-> (ok, why). See hold_follows_loads(). The underscored switches
     exist only for test_scorer_wiring's can-fail: False is the rule before
     spec 96dd3703 / 05999682 / 1d1fae8d (no clamp allowed as a move in
     clause 2; clause 3 anchored on chg_max 0 alone; no entry grace in
     clause 1; no clamp-plus-step frame in clause 2), and before the
     reviewer's 2026-10-13 ruling (the injected steps placed at the trace's
-    first chg_max 0 plus D, with no bcm_ibat cross-check)."""
+    first chg_max 0 plus D, with no bcm_ibat cross-check), and before spec
+    826925f4 (clause 1 with no tolerance: one bcm_ibat count over fails;
+    a load drop exempting a fixed 2 s rather than its walk-down)."""
     if series is None:
         return (False, "no flight trace -- the hold cannot be judged (a "
                        "board run has none)")
@@ -588,18 +636,28 @@ def _hold_follows_loads(series, veh_text, band=(2.6, 3.3), settle_s=120.0,
     def in_hold(t):
         return any(a <= t <= b for a, b in series["hold"])
 
-    # 1. pack current vs permission, exempting 2 s after each injected load
-    # drop and (spec 75b154da) each fall in bcm_chg_max: the frame where
-    # the value goes below the one before it, not every frame of the lower
-    # value, so a pack held above a fallen chg_max past 2 s still fails
+    # 1. pack current vs permission, exempting each injected load drop's
+    # walk-down (spec 826925f4; before it, 2 s) and 2 s after (spec
+    # 75b154da) each fall in bcm_chg_max: the frame where the value goes
+    # below the one before it, not every frame of the lower value, so a
+    # pack held above a fallen chg_max past 2 s still fails
     ct = [t for t, _a in series["chgmax"]]
     falls = [t for (_ta, a), (t, b) in zip(series["chgmax"],
                                            series["chgmax"][1:])
              if b < a - tol]
-    exempt = sorted(drops + falls)
+    # spans exempt as [a, b]; a walk-down's end is the hold / up frame,
+    # which is itself judged, so it is exempt as [a, b - 1 ms]
+    if _walk_down:
+        walks = [_walk_down_window(series["sp"], d) for d in drops]
+        exempt = [(f, f + drop_exempt_s * 1000) for f in falls] +             [(a, b - 1) for a, b, _w in walks]
+    else:
+        walks = []
+        exempt = [(d, d + drop_exempt_s * 1000) for d in drops + falls]
     # spec 05999682 (user, 2026-10-12, reading A): every frame within 30 s
     # of a hold's entry is exempt, however soon the walk-down ends
     entries = [h0 for h0, _h1 in series["hold"]] if _entry_grace else []
+    # spec 826925f4 (user, 2026-10-13): one count of bcm_ibat over passes
+    allow = IBAT_COUNT_A if _one_count else 0.0
     over = []
     n_grace = 0
     for t, ib in series["ibat"]:
@@ -609,26 +667,32 @@ def _hold_follows_loads(series, veh_text, band=(2.6, 3.3), settle_s=120.0,
         if i < 0:
             continue
         cm = series["chgmax"][i][1]
-        if ib > cm + tol and not any(d <= t <= d + drop_exempt_s * 1000
-                                     for d in exempt):
+        if ib > cm + allow + tol and not any(a <= t <= b
+                                             for a, b in exempt):
             if any(e <= t <= e + entry_grace_s * 1000 for e in entries):
                 n_grace += 1
                 continue
             over.append((t, ib - cm))
     grace = (", nor %.0f s of the hold's entry" % entry_grace_s
              if _entry_grace else "")
+    by = (" by more than one count (%.3f A)" % allow if allow else "")
+    where = ("a load drop's walk-down or %.0f s of a chg_max fall"
+             % drop_exempt_s if _walk_down else
+             "%.0f s of a load drop or a chg_max fall" % drop_exempt_s)
+    walked = "".join("; the walk-down after the drop at t=%.1f s ended at "
+                     "t=%.1f s (%s)" % (a / 1000.0, b / 1000.0, w)
+                     for a, b, w in walks)
     if over:
-        probs.append("1: pack current above bcm_chg_max outside %.0f s of a "
-                     "load drop or a chg_max fall%s on %d 0x410 frame(s), "
-                     "first at t=%.1f s, by up to %.3f A"
-                     % (drop_exempt_s, grace, len(over), over[0][0] / 1000.0,
-                        max(e for _t, e in over)))
+        probs.append("1: pack current above bcm_chg_max%s outside %s%s on %d "
+                     "0x410 frame(s), first at t=%.1f s, by up to %.3f A%s"
+                     % (by, where, grace, len(over), over[0][0] / 1000.0,
+                        max(e for _t, e in over), walked))
     else:
-        notes.append("1: pack current never above chg_max outside %.0f s "
-                     "of the %d load drop(s) and %d chg_max fall(s)%s (%d "
-                     "frame(s) above it inside the entry grace)"
-                     % (drop_exempt_s, len(drops), len(falls), grace,
-                        n_grace))
+        notes.append("1: pack current never above chg_max%s outside %s%s, "
+                     "with %d load drop(s) and %d chg_max fall(s) (%d "
+                     "frame(s) above it inside the entry grace)%s"
+                     % (by, where, grace, len(drops), len(falls), n_grace,
+                        walked))
     # 2. 0.1 A steps, >= 0.3 s apart, or a clamp to the EVSE cap (spec
     # 96dd3703), never 0 A. A clamp -- from above the cap to exactly the
     # cap -- is not a step: it is not size-checked and does not restart

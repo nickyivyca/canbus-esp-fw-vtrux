@@ -104,11 +104,13 @@ def _sp_path(hold0, hold1, start_a, legs, every=300):
 
 
 def _hs(hold=(50000, 500000), chg0=C0, sp=None, ibat=None, chg_after=None,
-        soc100=SOC100_T):
+        soc100=SOC100_T, walk_at=None):
     """A series in hold_series_from_trace()'s shape: chg_max 2.0 A, then
     0 A from chg0 (None: never); pack current -0.3 A every second, -0.1 A
-    from STEP_T (_ib); the setpoint 2.0 A walking up to 2.9 A from chg0;
-    bcm_soc reading 100 from soc100."""
+    from STEP_T (_ib); the setpoint 2.0 A walking up to 2.9 A from chg0,
+    and from walk_at (if given) back down to 2.0 A, 0.1 A per 300 ms frame:
+    a load drop's walk-down (spec 826925f4); bcm_soc reading 100 from
+    soc100."""
     h0, h1 = hold
     chg = [(0, 2.0)] + ([(chg0, 0.0)] if chg0 is not None else [])
     if chg_after:
@@ -119,7 +121,8 @@ def _hs(hold=(50000, 500000), chg0=C0, sp=None, ibat=None, chg_after=None,
     return dict(hold=[hold], chgmax=chg, soc100=soc100,
                 ibat=ibat if ibat is not None else _ib(h0, h1),
                 sp=sp if sp is not None else
-                _sp_path(h0, h1, 2.0, [(chg0 or h1 + 1, 2.9)]),
+                _sp_path(h0, h1, 2.0, [(chg0 or h1 + 1, 2.9)] +
+                         ([(walk_at, 2.0)] if walk_at else [])),
                 t_last=h1)
 
 
@@ -131,12 +134,15 @@ def hold_follows_loads_cases():
     check(ok, "a hold that settles at 2.9 A 2.7 s after chg_max 0 passes "
           "-> %s" % why)
     base_ib = _ib()
-    ok, why = run(_hs(ibat=base_ib + [(C0 + 201000, 0.5)]), DROP_LINE)
-    check(ok, "pack current above chg_max 1 s after an injected load DROP "
-          "passes (the 2 s exception) -> %s" % why)
-    ok, why = run(_hs(ibat=base_ib + [(C0 + 202500, 0.5)]), DROP_LINE)
+    ok, why = run(_hs(ibat=base_ib + [(C0 + 201000, 0.5)], walk_at=STEP_T),
+                  DROP_LINE)
+    check(ok, "pack current above chg_max 1 s after an injected load DROP, "
+          "during its walk-down, passes -> %s" % why)
+    ok, why = run(_hs(ibat=base_ib + [(C0 + 203500, 0.5)], walk_at=STEP_T),
+                  DROP_LINE)
     check(not ok and why.startswith("1:"),
-          "...2.5 s after the drop fails on clause 1 -> %s" % why)
+          "...3.5 s after the drop, past the walk-down's hold frame at "
+          "302.9 s, fails on clause 1 -> %s" % why)
     ok, why = run(_hs(ibat=base_ib + [(C0 + 50000, 0.3)]))
     check(not ok and "1:" in why,
           "pack current above chg_max with no drop fails on clause 1 -> %s"
@@ -406,6 +412,99 @@ def p3_clamp_step_cases():
           "%s" % (comb_t, clamp_t))
 
 
+def p3_walk_down_cases():
+    """Spec 826925f461768701 clause 1 (user, 2026-10-13), read per the
+    reviewer's rulings the same day: after an injected load drop every
+    frame is exempt from the drop until the first page-01 frame on which
+    the setpoint holds or steps up (that frame is judged), each down step
+    within 0.3 s plus one page-01 frame (inclusive) of the drop or the
+    step before it; and one count of bcm_ibat (0.025 A) over chg_max
+    passes. Each shown against the rule before it (`_walk_down` /
+    `_one_count` False)."""
+    def run(series, veh="", **kw):
+        return R._hold_follows_loads(series, veh, **kw)
+
+    def walk_sp(missing=(), up_at=None):
+        """Page 01 every 300 ms from 50 s: up to 2.9 A from C0, then from
+        STEP_T down 0.1 A on every PRESENT frame to 2.0 A (frames in
+        `missing` are not sent), or one 0.1 A step UP at up_at after which
+        it holds."""
+        out, a, t, up = [], 2.0, 50000, False
+        while t <= 500000:
+            if t not in missing:
+                if C0 <= t < STEP_T and a < 2.9 - 1e-6:
+                    a = round(a + 0.1, 2)
+                elif t >= STEP_T and not up:
+                    if t == up_at:
+                        a, up = round(a + 0.1, 2), True
+                    elif a > 2.0 + 1e-6:
+                        a = round(a - 0.1, 2)
+                out.append((t, a))
+            t += 300
+        return out
+
+    base_ib = _ib()
+    # frames at 50 s + k * 300 ms: the first after the drop at 300.0 s is
+    # 300.2 s; nine steps to 2.0 A end on the hold frame at 302.9 s
+    ok, why = run(_hs(sp=walk_sp(), ibat=base_ib + [(302800, 0.5)]),
+                  DROP_LINE)
+    check(ok and "ended at t=302.9 s (a hold frame)" in why,
+          "above chg_max on the last frame of an on-time walk-down passes "
+          "-> %s" % why)
+    ok, why = run(_hs(sp=walk_sp(), ibat=base_ib + [(302900, 0.5)]),
+                  DROP_LINE)
+    check(not ok and "1: pack current above" in why
+          and "first at t=302.9 s" in why,
+          "...ON the hold frame fails: it is judged, not exempt -> %s" % why)
+    ok, why = run(_hs(ibat=base_ib + [(301000, 0.5)]), DROP_LINE)
+    check(not ok and "1: pack current above" in why
+          and "(a hold frame)" in why,
+          "a setpoint that holds on the first frame after the drop ends the "
+          "walk at once: 1 s after the drop fails -> %s" % why)
+    ok, why = run(_hs(ibat=base_ib + [(301000, 0.5)]), DROP_LINE,
+                  _walk_down=False)
+    check(ok, "...where the rule before (a fixed 2 s) exempted it -> %s"
+          % why)
+    # one late step: frames 301.1 and 301.4 s not sent, so the step after
+    # 300.8 s comes 0.9 s later, past 0.3 s + one frame
+    late = walk_sp(missing=(301100, 301400))
+    ok, why = run(_hs(sp=late, ibat=base_ib + [(301500, 0.5)]), DROP_LINE)
+    check(not ok and "1: pack current above" in why
+          and "no down step within 0.6 s of the last step" in why,
+          "a walk-down with one step 0.9 s late ends 0.6 s after the step "
+          "before it: above chg_max at 301.5 s fails -> %s" % why)
+    ok, why = run(_hs(sp=late, ibat=base_ib + [(301400, 0.5)]), DROP_LINE)
+    check(ok, "...and at 301.4 s, exactly 0.6 s after that step, passes "
+          "(inclusive) -> %s" % why)
+    one = walk_sp(missing=(301100,))
+    ok, why = run(_hs(sp=one, ibat=base_ib + [(302900, 0.5)]), DROP_LINE)
+    check(ok and "ended at t=303.2 s (a hold frame)" in why,
+          "a step exactly 0.3 s + one frame after the last (one frame not "
+          "sent) keeps the walk going -> %s" % why)
+    up = walk_sp(up_at=301400)
+    ok, why = run(_hs(sp=up, ibat=base_ib + [(301300, 0.5)]), DROP_LINE)
+    check(ok, "above chg_max just before an UP step mid-walk passes -> %s"
+          % why)
+    ok, why = run(_hs(sp=up, ibat=base_ib + [(301400, 0.5)]), DROP_LINE)
+    check(not ok and "(an up step)" in why and "first at t=301.4 s" in why,
+          "...and on the up-step frame fails: an up step ends the walk "
+          "-> %s" % why)
+    print("  clause 1's tolerance, one bcm_ibat count")
+    for over, passes in ((0.025, True), (0.050, False)):
+        ok, why = run(_hs(ibat=base_ib + [(C0 + 100000, over)]))
+        check(ok == passes and (passes or "by more than one count" in why),
+              "pack current +%.3f A over chg_max 0 %s -> %s"
+              % (over, "passes" if passes else "fails", why))
+    ok, why = run(_hs(ibat=base_ib + [(C0 + 100000, 0.025)]),
+                  _one_count=False)
+    check(not ok and why.startswith("1:"),
+          "...and +0.025 A fails under the rule before (no tolerance) -> %s"
+          % why)
+    ok, why = run(_hs(ibat=base_ib + [(C0 + 100000, 0.026)]))
+    check(not ok, "+0.026 A (a reading off the count grid) fails -> %s"
+          % why)
+
+
 def p3_wire_anchor_cases():
     """The injected load steps placed by the wire anchor (reviewer,
     2026-10-13): each step's sim time mapped onto the trace by the 0x410
@@ -432,24 +531,28 @@ def p3_wire_anchor_cases():
         out += [(t, -0.1) for t in range(at + walk_ms + 1000, 500001, 1000)]
         return out
 
-    ok, why = run(_hs(ibat=drop_ib(t_drop)), line)
+    ok, why = run(_hs(ibat=drop_ib(t_drop), walk_at=t_drop), line)
     check(ok and "offset -600.000 s" in why,
           "a drop placed by bcm_soc 100, walked to 0 A in 1.5 s, passes "
           "-> %s" % why)
-    ok, why = run(_hs(ibat=drop_ib(t_drop)), line, _wire_anchor=False)
+    ok, why = run(_hs(ibat=drop_ib(t_drop), walk_at=t_drop), line,
+                  _wire_anchor=False)
     check(not ok and why.startswith("1:")
           and "first at t=%.1f s" % (t_drop / 1000.0) in why,
           "...and fails under the rule before (chg_max 0 plus D puts the "
           "exemption 13.7 s early) -> %s" % why)
-    ok, why = run(_hs(ibat=drop_ib(t_drop, walk_ms=3200)), line)
+    s = _hs(ibat=drop_ib(t_drop, walk_ms=3200), walk_at=t_drop)
+    hold_t = next(tb for (_ta, a), (tb, b) in zip(s["sp"], s["sp"][1:])
+                  if tb > t_drop and abs(b - a) < 0.025)
+    ok, why = run(s, line)
     check(not ok and "1: pack current above" in why
-          and "first at t=%.1f s" % ((t_drop + 2100) / 1000.0) in why,
-          "a walk-down lasting 3.2 s fails from the first frame past 2 s "
-          "-> %s" % why)
-    ok, why = run(_hs(ibat=drop_ib(t_drop + 500)), line)
+          and "first at t=%.1f s" % (hold_t / 1000.0) in why,
+          "pack current still over when the setpoint's walk-down ends fails, "
+          "from its hold frame (t=%.1f s) -> %s" % (hold_t / 1000.0, why))
+    ok, why = run(_hs(ibat=drop_ib(t_drop + 500), walk_at=t_drop), line)
     check(ok, "the bcm_ibat step 0.5 s after the mapped time is inside the "
           "0.6 s cross-check -> %s" % why)
-    ok, why = run(_hs(ibat=drop_ib(t_drop + 1000)), line)
+    ok, why = run(_hs(ibat=drop_ib(t_drop + 1000), walk_at=t_drop), line)
     check(not ok and "no bcm_ibat rise" in why and "1: pack current above"
           in why, "...1.0 s after it fails the cross-check, and the drop "
           "exempts nothing -> %s" % why)
@@ -786,6 +889,10 @@ def main():
     print("\nspec 9: the load steps placed by bcm_soc 100 (reviewer, "
           "2026-10-13)")
     p3_wire_anchor_cases()
+
+    print("\nspec 826925f4: clause 1's walk-down and one-count "
+          "tolerance")
+    p3_walk_down_cases()
 
     print("\n--keep-traces: the L1 replay keeps the trace only when asked")
     keep_trace_cases()
