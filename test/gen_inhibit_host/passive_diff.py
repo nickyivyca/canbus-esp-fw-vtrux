@@ -189,6 +189,22 @@ def tx_inhibit_times(trace):
     return [ln.split()[0] for ln in trace.splitlines() if " TX INHIBIT " in ln]
 
 
+def last_arm(trace):
+    """Time of the last mode set to a non-OFF mode (an arm), or 0.
+
+    Spec 3.1 rule 2 (user, 2026-10-12): the would-transmit count resets on every
+    arm, as tx_ok does, so it is compared with the transmits since the LAST arm.
+    Until then it counted since boot and was compared with every transmit in the
+    trace; on a core with the reset that read every re-arm scenario as a
+    difference (eight of them on dace947)."""
+    t = 0
+    for ln in trace.splitlines():
+        p = ln.split()
+        if len(p) >= 4 and p[1:3] == ["EV", "MODE"] and p[3] != "a=0":
+            t = int(p[0])
+    return t
+
+
 def final_field(trace, name):
     for ln in trace.splitlines():
         if " FINAL " in ln:
@@ -280,7 +296,8 @@ def main():
                             % (len(leaked), leaked[0]))
 
         # ...and the accounting half: one would-transmit per real transmit.
-        n_tx = len(tx_inhibit_times(a))
+        t_arm = last_arm(a)
+        n_tx = len([t for t in tx_inhibit_times(a) if int(t) >= t_arm])
         n_would = final_field(b, "would_tx")
         if n_would is None:
             problems.append("PASSIVE trace has no would_tx in FINAL")
@@ -288,13 +305,13 @@ def main():
             # INHIBIT stopped transmitting at its trip 7 and PASSIVE ran on, so
             # the totals cannot match. Compare what they shared instead: every
             # transmit INHIBIT made before the trip must have a would-transmit.
-            n_before = len([t for t in tx_inhibit_times(a) if int(t) < t_fail])
+            n_before = len([t for t in tx_inhibit_times(a) if t_arm <= int(t) < t_fail])
             if n_would < n_before:
                 problems.append("would_tx=%d but INHIBIT transmitted %d before "
                                 "its trip 7 at %d" % (n_would, n_before, t_fail))
         elif n_would != n_tx:
-            problems.append("would_tx=%d but INHIBIT transmitted %d"
-                            % (n_would, n_tx))
+            problems.append("would_tx=%d but INHIBIT transmitted %d since its "
+                            "last arm at %d" % (n_would, n_tx, t_arm))
 
         if final_field(b, "tx_ok"):
             problems.append("PASSIVE reported tx_ok=%d" % final_field(b, "tx_ok"))
