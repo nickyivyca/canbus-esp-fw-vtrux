@@ -22,6 +22,7 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <esp_app_desc.h>
+#include <esp_log.h>
 
 #include "bridge_health.h"
 #include "machine.h"
@@ -414,6 +415,28 @@ static void status(uint32_t t_ms) {
 }
 
 void setup() {
+#ifdef INTP_NO_SERIAL
+  // Spec 8.3 (user, 2026-10-13): the flight build prints nothing once the
+  // application has started, FRAMEWORK LOGGING INCLUDED. This firmware's
+  // own prints are compiled out above, and Arduino's log macros go with
+  // CORE_DEBUG_LEVEL=0 on [env:truck] -- but neither reaches an ESP_LOGE()
+  // inside the IDF libraries, because under framework = arduino those are
+  // PREBUILT (esp32-arduino-libs, built from esp-idf release/v5.4
+  // 858a988d6e) and no flag this build passes can remove a call from a
+  // library it does not compile.
+  //
+  // What those libraries can still emit is bounded by their own sdkconfig:
+  // CONFIG_LOG_MAXIMUM_LEVEL=1, so ERROR is the only level that survived
+  // their compilation -- the IDF startup logs (cpu_start, heap_init) are
+  // ESP_LOGI and are already absent. CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+  // with CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y means what an
+  // ESP_LOGE did write would leave by the same USB port as Serial -- the
+  // port a host may be attached to and not reading, which is the whole
+  // reason 8.3 exists. Dropping the default level to NONE leaves nothing
+  // able to write, and costs one call at boot. The ROM banner and the
+  // bootloader are out of scope per the spec.
+  esp_log_level_set("*", ESP_LOG_NONE);
+#endif
   INTP_SERIAL_BEGIN(115200);
   pinMode(LED_BUILTIN, OUTPUT);
   delay(200);
