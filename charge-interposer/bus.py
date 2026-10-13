@@ -13,6 +13,8 @@ Two transport families:
   real    : a physical dongle brand (ixxat / kvaser / pcan / socketcan /
             gs_usb), channel auto-detected via canbench.live.receiver, so the
             same simulator code drives real silicon once the board exists.
+            gs_usb is the exception: opened by device index (--channel N,
+            default 0), its TX echoes drained and dropped (open_gs_usb).
 
 Segment map for this bench:
 
@@ -196,6 +198,11 @@ def open_bus(args, *, prefix="", default_channel=VEHICLE_SEGMENT,
         _enlarge_rx_buffer(b, logger)
         return b
 
+    if transport == "gs_usb":
+        return open_gs_usb(channel, bitrate,
+                           receive_own_messages=receive_own_messages,
+                           logger=logger)
+
     from canbench.live.receiver import detect_all_can_interfaces
     if logger:
         logger.info("Detecting %s interfaces at %d bps...", transport, bitrate)
@@ -223,6 +230,59 @@ def open_bus(args, *, prefix="", default_channel=VEHICLE_SEGMENT,
         except Exception as e:
             if logger:
                 logger.debug("pcan reset() at startup failed (non-fatal): %s", e)
+    return bus
+
+
+def _libusb_bootstrap():
+    """gs_usb finds 0 devices on Windows unless libusb's DLL directory is on
+    the DLL search path (bringup, 2026-10-04)."""
+    import os
+    import libusb_package
+    d = os.path.dirname(libusb_package.get_library_path())
+    if hasattr(os, "add_dll_directory"):
+        os.add_dll_directory(d)
+    os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
+
+
+class _DropEchoes:
+    """Mixin for a python-can bus whose device returns an echo frame
+    (is_rx False) for every frame it sends, whatever receive_own_messages
+    says -- python-can's gs_usb does (4.6.1, GsUsbBus._recv_internal). A sim
+    that read its own echoes as received frames would answer itself. With
+    receive_own_messages False the echoes are read (gs_usb stalls its TX if
+    they are not drained, bringup 2026-10-06) and dropped here; with it
+    True they are passed through."""
+
+    def _recv_internal(self, timeout):
+        import time as _t
+        end = None if timeout is None else _t.monotonic() + timeout
+        while True:
+            left = None if end is None else max(0.0, end - _t.monotonic())
+            msg, filtered = super()._recv_internal(left)
+            if msg is None or msg.is_rx or self._keep_echoes:
+                return msg, filtered
+            if end is not None and _t.monotonic() >= end:
+                return None, False
+
+
+def open_gs_usb(channel, bitrate, *, receive_own_messages=False,
+                logger=None, _bus_cls=None):
+    """The Innomaker USB2CAN (gs_usb / candleLight), opened by INDEX:
+    detect_available_configs(['gs_usb']) returns [] even when the device
+    works (bringup, 2026-10-04), so auto-detection cannot find it.
+    `channel` is the device index ("0" if omitted). `_bus_cls` exists only
+    for bus_gs_usb_test (a fake in place of python-can's GsUsbBus)."""
+    if _bus_cls is None:
+        _libusb_bootstrap()
+        from can.interfaces.gs_usb import GsUsbBus as _bus_cls
+    index = int(channel) if channel not in (None, "") else 0
+    cls = type("GsUsbNoEcho", (_DropEchoes, _bus_cls), {})
+    if logger:
+        logger.info("Opening gs_usb device index %d at %d bps (echoes %s)",
+                    index, bitrate,
+                    "kept" if receive_own_messages else "drained and dropped")
+    bus = cls(channel="can%d" % index, index=index, bitrate=bitrate)
+    bus._keep_echoes = bool(receive_own_messages)
     return bus
 
 
