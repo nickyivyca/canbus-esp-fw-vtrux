@@ -75,6 +75,10 @@
  * two registrations below are the whole of its footprint in shipping code. */
 #include "gi_txabort_probe.h"
 #endif
+#if GI_TEST_RESTART_QUIESCE
+/* Restart test build only, spec 12.4 -- see main/CMakeLists.txt. */
+#include "gi_restart_test.h"
+#endif
 #include "can.h"
 #include "sleep_mode.h"
 #include "autopid.h"
@@ -2423,6 +2427,11 @@ static httpd_handle_t config_server_init(void)
 
     // Start the httpd server
 	config.max_uri_handlers = 21;
+#if GI_TEST_RESTART_QUIESCE
+	/* Registered last, below, so a full table cannot displace an existing
+	 * handler -- but the table is sized for them so that it is not full. */
+	config.max_uri_handlers += GI_RESTART_TEST_URI_COUNT;
+#endif
 	config.stack_size = 5120;
     ESP_LOGI(TAG, "Starting server on port: '%d'", config.server_port);
     if (httpd_start(&server, &config) == ESP_OK)
@@ -2454,6 +2463,9 @@ static httpd_handle_t config_server_init(void)
 		httpd_register_uri_handler(server, &load_car_config_uri);
 		httpd_register_uri_handler(server, &store_car_data_uri);
 		httpd_register_uri_handler(server, &scan_available_pids_uri);
+#if GI_TEST_RESTART_QUIESCE
+		gi_restart_test_register(server);
+#endif
         #if CONFIG_EXAMPLE_BASIC_AUTH
         httpd_register_basic_auth(server);
         #endif

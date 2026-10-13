@@ -36,6 +36,10 @@
 #include "can.h"
 #include "hw_config.h"
 #include "gen_inhibit.h"
+#if GI_TEST_RESTART_QUIESCE
+/* Restart test build only, spec 12.4 -- see main/CMakeLists.txt. */
+#include "gi_restart_test.h"
+#endif
 
 static EventGroupHandle_t s_can_event_group = NULL;
 #define CAN_ENABLE_BIT 		BIT0
@@ -219,6 +223,10 @@ void can_enable(void)
 	                                                : g_config_normal;
 	g_config.rx_queue_len = CAN_RX_QUEUE_LEN;
 
+#if GI_TEST_RESTART_QUIESCE
+	/* The far end of spec 3's "until the driver is installed again". */
+	gi_restart_test_pre_install();
+#endif
 	ESP_ERROR_CHECK(twai_driver_install(&g_config, (const twai_timing_config_t *)t_config, &f_config));
 
 	ESP_ERROR_CHECK(twai_start());

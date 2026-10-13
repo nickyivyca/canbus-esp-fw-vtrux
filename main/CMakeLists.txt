@@ -1,6 +1,6 @@
 # See the build system documentation in IDF programming guide
 # for more information about component CMakeLists.txt files.
-set(srcs "main.c" "comm_server.c" "config_server.c" "slcan.c" "can.c" "wifi_network.c" "wc_uart.c" "elm327.c" "mqtt.c" "sleep_mode.c" "autopid.c" "expression_parser.c" "wc_mdns.c" "wc_timer.c" "dev_status.c" "ota_health.c" "gen_inhibit.c" "gen_inhibit_core.c" "gi_sched.c")
+set(srcs "main.c" "comm_server.c" "config_server.c" "slcan.c" "can.c" "wifi_network.c" "wc_uart.c" "elm327.c" "mqtt.c" "sleep_mode.c" "autopid.c" "expression_parser.c" "wc_mdns.c" "wc_timer.c" "dev_status.c" "ota_health.c" "gen_inhibit.c" "gen_inhibit_core.c" "gi_sched.c" "gi_restart_quiesce.c")
 # hal and soc: the scheduler reaches the TWAI status register and the abort
 # command through the private HAL (spec 5.2 items 4 and 9, cleared by the user
 # 2026-09-27). E3 confines that call to one site.
@@ -21,6 +21,22 @@ set(requires   hal soc esp_timer esp_wifi nvs_flash fatfs vfs driver esp-tls esp
 if(GI_INSTRUMENT_TXABORT)
     list(APPEND srcs "gi_txabort_probe.c")
     list(APPEND requires "hal" "soc")
+endif()
+
+# RESTART TEST BUILD, for spec 12.4's "no error frames at a restart" row.
+#
+#   idf.py -B build-restart-test -DGI_TEST_RESTART_QUIESCE=1 build
+#
+# Adds a reader for the restart record, a crash trigger and two snapshots of the
+# controller and CAN_STDBY -- see gi_restart_test.h. The step itself is in every
+# build (gi_restart_quiesce.c, below); this adds only what lets a bench see it.
+# The source is added to the component only here, as gi_txabort_probe.c is.
+#
+# Never in a prod build (spec 12.4). tools/prod_build.py refuses a build
+# directory whose CMake cache sets this flag, and refuses an image carrying the
+# test symbols.
+if(GI_TEST_RESTART_QUIESCE)
+    list(APPEND srcs "gi_restart_test.c")
 endif()
 
 idf_component_register(
@@ -47,6 +63,20 @@ idf_component_register(
 if(GI_INSTRUMENT_RXQ)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE GI_INSTRUMENT_RXQ=1)
     message(STATUS "gen_inhibit: RX backlog instrument ENABLED (measurement build)")
+endif()
+
+# EVERY SOFTWARE RESTART TAKES THE CONTROLLER OFF THE BUS FIRST (spec 3, user
+# 2026-10-13). In every build, with no switch. Every caller of
+# esp_restart_noos() -- esp_restart(), panic_restart() and call_start_cpu0's
+# early-boot failures -- is in another object file of esp_system, so --wrap
+# redirects all of them to __wrap_esp_restart_noos in gi_restart_quiesce.c,
+# which reaches the real function as __real_esp_restart_noos.
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_restart_noos")
+
+if(GI_TEST_RESTART_QUIESCE)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE GI_TEST_RESTART_QUIESCE=1)
+    message(STATUS "gen_inhibit: RESTART TEST build -- /gi_quiesce and its "
+                   "crash trigger are registered")
 endif()
 
 if(GI_INSTRUMENT_TXABORT)

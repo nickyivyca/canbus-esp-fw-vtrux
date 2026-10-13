@@ -13,7 +13,20 @@ WHAT IT REFUSES, and each refusal is a separate exit rather than a warning:
   3. a `managed_components/` component whose files differ from its own
      `CHECKSUMS.json`, or which carries a file that `CHECKSUMS.json` does not
      list, or whose `.component_hash` differs from `dependencies.lock`;
-  4. a build that was not preceded by `idf.py reconfigure`.
+  4. a build that was not preceded by `idf.py reconfigure`;
+  5. a `build/` whose CMake cache sets a test or measurement flag -- the
+     restart test build's GI_TEST_RESTART_QUIESCE (spec 12.4, "no error frames
+     at a restart": the crash trigger and the restart record's reader are never
+     in a prod build, added 2026-10-13, user), and the instrument and
+     fault-injection flags whose CMakeLists.txt comments already say never to
+     fly them. `idf.py reconfigure` does NOT clear a cache variable, so a
+     `-D` given once to an earlier build in `build/` is still set in the next;
+  6. an image that carries the restart test build's symbols anyway, or that
+     lacks spec 3's restart step: `__wrap_esp_restart_noos` must be in the ELF
+     and `esp_restart` and `panic_restart` must call it, never the unwrapped
+     function. Read from the ELF, after the build -- a second mechanism, not a
+     restatement of 5, because 5 reads what the build was asked to do and this
+     reads what it did.
 
 and on success it writes the commit, the image's md5 and its size beside the
 image, as `<image>.prod.json`. `test/build_checks/build_output.py` refuses an
@@ -67,6 +80,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -82,6 +96,27 @@ MANIFEST_EXEMPT = {".component_hash", "CHECKSUMS.json"}
 # Spec 12.3 item 3 (added 2026-10-12, user): the only branch a prod build is
 # built from. It was `gen-inhibit/rollback-fix` until the same day.
 PROD_BRANCH = "gen-inhibit/main"
+
+# Refusal 5. CMake cache variables that must not be set, to a true value, in the
+# build directory a prod build uses. GEN_INHIBIT_AUTOARM is deliberately absent:
+# main/CMakeLists.txt calls it the deployed configuration, not a test hack.
+FORBIDDEN_CACHE_FLAGS = (
+    "GI_TEST_RESTART_QUIESCE",
+    "GI_INSTRUMENT_RXQ",
+    "GI_INSTRUMENT_TXABORT",
+    "GI_INSTRUMENT_ABORTWIN",
+    "OTA_HEALTH_FAULT_INJECT",
+)
+
+# CMake's false constants; anything else set is true.
+CMAKE_FALSE = {"", "0", "OFF", "NO", "FALSE", "N", "IGNORE", "NOTFOUND"}
+
+# Refusal 6. Global symbols that only gi_restart_test.c defines.
+FORBIDDEN_SYMBOLS = ("gi_restart_test_register", "gi_restart_test_pre_install")
+
+# Refusal 6, the other direction: spec 3's step, and the callers that must reach it.
+RESTART_WRAP = "__wrap_esp_restart_noos"
+RESTART_CALLERS = ("esp_restart", "panic_restart")
 
 
 def run(cmd, **kw):
@@ -352,6 +387,93 @@ def check_components(state):
     return ok
 
 
+def check_build_cache(state):
+    """
+    Refusal 5. A `-D` given once to an `idf.py` run in `build/` is kept in
+    `build/CMakeCache.txt`, and `idf.py reconfigure` re-reads the cache rather
+    than clearing it, so it would silently be in the prod image too.
+    """
+    cache = os.path.join(REPO, "build", "CMakeCache.txt")
+    if not os.path.exists(cache):
+        print("[  ok  ] build cache                 none yet; a fresh configure "
+              "sets no flag")
+        return True
+    hits = []
+    with open(cache, encoding="utf-8", errors="replace") as fh:
+        for ln in fh:
+            name, sep, val = ln.strip().partition("=")
+            if not sep:
+                continue
+            name = name.split(":", 1)[0]
+            v = val.strip().upper()
+            if (name in FORBIDDEN_CACHE_FLAGS and v not in CMAKE_FALSE
+                    and not v.endswith("-NOTFOUND")):
+                hits.append("%s=%s" % (name, val.strip()))
+    if hits:
+        return fail("build/CMakeCache.txt sets %s. That is a test or "
+                    "measurement build, never a prod build (spec 12.4); a "
+                    "reconfigure keeps it. Delete build/ and run this again."
+                    % ", ".join(hits))
+    print("[  ok  ] build cache                 no test or instrument flag set")
+    return True
+
+
+def tool(name):
+    """A toolchain binary from the exported IDF shell's PATH, or None."""
+    return shutil.which("riscv32-esp-elf-" + name)
+
+
+def check_image_symbols(image):
+    """
+    Refusal 6, read from the ELF after the build. Fails closed: if the
+    toolchain cannot be found, nothing here can be shown, and that is a refusal
+    rather than a pass.
+    """
+    elf = os.path.splitext(image)[0] + ".elf"
+    nm, objdump = tool("nm"), tool("objdump")
+    if not os.path.exists(elf):
+        return fail("no ELF beside the image (%s), so the image's symbols "
+                    "cannot be read." % os.path.basename(elf))
+    if nm is None or objdump is None:
+        return fail("riscv32-esp-elf-nm/objdump are not on PATH. Run this from "
+                    "an exported IDF shell; without them the image's restart "
+                    "step cannot be checked.")
+
+    r = subprocess.run([nm, elf], capture_output=True, text=True)
+    if r.returncode != 0 or not r.stdout.strip():
+        return fail("nm could not read %s: %s"
+                    % (os.path.basename(elf), r.stderr.strip()[:200]))
+    names = {ln.split()[-1] for ln in r.stdout.splitlines() if ln.strip()}
+
+    ok = True
+    leaked = [s for s in FORBIDDEN_SYMBOLS if s in names]
+    if leaked:
+        ok = fail("the image carries the restart test build's symbols (%s): "
+                  "its crash trigger and record reader are never in a prod "
+                  "build (spec 12.4)." % ", ".join(leaked))
+    if RESTART_WRAP not in names:
+        ok = fail("%s is not in the image, so a software restart does not take "
+                  "the controller off the bus first (spec 3)." % RESTART_WRAP)
+    else:
+        for fn in RESTART_CALLERS:
+            d = subprocess.run([objdump, "-d", "--disassemble=" + fn, elf],
+                               capture_output=True, text=True)
+            body = d.stdout
+            if d.returncode != 0 or ("<%s>:" % fn) not in body:
+                ok = fail("could not disassemble %s, so where it restarts "
+                          "through cannot be shown." % fn)
+            elif ("<%s>" % RESTART_WRAP) not in body:
+                ok = fail("%s does not call %s: that restart path bypasses "
+                          "spec 3's step." % (fn, RESTART_WRAP))
+            elif "<esp_restart_noos>" in body:
+                ok = fail("%s calls the unwrapped esp_restart_noos." % fn)
+    if ok:
+        print("[  ok  ] restart step                %s in the image; %s reach "
+              "it; no test-build symbols" % (RESTART_WRAP,
+                                             " and ".join(RESTART_CALLERS)))
+    return ok
+
+
 def check_idf_env():
     if not os.environ.get("IDF_PATH"):
         return fail("IDF_PATH is not set. Run this from an exported ESP-IDF "
@@ -424,6 +546,7 @@ def main():
     ok = check_clean_tree(state)
     ok = check_branch(state) and ok
     ok = check_components(state) and ok
+    ok = check_build_cache(state) and ok
     if not args.check_only:
         ok = check_idf_env() and ok
     if not ok:
@@ -437,6 +560,10 @@ def main():
 
     image = do_build(state)
     if image is None:
+        return 1
+    if not check_image_symbols(image):
+        print("\nNO PROD RECORD WRITTEN for %s, so build_output.py will refuse "
+              "it." % os.path.basename(image))
         return 1
     write_record(image, state)
     print("\nPROD BUILD COMPLETE: %s" % os.path.basename(image))
