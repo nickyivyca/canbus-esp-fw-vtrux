@@ -42,9 +42,26 @@ class Mcp2515Port : public CanPort {
   uint32_t rxDropped() const override;
   uint32_t txDropped() const override { return tx_dropped_; }
   uint32_t busErrors() const override { return bus_errors_; }
-  // spec 2.2: transmissions the controller could not complete, plus
-  // frames aged out of the queue. Counted ONCE each, here and nowhere
-  // else -- main.cpp must not add its own tally on top.
+  // spec 2.2: transmissions the controller could NOT COMPLETE -- a frame
+  // abandoned past TX_MAX_AGE_MS whose buffer then showed TXnIF clear, or
+  // one of the unexplained idle buffers below.
+  //
+  // NOT the queue age-out. A frame discarded at the head of the ring
+  // without ever being loaded is txAged(): the controller was never asked
+  // to send it, so nothing it did failed. Spec 2.2 counts that frame all
+  // the same -- "a frame discarded from the queue by the age-out without
+  // ever being loaded included" (user, 2026-10-13) -- so the spec's
+  // counter is the SUM of three DISJOINT tallies, txDropped() +
+  // txFailed() + txAged(), taken in main.cpp's accrueChargerTxFailures()
+  // while the VCU's flow bit is 1. Disjoint is what makes the sum safe: a
+  // frame is dropped at enqueue, aged at the head, or resolved at a
+  // buffer, never two of those.
+  //
+  // This comment used to say txFailed() ITSELF included the aged frames,
+  // which would make that sum count them twice. The code never did, and
+  // the sum is where the spec's "included" is satisfied. Nothing may add a
+  // further tally on top of the ports' own -- the mistake
+  // accrueChargerTxFailures() describes.
   uint32_t txFailed() const { return tx_failed_; }
   // Frames that WERE delivered after we had given up on them. Not a
   // failure -- the charger acknowledged -- but worth seeing on the

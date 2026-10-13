@@ -69,6 +69,14 @@ DIAG_BUILD_ID = 0x7F7
 #      VCU's flow bit is 1. The byte is in the same place and means a
 #      different quantity, which is exactly what this guard is for.
 DIAG_SCHEMA_VER = 4
+# THE 0x7F6 B7 COUNTER IS NOT MODELLED HERE. `diag_frames(tx_fail=...)`
+# takes it from whatever moves the frames. On the board that is main.cpp,
+# which sums the charger port's three disjoint tallies -- queue full,
+# controller failure, and a frame discarded by the 100 ms age-out without
+# ever being loaded -- while the flow bit is 1, the age-out included (spec
+# 2.2, user 2026-10-13). This core has no transmit queue, so
+# interposer_sim.py passes 0 and the byte reads 0 in every simulated run; a
+# host that grows a queue owes the same sum.
 # Firmware version (spec 8.2, B-2). The two cores must agree; check_port.py
 # fails if they do not.
 #   2  the section A behaviour, Python's value until 2026-10-03

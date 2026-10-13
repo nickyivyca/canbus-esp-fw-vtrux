@@ -90,6 +90,11 @@ static const uint32_t DIAG_BUILD_ID = 0x7F7;
 //      command; both are wrong in the same direction, which is why this is
 //      a schema bump and not a quiet addition.
 static const uint8_t DIAG_SCHEMA_VER = 4;
+// THE 0x7F6 B7 COUNTER IS NOT MODELLED HERE either -- the core is handed
+// it. main.cpp sums the charger port's three disjoint tallies while the
+// flow bit is 1, the 100 ms queue age-out included (spec 2.2, user
+// 2026-10-13); see txFailed() in port_mcp2515.h for why the sum, and not
+// one of the three, is the spec's counter.
 // Firmware version (spec 8.2, B-2). The two cores must agree; check_port.py
 // fails if they do not.
 //   2  the section A behaviour, Python's value until 2026-10-03
