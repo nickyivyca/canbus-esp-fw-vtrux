@@ -8,10 +8,12 @@ build. A prod build is ANY image meant for the truck.
 WHAT IT REFUSES, and each refusal is a separate exit rather than a warning:
 
   1. a working tree with uncommitted changes;
-  2. a `managed_components/` component whose files differ from its own
+  2. HEAD not on `gen-inhibit/main` -- another branch, or detached (spec 12.3
+     item 3, added 2026-10-12, user);
+  3. a `managed_components/` component whose files differ from its own
      `CHECKSUMS.json`, or which carries a file that `CHECKSUMS.json` does not
      list, or whose `.component_hash` differs from `dependencies.lock`;
-  3. a build that was not preceded by `idf.py reconfigure`.
+  4. a build that was not preceded by `idf.py reconfigure`.
 
 and on success it writes the commit, the image's md5 and its size beside the
 image, as `<image>.prod.json`. `test/build_checks/build_output.py` refuses an
@@ -76,6 +78,10 @@ REPO = os.path.dirname(HERE)
 # component manager after the manifest is made. Everything else on disk must
 # be in the manifest.
 MANIFEST_EXEMPT = {".component_hash", "CHECKSUMS.json"}
+
+# Spec 12.3 item 3 (added 2026-10-12, user): the only branch a prod build is
+# built from. It was `gen-inhibit/rollback-fix` until the same day.
+PROD_BRANCH = "gen-inhibit/main"
 
 
 def run(cmd, **kw):
@@ -185,6 +191,37 @@ def check_clean_tree(state):
     state["branch"] = br.stdout.strip()
     print("[  ok  ] working tree clean            HEAD %s (%s) on %s"
           % (state["commit"][:7], state["describe"], state["branch"]))
+    return True
+
+
+def check_branch(state):
+    """
+    HEAD has to be ON gen-inhibit/main: the branch checked out by name.
+
+    DETACHED IS A REFUSAL, even at a commit that is that branch's tip. "HEAD is
+    on a branch" is git's own distinction -- `git status` says "HEAD detached
+    at" otherwise -- and the spec's wording is "unless HEAD is on", so a
+    detached HEAD is not on it whatever it points at.
+
+    `symbolic-ref` AND NOT `rev-parse --abbrev-ref`, which is what
+    check_clean_tree() records. Detached, --abbrev-ref prints the word `HEAD`
+    -- and `HEAD` is not a name git forbids for a branch -- whereas
+    symbolic-ref fails outright, so the two cases cannot be confused.
+
+    A separate refusal from the clean tree, run whether or not that one
+    passed, so a dirty tree on the wrong branch reports both.
+    """
+    r = run(["git", "symbolic-ref", "--quiet", "--short", "HEAD"])
+    if r.returncode != 0:
+        h = run(["git", "rev-parse", "--short", "HEAD"])
+        return fail("HEAD is detached at %s. A prod build is built with HEAD "
+                    "on %s (spec 12.3 item 3); check that branch out by name."
+                    % (h.stdout.strip() or "?", PROD_BRANCH))
+    branch = r.stdout.strip()
+    if branch != PROD_BRANCH:
+        return fail("HEAD is on %s. A prod build is built with HEAD on %s "
+                    "(spec 12.3 item 3)." % (branch, PROD_BRANCH))
+    print("[  ok  ] branch                      %s" % branch)
     return True
 
 
@@ -385,6 +422,7 @@ def main():
     if not check_repo():
         return 1
     ok = check_clean_tree(state)
+    ok = check_branch(state) and ok
     ok = check_components(state) and ok
     if not args.check_only:
         ok = check_idf_env() and ok

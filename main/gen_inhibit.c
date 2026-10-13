@@ -1631,9 +1631,26 @@ static int hist_json(const gi_hist_t *h, const char *name, char *buf, int buflen
  * LIVE STATE.
  *
  * File-scope and not locals: together these are over a kilobyte, and the httpd
- * task's stack is not the place for it. Safe as statics because the web server
- * runs one task that serves sockets in turn, so two status pages are never built
- * at once -- if that ever changes these have to become per-request storage.
+ * task's stack is not the place for it.
+ *
+ * SAFE AS STATICS ONLY BECAUSE EXACTLY ONE httpd INSTANCE SERVES ONE REQUEST AT
+ * A TIME (user, 2026-10-12). Both callers are URI handlers in config_server.c,
+ * and one server task runs its handlers in turn, so two pages are never built
+ * at once. That is a property of how the server is started, not of this file.
+ *
+ * config_server_restart() calls httpd_start() a second time, and nothing calls
+ * it today. Reviving it, or starting any other second server instance, would
+ * let two requests run here at once: the second request's copy would overwrite
+ * these while the first is still formatting from them, and the first page would
+ * be built partly from one reading and partly from another. That is a torn
+ * snapshot, which spec 11's one-snapshot rule exists to forbid, and nothing on
+ * the page would show it.
+ *
+ * THE FIX THEN IS PER-REQUEST STORAGE: a stack-local snapshot, which means
+ * growing the httpd task's stack (stack_size is HTTPD_DEFAULT_CONFIG's 4096 and
+ * config_server.c does not override it), or one allocated per request. The two
+ * handlers' own `static char out[GI_STATUS_PAGE_CAP]` buffers rest on the same
+ * assumption and would need the same change.
  */
 /*
  * Spec 3.2's refusal counters (user, 2026-10-12), copied with everything else
