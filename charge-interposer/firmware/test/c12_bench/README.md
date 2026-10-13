@@ -27,11 +27,11 @@ fake. Its `--self-test` needs no hardware.
 Innomaker sends and is the only witness; the verdict is the chip's SPI
 registers. The two-adapter C12 stays open.
 
-## Build (NICKY-XPS, PowerShell -- see `tools-reference.md`)
+## Build (PowerShell; this machine's ESP-IDF and Python paths are in `tools-reference.md`)
 
 ```powershell
-$env:IDF_PATH = "C:\Users\Nicky\esp\esp-idf"
-$env:PATH = "C:\Users\Nicky\AppData\Local\Programs\Python\Python311-32;" + $env:PATH
+$env:IDF_PATH = "<ESP-IDF checkout>"
+$env:PATH = "<Python 3.11 folder>;" + $env:PATH
 . "$env:IDF_PATH\export.ps1"
 idf.py set-target esp32s3    # once
 idf.py build
