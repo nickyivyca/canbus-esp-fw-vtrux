@@ -97,6 +97,15 @@ def written_images(build_dir, since):
     return out
 
 
+def step_start(gap=1.1, sleep=time.sleep):
+    """The time a step's window opens: AFTER a gap, so the previous step's image
+    (written moments ago) is older than it. The first version opened the window
+    a second BEFORE the step, and on 95619b7 that counted revert/ninja's image as
+    written by commit/ninja, failing it for two images (2026-10-13)."""
+    sleep(gap)
+    return time.time()
+
+
 def judge(rc, images, desc, full_sha, dirty):
     """(ok, detail). ok is False for every undetermined case, never None."""
     if rc != 0:
@@ -192,8 +201,7 @@ def main():
             change()
             head = git(["rev-parse", "HEAD"], tree).stdout.strip()
             porcelain = git(["status", "--porcelain", "--untracked-files=no"], tree).stdout.strip()
-            since = time.time() - 1.0
-            time.sleep(1.1)
+            since = step_start()
             rc, secs = build(tree, how, log)
             images = written_images(os.path.join(tree, "build"), since)
             desc = BO.app_desc(images[0]) if len(images) == 1 else None

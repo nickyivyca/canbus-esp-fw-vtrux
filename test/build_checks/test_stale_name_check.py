@@ -43,6 +43,13 @@ def main():
             os.utime(p, (now - age, now - age))
         os.makedirs(os.path.join(TMP, "wican-fw_dir.bin"))
         written = sorted(os.path.basename(p) for p in S.written_images(TMP, now - 10))
+        prev = os.path.join(TMP, "wican-fw_obd_95619b7_man.bin")
+        open(prev, "wb").close()
+        since = S.step_start(gap=0.05)
+        time.sleep(0.05)   # file times tick coarser than time.time(); a build writes seconds later
+        after = os.path.join(TMP, "wican-fw_obd_ab2fa89_man.bin")
+        open(after, "wb").close()
+        window = [os.path.basename(p) for p in S.written_images(TMP, since)]
         try:
             missing_ok = S.written_images(os.path.join(HERE, "_no_such_build_dir"), 0) == []
         except OSError:
@@ -68,6 +75,8 @@ def main():
          and not S.carries("3ee4000", SHA, False)),
         ("written: this project's top-level .bin files modified since the step began, nothing else",
          written == ["wican-fw_obd_3ee47b7-dirty_man.bin", "wican-fw_obd_3ee47b7_man_rt.bin"]),
+        ("step window: an image the previous step wrote just before is not this step's",
+         window == ["wican-fw_obd_ab2fa89_man.bin"]),
         ("written: a missing build directory is no images, not a crash",
          missing_ok),
         ("judge: a dirty step whose image reads -dirty in all three passes",
