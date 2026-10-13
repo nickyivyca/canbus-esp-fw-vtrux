@@ -114,6 +114,15 @@ void gen_inhibit_note_refused_can_send(void);
  */
 void gen_inhibit_quiesce(void);
 
+/*
+ * For the restart step only (gi_restart_quiesce.c, spec 3): the scheduler's
+ * abort, so the private abort command stays at its one site (spec 12.4). Aborts
+ * the frame in the controller if it is still awaiting the bus, and says whether
+ * it did; a frame already transmitting is left to finish. In IRAM, and safe with
+ * interrupts disabled and from a panic.
+ */
+bool gen_inhibit_restart_abort_tx(void);
+
 /* JSON stats into `buf`. Returns bytes written. */
 /*
  * The buffer gen_inhibit_get_stats_json() must be given.

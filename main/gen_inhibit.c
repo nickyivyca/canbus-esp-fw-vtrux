@@ -22,6 +22,7 @@
  * dev_abort_if_awaiting() below -- because it is the kind of call that spreads.
  */
 #include "hal/twai_ll.h"
+#include "esp_attr.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -747,7 +748,7 @@ static bool dev_submit(void *ctx, const gi_frame_t *f)
     return ok;
 }
 
-static gs_buf_t buf_from_status(uint32_t st)
+static IRAM_ATTR gs_buf_t buf_from_status(uint32_t st)
 {
     if (st & TWAI_LL_STATUS_TBS) { return GS_BUF_EMPTY; }
     /*
@@ -777,8 +778,17 @@ static gs_buf_t dev_buf_state(void *ctx)
  *
  * The interrupt register is never touched: reading it clears interrupts and would
  * steal them from the driver.
+ *
+ * IN IRAM, because the restart step calls it too (gen_inhibit_restart_abort_tx(),
+ * below; spec 3 and spec 12.4's confinement row, 2026-10-13). That caller may run
+ * from a panic, so this must not depend on the flash cache. What it calls is
+ * force-inlined LL or IRAM already: buf_from_status() above, and on this
+ * single-core build taskENTER/EXIT_CRITICAL are vPortEnterCritical() and
+ * vPortExitCritical() (portmacro.h:530-531), which mask interrupts and keep a
+ * nesting count -- no spinlock, so a crash taken inside this same section cannot
+ * deadlock the restart on it.
  */
-static gs_buf_t dev_abort_if_awaiting(void *ctx)
+static IRAM_ATTR gs_buf_t dev_abort_if_awaiting(void *ctx)
 {
     twai_dev_t *hw = TWAI_LL_GET_HW(0);
     gs_buf_t seen;
@@ -818,6 +828,17 @@ static const gs_hal_t DEV_HAL = {
     .outstanding = dev_outstanding,
     .ctx = NULL,
 };
+
+/*
+ * THE RESTART STEP'S ABORT GOES THROUGH THE SCHEDULER'S, so the private abort
+ * command stays at one site (spec 12.4, "the private TWAI abort is confined";
+ * spec 3, "No restart leaves the controller on the bus"). See
+ * gi_restart_quiesce.c, which calls this on every poll of its wait.
+ */
+IRAM_ATTR bool gen_inhibit_restart_abort_tx(void)
+{
+    return dev_abort_if_awaiting(NULL) == GS_BUF_AWAITING;
+}
 
 /*
  * Turn the scheduler's monotonic counters into the core's events.

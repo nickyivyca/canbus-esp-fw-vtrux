@@ -193,14 +193,15 @@ static int page_json(char *b, size_t cap)
             "\"twai_clk\":%lu,\"twai_rst\":%lu,\"in_reset_at_entry\":%lu,"
             "\"status_at_entry\":\"0x%03lx\",\"tec\":%lu,\"rec\":%lu,"
             "\"did_twai\":%s,\"status_at_reset\":\"0x%03lx\","
-            "\"wait_us\":%lu,\"timed_out\":%s,\"did_stdby\":%s},",
+            "\"wait_us\":%lu,\"timed_out\":%s,\"did_stdby\":%s,"
+            "\"aborts\":%lu},",
             (unsigned long)l->entries,
             (unsigned long)l->twai_clk, (unsigned long)l->twai_rst,
             (unsigned long)l->in_reset, (unsigned long)l->st_entry,
             (unsigned long)l->tec, (unsigned long)l->rec,
             l->did_twai ? "true" : "false", (unsigned long)l->st_reset,
             (unsigned long)l->wait_us, l->timed_out ? "true" : "false",
-            l->did_stdby ? "true" : "false");
+            l->did_stdby ? "true" : "false", (unsigned long)l->aborts);
     }
     else
     {

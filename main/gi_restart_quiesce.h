@@ -34,6 +34,7 @@ typedef struct {
     uint32_t wait_us;       /* time spent waiting for the bus between frames */
     uint32_t timed_out;     /* the bus was not between frames within 1 ms */
     uint32_t did_stdby;     /* CAN_STDBY was driven to standby */
+    uint32_t aborts;        /* frames aborted while still awaiting the bus */
     uint32_t check;
 } gi_restart_record_t;
 

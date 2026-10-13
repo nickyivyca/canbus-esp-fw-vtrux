@@ -26,15 +26,26 @@
  *
  * WHAT IT DOES, in this order, as the trial did:
  *
- *   1. RESET MODE, after the frame on the wire (if any) has finished. Abort
- *      first -- that drops frames still waiting and stops the one on the wire
- *      from being retried -- then wait, bounded at 1 ms, for Transmit Status
- *      and Receive Status both to read 0, i.e. for the bus to be between
- *      frames. Entering reset mode in the middle of our own frame would cut it
- *      off, and every other node would flag that. If the wait runs out it is
- *      because another node's frame is on the wire, not ours (the abort stops
- *      ours being retried), and reset mode is entered anyway; the record says
- *      so. Nothing resets the controller again until twai_driver_install()
+ *   1. RESET MODE, after the frame on the wire (if any) has finished. Wait,
+ *      bounded at 1 ms, for Transmit Status and Receive Status both to read 0,
+ *      i.e. for the bus to be between frames, and on EVERY poll abort our
+ *      frame if it is still awaiting the bus. Entering reset mode in the
+ *      middle of our own frame would cut it off, and every other node would
+ *      flag that.
+ *
+ *      THE ABORT IS THE SCHEDULER'S, gen_inhibit_restart_abort_tx(), so the
+ *      private abort command stays at its one site (spec 12.4, "the private
+ *      TWAI abort is confined"). The trial build 089cd21 issued its own abort
+ *      once, unconditionally; this differs in two ways, both deliberate. It
+ *      aborts only an AWAITING frame, which is the only state in which the
+ *      command was measured to act (7 of 8 at TS = 1 had no effect, see that
+ *      function). And it does so on every poll, so a frame that failed on the
+ *      wire and dropped back to awaiting its retry is aborted then, rather
+ *      than retried into the 1 ms bound. Once nothing of ours is awaiting,
+ *      nothing of ours can start: interrupts are off, so the driver cannot
+ *      load another frame. If the wait still runs out it is because another
+ *      node's frame is on the wire, and reset mode is entered anyway; the
+ *      record says so. Nothing resets the controller again until twai_driver_install()
  *      does (twai.c:497-499), so it stays in reset mode through the CPU reset,
  *      the ROM, the bootloader and app_main.
  *
@@ -75,6 +86,7 @@
 #include "soc/gpio_reg.h"
 
 #include "hw_config.h"
+#include "gen_inhibit.h"
 #include "gi_restart_quiesce.h"
 
 _Static_assert(CAN_STDBY_GPIO_NUM < 32,
@@ -145,6 +157,7 @@ void IRAM_ATTR __wrap_esp_restart_noos(void)
     r.wait_us   = 0;
     r.timed_out = 0;
     r.did_stdby = 0;
+    r.aborts    = 0;
 
     if (r.twai_clk && !r.twai_rst)
     {
@@ -154,12 +167,19 @@ void IRAM_ATTR __wrap_esp_restart_noos(void)
         r.tec      = twai_ll_get_tec(hw);
         r.rec      = twai_ll_get_rec(hw);
 
-        twai_ll_set_cmd_abort_tx(hw);
         uint32_t waited = 0;
-        while ((twai_ll_get_status(hw) &
-                (TWAI_LL_STATUS_TS | TWAI_LL_STATUS_RS)) != 0 &&
-               waited < QZ_WAIT_MAX_US)
+        for (;;)
         {
+            if (gen_inhibit_restart_abort_tx())
+            {
+                r.aborts++;
+            }
+            if ((twai_ll_get_status(hw) &
+                 (TWAI_LL_STATUS_TS | TWAI_LL_STATUS_RS)) == 0 ||
+                waited >= QZ_WAIT_MAX_US)
+            {
+                break;
+            }
             esp_rom_delay_us(QZ_WAIT_STEP_US);
             waited += QZ_WAIT_STEP_US;
         }
