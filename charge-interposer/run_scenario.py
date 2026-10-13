@@ -14,6 +14,7 @@ the pair shows the intervention is what moved the outcome and not the bench.
 """
 
 import argparse
+import bisect
 import os
 import re
 import signal
@@ -318,11 +319,18 @@ def hold_follows_loads(band=(2.6, 3.3), settle_s=120.0, drop_exempt_s=2.0):
          0 A fails." (96dd3703)
 
     The injected steps are vehicle_sim's --aux-step lines ("12 V load
-    step: X -> Y W ... (+D s after chg_max reached 0 A)"); a step DOWN is a
-    load drop. Their times on the trace's clock are the trace's first
-    bcm_chg_max of 0 A plus D -- the same anchor vehicle_sim times them
-    from, seen up to one 0x420 period (100 ms) later by the core.
-    test_scorer_wiring drives each clause to fail."""
+    step: X -> Y W at t=T s ..."); a step DOWN is a load drop. Each is
+    placed at its sim time T mapped onto the trace's clock by one event
+    vehicle_sim both logs with a sim time and puts on the wire: the 0x410
+    on which bcm_soc first reads 100 (SOC100, series["soc100"]). NOT the
+    trace's first bcm_chg_max of 0 A plus D (the rule before 2026-10-13):
+    vehicle_sim times D from its internal chg_max reaching 0, which the
+    encoded value reaches first -- 13.7 s apart on P3 at E6a. And not the
+    bcm_ibat step either, since bcm_ibat is what clause 1 scores; instead
+    each mapped step must find a bcm_ibat step of its sign (a drop raises
+    the pack current) of at least IBAT_STEP_A within IBAT_STEP_WINDOW_MS
+    (one 0x410 period plus 0.5 s), or it fails and exempts nothing
+    (reviewer, 2026-10-13). test_scorer_wiring drives each clause to fail."""
     return ("hold_follows_loads", dict(band=band, settle_s=settle_s,
                                        drop_exempt_s=drop_exempt_s))
 
@@ -407,6 +415,66 @@ def _p3a_check(cs=None, vs=None):
 
 AUX_STEP = re.compile(r"12 V load step: ([\d.]+) -> ([\d.]+) W at t=[\d.]+s "
                       r"\(\+([\d.]+)s after chg_max reached 0 A\)")
+# the same line's sim time, which hold_follows_loads maps onto the trace
+AUX_STEP_AT = re.compile(r"12 V load step: ([\d.]+) -> ([\d.]+) W at "
+                         r"t=([\d.]+)s \(\+")
+# the cross-check on each mapped step (reviewer, 2026-10-13): a bcm_ibat
+# change of the step's sign, at least this big, within this of its time.
+# A 130 W step is ~0.49 A on the HV side (vehicle_sim.hv_draw_a); the
+# hold's own walk moves bcm_ibat 0.025 A a frame
+IBAT_STEP_A = 0.1
+IBAT_STEP_WINDOW_MS = 100 + 500
+
+
+def _aux_steps_on_trace(series, veh_text, c0, wire_anchor=True):
+    """-> (steps, problems, note) for hold_follows_loads: steps is
+    [(t_ms, from_w, to_w, seen)] on the trace's clock, `seen` False when
+    the bcm_ibat cross-check found no step there (such a step fails and
+    exempts nothing); problems is a list; note says how they were placed.
+    steps is None when they cannot be placed at all. `wire_anchor` False
+    is the rule before 2026-10-13 (the trace's first chg_max 0 plus D, no
+    cross-check), kept for test_scorer_wiring's can-fail."""
+    found = AUX_STEP_AT.findall(veh_text)
+    if not found:
+        return [], [], None
+    if not wire_anchor:
+        return ([(c0 + int(round(float(d) * 1000)), float(a), float(b), True)
+                 for a, b, d in AUX_STEP.findall(veh_text)], [],
+                "placed at the trace's first chg_max 0 plus D")
+    m = SOC100.search(veh_text)
+    t_wire = series.get("soc100")
+    if m is None or t_wire is None:
+        return (None, ["1/3: %d injected load step(s) but no wire anchor to "
+                       "place them on the trace (%s): the hold cannot be "
+                       "judged" % (len(found), "vehicle_sim logged no "
+                                   "bcm_soc 100" if m is None else
+                                   "no 0x410 on the trace reads bcm_soc "
+                                   "100")], None)
+    off = t_wire - int(round(float(m.group(1)) * 1000))
+    ib = sorted(series["ibat"])
+    ibt = [t for t, _a in ib]
+    steps, probs = [], []
+    for a, b, ts in found:
+        a, b = float(a), float(b)
+        t = int(round(float(ts) * 1000)) + off
+        sign = 1.0 if b < a else -1.0
+        lo = max(bisect.bisect_left(ibt, t - IBAT_STEP_WINDOW_MS), 1)
+        hi = bisect.bisect_right(ibt, t + IBAT_STEP_WINDOW_MS)
+        seen = any(sign * (ib[k][1] - ib[k - 1][1]) >= IBAT_STEP_A - 1e-6
+                   for k in range(lo, hi))
+        if not seen:
+            probs.append("1: the %.0f -> %.0f W load step at t=%.1f s (sim "
+                         "t=%s s) has no bcm_ibat %s of %.2f A or more within "
+                         "%.1f s of it, so it exempts nothing"
+                         % (a, b, t / 1000.0, ts,
+                            "rise" if sign > 0 else "fall", IBAT_STEP_A,
+                            IBAT_STEP_WINDOW_MS / 1000.0))
+        steps.append((t, a, b, seen))
+    return (steps, probs,
+            "steps placed by bcm_soc 100 (sim t=%s s, trace t=%.3f s, "
+            "offset %+.3f s), each with its bcm_ibat step within %.1f s"
+            % (m.group(1), t_wire / 1000.0, off / 1000.0,
+               IBAT_STEP_WINDOW_MS / 1000.0))
 
 
 def hold_series_from_trace(trace_path):
@@ -416,6 +484,8 @@ def hold_series_from_trace(trace_path):
       sp      [(t_ms, amps)] every page 01 sent to the charger in HOLD
       ibat    [(t_ms, A)] every 0x410 bcm_ibat
       chgmax  [(t_ms, A)] every 0x420 bcm_chg_max
+      soc100  t_ms of the first 0x410 whose bcm_soc reads 100, or None:
+              the wire anchor that places vehicle_sim's load steps
       spcap   [(t_ms, A or None)] the EVSE cap of spec 4 at each `sp`
               frame, by test_invariants' Oracle (the cap rule 6 uses):
               what clause 2's clamp is judged against (spec 96dd3703)
@@ -434,7 +504,8 @@ def hold_series_from_trace(trace_path):
             k, v = line[1:].split()
             setattr(cfg, k, int(v))
     core = M.InterposerCore(cfg, 0)
-    out = dict(hold=[], sp=[], ibat=[], chgmax=[], spcap=[], t_last=None)
+    out = dict(hold=[], sp=[], ibat=[], chgmax=[], spcap=[], soc100=None,
+               t_last=None)
     h0 = None
     t = 0
     for line in lines:
@@ -449,9 +520,12 @@ def hold_series_from_trace(trace_path):
             arb, ext, d = int(p[2], 16), p[3] == "1", bytes.fromhex(p[4])
             bus.observe(p[0], t, arb, d, monitor=(core.state == M.S_MONITOR))
             if arb == 0x410:
-                v = P.decode(P.EPRI, 0x410, d).get("bcm_ibat")
+                dec = P.decode(P.EPRI, 0x410, d)
+                v = dec.get("bcm_ibat")
                 if v is not None:
                     out["ibat"].append((t, float(v)))
+                if out["soc100"] is None and                         dec.get("bcm_soc", 0.0) >= 100.0:
+                    out["soc100"] = t
             elif arb == 0x420:
                 v = P.decode(P.EPRI, 0x420, d).get("bcm_chg_max")
                 if v is not None:
@@ -480,28 +554,36 @@ def hold_series_from_trace(trace_path):
 def _hold_follows_loads(series, veh_text, band=(2.6, 3.3), settle_s=120.0,
                         drop_exempt_s=2.0, entry_grace_s=30.0,
                         _clamp_move=True, _anchor_later=True,
-                        _entry_grace=True, _clamp_step=True):
+                        _entry_grace=True, _clamp_step=True,
+                        _wire_anchor=True):
     """-> (ok, why). See hold_follows_loads(). The underscored switches
     exist only for test_scorer_wiring's can-fail: False is the rule before
     spec 96dd3703 / 05999682 / 1d1fae8d (no clamp allowed as a move in
     clause 2; clause 3 anchored on chg_max 0 alone; no entry grace in
-    clause 1; no clamp-plus-step frame in clause 2)."""
+    clause 1; no clamp-plus-step frame in clause 2), and before the
+    reviewer's 2026-10-13 ruling (the injected steps placed at the trace's
+    first chg_max 0 plus D, with no bcm_ibat cross-check)."""
     if series is None:
         return (False, "no flight trace -- the hold cannot be judged (a "
                        "board run has none)")
     if not series["hold"]:
         return (False, "the core was never in HOLD")
-    import bisect
     probs, notes = [], []
     tol = 1e-6
     c0 = next((t for t, a in series["chgmax"] if a <= 0.0), None)
     if c0 is None:
         return (False, "bcm_chg_max never reached 0 A -- spec 9: such a run "
                        "fails")
-    steps = [(c0 + int(round(float(d) * 1000)), float(a), float(b))
-             for a, b, d in AUX_STEP.findall(veh_text)]
-    drops = [t for t, a, b in steps if b < a]
-    first_step = min([t for t, _a, _b in steps], default=None)
+    steps, step_probs, step_note = _aux_steps_on_trace(series, veh_text, c0,
+                                                       _wire_anchor)
+    if steps is None:
+        return (False, "; ".join(step_probs))
+    probs += step_probs
+    if step_note:
+        notes.append(step_note)
+    # a step whose bcm_ibat step was not found exempts nothing
+    drops = [t for t, a, b, seen in steps if b < a and seen]
+    first_step = min([t for t, _a, _b, _s in steps], default=None)
 
     def in_hold(t):
         return any(a <= t <= b for a, b in series["hold"])

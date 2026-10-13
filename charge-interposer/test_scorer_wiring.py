@@ -70,8 +70,20 @@ def _diag(fw7f4=7, sch7f4=4, fw7f7=(7, 7, 7), sch7f7=4, state=0,
 
 
 C0 = 100000                      # chg_max reaches 0 A here (ms)
-DROP_LINE = ("12 V load step: 266.0 -> 136.0 W at t=900.0s (+200.0s after "
-             "chg_max reached 0 A)")
+# The wire anchor (reviewer, 2026-10-13): bcm_soc reads 100 at sim t=650 s
+# and on the trace at SOC100_T, so sim t maps to trace ms by -600 s, and the
+# step below lands at C0 + 200 s by both anchors. The pack current steps up
+# 0.2 A there (_ib), the drop's bcm_ibat step the cross-check looks for.
+SOC100_T = 50000
+SOC100_LINE = "BMS: bcm_soc reads 100 % on the bus at t=650.0s"
+STEP_T = C0 + 200000
+DROP_LINE = (SOC100_LINE + "\n12 V load step: 266.0 -> 136.0 W at t=900.0s "
+             "(+200.0s after chg_max reached 0 A)")
+
+
+def _ib(h0=50000, h1=500000, at=STEP_T, before=-0.3, after=-0.1):
+    """Pack current every second: `before` until `at`, `after` from it."""
+    return [(t, before if t < at else after) for t in range(h0, h1 + 1, 1000)]
 
 
 def _sp_path(hold0, hold1, start_a, legs, every=300):
@@ -91,10 +103,12 @@ def _sp_path(hold0, hold1, start_a, legs, every=300):
     return out
 
 
-def _hs(hold=(50000, 500000), chg0=C0, sp=None, ibat=None, chg_after=None):
+def _hs(hold=(50000, 500000), chg0=C0, sp=None, ibat=None, chg_after=None,
+        soc100=SOC100_T):
     """A series in hold_series_from_trace()'s shape: chg_max 2.0 A, then
-    0 A from chg0 (None: never); pack current -0.1 A every second; the
-    setpoint 2.0 A walking up to 2.9 A from chg0."""
+    0 A from chg0 (None: never); pack current -0.3 A every second, -0.1 A
+    from STEP_T (_ib); the setpoint 2.0 A walking up to 2.9 A from chg0;
+    bcm_soc reading 100 from soc100."""
     h0, h1 = hold
     chg = [(0, 2.0)] + ([(chg0, 0.0)] if chg0 is not None else [])
     if chg_after:
@@ -102,9 +116,8 @@ def _hs(hold=(50000, 500000), chg0=C0, sp=None, ibat=None, chg_after=None):
         pts = sorted(chg + list(chg_after))
         chg = [(t, [a for tp, a in pts if tp <= t][-1])
                for t in range(0, h1 + 1, 100)]
-    return dict(hold=[hold], chgmax=chg,
-                ibat=ibat if ibat is not None else
-                [(t, -0.1) for t in range(h0, h1 + 1, 1000)],
+    return dict(hold=[hold], chgmax=chg, soc100=soc100,
+                ibat=ibat if ibat is not None else _ib(h0, h1),
                 sp=sp if sp is not None else
                 _sp_path(h0, h1, 2.0, [(chg0 or h1 + 1, 2.9)]),
                 t_last=h1)
@@ -117,7 +130,7 @@ def hold_follows_loads_cases():
     ok, why = run(_hs())
     check(ok, "a hold that settles at 2.9 A 2.7 s after chg_max 0 passes "
           "-> %s" % why)
-    base_ib = [(t, -0.1) for t in range(50000, 500001, 1000)]
+    base_ib = _ib()
     ok, why = run(_hs(ibat=base_ib + [(C0 + 201000, 0.5)]), DROP_LINE)
     check(ok, "pack current above chg_max 1 s after an injected load DROP "
           "passes (the 2 s exception) -> %s" % why)
@@ -157,8 +170,12 @@ def hold_follows_loads_cases():
           "above chg_max 1 s after a RISE in chg_max fails (a rise is not "
           "a fall) -> %s" % why)
     up_line = DROP_LINE.replace("266.0 -> 136.0", "136.0 -> 266.0")
-    ok, why = run(_hs(ibat=base_ib + [(C0 + 201000, 0.5)]), up_line)
-    check(not ok and "1:" in why,
+    up_ib = _ib(before=-0.1, after=-0.3)
+    ok, why = run(_hs(ibat=up_ib), up_line)
+    check(ok, "a load step UP with its bcm_ibat fall passes -> %s" % why)
+    ok, why = run(_hs(ibat=up_ib + [(C0 + 201000, 0.5)]), up_line)
+    check(not ok and "1: pack current above" in why
+          and "no bcm_ibat" not in why,
           "...and a load step UP is not a drop: no exception -> %s" % why)
     sp = _hs()["sp"]
     k = len(sp) // 2
@@ -387,6 +404,87 @@ def p3_clamp_step_cases():
           "hold_series_from_trace on syn_hold_cap_clamp_step: one clamp plus "
           "a step (6.10 -> 5.90 A at 121.4 s) and one clamp to 3.00 A: %s / "
           "%s" % (comb_t, clamp_t))
+
+
+def p3_wire_anchor_cases():
+    """The injected load steps placed by the wire anchor (reviewer,
+    2026-10-13): each step's sim time mapped onto the trace by the 0x410
+    on which bcm_soc first reads 100, and cross-checked against a bcm_ibat
+    step of its sign within 0.6 s. Shown against the rule before it
+    (`_wire_anchor` False: the trace's first chg_max 0 plus D), on P3 at
+    E6a's shape, where the two anchors are 13.7 s apart."""
+    def run(series, veh, **kw):
+        return R._hold_follows_loads(series, veh, **kw)
+
+    # vehicle_sim's internal chg_max reaches 0 13.7 s after the encoded
+    # one, so D = 200 s lands at sim 913.7 s -> trace C0 + 213.7 s
+    t_drop = C0 + 213700
+    line = (SOC100_LINE + "\n12 V load step: 266.0 -> 136.0 W at t=913.7s "
+            "(+200.0s after chg_max reached 0 A)")
+
+    def drop_ib(at, peak=0.5, walk_ms=1500):
+        """-0.1 A until `at`, then `peak` A falling linearly to 0 over
+        walk_ms (100 ms frames), then -0.1 A."""
+        out = [(t, -0.1) for t in range(50000, at, 1000)]
+        n = walk_ms // 100
+        out += [(at + k * 100, round(peak * (1 - k / n), 3))
+                for k in range(n + 1)]
+        out += [(t, -0.1) for t in range(at + walk_ms + 1000, 500001, 1000)]
+        return out
+
+    ok, why = run(_hs(ibat=drop_ib(t_drop)), line)
+    check(ok and "offset -600.000 s" in why,
+          "a drop placed by bcm_soc 100, walked to 0 A in 1.5 s, passes "
+          "-> %s" % why)
+    ok, why = run(_hs(ibat=drop_ib(t_drop)), line, _wire_anchor=False)
+    check(not ok and why.startswith("1:")
+          and "first at t=%.1f s" % (t_drop / 1000.0) in why,
+          "...and fails under the rule before (chg_max 0 plus D puts the "
+          "exemption 13.7 s early) -> %s" % why)
+    ok, why = run(_hs(ibat=drop_ib(t_drop, walk_ms=3200)), line)
+    check(not ok and "1: pack current above" in why
+          and "first at t=%.1f s" % ((t_drop + 2100) / 1000.0) in why,
+          "a walk-down lasting 3.2 s fails from the first frame past 2 s "
+          "-> %s" % why)
+    ok, why = run(_hs(ibat=drop_ib(t_drop + 500)), line)
+    check(ok, "the bcm_ibat step 0.5 s after the mapped time is inside the "
+          "0.6 s cross-check -> %s" % why)
+    ok, why = run(_hs(ibat=drop_ib(t_drop + 1000)), line)
+    check(not ok and "no bcm_ibat rise" in why and "1: pack current above"
+          in why, "...1.0 s after it fails the cross-check, and the drop "
+          "exempts nothing -> %s" % why)
+    small = [(t, 0.05 if t >= t_drop else -0.02)
+             for t in range(50000, 500001, 100)]
+    ok, why = run(_hs(ibat=small), line)
+    check(not ok and "no bcm_ibat rise" in why,
+          "a bcm_ibat change of 0.07 A is not the drop's step -> %s" % why)
+    falling = _ib(at=t_drop, before=-0.1, after=-0.6)
+    ok, why = run(_hs(ibat=falling), line)
+    check(not ok and "no bcm_ibat rise" in why,
+          "a drop whose bcm_ibat FALLS fails the cross-check (wrong sign) "
+          "-> %s" % why)
+    no_soc = line.replace(SOC100_LINE + "\n", "")
+    ok, why = run(_hs(ibat=drop_ib(t_drop)), no_soc)
+    check(not ok and "no wire anchor" in why and "logged no bcm_soc 100"
+          in why, "a step with no bcm_soc 100 in the vehicle log cannot be "
+          "placed, and fails -> %s" % why)
+    ok, why = run(_hs(ibat=drop_ib(t_drop), soc100=None), line)
+    check(not ok and "no wire anchor" in why and "no 0x410 on the trace"
+          in why, "...nor with no bcm_soc 100 on the trace -> %s" % why)
+    ok, why = run(_hs(soc100=None), "")
+    check(ok, "a run with no injected step needs no anchor -> %s" % why)
+    # the trace reader's anchor: the FIRST 0x410 reading 100, not the first
+    # 0x410 (unit_random_calm_seed2 sends 37 below 100 first)
+    s = R.hold_series_from_trace(TRACES / "unit_random_calm_seed2.trace")
+    check(s is not None and s["soc100"] == 3862,
+          "hold_series_from_trace finds bcm_soc 100 at t=3862 ms on "
+          "unit_random_calm_seed2 -> %s" % (s and s["soc100"]))
+    s = R.hold_series_from_trace(TRACES / "syn_override_release.trace")
+    check(s is not None and s["soc100"] is None,
+          "...and none on syn_override_release, below 100 throughout -> %s"
+          % (s and s["soc100"]))
+    check(len(R.AUX_STEP_AT.findall(line)) == len(R.AUX_STEP.findall(line))
+          == 1, "AUX_STEP_AT reads the same vehicle_sim line as AUX_STEP")
 
 
 def keep_trace_cases():
@@ -684,6 +782,10 @@ def main():
     print("\nspec 9 at 96dd3703: clause 2's clamp, clause 3's later anchor")
     p3_anchor_cases()
     p3_clamp_step_cases()
+
+    print("\nspec 9: the load steps placed by bcm_soc 100 (reviewer, "
+          "2026-10-13)")
+    p3_wire_anchor_cases()
 
     print("\n--keep-traces: the L1 replay keeps the trace only when asked")
     keep_trace_cases()
