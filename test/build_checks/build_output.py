@@ -380,10 +380,13 @@ def check_diag(dbc_path):
     defined = {m.frame_id for m in db.messages}
 
     # ROW 22 SAYS "diag frames", AND THE PROBE IS NOT ONE. 0x7F0 is the RESPOND
-    # mode's timing measurement, not a status page, and vtrux-wican-diag.dbc
-    # deliberately does not define it. The first version of this check demanded
-    # every GI_*_ID including the probe and failed a correct DBC -- an
-    # over-claim of exactly the kind config_vs_spec.py was corrected for.
+    # mode's timing measurement, not a status page. Until 2026-10-12 the DBC did
+    # not define it; since then (user) it does, as WICAN_Probe, with its layout
+    # in wican_diag_schema.md, but it is still not a diag frame and not versioned
+    # by diag_schema_ver, so this row only reports whether the DBC has it. The
+    # first version of this check demanded every GI_*_ID including the probe and
+    # failed a correct DBC -- an over-claim of exactly the kind config_vs_spec.py
+    # was corrected for.
     diag_ids = {k: v for k, v in ids.items() if k.startswith("GI_DIAG_ID_")}
     missing = sorted(v for v in diag_ids.values() if v not in defined)
     row("DBC defines every diag page", not missing,
