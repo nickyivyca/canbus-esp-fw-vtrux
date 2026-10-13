@@ -23,6 +23,21 @@ if(GI_INSTRUMENT_TXABORT)
     list(APPEND requires "hal" "soc")
 endif()
 
+# RESTART-QUIESCE TRIAL BUILD (user, 2026-10-13, via the reviewer; not in the
+# spec -- the trial is how it is decided whether it should be).
+#
+#   idf.py -B build-quiesce -DGI_TRIAL_RESTART_QUIESCE=1 build
+#
+# Takes the CAN controller off the bus, and the transceiver into standby, before
+# every software restart, behind a runtime switch -- see gi_restart_quiesce.c.
+# The source is added to the component only here, as gi_txabort_probe.c is, and
+# the linker wrap below is the only way it reaches the restart path.
+#
+# Never flash a build configured this way to the truck.
+if(GI_TRIAL_RESTART_QUIESCE)
+    list(APPEND srcs "gi_restart_quiesce.c")
+endif()
+
 idf_component_register(
     SRCS "hw_config.c" "wc_timer.c" "autopid.c" "" "${srcs}"        # list the source files of this component
     INCLUDE_DIRS        # optional, add here public include directories
@@ -47,6 +62,18 @@ idf_component_register(
 if(GI_INSTRUMENT_RXQ)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE GI_INSTRUMENT_RXQ=1)
     message(STATUS "gen_inhibit: RX backlog instrument ENABLED (measurement build)")
+endif()
+
+if(GI_TRIAL_RESTART_QUIESCE)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE GI_TRIAL_RESTART_QUIESCE=1)
+    # Every caller of esp_restart_noos() is in another object file of
+    # esp_system, so --wrap redirects all of them: esp_restart() and
+    # panic_restart() alike. The real function is reached as
+    # __real_esp_restart_noos at the end of the wrapper.
+    target_link_libraries(${COMPONENT_LIB} INTERFACE
+        "-Wl,--wrap=esp_restart_noos")
+    message(STATUS "gen_inhibit: RESTART-QUIESCE TRIAL build -- "
+                   "esp_restart_noos is wrapped, /gi_quiesce is registered")
 endif()
 
 if(GI_INSTRUMENT_TXABORT)

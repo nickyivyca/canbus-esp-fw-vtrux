@@ -75,6 +75,10 @@
  * two registrations below are the whole of its footprint in shipping code. */
 #include "gi_txabort_probe.h"
 #endif
+#if GI_TRIAL_RESTART_QUIESCE
+/* Restart-quiesce trial build only -- see main/CMakeLists.txt. */
+#include "gi_restart_quiesce.h"
+#endif
 #include "can.h"
 #include "sleep_mode.h"
 #include "autopid.h"
@@ -1621,6 +1625,9 @@ static esp_err_t gen_inhibit_get_handler(httpd_req_t *req)
 {
     static char out[GI_STATUS_PAGE_CAP];
     int n = gen_inhibit_get_stats_json(out, sizeof(out));
+#if GI_TRIAL_RESTART_QUIESCE
+    n = gi_quiesce_append_page(out, n, sizeof(out));
+#endif
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, out, n);
     return ESP_OK;
@@ -1672,6 +1679,9 @@ static esp_err_t gen_inhibit_set_handler(httpd_req_t *req)
 
     static char out[GI_STATUS_PAGE_CAP];    /* D10, as above */
     int n = gen_inhibit_get_stats_json(out, sizeof(out));
+#if GI_TRIAL_RESTART_QUIESCE
+    n = gi_quiesce_append_page(out, n, sizeof(out));
+#endif
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, out, n);
     return ESP_OK;
@@ -2423,6 +2433,11 @@ static httpd_handle_t config_server_init(void)
 
     // Start the httpd server
 	config.max_uri_handlers = 21;
+#if GI_TRIAL_RESTART_QUIESCE
+	/* Registered last, below, so a full table cannot displace an existing
+	 * handler -- but the table is sized for them so that it is not full. */
+	config.max_uri_handlers += GI_QUIESCE_URI_COUNT;
+#endif
 	config.stack_size = 5120;
     ESP_LOGI(TAG, "Starting server on port: '%d'", config.server_port);
     if (httpd_start(&server, &config) == ESP_OK)
@@ -2454,6 +2469,9 @@ static httpd_handle_t config_server_init(void)
 		httpd_register_uri_handler(server, &load_car_config_uri);
 		httpd_register_uri_handler(server, &store_car_data_uri);
 		httpd_register_uri_handler(server, &scan_available_pids_uri);
+#if GI_TRIAL_RESTART_QUIESCE
+		gi_quiesce_register(server);
+#endif
         #if CONFIG_EXAMPLE_BASIC_AUTH
         httpd_register_basic_auth(server);
         #endif
