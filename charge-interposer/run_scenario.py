@@ -44,8 +44,13 @@ TIME_SCALE_WARN_MS = 50.0    # wall-clock jitter the bench should tolerate
 
 class Scenario(object):
     def __init__(self, name, why, vehicle, charger=(), interposer=(),
-                 timeout=600, expect=()):
+                 timeout=600, expect=(), board_reset_at_s=None):
         self.name = name
+        # --external-interposer only: reset the BOARD this many seconds
+        # after vehicle_sim starts, and prove it (board_reset_proof). The
+        # simulated run ignores it: there the session is made old by the
+        # charger's pilot timer alone (reviewer, 2026-10-13).
+        self.board_reset_at_s = board_reset_at_s
         self.why = why
         self.vehicle = list(vehicle)
         self.charger = list(charger)
@@ -1286,6 +1291,10 @@ SCENARIOS = [
                  "--max-sim-s", "8000"],
         charger=["--pilot-start-min", "30", "--unplug-after-hold-s", "120"],
         timeout=600,
+        # On the board (reviewer, 2026-10-13): a real reset 20 s into the
+        # session, so the silicon boots with traffic flowing -- before the
+        # arm delay, so nothing has been overridden before it.
+        board_reset_at_s=20.0,
         expect=[ev(r"booted into a session already \d+ min old"),
                 no_ev(r"LOW_POWER overridden"),
                 no_ev(r"charge established"),
@@ -1375,6 +1384,70 @@ class SerialTap(object):
         # (tester, 2026-10-13). The plain log above is unchanged.
         self.stamped_path = str(path) + ".stamped"
         self._sfh = None
+        # The board reset for boot-mid-session (reviewer, 2026-10-13):
+        # requested by reset_board() from any thread, SENT by the reader
+        # thread, which owns the port. reset_host_t is when it was sent.
+        self._reset_req = threading.Event()
+        self.reset_host_t = None
+        # tests hand in a stand-in for the pyserial module
+        self._serial_mod = None
+
+    def reset_board(self):
+        """Ask for esptool's USB-Serial-JTAG hard reset on the board's
+        port. Returns at once; the reader thread sends it."""
+        self._reset_req.set()
+
+    def _mark(self, text):
+        """A '#' marker in both copies: never an event or a status line."""
+        host = time.perf_counter()
+        self._sfh.write("%.6f\t# %s\n" % (host, text))
+        self._sfh.flush()
+        self._fh.write("# %s\n" % text)
+        self._fh.flush()
+        return host
+
+    def _hard_reset(self, ser):
+        """esptool's HardReset(uses_usb=True) (esptool/reset.py): RTS high
+        (EN low) for 0.2 s, then low, then 0.2 s, each RTS change followed
+        by a dummy DTR write so Windows' usbser.sys sends the new line
+        state. DTR is held low first, as esptool leaves it, so RTS reads as
+        reset and not as a boot strap."""
+        def set_rts(v):
+            ser.rts = v
+            ser.dtr = ser.dtr
+        ser.dtr = False
+        t0 = time.perf_counter()
+        set_rts(True)
+        time.sleep(0.2)
+        set_rts(False)
+        time.sleep(0.2)
+        self.reset_host_t = t0
+        self._mark("RESET SENT host=%.6f (esptool HardReset, USB-Serial-JTAG: "
+                   "RTS 0.2 s)" % t0)
+
+    def _open(self, first):
+        S = self._serial_mod
+        if S is None:
+            import serial as S
+        if first:
+            return S.Serial(self.port, self.baud, timeout=0.5)
+        # a reconnect must not reset the board again: lines held low
+        s = S.Serial()
+        s.port, s.baudrate, s.timeout = self.port, self.baud, 0.5
+        s.dtr, s.rts = False, False
+        s.open()
+        return s
+
+    def _reconnect(self, give_up_s=30.0):
+        """The port re-enumerates when the chip resets (USB-Serial-JTAG):
+        retry opening it by name every 0.1 s for up to give_up_s."""
+        end = time.perf_counter() + give_up_s
+        while not self._stop.is_set() and time.perf_counter() < end:
+            try:
+                return self._open(False)
+            except Exception:                          # noqa: BLE001
+                time.sleep(0.1)
+        return None
 
     def start(self):
         try:
@@ -1389,20 +1462,35 @@ class SerialTap(object):
         self._thread.start()
 
     def _run(self):
-        import serial
         try:
-            ser = serial.Serial(self.port, self.baud, timeout=0.5)
+            ser = self._open(True)
         except Exception as exc:                       # noqa: BLE001
             self._fh.write("SERIAL OPEN FAILED: %s\n" % exc)
             self._fh.flush()
             return
-        with ser:
+        try:
             while not self._stop.is_set():
+                if self._reset_req.is_set():
+                    self._reset_req.clear()
+                    try:
+                        self._hard_reset(ser)
+                    except Exception as exc:           # noqa: BLE001
+                        self._mark("RESET FAILED: %s" % exc)
                 try:
                     raw = ser.readline()
                 except Exception as exc:               # noqa: BLE001
-                    self._fh.write("SERIAL READ FAILED: %s\n" % exc)
-                    break
+                    lost = self._mark("SERIAL LOST: %s" % exc)
+                    try:
+                        ser.close()
+                    except Exception:                  # noqa: BLE001
+                        pass
+                    ser = self._reconnect()
+                    if ser is None:
+                        self._mark("SERIAL NOT BACK within 30 s")
+                        return
+                    self._mark("SERIAL BACK gap=%.3f s"
+                               % (time.perf_counter() - lost))
+                    continue
                 if not raw:
                     continue
                 host = time.perf_counter()
@@ -1414,6 +1502,11 @@ class SerialTap(object):
                     self._last_state = m.group(1)
                 self._fh.write(line + "\n")
                 self._fh.flush()
+        finally:
+            try:
+                ser.close()
+            except Exception:                          # noqa: BLE001
+                pass
 
     def stop(self):
         self._stop.set()
@@ -1428,6 +1521,71 @@ class SerialTap(object):
                 self._fh.write("final state=UNKNOWN "
                                "(no status line seen on serial)\n")
             self._fh.close()
+
+
+# The board reset (reviewer, 2026-10-13, boot-mid-session on hardware).
+BOARD_PREROLL_S = 150
+BOOT_LINE = re.compile(r"Vtrux charge interposer|^rst:0x|^ESP-ROM:")
+STATUS_T = re.compile(r"^t=(\d+)s state=")
+
+
+def diag_cadence_rows(stamped_path):
+    import diag_cadence
+    return diag_cadence.read_stamped(stamped_path)
+
+
+def board_reset_proof(stamped_rows, veh_text, reset_host, veh_start,
+                      db=None):
+    """-> (ok, why). A reset is PROVEN only by both (reviewer, 2026-10-13):
+    a boot line on serial after the reset was sent, and 0x7F7's uptime
+    dropping to 0 from >= 2 min (it counts whole minutes, so a board up
+    less than 2 min before cannot show it). Anything less FAILS; a run with
+    no proven reset is not left unjudged. The reconnect gap in the serial
+    copy is reported. `db` is the diag DBC (tests pass a stand-in)."""
+    if reset_host is None:
+        return (False, "no reset was sent (the scenario asked for one)")
+    if db is None:
+        import diag_cadence
+        db = diag_cadence.load_state_names()[0]
+    after = [(h, ln) for h, ln in stamped_rows if h > reset_host]
+    boot = [(h, ln) for h, ln in after
+            if not ln.startswith("#") and BOOT_LINE.search(ln)]
+    gaps = [ln for _h, ln in after if ln.startswith("# SERIAL BACK")]
+    lost = [ln for _h, ln in after if ln.startswith("# SERIAL NOT BACK")]
+    first_t = next((int(m.group(1)) for h, ln in after
+                    for m in [STATUS_T.search(ln)] if m), None)
+    rel = reset_host - veh_start if veh_start is not None else None
+    up = [(t, db.decode_message(0x7F7, body)["intp_uptime_min"])
+          for t, fid, body in parse_diag_frames(veh_text) if fid == 0x7F7]
+    pre = [u for t, u in up if rel is not None and t < rel]
+    post = [u for t, u in up if rel is not None and t > rel + 1.0]
+    probs = []
+    if not boot:
+        probs.append("no boot line on serial after the reset")
+    if not pre or max(pre) < 2:
+        probs.append("0x7F7 uptime before the reset was %s min, so it cannot "
+                     "show a reset" % (max(pre) if pre else "unseen"))
+    elif not post:
+        probs.append("no 0x7F7 after the reset")
+    elif post[0] != 0:
+        probs.append("0x7F7 uptime after the reset is %d min, not 0 (it was "
+                     "%d before)" % (post[0], max(pre)))
+    if lost:
+        probs.append("the serial port did not come back")
+    detail = ("reset sent %.1f s after vehicle_sim started; %s; 0x7F7 uptime "
+              "%s min before, %s after; serial %s; first status line after "
+              "it t=%ss" % (rel if rel is not None else -1,
+                            ("boot line %.2f s after it: %r" % (
+                                boot[0][0] - reset_host, boot[0][1][:40]))
+                            if boot else "no boot line",
+                            max(pre) if pre else "-",
+                            post[0] if post else "-",
+                            gaps[0][2:] if gaps else
+                            "NOT BACK" if lost else "never lost",
+                            "-" if first_t is None else first_t))
+    if probs:
+        return (False, "; ".join(probs) + " -- " + detail)
+    return (True, detail)
 
 
 # Windows has no way to send SIGINT to another process: send_signal(SIGINT)
@@ -1499,6 +1657,8 @@ def run_one(sc, args, outdir):
     procs = []
     tap = None
     witness = None
+    reset_timer = None
+    veh_start = None
     witness_path = outdir / ("%s.diag_witness.log" % sc.name)
     try:
         with open(chg_log, "w") as f:
@@ -1523,6 +1683,14 @@ def run_one(sc, args, outdir):
                 import diag_cadence
                 witness = diag_cadence.DiagWitness(
                     str(witness_path), channel=args.diag_witness).start()
+            if sc.board_reset_at_s is not None:
+                # 0x7F7 counts uptime in whole minutes, so the reset can
+                # only be shown by it if the board has been up >= 2 min:
+                # the board runs before the vehicle side starts
+                print("   board reset scenario: %d s pre-roll so 0x7F7's "
+                      "uptime reads >= 2 min before the reset"
+                      % BOARD_PREROLL_S)
+                time.sleep(BOARD_PREROLL_S)
         else:
             with open(int_log, "w") as f:
                 procs.append(subprocess.Popen(
@@ -1547,6 +1715,12 @@ def run_one(sc, args, outdir):
                 + _transport_args(args, "vehicle") + ts + sc.vehicle,
                 stdout=f, stderr=subprocess.STDOUT, env=env,
                 **POPEN_KW)
+        veh_start = time.perf_counter()
+        if tap is not None and sc.board_reset_at_s is not None:
+            reset_timer = threading.Timer(sc.board_reset_at_s,
+                                          tap.reset_board)
+            reset_timer.daemon = True
+            reset_timer.start()
         try:
             veh.wait(timeout=sc.timeout * args.timeout_scale)
             timed_out = False
@@ -1555,6 +1729,8 @@ def run_one(sc, args, outdir):
             veh.wait()
             timed_out = True
     finally:
+        if reset_timer is not None:
+            reset_timer.cancel()
         if witness is not None:
             witness.stop()
         if tap is not None:
@@ -1572,6 +1748,11 @@ def run_one(sc, args, outdir):
     inv = None
     order = None
     hold = None
+    reset = None
+    if tap is not None and sc.board_reset_at_s is not None:
+        reset = board_reset_proof(
+            diag_cadence_rows(tap.stamped_path), veh_log.read_text(
+                errors="replace"), tap.reset_host_t, veh_start)
     diag82 = None
     if witness is not None:
         import diag_cadence
@@ -1620,7 +1801,7 @@ def run_one(sc, args, outdir):
             l1 = check_flight_core(trace_path,
                                    keep=getattr(args, "keep_traces", False))
     return evaluate(sc, veh_log, chg_log, int_log, timed_out, l1, inv,
-                    order=order, hold=hold, diag82=diag82)
+                    order=order, hold=hold, diag82=diag82, reset=reset)
 
 
 VEH_ROW = re.compile(
@@ -2511,7 +2692,7 @@ def _wsl_path(p):
 
 
 def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
-             order=None, hold=None, diag82=None):
+             order=None, hold=None, diag82=None, reset=None):
     veh = veh_log.read_text(errors="replace")
     chg = chg_log.read_text(errors="replace")
     intp = int_log.read_text(errors="replace")
@@ -2653,6 +2834,8 @@ def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
     if diag82 is not None:
         results.append((diag82[0], "spec 8.2 on the wire (passive PCAN "
                         "witness): %s" % diag82[1]))
+    if reset is not None:
+        results.append((reset[0], "the board reset happened: %s" % reset[1]))
 
     if "Traceback" in veh or "Traceback" in intp or "Traceback" in chg:
         results.append((False, "no simulator crashed"))
