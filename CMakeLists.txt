@@ -123,7 +123,21 @@ if(OTA_HEALTH_FAULT_INJECT)
 else()
     set(GI_FAULT_SUFFIX "")
 endif()
-set(PRJ_BIN "${PROJECT_PREF}_${HW_PREF}_${GIT_SHA}${GI_ARM_SUFFIX}${GI_FAULT_SUFFIX}")
+# THE RESTART TEST BUILD IS IN THE NAME TOO (spec 12.4, "no error frames at a
+# restart": its crash trigger and record reader are never in a prod build), for
+# the fault build's reason: at the same commit it and the normal manual image
+# would otherwise share a filename, a project_name and a git_version, and the
+# test build's own symbols and strings are the only other thing that tells them
+# apart. Marked by absence, like "_flt", and for the same two reasons. "_rt" is
+# 3: 13 + 7 + 4 + 3 = 27 clean fits, 13 + 13 + 4 + 3 = 33 dirty does not, and
+# the FATAL_ERROR below is again the right answer -- a test image that evidence
+# rests on must have a commit behind it.
+if(GI_TEST_RESTART_QUIESCE)
+    set(GI_TEST_SUFFIX "_rt")
+else()
+    set(GI_TEST_SUFFIX "")
+endif()
+set(PRJ_BIN "${PROJECT_PREF}_${HW_PREF}_${GIT_SHA}${GI_ARM_SUFFIX}${GI_FAULT_SUFFIX}${GI_TEST_SUFFIX}")
 
 #
 # esp_app_desc.project_name is a 32-byte field -- 31 characters plus the NUL -- and
@@ -152,6 +166,8 @@ if(PRJ_BIN_LEN GREATER 31)
         "needs a CLEAN tree: 13 + 7 + 4 + 4 = 28 fits, 13 + 13 + 4 + 4 = 34 does "
         "not. Commit rather than shortening -- an image built to be flashed over "
         "the live one must have a commit behind it.\n"
+        "  A restart test build adds GI_TEST_SUFFIX ('_rt', 3 more) and needs a "
+        "CLEAN tree for the same reason.\n"
         "  Left unchecked this surfaces as a _Static_assert in "
         "components/esp_app_format/esp_app_desc.c, which does not point here.")
 endif()
