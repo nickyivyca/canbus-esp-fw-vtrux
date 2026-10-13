@@ -160,14 +160,6 @@ _Static_assert(GEN_INHIBIT_PROBE_ID == GI_PROBE_ID, "id drift");
 #define GIT_SHA "unknown"
 #endif
 
-/*
- * Build-time override for the SoC floor. Every other tunable now lives in
- * gi_config_defaults(), where its justification is; this one keeps its macro
- * because measurement builds have used it. Adding more overrides here is the
- * obvious place for an eventual over-the-wire config to land.
- */
-/* #define GEN_INHIBIT_SOC_MIN_PCT 21 */
-
 /* Receive timeout: 200 ms rather than a full second only so a disarm is
  * acted on promptly; a timeout costs nothing but a loop iteration. */
 #define GEN_INHIBIT_RX_TIMEOUT_MS   200
@@ -2093,9 +2085,6 @@ void gen_inhibit_init(void)
 
     gi_config_t cfg;
     gi_config_defaults(&cfg);
-#ifdef GEN_INHIBIT_SOC_MIN_PCT
-    cfg.soc_min_raw = GEN_INHIBIT_SOC_MIN_PCT * 100;
-#endif
     cfg.fw_version = DIAG_FW_VERSION;
     cfg.git_hash   = fnv1a32(GIT_SHA);
     cfg.autoarm_configured = (GEN_INHIBIT_AUTOARM_MODE != GEN_INHIBIT_OFF);
