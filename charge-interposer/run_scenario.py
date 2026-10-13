@@ -1369,6 +1369,12 @@ class SerialTap(object):
         self._thread = None
         self._last_state = None
         self._fh = None
+        # A copy of every line with its host arrival time, this process's
+        # time.perf_counter() -- the clock diag_cadence's spec 8.2 50 ms
+        # rule pairs the serial event lines with the witnessed 0x7F4 on
+        # (tester, 2026-10-13). The plain log above is unchanged.
+        self.stamped_path = str(path) + ".stamped"
+        self._sfh = None
 
     def start(self):
         try:
@@ -1377,6 +1383,8 @@ class SerialTap(object):
             raise SystemExit("pyserial is required for --external-interposer: "
                              "pip install pyserial")
         self._fh = open(self.path, "w", encoding="utf-8", errors="replace")
+        self._sfh = open(self.stamped_path, "w", encoding="utf-8",
+                         errors="replace")
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -1397,7 +1405,10 @@ class SerialTap(object):
                     break
                 if not raw:
                     continue
+                host = time.perf_counter()
                 line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+                self._sfh.write("%.6f\t%s\n" % (host, line))
+                self._sfh.flush()
                 m = self.STATE_RE.search(line)
                 if m:
                     self._last_state = m.group(1)
@@ -1408,6 +1419,8 @@ class SerialTap(object):
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=3.0)
+        if self._sfh is not None:
+            self._sfh.close()
         if self._fh is not None:
             if self._last_state:
                 self._fh.write("final state=%s\n" % self._last_state)
@@ -1485,6 +1498,8 @@ def run_one(sc, args, outdir):
     env = dict(os.environ, PYTHONUNBUFFERED="1")
     procs = []
     tap = None
+    witness = None
+    witness_path = outdir / ("%s.diag_witness.log" % sc.name)
     try:
         with open(chg_log, "w") as f:
             procs.append(subprocess.Popen(
@@ -1504,6 +1519,10 @@ def run_one(sc, args, outdir):
                       "or expect this scenario to fail" % (sc.interposer,))
             tap = SerialTap(args.serial_port, args.serial_baud, int_log)
             tap.start()
+            if args.diag_witness:
+                import diag_cadence
+                witness = diag_cadence.DiagWitness(
+                    str(witness_path), channel=args.diag_witness).start()
         else:
             with open(int_log, "w") as f:
                 procs.append(subprocess.Popen(
@@ -1536,6 +1555,8 @@ def run_one(sc, args, outdir):
             veh.wait()
             timed_out = True
     finally:
+        if witness is not None:
+            witness.stop()
         if tap is not None:
             tap.stop()
         for p in procs:
@@ -1551,6 +1572,15 @@ def run_one(sc, args, outdir):
     inv = None
     order = None
     hold = None
+    diag82 = None
+    if witness is not None:
+        import diag_cadence
+        if witness.error:
+            diag82 = (False, "8.2: the witness failed: %s" % witness.error)
+        else:
+            diag82 = diag_cadence.score(
+                diag_cadence.read_witness(str(witness_path)),
+                diag_cadence.read_stamped(tap.stamped_path))
     if args.external_interposer or args.no_l1:
         # Said out loud (tester, 2026-10-07): rev 1 appended nothing here,
         # so a run with the flight core unchecked printed the same PASS as
@@ -1590,7 +1620,7 @@ def run_one(sc, args, outdir):
             l1 = check_flight_core(trace_path,
                                    keep=getattr(args, "keep_traces", False))
     return evaluate(sc, veh_log, chg_log, int_log, timed_out, l1, inv,
-                    order=order, hold=hold)
+                    order=order, hold=hold, diag82=diag82)
 
 
 VEH_ROW = re.compile(
@@ -2481,7 +2511,7 @@ def _wsl_path(p):
 
 
 def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
-             order=None, hold=None):
+             order=None, hold=None, diag82=None):
     veh = veh_log.read_text(errors="replace")
     chg = chg_log.read_text(errors="replace")
     intp = int_log.read_text(errors="replace")
@@ -2620,6 +2650,9 @@ def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
     if inv is not None:
         results.append((inv[0], "spec 2/4/4.1/8.1 invariants over the trace: "
                         "%s" % inv[1]))
+    if diag82 is not None:
+        results.append((diag82[0], "spec 8.2 on the wire (passive PCAN "
+                        "witness): %s" % diag82[1]))
 
     if "Traceback" in veh or "Traceback" in intp or "Traceback" in chg:
         results.append((False, "no simulator crashed"))
@@ -2659,6 +2692,11 @@ def main():
                          "output is captured to <scenario>.interposer.log so "
                          "the existing event expectations evaluate unchanged.")
     ap.add_argument("--serial-baud", type=int, default=115200)
+    ap.add_argument("--diag-witness", default=None, metavar="PCAN_CHANNEL",
+                    help="with --external-interposer: a PASSIVE PCAN (e.g. "
+                         "PCAN_USBBUS1) on the vehicle segment logs every "
+                         "0x7F4-0x7F7, and the scenario is also judged on "
+                         "spec 8.2's cadence and 50 ms rule (diag_cadence.py)")
     ap.add_argument("--no-l1", action="store_true",
                     help="skip the spec 9.1 L1 replay of the scenario "
                          "through machine.cpp. The replay needs a C++ "
