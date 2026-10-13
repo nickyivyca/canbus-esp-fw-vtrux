@@ -9,7 +9,8 @@ cases are the ways a switch could hide from a textual scan: a default value
 shaped like a header guard, a guard that is not the file's first directive,
 defined() inside an expression, #elif, a continuation line, a commented-out
 #if, a CMake condition with keywords, variables and comments. Plus the scope
-(managed_components/ and test/ are not product source) and the table's own
+(managed_components/ and test/ are not product source; the top-level and
+components/ CMakeLists.txt are, user 2026-10-13) and the table's own
 rules (unlisted, stale, malformed entries).
 """
 
@@ -44,7 +45,11 @@ FILES = {
                             "elseif (${CM_D} EQUAL 2)\nif(DEFINED CM_E AND \"literal\" STREQUAL CM_F)\n"
                             "endif()\nif(CONFIG_CM_SKIPPED)\nendif()\nIF(CM_UPPER_IF)\nendif()\n"
                             "set(NOT_TESTED_HERE 1)\n"),
-    "CMakeLists.txt": "if(TOP_LEVEL_ONLY)\nendif()\n",
+    "CMakeLists.txt": "set(X 1)\nif(TOP_LEVEL_ONLY)\nendif()\n",
+    "components/comp/CMakeLists.txt": "if(COMP_CM)\nendif()\n",
+    "managed_components/m/CMakeLists.txt": "if(MANAGED_CM)\nendif()\n",
+    "test/CMakeLists.txt": "if(TEST_DIR_CM)\nendif()\n",
+    "build/CMakeLists.txt": "if(BUILD_DIR_CM)\nendif()\n",
 }
 
 EXPECT = {
@@ -52,6 +57,7 @@ EXPECT = {
     "EXPR_A", "EXPR_B", "EXPR_C", "EXPR_D", "EXPR_E", "SPACED",
     "CONT_A", "CONT_B", "REAL_ONE", "STR_TEST", "AFTER_STRING", "DEEP_SWITCH", "COMP_DEFAULT",
     "CM_A", "CM_B", "CM_C", "CM_D", "CM_E", "CM_F", "CM_UPPER_IF",
+    "TOP_LEVEL_ONLY", "COMP_CM",
 }
 
 
@@ -97,9 +103,15 @@ def main():
         ("managed_components/ and test/ are not product source",
          not ({"MANAGED_ONLY", "TEST_DIR_ONLY"} & got), ""),
         ("only C sources are scanned in main/", "NOT_C_SOURCE" not in got, ""),
-        ("CMake: keywords, a commented if() and the top-level file are not symbols",
-         not ({"AND", "NOT", "DEFINED", "EQUAL", "STREQUAL", "CM_COMMENTED", "TOP_LEVEL_ONLY",
+        ("CMake: keywords and a commented if() are not symbols",
+         not ({"AND", "NOT", "DEFINED", "EQUAL", "STREQUAL", "CM_COMMENTED",
                "NOT_TESTED_HERE", "literal"} & got), ""),
+        ("CMake: the top-level CMakeLists.txt is scanned, with its own location (user, 2026-10-13)",
+         found.get("TOP_LEVEL_ONLY") == ["CMakeLists.txt:2"], "%r" % found.get("TOP_LEVEL_ONLY")),
+        ("CMake: a component's CMakeLists.txt is scanned",
+         found.get("COMP_CM") == ["components/comp/CMakeLists.txt:1"], "%r" % found.get("COMP_CM")),
+        ("CMake: managed_components/, test/ and a build directory's CMakeLists.txt are not",
+         not ({"MANAGED_CM", "TEST_DIR_CM", "BUILD_DIR_CM"} & got), ""),
         ("CMake: ${VAR}, elseif and an upper-case IF are scanned",
          {"CM_D", "CM_UPPER_IF"} <= got, ""),
         ("each symbol carries where it is tested",

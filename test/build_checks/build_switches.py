@@ -5,7 +5,7 @@
 
 WHAT THE SPEC ASKS (added 2026-10-13, user). Every preprocessor symbol the
 product source tests, other than ESP-IDF's `CONFIG_*` and header guards, and
-every build option `main/CMakeLists.txt` tests, is listed as one of:
+every build option the project's CMakeLists.txt files test, is listed as one of:
 
     shipping variant   a configuration that may fly (auto-arm, for example);
     test-only          must never reach a vehicle; has a refusal row in
@@ -19,7 +19,9 @@ unlisted new name, and the stale entry would read as coverage.
 
 Product source is `main/` and `components/` (the repo's own). The downloaded
 components (`managed_components/`) and `test/` are not product source (spec
-reading, reviewer 2026-10-13).
+reading, reviewer 2026-10-13). The CMakeLists.txt files scanned are the
+top-level one and every one under `main/` and `components/` (user, 2026-10-13:
+the top-level file is in scope; it sets HARDWARE_VER and names the image).
 
 THE SCAN IS TEXTUAL and deliberately over-inclusive. Every identifier in an
 `#if`/`#elif` expression is a tested symbol, so a function-like macro such as
@@ -281,17 +283,21 @@ def scan(repo=REPO):
         for d, dirs, files in os.walk(root):
             dirs.sort()
             for f in sorted(files):
-                if not f.endswith(C_EXTS):
+                if f == "CMakeLists.txt":
+                    symbols = cmake_symbols
+                elif f.endswith(C_EXTS):
+                    symbols = c_symbols
+                else:
                     continue
                 p = os.path.join(d, f)
                 rel = os.path.relpath(p, repo).replace(os.sep, "/")
                 text = open(p, encoding="utf-8", errors="replace").read()
-                for s, ln in c_symbols(text):
+                for s, ln in symbols(text):
                     add(s, "%s:%d" % (rel, ln))
-    cm = os.path.join(repo, "main", "CMakeLists.txt")
+    cm = os.path.join(repo, "CMakeLists.txt")
     if os.path.exists(cm):
         for s, ln in cmake_symbols(open(cm, encoding="utf-8", errors="replace").read()):
-            add(s, "main/CMakeLists.txt:%d" % ln)
+            add(s, "CMakeLists.txt:%d" % ln)
     return found
 
 
