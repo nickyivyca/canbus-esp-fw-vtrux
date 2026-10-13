@@ -30,12 +30,16 @@ add_definitions(-DWICAN_V300_STR="${WICAN_V300_STR}")
 add_definitions(-DWICAN_USB_V100_STR="${WICAN_USB_V100_STR}")
 add_definitions(-DWICAN_PRO_STR="${WICAN_PRO_STR}")
 
-execute_process(
-    COMMAND git describe --tags --always --dirty
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    OUTPUT_VARIABLE GIT_SHA
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-)
+# THE NAME IS RE-CHECKED ON EVERY BUILD, not only when CMake configures (spec
+# 12.3 item 3, "Every build names its image from the tree it compiled", added
+# 2026-10-13, user). git_tree_name() runs the same `git describe --tags --always
+# --dirty` as before, and also makes every build -- `idf.py build` or `ninja`
+# directly -- run it again first and re-run CMake if the answer changed, so an
+# edit is never compiled under the clean name of the commit before it. If git
+# cannot answer, the build fails. How, and why it runs before anything is
+# compiled: cmake/git_tree_name.cmake.
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/git_tree_name.cmake)
+git_tree_name(GIT_SHA)
 
 set(GIT_SHA1 "${GIT_SHA}")
 string(REPLACE "." "" GIT_SHA "${GIT_SHA}")
