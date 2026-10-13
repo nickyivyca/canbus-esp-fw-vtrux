@@ -293,6 +293,22 @@ static void witnessDump() {
                   ? "  *** per-id count is a LOWER BOUND: identifiers did "
                     "not fit the table ***"
                   : "");
+  // Spec 12 entry 2 (user, 2026-10-13): the hold's deferral count, beside
+  // the order record it qualifies. The arm passes only with this above
+  // zero -- an in-order result with no deferral did not exercise the hold
+  // at all, whatever the ordering says, and on 2026-10-05 the approved arm
+  // turned out to be exactly that once the stimulus was modelled.
+  //
+  // It counts PASSES in which the refill loop found the head blocked, not
+  // frames: at truck rate one frame is re-tested about six times, so this
+  // is a yes/no instrument and not a rate. txFramesDeferred() is the
+  // per-frame figure and is deliberately not in this dump.
+  INTP_PRINTF("  HOLD: deferrals(passes)=%lu%s\n",
+              (unsigned long)charger.txHoldDeferrals(),
+              charger.txHoldDeferrals()
+                  ? ""
+                  : "  *** the hold never bit in this window: the order "
+                    "record below does not test it ***");
   INTP_PRINTF("  BUSY-AT-LOAD: 0 others=%lu  1 other=%lu  2 others=%lu  "
               "loadsWithOlderPending=%lu\n",
               (unsigned long)Mcp2515Port::witnessBusyAtLoad(0),
