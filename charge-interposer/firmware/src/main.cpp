@@ -25,6 +25,7 @@
 #include <esp_log.h>
 
 #include "bridge_health.h"
+#include "charger_tx_failures.h"
 #include "machine.h"
 #include "port_mcp2515.h"
 #include "port_twai.h"
@@ -89,13 +90,11 @@ static bool healthy = false;
 static bool vehicle_up = false;
 
 // Spec 2.2: failed transmissions TOWARD THE CHARGER, counted only while the
-// VCU's flow bit is 1. The ports' own counters are monotonic and know
-// nothing about the flow bit, so the delta is taken every loop iteration and
-// added only when the charger is expected. Sampling at the 1 Hz diagnostic
-// cadence instead would misattribute up to a second of failures at each flow
-// transition.
-static uint32_t txf_charger_seen = 0;      // port total at the last sample
-static uint32_t txf_while_expected = 0;    // what goes on the wire
+// VCU's flow bit is 1. The rule itself is in charger_tx_failures.h, which
+// test/host_unit/ compiles -- it used to be the three statements below plus
+// two file statics here, where no test could reach it (reviewer,
+// 2026-10-13). What stays here is which counters feed it and how often.
+static ChargerTxFailures charger_txf;
 
 // Spec 8.2 (B-3, widened 2026-10-04): `bridge_ok` is health since the
 // previous status frame. The rule lives in bridge_health.h, which is pure
@@ -140,18 +139,19 @@ static const uint32_t DIAG_IDS[4] = {DIAG_STATUS_ID, DIAG_OBSERVED_ID,
 
 static uint8_t sat8(uint32_t v) { return v > 255u ? 255u : (uint8_t)v; }
 
-// Spec 2.2. Every failed transmission toward the charger is counted once:
-// the three charger-port tallies are disjoint (queue full, controller
-// reported failure, aged out past 100 ms) and none of them is the vehicle
-// side. The gate is the VCU's own command, so the counter reads 0 while
-// driving however many frames bounce off a charger that is not there, and
-// any non-zero value is a problem during a session.
+// Spec 2.2. The three charger-port tallies are disjoint (queue full,
+// controller reported failure, aged out past 100 ms) and none of them is
+// the vehicle side; the gate is the VCU's own command. Why each of those
+// is so, and what happens to a delta that arrives while the flow bit is 0,
+// is in charger_tx_failures.h beside the code that does it.
+//
+// THE CHARGER PORT IS THE ONLY SOURCE. A tally from the vehicle side or
+// from the bridge's own bookkeeping would be counting something else, and
+// adding one on top is the defect that put intp_tx_fail at its 255
+// ceiling before every bench run.
 static void accrueChargerTxFailures() {
-  const uint32_t now =
-      charger.txDropped() + charger.txFailed() + charger.txAged();
-  const uint32_t delta = now - txf_charger_seen;
-  txf_charger_seen = now;
-  if (delta && core->vcuFlow()) txf_while_expected += delta;
+  charger_txf.accrue(charger.txDropped(), charger.txFailed(),
+                     charger.txAged(), core->vcuFlow() != 0);
 }
 
 // Send the four status frames on the VEHICLE port (never toward the charger),
@@ -173,7 +173,7 @@ static void sendDiag(uint32_t t_ms, bool status_only) {
   // every bench run. The ports are the single place a failure is counted; the
   // two local tallies are kept for the serial line only, where seeing them
   // separately is useful, and are no longer summed in.
-  const uint32_t txf = txf_while_expected;
+  const uint32_t txf = charger_txf.whileExpected();
 
   // Spec 8.2: current health, not "since boot". A single overflow in hour
   // one must not leave the flag clear for the rest of the run.

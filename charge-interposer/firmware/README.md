@@ -32,6 +32,8 @@ bench artifacts stayed there when this folder moved into
 | `src/can_port.h` | `CanPort` interface + a fixed-capacity `FrameRing`. Separates "queued" from "on the wire" deliberately. |
 | `src/port_twai.h` / `.cpp` | CAN1, the vehicle segment, on the S3's built-in controller. |
 | `src/port_mcp2515.h` / `.cpp` | CAN2, the charger segment. Hand-written; see below for why. |
+| `src/bridge_health.h` | Spec 8.2's `bridge_ok`: health **since the previous status frame**, not since boot. Pure and header-only, kept out of `main.cpp` so `test/host_unit/` can compile it. |
+| `src/charger_tx_failures.h` | Spec 2.2's `0x7F6` B7 counter: the sum of the charger port's three disjoint tallies (queue full, controller failure, the 100 ms age-out), accrued only while the VCU's flow bit is 1, with a delta that arrives outside a session DISCARDED rather than banked for the next one. Lifted out of `main.cpp` on 2026-10-13 for the same reason as `bridge_health.h`: the rule is the whole of it, and nothing could test it where it was. |
 | `src/main.cpp` | Wiring only. Moves frames, reports losses. |
 | `src/slcan_main.cpp` | **Bench only, and not part of the bridge.** Turns the board into a plain SLCAN transmitter on CAN1 so the generator-inhibit bench has a SECOND transmitter on the powertrain segment. Frames queued in one adapter do not arbitrate against each other, so filler from the bench's PCAN delays the replay's `0x051` whatever its CAN priority; from this board's own controller arbitration places it, `0x7E0` loses to every truck id, and it cannot delay a command. Silent until it receives an `O`. Read its header before flashing it -- it lists the protocol subset and four deliberate refusals. |
 | `src/selftest_main.cpp` | Stage 0. Cross-port identity, DLC and throughput over the loopback jumpers. |
@@ -40,6 +42,7 @@ bench artifacts stayed there when this folder moved into
 | `test/host_diff/make_golden.py` | Freezes what `machine.py` does over a real capture into a trace + golden pair. |
 | `test/host_diff/host_runner.cpp` | Drives `machine.cpp` over the same trace, same output format. |
 | `test/host_diff/check_port.py` | Cross-checks every constant against `machine.py`. Needs no compiler. |
+| `test/host_unit/` | C++ unit tests for the pure headers above -- plain `g++`, no peripheral fakes. `run.sh` builds and runs every `test_*.cpp`; see that folder and `test/README.md`. |
 
 ## Build
 
