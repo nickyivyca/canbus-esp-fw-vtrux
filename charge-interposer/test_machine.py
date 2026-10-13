@@ -973,6 +973,91 @@ def test_a_cap_above_the_hold_setpoint_does_not_move_it():
        "a cap well above it does not pull it up (%s cA)" % b.core.hold_ca)
 
 
+def _above_the_cap_with_a_step_due(max_avail_a=16.0):
+    """A core in HOLD whose setpoint is ABOVE the cap with the cadence
+    expired, so the next frame both clamps and takes a step.
+
+    THE PRECONDITION IS THE WHOLE DIFFICULTY. The cadence has to expire while
+    the setpoint is still above the cap, and the obvious warm-up -- a few
+    frames after the entry -- takes a down step on the way and leaves the
+    setpoint EQUAL to the cap, where the clamp has nothing to do. The first
+    measurement of this clause did exactly that and reported three cases that
+    were all "setpoint already at the cap"; the wire reads 6.00 A either way,
+    so nothing in the result said so.
+
+    Entering at the 16 A cap with `chg_max` 300 A gives a warm-up for free:
+    an up step is due on every frame, wants 16.1 A, is clamped back to the
+    cap, equals the setpoint, so no step is recorded and `t_hold_step` keeps
+    the entry's value while the clock runs on.
+    """
+    b = _released_at_entry(vmax=3.590, chg_max=300.0, ibat=5.0,
+                           max_avail_a=max_avail_a)
+    assert b.core.hold_ca == 1600, "the entry was not at the cap"
+    t_entry = b.core.t_hold_step
+    _hold_frame(b, 300.0, 5.0, dt_ms=400, vmax=3.590)
+    assert b.core.hold_ca == 1600, "the warm-up moved the setpoint"
+    assert b.core.t_hold_step == t_entry, "the warm-up recorded a step"
+    assert b.t - b.core.t_hold_step >= M.Config().hold_step_min_ms,         "the cadence has not expired, so no step is due on the next frame"
+    return b
+
+
+def test_a_down_step_due_on_the_clamping_frame_steps_from_the_cap():
+    """Spec 5.2 (user, 2026-10-13, spec 1d1fae8d2aad1a38): "When a step is
+    due on the frame that clamps, the step is taken from the cap: a down step
+    sends the cap less 0.1 A and is the step from which the 0.3 s cadence is
+    timed."
+
+    The 1x run found the frame where the clamp and a due down step fall
+    together. The step is taken FROM THE CAP, not from the old setpoint: from
+    16 A with a 6.00 A cap the frame is 5.90 A, not 15.90 A, and not 6.00 A
+    either -- the clamp does not consume the step.
+    """
+    b = _above_the_cap_with_a_step_due()
+    b.charge_info(6.0)
+    cap = b.core._evse_cap_ca()
+    ok(b.core.hold_ca > cap,
+       "the setpoint is above the cap before the frame (%s cA over %s cA)"
+       % (b.core.hold_ca, cap))
+    i = _hold_frame(b, 0.0, 5.0, dt_ms=400, vmax=3.590)
+    ok(b.core.hold_ca == cap - 10,
+       "the frame clamps to the cap AND takes the step from it, so 5.90 A "
+       "(%s cA)" % b.core.hold_ca)
+    ok(abs(i - 5.90) < 0.03,
+       "which is what the charger is told (%.2f A)" % i)
+    ok(b.core.t_hold_step == b.t,
+       "and the cadence is timed from this frame, because a step was taken "
+       "on it")
+
+
+def test_an_up_step_due_on_the_clamping_frame_stops_at_the_cap():
+    """Spec 5.2 (user, 2026-10-13): "an up step is never taken past the cap."
+
+    It is SUPPRESSED, not taken at the cap, and the difference is the cadence
+    timer: the clamp makes the setpoint the cap, the up branch wants the cap
+    plus 0.1 A, the second clamp returns it to the cap, and the setpoint has
+    then not moved, so nothing is recorded. A core that instead recorded a
+    step here would send the same byte and sit a full 0.3 s behind the cap on
+    the way back up -- which is why this asserts the timer and not only the
+    value.
+    """
+    b = _above_the_cap_with_a_step_due()
+    t_before = b.core.t_hold_step
+    b.charge_info(6.0)
+    cap = b.core._evse_cap_ca()
+    ok(b.core.hold_ca > cap,
+       "the setpoint is above the cap before the frame (%s cA over %s cA)"
+       % (b.core.hold_ca, cap))
+    i = _hold_frame(b, 300.0, 5.0, dt_ms=400, vmax=3.590)
+    ok(b.core.hold_ca == cap,
+       "an up step due on the clamping frame stops AT the cap, never past it "
+       "(%s cA)" % b.core.hold_ca)
+    ok(abs(i - 6.00) < 0.03,
+       "and that is the byte on the wire (%.2f A)" % i)
+    ok(b.core.t_hold_step == t_before,
+       "the suppressed step did not restart the cadence, so the hold can "
+       "follow the cap up on the very next frame")
+
+
 def test_the_hold_stays_inside_the_evse_cap():
     """Spec 5.2: "It stays between 0 A and the EVSE cap of section 4", and
     the cap is instantaneous -- an EVSE with load management genuinely
