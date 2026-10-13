@@ -116,6 +116,48 @@ SWITCHES = {
     # user (reviewer, 2026-10-13), and until then it fails as unclassified.
 }
 
+# Spec 12.4 "test-only features are inert in the build that will fly": for every
+# test-only switch, the trigger a test run sends, the device state it is sent in,
+# the effect it exists to produce, and what the inert check observes. The bench rigs
+# READ THEIR REQUESTS FROM HERE (restart_error_frames.py --trigger, test_only_inert.py),
+# so a changed trigger changes the negative check and the test runs together, and the
+# negative check cannot go on probing a path the feature no longer uses.
+#   probes: (method, path) sent exactly as listed; state: the device state;
+#   observe: what the inert rig judges; effect: what the switch-on build does.
+TRIGGERS = {
+    "GI_TEST_RESTART_QUIESCE": {
+        "probes": (("POST", "/gi_quiesce?crash=illegal"), ("GET", "/gi_quiesce")),
+        "state": "live INHIBIT under replay (mode 3 at 5 s, the request at 20 s)",
+        "effect": "a panic 300 ms after the POST (reset reason PANIC); GET answers 200 with the restart record",
+        "observe": ("reset", "http_status"),
+    },
+    "GI_INSTRUMENT_TXABORT": {
+        "probes": (("POST", "/gi_txabort?phase=control&reps=2&settle=20"),),
+        "state": "mode 0, the PCAN open as the ACKing node",
+        "effect": "trial frames tagged AB 7E / AB 7F in bytes 2-3 on the wire, and a JSON answer",
+        "observe": ("tagged_frames", "http_status"),
+    },
+    "GI_INSTRUMENT_RXQ": {
+        "probes": (("GET", "/gen_inhibit"),),
+        "state": "live INHIBIT under replay",
+        "effect": "an \"rxq\" object on the page",
+        "observe": ("page_key:rxq",),
+    },
+    "GI_INSTRUMENT_ABORTWIN": {
+        "probes": (("GET", "/gen_inhibit"),),
+        "state": "live INHIBIT under replay",
+        "effect": "an \"abortwin\" object on the page (present at 0 when the state is not reached)",
+        "observe": ("page_key:abortwin",),
+    },
+    "OTA_HEALTH_FAULT_INJECT": {
+        "probes": (("OTA", "<the image>"),),
+        "state": "mode 0, then 70 s with no further request",
+        "effect": "the health gate fails and the device rolls back to the previous slot after 60 s",
+        "observe": ("rollback",),
+    },
+}
+
+
 CMAKE_KEYWORDS = {
     "AND", "OR", "NOT", "DEFINED", "EQUAL", "LESS", "GREATER", "LESS_EQUAL",
     "GREATER_EQUAL", "STREQUAL", "STRLESS", "STRGREATER", "MATCHES", "EXISTS",
@@ -253,9 +295,12 @@ def scan(repo=REPO):
     return found
 
 
-def classify(found, table=None):
-    """The comparison, as data: (unlisted, stale, malformed)."""
+def classify(found, table=None, triggers=None):
+    """The comparison, as data: (unlisted, stale, malformed). A test-only switch
+    with no trigger entry, and a trigger entry for anything not test-only, are
+    malformed: the 12.4 inert check draws its probes from TRIGGERS."""
     table = SWITCHES if table is None else table
+    triggers = TRIGGERS if triggers is None else triggers
     unlisted = sorted(s for s in found if s not in table)
     stale = sorted(s for s in table if s not in found)
     bad = []
@@ -269,6 +314,11 @@ def classify(found, table=None):
             bad.append("%s: no reason" % s)
         if cls == TEST and not refusal:
             bad.append("%s: test-only with no refusal row" % s)
+        if cls == TEST and not (triggers.get(s) or {}).get("probes"):
+            bad.append("%s: test-only with no trigger (12.4 inert check)" % s)
+    for s in sorted(triggers):
+        if (table.get(s) or (None,))[0] != TEST:
+            bad.append("%s: has a trigger but is not a listed test-only switch" % s)
     return unlisted, stale, bad
 
 

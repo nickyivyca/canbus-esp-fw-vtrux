@@ -73,6 +73,8 @@ def main():
     got = set(found)
     ok_entry = (B.NOT, "default value", "a reason", None)
     t_ok = {"A": ok_entry, "B": (B.TEST, None, "why", "some row"), "C": (B.SHIP, None, "why", None)}
+    PRB = {"probes": (("GET", "/x"),)}
+    TRG = {"B": PRB}
     checks = [
         ("the scan finds exactly the expected symbols", got == EXPECT,
          "missing %s, extra %s" % (sorted(EXPECT - got), sorted(got - EXPECT))),
@@ -103,19 +105,29 @@ def main():
         ("each symbol carries where it is tested",
          found.get("CONT_A") == ["main/cont.c:1"] and found.get("CM_B") == ["main/CMakeLists.txt:4"],
          "%r %r" % (found.get("CONT_A"), found.get("CM_B"))),
-        ("classify: a clean table passes", B.classify({"A": [], "B": [], "C": []}, t_ok) == ([], [], []), ""),
+        ("classify: a clean table passes", B.classify({"A": [], "B": [], "C": []}, t_ok, TRG) == ([], [], []), ""),
         ("classify: an unlisted symbol is reported",
-         B.classify({"A": [], "B": [], "C": [], "D": []}, t_ok)[0] == ["D"], ""),
+         B.classify({"A": [], "B": [], "C": [], "D": []}, t_ok, TRG)[0] == ["D"], ""),
         ("classify: a stale entry (no longer tested) is reported",
-         B.classify({"A": [], "B": []}, t_ok)[1] == ["C"], ""),
+         B.classify({"A": [], "B": []}, t_ok, TRG)[1] == ["C"], ""),
         ("classify: 'not a switch' needs one of the three kinds",
-         len(B.classify({"A": []}, {"A": (B.NOT, "a guess", "why", None)})[2]) == 1, ""),
+         len(B.classify({"A": []}, {"A": (B.NOT, "a guess", "why", None)}, {})[2]) == 1, ""),
         ("classify: a test-only switch needs a refusal row",
-         len(B.classify({"A": []}, {"A": (B.TEST, None, "why", None)})[2]) == 1, ""),
+         len(B.classify({"A": []}, {"A": (B.TEST, None, "why", None)}, {"A": PRB})[2]) == 1, ""),
         ("classify: an entry needs a reason",
-         len(B.classify({"A": []}, {"A": (B.SHIP, None, "  ", None)})[2]) == 1, ""),
+         len(B.classify({"A": []}, {"A": (B.SHIP, None, "  ", None)}, {})[2]) == 1, ""),
+        ("classify: a test-only switch with no trigger is malformed (12.4 inert check)",
+         len(B.classify({"B": []}, {"B": (B.TEST, None, "why", "some row")}, {})[2]) == 1, ""),
+        ("classify: a trigger with no probes counts as no trigger",
+         len(B.classify({"B": []}, {"B": (B.TEST, None, "why", "some row")}, {"B": {"probes": ()}})[2]) == 1, ""),
+        ("classify: a trigger for a switch that is not test-only is malformed",
+         len(B.classify({"C": []}, {"C": (B.SHIP, None, "why", None)}, {"C": PRB})[2]) == 1, ""),
+        ("classify: a trigger for an unlisted name is malformed",
+         len(B.classify({}, {}, {"Z": PRB})[2]) == 1, ""),
+        ("the real tables agree: every test-only switch has a trigger, every trigger a test-only switch",
+         sorted(k for k, e in B.SWITCHES.items() if e[0] == B.TEST) == sorted(B.TRIGGERS), ""),
         ("classify: an unknown class is malformed",
-         len(B.classify({"A": []}, {"A": ("maybe", None, "why", None)})[2]) == 1, ""),
+         len(B.classify({"A": []}, {"A": ("maybe", None, "why", None)}, {})[2]) == 1, ""),
     ]
     fails = 0
     for name, ok, detail in checks:
