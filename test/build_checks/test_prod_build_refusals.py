@@ -6,13 +6,19 @@ the prod-build script refuses to build if the working tree has uncommitted
 changes, or if a downloaded component (`managed_components/`, which git
 ignores) differs from its own `CHECKSUMS.json`, or if its `.component_hash`
 differs from the one in `dependencies.lock`. "Uncommitted changes" includes
-untracked files (reviewer's reading, review tracker 2026-10-05).
+untracked files (reviewer's reading, review tracker 2026-10-05). Since 2026-10-12
+(user) it also "refuses to build unless HEAD is on `gen-inhibit/main`".
 
 This runs the script's `--check-only` mode (its refusals, no build) in a
-throwaway `git worktree` at --commit, never in a working tree anyone uses:
+throwaway tree at --commit, never in a working tree anyone uses. SINCE 2026-10-12
+THE THROWAWAY TREE IS AN ISOLATED LOCAL CLONE, NOT A `git worktree`: the baseline
+must be on `gen-inhibit/main`, a worktree shares the real repo's branch refs (that
+branch is checked out elsewhere, and --self-test commits fakes, which would move
+it), while a clone has refs of its own. In the clone, `gen-inhibit/main` is
+created at --commit; nothing is ever pushed, and the clone is deleted afterwards.
 
-  - BASELINE: the tree as checked out, with a copy of a verified
-    `managed_components/` (--components) -> must pass (exit 0). A refusal here
+  - BASELINE: the tree as checked out on `gen-inhibit/main`, with a copy of a
+    verified `managed_components/` (--components) -> must pass (exit 0). A refusal here
     would make every case below meaningless, so the run stops.
   - each CASE makes one change, expects a refusal (exit != 0 and "NOT BUILT"),
     undoes the change, and expects a pass again -- so each refusal is shown to
@@ -28,9 +34,11 @@ The population is checked before anything is judged: the component must have
 a CHECKSUMS.json listing at least one file, and the first listed file must
 exist, or the component cases would pass on nothing.
 
---self-test runs the same cases against two fake scripts, one that always
-passes and one that always refuses. Each must make this harness report FAIL;
-otherwise the harness could not catch a script that ignores the tree.
+--self-test runs the same cases against fake scripts: one that always passes,
+one that always refuses, two that get the tree rule wrong, and two that get the
+branch rule wrong (a substring match on the branch name; a detached HEAD at the
+branch's tip accepted). Each must make this harness report FAIL; otherwise the
+harness could not catch a script that ignores the tree or the branch.
 
     py -3.14 test_prod_build_refusals.py --components <a tree's managed_components>
     py -3.14 test_prod_build_refusals.py --components <...> --self-test
@@ -67,6 +75,32 @@ FAKE_SILENT = ('import subprocess, sys\n'
                'print("CHECK ONLY: every refusal passed. Nothing was built.")\n')
 
 
+# The branch rule wrong two ways. Each refuses a dirty tree properly, so only its
+# branch handling can be caught.
+_FAKE_TREE_OK = ('import subprocess, sys\n'
+                 'r = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)\n'
+                 'lines = [l for l in r.stdout.splitlines() if "fake_prod_build" not in l]\n'
+                 'if lines:\n    print("REFUSED: the working tree has uncommitted changes")\n'
+                 '    print("NOT BUILT.")\n    sys.exit(1)\n')
+# Accepts any branch whose name CONTAINS gen-inhibit/main (gen-inhibit/main-old passes).
+FAKE_BRANCH_SUBSTRING = (_FAKE_TREE_OK +
+                         'b = subprocess.run(["git", "branch", "--show-current"], capture_output=True, text=True).stdout.strip()\n'
+                         'if "gen-inhibit/main" not in b:\n'
+                         '    print("REFUSED: HEAD is on %r, not gen-inhibit/main" % b)\n'
+                         '    print("NOT BUILT.")\n    sys.exit(1)\n'
+                         'print("CHECK ONLY: every refusal passed. Nothing was built.")\n')
+# Compares commits, not the branch: a detached HEAD at the branch's tip passes.
+FAKE_BRANCH_BY_COMMIT = (_FAKE_TREE_OK +
+                         'h = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()\n'
+                         'm = subprocess.run(["git", "rev-parse", "gen-inhibit/main"], capture_output=True, text=True).stdout.strip()\n'
+                         'if h != m:\n'
+                         '    print("REFUSED: HEAD is not at gen-inhibit/main")\n'
+                         '    print("NOT BUILT.")\n    sys.exit(1)\n'
+                         'print("CHECK ONLY: every refusal passed. Nothing was built.")\n')
+
+BRANCH = "gen-inhibit/main"
+
+
 def git(args, cwd):
     return subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True)
 
@@ -78,15 +112,19 @@ def run_script(tree, script):
 
 
 RULE_WORDS = {"tree": ("uncommitted",), "component": ("component",),
-              "identity": ("not the", "repo")}
+              "identity": ("not the", "repo"), "branch": (BRANCH,)}
 
 
 def refused_for(rule, rc, txt):
     """A refusal by the named rule: non-zero exit and a REFUSED line carrying every
-    word of that rule's cause phrase (case-insensitive)."""
-    return rc != 0 and any(ln.startswith("REFUSED")
-                           and all(w in ln.lower() for w in RULE_WORDS[rule])
-                           for ln in txt.splitlines())
+    word of that rule's cause phrase (case-insensitive). rule may be a tuple of
+    rules, each of which must be named on some REFUSED line (a dirty tree on the
+    wrong branch must report both). The branch rule's phrase is the branch the spec
+    requires, `gen-inhibit/main`."""
+    rules = rule if isinstance(rule, tuple) else (rule,)
+    lines = [ln.lower() for ln in txt.splitlines() if ln.startswith("REFUSED")]
+    return rc != 0 and all(any(all(w in ln for w in RULE_WORDS[r]) for ln in lines)
+                           for r in rules)
 
 
 def build_dirs(tree):
@@ -159,6 +197,43 @@ def cases(tree, comp):
              lambda: os.remove(extra_comp), "component"),
         Edit(".component_hash differs from dependencies.lock", flip_hash,
              lambda: restore_bytes(chash, keep[chash]), "component"),
+    ] + branch_cases(tree, tracked, keep)
+
+
+def branch_cases(tree, tracked, keep):
+    """Spec 12.3 item 3 (2026-10-12): refuses unless HEAD is on gen-inhibit/main. Each
+    case leaves the files as they are and moves HEAD only; its undo checks the branch
+    out again and deletes the probe branch. The names are chosen against a match on
+    part of the name: one that contains it, one that ends with it."""
+    def on(name):
+        return lambda: git(["checkout", "-q", "-b", name], tree)
+
+    def back(name=None):
+        def u():
+            git(["checkout", "-q", BRANCH], tree)
+            if name:
+                git(["branch", "-q", "-D", name], tree)
+        return u
+
+    def dirty_other():
+        git(["checkout", "-q", "-b", "tester-probe-dirty"], tree)
+        append_byte(tracked)
+
+    def undo_dirty_other():
+        restore_bytes(tracked, keep[tracked])
+        back("tester-probe-dirty")()
+
+    return [
+        Edit("on another branch, same commit", on("tester-probe-other"),
+             back("tester-probe-other"), "branch"),
+        Edit("detached HEAD at gen-inhibit/main's tip",
+             lambda: git(["checkout", "-q", "--detach"], tree), back(), "branch"),
+        Edit("on a branch whose name contains it (gen-inhibit/main-old)",
+             on("gen-inhibit/main-old"), back("gen-inhibit/main-old"), "branch"),
+        Edit("on a branch whose name ends with it (probe/gen-inhibit/main)",
+             on("probe/gen-inhibit/main"), back("probe/gen-inhibit/main"), "branch"),
+        Edit("dirty tree on another branch: both rules named", dirty_other,
+             undo_dirty_other, ("tree", "branch")),
     ]
 
 
@@ -167,8 +242,9 @@ def check_all(tree, script, comp):
     out = []
     rc, txt = run_script(tree, script)
     base_ok = rc == 0 and "every refusal passed" in txt
-    out.append(("baseline: clean tree with a verified component passes", base_ok,
-                "rc %d" % rc))
+    cur = git(["symbolic-ref", "--quiet", "--short", "HEAD"], tree).stdout.strip()
+    out.append(("baseline: clean tree on %s with a verified component passes" % BRANCH,
+                base_ok and cur == BRANCH, "rc %d, HEAD on %r" % (rc, cur)))
     if not base_ok:
         out.append(("baseline output", False, txt[-800:]))
         return out
@@ -228,19 +304,32 @@ def wrong_directory(tree, script, nested):
 
 
 def make_tree(repo, commit, components, where):
-    r = git(["worktree", "add", "--detach", where, commit], repo)
+    """An isolated local clone with its own gen-inhibit/main at commit. Its refs are
+    its own: nothing done in it reaches the real repo's branches."""
+    full = git(["rev-parse", "--verify", commit + "^{commit}"], repo).stdout.strip()
+    if not full:
+        raise SystemExit("cannot resolve %s" % commit)
+    r = git(["clone", "-q", "--no-checkout", "--no-hardlinks", repo, where], os.path.dirname(where))
     if r.returncode != 0:
-        raise SystemExit("worktree add failed: %s" % r.stderr.strip())
+        raise SystemExit("clone failed: %s" % r.stderr.strip())
+    git(["remote", "remove", "origin"], where)
+    r = git(["checkout", "-q", "-B", BRANCH, full], where)
+    if r.returncode != 0:
+        raise SystemExit("checkout failed: %s" % r.stderr.strip())
+    git(["config", "user.name", "prod-build refusal test"], where)
+    git(["config", "user.email", "test@invalid"], where)
     dst = os.path.join(where, "managed_components")
     shutil.copytree(components, dst)
     return dst
 
 
+def _writable(func, path, _exc):
+    os.chmod(path, 0o700)
+    func(path)
+
+
 def drop_tree(repo, where):
-    git(["worktree", "remove", "--force", where], repo)
-    if os.path.exists(where):
-        shutil.rmtree(where, ignore_errors=True)
-    git(["worktree", "prune"], repo)
+    shutil.rmtree(where, onerror=_writable)
 
 
 def main():
@@ -278,7 +367,11 @@ def main():
                                      ("exits 1 on a dirty tree without saying so",
                                       FAKE_SILENT, "refused: tracked"),
                                      ("refuses a dirty tree by the wrong rule",
-                                      FAKE_WRONG_RULE, "refused: tracked")):
+                                      FAKE_WRONG_RULE, "refused: tracked"),
+                                     ("accepts a branch whose name contains gen-inhibit/main",
+                                      FAKE_BRANCH_SUBSTRING, "refused: on a branch whose name contains"),
+                                     ("accepts a detached HEAD at the branch's tip",
+                                      FAKE_BRANCH_BY_COMMIT, "refused: detached HEAD")):
                 fake = os.path.join(where, "fake_prod_build.py")
                 restore_bytes(fake, body.encode())
                 git(["update-index", "--add", "--cacheinfo", "100644",
