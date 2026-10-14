@@ -52,11 +52,11 @@ void loop();
 // the bench checks that the serial line prints the same).
 uint8_t intpBootRoundSent();
 uint32_t intpBootRoundWaitUs();
-// Spec 8.3 (a9a8c36c3c52bbb9) and 2.3: the 1 Hz diag report, counted by
-// main.cpp whether or not a status frame goes with it (implementor,
-// a329f40). It counts the REPORT, not printed bytes: this build has
-// INTP_NO_SERIAL, so that the line reaches a host is bench evidence only
-// (E10, 59.1/min on the board clock).
+// Spec 8.3 (6505ded27e460190; its 1 Hz text unchanged since a9a8c36c) and
+// 2.3: the 1 Hz diag report, counted by main.cpp whether or not a status
+// frame goes with it (implementor, a329f40). It counts the REPORT, not
+// printed bytes: this build has INTP_NO_SERIAL, so that the line reaches
+// a host is bench evidence only (E10, 59.1/min on the board clock).
 uint32_t intpDiagReports();
 
 using mcpfake::Mcp2515Fake;
