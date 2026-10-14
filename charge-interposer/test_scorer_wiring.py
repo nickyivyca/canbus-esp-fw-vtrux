@@ -194,6 +194,18 @@ def hold_follows_loads_cases():
     ok, why = run(_hs(sp=fast))
     check(not ok and "ms apart" in why,
           "steps 200 ms apart fail on clause 2 -> %s" % why)
+    # the cadence, 0.28 s (spec dfc11cbb, user 2026-10-13, option A)
+    s270 = _sp_path(50000, 500000, 2.0, [(C0, 2.9)], every=270)
+    ok, why = run(_hs(sp=s270))
+    check(not ok and "2:" in why and "steps 270 ms apart" in why,
+          "steps 270 ms apart fail on clause 2 -> %s" % why)
+    s280 = _sp_path(50000, 500000, 2.0, [(C0, 2.9)], every=280)
+    ok, why = run(_hs(sp=s280))
+    check(ok and ">= 0.28 s apart" in why,
+          "steps 280 ms apart pass clause 2 -> %s" % why)
+    ok, why = R._hold_follows_loads(_hs(sp=s280), "", _step_gap_ms=300)
+    check(not ok and "steps 280 ms apart" in why,
+          "...and fail under the rule before dfc11cbb (0.3 s) -> %s" % why)
     zero = _sp_path(50000, 500000, 0.3, [(60000, 0.0), (C0, 2.9)])
     ok, why = run(_hs(sp=zero))
     check(not ok and "0 A on" in why, "a 0 A setpoint fails on clause 2 "

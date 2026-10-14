@@ -62,7 +62,7 @@ eb9b9d135939af17, schema 4: 0x7F4 B2 6 = HOLD):
     or holding (HOLD) and then only page 01's setpoint";
   - rule 6: in HOLD every page 01 follows the hold law -- 0.1 A steps,
     down while bcm_ibat > bcm_chg_max, up while bcm_ibat < bcm_chg_max -
-    0.25 A, held in that band, at most one step per 0.3 s, between 0 A and
+    0.25 A, held in that band, at most one step per 0.28 s, between 0 A and
     the EVSE cap, starting from the override's last setpoint, only the
     current bytes changed. Inputs from the Oracle (0x410 bcm_ibat added).
     Per-frame counts (up / down / held / clamped) are kept for P2;
@@ -72,10 +72,10 @@ Each has a mutation in _mutations() ("hold: ...").
 
 Rev 5 (tester, 2026-10-09), the user's ruling at spec 8a66ac010db8279a:
 "Entering the hold counts as a step, so the first step comes no sooner than
-0.3 s after the release." Rev 4 started each hold with no step, so its first
+0.28 s after the release." Rev 4 started each hold with no step, so its first
 step was never gap-judged: the mutation "hold: the first step 0.1 s after the
 release" got through rev 4 with no gap failure of its own. Rule 6 now measures the
-first gap from the release step; a frame in that first 0.3 s where the law
+first gap from the release step; a frame in that first 0.28 s where the law
 points but the gate holds is counted as release_gate (rev 4's entry_window,
 which was counted and not judged, is gone).
 
@@ -95,19 +95,19 @@ Rev 6 (tester, 2026-10-10), option B (spec 47c31278f6146c31, user
     setpoint the charger last had is above the cap, the next hold frame
     must be AT the cap; that is a clamp, exempt from the law and the gate.
   - rule 6, the gate after a clamp (spec 96dd37033d4bb763, user,
-    2026-10-12): "the clamp is not a step for the 0.3 s cadence either: it
+    2026-10-12): "the clamp is not a step for the 0.28 s cadence either: it
     neither waits for it nor restarts it, and the next 0.1 A step is timed
-    from the last step or the release". So a step that is due 0.3 s after
+    from the last step or the release". So a step that is due 0.28 s after
     the last step or the release must be taken even 0.1 s after a clamp;
     holding there fails, and the message names the clamp. Steps taken
-    inside 0.3 s after a clamp are counted (step_after_clamp). The
+    inside 0.28 s after a clamp are counted (step_after_clamp). The
     directed sequence sends page 01 every 400 ms and cannot tell the two
     readings apart, so the can-fail runs on syn_hold_cap_clamp (page 01
     every 100 ms).
   - rule 6, a step due on the frame that clamps (spec 1d1fae8d2aad1a38,
     user, 2026-10-13; the strict reading, reviewer): "the step is taken
     from the cap: a down step sends the cap less 0.1 A and is the step from
-    which the 0.3 s cadence is timed, and an up step is never taken past
+    which the 0.28 s cadence is timed, and an up step is never taken past
     the cap". So on a frame that owes a clamp: with a down step due
     (cadence elapsed, the law clearly down) only the cap less 0.1 passes,
     and the cadence runs from that frame; otherwise only the cap; inside
@@ -177,7 +177,9 @@ HELD = {0x02: bytes.fromhex("0302000000000000"),
 S_HOLD = 6
 HOLD_STEP_A = 0.1                # "steps the setpoint down / up 0.1 A"
 HOLD_BAND_A = 0.25               # up while ibat is "more than 0.25 A below"
-HOLD_GAP_MS = 300                # "at most one step per 0.3 s"
+# "at most one step per 0.28 s": spec 5.2 at dfc11cbb (user, 2026-10-13,
+# option A); 0.3 s before it
+HOLD_GAP_MS = 280
 # Half an LSB of bcm_ibat (0.025 A): a reading this close to a band edge
 # may be taken either way, so either answer is accepted there.
 HOLD_EDGE_A = 0.0125
@@ -360,7 +362,7 @@ class Checker(object):
                             # rev 6: frames the cell limits decided
                             "cell_down": 0, "cell_held": 0,
                             # e5d62c90: clamps to the cap from above it;
-                            # 96dd3703: 0.1 A steps inside 0.3 s after one
+                            # 96dd3703: 0.1 A steps inside 0.28 s after one
                             "cap_clamp": 0, "step_after_clamp": 0,
                             # 1d1fae8d: of the clamps, those that took a due
                             # down step from the cap in the same frame, and
@@ -438,7 +440,7 @@ class Checker(object):
             self.hold_step_t = None
         elif before != S_HOLD:
             # spec 5.2 (8a66ac01): "entering the hold counts as a step", so
-            # the first step's 0.3 s runs from the release, this step
+            # the first step's 0.28 s runs from the release, this step
             self.hold_entry_t = t_ms
             self.hold_step_t = t_ms
             self.hold_stepped = False
@@ -728,7 +730,7 @@ class Checker(object):
         - It starts from our last override setpoint, then on each page-01
           frame steps 0.1 A down while bcm_ibat > bcm_chg_max, up while
           bcm_ibat < bcm_chg_max - 0.25, and holds inside that band.
-        - At most one step per 0.3 s, and entering the hold counts as a
+        - At most one step per 0.28 s, and entering the hold counts as a
           step: the first gap is measured from the release (spec 8a66ac01).
         - Between 0 A and the EVSE cap of section 4.
         - Only the current changes.
@@ -766,7 +768,7 @@ class Checker(object):
             # 1d1fae8d (user, 2026-10-13; strict reading, reviewer): "when a
             # step is due on the frame that clamps, the step is taken from
             # the cap: a down step sends the cap less 0.1 A and is the step
-            # from which the 0.3 s cadence is timed, and an up step is never
+            # from which the 0.28 s cadence is timed, and an up step is never
             # taken past the cap". So with a down step due (cadence elapsed,
             # the law clearly down) only the cap less 0.1 passes; with none
             # due, or an up step due, only the cap; inside the edge band of
@@ -848,11 +850,11 @@ class Checker(object):
             if since is not None and since < HOLD_GAP_MS and first:
                 self.fail("hold: the first step %d ms after the release; "
                           "entering the hold counts as a step, so the first "
-                          "comes no sooner than 0.3 s after it (spec 5.2; %s)"
+                          "comes no sooner than 0.28 s after it (spec 5.2; %s)"
                           % (since, what))
             elif since is not None and since < HOLD_GAP_MS:
                 self.fail("hold: two steps %d ms apart, at most one per "
-                          "0.3 s (spec 5.2; %s)" % (since, what))
+                          "0.28 s (spec 5.2; %s)" % (since, what))
             elif step < 0 and not down_ok:
                 self.fail("hold: stepped DOWN with ibat not above chg_max "
                           "and the leader below 3600 mV (spec 5.2; %s)"
@@ -871,20 +873,20 @@ class Checker(object):
             self.hold_stepped = True
             return
         # no step. Ruled 2026-10-09 (spec 8a66ac01): the release counts as
-        # a step, so in the first 0.3 s a hold is right even where the law
+        # a step, so in the first 0.28 s a hold is right even where the law
         # points; counted as release_gate so P2 can report how often.
         due = (since is None or since >= HOLD_GAP_MS)
         if not due and first and (down_must or up_must):
             cnt["release_gate"] += 1
             return
         # Ruled 2026-10-12 (spec 96dd3703): a clamp is not a step for the
-        # 0.3 s cadence and does not restart it, so a step due from the
+        # 0.28 s cadence and does not restart it, so a step due from the
         # last step or the release is due even just after a clamp
         after = ""
         if self.hold_clamp_t is not None and \
                 t_ms - self.hold_clamp_t < HOLD_GAP_MS:
             after = (" -- %d ms after a clamp to the cap, which is not a "
-                     "step for the 0.3 s cadence and does not restart it "
+                     "step for the 0.28 s cadence and does not restart it "
                      "(96dd3703)" % (t_ms - self.hold_clamp_t))
         if due and down_must:
             if at_floor:
@@ -1277,8 +1279,8 @@ def test_invariants_hold_over_every_trace():
     # band, or it passes by never running.
     print("  --  traces: hold page-01 frames up %(up)d, down %(down)d, held "
           "%(hold)d, clamped %(clamped)d, unjudged %(unjudged)d, held by "
-          "the release's 0.3 s %(release_gate)d; clamps to the cap from "
-          "above it %(cap_clamp)d, 0.1 A steps inside 0.3 s after one "
+          "the release's 0.28 s %(release_gate)d; clamps to the cap from "
+          "above it %(cap_clamp)d, 0.1 A steps inside 0.28 s after one "
           "%(step_after_clamp)d; clamps that took a due down step from the "
           "cap %(clamp_step)d, clamps with an up step due %(clamp_up_due)d"
           % hold)
@@ -1297,7 +1299,7 @@ def test_invariants_hold_over_every_trace():
        "up step due (spec 5.2, 1d1fae8d)"
        % (hold["clamp_step"], hold["clamp_up_due"]))
     ok(hold["release_gate"] >= 1,
-       "rule 6 judged %d frames inside a release's 0.3 s where the law "
+       "rule 6 judged %d frames inside a release's 0.28 s where the law "
        "pointed (spec 5.2: the release counts as a step)"
        % hold["release_gate"])
     ok(M.STATE_NAMES.get(S_HOLD) == "HOLD",
@@ -1527,7 +1529,7 @@ def _mutations():
                             P.setpoint_counts(it[3])[1] - pi)))
 
     def m_hold_every_frame(c, kind, arb_id, data, out):
-        # the right direction, but on every page 01: no 0.3 s gate
+        # the right direction, but on every page 01: no 0.28 s gate
         ib, perm = c.bus.ibat_a, c.bus.perm_a
         if c.last_sp_a is None or ib is None or perm is None:
             return out, 0
@@ -1553,7 +1555,7 @@ def _mutations():
     def m_hold_early_step(c, kind, arb_id, data, out):
         # 5.2 (spec 8a66ac01): entering the hold counts as a step. One step,
         # the law's own direction, on the first page 01 that comes 0.1 s or
-        # more after the release and before 0.3 s; nothing else wrong
+        # more after the release and before 0.28 s; nothing else wrong
         ib, perm, t0 = c.bus.ibat_a, c.bus.perm_a, c.hold_entry_t
         if (c.core.state != S_HOLD or c._step_before != S_HOLD
                 or t0 is None or c.last_sp_a is None
@@ -2133,16 +2135,17 @@ def test_floor_rule_can_fail():
 def _hold_law(cell=True, up_below=HOLD_VMAX_UP_V, down_at=HOLD_VMAX_DOWN_V,
               clamp=True, clamp_restarts=False, clamp_step=True,
               clamp_step_a=HOLD_STEP_A, combined_is_step=True,
-              up_capped=True):
+              up_capped=True, gap_ms=HOLD_GAP_MS):
     """The spec 5.2 hold setpoint for this frame, from the Oracle and the
     Checker's own step clock, with knobs for the wrong versions.
-    `clamp_restarts`: a clamp restarts the 0.3 s cadence (96dd3703 rules
+    `clamp_restarts`: a clamp restarts the 0.28 s cadence (96dd3703 rules
     that it does not). The rest are for 1d1fae8d (user, 2026-10-13), a step
     due on the frame that clamps: `clamp_step` False clamps to the cap and
     takes the due down step a frame later; `clamp_step_a` is the size of
     the down step taken from the cap; `combined_is_step` False times the
     next step from the step or release before the combined frame, not from
-    it; `up_capped` False lets an up step go past the cap."""
+    it; `up_capped` False lets an up step go past the cap. `gap_ms` is
+    the law's own cadence (dfc11cbb: 280 ms; 300 ms is E6a's gate)."""
     last_clamp = [None]
     own_step = [None]           # this law's own last 0.1 A step, for
                                 # combined_is_step=False
@@ -2158,7 +2161,7 @@ def _hold_law(cell=True, up_below=HOLD_VMAX_UP_V, down_at=HOLD_VMAX_DOWN_V,
             ref = max(t for t in (c.hold_entry_t, own_step[0])
                       if t is not None) if (c.hold_entry_t is not None or
                                             own_step[0] is not None) else None
-        due = ref is None or c._t - ref >= HOLD_GAP_MS
+        due = ref is None or c._t - ref >= gap_ms
         down = ib > perm or (cell and vm >= down_at)
         up = ib < perm - HOLD_BAND_A and (not cell or vm < up_below)
         caps0 = c.bus.caps()
@@ -2223,7 +2226,7 @@ def test_hold_cell_limits_can_fail():
             print("  --  hold_cell_steps: up %(up)d, down %(down)d, held "
                   "%(hold)d, of which the leader decided down %(cell_down)d "
                   "and held %(cell_held)d; clamps to the cap %(cap_clamp)d, "
-                  "0.1 A steps inside 0.3 s after one %(step_after_clamp)d"
+                  "0.1 A steps inside 0.28 s after one %(step_after_clamp)d"
                   % hc)
             ok(hc["cell_down"] >= 5 and hc["cell_held"] >= 5
                and hc["up"] >= 5 and hc["cap_clamp"] >= 2,
@@ -2244,12 +2247,13 @@ def test_clamp_gate_can_fail():
     """Rule 6, the gate after a clamp (spec 96dd3703): on syn_hold_cap_clamp
     -- page 01 every 100 ms, a clamp to 6.00 A 100 ms after the release,
     the pack above chg_max -- the reference law steps 0.3 s after the
-    release, 0.2 s after the clamp, and passes; a law whose clamp restarts
+    release (the first frame at or past 0.28 s), 0.2 s after the clamp, and
+    passes; a law whose clamp restarts
     the cadence holds there and is rejected, naming the clamp."""
     cfg, steps = _read_trace(os.path.join(TRACES, CLAMP_GATE_TRACE))
     for name, fn, text in (
             ("reference", _hold_law(), None),
-            ("a clamp restarts the 0.3 s cadence",
+            ("a clamp restarts the 0.28 s cadence",
              _hold_law(clamp_restarts=True), "after a clamp to the cap")):
         hits = [0]
 
@@ -2266,7 +2270,7 @@ def test_clamp_gate_can_fail():
             ok(not probs, "rule 6 passes the reference hold over %s: %s"
                % (CLAMP_GATE_TRACE, probs[:2]))
             ok(hc["step_after_clamp"] >= 1 and hc["cap_clamp"] >= 2,
-               "the reference took %d 0.1 A step(s) inside 0.3 s after a "
+               "the reference took %d 0.1 A step(s) inside 0.28 s after a "
                "clamp, over %d clamps -- the case the ruling is about"
                % (hc["step_after_clamp"], hc["cap_clamp"]))
             continue
@@ -2302,7 +2306,7 @@ def test_clamp_step_can_fail():
              _hold_law(combined_is_step=False), "two steps"),
             ("an up step past the cap", _hold_law(up_capped=False),
              "outside 0 A .. the EVSE cap"),
-            ("a clamp restarts the 0.3 s cadence",
+            ("a clamp restarts the 0.28 s cadence",
              _hold_law(clamp_restarts=True), "after a clamp to the cap")):
         hits = [0]
 
@@ -2322,7 +2326,7 @@ def test_clamp_step_can_fail():
                and hc["step_after_clamp"] >= 1,
                "the reference took %d down step(s) from the cap on a clamp "
                "frame, landed on the cap %d time(s) with an up step due, "
-               "and stepped %d time(s) inside 0.3 s after a clamp -- the "
+               "and stepped %d time(s) inside 0.28 s after a clamp -- the "
                "cases 1d1fae8d rules on"
                % (hc["clamp_step"], hc["clamp_up_due"],
                   hc["step_after_clamp"]))
@@ -2330,6 +2334,106 @@ def test_clamp_step_can_fail():
         ok(any(text in q for q in probs),
            "rule 6 rejects '%s' (%d frames changed): %s"
            % (name, hits[0], probs[:1]))
+
+
+def hold_cadence_steps(page01_ms):
+    """hold_cell_steps' release into HOLD, then 4 s with the pack above
+    chg_max (the law steps down) and the VCU's page 01 every `page01_ms`
+    (a number, or a sequence of gaps used in turn), on a 2 ms tick: a frame grid on which 0.27, 0.28 and 0.3 s judge
+    differently, which the fixtures' 100 / 300 ms grids cannot."""
+    import test_trips as T
+    b = T.Bench()
+    b.arm(vmax=3.400, chg_max=300.0, soc=95.0)
+    b.low_power()
+    vcu = P.enc_setpoint(P.VLIM_DEFAULT_COUNTS, int(round(19.8 / P.UNIT)))
+    for i in range(10):
+        b.t += 100
+        b.charger_status(12)
+        b.bms(vmax=3.400, chg_max=4.0, soc=99.0)
+        if i % 3 == 0:
+            b.veh(M.CMD_ID, vcu)
+        b.tick()
+    for i in range(60):
+        if b.state() == "HOLD":
+            break
+        b.t += 100
+        b.charger_status(12)
+        b.bms(vmax=T.RELEASE_VMAX_V, chg_max=2.0, soc=99.0)
+        if i % 3 == 0:
+            b.veh(M.CMD_ID, vcu)
+        b.tick()
+    b.charge_info(6.0)
+    gaps = (list(page01_ms) if isinstance(page01_ms, (list, tuple))
+            else [page01_ms])
+    t_end = b.t + 4000
+    k = 0
+    next_p01 = b.t + gaps[0]
+    while b.t < t_end:
+        b.t += 2
+        if b.t % 100 == 0:
+            b.charger_status(12)
+            b.bms(vmax=3.590, chg_max=2.0, soc=99.0, ibat=5.5)
+        if b.t >= next_p01:
+            b.veh(M.CMD_ID, vcu)
+            k += 1
+            next_p01 += gaps[k % len(gaps)]
+        b.tick()
+    return _bench_steps(b)
+
+
+def test_hold_cadence_can_fail():
+    """Rule 6's cadence, 0.28 s (spec 5.2 at dfc11cbb, user 2026-10-13,
+    option A). The pack is above chg_max throughout, so every frame on
+    which a step is allowed must step. Page 01 every 280 ms with a law at
+    0.28 s steps on every frame and passes -- the pass at 0.28 s. Every
+    270 ms with a law at 0.27 s steps 270 ms apart and is rejected. Every
+    270 ms with a law at 0.28 s waits a frame each time and passes. Every
+    290 ms with a law at 0.3 s (E6a's gate) holds on frames where a step
+    was allowed and is rejected."""
+    for frames, gap, text in (
+            (280, 280, None),
+            (270, 270, "two steps 270 ms apart, at most one per 0.28 s"),
+            (270, 280, None),
+            (290, 300, "held while ibat was above chg_max")):
+        name = "page 01 every %d ms, law at %d ms" % (frames, gap)
+        hits = [0]
+
+        def mut(c, kind, arb_id, data, out, fn=_hold_law(gap_ms=gap)):
+            new, h = _rewrite_p01(c, kind, arb_id, out, S_HOLD, fn)
+            hits[0] += h
+            return new
+        c = _directed(lambda: hold_cadence_steps(frames), mutate=mut,
+                      label="hold_cadence/" + name)
+        probs = c.finish()
+        down = c.hold_counts["down"]
+        if text is None:
+            ok(not probs and down >= 6,
+               "rule 6 passes %s: %d down steps, %s"
+               % (name, down, probs[:2]))
+            continue
+        ok(any(text in q for q in probs),
+           "rule 6 rejects %s (%d frames changed): %s"
+           % (name, hits[0], probs[:1]))
+
+
+def test_hold_cadence():
+    """The core under test over hold_cadence_steps with the VCU's own
+    spacing: page 01 298 / 302 ms apart in turn (the truck's VCU: median
+    0.300 s, 98.8 % of gaps >= 0.28 s; artifacts/vcu_page01_gaps.txt, the
+    corpus behind dfc11cbb), and a flat 290 ms. With the pack above
+    chg_max a step is allowed on every frame, so a core still gated at
+    0.3 s holds on the 298 ms frames and fails rule 6 -- E6a does, which
+    is this test's pre-fix control."""
+    for gaps in ((298, 302), (290,)):
+        c = _directed(lambda: hold_cadence_steps(gaps),
+                      label="hold_cadence/core %s ms" % "/".join(
+                          str(g) for g in gaps))
+        probs = c.finish()
+        down = c.hold_counts["down"]
+        ok(down >= 6, "hold_cadence_steps %s judged %d down steps"
+           % (gaps, down))
+        for q in probs:
+            FAILS.append(q)
 
 
 def main():

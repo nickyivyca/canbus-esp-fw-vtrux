@@ -320,11 +320,12 @@ def hold_follows_loads(band=(2.6, 3.3), settle_s=120.0, drop_exempt_s=2.0):
          (inclusive) of the drop or the step before it
          (_walk_down_window); a fall in bcm_chg_max keeps its 2 s. And one
          count of bcm_ibat over chg_max passes (IBAT_COUNT_A, 0.025 A);
-      2. "the setpoint moves only in 0.1 A steps, at least 0.3 s apart, or
-         by a clamp to the EVSE cap (5.2), and is never 0 A" (96dd3703):
-         every page 01 sent to the charger in HOLD. A clamp is a move from
-         above the spec 4 cap (test_invariants' Oracle, as rule 6) to
-         exactly the cap; it is not a step and does not restart the 0.3 s;
+      2. "the setpoint moves only in 0.1 A steps, at least 0.28 s apart,
+         or by a clamp to the EVSE cap (5.2), and is never 0 A" (96dd3703;
+         0.28 s from dfc11cbb, HOLD_STEP_GAP_MS): every page 01 sent to the
+         charger in HOLD. A clamp is a move from above the spec 4 cap
+         (test_invariants' Oracle, as rule 6) to exactly the cap; it is not
+         a step and does not restart the cadence;
       3. "once bcm_chg_max is 0 A and the core is in HOLD, from whichever
          comes later, the setpoint is within 0.3 A of the VCU's own 2.9-3.0
          A [`band`] within 2 min [`settle_s`], and stays there until the
@@ -447,6 +448,10 @@ IBAT_STEP_WINDOW_MS = 100 + 500
 # 0.3 s plus one such frame; it matters only when a frame goes missing.
 PAGE01_PERIOD_MS = 300
 WALK_STEP_MS = 300 + PAGE01_PERIOD_MS
+# Clause 2's cadence: steps "at least 0.28 s apart" (spec dfc11cbb, user
+# 2026-10-13, option A); 0.3 s before it. Clause 1's walk-down bound above
+# stays 0.3 s plus one frame.
+HOLD_STEP_GAP_MS = 280
 
 
 def _walk_down_window(sp, drop):
@@ -606,8 +611,9 @@ def _hold_follows_loads(series, veh_text, band=(2.6, 3.3), settle_s=120.0,
                         _clamp_move=True, _anchor_later=True,
                         _entry_grace=True, _clamp_step=True,
                         _wire_anchor=True, _one_count=True,
-                        _walk_down=True):
-    """-> (ok, why). See hold_follows_loads(). The underscored switches
+                        _walk_down=True, _step_gap_ms=HOLD_STEP_GAP_MS):
+    """-> (ok, why). See hold_follows_loads(). `_step_gap_ms` is clause
+    2's cadence (300 = the rule before dfc11cbb). The underscored switches
     exist only for test_scorer_wiring's can-fail: False is the rule before
     spec 96dd3703 / 05999682 / 1d1fae8d (no clamp allowed as a move in
     clause 2; clause 3 anchored on chg_max 0 alone; no entry grace in
@@ -698,13 +704,13 @@ def _hold_follows_loads(series, veh_text, band=(2.6, 3.3), settle_s=120.0,
                      "frame(s) above it inside the entry grace)%s"
                      % (by, where, grace, len(drops), len(falls), n_grace,
                         walked))
-    # 2. 0.1 A steps, >= 0.3 s apart, or a clamp to the EVSE cap (spec
-    # 96dd3703), never 0 A. A clamp -- from above the cap to exactly the
-    # cap -- is not a step: it is not size-checked and does not restart
-    # the 0.3 s (5.2, user 2026-10-12). A frame from above the cap to the
-    # cap less 0.1 A is a clamp plus a down step taken from the cap (spec
-    # 1d1fae8d, user 2026-10-13): one clamp and one 0.1 A step, held to the
-    # 0.3 s like any step, and the next step is timed from it
+    # 2. 0.1 A steps, >= 0.28 s apart (dfc11cbb), or a clamp to the EVSE
+    # cap (spec 96dd3703), never 0 A. A clamp -- from above the cap to
+    # exactly the cap -- is not a step: it is not size-checked and does not
+    # restart the cadence (5.2, user 2026-10-12). A frame from above the cap
+    # to the cap less 0.1 A is a clamp plus a down step taken from the cap
+    # (spec 1d1fae8d, user 2026-10-13): one clamp and one 0.1 A step, held
+    # to the cadence like any step, and the next step is timed from it
     bad2 = []
     last_step = None
     nsteps = nclamps = ncombined = 0
@@ -727,7 +733,7 @@ def _hold_follows_loads(series, veh_text, band=(2.6, 3.3), settle_s=120.0,
         nsteps += 1
         if not combined and abs(abs(b - a) - 0.1) > 0.025:
             bad2.append("a %.2f A step at t=%.1f s" % (b - a, tb / 1000.0))
-        if last_step is not None and tb - last_step < 300:
+        if last_step is not None and tb - last_step < _step_gap_ms:
             bad2.append("steps %d ms apart at t=%.1f s"
                         % (tb - last_step, tb / 1000.0))
         last_step = tb
@@ -738,10 +744,10 @@ def _hold_follows_loads(series, veh_text, band=(2.6, 3.3), settle_s=120.0,
     if bad2:
         probs.append("2: " + "; ".join(bad2[:4]))
     else:
-        notes.append("2: %d steps, each 0.1 A and >= 0.3 s apart, and %d "
+        notes.append("2: %d steps, each 0.1 A and >= %.2f s apart, and %d "
                      "clamp(s) to the EVSE cap, %d of them with a down step "
                      "taken from the cap in the same frame; never 0 A"
-                     % (nsteps, nclamps, ncombined))
+                     % (nsteps, _step_gap_ms / 1000.0, nclamps, ncombined))
     # 3. settled in band within settle_s of the LATER of chg_max 0 and the
     # core in HOLD (spec 96dd3703, user 2026-10-12), until the first step.
     # `_anchor_later` False is the rule before it: anchored on chg_max 0,
