@@ -141,6 +141,31 @@ static uint32_t switch_us_last = 0;
 static uint32_t switch_us_max = 0;
 static uint32_t drain_frames = 0;
 
+// Spec 2.3's power-up round (user, 2026-10-13): "it puts the port in
+// listen-only once all four have been sent or 50 ms have passed, whichever
+// comes first. A frame not sent by then is dropped." The bound is from the
+// first transmit, which is where setup() starts timing it.
+//
+// The count is reported on serial (8.3) only. The spec also wants it on a
+// status page "once it has one: the Wi-Fi status page after the move to the
+// WiCAN codebase", which is the ESP-IDF port's job and nothing here. No CAN
+// diagnostic frame carries it, so DIAG_FW_VER stays 9 -- nothing on the wire
+// changes meaning for a reader of 0x7F4-0x7F7.
+static const uint32_t ROUND_WAIT_US = 50000;
+static const uint32_t ROUND_POLL_US = 100;
+static uint8_t boot_round_sent = 0;
+static uint32_t boot_round_wait_us = 0;
+
+// READ BY THE HOSTED L2 TEST, which compiles this file with INTP_NO_SERIAL
+// and so cannot see the printed line (reviewer, 2026-10-14). Not static, and
+// declared in the test the way `setup()` and `loop()` are, since this file
+// has no header. Read-only: the test asserts the count against the frames
+// the fake put on the wire, and the printed line is what the bench checks.
+// A Serial shim would have been the other way to do it and the Arduino-side
+// framework freeze rules it out.
+uint8_t intpBootRoundSent() { return boot_round_sent; }
+uint32_t intpBootRoundWaitUs() { return boot_round_wait_us; }
+
 // --- diagnostics (spec 8.2 / 8.3) -----------------------------------------
 // Build id (0x7F7 B0-B3): the first four bytes of this application's ELF
 // SHA-256, read from the ESP-IDF app descriptor.
@@ -470,13 +495,15 @@ static void status(uint32_t t_ms) {
   // records: a counter visible only when some other counter is non-zero is
   // not observable.
   INTP_PRINTF("  MODE veh=%s core wants %s | switches=%lu refused=%lu "
-              "suppressed=%lu | boot=%luus switch=%lu/%luus(last/max) "
-              "drained=%lu\n",
+              "suppressed=%lu | round=%u/4 in %luus | boot=%luus "
+              "switch=%lu/%luus(last/max) drained=%lu\n",
               vehicle.listenOnly() ? "listen-only" : "normal",
               core->vehicleListenOnly() ? "listen-only" : "normal",
               (unsigned long)mode_switches,
               (unsigned long)mode_switch_fail,
               (unsigned long)listen_suppressed,
+              (unsigned)boot_round_sent,
+              (unsigned long)boot_round_wait_us,
               (unsigned long)boot_window_us,
               (unsigned long)switch_us_last,
               (unsigned long)switch_us_max,
@@ -649,13 +676,83 @@ void setup() {
   // probably not be listening yet. It stays here until the user rules.
   if (vehicle_up) {
     last_diag_ms = millis();
+    const uint32_t dtf_before = diag_tx_fail;
     sendDiag(last_diag_ms, false);   // false = all four, not 0x7F4 alone
     last_diag_state = core->state();
+
+    // WAIT FOR THE ROUND TO LEAVE BEFORE THE SWITCH DISCARDS IT (spec 2.3
+    // at 4f5168ae66fd2c62, user 2026-10-13). sendDiag() only QUEUES the
+    // four frames; applyVehicleMode() below stops the driver, and a stop
+    // discards the TX queue. Without this wait the round does not reach the
+    // wire: the L2 tests with the fake modelling airtime put 0 of 4 out,
+    // and a bench boot with an acknowledging adapter put 1 of 4 -- the one
+    // frame already in the controller's TX buffer.
+    //
+    // "Sent" means the CONTROLLER reported it transmitted, which on CAN
+    // means another node acknowledged it. A send() that returned true only
+    // means the driver took it.
+    //
+    // THE DEADLINE IS WHAT ENDS THE NO-ACKNOWLEDGER CASE, not a failure:
+    // with automatic retransmission a frame nobody acknowledges raises no
+    // TX_FAILED at all, it just keeps retrying (reviewer, 2026-10-14). So
+    // on a quiet vehicle segment this spends the full 50 ms and reports 0,
+    // which is the specified outcome rather than a fault.
+    // POLL WITH delayMicroseconds(), NOT A BARE SPIN. The host harness's
+    // clock is virtual and only moves when something advances it, so a
+    // `while (micros() - t0 < bound)` spin never ends there -- it hung the
+    // L2 suite on the first boot when this was written that way.
+    // Arduino.h's shim advances the virtual clock in delay() and
+    // delayMicroseconds() for exactly this reason, which is how setMode()'s
+    // own polling timeout is reachable in a test, and on the board they are
+    // a real delay. pollAlerts() still runs each pass so a bus-off during
+    // the wait is seen and recovered by the one alert reader.
+    //
+    // THE COUNT COMES FROM THE DRIVER'S QUEUE, NOT FROM TX_SUCCESS
+    // (reviewer, 2026-10-14). The alert is a bit, so completions between
+    // polls collapse into one and the count would read low -- misleading in
+    // the direction that matters for "did the board think this went out",
+    // and it would also keep the wait running to the deadline for nothing.
+    // msgs_to_tx counts frames queued OR awaiting completion, and a frame
+    // leaves it by succeeding or by failing, so the arithmetic below is
+    // exact however many alerts collapsed.
+    const uint32_t queued = 4 - (diag_tx_fail - dtf_before);
+    const uint32_t fail_before = vehicle.txFailedCount();
+    const uint32_t disc_before = vehicle.txDiscardedBusOff();
+    const uint32_t t_round_us = micros();
+    while (vehicle.txPending() > 0 &&
+           micros() - t_round_us < ROUND_WAIT_US) {
+      delayMicroseconds(ROUND_POLL_US);
+      vehicle.pollAlerts();
+    }
+    boot_round_wait_us = micros() - t_round_us;
+    // `queued` rather than a literal 4: if a send() had been refused the
+    // frame was never on the wire and must not be counted as sent. It
+    // cannot happen today -- the TX queue is 32 deep and nothing else has
+    // sent yet -- but a literal would quietly over-report if it ever did.
+    //
+    // THE COUNT IS EXACT ACROSS A BUS-OFF RECOVERY INSIDE THE WAIT, and it
+    // took the third term to make it so (reviewer, 2026-10-14). A queued
+    // frame leaves msgs_to_tx three ways: it succeeds, it fails, or a
+    // recovery DISCARDS it -- twai_initiate_recovery "reset[s] the TX
+    // queue, clearing any messages pending transmission". A discard is in
+    // neither msgs_to_tx afterwards nor tx_failed_count, so counting only
+    // the first two terms booked discarded frames as SENT: the one way this
+    // figure could be wrong in the over-reporting direction. pollAlerts()
+    // can recover inside the wait, so the path is reachable -- at boot it
+    // needs a wrong bit rate or a bus fault, which is exactly when a
+    // trustworthy count matters. txDiscardedBusOff() is the port's count of
+    // what recovery threw away, read before the discard happens.
+    const uint32_t gone = vehicle.txPending()
+                          + (vehicle.txFailedCount() - fail_before)
+                          + (vehicle.txDiscardedBusOff() - disc_before);
+    boot_round_sent = (gone >= queued) ? 0 : (uint8_t)(queued - gone);
   }
   applyVehicleMode(millis());
   boot_window_us = micros() - veh_up_us;
   INTP_PRINTF("spec 2.3: vehicle port in normal mode for %lu us at boot, "
-              "round of 4 included\n", (unsigned long)boot_window_us);
+              "round %u of 4 sent in %lu us\n",
+              (unsigned long)boot_window_us, (unsigned)boot_round_sent,
+              (unsigned long)boot_round_wait_us);
 }
 
 void loop() {

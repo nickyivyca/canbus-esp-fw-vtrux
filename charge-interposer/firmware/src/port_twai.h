@@ -32,6 +32,42 @@ class TwaiPort : public CanPort {
   bool send(uint32_t id, bool ext, const uint8_t* data, uint8_t len) override;
   void service(uint32_t t_ms) override;
 
+  // Spec 2.3's power-up round (2026-10-14): drain the driver's alerts and
+  // fold them into this port's counters. service() calls it every pass, and
+  // setup()'s wait for the round calls it directly while the loop is not
+  // running yet.
+  //
+  // THERE IS EXACTLY ONE ALERT READER, and it has to stay that way:
+  // twai_read_alerts CONSUMES what it returns. A second reader anywhere
+  // would take BUS_OFF out from under the recovery path below -- which
+  // counts the TX queue before recovery throws it away, the only place
+  // those frames are ever counted -- or would eat the TX_SUCCESS alerts the
+  // round is waiting on and leave the count short. Both failures are
+  // silent. So callers poll through here rather than reading alerts
+  // themselves.
+  void pollAlerts();
+
+  // Frames the CONTROLLER reported transmitted, which on CAN means another
+  // node acknowledged. Not the same as send() returning true, which only
+  // says the driver accepted it into the queue (spec 2.3, user).
+  uint32_t txSuccess() const { return tx_success_; }
+
+  // Spec 2.3's round is COUNTED FROM THESE, not from the alert above.
+  //
+  //   txPending()     the driver's msgs_to_tx: "Number of messages queued
+  //                   for transmission or awaiting transmission completion"
+  //                   (esp32s3 driver/twai.h), so it includes the frame in
+  //                   flight and only falls when one completes or fails.
+  //   txFailedCount() the driver's cumulative tx_failed_count.
+  //
+  // A frame leaves msgs_to_tx by succeeding or by failing, so
+  // queued - txPending() - (txFailedCount() delta) is the number that
+  // reached the wire, exactly, however many alerts were collapsed on the
+  // way. Unlike the alerts these are NOT consuming reads, so anyone may
+  // call them.
+  uint32_t txPending() const;
+  uint32_t txFailedCount() const;
+
   uint32_t rxCount() const override { return rx_count_; }
   uint32_t txCount() const override { return tx_count_; }
   uint32_t rxDropped() const override { return rx_dropped_; }
@@ -116,6 +152,7 @@ class TwaiPort : public CanPort {
   uint32_t rx_lost_raw_;
   uint32_t tx_dropped_;
   uint32_t bus_errors_;
+  uint32_t tx_success_;
   uint32_t rx_peak_;
   uint32_t last_ms_;
   bool bus_off_;

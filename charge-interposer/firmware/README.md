@@ -651,19 +651,40 @@ log of a drive shows nothing from the board, and that is the board working.
 Its counters are read over USB serial on a bring-up build instead (8.3, and
 spec 10 item 7).
 
-**THE CODE DOES NOT MEET THE POWER-UP HALF OF THAT, AND E8 IS REOPENED FOR
-IT** (reviewer, 2026-10-13). `setup()` queues all four frames and then calls
-`applyVehicleMode()` on the next line; `setMode()` stops the driver, and that
-**discards its TX queue**, so the round never leaves the controller. Measured
-two ways: the L2 host tests with the TWAI fake modelling airtime put 0 of 4
-on the wire, and a bench boot with an acknowledging adapter on the segment
-put 1 of 4 -- the one frame already in the hardware TX buffer, which can
-complete only because something was there to ACK it. With nothing
-acknowledging, as on a truck whose vehicle bus may be quiet, it is 0 of 4.
-`test_l2_bridge`'s `failed-start` and `listen-only-boot` arms fail on this
-and are correct to. The fix must wait for the round to leave before
-switching; the bound on that wait, and what happens to frames still queued at
-it, is a spec addition with the user.
+**THE ROUND IS WAITED FOR, BECAUSE THE SWITCH USED TO THROW IT AWAY**
+(spec 2.3 at 4f5168ae66fd2c62, user 2026-10-13). `sendDiag()` only QUEUES the
+four frames, and `setMode()` stops the driver, which **discards its TX
+queue**. Until 2026-10-14 the switch ran on the next line, so the round never
+reached the wire: the L2 tests with the fake modelling airtime put 0 of 4 out,
+and a bench boot with an acknowledging adapter put 1 of 4 -- the single frame
+already in the hardware TX buffer, which could complete only because
+something was there to ACK it.
+
+`setup()` now waits for the round before switching: until all four are sent
+or 50 ms from the first transmit, whichever comes first, and a frame not sent
+by then is dropped. **A frame counts as sent when the CONTROLLER reports it
+transmitted**, which on CAN means another node acknowledged it -- not when
+`send()` returns true, which only means the driver queued it. The number is
+read from the driver's own queue, `msgs_to_tx` and `tx_failed_count`, rather
+than counted from `TWAI_ALERT_TX_SUCCESS`: the alert is a bit, not a counter,
+so completions between polls collapse into one and the count would read low.
+`msgs_to_tx` includes the frame in flight, and a frame leaves it by
+succeeding, by failing, or by a bus-off recovery discarding it -- all three
+are subtracted, so the arithmetic is exact whatever the alerts did and
+**exact across a recovery inside the wait**. A discard appears in neither
+`msgs_to_tx` nor `tx_failed_count`, so leaving that term out booked
+discarded frames as sent, which was the one way this figure could
+over-report. The count of
+0-4 is on the `MODE` line and the boot line (8.3); the spec also wants it on
+a status page once there is one, which is the Wi-Fi page after the move to
+the WiCAN codebase and nothing here. No CAN diagnostic frame changes, so
+`DIAG_FW_VER` stays 9.
+
+**With nothing acknowledging, the 50 ms deadline is the only thing that ends
+the wait.** Automatic retransmission means an unacknowledged frame raises no
+`TWAI_ALERT_TX_FAILED` at all -- it simply retries -- so a quiet vehicle
+segment spends the full 50 ms and reports `round=0/4`. That is the specified
+outcome, not a fault.
 
 The bring-up builds' 5 s status block carries a `MODE` line for this:
 
@@ -678,12 +699,22 @@ The bring-up builds' 5 s status block carries a `MODE` line for this:
 | `suppressed` | vehicle-bound frames `dispatch()` dropped because the port was in listen-only. Not booked as bridge failures |
 | `boot=` | the power-up window: vehicle controller up in normal mode to the first switch into listen-only completing, the status round inside it |
 | `switch=` | `setMode()`'s duration, last and worst; a mean would hide the one that matters |
+| `round=` | how many of the power-up round of four the CONTROLLER reported transmitted, and how long the wait took. `0/4` on a segment with no acknowledger, where the wait runs the full 50 ms |
 | `drained=` | vehicle frames found in the RX queue at a switch and handed to the core before the teardown. **Zero is the normal case** -- the loop drains RX every iteration, so the queue is empty at a switch unless the loop had fallen behind. Non-zero means it had. It says nothing about where the drain is placed |
 
 Measured on the bench 2026-10-13 (the loan entry in SeaDrive
-`firmware/bench-holder.md` has the runs): the boot window is 11,409-11,424 us
+`firmware/bench-holder.md` has the runs): the boot window was 11,409-11,424 us
 over nine boots, with no traffic dependence, and `setMode()` 234-340 us over
 nine switches in both directions.
+
+**Those boot-window figures predate the round's wait and no longer describe
+the current code.** They were measured when the switch followed the round
+immediately, so they are the cost of bringing both controllers up and
+nothing else. The window now also contains the wait, which is bounded at
+50 ms: expect roughly 12 ms where something acknowledges the round and
+roughly 61 ms where nothing does. `setMode()`'s own 234-340 us is unaffected,
+being the teardown and reinstall alone. The next bench run re-measures the
+window; until then read the figures above as the floor, not the window.
 
 ### Why a repeat ended -- the `c` field of `REPEAT ended`
 

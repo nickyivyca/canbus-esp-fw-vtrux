@@ -18,6 +18,7 @@ TwaiPort::TwaiPort(int tx_gpio, int rx_gpio, uint16_t rx_queue,
       rx_lost_raw_(0),
       tx_dropped_(0),
       bus_errors_(0),
+      tx_success_(0),
       rx_peak_(0),
       last_ms_(0),
       bus_off_(false),
@@ -55,9 +56,16 @@ bool TwaiPort::begin(uint32_t bitrate) {
     return false;
   }
 
+  // TX_SUCCESS is here for spec 2.3's power-up round: it is the only way
+  // the controller reports that a frame was ACKNOWLEDGED, as opposed to
+  // accepted into the queue. With automatic retransmission enabled an
+  // unacknowledged frame raises no TX_FAILED at all -- it simply retries
+  // for as long as it is allowed -- so the round's wait is ended by its own
+  // deadline, never by a failure alert (reviewer, 2026-10-14).
   twai_reconfigure_alerts(
       TWAI_ALERT_RX_QUEUE_FULL | TWAI_ALERT_ERR_PASS | TWAI_ALERT_BUS_ERROR |
-          TWAI_ALERT_BUS_OFF | TWAI_ALERT_TX_FAILED,
+          TWAI_ALERT_BUS_OFF | TWAI_ALERT_TX_FAILED |
+          TWAI_ALERT_TX_SUCCESS,
       NULL);
 
   ready_ = true;
@@ -99,12 +107,35 @@ bool TwaiPort::send(uint32_t id, bool ext, const uint8_t* data, uint8_t len) {
   return true;
 }
 
-void TwaiPort::service(uint32_t t_ms) {
+uint32_t TwaiPort::txPending() const {
+  if (!ready_) return 0;
+  twai_status_info_t st;
+  if (twai_get_status_info(&st) != ESP_OK) return 0;
+  return st.msgs_to_tx;
+}
+
+uint32_t TwaiPort::txFailedCount() const {
+  if (!ready_) return 0;
+  twai_status_info_t st;
+  if (twai_get_status_info(&st) != ESP_OK) return 0;
+  return st.tx_failed_count;
+}
+
+void TwaiPort::pollAlerts() {
   if (!ready_) return;
-  last_ms_ = t_ms;
 
   uint32_t alerts = 0;
   if (twai_read_alerts(&alerts, 0) == ESP_OK && alerts) {
+    // A lifetime record of completions, informational only: ONE ALERT CAN
+    // COVER MORE THAN ONE, since it is a bit and not a count. That is why
+    // spec 2.3's round is counted from txPending() and txFailedCount()
+    // instead (reviewer, 2026-10-14): a 100 us poll against a ~230 us frame
+    // makes a collapse rare rather than impossible -- one overshooting
+    // delay or one interrupt is enough -- and a board reporting 2 of 4 when
+    // 4 went out is wrong in the misleading direction. The host fake
+    // collapses exactly this way, raising one TX_SUCCESS however many
+    // frames completed in a pass, so it is reproducible and not theory.
+    if (alerts & TWAI_ALERT_TX_SUCCESS) tx_success_++;
     // NOT rx_dropped_++ here. The alert says "the queue filled at least
     // once since you last asked", not how many frames that cost, so
     // counting it was one per alert and can_port.h asks for frames lost.
@@ -142,6 +173,12 @@ void TwaiPort::service(uint32_t t_ms) {
       twai_initiate_recovery();
     }
   }
+}
+
+void TwaiPort::service(uint32_t t_ms) {
+  if (!ready_) return;
+  last_ms_ = t_ms;
+  pollAlerts();
 
   twai_status_info_t st;
   if (twai_get_status_info(&st) == ESP_OK) {
