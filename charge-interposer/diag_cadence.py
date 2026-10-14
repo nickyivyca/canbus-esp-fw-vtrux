@@ -270,11 +270,18 @@ def state_changes(serial_rows, names):
     return out
 
 
-def score(witness_rows, serial_rows, db=None, names=None, listen_only=True):
+def score(witness_rows, serial_rows, db=None, names=None, listen_only=True,
+          boot_in_capture=False):
     """-> (ok, why). `db` decodes 0x7F4's state; tests pass a stand-in.
     `listen_only` (spec 2.3, default): judge 8.2 inside the normal-mode
     windows only and fail a status frame outside them; False is the rule
-    before d9f49ea6 (the port always normal)."""
+    before d9f49ea6 (the port always normal).
+    `boot_in_capture`: the caller KNOWS the capture contains the board's
+    boot (it reset the board with the witness already open), so the
+    power-up round must carry all four status frames. Without it a missing
+    round is recorded, not failed, because a capture may start after the
+    boot -- which also let a board that sent one of the four pass
+    (implementor's bench boot, 2026-10-13; spec 2.3 at 4f5168ae)."""
     if db is None:
         db, codes = load_state_names()
         names = set(codes.values())
@@ -300,6 +307,13 @@ def score(witness_rows, serial_rows, db=None, names=None, listen_only=True):
                     windows[-1][1] = r[1] + REVERT_S
                 mw.charger(r[1])
         c = mw.counts
+        if boot_in_capture and mw.boot_ids != set(STATUS_IDS):
+            missing = sorted(set(STATUS_IDS) - mw.boot_ids)
+            probs.append("2.3: the capture contains the boot, but the "
+                         "power-up round carried %d of the four status "
+                         "frames (missing %s)"
+                         % (len(mw.boot_ids),
+                            " ".join("0x%03X" % f for f in missing)))
         if c["outside"]:
             t, fid = mw.first_outside
             probs.append("2.3: %d status frame(s) while the vehicle port "

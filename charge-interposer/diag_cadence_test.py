@@ -219,6 +219,23 @@ def main():
     check(ok and "0 in the power-up round" in why,
           "no power-up round on the witness passes (the capture may start "
           "after it), recorded -> %s" % why[:200])
+    # boot_in_capture (2026-10-13, spec 2.3 at 4f5168ae): a capture known
+    # to contain the boot must show all four in the power-up round
+    ok, why = run(good, [], boot_in_capture=True)
+    check(ok, "boot in capture, all four in the power-up round passes -> %s"
+          % why[:120])
+    one = [r for r in good if not (r[2] in D.STATUS_IDS and r[1] < 9.5
+                                   and r[2] != 0x7F4)]
+    ok, why = run(one, [], boot_in_capture=True)
+    check(not ok and "carried 1 of the four" in why and "0x7F5" in why,
+          "boot in capture, ONE of four (0x7F4 only, the bench boot of "
+          "6b54c67d) fails -> %s" % why[:200])
+    ok, why = run(one, [])
+    check(ok, "...and the same capture NOT known to contain the boot "
+          "passes, as before (recorded)")
+    ok, why = run(in_two(base, boot=False), [], boot_in_capture=True)
+    check(not ok and "carried 0 of the four" in why,
+          "boot in capture, no power-up round at all fails -> %s" % why[:160])
     # the cadence is judged inside a window only: the jump from the last
     # burst of window 1 to the first of window 2 is not a gap
     ok, why = run(good, [])
