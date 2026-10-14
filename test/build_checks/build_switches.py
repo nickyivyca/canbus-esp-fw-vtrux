@@ -140,8 +140,8 @@ SWITCHES = {
     "DEBUG_LOGS_QUEUE_LEN": (NOT, "default value", "#ifndef default in debug_logs_config.h", None),
     "DEBUG_LOGS_UDP_DEST_IP": (NOT, "default value", "#ifndef default in debug_logs_config.h", None),
     "DEBUG_LOGS_UDP_PORT": (NOT, "default value", "#ifndef default in debug_logs_config.h", None),
-    "GIT_SHA": (NOT, "injected value",
-        "the commit, injected by the top-level CMakeLists.txt (add_definitions)", None),
+    # GIT_SHA left the list with e998385 ("the name enters the build once"):
+    # it is no longer a compile define, and nothing tests it.
     "HARDWARE_VER": (SHIP, None,
         "the board, set by the top-level CMakeLists.txt (WICAN_V300 for the OBD); "
         "reviewer's ruling 2026-10-13", None),
@@ -180,6 +180,11 @@ SWITCHES = {
         "the stamp file path under the build directory, set in a function", None),
     "was": (NOT, "module internal",
         "the stamp's previous contents, set in a function", None),
+    "len": (NOT, "module internal",
+        "the name's length (string(LENGTH)), refused over 31, in a function", None),
+    "PROJECT_VER": (NOT, "guard",
+        "if(DEFINED PROJECT_VER) refuses any value set from outside, so no setting "
+        "of it changes the image; reviewer's ruling 2026-10-13", None),
     "MIN": (NOT, "library macro", "#ifndef fallback definition in ftp.h", None),
     "MAX": (NOT, "library macro", "#ifndef fallback definition in ftp.h", None),
     "ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED": (NOT, "library macro",
