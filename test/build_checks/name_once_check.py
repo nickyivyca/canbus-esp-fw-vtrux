@@ -265,7 +265,7 @@ def main():
         ok, detail = judge_overlong(rc, images)
         tail = open(log, encoding="utf-8", errors="replace").read()
         tail = tail[tail.rfind("===== "):]
-        note("overlong", ok, detail, rc=rc, seconds=round(secs, 1), name=OVERLONG, chars=len(OVERLONG),
+        note("overlong", ok, detail, rc=rc, seconds=round(secs, 1), tag=OVERLONG, chars=len(OVERLONG),
              images=[os.path.basename(p) for p in images], error=error_block(tail)[:600])
 
         # module fixture
@@ -290,7 +290,7 @@ def main():
         tail = open(log, encoding="utf-8", errors="replace").read()
         tail = tail[tail.rfind("===== "):]
         ok, detail = judge_module(rc, images, tail)
-        note("module", ok, detail, rc=rc, seconds=round(secs, 1), name=OVERLONG, chars=len(OVERLONG),
+        note("module", ok, detail, rc=rc, seconds=round(secs, 1), tag=OVERLONG, chars=len(OVERLONG),
              images=[os.path.basename(p) for p in images],
              version=desc[0] if desc else None, error=error_block(tail)[:600])
     finally:
