@@ -2230,7 +2230,7 @@ static void case_status_page_fits_the_handler_buffer(void)
      * and the longest comes from the table itself. `false` is one byte longer
      * than `true`, so every boolean reading true can still grow by one.
      */
-    bool found[6];
+    bool found[7];
     int text = 0;
     text += text_field_slack(page, "abort_reason",
                              longest_from(name_abort), &found[0]);
@@ -2251,7 +2251,14 @@ static void case_status_page_fits_the_handler_buffer(void)
                              longest_from(name_drvstate), &found[4]);
     text += text_field_slack(page, "reset_reason",
                              GI_RESET_REASON_LEN - 1, &found[5]);
-    for (int k = 0; k < 6; k++)
+    /*
+     * elf_sha256 is always 64 characters (spec 11, "The page names the binary
+     * it runs"), so its term is 0 while the mock renders it whole. It is here
+     * so that a page missing the field fails `found`, and so that a page
+     * rendering it short is still bounded at its full width.
+     */
+    text += text_field_slack(page, "elf_sha256", 64, &found[6]);
+    for (int k = 0; k < 7; k++)
     {
         CHECK(found[k],
               "case 26 could not find text field %d on the page, so its term "
@@ -4639,6 +4646,36 @@ static void case_late_probe_is_not_timed(void)
     case_end();
 }
 
+/*
+ * CASE 46 -- spec 11, "The page names the binary it runs" (user, 2026-10-14).
+ *
+ * The bench (12.4, "the page names the binary") compares the page with the
+ * flashed image file, which proves the value is the right one on hardware. What
+ * it cannot see is a formatting slip that both of its readers would share, so
+ * this holds the expected text as a literal: all 32 bytes, lowercase, two
+ * characters per byte, in descriptor order. The mock's bytes
+ * (mock/esp_app_desc.h) include a leading zero and nibbles above 9 for that.
+ */
+static void case_page_names_the_binary(void)
+{
+    case_begin("case 46: the page names the binary it runs (spec 11)");
+    setup();
+    go_live();
+    ft_run(20000);
+
+    CHECK(json_has("\"elf_sha256\":\""
+                   "000ff0ff0123456789abcdef1032547698badcfe"
+                   "a55a3cc37ee708809dd9c00c\""),
+          "the page's elf_sha256 is not the descriptor's 32 bytes as 64 "
+          "lowercase hex characters in order. The bench compares it with the "
+          "image file's descriptor, so a short, reordered or upper-case value "
+          "would fail there as a wrong binary rather than as a formatting "
+          "fault");
+
+    teardown();
+    case_end();
+}
+
 int main(int argc, char **argv)
 {
     /*
@@ -4710,6 +4747,7 @@ int main(int argc, char **argv)
     case_would_tx_is_per_arm();
     case_late_probe_is_not_timed();
     case_errors_before_live_still_trip();
+    case_page_names_the_binary();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
     return g_fail ? 1 : 0;

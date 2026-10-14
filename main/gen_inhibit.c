@@ -1630,6 +1630,42 @@ static int gi_clamp(int n, int buflen)
     return n;
 }
 
+/*
+ * SPEC 11, "THE PAGE NAMES THE BINARY IT RUNS" (user, 2026-10-14): the ELF
+ * SHA-256 from the running image's app descriptor, all 32 bytes as 64 lowercase
+ * hex characters. esptool writes it into the descriptor when it makes the image,
+ * so the image file carries the same value and the two can be compared.
+ *
+ * NOT esp_app_get_elf_sha256(). It copies app_elf_sha256_str, which holds only
+ * CONFIG_APP_RETRIEVE_LEN_ELF_SHA characters (16 in this sdkconfig): a prefix
+ * kept for the panic handler, not the hash. The spec asks for the hash.
+ *
+ * Read through a volatile pointer, as ESP-IDF's own conversion does
+ * (esp_app_format/esp_app_desc.c, esp_app_format_init_elf_sha256()): the
+ * descriptor is a const object whose initializer is a placeholder that esptool
+ * overwrites in the image, so a compiler that can see the initializer may fold
+ * the read to the placeholder. This file cannot see it today; the guard costs
+ * 32 loads.
+ *
+ * Outside the page's snapshot, and it need not be in it: it is a property of
+ * the image, the same at every reading, not a reading.
+ */
+#define GI_ELF_SHA256_HEX_LEN 64
+
+static void elf_sha256_hex(char out[GI_ELF_SHA256_HEX_LEN + 1])
+{
+    static const char hex[] = "0123456789abcdef";
+    const volatile uint8_t *b = esp_app_get_description()->app_elf_sha256;
+
+    for (int i = 0; i < GI_ELF_SHA256_HEX_LEN / 2; i++)
+    {
+        const uint8_t v = b[i];
+        out[2 * i]     = hex[v >> 4];
+        out[2 * i + 1] = hex[v & 0x0F];
+    }
+    out[GI_ELF_SHA256_HEX_LEN] = '\0';
+}
+
 static int hist_json(const gi_hist_t *h, const char *name, char *buf, int buflen)
 {
     int n = snprintf(buf, buflen,
@@ -1984,17 +2020,20 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
      */
     char reason[GI_RESET_REASON_LEN];
     reset_reason_name(s_reset_reason, reason, (int)sizeof(reason));
+    char elf_sha[GI_ELF_SHA256_HEX_LEN + 1];
+    elf_sha256_hex(elf_sha);
 
     n = gi_clamp(n + snprintf(buf + n, buflen - n,
                      "\"skips_withdrawn\":%lu,\"skips_late\":%lu,"
                      "\"snapshot_us\":%lu,\"snapshot_us_max\":%lu,"
-                     "\"uptime_ms\":%llu,\"reset_reason\":\"%s\",",
+                     "\"uptime_ms\":%llu,\"reset_reason\":\"%s\","
+                     "\"elf_sha256\":\"%s\",",
                      (unsigned long)st->skips_withdrawn,
                      (unsigned long)st->skips_late,
                      (unsigned long)s_snap_us,
                      (unsigned long)s_snap_us_max,
                      (unsigned long long)(t_now / 1000),
-                     reason), buflen);
+                     reason, elf_sha), buflen);
 
     /*
      * SPEC 11, "TRIP 6's ERROR HISTORY IS REPORTED" (user, 2026-10-12). From
