@@ -106,6 +106,14 @@ def objects(build_dir):
     return out
 
 
+def lines_with_name(entries, name):
+    """How many compile commands pass the name as a quoted value (-DX=\\"<name>\\").
+    Recorded, not judged. A bare substring would also match any path that
+    contains the sha -- the clone's own directory does -- and count every line."""
+    tok = re.compile(r'[\\"=]' + re.escape(name) + r'\\?"')
+    return sum(1 for e in entries if tok.search(e.get("command", "")))
+
+
 def mtimes(paths):
     out = {}
     for p in paths:
@@ -235,8 +243,8 @@ def main():
         ok, detail = SN.judge(rc, images, desc, c0, False)
         name_part = SN.name_version(os.path.basename(images[0])) if len(images) == 1 else None
         objs = objects(build_dir)
-        on_lines = sum(1 for e in json.load(open(os.path.join(build_dir, "compile_commands.json")))
-                       if desc and desc[0] in e.get("command", "")) if objs else None
+        on_lines = (lines_with_name(json.load(open(os.path.join(build_dir, "compile_commands.json"))), desc[0])
+                    if objs and desc else None)
         note("clean", ok, detail, rc=rc, seconds=round(secs, 1), images=[os.path.basename(p) for p in images],
              version=desc[0] if desc else None, project_name=desc[1] if desc else None,
              fnv1a32_version="0x%08X" % fnv1a32(desc[0]) if desc else None,

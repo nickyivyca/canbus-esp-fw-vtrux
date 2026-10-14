@@ -83,6 +83,12 @@ def main():
         ("product: a main/ object is the product's, ESP-IDF's descriptor is not",
          prod == [o_main] and prod_none == []),
         ("product: a components/ object is the product's too", prod_comp == [o_comp]),
+        ("name on compile lines: a quoted define counts; a path containing the sha does not",
+         N.lines_with_name([
+             {"command": 'gcc -DGIT_SHA=\\"d74777d\\" -c /x/wican-nameonce-d74777d-1/main/a.c'},
+             {"command": 'gcc -DPROJECT_VER="d74777d" -c b.c'},
+             {"command": 'gcc -I/x/wican-nameonce-d74777d-1/build/config -c c.c'},
+             {"command": 'gcc -DGIT_SHA=\\"d74777d-dirty\\" -c d.c'}], "d74777d") == 2),
         ("under: main/ but not a sibling that starts with 'main'",
          N.under(os.path.join("t", "main", "a.c"), [os.path.join("t", "main")])
          and not N.under(os.path.join("t", "mainx", "a.c"), [os.path.join("t", "main")])),
