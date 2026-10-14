@@ -45,7 +45,7 @@ def check(cond, name):
         failures += 1
 
 
-def _diag(fw7f4=7, sch7f4=4, fw7f7=(7, 7, 7), sch7f7=4, state=0,
+def _diag(fw7f4=8, sch7f4=4, fw7f7=(8, 8, 8), sch7f7=4, state=0,
           flags=None, b5=None):
     """A minimal decoded diag stream in parse_diag_frames()'s shape.
     B4 bit 5 and B5 follow schema 4 for `state` unless given: bit 5 set and
@@ -776,8 +776,8 @@ def main():
     check(R.BURST_FRAMES == 20 and R.BURST_MS == 1000,
           "a burst is 20 frames x 50 ms (got %d, %d ms)"
           % (R.BURST_FRAMES, R.BURST_MS))
-    check(R.SPEC_FW_VER == 7 and R.SPEC_SCHEMA_VER == 4,
-          "firmware 7, schema 4 -- the schema doc c42bc96535aed3b2 (got "
+    check(R.SPEC_FW_VER == 8 and R.SPEC_SCHEMA_VER == 4,
+          "firmware 8, schema 4 -- the schema doc b21629767b5c7fd5 (got "
           "%d, %d)" % (R.SPEC_FW_VER, R.SPEC_SCHEMA_VER))
     check(R.DIAG_STATES.get(6) == "HOLD",
           "0x7F4 B2 6 decodes as HOLD (schema 4)")
@@ -788,16 +788,16 @@ def main():
 
     print("\ndiag versions in every frame (reading 15)")
     ok, why = R._diag_frames_ok(_diag(), "PASSTHROUGH")
-    check(ok, "a clean fw 7 / schema 4 stream passes -> %s" % why)
-    ok, why = R._diag_frames_ok(_diag(fw7f7=(7, 6, 7)), "PASSTHROUGH")
+    check(ok, "a clean fw 8 / schema 4 stream passes -> %s" % why)
+    ok, why = R._diag_frames_ok(_diag(fw7f7=(8, 7, 8)), "PASSTHROUGH")
     check(not ok and "0x7F7" in why,
-          "a MIDDLE 0x7F7 reporting fw 6 (E5's) fails (rev 1 read only the last) "
-          "-> %s" % why)
+          "a MIDDLE 0x7F7 reporting fw 7 (E6a's) fails (rev 1 read only the "
+          "last) -> %s" % why)
     ok, why = R._diag_frames_ok(_diag(sch7f4=3), "PASSTHROUGH")
     check(not ok and "schema" in why, "0x7F4 schema 3 fails -> %s" % why)
-    ok, why = R._diag_frames_ok(_diag(fw7f4=6), "PASSTHROUGH")
+    ok, why = R._diag_frames_ok(_diag(fw7f4=7), "PASSTHROUGH")
     check(not ok and "firmware" in why,
-          "0x7F4 firmware 6 (E5's) fails -> %s" % why)
+          "0x7F4 firmware 7 (E6a's) fails -> %s" % why)
     ok, why = R._diag_frames_ok(_diag(state=2), "PASSTHROUGH")
     check(not ok and "OVERRIDE" in why,
           "a last 0x7F4 disagreeing with the final state fails -> %s" % why)

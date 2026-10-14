@@ -2024,11 +2024,12 @@ def _released_into_hold(chg_text, intp_text):
 BURST_FRAMES = 20
 BURST_MS = BURST_FRAMES * 50
 
-# Spec 8.2 and the schema doc's version table (c42bc96535aed3b2): firmware
-# version 7 is the spec of 2026-10-10 -- the 6.10 A floor, the release on
-# the leader, the hold's cell limits (6 was spec 3's arming on the
-# charger's latest status) -- schema 4. Literals for the same reason.
-SPEC_FW_VER = 7
+# Spec 8.2 and the schema doc's version table (b21629767b5c7fd5): firmware
+# version 8 is the spec of 2026-10-13 (5.2) -- the hold steps at most once
+# per 0.28 s (7 was the spec of 2026-10-10: the 6.10 A floor, the release
+# on the leader, the hold's cell limits) -- schema 4. Literals for the same
+# reason.
+SPEC_FW_VER = 8
 SPEC_SCHEMA_VER = 4
 
 # A timestamped REPEAT, and the vehicle-side markers of the VCU changing
