@@ -331,7 +331,8 @@ typedef struct
                                  * together when a page is added */
     uint32_t max_rx_errors;     /* consecutive hard RX errors -> self-disarm */
     uint16_t fw_version;        /* reported in diag */
-    uint32_t git_hash;          /* reported in diag; FNV-1a of GIT_SHA */
+    uint32_t git_hash;          /* reported in diag; FNV-1a of GIT_SHA
+                                 * (esp_app_desc.version on the device) */
     bool     autoarm_configured;/* diag flags bit3 -- build auto-arms */
 } gi_config_t;
 

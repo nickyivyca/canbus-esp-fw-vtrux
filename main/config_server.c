@@ -67,6 +67,7 @@
 #include "wifi_network.h"
 #include "esp_vfs.h"
 #include "esp_ota_ops.h"
+#include "esp_app_desc.h"
 #include "ota_health.h"
 #include "gen_inhibit.h"
 #if GI_INSTRUMENT_TXABORT
@@ -896,7 +897,8 @@ static esp_err_t check_status_handler(httpd_req_t *req)
 	cJSON_AddStringToObject(root, "port", device_config.port);
 	cJSON_AddStringToObject(root, "fw_version", fver);
 	cJSON_AddStringToObject(root, "hw_version", hver);
-	cJSON_AddStringToObject(root, "git_version", GIT_SHA);
+	/* The build's name, from the app descriptor (spec 12.3 item 3). */
+	cJSON_AddStringToObject(root, "git_version", esp_app_get_description()->version);
 	cJSON_AddStringToObject(root, "protocol", device_config.protocol);
 	cJSON_AddStringToObject(root, "sleep_status", device_config.sleep_status);
 	cJSON_AddStringToObject(root, "sleep_volt", device_config.sleep_volt);

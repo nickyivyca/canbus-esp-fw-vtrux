@@ -32,6 +32,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_system.h"      /* esp_reset_reason(), spec 11 */
+#include "esp_app_desc.h"    /* the build's name, spec 10 0x7F3 */
 #include "driver/twai.h"
 
 #include "can.h"
@@ -156,8 +157,17 @@ _Static_assert(GEN_INHIBIT_PROBE_ID == GI_PROBE_ID, "id drift");
 #ifndef DIAG_FW_VERSION
 #define DIAG_FW_VERSION              7
 #endif
-#ifndef GIT_SHA
-#define GIT_SHA "unknown"
+/*
+ * THE BUILD'S NAME IS esp_app_desc.version, read at runtime (spec 12.3 item 3,
+ * "The name enters the build once"): cmake/git_tree_name.cmake sets PROJECT_VER
+ * to the `git describe` it names the image from, and ESP-IDF embeds it. These
+ * two settings would put something else there.
+ */
+#if defined(CONFIG_APP_EXCLUDE_PROJECT_VER_VAR) && CONFIG_APP_EXCLUDE_PROJECT_VER_VAR
+#error "CONFIG_APP_EXCLUDE_PROJECT_VER_VAR empties esp_app_desc.version, which is the build's name (0x7F3 git_hash)"
+#endif
+#if defined(CONFIG_APP_PROJECT_VER_FROM_CONFIG) && CONFIG_APP_PROJECT_VER_FROM_CONFIG
+#error "CONFIG_APP_PROJECT_VER_FROM_CONFIG replaces the build's name in esp_app_desc.version (0x7F3 git_hash)"
 #endif
 
 /* Receive timeout: 200 ms rather than a full second only so a disarm is
@@ -2086,7 +2096,9 @@ void gen_inhibit_init(void)
     gi_config_t cfg;
     gi_config_defaults(&cfg);
     cfg.fw_version = DIAG_FW_VERSION;
-    cfg.git_hash   = fnv1a32(GIT_SHA);
+    /* Spec 10 0x7F3: FNV-1a of GIT_SHA, which is the descriptor's version --
+     * the same `git describe` string the -DGIT_SHA define carried before. */
+    cfg.git_hash   = fnv1a32(esp_app_get_description()->version);
     cfg.autoarm_configured = (GEN_INHIBIT_AUTOARM_MODE != GEN_INHIBIT_OFF);
 
     gi_init(&s_core, &cfg);

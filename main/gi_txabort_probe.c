@@ -99,6 +99,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_app_desc.h"
 #include "driver/twai.h"
 #include "hal/twai_ll.h"
 
@@ -1124,7 +1125,8 @@ static esp_err_t txab_handler(httpd_req_t *req)
         "\"arb_lost\":%lu,\"rx_missed\":%lu,\"rx_overrun\":%lu,"
         "\"tec\":%lu,\"rec\":%lu},"
         "\"trials\":[",
-        GIT_SHA, phase_s, gate_s, label, retry_s, TXAB_ID, TXAB_DLC,
+        esp_app_get_description()->version,
+        phase_s, gate_s, label, retry_s, TXAB_ID, TXAB_DLC,
         reps, d0, d1, step, steps, settle_ms,
         have_query ? "true" : "false",
         s_n, (long long)(esp_timer_get_time() - t_run0),

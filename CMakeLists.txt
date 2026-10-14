@@ -38,13 +38,17 @@ add_definitions(-DWICAN_PRO_STR="${WICAN_PRO_STR}")
 # edit is never compiled under the clean name of the commit before it. If git
 # cannot answer, the build fails. How, and why it runs before anything is
 # compiled: cmake/git_tree_name.cmake.
+#
+# THE NAME ENTERS THE BUILD ONCE (spec 12.3 item 3, same day, user): the call
+# also sets PROJECT_VER, which ESP-IDF embeds as esp_app_desc.version, and the
+# firmware reads the name from there at runtime. There is no -DGIT_SHA: as a
+# define on every compile line it recompiled the whole project on each name
+# change, and the name now changes on a tree's first edit and on its revert.
+# GIT_SHA below is only the dot-stripped form for the image name.
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/git_tree_name.cmake)
 git_tree_name(GIT_SHA)
 
-set(GIT_SHA1 "${GIT_SHA}")
 string(REPLACE "." "" GIT_SHA "${GIT_SHA}")
-
-add_definitions(-DGIT_SHA="${GIT_SHA1}")
 
 # Uncomment and use one of the following as needed
 # set(HARDWARE_VER ${WICAN_V210})

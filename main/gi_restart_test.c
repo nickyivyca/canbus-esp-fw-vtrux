@@ -43,10 +43,6 @@
 #include "gi_restart_quiesce.h"
 #include "gi_restart_test.h"
 
-#ifndef GIT_SHA
-#define GIT_SHA "unknown"
-#endif
-
 static const char *TAG = "gi_restart_test";
 
 #define CRASH_MS 300
@@ -183,7 +179,8 @@ static int page_json(char *b, size_t cap)
         "\"app_version\":\"%s\",\"ota_running\":\"%s\","
         "\"ota_running_addr\":\"0x%06lx\",\"ota_boot\":\"%s\","
         "\"reset_reason\":\"%s\",\"reset_reason_n\":%d,",
-        GIT_SHA, esp_app_get_description()->version, part_label(run),
+        esp_app_get_description()->version,
+        esp_app_get_description()->version, part_label(run),
         run != NULL ? (unsigned long)run->address : 0ul, part_label(boot),
         reset_name(why), (int)why);
 

@@ -36,6 +36,17 @@
 #     loads the regenerated build.ninja, and only then compiles, under the new
 #     name.
 #
+# THE NAME ENTERS THE BUILD ONCE (spec 12.3 item 3, "The name enters the build
+# once", added 2026-10-13, user). git_tree_name() also sets PROJECT_VER to the
+# same string, so ESP-IDF embeds it as esp_app_desc.version instead of running a
+# second `git describe` of its own, and firmware reads the name from there at
+# runtime (esp_app_get_description()->version). Nothing passes it on a compile
+# line, so a name change recompiles ESP-IDF's descriptor file and relinks, and
+# nothing else. ESP-IDF cuts PROJECT_VER to the version field's 31 characters
+# without a word (components/esp_app_format/CMakeLists.txt), and the firmware
+# would then report a name cut short, so a longer name fails configuring here
+# instead.
+#
 # IF THE NAME CANNOT BE WORKED OUT -- no git, not a repository -- the check
 # fails, and the build fails before anything is compiled. Configuring fails the
 # same way. If the reconfigure itself fails (a name over a project's length
@@ -50,7 +61,8 @@
 #   include(${CMAKE_CURRENT_LIST_DIR}/cmake/git_tree_name.cmake)
 #   git_tree_name(GIT_SHA)
 #
-# That is the only call. The check target is added by a deferred call at the
+# That is the only call. It sets <var> and PROJECT_VER, and PROJECT_VER must
+# not be set anywhere else. The check target is added by a deferred call at the
 # end of the top-level directory, i.e. after project(), so there is no second
 # call that could be left out. DESCRIBE <args...> replaces the default
 # `--tags --always --dirty`.
@@ -119,6 +131,12 @@ function(git_tree_name out_var)
         message(FATAL_ERROR "git_tree_name() is called more than once.")
     endif()
     set_property(GLOBAL PROPERTY _GIT_TREE_NAME_CALLED TRUE)
+    if(DEFINED PROJECT_VER)
+        message(FATAL_ERROR
+            "git_tree_name() sets PROJECT_VER, which is already set "
+            "('${PROJECT_VER}'). The embedded version must be the build's name "
+            "(spec 12.3 item 3), so set it nowhere else.")
+    endif()
 
     find_program(git NAMES git NO_CACHE)
     if(NOT git)
@@ -128,6 +146,16 @@ function(git_tree_name out_var)
     endif()
 
     _git_tree_name_describe(name "${git}" "${CMAKE_SOURCE_DIR}" ${GTN_DESCRIBE})
+
+    # esp_app_desc.version is 32 bytes, 31 characters and the NUL.
+    string(LENGTH "${name}" len)
+    if(len GREATER 31)
+        message(FATAL_ERROR
+            "git_tree_name: '${name}' is ${len} characters; "
+            "esp_app_desc.version holds 31 plus a NUL, and ESP-IDF would cut it "
+            "short without a word, so the image would report a name that is "
+            "not its own (spec 12.3 item 3).")
+    endif()
 
     # Rewritten only when it differs, so a reconfigure that finds the name
     # unchanged leaves the stamp as old as it was.
@@ -153,6 +181,7 @@ function(git_tree_name out_var)
 
     message(STATUS "git_tree_name: ${name}")
     set(${out_var} "${name}" PARENT_SCOPE)
+    set(PROJECT_VER "${name}" PARENT_SCOPE)
 endfunction()
 
 function(_git_tree_name_add_check git stamp args script)
