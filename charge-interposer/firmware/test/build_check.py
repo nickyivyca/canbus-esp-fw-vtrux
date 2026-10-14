@@ -983,6 +983,124 @@ def check_diagnostics_are_gated():
     return problems
 
 
+# Spec 9, Build check, C2b (b7dc12e3fa5c6852, user 2026-10-13): "the
+# witness build differs from the bench build only by the witness switch,
+# and the bench build from the flight build only by its serial-output
+# settings". Each link: (env, the env it is compared against, the
+# build_flags it adds, the build_unflags it adds, what the spec calls it).
+# Nothing may be removed, and every other setting must be equal.
+BUILD_LINKS = (
+    (WITNESS_ENV, BENCH_ENV, ("-DINTP_ORDER_WITNESS=1",), (),
+     "the witness switch"),
+    (TRUCK_ENV, BENCH_ENV, ("-DCORE_DEBUG_LEVEL=0", "-DINTP_NO_SERIAL=1"),
+     ("-DCORE_DEBUG_LEVEL=1",), "its serial-output settings"),
+)
+# Options that never reach the image: how the env was written (extends)
+# and what the monitor / upload / debugger / test runner do with it.
+# Everything else -- build_src_filter, flags, unflags, lib_deps, board,
+# board_build.*, platform, framework, extra_scripts -- is compared.
+NOT_IN_IMAGE = ("extends",)
+NOT_IN_IMAGE_PREFIXES = ("monitor_", "upload_", "debug_", "test_")
+FLAG_OPTIONS = ("build_flags", "build_unflags")
+
+
+def resolved_config(fw_dir=FW):
+    """{env: {option: value}} as PlatformIO resolves it.
+
+    PlatformIO's own resolution, not a parse of the ini text: `extends`
+    and ${section.option} are expanded by the tool that builds, so this
+    sees what the build sees. Returns (config, problem or None).
+    """
+    r = subprocess.run([sys.executable, "-m", "platformio", "project",
+                        "config", "-d", fw_dir, "--json-output"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        return None, ("platformio project config failed (exit %d): %s"
+                      % (r.returncode, (r.stdout + r.stderr).strip()[-400:]))
+    try:
+        raw = json.loads(r.stdout)
+    except ValueError as e:
+        return None, "platformio project config gave no JSON: %s" % e
+    cfg = {}
+    for sec, opts in raw:
+        if sec.startswith("env:"):
+            cfg[sec[4:]] = dict((k, v) for k, v in opts)
+    return cfg, None
+
+
+def _flag_tokens(value):
+    """A flags option as a list of tokens: PlatformIO hands back one
+    string per ini line, and a line may carry several flags."""
+    if value is None:
+        return []
+    items = value if isinstance(value, list) else [value]
+    out = []
+    for it in items:
+        out += str(it).split()
+    return out
+
+
+def _in_image(option):
+    return (option not in NOT_IN_IMAGE
+            and not option.startswith(NOT_IN_IMAGE_PREFIXES))
+
+
+def link_problems(cfg, env, base, add_flags, add_unflags, why):
+    """Problems with `env` = `base` + exactly these flags and unflags."""
+    import collections
+    for e in (env, base):
+        if e not in cfg:
+            return ["[env:%s] is not in the resolved config, so the link "
+                    "%s -> %s cannot be checked" % (e, base, env)]
+    a, b = cfg[base], cfg[env]
+    problems = []
+    for opt, want in (("build_flags", add_flags),
+                      ("build_unflags", add_unflags)):
+        ca = collections.Counter(_flag_tokens(a.get(opt)))
+        cb = collections.Counter(_flag_tokens(b.get(opt)))
+        added = sorted((cb - ca).elements())
+        removed = sorted((ca - cb).elements())
+        if added != sorted(want):
+            problems.append(
+                "[env:%s] %s adds %s to [env:%s]'s; spec 9 C2b allows only "
+                "%s (%s)" % (env, opt, added or "nothing", base,
+                             list(want) or "nothing", why))
+        if removed:
+            problems.append(
+                "[env:%s] %s drops %s that [env:%s] has; spec 9 C2b allows "
+                "only %s added (%s)" % (env, opt, removed, base,
+                                       list(want) or "nothing", why))
+    for opt in sorted(set(a) | set(b)):
+        if opt in FLAG_OPTIONS or not _in_image(opt):
+            continue
+        if a.get(opt) != b.get(opt):
+            problems.append(
+                "[env:%s] %s is %r, [env:%s] has %r; spec 9 C2b allows the "
+                "two to differ only by %s"
+                % (env, opt, b.get(opt), base, a.get(opt), why))
+    return problems
+
+
+def check_build_links(fw_dir=FW, cfg=None):
+    """Spec 9 C2b: witness = bench + the switch; truck = bench + serial."""
+    if cfg is None:
+        cfg, err = resolved_config(fw_dir)
+        if err:
+            return [err]
+    problems = []
+    for env, base, flags, unflags, why in BUILD_LINKS:
+        problems += link_problems(cfg, env, base, flags, unflags, why)
+    if not problems:
+        n = len([o for o in set(cfg[BENCH_ENV]) if _in_image(o)])
+        print("build links (spec 9 C2b): %s; %d settings compared per link"
+              % ("; ".join(
+                  "[env:%s] = [env:%s] + %s" % (
+                      env, base, " ".join(
+                          list(flags) + ["unflag " + u for u in unflags]))
+                  for env, base, flags, unflags, _ in BUILD_LINKS), n))
+    return problems
+
+
 def check_truck_is_silent():
     problems = []
     truck, bench = image(TRUCK_ENV), image(BENCH_ENV)
@@ -1048,6 +1166,10 @@ def main():
                     help="spec 8.2: in a clone of HEAD, build twice with "
                          "nothing edited (git_dirty false), then with "
                          "src/machine.cpp edited (git_dirty true)")
+    ap.add_argument("--links", action="store_true",
+                    help="spec 9 C2b: only check that the witness and truck "
+                         "environments differ from the bench one by their "
+                         "allowed settings alone (no build)")
     ap.add_argument("--envs", default="",
                     help="comma-separated subset of environments for "
                          "--reproducible (default: all)")
@@ -1062,6 +1184,16 @@ def main():
                 print("  - " + p_)
             return 1
         print("\nOK -- dirty flag (spec 8.2)")
+        return 0
+
+    if a.links:
+        probs = check_build_links()
+        if probs:
+            print("\nFAIL -- %d problem(s):" % len(probs))
+            for p_ in probs:
+                print("  - " + p_)
+            return 1
+        print("\nOK -- build links (spec 9 C2b)")
         return 0
 
     if a.diff_bins:
@@ -1123,6 +1255,7 @@ def main():
         problems += check_manifest(envs)
         problems += check_truck_is_silent()
         problems += check_diagnostics_are_gated()
+        problems += check_build_links()
 
     if problems:
         print("\nFAIL -- %d problem(s):" % len(problems))

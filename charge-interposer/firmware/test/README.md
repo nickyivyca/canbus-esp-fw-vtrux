@@ -8,6 +8,7 @@ behavioural tests of the core live one level up (`../../test_machine.py`,
 | file | what |
 |---|---|
 | `build_check.py` | Builds **every** PlatformIO environment and checks the truck image carries no serial output (spec 8.3). Review item C2b. Also compares every image's source digest **against the tree on disk** (added 2026-10-05) -- the earlier check only compared the six images with each other, which six images built from the same older tree pass unanimously |
+| `build_check_links_test.py` | Tests the harness (tester, 2026-10-13): `build_check.check_build_links` (spec 9 C2b, b7dc12e3) must fail on one extra flag on either side of each link (witness vs bench, truck vs bench), a dropped flag, an extra unflag, and any other setting that reaches the image; a monitor setting must pass. In memory on the resolved config, and end to end on edited copies of `platformio.ini` resolved by `platformio project config` |
 | `build_check_manifest_test.py` | Tests the harness (tester, 2026-10-07): `build_check.check_manifest` must find, for each image on disk, a manifest row with that name AND the ELF read from its bytes -- a row with the name but other bytes fails, as does an image with no application descriptor. Runs against a throwaway tree. |
 | `digest_recheck_check.py` | Proves the source-digest re-check can fail. Test 1: `source_digest()` moves on a one-byte change to any hashed input and returns when it is reverted, and does *not* move on a file that is not hashed. Test 2: starts a real build, edits a hashed input while it runs, and requires the build to **fail** with `SOURCE DIGEST MISMATCH`; then requires an untouched build to pass. It deletes the environment's `.bin`/`.elf` first, because the post-action is attached to the image target and a `pio run` with nothing to do never reaches it -- the first version of this test omitted that and reported the check broken when the probe had simply never run |
 | `host_diff/` | The Python/C++ differential: `machine.py` makes the golden, `machine.cpp` is replayed through `host_runner` and the two are diffed byte for byte |
@@ -38,6 +39,16 @@ Second, the truck image contains none of `main.cpp`'s serial format strings,
 decoration: "the string is not in the file" is also what a typo, a renamed
 message or a path pointing at the wrong image produces, and without the
 control those pass as success.
+
+Third (spec 9 C2b, b7dc12e3, user 2026-10-13), the build links. The witness
+environment is the bench one plus `-DINTP_ORDER_WITNESS=1`. The truck
+environment is the bench one plus `-DCORE_DEBUG_LEVEL=0 -DINTP_NO_SERIAL=1`,
+with `-DCORE_DEBUG_LEVEL=1` unflagged. Nothing else may differ. The check
+compares the settings PlatformIO resolves (`platformio project config
+--json-output`), so the tool that builds expands `extends` and `${...}`. It
+compares every option except `extends` and the monitor / upload / debug /
+test options, which never reach the image. `--links` runs this check alone,
+without a build.
 
 ## `host_unit/`
 
