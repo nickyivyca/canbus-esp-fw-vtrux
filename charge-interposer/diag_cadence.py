@@ -33,6 +33,16 @@ stated in every result.
 Passive (no ACK) on purpose: the witness must add nothing to the segment.
 The Kvaser (vehicle_sim's adapter) acknowledges.
 
+LISTEN-ONLY (spec 2.3 at d9f49ea6, user 2026-10-13). While the charger is
+silent the vehicle port is listen-only and sends nothing: no status frames
+except one round at power-up. It goes to normal on the first charger frame
+(extended, source address 0xC0), switching BEFORE it forwards that frame,
+and back after 2 s with no charger frame. So the witness, which also logs
+the charger frames the board forwards onto the vehicle segment, can tell
+the mode from the wire alone (ModeWindows): the 8.2 rules above are judged
+inside normal-mode windows only (reviewer, 2026-10-13), and a status frame
+outside them, other than the power-up round, is a failure of its own.
+
 Tester, 2026-10-13. diag_cadence_test.py drives each rule to fail.
 """
 
@@ -47,6 +57,58 @@ PERIOD_S = 1.0
 PERIOD_TOL = 0.10
 IMMEDIATE_S = 0.050
 MAP_WINDOW_S = 30.0
+# spec 2.3: "back to listen-only after 2 s with no charger frame". The
+# slack covers the board's own 10 ms tick and a burst already going out as
+# the 2 s ends; it is the harness's figure, not the spec's.
+REVERT_S = 2.0
+REVERT_SLACK_S = 0.1
+CHARGER_SA = 0xC0
+
+
+def is_charger_frame(fid):
+    """Spec 2.3's valid charger frame, by identifier: extended (above the
+    11-bit range) with source address 0xC0 in its low byte."""
+    return fid > 0x7FF and (fid & 0xFF) == CHARGER_SA
+
+
+class ModeWindows(object):
+    """The vehicle port's mode as a witness on the vehicle segment sees it,
+    fed in time order. charger(t) for each charger frame forwarded onto the
+    segment; status(t, fid) -> 'normal' (within REVERT_S + slack after a
+    charger frame), 'boot' (the first of each status ID before any charger
+    frame: the power-up round) or 'outside'. Streaming, so vehicle_sim can
+    run it on the live bus; `window` numbers the normal-mode windows."""
+
+    def __init__(self, revert_s=REVERT_S, slack_s=REVERT_SLACK_S):
+        self.revert_s, self.slack_s = revert_s, slack_s
+        self.last_c = None
+        self.window = 0
+        self.boot_ids = set()
+        self.counts = {"normal": 0, "boot": 0, "outside": 0}
+        self.first_outside = None
+
+    def charger(self, t):
+        if self.last_c is None or t - self.last_c > self.revert_s:
+            self.window += 1
+        if self.last_c is None or t > self.last_c:
+            self.last_c = t
+
+    def is_normal(self, t):
+        return (self.last_c is not None
+                and 0 <= t - self.last_c <= self.revert_s + self.slack_s)
+
+    def status(self, t, fid):
+        if self.is_normal(t):
+            kind = "normal"
+        elif self.last_c is None and fid not in self.boot_ids:
+            self.boot_ids.add(fid)
+            kind = "boot"
+        else:
+            kind = "outside"
+            if self.first_outside is None:
+                self.first_outside = (t, fid)
+        self.counts[kind] += 1
+        return kind
 
 # the board's 8.3 event line, "[t] STATE event a= b= c=", and
 # interposer_sim's "HH:MM:SS intp [STATE] event" (the same events)
@@ -73,7 +135,8 @@ def state_of(db, data):
 # --- capture ---------------------------------------------------------------
 
 class DiagWitness(object):
-    """A passive PCAN on the vehicle segment logging every 0x7F4-0x7F7:
+    """A passive PCAN on the vehicle segment logging every 0x7F4-0x7F7,
+    and every charger frame the board forwards (spec 2.3's mode):
     'host<TAB>device<TAB>id<TAB>hex' per line, host = time.perf_counter()
     at recv. Drained throughout."""
 
@@ -101,7 +164,10 @@ class DiagWitness(object):
                 self.error = str(exc)
                 return
             host = time.perf_counter()
-            if m is None or m.arbitration_id not in STATUS_IDS:
+            # the status frames, and the charger frames the board forwards:
+            # spec 2.3's mode is read from the latter (ModeWindows)
+            if m is None or not (m.arbitration_id in STATUS_IDS or (
+                    m.is_extended_id and is_charger_frame(m.arbitration_id))):
                 continue
             self.fh.write("%.6f\t%.6f\t%03X\t%s\n" % (
                 host, m.timestamp, m.arbitration_id, bytes(m.data).hex()))
@@ -204,30 +270,72 @@ def state_changes(serial_rows, names):
     return out
 
 
-def score(witness_rows, serial_rows, db=None, names=None):
-    """-> (ok, why). `db` decodes 0x7F4's state; tests pass a stand-in."""
+def score(witness_rows, serial_rows, db=None, names=None, listen_only=True):
+    """-> (ok, why). `db` decodes 0x7F4's state; tests pass a stand-in.
+    `listen_only` (spec 2.3, default): judge 8.2 inside the normal-mode
+    windows only and fail a status frame outside them; False is the rule
+    before d9f49ea6 (the port always normal)."""
     if db is None:
         db, codes = load_state_names()
         names = set(codes.values())
     probs, notes = [], []
-    rows = sorted(witness_rows, key=lambda r: r[1])
+    every = sorted(witness_rows, key=lambda r: r[1])
+    rows = [r for r in every if r[2] in STATUS_IDS]
     if not rows:
         return (False, "8.2: no status frame on the witness")
-    bursts, imm, stray = group(rows)
+    # spec 2.3: each status frame's window (None = judged as one span)
+    win_of = {}
+    windows = []                       # [(first device t, last + REVERT_S)]
+    if listen_only:
+        mw = ModeWindows()
+        for r in every:
+            if r[2] in STATUS_IDS:
+                kind = mw.status(r[1], r[2])
+                if kind == "normal":
+                    win_of[id(r)] = mw.window
+            elif is_charger_frame(r[2]):
+                if mw.last_c is None or r[1] - mw.last_c > mw.revert_s:
+                    windows.append([r[1], r[1] + REVERT_S])
+                else:
+                    windows[-1][1] = r[1] + REVERT_S
+                mw.charger(r[1])
+        c = mw.counts
+        if c["outside"]:
+            t, fid = mw.first_outside
+            probs.append("2.3: %d status frame(s) while the vehicle port "
+                         "should be listen-only (more than %.1f s after the "
+                         "last charger frame, or beyond the one power-up "
+                         "round), first 0x%03X at device t=%.3f s"
+                         % (c["outside"], REVERT_S, fid, t))
+        notes.append("2.3: %d normal-mode window(s); %d status frames in "
+                     "them, %d in the power-up round, %d outside"
+                     % (len(windows), c["normal"], c["boot"], c["outside"]))
+        judged = [r for r in rows if id(r) in win_of]
+    else:
+        judged = rows
+    spans = {}
+    for r in judged:
+        spans.setdefault(win_of.get(id(r)), []).append(r)
+    bursts, imm, stray = [], [], []
+    bad_gaps, gaps_all = [], []
+    for _w, span in sorted(spans.items(), key=lambda kv: kv[1][0][1]):
+        b, i_, s_ = group(span)
+        bursts += b
+        imm += i_
+        stray += s_
+        # the cadence inside one window only: a window starts afresh
+        for a, bb in zip(b, b[1:]):
+            ta = {r[2]: r[1] for r in a}
+            tb = {r[2]: r[1] for r in bb}
+            for fid in STATUS_IDS:
+                g = tb[fid] - ta[fid]
+                gaps_all.append(g)
+                if abs(g - PERIOD_S) > PERIOD_TOL * PERIOD_S + 1e-9:
+                    bad_gaps.append((fid, ta[fid], g))
     if stray:
         probs.append("%d frame(s) outside a complete burst of four, first "
                      "0x%03X at device t=%.3f s" % (len(stray), stray[0][2],
                                                     stray[0][1]))
-    bad_gaps = []
-    gaps_all = []
-    for a, b in zip(bursts, bursts[1:]):
-        ta = {r[2]: r[1] for r in a}
-        tb = {r[2]: r[1] for r in b}
-        for fid in STATUS_IDS:
-            g = tb[fid] - ta[fid]
-            gaps_all.append(g)
-            if abs(g - PERIOD_S) > PERIOD_TOL * PERIOD_S + 1e-9:
-                bad_gaps.append((fid, ta[fid], g))
     if bad_gaps:
         probs.append("%d status-frame gap(s) outside %.1f s +/- %.0f %%, "
                      "first 0x%03X %.3f s after its last at device t=%.3f s"
@@ -242,9 +350,17 @@ def score(witness_rows, serial_rows, db=None, names=None):
                         spreads[len(spreads) // 2], spreads[-1]))
     to_host = host_map(rows)
     imm_host = [(to_host(r[1]), r) for r in imm]
-    every7f4 = [(to_host(r[1]), r) for r in rows if r[2] == 0x7F4]
+    every7f4 = [(to_host(r[1]), r) for r in judged if r[2] == 0x7F4]
+    host_windows = [(to_host(a), to_host(b)) for a, b in windows]
+
+    def in_normal(h):
+        return (not listen_only) or any(
+            a <= h <= b + REVERT_SLACK_S for a, b in host_windows)
+    changes = [c_ for c_ in state_changes(serial_rows, names)
+               if in_normal(c_[0])]
+    n_listen = len(state_changes(serial_rows, names)) - len(changes)
     late = []
-    for h, old, new, line in state_changes(serial_rows, names):
+    for h, old, new, line in changes:
         near = [(abs(th - h), th - h, state_of(db, r[3]))
                 for th, r in imm_host if abs(th - h) <= IMMEDIATE_S + 1e-9]
         good = [x for x in near if x[2] == new]
@@ -254,7 +370,7 @@ def score(witness_rows, serial_rows, db=None, names=None):
                        for th, r in every7f4 if state_of(db, r[3]) == new),
                       default=None)
         late.append((h, old, new, near, nearest))
-    n_chg = len(state_changes(serial_rows, names))
+    n_chg = len(changes)
     if late:
         h, old, new, near, nearest = late[0]
         probs.append("%d of %d state change(s) without a 0x7F4 carrying the "
@@ -271,6 +387,9 @@ def score(witness_rows, serial_rows, db=None, names=None):
                      "state within %.0f ms (host clock; the serial line's "
                      "USB latency is in the figure)" % (n_chg,
                                                         IMMEDIATE_S * 1000))
+    if listen_only and n_listen:
+        notes.append("%d state change(s) in listen-only, not judged (no "
+                     "frame may go out then)" % n_listen)
     if probs:
         return (False, "8.2: " + "; ".join(probs))
     return (True, "8.2: " + "; ".join(notes))

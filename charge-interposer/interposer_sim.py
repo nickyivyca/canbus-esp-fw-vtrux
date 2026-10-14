@@ -30,6 +30,53 @@ log = logging.getLogger("intp")
 DRAIN_LIMIT = 512       # frames retired per port per loop pass
 
 
+class VehiclePort(object):
+    """Spec 2.3 (d9f49ea6, user 2026-10-13): the vehicle port listens only
+    while the charger is silent. Board I/O, not core logic -- the board
+    does it in its port layer -- so it lives here with the status frames,
+    which this process also sends on the board's behalf.
+
+    Listen-only from power-up; normal on the first valid charger frame, an
+    extended frame with source address 0xC0 received on the charger port
+    (anything else on that segment does not count), switching BEFORE that
+    frame is forwarded; back to listen-only after 2 s with no charger
+    frame. In listen-only nothing goes onto the vehicle segment: a frame
+    toward it is dropped and counted (`dropped`), which a correct core
+    should never ask for while the charger is silent."""
+
+    REVERT_MS = 2000
+
+    def __init__(self):
+        self.normal = False
+        self.last_c = None
+        self.to_normal = 0
+        self.to_listen = 0
+        self.dropped = 0
+
+    @staticmethod
+    def valid_charger_frame(arb, ext):
+        return bool(ext) and (arb & 0xFF) == 0xC0
+
+    def on_charger_frame(self, arb, ext, now_ms):
+        """-> True if this frame switched the port to normal."""
+        if not self.valid_charger_frame(arb, ext):
+            return False
+        self.last_c = now_ms
+        if self.normal:
+            return False
+        self.normal = True
+        self.to_normal += 1
+        return True
+
+    def tick(self, now_ms):
+        """-> True if the port fell back to listen-only on this tick."""
+        if self.normal and now_ms - self.last_c > self.REVERT_MS:
+            self.normal = False
+            self.to_listen += 1
+            return True
+        return False
+
+
 def main():
     busmod.install_break_handler()
     ap = argparse.ArgumentParser(description=__doc__,
@@ -100,6 +147,10 @@ def main():
     echo_c = busmod.EchoSuppressor() if virtual else None
 
     core = M.InterposerCore(cfg, now_ms=0)
+    # spec 2.3: listen-only from power-up, after one round of status frames
+    port = VehiclePort()
+    boot_round = [not args.bypass]      # still to send
+    sending_boot = [False]
     t0 = time.time()
     seen_events = 0
 
@@ -146,6 +197,12 @@ def main():
             if echo_c:
                 echo_c.sent(msg)
         else:
+            # spec 2.3: nothing onto the vehicle segment in listen-only,
+            # bar the power-up round (bypass is the plain-wire control and
+            # is not gated)
+            if not (args.bypass or port.normal or sending_boot[0]):
+                port.dropped += 1
+                return
             veh.send(msg)
             if echo_v:
                 echo_v.sent(msg)
@@ -221,6 +278,13 @@ def main():
                              msg.is_extended_id, bytes(msg.data))
                     else:
                         rec_frame("C", msg, now_ms)
+                        # switch FIRST, then forward that frame (2.3)
+                        if port.on_charger_frame(msg.arbitration_id,
+                                                 msg.is_extended_id, now_ms):
+                            log.info("VPORT normal: charger frame 0x%X at sim "
+                                     "t=%.3fs (core state %s)",
+                                     msg.arbitration_id, now_ms / 1000.0,
+                                     M.STATE_NAMES[core.state])
                         for out in core.on_charger_frame(
                                 msg.arbitration_id, msg.is_extended_id,
                                 bytes(msg.data), now_ms):
@@ -253,6 +317,11 @@ def main():
                 for out in core.tick(now_ms):
                     emit(*out)
 
+            if not args.bypass and port.tick(now_ms):
+                log.info("VPORT listen-only: no charger frame for %d ms at "
+                         "sim t=%.3fs (core state %s)", now_ms - port.last_c,
+                         now_ms / 1000.0, M.STATE_NAMES[core.state])
+
             if not args.bypass:
                 while seen_events < len(core.events):
                     t_ms, state, text = core.events[seen_events]
@@ -270,6 +339,8 @@ def main():
                 # board, so it follows the board.
                 periodic = now_ms - last_diag_ms >= 1000
                 changed = core.state != last_diag_state
+                if boot_round[0]:
+                    periodic = True      # the power-up round: all four
                 if periodic or changed:
                     last_diag_state = core.state
                     ovf = min(255, saturated[0])
@@ -287,8 +358,19 @@ def main():
                         last_diag_ms = now_ms
                     else:
                         frames = frames[:1]      # 0x7F4 only
-                    for fid, data in frames:
-                        emit(M.TO_VEHICLE, fid, False, data)
+                    # spec 2.3: status frames only in normal mode, bar the
+                    # one power-up round; the serial diag line (8.3) runs
+                    # regardless
+                    if port.normal or boot_round[0]:
+                        sending_boot[0] = boot_round[0]
+                        for fid, data in frames:
+                            emit(M.TO_VEHICLE, fid, False, data)
+                        sending_boot[0] = False
+                        if boot_round[0]:
+                            boot_round[0] = False
+                            log.info("VPORT power-up round sent at sim "
+                                     "t=%.3fs; listen-only until a charger "
+                                     "frame (spec 2.3)", now_ms / 1000.0)
                     if periodic:
                         log.info(core.diag_line(now_ms, ovf, 0))
 
@@ -306,6 +388,10 @@ def main():
                      "modified/synth to report)",
                      M.STATE_NAMES[core.state], bypass_fwd[0], bypass_fwd[1])
         else:
+            log.info("vport: %d switch(es) to normal, %d back to listen-only, "
+                     "%d frame(s) toward the vehicle dropped in listen-only, "
+                     "ending %s (spec 2.3)", port.to_normal, port.to_listen,
+                     port.dropped, "normal" if port.normal else "listen-only")
             log.info("final state=%s  fwd v->c=%d c->v=%d modified=%d "
                      "synth=%d%s",
                      M.STATE_NAMES[core.state], core.stats["fwd_v2c"],

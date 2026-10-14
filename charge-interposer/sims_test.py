@@ -474,6 +474,42 @@ def high_cell_problems(fmt=None, outlier_pct=-5.0):
     return probs
 
 
+def vport_problems(port_cls=None):
+    """interposer_sim's spec 2.3 vehicle port (d9f49ea6, user 2026-10-13):
+    listen-only from power-up; normal on the first extended frame with SA
+    0xC0 from the charger port, and not on a standard frame or another SA;
+    still normal after a 1.9 s gap; listen-only after 2.1 s; normal again
+    on the next charger frame. And in interposer_sim the switch is made
+    BEFORE the frame is handed to the core to forward."""
+    import interposer_sim as IS
+    vp = (port_cls or IS.VehiclePort)()
+    probs = []
+    if vp.normal:
+        probs.append("normal at power-up")
+    for arb, ext, what in ((0x63B, False, "a standard 0x63B"),
+                           (0x18FFD4C1, True, "an extended frame with SA "
+                                              "0xC1"),
+                           (0x7C0, False, "a standard 0x7C0")):
+        if vp.on_charger_frame(arb, ext, 1000) or vp.normal:
+            probs.append("%s switched the port to normal" % what)
+    if not (vp.on_charger_frame(0x18FFD4C0, True, 2000) and vp.normal):
+        probs.append("the first 0x18FFD4C0 did not switch to normal")
+    if vp.tick(3900) or not vp.normal:
+        probs.append("listen-only after a 1.9 s gap")
+    if not vp.tick(4100) or vp.normal:
+        probs.append("still normal 2.1 s after the last charger frame")
+    if not (vp.on_charger_frame(0x18FFD4C0, True, 9000) and vp.normal):
+        probs.append("the next charger frame did not switch back to normal")
+    src = open(os.path.join(HERE, "interposer_sim.py"),
+               encoding="utf-8").read()
+    i_sw = src.find("port.on_charger_frame(")
+    i_fw = src.find("core.on_charger_frame(")
+    if not (0 < i_sw < i_fw):
+        probs.append("interposer_sim does not switch the port before the "
+                     "core forwards the charger frame")
+    return probs
+
+
 def help_problems():
     """Each sim's argument parser builds: `--help` exits 0. A broken help
     string (argparse formats it lazily) otherwise only shows when a
@@ -555,6 +591,35 @@ def main():
     check(bool(aux_problems(ReAnchors)),
           "can fail: a schedule that re-anchors on a later chg_max 0 A is "
           "caught")
+
+    for p in vport_problems():
+        check(False, "interposer_sim: " + p)
+    check(not vport_problems(), "interposer_sim: the spec 2.3 vehicle port "
+          "(listen-only from power-up, normal on an SA 0xC0 frame, back "
+          "after 2 s, switched before the forward)")
+    import interposer_sim as _IS
+
+    class AnyFrame(_IS.VehiclePort):
+        @staticmethod
+        def valid_charger_frame(arb, ext):
+            return True
+
+    class Revert1s(_IS.VehiclePort):
+        REVERT_MS = 1000
+
+    class NeverReverts(_IS.VehiclePort):
+        def tick(self, now_ms):
+            return False
+
+    class StartsNormal(_IS.VehiclePort):
+        def __init__(self):
+            _IS.VehiclePort.__init__(self)
+            self.normal = True
+    for cls, what in ((AnyFrame, "a port that switches on any frame"),
+                      (Revert1s, "a port that reverts after 1 s"),
+                      (NeverReverts, "a port that never reverts"),
+                      (StartsNormal, "a port normal from power-up")):
+        check(bool(vport_problems(cls)), "can fail: %s is caught" % what)
 
     for line in measured():
         print("  --  " + line)

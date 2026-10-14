@@ -700,6 +700,61 @@ def bypass_diag_cases():
           % why)
 
 
+def listen_only_diag_cases():
+    """Spec 2.3 (d9f49ea6, user 2026-10-13) in the diag check, as the
+    reviewer accepted it: the last 0x7F4 is judged against the core's state
+    when it was sent -- for a run that ends in listen-only, the state at the
+    last fall-back -- and a status frame the witness saw outside normal
+    mode fails."""
+    safe = _diag(state=5)
+    to_listen = ("10:00:00 intp VPORT normal: charger frame 0x18FFD4C0 at sim "
+                 "t=1.000s (core state PASSTHROUGH)\n"
+                 "10:30:00 intp VPORT listen-only: no charger frame for 2010 "
+                 "ms at sim t=1800.000s (core state SAFE)\n"
+                 "10:30:05 intp vport: 1 switch(es) to normal, 1 back to "
+                 "listen-only, 0 frame(s) toward the vehicle dropped in "
+                 "listen-only, ending listen-only (spec 2.3)\n")
+    wit0 = ("10:30:05 veh vport witness: 7200 status frame(s) in normal mode,"
+            " 4 in the power-up round, 0 outside (spec 2.3)\n")
+    ok, why = R._diag_frames_ok(safe, "PASSTHROUGH", intp=to_listen,
+                                veh=wit0)
+    check(ok and "when the port went listen-only" in why
+          and "0 outside" in why and "0 frame(s) toward the vehicle" in why,
+          "last 0x7F4 SAFE, the core SAFE at the fall-back, PASSTHROUGH at "
+          "the end: passes -> %s" % why)
+    ok, why = R._diag_frames_ok(safe, "PASSTHROUGH")
+    check(not ok and "at the end of the run" in why,
+          "...and fails judged against the final state (the rule before "
+          "d9f49ea6, no VPORT lines) -> %s" % why)
+    ok, why = R._diag_frames_ok(_diag(state=1), "PASSTHROUGH",
+                                intp=to_listen, veh=wit0)
+    check(not ok and "the core was SAFE when the port went listen-only"
+          in why,
+          "last 0x7F4 MONITOR with the core SAFE at the fall-back fails -> %s"
+          % why)
+    to_normal = to_listen + ("10:31:00 intp VPORT normal: charger frame "
+                             "0x18FFD4C0 at sim t=1860.000s (core state "
+                             "PASSTHROUGH)\n")
+    ok, why = R._diag_frames_ok(safe, "PASSTHROUGH", intp=to_normal,
+                                veh=wit0)
+    check(not ok and "at the end of the run" in why,
+          "a run that ends in normal mode is judged against its final state "
+          "-> %s" % why)
+    wit1 = ("10:30:05 veh vport witness: 7200 status frame(s) in normal mode,"
+            " 4 in the power-up round, 1 outside (spec 2.3); first outside "
+            "0x7F4 at t=1805.0\n")
+    ok, why = R._diag_frames_ok(safe, "PASSTHROUGH", intp=to_listen,
+                                veh=wit1)
+    check(not ok and "1 status frame(s) on the vehicle segment while the "
+          "port should be listen-only" in why and "1805.0" in why,
+          "ONE status frame outside normal mode fails -> %s" % why)
+    fake = R.Scenario("x", "", vehicle=[], interposer=[])
+    ok, why = R._diag_check(fake, safe, "PASSTHROUGH", intp=to_listen,
+                            veh=wit1)
+    check(not ok and "listen-only" in why,
+          "_diag_check passes both logs through -> %s" % why)
+
+
 def leader_release_cases():
     """Spec 5.1 / 9 (47c31278, user 2026-10-10): the release is on the
     leader (vmax >= 3585 mV); the high-cell scenarios also release before
@@ -764,6 +819,7 @@ def main():
 
     print("\nspec 9 (c383868a): a declared --bypass is exempt, nothing else")
     bypass_diag_cases()
+    listen_only_diag_cases()
 
     print("\nspec 5.1 / 9 (47c31278): the release on the leader, before "
           "SoC 100 on the high-cell scenarios")
