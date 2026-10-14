@@ -841,6 +841,14 @@ void InterposerCore::onChargerFrame(uint32_t id, bool ext, const uint8_t* d,
   // BEFORE ANYTHING IS EMITTED, which is the spec's "switch first, then
   // forward that frame": main.cpp applies vehicleListenOnly() and only then
   // dispatches this call's EmitList.
+  // AN RTR FRAME CANNOT REACH THIS TEST, which is why it does not mention
+  // one (reviewer, 2026-10-13: an extended remote frame with source address
+  // 0xC0 must NOT switch the mode, because the frame that switches it has
+  // to be forwarded and spec 2's B-8 exception does not forward RTR). Both
+  // drivers drop remote frames first -- port_twai.cpp:71 and
+  // port_mcp2515.cpp:310 -- so there is no rtr argument here to test, and
+  // adding one would change this interface and the trace format with it
+  // for a frame that cannot arrive.
   if (ext && (id & 0xFFu) == CHG_SA) {
     t_chg_frame_ = t_ms;
     have_t_chg_frame_ = true;

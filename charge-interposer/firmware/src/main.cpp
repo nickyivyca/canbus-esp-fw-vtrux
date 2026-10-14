@@ -589,19 +589,21 @@ void setup() {
   // core cannot know that a board has just booted; the mode after it is the
   // core's, and applyVehicleMode() reads it.
   //
-  // FOUR FRAMES WHEN THE BRIDGE IS UP, 0x7F4 ALONE WHEN IT IS NOT, which is
-  // not an inconsistency but the two rules the spec gives: 2.3 asks for "one
-  // round of the status frames of 8.2", while 8.2's B-7d row says a board
-  // whose controllers did not both start "still sends 0x7F4 on the vehicle
-  // side ... with the bridge reported failed" -- the other three carry
-  // observations and counters that mean nothing on a board that is not
-  // bridging.
+  // ALL FOUR FRAMES WHETHER OR NOT THE BRIDGE CAME UP (spec d8c9e87d058abd52,
+  // 8.2's B-7d row, user 2026-10-13): a board whose controllers did not both
+  // start "sends, if the vehicle-side controller is up, the power-up round of
+  // all four status frames (2.3) with the bridge reported failed, and then
+  // stays in listen-only". The older wording said 0x7F4 alone on a failed
+  // start, on the ground that the other three carry observations and counters
+  // that mean nothing from a board that is not bridging; the ruling takes the
+  // round as one indivisible thing instead, which also means a log needs no
+  // special case to read it.
   //
   // 2.3 records this timing as OPEN: at power-up a truck logger will
   // probably not be listening yet. It stays here until the user rules.
   if (vehicle_up) {
     last_diag_ms = millis();
-    sendDiag(last_diag_ms, !healthy);
+    sendDiag(last_diag_ms, false);   // false = all four, not 0x7F4 alone
     last_diag_state = core->state();
   }
   applyVehicleMode(millis());

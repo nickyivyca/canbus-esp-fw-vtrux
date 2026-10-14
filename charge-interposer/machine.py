@@ -1412,6 +1412,16 @@ class InterposerCore(object):
         # mode and only then dispatches what this call returns, so the
         # frame that caused the switch goes out on a port already in
         # normal mode.
+        # AN RTR FRAME CANNOT REACH THIS TEST, which is why the test does
+        # not mention one (reviewer, 2026-10-13: an extended remote frame
+        # with source address 0xC0 must NOT switch the mode, since the
+        # frame that switches it has to be forwarded and spec 2's B-8
+        # exception does not forward RTR). Both drivers drop remote frames
+        # before the core sees them -- port_twai.cpp's receive() and
+        # port_mcp2515.cpp's -- so the core has no rtr argument to test and
+        # adding one would change the interface and the trace format for a
+        # frame that cannot arrive. The tester's L2 rtr arm is where that
+        # is held.
         if ext and (arb_id & 0xFF) == CHG_SA:
             self.t_chg_frame = t_ms
             if self.listen_only:
