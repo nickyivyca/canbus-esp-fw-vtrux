@@ -74,6 +74,19 @@ Worth listing because each produced a green or plausible result:
   `INTP_NO_SERIAL` was missing and the test did not build at all -- while
   building fine by hand, which is the confusing direction.
 
+### The diag report in listen-only (`diag-listen-only`)
+
+Spec 8.3 wants the 1 Hz diag line in listen-only too, where 2.3 forbids the
+status frames. The case reads `intpDiagReports()` (main.cpp's count of 1 Hz
+reports, declared in the test like `setup()`): 1 Hz over 10 s of listen-only
+with nothing on the vehicle side, over 5 s in normal mode alongside `0x7F5`,
+and over 5 s after falling back. One predicate judges every window, and its
+can-fails run on the same data: the frame-gated count (0 in listen-only, the
+6cacaf88 / 615821b behaviour) and a per-tick count are both rejected.
+**What it cannot show:** this build has `INTP_NO_SERIAL`, so it counts the
+report, not a printed line. That the line reaches a host is bench evidence
+only (evidence E10).
+
 ## Bus-off on the charger port
 
 Added 2026-10-04, completing spec 9.1's bus-off coverage -- the TWAI side

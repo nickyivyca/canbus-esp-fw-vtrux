@@ -52,6 +52,12 @@ void loop();
 // the bench checks that the serial line prints the same).
 uint8_t intpBootRoundSent();
 uint32_t intpBootRoundWaitUs();
+// Spec 8.3 (a9a8c36c3c52bbb9) and 2.3: the 1 Hz diag report, counted by
+// main.cpp whether or not a status frame goes with it (implementor,
+// a329f40). It counts the REPORT, not printed bytes: this build has
+// INTP_NO_SERIAL, so that the line reaches a host is bench evidence only
+// (E10, 59.1/min on the board clock).
+uint32_t intpDiagReports();
 
 using mcpfake::Mcp2515Fake;
 using twaifake::fake;
@@ -1929,6 +1935,59 @@ void caseListenOnlyRevert() {
   assertPathsExercised();
 }
 
+// Spec 8.3: "A diag line at the 1 Hz cadence" -- in listen-only too, where
+// 2.3 forbids the status frames ("its counters are read over USB serial on a
+// bring-up build"). Before a329f40 the report was skipped with the frame.
+// Judged by one predicate, so the can-fail below exercises the same code.
+bool reportsAtOneHz(uint32_t delta, uint32_t seconds, const char* tag) {
+  std::printf("  --  %s: %u report(s) in %u s\n", tag, delta, seconds);
+  return delta + 1 >= seconds && delta <= seconds + 1;
+}
+
+void caseDiagListenOnly() {
+  boot();
+  const uint32_t r0 = intpDiagReports();
+  const size_t v0 = vehSent().size();
+  vehicleOnly(10000);
+  check(fake().mode() == TWAI_MODE_LISTEN_ONLY,
+        "premise: the port is listen-only (charger silent since boot)");
+  check(reportsAtOneHz(intpDiagReports() - r0, 10, "listen-only, 10 s"),
+        "8.3 / 2.3: the diag report keeps its 1 Hz cadence in listen-only");
+  check(vehSince(v0) == 0 && countFrom(DIAG_STATUS, v0) == 0,
+        "2.3: ...and no status frame goes with it (nothing on the vehicle "
+        "side)");
+  // CAN-FAIL for the predicate, on this run's own data: a report gated with
+  // the frames (the 6cacaf88 / 615821b behaviour, E10) would have counted
+  // what the wire carried in listen-only, which is nothing.
+  check(!reportsAtOneHz(countFrom(DIAG_STATUS, v0), 10,
+                        "can-fail: a frame-gated count"),
+        "can-fail: the predicate rejects a frame-gated count of 0 in 10 s");
+  check(!reportsAtOneHz(100, 10, "can-fail: one report per 100 ms tick"),
+        "can-fail: ...and a count that ran at the loop's tick, not 1 Hz");
+  // the charger talks: normal mode, reports and 0x7F5 both at 1 Hz
+  const uint32_t r1 = intpDiagReports();
+  const size_t v1 = vehSent().size();
+  feed(50);
+  check(fake().mode() == TWAI_MODE_NORMAL, "normal while the charger talks");
+  const uint32_t obs = countFrom(DIAG_OBSERVED, v1);
+  check(reportsAtOneHz(intpDiagReports() - r1, 5, "normal, 5 s"),
+        "8.3: 1 Hz in normal mode too");
+  check(obs + 1 >= 5 && obs <= 6,
+        "8.2: ...with 0x7F5 going out about once a second alongside");
+  // silent again: back to listen-only, the report carries on
+  vehicleOnly(2100);
+  runBridge(20);
+  check(fake().mode() == TWAI_MODE_LISTEN_ONLY,
+        "2.3: listen-only 2.1 s after the last charger frame");
+  const uint32_t r2 = intpDiagReports();
+  const size_t v2 = vehSent().size();
+  vehicleOnly(5000);
+  check(reportsAtOneHz(intpDiagReports() - r2, 5, "fallen back, 5 s"),
+        "8.3: 1 Hz after falling back to listen-only");
+  check(vehSince(v2) == 0 && fake().listenOnlyTxAttempts() == 0,
+        "2.3: ...with nothing on the vehicle side and no transmit attempted");
+}
+
 struct Case {
   const char* name;
   void (*fn)();
@@ -1957,6 +2016,7 @@ const Case kCases[] = {
     {"round-count-can-fail", caseRoundCountCanFail},
     {"listen-only-switch", caseListenOnlySwitch},
     {"listen-only-revert", caseListenOnlyRevert},
+    {"diag-listen-only", caseDiagListenOnly},
 };
 
 }  // namespace
