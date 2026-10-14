@@ -110,8 +110,31 @@ class TwaiFake {
   // driver noticed the same number.
   uint32_t txDiscardedByRecovery() const { return tx_discarded_by_recovery_; }
 
+  // Spec 2.3's power-up count under a bus-off (reviewer, 2026-10-14). With
+  // airtime, go bus-off the moment the n-th frame since this call has
+  // reached the wire, so a test can strike INSIDE setup()'s 50 ms wait
+  // with round frames still queued. -1 is off.
+  void setBusOffAfterSent(int n) {
+    busoff_after_sent_ = n;
+    sent_at_arm_ = (uint32_t)sent_.size();
+  }
+  // Complete an initiated recovery on the host clock, after the header's
+  // "128 occurrences of the bus-free signal" (11 recessive bits each,
+  // 1408 bit times = 2816 us at 500 kbit/s), instead of waiting for the
+  // test to call completeRecovery(). Off by default.
+  void setAutoRecovery(bool yes) { auto_recovery_ = yes; }
+  // A CAN-FAIL knob, not a model of the hardware: status() reports an
+  // empty TX queue whatever is pending, so a count derived from
+  // msgs_to_tx reads frames as sent that never reached the wire.
+  void setMisreportQueueEmpty(bool yes) { misreport_queue_empty_ = yes; }
+
   // ---- inspection ------------------------------------------------------
-  twai_state_t state() const { return state_; }
+  // Advances the airtime model first, like every other read: a lazy
+  // state() read RUNNING after a setBusOffAfterSent strike was due.
+  twai_state_t state() {
+    advanceWire();
+    return state_;
+  }
   bool installed() const { return installed_; }
   const std::vector<Frame>& sent() {
     advanceWire();
@@ -200,6 +223,12 @@ class TwaiFake {
   bool auto_flush_ = true;
   uint32_t tx_discarded_by_recovery_ = 0;
   // airtime model (setWireTime)
+  int busoff_after_sent_ = -1;
+  uint32_t sent_at_arm_ = 0;
+  bool auto_recovery_ = false;
+  uint64_t recovery_done_us_ = 0;
+  bool misreport_queue_empty_ = false;
+  void tickRecovery();
   bool wire_time_ = false;
   uint64_t head_start_us_ = 0;     // when the head of tx_pending_ started
   uint32_t tx_discarded_by_stop_ = 0;

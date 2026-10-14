@@ -468,6 +468,41 @@ int main() {
     check(fake().sent().size() == s0 + 1,
           "fake, airtime: ...it completes one airtime after the ACKer "
           "arrives");
+    // bus-off after the first frame (setBusOffAfterSent), with auto recovery
+    twai_stop();
+    twai_start();
+    const size_t s1 = fake().sent().size();
+    const uint32_t disc0 = fake().txDiscardedByRecovery();
+    fake().setBusOffAfterSent(1);
+    fake().setAutoRecovery(true);
+    for (int i = 0; i < 4; i++) twai_transmit(&m, 0);
+    hostclock::advance(5 * us);
+    check(fake().state() == TWAI_STATE_BUS_OFF &&
+              fake().sent().size() == s1 + 1 && fake().pendingTx() == 3,
+          "fake: setBusOffAfterSent(1) -- bus-off once the first frame is on "
+          "the wire, the other three still queued");
+    twai_initiate_recovery();
+    check(fake().pendingTx() == 0 &&
+              fake().txDiscardedByRecovery() == disc0 + 3,
+          "fake: initiating recovery discards the three");
+    hostclock::advance(2815);
+    twai_get_status_info(&st);
+    check(st.state == TWAI_STATE_RECOVERING,
+          "fake, auto recovery: still RECOVERING 1 us before 1408 bit times");
+    hostclock::advance(1);
+    twai_get_status_info(&st);
+    check(st.state == TWAI_STATE_STOPPED,
+          "fake, auto recovery: STOPPED (not running) at 2816 us");
+    // the can-fail knob: msgs_to_tx reads 0 while frames are queued
+    twai_start();
+    fake().setAcknowledged(false);
+    twai_transmit(&m, 0);
+    fake().setMisreportQueueEmpty(true);
+    twai_get_status_info(&st);
+    check(st.msgs_to_tx == 0 && fake().pendingTx() == 1,
+          "fake, can-fail knob: msgs_to_tx misreports 0 with a frame queued");
+    fake().setMisreportQueueEmpty(false);
+    fake().setAcknowledged(true);
     // the same four, airtime OFF: the control, everything on the wire at once
     twai_stop();
     twai_driver_uninstall();

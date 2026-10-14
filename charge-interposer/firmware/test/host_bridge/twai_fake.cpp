@@ -25,6 +25,11 @@ void TwaiFake::hardReset() {
   auto_flush_ = true;
   tx_discarded_by_recovery_ = 0;
   wire_time_ = false;
+  busoff_after_sent_ = -1;
+  sent_at_arm_ = 0;
+  auto_recovery_ = false;
+  recovery_done_us_ = 0;
+  misreport_queue_empty_ = false;
   head_start_us_ = 0;
   tx_discarded_by_stop_ = 0;
   tx_cut_by_stop_ = 0;
@@ -169,7 +174,14 @@ uint32_t TwaiFake::frameUs(const Frame& f) {
   return bits * 2u;
 }
 
+void TwaiFake::tickRecovery() {
+  if (auto_recovery_ && state_ == TWAI_STATE_RECOVERING &&
+      hostclock::micros() >= recovery_done_us_)
+    completeRecovery();
+}
+
 void TwaiFake::advanceWire() {
+  tickRecovery();
   if (!wire_time_ || state_ != TWAI_STATE_RUNNING) return;
   // Nothing ACKs: the head is retransmitted and never completes.
   if (!acked_) return;
@@ -182,6 +194,13 @@ void TwaiFake::advanceWire() {
     tx_pending_.pop_front();
     head_start_us_ = done;     // the next frame follows back to back
     any = true;
+    if (busoff_after_sent_ >= 0 &&
+        sent_.size() - sent_at_arm_ >= (uint32_t)busoff_after_sent_) {
+      busoff_after_sent_ = -1;       // once
+      alerts_ |= TWAI_ALERT_TX_SUCCESS;
+      enterBusOff();                 // what is still queued stays queued
+      return;
+    }
   }
   if (any) {
     // Header: TX_SUCCESS "The previous transmission was successful",
@@ -292,7 +311,7 @@ esp_err_t TwaiFake::status(twai_status_info_t* s) {
   std::memset(s, 0, sizeof(*s));
   advanceWire();
   s->state = state_;
-  s->msgs_to_tx = (uint32_t)tx_pending_.size();
+  s->msgs_to_tx = misreport_queue_empty_ ? 0u : (uint32_t)tx_pending_.size();
   s->msgs_to_rx = (uint32_t)rx_.size();
   s->tx_failed_count = tx_failed_count_;
   s->rx_missed_count = rx_missed_count_;
@@ -306,6 +325,7 @@ esp_err_t TwaiFake::initiateRecovery() {
   if (!installed_ || state_ != TWAI_STATE_BUS_OFF)
     return ESP_ERR_INVALID_STATE;
   state_ = TWAI_STATE_RECOVERING;
+  recovery_done_us_ = hostclock::micros() + 1408u * 2u;
   // Header, verbatim: "This function will reset the TX queue, clearing any
   // messages pending transmission." Those frames never reach the wire and
   // nothing else reports them, so the count is kept for the test.
@@ -390,6 +410,12 @@ static const prov::Assumption kAssumptions[] = {
      "nothing completes, no TX_SUCCESS, no TX_FAILED, tx_failed_count not "
      "raised, and twai_stop cuts it. The error counters this drives (TEC "
      "to error passive) are NOT modelled"},
+    {prov::ASSUMED,
+     "test-driven bus-off; header: recovery waits 128 bus-free signals",
+     "setBusOffAfterSent strikes bus-off right after the n-th frame "
+     "completes, leaving the rest queued (initiate_recovery is what clears "
+     "them); setAutoRecovery completes recovery 1408 bit times (2816 us) "
+     "later. What causes the bus-off is not modelled"},
 };
 
 const prov::Assumption* assumptions(int* count) {
