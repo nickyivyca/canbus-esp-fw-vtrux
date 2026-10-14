@@ -10,7 +10,7 @@ before and after the ESP-IDF port. **It never goes on the truck.**
 
 | File | What |
 |---|---|
-| `main/vport_bench.cpp` | the console protocol (one command per line, one `@` reply per line, each ending `mode=<normal\|listen> bitrate=<...>`): `HELLO?`, `MODE normal\|listen`, `BITRATE 125k\|250k\|500k\|1M`, `SEND <hexid> [n]`, `FLOOD <hexid>` / `STOP`, `STALL <n>`, `DOMINANT <ms>`, `STATUS`, `RESET`, `AUTORECOVER on\|off`. Its header describes each |
+| `main/vport_bench.cpp` | the console protocol (one command per line, one `@` reply per line, each ending `mode=<normal\|listen> bitrate=<...>`): `HELLO?`, `MODE normal\|listen`, `BITRATE 125k\|250k\|500k\|1M`, `SEND <hexid> [n]`, `FLOOD <hexid>` / `STOP`, `STALL <n>`, `DOMINANT <us> [reps]`, `STATUS`, `RESET`, `AUTORECOVER on\|off`. Its header describes each |
 | `main/CMakeLists.txt` | the component: `vport_bench.cpp` only |
 | `CMakeLists.txt`, `sdkconfig.defaults` | the project: esp32s3, 8 MB flash, console on USB Serial/JTAG, 1 kHz tick, logs at WARN, task watchdog off (STALL blocks a task forever on purpose) |
 | `.gitignore` | `build/`, `sdkconfig` |
@@ -33,9 +33,15 @@ What each command is for (spec 9's list):
   vehicle identifier);
 - a stalled task: `STALL n` queues n frames on 0x7F0, and then the task
   blocks forever while the controller keeps running;
-- the MCP2562's permanent-dominant timeout: `DOMINANT <ms>` stops the
-  driver, detaches TWAI TX in the GPIO matrix, holds TXD low and restores.
-  The timeout itself shows only on an instrument across CANH/CANL;
+- the MCP2562's permanent-dominant timeout, timed by the board itself (spec
+  9 at 731e9c15, user 2026-10-13; no scope, no bench changes): `DOMINANT
+  <us> [reps]` stops the driver, detaches TWAI TX in the GPIO matrix, holds
+  TXD low for at most `<us>` and polls RXD (GPIO6) in a critical section
+  with esp_timer: RXD going low, then high while TXD is still low, is the
+  transceiver releasing the bus (`by=transceiver`, the interval reported).
+  One `@DOM` line per pulse and an `@DOMINANT` summary (min / median /
+  max). The can-fail is a pulse shorter than the timeout (500 us), which
+  must report RXD following TXD back high after the release (`by=txd`);
 - listen-only under each of the above: `MODE listen`, then the same
   commands.
 

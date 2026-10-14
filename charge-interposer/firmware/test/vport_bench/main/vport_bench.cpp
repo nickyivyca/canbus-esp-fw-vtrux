@@ -23,11 +23,15 @@
 //                          blocks forever; the controller keeps running, so
 //                          the wire shows whether anything beyond those n
 //                          goes out
-//   DOMINANT <ms>          the driver stopped, TWAI TX detached in the GPIO
-//                          matrix and TXD driven low for <ms> (1..1000),
-//                          then reattached and the driver restarted: the
-//                          MCP2562's permanent-dominant timeout, from the
-//                          wire (needs an instrument on CANH/CANL)
+//   DOMINANT <us> [reps]   the MCP2562's permanent-dominant timeout, timed by
+//                          the board itself (spec 9 at 731e9c15): the driver
+//                          stopped, TWAI TX detached in the GPIO matrix, TXD
+//                          driven low for at most <us> (100..5000), RXD
+//                          polled for the transceiver releasing the bus
+//                          while TXD is still low; one @DOM line per pulse
+//                          (reps 1..50) and an @DOMINANT summary with min /
+//                          median / max. A pulse shorter than the timeout
+//                          must report by=txd (the can-fail)
 //   STATUS                 twai_get_status_info, plus this image's counters
 //   RESET                  stop, uninstall, reinstall in the current mode
 //   AUTORECOVER on|off     bus-off -> recovery -> start again, by itself
@@ -363,29 +367,109 @@ void cmdStall(const char* args) {
         esp_err_to_name(stall.last_err));
 }
 
+// One TXD-low pulse, timed by the board itself (spec 9 at 731e9c15, user
+// 2026-10-13: "from its transmit line held low to its receive line going
+// recessive"). TXD is held low for at most `pulse_us`; RXD is polled in a
+// critical section (no preemption, so the loop's own jitter is well under
+// the microsecond the timer resolves) for, in order: RXD going low (the
+// transceiver drove the bus), then RXD going high again. If RXD goes high
+// while TXD is still low, the transceiver released the bus by itself
+// (by=transceiver, rxd_high_us = the timeout). If TXD is released first,
+// RXD is followed for up to 1 ms more (by=txd: the capture tracks the line
+// rather than reporting a constant -- the can-fail run uses a pulse shorter
+// than the timeout). Otherwise by=none.
+struct DomResult {
+  int64_t rxd_low_us;      // -1: RXD never went low
+  int64_t rxd_high_us;     // -1: never high again inside the window
+  int64_t released_us;     // when this image let TXD go
+  const char* by;
+};
+
+DomResult dominantPulse(int64_t pulse_us) {
+  static portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+  DomResult r = {-1, -1, -1, "none"};
+  portENTER_CRITICAL(&mux);
+  gpio_set_level(PIN_TX, 0);  // TXD low = dominant
+  const int64_t t0 = esp_timer_get_time();
+  bool txd_low = true;
+  for (;;) {
+    const int64_t t = esp_timer_get_time() - t0;
+    const int rxd = gpio_get_level(PIN_RX);
+    if (r.rxd_low_us < 0) {
+      if (rxd == 0) r.rxd_low_us = t;
+    } else if (rxd == 1) {
+      r.rxd_high_us = t;
+      r.by = txd_low ? "transceiver" : "txd";
+      break;
+    }
+    if (txd_low && t >= pulse_us) {
+      gpio_set_level(PIN_TX, 1);  // recessive
+      txd_low = false;
+      r.released_us = t;
+    }
+    if (!txd_low && t >= r.released_us + 1000) break;
+  }
+  if (txd_low) {
+    gpio_set_level(PIN_TX, 1);
+    r.released_us = esp_timer_get_time() - t0;
+  }
+  portEXIT_CRITICAL(&mux);
+  return r;
+}
+
 void cmdDominant(const char* args) {
-  const long ms = strtol(args, nullptr, 10);
-  if (ms < 1 || ms > 1000) {
-    reply("@ERR DOMINANT ms must be 1..1000");
+  char* end = nullptr;
+  const long pulse_us = strtol(args, &end, 10);
+  long reps = end && *end ? strtol(end, nullptr, 10) : 1;
+  if (pulse_us < 100 || pulse_us > 5000 || reps < 1 || reps > 50) {
+    reply("@ERR DOMINANT <pulse_us 100..5000> [reps 1..50]");
     return;
   }
   stopFlood();
   xSemaphoreTake(drv, portMAX_DELAY);
   const bool was = installed;
   uninstallLocked();
+  gpio_reset_pin(PIN_RX);
+  gpio_set_direction(PIN_RX, GPIO_MODE_INPUT);
   gpio_reset_pin(PIN_TX);
   gpio_set_direction(PIN_TX, GPIO_MODE_OUTPUT);
   esp_rom_gpio_connect_out_signal(PIN_TX, SIG_GPIO_OUT_IDX, false, false);
-  gpio_set_level(PIN_TX, 0);  // TXD low = dominant
-  const int64_t t0 = esp_timer_get_time();
-  vTaskDelay(pdMS_TO_TICKS(ms));
-  gpio_set_level(PIN_TX, 1);  // recessive
-  const int64_t held = esp_timer_get_time() - t0;
-  // installLocked() routes TWAI_TX back onto PIN_TX through the driver
+  gpio_set_level(PIN_TX, 1);  // recessive before the first pulse
+  vTaskDelay(pdMS_TO_TICKS(20));
+  int64_t by_xcvr[50];
+  int n_xcvr = 0, n_txd = 0, n_none = 0, n_never_low = 0;
+  for (long i = 0; i < reps; i++) {
+    const DomResult r = dominantPulse(pulse_us);
+    if (r.rxd_low_us < 0) n_never_low++;
+    if (strcmp(r.by, "transceiver") == 0) by_xcvr[n_xcvr++] = r.rxd_high_us;
+    else if (strcmp(r.by, "txd") == 0) n_txd++;
+    else n_none++;
+    reply("@DOM i=%ld pulse_us=%ld rxd_low_us=%lld rxd_high_us=%lld "
+          "released_us=%lld by=%s", i, pulse_us, (long long)r.rxd_low_us,
+          (long long)r.rxd_high_us, (long long)r.released_us, r.by);
+    vTaskDelay(pdMS_TO_TICKS(100));  // the other nodes recover between
+  }
+  // installLocked() routes TWAI_TX/RX back onto the pins through the driver
   esp_err_t e = was ? installLocked() : ESP_OK;
   xSemaphoreGive(drv);
-  reply("@DOMINANT ms=%ld held_us=%lld driver=%s", ms, (long long)held,
-        esp_err_to_name(e));
+  for (int a = 1; a < n_xcvr; a++)        // insertion sort, n <= 50
+    for (int b = a; b > 0 && by_xcvr[b - 1] > by_xcvr[b]; b--) {
+      const int64_t t = by_xcvr[b];
+      by_xcvr[b] = by_xcvr[b - 1];
+      by_xcvr[b - 1] = t;
+    }
+  if (n_xcvr) {
+    reply("@DOMINANT pulse_us=%ld reps=%ld transceiver=%d min_us=%lld "
+          "median_us=%lld max_us=%lld followed_txd=%d none=%d "
+          "rxd_never_low=%d driver=%s", pulse_us, reps, n_xcvr,
+          (long long)by_xcvr[0], (long long)by_xcvr[n_xcvr / 2],
+          (long long)by_xcvr[n_xcvr - 1], n_txd, n_none, n_never_low,
+          esp_err_to_name(e));
+  } else {
+    reply("@DOMINANT pulse_us=%ld reps=%ld transceiver=0 followed_txd=%d "
+          "none=%d rxd_never_low=%d driver=%s", pulse_us, reps, n_txd, n_none,
+          n_never_low, esp_err_to_name(e));
+  }
 }
 
 void cmdStatus() {
