@@ -1169,6 +1169,14 @@ bool gen_inhibit_owns_bus(void)
  * bus-off, so can_is_enabled() stays true for a controller that has left the
  * bus. Unknown (the driver will not say) counts as not running, the direction
  * that reinstalls rather than arms onto a dead controller.
+ *
+ * RECOVERING IS NOT HANDLED, AND MUST BE BEFORE RECOVERY IS EVER ADDED
+ * (reviewer, 2026-10-14). It is unreachable while nothing calls
+ * twai_initiate_recovery(). If it were reached, the arm's can_disable() would
+ * have twai_driver_uninstall() refused (it needs STOPPED or BUS_OFF), can.c
+ * would mark OFF_BUS regardless, and the reinstall's twai_driver_install()
+ * would fail on the driver still installed and abort through can_enable()'s
+ * ESP_ERROR_CHECK. Introducing recovery means revisiting this path first.
  */
 static bool controller_running(void)
 {
