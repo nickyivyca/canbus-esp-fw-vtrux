@@ -168,14 +168,34 @@ uint32_t TwaiFake::frameUs(const Frame& f) {
 
 void TwaiFake::advanceWire() {
   if (!wire_time_ || state_ != TWAI_STATE_RUNNING) return;
+  // Nothing ACKs: the head is retransmitted and never completes.
+  if (!acked_) return;
   const uint64_t now = hostclock::micros();
+  bool any = false;
   while (!tx_pending_.empty()) {
     const uint64_t done = head_start_us_ + frameUs(tx_pending_.front());
     if (done > now) break;
     sent_.push_back(tx_pending_.front());
     tx_pending_.pop_front();
     head_start_us_ = done;     // the next frame follows back to back
+    any = true;
   }
+  if (any) {
+    // Header: TX_SUCCESS "The previous transmission was successful",
+    // TX_IDLE "No more messages to transmit".
+    alerts_ |= TWAI_ALERT_TX_SUCCESS;
+    if (tx_pending_.empty()) alerts_ |= TWAI_ALERT_TX_IDLE;
+  }
+}
+
+void TwaiFake::setAcknowledged(bool yes) {
+  // An ACKer arriving: the retransmission of the head that it ACKs starts
+  // now, not when the frame was first queued.
+  if (wire_time_ && yes && !acked_) {
+    advanceWire();
+    head_start_us_ = hostclock::micros();
+  }
+  acked_ = yes;
 }
 
 esp_err_t TwaiFake::transmit(const twai_message_t* m) {
@@ -191,7 +211,7 @@ esp_err_t TwaiFake::transmit(const twai_message_t* m) {
     return ESP_ERR_NOT_SUPPORTED;
   }
 
-  if (!acked_) {
+  if (!acked_ && !wire_time_) {
     tx_failed_count_++;
     alerts_ |= TWAI_ALERT_TX_FAILED;
     return ESP_OK;   // accepted into the queue; the failure is later
@@ -217,10 +237,12 @@ esp_err_t TwaiFake::transmit(const twai_message_t* m) {
 }
 
 void TwaiFake::flushTx() {
+  if (tx_pending_.empty()) return;
   while (!tx_pending_.empty()) {
     sent_.push_back(tx_pending_.front());
     tx_pending_.pop_front();
   }
+  alerts_ |= TWAI_ALERT_TX_SUCCESS | TWAI_ALERT_TX_IDLE;
 }
 
 esp_err_t TwaiFake::receive(twai_message_t* m) {
@@ -245,6 +267,7 @@ esp_err_t TwaiFake::receive(twai_message_t* m) {
 esp_err_t TwaiFake::readAlerts(uint32_t* alerts) {
   if (!installed_) return ESP_ERR_INVALID_STATE;
   if (!alerts) return ESP_ERR_INVALID_ARG;
+  advanceWire();
   // Only the enabled ones are reported, and reading clears them.
   const uint32_t reportable = alerts_ & alerts_enabled_;
   *alerts = reportable;
@@ -353,6 +376,16 @@ static const prov::Assumption kAssumptions[] = {
      "each its UNSTUFFED length at 500 kbit/s, the first starting at the "
      "transmit that found the queue empty. A lower bound on airtime. With "
      "an ACKer the bench put 1 of the 4 power-up frames on the wire"},
+    {prov::DATASHEET,
+     "esp32s3 driver/twai.h, TWAI_ALERT_TX_SUCCESS / TWAI_ALERT_TX_IDLE",
+     "a completed transmission raises TX_SUCCESS, and an emptied queue "
+     "TX_IDLE (both modes; with airtime, when the airtime ends)"},
+    {prov::ASSUMED,
+     "normal-mode CAN retransmission; TX_FAILED documented single-shot",
+     "with airtime and nothing ACKing, the head is retransmitted forever: "
+     "nothing completes, no TX_SUCCESS, no TX_FAILED, tx_failed_count not "
+     "raised, and twai_stop cuts it. The error counters this drives (TEC "
+     "to error passive) are NOT modelled"},
 };
 
 const prov::Assumption* assumptions(int* count) {

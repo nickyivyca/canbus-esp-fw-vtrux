@@ -421,6 +421,53 @@ int main() {
     hostclock::advance(1000);
     check(fake().sent().size() == 3,
           "fake, airtime: after a restart a frame goes out again");
+    // TX alerts: a completion raises TX_SUCCESS, an emptied queue TX_IDLE
+    uint32_t al = 0;
+    uint32_t cur = 0;
+    twai_reconfigure_alerts(TWAI_ALERT_TX_SUCCESS | TWAI_ALERT_TX_IDLE, &cur);
+    twai_read_alerts(&al, 0);                  // clear what is pending
+    twai_transmit(&m, 0);
+    twai_transmit(&m, 0);
+    al = 0;
+    twai_read_alerts(&al, 0);
+    check(al == 0, "fake, airtime: no TX alert before any airtime ends");
+    hostclock::advance(us);
+    twai_read_alerts(&al, 0);
+    check(al == TWAI_ALERT_TX_SUCCESS,
+          "fake, airtime: TX_SUCCESS (not TX_IDLE) when the first of two "
+          "completes");
+    hostclock::advance(us);
+    twai_read_alerts(&al, 0);
+    check(al == (TWAI_ALERT_TX_SUCCESS | TWAI_ALERT_TX_IDLE),
+          "fake, airtime: TX_SUCCESS and TX_IDLE when the queue empties");
+    // nothing ACKing: the head is retried and never completes
+    const size_t s0 = fake().sent().size();
+    fake().setAcknowledged(false);
+    for (int i = 0; i < 4; i++) twai_transmit(&m, 0);
+    hostclock::advance(50000);
+    al = 0;
+    twai_read_alerts(&al, 0);
+    twai_status_info_t st;
+    twai_get_status_info(&st);
+    check(fake().sent().size() == s0 && fake().pendingTx() == 4 &&
+              st.msgs_to_tx == 4 && al == 0,
+          "fake, airtime, NO ACKer: 50 ms later none of four is on the wire, "
+          "all four still queued, no TX alert");
+    twai_stop();
+    check(fake().txCutByStop() == 2 && fake().txDiscardedByStop() == 4,
+          "fake, airtime, NO ACKer: twai_stop cuts the retried head and "
+          "discards the three behind it");
+    twai_start();
+    twai_transmit(&m, 0);
+    hostclock::advance(10000);
+    fake().setAcknowledged(true);
+    check(fake().sent().size() == s0,
+          "fake, airtime: an ACKer arriving does not complete the head "
+          "retroactively");
+    hostclock::advance(us);
+    check(fake().sent().size() == s0 + 1,
+          "fake, airtime: ...it completes one airtime after the ACKer "
+          "arrives");
     // the same four, airtime OFF: the control, everything on the wire at once
     twai_stop();
     twai_driver_uninstall();

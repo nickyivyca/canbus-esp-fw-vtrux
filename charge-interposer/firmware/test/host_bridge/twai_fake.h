@@ -66,9 +66,14 @@ class TwaiFake {
   // ends in STOPPED -- NOT running.
   void completeRecovery();
 
-  // Whether a transmitted frame is acknowledged. Unacknowledged frames
-  // land in tx_failed_count.
-  void setAcknowledged(bool yes) { acked_ = yes; }
+  // Whether a transmitted frame is acknowledged. Without airtime,
+  // unacknowledged frames land in tx_failed_count. WITH airtime
+  // (setWireTime) the head of the queue is retransmitted for as long as
+  // nothing ACKs it -- a normal-mode controller retries indefinitely;
+  // TX_FAILED is the header's single-shot alert -- so it never completes,
+  // the frames behind it wait, and twai_stop then cuts it. That is the
+  // no-acknowledger power-up of spec 2.3 (4f5168ae).
+  void setAcknowledged(bool yes);
 
   // Hold transmitted frames in the TX queue instead of putting them
   // straight on the wire, so a test can have frames PENDING when bus-off
