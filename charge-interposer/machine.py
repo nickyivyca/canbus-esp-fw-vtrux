@@ -97,7 +97,13 @@ DIAG_SCHEMA_VER = 4
 #      below a 6.10 A floor from 98 % SoC up, the release fires on
 #      bcm_cell_vmax >= 3585 mV for 1 s instead of bcm_chg_max <= 3.0 A, and
 #      the hold steps down at 3600 mV and up only below 3595 mV.
-DIAG_FW_VER = 7
+#   8  spec 5.2 of 2026-10-13: the hold's step gate is 0.28 s, not 0.3 s,
+#      so a step lands on each of the VCU's page-01 frames instead of on
+#      every second one. The only difference it makes on the wire is the
+#      RATE at which the hold follows bcm_chg_max -- 0.1 A per 0.3 s rather
+#      than per 0.6 s -- so a capture cannot be told apart from a version 7
+#      one by any single frame, which is what this byte is for.
+DIAG_FW_VER = 8
 
 
 def mirror_id(arb_id):
@@ -249,8 +255,18 @@ class Config(object):
         # --- the hold after the release (spec 5.2, user 2026-10-08) --------
         # The setpoint follows the vehicle's loads the way the truck's own
         # full-charge hold does (vcu_hold_character.txt, nine holds at
-        # 100 %): 0.1 A steps, no faster than one per 0.3 s, which is the
-        # truck's own fastest step cadence.
+        # 100 %): 0.1 A steps, no faster than one per 0.28 s, which puts
+        # a step on each of the VCU's page-01 frames -- the truck's own
+        # fastest step cadence.
+        #
+        # THE GATE IS 0.28 s AND THE FRAMES COME AT 0.300 s, and the 20 ms
+        # of margin is the whole point of the figure. Page 01's median gap
+        # on the truck is 0.300 s and 98.8 % of 963,253 gaps are 0.28 s or
+        # more (artifacts/vcu_page01_gaps.txt), so a gate of a full 0.3 s
+        # skips every frame that arrives a little early and steps on every
+        # SECOND frame instead, 0.6 s apart. That is what P3 clause 1 caught
+        # at 1x: 24 frames above the permission, up to 0.425 A over (spec
+        # 5.2, user, 2026-10-13).
         #
         # THE BAND IS WHAT STOPS IT OSCILLATING. Stepping down above the
         # permission and up below it, with nothing in between, would step on
@@ -260,7 +276,7 @@ class Config(object):
         # and reverse.
         self.hold_step_ca = 10               # 0.1 A per step
         self.hold_band_ca = 25               # hold while within 0.25 A below
-        self.hold_step_min_ms = 300          # at most one step per 0.3 s
+        self.hold_step_min_ms = 280          # at most one step per 0.28 s
 
         # Spec 5.2 (user, 2026-10-10): the hold's own cell limits, for a
         # release by a high cell with chg_max still above 0 A, where the
@@ -1215,14 +1231,14 @@ class InterposerCore(object):
         # Spec 5.2 (user, 2026-10-10): "Whenever the cap is below the hold
         # setpoint, at entry or later, the setpoint moves to the cap at
         # once." A CLAMP, NOT A STEP -- it is not 0.1 A and it does not wait
-        # for the 0.3 s gate.
+        # for the 0.28 s cadence.
         #
         # IT HAS TO COME BEFORE THE GATE'S EARLY RETURN, and that was the
-        # defect. The clamp below used to be the only one, after the gate, so
-        # for the first 0.3 s of the hold -- and for 0.3 s after every step --
-        # the cap was not applied at all. That window is exactly when it
-        # matters: the hold is entered at the section 4 floor or higher, up to
-        # 16 A with a far-high cell, and the charger reports
+        # defect. The clamp below used to be the only one, after the gate,
+        # so for the first 0.28 s of the hold -- and for 0.28 s after every
+        # step -- the cap was not applied at all. That window is exactly
+        # when it matters: the hold is entered at the section 4 floor or
+        # higher, up to 16 A with a far-high cell, and the charger reports
         # maxAvailableChargingCurrent as 6.00 A once it is in Low Power (6.00
         # in all six captures,
         # artifacts/interposer-firmware/lowpower_maxavail.txt), so the entry
@@ -1231,9 +1247,11 @@ class InterposerCore(object):
         # unit suite had no case where the cap fell during a hold.
         #
         # The clamp does not set t_hold_step, so it neither consumes nor
-        # restarts the step cadence (reviewer, 2026-10-10: the gate's timing
-        # under a clamp is the user's to rule; leaving it alone is the
-        # interim).
+        # restarts the step cadence. That was an interim in 2026-10-10 --
+        # the reviewer held the timing under a clamp as the user's to rule --
+        # and it is now spec 5.2's own words: the clamp "neither waits for
+        # the cadence nor restarts it", and a down step due on the clamping
+        # frame is the step the cadence is timed from (user, 2026-10-13).
         cap = self._evse_cap_ca()
         if cap >= 0 and self.hold_ca > cap:
             self.hold_ca = cap

@@ -115,7 +115,13 @@ static const uint8_t DIAG_SCHEMA_VER = 4;
 //      below a 6.10 A floor from 98 % SoC up, the release fires on
 //      bcm_cell_vmax >= 3585 mV for 1 s instead of bcm_chg_max <= 3.0 A, and
 //      the hold steps down at 3600 mV and up only below 3595 mV.
-static const uint8_t DIAG_FW_VER = 7;
+//   8  spec 5.2 of 2026-10-13: the hold's step gate is 0.28 s, not 0.3 s,
+//      so a step lands on each of the VCU's page-01 frames instead of on
+//      every second one. The only difference it makes on the wire is the
+//      RATE at which the hold follows bcm_chg_max -- 0.1 A per 0.3 s rather
+//      than per 0.6 s -- so a capture cannot be told apart from a version 7
+//      one by any single frame, which is what this byte is for.
+static const uint8_t DIAG_FW_VER = 8;
 
 // The 29-bit id with its source-address byte replaced by DIAG_SA.
 inline uint32_t mirrorId(uint32_t id) { return (id & 0x1FFFFF00u) | DIAG_SA; }
@@ -228,8 +234,12 @@ struct Config {
   // --- the hold after the release (spec 5.2, user 2026-10-08) ------------
   // The setpoint follows the vehicle's loads the way the truck's own
   // full-charge hold does (vcu_hold_character.txt, nine holds at 100 %):
-  // 0.1 A steps, no faster than one per 0.3 s, the truck's own fastest
-  // step cadence.
+  // 0.1 A steps, no faster than one per 0.28 s -- one step on each of the
+  // VCU's page-01 frames, which come at a median 0.300 s, the truck's own
+  // fastest step cadence. The 20 ms of margin is deliberate: 1.2 % of
+  // 963,253 page-01 gaps on the truck are shorter than 0.28 s, so a gate of
+  // a full 0.3 s skips every frame that arrives early and halves the step
+  // rate (user, 2026-10-13; the measurement is in machine.py).
   //
   // THE BAND IS WHAT STOPS IT OSCILLATING. Stepping down above the
   // permission and up below it, with nothing in between, would step on

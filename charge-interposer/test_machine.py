@@ -868,9 +868,13 @@ def test_the_hold_rests_inside_the_band():
 
 
 def test_the_hold_steps_no_faster_than_the_truck():
-    """Spec 5.2: at most one step per 0.3 s, the truck's own fastest step
-    cadence. The VCU's page-01 cadence is faster than that, so the limit is
-    load-bearing rather than decorative."""
+    """Spec 5.2: at most one step per 0.28 s. The boundary is asserted
+    exactly, because the figure is the whole of the 2026-10-13 change: at
+    0.3 s the gate skipped every page-01 frame that arrived early.
+
+    Frames 0.1 s apart are faster than any the VCU sends; they are here to
+    show the gate is load-bearing rather than decorative.
+    """
     b = _released(ibat=5.0, chg_max=2.75)
     _hold_frame(b, 2.75, 5.0)
     first = b.core.hold_ca
@@ -879,9 +883,61 @@ def test_the_hold_steps_no_faster_than_the_truck():
     ok(b.core.hold_ca == first,
        "two more frames 0.1 s apart make no further step (%d cA)"
        % b.core.hold_ca)
-    _hold_frame(b, 2.75, 5.0, dt_ms=100)
+    _hold_frame(b, 2.75, 5.0, dt_ms=70)
+    ok(b.core.hold_ca == first,
+       "nor does one at 0.27 s, a tick short of the gate (%d cA)"
+       % b.core.hold_ca)
+    _hold_frame(b, 2.75, 5.0, dt_ms=10)
     ok(b.core.hold_ca == first - 10,
-       "and the next step comes once 0.3 s has passed (%d cA)"
+       "and the step lands at exactly 0.28 s, not at 0.3 s (%d cA)"
+       % b.core.hold_ca)
+
+
+def test_a_page_01_stream_at_298_ms_steps_on_every_frame():
+    """Spec 5.2 (user, 2026-10-13): the 0.28 s gate is there so that a step
+    lands on EACH of the VCU's page-01 frames. On the truck their median gap
+    is 0.300 s and 1.2 % of 963,253 gaps are shorter than 0.28 s
+    (artifacts/vcu_page01_gaps.txt), so a stream running a little early is
+    the normal case rather than an edge one.
+
+    A gate of a full 0.3 s turns this into a step on every SECOND frame,
+    0.6 s apart: ten frames move the setpoint 0.5 A instead of 1.0 A. That
+    is what P3 clause 1 caught at 1x -- 24 frames above the permission, up
+    to 0.425 A over -- and this is the unit-level form of it.
+    """
+    b = _released(ibat=5.0, chg_max=2.75)
+    _hold_frame(b, 2.75, 5.0)
+    start = b.core.hold_ca
+    seen = []
+    for _ in range(10):
+        _hold_frame(b, 2.75, 5.0, dt_ms=298)
+        seen.append(b.core.hold_ca)
+    want = [start - 10 * (n + 1) for n in range(10)]
+    ok(seen == want,
+       "every frame of a 0.298 s stream takes its own step; the setpoint "
+       "walks %s A below where it started" % [(start - s) / 100.0
+                                              for s in seen])
+    ok(b.core.hold_ca == start - 100,
+       "so ten frames move it a full 1.0 A, not the 0.5 A a 0.3 s gate "
+       "allows (%d cA)" % b.core.hold_ca)
+
+
+def test_a_gap_shorter_than_the_gate_is_still_skipped():
+    """The gate was lowered on 2026-10-13, not removed. A genuinely short
+    gap -- 1.2 % of the truck's page-01 gaps are under 0.28 s -- is still
+    skipped, and the pair catches up on the next frame, which on the truck
+    brings 78 % of them back to a 0.6 s pair.
+    """
+    b = _released(ibat=5.0, chg_max=2.75)
+    _hold_frame(b, 2.75, 5.0)
+    first = b.core.hold_ca
+    _hold_frame(b, 2.75, 5.0, dt_ms=260)
+    ok(b.core.hold_ca == first,
+       "a 0.26 s gap is under the gate and takes no step (%d cA)"
+       % b.core.hold_ca)
+    _hold_frame(b, 2.75, 5.0, dt_ms=340)
+    ok(b.core.hold_ca == first - 10,
+       "and the next frame, 0.6 s after the last step, takes it (%d cA)"
        % b.core.hold_ca)
 
 
@@ -891,7 +947,7 @@ def _released_at_entry(vmax=3.590, chg_max=0.0, ibat=0.1, soc=80.0,
 
     `_released()` runs on past the release, which leaves the cadence timer
     old enough that a step is already due -- fine for the step cases, fatal
-    for any case about what happens INSIDE the 0.3 s gate, because the frame
+    for any case about what happens INSIDE the 0.28 s gate, because the
     under test then takes a step as well as whatever is being measured. This
     stops at the release, so `t_hold_step` is `b.t` and the next frame 100 ms
     later is genuinely gated.
@@ -913,14 +969,14 @@ def _released_at_entry(vmax=3.590, chg_max=0.0, ibat=0.1, soc=80.0,
 def test_the_hold_clamps_to_a_cap_that_falls_under_it():
     """Spec 5.2 (user, 2026-10-10): "Whenever the cap is below the hold
     setpoint, at entry or later, the setpoint moves to the cap at once." A
-    clamp, not a 0.1 A step, and it does not wait for the 0.3 s gate.
+    clamp, not a 0.1 A step, and it does not wait for the 0.28 s gate.
 
     This is the defect the tester's smoke run found. In Low Power the charger
     reports maxAvailableChargingCurrent as 6.00 A -- the same in all six
     captures checked -- while E6 enters the hold at the section 4 floor of
     6.10 A or higher, up to 16 A with a far-high cell. The clamp used to sit
-    AFTER the cadence gate, so for the first 0.3 s of every hold, and for
-    0.3 s after every step, the cap was not applied at all.
+    AFTER the cadence gate, so for the first 0.28 s of every hold, and for
+    0.28 s after every step, the cap was not applied at all.
 
     Both cases drive the frame 100 ms after the entry, with the gate live, so
     the move cannot be a step: a 0.1 A step would read 6.00 A only after a
@@ -935,12 +991,12 @@ def test_the_hold_clamps_to_a_cap_that_falls_under_it():
     i = _hold_frame(b, 0.0, 0.1, dt_ms=100, vmax=3.590)
     ok(b.core.hold_ca == 600,
        "and goes straight to the 6.00 A cap on the next page-01 frame, "
-       "100 ms in and inside the 0.3 s gate (%s cA)" % b.core.hold_ca)
+       "100 ms in and inside the 0.28 s gate (%s cA)" % b.core.hold_ca)
     ok(abs(i - 6.00) < 0.03,
        "which is what the charger is told (%.2f A)" % i)
     ok(b.core.t_hold_step == b.t - 100,
        "and the clamp did not touch the cadence timer, so the next 0.1 A "
-       "step is still due 0.3 s after the release")
+       "step is still due 0.28 s after the release")
 
     # 2. the far-high-cell entry at the full 16 A cap, which then falls
     b = _released_at_entry(vmax=3.601, chg_max=300.0, ibat=5.0)
@@ -1004,7 +1060,7 @@ def _above_the_cap_with_a_step_due(max_avail_a=16.0):
 def test_a_down_step_due_on_the_clamping_frame_steps_from_the_cap():
     """Spec 5.2 (user, 2026-10-13, spec 1d1fae8d2aad1a38): "When a step is
     due on the frame that clamps, the step is taken from the cap: a down step
-    sends the cap less 0.1 A and is the step from which the 0.3 s cadence is
+    sends the cap less 0.1 A and is the step from which the 0.28 s cadence
     timed."
 
     The 1x run found the frame where the clamp and a due down step fall
@@ -1036,7 +1092,7 @@ def test_an_up_step_due_on_the_clamping_frame_stops_at_the_cap():
     timer: the clamp makes the setpoint the cap, the up branch wants the cap
     plus 0.1 A, the second clamp returns it to the cap, and the setpoint has
     then not moved, so nothing is recorded. A core that instead recorded a
-    step here would send the same byte and sit a full 0.3 s behind the cap on
+    step here would send the same byte and sit a full 0.28 s behind the cap
     the way back up -- which is why this asserts the timer and not only the
     value.
     """
@@ -1072,7 +1128,7 @@ def test_the_hold_stays_inside_the_evse_cap():
     i = _hold_frame(b, 300.0, 0.3)
     ok(abs(i - 6.0) < 1e-6,
        "and a derate brings the hold straight down with it, not one step "
-       "per 0.3 s (%.2f A)" % i)
+       "per 0.28 s (%.2f A)" % i)
 
 
 def test_the_hold_follows_the_permission_to_zero():
@@ -1215,10 +1271,16 @@ def test_the_hold_reports_its_own_setpoint_in_the_diagnostics():
        "the status frame reports state %d, HOLD" % status[2])
     ok(status[5] == 15,
        "and 1.50 A as 15 in the 0.1 A field (%d)" % status[5])
-    ok((status[0], status[1]) == (4, 7),
-       "under diag schema 4 / fw 7, which is what the new state code and "
-       "this field's new meaning are published as (%d/%d)"
-       % (status[0], status[1]))
+    # The schema is a literal because 4 IS the published wire layout, and a
+    # case that read it from the module could not break on a layout change.
+    # The firmware version is not a layout: it moves with every behaviour
+    # change (8 since the 0.28 s step gate), and what this case needs from
+    # byte 1 is that it carries the firmware version rather than the schema.
+    # The two values differ, so a swap of the two bytes still fails here.
+    ok((status[0], status[1]) == (4, M.DIAG_FW_VER),
+       "under diag schema 4 -- which is what the new state code and this "
+       "field's new meaning are published as -- with the firmware version "
+       "beside it (%d/%d)" % (status[0], status[1]))
     line = b.core.diag_line(b.t, 0, 0)
     ok("HOLD" in line, "the human diag line says HOLD too")
     ok("1.5" in line, "and carries the same setpoint (%s)" % line)
@@ -2140,7 +2202,7 @@ def test_a_state_12_the_charger_has_stopped_refreshing_does_not_arm():
 
 def test_the_first_hold_step_waits_a_full_cadence_after_the_release():
     """Spec 5.2 (user, 2026-10-09): "Entering the hold counts as a step, so
-    the first step comes no sooner than 0.3 s after the release."
+    the first step comes no sooner than 0.28 s after the release."
 
     This cannot use `_released()`, which runs on past the release and leaves
     the cadence timer old enough that a step is already due -- the whole
@@ -2165,10 +2227,10 @@ def test_the_first_hold_step_waits_a_full_cadence_after_the_release():
     ok(b.core.hold_ca == sp0,
        "0.1 s later the setpoint has not moved, though ibat is 2.25 A over "
        "the permission and a step is otherwise due (%s)" % b.core.hold_ca)
-    _hold_frame(b, 2.75, 5.0, dt_ms=250)
+    _hold_frame(b, 2.75, 5.0, dt_ms=180)
     ok(b.core.hold_ca == sp0 - M.Config().hold_step_ca,
-       "and the first step lands once 0.3 s has passed (%s -> %s)"
-       % (sp0, b.core.hold_ca))
+       "and the first step lands at exactly 0.28 s after the release, not "
+       "at 0.3 s (%s -> %s)" % (sp0, b.core.hold_ca))
 
 
 def test_passthrough_is_byte_exact_when_idle():

@@ -124,7 +124,11 @@ void configDefaults(Config& c) {
   // Spec 5.2: the hold after the release.
   c.hold_step_ca = 10;        // 0.1 A per step
   c.hold_band_ca = 25;        // hold while within 0.25 A below
-  c.hold_step_min_ms = 300;   // at most one step per 0.3 s
+  c.hold_step_min_ms = 280;   // at most one step per 0.28 s, which puts
+                              // a step on each page-01 frame: they come at
+                              // a median 0.300 s and 1.2 % of 963,253 gaps
+                              // are shorter, so a full 0.3 s gate steps on
+                              // every second frame (user, 2026-10-13)
   c.hold_vmax_down_mv = 3600;
   c.hold_vmax_up_mv = 3595;
 
