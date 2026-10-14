@@ -199,12 +199,12 @@ void caseFields() {
   std::printf("  --  0x7F4 = %02X %02X %02X %02X %02X %02X %02X %02X\n",
               st->data[0], st->data[1], st->data[2], st->data[3],
               st->data[4], st->data[5], st->data[6], st->data[7]);
-  // interposer_diag_schema.md (b21629767b5c7fd5): schema 4, and its
-  // section 4 table's intp_fw_ver 8 (the spec of 2026-10-13: the hold steps
-  // at most once per 0.28 s; 7 was the spec of 2026-10-10: the floor, the
-  // release on the leader, the hold's cell limits).
+  // interposer_diag_schema.md (bae9948312c38cb1): schema 4, and its
+  // section 4 table's intp_fw_ver 9 (the spec of 2026-10-13: the vehicle
+  // port listens only while the charger is silent; 8 was the hold's 0.28 s
+  // step gate).
   check(st->data[0] == 4, "schema version 4 in 0x7F4 byte 0");
-  check(st->data[1] == 8, "firmware version 8 in 0x7F4 byte 1");
+  check(st->data[1] == 9, "firmware version 9 in 0x7F4 byte 1");
   check(st->len == 8, "the status frame is 8 bytes");
   check(!st->ext, "diagnostics are STANDARD ids, not extended");
 

@@ -709,6 +709,26 @@ class BMS(object):
 PEAK = {"i": None, "vmax": None, "soc": None, "n": 0, "done": False}
 
 
+# Spec 2.3 (d9f49ea6, user 2026-10-13) seen from the vehicle segment: the
+# status frames classified by the port's mode as the wire shows it --
+# normal within 2 s of a charger frame forwarded onto the segment, the one
+# power-up round, or outside (diag_cadence.ModeWindows, the bench witness's
+# own rule). Module-level so main()'s `finally` reports it on every exit.
+import diag_cadence as _dc                                # noqa: E402
+VPORT = _dc.ModeWindows()
+
+
+def report_vport():
+    """One line: status frames in normal mode / power-up round / outside."""
+    c = VPORT.counts
+    first = ("; first outside 0x%03X at t=%.1f" % (VPORT.first_outside[1],
+                                                    VPORT.first_outside[0])
+             if VPORT.first_outside else "")
+    log.info("vport witness: %d status frame(s) in normal mode, %d in the "
+             "power-up round, %d outside (spec 2.3)%s",
+             c["normal"], c["boot"], c["outside"], first)
+
+
 def report_peaks():
     """One line, once, with the true maxima over the whole run."""
     if PEAK["n"] == 0 or PEAK["done"]:
@@ -774,6 +794,11 @@ def run_model(args, b, phys):
             if msg is None:
                 break
             n_b += 1
+            if msg.is_extended_id and _dc.is_charger_frame(
+                    msg.arbitration_id):
+                VPORT.charger(t)
+            elif msg.arbitration_id in DIAG_IDS:
+                VPORT.status(t, msg.arbitration_id)
             if msg.arbitration_id in DIAG_IDS and len(msg.data) >= 8:
                 # The interposer's own telemetry (spec 8.2). The VCU ignores
                 # it; we record it so the scenario can judge the diagnostics
@@ -1038,6 +1063,7 @@ def main():
         log.info("interrupted")
     finally:
         report_peaks()
+        report_vport()
         b.shutdown()
         phys.shutdown()
 

@@ -30,6 +30,39 @@ log = logging.getLogger("intp")
 DRAIN_LIMIT = 512       # frames retired per port per loop pass
 
 
+class PortMode(object):
+    """Spec 2.3 (d9f49ea6 / d8c9e87d, user 2026-10-13): the vehicle port
+    listens only while the charger is silent. The DECISION is the core's
+    -- machine.py's `listen_only`, True from construction, False on an
+    extended charger frame with SA 0xC0, True again 2 s after the last
+    one (the reviewer's ruling: the mode lives in the core and the port
+    applies it). This is the port side, which the core cannot do: apply
+    the core's mode after each call and BEFORE emitting that call's frames
+    (that ordering is "the port switches first and then forwards that
+    frame"); send one round of all four status frames at power-up, before
+    applying it the first time; and put nothing on the vehicle segment
+    while listen-only -- a frame toward it is dropped and counted
+    (`dropped`), which a correct core should never ask for."""
+
+    def __init__(self):
+        self.normal = False          # nothing applied yet: listen-only
+        self.to_normal = 0
+        self.to_listen = 0
+        self.dropped = 0
+
+    def apply(self, core):
+        """-> 'normal' / 'listen-only' if this changed the port, else None."""
+        want = not core.listen_only
+        if want == self.normal:
+            return None
+        self.normal = want
+        if want:
+            self.to_normal += 1
+            return "normal"
+        self.to_listen += 1
+        return "listen-only"
+
+
 def main():
     busmod.install_break_handler()
     ap = argparse.ArgumentParser(description=__doc__,
@@ -100,6 +133,11 @@ def main():
     echo_c = busmod.EchoSuppressor() if virtual else None
 
     core = M.InterposerCore(cfg, now_ms=0)
+    # spec 2.3: listen-only from power-up, after one round of status frames
+    port = PortMode()
+    boot_round = [not args.bypass]      # still to send
+    sending_boot = [False]
+    now_ms_box = [0]                    # for apply_mode()'s log line
     t0 = time.time()
     seen_events = 0
 
@@ -146,9 +184,26 @@ def main():
             if echo_c:
                 echo_c.sent(msg)
         else:
+            # spec 2.3: nothing onto the vehicle segment in listen-only,
+            # bar the power-up round (bypass is the plain-wire control and
+            # is not gated)
+            if not (args.bypass or port.normal or sending_boot[0]):
+                port.dropped += 1
+                return
             veh.send(msg)
             if echo_v:
                 echo_v.sent(msg)
+
+    def apply_mode(after):
+        """Spec 2.3: apply the core's vehicle-port mode, after a core call
+        and before its frames are emitted. Not before the power-up round."""
+        if boot_round[0]:
+            return
+        sw = port.apply(core)
+        if sw:
+            log.info("VPORT %s: after a %s at sim t=%.3fs (core state %s)",
+                     sw, after, now_ms_box[0] / 1000.0,
+                     M.STATE_NAMES[core.state])
 
     last_nv, last_nc = [0], [0]
     frozen_s = 0.0
@@ -174,7 +229,26 @@ def main():
             last_loop = _now
             frozen_s += _gap - busmod.unfreeze(_gap)
             now_ms = int((time.time() - t0 - frozen_s) * 1000 * args.time_scale)
+            now_ms_box[0] = now_ms
             did = False
+            if boot_round[0]:
+                # Spec 2.3 / 8.2 (d8c9e87d): ONE round of all four status
+                # frames at power-up, BEFORE the core's mode is applied for
+                # the first time -- so before any frame is drained, or a
+                # charger frame in this first pass would meet a port that
+                # has not yet been set. The core emits nothing at power-up
+                # and cannot know a board has booted; the port does this.
+                sending_boot[0] = True
+                for fid, data in core.diag_frames(now_ms, 0, 0, now_ms, True,
+                                                  False, 0):
+                    emit(M.TO_VEHICLE, fid, False, data)
+                sending_boot[0] = False
+                boot_round[0] = False
+                last_diag_ms = now_ms
+                last_diag_state = core.state
+                log.info("VPORT power-up round sent at sim t=%.3fs (spec 2.3)",
+                         now_ms / 1000.0)
+                apply_mode("power-up round")
             if _gap > 0.040:
                 log.warning("STALL %.0f ms wall at sim t=%.0fs (loop gap; "
                             "%.0f ms subtracted from the clock; last pass "
@@ -203,9 +277,12 @@ def main():
                              msg.is_extended_id, bytes(msg.data))
                     else:
                         rec_frame("V", msg, now_ms)
-                        for out in core.on_vehicle_frame(
-                                msg.arbitration_id, msg.is_extended_id,
-                                bytes(msg.data), now_ms):
+                        outs = core.on_vehicle_frame(
+                            msg.arbitration_id, msg.is_extended_id,
+                            bytes(msg.data), now_ms)
+                        apply_mode("vehicle frame 0x%X"
+                                   % msg.arbitration_id)
+                        for out in outs:
                             emit(*out)
                 msg = veh.recv(timeout=0.0)
 
@@ -221,9 +298,12 @@ def main():
                              msg.is_extended_id, bytes(msg.data))
                     else:
                         rec_frame("C", msg, now_ms)
-                        for out in core.on_charger_frame(
-                                msg.arbitration_id, msg.is_extended_id,
-                                bytes(msg.data), now_ms):
+                        outs = core.on_charger_frame(
+                            msg.arbitration_id, msg.is_extended_id,
+                            bytes(msg.data), now_ms)
+                        # switch FIRST, then forward that frame (2.3)
+                        apply_mode("charger frame 0x%X" % msg.arbitration_id)
+                        for out in outs:
                             emit(*out)
                 msg = chg.recv(timeout=0.0)
 
@@ -250,7 +330,9 @@ def main():
                 last_tick_ms = now_ms
                 if trace is not None:
                     trace.write("T %d\n" % now_ms)
-                for out in core.tick(now_ms):
+                outs = core.tick(now_ms)
+                apply_mode("tick")
+                for out in outs:
                     emit(*out)
 
             if not args.bypass:
@@ -287,8 +369,12 @@ def main():
                         last_diag_ms = now_ms
                     else:
                         frames = frames[:1]      # 0x7F4 only
-                    for fid, data in frames:
-                        emit(M.TO_VEHICLE, fid, False, data)
+                    # spec 2.3: no status frames while listen-only (the
+                    # power-up round went out above); the serial diag line
+                    # (8.3) runs regardless
+                    if port.normal:
+                        for fid, data in frames:
+                            emit(M.TO_VEHICLE, fid, False, data)
                     if periodic:
                         log.info(core.diag_line(now_ms, ovf, 0))
 
@@ -306,6 +392,10 @@ def main():
                      "modified/synth to report)",
                      M.STATE_NAMES[core.state], bypass_fwd[0], bypass_fwd[1])
         else:
+            log.info("vport: %d switch(es) to normal, %d back to listen-only, "
+                     "%d frame(s) toward the vehicle dropped in listen-only, "
+                     "ending %s (spec 2.3)", port.to_normal, port.to_listen,
+                     port.dropped, "normal" if port.normal else "listen-only")
             log.info("final state=%s  fwd v->c=%d c->v=%d modified=%d "
                      "synth=%d%s",
                      M.STATE_NAMES[core.state], core.stats["fwd_v2c"],

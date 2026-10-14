@@ -1758,6 +1758,116 @@ def test_spec_non_trips():
                % (label, state, want, b.state()))
 
 
+# --- spec 2.3 (d9f49ea6 / d8c9e87d, user 2026-10-13): the vehicle port
+# listens only while the charger is silent. The mode is decided in the core
+# (reviewer's ruling, 2026-10-13) and published as `listen_only`; judged
+# here from that attribute and the core's outputs, against the spec text.
+
+def listen_only_problems(core_cls=None):
+    """-> problems. Listen-only at construction; not ended by vehicle
+    frames, an extended frame from another SA, or a standard frame whose
+    low byte is 0xC0; ended by the first extended frame with SA 0xC0, whose
+    own forward is in that call's output; still normal 1.9 s after the last
+    charger frame, listen-only 2.1 s after it, whatever state the core is
+    then in; and normal again on the charger's return."""
+    b = Bench()
+    if core_cls is not None:
+        b.core = core_cls(b.core.cfg, 0)
+    c = b.core
+    probs = []
+    if not hasattr(c, "listen_only"):
+        return ["the core has no `listen_only` (the spec 2.3 interface)"]
+    if not c.listen_only:
+        probs.append("not listen-only at construction")
+    d = bytes(8)
+    for i in range(10):                      # vehicle traffic alone, 1 s
+        b.t += 100
+        b.veh(0x18FF4AE5, d)
+        b.tick()
+    b.t += 10
+    b.chg(0x18FF50E5, d)                     # extended, SA 0xE5
+    b.t += 10
+    c.on_charger_frame(0x7C0, False, d, b.t)  # standard, low byte 0xC0
+    b.t += 100
+    b.tick()
+    if not c.listen_only:
+        probs.append("normal after vehicle frames, an SA 0xE5 frame or a "
+                     "standard 0x7C0 -- none of them is a charger frame")
+    b.t += 10
+    out = b.chg(0x18FF50C0, bytes([0x5C] + [0] * 7))
+    if c.listen_only:
+        probs.append("still listen-only after an extended SA 0xC0 frame")
+    if not any(o[0] == M.TO_VEHICLE and o[1] == 0x18FF50C0 for o in out):
+        probs.append("the switching frame is not in that call's output "
+                     "toward the vehicle (2.3: switch, then forward it)")
+    t_last = b.t
+    while b.t < t_last + 1900:
+        b.t += 100
+        b.veh(0x18FF4AE5, d)
+        b.tick()
+    if c.listen_only:
+        probs.append("listen-only 1.9 s after the last charger frame")
+    while b.t < t_last + 2100:
+        b.t += 100
+        b.veh(0x18FF4AE5, d)
+        b.tick()
+    if not c.listen_only:
+        probs.append("still normal 2.1 s after the last charger frame (core "
+                     "in %s)" % M.STATE_NAMES[c.state])
+    b.t += 10
+    b.charger_status(12)
+    if c.listen_only:
+        probs.append("the charger's return did not switch it back")
+    return probs
+
+
+def test_listen_only():
+    for p in listen_only_problems():
+        FAILS.append("spec 2.3: " + p)
+
+
+def test_listen_only_can_fail():
+    class AnyFrame(M.InterposerCore):
+        def on_charger_frame(self, arb_id, ext, data, t_ms):
+            out = M.InterposerCore.on_charger_frame(self, arb_id, ext, data,
+                                                    t_ms)
+            self.listen_only = False
+            return out
+
+    class StartsNormal(M.InterposerCore):
+        def __init__(self, cfg, now_ms):
+            M.InterposerCore.__init__(self, cfg, now_ms)
+            self.listen_only = False
+
+    class NeverReverts(M.InterposerCore):
+        def tick(self, t_ms):
+            keep = self.listen_only
+            out = M.InterposerCore.tick(self, t_ms)
+            if not keep:
+                self.listen_only = False
+            return out
+
+    class RevertsAt1s(M.InterposerCore):
+        def on_charger_frame(self, arb_id, ext, data, t_ms):
+            if ext and (arb_id & 0xFF) == 0xC0:
+                self._lo_last = t_ms
+            return M.InterposerCore.on_charger_frame(self, arb_id, ext, data,
+                                                     t_ms)
+
+        def tick(self, t_ms):
+            out = M.InterposerCore.tick(self, t_ms)
+            last = getattr(self, "_lo_last", None)
+            if last is not None and t_ms - last >= 1000:
+                self.listen_only = True
+            return out
+    for cls, what in ((AnyFrame, "switches on any charger-port frame"),
+                      (StartsNormal, "starts in normal mode"),
+                      (NeverReverts, "never falls back"),
+                      (RevertsAt1s, "falls back after 1 s")):
+        ok(bool(listen_only_problems(cls)),
+           "spec 2.3: the judgement fails a core that %s" % what)
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

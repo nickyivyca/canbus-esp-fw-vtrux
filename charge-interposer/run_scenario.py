@@ -2024,12 +2024,11 @@ def _released_into_hold(chg_text, intp_text):
 BURST_FRAMES = 20
 BURST_MS = BURST_FRAMES * 50
 
-# Spec 8.2 and the schema doc's version table (b21629767b5c7fd5): firmware
-# version 8 is the spec of 2026-10-13 (5.2) -- the hold steps at most once
-# per 0.28 s (7 was the spec of 2026-10-10: the 6.10 A floor, the release
-# on the leader, the hold's cell limits) -- schema 4. Literals for the same
-# reason.
-SPEC_FW_VER = 8
+# Spec 8.2 and the schema doc's version table (bae9948312c38cb1): firmware
+# version 9 is the spec of 2026-10-13 (2.3, 2.1, 8, 8.2) -- the vehicle
+# port listens only while the charger is silent (8 was the hold's 0.28 s
+# step gate) -- schema 4. Literals for the same reason.
+SPEC_FW_VER = 9
 SPEC_SCHEMA_VER = 4
 
 # A timestamped REPEAT, and the vehicle-side markers of the VCU changing
@@ -2376,7 +2375,7 @@ def _repeat_bursts(intp_text, veh_text, frames=None, chg_text=""):
                          for s in superseded)))
 
 
-def _diag_check(sc, diag, fstate):
+def _diag_check(sc, diag, fstate, intp="", veh=""):
     """-> (ok, why) for diag_frames_ok(). Spec 9 at c383868a834b6158 (user,
     2026-10-10): every scenario decodes the diagnostic CAN frames "except a
     scenario that runs the core in bypass, which is exempt by its own
@@ -2387,10 +2386,21 @@ def _diag_check(sc, diag, fstate):
     if "--bypass" in sc.interposer:
         return (True, "not applicable: the scenario declares --bypass, so "
                       "there is no core to report (spec 9)")
-    return _diag_frames_ok(diag, fstate)
+    return _diag_frames_ok(diag, fstate, intp=intp, veh=veh)
 
 
-def _diag_frames_ok(diag, fstate):
+# Spec 2.3 (d9f49ea6, user 2026-10-13) in the sims' logs: interposer_sim's
+# port switches and vehicle_sim's witness of the status frames by mode
+VPORT_SWITCH = re.compile(r"VPORT (normal|listen-only): .*\(core state "
+                          r"(\w+)\)")
+VPORT_WITNESS = re.compile(r"vport witness: (\d+) status frame\(s\) in normal "
+                           r"mode, (\d+) in the power-up round, (\d+) "
+                           r"outside \(spec 2\.3\)(.*)")
+VPORT_DROPPED = re.compile(r"vport: .*?(\d+) frame\(s\) toward the vehicle "
+                           r"dropped in listen-only")
+
+
+def _diag_frames_ok(diag, fstate, intp="", veh=""):
     """-> (ok, why). Every frame carries the schema and firmware version the
     harness was built against, and the last 0x7F4 agrees with the final
     state. A wrong version is the one error a decoder cannot otherwise see:
@@ -2442,11 +2452,36 @@ def _diag_frames_ok(diag, fstate):
 
     last_state = DIAG_STATES.get(by_id[0x7F4][-1][2], "?%d"
                                  % by_id[0x7F4][-1][2])
-    if last_state != fstate:
-        return (False, "last 0x7F4 says %s, the run ended %s"
-                % (last_state, fstate))
-    return (True, "%d frames, fw %d schema %d, last 0x7F4 %s"
-            % (len(diag), SPEC_FW_VER, SPEC_SCHEMA_VER, last_state))
+    # Spec 2.3: the last 0x7F4 is judged against the core's state when it
+    # was sent. A run that ends in listen-only sent its last frame before
+    # the port fell back, so that is the state at the last fall-back
+    # (reviewer, 2026-10-13); otherwise the run's final state.
+    sw = VPORT_SWITCH.findall(intp or "")
+    if sw and sw[-1][0] == "listen-only":
+        want, when = sw[-1][1], "when the port went listen-only"
+    else:
+        want, when = fstate, "at the end of the run"
+    if last_state != want:
+        return (False, "last 0x7F4 says %s, the core was %s %s"
+                % (last_state, want, when))
+    extra = ""
+    m = VPORT_WITNESS.search(veh or "")
+    if m:
+        n_norm, n_boot, n_out = (int(m.group(1)), int(m.group(2)),
+                                 int(m.group(3)))
+        if n_out:
+            return (False, "%d status frame(s) on the vehicle segment while "
+                           "the port should be listen-only (spec 2.3)%s"
+                    % (n_out, m.group(4)))
+        extra = ("; spec 2.3: %d in normal mode, %d in the power-up round, "
+                 "0 outside" % (n_norm, n_boot))
+        d = VPORT_DROPPED.search(intp or "")
+        if d:
+            extra += (", %s frame(s) toward the vehicle dropped in "
+                      "listen-only" % d.group(1))
+    return (True, "%d frames, fw %d schema %d, last 0x7F4 %s (%s %s)%s"
+            % (len(diag), SPEC_FW_VER, SPEC_SCHEMA_VER, last_state,
+               "the core's state", when, extra))
 
 
 def _no_rewrite_after_terminated(diag):
@@ -2811,7 +2846,7 @@ def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
             results.append((ok, "P3a, the simulation against the truck's "
                                 "holds: %s" % why))
         elif kind == "diag_frames_ok":
-            ok, why = _diag_check(sc, diag, fstate)
+            ok, why = _diag_check(sc, diag, fstate, intp=intp, veh=veh)
             results.append((ok, "diag frames: %s" % why))
         elif kind == "fault_or_flow_first":
             ok, why = _fault_or_flow_first(intp, veh, chg, diag, val,

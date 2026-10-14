@@ -34,18 +34,33 @@ def body(state):
     return bytes([4, 7, state, 0, 0, 0, 0, 0])
 
 
+CHG_ID = 0x18FFD4C0                 # the Bel's status frame, SA 0xC0
+
+
 def witness(n=20, period=1.0, lat=0.004, drift_ppm=0.0, state_at=None,
-            extra=(), drop=None, intrude=None):
+            extra=(), drop=None, intrude=None, charger="all"):
     """Bursts of the four IDs every `period` s from device t=10 s, 0.3 ms
     apart; host = device + 100 s + drift + `lat` (USB). `state_at(t)`
     gives the state byte; `extra` adds (device t, id, state) rows;
     `drop` = (burst, id) removes one frame; `intrude` = burst index after
-    whose first frame a 0x7F5 of the next burst is inserted."""
+    whose first frame a 0x7F5 of the next burst is inserted. `charger`:
+    the forwarded charger frames (spec 2.3's mode), every 100 ms -- "all"
+    from 9.9 s to past the last burst, a list of (from, to) spans, or
+    None."""
     rows = []
     st = state_at or (lambda t: 1)
 
     def host(d):
         return d * (1 + drift_ppm / 1e6) + 100.0 + lat
+
+    spans = ([(9.9, 10.0 + n * period)] if charger == "all"
+             else list(charger or []))
+    for a, b in spans:
+        k = 0
+        while a + k * 0.1 <= b + 1e-9:
+            d = round(a + k * 0.1, 4)
+            rows.append((host(d), d, CHG_ID, bytes(8)))
+            k += 1
 
     for k in range(n):
         t0 = 10.0 + k * period
@@ -66,8 +81,9 @@ def ev(host_t, state, text="LOW_POWER overridden a=1 b=2 c=3"):
     return (host_t, "[%d] %s %s" % (int(host_t * 1000), state, text))
 
 
-def run(rows, serial):
-    return D.score(rows, serial, db=FakeDb(), names=set(NAMES.values()))
+def run(rows, serial, **kw):
+    return D.score(rows, serial, db=FakeDb(), names=set(NAMES.values()),
+                   **kw)
 
 
 def main():
@@ -146,6 +162,91 @@ def main():
     f = D.host_map(long_rows)
     check(abs(f(3000.0) - (3000.0 * (1 + 80e-6) + 100.004)) < 0.002,
           "the map lands within 2 ms of the true host time after 50 min")
+
+    print("spec 2.3: listen-only while the charger is silent")
+    # charger talking 10-15 s and 25-30 s; bursts every second 10-39 s
+    two = [(10.0, 15.0), (25.0, 30.0)]
+
+    def in_two(rows, boot=True):
+        """keep the bursts the board may send under 2.3: inside a window
+        (last charger frame + 2 s), plus a power-up round at 9.0 s"""
+        keep = [r for r in rows if r[2] not in D.STATUS_IDS
+                or any(a <= r[1] <= b + 2.0 for a, b in two)]
+        if boot:
+            keep += [(r[1] + 100.004 - 1.0, r[1] - 1.0, r[2], r[3])
+                     for r in rows if r[2] in D.STATUS_IDS and r[1] < 10.01]
+        return keep
+    base = witness(n=30, charger=two)
+    good = in_two(base)
+    ok, why = run(good, [])
+    check(ok and "2 normal-mode window(s)" in why and "4 in the power-up "
+          "round, 0 outside" in why,
+          "bursts only inside the windows and one power-up round pass -> %s"
+          % why)
+    ok, why = run(base, [])
+    check(not ok and "2.3:" in why and "listen-only" in why,
+          "the port always normal (1 Hz throughout, as E6a) fails 2.3 -> %s"
+          % why[:200])
+    ok, why = run(base, [], listen_only=False)
+    check(ok, "...and passes under the rule before d9f49ea6 -> %s"
+          % why[:120])
+    stray = good + [(118.504, 18.5, 0x7F4, body(1))]
+    ok, why = run(stray, [])
+    check(not ok and "1 status frame(s) while the vehicle port should be "
+          "listen-only" in why and "18.500" in why,
+          "ONE 0x7F4 at 18.5 s, 3.5 s after the charger stopped, fails -> %s"
+          % why[:200])
+    late = [r for r in good if not (r[2] in D.STATUS_IDS and 16.5 < r[1])
+            or r[1] > 24.0] + [(117.154, 17.15, f, body(1))
+                               for f in D.STATUS_IDS]
+    ok, why = run(sorted(late, key=lambda r: r[1]), [])
+    check(not ok and "4 status frame(s) while the vehicle port should be "
+          "listen-only" in why and "17.150" in why,
+          "a burst 2.15 s after the last charger frame (past 2 s + the "
+          "0.1 s slack) fails -> %s" % why[:200])
+    edge = [r for r in good if not (r[2] in D.STATUS_IDS and 16.5 < r[1])
+            or r[1] > 24.0] + [(117.054, 17.05, f, body(1))
+                               for f in D.STATUS_IDS]
+    ok, why = run(sorted(edge, key=lambda r: r[1]), [])
+    check(ok, "a burst 2.05 s after the last charger frame is inside the "
+          "slack -> %s" % why[:160])
+    twice = good + [(r[0] + 0.5, r[1] + 0.5, r[2], r[3])
+                    for r in good if r[2] in D.STATUS_IDS and r[1] < 9.5]
+    ok, why = run(twice, [])
+    check(not ok and "2.3:" in why,
+          "a second power-up round fails -> %s" % why[:160])
+    ok, why = run(in_two(base, boot=False), [])
+    check(ok and "0 in the power-up round" in why,
+          "no power-up round on the witness passes (the capture may start "
+          "after it), recorded -> %s" % why[:200])
+    # the cadence is judged inside a window only: the jump from the last
+    # burst of window 1 to the first of window 2 is not a gap
+    ok, why = run(good, [])
+    check(ok and "outside 1.0 s" not in why,
+          "the 10 s from window 1's last burst to window 2's first is not a "
+          "cadence gap -> %s" % why[:160])
+    # a state change while listen-only needs no 0x7F4; one in normal does
+    ok, why = run(good, [ev(105.0, "MONITOR"), ev(120.0, "OVERRIDE")])
+    check(ok and "1 state change(s) in listen-only, not judged" in why,
+          "a state change at 20 s (listen-only) is not judged -> %s"
+          % why[:220])
+    ok, why = run(good, [ev(105.0, "MONITOR"), ev(112.0, "OVERRIDE")])
+    check(not ok and "without a 0x7F4" in why,
+          "...but one at 12 s (normal) still needs its 0x7F4 -> %s"
+          % why[:200])
+    mw = D.ModeWindows()
+    check([mw.status(1.0, 0x7F4), mw.status(1.0, 0x7F5)] == ["boot", "boot"]
+          and mw.status(1.5, 0x7F4) == "outside",
+          "ModeWindows: the first of each ID before any charger frame is "
+          "the power-up round, a repeat is not")
+    mw.charger(2.0)
+    check(mw.status(4.05, 0x7F4) == "normal"
+          and mw.status(4.2, 0x7F4) == "outside" and mw.window == 1,
+          "ModeWindows: normal to 2 s + 0.1 s after a charger frame")
+    check(D.is_charger_frame(0x18FFD4C0) and not D.is_charger_frame(0x7C0)
+          and not D.is_charger_frame(0x18FFD4C1),
+          "a charger frame is extended with SA 0xC0; a standard 0x7C0 and "
+          "SA 0xC1 are not")
 
     print("the real diag DBC")
     db, codes = D.load_state_names()

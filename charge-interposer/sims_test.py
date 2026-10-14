@@ -474,6 +474,70 @@ def high_cell_problems(fmt=None, outlier_pct=-5.0):
     return probs
 
 
+def vport_problems(port_cls=None, src=None):
+    """interposer_sim's PORT side of spec 2.3 (d9f49ea6 / d8c9e87d, user
+    2026-10-13). The mode is the core's (`listen_only`); the sim applies
+    it: not normal before anything is applied; apply() reports a switch
+    only when the core's mode differs from the port's. And in
+    interposer_sim's loop, read from its source in order: the power-up
+    round goes out BEFORE the first drain and is followed by the first
+    apply; each core call is applied before its frames are emitted; and a
+    frame toward the vehicle is dropped unless the port is normal (bar the
+    power-up round)."""
+    import interposer_sim as IS
+    probs = []
+    pm = (port_cls or IS.PortMode)()
+
+    class Core(object):
+        listen_only = True
+    c = Core()
+    if pm.normal:
+        probs.append("the port is normal before anything is applied")
+    if pm.apply(c) is not None:
+        probs.append("apply() reported a switch with the core listen-only")
+    c.listen_only = False
+    if pm.apply(c) != "normal" or not pm.normal:
+        probs.append("apply() did not switch to normal with the core normal")
+    if pm.apply(c) is not None:
+        probs.append("apply() reported a second switch with no change")
+    c.listen_only = True
+    if pm.apply(c) != "listen-only" or pm.normal:
+        probs.append("apply() did not fall back with the core listen-only")
+    if src is None:
+        src = open(os.path.join(HERE, "interposer_sim.py"),
+                   encoding="utf-8").read()
+    loop = src[src.index("while running[0]:"):]
+
+    def order(*needles):
+        """each needle found AFTER the previous one, the first anywhere;
+        the next occurrence of the first needle must not come before the
+        last one (so the three belong to one call site)"""
+        at = loop.find(needles[0])
+        if at < 0:
+            return False
+        for n in needles[1:]:
+            nxt = loop.find(n, at + 1)
+            if nxt < 0:
+                return False
+            at = nxt
+        again = loop.find(needles[0], loop.find(needles[0]) + 1)
+        return again < 0 or again > at
+    if not order('core.diag_frames(now_ms, 0, 0, now_ms, True',
+                 'apply_mode("power-up round")', "veh.recv(timeout=0.0)"):
+        probs.append("the power-up round and its first apply do not come "
+                     "before the first drain")
+    if not order("core.on_charger_frame(", 'apply_mode("charger frame',
+                 "for out in outs:"):
+        probs.append("a charger frame's call is not applied before its "
+                     "frames are emitted")
+    if not order("core.tick(now_ms)", 'apply_mode("tick")', "for out in outs:"):
+        probs.append("a tick is not applied before its frames are emitted")
+    if "if not (args.bypass or port.normal or sending_boot[0]):" not in src:
+        probs.append("emit() no longer drops frames toward the vehicle in "
+                     "listen-only")
+    return probs
+
+
 def help_problems():
     """Each sim's argument parser builds: `--help` exits 0. A broken help
     string (argparse formats it lazily) otherwise only shows when a
@@ -555,6 +619,49 @@ def main():
     check(bool(aux_problems(ReAnchors)),
           "can fail: a schedule that re-anchors on a later chg_max 0 A is "
           "caught")
+
+    for p in vport_problems():
+        check(False, "interposer_sim: " + p)
+    check(not vport_problems(), "interposer_sim: the spec 2.3 port side "
+          "(apply the core's mode after each call and before its frames; "
+          "the power-up round first; nothing toward the vehicle in "
+          "listen-only)")
+    import interposer_sim as _IS
+
+    class StartsNormal(_IS.PortMode):
+        def __init__(self):
+            _IS.PortMode.__init__(self)
+            self.normal = True
+
+    class Inverted(_IS.PortMode):
+        def apply(self, core):
+            class Flip(object):
+                listen_only = not core.listen_only
+            return _IS.PortMode.apply(self, Flip())
+
+    class Sticky(_IS.PortMode):
+        def apply(self, core):
+            if self.normal:
+                return None
+            return _IS.PortMode.apply(self, core)
+    for cls, what in ((StartsNormal, "a port normal before anything is "
+                                     "applied"),
+                      (Inverted, "a port applying the opposite mode"),
+                      (Sticky, "a port that never falls back")):
+        check(bool(vport_problems(cls)), "can fail: %s is caught" % what)
+    real = open(os.path.join(HERE, "interposer_sim.py"),
+                encoding="utf-8").read()
+    for needle, what in (('apply_mode("charger frame', "the charger call's "
+                          "apply"),
+                         ('apply_mode("tick")', "the tick's apply"),
+                         ('apply_mode("power-up round")', "the first apply "
+                          "after the power-up round")):
+        check(bool(vport_problems(src=real.replace(needle, "pass  # ", 1))),
+              "can fail: interposer_sim without %s is caught" % what)
+    moved = real.replace("if not (args.bypass or port.normal or "
+                         "sending_boot[0]):", "if False:", 1)
+    check(bool(vport_problems(src=moved)),
+          "can fail: interposer_sim without the listen-only drop is caught")
 
     for line in measured():
         print("  --  " + line)
