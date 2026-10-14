@@ -208,6 +208,35 @@ def learned_cc_traces(outdir):
     return [write(outdir, PREFIX + "learned_cc_largest", overrides, lines)]
 
 
+def hold_cadence_traces(outdir):
+    """Spec 5.2 at dfc11cbb (user, 2026-10-13): the hold's 0.28 s step gate,
+    on page-01 grids where 0.28 s and 0.3 s step differently -- the VCU's
+    own 298 / 302 ms in turn, and a flat 290 ms (test_invariants'
+    hold_cadence_steps). Every other trace steps on a 100 ms grid, where
+    both gates step at 300 ms, so without these the C++ port's gate is
+    never told apart from the old one. Refuses to record a run the
+    invariants reject or one that took too few steps to show anything."""
+    made = []
+    for gaps in ((298, 302), (290,)):
+        overrides, steps = I.hold_cadence_steps(gaps)
+        c = I._directed(lambda: (overrides, steps), label="cadence")
+        problems = c.finish()
+        if problems or c.hold_counts["down"] < 6:
+            raise SystemExit("hold cadence %s: %s, %d down steps -- not "
+                             "recording it" % (gaps, problems[:1],
+                                               c.hold_counts["down"]))
+        lines = []
+        for k, t, fid, ext, data in steps:
+            if k == "T":
+                lines.append("T %d" % t)
+            else:
+                lines.append("%s %d %X %d %s" % (k, t, fid, 1 if ext else 0,
+                                                 data.hex()))
+        made.append(write(outdir, "%shold_cadence_%s" % (
+            PREFIX, "_".join(str(g) for g in gaps)), overrides, lines))
+    return made
+
+
 def random_traces(outdir):
     made = []
     for seed, rate, junk in RANDOM_SEEDS:
@@ -239,7 +268,7 @@ def main():
 
     made = (trip_traces(a.outdir) + control_trace(a.outdir)
             + definition_traces(a.outdir) + silence_traces(a.outdir)
-            + learned_cc_traces(a.outdir))
+            + learned_cc_traces(a.outdir) + hold_cadence_traces(a.outdir))
     for path, n in made:
         print("  %-52s %6d steps" % (os.path.basename(path), n))
 
