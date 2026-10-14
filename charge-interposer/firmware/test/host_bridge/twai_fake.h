@@ -133,6 +133,20 @@ class TwaiFake {
   const std::vector<twai_mode_t>& installModes() const {
     return install_modes_;
   }
+  // The host-clock time of every install, paired with installModes(): spec
+  // 2.3 (4f5168ae) bounds WHEN the power-up switch to listen-only happens
+  // -- all four sent, or 50 ms -- so L2 measures it from the driver's side.
+  const std::vector<uint64_t>& installTimesUs() const {
+    return install_times_us_;
+  }
+  // The host-clock time of every transmit the driver ACCEPTED into its
+  // queue. The power-up wait starts when the round is queued, not when the
+  // driver was installed: setup() does other work in between (the charger
+  // controller's SPI init among it), so the switch is timed from the first
+  // of these after the normal install.
+  const std::vector<uint64_t>& txQueuedTimesUs() const {
+    return tx_queued_times_us_;
+  }
   uint32_t listenOnlyTxAttempts() const { return listen_only_tx_attempts_; }
 
   // Make driver_install() fail, so TwaiPort::begin() returns false.
@@ -206,6 +220,8 @@ class TwaiFake {
   bool install_fails_ = false;
   twai_mode_t mode_ = TWAI_MODE_NORMAL;
   std::vector<twai_mode_t> install_modes_;
+  std::vector<uint64_t> install_times_us_;
+  std::vector<uint64_t> tx_queued_times_us_;
   uint32_t listen_only_tx_attempts_ = 0;
 };
 

@@ -38,6 +38,8 @@ void TwaiFake::hardReset() {
   install_fails_ = false;
   mode_ = TWAI_MODE_NORMAL;
   install_modes_.clear();
+  install_times_us_.clear();
+  tx_queued_times_us_.clear();
   listen_only_tx_attempts_ = 0;
 }
 
@@ -97,6 +99,7 @@ esp_err_t TwaiFake::install(const twai_general_config_t* g) {
   alerts_enabled_ = g ? g->alerts_enabled : 0;
   mode_ = g ? g->mode : TWAI_MODE_NORMAL;
   install_modes_.push_back(mode_);
+  install_times_us_.push_back(hostclock::micros());
   alerts_ = 0;
   rx_.clear();
   // A fresh install resets the controller's cumulative counters. THIS is
@@ -223,6 +226,7 @@ esp_err_t TwaiFake::transmit(const twai_message_t* m) {
   f.rtr = m->rtr != 0;
   f.len = m->data_length_code > 8 ? 8 : m->data_length_code;
   for (uint8_t i = 0; i < f.len; i++) f.data[i] = m->data[i];
+  tx_queued_times_us_.push_back(hostclock::micros());
   if (wire_time_) {
     advanceWire();
     // "Transmission will start immediately if no other messages are

@@ -125,11 +125,15 @@ void vehicleFrame(uint32_t id) {
 }
 
 // Wire both models in and boot. Returns after setup().
-void boot(bool charger_starts = true, bool vehicle_starts = true) {
+void boot(bool charger_starts = true, bool vehicle_starts = true,
+          bool vehicle_acked = true) {
   fake().hardReset();
   // Frames take airtime on the vehicle wire, so twai_stop's documented
   // discard of the TX queue can bite (twai_fake.h, setWireTime).
   fake().setWireTime(true);
+  // Spec 2.3 (4f5168ae): with nothing on the vehicle segment to ACK, the
+  // power-up round cannot complete and the switch waits out its 50 ms.
+  fake().setAcknowledged(vehicle_acked);
   fake().setInstallFails(!vehicle_starts);
   hostclock::attach(g_chip, 10);          // MCP_CS
   hostclock::attachInt(3);                // MCP_INT
@@ -1655,8 +1659,49 @@ bool vehSentHas(uint32_t id, uint8_t tag, size_t from) {
   return false;
 }
 
+// Spec 2.3 (4f5168ae, user 2026-10-13): the switch to listen-only after the
+// power-up round "waits until all four are sent or 50 ms have passed,
+// whichever comes first". Measured on the driver's side: the host-clock
+// time from the round's first frame entering the driver's queue to the
+// listen-only install. NOT from the normal install: setup() spends ~10 ms
+// between the two on other work (the MCP2515's SPI init among it), which
+// a first version of this measure counted as part of the wait.
+// -1 if the boot did not install normal then listen-only with a frame
+// queued in between.
+const int64_t ROUND_WAIT_MAX_US = 50000;
+const int64_t SETMODE_ALLOW_US = 1000;   // the switch's own teardown
+
+int64_t bootSwitchUs() {
+  const std::vector<twai_mode_t>& m = fake().installModes();
+  const std::vector<uint64_t>& t = fake().installTimesUs();
+  if (m.size() < 2 || t.size() < 2 || m[0] != TWAI_MODE_NORMAL ||
+      m[1] != TWAI_MODE_LISTEN_ONLY)
+    return -1;
+  for (uint64_t q : fake().txQueuedTimesUs()) {
+    if (q >= t[0] && q <= t[1]) return (int64_t)(t[1] - q);
+  }
+  return -1;
+}
+
+int64_t fourFramesUs() {
+  twaifake::Frame f;
+  std::memset(&f, 0, sizeof(f));
+  f.len = 8;
+  return 4 * (int64_t)twaifake::TwaiFake::frameUs(f);
+}
+
 void caseListenOnlyBoot() {
   boot();
+  {
+    const int64_t sw = bootSwitchUs();
+    std::printf("  --  power-up switch %lld us after the round was queued "
+                "(four frames' airtime %lld us, bound %lld us)\n",
+                (long long)sw, (long long)fourFramesUs(),
+                (long long)ROUND_WAIT_MAX_US);
+    check(sw >= fourFramesUs() && sw < ROUND_WAIT_MAX_US / 5,
+          "2.3: with an ACKer the wait ends EARLY, once the four are sent: "
+          "no sooner than their airtime, well under 50 ms");
+  }
   const size_t w0 = g_chip->wire().size();
   vehicleOnly(10000);
   std::printf("  --  10 s, charger silent: vehicle side %u frame(s) "
@@ -1681,6 +1726,34 @@ void caseListenOnlyBoot() {
   check(fake().invalidStateCalls() == 0,
         "no wrong-state TWAI call across the mode change");
 }
+
+// Spec 2.3 with NOTHING acknowledging on the vehicle segment: none of the
+// four can be sent, so the switch comes at 50 ms -- not sooner, and not
+// later than 50 ms plus the switch itself -- and the round reaches the
+// wire as nothing at all.
+void caseRoundNoAck(bool charger_starts) {
+  boot(charger_starts, /*vehicle_starts=*/true, /*vehicle_acked=*/false);
+  const int64_t sw = bootSwitchUs();
+  std::printf("  --  no ACKer: power-up switch %lld us after the round "
+              "was queued, vehicle side %u frame(s), cut %u, discarded %u\n",
+              (long long)sw, vehSince(0), fake().txCutByStop(),
+              fake().txDiscardedByStop());
+  check(sw >= ROUND_WAIT_MAX_US &&
+            sw <= ROUND_WAIT_MAX_US + SETMODE_ALLOW_US,
+        "2.3: with no ACKer the switch waits out the 50 ms and comes no "
+        "later than 50 ms plus the switch");
+  check(vehSince(0) == 0,
+        "2.3: with no ACKer none of the four reaches the wire");
+  check(fake().mode() == TWAI_MODE_LISTEN_ONLY &&
+            fake().listenOnlyTxAttempts() == 0,
+        "2.3: ...and the port is listen-only afterwards, with no transmit "
+        "attempted there");
+  check(fake().invalidStateCalls() == 0,
+        "no wrong-state TWAI call across the wait and the switch");
+}
+
+void caseListenOnlyBootNoAck() { caseRoundNoAck(true); }
+void caseFailedStartNoAck() { caseRoundNoAck(false); }
 
 void caseListenOnlySwitch() {
   boot();
@@ -1786,6 +1859,8 @@ const Case kCases[] = {
     {"busoff-vehicle", caseBusOffVehicle},
     {"failed-start-vehicle", caseFailedStartVehicle},
     {"listen-only-boot", caseListenOnlyBoot},
+    {"listen-only-boot-noack", caseListenOnlyBootNoAck},
+    {"failed-start-noack", caseFailedStartNoAck},
     {"listen-only-switch", caseListenOnlySwitch},
     {"listen-only-revert", caseListenOnlyRevert},
 };
