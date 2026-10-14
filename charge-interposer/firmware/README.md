@@ -634,10 +634,17 @@ The bench and bring-up builds keep their prints and bound the block instead:
 `INTP_SERIAL_BEGIN` sets the CDC TX timeout to `INTP_CDC_TX_TIMEOUT_MS`,
 1 ms, so output a host is not reading is dropped rather than held (spec 8.3,
 user 2026-10-14). `diag`, `selftest` and `slcan` set the same value beside
-their own `Serial.begin()`. **1 and not 0**: in that loop the timeout
-doubles as the retry counter, and 0 makes it wrap on a `uint32_t` so the
-write never returns at all -- the comment at `INTP_CDC_TX_TIMEOUT_MS` in
-`main.cpp` has the mechanism and the measurement it came from.
+their own `Serial.begin()`.
+
+**The setting is 1 and 8.3's bound is 2 ms** (`6505ded27e460190`), and they
+are different numbers. The macro is what `setTxTimeoutMs()` gets, and in
+that loop the timeout doubles as the retry counter, so 1 buys exactly one
+pass; 2 ms is what the spec allows the episode that one pass produces, after
+E10 measured it at more than a millisecond (below). **Do not raise the macro
+to 2 to match the bound** -- nothing asks for a second pass. **And 1 and not
+0**: 0 makes the counter wrap on a `uint32_t` so the write never returns at
+all -- the comment at `INTP_CDC_TX_TIMEOUT_MS` in `main.cpp` has the
+mechanism and the measurement it came from.
 
 Verified from the images, not the source (2026-10-03):
 
@@ -761,9 +768,31 @@ window -- and the published fields localise it without reading the source,
 because `round=` and `switch=` are normal on those boots and `drained=0`,
 which leaves that print as the only code in the span. Spec 8.3 now forbids
 the wait and `INTP_CDC_TX_TIMEOUT_MS` sets the timeout to 1 ms on every
-serial-enabled build, so the figures above are expected to hold whether or
-not a host is reading; the tester's evidence is what settles that. The
-unexplained 111,388 us recorded on 2026-10-13 was this.
+serial-enabled build -- the setting stays 1 although the bound is now 2 ms,
+see above. **E10 settled it on silicon and the figures above do hold whether
+or not a host is reading** (`charge-interposer-test-evidence.md`, 8.3).
+Three sets, and they are not interchangeable:
+
+| Boot | ACKed | No acknowledger |
+|---|---|---|
+| baseline: RTS reset, host reading | 12,163-12,238 us | 61,422-61,536 us |
+| fix, host attached, buffer full, RTS reset | 12,209-12,216 us | 61,357-61,386 us |
+| fix, no host at the boot (a COM3 close resets the board) | 13,386 us every boot | 62,386 us every boot |
+| **control `6cacaf88`, same close-boots** | **112,382 us (+100,164)** | **161,383 us (+99,891)** |
+
+6/6 PASS on both fix classes; the check fails the control on both, so it can
+fail. The buffer-full RTS resets leave no residue at all.
+
+**The residue is the close-boot class**: +1.148 ms over the baseline's max
+and +1.223 ms over its min when ACKed, +0.850 ms over the max with no
+acknowledger -- which is what moved 8.3's bound from 1 ms to 2. Read it as
+an extra over a baseline that already contains an RTS reset with the host
+reading, not as an isolated timing of the wait; and note it is more than the
+single `delay(1)` accounts for on its own, which is not explained anywhere
+and is inside the bound's margin. Bridging is bounded the same way: after
+the buffer fills, a max excess of 0.755 ms over 185,854 gaps against a
+2.131 ms limit, where the control shows one +99.284 ms at the first print
+after the fill. The unexplained 111,388 us recorded on 2026-10-13 was this.
 
 ### Why a repeat ended -- the `c` field of `REPEAT ended`
 

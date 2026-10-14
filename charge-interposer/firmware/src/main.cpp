@@ -36,8 +36,9 @@
 // Every print below runs inside the bridge loop. A USB host attached but not
 // reading can block the CDC write and the bridge would stall with it. Two
 // different answers to that, and both are needed. The bench and bring-up
-// builds bound the block to 1 ms once per stall and then drop, which spec
-// 8.3 requires of them -- see INTP_CDC_TX_TIMEOUT_MS in the #else branch.
+// builds bound the block to under 2 ms once per stall and then drop, which
+// spec 8.3 requires of them -- see INTP_CDC_TX_TIMEOUT_MS in the #else
+// branch.
 // The truck build compiles the calls OUT under -DINTP_NO_SERIAL
 // ([env:truck]) rather than guarding them at run time, so there is no call
 // left to block on at all. The spec 8.2 diagnostic frames are unaffected -- 0x7F4-0x7F7 are
@@ -50,9 +51,9 @@
 #define INTP_PRINTLN(x)         ((void)0)
 #define INTP_SERIAL_READY       false
 #else
-// Spec 8.3 (user, 2026-10-14; spec a9a8c36c3c52bbb9): a bench or bring-up
+// Spec 8.3 (user, 2026-10-14; spec 6505ded27e460190): a bench or bring-up
 // build DROPS output a host is not reading rather than holding it, after at
-// most 1 ms once each time a host stops reading. So a laptop that stops
+// most 2 ms once each time a host stops reading. So a laptop that stops
 // reading cannot stall bridging or lengthen the power-up window. Where the wait was: Arduino core 3.2.1's HWCDC::write(), which on
 // a TX ring buffer that has stopped draining runs `tries = tx_timeout_ms`
 // passes of delay(1) and only then latches `connected = false`. The default
@@ -70,6 +71,19 @@
 // pass: tries-- reaches 0, one delay(1), connected = false, and every later
 // write takes the non-blocking drop path until the host reads again and the
 // IN_EMPTY ISR sets connected back.
+//
+// THE SETTING IS 1 AND THE BOUND IS 2 MS. They are different numbers: the
+// macro is what setTxTimeoutMs() gets, and 2 ms is what 8.3 allows the
+// resulting episode. E10 measured that episode as a residue of +1.148 ms
+// over a host-reading RTS-reset baseline's max and +1.223 ms over its min
+// on ACKed close-boots, +0.850 ms over the max with no acknowledger
+// (charge-interposer-test-evidence.md, 8.3), which is why the user put the
+// bound at 2 and not 1. Two things not to read into that figure: it is an
+// extra over a baseline that itself contains an RTS reset with the host
+// reading, not an isolated timing of the wait, and it is more than the one
+// delay(1) accounts for on its own -- where the rest comes from is not
+// explained here. DO NOT RAISE THE MACRO TO 2 to match the bound; nothing
+// asks for a second pass.
 #define INTP_CDC_TX_TIMEOUT_MS  1
 #define INTP_SERIAL_BEGIN(baud) (Serial.begin(baud), Serial.setTxTimeoutMs(INTP_CDC_TX_TIMEOUT_MS))
 #define INTP_PRINTF(...)        Serial.printf(__VA_ARGS__)
