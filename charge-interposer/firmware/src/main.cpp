@@ -116,6 +116,28 @@ static uint32_t mode_switches = 0;
 static uint32_t mode_switch_fail = 0;
 static uint32_t listen_suppressed = 0;
 
+// Spec 2.3, the two figures the reviewer asked to be measured rather than
+// guessed from a datasheet (2026-10-13). Both are micros() on the board.
+//
+//   boot_window_us  from the vehicle controller coming up in NORMAL mode to
+//                   the first switch into listen-only completing. It is the
+//                   window in which the board can write to the vehicle
+//                   segment at power-up, and it INCLUDES the deliberate
+//                   round of four status frames, because 2.3 puts the round
+//                   inside it. Zero until the first switch completes.
+//   switch_us       how long setMode()'s driver stop-and-reinstall takes.
+//                   Last and worst are both kept: a mean would hide the one
+//                   that matters, and the figure feeds how many frames the
+//                   vehicle segment can lose across a switch.
+//   drain_frames    frames read out of the TWAI queue and handed to the core
+//                   before a teardown, which would otherwise have gone with
+//                   the driver. A standing zero on a loaded bus would mean
+//                   the drain is in the wrong place.
+static uint32_t boot_window_us = 0;
+static uint32_t switch_us_last = 0;
+static uint32_t switch_us_max = 0;
+static uint32_t drain_frames = 0;
+
 // --- diagnostics (spec 8.2 / 8.3) -----------------------------------------
 // Build id (0x7F7 B0-B3): the first four bytes of this application's ELF
 // SHA-256, read from the ESP-IDF app descriptor.
@@ -289,11 +311,21 @@ static void applyVehicleMode(uint32_t t_ms) {
     drain.clear();
     core->onVehicleFrame(f.id, f.ext, f.data, f.len, t_ms, drain);
     dispatch(drain);
+    drain_frames++;
   }
 
-  if (vehicle.setMode(want)) {
+  // micros() rather than millis(): the whole quantity is expected to be
+  // under a millisecond, and a figure of "0 or 1 ms" would not answer how
+  // many frames a 2,250 fps segment can lose across the switch.
+  const uint32_t t0_us = micros();
+  const bool switched = vehicle.setMode(want);
+  const uint32_t dt_us = micros() - t0_us;
+  if (switched) {
+    switch_us_last = dt_us;
+    if (dt_us > switch_us_max) switch_us_max = dt_us;
     mode_switches++;
-    INTP_PRINTF("vehicle port -> %s\n", want ? "LISTEN-ONLY" : "normal");
+    INTP_PRINTF("vehicle port -> %s (%lu us)\n",
+                want ? "LISTEN-ONLY" : "normal", (unsigned long)dt_us);
   } else {
     // Refused, which TwaiPort::setMode documents as legitimate during
     // bus-off recovery. The core's wish stands and the next pass tries
@@ -433,12 +465,17 @@ static void status(uint32_t t_ms) {
   // records: a counter visible only when some other counter is non-zero is
   // not observable.
   INTP_PRINTF("  MODE veh=%s core wants %s | switches=%lu refused=%lu "
-              "suppressed=%lu\n",
+              "suppressed=%lu | boot=%luus switch=%lu/%luus(last/max) "
+              "drained=%lu\n",
               vehicle.listenOnly() ? "listen-only" : "normal",
               core->vehicleListenOnly() ? "listen-only" : "normal",
               (unsigned long)mode_switches,
               (unsigned long)mode_switch_fail,
-              (unsigned long)listen_suppressed);
+              (unsigned long)listen_suppressed,
+              (unsigned long)boot_window_us,
+              (unsigned long)switch_us_last,
+              (unsigned long)switch_us_max,
+              (unsigned long)drain_frames);
 
   // Anything non-zero on this line means the bridge is not transparent, which
   // matters more than any of the numbers above.
@@ -555,6 +592,10 @@ void setup() {
   mcp_spi.begin(MCP_SCK, MCP_MISO, MCP_MOSI, MCP_CS);
 
   const bool v_ok = vehicle.begin(BITRATE);
+  // Spec 2.3: the boot window starts HERE, the moment the vehicle
+  // controller is up in normal mode, and ends when the first switch into
+  // listen-only completes at the end of setup().
+  const uint32_t veh_up_us = micros();
   INTP_PRINTF("CAN1 (vehicle, TWAI)   : %s\n", v_ok ? "up" : "FAILED");
   const bool c_ok = charger.begin(BITRATE);
   INTP_PRINTF("CAN2 (charger, MCP2515): %s\n", c_ok ? "up" : "FAILED");
@@ -607,6 +648,9 @@ void setup() {
     last_diag_state = core->state();
   }
   applyVehicleMode(millis());
+  boot_window_us = micros() - veh_up_us;
+  INTP_PRINTF("spec 2.3: vehicle port in normal mode for %lu us at boot, "
+              "round of 4 included\n", (unsigned long)boot_window_us);
 }
 
 void loop() {
