@@ -41,8 +41,11 @@
 # same string, so ESP-IDF embeds it as esp_app_desc.version instead of running a
 # second `git describe` of its own, and firmware reads the name from there at
 # runtime (esp_app_get_description()->version). Nothing passes it on a compile
-# line, so a name change recompiles ESP-IDF's descriptor file and relinks, and
-# nothing else. ESP-IDF cuts PROJECT_VER to the version field's 31 characters
+# line, so a name change recompiles two files and relinks: ESP-IDF's descriptor
+# file (esp_app_desc.c), and project_elf_src_<target>.c, the empty source ESP-IDF
+# generates for the ELF target, whose object is named after it -- and the ELF
+# is named after the image (project()). Nothing of the project's own is
+# recompiled. ESP-IDF cuts PROJECT_VER to the version field's 31 characters
 # without a word (components/esp_app_format/CMakeLists.txt), and the firmware
 # would then report a name cut short, so a longer name fails configuring here
 # instead.
