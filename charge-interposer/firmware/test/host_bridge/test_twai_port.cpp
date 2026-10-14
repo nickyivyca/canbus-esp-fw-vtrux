@@ -493,6 +493,23 @@ int main() {
     twai_get_status_info(&st);
     check(st.state == TWAI_STATE_STOPPED,
           "fake, auto recovery: STOPPED (not running) at 2816 us");
+    // branch a: the frame in flight at the strike is booked failed
+    twai_start();
+    const size_t s2 = fake().sent().size();
+    twai_get_status_info(&st);
+    const uint32_t f0 = st.tx_failed_count;
+    fake().setBusOffAfterSent(1);
+    fake().setBusOffInFlightFails(true);
+    for (int i = 0; i < 4; i++) twai_transmit(&m, 0);
+    hostclock::advance(5 * us);
+    twai_get_status_info(&st);
+    check(st.state == TWAI_STATE_BUS_OFF && fake().sent().size() == s2 + 1 &&
+              st.tx_failed_count == f0 + 1 && st.msgs_to_tx == 2,
+          "fake, branch a: the halted frame is booked tx_failed and leaves "
+          "msgs_to_tx in one step (1 sent, 1 failed, 2 still queued)");
+    fake().setBusOffInFlightFails(false);
+    twai_initiate_recovery();
+    hostclock::advance(3000);
     // the can-fail knob: msgs_to_tx reads 0 while frames are queued
     twai_start();
     fake().setAcknowledged(false);

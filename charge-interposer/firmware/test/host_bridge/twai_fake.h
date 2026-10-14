@@ -123,6 +123,18 @@ class TwaiFake {
   // 1408 bit times = 2816 us at 500 kbit/s), instead of waiting for the
   // test to call completeRecovery(). Off by default.
   void setAutoRecovery(bool yes) { auto_recovery_ = yes; }
+  // Which way the frame IN FLIGHT at the strike is booked. ESP-IDF's HAL
+  // (twai_hal_iram.c, twai_hal_decode_interrupt) halts it at bus-off; if a
+  // TX-buffer-free event also fires for it, twai.c books it as
+  // tx_failed_count++ with tx_msg_count-- in the same handler (branch a);
+  // if not, it stays in the count and recovery discards it with the rest
+  // (branch b, the default). Which one the silicon takes is not settled
+  // from source: it turns on the buffer status at bus-off and an errata
+  // option, so L2 runs both.
+  void setBusOffInFlightFails(bool yes) { busoff_inflight_fails_ = yes; }
+  // Frames booked failed by branch a, cumulative across reinstalls
+  // (tx_failed_count itself restarts at every install).
+  uint32_t txFailedInFlightAtBusOff() const { return inflight_failed_; }
   // A CAN-FAIL knob, not a model of the hardware: status() reports an
   // empty TX queue whatever is pending, so a count derived from
   // msgs_to_tx reads frames as sent that never reached the wire.
@@ -226,6 +238,8 @@ class TwaiFake {
   int busoff_after_sent_ = -1;
   uint32_t sent_at_arm_ = 0;
   bool auto_recovery_ = false;
+  bool busoff_inflight_fails_ = false;
+  uint32_t inflight_failed_ = 0;
   uint64_t recovery_done_us_ = 0;
   bool misreport_queue_empty_ = false;
   void tickRecovery();

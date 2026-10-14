@@ -47,6 +47,11 @@
 // header, and declaring them is what a hosted firmware test does.
 void setup();
 void loop();
+// Spec 2.3 (4f5168ae): the power-up round's count and wait, read-only from
+// main.cpp (reviewer's ruling (c), 2026-10-14: L2 reads the value here,
+// the bench checks that the serial line prints the same).
+uint8_t intpBootRoundSent();
+uint32_t intpBootRoundWaitUs();
 
 using mcpfake::Mcp2515Fake;
 using twaifake::fake;
@@ -124,6 +129,10 @@ void vehicleFrame(uint32_t id) {
   fake().deliver(id, true, d, 8);
 }
 
+// A case's fake setup that must happen after hardReset() and before
+// setup() -- e.g. a bus-off armed to strike inside the power-up wait.
+void (*g_pre_setup)() = nullptr;
+
 // Wire both models in and boot. Returns after setup().
 void boot(bool charger_starts = true, bool vehicle_starts = true,
           bool vehicle_acked = true) {
@@ -134,6 +143,7 @@ void boot(bool charger_starts = true, bool vehicle_starts = true,
   // Spec 2.3 (4f5168ae): with nothing on the vehicle segment to ACK, the
   // power-up round cannot complete and the switch waits out its 50 ms.
   fake().setAcknowledged(vehicle_acked);
+  if (g_pre_setup) g_pre_setup();
   fake().setInstallFails(!vehicle_starts);
   hostclock::attach(g_chip, 10);          // MCP_CS
   hostclock::attachInt(3);                // MCP_INT
@@ -1701,6 +1711,11 @@ void caseListenOnlyBoot() {
     check(sw >= fourFramesUs() && sw < ROUND_WAIT_MAX_US / 5,
           "2.3: with an ACKer the wait ends EARLY, once the four are sent: "
           "no sooner than their airtime, well under 50 ms");
+    std::printf("  --  board's count %u, wait %u us; wire %u\n",
+                (unsigned)intpBootRoundSent(),
+                (unsigned)intpBootRoundWaitUs(), vehSince(0));
+    check(intpBootRoundSent() == 4 && vehSince(0) == 4,
+          "2.3: the board's count of the round is 4, and 4 are on the wire");
   }
   const size_t w0 = g_chip->wire().size();
   vehicleOnly(10000);
@@ -1744,6 +1759,10 @@ void caseRoundNoAck(bool charger_starts) {
         "later than 50 ms plus the switch");
   check(vehSince(0) == 0,
         "2.3: with no ACKer none of the four reaches the wire");
+  std::printf("  --  board's count %u, wait %u us\n",
+              (unsigned)intpBootRoundSent(), (unsigned)intpBootRoundWaitUs());
+  check(intpBootRoundSent() == 0,
+        "2.3: ...and the board's count is 0, matching the wire");
   check(fake().mode() == TWAI_MODE_LISTEN_ONLY &&
             fake().listenOnlyTxAttempts() == 0,
         "2.3: ...and the port is listen-only afterwards, with no transmit "
@@ -1753,6 +1772,78 @@ void caseRoundNoAck(bool charger_starts) {
 }
 
 void caseListenOnlyBootNoAck() { caseRoundNoAck(true); }
+
+// Does the board's count agree with the frames that reached the wire?
+// Every count case goes through this, and the can-fails show it can say no.
+bool roundCountMatchesWire(const char* tag) {
+  const unsigned n = intpBootRoundSent();
+  const unsigned w = vehSince(0);
+  std::printf("  --  %s: board's count %u, wire %u, recovery discarded %u, "
+              "stop discarded %u (+%u cut)\n", tag, n, w,
+              fake().txDiscardedByRecovery(), fake().txDiscardedByStop(),
+              fake().txCutByStop());
+  return n == w;
+}
+
+// Reviewer, 2026-10-14: a bus-off inside the 50 ms wait, with round frames
+// still queued. Recovery (or the switch's teardown) discards them; they
+// never reach the wire and must not be counted as sent.
+void armBusOffAfterOne() {
+  fake().setBusOffAfterSent(1);
+  fake().setAutoRecovery(true);
+}
+
+// Branch a of twai_fake.h's setBusOffInFlightFails: the frame halted by
+// the bus-off is booked as tx_failed (and leaves msgs_to_tx) before the
+// recovery discards the rest -- the reviewer's double-count edge.
+void armBusOffInFlightFails() {
+  armBusOffAfterOne();
+  fake().setBusOffInFlightFails(true);
+}
+
+void roundBusOff(void (*arm)()) {
+  g_pre_setup = arm;
+  boot();
+  g_pre_setup = nullptr;
+  const uint32_t lost = fake().txDiscardedByRecovery() +
+                        fake().txDiscardedByStop() + fake().txCutByStop();
+  const uint32_t failed = fake().txFailedInFlightAtBusOff();
+  check(vehSince(0) >= 1 && lost + failed >= 1,
+        "premise: the bus-off struck inside the wait -- a round frame on the "
+        "wire, and queued ones discarded");
+  check(roundCountMatchesWire("bus-off mid-wait"),
+        "2.3: after a bus-off mid-wait the board's count equals the frames "
+        "that reached the wire -- discarded frames are not counted as sent");
+  // The driver may still be RECOVERING when setup() ends (the switch is
+  // retried across a bus-off), so the mode is judged after 100 ms of loop.
+  const uint32_t w_boot = vehSince(0);
+  vehicleOnly(100);
+  std::printf("  --  100 ms later: mode %d, driver state %d, installs %u, "
+              "vehicle side +%u\n", (int)fake().mode(), (int)fake().state(),
+              (unsigned)fake().installModes().size(), vehSince(0) - w_boot);
+  check(fake().mode() == TWAI_MODE_LISTEN_ONLY && vehSince(0) == w_boot,
+        "2.3: ...and within 100 ms of the boot the port is listen-only, "
+        "with nothing more on the vehicle side");
+}
+
+void caseRoundBusOff() { roundBusOff(armBusOffAfterOne); }
+void caseRoundBusOffInFlightFails() { roundBusOff(armBusOffInFlightFails); }
+
+// CAN-FAIL for roundCountMatchesWire: the fake misreports an empty queue
+// in a no-ACKer boot, so a count derived from msgs_to_tx reads frames as
+// sent while the wire carries none. The check must say they disagree.
+void armMisreport() { fake().setMisreportQueueEmpty(true); }
+
+void caseRoundCountCanFail() {
+  g_pre_setup = armMisreport;
+  boot(true, true, /*vehicle_acked=*/false);
+  g_pre_setup = nullptr;
+  check(vehSince(0) == 0 && intpBootRoundSent() > 0,
+        "can-fail premise: with msgs_to_tx misreported, the board counts "
+        "frames the wire never carried");
+  check(!roundCountMatchesWire("can-fail, misreported queue"),
+        "can-fail: roundCountMatchesWire reports the disagreement");
+}
 void caseFailedStartNoAck() { caseRoundNoAck(false); }
 
 void caseListenOnlySwitch() {
@@ -1861,6 +1952,9 @@ const Case kCases[] = {
     {"listen-only-boot", caseListenOnlyBoot},
     {"listen-only-boot-noack", caseListenOnlyBootNoAck},
     {"failed-start-noack", caseFailedStartNoAck},
+    {"round-busoff", caseRoundBusOff},
+    {"round-busoff-inflight-failed", caseRoundBusOffInFlightFails},
+    {"round-count-can-fail", caseRoundCountCanFail},
     {"listen-only-switch", caseListenOnlySwitch},
     {"listen-only-revert", caseListenOnlyRevert},
 };

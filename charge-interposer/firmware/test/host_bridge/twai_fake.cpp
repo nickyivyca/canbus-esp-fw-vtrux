@@ -28,6 +28,8 @@ void TwaiFake::hardReset() {
   busoff_after_sent_ = -1;
   sent_at_arm_ = 0;
   auto_recovery_ = false;
+  busoff_inflight_fails_ = false;
+  inflight_failed_ = 0;
   recovery_done_us_ = 0;
   misreport_queue_empty_ = false;
   head_start_us_ = 0;
@@ -131,6 +133,7 @@ esp_err_t TwaiFake::uninstall() {
 }
 
 esp_err_t TwaiFake::start() {
+  tickRecovery();   // recovery completes on its own, read or not
   // "Driver is not in stopped state, or is not installed."
   if (!installed_ || state_ != TWAI_STATE_STOPPED)
     return ESP_ERR_INVALID_STATE;
@@ -198,6 +201,13 @@ void TwaiFake::advanceWire() {
         sent_.size() - sent_at_arm_ >= (uint32_t)busoff_after_sent_) {
       busoff_after_sent_ = -1;       // once
       alerts_ |= TWAI_ALERT_TX_SUCCESS;
+      if (busoff_inflight_fails_ && !tx_pending_.empty()) {
+        // branch a: the halted frame is booked failed, out of the queue
+        tx_failed_count_++;
+        inflight_failed_++;
+        alerts_ |= TWAI_ALERT_TX_FAILED;
+        tx_pending_.pop_front();
+      }
       enterBusOff();                 // what is still queued stays queued
       return;
     }
@@ -222,6 +232,7 @@ void TwaiFake::setAcknowledged(bool yes) {
 
 esp_err_t TwaiFake::transmit(const twai_message_t* m) {
   transmit_calls_++;            // counted before any state check
+  tickRecovery();
   // "TWAI driver is not in running state, or is not installed."
   if (!installed_ || state_ != TWAI_STATE_RUNNING)
     return ESP_ERR_INVALID_STATE;
