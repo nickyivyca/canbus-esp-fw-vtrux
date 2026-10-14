@@ -2,6 +2,8 @@
 
 #include <cstring>
 
+#include "host_clock.h"
+
 namespace twaifake {
 
 TwaiFake& fake() {
@@ -22,6 +24,10 @@ void TwaiFake::hardReset() {
   sent_.clear();
   auto_flush_ = true;
   tx_discarded_by_recovery_ = 0;
+  wire_time_ = false;
+  head_start_us_ = 0;
+  tx_discarded_by_stop_ = 0;
+  tx_cut_by_stop_ = 0;
   rx_missed_count_ = 0;
   rx_overrun_count_ = 0;
   tx_failed_count_ = 0;
@@ -110,6 +116,9 @@ esp_err_t TwaiFake::uninstall() {
     return ESP_ERR_INVALID_STATE;
   installed_ = false;
   rx_.clear();
+  // A bus-off driver can still hold queued frames (initiateRecovery is
+  // what clears them). Uninstalling frees the queue, so they are gone.
+  dropQueuedAtStop();
   return ESP_OK;
 }
 
@@ -117,6 +126,10 @@ esp_err_t TwaiFake::start() {
   // "Driver is not in stopped state, or is not installed."
   if (!installed_ || state_ != TWAI_STATE_STOPPED)
     return ESP_ERR_INVALID_STATE;
+  // Header: "The TX and RX queue are reset in this function, clearing any
+  // messages that are unread or pending transmission."
+  rx_.clear();
+  dropQueuedAtStop();
   state_ = TWAI_STATE_RUNNING;
   return ESP_OK;
 }
@@ -125,8 +138,44 @@ esp_err_t TwaiFake::stop() {
   // "Driver is not in running state, or is not installed."
   if (!installed_ || state_ != TWAI_STATE_RUNNING)
     return ESP_ERR_INVALID_STATE;
+  // Header: "Any messages in the TX queue are cleared", and "A message
+  // currently being transmitted ... will be ceased immediately". Frames
+  // whose airtime has already ended reached the wire first.
+  advanceWire();
+  dropQueuedAtStop();
   state_ = TWAI_STATE_STOPPED;
   return ESP_OK;
+}
+
+void TwaiFake::dropQueuedAtStop() {
+  if (tx_pending_.empty()) return;
+  if (wire_time_ && state_ == TWAI_STATE_RUNNING) {
+    tx_cut_by_stop_++;                       // the head was on the wire
+    tx_discarded_by_stop_ += (uint32_t)tx_pending_.size() - 1;
+  } else {
+    tx_discarded_by_stop_ += (uint32_t)tx_pending_.size();
+  }
+  tx_pending_.clear();
+}
+
+uint32_t TwaiFake::frameUs(const Frame& f) {
+  // Unstuffed frame bits incl. ACK, EOF and the 3-bit intermission: 47
+  // for a standard data frame, 67 for an extended one, plus 8 per data
+  // byte (none for an RTR). 2 us per bit at 500 kbit/s.
+  const uint32_t bits = (f.ext ? 67u : 47u) + (f.rtr ? 0u : 8u * f.len);
+  return bits * 2u;
+}
+
+void TwaiFake::advanceWire() {
+  if (!wire_time_ || state_ != TWAI_STATE_RUNNING) return;
+  const uint64_t now = hostclock::micros();
+  while (!tx_pending_.empty()) {
+    const uint64_t done = head_start_us_ + frameUs(tx_pending_.front());
+    if (done > now) break;
+    sent_.push_back(tx_pending_.front());
+    tx_pending_.pop_front();
+    head_start_us_ = done;     // the next frame follows back to back
+  }
 }
 
 esp_err_t TwaiFake::transmit(const twai_message_t* m) {
@@ -154,6 +203,14 @@ esp_err_t TwaiFake::transmit(const twai_message_t* m) {
   f.rtr = m->rtr != 0;
   f.len = m->data_length_code > 8 ? 8 : m->data_length_code;
   for (uint8_t i = 0; i < f.len; i++) f.data[i] = m->data[i];
+  if (wire_time_) {
+    advanceWire();
+    // "Transmission will start immediately if no other messages are
+    // queued"; otherwise the frame waits behind the ones ahead of it.
+    if (tx_pending_.empty()) head_start_us_ = hostclock::micros();
+    tx_pending_.push_back(f);
+    return ESP_OK;
+  }
   tx_pending_.push_back(f);
   if (auto_flush_) flushTx();
   return ESP_OK;
@@ -206,6 +263,7 @@ esp_err_t TwaiFake::status(twai_status_info_t* s) {
   if (!installed_) return ESP_ERR_INVALID_STATE;
   if (!s) return ESP_ERR_INVALID_ARG;
   std::memset(s, 0, sizeof(*s));
+  advanceWire();
   s->state = state_;
   s->msgs_to_tx = (uint32_t)tx_pending_.size();
   s->msgs_to_rx = (uint32_t)rx_.size();
@@ -281,6 +339,20 @@ static const prov::Assumption kAssumptions[] = {
      "nothing here raises it",
      "the errata workaround that also feeds rx_missed_count on some "
      "silicon revisions"},
+    {prov::DATASHEET,
+     "esp32s3 driver/twai.h, twai_stop",
+     "'Any messages in the TX queue are cleared', and a message being "
+     "transmitted is 'ceased immediately'. Modelled always; it bites only "
+     "with setWireTime(true), since otherwise nothing is ever queued"},
+    {prov::DATASHEET,
+     "esp32s3 driver/twai.h, twai_start",
+     "the TX and RX queues are reset, clearing anything unread or pending"},
+    {prov::ASSUMED,
+     "frame length arithmetic; implementor's bench boot 2026-10-13",
+     "setWireTime(true): one frame on the wire at a time, back to back, "
+     "each its UNSTUFFED length at 500 kbit/s, the first starting at the "
+     "transmit that found the queue empty. A lower bound on airtime. With "
+     "an ACKer the bench put 1 of the 4 power-up frames on the wire"},
 };
 
 const prov::Assumption* assumptions(int* count) {

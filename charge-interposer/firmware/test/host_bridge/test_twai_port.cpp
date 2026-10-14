@@ -16,6 +16,8 @@
 #include <cstdio>
 #include <cstring>
 
+#include "host_clock.h"
+#include "mcp2515_fake_chip.h"
 #include "port_twai.h"
 #include "twai_fake.h"
 
@@ -363,6 +365,76 @@ int main() {
               fake().installModes()[0] == TWAI_MODE_LISTEN_ONLY &&
               fake().installModes()[1] == TWAI_MODE_NORMAL,
           "fake: installModes() records listen-only then normal");
+  }
+  {
+    // The fake itself, AIRTIME (setWireTime, 2026-10-13). The header says
+    // twai_stop clears the TX queue and ceases the frame being sent; with
+    // airtime that discard can bite, and the implementor's bench boot
+    // showed it does (1 of 4 power-up frames on the wire). The clock lives
+    // in the chip model, so one is attached only to keep time.
+    static mcpfake::Mcp2515Fake clock_chip;
+    hostclock::attach(&clock_chip, 10);
+    fake().hardReset();
+    fake().setWireTime(true);
+    twai_general_config_t g =
+        TWAI_GENERAL_CONFIG_DEFAULT(TX_GPIO, RX_GPIO, TWAI_MODE_NORMAL);
+    twai_timing_config_t t = TWAI_TIMING_CONFIG_500KBITS();
+    twai_filter_config_t f = TWAI_FILTER_CONFIG_ACCEPT_ALL();
+    twai_message_t m;
+    std::memset(&m, 0, sizeof(m));
+    m.identifier = 0x7F4;
+    m.data_length_code = 8;
+    twaifake::Frame std8;
+    std::memset(&std8, 0, sizeof(std8));
+    std8.len = 8;
+    const uint32_t us = twaifake::TwaiFake::frameUs(std8);
+    check(us == 222, "fake: a standard 8-byte frame takes 222 us unstuffed "
+                     "at 500 kbit/s (111 bits)");
+    twai_driver_install(&g, &t, &f);
+    twai_start();
+    for (int i = 0; i < 4; i++) {
+      m.identifier = 0x7F4 + i;
+      twai_transmit(&m, 0);
+    }
+    check(fake().sent().empty() && fake().pendingTx() == 4,
+          "fake, airtime: four frames queued at one instant are not yet on "
+          "the wire");
+    hostclock::advance(us - 1);
+    check(fake().sent().empty(), "fake, airtime: ...nor 1 us before the "
+                                 "first frame's airtime ends");
+    hostclock::advance(1);
+    check(fake().sent().size() == 1 && fake().sent()[0].id == 0x7F4,
+          "fake, airtime: the first is on the wire exactly when its airtime "
+          "ends");
+    hostclock::advance(us + us / 2);
+    check(fake().sent().size() == 2 && fake().pendingTx() == 2,
+          "fake, airtime: back to back, the second follows one airtime "
+          "later and the third is mid-frame");
+    twai_stop();
+    check(fake().sent().size() == 2 && fake().pendingTx() == 0 &&
+              fake().txCutByStop() == 1 && fake().txDiscardedByStop() == 1,
+          "fake, airtime: twai_stop ceases the frame in flight (1 cut) and "
+          "discards the one behind it (1 discarded); neither reaches the "
+          "wire");
+    twai_start();
+    twai_transmit(&m, 0);
+    hostclock::advance(1000);
+    check(fake().sent().size() == 3,
+          "fake, airtime: after a restart a frame goes out again");
+    // the same four, airtime OFF: the control, everything on the wire at once
+    twai_stop();
+    twai_driver_uninstall();
+    fake().hardReset();
+    twai_driver_install(&g, &t, &f);
+    twai_start();
+    for (int i = 0; i < 4; i++) twai_transmit(&m, 0);
+    twai_stop();
+    check(fake().sent().size() == 4 && fake().txDiscardedByStop() == 0,
+          "fake, airtime OFF (control): the same four reach the wire before "
+          "the stop, so the discard never bites -- the case the L2 boot "
+          "round passed on before 2026-10-13");
+    fake().hardReset();
+    hostclock::detach();
   }
 
   if (failures) {

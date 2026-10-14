@@ -127,6 +127,9 @@ void vehicleFrame(uint32_t id) {
 // Wire both models in and boot. Returns after setup().
 void boot(bool charger_starts = true, bool vehicle_starts = true) {
   fake().hardReset();
+  // Frames take airtime on the vehicle wire, so twai_stop's documented
+  // discard of the TX queue can bite (twai_fake.h, setWireTime).
+  fake().setWireTime(true);
   fake().setInstallFails(!vehicle_starts);
   hostclock::attach(g_chip, 10);          // MCP_CS
   hostclock::attachInt(3);                // MCP_INT

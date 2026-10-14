@@ -76,7 +76,30 @@ class TwaiFake {
   // about the queue behaving as before.
   void setAutoFlush(bool yes) { auto_flush_ = yes; }
   void flushTx();
-  uint32_t pendingTx() const { return (uint32_t)tx_pending_.size(); }
+  uint32_t pendingTx() {
+    advanceWire();
+    return (uint32_t)tx_pending_.size();
+  }
+
+  // AIRTIME (2026-10-13). Off, a transmitted frame is on the wire the
+  // instant twai_transmit returns, so nothing is ever still queued when
+  // the code under test stops the driver -- and twai_stop's documented
+  // discard of the TX queue can never bite. On, frames go out ONE AT A
+  // TIME on the host clock, each taking its unstuffed length at 500
+  // kbit/s, the first starting at the transmit that found the queue
+  // empty ("Transmission will start immediately if no other messages are
+  // queued"). twai_stop then ceases the frame in flight and discards the
+  // rest, as its header says. Unstuffed length is a LOWER bound on
+  // airtime, so a run that loses frames here loses at least as many on
+  // silicon. Found by the implementor's bench boot on 2026-10-13: one
+  // status frame of the power-up round reached the wire, not four.
+  void setWireTime(bool yes) { wire_time_ = yes; }
+  bool wireTime() const { return wire_time_; }
+  static uint32_t frameUs(const Frame& f);
+  // Frames twai_stop (or an uninstall with frames still queued) threw
+  // away, and the one it cut off mid-frame (an error on a real wire).
+  uint32_t txDiscardedByStop() const { return tx_discarded_by_stop_; }
+  uint32_t txCutByStop() const { return tx_cut_by_stop_; }
 
   // Frames the recovery threw away, counted so a test can check the
   // driver noticed the same number.
@@ -85,7 +108,10 @@ class TwaiFake {
   // ---- inspection ------------------------------------------------------
   twai_state_t state() const { return state_; }
   bool installed() const { return installed_; }
-  const std::vector<Frame>& sent() const { return sent_; }
+  const std::vector<Frame>& sent() {
+    advanceWire();
+    return sent_;
+  }
   // Frames actually handed to the driver by receive(). The coverage
   // measure for the vehicle side, same reasoning as the chip's
   // rxReads(): a run where this is zero never exercised the path.
@@ -154,6 +180,13 @@ class TwaiFake {
   std::vector<Frame> sent_;
   bool auto_flush_ = true;
   uint32_t tx_discarded_by_recovery_ = 0;
+  // airtime model (setWireTime)
+  bool wire_time_ = false;
+  uint64_t head_start_us_ = 0;     // when the head of tx_pending_ started
+  uint32_t tx_discarded_by_stop_ = 0;
+  uint32_t tx_cut_by_stop_ = 0;
+  void advanceWire();
+  void dropQueuedAtStop();
 
   // Cumulative since install, exactly as the real driver documents. An
   // uninstall/install pair resets them to zero, which is the case the
