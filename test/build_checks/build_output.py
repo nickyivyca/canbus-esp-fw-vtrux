@@ -774,9 +774,13 @@ def check_no_restart_test(path):
         else "none of the %d restart-test symbols are defined" % len(RESTART_TEST_SYMS))
 
 
-def check_switches_classified():
+def check_switches_classified(build_dir=None):
     """Spec 12.3 item 3 (added 2026-10-13, user): every build-time switch is
     classified, and an unclassified one fails the build checks.
+
+    The CMake files come from the record of the image's own build directory
+    (build_switches.read_record); a record that cannot be read or trusted
+    fails the row rather than falling back to a list.
 
     The scan and the table are in build_switches.py, which tests itself
     (test_build_switches.py). These rows report its three findings separately,
@@ -791,7 +795,13 @@ def check_switches_classified():
         row("every build-time switch classified", None,
             "cannot import build_switches (%s)" % e, ref_missing=True)
         return
-    found = BS.scan(REPO)
+    try:
+        rec = BS.read_record(REPO, build_dir or os.path.join(REPO, "build"))
+    except BS.RecordError as e:
+        row("every build-time switch classified", False,
+            "the build's record of its CMake files cannot be used: %s" % e)
+        return
+    found = BS.scan(REPO, rec)
     unlisted, stale, bad = BS.classify(found)
     counts = {}
     for s in found:
@@ -1470,7 +1480,7 @@ def main():
     check_lateness_has_a_detector()
     check_abort_reason_parity(args.dbc)
     check_private_abort_confined()
-    check_switches_classified()
+    check_switches_classified(build_dir)
     check_image_identity(img_ver)
     if b is not None:
         check_no_instrument(b)

@@ -62,13 +62,14 @@ def main():
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
 
-    real_scan, real_table, real_triggers = BS.scan, BS.SWITCHES, BS.TRIGGERS
+    real_scan, real_table, real_triggers, real_record = BS.scan, BS.SWITCHES, BS.TRIGGERS, BS.read_record
     ok_t = {"A": (BS.SHIP, None, "why", None), "B": (BS.TEST, None, "why", "row b")}
     try:
         def drive(found, table):
             # classify() reads TRIGGERS too, so a substituted table needs triggers
             # that match it: one per test-only entry, as the real tables have
-            BS.scan = lambda repo=None: found
+            BS.read_record = lambda repo, build_dir, run=None: None
+            BS.scan = lambda repo=None, record=None: found
             BS.SWITCHES = table
             BS.TRIGGERS = {s: {"probes": (("GET", "/x"),)} for s, e in table.items() if e[0] == BS.TEST}
             return rows_of(BO.check_switches_classified)
@@ -87,6 +88,14 @@ def main():
         r = drive({"A": ["x:1"]}, {"A": (BS.TEST, None, "why", None)})
         checks.append(("classified: a test-only entry with no refusal fails 'well-formed'",
                        r.get("switch table well-formed") is False))
+        def no_record(repo, build_dir, run=None):
+            raise BS.RecordError("no build.ninja")
+        BS.read_record = no_record
+        BO.rows.clear()
+        BO.check_switches_classified()
+        got = {n: ok for n, ok, _d, _r in BO.rows}
+        checks.append(("classified: an unusable build record FAILS the row, never a fallback",
+                       got.get("every build-time switch classified") is False))
 
         BS.SWITCHES = ok_t
         BO.rows.clear()
@@ -108,7 +117,7 @@ def main():
         checks.append(("refused: a shipping variant needs no refusal row",
                        got.get("every test-only switch has a refusal row") is True))
     finally:
-        BS.scan, BS.SWITCHES, BS.TRIGGERS = real_scan, real_table, real_triggers
+        BS.scan, BS.SWITCHES, BS.TRIGGERS, BS.read_record = real_scan, real_table, real_triggers, real_record
         BO.rows.clear()
 
     # The real pair: images of one commit built with and without the switch, each
