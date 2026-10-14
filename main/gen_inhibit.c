@@ -1670,8 +1670,8 @@ static int hist_json(const gi_hist_t *h, const char *name, char *buf, int buflen
  * the page would show it.
  *
  * THE FIX THEN IS PER-REQUEST STORAGE: a stack-local snapshot, which means
- * growing the httpd task's stack (stack_size is HTTPD_DEFAULT_CONFIG's 4096 and
- * config_server.c does not override it), or one allocated per request. The two
+ * growing the httpd task's stack (config_server_init() sets stack_size to 5120,
+ * over HTTPD_DEFAULT_CONFIG's 4096), or one allocated per request. The two
  * handlers' own `static char out[GI_STATUS_PAGE_CAP]` buffers rest on the same
  * assumption and would need the same change.
  */
