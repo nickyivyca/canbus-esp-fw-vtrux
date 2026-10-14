@@ -100,11 +100,17 @@ uint32_t countFrom(uint32_t id, size_t from) {
   return n;
 }
 
-// A charger status frame, so the core does not trip on staleness.
+// A charger frame. Source address 0xC0, the Bel's own: under spec 2.3
+// (d9f49ea6) only an extended data frame with SA 0xC0 switches the vehicle
+// port out of listen-only, so every case that expects the board to report
+// or to bridge toward the vehicle needs one. PGN 0xFF50 is not one the core
+// parses (CHG_STATUS / CHG_INFO / CHG_PILOT are 0xD4 / 0xD9 / 0xD8), so the
+// core only forwards it; until 2026-10-13 it was SA 0xE5.
+const uint32_t CHG_FRAME_ID = 0x18FF50C0;
 void chargerStatus() {
   mcpfake::CanFrame f;
   std::memset(&f, 0, sizeof(f));
-  f.id = 0x18FF50E5;
+  f.id = CHG_FRAME_ID;
   f.ext = true;
   f.len = 8;
   f.data[0] = 12;          // state 12, no faults
@@ -285,8 +291,8 @@ void caseRxRolloverOrder() {
     uint32_t id[3];
   };
   const Variant variants[] = {
-      {"three identifiers", {0x18FF60E5, 0x18FF61E5, 0x18FF62E5}},
-      {"one identifier", {0x18FF60E5, 0x18FF60E5, 0x18FF60E5}},
+      {"three identifiers", {0x18FF60C0, 0x18FF61C0, 0x18FF62C0}},
+      {"one identifier", {0x18FF60C0, 0x18FF60C0, 0x18FF60C0}},
   };
   const uint8_t tag[3] = {0xA0, 0xB0, 0xC0};
   for (int rep = 0; rep < 3; rep++) {
@@ -355,7 +361,7 @@ void caseRxRolloverOrder() {
   {
     runBridge(5);
     const size_t mark = vehSent().size();
-    const uint32_t id = 0x18FF60E5;
+    const uint32_t id = 0x18FF60C0;
     mcpfake::CanFrame f[3];
     for (int k = 0; k < 3; k++) {
       std::memset(&f[k], 0, sizeof(f[k]));
@@ -404,8 +410,8 @@ void caseRxRolloverRefill() {
     const char* name;
     uint32_t id[4];
   } variants[] = {
-      {"four identifiers", {0x18FF60E5, 0x18FF61E5, 0x18FF62E5, 0x18FF63E5}},
-      {"one identifier", {0x18FF60E5, 0x18FF60E5, 0x18FF60E5, 0x18FF60E5}},
+      {"four identifiers", {0x18FF60C0, 0x18FF61C0, 0x18FF62C0, 0x18FF63C0}},
+      {"one identifier", {0x18FF60C0, 0x18FF60C0, 0x18FF60C0, 0x18FF60C0}},
   };
   for (int rep = 0; rep < 3; rep++) {
     for (const auto& v : variants) {
@@ -481,8 +487,8 @@ void caseRxRolloverMidread() {
     const char* name;
     uint32_t id[3];
   } variants[] = {
-      {"three identifiers", {0x18FF60E5, 0x18FF61E5, 0x18FF62E5}},
-      {"one identifier", {0x18FF60E5, 0x18FF60E5, 0x18FF60E5}},
+      {"three identifiers", {0x18FF60C0, 0x18FF61C0, 0x18FF62C0}},
+      {"one identifier", {0x18FF60C0, 0x18FF60C0, 0x18FF60C0}},
   };
   for (int rep = 0; rep < 3; rep++) {
     for (const auto& v : variants) {
@@ -559,8 +565,8 @@ void caseRtrNotForwarded() {
 
   const uint32_t V_DATA1 = 0x18FF70E5, V_RTR_X = 0x18FF71E5,
                  V_DATA2 = 0x18FF72E5, V_RTR_S = 0x321;
-  const uint32_t C_DATA1 = 0x18FF73E5, C_RTR_X = 0x18FF74E5,
-                 C_DATA2 = 0x18FF75E5, C_RTR_S = 0x322;
+  const uint32_t C_DATA1 = 0x18FF73C0, C_RTR_X = 0x18FF74E5,
+                 C_DATA2 = 0x18FF75C0, C_RTR_S = 0x322;
 
   auto vehFrame = [](uint32_t id, bool ext, bool rtr, uint8_t tag) {
     twaifake::Frame f;
@@ -672,7 +678,7 @@ static std::pair<uint32_t, uint32_t> bridgesBothWays(uint8_t tag) {
   fake().deliver(0x18FF76E5, true, d, 8);
   mcpfake::CanFrame f;
   std::memset(&f, 0, sizeof(f));
-  f.id = 0x18FF77E5; f.ext = true; f.len = 8;
+  f.id = 0x18FF77C0; f.ext = true; f.len = 8;
   f.data[0] = tag; f.data[1] = 0x5A;
   g_chip->deliverFrame(f);
   runBridge(30);
@@ -684,7 +690,7 @@ static std::pair<uint32_t, uint32_t> bridgesBothWays(uint8_t tag) {
       tc++;
   const std::vector<twaifake::Frame>& s = vehSent();
   for (size_t i = v0; i < s.size(); i++)
-    if (s[i].id == 0x18FF77E5 && s[i].data[0] == tag) tv++;
+    if (s[i].id == 0x18FF77C0 && s[i].data[0] == tag) tv++;
   return std::make_pair(tc, tv);
 }
 
@@ -815,12 +821,22 @@ void caseFailedStart() {
   std::printf("  --  failed start: 0x7F4=%u, others=%u\n",
               n_status, n_other);
 
-  check(n_status > 0,
-        "a board whose charger port did not start still sends 0x7F4 -- "
-        "otherwise it is indistinguishable from a board not fitted");
-  check(n_other == 0,
-        "...and NOT the other three, which carry observations and "
-        "counters that mean nothing on a board bridging nothing");
+  // Spec 8.2's B-7d row and 2.3 (d8c9e87d058abd52, the user's ruling of
+  // 2026-10-13): a board whose controllers did not both start sends, if
+  // the vehicle side is up, ONE power-up round of ALL FOUR status frames
+  // with the bridge reported failed, and then stays in listen-only --
+  // silent, since no charger frame can arrive. (Until 2026-10-13 the case
+  // expected 0x7F4 alone, repeating.)
+  check(n_status == 1 && countFrom(DIAG_OBSERVED, 0) == 1 &&
+            countFrom(DIAG_COUNTERS, 0) == 1 && countFrom(DIAG_BUILD, 0) == 1,
+        "a board whose charger port did not start sends ONE power-up round "
+        "of all four status frames -- otherwise it is indistinguishable from "
+        "a board not fitted -- and nothing after it");
+  (void)n_other;
+  check(fake().mode() == TWAI_MODE_LISTEN_ONLY &&
+            fake().listenOnlyTxAttempts() == 0,
+        "...and the vehicle port is listen-only after it, with no transmit "
+        "even attempted (spec 2.3)");
 
   const twaifake::Frame* st = lastFrom(DIAG_STATUS);
   check(st != nullptr, "a status frame exists to read");
@@ -851,20 +867,18 @@ void caseFailedStart() {
       runBridge(20);
     }
     feed(5);
-    uint32_t veh_non_status = 0;
-    const std::vector<twaifake::Frame>& s = vehSent();
-    for (size_t i = v0; i < s.size(); i++)
-      if (s[i].id != DIAG_STATUS) veh_non_status++;
+    // After the power-up round the vehicle side carries NOTHING (2.3:
+    // listen-only, and no charger frame can arrive to end it)
+    const uint32_t veh_any = (uint32_t)(vehSent().size() - v0);
     uint32_t chg_any = 0;
     const std::vector<mcpfake::WireEvent>& w = g_chip->wire();
     for (size_t i = w0; i < w.size(); i++)
       if (w[i].delivered) chg_any++;
-    std::printf("  --  failed start, bridging: vehicle side non-0x7F4 "
-                "frames %u, charger wire frames %u\n",
-                veh_non_status, chg_any);
-    check(veh_non_status == 0,
-          "spec 2.1: nothing from the charger side is bridged to the "
-          "vehicle -- the vehicle side carries 0x7F4 only");
+    std::printf("  --  failed start, bridging: vehicle side frames %u, "
+                "charger wire frames %u\n", veh_any, chg_any);
+    check(veh_any == 0,
+          "spec 2.1 / 2.3: nothing from the charger side is bridged to the "
+          "vehicle, and nothing else goes out on it either");
     check(chg_any == 0,
           "spec 2.1: nothing reaches the charger side at all -- no "
           "half-open bridge");
@@ -1595,6 +1609,159 @@ void caseReplay() {
   assertPathsExercised();
 }
 
+// --- spec 2.3 (d9f49ea6 / d8c9e87d, user 2026-10-13): the vehicle port
+// listens only while the charger is silent. The TWAI fake refuses every
+// transmit in a listen-only install (ESP_ERR_NOT_SUPPORTED, counted), so
+// these cases see the silence from the DRIVER's side -- the mode main.cpp
+// actually put the controller in -- and not only from main.cpp's own gate.
+
+// Frames the bridge put on the vehicle side since `from`, of any id.
+uint32_t vehSince(size_t from) { return (uint32_t)(vehSent().size() - from); }
+
+// Vehicle frames only (the charger silent), for `ms`, one every 100 ms.
+void vehicleOnly(uint32_t ms) {
+  for (uint32_t t = 0; t < ms; t += 100) {
+    vehicleFrame(0x18FF4AE5);
+    runBridge(100);
+  }
+}
+
+uint32_t chargerWireCount(uint32_t id, size_t from) {
+  uint32_t n = 0;
+  const std::vector<mcpfake::WireEvent>& w = g_chip->wire();
+  for (size_t i = from; i < w.size(); i++)
+    if (w[i].delivered && w[i].frame.id == id) n++;
+  return n;
+}
+
+void chargerFrame(uint32_t id, bool ext, bool rtr, uint8_t tag) {
+  mcpfake::CanFrame f;
+  std::memset(&f, 0, sizeof(f));
+  f.id = id;
+  f.ext = ext;
+  f.rtr = rtr;
+  f.len = 8;
+  if (!rtr) f.data[0] = tag;
+  g_chip->deliverFrame(f);
+}
+
+bool vehSentHas(uint32_t id, uint8_t tag, size_t from) {
+  const std::vector<twaifake::Frame>& s = vehSent();
+  for (size_t i = from; i < s.size(); i++)
+    if (s[i].id == id && s[i].data[0] == tag) return true;
+  return false;
+}
+
+void caseListenOnlyBoot() {
+  boot();
+  const size_t w0 = g_chip->wire().size();
+  vehicleOnly(10000);
+  std::printf("  --  10 s, charger silent: vehicle side %u frame(s) "
+              "(0x7F4=%u 0x7F5=%u 0x7F6=%u 0x7F7=%u), mode %d, "
+              "listen-only tx attempts %u, installs %u\n",
+              vehSince(0), countFrom(DIAG_STATUS, 0),
+              countFrom(DIAG_OBSERVED, 0), countFrom(DIAG_COUNTERS, 0),
+              countFrom(DIAG_BUILD, 0), (int)fake().mode(),
+              fake().listenOnlyTxAttempts(),
+              (unsigned)fake().installModes().size());
+  check(countFrom(DIAG_STATUS, 0) == 1 && countFrom(DIAG_OBSERVED, 0) == 1 &&
+            countFrom(DIAG_COUNTERS, 0) == 1 && countFrom(DIAG_BUILD, 0) == 1 &&
+            vehSince(0) == 4,
+        "2.3: at power-up ONE round of all four status frames, and nothing "
+        "else on the vehicle side in 10 s of a silent charger");
+  check(fake().mode() == TWAI_MODE_LISTEN_ONLY,
+        "2.3: the vehicle port's driver is in listen-only after the round");
+  check(fake().listenOnlyTxAttempts() == 0,
+        "2.3: ...and the board did not even attempt a transmit there");
+  check(chargerWireCount(0x18FF4AE5, w0) >= 90,
+        "2.3: frames still cross toward the charger in listen-only");
+  check(fake().invalidStateCalls() == 0,
+        "no wrong-state TWAI call across the mode change");
+}
+
+void caseListenOnlySwitch() {
+  boot();
+  vehicleOnly(1000);
+  const size_t v0 = vehSent().size();
+  // none of these is a valid charger frame (2.3: "Bus errors and anything
+  // else on that segment do not count"; an RTR is not forwarded, so it
+  // cannot be the frame the port switches for -- reviewer, 2026-10-13)
+  g_chip->injectReceiveErrors(40);
+  vehicleOnly(300);
+  chargerFrame(0x18FF50E5, true, false, 0x11);   // extended, SA 0xE5
+  vehicleOnly(300);
+  chargerFrame(0x7C0, false, false, 0x12);       // standard, low byte C0
+  vehicleOnly(300);
+  chargerFrame(0x18FF50C0, true, true, 0);       // extended RTR, SA 0xC0
+  vehicleOnly(300);
+  std::printf("  --  after error frames, SA 0xE5, standard 0x7C0, RTR 0xC0: "
+              "vehicle side +%u, mode %d, rx errors injected %u\n",
+              vehSince(v0), (int)fake().mode(),
+              g_chip->receiveErrorsInjected());
+  check(g_chip->receiveErrorsInjected() == 40,
+        "the error-frame burst was injected on the charger segment");
+  check(fake().mode() == TWAI_MODE_LISTEN_ONLY && vehSince(v0) == 0,
+        "2.3: error frames, an extended frame from SA 0xE5, a standard 0x7C0 "
+        "and an extended RTR from SA 0xC0 leave the port listen-only, with "
+        "nothing on the vehicle side");
+  const size_t v1 = vehSent().size();
+  chargerFrame(CHG_FRAME_ID, true, false, 0x5C);   // the valid one
+  runBridge(20);
+  check(fake().mode() == TWAI_MODE_NORMAL,
+        "2.3: the first extended data frame from SA 0xC0 switches the port "
+        "to normal");
+  check(vehSentHas(CHG_FRAME_ID, 0x5C, v1),
+        "2.3: ...and THAT frame reaches the vehicle side (switch first, then "
+        "forward)");
+  check(fake().listenOnlyTxAttempts() == 0,
+        "2.3: no transmit was attempted while the driver was listen-only");
+  const size_t v2 = vehSent().size();
+  feed(13);
+  check(countFrom(DIAG_OBSERVED, v2) >= 1,
+        "8.2: status frames resume in normal mode");
+  assertPathsExercised();
+}
+
+void caseListenOnlyRevert() {
+  boot();
+  feed(20);                                       // charger talking, 2 s
+  check(fake().mode() == TWAI_MODE_NORMAL, "normal while the charger talks");
+  const size_t installs = fake().installModes().size();
+  // a 1.9 s gap, then the charger again: the port must not fall back
+  vehicleOnly(1900);
+  check(fake().mode() == TWAI_MODE_NORMAL &&
+            fake().installModes().size() == installs,
+        "2.3: still normal 1.9 s after the last charger frame, with no "
+        "reinstall in between");
+  feed(5);
+  check(fake().installModes().size() == installs,
+        "2.3: ...and the charger's next frame finds it never left normal");
+  // now 2.1 s of silence: back to listen-only
+  vehicleOnly(2100);
+  runBridge(20);
+  check(fake().mode() == TWAI_MODE_LISTEN_ONLY,
+        "2.3: listen-only 2.1 s after the last charger frame");
+  const size_t v0 = vehSent().size();
+  const size_t w0 = g_chip->wire().size();
+  vehicleOnly(5000);
+  std::printf("  --  5 s after the fall-back: vehicle side +%u, listen-only "
+              "tx attempts %u, frames toward the charger %u\n",
+              vehSince(v0), fake().listenOnlyTxAttempts(),
+              chargerWireCount(0x18FF4AE5, w0));
+  check(vehSince(v0) == 0 && fake().listenOnlyTxAttempts() == 0,
+        "2.3 / 8.2: nothing on the vehicle side in listen-only -- no status "
+        "frame, no forwarded frame -- and no transmit attempted");
+  check(chargerWireCount(0x18FF4AE5, w0) >= 45,
+        "2.3: frames still cross toward the charger");
+  const size_t v1 = vehSent().size();
+  chargerFrame(CHG_FRAME_ID, true, false, 0x6D);
+  runBridge(20);
+  check(fake().mode() == TWAI_MODE_NORMAL && vehSentHas(CHG_FRAME_ID, 0x6D, v1),
+        "2.3: the charger's return switches the port back, and its first "
+        "frame reaches the vehicle side");
+  assertPathsExercised();
+}
+
 struct Case {
   const char* name;
   void (*fn)();
@@ -1615,6 +1782,9 @@ const Case kCases[] = {
     {"busoff-charger", caseBusOffCharger},
     {"busoff-vehicle", caseBusOffVehicle},
     {"failed-start-vehicle", caseFailedStartVehicle},
+    {"listen-only-boot", caseListenOnlyBoot},
+    {"listen-only-switch", caseListenOnlySwitch},
+    {"listen-only-revert", caseListenOnlyRevert},
 };
 
 }  // namespace

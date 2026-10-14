@@ -84,11 +84,16 @@ static const Assumption kAssumptions[] = {
      "figure's 'TEC > 127' and the prose's 'equals or exceeds 128' are "
      "the SAME threshold -- the counters are integers -- so the two "
      "agree and there is no conflict here to go looking for"},
-    {NOT_MODELLED, "nothing here drives REC",
-     "the RECEIVE error counter and the error-passive RECEIVE state. "
-     "Only transmit errors are modelled, which is enough for bus-off "
-     "(p47 s6.6: 'only transmitters can go bus-off') but means no result "
-     "may rest on REC or EFLG_RXEP"},
+    {NOT_MODELLED, "only injectReceiveErrors drives REC",
+     "the RECEIVE error counter and the error-passive RECEIVE state, "
+     "beyond injectReceiveErrors (tester, 2026-10-13, for spec 2.3: error "
+     "frames on the charger segment must not count as a charger frame). "
+     "That raises REC by 1 per error (the ISO receiver rule; the 8-count "
+     "dominant-bit case is not modelled), sets MERRF, and sets ERRIF when "
+     "EFLG changes, and delivers no frame. Only transmit errors are "
+     "otherwise modelled, which is enough for bus-off (p47 s6.6: 'only "
+     "transmitters can go bus-off') but means no result may rest on REC's "
+     "value or EFLG_RXEP"},
     {DEFERRED, "p47 s6.7 defers increments AND decrements to the CAN "
                "specification",
      "TEC decrements by 1 on a successful transmission. Modelled as the "

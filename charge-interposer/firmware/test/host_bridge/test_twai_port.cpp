@@ -321,6 +321,49 @@ int main() {
     p.end();
     check(p.end(), "end() twice is not a failure");
   }
+  {
+    // The fake itself, spec 2.3 (d9f49ea6): a listen-only install refuses
+    // every transmit (ESP_ERR_NOT_SUPPORTED, the header's own return) and
+    // puts nothing on the wire, and a reinstall in normal mode sends again.
+    // Driven through the C entry points, as port_twai.cpp would be. This
+    // is what lets test_l2_bridge prove the vehicle segment quiet from the
+    // driver's side rather than from main.cpp's own gate.
+    fake().hardReset();
+    twai_general_config_t g =
+        TWAI_GENERAL_CONFIG_DEFAULT(TX_GPIO, RX_GPIO, TWAI_MODE_LISTEN_ONLY);
+    twai_timing_config_t t = TWAI_TIMING_CONFIG_500KBITS();
+    twai_filter_config_t f = TWAI_FILTER_CONFIG_ACCEPT_ALL();
+    twai_message_t m;
+    std::memset(&m, 0, sizeof(m));
+    m.identifier = 0x7F4;
+    m.data_length_code = 8;
+    twai_driver_install(&g, &t, &f);
+    twai_start();
+    const esp_err_t lo = twai_transmit(&m, 0);
+    check(lo == ESP_ERR_NOT_SUPPORTED,
+          "fake: transmit in listen-only returns ESP_ERR_NOT_SUPPORTED");
+    check(fake().sent().empty() && fake().pendingTx() == 0,
+          "fake: ...and nothing is queued or sent");
+    check(fake().listenOnlyTxAttempts() == 1 &&
+              fake().mode() == TWAI_MODE_LISTEN_ONLY,
+          "fake: the attempt is counted and the mode reads listen-only");
+    const uint8_t d[8] = {0};
+    fake().deliver(0x18FF50C0, true, d, 8);
+    check(fake().rxQueueLen() == 1,
+          "fake: a listen-only port still receives");
+    twai_stop();
+    twai_driver_uninstall();
+    g.mode = TWAI_MODE_NORMAL;
+    twai_driver_install(&g, &t, &f);
+    twai_start();
+    const esp_err_t no = twai_transmit(&m, 0);
+    check(no == ESP_OK && fake().sent().size() == 1,
+          "fake: after a reinstall in normal mode the frame goes out");
+    check(fake().installModes().size() == 2 &&
+              fake().installModes()[0] == TWAI_MODE_LISTEN_ONLY &&
+              fake().installModes()[1] == TWAI_MODE_NORMAL,
+          "fake: installModes() records listen-only then normal");
+  }
 
   if (failures) {
     std::printf("\n%d failure(s)\n", failures);

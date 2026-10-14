@@ -30,6 +30,9 @@ void TwaiFake::hardReset() {
   transmit_calls_ = 0;
   frames_handed_out_ = 0;
   install_fails_ = false;
+  mode_ = TWAI_MODE_NORMAL;
+  install_modes_.clear();
+  listen_only_tx_attempts_ = 0;
 }
 
 void TwaiFake::deliver(const Frame& f) {
@@ -86,6 +89,8 @@ esp_err_t TwaiFake::install(const twai_general_config_t* g) {
   cfg_rx_queue_len_ = g && g->rx_queue_len ? g->rx_queue_len : 5;
   cfg_tx_queue_len_ = g && g->tx_queue_len ? g->tx_queue_len : 5;
   alerts_enabled_ = g ? g->alerts_enabled : 0;
+  mode_ = g ? g->mode : TWAI_MODE_NORMAL;
+  install_modes_.push_back(mode_);
   alerts_ = 0;
   rx_.clear();
   // A fresh install resets the controller's cumulative counters. THIS is
@@ -130,6 +135,12 @@ esp_err_t TwaiFake::transmit(const twai_message_t* m) {
   if (!installed_ || state_ != TWAI_STATE_RUNNING)
     return ESP_ERR_INVALID_STATE;
   if (!m) return ESP_ERR_INVALID_ARG;
+  // "ESP_ERR_NOT_SUPPORTED: Listen Only Mode does not support
+  // transmissions" -- nothing reaches the wire, and the attempt is counted
+  if (mode_ == TWAI_MODE_LISTEN_ONLY) {
+    listen_only_tx_attempts_++;
+    return ESP_ERR_NOT_SUPPORTED;
+  }
 
   if (!acked_) {
     tx_failed_count_++;
@@ -250,6 +261,13 @@ static const prov::Assumption kAssumptions[] = {
      "a fresh driver_install zeroes the cumulative counters. This is the "
      "case the port's delta accumulation exists for, so the model takes "
      "the reading that makes that code matter"},
+    {prov::DATASHEET,
+     "esp32s3 driver/twai.h, twai_transmit return values",
+     "ESP_ERR_NOT_SUPPORTED in TWAI_MODE_LISTEN_ONLY: nothing is queued or "
+     "sent, and the attempt is counted. The mode is the install's (a mode "
+     "change is an uninstall / install). That a listen-only controller "
+     "also sends no ACK and no error flag is the controller's documented "
+     "behaviour, not something this model can show: it has no medium"},
     {prov::ASSUMED,
      "the fake has no shared medium",
      "arbitration, bit timing and how quickly TEC climbs. Any "

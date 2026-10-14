@@ -91,6 +91,19 @@ class TwaiFake {
   // rxReads(): a run where this is zero never exercised the path.
   uint32_t framesHandedOut() const { return frames_handed_out_; }
 
+  // Spec 2.3 (d9f49ea6): the vehicle port's mode, as the DRIVER has it --
+  // the mode of the current install. The header documents
+  // ESP_ERR_NOT_SUPPORTED for twai_transmit in TWAI_MODE_LISTEN_ONLY, so a
+  // listen-only install puts nothing on the wire whatever main.cpp asks
+  // for, and every such attempt is counted: L2 then proves the silence
+  // from the driver's side, not from the gate in the code under test.
+  twai_mode_t mode() const { return mode_; }
+  // The mode of every install, in order (a mode change is a reinstall).
+  const std::vector<twai_mode_t>& installModes() const {
+    return install_modes_;
+  }
+  uint32_t listenOnlyTxAttempts() const { return listen_only_tx_attempts_; }
+
   // Make driver_install() fail, so TwaiPort::begin() returns false.
   void setInstallFails(bool yes) { install_fails_ = yes; }
 
@@ -153,6 +166,9 @@ class TwaiFake {
   uint32_t transmit_calls_ = 0;
   uint32_t frames_handed_out_ = 0;
   bool install_fails_ = false;
+  twai_mode_t mode_ = TWAI_MODE_NORMAL;
+  std::vector<twai_mode_t> install_modes_;
+  uint32_t listen_only_tx_attempts_ = 0;
 };
 
 // The single instance the C entry points drive. A test gets at it to

@@ -173,6 +173,14 @@ class Mcp2515Fake {
   void injectRxOverrun(bool rxb1) {
     regs_[R_EFLG] |= (uint8_t)(rxb1 ? EFLG_RX1OVR : EFLG_RX0OVR);
   }
+
+  // Error frames seen while RECEIVING on the charger segment, n of them
+  // (spec 2.3: "Bus errors and anything else on that segment do not
+  // count" as the charger's first frame). REC +1 each, MERRF set, ERRIF
+  // when EFLG changes; no frame is received. See the REC row of the
+  // assumptions table for what this does NOT model.
+  void injectReceiveErrors(uint32_t n);
+  uint32_t receiveErrorsInjected() const { return rx_errors_injected_; }
   void setReloadWhileSending(ReloadWhileSending m) { reload_mode_ = m; }
 
   // Bits on the wire for THIS frame, per CAN 2.0B: 44 bits of standard
@@ -383,6 +391,7 @@ class Mcp2515Fake {
   uint32_t same_id_coresident_ = 0;
   uint32_t rx_overflow_count_ = 0;
   bool bus_errors_on_ = false;
+  uint32_t rx_errors_injected_ = 0;
   uint16_t tec_ = 0;
   uint32_t rx_reads_ = 0;
   uint32_t tx_loads_ = 0;

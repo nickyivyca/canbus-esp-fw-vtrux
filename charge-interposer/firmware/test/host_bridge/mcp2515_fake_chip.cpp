@@ -20,6 +20,7 @@ void Mcp2515Fake::reset(bool power_on) {
   if (power_on) {
     wire_.clear();
     bus_errors_on_ = false;
+    rx_errors_injected_ = 0;
     bus_off_entries_ = 0;
     reloads_while_sending_ = 0;
     same_id_coresident_ = 0;
@@ -134,6 +135,17 @@ void Mcp2515Fake::setMode(uint8_t m) {
 
 // EWARN, TXEP and TXBO follow the counters rather than being latched where
 // they happen to be set (F5). Thresholds from p47 s6.7 and p48 Fig 6-1.
+void Mcp2515Fake::injectReceiveErrors(uint32_t n) {
+  if (n == 0) return;
+  const uint8_t eflg_before = regs_[R_EFLG];
+  uint32_t rec = (uint32_t)regs_[R_REC] + n;
+  regs_[R_REC] = (uint8_t)(rec > 255 ? 255 : rec);
+  refreshErrorFlags();
+  regs_[R_CANINTF] |= INTF_MERRF;
+  if (regs_[R_EFLG] != eflg_before) regs_[R_CANINTF] |= INTF_ERRIF;
+  rx_errors_injected_ += n;
+}
+
 void Mcp2515Fake::refreshErrorFlags() {
   uint8_t e = (uint8_t)(regs_[R_EFLG] & ~(EFLG_EWARN | EFLG_TXEP | EFLG_RXEP));
   const uint8_t tec = regs_[R_TEC];
