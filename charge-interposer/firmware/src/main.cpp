@@ -129,10 +129,18 @@ static uint32_t listen_suppressed = 0;
 //                   Last and worst are both kept: a mean would hide the one
 //                   that matters, and the figure feeds how many frames the
 //                   vehicle segment can lose across a switch.
-//   drain_frames    frames read out of the TWAI queue and handed to the core
-//                   before a teardown, which would otherwise have gone with
-//                   the driver. A standing zero on a loaded bus would mean
-//                   the drain is in the wrong place.
+//   drain_frames    vehicle frames found in the TWAI RX queue at a mode
+//                   switch and handed to the core before the teardown, which
+//                   would otherwise have taken them with the driver.
+//                   ZERO IS THE NORMAL CASE, and this comment said the
+//                   opposite until 2026-10-13 (corrected on the reviewer's
+//                   ruling after the bench run): the loop drains vehicle RX
+//                   every iteration, so the queue is empty at a switch unless
+//                   the loop had fallen behind, and non-zero is what says it
+//                   had. The counter is not evidence of WHERE the drain is
+//                   placed, which is what the old wording claimed -- and no
+//                   observation could have contradicted that claim, which is
+//                   what was wrong with it.
 static uint32_t boot_window_us = 0;
 static uint32_t switch_us_last = 0;
 static uint32_t switch_us_max = 0;
@@ -303,8 +311,10 @@ static void applyVehicleMode(uint32_t t_ms) {
   // lost just because the mode changed. Bounded by the queue depth rather
   // than the loop's usual 16, because the alternative to reading them here
   // is losing them. What arrives on the WIRE during the reinstall cannot be
-  // saved by anything at this level; the window was measured on the bench
-  // and the figure is in the bring-up notes.
+  // saved by anything at this level. The window was measured on the bench on
+  // 2026-10-13 -- setMode() takes 234-340 us over nine switches -- and the
+  // record is the loan entry in SeaDrive firmware/bench-holder.md, not the
+  // bring-up notes this comment used to point at.
   EmitList drain;
   RxFrame f;
   for (uint16_t i = 0; i < 64 && vehicle.receive(f); i++) {

@@ -633,6 +633,26 @@ drive shows nothing from the board, and that is the board working. Its
 counters are read over USB serial on a bring-up build instead (8.3, and spec
 10 item 7).
 
+The bring-up builds' 5 s status block carries a `MODE` line for this:
+
+```
+  MODE veh=listen-only core wants listen-only | switches=1 refused=0 suppressed=0 | boot=11410us switch=319/319us(last/max) drained=0
+```
+
+| Field | What it is |
+|---|---|
+| `veh=` / `core wants` | the PORT's actual mode and the CORE's wish, separately, so a refused switch is visible as the two disagreeing rather than as silence |
+| `switches` / `refused` | completed and refused `setMode()` calls (it can be refused from RECOVERING) |
+| `suppressed` | vehicle-bound frames `dispatch()` dropped because the port was in listen-only. Not booked as bridge failures |
+| `boot=` | the power-up window: vehicle controller up in normal mode to the first switch into listen-only completing, the status round inside it |
+| `switch=` | `setMode()`'s duration, last and worst; a mean would hide the one that matters |
+| `drained=` | vehicle frames found in the RX queue at a switch and handed to the core before the teardown. **Zero is the normal case** -- the loop drains RX every iteration, so the queue is empty at a switch unless the loop had fallen behind, and non-zero is what says it had. It is not evidence of where the drain is placed (corrected 2026-10-13: the first wording claimed it was, which no observation could have contradicted) |
+
+Measured on the bench 2026-10-13 (the loan entry in SeaDrive
+`firmware/bench-holder.md` has the runs): the boot window is 11,409-11,424 us
+over nine boots, with no traffic dependence, and `setMode()` 234-340 us over
+nine switches in both directions.
+
 ## Charger-segment transmit behaviour (spec 2.2)
 
 With nothing acknowledging on the charger segment the MCP2515 retries
