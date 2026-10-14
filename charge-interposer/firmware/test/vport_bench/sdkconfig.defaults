@@ -1,0 +1,14 @@
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+# The X2's USB socket is the S3's own USB Serial/JTAG; commands and
+# replies travel over it.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+# 1 ms ticks so DOMINANT and the monitor's polling resolve in small steps.
+CONFIG_FREERTOS_HZ=1000
+# Nothing but the protocol on the console: IDF's own log lines would sit
+# between a command and its reply.
+CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
+# The board waits on the host indefinitely between commands, and STALL
+# blocks a task forever on purpose.
+CONFIG_ESP_TASK_WDT_EN=n
