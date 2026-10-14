@@ -90,5 +90,66 @@ for t in "$ART"/*.trace; do
   fi
 done
 
+# Spec 8.3's event line is a fixed name and three numbers, `event a= b= c=`.
+# Events change no emitted byte, so neither loop above sees them, and until
+# 2026-10-13 the two cores' events drifted unseen (the model's top of charge
+# read vmax, vmin, chg_max in amps against the board's vmax, chg_max in
+# centiamps, vmin). This diffs name, t, a, b and c for every event, both
+# sides generated now (event_stream.py against host_runner --events).
+echo
+echo "events (spec 8.3), machine.py vs machine.cpp, field by field:"
+# Negative control: top of charge's b and c swapped in a copy of machine.py
+# must read DIFFERS on a trace that reaches top of charge. Only the top of
+# charge lines are compared, and the UNMUTATED ones must match first, so the
+# control is decided by the swap and not by any other difference the trace
+# happens to carry.
+MUT="${BIN}_mut"
+mkdir -p "$MUT"
+cp "$FW/../machine.py" "$MUT/machine.py"
+sed -i 's/self\.vmax, self\.chg_max, self\.vmin)/self.vmax, self.vmin, self.chg_max)/' \
+    "$MUT/machine.py"
+if cmp -s "$FW/../machine.py" "$MUT/machine.py"; then
+  echo "  EVENTS NEGATIVE CONTROL COULD NOT RUN: the b/c swap did not apply"
+  fail=1
+else
+  toc=""
+  for t in "$ART"/*.trace; do
+    if "$BIN" --events "$t" | grep -q ' top of charge reached$'; then
+      toc="$t"; break
+    fi
+  done
+  tocl() { grep ' top of charge reached$' || true; }
+  if [ -z "$toc" ]; then
+    echo "  EVENTS NEGATIVE CONTROL COULD NOT RUN: no trace reaches top of charge"
+    fail=1
+  elif ! diff -q <("$BIN" --events "$toc" | tocl) \
+         <(python3 "$HERE/event_stream.py" "$toc" | tocl) >/dev/null; then
+    echo "  EVENTS NEGATIVE CONTROL COULD NOT RUN: the unmutated top of charge"
+    echo "  lines already differ on $(basename "$toc")"
+    fail=1
+  elif diff -q <("$BIN" --events "$toc" | tocl) \
+       <(python3 "$HERE/event_stream.py" --core-dir "$MUT" "$toc" | tocl) \
+       >/dev/null; then
+    echo "  EVENTS NEGATIVE CONTROL FAILED: top of charge with b and c swapped"
+    echo "  still read IDENTICAL on $(basename "$toc")"
+    fail=1
+  else
+    echo "  negative control: top of charge's b/c swapped is reported on" \
+         "$(basename "$toc" .trace) (its unmutated lines match)"
+  fi
+fi
+rm -rf "$MUT"
+for t in "$ART"/*.trace; do
+  name="$(basename "$t" .trace)"
+  if "$BIN" --events "$t" | diff -q - <(python3 "$HERE/event_stream.py" "$t") \
+     >/dev/null; then
+    echo "  $name events IDENTICAL"
+  else
+    echo "  $name events DIFFER"
+    "$BIN" --events "$t" | diff - <(python3 "$HERE/event_stream.py" "$t") | head -6
+    fail=1
+  fi
+done
+
 rm -f "$BIN"
 exit $fail

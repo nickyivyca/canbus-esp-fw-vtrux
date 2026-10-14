@@ -12,6 +12,14 @@ Compares three things:
   1. every field of Config, Python defaults vs configDefaults() in machine.cpp
   2. the frame identifiers and enum values in machine.h
   3. the two hard-coded page-03 payloads
+  4. the codes logged in event fields: RepeatEnd (REPEAT ended's c) against
+     machine.py's REPEAT_* constants, and TripReason (TRIP's a) against the
+     position of each reason in machine.py's TRIP_KEYS (added 2026-10-13:
+     neither was compared, and RepeatEnd numbers implicitly, so the regex in
+     check_identifiers could not have seen it)
+
+`--self-test` runs item 4 against renumbered copies of machine.h, which must
+each fail.
 
 Usage (from the repo root):
     py -3.12 projects/vtrux/tools/interposer/firmware/test/host_diff/check_port.py
@@ -139,6 +147,131 @@ def check_identifiers(problems):
                             % (sorted(M.MAINC_CLOSED), sorted(accepted)))
 
 
+def parse_enum(hdr, name):
+    """{member: value} of `enum <name> ... { ... };` in machine.h, numbered
+    the C way: an explicit `= N` sets the value, every other member is one
+    more than the last. Comments are stripped first. None if absent."""
+    m = re.search(r"enum\s+%s\b[^{]*\{(.*?)\};" % name, hdr, re.S)
+    if not m:
+        return None
+    body = re.sub(r"//[^\n]*", "", m.group(1))
+    body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
+    out, nxt = {}, 0
+    for item in body.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if "=" in item:
+            k, v = item.split("=", 1)
+            k, nxt = k.strip(), _num(v)
+        else:
+            k = item
+        out[k] = nxt
+        nxt += 1
+    return out
+
+
+# machine.h's TripReason member -> the TRIP_KEYS entry it stands for. The
+# code on the wire is the member's value; machine.py's is the key's index
+# + 1 (code 0 is "no trip"), so the two must agree position for position.
+TRIP_PAIRS = [
+    ("TRIP_VMAX_HARD", "over hard ceiling"),
+    ("TRIP_CELL_OVERVOLT", "cell_overvolt"),
+    ("TRIP_CELL_UNDERVOLT_RETIRED", "cell_undervolt"),
+    ("TRIP_BMS_EPO", "BMS EPO"),
+    ("TRIP_BMS_ALARM_TYPE3", "BMS alarm"),
+    ("TRIP_HVIL_OPEN", "HVIL open"),
+    ("TRIP_CONTACTOR", "contactor state"),
+    ("TRIP_CHARGER_FAULT", "charger fault"),
+    ("TRIP_CHG_STATE", "charger out of state 12"),
+    ("TRIP_BMS_STALE", "BMS frames stale"),
+    ("TRIP_CHG_STALE", "charger frames stale"),
+    ("TRIP_OVERRIDE_CAP", "override exceeded session cap"),
+]
+
+REPEAT_NAMES = ("REPEAT_COMPLETE", "REPEAT_SUPERSEDED", "REPEAT_RESET",
+                "REPEAT_REPLACED")
+
+
+def check_event_codes(problems, hdr=None):
+    hdr = _read("machine.h") if hdr is None else hdr
+    rep_end = parse_enum(hdr, "RepeatEnd")
+    if rep_end is None:
+        problems.append("enum RepeatEnd not found in machine.h")
+    else:
+        for n in REPEAT_NAMES:
+            if n not in rep_end:
+                problems.append("%s not in machine.h's RepeatEnd" % n)
+            elif not hasattr(M, n):
+                problems.append("%s not in machine.py" % n)
+            elif rep_end[n] != getattr(M, n):
+                problems.append("%s: python=%r cpp=%r"
+                                % (n, getattr(M, n), rep_end[n]))
+        extra = sorted(set(rep_end) - set(REPEAT_NAMES))
+        if extra:
+            problems.append("RepeatEnd members this check does not know: %s"
+                            % ", ".join(extra))
+    trip = parse_enum(hdr, "TripReason")
+    if trip is None:
+        problems.append("enum TripReason not found in machine.h")
+    else:
+        if trip.get("TRIP_NONE") != 0:
+            problems.append("TRIP_NONE is %r, not 0" % trip.get("TRIP_NONE"))
+        for cname, key in TRIP_PAIRS:
+            if key not in M.TRIP_KEYS:
+                problems.append("TRIP_KEYS has no %r" % key)
+            elif cname not in trip:
+                problems.append("%s not in machine.h's TripReason" % cname)
+            elif trip[cname] != M.TRIP_KEYS.index(key) + 1:
+                problems.append("%s: python code %d (%r), cpp %d"
+                                % (cname, M.TRIP_KEYS.index(key) + 1, key,
+                                   trip[cname]))
+        if len(M.TRIP_KEYS) != len(TRIP_PAIRS) or \
+                len(trip) != len(TRIP_PAIRS) + 1:
+            problems.append("trip reasons: TRIP_KEYS has %d, TripReason %d "
+                            "(+ TRIP_NONE), this check pairs %d"
+                            % (len(M.TRIP_KEYS), len(trip) - 1,
+                               len(TRIP_PAIRS)))
+    print("event codes checked  : %d" % (len(REPEAT_NAMES) + len(TRIP_PAIRS)))
+
+
+def self_test():
+    """Item 4 against renumbered copies of machine.h: each must fail."""
+    hdr = _read("machine.h")
+    fails = []
+
+    def expect(text, want_fail, what):
+        probs = []
+        check_event_codes(probs, text)
+        ok = bool(probs) == want_fail
+        print("  %s  %s%s" % ("ok  " if ok else "FAIL", what,
+                              (" -> " + probs[0]) if probs else ""))
+        if not ok:
+            fails.append(what)
+
+    expect(hdr, False, "machine.h as it is passes")
+    renum = hdr.replace("REPEAT_COMPLETE = 0,", "REPEAT_COMPLETE = 1,", 1)
+    expect(renum, True, "RepeatEnd renumbered from 1 fails")
+    ins = hdr.replace("  REPEAT_RESET,", "  REPEAT_INSERTED,\n  REPEAT_RESET,",
+                      1)
+    expect(ins, True, "a member inserted before REPEAT_RESET fails "
+                      "(appended, never inserted)")
+    swap = hdr.replace("  TRIP_BMS_STALE,\n  TRIP_CHG_STALE,",
+                       "  TRIP_CHG_STALE,\n  TRIP_BMS_STALE,", 1)
+    expect(swap, True, "TripReason with BMS_STALE and CHG_STALE swapped "
+                       "fails")
+    gone = hdr.replace("  TRIP_CELL_UNDERVOLT_RETIRED,\n", "", 1)
+    expect(gone, True, "TripReason with the retired slot removed fails "
+                       "(every later code shifts)")
+    for t in (renum, ins, swap, gone):
+        if t == hdr:
+            fails.append("a mutation did not apply -- the test is stale")
+            print("  FAIL  a mutation did not apply")
+    print("\ncheck_port self-test: %s"
+          % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
+    return 1 if fails else 0
+
+
 def check_payloads(problems):
     cpp = _read("machine.cpp")
     for cname, pyname in (("CONST_03_02_CHARGING", "CONST_03_02_CHARGING"),
@@ -209,11 +342,14 @@ def check_extractors(problems):
 
 
 def main():
+    if "--self-test" in sys.argv[1:]:
+        return self_test()
     problems = []
     check_config(problems)
     check_identifiers(problems)
     check_payloads(problems)
     check_extractors(problems)
+    check_event_codes(problems)
     print("")
     if problems:
         print("FAIL -- %d problem(s):" % len(problems))
