@@ -1163,6 +1163,20 @@ bool gen_inhibit_owns_bus(void)
     return s_core.mode != GI_OFF;
 }
 
+/*
+ * Is the controller on the bus? The driver's own state, not can.c's bus_state:
+ * can.c records ON_BUS when it installs the driver and nothing changes it at a
+ * bus-off, so can_is_enabled() stays true for a controller that has left the
+ * bus. Unknown (the driver will not say) counts as not running, the direction
+ * that reinstalls rather than arms onto a dead controller.
+ */
+static bool controller_running(void)
+{
+    twai_status_info_t st;
+    return twai_get_status_info(&st) == ESP_OK
+           && st.state == TWAI_STATE_RUNNING;
+}
+
 esp_err_t gen_inhibit_set_mode(gen_inhibit_mode_t mode, uint32_t offset_us)
 {
     if (mode > GEN_INHIBIT_PASSIVE)
@@ -1196,6 +1210,37 @@ esp_err_t gen_inhibit_set_mode(gen_inhibit_mode_t mode, uint32_t offset_us)
         /* Cancel any standing quiesce so the worker resumes into the driver. */
         s_quiesce = false;
         s_parked = false;
+
+        /*
+         * SPEC 7, "A BUS-OFF ENDS THE DEVICE'S PART UNTIL A RE-ARM OR A
+         * REBOOT" (user, 2026-10-14): the re-arm half. A controller that is
+         * installed but not running -- bus-off, recovering or stopped -- is
+         * taken down here, and the block below installs it again, so every arm
+         * puts the controller back on the bus.
+         *
+         * Before 2026-10-14 an arm into INHIBIT, RESPOND or PASSIVE skipped
+         * the install whenever can_is_enabled() was true, which it stays
+         * through a bus-off, so the arm replied 200 with the controller still
+         * off the bus and the gate waiting for 0x051 indefinitely. Only a move
+         * into or out of OBSERVE, or mode 0 first, reinstalled it.
+         *
+         * The check is HERE and not in can_is_enabled(), whose callers read it
+         * as "can.c installed the driver"; and folding it in would not reinstall
+         * anyway, because can_enable() returns at once while bus_state is
+         * ON_BUS. The teardown is the ordinary can_disable(), which quiesces
+         * the worker first. In BUS_OFF its twai_stop() is refused
+         * (INVALID_STATE) and ignored, and twai_driver_uninstall() is allowed.
+         *
+         * Not recovery: nothing here calls twai_initiate_recovery(), and nothing
+         * happens without an arm. A bus-off still ends the device's part until
+         * someone arms it or it reboots.
+         */
+        if (can_is_enabled() && !controller_running())
+        {
+            ESP_LOGW(TAG, "arming mode %d: controller not running, "
+                          "reinstalling the driver (spec 7)", (int)mode);
+            can_disable();
+        }
 
         /*
          * Spec 3 and 13 item 1: OBSERVE must perturb nothing, and that is a
@@ -1292,6 +1337,16 @@ esp_err_t gen_inhibit_set_mode(gen_inhibit_mode_t mode, uint32_t offset_us)
         if (!can_is_enabled())
         {
             ESP_LOGE(TAG, "cannot arm: CAN bus would not come up");
+            return ESP_ERR_INVALID_STATE;
+        }
+        /*
+         * And the controller itself, which can_is_enabled() does not report:
+         * an arm that could not bring it back onto the bus replies with an
+         * error, never 200 (spec 7, user, 2026-10-14).
+         */
+        if (!controller_running())
+        {
+            ESP_LOGE(TAG, "cannot arm: controller not running after install");
             return ESP_ERR_INVALID_STATE;
         }
         /*

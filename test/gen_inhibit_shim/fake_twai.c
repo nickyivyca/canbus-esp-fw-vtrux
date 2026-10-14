@@ -92,8 +92,12 @@ static void deliv_note(uint32_t id)
     }
 }
 
+static bool g_bus_off;              /* the controller left the bus (spec 7) */
+
 static void rx_push(uint32_t id, const uint8_t *data, uint8_t dlc)
 {
+    /* A bus-off controller receives nothing. */
+    if (g_bus_off) { return; }
     if (g_rx_n >= RXMAX) { g_rx_dropped++; return; }
     twai_message_t *m = &g_rx_q[g_rx_n++];
     memset(m, 0, sizeof(*m));
@@ -236,6 +240,7 @@ static int      g_refuse_id_n;
 static int      g_max_inflight;     /* item 3's high-water mark, ours only */
 static bool     g_fail_next;
 static bool     g_installed, g_running;
+static bool     g_fail_install;     /* the next twai_driver_install() fails */
 static bool     g_in_receive;       /* a thread is blocked inside the driver */
 static int      g_unsafe_teardowns;
 static int      g_installed_mode = -1;
@@ -481,6 +486,8 @@ uint32_t ft_installed_acc_code(void)     { return g_installed_acc_code; }
 uint32_t ft_installed_acc_mask(void)     { return g_installed_acc_mask; }
 int      ft_installed_single_filter(void) { return g_installed_single_filter; }
 void ft_fail_alerts_config(bool fail) { g_fail_alerts_cfg = fail; }
+void ft_bus_off(void) { g_bus_off = true; }
+void ft_fail_install_next(void) { g_fail_install = true; }
 
 int              ft_sent_count(void) { return g_nsent; }
 const ft_frame_t *ft_sent(int i) { return &g_sent[i]; }
@@ -917,6 +924,18 @@ esp_err_t twai_driver_install(const twai_general_config_t *g,
                               const twai_filter_config_t *f)
 {
     (void)t;
+    if (g_fail_install)
+    {
+        /*
+         * One install that fails and leaves nothing installed. can.c wraps
+         * the call in ESP_ERROR_CHECK, which the shim defines as a no-op
+         * (mock/freertos/FreeRTOS.h), so here can_enable() carries on as if it
+         * had worked; on the device the same failure aborts. What a case can
+         * check with it is the arm's own test that the controller is running.
+         */
+        g_fail_install = false;
+        return ESP_FAIL;
+    }
     /*
      * Record the MODE. Spec 3 requires OBSERVE to be hardware listen-only, and
      * the TWAI API exposes no read-back of the controller's mode -- so the only
@@ -946,14 +965,23 @@ esp_err_t twai_driver_uninstall(void)
     if (g_in_receive) g_unsafe_teardowns++;
     g_installed = false;
     g_running = false;
+    g_bus_off = false;      /* allowed from BUS_OFF, as on the device */
     g_installed_mode = -1;
     return ESP_OK;
 }
 
-esp_err_t twai_start(void) { g_running = true; return ESP_OK; }
+esp_err_t twai_start(void)
+{
+    /* No driver, no handle: the real one fails its handle check. */
+    if (!g_installed) return ESP_ERR_INVALID_ARG;
+    g_running = true;
+    return ESP_OK;
+}
 esp_err_t twai_stop(void)
 {
     if (g_in_receive) g_unsafe_teardowns++;
+    /* The real twai_stop() refuses any state but RUNNING, BUS_OFF included. */
+    if (g_bus_off) return ESP_ERR_INVALID_STATE;
     g_running = false;
     return ESP_OK;
 }
@@ -1005,7 +1033,8 @@ void ft_set_bus_errors(uint32_t n) { g_bus_errors = n; }
 esp_err_t twai_get_status_info(twai_status_info_t *status)
 {
     memset(status, 0, sizeof(*status));
-    status->state = g_running ? TWAI_STATE_RUNNING : TWAI_STATE_STOPPED;
+    status->state = g_bus_off ? TWAI_STATE_BUS_OFF
+                  : g_running ? TWAI_STATE_RUNNING : TWAI_STATE_STOPPED;
     status->msgs_to_tx = (uint32_t)g_qn;
     status->msgs_to_rx = (uint32_t)g_rx_n;
     status->bus_error_count = g_bus_errors;
@@ -1062,7 +1091,7 @@ esp_err_t twai_transmit(const twai_message_t *message, TickType_t ticks)
      */
     check_wire(message);
 
-    if (!g_running) return ESP_ERR_INVALID_STATE;
+    if (!g_running || g_bus_off) return ESP_ERR_INVALID_STATE;
 
     /*
      * LISTEN-ONLY REFUSES TO TRANSMIT, which the model has to implement rather
@@ -1369,6 +1398,8 @@ void ft_reset(void)
     g_installed_single_filter = -1;
     g_fail_alerts_cfg = false;
     g_fail_next = false;
+    g_bus_off = false;
+    g_fail_install = false;
     g_rx_n = g_rx_dropped = 0;
     /*
      * Cleared here, unlike the reset reason and the error count: nothing sets

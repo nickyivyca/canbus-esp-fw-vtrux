@@ -4676,6 +4676,116 @@ static void case_page_names_the_binary(void)
     case_end();
 }
 
+/*
+ * CASES 47 AND 48 -- spec 7, "A bus-off ends the device's part until a re-arm
+ * or a reboot" (user, 2026-10-14): the arm is what ends it.
+ *
+ * Before the change an arm into INHIBIT skipped the install while
+ * can_is_enabled() was true, and can.c leaves that true through a bus-off, so
+ * the arm returned OK onto a controller that was still off the bus. Case 47
+ * checks the arm reinstalls and the device goes live again; its control is an
+ * arm onto a RUNNING controller, which must not reinstall, so a fix that
+ * reinstalled on every arm would fail it. Case 48 is the arm whose reinstall
+ * does not bring the controller back: it must not return OK.
+ */
+static void feed_interlocks(int from, int to)
+{
+    static const uint8_t KEY[8]  = { 0x10 };
+    static const uint8_t CONT[8] = { 11 << 2 };
+    static const uint8_t SOC[8]  = { 0x4E, 0x20 };
+    static const uint8_t FLT[8]  = { 0, 0, 0, 0, 0, 0, 0, 0xC8 };
+    static const uint8_t SHF[8]  = { 0, 0, 0, 0, 0, 0, 2 << 4 };
+    uint8_t cmd[6];
+
+    for (int i = from; i < to; i++)
+    {
+        memcpy(cmd, VCM, sizeof(cmd));
+        cmd[5] = (uint8_t)(i & 0x0F);
+        feed(0x051, cmd, 6, 5000);
+        feed(0x592, KEY, 8, 5000);
+        feed(0x440, CONT, 8, 5000);
+        feed(0x411, SOC, 8, 5000);
+        feed(0x617, FLT, 8, 5000);
+        feed(0x639, SHF, 8, 5000);
+    }
+}
+
+static void case_arm_reinstalls_after_bus_off(void)
+{
+    case_begin("case 47: an arm after a bus-off reinstalls the driver and goes "
+               "live (spec 7)");
+    setup();
+    go_live();
+    ft_run(20000);
+    CHECK(json_has("\"inhibit_live\":true"), "never went live: %s", stats());
+
+    /* The control: an arm onto a running controller does not reinstall. */
+    const int installs = ft_install_count();
+    CHECK(gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500) == ESP_OK,
+          "a re-arm onto a running controller was refused");
+    CHECK(ft_install_count() == installs,
+          "a re-arm onto a running controller reinstalled the driver (%d "
+          "installs, was %d). Spec 7 asks for a reinstall only when the "
+          "controller is not running", ft_install_count(), installs);
+    feed_interlocks(12, 24);
+
+    ft_bus_off();
+    ft_run(20000);
+    CHECK(json_has("\"state\":\"bus_off\""),
+          "the model's bus-off did not reach the page: %s", stats());
+
+    const int wire_before = ft_wire_count_id(0x051);
+    const esp_err_t r = gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
+    CHECK(r == ESP_OK, "the arm after a bus-off was refused (%d)", (int)r);
+    CHECK(ft_install_count() == installs + 1,
+          "the arm after a bus-off did not reinstall the driver (%d installs, "
+          "expected %d), so the controller is still off the bus",
+          ft_install_count(), installs + 1);
+    CHECK(json_has("\"state\":\"running\""),
+          "after the arm the controller is not running: %s", stats());
+    CHECK(ft_unsafe_teardowns() == 0,
+          "the reinstall tore the driver down under the worker %d time(s)",
+          ft_unsafe_teardowns());
+
+    feed_interlocks(24, 37);
+    CHECK(json_has("\"inhibit_live\":true"),
+          "never went live after the arm that ended the bus-off: %s", stats());
+    CHECK(ft_wire_count_id(0x051) > wire_before,
+          "live again but answered nothing: %s", stats());
+
+    teardown();
+    case_end();
+}
+
+static void case_arm_fails_when_reinstall_fails(void)
+{
+    case_begin("case 48: an arm whose reinstall fails is refused (spec 7)");
+    setup();
+    go_live();
+    ft_run(20000);
+
+    ft_bus_off();
+    ft_run(20000);
+    ft_fail_install_next();
+
+    const int wire_before = ft_wire_count_id(0x051);
+    const esp_err_t r = gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
+    CHECK(r != ESP_OK,
+          "the arm returned OK though the reinstall left the controller off "
+          "the bus. The handler would answer 200 to an arm that cannot "
+          "transmit: %s", stats());
+
+    feed_interlocks(12, 25);
+    CHECK(json_has("\"inhibit_live\":false"),
+          "went live on a controller that is not running: %s", stats());
+    CHECK(ft_wire_count_id(0x051) == wire_before,
+          "%d inhibit frame(s) reached the wire after a failed arm",
+          ft_wire_count_id(0x051) - wire_before);
+
+    teardown();
+    case_end();
+}
+
 int main(int argc, char **argv)
 {
     /*
@@ -4748,6 +4858,8 @@ int main(int argc, char **argv)
     case_late_probe_is_not_timed();
     case_errors_before_live_still_trip();
     case_page_names_the_binary();
+    case_arm_reinstalls_after_bus_off();
+    case_arm_fails_when_reinstall_fails();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
     return g_fail ? 1 : 0;

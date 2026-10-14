@@ -190,6 +190,22 @@ int ft_installed_mode(void);
  */
 int ft_install_count(void);
 
+/*
+ * The controller goes bus-off (spec 7, "A bus-off ends the device's part until
+ * a re-arm or a reboot"). From then on it receives nothing, transmits nothing,
+ * and twai_get_status_info() reports TWAI_STATE_BUS_OFF; twai_stop() is refused
+ * and twai_driver_uninstall() is allowed, as in ESP-IDF v5.4.1. It ends only at
+ * an uninstall. Cleared by ft_reset().
+ */
+void ft_bus_off(void);
+
+/*
+ * The next twai_driver_install() fails and installs nothing. Cleared by
+ * ft_reset(). See fake_twai.c for what the shim's no-op ESP_ERROR_CHECK means
+ * for it.
+ */
+void ft_fail_install_next(void);
+
 uint32_t ft_installed_rx_queue_len(void);
 uint32_t ft_installed_acc_code(void);
 uint32_t ft_installed_acc_mask(void);
