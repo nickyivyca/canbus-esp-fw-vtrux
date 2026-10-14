@@ -201,6 +201,10 @@ void setup()
     //
     Serial.setRxBufferSize(8192);
     Serial.begin(115200);
+    // Spec 8.3 (user, 2026-10-14): never wait on the USB host. 1 ms and not 0 --
+    // 0 wraps HWCDC::write()'s uint32_t retry counter and the write never
+    // returns. The full reasoning is at INTP_CDC_TX_TIMEOUT_MS in main.cpp.
+    Serial.setTxTimeoutMs(1);
     // No wait for a host: this board must reach its silent, not-transmitting
     // state whether or not anyone is listening.
     g_open = false;

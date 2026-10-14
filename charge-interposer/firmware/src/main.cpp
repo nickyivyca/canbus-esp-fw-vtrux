@@ -34,10 +34,13 @@
 // Spec 8.3: builds loaded to the truck have serial output disabled.
 //
 // Every print below runs inside the bridge loop. A USB host attached but not
-// reading can block the CDC write and the bridge would stall with it. These
-// compile the calls OUT under -DINTP_NO_SERIAL ([env:truck]) rather than
-// guarding them at run time, so in the truck build there is no call left to
-// block on. The spec 8.2 diagnostic frames are unaffected -- 0x7F4-0x7F7 are
+// reading can block the CDC write and the bridge would stall with it. Two
+// different answers to that, and both are needed. The bench and bring-up
+// builds bound the block to 1 ms once per stall and then drop, which spec
+// 8.3 requires of them -- see INTP_CDC_TX_TIMEOUT_MS in the #else branch.
+// The truck build compiles the calls OUT under -DINTP_NO_SERIAL
+// ([env:truck]) rather than guarding them at run time, so there is no call
+// left to block on at all. The spec 8.2 diagnostic frames are unaffected -- 0x7F4-0x7F7 are
 // how the truck build is observed, and `intp_serial` reads 0 there, which is
 // what identifies it as a truck image on the wire.
 #ifdef INTP_NO_SERIAL
@@ -47,7 +50,28 @@
 #define INTP_PRINTLN(x)         ((void)0)
 #define INTP_SERIAL_READY       false
 #else
-#define INTP_SERIAL_BEGIN(baud) Serial.begin(baud)
+// Spec 8.3 (user, 2026-10-14): bench and bring-up builds NEVER WAIT on the
+// USB host -- output a host is not reading is DROPPED rather than held, so a
+// laptop that stops reading cannot stall bridging or lengthen the power-up
+// window. Where the wait was: Arduino core 3.2.1's HWCDC::write(), which on
+// a TX ring buffer that has stopped draining runs `tries = tx_timeout_ms`
+// passes of delay(1) and only then latches `connected = false`. The default
+// is 100, so a host attached but not reading costs exactly 100 ms once per
+// boot -- measured at E9, where a boot following a COM3 close reported a
+// power-up window ~100 ms longer than the same segment state with a reader.
+//
+// 1 AND NOT 0, which would be worse than the default rather than better.
+// With tx_timeout_ms = 0 the loop reaches `tries--` on a uint32_t BEFORE it
+// tests for zero, and the pass it is in makes no progress: the TX ring
+// buffer is RINGBUF_TYPE_BYTEBUF, where an xRingbufferSend() of 0 bytes
+// "will simply return pdTRUE without copying any data" (esp_ringbuf
+// ringbuf.h), which is the same path that produces the 100 ms. So `tries`
+// wraps to 0xFFFFFFFF and the write never returns. 1 gives exactly one
+// pass: tries-- reaches 0, one delay(1), connected = false, and every later
+// write takes the non-blocking drop path until the host reads again and the
+// IN_EMPTY ISR sets connected back.
+#define INTP_CDC_TX_TIMEOUT_MS  1
+#define INTP_SERIAL_BEGIN(baud) (Serial.begin(baud), Serial.setTxTimeoutMs(INTP_CDC_TX_TIMEOUT_MS))
 #define INTP_PRINTF(...)        Serial.printf(__VA_ARGS__)
 #define INTP_PRINT(x)           Serial.print(x)
 #define INTP_PRINTLN(x)         Serial.println(x)

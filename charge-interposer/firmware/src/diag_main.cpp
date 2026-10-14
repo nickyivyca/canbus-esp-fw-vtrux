@@ -202,6 +202,10 @@ static void phaseOneWay() {
 
 void setup() {
   Serial.begin(115200);
+  // Spec 8.3 (user, 2026-10-14): never wait on the USB host. 1 ms and not 0 --
+  // 0 wraps HWCDC::write()'s uint32_t retry counter and the write never
+  // returns. The full reasoning is at INTP_CDC_TX_TIMEOUT_MS in main.cpp.
+  Serial.setTxTimeoutMs(1);
   delay(1500);
   Serial.println("\n\n=== ESP32-CAN-X2 diagnostic (Stage 0a) ===");
   Serial.printf("bitrate %lu\n", (unsigned long)BITRATE);

@@ -630,6 +630,15 @@ formatting block is `#ifdef`-ed out with it. The calls are removed at compile
 time rather than guarded at run time, so there is no CDC write left for an
 attached-but-not-reading USB host to block the bridge loop on.
 
+The bench and bring-up builds keep their prints and bound the block instead:
+`INTP_SERIAL_BEGIN` sets the CDC TX timeout to `INTP_CDC_TX_TIMEOUT_MS`,
+1 ms, so output a host is not reading is dropped rather than held (spec 8.3,
+user 2026-10-14). `diag`, `selftest` and `slcan` set the same value beside
+their own `Serial.begin()`. **1 and not 0**: in that loop the timeout
+doubles as the retry counter, and 0 makes it wrap on a `uint32_t` so the
+write never returns at all -- the comment at `INTP_CDC_TX_TIMEOUT_MS` in
+`main.cpp` has the mechanism and the measurement it came from.
+
 Verified from the images, not the source (2026-10-03):
 
 | | `esp32-can-x2` | `truck` |
@@ -707,14 +716,32 @@ Measured on the bench 2026-10-13 (the loan entry in SeaDrive
 over nine boots, with no traffic dependence, and `setMode()` 234-340 us over
 nine switches in both directions.
 
-**Those boot-window figures predate the round's wait and no longer describe
-the current code.** They were measured when the switch followed the round
-immediately, so they are the cost of bringing both controllers up and
-nothing else. The window now also contains the wait, which is bounded at
-50 ms: expect roughly 12 ms where something acknowledges the round and
-roughly 61 ms where nothing does. `setMode()`'s own 234-340 us is unaffected,
-being the teardown and reinstall alone. The next bench run re-measures the
-window; until then read the figures above as the floor, not the window.
+**Those boot-window figures predate the round's wait.** They were measured
+when the switch followed the round immediately, so they are the cost of
+bringing both controllers up and nothing else. Re-measured with the wait in
+place at E9 (2026-10-14, image `6cacaf88`; the tester's run folder is
+`runs/bench_powerup_round_e9_20261014T0255/`): **12,154-12,218 us with
+something acknowledging the round** over five boots and **61,413-61,428 us
+with nothing acknowledging** over three, against a wait bounded at 50 ms.
+`setMode()` came out 298-302 us and is unaffected by the wait, being the
+teardown and reinstall alone.
+
+**A boot with no host reading the USB port reported about 100 ms more than
+that, and the cause was the CDC write rather than anything on the CAN side.**
+Same run: 161,383 us with nothing acknowledging against 61,4xx, and 112,383
+and 119,383 us with an acknowledger against 12,1xx-12,2xx. Arduino core
+3.2.1's `HWCDC::write()` spends `tx_timeout_ms` passes of `delay(1)` on a TX
+ring buffer that has stopped draining and only then latches its `connected`
+flag false, so a host that is attached but not reading costs exactly one
+100 ms stall per boot. The write it lands in is the `vehicle port ->
+LISTEN-ONLY` line inside `applyVehicleMode()`, which is inside the measured
+window -- and the published fields localise it without reading the source,
+because `round=` and `switch=` are normal on those boots and `drained=0`,
+which leaves that print as the only code in the span. Spec 8.3 now forbids
+the wait and `INTP_CDC_TX_TIMEOUT_MS` sets the timeout to 1 ms on every
+serial-enabled build, so the figures above are expected to hold whether or
+not a host is reading; the tester's evidence is what settles that. The
+unexplained 111,388 us recorded on 2026-10-13 was this.
 
 ### Why a repeat ended -- the `c` field of `REPEAT ended`
 
