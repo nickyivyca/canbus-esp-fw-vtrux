@@ -694,13 +694,13 @@ class InterposerCore(object):
             self.events.append(
                 Event(t_ms, STATE_NAMES[self.state], text, a, b, c))
 
-    def _goto(self, t_ms, state, why):
+    def _goto(self, t_ms, state, why, a=0, b=0, c=0):
         if state == self.state:
             return
         self.state = state
         self.t_enter = t_ms
         self._wait_reason = None
-        self._log(t_ms, why)
+        self._log(t_ms, why, a, b, c)
 
     def _active(self):
         """Armed and answerable: the states where section 6 can trip.
@@ -714,7 +714,7 @@ class InterposerCore(object):
         """
         return self.state in (S_MONITOR, S_OVERRIDE, S_HOLD)
 
-    def _trip(self, t_ms, reason):
+    def _trip(self, t_ms, reason, b=0):
         """Bail to transparent forwarding and latch SAFE (spec 6).
 
         A trip is the same action as a release: we stop rewriting, and if we
@@ -745,13 +745,19 @@ class InterposerCore(object):
             return out
         self.trip_reason = reason
         was_override = self.state == S_OVERRIDE
-        self._goto(t_ms, S_SAFE, "TRIP: %s" % reason)
+        # a= is the trip code the board reports, derived from the text the
+        # model keeps as its canonical form; b= is the stale BMS identifier
+        # and 0 everywhere else, which mirrors machine.cpp:1017 being the
+        # only call site that passes it. The reason text itself stays in
+        # self.trip_reason: it is state, and trip_reason_code() reads it.
+        self._goto(t_ms, S_SAFE, "TRIP", self.trip_reason_code(), b)
         if was_override:
             self._repeat_master(t_ms, self.vcu_mode)
             self._emit_repeat(t_ms, out)
         return out
 
-    def _session_boundary(self, t_ms, why, clear_safe, forget_pilot=False):
+    def _session_boundary(self, t_ms, why, clear_safe, forget_pilot=False,
+                          a=0, b=0, c=0):
         """Spec 6.1: reset everything this session learned.
 
         ONE path, used by all three boundaries, because the defect this
@@ -786,7 +792,7 @@ class InterposerCore(object):
         # Spec 6.1's most consequential boundary was the one you could not see.
         if self.state != S_PASSTHROUGH and (clear_safe
                                             or self.state != S_SAFE):
-            self._goto(t_ms, S_PASSTHROUGH, why)
+            self._goto(t_ms, S_PASSTHROUGH, why, a, b, c)
         elif not (self.events and self.events[-1][2] == why):
             # Collapse a contiguous run of the same boundary to one line.
             # The reset below stays level-triggered and fires on every frame,
@@ -795,7 +801,7 @@ class InterposerCore(object):
             # stops the core arming while the VCU is commanding STAND_BY.
             # Only the LOG is an edge. The VCU sends its page-00 changes as a
             # 20-frame burst, so without this one session end reads as twenty.
-            self._log(t_ms, why)
+            self._log(t_ms, why, a, b, c)
 
         self.t_full_since = None
         self.learned_ilim = 0
@@ -987,9 +993,7 @@ class InterposerCore(object):
                 and self._chg_reading_fresh(t_ms)
                 and self.mainc_closed and self.pilot_seen
                 and not self.boot_locked):
-            self._goto(t_ms, S_MONITOR,
-                       "charge established (charger in state 12, contactors "
-                       "closed, ibat %.1f A)" % (self.ibat / 100.0))
+            self._goto(t_ms, S_MONITOR, "charge established", self.ibat)
 
     def _is_genuinely_full(self):
         """Are WE done charging? Spec 5.1: the LEADER CELL has reached the
@@ -1248,8 +1252,8 @@ class InterposerCore(object):
             elif mode in (MODE_STANDBY, MODE_EXPORT):
                 # Spec 6.1: a session boundary, obeyed from any state. Clears
                 # SAFE -- this is the VCU's own session end.
-                self._session_boundary(t_ms, "VCU mode %d, session over" % mode,
-                                       clear_safe=True)
+                self._session_boundary(t_ms, "session over",
+                                       clear_safe=True, a=mode)
             elif mode == MODE_LOW_POWER and self.state == S_MONITOR:
                 # spec 3: decided on every Low Power frame while armed
                 self._evaluate_hold(t_ms, from_frame=True)
@@ -1380,12 +1384,18 @@ class InterposerCore(object):
             self.hold_ca = want
             self.t_hold_step = t_ms
 
-    def _wait(self, t_ms, key, text):
-        """Still MONITOR; log the reason once per change of reason (the text
-        may carry the time, the key must not)."""
+    def _wait(self, t_ms, key, text, a=0, b=0, c=0):
+        """Still MONITOR; log the reason once per change of reason.
+
+        The text is the board's event NAME and carries no values -- the time
+        and the soc ride in a/b/c, as they do on the board (wait() in
+        machine.cpp). The key must still not carry them: it is what makes
+        "once per change of reason" mean once per REASON rather than once
+        per millisecond, and a key with the time in it would log every tick.
+        """
         if key != self._wait_reason:
             self._wait_reason = key
-            self._log(t_ms, text)
+            self._log(t_ms, text, a, b, c)
 
     def _evaluate_hold(self, t_ms, from_frame=False):
         """The VCU is commanding Low Power and we are armed. The evap ceiling,
@@ -1421,32 +1431,35 @@ class InterposerCore(object):
             # delay ends the tick path decides on the standing command and
             # repeats it (4.1) if it overrides.
             self._wait(t_ms, "delay",
-                       "LOW_POWER seen at soc=%.1f%% -- waiting out the arm "
-                       "delay (%.1f s into the charge)"
-                       % (self.soc_half / 2.0, (t_ms - self.t_enter) / 1000.0))
+                       "LOW_POWER seen with the evap flag set -- waiting out "
+                       "the arm delay",
+                       self.soc_half, t_ms - self.t_enter)
             return
         if not self.evap:
             self._goto(t_ms, S_TERMINATED,
-                       "LOW_POWER accepted: evap flag clear (soc=%.1f%% "
-                       "vmax=%d mV chg_max=%.2f A)"
-                       % (self.soc_half / 2.0, self.vmax, self.chg_max / 100.0))
+                       "LOW_POWER accepted: evap flag clear",
+                       self.soc_half, self.vmax, self.chg_max)
             return
         if self.soc_half < c.soc_arm_half:
+            # The gate drops off the line: the board does not carry it,
+            # it is config, and it is recoverable from the config (reviewer,
+            # 2026-10-13).
             self._goto(t_ms, S_TERMINATED,
-                       "LOW_POWER accepted: evap flag set but soc=%.1f%% is "
-                       "below the %.1f%% gate" % (self.soc_half / 2.0,
-                                                 c.soc_arm_half / 2.0))
+                       "LOW_POWER accepted: evap flag set but soc below the "
+                       "gate", self.soc_half)
             return
         if self._evse_cap_ca() < 0:
             self._wait(t_ms, "cap",
-                       "LOW_POWER seen with the evap flag set at soc=%.1f%% -- "
-                       "no EVSE current limit known yet, not driving"
-                       % (self.soc_half / 2.0))
+                       "LOW_POWER seen with the evap flag set -- no EVSE "
+                       "current limit known yet, not driving",
+                       self.soc_half)
             return
-        self._goto(t_ms, S_OVERRIDE,
-                   "LOW_POWER overridden: evap flag set, soc=%.1f%% vmax=%d mV "
-                   "chg_max=%.2f A"
-                   % (self.soc_half / 2.0, self.vmax, self.chg_max / 100.0))
+        # The board's field order here is vmax, chg_max, soc -- NOT the
+        # accept event's soc, vmax, chg_max, three lines up. Same three
+        # quantities, different order, and the model follows each event's own
+        # order rather than imposing one (reviewer, 2026-10-13).
+        self._goto(t_ms, S_OVERRIDE, "LOW_POWER overridden",
+                   self.vmax, self.chg_max, self.soc_half)
         if not from_frame:
             self._repeat_master(t_ms, MODE_CHARGER)
 
@@ -1504,8 +1517,8 @@ class InterposerCore(object):
                 # Spec 6.1: it returns to 0 at every handle pull, so a step
                 # backwards is a new plug-in. Clears SAFE.
                 self._session_boundary(
-                    t_ms, "pilot timer stepped back %d -> %d min: new session"
-                    % (self.pilot_min, mins), clear_safe=True)
+                    t_ms, "pilot timer stepped back: new session",
+                    clear_safe=True, a=self.pilot_min, b=mins)
             self.pilot_min = mins
         elif arb_id == CHG_STATUS and len(d) >= 8:
             self.t_chg = t_ms
@@ -1618,9 +1631,8 @@ class InterposerCore(object):
         if (self.t_chg is not None
                 and t_ms - self.t_chg >= cfg.chg_silence_ms):
             self._session_boundary(
-                t_ms, "no charger status frame for %d ms: Bel unit offline"
-                % (t_ms - self.t_chg), clear_safe=False,
-                forget_pilot=True)
+                t_ms, "no charger status frame: Bel unit offline",
+                clear_safe=False, forget_pilot=True, a=t_ms - self.t_chg)
             self.t_chg = None      # one boundary per silence, not one a tick
 
         # Spec 2.3: back to listen-only after listen_only_ms with no
@@ -1665,7 +1677,7 @@ class InterposerCore(object):
                 # frames stale" stays a substring so trip_reason_code() keeps
                 # reporting 10 and the on-wire enum is unchanged.
                 out.extend(self._trip(
-                    t_ms, "BMS frames stale: 0x%03X" % bid))
+                    t_ms, "BMS frames stale: 0x%03X" % bid, bid))
                 return out
         if self.t_chg is None or t_ms - self.t_chg > cfg.chg_stale_ms:
             out.extend(self._trip(t_ms, "charger frames stale"))
@@ -1731,8 +1743,7 @@ class InterposerCore(object):
                 self.t_hold_step = t_ms
                 self._goto(t_ms, S_HOLD,
                            "RELEASE: the VCU's Low Power now reaches the "
-                           "charger; the setpoint is ours, holding at "
-                           "%.2f A" % (self.hold_ca / 100.0))
+                           "charger; the setpoint is ours", self.hold_ca)
                 self._repeat_master(t_ms, self.vcu_mode)
                 self._emit_repeat(t_ms, out)
         else:

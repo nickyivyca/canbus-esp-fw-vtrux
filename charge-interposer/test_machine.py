@@ -9,7 +9,9 @@ high-fidelity backstops.
 Run:  py -3.12 projects/vtrux/tools/interposer/test_machine.py
 """
 
+import io
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -626,6 +628,16 @@ def test_release_hands_page_00_back_and_takes_the_setpoint():
        "every repeated frame is the VCU's own 00 01 03")
     ok(b.core.stats["synth"] == b.core.cfg.burst_frames, "counted as synth")
     ok(any("RELEASE" in e[2] for e in b.core.events), "the release is logged")
+    # And its field, in the board's unit: machine.cpp:1081 is a=hold_ca_,
+    # centiamps. A substring check on "RELEASE" cannot see this, which is
+    # how the amps-versus-centiamps mutation first passed the suite.
+    rel = [e for e in b.core.events if e[2].startswith("RELEASE:")][0]
+    ok(rel.a == b.core.hold_ca and isinstance(rel.a, int),
+       "the release carries the hold setpoint in a=, as centiamps and as an "
+       "integer (a=%r, hold_ca=%r)" % (rel.a, b.core.hold_ca))
+    ok(rel.a > 100,
+       "a three-figure centiamp value, so the amps form (about 2.75) fails "
+       "here rather than reading as plausible (a=%r)" % (rel.a,))
     ok(any("top of charge reached" in e[2] for e in b.core.events),
        "the top of charge is logged")
     # Reviewer's ruling (ii), 2026-10-13: the event line carries the BOARD's
@@ -2606,6 +2618,106 @@ def test_a_session_boundary_does_not_put_the_port_back_in_listen_only():
        "is still there")
 
 
+def test_every_logged_event_name_is_one_the_board_can_return():
+    """Every string the model logs must be a string `eventName()` can return.
+
+    THE CHECK TO KEEP (reviewer, 2026-10-13), and the reason is that three
+    narrower checks in a row missed things. An AST pass over `self._log`
+    calls found six interpolated lines; comparing literals against
+    `eventName()` found six more, through `_goto`; and both missed `_wait`
+    and `_session_boundary`, whose text is the third argument. Each check
+    hard-coded the call shapes its author had in mind, and each clean result
+    read as a clean answer.
+
+    So this one does not name the paths. It finds every method whose body
+    forwards a parameter into `_log` -- directly or through another such
+    method -- and reads the literal at that position in every call to it. A
+    new wrapper is covered the day it is written.
+
+    It reads `machine.cpp` as TEXT because it cannot import it. That makes
+    the C++ file a required input: if it cannot be found this test FAILS
+    rather than skips, since a conformance check that quietly stops checking
+    is the defect it exists to prevent.
+    """
+    import ast
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    cpp_path = os.path.join(here, "firmware", "src", "machine.cpp")
+    ok(os.path.isfile(cpp_path),
+       "machine.cpp is where this test expects it (%s)" % cpp_path)
+    if not os.path.isfile(cpp_path):
+        return
+    cpp = io.open(cpp_path, encoding="utf-8").read()
+    seg = cpp[cpp.index("eventName"):]
+    seg = seg[:seg.index("\n}")]
+    names = set()
+    for m in re.finditer(r"return\s+((?:\"(?:[^\"\\]|\\.)*\"\s*)+);", seg):
+        names.add("".join(re.findall(r"\"((?:[^\"\\]|\\.)*)\"", m.group(1))))
+    names.discard("?")
+    ok(len(names) > 15,
+       "the eventName() table was parsed, not missed (%d names)" % len(names))
+
+    src = io.open(os.path.join(here, "machine.py"), encoding="utf-8").read()
+    tree = ast.parse(src)
+    defs = {}
+    for cls in ast.walk(tree):
+        if isinstance(cls, ast.ClassDef):
+            for fn in cls.body:
+                if isinstance(fn, ast.FunctionDef):
+                    defs[fn.name] = fn
+
+    sinks = {"_log": 1}
+    for _ in range(6):
+        grew = False
+        for name, fn in defs.items():
+            if name in sinks:
+                continue
+            args = [a.arg for a in fn.args.args]
+            found = None
+            for node in ast.walk(fn):
+                if not (isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Attribute)):
+                    continue
+                pos = sinks.get(node.func.attr)
+                if pos is None or len(node.args) <= pos:
+                    continue
+                a = node.args[pos]
+                if isinstance(a, ast.Name) and a.id in args:
+                    found = args.index(a.id) - 1    # drop `self`
+                    break
+            if found is not None:
+                sinks[name] = found
+                grew = True
+        if not grew:
+            break
+    ok("_goto" in sinks and "_wait" in sinks and "_session_boundary" in sinks,
+       "the wrapper walk found the indirect paths too (%s)"
+       % ", ".join(sorted(sinks)))
+
+    bad = []
+    seen = 0
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)):
+            continue
+        pos = sinks.get(node.func.attr)
+        if pos is None or len(node.args) <= pos:
+            continue
+        a = node.args[pos]
+        seen += 1
+        if isinstance(a, ast.Constant) and isinstance(a.value, str):
+            if a.value not in names:
+                bad.append((node.lineno, "not a board name", a.value))
+        elif isinstance(a, (ast.BinOp, ast.JoinedStr)):
+            bad.append((node.lineno, "interpolates a value",
+                        ast.dump(a)[:40]))
+    ok(seen > 20, "and it found the event texts themselves (%d)" % seen)
+    ok(not bad,
+       "every logged event name is one the board can return, with no value "
+       "in the text: %s" % ("; ".join("line %d %s %r" % r for r in bad[:4])
+                            or "all clear"))
+
+
 def test_event_lines_carry_values_in_fields_not_in_the_text():
     """Reviewer's ruling (ii), 2026-10-13: an event's NAME is fixed text and
     its values live in a/b/c, in the board's order and units.
@@ -2652,6 +2764,103 @@ def test_event_lines_carry_values_in_fields_not_in_the_text():
     ok(locked[0].a == 5,
        "the age is in a=, the field the board puts it in (a=%d)"
        % locked[0].a)
+
+
+def _ev(core, name):
+    """The one event with this exact name, or None."""
+    hits = [e for e in core.events if e[2] == name]
+    return hits[0] if len(hits) == 1 else None
+
+
+def test_the_state_events_carry_the_boards_units():
+    """The second batch of 2026-10-13: a/b/c in the board's units, which are
+    centiamps for currents, millivolts for cells and HALF PERCENT for soc.
+
+    Every one of these is a conversion the model used to do in the opposite
+    direction, printing amps and whole percent in its prose, so a unit
+    regression here reads as a plausible number rather than as an error.
+    That is what the assertions are for: they pin the raw field, not a
+    rounded one.
+    """
+    # 0x410 FIRST, deliberately. The arm completes on the contactor frame
+    # (0x440), and in Bench.arm's default order that is sent BEFORE 0x410 --
+    # so ibat is still 0 when the event fires, and a=0 is correct there on
+    # both cores (machine.cpp:502 reads ibat_ the same way). Sending the
+    # current first is what makes this a test of the UNIT rather than of the
+    # ordering, which is the mistake the first version of this made.
+    b = Bench()
+    b.bms_410(soc=80.0, ibat=15.0)
+    b.arm(skip=(0x410,))
+    est = _ev(b.core, "charge established")
+    ok(est is not None, "the arm logs the board's name")
+    ok(est.a == 1500,
+       "ibat is centiamps in a= (1500), not the 15.0 the prose printed "
+       "(a=%r)" % (est.a,))
+
+    b.low_power()
+    ovr = _ev(b.core, "LOW_POWER overridden")
+    ok(ovr is not None, "the override logs the board's name")
+    ok(ovr.fields() == (3340, 30000, 160),
+       "a=vmax mV, b=chg_max cA, c=soc half-percent -- the board's order at "
+       "machine.cpp:620, which is NOT the accept event's (%r)"
+       % (ovr.fields(),))
+
+    b2 = Bench()
+    b2.arm(evap=0)
+    b2.low_power()
+    acc = _ev(b2.core, "LOW_POWER accepted: evap flag clear")
+    ok(acc is not None, "the evap-clear accept logs the board's name")
+    ok(acc.fields() == (160, 3340, 30000),
+       "and ITS order is a=soc half-percent, b=vmax, c=chg_max "
+       "(machine.cpp:608) -- the two events differ, so a shared helper "
+       "would be wrong (%r)" % (acc.fields(),))
+
+    b3 = Bench()
+    b3.arm(soc=70.0)                # 140 half-percent, below the 156 gate
+    b3.low_power()
+    gate = _ev(b3.core, "LOW_POWER accepted: evap flag set but soc below the "
+                        "gate")
+    ok(gate is not None, "the below-gate accept logs the board's name")
+    ok(gate.fields() == (140, 0, 0),
+       "a=soc half-percent and nothing else: the gate drops off the line "
+       "because the board does not carry it (%r)" % (gate.fields(),))
+
+    b4 = Bench()
+    b4.arm()
+    b4.bms_420(chg_max=300.0, overvolt=1)
+    trip = _ev(b4.core, "TRIP")
+    ok(trip is not None, "a trip logs the bare name")
+    ok(trip.a == 2 and trip.b == 0,
+       "a= is the board's trip code (2 for cell_overvolt) and b= is 0 "
+       "where the board passes nothing (%r)" % (trip.fields(),))
+
+    b5 = Bench()
+    b5.arm()
+    b5.t += b5.core.cfg.bms_stale_ms + 1
+    b5.tick()
+    stale = _ev(b5.core, "TRIP")
+    ok(stale is not None, "the stale-BMS trip logs the same bare name")
+    ok(stale.a == 10 and stale.b in M.BMS_IDS,
+       "with a=10, the unchanged on-wire code, and the stale id in b= -- "
+       "mirroring machine.cpp:1017, the only site that passes b (%r)"
+       % (stale.fields(),))
+
+    b6 = Bench()
+    b6.chg(M.CHG_PILOT, pilot(5))
+    b6.chg(M.CHG_PILOT, pilot(0))
+    back = _ev(b6.core, "pilot timer stepped back: new session")
+    ok(back is not None, "the pilot step back logs the board's name")
+    ok(back.a == 5 and back.b == 0,
+       "a= is the minutes it was, b= what it became, the board's order at "
+       "machine.cpp:874 (%r)" % (back.fields(),))
+
+    b7 = Bench()
+    b7.arm()
+    b7.veh(0x18EFC000, P.enc_master(1, P.MODE_STANDBY))
+    over = _ev(b7.core, "session over")
+    ok(over is not None, "the VCU's session end logs the board's name")
+    ok(over.a == P.MODE_STANDBY,
+       "with the VCU's mode in a= (%r)" % (over.fields(),))
 
 
 def main():
