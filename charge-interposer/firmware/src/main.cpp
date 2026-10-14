@@ -106,6 +106,16 @@ static BridgeHealth bridge_health;
 // also counts the board's own diagnostic sends.
 static uint32_t veh_bridge_fail = 0;
 
+// Spec 2.3: the vehicle port's mode. Three tallies, all three on the serial
+// line, because each one means something different if it is not zero:
+// switches that happened, switches the driver refused (bus-off recovery, see
+// TwaiPort::setMode), and vehicle-bound frames that arrived with the port in
+// listen-only -- which should be impossible and is a bug in the ordering
+// below rather than a lost frame.
+static uint32_t mode_switches = 0;
+static uint32_t mode_switch_fail = 0;
+static uint32_t listen_suppressed = 0;
+
 // --- diagnostics (spec 8.2 / 8.3) -----------------------------------------
 // Build id (0x7F7 B0-B3): the first four bytes of this application's ELF
 // SHA-256, read from the ESP-IDF app descriptor.
@@ -158,6 +168,14 @@ static void accrueChargerTxFailures() {
 // best-effort, and print the matching serial line. `status_only` sends just
 // 0x7F4 -- the immediate frame on a state change.
 static void sendDiag(uint32_t t_ms, bool status_only) {
+  // Spec 2.3 (user, 2026-10-13): no diagnostic frames at all while the
+  // vehicle port is in listen-only. Gated on the PORT's own mode rather
+  // than on the core's wish, and the difference shows when a switch has
+  // been refused: a port still in normal mode may as well keep reporting,
+  // and a port in listen-only could not transmit if we asked it to. The
+  // one round at power-up is sent from setup(), before the first switch,
+  // so this gate does not reach it.
+  if (vehicle.listenOnly()) return;
   uint8_t fr[4][8];
   const uint32_t ovf = vehicle.rxDropped() + charger.rxDropped() + emit_overflow;
   const uint32_t boe = vehicle.busOffEvents() + charger.busOffEvents();
@@ -218,6 +236,18 @@ static void sendDiag(uint32_t t_ms, bool status_only) {
 static void dispatch(const EmitList& out) {
   for (uint8_t i = 0; i < out.n; i++) {
     const Emit& e = out.items[i];
+    // Spec 2.3: a vehicle-bound frame cannot go out on a listen-only port,
+    // and it must not be counted as a bridge failure either -- nothing
+    // failed, the board is deliberately off the segment. It should also
+    // never happen: everything bound for the vehicle is a forward or a
+    // mirror of charger traffic, and the port is in normal mode from the
+    // first charger frame on, because applyVehicleMode() runs before this.
+    // So it is counted on its own, where a non-zero reading is that
+    // ordering broken rather than a frame lost.
+    if (e.port == TO_VEHICLE && vehicle.listenOnly()) {
+      listen_suppressed++;
+      continue;
+    }
     const bool ok = (e.port == TO_CHARGER)
                         ? charger.send(e.id, e.ext, e.data, e.len)
                         : vehicle.send(e.id, e.ext, e.data, e.len);
@@ -233,6 +263,43 @@ static void dispatch(const EmitList& out) {
     }
   }
   if (out.dropped) emit_overflow += out.dropped;
+}
+
+// Spec 2.3: put the vehicle port in the mode the core says it should be in.
+//
+// CALLED AFTER EVERY CHARGER FRAME AND EVERY TICK, AND BEFORE THAT PASS'S
+// EmitList IS DISPATCHED. That ordering is the spec's "the port switches
+// first and then forwards that frame", and this is the only place it is
+// stated: the core sets its wish inside onChargerFrame() before it emits
+// anything, and the dispatch below happens after this returns.
+static void applyVehicleMode(uint32_t t_ms) {
+  const bool want = core->vehicleListenOnly();
+  if (vehicle.listenOnly() == want) return;
+
+  // The switch tears the driver down, which discards whatever it had in RX,
+  // so drain it into the core first: a frame already received must not be
+  // lost just because the mode changed. Bounded by the queue depth rather
+  // than the loop's usual 16, because the alternative to reading them here
+  // is losing them. What arrives on the WIRE during the reinstall cannot be
+  // saved by anything at this level; the window was measured on the bench
+  // and the figure is in the bring-up notes.
+  EmitList drain;
+  RxFrame f;
+  for (uint16_t i = 0; i < 64 && vehicle.receive(f); i++) {
+    drain.clear();
+    core->onVehicleFrame(f.id, f.ext, f.data, f.len, t_ms, drain);
+    dispatch(drain);
+  }
+
+  if (vehicle.setMode(want)) {
+    mode_switches++;
+    INTP_PRINTF("vehicle port -> %s\n", want ? "LISTEN-ONLY" : "normal");
+  } else {
+    // Refused, which TwaiPort::setMode documents as legitimate during
+    // bus-off recovery. The core's wish stands and the next pass tries
+    // again; until then listenOnly() reports what the hardware is doing.
+    mode_switch_fail++;
+  }
 }
 
 static void reportEvents() {
@@ -357,6 +424,21 @@ static void status(uint32_t t_ms) {
       core->chargerState(), (unsigned long)core->fwdV2C(),
       (unsigned long)core->fwdC2V(), (unsigned long)core->modified(),
       (unsigned long)core->synth());
+
+  // Spec 2.3, and both modes are printed on purpose (reviewer, 2026-10-13):
+  // the core's wish and the port's actual mode can disagree for a pass or
+  // more, because a mode change is a driver reinstall that bus-off recovery
+  // legitimately refuses, and a disagreement is invisible if only one of
+  // them is reported. Unconditional, for the reason the LOSS line below
+  // records: a counter visible only when some other counter is non-zero is
+  // not observable.
+  INTP_PRINTF("  MODE veh=%s core wants %s | switches=%lu refused=%lu "
+              "suppressed=%lu\n",
+              vehicle.listenOnly() ? "listen-only" : "normal",
+              core->vehicleListenOnly() ? "listen-only" : "normal",
+              (unsigned long)mode_switches,
+              (unsigned long)mode_switch_fail,
+              (unsigned long)listen_suppressed);
 
   // Anything non-zero on this line means the bridge is not transparent, which
   // matters more than any of the numbers above.
@@ -499,6 +581,30 @@ void setup() {
 
   last_tick_ms = millis();
   last_status_ms = last_tick_ms;
+
+  // Spec 2.3 (user, 2026-10-13): ONE round of the 8.2 status frames at
+  // power-up, so a log shows which software is on the board, and then the
+  // vehicle port goes to listen-only and stays there until the charger
+  // speaks. The round is sent from here and not from the core because a
+  // core cannot know that a board has just booted; the mode after it is the
+  // core's, and applyVehicleMode() reads it.
+  //
+  // FOUR FRAMES WHEN THE BRIDGE IS UP, 0x7F4 ALONE WHEN IT IS NOT, which is
+  // not an inconsistency but the two rules the spec gives: 2.3 asks for "one
+  // round of the status frames of 8.2", while 8.2's B-7d row says a board
+  // whose controllers did not both start "still sends 0x7F4 on the vehicle
+  // side ... with the bridge reported failed" -- the other three carry
+  // observations and counters that mean nothing on a board that is not
+  // bridging.
+  //
+  // 2.3 records this timing as OPEN: at power-up a truck logger will
+  // probably not be listening yet. It stays here until the user rules.
+  if (vehicle_up) {
+    last_diag_ms = millis();
+    sendDiag(last_diag_ms, !healthy);
+    last_diag_state = core->state();
+  }
+  applyVehicleMode(millis());
 }
 
 void loop() {
@@ -526,15 +632,16 @@ void loop() {
 
   if (!healthy) {
     digitalWrite(LED_BUILTIN, (t_ms / 100) % 2);  // fast blink = down
-    // Spec 2.1 / 8.2 (B-7d): bridge nothing, but keep saying so. The core
-    // has seen no frames, so this reports PASSTHROUGH with `bridge_ok`
-    // clear -- sendDiag forces it clear while `healthy` is false. Only 0x7F4
-    // goes out; the other three carry observations and counters that mean
-    // nothing on a board that is not bridging.
-    if (vehicle_up && (uint32_t)(t_ms - last_diag_ms) >= DIAG_INTERVAL_MS) {
-      last_diag_ms = t_ms;
-      sendDiag(t_ms, true);
-    }
+    // Spec 2.1 / 8.2 (B-7d), as 2.3 amends it (user, 2026-10-13): the
+    // failed start is reported by the ONE round sent at power-up, and the
+    // port then stays in listen-only, because no charger frame can arrive
+    // to take it out of it. So there is nothing to send from here and
+    // nothing that could change the mode.
+    //
+    // Until 2.3 this repeated 0x7F4 once a second for as long as the board
+    // was powered. On a truck that is a frame a second on the vehicle
+    // segment from a board that is not bridging, which is the case 2.3
+    // exists to remove.
     return;
   }
 
@@ -554,13 +661,18 @@ void loop() {
   for (uint8_t i = 0; i < 16 && charger.receive(f); i++) {
     out.clear();
     core->onChargerFrame(f.id, f.ext, f.data, f.len, t_ms, out);
-    dispatch(out);
+    applyVehicleMode(t_ms);   // spec 2.3: the port switches first...
+    dispatch(out);            // ...and then forwards that frame
   }
 
   if ((uint32_t)(t_ms - last_tick_ms) >= TICK_INTERVAL_MS) {
     last_tick_ms = t_ms;
     out.clear();
     core->tick(t_ms, out);
+    // Spec 2.3: the tick is where the port goes BACK to listen-only, 2 s
+    // after the last charger frame -- the condition is the absence of a
+    // frame, so no frame path can notice it.
+    applyVehicleMode(t_ms);
     dispatch(out);
   }
 

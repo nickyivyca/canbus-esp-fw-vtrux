@@ -64,10 +64,29 @@ class TwaiPort : public CanPort {
   // begin(); it also makes send() set the self-reception flag.
   void setSelfTest(bool on) { selftest_ = on; }
   // Listen-only (TWAI_MODE_LISTEN_ONLY): receives without ever writing an ACK
-  // or an error flag. Paired with a NO_ACK transmitter on the far side it gives
-  // a one-way physical-path test on a two-node bus, which normal mode cannot --
-  // in normal mode each node needs the other to ACK before either succeeds.
+  // or an error flag. Call before begin(); setMode() below is the runtime
+  // form. Two uses, and the first is no longer bench-only: spec 2.3 keeps
+  // the vehicle port in this mode whenever the charger is silent, so the
+  // board cannot disturb the truck's bus while it drives. On the bench,
+  // paired with a NO_ACK transmitter on the far side, it also gives a
+  // one-way physical-path test that normal mode cannot -- there each node
+  // needs the other to ACK before either succeeds.
   void setListenOnly(bool on) { listen_only_ = on; }
+  bool listenOnly() const { return listen_only_; }
+  // Spec 2.3: change mode on a port that is already up.
+  //
+  // THERE IS NO TWAI CALL FOR THIS. The mode is an argument to
+  // twai_driver_install(), so this is end() followed by begin(), and the
+  // two consequences belong to every caller:
+  //   * IT CAN FAIL, and legitimately -- end() is refused during bus-off
+  //     recovery, which cannot be hurried. False means "still in the old
+  //     mode", so the caller retries rather than assuming;
+  //   * IT DISCARDS THE DRIVER'S QUEUES. Frames already received but not
+  //     yet read are lost with the driver, so a caller that cares drains
+  //     RX first; frames arriving on the wire during the reinstall cannot
+  //     be saved by anything above this layer.
+  // Returns true when the port is up in the requested mode.
+  bool setMode(bool listen_only);
   // Tear the driver down. Returns false if it could NOT be torn down --
   // which happens from RECOVERING, where neither stop nor uninstall is
   // permitted and the 128 bus-free occurrences cannot be hurried. The
@@ -82,6 +101,10 @@ class TwaiPort : public CanPort {
   int rx_gpio_;
   uint16_t rx_queue_;
   uint16_t tx_queue_;
+  // Remembered by begin() so setMode() can bring the driver back up on the
+  // same wire; 0 until then, which makes a setMode() before begin() fail
+  // rather than install at some default rate.
+  uint32_t bitrate_;
 
   uint32_t rx_count_;
   uint32_t tx_count_;

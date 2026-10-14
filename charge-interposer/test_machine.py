@@ -76,9 +76,14 @@ class Bench(object):
         self.out = self.core.on_vehicle_frame(fid, fid > 0x7FF, data, self.t)
         return self.out
 
-    def chg(self, fid, data):
-        self.trace.append("C %d %X 1 %s" % (self.t, fid, bytes(data).hex()))
-        self.out = self.core.on_charger_frame(fid, True, data, self.t)
+    def chg(self, fid, data, ext=True):
+        # `ext` is a parameter because spec 2.3's switch tests it: a
+        # STANDARD frame on the charger segment is not the charger, and a
+        # helper that could only send extended frames could not say so.
+        self.trace.append("C %d %X %d %s"
+                          % (self.t, fid, 1 if ext else 0,
+                             bytes(data).hex()))
+        self.out = self.core.on_charger_frame(fid, ext, data, self.t)
         return self.out
 
     def tick(self):
@@ -2408,6 +2413,184 @@ def test_a_low_cell_is_the_bms_s_business_not_ours():
     ok("cell_overvolt" in (b.core.trip_reason or ""),
        "cell_overvolt in the same message still trips (%r)"
        % b.core.trip_reason)
+
+
+# --- spec 2.3: which mode the vehicle port should be in ---------------------
+#
+# The core decides the mode and never applies it. These cases are therefore
+# about the DECISION only; that the port then puts nothing on the segment is
+# the tester's L2, which can see a wire.
+
+
+def test_the_board_boots_in_listen_only():
+    """Spec 2.3 (user, 2026-10-13): "At power-up the board sends one round of
+    the status frames of 8.2 ... and then puts the port in listen-only."
+
+    The power-up round is the caller's -- a core cannot know that a board has
+    just booted -- so the core's half is the mode, and what this pins is that
+    it starts in listen-only and that nothing but a charger frame moves it.
+    The truck driving with no charger on the segment is the case 2.3 exists
+    for, and it is exactly this: ticks and vehicle traffic, forever.
+    """
+    b = Bench()
+    ok(b.core.listen_only, "the core starts in listen-only")
+    for _ in range(50):
+        b.t += 10
+        b.tick()
+    ok(b.core.listen_only, "and 500 ms of ticks do not change that")
+    for _ in range(50):
+        b.t += 10
+        b.bms()
+        b.evap(1)
+        b.tick()
+    ok(b.core.listen_only,
+       "nor does half a second of vehicle traffic, BMS and VCM both")
+
+
+def test_the_first_charger_frame_switches_the_mode_before_it_is_forwarded():
+    """Spec 2.3: "The port switches first and then forwards that frame."
+
+    What the core owes the caller is that ONE CALL does both: the mode is
+    already normal when the call returns, and the frame comes back in the
+    same call's EmitList, so a caller that applies the mode and then
+    dispatches cannot put that frame out on a port still in listen-only.
+
+    This case does NOT see the order inside the call -- both are read after
+    it returns -- and it is not meant to. The ordering proper belongs to
+    main.cpp, which applies vehicleListenOnly() before dispatch(), and to
+    the tester's L2, which can watch a wire.
+    """
+    b = Bench()
+    ok(b.core.listen_only, "listen-only before the charger speaks")
+    out = b.charger_status(12)
+    ok(not b.core.listen_only,
+       "the first extended 0xC0 frame switches it to normal")
+    fwd = [e for e in out if e[0] == M.TO_VEHICLE and e[1] == 0x18FFD4C0]
+    ok(len(fwd) == 1,
+       "and the same call hands that frame back for the vehicle side, so "
+       "the switch precedes the forward (%s)"
+       % ([(e[0], "%X" % e[1]) for e in out],))
+
+
+def test_a_frame_that_is_not_the_charger_does_not_switch_the_mode():
+    """Spec 2.3: "an extended frame with source address 0xC0 received on the
+    charger port. Bus errors and anything else on that segment do not
+    count."
+
+    Both negatives are things the charger segment really carries. 0x18EFC000
+    is our own forward of the VCU's command, source address 0x00, which an
+    echo or a reflection would present straight back to us; a standard frame
+    is not a J1939 PGN at all and nothing on that segment should send one.
+    The control at the end is the point of the case: a real charger frame at
+    the same moment DOES switch it, so the two above were refused rather
+    than merely unnoticed.
+
+    A BUS ERROR CANNOT BE TESTED HERE and that is not a gap in the case: an
+    error never reaches a frame path in either core, so there is nothing for
+    a core-level test to drive. The tester's L2 has the error-burst case,
+    where there is a controller to make errors on.
+    """
+    b = Bench()
+    b.chg(0x18EFC000, bytes(8))
+    ok(b.core.listen_only,
+       "0x18EFC000 carries source address 00, not C0: not the charger")
+    b.chg(0x4C0, bytes(8), ext=False)
+    ok(b.core.listen_only,
+       "and 0x4C0, a STANDARD frame, is refused on `ext` alone -- its low "
+       "byte is 0xC0, so the source-address test cannot be what refuses it")
+    b.t += 5000
+    b.tick()
+    ok(b.core.listen_only,
+       "still listen-only 5 s on -- and no revert fired, because there was "
+       "no mode to revert from")
+    b.charger_status(12)
+    ok(not b.core.listen_only,
+       "control: a real charger frame at this same point switches it, so "
+       "the two above were refused and not missed")
+
+
+def test_any_extended_0xc0_frame_switches_the_mode_not_only_a_known_one():
+    """Spec 2.3 tests the SOURCE ADDRESS: "an extended frame with source
+    address 0xC0", not a list of identifiers. So a frame of the Bel's that
+    this core never reads is still the charger being there -- which matters,
+    because the corpus has Bel identifiers this core has no handler for, and
+    a charger whose first frame after a plug-in happens to be one of them
+    would otherwise leave the board off the segment until the next one.
+
+    0x18FF50C0 is such an id: nothing in either core reads it.
+    """
+    b = Bench()
+    ok(b.core.listen_only, "listen-only to begin with")
+    out = b.chg(0x18FF50C0, bytes(8))
+    ok(not b.core.listen_only,
+       "an unread extended 0xC0 frame switches the mode")
+    ok([e for e in out if e[0] == M.TO_VEHICLE and e[1] == 0x18FF50C0],
+       "and it is forwarded like any other frame (spec 2), so the switch "
+       "did not swallow it (%s)" % ([(e[0], "%X" % e[1]) for e in out],))
+
+
+def test_it_reverts_to_listen_only_after_two_seconds_of_silence():
+    """Spec 2.3: "Back to listen-only after 2 s with no charger frame."
+
+    1.9 s and 2.1 s are the reviewer's figures (2026-10-13); the equality at
+    exactly 2.0 s is the sharper claim and the one that pins >= against >.
+    """
+    b = Bench()
+    b.charger_status(12)
+    ok(not b.core.listen_only, "normal mode, from the charger frame")
+    b.t += 1900
+    b.tick()
+    ok(not b.core.listen_only, "1.9 s of silence does not revert it")
+    b.t += 100
+    b.tick()
+    ok(b.core.listen_only,
+       "and 2.0 s exactly does: the gate is >= listen_only_ms (%d ms), not "
+       "> it" % b.core.cfg.listen_only_ms)
+
+    b = Bench()
+    b.charger_status(12)
+    b.t += 2100
+    b.tick()
+    ok(b.core.listen_only, "2.1 s reverts it from a standing start too")
+
+    # And it is the SILENCE that does it, not the passage of time: a charger
+    # talking at its own 100 ms cadence holds the port in normal mode for as
+    # long as it keeps talking.
+    b = Bench()
+    b.charger_status(12)
+    for _ in range(100):
+        b.t += 100
+        b.tick()
+        b.charger_status(12)
+    ok(not b.core.listen_only,
+       "10 s of charger frames 100 ms apart keep it in normal mode")
+    b.t += 2000
+    b.tick()
+    ok(b.core.listen_only, "and it reverts 2 s after the last one")
+
+
+def test_a_session_boundary_does_not_put_the_port_back_in_listen_only():
+    """The mode is about whether the charger SEGMENT is alive, not about
+    whether a session is running, so no session boundary clears it
+    (implementor, 2026-10-13, written beside the flag in machine.py).
+
+    The pilot timer stepping back is the case that separates the two,
+    because it is a boundary that happens WHILE the charger is talking --
+    6.1's silence boundary cannot test this, since by the time it fires at
+    20 s the port has been back in listen-only for 18 s. Everything else
+    resets; the mode does not.
+    """
+    b = Bench()
+    b.charger_status(12)
+    ok(not b.core.listen_only, "normal mode first")
+    b.chg(0x18FFD8C0, pilot(5))
+    b.chg(0x18FFD8C0, pilot(0))          # a new plug-in
+    ok(any("new session" in e[2] for e in b.core.events),
+       "precondition: the step back really was taken as a session boundary "
+       "(%s)" % ([e[2][:40] for e in b.core.events],))
+    ok(not b.core.listen_only,
+       "and the boundary left the port in normal mode, because the charger "
+       "is still there")
 
 
 def main():

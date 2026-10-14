@@ -11,6 +11,7 @@ TwaiPort::TwaiPort(int tx_gpio, int rx_gpio, uint16_t rx_queue,
       rx_gpio_(rx_gpio),
       rx_queue_(rx_queue),
       tx_queue_(tx_queue),
+      bitrate_(0),
       rx_count_(0),
       tx_count_(0),
       rx_dropped_(0),
@@ -27,6 +28,7 @@ TwaiPort::TwaiPort(int tx_gpio, int rx_gpio, uint16_t rx_queue,
       listen_only_(false) {}
 
 bool TwaiPort::begin(uint32_t bitrate) {
+  bitrate_ = bitrate;
   twai_general_config_t g = TWAI_GENERAL_CONFIG_DEFAULT(
       (gpio_num_t)tx_gpio_, (gpio_num_t)rx_gpio_,
       listen_only_ ? TWAI_MODE_LISTEN_ONLY
@@ -179,6 +181,21 @@ void TwaiPort::service(uint32_t t_ms) {
       if (twai_start() == ESP_OK) bus_off_ = false;   // the episode is over
     }
   }
+}
+
+// Spec 2.3. Ordering matters and is not obvious: listen_only_ is set only
+// once end() has succeeded, so a refused teardown leaves BOTH the flag and
+// the hardware in the old mode and listenOnly() keeps telling the truth. A
+// flag set first would make the port claim a mode it is not in, which is
+// the one thing a caller gating transmission on it cannot survive.
+bool TwaiPort::setMode(bool listen_only) {
+  if (ready_ && listen_only_ == listen_only) return true;
+  if (ready_ && !end()) return false;
+  listen_only_ = listen_only;
+  // Down either way now -- by the end() above, or because it never came up.
+  // Trying begin() from down is deliberate: a transient install failure then
+  // recovers on the caller's next attempt instead of latching the port off.
+  return begin(bitrate_);
 }
 
 bool TwaiPort::end() {

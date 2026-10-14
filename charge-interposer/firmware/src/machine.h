@@ -62,6 +62,10 @@ static const uint32_t CHG_STATUS = 0x18FFD4C0u;     // BINV_status, multiplexed
 static const uint32_t CHG_HV_STATUS = 0x18FFD7C0u;  // pack V/I, AC V/I
 static const uint32_t CHG_INFO = 0x18FFD9C0u;       // maxAvailableChargingCurrent
 static const uint32_t CHG_PILOT = 0x18FFD8C0u;      // chargePilotOnlineTime (spec 3)
+// The Bel unit's J1939 source address, the low byte of every frame it sends.
+// Spec 2.3 tests the SOURCE ADDRESS rather than a list of known ids, so a
+// frame of the charger's that this core does not read still counts.
+static const uint32_t CHG_SA = 0xC0u;
 
 enum PortId : uint8_t {
   TO_VEHICLE = 0,
@@ -121,7 +125,14 @@ static const uint8_t DIAG_SCHEMA_VER = 4;
 //      RATE at which the hold follows bcm_chg_max -- 0.1 A per 0.3 s rather
 //      than per 0.6 s -- so a capture cannot be told apart from a version 7
 //      one by any single frame, which is what this byte is for.
-static const uint8_t DIAG_FW_VER = 8;
+//   9  spec 2.3 of 2026-10-13: the vehicle port is in listen-only while the
+//      charger is silent, so the board puts NOTHING on the vehicle segment
+//      -- no frame, no acknowledgement, no error frame -- while the truck
+//      drives, and sends no diagnostic frames either. A reader who sees
+//      0x7F4-0x7F7 arrive only during a charge, and one round at power-up,
+//      is looking at version 9 working rather than at a board that has
+//      stopped.
+static const uint8_t DIAG_FW_VER = 9;
 
 // The 29-bit id with its source-address byte replaced by DIAG_SA.
 inline uint32_t mirrorId(uint32_t id) { return (id & 0x1FFFFF00u) | DIAG_SA; }
@@ -224,6 +235,14 @@ struct Config {
 
   uint32_t bms_stale_ms;
   uint32_t chg_stale_ms;
+  // Spec 2.3 (user, 2026-10-13): no charger frame for this long and the
+  // vehicle port goes back to listen-only. THREE CHARGER TIMERS SIT
+  // TOGETHER HERE AND THEY ARE NOT THE SAME THING: 500 ms without a status
+  // frame trips the core, 20 s ends the session, and this one takes the
+  // port off the segment. Between the two on purpose, so a session that
+  // ends always ends through section 6 first. See machine.py for why it
+  // cannot fire inside a live charge.
+  uint32_t listen_only_ms;
   // Spec 6.1: no charger status frame for this long is a session boundary.
   // It resets everything EXCEPT SAFE -- the 500 ms staleness row has already
   // tripped on the same silence, and silence continuing must not undo the
@@ -353,6 +372,11 @@ enum EventCode : uint8_t {
   // codes are not on the wire, but they are in every serial log already
   // captured, and renumbering would re-read all of them silently.
   EV_HOLD_ENDED_BY_VCU,
+  // Spec 2.3 (user, 2026-10-13): the vehicle port's mode changed.
+  // a = 1 for normal, 0 for listen-only; b = the frame id that switched
+  // it, or the milliseconds of silence that switched it back. Appended
+  // for the reason EV_REPEAT_END gives.
+  EV_VEHICLE_MODE,
 };
 
 // Why a spec 4.1 repeat stopped, reported as EV_REPEAT_END's `c`.
@@ -570,6 +594,15 @@ class InterposerCore {
     return !have_t_chg_ || (uint32_t)(t_ms - t_chg_) > cfg_.chg_stale_ms;
   }
   uint8_t evap() const { return evap_; }
+  // Spec 2.3 (user, 2026-10-13): the mode the VEHICLE PORT SHOULD BE IN.
+  // The core decides it and never applies it: the caller reads this after
+  // every onChargerFrame() and tick(), applies it to its port, and only
+  // then dispatches that call's EmitList -- which is the spec's "switch
+  // first, then forward that frame". On the board the two can disagree for
+  // a pass or more, because a TWAI mode change is a driver reinstall that
+  // is legitimately refused during bus-off recovery, so main.cpp reports
+  // the port's actual mode beside this one (reviewer, 2026-10-13).
+  bool vehicleListenOnly() const { return listen_only_; }
 
  private:
   void log(uint32_t t_ms, uint8_t code, int32_t a = 0, int32_t b = 0,
@@ -650,6 +683,10 @@ class InterposerCore {
   bool have_t_bms_[N_BMS_IDS];
   uint32_t t_bms_[N_BMS_IDS];
   bool have_t_chg_;
+  // Spec 2.3: any extended frame with source address 0xC0 -- a wider test
+  // than have_t_chg_/t_chg_, which are the mux-0 status frame alone.
+  bool listen_only_;
+  bool have_t_chg_frame_;
   bool have_chg_bad_;
   bool have_t_full_;
   // Spec 5.2: the hold setpoint in cA and the time of its last step.
@@ -659,6 +696,7 @@ class InterposerCore {
   bool hold_valid_;
   bool have_t_hold_step_;
   uint32_t t_chg_;
+  uint32_t t_chg_frame_;
   uint32_t chg_bad_since_;
   uint32_t t_full_since_;
   int32_t hold_ca_;

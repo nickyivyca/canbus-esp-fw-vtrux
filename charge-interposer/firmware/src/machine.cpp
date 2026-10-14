@@ -73,6 +73,8 @@ const char* eventName(uint8_t c) {
       return "no charger status frame: Bel unit offline";
     case EV_HANDLE_PULL:
       return "charger reports the plug out (vehicleConnected 1 -> 0): transparent";
+    case EV_VEHICLE_MODE:
+      return "vehicle port mode (a=1 normal, a=0 listen-only)";
     default: return "?";
   }
 }
@@ -118,6 +120,8 @@ void configDefaults(Config& c) {
   c.chg_state_debounce_ms = 5000;
   c.bms_stale_ms = 500;
   c.chg_stale_ms = 500;
+  c.listen_only_ms = 2000;   // spec 2.3: no charger frame for 2 s and the
+                             // vehicle port goes back to listen-only
   c.chg_silence_ms = 20000;  // spec 6.1
   c.override_max_ms = 6u * 3600u * 1000u;
 
@@ -200,12 +204,15 @@ InterposerCore::InterposerCore(const Config& cfg, uint32_t now_ms)
       chg_seen_charging_(false),
 
       have_t_chg_(false),
+      listen_only_(true),        // spec 2.3: the board boots off the segment
+      have_t_chg_frame_(false),
       have_chg_bad_(false),
       have_t_full_(false),
       hold_valid_(false),
       have_t_hold_step_(false),
 
       t_chg_(0),
+      t_chg_frame_(0),
       chg_bad_since_(0),
       t_full_since_(0),
       hold_ca_(0),
@@ -825,6 +832,23 @@ void InterposerCore::onCommand(const uint8_t* d, uint32_t t_ms, EmitList& out) {
 
 void InterposerCore::onChargerFrame(uint32_t id, bool ext, const uint8_t* d,
                                     uint8_t len, uint32_t t_ms, EmitList& out) {
+  // Spec 2.3 (user, 2026-10-13): the first valid charger frame takes the
+  // vehicle port out of listen-only. "An extended frame with source address
+  // 0xC0" -- not a known id, so a frame of the Bel's that this core never
+  // reads still counts, and bus errors, which reach no frame path at all,
+  // never can.
+  //
+  // BEFORE ANYTHING IS EMITTED, which is the spec's "switch first, then
+  // forward that frame": main.cpp applies vehicleListenOnly() and only then
+  // dispatches this call's EmitList.
+  if (ext && (id & 0xFFu) == CHG_SA) {
+    t_chg_frame_ = t_ms;
+    have_t_chg_frame_ = true;
+    if (listen_only_) {
+      listen_only_ = false;
+      log(t_ms, EV_VEHICLE_MODE, 1, (int32_t)id);
+    }
+  }
   if (id == CHG_PILOT && len >= 8) {
     const uint32_t mins = pilotOnlineMin(d);
     if (!pilot_seen_) {
@@ -950,6 +974,17 @@ void InterposerCore::tick(uint32_t t_ms, EmitList& out) {
     sessionBoundary(t_ms, EV_CHG_SILENCE, (int32_t)(t_ms - t_chg_), 0,
                     false, true);
     have_t_chg_ = false;  // one boundary per silence, not one a tick
+  }
+
+  // Spec 2.3: back to listen-only after listen_only_ms with no charger
+  // frame. On the clock rather than on a frame path for the obvious reason
+  // -- the condition is the ABSENCE of a frame -- and before the armed-only
+  // return below, because a charger that has gone quiet is exactly what
+  // leaves the core inactive.
+  if (!listen_only_ && have_t_chg_frame_ &&
+      (uint32_t)(t_ms - t_chg_frame_) >= cfg_.listen_only_ms) {
+    listen_only_ = true;
+    log(t_ms, EV_VEHICLE_MODE, 0, (int32_t)(t_ms - t_chg_frame_));
   }
 
   // Spec 5.2: "The trips of section 6 apply throughout, including 0x410

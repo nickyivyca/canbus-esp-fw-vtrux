@@ -30,11 +30,11 @@ bench artifacts stayed there when this folder moved into
 | `platformio.ini` | Build config. Arduino framework, `esp32-s3-devkitc-1` board (there is no PlatformIO definition for the CAN-X2). Six environments: `esp32-can-x2` (the bench bridge), **`truck`** (the same with serial compiled out, spec 8.3), **`esp32-can-x2-witness`** (the bridge plus completion-order instrumentation), `selftest`, `diag`, `slcan`. **Each one must exclude every other env's `*_main.cpp`** -- `slcan_main.cpp` was added on 2026-09-29 without updating the others, and `esp32-can-x2` did not link at all from then until 2026-10-03. Nothing caught it because nothing built it in between. |
 | `src/machine.h` / `.cpp` | **The state machine.** Pure: no Arduino, no ESP-IDF, integer-only, time as a parameter. The only file whose behaviour matters. |
 | `src/can_port.h` | `CanPort` interface + a fixed-capacity `FrameRing`. Separates "queued" from "on the wire" deliberately. |
-| `src/port_twai.h` / `.cpp` | CAN1, the vehicle segment, on the S3's built-in controller. |
+| `src/port_twai.h` / `.cpp` | CAN1, the vehicle segment, on the S3's built-in controller. `setMode()` is spec 2.3's listen-only switch, and it is a driver teardown and reinstall because TWAI fixes the mode at install: it can be refused, and it discards the driver's queues. |
 | `src/port_mcp2515.h` / `.cpp` | CAN2, the charger segment. Hand-written; see below for why. |
 | `src/bridge_health.h` | Spec 8.2's `bridge_ok`: health **since the previous status frame**, not since boot. Pure and header-only, kept out of `main.cpp` so `test/host_unit/` can compile it. |
 | `src/charger_tx_failures.h` | Spec 2.2's `0x7F6` B7 counter: the sum of the charger port's three disjoint tallies (queue full, controller failure, the 100 ms age-out), accrued only while the VCU's flow bit is 1, with a delta that arrives outside a session DISCARDED rather than banked for the next one. Lifted out of `main.cpp` on 2026-10-13 for the same reason as `bridge_health.h`: the rule is the whole of it, and nothing could test it where it was. |
-| `src/main.cpp` | Wiring only. Moves frames, reports losses. |
+| `src/main.cpp` | Wiring only. Moves frames, reports losses. Owns spec 2.3's two caller duties: the one round of status frames at power-up, and applying the core's `vehicleListenOnly()` to the port BEFORE dispatching that pass's frames. |
 | `src/slcan_main.cpp` | **Bench only, and not part of the bridge.** Turns the board into a plain SLCAN transmitter on CAN1 so the generator-inhibit bench has a SECOND transmitter on the powertrain segment. Frames queued in one adapter do not arbitrate against each other, so filler from the bench's PCAN delays the replay's `0x051` whatever its CAN priority; from this board's own controller arbitration places it, `0x7E0` loses to every truck id, and it cannot delay a command. Silent until it receives an `O`. Read its header before flashing it -- it lists the protocol subset and four deliberate refusals. |
 | `src/selftest_main.cpp` | Stage 0. Cross-port identity, DLC and throughput over the loopback jumpers. |
 | `src/diag_main.cpp` | Stage 0a. Controller internal loopback + physical-layer probes. Flash this when Stage 0 fails and the cause could be either wiring or driver. |
@@ -621,9 +621,17 @@ Verified from the images, not the source (2026-10-03):
 | `"BRIDGE DOWN"` | present | **absent** |
 | flash | 353,824 B | 350,528 B |
 
-The spec 8.2 diagnostic CAN frames are unaffected -- `0x7F4`-`0x7F7` are how
-the truck build is observed, and `intp_serial` reads 0 in it, which is what
-identifies a truck image on the wire.
+The spec 8.2 diagnostic CAN frames are unaffected BY THE SERIAL REMOVAL --
+`0x7F4`-`0x7F7` are how the truck build is observed, and `intp_serial` reads
+0 in it, which is what identifies a truck image on the wire.
+
+**Spec 2.3 does affect when they arrive** (user, 2026-10-13): the vehicle
+port is in listen-only whenever the charger has been quiet for 2 s, and the
+board sends no diagnostic frames at all in that mode. So on a truck the four
+frames appear once at power-up and then only during a charge. A log of a
+drive shows nothing from the board, and that is the board working. Its
+counters are read over USB serial on a bring-up build instead (8.3, and spec
+10 item 7).
 
 ## Charger-segment transmit behaviour (spec 2.2)
 

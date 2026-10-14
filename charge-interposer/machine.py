@@ -48,6 +48,11 @@ CHG_STATUS = 0x18FFD4C0     # BINV_status, multiplexed
 CHG_HV_STATUS = 0x18FFD7C0  # BELINV_hvBatteryAndCharger: pack V/I, AC V/I
 CHG_INFO = 0x18FFD9C0       # BELINV_chargeInfo: maxAvailableChargingCurrent
 CHG_PILOT = 0x18FFD8C0      # BELINV_chargePilotOnlineTime (spec 3, A3)
+# The Bel unit's J1939 source address, which is the low byte of every frame
+# it sends. Spec 2.3 tests the SOURCE ADDRESS and not a list of known ids,
+# so a frame of the charger's that this core does not read still counts as
+# the charger being there.
+CHG_SA = 0xC0
 
 TO_VEHICLE = 0
 TO_CHARGER = 1
@@ -103,7 +108,14 @@ DIAG_SCHEMA_VER = 4
 #      RATE at which the hold follows bcm_chg_max -- 0.1 A per 0.3 s rather
 #      than per 0.6 s -- so a capture cannot be told apart from a version 7
 #      one by any single frame, which is what this byte is for.
-DIAG_FW_VER = 8
+#   9  spec 2.3 of 2026-10-13: the vehicle port is in listen-only while the
+#      charger is silent, so the board puts NOTHING on the vehicle segment
+#      -- no frame, no acknowledgement, no error frame -- while the truck
+#      drives, and sends no diagnostic frames either. A reader who sees
+#      0x7F4-0x7F7 arrive only during a charge, and one round at power-up,
+#      is looking at version 9 working rather than at a board that has
+#      stopped.
+DIAG_FW_VER = 9
 
 
 def mirror_id(arb_id):
@@ -158,7 +170,7 @@ class Config(object):
                  "learned_ilim_min_ca", "burst_frames", "burst_period_ms",
                  "arm_delay_ms", "full_debounce_ms", "chg_state_debounce_ms",
                  "bms_stale_ms", "chg_stale_ms", "chg_silence_ms",
-                 "override_max_ms",
+                 "listen_only_ms", "override_max_ms",
                  "hold_step_ca", "hold_band_ca", "hold_step_min_ms",
                  "hold_vmax_down_mv", "hold_vmax_up_mv",
                  "revert_aux_pages", "mask_charger_telemetry", "diag_mirror")
@@ -316,6 +328,24 @@ class Config(object):
         # captured charges the 100 ms status frame never went quiet for 2 s
         # (artifacts/interposer-firmware/charger_silence_gaps.txt).
         self.chg_silence_ms = 20000
+
+        # Spec 2.3 (user, 2026-10-13): no charger frame for this long and
+        # the vehicle port goes back to listen-only.
+        #
+        # THREE CHARGER TIMERS NOW SIT TOGETHER AND THEY ARE NOT THE SAME
+        # THING. 500 ms without a status frame trips the core
+        # (chg_stale_ms); 20 s ends the session (chg_silence_ms); this one
+        # takes the vehicle port off the segment. It is deliberately
+        # between them, so a session that ends always ends through section
+        # 6 first and this fallback is never what reports a charger
+        # failure.
+        #
+        # It also cannot fire inside a live charge, which the measurement
+        # recorded for chg_silence_ms above already settles: the 100 ms
+        # status frame never went quiet for 2 s in any fully captured
+        # charge (artifacts/interposer-firmware/charger_silence_gaps.txt),
+        # and that frame is one of the frames this timer watches.
+        self.listen_only_ms = 2000
         self.override_max_ms = 6 * 3600 * 1000   # spec 6: 6 hours
 
         # Spec 4: hold pages 03.02 / 03.07 at their charging-time values
@@ -553,6 +583,24 @@ class InterposerCore(object):
         # (review probe P5). Keyed by arbitration id; absent = never seen.
         self.t_bms = {}
         self.t_chg = None
+        # Spec 2.3 (user, 2026-10-13): the vehicle port is in listen-only
+        # while the charger is silent, and the core owns the decision --
+        # both halves of the rule are frames and a clock, which is what
+        # this class already has. The caller applies the mode to its port.
+        #
+        # True at power-up. The one round of 8.2 status frames the spec
+        # asks for at power-up is the CALLER's, not the core's: it happens
+        # once, before any frame has been seen, and the core has nothing to
+        # say about when a board boots.
+        #
+        # NOT CLEARED BY A SESSION BOUNDARY, deliberately. The mode is
+        # about whether the charger segment is alive, not about whether a
+        # session is running -- and by the time 6.1's silence boundary
+        # fires at 20 s this has been back in listen-only for 18 s.
+        self.listen_only = True
+        # Any extended frame with source address 0xC0, which is a wider
+        # test than t_chg above: that one is the mux-0 status frame alone.
+        self.t_chg_frame = None
         self.t_enter = now_ms
         self.t_full_since = None
 
@@ -1353,6 +1401,23 @@ class InterposerCore(object):
     def on_charger_frame(self, arb_id, ext, data, t_ms):
         out = []
         d = data
+        # Spec 2.3 (user, 2026-10-13): the first valid charger frame takes
+        # the vehicle port out of listen-only. "An extended frame with
+        # source address 0xC0" -- not a known id, so a frame of the Bel's
+        # that this core never reads still counts, and bus errors, which
+        # reach no frame path at all, never can.
+        #
+        # IT HAPPENS BEFORE ANYTHING IS EMITTED, which is the spec's
+        # "switch first, then forward that frame": the caller applies the
+        # mode and only then dispatches what this call returns, so the
+        # frame that caused the switch goes out on a port already in
+        # normal mode.
+        if ext and (arb_id & 0xFF) == CHG_SA:
+            self.t_chg_frame = t_ms
+            if self.listen_only:
+                self.listen_only = False
+                self._log(t_ms, "vehicle port: listen-only -> normal "
+                                "(charger frame %08X)" % arb_id)
         if arb_id == CHG_INFO and len(d) >= 8:
             self.max_avail = max_avail_ca(d)
         elif arb_id == CHG_PILOT and len(d) >= 8:
@@ -1492,6 +1557,18 @@ class InterposerCore(object):
                 % (t_ms - self.t_chg), clear_safe=False,
                 forget_pilot=True)
             self.t_chg = None      # one boundary per silence, not one a tick
+
+        # Spec 2.3: back to listen-only after listen_only_ms with no
+        # charger frame. On the clock rather than on a frame path for the
+        # obvious reason -- the condition is the ABSENCE of a frame -- and
+        # before the armed-only return below, because a charger that has
+        # gone quiet is exactly what leaves the core inactive.
+        if (not self.listen_only and self.t_chg_frame is not None
+                and t_ms - self.t_chg_frame >= cfg.listen_only_ms):
+            self.listen_only = True
+            self._log(t_ms, "vehicle port: normal -> listen-only "
+                            "(no charger frame for %d ms)"
+                      % (t_ms - self.t_chg_frame))
 
         if not self._active():
             # Spec 5.2: "The trips of section 6 apply throughout, including
