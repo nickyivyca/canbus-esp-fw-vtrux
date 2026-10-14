@@ -138,6 +138,18 @@ S_HOLD = 6          # spec 5.2: released, and the page-01 setpoint is ours
 STATE_NAMES = {0: "PASSTHROUGH", 1: "MONITOR", 2: "OVERRIDE",
                4: "TERMINATED", 5: "SAFE", 6: "HOLD"}
 
+# Why a spec 4.1 repeat stopped, reported as the event's `c`. These mirror
+# machine.cpp's RepeatEnd (machine.h), values included: the code goes in the
+# event line, so the two cores must agree on the numbers and not merely on
+# the order. APPENDED, NEVER INSERTED, for the reason machine.h gives --
+# captured logs carry these codes, so renumbering silently re-reads every
+# saved trace. The table is published in firmware/README.md, which is what
+# makes a bare number satisfy spec 8.3's "the reason" (reviewer, 2026-10-13).
+REPEAT_COMPLETE = 0     # all announced frames went out
+REPEAT_SUPERSEDED = 1   # spec 4.1: the VCU's own page 00 ended it
+REPEAT_RESET = 2        # the session was torn down mid-burst
+REPEAT_REPLACED = 3     # a newer repeat took over mid-burst
+
 # page 00 cmd_Mode. CONFIRMED by two independent methods -- the EPRI app binary's
 # literal pool and log correlation on this vehicle. Mode 3 is a LOW POWER mode,
 # NOT a completion state: the charger caps itself at ~6 A in it and then
@@ -548,6 +560,41 @@ CONST_03_07_CHARGING = bytes((0x03, 0x07, 0x02, 0x64, 0x04, 0x32, 0, 0))
 # the core
 # ---------------------------------------------------------------------------
 
+class Event(tuple):
+    """One bench event line: `(t_ms, state, text)` plus the board's a/b/c.
+
+    WHY A TUPLE SUBCLASS AND NOT A FOURTH ELEMENT (reviewer's ruling (ii),
+    2026-10-13). The board's event line is spec 8.3's `[t] STATE event a= b=
+    c=`, with the values in the fields and the name fixed text, and the model
+    now carries the same structure so the two cores can be compared field by
+    field. Every existing reader of `core.events` unpacks or indexes three
+    elements -- `interposer_sim.py` does `t_ms, state, text = ev` -- so this
+    stays a THREE-element tuple and carries the fields as attributes. A
+    6-tuple would have broken those readers; two parallel lists would have
+    been free to drift, which is the defect this change exists to close.
+
+    `a`/`b`/`c` default to 0, as they do on the board, so an event with
+    nothing to report reads the same on both sides.
+    """
+
+    # No __slots__ here: a tuple subclass cannot have a non-empty one
+    # ("nonempty __slots__ not supported for subtype of 'tuple'"), because
+    # the instance layout is fixed by the tuple. The attributes live in a
+    # per-instance dict, which costs memory the model can afford and the
+    # board does not share -- machine.cpp's event is three int32 fields.
+
+    def __new__(cls, t_ms, state, text, a=0, b=0, c=0):
+        ev = tuple.__new__(cls, (t_ms, state, text))
+        ev.a = a
+        ev.b = b
+        ev.c = c
+        return ev
+
+    def fields(self):
+        """The three field values, for a core-against-core comparison."""
+        return (self.a, self.b, self.c)
+
+
 class InterposerCore(object):
 
     def __init__(self, cfg=None, now_ms=0):
@@ -638,9 +685,14 @@ class InterposerCore(object):
     # -- helpers ------------------------------------------------------------
     MAX_EVENTS = 500
 
-    def _log(self, t_ms, text):
+    def _log(self, t_ms, text, a=0, b=0, c=0):
+        # `text` is the event NAME and carries no values: machine.cpp's
+        # eventName() returns a fixed string and cannot interpolate, so a
+        # value in the prose here is a value the port can never match. The
+        # values go in a/b/c, in the board's order and the board's units.
         if len(self.events) < self.MAX_EVENTS:
-            self.events.append((t_ms, STATE_NAMES[self.state], text))
+            self.events.append(
+                Event(t_ms, STATE_NAMES[self.state], text, a, b, c))
 
     def _goto(self, t_ms, state, why):
         if state == self.state:
@@ -760,7 +812,7 @@ class InterposerCore(object):
         self.max_avail = -1
         self._wait_reason = None
         if self._burst_left > 0:
-            self._end_repeat(t_ms, "abandoned on session reset")
+            self._end_repeat(t_ms, REPEAT_RESET)
         self._burst_left = 0
         self.boot_locked = False
         if forget_pilot:
@@ -795,14 +847,14 @@ class InterposerCore(object):
         that actually went. Mirrors machine.cpp's REPEAT_REPLACED.
         """
         if self._burst_left > 0:
-            self._end_repeat(t_ms, "replaced by a new repeat")
+            self._end_repeat(t_ms, REPEAT_REPLACED)
         self._burst_frame = enc_master(self.vcu_flow, mode)
         self._burst_left = self.cfg.burst_frames
         self._burst_sent = 0
         self._burst_next_ms = t_ms
         self._log(t_ms, "REPEAT: the VCU's standing page-00 command to the "
-                        "charger, flow %d mode %d, %d frames"
-                  % (self.vcu_flow, mode, self.cfg.burst_frames))
+                        "charger",
+                  self.vcu_flow, mode, self.cfg.burst_frames)
 
     def _emit_repeat(self, t_ms, out):
         cfg = self.cfg
@@ -820,7 +872,7 @@ class InterposerCore(object):
         # exactly once per completed burst. Mirrors machine.cpp's
         # EV_REPEAT_END / REPEAT_COMPLETE.
         if self._burst_left == 0:
-            self._end_repeat(t_ms, "complete")
+            self._end_repeat(t_ms, REPEAT_COMPLETE)
 
     def _end_repeat(self, t_ms, why):
         """Spec 4.1: how the repeat ended, with the count that actually went.
@@ -831,8 +883,8 @@ class InterposerCore(object):
         the same code. A log line that is read as an accomplishment has to
         report one.
         """
-        self._log(t_ms, "REPEAT ended: %d of %d, %s"
-                  % (self._burst_sent, self.cfg.burst_frames, why))
+        self._log(t_ms, "REPEAT ended",
+                  self._burst_sent, self.cfg.burst_frames, why)
 
     def _chg_reading_fresh(self, t_ms):
         """Is `chg_state` what the charger says now, or the last thing it
@@ -1126,7 +1178,7 @@ class InterposerCore(object):
             self.vcu_mode = mode
             # spec 4.1: the VCU's own page 00 supersedes any repeat of it
             if self._burst_left > 0:
-                self._end_repeat(t_ms, "superseded by the VCU's page 00")
+                self._end_repeat(t_ms, REPEAT_SUPERSEDED)
             self._burst_left = 0
             if prev_flow and not self.vcu_flow and self._active():
                 # Spec 6 (A5, changed 2026-09-30): a flow drop ENDS the
@@ -1426,8 +1478,10 @@ class InterposerCore(object):
             self.t_chg_frame = t_ms
             if self.listen_only:
                 self.listen_only = False
-                self._log(t_ms, "vehicle port: listen-only -> normal "
-                                "(charger frame %08X)" % arb_id)
+                self._log(t_ms,
+                          "vehicle port mode "
+                          "(a=1 normal, a=0 listen-only)",
+                          1, arb_id)
         if arb_id == CHG_INFO and len(d) >= 8:
             self.max_avail = max_avail_ca(d)
         elif arb_id == CHG_PILOT and len(d) >= 8:
@@ -1442,9 +1496,10 @@ class InterposerCore(object):
                 if mins >= 2:
                     self.boot_locked = True
                     self._log(t_ms,
-                              "booted into a session already %d min old: "
-                              "PASSTHROUGH until the next session boundary"
-                              % mins)
+                              "booted into a session already running: "
+                              "PASSTHROUGH until the next session "
+                              "boundary",
+                              mins)
             elif self.pilot_min is not None and mins < self.pilot_min:
                 # Spec 6.1: it returns to 0 at every handle pull, so a step
                 # backwards is a new plug-in. Clears SAFE.
@@ -1576,9 +1631,9 @@ class InterposerCore(object):
         if (not self.listen_only and self.t_chg_frame is not None
                 and t_ms - self.t_chg_frame >= cfg.listen_only_ms):
             self.listen_only = True
-            self._log(t_ms, "vehicle port: normal -> listen-only "
-                            "(no charger frame for %d ms)"
-                      % (t_ms - self.t_chg_frame))
+            self._log(t_ms,
+                      "vehicle port mode (a=1 normal, a=0 listen-only)",
+                      0, t_ms - self.t_chg_frame)
 
         if not self._active():
             # Spec 5.2: "The trips of section 6 apply throughout, including
@@ -1649,9 +1704,8 @@ class InterposerCore(object):
                 # pack's SPREAD at the moment it happened (spec 9, C2). The
                 # truck reports one clamped SoC, so "terminated below full"
                 # is only visible as the spread and the weakest cell.
-                self._log(t_ms, "top of charge reached: vmax=%d mV "
-                                "vmin=%d mV chg_max=%.2f A"
-                          % (self.vmax, self.vmin, self.chg_max / 100.0))
+                self._log(t_ms, "top of charge reached",
+                          self.vmax, self.chg_max, self.vmin)
                 # Spec 5.2 (user, 2026-10-08): the release stops rewriting
                 # page 00 and repeats the VCU's standing Low Power command
                 # once, so the charger -- which only ever heard our rewrite

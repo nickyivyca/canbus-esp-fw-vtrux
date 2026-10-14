@@ -493,6 +493,24 @@ existing `ev()` / `no_ev()` / `final_state()` expectations evaluate against real
 hardware unchanged -- `machine.cpp`'s `eventName()` returns the same strings
 `machine.py` logs.
 
+**That claim was false for every event that carried a value, until
+2026-10-13.** `eventName()` returns a static string and cannot interpolate,
+so where `machine.py` wrote the value into its prose the two cores could not
+match -- and nothing compared them, so they drifted. `boot-mid-session`
+passed on the sim and failed at its first bench run on the board for exactly
+this: the model wrote "already %d min old", the board "already running".
+`top of charge reached` had drifted further still, the model's prose being
+vmax, vmin, chg_max in amps against the board's fields vmax, chg_max in
+centiamps, vmin.
+
+The rule now (reviewer's ruling, 2026-10-13): **an event's name is fixed
+text and its values go in `a`/`b`/`c`, in the board's order and the board's
+units.** `machine.py`'s `_log` takes the fields, `machine.events` entries
+carry them as `.a`/`.b`/`.c` while staying three-element tuples for their
+existing readers, and `test_machine.py` pins the fields of the events it
+reaches. Comparing the two cores' fields on the same input belongs to the
+reference-vs-port differential, not here.
+
 **`--time-scale` is forced to 1.0**, and the flag says so rather than warning.
 The board runs on its own `millis()` and cannot be sped up: at scale 20 the sims
 reach the evap ceiling in 4.5 s of wall time while the board is still 55 s short
@@ -627,11 +645,25 @@ The spec 8.2 diagnostic CAN frames are unaffected BY THE SERIAL REMOVAL --
 
 **Spec 2.3 does affect when they arrive** (user, 2026-10-13): the vehicle
 port is in listen-only whenever the charger has been quiet for 2 s, and the
-board sends no diagnostic frames at all in that mode. So on a truck the four
-frames appear once at power-up and then only during a charge. A log of a
-drive shows nothing from the board, and that is the board working. Its
-counters are read over USB serial on a bring-up build instead (8.3, and spec
-10 item 7).
+board sends no diagnostic frames at all in that mode. So on a truck the spec
+requires the four frames once at power-up and then only during a charge. A
+log of a drive shows nothing from the board, and that is the board working.
+Its counters are read over USB serial on a bring-up build instead (8.3, and
+spec 10 item 7).
+
+**THE CODE DOES NOT MEET THE POWER-UP HALF OF THAT, AND E8 IS REOPENED FOR
+IT** (reviewer, 2026-10-13). `setup()` queues all four frames and then calls
+`applyVehicleMode()` on the next line; `setMode()` stops the driver, and that
+**discards its TX queue**, so the round never leaves the controller. Measured
+two ways: the L2 host tests with the TWAI fake modelling airtime put 0 of 4
+on the wire, and a bench boot with an acknowledging adapter on the segment
+put 1 of 4 -- the one frame already in the hardware TX buffer, which can
+complete only because something was there to ACK it. With nothing
+acknowledging, as on a truck whose vehicle bus may be quiet, it is 0 of 4.
+`test_l2_bridge`'s `failed-start` and `listen-only-boot` arms fail on this
+and are correct to. The fix must wait for the round to leave before
+switching; the bound on that wait, and what happens to frames still queued at
+it, is a spec addition with the user.
 
 The bring-up builds' 5 s status block carries a `MODE` line for this:
 
@@ -646,12 +678,33 @@ The bring-up builds' 5 s status block carries a `MODE` line for this:
 | `suppressed` | vehicle-bound frames `dispatch()` dropped because the port was in listen-only. Not booked as bridge failures |
 | `boot=` | the power-up window: vehicle controller up in normal mode to the first switch into listen-only completing, the status round inside it |
 | `switch=` | `setMode()`'s duration, last and worst; a mean would hide the one that matters |
-| `drained=` | vehicle frames found in the RX queue at a switch and handed to the core before the teardown. **Zero is the normal case** -- the loop drains RX every iteration, so the queue is empty at a switch unless the loop had fallen behind, and non-zero is what says it had. It is not evidence of where the drain is placed (corrected 2026-10-13: the first wording claimed it was, which no observation could have contradicted) |
+| `drained=` | vehicle frames found in the RX queue at a switch and handed to the core before the teardown. **Zero is the normal case** -- the loop drains RX every iteration, so the queue is empty at a switch unless the loop had fallen behind. Non-zero means it had. It says nothing about where the drain is placed |
 
 Measured on the bench 2026-10-13 (the loan entry in SeaDrive
 `firmware/bench-holder.md` has the runs): the boot window is 11,409-11,424 us
 over nine boots, with no traffic dependence, and `setMode()` 234-340 us over
 nine switches in both directions.
+
+### Why a repeat ended -- the `c` field of `REPEAT ended`
+
+Spec 8.3 requires the end line to carry the number of frames sent and the
+reason. The line is 8.3's own `event a= b= c=`, so the reason is the code
+below: `a` is the frames that went, `b` the number announced, `c` this.
+**Published here because that is what makes a bare number satisfy "the
+reason"** (reviewer, 2026-10-13).
+
+| `c` | Name | What happened |
+|---|---|---|
+| 0 | `REPEAT_COMPLETE` | all announced frames went out |
+| 1 | `REPEAT_SUPERSEDED` | spec 4.1: the VCU's own page 00 ended it |
+| 2 | `REPEAT_RESET` | the session was torn down mid-burst |
+| 3 | `REPEAT_REPLACED` | a newer repeat took over mid-burst |
+
+**Appended, never inserted.** Saved logs and traces carry these numbers, so
+renumbering silently re-reads every one of them -- which is why `REPLACED`,
+added 2026-10-05, is 3 and not 2. The table is in `machine.h` as
+`enum RepeatEnd` and in `machine.py` as the four `REPEAT_*` constants, and
+both must agree on the numbers, not merely on the order.
 
 ## Charger-segment transmit behaviour (spec 2.2)
 

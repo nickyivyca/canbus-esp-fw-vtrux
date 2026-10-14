@@ -628,6 +628,19 @@ def test_release_hands_page_00_back_and_takes_the_setpoint():
     ok(any("RELEASE" in e[2] for e in b.core.events), "the release is logged")
     ok(any("top of charge reached" in e[2] for e in b.core.events),
        "the top of charge is logged")
+    # Reviewer's ruling (ii), 2026-10-13: the event line carries the BOARD's
+    # fields, in the board's order and units -- machine.cpp:1061 is
+    # a=vmax_ b=chg_max_ c=vmin_, with chg_max in CENTIAMPS. The model's old
+    # prose was vmax, vmin, chg_max with chg_max in amps, so the two cores
+    # already disagreed on both order and units and nothing caught it.
+    toc = [e for e in b.core.events if e[2] == "top of charge reached"][0]
+    ok(toc.fields() == (b.core.vmax, b.core.chg_max, b.core.vmin),
+       "top of charge carries a=vmax b=chg_max c=vmin, the board's order")
+    ok(toc.b == 275 and toc.a == 3593,
+       "and the board's units: chg_max in centiamps (275), vmax in mV")
+    ok(toc.b != 2 and toc.b != 3,
+       "b is not the amps figure the model used to print -- a unit "
+       "regression here must fail, not round to something plausible")
     # spec 5.2: page 00 -- and with it Low Power mode -- is the VCU's again
     out = b.low_power()
     ok(emitted_mode(out) == P.MODE_LOW_POWER,
@@ -2591,6 +2604,54 @@ def test_a_session_boundary_does_not_put_the_port_back_in_listen_only():
     ok(not b.core.listen_only,
        "and the boundary left the port in normal mode, because the charger "
        "is still there")
+
+
+def test_event_lines_carry_values_in_fields_not_in_the_text():
+    """Reviewer's ruling (ii), 2026-10-13: an event's NAME is fixed text and
+    its values live in a/b/c, in the board's order and units.
+
+    The reason is not tidiness. machine.cpp's eventName() returns a static
+    string and cannot interpolate, so a value in the model's prose is a value
+    the port can never match, and the two cores drift with nothing to catch
+    it: the bench found it on `boot-mid-session`, which passed on the sim for
+    months and failed on the board at the first run. These assertions are the
+    model's half of the guard. The half that compares the model against
+    machine.cpp field by field is the reference-vs-port differential, which
+    is the tester's.
+    """
+    b = Bench()
+    b.charger_status(12)
+    sw = [e for e in b.core.events
+          if e[2].startswith("vehicle port mode")]
+    ok(len(sw) == 1, "the switch out of listen-only logs one event")
+    ok("%" not in sw[0][2] and "->" not in sw[0][2],
+       "its text is the board's fixed name, with no value and no direction "
+       "word in it (%r)" % sw[0][2])
+    ok(sw[0].a == 1, "a=1 is the direction: into normal mode")
+    ok(sw[0].b == M.CHG_STATUS,
+       "b is the charger frame that did it, not a count or a time")
+
+    b.t += 2100
+    b.tick()
+    rev = [e for e in b.core.events
+           if e[2].startswith("vehicle port mode")]
+    ok(len(rev) == 2, "and the revert logs a second one under the same name")
+    ok(rev[1].a == 0, "a=0 is the other direction")
+    ok(rev[1].b >= 2000,
+       "b is the silence in ms (%d), the value the old prose interpolated"
+       % rev[1].b)
+
+    b2 = Bench()
+    b2.chg(M.CHG_PILOT, pilot(5))
+    b2.arm(vmax=3.340, chg_max=300.0, pilot_min=None)
+    locked = [e for e in b2.core.events if e[2].startswith("booted into")]
+    ok(len(locked) == 1, "the boot lock logs an event")
+    ok(locked[0][2].endswith("boundary") and "min old" not in locked[0][2],
+       "with the board's wording, which does not name the age (%r)"
+       % locked[0][2])
+    ok(locked[0].a == 5,
+       "the age is in a=, the field the board puts it in (a=%d)"
+       % locked[0].a)
 
 
 def main():

@@ -132,15 +132,10 @@ static uint32_t listen_suppressed = 0;
 //   drain_frames    vehicle frames found in the TWAI RX queue at a mode
 //                   switch and handed to the core before the teardown, which
 //                   would otherwise have taken them with the driver.
-//                   ZERO IS THE NORMAL CASE, and this comment said the
-//                   opposite until 2026-10-13 (corrected on the reviewer's
-//                   ruling after the bench run): the loop drains vehicle RX
-//                   every iteration, so the queue is empty at a switch unless
-//                   the loop had fallen behind, and non-zero is what says it
-//                   had. The counter is not evidence of WHERE the drain is
-//                   placed, which is what the old wording claimed -- and no
-//                   observation could have contradicted that claim, which is
-//                   what was wrong with it.
+//                   Zero is the normal case: the loop drains vehicle RX every
+//                   iteration, so the queue is empty at a switch unless the
+//                   loop had fallen behind. Non-zero means it had. It says
+//                   nothing about where the drain is placed.
 static uint32_t boot_window_us = 0;
 static uint32_t switch_us_last = 0;
 static uint32_t switch_us_max = 0;
