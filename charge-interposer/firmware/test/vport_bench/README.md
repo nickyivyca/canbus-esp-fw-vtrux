@@ -47,9 +47,16 @@ What each command is for (spec 9's list):
 
 The host side is `bench_vport.py` in SeaDrive
 `projects/vtrux/notes/artifacts/interposer-firmware/`. It drives this image,
-the PCAN (another node) and the Kvaser (listen-only witness, hardware
-timestamps), and writes the record: image identity, adapters, pins, and each
-measurement. Its `--self-test` needs no hardware.
+the Kvaser (another node, which ACKs) and the PCAN (the witness, opened
+listen-only, with hardware timestamps), and writes the record: image
+identity, adapters, pins, and each measurement. Its `--self-test` needs no
+hardware.
+
+The Kvaser Leaf Light v2 cannot be the witness: it has no silent mode and
+ACKs even when opened with `driver_mode=False` (bench fact, 2026-10-09). So
+every run starts by proving the witness silent. With only the witness open,
+`MODE normal` and `SEND 7EF 1` must leave `STATUS` at `tec` >= 128 (nobody
+ACKed). If not, the run is refused.
 
 ## Build (PowerShell; this machine's ESP-IDF and Python paths are in `tools-reference.md`)
 
