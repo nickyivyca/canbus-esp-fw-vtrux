@@ -237,6 +237,38 @@ def hold_cadence_traces(outdir):
     return made
 
 
+def no_evse_cap_traces(outdir):
+    """Spec 3: the override needs "an EVSE current cap is known (section
+    4)" -- the charger's maxAvailableChargingCurrent. Armed, evap set, SoC
+    above the gate, the arm delay over and Low Power commanded, but the
+    charger's info frame never sent: the core must wait, logging its event,
+    and override only once the cap arrives. No other trace leaves the cap
+    unknown, so this event's fields were outside the events gate
+    (reviewer, 2026-10-14). Refuses to record a run that did not wait, or
+    did not override after the cap came."""
+    b = T.Bench()
+    b.veh(0x18EFC000, T.P.enc_master(1, T.P.MODE_CHARGER))
+    b.chg(M.CHG_PILOT, T.pilot(0))
+    b.charger_status(12)
+    b.evap(1)
+    b.bms(vmax=3.340, chg_max=300.0)
+    b.low_power()
+    T._drain(b, T._hold_all, 30)
+    waited = [ev for ev in b.core.events if "no EVSE" in ev[2]]
+    if not waited or b.state() == "OVERRIDE":
+        raise SystemExit("no-EVSE-cap: no wait event (%d) or already in "
+                         "OVERRIDE (%s) -- not recording it"
+                         % (len(waited), b.state()))
+    b.t += 100
+    b.charge_info(16.0)
+    T._drain(b, T._hold_all, 30)
+    if b.state() != "OVERRIDE":
+        raise SystemExit("no-EVSE-cap: still %s after the cap arrived -- not "
+                         "recording it" % b.state())
+    return [write(outdir, PREFIX + "no_evse_cap_then_cap", b.cfg_overrides,
+                  b.trace)]
+
+
 def random_traces(outdir):
     made = []
     for seed, rate, junk in RANDOM_SEEDS:
@@ -268,7 +300,8 @@ def main():
 
     made = (trip_traces(a.outdir) + control_trace(a.outdir)
             + definition_traces(a.outdir) + silence_traces(a.outdir)
-            + learned_cc_traces(a.outdir) + hold_cadence_traces(a.outdir))
+            + learned_cc_traces(a.outdir) + hold_cadence_traces(a.outdir)
+            + no_evse_cap_traces(a.outdir))
     for path, n in made:
         print("  %-52s %6d steps" % (os.path.basename(path), n))
 
