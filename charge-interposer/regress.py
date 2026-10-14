@@ -71,7 +71,8 @@ CASES = [
          "expectation used to assert.",
          ["vtrux_charge_M1_T*.log", "vtrux_M1_T20.log"],
          dict(modified=0, synthesized=0,
-              must_event=r"booted into a session already \d+ min old",
+              must_event=r"booted into a session already running: "
+                         r"PASSTHROUGH until the next session boundary a=\d+ ",
               must_not_event=r"LOW_POWER (?:overridden|accepted)",
               final_state=("PASSTHROUGH",)),
          order_by_header=True),
@@ -279,8 +280,11 @@ def run_case(case, args):
             except OSError:
                 pass
 
-    evtext = "\n".join("%8.1fs [%s] %s" % (t / 1000.0, st, tx)
-                       for t, st, tx in res["events"])
+    # spec 8.3: the name, then a= b= c=, as the board and interposer_sim
+    # write it (the values left the name at 7078b5e / 817f7cf)
+    evtext = "\n".join("%8.1fs [%s] %s a=%d b=%d c=%d"
+                       % ((ev[0] / 1000.0, ev[1], ev[2]) + tuple(ev.fields()))
+                       for ev in res["events"])
     checks = []
     # spec 9.1: the raw captures and the stream the core was fed must match
     # the pins held in capture_pins.py

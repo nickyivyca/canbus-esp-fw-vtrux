@@ -61,6 +61,28 @@ class Scenario(object):
 
 # --- expectation helpers ---------------------------------------------------
 
+# Spec 8.3 event fields (7078b5e / 817f7cf): TRIP carries its reason as a=
+# code. The codes are the published interface's -- intp_trip_reason's
+# comment in vtrux-interposer-diag.dbc -- not machine.py's; test_scorer_wiring
+# checks this table against that comment.
+TRIP_CODE = {"vmax over hard ceiling": 1, "cell_overvolt": 2, "BMS EPO": 4,
+             "BMS alarm TYPE3": 5, "HVIL open": 6,
+             "contactors not closed": 7, "charger fault": 8,
+             "charger out of state 12": 9, "BMS frames stale": 10,
+             "charger frames stale": 11, "override exceeded the 6 h cap": 12}
+
+
+# Spec 3 (A3): booted into a running session; a= the pilot minutes.
+BOOT_LOCKED = (r"booted into a session already running: PASSTHROUGH until "
+               r"the next session boundary a=\d+ ")
+
+
+def trip(reason):
+    """The TRIP event line for one reason: `TRIP a=<code> ` -- the space
+    stops a=1 matching a=10..12."""
+    return r"TRIP a=%d " % TRIP_CODE[reason]
+
+
 def ev(pattern):
     """An interposer event log line must match."""
     return ("intp_event", pattern)
@@ -260,7 +282,8 @@ def fault_or_flow_first(override=False):
     in 18 of 19 source-3 endings (charger_fault_flag_timing.txt), so that is
     the sim's default; the "-flow-first" variants force the other order.
     Judged from the logs:
-      - which came first in the core's own log: "TRIP: charger fault" or
+      - which came first in the core's own log: TRIP with the charger-fault
+        code (a=8) or
         "VCU dropped the flow bit";
       - that it fits the inputs as they reached the core: a TRIP needs the
         flagged mux-3 page to have arrived before the flow drop; going
@@ -1082,7 +1105,7 @@ SCENARIOS = [
         charger=["--unplug-after-hold-s", "300"],
         timeout=600,
         expect=[ev(r"LOW_POWER overridden"),
-                ev(r"TRIP: BMS cell_overvolt"),
+                ev(trip("cell_overvolt")),
                 no_ev(r"RELEASE"),
                 veh_ev(r"commanding STAND_BY"),
                 final_state("PASSTHROUGH")]),
@@ -1237,7 +1260,7 @@ SCENARIOS = [
         interposer=["--vmax-full-mv", "9999"],
         timeout=800,
         expect=[ev(r"LOW_POWER overridden"),
-                ev(r"TRIP: vmax \d+ mV over hard ceiling"),
+                ev(trip("vmax over hard ceiling")),
                 no_ev(r"RELEASE"),
                 repeat_bursts_of_20(),
                 veh_ev(r"commanding STAND_BY"),
@@ -1263,7 +1286,7 @@ SCENARIOS = [
         # which is before the replug, so the second session never happens --
         # and the plain ev(/LOW_POWER overridden/) this used to assert still
         # passed, on the first session's override. Hence ev_after.
-        expect=[ev(r"TRIP: charger fault"),
+        expect=[ev(trip("charger fault")),
                 ev(r"pilot timer stepped back"),
                 ev_after(r"pilot timer stepped back",
                          r"LOW_POWER overridden"),
@@ -1301,7 +1324,7 @@ SCENARIOS = [
         # session, so the silicon boots with traffic flowing -- before the
         # arm delay, so nothing has been overridden before it.
         board_reset_at_s=20.0,
-        expect=[ev(r"booted into a session already \d+ min old"),
+        expect=[ev(BOOT_LOCKED),
                 no_ev(r"LOW_POWER overridden"),
                 no_ev(r"charge established"),
                 no_ev(r"TRIP"),
@@ -1319,7 +1342,7 @@ SCENARIOS = [
         charger=["--silent-at", "2600"],
         timeout=600,
         expect=[ev(r"LOW_POWER overridden"),
-                ev(r"TRIP: charger frames stale"),
+                ev(trip("charger frames stale")),
                 ev(r"no charger status frame"),
                 final_state("SAFE"),
                 diag_frames_ok()]),
@@ -1820,15 +1843,16 @@ VEH_PEAKS = re.compile(
 # Spec 8.2 frames as the vehicle sim taps them off the segment.
 DIAG_FRAME = re.compile(
     r"diagframe t=([\d.]+) id=0x([0-9A-Fa-f]{3}) data=([0-9a-f]{16})")
-# The release, from the core's own event. Both renderings: machine.py writes
-# the names, the board writes machine.cpp's a=/b=/c= fields.
-TOC_NAMED = re.compile(
-    r"top of charge reached: vmax=(\d+) mV vmin=(\d+) mV")
-TOC_BOARD = re.compile(r"top of charge reached a=(\d+) b=-?\d+ c=(\d+)")
+# The release, from the core's own event: spec 8.3's fields, a=vmax
+# b=chg_max (cA) c=vmin, as the board and (from 817f7cf) interposer_sim both
+# write it. One form: the NAMED/BOARD pair of before 2026-10-14 is gone.
+TOC = re.compile(r"top of charge reached a=(\d+) b=-?\d+ c=(\d+)")
 # vehicle_sim, once: the first bcm_soc of 100 on the bus (spec 9).
 SOC100 = re.compile(r"BMS: bcm_soc reads 100 % on the bus at t=([\d.]+)s")
 RELEASE_VMAX_MV = 3585          # spec 5.1 (47c31278)
-REPEAT_EV = re.compile(r"REPEAT: .*?, (\d+) frames")
+# REPEAT start, any log: a=flow b=mode c=frames (spec 8.3 fields); the
+# timestamped sim-only twin is REPEAT_EV_T below.
+REPEAT_EV = re.compile(r"REPEAT: [^\n]*? a=-?\d+ b=-?\d+ c=(\d+)")
 FINAL_SYNTH = re.compile(r"final state=\w+.*synth=(\d+)")
 CHG_MODE = re.compile(r"charger: mode (\w+) -> (\w+) \(setpoint ([\d.]+) A\)")
 CHG_STATE = re.compile(r"charger: state (\d+) -> (\d+) ")
@@ -1878,7 +1902,7 @@ def _leader_release_check(intp, veh, diag, before_soc_100):
 
 def release_vmax_vmin(intp_text):
     """(vmax_mV, vmin_mV) at the release, or (None, None)."""
-    m = TOC_NAMED.search(intp_text) or TOC_BOARD.search(intp_text)
+    m = TOC.search(intp_text)
     if m is None:
         return (None, None)
     return (int(m.group(1)), int(m.group(2)))
@@ -2035,15 +2059,15 @@ SPEC_SCHEMA_VER = 4
 # page 00: a mode command, or the energy-flow bit going to 0. "VCU: charger
 # left state ..." is NOT one of these -- it is the VCU noticing something,
 # and it says itself that the command follows in REACT_HOLD_S.
-REPEAT_EV_T = re.compile(r"^(\d\d:\d\d:\d\d) .*?REPEAT: .*?, (\d+) frames",
-                         re.M)
-# How a burst ENDED, which machine.py and machine.cpp both log from
-# 2026-10-05. Two forms for one event, as with TOC_NAMED / TOC_BOARD: the
-# sim writes prose, the board writes the event name plus a/b/c.
-REPEAT_END_NAMED = re.compile(
-    r"^(\d\d:\d\d:\d\d) .*?REPEAT ended: (\d+) of (\d+), (.+?)\s*$", re.M)
-REPEAT_END_BOARD = re.compile(r"REPEAT ended a=(\d+) b=(\d+) c=(\d+)")
-# machine.cpp's RepeatEnd, and the prose machine.py writes for each.
+# REPEAT start: a=flow b=mode c=frames (spec 8.3 fields). Timestamped, so
+# sim logs only -- the board's line carries device time, not the host clock.
+REPEAT_EV_T = re.compile(r"^(\d\d:\d\d:\d\d) .*?REPEAT: [^\n]*? a=-?\d+ "
+                         r"b=-?\d+ c=(\d+)\s*$", re.M)
+# How a burst ENDED: a=sent b=announced c=reason code, the board's form and
+# (from 817f7cf) the sim's. One form since 2026-10-14.
+REPEAT_END = re.compile(r"REPEAT ended a=(\d+) b=(\d+) c=(\d+)")
+# The reason codes, as published in firmware/README.md ("Why a repeat
+# ended"), named in the words the per-burst scorer reports.
 REPEAT_END_REASONS = {0: "complete",
                       1: "superseded by the VCU's page 00",
                       2: "abandoned on session reset",
@@ -2132,15 +2156,11 @@ def _burst_ends(intp_text):
     SOME ends and not others is not a fallback case: it is a log that lost
     one, and that has to fail.
     """
-    named = REPEAT_END_NAMED.findall(intp_text)
-    if named:
-        return [(int(sent), int(ann), why.strip())
-                for _t, sent, ann, why in named]
-    board = REPEAT_END_BOARD.findall(intp_text)
-    if board:
+    ends = REPEAT_END.findall(intp_text)
+    if ends:
         return [(int(sent), int(ann),
                  REPEAT_END_REASONS.get(int(c), "reason %s" % c))
-                for sent, ann, c in board]
+                for sent, ann, c in ends]
     return None
 
 
@@ -2580,7 +2600,7 @@ def _fault_or_flow_first(intp, veh, chg, diag, override, order):
     fault_and_drop_order() of this run's flight trace."""
     first = None
     for line in intp.splitlines():
-        if "TRIP: charger fault" in line:
+        if re.search(trip("charger fault"), line):
             first = "trip"
             break
         if "VCU dropped the flow bit" in line:

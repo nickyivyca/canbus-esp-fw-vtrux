@@ -337,8 +337,13 @@ def main():
 
             if not args.bypass:
                 while seen_events < len(core.events):
-                    t_ms, state, text = core.events[seen_events]
-                    log.info("[%s] %s", state, text)
+                    ev = core.events[seen_events]
+                    t_ms, state, text = ev
+                    # spec 8.3's event line, as the board writes it: the
+                    # fixed name, then a= b= c= (the values left the name
+                    # at 7078b5e / 817f7cf), so one pattern reads both logs
+                    a, b, c = ev.fields()
+                    log.info("[%s] %s a=%d b=%d c=%d", state, text, a, b, c)
                     seen_events += 1
                 # Diagnostics (spec 8.2 / 8.3): all four status frames on
                 # the vehicle side at 1 Hz of simulated time, plus 0x7F4

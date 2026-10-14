@@ -772,7 +772,18 @@ def leader_release_cases():
           "no scenario passes the removed --bms-taper-shift-mv")
 
     def toc(vmax):
-        return "top of charge reached: vmax=%d mV vmin=3440 mV\n" % vmax
+        # spec 8.3 fields: a=vmax b=chg_max (cA) c=vmin
+        return "top of charge reached a=%d b=7125 c=3440\n" % vmax
+
+    # the TOC key, each way it could be wrong (2026-10-14: one form now)
+    check(R.release_vmax_vmin(toc(3585)) == (3585, 3440),
+          "TOC: vmax from a=, vmin from c= (b= is chg_max)")
+    check(R.release_vmax_vmin("[  99.000] HOLD top of charge reached a=3590 "
+                              "b=7125 c=3441\n") == (3590, 3441),
+          "TOC: the board's line form is read by the same key")
+    check(R.release_vmax_vmin("top of charge reached: vmax=3585 mV vmin=3440 "
+                              "mV\n") == (None, None),
+          "TOC: the OLD prose form is no longer read")
 
     def hold_at(t):
         return [(t - 5.0, 0x7F4, bytes([4, 7, 2, 0, 0x20, 61, 0, 0])),
@@ -994,13 +1005,45 @@ def main():
         check("veh_current_max" not in kinds,
               "it no longer scores the charger sim's clamped current")
 
+    print("\nspec 8.3 event keys (2026-10-14): TRIP codes, boot lock")
+    # TRIP_CODE must be the PUBLISHED table: intp_trip_reason's comment in
+    # the diag DBC, parsed here rather than trusted
+    import cantools
+    import paths
+    db = cantools.database.load_file(
+        os.path.join(paths.data_dir(), "vtrux-interposer-diag.dbc"))
+    cm = db.get_message_by_frame_id(0x7F4).get_signal_by_name(
+        "intp_trip_reason").comment
+    bad = [k for k, c in R.TRIP_CODE.items() if (" %d %s" % (c, k)) not in cm]
+    check(not bad, "TRIP_CODE agrees with intp_trip_reason's comment in the "
+                   "diag DBC%s" % ((": not found " + repr(bad)) if bad else ""))
+    import re as _re
+    check(_re.search(R.trip("vmax over hard ceiling"), "[SAFE] TRIP a=1 b=0 c=0")
+          and not _re.search(R.trip("vmax over hard ceiling"),
+                             "[SAFE] TRIP a=10 b=1040 c=0"),
+          "trip(): code 1 matches a=1 and not a=10 (BMS frames stale)")
+    check(not _re.search(R.trip("charger fault"), "[SAFE] TRIP: charger fault"),
+          "trip(): the OLD prose 'TRIP: charger fault' is no longer read")
+    ok, why = R._fault_or_flow_first(
+        "10:00:00 intp [SAFE] TRIP: charger fault\n", "", "", [], False,
+        (600000, 600450))
+    check(not ok and "neither" in why,
+          "the fault-or-flow check does not read the old prose TRIP -> %s"
+          % why)
+    check(_re.search(R.BOOT_LOCKED, "[MONITOR] booted into a session already "
+                     "running: PASSTHROUGH until the next session boundary "
+                     "a=30 b=0 c=0")
+          and not _re.search(R.BOOT_LOCKED, "booted into a session already "
+                             "30 min old"),
+          "BOOT_LOCKED reads the shared name with a=, not the old prose")
+
     print("\nfault vs flow drop, either order (reviewer, 2026-10-08)")
     for name in ("charger-fault-stop", "charger-fault-stop-flow-first",
                  "fault-during-override", "fault-during-override-flow-first"):
         sc = [s for s in R.SCENARIOS if s.name == name]
         kinds = [k for k, _v in sc[0].expect] if sc else []
         check(sc and "fault_or_flow_first" in kinds
-              and ("intp_event", r"TRIP: charger fault") not in sc[0].expect,
+              and ("intp_event", R.trip("charger fault")) not in sc[0].expect,
               "%s judges either order and no longer demands the trip" % name)
 
     def diag_frozen(state, mods):
@@ -1011,11 +1054,11 @@ def main():
             rows.append((10.0 + i, 0x7F6,
                          m.to_bytes(4, "little") + bytes(4)))
         return rows
-    intp_trip = ("10:00:00 intp [SAFE] TRIP: charger fault\n"
-                 "10:00:01 intp [PASSTHROUGH] VCU mode 2, session over\n")
+    intp_trip = ("10:00:00 intp [SAFE] TRIP a=8 b=0 c=0\n"
+                 "10:00:01 intp [PASSTHROUGH] session over a=2 b=0 c=0\n")
     intp_flow = ("10:00:00 intp [TERMINATED] VCU dropped the flow bit: "
-                 "transparent\n"
-                 "10:00:01 intp [PASSTHROUGH] VCU mode 2, session over\n")
+                 "transparent a=0 b=0 c=0\n"
+                 "10:00:01 intp [PASSTHROUGH] session over a=2 b=0 c=0\n")
     fz_safe = diag_frozen("SAFE", [5, 5, 5])
     fz_term = diag_frozen("TERMINATED", [5, 5, 5])
     flag_first, drop_first = (600000, 600450), (600500, 600450)
@@ -1036,7 +1079,7 @@ def main():
     check(not ok and "fault flag reached it first" in why,
           "transparent although the fault flag reached the core first FAILS "
           "-> %s" % why)
-    ok, why = F(intp_flow + "10:00:02 intp [SAFE] TRIP: charger fault\n",
+    ok, why = F(intp_flow + "10:00:02 intp [SAFE] TRIP a=8 b=0 c=0\n",
                 "", "", fz_term, False, drop_first)
     check(not ok and "TRIP after" in why,
           "a trip after going transparent FAILS -> %s" % why)

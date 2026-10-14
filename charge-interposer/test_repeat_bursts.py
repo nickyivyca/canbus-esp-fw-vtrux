@@ -27,6 +27,7 @@ indistinguishable from not checking the count at all.
 """
 
 import sys
+import re
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -64,6 +65,36 @@ def refuses(intp, veh, fragment, what, chg=""):
                             else "WRONG REASON: " + why))
 
 
+# Spec 8.3 fields (7078b5e / 817f7cf): the sims now write REPEAT as the
+# board does, `REPEAT: <name> a=flow b=mode c=frames`, and the end as
+# `REPEAT ended a=sent b=announced c=code`. The saved acceptance logs below
+# predate that, so they are converted on read -- the start line only; they
+# have no end lines -- and the unconverted text is itself a case: the
+# harness must no longer read the old prose as a REPEAT.
+OLD_REPEAT = re.compile(r"REPEAT: (the VCU's standing page-00 command to the "
+                        r"charger), flow (\d+) mode (\d+), (\d+) frames")
+
+
+def modernise(text):
+    return OLD_REPEAT.sub(r"REPEAT: \1 a=\2 b=\3 c=\4", text)
+
+
+# firmware/README.md "Why a repeat ended": the c codes, by the words the
+# per-burst scorer reports
+END_CODE = {"complete": 0, "superseded by the VCU's page 00": 1,
+            "abandoned on session reset": 2, "replaced by a new repeat": 3}
+
+
+def end(e):
+    """'9 of 20, superseded by the VCU's page 00' -> 'a=9 b=20 c=1'; a
+    string already in a=/b=/c= form passes through (unknown codes)."""
+    if e.startswith("a="):
+        return e
+    counts, why = e.split(", ", 1)
+    sent, ann = counts.split(" of ")
+    return "a=%s b=%s c=%d" % (sent, ann, END_CODE[why])
+
+
 def main():
     run = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_RUN
     print("--- spec 4.1 repeat check, burst = %d x %d ms = %d ms ---"
@@ -78,8 +109,9 @@ def main():
               "pass." % (", ".join(missing), run))
         return 2
 
-    def logs(name):
-        return ((run / ("%s.interposer.log" % name)).read_text(errors="replace"),
+    def logs(name, convert=True):
+        intp = (run / ("%s.interposer.log" % name)).read_text(errors="replace")
+        return ((modernise(intp) if convert else intp),
                 (run / ("%s.vehicle.log" % name)).read_text(errors="replace"))
 
     print("real logs -- every scenario that declares the check:")
@@ -131,8 +163,22 @@ def main():
             "exceeds the", "synth 33 against one announced burst of 20")
 
     # A REPEAT that announces the wrong shape.
-    refuses(intp_ov.replace(", 20 frames", ", 5 frames"), veh_ov,
-            "not 20", "a REPEAT announcing 5 frames instead of 20")
+    five = _re.sub(r"(REPEAT: [^\n]*? c=)20\b", r"\g<1>5", intp_ov)
+    assert five != intp_ov, "fixture did not mutate"
+    refuses(five, veh_ov, "not 20", "a REPEAT announcing 5 frames instead "
+            "of 20 (c=5)")
+    # The frame count is c, not a or b: flow 1 / mode 1 must not be read as
+    # the burst length (the field-order can-fail for REPEAT_EV_T).
+    flowc = _re.sub(r"(REPEAT: [^\n]*?) a=(\d+) b=(\d+) c=20\b",
+                    r"\1 a=20 b=\3 c=\2", intp_ov)
+    assert flowc != intp_ov, "fixture did not mutate"
+    refuses(flowc, veh_ov, "not 20", "a REPEAT whose 20 sits in a= (flow) "
+            "and 1 in c=: c is the frame count")
+    # The OLD prose form is not read any more: the saved log unconverted.
+    raw_ov, _v = logs("evap-override", convert=False)
+    refuses(raw_ov, veh_ov, "nothing here to be right about",
+            "the saved log in the old prose form (', 20 frames') is no "
+            "longer read as a REPEAT")
 
     # No tally at all is not a pass.
     refuses(_re.sub(r"final state=\w+.*", "final state=PASSTHROUGH", intp_ov),
@@ -157,13 +203,13 @@ def main():
              drop_second_end=False):
         rows = [
             "14:18:27 intp [OVERRIDE] REPEAT: the VCU's standing page-00 "
-            "command to the charger, flow 1 mode 1, 20 frames",
-            "14:18:28 intp REPEAT ended: " + e1,
+            "command to the charger a=1 b=1 c=20",
+            "14:18:28 intp [OVERRIDE] REPEAT ended " + end(e1),
             "15:12:47 intp [TERMINATED] REPEAT: the VCU's standing page-00 "
-            "command to the charger, flow 1 mode 3, 20 frames",
+            "command to the charger a=1 b=3 c=20",
         ]
         if not drop_second_end:
-            rows.append("15:12:48 intp REPEAT ended: " + e2)
+            rows.append("15:12:48 intp [TERMINATED] REPEAT ended " + end(e2))
         rows.append("15:30:00 intp final state=PASSTHROUGH  fwd v->c=1 "
                     "c->v=1 modified=0 synth=%d" % synth)
         return "\n".join(rows) + "\n"
@@ -220,11 +266,7 @@ def main():
     # PULLED / REPLUGGED), or the charger silent for 20 s. Until 2026-10-08
     # every ABANDONED end failed, pending that text (tracker F item 1).
     ab = log2(e2="3 of 20, abandoned on session reset", synth=23)
-    board_ab = (log2(e2="3 of 20, X", synth=23)
-                .replace("REPEAT ended: 20 of 20, complete",
-                         "REPEAT ended a=20 b=20 c=0")
-                .replace("REPEAT ended: 3 of 20, X",
-                         "REPEAT ended a=3 b=20 c=2"))
+    board_ab = log2(e2="a=3 b=20 c=2", synth=23)
     veh_sb2 = veh_b1 + "15:12:48 veh VCU: commanding STAND_BY (session over)\n"
     chg_pull = ("15:12:48 chg charger: PILOT TIMER BACK TO 0 at t=900.6s, "
                 "0.6 s after the VCU's STAND_BY\n")
@@ -273,11 +315,7 @@ def main():
     refuses(log2(e2="20 of 20, abandoned on session reset", synth=40),
             veh_sb2, "nothing left to send",
             "ABANDONED claiming all 20 sent, witness or not")
-    refuses(log2(e2="3 of 20, X", synth=23)
-            .replace("REPEAT ended: 20 of 20, complete",
-                     "REPEAT ended a=20 b=20 c=0")
-            .replace("REPEAT ended: 3 of 20, X",
-                     "REPEAT ended a=3 b=20 c=7"),
+    refuses(log2(e2="a=3 b=20 c=7", synth=23),
             veh_sb2, "does not account for",
             "an end code the harness does not know (c=7), even with a "
             "boundary in the window")
@@ -287,13 +325,22 @@ def main():
           "evaluate() hands the charger log to the repeat scorer, so the "
           "pilot and silence witnesses can be found in a real run")
 
-    # The board writes the same event as a code plus numbers.
-    board = log2().replace("REPEAT ended: 20 of 20, complete",
-                           "REPEAT ended a=20 b=20 c=0")
-    ok, why = R._repeat_bursts(board, veh_b1)
-    check(ok and why.startswith("per-burst:"),
-          "the BOARD form of the end line is scored per-burst too, so a "
-          "hardware log is not silently demoted to the aggregate -> %s" % why)
+    # The board's own line form ("[t] STATE REPEAT ended a= b= c=", no host
+    # clock) is read by the same key, so a hardware log is not demoted to
+    # the aggregate.
+    ends = R._burst_ends("[  12.345] OVERRIDE REPEAT ended a=9 b=20 c=1\n")
+    check(ends == [(9, 20, "superseded by the VCU's page 00")],
+          "the board's line form of the end is read: a=sent b=announced "
+          "c=code -> %r" % (ends,))
+    # Field order: a is what went, b what was announced. Swapped, 20 sent of
+    # 9 announced must not pass as a complete burst.
+    refuses(log2(e1="a=20 b=9 c=0", synth=29), veh_b1, "",
+            "an end line with a and b swapped (20 sent of 9 announced)")
+    # The old prose end line is not read any more.
+    check(R._burst_ends("14:18:28 intp REPEAT ended: 9 of 20, superseded by "
+                        "the VCU's page 00\n") is None,
+          "the OLD prose end line ('REPEAT ended: 9 of 20, ...') is no "
+          "longer read as an end")
 
     # And the saved logs must still take the aggregate path, labelled.
     intp_fd, veh_fd = logs("fault-during-override")
@@ -322,15 +369,13 @@ def main():
         t2 = "14:18:%02d" % (27 + gap_s)
         rows = [
             "14:18:27 intp [OVERRIDE] REPEAT: the VCU's standing page-00 "
-            "command to the charger, flow 1 mode 1, 20 frames",
-            "%s intp REPEAT ended: %d of 20, replaced by a new repeat"
-            % (t2, sent),
+            "command to the charger a=1 b=1 c=20",
+            "%s intp [OVERRIDE] REPEAT ended a=%d b=20 c=3" % (t2, sent),
         ]
         if not drop_next_repeat:
             rows.append("%s intp [SAFE] REPEAT: the VCU's standing page-00 "
-                        "command to the charger, flow 1 mode 3, 20 frames"
-                        % t2)
-            rows.append("%s intp REPEAT ended: %s" % (t2, e2))
+                        "command to the charger a=1 b=3 c=20" % t2)
+            rows.append("%s intp [SAFE] REPEAT ended %s" % (t2, end(e2)))
         rows.append("15:30:00 intp final state=SAFE  fwd v->c=1 "
                     "c->v=1 modified=0 synth=%d" % synth)
         return "\n".join(rows) + "\n"
