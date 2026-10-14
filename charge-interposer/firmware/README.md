@@ -32,7 +32,7 @@ bench artifacts stayed there when this folder moved into
 | `src/can_port.h` | `CanPort` interface + a fixed-capacity `FrameRing`. Separates "queued" from "on the wire" deliberately. |
 | `src/port_twai.h` / `.cpp` | CAN1, the vehicle segment, on the S3's built-in controller. `setMode()` is spec 2.3's listen-only switch, and it is a driver teardown and reinstall because TWAI fixes the mode at install: it can be refused, and it discards the driver's queues. |
 | `src/port_mcp2515.h` / `.cpp` | CAN2, the charger segment. Hand-written; see below for why. |
-| `src/bridge_health.h` | Spec 8.2's `bridge_ok`: health **since the previous status frame**, not since boot. Pure and header-only, kept out of `main.cpp` so `test/host_unit/` can compile it. |
+| `src/bridge_health.h` | Spec 8.2's `bridge_ok`: health **since the previous status frame**, not since boot. `sample()` answers and moves the baselines, for a frame; `peek()` answers without moving them, for 8.3's serial line in listen-only where no frame goes out. Pure and header-only, kept out of `main.cpp` so `test/host_unit/` can compile it. |
 | `src/charger_tx_failures.h` | Spec 2.2's `0x7F6` B7 counter: the sum of the charger port's three disjoint tallies (queue full, controller failure, the 100 ms age-out), accrued only while the VCU's flow bit is 1, with a delta that arrives outside a session DISCARDED rather than banked for the next one. Lifted out of `main.cpp` on 2026-10-13 for the same reason as `bridge_health.h`: the rule is the whole of it, and nothing could test it where it was. |
 | `src/main.cpp` | Wiring only. Moves frames, reports losses. Owns spec 2.3's two caller duties: the one round of status frames at power-up, and applying the core's `vehicleListenOnly()` to the port BEFORE dispatching that pass's frames. |
 | `src/slcan_main.cpp` | **Bench only, and not part of the bridge.** Turns the board into a plain SLCAN transmitter on CAN1 so the generator-inhibit bench has a SECOND transmitter on the powertrain segment. Frames queued in one adapter do not arbitrate against each other, so filler from the bench's PCAN delays the replay's `0x051` whatever its CAN priority; from this board's own controller arbitration places it, `0x7E0` loses to every truck id, and it cannot delay a command. Silent until it receives an `O`. Read its header before flashing it -- it lists the protocol subset and four deliberate refusals. |
@@ -659,6 +659,28 @@ requires the four frames once at power-up and then only during a charge. A
 log of a drive shows nothing from the board, and that is the board working.
 Its counters are read over USB serial on a bring-up build instead (8.3, and
 spec 10 item 7).
+
+**And until 2026-10-14 serial did not deliver on that** (reviewer).
+`sendDiag()` returned on `vehicle.listenOnly()` before it reached the print,
+so a bench or bring-up build printed one `diag st=` line at boot and then
+none -- listen-only being the normal state, every E9 log on `6cacaf88` shows
+exactly that, and the promise in the paragraph above was not kept. The gate
+now covers the SEND only: in listen-only no frame goes out and the 1 Hz line
+is still built and printed. The immediate `0x7F4` of a state change has no
+line of its own, so in listen-only it does nothing at all.
+
+**One subtlety in the printed line's `bridge_ok` flag, and it is the kind
+that would not show up in the output.** The flag describes the interval since
+the previous status FRAME (8.2), and `BridgeHealth::sample()` moves its
+baselines when it answers. A printed line therefore calls `peek()`, which
+answers without moving them. Had it sampled, an overflow during listen-only
+would have been reported on a serial line nobody may be reading and then been
+**absent** from the first frame after the switch -- the flag would read ok and
+nothing else anywhere would differ. What to expect when reading a bench log:
+in listen-only the printed flag stays cleared on every line until a frame
+actually carries it, rather than clearing once and going green.
+`test/host_unit/test_bridge_health.cpp` pins both halves, and its mutation is
+a `peek()` that advances.
 
 **THE ROUND IS WAITED FOR, BECAUSE THE SWITCH USED TO THROW IT AWAY**
 (spec 2.3 at 4f5168ae66fd2c62, user 2026-10-13). `sendDiag()` only QUEUES the

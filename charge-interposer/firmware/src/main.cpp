@@ -50,10 +50,10 @@
 #define INTP_PRINTLN(x)         ((void)0)
 #define INTP_SERIAL_READY       false
 #else
-// Spec 8.3 (user, 2026-10-14): bench and bring-up builds NEVER WAIT on the
-// USB host -- output a host is not reading is DROPPED rather than held, so a
-// laptop that stops reading cannot stall bridging or lengthen the power-up
-// window. Where the wait was: Arduino core 3.2.1's HWCDC::write(), which on
+// Spec 8.3 (user, 2026-10-14; spec a9a8c36c3c52bbb9): a bench or bring-up
+// build DROPS output a host is not reading rather than holding it, after at
+// most 1 ms once each time a host stops reading. So a laptop that stops
+// reading cannot stall bridging or lengthen the power-up window. Where the wait was: Arduino core 3.2.1's HWCDC::write(), which on
 // a TX ring buffer that has stopped draining runs `tries = tx_timeout_ms`
 // passes of delay(1) and only then latches `connected = false`. The default
 // is 100, so a host attached but not reading costs exactly 100 ms once per
@@ -190,6 +190,19 @@ static uint32_t boot_round_wait_us = 0;
 uint8_t intpBootRoundSent() { return boot_round_sent; }
 uint32_t intpBootRoundWaitUs() { return boot_round_wait_us; }
 
+// Spec 8.3's 1 Hz diag reports, counted so the hosted L2 test can see that
+// one is produced every second while the vehicle port is in listen-only and
+// the vehicle side stays silent (reviewer, 2026-10-14).
+//
+// IT COUNTS THE REPORT, NOT THE BYTES. The harness compiles this file with
+// INTP_NO_SERIAL, so there is no line there to count, and a test built on
+// this cannot tell a printed line from a formatted-and-discarded one. That
+// the line reaches a host is the tester's bench evidence for 8.3 and is not
+// what this proves. The immediate 0x7F4 of a state change is not counted
+// either -- it has no line.
+static uint32_t diag_reports = 0;
+uint32_t intpDiagReports() { return diag_reports; }
+
 // --- diagnostics (spec 8.2 / 8.3) -----------------------------------------
 // Build id (0x7F7 B0-B3): the first four bytes of this application's ELF
 // SHA-256, read from the ESP-IDF app descriptor.
@@ -242,14 +255,27 @@ static void accrueChargerTxFailures() {
 // best-effort, and print the matching serial line. `status_only` sends just
 // 0x7F4 -- the immediate frame on a state change.
 static void sendDiag(uint32_t t_ms, bool status_only) {
-  // Spec 2.3 (user, 2026-10-13): no diagnostic frames at all while the
+  // Spec 2.3 (user, 2026-10-13): no diagnostic FRAMES at all while the
   // vehicle port is in listen-only. Gated on the PORT's own mode rather
   // than on the core's wish, and the difference shows when a switch has
   // been refused: a port still in normal mode may as well keep reporting,
   // and a port in listen-only could not transmit if we asked it to. The
   // one round at power-up is sent from setup(), before the first switch,
   // so this gate does not reach it.
-  if (vehicle.listenOnly()) return;
+  //
+  // THE SERIAL LINE IS NOT A FRAME, AND 8.3 WANTS IT ANYWAY (reviewer,
+  // 2026-10-14). This function used to return here, which meant a bench or
+  // bring-up build printed one `diag st=` line at boot and then none --
+  // listen-only is the normal state whenever the charger is silent, so
+  // almost always. That lost 2.3's "its counters are read over USB serial
+  // on a bring-up build (8.3)" and section 10 item 7, the charger-port
+  // error counters read during a drive. The gate now covers the SEND only;
+  // the content is built and the line printed either way.
+  const bool quiet = vehicle.listenOnly();
+  // The immediate 0x7F4 on a state change is a frame and nothing else --
+  // there is no line that goes with it -- so in listen-only it has nothing
+  // left to do.
+  if (quiet && status_only) return;
   uint8_t fr[4][8];
   const uint32_t ovf = vehicle.rxDropped() + charger.rxDropped() + emit_overflow;
   const uint32_t boe = vehicle.busOffEvents() + charger.busOffEvents();
@@ -269,17 +295,29 @@ static void sendDiag(uint32_t t_ms, bool status_only) {
 
   // Spec 8.2: current health, not "since boot". A single overflow in hour
   // one must not leave the flag clear for the rest of the run.
-  const bool bridge_ok = bridge_health.sample(
-      healthy, ovf, boe, veh_bridge_fail,
-      vehicle.busOff() || charger.busOff());
+  //
+  // peek() WHEN NOTHING GOES OUT, because the flag describes the interval
+  // since the previous status FRAME. sample() moves the baselines, so
+  // calling it for a line that is only printed would narrow what the next
+  // real frame covers and silently drop an overflow that happened during
+  // listen-only from the frame that should have carried it. The method
+  // comment in bridge_health.h says the same beside the code.
+  const bool bridge_ok =
+      quiet ? bridge_health.peek(healthy, ovf, boe, veh_bridge_fail,
+                                 vehicle.busOff() || charger.busOff())
+            : bridge_health.sample(healthy, ovf, boe, veh_bridge_fail,
+                                   vehicle.busOff() || charger.busOff());
 
   core->diagFrames(t_ms, sat8(ovf), sat8(txf), t_ms, bridge_ok,
                    INTP_SERIAL_READY, buildId(), fr);
-  const uint8_t n = status_only ? 1 : 4;
-  for (uint8_t i = 0; i < n; i++) {
-    if (!vehicle.send(DIAG_IDS[i], false, fr[i], 8)) diag_tx_fail++;
+  if (!quiet) {
+    const uint8_t n = status_only ? 1 : 4;
+    for (uint8_t i = 0; i < n; i++) {
+      if (!vehicle.send(DIAG_IDS[i], false, fr[i], 8)) diag_tx_fail++;
+    }
   }
   if (status_only) return;
+  diag_reports++;
 #ifdef INTP_NO_SERIAL
   (void)fr;   // spec 8.3: no serial on the truck build, so nothing to format
 #else

@@ -65,16 +65,40 @@ class BridgeHealth {
   // which is correct for that one frame.
   bool sample(bool healthy, uint32_t ovf, uint32_t bus_off_events,
               uint32_t veh_bridge_fail, bool bus_off_now) {
-    const bool ok = healthy && !bus_off_now && ovf == prev_ovf_ &&
-                    bus_off_events == prev_bus_off_events_ &&
-                    veh_bridge_fail == prev_veh_fail_;
+    const bool ok = evaluate(healthy, ovf, bus_off_events, veh_bridge_fail,
+                             bus_off_now);
     prev_ovf_ = ovf;
     prev_bus_off_events_ = bus_off_events;
     prev_veh_fail_ = veh_bridge_fail;
     return ok;
   }
 
+  // The same flag for a report that is NOT a status frame, with the
+  // baselines LEFT WHERE THEY ARE (reviewer, 2026-10-14).
+  //
+  // Spec 8.3's serial diag line is printed while the vehicle port is in
+  // listen-only, where spec 2.3 forbids the frames. Calling sample() for a
+  // line that is only printed would move the baselines and so NARROW the
+  // interval the next actual frame covers: an overflow during listen-only
+  // would be dropped from the frame that should have reported it, and
+  // nothing in the output would say so -- the flag would simply read ok.
+  // So a printed line reports "since the last FRAME", which is what the
+  // flag means, and a long listen-only stretch keeps printing a cleared
+  // flag until a frame actually carries it.
+  bool peek(bool healthy, uint32_t ovf, uint32_t bus_off_events,
+            uint32_t veh_bridge_fail, bool bus_off_now) const {
+    return evaluate(healthy, ovf, bus_off_events, veh_bridge_fail,
+                    bus_off_now);
+  }
+
  private:
+  bool evaluate(bool healthy, uint32_t ovf, uint32_t bus_off_events,
+                uint32_t veh_bridge_fail, bool bus_off_now) const {
+    return healthy && !bus_off_now && ovf == prev_ovf_ &&
+           bus_off_events == prev_bus_off_events_ &&
+           veh_bridge_fail == prev_veh_fail_;
+  }
+
   uint32_t prev_ovf_;
   uint32_t prev_bus_off_events_;
   uint32_t prev_veh_fail_;

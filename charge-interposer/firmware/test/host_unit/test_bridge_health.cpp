@@ -35,6 +35,9 @@ struct Bus {
   bool off_now = false;
   bool healthy = true;
   bool frame() { return h.sample(healthy, ovf, boe, vfail, off_now); }
+  // A printed 8.3 line rather than a status frame: same verdict, baselines
+  // untouched.
+  bool line() { return h.peek(healthy, ovf, boe, vfail, off_now); }
 };
 
 int main() {
@@ -105,6 +108,44 @@ int main() {
           "clears it once");
     check(c.frame(),
           "but large standing counts that are not MOVING are healthy");
+  }
+
+  // --- the 8.3 serial line printed in listen-only, which must NOT consume
+  //     an interval (reviewer, 2026-10-14) -------------------------------
+  //
+  // Spec 2.3 stops the status frames while the vehicle port is in
+  // listen-only and 8.3 keeps the serial line, so for minutes at a time the
+  // only reader of this class is a line nobody may be reading. If that line
+  // moved the baselines, an overflow during listen-only would be reported
+  // on serial and then be ABSENT from the first frame after the switch --
+  // the flag would read ok and nothing else in the output would differ.
+  // That is the failure these checks exist for; it is invisible from the
+  // frames alone.
+  {
+    Bus b;
+    check(b.frame(), "a frame on a clean bridge is ok");
+    check(b.line(), "and so is a printed line");
+
+    b.ovf++;                         // an overflow while in listen-only
+    check(!b.line(), "a printed line reports the overflow");
+    check(!b.line(), "and keeps reporting it, since no frame has carried it");
+    check(!b.line(), "however many lines are printed");
+    check(!b.frame(),
+          "THE FRAME STILL CARRIES IT: a printed line must not consume the "
+          "interval");
+    check(b.frame(), "and only then is the bridge clean again");
+  }
+  {
+    // The same property stated as the mutation it guards, on a different
+    // input: a peek() that advanced the baselines passes everything above
+    // except this.
+    Bus b;
+    b.frame();
+    b.vfail++;
+    b.line();
+    check(!b.frame(),
+          "a line printed between the failure and the frame does not "
+          "whitewash it");
   }
 
   if (failures) {
