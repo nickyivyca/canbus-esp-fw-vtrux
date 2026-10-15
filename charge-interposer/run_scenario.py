@@ -1899,6 +1899,12 @@ def run_one(sc, args, outdir):
                 hold = hold_series_from_trace(trace_path)
             l1 = check_flight_core(trace_path,
                                    keep=getattr(args, "keep_traces", False))
+    stimulus = None
+    if args.external_interposer and witness is not None and not witness.error:
+        import diag_cadence
+        stimulus = charger_stimulus(
+            diag_cadence.read_witness(str(witness_path)),
+            chg_log.read_text(errors="replace"))
     if (args.external_interposer and witness is not None and not witness.error
             and any(k == "fault_or_flow_first" for k, _v in sc.expect)):
         import diag_cadence
@@ -1906,7 +1912,7 @@ def run_one(sc, args, outdir):
             diag_cadence.read_witness(str(witness_path)))
     return evaluate(sc, veh_log, chg_log, int_log, timed_out, l1, inv,
                     order=order, hold=hold, diag82=diag82, reset=reset,
-                    acker_first=acker_first)
+                    acker_first=acker_first, stimulus=stimulus)
 
 
 VEH_ROW = re.compile(
@@ -2686,6 +2692,75 @@ def witness_fault_flow_order(rows, latency_max_s=None):
                 source="the PCAN witness (CAN1, device clock)")
 
 
+# The charger stimulus premise for a board run (reviewer, 2026-10-14). A
+# host loaded by other work starved charger_sim, its status frame went
+# quiet for > 500 ms, and the board tripped on staleness -- correctly, on a
+# stimulus the truck never gives. A gap in the forwarded 0x18FFD4C0 over
+# STIM_GAP_S inside a session is the BENCH's only if ALL hold: charger_sim's
+# own STALL lines cover it (host clock, the witness's), and nothing was
+# lost (charger_sim's sent count equals the PCAN's forwarded count). Any
+# loss, or a gap with no stall to explain it, is a FAIL against the board.
+STIM_GAP_S = 0.400
+STIM_COVER_SLACK_S = 0.150     # one 100 ms period plus jitter
+SESSION_STATES = ("MONITOR", "OVERRIDE", "HOLD")
+STALL_RE = re.compile(r"STALL (\d+) ms wall at sim t=\S+ host=([\d.]+)")
+SENT_RE = re.compile(r"status frames sent: (\d+) \(0x18FFD4C0\)")
+
+
+def charger_stimulus(witness_rows, chg_text):
+    """-> (verdict, why): verdict "OK" (no gap over STIM_GAP_S in a
+    session), "VOID" (the bench's: stall-covered, nothing lost) or "FAIL".
+    witness_rows: diag_cadence.read_witness() rows (host, device, id, data);
+    chg_text: charger_sim's log."""
+    st = sorted((r for r in witness_rows if r[2] == 0x7F4), key=lambda r: r[1])
+    chg = sorted((r for r in witness_rows if r[2] == 0x18FFD4C0),
+                 key=lambda r: r[1])
+
+    def state_at(dev):
+        last = None
+        for r in st:
+            if r[1] > dev:
+                break
+            last = r
+        return None if last is None else DIAG_STATES.get(last[3][2])
+    gaps = [(b[1] - a[1], a, b) for a, b in zip(chg, chg[1:])
+            if b[1] - a[1] > STIM_GAP_S and state_at(a[1]) in SESSION_STATES]
+    largest = max((b[1] - a[1] for a, b in zip(chg, chg[1:])), default=0.0)
+    if not gaps:
+        return ("OK", "largest gap in the forwarded 0x18FFD4C0 %.0f ms; none "
+                "over %.0f ms in a session" % (largest * 1000,
+                                               STIM_GAP_S * 1000))
+    stalls = [(float(h) - int(ms) / 1000.0, float(h))
+              for ms, h in STALL_RE.findall(chg_text)]
+    m = SENT_RE.search(chg_text)
+    sent = int(m.group(1)) if m else None
+    seen = len(chg)
+    lost = None if sent is None else sent - seen
+    uncovered = []
+    for g, a, b in gaps:
+        lo, hi = a[0], b[0]
+        cov = sum(max(0.0, min(hi, e) - max(lo, s0)) for s0, e in stalls)
+        if cov < (hi - lo) - STIM_COVER_SLACK_S:
+            uncovered.append((g, a[1], cov))
+    desc = "%d gap(s) over %.0f ms in a session, largest %.0f ms" % (
+        len(gaps), STIM_GAP_S * 1000, max(g for g, _a, _b in gaps) * 1000)
+    if lost is None:
+        return ("FAIL", "%s; charger_sim's sent count is not in its log, so "
+                "no loss can be ruled out" % desc)
+    if lost != 0:
+        return ("FAIL", "%s; charger_sim sent %d status frames and the "
+                "witness saw %d forwarded: %d lost -- against the board, "
+                "whatever the stalls show" % (desc, sent, seen, lost))
+    if uncovered:
+        g, t, cov = uncovered[0]
+        return ("FAIL", "%s; the %.0f ms gap at device %.3f s is covered by "
+                "only %.0f ms of charger_sim stalls: not the bench's"
+                % (desc, g * 1000, t, cov * 1000))
+    return ("VOID", "%s, every one covered by charger_sim's own stalls, and "
+            "nothing lost (%d sent, %d forwarded): the bench starved the "
+            "stimulus" % (desc, sent, seen))
+
+
 FAULT_FLAGS = ("BELINV_inverterFault", "BELINV_buckBoostFault",
                "BELINV_hvBatteryOverVoltage", "BELINV_overTemperature")
 
@@ -2890,7 +2965,8 @@ def _wsl_path(p):
 
 
 def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
-             order=None, hold=None, diag82=None, reset=None, acker_first=None):
+             order=None, hold=None, diag82=None, reset=None, acker_first=None,
+             stimulus=None):
     veh = veh_log.read_text(errors="replace")
     chg = chg_log.read_text(errors="replace")
     intp = int_log.read_text(errors="replace")
@@ -3034,6 +3110,12 @@ def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
                         "witness): %s" % diag82[1]))
     if reset is not None:
         results.append((reset[0], "the board reset happened: %s" % reset[1]))
+    if stimulus is not None:
+        results.append((stimulus[0] == "OK", "bench premise: the charger "
+                        "stimulus %s: %s" % (
+                            {"OK": "held", "VOID": "VOID (the bench, not the "
+                             "board)", "FAIL": "gap NOT the bench's"}[
+                                 stimulus[0]], stimulus[1])))
     if acker_first is not None:
         results.append((acker_first, "bench premise: the vehicle segment had "
                         "an acknowledger before the charger started (%s)" % (

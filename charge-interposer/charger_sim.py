@@ -123,8 +123,13 @@ def report_stall(dt_wall, t_sim, prev_gc):
     cur = _gc_collections()
     if dt_wall > STALL_WARN_S:
         delta = tuple(c - p for c, p in zip(cur, prev_gc))
-        log.warning("STALL %.0f ms wall at sim t=%.0fs  gc collections during "
-                    "it gen0/1/2=%s", dt_wall * 1000.0, t_sim, delta)
+        # host= is time.perf_counter() at the end of the stall: the clock
+        # run_scenario's witness stamps its frames with, so a gap in the
+        # forwarded status frames can be laid against the sim's own stalls
+        # (the charger stimulus premise, reviewer 2026-10-14)
+        log.warning("STALL %.0f ms wall at sim t=%.0fs host=%.6f  gc "
+                    "collections during it gen0/1/2=%s", dt_wall * 1000.0,
+                    t_sim, time.perf_counter(), delta)
     return cur
 
 class Charger(object):
@@ -624,6 +629,7 @@ def main():
              "time-scale=%g)", args.pilot_duty, evse_a, args.hold_a,
              args.time_scale)
     fired = {"fault": False, "unplug": False}
+    status_sent = [0]
     try:
         while True:
             now = time.time()
@@ -709,6 +715,8 @@ def main():
                 for fid, data in c.frames().items():
                     b.send(can.Message(arbitration_id=fid, is_extended_id=True,
                                        data=data))
+                    if fid == 0x18FFD4C0:
+                        status_sent[0] += 1
                 next_fast += 0.100
                 n += 1
             if n >= MAX_CATCHUP:
@@ -729,6 +737,9 @@ def main():
     except KeyboardInterrupt:
         log.info("interrupted")
     finally:
+        # every 0x18FFD4C0 handed to the bus, for the stimulus premise: a
+        # gap the board did not cause loses no frame (run_scenario)
+        log.info("status frames sent: %d (0x18FFD4C0)", status_sent[0])
         b.shutdown()
         phys.shutdown()
 
