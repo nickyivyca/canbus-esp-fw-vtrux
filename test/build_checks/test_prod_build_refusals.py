@@ -8,8 +8,17 @@ ignores) differs from its own `CHECKSUMS.json`, or if its `.component_hash`
 differs from the one in `dependencies.lock`. "Uncommitted changes" includes
 untracked files (reviewer's reading, review tracker 2026-10-05).
 
+It also refuses unless HEAD is on `gen-inhibit/main` by name (spec 12.3 item 3,
+added 2026-10-12, user): a detached HEAD or another branch is refused even at
+the same commit.
+
 This runs the script's `--check-only` mode (its refusals, no build) in a
-throwaway `git worktree` at --commit, never in a working tree anyone uses:
+throwaway local CLONE at --commit with `gen-inhibit/main` checked out by name,
+never in a working tree anyone uses. A clone, not a `git worktree`: a worktree
+cannot check that branch out while another tree has it, and forcing it would
+share the branch ref, so the self-test's commit would move the real branch.
+Until 2026-10-15 this was a detached worktree, which the branch refusal rightly
+refuses, so the baseline failed on every commit since 2026-10-12.
 
   - BASELINE: the tree as checked out, with a copy of a verified
     `managed_components/` (--components) -> must pass (exit 0). A refusal here
@@ -17,6 +26,8 @@ throwaway `git worktree` at --commit, never in a working tree anyone uses:
   - each CASE makes one change, expects a refusal (exit != 0 and "NOT BUILT"),
     undoes the change, and expects a pass again -- so each refusal is shown to
     come from that change and not from the tree.
+  - the branch cases: HEAD detached at the same commit, and HEAD on another
+    branch at the same commit, must each be refused naming the branch rule.
   - --check-only must never create a build directory.
 
 IT TESTS THE SCRIPT AS COMMITTED at --commit, never anyone's working tree, so an
@@ -65,6 +76,16 @@ FAKE_SILENT = ('import subprocess, sys\n'
                'lines = [l for l in r.stdout.splitlines() if "fake_prod_build" not in l]\n'
                'if lines:\n    sys.exit(1)\n'
                'print("CHECK ONLY: every refusal passed. Nothing was built.")\n')
+# Refuses a dirty tree and a bad component correctly but never looks at the branch
+# (prod_build.py before 2026-10-12). Every branch row must fail.
+FAKE_NO_BRANCH = ('import subprocess, sys\n'
+                  'r = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)\n'
+                  'lines = [l for l in r.stdout.splitlines() if "fake_prod_build" not in l]\n'
+                  'if lines:\n    print("REFUSED: uncommitted changes")\n'
+                  '    print("NOT BUILT.")\n    sys.exit(1)\n'
+                  'print("CHECK ONLY: every refusal passed. Nothing was built.")\n')
+PROD_BRANCH = "gen-inhibit/main"
+OTHER_BRANCH = "tester-refusal-probe"
 
 
 def git(args, cwd):
@@ -78,14 +99,15 @@ def run_script(tree, script):
 
 
 RULE_WORDS = {"tree": ("uncommitted",), "component": ("component",),
-              "identity": ("not the", "repo")}
+              "identity": ("not the", "repo"), "branch": ("head", "on " + PROD_BRANCH)}
 
 
-def refused_for(rule, rc, txt):
+def refused_for(rule, rc, txt, also=()):
     """A refusal by the named rule: non-zero exit and a REFUSED line carrying every
-    word of that rule's cause phrase (case-insensitive)."""
+    word of that rule's cause phrase, and of `also` (case-insensitive)."""
+    words = tuple(RULE_WORDS[rule]) + tuple(w.lower() for w in also)
     return rc != 0 and any(ln.startswith("REFUSED")
-                           and all(w in ln.lower() for w in RULE_WORDS[rule])
+                           and all(w in ln.lower() for w in words)
                            for ln in txt.splitlines())
 
 
@@ -104,10 +126,14 @@ class Edit:
     repo, passed on the identity refusal and would have passed with the clean-tree
     check gone (implementor, 2026-10-10). Reviewer ruling the same day: a tracked file
     deleted is a dirty tree and must be refused as one, whichever file it is; a
-    directory that is not the repo is refused by identity."""
+    directory that is not the repo is refused by identity.
 
-    def __init__(self, name, apply, undo, rule):
-        self.name, self.apply, self.undo, self.rule = name, apply, undo, rule
+    rule "branch": it must say HEAD has to be on gen-inhibit/main. The other-branch
+    case must also name the branch it is on (`also`), or a detached HEAD would pass
+    it and the case would only repeat the detached one."""
+
+    def __init__(self, name, apply, undo, rule, also=()):
+        self.name, self.apply, self.undo, self.rule, self.also = name, apply, undo, rule, also
 
 
 def append_byte(path):
@@ -159,6 +185,12 @@ def cases(tree, comp):
              lambda: os.remove(extra_comp), "component"),
         Edit(".component_hash differs from dependencies.lock", flip_hash,
              lambda: restore_bytes(chash, keep[chash]), "component"),
+        Edit("HEAD detached at the same commit", lambda: git(["checkout", "-q", "--detach"], tree),
+             lambda: git(["checkout", "-q", PROD_BRANCH], tree), "branch"),
+        Edit("HEAD on another branch at the same commit",
+             lambda: git(["checkout", "-q", "-b", OTHER_BRANCH], tree),
+             lambda: (git(["checkout", "-q", PROD_BRANCH], tree),
+                      git(["branch", "-q", "-D", OTHER_BRANCH], tree)), "branch", (OTHER_BRANCH,)),
     ]
 
 
@@ -179,7 +211,7 @@ def check_all(tree, script, comp):
         finally:
             e.undo()
         why = [ln.strip()[:110] for ln in txt.splitlines() if ln.startswith("REFUSED")]
-        out.append(("refused: %s" % e.name, refused_for(e.rule, rc, txt),
+        out.append(("refused: %s" % e.name, refused_for(e.rule, rc, txt, e.also),
                     "rc %d; %s" % (rc, why[0] if why else "no REFUSED line")))
         rc2, _ = run_script(tree, script)
         out.append(("  passes again once undone", rc2 == 0, "rc %d" % rc2))
@@ -228,19 +260,29 @@ def wrong_directory(tree, script, nested):
 
 
 def make_tree(repo, commit, components, where):
-    r = git(["worktree", "add", "--detach", where, commit], repo)
+    """A local clone with PROD_BRANCH checked out BY NAME at commit; the refs are the
+    clone's own, so nothing done here reaches the repo's branches."""
+    full = git(["rev-parse", commit], repo).stdout.strip()
+    r = git(["clone", "-q", "--no-checkout", repo, where], os.path.dirname(repo))
     if r.returncode != 0:
-        raise SystemExit("worktree add failed: %s" % r.stderr.strip())
+        raise SystemExit("clone failed: %s" % r.stderr.strip())
+    r = git(["checkout", "-q", "-B", PROD_BRANCH, full], where)
+    on = git(["symbolic-ref", "--quiet", "--short", "HEAD"], where).stdout.strip()
+    at = git(["rev-parse", "HEAD"], where).stdout.strip()
+    if r.returncode != 0 or on != PROD_BRANCH or at != full:
+        raise SystemExit("checkout failed: on %r at %s, wanted %s at %s (%s)"
+                         % (on, at[:7], PROD_BRANCH, full[:7], r.stderr.strip()))
     dst = os.path.join(where, "managed_components")
     shutil.copytree(components, dst)
     return dst
 
 
 def drop_tree(repo, where):
-    git(["worktree", "remove", "--force", where], repo)
+    def writable(fn, p, _exc):          # git's object files are read-only on Windows
+        os.chmod(p, 0o700)
+        fn(p)
     if os.path.exists(where):
-        shutil.rmtree(where, ignore_errors=True)
-    git(["worktree", "prune"], repo)
+        shutil.rmtree(where, onerror=writable)
 
 
 def main():
@@ -278,7 +320,9 @@ def main():
                                      ("exits 1 on a dirty tree without saying so",
                                       FAKE_SILENT, "refused: tracked"),
                                      ("refuses a dirty tree by the wrong rule",
-                                      FAKE_WRONG_RULE, "refused: tracked")):
+                                      FAKE_WRONG_RULE, "refused: tracked"),
+                                     ("never looks at the branch",
+                                      FAKE_NO_BRANCH, "refused: HEAD")):
                 fake = os.path.join(where, "fake_prod_build.py")
                 restore_bytes(fake, body.encode())
                 git(["update-index", "--add", "--cacheinfo", "100644",
