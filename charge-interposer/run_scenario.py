@@ -1494,6 +1494,13 @@ class SerialTap(object):
         self._fh = open(self.path, "w", encoding="utf-8", errors="replace")
         self._sfh = open(self.stamped_path, "w", encoding="utf-8",
                          errors="replace")
+        # The host's wall clock against its perf_counter, once: the board's
+        # lines carry no time of day, and the checks that set them against
+        # the sims' logs (HH:MM:SS) need one (board_text_wall). In the
+        # stamped copy only: the plain one is the board's own output.
+        self._sfh.write("%.6f\t# wall=%.6f\n" % (time.perf_counter(),
+                                                 time.time()))
+        self._sfh.flush()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -1749,6 +1756,7 @@ def run_one(sc, args, outdir):
     reset_timer = None
     veh_start = None
     witness_path = outdir / ("%s.diag_witness.log" % sc.name)
+    sp_log = outdir / ("%s.charger.sp.log" % sc.name)
     acker_first = None
 
     def start_charger():
@@ -1756,7 +1764,8 @@ def run_one(sc, args, outdir):
             procs.append(subprocess.Popen(
                 [PY, str(HERE / "charger_sim.py"),
                  "--port", str(args.charger_port),
-                 "--phys-port", str(args.phys_port)]
+                 "--phys-port", str(args.phys_port),
+                 "--sp-log", str(sp_log)]
                 + _transport_args(args, "charger")
                 + ts + sc.charger, stdout=f, stderr=subprocess.STDOUT, env=env,
                 **POPEN_KW))
@@ -1925,11 +1934,16 @@ def run_one(sc, args, outdir):
             l1 = check_flight_core(trace_path,
                                    keep=getattr(args, "keep_traces", False))
     stimulus = None
+    vstim = None
+    hold_wire = None
     if args.external_interposer and witness is not None and not witness.error:
         import diag_cadence
-        stimulus = charger_stimulus(
-            diag_cadence.read_witness(str(witness_path)),
-            chg_log.read_text(errors="replace"))
+        wrows = diag_cadence.read_witness(str(witness_path))
+        stimulus = charger_stimulus(wrows, chg_log.read_text(errors="replace"))
+        vstim = vehicle_stimulus(wrows, veh_log.read_text(errors="replace"))
+        if any(k == "hold_follows_loads" for k, _v in sc.expect):
+            hold_wire = (wrows, read_sp_log(sp_log) if sp_log.exists()
+                         else [])
     if (args.external_interposer and witness is not None and not witness.error
             and any(k == "fault_or_flow_first" for k, _v in sc.expect)):
         import diag_cadence
@@ -1937,7 +1951,8 @@ def run_one(sc, args, outdir):
             diag_cadence.read_witness(str(witness_path)))
     return evaluate(sc, veh_log, chg_log, int_log, timed_out, l1, inv,
                     order=order, hold=hold, diag82=diag82, reset=reset,
-                    acker_first=acker_first, stimulus=stimulus)
+                    acker_first=acker_first, stimulus=stimulus, vstim=vstim,
+                    hold_wire=hold_wire)
 
 
 VEH_ROW = re.compile(
@@ -1961,6 +1976,11 @@ RELEASE_VMAX_MV = 3585          # spec 5.1 (47c31278)
 # timestamped sim-only twin is REPEAT_EV_T below.
 REPEAT_EV = re.compile(r"REPEAT: [^\n]*? a=-?\d+ b=-?\d+ c=(\d+)")
 FINAL_SYNTH = re.compile(r"final state=\w+.*synth=(\d+)")
+# The board prints no exit line. Its 1 Hz diag line carries the same counter
+# (8.3, synth=), so on a board log the last one is the final count. It counts
+# since boot: a reset after a burst would undercount it, and fail short.
+BOARD_SYNTH = re.compile(r"^(?:\d\d:\d\d:\d\d )?diag st=\w+ [^\n]*?"
+                         r"\bsynth=(\d+)", re.M)
 CHG_MODE = re.compile(r"charger: mode (\w+) -> (\w+) \(setpoint ([\d.]+) A\)")
 CHG_STATE = re.compile(r"charger: state (\d+) -> (\d+) ")
 CHG_ANY = re.compile(
@@ -2057,6 +2077,39 @@ def _stamped(text):
 
 
 RELEASE_LINE = re.compile(r"\[(\w+)\] RELEASE")
+# The board's spec 8.3 form, "[uptime ms] STATE  RELEASE: ...": the state is
+# the word after the uptime (step 4 item 6, 2026-10-15: RELEASE_LINE alone
+# never matched a board line, and released_into_hold() reported "the core
+# never logged a RELEASE" over a board log that has one).
+RELEASE_LINE_BOARD = re.compile(r"\[\d+\] (\w+)\s+RELEASE\b")
+
+# SerialTap's wall-clock mark in the stamped copy.
+WALL_MARK = re.compile(r"^([\d.]+)\t# wall=([\d.]+)$")
+
+
+def board_text_wall(stamped_path, wall_minus_perf=None):
+    """The board's serial lines in the sims' 'HH:MM:SS line' form, from
+    SerialTap's stamped copy, so the checks that set the core's lines
+    against the charger's and the vehicle's logs can read a board run.
+    The offset comes from the tap's wall mark, or is given (a log recorded
+    before the mark, offset from elsewhere). None when there is neither."""
+    rows, off = [], wall_minus_perf
+    for ln in open(stamped_path, encoding="utf-8", errors="replace"):
+        ln = ln.rstrip("\n")
+        m = WALL_MARK.match(ln)
+        if m:
+            if off is None:
+                off = float(m.group(2)) - float(m.group(1))
+            continue
+        h, _, line = ln.partition("\t")
+        try:
+            rows.append((float(h), line))
+        except ValueError:
+            pass
+    if off is None:
+        return None
+    return "\n".join(time.strftime("%H:%M:%S ", time.localtime(h + off))
+                     + line for h, line in rows) + "\n"
 
 
 def _release_event(intp_text):
@@ -2065,7 +2118,7 @@ def _release_event(intp_text):
     core was in after the event: spec 5.2 (eb9b9d13) releases into HOLD;
     before HOLD existed it was TERMINATED."""
     for t, line in _stamped(intp_text):
-        m = RELEASE_LINE.search(line)
+        m = RELEASE_LINE.search(line) or RELEASE_LINE_BOARD.search(line)
         if m:
             return t, m.group(1)
     return None, None
@@ -2436,12 +2489,13 @@ def _repeat_bursts(intp_text, veh_text, frames=None, chg_text=""):
                 % (bad, frames))
 
     m = FINAL_SYNTH.search(intp_text)
-    if m is None:
+    board = BOARD_SYNTH.findall(intp_text) if m is None else []
+    if m is None and not board:
         return (False, "%d burst(s) announced, but the core printed no final "
                        "synth counter, so what it actually sent is unknown "
                        "-- which is not the same as having sent it"
                 % len(counts))
-    synth = int(m.group(1))
+    synth = int(m.group(1)) if m is not None else int(board[-1])
     want = frames * len(counts)
 
     # PREFER PER-BURST. The aggregate below cannot attribute a shortfall to
@@ -2786,6 +2840,311 @@ def charger_stimulus(witness_rows, chg_text):
             "stimulus" % (desc, sent, seen))
 
 
+# --- the vehicle stimulus premise for a board run (reviewer, 2026-10-15) ---
+#
+# Step 4 item 6 #17: vehicle_sim stalled 1.37 s in its bus receive, sent no
+# BMS frame, and the board tripped on 0x410 stale -- correctly, on a stimulus
+# the truck never gives. The counterpart of charger_stimulus(), on the BMS
+# frames the core times (spec 6, each separately), which the witness logs:
+#   - a gap over STIM_GAP_S inside a session is the BENCH's (VOID) only if a
+#     vehicle_sim STALL over STIM_GAP_S covers it: the wire gap lies inside
+#     the stall, within STIM_COVER_SLACK_S at each end; a gap no stall
+#     covers stays FAIL;
+#   - the premise voids the scenario's verdict, NOT spec 6: once a BMS frame
+#     has been stale VEH_STALE_S on the wire the board must trip on it
+#     (a=10), and it must not trip on staleness before; either miss FAILS,
+#     covered or not. The trip's time is its 0x7F4 SAFE frame (8.2: within
+#     50 ms of the event), against TRIP_EARLY_S / TRIP_LATE_S.
+VEH_STALL_RE = re.compile(r"STALL (\d+) ms wall at sim t=\S+ host=([\d.]+)")
+VEH_BMS_IDS = (0x410, 0x420, 0x430, 0x440)
+VEH_STALE_S = 0.500             # spec 6
+TRIP_STALE_CODE = 10            # 0x7F4 B3: BMS frames stale
+TRIP_EARLY_S = 0.030            # the witness's and the board's receipt
+TRIP_LATE_S = 0.250             # 8.2's 50 ms plus the core's own pass
+
+
+def vehicle_stimulus(witness_rows, veh_text):
+    """-> (verdict, why): "OK", "VOID" (the bench's: every gap covered by a
+    vehicle_sim stall, and the board's spec 6 behaviour right) or "FAIL".
+    witness_rows: diag_cadence.read_witness() rows; host clock throughout."""
+    rows = sorted(witness_rows, key=lambda r: r[0])
+    st = [(r[0], DIAG_STATES.get(r[3][2]), r[3][3] if len(r[3]) > 3 else None)
+          for r in rows if r[2] == 0x7F4 and len(r[3]) > 2]
+    hosts = [h for h, _s, _c in st]
+
+    def state_at(h):
+        k = bisect.bisect_right(hosts, h) - 1
+        return st[k][1] if k >= 0 else None
+    bms = {fid: [r[0] for r in rows if r[2] == fid] for fid in VEH_BMS_IDS}
+    if not any(bms.values()):
+        return ("FAIL", "no 0x410-0x440 on the witness: the vehicle "
+                "stimulus cannot be judged")
+    gaps = []
+    for fid, ts in bms.items():
+        for a, b in zip(ts, ts[1:]):
+            if b - a > STIM_GAP_S and state_at(a) in SESSION_STATES:
+                gaps.append((b - a, a, b, fid))
+    gaps.sort(key=lambda g: g[1])
+    trip = next((h for h, s0, c in st
+                 if s0 == "SAFE" and c == TRIP_STALE_CODE), None)
+    probs = []
+    stale = [a + VEH_STALE_S for g, a, b, fid in gaps if g > VEH_STALE_S]
+    t_stale = min(stale) if stale else None
+    if trip is not None and (t_stale is None
+                             or trip < t_stale - TRIP_EARLY_S):
+        probs.append("the board tripped on stale BMS frames (a=10) at host "
+                     "%.3f%s -- spec 6: not before 500 ms of wire gap"
+                     % (trip, "" if t_stale is None else
+                        ", %.0f ms before any frame was 500 ms stale"
+                        % ((t_stale - trip) * 1000)))
+    if t_stale is not None and trip is None:
+        probs.append("a BMS frame was 500 ms stale on the wire at host %.3f "
+                     "and the board never tripped on it -- spec 6" % t_stale)
+    elif (t_stale is not None and trip is not None
+          and trip > t_stale + TRIP_LATE_S):
+        probs.append("the board tripped %.0f ms after a BMS frame was 500 ms "
+                     "stale -- spec 6 (allowed %.0f ms)"
+                     % ((trip - t_stale) * 1000, TRIP_LATE_S * 1000))
+    largest = max((g for g, _a, _b, _f in gaps), default=0.0)
+    if probs:
+        return ("FAIL", "; ".join(probs) + " (%d gap(s) over %.0f ms)"
+                % (len(gaps), STIM_GAP_S * 1000))
+    if not gaps:
+        return ("OK", "no 0x410-0x440 gap over %.0f ms in a session"
+                % (STIM_GAP_S * 1000))
+    stalls = [(float(h) - int(ms) / 1000.0, float(h))
+              for ms, h in VEH_STALL_RE.findall(veh_text)
+              if int(ms) / 1000.0 > STIM_GAP_S]
+    uncovered = [(g, a, b, fid) for g, a, b, fid in gaps
+                 if not any(s0 - STIM_COVER_SLACK_S <= a
+                            and b <= e + STIM_COVER_SLACK_S
+                            for s0, e in stalls)]
+    desc = ("%d BMS gap(s) over %.0f ms in a session, largest %.0f ms"
+            % (len(gaps), STIM_GAP_S * 1000, largest * 1000))
+    if uncovered:
+        g, a, _b, fid = uncovered[0]
+        return ("FAIL", "%s; the %.0f ms gap in 0x%03X at host %.3f lies "
+                "inside no vehicle_sim stall over %.0f ms: not the bench's"
+                % (desc, g * 1000, fid, a, STIM_GAP_S * 1000))
+    return ("VOID", "%s, each inside a vehicle_sim stall, and the board's "
+            "spec 6 trip on time: the bench starved the stimulus" % desc)
+
+
+# --- spec 9's hold on a board run, judged on the wire (reviewer, 2026-10-15)
+#
+# A board run has no flight trace, and what spec 9 judges there is what the
+# charger RECEIVES through the board's real path -- the charger port's queue,
+# 2.2's age discard, the MCP2515 -- which only a board run shows: the 0.28 s
+# step rule and the never-0-A rule can break there and nowhere else.
+# hold_series_from_wire() builds the series _hold_follows_loads judges
+# (unchanged), every time on the host's perf_counter in ms; neither sim's
+# own clock is used:
+#   hold    0x7F4 HOLD on the PCAN witness, each span bounded INWARD, first
+#           HOLD frame to last (0x7F4 is 1 Hz plus 8.2's immediate frame);
+#           what that leaves unjudged at each end is reported
+#   sp      every page 01 charger_sim received inside those spans (its
+#           --sp-log), with the EVSE cap from test_invariants' Oracle fed
+#           the witness's frames in host order
+#   ibat, chgmax, soc100   0x410 / 0x420 on the witness
+# The cadence is measured at the charger, so it carries the path's timing:
+# u, the spread of (charger receipt - the witness's VCU page 01 it rode on),
+# is printed; a spacing below 0.28 s - u FAILS, one in [0.28 s - u, 0.28 s)
+# is UNRESOLVED unless its two VCU page-01 frames are >= 0.28 s apart on the
+# witness (then it passes). A record without the 6.10 A entry setpoint, or
+# without a setpoint change after each injected load step, is UNRESOLVED,
+# never PASS (wire_hold_premise).
+VCU_PAGE01_PAIR_MS = 150        # a receipt rides the VCU page 01 before it
+ENTRY_SP_A = 6.10               # spec 5.2's setpoint at the release
+
+
+def read_sp_log(path):
+    """charger_sim's --sp-log: [(host s, amps)]."""
+    out = []
+    for ln in open(str(path), encoding="utf-8", errors="replace"):
+        f = ln.rstrip("\n").split("\t")
+        try:
+            out.append((float(f[0]), float(f[1])))
+        except (ValueError, IndexError):
+            pass
+    return out
+
+
+def hold_series_from_wire(witness_rows, sp_rows):
+    """-> (series, ends): series in hold_series_from_trace()'s shape, host
+    ms; ends: [(entry_ms, exit_ms)] per HOLD span, the most each inward
+    bound can leave unjudged (None at the record's edge)."""
+    import protocol as P
+    sys.path.insert(0, str(HERE))
+    import test_invariants as TI
+    rows = sorted(witness_rows, key=lambda r: r[0])
+    st = [(int(round(r[0] * 1000)), DIAG_STATES.get(r[3][2])) for r in rows
+          if r[2] == 0x7F4 and len(r[3]) > 2]
+    hold, ends = [], []
+    i = 0
+    while i < len(st):
+        if st[i][1] != "HOLD":
+            i += 1
+            continue
+        j = i
+        while j + 1 < len(st) and st[j + 1][1] == "HOLD":
+            j += 1
+        hold.append((st[i][0], st[j][0]))
+        ends.append((st[i][0] - st[i - 1][0] if i > 0 else None,
+                     st[j + 1][0] - st[j][0] if j + 1 < len(st) else None))
+        i = j + 1
+
+    def in_hold(t):
+        return any(a <= t <= b for a, b in hold)
+    out = dict(hold=hold, sp=[], ibat=[], chgmax=[], spcap=[], soc100=None,
+               t_last=None)
+    bus = TI.Oracle()
+    state = None
+    ev = sorted([(int(round(r[0] * 1000)), 0, r) for r in rows] +
+                [(int(round(h * 1000)), 1, a) for h, a in sp_rows],
+                key=lambda e: (e[0], e[1]))
+    for t, kind, x in ev:
+        if kind == 1:
+            if in_hold(t):
+                out["sp"].append((t, x))
+                caps = bus.caps()
+                out["spcap"].append((t, caps[0] if caps else None))
+            continue
+        fid, d = x[2], x[3]
+        if fid in (0x7F4, 0x7F5, 0x7F6, 0x7F7):
+            if fid == 0x7F4 and len(d) > 2:
+                state = DIAG_STATES.get(d[2])
+            bus.observe("T", t, None, None)
+            continue
+        if fid > 0x7FF and (fid & 0xFF) == 0xC0:
+            bus.observe("C", t, fid, d)
+            continue
+        bus.observe("V", t, fid, d, monitor=(state == "MONITOR"))
+        if fid == 0x410:
+            dec = P.decode(P.EPRI, 0x410, d)
+            if dec.get("bcm_ibat") is not None:
+                out["ibat"].append((t, float(dec["bcm_ibat"])))
+            if out["soc100"] is None and dec.get("bcm_soc", 0.0) >= 100.0:
+                out["soc100"] = t
+        elif fid == 0x420:
+            v = P.decode(P.EPRI, 0x420, d).get("bcm_chg_max")
+            if v is not None:
+                out["chgmax"].append((t, float(v)))
+    out["t_last"] = ev[-1][0] if ev else None
+    return out, ends
+
+
+def step_timing(witness_rows, sp_rows, hold):
+    """-> (u_ms or None, n, vcu_of): u is the spread of (charger receipt -
+    the latest witness VCU page 01 within VCU_PAGE01_PAIR_MS before it)
+    over the receipts inside HOLD; vcu_of maps a receipt's host ms to its
+    VCU frame's."""
+    vcu = sorted(int(round(r[0] * 1000)) for r in witness_rows
+                 if r[2] == 0x18EFC000 and len(r[3]) >= 5 and r[3][0] == 0x01)
+    lat, vcu_of = [], {}
+    for h, _a in sp_rows:
+        t = int(round(h * 1000))
+        if not any(a <= t <= b for a, b in hold):
+            continue
+        k = bisect.bisect_right(vcu, t) - 1
+        if k >= 0 and t - vcu[k] <= VCU_PAGE01_PAIR_MS:
+            lat.append(t - vcu[k])
+            vcu_of[t] = vcu[k]
+    if not lat:
+        return None, 0, vcu_of
+    return max(lat) - min(lat), len(lat), vcu_of
+
+
+def wire_hold_premise(series, veh_text):
+    """-> None if the record can be judged, else why it is UNRESOLVED
+    (reviewer, 2026-10-15: an empty record never passes)."""
+    if not series["hold"]:
+        return "no 0x7F4 HOLD on the witness"
+    if not series["sp"]:
+        return ("charger_sim received no page 01 inside HOLD (no --sp-log "
+                "record)")
+    if abs(series["sp"][0][1] - ENTRY_SP_A) > 0.025:
+        return ("the first setpoint received in HOLD is %.2f A, not the "
+                "%.2f A entry setpoint" % (series["sp"][0][1], ENTRY_SP_A))
+    c0 = next((t for t, a in series["chgmax"] if a <= 0.0), None)
+    if c0 is None:
+        return None              # _hold_follows_loads FAILS this itself
+    steps, probs, _note = _aux_steps_on_trace(series, veh_text, c0, True)
+    if steps is None or len(steps) < 2:
+        return ("%d injected load step(s) placed on the wire, not the two "
+                "(266 -> 136 and 136 -> 266 W)%s"
+                % (0 if steps is None else len(steps),
+                   ": " + "; ".join(probs) if probs else ""))
+    ts = sorted(t for t, _a, _b, _s in steps)
+    end = max(b for _a, b in series["hold"])
+    for k, t in enumerate(ts):
+        nxt = ts[k + 1] if k + 1 < len(ts) else end
+        win = [a for tt, a in series["sp"] if t < tt <= nxt]
+        before = [a for tt, a in series["sp"] if tt <= t]
+        ref = before[-1] if before else None
+        if ref is None or not any(abs(a - ref) > 0.025 for a in win):
+            return ("no setpoint change received after the load step at "
+                    "host t=%.1f s" % (t / 1000.0))
+    return None
+
+
+def _band_steps(series, gap_ms, u_ms):
+    """Consecutive setpoint steps (as clause 2 counts them) spaced in
+    [gap_ms - u_ms, gap_ms): [(t_prev_step, t_step)]."""
+    out, last = [], None
+    for (ta, a), (tb, b) in zip(series["sp"], series["sp"][1:]):
+        if not any(h0 <= ta and tb <= h1 for h0, h1 in series["hold"]):
+            continue
+        if abs(b - a) <= 0.025:
+            continue
+        if last is not None and gap_ms - u_ms <= tb - last < gap_ms:
+            out.append((last, tb))
+        last = tb
+    return out
+
+
+def judge_hold_series(series, ends, u_ms, n_pairs, vcu_of, veh_text, **kw):
+    """-> (verdict, why): PASS / FAIL / UNRESOLVED (counts as FAIL). Pure:
+    the wire record already built (judge_hold_on_wire)."""
+    gap = HOLD_STEP_GAP_MS
+    edge = "; unjudged at the span ends by the inward bound: %s" % (
+        ", ".join("entry <= %s ms, exit <= %s ms" % e for e in ends)
+        if ends else "no span")
+    pre = wire_hold_premise(series, veh_text)
+    if pre:
+        return ("UNRESOLVED", pre + edge)
+    if u_ms is None:
+        return ("UNRESOLVED", "no charger receipt pairs with a VCU page 01 "
+                "on the witness, so the path's timing u is unknown" + edge)
+    ut = "; u = %d ms over %d receipts" % (u_ms, n_pairs)
+    ok, why = _hold_follows_loads(series, veh_text, **kw)
+    if ok:
+        return ("PASS", why + ut + edge)
+    ok2, why2 = _hold_follows_loads(series, veh_text,
+                                    _step_gap_ms=max(0, gap - u_ms), **kw)
+    if not ok2:
+        return ("FAIL", why2 + ut + edge)
+    band = _band_steps(series, gap, u_ms)
+    open_ = [(a, b) for a, b in band
+             if not (a in vcu_of and b in vcu_of
+                     and vcu_of[b] - vcu_of[a] >= gap)]
+    if open_:
+        a, b = open_[0]
+        return ("UNRESOLVED", "%d step spacing(s) within u of %.2f s that "
+                "the witness's VCU page-01 times do not resolve, first %d ms "
+                "at host t=%.1f s%s%s" % (len(open_), gap / 1000.0, b - a,
+                                          b / 1000.0, ut, edge))
+    return ("PASS", "%s; %d step spacing(s) within u of %.2f s, each "
+            "resolved >= %.2f s on the witness's VCU page 01%s%s"
+            % (why2, len(band), gap / 1000.0, gap / 1000.0, ut, edge))
+
+
+def judge_hold_on_wire(witness_rows, sp_rows, veh_text, **kw):
+    """-> (verdict, why) for a board run's spec 9 hold."""
+    series, ends = hold_series_from_wire(witness_rows, sp_rows)
+    u, n, vcu_of = step_timing(witness_rows, sp_rows, series["hold"])
+    return judge_hold_series(series, ends, u, n, vcu_of, veh_text, **kw)
+
+
 FAULT_FLAGS = ("BELINV_inverterFault", "BELINV_buckBoostFault",
                "BELINV_hvBatteryOverVoltage", "BELINV_overTemperature")
 
@@ -2812,7 +3171,8 @@ def _no_rewrite_after_state(diag, states):
             % (mods[0], len(mods), t0[1]))
 
 
-def _fault_or_flow_first(intp, veh, chg, diag, override, order):
+def _fault_or_flow_first(intp, veh, chg, diag, override, order,
+                         intp_wall=None):
     """-> (ok, why). See fault_or_flow_first(). `order` is
     fault_and_drop_order() of this run's flight trace."""
     first = None
@@ -2871,7 +3231,7 @@ def _fault_or_flow_first(intp, veh, chg, diag, override, order):
     why = "%s first (%s); %s" % ("trip" if first == "trip" else "flow drop",
                                  seen, whym)
     if override and first == "trip":
-        okr, whyr = _repeat_bursts(intp, veh, chg_text=chg)
+        okr, whyr = _repeat_bursts(intp_wall or intp, veh, chg_text=chg)
         if not okr:
             return (False, why + "; but spec 4.1 repeat: " + whyr)
         why += "; spec 4.1 repeat: " + whyr
@@ -2991,10 +3351,16 @@ def _wsl_path(p):
 
 def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
              order=None, hold=None, diag82=None, reset=None, acker_first=None,
-             stimulus=None):
+             stimulus=None, vstim=None, hold_wire=None):
     veh = veh_log.read_text(errors="replace")
     chg = chg_log.read_text(errors="replace")
     intp = int_log.read_text(errors="replace")
+    # A board run: the checks that set the core's lines against the sims'
+    # logs read the stamped copy in their HH:MM:SS form (board_text_wall).
+    intp_wall = intp
+    stamped = Path(str(int_log) + ".stamped")
+    if stamped.exists():
+        intp_wall = board_text_wall(stamped) or intp
     diag = parse_diag_frames(veh)
 
     rows = VEH_ROW.findall(veh)
@@ -3092,11 +3458,11 @@ def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
             ok = re.search(val, chg) is not None
             results.append((ok, "charger log matches /%s/" % val))
         elif kind == "chg_released_into_hold":
-            ok, why = _released_into_hold(chg, intp)
+            ok, why = _released_into_hold(chg, intp_wall)
             results.append((ok, "the release landed in the VCU's hold: %s"
                             % why))
         elif kind == "intp_repeat_20":
-            ok, why = _repeat_bursts(intp, veh, chg_text=chg)
+            ok, why = _repeat_bursts(intp_wall, veh, chg_text=chg)
             results.append((ok, "spec 4.1 repeats: %s" % why))
         elif kind == "p3a":
             ok, why = _p3a_check()
@@ -3107,15 +3473,24 @@ def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
             results.append((ok, "diag frames: %s" % why))
         elif kind == "fault_or_flow_first":
             ok, why = _fault_or_flow_first(intp, veh, chg, diag, val,
-                                           order)
+                                           order, intp_wall=intp_wall)
             results.append((ok, "fault vs flow drop: %s" % why))
         elif kind == "diag_no_rewrite_after_release":
             ok, why = _no_rewrite_after_terminated(diag)
             results.append((ok, "no frame rewritten after the release: %s"
                             % why))
         elif kind == "hold_follows_loads":
-            ok, why = _hold_follows_loads(hold, veh, **val)
-            results.append((ok, "spec 9 hold on the parts truck: %s" % why))
+            if hold is None and hold_wire is not None:
+                # a board run: judged on what the charger received
+                verdict, why = judge_hold_on_wire(hold_wire[0], hold_wire[1],
+                                                  veh, **val)
+                results.append((verdict == "PASS", "spec 9 hold on the "
+                                "parts truck, on the wire: %s -- %s"
+                                % (verdict, why)))
+            else:
+                ok, why = _hold_follows_loads(hold, veh, **val)
+                results.append((ok, "spec 9 hold on the parts truck: %s"
+                                % why))
 
         else:
             # A kind with no branch used to append nothing, so the check
@@ -3141,6 +3516,12 @@ def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
                             {"OK": "held", "VOID": "VOID (the bench, not the "
                              "board)", "FAIL": "gap NOT the bench's"}[
                                  stimulus[0]], stimulus[1])))
+    if vstim is not None:
+        results.append((vstim[0] == "OK", "bench premise: the vehicle "
+                        "stimulus %s: %s" % (
+                            {"OK": "held", "VOID": "VOID (the bench, not the "
+                             "board)", "FAIL": "gap or trip NOT the bench's"}[
+                                 vstim[0]], vstim[1])))
     if acker_first is not None:
         results.append((acker_first, "bench premise: the vehicle segment had "
                         "an acknowledger before the charger started (%s)" % (

@@ -132,6 +132,17 @@ def report_stall(dt_wall, t_sim, prev_gc):
                     t_sim, time.perf_counter(), delta)
     return cur
 
+def sp_record(fh, data, host):
+    """--sp-log: one 'host<TAB>amps<TAB>hex' line for a page 01 received,
+    nothing for any other page. host is perf_counter at recv, the witness's
+    clock (run_scenario.hold_series_from_wire)."""
+    if P.page_key(data) != P.PAGE_SETPOINT:
+        return False
+    fh.write("%.6f\t%.3f\t%s\n" % (host, P.dec_setpoint(data)[1], data.hex()))
+    fh.flush()
+    return True
+
+
 class Charger(object):
 
     def __init__(self, evse_a=16.0, hold_a=6.0, ac_v=240.0, ramp_s=1.5,
@@ -613,6 +624,12 @@ def main():
                          "after charging starts with shutdownSource 11 and the "
                          "plug still IN (vehicleConnected stays 1), the "
                          "original Bel unit's behaviour (0 = never)")
+    ap.add_argument("--sp-log", default=None,
+                    help="write every page 01 RECEIVED to this file, as "
+                         "'host<TAB>amps<TAB>hex' (host = perf_counter at "
+                         "recv): spec 9's hold on a board run is judged on "
+                         "what reached the charger (run_scenario, "
+                         "hold_series_from_wire; reviewer, 2026-10-15)")
     ap.add_argument("--debug", action="store_true")
     args = ap.parse_args()
 
@@ -645,6 +662,7 @@ def main():
              args.time_scale)
     fired = {"fault": False, "unplug": False}
     status_sent = [0]
+    sp_fh = open(args.sp_log, "w") if args.sp_log else None
     try:
         while True:
             now = time.time()
@@ -658,6 +676,8 @@ def main():
                 if msg is None:
                     break
                 if msg.arbitration_id == P.CMD_ID and len(msg.data) >= 8:
+                    if sp_fh is not None:
+                        sp_record(sp_fh, bytes(msg.data), time.perf_counter())
                     c.on_command(bytes(msg.data), t)
             while True:
                 msg = phys.recv(timeout=0.0)
@@ -755,6 +775,8 @@ def main():
         # every 0x18FFD4C0 handed to the bus, for the stimulus premise: a
         # gap the board did not cause loses no frame (run_scenario)
         log.info("status frames sent: %d (0x18FFD4C0)", status_sent[0])
+        if sp_fh is not None:
+            sp_fh.close()
         b.shutdown()
         phys.shutdown()
 

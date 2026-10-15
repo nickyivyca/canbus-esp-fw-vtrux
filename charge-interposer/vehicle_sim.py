@@ -216,8 +216,13 @@ def report_stall(dt_wall, t_sim, prev_gc, phases=None):
             where = "  phases(ms): " + " ".join(
                 "%s=%.1f" % (k, v * 1000.0) if isinstance(v, float) else "%s=%d" % (k, v)
                 for k, v in phases.items())
-        log.warning("STALL %.0f ms wall at sim t=%.0fs  gc collections during "
-                    "it gen0/1/2=%s%s", dt_wall * 1000.0, t_sim, delta, where)
+        # host= is time.perf_counter() at the end of the stall, the clock
+        # run_scenario's witness stamps its frames with: the vehicle
+        # stimulus premise lays the BMS frames' gaps against it (reviewer,
+        # 2026-10-15, after step 4 item 6 #17)
+        log.warning("STALL %.0f ms wall at sim t=%.0fs host=%.6f  gc "
+                    "collections during it gen0/1/2=%s%s", dt_wall * 1000.0,
+                    t_sim, time.perf_counter(), delta, where)
     return cur
 
 class VCU(object):

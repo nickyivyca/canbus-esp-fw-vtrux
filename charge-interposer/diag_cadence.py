@@ -59,6 +59,11 @@ import threading
 import time
 
 STATUS_IDS = (0x7F4, 0x7F5, 0x7F6, 0x7F7)
+# The BMS frames the core times for staleness (spec 6), logged too so the
+# vehicle stimulus premise and spec 9's hold on a board run read them off
+# the wire (reviewer, 2026-10-15). Nothing that scores 8.2 reads them: score()
+# keeps STATUS_IDS only.
+BMS_IDS = (0x410, 0x420, 0x430, 0x440)
 PERIOD_S = 1.0
 PERIOD_TOL = 0.10
 IMMEDIATE_S = 0.050
@@ -157,9 +162,9 @@ def witness_bus_state(acks):
 
 
 class DiagWitness(object):
-    """A PCAN on the vehicle segment logging every 0x7F4-0x7F7, and every
-    charger frame the board forwards (spec 2.3's mode), and the VCU's page
-    00 (VCU_PAGE00_ID):
+    """A PCAN on the vehicle segment logging every 0x7F4-0x7F7, every
+    charger frame the board forwards (spec 2.3's mode), the VCU's
+    0x18EFC000 (VCU_PAGE00_ID, every page) and the BMS frames BMS_IDS:
     'host<TAB>device<TAB>id<TAB>hex' per line, host = time.perf_counter()
     at recv. Drained throughout. acks=True opens it in normal mode, so it
     is the vehicle segment's acknowledger (witness_bus_state)."""
@@ -194,6 +199,7 @@ class DiagWitness(object):
             # the status frames, and the charger frames the board forwards:
             # spec 2.3's mode is read from the latter (ModeWindows)
             if m is None or not (m.arbitration_id in STATUS_IDS or (
+                    not m.is_extended_id and m.arbitration_id in BMS_IDS) or (
                     m.is_extended_id and (
                         is_charger_frame(m.arbitration_id) or
                         m.arbitration_id == VCU_PAGE00_ID))):

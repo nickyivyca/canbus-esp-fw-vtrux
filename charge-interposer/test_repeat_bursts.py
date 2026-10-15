@@ -320,10 +320,17 @@ def main():
             "an end code the harness does not know (c=7), even with a "
             "boundary in the window")
     import inspect
-    check("_repeat_bursts(intp, veh, chg_text=chg)"
-          in inspect.getsource(R.evaluate),
+    src = inspect.getsource(R.evaluate)
+    check("_repeat_bursts(intp_wall, veh, chg_text=chg)" in src,
           "evaluate() hands the charger log to the repeat scorer, so the "
           "pilot and silence witnesses can be found in a real run")
+    # ...and on a board run the core's lines in HH:MM:SS form (2026-10-15:
+    # the plain board log has no time of day, so no burst could be placed)
+    check("board_text_wall(stamped)" in src
+          and "_released_into_hold(chg, intp_wall)" in src
+          and "intp_wall=intp_wall" in src,
+          "evaluate() gives the repeat, the release-into-hold and the "
+          "fault-or-flow checks the board's wall-stamped lines")
 
     # The board's own line form ("[t] STATE REPEAT ended a= b= c=", no host
     # clock) is read by the same key, so a hardware log is not demoted to
