@@ -1718,6 +1718,23 @@ def start_order(external):
     return ["charger", "interposer", "vehicle"]
 
 
+END_SETTLE_S = 1.5        # past the 500 ms BMS staleness, with margin
+
+
+def teardown_order(have_tap, have_witness):
+    """-> what run_one stops after vehicle_sim exits, in order: a settle
+    while both still record (only when the witness runs), the tap, and the
+    witness LAST."""
+    out = []
+    if have_witness:
+        out.append("settle")
+    if have_tap:
+        out.append("tap")
+    if have_witness:
+        out.append("witness")
+    return out
+
+
 def run_one(sc, args, outdir):
     veh_log = outdir / ("%s.vehicle.log" % sc.name)
     chg_log = outdir / ("%s.charger.log" % sc.name)
@@ -1827,10 +1844,18 @@ def run_one(sc, args, outdir):
     finally:
         if reset_timer is not None:
             reset_timer.cancel()
-        if witness is not None:
-            witness.stop()
-        if tap is not None:
-            tap.stop()
+        # a board run ends with vehicle_sim exiting, and the board then trips
+        # on the BMS going quiet (500 ms): settle, then stop the tap, then the
+        # witness, so that trip's 0x7F4 is SEEN, not excused (reviewer,
+        # 2026-10-14; restart-after-standby's TRIP came 0.4 s after the
+        # witness used to stop)
+        for what in teardown_order(tap is not None, witness is not None):
+            if what == "settle":
+                time.sleep(END_SETTLE_S)
+            elif what == "tap":
+                tap.stop()
+            elif what == "witness":
+                witness.stop()
         for p in procs:
             _interrupt(p)
         deadline = time.time() + 5

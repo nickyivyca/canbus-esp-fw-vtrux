@@ -453,6 +453,14 @@ def main():
     partial_line_case(R)
     witness_order_cases(R)
     stimulus_cases(R)
+    td = R.teardown_order(True, True)
+    check(td == ["settle", "tap", "witness"],
+          "teardown: settle, then the tap, then the witness LAST -> %s" % td)
+    check(td.index("witness") > td.index("tap") and R.END_SETTLE_S > 0.5,
+          "...so the board's end-of-run trip (500 ms after vehicle_sim "
+          "exits) is still on the witness (the old order stopped it first)")
+    check(R.teardown_order(True, False) == ["tap"],
+          "no witness: no settle, just the tap")
 
     print("\nboard_reset_test: %s" % ("all checks OK" if not FAILS else
                                      "%d FAILED" % len(FAILS)))
