@@ -892,10 +892,18 @@ the trip itself was correct** -- found on the bench in step 4 item 2.
 **Slot 3 is retired in place, not removed.** The `cell_undervolt` trip went
 at B-7a (2026-10-03) and its number stayed, so every trip above it keeps the
 value it already had in saved logs and traces. A decoder that meets a 3 is
-reading a pre-B-7a log. The names are `enum TripReason` in `machine.h` and
-`tripName()` in `machine.cpp`, matched position for position against
-`machine.py`'s `TRIP_KEYS` by `test/host_diff/check_port.py` -- which is what
-stops this table and the wire drifting apart.
+reading a pre-B-7a log.
+
+**What is pinned here and what is not.** The NUMBERS are `enum TripReason`
+in `machine.h`, matched position for position against `machine.py`'s
+`TRIP_KEYS` by `test/host_diff/check_port.py` -- that check is what stops
+this table's codes and the wire drifting apart, and it is the only one.
+The STRINGS in `machine.cpp`'s `tripName()` are pinned by nothing. Since the
+`TRIP` line stopped printing them nothing calls the function either, so the
+linker drops it: searching the images built at `91b360b2b0ef` for
+`contactor not in a closed state` finds it in none of them. It is
+source-only reference material now, and a third place for these names to
+live after this table and `TRIP_KEYS`.
 
 ## Charger-segment transmit behaviour (spec 2.2)
 
