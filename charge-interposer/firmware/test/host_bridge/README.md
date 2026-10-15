@@ -99,6 +99,28 @@ count of boundary lines, which survives `clearEvents()`; declared like
 and 40 more STAND_BY frames after it must add none. Its can-fails run the
 same predicate on 20 (a line per frame) and 0, and both are rejected.
 
+### 100 ms from queueing (`age-from-queue`)
+
+Spec 2.2's 100 ms counts from when a frame was queued, not from when it was
+loaded (the user's ruling, 2026-10-15). On the bench `88566aee` delivered a
+frame 188 ms after it was queued: it had waited ~88 ms behind a frame of its
+own identifier (the same-id hold), then got a fresh 100 ms in the transmit
+buffer (step 4 item 4, run 7). The case sends one identifier at 50/s with
+nothing acknowledging. For each frame it records when it was handed in, when
+the chip first held it in a transmit buffer (polled each 250 us step), and
+its outcome in the chip's wire record. Then the charger comes back for
+15 more frames.
+- **Populations first:** at least one frame loaded fresh, one loaded after
+  waiting at least 20 ms, and at least 10 delivered after the return.
+- **Every outcome by queue time + 100 ms**, plus 2 ms for the whole-ms stamp
+  and the attempt in flight. A frame loaded late included.
+- **A frame loaded fresh still gets its whole 100 ms.**
+- **Nothing older than 100 ms since queued is delivered after the return.**
+
+The can-fails run the same two predicates on run 7's per-stage numbers
+(188 ms) and on a fresh frame cut short (12 ms), and both are refused. The
+case was also run against the per-stage product (`2a56b90`), where it fails.
+
 ## Bus-off on the charger port
 
 Added 2026-10-04, completing spec 9.1's bus-off coverage -- the TWAI side

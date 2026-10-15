@@ -51,6 +51,13 @@ struct Rig {
     hostclock::attach(&chip, CS_PIN);
     spi.attach(&chip);
     port.begin(500000);
+    // send() stamps a frame with the last service() tick, and spec 2.2
+    // counts its 100 ms from that stamp (6bcefad7212c2746). begin()'s
+    // waits leave the chip clock ~10 ms past a tick that has never run,
+    // so a frame queued before any service() pass would start its 100 ms
+    // ~10 ms early. One pass first, as the bridge loop makes one before
+    // anything is queued (reviewer's ruling, 2026-10-15).
+    port.service(chip.millis());
   }
   ~Rig() { hostclock::detach(); }
 
@@ -86,6 +93,27 @@ int main() {
     check(r.chip.delivered() == 1, "and the chip delivers it");
     check(r.port.txFailed() == 0, "with no failure counted");
     check(r.port.txAged() == 0, "and nothing aged out");
+  }
+
+  // --- the rig: a case's first frame is stamped with the chip clock ----
+  //
+  // The check for the pass above. Without it, the 99 ms cases below land
+  // past the deadline of a frame stamped ~10 ms early.
+  {
+    Rig r;
+    r.chip.setAcknowledged(false);
+    const uint64_t t0 = r.chip.micros();
+    r.port.send(0x18FFD4C0, true, kData, 8);
+    uint64_t gone = 0;
+    while (r.chip.micros() < t0 + 150000 && !gone) {
+      r.run(250);
+      if (r.port.txFailed() + r.port.txAged() > 0) gone = r.chip.micros();
+    }
+    std::printf("  --  first frame given up %.1f ms after send()\n",
+                (gone - t0) / 1000.0);
+    check(gone >= t0 + 99000,
+          "(rig) a first frame starved from send() keeps its whole 100 ms: "
+          "its stamp is the chip clock, not a tick before begin()'s waits");
   }
 
   // --- (a) a frame delivered after the abort is counted as a failure -----

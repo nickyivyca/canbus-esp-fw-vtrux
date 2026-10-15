@@ -2037,6 +2037,172 @@ void caseBoundaryOneLine() {
   assertPathsExercised();
 }
 
+// Spec 2.2 (6bcefad7212c2746; the user's ruling, 2026-10-15): a frame is
+// sent toward the charger only if it was queued at most 100 ms before, the
+// 100 ms counting from when it was QUEUED, not from when it was loaded. On
+// the bench 88566aee delivered a frame 188 ms after it was queued: it waited
+// ~88 ms behind a frame of its own identifier (the same-id hold, 2), was
+// loaded, and was then given a fresh 100 ms in the transmit buffer (step 4
+// item 4, run 7).
+//
+// One identifier at 50/s with nothing acknowledging, so each frame after
+// the first waits in the driver's queue until the buffer ahead of it frees.
+// Per frame: when the vehicle side handed it in, when the chip first held
+// it in a transmit buffer, and its outcome on the wire (the chip's own
+// record). Every outcome must come by queue time + 100 ms; a frame loaded
+// fresh must still get its whole 100 ms. Then the charger comes back, and
+// nothing older than 100 ms since queued may be delivered.
+const uint32_t AGE_ID = 0x18FFAA01;     // no section 4 override touches it
+const uint64_t AGE_US = 100000;
+// The board stamps a frame with its last service tick (whole ms), and an
+// abort takes effect once the attempt in flight ends (p16 s3.6 note 1,
+// ~0.3 ms at 500 kbit/s): 2 ms covers both and one 250 us step.
+const uint64_t AGE_SLACK_US = 2000;
+
+struct AgeFrame {
+  uint64_t queued = 0, loaded = 0, ended = 0;
+  bool was_loaded = false, ended_seen = false, delivered = false;
+};
+
+// The outcome bound, as one predicate so the can-fails exercise it.
+bool endsWithinAgeOut(uint64_t queued, uint64_t ended) {
+  return ended - queued <= AGE_US + AGE_SLACK_US;
+}
+// ...and the other side: a frame abandoned well before 100 ms since queued
+// lost time it was owed (the 1-tick stamp is the only allowance).
+bool keepsItsWholeAge(uint64_t queued, uint64_t ended) {
+  return ended - queued + AGE_SLACK_US >= AGE_US;
+}
+
+void stepWatchingLoads(std::map<uint8_t, AgeFrame>& m, uint32_t ms) {
+  const uint64_t until = g_chip->micros() + (uint64_t)ms * 1000;
+  while (g_chip->micros() < until) {
+    loop();
+    for (int n = 0; n < 3; n++) {
+      if (!g_chip->txLoaded(n) || g_chip->txFrameId(n) != AGE_ID) continue;
+      auto it = m.find(g_chip->txFrameByte0(n));
+      if (it != m.end() && !it->second.was_loaded) {
+        it->second.was_loaded = true;
+        it->second.loaded = g_chip->micros();
+      }
+    }
+    g_chip->advance(250);
+  }
+}
+
+void ageFrame(std::map<uint8_t, AgeFrame>& m, uint8_t seq) {
+  const uint8_t d[8] = {seq, 0xA5, 0, 0, 0, 0, 0, 0};
+  m[seq].queued = g_chip->micros();
+  fake().deliver(AGE_ID, true, d, 8);
+}
+
+void caseAgeFromQueue() {
+  boot();
+  feed(5);
+  std::map<uint8_t, AgeFrame> m;
+  const size_t wire0 = g_chip->wire().size();
+
+  // --- silent: 30 frames at 50/s, nothing acknowledging ----------------
+  g_chip->setAcknowledged(false);
+  uint8_t seq = 1;
+  for (; seq <= 30; seq++) {
+    ageFrame(m, seq);
+    stepWatchingLoads(m, 20);
+  }
+  stepWatchingLoads(m, 5);
+  const uint8_t last_silent = (uint8_t)(seq - 1);
+  // --- the charger returns: 15 more at 50/s, then let them settle ------
+  const uint64_t back_us = g_chip->micros();
+  g_chip->setAcknowledged(true);
+  for (; seq <= 45; seq++) {
+    ageFrame(m, seq);
+    stepWatchingLoads(m, 20);
+  }
+  stepWatchingLoads(m, 200);
+
+  const std::vector<mcpfake::WireEvent>& w = g_chip->wire();
+  for (size_t i = wire0; i < w.size(); i++) {
+    if (w[i].frame.id != AGE_ID) continue;
+    auto it = m.find(w[i].frame.data[0]);
+    if (it == m.end() || it->second.ended_seen) continue;
+    it->second.ended_seen = true;
+    it->second.ended = w[i].t_us;
+    it->second.delivered = w[i].delivered;
+  }
+
+  int fresh = 0, late = 0, ended_silent = 0, over = 0, short_fresh = 0;
+  int delivered_after = 0, delivered_old = 0;
+  uint64_t worst = 0, worst_late_wait = 0;
+  for (auto& kv : m) {
+    const AgeFrame& a = kv.second;
+    if (!a.ended_seen) continue;
+    const uint64_t age = a.ended - a.queued;
+    if (age > worst) worst = age;
+    if (!endsWithinAgeOut(a.queued, a.ended)) {
+      over++;
+      std::printf("  --  seq %u: queued %.1f ms, loaded %+.1f ms after, "
+                  "%s %.1f ms after it was queued\n", kv.first,
+                  a.queued / 1000.0,
+                  a.was_loaded ? (a.loaded - a.queued) / 1000.0 : -1.0,
+                  a.delivered ? "DELIVERED" : "abandoned", age / 1000.0);
+    }
+    if (kv.first > last_silent || a.delivered) {
+      if (a.delivered && a.ended >= back_us) {
+        delivered_after++;
+        if (!endsWithinAgeOut(a.queued, a.ended)) delivered_old++;
+      }
+      continue;
+    }
+    if (!a.was_loaded) continue;
+    ended_silent++;
+    const uint64_t wait = a.loaded - a.queued;
+    if (wait <= 2000) {
+      fresh++;
+      if (!keepsItsWholeAge(a.queued, a.ended)) {
+        short_fresh++;
+        std::printf("  --  seq %u loaded fresh, abandoned only %.1f ms "
+                    "after it was queued\n", kv.first, age / 1000.0);
+      }
+    } else if (wait >= 20000) {
+      late++;
+      if (wait > worst_late_wait) worst_late_wait = wait;
+    }
+  }
+  std::printf("  --  silent phase: %d frames loaded and abandoned, %d "
+              "loaded fresh, %d after waiting >= 20 ms in the queue (longest "
+              "%.1f ms); oldest outcome %.1f ms after queueing\n",
+              ended_silent, fresh, late, worst_late_wait / 1000.0,
+              worst / 1000.0);
+  std::printf("  --  after the return: %d delivered, %d of them older than "
+              "100 ms since queued\n", delivered_after, delivered_old);
+
+  // The populations first: a bound over an empty set proves nothing.
+  check(fresh >= 1, "population: at least one frame loaded into an idle "
+        "buffer at once (fresh)");
+  check(late >= 1, "population: at least one frame loaded after waiting "
+        ">= 20 ms behind its own identifier (the 88566aee run 7 shape)");
+  check(delivered_after >= 10, "population: frames delivered once the "
+        "charger acknowledges again");
+  check(over == 0,
+        "2.2: every frame's outcome (abandoned or delivered) comes by queue "
+        "time + 100 ms, including one loaded late -- not load time + 100 ms");
+  check(short_fresh == 0,
+        "2.2: a frame loaded fresh still gets its whole 100 ms");
+  check(delivered_old == 0,
+        "2.2: the returning charger receives nothing older than 100 ms "
+        "since queued");
+  // can-fails on the same predicates, with run 7's numbers: per stage, the
+  // held frame was queued at 0, loaded at 88 ms and delivered at 188 ms.
+  check(!endsWithinAgeOut(0, 188300),
+        "can-fail: the per-stage reading (188 ms since queued, each stage "
+        "under 100) is refused");
+  check(!keepsItsWholeAge(0, 12000),
+        "can-fail: a fresh frame abandoned 12 ms after queueing is refused");
+  check(endsWithinAgeOut(0, 100400) && keepsItsWholeAge(0, 99000),
+        "...and a frame abandoned at 99-100.4 ms since queued is accepted");
+  assertPathsExercised();
+}
+
 struct Case {
   const char* name;
   void (*fn)();
@@ -2067,6 +2233,7 @@ const Case kCases[] = {
     {"listen-only-revert", caseListenOnlyRevert},
     {"diag-listen-only", caseDiagListenOnly},
     {"boundary-one-line", caseBoundaryOneLine},
+    {"age-from-queue", caseAgeFromQueue},
 };
 
 }  // namespace
