@@ -699,6 +699,150 @@ def check_not_rollback_rehearsal(path):
                     "rollback-rehearsal image" if flt else ""))
 
 
+RT_TOKEN = re.compile(r"_rt(?=_|$)")
+RESTART_TEST_MARKERS = (b"/gi_quiesce", b'{"build":"restart-test"', b"expected ?crash=illegal|abort")
+RESTART_TEST_SYMS = ("gi_restart_test_register", "gi_restart_test_pre_install", "gi_restart_record_get")
+
+
+def check_no_restart_test(path):
+    """This image must NOT be the restart test build (GI_TEST_RESTART_QUIESCE).
+
+    ADDED 2026-10-13 (spec 12.3 item 3, the refusal row for a test-only switch).
+    The test build adds GET/POST /gi_quiesce: the restart record, and a crash
+    trigger that panics the device 300 ms after a POST. That is what spec 12.4's
+    "no error frames at a restart" needs on the bench, and a remotely reachable
+    crash on a truck. The quiesce itself is in both builds; only the record and
+    the trigger are test-only.
+
+    The markers were picked by comparing images of 42a860d built with and without
+    the switch, both from a clean tree (the test image's filename is the same as
+    the default's, `wican-fw_obd_42a860d_man.bin`, so only content separates
+    them). Image: the URI, the record's JSON head, and the crash-argument error
+    text. ELF: three non-static functions, the shape the instrument table's M5
+    note asks for -- a static that the compiler can inline away would claim
+    coverage it does not have.
+    """
+    try:
+        img = open(path, "rb").read()
+    except OSError as e:
+        row("no restart test feature in the image", None,
+            "cannot read %s (%s)" % (os.path.basename(path), e), ref_missing=True)
+        return
+    hits = [m.decode("latin-1") for m in RESTART_TEST_MARKERS if m in img]
+    row("no restart test feature in the image", not hits,
+        "image carries %s -- built with GI_TEST_RESTART_QUIESCE (a crash trigger "
+        "on /gi_quiesce); never flash this to the truck" % ", ".join(repr(h) for h in hits)
+        if hits else "none of the %d restart-test markers are in the image"
+        % len(RESTART_TEST_MARKERS))
+
+    # The name, from a3394ca on: CMake appends "_rt" to the project name of a
+    # test build. A whole "_"-delimited token anywhere, as the _flt row reads it.
+    d = app_desc(path)
+    if d is None:
+        row("project name is not a restart test build", None,
+            "no app descriptor to read the project name from", ref_missing=True)
+    else:
+        rt = RT_TOKEN.search(d[1]) is not None
+        row("project name is not a restart test build", not rt,
+            "project_name=%r%s" % (d[1], "  <-- the _rt suffix marks a restart test build" if rt else ""))
+
+    elf = os.path.splitext(path)[0] + ".elf"
+    if not os.path.exists(elf):
+        row("no restart test symbols in the ELF", None,
+            "no ELF beside the image, so the symbol check has no reference",
+            ref_missing=True)
+        return
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from elf_checks import find_nm
+    except ImportError as e:
+        row("no restart test symbols in the ELF", None,
+            "cannot import elf_checks.find_nm (%s)" % e, ref_missing=True)
+        return
+    exe = find_nm()
+    if exe is None:
+        row("no restart test symbols in the ELF", None,
+            "no riscv32-esp-elf-nm found, so the symbol check has no reference",
+            ref_missing=True)
+        return
+    r = subprocess.run((exe, "--defined-only", elf), capture_output=True, text=True)
+    if r.returncode != 0:
+        row("no restart test symbols in the ELF", None,
+            "nm exited %d on %s" % (r.returncode, os.path.basename(elf)), ref_missing=True)
+        return
+    defined = {ln.split()[-1] for ln in r.stdout.splitlines() if len(ln.split()) >= 3}
+    shits = [s for s in RESTART_TEST_SYMS if s in defined]
+    row("no restart test symbols in the ELF", not shits,
+        "ELF defines %s" % ", ".join(shits) if shits
+        else "none of the %d restart-test symbols are defined" % len(RESTART_TEST_SYMS))
+
+
+def check_switches_classified(build_dir=None):
+    """Spec 12.3 item 3 (added 2026-10-13, user): every build-time switch is
+    classified, and an unclassified one fails the build checks.
+
+    The CMake files come from the record of the image's own build directory
+    (build_switches.read_record); a record that cannot be read or trusted
+    fails the row rather than falling back to a list.
+
+    The scan and the table are in build_switches.py, which tests itself
+    (test_build_switches.py). These rows report its three findings separately,
+    because they mean different things: an unlisted symbol is a switch nobody
+    has decided about; a stale entry is coverage that no longer covers anything
+    (a renamed switch leaves one behind); a malformed entry is a decision with
+    no reason or no refusal row.
+    """
+    try:
+        import build_switches as BS
+    except ImportError as e:
+        row("every build-time switch classified", None,
+            "cannot import build_switches (%s)" % e, ref_missing=True)
+        return
+    try:
+        rec = BS.read_record(REPO, build_dir or os.path.join(REPO, "build"))
+    except BS.RecordError as e:
+        row("every build-time switch classified", False,
+            "the build's record of its CMake files cannot be used: %s" % e)
+        return
+    found = BS.scan(REPO, rec)
+    unlisted, stale, bad = BS.classify(found)
+    counts = {}
+    for s in found:
+        if s in BS.SWITCHES:
+            c = BS.SWITCHES[s][0]
+            counts[c] = counts.get(c, 0) + 1
+    row("every build-time switch classified", not unlisted,
+        ("UNLISTED: " + "; ".join("%s (%s)" % (s, ", ".join(found[s][:2])) for s in unlisted))
+        if unlisted else "%d symbols tested, all listed (%s)"
+        % (len(found), ", ".join("%d %s" % (n, c) for c, n in sorted(counts.items()))))
+    row("no stale switch entries", not stale,
+        "listed but no longer tested: " + ", ".join(stale) if stale
+        else "every listed switch is still tested")
+    row("switch table well-formed", not bad, "; ".join(bad) if bad
+        else "every entry has a class, a reason, and (test-only) a refusal row")
+
+
+def check_test_only_refused():
+    """Each test-only switch's refusal row is one this run actually produced.
+
+    Run AFTER the image rows. A table entry naming a row that does not exist
+    -- renamed, or never written -- would otherwise be a refusal on paper only.
+    """
+    try:
+        import build_switches as BS
+    except ImportError as e:
+        row("every test-only switch has a refusal row", None,
+            "cannot import build_switches (%s)" % e, ref_missing=True)
+        return
+    names = {r[0] for r in rows}
+    missing = sorted("%s -> %r" % (s, e[3]) for s, e in BS.SWITCHES.items()
+                     if e[0] == BS.TEST and e[3] not in names)
+    n = sum(1 for e in BS.SWITCHES.values() if e[0] == BS.TEST)
+    row("every test-only switch has a refusal row", not missing,
+        "no such row: " + "; ".join(missing) if missing
+        else "all %d test-only switches name a row this run produced" % n)
+
+
 def _count_calls(rel, needle):
     """How many times `needle(` is called in main/<rel>, comments excluded.
 
@@ -1339,10 +1483,12 @@ def main():
     check_lateness_has_a_detector()
     check_abort_reason_parity(args.dbc)
     check_private_abort_confined()
+    check_switches_classified(build_dir)
     check_image_identity(img_ver)
     if b is not None:
         check_no_instrument(b)
         check_not_rollback_rehearsal(b)
+        check_no_restart_test(b)
         check_sources_older_than_image(b)
         check_prod_record(b)
     else:
@@ -1350,8 +1496,11 @@ def main():
             "no image to inspect", ref_missing=True)
         row("no OTA fault injection in the image", None,
             "no image to inspect", ref_missing=True)
+        row("no restart test feature in the image", None,
+            "no image to inspect", ref_missing=True)
         row("prod-build record present", None,
             "no image to inspect", ref_missing=True)
+    check_test_only_refused()
 
     print()
     bad = 0
