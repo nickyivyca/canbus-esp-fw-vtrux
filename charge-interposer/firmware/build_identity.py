@@ -140,6 +140,52 @@ def name_glob(env_name):
     return "%s*_%s.bin" % (PREFIX, tag_for(env_name))
 
 
+def row_is_committable(identity):
+    """May a manifest row carrying this git identity be written?
+
+    Returns `(True, None)` or `(False, reason)`.
+
+    Spec 8.2 keeps the commit BESIDE the source digest, never instead of
+    it: "the digest answers which sources; the commit answers where to
+    find them again, and only if git_dirty is false". This is the second
+    half of that sentence enforced at the point of writing (reviewer,
+    2026-10-15).
+
+    WHY A ROW IS WORSE THAN NO ROW. On 2026-10-15 a source file was
+    edited while a six-environment build was running. Five rows landed
+    carrying `git_dirty: true` against a commit whose tree hashes to
+    neither of the two digests they named, so a custody lookup reading
+    `1700b071` off a board would have resolved it to `5df0e62` and been
+    wrong. A missing row says "look elsewhere"; a wrong row sends the
+    reader to a tree that does not contain the image. Those five and two
+    older ones were removed by hand; this stops the next set being
+    written at all.
+
+    UNKNOWN IS REFUSED AS WELL AS DIRTY (reviewer, 2026-10-15). A row
+    whose dirtiness could not be read carries the same custody risk as a
+    dirty one, and every product build here comes from a git clone, so
+    an unreadable git state is something to look at rather than record
+    past. `git_identity()` reports that as `git_error`; a reply with
+    neither `git_dirty` nor `git_error` is refused too, so a future
+    change there cannot quietly start writing unknown rows.
+
+    This does NOT touch rows already in the manifest. The 77 that carry
+    no `git_dirty` field at all predate the field and stay (reviewer,
+    2026-10-15).
+    """
+    err = identity.get("git_error")
+    if err is not None:
+        return False, "the git state could not be read (%s)" % err
+    dirty = identity.get("git_dirty")
+    if dirty is None:
+        return False, ("the git state was not reported at all, so it is "
+                       "unknown")
+    if dirty:
+        return False, ("the working tree has uncommitted changes, so no "
+                       "commit holds the sources this image was built from")
+    return True, None
+
+
 def digest_of(filename):
     """The source digest embedded in an image filename, or None.
 
