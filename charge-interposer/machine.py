@@ -1242,8 +1242,12 @@ class InterposerCore(object):
                 # trip anything. This frame itself goes to the charger
                 # unmodified (it falls through every rewrite branch below,
                 # none of which match TERMINATED), so no repeat is needed.
+                # NOT "override ended" (reviewer, 2026-10-14): this fires
+                # from any _active() state -- MONITOR, OVERRIDE, HOLD -- so
+                # it claimed an override had ended from two states with
+                # none to end. The prefix is preserved for the harness keys.
                 self._goto(t_ms, S_TERMINATED,
-                           "VCU dropped the flow bit: override ended, "
+                           "VCU dropped the flow bit: session ending, "
                            "transparent")
 
             if (mode == MODE_CHARGER and self.state == S_TERMINATED

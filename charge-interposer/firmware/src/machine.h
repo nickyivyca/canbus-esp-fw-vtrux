@@ -412,7 +412,14 @@ enum TripReason : uint8_t {
   TRIP_OVERRIDE_CAP,
 };
 
-const char* tripName(uint8_t r);
+// tripName() was here and was deleted 2026-10-14 (ruled by the reviewer).
+// The TRIP line stopped printing the reason text when TRIP joined spec 8.3's
+// shared `a= b= c=` form, which left the function with no caller: the linker
+// dropped it from every image, and nothing checked its strings, so it was a
+// third unverified home for these names. The numbers are `enum TripReason`
+// above, pinned against machine.py's TRIP_KEYS by
+// test/host_diff/check_port.py; the names are the table in
+// firmware/README.md.
 const char* eventName(uint8_t c);
 
 struct Event {

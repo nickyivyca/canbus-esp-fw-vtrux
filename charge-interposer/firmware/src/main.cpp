@@ -511,13 +511,24 @@ static void reportEvents() {
     // the old line made EVERY board scenario that trips fail, while the trip
     // itself was correct. The reason NAME is not printed at all now: a= is
     // the TripReason code, and the code-to-name table is in
-    // firmware/README.md beside the event and state tables. tripName() stays
-    // in machine.cpp as the port's mirror of machine.py's TRIP_KEYS, which
-    // is where that table is generated from and what check_port.py pins the
-    // enum against.
-    if (e.a || e.b || e.c) {
-      INTP_PRINTF(" a=%ld b=%ld c=%ld", (long)e.a, (long)e.b, (long)e.c);
-    }
+    // firmware/README.md beside the event and state tables. The numbers are
+    // enum TripReason in machine.h, pinned position for position against
+    // machine.py's TRIP_KEYS by test/host_diff/check_port.py -- which is the
+    // only check on them. machine.cpp's tripName() held the same names and
+    // was deleted on 2026-10-14 once this line stopped calling it: nothing
+    // linked it and nothing checked its strings.
+    // THE FIELDS ARE UNCONDITIONAL (reviewer, 2026-10-14, found on the
+    // bench in item 6 scenario 2). Spec 8.3's form is
+    // `[t] STATE event a= b= c=`, and this used to print them only
+    // `if (e.a || e.b || e.c)` -- so an all-zero event printed a bare name
+    // and fell out of the form. The line that found it was
+    // "[604437] TERMINATED   VCU dropped the flow bit: ...", which carries
+    // no values at all. The reference has no such rule: machine.py's Event
+    // always holds the three, defaulted to 0 (its _log signature), and
+    // fields() returns all three unconditionally -- so suppressing them
+    // here made the port's OUTPUT disagree with the reference's DATA for
+    // exactly the events that have nothing to say.
+    INTP_PRINTF(" a=%ld b=%ld c=%ld", (long)e.a, (long)e.b, (long)e.c);
     INTP_PRINTLN("");
   }
   core->clearEvents();

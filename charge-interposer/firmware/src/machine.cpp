@@ -18,25 +18,6 @@ const char* stateName(uint8_t s) {
   }
 }
 
-const char* tripName(uint8_t r) {
-  switch (r) {
-    case TRIP_NONE: return "none";
-    case TRIP_VMAX_HARD: return "vmax over hard ceiling";
-    case TRIP_CELL_OVERVOLT: return "BMS cell_overvolt";
-    case TRIP_CELL_UNDERVOLT_RETIRED: return "BMS cell_undervolt (retired)";
-    case TRIP_BMS_EPO: return "BMS EPO";
-    case TRIP_BMS_ALARM_TYPE3: return "BMS alarm TYPE3";
-    case TRIP_HVIL_OPEN: return "HVIL open";
-    case TRIP_CONTACTOR: return "contactor not in a closed state";
-    case TRIP_CHARGER_FAULT: return "charger fault";
-    case TRIP_CHG_STATE: return "charger out of state 12";
-    case TRIP_BMS_STALE: return "BMS frames stale";
-    case TRIP_CHG_STALE: return "charger frames stale";
-    case TRIP_OVERRIDE_CAP: return "override exceeded session cap";
-    default: return "?";
-  }
-}
-
 const char* eventName(uint8_t c) {
   switch (c) {
     case EV_ARMED: return "charge established";
@@ -64,7 +45,15 @@ const char* eventName(uint8_t c) {
     case EV_REPEAT: return "REPEAT: the VCU's standing page-00 command to the charger";
     case EV_REPEAT_END: return "REPEAT ended";
     case EV_FLOW_DROP:
-      return "VCU dropped the flow bit: override ended, transparent";
+      // NOT "override ended" (reviewer, 2026-10-14). It fires on
+      // `prev_flow && !vcu_flow_ && active()`, and active() is MONITOR,
+      // OVERRIDE and HOLD -- so it was claiming an override had ended from
+      // two states where there was none to end. Demonstrated from all three
+      // against the reference, not argued from the guard: the scenario that
+      // found it, charger-fault-stop-flow-first, never overrode at all. The
+      // "VCU dropped the flow bit" prefix is preserved because the harness
+      // keys match on it.
+      return "VCU dropped the flow bit: session ending, transparent";
     case EV_BOOT_LOCKED:
       return "booted into a session already running: PASSTHROUGH until the next session boundary";
     case EV_PILOT_BACK:

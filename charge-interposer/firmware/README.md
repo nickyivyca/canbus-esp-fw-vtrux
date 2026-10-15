@@ -858,6 +858,42 @@ added 2026-10-05, is 3 and not 2. The table is in `machine.h` as
 `enum RepeatEnd` and in `machine.py` as the four `REPEAT_*` constants, and
 both must agree on the numbers, not merely on the order.
 
+### An event's text must be true in every state it can fire from
+
+`EV_FLOW_DROP` printed `VCU dropped the flow bit: override ended,
+transparent`. It fires on `prev_flow && !vcu_flow_ && active()`, and
+`active()` is **MONITOR, OVERRIDE and HOLD** -- so it claimed an override
+had ended from two states where there was none to end. The scenario that
+found it, `charger-fault-stop-flow-first`, never overrode at all (reviewer,
+2026-10-14, item 6 scenario 2). It now reads `VCU dropped the flow bit:
+session ending, transparent`; the `VCU dropped the flow bit` prefix is
+preserved because the harness keys match on it.
+
+**The audit this prompted, over every string in `eventName()`.** Checked by
+asking, for each, which states it can be emitted from and whether its text
+claims otherwise. Three texts name a state or a posture and are correct:
+`EV_HOLD_ENDED_BY_VCU` is guarded by `state_ == S_HOLD` and
+`EV_OVERRIDE_ENDED_BY_VCU` by `state_ == S_OVERRIDE`, so each names the
+state it actually fires from; `EV_HANDLE_PULL` fires from all three
+`active()` states but claims only its destination, TERMINATED, which is
+transparent from each of them. `EV_BOOT_LOCKED` claims `PASSTHROUGH until
+the next session boundary` and can fire only in PASSTHROUGH, because
+`_maybe_arm` is gated on `pilot_seen` -- spec 3 (A3), a deliberate ordering
+whose comment records the bug that forced it, where arming before the first
+pilot value left the core in MONITOR. `EV_RELEASE` describes HOLD's
+behaviour and is reached only from OVERRIDE. The rest -- `EV_ARMED`,
+`EV_VCU_CHARGE_AGAIN`, `EV_SESSION_OVER`, the three `EV_WAIT_*`, the two
+`EV_ACCEPT_*`, `EV_OVERRIDE`, `EV_TOP_OF_CHARGE`, `EV_TRIP`, `EV_REPEAT`,
+`EV_REPEAT_END`, `EV_PILOT_BACK`, `EV_CHG_SILENCE` and `EV_VEHICLE_MODE` --
+describe an input, a decision or a field and name no state.
+
+**One thing left for the reviewer rather than changed.**
+`EV_OVERRIDE_ENDED_BY_VCU` ends with `transparent` and goes to **MONITOR**,
+which forwards unmodified but is armed: it can trip, and the next Low Power
+can override again. That is a claim about the destination, not about where
+the event fires from, so it is not the defect above -- but `transparent`
+reads as a posture and MONITOR's posture is armed.
+
 ### Why it tripped -- the `a` field of `TRIP`
 
 `TRIP` is spec 8.3's ordinary `event a= b= c=` line, so the reason is the
@@ -897,13 +933,16 @@ reading a pre-B-7a log.
 **What is pinned here and what is not.** The NUMBERS are `enum TripReason`
 in `machine.h`, matched position for position against `machine.py`'s
 `TRIP_KEYS` by `test/host_diff/check_port.py` -- that check is what stops
-this table's codes and the wire drifting apart, and it is the only one.
-The STRINGS in `machine.cpp`'s `tripName()` are pinned by nothing. Since the
-`TRIP` line stopped printing them nothing calls the function either, so the
-linker drops it: searching the images built at `91b360b2b0ef` for
-`contactor not in a closed state` finds it in none of them. It is
-source-only reference material now, and a third place for these names to
-live after this table and `TRIP_KEYS`.
+this table's codes and the wire drifting apart, and it is the only one. The
+NAMES in this table are pinned by nothing, so they are documentation and
+must be read as such.
+
+`machine.cpp` used to carry the same names a third time, in `tripName()`.
+Once the `TRIP` line stopped printing them nothing called it, nothing linked
+it -- the strings were absent from every image at `91b360b2b0ef` -- and no
+check ever covered it, so it was deleted on 2026-10-14. Two homes for these
+names is the intended number: the numbering in the enum, which is checked,
+and the prose here, which is not.
 
 ## Charger-segment transmit behaviour (spec 2.2)
 
@@ -1126,6 +1165,23 @@ during a flash erase -- is ~45 frames at 2250 fps.
 cannot forward what it filtered, and we do not yet know the full set of IDs the
 Bel actually cares about.
 
+### Every event line carries `a= b= c=`, zeros included
+
+Spec 8.3's event line is `[t] STATE event a= b= c=`. Until 2026-10-14
+`reportEvents()` printed the three fields only `if (e.a || e.b || e.c)`, so
+an event with nothing to report printed a bare name and fell out of the
+form -- the line that found it was
+`[604437] TERMINATED   VCU dropped the flow bit: ...`, with no fields at all
+(found on the bench, item 6 scenario 2).
+
+The reference has no such rule and never did: `machine.py`'s `_log` defaults
+`a`, `b` and `c` to 0 and `Event.fields()` returns all three
+unconditionally. So the suppression made the port's OUTPUT disagree with the
+reference's DATA for exactly those events that have nothing to say, which is
+also why nothing caught it -- `event_stream.py` compares the three numbers
+against `host_runner --events`, and both sides had them; only the printed
+line dropped them.
+
 ### An edge must not live in a buffer someone else empties
 
 Spec 6.1's session boundary resets the session on **every** frame that shows
@@ -1138,11 +1194,28 @@ always empty when the question was asked. **It answered "no" every time and
 the board printed `session over a=2` twenty times, ~50 ms apart** (found on
 the bench, step 4 item 2, 2026-10-14).
 
-**The reference never empties its buffer, and that is where the defect
-hid.** `machine.py` collapsed correctly, the two cores agreed on every whole
-trace, and neither the differential nor the events gate could see a thing.
-The asymmetry between the cores was not in the cores at all -- it was in how
-their callers used them.
+**Why the differential could not see it, corrected 2026-10-14.** The first
+account of this said the reference never empties its buffer, so `machine.py`
+collapsed correctly and the two cores agreed. The agreement is real and the
+reason given for it was wrong, which matters because the wrong reason is
+reassuring and the right one is not.
+
+`test/host_diff/event_stream.py` drains the reference's log after every
+input line -- `del core.events[:]` at its line 60 -- precisely as
+`host_runner` drains `machine.cpp`'s every pass, so that the two sides are
+comparable. Measured on the pre-fix reference over a 20-frame STAND_BY
+burst: **1 line undrained, 20 lines drained.** So in the differential BOTH
+cores emitted twenty and agreed. The reference was not correct there; it was
+broken in exactly the same way, because the harness had put it in the
+board's condition.
+
+**A differential can only see asymmetry, and the draining that makes the
+comparison possible is what made this defect symmetric.** That is the thing
+worth remembering: the defect was invisible to the strongest check in the
+project not despite that check's design but because of it. `test_machine.py`
+drains neither side, which is why the reference looked correct there and why
+the unit test for this had to call `clear_events()` explicitly to say
+anything at all.
 
 So the edge is a member on both sides now (`last_boundary_valid_` /
 `_last_boundary`), set where a boundary line is logged and cleared by any
