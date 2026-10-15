@@ -22,6 +22,8 @@ Also the two other things run_scenario does differently for a real board
     acknowledges) before either; passive only on request. (vehicle_sim
     first, tried in 9aaf1e2, is refused: it left CAN1 and then CAN2 with
     nothing to acknowledge.)
+  - a board run's fault-vs-flow-drop order from the PCAN witness (device
+    clock), resolved only past the margin (witness_order_cases);
   - SerialTap holds a line that readline() returned without its newline
     (its whole-call timeout ended mid-line) until the rest arrives, so a
     line is never written as two (partial_line_case, which fails on the
@@ -216,6 +218,71 @@ def partial_line_case(R):
     return lines == want
 
 
+def witness_order_cases(R):
+    """A board run's fault-vs-flow-drop order (reviewer, 2026-10-14): from
+    the PCAN witness, resolved only when the two events are further apart
+    than the margin (20 ms, or a larger measured latency)."""
+    import protocol as P
+    fault = bytes(P.encode(P.BEL, 0x18FFD4C0, {
+        "BELINV_inverterFault": 1}, "BELINV_statusMultiplexer", 3))
+    clean = bytes(P.encode(P.BEL, 0x18FFD4C0, {}, "BELINV_statusMultiplexer",
+                           3))
+    flow1, flow0 = P.enc_master(1, P.MODE_CHARGER), P.enc_master(
+        0, P.MODE_CHARGER)
+
+    def rows(t_fault, t_drop):
+        out = [(0.0, 99.0, 0x18EFC000, flow1), (0.0, 99.1, 0x18FFD4C0, clean)]
+        if t_fault is not None:
+            out.append((0.0, t_fault, 0x18FFD4C0, fault))
+        if t_drop is not None:
+            out.append((0.0, t_drop, 0x18EFC000, flow0))
+        return out
+    o = R.witness_fault_flow_order(rows(100.000, 100.450))
+    check(o["resolved"] and o["t_flag"] < o["t_drop"]
+          and abs(o["gap_ms"] - 450.0) < 0.01,
+          "fault first, 450 ms apart: resolved, fault first -> %s" % o)
+    o = R.witness_fault_flow_order(rows(100.500, 100.000))
+    check(o["resolved"] and o["t_drop"] < o["t_flag"],
+          "flow drop first, 500 ms apart: resolved, flow first")
+    o = R.witness_fault_flow_order(rows(None, None))
+    check(o["resolved"] is None and o["t_flag"] is None and
+          o["t_drop"] is None, "neither event: nothing resolved")
+    o = R.witness_fault_flow_order(rows(100.000, 100.010))
+    check(o["resolved"] is False and o["margin_ms"] == 20.0,
+          "10 ms apart, inside the 20 ms margin: UNRESOLVED -> %s" % o)
+    o = R.witness_fault_flow_order(rows(100.000, 100.030),
+                                   latency_max_s=0.050)
+    check(o["resolved"] is False and o["margin_ms"] == 50.0,
+          "30 ms apart with a 50 ms measured latency: UNRESOLVED")
+    # through the check itself
+    intp = "[949252] SAFE         TRIP a=8 b=0 c=0\n"
+    diag = [(10.0, 0x7F4, bytes([4, 9, 5, 8, 0, 0, 0, 0])),
+            (11.0, 0x7F6, bytes(8)), (12.0, 0x7F6, bytes(8))]
+    ok, why = R._fault_or_flow_first(intp, "", "", diag, False,
+                                     R.witness_fault_flow_order(
+                                         rows(100.000, 100.010)))
+    check(not ok and "order UNRESOLVED" in why and "gap 10.0 ms" in why,
+          "the check FAILS an unresolved pair with its reason, never "
+          "picking -> %s" % why)
+    ok, why = R._fault_or_flow_first(intp, "", "", diag, False,
+                                     R.witness_fault_flow_order(
+                                         rows(100.000, 100.450)))
+    check(ok and "gap 450.0 ms" in why and "witness" in why,
+          "a resolved trip-first pair passes, printing the gap -> %s" % why)
+    ok, why = R._fault_or_flow_first(intp, "", "", diag, False,
+                                     R.witness_fault_flow_order(
+                                         rows(100.500, 100.000)))
+    check(not ok and "flow drop reached it first" in why,
+          "a trip when the witness saw the flow drop first FAILS -> %s" % why)
+    ok, why = R._fault_or_flow_first(intp, "", "", diag, False,
+                                     (100000.0, 100450.0))
+    check(ok and "gap 450.0 ms" in why,
+          "the trace's order prints its gap too -> %s" % why)
+    import diag_cadence as DC
+    check(DC.VCU_PAGE00_ID == P.CMD_ID == 0x18EFC000,
+          "the witness logs the VCU's page 00 under protocol's own id")
+
+
 def main():
     print("a board that honours the reset")
     b = Board()
@@ -324,6 +391,7 @@ def main():
          "PCAN_USBBUS1", "--diag-witness-mode", "passive"])
     check(a.diag_witness_mode == "passive", "...passive only on request")
     partial_line_case(R)
+    witness_order_cases(R)
 
     print("\nboard_reset_test: %s" % ("all checks OK" if not FAILS else
                                      "%d FAILED" % len(FAILS)))

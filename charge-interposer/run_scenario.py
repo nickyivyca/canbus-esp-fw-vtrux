@@ -1890,6 +1890,11 @@ def run_one(sc, args, outdir):
                 hold = hold_series_from_trace(trace_path)
             l1 = check_flight_core(trace_path,
                                    keep=getattr(args, "keep_traces", False))
+    if (args.external_interposer and witness is not None and not witness.error
+            and any(k == "fault_or_flow_first" for k, _v in sc.expect)):
+        import diag_cadence
+        order = witness_fault_flow_order(
+            diag_cadence.read_witness(str(witness_path)))
     return evaluate(sc, veh_log, chg_log, int_log, timed_out, l1, inv,
                     order=order, hold=hold, diag82=diag82, reset=reset,
                     acker_first=acker_first)
@@ -2631,6 +2636,47 @@ def fault_and_drop_order(trace_path):
     return (t_flag, t_drop)
 
 
+# A board run's order, from the PCAN witness on its device clock (reviewer,
+# 2026-10-14). The witness sees the charger's fault frame only after the
+# board has forwarded it; the board had it on CAN2 one bridge latency
+# earlier. So a VCU flow-0 frame inside that window can read in the opposite
+# order on CAN1 from the order the core saw: the order is RESOLVED only when
+# the two are further apart than ORDER_MARGIN_S, or the run's own measured
+# charger-to-vehicle latency max when that is larger. run_scenario does not
+# measure that latency (no CAN2 witness on a device clock), so the margin
+# here is ORDER_MARGIN_S unless a caller passes one.
+ORDER_MARGIN_S = 0.020
+
+
+def witness_fault_flow_order(rows, latency_max_s=None):
+    """rows: diag_cadence.read_witness() -- (host, device s, id, data).
+    -> dict(t_flag, t_drop: ms on the PCAN's device clock or None; gap_ms;
+    margin_ms; resolved: True / False, None when an event is missing)."""
+    import protocol as P
+    t_flag = t_drop = None
+    flow_seen = False
+    for _h, dev, fid, data in sorted(rows, key=lambda r: r[1]):
+        if (fid == 0x18FFD4C0 and t_flag is None and data
+                and data[0] == 3):
+            d = P.decode(P.BEL, 0x18FFD4C0, data)
+            if any(d.get(n) for n in FAULT_FLAGS):
+                t_flag = dev * 1000.0
+        elif fid == 0x18EFC000 and len(data) >= 3 and data[0] == 0x00:
+            flow, _mode = P.dec_master(data)
+            if flow:
+                flow_seen = True
+            elif flow_seen and t_drop is None:
+                t_drop = dev * 1000.0
+        if t_flag is not None and t_drop is not None:
+            break
+    margin = max(ORDER_MARGIN_S, latency_max_s or 0.0) * 1000.0
+    gap = (None if t_flag is None or t_drop is None
+           else abs(t_drop - t_flag))
+    return dict(t_flag=t_flag, t_drop=t_drop, gap_ms=gap, margin_ms=margin,
+                resolved=None if gap is None else gap > margin,
+                source="the PCAN witness (CAN1, device clock)")
+
+
 FAULT_FLAGS = ("BELINV_inverterFault", "BELINV_buckBoostFault",
                "BELINV_hvBatteryOverVoltage", "BELINV_overTemperature")
 
@@ -2675,10 +2721,29 @@ def _fault_or_flow_first(intp, veh, chg, diag, override, order):
         return (False, "the input order is unknown: no flight trace (a "
                        "board run, or the trace was not written), so which "
                        "input reached the core first cannot be judged")
-    t_flag, t_drop = order
-    seen = "core saw the fault flag at %s, the flow drop at %s" % (
-        "-" if t_flag is None else "%.3f s" % (t_flag / 1000.0),
-        "-" if t_drop is None else "%.3f s" % (t_drop / 1000.0))
+    if isinstance(order, dict):
+        # a board run: the witness's order, resolved only past the margin
+        t_flag, t_drop = order["t_flag"], order["t_drop"]
+        gap_txt = ("gap %.1f ms, margin %.1f ms, %s"
+                   % (order["gap_ms"], order["margin_ms"], order["source"])
+                   if order["gap_ms"] is not None else
+                   "no gap: %s missing on %s" % (
+                       "the fault frame" if t_flag is None else "the flow drop",
+                       order["source"]))
+        if order["resolved"] is False:
+            return (False, "order UNRESOLVED (%s): the two are closer than "
+                           "the bridge can be trusted to keep, so no order "
+                           "is picked" % gap_txt)
+        who = "the witness saw"
+    else:
+        t_flag, t_drop = order
+        gap_txt = ("gap %.1f ms, the core's own trace" % abs(t_drop - t_flag)
+                   if t_flag is not None and t_drop is not None
+                   else "no gap: an event missing from the trace")
+        who = "core saw"
+    seen = "%s the fault flag at %s, the flow drop at %s; %s" % (
+        who, "-" if t_flag is None else "%.3f s" % (t_flag / 1000.0),
+        "-" if t_drop is None else "%.3f s" % (t_drop / 1000.0), gap_txt)
     if first == "trip":
         if t_flag is None or (t_drop is not None and t_drop < t_flag):
             return (False, "the core tripped on the fault first, but the "

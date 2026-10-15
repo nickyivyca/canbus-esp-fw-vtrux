@@ -140,6 +140,13 @@ def state_of(db, data):
 
 # --- capture ---------------------------------------------------------------
 
+# The VCU's page 00 (protocol.CMD_ID), logged by the witness too: its flow
+# bit's fall, seen on CAN1 on the PCAN's clock, is the flow drop's time for
+# a board run's fault-vs-flow-drop order (run_scenario.witness_fault_flow_
+# order; reviewer, 2026-10-14). A board writes no flight trace.
+VCU_PAGE00_ID = 0x18EFC000
+
+
 def witness_bus_state(acks):
     """The PCAN witness's bus state: ACTIVE (it acknowledges) or PASSIVE.
     On the bench nothing else acknowledges on the vehicle segment while the
@@ -151,7 +158,8 @@ def witness_bus_state(acks):
 
 class DiagWitness(object):
     """A PCAN on the vehicle segment logging every 0x7F4-0x7F7, and every
-    charger frame the board forwards (spec 2.3's mode):
+    charger frame the board forwards (spec 2.3's mode), and the VCU's page
+    00 (VCU_PAGE00_ID):
     'host<TAB>device<TAB>id<TAB>hex' per line, host = time.perf_counter()
     at recv. Drained throughout. acks=True opens it in normal mode, so it
     is the vehicle segment's acknowledger (witness_bus_state)."""
@@ -186,7 +194,9 @@ class DiagWitness(object):
             # the status frames, and the charger frames the board forwards:
             # spec 2.3's mode is read from the latter (ModeWindows)
             if m is None or not (m.arbitration_id in STATUS_IDS or (
-                    m.is_extended_id and is_charger_frame(m.arbitration_id))):
+                    m.is_extended_id and (
+                        is_charger_frame(m.arbitration_id) or
+                        m.arbitration_id == VCU_PAGE00_ID))):
                 continue
             self.fh.write("%.6f\t%.6f\t%03X\t%s\n" % (
                 host, m.timestamp, m.arbitration_id, bytes(m.data).hex()))
