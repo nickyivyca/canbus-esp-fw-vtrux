@@ -58,6 +58,10 @@ uint32_t intpBootRoundWaitUs();
 // printed bytes: this build has INTP_NO_SERIAL, so that the line reaches
 // a host is bench evidence only (E10, 59.1/min on the board clock).
 uint32_t intpDiagReports();
+// Spec 6.1 / 8.3: main.cpp's count of session-boundary LINES (implementor,
+// 5f925bd), readable across clearEvents() -- the event buffer cannot show
+// a collapse, because the board empties it every pass.
+uint32_t intpBoundaryLogs();
 
 using mcpfake::Mcp2515Fake;
 using twaifake::fake;
@@ -1988,6 +1992,51 @@ void caseDiagListenOnly() {
         "2.3: ...with nothing on the vehicle side and no transmit attempted");
 }
 
+// Spec 6.1 / 8.3 (step 4 item 2, 2026-10-14): the VCU sends a page-00
+// change as a burst of 20 frames ~50 ms apart. The boundary resets on every
+// frame, but it is ONE event line: on the board 88566aee printed "session
+// over a=2" twenty times, because the collapse read the event buffer that
+// main.cpp empties every pass. Counted by intpBoundaryLogs(), which that
+// emptying cannot reach. Judged by one predicate, so the can-fails below
+// exercise the same code.
+bool oneLinePerBoundary(uint32_t delta, uint32_t boundaries, const char* tag) {
+  std::printf("  --  %s: %u boundary line(s) for %u boundary\n", tag, delta,
+              boundaries);
+  return delta == boundaries;
+}
+
+// The VCU's page 00 (protocol.py CMD_ID / enc_master: B1 flow, B2 mode),
+// n frames 50 ms apart, the charger talking throughout so the vehicle port
+// stays normal (2.3).
+void vcuPage00(uint8_t flow, uint8_t mode, int n) {
+  const uint8_t d[8] = {0x00, flow, mode, 0, 0, 0, 0, 0};
+  for (int i = 0; i < n; i++) {
+    chargerStatus();
+    fake().deliver(0x18EFC000, true, d, 8);
+    runBridge(50);
+  }
+}
+
+void caseBoundaryOneLine() {
+  boot();
+  feed(5);
+  const uint32_t b0 = intpBoundaryLogs();
+  vcuPage00(0, 2, 20);                  // STAND_BY: the burst
+  check(oneLinePerBoundary(intpBoundaryLogs() - b0, 1,
+                           "the VCU's STAND_BY burst of 20"),
+        "6.1 / 8.3: one boundary line for a 20-frame STAND_BY burst, read "
+        "across the board's clearEvents()");
+  vcuPage00(0, 2, 40);                  // the standing command, 2 s more
+  check(oneLinePerBoundary(intpBoundaryLogs() - b0, 1,
+                           "...and 40 more STAND_BY frames after it"),
+        "6.1 / 8.3: the standing STAND_BY after the burst adds no line");
+  check(!oneLinePerBoundary(20, 1, "can-fail: a line per frame"),
+        "can-fail: a line per frame of the burst (88566aee's 20) is refused");
+  check(!oneLinePerBoundary(0, 1, "can-fail: no line"),
+        "can-fail: a boundary with no line is refused");
+  assertPathsExercised();
+}
+
 struct Case {
   const char* name;
   void (*fn)();
@@ -2017,6 +2066,7 @@ const Case kCases[] = {
     {"listen-only-switch", caseListenOnlySwitch},
     {"listen-only-revert", caseListenOnlyRevert},
     {"diag-listen-only", caseDiagListenOnly},
+    {"boundary-one-line", caseBoundaryOneLine},
 };
 
 }  // namespace

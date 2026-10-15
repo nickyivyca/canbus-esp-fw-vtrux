@@ -87,6 +87,18 @@ can-fails run on the same data: the frame-gated count (0 in listen-only, the
 report, not a printed line. That the line reaches a host is bench evidence
 only (evidence E10).
 
+### One line per session boundary (`boundary-one-line`)
+
+Spec 6.1 resets the session on every frame of the VCU's 20-frame page-00
+burst, and 8.3 logs it as one event line. On the bench `88566aee` printed
+`session over a=2` twenty times (step 4 item 2, 2026-10-14). The collapse
+read the event buffer, which main.cpp empties every pass, and no whole-trace
+comparison could see that. The case reads `intpBoundaryLogs()` (main.cpp's
+count of boundary lines, which survives `clearEvents()`; declared like
+`intpDiagReports()`). A STAND_BY burst of 20 at 50 ms must add exactly one,
+and 40 more STAND_BY frames after it must add none. Its can-fails run the
+same predicate on 20 (a line per frame) and 0, and both are rejected.
+
 ## Bus-off on the charger port
 
 Added 2026-10-04, completing spec 9.1's bus-off coverage -- the TWAI side
