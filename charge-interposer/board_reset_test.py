@@ -14,6 +14,17 @@ uptime dropping to 0 from >= 2 min. Driven here against a fake pyserial:
   - a port that never comes back, uptime that cannot discriminate, uptime
     that does not drop, and no reset sent each fail.
 
+Also the two other things run_scenario does differently for a real board
+(tester, 2026-10-14, step 4 item 2):
+
+  - the start order: vehicle_sim first and charger_sim only once its bus
+    is open (wait_for_line on vehicle_sim's "model start"), simulated runs
+    unchanged; a line that never appears, or a child that dies, is False;
+  - SerialTap holds a line that readline() returned without its newline
+    (its whole-call timeout ended mid-line) until the rest arrives, so a
+    line is never written as two (partial_line_case, which fails on the
+    SerialTap before this change).
+
 Run: python board_reset_test.py   (exit 0 = all checks passed)
 """
 
@@ -154,6 +165,55 @@ def veh(pre_min, post_min, reset_rel):
     return "\n".join(out)
 
 
+class PiecesPort(FakePort):
+    """A board whose lines readline() returns in pieces: the first comes
+    back WITHOUT its newline, as pyserial's readline does when its
+    whole-call timeout ends mid-line."""
+
+    PIECES = [b"t=10s state=MON", b"ITOR vmax=3400mV\r\n",
+              b"[10001] MONITOR      charge established a=-78 b=0 c=0\r\n",
+              b"diag st=MONITOR trip=0 fla", b"gs=0xdf txf=0 silent=0 fw=9 ",
+              b"schema=4\r\n"]
+
+    def readline(self):
+        time.sleep(0.01)
+        self.n += 1
+        return self.PIECES[self.n - 1] if self.n <= len(self.PIECES) else b""
+
+
+class PiecesModule(object):
+    def __init__(self, board):
+        self.board = board
+
+    def Serial(self, port=None, baud=None, timeout=None):
+        return PiecesPort(self.board, port, baud, timeout)
+
+
+def partial_line_case(R):
+    """Takes the module, so the same case can be run against a SerialTap
+    from before the change to show it fails there."""
+    tmp = Path(tempfile.mkdtemp(dir=str(HERE)))
+    try:
+        tap = R.SerialTap("FAKE", 115200, tmp / "i.log")
+        tap._serial_mod = PiecesModule(Board())
+        tap.start()
+        time.sleep(0.4)
+        tap.stop()
+        lines = [x for x in (tmp / "i.log").read_text().splitlines()
+                 if not x.startswith("final state")]
+        stamped = [x.split("\t", 1)[1] for x in
+                   Path(tap.stamped_path).read_text().splitlines()]
+    finally:
+        shutil.rmtree(str(tmp), ignore_errors=True)
+    want = ["t=10s state=MONITOR vmax=3400mV",
+            "[10001] MONITOR      charge established a=-78 b=0 c=0",
+            "diag st=MONITOR trip=0 flags=0xdf txf=0 silent=0 fw=9 schema=4"]
+    check(lines == want and stamped == want,
+          "a line returned in pieces is written whole, once, in both copies "
+          "-> %s" % lines)
+    return lines == want
+
+
 def main():
     print("a board that honours the reset")
     b = Board()
@@ -231,6 +291,41 @@ def main():
           all(s.board_reset_at_s is None for s in R.SCENARIOS
               if s.name != "boot-mid-session"),
           "only boot-mid-session asks for a board reset")
+
+    print("the start order and the serial lines (2026-10-14)")
+    check(R.start_order(True) == ["vehicle", "charger"],
+          "a real board: vehicle_sim first, then charger_sim, no interposer_sim")
+    check(R.start_order(False) == ["charger", "interposer", "vehicle"],
+          "simulated runs keep their order")
+    tmp = Path(tempfile.mkdtemp(dir=str(HERE)))
+    try:
+        log = tmp / "v.log"
+        log.write_text("12:00:00 veh Detecting kvaser interfaces\n")
+
+        def later():
+            time.sleep(0.3)
+            with open(log, "a") as f:
+                f.write("12:00:01 veh model start: soc=88.0% imbalance=0.30%\n")
+        threading.Thread(target=later).start()
+        t0 = time.perf_counter()
+        up = R.wait_for_line(log, R.VEHICLE_UP_RE, 5.0)
+        check(up and 0.2 < time.perf_counter() - t0 < 3.0,
+              "wait_for_line returns True once vehicle_sim's model start "
+              "appears (%.2f s)" % (time.perf_counter() - t0))
+        log2 = tmp / "v2.log"
+        log2.write_text("12:00:00 veh Detecting kvaser interfaces\n")
+        check(not R.wait_for_line(log2, R.VEHICLE_UP_RE, 0.5),
+              "...False if it never appears within the timeout")
+        t0 = time.perf_counter()
+        check(not R.wait_for_line(log2, R.VEHICLE_UP_RE, 10.0,
+                                  alive=lambda: False)
+              and time.perf_counter() - t0 < 1.0,
+              "...and False at once if vehicle_sim has died")
+        check(not R.VEHICLE_UP_RE.search("12:00:01 chg model start: x"),
+              "...and only vehicle_sim's line counts")
+    finally:
+        shutil.rmtree(str(tmp), ignore_errors=True)
+    partial_line_case(R)
 
     print("\nboard_reset_test: %s" % ("all checks OK" if not FAILS else
                                      "%d FAILED" % len(FAILS)))

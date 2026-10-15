@@ -1418,6 +1418,7 @@ class SerialTap(object):
         # thread, which owns the port. reset_host_t is when it was sent.
         self._reset_req = threading.Event()
         self.reset_host_t = None
+        self._partial = b""         # a line still arriving (see _run)
         # tests hand in a stand-in for the pyserial module
         self._serial_mod = None
 
@@ -1508,6 +1509,11 @@ class SerialTap(object):
                 try:
                     raw = ser.readline()
                 except Exception as exc:               # noqa: BLE001
+                    if self._partial:
+                        # what had arrived of the line is kept, as it was
+                        self._fh.write(self._partial.decode(
+                            "utf-8", errors="replace") + "\n")
+                        self._partial = b""
                     lost = self._mark("SERIAL LOST: %s" % exc)
                     try:
                         ser.close()
@@ -1522,6 +1528,15 @@ class SerialTap(object):
                     continue
                 if not raw:
                     continue
+                if not raw.endswith(b"\n"):
+                    # readline()'s timeout covers the whole call, so a line
+                    # still arriving when it ends comes back in pieces; it
+                    # was written as two lines (2-3 per board log, E8 and
+                    # 88566aee alike; tester, 2026-10-14). Held until its
+                    # newline, and stamped when the line is complete.
+                    self._partial += raw
+                    continue
+                raw, self._partial = self._partial + raw, b""
                 host = time.perf_counter()
                 line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
                 self._sfh.write("%.6f\t%s\n" % (host, line))
@@ -1675,6 +1690,43 @@ def _transport_args(args, side):
     return out
 
 
+# The order the processes start in (reviewer, 2026-10-14, step 4 item 2).
+# Simulated: charger_sim, interposer_sim, then vehicle_sim 1.5 s later, as
+# always. --external-interposer: vehicle_sim FIRST, and charger_sim only once
+# its bus is open. With the charger first, the real board went normal on the
+# first charger frame while nothing on the vehicle segment acknowledged yet:
+# it retried one forwarded frame ~6,700 times in 2.2 s, no status frame
+# completed, and 8.2's cadence failed on the bench, not the board. On the
+# truck the vehicle bus is up before the charger talks.
+VEHICLE_UP_RE = re.compile(r" veh model start: ")
+VEHICLE_UP_TIMEOUT_S = 30.0
+
+
+def start_order(external):
+    """-> the processes to start, in order."""
+    if external:
+        return ["vehicle", "charger"]
+    return ["charger", "interposer", "vehicle"]
+
+
+def wait_for_line(path, pattern, timeout_s, poll_s=0.05, alive=None):
+    """Block until a line matching `pattern` appears in the file at `path`
+    (a child's log), `alive()` turns False, or timeout_s passes. -> True
+    only if the line appeared."""
+    end = time.perf_counter() + timeout_s
+    while time.perf_counter() < end:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                if any(pattern.search(ln) for ln in f):
+                    return True
+        except OSError:
+            pass
+        if alive is not None and not alive():
+            return False
+        time.sleep(poll_s)
+    return False
+
+
 def run_one(sc, args, outdir):
     veh_log = outdir / ("%s.vehicle.log" % sc.name)
     chg_log = outdir / ("%s.charger.log" % sc.name)
@@ -1689,7 +1741,9 @@ def run_one(sc, args, outdir):
     reset_timer = None
     veh_start = None
     witness_path = outdir / ("%s.diag_witness.log" % sc.name)
-    try:
+    vehicle_up = None
+
+    def start_charger():
         with open(chg_log, "w") as f:
             procs.append(subprocess.Popen(
                 [PY, str(HERE / "charger_sim.py"),
@@ -1698,6 +1752,34 @@ def run_one(sc, args, outdir):
                 + _transport_args(args, "charger")
                 + ts + sc.charger, stdout=f, stderr=subprocess.STDOUT, env=env,
                 **POPEN_KW))
+
+    def start_interposer():
+        with open(int_log, "w") as f:
+            procs.append(subprocess.Popen(
+                [PY, str(HERE / "interposer_sim.py"),
+                 "--vehicle-port", str(args.vehicle_port),
+                 "--charger-port", str(args.charger_port)]
+                + ([] if args.no_l1
+                   else ["--trace-out", str(trace_path)])
+                + ts + sc.interposer, stdout=f,
+                stderr=subprocess.STDOUT, env=env, **POPEN_KW))
+
+    def start_vehicle():
+        with open(veh_log, "w") as f:
+            return subprocess.Popen(
+                [PY, str(HERE / "vehicle_sim.py"),
+                 "--port", str(args.vehicle_port),
+                 "--phys-port", str(args.phys_port),
+                 # SIMULATED seconds, and only for a human reading the
+                 # log -- the assertions below read vehicle_sim's `peaks`
+                 # line, not these rows. 60 rather than 1200 so a short
+                 # scenario still has a readable trace of itself.
+                 "--report-every", "60"]
+                + _transport_args(args, "vehicle") + ts + sc.vehicle,
+                stdout=f, stderr=subprocess.STDOUT, env=env,
+                **POPEN_KW)
+
+    try:
         if args.external_interposer:
             # The board is the interposer. Its serial output stands in for
             # interposer_sim's log, so the ev()/no_ev()/final_state()
@@ -1714,37 +1796,31 @@ def run_one(sc, args, outdir):
                     str(witness_path), channel=args.diag_witness).start()
             if sc.board_reset_at_s is not None:
                 # 0x7F7 counts uptime in whole minutes, so the reset can
-                # only be shown by it if the board has been up >= 2 min:
-                # the board runs before the vehicle side starts
+                # only be shown by it if the board has been up >= 2 min.
+                # Nothing runs during the pre-roll: no charger frames, so
+                # the board sits listen-only and silent.
                 print("   board reset scenario: %d s pre-roll so 0x7F7's "
                       "uptime reads >= 2 min before the reset"
                       % BOARD_PREROLL_S)
                 time.sleep(BOARD_PREROLL_S)
-        else:
-            with open(int_log, "w") as f:
-                procs.append(subprocess.Popen(
-                    [PY, str(HERE / "interposer_sim.py"),
-                     "--vehicle-port", str(args.vehicle_port),
-                     "--charger-port", str(args.charger_port)]
-                    + ([] if args.no_l1
-                       else ["--trace-out", str(trace_path)])
-                    + ts + sc.interposer, stdout=f,
-                    stderr=subprocess.STDOUT, env=env, **POPEN_KW))
-        time.sleep(1.5)
-        with open(veh_log, "w") as f:
-            veh = subprocess.Popen(
-                [PY, str(HERE / "vehicle_sim.py"),
-                 "--port", str(args.vehicle_port),
-                 "--phys-port", str(args.phys_port),
-                 # SIMULATED seconds, and only for a human reading the
-                 # log -- the assertions below read vehicle_sim's `peaks`
-                 # line, not these rows. 60 rather than 1200 so a short
-                 # scenario still has a readable trace of itself.
-                 "--report-every", "60"]
-                + _transport_args(args, "vehicle") + ts + sc.vehicle,
-                stdout=f, stderr=subprocess.STDOUT, env=env,
-                **POPEN_KW)
-        veh_start = time.perf_counter()
+        veh = None
+        for what in start_order(args.external_interposer):
+            if what == "charger":
+                start_charger()
+            elif what == "interposer":
+                start_interposer()
+                time.sleep(1.5)
+            else:
+                veh = start_vehicle()
+                veh_start = time.perf_counter()
+                if args.external_interposer:
+                    vehicle_up = wait_for_line(
+                        veh_log, VEHICLE_UP_RE, VEHICLE_UP_TIMEOUT_S,
+                        alive=lambda: veh.poll() is None)
+                    print("   vehicle_sim's bus open before the charger "
+                          "starts: %s (%.1f s)"
+                          % ("yes" if vehicle_up else "NO",
+                             time.perf_counter() - veh_start))
         if tap is not None and sc.board_reset_at_s is not None:
             reset_timer = threading.Timer(sc.board_reset_at_s,
                                           tap.reset_board)
@@ -1830,7 +1906,8 @@ def run_one(sc, args, outdir):
             l1 = check_flight_core(trace_path,
                                    keep=getattr(args, "keep_traces", False))
     return evaluate(sc, veh_log, chg_log, int_log, timed_out, l1, inv,
-                    order=order, hold=hold, diag82=diag82, reset=reset)
+                    order=order, hold=hold, diag82=diag82, reset=reset,
+                    vehicle_up=vehicle_up)
 
 
 VEH_ROW = re.compile(
@@ -2754,7 +2831,7 @@ def _wsl_path(p):
 
 
 def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
-             order=None, hold=None, diag82=None, reset=None):
+             order=None, hold=None, diag82=None, reset=None, vehicle_up=None):
     veh = veh_log.read_text(errors="replace")
     chg = chg_log.read_text(errors="replace")
     intp = int_log.read_text(errors="replace")
@@ -2898,6 +2975,12 @@ def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
                         "witness): %s" % diag82[1]))
     if reset is not None:
         results.append((reset[0], "the board reset happened: %s" % reset[1]))
+    if vehicle_up is not None:
+        results.append((vehicle_up, "bench premise: vehicle_sim's bus was "
+                        "open before charger_sim started (%s)" % (
+                            "yes" if vehicle_up else
+                            "NO -- the board met the charger with nothing "
+                            "on the vehicle segment acknowledging")))
 
     if "Traceback" in veh or "Traceback" in intp or "Traceback" in chg:
         results.append((False, "no simulator crashed"))
