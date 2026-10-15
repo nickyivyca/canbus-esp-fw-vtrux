@@ -1494,6 +1494,13 @@ class SerialTap(object):
         self._fh = open(self.path, "w", encoding="utf-8", errors="replace")
         self._sfh = open(self.stamped_path, "w", encoding="utf-8",
                          errors="replace")
+        # The host's wall clock against its perf_counter, once: the board's
+        # lines carry no time of day, and the checks that set them against
+        # the sims' logs (HH:MM:SS) need one (board_text_wall). In the
+        # stamped copy only: the plain one is the board's own output.
+        self._sfh.write("%.6f\t# wall=%.6f\n" % (time.perf_counter(),
+                                                 time.time()))
+        self._sfh.flush()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -1961,6 +1968,11 @@ RELEASE_VMAX_MV = 3585          # spec 5.1 (47c31278)
 # timestamped sim-only twin is REPEAT_EV_T below.
 REPEAT_EV = re.compile(r"REPEAT: [^\n]*? a=-?\d+ b=-?\d+ c=(\d+)")
 FINAL_SYNTH = re.compile(r"final state=\w+.*synth=(\d+)")
+# The board prints no exit line. Its 1 Hz diag line carries the same counter
+# (8.3, synth=), so on a board log the last one is the final count. It counts
+# since boot: a reset after a burst would undercount it, and fail short.
+BOARD_SYNTH = re.compile(r"^(?:\d\d:\d\d:\d\d )?diag st=\w+ [^\n]*?"
+                         r"\bsynth=(\d+)", re.M)
 CHG_MODE = re.compile(r"charger: mode (\w+) -> (\w+) \(setpoint ([\d.]+) A\)")
 CHG_STATE = re.compile(r"charger: state (\d+) -> (\d+) ")
 CHG_ANY = re.compile(
@@ -2057,6 +2069,39 @@ def _stamped(text):
 
 
 RELEASE_LINE = re.compile(r"\[(\w+)\] RELEASE")
+# The board's spec 8.3 form, "[uptime ms] STATE  RELEASE: ...": the state is
+# the word after the uptime (step 4 item 6, 2026-10-15: RELEASE_LINE alone
+# never matched a board line, and released_into_hold() reported "the core
+# never logged a RELEASE" over a board log that has one).
+RELEASE_LINE_BOARD = re.compile(r"\[\d+\] (\w+)\s+RELEASE\b")
+
+# SerialTap's wall-clock mark in the stamped copy.
+WALL_MARK = re.compile(r"^([\d.]+)\t# wall=([\d.]+)$")
+
+
+def board_text_wall(stamped_path, wall_minus_perf=None):
+    """The board's serial lines in the sims' 'HH:MM:SS line' form, from
+    SerialTap's stamped copy, so the checks that set the core's lines
+    against the charger's and the vehicle's logs can read a board run.
+    The offset comes from the tap's wall mark, or is given (a log recorded
+    before the mark, offset from elsewhere). None when there is neither."""
+    rows, off = [], wall_minus_perf
+    for ln in open(stamped_path, encoding="utf-8", errors="replace"):
+        ln = ln.rstrip("\n")
+        m = WALL_MARK.match(ln)
+        if m:
+            if off is None:
+                off = float(m.group(2)) - float(m.group(1))
+            continue
+        h, _, line = ln.partition("\t")
+        try:
+            rows.append((float(h), line))
+        except ValueError:
+            pass
+    if off is None:
+        return None
+    return "\n".join(time.strftime("%H:%M:%S ", time.localtime(h + off))
+                     + line for h, line in rows) + "\n"
 
 
 def _release_event(intp_text):
@@ -2065,7 +2110,7 @@ def _release_event(intp_text):
     core was in after the event: spec 5.2 (eb9b9d13) releases into HOLD;
     before HOLD existed it was TERMINATED."""
     for t, line in _stamped(intp_text):
-        m = RELEASE_LINE.search(line)
+        m = RELEASE_LINE.search(line) or RELEASE_LINE_BOARD.search(line)
         if m:
             return t, m.group(1)
     return None, None
@@ -2436,12 +2481,13 @@ def _repeat_bursts(intp_text, veh_text, frames=None, chg_text=""):
                 % (bad, frames))
 
     m = FINAL_SYNTH.search(intp_text)
-    if m is None:
+    board = BOARD_SYNTH.findall(intp_text) if m is None else []
+    if m is None and not board:
         return (False, "%d burst(s) announced, but the core printed no final "
                        "synth counter, so what it actually sent is unknown "
                        "-- which is not the same as having sent it"
                 % len(counts))
-    synth = int(m.group(1))
+    synth = int(m.group(1)) if m is not None else int(board[-1])
     want = frames * len(counts)
 
     # PREFER PER-BURST. The aggregate below cannot attribute a shortfall to
@@ -2812,7 +2858,8 @@ def _no_rewrite_after_state(diag, states):
             % (mods[0], len(mods), t0[1]))
 
 
-def _fault_or_flow_first(intp, veh, chg, diag, override, order):
+def _fault_or_flow_first(intp, veh, chg, diag, override, order,
+                         intp_wall=None):
     """-> (ok, why). See fault_or_flow_first(). `order` is
     fault_and_drop_order() of this run's flight trace."""
     first = None
@@ -2871,7 +2918,7 @@ def _fault_or_flow_first(intp, veh, chg, diag, override, order):
     why = "%s first (%s); %s" % ("trip" if first == "trip" else "flow drop",
                                  seen, whym)
     if override and first == "trip":
-        okr, whyr = _repeat_bursts(intp, veh, chg_text=chg)
+        okr, whyr = _repeat_bursts(intp_wall or intp, veh, chg_text=chg)
         if not okr:
             return (False, why + "; but spec 4.1 repeat: " + whyr)
         why += "; spec 4.1 repeat: " + whyr
@@ -2995,6 +3042,12 @@ def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
     veh = veh_log.read_text(errors="replace")
     chg = chg_log.read_text(errors="replace")
     intp = int_log.read_text(errors="replace")
+    # A board run: the checks that set the core's lines against the sims'
+    # logs read the stamped copy in their HH:MM:SS form (board_text_wall).
+    intp_wall = intp
+    stamped = Path(str(int_log) + ".stamped")
+    if stamped.exists():
+        intp_wall = board_text_wall(stamped) or intp
     diag = parse_diag_frames(veh)
 
     rows = VEH_ROW.findall(veh)
@@ -3092,11 +3145,11 @@ def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
             ok = re.search(val, chg) is not None
             results.append((ok, "charger log matches /%s/" % val))
         elif kind == "chg_released_into_hold":
-            ok, why = _released_into_hold(chg, intp)
+            ok, why = _released_into_hold(chg, intp_wall)
             results.append((ok, "the release landed in the VCU's hold: %s"
                             % why))
         elif kind == "intp_repeat_20":
-            ok, why = _repeat_bursts(intp, veh, chg_text=chg)
+            ok, why = _repeat_bursts(intp_wall, veh, chg_text=chg)
             results.append((ok, "spec 4.1 repeats: %s" % why))
         elif kind == "p3a":
             ok, why = _p3a_check()
@@ -3107,7 +3160,7 @@ def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
             results.append((ok, "diag frames: %s" % why))
         elif kind == "fault_or_flow_first":
             ok, why = _fault_or_flow_first(intp, veh, chg, diag, val,
-                                           order)
+                                           order, intp_wall=intp_wall)
             results.append((ok, "fault vs flow drop: %s" % why))
         elif kind == "diag_no_rewrite_after_release":
             ok, why = _no_rewrite_after_terminated(diag)

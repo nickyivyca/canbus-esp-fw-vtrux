@@ -206,7 +206,8 @@ def partial_line_case(R):
         lines = [x for x in (tmp / "i.log").read_text().splitlines()
                  if not x.startswith("final state")]
         stamped = [x.split("\t", 1)[1] for x in
-                   Path(tap.stamped_path).read_text().splitlines()]
+                   Path(tap.stamped_path).read_text().splitlines()
+                   if not x.split("\t", 1)[1].startswith("# wall=")]
     finally:
         shutil.rmtree(str(tmp), ignore_errors=True)
     want = ["t=10s state=MONITOR vmax=3400mV",
@@ -216,6 +217,97 @@ def partial_line_case(R):
           "a line returned in pieces is written whole, once, in both copies "
           "-> %s" % lines)
     return lines == want
+
+
+# The board's lines in the sims' HH:MM:SS form (step 4 item 6, 2026-10-15):
+# released_into_hold() and the 4.1 repeat check read the core's lines against
+# the charger's log by time of day, and a board log has none, no exit line,
+# and its own event form -- so on evap-override-high-cell-far both reported
+# "never logged a RELEASE" / "no final synth counter" over a board log that
+# had a RELEASE, "REPEAT ended a=20 b=20" and synth=20.
+BOARD_RELEASE = ("[2394385] HOLD         RELEASE: the VCU's Low Power now "
+                 "reaches the charger; the setpoint is ours a=1600 b=0 c=0")
+BOARD_REPEAT = ("[2394385] HOLD         REPEAT: the VCU's standing page-00 "
+                "command to the charger a=1 b=3 c=20")
+BOARD_ENDED = "[2395335] HOLD         REPEAT ended a=20 b=20 c=0"
+
+
+def diag_line(synth):
+    return ("diag st=HOLD trip=0 flags=0xc9 ilim=- vmax=3596 chgmax=11075 "
+            "soc=96.5 evap=1 chg=33 mod=24519 synth=%d ovf=2 txf=0 silent=0 "
+            "fw=9 schema=4" % synth)
+
+
+def wall_cases(R):
+    # the tap writes its wall mark first, in the stamped copy only
+    tmp = Path(tempfile.mkdtemp(dir=str(HERE)))
+    try:
+        tap = R.SerialTap("FAKE", 115200, tmp / "i.log")
+        tap._serial_mod = PiecesModule(Board())
+        t0 = time.time()
+        tap.start()
+        time.sleep(0.3)
+        tap.stop()
+        st = Path(tap.stamped_path).read_text().splitlines()
+        plain = (tmp / "i.log").read_text()
+        m = R.WALL_MARK.match(st[0]) if st else None
+        check(m is not None and abs(float(m.group(2)) - t0) < 1.0,
+              "the stamped copy opens with the tap's wall mark -> %r"
+              % (st[:1],))
+        check("wall=" not in plain, "...and the plain copy has none")
+        text = R.board_text_wall(tap.stamped_path)
+        check(text is not None and R.LOG_TS.match(text.splitlines()[0])
+              is not None and "charge established" in text,
+              "board_text_wall gives the board's lines in HH:MM:SS form")
+    finally:
+        shutil.rmtree(str(tmp), ignore_errors=True)
+    # the offset: mark at perf 999 = wall W, a line at perf 1001.5 -> W+2.5
+    w = time.mktime((2026, 10, 15, 1, 0, 0, 0, 0, -1))
+    tmp = Path(tempfile.mkdtemp(dir=str(HERE)))
+    try:
+        p = tmp / "s.stamped"
+        p.write_text("999.000000\t# wall=%.6f\n1001.500000\t%s\n"
+                     % (w, BOARD_RELEASE))
+        text = R.board_text_wall(p)
+        check(text.startswith("01:00:02 [2394385] HOLD"),
+              "a line 2.5 s after the mark is stamped 2.5 s after its wall "
+              "time -> %r" % text[:24])
+        p.write_text("1001.500000\t%s\n" % BOARD_RELEASE)
+        check(R.board_text_wall(p) is None,
+              "no mark and no offset given: None, not a guess")
+        check(R.board_text_wall(p, w - 999.0).startswith("01:00:02 "),
+              "...and an offset given for an older log is used")
+    finally:
+        shutil.rmtree(str(tmp), ignore_errors=True)
+    # the board's RELEASE form
+    t, state = R._release_event("01:00:02 " + BOARD_RELEASE + "\n")
+    check(t == 3602 and state == "HOLD",
+          "the board's RELEASE line is the release, in HOLD -> %s %s"
+          % (t, state))
+    check(R.RELEASE_LINE.search(BOARD_RELEASE) is None,
+          "can-fail: the sims' RELEASE_LINE alone does not match it (the "
+          "defect)")
+    check(R._release_event("01:00:03 " + BOARD_ENDED + "\n") == (None, None),
+          "...and a board line without RELEASE is not one")
+
+    # the 4.1 repeat on a board log: the last diag line is the counter
+    def board_log(final_synth, with_diag=True):
+        rows = ["01:00:01 " + diag_line(0), "01:00:02 " + BOARD_REPEAT,
+                "01:00:03 " + BOARD_ENDED]
+        if with_diag:
+            rows.append("01:00:04 " + diag_line(final_synth))
+        else:
+            rows = rows[1:]
+        return "\n".join(rows) + "\n"
+    ok, why = R._repeat_bursts(board_log(20), "")
+    check(ok, "a board burst of 20, ended a=20 b=20, synth 20: PASS -> %s"
+          % why)
+    ok, why = R._repeat_bursts(board_log(5), "")
+    check(not ok, "can-fail: the same burst with the board's synth at 5 "
+          "FAILS -> %s" % why)
+    ok, why = R._repeat_bursts(board_log(20, with_diag=False), "")
+    check(not ok and "no final synth counter" in why,
+          "can-fail: no diag line and no final line: still no counter")
 
 
 def stimulus_cases(R):
@@ -451,6 +543,7 @@ def main():
          "PCAN_USBBUS1", "--diag-witness-mode", "passive"])
     check(a.diag_witness_mode == "passive", "...passive only on request")
     partial_line_case(R)
+    wall_cases(R)
     witness_order_cases(R)
     stimulus_cases(R)
     td = R.teardown_order(True, True)
