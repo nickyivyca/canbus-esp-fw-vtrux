@@ -218,6 +218,66 @@ def partial_line_case(R):
     return lines == want
 
 
+def stimulus_cases(R):
+    """The charger stimulus premise (reviewer, 2026-10-14): a gap over
+    400 ms in the forwarded 0x18FFD4C0 inside a session is the bench's
+    (VOID) only if charger_sim's stalls cover it AND nothing was lost."""
+    def rows(gap_at=None, gap_s=0.55, state=1, drop=0):
+        """Charger status every 100 ms from device 10 s to 30 s, host =
+        device + 100; 0x7F4 every 1 s in `state`; a gap of gap_s at
+        gap_at; `drop` frames removed elsewhere (a board loss)."""
+        out, d = [], 10.0
+        while d <= 30.0:
+            if gap_at is not None and gap_at < d < gap_at + gap_s:
+                d = round(d + 0.1, 4)
+                continue
+            out.append((d + 100.0, d, 0x18FFD4C0, bytes(8)))
+            d = round(d + 0.1, 4)
+        for k in range(10, 31):
+            out.append((k + 100.0, float(k), 0x7F4,
+                        bytes([4, 9, state, 0, 0, 0, 0, 0])))
+        chg = [r for r in out if r[2] == 0x18FFD4C0]
+        for r in chg[5:5 + drop]:
+            out.remove(r)
+        return out, len(chg)
+
+    def log(sent, stalls=()):
+        lines = ["12:00:00 chg STALL %d ms wall at sim t=1s host=%.6f  gc "
+                 "collections during it gen0/1/2=(0, 0, 0)" % (ms, h)
+                 for ms, h in stalls]
+        if sent is not None:
+            lines.append("12:00:30 chg status frames sent: %d (0x18FFD4C0)"
+                         % sent)
+        return "\n".join(lines) + "\n"
+    # a 0.55 s gap from device 20.0 (host 120.0): stalls covering it
+    cover = [(90, 120.09), (90, 120.18), (90, 120.27), (90, 120.36),
+             (90, 120.45), (90, 120.54)]
+    w, n = rows(gap_at=20.0)
+    v, why = R.charger_stimulus(w, log(n, cover))
+    check(v == "VOID" and "covered by charger_sim's own stalls" in why,
+          "a stall-covered gap with nothing lost is the bench's: VOID -> %s"
+          % why)
+    v, why = R.charger_stimulus(w, log(n))
+    check(v == "FAIL" and "not the bench's" in why,
+          "the same gap with no stall to explain it: FAIL -> %s" % why)
+    w2, n2 = rows()
+    v, why = R.charger_stimulus(w2, log(n2))
+    check(v == "OK" and "largest gap in the forwarded 0x18FFD4C0 100 ms"
+          in why, "no gap over 400 ms: the premise holds -> %s" % why)
+    w3, n3 = rows(gap_at=20.0, drop=1)
+    v, why = R.charger_stimulus(w3, log(n3, cover))
+    check(v == "FAIL" and "1 lost" in why,
+          "a stall-covered gap with ONE frame missing: FAIL against the "
+          "board -> %s" % why)
+    w4, n4 = rows(gap_at=20.0, state=4)
+    v, why = R.charger_stimulus(w4, log(n4))
+    check(v == "OK", "a gap while TERMINATED is outside a session: not "
+          "judged -> %s" % why)
+    v, why = R.charger_stimulus(w, log(None, cover))
+    check(v == "FAIL" and "no loss can be ruled out" in why,
+          "no sent count in charger_sim's log: FAIL -> %s" % why)
+
+
 def witness_order_cases(R):
     """A board run's fault-vs-flow-drop order (reviewer, 2026-10-14): from
     the PCAN witness, resolved only when the two events are further apart
@@ -392,6 +452,15 @@ def main():
     check(a.diag_witness_mode == "passive", "...passive only on request")
     partial_line_case(R)
     witness_order_cases(R)
+    stimulus_cases(R)
+    td = R.teardown_order(True, True)
+    check(td == ["settle", "tap", "witness"],
+          "teardown: settle, then the tap, then the witness LAST -> %s" % td)
+    check(td.index("witness") > td.index("tap") and R.END_SETTLE_S > 0.5,
+          "...so the board's end-of-run trip (500 ms after vehicle_sim "
+          "exits) is still on the witness (the old order stopped it first)")
+    check(R.teardown_order(True, False) == ["tap"],
+          "no witness: no settle, just the tap")
 
     print("\nboard_reset_test: %s" % ("all checks OK" if not FAILS else
                                      "%d FAILED" % len(FAILS)))

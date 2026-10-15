@@ -123,8 +123,13 @@ def report_stall(dt_wall, t_sim, prev_gc):
     cur = _gc_collections()
     if dt_wall > STALL_WARN_S:
         delta = tuple(c - p for c, p in zip(cur, prev_gc))
-        log.warning("STALL %.0f ms wall at sim t=%.0fs  gc collections during "
-                    "it gen0/1/2=%s", dt_wall * 1000.0, t_sim, delta)
+        # host= is time.perf_counter() at the end of the stall: the clock
+        # run_scenario's witness stamps its frames with, so a gap in the
+        # forwarded status frames can be laid against the sim's own stalls
+        # (the charger stimulus premise, reviewer 2026-10-14)
+        log.warning("STALL %.0f ms wall at sim t=%.0fs host=%.6f  gc "
+                    "collections during it gen0/1/2=%s", dt_wall * 1000.0,
+                    t_sim, time.perf_counter(), delta)
     return cur
 
 class Charger(object):
@@ -410,12 +415,27 @@ class Charger(object):
         if any(self.faults.values()):
             # Internal fault: 15 with shutdownSource 3, then 14 once the
             # vehicle has closed the session out (the truck's own sequence).
+            # Held EVERY pass, and any dip cancelled: a mode-change dip begun
+            # in the flag's lead (the board repeating the VCU's Low Power on
+            # the flag) used to write its source 1 over the fault's 3 on every
+            # pass after the first, and the VCU never reacted (step 4 item 6,
+            # fault-during-override, 2026-10-14).
+            # A MODELLING CHOICE, NOT A MEASURED BEHAVIOUR: no capture shows a
+            # faulted Bel receiving a CHARGER <-> LOW_POWER change
+            # (fault_mode_change_sweep.txt, 557 captures with the charger on
+            # the powertrain bus: the only mode changes while faulted are
+            # STAND_BY / CHARGER -> EXPORT after the close-out, source 14 ->
+            # 0). The board's repeat of the VCU's Low Power on a trip is new
+            # with this design, so the truck has not shown it. Simulator
+            # fidelity, P4.
             if self.fault_t is None:
                 self.fault_t = t
                 self.state_before = prev_state
-                self.shutdown_source = 3
-            elif self.mode == P.MODE_STANDBY:
+            self.dip_until = None
+            if self.mode == P.MODE_STANDBY or self.shutdown_source == 14:
                 self.shutdown_source = 14
+            else:
+                self.shutdown_source = 3
             self.state = P.CHG_STATE_FAULT
             target = 0.0
         elif self.unplugged_t is not None or self.stop11_t is not None:
@@ -624,6 +644,7 @@ def main():
              "time-scale=%g)", args.pilot_duty, evse_a, args.hold_a,
              args.time_scale)
     fired = {"fault": False, "unplug": False}
+    status_sent = [0]
     try:
         while True:
             now = time.time()
@@ -709,6 +730,8 @@ def main():
                 for fid, data in c.frames().items():
                     b.send(can.Message(arbitration_id=fid, is_extended_id=True,
                                        data=data))
+                    if fid == 0x18FFD4C0:
+                        status_sent[0] += 1
                 next_fast += 0.100
                 n += 1
             if n >= MAX_CATCHUP:
@@ -729,6 +752,9 @@ def main():
     except KeyboardInterrupt:
         log.info("interrupted")
     finally:
+        # every 0x18FFD4C0 handed to the bus, for the stimulus premise: a
+        # gap the board did not cause loses no frame (run_scenario)
+        log.info("status frames sent: %d (0x18FFD4C0)", status_sent[0])
         b.shutdown()
         phys.shutdown()
 

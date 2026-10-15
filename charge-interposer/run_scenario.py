@@ -77,6 +77,12 @@ BOOT_LOCKED = (r"booted into a session already running: PASSTHROUGH until "
                r"the next session boundary a=\d+ ")
 
 
+# Spec 8.3 / 6: the VCU's flow drop, in the shared form. The board printed
+# it with no fields when all three were 0 (item 6, c336a7aa) and a
+# substring key passed it; now a missing field fails (reviewer, 2026-10-14).
+FLOW_DROP = r"VCU dropped the flow bit: [^\n]*? a=-?\d+ b=-?\d+ c=-?\d+"
+
+
 def trip(reason):
     """The TRIP event line for one reason: `TRIP a=<code> ` -- the space
     stops a=1 matching a=10..12."""
@@ -284,7 +290,7 @@ def fault_or_flow_first(override=False):
     Judged from the logs:
       - which came first in the core's own log: TRIP with the charger-fault
         code (a=8) or
-        "VCU dropped the flow bit";
+        FLOW_DROP (the shared form, a= b= c=);
       - that it fits the inputs as they reached the core: a TRIP needs the
         flagged mux-3 page to have arrived before the flow drop; going
         transparent needs the flow drop to have arrived first -- and nothing
@@ -1198,7 +1204,7 @@ SCENARIOS = [
         expect=[no_ev(r"LOW_POWER overridden"),
                 no_ev(r"LOW_POWER accepted"),
                 fault_or_flow_first(),
-                ev(r"VCU dropped the flow bit"),
+                ev(FLOW_DROP),
                 no_ev(r"TRIP"),
                 veh_ev(r"commanding STAND_BY"),
                 final_state("PASSTHROUGH"),
@@ -1235,7 +1241,7 @@ SCENARIOS = [
         expect=[ev(r"LOW_POWER overridden"),
                 no_ev(r"RELEASE"),
                 fault_or_flow_first(override=True),
-                ev(r"VCU dropped the flow bit"),
+                ev(FLOW_DROP),
                 no_ev(r"TRIP"),
                 veh_ev(r"commanding STAND_BY"),
                 final_state("PASSTHROUGH")]),
@@ -1712,6 +1718,23 @@ def start_order(external):
     return ["charger", "interposer", "vehicle"]
 
 
+END_SETTLE_S = 1.5        # past the 500 ms BMS staleness, with margin
+
+
+def teardown_order(have_tap, have_witness):
+    """-> what run_one stops after vehicle_sim exits, in order: a settle
+    while both still record (only when the witness runs), the tap, and the
+    witness LAST."""
+    out = []
+    if have_witness:
+        out.append("settle")
+    if have_tap:
+        out.append("tap")
+    if have_witness:
+        out.append("witness")
+    return out
+
+
 def run_one(sc, args, outdir):
     veh_log = outdir / ("%s.vehicle.log" % sc.name)
     chg_log = outdir / ("%s.charger.log" % sc.name)
@@ -1821,10 +1844,18 @@ def run_one(sc, args, outdir):
     finally:
         if reset_timer is not None:
             reset_timer.cancel()
-        if witness is not None:
-            witness.stop()
-        if tap is not None:
-            tap.stop()
+        # a board run ends with vehicle_sim exiting, and the board then trips
+        # on the BMS going quiet (500 ms): settle, then stop the tap, then the
+        # witness, so that trip's 0x7F4 is SEEN, not excused (reviewer,
+        # 2026-10-14; restart-after-standby's TRIP came 0.4 s after the
+        # witness used to stop)
+        for what in teardown_order(tap is not None, witness is not None):
+            if what == "settle":
+                time.sleep(END_SETTLE_S)
+            elif what == "tap":
+                tap.stop()
+            elif what == "witness":
+                witness.stop()
         for p in procs:
             _interrupt(p)
         deadline = time.time() + 5
@@ -1851,7 +1882,10 @@ def run_one(sc, args, outdir):
         else:
             diag82 = diag_cadence.score(
                 diag_cadence.read_witness(str(witness_path)),
-                diag_cadence.read_stamped(tap.stamped_path))
+                diag_cadence.read_stamped(tap.stamped_path),
+                # a board reset is a power-up (diag_cadence.reset_round)
+                reset_host=(tap.reset_host_t
+                            if sc.board_reset_at_s is not None else None))
     if args.external_interposer or args.no_l1:
         # Said out loud (tester, 2026-10-07): rev 1 appended nothing here,
         # so a run with the flight core unchecked printed the same PASS as
@@ -1890,6 +1924,12 @@ def run_one(sc, args, outdir):
                 hold = hold_series_from_trace(trace_path)
             l1 = check_flight_core(trace_path,
                                    keep=getattr(args, "keep_traces", False))
+    stimulus = None
+    if args.external_interposer and witness is not None and not witness.error:
+        import diag_cadence
+        stimulus = charger_stimulus(
+            diag_cadence.read_witness(str(witness_path)),
+            chg_log.read_text(errors="replace"))
     if (args.external_interposer and witness is not None and not witness.error
             and any(k == "fault_or_flow_first" for k, _v in sc.expect)):
         import diag_cadence
@@ -1897,7 +1937,7 @@ def run_one(sc, args, outdir):
             diag_cadence.read_witness(str(witness_path)))
     return evaluate(sc, veh_log, chg_log, int_log, timed_out, l1, inv,
                     order=order, hold=hold, diag82=diag82, reset=reset,
-                    acker_first=acker_first)
+                    acker_first=acker_first, stimulus=stimulus)
 
 
 VEH_ROW = re.compile(
@@ -2677,6 +2717,75 @@ def witness_fault_flow_order(rows, latency_max_s=None):
                 source="the PCAN witness (CAN1, device clock)")
 
 
+# The charger stimulus premise for a board run (reviewer, 2026-10-14). A
+# host loaded by other work starved charger_sim, its status frame went
+# quiet for > 500 ms, and the board tripped on staleness -- correctly, on a
+# stimulus the truck never gives. A gap in the forwarded 0x18FFD4C0 over
+# STIM_GAP_S inside a session is the BENCH's only if ALL hold: charger_sim's
+# own STALL lines cover it (host clock, the witness's), and nothing was
+# lost (charger_sim's sent count equals the PCAN's forwarded count). Any
+# loss, or a gap with no stall to explain it, is a FAIL against the board.
+STIM_GAP_S = 0.400
+STIM_COVER_SLACK_S = 0.150     # one 100 ms period plus jitter
+SESSION_STATES = ("MONITOR", "OVERRIDE", "HOLD")
+STALL_RE = re.compile(r"STALL (\d+) ms wall at sim t=\S+ host=([\d.]+)")
+SENT_RE = re.compile(r"status frames sent: (\d+) \(0x18FFD4C0\)")
+
+
+def charger_stimulus(witness_rows, chg_text):
+    """-> (verdict, why): verdict "OK" (no gap over STIM_GAP_S in a
+    session), "VOID" (the bench's: stall-covered, nothing lost) or "FAIL".
+    witness_rows: diag_cadence.read_witness() rows (host, device, id, data);
+    chg_text: charger_sim's log."""
+    st = sorted((r for r in witness_rows if r[2] == 0x7F4), key=lambda r: r[1])
+    chg = sorted((r for r in witness_rows if r[2] == 0x18FFD4C0),
+                 key=lambda r: r[1])
+
+    def state_at(dev):
+        last = None
+        for r in st:
+            if r[1] > dev:
+                break
+            last = r
+        return None if last is None else DIAG_STATES.get(last[3][2])
+    gaps = [(b[1] - a[1], a, b) for a, b in zip(chg, chg[1:])
+            if b[1] - a[1] > STIM_GAP_S and state_at(a[1]) in SESSION_STATES]
+    largest = max((b[1] - a[1] for a, b in zip(chg, chg[1:])), default=0.0)
+    if not gaps:
+        return ("OK", "largest gap in the forwarded 0x18FFD4C0 %.0f ms; none "
+                "over %.0f ms in a session" % (largest * 1000,
+                                               STIM_GAP_S * 1000))
+    stalls = [(float(h) - int(ms) / 1000.0, float(h))
+              for ms, h in STALL_RE.findall(chg_text)]
+    m = SENT_RE.search(chg_text)
+    sent = int(m.group(1)) if m else None
+    seen = len(chg)
+    lost = None if sent is None else sent - seen
+    uncovered = []
+    for g, a, b in gaps:
+        lo, hi = a[0], b[0]
+        cov = sum(max(0.0, min(hi, e) - max(lo, s0)) for s0, e in stalls)
+        if cov < (hi - lo) - STIM_COVER_SLACK_S:
+            uncovered.append((g, a[1], cov))
+    desc = "%d gap(s) over %.0f ms in a session, largest %.0f ms" % (
+        len(gaps), STIM_GAP_S * 1000, max(g for g, _a, _b in gaps) * 1000)
+    if lost is None:
+        return ("FAIL", "%s; charger_sim's sent count is not in its log, so "
+                "no loss can be ruled out" % desc)
+    if lost != 0:
+        return ("FAIL", "%s; charger_sim sent %d status frames and the "
+                "witness saw %d forwarded: %d lost -- against the board, "
+                "whatever the stalls show" % (desc, sent, seen, lost))
+    if uncovered:
+        g, t, cov = uncovered[0]
+        return ("FAIL", "%s; the %.0f ms gap at device %.3f s is covered by "
+                "only %.0f ms of charger_sim stalls: not the bench's"
+                % (desc, g * 1000, t, cov * 1000))
+    return ("VOID", "%s, every one covered by charger_sim's own stalls, and "
+            "nothing lost (%d sent, %d forwarded): the bench starved the "
+            "stimulus" % (desc, sent, seen))
+
+
 FAULT_FLAGS = ("BELINV_inverterFault", "BELINV_buckBoostFault",
                "BELINV_hvBatteryOverVoltage", "BELINV_overTemperature")
 
@@ -2711,7 +2820,7 @@ def _fault_or_flow_first(intp, veh, chg, diag, override, order):
         if re.search(trip("charger fault"), line):
             first = "trip"
             break
-        if "VCU dropped the flow bit" in line:
+        if re.search(FLOW_DROP, line):
             first = "flow"
             break
     if first is None:
@@ -2752,7 +2861,7 @@ def _fault_or_flow_first(intp, veh, chg, diag, override, order):
         if t_drop is None or (t_flag is not None and t_flag < t_drop):
             return (False, "the core went transparent on the flow drop, but "
                            "the fault flag reached it first (%s)" % seen)
-        rest = intp.split("VCU dropped the flow bit", 1)[1]
+        rest = intp[re.search(FLOW_DROP, intp).end():]
         if "TRIP" in rest:
             return (False, "a TRIP after going transparent on the flow drop "
                            "(%s)" % seen)
@@ -2881,7 +2990,8 @@ def _wsl_path(p):
 
 
 def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
-             order=None, hold=None, diag82=None, reset=None, acker_first=None):
+             order=None, hold=None, diag82=None, reset=None, acker_first=None,
+             stimulus=None):
     veh = veh_log.read_text(errors="replace")
     chg = chg_log.read_text(errors="replace")
     intp = int_log.read_text(errors="replace")
@@ -3025,6 +3135,12 @@ def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
                         "witness): %s" % diag82[1]))
     if reset is not None:
         results.append((reset[0], "the board reset happened: %s" % reset[1]))
+    if stimulus is not None:
+        results.append((stimulus[0] == "OK", "bench premise: the charger "
+                        "stimulus %s: %s" % (
+                            {"OK": "held", "VOID": "VOID (the bench, not the "
+                             "board)", "FAIL": "gap NOT the bench's"}[
+                                 stimulus[0]], stimulus[1])))
     if acker_first is not None:
         results.append((acker_first, "bench premise: the vehicle segment had "
                         "an acknowledger before the charger started (%s)" % (

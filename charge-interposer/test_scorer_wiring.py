@@ -23,6 +23,7 @@ Run:  py -3.14 projects/vtrux/tools/interposer/test_scorer_wiring.py
 """
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -1096,6 +1097,25 @@ def main():
     ok, why = F(intp_trip, "", "", fz_safe, False, None)
     check(not ok and "input order is unknown" in why,
           "with no flight trace the order is not guessed: FAILS -> %s" % why)
+    # the flow drop in the shared form (reviewer, 2026-10-14): c336a7aa
+    # printed it with no fields when all three were 0, and the substring
+    # key passed it
+    bare = ("10:00:00 intp [TERMINATED] VCU dropped the flow bit: override "
+            "ended, transparent\n")
+    new = ("10:00:00 intp [TERMINATED] VCU dropped the flow bit: session "
+           "ending, transparent a=0 b=0 c=0\n")
+    check(re.search(R.FLOW_DROP, bare) is None,
+          "FLOW_DROP refuses the field-less line c336a7aa printed")
+    check(re.search(R.FLOW_DROP, new) is not None,
+          "...and takes the shared form with zeros (f7451d5's text)")
+    ok, why = F(bare + "10:00:01 intp [PASSTHROUGH] session over a=2 b=0 "
+                "c=0\n", "", "", fz_term, False, drop_first)
+    check(not ok and "neither" in why,
+          "a field-less flow drop is no flow drop to the order check: "
+          "FAILS -> %s" % why)
+    ok, why = F(new, "", "", fz_term, False, drop_first)
+    check(ok and why.startswith("flow drop first"),
+          "the shared form with the new text passes -> %s" % why)
 
     # the order comes from the core's own flight trace, one clock
     import tempfile

@@ -299,8 +299,49 @@ def state_changes(serial_rows, names):
     return out
 
 
+RESET_ROUND_S = 2.0       # the round must follow a board reset within this
+
+
+def reset_round(rows, reset_host, uptime_of):
+    """A board reset in the middle of a capture (boot-mid-session's) is a
+    power-up: the first of each status id after it is spec 2.3's round, and
+    8.2's cadence restarts from there (reviewer, 2026-10-14). Anchored on the
+    BOARD's evidence, not only the host's reset time: within RESET_ROUND_S
+    of reset_host (the witness's own host clock) all four ids must arrive,
+    and the first 0x7F7 after it must show the uptime reset -- 0, from a
+    pre-reset uptime of at least 1 min (a board up under a minute reads 0
+    either way and cannot show it). rows: status frames, (host, device, id,
+    body). uptime_of(body) -> whole minutes. -> (round rows or None, why)."""
+    after = sorted((r for r in rows if r[0] >= reset_host),
+                   key=lambda r: r[1])
+    before = [r for r in rows if r[0] < reset_host and r[2] == 0x7F7]
+    # the round is the FIRST four status frames after the reset, all four
+    # ids together -- not the first of each id wherever it falls, which
+    # would borrow a missing id from the next 1 Hz burst (the can-fail
+    # caught exactly that, 2026-10-14)
+    four = [r for r in after[:4] if r[0] - reset_host <= RESET_ROUND_S]
+    first = {r[2]: r for r in four}
+    missing = sorted(set(STATUS_IDS) - set(first))
+    if missing or len(four) < 4:
+        return (None, "no power-up round of all four within %.0f s of the "
+                "reset (the first status frames after it: %s; missing %s)"
+                % (RESET_ROUND_S, " ".join("0x%03X" % r[2] for r in four)
+                   or "none", " ".join("0x%03X" % f for f in missing)
+                   or "none, but not four distinct ids"))
+    up_pre = uptime_of(before[-1][3]) if before else None
+    up_post = uptime_of(first[0x7F7][3])
+    if up_pre is None or up_pre < 1 or up_post != 0:
+        return (None, "0x7F7 uptime %s -> %s min across the reset: no uptime "
+                "reset shown, so the gap is judged as cadence"
+                % ("unseen" if up_pre is None else up_pre, up_post))
+    rnd = sorted(first.values(), key=lambda r: r[1])
+    return (rnd, "a board reset at host %.3f: the power-up round of all four "
+            "%.3f s after it, 0x7F7 uptime %d -> 0 min; the cadence restarts "
+            "from the round" % (reset_host, rnd[0][0] - reset_host, up_pre))
+
+
 def score(witness_rows, serial_rows, db=None, names=None, listen_only=True,
-          boot_in_capture=False):
+          boot_in_capture=False, reset_host=None):
     """-> (ok, why). `db` decodes 0x7F4's state; tests pass a stand-in.
     `listen_only` (spec 2.3, default): judge 8.2 inside the normal-mode
     windows only and fail a status frame outside them; False is the rule
@@ -356,6 +397,19 @@ def score(witness_rows, serial_rows, db=None, names=None, listen_only=True,
         judged = [r for r in rows if id(r) in win_of]
     else:
         judged = rows
+    if reset_host is not None:
+        rnd, why = reset_round(
+            rows, reset_host, lambda body: int(db.decode_message(
+                0x7F7, body, decode_choices=False)["intp_uptime_min"]))
+        notes.append("reset: " + why)
+        if rnd is not None:
+            # the round is 2.3's, not cadence; everything after it is a
+            # fresh span, so the gap back to the previous boot is not judged
+            drop = set(id(r) for r in rnd)
+            judged = [r for r in judged if id(r) not in drop]
+            for r in judged:
+                if r[0] >= reset_host:
+                    win_of[id(r)] = ("after reset", win_of.get(id(r)))
     spans = {}
     for r in judged:
         spans.setdefault(win_of.get(id(r)), []).append(r)
@@ -402,6 +456,16 @@ def score(witness_rows, serial_rows, db=None, names=None, listen_only=True,
     changes = [c_ for c_ in state_changes(serial_rows, names)
                if in_normal(c_[0])]
     n_listen = len(state_changes(serial_rows, names)) - len(changes)
+    # a state change whose 50 ms ran past the witness's last frame cannot be
+    # judged: the witness stops when vehicle_sim exits, and a board then
+    # trips on the BMS going quiet (restart-after-standby, item 6: the TRIP
+    # line came 0.4 s after the witness's last frame) -- not judged, counted
+    witness_end = max(r[0] for r in every)
+    n_after = sum(1 for c_ in changes if c_[0] > witness_end - IMMEDIATE_S)
+    changes = [c_ for c_ in changes if c_[0] <= witness_end - IMMEDIATE_S]
+    if n_after:
+        notes.append("%d state change(s) after the witness stopped, not "
+                     "judged" % n_after)
     late = []
     for h, old, new, line in changes:
         near = [(abs(th - h), th - h, state_of(db, r[3]))
@@ -434,5 +498,8 @@ def score(witness_rows, serial_rows, db=None, names=None, listen_only=True,
         notes.append("%d state change(s) in listen-only, not judged (no "
                      "frame may go out then)" % n_listen)
     if probs:
-        return (False, "8.2: " + "; ".join(probs))
+        # a reset the board did not show is context for the failure, not a
+        # failure of its own (board_reset_proof judges the reset)
+        ctx = [n for n in notes if n.startswith("reset: ")]
+        return (False, "8.2: " + "; ".join(probs + ctx))
     return (True, "8.2: " + "; ".join(notes))

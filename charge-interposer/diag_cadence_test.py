@@ -27,7 +27,9 @@ def check(cond, what):
 
 class FakeDb(object):
     def decode_message(self, fid, data, decode_choices=True):
-        return {"intp_state": NAMES[data[2]]}
+        # 0x7F7's uptime in byte 7 (the reset cases); state in byte 2
+        return {"intp_state": NAMES.get(data[2], NAMES[1]),
+                "intp_uptime_min": data[7]}
 
 
 def body(state):
@@ -84,6 +86,70 @@ def ev(host_t, state, text="LOW_POWER overridden a=1 b=2 c=3"):
 def run(rows, serial, **kw):
     return D.score(rows, serial, db=FakeDb(), names=set(NAMES.values()),
                    **kw)
+
+
+def reset_rows(pre_up=2, post_up=0, round_ids=None, round_after=0.328):
+    """boot-mid-session on c336a7aa (item 6, 2026-10-14): bursts every 1 s
+    from device 10 s, a board reset at host 119.006 (6 ms after the burst
+    at device 19 s), the new boot's round `round_after` s after that burst,
+    then bursts every 1 s from the round. Charger frames throughout, so
+    one normal-mode window. 0x7F7 carries the uptime in byte 7."""
+    rows = []
+
+    def host(d):
+        return d + 100.0 + 0.001
+
+    d = 9.9
+    while d <= 26.0:
+        rows.append((host(d), round(d, 4), CHG_ID, bytes(8)))
+        d += 0.1
+
+    def burst(t0, up, ids=D.STATUS_IDS):
+        for j, fid in enumerate(D.STATUS_IDS):
+            if fid not in ids:
+                continue
+            dd = t0 + j * 0.0003
+            b = bytearray(body(1))
+            if fid == 0x7F7:
+                b[7] = up
+            rows.append((host(dd), dd, fid, bytes(b)))
+    for k in range(10):
+        burst(10.0 + k, pre_up)
+    t_r = 19.0 + round_after
+    burst(t_r, post_up, round_ids or D.STATUS_IDS)
+    for k in range(1, 6):
+        burst(t_r + k, post_up)
+    return rows, 119.006
+
+
+def reset_cases():
+    """A board reset mid-capture is a power-up (reviewer, 2026-10-14): the
+    first of each id after it is 2.3's round and the cadence restarts --
+    only if the board shows it: all four within 2 s, and 0x7F7's uptime
+    reset to 0 from >= 1 min."""
+    rows, rh = reset_rows()
+    ok, why = run(rows, [], reset_host=rh)
+    check(ok and "power-up round of all four" in why and "2 -> 0" in why,
+          "boot-mid-session's shape, the reset given: PASS -> %s" % why)
+    ok, why = run(rows, [])
+    check(not ok and "gap(s) outside" in why,
+          "the same frames with NO reset known: the 0.328 s gap FAILS as "
+          "cadence -> %s" % why)
+    rows2, rh2 = reset_rows(round_ids=(0x7F4, 0x7F5, 0x7F7))
+    ok, why = run(rows2, [], reset_host=rh2)
+    check(not ok and "missing 0x7F6" in why,
+          "a round missing 0x7F6: no round, judged as cadence: FAILS -> %s"
+          % why)
+    rows3, rh3 = reset_rows(post_up=2)
+    ok, why = run(rows3, [], reset_host=rh3)
+    check(not ok and "no uptime reset shown" in why,
+          "a reset time present but the uptime continuing (2 -> 2): FAILS "
+          "-> %s" % why)
+    rows4, rh4 = reset_rows(pre_up=0, post_up=0)
+    ok, why = run(rows4, [], reset_host=rh4)
+    check(not ok and "no uptime reset shown" in why,
+          "a board up under a minute (0 -> 0) cannot show the reset: FAILS "
+          "-> %s" % why)
 
 
 def main():
@@ -150,6 +216,20 @@ def main():
     ok, why = run(base, [(line_h, "16:39:13 intp diag st=OVERRIDE trip=0")])
     check(ok and "0 state change(s)" in why,
           "a diag status line is not an event line -> %s" % why)
+    # after the witness stopped (item 6, restart-after-standby: the BMS
+    # stale TRIP came 0.4 s after the witness's last frame). The witness's
+    # last frame here is at host ~130.004 (charger frames to device 30 s).
+    end = max(r[0] for r in base)
+    ok, why = run(base, [ev(105.0, "MONITOR"), ev(line_h, "OVERRIDE"),
+                         ev(end + 0.4, "SAFE", "TRIP a=10 b=1040 c=0")])
+    check(ok and "1 state change(s) after the witness stopped, not judged"
+          in why, "a state change 0.4 s after the witness's last frame is "
+          "not judged -> %s" % why)
+    ok, why = run(base, [ev(105.0, "MONITOR"), ev(line_h, "OVERRIDE"),
+                         ev(end - 0.3, "SAFE", "TRIP a=10 b=1040 c=0")])
+    check(not ok and "OVERRIDE -> SAFE" in why,
+          "...but one 0.3 s BEFORE it, with no 0x7F4, still fails -> %s"
+          % why)
 
     print("host mapping under adapter drift")
     st2 = (lambda t: 2 if t >= 3000.0 else 1)
@@ -297,6 +377,9 @@ def main():
               "...and adds none when no witness ran")
     finally:
         shutil.rmtree(str(tmp), ignore_errors=True)
+
+    print("a board reset mid-capture (2026-10-14)")
+    reset_cases()
 
     print("\ndiag_cadence_test: %s" % ("all checks OK" if not FAILS else
                                       "%d FAILED" % len(FAILS)))
