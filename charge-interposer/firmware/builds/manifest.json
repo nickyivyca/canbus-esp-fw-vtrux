@@ -305,6 +305,28 @@
       }
     },
     {
+      "build_id_0x7F7": "c336a7aa",
+      "built_utc": "2026-10-15T01:09:16Z",
+      "elf_sha256": "c336a7aafe45af1f28dc318acfdf3bb05628a673415445080137b344bd710a02",
+      "env": "esp32-can-x2",
+      "git_commit": "5f925bdb94a542553fceda71ba72d95ce37b687f",
+      "git_dirty": false,
+      "image": "interposer_91b360b2b0ef_bridge.bin",
+      "intp_fw_ver16": 9,
+      "md5": "505a6a26c3a63435bcf63aebbcac59fe",
+      "size": 356864,
+      "src_digest": "91b360b2b0ef",
+      "tag": "bridge",
+      "toolchain": {
+        "framework-arduinoespressif32": "3.2.1",
+        "framework-arduinoespressif32-libs": "5.4.0+sha.858a988d6e",
+        "platform": "espressif32@54.03.21",
+        "tool-esptoolpy": "5.0.2",
+        "tool-mklittlefs": "3.2.0",
+        "toolchain-xtensa-esp-elf": "14.2.0+20241119"
+      }
+    },
+    {
       "build_id_0x7F7": "e205875f",
       "built_utc": "2026-10-13T14:31:48Z",
       "elf_sha256": "e205875f7f4bb03916fa8bcb03434f89daac1b79bf9099c39ef2d6fefd6bed37",
@@ -853,6 +875,28 @@
       }
     },
     {
+      "build_id_0x7F7": "616f12bd",
+      "built_utc": "2026-10-15T01:10:16Z",
+      "elf_sha256": "616f12bdee68152ecd1d910d45a8a1fdbb6ea7ec7ac1af0171281223c01fa05b",
+      "env": "diag",
+      "git_commit": "5f925bdb94a542553fceda71ba72d95ce37b687f",
+      "git_dirty": false,
+      "image": "interposer_91b360b2b0ef_diag.bin",
+      "intp_fw_ver16": 9,
+      "md5": "d06ed1a0cec41f5e6d190fcf3d3bd06d",
+      "size": 349008,
+      "src_digest": "91b360b2b0ef",
+      "tag": "diag",
+      "toolchain": {
+        "framework-arduinoespressif32": "3.2.1",
+        "framework-arduinoespressif32-libs": "5.4.0+sha.858a988d6e",
+        "platform": "espressif32@54.03.21",
+        "tool-esptoolpy": "5.0.2",
+        "tool-mklittlefs": "3.2.0",
+        "toolchain-xtensa-esp-elf": "14.2.0+20241119"
+      }
+    },
+    {
       "build_id_0x7F7": "518c3f0c",
       "built_utc": "2026-10-13T14:33:25Z",
       "elf_sha256": "518c3f0c80f69f44f947e7d4b96e6784d0350fb3dcb545d7902ec109288517db",
@@ -1379,6 +1423,28 @@
       }
     },
     {
+      "build_id_0x7F7": "a94f762e",
+      "built_utc": "2026-10-15T01:09:47Z",
+      "elf_sha256": "a94f762ed3168f00094b676363f58752d8ea13661201853bf00f085437beaaba",
+      "env": "selftest",
+      "git_commit": "5f925bdb94a542553fceda71ba72d95ce37b687f",
+      "git_dirty": false,
+      "image": "interposer_91b360b2b0ef_selftest.bin",
+      "intp_fw_ver16": 9,
+      "md5": "60053017bc44d675c241712a9a924de4",
+      "size": 348528,
+      "src_digest": "91b360b2b0ef",
+      "tag": "selftest",
+      "toolchain": {
+        "framework-arduinoespressif32": "3.2.1",
+        "framework-arduinoespressif32-libs": "5.4.0+sha.858a988d6e",
+        "platform": "espressif32@54.03.21",
+        "tool-esptoolpy": "5.0.2",
+        "tool-mklittlefs": "3.2.0",
+        "toolchain-xtensa-esp-elf": "14.2.0+20241119"
+      }
+    },
+    {
       "build_id_0x7F7": "03094f36",
       "built_utc": "2026-10-13T14:32:44Z",
       "elf_sha256": "03094f3645e524ad658677954e22d676ede737a9980ee7796ec46caf8ef5ffa5",
@@ -1894,6 +1960,28 @@
       "md5": "3a49bfa4f2530c5172965c0f8218d899",
       "size": 337520,
       "src_digest": "7624b0116e38",
+      "tag": "slcan",
+      "toolchain": {
+        "framework-arduinoespressif32": "3.2.1",
+        "framework-arduinoespressif32-libs": "5.4.0+sha.858a988d6e",
+        "platform": "espressif32@54.03.21",
+        "tool-esptoolpy": "5.0.2",
+        "tool-mklittlefs": "3.2.0",
+        "toolchain-xtensa-esp-elf": "14.2.0+20241119"
+      }
+    },
+    {
+      "build_id_0x7F7": "e52e2f78",
+      "built_utc": "2026-10-15T01:10:44Z",
+      "elf_sha256": "e52e2f7896ea49a02079002480c24e4d82406e9ffab4c1cebf0f6c12e4bbdaf3",
+      "env": "slcan",
+      "git_commit": "5f925bdb94a542553fceda71ba72d95ce37b687f",
+      "git_dirty": false,
+      "image": "interposer_91b360b2b0ef_slcan.bin",
+      "intp_fw_ver16": 9,
+      "md5": "cee1bd8ca22fdc57eb223abbef53c085",
+      "size": 337536,
+      "src_digest": "91b360b2b0ef",
       "tag": "slcan",
       "toolchain": {
         "framework-arduinoespressif32": "3.2.1",
@@ -2440,6 +2528,28 @@
       "md5": "5600ac607de9ba25ae9b991dada0b43b",
       "size": 351472,
       "src_digest": "7c32d27600b4",
+      "tag": "truck",
+      "toolchain": {
+        "framework-arduinoespressif32": "3.2.1",
+        "framework-arduinoespressif32-libs": "5.4.0+sha.858a988d6e",
+        "platform": "espressif32@54.03.21",
+        "tool-esptoolpy": "5.0.2",
+        "tool-mklittlefs": "3.2.0",
+        "toolchain-xtensa-esp-elf": "14.2.0+20241119"
+      }
+    },
+    {
+      "build_id_0x7F7": "18f76adf",
+      "built_utc": "2026-10-15T01:11:42Z",
+      "elf_sha256": "18f76adfb664f5817e6c320ec5d39446f386952b34659f30183d3def8f816da5",
+      "env": "truck",
+      "git_commit": "5f925bdb94a542553fceda71ba72d95ce37b687f",
+      "git_dirty": false,
+      "image": "interposer_91b360b2b0ef_truck.bin",
+      "intp_fw_ver16": 9,
+      "md5": "e23e6d69f57f39debb8225f5832b6147",
+      "size": 343520,
+      "src_digest": "91b360b2b0ef",
       "tag": "truck",
       "toolchain": {
         "framework-arduinoespressif32": "3.2.1",
@@ -3017,6 +3127,28 @@
         "tool-mklittlefs": "3.2.0",
         "tool-mklittlefs-4.0.0": "4.0.0",
         "tool-mkspiffs": "2.230.0",
+        "toolchain-xtensa-esp-elf": "14.2.0+20241119"
+      }
+    },
+    {
+      "build_id_0x7F7": "943c07d7",
+      "built_utc": "2026-10-15T01:11:14Z",
+      "elf_sha256": "943c07d76a0b1a07f3241725577fb1210870d96ccf9bbb7848c112decd7518a1",
+      "env": "esp32-can-x2-witness",
+      "git_commit": "5f925bdb94a542553fceda71ba72d95ce37b687f",
+      "git_dirty": false,
+      "image": "interposer_91b360b2b0ef_witness.bin",
+      "intp_fw_ver16": 9,
+      "md5": "5d6f90340a154d54e7d496a76b4d66f2",
+      "size": 359264,
+      "src_digest": "91b360b2b0ef",
+      "tag": "witness",
+      "toolchain": {
+        "framework-arduinoespressif32": "3.2.1",
+        "framework-arduinoespressif32-libs": "5.4.0+sha.858a988d6e",
+        "platform": "espressif32@54.03.21",
+        "tool-esptoolpy": "5.0.2",
+        "tool-mklittlefs": "3.2.0",
         "toolchain-xtensa-esp-elf": "14.2.0+20241119"
       }
     },
