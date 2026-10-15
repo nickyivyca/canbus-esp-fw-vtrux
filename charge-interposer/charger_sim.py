@@ -415,12 +415,27 @@ class Charger(object):
         if any(self.faults.values()):
             # Internal fault: 15 with shutdownSource 3, then 14 once the
             # vehicle has closed the session out (the truck's own sequence).
+            # Held EVERY pass, and any dip cancelled: a mode-change dip begun
+            # in the flag's lead (the board repeating the VCU's Low Power on
+            # the flag) used to write its source 1 over the fault's 3 on every
+            # pass after the first, and the VCU never reacted (step 4 item 6,
+            # fault-during-override, 2026-10-14).
+            # A MODELLING CHOICE, NOT A MEASURED BEHAVIOUR: no capture shows a
+            # faulted Bel receiving a CHARGER <-> LOW_POWER change
+            # (fault_mode_change_sweep.txt, 557 captures with the charger on
+            # the powertrain bus: the only mode changes while faulted are
+            # STAND_BY / CHARGER -> EXPORT after the close-out, source 14 ->
+            # 0). The board's repeat of the VCU's Low Power on a trip is new
+            # with this design, so the truck has not shown it. Simulator
+            # fidelity, P4.
             if self.fault_t is None:
                 self.fault_t = t
                 self.state_before = prev_state
-                self.shutdown_source = 3
-            elif self.mode == P.MODE_STANDBY:
+            self.dip_until = None
+            if self.mode == P.MODE_STANDBY or self.shutdown_source == 14:
                 self.shutdown_source = 14
+            else:
+                self.shutdown_source = 3
             self.state = P.CHG_STATE_FAULT
             target = 0.0
         elif self.unplugged_t is not None or self.stop11_t is not None:

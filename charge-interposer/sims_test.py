@@ -243,6 +243,36 @@ def fault_timing(lead):
     return t_flag, t_edge
 
 
+def fault_source_holds(repeat_low_power=True):
+    """-> the shutdownSource values reported after the fault's state edge.
+    The board trips on the flag (it leads the edge by 0.30 s) and repeats
+    the VCU's standing Low Power to the charger; that mode change inside the
+    flag's lead started charger_sim's benign mode-change dip (source 1),
+    which then overwrote the fault's source 3 for good -- the VCU never
+    reacted and fault-during-override ran to its limit (item 6, 2026-10-14).
+    """
+    c = CS.Charger()
+    c.fault_flag_lead_s = 0.3
+    c.on_command(P.enc_master(1, P.MODE_CHARGER), 0.0)
+    c.pack_v = 400.0
+    t, injected, repeated, edge, out = 0.0, False, False, False, []
+    while t < 14.0:
+        if not injected and t >= 10.0:
+            c.inject_fault("inverter", t)
+            injected = True
+        if (repeat_low_power and injected and not repeated
+                and c.fault_flags["inverter"]):
+            c.on_command(P.enc_master(1, P.MODE_LOW_POWER), t)
+            repeated = True
+        c.update(STEP, t)
+        if c.fault_t is not None:       # the fault's own state edge
+            edge = True
+        if edge:
+            out.append(c.shutdown_source)
+        t += STEP
+    return out
+
+
 def fault_flag_problems(lead=None, want_lo=0.1, want_hi=0.5):
     """Default: the flag leads the state edge by 0.1-0.5 s (16 of 19 source-3
     endings). want_lo/hi negative express the minority (flag after edge)."""
@@ -695,6 +725,12 @@ def main():
         check(False, "charger_sim: " + p)
     check(not cadence_problems(), "charger_sim rotates 0x18FFD4C0 mux 0-3, "
           "one page per 100 ms frame, none in the slow frames")
+    src = sorted(set(fault_source_holds()))
+    check(src == [3], "the fault's shutdownSource holds at 3 after the edge "
+          "even when the board repeats the VCU's Low Power inside the flag's "
+          "lead -> %s" % src)
+    check(sorted(set(fault_source_holds(repeat_low_power=False))) == [3],
+          "...and with no repeat at all")
     check(not fault_flag_problems(), "charger_sim raises the fault flag 0.1-"
           "0.5 s before the state edge by default")
     check(not fault_flag_problems(lead=-0.2, want_lo=-0.25, want_hi=-0.15),
