@@ -216,6 +216,20 @@ def main():
     ok, why = run(base, [(line_h, "16:39:13 intp diag st=OVERRIDE trip=0")])
     check(ok and "0 state change(s)" in why,
           "a diag status line is not an event line -> %s" % why)
+    # after the witness stopped (item 6, restart-after-standby: the BMS
+    # stale TRIP came 0.4 s after the witness's last frame). The witness's
+    # last frame here is at host ~130.004 (charger frames to device 30 s).
+    end = max(r[0] for r in base)
+    ok, why = run(base, [ev(105.0, "MONITOR"), ev(line_h, "OVERRIDE"),
+                         ev(end + 0.4, "SAFE", "TRIP a=10 b=1040 c=0")])
+    check(ok and "1 state change(s) after the witness stopped, not judged"
+          in why, "a state change 0.4 s after the witness's last frame is "
+          "not judged -> %s" % why)
+    ok, why = run(base, [ev(105.0, "MONITOR"), ev(line_h, "OVERRIDE"),
+                         ev(end - 0.3, "SAFE", "TRIP a=10 b=1040 c=0")])
+    check(not ok and "OVERRIDE -> SAFE" in why,
+          "...but one 0.3 s BEFORE it, with no 0x7F4, still fails -> %s"
+          % why)
 
     print("host mapping under adapter drift")
     st2 = (lambda t: 2 if t >= 3000.0 else 1)

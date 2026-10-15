@@ -456,6 +456,16 @@ def score(witness_rows, serial_rows, db=None, names=None, listen_only=True,
     changes = [c_ for c_ in state_changes(serial_rows, names)
                if in_normal(c_[0])]
     n_listen = len(state_changes(serial_rows, names)) - len(changes)
+    # a state change whose 50 ms ran past the witness's last frame cannot be
+    # judged: the witness stops when vehicle_sim exits, and a board then
+    # trips on the BMS going quiet (restart-after-standby, item 6: the TRIP
+    # line came 0.4 s after the witness's last frame) -- not judged, counted
+    witness_end = max(r[0] for r in every)
+    n_after = sum(1 for c_ in changes if c_[0] > witness_end - IMMEDIATE_S)
+    changes = [c_ for c_ in changes if c_[0] <= witness_end - IMMEDIATE_S]
+    if n_after:
+        notes.append("%d state change(s) after the witness stopped, not "
+                     "judged" % n_after)
     late = []
     for h, old, new, line in changes:
         near = [(abs(th - h), th - h, state_of(db, r[3]))
