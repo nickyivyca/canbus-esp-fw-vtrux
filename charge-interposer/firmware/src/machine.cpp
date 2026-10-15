@@ -25,7 +25,13 @@ const char* eventName(uint8_t c) {
     case EV_HOLD_ENDED_BY_VCU:
       return "VCU commanded CHARGE during the hold: hold ended, transparent";
     case EV_OVERRIDE_ENDED_BY_VCU:
-      return "VCU commanded CHARGE during the override: override ended, transparent";
+      // "armed" AND NOT "transparent" (reviewer, 2026-10-14). This goes to
+      // MONITOR, which forwards unmodified but is armed: it can trip, and
+      // the next Low Power can override again. In this core "transparent"
+      // names TERMINATED and PASSTHROUGH -- the postures that do neither --
+      // so the line must not claim it. Raised from the eventName() audit as
+      // a destination claim rather than a false origin, and ruled on.
+      return "VCU commanded CHARGE during the override: override ended, armed";
     case EV_SESSION_OVER: return "session over";
     case EV_WAIT_NO_BMS: return "LOW_POWER seen, no BMS data yet -- waiting";
     case EV_ACCEPT_EVAP_CLEAR: return "LOW_POWER accepted: evap flag clear";

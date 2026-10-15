@@ -1300,9 +1300,14 @@ class InterposerCore(object):
                 # hold except at a handle pull. The override ends at once and
                 # the next Low Power is decided afresh, behind the arm delay.
                 self.t_full_since = None
+                # "armed" and not "transparent" (reviewer, 2026-10-14):
+                # MONITOR forwards unmodified but is armed -- it can trip
+                # and the next Low Power can override again, where
+                # "transparent" in this core names TERMINATED and
+                # PASSTHROUGH.
                 self._goto(t_ms, S_MONITOR,
                            "VCU commanded CHARGE during the override: "
-                           "override ended, transparent")
+                           "override ended, armed")
             elif mode in (MODE_STANDBY, MODE_EXPORT):
                 # Spec 6.1: a session boundary, obeyed from any state. Clears
                 # SAFE -- this is the VCU's own session end.

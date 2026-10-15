@@ -887,12 +887,16 @@ behaviour and is reached only from OVERRIDE. The rest -- `EV_ARMED`,
 `EV_REPEAT_END`, `EV_PILOT_BACK`, `EV_CHG_SILENCE` and `EV_VEHICLE_MODE` --
 describe an input, a decision or a field and name no state.
 
-**One thing left for the reviewer rather than changed.**
-`EV_OVERRIDE_ENDED_BY_VCU` ends with `transparent` and goes to **MONITOR**,
+**And one the audit raised and the reviewer then ruled on.**
+`EV_OVERRIDE_ENDED_BY_VCU` ended with `transparent` and goes to **MONITOR**,
 which forwards unmodified but is armed: it can trip, and the next Low Power
-can override again. That is a claim about the destination, not about where
-the event fires from, so it is not the defect above -- but `transparent`
-reads as a posture and MONITOR's posture is armed.
+can override again. That is a claim about the destination rather than about
+where the event fires from, so it is a different fault from the flow-drop
+one above -- the text was true of no state at all there, whereas this was
+true of the frames and wrong about the posture. **Ruled (reviewer,
+2026-10-14): `transparent` in this core names TERMINATED and PASSTHROUGH,
+the postures that neither rewrite nor arm, so a line reaching MONITOR must
+not claim it.** It now reads `override ended, armed`, in both cores.
 
 ### Why it tripped -- the `a` field of `TRIP`
 
