@@ -77,6 +77,12 @@ BOOT_LOCKED = (r"booted into a session already running: PASSTHROUGH until "
                r"the next session boundary a=\d+ ")
 
 
+# Spec 8.3 / 6: the VCU's flow drop, in the shared form. The board printed
+# it with no fields when all three were 0 (item 6, c336a7aa) and a
+# substring key passed it; now a missing field fails (reviewer, 2026-10-14).
+FLOW_DROP = r"VCU dropped the flow bit: [^\n]*? a=-?\d+ b=-?\d+ c=-?\d+"
+
+
 def trip(reason):
     """The TRIP event line for one reason: `TRIP a=<code> ` -- the space
     stops a=1 matching a=10..12."""
@@ -284,7 +290,7 @@ def fault_or_flow_first(override=False):
     Judged from the logs:
       - which came first in the core's own log: TRIP with the charger-fault
         code (a=8) or
-        "VCU dropped the flow bit";
+        FLOW_DROP (the shared form, a= b= c=);
       - that it fits the inputs as they reached the core: a TRIP needs the
         flagged mux-3 page to have arrived before the flow drop; going
         transparent needs the flow drop to have arrived first -- and nothing
@@ -1198,7 +1204,7 @@ SCENARIOS = [
         expect=[no_ev(r"LOW_POWER overridden"),
                 no_ev(r"LOW_POWER accepted"),
                 fault_or_flow_first(),
-                ev(r"VCU dropped the flow bit"),
+                ev(FLOW_DROP),
                 no_ev(r"TRIP"),
                 veh_ev(r"commanding STAND_BY"),
                 final_state("PASSTHROUGH"),
@@ -1235,7 +1241,7 @@ SCENARIOS = [
         expect=[ev(r"LOW_POWER overridden"),
                 no_ev(r"RELEASE"),
                 fault_or_flow_first(override=True),
-                ev(r"VCU dropped the flow bit"),
+                ev(FLOW_DROP),
                 no_ev(r"TRIP"),
                 veh_ev(r"commanding STAND_BY"),
                 final_state("PASSTHROUGH")]),
@@ -1851,7 +1857,10 @@ def run_one(sc, args, outdir):
         else:
             diag82 = diag_cadence.score(
                 diag_cadence.read_witness(str(witness_path)),
-                diag_cadence.read_stamped(tap.stamped_path))
+                diag_cadence.read_stamped(tap.stamped_path),
+                # a board reset is a power-up (diag_cadence.reset_round)
+                reset_host=(tap.reset_host_t
+                            if sc.board_reset_at_s is not None else None))
     if args.external_interposer or args.no_l1:
         # Said out loud (tester, 2026-10-07): rev 1 appended nothing here,
         # so a run with the flight core unchecked printed the same PASS as
@@ -2711,7 +2720,7 @@ def _fault_or_flow_first(intp, veh, chg, diag, override, order):
         if re.search(trip("charger fault"), line):
             first = "trip"
             break
-        if "VCU dropped the flow bit" in line:
+        if re.search(FLOW_DROP, line):
             first = "flow"
             break
     if first is None:
@@ -2752,7 +2761,7 @@ def _fault_or_flow_first(intp, veh, chg, diag, override, order):
         if t_drop is None or (t_flag is not None and t_flag < t_drop):
             return (False, "the core went transparent on the flow drop, but "
                            "the fault flag reached it first (%s)" % seen)
-        rest = intp.split("VCU dropped the flow bit", 1)[1]
+        rest = intp[re.search(FLOW_DROP, intp).end():]
         if "TRIP" in rest:
             return (False, "a TRIP after going transparent on the flow drop "
                            "(%s)" % seen)
