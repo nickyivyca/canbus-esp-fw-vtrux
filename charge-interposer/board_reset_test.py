@@ -17,9 +17,11 @@ uptime dropping to 0 from >= 2 min. Driven here against a fake pyserial:
 Also the two other things run_scenario does differently for a real board
 (tester, 2026-10-14, step 4 item 2):
 
-  - the start order: vehicle_sim first and charger_sim only once its bus
-    is open (wait_for_line on vehicle_sim's "model start"), simulated runs
-    unchanged; a line that never appears, or a child that dies, is False;
+  - the start order and the vehicle segment's acknowledger: charger_sim
+    first, then vehicle_sim, with the PCAN witness opened ACTIVE (it
+    acknowledges) before either; passive only on request. (vehicle_sim
+    first, tried in 9aaf1e2, is refused: it left CAN1 and then CAN2 with
+    nothing to acknowledge.)
   - SerialTap holds a line that readline() returned without its newline
     (its whole-call timeout ended mid-line) until the rest arrives, so a
     line is never written as two (partial_line_case, which fails on the
@@ -292,39 +294,35 @@ def main():
               if s.name != "boot-mid-session"),
           "only boot-mid-session asks for a board reset")
 
-    print("the start order and the serial lines (2026-10-14)")
-    check(R.start_order(True) == ["vehicle", "charger"],
-          "a real board: vehicle_sim first, then charger_sim, no interposer_sim")
+    print("the start order, the acknowledger and the serial lines "
+          "(2026-10-14)")
+    order = R.start_order(True)
+    check(order == ["charger", "vehicle"],
+          "a real board: charger_sim first, then vehicle_sim, no "
+          "interposer_sim -> %s" % order)
+    check(order.index("charger") < order.index("vehicle"),
+          "...the charger before the vehicle side (9aaf1e2's vehicle-first "
+          "order is refused)")
     check(R.start_order(False) == ["charger", "interposer", "vehicle"],
           "simulated runs keep their order")
-    tmp = Path(tempfile.mkdtemp(dir=str(HERE)))
-    try:
-        log = tmp / "v.log"
-        log.write_text("12:00:00 veh Detecting kvaser interfaces\n")
-
-        def later():
-            time.sleep(0.3)
-            with open(log, "a") as f:
-                f.write("12:00:01 veh model start: soc=88.0% imbalance=0.30%\n")
-        threading.Thread(target=later).start()
-        t0 = time.perf_counter()
-        up = R.wait_for_line(log, R.VEHICLE_UP_RE, 5.0)
-        check(up and 0.2 < time.perf_counter() - t0 < 3.0,
-              "wait_for_line returns True once vehicle_sim's model start "
-              "appears (%.2f s)" % (time.perf_counter() - t0))
-        log2 = tmp / "v2.log"
-        log2.write_text("12:00:00 veh Detecting kvaser interfaces\n")
-        check(not R.wait_for_line(log2, R.VEHICLE_UP_RE, 0.5),
-              "...False if it never appears within the timeout")
-        t0 = time.perf_counter()
-        check(not R.wait_for_line(log2, R.VEHICLE_UP_RE, 10.0,
-                                  alive=lambda: False)
-              and time.perf_counter() - t0 < 1.0,
-              "...and False at once if vehicle_sim has died")
-        check(not R.VEHICLE_UP_RE.search("12:00:01 chg model start: x"),
-              "...and only vehicle_sim's line counts")
-    finally:
-        shutil.rmtree(str(tmp), ignore_errors=True)
+    import can
+    import diag_cadence as DC
+    check(DC.witness_bus_state(True) == can.BusState.ACTIVE,
+          "the witness that acknowledges opens ACTIVE")
+    check(DC.witness_bus_state(False) == can.BusState.PASSIVE,
+          "...and the passive one PASSIVE")
+    w = DC.DiagWitness("unused")
+    check(w.acks is True,
+          "a DiagWitness acknowledges unless asked not to")
+    a = R.build_parser().parse_args(
+        ["charger-fault-stop", "--external-interposer", "--diag-witness",
+         "PCAN_USBBUS1"])
+    check(a.diag_witness_mode == "acks",
+          "a board run's witness acknowledges by default")
+    a = R.build_parser().parse_args(
+        ["charger-fault-stop", "--external-interposer", "--diag-witness",
+         "PCAN_USBBUS1", "--diag-witness-mode", "passive"])
+    check(a.diag_witness_mode == "passive", "...passive only on request")
     partial_line_case(R)
 
     print("\nboard_reset_test: %s" % ("all checks OK" if not FAILS else

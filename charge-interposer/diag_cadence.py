@@ -19,7 +19,7 @@ output (8.3)." Read per the reviewer's rulings the same day:
      fails.
 
 THE CLOCKS (measurement plan accepted by the reviewer, 2026-10-13). A
-passive PCAN on the vehicle segment logs every 0x7F4-0x7F7 with its device
+PCAN on the vehicle segment logs every 0x7F4-0x7F7 with its device
 timestamp and its host arrival time; run_scenario's SerialTap logs every
 serial line with its host arrival time; both host times are this process's
 time.perf_counter(). Cadence is judged on the PCAN's DEVICE clock. The 50 ms
@@ -30,8 +30,14 @@ windowed, so the adapter's drift over a 1.5 h run does not accumulate). The
 serial line's own USB latency is IN that figure and is not removed; it is
 stated in every result.
 
-Passive (no ACK) on purpose: the witness must add nothing to the segment.
-The Kvaser (vehicle_sim's adapter) acknowledges.
+It ACKNOWLEDGES by default (--diag-witness-mode acks; reviewer,
+2026-10-14). It used to be passive so as to add nothing to the segment, on
+the assumption that the Kvaser (vehicle_sim's adapter) acknowledged -- but
+the Kvaser opens after the charger, and while the board is listen-only
+nothing else on the bench's vehicle segment acknowledges. The board met the
+first charger frame with no acknowledger and retried one frame ~6,700 times
+in 2.2 s (step 4 item 2). An acknowledging witness stands in for the
+truck's VCU and BMS and records the same frames; passive stays an option.
 
 LISTEN-ONLY (spec 2.3 at d9f49ea6, user 2026-10-13). While the charger is
 silent the vehicle port is listen-only and sends nothing: no status frames
@@ -134,14 +140,26 @@ def state_of(db, data):
 
 # --- capture ---------------------------------------------------------------
 
-class DiagWitness(object):
-    """A passive PCAN on the vehicle segment logging every 0x7F4-0x7F7,
-    and every charger frame the board forwards (spec 2.3's mode):
-    'host<TAB>device<TAB>id<TAB>hex' per line, host = time.perf_counter()
-    at recv. Drained throughout."""
+def witness_bus_state(acks):
+    """The PCAN witness's bus state: ACTIVE (it acknowledges) or PASSIVE.
+    On the bench nothing else acknowledges on the vehicle segment while the
+    board is listen-only, so a board run wants ACTIVE (reviewer,
+    2026-10-14); either way it records the same frames."""
+    import can
+    return can.BusState.ACTIVE if acks else can.BusState.PASSIVE
 
-    def __init__(self, path, channel="PCAN_USBBUS1", bitrate=500000):
+
+class DiagWitness(object):
+    """A PCAN on the vehicle segment logging every 0x7F4-0x7F7, and every
+    charger frame the board forwards (spec 2.3's mode):
+    'host<TAB>device<TAB>id<TAB>hex' per line, host = time.perf_counter()
+    at recv. Drained throughout. acks=True opens it in normal mode, so it
+    is the vehicle segment's acknowledger (witness_bus_state)."""
+
+    def __init__(self, path, channel="PCAN_USBBUS1", bitrate=500000,
+                 acks=True):
         self.path, self.channel, self.bitrate = path, channel, bitrate
+        self.acks = acks
         self._stop = threading.Event()
         self._t = None
         self.n = 0
@@ -150,7 +168,8 @@ class DiagWitness(object):
     def start(self):
         import can
         self.bus = can.Bus(interface="pcan", channel=self.channel,
-                           bitrate=self.bitrate, state=can.BusState.PASSIVE)
+                           bitrate=self.bitrate,
+                           state=witness_bus_state(self.acks))
         self.fh = open(self.path, "w")
         self._t = threading.Thread(target=self._run, daemon=True)
         self._t.start()

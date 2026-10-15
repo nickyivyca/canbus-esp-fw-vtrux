@@ -1690,41 +1690,26 @@ def _transport_args(args, side):
     return out
 
 
-# The order the processes start in (reviewer, 2026-10-14, step 4 item 2).
-# Simulated: charger_sim, interposer_sim, then vehicle_sim 1.5 s later, as
-# always. --external-interposer: vehicle_sim FIRST, and charger_sim only once
-# its bus is open. With the charger first, the real board went normal on the
-# first charger frame while nothing on the vehicle segment acknowledged yet:
-# it retried one forwarded frame ~6,700 times in 2.2 s, no status frame
-# completed, and 8.2's cadence failed on the bench, not the board. On the
-# truck the vehicle bus is up before the charger talks.
-VEHICLE_UP_RE = re.compile(r" veh model start: ")
-VEHICLE_UP_TIMEOUT_S = 30.0
-
-
+# The order the processes start in, and who acknowledges on the vehicle
+# segment (reviewer, 2026-10-14, step 4 item 2). charger_sim first, then
+# vehicle_sim 1.5 s later, for a board as for interposer_sim: the charger
+# talks before the VCU sets flow 1, as on the truck, so 2.2's counter starts
+# clean. For a board, the PCAN witness acknowledges on CAN1 (--diag-witness-
+# mode acks, the default) and is opened before either sim, standing in for
+# the truck's VCU and BMS: while the board is listen-only nothing else on the
+# bench's vehicle segment does.
+#   - Charger first with a PASSIVE witness: the board went normal on the
+#     first charger frame with nobody to acknowledge and retried one frame
+#     ~6,700 times in 2.2 s; no status frame completed (8.2 VOID).
+#   - vehicle_sim first (9aaf1e2, reverted): nothing acknowledged the Kvaser
+#     (vehicle_sim crashed on a full transmit buffer), and the sim's VCU set
+#     flow 1 with no charger on CAN2, saturating 2.2's counter at 255 before
+#     the session began.
 def start_order(external):
     """-> the processes to start, in order."""
     if external:
-        return ["vehicle", "charger"]
+        return ["charger", "vehicle"]
     return ["charger", "interposer", "vehicle"]
-
-
-def wait_for_line(path, pattern, timeout_s, poll_s=0.05, alive=None):
-    """Block until a line matching `pattern` appears in the file at `path`
-    (a child's log), `alive()` turns False, or timeout_s passes. -> True
-    only if the line appeared."""
-    end = time.perf_counter() + timeout_s
-    while time.perf_counter() < end:
-        try:
-            with open(path, encoding="utf-8", errors="replace") as f:
-                if any(pattern.search(ln) for ln in f):
-                    return True
-        except OSError:
-            pass
-        if alive is not None and not alive():
-            return False
-        time.sleep(poll_s)
-    return False
 
 
 def run_one(sc, args, outdir):
@@ -1741,7 +1726,7 @@ def run_one(sc, args, outdir):
     reset_timer = None
     veh_start = None
     witness_path = outdir / ("%s.diag_witness.log" % sc.name)
-    vehicle_up = None
+    acker_first = None
 
     def start_charger():
         with open(chg_log, "w") as f:
@@ -1793,7 +1778,15 @@ def run_one(sc, args, outdir):
             if args.diag_witness:
                 import diag_cadence
                 witness = diag_cadence.DiagWitness(
-                    str(witness_path), channel=args.diag_witness).start()
+                    str(witness_path), channel=args.diag_witness,
+                    acks=(args.diag_witness_mode == "acks")).start()
+            # the premise, scored: an acknowledger on the vehicle segment
+            # before the charger starts (start_order's comment)
+            acker_first = witness is not None and witness.acks
+            print("   vehicle segment acknowledger before the charger: %s"
+                  % ("the PCAN witness, normal mode" if acker_first else
+                     "NONE (%s)" % ("witness passive" if witness is not None
+                                    else "no --diag-witness")))
             if sc.board_reset_at_s is not None:
                 # 0x7F7 counts uptime in whole minutes, so the reset can
                 # only be shown by it if the board has been up >= 2 min.
@@ -1809,18 +1802,10 @@ def run_one(sc, args, outdir):
                 start_charger()
             elif what == "interposer":
                 start_interposer()
-                time.sleep(1.5)
             else:
+                time.sleep(1.5)
                 veh = start_vehicle()
                 veh_start = time.perf_counter()
-                if args.external_interposer:
-                    vehicle_up = wait_for_line(
-                        veh_log, VEHICLE_UP_RE, VEHICLE_UP_TIMEOUT_S,
-                        alive=lambda: veh.poll() is None)
-                    print("   vehicle_sim's bus open before the charger "
-                          "starts: %s (%.1f s)"
-                          % ("yes" if vehicle_up else "NO",
-                             time.perf_counter() - veh_start))
         if tap is not None and sc.board_reset_at_s is not None:
             reset_timer = threading.Timer(sc.board_reset_at_s,
                                           tap.reset_board)
@@ -1907,7 +1892,7 @@ def run_one(sc, args, outdir):
                                    keep=getattr(args, "keep_traces", False))
     return evaluate(sc, veh_log, chg_log, int_log, timed_out, l1, inv,
                     order=order, hold=hold, diag82=diag82, reset=reset,
-                    vehicle_up=vehicle_up)
+                    acker_first=acker_first)
 
 
 VEH_ROW = re.compile(
@@ -2831,7 +2816,7 @@ def _wsl_path(p):
 
 
 def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
-             order=None, hold=None, diag82=None, reset=None, vehicle_up=None):
+             order=None, hold=None, diag82=None, reset=None, acker_first=None):
     veh = veh_log.read_text(errors="replace")
     chg = chg_log.read_text(errors="replace")
     intp = int_log.read_text(errors="replace")
@@ -2971,16 +2956,16 @@ def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
         results.append((inv[0], "spec 2/4/4.1/8.1 invariants over the trace: "
                         "%s" % inv[1]))
     if diag82 is not None:
-        results.append((diag82[0], "spec 8.2 on the wire (passive PCAN "
+        results.append((diag82[0], "spec 8.2 on the wire (PCAN "
                         "witness): %s" % diag82[1]))
     if reset is not None:
         results.append((reset[0], "the board reset happened: %s" % reset[1]))
-    if vehicle_up is not None:
-        results.append((vehicle_up, "bench premise: vehicle_sim's bus was "
-                        "open before charger_sim started (%s)" % (
-                            "yes" if vehicle_up else
-                            "NO -- the board met the charger with nothing "
-                            "on the vehicle segment acknowledging")))
+    if acker_first is not None:
+        results.append((acker_first, "bench premise: the vehicle segment had "
+                        "an acknowledger before the charger started (%s)" % (
+                            "the PCAN witness in normal mode" if acker_first
+                            else "NONE -- the board met the charger with "
+                            "nothing on CAN1 to acknowledge it")))
 
     if "Traceback" in veh or "Traceback" in intp or "Traceback" in chg:
         results.append((False, "no simulator crashed"))
@@ -2993,7 +2978,9 @@ def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
                 logs=(veh_log, int_log))
 
 
-def main():
+def build_parser():
+    """The command line, apart from main() so a test can read its defaults
+    (board_reset_test: --diag-witness-mode)."""
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("scenario", nargs="*", help="scenario name(s)")
@@ -3021,10 +3008,16 @@ def main():
                          "the existing event expectations evaluate unchanged.")
     ap.add_argument("--serial-baud", type=int, default=115200)
     ap.add_argument("--diag-witness", default=None, metavar="PCAN_CHANNEL",
-                    help="with --external-interposer: a PASSIVE PCAN (e.g. "
+                    help="with --external-interposer: a PCAN (e.g. "
                          "PCAN_USBBUS1) on the vehicle segment logs every "
                          "0x7F4-0x7F7, and the scenario is also judged on "
                          "spec 8.2's cadence and 50 ms rule (diag_cadence.py)")
+    ap.add_argument("--diag-witness-mode", choices=("acks", "passive"),
+                    default="acks",
+                    help="the PCAN witness in normal mode, acknowledging on "
+                         "the vehicle segment (default: on the bench nothing "
+                         "else does while the board is listen-only, as the "
+                         "truck's VCU and BMS would), or passive")
     ap.add_argument("--no-l1", action="store_true",
                     help="skip the spec 9.1 L1 replay of the scenario "
                          "through machine.cpp. The replay needs a C++ "
@@ -3058,6 +3051,11 @@ def main():
     ap.add_argument("--outdir", default=None,
                     help="default: interposer-runs/ under VTRUX_DATA "
                          "(paths.py)")
+    return ap
+
+
+def main():
+    ap = build_parser()
     args = ap.parse_args()
 
     if args.external_interposer and args.time_scale != 1.0:
