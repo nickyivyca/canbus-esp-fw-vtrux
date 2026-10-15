@@ -577,6 +577,13 @@ class InterposerCore {
   const Event& event(uint8_t i) const { return events_[i]; }
   void clearEvents() { event_n_ = 0; }
 
+  // Spec 6.1's boundary lines, counted so the collapse can be seen ACROSS
+  // clearEvents() (reviewer, 2026-10-14). Nothing in the event buffer can
+  // show it: main.cpp's reportEvents() empties the buffer every pass, which
+  // is the defect this counter exists to pin. It counts boundary lines
+  // LOGGED, so a collapsed run adds 1 and not 20.
+  uint32_t boundaryLogs() const { return boundary_logs_; }
+
   // Live view, for a status frame or a serial dump.
   int32_t vmax() const { return vmax_; }
   int32_t chgMax() const { return chg_max_; }
@@ -740,6 +747,35 @@ class InterposerCore {
 
   Event events_[MAX_EVENTS];
   uint8_t event_n_;
+
+  // Spec 6.1's boundary collapse, held OFF the event buffer (reviewer,
+  // 2026-10-14, found on the bench in step 4 item 2). The earlier test was
+  // against events_[event_n_ - 1], and on the board main.cpp's
+  // reportEvents() calls clearEvents() every pass, so event_n_ is 0 whenever
+  // sessionBoundary() runs: the collapse could never fire and one session
+  // end printed 20 times, ~50 ms apart, as the VCU's page-00 burst arrived.
+  // THE REFERENCE NEVER CLEARS ITS BUFFER, so machine.py collapsed
+  // correctly, the two cores agreed on every whole trace, and neither the
+  // differential nor the events gate could see it. A member cannot be
+  // emptied by a consumer, so the edge is now a property of the core alone.
+  // wait_reason_ above is the same pattern.
+  uint8_t last_boundary_ev_;
+  int32_t last_boundary_a_;
+  int32_t last_boundary_b_;
+  bool last_boundary_valid_;
+  uint32_t boundary_logs_;
+
+  // Called wherever a boundary line is actually logged, by either branch of
+  // sessionBoundary(). Any OTHER event logged clears last_boundary_valid_
+  // in log(), so a run is only collapsed while it is contiguous -- which is
+  // what the old buffer test meant by comparing against the last event.
+  void rememberBoundary(uint8_t ev, int32_t a, int32_t b) {
+    last_boundary_ev_ = ev;
+    last_boundary_a_ = a;
+    last_boundary_b_ = b;
+    last_boundary_valid_ = true;
+    boundary_logs_++;
+  }
 };
 
 }  // namespace interposer

@@ -2863,6 +2863,72 @@ def test_the_state_events_carry_the_boards_units():
        "with the VCU's mode in a= (%r)" % (over.fields(),))
 
 
+def test_the_boundary_collapse_does_not_need_the_event_buffer():
+    """Spec 6.1's collapse is an edge, and an edge must not live in a buffer
+    somebody else empties (reviewer, 2026-10-14, found on the bench).
+
+    THE DEFECT THIS PINS. The collapse used to ask whether the LAST RECORDED
+    EVENT was the same boundary. main.cpp's reportEvents() prints the buffer
+    and calls clearEvents() every pass, so on the board the buffer is empty
+    whenever sessionBoundary() runs: the question answered "no" every time
+    and one session end printed 20 times, ~50 ms apart, as the VCU's page-00
+    burst arrived. Nothing here could see it, because the REFERENCE never
+    cleared its buffer -- the two cores agreed on every whole trace, so the
+    differential and the events gate both passed. The asymmetry was the bug's
+    hiding place, so the test now drives the reference the way the board is
+    driven, through the clear_events() mirror added for exactly this.
+    """
+    burst = P.enc_master(1, P.MODE_STANDBY)
+
+    # the board's condition: a consumer empties the buffer after every pass
+    b = Bench()
+    b.arm()
+    for _ in range(20):
+        b.veh(0x18EFC000, burst)
+        b.core.clear_events()
+        b.t += 50
+    ok(b.core.boundary_logs == 1,
+       "a 20-frame STAND_BY burst logs ONE session end even though the event "
+       "buffer is emptied between every frame (got %d)"
+       % b.core.boundary_logs)
+
+    # and the same burst with nobody consuming, which is the case that always
+    # worked -- kept so a fix that only works when the buffer is cleared is
+    # as visible as the defect that only failed when it was
+    b2 = Bench()
+    b2.arm()
+    for _ in range(20):
+        b2.veh(0x18EFC000, burst)
+        b2.t += 50
+    ok(b2.core.boundary_logs == 1,
+       "...and one when nothing consumes it either (got %d)"
+       % b2.core.boundary_logs)
+    ok(_ev(b2.core, "session over") is not None,
+       "...with exactly one 'session over' left in the buffer to show for it")
+
+    # THE COUNTER IS THE POINT OF THE ACCESSOR: it is what the hosted L2 case
+    # can read across clearEvents(), where the buffer shows nothing at all.
+    ok(b.core.events == [],
+       "premise: the buffer really is empty at the end of the cleared run, "
+       "so boundary_logs is the only witness to those 20 frames")
+
+    # the run must be CONTIGUOUS: any other event between two identical
+    # boundaries starts a new run and the second one logs. Driven through
+    # _log directly, because this is the mechanism and not a scenario -- a
+    # scenario would also be asserting which section logs what.
+    b3 = Bench()
+    b3.arm()
+    b3.veh(0x18EFC000, burst)
+    first = b3.core.boundary_logs
+    b3.t += 50
+    b3.core._log(b3.t, "something else entirely")
+    b3.veh(0x18EFC000, burst)
+    ok(b3.core.boundary_logs == first + 1,
+       "an unrelated event between two identical boundaries ends the run, so "
+       "the second boundary logs (got %d, was %d)"
+       % (b3.core.boundary_logs, first))
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

@@ -200,6 +200,14 @@ void setup()
     // Must be called BEFORE begin() to have any effect.
     //
     Serial.setRxBufferSize(8192);
+    // The TX side has the same shape and the same cure, and the RX note
+    // above applies to it word for word -- the default TX ring is 256 B, a
+    // burst larger than it makes one no-progress pass in HWCDC::write(),
+    // and at spec 8.3's 1 ms timeout that one pass latches connected = false
+    // and cuts the line in half. Measured on the bridge build as 42 cut
+    // lines in 1,250 with the host reading throughout; reasoning at
+    // INTP_CDC_TX_RING_BYTES in main.cpp (reviewer, 2026-10-14).
+    Serial.setTxBufferSize(2048);
     Serial.begin(115200);
     // Spec 8.3 (user, 2026-10-14): never wait on the USB host. 1 ms and not 0 --
     // 0 wraps HWCDC::write()'s uint32_t retry counter and the write never

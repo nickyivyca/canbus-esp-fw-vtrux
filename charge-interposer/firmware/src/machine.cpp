@@ -231,7 +231,12 @@ InterposerCore::InterposerCore(const Config& cfg, uint32_t now_ms)
       fwd_c2v_(0),
       modified_(0),
       synth_(0),
-      event_n_(0) {
+      event_n_(0),
+      last_boundary_ev_(0),
+      last_boundary_a_(0),
+      last_boundary_b_(0),
+      last_boundary_valid_(false),
+      boundary_logs_(0) {
   for (uint8_t i = 0; i < 8; i++) burst_frame_[i] = 0;
   // B-6: one staleness timer per BMS message, all "never seen" at boot.
   for (uint8_t i = 0; i < N_BMS_IDS; i++) {
@@ -242,6 +247,12 @@ InterposerCore::InterposerCore(const Config& cfg, uint32_t now_ms)
 
 void InterposerCore::log(uint32_t t_ms, uint8_t code, int32_t a, int32_t b,
                          int32_t c) {
+  // Any event ends a contiguous run of boundary lines, and this must happen
+  // BEFORE the MAX_EVENTS guard below: the boundary edge is not allowed to
+  // depend on whether the buffer had room, any more than on whether a
+  // consumer had emptied it. sessionBoundary() sets the flag back after its
+  // own log() call.
+  last_boundary_valid_ = false;
   if (event_n_ >= MAX_EVENTS) return;
   Event& e = events_[event_n_++];
   e.t_ms = t_ms;
@@ -536,17 +547,21 @@ void InterposerCore::sessionBoundary(uint32_t t_ms, uint8_t ev, int32_t a,
   // left no trace of having done it.
   if (state_ != S_PASSTHROUGH && (clear_safe || state_ != S_SAFE)) {
     gotoState(t_ms, S_PASSTHROUGH, ev, a, b);
-  } else if (!(event_n_ > 0 && events_[event_n_ - 1].code == ev
-               && events_[event_n_ - 1].a == a
-               && events_[event_n_ - 1].b == b)) {
+    rememberBoundary(ev, a, b);
+  } else if (!(last_boundary_valid_ && last_boundary_ev_ == ev
+               && last_boundary_a_ == a && last_boundary_b_ == b)) {
     // Collapse a contiguous run of the same boundary to one line. The reset
     // below stays level-triggered and fires on every frame, because
     // maybeArm() does not look at the VCU's mode: it is the repeated
     // clearing of chg_seen_charging_ and mainc_closed_ that stops the core
     // arming while the VCU is commanding STAND_BY. Only the LOG is an edge.
     // The VCU sends its page-00 changes as a 20-frame burst, so without this
-    // one session end reads as twenty.
+    // one session end reads as twenty -- which is exactly what the board
+    // printed until 2026-10-14, because the test used to read the event
+    // buffer that reportEvents() empties every pass. It is a member now; see
+    // last_boundary_valid_ in machine.h.
     log(t_ms, ev, a, b);
+    rememberBoundary(ev, a, b);
   }
   have_t_full_ = false;
   learned_ilim_ = 0;

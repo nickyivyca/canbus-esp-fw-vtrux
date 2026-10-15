@@ -646,6 +646,49 @@ to 2 to match the bound** -- nothing asks for a second pass. **And 1 and not
 all -- the comment at `INTP_CDC_TX_TIMEOUT_MS` in `main.cpp` has the
 mechanism and the measurement it came from.
 
+**And the TX ring is sized, which the 1 ms timeout made necessary** (spec
+8.3, reviewer 2026-10-14, found on the bench in step 4 item 2). 8.3 lets
+output be dropped for a host that is **not** reading; a host that **is**
+reading must get every line, and it was not: 42 of 1,250 lines were cut
+mid-line, tail and newline missing, with `run_scenario`'s tap reading
+throughout. 33 inside the first line of the 5 s status block, 223-257 B from
+its start, and 9 in the `charger tx:` line at 468-504 B. E8's `6b54c67d`,
+before the 1 ms timeout, has **0 splices in 211 complete blocks**.
+
+The cause is the ring, and the timeout is what made it fatal. `begin()`
+creates the TX ring at 256 B (`HWCDC.cpp:315`) and a status block is
+430-515 B, written in one pass while USB-Serial/JTAG drains 64 B per IN
+token -- so the ring **must** fill part-way through however fast the host
+reads. `HWCDC::write()` then finds no free space and calls
+`xRingbufferSend()` for 0 bytes, which on a `RINGBUF_TYPE_BYTEBUF` returns
+`pdTRUE` without copying (the same fact that makes a 0 ms timeout hang), so
+the pass makes no progress, `tries` goes 1 -> 0, `connected` latches false
+and the rest of the line goes to `flushTXBuffer()`. The 256 B and ~500 B
+clusters are the ring filling once and twice. At the old 100 ms default that
+same pass cost one `delay(1)` and the next pass made progress, which
+**resets** `tries` (`HWCDC.cpp:473`) -- so a reading host never reached 0,
+which is why E8 shows none of it.
+
+`INTP_CDC_TX_RING_BYTES` is 2048, set with `setTxBufferSize()` **before**
+`begin()`, which is what makes it stick: `begin()` creates a ring only
+`if (tx_ring_buf == NULL)`, so an existing one is left alone and nothing
+buffered is discarded, while calling it afterwards would delete the ring
+`begin()` had just made. `diag`, `selftest` and `slcan` do the same beside
+their own `Serial.begin()`; `slcan` already had `setRxBufferSize(8192)`
+there, against the RX form of this same failure.
+
+**Why 2048 and not the ~11 KB the worst case would need.** One pass fits
+with room -- 515 B of status block, ~140 B of diag line, and an event line
+is at most ~154 B. `MAX_EVENTS` is 64, so a pathological pass could still
+overrun it and splice exactly as it does today; this bounds the realistic
+pass and does not prove the pathological one. A ring large enough for 64
+events would hold **minutes** of output for a host that had stopped reading,
+and the tester's 8.3 method scores a stop only when a hole appears in the
+board's own `t=` sequence -- so it would lengthen the buffer-fill times E10
+measured and could stop a hole appearing at all. `tx_timeout_ms` is
+unchanged at 1, so what E10 measured for a host that is not reading is
+unchanged.
+
 Verified from the images, not the source (2026-10-03):
 
 | | `esp32-can-x2` | `truck` |
@@ -814,6 +857,45 @@ renumbering silently re-reads every one of them -- which is why `REPLACED`,
 added 2026-10-05, is 3 and not 2. The table is in `machine.h` as
 `enum RepeatEnd` and in `machine.py` as the four `REPEAT_*` constants, and
 both must agree on the numbers, not merely on the order.
+
+### Why it tripped -- the `a` field of `TRIP`
+
+`TRIP` is spec 8.3's ordinary `event a= b= c=` line, so the reason is the
+code below and the board prints no reason text at all: `a` is this, `b` is
+the stale BMS identifier on `BMS frames stale` and 0 on every other trip,
+`c` is unused. **Published here for the same reason as the table above -- it
+is what makes a bare number satisfy "the reason"** (reviewer, 2026-10-14).
+
+Until 2026-10-14 the board printed `TRIP: charger fault` instead, from
+2026-09-11 when the reference logged the text too. Both had moved to the
+shared form at `7078b5e` / `817f7cf` and this line had not, so the harness
+key stopped matching and **every board scenario that tripped failed while
+the trip itself was correct** -- found on the bench in step 4 item 2.
+
+| `a` | Name | What tripped it |
+|---|---|---|
+| 0 | `TRIP_NONE` | no trip; what `diag trip=` reads when the latch is clear |
+| 1 | `TRIP_VMAX_HARD` | vmax over the hard ceiling |
+| 2 | `TRIP_CELL_OVERVOLT` | BMS `cell_overvolt` |
+| 3 | `TRIP_CELL_UNDERVOLT_RETIRED` | **never emitted** -- see below |
+| 4 | `TRIP_BMS_EPO` | BMS EPO |
+| 5 | `TRIP_BMS_ALARM_TYPE3` | BMS alarm TYPE3 |
+| 6 | `TRIP_HVIL_OPEN` | HVIL open |
+| 7 | `TRIP_CONTACTOR` | contactor not in a closed state |
+| 8 | `TRIP_CHARGER_FAULT` | charger fault |
+| 9 | `TRIP_CHG_STATE` | charger out of state 12 |
+| 10 | `TRIP_BMS_STALE` | BMS frames stale; the id is in `b` |
+| 11 | `TRIP_CHG_STALE` | charger frames stale |
+| 12 | `TRIP_OVERRIDE_CAP` | override exceeded the session cap |
+| 255 | -- | the reference's fallback for a trip text it cannot map; the board has no such case |
+
+**Slot 3 is retired in place, not removed.** The `cell_undervolt` trip went
+at B-7a (2026-10-03) and its number stayed, so every trip above it keeps the
+value it already had in saved logs and traces. A decoder that meets a 3 is
+reading a pre-B-7a log. The names are `enum TripReason` in `machine.h` and
+`tripName()` in `machine.cpp`, matched position for position against
+`machine.py`'s `TRIP_KEYS` by `test/host_diff/check_port.py` -- which is what
+stops this table and the wire drifting apart.
 
 ## Charger-segment transmit behaviour (spec 2.2)
 
@@ -1035,6 +1117,41 @@ during a flash erase -- is ~45 frames at 2250 fps.
 **Nothing is filtered in hardware.** Both ports accept everything. A bridge
 cannot forward what it filtered, and we do not yet know the full set of IDs the
 Bel actually cares about.
+
+### An edge must not live in a buffer someone else empties
+
+Spec 6.1's session boundary resets the session on **every** frame that shows
+one, level-triggered on purpose, and only the log line is an edge: the VCU
+sends its page-00 changes as a 20-frame burst, so without a collapse one
+session end reads as twenty. The collapse used to ask whether the last
+RECORDED EVENT was the same boundary -- and `reportEvents()` prints the
+event buffer and empties it every pass, so on the board the buffer was
+always empty when the question was asked. **It answered "no" every time and
+the board printed `session over a=2` twenty times, ~50 ms apart** (found on
+the bench, step 4 item 2, 2026-10-14).
+
+**The reference never empties its buffer, and that is where the defect
+hid.** `machine.py` collapsed correctly, the two cores agreed on every whole
+trace, and neither the differential nor the events gate could see a thing.
+The asymmetry between the cores was not in the cores at all -- it was in how
+their callers used them.
+
+So the edge is a member on both sides now (`last_boundary_valid_` /
+`_last_boundary`), set where a boundary line is logged and cleared by any
+other event, which is the pattern `wait_reason_` already used. A member
+cannot be emptied by a consumer. `boundaryLogs()` counts the lines so the
+behaviour can be read **across** `clearEvents()`, where the buffer shows
+nothing, and `main.cpp` exposes it as `intpBoundaryLogs()` for the hosted L2
+test. `test_machine.py` drives the reference through `clear_events()` -- a
+mirror of the board's call added for this -- so the board's condition is now
+something a test can express rather than something only hardware saw.
+
+**Unifying the two cores took a second change.** `machine.cpp` compared the
+event code, `a` and `b`; `machine.py` compared the event NAME alone. A run
+of same-named boundaries carrying different values would therefore have
+collapsed in the reference and not on the board. No trace in the corpus
+contains that case -- the differential would have failed if one did -- so
+the port's reading was kept as the more discriminating of the two.
 
 ## What this firmware deliberately does not do
 

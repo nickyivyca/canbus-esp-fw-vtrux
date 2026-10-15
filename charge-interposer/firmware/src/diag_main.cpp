@@ -201,6 +201,13 @@ static void phaseOneWay() {
 }
 
 void setup() {
+  // And the TX ring, BEFORE begin() so begin() leaves it alone: at the
+  // default 256 B a burst larger than the ring makes one no-progress pass,
+  // and at a 1 ms timeout that one pass latches connected = false and cuts
+  // the line in half. 8.3 allows that for a host that is not reading and not
+  // for one that is. Reasoning and the measurement at INTP_CDC_TX_RING_BYTES
+  // in main.cpp (reviewer, 2026-10-14).
+  Serial.setTxBufferSize(2048);
   Serial.begin(115200);
   // Spec 8.3 (user, 2026-10-14): never wait on the USB host. 1 ms and not 0 --
   // 0 wraps HWCDC::write()'s uint32_t retry counter and the write never

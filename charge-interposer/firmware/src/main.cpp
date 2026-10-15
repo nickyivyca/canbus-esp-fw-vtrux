@@ -85,7 +85,53 @@
 // explained here. DO NOT RAISE THE MACRO TO 2 to match the bound; nothing
 // asks for a second pass.
 #define INTP_CDC_TX_TIMEOUT_MS  1
-#define INTP_SERIAL_BEGIN(baud) (Serial.begin(baud), Serial.setTxTimeoutMs(INTP_CDC_TX_TIMEOUT_MS))
+//
+// AND A RING BIG ENOUGH THAT A READING HOST NEVER TRIPS THE TIMEOUT
+// (reviewer, 2026-10-14, found on the bench in step 4 item 2). 8.3 lets
+// output be dropped for a host that is NOT reading; a host that is reading
+// must get every line. It was not getting them: 42 of 1,250 lines were cut
+// mid-line, tail and newline missing, with run_scenario's tap reading
+// throughout -- 33 inside the first line of the 5 s status block, 223-257 B
+// from the block's start, and 9 in the "charger tx:" line at 468-504 B.
+// E8's 6b54c67d, before the 1 ms timeout, has 0 splices in 211 complete
+// blocks of 471-494 B, so this arrived with INTP_CDC_TX_TIMEOUT_MS.
+//
+// The mechanism, confirmed in HWCDC::write() and not inferred from the
+// offsets: begin() creates the TX ring at 256 B (HWCDC.cpp:315), and a
+// status block is 430-515 B. The loop writes the whole block in one pass
+// while USB-Serial/JTAG drains 64 B per IN token, so the ring MUST fill
+// part-way through even with a host reading as fast as it can. write() then
+// enters its while loop, finds no free space, and calls xRingbufferSend()
+// for 0 bytes -- which on a RINGBUF_TYPE_BYTEBUF returns pdTRUE without
+// copying, the same fact that makes a 0 ms timeout hang. So the pass makes
+// no progress, `tries` goes 1 -> 0, `connected = false`, and the remainder
+// of that line goes to flushTXBuffer(). The 256 B and ~500 B clusters are
+// the ring filling once and twice. At the old 100 ms the same pass cost one
+// delay(1) and the next pass made progress, which RESETS tries to
+// tx_timeout_ms (HWCDC.cpp:473) -- so a reading host never reached 0, which
+// is why E8 shows none of this.
+//
+// 2048 B is one pass with room: the biggest block measured is 515 B, the
+// 8.3 diag line is ~140 B, and an event line is at most ~154 B (a 10-digit
+// t=, the 12-wide state, the 85-character longest eventName and three
+// 11-digit fields). NOT the ~11 KB that MAX_EVENTS = 64 would need in the
+// worst case, on purpose: a ring that large would hold MINUTES of output
+// for a host that has stopped reading, and the tester's 8.3 method scores a
+// stop only when a hole appears in the board's own t= sequence, so it would
+// lengthen the fill times E10 measured and could stop a hole appearing at
+// all. A pass that did overrun 2048 B would splice exactly as today -- this
+// bounds the realistic pass, it does not prove the pathological one.
+//
+// setTxBufferSize() BEFORE begin(), which is what makes it stick:
+// begin() creates the ring only `if (tx_ring_buf == NULL)`, so a ring that
+// already exists is left alone, and nothing buffered is discarded. Calling
+// it afterwards would vRingbufferDelete() the ring begin() had just made.
+// Our builds set ARDUINO_USB_MODE=1, so the core's own `Serial.begin()` at
+// its main.cpp:91 is compiled out and ours is the only one -- which is also
+// why the truck build, where INTP_SERIAL_BEGIN is ((void)0), allocates no
+// ring at all and pays nothing for this.
+#define INTP_CDC_TX_RING_BYTES  2048
+#define INTP_SERIAL_BEGIN(baud) (Serial.setTxBufferSize(INTP_CDC_TX_RING_BYTES), Serial.begin(baud), Serial.setTxTimeoutMs(INTP_CDC_TX_TIMEOUT_MS))
 #define INTP_PRINTF(...)        Serial.printf(__VA_ARGS__)
 #define INTP_PRINT(x)           Serial.print(x)
 #define INTP_PRINTLN(x)         Serial.println(x)
@@ -216,6 +262,16 @@ uint32_t intpBootRoundWaitUs() { return boot_round_wait_us; }
 // either -- it has no line.
 static uint32_t diag_reports = 0;
 uint32_t intpDiagReports() { return diag_reports; }
+
+// Spec 6.1's boundary lines, for the same reason and read the same way
+// (reviewer, 2026-10-14). The count lives in the core, because the collapse
+// does; this only reaches it, since the L2 harness has no handle on `core`.
+// WHAT IT IS FOR: the board's 20-fold "session over" could not be seen in
+// the event buffer, because the buffer is what reportEvents() empties every
+// pass and emptying it was the cause. A counter cannot be emptied by a
+// consumer, so a run that collapses correctly reads 1 here however often the
+// buffer is cleared. 0 before setup() has built the core.
+uint32_t intpBoundaryLogs() { return core ? core->boundaryLogs() : 0; }
 
 // --- diagnostics (spec 8.2 / 8.3) -----------------------------------------
 // Build id (0x7F7 B0-B3): the first four bytes of this application's ELF
@@ -445,16 +501,21 @@ static void reportEvents() {
     const Event& e = core->event(i);
     INTP_PRINTF("[%lu] %-12s %s", (unsigned long)e.t_ms,
                   stateName(e.state), eventName(e.code));
-    if (e.code == EV_TRIP) {
-      // "TRIP: reason", not "TRIP (reason)". machine.py logs
-      // "TRIP: %s" % reason, and run_scenario.py matches the board's serial
-      // output against the very same ev(r"TRIP: ...") patterns it uses for the
-      // simulated interposer. The bracketed form parsed as a failure on every
-      // trip scenario run against hardware even though the trip, the release
-      // burst and the state change were all correct -- fault-during-override
-      // reported FAIL on 2026-09-11 with synth=20 and final state SAFE.
-      INTP_PRINTF(": %s", tripName((uint8_t)e.a));
-    } else if (e.a || e.b || e.c) {
+    // TRIP HAS NO SPECIAL FORM ANY MORE (reviewer, 2026-10-14, found on the
+    // bench in step 4 item 2). It used to print "TRIP: charger fault" --
+    // dating from 2026-09-11, when machine.py logged "TRIP: %s" % reason and
+    // run_scenario.py matched that text. Both moved to spec 8.3's shared
+    // `event a= b= c=` form at 7078b5e / 817f7cf, machine.py now logs the
+    // name "TRIP" with the reason as a= (machine.py:753, via
+    // trip_reason_code()), and the harness key reads the shared form -- so
+    // the old line made EVERY board scenario that trips fail, while the trip
+    // itself was correct. The reason NAME is not printed at all now: a= is
+    // the TripReason code, and the code-to-name table is in
+    // firmware/README.md beside the event and state tables. tripName() stays
+    // in machine.cpp as the port's mirror of machine.py's TRIP_KEYS, which
+    // is where that table is generated from and what check_port.py pins the
+    // enum against.
+    if (e.a || e.b || e.c) {
       INTP_PRINTF(" a=%ld b=%ld c=%ld", (long)e.a, (long)e.b, (long)e.c);
     }
     INTP_PRINTLN("");

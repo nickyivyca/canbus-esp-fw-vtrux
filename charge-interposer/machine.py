@@ -603,6 +603,14 @@ class InterposerCore(object):
         self.trip_reason = None
         self.events = []              # (t_ms, state, text) -- bench diagnostics
 
+        # spec 6.1's boundary collapse, held OFF self.events so the port can
+        # hold it off its own buffer; see _session_boundary. (why, a, b) of
+        # the last boundary LOGGED, or None once anything else is logged.
+        self._last_boundary = None
+        # the mirror of machine.cpp's boundaryLogs(): boundary lines logged,
+        # which a collapsed run adds 1 to and not 20.
+        self.boundary_logs = 0
+
         # latest BMS / charger / VCM view
         self.vmax = 0
         self.vmin = 0
@@ -690,9 +698,29 @@ class InterposerCore(object):
         # eventName() returns a fixed string and cannot interpolate, so a
         # value in the prose here is a value the port can never match. The
         # values go in a/b/c, in the board's order and the board's units.
+        #
+        # Any event ends a contiguous run of boundary lines, and this happens
+        # BEFORE the MAX_EVENTS guard: the edge must not depend on whether
+        # the buffer had room, exactly as it must not depend on whether a
+        # consumer emptied it. _session_boundary sets it back after its own
+        # _log call. machine.cpp:log() does the same, in the same order.
+        self._last_boundary = None
         if len(self.events) < self.MAX_EVENTS:
             self.events.append(
                 Event(t_ms, STATE_NAMES[self.state], text, a, b, c))
+
+    def clear_events(self):
+        """Mirror of machine.cpp's clearEvents().
+
+        The reference does not need it -- nothing here consumes the buffer --
+        but the PORT's caller does: main.cpp's reportEvents() prints the
+        buffer and empties it every pass. That asymmetry is what hid the
+        boundary-collapse defect of 2026-10-14 for as long as it did, because
+        the reference always had history where the board never did. Having
+        the mirror means a test can put the reference in the board's
+        condition instead of trusting that the two agree in it.
+        """
+        self.events = []
 
     def _goto(self, t_ms, state, why, a=0, b=0, c=0):
         if state == self.state:
@@ -701,6 +729,13 @@ class InterposerCore(object):
         self.t_enter = t_ms
         self._wait_reason = None
         self._log(t_ms, why, a, b, c)
+
+    def _remember_boundary(self, why, a, b):
+        """Called wherever a boundary line is actually logged, by either
+        branch of _session_boundary. machine.h's rememberBoundary() is the
+        same three lines."""
+        self._last_boundary = (why, a, b)
+        self.boundary_logs += 1
 
     def _active(self):
         """Armed and answerable: the states where section 6 can trip.
@@ -793,7 +828,8 @@ class InterposerCore(object):
         if self.state != S_PASSTHROUGH and (clear_safe
                                             or self.state != S_SAFE):
             self._goto(t_ms, S_PASSTHROUGH, why, a, b, c)
-        elif not (self.events and self.events[-1][2] == why):
+            self._remember_boundary(why, a, b)
+        elif self._last_boundary != (why, a, b):
             # Collapse a contiguous run of the same boundary to one line.
             # The reset below stays level-triggered and fires on every frame,
             # because `_maybe_arm` does not look at the VCU's mode: it is the
@@ -801,7 +837,21 @@ class InterposerCore(object):
             # stops the core arming while the VCU is commanding STAND_BY.
             # Only the LOG is an edge. The VCU sends its page-00 changes as a
             # 20-frame burst, so without this one session end reads as twenty.
+            #
+            # OFF THE EVENT BUFFER since 2026-10-14. This read
+            # self.events[-1] and the port read its own events_[event_n_ - 1],
+            # which on the board is always empty because reportEvents()
+            # clears it every pass -- so the port printed all twenty. Two
+            # changes, not one: the test is a member now, and it compares
+            # (why, a, b) where this side compared the NAME alone. The port
+            # always compared code, a and b, so a run of same-named
+            # boundaries carrying different values collapsed here and did not
+            # there. No trace in the corpus shows that case -- the
+            # differential would have failed if one did -- so this picks the
+            # port's reading, as the more discriminating of the two, and the
+            # reviewer has been told it was a choice and not a given.
             self._log(t_ms, why, a, b, c)
+            self._remember_boundary(why, a, b)
 
         self.t_full_since = None
         self.learned_ilim = 0
