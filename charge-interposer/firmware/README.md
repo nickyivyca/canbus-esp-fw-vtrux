@@ -962,8 +962,29 @@ Now (`port_mcp2515.cpp`):
 - every queued frame is stamped with the current `service()` tick;
 - a frame older than `TX_MAX_AGE_MS` (100 ms, two periods of the 20 Hz
   command page) is **dropped rather than sent**, counted in `txAged()`;
-- a hardware buffer pending longer than that has its `TXREQ` cleared, so the
-  controller abandons it, counted in `txFailed()`;
+- a hardware buffer holding a frame queued longer ago than that has its
+  `TXREQ` cleared, so the controller abandons it, counted in `txFailed()`;
+- **the 100 ms is one budget across both stages, counted from when the
+  frame was queued** (user, 2026-10-15). The buffer's deadline is the
+  frame's queue stamp plus the bound, carried over from the ring at load
+  (`tx_queued_at_`), so the ring wait and the buffer wait cannot be spent
+  one after the other. Until then each stage had its own 100 ms and they
+  added up: on the bench in step 4 item 4 (`88566aee`, nothing
+  acknowledging and then the charger returning) a frame reached the
+  charger 188 ms after it was queued, about 100 ms in the ring behind the
+  previous frame's retries and about 88 ms in the buffer, each stage
+  inside its own limit at the time. A frame loaded at 99 ms of age now
+  gets about 1 ms in the buffer; one loaded fresh still gets 100;
+- the stamp is the `t_ms` the port was last given, so it is at most one
+  loop pass old -- and `setup()` takes one service pass of its own before
+  `applyVehicleMode()`, because that drain reaches `charger.send()` while
+  the ageing clock would otherwise still read 0. A frame stamped 0 is
+  older than the bound the moment the clock catches up, so without that
+  pass the boot drain would discard the frames it exists to save. Reading
+  `millis()` in `send()` instead would make the stamp exact at the cost of
+  comparing two clocks; the port keeps one, the caller's, and the
+  staleness can only age a frame out early, which is the safe direction
+  for a rule that exists to stop late delivery (reviewer, 2026-10-15);
 - retries are deliberately left **on**. One-shot mode would also discard a
   frame that merely lost arbitration, which on a healthy segment should be
   retried. Aborting on age keeps normal retries and still bounds staleness.

@@ -895,7 +895,31 @@ void setup() {
                           + (vehicle.txDiscardedBusOff() - disc_before);
     boot_round_sent = (gone >= queued) ? 0 : (uint8_t)(queued - gone);
   }
-  applyVehicleMode(millis());
+  // ONE SERVICE PASS BEFORE ANYTHING CAN BE QUEUED TOWARD THE CHARGER
+  // (reviewer, 2026-10-15). There IS such a path in setup():
+  // applyVehicleMode() below drains the vehicle driver into the core and
+  // dispatches what the core emits, so Mcp2515Port::send() is reachable
+  // from here -- dispatch() at :475, charger.send() at :434 -- before
+  // loop()'s first charger.service() at :951. TwaiPort::receive() reads
+  // twai_receive() directly and needs no service() call of its own, so on
+  // the truck there are frames waiting by the time we get here.
+  //
+  // Spec 2.2's ageing clock is the `t_ms` the port was last given, and
+  // before the first pass that is 0 -- so a frame queued here would be
+  // stamped 0, be older than TX_MAX_AGE_MS the instant the clock caught
+  // up, and be aged out immediately. That would discard exactly the frames
+  // this drain exists to save. Seeding it costs one READ STATUS, inside a
+  // boot window that already holds the status round's 50 ms wait.
+  //
+  // AS LATE AS POSSIBLE, not right after begin(): a seed taken before the
+  // round's wait would itself be up to 50 ms stale by the time the drain
+  // queues anything, which is the same defect with a smaller number. The
+  // same instant is handed to both ports and to applyVehicleMode(), so the
+  // stamp and the comparison that reads it cannot disagree.
+  const uint32_t boot_pass_ms = millis();
+  vehicle.service(boot_pass_ms);
+  charger.service(boot_pass_ms);
+  applyVehicleMode(boot_pass_ms);
   boot_window_us = micros() - veh_up_us;
   INTP_PRINTF("spec 2.3: vehicle port in normal mode for %lu us at boot, "
               "round %u of 4 sent in %lu us\n",

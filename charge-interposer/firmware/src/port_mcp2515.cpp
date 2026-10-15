@@ -152,7 +152,7 @@ Mcp2515Port::Mcp2515Port(SPIClass& spi, uint8_t cs_pin, uint8_t int_pin,
       tx_late_(0),
       tx_unexplained_(0),
       now_ms_(0),
-      tx_busy_since_{0, 0, 0},
+      tx_queued_at_{0, 0, 0},
       tx_busy_{false, false, false},
       tx_aborting_{false, false, false},
       tx_abort_us_{0, 0, 0},
@@ -401,8 +401,11 @@ void Mcp2515Port::drainTx() {
 #define WITNESS(n, oc) do { } while (0)
 #endif
 
-  // Spec 2.2, part one: a transmission that has been pending longer than
-  // TX_MAX_AGE_MS is abandoned.
+  // Spec 2.2, part one: a transmission is abandoned once the frame has
+  // been QUEUED longer than TX_MAX_AGE_MS. The deadline is its queue time
+  // plus the bound, not its load time plus the bound (user, 2026-10-15),
+  // so this and the ring age-out further down share one budget instead of
+  // having one each.
   //
   // Retries are deliberately left ON (no one-shot mode): on a healthy
   // segment a frame that merely loses arbitration should be retried, and
@@ -462,12 +465,15 @@ void Mcp2515Port::drainTx() {
 
     if (st & busy[n]) {
       TXTRACE(n, 'B');
-      // Spec 2.2, part one: a transmission pending longer than
-      // TX_MAX_AGE_MS is abandoned. Clearing TXREQ does NOT by itself mean
+      // Spec 2.2, part one: a frame queued longer ago than TX_MAX_AGE_MS is
+      // abandoned wherever it has got to. `tx_queued_at_` is the frame's
+      // own queue stamp, not the load time, so a frame that reached this
+      // buffer with little of its budget left is abandoned promptly rather
+      // than starting a second one. Clearing TXREQ does NOT by itself mean
       // the frame failed, so nothing is counted here -- the resolve step
       // above decides, once it can.
       if (tx_busy_[n] &&
-          (uint32_t)(now_ms_ - tx_busy_since_[n]) > TX_MAX_AGE_MS) {
+          (uint32_t)(now_ms_ - tx_queued_at_[n]) > TX_MAX_AGE_MS) {
         modifyReg(ctrl_reg, TXB_TXREQ, 0x00);
         tx_aborting_[n] = true;
         TXTRACE(n, 'X');
@@ -550,7 +556,7 @@ void Mcp2515Port::drainTx() {
     const uint8_t st_now = readStatus();
     if (st_now & busy[n]) continue;
 
-    // Spec 2, part three: age out whatever is stale at the HEAD first.
+    // Spec 2.2, part three: age out whatever is stale at the HEAD first.
     // Unchanged in effect from the old loop, but it now inspects the
     // head in place rather than popping, because the hold below has to
     // decide about that exact frame and leave it where it is if the
@@ -626,7 +632,11 @@ void Mcp2515Port::drainTx() {
 #endif
     loadAndSend(n, f);
     tx_busy_[n] = true;
-    tx_busy_since_[n] = now_ms_;
+    // THE FRAME'S QUEUE STAMP, carried over from the ring -- not now_ms_.
+    // Spec 2.2's deadline is queue time plus the bound and this buffer is
+    // the second stage of one wait, so restamping here would hand the
+    // frame a fresh budget it has already partly spent (user, 2026-10-15).
+    tx_queued_at_[n] = f.t_ms;
     tx_holds_[n] = true;
     tx_held_id_[n] = f.id;
     tx_held_ext_[n] = f.ext;
@@ -650,6 +660,34 @@ bool Mcp2515Port::send(uint32_t id, bool ext, const uint8_t* data,
   // ring fills within ~30 ms, and a charger coming back on the bus was met
   // with a burst of up to 66 frames describing a charge that had already
   // moved on.
+  //
+  // THE STAMP IS `now_ms_`, THE LAST service() TICK, AND NOT millis().
+  // Worth stating plainly because since 2026-10-15 this one stamp governs
+  // the frame's whole life -- the ring wait and the hardware buffer both
+  // age against it -- so what it measures matters more than it did when it
+  // only bounded the ring.
+  //
+  // The port keeps ONE clock and it is the caller's, the `t_ms` passed to
+  // service(). Reading millis() here instead would make the stamp exact,
+  // and would also mean the ages were a difference between two different
+  // clocks, which is only safe while every caller happens to pass millis()
+  // (main.cpp does). A stamp that is at most one service period old is the
+  // better trade, and it errs the safe way: it can only age a frame out
+  // EARLY, never late, and spec 2.2 exists to stop frames being delivered
+  // late.
+  //
+  // The one case where it is further out than a service period is a frame
+  // queued BEFORE the first service() call, which is stamped 0 and so is
+  // over the bound the instant the clock catches up. THAT PATH IS REAL AND
+  // main.cpp CLOSES IT: applyVehicleMode(), called from setup(), drains the
+  // vehicle driver and dispatches what the core emits, which reaches this
+  // function before loop() has serviced anything -- and TwaiPort::receive()
+  // reads twai_receive() directly, so there are frames waiting on a live
+  // segment. setup() therefore takes one service pass immediately before
+  // that drain (reviewer, 2026-10-15). A test rig that constructs the port
+  // and sends without servicing sees the same thing, and there the stamp
+  // predates the send() by however long begin() took: 10.028 ms against the
+  // host chip model.
   if (!ready_) {
     tx_dropped_++;   // counted here, so the caller does not count it again
     return false;

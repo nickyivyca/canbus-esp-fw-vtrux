@@ -181,7 +181,20 @@ class Mcp2515Port : public CanPort {
   uint32_t tx_late_;
   uint32_t tx_unexplained_;
   uint32_t now_ms_;            // last service() tick, for ageing
-  uint32_t tx_busy_since_[3];  // when each hardware buffer was loaded
+  // WHEN THE FRAME IN EACH HARDWARE BUFFER WAS QUEUED, not when it was
+  // loaded (spec 2.2, user 2026-10-15). Copied from the ring frame's own
+  // stamp at load, so a single deadline -- queue time + TX_MAX_AGE_MS --
+  // follows the frame from send() to the wire whichever stage it is in.
+  //
+  // It held the LOAD time until 2026-10-15, which gave the two stages a
+  // budget each and let them add up. On the bench in step 4 item 4
+  // (88566aee: nothing acknowledging on the charger segment, then the
+  // charger returning) a frame was delivered 188 ms after it was queued
+  // -- about 100 ms in the ring behind the previous frame's retries and
+  // about 88 ms in the buffer, each stage inside its own old limit. A
+  // frame loaded at 99 ms of age now gets about 1 ms here; one loaded
+  // fresh still gets the full 100.
+  uint32_t tx_queued_at_[3];
   bool tx_busy_[3];
   // Spec 2.2: a buffer whose TXREQ we cleared, whose outcome is not
   // yet known. The frame may still have been on the wire when we
@@ -241,6 +254,14 @@ class Mcp2515Port : public CanPort {
   // it would describe a charge that has moved on. 100 ms = two command
   // periods: long enough to ride out ordinary arbitration and a busy
   // moment, short enough that a returning charger never sees stale state.
+  //
+  // IT IS ONE BUDGET ACROSS BOTH STAGES, counted from when the frame was
+  // queued (user, 2026-10-15). The ring age-out and the buffer abort read
+  // the same stamp -- `RxFrame::t_ms` for the one still in the ring,
+  // `tx_queued_at_` for the one in the chip -- so a frame cannot spend
+  // the bound waiting in the ring and then the bound again in a hardware
+  // buffer. Ordinary retries after lost arbitration still continue inside
+  // it, which is why single-shot transmission is not used.
   static const uint32_t TX_MAX_AGE_MS = 100;
 
   // How long after clearing TXREQ the outcome is certain.
