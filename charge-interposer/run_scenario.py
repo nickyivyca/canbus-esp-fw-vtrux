@@ -740,16 +740,34 @@ def _hold_follows_loads(series, veh_text, band=(2.6, 3.3), settle_s=120.0,
     # to the cap less 0.1 A is a clamp plus a down step taken from the cap
     # (spec 1d1fae8d, user 2026-10-13): one clamp and one 0.1 A step, held
     # to the cadence like any step, and the next step is timed from it
+    # On a wire series the entry is judged too (5.2): the move from the
+    # override's last setpoint to the first HOLD receipt, with entering the
+    # hold counted as a step at the release, so the first 0.1 A step comes
+    # >= 0.28 s after it (the release is the first HOLD 0x7F4, which 8.2
+    # puts within 50 ms of the change).
     bad2 = []
     last_step = None
     nsteps = nclamps = ncombined = 0
     spcap = series.get("spcap") or []
+    pairs = []
     for i, ((ta, a), (tb, b)) in enumerate(zip(series["sp"],
                                                 series["sp"][1:])):
-        same_hold = any(h0 <= ta and tb <= h1 for h0, h1 in series["hold"])
-        if not same_hold or abs(b - a) <= 0.025:
+        if any(h0 <= ta and tb <= h1 for h0, h1 in series["hold"]):
+            pairs.append((tb, ta, a, b, spcap[i + 1][1]
+                          if i + 1 < len(spcap) else None, None))
+    for h0, pre_t, pre_a in series.get("entry") or []:
+        k = next((i for i, (t, _a) in enumerate(series["sp"]) if t >= h0),
+                 None)
+        if pre_t is not None and k is not None:
+            tb, b = series["sp"][k]
+            pairs.append((tb, pre_t, pre_a, b, spcap[k][1]
+                          if k < len(spcap) else None, h0))
+    pairs.sort(key=lambda p: (p[0], p[5] is None))
+    for tb, ta, a, b, cap_b, release in pairs:
+        if release is not None:
+            last_step = release
+        if abs(b - a) <= 0.025:
             continue
-        cap_b = spcap[i + 1][1] if i + 1 < len(spcap) else None
         if (_clamp_move and cap_b is not None and a > cap_b + 0.025
                 and abs(b - cap_b) <= 0.025):
             nclamps += 1
@@ -2950,22 +2968,39 @@ def vehicle_stimulus(witness_rows, veh_text):
 # u, the spread of (charger receipt - the witness's VCU page 01 it rode on),
 # is printed; a spacing below 0.28 s - u FAILS, one in [0.28 s - u, 0.28 s)
 # is UNRESOLVED unless its two VCU page-01 frames are >= 0.28 s apart on the
-# witness (then it passes). A record without the 6.10 A entry setpoint, or
-# without a setpoint change after each injected load step, is UNRESOLVED,
-# never PASS (wire_hold_premise).
-VCU_PAGE01_PAIR_MS = 150        # a receipt rides the VCU page 01 before it
-ENTRY_SP_A = 6.10               # spec 5.2's setpoint at the release
+# witness (then it passes). A receipt rides the NEAREST witness VCU page 01
+# within +/-150 ms whose bytes 0-1 and 4-7 equal the receipt's (only the
+# setpoint bytes 2-3 are ours): the two records come through two USB
+# adapters, so a receipt can be stamped ~1.6 ms BEFORE the witness's copy of
+# its own frame (R9, 2026-10-15; reviewer: pair by time and content).
+# The entry (spec 5.2): the hold "starts from our last override setpoint";
+# a cap below it is a clamp at once, and entering counts as a step, so the
+# first 0.1 A step comes >= 0.28 s after the release. The first receipt in
+# HOLD must therefore be the override's last setpoint, the cap (a clamp),
+# or one 0.1 A step from either -- the cap is the Oracle's at that first
+# receipt (in R9 the charger's 6.00 A Low Power ceiling arrived 3 ms before
+# it) -- and clause 2 judges that move, timed from the release; anything
+# else is UNRESOLVED. A record without the override's setpoint before the
+# hold, or without a setpoint change after each injected load step, is
+# UNRESOLVED, never PASS (wire_hold_premise).
+VCU_PAGE01_PAIR_MS = 150        # a receipt pairs within +/-150 ms
+ENTRY_FLOOR_A = 6.10            # 5.2: the override's last setpoint >= this
 
 
 def read_sp_log(path):
-    """charger_sim's --sp-log: [(host s, amps)]."""
+    """charger_sim's --sp-log: [(host s, amps, frame bytes or None)]."""
     out = []
     for ln in open(str(path), encoding="utf-8", errors="replace"):
         f = ln.rstrip("\n").split("\t")
         try:
-            out.append((float(f[0]), float(f[1])))
+            row = (float(f[0]), float(f[1]))
         except (ValueError, IndexError):
-            pass
+            continue
+        try:
+            body = bytes.fromhex(f[2])
+        except (ValueError, IndexError):
+            body = None
+        out.append(row + (body,))
     return out
 
 
@@ -2996,11 +3031,12 @@ def hold_series_from_wire(witness_rows, sp_rows):
     def in_hold(t):
         return any(a <= t <= b for a, b in hold)
     out = dict(hold=hold, sp=[], ibat=[], chgmax=[], spcap=[], soc100=None,
-               t_last=None)
+               t_last=None, entry=[])
     bus = TI.Oracle()
     state = None
+    before = []                  # receipts outside HOLD, for the entry
     ev = sorted([(int(round(r[0] * 1000)), 0, r) for r in rows] +
-                [(int(round(h * 1000)), 1, a) for h, a in sp_rows],
+                [(int(round(r[0] * 1000)), 1, r[1]) for r in sp_rows],
                 key=lambda e: (e[0], e[1]))
     for t, kind, x in ev:
         if kind == 1:
@@ -3008,6 +3044,8 @@ def hold_series_from_wire(witness_rows, sp_rows):
                 out["sp"].append((t, x))
                 caps = bus.caps()
                 out["spcap"].append((t, caps[0] if caps else None))
+            else:
+                before.append((t, x))
             continue
         fid, d = x[2], x[3]
         if fid in (0x7F4, 0x7F5, 0x7F6, 0x7F7):
@@ -3030,28 +3068,50 @@ def hold_series_from_wire(witness_rows, sp_rows):
             if v is not None:
                 out["chgmax"].append((t, float(v)))
     out["t_last"] = ev[-1][0] if ev else None
+    # per span: the release (its first HOLD 0x7F4) and the last receipt
+    # before it, the override's setpoint the hold starts from (5.2)
+    for h0, _h1 in hold:
+        pre = [r for r in before if r[0] < h0]
+        out["entry"].append((h0,) + (pre[-1] if pre else (None, None)))
     return out, ends
 
 
+def _same_frame(vcu_body, sp_body):
+    """A receipt is the VCU's page 01 with only the setpoint (bytes 2-3)
+    replaced: bytes 0-1 and 4-7 equal. A receipt without its bytes (an old
+    --sp-log) matches on time alone."""
+    if sp_body is None:
+        return True
+    return (len(vcu_body) >= 8 and len(sp_body) >= 8
+            and vcu_body[0:2] == sp_body[0:2] and vcu_body[4:8] == sp_body[4:8])
+
+
 def step_timing(witness_rows, sp_rows, hold):
-    """-> (u_ms or None, n, vcu_of): u is the spread of (charger receipt -
-    the latest witness VCU page 01 within VCU_PAGE01_PAIR_MS before it)
-    over the receipts inside HOLD; vcu_of maps a receipt's host ms to its
-    VCU frame's."""
-    vcu = sorted(int(round(r[0] * 1000)) for r in witness_rows
+    """-> (u_ms or None, n, vcu_of): u is the spread, in float ms, of
+    (charger receipt - the witness VCU page 01 it rode) over the receipts
+    inside HOLD that pair: the nearest page 01 within +/-VCU_PAGE01_PAIR_MS
+    whose bytes match (_same_frame). n counts the paired receipts; vcu_of
+    maps a paired receipt's host ms to its VCU frame's."""
+    vcu = sorted((r[0] * 1000.0, bytes(r[3])) for r in witness_rows
                  if r[2] == 0x18EFC000 and len(r[3]) >= 5 and r[3][0] == 0x01)
+    vt = [v[0] for v in vcu]
     lat, vcu_of = [], {}
-    for h, _a in sp_rows:
-        t = int(round(h * 1000))
-        if not any(a <= t <= b for a, b in hold):
+    for r in sp_rows:
+        t = r[0] * 1000.0
+        if not any(a <= int(round(t)) <= b for a, b in hold):
             continue
-        k = bisect.bisect_right(vcu, t) - 1
-        if k >= 0 and t - vcu[k] <= VCU_PAGE01_PAIR_MS:
-            lat.append(t - vcu[k])
-            vcu_of[t] = vcu[k]
+        body = r[2] if len(r) > 2 else None
+        lo = bisect.bisect_left(vt, t - VCU_PAGE01_PAIR_MS)
+        hi = bisect.bisect_right(vt, t + VCU_PAGE01_PAIR_MS)
+        cand = [k for k in range(lo, hi) if _same_frame(vcu[k][1], body)]
+        if not cand:
+            continue
+        k = min(cand, key=lambda k: abs(t - vt[k]))
+        lat.append(t - vt[k])
+        vcu_of[int(round(t))] = int(round(vt[k]))
     if not lat:
         return None, 0, vcu_of
-    return max(lat) - min(lat), len(lat), vcu_of
+    return round(max(lat) - min(lat), 1), len(lat), vcu_of
 
 
 def wire_hold_premise(series, veh_text):
@@ -3062,9 +3122,28 @@ def wire_hold_premise(series, veh_text):
     if not series["sp"]:
         return ("charger_sim received no page 01 inside HOLD (no --sp-log "
                 "record)")
-    if abs(series["sp"][0][1] - ENTRY_SP_A) > 0.025:
-        return ("the first setpoint received in HOLD is %.2f A, not the "
-                "%.2f A entry setpoint" % (series["sp"][0][1], ENTRY_SP_A))
+    caps = dict(series.get("spcap") or [])
+    for h0, pre_t, pre_a in series.get("entry") or []:
+        if pre_t is None:
+            return ("no setpoint received before the HOLD at host t=%.3f s, "
+                    "so the override's last setpoint is unknown" % (h0 / 1e3))
+        if pre_a < ENTRY_FLOOR_A - 0.025:
+            return ("the override's last setpoint before the HOLD at host "
+                    "t=%.3f s is %.2f A, below the %.2f A floor"
+                    % (h0 / 1e3, pre_a, ENTRY_FLOOR_A))
+        first = next(((t, a) for t, a in series["sp"] if t >= h0), None)
+        if first is None:
+            continue
+        cap = caps.get(first[0])
+        ok = [pre_a, pre_a - 0.1, pre_a + 0.1]
+        if cap is not None and cap < pre_a - 0.025:
+            ok += [cap, cap - 0.1]
+        if not any(abs(first[1] - x) <= 0.025 for x in ok):
+            return ("the first setpoint received in HOLD (host t=%.3f s) is "
+                    "%.2f A: neither the override's last setpoint %.2f A, the "
+                    "cap %s, nor one 0.1 A step from them"
+                    % (first[0] / 1e3, first[1], pre_a,
+                       "%.2f A" % cap if cap is not None else "(none heard)"))
     c0 = next((t for t, a in series["chgmax"] if a <= 0.0), None)
     if c0 is None:
         return None              # _hold_follows_loads FAILS this itself
@@ -3115,7 +3194,8 @@ def judge_hold_series(series, ends, u_ms, n_pairs, vcu_of, veh_text, **kw):
     if u_ms is None:
         return ("UNRESOLVED", "no charger receipt pairs with a VCU page 01 "
                 "on the witness, so the path's timing u is unknown" + edge)
-    ut = "; u = %d ms over %d receipts" % (u_ms, n_pairs)
+    ut = "; u = %g ms over %d of %d receipts in HOLD (%d unpaired)" % (
+        u_ms, n_pairs, len(series["sp"]), len(series["sp"]) - n_pairs)
     ok, why = _hold_follows_loads(series, veh_text, **kw)
     if ok:
         return ("PASS", why + ut + edge)
