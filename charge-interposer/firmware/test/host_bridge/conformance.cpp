@@ -490,6 +490,42 @@ void stepRxOverrun(Target& t, Recorder& r) {
 // Observed by plain READ of RXBnD0 (0x66 / 0x76), which does not free a
 // buffer, so looking does not change what is looked at. Every step is
 // sequenced by the script; nothing is raced.
+}  // namespace
+
+uint8_t payloadByte(uint8_t tag, int i) {
+  return i == 0 ? tag : (uint8_t)(tag + 0x1D * i);
+}
+
+std::string compareWhole(const uint8_t b[13], uint32_t id, bool ext,
+                         uint8_t dlc, uint8_t tag) {
+  const bool got_ext = (b[1] & 0x08) != 0;
+  uint32_t got_id;
+  if (got_ext)
+    got_id = ((uint32_t)b[0] << 21) | ((uint32_t)(b[1] & 0xE0) << 13) |
+             ((uint32_t)(b[1] & 0x03) << 16) | ((uint32_t)b[2] << 8) | b[3];
+  else
+    got_id = ((uint32_t)b[0] << 3) | (b[1] >> 5);
+  const uint8_t got_dlc = (uint8_t)(b[4] & 0x0F);
+  char out[160];
+  out[0] = 0;
+  if (got_ext != ext || got_id != id)
+    std::snprintf(out, sizeof(out), "id %08lX/%d not %08lX/%d",
+                  (unsigned long)got_id, got_ext ? 1 : 0, (unsigned long)id,
+                  ext ? 1 : 0);
+  else if (got_dlc != dlc)
+    std::snprintf(out, sizeof(out), "dlc %u not %u", got_dlc, dlc);
+  else
+    for (int i = 0; i < dlc && i < 8; i++)
+      if (b[5 + i] != payloadByte(tag, i)) {
+        std::snprintf(out, sizeof(out), "D%d %02X not %02X", i, b[5 + i],
+                      payloadByte(tag, i));
+        break;
+      }
+  return std::string(out);
+}
+
+namespace {
+
 uint8_t rxFlags(Target& t) {
   return (uint8_t)(readReg(t, R_CANINTF) & (INTF_RX0IF | INTF_RX1IF));
 }
@@ -590,6 +626,98 @@ void stepRxRollover(Target& t, Recorder& r) {
   r.hex8(S, "noBUKT.RXB0D0", readReg(t, 0x66), DATASHEET, P26);
 }
 
+// --- C13: the frames the chip keeps on an overflow, read back whole ------
+//
+// Reviewer, 2026-10-15, after C12 showed silicon setting RX0OVR for a frame
+// it kept: (1) is the kept frame intact -- identifier, DLC and data, read
+// back whole with READ RX 0x94 (the product's read: RXB1SIDH, 13 bytes)?
+// (2) with one frame already held, a SECOND overflow: which is stored once
+// the buffers free, is either lost, and is anything partly overwritten?
+// The held frames carry their own identifiers, a DLC other than their
+// neighbours' 8, and their own payloads (payloadByte).
+std::string wholeText(const uint8_t b[13]) {
+  char s[96];
+  std::snprintf(s, sizeof(s), "%02X%02X%02X%02X dlc%u %02X%02X%02X%02X%02X%02X%02X%02X",
+                b[0], b[1], b[2], b[3], b[4] & 0x0F, b[5], b[6], b[7], b[8],
+                b[9], b[10], b[11], b[12]);
+  return std::string(s);
+}
+
+void readRxWhole(Target& t, int n, uint8_t b[13]) {
+  t.csLow();
+  t.transfer((uint8_t)(OP_READ_RX | (n ? 0x04 : 0x00)));
+  for (int i = 0; i < 13; i++) b[i] = t.transfer(0);
+  t.csHigh();
+}
+
+struct Held { uint32_t id; uint8_t dlc; uint8_t tag; const char* name; };
+
+std::string which(const uint8_t b[13], const Held* hs, int n) {
+  for (int k = 0; k < n; k++)
+    if (compareWhole(b, hs[k].id, true, hs[k].dlc, hs[k].tag).empty())
+      return hs[k].name;
+  return "none whole (" + wholeText(b) + ")";
+}
+
+void stepHeldFrames(Target& t, Recorder& r) {
+  const char* S = "C13-held-frames";
+  const char* P23 = "p23 s4.1.3 note: the buffer is overwritten with the MAB";
+  if (!t.canInject()) {
+    r.note(S, "not-run", "no sender on the segment", UNKNOWN,
+           "Target::canInject");
+    return;
+  }
+  const uint32_t ID = 0x18FF60E5;
+  const Held H = {0x1ABCD5E7, 6, 0xD5, "H"};
+  const Held P = {0x1BCDE6F8, 6, 0x5A, "P"};
+  const Held Q = {0x1CDEF709, 3, 0x6B, "Q"};
+  const Held X = {ID, 8, 0xA2, "X"};
+  const Held Y = {ID, 8, 0xB2, "Y"};
+  const Held all[5] = {X, Y, P, Q, H};
+  uint8_t b[13];
+  reset(t);
+  writeReg(t, R_RXB0CTRL, 0x64);     // RXM = 11, BUKT
+  writeReg(t, (uint8_t)(R_RXB0CTRL + 0x10), 0x60);
+  intoNormalMode(t);
+
+  // (1) one held frame, read back whole
+  t.injectFrame(ID, true, 0xA1, 8);
+  t.injectFrame(ID, true, 0xB1, 8);
+  t.injectFrame(H.id, true, H.tag, H.dlc);         // both full: held
+  r.hex8(S, "H.overflow", ovrFlags(t), UNKNOWN, "C12 D: RX0OVR on silicon");
+  bitModify(t, R_CANINTF, INTF_RX1IF, 0x00);       // frees RXB1: H moves in
+  r.hex8(S, "H.rx-flags-after-free", rxFlags(t), UNKNOWN, "C12 E: 0x03");
+  readRxWhole(t, 1, b);
+  r.note(S, "H.read94-whole", wholeText(b), UNKNOWN, "silicon decides");
+  const std::string dh = compareWhole(b, H.id, true, H.dlc, H.tag);
+  r.note(S, "H.read94-intact", dh.empty() ? "intact" : dh, DATASHEET, P23);
+
+  // (2) a second overflow while one frame is held
+  writeReg(t, R_CANINTF, 0x00);                    // free both
+  bitModify(t, R_EFLG, (uint8_t)(EFLG_RX0OVR | EFLG_RX1OVR), 0x00);
+  t.injectFrame(X.id, true, X.tag, X.dlc);
+  t.injectFrame(Y.id, true, Y.tag, Y.dlc);
+  t.injectFrame(P.id, true, P.tag, P.dlc);         // held
+  r.hex8(S, "P.overflow", ovrFlags(t), UNKNOWN, "silicon decides");
+  bitModify(t, R_EFLG, (uint8_t)(EFLG_RX0OVR | EFLG_RX1OVR), 0x00);
+  t.injectFrame(Q.id, true, Q.tag, Q.dlc);         // second, P held
+  r.hex8(S, "Q.overflow", ovrFlags(t), UNKNOWN, "silicon decides");
+  readRxWhole(t, 1, b);                            // Y out, RXB1 freed
+  r.note(S, "free1.read94-was", which(b, all, 5), UNKNOWN, "Y expected");
+  r.hex8(S, "free1.rx-flags", rxFlags(t), UNKNOWN, "a held frame moved in?");
+  readRxWhole(t, 1, b);
+  r.note(S, "free1.moved-in", which(b, all, 5), UNKNOWN,
+         "the held one (P) or the newest (Q)?");
+  r.hex8(S, "free2.rx-flags", rxFlags(t), UNKNOWN,
+         "a second held frame moved in?");
+  readRxWhole(t, 1, b);
+  r.note(S, "free2.read94", which(b, all, 5), UNKNOWN,
+         "stale or another held frame");
+  readRxWhole(t, 0, b);                            // X out, RXB0 freed
+  r.note(S, "rxb0.read90-was", which(b, all, 5), UNKNOWN, "X expected");
+  r.hex8(S, "end.rx-flags", rxFlags(t), UNKNOWN, "anything left held?");
+}
+
 }  // namespace
 
 void run(Target& t, Recorder& rec) {
@@ -605,6 +733,7 @@ void run(Target& t, Recorder& rec) {
   stepAbort(t, rec);
   stepRxOverrun(t, rec);
   stepRxRollover(t, rec);
+  stepHeldFrames(t, rec);
 }
 
 bool runNamed(Target& t, Recorder& rec, const char* name) {
@@ -618,7 +747,8 @@ bool runNamed(Target& t, Recorder& rec, const char* name) {
       {"C5", stepRtsTogether},      {"C6", stepRtsSeparately},
       {"C7", stepTxPriority},       {"C8", stepSameIdVaryingDlc},
       {"C9", stepNoAck},            {"C10", stepAbort},
-      {"C11", stepRxOverrun},       {"C12", stepRxRollover}};
+      {"C11", stepRxOverrun},       {"C12", stepRxRollover},
+      {"C13", stepHeldFrames}};
   if (std::strcmp(name, "all") == 0) {
     run(t, rec);
     return true;

@@ -84,7 +84,8 @@ struct FakeTarget : mcpconf::Target {
     f.id = id;
     f.ext = ext;
     f.len = dlc;
-    f.data[0] = tag;
+    for (int i = 0; i < dlc && i < 8; i++)
+      f.data[i] = mcpconf::payloadByte(tag, i);
     chip.deliverFrame(f);
   }
 
@@ -219,6 +220,28 @@ int main() {
   expect(rec, "C12-rx-rollover", "noBUKT.rx-flags", "0x01");
   expect(rec, "C12-rx-rollover", "noBUKT.RXB0D0", "0xF0");
 
+  // C13 (reviewer, 2026-10-15): the held frame read back whole. The
+  // comparison itself must refuse a wrong expectation (the can-fail).
+  expect(rec, "C13-held-frames", "H.read94-intact", "intact");
+  {
+    uint8_t b[13] = {0};
+    const uint32_t id = 0x1ABCD5E7;
+    b[0] = (uint8_t)(id >> 21);
+    b[1] = (uint8_t)(((id >> 13) & 0xE0) | 0x08 | ((id >> 16) & 0x03));
+    b[2] = (uint8_t)(id >> 8);
+    b[3] = (uint8_t)id;
+    b[4] = 6;
+    for (int i = 0; i < 6; i++) b[5 + i] = mcpconf::payloadByte(0xD5, i);
+    check(mcpconf::compareWhole(b, id, true, 6, 0xD5).empty(),
+          "compareWhole: the frame as injected reads intact");
+    check(!mcpconf::compareWhole(b, id, true, 6, 0xD6).empty(),
+          "can-fail: a deliberately different expected payload is refused");
+    check(!mcpconf::compareWhole(b, id + 1, true, 6, 0xD5).empty(),
+          "can-fail: a different identifier is refused");
+    check(!mcpconf::compareWhole(b, id, true, 5, 0xD5).empty(),
+          "can-fail: a different DLC is refused");
+  }
+
   // --- the transcript must stay diffable --------------------------------
   //
   // A step that silently stopped emitting its lines would quietly shrink
@@ -280,8 +303,8 @@ int main() {
     check(mcpconf::runNamed(ta, ra, "all") && ra.all().size() == full, msg);
     FakeTarget tb;
     mcpconf::Recorder rb;
-    check(!mcpconf::runNamed(tb, rb, "C13") && rb.all().empty(),
-          "runNamed(\"C13\") is refused and records nothing");
+    check(!mcpconf::runNamed(tb, rb, "C14") && rb.all().empty(),
+          "runNamed(\"C14\") is refused and records nothing");
     // The bench needs a real bit timing: RESET leaves CNF1-3 at 0. After
     // C12 (which goes to Normal mode) the chip must hold 500 kbit/s at
     // 16 MHz, sample point 87.5 %.

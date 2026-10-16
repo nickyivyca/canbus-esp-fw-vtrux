@@ -124,6 +124,20 @@ void run(Target& t, Recorder& rec);
 // own: the single-adapter C12 the reviewer accepted.
 bool runNamed(Target& t, Recorder& rec, const char* name);
 
+// The payload every injected frame carries (step 4 item 8 follow-up,
+// reviewer 2026-10-15): byte 0 is the tag, byte i the tag + 0x1D * i, so a
+// frame read back whole can be compared field by field. Both subjects'
+// injectors fill it: the fake's (test_conformance) and the bench's
+// (bench_c12.py, the same rule in Python).
+uint8_t payloadByte(uint8_t tag, int i);
+
+// A frame read back whole from a receive buffer's 13 bytes (SIDH..D7),
+// compared with what was injected: -> "" when every field (id, ext, dlc,
+// the dlc data bytes) matches, else what differs. Exposed so a test can
+// show it refuses a wrong expectation.
+std::string compareWhole(const uint8_t b[13], uint32_t id, bool ext,
+                         uint8_t dlc, uint8_t tag);
+
 // --- helpers shared with the tests, exposed so a test can drive one step
 // --- without replaying the entire sequence.
 uint8_t readReg(Target& t, uint8_t addr);
