@@ -370,6 +370,26 @@ def vehicle_cases():
     v, why = R.vehicle_stimulus(vrows(ids=()), "")
     check(v == "FAIL" and "cannot be judged" in why,
           "can-fail: no BMS frames on the witness -> FAIL, not OK")
+    # the trailing gap (reviewer, 2026-10-15, R4): the vehicle sim stops in
+    # a session and the board trips on it
+    def stop_at(rows, t_stop):
+        return [r for r in rows
+                if not (r[2] in R.VEH_BMS_IDS and r[0] > t_stop)]
+    v, why = R.vehicle_stimulus(stop_at(vrows(trip_at=40.51), 40.0), "")
+    check(v == "OK" and "the bench's" in why and "a=10 trip 510 ms" in why,
+          "0x410-0x440 stopping 510 ms before a TRIP a=10: the sim's stop, "
+          "the bench's, and the trip on time -> OK -> %s" % why)
+    v, why = R.vehicle_stimulus(stop_at(vrows(trip_at=40.30), 40.0), "")
+    check(v == "FAIL" and "not before 500 ms" in why,
+          "can-fail: the same stop with the trip 300 ms after -> FAIL -> %s"
+          % why[:120])
+    v, why = R.vehicle_stimulus(stop_at(vrows(), 40.0), "")
+    check(v == "FAIL" and "never tripped" in why,
+          "can-fail: the sim stops in a session, the record runs 20 s on, "
+          "and the board never trips -> FAIL (spec 6) -> %s" % why[:120])
+    v, why = R.vehicle_stimulus(stop_at(vrows(), 59.8), "")
+    check(v == "OK", "a stop 0.2 s before the record ends owes no trip yet "
+          "-> OK -> %s" % why[:100])
 
 
 def recording_cases():

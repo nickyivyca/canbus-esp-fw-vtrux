@@ -1744,20 +1744,116 @@ def start_order(external):
 
 
 END_SETTLE_S = 1.5        # past the 500 ms BMS staleness, with margin
+NEXT_SETTLE_S = 3.0       # before the next scenario's witness opens
+PRE_CHARGER_TAIL_S = 2.5  # the pre-charger 2.3 premise (below)
+LAST_CHARGER_FILE = "board_last_charger_host.txt"
 
 
+# The teardown (reviewer, 2026-10-15, step 4 item 6 R2 / R4). Closing the
+# serial port resets the board (USB-Serial/JTAG). It used to close before
+# charger_sim stopped, so the rebooted board heard the charger's tail, went
+# normal and sent status frames the NEXT scenario's witness counted against
+# 2.3. Now: a settle while everything records (the board's trip on the BMS
+# going quiet stays on the witness), then the sims, then the witness, then
+# the serial port, and a settle before the next scenario can open its
+# witness. vehicle_sim has already exited: its exit ends the scenario.
 def teardown_order(have_tap, have_witness):
-    """-> what run_one stops after vehicle_sim exits, in order: a settle
-    while both still record (only when the witness runs), the tap, and the
-    witness LAST."""
+    """-> what run_one does after vehicle_sim exits, in order."""
     out = []
     if have_witness:
         out.append("settle")
-    if have_tap:
-        out.append("tap")
+    out.append("sims")
     if have_witness:
         out.append("witness")
+    if have_tap:
+        out += ["tap", "rest"]
     return out
+
+
+def pre_charger_premise(prev_stop_host, witness_open_host):
+    """-> None, or why the window before this scenario's first charger frame
+    cannot be judged under 2.3: the previous scenario's charger_sim stopped
+    less than PRE_CHARGER_TAIL_S before this witness opened (host perf
+    clock), so its last frames may still hold the port normal. The stop is
+    charger_sim's exit, which no frame of it can follow, so the gap is never
+    overstated. A stop after the witness opened is a perf clock from before
+    a reboot: no record."""
+    if prev_stop_host is None or witness_open_host < prev_stop_host:
+        return None
+    gap = witness_open_host - prev_stop_host
+    if gap < PRE_CHARGER_TAIL_S:
+        return ("the witness opened %.2f s after the previous scenario's "
+                "charger_sim stopped, under %.1f s: its tail can hold the "
+                "port normal" % (gap, PRE_CHARGER_TAIL_S))
+    return None
+
+
+def read_last_charger(outdir):
+    try:
+        return float((Path(outdir) / LAST_CHARGER_FILE).read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def write_last_charger(outdir, host):
+    try:
+        (Path(outdir) / LAST_CHARGER_FILE).write_text("%.6f\n" % host)
+    except OSError:
+        pass
+
+
+# --- process priority (tester, 2026-10-15; step 4 item 6's VOIDs) ---------
+# charger_sim and vehicle_sim stalled under the PC's other load (#5, #12,
+# #17). On Windows the sims, and run_scenario itself (the serial tap and
+# the witness are its threads), run at ABOVE_NORMAL, and the class is read
+# back: a process not at ABOVE_NORMAL is a failed bench premise.
+ABOVE_NORMAL_PRIORITY_CLASS = 0x8000
+
+
+def set_above_normal(pid):
+    """-> True if the class was set. Windows only."""
+    if os.name != "nt":
+        return False
+    import ctypes
+    k32 = ctypes.windll.kernel32
+    h = k32.OpenProcess(0x0200 | 0x0400, False, int(pid))
+    if not h:
+        return False
+    try:
+        return bool(k32.SetPriorityClass(h, ABOVE_NORMAL_PRIORITY_CLASS))
+    finally:
+        k32.CloseHandle(h)
+
+
+def priority_class(pid):
+    """-> the process's priority class, or None (not Windows, or gone)."""
+    if os.name != "nt":
+        return None
+    import ctypes
+    k32 = ctypes.windll.kernel32
+    h = k32.OpenProcess(0x1000, False, int(pid))
+    if not h:
+        return None
+    try:
+        return int(k32.GetPriorityClass(h)) or None
+    finally:
+        k32.CloseHandle(h)
+
+
+def priority_premise(named_pids):
+    """-> (ok, why): every (name, pid) read back at ABOVE_NORMAL."""
+    if os.name != "nt":
+        return (True, "process priority: not applicable (not Windows)")
+    bad, good = [], []
+    for name, pid in named_pids:
+        c = priority_class(pid)
+        (good if c == ABOVE_NORMAL_PRIORITY_CLASS else bad).append(
+            "%s 0x%X" % (name, c) if c is not None else "%s unreadable" % name)
+    if bad:
+        return (False, "process priority: NOT at ABOVE_NORMAL (0x8000): %s"
+                % ", ".join(bad))
+    return (True, "process priority: %s at ABOVE_NORMAL, read back"
+            % ", ".join(n for n, _p in named_pids))
 
 
 def run_one(sc, args, outdir):
@@ -1776,32 +1872,41 @@ def run_one(sc, args, outdir):
     witness_path = outdir / ("%s.diag_witness.log" % sc.name)
     sp_log = outdir / ("%s.charger.sp.log" % sc.name)
     acker_first = None
+    prechg = None
+    prio = None
+    named = [("run_scenario", os.getpid())]
+    set_above_normal(os.getpid())
+
+    def started(name, proc):
+        set_above_normal(proc.pid)
+        named.append((name, proc.pid))
+        return proc
 
     def start_charger():
         with open(chg_log, "w") as f:
-            procs.append(subprocess.Popen(
+            procs.append(started("charger_sim", subprocess.Popen(
                 [PY, str(HERE / "charger_sim.py"),
                  "--port", str(args.charger_port),
                  "--phys-port", str(args.phys_port),
                  "--sp-log", str(sp_log)]
                 + _transport_args(args, "charger")
                 + ts + sc.charger, stdout=f, stderr=subprocess.STDOUT, env=env,
-                **POPEN_KW))
+                **POPEN_KW)))
 
     def start_interposer():
         with open(int_log, "w") as f:
-            procs.append(subprocess.Popen(
+            procs.append(started("interposer_sim", subprocess.Popen(
                 [PY, str(HERE / "interposer_sim.py"),
                  "--vehicle-port", str(args.vehicle_port),
                  "--charger-port", str(args.charger_port)]
                 + ([] if args.no_l1
                    else ["--trace-out", str(trace_path)])
                 + ts + sc.interposer, stdout=f,
-                stderr=subprocess.STDOUT, env=env, **POPEN_KW))
+                stderr=subprocess.STDOUT, env=env, **POPEN_KW)))
 
     def start_vehicle():
         with open(veh_log, "w") as f:
-            return subprocess.Popen(
+            return started("vehicle_sim", subprocess.Popen(
                 [PY, str(HERE / "vehicle_sim.py"),
                  "--port", str(args.vehicle_port),
                  "--phys-port", str(args.phys_port),
@@ -1812,7 +1917,7 @@ def run_one(sc, args, outdir):
                  "--report-every", "60"]
                 + _transport_args(args, "vehicle") + ts + sc.vehicle,
                 stdout=f, stderr=subprocess.STDOUT, env=env,
-                **POPEN_KW)
+                **POPEN_KW))
 
     try:
         if args.external_interposer:
@@ -1827,9 +1932,19 @@ def run_one(sc, args, outdir):
             tap.start()
             if args.diag_witness:
                 import diag_cadence
+                prev_stop = read_last_charger(outdir)
+                open_t = time.perf_counter()
                 witness = diag_cadence.DiagWitness(
                     str(witness_path), channel=args.diag_witness,
                     acks=(args.diag_witness_mode == "acks")).start()
+                prechg = pre_charger_premise(prev_stop, open_t)
+                print("   2.3 before the first charger frame: %s"
+                      % ("NOT JUDGED -- " + prechg if prechg else
+                         "judged (%s)" % ("no previous charger_sim stop "
+                                          "recorded" if prev_stop is None
+                                          else "the previous charger_sim "
+                                          "stopped %.1f s before"
+                                          % (open_t - prev_stop))))
             # the premise, scored: an acknowledger on the vehicle segment
             # before the charger starts (start_order's comment)
             acker_first = witness is not None and witness.acks
@@ -1856,6 +1971,8 @@ def run_one(sc, args, outdir):
                 time.sleep(1.5)
                 veh = start_vehicle()
                 veh_start = time.perf_counter()
+        prio = priority_premise(named)
+        print("   %s" % prio[1])
         if tap is not None and sc.board_reset_at_s is not None:
             reset_timer = threading.Timer(sc.board_reset_at_s,
                                           tap.reset_board)
@@ -1879,18 +1996,23 @@ def run_one(sc, args, outdir):
         for what in teardown_order(tap is not None, witness is not None):
             if what == "settle":
                 time.sleep(END_SETTLE_S)
-            elif what == "tap":
-                tap.stop()
+            elif what == "sims":
+                for p in procs:
+                    _interrupt(p)
+                deadline = time.time() + 5
+                for p in procs:
+                    try:
+                        p.wait(timeout=max(0.1, deadline - time.time()))
+                    except subprocess.TimeoutExpired:
+                        p.kill()
+                if tap is not None:
+                    write_last_charger(outdir, time.perf_counter())
             elif what == "witness":
                 witness.stop()
-        for p in procs:
-            _interrupt(p)
-        deadline = time.time() + 5
-        for p in procs:
-            try:
-                p.wait(timeout=max(0.1, deadline - time.time()))
-            except subprocess.TimeoutExpired:
-                p.kill()
+            elif what == "tap":
+                tap.stop()
+            elif what == "rest":
+                time.sleep(NEXT_SETTLE_S)
 
     l1 = None
     inv = None
@@ -1912,7 +2034,8 @@ def run_one(sc, args, outdir):
                 diag_cadence.read_stamped(tap.stamped_path),
                 # a board reset is a power-up (diag_cadence.reset_round)
                 reset_host=(tap.reset_host_t
-                            if sc.board_reset_at_s is not None else None))
+                            if sc.board_reset_at_s is not None else None),
+                prechg_unjudged=prechg)
     if args.external_interposer or args.no_l1:
         # Said out loud (tester, 2026-10-07): rev 1 appended nothing here,
         # so a run with the flight core unchecked printed the same PASS as
@@ -1954,6 +2077,7 @@ def run_one(sc, args, outdir):
     stimulus = None
     vstim = None
     hold_wire = None
+    wrows = None
     if args.external_interposer and witness is not None and not witness.error:
         import diag_cadence
         wrows = diag_cadence.read_witness(str(witness_path))
@@ -1970,7 +2094,7 @@ def run_one(sc, args, outdir):
     return evaluate(sc, veh_log, chg_log, int_log, timed_out, l1, inv,
                     order=order, hold=hold, diag82=diag82, reset=reset,
                     acker_first=acker_first, stimulus=stimulus, vstim=vstim,
-                    hold_wire=hold_wire)
+                    hold_wire=hold_wire, wrows=wrows, prio=prio)
 
 
 VEH_ROW = re.compile(
@@ -2907,6 +3031,30 @@ def vehicle_stimulus(witness_rows, veh_text):
                  if s0 == "SAFE" and c == TRIP_STALE_CODE), None)
     probs = []
     stale = [a + VEH_STALE_S for g, a, b, fid in gaps if g > VEH_STALE_S]
+    # Each id's TRAILING gap, from its last frame to the trip or the end of
+    # the record (reviewer, 2026-10-15, R4: a gap counted only between two
+    # frames never saw the one the sim's stop leaves, and blamed the board
+    # for the trip it caused). It is the bench's -- the sim stopped -- so it
+    # needs no stall to cover it, but spec 6 still holds on it: in a session
+    # the frame is stale 500 ms after its last copy, whatever follows.
+    t_end = rows[-1][0] if rows else None
+    trail = []
+    for fid, ts in bms.items():
+        if ts and state_at(ts[-1]) in SESSION_STATES:
+            a = ts[-1]
+            end = trip if trip is not None and trip > a else t_end
+            if end - a > VEH_STALE_S - TRIP_EARLY_S:
+                trail.append((a, fid))
+    if trail:
+        a0, fid0 = min(trail)
+        stale.append(a0 + VEH_STALE_S)
+        tnote = ("; trailing: the vehicle sim stopped (0x%03X's last frame at "
+                 "host %.3f, in a session), the bench's" % (fid0, a0))
+        if trip is not None and trip > a0:
+            tnote += ("; the board's a=10 trip %.0f ms after it"
+                      % ((trip - a0) * 1000))
+    else:
+        tnote = ""
     t_stale = min(stale) if stale else None
     if trip is not None and (t_stale is None
                              or trip < t_stale - TRIP_EARLY_S):
@@ -2925,11 +3073,11 @@ def vehicle_stimulus(witness_rows, veh_text):
                      % ((trip - t_stale) * 1000, TRIP_LATE_S * 1000))
     largest = max((g for g, _a, _b, _f in gaps), default=0.0)
     if probs:
-        return ("FAIL", "; ".join(probs) + " (%d gap(s) over %.0f ms)"
-                % (len(gaps), STIM_GAP_S * 1000))
+        return ("FAIL", "; ".join(probs) + " (%d gap(s) over %.0f ms%s)"
+                % (len(gaps), STIM_GAP_S * 1000, tnote))
     if not gaps:
-        return ("OK", "no 0x410-0x440 gap over %.0f ms in a session"
-                % (STIM_GAP_S * 1000))
+        return ("OK", "no 0x410-0x440 gap over %.0f ms in a session%s"
+                % (STIM_GAP_S * 1000, tnote))
     stalls = [(float(h) - int(ms) / 1000.0, float(h))
               for ms, h in VEH_STALL_RE.findall(veh_text)
               if int(ms) / 1000.0 > STIM_GAP_S]
@@ -2945,7 +3093,87 @@ def vehicle_stimulus(witness_rows, veh_text):
                 "inside no vehicle_sim stall over %.0f ms: not the bench's"
                 % (desc, g * 1000, fid, a, STIM_GAP_S * 1000))
     return ("VOID", "%s, each inside a vehicle_sim stall, and the board's "
-            "spec 6 trip on time: the bench starved the stimulus" % desc)
+            "spec 6 trip on time: the bench starved the stimulus%s"
+            % (desc, tnote))
+
+
+# --- "no TRIP" on a board run ends at the earliest sim stop (reviewer,
+# 2026-10-15, step 4 item 6 R4)
+#
+# A board run ends with the sims stopping, and a scenario still in a session
+# then trips on whichever stops first (R4: vehicle_sim at --max-sim-s in
+# OVERRIDE, TRIP a=10 ~509 ms after its last 0x410). Teardown order cannot
+# prevent that. So every no-TRIP check is judged up to the earliest sim
+# stop, the first sim's last frame on the witness; a TRIP before it FAILS
+# as ever. A trip after it is judged, never ignored, against spec 6 timing
+# from that sim's last frame: the stopped sim's stale code (10 for the
+# BMS frames, 11 for the charger's) between 500 ms - TRIP_EARLY_S and
+# 500 ms + TRIP_LATE_S after it, on the TRIP line's host stamp (the
+# serial path's ~1 ms is inside the margins); anything else FAILS.
+CHG_STALE_CODE = 11             # TRIP a= / 0x7F4 B3: charger frames stale
+STALE_S = 0.500                 # spec 6, both
+
+
+def earliest_sim_stop(witness_rows):
+    """-> (host s, sim, its stale code) of the first sim's last frame on
+    the witness, or None: vehicle_sim's last 0x410-0x440, charger_sim's
+    last forwarded frame (SA 0xC0)."""
+    bms = [r[0] for r in witness_rows if r[2] in VEH_BMS_IDS]
+    chg = [r[0] for r in witness_rows
+           if r[2] > 0x7FF and (r[2] & 0xFF) == 0xC0]
+    ends = []
+    if bms:
+        ends.append((max(bms), "vehicle_sim", TRIP_STALE_CODE))
+    if chg:
+        ends.append((max(chg), "charger_sim", CHG_STALE_CODE))
+    return min(ends) if ends else None
+
+
+def no_trip_to_first_stop(pattern, stamped_rows, witness_rows):
+    """-> (ok, why) for no_ev(pattern) on a board run (see above)."""
+    import diag_cadence
+    hits = [(h, ln) for h, ln in stamped_rows
+            if diag_cadence.BOARD_EVENT.match(ln) and re.search(pattern, ln)]
+    stop = earliest_sim_stop(witness_rows)
+    if stop is None:
+        return (not hits, "no event matches /%s/ (no sim frame on the "
+                "witness: judged to the end of the log)%s"
+                % (pattern, "" if not hits else ": %d match" % len(hits)))
+    t_stop, who, code = stop
+    where = ("up to the earliest sim stop (%s's last frame on the witness, "
+             "host %.3f)" % (who, t_stop))
+    before = [(h, ln) for h, ln in hits if h <= t_stop]
+    if before:
+        h, ln = before[0]
+        return (False, "an event matches /%s/ %s: %d before it, first at "
+                "host %.3f: %s" % (pattern, where, len(before), h, ln[:80]))
+    after = [(h, ln) for h, ln in hits if h > t_stop]
+    if not after:
+        return (True, "no event matches /%s/ %s" % (pattern, where))
+    probs, notes = [], []
+    lo, hi = STALE_S - TRIP_EARLY_S, STALE_S + TRIP_LATE_S
+    for h, ln in after:
+        m = re.search(r"\bTRIP a=(-?\d+)", ln)
+        dt = h - t_stop
+        if m is None:
+            probs.append("%r %.0f ms after the stop is no TRIP line spec 6 "
+                         "can time" % (ln[:60], dt * 1000))
+        elif int(m.group(1)) != code:
+            probs.append("TRIP a=%s %.0f ms after %s stopped: not its stale "
+                         "code a=%d" % (m.group(1), dt * 1000, who, code))
+        elif not lo <= dt <= hi:
+            probs.append("TRIP a=%d %.0f ms after %s's last frame -- spec 6 "
+                         "allows %.0f-%.0f ms" % (code, dt * 1000, who,
+                                                  lo * 1000, hi * 1000))
+        else:
+            notes.append("TRIP a=%d %.0f ms after %s's last frame -- spec 6 "
+                         "timing (%.0f-%.0f ms): PASS"
+                         % (code, dt * 1000, who, lo * 1000, hi * 1000))
+    if probs:
+        return (False, "no event matches /%s/ %s; after it: %s"
+                % (pattern, where, "; ".join(probs + notes)))
+    return (True, "no event matches /%s/ %s; after it: %s"
+            % (pattern, where, "; ".join(notes)))
 
 
 # --- spec 9's hold on a board run, judged on the wire (reviewer, 2026-10-15)
@@ -3431,7 +3659,8 @@ def _wsl_path(p):
 
 def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
              order=None, hold=None, diag82=None, reset=None, acker_first=None,
-             stimulus=None, vstim=None, hold_wire=None):
+             stimulus=None, vstim=None, hold_wire=None, wrows=None,
+             prio=None):
     veh = veh_log.read_text(errors="replace")
     chg = chg_log.read_text(errors="replace")
     intp = int_log.read_text(errors="replace")
@@ -3481,8 +3710,13 @@ def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
                                "" if mf is not None
                                else " -- the first never matched")))
         elif kind == "intp_no_event":
-            ok = re.search(val, intp) is None
-            results.append((ok, "no event matches /%s/" % val))
+            if wrows is not None and stamped.exists() and "TRIP" in val:
+                import diag_cadence
+                results.append(no_trip_to_first_stop(
+                    val, diag_cadence.read_stamped(str(stamped)), wrows))
+            else:
+                ok = re.search(val, intp) is None
+                results.append((ok, "no event matches /%s/" % val))
         elif kind == "veh_event":
             ok = re.search(val, veh) is not None
             results.append((ok, "vehicle log matches /%s/" % val))
@@ -3608,6 +3842,8 @@ def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
                             "the PCAN witness in normal mode" if acker_first
                             else "NONE -- the board met the charger with "
                             "nothing on CAN1 to acknowledge it")))
+    if prio is not None:
+        results.append((prio[0], "bench premise: %s" % prio[1]))
 
     if "Traceback" in veh or "Traceback" in intp or "Traceback" in chg:
         results.append((False, "no simulator crashed"))

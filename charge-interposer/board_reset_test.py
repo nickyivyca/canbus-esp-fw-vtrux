@@ -32,7 +32,9 @@ Also the two other things run_scenario does differently for a real board
 Run: python board_reset_test.py   (exit 0 = all checks passed)
 """
 
+import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -435,6 +437,123 @@ def witness_order_cases(R):
           "the witness logs the VCU's page 00 under protocol's own id")
 
 
+def teardown_cases(R):
+    """The teardown (reviewer, 2026-10-15, item 6 R2 / R4): the sims stop
+    before the serial port closes (which resets the board), and the next
+    witness waits."""
+    import inspect
+    td = R.teardown_order(True, True)
+    check(td == ["settle", "sims", "witness", "tap", "rest"],
+          "teardown: settle, the sims, the witness, the serial port, a rest "
+          "-> %s" % td)
+    check("sims" in td and "tap" in td and td.index("sims") < td.index("tap"),
+          "can-fail against the old order (tap before the charger): "
+          "charger_sim stops BEFORE the serial port closes and resets the "
+          "board, so no tail of it reaches the rebooted board")
+    check(td.index("settle") < td.index("sims") < td.index("witness")
+          and R.END_SETTLE_S > 0.5,
+          "...and the settle comes first, with the witness open, so the "
+          "board's end-of-run trip (500 ms after vehicle_sim exits) is on it")
+    check(td[-1] == "rest" and R.NEXT_SETTLE_S >= 3.0,
+          "a rest of %.1f s after the serial port closes, before the next "
+          "scenario can open its witness" % R.NEXT_SETTLE_S)
+    check(R.teardown_order(False, False) == ["sims"],
+          "an emulated run just stops its sims")
+    src = inspect.getsource(R.run_one)
+    check('write_last_charger(outdir, time.perf_counter())' in src
+          and "prev_stop = read_last_charger(outdir)" in src
+          and "pre_charger_premise(prev_stop, open_t)" in src
+          and "prechg_unjudged=prechg" in src,
+          "run_one records charger_sim's stop, and the next run reads it as "
+          "its witness opens and hands the premise to 8.2's score")
+    tmp = Path(tempfile.mkdtemp(dir=str(HERE)))
+    try:
+        check(R.read_last_charger(tmp) is None,
+              "no file: no previous charger stop")
+        R.write_last_charger(tmp, 1234.5)
+        check(R.read_last_charger(tmp) == 1234.5,
+              "the stop round-trips through %s" % R.LAST_CHARGER_FILE)
+    finally:
+        shutil.rmtree(str(tmp), ignore_errors=True)
+    check(R.pre_charger_premise(100.0, 101.9) is not None
+          and R.pre_charger_premise(100.0, 102.6) is None,
+          "the premise: 1.9 s -> NOT JUDGED, 2.6 s -> judged")
+
+
+def no_trip_cases(R):
+    """no-TRIP ends at the earliest sim stop; a trip after it is judged
+    against spec 6 (reviewer, 2026-10-15, R4)."""
+    import inspect
+    rows = []
+    t = 0.0
+    while t <= 100.0 + 1e-9:
+        for fid in R.VEH_BMS_IDS:
+            rows.append((round(t, 3), round(t, 3), fid, bytes(8)))
+        t += 0.1
+    t = 0.05
+    while t <= 102.0 + 1e-9:
+        rows.append((round(t, 3), round(t, 3), 0x18FFD4C0, bytes(8)))
+        t += 0.1
+    stop = R.earliest_sim_stop(rows)
+    check(stop is not None and stop[1] == "vehicle_sim"
+          and abs(stop[0] - 100.0) < 1e-6 and stop[2] == 10,
+          "the earliest stop: vehicle_sim's last 0x410-0x440 -> %s"
+          % (stop,))
+
+    def judge(*trips):
+        st = [(50.0, "[50000] MONITOR      charge established a=1 b=0 c=0")]
+        st += [(h, "[%d] SAFE         TRIP a=%d b=1040 c=0" % (h * 1000, a))
+               for h, a in trips]
+        return R.no_trip_to_first_stop(r"TRIP", st, rows)
+    ok, why = judge()
+    check(ok and "up to the earliest sim stop" in why,
+          "no TRIP at all -> PASS -> %s" % why[:110])
+    ok, why = judge((100.510, 10))
+    check(ok and "510 ms after vehicle_sim" in why and "PASS" in why,
+          "a TRIP a=10 510 ms after vehicle_sim's last frame is judged "
+          "against spec 6 and PASSES -> %s" % why[why.find("after it"):][:90])
+    ok, why = judge((100.300, 10))
+    check(not ok and "300 ms" in why,
+          "can-fail: a TRIP a=10 300 ms after the last frame -> FAIL -> %s"
+          % why[why.find("after it"):][:90])
+    ok, why = judge((99.0, 10))
+    check(not ok and "before it" in why,
+          "can-fail: a TRIP before the earliest stop still FAILS no-TRIP "
+          "-> %s" % why[:110])
+    ok, why = judge((100.510, 11))
+    check(not ok and "not its stale code" in why,
+          "can-fail: a=11 after vehicle_sim stopped is not that sim's code "
+          "-> FAIL")
+    ok, why = judge((100.900, 10))
+    check(not ok and "900 ms" in why, "can-fail: 900 ms after, too late -> "
+          "FAIL")
+    check("no_trip_to_first_stop(" in inspect.getsource(R.evaluate),
+          "evaluate() judges a board run's no-TRIP this way")
+
+
+def priority_cases(R):
+    """The sims and run_scenario at ABOVE_NORMAL, read back (Windows)."""
+    if os.name != "nt":
+        ok, why = R.priority_premise([("x", os.getpid())])
+        check(ok and "not applicable" in why, "not Windows: not applicable")
+        return
+    child = subprocess.Popen([sys.executable, "-c",
+                              "import time; time.sleep(20)"])
+    try:
+        ok, why = R.priority_premise([("child", child.pid)])
+        check(not ok and "NOT at ABOVE_NORMAL" in why,
+              "can-fail: a process left at NORMAL fails the premise -> %s"
+              % why)
+        check(R.set_above_normal(child.pid),
+              "set_above_normal() sets the class")
+        ok, why = R.priority_premise([("child", child.pid)])
+        check(ok and "read back" in why,
+              "...and it reads back ABOVE_NORMAL -> %s" % why)
+    finally:
+        child.kill()
+        child.wait()
+
+
 def main():
     print("a board that honours the reset")
     b = Board()
@@ -546,14 +665,9 @@ def main():
     wall_cases(R)
     witness_order_cases(R)
     stimulus_cases(R)
-    td = R.teardown_order(True, True)
-    check(td == ["settle", "tap", "witness"],
-          "teardown: settle, then the tap, then the witness LAST -> %s" % td)
-    check(td.index("witness") > td.index("tap") and R.END_SETTLE_S > 0.5,
-          "...so the board's end-of-run trip (500 ms after vehicle_sim "
-          "exits) is still on the witness (the old order stopped it first)")
-    check(R.teardown_order(True, False) == ["tap"],
-          "no witness: no settle, just the tap")
+    teardown_cases(R)
+    no_trip_cases(R)
+    priority_cases(R)
 
     print("\nboard_reset_test: %s" % ("all checks OK" if not FAILS else
                                      "%d FAILED" % len(FAILS)))
