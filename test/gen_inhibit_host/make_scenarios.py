@@ -1239,6 +1239,56 @@ def s_key_stale():
     return sorted_directives(L)
 
 
+@scenario("key-stale-keeps-latch", """
+Spec 7.1 decision 4 with a latch to keep: "A stale key gates transmission but
+clears no latch." M mode latches the section 6 release at 3 s; then 0x592
+simply stops for 2 s with the key ON (5-7 s) and comes back still reading ON.
+key-stale-not-keyoff has no latch set, so it shows that no KEY_CLEAR is raised;
+this one shows the latch survives (tester, 2026-10-16, reviewer's gap 2).
+
+EXPECT: DISABLED (m_mode) at 3 s and transmission stops. No KEY event at 5 or
+7 s (the value never changed), no KEY_CLEAR, and the device is still disabled,
+not live, on fresh key readings from 7 s to the end. Nothing is transmitted
+after 3 s.
+""", autokey=False)
+def s_key_stale_keeps_latch():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 10 * S, 20 * MS)
+    L += key_train(1 * S, 5 * S, on=True)
+    L += key_train(7 * S, 10 * S, on=True)
+    L += periodic(1 * S, 3 * S, 200 * MS, lambda t: shift(t, 0))
+    L += periodic(3 * S, 4 * S, 200 * MS, lambda t: shift(t, 4))
+    L += periodic(4 * S, 10 * S, 200 * MS, lambda t: shift(t, 0))
+    L += ["end %d" % (11 * S)]
+    return sorted_directives(L)
+
+
+@scenario("key-on-clears-low-soc", """
+Spec 7.1 decision 5 for the other section 6 release: "M mode and low SoC clear
+on a key-on too." key-on-clears-disable covers M mode only (tester, 2026-10-16,
+reviewer's gap 1). Low SoC latches at about 2.25 s (five low 0x411 at 20 Hz);
+the pack reads 50 % again from 5 s, during the key-off, so nothing re-latches
+after the key-on ("a low SoC re-latches after five valid 0x411 frames" -- it is
+a re-evaluation, not an override).
+
+EXPECT: DISABLED (low_soc) at ~2.25 s and transmission stops; KEY off at 5 s;
+KEY on and KEY_CLEAR at 6 s; the device re-enters the arm gate, goes live again
+and transmits.
+""", autokey=False, autobms=False)
+def s_key_on_clears_low_soc():
+    L = ["mode 0 3 500"]
+    L += cmd_train(1 * S, 12 * S, 20 * MS)
+    L += key_train(1 * S, 5 * S, on=True)
+    L += key_train(5 * S, 6 * S, on=False)
+    L += key_train(6 * S, 12 * S, on=True)
+    L += _healthy_bg(1 * S, 12 * S, skip=(0x411,))
+    L += periodic(1 * S, 2 * S, 50 * MS, lambda t: soc(t, 5000))
+    L += periodic(2 * S, 5 * S, 50 * MS, lambda t: soc(t, 1500))    # low_soc
+    L += periodic(5 * S, 12 * S, 50 * MS, lambda t: soc(t, 5000))
+    L += ["end %d" % (13 * S)]
+    return sorted_directives(L)
+
+
 @scenario("key-never-seen", """
 A bus with no 0x592 on it at all -- a partial bench harness, or a capture
 taken from the wrong segment.
