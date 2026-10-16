@@ -58,6 +58,14 @@ every run starts by proving the witness silent. With only the witness open,
 `MODE normal` and `SEND 7EF 1` must leave `STATUS` at `tec` >= 128 (nobody
 ACKed). If not, the run is refused.
 
+`STATUS` prints the driver API's `tec=` / `rec=` and, since 2026-10-16, the
+controller's own registers: `tec_reg=` / `rec_reg=` (the 8-bit counters) and
+`tec_raw=` / `rec_raw=` (the whole 32-bit words; bits 8-31 are reserved). In
+listen-only mode the API's pair is 0 by construction: ESP-IDF v5.4.1
+`twai.c`, `twai_get_status_info_v2`, returns literals there and reads the
+registers only in other modes. So a listen-only REC must be read from
+`rec_reg=`.
+
 ## Build (PowerShell; this machine's ESP-IDF and Python paths are in `tools-reference.md`)
 
 ```powershell
