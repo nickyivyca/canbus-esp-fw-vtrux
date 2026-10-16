@@ -269,6 +269,30 @@ def no_evse_cap_traces(outdir):
                   b.trace)]
 
 
+def override_ended_traces(outdir):
+    """Spec 6: a VCU CHARGER command with the flow bit on, during an
+    override, ends it at once, back to MONITOR, armed -- the event
+    EV_OVERRIDE_ENDED_BY_VCU, "... override ended, armed". Defined, never
+    observed: no capture and no scenario reaches it, and none of the 132
+    traces did (reviewer, 2026-10-15, step 4 item 2's (6): a host check is
+    enough). diff_all.sh holds the port to its event line, and its second
+    events negative control fails on "transparent"."""
+    b = T._armed()
+    b.low_power()
+    T._drain(b, T._hold_all, 30)
+    if b.state() != "OVERRIDE":
+        raise SystemExit("charger_during_override: the bench is in %s, not "
+                         "OVERRIDE, before the CHARGER command" % b.state())
+    b.veh(0x18EFC000, T.P.enc_master(1, T.P.MODE_CHARGER))
+    T._drain(b, T._hold_all, 20)
+    if b.state() != "MONITOR":
+        raise SystemExit("charger_during_override: a CHARGER command during "
+                         "the override left the core in %s, not MONITOR -- "
+                         "recording it would bake that in" % b.state())
+    return [write(outdir, PREFIX + "charger_during_override",
+                  b.cfg_overrides, b.trace)]
+
+
 def random_traces(outdir):
     made = []
     for seed, rate, junk in RANDOM_SEEDS:
@@ -301,7 +325,7 @@ def main():
     made = (trip_traces(a.outdir) + control_trace(a.outdir)
             + definition_traces(a.outdir) + silence_traces(a.outdir)
             + learned_cc_traces(a.outdir) + hold_cadence_traces(a.outdir)
-            + no_evse_cap_traces(a.outdir))
+            + no_evse_cap_traces(a.outdir) + override_ended_traces(a.outdir))
     for path, n in made:
         print("  %-52s %6d steps" % (os.path.basename(path), n))
 
