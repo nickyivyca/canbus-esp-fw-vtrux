@@ -12,7 +12,7 @@ after the ESP-IDF port.
 
 | File | What |
 |---|---|
-| `main/c12_bench.cpp` | `BenchTarget` (SPI2 on CS 10 / SCK 12 / MISO 13 / MOSI 11, CS as a GPIO; esp_timer clock) and the console protocol: `HELLO?`, `RUN <C1..C12\|all>`, and the board's `@REQ` lines that the host answers |
+| `main/c12_bench.cpp` | `BenchTarget` (SPI2 on CS 10 / SCK 12 / MISO 13 / MOSI 11, CS as a GPIO; esp_timer clock) and the console protocol: `HELLO?`, `RUN <C1..C13\|all>`, and the board's `@REQ` lines that the host answers |
 | `main/CMakeLists.txt` | the component: `c12_bench.cpp` plus `../../host_bridge/conformance.cpp` and `provenance.cpp`. host_bridge is deliberately NOT an include directory (its fake `Arduino.h`, `SPI.h`, `driver/twai.h` must not shadow IDF's) |
 | `CMakeLists.txt`, `sdkconfig.defaults` | the project: esp32s3, 8 MB flash, console on USB Serial/JTAG, 1 kHz tick, logs at WARN, task watchdog off |
 | `.gitignore` | `build/`, `sdkconfig` |

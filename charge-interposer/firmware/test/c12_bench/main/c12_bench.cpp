@@ -29,7 +29,7 @@
 //                                                  listen-only, or normal)
 //
 // and the host drives the board with `HELLO?` (answered with the image's
-// identity) and `RUN <C1..C12|all>` (answered with the transcript between
+// identity) and `RUN <C1..C13|all>` (answered with the transcript between
 // `@BEGIN` and `@END`). Every C12 action is sequenced by the script, so no
 // timing precision is needed of the host (conformance.h, injectFrame).
 //

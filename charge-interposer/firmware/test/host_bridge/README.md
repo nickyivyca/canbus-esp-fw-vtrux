@@ -15,7 +15,7 @@ generator-inhibit session built against old headers three times.
 | `mcp2515_fake.h` / `.cpp` | Constants, the status table, and the bit-modifiable register set. **The status table is the source of truth for what every L2 result rests on**, and the run-time marking is generated from it |
 | `mcp2515_fake_chip.h` / `.cpp` | The chip: register file, SPI instruction decode, transmit engine, error counters, virtual clock |
 | `test_mcp2515_fake.cpp` | The model checked against the datasheet behaviours it claims |
-| `conformance.h` / `.cpp` | **The conformance sequence: one script, two subjects.** Twelve steps (C1-C12) driven entirely over raw SPI, emitting a diffable transcript |
+| `conformance.h` / `.cpp` | **The conformance sequence: one script, two subjects.** Thirteen steps (C1-C13) driven entirely over raw SPI, emitting a diffable transcript |
 | `test_conformance.cpp` | Runs the sequence against the fake, prints the transcript, and asserts the DATASHEET-grade lines |
 | `driver/twai.h` | The ESP-IDF TWAI API, host side, so `port_twai.cpp` compiles unmodified. Types and documented return values taken from the toolchain's own header |
 | `twai_fake.h` / `.cpp` | The TWAI driver model: four states, `ESP_ERR_INVALID_STATE` on every wrong-state call, config-sized RX queue, injectable FIFO overruns, bus errors and bus-off |
@@ -258,6 +258,7 @@ a buffer tag in `data[0]` and the observable is the order of tags.
 | C10 | Aborting a buffer that has not started |
 | C11 | Receive-overrun flags and clearing them |
 | C12 | Receive rollover and buffer order (reviewer, tracker "RX rollover order", 2026-10-08): A and B unread land in RXB0 / RXB1; after A is taken, C lands in RXB0, **newer than the B beside it**; a rollover into a full RXB1 sets RX1OVR; clearing RXnIF by BIT MODIFY frees a buffer; READ RX `0x96` starts at RXB1D0. Needs a sender on the segment (`Target::injectFrame`); every action is sequenced by the script, so the bench needs no timing precision |
+| C13 | The frames the chip keeps on an overflow, read back whole (reviewer, 2026-10-15): every injected frame carries a full payload (`payloadByte`: byte i = tag + 0x1D * i) and a buffer is read with READ RX (13 bytes, SIDH..D7) and compared on identifier, extension, DLC and data (`compareWhole`; its can-fails in `test_conformance`). (1) One held frame (own id, DLC 6) is read back intact once RXB1 frees; (2) a second overflow while one frame is held: which frame is stored after the buffers free (silicon 2026-10-15: the newest; the held one is lost), and whether any read is partly overwritten (none was) |
 
 ### Receive order through the bridge (`test_l2_bridge rx-rollover-order`)
 
