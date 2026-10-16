@@ -1859,6 +1859,102 @@ static void case_standdown_after_deadline_books_once(void)
     ck_standdown_identity(&s, "withdrawn + dropped == skipped + standdown");
 }
 
+/*
+ * A RE-ARM WHILE A WITHDRAWAL IS STILL RUNNING (spec 5.2 item 6, user
+ * 2026-10-16). The old arm gave an inhibit up and booked it -- as a skip at its
+ * deadline, or as a stand-down -- and the item 4 loop is still removing it when
+ * gs_rearm() runs. The loop then books `withdrawn` in the NEW arm, so the new
+ * arm counts the frame as a stand-down at the re-arm, beside its carried_in, and
+ * its own equality holds once the loop finishes. On c6fdab5 it read one over for
+ * the rest of the arm.
+ *
+ * Reachable only by timing: a re-arm within about 0.4 ms of the withdrawal
+ * starting. Here gs_rearm() is simply called before the next tick.
+ */
+static void rearm_mid_withdrawal(bool by_deadline)
+{
+    fb_reset();
+    fb_set_contended(true);     /* STRESS: the answer sits AWAITING, so it is held */
+    gs_t s;
+    gs_init(&s, fb_hal());
+
+    command_and_answer(&s);
+    run(&s, 20, 10, 0);
+    ck_eq(held_in(&s, GS_CLASS_INHIBIT), 1,
+          "PRECONDITION: the answer is in the controller");
+
+    if (by_deadline)
+    {
+        const gs_deadline_t v = gs_command_received(&s, fb_now(), 0);
+        ck_eq((long)v, (long)GS_DEADLINE_SKIPPED, "the old arm skips it");
+    }
+    else
+    {
+        gs_withdraw_inhibits(&s, fb_now());
+        ck_eq(json_standdown(&s), 1, "the old arm stands it down");
+    }
+    ck(s.aborting, "PRECONDITION: the withdrawal is still running");
+
+    gs_rearm(&s, fb_hal(), GS_CLASS_INHIBIT);
+    const gs_class_stats_t *c = &s.st.cls[GS_CLASS_INHIBIT];
+    ck_eq(c->carried_in, 1, "the new arm carries the frame in");
+    ck_eq(json_standdown(&s), 1, "and counts it as a stand-down at the re-arm");
+    ck_eq(s.st.skipped, 0, "not as a skip: the skip, if any, was the old arm's");
+
+    fb_set_contended(false);
+    run(&s, 2000, 10, 0);       /* the loop removes it, in the new arm */
+    ck_eq(held_in(&s, GS_CLASS_INHIBIT), 0, "the controller has let it go");
+    ck_eq(c->withdrawn, 1, "booked `withdrawn` in the new arm");
+    ck_eq(c->sent, 0, "and never as sent");
+    ck_eq(residual(&s, GS_CLASS_INHIBIT), 0, "the new arm's balance closes");
+    ck_standdown_identity(&s,
+        "the new arm's withdrawn + dropped == skipped + standdown");
+    ck_eq(wire_count_id(ID_INHIBIT), 0, "the withdrawn answer never reached the wire");
+}
+
+static void case_rearm_during_deadline_withdrawal(void)
+{
+    g_case = "re-arm while a deadline's withdrawal runs: a stand-down in the new arm";
+    rearm_mid_withdrawal(true);
+}
+
+static void case_rearm_during_standdown_withdrawal(void)
+{
+    g_case = "re-arm while a stand-down's withdrawal runs: a stand-down in the new arm";
+    rearm_mid_withdrawal(false);
+}
+
+/*
+ * AND ONLY THEN. A held inhibit nobody has given up is carried across a re-arm
+ * and leaves as `sent`, balanced by carried_in; it is not a stand-down.
+ */
+static void case_rearm_with_live_answer_is_no_standdown(void)
+{
+    g_case = "re-arm with an answer still live in the controller: no stand-down";
+    fb_reset();
+    fb_set_contended(true);     /* STRESS: the answer sits AWAITING, so it is held */
+    gs_t s;
+    gs_init(&s, fb_hal());
+
+    command_and_answer(&s);
+    run(&s, 20, 10, 0);
+    ck_eq(held_in(&s, GS_CLASS_INHIBIT), 1,
+          "PRECONDITION: the answer is in the controller");
+    ck(!s.aborting, "PRECONDITION: nothing is withdrawing it");
+
+    gs_rearm(&s, fb_hal(), GS_CLASS_INHIBIT);
+    ck_eq(s.st.cls[GS_CLASS_INHIBIT].carried_in, 1, "the new arm carries it in");
+    ck_eq(json_standdown(&s), 0, "and books no stand-down for it");
+
+    fb_set_contended(false);
+    run(&s, 2000, 10, 0);
+    const gs_class_stats_t *c = &s.st.cls[GS_CLASS_INHIBIT];
+    ck_eq(c->sent, 1, "it leaves as sent");
+    ck_eq(c->withdrawn, 0, "not withdrawn");
+    ck_eq(residual(&s, GS_CLASS_INHIBIT), 0, "the balance closes");
+    ck_standdown_identity(&s, "withdrawn + dropped == skipped + standdown");
+}
+
 static void case_integration_order(void)
 {
     uint32_t v;
@@ -1920,6 +2016,9 @@ int main(void)
     case_standdown_queued_answer();
     case_standdown_held_answer();
     case_standdown_after_deadline_books_once();
+    case_rearm_during_deadline_withdrawal();
+    case_rearm_during_standdown_withdrawal();
+    case_rearm_with_live_answer_is_no_standdown();
 
     if (g_fail == 0)
     {

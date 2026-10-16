@@ -190,6 +190,9 @@ int ft_installed_mode(void);
  */
 int ft_install_count(void);
 
+/* Driver installs made from a thread other than the worker (spec 3). */
+int ft_installs_off_worker(void);
+
 /*
  * The controller goes bus-off (spec 7, "A bus-off ends the device's part until
  * a re-arm or a reboot"). From then on it receives nothing, transmits nothing,
@@ -375,6 +378,12 @@ void             ft_timing_config(char *buf, int len);
  * time by at most `us`. Returns the virtual time now.
  */
 int64_t ft_run(int64_t us);
+
+/*
+ * While true, ft_run() -- and so a vTaskDelay() on the test thread -- passes
+ * virtual time without giving the worker a turn. Cleared by ft_reset().
+ */
+void ft_hold_worker(bool hold);
 
 /*
  * A hook run at EVERY step boundary -- after each ft_run(), and after each

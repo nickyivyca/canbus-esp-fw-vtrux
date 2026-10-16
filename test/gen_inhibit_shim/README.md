@@ -526,3 +526,43 @@ Cases 49-52, for the reviewer's pre-port batch.
   dropped and counted, and a drain bounded at 100 turns takes none. It tests the
   fake, not the firmware, so it passes on `c65c45e` too.
 * **Case 23 changed** with the spec: see the note under its table.
+
+### 2026-10-16: the worker makes every mode change
+
+Spec 3 as changed 2026-10-16: `gen_inhibit_set_mode()` posts the change and the
+worker applies it at the top of its loop, so the test thread -- which plays
+httpd -- now WAITS in it while the worker runs. Two model changes follow:
+
+* `vTaskDelay()` on the test thread before the worker exists only passes time;
+  yielding would wait for a thread that does not exist.
+* `ft_hold_worker()` lets time pass without giving the worker a turn, so a case
+  can make the worker miss the 1 s bound. `ft_installs_off_worker()` counts
+  driver installs from any thread but the worker.
+
+And the cases:
+
+* **Case 39** posts its arm before starting the worker and awaits it after
+  (`gen_inhibit_post_mode()` / `gen_inhibit_await_mode()`, the two halves of the
+  setter). That is still the boot ordering it reproduces.
+* **Case 53** replays the 300 s capture and posts a mode change every 10 s
+  (PASSIVE, INHIBIT, OBSERVE, RESPOND in a cycle) without pausing the traffic.
+  Every change must come back `ESP_OK`, every status reading must balance (case
+  28's hook), the stand-down identity must hold at each window with nothing
+  held, every INHIBIT arm must transmit, and no install may come from outside the
+  worker. It cannot show a race; nothing here can.
+* **Case 54** puts the 1 s deadline and the worker's take in each order: never
+  taken (refused, and never applied afterwards), taken at 950 ms (applied), and
+  taken at 999 ms but still applying at the second, because OBSERVE tears the
+  driver down and `can_block()` yields (the poster waits; applied). Then with
+  the slot held by another poster, since the 1 s runs from the setter's call
+  and covers its wait for the slot: held all second (refused with
+  `ESP_ERR_NOT_FINISHED` at 1 s, and the worker applies neither request, the
+  other one being past its deadline too), and freed at 900 ms (posted then,
+  withdrawn at the same 1 s with `ESP_ERR_TIMEOUT`, never applied).
+
+**Why `apply_mode()` drives the scheduler first.** With the change applied at the
+top of the loop, before the periodic tick, a frame that had completed since the
+last pass was still `held`, so the re-arm carried it in and the new arm timed it
+as on time with no `tx_ok` behind it. Case 33 read ontime 29978 against tx_ok
+29977 that way, the extra frame being case 32's last. `apply_mode()` now collects
+the old arm's completions before it touches anything.

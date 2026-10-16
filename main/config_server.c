@@ -1688,6 +1688,26 @@ static esp_err_t gen_inhibit_set_handler(httpd_req_t *req)
      */
     const esp_err_t serr = gen_inhibit_set_mode((gen_inhibit_mode_t)mode,
                                                 offset_us);
+    /*
+     * The worker makes the change (spec 3, 2026-10-16). One it did not take
+     * within 1 s was withdrawn and is never applied, so say that rather than
+     * "cannot arm": the bus was never tried.
+     */
+    if (serr == ESP_ERR_TIMEOUT)
+    {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "mode change not taken by the gen_inhibit worker "
+                            "within 1 s; withdrawn, not applied");
+        return ESP_OK;
+    }
+    /* Another change held the one slot for the whole second. */
+    if (serr == ESP_ERR_NOT_FINISHED)
+    {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "another mode change was still in progress for 1 s; "
+                            "this one was not posted, not applied");
+        return ESP_OK;
+    }
     if (serr != ESP_OK)
     {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,

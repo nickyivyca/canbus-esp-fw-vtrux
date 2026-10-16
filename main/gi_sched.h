@@ -257,6 +257,10 @@ typedef struct
      *
      *   cls[INHIBIT].withdrawn + cls[INHIBIT].dropped == skipped + standdown
      *
+     * A RE-ARM landing while the loop is still removing an inhibit the old arm
+     * gave up counts it here too, in the new arm, beside its `carried_in`
+     * (gs_rearm(); spec 5.2 item 6, 2026-10-16).
+     *
      * The caller reports each one to the core, which ends its wait for that
      * frame's completion. On c65c45e a frame withdrawn from the controller at
      * stand-down was booked only in `withdrawn`, which the core never hears about,

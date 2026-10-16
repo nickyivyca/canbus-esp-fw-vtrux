@@ -177,11 +177,12 @@ _Static_assert(GEN_INHIBIT_PROBE_ID == GI_PROBE_ID, "id drift");
 /* ------------------------------------------------------------------------- */
 
 /*
- * The decision state. Shared between the worker task and the HTTP handlers,
- * with the same coarse discipline the pre-split code had: `mode` is the
- * synchronisation point and everything else is read racily for reporting.
- * Unchanged by the split, and worth flagging rather than hiding -- a
- * set_mode() arriving mid-loop still resets histograms under the worker.
+ * The decision state. WRITTEN BY THE WORKER ONLY (spec 3, "The worker makes
+ * every mode change", 2026-10-16): a mode change is posted to the worker and
+ * applied at the top of its loop, see the mailbox below. Other tasks read it
+ * for reporting, through the snapshot the status page takes. The one remaining
+ * outside writer is gen_inhibit_quiesce() (spec 8), for callers that tear the
+ * driver down themselves.
  */
 static gi_state_t s_core;
 
@@ -239,6 +240,172 @@ static void worker_wake(void)
     if (s_worker != NULL)
     {
         xTaskNotifyGive(s_worker);
+    }
+}
+
+/*
+ * SPEC 3, "THE WORKER MAKES EVERY MODE CHANGE" (user, 2026-10-16).
+ *
+ * A mode change is a REQUEST in this one-slot mailbox. The HTTP setter and the
+ * boot auto-arm post it and wake the worker; the worker takes it at the top of
+ * its loop -- outside twai_receive(), between frames -- applies it
+ * (apply_mode(): driver teardown and install, gs_rearm(), gi_set_mode()) and
+ * leaves the result here for the poster. No other task writes the worker's
+ * state.
+ *
+ * Why: on c6fdab5 gen_inhibit_set_mode() ran all of that in the httpd task. The
+ * worker, at priority 18, wakes on the next frame, so it could run part-way
+ * through gs_rearm()'s memset-and-restore or gi_set_mode()'s resets.
+ *
+ * THE 1 s BOUND RUNS FROM THE SETTER'S CALL. Spec 3: "The setter waits at most
+ * 1 s". gen_inhibit_post_mode() fixes the deadline, call + 1 s, before it waits
+ * for the slot, and the request carries it, so the wait for a free slot and the
+ * wait for the worker's take share the one second (until 2026-10-16 each had
+ * its own, about 2 s in all). A request posted late in the second is withdrawn
+ * at the same deadline.
+ *
+ * THE RACE. A request still POSTED at its deadline is WITHDRAWN by its poster
+ * and refused (ESP_ERR_TIMEOUT). Withdrawing and taking are each one
+ * test-and-set of `state` inside s_req_lock, so exactly one of them happens to
+ * any request:
+ *   - the worker takes it first (POSTED -> TAKEN): the poster may no longer
+ *     withdraw it and waits for DONE, however long past the second that is.
+ *     apply_mode() does not block beyond can_block()'s 1 ms delay, and the
+ *     worker is the highest-priority task that touches this;
+ *   - the poster withdraws it first (POSTED -> IDLE): the worker finds nothing
+ *     to take, now or later, so a withdrawn request is never applied.
+ * And the worker never takes a request whose deadline has passed: its poster,
+ * at a lower priority, may not yet have run to withdraw it, and a change not
+ * taken within the second is refused, not applied late.
+ *
+ * ONE SLOT, AND A POSTER WAITS FOR IT TO BE FREE within its second. Two posters
+ * can meet: config_server starts before gen_inhibit_init(), so a POST can
+ * coincide with the boot auto-arm. A slot is freed only by its own poster
+ * (reading the result, or withdrawing), so one poster's result is never
+ * overwritten by the next. A poster that finds the slot busy for its whole
+ * second posts nothing and is refused with ESP_ERR_NOT_FINISHED: another change
+ * had not finished.
+ */
+typedef enum
+{
+    REQ_IDLE = 0,   /* free */
+    REQ_POSTED,     /* waiting for the worker; its poster may still withdraw it */
+    REQ_TAKEN,      /* the worker is applying it; it will finish */
+    REQ_DONE,       /* applied; `result` waits for its poster */
+} req_state_t;
+
+static portMUX_TYPE s_req_lock = portMUX_INITIALIZER_UNLOCKED;
+static struct
+{
+    req_state_t        state;
+    uint32_t           ticket;
+    gen_inhibit_mode_t mode;
+    uint32_t           offset_us;
+    int64_t            deadline_us; /* the poster's call + 1 s */
+    esp_err_t          result;
+} s_req;
+static uint32_t s_req_tickets;
+
+#define GEN_INHIBIT_MODE_WAIT_US    1000000
+
+/* One tick between polls; never 0, which would spin a lower-priority poster. */
+static void req_poll_delay(void)
+{
+    const TickType_t t = pdMS_TO_TICKS(1);
+    vTaskDelay(t > 0 ? t : 1);
+}
+
+esp_err_t gen_inhibit_post_mode(gen_inhibit_mode_t mode, uint32_t offset_us,
+                                uint32_t *ticket)
+{
+    if (mode > GEN_INHIBIT_PASSIVE)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+    /*
+     * A probe scheduled beyond the VCM's shortest observed inter-frame gap
+     * (4.69 ms, per notes/gen-inhibit-truck-tests.md) would land after the
+     * next genuine frame and make the measurement meaningless.
+     */
+    if (offset_us > 4000)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+    /* The worker would wait for itself. gen_inhibit_set_mode() handles it. */
+    if (s_worker != NULL && xTaskGetCurrentTaskHandle() == s_worker)
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const int64_t deadline_us = esp_timer_get_time() + GEN_INHIBIT_MODE_WAIT_US;
+    for (;;)
+    {
+        bool posted = false;
+        bool expired = false;
+        taskENTER_CRITICAL(&s_req_lock);
+        if (esp_timer_get_time() >= deadline_us)
+        {
+            expired = true;
+        }
+        else if (s_req.state == REQ_IDLE)
+        {
+            s_req.ticket      = ++s_req_tickets;
+            s_req.mode        = mode;
+            s_req.offset_us   = offset_us;
+            s_req.deadline_us = deadline_us;
+            s_req.result      = ESP_FAIL;
+            s_req.state     = REQ_POSTED;
+            *ticket = s_req.ticket;
+            posted = true;
+        }
+        taskEXIT_CRITICAL(&s_req_lock);
+        if (posted)
+        {
+            /* SPEC 3, "A MODE CHANGE TAKES EFFECT AT ONCE": the wake. */
+            worker_wake();
+            return ESP_OK;
+        }
+        if (expired)
+        {
+            return ESP_ERR_NOT_FINISHED;    /* another change held the slot */
+        }
+        req_poll_delay();
+    }
+}
+
+esp_err_t gen_inhibit_await_mode(uint32_t ticket)
+{
+    for (;;)
+    {
+        esp_err_t r = ESP_OK;
+        bool finished = false;
+        taskENTER_CRITICAL(&s_req_lock);
+        if (s_req.ticket != ticket || s_req.state == REQ_IDLE)
+        {
+            r = ESP_ERR_INVALID_ARG;    /* not a request this caller holds */
+            finished = true;
+        }
+        else if (s_req.state == REQ_DONE)
+        {
+            r = s_req.result;
+            s_req.state = REQ_IDLE;
+            finished = true;
+        }
+        else if (s_req.state == REQ_POSTED
+                 && esp_timer_get_time() >= s_req.deadline_us)
+        {
+            /* WITHDRAWN: never taken, so never applied. See above. */
+            s_req.state = REQ_IDLE;
+            r = ESP_ERR_TIMEOUT;
+            finished = true;
+        }
+        /* REQ_TAKEN: the worker is applying it, and it will finish. */
+        taskEXIT_CRITICAL(&s_req_lock);
+        if (finished)
+        {
+            return r;
+        }
+        req_poll_delay();
     }
 }
 
@@ -1204,21 +1371,35 @@ static bool controller_running(void)
            && st.state == TWAI_STATE_RUNNING;
 }
 
-esp_err_t gen_inhibit_set_mode(gen_inhibit_mode_t mode, uint32_t offset_us)
+/*
+ * APPLY A MODE CHANGE. THE WORKER'S OWN CODE (spec 3, "The worker makes every
+ * mode change"): reached only from take_mode_request() at the top of the worker
+ * loop, or from gen_inhibit_set_mode() when the worker itself calls it. The
+ * arguments were validated when the request was posted. Until 2026-10-16 this
+ * was the body of gen_inhibit_set_mode() and ran in the caller's task.
+ *
+ * In order: the driver teardown and install, the scheduler re-arm, the core's
+ * mode. can_disable() from here quiesces nothing: gen_inhibit_quiesce() sees
+ * the worker calling and returns at once, and the worker is outside the driver.
+ */
+static esp_err_t apply_mode(gen_inhibit_mode_t mode, uint32_t offset_us)
 {
-    if (mode > GEN_INHIBIT_PASSIVE)
-    {
-        return ESP_ERR_INVALID_ARG;
-    }
     /*
-     * A probe scheduled beyond the VCM's shortest observed inter-frame gap
-     * (4.69 ms, per notes/gen-inhibit-truck-tests.md) would land after the
-     * next genuine frame and make the measurement meaningless.
+     * COLLECT WHAT THE OLD ARM HAS ALREADY FINISHED, before anything is torn
+     * down or re-armed. This runs at the top of the worker loop, where the
+     * scheduler has not yet looked at the controller since the last frame or
+     * timeout, so a frame that completed in the meantime is still `held`.
+     * gs_rearm() would carry it into the new arm as carried_in and time it there
+     * as an on-time completion with no tx_ok behind it. E1 case 33 read
+     * ontime 29978 against tx_ok 29977 that way, the extra one being the
+     * previous case's last frame.
      */
-    if (offset_us > 4000)
     {
-        return ESP_ERR_INVALID_ARG;
+        gi_events_t ev = { 0 };
+        sched_advance(esp_timer_get_time(), &ev);
+        report_events(&ev);
     }
+
     /*
      * Bring the bus up ourselves. can_init() only records the bitrate -- it is
      * can_enable() that installs the TWAI driver, calls twai_start() and drops
@@ -1442,7 +1623,13 @@ esp_err_t gen_inhibit_set_mode(gen_inhibit_mode_t mode, uint32_t offset_us)
     s_seen_probe_lost = 0;
     s_seen_skip_withdrawn = 0;
     s_seen_skip_late = 0;
-    s_seen_standdown = 0;
+    /*
+     * PAST ANY STAND-DOWN THE RE-ARM ITSELF BOOKED (spec 5.2 item 6, "A re-arm
+     * while a withdrawal is still running"). That answer belonged to the old
+     * arm, and gi_set_mode() below ends the core's wait for it anyway, so
+     * reporting it would only end a wait the new arm has not started.
+     */
+    s_seen_standdown = gs_stats(&s_sched)->standdown;
     s_was_live = false;
     s_have_last_inhibit = false;
     s_have_last_probe = false;
@@ -1450,24 +1637,77 @@ esp_err_t gen_inhibit_set_mode(gen_inhibit_mode_t mode, uint32_t offset_us)
     report_events(&ev);
 
     /*
-     * Releasing the bus is left to the worker, deliberately. can_disable()
-     * calls twai_driver_uninstall(), and tearing the driver down from this
-     * task while the worker is parked inside twai_receive() is a use-after-
-     * free on the driver's internals. The worker disarms itself instead, from
-     * a point where it is provably not inside the driver.
+     * Releasing the bus is done in the worker's OFF branch, from a point where
+     * it is provably not inside the driver -- the next thing the worker does
+     * after this returns.
      */
     if (mode == GEN_INHIBIT_OFF && s_we_enabled_bus)
     {
         s_release_bus = true;
     }
     /*
-     * SPEC 3, "A MODE CHANGE TAKES EFFECT AT ONCE" (user, 2026-10-10). Last
-     * thing in the function, after s_release_bus above: the worker acts on
-     * everything this function set, so waking it before the last write would
-     * have it read half of them.
+     * No wake here any more: this runs in the worker. The poster woke it
+     * (gen_inhibit_post_mode()).
      */
-    worker_wake();
     return ESP_OK;
+}
+
+/*
+ * The worker's half of the mailbox: take a posted request and apply it. Called
+ * at the top of the worker loop only, where the worker is outside the driver
+ * and between frames (spec 3).
+ */
+static void take_mode_request(void)
+{
+    gen_inhibit_mode_t mode = GEN_INHIBIT_OFF;
+    uint32_t offset_us = 0;
+    bool took = false;
+
+    taskENTER_CRITICAL(&s_req_lock);
+    /* Past its deadline it is its poster's to withdraw, never ours to apply. */
+    if (s_req.state == REQ_POSTED && esp_timer_get_time() < s_req.deadline_us)
+    {
+        s_req.state = REQ_TAKEN;
+        mode = s_req.mode;
+        offset_us = s_req.offset_us;
+        took = true;
+    }
+    taskEXIT_CRITICAL(&s_req_lock);
+    if (!took)
+    {
+        return;
+    }
+
+    const esp_err_t r = apply_mode(mode, offset_us);
+
+    taskENTER_CRITICAL(&s_req_lock);
+    s_req.result = r;
+    s_req.state = REQ_DONE;
+    taskEXIT_CRITICAL(&s_req_lock);
+}
+
+esp_err_t gen_inhibit_set_mode(gen_inhibit_mode_t mode, uint32_t offset_us)
+{
+    /*
+     * The worker itself applies directly: posting would have it wait for its
+     * own loop. Nothing in the worker calls this today; the guard keeps a
+     * future caller from deadlocking it.
+     */
+    if (s_worker != NULL && xTaskGetCurrentTaskHandle() == s_worker)
+    {
+        if (mode > GEN_INHIBIT_PASSIVE || offset_us > 4000)
+        {
+            return ESP_ERR_INVALID_ARG;
+        }
+        return apply_mode(mode, offset_us);
+    }
+    uint32_t ticket = 0;
+    const esp_err_t perr = gen_inhibit_post_mode(mode, offset_us, &ticket);
+    if (perr != ESP_OK)
+    {
+        return perr;
+    }
+    return gen_inhibit_await_mode(ticket);
 }
 
 void gen_inhibit_quiesce(void)
@@ -1533,6 +1773,16 @@ static void gen_inhibit_task(void *arg)
 
     while (1)
     {
+        /*
+         * SPEC 3: A POSTED MODE CHANGE IS APPLIED HERE, AND ONLY HERE -- at the
+         * top of the loop, outside twai_receive() and between frames. Every
+         * path through the loop comes back to this point: after a frame, after
+         * a receive timeout (up to GEN_INHIBIT_RX_TIMEOUT_MS on a quiet bus,
+         * which a wake cannot cut short), and out of either sleep, which the
+         * poster's wake ends.
+         */
+        take_mode_request();
+
         if (s_core.mode == GI_OFF)
         {
             gi_notify_off(&s_core);
