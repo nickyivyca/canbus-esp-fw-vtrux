@@ -86,8 +86,30 @@ typedef enum
 /* Start the worker. Call once, after can_init(). Starts in OFF. */
 void gen_inhibit_init(void);
 
-/* Mode change. `offset_us` applies to RESPOND: delay from RX to probe TX. */
+/*
+ * Mode change. `offset_us` applies to RESPOND: delay from RX to probe TX.
+ *
+ * Posts the change to the worker and waits for it to be applied (spec 3, "The
+ * worker makes every mode change"). Returns the worker's result:
+ *   ESP_OK                 applied;
+ *   ESP_ERR_INVALID_ARG    bad mode or offset (nothing posted);
+ *   ESP_ERR_INVALID_STATE  the arm was refused (the bus, the filter, the alerts,
+ *                          or OBSERVE not listen-only);
+ *   ESP_ERR_TIMEOUT        not taken by the worker within 1 s of posting, or the
+ *                          slot not free within 1 s: withdrawn, never applied.
+ * On a quiet bus a change can take up to the 200 ms receive timeout.
+ */
 esp_err_t gen_inhibit_set_mode(gen_inhibit_mode_t mode, uint32_t offset_us);
+
+/*
+ * The two halves of gen_inhibit_set_mode(), for a caller that must keep doing
+ * something while the worker applies the change (the E1 cases that post during
+ * a live replay). Post, then await with the ticket. The 1 s bound runs from the
+ * post: a request still untaken by then is withdrawn by the await.
+ */
+esp_err_t gen_inhibit_post_mode(gen_inhibit_mode_t mode, uint32_t offset_us,
+                                uint32_t *ticket);
+esp_err_t gen_inhibit_await_mode(uint32_t ticket);
 
 /* True while this component owns the TWAI receive path, so wican-fw's
  * can_rx_task can stand down rather than race us for frames. */

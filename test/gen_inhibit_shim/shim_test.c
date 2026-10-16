@@ -3960,7 +3960,16 @@ static void case_wake_has_a_target_before_the_worker_runs(void)
     CHECK(ft_wakes_sent() == 0,
           "a wake was sent before anything asked for a mode change");
 
-    gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
+    /*
+     * POSTED HERE, AWAITED ONCE THE WORKER EXISTS (spec 3, "The worker makes
+     * every mode change", 2026-10-16). gen_inhibit_set_mode() is exactly these
+     * two halves. On the device the higher-priority worker runs inside the
+     * await's first delay; here the worker is started between them, which is the
+     * boot ordering this case reproduces.
+     */
+    uint32_t ticket = 0;
+    CHECK(gen_inhibit_post_mode(GEN_INHIBIT_INHIBIT, 500, &ticket) == ESP_OK,
+          "the arm could not be posted");
 
     CHECK(ft_wakes_sent() == 1,
           "arming before the worker ran sent %d wakes, expected 1 -- a wake "
@@ -3971,6 +3980,9 @@ static void case_wake_has_a_target_before_the_worker_runs(void)
           ft_wakes_misdirected());
 
     ft_start_worker();
+    const esp_err_t armed = gen_inhibit_await_mode(ticket);
+    CHECK(armed == ESP_OK,
+          "the arm posted before the worker ran came back %d, not ESP_OK", (int)armed);
     ft_run(1000);
 
     /* And it still arms and goes live, so the case cannot pass on a corpse. */
@@ -5111,6 +5123,260 @@ static void case_off_controller_receives_nothing(void)
     case_end();
 }
 
+/* -------------------------------------------- the worker makes mode changes -- */
+
+/*
+ * CASE 53 -- MODE CHANGES FROM ANOTHER TASK DURING A LIVE REPLAY (spec 3, "The
+ * worker makes every mode change"; the spec 12.4 row of that name).
+ *
+ * The test thread plays the other task: every 10 s of the 300 s capture it
+ * POSTS a mode change and goes straight on delivering traffic, as httpd would
+ * while the bus kept running. The worker takes the change at the top of its
+ * loop, at the next frame. The test collects the previous result at the next
+ * window. Every status reading is checked against the balance identity (case
+ * 28's step hook), the stand-down identity is checked at every window where no
+ * inhibit is in the controller, and every driver install must come from the
+ * worker.
+ *
+ * WHAT IT CANNOT SHOW: a race. This harness never runs two threads at once (see
+ * fake_twai.c), so the defect this fixes -- the worker preempting httpd part-way
+ * through gs_rearm() -- cannot occur here before or after. What it shows is that
+ * the changes are made by the worker, at the point the spec names, and that
+ * every arm still balances across a stream of them. The race is the bench's.
+ */
+static const gen_inhibit_mode_t MC_CYCLE[] = {
+    GEN_INHIBIT_PASSIVE, GEN_INHIBIT_INHIBIT, GEN_INHIBIT_INHIBIT,
+    GEN_INHIBIT_OBSERVE, GEN_INHIBIT_INHIBIT, GEN_INHIBIT_RESPOND,
+    GEN_INHIBIT_INHIBIT,
+};
+#define MC_N ((int)(sizeof(MC_CYCLE) / sizeof(MC_CYCLE[0])))
+
+static uint32_t g_mc_ticket;
+static bool     g_mc_pending;
+static gen_inhibit_mode_t g_mc_mode;
+static int      g_mc_posted, g_mc_ok, g_mc_bad_result, g_mc_wrong_mode;
+static int      g_mc_inhibit_arms, g_mc_inhibit_arms_tx;
+static int      g_mc_sd_checked, g_mc_sd_failures;
+static char     g_mc_first[400];
+
+static void mc_collect(void)
+{
+    if (!g_mc_pending) { return; }
+    g_mc_pending = false;
+    const esp_err_t r = gen_inhibit_await_mode(g_mc_ticket);
+    if (r != ESP_OK)
+    {
+        if (g_mc_bad_result++ == 0)
+        {
+            snprintf(g_mc_first, sizeof(g_mc_first),
+                     "change %d to mode %d came back %d", g_mc_posted,
+                     (int)g_mc_mode, (int)r);
+        }
+        return;
+    }
+    g_mc_ok++;
+    if ((long)json_u32("\"mode\":") != (long)g_mc_mode)
+    {
+        g_mc_wrong_mode++;
+    }
+}
+
+static void mc_window(int w)
+{
+    (void)w;
+    /* The arm that is ending: did it transmit, and does it balance? */
+    if (g_mc_posted > 0 && g_mc_mode == GEN_INHIBIT_INHIBIT)
+    {
+        g_mc_inhibit_arms++;
+        if (json_u32("\"tx_ok\":") > 0) { g_mc_inhibit_arms_tx++; }
+    }
+    if (cls_num("inhibit", "held") == 0)
+    {
+        const long wd = cls_num("inhibit", "withdrawn");
+        const long dr = cls_num("inhibit", "dropped");
+        const long sk = (long)json_u32("\"skipped\":");
+        const long sd = (long)json_u32("\"standdown\":");
+        g_mc_sd_checked++;
+        if (wd < 0 || dr < 0 || wd + dr != sk + sd)
+        {
+            if (g_mc_sd_failures++ == 0)
+            {
+                snprintf(g_mc_first, sizeof(g_mc_first),
+                         "window %d: withdrawn %ld + dropped %ld != skipped %ld + "
+                         "standdown %ld", w, wd, dr, sk, sd);
+            }
+        }
+    }
+
+    mc_collect();
+    g_mc_mode = MC_CYCLE[g_mc_posted % MC_N];
+    if (gen_inhibit_post_mode(g_mc_mode, 500, &g_mc_ticket) == ESP_OK)
+    {
+        g_mc_pending = true;
+    }
+    g_mc_posted++;
+}
+
+static void case_mode_changes_during_a_live_replay(void)
+{
+    case_begin("case 53: mode changes posted by another task during a live replay "
+               "are made by the worker, and every arm balances");
+    case_budget(240, "replays 706,283 frames of a real 300 s capture");
+    setup();
+
+    g_mc_pending = false;
+    g_mc_posted = g_mc_ok = g_mc_bad_result = g_mc_wrong_mode = 0;
+    g_mc_inhibit_arms = g_mc_inhibit_arms_tx = 0;
+    g_mc_sd_checked = g_mc_sd_failures = 0;
+    g_mc_first[0] = 0;
+    g_mc_mode = GEN_INHIBIT_OFF;
+    g_bal_readings = g_bal_failures = 0;
+    g_bal_held_seen = g_bal_depth_seen = 0;
+    g_bal_first[0] = 0;
+    const int installs_off_worker_before = ft_installs_off_worker();
+
+    ft_set_step_hook(balance_step_hook);
+    scn_result_t r;
+    const bool ok = replay_scn("replay-longarm-300s-all", &r, 10000000, mc_window);
+    ft_set_step_hook(invariant_hook);
+    CHECK(ok, "test/gen_inhibit_shim/scenarios/replay-longarm-300s-all.scn is "
+          "missing; see case 33");
+    if (!ok) { teardown(); case_end(); return; }
+    pin_stimulus("replay-longarm-300s-all", &r);
+    mc_collect();
+
+    CHECK(g_mc_posted >= 25,
+          "only %d mode changes were posted over the replay", g_mc_posted);
+    CHECK(g_mc_bad_result == 0 && g_mc_ok == g_mc_posted,
+          "%d of %d mode changes were applied (%d came back with an error; "
+          "first: %s)", g_mc_ok, g_mc_posted, g_mc_bad_result, g_mc_first);
+    CHECK(g_mc_wrong_mode == 0,
+          "%d applied changes left the page reporting a different mode",
+          g_mc_wrong_mode);
+    CHECK(ft_installs_off_worker() == installs_off_worker_before,
+          "%d driver install(s) were made from a task other than the worker "
+          "(spec 3: the worker makes every mode change)",
+          ft_installs_off_worker() - installs_off_worker_before);
+
+    CHECK(g_bal_readings > 1000 && g_bal_held_seen > 0,
+          "the balance was read %d times with `held` set in %d of them, so it "
+          "was not exercised", g_bal_readings, g_bal_held_seen);
+    CHECK(g_bal_failures == 0,
+          "%d status readings did not balance across the mode changes; first: %s",
+          g_bal_failures, g_bal_first);
+    CHECK(g_mc_sd_checked >= 20 && g_mc_sd_failures == 0,
+          "the stand-down identity failed at %d of %d windows; first: %s",
+          g_mc_sd_failures, g_mc_sd_checked, g_mc_first);
+    CHECK(g_mc_inhibit_arms >= 5 && g_mc_inhibit_arms_tx == g_mc_inhibit_arms,
+          "only %d of %d INHIBIT arms transmitted anything, so the balance was "
+          "checked over arms that did nothing", g_mc_inhibit_arms_tx,
+          g_mc_inhibit_arms);
+    printf("           %d mode changes, %d INHIBIT arms all transmitting, %d "
+           "balance readings (%d with held set)\n", g_mc_posted,
+           g_mc_inhibit_arms, g_bal_readings, g_bal_held_seen);
+    teardown();
+    case_end();
+}
+
+/*
+ * CASE 54 -- THE 1 s BOUND ON A MODE CHANGE, AND THE WITHDRAW-OR-TAKE RACE
+ * (spec 3, "The worker makes every mode change").
+ *
+ * The worker is held off the CPU (ft_hold_worker) and let go at a chosen
+ * instant by a step hook, so the poster's deadline and the worker's take can be
+ * put in each order:
+ *   A. never taken within the second: refused with ESP_ERR_TIMEOUT, and NEVER
+ *      applied afterwards, however long the worker then runs;
+ *   B. taken just before the second: applied, ESP_OK;
+ *   C. taken before the second but still being applied when it passes -- the
+ *      apply tears the driver down for OBSERVE, and can_block()'s 1 ms delay
+ *      yields mid-apply: the poster must NOT withdraw a taken request; it waits
+ *      and gets ESP_OK.
+ */
+static int64_t g_release_at;
+
+static void release_hook(void)
+{
+    if (g_release_at > 0 && ft_now() >= g_release_at)
+    {
+        ft_hold_worker(false);
+        g_release_at = 0;
+    }
+    invariant_hook();
+}
+
+static void case_mode_change_bound_and_race(void)
+{
+    case_begin("case 54: a mode change not taken within 1 s is refused and never "
+               "applied; one taken in time is applied");
+    uint8_t ctr = 0x10;
+
+    /* A. Never taken in time. */
+    setup();
+    go_live();
+    keep_alive(100000, &ctr);
+    CHECK(json_has("\"mode\":3"), "PRECONDITION A: not in INHIBIT: %s", stats());
+    ft_set_step_hook(release_hook);
+    g_release_at = 0;
+    ft_hold_worker(true);
+    int64_t t0 = ft_now();
+    esp_err_t r = gen_inhibit_set_mode(GEN_INHIBIT_PASSIVE, 500);
+    int64_t took = ft_now() - t0;
+    ft_hold_worker(false);
+    CHECK(r == ESP_ERR_TIMEOUT,
+          "A: a change the worker could not take for over 1 s came back %d, not "
+          "ESP_ERR_TIMEOUT", (int)r);
+    CHECK(took >= 1000000 && took < 1100000,
+          "A: the refusal came after %lld us; the bound is 1 s", (long long)took);
+    /* Let the worker run, with traffic, long enough to apply a stale request. */
+    keep_alive(300000, &ctr);
+    CHECK(json_has("\"mode\":3"),
+          "A: the withdrawn change was applied after its refusal: %s", stats());
+    ft_set_step_hook(invariant_hook);
+    teardown();
+
+    /* B. Taken just before the second. */
+    setup();
+    go_live();
+    keep_alive(100000, &ctr);
+    ft_set_step_hook(release_hook);
+    t0 = ft_now();
+    g_release_at = t0 + 950000;
+    ft_hold_worker(true);
+    r = gen_inhibit_set_mode(GEN_INHIBIT_PASSIVE, 500);
+    took = ft_now() - t0;
+    ft_hold_worker(false);
+    CHECK(took >= 950000,
+          "PRECONDITION B: the worker took the change after %lld us, before it "
+          "was let go", (long long)took);
+    CHECK(r == ESP_OK && json_has("\"mode\":4"),
+          "B: a change taken at %lld us came back %d: %s", (long long)took,
+          (int)r, stats());
+    ft_set_step_hook(invariant_hook);
+    teardown();
+
+    /* C. Taken in time, still being applied at the second. */
+    setup();
+    go_live();
+    keep_alive(100000, &ctr);
+    ft_set_step_hook(release_hook);
+    t0 = ft_now();
+    g_release_at = t0 + 999000;
+    ft_hold_worker(true);
+    r = gen_inhibit_set_mode(GEN_INHIBIT_OBSERVE, 500);
+    took = ft_now() - t0;
+    ft_hold_worker(false);
+    CHECK(took > 1000000,
+          "PRECONDITION C: the change finished at %lld us, inside the second, so "
+          "the poster never had a taken request at its deadline", (long long)took);
+    CHECK(r == ESP_OK && json_has("\"mode\":1"),
+          "C: a change taken before the deadline and finished after it came back "
+          "%d (a taken request must not be withdrawn): %s", (int)r, stats());
+    ft_set_step_hook(invariant_hook);
+    teardown();
+    case_end();
+}
+
 int main(int argc, char **argv)
 {
     /*
@@ -5189,6 +5455,8 @@ int main(int argc, char **argv)
     case_standdown_queued_answer();
     case_short_vcm_frame_is_not_a_tx_fail();
     case_off_controller_receives_nothing();
+    case_mode_changes_during_a_live_replay();
+    case_mode_change_bound_and_race();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
     return g_fail ? 1 : 0;

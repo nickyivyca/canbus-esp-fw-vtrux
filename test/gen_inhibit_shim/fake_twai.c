@@ -275,6 +275,7 @@ static bool     g_fail_alerts_cfg;
  * depth and the acceptance filter simply were not observable here.
  */
 static int      g_install_n;
+static int      g_install_off_worker;   /* installs from a thread not the worker */
 static uint32_t g_installed_rxq;
 static uint32_t g_installed_acc_code, g_installed_acc_mask;
 static int      g_installed_single_filter = -1;
@@ -499,6 +500,7 @@ int  ft_unsafe_teardowns(void) { return g_unsafe_teardowns; }
 int  ft_installed_mode(void)   { return g_installed_mode; }
 int  ft_rx_dropped_off(void)   { return g_rx_dropped_off; }
 int      ft_install_count(void)          { return g_install_n; }
+int      ft_installs_off_worker(void)    { return g_install_off_worker; }
 uint32_t ft_installed_rx_queue_len(void) { return g_installed_rxq; }
 uint32_t ft_installed_acc_code(void)     { return g_installed_acc_code; }
 uint32_t ft_installed_acc_mask(void)     { return g_installed_acc_mask; }
@@ -899,9 +901,25 @@ void ft_stop_worker(void)
  * both of those advance the clock themselves and then yield, so one call here
  * is one pass round the worker loop.
  */
+/*
+ * HOLD THE WORKER OFF: while set, ft_run() lets virtual time pass without giving
+ * the worker a turn, as a worker that cannot get the CPU would look to everyone
+ * else. For spec 3's 1 s bound on a mode change: a request the worker does not
+ * take within the second must be withdrawn and never applied.
+ */
+static bool g_hold_worker;
+void ft_hold_worker(bool hold) { g_hold_worker = hold; }
+
 int64_t ft_run(int64_t us)
 {
     const int64_t deadline = g_now + us;
+    if (g_hold_worker)
+    {
+        if (g_now < deadline) g_now = deadline;
+        controller_advance(g_now);
+        step();
+        return g_now;
+    }
     /*
      * Record the grant before the worker can look at it. A blocked receive may
      * advance the clock no further than this; see g_turn_grant.
@@ -969,6 +987,14 @@ esp_err_t twai_driver_install(const twai_general_config_t *g,
     g_installed_single_filter = f ? (int)f->single_filter : -1;
 
     g_install_n++;
+    /*
+     * WHICH THREAD INSTALLED IT (spec 3, "The worker makes every mode change"):
+     * on c6fdab5 an arm installed the driver from the caller's task.
+     */
+    if (!(g_worker_started && pthread_equal(pthread_self(), g_worker)))
+    {
+        g_install_off_worker++;
+    }
     g_installed = true;
     /*
      * A FRESH, EMPTY RECEIVE QUEUE: install creates it (xQueueCreateWithCaps in
@@ -1292,6 +1318,17 @@ esp_err_t twai_receive(twai_message_t *message, TickType_t ticks)
  */
 void vTaskDelay(TickType_t ticks)
 {
+    /*
+     * NO WORKER YET, so this is the test thread and there is nobody to yield to:
+     * time passes and that is all. Since 2026-10-16 a mode change waits for the
+     * worker (spec 3); yielding here would wait for a thread that does not exist.
+     */
+    if (!g_worker_started)
+    {
+        g_now += (int64_t)ticks * 1000;
+        controller_advance(g_now);
+        return;
+    }
     if (g_worker_started && !pthread_equal(pthread_self(), g_worker))
     {
         ft_run((int64_t)ticks * 1000);
@@ -1423,6 +1460,7 @@ void ft_reset(void)
     g_unsafe_teardowns = 0;
     g_installed_mode = -1;
     g_install_n = 0;
+    g_install_off_worker = 0;
     g_installed_rxq = 0;
     g_installed_acc_code = g_installed_acc_mask = 0;
     g_installed_single_filter = -1;
@@ -1431,6 +1469,7 @@ void ft_reset(void)
     g_bus_off = false;
     g_fail_install = false;
     g_rx_n = g_rx_dropped = g_rx_dropped_off = 0;
+    g_hold_worker = false;
     /*
      * Cleared here, unlike the reset reason and the error count: nothing sets
      * a notification before setup(), and a wake left over from the previous
