@@ -88,14 +88,18 @@ class ModeWindows(object):
     segment; status(t, fid) -> 'normal' (within REVERT_S + slack after a
     charger frame), 'boot' (the first of each status ID before any charger
     frame: the power-up round) or 'outside'. Streaming, so vehicle_sim can
-    run it on the live bus; `window` numbers the normal-mode windows."""
+    run it on the live bus; `window` numbers the normal-mode windows.
+    `pre_unjudged`: every status frame before the first charger frame is
+    'prechg', counted and not judged (score()'s `prechg_unjudged`)."""
 
-    def __init__(self, revert_s=REVERT_S, slack_s=REVERT_SLACK_S):
+    def __init__(self, revert_s=REVERT_S, slack_s=REVERT_SLACK_S,
+                 pre_unjudged=False):
         self.revert_s, self.slack_s = revert_s, slack_s
+        self.pre_unjudged = pre_unjudged
         self.last_c = None
         self.window = 0
         self.boot_ids = set()
-        self.counts = {"normal": 0, "boot": 0, "outside": 0}
+        self.counts = {"normal": 0, "boot": 0, "outside": 0, "prechg": 0}
         self.first_outside = None
 
     def charger(self, t):
@@ -111,6 +115,8 @@ class ModeWindows(object):
     def status(self, t, fid):
         if self.is_normal(t):
             kind = "normal"
+        elif self.last_c is None and self.pre_unjudged:
+            kind = "prechg"
         elif self.last_c is None and fid not in self.boot_ids:
             self.boot_ids.add(fid)
             kind = "boot"
@@ -347,7 +353,7 @@ def reset_round(rows, reset_host, uptime_of):
 
 
 def score(witness_rows, serial_rows, db=None, names=None, listen_only=True,
-          boot_in_capture=False, reset_host=None):
+          boot_in_capture=False, reset_host=None, prechg_unjudged=None):
     """-> (ok, why). `db` decodes 0x7F4's state; tests pass a stand-in.
     `listen_only` (spec 2.3, default): judge 8.2 inside the normal-mode
     windows only and fail a status frame outside them; False is the rule
@@ -357,7 +363,12 @@ def score(witness_rows, serial_rows, db=None, names=None, listen_only=True,
     power-up round must carry all four status frames. Without it a missing
     round is recorded, not failed, because a capture may start after the
     boot -- which also let a board that sent one of the four pass
-    (implementor's bench boot, 2026-10-13; spec 2.3 at 4f5168ae)."""
+    (implementor's bench boot, 2026-10-13; spec 2.3 at 4f5168ae).
+    `prechg_unjudged`: why the window before the first charger frame cannot
+    be judged (run_scenario.pre_charger_premise: the previous scenario's
+    charger stopped too recently, so its tail may hold the port normal);
+    its status frames are then counted and printed NOT JUDGED, never
+    failed (reviewer, 2026-10-15, R2 and R4)."""
     if db is None:
         db, codes = load_state_names()
         names = set(codes.values())
@@ -370,7 +381,7 @@ def score(witness_rows, serial_rows, db=None, names=None, listen_only=True,
     win_of = {}
     windows = []                       # [(first device t, last + REVERT_S)]
     if listen_only:
-        mw = ModeWindows()
+        mw = ModeWindows(pre_unjudged=bool(prechg_unjudged))
         for r in every:
             if r[2] in STATUS_IDS:
                 kind = mw.status(r[1], r[2])
@@ -400,6 +411,10 @@ def score(witness_rows, serial_rows, db=None, names=None, listen_only=True,
         notes.append("2.3: %d normal-mode window(s); %d status frames in "
                      "them, %d in the power-up round, %d outside"
                      % (len(windows), c["normal"], c["boot"], c["outside"]))
+        if prechg_unjudged:
+            notes.append("2.3: the window before the first charger frame "
+                         "NOT JUDGED (%s): %d status frame(s) in it"
+                         % (prechg_unjudged, c["prechg"]))
         judged = [r for r in rows if id(r) in win_of]
     else:
         judged = rows

@@ -5,6 +5,11 @@ behavioural tests of the core live one level up (`../../test_machine.py`,
 `../../test_trips.py`, `../../test_invariants.py`) because they run against
 `machine.py`; everything here is about the C++ port or the build.
 
+**This file also carries the detail of the tester's harness files one level
+up** (reviewer, 2026-10-15): `../../README.md` describes each in one line and
+points here for the checks and their can-fails. See "Harness files in
+`charge-interposer/`" at the end.
+
 | file | what |
 |---|---|
 | `build_check.py` | Builds **every** PlatformIO environment and checks the truck image carries no serial output (spec 8.3). Review item C2b. Also compares every image's source digest **against the tree on disk** (added 2026-10-05) -- the earlier check only compared the six images with each other, which six images built from the same older tree pass unanimously |
@@ -91,10 +96,10 @@ that case first.*
 |---|---|
 | `host_runner.cpp` | Drives `machine.cpp` over a trace, printing `make_golden.py`'s canonical format. `--diag` prints the four spec 8.2 status frames instead |
 | `diag_stream.py` | The same status frames from `machine.py`. No golden: both sides are generated on the spot, so neither can go stale |
-| `diff_all.sh` | Builds `host_runner`, diffs every pair, then diffs the diagnostics. Run under WSL on Windows (its `python3` is 3.10 and runs `machine.py` unchanged) |
+| `diff_all.sh` | Builds `host_runner`, checks every golden is current against `machine.py` and every capture-derived trace against its pin, diffs every pair, then the diagnostics, then the 8.3 events field by field. Three negative controls, each reporting COULD NOT RUN rather than passing when it cannot: one byte flipped in a golden; top of charge's b and c swapped in a copy of `machine.py`; and (2026-10-15) "override ended, transparent" in a copy of `machine.py`, which must read DIFFERS on `unit_charger_during_override` while the unmutated line matches. Run under WSL on Windows (its `python3` is 3.10 and runs `machine.py` unchanged), or on madhouse-debian |
 | `make_golden.py` | Builds a trace/golden pair from a real capture |
 | `make_synthetic.py` | Builds the `syn_*` pairs from generators, for the paths no capture reaches |
-| `make_unit_traces.py` | Builds the `unit_*` pairs by recording what `test_trips.py` and `test_invariants.py` drive, so the unit tests reach `machine.cpp` and not only `machine.py`. From 2026-10-08 also the 58 `unit_def_*` traces: spec 6's contactor and charger-fault definitions, one input per trace (`test_trips.definition_cases`); and the 5 `unit_dense_*` traces, synthetic charges replayed with 2-10 ms ticks and injected page 03 (`test_invariants.densified`), so the port is held to the spec 4 hold of 03.02 / 03.07 and the 4.1 repeat spacing |
+| `make_unit_traces.py` | Builds the `unit_*` pairs by recording what `test_trips.py` and `test_invariants.py` drive, so the unit tests reach `machine.cpp` and not only `machine.py`. From 2026-10-08 also the 58 `unit_def_*` traces: spec 6's contactor and charger-fault definitions, one input per trace (`test_trips.definition_cases`); and the 5 `unit_dense_*` traces, synthetic charges replayed with 2-10 ms ticks and injected page 03 (`test_invariants.densified`), so the port is held to the spec 4 hold of 03.02 / 03.07 and the 4.1 repeat spacing. From 2026-10-15 also `unit_charger_during_override` (`override_ended_traces`): armed, Low Power, OVERRIDE, then the VCU's page 00 with mode CHARGER and the flow bit on -- spec 6's EV_OVERRIDE_ENDED_BY_VCU, "override ended, armed", which no capture, scenario or other trace reaches; it refuses to record unless the bench is in OVERRIDE before and MONITOR after |
 | `regen_golden.py` | Replays an EXISTING trace through `machine.py` and rewrites only the golden -- for when the spec changes. `--check` reports without writing; `--stdout` prints one golden instead of writing it |
 | `diff_one.sh` | Replays ONE trace through `machine.cpp` and diffs it against `machine.py`, generating both sides on the spot. `run_scenario.py` calls it per scenario (spec 9.1 L1) |
 | `check_port.py` | Compares every `Config` field, identifier, enum and bit extractor in `machine.cpp`/`.h` against `machine.py`. Needs no compiler |
@@ -161,3 +166,76 @@ expected one. Review items B-1, B-6 and B-7a were all in both cores or in
 neither trace, and all 24 pairs stayed byte-identical across every one of
 those fixes. `../../test_invariants.py` is the complement -- rules with no
 golden behind them.
+
+## Harness files in `charge-interposer/`
+
+The tester's files one level up, the checks they make and how each can fail.
+Paths below are relative to `charge-interposer/`. Each test runs with
+`py -3.14 <file>` (NICKY-XPS) or `python3 <file>` (madhouse-debian), with
+`VTRUX_DATA` and `VTRUX_PUBLIC_REPO` set (`paths.py`), and exits 0 only if
+every check passed.
+
+| file | what |
+|---|---|
+| `run_scenario.py` | The closed-loop scenarios (spec 9) against `interposer_sim` or, with `--external-interposer`, the real board. A board run's own checks are listed below the table |
+| `diag_cadence.py` | Spec 8.2 on the wire: the PCAN witness (`DiagWitness`, ACTIVE by default so it acknowledges on CAN1) and `score()`, which judges the 1 Hz cadence and the immediate 0x7F4 against the serial event lines, and spec 2.3's windows: a status frame is normal-mode within 2 s (+0.1 s slack) of a forwarded charger frame, the power-up round once before any, otherwise outside and a FAIL. `prechg_unjudged` (2026-10-15) counts the frames before the first charger frame as NOT JUDGED, never failed, when `run_scenario.pre_charger_premise` says the previous charger stopped too recently. `reset_round()` places a board reset's power-up round |
+| `diag_cadence_test.py` | `diag_cadence`'s own test: each 8.2 rule driven to pass and fail on synthetic rows, the host mapping under 80 ppm adapter drift, 2.3's windows (a stray 0x7F4, a burst 2.15 s after the last charger frame, a second power-up round each FAIL; 2.05 s passes on the slack), the real diag DBC, a board reset mid-capture, and the pre-charger premise: the previous charger 1.9 s before the witness -> NOT JUDGED; 3 s, with a second round before the first charger frame -> FAIL |
+| `board_reset_test.py` | What `run_scenario` does differently for a real board, against a fake pyserial: boot-mid-session's reset (a port that ignores it, never comes back, or uptime that cannot discriminate each FAIL); the start order and the acknowledging witness; the serial readline fix; the fault-vs-flow-drop order from the witness. From 2026-10-15: the teardown order (refused if the serial port closes before the sims stop), the 3 s rest, the pre-charger premise's file and wiring; no-TRIP to the earliest sim stop (a trip 300 ms after the stop, one before it, a=11 after vehicle_sim stopped and one 900 ms after each FAIL, 510 ms PASSES); process priority (a child left at NORMAL FAILS, read back at ABOVE_NORMAL PASSES; Windows only). Needs pyserial, so it runs on NICKY-XPS |
+| `bus_gs_usb_test.py` | `bus.open_gs_usb` against a fake GsUsbBus: the Innomaker opened by index from `--channel` with no auto-detection, its TX echoes drained and dropped by default and kept on request, and a `recv()` that sees only echoes returning None rather than an echo or a hang |
+| `test_hold_wire.py` | A board run's spec 9 hold judged on the wire, and the vehicle stimulus premise, on synthetic witness rows and `--sp-log` receipts; each can-fail is one change to a record that passes. The hold below the table; the premise: a gap covered by a vehicle_sim stall -> VOID; a stale-BMS trip with no gap, a stall over 500 ms with the trip suppressed, a trip 300 ms into a gap, a gap no stall covers -> FAIL; the trailing gap (2026-10-15): BMS frames stopping 510 ms before a TRIP a=10 -> OK, "the bench's"; 300 ms -> FAIL; a stop in a session with no trip -> FAIL |
+
+**A board run's checks in `run_scenario.py`** (step 4, 2026-10-14 and -15):
+- **The start and the teardown.** charger_sim first, vehicle_sim 1.5 s
+  later, the PCAN witness opened ACTIVE before either (a scored premise).
+  After vehicle_sim exits: a 1.5 s settle with everything recording (the
+  board's end-of-run trip stays on the witness), then the sims, then the
+  witness, then the serial port -- whose close resets the board -- then a
+  3.0 s rest. Before 2026-10-15 the serial port closed first and the
+  rebooted board heard the charger's tail (item 6 R2, R4).
+- **The pre-charger premise.** charger_sim's exit time (host perf clock) is
+  written to `board_last_charger_host.txt` in the run folder; the next run
+  reads it as its witness opens, and under 2.5 s the window before its first
+  charger frame is NOT JUDGED under 2.3 (`pre_charger_premise`).
+- **No-TRIP ends at the earliest sim stop**, the first sim's last frame on
+  the witness (`earliest_sim_stop`, `no_trip_to_first_stop`). A TRIP before it
+  FAILS. A trip after it is judged against spec 6: the stopped sim's stale
+  code (10 BMS, 11 charger) 470-750 ms after its last frame, on the TRIP
+  line's host stamp, else FAIL.
+- **The stimulus premises.** `charger_stimulus`: no forwarded 0x18FFD4C0 gap
+  over 400 ms in a session unless charger_sim's own stalls cover it and
+  nothing was lost. `vehicle_stimulus`: the same for 0x410-0x440 against
+  vehicle_sim's stalls, with spec 6 held regardless (a=10 not before 500 ms
+  of wire gap, and on time once it is); each id's trailing gap, to the trip
+  or the record's end, counts as the bench's and is held to spec 6.
+- **Process priority.** run_scenario (whose threads are the serial tap and
+  the witness) and every sim at ABOVE_NORMAL on Windows, read back with
+  GetPriorityClass as a premise line (`priority_premise`).
+- **Spec 9's hold on the wire** (`judge_hold_on_wire`), for scenarios that
+  declare `hold_follows_loads`. HOLD spans from the witness's 0x7F4, bounded
+  inward (the unjudged ms at each end printed); the setpoints charger_sim
+  RECEIVED (`--sp-log`); chg_max, pack current and the SoC-100 anchor from
+  the witness's 0x410 / 0x420; the EVSE cap from `test_invariants.Oracle`.
+  The entry (2026-10-15, spec 5.2): the last receipt before the release must
+  exist and be >= 6.10 A, and the first HOLD receipt must be that setpoint,
+  the Oracle's cap at that receipt (a clamp), or one 0.1 A step from either,
+  else UNRESOLVED; clause 2 judges that move with the cadence timed from the
+  release, so an entry clamp is counted and the first step must come
+  >= 0.28 s after the release. u, the spread of (receipt - the witness VCU
+  page 01 it rode), pairs each receipt with the NEAREST page 01 within
+  +/-150 ms whose bytes 0-1 and 4-7 match it (two USB adapters can stamp a
+  receipt ~1.6 ms before its own frame), in float ms, with unpaired receipts
+  counted in the verdict. A spacing below 0.28 s - u FAILS; one in
+  [0.28 s - u, 0.28 s) is UNRESOLVED unless its VCU page 01s are >= 0.28 s
+  apart. A record without the override's setpoint, or without a setpoint
+  change after each injected load step, is UNRESOLVED, never PASS.
+  `test_hold_wire.py`'s can-fails: a 0 A setpoint, 0.27 s steps (0.28 s
+  passes), pack current above chg_max past the grace, no settle in band, the
+  setpoint lines removed, a 275 ms spacing inside u; and from 2026-10-15 a
+  Low Power release (6.10 -> 6.00 A clamp at +46 ms -> 5.90 A at +345 ms)
+  PASSES with 1 clamp, the same with the cap at 6.10 A FAILS (a step 46 ms
+  after the release), a first step 200 ms after the release FAILS, a step
+  from the cap on the clamp frame is timed as the step (at entry: FAIL), no
+  receipt before HOLD, a 2.0 A override and a 5.0 A first receipt are
+  UNRESOLVED, a receipt 1 ms before its frame pairs with it, one whose
+  time-nearest page 01 differs in byte 1 stays unpaired and is reported, and
+  -1.6 / +15.3 ms gives u = 16.9 ms.

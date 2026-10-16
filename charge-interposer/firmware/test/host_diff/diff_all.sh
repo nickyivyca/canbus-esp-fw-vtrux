@@ -139,6 +139,45 @@ else
   fi
 fi
 rm -rf "$MUT"
+# Negative control 2 (reviewer, 2026-10-15, step 4 item 2's (6)): the trace
+# that reaches EV_OVERRIDE_ENDED_BY_VCU (a VCU CHARGER command during an
+# override, make_unit_traces.override_ended_traces) must read DIFFERS when
+# the reference core prints "transparent" there, its text before 2026-10-14.
+OE="$ART/unit_charger_during_override.trace"
+MUT2="${BIN}_mut2"
+oel() { grep 'override ended' || true; }
+if [ ! -f "$OE" ]; then
+  echo "  EVENTS NEGATIVE CONTROL 2 COULD NOT RUN: no $(basename "$OE")"
+  fail=1
+else
+  mkdir -p "$MUT2"
+  cp "$FW/../machine.py" "$MUT2/machine.py"
+  sed -i 's/override ended, armed/override ended, transparent/' "$MUT2/machine.py"
+  if cmp -s "$FW/../machine.py" "$MUT2/machine.py"; then
+    echo "  EVENTS NEGATIVE CONTROL 2 COULD NOT RUN: 'override ended, armed'"
+    echo "  is not in machine.py"
+    fail=1
+  elif [ -z "$("$BIN" --events "$OE" | oel)" ]; then
+    echo "  EVENTS NEGATIVE CONTROL 2 COULD NOT RUN: machine.cpp prints no"
+    echo "  'override ended' line on $(basename "$OE" .trace)"
+    fail=1
+  elif ! diff -q <("$BIN" --events "$OE" | oel) \
+         <(python3 "$HERE/event_stream.py" "$OE" | oel) >/dev/null; then
+    echo "  EVENTS NEGATIVE CONTROL 2 COULD NOT RUN: the unmutated override"
+    echo "  ended lines already differ"
+    fail=1
+  elif diff -q <("$BIN" --events "$OE" | oel) \
+       <(python3 "$HERE/event_stream.py" --core-dir "$MUT2" "$OE" | oel) \
+       >/dev/null; then
+    echo "  EVENTS NEGATIVE CONTROL 2 FAILED: 'override ended, transparent'"
+    echo "  still read IDENTICAL on $(basename "$OE" .trace)"
+    fail=1
+  else
+    echo "  negative control 2: 'override ended, transparent' is reported on" \
+         "$(basename "$OE" .trace); machine.cpp prints: $("$BIN" --events "$OE" | oel)"
+  fi
+  rm -rf "$MUT2"
+fi
 for t in "$ART"/*.trace; do
   name="$(basename "$t" .trace)"
   if "$BIN" --events "$t" | diff -q - <(python3 "$HERE/event_stream.py" "$t") \

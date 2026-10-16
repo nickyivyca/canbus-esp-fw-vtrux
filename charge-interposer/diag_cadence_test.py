@@ -378,6 +378,33 @@ def main():
     finally:
         shutil.rmtree(str(tmp), ignore_errors=True)
 
+    print("spec 2.3: the window before the first charger frame, after a "
+          "scenario whose charger stopped recently (2026-10-15)")
+    # R2's shape: two rounds before the first charger frame, while the port
+    # was normal on the previous scenario's tail
+    tail = good + [(r[0] - 1.2, r[1] - 1.2, r[2], r[3])
+                   for r in good if r[2] in D.STATUS_IDS and r[1] < 9.5]
+    stop, open_t = 1000.0, 1001.9
+    why_nj = R.pre_charger_premise(stop, open_t)
+    ok, why = run(tail, [], prechg_unjudged=why_nj)
+    check(why_nj is not None and ok and "NOT JUDGED" in why
+          and "8 status frame(s) in it" in why,
+          "the previous charger 1.9 s before the witness opened: the "
+          "pre-charger window is NOT JUDGED, not FAILED -> %s" % why[-170:])
+    why_j = R.pre_charger_premise(1000.0, 1003.0)
+    ok, why = run(tail, [], prechg_unjudged=why_j)
+    check(why_j is None and not ok and "listen-only" in why,
+          "can-fail: 3 s before, a second round before the first charger "
+          "frame FAILS -> %s" % why[:150])
+    check(R.pre_charger_premise(None, 1001.0) is None
+          and R.pre_charger_premise(1005.0, 1001.0) is None,
+          "no record of a previous charger, or one from after the witness "
+          "opened (a perf clock from before a reboot): judged as before")
+    ok, why = run(good, [], prechg_unjudged=why_nj)
+    check(ok and "4 status frame(s) in it" in why and "0 in the power-up "
+          "round" in why, "...and a clean start under the premise counts "
+          "its power-up round as not judged -> %s" % why[-120:])
+
     print("a board reset mid-capture (2026-10-14)")
     reset_cases()
 
