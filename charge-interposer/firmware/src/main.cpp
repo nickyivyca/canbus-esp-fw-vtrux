@@ -499,6 +499,12 @@ static void applyVehicleMode(uint32_t t_ms) {
 static void reportEvents() {
   for (uint8_t i = 0; i < core->eventCount(); i++) {
     const Event& e = core->event(i);
+    // The truck image compiles INTP_PRINTF to `((void)0)`, so every use
+    // of `e` below disappears with it and the compiler warned about an
+    // unused variable. Silenced here rather than by making the macro
+    // consume its arguments: that would change what five images compile,
+    // for the sake of one warning in the sixth.
+    (void)e;
     INTP_PRINTF("[%lu] %-12s %s", (unsigned long)e.t_ms,
                   stateName(e.state), eventName(e.code));
     // TRIP HAS NO SPECIAL FORM ANY MORE (reviewer, 2026-10-14, found on the

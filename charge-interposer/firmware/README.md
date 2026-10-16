@@ -621,6 +621,40 @@ It does not perturb what it measures: `test_l2_bridge[replay]` built with and
 without `INTP_ORDER_WITNESS` produces **byte-identical output** -- 22,316
 delivered on the charger wire either way.
 
+### The hold's deferral count, in the same dump
+
+The dump also publishes **the same-identifier hold's deferral count**, which
+is what makes spec 12 entry 2's arm scoreable: the arm passes only with that
+count above zero. An in-order result with no deferral did not exercise the
+hold at all, whatever its ordering says -- and on 2026-10-05 the then-approved
+arm turned out to be exactly that once the stimulus was modelled physically.
+The line reads
+
+```
+  HOLD: deferrals(passes)=1234
+```
+
+and when the count is zero it says so in words, because a reader scanning the
+dump for a failure would otherwise take the clean order record below it at
+face value.
+
+**It counts PASSES, not frames** -- section F item 27 of the review tracker
+asked which, and this is the answer. `drainTx()` re-tests the blocked head on
+every pass and the driver's own comment puts that at about six passes per
+frame at truck rate, so the figure is a yes/no instrument and not a rate:
+nothing should be divided by it. `txFramesDeferred()` is the per-frame
+companion -- frames deferred at least once, incremented when the frame
+finally loads -- and it is deliberately **not** in the dump, so the published
+number is the one the arm is scored on rather than one that invites
+arithmetic.
+
+**The counter is in every build; only the dump is gated.** `tx_hold_defer_`
+is four bytes and one unconditional increment inside `drainTx()`, outside
+both `INTP_TX_TRACE` and `INTP_ORDER_WITNESS`, so the bridge and truck images
+count deferrals as well and simply never print them. `witnessDump()` is what
+`INTP_ORDER_WITNESS` compiles in, which is why spec 12 entry 2 reads the count
+from the witness build.
+
 ## The truck build (spec 8.3)
 
 `[env:truck]` is `[env:esp32-can-x2]` with `-DINTP_NO_SERIAL=1`. Every print

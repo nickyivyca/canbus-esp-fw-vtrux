@@ -45,7 +45,7 @@ Import("env")                                             # noqa: F821
 
 sys.path.insert(0, env.subst("$PROJECT_DIR"))             # noqa: F821
 from build_identity import (DIGEST_CHARS, digest_of,      # noqa: E402
-                             source_digest, tag_for)
+                             row_is_committable, source_digest, tag_for)
 
 MANIFEST_DIR = "builds"
 MANIFEST = "manifest.json"
@@ -460,6 +460,32 @@ def record(source, target, env):                          # noqa: F841
               % (base, elf_sha256_error))
 
     entry.update(git_identity(fw_dir))
+
+    # NO ROW FOR A BUILD NO COMMIT CAN EXPLAIN (reviewer, 2026-10-15).
+    #
+    # Checked here, immediately after the identity is merged in and
+    # before the pops below erase the difference between "false" and
+    # "not reported". The rule itself is row_is_committable() in
+    # build_identity.py, with the incident that produced it; what
+    # matters at this site is the SEVERITY.
+    #
+    # THIS RETURNS, IT DOES NOT RAISE. The digest mismatch above raises,
+    # because an image whose name asserts sources it was not built from
+    # must not reach a flash command. A dirty build is different: the
+    # image is fine and building one locally is a normal thing to do.
+    # What it must not get is a committable row, because a row pointing
+    # at a commit that does not hold its sources sends a custody lookup
+    # to the wrong tree. So the build succeeds, the image stands, and
+    # the manifest is left exactly as it was.
+    committable, why = row_is_committable(entry)
+    if not committable:
+        print("manifest.py: NO MANIFEST ROW for %s -- %s. The image is "
+              "built and can be flashed locally; it gets no row, because "
+              "a row whose commit does not hold its sources sends a "
+              "custody lookup to the wrong tree. Commit and rebuild to "
+              "record it." % (base, why))
+        return
+
     if entry.get("git_commit") is None:
         entry.pop("git_commit", None)
     if entry.get("git_dirty") is None:
