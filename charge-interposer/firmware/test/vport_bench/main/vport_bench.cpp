@@ -32,7 +32,12 @@
 //                          (reps 1..50) and an @DOMINANT summary with min /
 //                          median / max. A pulse shorter than the timeout
 //                          must report by=txd (the can-fail)
-//   STATUS                 twai_get_status_info, plus this image's counters
+//   STATUS                 twai_get_status_info, plus this image's counters,
+//                          plus rec_reg= / tec_reg=: the controller's error
+//                          counter registers read directly (twai_ll_get_rec /
+//                          twai_ll_get_tec). The API's rec= / tec= are 0 in
+//                          listen-only by construction (IDF v5.4.1 twai.c,
+//                          twai_get_status_info_v2), not a register reading
 //   RESET                  stop, uninstall, reinstall in the current mode
 //   AUTORECOVER on|off     bus-off -> recovery -> start again, by itself
 //                          (default on, as the product does, B-7c, so the
@@ -68,7 +73,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "hal/twai_ll.h"
 #include "soc/gpio_sig_map.h"
+#include "soc/twai_struct.h"
 
 namespace {
 
@@ -474,9 +481,14 @@ void cmdDominant(const char* args) {
 
 void cmdStatus() {
   twai_status_info_t s = {};
+  uint32_t rec_reg = 0, tec_reg = 0;
   xSemaphoreTake(drv, portMAX_DELAY);
   const esp_err_t e = installed ? twai_get_status_info(&s)
                                 : ESP_ERR_INVALID_STATE;
+  if (installed) {  // the peripheral is clocked only while installed
+    rec_reg = twai_ll_get_rec(&TWAI);
+    tec_reg = twai_ll_get_tec(&TWAI);
+  }
   xSemaphoreGive(drv);
   if (e != ESP_OK) {
     reply("@STATUS installed=0 err=%s rx_frames=%lu recoveries=%lu",
@@ -484,12 +496,13 @@ void cmdStatus() {
           (unsigned long)recoveries);
     return;
   }
-  reply("@STATUS installed=1 state=%s tec=%lu rec=%lu tx_failed=%lu "
-        "bus_err=%lu arb_lost=%lu msgs_to_tx=%lu msgs_to_rx=%lu "
+  reply("@STATUS installed=1 state=%s tec=%lu rec=%lu tec_reg=%lu "
+        "rec_reg=%lu tx_failed=%lu bus_err=%lu arb_lost=%lu msgs_to_tx=%lu msgs_to_rx=%lu "
         "rx_missed=%lu rx_overrun=%lu rx_frames=%lu recoveries=%lu "
         "autorecover=%d flood=%d flood_queued=%lu flood_refused=%lu",
         stateName(s.state), (unsigned long)s.tx_error_counter,
-        (unsigned long)s.rx_error_counter, (unsigned long)s.tx_failed_count,
+        (unsigned long)s.rx_error_counter, (unsigned long)tec_reg,
+        (unsigned long)rec_reg, (unsigned long)s.tx_failed_count,
         (unsigned long)s.bus_error_count, (unsigned long)s.arb_lost_count,
         (unsigned long)s.msgs_to_tx, (unsigned long)s.msgs_to_rx,
         (unsigned long)s.rx_missed_count, (unsigned long)s.rx_overrun_count,
