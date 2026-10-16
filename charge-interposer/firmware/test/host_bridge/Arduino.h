@@ -50,3 +50,37 @@ inline void digitalWrite(uint8_t pin, uint8_t level) {
   hostpins::set(pin, level);
 }
 inline int digitalRead(uint8_t pin) { return hostpins::get(pin); }
+
+// A Serial that captures, for the one test that reads main.cpp's printed
+// lines (test_event_layout, spec 8.3's event-line form). Compiled only
+// under HOST_SERIAL_CAPTURE, which run.sh defines for that test alone:
+// every other build either defines INTP_NO_SERIAL or never names Serial.
+// It provides only what main.cpp calls; println ends with "\r\n" as the
+// Arduino core's does.
+#ifdef HOST_SERIAL_CAPTURE
+#include <stdarg.h>
+#include <stdio.h>
+#include <string>
+class HostSerial {
+ public:
+  std::string out;
+  void setTxBufferSize(size_t) {}
+  void begin(unsigned long) {}
+  void setTxTimeoutMs(uint32_t) {}
+  explicit operator bool() const { return true; }
+  int available() { return 0; }
+  int read() { return -1; }
+  size_t printf(const char* fmt, ...) __attribute__((format(printf, 2, 3))) {
+    char buf[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    const int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    out += buf;
+    return n < 0 ? 0 : (size_t)n;
+  }
+  size_t print(const char* s) { out += s; return strlen(s); }
+  size_t println(const char* s) { out += s; out += "\r\n"; return strlen(s) + 2; }
+};
+static HostSerial Serial;
+#endif

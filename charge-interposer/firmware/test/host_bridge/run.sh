@@ -58,6 +58,14 @@ for t in "$HERE"/test_*.cpp; do
       defs+=(-DINTP_ORDER_WITNESS=1)
       ;;
     test_twai_port) srcs+=("$SRC/port_twai.cpp") ;;
+    # Spec 8.3's event-line form. The test #includes main.cpp itself (to
+    # reach its static reportEvents() and core without a src change), so
+    # main.cpp is NOT listed; built WITH serial, into the capturing Serial
+    # of Arduino.h, which only HOST_SERIAL_CAPTURE compiles in.
+    test_event_layout)
+      srcs+=("$SRC/port_mcp2515.cpp" "$SRC/port_twai.cpp" "$SRC/machine.cpp")
+      defs+=(-DHOST_SERIAL_CAPTURE=1)
+      ;;
     # L2 is the whole bridge: main.cpp itself, both ports and the core.
     # Built with INTP_NO_SERIAL so it is the TRUCK image's code path --
     # the one that actually goes in the vehicle, and the one whose
