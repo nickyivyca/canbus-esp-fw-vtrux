@@ -129,9 +129,13 @@ Low Power, 4 Invalid) is confirmed from the EPRI binary and on the bus; see
 | `diag_cadence_test.py` | Test for `diag_cadence.py`: no hardware. |
 | `firmware/` | **The real board.** ESP32-CAN-X2 firmware: `machine.py` ported to C++ plus the two CAN port drivers. See `firmware/README.md`. The port is verified against this folder's Python by a differential trace test; `machine.py` remains the reference implementation. Stage 0 board self-test passed on hardware 2026-09-10 (18 checks / 0 failed); Stages 1-2, which need dongles, are not run. |
 
-The harness's own checks and can-fails are not described here: they are in
-`firmware/test/README.md`, which is the tester's, so the description changes where the
-harness does (reviewer, 2026-10-15).
+The harness's own checks and can-fails are not described here, so that the
+description changes where the harness does (reviewer, 2026-10-15). They are in
+`firmware/test/README.md`, which is the tester's: its "Harness files in
+`charge-interposer/`" section covers the board-run group -- `run_scenario.py`,
+`diag_cadence.py` and its test, `board_reset_test.py`, `bus_gs_usb_test.py` and
+`test_hold_wire.py`. The other harness files are not in it yet, and until they
+are the file itself is their description.
 
 ---
 
