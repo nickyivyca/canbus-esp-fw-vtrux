@@ -179,6 +179,9 @@ int main() {
   // C10. The waiting buffer was dropped; only the one already on the wire
   // got out.
   expect(rec, "C10-abort", "wire.after-abort-of-waiting", "1");
+  // Silicon, step 4 item 8 (2026-10-15, c12_all.txt): the aborted waiting
+  // buffer reads ABTF set. The model followed p16 s3.6 note 2 until then.
+  expect(rec, "C10-abort", "TXB0CTRL.after-abort", "0x40");
 
   // C12. Receive rollover and buffer order (reviewer, tracker "RX rollover
   // order"). After A is taken, C sits in RXB0 and the OLDER B in RXB1:
@@ -192,12 +195,17 @@ int main() {
   expect(rec, "C12-rx-rollover", "C.rx-flags", "0x03");
   expect(rec, "C12-rx-rollover", "C.RXB0D0", "0xC0");
   expect(rec, "C12-rx-rollover", "C.RXB1D0", "0xB0");
-  expect(rec, "C12-rx-rollover", "D.overflow", "0x80");
+  // D, E: silicon, step 4 item 8 (2026-10-15, c12_all.txt), against the
+  // reading of p26 Fig 4-3 the model held until then (RX1OVR; D lost; E in
+  // RXB1; RX1IF clear after 0x96). The chip flags RX0OVR, keeps D and
+  // writes it into RXB1 once RX1IF is cleared, and after 0x96 frees RXB1
+  // the next held frame (E) moves in and RX1IF reads set again.
+  expect(rec, "C12-rx-rollover", "D.overflow", "0x40");
   expect(rec, "C12-rx-rollover", "D.RXB0D0", "0xC0");
   expect(rec, "C12-rx-rollover", "D.RXB1D0", "0xB0");
-  expect(rec, "C12-rx-rollover", "E.RXB1D0", "0xE0");
-  expect(rec, "C12-rx-rollover", "E.read96-first-byte", "0xE0");
-  expect(rec, "C12-rx-rollover", "E.read96-rx-flags", "0x01");
+  expect(rec, "C12-rx-rollover", "E.RXB1D0", "0xD0");
+  expect(rec, "C12-rx-rollover", "E.read96-first-byte", "0xD0");
+  expect(rec, "C12-rx-rollover", "E.read96-rx-flags", "0x03");
   expect(rec, "C12-rx-rollover", "noBUKT.overflow", "0x40");
   expect(rec, "C12-rx-rollover", "noBUKT.rx-flags", "0x01");
   expect(rec, "C12-rx-rollover", "noBUKT.RXB0D0", "0xF0");

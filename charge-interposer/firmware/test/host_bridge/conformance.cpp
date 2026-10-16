@@ -266,8 +266,11 @@ void stepTxFlagsOnRequest(Target& t, Recorder& r) {
 
   // Dirty the flags by hand, then request and look.
   writeReg(t, R_TXB0CTRL, (uint8_t)(TXB_ABTF | TXB_MLOA | TXB_TXERR));
+  // Silicon (step 4 item 8, 2026-10-15): the write left 0x00 -- the host
+  // cannot set these bits, so what the chip does with them set is NOT
+  // measured on this bench (reviewer). The fake keeps whatever is written.
   r.hex8(S, "TXB0CTRL.dirtied", readReg(t, R_TXB0CTRL), ASSUMED,
-         "set directly; the chip normally sets these itself");
+         "set directly; silicon refuses the write (0x00): unmeasured");
 
   t.setAcknowledged(true);
   loadBuffer(t, 0, 0x202, 0, 8);

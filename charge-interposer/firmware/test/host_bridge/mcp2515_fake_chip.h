@@ -337,6 +337,10 @@ class Mcp2515Fake {
   // cannot say how many were lost -- a count is what an accounting
   // needs. Incremented in deliverFrame().
   uint32_t rxOverflowCount() const { return rx_overflow_count_; }
+  // Frames held after a BUKT overflow and later written into a freed
+  // buffer (silicon, step 4 item 8 C12 E; see deliverFrame). A frame
+  // counted here was flagged in EFLG but not lost.
+  uint32_t mabTransfers() const { return mab_transfers_; }
 
   void reset(bool power_on);
 
@@ -390,6 +394,9 @@ class Mcp2515Fake {
   uint32_t reloads_while_sending_ = 0;
   uint32_t same_id_coresident_ = 0;
   uint32_t rx_overflow_count_ = 0;
+  uint32_t mab_transfers_ = 0;
+  CanFrame mab_;              // a frame held after a BUKT overflow
+  bool mab_held_ = false;
   bool bus_errors_on_ = false;
   uint32_t rx_errors_injected_ = 0;
   uint16_t tec_ = 0;

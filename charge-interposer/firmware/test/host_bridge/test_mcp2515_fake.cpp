@@ -563,28 +563,49 @@ int main() {
           "C arriving now lands in RXB0, NEWER than the B in RXB1 -- the "
           "chip state the receive-order case turns on");
 
-    // Overflow flags (p26 Fig 4-3).
+    // Overflow with both full and BUKT set -- SILICON, step 4 item 8 C12
+    // (2026-10-15), where it contradicts the reading of p26 Fig 4-3 this
+    // model held: RX0OVR, and the frame is kept, not lost.
     f.data[0] = 0xD0; c.deliverFrame(f);
-    check((s.readReg(R_EFLG) & (EFLG_RX0OVR | EFLG_RX1OVR)) == EFLG_RX1OVR,
-          "both full, BUKT set: the frame rolls to a full RXB1 and sets "
-          "RX1OVR, not RX0OVR (p26 Fig 4-3)");
+    check((s.readReg(R_EFLG) & (EFLG_RX0OVR | EFLG_RX1OVR)) == EFLG_RX0OVR,
+          "both full, BUKT set: RX0OVR, not RX1OVR (silicon C12 D.overflow "
+          "0x40; Fig 4-3 as read said RX1OVR)");
     check(s.readReg(0x66) == 0xC0 && s.readReg(0x76) == 0xB0 &&
-          c.rxOverflowCount() == 1,
-          "...and D is lost: neither buffer overwritten, one counted");
+          c.rxOverflowCount() == 1 && c.mabTransfers() == 0,
+          "...neither buffer overwritten, the flag event counted, D held");
 
-    // BIT MODIFY clearing RX1IF frees RXB1 (p23 s4.1.3).
+    // BIT MODIFY clearing RX1IF frees RXB1 (p23 s4.1.3) -- and the held D
+    // goes straight into it (silicon C12 E.RXB1D0 0xD0).
     s.bitModify(R_CANINTF, INTF_RX1IF, 0x00);
-    check(c.rxFull(0) && !c.rxFull(1),
-          "BIT MODIFY clearing RX1IF frees RXB1 without a READ RX "
-          "(p23 s4.1.3: the flag IS the lockout)");
+    check(c.rxFull(0) && c.rxFull(1) && s.readReg(0x76) == 0xD0 &&
+          c.mabTransfers() == 1,
+          "BIT MODIFY clearing RX1IF frees RXB1, and the held D is written "
+          "into it at once (silicon C12 E.RXB1D0 0xD0)");
     f.data[0] = 0xE0; c.deliverFrame(f);
-    check(s.readReg(0x76) == 0xE0,
-          "...so the next frame rolls into it");
+    check(s.readReg(0x76) == 0xD0 && c.rxOverflowCount() == 2,
+          "...so E, arriving with both full again, is held in turn and RXB1 "
+          "still holds D");
+    c.csLow();
+    c.transfer((uint8_t)(OP_READ_RX | 0x06));   // 0x96: RXB1 from D0
+    const uint8_t e0 = c.transfer(0);
+    c.csHigh();
+    check(e0 == 0xD0 && c.rxFull(0) && c.rxFull(1) && s.readReg(0x76) == 0xE0
+          && c.mabTransfers() == 2,
+          "READ RX 0x96 returns D; raising CS frees RXB1 and the held E moves "
+          "in, so RX1IF reads set again (silicon C12 E.read96 0xD0 / 0x03)");
+  }
 
-    // BUKT = 0: a frame for a full RXB0 is lost and sets RX0OVR.
-    s.writeReg(R_EFLG, 0x00);
-    s.writeReg(R_CANINTF, 0x00);
+  // BUKT = 0: a frame for a full RXB0 is lost and sets RX0OVR (p26 Fig
+  // 4-3; silicon C12 noBUKT agreed: 0x40, RXB0 keeps the first). A fresh
+  // chip, so no frame held by the BUKT case above can land in a buffer
+  // this case frees.
+  {
+    Mcp2515Fake c;
+    Spi s(c);
     s.writeReg(R_RXB0CTRL, 0x60);          // BUKT clear
+    s.writeReg(R_CANCTRL, MODE_NORMAL);
+    CanFrame f = ext8Frame();
+    f.id = 0x18FF60E5;
     f.data[0] = 0xF0; c.deliverFrame(f);
     f.data[0] = 0xF1; c.deliverFrame(f);
     check((s.readReg(R_EFLG) & (EFLG_RX0OVR | EFLG_RX1OVR)) == EFLG_RX0OVR &&

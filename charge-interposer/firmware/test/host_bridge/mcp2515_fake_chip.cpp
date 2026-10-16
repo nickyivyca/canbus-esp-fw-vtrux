@@ -17,6 +17,7 @@ void Mcp2515Fake::reset(bool power_on) {
   max_load_to_sof_ns_ = 0;
   tec_ = 0;
   bus_off_recover_ns_ = 0;
+  mab_held_ = false;
   if (power_on) {
     wire_.clear();
     bus_errors_on_ = false;
@@ -25,6 +26,7 @@ void Mcp2515Fake::reset(bool power_on) {
     reloads_while_sending_ = 0;
     same_id_coresident_ = 0;
     rx_overflow_count_ = 0;
+    mab_transfers_ = 0;
     t_ns_ = 0;
   }
 }
@@ -184,12 +186,6 @@ void Mcp2515Fake::deliverFrame(const CanFrame& f) {
     regs_[R_CANINTF] |= INTF_RX0IF;
     return;
   }
-  // p26 Figure 4-3: RX0IF = 1 -> "BUKT = 1?" -- No sets RX0OVR; Yes joins
-  // the RXB1 path, where "RX1IF = 0?" -- No sets RX1OVR. So a frame that
-  // rolled over into a full RXB1 sets RX1OVR. (Until 2026-10-08 this set
-  // RX0OVR and the status table called the flag UNKNOWN; the flowchart
-  // settles it, read from the rendered page.) The driver sums both bits,
-  // so rxDropped() is unchanged either way.
   if (!(regs_[R_RXB0CTRL] & RXB0_BUKT)) {
     rx_overflow_count_++;
     regs_[R_EFLG] |= EFLG_RX0OVR;
@@ -200,8 +196,25 @@ void Mcp2515Fake::deliverFrame(const CanFrame& f) {
     regs_[R_CANINTF] |= INTF_RX1IF;
     return;
   }
+  // Both full with BUKT set. MEASURED ON SILICON (step 4 item 8, the X2's
+  // MCP2515 under c12_bench, 2026-10-15, runs/step4_nohands_20261014T1730/
+  // c12_all.txt), against the reading of p26 Figure 4-3 this model held
+  // until then (RX1OVR, the frame lost):
+  //   - C12 D.overflow: the chip sets RX0OVR (0x40), not RX1OVR;
+  //   - C12 E.RXB1D0 / E.read96-first-byte 0xD0, E.read96-rx-flags 0x03:
+  //     the frame is NOT lost. It is kept (the MAB) and written into the
+  //     first buffer freed -- D was in RXB1 once RX1IF was cleared, and
+  //     after READ RX 0x96 freed RXB1 the next held frame (E) moved in and
+  //     RX1IF read set again.
+  // rxOverflowCount() still counts the flag event; mabTransfers() counts
+  // the held frames later stored. NOT measured, so not modelled: which
+  // frame is kept when a second arrives while one is already held (the
+  // newest is kept here), and whether a frame is kept with BUKT clear
+  // (C12 noBUKT matched the old model and never freed RXB0 afterwards).
   rx_overflow_count_++;
-  regs_[R_EFLG] |= EFLG_RX1OVR;
+  regs_[R_EFLG] |= EFLG_RX0OVR;
+  mab_ = f;
+  mab_held_ = true;
 }
 
 // The MAB's content written into RXBn's registers, SIDH..D7 (p23 note:
@@ -238,6 +251,15 @@ void Mcp2515Fake::rxFlagsChanged(uint8_t before) {
     pend_other_full_[n] = rxFull(1 - n);
     pend_seq_[n] = ++fire_seq_;
     deliverFrame(pend_[n]);
+  }
+  // A frame held after a BUKT overflow goes into the buffer just freed
+  // (see deliverFrame: measured on silicon, C12 E).
+  for (int n = 0; n < 2 && mab_held_; n++) {
+    const uint8_t bit = n ? INTF_RX1IF : INTF_RX0IF;
+    if (!(before & bit) || (regs_[R_CANINTF] & bit)) continue;
+    mab_held_ = false;
+    mab_transfers_++;
+    deliverFrame(mab_);
   }
 }
 
@@ -291,11 +313,18 @@ void Mcp2515Fake::writeReg(uint8_t a, uint8_t v) {
       startIfIdle();
     } else if ((was & TXB_TXREQ) && !(v & TXB_TXREQ)) {
       // p16 s3.6 note 1: a message already transmitting CONTINUES; only one
-      // that has not started is aborted. Note 2: this does NOT set ABTF.
+      // that has not started is aborted.
       tx_[n].abort_requested = true;
       if (!tx_[n].sending) {
         if (tx_[n].loaded && !tx_[n].started) tx_never_started_++;
         tx_[n].loaded = false;
+        // MEASURED ON SILICON (step 4 item 8, C10-abort, 2026-10-15,
+        // c12_all.txt): TXB0CTRL read 0x40 after its waiting frame was
+        // aborted -- the chip sets ABTF, where this model followed the
+        // reading of p16 s3.6 note 2 ("does NOT set ABTF") until then. An
+        // abort that takes effect after a failed attempt (below, in
+        // completeTx) was not measured and is left as it was.
+        regs_[a] = (uint8_t)(regs_[a] | TXB_ABTF);
         wire_.push_back(WireEvent{micros(), n, tx_[n].frame, false, true});
       }
     }
