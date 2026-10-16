@@ -209,6 +209,12 @@ int main() {
   expect(rec, "C12-rx-rollover", "E.RXB1D0", "0xD0");
   expect(rec, "C12-rx-rollover", "E.read96-first-byte", "0xD0");
   expect(rec, "C12-rx-rollover", "E.read96-rx-flags", "0x03");
+  // G, 0x94 (the product's read): the model's answer, which the bench
+  // decides -- the fake holds G and moves it in exactly as after 0x96.
+  expect(rec, "C12-rx-rollover", "G.overflow", "0x40");
+  expect(rec, "C12-rx-rollover", "G.read94-D0", "0xE0");
+  expect(rec, "C12-rx-rollover", "G.read94-rx-flags", "0x03");
+  expect(rec, "C12-rx-rollover", "G.read94-then-RXB1D0", "0x90");
   expect(rec, "C12-rx-rollover", "noBUKT.overflow", "0x40");
   expect(rec, "C12-rx-rollover", "noBUKT.rx-flags", "0x01");
   expect(rec, "C12-rx-rollover", "noBUKT.RXB0D0", "0xF0");

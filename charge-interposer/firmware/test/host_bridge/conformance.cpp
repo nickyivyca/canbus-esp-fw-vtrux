@@ -557,6 +557,28 @@ void stepRxRollover(Target& t, Recorder& r) {
   r.hex8(S, "E.read96-first-byte", e0, DATASHEET, P68);
   r.hex8(S, "E.read96-rx-flags", rxFlags(t), DATASHEET, P68);
 
+  // The product's read: port_mcp2515 takes RXB1 with READ RX 0x94 (n=1,
+  // m=0: from RXB1SIDH, 13 bytes), not 0x96 (reviewer and implementor,
+  // 2026-10-15). The same question as E, asked with 0x94: G arrives with
+  // both full (RXB0 = C, RXB1 = E) and is held; 0x94 reads E whole; does
+  // RX1IF re-assert with G moved into RXB1? The overflow flags are cleared
+  // first so G's own flag is read.
+  bitModify(t, R_EFLG, (uint8_t)(EFLG_RX0OVR | EFLG_RX1OVR), 0x00);
+  t.injectFrame(ID, true, 0x90, 8);
+  r.hex8(S, "G.overflow", ovrFlags(t), UNKNOWN,
+         "silicon decides (D's was RX0OVR)");
+  t.csLow();
+  t.transfer((uint8_t)(OP_READ_RX | 0x04));
+  uint8_t b94[13];
+  for (int i = 0; i < 13; i++) b94[i] = t.transfer(0);
+  t.csHigh();
+  r.hex8(S, "G.read94-D0", b94[5], DATASHEET,
+         "p68 Fig 12-3: 0x94 starts at RXB1SIDH, D0 is the 6th byte");
+  r.hex8(S, "G.read94-rx-flags", rxFlags(t), UNKNOWN,
+         "re-asserts as after 0x96? (silicon decides)");
+  r.hex8(S, "G.read94-then-RXB1D0", readReg(t, 0x76), UNKNOWN,
+         "the held frame moved in? (silicon decides)");
+
   // BUKT clear: no rollover; the second frame is lost with RX0OVR.
   writeReg(t, R_EFLG, 0x00);
   writeReg(t, R_CANINTF, 0x00);
