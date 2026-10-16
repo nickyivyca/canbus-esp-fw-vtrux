@@ -59,6 +59,7 @@
 static twai_message_t g_rx_q[RXMAX];
 static int            g_rx_n;
 static int            g_rx_dropped;
+static int            g_rx_dropped_off;     /* delivered while not receiving */
 static int            g_self_received;
 static int64_t        g_last_rx_time = -1;
 
@@ -93,11 +94,27 @@ static void deliv_note(uint32_t id)
 }
 
 static bool g_bus_off;              /* the controller left the bus (spec 7) */
+static bool g_installed, g_running;
 
 static void rx_push(uint32_t id, const uint8_t *data, uint8_t dlc)
 {
-    /* A bus-off controller receives nothing. */
-    if (g_bus_off) { return; }
+    /*
+     * A CONTROLLER THAT IS NOT RUNNING RECEIVES NOTHING, as on the device
+     * (components/driver/twai/twai.c, IDF 5.4.1). Not installed, there is no
+     * driver and no queue: twai_driver_uninstall() deletes it. Stopped,
+     * twai_hal_stop() has put the controller in reset mode. Bus-off, it has left
+     * the bus. The frame is dropped, and counted so a case can see it was.
+     *
+     * Until 2026-10-16 only bus-off dropped, silently. A frame delivered after a
+     * mode 0 then queued with no driver and no worker to take it, and
+     * replay_scn()'s drain, `while (ft_rx_pending() > 0) ft_run(0);`, never
+     * returned.
+     */
+    if (!g_installed || !g_running || g_bus_off)
+    {
+        g_rx_dropped_off++;
+        return;
+    }
     if (g_rx_n >= RXMAX) { g_rx_dropped++; return; }
     twai_message_t *m = &g_rx_q[g_rx_n++];
     memset(m, 0, sizeof(*m));
@@ -239,7 +256,7 @@ static uint32_t g_refuse_id;
 static int      g_refuse_id_n;
 static int      g_max_inflight;     /* item 3's high-water mark, ours only */
 static bool     g_fail_next;
-static bool     g_installed, g_running;
+/* g_installed and g_running are declared above rx_push(), which reads them. */
 static bool     g_fail_install;     /* the next twai_driver_install() fails */
 static bool     g_in_receive;       /* a thread is blocked inside the driver */
 static int      g_unsafe_teardowns;
@@ -480,6 +497,7 @@ bool ft_in_receive(void) { return g_in_receive; }
 
 int  ft_unsafe_teardowns(void) { return g_unsafe_teardowns; }
 int  ft_installed_mode(void)   { return g_installed_mode; }
+int  ft_rx_dropped_off(void)   { return g_rx_dropped_off; }
 int      ft_install_count(void)          { return g_install_n; }
 uint32_t ft_installed_rx_queue_len(void) { return g_installed_rxq; }
 uint32_t ft_installed_acc_code(void)     { return g_installed_acc_code; }
@@ -952,6 +970,12 @@ esp_err_t twai_driver_install(const twai_general_config_t *g,
 
     g_install_n++;
     g_installed = true;
+    /*
+     * A FRESH, EMPTY RECEIVE QUEUE: install creates it (xQueueCreateWithCaps in
+     * twai_driver_install_v2), so nothing received under an earlier install
+     * survives into this one.
+     */
+    g_rx_n = 0;
     return ESP_OK;
 }
 
@@ -967,6 +991,7 @@ esp_err_t twai_driver_uninstall(void)
     g_running = false;
     g_bus_off = false;      /* allowed from BUS_OFF, as on the device */
     g_installed_mode = -1;
+    g_rx_n = 0;             /* the queue is deleted with the driver */
     return ESP_OK;
 }
 
@@ -975,6 +1000,11 @@ esp_err_t twai_start(void)
     /* No driver, no handle: the real one fails its handle check. */
     if (!g_installed) return ESP_ERR_INVALID_ARG;
     g_running = true;
+    /*
+     * twai_start_v2() resets the receive queue (xQueueReset, twai.c:606).
+     * twai_stop() does not, so frames queued before a stop stay readable.
+     */
+    g_rx_n = 0;
     return ESP_OK;
 }
 esp_err_t twai_stop(void)
@@ -1400,7 +1430,7 @@ void ft_reset(void)
     g_fail_next = false;
     g_bus_off = false;
     g_fail_install = false;
-    g_rx_n = g_rx_dropped = 0;
+    g_rx_n = g_rx_dropped = g_rx_dropped_off = 0;
     /*
      * Cleared here, unlike the reset reason and the error count: nothing sets
      * a notification before setup(), and a wake left over from the previous

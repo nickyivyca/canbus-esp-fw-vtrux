@@ -350,6 +350,13 @@ int              ft_rx_queue_depth(void);
 int              ft_rx_pending(void);
 
 /*
+ * Frames delivered while the controller was not receiving -- no driver installed,
+ * stopped, or bus-off -- and dropped, as the device drops them. Such a frame never
+ * reaches the receive queue, so ft_rx_pending() cannot count it.
+ */
+int              ft_rx_dropped_off(void);
+
+/*
  * THE TRANSMIT-TIMING CONFIGURATION THIS CASE RAN WITH (spec 12.4, 2026-10-03):
  * default air time, every per-ID override, and how many stalls were armed. Writes a
  * one-line summary into `buf`.
