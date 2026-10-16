@@ -149,10 +149,16 @@ void Mcp2515Fake::injectReceiveErrors(uint32_t n) {
 }
 
 void Mcp2515Fake::refreshErrorFlags() {
-  uint8_t e = (uint8_t)(regs_[R_EFLG] & ~(EFLG_EWARN | EFLG_TXEP | EFLG_RXEP));
+  uint8_t e = (uint8_t)(regs_[R_EFLG] &
+                        ~(EFLG_EWARN | EFLG_TXEP | EFLG_RXEP | EFLG_TXWAR));
   const uint8_t tec = regs_[R_TEC];
   const uint8_t rec = regs_[R_REC];
   if (tec >= 96 || rec >= 96) e |= EFLG_EWARN;
+  // TXWAR: SILICON, step 4 item 8 C9 (2026-10-15, c12_C9.txt): EFLG read
+  // 0x15 with TEC at 128, where this model gave 0x11. The threshold is the
+  // datasheet's (TEC >= 96, as EWARN's); only TEC 128 was measured. RXWAR
+  // was not measured and stays unmodelled.
+  if (tec >= 96) e |= EFLG_TXWAR;
   if (tec >= 128) e |= EFLG_TXEP;
   if (rec >= 128) e |= EFLG_RXEP;
   regs_[R_EFLG] = e;

@@ -2203,6 +2203,110 @@ void caseAgeFromQueue() {
   assertPathsExercised();
 }
 
+// The receive overflow silicon showed (step 4 item 8, C12 on the X2's
+// MCP2515, 2026-10-15; reviewer, the same day): with both buffers full and
+// BUKT set, a third frame sets RX0OVR and is KEPT, written into the first
+// buffer freed. The corrected fake models it, and no other L2 case reaches
+// the path. Three frames of ONE identifier, the third arriving while both
+// buffers are full:
+//   JUDGED (spec 2): each reaches the vehicle side once and in order, the
+//   held one included.
+//   REPORTED, NOT JUDGED (spec 8.2; the reviewer reads it): 0x7F6's RX
+//   overflow count and 0x7F4's bridge_ok across overflows in which nothing
+//   was lost.
+// The order/once judgement is a function, shown to refuse a held frame
+// delivered out of order and one delivered twice.
+std::string heldOrder(const std::vector<uint8_t>& tags) {
+  std::string o;
+  for (size_t i = 0; i < tags.size(); i++) {
+    if (!o.empty()) o += ",";
+    o += (tags[i] >= 0xA0 && tags[i] <= 0xC0) ? "ABC"[(tags[i] >> 4) - 0xA]
+                                              : '?';
+  }
+  return o;
+}
+
+void caseRxOverflowHeld() {
+  // The judgement's own can-fails, on synthetic deliveries.
+  check(heldOrder({0xA0, 0xB0, 0xC0}) == "A,B,C",
+        "the judgement reads A,B,C as A,B,C");
+  check(heldOrder({0xA0, 0xC0, 0xB0}) != "A,B,C",
+        "can-fail: the held frame delivered out of order (A,C,B) is refused");
+  check(heldOrder({0xA0, 0xB0, 0xC0, 0xC0}) != "A,B,C",
+        "can-fail: the held frame delivered twice (A,B,C,C) is refused");
+
+  boot();
+  feed(12);
+  const twaifake::Frame* c6a = lastFrom(DIAG_COUNTERS);
+  const int ovf_before = c6a ? (int)c6a->data[6] : -1;
+  const size_t mark0 = vehSent().size();
+  const uint8_t tag[3] = {0xA0, 0xB0, 0xC0};
+  const uint32_t id = 0x18FF60C0;
+  int n_ok = 0;
+  for (int rep = 0; rep < 3; rep++) {
+    char msg[220];
+    runBridge(5);
+    const bool empty = !g_chip->rxFull(0) && !g_chip->rxFull(1);
+    const uint32_t mab0 = g_chip->mabTransfers();
+    const uint32_t ovf0 = g_chip->rxOverflowCount();
+    const size_t mark = vehSent().size();
+    mcpfake::CanFrame f[3];
+    for (int k = 0; k < 3; k++) {
+      std::memset(&f[k], 0, sizeof(f[k]));
+      f[k].id = id;
+      f[k].ext = true;
+      f[k].len = 8;
+      f[k].data[0] = tag[k];
+      f[k].data[1] = (uint8_t)(0x50 + rep);
+    }
+    g_chip->deliverFrame(f[0]);               // A -> RXB0
+    g_chip->deliverFrame(f[1]);               // B -> RXB1 (rollover)
+    const bool both = g_chip->rxFull(0) && g_chip->rxFull(1);
+    g_chip->deliverFrame(f[2]);               // C: both full -> held
+    const bool held = g_chip->rxOverflowCount() == ovf0 + 1 &&
+                      g_chip->mabTransfers() == mab0;
+    runBridge(20);
+    const bool moved = g_chip->mabTransfers() == mab0 + 1;
+    std::vector<uint8_t> got;
+    const std::vector<twaifake::Frame>& s = vehSent();
+    for (size_t i = mark; i < s.size(); i++)
+      if (s[i].id == id && s[i].ext && s[i].len >= 2 &&
+          s[i].data[1] == (uint8_t)(0x50 + rep))
+        got.push_back(s[i].data[0]);
+    const std::string order = heldOrder(got);
+    std::printf("  --  rep %d: vehicle side %s\n", rep,
+                order.empty() ? "(none)" : order.c_str());
+    std::snprintf(msg, sizeof(msg),
+                  "rep %d: setup held (buffers empty; A and B filled both; C "
+                  "arrived with both full, was held, and was later stored)",
+                  rep);
+    check(empty && both && held && moved, msg);
+    std::snprintf(msg, sizeof(msg),
+                  "rep %d: A, B and the held C each reach the vehicle side "
+                  "once, in order (spec 2; observed %s)",
+                  rep, order.empty() ? "none" : order.c_str());
+    check(order == "A,B,C", msg);
+    if (order == "A,B,C") n_ok++;
+  }
+  // 8.2, reported: two status periods so a 0x7F6 and 0x7F4s go out.
+  feed(25);
+  const twaifake::Frame* c6b = lastFrom(DIAG_COUNTERS);
+  const int ovf_after = c6b ? (int)c6b->data[6] : -1;
+  bool cleared = false;
+  const std::vector<twaifake::Frame>& s = vehSent();
+  for (size_t i = mark0; i < s.size(); i++)
+    if (s[i].id == DIAG_STATUS && !(s[i].data[4] & FLAG_BRIDGE_OK))
+      cleared = true;
+  std::printf("  --  REPORTED (spec 8.2, not judged): 3 overflows in which "
+              "the held frame was delivered (%d of 3 reps in order, nothing "
+              "lost): 0x7F6 rx_ovf %d -> %d; bridge_ok cleared on some 0x7F4 "
+              "after them: %s; the fake counted %u flag events and %u held "
+              "frames stored\n",
+              n_ok, ovf_before, ovf_after, cleared ? "YES" : "no",
+              g_chip->rxOverflowCount(), g_chip->mabTransfers());
+  assertPathsExercised();
+}
+
 struct Case {
   const char* name;
   void (*fn)();
@@ -2234,6 +2338,7 @@ const Case kCases[] = {
     {"diag-listen-only", caseDiagListenOnly},
     {"boundary-one-line", caseBoundaryOneLine},
     {"age-from-queue", caseAgeFromQueue},
+    {"rx-overflow-held", caseRxOverflowHeld},
 };
 
 }  // namespace

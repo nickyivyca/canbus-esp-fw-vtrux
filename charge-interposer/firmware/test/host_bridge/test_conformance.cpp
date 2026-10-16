@@ -174,6 +174,9 @@ int main() {
   // that, and if it disagrees these lines are where it shows.
   expect(rec, "C9-no-ack", "TEC.at-1000ms", "128");
   expect(rec, "C9-no-ack", "EFLG.TXBO-set", "0x00");
+  // Silicon, step 4 item 8 C9 (2026-10-15, c12_C9.txt): TXWAR set beside
+  // TXEP and EWARN at TEC 128.
+  expect(rec, "C9-no-ack", "EFLG.final", "0x15");
   expect(rec, "C9-no-ack", "wire.delivered", "(none)");
 
   // C10. The waiting buffer was dropped; only the one already on the wire
