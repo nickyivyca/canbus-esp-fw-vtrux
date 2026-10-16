@@ -5292,8 +5292,20 @@ static void case_mode_changes_during_a_live_replay(void)
  *      apply tears the driver down for OBSERVE, and can_block()'s 1 ms delay
  *      yields mid-apply: the poster must NOT withdraw a taken request; it waits
  *      and gets ESP_OK.
+ * And with the slot held by another poster (the bound runs from the call, so
+ * the slot wait is inside the second, reviewer 2026-10-16):
+ *   D. held all second, by a poster that never comes back for it: refused with
+ *      ESP_ERR_NOT_FINISHED within 1.0-1.1 s of the call. Then the worker runs
+ *      and must apply neither: the other request's deadline has passed, so it
+ *      is not taken either, and its poster withdraws it when it does come back;
+ *   E. freed at 900 ms, when the other poster withdraws its expired request:
+ *      the setter posts then and is withdrawn at its own call's deadline,
+ *      ESP_ERR_TIMEOUT within 1.0-1.1 s, not 1.9 s, and never applied.
  */
 static int64_t g_release_at;
+static int64_t g_withdraw_at;           /* E: when the other poster comes back */
+static uint32_t g_withdraw_ticket;
+static esp_err_t g_withdraw_result;
 
 static void release_hook(void)
 {
@@ -5301,6 +5313,11 @@ static void release_hook(void)
     {
         ft_hold_worker(false);
         g_release_at = 0;
+    }
+    if (g_withdraw_at > 0 && ft_now() >= g_withdraw_at)
+    {
+        g_withdraw_at = 0;
+        g_withdraw_result = gen_inhibit_await_mode(g_withdraw_ticket);
     }
     invariant_hook();
 }
@@ -5372,6 +5389,74 @@ static void case_mode_change_bound_and_race(void)
     CHECK(r == ESP_OK && json_has("\"mode\":1"),
           "C: a change taken before the deadline and finished after it came back "
           "%d (a taken request must not be withdrawn): %s", (int)r, stats());
+    ft_set_step_hook(invariant_hook);
+    teardown();
+
+    /* D. The slot held all second by another poster. */
+    setup();
+    go_live();
+    keep_alive(100000, &ctr);
+    ft_set_step_hook(release_hook);
+    g_release_at = 0;
+    ft_hold_worker(true);
+    uint32_t other = 0;
+    CHECK(gen_inhibit_post_mode(GEN_INHIBIT_OBSERVE, 500, &other) == ESP_OK,
+          "PRECONDITION D: the other poster could not post");
+    ft_run(500000);             /* held: no traffic to queue up */
+    t0 = ft_now();
+    r = gen_inhibit_set_mode(GEN_INHIBIT_PASSIVE, 500);
+    took = ft_now() - t0;
+    CHECK(r == ESP_ERR_NOT_FINISHED,
+          "D: a change that never got the slot came back %s, not "
+          "ESP_ERR_NOT_FINISHED", esp_err_to_name(r));
+    CHECK(took >= 1000000 && took < 1100000,
+          "D: the refusal came %lld us after the call; the bound is 1 s",
+          (long long)took);
+    ft_hold_worker(false);
+    keep_alive(300000, &ctr);
+    CHECK(json_has("\"mode\":3"),
+          "D: a change was applied after its deadline (the other poster's OBSERVE "
+          "or the refused PASSIVE): %s", stats());
+    r = gen_inhibit_await_mode(other);
+    CHECK(r == ESP_ERR_TIMEOUT,
+          "D: the other poster's expired request came back %s, not withdrawn",
+          esp_err_to_name(r));
+    CHECK(json_has("\"mode\":3"), "D: mode moved after the withdrawal: %s",
+          stats());
+    ft_set_step_hook(invariant_hook);
+    teardown();
+
+    /* E. The slot freed late in the second: the same deadline. */
+    setup();
+    go_live();
+    keep_alive(100000, &ctr);
+    ft_set_step_hook(release_hook);
+    g_release_at = 0;
+    ft_hold_worker(true);
+    other = 0;
+    CHECK(gen_inhibit_post_mode(GEN_INHIBIT_OBSERVE, 500, &other) == ESP_OK,
+          "PRECONDITION E: the other poster could not post");
+    ft_run(500000);             /* held: no traffic to queue up */
+    t0 = ft_now();
+    g_withdraw_ticket = other;
+    g_withdraw_result = ESP_OK;
+    g_withdraw_at = t0 + 900000;
+    r = gen_inhibit_set_mode(GEN_INHIBIT_PASSIVE, 500);
+    took = ft_now() - t0;
+    CHECK(g_withdraw_at == 0 && g_withdraw_result == ESP_ERR_TIMEOUT,
+          "PRECONDITION E: the other poster did not withdraw its request at "
+          "900 ms (%s)", esp_err_to_name(g_withdraw_result));
+    CHECK(r == ESP_ERR_TIMEOUT,
+          "E: a change posted at 900 ms and never taken came back %s, not "
+          "ESP_ERR_TIMEOUT", esp_err_to_name(r));
+    CHECK(took >= 1000000 && took < 1100000,
+          "E: the refusal came %lld us after the call; the slot wait and the "
+          "take share one second", (long long)took);
+    ft_hold_worker(false);
+    keep_alive(300000, &ctr);
+    CHECK(json_has("\"mode\":3"),
+          "E: a withdrawn change was applied after its refusal: %s", stats());
+    g_withdraw_at = 0;
     ft_set_step_hook(invariant_hook);
     teardown();
     case_end();

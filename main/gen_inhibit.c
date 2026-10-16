@@ -257,22 +257,34 @@ static void worker_wake(void)
  * worker, at priority 18, wakes on the next frame, so it could run part-way
  * through gs_rearm()'s memset-and-restore or gi_set_mode()'s resets.
  *
- * THE 1 s BOUND AND THE RACE. A request still POSTED one second after it was
- * posted is WITHDRAWN by its poster and refused (ESP_ERR_TIMEOUT). Withdrawing
- * and taking are each one test-and-set of `state` inside s_req_lock, so exactly
- * one of them happens to any request:
+ * THE 1 s BOUND RUNS FROM THE SETTER'S CALL. Spec 3: "The setter waits at most
+ * 1 s". gen_inhibit_post_mode() fixes the deadline, call + 1 s, before it waits
+ * for the slot, and the request carries it, so the wait for a free slot and the
+ * wait for the worker's take share the one second (until 2026-10-16 each had
+ * its own, about 2 s in all). A request posted late in the second is withdrawn
+ * at the same deadline.
+ *
+ * THE RACE. A request still POSTED at its deadline is WITHDRAWN by its poster
+ * and refused (ESP_ERR_TIMEOUT). Withdrawing and taking are each one
+ * test-and-set of `state` inside s_req_lock, so exactly one of them happens to
+ * any request:
  *   - the worker takes it first (POSTED -> TAKEN): the poster may no longer
  *     withdraw it and waits for DONE, however long past the second that is.
  *     apply_mode() does not block beyond can_block()'s 1 ms delay, and the
  *     worker is the highest-priority task that touches this;
  *   - the poster withdraws it first (POSTED -> IDLE): the worker finds nothing
  *     to take, now or later, so a withdrawn request is never applied.
+ * And the worker never takes a request whose deadline has passed: its poster,
+ * at a lower priority, may not yet have run to withdraw it, and a change not
+ * taken within the second is refused, not applied late.
  *
- * ONE SLOT, AND A POSTER WAITS FOR IT TO BE FREE within the same second. Two
- * posters can meet: config_server starts before gen_inhibit_init(), so a POST
- * can coincide with the boot auto-arm. A slot is freed only by its own poster
+ * ONE SLOT, AND A POSTER WAITS FOR IT TO BE FREE within its second. Two posters
+ * can meet: config_server starts before gen_inhibit_init(), so a POST can
+ * coincide with the boot auto-arm. A slot is freed only by its own poster
  * (reading the result, or withdrawing), so one poster's result is never
- * overwritten by the next.
+ * overwritten by the next. A poster that finds the slot busy for its whole
+ * second posts nothing and is refused with ESP_ERR_NOT_FINISHED: another change
+ * had not finished.
  */
 typedef enum
 {
@@ -289,7 +301,7 @@ static struct
     uint32_t           ticket;
     gen_inhibit_mode_t mode;
     uint32_t           offset_us;
-    int64_t            posted_us;
+    int64_t            deadline_us; /* the poster's call + 1 s */
     esp_err_t          result;
 } s_req;
 static uint32_t s_req_tickets;
@@ -325,18 +337,23 @@ esp_err_t gen_inhibit_post_mode(gen_inhibit_mode_t mode, uint32_t offset_us,
         return ESP_ERR_INVALID_STATE;
     }
 
-    const int64_t t0 = esp_timer_get_time();
+    const int64_t deadline_us = esp_timer_get_time() + GEN_INHIBIT_MODE_WAIT_US;
     for (;;)
     {
         bool posted = false;
+        bool expired = false;
         taskENTER_CRITICAL(&s_req_lock);
-        if (s_req.state == REQ_IDLE)
+        if (esp_timer_get_time() >= deadline_us)
         {
-            s_req.ticket    = ++s_req_tickets;
-            s_req.mode      = mode;
-            s_req.offset_us = offset_us;
-            s_req.posted_us = esp_timer_get_time();
-            s_req.result    = ESP_FAIL;
+            expired = true;
+        }
+        else if (s_req.state == REQ_IDLE)
+        {
+            s_req.ticket      = ++s_req_tickets;
+            s_req.mode        = mode;
+            s_req.offset_us   = offset_us;
+            s_req.deadline_us = deadline_us;
+            s_req.result      = ESP_FAIL;
             s_req.state     = REQ_POSTED;
             *ticket = s_req.ticket;
             posted = true;
@@ -348,9 +365,9 @@ esp_err_t gen_inhibit_post_mode(gen_inhibit_mode_t mode, uint32_t offset_us,
             worker_wake();
             return ESP_OK;
         }
-        if (esp_timer_get_time() - t0 >= GEN_INHIBIT_MODE_WAIT_US)
+        if (expired)
         {
-            return ESP_ERR_TIMEOUT;     /* another poster held the slot */
+            return ESP_ERR_NOT_FINISHED;    /* another change held the slot */
         }
         req_poll_delay();
     }
@@ -375,8 +392,7 @@ esp_err_t gen_inhibit_await_mode(uint32_t ticket)
             finished = true;
         }
         else if (s_req.state == REQ_POSTED
-                 && esp_timer_get_time() - s_req.posted_us
-                        >= GEN_INHIBIT_MODE_WAIT_US)
+                 && esp_timer_get_time() >= s_req.deadline_us)
         {
             /* WITHDRAWN: never taken, so never applied. See above. */
             s_req.state = REQ_IDLE;
@@ -1648,7 +1664,8 @@ static void take_mode_request(void)
     bool took = false;
 
     taskENTER_CRITICAL(&s_req_lock);
-    if (s_req.state == REQ_POSTED)
+    /* Past its deadline it is its poster's to withdraw, never ours to apply. */
+    if (s_req.state == REQ_POSTED && esp_timer_get_time() < s_req.deadline_us)
     {
         s_req.state = REQ_TAKEN;
         mode = s_req.mode;

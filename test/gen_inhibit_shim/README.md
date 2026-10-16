@@ -553,7 +553,12 @@ And the cases:
 * **Case 54** puts the 1 s deadline and the worker's take in each order: never
   taken (refused, and never applied afterwards), taken at 950 ms (applied), and
   taken at 999 ms but still applying at the second, because OBSERVE tears the
-  driver down and `can_block()` yields (the poster waits; applied).
+  driver down and `can_block()` yields (the poster waits; applied). Then with
+  the slot held by another poster, since the 1 s runs from the setter's call
+  and covers its wait for the slot: held all second (refused with
+  `ESP_ERR_NOT_FINISHED` at 1 s, and the worker applies neither request, the
+  other one being past its deadline too), and freed at 900 ms (posted then,
+  withdrawn at the same 1 s with `ESP_ERR_TIMEOUT`, never applied).
 
 **Why `apply_mode()` drives the scheduler first.** With the change applied at the
 top of the loop, before the periodic tick, a frame that had completed since the

@@ -1700,6 +1700,14 @@ static esp_err_t gen_inhibit_set_handler(httpd_req_t *req)
                             "within 1 s; withdrawn, not applied");
         return ESP_OK;
     }
+    /* Another change held the one slot for the whole second. */
+    if (serr == ESP_ERR_NOT_FINISHED)
+    {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "another mode change was still in progress for 1 s; "
+                            "this one was not posted, not applied");
+        return ESP_OK;
+    }
     if (serr != ESP_OK)
     {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,

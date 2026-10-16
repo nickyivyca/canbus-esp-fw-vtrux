@@ -1428,6 +1428,7 @@ const char *esp_err_to_name(esp_err_t e)
     case ESP_ERR_TIMEOUT:        return "ESP_ERR_TIMEOUT";
     case ESP_ERR_INVALID_STATE:  return "ESP_ERR_INVALID_STATE";
     case ESP_ERR_INVALID_ARG:    return "ESP_ERR_INVALID_ARG";
+    case ESP_ERR_NOT_FINISHED:   return "ESP_ERR_NOT_FINISHED";
     default: break;
     }
     snprintf(buf, sizeof(buf), "err 0x%x", (unsigned)e);
