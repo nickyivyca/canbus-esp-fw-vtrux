@@ -118,3 +118,11 @@ locked to a command (its deadline, then its answer queued, then the stand-down):
 and fails there on the assertions (19 of them) instead of at compile time.
 `case_identity_withdraw_api_balances` now expects a stand-down where it expected
 a skip.
+
+**A re-arm while a withdrawal is still running** (spec 5.2 item 6, 2026-10-16):
+`case_rearm_during_deadline_withdrawal` and
+`case_rearm_during_standdown_withdrawal` call `gs_rearm()` before the abort loop
+has removed an inhibit the old arm gave up. The new arm must count it as a
+stand-down beside its `carried_in`, so its own identity holds once the loop books
+`withdrawn`; on `c6fdab5` it read one over. `case_rearm_with_live_answer_is_no_standdown`
+is the other side: a held answer nobody gave up leaves as `sent`.

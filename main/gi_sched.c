@@ -178,6 +178,20 @@ void gs_rearm(gs_t *s, const gs_hal_t *hal, gs_class_t timed)
         s->st.cls[held_class].carried_in++;
     }
     /*
+     * A RE-ARM WHILE A WITHDRAWAL IS STILL RUNNING (spec 5.2 item 6, user
+     * 2026-10-16). The old arm gave this inhibit up -- as a skip or a stand-down,
+     * which is what `held_booked` records -- and booked it there; the item 4 loop
+     * is still removing it, and will book `withdrawn` in THIS arm. Counted as a
+     * stand-down here, beside its carried_in, so this arm's
+     *   withdrawn + dropped == skipped + standdown
+     * holds once the loop finishes, instead of reading one over for the rest of
+     * the arm.
+     */
+    if (held && held_class == GS_CLASS_INHIBIT && aborting && held_booked)
+    {
+        s->st.standdown++;
+    }
+    /*
      * `inhibit_outstanding` is deliberately NOT restored: a new arm has no inhibit
      * of its own outstanding, and leaving it set would make the first
      * gs_queue_frame() of this arm look like an ordering violation.
