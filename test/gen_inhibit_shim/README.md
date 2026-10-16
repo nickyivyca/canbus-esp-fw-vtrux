@@ -33,7 +33,13 @@ on, and nothing else:
   reading clears it;
 - **one transmit buffer, FIFO** — so a frame at the head blocks everything
   behind it, and `msgs_to_tx` is the only attributable completion signal;
-- **completion takes time**, settable per case.
+- **completion takes time**, settable per case;
+- **a controller that is not running receives nothing** -- with no driver
+  installed, stopped, or bus-off, a delivered frame is dropped and counted
+  (`ft_rx_dropped_off()`), and install and start each begin with an empty
+  receive queue, as `components/driver/twai/twai.c` does (IDF 5.4.1). Until
+  2026-10-16 only bus-off dropped, so frames delivered after a mode 0 queued
+  with nothing to take them and `replay_scn()`'s drain never returned.
 
 Determinism: virtual time, and the worker thread never runs concurrently with
 the test. Two runs of the same script produce the same trace. **It therefore
@@ -442,6 +448,11 @@ printing the counters:
 | `0x051` on the wire | 11 | 12 |
 | `skipped_withdrawn` | 1 | 0 |
 
+(Since 2026-10-16 the withdrawn frame is a **stand-down**, not a skip -- spec 5.2
+item 5 -- so the case now reads `withdrawn` and `standdown` where this table has
+`skipped_withdrawn`. The D7 question is the same: withdrawn, or left queued for a
+retry.)
+
 So the case asserts what happened to the frame rather than when it went out --
 from two independent places, the fake's wire log and the scheduler's own
 counters. Neither needs to resolve the instant of the trip, which is the part the
@@ -493,3 +504,25 @@ from their FINAL line and were re-blessed; the re-bless was verified mechanicall
 -- stripping that token from the old goldens reproduces the new ones **exactly**,
 all 77, so nothing else changed. The skip count stays pinned in the goldens by
 the `GI_EV_SKIP` event lines, one per skip.
+
+### 2026-10-16: stand-downs, trip 8, and a receive queue with no driver
+
+Cases 49-52, for the reviewer's pre-port batch.
+
+* **Cases 49 and 50, a stand-down with an answer pending** (spec 12.4 row of that
+  name). An M-mode release locked to a `0x051`, with the answer in the controller
+  (49, `ft_stall_id`) or queued behind a diag page on the wire (50, 30 ms page air
+  time, the command fed only once a page is found in flight). Each requires one
+  `standdown`, skips unchanged, the identity `withdrawn + dropped == skipped +
+  standdown`, at least 4 diag pages in the next 1.2 s, and the answer never on the
+  wire. Against `c65c45e` product code, case 49 shows the bench B20 silence (0
+  pages) and case 50 a skip where there should be none; both lack `standdown`.
+  **The frame after the release is not a `0x051`.** A `0x051` there also runs
+  its deadline mid-withdrawal, which on `c65c45e` booked a phantom skip that
+  ended the core's wait and hid the silence.
+* **Case 51, a short `0x051`** (spec 7 trip 8): aborts, and `tx_fail` does not
+  move. It moved by 1 on `c65c45e`.
+* **Case 52, the receive model above**: frames delivered after a mode 0 are
+  dropped and counted, and a drain bounded at 100 turns takes none. It tests the
+  fake, not the firmware, so it passes on `c65c45e` too.
+* **Case 23 changed** with the spec: see the note under its table.

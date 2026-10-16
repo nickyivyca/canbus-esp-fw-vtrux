@@ -379,6 +379,16 @@ static esp_err_t index_handler(httpd_req_t *req)
  *
  * Boot-time writes (config_server_load_cfg, config_server_init) are allowed and
  * deliberately not gated: they run before the inhibitor can arm.
+ *
+ * THE CALLER RETURNS ESP_OK AFTER A REFUSAL, NOT ESP_FAIL (2026-10-16), and that
+ * is what gets the 403 to the client. ESP_FAIL from a handler makes
+ * esp_http_server skip httpd_req_delete() -- the step that reads off the unread
+ * request body -- and close the socket with that body still in lwIP's receive
+ * buffer. lwIP then answers the close with a RST (tcp_close_shutdown, rcv_wnd !=
+ * TCP_WND_MAX) and frees our unacknowledged reply with it (tcp_pcb_purge), so the
+ * client can see a reset and no 403 at all. With ESP_OK the server reads and
+ * discards the rest of the body, in CONFIG_HTTPD_PURGE_BUF_LEN chunks, after the
+ * reply has gone, and keeps the connection. Reading the body writes no flash.
  */
 static bool flash_write_refused(httpd_req_t *req, const char *what)
 {
@@ -396,7 +406,7 @@ static bool flash_write_refused(httpd_req_t *req, const char *what)
 
 static esp_err_t store_config_handler(httpd_req_t *req)
 {
-    if(flash_write_refused(req, "/store_config")) return ESP_FAIL;
+    if(flash_write_refused(req, "/store_config")) return ESP_OK;
 
     char *buf = NULL;
     size_t buf_size = req->content_len;
@@ -453,7 +463,7 @@ static esp_err_t store_config_handler(httpd_req_t *req)
 
 static esp_err_t store_canflt_handler(httpd_req_t *req)
 {
-    if(flash_write_refused(req, "/store_canflt")) return ESP_FAIL;
+    if(flash_write_refused(req, "/store_canflt")) return ESP_OK;
 
     char *buf = NULL;
     size_t buf_size = req->content_len;
@@ -713,7 +723,7 @@ static esp_err_t logo_handler(httpd_req_t *req)
 
 static esp_err_t store_auto_data_handler(httpd_req_t *req)
 {
-    if(flash_write_refused(req, "/store_auto_data")) return ESP_FAIL;
+    if(flash_write_refused(req, "/store_auto_data")) return ESP_OK;
 
     if (!req)
 	{
@@ -814,7 +824,7 @@ cleanup:
 
 static esp_err_t store_car_data_handler(httpd_req_t *req)
 {
-    if(flash_write_refused(req, "/store_car_data")) return ESP_FAIL;
+    if(flash_write_refused(req, "/store_car_data")) return ESP_OK;
 
     int total_len = req->content_len;
     int received = 0;
@@ -1093,7 +1103,14 @@ static esp_err_t upload_post_handler(httpd_req_t *req)
         /* IDF's httpd_err_code_t has no 409, so 403 carries the refusal. */
         httpd_resp_send_err(req, HTTPD_403_FORBIDDEN,
                             "gen_inhibit is armed; POST /gen_inhibit_set?mode=0 first");
-        return ESP_FAIL;
+        /*
+         * ESP_OK, so the server reads off the image body after the 403 instead
+         * of closing on it, which lost the reply to a RST (see
+         * flash_write_refused()). Nothing has been touched yet -- can_disable()
+         * is below -- so the device carries on exactly as it was. The cost is
+         * the httpd task reading the rest of the image and discarding it.
+         */
+        return ESP_OK;
     }
 
     can_disable();
@@ -1328,7 +1345,7 @@ static esp_err_t upload_post_handler(httpd_req_t *req)
 
 static esp_err_t upload_car_data_handler(httpd_req_t *req)
 {
-    if(flash_write_refused(req, "/upload/car_data.json")) return ESP_FAIL;
+    if(flash_write_refused(req, "/upload/car_data.json")) return ESP_OK;
 
     char filepath[FILE_PATH_MAX];
     uint32_t total_size = 0;
@@ -1639,10 +1656,15 @@ static esp_err_t gen_inhibit_set_handler(httpd_req_t *req)
     int mode = -1;
     uint32_t offset_us = 500;
 
+    /*
+     * EVERY ERROR EXIT HERE RETURNS ESP_OK after its 400, for the reason
+     * flash_write_refused() gives: ESP_FAIL closes the socket with any request
+     * body unread, and lwIP's RST can then take the reply with it.
+     */
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK)
     {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "expected ?mode=0|1|2|3|4[&offset=us]");
-        return ESP_FAIL;
+        return ESP_OK;
     }
     if (httpd_query_key_value(query, "mode", val, sizeof(val)) == ESP_OK)
     {
@@ -1656,7 +1678,7 @@ static esp_err_t gen_inhibit_set_handler(httpd_req_t *req)
     {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
                             "mode must be 0..4 (3=INHIBIT, 4=PASSIVE)");
-        return ESP_FAIL;
+        return ESP_OK;
     }
     /*
      * Name the actual cause. This used to report "bad offset" for every
@@ -1673,7 +1695,7 @@ static esp_err_t gen_inhibit_set_handler(httpd_req_t *req)
                                 ? "bad offset (max 4000 us)"
                                 : "cannot arm: bus would not come up, or "
                                   "OBSERVE could not be made listen-only");
-        return ESP_FAIL;
+        return ESP_OK;
     }
 
     static char out[GI_STATUS_PAGE_CAP];    /* D10, as above */

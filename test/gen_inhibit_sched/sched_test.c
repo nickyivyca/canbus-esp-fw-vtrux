@@ -24,6 +24,7 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "fake_buf.h"
@@ -1042,6 +1043,10 @@ static void case_identity_withdrawn_held_inhibit_balances(void)
           "withdrawn + dropped == skipped, once the abort has completed");
 }
 
+/* The stand-down helpers, defined with the stand-down cases below. */
+static long json_standdown(const gs_t *s);
+static void ck_standdown_identity(const gs_t *s, const char *what);
+
 /*
  * gs_withdraw_inhibits()'s OWN purge, the third and last site that books
  * `withdrawn`. The core calls it whenever it stops being live -- any section 7
@@ -1052,6 +1057,10 @@ static void case_identity_withdrawn_held_inhibit_balances(void)
  * The frame is withdrawn straight out of the class queue with no gs_tick() in
  * between, so it is never handed over and there is no abort to wait for: the
  * purge is the whole of it.
+ *
+ * A STAND-DOWN SINCE 2026-10-16, NOT A SKIP (spec 5.2 item 5, user). Until then
+ * this case asserted one skip here; the frame was given up because the inhibit
+ * stopped being live, which is not a cycle a live inhibit missed.
  */
 static void case_identity_withdraw_api_balances(void)
 {
@@ -1076,12 +1085,11 @@ static void case_identity_withdraw_api_balances(void)
     ck_eq(held_in(&s, GS_CLASS_INHIBIT), 0, "nothing was handed over");
     ck_eq(c->sent, 0, "nothing was sent");
     ck_eq(c->dropped, 0, "and a withdrawal is not a drop");
-    ck_eq(s.st.skipped, 1, "it is counted as a skip");
-    ck_eq(s.st.skipped_withdrawn, 1, "a withdrawn one");
+    ck_eq(s.st.skipped, 0, "it is NOT a skip");
+    ck_eq(json_standdown(&s), 1, "it is a stand-down");
     ck_eq(c->withdrawn, 1, "and the class books the identity's term");
     ck_eq(residual(&s, GS_CLASS_INHIBIT), 0, "so the balance closes");
-    ck_eq((long)(c->withdrawn + c->dropped), (long)s.st.skipped,
-          "withdrawn + dropped == skipped");
+    ck_standdown_identity(&s, "withdrawn + dropped == skipped + standdown");
 
     /* Nothing may come back later: item 5 forbids sending a skipped frame. */
     run(&s, 3000, 10, 0);
@@ -1648,6 +1656,209 @@ static void case_withdrawal_clears_inhibit_outstanding(void)
     ck_eq(residual(&s, GS_CLASS_INHIBIT), 0, "and the balance still closes");
 }
 
+/* ------------------------------------------------------------ stand-downs --- */
+
+/*
+ * STAND-DOWNS (spec 5.2 items 5 and 6; spec 12.4 row "a stand-down with an answer
+ * pending"; user 2026-10-16). An answer still queued, or still in the controller,
+ * when the inhibit stops being live is given up on purpose. It is counted as
+ * `standdown` and never as a skip, and the identity becomes
+ *
+ *   withdrawn + dropped == skipped + standdown   (inhibit class)
+ *
+ * once the item 4 loop has finished.
+ *
+ * EACH CASE IS PHASE-LOCKED ON A COMMAND: its deadline runs, its answer is queued,
+ * and the inhibit stops being live before the answer can leave. That is the timing
+ * of bench B20 `liveflag-mmode`, an M-mode release 260 us after a 0x051, which on
+ * c65c45e left the diag pages silent until the re-arm.
+ *
+ * `standdown` IS READ FROM THE STATUS PAGE (gs_json), not from the struct, so this
+ * file still builds against c65c45e, where the field does not exist, and fails
+ * there on the assertions rather than at compile time. That is also the reading
+ * spec 11 puts on the page.
+ */
+static long json_standdown(const gs_t *s)
+{
+    static char buf[4096];
+    (void)gs_json(s, buf, (int)sizeof(buf));
+    const char *p = strstr(buf, "\"standdown\":");
+    if (p == NULL)
+    {
+        return -1;      /* absent: no stand-down count on the page */
+    }
+    return strtol(p + strlen("\"standdown\":"), NULL, 10);
+}
+
+/* One VCM command, phase-locked: its deadline first, then its answer queued. */
+static void command_and_answer(gs_t *s)
+{
+    (void)gs_command_received(s, fb_now(), 0);
+    gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
+    gs_queue_frame(s, GS_CLASS_INHIBIT, &inh, fb_now());
+}
+
+/*
+ * Telemetry after a stand-down: one page every `period_us`. Returns how many of
+ * them reached the wire. A page left waiting on a frame nobody will ever report
+ * is what the core did on c65c45e; here the scheduler's side of the same promise
+ * is checked, that nothing it holds keeps telemetry back.
+ */
+static int pages_after(gs_t *s, int pages, int64_t period_us)
+{
+    const int before = wire_count_id(ID_DIAG);
+    for (int i = 0; i < pages; i++)
+    {
+        gi_frame_t d = mk(ID_DIAG, GI_TX_DIAG);
+        gs_queue_frame(s, GS_CLASS_TELEMETRY, &d, fb_now());
+        run(s, period_us, 10, 0);
+    }
+    return wire_count_id(ID_DIAG) - before;
+}
+
+static void ck_standdown_identity(const gs_t *s, const char *what)
+{
+    const gs_class_stats_t *c = &s->st.cls[GS_CLASS_INHIBIT];
+    ck_eq((long)(c->withdrawn + c->dropped),
+          (long)s->st.skipped + json_standdown(s), what);
+}
+
+static void case_standdown_queued_answer(void)
+{
+    g_case = "stand-down: an answer still QUEUED is a stand-down, not a skip";
+    fb_reset();
+    gs_t s;
+    gs_init(&s, fb_hal());
+
+    /*
+     * A telemetry page already ON THE WIRE, and staying there. Item 4 never aborts
+     * a transmitting frame, so the answer has to wait in its class queue -- which
+     * is the state this case needs.
+     */
+    fb_stick_transmitting(5000);
+    gi_frame_t d = mk(ID_DIAG, GI_TX_DIAG);
+    gs_queue_frame(&s, GS_CLASS_TELEMETRY, &d, fb_now());
+    run(&s, 50, 10, 0);
+    ck(fb_state_now() == GS_BUF_TRANSMITTING, "the page is transmitting");
+
+    command_and_answer(&s);
+    run(&s, 20, 10, 0);
+    ck_eq(s.q[GS_CLASS_INHIBIT].n, 1,
+          "PRECONDITION: the answer is waiting in its queue");
+    ck_eq(held_in(&s, GS_CLASS_INHIBIT), 0, "and is not in the controller");
+
+    /* The inhibit stops being live. */
+    gs_withdraw_inhibits(&s, fb_now());
+
+    const gs_class_stats_t *c = &s.st.cls[GS_CLASS_INHIBIT];
+    ck_eq(json_standdown(&s), 1, "one stand-down, on the status page");
+    ck_eq(s.st.skipped, 0, "and NO skip");
+    ck_eq(s.st.skipped_withdrawn, 0, "of either kind");
+    ck_eq(s.st.skip_window, 0, "so nothing in trip 7's window");
+    ck_eq(c->withdrawn, 1, "the class books `withdrawn`");
+    ck_eq(residual(&s, GS_CLASS_INHIBIT), 0, "the balance closes");
+    ck_standdown_identity(&s, "withdrawn + dropped == skipped + standdown");
+
+    /* The page finishes; telemetry keeps its cadence; the answer never goes. */
+    fb_stick_transmitting(0);
+    run(&s, 1000, 10, 0);
+    ck_eq(wire_count_id(ID_DIAG), 1, "the page that was on the wire finished");
+    ck_eq(pages_after(&s, 5, 20000), 5,
+          "every page queued after the stand-down reached the wire");
+    ck_eq(wire_count_id(ID_INHIBIT), 0,
+          "the withdrawn answer never reached the wire");
+
+    /* A later command with no answer, as the core sends none while not live. */
+    (void)gs_command_received(&s, fb_now(), 0);
+    run(&s, 1000, 10, 0);
+    ck_eq(s.st.skipped, 0, "a later deadline does not book it as a skip");
+    ck_eq(json_standdown(&s), 1, "nor as a second stand-down");
+    ck_standdown_identity(&s, "and the identity still holds");
+    wire_log_sane();
+}
+
+static void case_standdown_held_answer(void)
+{
+    g_case = "stand-down: an answer IN THE CONTROLLER is a stand-down, not a skip";
+    fb_reset();
+    fb_set_contended(true);     /* STRESS: the answer sits AWAITING, so it is held */
+    gs_t s;
+    gs_init(&s, fb_hal());
+
+    command_and_answer(&s);
+    run(&s, 20, 10, 0);
+    ck_eq(held_in(&s, GS_CLASS_INHIBIT), 1,
+          "PRECONDITION: the answer is in the controller");
+    ck(fb_state_now() == GS_BUF_AWAITING, "awaiting arbitration");
+
+    /* The inhibit stops being live. */
+    gs_withdraw_inhibits(&s, fb_now());
+    ck_eq(json_standdown(&s), 1, "booked as a stand-down when it is given up");
+    ck_eq(s.st.skipped, 0, "not as a skip");
+
+    /*
+     * THE VCM'S NEXT COMMAND ARRIVES BEFORE THE LOOP HAS RUN. On c65c45e the frame
+     * was still `inhibit_outstanding` here, so this deadline booked it as a skip
+     * (the buffer reads AWAITING mid-abort) -- a frame withdrawn on purpose, fed
+     * to trip 7.
+     */
+    const gs_deadline_t v = gs_command_received(&s, fb_now(), 0);
+    ck_eq((long)v, (long)GS_DEADLINE_OK,
+          "the next deadline finds no answer of ours outstanding");
+    ck_eq(s.st.skipped, 0, "so it books no skip");
+    ck_eq(s.st.late_on_wire, 0, "and no late frame");
+
+    run(&s, 2000, 10, 0);       /* the loop removes it */
+    const gs_class_stats_t *c = &s.st.cls[GS_CLASS_INHIBIT];
+    ck_eq(held_in(&s, GS_CLASS_INHIBIT), 0, "the controller has let it go");
+    ck_eq(c->withdrawn, 1, "booked `withdrawn` when the loop removed it");
+    ck_eq(c->sent, 0, "and never as sent");
+    ck_eq(residual(&s, GS_CLASS_INHIBIT), 0, "the balance closes");
+    ck_standdown_identity(&s, "withdrawn + dropped == skipped + standdown");
+
+    fb_set_contended(false);
+    ck_eq(pages_after(&s, 5, 20000), 5,
+          "every page queued after the stand-down reached the wire");
+    ck_eq(wire_count_id(ID_INHIBIT), 0,
+          "the withdrawn answer never reached the wire");
+    ck_eq(json_standdown(&s), 1, "still one stand-down");
+    ck_eq(s.st.skipped, 0, "still no skip");
+    wire_log_sane();
+}
+
+/*
+ * ONE FRAME, ONE BOOKING. A stand-down landing while the deadline's own abort is
+ * still running finds a frame that is already a skip. Booking it again as a
+ * stand-down would count one frame in both totals and break the identity the
+ * other way.
+ */
+static void case_standdown_after_deadline_books_once(void)
+{
+    g_case = "stand-down during a deadline's abort: still one skip, no stand-down";
+    fb_reset();
+    fb_set_contended(true);     /* STRESS: the answer sits AWAITING, so it is held */
+    gs_t s;
+    gs_init(&s, fb_hal());
+
+    command_and_answer(&s);
+    run(&s, 20, 10, 0);
+    ck_eq(held_in(&s, GS_CLASS_INHIBIT), 1,
+          "PRECONDITION: the answer is in the controller");
+
+    const gs_deadline_t v = gs_command_received(&s, fb_now(), 0);
+    ck_eq((long)v, (long)GS_DEADLINE_SKIPPED, "its deadline skips it");
+    ck(s.aborting, "PRECONDITION: the deadline's abort is still running");
+
+    gs_withdraw_inhibits(&s, fb_now());     /* and now the inhibit stops being live */
+    ck_eq(s.st.skipped, 1, "one skip");
+    ck_eq(json_standdown(&s), 0, "and no stand-down for the same frame");
+
+    run(&s, 2000, 10, 0);
+    ck_eq(s.st.cls[GS_CLASS_INHIBIT].withdrawn, 1, "one withdrawal");
+    ck_eq(residual(&s, GS_CLASS_INHIBIT), 0, "the balance closes");
+    ck_standdown_identity(&s, "withdrawn + dropped == skipped + standdown");
+}
+
 static void case_integration_order(void)
 {
     uint32_t v;
@@ -1706,6 +1917,9 @@ int main(void)
     case_saturation_skip_is_counted();
     case_withdrawal_clears_inhibit_outstanding();
     case_identity_carried_requeue_sets_no_wait();
+    case_standdown_queued_answer();
+    case_standdown_held_answer();
+    case_standdown_after_deadline_books_once();
 
     if (g_fail == 0)
     {

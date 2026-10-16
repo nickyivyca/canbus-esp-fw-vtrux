@@ -1918,15 +1918,23 @@ static void case_refusal_trips_and_nothing_follows(void)
      * is the part the harness cannot resolve. They come from two independent
      * places -- the fake's wire log and the scheduler's own counters -- so a
      * defect has to fool both to pass.
+     *
+     * A STAND-DOWN SINCE 2026-10-16, NOT A SKIP (spec 5.2 item 5, user). The
+     * refusal trips, and the frame still queued is then withdrawn because the
+     * inhibit stopped being live. The table's `skipped_withdrawn 1` row is what
+     * the measurement read then; the same frame now reads `withdrawn` 1 in the
+     * inhibit class and `standdown` 1, and is not a skip. The D7 question is
+     * unchanged: was it withdrawn, or left queued for a retry?
      */
     const uint32_t queued = json_need("\"inhibit\":{\"queued\":");
     CHECK((uint32_t)ft_wire_count_id(0x051) < queued,
           "all %u queued inhibit frames reached the wire, so the one the driver "
           "refused was retried after the trip instead of being withdrawn "
           "(defect D7): %s", queued, stats());
-    CHECK(json_need("\"skipped_withdrawn\":") >= 1,
-          "the refused inhibit was never counted as withdrawn, so it stayed in "
-          "the scheduler's queue for a retry -- and a retry after the trip puts "
+    /* The first "withdrawn" on the page is the inhibit class's (sched.cls). */
+    CHECK(json_need("\"withdrawn\":") >= 1 && json_need("\"standdown\":") >= 1,
+          "the refused inhibit was never withdrawn as a stand-down, so it stayed "
+          "in the scheduler's queue for a retry -- and a retry after the trip puts "
           "an inhibit frame on the wire after the thing that stopped us "
           "(defect D7): %s", stats());
     teardown();
@@ -4786,6 +4794,323 @@ static void case_arm_fails_when_reinstall_fails(void)
     case_end();
 }
 
+/* ------------------------------------------------------------ stand-downs -- */
+
+/*
+ * CASES 49 AND 50 -- A STAND-DOWN WITH AN ANSWER PENDING (spec 5.2 items 5 and 6,
+ * spec 10, spec 11; the spec 12.4 row of that name, user 2026-10-16).
+ *
+ * An M-mode release (spec 6.1) phase-locked on a 0x051, so the answer to that
+ * command is still pending when the inhibit stops being live: in the controller
+ * (case 49) or still queued (case 50). The answer is withdrawn on purpose and
+ * must be counted as `standdown`, never as a skip; and the withdrawal must end
+ * the device's wait for it, so the diag pages keep their cadence.
+ *
+ * THE BENCH FOUND IT, NOT A CASE (B20 `liveflag-mmode`, c65c45e): an M-mode
+ * release 260 us after a 0x051 left the pages silent until the re-arm. The
+ * scheduler withdrew the held answer and booked it only in `withdrawn`, which the
+ * core never hears about, so the core's `tx_pending` stayed set and gi_tick()
+ * built no page.
+ *
+ * THE FRAME AFTER THE RELEASE IS NOT A 0x051, deliberately. It is the dequeue
+ * that runs the scheduler and sees the inhibit stop being live, and a 0x051 there
+ * would also run its deadline mid-withdrawal -- which on c65c45e booked a phantom
+ * skip that happened to end the wait and hide the silence. On the bench the next
+ * frame dequeued is almost never a 0x051: at ~2250 frames/s it is 1 in ~20.
+ */
+static const uint8_t MMODE[8] = { 0, 0, 0, 0, 0, 0, 4 << 4 };   /* lever pos 4 */
+
+/* The diag pages, 0x7F9 included (spec 10). */
+static const uint32_t PAGE_IDS[] = { 0x7F1, 0x7F2, 0x7F3, 0x7F8, 0x7F9 };
+#define N_PAGE_IDS ((int)(sizeof(PAGE_IDS) / sizeof(PAGE_IDS[0])))
+
+static int pages_queued_since(int from)
+{
+    int n = 0;
+    for (int i = from; i < ft_sent_count(); i++)
+    {
+        for (int k = 0; k < N_PAGE_IDS; k++)
+        {
+            if (ft_sent(i)->id == PAGE_IDS[k]) { n++; }
+        }
+    }
+    return n;
+}
+
+static int pages_in_flight(void)
+{
+    int n = 0;
+    for (int k = 0; k < N_PAGE_IDS; k++)
+    {
+        n += ft_sent_count_id(PAGE_IDS[k]) - ft_wire_count_id(PAGE_IDS[k]);
+    }
+    return n;
+}
+
+/* One field of one transmit class's object on the status page; -1 if absent. */
+static long cls_num(const char *cls, const char *key)
+{
+    static char page[GI_STATUS_PAGE_CAP];
+    if (gen_inhibit_get_stats_json(page, sizeof(page)) <= 0) { return -1; }
+    char pat[48];
+    snprintf(pat, sizeof(pat), "\"%s\":{", cls);
+    const char *p = strstr(page, pat);
+    if (p == NULL) { return -1; }
+    const char *end = strchr(p, '}');
+    if (end == NULL) { return -1; }
+    static char obj[512];
+    size_t len = (size_t)(end - p) + 1;
+    if (len >= sizeof(obj)) { len = sizeof(obj) - 1; }
+    memcpy(obj, p, len);
+    obj[len] = 0;
+    return jnum(obj, key);
+}
+
+/*
+ * What both cases require once the release has landed. `skipped_before` is read
+ * just before the command the release is locked to.
+ */
+static void after_standdown(const char *which, uint32_t skipped_before,
+                            int wire_051_before, uint8_t *ctr)
+{
+    static const uint8_t KEY[8] = { 0x10 };
+
+    /* The dequeue that sees the inhibit stop being live -- not a 0x051 (above). */
+    feed(0x592, KEY, 8, 2000);
+    CHECK(json_has("\"disable_reason\":\"m_mode\""),
+          "%s: M mode did not latch the release, so nothing stood down: %s",
+          which, stats());
+
+    /*
+     * 1.2 s of a live bus. The VCM keeps commanding and the device answers
+     * nothing; a page is due every 240 ms, so 5 fall due.
+     */
+    const int from = ft_sent_count();
+    keep_alive(1200000, ctr);
+    const int pages = pages_queued_since(from);
+    CHECK(!ft_logs_saturated(), "%s: the frame logs are full, so the page count "
+          "below is a lower bound and proves nothing", which);
+
+    const uint32_t standdown = json_need("\"standdown\":");
+    const uint32_t skipped = json_need("\"skipped\":");
+    CHECK(standdown == 1,
+          "%s: the withdrawn answer must be counted as ONE stand-down "
+          "(spec 5.2 item 5), got %u: %s", which, standdown, stats());
+    CHECK(skipped == skipped_before,
+          "%s: skips moved from %u to %u. An answer withdrawn because the "
+          "inhibit stopped being live is not a skip and must not reach trip 7: %s",
+          which, skipped_before, skipped, stats());
+
+    const long wd = cls_num("inhibit", "withdrawn");
+    const long dr = cls_num("inhibit", "dropped");
+    CHECK(wd >= 0 && dr >= 0
+          && wd + dr == (long)skipped + (long)standdown,
+          "%s: withdrawn %ld + dropped %ld != skipped %u + standdown %u "
+          "(spec 5.2 item 6, read after the item 4 loop has finished): %s",
+          which, wd, dr, skipped, standdown, stats());
+    CHECK(cls_num("inhibit", "held") == 0,
+          "%s: the controller still holds the answer: %s", which, stats());
+
+    CHECK(pages >= 4,
+          "%s: %d diag pages in the 1.2 s after the stand-down, where one is due "
+          "every 240 ms. The device is still waiting for the completion of the "
+          "answer it withdrew (spec 5.2 item 6, spec 10; bench B20)",
+          which, pages);
+    CHECK(ft_wire_count_id(0x051) == wire_051_before,
+          "%s: the withdrawn answer reached the wire (%d inhibit frames "
+          "completed, %d before it)", which, ft_wire_count_id(0x051),
+          wire_051_before);
+}
+
+static void case_standdown_held_answer(void)
+{
+    case_begin("case 49: a stand-down with the answer in the controller is a "
+               "stand-down, and the pages keep their cadence");
+    setup();
+    go_live();
+    uint8_t ctr = 0x20;
+    keep_alive(100000, &ctr);
+    CHECK(json_has("\"inhibit_live\":true"),
+          "PRECONDITION: the device is not live, so nothing can stand down: %s",
+          stats());
+
+    const uint32_t skipped_before = json_need("\"skipped\":");
+    const int wire_051_before = ft_wire_count_id(0x051);
+
+    /* The answer to this command stays in the controller, AWAITING arbitration. */
+    ft_stall_id(0x051, 1);
+    uint8_t cmd[6];
+    memcpy(cmd, VCM, sizeof(cmd));
+    cmd[5] = (uint8_t)(ctr++ & 0x0F);
+    feed(0x051, cmd, 6, 1000);
+    CHECK(cls_num("inhibit", "held") == 1,
+          "PRECONDITION: the answer is not in the controller, so this case "
+          "proves nothing about a held one: %s", stats());
+
+    feed(0x639, MMODE, 8, 1000);    /* the release, locked to that command */
+    after_standdown("case 49", skipped_before, wire_051_before, &ctr);
+    teardown();
+    case_end();
+}
+
+static void case_standdown_queued_answer(void)
+{
+    case_begin("case 50: a stand-down with the answer still queued is a "
+               "stand-down, and the pages keep their cadence");
+    setup();
+    go_live();
+    uint8_t ctr = 0x40;
+    keep_alive(100000, &ctr);
+    CHECK(json_has("\"inhibit_live\":true"),
+          "PRECONDITION: the device is not live, so nothing can stand down: %s",
+          stats());
+
+    /*
+     * A PAGE ON THE WIRE, AND STAYING THERE. Item 4 never aborts a transmitting
+     * frame, so an answer queued now waits in its class queue -- the state this
+     * case needs. 30 ms of air time per page.
+     *
+     * THE COMMAND IS FED ONLY ONCE A PAGE IS FOUND ON THE WIRE, frame by frame.
+     * Feeding 0x051 while a page is in flight would queue its answer and the next
+     * 0x051 would purge it as a skip -- a skip this case did not ask for.
+     */
+    for (int k = 0; k < N_PAGE_IDS; k++) { ft_set_air_time_id(PAGE_IDS[k], 30000); }
+    static const uint8_t KEY[8]  = { 0x10 };
+    static const uint8_t CONT[8] = { 11 << 2 };
+    static const uint8_t SOC[8]  = { 0x4E, 0x20 };
+    static const uint8_t FLT[8]  = { 0, 0, 0, 0, 0, 0, 0, 0xC8 };
+    static const uint8_t SHF[8]  = { 0, 0, 0, 0, 0, 0, 2 << 4 };
+    uint8_t cmd[6];
+    bool on_wire = false;
+    for (int round = 0; round < 60 && !on_wire; round++)
+    {
+        memcpy(cmd, VCM, sizeof(cmd));
+        cmd[5] = (uint8_t)(ctr++ & 0x0F);
+        feed(0x051, cmd, 6, 2000);
+        const struct { uint32_t id; const uint8_t *d; } rest[] = {
+            { 0x592, KEY }, { 0x440, CONT }, { 0x411, SOC },
+            { 0x617, FLT }, { 0x639, SHF },
+        };
+        for (int i = 0; i < 5 && !on_wire; i++)
+        {
+            feed(rest[i].id, rest[i].d, 8, 2000);
+            on_wire = pages_in_flight() > 0;
+        }
+    }
+    CHECK(on_wire, "PRECONDITION: no diag page went on the wire in 60 rounds");
+
+    const uint32_t skipped_before = json_need("\"skipped\":");
+    const int wire_051_before = ft_wire_count_id(0x051);
+
+    memcpy(cmd, VCM, sizeof(cmd));
+    cmd[5] = (uint8_t)(ctr++ & 0x0F);
+    feed(0x051, cmd, 6, 1000);
+    CHECK(cls_num("inhibit", "depth") == 1 && cls_num("inhibit", "held") == 0
+          && cls_num("telemetry", "held") == 1,
+          "PRECONDITION: the answer is not waiting behind a page on the wire, so "
+          "this case proves nothing about a queued one: %s", stats());
+
+    feed(0x639, MMODE, 8, 1000);    /* the release, locked to that command */
+    for (int k = 0; k < N_PAGE_IDS; k++) { ft_set_air_time_id(PAGE_IDS[k], 200); }
+    after_standdown("case 50", skipped_before, wire_051_before, &ctr);
+    teardown();
+    case_end();
+}
+
+/*
+ * CASE 51 -- A SHORT 0x051 TRIPS AND IS NOT A TRANSMIT FAILURE (spec 7 trip 8).
+ *
+ * A 0x051 with DLC < 6 while live cannot be answered: there is no counter to
+ * steal. It aborts. The core's comment said it no longer counted `tx_fail`, but
+ * the increment was still there (c65c45e gen_inhibit_core.c:2270), so the page
+ * reported a failed transmit of ours for a frame we never attempted.
+ */
+static void case_short_vcm_frame_is_not_a_tx_fail(void)
+{
+    case_begin("case 51: a short 0x051 aborts (trip 8) and is not a transmit "
+               "failure");
+    setup();
+    go_live();
+    uint8_t ctr = 0x60;
+    keep_alive(100000, &ctr);
+    CHECK(json_has("\"inhibit_live\":true"),
+          "PRECONDITION: the device is not live, so trip 8 cannot fire: %s",
+          stats());
+    const uint32_t tx_fail_before = json_need("\"tx_fail\":");
+
+    uint8_t cmd[6];
+    memcpy(cmd, VCM, sizeof(cmd));
+    cmd[5] = (uint8_t)(ctr++ & 0x0F);
+    feed(0x051, cmd, 5, 2000);      /* DLC 5 */
+
+    CHECK(json_has("\"abort_latched\":true") && json_has("DLC < 6"),
+          "a 0x051 with DLC 5 while live did not abort as trip 8: %s", stats());
+    const uint32_t tx_fail = json_need("\"tx_fail\":");
+    CHECK(tx_fail == tx_fail_before,
+          "tx_fail moved from %u to %u. Trip 8 is about the frame the VCM sent; "
+          "we attempted no transmit (spec 7 trip 8): %s",
+          tx_fail_before, tx_fail, stats());
+    teardown();
+    case_end();
+}
+
+/*
+ * CASE 52 -- A CONTROLLER THAT IS NOT RUNNING RECEIVES NOTHING (the model).
+ *
+ * fake_twai queued every delivered frame unless the controller was bus-off, so
+ * after a mode 0 -- driver uninstalled, worker not receiving -- frames piled up
+ * that nothing would ever take, and replay_scn()'s drain loop,
+ * `while (ft_rx_pending() > 0) ft_run(0);`, never returned. The device has no
+ * queue at all then.
+ */
+static void case_off_controller_receives_nothing(void)
+{
+    case_begin("case 52: frames delivered after a mode 0 are dropped and counted, "
+               "and a drain returns");
+    setup();
+    go_live();
+
+    /* Mode 0, and one frame to bring the worker round to the release (teardown). */
+    static const uint8_t PAD[8] = { 0 };
+    gen_inhibit_set_mode(GEN_INHIBIT_OFF, 500);
+    ft_deliver(0x7FF, PAD, 8);
+    ft_run(1000);
+    ft_run(100000);
+    CHECK(ft_rx_pending() == 0,
+          "PRECONDITION: %d frames still pending after the release",
+          ft_rx_pending());
+
+    const int dropped_before = ft_rx_dropped_off();
+    uint8_t cmd[6];
+    memcpy(cmd, VCM, sizeof(cmd));
+    for (int i = 0; i < 3; i++)
+    {
+        cmd[5] = (uint8_t)i;
+        ft_deliver(0x051, cmd, 6);
+    }
+    CHECK(ft_rx_pending() == 0,
+          "%d frames were queued with no driver installed", ft_rx_pending());
+    CHECK(ft_rx_dropped_off() == dropped_before + 3,
+          "%d of 3 frames delivered with no driver were counted as dropped",
+          ft_rx_dropped_off() - dropped_before);
+
+    /* replay_scn()'s drain, bounded here so a regression fails instead of hanging. */
+    int turns = 0;
+    while (ft_rx_pending() > 0 && turns < 100)
+    {
+        ft_run(0);
+        turns++;
+    }
+    CHECK(turns == 0, "the drain took %d turns (bound 100) after a mode 0", turns);
+
+    /* Re-arming installs a fresh driver with an empty queue, and it is live again. */
+    go_live();
+    CHECK(json_has("\"inhibit_live\":true"),
+          "the device did not go live again after the mode 0: %s", stats());
+    teardown();
+    case_end();
+}
+
 int main(int argc, char **argv)
 {
     /*
@@ -4860,6 +5185,10 @@ int main(int argc, char **argv)
     case_page_names_the_binary();
     case_arm_reinstalls_after_bus_off();
     case_arm_fails_when_reinstall_fails();
+    case_standdown_held_answer();
+    case_standdown_queued_answer();
+    case_short_vcm_frame_is_not_a_tx_fail();
+    case_off_controller_receives_nothing();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
     return g_fail ? 1 : 0;

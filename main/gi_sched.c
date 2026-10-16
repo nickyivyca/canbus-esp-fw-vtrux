@@ -29,8 +29,10 @@
 /*
  * Forward declarations. note_skip() is used by gs_queue_frame(), which sits above
  * it because the queue helpers belong together -- every path that loses an
- * inhibit frame must go through note_skip() so the counters and trip 7's window
- * cannot disagree about what happened.
+ * inhibit frame while the inhibit is live must go through note_skip() so the
+ * counters and trip 7's window cannot disagree about what happened. A frame given
+ * up because the inhibit stopped being live is a stand-down instead, and goes
+ * nowhere near it: see gs_withdraw_inhibits().
  */
 static void     note_skip(gs_t *s, int64_t now, bool late);
 static void     begin_abort(gs_t *s, int64_t now);
@@ -148,6 +150,7 @@ void gs_rearm(gs_t *s, const gs_hal_t *hal, gs_class_t timed)
     const bool       aborting   = s->aborting;
     const int64_t    abort_since = s->abort_since;
     const uint32_t   abort_cmds_this = s->abort_cmds_this;
+    const bool       held_booked = s->held_booked;
 
     gs_init(s, hal);
     s->timed_class = timed;
@@ -160,6 +163,7 @@ void gs_rearm(gs_t *s, const gs_hal_t *hal, gs_class_t timed)
     s->aborting = aborting;
     s->abort_since = abort_since;
     s->abort_cmds_this = abort_cmds_this;
+    s->held_booked = held_booked;
     /*
      * SPEC 5.2 ITEM 6 (2026-09-29): declare the carried-over frame, because this
      * arm will see it leave and did not queue it.
@@ -182,15 +186,45 @@ void gs_rearm(gs_t *s, const gs_hal_t *hal, gs_class_t timed)
 
 void gs_withdraw_inhibits(gs_t *s, int64_t now)
 {
+    /*
+     * STAND-DOWNS, NOT SKIPS (spec 5.2 item 5, user 2026-10-16). Whatever is given
+     * up here is given up on purpose, because the inhibit stopped being live.
+     * Nothing failed, and booking it as a skip would feed trip 7 with frames no
+     * live inhibit missed.
+     *
+     * Until 2026-10-16 the queued route went through note_skip() and the held
+     * route was booked only in `withdrawn`. The core hears of a lost frame only
+     * through these counters, so after a held withdrawal it waited for that
+     * frame's completion for ever and sent no diag page until the re-arm.
+     */
     while (s->q[GS_CLASS_INHIBIT].n > 0)
     {
         q_pop(&s->q[GS_CLASS_INHIBIT]);
         s->st.cls[GS_CLASS_INHIBIT].withdrawn++;
-        note_skip(s, now, false);
+        s->st.standdown++;
     }
-    if (s->held && s->held_class == GS_CLASS_INHIBIT && !s->aborting)
+    if (s->held && s->held_class == GS_CLASS_INHIBIT)
     {
-        begin_abort(s, now);
+        /*
+         * Booked now, as a skip is booked at its deadline; `withdrawn` follows
+         * when the loop removes it (gs_tick step 3). Not booked if its deadline
+         * got there first, because then it is already a skip.
+         *
+         * `inhibit_outstanding` is cleared HERE and not at removal, so that a
+         * deadline evaluated while the loop is still running cannot book the
+         * same frame again as a skip. Nothing is handed over meanwhile: `held`
+         * is still set.
+         */
+        if (!s->held_booked)
+        {
+            s->held_booked = true;
+            s->st.standdown++;
+            s->inhibit_outstanding = false;
+        }
+        if (!s->aborting)
+        {
+            begin_abort(s, now);
+        }
     }
     s->st.skip_window = skips_in_window(s, now);
 }
@@ -250,8 +284,9 @@ bool gs_queue_frame(gs_t *s, gs_class_t cls, const gi_frame_t *f, int64_t now)
 /* ------------------------------------------------------------ the engine --- */
 
 /*
- * Record one skip. Every path that loses an inhibit frame comes here, so the
- * window and the counters cannot disagree about what happened.
+ * Record one skip. Every path that loses an inhibit frame while the inhibit is
+ * live comes here, so the window and the counters cannot disagree about what
+ * happened. A stand-down does not (gs_withdraw_inhibits()).
  */
 static void note_skip(gs_t *s, int64_t now, bool late)
 {
@@ -642,6 +677,7 @@ void gs_tick(gs_t *s, int64_t now, uint32_t rx_backlog)
         s->held_since = now;
         s->held_carried = sl->carried;
         s->held_deadline_n = sl->deadline_n;
+        s->held_booked = false;
         if (c == GS_CLASS_INHIBIT)
         {
             s->inhibit_outstanding = true;
@@ -857,6 +893,7 @@ gs_deadline_t gs_command_received(gs_t *s, int64_t now, uint32_t rx_backlog)
         verdict = GS_DEADLINE_SKIPPED;
     }
     note_skip(s, now, verdict == GS_DEADLINE_MAYBE_LATE);
+    s->held_booked = true;      /* a later stand-down must not book it again */
     s->st.skip_window = skips_in_window(s, now);
 
     /* Withdraw it. The loop runs on subsequent ticks; the frame is never
@@ -924,6 +961,12 @@ int gs_json(const gs_t *s, char *buf, int buflen)
     n = clamp(n + snprintf(buf + n, buflen - n,
         "\"sched\":{\"skipped\":%lu,\"skip_window\":%lu,"
         "\"skipped_withdrawn\":%lu,\"skipped_late\":%lu,"
+        /*
+         * Beside the skips because the inhibit-class identity pairs them:
+         * withdrawn + dropped == skipped + standdown (spec 5.2 item 6). Status
+         * page only (spec 11); the CAN diag page carries the skip counts alone.
+         */
+        "\"standdown\":%lu,"
         "\"aborts\":%lu,\"abort_cmds\":%lu,\"abort_bound_hit\":%lu,"
         "\"abort_max_us\":%lu,"
         "\"ontime\":%lu,\"ontime_unverified\":%lu,"
@@ -934,6 +977,7 @@ int gs_json(const gs_t *s, char *buf, int buflen)
         (unsigned long)s->st.skipped, (unsigned long)s->st.skip_window,
         (unsigned long)s->st.skipped_withdrawn,
         (unsigned long)s->st.skipped_late,
+        (unsigned long)s->st.standdown,
         (unsigned long)s->st.aborts, (unsigned long)s->st.abort_cmds,
         (unsigned long)s->st.abort_bound_hit,
         (unsigned long)s->st.abort_max_us,

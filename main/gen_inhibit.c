@@ -707,6 +707,7 @@ static uint32_t s_seen_probe_handed;
 static uint32_t s_seen_probe_lost;
 static uint32_t s_seen_skip_withdrawn;
 static uint32_t s_seen_skip_late;
+static uint32_t s_seen_standdown;
 static bool     s_was_live;
 static gi_frame_t s_last_inhibit;
 static bool     s_have_last_inhibit;
@@ -922,6 +923,24 @@ static void sched_advance(int64_t now, gi_events_t *ev)
         s_seen_skip_late++;
         gi_on_inhibit_skip(&s_core, GI_SKIP_MAYBE_LATE,
                            gs_skip_trip(&s_sched), now, ev);
+    }
+
+    /*
+     * STAND-DOWNS, ONE CORE CALL EACH (spec 5.2 items 5 and 6, user 2026-10-16).
+     * Each ends the core's wait for a frame whose completion will never be
+     * reported, so diag pages keep their cadence after a release or a trip.
+     *
+     * Read HERE, on the next pass, and not straight after gs_withdraw_inhibits()
+     * at the bottom of this function: when a refusal trips, dispatch_emits()
+     * reports the frame as queued AFTER this function returns, and that sets the
+     * wait again. Reporting on the next pass ends it after that, and it still
+     * comes before any new inhibit, because the core queues one only through
+     * dispatch_emits(), which runs this first.
+     */
+    while (s_seen_standdown < st->standdown)
+    {
+        s_seen_standdown++;
+        gi_on_inhibit_standdown(&s_core);
     }
 
     while (s_seen_inh_sent < st->cls[GS_CLASS_INHIBIT].sent)
@@ -1423,6 +1442,7 @@ esp_err_t gen_inhibit_set_mode(gen_inhibit_mode_t mode, uint32_t offset_us)
     s_seen_probe_lost = 0;
     s_seen_skip_withdrawn = 0;
     s_seen_skip_late = 0;
+    s_seen_standdown = 0;
     s_was_live = false;
     s_have_last_inhibit = false;
     s_have_last_probe = false;
