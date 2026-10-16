@@ -131,11 +131,8 @@ Low Power, 4 Invalid) is confirmed from the EPRI binary and on the bus; see
 
 The harness's own checks and can-fails are not described here, so that the
 description changes where the harness does (reviewer, 2026-10-15). They are in
-`firmware/test/README.md`, which is the tester's: its "Harness files in
-`charge-interposer/`" section covers the board-run group -- `run_scenario.py`,
-`diag_cadence.py` and its test, `board_reset_test.py`, `bus_gs_usb_test.py` and
-`test_hold_wire.py`. The other harness files are not in it yet, and until they
-are the file itself is their description.
+`firmware/test/README.md`, which is the tester's, under "Harness files in
+`charge-interposer/`".
 
 ---
 
