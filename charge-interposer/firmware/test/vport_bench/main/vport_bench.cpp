@@ -35,7 +35,10 @@
 //   STATUS                 twai_get_status_info, plus this image's counters,
 //                          plus rec_reg= / tec_reg=: the controller's error
 //                          counter registers read directly (twai_ll_get_rec /
-//                          twai_ll_get_tec). The API's rec= / tec= are 0 in
+//                          twai_ll_get_tec, masked to the 8-bit counter; the
+//                          raw 32-bit words beside them as rec_raw= /
+//                          tec_raw=, so the reserved bits are shown to read
+//                          0, not assumed). The API's rec= / tec= are 0 in
 //                          listen-only by construction (IDF v5.4.1 twai.c,
 //                          twai_get_status_info_v2), not a register reading
 //   RESET                  stop, uninstall, reinstall in the current mode
@@ -481,13 +484,13 @@ void cmdDominant(const char* args) {
 
 void cmdStatus() {
   twai_status_info_t s = {};
-  uint32_t rec_reg = 0, tec_reg = 0;
+  uint32_t rec_raw = 0, tec_raw = 0;
   xSemaphoreTake(drv, portMAX_DELAY);
   const esp_err_t e = installed ? twai_get_status_info(&s)
                                 : ESP_ERR_INVALID_STATE;
   if (installed) {  // the peripheral is clocked only while installed
-    rec_reg = twai_ll_get_rec(&TWAI);
-    tec_reg = twai_ll_get_tec(&TWAI);
+    rec_raw = twai_ll_get_rec(&TWAI);  // the whole word; bits 8-31 reserved
+    tec_raw = twai_ll_get_tec(&TWAI);
   }
   xSemaphoreGive(drv);
   if (e != ESP_OK) {
@@ -497,12 +500,14 @@ void cmdStatus() {
     return;
   }
   reply("@STATUS installed=1 state=%s tec=%lu rec=%lu tec_reg=%lu "
-        "rec_reg=%lu tx_failed=%lu bus_err=%lu arb_lost=%lu msgs_to_tx=%lu msgs_to_rx=%lu "
+        "rec_reg=%lu tec_raw=0x%08lx rec_raw=0x%08lx tx_failed=%lu "
+        "bus_err=%lu arb_lost=%lu msgs_to_tx=%lu msgs_to_rx=%lu "
         "rx_missed=%lu rx_overrun=%lu rx_frames=%lu recoveries=%lu "
         "autorecover=%d flood=%d flood_queued=%lu flood_refused=%lu",
         stateName(s.state), (unsigned long)s.tx_error_counter,
-        (unsigned long)s.rx_error_counter, (unsigned long)tec_reg,
-        (unsigned long)rec_reg, (unsigned long)s.tx_failed_count,
+        (unsigned long)s.rx_error_counter, (unsigned long)(tec_raw & 0xFF),
+        (unsigned long)(rec_raw & 0xFF), (unsigned long)tec_raw,
+        (unsigned long)rec_raw, (unsigned long)s.tx_failed_count,
         (unsigned long)s.bus_error_count, (unsigned long)s.arb_lost_count,
         (unsigned long)s.msgs_to_tx, (unsigned long)s.msgs_to_rx,
         (unsigned long)s.rx_missed_count, (unsigned long)s.rx_overrun_count,
