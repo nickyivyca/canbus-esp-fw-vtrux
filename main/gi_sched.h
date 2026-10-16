@@ -190,9 +190,10 @@ typedef struct
      */
     uint32_t carried_in;
     /*
-     * FRAMES GIVEN UP AT THE DEADLINE AND NEVER TO BE SENT (spec 5.2 item 6,
-     * 2026-09-29). Only the inhibit class can have any: item 5 forbids sending a
-     * skipped inhibit later, so the frame leaves the accounting without ever
+     * FRAMES GIVEN UP AND NEVER TO BE SENT (spec 5.2 item 6, 2026-09-29): at the
+     * deadline, or because the inhibit stopped being live (a stand-down, see
+     * gs_stats_t.standdown). Only the inhibit class can have any: item 5 forbids
+     * sending a skipped inhibit later, so the frame leaves the accounting without ever
      * reaching `sent`, and without this term `queued` moves and nothing on the
      * right does.
      *
@@ -205,8 +206,8 @@ typedef struct
      * from OUR accounting, not proven off the wire; the device cannot prove the
      * latter, which is what `skipped_late` and `late_on_wire` exist to say.
      *
-     * So: cls[INHIBIT].withdrawn + cls[INHIBIT].dropped == skipped, once any
-     * in-progress abort has completed. While one is still running the frame is
+     * So: cls[INHIBIT].withdrawn + cls[INHIBIT].dropped == skipped + standdown,
+     * once any in-progress abort has completed. While one is still running the frame is
      * counted in `held` instead, which is what keeps the identity closed.
      */
     uint32_t withdrawn;
@@ -240,6 +241,29 @@ typedef struct
      */
     uint32_t skipped_withdrawn; /* removed at the deadline, never on the wire */
     uint32_t skipped_late;      /* went out late, or may have (late_on_wire) */
+
+    /*
+     * STAND-DOWNS (spec 5.2 items 5 and 6, user 2026-10-16). Inhibit frames given
+     * up because the inhibit stopped being live: a section 6 release or a section
+     * 7 trip that landed while an answer was queued or still in the controller.
+     * They are withdrawn on purpose and nothing failed, so they are NOT skips:
+     * they reach neither `skipped` nor trip 7's window, whether or not the frame
+     * reached the wire.
+     *
+     * Booked when gs_withdraw_inhibits() gives the frame up, as a skip is booked
+     * at its deadline. A queued frame is booked `withdrawn` in the same call; one
+     * in the controller only when the item 4 loop removes it, and until then it is
+     * in `held`, so this reads one short mid-withdrawal:
+     *
+     *   cls[INHIBIT].withdrawn + cls[INHIBIT].dropped == skipped + standdown
+     *
+     * The caller reports each one to the core, which ends its wait for that
+     * frame's completion. On c65c45e a frame withdrawn from the controller at
+     * stand-down was booked only in `withdrawn`, which the core never hears about,
+     * so its wait never ended and no diag page went out until the re-arm (bench
+     * B20 `liveflag-mmode`).
+     */
+    uint32_t standdown;
 
     /*
      * D6. A telemetry frame that COMPLETES GENUINELY while an abort is in
@@ -414,6 +438,13 @@ typedef struct
     bool       held_carried;
     /* The held frame's gs_slot_t.deadline_n, carried across the handover. */
     uint32_t   held_deadline_n;
+    /*
+     * THE HELD INHIBIT HAS ALREADY BEEN GIVEN UP AND BOOKED, as a skip at its
+     * deadline or as a stand-down, so nothing may book it again. Without it a
+     * stand-down landing while a deadline's abort was still running would count
+     * one frame in both totals. Cleared at every handover.
+     */
+    bool       held_booked;
 
     /*
      * THE ABORT LOOP's state, kept across ticks so the loop does not block the
@@ -538,7 +569,9 @@ void gs_rearm(gs_t *s, const gs_hal_t *hal, gs_class_t timed);
 
 /*
  * Withdraw every inhibit: purge the class queue and start the abort loop on a held
- * one. Each purged frame is counted as a skip.
+ * one. Each frame given up, queued or held, is counted as a stand-down
+ * (`standdown`), never as a skip (spec 5.2 item 5, user 2026-10-16), unless its
+ * deadline has already booked it as one.
  *
  * CALL THIS WHENEVER THE CORE STOPS BEING LIVE -- any abort, any disable, any mode
  * change out of INHIBIT. Without it a refused inhibit stays queued and is retried

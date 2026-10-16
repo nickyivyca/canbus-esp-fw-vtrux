@@ -976,6 +976,13 @@ const char *gi_skip_name(gi_skip_kind_t k);
 void gi_on_inhibit_skip(gi_state_t *st, gi_skip_kind_t kind, bool trip,
                         int64_t now, gi_events_t *ev);
 
+/*
+ * The transmit scheduler gave up an inhibit frame because the inhibit stopped
+ * being live (a stand-down, spec 5.2 items 5 and 6). Not a skip: it ends the
+ * core's wait for that frame's completion, and does nothing else.
+ */
+void gi_on_inhibit_standdown(gi_state_t *st);
+
 /* A hard (non-timeout) receive error. Returns true if it self-disarmed. */
 bool gi_on_rx_error(gi_state_t *st, int64_t now, gi_events_t *ev);
 

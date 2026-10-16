@@ -2266,8 +2266,12 @@ void gi_on_frame(gi_state_t *st, uint32_t id, uint8_t dlc, const uint8_t *data,
              * not about a transmit of ours -- spec 3.1 excuses PASSIVE only
              * from the trips that concern our own transmission, which is trip
              * 7 alone.
+             *
+             * NO tx_fail HERE (spec 7 trip 8 as written; user 2026-10-16). The
+             * increment survived the change described above, so the trip read
+             * as an abort AND a failed transmit of ours, for a frame we never
+             * attempted.
              */
-            st->tx_fail++;
             inhibit_abort(st, GI_ABORT_SHORT_VCM_FRAME, now, ev);
             return;
         }
@@ -2424,6 +2428,24 @@ void gi_on_inhibit_skip(gi_state_t *st, gi_skip_kind_t kind, bool trip,
     {
         inhibit_abort(st, GI_ABORT_SKIPS, now, ev);
     }
+}
+
+/*
+ * The scheduler gave up an inhibit frame because the inhibit stopped being live
+ * (spec 5.2 items 5 and 6, user 2026-10-16). Not a skip, so nothing is counted
+ * here and nothing trips: the scheduler counts it as `standdown`. What it does is
+ * END THE WAIT for that frame's completion, which will never be reported.
+ *
+ * Without it `tx_pending` stayed set, and gi_tick() builds no diag page while it
+ * is: on c65c45e an M-mode release 260 us after a 0x051 left the pages silent
+ * until the re-arm (bench B20 `liveflag-mmode`). latch_disable() and
+ * inhibit_abort() do not clear it themselves, because the frame may still be in
+ * the controller then and it is the scheduler that knows when it has gone.
+ */
+void gi_on_inhibit_standdown(gi_state_t *st)
+{
+    st->tx_pending = false;
+    st->tx_pending_have_rx = false;
 }
 
 void gi_on_tx_done(gi_state_t *st, bool ok, int64_t t_done, gi_events_t *ev)

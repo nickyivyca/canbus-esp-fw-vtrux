@@ -99,3 +99,22 @@ in this model, while on the device `twai_transmit()` would accept the frame into
 the driver's FIFO behind the old one. Same fault, two symptoms; E1's case 27
 covers the FIFO form, this one covers the refusal form, and both are written down
 at the call site so neither reads as the whole story.
+
+### 2026-10-16: stand-downs are not skips
+
+Spec 5.2 item 5 as changed 2026-10-16: an answer withdrawn because the inhibit
+stopped being live is a **stand-down**, never a skip, and the inhibit-class
+identity is `withdrawn + dropped == skipped + standdown`. Three cases, each
+locked to a command (its deadline, then its answer queued, then the stand-down):
+
+* `case_standdown_queued_answer` -- the answer waits behind a page on the wire
+  (`fb_stick_transmitting`);
+* `case_standdown_held_answer` -- the answer is in the controller, and the VCM's
+  next command arrives before the abort loop has run;
+* `case_standdown_after_deadline_books_once` -- a stand-down during a deadline's
+  abort books nothing more.
+
+`standdown` is read from `gs_json()`, so the file still builds against `c65c45e`
+and fails there on the assertions (19 of them) instead of at compile time.
+`case_identity_withdraw_api_balances` now expects a stand-down where it expected
+a skip.
