@@ -45,8 +45,9 @@ charger fault. What the VCU does is REACT to the charger leaving state 12 --
 flow bit 0 after ~1 s, STAND_BY ~250 ms later -- and the BMS then asserts EPO
 and opens the contactors. That reaction is modelled here with the measured
 delays (REACT_*, STANDBY_GAP_*, EPO_*); the endings themselves come from
-charger_sim (--unplug-at, --fault-at) or from the interposer's own charger
-stop (spec 5.2), which the VCU reacts to the same way.
+charger_sim (--unplug-at, --fault-at). The interposer never stops the
+charger itself: its release is the VCU's own Low Power at the leader cell's
+cut, then its hold (spec 5.1, 5.2).
 """
 
 import argparse
@@ -233,8 +234,9 @@ class VCU(object):
     session is NOT one of them -- it has never been observed to (spec 7). It
     REACTS to the charger leaving state 12, for a handle pull or a charger
     fault, by dropping the flow bit and then commanding STAND_BY with the
-    measured delays. That reaction is also what the interposer's own charger
-    stop relies on (spec 5.3).
+    measured delays. The interposer's release does not rely on it: the
+    release is the VCU's own Low Power at the leader cell's cut, then the
+    interposer's hold (spec 5.1, 5.2).
     """
 
     def __init__(self, evap=False, cutoff_ilim_delay=155.0, seed=7,
@@ -660,10 +662,12 @@ class BMS(object):
         under P3a's charger and loads, which no capture shows.
 
         `stuck_chg_max` pins it instead, simulating a BMS whose charge-current
-        permission fails to taper at the top of charge. That is the only way to
-        reach the interposer's own hard cell-voltage ceiling: while the BMS
-        behaves, bcm_chg_max going to zero already clamps our taper to zero, so
-        the ceiling is unreachable -- which is itself worth knowing.
+        permission fails to taper at the top of charge. `hard-ceiling-failsafe`
+        uses it, with the release turned off, to reach the interposer's hard
+        cell-voltage trip (3610 mV, spec 6). The interposer has no taper of its
+        own: during an override it commands the BMS's permission, capped at the
+        EVSE's limit, with a 6.10 A floor once the BMS reads 98 % (spec 4); after
+        the release its hold steps the setpoint (spec 5.2).
         """
         if self.stuck_chg_max is not None:
             return self.stuck_chg_max

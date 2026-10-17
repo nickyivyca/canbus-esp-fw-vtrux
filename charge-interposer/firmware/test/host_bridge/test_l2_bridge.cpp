@@ -291,6 +291,186 @@ void caseBridgeOk() {
   assertPathsExercised();
 }
 
+// Spec 8.2's other bridge_ok inputs (coverage gap 1, reviewer 2026-10-16):
+// "no RX overflow, no controller bus-off and no bridged frame that failed
+// to reach the vehicle since the previous status frame ... The board's own
+// diagnostic frames failing to send do not count", and an RX overflow "is
+// the controller or its driver reporting one" (spec 461cf456998e419d).
+// Each case has the bridge_ok case's three states: set, clear for the
+// interval with the loss, set again on the next clean interval.
+
+// bridge_ok of every 0x7F4 that reached the vehicle from index `from`.
+std::string bridgeOkFlags(size_t from) {
+  std::string s;
+  const std::vector<twaifake::Frame>& v = vehSent();
+  for (size_t i = from; i < v.size(); i++)
+    if (v[i].id == DIAG_STATUS)
+      s += ((v[i].data[4] & FLAG_BRIDGE_OK) != 0) ? '1' : '0';
+  return s;
+}
+
+// The by-id knobs' self-check: a listed id is failed or refused, and an
+// unlisted one still goes out, so a case's "the knob fired" is a reading.
+void caseFakeByIdKnobs() {
+  boot();
+  feed(3);
+  auto send = [](uint32_t id) {
+    twai_message_t m;
+    std::memset(&m, 0, sizeof(m));
+    m.identifier = id;
+    m.extd = 1;
+    m.data_length_code = 8;
+    return twai_transmit(&m, 0);
+  };
+  twai_status_info_t st0, st1;
+  twai_get_status_info(&st0);
+  fake().setFailIds({0x18AAAAAA});
+  fake().setRefuseIds({0x18BBBBBB});
+  const size_t mark = vehSent().size();
+  const esp_err_t ef = send(0x18AAAAAA);
+  const esp_err_t er = send(0x18BBBBBB);
+  const esp_err_t eo = send(0x18CCCCCC);
+  runBridge(5);
+  twai_get_status_info(&st1);
+  uint32_t a = 0, b = 0, c = 0;
+  const std::vector<twaifake::Frame>& v = vehSent();
+  for (size_t i = mark; i < v.size(); i++) {
+    if (v[i].id == 0x18AAAAAA) a++;
+    if (v[i].id == 0x18BBBBBB) b++;
+    if (v[i].id == 0x18CCCCCC) c++;
+  }
+  fake().setFailIds({});
+  fake().setRefuseIds({});
+  check(ef == ESP_OK && fake().failedById() == 1 && a == 0 &&
+            st1.tx_failed_count == st0.tx_failed_count + 1,
+        "knob: a failIds frame is accepted, booked to tx_failed_count and "
+        "never reaches the wire");
+  check(er == ESP_ERR_TIMEOUT && fake().refusedById() == 1 && b == 0,
+        "knob: a refuseIds frame is refused at twai_transmit and never "
+        "reaches the wire");
+  check(eo == ESP_OK && c == 1, "knob: an unlisted frame still goes out");
+}
+
+// A bridged charger frame fails toward the vehicle. `refuse` picks the
+// route: refused at twai_transmit, or accepted and then failed (both count,
+// reviewer's Q1 ruling of 2026-10-16).
+void bridgeOkVehTx(bool refuse) {
+  boot();
+  const size_t a = vehSent().size();
+  feed(12);
+  const std::string before = bridgeOkFlags(a);
+
+  const size_t b = vehSent().size();
+  const uint32_t n0 = refuse ? fake().refusedById() : fake().failedById();
+  if (refuse) fake().setRefuseIds({CHG_FRAME_ID});
+  else fake().setFailIds({CHG_FRAME_ID});
+  feed(12);
+  fake().setFailIds({});
+  fake().setRefuseIds({});
+  const uint32_t lost =
+      (refuse ? fake().refusedById() : fake().failedById()) - n0;
+  const std::string during = bridgeOkFlags(b);
+
+  const size_t c = vehSent().size();
+  feed(25);
+  const std::string after = bridgeOkFlags(c);
+
+  std::printf("  --  %s: bridged frames lost %u; bridge_ok before=%s "
+              "during=%s after=%s\n", refuse ? "refused" : "failed", lost,
+              before.c_str(), during.c_str(), after.c_str());
+  check(lost > 0, "setup: bridged charger frames were lost toward the "
+                  "vehicle");
+  check(before.find('1') != std::string::npos,
+        "bridge_ok is SET on a healthy bridge");
+  check(during.find('0') != std::string::npos,
+        refuse ? "a bridged frame refused toward the vehicle clears it "
+                 "(spec 8.2)"
+               : "a bridged frame accepted and then failed toward the "
+                 "vehicle clears it (spec 8.2)");
+  check(!after.empty() && after[after.size() - 1] == '1',
+        "...and it is SET again once frames reach the vehicle");
+  assertPathsExercised();
+}
+void caseBridgeOkVehRefused() { bridgeOkVehTx(true); }
+void caseBridgeOkVehFailed() { bridgeOkVehTx(false); }
+
+// The spec's exclusion: the board's own 0x7F5-0x7F7 failing toward the
+// vehicle leaves bridge_ok set (0x7F4 is spared so the flag can be read).
+void bridgeOkDiagTx(bool refuse) {
+  boot();
+  feed(12);
+  const size_t b = vehSent().size();
+  const uint32_t n0 = refuse ? fake().refusedById() : fake().failedById();
+  const std::vector<uint32_t> own = {DIAG_OBSERVED, DIAG_COUNTERS,
+                                     DIAG_BUILD};
+  if (refuse) fake().setRefuseIds(own);
+  else fake().setFailIds(own);
+  feed(30);
+  fake().setFailIds({});
+  fake().setRefuseIds({});
+  const uint32_t lost =
+      (refuse ? fake().refusedById() : fake().failedById()) - n0;
+  const std::string during = bridgeOkFlags(b);
+  std::printf("  --  own diagnostics %s: lost %u; bridge_ok during=%s\n",
+              refuse ? "refused" : "failed", lost, during.c_str());
+  check(lost >= 6, "setup: the board's own 0x7F5-0x7F7 were lost, at least "
+                   "two rounds of them");
+  check(during.size() >= 2 && during.find('0') == std::string::npos,
+        "spec 8.2: the board's own diagnostic frames failing does NOT "
+        "clear bridge_ok");
+  assertPathsExercised();
+}
+void caseBridgeOkDiagRefused() { bridgeOkDiagTx(true); }
+void caseBridgeOkDiagFailed() { bridgeOkDiagTx(false); }
+
+// Vehicle-side receive loss. `overrun`: the controller's FIFO overrun
+// (rx_overrun_count). Otherwise the driver's full RX queue, by the real
+// mechanism: more frames delivered at once than the queue the bridge
+// configured can hold, so the driver books rx_missed_count.
+void bridgeOkRxLoss(bool overrun) {
+  boot();
+  const size_t a = vehSent().size();
+  feed(12);
+  const std::string before = bridgeOkFlags(a);
+
+  const size_t b = vehSent().size();
+  const uint32_t m0 = fake().rxMissed(), o0 = fake().rxOverrun();
+  if (overrun) {
+    fake().injectRxFifoOverrun(1);
+  } else {
+    const uint32_t n = fake().configuredRxQueueLen() * 3 + 8;
+    for (uint32_t k = 0; k < n; k++) vehicleFrame(0x18FF4AE5);
+  }
+  const uint32_t lost =
+      overrun ? fake().rxOverrun() - o0 : fake().rxMissed() - m0;
+  feed(12);
+  const std::string during = bridgeOkFlags(b);
+
+  const size_t c = vehSent().size();
+  feed(25);
+  const std::string after = bridgeOkFlags(c);
+
+  std::printf("  --  %s: %u lost (rx queue %u); bridge_ok before=%s "
+              "during=%s after=%s\n",
+              overrun ? "rx_overrun" : "rx_missed", lost,
+              fake().configuredRxQueueLen(), before.c_str(), during.c_str(),
+              after.c_str());
+  check(lost > 0, overrun ? "setup: the controller reports a FIFO overrun"
+                          : "setup: the driver booked frames to rx_missed "
+                            "(its RX queue was full)");
+  check(before.find('1') != std::string::npos,
+        "bridge_ok is SET on a healthy bridge");
+  check(during.find('0') != std::string::npos,
+        overrun ? "a TWAI FIFO overrun clears it (spec 8.2)"
+                : "frames lost to the TWAI driver's full RX queue clear it "
+                  "(spec 8.2, 461cf456998e419d)");
+  check(!after.empty() && after[after.size() - 1] == '1',
+        "...and it is SET again on the next clean interval");
+  assertPathsExercised();
+}
+void caseBridgeOkRxMissed() { bridgeOkRxLoss(false); }
+void caseBridgeOkRxOverrun() { bridgeOkRxLoss(true); }
+
 // Spec 2: "Every frame is forwarded to the other port unmodified, in
 // order"; the only accepted reordering is vehicle-to-charger across
 // identifiers, so charger-to-vehicle has none. Reviewer request (tracker
@@ -2317,6 +2497,13 @@ const Case kCases[] = {
     {"cadence", caseCadence},
     {"fields", caseFields},
     {"bridge-ok", caseBridgeOk},
+    {"fake-by-id-knobs", caseFakeByIdKnobs},
+    {"bridge-ok-veh-refused", caseBridgeOkVehRefused},
+    {"bridge-ok-veh-failed", caseBridgeOkVehFailed},
+    {"bridge-ok-diag-refused", caseBridgeOkDiagRefused},
+    {"bridge-ok-diag-failed", caseBridgeOkDiagFailed},
+    {"bridge-ok-rx-missed", caseBridgeOkRxMissed},
+    {"bridge-ok-rx-overrun", caseBridgeOkRxOverrun},
     {"tx-fail", caseTxFail},
     {"failed-start", caseFailedStart},
     {"replay", caseReplay},

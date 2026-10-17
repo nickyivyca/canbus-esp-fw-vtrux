@@ -140,6 +140,21 @@ class TwaiFake {
   // msgs_to_tx reads frames as sent that never reached the wire.
   void setMisreportQueueEmpty(bool yes) { misreport_queue_empty_ = yes; }
 
+  // Spec 8.2's "no bridged frame that failed to reach the vehicle", by id
+  // (tester, 2026-10-16; reviewer's Q1 ruling: both routes count). Test
+  // knobs, not a model of WHY a frame fails: a real refusal is a full TX
+  // queue and a real failure a bus error, and either would hit the board's
+  // own diagnostic frames too, leaving no 0x7F4 to read the flag from.
+  //   failIds:   accepted (ESP_OK), then booked to tx_failed_count with
+  //              TX_FAILED raised; never reaches the wire.
+  //   refuseIds: refused at twai_transmit (ESP_ERR_TIMEOUT, the header's
+  //              "timed out waiting for space on TX queue"); never queued.
+  // Empty (the default) changes nothing.
+  void setFailIds(const std::vector<uint32_t>& ids) { fail_ids_ = ids; }
+  void setRefuseIds(const std::vector<uint32_t>& ids) { refuse_ids_ = ids; }
+  uint32_t failedById() const { return failed_by_id_; }
+  uint32_t refusedById() const { return refused_by_id_; }
+
   // ---- inspection ------------------------------------------------------
   // Advances the airtime model first, like every other read: a lazy
   // state() read RUNNING after a setBusOffAfterSent strike was due.
@@ -242,6 +257,10 @@ class TwaiFake {
   uint32_t inflight_failed_ = 0;
   uint64_t recovery_done_us_ = 0;
   bool misreport_queue_empty_ = false;
+  std::vector<uint32_t> fail_ids_;
+  std::vector<uint32_t> refuse_ids_;
+  uint32_t failed_by_id_ = 0;
+  uint32_t refused_by_id_ = 0;
   void tickRecovery();
   bool wire_time_ = false;
   uint64_t head_start_us_ = 0;     // when the head of tx_pending_ started

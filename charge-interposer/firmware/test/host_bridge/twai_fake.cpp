@@ -32,6 +32,10 @@ void TwaiFake::hardReset() {
   inflight_failed_ = 0;
   recovery_done_us_ = 0;
   misreport_queue_empty_ = false;
+  fail_ids_.clear();
+  refuse_ids_.clear();
+  failed_by_id_ = 0;
+  refused_by_id_ = 0;
   head_start_us_ = 0;
   tx_discarded_by_stop_ = 0;
   tx_cut_by_stop_ = 0;
@@ -243,6 +247,20 @@ esp_err_t TwaiFake::transmit(const twai_message_t* m) {
     listen_only_tx_attempts_++;
     return ESP_ERR_NOT_SUPPORTED;
   }
+
+  // The by-id knobs (twai_fake.h, setFailIds / setRefuseIds).
+  for (uint32_t id : refuse_ids_)
+    if (id == m->identifier) {
+      refused_by_id_++;
+      return ESP_ERR_TIMEOUT;
+    }
+  for (uint32_t id : fail_ids_)
+    if (id == m->identifier) {
+      failed_by_id_++;
+      tx_failed_count_++;
+      alerts_ |= TWAI_ALERT_TX_FAILED;
+      return ESP_OK;   // accepted into the queue; the failure is later
+    }
 
   if (!acked_ && !wire_time_) {
     tx_failed_count_++;
