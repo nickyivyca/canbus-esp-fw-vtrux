@@ -206,6 +206,14 @@ class TwaiFake {
   uint32_t rxOverrun() const { return rx_overrun_count_; }
   uint32_t rxQueueLen() const { return (uint32_t)rx_.size(); }
   uint32_t configuredRxQueueLen() const { return cfg_rx_queue_len_; }
+  // Inspection only (tester, 2026-10-16, the switch-discard case): the TX
+  // queue the code under test configured, and the id of every frame a
+  // stop or an uninstall threw away (the one cut mid-frame included), in
+  // order. The real driver refuses a transmit only with this many queued.
+  uint32_t configuredTxQueueLen() const { return cfg_tx_queue_len_; }
+  const std::vector<uint32_t>& droppedAtStopIds() const {
+    return dropped_at_stop_ids_;
+  }
 
   // How many times a call was rejected for being made in the wrong state.
   // A test asserts this is zero for a healthy run: the driver quietly
@@ -266,6 +274,7 @@ class TwaiFake {
   uint64_t head_start_us_ = 0;     // when the head of tx_pending_ started
   uint32_t tx_discarded_by_stop_ = 0;
   uint32_t tx_cut_by_stop_ = 0;
+  std::vector<uint32_t> dropped_at_stop_ids_;
   void advanceWire();
   void dropQueuedAtStop();
 

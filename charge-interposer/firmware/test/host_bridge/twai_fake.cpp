@@ -39,6 +39,7 @@ void TwaiFake::hardReset() {
   head_start_us_ = 0;
   tx_discarded_by_stop_ = 0;
   tx_cut_by_stop_ = 0;
+  dropped_at_stop_ids_.clear();
   rx_missed_count_ = 0;
   rx_overrun_count_ = 0;
   tx_failed_count_ = 0;
@@ -164,6 +165,7 @@ esp_err_t TwaiFake::stop() {
 
 void TwaiFake::dropQueuedAtStop() {
   if (tx_pending_.empty()) return;
+  for (const Frame& f : tx_pending_) dropped_at_stop_ids_.push_back(f.id);
   if (wire_time_ && state_ == TWAI_STATE_RUNNING) {
     tx_cut_by_stop_++;                       // the head was on the wire
     tx_discarded_by_stop_ += (uint32_t)tx_pending_.size() - 1;

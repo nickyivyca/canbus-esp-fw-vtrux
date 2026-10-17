@@ -2038,6 +2038,101 @@ void caseRoundCountCanFail() {
 }
 void caseFailedStartNoAck() { caseRoundNoAck(false); }
 
+// Spec 2.3 / 8.2, the switch-discard route (reviewer, 2026-10-16; spec 12's
+// 2.3 entry, 8f228da8a7c2b995). With nothing on the vehicle segment
+// acknowledging, the head frame retries for ever at error-passive and never
+// reaches bus-off, so bridged frames queue behind it. 2 s after the charger
+// goes quiet the switch to listen-only tears the driver down and the queue
+// is discarded. 2.3: a vehicle-bound frame pending at that switch "is either
+// sent or counted"; 8.2: a bridged frame that failed to reach the vehicle
+// clears bridge_ok for its interval, and the board's own diagnostic frames
+// failing do not count. Read off the wire, the interval that carries the
+// switch is the one the first 0x7F4 after the return to normal reports: no
+// frame reached the wire since the healthy 0x7F4s before the ACK went.
+//
+// `bridged`: charger frames are bridged into the stuck queue (the case).
+// Without them only the board's own frames queue and are discarded (the
+// control: bridge_ok must stay set). No refusal is in the judged interval:
+// the queue stays under the TX queue the bridge configured, the only point
+// at which the real driver refuses, and no by-id knob is set.
+void bridgeOkSwitchDiscard(bool bridged) {
+  boot();
+  const size_t a = vehSent().size();
+  feed(12);
+  const std::string before = bridgeOkFlags(a);
+  check(fake().mode() == TWAI_MODE_NORMAL, "setup: normal while the charger "
+                                           "talks");
+
+  fake().setAcknowledged(false);
+  const size_t w0 = vehSent().size();
+  const size_t d0 = fake().droppedAtStopIds().size();
+  if (bridged) {
+    for (int i = 0; i < 10; i++) {
+      chargerStatus();
+      runBridge(100);
+    }
+  }
+  const uint32_t pending = fake().pendingTx();
+  vehicleOnly(2500);
+  runBridge(20);
+  const bool switched = fake().mode() == TWAI_MODE_LISTEN_ONLY;
+  const std::vector<uint32_t>& dropped = fake().droppedAtStopIds();
+  uint32_t n_bridged = 0, n_own = 0, n_other = 0;
+  for (size_t i = d0; i < dropped.size(); i++) {
+    if (dropped[i] == CHG_FRAME_ID) n_bridged++;
+    else if (dropped[i] >= DIAG_STATUS && dropped[i] <= DIAG_BUILD) n_own++;
+    else n_other++;
+  }
+  const uint32_t on_wire = (uint32_t)(vehSent().size() - w0);
+
+  fake().setAcknowledged(true);
+  const size_t b = vehSent().size();
+  feed(25);
+  const std::string after = bridgeOkFlags(b);
+
+  std::printf("  --  %s: queued at the quiet %u (TX queue %u), on the wire "
+              "while unacknowledged %u; discarded at the switch: bridged %u, "
+              "own 0x7F4-0x7F7 %u, other %u; refused by id %u; bridge_ok "
+              "before=%s after the return=%s\n",
+              bridged ? "bridged" : "own frames only", pending,
+              fake().configuredTxQueueLen(), on_wire, n_bridged, n_own,
+              n_other, fake().refusedById(), before.c_str(), after.c_str());
+  check(before.find('1') != std::string::npos,
+        "bridge_ok is SET on a healthy bridge");
+  check(switched, "setup: the port switched to listen-only 2 s after the "
+                  "charger went quiet");
+  check(on_wire == 0, "setup: nothing reached the vehicle wire while nothing "
+                      "acknowledged (the head retried for ever)");
+  // The queue only grows while the head is stuck, so what the switch threw
+  // away is its high-water mark.
+  const uint32_t n_dropped = n_bridged + n_own + n_other;
+  check(n_dropped >= 1 && n_dropped < fake().configuredTxQueueLen() &&
+            fake().refusedById() == 0,
+        "setup: no refusal in the judged interval -- the queue never filled "
+        "the configured TX queue, and no by-id knob was set");
+  if (bridged) {
+    check(n_bridged >= 5, "setup: bridged charger frames were among the "
+                          "frames discarded at the switch");
+    check(!after.empty() && after[0] == '0',
+          "spec 2.3 / 8.2: bridged frames discarded at the switch to "
+          "listen-only are counted -- the first 0x7F4 after the return "
+          "reports bridge_ok CLEAR [KNOWN FAIL expected on src "
+          "36edf3e55552, reviewer 2026-10-16: the ported image must pass "
+          "it]");
+  } else {
+    check(n_bridged == 0 && n_own >= 1,
+          "setup: only the board's own frames were discarded at the switch");
+    check(!after.empty() && after[0] == '1',
+          "spec 8.2: the board's own frames discarded at the switch do NOT "
+          "clear bridge_ok");
+  }
+  check(!after.empty() && after[after.size() - 1] == '1',
+        "...and bridge_ok is SET again on a later clean interval");
+  assertPathsExercised();
+}
+void caseBridgeOkSwitchDiscard() { bridgeOkSwitchDiscard(true); }
+void caseBridgeOkSwitchDiscardDiagOnly() { bridgeOkSwitchDiscard(false); }
+
 void caseListenOnlySwitch() {
   boot();
   vehicleOnly(1000);
@@ -2506,6 +2601,8 @@ const Case kCases[] = {
     {"bridge-ok-diag-failed", caseBridgeOkDiagFailed},
     {"bridge-ok-rx-missed", caseBridgeOkRxMissed},
     {"bridge-ok-rx-overrun", caseBridgeOkRxOverrun},
+    {"bridge-ok-switch-discard", caseBridgeOkSwitchDiscard},
+    {"bridge-ok-switch-discard-diag-only", caseBridgeOkSwitchDiscardDiagOnly},
     {"tx-fail", caseTxFail},
     {"failed-start", caseFailedStart},
     {"replay", caseReplay},
