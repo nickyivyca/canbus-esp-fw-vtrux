@@ -94,7 +94,110 @@ def read_until(boots, code, image_sha, until_s):
     return B.classify(code, T_END, before, rd, image_sha)
 
 
+class FakeCapture:
+    """A capture that logs its calls into the run's event list. kind: 'ok', 'no-start'
+    (refuses to start), 'raise-start', or 'raise-later' (stop and summary raise)."""
+    SUMMARY = {"stream": 3, "from_syn": True, "segment": 1440, "device_acks": 3, "upload_end_s": 16.49,
+               "rst_from": [], "device_data_s": None, "highest_ack": 20391, "bytes_acked": 20390,
+               "last_ack_s": 5.94, "last_window": 90, "window_closed": True, "longest_gap_s": 3.54,
+               "gap_after_ack": 17511, "gap_at_s": 1.48}
+
+    def __init__(self, kind, events):
+        self.kind, self.events, self.path = kind, events, "x.pcapng"
+
+    def start(self):
+        self.events.append("start")
+        if self.kind == "raise-start":
+            raise RuntimeError("dumpcap vanished")
+        return (False, "no dumpcap") if self.kind == "no-start" else (True, "capturing")
+
+    def stop(self):
+        self.events.append("stop")
+        if self.kind == "raise-later":
+            raise RuntimeError("stop failed")
+        return True, "stopped"
+
+    def summary(self, t_start, t_end):
+        self.events.append("summary")
+        if self.kind == "raise-later":
+            raise RuntimeError("tshark failed")
+        return dict(self.SUMMARY), None
+
+
+def judged(code, boots, image_sha, kind):
+    """upload_and_judge on the fake device and clock, with the capture `kind`
+    (None: off). Returns (result, stdout, events); a crash is returned, not raised."""
+    import contextlib
+    import io
+    clock = Clock(T_END - 20.0)
+    dev = Device(clock, boots)
+    before = before_of(dev, clock)
+    clock.t = T_END - 15.0
+    events = []
+
+    def post():
+        events.append("post")
+        clock.t = T_END
+        return {"http_code": code, "size_upload": 131072 if code is None else 1113456,
+                "time_total": 15.0, "body": "", "curl_error": "", "curl_rc": 0}
+
+    def read():
+        events.append("read")
+        return dev.read()
+    cap = FakeCapture(kind, events) if kind else None
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out):
+            res = B.upload_and_judge(post, read, before, image_sha, 1113456, clock.now, clock.sleep, cap)
+    except Exception as e:      # noqa: BLE001 -- a crash is a failed check, not a kill
+        return {"crash": "%s: %s" % (type(e).__name__, e)}, out.getvalue(), events
+    return res, out.getvalue(), events
+
+
+def judged_key(res):
+    if "crash" in res:
+        return res
+    return (res["verdict"], res["detail"], [(r.get("t_req"), r.get("t_resp")) for r in res["readings"]])
+
+
+def wire_checks():
+    """The capture's line is message only (reviewer, 2026-10-17): the verdict, its
+    detail and the readings are the same with the capture off, on, refusing to
+    start, or raising."""
+    up = [(-1000.0, OLD, "SW")]
+    for code, boots_, want in ((None, up, "a1"), (303, up + [(2.5, NEW, "SW")], "c")):
+        off = judged(code, boots_, NEW, None)
+        check("wire: with the capture off the verdict is (%s)" % want, off[0].get("verdict") == want, judged_key(off[0]))
+        for kind in ("ok", "no-start", "raise-start", "raise-later"):
+            on = judged(code, boots_, NEW, kind)
+            check("wire: (%s) the same verdict, detail and readings with the capture %s" % (want, kind),
+                  judged_key(on[0]) == judged_key(off[0]), judged_key(on[0]))
+        check("wire: (%s) off, no wire line and no skip note" % want, "wire" not in off[1].lower(), off[1][-150:])
+
+    res, out, ev = judged(None, up, NEW, "ok")
+    check("wire: a failed upload prints the capture's line, after the verdict",
+          "VERDICT:" in out and out.index("VERDICT:") < out.find("wire: the device ACKed 20390 bytes")
+          and "(window closed)" in out, out[-200:])
+    check("wire: the line is in the result for the record", res.get("wire", {}).get("line", "").startswith("wire: the device"),
+          res.get("wire"))
+    check("wire: the capture starts before the post and stops after the last read",
+          ev[:2] == ["start", "post"] and "stop" in ev and ev.index("stop") > max(i for i, e in enumerate(ev) if e == "read"),
+          ev)
+    res, out, ev = judged(303, up + [(2.5, NEW, "SW")], NEW, "ok")
+    check("wire: an upload that got its 303 prints no line, and the capture is still stopped",
+          "wire: the device" not in out and "summary" not in ev and "stop" in ev, ev)
+    res, out, ev = judged(None, up, NEW, "no-start")
+    check("wire: a capture that will not start is said to be skipped, and not used again",
+          "skipped" in out and "no dumpcap" in out and ev == ["start", "post"] + ["read"] * ev.count("read"), ev)
+    res, out, ev = judged(None, up, NEW, "raise-start")
+    check("wire: a capture that raises at start is skipped too", "skipped" in out and "RuntimeError" in out, out[-200:])
+    res, out, ev = judged(None, up, NEW, "raise-later")
+    check("wire: a summary that raises says the diagnostic was skipped",
+          "wire: diagnostic skipped" in out and "tshark failed" in out, out[-200:])
+
+
 def main():
+    wire_checks()
     up = [(-1000.0, OLD, "SW")]
 
     # -- no status ------------------------------------------------------------

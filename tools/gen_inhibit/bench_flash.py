@@ -40,6 +40,7 @@ import re
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -48,6 +49,7 @@ sys.path.insert(0, HERE)
 from bench_ota_guard import (            # noqa: E402
     MODES, http, have_external_route, gi_status,
 )
+import bench_flash_wire                  # noqa: E402
 
 DEFAULT_HOST = "192.168.80.1"
 # The SoftAP's SSID embeds the device MAC, so it is a setting and never a
@@ -276,6 +278,69 @@ def watch(read, code, t_end, before, image_sha, now, sleep, settle_ms=SETTLE_UPT
         sleep(every)
     return readings
 
+
+# -------------------------------------------------- the capture's one line --
+#
+# A Wi-Fi capture around each upload (bench_flash_wire.py; reviewer, 2026-10-17,
+# for the open 128 KiB upload-reset observation). MESSAGE ONLY: the capture is
+# started before the post and stopped after the watch, and nothing it returns
+# reaches classify() or the pass/fail. Every call into it is guarded, so a host
+# without Wireshark, or a capture that fails, flashes exactly as before and says
+# the diagnostic was skipped.
+
+def _guarded(fn, *a):
+    """(ok, value-or-why) from fn(*a), which may also raise."""
+    try:
+        return fn(*a)
+    except Exception as e:      # noqa: BLE001 -- the diagnostic never fails a flash
+        return False, "%s: %s" % (type(e).__name__, e)
+
+
+def upload_failed(up):
+    """When the capture's line is printed: the upload did not end with the 303."""
+    return up.get("http_code") != 303
+
+
+def upload_and_judge(post, read, before, image_sha, image_bytes, now, sleep, capture=None):
+    """Post the image, watch the device and judge it: the same steps, prints and
+    verdict as before the capture was added. Returns a dict with up, t_start,
+    t_end, readings, verdict, names, detail and wire (the capture's account)."""
+    wire = {"capture": None}
+    if capture is not None:
+        ok, why = _guarded(capture.start)
+        wire.update(capture=os.path.basename(getattr(capture, "path", "") or ""), started=bool(ok), start=why)
+        if not ok:
+            say(None, "wire capture", "skipped, the flash goes on without it: %s" % why)
+            capture = None
+    t_start = now()
+    up = post()
+    t_end = now()
+    code = up.get("http_code")
+    say(None, "upload ended", "HTTP %s; curl sent %s of %d bytes in %s s (wall %.2f s); %s"
+        % (code, up.get("size_upload"), image_bytes, up.get("time_total"),
+           t_end - t_start, up.get("curl_error") or "no curl error"))
+    if up.get("body"):
+        say(None, "reply body", up["body"][:200].replace("\n", " | "))
+
+    readings = watch(read, code, t_end, before, image_sha, now, sleep)
+    verdict, detail = classify(code, t_end, before, readings, image_sha)
+    names = " + ".join(VERDICT_NAMES.get(v, v.upper()) for v in verdict.split("+"))
+    print("\nVERDICT: (%s) %s -- %s" % (verdict, names, detail))
+    if capture is not None:
+        wire["stop"] = _guarded(capture.stop)[1]
+        if upload_failed(up):
+            res = _guarded(capture.summary, t_start, t_end)
+            if res[0] and isinstance(res[0], dict):
+                wire["summary"] = res[0]
+                line = _guarded(lambda s: (True, bench_flash_wire.wire_line(s)), res[0])
+                wire["line"] = line[1] if line[0] else None
+                print(line[1] if line[0] else "wire: diagnostic skipped: %s" % line[1])
+            else:
+                print("wire: diagnostic skipped: %s" % res[1])
+    return {"up": up, "t_start": t_start, "t_end": t_end, "readings": readings,
+            "verdict": verdict, "names": names, "detail": detail, "wire": wire}
+
+
 def check_status(host):
     st, txt = http(host, "/check_status")
     if st != 200:
@@ -385,6 +450,11 @@ def main():
                     help="join and report the device, then stop")
     ap.add_argument("--record", help="with --flash: write the OTA's outcome "
                     "(before, the readings after, the verdict) to this JSON file")
+    ap.add_argument("--no-capture", action="store_true",
+                    help="with --flash: no Wi-Fi capture around the upload, so no wire "
+                         "line if it fails. The verdict is the same either way.")
+    ap.add_argument("--capture-iface", default=WIFI_IFACE,
+                    help="the capture interface's name in `dumpcap -D` (default %(default)s)")
     args = ap.parse_args()
     if not args.ssid:
         ap.error("no SSID: pass --ssid or set %s (the bench's is in "
@@ -538,27 +608,26 @@ def main():
         % (before["elf_sha256"][:8], before["uptime_ms"], before["reset_reason"], image_sha[:8]))
     print("\nposting %s (%d bytes) to http://%s/upload"
           % (os.path.basename(args.bin), os.path.getsize(args.bin), args.host))
-    t_start = time.time()
-    up = post_ota(args.host, args.bin)
-    t_end = time.time()
-    code = up.get("http_code")
-    say(None, "upload ended", "HTTP %s; curl sent %s of %d bytes in %s s (wall %.2f s); %s"
-        % (code, up.get("size_upload"), os.path.getsize(args.bin), up.get("time_total"),
-           t_end - t_start, up.get("curl_error") or "no curl error"))
-    if up.get("body"):
-        say(None, "reply body", up["body"][:200].replace("\n", " | "))
-
-    readings = watch(read, code, t_end, before, image_sha, time.time, time.sleep)
-    verdict, detail = classify(code, t_end, before, readings, image_sha)
-    names = " + ".join(VERDICT_NAMES.get(v, v.upper()) for v in verdict.split("+"))
-    print("\nVERDICT: (%s) %s -- %s" % (verdict, names, detail))
+    capture = None
+    if not args.no_capture:
+        # Beside the record, or in the temp folder: never in this repo.
+        cap_path = (os.path.splitext(args.record)[0] + ".pcapng" if args.record else
+                    os.path.join(tempfile.gettempdir(), "gen-inhibit-bench-flash",
+                                 "ota_%s.pcapng" % time.strftime("%Y%m%dT%H%M%S")))
+        capture = bench_flash_wire.Capture(args.host, cap_path, args.capture_iface,
+                                           ceiling_s=int(WATCH_S + 180 + 120))
+    res = upload_and_judge(lambda: post_ota(args.host, args.bin), read, before, image_sha,
+                           os.path.getsize(args.bin), time.time, time.sleep, capture)
+    up, t_start, t_end, readings = res["up"], res["t_start"], res["t_end"], res["readings"]
+    verdict, names, detail = res["verdict"], res["names"], res["detail"]
     if args.record:
         rec = {"image": os.path.basename(args.bin), "image_elf_sha256": image_sha,
                "image_version": img_ver, "image_bytes": os.path.getsize(args.bin),
                "before": before, "t_start": t_start, "t_end": t_end,
                "wall_s": round(t_end - t_start, 3), "upload": up, "readings": readings,
                "boots": boots(before, readings), "settle_uptime_ms": SETTLE_UPTIME_MS,
-               "verdict": verdict, "verdict_name": names, "detail": detail}
+               "verdict": verdict, "verdict_name": names, "detail": detail,
+               "wire": res["wire"]}
         with open(args.record, "w") as fh:
             json.dump(rec, fh, indent=1)
         print("wrote %s" % args.record)

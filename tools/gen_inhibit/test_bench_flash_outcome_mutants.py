@@ -52,6 +52,23 @@ MUTANTS = [
     ("elf_sha256 from the idf_ver field",
      "return head[APP_DESC_OFF + 0x90:APP_DESC_OFF + 0xB0].hex()",
      "return head[APP_DESC_OFF + 0x70:APP_DESC_OFF + 0x90].hex()"),
+    # The capture's line is message only (2026-10-17).
+    ("the capture moves the watch",
+     "    readings = watch(read, code, t_end, before, image_sha, now, sleep)\n",
+     "    readings = watch(read, code, t_end + (1.0 if capture is not None else 0.0), before, image_sha, now, sleep)\n"),
+    ("a raising capture is not caught",
+     '        return False, "%s: %s" % (type(e).__name__, e)', "        raise"),
+    ("the capture is never stopped", 'wire["stop"] = _guarded(capture.stop)[1]', 'wire["stop"] = None'),
+    ("the line on every upload", 'return up.get("http_code") != 303', "return True"),
+    ("no line on a failed upload", 'return up.get("http_code") != 303', "return False"),
+    ("a capture that failed to start is still used", "            capture = None\n    t_start = now()",
+     "            pass\n    t_start = now()"),
+    ("a skipped capture says nothing",
+     '            say(None, "wire capture", "skipped, the flash goes on without it: %s" % why)', "            pass"),
+    ("a failed summary says nothing", '                print("wire: diagnostic skipped: %s" % res[1])', "                pass"),
+    ("the capture starts after the post",
+     "        ok, why = _guarded(capture.start)\n",
+     "        ok, why = True, \"deferred\"\n        post = (lambda p: lambda: (p(), capture.start())[0])(post)\n"),
 ]
 
 
