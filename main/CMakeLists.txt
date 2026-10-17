@@ -39,14 +39,81 @@ if(GI_TEST_RESTART_QUIESCE)
     list(APPEND srcs "gi_restart_test.c")
 endif()
 
+# STOCK FEATURES, OFF IN THIS PRODUCT (spec 3.2 and 12.3 item 3, user
+# 2026-10-16). Four protocols of the stock firmware changed bus state from
+# outside gen_inhibit: RealDash, ELM327 (its boot enable, ATSP and the receive
+# flush), AutoPID (through ELM327's ATSP) and MQTT (its boot enable and the
+# can_enable() before a transmit). Each has a switch, ON here because this is
+# the shared code, and the top-level CMakeLists.txt sets all four OFF for
+# gen-inhibit. OFF takes the feature's source out of the component, as
+# gi_txabort_probe.c is kept out above, and its call sites in main.c, mqtt.c
+# and config_server.c are under #if on the same switch, so none of its code is
+# compiled. realdash.c is not in the stock build at all; RealDash's code here
+# is its boot branch in main.c.
+#
+#   idf.py -B build-features -DWICAN_FEATURE_MQTT=ON build
+#
+# AutoPID calls elm327_process_cmd() and mqtt_publish() directly, so it needs
+# both; wican_features.h stops a build that asks for it without them.
+if(NOT DEFINED WICAN_FEATURE_MQTT)
+    set(WICAN_FEATURE_MQTT ON)
+endif()
+if(NOT DEFINED WICAN_FEATURE_ELM327)
+    set(WICAN_FEATURE_ELM327 ON)
+endif()
+if(NOT DEFINED WICAN_FEATURE_AUTOPID)
+    set(WICAN_FEATURE_AUTOPID ON)
+endif()
+if(NOT DEFINED WICAN_FEATURE_REALDASH)
+    set(WICAN_FEATURE_REALDASH ON)
+endif()
+if(NOT WICAN_FEATURE_MQTT)
+    list(REMOVE_ITEM srcs "mqtt.c")
+endif()
+if(NOT WICAN_FEATURE_ELM327)
+    list(REMOVE_ITEM srcs "elm327.c")
+endif()
+if(NOT WICAN_FEATURE_AUTOPID)
+    list(REMOVE_ITEM srcs "autopid.c")
+endif()
+
+# autopid.c is listed once, in srcs: the stock line also named it here, which
+# would have compiled it with its switch off.
 idf_component_register(
-    SRCS "hw_config.c" "wc_timer.c" "autopid.c" "" "${srcs}"        # list the source files of this component
+    SRCS "hw_config.c" "wc_timer.c" "" "${srcs}"        # list the source files of this component
     INCLUDE_DIRS        # optional, add here public include directories
     PRIV_INCLUDE_DIRS   # optional, add here private include directories
     REQUIRES   "${requires}"         # optional, list the public requirements (component names)
     PRIV_REQUIRES       # optional, list the private requirements
     EMBED_FILES "homepage.html"
 )
+
+# The four feature switches reach the C code as 1 or 0, never undefined:
+# wican_features.h refuses to compile without them, so an #if cannot read a
+# missing definition as off.
+if(WICAN_FEATURE_MQTT)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE WICAN_FEATURE_MQTT=1)
+else()
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE WICAN_FEATURE_MQTT=0)
+endif()
+if(WICAN_FEATURE_ELM327)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE WICAN_FEATURE_ELM327=1)
+else()
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE WICAN_FEATURE_ELM327=0)
+endif()
+if(WICAN_FEATURE_AUTOPID)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE WICAN_FEATURE_AUTOPID=1)
+else()
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE WICAN_FEATURE_AUTOPID=0)
+endif()
+if(WICAN_FEATURE_REALDASH)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE WICAN_FEATURE_REALDASH=1)
+else()
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE WICAN_FEATURE_REALDASH=0)
+endif()
+message(STATUS "stock features: MQTT=${WICAN_FEATURE_MQTT} "
+               "ELM327=${WICAN_FEATURE_ELM327} AUTOPID=${WICAN_FEATURE_AUTOPID} "
+               "REALDASH=${WICAN_FEATURE_REALDASH}")
 
 # MEASUREMENT-ONLY INSTRUMENT, OFF UNLESS ASKED FOR EXPLICITLY.
 #

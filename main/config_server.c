@@ -83,6 +83,7 @@
 #include "can.h"
 #include "sleep_mode.h"
 #include "autopid.h"
+#include "wican_features.h"
 #include "wc_mdns.h"
 #include "hw_config.h"
 
@@ -672,6 +673,7 @@ static esp_err_t load_config_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+#if WICAN_FEATURE_AUTOPID
 static esp_err_t load_car_config_handler(httpd_req_t *req)
 {
     char *response_str = autopid_get_config();
@@ -688,6 +690,7 @@ static esp_err_t load_car_config_handler(httpd_req_t *req)
     
     return ESP_OK;
 }
+#endif
 
 
 static esp_err_t system_reboot_handler(httpd_req_t *req)
@@ -943,11 +946,13 @@ static esp_err_t check_status_handler(httpd_req_t *req)
 	cJSON_AddStringToObject(root, "device_id", device_id);
 	cJSON_AddStringToObject(root, "sta_security", device_config.sta_security);
 	
+#if WICAN_FEATURE_AUTOPID
 	if(autopid_get_ecu_status())
 	{
 		cJSON_AddStringToObject(root, "ecu_status", "online");
 	}
 	else
+#endif
 	{
 		cJSON_AddStringToObject(root, "ecu_status", "offline");
 	}
@@ -1513,6 +1518,7 @@ static esp_err_t upload_car_data_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+#if WICAN_FEATURE_AUTOPID
 esp_err_t autopid_data_handler(httpd_req_t *req)
 {
     char *data = autopid_data_read();
@@ -1571,6 +1577,7 @@ static esp_err_t scan_available_pids_handler(httpd_req_t *req)
     free(available_pids);
     return ESP_OK;
 }
+#endif
 
 static const httpd_uri_t index_uri = {
     .uri       = "/",
@@ -1620,6 +1627,7 @@ static const httpd_uri_t load_pid_auto_conf_uri = {
      * context to demonstrate it's usage */
     .user_ctx  = NULL
 };
+#if WICAN_FEATURE_AUTOPID
 static const httpd_uri_t load_car_config_uri = {
     .uri       = "/load_car_config",
     .method    = HTTP_GET,
@@ -1628,6 +1636,7 @@ static const httpd_uri_t load_car_config_uri = {
      * context to demonstrate it's usage */
     .user_ctx  = NULL
 };
+#endif
 static const httpd_uri_t check_status_uri = {
     .uri       = "/check_status",
     .method    = HTTP_GET,
@@ -1803,24 +1812,28 @@ static const httpd_uri_t upload_car_data = {
     .handler   = upload_car_data_handler,
     .user_ctx  = &server_data    // Pass server data as context
 };
+#if WICAN_FEATURE_AUTOPID
 static const httpd_uri_t autopid_data = {
     .uri       = "/autopid_data",   // Match all URIs of type /upload/path/to/file
     .method    = HTTP_GET,
     .handler   = autopid_data_handler,
     .user_ctx  = &server_data    // Pass server data as context
 };
+#endif
 static const httpd_uri_t store_car_data_uri = {
     .uri       = "/store_car_data",
     .method    = HTTP_POST,
     .handler   = store_car_data_handler,
     .user_ctx  = NULL
 };
+#if WICAN_FEATURE_AUTOPID
 static const httpd_uri_t scan_available_pids_uri = {
     .uri       = "/scan_available_pids",
     .method    = HTTP_GET,
     .handler   = scan_available_pids_handler,
     .user_ctx  = NULL
 };
+#endif
 static void config_server_load_cfg(char *cfg)
 {
 	cJSON * root, *key = 0;
@@ -2545,10 +2558,14 @@ static httpd_handle_t config_server_init(void)
 		httpd_register_uri_handler(server, &load_pid_auto_uri);
 		httpd_register_uri_handler(server, &load_pid_auto_conf_uri);
 		httpd_register_uri_handler(server, &upload_car_data);
+#if WICAN_FEATURE_AUTOPID
 		httpd_register_uri_handler(server, &autopid_data);
 		httpd_register_uri_handler(server, &load_car_config_uri);
+#endif
 		httpd_register_uri_handler(server, &store_car_data_uri);
+#if WICAN_FEATURE_AUTOPID
 		httpd_register_uri_handler(server, &scan_available_pids_uri);
+#endif
 #if GI_TEST_RESTART_QUIESCE
 		gi_restart_test_register(server);
 #endif

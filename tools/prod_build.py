@@ -19,14 +19,20 @@ WHAT IT REFUSES, and each refusal is a separate exit rather than a warning:
      at a restart": the crash trigger and the restart record's reader are never
      in a prod build, added 2026-10-13, user), and the instrument and
      fault-injection flags whose CMakeLists.txt comments already say never to
-     fly them. `idf.py reconfigure` does NOT clear a cache variable, so a
-     `-D` given once to an earlier build in `build/` is still set in the next;
+     fly them -- or that turns on a stock feature this product leaves off
+     (spec 3.2 and 12.3 item 3, added 2026-10-16, user: WICAN_FEATURE_MQTT,
+     _ELM327, _AUTOPID, _REALDASH). `idf.py reconfigure` does NOT clear a
+     cache variable, so a `-D` given once to an earlier build in `build/` is
+     still set in the next;
   6. an image that carries the restart test build's symbols anyway, or that
      lacks spec 3's restart step: `__wrap_esp_restart_noos` must be in the ELF
      and `esp_restart` and `panic_restart` must call it, never the unwrapped
-     function. Read from the ELF, after the build -- a second mechanism, not a
-     restatement of 5, because 5 reads what the build was asked to do and this
-     reads what it did.
+     function; or that carries a stock feature's code anyway: its functions
+     are in the ELF, or `app_main` calls `can_enable` (RealDash's code in this
+     tree is only its boot branch, which has no function of its own). Read
+     from the ELF, after the build -- a second mechanism, not a restatement of
+     5, because 5 reads what the build was asked to do and this reads what it
+     did.
 
 and on success it writes the commit, the image's md5 and its size beside the
 image, as `<image>.prod.json`. `test/build_checks/build_output.py` refuses an
@@ -108,11 +114,34 @@ FORBIDDEN_CACHE_FLAGS = (
     "OTA_HEALTH_FAULT_INJECT",
 )
 
+# Refusal 5, and 6 below: the stock features this product leaves out (spec 3.2
+# and 12.3 item 3, user 2026-10-16). ON in the shared code (main/CMakeLists.txt),
+# OFF in this product's top-level CMakeLists.txt. A cache entry the top level
+# has not written yet is not a refusal: the reconfigure writes it OFF.
+STOCK_FEATURES_OFF = (
+    "WICAN_FEATURE_MQTT",
+    "WICAN_FEATURE_ELM327",
+    "WICAN_FEATURE_AUTOPID",
+    "WICAN_FEATURE_REALDASH",
+)
+
 # CMake's false constants; anything else set is true.
 CMAKE_FALSE = {"", "0", "OFF", "NO", "FALSE", "N", "IGNORE", "NOTFOUND"}
 
 # Refusal 6. Global symbols that only gi_restart_test.c defines.
 FORBIDDEN_SYMBOLS = ("gi_restart_test_register", "gi_restart_test_pre_install")
+
+# Refusal 6. Global functions each stock feature's source defines, absent with
+# its switch off. RealDash has no source file in this tree, so it is judged by
+# what its boot branch calls instead: with every feature off, app_main does not
+# call can_enable (the boot can_init is a separate function, spec 3.2 keeps it).
+STOCK_FEATURE_SYMBOLS = (
+    ("WICAN_FEATURE_MQTT", ("mqtt_init", "mqtt_publish", "mqtt_connected")),
+    ("WICAN_FEATURE_ELM327", ("elm327_init", "elm327_process_cmd")),
+    ("WICAN_FEATURE_AUTOPID", ("autopid_init", "autopid_parser",
+                               "autopid_data_handler")),
+)
+BOOT_FN, BOOT_BUS_UP = "app_main", "can_enable"
 
 # Refusal 6, the other direction: spec 3's step, and the callers that must reach it.
 RESTART_WRAP = "__wrap_esp_restart_noos"
@@ -398,7 +427,7 @@ def check_build_cache(state):
         print("[  ok  ] build cache                 none yet; a fresh configure "
               "sets no flag")
         return True
-    hits = []
+    hits, features = [], []
     with open(cache, encoding="utf-8", errors="replace") as fh:
         for ln in fh:
             name, sep, val = ln.strip().partition("=")
@@ -406,16 +435,26 @@ def check_build_cache(state):
                 continue
             name = name.split(":", 1)[0]
             v = val.strip().upper()
-            if (name in FORBIDDEN_CACHE_FLAGS and v not in CMAKE_FALSE
-                    and not v.endswith("-NOTFOUND")):
+            on = v not in CMAKE_FALSE and not v.endswith("-NOTFOUND")
+            if name in FORBIDDEN_CACHE_FLAGS and on:
                 hits.append("%s=%s" % (name, val.strip()))
+            elif name in STOCK_FEATURES_OFF and on:
+                features.append("%s=%s" % (name, val.strip()))
+    ok = True
     if hits:
-        return fail("build/CMakeCache.txt sets %s. That is a test or "
-                    "measurement build, never a prod build (spec 12.4); a "
-                    "reconfigure keeps it. Delete build/ and run this again."
-                    % ", ".join(hits))
-    print("[  ok  ] build cache                 no test or instrument flag set")
-    return True
+        ok = fail("build/CMakeCache.txt sets %s. That is a test or "
+                  "measurement build, never a prod build (spec 12.4); a "
+                  "reconfigure keeps it. Delete build/ and run this again."
+                  % ", ".join(hits))
+    if features:
+        ok = fail("build/CMakeCache.txt sets %s. Each is a stock feature this "
+                  "product leaves off (spec 3.2): it changes bus state from "
+                  "outside gen_inhibit. A reconfigure keeps it. Delete build/ "
+                  "and run this again." % ", ".join(features))
+    if ok:
+        print("[  ok  ] build cache                 no test or instrument flag "
+              "set, no stock feature on")
+    return ok
 
 
 def tool(name):
@@ -471,7 +510,29 @@ def check_image_symbols(image):
         print("[  ok  ] restart step                %s in the image; %s reach "
               "it; no test-build symbols" % (RESTART_WRAP,
                                              " and ".join(RESTART_CALLERS)))
-    return ok
+
+    feat_ok = True
+    for switch, syms in STOCK_FEATURE_SYMBOLS:
+        found = [s for s in syms if s in names]
+        if found:
+            feat_ok = fail("the image carries %s, so %s's code is in it: that "
+                           "stock feature is off in this product (spec 3.2)."
+                           % (", ".join(found), switch))
+    d = subprocess.run([objdump, "-d", "--disassemble=" + BOOT_FN, elf],
+                       capture_output=True, text=True)
+    if d.returncode != 0 or ("<%s>:" % BOOT_FN) not in d.stdout:
+        feat_ok = fail("could not disassemble %s, so whether boot brings the "
+                       "bus up outside gen_inhibit cannot be shown." % BOOT_FN)
+    elif ("<%s>" % BOOT_BUS_UP) in d.stdout:
+        feat_ok = fail("%s calls %s: a stock feature's boot branch brings the "
+                       "bus up outside gen_inhibit (spec 3.2)."
+                       % (BOOT_FN, BOOT_BUS_UP))
+    if feat_ok:
+        print("[  ok  ] stock features off          none of %s in the image; "
+              "%s does not call %s"
+              % (", ".join(s for _, ss in STOCK_FEATURE_SYMBOLS for s in ss),
+                 BOOT_FN, BOOT_BUS_UP))
+    return ok and feat_ok
 
 
 def check_idf_env():

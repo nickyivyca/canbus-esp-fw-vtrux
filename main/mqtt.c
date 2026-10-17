@@ -60,6 +60,7 @@
 #include "esp_timer.h"
 #include "expression_parser.h"
 #include "autopid.h"
+#include "wican_features.h"
 #include "dev_status.h"
 
 #define TAG 		__func__
@@ -292,10 +293,12 @@ static void mqtt_parse_data(void *handler_args, esp_event_base_t base, int32_t e
             sprintf(cmd_response, "{\"battery_voltage\": %f}", vbatt);
             mqtt_publish(mqtt_rsp_topic, cmd_response, strlen(cmd_response), 0, 0);
         }
+#if WICAN_FEATURE_AUTOPID
         else if(strcmp(cmd->valuestring, "get_autopid_data") == 0)
         {
             autopid_request_data();
         }
+#endif
         else
         {
             ESP_LOGW(TAG, "Unknown command received: %s", cmd->valuestring);

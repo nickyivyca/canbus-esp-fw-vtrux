@@ -54,6 +54,7 @@
 #include "dev_status.h"
 #include "ota_health.h"
 #include "gen_inhibit.h"
+#include "wican_features.h"
 #include "debug_logs.h"
 #include "debug_logs_config.h"
 
@@ -63,7 +64,13 @@
 #define BLE_EN_PIN_SEL		(1ULL<<BLE_EN_PIN_NUM)
 #define BLE_Enabled()		(!gpio_get_level(BLE_EN_PIN_NUM))
 
-static QueueHandle_t xMsg_Tx_Queue, xMsg_Rx_Queue, xmsg_ws_tx_queue, xmsg_uart_tx_queue, xmsg_obd_rx_queue, xmsg_mqtt_rx_queue;
+static QueueHandle_t xMsg_Tx_Queue, xMsg_Rx_Queue, xmsg_ws_tx_queue, xmsg_uart_tx_queue;
+#if WICAN_FEATURE_ELM327
+static QueueHandle_t xmsg_obd_rx_queue;
+#endif
+#if WICAN_FEATURE_MQTT
+static QueueHandle_t xmsg_mqtt_rx_queue;
+#endif
 static xdev_buffer ucTCP_RX_Buffer;
 static xdev_buffer ucTCP_TX_Buffer;
 
@@ -72,7 +79,9 @@ static uint8_t protocol = SLCAN;
 uint8_t project_hardware_rev;
 int FTP_TASK_FINISH_BIT = BIT2;
 EventGroupHandle_t xEventTask;
+#if WICAN_FEATURE_MQTT
 static uint8_t mqtt_elm327_log_en = 0;
+#endif
 static uint8_t derived_mac_addr[6] = {0};
 static uint8_t uid[16];
 static uint8_t ble_uid[33];
@@ -81,6 +90,7 @@ static char firmware_version[10];
 // Wrapper so we can provide a function pointer for network readiness
 static bool dbg_net_ready(void) { return wifi_network_is_connected(); }
 
+#if WICAN_FEATURE_MQTT && WICAN_FEATURE_ELM327
 static void log_can_to_mqtt(twai_message_t *frame, uint8_t type)
 {
 	static mqtt_can_message_t mqtt_msg;
@@ -105,6 +115,7 @@ static void log_can_to_mqtt(twai_message_t *frame, uint8_t type)
 	mqtt_msg.type = type;
 	xQueueSend( xmsg_mqtt_rx_queue, ( void * ) &mqtt_msg, pdMS_TO_TICKS(0) );
 }
+#endif
 static void process_led(bool state)
 {
 	static bool current_state;
@@ -270,6 +281,7 @@ static void can_tx_task(void *pvParameters)
 				}
 			}
 		}
+#if WICAN_FEATURE_ELM327
 		else if(protocol == OBD_ELM327)
 		{
 			if(ucTCP_RX_Buffer.dev_channel == DEV_WIFI)
@@ -277,6 +289,7 @@ static void can_tx_task(void *pvParameters)
 				elm327_process_cmd(msg_ptr, temp_len, &tx_msg, &xMsg_Tx_Queue);
 			}
 		}
+#endif
 	}
 }
 #define HEAP_CAPS   (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
@@ -339,7 +352,16 @@ static void can_rx_task(void *pvParameters)
 				}
         	}
         	//TODO: optimize, useless ifs
-			if(tcp_port_open() || project_hardware_rev == WICAN_USB_V100 || mqtt_connected() || protocol == AUTO_PID )
+			/* spec 3.2: each stock feature's share of this test is compiled
+			 * only with its switch (wican_features.h) */
+			if(tcp_port_open() || project_hardware_rev == WICAN_USB_V100
+#if WICAN_FEATURE_MQTT
+			   || mqtt_connected()
+#endif
+#if WICAN_FEATURE_AUTOPID
+			   || protocol == AUTO_PID
+#endif
+			   )
 			{
 				memset(ucTCP_TX_Buffer.ucElement, 0, sizeof(ucTCP_TX_Buffer.ucElement));
 				ucTCP_TX_Buffer.usLen = 0;
@@ -348,7 +370,12 @@ static void can_rx_task(void *pvParameters)
 				{
 					ucTCP_TX_Buffer.usLen = slcan_parse_frame(ucTCP_TX_Buffer.ucElement, &rx_msg);
 				}
-				else if(protocol == OBD_ELM327 || protocol == AUTO_PID)
+#if WICAN_FEATURE_ELM327
+				else if(protocol == OBD_ELM327
+#if WICAN_FEATURE_AUTOPID
+				        || protocol == AUTO_PID
+#endif
+				        )
 				{
 					// Let elm327.c decide which messages to process
 					if(elm327_ready_to_receive())
@@ -356,6 +383,7 @@ static void can_rx_task(void *pvParameters)
 						xQueueSend( xmsg_obd_rx_queue, ( void * ) &rx_msg, pdMS_TO_TICKS(0) );
 					}
 				}
+#endif
 
 				if(ucTCP_TX_Buffer.usLen != 0)
 				{
@@ -372,6 +400,7 @@ static void can_rx_task(void *pvParameters)
 					}
 				}
 			}
+#if WICAN_FEATURE_MQTT
 			if(mqtt_connected())
 			{
 				static mqtt_can_message_t mqtt_rx_msg;
@@ -398,6 +427,7 @@ static void can_rx_task(void *pvParameters)
 					xQueueSend( xmsg_mqtt_rx_queue, ( void * ) &mqtt_rx_msg, pdMS_TO_TICKS(0) );
 				}
 			}
+#endif
         }
         vTaskDelay(pdMS_TO_TICKS(1));
 	}
@@ -474,6 +504,16 @@ void app_main(void)
 	protocol = config_server_protocol();
 //	protocol = OBD_ELM327;
 
+	/*
+	 * SPEC 3.2, STOCK FEATURES OFF IN THIS PRODUCT (user, 2026-10-16). Each
+	 * branch below brought the bus up at boot from outside gen_inhibit. The
+	 * branches are compiled only with their feature's switch, which is on in
+	 * the shared code and off in this product's build (wican_features.h).
+	 * Separate ifs rather than the stock else-if chain, so that a branch
+	 * switched out cannot leave its else attached to the next one; protocol
+	 * holds one value, so at most one of the first three runs, as before.
+	 */
+#if WICAN_FEATURE_REALDASH
 	if(protocol == REALDASH)
 	{
 //		int can_datarate = config_server_get_can_rate();
@@ -489,24 +529,30 @@ void app_main(void)
 
 		can_enable();
 	}
-	else if(protocol == OBD_ELM327)
+#endif
+#if WICAN_FEATURE_ELM327
+	if(protocol == OBD_ELM327)
 	{
 //		can_init(CAN_500K);
 		can_set_bitrate(can_datarate);
 		can_enable();
 		xmsg_obd_rx_queue = xQueueCreate(32, sizeof( twai_message_t) );
 		
+#if WICAN_FEATURE_MQTT
 		if(config_server_mqtt_en_config() && config_server_mqtt_elm327_log())
 		{
 			mqtt_elm327_log_en = config_server_mqtt_elm327_log();
 			elm327_init(&send_to_host, &xmsg_obd_rx_queue, log_can_to_mqtt);
 		}
 		else
+#endif
 		{
 			elm327_init(&send_to_host, &xmsg_obd_rx_queue, NULL);
 		}
 	}
-	else if(protocol == AUTO_PID)
+#endif
+#if WICAN_FEATURE_AUTOPID
+	if(protocol == AUTO_PID)
 	{
 		can_set_bitrate(can_datarate);
 		can_enable();
@@ -515,7 +561,9 @@ void app_main(void)
 		elm327_init(&autopid_parser, &xmsg_obd_rx_queue, NULL);
 		autopid_init((char*)&uid[0]);
 	}
+#endif
 
+#if WICAN_FEATURE_MQTT
 	if(config_server_mqtt_en_config())
 	{
 		can_set_bitrate(can_datarate);
@@ -523,6 +571,7 @@ void app_main(void)
 		can_enable();
 		mqtt_init((char*)&uid[0], CONNECTED_LED_GPIO_NUM, &xmsg_mqtt_rx_queue);
 	}
+#endif
 //	else if(protocol == MQTT)
 //	{
 //		xmsg_mqtt_rx_queue = xQueueCreate(100, sizeof( twai_message_t) );

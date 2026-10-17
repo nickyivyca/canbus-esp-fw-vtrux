@@ -77,6 +77,17 @@ endif()
 
 add_definitions(-DHARDWARE_VERSION="${HW_VER}")
 
+# STOCK FEATURES, OFF IN THIS PRODUCT (spec 3.2 and 12.3 item 3, user
+# 2026-10-16). main/CMakeLists.txt is the shared code and defaults each switch
+# ON; gen-inhibit's build turns all four OFF here, so their code is not
+# compiled into this product. CACHE, so `idf.py -D<switch>=ON` still overrides
+# it. That also means a build directory once configured ON stays ON until it
+# is deleted, which tools/prod_build.py refuses.
+set(WICAN_FEATURE_MQTT     OFF CACHE BOOL "MQTT CAN logging and transmit (mqtt.c); off in gen-inhibit, spec 3.2")
+set(WICAN_FEATURE_ELM327   OFF CACHE BOOL "ELM327 command path (elm327.c); off in gen-inhibit, spec 3.2")
+set(WICAN_FEATURE_AUTOPID  OFF CACHE BOOL "AutoPID (autopid.c), needs ELM327 and MQTT; off in gen-inhibit, spec 3.2")
+set(WICAN_FEATURE_REALDASH OFF CACHE BOOL "RealDash boot branch (main.c); off in gen-inhibit, spec 3.2")
+
 # Form the project binary name
 #
 # THE ARM STATE IS IN THE NAME (user, 2026-10-04). Before this, a shipping build and
