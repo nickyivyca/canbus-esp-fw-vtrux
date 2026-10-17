@@ -12,7 +12,10 @@ WHAT IT REFUSES, and each refusal is a separate exit rather than a warning:
      item 3, added 2026-10-12, user);
   3. a `managed_components/` component whose files differ from its own
      `CHECKSUMS.json`, or which carries a file that `CHECKSUMS.json` does not
-     list, or whose `.component_hash` differs from `dependencies.lock`;
+     list, or whose `.component_hash` differs from `dependencies.lock` --
+     checked again AFTER the reconfigure, which is what downloads them on a
+     fresh clone, and before the build, where a component the lock names but
+     that is not on disk is a refusal too;
   4. a build that was not preceded by `idf.py reconfigure`;
   5. a `build/` whose CMake cache sets a test or measurement flag -- the
      restart test build's GI_TEST_RESTART_QUIESCE (spec 12.4, "no error frames
@@ -312,18 +315,60 @@ def lock_hashes():
     return out
 
 
-def check_components(state):
-    """Re-hash every managed component against its own CHECKSUMS.json."""
-    root = os.path.join(REPO, "managed_components")
-    if not os.path.isdir(root):
-        print("[  ok  ] managed components          none on disk")
-        state["components"] = {}
-        return True
+def check_components(state, fetched=False):
+    """
+    Re-hash every managed component against its own CHECKSUMS.json.
 
+    Run twice. Before the reconfigure (`fetched` False) it judges whatever is
+    on disk, and finding nothing is not a refusal. After the reconfigure
+    (`fetched` True) it judges what the build will compile, and every
+    component dependencies.lock names must be on disk.
+
+    WHY TWICE (reviewer's ruling 2026-10-16, from the tester's prod build of
+    e3d9437 on a fresh clone). On a fresh clone `managed_components/` does not
+    exist until `idf.py reconfigure` downloads it. Run only before that, this
+    check printed "none on disk" and passed, and the component that went into
+    the image was never verified -- the check was vacuous on exactly the path
+    a prod build normally takes.
+    """
+    root = os.path.join(REPO, "managed_components")
     locks = lock_hashes()
+    on_disk = (sorted(n for n in os.listdir(root)
+                      if os.path.isdir(os.path.join(root, n)))
+               if os.path.isdir(root) else [])
     report = {}
     ok = True
-    for name in sorted(os.listdir(root)):
+
+    if fetched:
+        missing = [n for n in sorted(locks)
+                   if n.replace("/", "__", 1) not in on_disk]
+        for n in missing:
+            ok = False
+            report[n.replace("/", "__", 1)] = {
+                "files_checked": 0,
+                "problems": ["named in dependencies.lock, not in "
+                             "managed_components/ after the reconfigure"]}
+            print("[ FAIL ] component %-22s named in dependencies.lock, not "
+                  "on disk after the reconfigure" % n)
+    if not on_disk:
+        if fetched:
+            if not locks:
+                print("[  ok  ] managed components          none on disk, "
+                      "none named in dependencies.lock")
+        else:
+            print("[  ok  ] managed components          none on disk before "
+                  "the reconfigure; a build checks %s after the reconfigure "
+                  "fetches %s"
+                  % (", ".join(sorted(locks)) or "them",
+                     "it" if len(locks) == 1 else "them"))
+        state["components"] = report
+        if not ok:
+            print("REFUSED: the reconfigure did not fetch every component "
+                  "dependencies.lock names, so what the build would compile "
+                  "is not what the lock pins.")
+        return ok
+
+    for name in on_disk:
         cdir = os.path.join(root, name)
         if not os.path.isdir(cdir):
             continue
@@ -410,9 +455,10 @@ def check_components(state):
     state["components"] = report
     if not ok:
         print("REFUSED: a downloaded component differs from its own "
-              "CHECKSUMS.json or from dependencies.lock. managed_components/ "
-              "is git-ignored, so the clean-tree check above cannot see this "
-              "and a modified component would ship in the image.")
+              "CHECKSUMS.json or from dependencies.lock, or one the lock names "
+              "is missing. managed_components/ is git-ignored, so the "
+              "clean-tree check above cannot see this and a modified component "
+              "would ship in the image.")
     return ok
 
 
@@ -545,10 +591,25 @@ def check_idf_env():
 
 
 def do_build(state):
-    """reconfigure THEN build, in one idf.py invocation, never a bare ninja."""
-    print("\nidf.py reconfigure build ...")
-    r = subprocess.run(["idf.py", "reconfigure", "build"], cwd=REPO,
+    """
+    reconfigure, re-check the components it fetched, THEN build; never a bare
+    ninja. Two idf.py calls rather than one `idf.py reconfigure build`, so the
+    components are verified after the reconfigure has downloaded them and
+    before anything is compiled from them (refusal 3).
+    """
+    print("\nidf.py reconfigure ...")
+    r = subprocess.run(["idf.py", "reconfigure"], cwd=REPO,
                        shell=(os.name == "nt"))
+    if r.returncode != 0:
+        print("REFUSED: the reconfigure failed (exit %d)." % r.returncode)
+        return None
+    print("\nmanaged components, as fetched for this build:")
+    if not check_components(state, fetched=True):
+        print("\nNOT BUILT: the components the build would compile failed "
+              "refusal 3.")
+        return None
+    print("\nidf.py build ...")
+    r = subprocess.run(["idf.py", "build"], cwd=REPO, shell=(os.name == "nt"))
     if r.returncode != 0:
         print("REFUSED: the build failed (exit %d)." % r.returncode)
         return None
