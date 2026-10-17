@@ -386,7 +386,9 @@ void bridgeOkVehTx(bool refuse) {
         refuse ? "a bridged frame refused toward the vehicle clears it "
                  "(spec 8.2)"
                : "a bridged frame accepted and then failed toward the "
-                 "vehicle clears it (spec 8.2)");
+                 "vehicle clears it (spec 8.2) [KNOWN FAIL on src "
+                 "36edf3e55552, recorded 2026-10-16 and assigned to the "
+                 "port's first change: the ported image must pass it]");
   check(!after.empty() && after[after.size() - 1] == '1',
         "...and it is SET again once frames reach the vehicle");
   assertPathsExercised();
