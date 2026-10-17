@@ -10,6 +10,7 @@ typedef int esp_err_t;
 #define ESP_ERR_TIMEOUT         0x107
 #define ESP_ERR_NOT_FOUND       0x105
 #define ESP_ERR_NOT_FINISHED    0x10C
+#define ESP_ERR_NOT_ALLOWED     0x10D
 /*
  * What the real twai_transmit() returns in listen-only: ESP-IDF documents
  * "ESP_ERR_NOT_SUPPORTED: Listen Only Mode does not support transmissions".

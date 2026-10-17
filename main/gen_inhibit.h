@@ -83,8 +83,15 @@ typedef enum
                              * wire at all. */
 } gen_inhibit_mode_t;
 
-/* Start the worker. Call once, after can_init(). Starts in OFF. */
-void gen_inhibit_init(void);
+/*
+ * Start the worker. Call once, after can_init(). Starts in OFF (IDLE).
+ *
+ * `bitrate` (a CAN_* code) and `silent` are the boot configuration: stored
+ * first, then the worker is started and an auto-arm build arms (spec 3.2,
+ * "arming comes after it"). They are what the worker installs with and what
+ * leaving OBSERVE restores.
+ */
+void gen_inhibit_init(uint8_t bitrate, uint8_t silent);
 
 /*
  * Mode change. `offset_us` applies to RESPOND: delay from RX to probe TX.
@@ -98,7 +105,9 @@ void gen_inhibit_init(void);
  *   ESP_ERR_TIMEOUT        not taken by the worker within 1 s of the call:
  *                          withdrawn, never applied;
  *   ESP_ERR_NOT_FINISHED   another mode change held the one slot for the whole
- *                          second: nothing posted, never applied.
+ *                          second: nothing posted, never applied;
+ *   ESP_ERR_NOT_ALLOWED    the bus is down for a firmware update (spec 8.1
+ *                          row 12).
  * The 1 s runs from the call and covers both waits.
  * On a quiet bus a change can take up to the 200 ms receive timeout.
  */
@@ -116,8 +125,24 @@ esp_err_t gen_inhibit_post_mode(gen_inhibit_mode_t mode, uint32_t offset_us,
 esp_err_t gen_inhibit_await_mode(uint32_t ticket);
 
 /* True while this component owns the TWAI receive path, so wican-fw's
- * can_rx_task can stand down rather than race us for frames. */
+ * can_rx_task can stand down rather than race us for frames: the worker is
+ * ARMED or UPDATING (spec 8.1), or the core is in a non-OFF mode. */
 bool gen_inhibit_owns_bus(void);
+
+/*
+ * THE OTA HANDLER TAKES THE BUS THROUGH THE WORKER (spec 8.1 rows 4, 8 and 11;
+ * 9.3). Call gen_inhibit_ota_begin() before touching the bus:
+ *   ESP_OK                 the worker is UPDATING and outside the driver; the
+ *                          handler may now tear the bus down (can_disable());
+ *   ESP_ERR_INVALID_STATE  the worker is armed: refused, nothing touched --
+ *                          reply 403;
+ *   ESP_ERR_TIMEOUT / ESP_ERR_NOT_FINISHED  the worker did not take it within
+ *                          1 s of the call: nothing touched.
+ * After an ESP_OK, every exit that does not end in the restart calls
+ * gen_inhibit_ota_failed(), which returns the worker to IDLE.
+ */
+esp_err_t gen_inhibit_ota_begin(void);
+void gen_inhibit_ota_failed(void);
 
 /*
  * Spec 3.2: count an attempt refused because the inhibitor owns the bus. Both
@@ -129,14 +154,16 @@ void gen_inhibit_note_refused_slcan(void);
 void gen_inhibit_note_refused_can_send(void);
 
 /*
- * Force the worker out of the TWAI driver and keep it out until re-armed.
- *
- * can_disable() uninstalls the driver; doing that while the worker is blocked
- * inside twai_receive() frees the driver under it. Any task that is about to
- * tear the bus down -- the sleep monitor, an SLCAN close, a protocol switch --
- * MUST call this first. It blocks until the worker is provably outside the
- * driver (bounded by the receive timeout). Safe to call from the worker itself
- * (returns immediately) and safe when the worker never started.
+ * THE BACKSTOP (spec 8 and 8.1 rows 9 and 13). can_disable() calls this first,
+ * because uninstalling the driver while the worker is blocked inside
+ * twai_receive() frees it under that call. Since 2026-10-16 only gen_inhibit
+ * and the OTA handler may change bus state (3.2), so from any other caller
+ * this is a violation: the worker takes it at its update point -- armed, it
+ * goes OFF, reports the forced quiesce and counts it; idle or updating, it
+ * counts it if the bus was up -- and this blocks until it has (bounded by the
+ * receive timeout; 1 s from the call). Returns at once from the worker itself,
+ * from the OTA handler after gen_inhibit_ota_begin(), and when the worker
+ * never started.
  */
 void gen_inhibit_quiesce(void);
 

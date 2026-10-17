@@ -1082,22 +1082,29 @@ static esp_err_t ws_handler(httpd_req_t *req)
 }
 
 /* Handler to upload a file onto the server */
+static esp_err_t upload_post_body(httpd_req_t *req, bool *succeeded);
+
 static esp_err_t upload_post_handler(httpd_req_t *req)
 {
-    char filepath[FILE_PATH_MAX];
-    uint32_t total_size = 0;
-
     /*
-     * Refuse an OTA while gen_inhibit holds the bus.
+     * THE WORKER DECIDES WHETHER AN OTA MAY TAKE THE BUS (spec 9.3, 8.1 rows 4,
+     * 8 and 11; user, 2026-10-16).
      *
-     * Two reasons, both real. Safety: this device exists to transmit onto a
-     * live powertrain bus, and reflashing underneath an armed transmitter is
-     * never what anyone wants. Correctness: can_disable() below calls
-     * twai_driver_uninstall(), and doing that while the gen_inhibit worker is
-     * parked inside twai_receive() tears the driver out from under a blocked
-     * call. Disarm first -- POST /gen_inhibit_set?mode=0.
+     * Refused while gen_inhibit is armed, for two reasons, both real. Safety:
+     * this device exists to transmit onto a live powertrain bus, and
+     * reflashing underneath an armed transmitter is never what anyone wants.
+     * Correctness: can_disable() below calls twai_driver_uninstall(), and doing
+     * that while the gen_inhibit worker is parked inside twai_receive() tears
+     * the driver out from under a blocked call. Disarm first -- POST
+     * /gen_inhibit_set?mode=0.
+     *
+     * It used to be a check here (gen_inhibit_owns_bus()) followed by a
+     * separate act (can_disable()), so an arm could land in between. Now the
+     * worker takes the request at its update point: from IDLE it hands the bus
+     * over (UPDATING) and only then does this tear it down; armed, it refuses.
      */
-    if(gen_inhibit_owns_bus())
+    const esp_err_t ob = gen_inhibit_ota_begin();
+    if(ob == ESP_ERR_INVALID_STATE)
     {
         ESP_LOGE(TAG, "OTA refused: gen_inhibit is armed");
         /* IDF's httpd_err_code_t has no 409, so 403 carries the refusal. */
@@ -1112,8 +1119,35 @@ static esp_err_t upload_post_handler(httpd_req_t *req)
          */
         return ESP_OK;
     }
+    if(ob != ESP_OK)
+    {
+        /* The worker did not take the request within 1 s; nothing touched. */
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "gen_inhibit worker did not answer within 1 s; "
+                            "nothing touched");
+        return ESP_OK;
+    }
 
     can_disable();
+    /*
+     * SPEC 8.1 ROW 11: every exit but the one that ends in the restart returns
+     * the worker to IDLE. One wrapper rather than a call at each of the body's
+     * error returns, so an exit added later cannot forget it.
+     */
+    bool succeeded = false;
+    const esp_err_t r = upload_post_body(req, &succeeded);
+    if(!succeeded)
+    {
+        gen_inhibit_ota_failed();
+    }
+    return r;
+}
+
+static esp_err_t upload_post_body(httpd_req_t *req, bool *succeeded)
+{
+    char filepath[FILE_PATH_MAX];
+    uint32_t total_size = 0;
+
     /* Skip leading "/upload" from URI to get filename */
     /* Note sizeof() counts NULL termination hence the -1 */
     const char *filename = get_path_from_uri(filepath, ((struct file_server_data *)req->user_ctx)->base_path,
@@ -1332,6 +1366,7 @@ static esp_err_t upload_post_handler(httpd_req_t *req)
     }
 
     xTimerStart( xrestartTimer, 0 );
+    *succeeded = true;      /* spec 8.1 row 10: the restart takes over */
 
     /* Redirect onto root to see the updated file list */
     httpd_resp_set_status(req, "303 See Other");
@@ -1698,6 +1733,13 @@ static esp_err_t gen_inhibit_set_handler(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                             "mode change not taken by the gen_inhibit worker "
                             "within 1 s; withdrawn, not applied");
+        return ESP_OK;
+    }
+    /* Spec 8.1 row 12: an OTA upload holds the bus. */
+    if (serr == ESP_ERR_NOT_ALLOWED)
+    {
+        httpd_resp_send_err(req, HTTPD_403_FORBIDDEN,
+                            "bus is down for a firmware update");
         return ESP_OK;
     }
     /* Another change held the one slot for the whole second. */

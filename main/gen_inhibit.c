@@ -180,9 +180,9 @@ _Static_assert(GEN_INHIBIT_PROBE_ID == GI_PROBE_ID, "id drift");
  * The decision state. WRITTEN BY THE WORKER ONLY (spec 3, "The worker makes
  * every mode change", 2026-10-16): a mode change is posted to the worker and
  * applied at the top of its loop, see the mailbox below. Other tasks read it
- * for reporting, through the snapshot the status page takes. The one remaining
- * outside writer is gen_inhibit_quiesce() (spec 8), for callers that tear the
- * driver down themselves.
+ * for reporting, through the snapshot the status page takes. There is no
+ * exception (spec 3 and 8.1, user 2026-10-16): a teardown by another caller and
+ * an OTA upload are requests the worker takes like a mode change.
  */
 static gi_state_t s_core;
 
@@ -190,8 +190,39 @@ static bool     s_we_enabled_bus;   /* we called can_enable(), so we may disable
 static volatile bool s_release_bus; /* disarm asked us to hand the bus back */
 
 static TaskHandle_t  s_worker;      /* the worker task: self-call detection, and the wake */
-static volatile bool s_quiesce;     /* an external caller needs the driver freed */
-static volatile bool s_parked;      /* worker is provably outside twai_receive() */
+
+/*
+ * SPEC 8.1, THE WORKER STATE MACHINE (user, 2026-10-16). Written by the worker
+ * only, at its update point (update_point(), the top of each pass); read by
+ * other tasks for gen_inhibit_owns_bus() and the status page.
+ *   IDLE      mode OFF; the driver is not ours; the worker is outside it.
+ *   ARMED     a non-OFF mode; the worker installed the driver and receives.
+ *   UPDATING  an OTA upload holds the bus (rows 4, 10-12).
+ * The core's mode says what an ARMED worker does with a frame; this says who
+ * holds the bus. They differ for one pass after the core switches itself off
+ * (row 7), which is the event that brings them back together.
+ */
+typedef enum
+{
+    GI_WORKER_IDLE = 0,
+    GI_WORKER_ARMED,
+    GI_WORKER_UPDATING,
+} gi_worker_state_t;
+
+static volatile gi_worker_state_t s_wstate;
+static uint32_t     s_violations;   /* rows 9 and 13: teardowns by another caller */
+static TaskHandle_t s_ota_task;     /* the task row 4 handed the bus to */
+
+static const char *worker_state_name(gi_worker_state_t s)
+{
+    switch (s)
+    {
+    case GI_WORKER_IDLE:     return "idle";
+    case GI_WORKER_ARMED:    return "armed";
+    case GI_WORKER_UPDATING: return "updating";
+    }
+    return "?";
+}
 
 /*
  * SPEC 3, "A mode change takes effect at once" (user, 2026-10-10).
@@ -294,10 +325,24 @@ typedef enum
     REQ_DONE,       /* applied; `result` waits for its poster */
 } req_state_t;
 
+/*
+ * WHAT THE SLOT HOLDS: a mode change, or the OTA handler asking for the bus
+ * (spec 8.1 rows 4 and 8). Both want a reply and both obey the same 1 s, so
+ * they share the slot; the web server runs one request at a time, so the OTA
+ * handler and the HTTP setter never compete for it.
+ */
+typedef enum
+{
+    REQ_KIND_MODE = 0,
+    REQ_KIND_OTA_BEGIN,
+} req_kind_t;
+
 static portMUX_TYPE s_req_lock = portMUX_INITIALIZER_UNLOCKED;
 static struct
 {
     req_state_t        state;
+    req_kind_t         kind;
+    TaskHandle_t       poster;      /* who posted it: row 4 hands the bus to it */
     uint32_t           ticket;
     gen_inhibit_mode_t mode;
     uint32_t           offset_us;
@@ -305,6 +350,26 @@ static struct
     esp_err_t          result;
 } s_req;
 static uint32_t s_req_tickets;
+
+/*
+ * THE TWO REQUESTS THAT ARE FLAGS, NOT SLOTS (spec 8.1), under s_req_lock.
+ *
+ * A TEARDOWN BY ANOTHER CALLER (rows 9 and 13, the backstop). Its caller tears
+ * the driver down whatever it is told, so it may neither wait behind the slot
+ * nor be refused for it: gen_inhibit_quiesce() bumps s_td_posted and waits for
+ * the worker to serve it. `candidates` counts those posted while the bus was
+ * up, which is what row 13 counts in IDLE or UPDATING; in ARMED every one
+ * counts. Never withdrawn: the caller goes on regardless, so the worker must go
+ * OFF whenever it gets there.
+ *
+ * AN OTA THAT FAILED (row 11). Every error exit of the upload handler bumps
+ * s_ota_end_posted; the worker returns to IDLE. Nothing waits for it.
+ *
+ * The *_served counts are the worker's; posters read them under the lock.
+ */
+static uint32_t s_td_posted, s_td_candidates;
+static uint32_t s_td_served, s_td_cand_served;
+static uint32_t s_ota_end_posted, s_ota_end_served;
 
 #define GEN_INHIBIT_MODE_WAIT_US    1000000
 
@@ -314,6 +379,9 @@ static void req_poll_delay(void)
     const TickType_t t = pdMS_TO_TICKS(1);
     vTaskDelay(t > 0 ? t : 1);
 }
+
+static esp_err_t post_request(req_kind_t kind, gen_inhibit_mode_t mode,
+                              uint32_t offset_us, uint32_t *ticket);
 
 esp_err_t gen_inhibit_post_mode(gen_inhibit_mode_t mode, uint32_t offset_us,
                                 uint32_t *ticket)
@@ -336,7 +404,12 @@ esp_err_t gen_inhibit_post_mode(gen_inhibit_mode_t mode, uint32_t offset_us,
     {
         return ESP_ERR_INVALID_STATE;
     }
+    return post_request(REQ_KIND_MODE, mode, offset_us, ticket);
+}
 
+static esp_err_t post_request(req_kind_t kind, gen_inhibit_mode_t mode,
+                              uint32_t offset_us, uint32_t *ticket)
+{
     const int64_t deadline_us = esp_timer_get_time() + GEN_INHIBIT_MODE_WAIT_US;
     for (;;)
     {
@@ -350,6 +423,8 @@ esp_err_t gen_inhibit_post_mode(gen_inhibit_mode_t mode, uint32_t offset_us,
         else if (s_req.state == REQ_IDLE)
         {
             s_req.ticket      = ++s_req_tickets;
+            s_req.kind        = kind;
+            s_req.poster      = xTaskGetCurrentTaskHandle();
             s_req.mode        = mode;
             s_req.offset_us   = offset_us;
             s_req.deadline_us = deadline_us;
@@ -1346,7 +1421,12 @@ void gen_inhibit_note_refused_can_send(void)
 
 bool gen_inhibit_owns_bus(void)
 {
-    return s_core.mode != GI_OFF;
+    /*
+     * The core's mode, as before, OR the worker's state (spec 8.1): ARMED for
+     * the one pass after the core switches itself off with the driver still
+     * ours (row 7), and UPDATING while an OTA holds the bus.
+     */
+    return s_core.mode != GI_OFF || s_wstate != GI_WORKER_IDLE;
 }
 
 /*
@@ -1372,9 +1452,24 @@ static bool controller_running(void)
 }
 
 /*
+ * WITHDRAW THE PENDING ANSWERS (spec 8.1 rows 5, 6, 7 and 9, the exit action of
+ * ARMED; 5.2 item 5): every inhibit still queued or in the controller is given
+ * up as a stand-down. The item 4 loop finishes removing one already in the
+ * controller on later passes, or the next arm counts it (5.2 item 6).
+ */
+static void withdraw_pending(void)
+{
+    const int64_t now = esp_timer_get_time();
+    gi_events_t ev = { 0 };
+    gs_withdraw_inhibits(&s_sched, now);
+    sched_advance(now, &ev);
+    report_events(&ev);
+}
+
+/*
  * APPLY A MODE CHANGE. THE WORKER'S OWN CODE (spec 3, "The worker makes every
- * mode change"): reached only from take_mode_request() at the top of the worker
- * loop, or from gen_inhibit_set_mode() when the worker itself calls it. The
+ * mode change"): reached only from take_request() at the update point (spec
+ * 8.1), or from gen_inhibit_set_mode() when the worker itself calls it. The
  * arguments were validated when the request was posted. Until 2026-10-16 this
  * was the body of gen_inhibit_set_mode() and ran in the caller's task.
  *
@@ -1399,6 +1494,14 @@ static esp_err_t apply_mode(gen_inhibit_mode_t mode, uint32_t offset_us)
         sched_advance(esp_timer_get_time(), &ev);
         report_events(&ev);
     }
+    /*
+     * SPEC 8.1 ROWS 5 AND 6, THE EXIT ACTION: an armed worker leaving its mode
+     * withdraws the answers it still has pending, as stand-downs (5.2 item 5).
+     */
+    if (s_wstate == GI_WORKER_ARMED)
+    {
+        withdraw_pending();
+    }
 
     /*
      * Bring the bus up ourselves. can_init() only records the bitrate -- it is
@@ -1415,10 +1518,6 @@ static esp_err_t apply_mode(gen_inhibit_mode_t mode, uint32_t offset_us)
      */
     if (mode != GEN_INHIBIT_OFF)
     {
-        /* Cancel any standing quiesce so the worker resumes into the driver. */
-        s_quiesce = false;
-        s_parked = false;
-
         /*
          * SPEC 7, "A BUS-OFF ENDS THE DEVICE'S PART UNTIL A RE-ARM OR A
          * REBOOT" (user, 2026-10-14): the re-arm half. A controller that is
@@ -1653,12 +1752,60 @@ static esp_err_t apply_mode(gen_inhibit_mode_t mode, uint32_t offset_us)
 }
 
 /*
- * The worker's half of the mailbox: take a posted request and apply it. Called
- * at the top of the worker loop only, where the worker is outside the driver
- * and between frames (spec 3).
+ * A mode request, by state (spec 8.1 rows 1-3, 5, 6 and 12).
  */
-static void take_mode_request(void)
+static esp_err_t apply_mode_request(gen_inhibit_mode_t mode, uint32_t offset_us)
 {
+    if (s_wstate == GI_WORKER_UPDATING)
+    {
+        return ESP_ERR_NOT_ALLOWED;                     /* row 12 */
+    }
+    if (s_wstate == GI_WORKER_IDLE && mode == GEN_INHIBIT_OFF)
+    {
+        return ESP_OK;                                  /* row 3 */
+    }
+    const esp_err_t r = apply_mode(mode, offset_us);   /* rows 1, 2, 5, 6 */
+    /*
+     * Where that left us. A refused arm from IDLE (row 2) leaves the core OFF;
+     * a refused re-arm whose reinstall had already taken the old driver down
+     * (row 5) left it OFF too, through gen_inhibit_quiesce()'s worker branch.
+     * Either way IDLE, and IDLE means the driver is not ours: one the refused
+     * arm brought up is given back by the OFF branch.
+     */
+    s_wstate = (s_core.mode != GI_OFF) ? GI_WORKER_ARMED : GI_WORKER_IDLE;
+    if (s_wstate == GI_WORKER_IDLE && s_we_enabled_bus)
+    {
+        s_release_bus = true;
+    }
+    return r;
+}
+
+/*
+ * The OTA handler asks for the bus (spec 8.1 rows 4 and 8, 9.3). Taken at the
+ * update point, so in IDLE the worker is outside the driver by construction
+ * and the handler may tear it down once this returns.
+ */
+static esp_err_t apply_ota_begin(TaskHandle_t poster)
+{
+    if (s_wstate != GI_WORKER_IDLE)
+    {
+        return ESP_ERR_INVALID_STATE;   /* row 8: armed, refused, nothing touched */
+    }
+    s_ota_task = poster;
+    s_wstate = GI_WORKER_UPDATING;      /* row 4 */
+    ESP_LOGW(TAG, "firmware update: the bus is the OTA handler's (spec 8.1 row 4)");
+    return ESP_OK;
+}
+
+/*
+ * The worker's half of the slot: take a posted request and apply it. Called
+ * from the update point only, where the worker is outside the driver and
+ * between frames (spec 3, 8.1).
+ */
+static void take_request(void)
+{
+    req_kind_t kind = REQ_KIND_MODE;
+    TaskHandle_t poster = NULL;
     gen_inhibit_mode_t mode = GEN_INHIBIT_OFF;
     uint32_t offset_us = 0;
     bool took = false;
@@ -1668,6 +1815,8 @@ static void take_mode_request(void)
     if (s_req.state == REQ_POSTED && esp_timer_get_time() < s_req.deadline_us)
     {
         s_req.state = REQ_TAKEN;
+        kind = s_req.kind;
+        poster = s_req.poster;
         mode = s_req.mode;
         offset_us = s_req.offset_us;
         took = true;
@@ -1678,12 +1827,145 @@ static void take_mode_request(void)
         return;
     }
 
-    const esp_err_t r = apply_mode(mode, offset_us);
+    const esp_err_t r = (kind == REQ_KIND_OTA_BEGIN)
+                            ? apply_ota_begin(poster)
+                            : apply_mode_request(mode, offset_us);
 
     taskENTER_CRITICAL(&s_req_lock);
     s_req.result = r;
     s_req.state = REQ_DONE;
     taskEXIT_CRITICAL(&s_req_lock);
+}
+
+/*
+ * A TEARDOWN BY ANOTHER CALLER (spec 8.1 rows 9 and 13, the backstop). Every
+ * one posted so far is served at once.
+ */
+static void serve_teardown(void)
+{
+    taskENTER_CRITICAL(&s_req_lock);
+    const uint32_t posted = s_td_posted;
+    const uint32_t cand = s_td_candidates;
+    taskEXIT_CRITICAL(&s_req_lock);
+    const uint32_t n = posted - s_td_served;
+    const uint32_t c = cand - s_td_cand_served;
+    if (n == 0)
+    {
+        return;
+    }
+
+    if (s_wstate == GI_WORKER_ARMED)
+    {
+        /*
+         * Row 9. Spec 8 and 11: a mode OFF nobody asked for. Record it and log
+         * it, because in OFF the device goes silent on the wire and looks
+         * identical to one that was disarmed on purpose.
+         */
+        withdraw_pending();
+        ESP_LOGW(TAG, "forced quiesce: another task is tearing the bus down "
+                      "(spec 8.1 row 9)");
+        s_core.self_off = GI_SELF_OFF_QUIESCE;
+        s_core.mode = GI_OFF;
+        s_we_enabled_bus = false;   /* the caller owns the teardown now, not us */
+        s_release_bus = false;
+        s_violations += n;
+        s_wstate = GI_WORKER_IDLE;
+    }
+    else if (c > 0)
+    {
+        /* Row 13: nothing is forced; the bus was up and not the OTA handler's. */
+        ESP_LOGW(TAG, "bus torn down by a caller spec 3.2 disables "
+                      "(spec 8.1 row 13)");
+        s_violations += c;
+    }
+
+    taskENTER_CRITICAL(&s_req_lock);
+    s_td_served = posted;
+    s_td_cand_served = cand;
+    taskEXIT_CRITICAL(&s_req_lock);
+}
+
+/* AN OTA THAT FAILED (spec 8.1 row 11). */
+static void serve_ota_end(void)
+{
+    taskENTER_CRITICAL(&s_req_lock);
+    const uint32_t posted = s_ota_end_posted;
+    taskEXIT_CRITICAL(&s_req_lock);
+    if (posted == s_ota_end_served)
+    {
+        return;
+    }
+    s_ota_end_served = posted;
+    if (s_wstate == GI_WORKER_UPDATING)
+    {
+        s_wstate = GI_WORKER_IDLE;
+        s_ota_task = NULL;
+        ESP_LOGW(TAG, "firmware update failed: back to IDLE (spec 8.1 row 11)");
+    }
+}
+
+/* THE CORE SWITCHED ITSELF OFF (spec 8.1 row 7: receive errors, section 7). */
+static void serve_self_off(void)
+{
+    if (s_wstate != GI_WORKER_ARMED || s_core.mode != GI_OFF)
+    {
+        return;
+    }
+    withdraw_pending();
+    ESP_LOGW(TAG, "switched itself off: %s (spec 8.1 row 7)",
+             gi_self_off_name(s_core.self_off));
+    if (s_we_enabled_bus)
+    {
+        s_release_bus = true;   /* the OFF branch, next */
+    }
+    s_wstate = GI_WORKER_IDLE;
+}
+
+/*
+ * THE UPDATE POINT (spec 8.1): the top of each worker pass, and nowhere else.
+ * Pending events are taken in the spec's order -- a teardown by another
+ * caller, an OTA starting or ending, a mode request, the core switching itself
+ * off -- each seeing the state the one before it left. The OTA start shares the
+ * slot with a mode request, so at most one of those two is pending.
+ */
+static void update_point(void)
+{
+    serve_teardown();
+    serve_ota_end();
+    take_request();
+    serve_self_off();
+}
+
+esp_err_t gen_inhibit_ota_begin(void)
+{
+    if (s_worker == NULL)
+    {
+        return ESP_OK;      /* nothing to hand over */
+    }
+    if (xTaskGetCurrentTaskHandle() == s_worker)
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+    uint32_t ticket = 0;
+    const esp_err_t perr = post_request(REQ_KIND_OTA_BEGIN, GEN_INHIBIT_OFF, 0,
+                                        &ticket);
+    if (perr != ESP_OK)
+    {
+        return perr;
+    }
+    return gen_inhibit_await_mode(ticket);
+}
+
+void gen_inhibit_ota_failed(void)
+{
+    if (s_worker == NULL)
+    {
+        return;
+    }
+    taskENTER_CRITICAL(&s_req_lock);
+    s_ota_end_posted++;
+    taskEXIT_CRITICAL(&s_req_lock);
+    worker_wake();
 }
 
 esp_err_t gen_inhibit_set_mode(gen_inhibit_mode_t mode, uint32_t offset_us)
@@ -1718,42 +2000,64 @@ void gen_inhibit_quiesce(void)
      *   - Called from the worker itself (its own release path calls
      *     can_disable): it is already at its safe top-of-loop point, so just
      *     make sure it will not re-enter the driver, and return. Blocking here
-     *     would deadlock -- the worker is the thing that sets s_parked.
+     *     would deadlock -- the worker is the thing that serves the quiesce.
      *
-     *   - Called from any other task: force mode OFF, relinquish ownership so
-     *     the caller owns the teardown, and block until the worker confirms it
-     *     is outside twai_receive(). Bounded by the receive timeout; we allow
-     *     up to 1 s.
+     *   - Called from any other task: post a teardown (see s_td_posted) and
+     *     block until the worker has served it at its update point, which is
+     *     outside twai_receive() by construction (spec 8.1 rows 9 and 13).
+     *     Bounded by the receive timeout; 1 s from the call.
      */
     if (s_worker == NULL)
     {
         return;
     }
-    if (xTaskGetCurrentTaskHandle() == s_worker)
+    const TaskHandle_t me = xTaskGetCurrentTaskHandle();
+    if (me == s_worker)
     {
         s_core.mode = GI_OFF;
         return;
     }
+    /*
+     * THE OTA HANDLER'S OWN TEARDOWN, which row 4 handed it: the worker is in
+     * UPDATING and outside the driver, and nothing is counted (row 13). Only
+     * that task, and only while UPDATING -- which only that task can end.
+     */
+    if (s_wstate == GI_WORKER_UPDATING && me == s_ota_task)
+    {
+        return;
+    }
 
     /*
-     * Spec 8 and 11: this is a mode OFF nobody asked for -- another task is
-     * about to uninstall the driver and the worker has to be out of it first.
-     * Record it, because in OFF the device goes silent on the wire and looks
-     * identical to one that was disarmed on purpose.
+     * "The bus was up" (row 13): can.c's own state. A bus never enabled since
+     * boot reads END_BUS, which is not up (spec 8.1 row 13, finding F3).
      */
-    s_core.self_off = GI_SELF_OFF_QUIESCE;
-    s_core.mode = GI_OFF;
-    s_we_enabled_bus = false;   /* caller owns the teardown now, not us */
-    s_release_bus = false;
-    s_quiesce = true;
-
-    for (int i = 0; i < 100 && !s_parked; i++)
+    const bool bus_up = can_is_enabled();
+    const int64_t deadline_us = esp_timer_get_time() + GEN_INHIBIT_MODE_WAIT_US;
+    taskENTER_CRITICAL(&s_req_lock);
+    const uint32_t mine = ++s_td_posted;
+    if (bus_up)
     {
-        vTaskDelay(pdMS_TO_TICKS(10));
+        s_td_candidates++;
     }
-    if (!s_parked)
+    taskEXIT_CRITICAL(&s_req_lock);
+    worker_wake();
+
+    for (;;)
     {
-        ESP_LOGE(TAG, "quiesce timed out; worker did not confirm parked");
+        taskENTER_CRITICAL(&s_req_lock);
+        const bool served = (int32_t)(s_td_served - mine) >= 0;
+        taskEXIT_CRITICAL(&s_req_lock);
+        if (served)
+        {
+            return;
+        }
+        if (esp_timer_get_time() >= deadline_us)
+        {
+            /* Left posted: the worker goes OFF when it reaches the top. */
+            ESP_LOGE(TAG, "quiesce timed out; worker did not confirm parked");
+            return;
+        }
+        req_poll_delay();
     }
 }
 
@@ -1779,9 +2083,10 @@ static void gen_inhibit_task(void *arg)
          * path through the loop comes back to this point: after a frame, after
          * a receive timeout (up to GEN_INHIBIT_RX_TIMEOUT_MS on a quiet bus,
          * which a wake cannot cut short), and out of either sleep, which the
-         * poster's wake ends.
+         * poster's wake ends. Spec 8.1: this is the update point, where every
+         * pending request is taken, in the table's order.
          */
-        take_mode_request();
+        update_point();
 
         if (s_core.mode == GI_OFF)
         {
@@ -1789,12 +2094,8 @@ static void gen_inhibit_task(void *arg)
             /*
              * Safe teardown point: we are not inside twai_receive() here, so
              * uninstalling the driver cannot pull the floor out from under a
-             * blocked call. Publish that fact so an external
-             * gen_inhibit_quiesce() caller (sleep monitor, SLCAN close) knows
-             * it can now uninstall.
+             * blocked call.
              */
-            s_parked = true;
-
             if (s_release_bus)
             {
                 s_release_bus = false;
@@ -1845,7 +2146,6 @@ static void gen_inhibit_task(void *arg)
          * ISR-to-task latency rather than wican-fw's 1 ms poll interval. That
          * difference is the whole reason this component exists.
          */
-        s_parked = false;   /* about to enter the driver */
         esp_err_t rx_err = twai_receive(&rx, pdMS_TO_TICKS(GEN_INHIBIT_RX_TIMEOUT_MS));
         if (rx_err != ESP_OK)
         {
@@ -2051,6 +2351,9 @@ static int hist_json(const gi_hist_t *h, const char *name, char *buf, int buflen
  */
 static uint32_t   s_snap_refused_slcan;
 static uint32_t   s_snap_refused_can_send;
+/* Spec 8.1: the worker's state and the violation count, in the same reading. */
+static gi_worker_state_t s_snap_wstate;
+static uint32_t   s_snap_violations;
 
 static gi_state_t s_snap_core;
 static gs_t       s_snap_sched;
@@ -2173,6 +2476,8 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
     s_snap_sched = s_sched;
     s_snap_refused_slcan    = s_refused_slcan;
     s_snap_refused_can_send = s_refused_can_send;
+    s_snap_wstate           = s_wstate;
+    s_snap_violations       = s_violations;
 #if GI_INSTRUMENT_RXQ
     s_snap_rxq_samples = s_rxq_samples;
     s_snap_rxq_max     = s_rxq_max;
@@ -2410,6 +2715,15 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
                      "\"refused_slcan\":%lu,\"refused_can_send\":%lu,",
                      (unsigned long)s_snap_refused_slcan,
                      (unsigned long)s_snap_refused_can_send), buflen);
+    /*
+     * SPEC 8.1: who holds the bus, and the teardowns by another caller since
+     * boot (rows 9 and 13). Why the worker last switched itself off is
+     * `self_off`, above.
+     */
+    n = gi_clamp(n + snprintf(buf + n, buflen - n,
+                     "\"worker\":\"%s\",\"bus_violations\":%lu,",
+                     worker_state_name(s_snap_wstate),
+                     (unsigned long)s_snap_violations), buflen);
 
     n = gi_clamp(n + hist_json(&st->rx_gap, "rx_gap", buf + n, buflen - n),
                  buflen);
@@ -2460,10 +2774,35 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
 
 /* ------------------------------------------------------------------ init -- */
 
-void gen_inhibit_init(void)
+void gen_inhibit_init(uint8_t bitrate, uint8_t silent)
 {
     /* Spec 11: read once at boot, not once per page. See reset_reason_name(). */
     s_reset_reason = esp_reset_reason();
+
+    /*
+     * SPEC 3.2, "THE BOOT-TIME CONFIGURATION STAYS, AND ARMING COMES AFTER IT"
+     * (user, 2026-10-16). The configured bitrate and can_mode are what the
+     * worker installs with and what leaving OBSERVE restores, so they are
+     * stored here, before the worker exists or anything can arm. On 65e9446
+     * main.c stored them after gen_inhibit_init(), whose auto-arm had already
+     * installed the stock defaults; the setters then did nothing (ON_BUS).
+     */
+    can_set_bitrate(bitrate);
+    can_set_silent(silent);
+
+    /*
+     * Spec 8.1: IDLE at boot, nothing posted, nothing counted. Reset here as
+     * well as by the statics' initialisers because the host suite calls this
+     * once per case.
+     */
+    s_wstate = GI_WORKER_IDLE;
+    s_violations = 0;
+    s_ota_task = NULL;
+    taskENTER_CRITICAL(&s_req_lock);
+    s_req.state = REQ_IDLE;
+    s_td_posted = s_td_candidates = s_td_served = s_td_cand_served = 0;
+    s_ota_end_posted = s_ota_end_served = 0;
+    taskEXIT_CRITICAL(&s_req_lock);
 
     gi_config_t cfg;
     gi_config_defaults(&cfg);

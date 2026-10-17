@@ -96,8 +96,8 @@ void ft_refuse_id(uint32_t id, int n);
 /* Raise TWAI_ALERT_TX_FAILED when the next completing frame finishes. */
 void ft_fail_next(void);
 
-/* Queue a frame from ANOTHER task, as an SLCAN or MQTT path would. Spec 3.2
- * forbids this while the inhibitor owns the bus; the model allows it so a test
+/* Queue a frame from ANOTHER task, as any client's can_send() would. Spec 3.2
+ * refuses that while the inhibitor owns the bus; the model allows it so a test
  * can show what it costs when the refusal is missing. */
 bool ft_foreign_transmit(uint32_t id, const uint8_t *data, uint8_t dlc);
 
@@ -190,6 +190,19 @@ int ft_installed_mode(void);
  */
 int ft_install_count(void);
 
+/* The last install's bitrate prescaler (can.c's table: 8 = 500K, 16 = 250K). */
+uint32_t ft_installed_brp(void);
+
+/*
+ * Spec 8.1 needs two tasks besides the worker: ft_as_task(3) makes the test
+ * thread a task other than the default (2) until ft_as_task(0). Cleared by
+ * ft_reset().
+ */
+void ft_as_task(int handle);
+
+/* The auto-arm build only: xTaskCreate() starts the worker at once. */
+void ft_autostart_worker(bool on);
+
 /* Driver installs made from a thread other than the worker (spec 3). */
 int ft_installs_off_worker(void);
 
@@ -234,9 +247,9 @@ int      ft_installed_single_filter(void);
  * every other counter here. The D8 mutation (gs_rearm -> gs_init at a mode
  * change) survived E1 for exactly that reason.
  *
- * Foreign frames are NOT counted: ft_foreign_transmit() models the SLCAN and MQTT
- * paths, and mixing them in would conflate "the scheduler double-submitted" with
- * "another task transmitted", which case 5 covers separately.
+ * Foreign frames are NOT counted: ft_foreign_transmit() models another task's
+ * can_send(), and mixing them in would conflate "the scheduler double-submitted"
+ * with "another task transmitted", which case 5 covers separately.
  */
 int ft_max_inflight(void);
 

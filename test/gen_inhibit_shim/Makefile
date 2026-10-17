@@ -25,20 +25,27 @@ SRC := shim_test.c fake_twai.c fake_can.c \
        $(COREDIR)/gi_sched.c \
        $(COREDIR)/can.c
 
-all: shim_test
+all: shim_test shim_test_autoarm
 
 shim_test: $(SRC) fake_twai.h
 	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS)
+
+# THE AUTO-ARM BUILD (spec 3.2, "arming comes after it"): the same sources with
+# the boot auto-arm compiled in, running the one case that needs it. The other
+# cases arm by hand and would meet an arm they did not make, so they are not in
+# this binary -- hence -Wno-unused-function.
+shim_test_autoarm: $(SRC) fake_twai.h
+	$(CC) $(CFLAGS) -Wno-unused-function -DSHIM_AUTOARM_BUILD=1 -DGEN_INHIBIT_AUTOARM_MODE=GEN_INHIBIT_PASSIVE -o $@ $(SRC) $(LDFLAGS)
 
 # The sanitiser build is where a mock-HAL suite earns its keep: it drives the
 # shim's pointer and lifetime handling, which the core-only harness never does.
 asan: CFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer
 asan: clean shim_test
 
-run: shim_test
-	./shim_test
+run: shim_test shim_test_autoarm
+	./shim_test && ./shim_test_autoarm
 
 clean:
-	rm -f shim_test
+	rm -f shim_test shim_test_autoarm
 
 .PHONY: all asan run clean

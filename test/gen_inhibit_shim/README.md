@@ -15,12 +15,16 @@ invisible to a suite that was green throughout:
 ## Running it
 
 ```sh
-make && ./shim_test       # or: make run
+make && ./shim_test && ./shim_test_autoarm    # or: make run
 make asan && ./shim_test
 ```
 
 Builds `main/gen_inhibit.c` and `main/gen_inhibit_core.c` against mock
 platform headers in `mock/`. Needs pthreads; no ESP-IDF.
+
+`shim_test_autoarm` is the same sources with the boot auto-arm compiled in
+(`GEN_INHIBIT_AUTOARM_MODE=GEN_INHIBIT_PASSIVE`). It runs the one case that
+needs it (spec 3.2, "arming comes after it"); every other case arms by hand.
 
 ## What the model has to get right
 
@@ -487,8 +491,8 @@ nothing in the fake was counting it.
 `ft_max_inflight()` now does: the high-water mark of **our** frames in the driver
 at once. Item 3 says at most one, so the assertion is `<= 1` and the mutation
 takes it to 2. Foreign frames are excluded, because `ft_foreign_transmit()`
-models the SLCAN and MQTT paths that item 3 is about refusing, and counting them
-would conflate "the scheduler double-submitted" with "another task transmitted" --
+models another task's `can_send()`, which spec 3.2 refuses while armed, and
+counting them would conflate "the scheduler double-submitted" with "another task transmitted" --
 which case 5 already covers.
 
 The case is also **driven to its precondition rather than timed into it**: it
@@ -566,3 +570,38 @@ last pass was still `held`, so the re-arm carried it in and the new arm timed it
 as on time with no `tx_ok` behind it. Case 33 read ontime 29978 against tx_ok
 29977 that way, the extra frame being case 32's last. `apply_mode()` now collects
 the old arm's completions before it touches anything.
+
+### 2026-10-16: the worker state machine (spec 8.1)
+
+The worker is IDLE, ARMED or UPDATING, and every pending request is taken at
+one update point per pass. The status page now carries `worker` and
+`bus_violations`. Model changes:
+
+* `ft_as_task(3)` makes the test thread a task other than the default (2). Spec
+  8.1 tells the OTA handler's own teardown from anybody else's by the task.
+* `ft_autostart_worker()` starts the worker inside `xTaskCreate()`, for the
+  auto-arm build, where `gen_inhibit_init()` waits for its own arm.
+* `ft_installed_brp()` records the bitrate an install was handed.
+* `gen_inhibit_init()` takes the boot configuration; `setup()` passes can.c's
+  defaults (500K, normal), which is what every case ran with before.
+
+And the cases:
+
+* **Case 6** also checks row 7: after the receive-error self-off the worker is
+  idle and the bus is given back.
+* **Case 55** is row 9, the backstop: a `can_disable()` from the test thread with
+  the worker held off the CPU must not move the mode until the worker runs, and
+  leaves it idle with one violation. Part B does it against a blocked receive,
+  with no traffic.
+* **Case 56** is the OTA rows, each from its own state: refused while armed with
+  nothing touched (8), handed over from idle (4), the handler's own teardown
+  counted as nothing and another caller's as one (13), a mode request refused
+  (12), and a failed upload back to idle with a later arm working (11).
+* **Case 57** is the mode rows from their own states (1, 2, 3, 5 and its
+  refusal, 6) and row 13 from idle: a teardown of a bus that was down counts
+  nothing, one that was up counts one and forces nothing.
+* **Case 58** is the exit action: an answer held in the controller is given up
+  as a stand-down when the worker leaves ARMED by row 6, 5 or 9.
+* **`shim_test_autoarm`**: `gen_inhibit_init(CAN_250K, listen-only)` with the
+  auto-arm compiled in must install at 250K and listen-only, not can.c's
+  defaults.

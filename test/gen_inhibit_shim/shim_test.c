@@ -335,7 +335,7 @@ static void setup(void)
     g_wv_reported = 0;
     ft_set_step_hook(invariant_hook);
     ml_clear();
-    gen_inhibit_init();
+    gen_inhibit_init(CAN_500K, 0);  /* can.c's defaults, as the cases always ran */
     ft_start_worker();
     ft_run(1000);
 }
@@ -707,8 +707,9 @@ static void case_inhibit_behind_diag(void)
      * A FOREIGN FRAME IS THE BETTER VEHICLE ANYWAY, and it is the purer form of
      * the same hazard. TWAI_ALERT_TX_SUCCESS is a latched bit shared by every
      * frame the controller sends, including frames this component never emitted
-     * -- an SLCAN or MQTT path, which is what spec 3.2 is about. If a foreign
-     * frame's completion can credit our outstanding inhibit, the attribution is
+     * -- another task's can_send(), which is what spec 3.2 refuses while armed.
+     * If a foreign frame's completion can credit our outstanding inhibit, the
+     * attribution is
      * broken in the most general way there is, and a diag page was only ever a
      * convenient instance of it.
      *
@@ -845,6 +846,10 @@ static void case_self_off_names_itself(void)
 
     CHECK(json_has("receive errors"),
           "the receive-error self-disarm did not name itself: %s", stats());
+    /* Spec 8.1 row 7: IDLE, and the bus given back. */
+    CHECK(json_has("\"worker\":\"idle\"") && !can_is_enabled(),
+          "row 7: the self-off did not leave the worker idle with the bus "
+          "released: %s", stats());
 
     /* Arming again answers the question, so the reason must clear. */
     gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
@@ -3954,7 +3959,7 @@ static void case_wake_has_a_target_before_the_worker_runs(void)
     ft_set_step_hook(invariant_hook);
     ml_clear();
 
-    gen_inhibit_init();
+    gen_inhibit_init(CAN_500K, 0);
     /* Deliberately NOT ft_start_worker() yet: that is the boot ordering. */
 
     CHECK(ft_wakes_sent() == 0,
@@ -5462,6 +5467,337 @@ static void case_mode_change_bound_and_race(void)
     case_end();
 }
 
+/*
+ * CASE 55 -- AN OUTSIDE QUIESCE: THE WORKER ALONE WRITES THE MODE (spec 3, "The
+ * worker makes every mode change", "there is no exception"; spec 8, "The
+ * quiesce handshake"; user 2026-10-16).
+ *
+ * can_disable() from the test thread -- OTA, SLCAN, ELM327 on the device --
+ * with the worker held off the CPU for 300 ms. While it is held, nothing but
+ * the worker may have moved the mode, so the status page must still read
+ * INHIBIT at every step of the wait; once it runs, it parks, the mode reads OFF
+ * with the forced-quiesce reason, and only then is the driver torn down
+ * (teardown()'s ft_unsafe_teardowns() check). Until 2026-10-16 the quiesce wrote
+ * the mode from the caller's task, and the page read OFF at the first step.
+ */
+static int64_t g_q_release_at;
+static bool g_q_moved_while_held;
+static int g_q_reads_held;
+
+static void quiesce_hold_hook(void)
+{
+    if (g_q_release_at > 0)
+    {
+        if (ft_now() >= g_q_release_at)
+        {
+            ft_hold_worker(false);
+            g_q_release_at = 0;
+        }
+        else
+        {
+            g_q_reads_held++;
+            if (!json_has("\"mode\":3"))
+            {
+                g_q_moved_while_held = true;
+            }
+        }
+    }
+    invariant_hook();
+}
+
+static void case_quiesce_is_made_by_the_worker(void)
+{
+    case_begin("case 55: an outside quiesce is applied by the worker, not the "
+               "caller, and the driver comes down only after it parks");
+    uint8_t ctr = 0x10;
+    setup();
+    go_live();
+    keep_alive(100000, &ctr);
+    CHECK(json_has("\"mode\":3"), "PRECONDITION: not in INHIBIT: %s", stats());
+
+    g_q_moved_while_held = false;
+    g_q_reads_held = 0;
+    ft_set_step_hook(quiesce_hold_hook);
+    const int64_t t0 = ft_now();
+    g_q_release_at = t0 + 300000;
+    ft_hold_worker(true);
+    can_disable();
+    const int64_t took = ft_now() - t0;
+    ft_hold_worker(false);
+    g_q_release_at = 0;
+    ft_set_step_hook(invariant_hook);
+
+    CHECK(g_q_reads_held > 0,
+          "PRECONDITION: the status page was never read while the worker was "
+          "held, so the check below saw nothing");
+    CHECK(!g_q_moved_while_held,
+          "the mode moved while the worker was held: a task other than the "
+          "worker wrote it (%d readings)", g_q_reads_held);
+    CHECK(took >= 300000 && took < 1000000,
+          "the quiesce returned %lld us after the call; the worker was let go at "
+          "300 ms", (long long)took);
+    CHECK(json_has("\"mode\":0") && json_has("forced quiesce"),
+          "after the quiesce the device is not OFF with its reason: %s", stats());
+    CHECK(json_has("\"worker\":\"idle\"") && json_has("\"bus_violations\":1"),
+          "row 9: the backstop did not leave the worker idle with one "
+          "violation: %s", stats());
+
+    /* And it re-arms cleanly. */
+    const esp_err_t r = gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
+    keep_alive(200000, &ctr);
+    CHECK(r == ESP_OK && json_has("\"mode\":3"),
+          "the re-arm after the quiesce came back %s: %s", esp_err_to_name(r),
+          stats());
+    teardown();
+
+    /*
+     * B. Against a BLOCKED RECEIVE (spec 8: "a can_disable() from a second
+     * thread against a blocked receive"): armed, no traffic, so the worker sits
+     * in twai_receive() and a wake cannot end it. The teardown waits for the
+     * receive timeout and then for the worker; teardown() checks it never
+     * happened with the worker inside the driver.
+     */
+    setup();
+    go_live();
+    keep_alive(50000, &ctr);
+    ft_run(20000);
+    const int64_t t1 = ft_now();
+    can_disable();
+    const int64_t took_b = ft_now() - t1;
+    CHECK(took_b < 300000 && json_has("\"worker\":\"idle\"")
+          && json_has("\"bus_violations\":1"),
+          "B: the backstop against a blocked receive took %lld us or did not "
+          "leave the worker idle with one violation: %s", (long long)took_b,
+          stats());
+    teardown();
+    case_end();
+}
+
+/*
+ * CASE 56 -- AN OTA TAKES THE BUS THROUGH THE WORKER (spec 8.1 rows 4, 8, 11,
+ * 12 and 13; spec 9.3; user 2026-10-16).
+ *
+ * The test thread is the OTA handler (task 2), and with ft_as_task(3) another
+ * caller. Each row from its own starting state:
+ *   8   ARMED, an update request: refused, nothing touched, still answering;
+ *   4   IDLE, an update request: UPDATING;
+ *   13  UPDATING: the OTA handler's own teardown counts nothing, even with the
+ *       bus up; another caller's, with the bus up, counts one;
+ *   12  UPDATING, a mode request: refused, "bus is down for a firmware update";
+ *   11  UPDATING, the upload fails: IDLE, and a later arm works.
+ */
+static void case_ota_goes_through_the_worker(void)
+{
+    case_begin("case 56: an OTA takes the bus through the worker (spec 8.1 rows "
+               "4, 8, 11, 12, 13)");
+    uint8_t ctr = 0x20;
+
+    /* Row 8. */
+    setup();
+    go_live();
+    keep_alive(100000, &ctr);
+    CHECK(json_has("\"worker\":\"armed\"") && json_has("\"inhibit_live\":true"),
+          "PRECONDITION 8: not armed and live: %s", stats());
+    const int installs = ft_install_count();
+    const int wire = ft_wire_count_id(0x051);
+    esp_err_t r = gen_inhibit_ota_begin();
+    CHECK(r == ESP_ERR_INVALID_STATE,
+          "row 8: an update request while armed came back %s, not refused",
+          esp_err_to_name(r));
+    keep_alive(100000, &ctr);
+    CHECK(json_has("\"worker\":\"armed\"") && json_has("\"mode\":3"),
+          "row 8: the refused update moved the worker: %s", stats());
+    CHECK(ft_install_count() == installs && ft_wire_count_id(0x051) > wire,
+          "row 8: the refused update touched the bus (%d installs, %d answers "
+          "since)", ft_install_count() - installs,
+          ft_wire_count_id(0x051) - wire);
+    teardown();
+
+    /* Row 4. */
+    setup();
+    CHECK(json_has("\"worker\":\"idle\""), "PRECONDITION 4: not idle: %s", stats());
+    r = gen_inhibit_ota_begin();
+    CHECK(r == ESP_OK && json_has("\"worker\":\"updating\""),
+          "row 4: an update request while idle came back %s: %s",
+          esp_err_to_name(r), stats());
+
+    /* Row 13, the OTA handler's own teardown, with the bus up. */
+    can_enable();
+    CHECK(can_is_enabled(), "PRECONDITION 13: the bus did not come up");
+    can_disable();
+    CHECK(json_has("\"bus_violations\":0"),
+          "row 13: the OTA handler's own teardown was counted: %s", stats());
+
+    /* Row 12. */
+    r = gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
+    CHECK(r == ESP_ERR_NOT_ALLOWED,
+          "row 12: a mode request while updating came back %s",
+          esp_err_to_name(r));
+    CHECK(json_has("\"worker\":\"updating\"") && json_has("\"mode\":0"),
+          "row 12: the refused request moved the worker: %s", stats());
+
+    /* Row 13, another caller, with the bus up: one violation, nothing forced. */
+    ft_as_task(3);
+    can_enable();
+    can_disable();
+    ft_as_task(0);
+    CHECK(json_has("\"bus_violations\":1") && json_has("\"worker\":\"updating\""),
+          "row 13: another caller's teardown while updating was not counted "
+          "once, or moved the worker: %s", stats());
+
+    /* Row 11. */
+    gen_inhibit_ota_failed();
+    ft_run(60000);
+    CHECK(json_has("\"worker\":\"idle\""),
+          "row 11: a failed upload did not return the worker to idle: %s",
+          stats());
+    r = gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
+    keep_alive(200000, &ctr);
+    CHECK(r == ESP_OK && json_has("\"worker\":\"armed\"")
+          && json_has("\"inhibit_live\":true"),
+          "row 11: the arm after a failed upload came back %s: %s",
+          esp_err_to_name(r), stats());
+    teardown();
+    case_end();
+}
+
+/*
+ * CASE 57 -- THE MODE ROWS, AND ROW 13 FROM IDLE (spec 8.1 rows 1, 2, 3, 5, 6
+ * and 13; user 2026-10-16). Each from its own starting state; the bus-off
+ * refusal of row 5 is case 48's.
+ */
+static void case_worker_mode_rows(void)
+{
+    case_begin("case 57: the worker's mode rows from their own states (spec 8.1 "
+               "rows 1, 2, 3, 5, 6, 13)");
+    setup();
+    esp_err_t r;
+
+    /* Row 3: IDLE, OFF. Nothing installed. */
+    const int i0 = ft_install_count();
+    r = gen_inhibit_set_mode(GEN_INHIBIT_OFF, 500);
+    CHECK(r == ESP_OK && json_has("\"worker\":\"idle\"") && ft_install_count() == i0,
+          "row 3: OFF while idle came back %s with %d install(s): %s",
+          esp_err_to_name(r), ft_install_count() - i0, stats());
+
+    /* Row 2: IDLE, the install fails. */
+    ft_fail_install_next();
+    r = gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
+    ft_run(60000);
+    CHECK(r != ESP_OK && json_has("\"worker\":\"idle\"") && json_has("\"mode\":0"),
+          "row 2: an arm whose install failed came back %s: %s",
+          esp_err_to_name(r), stats());
+    CHECK(!can_is_enabled(), "row 2: the refused arm left the bus up");
+
+    /* Row 1. */
+    r = gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
+    CHECK(r == ESP_OK && json_has("\"worker\":\"armed\"") && json_has("\"mode\":3"),
+          "row 1: an arm from idle came back %s: %s", esp_err_to_name(r), stats());
+
+    /* Row 5, then its refusal: the reinstall OBSERVE needs fails. */
+    r = gen_inhibit_set_mode(GEN_INHIBIT_PASSIVE, 500);
+    CHECK(r == ESP_OK && json_has("\"worker\":\"armed\"") && json_has("\"mode\":4"),
+          "row 5: INHIBIT -> PASSIVE came back %s: %s", esp_err_to_name(r), stats());
+    ft_fail_install_next();
+    r = gen_inhibit_set_mode(GEN_INHIBIT_OBSERVE, 500);
+    ft_run(60000);
+    CHECK(r != ESP_OK && json_has("\"worker\":\"idle\"") && json_has("\"mode\":0"),
+          "row 5: a re-arm whose reinstall failed came back %s and did not go "
+          "to idle: %s", esp_err_to_name(r), stats());
+
+    /* Row 6. */
+    r = gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
+    CHECK(r == ESP_OK, "PRECONDITION 6: the arm came back %s", esp_err_to_name(r));
+    r = gen_inhibit_set_mode(GEN_INHIBIT_OFF, 500);
+    ft_run(60000);
+    CHECK(r == ESP_OK && json_has("\"worker\":\"idle\"") && !can_is_enabled(),
+          "row 6: OFF while armed came back %s or kept the bus: %s",
+          esp_err_to_name(r), stats());
+
+    /* Row 13 from IDLE: the bus down counts nothing; up, one, nothing forced. */
+    ft_as_task(3);
+    can_disable();
+    CHECK(json_has("\"bus_violations\":0"),
+          "row 13: a teardown of a bus that was down was counted: %s", stats());
+    can_enable();
+    can_disable();
+    ft_as_task(0);
+    CHECK(json_has("\"bus_violations\":1") && json_has("\"worker\":\"idle\"")
+          && json_has("\"self_off\":\"\""),
+          "row 13: another caller's teardown while idle was not counted once, "
+          "or forced something: %s", stats());
+    teardown();
+    case_end();
+}
+
+/*
+ * CASE 58 -- LEAVING ARMED WITHDRAWS THE PENDING ANSWER (spec 8.1 rows 5, 6 and
+ * 9, the exit action; 5.2 items 5 and 6; user 2026-10-16).
+ *
+ * The answer to a command is held in the controller (case 49's stall), and the
+ * worker leaves its mode: OFF (row 6), a re-arm into PASSIVE (row 5), and a
+ * teardown by another caller (row 9). Each time the answer is given up.
+ *
+ * Row 9 does not re-arm the scheduler, so its stand-down is on the page. Rows 5
+ * and 6 do, and the per-arm counters are cleared there, so the old arm's
+ * stand-down is gone by the time the page is read: what shows instead is that
+ * the answer did not cross the re-arm -- the fake aborts a frame still awaiting
+ * arbitration at once, so it is out of the controller first, and the new arm
+ * holds nothing and carried nothing in. Without the exit action the re-arm
+ * carries it in as a live frame (carried_in 1, held 1).
+ */
+static void held_answer(uint8_t *ctr)
+{
+    go_live();
+    keep_alive(100000, ctr);
+    ft_stall_id(0x051, 1);
+    uint8_t cmd[6];
+    memcpy(cmd, VCM, sizeof(cmd));
+    cmd[5] = (uint8_t)((*ctr)++ & 0x0F);
+    feed(0x051, cmd, 6, 1000);
+}
+
+static void case_leaving_armed_withdraws(void)
+{
+    case_begin("case 58: leaving ARMED withdraws the answer still in the "
+               "controller (spec 8.1 rows 5, 6, 9)");
+    uint8_t ctr = 0x30;
+    static const char *how[3] = { "row 6, OFF", "row 5, re-arm into PASSIVE",
+                                  "row 9, another caller's teardown" };
+    for (int k = 0; k < 3; k++)
+    {
+        setup();
+        held_answer(&ctr);
+        CHECK(cls_num("inhibit", "held") == 1,
+              "PRECONDITION %s: the answer is not in the controller: %s", how[k],
+              stats());
+        const int wire = ft_wire_count_id(0x051);
+        if (k == 0)      { (void)gen_inhibit_set_mode(GEN_INHIBIT_OFF, 500); }
+        else if (k == 1) { (void)gen_inhibit_set_mode(GEN_INHIBIT_PASSIVE, 500); }
+        else             { can_disable(); }
+        if (k == 2)
+        {
+            CHECK(json_need("\"standdown\":") == 1,
+                  "%s: the held answer was not given up as a stand-down: %s",
+                  how[k], stats());
+        }
+        else
+        {
+            CHECK(cls_num("inhibit", "carried_in") == 0
+                  && cls_num("inhibit", "held") == 0,
+                  "%s: the held answer crossed the re-arm instead of being "
+                  "withdrawn: %s", how[k], stats());
+        }
+        ft_run(200000);
+        CHECK(ft_wire_count_id(0x051) == wire,
+              "%s: an inhibit reached the wire after the worker left ARMED (%d)",
+              how[k], ft_wire_count_id(0x051) - wire);
+        teardown();
+    }
+    case_end();
+}
+
+#if !SHIM_AUTOARM_BUILD
 int main(int argc, char **argv)
 {
     /*
@@ -5542,7 +5878,48 @@ int main(int argc, char **argv)
     case_off_controller_receives_nothing();
     case_mode_changes_during_a_live_replay();
     case_mode_change_bound_and_race();
+    case_quiesce_is_made_by_the_worker();
+    case_ota_goes_through_the_worker();
+    case_worker_mode_rows();
+    case_leaving_armed_withdraws();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
     return g_fail ? 1 : 0;
 }
+
+#else   /* SHIM_AUTOARM_BUILD */
+/*
+ * THE AUTO-ARM BUILD (spec 3.2, "The boot-time configuration stays, and arming
+ * comes after it"; spec 12.4 "the worker state machine"; user 2026-10-16).
+ * Compiled with GEN_INHIBIT_AUTOARM_MODE=GEN_INHIBIT_PASSIVE (Makefile,
+ * shim_test_autoarm). gen_inhibit_init() is handed a configuration that differs
+ * from can.c's defaults in both fields -- 250K and listen-only, against 500K and
+ * normal -- and the arm it makes must install with it. On 65e9446 main.c stored
+ * the configuration after gen_inhibit_init()'s arm, which had installed the
+ * defaults.
+ */
+int main(void)
+{
+    printf("  auto-arm build: the boot arm installs with the configured bitrate "
+           "and can_mode\n");
+    ft_reset();
+    ft_set_step_hook(invariant_hook);
+    ml_clear();
+    ft_autostart_worker(true);
+    gen_inhibit_init(CAN_250K, 1);
+    ft_run(10000);
+    CHECK(ft_install_count() == 1,
+          "the auto-arm made %d installs, not 1", ft_install_count());
+    CHECK(ft_installed_brp() == 16,
+          "the auto-arm installed prescaler %u, not 250K's 16 (500K's is 8)",
+          (unsigned)ft_installed_brp());
+    CHECK(ft_installed_mode() == TWAI_MODE_LISTEN_ONLY,
+          "the auto-arm installed mode %d, not the configured listen-only",
+          ft_installed_mode());
+    CHECK(json_has("\"mode\":4") && json_has("\"worker\":\"armed\""),
+          "the auto-arm did not leave PASSIVE armed: %s", stats());
+    ft_stop_worker();
+    printf("\n%s\n", g_fail ? "FAILURES" : "all auto-arm cases pass");
+    return g_fail ? 1 : 0;
+}
+#endif  /* SHIM_AUTOARM_BUILD */

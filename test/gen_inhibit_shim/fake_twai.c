@@ -275,6 +275,7 @@ static bool     g_fail_alerts_cfg;
  * depth and the acceptance filter simply were not observable here.
  */
 static int      g_install_n;
+static uint32_t g_installed_brp;        /* the bitrate's prescaler: 8 = 500K, 16 = 250K */
 static int      g_install_off_worker;   /* installs from a thread not the worker */
 static uint32_t g_installed_rxq;
 static uint32_t g_installed_acc_code, g_installed_acc_mask;
@@ -500,6 +501,7 @@ int  ft_unsafe_teardowns(void) { return g_unsafe_teardowns; }
 int  ft_installed_mode(void)   { return g_installed_mode; }
 int  ft_rx_dropped_off(void)   { return g_rx_dropped_off; }
 int      ft_install_count(void)          { return g_install_n; }
+uint32_t ft_installed_brp(void)          { return g_installed_brp; }
 int      ft_installs_off_worker(void)    { return g_install_off_worker; }
 uint32_t ft_installed_rx_queue_len(void) { return g_installed_rxq; }
 uint32_t ft_installed_acc_code(void)     { return g_installed_acc_code; }
@@ -834,6 +836,15 @@ static void *worker_entry(void *arg)
     return NULL;
 }
 
+/*
+ * AUTO-START, for the auto-arm build only (spec 3.2, "arming comes after it"):
+ * gen_inhibit_init() creates the worker and then waits in the auto-arm for it
+ * to apply the arm, so the worker has to be running by then. Everywhere else a
+ * case starts it with ft_start_worker() after init.
+ */
+static bool g_autostart_worker;
+void ft_autostart_worker(bool on) { g_autostart_worker = on; }
+
 int xTaskCreate(TaskFunction_t fn, const char *name, uint32_t stack,
                 void *arg, uint32_t prio, TaskHandle_t *out)
 {
@@ -841,6 +852,10 @@ int xTaskCreate(TaskFunction_t fn, const char *name, uint32_t stack,
     g_worker_fn = fn;
     g_worker_arg = arg;
     if (out) *out = (TaskHandle_t)1;
+    if (g_autostart_worker)
+    {
+        ft_start_worker();
+    }
     return pdTRUE;
 }
 
@@ -856,11 +871,24 @@ int xTaskCreate(TaskFunction_t fn, const char *name, uint32_t stack,
  * tasks apart cannot test code whose correctness turns on which task is
  * calling.
  */
+/*
+ * WHICH OTHER TASK the test thread is. Spec 8.1 tells the OTA handler's own
+ * teardown (row 4 handed it the bus) from anybody else's by the task, so a case
+ * needs two non-worker identities: 2 is the default, and ft_as_task(3) makes
+ * the test thread a different task until ft_as_task(0). Cleared by ft_reset().
+ */
+static int g_as_task;
+void ft_as_task(int handle) { g_as_task = handle; }
+
 TaskHandle_t xTaskGetCurrentTaskHandle(void)
 {
     if (g_worker_started && pthread_equal(pthread_self(), g_worker))
     {
         return (TaskHandle_t)1;         /* the worker */
+    }
+    if (g_as_task > 2)
+    {
+        return (TaskHandle_t)(intptr_t)g_as_task;
     }
     return (TaskHandle_t)2;             /* anybody else */
 }
@@ -985,6 +1013,7 @@ esp_err_t twai_driver_install(const twai_general_config_t *g,
     g_installed_acc_code = f ? f->acceptance_code : 0;
     g_installed_acc_mask = f ? f->acceptance_mask : 0;
     g_installed_single_filter = f ? (int)f->single_filter : -1;
+    g_installed_brp = t ? t->brp : 0;
 
     g_install_n++;
     /*
@@ -1187,10 +1216,12 @@ esp_err_t twai_transmit(const twai_message_t *message, TickType_t ticks)
 bool ft_foreign_transmit(uint32_t id, const uint8_t *data, uint8_t dlc)
 {
     /*
-     * Not checked against the wire invariant: this models the SLCAN and MQTT
-     * paths, which are another component's frames. Spec 3.2's objection to
-     * them is that they exist at all while the inhibitor owns the bus, not
-     * that they are malformed.
+     * Not checked against the wire invariant: this models a transmit from
+     * ANOTHER task through can_send(), which is another component's frame.
+     * Since 2026-10-16 spec 3.2 disables every other caller that changes bus
+     * state, but can_send()'s refusal while the inhibitor owns the bus still
+     * stands, and this is what a case needs to show that refusal at work or
+     * what it costs when it is missing.
      */
     return enqueue(id, data, dlc, true, NULL);
 }
@@ -1429,6 +1460,7 @@ const char *esp_err_to_name(esp_err_t e)
     case ESP_ERR_INVALID_STATE:  return "ESP_ERR_INVALID_STATE";
     case ESP_ERR_INVALID_ARG:    return "ESP_ERR_INVALID_ARG";
     case ESP_ERR_NOT_FINISHED:   return "ESP_ERR_NOT_FINISHED";
+    case ESP_ERR_NOT_ALLOWED:    return "ESP_ERR_NOT_ALLOWED";
     default: break;
     }
     snprintf(buf, sizeof(buf), "err 0x%x", (unsigned)e);
@@ -1471,6 +1503,7 @@ void ft_reset(void)
     g_fail_install = false;
     g_rx_n = g_rx_dropped = g_rx_dropped_off = 0;
     g_hold_worker = false;
+    g_as_task = 0;
     /*
      * Cleared here, unlike the reset reason and the error count: nothing sets
      * a notification before setup(), and a wake left over from the previous

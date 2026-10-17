@@ -455,26 +455,21 @@ void app_main(void)
 	int8_t can_datarate = config_server_get_can_rate();
 	(can_datarate != -1) ? can_init(can_datarate):can_init(CAN_500K);
 	ota_health_report(OTA_HEALTH_CAN);
-	gen_inhibit_init();
 
-	if(can_datarate != -1)
-	{
-		can_set_bitrate(can_datarate);
-	}
-	else
+	if(can_datarate == -1)
 	{
 		ESP_LOGE(TAG, "error going to default CAN_500K");
-		can_set_bitrate(CAN_500K);
 	}
-
-	if(config_server_get_can_mode() == CAN_NORMAL)
-	{
-		can_set_silent(0);
-	}
-	else
-	{
-		can_set_silent(1);
-	}
+	/*
+	 * SPEC 3.2, "THE BOOT-TIME CONFIGURATION STAYS, AND ARMING COMES AFTER IT"
+	 * (user, 2026-10-16). The configured bitrate and can_mode used to be
+	 * stored here AFTER gen_inhibit_init(), whose auto-arm had already
+	 * installed the driver with can.c's defaults; both setters then did
+	 * nothing (ON_BUS). gen_inhibit_init() now stores them first and only then
+	 * starts the worker and arms.
+	 */
+	gen_inhibit_init((can_datarate != -1) ? (uint8_t)can_datarate : CAN_500K,
+	                 (config_server_get_can_mode() == CAN_NORMAL) ? 0 : 1);
 
 	protocol = config_server_protocol();
 //	protocol = OBD_ELM327;
