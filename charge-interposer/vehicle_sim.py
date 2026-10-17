@@ -278,6 +278,11 @@ class VCU(object):
         self._chgmax_low_since = None
         self.pending = []            # event frames still to burst out
         self.last_view = ""          # pack summary for the close-out log line
+        # Spec 6's "VCU commanded CHARGE during the override" row, as a test
+        # stimulus (--vcu-charger-after-override-s; tester, 2026-10-16). No
+        # truck has shown it. Once it fires the VCU does not cut off again:
+        # the scenario ends the session from the charger side.
+        self.recommanded = False
 
     def start(self, t):
         self.flow = 1
@@ -382,7 +387,8 @@ class VCU(object):
                           % (soc_pct,
                              "n/a" if spread_mv is None else "%.1f" % spread_mv,
                              "n/a" if vmin is None else "%.3f" % vmin))
-        if self.mode == P.MODE_CHARGER and self.flow_off_t is None:
+        if (self.mode == P.MODE_CHARGER and self.flow_off_t is None
+                and not self.recommanded):
             if self.evap:
                 if int(soc_pct) >= 80:
                     if self._soc_80_since is None:
@@ -450,6 +456,20 @@ class VCU(object):
             target = max(I_FLOOR, min(I_CC_CMD, chg_max))
         self.ilim += (target - self.ilim) * min(1.0, dt * 2.0)
         self.ilim = max(0.0, self.ilim)
+
+    def recommand_charger(self, t):
+        """CHARGER with the flow bit on, as a new page-00 burst, while the
+        interposer is overriding. A test stimulus for spec 6's row (and, sent
+        inside the override's first second, spec 4.1's "a page-00 frame from
+        the VCU during a repeat ends the repeat"); never observed on a
+        truck."""
+        self.recommanded = True
+        self.mode = P.MODE_CHARGER
+        self.flow = 1
+        self._burst(P.enc_master(1, P.MODE_CHARGER))
+        log.info("VCU: commanding CHARGER during the override "
+                 "(--vcu-charger-after-override-s: a test stimulus, never "
+                 "seen on the truck)")
 
     def _complete(self, t):
         """The cutoff: mode 3, the hold. The charger keeps delivering ~2.4 A
@@ -756,6 +776,10 @@ def run_model(args, b, phys):
               hold_max_s=args.hold_max_s, start_soc=args.soc)
     vcu.no_standby = args.no_standby_on_unplug
     vcu.restart_on_replug = args.restart_on_replug
+    # --vcu-charger-after-override-s: wall time the first 0x7F4 reporting
+    # OVERRIDE (state 2) arrived, and whether the re-command has fired.
+    override_seen_wall = None
+    recommand_fired = False
     bms = BMS(pk, stuck_chg_max=args.bms_stuck_chg_max,
               fault_at=args.bms_fault_at, fault_kind=args.bms_fault_kind,
               hvil_early=args.hvil_before_flow_drop)
@@ -815,6 +839,11 @@ def run_model(args, b, phys):
                 fid = msg.arbitration_id
                 body = bytes(msg.data)
                 changed = (fid == 0x7F4 and body[2] != diag_last_state)
+                if (fid == 0x7F4 and body[2] == 2
+                        and override_seen_wall is None):
+                    override_seen_wall = time.monotonic()
+                    log.info("VCU: first 0x7F4 reporting OVERRIDE seen "
+                             "(t=%.1f)", t)
                 if changed or t - diag_last_t.get(fid, -1e9) >= DIAG_LOG_PERIOD_S:
                     diag_last_t[fid] = t
                     if fid == 0x7F4:
@@ -864,6 +893,12 @@ def run_model(args, b, phys):
                 peak[key] = v
         bms.update(t, vcu)
         vcu.update(t, dt, pk.soc_pct, bms.chg_max, pk.spread_mv, pk.vmin)
+        if (args.vcu_charger_after_override_s is not None
+                and not recommand_fired and override_seen_wall is not None
+                and time.monotonic() - override_seen_wall
+                >= args.vcu_charger_after_override_s):
+            recommand_fired = True
+            vcu.recommand_charger(t)
         if vcu.consume_restart():
             bms.restart()
         ph["model"] = time.perf_counter() - _pt
@@ -1044,6 +1079,15 @@ def main():
                          "NOT suitable for override scenarios: there the VCU "
                          "sits in low power for the whole override. Use "
                          "--max-sim-s there.")
+    ap.add_argument("--vcu-charger-after-override-s", type=float,
+                    default=None,
+                    help="spec 6 / 4.1 test stimulus (tester, 2026-10-16): "
+                         "this many WALL seconds after the first 0x7F4 "
+                         "reporting OVERRIDE reaches the vehicle segment, the "
+                         "VCU commands CHARGER with the flow bit on. Wall "
+                         "time, because the interposer's repeat is 20 frames "
+                         "at 50 ms of its own clock at any --time-scale. "
+                         "Never seen on a truck.")
     ap.add_argument("--debug", action="store_true")
     args = ap.parse_args()
     if args.bms_taper_shift_mv:

@@ -210,6 +210,13 @@ class Charger(object):
         # (it counts only while vehicleConnected is 1).
         self.pilot_reset_after_standby_s = 0.6
         self.pilot_reset_at = None
+        # Spec 4.1's early ends, as test stimuli (tester, 2026-10-16): the
+        # WALL time the first page 00 commanding CHARGER with the flow bit on
+        # arrived after one commanding LOW_POWER. The VCU itself never goes
+        # back from Low Power to CHARGER in these scenarios, so that frame
+        # is the interposer's override repeat (4.1). Wall time, because the
+        # repeat is 20 frames at 50 ms of the interposer's own clock.
+        self.repeat_seen_wall = None
         # Spec 9 (user, 2026-10-08): the original Bel unit's stop with
         # shutdownSource 11 and the plug still IN (vehicleConnected 1); the
         # VCU kept flow on for 84 s in the one clean capture
@@ -300,6 +307,12 @@ class Charger(object):
         key = P.page_key(data)
         if key == P.PAGE_MASTER:
             flow, mode = P.dec_master(data)
+            if (self.repeat_seen_wall is None and flow == 1
+                    and mode == P.MODE_CHARGER
+                    and self.mode == P.MODE_LOW_POWER):
+                self.repeat_seen_wall = time.monotonic()
+                log.info("charger: first CHARGER page 00 after LOW_POWER "
+                         "(the override's repeat) at t=%.1f", t)
             if mode != self.mode:
                 log.info("charger: mode %s -> %s (setpoint %.2f A)",
                          P.MODE_NAMES.get(self.mode),
@@ -624,6 +637,26 @@ def main():
                          "after charging starts with shutdownSource 11 and the "
                          "plug still IN (vehicleConnected stays 1), the "
                          "original Bel unit's behaviour (0 = never)")
+    ap.add_argument("--fault-after-repeat-s", type=float, default=None,
+                    help="spec 4.1 test stimulus (tester, 2026-10-16): inject "
+                         "--fault-kind this many WALL seconds after the "
+                         "override's repeat reaches the charger (its first "
+                         "CHARGER page 00 after LOW_POWER). Inside the "
+                         "repeat's 1 s, the trip's own repeat replaces it.")
+    ap.add_argument("--pilot-reset-after-repeat-s", type=float, default=None,
+                    help="spec 4.1 / 6.1 test stimulus (tester, 2026-10-16): "
+                         "this many WALL seconds after the override's repeat "
+                         "reaches the charger, the pilot timer steps back to "
+                         "0, a session boundary (6.1), with the plug still in "
+                         "and nothing else changed. The timer must be above "
+                         "0 min by then, or it is no step (logged as such); "
+                         "a session charging long enough to override always "
+                         "is.")
+    ap.add_argument("--unplug-after-repeat-s", type=float, default=None,
+                    help="pull the handle this many WALL seconds after the "
+                         "override's repeat reaches the charger (tester, "
+                         "2026-10-16): ends a scenario soon after its "
+                         "repeat.")
     ap.add_argument("--sp-log", default=None,
                     help="write every page 01 RECEIVED to this file, as "
                          "'host<TAB>amps<TAB>hex' (host = perf_counter at "
@@ -716,6 +749,40 @@ def main():
                 c.stop11_t = t
                 log.warning("charger: STOPPED with shutdownSource 11, plug "
                             "still in, at t=%.0fs", t)
+            since_rep = (None if c.repeat_seen_wall is None
+                         else time.monotonic() - c.repeat_seen_wall)
+            if (args.fault_after_repeat_s is not None and since_rep is not None
+                    and not fired.get("fault_rep")
+                    and since_rep >= args.fault_after_repeat_s):
+                fired["fault_rep"] = True
+                c.inject_fault(args.fault_kind, t)
+                log.warning("charger: INJECTED FAULT %s %.2f s (wall) after "
+                            "the override's repeat began, at t=%.1fs (flag "
+                            "leads the state edge by %.2f s)",
+                            args.fault_kind, since_rep, t,
+                            c.fault_flag_lead_s)
+            if (args.pilot_reset_after_repeat_s is not None
+                    and since_rep is not None
+                    and not fired.get("pilot_rep")
+                    and since_rep >= args.pilot_reset_after_repeat_s):
+                fired["pilot_rep"] = True
+                was = c.pilot_start_min + int(c.pilot_online_s // 60)
+                c.pilot_online_s = 0.0
+                c.pilot_start_min = 0
+                # Worded to start as the post-STAND_BY reset's line does:
+                # run_scenario's CHG_PILOT_BACK witness reads that prefix.
+                log.warning("charger: PILOT TIMER BACK TO 0 (stepped back "
+                            "from %d min) %.2f s (wall) after the override's "
+                            "repeat began, plug still in, at t=%.1fs%s", was,
+                            since_rep, t,
+                            "" if was > 0 else " -- NOT A STEP: it was "
+                            "already 0")
+            if (args.unplug_after_repeat_s is not None
+                    and since_rep is not None
+                    and not fired.get("unplug_rep")
+                    and since_rep >= args.unplug_after_repeat_s):
+                fired["unplug_rep"] = True
+                c.unplug(t)
             if (args.unplug_after_hold_s and c.low_power_since is not None
                     and t - c.low_power_since >= args.unplug_after_hold_s):
                 c.unplug(t)

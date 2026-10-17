@@ -448,6 +448,31 @@ def main():
           "and a burst three minutes earlier finds nothing, so the window "
           "is a window and not a whole-log search")
 
+    # repeat_ended(): the coverage-gap scenarios' required end (tester,
+    # 2026-10-16). It must find its own reason, short of 20, and nothing
+    # else, so a run whose race went the other way FAILS rather than
+    # passing on the other checks.
+    print("\nrepeat_ended (the named end a scenario requires):")
+
+    def matches(exp, line):
+        kind, pat = exp
+        return kind == "intp_event" and re.search(pat, line) is not None
+    line = "[2505312] OVERRIDE     REPEAT ended a=%d b=20 c=%d"
+    check(matches(R.repeat_ended(1), line % (12, 1)),
+          "repeat_ended(1) finds a SUPERSEDED end at 12 of 20")
+    check(matches(R.repeat_ended(0, short=False), line % (20, 0)),
+          "repeat_ended(0, short=False) finds a COMPLETE end at 20 of 20")
+    for exp, sent, code, what in (
+            (R.repeat_ended(1), 20, 0, "a COMPLETE end (the race lost)"),
+            (R.repeat_ended(1), 20, 1, "a SUPERSEDED end claiming 20 of 20"),
+            (R.repeat_ended(1), 12, 3, "a REPLACED end"),
+            (R.repeat_ended(1), 12, 10, "reason 10 (not 1)"),
+            (R.repeat_ended(3), 12, 2, "a RESET end, for REPLACED"),
+            (R.repeat_ended(2), 12, 1, "a SUPERSEDED end, for RESET"),
+            (R.repeat_ended(0, short=False), 19, 0, "19 sent, for COMPLETE")):
+        check(not matches(exp, line % (sent, code)),
+              "can fail: it does not accept %s" % what)
+
     if failures:
         print("\n%d failure(s)" % failures)
         return 1

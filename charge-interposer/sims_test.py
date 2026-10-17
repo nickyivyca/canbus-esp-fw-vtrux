@@ -568,6 +568,64 @@ def vport_problems(port_cls=None, src=None):
     return probs
 
 
+def repeat_seen_problems(charger_cls=None):
+    """charger_sim's trigger for the 4.1 early-end stimuli (tester,
+    2026-10-16): the override's repeat is the first page 00 commanding
+    CHARGER with flow 1 after one commanding LOW_POWER. Not the session's
+    opening CHARGER, not a flow-0 CHARGER, and only the first."""
+    cls = charger_cls or CS.Charger
+    probs = []
+    c = cls()
+    c.on_command(P.enc_master(1, P.MODE_CHARGER), 0.0)
+    if c.repeat_seen_wall is not None:
+        probs.append("the session's opening CHARGER was taken for the repeat")
+    c.on_command(P.enc_master(1, P.MODE_LOW_POWER), 1.0)
+    c.on_command(P.enc_master(0, P.MODE_CHARGER), 1.1)
+    if c.repeat_seen_wall is not None:
+        probs.append("a flow-0 CHARGER after LOW_POWER was taken for the "
+                     "repeat")
+    c.on_command(P.enc_master(1, P.MODE_LOW_POWER), 1.2)
+    c.on_command(P.enc_master(1, P.MODE_CHARGER), 2.0)
+    first = c.repeat_seen_wall
+    if first is None:
+        probs.append("CHARGER with flow 1 after LOW_POWER was not seen")
+    c.on_command(P.enc_master(1, P.MODE_LOW_POWER), 3.0)
+    c.on_command(P.enc_master(1, P.MODE_CHARGER), 4.0)
+    if c.repeat_seen_wall != first:
+        probs.append("a later CHARGER after LOW_POWER moved the stamp")
+    return probs
+
+
+def recommand_problems(vcu_cls=None):
+    """vehicle_sim's spec 6 stimulus: recommand_charger() sends one 20-frame
+    CHARGER burst with flow 1, and the VCU then does not cut off again, so
+    the scenario ends from the charger side."""
+    cls = vcu_cls or VS.VCU
+    probs = []
+    v = cls(evap=True, start_soc=79.8)
+    v.start(0.0)
+    v.on_charger(0.5, P.CHG_STATE_CHARGING, 0, 1)
+    t = 1.0
+    while v.mode != P.MODE_LOW_POWER and t < 10.0:
+        v.update(t, STEP, 80.2, 300.0)
+        t += STEP
+    if v.mode != P.MODE_LOW_POWER:
+        return ["setup: the evap VCU never cut off at 80 %"]
+    v.pending = []
+    v.recommand_charger(t)
+    want = P.enc_master(1, P.MODE_CHARGER)
+    if v.pending != [want] * VS.BURST_FRAMES:
+        probs.append("the re-command is not one %d-frame CHARGER flow-1 "
+                     "burst (%d frames)" % (VS.BURST_FRAMES, len(v.pending)))
+    for _ in range(int(30.0 / STEP)):
+        t += STEP
+        v.update(t, STEP, 80.2, 300.0)
+    if v.mode != P.MODE_CHARGER:
+        probs.append("30 s after the re-command the VCU is in mode %s, not "
+                     "CHARGER: it cut off again" % v.mode)
+    return probs
+
+
 def help_problems():
     """Each sim's argument parser builds: `--help` exits 0. A broken help
     string (argparse formats it lazily) otherwise only shows when a
@@ -740,6 +798,33 @@ def main():
           "can fail: a flag raised with the state edge is caught")
     check(bool(fault_flag_problems(lead=-0.2)),
           "can fail: the minority order is not mistaken for the default")
+
+    for p in repeat_seen_problems():
+        check(False, "charger_sim: " + p)
+    check(not repeat_seen_problems(), "charger_sim stamps the override's "
+          "repeat at the first CHARGER flow-1 page 00 after LOW_POWER, and "
+          "only there")
+
+    class AnyCharger(CS.Charger):
+        def on_command(self, data, t=0.0):
+            if (P.page_key(data) == P.PAGE_MASTER and self.repeat_seen_wall
+                    is None and P.dec_master(data)[1] == P.MODE_CHARGER):
+                self.repeat_seen_wall = t + 1e6
+            CS.Charger.on_command(self, data, t)
+    check(bool(repeat_seen_problems(charger_cls=AnyCharger)),
+          "can fail: a trigger on any CHARGER page 00 is caught")
+    for p in recommand_problems():
+        check(False, "vehicle_sim: " + p)
+    check(not recommand_problems(), "vehicle_sim's recommand_charger sends "
+          "one CHARGER flow-1 burst and the VCU does not cut off again")
+
+    class ReCutVCU(VS.VCU):
+        def recommand_charger(self, t):
+            VS.VCU.recommand_charger(self, t)
+            self.recommanded = False
+    check(bool(recommand_problems(vcu_cls=ReCutVCU)),
+          "can fail: a VCU that cuts off again after the re-command is "
+          "caught")
 
     for p in guard_problems():
         check(False, "bus.py guard: " + p)

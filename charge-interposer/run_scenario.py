@@ -278,6 +278,24 @@ def repeat_bursts_of_20():
     return ("intp_repeat_20", None)
 
 
+# Spec 4.1's early ends, as the core logs them (8.3): REPEAT ended a=<sent>
+# b=<announced> c=<reason>, reason 0 complete, 1 superseded by the VCU's
+# page 00, 2 abandoned on a session reset, 3 replaced by a new repeat
+# (REPEAT_END_REASONS). The coverage-gap scenarios (tester, 2026-10-16)
+# each REQUIRE their named end, because a race that went the other way
+# (the burst finishing first) would otherwise pass every other check and
+# show nothing. The per-burst scorer (repeat_bursts_of_20) still judges
+# each end on its own witness.
+SHORT_SENT = r"a=(?:1[0-9]|[0-9])"         # 0-19 of 20
+
+
+def repeat_ended(code, short=True):
+    """A REPEAT ended line with reason `code` must be in the interposer log,
+    with fewer than 20 sent when `short` (all 20 for code 0)."""
+    sent = SHORT_SENT if short else r"a=20"
+    return ev(r"REPEAT ended %s b=20 c=%d\b" % (sent, code))
+
+
 def fault_or_flow_first(override=False):
     """A charger internal fault that the VCU also closes out (spec 6, the
     reviewer's reading of 2026-10-08): EITHER order is spec-correct.
@@ -1224,6 +1242,107 @@ SCENARIOS = [
                 fault_or_flow_first(),
                 ev(FLOW_DROP),
                 no_ev(r"TRIP"),
+                veh_ev(r"commanding STAND_BY"),
+                final_state("PASSTHROUGH"),
+                diag_frames_ok()]),
+
+    # Coverage gaps 2-4 (reviewer, 2026-10-16): the "override ended, armed"
+    # line, the REPEAT start / end lines and spec 4.1's early ends in a
+    # closed loop. Each starts as evap-override does, but at 79.8 % so the
+    # ceiling comes early, and its stimulus is keyed to what the sim sees on
+    # its own wire (wall seconds after the first 0x7F4 reporting OVERRIDE,
+    # or after the override's repeat reaches the charger), not to sim time.
+    # Each ends with a handle pull 10 s after the repeat began.
+    Scenario(
+        "override-ended-by-vcu",
+        "Spec 6's 'VCU commanded CHARGE during the override' row: the VCU "
+        "commands CHARGER with the flow bit on 3 s after the override began, "
+        "after its 20-frame repeat. The override ends at once, back to "
+        "MONITOR, armed; the handle pull then closes the session. A test "
+        "stimulus: no truck has shown it.",
+        vehicle=["--evap", "--soc", "79.8", "--imbalance", "0.4",
+                 "--stop-on-done", "--max-sim-s", "6000",
+                 "--vcu-charger-after-override-s", "3"],
+        charger=["--unplug-after-repeat-s", "10"],
+        timeout=420,
+        expect=[ev(r"LOW_POWER overridden"),
+                repeat_ended(0, short=False),
+                ev(r"override ended, armed"),
+                ev_after(r"override ended, armed", r"plug out"),
+                no_ev(r"TRIP"),
+                no_ev(r"RELEASE"),
+                repeat_bursts_of_20(),
+                veh_ev(r"commanding CHARGER during the override"),
+                veh_ev(r"commanding STAND_BY"),
+                final_state("PASSTHROUGH"),
+                diag_frames_ok()]),
+
+    Scenario(
+        "repeat-superseded-by-vcu",
+        "Spec 4.1: 'a page-00 frame from the VCU during a repeat ends the "
+        "repeat'. The VCU commands CHARGER 0.3 s after the override began, "
+        "inside its repeat: the repeat ends SUPERSEDED, short of 20, and "
+        "the override ends, armed (spec 6). A test stimulus.",
+        vehicle=["--evap", "--soc", "79.8", "--imbalance", "0.4",
+                 "--stop-on-done", "--max-sim-s", "6000",
+                 "--vcu-charger-after-override-s", "0.3"],
+        charger=["--unplug-after-repeat-s", "10"],
+        timeout=420,
+        expect=[ev(r"LOW_POWER overridden"),
+                repeat_ended(1),
+                ev(r"override ended, armed"),
+                no_ev(r"TRIP"),
+                no_ev(r"RELEASE"),
+                repeat_bursts_of_20(),
+                veh_ev(r"commanding CHARGER during the override"),
+                veh_ev(r"commanding STAND_BY"),
+                final_state("PASSTHROUGH"),
+                diag_frames_ok()]),
+
+    Scenario(
+        "repeat-replaced-by-trip",
+        "Spec 4.1's own example: an override decided from a tick starts a "
+        "CHARGER repeat, and a trip within its 1,000 ms starts the Low Power "
+        "one, which replaces it. A charger inverterFault 0.2 s after the "
+        "repeat reaches the charger: the CHARGER repeat ends REPLACED, short "
+        "of 20, and the trip's repeat follows.",
+        vehicle=["--evap", "--soc", "79.8", "--imbalance", "0.4",
+                 "--stop-on-done", "--max-sim-s", "6000"],
+        charger=["--fault-after-repeat-s", "0.2"],
+        timeout=420,
+        expect=[ev(r"LOW_POWER overridden"),
+                repeat_ended(3),
+                ev(r"TRIP a=8"),
+                no_ev(r"RELEASE"),
+                repeat_bursts_of_20(),
+                chg_ev(r"INJECTED FAULT"),
+                veh_ev(r"commanding STAND_BY"),
+                final_state("PASSTHROUGH"),
+                diag_frames_ok()]),
+
+    Scenario(
+        "repeat-reset-by-pilot-step",
+        "Spec 4.1 / 6.1: 'a session boundary (6.1), which resets any "
+        "repeat'. The charger's pilot timer steps back to 0 with the plug "
+        "still in, as the override's repeat reaches it (the core sees it on "
+        "the next 0.9 s pilot frame, inside the repeat's 1 s): the repeat "
+        "ends on the session reset, short of 20. The handle pull 10 s after "
+        "the repeat began closes the session. A test stimulus.",
+        vehicle=["--evap", "--soc", "79.8", "--imbalance", "0.4",
+                 "--stop-on-done", "--max-sim-s", "6000"],
+        # 0.0, not 0.2 (the first run's value): the timer rides 0x18FFD8C0,
+        # sent every 0.9 s, so a step at 0.2 s could reach the core after a
+        # 1 s repeat had ended.
+        charger=["--pilot-reset-after-repeat-s", "0.0",
+                 "--unplug-after-repeat-s", "10"],
+        timeout=420,
+        expect=[ev(r"LOW_POWER overridden"),
+                repeat_ended(2),
+                ev(r"pilot timer stepped back"),
+                no_ev(r"TRIP"),
+                no_ev(r"RELEASE"),
+                repeat_bursts_of_20(),
+                chg_ev(r"PILOT TIMER BACK TO 0 \(stepped back from [1-9]"),
                 veh_ev(r"commanding STAND_BY"),
                 final_state("PASSTHROUGH"),
                 diag_frames_ok()]),
