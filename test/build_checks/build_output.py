@@ -777,6 +777,179 @@ def check_no_restart_test(path):
         else "none of the %d restart-test symbols are defined" % len(RESTART_TEST_SYMS))
 
 
+# ---- stock features, off in this product (spec 3.2, 12.3 item 3; 2026-10-16) ----
+#
+# (switch, row, ELF symbols, ELF symbol prefixes). The symbols are the ones nm
+# reported on the implementor's switch-on builds of e3d9437 (his self-check), and
+# the rows were then shown failing on the tester's own switch-on builds and passing
+# on the product build (test_refusal_pairs.py). Non-static functions only, the M5
+# lesson in check_no_instrument: a static the compiler can inline away would claim
+# coverage it does not have. A prefix catches the esp-mqtt library, whose own
+# function names are not ours to list one by one.
+STOCK_FEATURES = (
+    ("WICAN_FEATURE_MQTT", "no MQTT feature in the ELF",
+     ("mqtt_init", "mqtt_publish", "mqtt_connected"), ("esp_mqtt_client_", "mqtt_msg_")),
+    ("WICAN_FEATURE_ELM327", "no ELM327 feature in the ELF",
+     ("elm327_init", "elm327_process_cmd", "elm327_ready_to_receive", "elm327_get_identifier",
+      "elm327_can_log"), ()),
+    ("WICAN_FEATURE_AUTOPID", "no AutoPID feature in the ELF",
+     ("autopid_init", "autopid_parser", "autopid_data_handler", "autopid_find_standard_pid"), ()),
+)
+# The image half (spec 12.3 judges the image and the ELF): strings in every
+# image the tester built of e3d9437 with that feature on and in none built with it
+# off (string diffs of the switch-on images against the product image, and of
+# AutoPID's against MQTT+ELM327; test_refusal_pairs.py shows each row failing and
+# passing). RealDash adds no string of its own, so it has no image row.
+STOCK_IMAGE_MARKERS = (
+    ("WICAN_FEATURE_MQTT", "no MQTT feature in the image",
+     (b"MQTT_EVENTS", b"esp_mqtt_client_init", b"mqtt_parse_data")),
+    ("WICAN_FEATURE_ELM327", "no ELM327 feature in the image",
+     (b"ELM327 v1.3a", b"elm327_process_cmd", b"elm327_set_protocol")),
+    ("WICAN_FEATURE_AUTOPID", "no AutoPID feature in the image",
+     (b"autopid_task", b"/autopid_data", b"Autopid Task Started")),
+)
+REALDASH_ROW = "no boot-time bus enable in app_main"
+BUS_STATE_ROW = "bus state changed only by gen_inhibit and the OTA handler (ELF call sites)"
+# Spec 3.2: in every mode only gen_inhibit and the OTA handler bring the bus up or
+# down or flush it, and the OTA handler takes it only through the worker (8.1 rows 4
+# and 8), so it may tear down but never bring up. Callers by function name, as
+# objdump reports them; can_flush_rx and can_send are not in the product image at all.
+BUS_STATE_CALLERS = {
+    "can_enable": ("apply_mode",),
+    "can_disable": ("apply_mode", "gen_inhibit_task", "upload_post_handler"),
+}
+BUS_STATE_ABSENT = ("can_flush_rx", "can_send")
+_FUNC_RE = re.compile(r"^[0-9a-f]+ <([^>]+)>:\s*$")
+_CALL_MNEMONICS = ("j", "jal", "jalr", "c.j", "c.jal", "c.jalr", "tail", "call")
+
+
+def defined_symbols(nm_text):
+    """The names nm --defined-only lists (address, type, name)."""
+    return {ln.split()[-1] for ln in nm_text.splitlines() if len(ln.split()) >= 3}
+
+
+def call_sites(disasm, targets):
+    """{target: {caller: n}} from objdump -d text: every jump or call whose target is
+    exactly <target> (not <target+0x..>, a branch inside it), by the function it is in."""
+    out = {t: {} for t in targets}
+    fn = None
+    for ln in disasm.splitlines():
+        m = _FUNC_RE.match(ln)
+        if m:
+            fn = m.group(1)
+            continue
+        parts = ln.split("\t")
+        if len(parts) < 3 or not ln.rstrip().endswith(">"):
+            continue
+        mnem = parts[-2].strip() if len(parts) >= 4 else parts[1].strip()
+        if mnem not in _CALL_MNEMONICS:
+            continue
+        tgt = ln.rstrip()[ln.rstrip().rfind("<") + 1:-1]
+        if tgt in out and fn is not None and fn != tgt:
+            out[tgt][fn] = out[tgt].get(fn, 0) + 1
+    return out
+
+
+def _elf_tools():
+    """(nm, objdump) paths, or (None, why)."""
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from elf_checks import find_nm
+    except ImportError as e:
+        return None, "cannot import elf_checks.find_nm (%s)" % e
+    nm = find_nm()
+    if nm is None:
+        return None, "no riscv32-esp-elf-nm found"
+    od = os.path.join(os.path.dirname(nm), os.path.basename(nm).replace("-nm", "-objdump"))
+    if os.path.dirname(nm) == "":
+        od = nm.replace("-nm", "-objdump")
+    return (nm, od), None
+
+
+def stock_image_rows(img):
+    """[(row, ok, detail)] for the stock-feature image rows, from the image bytes."""
+    out = []
+    for flag, name, markers in STOCK_IMAGE_MARKERS:
+        hits = [m.decode("latin-1") for m in markers if m in img]
+        out.append((name, not hits, "image carries %s -- built with %s, a stock feature off in this product"
+                    % (", ".join(hits), flag) if hits
+                    else "none of %s's %d markers are in the image" % (flag, len(markers))))
+    return out
+
+
+def stock_rows(defined, sites):
+    """[(row, ok, detail)] for the stock-feature rows, from the ELF's defined
+    symbols and its call sites (call_sites over can_enable, can_disable and the
+    absent ones). Pure, so it is tested without a build."""
+    out = []
+    for flag, name, syms, prefixes in STOCK_FEATURES:
+        hits = [x for x in syms if x in defined]
+        hits += sorted(x for x in defined if any(x.startswith(p) for p in prefixes))
+        out.append((name, not hits, "ELF defines %s -- built with %s, a stock feature off in this "
+                    "product" % (", ".join(hits[:6]) + (" and %d more" % (len(hits) - 6) if len(hits) > 6 else ""),
+                                 flag) if hits else "none of %s's %d symbols%s are defined"
+                    % (flag, len(syms), (" or %s* names" % "/".join(prefixes)) if prefixes else "")))
+    n = sites.get("can_enable", {}).get("app_main", 0)
+    out.append((REALDASH_ROW, n == 0,
+                "app_main calls can_enable at %d site(s) -- a boot-time bus enable (the RealDash, "
+                "MQTT, ELM327 or AutoPID boot branch)" % n if n else "app_main never calls can_enable"))
+    bad = []
+    for fn, allowed in sorted(BUS_STATE_CALLERS.items()):
+        for caller, k in sorted(sites.get(fn, {}).items()):
+            if caller not in allowed:
+                bad.append("%s from %s (%d)" % (fn, caller, k))
+    present = [x for x in BUS_STATE_ABSENT if x in defined]
+    seen = "; ".join("%s from %s" % (fn, ", ".join(sorted(sites.get(fn, {})))) for fn in sorted(BUS_STATE_CALLERS))
+    out.append((BUS_STATE_ROW, not bad and not present,
+                ("other callers: %s" % "; ".join(bad) if bad else "")
+                + ("; " if bad and present else "")
+                + ("in the image: %s" % ", ".join(present) if present else "")
+                if bad or present else "%s; %s not in the image" % (seen, " and ".join(BUS_STATE_ABSENT))))
+    return out
+
+
+def check_no_stock_features(path):
+    """Spec 3.2 and 12.3 item 3 (2026-10-16): no stock feature that is off in this
+    product is in the image, and only gen_inhibit and the OTA handler change bus state.
+
+    Judged from the image's bytes (STOCK_IMAGE_MARKERS) and the ELF beside it --
+    its symbols and the call sites objdump finds -- never from the switches, so a switch set off but not wired to its code
+    is still caught. RealDash has no symbol of its own; its boot branch is a
+    can_enable() call in app_main, so its row counts those call sites (0 in the
+    product, one per enabled boot branch: implementor's objdump, e3d9437).
+    """
+    try:
+        img = open(path, "rb").read()
+    except OSError as e:
+        img = None
+        for _f, n, _m in STOCK_IMAGE_MARKERS:
+            row(n, None, "cannot read the image (%s)" % e, ref_missing=True)
+    if img is not None:
+        for n, ok, detail in stock_image_rows(img):
+            row(n, ok, detail)
+    names = [r[1] for r in STOCK_FEATURES] + [REALDASH_ROW, BUS_STATE_ROW]
+    elf = os.path.splitext(path)[0] + ".elf"
+    if not os.path.exists(elf):
+        for n in names:
+            row(n, None, "no ELF beside the image, so the check has no reference", ref_missing=True)
+        return
+    tools, why = _elf_tools()
+    if tools is None:
+        for n in names:
+            row(n, None, why, ref_missing=True)
+        return
+    r = subprocess.run((tools[0], "--defined-only", elf), capture_output=True, text=True)
+    d = subprocess.run((tools[1], "-d", "--no-show-raw-insn", elf), capture_output=True, text=True)
+    if r.returncode != 0 or d.returncode != 0 or not d.stdout:
+        for n in names:
+            row(n, None, "nm exit %d / objdump exit %d on %s" % (r.returncode, d.returncode,
+                os.path.basename(elf)), ref_missing=True)
+        return
+    sites = call_sites(d.stdout, tuple(BUS_STATE_CALLERS) + BUS_STATE_ABSENT)
+    for n, ok, detail in stock_rows(defined_symbols(r.stdout), sites):
+        row(n, ok, detail)
+
+
 def check_switches_classified(build_dir=None):
     """Spec 12.3 item 3 (added 2026-10-13, user): every build-time switch is
     classified, and an unclassified one fails the build checks.
@@ -831,16 +1004,18 @@ def check_test_only_refused():
     try:
         import build_switches as BS
     except ImportError as e:
-        row("every test-only switch has a refusal row", None,
-            "cannot import build_switches (%s)" % e, ref_missing=True)
+        for label in ("test-only switch", "stock feature off in this product"):
+            row("every %s has a refusal row" % label, None,
+                "cannot import build_switches (%s)" % e, ref_missing=True)
         return
     names = {r[0] for r in rows}
-    missing = sorted("%s -> %r" % (s, e[3]) for s, e in BS.SWITCHES.items()
-                     if e[0] == BS.TEST and e[3] not in names)
-    n = sum(1 for e in BS.SWITCHES.values() if e[0] == BS.TEST)
-    row("every test-only switch has a refusal row", not missing,
-        "no such row: " + "; ".join(missing) if missing
-        else "all %d test-only switches name a row this run produced" % n)
+    for cls, label in ((BS.TEST, "test-only switch"), (BS.STOCK, "stock feature off in this product")):
+        missing = sorted("%s -> %r" % (s, e[3]) for s, e in BS.SWITCHES.items()
+                         if e[0] == cls and e[3] not in names)
+        n = sum(1 for e in BS.SWITCHES.values() if e[0] == cls)
+        row("every %s has a refusal row" % label, not missing,
+            "no such row: " + "; ".join(missing) if missing
+            else "all %d name a row this run produced" % n)
 
 
 def _count_calls(rel, needle):
@@ -1493,6 +1668,7 @@ def main():
         check_no_instrument(b)
         check_not_rollback_rehearsal(b)
         check_no_restart_test(b)
+        check_no_stock_features(b)
         check_sources_older_than_image(b)
         check_prod_record(b)
     else:
@@ -1502,6 +1678,12 @@ def main():
             "no image to inspect", ref_missing=True)
         row("no restart test feature in the image", None,
             "no image to inspect", ref_missing=True)
+        for _f, n, _m in STOCK_IMAGE_MARKERS:
+            row(n, None, "no image to inspect", ref_missing=True)
+        for _f, n, _s, _p in STOCK_FEATURES:
+            row(n, None, "no image to inspect", ref_missing=True)
+        row(REALDASH_ROW, None, "no image to inspect", ref_missing=True)
+        row(BUS_STATE_ROW, None, "no image to inspect", ref_missing=True)
         row("prod-build record present", None,
             "no image to inspect", ref_missing=True)
     check_test_only_refused()

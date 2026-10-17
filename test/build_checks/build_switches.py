@@ -11,6 +11,11 @@ listed as one of:
     shipping variant   a configuration that may fly (auto-arm, for example);
     test-only          must never reach a vehicle; has a refusal row in
                        build_output.py that judges the image and the ELF;
+    stock feature, off in this product
+                       (class added 2026-10-16, user) one of the spec 3.2
+                       feature switches: on in the shared code, off here. It
+                       has the same kind of refusal row as a test-only switch,
+                       but no test trigger, so it is not in TRIGGERS;
     not a switch       a default value, a value the build injects, or a
                        library macro -- each with its reason. Those three are
                        the spec's examples, not a closed list (reviewer's
@@ -90,6 +95,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
 
 SHIP, TEST, NOT = "shipping variant", "test-only", "not a switch"
+STOCK = "stock feature, off in this product"
+CLASSES = (SHIP, TEST, STOCK, NOT)
+REFUSED = (TEST, STOCK)            # the classes whose entry names a refusal row
 # A "not a switch" entry carries a kind and a reason. The spec's kinds (default
 # value, injected value, library macro) are examples, not a closed list
 # (reviewer's reading, 2026-10-13), so the kind is checked for presence only.
@@ -123,6 +131,22 @@ SWITCHES = {
     "GI_TEST_RESTART_QUIESCE": (TEST, None,
         "restart test build (spec 12.4 'no error frames at a restart'): the "
         "crash trigger and the restart record", "no restart test feature in the image"),
+    # ---- stock features, off in this product (spec 3.2, 12.3 item 3; user
+    # 2026-10-16). Each is a CMake option (the top-level CMakeLists.txt sets it
+    # OFF in the cache, main/CMakeLists.txt defaults it ON) and the C symbol of the
+    # same name (defined 0 or 1 on every file of main), so one entry each.
+    "WICAN_FEATURE_MQTT": (STOCK, None,
+        "MQTT CAN logging and transmit (mqtt.c), and its can_enable() before a "
+        "transmit and at boot", "no MQTT feature in the ELF"),
+    "WICAN_FEATURE_ELM327": (STOCK, None,
+        "the ELM327 command path (elm327.c): ATSP's can_disable/can_enable, the "
+        "receive-queue flush, can_send", "no ELM327 feature in the ELF"),
+    "WICAN_FEATURE_AUTOPID": (STOCK, None,
+        "AutoPID (autopid.c), which drives ELM327 and publishes over MQTT and "
+        "cannot be built without both", "no AutoPID feature in the ELF"),
+    "WICAN_FEATURE_REALDASH": (STOCK, None,
+        "the RealDash boot branch in main.c, a boot-time can_enable(); no symbol "
+        "of its own", "no boot-time bus enable in app_main"),
     # ---- not a switch
     "GEN_INHIBIT_AUTOARM_OFFSET_US": (SHIP, None,
         "part of the auto-arm configuration (an #ifndef default of 500 us beside "
@@ -671,14 +695,14 @@ def classify(found, table=None, triggers=None):
     bad = []
     for s, entry in sorted(table.items()):
         cls, kind, reason, refusal = entry
-        if cls not in (SHIP, TEST, NOT):
-            bad.append("%s: class %r is not one of the three" % (s, cls))
+        if cls not in CLASSES:
+            bad.append("%s: class %r is not one of the four" % (s, cls))
         if cls == NOT and not (kind or "").strip():
             bad.append("%s: 'not a switch' needs a kind" % s)
         if not (reason or "").strip():
             bad.append("%s: no reason" % s)
-        if cls == TEST and not refusal:
-            bad.append("%s: test-only with no refusal row" % s)
+        if cls in REFUSED and not refusal:
+            bad.append("%s: %s with no refusal row" % (s, cls))
         if cls == TEST and not (triggers.get(s) or {}).get("probes"):
             bad.append("%s: test-only with no trigger (12.4 inert check)" % s)
     for s in sorted(triggers):

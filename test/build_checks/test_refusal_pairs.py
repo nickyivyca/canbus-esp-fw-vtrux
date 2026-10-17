@@ -1,8 +1,18 @@
 #!/usr/bin/env python3
-"""Spec 12.3 item 3: each test-only switch's refusal rows, shown failing on an image
-built with the switch on and passing on one built without it.
+"""Spec 12.3 item 3: each test-only switch's refusal rows, and each stock feature's
+(off in this product, class added 2026-10-16), shown failing on an image built with
+the switch on and passing on one built without it.
 
-    python3 test_refusal_pairs.py --off <off.bin> --on SWITCH=<on.bin> [--on SWITCH=<on.bin> ...]
+    python3 test_refusal_pairs.py --off <off.bin> --on SWITCH=<on.bin> [--on ...] [--control SWITCH=<img> ...]
+
+--control: for a switch that cannot be built on alone, the image that differs from
+its --on image by that switch only; the switch's rows must PASS on it. AutoPID needs
+ELM327 and MQTT (wican_features.h), so its --on is MQTT+ELM327+AUTOPID and its
+--control MQTT+ELM327, which the generic --off image (everything off) cannot stand in
+for: there the AutoPID row passing would not show that AutoPID's switch is what
+moves it.
+So the control must also be shown to carry what the switch needs (NEEDS_CONTROL):
+on it, MQTT's and ELM327's rows must FAIL, naming them.
 
 Both images of a pair should be built from the same commit, from a clean tree. Each
 must have its .elf beside it. For each --on image, every row the switch's table entry
@@ -34,7 +44,21 @@ ROWS = {
     "GI_TEST_RESTART_QUIESCE": (BO.check_no_restart_test,
                                 ("no restart test feature in the image", "no restart test symbols in the ELF",
                                  "project name is not a restart test build"), False),
+    # Stock features, off in this product (2026-10-16). The three with symbols and
+    # strings name their switch in the detail, image and ELF; RealDash's row counts
+    # app_main's can_enable call sites, which any boot branch adds to, so its detail
+    # cannot name it, and it has no image row.
+    "WICAN_FEATURE_MQTT": (BO.check_no_stock_features,
+                           ("no MQTT feature in the image", "no MQTT feature in the ELF"), True),
+    "WICAN_FEATURE_ELM327": (BO.check_no_stock_features,
+                             ("no ELM327 feature in the image", "no ELM327 feature in the ELF"), True),
+    "WICAN_FEATURE_AUTOPID": (BO.check_no_stock_features,
+                              ("no AutoPID feature in the image", "no AutoPID feature in the ELF"), True),
+    "WICAN_FEATURE_REALDASH": (BO.check_no_stock_features, (BO.REALDASH_ROW,), False),
 }
+# switch -> the switches its --control image must carry: their rows must FAIL on it,
+# naming them, so the product image (which passes AutoPID's rows too) cannot stand in.
+NEEDS_CONTROL = {"WICAN_FEATURE_AUTOPID": ("WICAN_FEATURE_MQTT", "WICAN_FEATURE_ELM327")}
 
 
 def run(fn, path):
@@ -49,9 +73,10 @@ def main():
     args = sys.argv[1:]
     off = args[args.index("--off") + 1]
     ons = [args[k + 1].split("=", 1) for k, a in enumerate(args) if a == "--on"]
+    controls = [args[k + 1].split("=", 1) for k, a in enumerate(args) if a == "--control"]
     checks = []
-    tests = sorted(s for s, e in BS.SWITCHES.items() if e[0] == BS.TEST)
-    checks.append(("every test-only switch in the table has rows here",
+    tests = sorted(s for s, e in BS.SWITCHES.items() if e[0] in (BS.TEST, BS.STOCK))
+    checks.append(("every test-only switch and stock feature in the table has rows here",
                    [s for s in tests if s not in ROWS] == [], "missing %s" % [s for s in tests if s not in ROWS]))
     for sw, path in ons:
         if sw not in ROWS:
@@ -63,6 +88,22 @@ def main():
             ok, detail = got.get(n, (None, "row not produced"))
             good = ok is False and (not named or sw in detail)
             checks.append(("%s ON: %r fails%s" % (sw, n, " naming it" if named else ""), good, detail[:120]))
+    for sw, path in controls:
+        if sw not in ROWS:
+            checks.append(("%s is a known switch" % sw, False, "not in ROWS"))
+            continue
+        fn, names, _named = ROWS[sw]
+        got = run(fn, path)
+        for n in names:
+            ok, detail = got.get(n, (None, "row not produced"))
+            checks.append(("%s CONTROL: %r passes" % (sw, n), ok is True, detail[:120]))
+        for dep in NEEDS_CONTROL.get(sw, ()):
+            dfn, dnames, dnamed = ROWS[dep]
+            dgot = got if dfn is fn else run(dfn, path)
+            for n in dnames:
+                ok, detail = dgot.get(n, (None, "row not produced"))
+                checks.append(("%s CONTROL carries %s: %r fails%s" % (sw, dep, n, " naming it" if dnamed else ""),
+                               ok is False and (not dnamed or dep in detail), detail[:120]))
     seen_fns = []
     for sw, (fn, names, _n) in sorted(ROWS.items()):
         if fn in seen_fns:
@@ -73,8 +114,11 @@ def main():
             ok, detail = got.get(n, (None, "row not produced"))
             checks.append(("OFF: %r passes" % n, ok is True, detail[:120]))
     covered = {sw for sw, _p in ons}
-    checks.append(("every test-only switch has an ON image in this run",
+    checks.append(("every test-only switch and stock feature has an ON image in this run",
                    set(tests) <= covered, "no ON image for %s" % sorted(set(tests) - covered)))
+    need = set(NEEDS_CONTROL) - {sw for sw, _p in controls}
+    checks.append(("every switch that cannot be built alone has a CONTROL image in this run",
+                   not need, "no --control for %s" % sorted(need)))
     fails = 0
     for name, ok, detail in checks:
         print("  %-4s %s%s" % ("ok" if ok else "FAIL", name, "" if ok else "  -- " + detail))

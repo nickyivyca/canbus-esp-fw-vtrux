@@ -10,7 +10,12 @@
   table well-formed": driven through a substituted scan and table, so each
   finding is shown to reach its own row and only that row;
 - "every test-only switch has a refusal row": a table naming a row that this
-  run did not produce fails it.
+  run did not produce fails it; and the same for "every stock feature off in
+  this product has a refusal row" (2026-10-16);
+- the stock-feature rows (spec 3.2, 12.3 item 3; 2026-10-16): call_sites on
+  synthetic objdump text in both line shapes, and stock_rows on synthetic symbol
+  sets and call sites, each feature and each bus-state breach reaching its own
+  row. The real switch-on/switch-off builds are test_refusal_pairs.py's.
 """
 
 import os
@@ -116,9 +121,23 @@ def main():
         got = {n: ok for n, ok, _d, _r in BO.rows}
         checks.append(("refused: a shipping variant needs no refusal row",
                        got.get("every test-only switch has a refusal row") is True))
+        SR = "every stock feature off in this product has a refusal row"
+        BS.SWITCHES = {"S": (BS.STOCK, None, "why", "row s")}
+        BO.rows.clear()
+        BO.row("row s", True, "")
+        BO.check_test_only_refused()
+        got = {n: ok for n, ok, _d, _r in BO.rows}
+        checks.append(("refused: a stock feature whose row ran passes", got.get(SR) is True))
+        BO.rows.clear()
+        BO.row("some other row", True, "")
+        BO.check_test_only_refused()
+        got = {n: ok for n, ok, _d, _r in BO.rows}
+        checks.append(("refused: a stock feature whose row did not run fails", got.get(SR) is False))
     finally:
         BS.scan, BS.SWITCHES, BS.TRIGGERS, BS.read_record = real_scan, real_table, real_triggers, real_record
         BO.rows.clear()
+
+    checks.extend(stock_checks())
 
     # The real pair: images of one commit built with and without the switch, each
     # with its ELF beside it. Only this exercises the ELF half of the row.
@@ -139,6 +158,82 @@ def main():
         fails += 0 if ok else 1
     print("PASS" if not fails else "FAIL: %d" % fails)
     return 1 if fails else 0
+
+
+DISASM = """
+42000100 <apply_mode>:
+42000104:\tjal\tra,42000900 <can_enable>
+42000108:\t0e2080ef          \tjal\tra,42000980 <can_disable>
+42000200 <gen_inhibit_task>:
+42000204:\tj\t42000980 <can_disable>
+42000300 <upload_post_handler>:
+42000304:\tjalr\tra,-12(ra) # 42000980 <can_disable>
+42000308:\taddi\ta0,a0,256 # 42000900 <can_enable>
+42000900 <can_enable>:
+42000904:\tbeqz\ta0,42000910 <can_enable+0x10>
+42000908:\tj\t42000900 <can_enable>
+42000980 <can_disable>:
+42000984:\tret
+"""
+PRODUCT_SITES = {"can_enable": {"apply_mode": 1},
+                 "can_disable": {"apply_mode": 1, "gen_inhibit_task": 1, "upload_post_handler": 1},
+                 "can_flush_rx": {}, "can_send": {}}
+
+
+def stock_checks():
+    out = []
+    s = BO.call_sites(DISASM, ("can_enable", "can_disable", "can_send"))
+    out.append(("call_sites: jal, j and a commented jalr counted, by caller, in both line shapes",
+                s["can_disable"] == {"apply_mode": 1, "gen_inhibit_task": 1, "upload_post_handler": 1}))
+    out.append(("call_sites: a branch to <can_enable+0x10>, its own self-jump and an address taken (addi) are not call sites",
+                s["can_enable"] == {"apply_mode": 1}))
+    out.append(("call_sites: a target never called is empty", s["can_send"] == {}))
+    nm = "42000100 T apply_mode\n42000200 t gen_inhibit_task\n         U printf\n"
+    out.append(("defined_symbols: defined names only", BO.defined_symbols(nm) == {"apply_mode", "gen_inhibit_task"}))
+
+    base = {"apply_mode", "gen_inhibit_task", "upload_post_handler", "can_enable", "can_disable", "app_main"}
+
+    def rows(defined=(), sites=None):
+        return {n: (ok, det) for n, ok, det in BO.stock_rows(base | set(defined), sites or PRODUCT_SITES)}
+
+    r = rows()
+    out.append(("stock_rows: the product shape passes every row", all(ok for ok, _ in r.values())
+                and len(r) == len(BO.STOCK_FEATURES) + 2))
+    for flag, name, syms, prefixes in BO.STOCK_FEATURES:
+        for sym in syms:
+            r = rows({sym})
+            out.append(("stock_rows: %s alone fails %r, naming %s" % (sym, name, flag),
+                        r[name][0] is False and flag in r[name][1]
+                        and sum(1 for ok, _ in r.values() if not ok) == 1))
+        for p in prefixes:
+            r = rows({p + "init"})
+            out.append(("stock_rows: a %s* name fails %r" % (p, name), r[name][0] is False))
+    sites = dict(PRODUCT_SITES, can_enable={"apply_mode": 1, "app_main": 1})
+    r = rows(sites=sites)
+    out.append(("stock_rows: app_main calling can_enable fails the boot-enable row", r[BO.REALDASH_ROW][0] is False))
+    out.append(("stock_rows: ... and the bus-state row", r[BO.BUS_STATE_ROW][0] is False))
+    for fn, caller in (("can_disable", "elm327_set_protocol"), ("can_enable", "mqtt_parse_data"),
+                       ("can_enable", "upload_post_handler")):
+        sites = dict(PRODUCT_SITES, **{fn: dict(PRODUCT_SITES[fn], **{caller: 1})})
+        r = rows(sites=sites)
+        out.append(("stock_rows: %s from %s fails the bus-state row, naming it" % (fn, caller),
+                    r[BO.BUS_STATE_ROW][0] is False and caller in r[BO.BUS_STATE_ROW][1]))
+    for absent in BO.BUS_STATE_ABSENT:
+        r = rows({absent})
+        out.append(("stock_rows: %s in the image fails the bus-state row" % absent,
+                        r[BO.BUS_STATE_ROW][0] is False and absent in r[BO.BUS_STATE_ROW][1]))
+
+    img = bytes(1) + b"product image" + bytes(1) + b"gen_inhibit" + bytes(1)
+    r = {n: ok for n, ok, _d in BO.stock_image_rows(img)}
+    out.append(("stock_image_rows: an image with no marker passes every row",
+                all(r.values()) and len(r) == len(BO.STOCK_IMAGE_MARKERS)))
+    for flag, name, markers in BO.STOCK_IMAGE_MARKERS:
+        for m in markers:
+            r = {n: (ok, d) for n, ok, d in BO.stock_image_rows(img + m + bytes(1))}
+            out.append(("stock_image_rows: %r alone fails %r, naming %s" % (m.decode(), name, flag),
+                        r[name][0] is False and flag in r[name][1]
+                        and sum(1 for ok, _ in r.values() if not ok) == 1))
+    return out
 
 
 if __name__ == "__main__":

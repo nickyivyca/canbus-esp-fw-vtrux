@@ -385,6 +385,16 @@ def main():
          len(B.classify({}, {}, {"Z": PRB})[2]) == 1, ""),
         ("the real tables agree: every test-only switch has a trigger, every trigger a test-only switch",
          sorted(k for k, e in B.SWITCHES.items() if e[0] == B.TEST) == sorted(B.TRIGGERS), ""),
+        ("classify: a stock feature off in this product is a class (2026-10-16)",
+         B.classify({"S": []}, {"S": (B.STOCK, None, "why", "row s")}, {}) == ([], [], []), ""),
+        ("classify: a stock feature needs a refusal row",
+         len(B.classify({"S": []}, {"S": (B.STOCK, None, "why", None)}, {})[2]) == 1, ""),
+        ("classify: a stock feature with a trigger is malformed (it has no test trigger)",
+         len(B.classify({"S": []}, {"S": (B.STOCK, None, "why", "row s")}, {"S": PRB})[2]) == 1, ""),
+        ("the real table: the four spec 3.2 feature switches are stock features with rows",
+         all((B.SWITCHES.get(s) or (None,))[0] == B.STOCK and B.SWITCHES[s][3]
+             for s in ("WICAN_FEATURE_MQTT", "WICAN_FEATURE_ELM327", "WICAN_FEATURE_AUTOPID",
+                       "WICAN_FEATURE_REALDASH")), ""),
         ("classify: an unknown class is malformed",
          len(B.classify({"A": []}, {"A": ("maybe", None, "why", None)}, {})[2]) == 1, ""),
     ]
