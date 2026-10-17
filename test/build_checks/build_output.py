@@ -868,8 +868,12 @@ def check_one_transmit_owner():
     The image cannot show this -- a call is a call -- so it lives with the other
     source rows. Two callers of twai_transmit() are allowed and no more:
 
-      can.c        can_send(), the client path (SLCAN / ELM327 / MQTT), which is
+      can.c        can_send(), the one way any other task can transmit, which is
                    refused whenever gen_inhibit owns the bus (spec 3.2, review A3).
+                   Stock reached it from SLCAN, ELM327 and MQTT; since 2026-10-16
+                   the SLCAN parser is disabled on every channel and the ELM327
+                   and MQTT CAN paths are given up (spec 3.2), but the refusal
+                   stays whoever calls it.
                    That refusal is ALSO a trip-7 correctness requirement: the
                    inhibit is judged complete from msgs_to_tx == 0, which proves our
                    frame went out only because nothing else can be queued behind it.
