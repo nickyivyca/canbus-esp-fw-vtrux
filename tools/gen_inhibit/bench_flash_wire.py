@@ -15,8 +15,15 @@ things the device's ACKs did at the end --
     stopped reading (window closed);
   - its last ACK left the window open: the ACKs stopped with the window open
     (link lost);
-plus the longest gap between device ACKs, and when the upload ended. An RST
-from either side and the device's first reply data are added when present.
+and a third (reviewer, 2026-10-17) that comes before both --
+  - the highest ACK covers the whole request (its header plus Content-Length,
+    read from the capture): whole upload acknowledged, and what the device
+    answered on the wire;
+plus the longest gap between device ACKs, how long the device was silent after
+its last ACK until the upload ended (a separate figure, not a gap between
+ACKs), and when the upload ended. An RST from either side and the device's
+first reply data are added when present. Payload bytes are read only to size
+the request and find the reply's status; none is printed or kept.
 
 The device's address is bench_flash's --host; none is committed here. dumpcap
 and tshark come from PATH or the standard Wireshark install folder.
@@ -35,7 +42,7 @@ READY_MARGIN_S = 1.5
 STOP_TIMEOUT_S = 10.0
 
 FIELDS = ("frame.time_epoch", "ip.src", "tcp.stream", "tcp.flags.syn", "tcp.flags.ack",
-          "tcp.flags.fin", "tcp.flags.reset", "tcp.ack", "tcp.window_size", "tcp.len")
+          "tcp.flags.fin", "tcp.flags.reset", "tcp.ack", "tcp.window_size", "tcp.len", "tcp.payload")
 
 
 def find_tool(name):
@@ -65,19 +72,52 @@ def _flag(v):
 
 
 def parse_rows(text):
-    """tshark -T fields output, FIELDS in order, into dicts. Pure."""
+    """tshark -T fields output, FIELDS in order, into dicts; the payload (hex, with
+    or without colons) is optional. Pure."""
     rows = []
     for ln in text.splitlines():
         f = ln.split("\t")
-        if len(f) < len(FIELDS) or not f[0] or not f[2]:
+        if len(f) < len(FIELDS) - 1 or not f[0] or not f[2]:
             continue
         try:
             rows.append({"t": float(f[0]), "src": f[1], "stream": int(f[2]),
                          "syn": _flag(f[3]), "ackf": _flag(f[4]), "fin": _flag(f[5]), "rst": _flag(f[6]),
-                         "ack": int(f[7] or 0), "win": int(f[8] or 0), "len": int(f[9] or 0)})
+                         "ack": int(f[7] or 0), "win": int(f[8] or 0), "len": int(f[9] or 0),
+                         "payload": f[10].strip().replace(":", "") if len(f) > 10 else ""})
         except ValueError:
             continue
     return rows
+
+
+def _bytes(hexstr):
+    try:
+        return bytes.fromhex(hexstr or "")
+    except ValueError:
+        return b""
+
+
+def request_size(payload):
+    """The whole request's bytes, header plus Content-Length, from the bytes of the
+    laptop's first data segment; None if the header is not all there. Pure."""
+    end = payload.find(b"\r\n\r\n")
+    if end < 0:
+        return None
+    for line in payload[:end].split(b"\r\n")[1:]:
+        k, _, v = line.partition(b":")
+        if k.strip().lower() == b"content-length":
+            try:
+                return end + 4 + int(v.strip())
+            except ValueError:
+                return None
+    return None
+
+
+def reply_status(payload):
+    """The HTTP status at the start of the device's first reply data, or None. Pure."""
+    parts = payload.split(b" ", 2)
+    if len(parts) >= 2 and parts[0].startswith(b"HTTP/") and parts[1].isdigit():
+        return int(parts[1])
+    return None
 
 
 def upload_stream(rows, host):
@@ -103,10 +143,13 @@ def wire_summary(rows, host, t_start, t_end):
     acks = [r for r in conn if r["src"] == host and r["ackf"] and r["len"] == 0
             and not (r["syn"] or r["fin"] or r["rst"])]
     data = [r for r in conn if r["src"] == host and r["len"] > 0]
+    first = next((r for r in conn if r["src"] != host and r["len"] > 0), None)
+    req = request_size(_bytes(first.get("payload"))) if first else None
     out = {"stream": st, "from_syn": syn is not None, "segment": seg, "device_acks": len(acks),
            "upload_end_s": round(t_end - t0, 3),
            "rst_from": sorted({"device" if r["src"] == host else "laptop" for r in conn if r["rst"]}),
-           "device_data_s": round(data[0]["t"] - t0, 3) if data else None}
+           "device_data_s": round(data[0]["t"] - t0, 3) if data else None,
+           "request_bytes": req, "device_status": reply_status(_bytes(data[0].get("payload"))) if data else None}
     if not acks:
         return out
     hi = max(a["ack"] for a in acks)
@@ -115,6 +158,8 @@ def wire_summary(rows, host, t_start, t_end):
               key=lambda g: g[0], default=None)
     out.update({"highest_ack": hi, "bytes_acked": hi - 1, "last_ack_s": round(last["t"] - t0, 3),
                 "last_window": last["win"], "window_closed": last["win"] < seg,
+                "whole_acked": req is not None and hi - 1 >= req,
+                "silent_after_last_ack_s": round(max(0.0, t_end - last["t"]), 3),
                 "longest_gap_s": round(gap[0], 3) if gap else None,
                 "gap_after_ack": gap[1]["ack"] if gap else None,
                 "gap_at_s": round(gap[1]["t"] - t0, 3) if gap else None})
@@ -129,13 +174,21 @@ def wire_line(s):
     if not s["device_acks"]:
         line = "wire: the device sent no ACK on the upload connection"
     else:
-        how = ("under one %d-byte segment: the device stopped reading (window closed)" if s["window_closed"]
-               else "at least one %d-byte segment: the ACKs stopped with the window open (link lost)") % s["segment"]
+        if s.get("whole_acked"):
+            st = s.get("device_status")
+            how = "the whole %d-byte request: whole upload acknowledged; device answered %s" % (
+                s["request_bytes"], "HTTP %d" % st if st is not None else "nothing with a status on the wire")
+        elif s["window_closed"]:
+            how = "under one %d-byte segment: the device stopped reading (window closed)" % s["segment"]
+        else:
+            how = "at least one %d-byte segment: the ACKs stopped with the window open (link lost)" % s["segment"]
         line = ("wire: the device ACKed %d bytes (highest ack %d); its last ACK, %.2f s after %s, advertised "
-                "%d bytes, %s; longest gap between device ACKs %s"
+                "%d bytes, %s; longest gap between device ACKs %s; silent %.2f s after the last ACK until the "
+                "upload ended"
                 % (s["bytes_acked"], s["highest_ack"], s["last_ack_s"], since, s["last_window"], how,
                    "%.2f s, after ack %d at %.2f s" % (s["longest_gap_s"], s["gap_after_ack"], s["gap_at_s"])
-                   if s["longest_gap_s"] is not None else "none (one ACK)"))
+                   if s["longest_gap_s"] is not None else "none (one ACK)",
+                   s.get("silent_after_last_ack_s") or 0.0))
     line += "; the upload ended %.2f s after %s" % (s["upload_end_s"], since)
     if s["device_data_s"] is not None:
         line += "; the device's first reply data at %.2f s" % s["device_data_s"]

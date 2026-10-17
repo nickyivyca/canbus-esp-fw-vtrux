@@ -31,13 +31,23 @@ MUTANTS = [
      'sent[r["stream"]] = sent.get(r["stream"], 0) + 1'),
     ("times always from the upload's start", "t0 = syn if syn is not None else t_start", "t0 = t_start"),
     ("the shortest gap, not the longest", 'gap = max(((acks[i + 1]["t"]', 'gap = min(((acks[i + 1]["t"]'),
-    ("closed and open swapped in the line", 'if s["window_closed"]\n', 'if not s["window_closed"]\n'),
+    ("closed and open swapped in the line", 'elif s["window_closed"]:', 'elif not s["window_closed"]:'),
     ("RST blamed on the other side", '"device" if r["src"] == host else "laptop"', '"laptop" if r["src"] == host else "device"'),
     ("flags read from 1 only", 'return v.strip() in ("1", "True", "true")', 'return v.strip() in ("1",)'),
     ("an interface matched by prefix", 'if s.endswith("(%s)" % name) and ". " in s:', 'if ("(%s" % name) in s and ". " in s:'),
     ("no dumpcap is not checked", '        if not dumpcap:\n            return False, "no dumpcap (Wireshark not installed)"\n', ""),
     ("dumpcap -D failing raises", "        except (OSError, subprocess.SubprocessError) as e:\n            return False, \"dumpcap -D failed: %s\" % e\n",
      "        except subprocess.SubprocessError as e:\n            return False, \"dumpcap -D failed: %s\" % e\n"),
+    # The reviewer's 2026-10-17 rulings: a third label, and the silence after the last ACK.
+    ("the whole request needs one byte more", '"whole_acked": req is not None and hi - 1 >= req,',
+     '"whole_acked": req is not None and hi - 1 > req,'),
+    ("any upload is the whole one", '"whole_acked": req is not None and hi - 1 >= req,', '"whole_acked": True,'),
+    ("the request is its Content-Length only", "return end + 4 + int(v.strip())", "return int(v.strip())"),
+    ("the whole-upload label never printed", 'if s.get("whole_acked"):', "if False:"),
+    ("no reply status read", 'if len(parts) >= 2 and parts[0].startswith(b"HTTP/") and parts[1].isdigit():',
+     "if False:"),
+    ("silence counted from the first ACK", 'round(max(0.0, t_end - last["t"]), 3)', 'round(max(0.0, t_end - acks[0]["t"]), 3)'),
+    ("a colon-separated payload is not read", '.replace(":", "")', ""),
 ]
 
 
