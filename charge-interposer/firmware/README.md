@@ -18,10 +18,14 @@ SeaDrive, not in this repository. The spec, the bring-up log and the
 bench artifacts stayed there when this folder moved into
 `charge-interposer/`; see `../README.md`.
 
-> **Status:** Stage 0 (2026-09-10), Stage 1 and Stage 2 have all passed on
-> hardware; the running log of every result is
-> `projects/vtrux/notes/interposer-firmware-bringup.md`. The logic is separately
-> verified against the Python reference over real captures (below).
+> **Status:** Stage 0 (2026-09-10) and Stage 1 (2026-09-11) passed on
+> hardware. Stage 2 ran only in part and was superseded by acceptance
+> testing, round 1: step 3 ran every closed-loop scenario at 1x (23 of 23 on
+> E8) and step 4 ran the board on the bench (item 6: 21 of 21 closed-loop
+> scenarios on the board). Results that count are in
+> `projects/vtrux/notes/charge-interposer-test-evidence.md`, not here; the
+> implementor's working log is
+> `projects/vtrux/notes/interposer-firmware-bringup.md`.
 
 ## Layout
 
@@ -180,8 +184,9 @@ Two corollaries worth stating separately:
 
 ## Bringing it up on hardware
 
-Three stages, cheapest first. **Stage 0 and 0a passed 2026-09-10**; Stages 1 and
-2 are not run, and both need dongles.
+Three stages, cheapest first. **Stage 0 and 0a passed 2026-09-10, and Stage 1
+on 2026-09-11.** Stage 2 ran only in part (2026-09-11) and was superseded by
+acceptance testing, round 1, steps 3 and 4; see the status note at the top.
 
 > **Resolve the board from its MAC before every flash, never from a port
 > number written down earlier.** Two ESP32s enumerate here and both report
@@ -513,12 +518,12 @@ reference-vs-port differential, not here.
 
 **`--time-scale` is forced to 1.0**, and the flag says so rather than warning.
 The board runs on its own `millis()` and cannot be sped up: at scale 20 the sims
-reach the evap ceiling in 4.5 s of wall time while the board is still 55 s short
-of its 60 s arm delay, so it correctly refuses to override and the scenario
-"fails" for a reason that has nothing to do with the firmware. Real-time runs
-cost ~2-3 minutes each, which is what the synthetic scenarios suggest (override
-at 90 s, done by 150 s). Long-run charge regression stays offline in
-`regress.py`.
+reach the evap ceiling in 4.5 s of wall time while the board is still about 70 s
+short of its 75 s arm delay (spec 3), so it correctly refuses to override and the
+scenario "fails" for a reason that has nothing to do with the firmware. A
+real-time run lasts as long as the charge it simulates: about 1.5 h for a
+full-charge scenario (acceptance round 1, step 3). Long-run charge regression
+stays offline in `regress.py`.
 
 ## Test
 
@@ -555,8 +560,9 @@ g++ -std=c++11 -O2 -I src -o /tmp/hr test/host_diff/host_runner.cpp src/machine.
 
 `host_runner.cpp --events` dumps the core's event log as `X <t_ms> <a> <b> <c> <name>` instead of its emissions. It is NOT part of the L1 gate: the two cores word their logs differently by design, so only the numbers are comparable. It exists so `EV_REPEAT_END` can be checked against `machine.py`'s -- both report 9 of 20, superseded, at t=100500 on the trace above.
 No real capture reaches a release, because in reality the charger shut down
-at the ceiling and the capture ended. So the release (transparency, spec
-5.2), every trip path, the arm-delay wait and the above-ceiling start were
+at the ceiling and the capture ended. So the release (spec 5.1, and 5.2's
+Low Power with our hold), every trip path, the arm-delay wait and the
+above-ceiling start were
 untested by the captures. These drive them deliberately; `synth` counts the
 repeats of the VCU's standing page-00 command (spec 4.1), the only frames
 the core originates -- 20 per release, trip-during-override or
