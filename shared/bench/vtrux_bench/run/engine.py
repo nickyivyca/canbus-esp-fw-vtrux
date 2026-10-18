@@ -30,6 +30,11 @@ fails when the rule is switched off through RULES):
   gate            a gate check that does not PASS makes the rest of its
                   group NOT-RUN
   timeout         a check past its timeout is killed (whole tree), ERROR
+  skip            a check with a skip reason is recorded NOT-RUN with it,
+                  and never executed
+  restore         at the end, every board the run flashed is put back on
+                  its standing image (unless a flash failure stopped the
+                  bench, or STOP says norestore)
 """
 
 import fnmatch
@@ -52,7 +57,7 @@ from .record import Recorder, load_progress, new_run_dir, stamp, write_record, w
 RULES = {k: True for k in (
     "lock_guard", "flash_gate", "image_schedule", "identify_after",
     "no_verdict", "known_fail", "stop_pause", "throttle", "redact_scope",
-    "gate", "timeout")}
+    "gate", "timeout", "skip", "restore")}
 
 SHIP_EXCLUDE = {"__pycache__", ".pio", ".git", "build"}
 SSH = ("ssh", "-o", "BatchMode=yes")
@@ -97,10 +102,12 @@ class Engine:
         self.kf = {k.id: k.ref for k in suite.known_fails}
         self._wc_lock = threading.Lock()
         self.active_wallclock = {}
-        self.board_image = None
-        self.board_read = None
-        self.board_touched = False
-        self.no_more_flash = False
+        # Per board (Image.board): what it is on, what it last read, whether
+        # this run flashed it, and boards whose auto-reset check failed.
+        self.board_image = {}
+        self.board_read = {}
+        self.board_touched = set()
+        self.no_more_flash = set()
         self.bench_stopped = None
         self.failed_images = set()
         self.executed_checks = set()
@@ -137,6 +144,11 @@ class Engine:
         for e in load_progress(self.resume):
             if e.get("type") == "result":
                 by.setdefault(e["check"], []).append(e)
+            elif e.get("type") == "amend":
+                for r in by.get(e["check"], []):
+                    if r["id"] == e["id"]:
+                        r["verdict"] = e["verdict"]
+                        r["detail"] = e["detail"]
         prev = os.path.basename(os.path.normpath(self.resume))
         return {cid: (prev, rs) for cid, rs in by.items()
                 if rs and all(r["verdict"] in Verdict.TERMINAL for r in rs)}
@@ -224,15 +236,15 @@ class Engine:
         except Exception as e:
             got = None
             self.rec.event("identify-error", image=image.name, error=repr(e))
-        self.board_read = got
-        self.rec.event("identify", expected_image=image.name,
+        self.board_read[image.board] = got
+        self.rec.event("identify", board=image.board, expected_image=image.name,
                        expected=image.expect, read=got)
         return got
 
     def _flash_failed(self, name, why, recoverable=True):
         if RULES["flash_gate"]:
             if recoverable is False:
-                self.no_more_flash = True
+                self.no_more_flash.add(self.suite.images[name].board)
             self.failed_images.add(name)
             if self.suite.on_flash_failure == "stop-bench":
                 self.bench_stopped = why
@@ -242,16 +254,18 @@ class Engine:
         im = self.suite.images[name]
         if name in self.failed_images:
             return False, "image %s failed to flash earlier in this run" % name
+        board = im.board
         got = self.identify(im, logdir)
         if got == im.expect and RULES["image_schedule"]:
-            self.board_image = name
-            return True, "already on %s (read %s)" % (name, got)
-        self.board_image = None
-        if self.no_more_flash and RULES["flash_gate"]:
-            return False, "no flash allowed: an auto-reset check failed earlier"
+            self.board_image[board] = name
+            return True, "%s already on %s (read %s)" % (board, name, got)
+        self.board_image[board] = None
+        if board in self.no_more_flash and RULES["flash_gate"]:
+            return False, ("no flash of %s allowed: its auto-reset check "
+                           "failed earlier" % board)
         params = fmt_any(im.params, self.base_ctx())
-        self.board_touched = True
-        self.rec.event("flash-start", image=name, read_before=got)
+        self.board_touched.add(board)
+        self.rec.event("flash-start", board=board, image=name, read_before=got)
         res = self.flashers[im.flasher](im, params, self.settings, logdir)
         self.rec.event("flash", image=name, **res)
         if not res.get("ok"):
@@ -264,8 +278,8 @@ class Engine:
             why = "flashed %s but identify read %s" % (name, got2)
             self._flash_failed(name, why)
             return False, why
-        self.board_image = name
-        return True, "flashed %s, read %s" % (name, got2)
+        self.board_image[board] = name
+        return True, "flashed %s to %s, read %s" % (board, name, got2)
 
     # ---- remote ---------------------------------------------------------
     def _ship(self, g):
@@ -470,15 +484,18 @@ class Engine:
                     self.rec.event("lock-lost", group=g.name, holder=h)
                     status = skip_all(self.bench_stopped)
                     return
-            if g.image:
+            for name in g.image_list:
                 os.makedirs(logdir, exist_ok=True)
-                ok, why = self.ensure_image(g.image, logdir)
+                ok, why = self.ensure_image(name, logdir)
                 self.rec.event("image", group=g.name, ok=ok, reason=why)
                 if not ok:
                     status = skip_all(why)
                     return
             gate_reason = None
             for c in items:
+                if c.skip and RULES["skip"]:
+                    self._not_run(g, c, "skipped: %s" % c.skip)
+                    continue
                 if gate_reason:
                     self._not_run(g, c, gate_reason)
                     continue
@@ -491,23 +508,28 @@ class Engine:
                 passed = self.run_check(g, c, carried)
                 if c.gate and not passed and RULES["gate"]:
                     gate_reason = "gate %s/%s did not PASS" % (g.name, c.id)
-            if g.image and self.board_image is not None:
-                im = self.suite.images[g.image]
+            changed = []
+            for name in g.image_list:
+                im = self.suite.images[name]
+                if self.board_image.get(im.board) != name:
+                    continue
                 got = self.identify(im, logdir)
                 if got != im.expect:
-                    self.board_image = None
-                    if RULES["identify_after"]:
-                        status = "VOID: image read %s after the group" % got
-                        for r in self.rec.results[n_before:]:
-                            if r["group"] == g.name and not r.get("carried_from") \
-                                    and r["verdict"] != Verdict.NOT_RUN:
-                                r["judged"] = r["verdict"]
-                                r["verdict"] = Verdict.VOID
-                                r["detail"] = ("image read %s after the group, "
-                                               "expected %s; judged %s: %s" % (
-                                                   got, im.expect, r["judged"],
-                                                   r.get("detail", "")))
-                        self.rec.event("void-group", group=g.name, read=got)
+                    self.board_image[im.board] = None
+                    changed.append((im, got))
+            if changed and RULES["identify_after"]:
+                why = "; ".join("%s read %s after the group, expected %s" % (
+                    im.board, got, im.expect) for im, got in changed)
+                status = "VOID: " + why
+                for r in self.rec.results[n_before:]:
+                    if r["group"] == g.name and not r.get("carried_from") \
+                            and r["verdict"] != Verdict.NOT_RUN:
+                        r["judged"] = r["verdict"]
+                        r["verdict"] = Verdict.VOID
+                        r["detail"] = "%s; judged %s: %s" % (
+                            why, r["judged"], r.get("detail", ""))
+                        self.rec.amend(r)
+                self.rec.event("void-group", group=g.name, reason=why)
         finally:
             self.groups_out.append(dict(
                 name=g.name, lane=g.lane, host=g.host, needs_lock=g.needs_lock,
@@ -516,13 +538,18 @@ class Engine:
                 checks=len(items)))
 
     def restore(self):
-        si = self.suite.standing_image
-        if not si or not self.board_touched or self.board_image == si:
+        """Every board this run flashed goes back to its standing image."""
+        if not RULES["restore"]:
             return
-        if self.no_more_flash or (self.bench_stopped and
-                                  "flash" in self.bench_stopped):
-            self.rec.event("restore-skipped", reason=self.bench_stopped or
-                           "no flash allowed")
+        todo = []
+        for board in sorted(self.board_touched):
+            si = self.suite.standing_for(board)
+            if si and self.board_image.get(board) != si:
+                todo.append((board, si))
+        if not todo:
+            return
+        if self.bench_stopped and "flash" in self.bench_stopped:
+            self.rec.event("restore-skipped", reason=self.bench_stopped)
             return
         st = self.stop_text()
         if st is not None and "norestore" in st.lower():
@@ -530,19 +557,27 @@ class Engine:
             return
         t0 = time.monotonic()
         started = stamp()
+        statuses = []
         ok, h = self.lock_ours()
-        if not ok:
-            status = "RESTORE NOT RUN: lock not ours (%s)" % h
-        else:
+        for board, si in todo:
+            if not ok:
+                statuses.append("%s: RESTORE NOT RUN, lock not ours (%s)"
+                                % (board, h))
+                continue
+            if board in self.no_more_flash:
+                statuses.append("%s: RESTORE NOT RUN, its auto-reset check "
+                                "failed" % board)
+                continue
             logdir = os.path.join(self.run_dir, "_bench", "restore")
             os.makedirs(logdir, exist_ok=True)
             self.failed_images.discard(si)
             good, why = self.ensure_image(si, logdir)
-            status = ("restored: " if good else "RESTORE FAILED: ") + why
+            statuses.append(("restored: " if good else "RESTORE FAILED: ") + why)
+        status = "; ".join(statuses)
         self.rec.event("restore", status=status)
         self.groups_out.append(dict(
             name="restore", lane="bench", host="local", needs_lock=True,
-            image=si, started=started, ended=stamp(),
+            image=[si for _, si in todo], started=started, ended=stamp(),
             wall_s=round(time.monotonic() - t0, 1), status=status, checks=0))
 
     def _lane(self, lane, work, carried):
@@ -574,14 +609,14 @@ class Engine:
             for g, items in work:
                 lines.append("  group %s  host=%s bench=%s image=%s" % (
                     g.name, g.host, "yes" if g.needs_lock else "no",
-                    g.image or "-"))
+                    ",".join(g.image_list) or "-"))
                 for c in items:
                     lines.append("    %-9s %s/%s  %s%s" % (
                         c.cls, g.name, c.id, "[python] " if c.python else "",
                         " ".join(c.argv)))
-            if lane == "bench" and self.suite.standing_image:
-                lines.append("  then restore %s if the board was flashed"
-                             % self.suite.standing_image)
+            if lane == "bench" and self.suite.standings():
+                lines.append("  then restore each flashed board: %s" % ", ".join(
+                    "%s -> %s" % kv for kv in sorted(self.suite.standings().items())))
         return lines
 
     def run(self):
@@ -644,13 +679,18 @@ class Engine:
                 if "/".join(kid.split("/")[:2]) in ran and kid not in produced:
                     unmatched.append(kid)
         if self.needs_bench():
+            lines = ["Boards at the end of run %s (for the release message "
+                     "and the board sections, bench-holder rule 4):"
+                     % self.run_id]
+            for board in sorted(set(self.board_read) | set(self.board_image)):
+                lines.append("  %s: last identify read %s; image %s; flashed in "
+                             "this run: %s" % (
+                                 board, self.board_read.get(board),
+                                 self.board_image.get(board) or "unknown",
+                                 board in self.board_touched))
+            lines.append("  bench stopped: %s" % self.bench_stopped)
             write_new(os.path.join(self.run_dir, "board_state.txt"),
-                      "Board at the end of run %s (for the release message and "
-                      "the board sections, bench-holder rule 4):\n"
-                      "  last identify read: %s\n  image: %s\n  flashed in "
-                      "this run: %s\n  stopped: %s\n" % (
-                          self.run_id, self.board_read, self.board_image or
-                          "unknown", self.board_touched, self.bench_stopped))
+                      "\n".join(lines) + "\n")
         self.rec.event("end")
         rec = write_record(self.rec, header, self.groups_out, unmatched)
         self.rec.close()

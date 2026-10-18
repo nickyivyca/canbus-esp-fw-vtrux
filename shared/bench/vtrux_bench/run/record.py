@@ -84,6 +84,15 @@ class Recorder:
             self._append(r)
         return r
 
+    def amend(self, r):
+        """Record a change to a result already written (a group made VOID
+        after the fact), so progress.jsonl stays the truth for --resume."""
+        a = dict(type="amend", t=stamp(), id=r["id"], check=r["check"],
+                 verdict=r["verdict"], detail=r.get("detail", ""),
+                 judged=r.get("judged"))
+        with self._lock:
+            self._append(a)
+
     def close(self):
         with self._lock:
             self._progress.close()

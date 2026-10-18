@@ -31,7 +31,23 @@ every group of checks, restore, record. The same command runs part of it.
 | `vtrux_bench/run/procs.py` | Commands with timeouts that kill the whole tree; the remote (ssh) line with coreutils `timeout`; the build throttle (idle priority, one job) and the process-list scan for wall-clock tests. |
 | `vtrux_bench/run/record.py` | The run folder (never reused), `progress.jsonl`, `record.json` and `index.txt` (exclusive create), and `compare` with per-figure tolerances. |
 | `vtrux_bench/run/cli.py` | The command line. |
-| `tests/test_run_core.py` | The runner's own tests, with a fake suite and `fake_esptool.py`. `--can-fail` runs each with its rule switched off; every one must then fail. |
+| `tests/test_run_core.py` | The runner's own tests (20), with a fake suite, a fake two-board bench and `fake_esptool.py`. `--can-fail` runs each with its rule switched off; every one must then fail. |
+
+### Boards and images
+
+A bench may hold several boards. Each `Image` names its `board` (default
+"board"); a group's `image` is one image name or a list, one per board.
+The runner flashes a board only when it is not already on the image the
+group needs, identifies every board the group needs before and after it
+(the group is VOID if one changed under it), and at the end puts every
+board it flashed back on that board's standing image
+(`Suite.standing_images = {board: image}`, or `standing_image` for one
+board). A board state that is not a flashed image, such as an X2 held in
+ROM, can be an `Image` with its own flasher and expected identify value.
+
+A check with `skip="<reason>"` (needs hands, needs the truck, blocked) is
+listed NOT-RUN with its reason and never executed, so the index still
+shows it.
 
 ### Verdicts
 
@@ -39,7 +55,9 @@ every group of checks, restore, record. The same command runs part of it.
 reference), `VOID` (a premise was not met, or the board's image changed
 under the group), `ERROR` (the check could not be judged: crashed, timed
 out, or returned no verdict -- never a PASS), `NOT-RUN` (with the reason),
-`INCONCLUSIVE`, `NOT-APPLICABLE`. A registry entry that passes is flagged as
+`INCONCLUSIVE`, `NOT-APPLICABLE`. `--resume` carries PASS, FAIL,
+KNOWN-FAIL, INCONCLUSIVE and NOT-APPLICABLE results and runs the rest
+again (VOID, ERROR, NOT-RUN). A registry entry that passes is flagged as
 a change; a registry entry no selected check produced is listed (renamed?).
 
 ### Settings (one JSON per machine, not in git)

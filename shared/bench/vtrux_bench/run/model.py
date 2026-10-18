@@ -39,8 +39,9 @@ class Verdict:
     # What a judge may return. KNOWN-FAIL is assigned by the runner from
     # the registry, never by a judge, and NOT-RUN only by the runner.
     JUDGE = (PASS, FAIL, VOID, ERROR, INCONCLUSIVE, NOT_APPLICABLE)
-    # A carried (resumed) result must have been one of these.
-    TERMINAL = (PASS, FAIL, KNOWN_FAIL, VOID, INCONCLUSIVE, NOT_APPLICABLE)
+    # A carried (resumed) result must have been one of these. VOID, ERROR
+    # and NOT-RUN are run again.
+    TERMINAL = (PASS, FAIL, KNOWN_FAIL, INCONCLUSIVE, NOT_APPLICABLE)
 
 
 ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -111,6 +112,9 @@ class Check:
     outputs  files (relative to the check's outdir) the check writes; the
              suite's redaction hook sees these and nothing else.
     gate     if this check does not PASS, the rest of its group is NOT-RUN.
+    skip     a reason this check is listed but not run (needs hands, needs
+             the truck, blocked); it is recorded NOT-RUN with the reason, so
+             the index still lists it.
     judge    callable(CheckRun) -> Result or [Result]; returning nothing
              is an ERROR, never a PASS.
     tolerances  per figure name, for compare.
@@ -126,6 +130,7 @@ class Check:
     gate: bool = False
     judge: Callable[[CheckRun], Any] = exit_code_judge
     tolerances: Dict[str, Tol] = dataclasses.field(default_factory=dict)
+    skip: Optional[str] = None
     note: str = ""
 
 
@@ -138,11 +143,16 @@ class Image:
     params   flasher-specific (files, offsets, port...), formatted with
              the run context.
     expect   what the suite's identify hook must read back for this image.
+    board    which board carries it; a bench may hold several boards, each
+             on one image at a time (e.g. "x2", "wican"). A state that is
+             not a flashed image (an X2 held in ROM) can be an Image too,
+             with its own flasher and expect.
     """
     name: str
     flasher: str
     params: Dict[str, Any] = dataclasses.field(default_factory=dict)
     expect: str = ""
+    board: str = "board"
     note: str = ""
 
 
@@ -152,7 +162,7 @@ class Group:
     checks: List[Check]
     host: str = "local"
     needs_lock: bool = False
-    image: Optional[str] = None
+    image: Any = None        # an image name, or a list of them (one per board)
     cleanup: Optional[List[str]] = None  # argv run after each check
     ship: Optional[Dict[str, str]] = None  # remote: {name: local dir}
     note: str = ""
@@ -160,6 +170,12 @@ class Group:
     @property
     def lane(self):
         return "bench" if self.needs_lock else "logic:%s" % self.host
+
+    @property
+    def image_list(self):
+        if self.image is None:
+            return []
+        return [self.image] if isinstance(self.image, str) else list(self.image)
 
 
 @dataclasses.dataclass
@@ -176,7 +192,8 @@ class Suite:
     role: str                     # bench-holder holder string
     groups: List[Group]
     images: Dict[str, Image] = dataclasses.field(default_factory=dict)
-    standing_image: Optional[str] = None
+    standing_image: Optional[str] = None   # single-board shorthand
+    standing_images: Dict[str, str] = dataclasses.field(default_factory=dict)
     known_fails: List[KnownFail] = dataclasses.field(default_factory=list)
     flashers: Dict[str, Callable] = dataclasses.field(default_factory=dict)
     # identify(image_name_expected, ctx, logdir) -> str or None
@@ -186,6 +203,17 @@ class Suite:
     # code_info(ctx) -> dict recorded with the run
     code_info: Optional[Callable] = None
     on_flash_failure: str = "stop-bench"   # or "skip-image-groups"
+
+    def standings(self):
+        """{board: standing image name}."""
+        out = dict(self.standing_images)
+        if self.standing_image and self.standing_image in self.images:
+            out.setdefault(self.images[self.standing_image].board,
+                           self.standing_image)
+        return out
+
+    def standing_for(self, board):
+        return self.standings().get(board)
 
 
 class SuiteError(Exception):
@@ -207,6 +235,12 @@ def validate(suite: Suite, settings: Dict[str, Any], builtin_flashers=()):
             errs.append("image %s: unknown flasher %r" % (name, im.flasher))
     if suite.standing_image and suite.standing_image not in suite.images:
         errs.append("standing_image %r is not an image" % suite.standing_image)
+    for board, name in suite.standing_images.items():
+        if name not in suite.images:
+            errs.append("standing image %r is not an image" % name)
+        elif suite.images[name].board != board:
+            errs.append("standing image %s is for board %s, not %s" % (
+                name, suite.images[name].board, board))
     hosts = set((settings.get("hosts") or {}).keys()) | {"local"}
     seen_groups = set()
     seen = set()
@@ -219,8 +253,14 @@ def validate(suite: Suite, settings: Dict[str, Any], builtin_flashers=()):
         if g.host not in hosts:
             errs.append("group %s: host %r not in settings" % (g.name, g.host))
         if g.image is not None:
-            if g.image not in suite.images:
-                errs.append("group %s: image %r unknown" % (g.name, g.image))
+            boards = []
+            for name in g.image_list:
+                if name not in suite.images:
+                    errs.append("group %s: image %r unknown" % (g.name, name))
+                else:
+                    boards.append(suite.images[name].board)
+            if len(boards) != len(set(boards)):
+                errs.append("group %s: two images for one board" % g.name)
             if not g.needs_lock:
                 errs.append("group %s carries an image but does not hold "
                             "the lock" % g.name)

@@ -285,6 +285,66 @@ def test_identify_after():
     v = verdicts(rec)
     assert v == {"g1/x": "VOID", "g1/tamper": "VOID"}, v
     assert all(r.get("judged") == "PASS" for r in rec["results"])
+    return env, s, eng
+
+
+def test_void_resume():
+    """A group made VOID after the fact is amended in progress.jsonl, so a
+    resume runs it again instead of carrying the PASSes it was judged."""
+    env, s, eng = test_identify_after()
+    with open(env.board, "w") as f:
+        f.write("IMG-A")
+    eng2, rec2 = run(env, s, resume=eng.run_dir)
+    assert not any(r.get("carried_from") for r in rec2["results"]), rec2["results"]
+
+
+class TwoBoards:
+    """Fake flasher and identify for two boards, each a file."""
+    def __init__(self, env):
+        self.env = env
+        self.flashes = []
+
+    def path(self, board):
+        return os.path.join(self.env.root, "board_%s.txt" % board)
+
+    def set(self, board, value):
+        with open(self.path(board), "w") as f:
+            f.write(value)
+
+    def flasher(self, image, params, settings, logdir):
+        self.flashes.append(image.name)
+        self.set(image.board, image.expect)
+        return dict(ok=True, phase="done", detail="fake", recoverable=True)
+
+    def identify(self, image, ctx, logdir):
+        p = self.path(image.board)
+        return open(p).read() if os.path.exists(p) else None
+
+
+def test_two_boards():
+    """Two boards: each flashed only when its image changes, and each put
+    back on its own standing image at the end."""
+    env = Env("twoboards")
+    tb = TwoBoards(env)
+    tb.set("x2", "X2-APP")
+    tb.set("wican", "WC-1")
+    ims = {"x2app": Image("x2app", "fake", expect="X2-APP", board="x2"),
+           "jammer": Image("jammer", "fake", expect="JAM", board="x2"),
+           "w1": Image("w1", "fake", expect="WC-1", board="wican"),
+           "w2": Image("w2", "fake", expect="WC-2", board="wican")}
+    s = suite([Group("a", [chk("x", "pass")], needs_lock=True, image="w1"),
+               Group("b", [chk("y", "pass")], needs_lock=True,
+                     image=["w2", "jammer"]),
+               Group("c", [chk("z", "pass")], needs_lock=True, image="w2")],
+              images=ims, flashers={"fake": tb.flasher}, identify=tb.identify,
+              standing_images={"x2": "x2app", "wican": "w1"})
+    eng, rec = run(env, s)
+    assert tb.flashes == ["w2", "jammer", "w1", "x2app"], tb.flashes
+    assert tb.identify(ims["x2app"], None, None) == "X2-APP"
+    assert tb.identify(ims["w1"], None, None) == "WC-1"
+    assert set(verdicts(rec).values()) == {"PASS"}, verdicts(rec)
+    bs = open(os.path.join(eng.run_dir, "board_state.txt")).read()
+    assert "wican:" in bs and "x2:" in bs, bs
 
 
 def test_stop_pause():
@@ -379,6 +439,19 @@ def test_gate():
     v = verdicts(rec)
     assert v == {"g/premise": "FAIL", "g/judged": "NOT-RUN",
                  "h/other": "PASS"}, v
+
+
+def test_skip():
+    """A check with a skip reason is listed NOT-RUN with it and never runs."""
+    env = Env("skip")
+    marker = os.path.join(env.root, "ran.txt")
+    s = suite([Group("g", [chk("hands", "open(%r,'w').close()" % marker,
+                               skip="needs hands: power cycle"),
+                           chk("ok", "pass")])])
+    eng, rec = run(env, s)
+    hands = [r for r in rec["results"] if r["id"] == "g/hands"][0]
+    assert hands["verdict"] == "NOT-RUN" and "needs hands" in hands["detail"], hands
+    assert not os.path.exists(marker), "a skipped check ran"
 
 
 def test_timeout():
@@ -490,8 +563,9 @@ def test_remote_command():
 
 TESTS = [test_validate, test_basic_verdicts, test_never_overwrite,
          test_known_fail, test_lock_guard, test_flash_gate,
-         test_image_schedule, test_identify_after, test_stop_pause,
-         test_throttle, test_redact_scope, test_gate, test_timeout,
+         test_image_schedule, test_identify_after, test_void_resume,
+         test_two_boards, test_stop_pause,
+         test_throttle, test_redact_scope, test_gate, test_skip, test_timeout,
          test_resume, test_compare, test_esptool_flasher, test_remote_command]
 
 
@@ -547,10 +621,13 @@ MUTANTS = {
     "test_flash_gate": _rule("flash_gate"),
     "test_image_schedule": _rule("image_schedule"),
     "test_identify_after": _rule("identify_after"),
+    "test_void_resume": _patch(R.Recorder, "amend", lambda self, r: None),
+    "test_two_boards": _rule("restore"),
     "test_stop_pause": _rule("stop_pause"),
     "test_throttle": _rule("throttle"),
     "test_redact_scope": _rule("redact_scope"),
     "test_gate": _rule("gate"),
+    "test_skip": _rule("skip"),
     "test_timeout": _rule("timeout"),
     "test_resume": _patch(E.Engine, "_carried", lambda self: {}),
     "test_compare": _patch(R, "_within", lambda a, b, t: True),
