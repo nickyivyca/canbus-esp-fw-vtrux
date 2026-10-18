@@ -34,6 +34,12 @@ fails when the rule is switched off through RULES):
                   and never executed
   after           a group with `after` waits for those groups, and with
                   after_must_pass runs only if they all passed
+  wallclock_guard a wall-clock check starts only when no other wall-clock
+                  test runs on its host (another role's lock, a matching
+                  process that is not this run's own, or another of this
+                  run's wall-clock checks): one long simulation at a time
+  requires        a suite with `requires` starts only when a run of that
+                  suite on the same code matched its reference
   identify_error  an identify hook that fails (raises) stops the bench; it
                   never leads to a flash
   restore         at the end, every board the run flashed is put back on
@@ -42,8 +48,10 @@ fails when the rule is switched off through RULES):
 """
 
 import fnmatch
+import glob
 import hashlib
 import io
+import json
 import os
 import socket
 import subprocess
@@ -56,12 +64,14 @@ from . import lock as lockmod
 from . import procs
 from .flash import BUILTIN as BUILTIN_FLASHERS
 from .model import Check, CheckRun, Result, SuiteError, Verdict, validate
-from .record import Recorder, load_progress, new_run_dir, stamp, write_record, write_new
+from .record import (Recorder, compare, load_progress, new_run_dir, stamp,
+                     write_record, write_new)
 
 RULES = {k: True for k in (
     "lock_guard", "flash_gate", "image_schedule", "identify_after",
     "no_verdict", "known_fail", "stop_pause", "throttle", "redact_scope",
-    "gate", "timeout", "skip", "restore", "identify_error", "after")}
+    "gate", "timeout", "skip", "restore", "identify_error", "after",
+    "wallclock_guard", "requires")}
 
 IDENTIFY_ERROR = "<identify failed>"
 
@@ -121,6 +131,7 @@ class Engine:
         self.shipped = set()
         self._ship_lock = threading.Lock()
         self.group_done = {}
+        self.images_used = {}
         names = [x.name for x in suite.groups]
         for g in self.sel_groups:
             if g not in names:
@@ -229,17 +240,50 @@ class Engine:
                     return True, "bench lock held by another role: %s" % h[:80]
             except Exception as e:
                 return True, "bench-holder unreadable (%s): assume running" % e
-        pats = self.settings.get("wallclock_patterns") or []
-        if pats:
-            ssh_host = None if host == "local" else self.host_cfg(host).get("ssh")
-            try:
-                lines = procs.process_lines(ssh_host)
-            except Exception as e:
-                return True, "process list failed (%s): assume running" % e
-            hits = procs.matching(lines, pats)
-            if hits:
-                return True, "process: %s" % hits[0][:100]
+        hit = self.other_wallclock_process(host)
+        if hit:
+            return True, hit
         return False, "no wall-clock test on %s" % host
+
+    def other_wallclock_process(self, host):
+        """A matching process on the host that is not this runner, its
+        ancestors or anything it started (locally by process tree; on a
+        remote host, by this run's id in the command line). None if none."""
+        pats = self.settings.get("wallclock_patterns") or []
+        if not pats:
+            return None
+        ssh_host = None if host == "local" else self.host_cfg(host).get("ssh")
+        try:
+            table = procs.process_table(ssh_host)
+        except Exception as e:
+            return "process list failed (%s): assume running" % e
+        if host == "local":
+            mine = procs.own_tree(table, os.getpid())
+            lines = [a for p, _pp, a in table if p not in mine]
+        else:
+            rid = getattr(self, "run_id", None) or "\0"
+            lines = [a for _p, _pp, a in table if rid not in a]
+        hits = procs.matching(lines, pats)
+        return ("process: %s" % hits[0][:100]) if hits else None
+
+    def other_wallclock(self, host):
+        """Is another wall-clock test running on `host`? (busy, why)"""
+        with self._wc_lock:
+            if self.active_wallclock.get(host, 0) > 0:
+                return True, ("this run already has a wall-clock check on %s"
+                              % host)
+        if host == "local" and self.bench_holder:
+            try:
+                h = lockmod.holder(self.bench_holder)
+                if not lockmod.is_free(h) and not lockmod.held_by(
+                        h, self.suite.role):
+                    return True, "bench lock held by another role: %s" % h[:80]
+            except Exception as e:
+                return True, "bench-holder unreadable (%s)" % e
+        hit = self.other_wallclock_process(host)
+        if hit:
+            return True, hit
+        return False, None
 
     # ---- images ---------------------------------------------------------
     def identify(self, image, logdir):
@@ -273,6 +317,7 @@ class Engine:
             return False, "image %s failed to flash earlier in this run" % name
         board = im.board
         got = self.identify(im, logdir)
+        self._note_image(im, got, flashed=False)
         if got == IDENTIFY_ERROR and RULES["identify_error"]:
             why = ("could not identify %s (the identify hook failed): no "
                    "flash on an unknown state" % board)
@@ -290,6 +335,7 @@ class Engine:
         self.rec.event("flash-start", board=board, image=name, read_before=got)
         res = self.flashers[im.flasher](im, params, self.settings, logdir)
         self.rec.event("flash", image=name, **res)
+        self._note_image(im, None, flashed=True, md5=res.get("md5"))
         if not res.get("ok"):
             why = "flash of %s failed (%s): %s" % (name, res.get("phase"),
                                                   res.get("detail"))
@@ -302,6 +348,22 @@ class Engine:
             return False, why
         self.board_image[board] = name
         return True, "flashed %s to %s, read %s" % (board, name, got2)
+
+    def _note_image(self, im, read, flashed, md5=None):
+        """Every image this run used, for the record (user ruling
+        2026-10-17: log the code hash of each). code_hash stays null until
+        the image library's code-hash tool exists; the identity read off
+        the board and the file digests stand in."""
+        e = self.images_used.setdefault(im.name, dict(
+            board=im.board, expect=im.expect, flasher=im.flasher, note=im.note,
+            code_hash=None, md5=(im.params or {}).get("md5") or {},
+            flashed=False, reads=[]))
+        if read is not None:
+            e["reads"].append(read)
+        if flashed:
+            e["flashed"] = True
+            if md5:
+                e["md5"] = md5
 
     # ---- remote ---------------------------------------------------------
     def _ship(self, g):
@@ -374,6 +436,20 @@ class Engine:
                 r2["carried_from"] = prev
                 self.rec.result(**r2)
             return all(r["verdict"] == Verdict.PASS for r in rs)
+        if c.cls == "wallclock" and RULES["wallclock_guard"]:
+            wait_s = float(self.settings.get("wallclock_wait_s", 0))
+            t_end = time.monotonic() + wait_s
+            while True:
+                busy, why = self.other_wallclock(g.host)
+                if not busy or time.monotonic() >= t_end or \
+                        self.stop_text() is not None:
+                    break
+                time.sleep(float(self.settings.get("wallclock_poll_s", 60)))
+            if busy:
+                self.rec.event("wallclock-refused", check=fid, reason=why)
+                self._not_run(g, c, "refused: another wall-clock test on %s "
+                              "(%s)" % (g.host, why))
+                return False
         self.executed_checks.add(fid)
         outdir = os.path.join(self.run_dir, g.name, c.id)
         os.makedirs(outdir)
@@ -644,6 +720,65 @@ class Engine:
                                         verdict=Verdict.ERROR,
                                         detail="lane %s crashed: %r" % (lane, e))
 
+    # ---- the precondition ---------------------------------------------
+    def requirement_met(self):
+        """Suite.requires names a suite (e.g. the emulated one). Met when
+        the newest finished run of it under runs_root is on the same code as
+        this run, and its results match the reference run named in
+        settings.references[<that suite>] (no differences by compare); with
+        no reference yet (the first baseline), when none of its results is
+        FAIL, ERROR or VOID and no known FAIL passed."""
+        need = self.suite.requires
+        code = self._code()
+        ident = _code_ident(code)
+        if ident is None:
+            return False, ("this run's code is not identifiable (%s): a dirty "
+                           "tree has no code identity" % code)
+        cands = []
+        for rec_path in glob.glob(os.path.join(self.runs_root, "*", "record.json")):
+            try:
+                with open(rec_path, encoding="utf-8") as f:
+                    r = json.load(f)
+            except (OSError, ValueError):
+                continue
+            if r.get("suite") == need:
+                cands.append((r.get("ended", ""), rec_path, r))
+        if not cands:
+            return False, "no finished run of %s under %s" % (need, self.runs_root)
+        cands.sort()
+        _ended, path, r = cands[-1]
+        if _code_ident(r.get("code") or {}) != ident:
+            return False, ("the newest %s run (%s) is on other code: %s, not %s"
+                           % (need, r.get("run_id"), _code_ident(r.get("code") or {}),
+                              ident))
+        ref = (self.settings.get("references") or {}).get(need)
+        if ref:
+            with open(os.path.join(ref, "record.json"), encoding="utf-8") as f:
+                diffs = compare(json.load(f), r)
+            if diffs:
+                return False, ("the newest %s run (%s) differs from its "
+                               "reference: %s" % (need, r.get("run_id"),
+                                                  "; ".join(diffs[:3])))
+            return True, "%s matched its reference" % r.get("run_id")
+        bad = [x["id"] for x in r["results"]
+               if x["verdict"] in (Verdict.FAIL, Verdict.ERROR, Verdict.VOID)
+               or x.get("known_fail_passed")]
+        if bad:
+            return False, ("the newest %s run (%s) has %d result(s) FAIL, ERROR "
+                           "or VOID (%s) and there is no reference to compare "
+                           "with" % (need, r.get("run_id"), len(bad),
+                                     ", ".join(bad[:3])))
+        return True, "%s is clean (no reference yet)" % r.get("run_id")
+
+    def _code(self):
+        if not self.suite.code_info:
+            return {}
+        try:
+            return dict(self.suite.code_info(self.base_ctx() if hasattr(
+                self, "run_dir") else {}))
+        except Exception as e:
+            return {"error": repr(e)}
+
     # ---- the run --------------------------------------------------------
     def plan_lines(self):
         lines = []
@@ -668,6 +803,10 @@ class Engine:
     def run(self):
         if not self.runs_root:
             raise SuiteError("settings.runs_root is not set")
+        if self.suite.requires and RULES["requires"]:
+            ok, why = self.requirement_met()
+            if not ok:
+                raise SuiteError("refusing to start: %s" % why)
         if self.needs_bench():
             ok, h = self.lock_ours()
             if not ok:
@@ -739,9 +878,21 @@ class Engine:
             write_new(os.path.join(self.run_dir, "board_state.txt"),
                       "\n".join(lines) + "\n")
         self.rec.event("end")
+        header["images_used"] = self.images_used
         rec = write_record(self.rec, header, self.groups_out, unmatched)
         self.rec.close()
         return rec
+
+
+def _code_ident(code):
+    """What "the same code" means for Suite.requires: the code hash once it
+    is logged (port plan goal 13); until then the commit, and only from a
+    clean tree."""
+    if code.get("code_hash"):
+        return "code_hash:%s" % code["code_hash"]
+    if code.get("commit") and code.get("dirty") is False:
+        return "commit:%s" % code["commit"]
+    return None
 
 
 def exit_code(record):

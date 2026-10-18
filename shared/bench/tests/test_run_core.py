@@ -269,6 +269,8 @@ def test_image_schedule():
     assert set(verdicts(rec).values()) == {"PASS"}
     assert any(g["name"] == "restore" and g["status"].startswith("restored")
                for g in rec["groups"]), rec["groups"]
+    used = rec["images_used"]
+    assert set(used) == {"A", "B"} and used["B"]["flashed"] and         "code_hash" in used["A"] and used["A"]["reads"], used
 
 
 def test_identify_error():
@@ -433,16 +435,15 @@ def test_throttle():
     eng, rec = run(env, s)
     assert verdicts(rec) == {"g/build": "FAIL"}, "throttled by its own lock"
     # ...but a wall-clock process on the host throttles it again
-    import subprocess
     marker = "vtrux_bench_wallclock_marker_%d" % os.getpid()
-    p = subprocess.Popen([PY, "-c", "import time; time.sleep(60)", marker])
+    pid = spawn_foreign(marker)
     try:
         st = env.settings(wallclock_patterns=[marker])
         eng, rec = run(env, s, settings=st)
         assert verdicts(rec) == {"g/build": "PASS"}, rec["results"]
         assert "process" in rec["results"][0]["throttle_reason"], rec["results"]
     finally:
-        p.kill()
+        kill_pid(pid)
     env.set_holder("-- (free)")
     eng, rec = run(env, s)
     assert verdicts(rec) == {"g/build": "FAIL"}, "not throttled when idle"
@@ -475,6 +476,61 @@ def test_after():
         pass
     else:
         raise AssertionError("accepted a cycle")
+
+
+def test_wallclock_guard():
+    """A wall-clock check does not start while another wall-clock test
+    runs on its host; the runner's own processes do not count."""
+    env = Env("wcguard")
+    marker = "vtrux_bench_other_sim_%d" % os.getpid()
+    st = env.settings(wallclock_patterns=[marker, r"vtrux_bench\.run"])
+    s = suite([Group("g", [Check("sim", pc("pass"), python=True,
+                                 cls="wallclock")])])
+    eng, rec = run(env, s, settings=st)    # only the runner itself matches
+    assert verdicts(rec) == {"g/sim": "PASS"}, rec["results"]
+    pid = spawn_foreign(marker)
+    try:
+        eng, rec = run(env, s, settings=st)
+        r = rec["results"][0]
+        assert r["verdict"] == "NOT-RUN" and "another wall-clock" in r["detail"], r
+    finally:
+        kill_pid(pid)
+    env.set_holder("tester (the-other-project)")
+    eng, rec = run(env, suite([Group("g", [Check("sim", pc("pass"), python=True,
+                                                 cls="wallclock")])]))
+    assert verdicts(rec) == {"g/sim": "NOT-RUN"}, rec["results"]
+
+
+def test_requires():
+    """A suite that requires another starts only after a clean run of it
+    on the same, identifiable code."""
+    env = Env("requires")
+    code = {"commit": "abc", "dirty": False}
+    emu_ok = suite([Group("e", [chk("x", "pass")])], name="emu",
+                   code_info=lambda ctx: dict(code))
+    emu_bad = suite([Group("e", [chk("x", "import sys; sys.exit(1)")])],
+                    name="emu", code_info=lambda ctx: dict(code))
+    bench = suite([Group("b", [chk("y", "pass")])], name="bench",
+                  requires="emu", code_info=lambda ctx: dict(code))
+
+    def refused():
+        try:
+            run(env, bench)
+        except SuiteError as e:
+            return str(e)
+        return None
+    assert refused() and "no finished run" in refused()
+    run(env, emu_bad)
+    assert refused() and "FAIL, ERROR" in refused(), refused()
+    time.sleep(1.1)
+    run(env, emu_ok)
+    assert refused() is None, refused()
+    code["commit"] = "def"           # the bench is now on other code
+    r = refused()
+    assert r and "other code" in r, r
+    code["dirty"] = True
+    r = refused()
+    assert r and "not identifiable" in r, r
 
 
 def test_redact_scope():
@@ -532,6 +588,31 @@ def test_timeout():
     pid = int(open(pidf).read())
     time.sleep(0.5)
     assert not _alive(pid), "child %d survived the timeout" % pid
+
+
+def spawn_foreign(marker, seconds=60):
+    """A process that looks like another session's: started through an
+    intermediate that exits at once, so it is not this runner's descendant.
+    Returns its pid."""
+    import subprocess
+    pidf = os.path.join(SCRATCH, "foreign_%s.pid" % marker)
+    code = ("import subprocess, sys; p = subprocess.Popen([sys.executable, '-c', "
+            "'import time; time.sleep(%d)', %r]); open(%r, 'w').write(str(p.pid))"
+            % (seconds, marker, pidf))
+    subprocess.run([PY, "-c", code], check=True)
+    return int(open(pidf).read())
+
+
+def kill_pid(pid):
+    import subprocess
+    if sys.platform == "win32":
+        subprocess.run(["taskkill", "/F", "/PID", str(pid)],
+                       capture_output=True)
+    else:
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
 
 
 def _alive(pid):
@@ -628,7 +709,8 @@ TESTS = [test_validate, test_basic_verdicts, test_never_overwrite,
          test_image_schedule, test_identify_error, test_identify_after,
          test_void_resume,
          test_two_boards, test_stop_pause,
-         test_throttle, test_after, test_redact_scope, test_gate, test_skip, test_timeout,
+         test_throttle, test_after, test_wallclock_guard, test_requires,
+         test_redact_scope, test_gate, test_skip, test_timeout,
          test_resume, test_compare, test_esptool_flasher, test_remote_command]
 
 
@@ -690,6 +772,8 @@ MUTANTS = {
     "test_stop_pause": _rule("stop_pause"),
     "test_throttle": _rule("throttle"),
     "test_after": _rule("after"),
+    "test_wallclock_guard": _rule("wallclock_guard"),
+    "test_requires": _rule("requires"),
     "test_redact_scope": _rule("redact_scope"),
     "test_gate": _rule("gate"),
     "test_skip": _rule("skip"),

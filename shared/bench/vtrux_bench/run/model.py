@@ -208,6 +208,10 @@ class Suite:
     # code_info(ctx) -> dict recorded with the run
     code_info: Optional[Callable] = None
     on_flash_failure: str = "stop-bench"   # or "skip-image-groups"
+    # the name of a suite whose newest run on the same code must have
+    # matched its reference before this suite may start (the bench suite
+    # requires the emulated one)
+    requires: Optional[str] = None
 
     def standings(self):
         """{board: standing image name}."""

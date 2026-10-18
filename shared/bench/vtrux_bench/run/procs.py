@@ -112,27 +112,61 @@ def run_remote(ssh_host, argv, cwd, env, timeout_s, log_path, throttled=False,
                      timeout_s + 90, log_path, False, stop_check)
 
 
-def process_lines(ssh_host=None, ssh=("ssh", "-o", "BatchMode=yes")):
-    """Command lines of every process on the host (local or over ssh)."""
+def process_table(ssh_host=None, ssh=("ssh", "-o", "BatchMode=yes")):
+    """[(pid, ppid, command line)] of every process on the host (local or
+    over ssh)."""
     if ssh_host:
-        argv = list(ssh) + [ssh_host, "ps -eo args"]
+        argv = list(ssh) + [ssh_host, "ps -eo pid=,ppid=,args="]
     elif WIN:
         argv = ["powershell", "-NoProfile", "-Command",
-                "Get-CimInstance Win32_Process | "
-                "ForEach-Object { $_.CommandLine }"]
+                "Get-CimInstance Win32_Process | ForEach-Object { "
+                "'{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, "
+                "$_.CommandLine }"]
     else:
-        argv = ["ps", "-eo", "args"]
+        argv = ["ps", "-eo", "pid=,ppid=,args="]
     r = subprocess.run(argv, capture_output=True, text=True, timeout=120,
                        errors="replace")
     if r.returncode != 0:
         raise RuntimeError("process list failed on %s: %s"
                            % (ssh_host or "local", r.stderr[-300:]))
-    lines = [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
-    if not lines:
+    out = []
+    for ln in r.stdout.splitlines():
+        p = ln.strip().split(None, 2)
+        if len(p) >= 2 and p[0].isdigit() and p[1].isdigit():
+            out.append((int(p[0]), int(p[1]), p[2] if len(p) > 2 else ""))
+    if not out:
         # An empty list is not "nothing running" -- it is a broken probe.
         raise RuntimeError("process list on %s came back empty"
                            % (ssh_host or "local"))
-    return lines
+    return out
+
+
+def own_tree(table, pid):
+    """pid, its ancestors and its descendants: this runner and what it
+    started, which a scan for OTHER wall-clock tests must leave out."""
+    parent = {p: pp for p, pp, _a in table}
+    # descendants of pid only -- not of its ancestors, whose other children
+    # (everything else under the same shell, sshd or init) are not ours
+    down = {pid}
+    grew = True
+    while grew:
+        grew = False
+        for p, pp, _a in table:
+            if pp in down and p not in down and p != pp:
+                down.add(p)
+                grew = True
+    up = set()
+    p = pid
+    while p in parent and parent[p] not in up and parent[p] not in down \
+            and parent[p] > 0:
+        p = parent[p]
+        up.add(p)
+    return down | up
+
+
+def process_lines(ssh_host=None, ssh=("ssh", "-o", "BatchMode=yes")):
+    """Command lines of every process on the host."""
+    return [a for _p, _pp, a in process_table(ssh_host, ssh)]
 
 
 def matching(lines, patterns, own_pid=None):

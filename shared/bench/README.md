@@ -31,7 +31,7 @@ every group of checks, restore, record. The same command runs part of it.
 | `vtrux_bench/run/procs.py` | Commands with timeouts that kill the whole tree; the remote (ssh) line with coreutils `timeout`; the build throttle (idle priority, one job) and the process-list scan for wall-clock tests. |
 | `vtrux_bench/run/record.py` | The run folder (never reused), `progress.jsonl`, `record.json` and `index.txt` (exclusive create), and `compare` with per-figure tolerances. |
 | `vtrux_bench/run/cli.py` | The command line. |
-| `tests/test_run_core.py` | The runner's own tests (22), with a fake suite, a fake two-board bench and `fake_esptool.py`. `--can-fail` runs each with its rule switched off; every one must then fail. |
+| `tests/test_run_core.py` | The runner's own tests (24), with a fake suite, a fake two-board bench and `fake_esptool.py`. `--can-fail` runs each with its rule switched off; every one must then fail. |
 
 ### Boards and images
 
@@ -56,6 +56,24 @@ PASS, KNOWN-FAIL or NOT-APPLICABLE. Cycles are refused.
 The build throttle counts another role's bench lock as a wall-clock test
 running; under the suite's own lock, this run's own wall-clock checks and
 the process scan decide.
+
+A "wallclock" check starts only when no other wall-clock test runs on its
+host: another role's bench lock, a process matching `wallclock_patterns`
+that is not this runner or something it started (on a remote host: not
+carrying this run's id), or another of this run's own wall-clock checks.
+Otherwise it is NOT-RUN with the reason (after waiting up to
+`wallclock_wait_s`). One long simulation at a time, enforced by the runner.
+
+`Suite.requires = "<suite>"` (the bench suite requires the emulated one):
+the run refuses to start unless the newest finished run of that suite is
+on the same code and matched its reference (`settings.references`), or,
+with no reference yet, has no FAIL, ERROR or VOID. "The same code" is the
+code hash once it is logged (port plan goal 13); until then the commit, and
+only from a clean tree.
+
+`record.json` lists every image the run used (`images_used`): board,
+expected identity, what identify read, file digests, whether it was
+flashed, and a `code_hash` field (null until the code-hash tool exists).
 
 A check with `skip="<reason>"` (needs hands, needs the truck, blocked) is
 listed NOT-RUN with its reason and never executed, so the index still
