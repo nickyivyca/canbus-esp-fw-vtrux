@@ -163,6 +163,11 @@ class Group:
     host: str = "local"
     needs_lock: bool = False
     image: Any = None        # an image name, or a list of them (one per board)
+    # Wait for these groups (any lane) to finish first; with after_must_pass,
+    # run only if every one of their results is PASS, KNOWN-FAIL or
+    # NOT-APPLICABLE (e.g. the bench flashes images the build group made).
+    after: List[str] = dataclasses.field(default_factory=list)
+    after_must_pass: bool = True
     cleanup: Optional[List[str]] = None  # argv run after each check
     ship: Optional[Dict[str, str]] = None  # remote: {name: local dir}
     note: str = ""
@@ -289,6 +294,34 @@ def validate(suite: Suite, settings: Dict[str, Any], builtin_flashers=()):
                                     "path" % (fid, o))
             else:
                 errs.append("%s: not a Check" % fid)
+    names = [g.name for g in suite.groups]
+    for g in suite.groups:
+        for d in g.after:
+            if d not in names:
+                errs.append("group %s: after %r is not a group" % (g.name, d))
+            elif d == g.name:
+                errs.append("group %s waits for itself" % g.name)
+    # A cycle (through `after` or through lane order) would deadlock.
+    preds = {g.name: set(d for d in g.after if d in names) for g in suite.groups}
+    last = {}
+    for g in suite.groups:
+        if g.lane in last:
+            preds[g.name].add(last[g.lane])
+        last[g.lane] = g.name
+    state = {}
+
+    def visit(n, path):
+        if state.get(n) == 1:
+            errs.append("groups wait in a cycle: %s" % " -> ".join(path + [n]))
+            return
+        if state.get(n) == 2:
+            return
+        state[n] = 1
+        for p in sorted(preds.get(n, ())):
+            visit(p, path + [n])
+        state[n] = 2
+    for n in names:
+        visit(n, [])
     for kf in suite.known_fails:
         parts = kf.id.split("/")
         if len(parts) < 2 or not all(ID_RE.match(p) for p in parts):

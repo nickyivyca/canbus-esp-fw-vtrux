@@ -31,7 +31,7 @@ every group of checks, restore, record. The same command runs part of it.
 | `vtrux_bench/run/procs.py` | Commands with timeouts that kill the whole tree; the remote (ssh) line with coreutils `timeout`; the build throttle (idle priority, one job) and the process-list scan for wall-clock tests. |
 | `vtrux_bench/run/record.py` | The run folder (never reused), `progress.jsonl`, `record.json` and `index.txt` (exclusive create), and `compare` with per-figure tolerances. |
 | `vtrux_bench/run/cli.py` | The command line. |
-| `tests/test_run_core.py` | The runner's own tests (20), with a fake suite, a fake two-board bench and `fake_esptool.py`. `--can-fail` runs each with its rule switched off; every one must then fail. |
+| `tests/test_run_core.py` | The runner's own tests (22), with a fake suite, a fake two-board bench and `fake_esptool.py`. `--can-fail` runs each with its rule switched off; every one must then fail. |
 
 ### Boards and images
 
@@ -44,6 +44,18 @@ board it flashed back on that board's standing image
 (`Suite.standing_images = {board: image}`, or `standing_image` for one
 board). A board state that is not a flashed image, such as an X2 held in
 ROM, can be an `Image` with its own flasher and expected identify value.
+
+An identify hook that raises (could not look) stops the bench; the runner
+never flashes a board whose state nobody read.
+
+A group with `after=[...]` waits for those groups, in any lane, before its
+first step -- e.g. bench groups that flash what a build group made -- and
+with `after_must_pass` (the default) runs only if all their results are
+PASS, KNOWN-FAIL or NOT-APPLICABLE. Cycles are refused.
+
+The build throttle counts another role's bench lock as a wall-clock test
+running; under the suite's own lock, this run's own wall-clock checks and
+the process scan decide.
 
 A check with `skip="<reason>"` (needs hands, needs the truck, blocked) is
 listed NOT-RUN with its reason and never executed, so the index still

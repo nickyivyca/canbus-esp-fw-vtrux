@@ -271,6 +271,23 @@ def test_image_schedule():
                for g in rec["groups"]), rec["groups"]
 
 
+def test_identify_error():
+    """An identify hook that cannot look (raises) stops the bench and
+    never leads to a flash."""
+    env = Env("iderror")
+    a = env.image("A", "IMG-A")
+
+    def broken(image, ctx, logdir):
+        raise RuntimeError("capture tool crashed")
+    s = suite([Group("g1", [chk("x", "pass")], needs_lock=True, image="A"),
+               Group("g2", [chk("y", "pass")], needs_lock=True, image="A")],
+              images={"A": a}, identify=broken)
+    eng, rec = run(env, s)
+    assert not [c for c in env.esptool_calls() if "write-flash" in c], \
+        env.esptool_calls()
+    assert verdicts(rec) == {"g1/x": "NOT-RUN", "g2/y": "NOT-RUN"}, verdicts(rec)
+
+
 def test_identify_after():
     """A group whose board image changed under it is VOID."""
     env = Env("idafter")
@@ -406,13 +423,58 @@ def test_throttle():
 
     s = suite([Group("g", [Check("build", ["-c", probe, "{jobs}", "{outdir}"], python=True,
                                  cls="build", judge=judge)])])
-    eng, rec = run(env, s)                        # lock held by ROLE
+    env.set_holder("tester (the-other-project)")
+    eng, rec = run(env, s)
     assert verdicts(rec) == {"g/build": "PASS"}, rec["results"]
     r = rec["results"][0]
-    assert r["throttled"] and "bench lock held" in r["throttle_reason"], r
+    assert r["throttled"] and "another role" in r["throttle_reason"], r
+    # under its own lock, with nothing timing-sensitive running: full speed
+    env.set_holder(ROLE + " (test)")
+    eng, rec = run(env, s)
+    assert verdicts(rec) == {"g/build": "FAIL"}, "throttled by its own lock"
+    # ...but a wall-clock process on the host throttles it again
+    import subprocess
+    marker = "vtrux_bench_wallclock_marker_%d" % os.getpid()
+    p = subprocess.Popen([PY, "-c", "import time; time.sleep(60)", marker])
+    try:
+        st = env.settings(wallclock_patterns=[marker])
+        eng, rec = run(env, s, settings=st)
+        assert verdicts(rec) == {"g/build": "PASS"}, rec["results"]
+        assert "process" in rec["results"][0]["throttle_reason"], rec["results"]
+    finally:
+        p.kill()
     env.set_holder("-- (free)")
     eng, rec = run(env, s)
     assert verdicts(rec) == {"g/build": "FAIL"}, "not throttled when idle"
+
+
+def test_after():
+    """A group with `after` waits for those groups in another lane; with
+    after_must_pass it does not run if they did not all pass."""
+    env = Env("after")
+    marker = os.path.join(env.root, "built.txt")
+    build = ("import time, sys; time.sleep(1.5); open(sys.argv[1], 'w').close()")
+    need = "import os, sys; sys.exit(0 if os.path.exists(sys.argv[1]) else 1)"
+    s = suite([Group("build", [Check("b", ["-c", build, marker], python=True)]),
+               Group("bench", [Check("uses", ["-c", need, marker], python=True)],
+                     needs_lock=True, after=["build"])])
+    eng, rec = run(env, s)
+    assert verdicts(rec) == {"build/b": "PASS", "bench/uses": "PASS"}, verdicts(rec)
+    env = Env("after2")
+    s = suite([Group("build", [chk("b", "import time, sys; time.sleep(1); sys.exit(1)")]),
+               Group("bench", [chk("uses", "pass")], needs_lock=True,
+                     after=["build"])])
+    eng, rec = run(env, s)
+    assert verdicts(rec) == {"build/b": "FAIL", "bench/uses": "NOT-RUN"}, verdicts(rec)
+    # a cycle is refused before anything runs
+    s = suite([Group("a", [chk("x", "pass")], after=["b"]),
+               Group("b", [chk("y", "pass")], needs_lock=True, after=["a"])])
+    try:
+        E.Engine(s, env.settings())
+    except SuiteError:
+        pass
+    else:
+        raise AssertionError("accepted a cycle")
 
 
 def test_redact_scope():
@@ -563,9 +625,10 @@ def test_remote_command():
 
 TESTS = [test_validate, test_basic_verdicts, test_never_overwrite,
          test_known_fail, test_lock_guard, test_flash_gate,
-         test_image_schedule, test_identify_after, test_void_resume,
+         test_image_schedule, test_identify_error, test_identify_after,
+         test_void_resume,
          test_two_boards, test_stop_pause,
-         test_throttle, test_redact_scope, test_gate, test_skip, test_timeout,
+         test_throttle, test_after, test_redact_scope, test_gate, test_skip, test_timeout,
          test_resume, test_compare, test_esptool_flasher, test_remote_command]
 
 
@@ -620,11 +683,13 @@ MUTANTS = {
     "test_lock_guard": _rule("lock_guard"),
     "test_flash_gate": _rule("flash_gate"),
     "test_image_schedule": _rule("image_schedule"),
+    "test_identify_error": _rule("identify_error"),
     "test_identify_after": _rule("identify_after"),
     "test_void_resume": _patch(R.Recorder, "amend", lambda self, r: None),
     "test_two_boards": _rule("restore"),
     "test_stop_pause": _rule("stop_pause"),
     "test_throttle": _rule("throttle"),
+    "test_after": _rule("after"),
     "test_redact_scope": _rule("redact_scope"),
     "test_gate": _rule("gate"),
     "test_skip": _rule("skip"),

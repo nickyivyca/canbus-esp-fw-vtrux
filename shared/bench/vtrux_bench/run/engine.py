@@ -32,6 +32,10 @@ fails when the rule is switched off through RULES):
   timeout         a check past its timeout is killed (whole tree), ERROR
   skip            a check with a skip reason is recorded NOT-RUN with it,
                   and never executed
+  after           a group with `after` waits for those groups, and with
+                  after_must_pass runs only if they all passed
+  identify_error  an identify hook that fails (raises) stops the bench; it
+                  never leads to a flash
   restore         at the end, every board the run flashed is put back on
                   its standing image (unless a flash failure stopped the
                   bench, or STOP says norestore)
@@ -57,7 +61,9 @@ from .record import Recorder, load_progress, new_run_dir, stamp, write_record, w
 RULES = {k: True for k in (
     "lock_guard", "flash_gate", "image_schedule", "identify_after",
     "no_verdict", "known_fail", "stop_pause", "throttle", "redact_scope",
-    "gate", "timeout", "skip", "restore")}
+    "gate", "timeout", "skip", "restore", "identify_error", "after")}
+
+IDENTIFY_ERROR = "<identify failed>"
 
 SHIP_EXCLUDE = {"__pycache__", ".pio", ".git", "build"}
 SSH = ("ssh", "-o", "BatchMode=yes")
@@ -114,6 +120,7 @@ class Engine:
         self.groups_out = []
         self.shipped = set()
         self._ship_lock = threading.Lock()
+        self.group_done = {}
         names = [x.name for x in suite.groups]
         for g in self.sel_groups:
             if g not in names:
@@ -211,10 +218,15 @@ class Engine:
             if self.active_wallclock.get(host, 0) > 0:
                 return True, "this run has a wall-clock check on %s" % host
         if host == "local" and self.bench_holder:
+            # Another role's lock means its wall-clock test may be running.
+            # Under this suite's own role, nothing of the other project can
+            # run, so this run's own wall-clock checks (above) and the
+            # process scan (below) decide.
             try:
                 h = lockmod.holder(self.bench_holder)
-                if not lockmod.is_free(h):
-                    return True, "bench lock held: %s" % h[:80]
+                if not lockmod.is_free(h) and not lockmod.held_by(
+                        h, self.suite.role):
+                    return True, "bench lock held by another role: %s" % h[:80]
             except Exception as e:
                 return True, "bench-holder unreadable (%s): assume running" % e
         pats = self.settings.get("wallclock_patterns") or []
@@ -231,11 +243,16 @@ class Engine:
 
     # ---- images ---------------------------------------------------------
     def identify(self, image, logdir):
+        """The board's identity, or None if it is on no image identify
+        knows. An identify hook that RAISES could not look, which is not
+        the same as "not this image": it returns IDENTIFY_ERROR, and the
+        caller must not flash on it."""
         try:
             got = self.suite.identify(image, self.base_ctx(), logdir)
         except Exception as e:
-            got = None
-            self.rec.event("identify-error", image=image.name, error=repr(e))
+            got = IDENTIFY_ERROR
+            self.rec.event("identify-error", board=image.board,
+                           image=image.name, error=repr(e))
         self.board_read[image.board] = got
         self.rec.event("identify", board=image.board, expected_image=image.name,
                        expected=image.expect, read=got)
@@ -256,6 +273,11 @@ class Engine:
             return False, "image %s failed to flash earlier in this run" % name
         board = im.board
         got = self.identify(im, logdir)
+        if got == IDENTIFY_ERROR and RULES["identify_error"]:
+            why = ("could not identify %s (the identify hook failed): no "
+                   "flash on an unknown state" % board)
+            self.bench_stopped = why
+            return False, why
         if got == im.expect and RULES["image_schedule"]:
             self.board_image[board] = name
             return True, "%s already on %s (read %s)" % (board, name, got)
@@ -473,6 +495,25 @@ class Engine:
             return "not run: %s" % reason
 
         try:
+            waits = [d for d in g.after if d in self.group_done] \
+                if RULES["after"] else []
+            for d in waits:
+                if not self.group_done[d].is_set():
+                    self.rec.event("waiting", group=g.name, after=d)
+                while not self.group_done[d].wait(2.0):
+                    if self.stop_text() is not None:
+                        break
+            if self.stop_text() is not None and waits:
+                status = skip_all("STOP while waiting for %s" % ", ".join(waits))
+                return
+            if g.after_must_pass and waits:
+                ok_v = (Verdict.PASS, Verdict.KNOWN_FAIL, Verdict.NOT_APPLICABLE)
+                bad = [r["id"] for r in self.rec.results
+                       if r["group"] in waits and r["verdict"] not in ok_v]
+                if bad:
+                    status = skip_all("after %s: %d result(s) not PASS (%s)" % (
+                        ", ".join(waits), len(bad), ", ".join(bad[:3])))
+                    return
             if g.needs_lock:
                 if self.bench_stopped:
                     status = skip_all("bench stopped (%s)" % self.bench_stopped)
@@ -536,6 +577,8 @@ class Engine:
                 image=g.image, started=started, ended=stamp(),
                 wall_s=round(time.monotonic() - t0, 1), status=status,
                 checks=len(items)))
+            if g.name in self.group_done:
+                self.group_done[g.name].set()
 
     def restore(self):
         """Every board this run flashed goes back to its standing image."""
@@ -589,6 +632,9 @@ class Engine:
         except Exception as e:
             self.rec.event("lane-crash", lane=lane, error=repr(e),
                            tb=traceback.format_exc()[-2000:])
+            for g, _ in work:
+                if g.name in self.group_done:
+                    self.group_done[g.name].set()
             done = {r["check"] for r in self.rec.results}
             for g, items in work:
                 for c in items:
@@ -663,6 +709,7 @@ class Engine:
         lanes = {}
         for g, items in sel:
             lanes.setdefault(g.lane, []).append((g, items))
+            self.group_done[g.name] = threading.Event()
         threads = [threading.Thread(target=self._lane, args=(ln, w, carried),
                                     name=ln) for ln, w in lanes.items()]
         for t in threads:
