@@ -13,6 +13,7 @@ standing in for esptool. Scratch goes to the machine temp folder
 """
 
 import json
+import re
 import os
 import shutil
 import sys
@@ -484,7 +485,12 @@ def test_wallclock_guard():
     runs on its host; the runner's own processes do not count."""
     env = Env("wcguard")
     marker = "vtrux_bench_other_sim_%d" % os.getpid()
-    st = env.settings(wallclock_patterns=[marker, r"vtrux_bench\.run"])
+    # The runner's own process matches by its exact command line, read
+    # from the process table. A broad pattern ("vtrux_bench.run") also
+    # matched other sessions' runners on the same host (2026-10-19).
+    own = [a for pid, _pp, a in P.process_table() if pid == os.getpid()]
+    assert own and own[0], "this process is not in the process table"
+    st = env.settings(wallclock_patterns=[marker, re.escape(own[0])])
     s = suite([Group("g", [Check("sim", pc("pass"), python=True,
                                  cls="wallclock")])])
     eng, rec = run(env, s, settings=st)    # only the runner itself matches
@@ -532,6 +538,77 @@ def test_requires():
     code["dirty"] = True
     r = refused()
     assert r and "not identifiable" in r, r
+
+
+def test_requires_whole():
+    """The run Suite.requires accepts is a run of the whole suite: not a
+    --group or --check selection, and with no NOT-RUN check but declared
+    skips (gen-inhibit tester, 2026-10-19)."""
+    env = Env("reqwhole")
+    code = {"commit": "abc", "dirty": False}
+    emu = suite([Group("e", [chk("x", "pass")]),
+                 Group("f", [Check("sim", pc("pass"), python=True,
+                                   cls="wallclock"),
+                             Check("later", ["-"], skip="by ruling")])],
+                name="emu", code_info=lambda ctx: dict(code))
+    bench = suite([Group("b", [chk("y", "pass")])], name="bench",
+                  requires="emu", code_info=lambda ctx: dict(code))
+
+    def refused():
+        try:
+            run(env, bench)
+        except SuiteError as e:
+            return str(e)
+        return None
+    run(env, emu, groups=["e"])               # clean, but one group only
+    r = refused()
+    assert r and "partial" in r, r
+    time.sleep(1.1)
+    run(env, emu, checks=["e/*", "f/later"])  # clean, by --check
+    r = refused()
+    assert r and "partial" in r, r
+    time.sleep(1.1)
+    env.set_holder("tester (the-other-project)")   # the sim is refused
+    run(env, emu)
+    env.set_holder("-- (free)")
+    r = refused()
+    assert r and "NOT-RUN" in r and "f/sim" in r, r
+    time.sleep(1.1)
+    run(env, emu)                             # whole, one declared skip
+    assert refused() is None, refused()
+
+
+def test_resume_code():
+    """--resume refuses a run of another suite or on other code, and a run
+    whose start records neither."""
+    env = Env("resumecode")
+    code = {"commit": "abc", "dirty": False}
+    s = suite([Group("g", [chk("a", "pass")])], name="emu",
+              code_info=lambda ctx: dict(code))
+    eng1, _ = run(env, s)
+
+    def refused(st, **kw):
+        try:
+            run(env, st, resume=eng1.run_dir, **kw)
+        except SuiteError as e:
+            return str(e)
+        return None
+    assert refused(s) is None, refused(s)
+    code["commit"] = "def"
+    r = refused(s)
+    assert r and "other code" in r, r
+    code["commit"] = "abc"
+    other = suite([Group("g", [chk("a", "pass")])], name="bench",
+                  code_info=lambda ctx: dict(code))
+    r = refused(other)
+    assert r and "is a run of emu" in r, r
+    p = os.path.join(eng1.run_dir, "progress.jsonl")
+    lines = open(p).readlines()
+    lines = [ln.replace('"suite": "emu", ', "") if '"start"' in ln else ln
+             for ln in lines]
+    open(p, "w").writelines(lines)
+    r = refused(s)
+    assert r and "records no suite" in r, r
 
 
 def test_redact_scope():
@@ -741,6 +818,7 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_void_resume,
          test_two_boards, test_stop_pause,
          test_throttle, test_after, test_wallclock_guard, test_requires,
+         test_requires_whole, test_resume_code,
          test_redact_scope, test_gate, test_skip, test_timeout,
          test_resume, test_compare, test_esptool_flasher, test_remote_command]
 
@@ -806,6 +884,8 @@ MUTANTS = {
     "test_after": _rule("after"),
     "test_wallclock_guard": _rule("wallclock_guard"),
     "test_requires": _rule("requires"),
+    "test_requires_whole": _rule("requires_whole"),
+    "test_resume_code": _rule("resume_code"),
     "test_redact_scope": _rule("redact_scope"),
     "test_gate": _rule("gate"),
     "test_skip": _rule("skip"),

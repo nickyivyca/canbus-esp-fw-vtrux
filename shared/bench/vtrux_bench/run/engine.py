@@ -40,6 +40,9 @@ fails when the rule is switched off through RULES):
                   run's wall-clock checks): one long simulation at a time
   requires        a suite with `requires` starts only when a run of that
                   suite on the same code matched its reference
+  requires_whole  the run Suite.requires accepts must have selected the
+                  whole suite, with no NOT-RUN but declared skips
+  resume_code     --resume refuses a run of another suite or other code
   identify_error  an identify hook that fails (raises) stops the bench; it
                   never leads to a flash
   restore         at the end, every board the run flashed is put back on
@@ -71,7 +74,7 @@ RULES = {k: True for k in (
     "lock_guard", "flash_gate", "image_schedule", "identify_after",
     "no_verdict", "known_fail", "stop_pause", "throttle", "redact_scope",
     "gate", "timeout", "skip", "restore", "identify_error", "after",
-    "wallclock_guard", "requires")}
+    "wallclock_guard", "requires", "requires_whole", "resume_code")}
 
 IDENTIFY_ERROR = "<identify failed>"
 
@@ -751,6 +754,21 @@ class Engine:
             return False, ("the newest %s run (%s) is on other code: %s, not %s"
                            % (need, r.get("run_id"), _code_ident(r.get("code") or {}),
                               ident))
+        if RULES["requires_whole"]:
+            sel = r.get("selection") or {}
+            if sel.get("groups") or sel.get("checks"):
+                return False, ("the newest %s run (%s) was partial (--group %s "
+                               "--check %s): the whole suite must have run"
+                               % (need, r.get("run_id"), sel.get("groups"),
+                                  sel.get("checks")))
+            nr = [x["id"] for x in r["results"]
+                  if x["verdict"] == Verdict.NOT_RUN
+                  and not str(x.get("detail", "")).startswith("skipped: ")]
+            if nr:
+                return False, ("the newest %s run (%s) has %d check(s) NOT-RUN "
+                               "that are not declared skips (%s)"
+                               % (need, r.get("run_id"), len(nr),
+                                  ", ".join(nr[:3])))
         ref = (self.settings.get("references") or {}).get(need)
         if ref:
             with open(os.path.join(ref, "record.json"), encoding="utf-8") as f:
@@ -769,6 +787,26 @@ class Engine:
                            "with" % (need, r.get("run_id"), len(bad),
                                      ", ".join(bad[:3])))
         return True, "%s is clean (no reference yet)" % r.get("run_id")
+
+    def resume_matches(self):
+        """--resume carries verdicts, so the run it carries them from must be
+        of this suite and on this code, as its start event records them."""
+        start = next((e for e in load_progress(self.resume)
+                      if e.get("type") == "event" and e.get("kind") == "start"),
+                     None)
+        if not start or "suite" not in start or "code" not in start:
+            return False, ("%s records no suite and code at its start (a run "
+                           "from before resume checked them)" % self.resume)
+        if start["suite"] != self.suite.name:
+            return False, ("%s is a run of %s, not %s"
+                           % (self.resume, start["suite"], self.suite.name))
+        now = dict(self._code())
+        now.setdefault("code_hash", None)
+        if not _same_code(start["code"], now):
+            return False, ("%s ran on other code: %s, not %s"
+                           % (self.resume, _code_ident(start["code"])
+                              or start["code"], _code_ident(now) or now))
+        return True, ""
 
     def _code(self):
         if not self.suite.code_info:
@@ -807,6 +845,10 @@ class Engine:
             ok, why = self.requirement_met()
             if not ok:
                 raise SuiteError("refusing to start: %s" % why)
+        if self.resume and RULES["resume_code"]:
+            ok, why = self.resume_matches()
+            if not ok:
+                raise SuiteError("refusing to resume: %s" % why)
         if self.needs_bench():
             ok, h = self.lock_ours()
             if not ok:
@@ -844,7 +886,8 @@ class Engine:
             except Exception as e:
                 clocks[host] = "unreadable: %r" % (e,)
         header["host_clocks_epoch"] = clocks
-        self.rec.event("start", run_id=self.run_id)
+        self.rec.event("start", run_id=self.run_id, suite=self.suite.name,
+                       code=code)
         lanes = {}
         for g, items in sel:
             lanes.setdefault(g.lane, []).append((g, items))
@@ -893,6 +936,16 @@ def _code_ident(code):
     if code.get("commit") and code.get("dirty") is False:
         return "commit:%s" % code["commit"]
     return None
+
+
+def _same_code(a, b):
+    """The same code for --resume: the same identity where either side has
+    one; otherwise the same recorded code_info."""
+    ia, ib = _code_ident(a), _code_ident(b)
+    if ia or ib:
+        return ia == ib
+    strip = lambda d: {k: v for k, v in d.items() if k != "error"}  # noqa: E731
+    return strip(a) == strip(b)
 
 
 def exit_code(record):

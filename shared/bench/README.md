@@ -31,7 +31,7 @@ every group of checks, restore, record. The same command runs part of it.
 | `vtrux_bench/run/procs.py` | Commands with timeouts that kill the whole tree; the remote (ssh) line with coreutils `timeout`; the build throttle (idle priority, one job) and the process-list scan for wall-clock tests. |
 | `vtrux_bench/run/record.py` | The run folder (never reused), `progress.jsonl`, `record.json` and `index.txt` (exclusive create), and `compare` with per-figure tolerances. |
 | `vtrux_bench/run/cli.py` | The command line. |
-| `tests/test_run_core.py` | The runner's own tests (25), with a fake suite, a fake two-board bench and `fake_esptool.py`. `--can-fail` runs each with its rule switched off; every one must then fail. |
+| `tests/test_run_core.py` | The runner's own tests (27), with a fake suite, a fake two-board bench and `fake_esptool.py`. `--can-fail` runs each with its rule switched off; every one must then fail. |
 
 ### Boards and images
 
@@ -74,7 +74,12 @@ the run refuses to start unless the newest finished run of that suite is
 on the same code and matched its reference (`settings.references`), or,
 with no reference yet, has no FAIL, ERROR or VOID. "The same code" is the
 code hash once it is logged (port plan goal 13); until then the commit, and
-only from a clean tree.
+only from a clean tree. That run must also be of the whole suite: a
+`--group` or `--check` selection is refused, and so is any NOT-RUN result
+that is not a declared skip (a check refused by a guard, a stopped run).
+
+`--resume RUN_DIR` carries only from a run of the same suite on the same
+code, as that run's start event records them; anything else is refused.
 
 `record.json` lists every image the run used (`images_used`): board,
 expected identity, what identify read, file digests, whether it was
