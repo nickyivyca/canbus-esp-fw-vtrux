@@ -299,23 +299,14 @@ def test_suites():
 
 
 def test_mutant_wiring():
-    """The corrupt-pin check uses its judge; the prefix control gets the
-    pre-fix driver, staged in the shipped artifacts."""
+    """The corrupt-pin check uses its judge; every other mutant script
+    the exit-code judge."""
     s, su = _all()
     mut = {c.id: c for g in su["harness"].groups if g.name == "m-mutants"
            for c in g.checks}
     assert mut["monitor-6h-diff-corrupt-pin"].judge is B.corrupt_pin_judge
     assert all(c.judge is B.script_judge for k, c in mut.items()
                if k != "monitor-6h-diff-corrupt-pin")
-    env = mut["rx-order-prefix-control"].env
-    name = "port_mcp2515_%s.cpp" % B.PRE_FIX_COMMIT
-    assert env.get("PRE_DRIVER") == "{work}/art/" + name, env
-    g = [g for g in su["harness"].groups if g.name == "m-mutants"][0]
-    staged = os.path.join(g.ship["art"], name)
-    assert os.path.getsize(staged) > 1000, "pre-fix driver not staged"
-    cur = os.path.join(HERE, "firmware", "src", "port_mcp2515.cpp")
-    assert open(staged, "rb").read() != open(cur, "rb").read(), \
-        "the staged driver is the current one"
 
 
 # The two HELLO? replies the bridge image gave in the 00:30 trial
@@ -456,13 +447,6 @@ def _plain_judges(s):
                 c.judge = B.script_judge
 
 
-def _no_pre_driver(s):
-    for g in s.groups:
-        for c in g.checks:
-            if c.env and "PRE_DRIVER" in c.env:
-                c.env = {k: v for k, v in c.env.items() if k != "PRE_DRIVER"}
-
-
 def _identify_ignores_product(image, ctx, logdir, settings):
     I = B.bench_identify
     got, _p = I.read_7f7(settings, logdir, "t")
@@ -508,8 +492,7 @@ MUTANTS = {
     "test_mutant_wiring": [
         ("harness", _wrap_suite("harness", _plain_judges),
          "every mutant on the exit-code judge"),
-        ("harness", _wrap_suite("harness", _no_pre_driver),
-         "the prefix control without PRE_DRIVER")],
+        ],
     "test_identify": [
         ("bench_identify.PRODUCT_RE", _OLD_PRODUCT_RE,
          "PRODUCT_RE without re.M (the 00:30 form)"),

@@ -110,9 +110,6 @@ MADHOUSE_MUTANTS = [
     ("monitor-6h-diff-canfail", ["@python", "{work}/art/monitor_6h_diff.py", "--can-fail"]),
     ("monitor-6h-diff-corrupt-pin", ["@python", "{work}/art/monitor_6h_diff.py", "--corrupt-pin"]),
 ]
-# The driver before the rollover fix, for rx_order_prefix_control.sh: the
-# shipped tree has no git history, so it is extracted here (PRE_DRIVER).
-PRE_FIX_COMMIT = "9021d5e"
 MUTANT_JUDGES = {"monitor-6h-diff-corrupt-pin": "corrupt_pin_judge"}  # by name
 
 # Bench drivers with a --self-test (no hardware), run locally.
@@ -358,7 +355,6 @@ class _Build:
         self.ship = {"code": self.code}
         if ship_art:
             self.ship["art"] = _stage_artifacts(settings)
-            _stage_pre_fix_driver(self.code, self.ship["art"])
         self.mad_env = {"INTERPOSER_CODE": "{work}/code",
                         "L3_STIMULUS": "{madhouse_artifacts}/l3_stimulus.txt"}
 
@@ -421,19 +417,6 @@ class _Build:
                 out["images"] = {k: v.note for k, v in images.items()}
             return out
         return info
-
-
-def _stage_pre_fix_driver(code, art):
-    import subprocess
-    r = subprocess.run(["git", "-C", os.path.dirname(code), "show",
-                        "%s:charge-interposer/firmware/src/port_mcp2515.cpp"
-                        % PRE_FIX_COMMIT], capture_output=True)
-    if r.returncode != 0 or not r.stdout:
-        raise ValueError("cannot extract port_mcp2515.cpp at %s: %s"
-                         % (PRE_FIX_COMMIT, r.stderr[-200:]))
-    with open(os.path.join(art, "port_mcp2515_%s.cpp" % PRE_FIX_COMMIT),
-              "wb") as f:
-        f.write(r.stdout)
 
 
 def _artifacts_digest(settings):
@@ -659,9 +642,6 @@ def harness(settings):
     def mutant(cid, argv):
         kw = dict(cls="build", timeout_s=7200,
                   judge=globals()[MUTANT_JUDGES.get(cid, "script_judge")])
-        if cid == "rx-order-prefix-control":
-            kw["env"] = dict(b.mad_env, PRE_DRIVER="{work}/art/port_mcp2515_%s.cpp"
-                             % PRE_FIX_COMMIT)
         if argv[0] == "@python":
             return b.mpy(cid, argv[1:], **kw)
         return b.mbash(cid, argv, **kw)
