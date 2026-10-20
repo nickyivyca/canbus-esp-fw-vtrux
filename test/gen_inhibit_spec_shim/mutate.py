@@ -77,7 +77,7 @@ def wsl_path(p):
 
 
 def sh(cmd, local, timeout=900):
-    argv = ["bash", "-lc", cmd] if local else ["wsl", "-e", "bash", "-lc", cmd]
+    argv = ["bash", "-c", cmd] if local else ["wsl", "-e", "bash", "-c", cmd]
     r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
     return r.returncode, r.stdout, r.stderr
 

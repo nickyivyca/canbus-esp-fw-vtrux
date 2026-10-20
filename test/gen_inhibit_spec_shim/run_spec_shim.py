@@ -38,7 +38,7 @@ def wsl_path(p):
 
 
 def wsl(cmd, timeout=1800):
-    r = subprocess.run(["wsl", "-e", "bash", "-lc", cmd], capture_output=True, text=True, timeout=timeout)
+    r = subprocess.run(["wsl", "-e", "bash", "-c", cmd], capture_output=True, text=True, timeout=timeout)
     return r.returncode, r.stdout + r.stderr
 
 
