@@ -360,12 +360,108 @@ def test_two_boards():
               images=ims, flashers={"fake": tb.flasher}, identify=tb.identify,
               standing_images={"x2": "x2app", "wican": "w1"})
     eng, rec = run(env, s)
-    assert tb.flashes == ["w2", "jammer", "w1", "x2app"], tb.flashes
+    # at the start each board is put on its first image (x2: jammer),
+    # then flashed only on change, then restored
+    assert tb.flashes == ["jammer", "w2", "w1", "x2app"], tb.flashes
     assert tb.identify(ims["x2app"], None, None) == "X2-APP"
     assert tb.identify(ims["w1"], None, None) == "WC-1"
     assert set(verdicts(rec).values()) == {"PASS"}, verdicts(rec)
     bs = open(os.path.join(eng.run_dir, "board_state.txt")).read()
     assert "wican:" in bs and "x2:" in bs, bs
+    assert "NOT ON STANDING" not in bs and not rec["not_on_standing"], bs
+
+
+def test_start_identify():
+    """Every board the run uses is identified at the start, before the
+    first group, and flashed only if it reads another image; a board needed
+    only by a later group is still read first (user 2026-10-20)."""
+    env = Env("startidentify")
+    tb = TwoBoards(env)
+    tb.set("x2", "X2-APP")
+    tb.set("wican", "WC-OLD")
+    ims = {"x2app": Image("x2app", "fake", expect="X2-APP", board="x2"),
+           "w1": Image("w1", "fake", expect="WC-1", board="wican")}
+    s = suite([Group("a", [chk("x", "pass")], needs_lock=True, image="x2app"),
+               Group("b", [chk("y", "pass")], needs_lock=True, image="w1")],
+              images=ims, flashers={"fake": tb.flasher}, identify=tb.identify,
+              standing_images={"x2": "x2app", "wican": "w1"})
+    eng, rec = run(env, s)
+    assert tb.flashes == ["w1"], tb.flashes      # x2 matched; wican did not
+    prog = R.load_progress(eng.run_dir)
+    first_check = next(n for n, e in enumerate(prog) if e["type"] == "result")
+    reads = [(e["board"], e["read"]) for e in prog[:first_check]
+             if e.get("kind") == "identify"]
+    assert reads[:3] == [("x2", "X2-APP"), ("wican", "WC-OLD"),
+                         ("wican", "WC-1")], reads
+    assert any(g["name"] == "start-identify" for g in rec["groups"]), rec["groups"]
+    assert set(verdicts(rec).values()) == {"PASS"}, verdicts(rec)
+
+
+class GarbledJammer(TwoBoards):
+    """Flashing `bad` leaves the board reading something no identify
+    knows; with garble_restore the standing image reads wrong too."""
+    def __init__(self, env, bad, garble_restore=False):
+        TwoBoards.__init__(self, env)
+        self.bad = set(bad)
+        self.garble_restore = garble_restore
+        self.bad_seen = False
+
+    def flasher(self, image, params, settings, logdir):
+        self.flashes.append(image.name)
+        garble = image.name in self.bad or (
+            self.garble_restore and self.bad_seen)
+        self.bad_seen = self.bad_seen or image.name in self.bad
+        self.set(image.board, "VN-garbage" if garble else image.expect)
+        return dict(ok=True, phase="done", detail="fake", recoverable=True)
+
+
+def _jammer_suite(tb):
+    ims = {"x2app": Image("x2app", "fake", expect="X2-APP", board="x2"),
+           "jammer": Image("jammer", "fake", expect="JAM", board="x2")}
+    return suite([Group("a", [chk("x", "pass")], needs_lock=True,
+                        image="x2app"),
+                  Group("j", [chk("y", "pass")], needs_lock=True,
+                        image="jammer"),
+                  Group("k", [chk("z", "pass")], needs_lock=True,
+                        image="x2app")],
+                 images=ims, flashers={"fake": tb.flasher},
+                 identify=tb.identify, standing_images={"x2": "x2app"})
+
+
+def test_restore_after_stop():
+    """An identify that reads wrong after a flash stops the bench, and the
+    end-of-run restore is still made, once; a restore that reads wrong as
+    well flashes nothing further (user 2026-10-20)."""
+    env = Env("restorestop")
+    tb = GarbledJammer(env, bad=["jammer"])
+    tb.set("x2", "X2-APP")
+    eng, rec = run(env, _jammer_suite(tb))
+    v = verdicts(rec)
+    assert v == {"a/x": "PASS", "j/y": "NOT-RUN", "k/z": "NOT-RUN"}, v
+    assert tb.flashes == ["jammer", "x2app"], tb.flashes
+    assert open(tb.path("x2")).read() == "X2-APP"
+    assert not rec["not_on_standing"], rec["not_on_standing"]
+    env = Env("restorestop2")
+    tb = GarbledJammer(env, bad=["jammer"], garble_restore=True)
+    tb.set("x2", "X2-APP")
+    eng, rec = run(env, _jammer_suite(tb))
+    assert tb.flashes == ["jammer", "x2app"], tb.flashes   # one restore
+    assert open(tb.path("x2")).read() == "VN-garbage"
+
+
+def test_standing_line():
+    """A board left off its standing image opens board_state.txt, index.txt
+    and the record with NOT ON STANDING IMAGE, with the board and reason."""
+    env = Env("standingline")
+    tb = GarbledJammer(env, bad=["jammer"], garble_restore=True)
+    tb.set("x2", "X2-APP")
+    eng, rec = run(env, _jammer_suite(tb))
+    first = open(os.path.join(eng.run_dir, "board_state.txt")).readline()
+    assert first.startswith("NOT ON STANDING IMAGE: x2 on unknown"), first
+    assert "RESTORE FAILED" in first and "VN-garbage" in first, first
+    idx = open(os.path.join(eng.run_dir, "index.txt")).readline()
+    assert idx == first, (idx, first)
+    assert rec["not_on_standing"] == [first.rstrip("\n")], rec["not_on_standing"]
 
 
 def test_stop_pause():
@@ -939,7 +1035,8 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_known_fail, test_lock_guard, test_flash_gate,
          test_image_schedule, test_identify_error, test_identify_after,
          test_void_resume,
-         test_two_boards, test_stop_pause,
+         test_two_boards, test_start_identify, test_restore_after_stop,
+         test_standing_line, test_stop_pause,
          test_throttle, test_after, test_wallclock_guard, test_requires,
          test_requires_whole, test_subset_mark, test_subset_not_whole,
          test_resume_code,
@@ -1004,6 +1101,9 @@ MUTANTS = {
     "test_identify_after": _rule("identify_after"),
     "test_void_resume": _patch(R.Recorder, "amend", lambda self, r: None),
     "test_two_boards": _rule("restore"),
+    "test_start_identify": _rule("start_identify"),
+    "test_restore_after_stop": _rule("restore_after_stop"),
+    "test_standing_line": _rule("standing_line"),
     "test_stop_pause": _rule("stop_pause"),
     "test_throttle": _rule("throttle"),
     "test_after": _rule("after"),

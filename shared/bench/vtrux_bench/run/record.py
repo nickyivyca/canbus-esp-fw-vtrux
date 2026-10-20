@@ -127,7 +127,8 @@ def _fig_text(figs):
 def index_text(record):
     """Every check with its verdict; known FAILs and changes called out."""
     res = record["results"]
-    lines = ["Run %s -- suite %s" % (record["run_id"], record["suite"]),
+    lines = list(record.get("not_on_standing") or []) + [
+             "Run %s -- suite %s" % (record["run_id"], record["suite"]),
              "started %s, ended %s" % (record["started"], record["ended"]),
              "code: %s" % json.dumps(record.get("code", {}), sort_keys=True)]
     if record.get("subset"):

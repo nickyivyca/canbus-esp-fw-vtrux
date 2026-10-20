@@ -19,6 +19,20 @@ fails when the rule is switched off through RULES):
                   needs that image; no retry; after a failed auto-reset
                   check no further flash at all
   image_schedule  flash only when the board is not already on the image
+                  (also in the start pass below)
+  start_identify  at the start of the bench lane, before the first group,
+                  every board the run uses (test gear included) is
+                  identified against the first image the run needs on it,
+                  flashed if it reads anything else, and identified again
+                  (user 2026-10-20: correctness rests on this, not on what
+                  the last run left)
+  restore_after_stop  the end-of-run restore is one best-effort attempt
+                  per board, also after a flash or identify failure stopped
+                  the bench; only the flash gate (a failed auto-reset
+                  check), a lost lock or STOP norestore prevent it
+  standing_line   a board the run used that ends off its standing image
+                  opens board_state.txt with "NOT ON STANDING IMAGE: ..."
+                  (also in record.json and index.txt)
   identify_after  a group whose board image changed under it is VOID
   no_verdict      a check that returns no verdict is an ERROR
   known_fail      registry FAILs become KNOWN-FAIL; a registry PASS is
@@ -82,7 +96,8 @@ RULES = {k: True for k in (
     "no_verdict", "known_fail", "stop_pause", "throttle", "redact_scope",
     "gate", "timeout", "skip", "restore", "identify_error", "after",
     "wallclock_guard", "requires", "requires_whole", "resume_code",
-    "subset_mark", "subset_not_whole")}
+    "subset_mark", "subset_not_whole", "start_identify", "restore_after_stop",
+    "standing_line")}
 
 IDENTIFY_ERROR = "<identify failed>"
 
@@ -134,6 +149,7 @@ class Engine:
         self.board_image = {}
         self.board_read = {}
         self.board_touched = set()
+        self.restore_note = {}
         self.no_more_flash = set()
         self.bench_stopped = None
         self.failed_images = set()
@@ -679,12 +695,17 @@ class Engine:
                 todo.append((board, si))
         if not todo:
             return
-        if self.bench_stopped and "flash" in self.bench_stopped:
+        if (self.bench_stopped and "flash" in self.bench_stopped
+                and not RULES["restore_after_stop"]):
             self.rec.event("restore-skipped", reason=self.bench_stopped)
+            for board, _si in todo:
+                self.restore_note[board] = "restore skipped: %s" % self.bench_stopped
             return
         st = self.stop_text()
         if st is not None and "norestore" in st.lower():
             self.rec.event("restore-skipped", reason="STOP says norestore")
+            for board, _si in todo:
+                self.restore_note[board] = "restore skipped: STOP says norestore"
             return
         t0 = time.monotonic()
         started = stamp()
@@ -694,16 +715,19 @@ class Engine:
             if not ok:
                 statuses.append("%s: RESTORE NOT RUN, lock not ours (%s)"
                                 % (board, h))
+                self.restore_note[board] = statuses[-1]
                 continue
             if board in self.no_more_flash:
                 statuses.append("%s: RESTORE NOT RUN, its auto-reset check "
                                 "failed" % board)
+                self.restore_note[board] = statuses[-1]
                 continue
             logdir = os.path.join(self.run_dir, "_bench", "restore")
             os.makedirs(logdir, exist_ok=True)
             self.failed_images.discard(si)
             good, why = self.ensure_image(si, logdir)
             statuses.append(("restored: " if good else "RESTORE FAILED: ") + why)
+            self.restore_note[board] = statuses[-1]
         status = "; ".join(statuses)
         self.rec.event("restore", status=status)
         self.groups_out.append(dict(
@@ -711,8 +735,60 @@ class Engine:
             image=[si for _, si in todo], started=started, ended=stamp(),
             wall_s=round(time.monotonic() - t0, 1), status=status, checks=0))
 
+    def start_identify(self, work):
+        """Identify every board the lane uses against the first image the
+        run needs on it, before the first group; flash it if it reads
+        anything else (ensure_image). A failure is handled as any flash
+        failure (the flash gate, on_flash_failure)."""
+        first = {}
+        for g, _items in work:
+            for name in g.image_list:
+                first.setdefault(self.suite.images[name].board, name)
+        if not first:
+            return
+        t0 = time.monotonic()
+        started = stamp()
+        logdir = os.path.join(self.run_dir, "_bench", "start")
+        os.makedirs(logdir, exist_ok=True)
+        statuses = []
+        for board, name in first.items():
+            if self.bench_stopped:
+                statuses.append("%s: not flashed, bench stopped (%s)"
+                                % (board, self.bench_stopped))
+                continue
+            ok, why = self.ensure_image(name, logdir)
+            statuses.append(("" if ok else "START FAILED: ") + why)
+        status = "; ".join(statuses)
+        self.rec.event("start-identify", status=status)
+        self.groups_out.append(dict(
+            name="start-identify", lane="bench", host="local", needs_lock=True,
+            image=list(first.values()), started=started, ended=stamp(),
+            wall_s=round(time.monotonic() - t0, 1), status=status, checks=0))
+
+    def off_standing(self):
+        """Lines for every board the run used that ends off its standing
+        image: [] when all are on it (or have none)."""
+        used = set(self.board_touched)
+        for g, _items in self.selected():
+            for name in g.image_list:
+                used.add(self.suite.images[name].board)
+        out = []
+        for board in sorted(used):
+            si = self.suite.standing_for(board)
+            if si and self.board_image.get(board) != si:
+                out.append("NOT ON STANDING IMAGE: %s on %s (standing %s), "
+                           "reason: %s" % (
+                               board, self.board_image.get(board) or
+                               "unknown (last read %r)" % (
+                                   self.board_read.get(board),),
+                               si, self.restore_note.get(board) or
+                               self.bench_stopped or "restore not reached"))
+        return out
+
     def _lane(self, lane, work, carried):
         try:
+            if lane == "bench" and RULES["start_identify"]:
+                self.start_identify(work)
             for g, items in work:
                 self.run_group(g, items, carried)
             if lane == "bench":
@@ -923,10 +999,14 @@ class Engine:
             for kid in sorted(self.kf):
                 if "/".join(kid.split("/")[:2]) in ran and kid not in produced:
                     unmatched.append(kid)
+        off = self.off_standing() if RULES["standing_line"] else []
+        header["not_on_standing"] = off
+        for ln in off:
+            self.out(ln)
         if self.needs_bench():
-            lines = ["Boards at the end of run %s (for the release message "
-                     "and the board sections, bench-holder rule 4):"
-                     % self.run_id]
+            lines = off + ["Boards at the end of run %s (for the release "
+                           "message and the board sections, bench-holder "
+                           "rule 4):" % self.run_id]
             for board in sorted(set(self.board_read) | set(self.board_image)):
                 lines.append("  %s: last identify read %s; image %s; flashed in "
                              "this run: %s" % (
