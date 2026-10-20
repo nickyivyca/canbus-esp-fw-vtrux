@@ -9,6 +9,9 @@ description = "Shared bench toolkit for the Vtrux ESP32 firmware projects: the c
 requires-python = ">=3.10"
 dependencies = []
 
+[project.optional-dependencies]
+decode = ["cantools>=44.1"]
+
 [project.scripts]
 vtrux-bench-run = "vtrux_bench.run.cli:main"
 

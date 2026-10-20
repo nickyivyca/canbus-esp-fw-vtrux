@@ -1,0 +1,42 @@
+VERSION "golden layout_hash test DBC -- not a real bus"
+
+
+NS_ :
+
+BS_:
+
+BU_: TX RX
+
+BO_ 2566848737 ExtMsg: 8 TX
+ SG_ temp : 7|12@0- (0.5,-40) [-40|100] "degC" RX
+ SG_ volts : 32|32@1- (1,0) [0|0] "V" RX
+
+BO_ 500 Status: 4 TX
+ SG_ state : 8|8@1+ (1,0) [0|6] "" RX
+ SG_ mode : 0|4@1+ (1.0,0.0) [0|15] "" RX
+
+BO_ 300 Mux: 8 TX
+ SG_ pageB m2 : 8|16@1+ (1,10) [0|0] "" RX
+ SG_ sel M : 0|8@1+ (1,0) [0|0] "" RX
+ SG_ pageA m1 : 8|16@1+ (0.01,0) [0|0] "kWh" RX
+
+CM_ "Comments, units, ranges, nodes and attributes are not in the hash.";
+CM_ BO_ 500 "A message comment.";
+CM_ SG_ 500 state "A signal comment.";
+
+BA_DEF_ "DiagSchemaVersion" INT 0 255;
+BA_DEF_ "DiagSchemaHash" STRING ;
+BA_DEF_ BO_ "GenMsgCycleTime" INT 0 65535;
+BA_DEF_ SG_ "RenamedFrom" STRING ;
+BA_DEF_DEF_ "DiagSchemaVersion" 0;
+BA_DEF_DEF_ "DiagSchemaHash" "";
+BA_DEF_DEF_ "GenMsgCycleTime" 0;
+BA_DEF_DEF_ "RenamedFrom" "";
+BA_ "DiagSchemaVersion" 7;
+BA_ "DiagSchemaHash" "8c585cd221163525";
+BA_ "GenMsgCycleTime" BO_ 500 1000;
+BA_ "RenamedFrom" SG_ 500 mode "vcu_mode";
+
+VAL_ 500 state 6 "HOLD" 0 "PASSTHROUGH" 2 "OVERRIDE" ;
+
+SIG_VALTYPE_ 2566848737 volts : 1;

@@ -1,0 +1,13 @@
+M|300|Mux|8|0
+S|sel|0|8|le|u|1.0|0.0|M
+S|pageA|8|16|le|u|0.01|0.0|m1@sel
+S|pageB|8|16|le|u|1.0|10.0|m2@sel
+M|500|Status|4|0
+S|mode|0|4|le|u|1.0|0.0|-
+S|state|8|8|le|u|1.0|0.0|-
+C|0=PASSTHROUGH
+C|2=OVERRIDE
+C|6=HOLD
+M|419365089|ExtMsg|8|1
+S|temp|7|12|be|s|0.5|-40.0|-
+S|volts|32|32|le|f|1.0|0.0|-

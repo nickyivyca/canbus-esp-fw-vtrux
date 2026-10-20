@@ -3,8 +3,9 @@
 Bench tooling shared by the two Vtrux ESP32 projects (gen-inhibit and
 charge-interposer). Item 8, "run", of the shared bench toolkit in the
 reverse-it plan `projects/vtrux/notes/plans/esp-shared-code-port.md`.
-Stdlib only, Python >= 3.10. Written by the charge-interposer tester
-(2026-10-17); each project writes its own suite on top.
+Python >= 3.10. The runner is stdlib only; `vtrux_bench.decode` needs
+cantools (`pip install ".[decode]"`). Written by the charge-interposer
+tester (2026-10-17); each project writes its own suite on top.
 
 Install it at a pinned commit rather than copying it:
 
@@ -31,6 +32,8 @@ every group of checks, restore, record. The same command runs part of it.
 | `vtrux_bench/run/procs.py` | Commands with timeouts that kill the whole tree; the remote (ssh) line with coreutils `timeout`; the build throttle (idle priority, one job) and the process-list scan for wall-clock tests. |
 | `vtrux_bench/run/record.py` | The run folder (never reused), `progress.jsonl`, `record.json` and `index.txt` (exclusive create), and `compare` with per-figure tolerances. |
 | `vtrux_bench/run/cli.py` | The command line. |
+| `vtrux_bench/decode.py` | Diag DBC schema identity (toolkit item 10, first part): `layout_hash`, `check_identity`, `check_history`. See "Diag DBC schema identity" below. |
+| `tests/test_decode.py` | Its tests (6), with `data/golden_layout.dbc` and its hand-written canonical text `data/golden_layout.txt`. `--can-fail` runs each test under each of its mutants (28); every one must fail. |
 | `tests/test_run_core.py` | The runner's own tests (27), with a fake suite, a fake two-board bench and `fake_esptool.py`. `--can-fail` runs each with its rule switched off; every one must then fail. |
 
 ### Boards and images
@@ -88,6 +91,28 @@ flashed, and a `code_hash` field (null until the code-hash tool exists).
 A check with `skip="<reason>"` (needs hands, needs the truck, blocked) is
 listed NOT-RUN with its reason and never executed, so the index still
 shows it.
+
+### Diag DBC schema identity (`vtrux_bench.decode`)
+
+User ruling, 2026-10-19, common to both projects. Each diag DBC states
+`DiagSchemaVersion` (INT, the schema byte its frames carry) and
+`DiagSchemaHash` (STRING, its own `layout_hash`) as database attributes;
+a renamed signal carries `RenamedFrom` (its earlier names, oldest first).
+
+`layout_hash(db)` is the first 16 hex characters of SHA-256 over a
+canonical text of the parsed database: per message its id, name, DLC and
+extended flag; per signal its name, start bit as written, length, byte
+order, u/s/f, scale and offset as `repr(float(x))`, and multiplexing; the
+choices as value=name. Messages are sorted by id, signals by start bit then
+name, choices by value. Comments, units, ranges, nodes and attributes are
+left out. Names are in it, so a rename needs a schema bump. A choice name
+holding `|`, `=` or a line break is refused. The exact line format is in
+the module docstring and pinned by the golden test.
+
+`check_identity(db)` checks that a DBC states an integer version and its
+own hash. `check_history(repo, path)` checks every commit of the DBC in
+git: each commit's identity, and one layout per `DiagSchemaVersion`. A
+shallow clone is refused.
 
 ### Verdicts
 
