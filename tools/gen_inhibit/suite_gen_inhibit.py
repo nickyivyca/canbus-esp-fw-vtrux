@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Gen-inhibit's two suites for the shared chain runner (shared/bench, vtrux_bench.run,
-pinned at 45a67ba, tester/core-board-hooks on e37995a: its on_start / on_end board
+pinned at 5fa86c6, tester/core-hooks-fixes on e37995a: its on_start / on_end board
 steps reboot the WiCAN at each run's start and release; it refuses an esptool write unless
 settings.esptool.chip names the X2's type and MAC, and the MAC lives only in the local
 settings, never in a published file).
