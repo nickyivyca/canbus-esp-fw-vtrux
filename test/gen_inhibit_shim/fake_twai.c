@@ -919,7 +919,19 @@ void ft_stop_worker(void)
     g_turn = 1;
     pthread_cond_broadcast(&g_cv);
     pthread_mutex_unlock(&g_m);
-    pthread_cancel(g_worker);
+    /*
+     * NO pthread_cancel(), which hung the suite (2026-10-20, WSL gcc 9.4 /
+     * glibc 2.31). Cancelled inside yield_to_test()'s pthread_cond_wait(),
+     * the worker re-acquires g_m before it exits and nothing releases it, so
+     * the next case's ft_start_worker() blocks on g_m for ever. Whether the
+     * cancel lands there or after the wake is scheduling, which is why the
+     * hang moved between cases from run to run. The cancel is not needed:
+     * the worker is always parked in yield_to_test(), whose callers
+     * (twai_receive(), vTaskDelay()) pthread_exit() on g_worker_stop.
+     * The cancel was also the only way out of vTaskDelay()'s no-worker
+     * branch, which a stopping worker can reach once g_worker_started is
+     * clear; that branch now checks g_worker_stop as well.
+     */
     pthread_join(g_worker, NULL);
 }
 
@@ -1353,9 +1365,19 @@ void vTaskDelay(TickType_t ticks)
      * NO WORKER YET, so this is the test thread and there is nobody to yield to:
      * time passes and that is all. Since 2026-10-16 a mode change waits for the
      * worker (spec 3); yielding here would wait for a thread that does not exist.
+     *
+     * A STOPPED WORKER CAN ALSO LAND HERE: ft_stop_worker() clears
+     * g_worker_started before the worker has left. Without the check it would
+     * spin in the OFF branch's sleep for ever, and since 2026-10-20 there is
+     * no pthread_cancel() behind it (see ft_stop_worker()), so g_worker_stop
+     * has to be the way out on this branch too.
      */
     if (!g_worker_started)
     {
+        if (g_worker_stop && pthread_equal(pthread_self(), g_worker))
+        {
+            pthread_exit(NULL);
+        }
         g_now += (int64_t)ticks * 1000;
         controller_advance(g_now);
         return;
