@@ -298,6 +298,13 @@ def _manifest(code):
         return json.load(f)["builds"]
 
 
+# The X2 the esptool flasher must find on the port before it writes
+# (methodology, 2026-10-20: a chip-id mismatch writes nothing). The MAC is
+# the one every chip-id on this bench has read (242 reads in both projects'
+# flash logs to 2026-10-20); the WiCAN is an ESP32-C3.
+X2_CHIP = {"type": "ESP32-S3", "mac": "02:00:00:0a:bc:de"}
+
+
 def _arduino_image(name, env, settings):
     src = settings["images_src"]
     d = os.path.join(settings["images_dir"], src, env)
@@ -313,7 +320,7 @@ def _arduino_image(name, env, settings):
                                    ["0x8000", os.path.join(d, "partitions.bin")],
                                    ["0xe000", settings["boot_app0"]],
                                    ["0x10000", app]],
-                         "md5": {app: row["md5"]}},
+                         "md5": {app: row["md5"]}, "chip": dict(X2_CHIP)},
                  note="manifest row %s, elf %s" % (row["image"],
                                                    row["elf_sha256"][:8]))
 
@@ -326,7 +333,8 @@ def _idf_image(name, settings):
     return Image(name, "esptool", board="x2", expect="%s:%s" % (name, sha),
                  params={"files": [["0x0", os.path.join(d, "bootloader.bin")],
                                    ["0x8000", os.path.join(d, "partition-table.bin")],
-                                   ["0x10000", os.path.join(d, "%s.bin" % name)]]},
+                                   ["0x10000", os.path.join(d, "%s.bin" % name)]],
+                         "chip": dict(X2_CHIP)},
                  note="ELF %s" % sha[:8])
 
 

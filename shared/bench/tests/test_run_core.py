@@ -251,6 +251,41 @@ def test_flash_gate():
     assert verdicts(rec) == {"g1/x": "NOT-RUN", "g2/y": "NOT-RUN"}
 
 
+def test_chip_mismatch():
+    """A chip-id that reads another chip type or MAC than the image names
+    writes nothing, also at the restore, and the board's NOT ON STANDING
+    IMAGE line names the mismatch (methodology, 2026-10-20)."""
+    for name, chip, mac in (("chiptype", "ESP32-C3", "02:00:00:0a:bc:de"),
+                            ("chipmac", "ESP32-S3", "aa:bb:cc:dd:ee:ff")):
+        env = Env(name)
+        os.environ["FAKE_ESPTOOL_CHIP"] = chip
+        os.environ["FAKE_ESPTOOL_MAC"] = mac
+        a, b = env.image("A", "IMG-A"), env.image("B", "IMG-B")
+        for im in (a, b):
+            im.params["chip"] = {"type": "ESP32-S3", "mac": "02:00:00:0A:BC:DE"}
+        with open(env.board, "w") as f:
+            f.write("IMG-A")
+        s = suite([Group("g1", [chk("x", "pass")], needs_lock=True, image="B"),
+                   Group("g2", [chk("y", "pass")], needs_lock=True, image="A")],
+                  images={"A": a, "B": b}, standing_image="A",
+                  identify=env.identify)
+        eng, rec = run(env, s)
+        calls = env.esptool_calls()
+        assert not any("write-flash" in c for c in calls), (name, calls)
+        assert verdicts(rec) == {"g1/x": "NOT-RUN", "g2/y": "NOT-RUN"}, verdicts(rec)
+        off = rec["not_on_standing"]
+        assert len(off) == 1 and "chip-id mismatch" in off[0], (name, off)
+    # the same check passes on the right chip (the control)
+    env = Env("chipok")
+    a = env.image("A", "IMG-A")
+    a.params["chip"] = {"type": "ESP32-S3", "mac": "02:00:00:0a:bc:de"}
+    s = suite([Group("g1", [chk("x", "pass")], needs_lock=True, image="A")],
+              images={"A": a}, standing_image="A", identify=env.identify)
+    eng, rec = run(env, s)
+    assert verdicts(rec) == {"g1/x": "PASS"}, verdicts(rec)
+    assert len([c for c in env.esptool_calls() if "write-flash" in c]) == 1
+
+
 def test_image_schedule():
     """Flash only when the board is not already on the image; restore the
     standing image at the end."""
@@ -1033,7 +1068,7 @@ def test_bare_shell():
 
 TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwrite,
          test_known_fail, test_lock_guard, test_flash_gate,
-         test_image_schedule, test_identify_error, test_identify_after,
+         test_chip_mismatch, test_image_schedule, test_identify_error, test_identify_after,
          test_void_resume,
          test_two_boards, test_start_identify, test_restore_after_stop,
          test_standing_line, test_stop_pause,
@@ -1096,6 +1131,9 @@ MUTANTS = {
     "test_known_fail": _rule("known_fail"),
     "test_lock_guard": _rule("lock_guard"),
     "test_flash_gate": _rule("flash_gate"),
+    "test_chip_mismatch": _patch(
+        __import__("vtrux_bench.run.flash", fromlist=["RULES"]), "RULES",
+        {"chip_match": False}),
     "test_image_schedule": _rule("image_schedule"),
     "test_identify_error": _rule("identify_error"),
     "test_identify_after": _rule("identify_after"),

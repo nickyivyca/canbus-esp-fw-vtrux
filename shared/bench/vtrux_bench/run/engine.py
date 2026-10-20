@@ -151,6 +151,7 @@ class Engine:
         self.board_touched = set()
         self.restore_note = {}
         self.no_more_flash = set()
+        self.no_flash_why = {}
         self.bench_stopped = None
         self.failed_images = set()
         self.executed_checks = set()
@@ -333,6 +334,7 @@ class Engine:
         if RULES["flash_gate"]:
             if recoverable is False:
                 self.no_more_flash.add(self.suite.images[name].board)
+                self.no_flash_why.setdefault(self.suite.images[name].board, why)
             self.failed_images.add(name)
             if self.suite.on_flash_failure == "stop-bench":
                 self.bench_stopped = why
@@ -718,8 +720,10 @@ class Engine:
                 self.restore_note[board] = statuses[-1]
                 continue
             if board in self.no_more_flash:
-                statuses.append("%s: RESTORE NOT RUN, its auto-reset check "
-                                "failed" % board)
+                statuses.append("%s: RESTORE NOT RUN, no further flash "
+                                "allowed (%s)" % (
+                                    board, self.no_flash_why.get(
+                                        board, "its auto-reset check failed")))
                 self.restore_note[board] = statuses[-1]
                 continue
             logdir = os.path.join(self.run_dir, "_bench", "restore")

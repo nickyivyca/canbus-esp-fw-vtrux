@@ -310,6 +310,11 @@ def test_suites():
                         "list-heads", bundle], capture_output=True, text=True)
     assert r.returncode == 0 and head in r.stdout, (bundle, r.stdout,
                                                     r.stderr)
+    # every X2 image names the X2's chip, so a port that reaches another
+    # board writes nothing (methodology, 2026-10-20)
+    for n, im in su["bench"].images.items():
+        assert im.board == "x2" and (im.params or {}).get("chip") == {
+            "type": "ESP32-S3", "mac": "02:00:00:0a:bc:de"}, (n, im.params)
     e_sims = [c for g in su["emulated"].groups for c in g.checks
               if c.id.startswith("sim.")]
     assert len(e_sims) == 27 and all("--time-scale 1 " in _argv(c) + " "
@@ -453,6 +458,11 @@ def _plain_build_check(s):
                 c.argv = ["firmware/test/build_check.py"]
 
 
+def _no_chip(s):
+    for im in s.images.values():
+        im.params.pop("chip", None)
+
+
 def _sim_into_harness(s):
     s.groups[0].checks.append(B.Check("sim.extra", ["run_scenario.py", "x"],
                                       python=True, cls="wallclock"))
@@ -539,7 +549,9 @@ MUTANTS = {
         ("bench", _wrap_suite("bench", _bare_skip),
          "a skip with no spec item or ruling"),
         ("emulated", _wrap_suite("emulated", _plain_build_check),
-         "build-check in the shipped copy (e7d4)")],
+         "build-check in the shipped copy (e7d4)"),
+        ("bench", _wrap_suite("bench", _no_chip),
+         "X2 images name no chip")],
 }
 
 

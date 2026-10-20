@@ -35,7 +35,7 @@ every group of checks, restore, record. The same command runs part of it.
 | `vtrux_bench/run/cli.py` | The command line. |
 | `vtrux_bench/decode.py` | Diag DBC schema identity (toolkit item 10, first part): `layout_hash`, `check_identity`, `check_history`. See "Diag DBC schema identity" below. |
 | `tests/test_decode.py` | Its tests (6), with `data/golden_layout.dbc` and its hand-written canonical text `data/golden_layout.txt`. `--can-fail` runs each test under each of its mutants (28); every one must fail. |
-| `tests/test_run_core.py` | The runner's own tests (33), with a fake suite, a fake two-board bench, `fake_esptool.py` and `fake_ssh.py`. `--can-fail` runs each with its rule switched off; every one must then fail. |
+| `tests/test_run_core.py` | The runner's own tests (34), with a fake suite, a fake two-board bench, `fake_esptool.py` and `fake_ssh.py`. `--can-fail` runs each with its rule switched off; every one must then fail. |
 
 ### Boards and images
 
@@ -55,8 +55,11 @@ against the first image the run needs on it, flashed if it reads anything
 else, and identified again: correctness rests on that, not on what the last
 run left. At the end, one best-effort restore per board to its standing
 image, also after a flash or identify failure stopped the bench; only a
-failed auto-reset check (no further flash), a lost lock or STOP `norestore`
-prevent it, and there is never a second attempt. A board the run used that
+failed auto-reset check or a chip-id mismatch (no further flash on that
+board), a lost lock or STOP `norestore` prevent it, and there is never a
+second attempt. An esptool image may name its chip (`params["chip"] =
+{"type": "ESP32-S3", "mac": "..."}`): if the auto-reset check reads another
+chip type or MAC, the port reached another board, and nothing is written. A board the run used that
 ends off its standing image opens `board_state.txt`, `index.txt` and
 `record.json` (`not_on_standing`) with `NOT ON STANDING IMAGE: <board> on
 <image>, reason ...`; the tester copies that line into the release message
