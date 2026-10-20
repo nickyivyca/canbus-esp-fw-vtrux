@@ -54,6 +54,13 @@ fails when the rule is switched off through RULES):
                   run's wall-clock checks): one long simulation at a time
   requires        a suite with `requires` starts only when a run of that
                   suite on the same code matched its reference
+  product_digest  "the same code" (Suite.requires, --resume) is the product
+                  digest over Suite.product_files when the suite gives them,
+                  not the commit: a harness-only commit keeps it (user
+                  2026-10-20). The harness identity is recorded, not gated
+  digest_bridge   a record with no product digest (older runs) is given
+                  the digest of its commit's tree, from git, if that tree
+                  was clean
   requires_whole  the run Suite.requires accepts must have selected the
                   whole suite, with no NOT-RUN but declared skips
   subset_mark     a run with a --group or --check selection is marked a
@@ -97,7 +104,7 @@ RULES = {k: True for k in (
     "gate", "timeout", "skip", "restore", "identify_error", "after",
     "wallclock_guard", "requires", "requires_whole", "resume_code",
     "subset_mark", "subset_not_whole", "start_identify", "restore_after_stop",
-    "standing_line")}
+    "standing_line", "product_digest", "digest_bridge")}
 
 IDENTIFY_ERROR = "<identify failed>"
 
@@ -150,7 +157,10 @@ class Engine:
         self.board_read = {}
         self.board_touched = set()
         self.restore_note = {}
+        self.requires_note = None
+        self._bridged = {}
         self.no_more_flash = set()
+        self.no_flash_why = {}
         self.bench_stopped = None
         self.failed_images = set()
         self.executed_checks = set()
@@ -333,6 +343,7 @@ class Engine:
         if RULES["flash_gate"]:
             if recoverable is False:
                 self.no_more_flash.add(self.suite.images[name].board)
+                self.no_flash_why.setdefault(self.suite.images[name].board, why)
             self.failed_images.add(name)
             if self.suite.on_flash_failure == "stop-bench":
                 self.bench_stopped = why
@@ -718,8 +729,10 @@ class Engine:
                 self.restore_note[board] = statuses[-1]
                 continue
             if board in self.no_more_flash:
-                statuses.append("%s: RESTORE NOT RUN, its auto-reset check "
-                                "failed" % board)
+                statuses.append("%s: RESTORE NOT RUN, no further flash "
+                                "allowed (%s)" % (
+                                    board, self.no_flash_why.get(
+                                        board, "its auto-reset check failed")))
                 self.restore_note[board] = statuses[-1]
                 continue
             logdir = os.path.join(self.run_dir, "_bench", "restore")
@@ -835,10 +848,11 @@ class Engine:
             return False, "no finished run of %s under %s" % (need, self.runs_root)
         cands.sort()
         _ended, path, r = cands[-1]
-        if _code_ident(r.get("code") or {}) != ident:
-            return False, ("the newest %s run (%s) is on other code: %s, not %s"
-                           % (need, r.get("run_id"), _code_ident(r.get("code") or {}),
-                              ident))
+        rid, bridged = self._record_ident(r.get("code") or {}, code)
+        if rid != ident:
+            return False, ("the newest %s run (%s) is on other code: %s, not "
+                           "%s%s" % (need, r.get("run_id"), rid, ident, bridged))
+        self.requires_note = "%s on %s%s" % (r.get("run_id"), ident, bridged)
         if RULES["requires_whole"]:
             sel = r.get("selection") or {}
             if RULES["subset_not_whole"] and (
@@ -865,7 +879,7 @@ class Engine:
                 return False, ("the newest %s run (%s) differs from its "
                                "reference: %s" % (need, r.get("run_id"),
                                                   "; ".join(diffs[:3])))
-            return True, "%s matched its reference" % r.get("run_id")
+            return True, "%s matched its reference" % self.requires_note
         bad = [x["id"] for x in r["results"]
                if x["verdict"] in (Verdict.FAIL, Verdict.ERROR, Verdict.VOID)
                or x.get("known_fail_passed")]
@@ -874,7 +888,7 @@ class Engine:
                            "or VOID (%s) and there is no reference to compare "
                            "with" % (need, r.get("run_id"), len(bad),
                                      ", ".join(bad[:3])))
-        return True, "%s is clean (no reference yet)" % r.get("run_id")
+        return True, "%s is clean (no reference yet)" % self.requires_note
 
     def resume_matches(self):
         """--resume carries verdicts, so the run it carries them from must be
@@ -890,20 +904,78 @@ class Engine:
                            % (self.resume, start["suite"], self.suite.name))
         now = dict(self._code())
         now.setdefault("code_hash", None)
-        if not _same_code(start["code"], now):
+        then = dict(start["code"])
+        if now.get("product_digest") and not then.get("product_digest"):
+            rid, _b = self._record_ident(then, now)
+            if rid and rid.startswith("product:"):
+                then["product_digest"] = rid[len("product:"):]
+        if not _same_code(then, now):
             return False, ("%s ran on other code: %s, not %s"
-                           % (self.resume, _code_ident(start["code"])
-                              or start["code"], _code_ident(now) or now))
+                           % (self.resume, _code_ident(then)
+                              or then, _code_ident(now) or now))
         return True, ""
+
+    def _record_ident(self, rcode, now):
+        """(identity of a recorded run's code, note). A record with no
+        product digest, when this run has one, gets the digest of its
+        commit's tree from git (bridge), if that tree was clean."""
+        rid = _code_ident(rcode)
+        if (not RULES["digest_bridge"] or rcode.get("product_digest")
+                or not now.get("product_digest") or not now.get("repo")):
+            return rid, ""
+        commit = rcode.get("commit")
+        if not commit or rcode.get("dirty") is not False:
+            return rid, " (no bridge: the record's tree was not clean)"
+        try:
+            d = self._digest_at(now["repo"], commit)
+        except Exception as e:
+            return rid, " (no bridge: %r)" % (e,)
+        return "product:%s" % d, (" (product digest bridged from commit %s)"
+                                  % commit[:12])
+
+    def _digest_at(self, repo, commit):
+        """The product digest of the tree at `commit`, read from git
+        objects (git archive), never from a working tree."""
+        if commit in self._bridged:
+            return self._bridged[commit]
+        import io
+        import shutil
+        import tarfile
+        import tempfile
+        tar = subprocess.run(["git", "-C", repo, "archive", commit],
+                             capture_output=True, check=True).stdout
+        work = os.path.join(tempfile.gettempdir(), "vtrux-bench", "digest",
+                            commit[:12])
+        shutil.rmtree(work, ignore_errors=True)
+        os.makedirs(work)
+        with tarfile.open(fileobj=io.BytesIO(tar)) as tf:
+            tf.extractall(work, filter="data")
+        d = product_digest(work, self.suite.product_files(work))
+        self._bridged[commit] = d
+        return d
 
     def _code(self):
         if not self.suite.code_info:
             return {}
         try:
-            return dict(self.suite.code_info(self.base_ctx() if hasattr(
+            code = dict(self.suite.code_info(self.base_ctx() if hasattr(
                 self, "run_dir") else {}))
         except Exception as e:
             return {"error": repr(e)}
+        return self._with_digest(code)
+
+    def _with_digest(self, code):
+        """Adds product_digest (and the file count) when the suite gives
+        product_files and its code_info gives the repo root."""
+        if (RULES["product_digest"] and self.suite.product_files
+                and code.get("repo")):
+            try:
+                files = self.suite.product_files(code["repo"])
+                code["product_digest"] = product_digest(code["repo"], files)
+                code["product_files"] = len(set(files))
+            except Exception as e:
+                code["product_digest_error"] = repr(e)
+        return code
 
     # ---- the run --------------------------------------------------------
     def plan_lines(self):
@@ -960,14 +1032,10 @@ class Engine:
             subset=subset, subset_cases=cases,
             resume_from=self.resume, settings=self.settings,
             plan=self.plan_lines())
-        code = {}
-        if self.suite.code_info:
-            try:
-                code = dict(self.suite.code_info(self.base_ctx()))
-            except Exception as e:
-                code = {"error": repr(e)}
+        code = self._code()
         code.setdefault("code_hash", None)   # pending a user ruling
         header["code"] = code
+        header["requires_met"] = self.requires_note
         clocks = {"local": time.time()}
         for host in sorted({g.host for g, _ in sel if g.host != "local"}):
             try:
@@ -1018,15 +1086,40 @@ class Engine:
                       "\n".join(lines) + "\n")
         self.rec.event("end")
         header["images_used"] = self.images_used
+        header["harness"] = dict(
+            gated=False, commit=code.get("commit"), dirty=code.get("dirty"),
+            artifacts_sha256=code.get("artifacts_sha256"),
+            ship_lists={os.path.basename(p): _sha256_file(p) for p in sorted(
+                glob.glob(os.path.join(self.run_dir, "ship_*.txt")))})
         rec = write_record(self.rec, header, self.groups_out, unmatched)
         self.rec.close()
         return rec
 
 
+def product_digest(root, rels):
+    """sha256 over the product files, sorted by repo-relative path: each
+    path, a NUL, its bytes, a NUL."""
+    h = hashlib.sha256()
+    for rel in sorted(set(r.replace(os.sep, "/") for r in rels)):
+        h.update(rel.encode("utf-8") + b"\0")
+        with open(os.path.join(root, rel), "rb") as f:
+            h.update(f.read())
+        h.update(b"\0")
+    return h.hexdigest()
+
+
+def _sha256_file(path):
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
 def _code_ident(code):
-    """What "the same code" means for Suite.requires: the code hash once it
-    is logged (port plan goal 13); until then the commit, and only from a
-    clean tree."""
+    """What "the same code" means for Suite.requires and --resume: the
+    product digest where the suite gives one (user 2026-10-20); else the
+    code hash once it is logged; else the commit, and only from a clean
+    tree."""
+    if RULES["product_digest"] and code.get("product_digest"):
+        return "product:%s" % code["product_digest"]
     if code.get("code_hash"):
         return "code_hash:%s" % code["code_hash"]
     if code.get("commit") and code.get("dirty") is False:

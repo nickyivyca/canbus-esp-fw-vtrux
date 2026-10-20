@@ -58,6 +58,30 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared", "bench"))
 from vtrux_bench.run import (Check, Figure, Group, Image, KnownFail,  # noqa: E402
                              Result, Suite, Verdict)
 import bench_identify  # noqa: E402
+sys.path.insert(0, os.path.join(HERE, "firmware"))
+import build_identity  # noqa: E402
+
+
+def product_files(root):
+    """The interposer's product files in the tree at `root` (a clone root),
+    for the runner's product digest (user 2026-10-20). The split is the
+    component table's (reviewer, 2026-10-20): machine.py, plus firmware/src
+    and the build files exactly as build_identity.source_digest takes them
+    (DIGEST_INPUTS). Everything else -- the sims, run_scenario, pack.py,
+    protocol.py, bus.py, replay.py, regress.py, tests -- is harness."""
+    fw = os.path.join(root, "charge-interposer", "firmware")
+    out = []
+    for dirpath, dirs, files in os.walk(os.path.join(fw, "src")):
+        dirs.sort()
+        for f in sorted(files):
+            if f.endswith(build_identity.SRC_SUFFIXES):
+                out.append(os.path.relpath(os.path.join(dirpath, f), root)
+                           .replace(os.sep, "/"))
+    for x in build_identity.EXTRA_INPUTS:
+        if os.path.exists(os.path.join(fw, x)):
+            out.append("charge-interposer/firmware/" + x)
+    out.append("charge-interposer/machine.py")
+    return out
 
 ROLE = "tester (charge-interposer)"
 
@@ -298,6 +322,18 @@ def _manifest(code):
         return json.load(f)["builds"]
 
 
+# The X2 the esptool flasher must find on the port before it writes
+# (methodology, 2026-10-20: a chip-id mismatch writes nothing, and an image
+# that names no chip is refused). The repo is public, so the MAC is never a
+# literal here: it comes from the local, unpublished settings (x2_mac); the
+# WiCAN is an ESP32-C3.
+X2_CHIP_TYPE = "ESP32-S3"
+
+
+def _x2_chip(settings):
+    return {"type": X2_CHIP_TYPE, "mac": settings.get("x2_mac")}
+
+
 def _arduino_image(name, env, settings):
     src = settings["images_src"]
     d = os.path.join(settings["images_dir"], src, env)
@@ -313,7 +349,7 @@ def _arduino_image(name, env, settings):
                                    ["0x8000", os.path.join(d, "partitions.bin")],
                                    ["0xe000", settings["boot_app0"]],
                                    ["0x10000", app]],
-                         "md5": {app: row["md5"]}},
+                         "md5": {app: row["md5"]}, "chip": _x2_chip(settings)},
                  note="manifest row %s, elf %s" % (row["image"],
                                                    row["elf_sha256"][:8]))
 
@@ -326,7 +362,8 @@ def _idf_image(name, settings):
     return Image(name, "esptool", board="x2", expect="%s:%s" % (name, sha),
                  params={"files": [["0x0", os.path.join(d, "bootloader.bin")],
                                    ["0x8000", os.path.join(d, "partition-table.bin")],
-                                   ["0x10000", os.path.join(d, "%s.bin" % name)]]},
+                                   ["0x10000", os.path.join(d, "%s.bin" % name)]],
+                         "chip": _x2_chip(settings)},
                  note="ELF %s" % sha[:8])
 
 
@@ -417,10 +454,13 @@ class _Build:
                      python=True, **kw)
 
     def code_info(self, images=None):
-        """What the run tested. The code hash (port plan goal 13) is not
-        logged yet, so code_hash is null and the identity is the commit of a
-        clean tree (the core's _code_ident). The artifacts digest covers the
-        harness scripts in reverse-it, which git does not."""
+        """What the run tested. For the emulated and bench suites the
+        identity is the product digest over product_files(), which the core
+        adds (user 2026-10-20); the commit, dirty state and the artifacts
+        digest (the harness scripts in reverse-it, which git does not
+        cover) are the harness identity, recorded and not gated. The
+        harness suite gives no product files, so its identity stays the
+        commit of a clean tree."""
         code, settings = self.code, self.settings
 
         def info(ctx):
@@ -495,7 +535,8 @@ def emulated(settings):
     return Suite(
         name="charge-interposer-emulated", role=ROLE,
         groups=[m_build, m_host, m_sims, l_emulated],
-        known_fails=EMULATED_KNOWN_FAILS, code_info=b.code_info())
+        known_fails=EMULATED_KNOWN_FAILS, code_info=b.code_info(),
+        product_files=product_files)
 
 
 # ---- bench --------------------------------------------------------------
@@ -650,7 +691,8 @@ def bench(settings):
         groups=[b_bridge, b_witness, b_truck, b_c12, b_vport, truck_only],
         images=images, standing_images={"x2": "bridge"},
         known_fails=BENCH_KNOWN_FAILS, identify=identify,
-        code_info=b.code_info(images), requires="charge-interposer-emulated")
+        code_info=b.code_info(images), requires="charge-interposer-emulated",
+        product_files=product_files)
 
 
 # ---- harness ------------------------------------------------------------

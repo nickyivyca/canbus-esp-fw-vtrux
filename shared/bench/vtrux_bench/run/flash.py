@@ -7,7 +7,13 @@ Ported from the charge-interposer tester's flash_custody*.sh (2026-10-14 to
      (the runner flashes only bins already matched to their manifest row);
   2. the auto-reset check: `esptool chip-id` on the port must return 0.
      If it does not, nothing is written -- a board whose auto-reset does
-     not work may not come back without hands;
+     not work may not come back without hands. The image (or
+     settings.esptool) must name its chip, type and MAC, or nothing is
+     written; the chip type and MAC that check reads must match it, and a
+     mismatch means the port reached another board, so nothing is written
+     and no further flash is allowed on that board (methodology,
+     2026-10-20: the X2's image must never reach the WiCAN, and a check an
+     image can skip by naming nothing is no check);
   3. `write-flash` of every (offset, file), and esptool must report "Hash
      of data verified" once per file;
   4. the auto-reset check again, first thing after the write.
@@ -18,6 +24,10 @@ Image.params:
     md5       {path: md5}            optional expected digests
     port      e.g. "COM3"; default settings["esptool"]["port"]
     baud      default settings["esptool"]["baud"] or 921600
+    chip      {"type": "ESP32-S3", "mac": "<the board's MAC>"}, both
+              REQUIRED; default settings["esptool"]["chip"]. The repo is
+              public: a suite reads the MAC from its local, unpublished
+              settings at run time, never from a literal in a file
 Settings:
     esptool   {"argv": ["py", "-3.14", ".../esptool.py"], "port": "COM3",
                "baud": 921600}
@@ -25,9 +35,43 @@ Settings:
 
 import hashlib
 import os
+import re
 import subprocess
 
 from .procs import run_local
+
+RULES = {"chip_match": True, "chip_required": True}
+
+
+def chip_read(text):
+    """(chip type, MAC) as `esptool chip-id` printed them, or None each."""
+    typ = re.search(r"^(?:Chip type:\s*|Chip is\s+)(ESP32[-\w]*)", text, re.M)
+    mac = re.search(r"^MAC:\s*([0-9a-fA-F:]{17})", text, re.M)
+    return (typ.group(1) if typ else None,
+            mac.group(1).lower() if mac else None)
+
+
+def chip_unnamed(want):
+    """A reason string if the image names no chip type or MAC, else None."""
+    if not RULES["chip_required"]:
+        return None
+    miss = [k for k in ("type", "mac") if not (want or {}).get(k)]
+    return ("names no chip %s" % " or ".join(miss)) if miss else None
+
+
+def chip_mismatch(text, want):
+    """A reason string if the chip-id output does not match `want`, else
+    None. A key `want` does not give is not checked (chip_unnamed refuses
+    such an image before this is reached)."""
+    if not want or not RULES["chip_match"]:
+        return None
+    typ, mac = chip_read(text)
+    bad = []
+    if want.get("type") and typ != want["type"]:
+        bad.append("type %s, expected %s" % (typ, want["type"]))
+    if want.get("mac") and mac != want["mac"].lower():
+        bad.append("MAC %s, expected %s" % (mac, want["mac"].lower()))
+    return "; ".join(bad) or None
 
 
 def md5_of(path):
@@ -74,6 +118,13 @@ def esptool_flash(image, params, settings, logdir):
     with open(os.path.join(logdir, "flash_md5.txt"), "w") as f:
         for path, m in out["md5"].items():
             f.write("%s  %s\n" % (m, path))
+    why = chip_unnamed(params.get("chip") or et.get("chip"))
+    if why:
+        out["phase"] = "chip-unnamed"
+        out["detail"] = ("image %s %s (params['chip'] = {'type', 'mac'}, "
+                         "from local settings): nothing written"
+                         % (image.name, why))
+        return out
 
     out["phase"] = "autoreset-before"
     log = os.path.join(logdir, "autoreset_before.txt")
@@ -81,6 +132,14 @@ def esptool_flash(image, params, settings, logdir):
     if rc != 0:
         out["detail"] = ("auto-reset check before the flash failed (rc=%s%s): "
                          "nothing written" % (rc, ", timeout" if to else ""))
+        out["recoverable"] = False
+        return out
+    with open(log, encoding="utf-8", errors="replace") as f:
+        why = chip_mismatch(f.read(), params.get("chip") or et.get("chip"))
+    if why:
+        out["phase"] = "chip-mismatch"
+        out["detail"] = ("chip-id mismatch (%s): the port reached another "
+                         "board; nothing written" % why)
         out["recoverable"] = False
         return out
 

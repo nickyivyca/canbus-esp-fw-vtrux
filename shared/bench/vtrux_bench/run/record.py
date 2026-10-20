@@ -131,6 +131,21 @@ def index_text(record):
              "Run %s -- suite %s" % (record["run_id"], record["suite"]),
              "started %s, ended %s" % (record["started"], record["ended"]),
              "code: %s" % json.dumps(record.get("code", {}), sort_keys=True)]
+    code = record.get("code") or {}
+    if code.get("product_digest"):
+        lines.append("product digest (the code identity): %s over %s file(s)"
+                     % (code["product_digest"], code.get("product_files")))
+    h = record.get("harness")
+    if h:
+        lines.append("harness (recorded, not gated): commit %s, dirty %s, "
+                     "artifacts_sha256 %s, ship lists %s" % (
+                         h.get("commit"), h.get("dirty"),
+                         h.get("artifacts_sha256"),
+                         ", ".join("%s %s" % (k, v[:12]) for k, v in
+                                   sorted((h.get("ship_lists") or {}).items()))
+                         or "none"))
+    if record.get("requires_met"):
+        lines.append("requires: %s" % record["requires_met"])
     if record.get("subset"):
         cases = record.get("subset_cases") or []
         sel = record.get("selection") or {}

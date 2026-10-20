@@ -18,6 +18,7 @@ test to fail; exit 0 only if every mutant is caught.
 """
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -226,6 +227,7 @@ def _settings():
     return {"interposer_code": HERE, "interposer_artifacts": art,
             "images_dir": os.path.join(d, "images"),
             "images_src": "36edf3e55552", "boot_app0": "boot_app0.bin",
+            "x2_mac": "02:00:00:00:00:01",
             "hosts": {"local": {}, "madhouse": {}}}
 
 
@@ -310,6 +312,41 @@ def test_suites():
                         "list-heads", bundle], capture_output=True, text=True)
     assert r.returncode == 0 and head in r.stdout, (bundle, r.stdout,
                                                     r.stderr)
+    # the product digest (user 2026-10-20): emulated and bench use the
+    # component table's split; the harness suite keeps the commit
+    assert su["emulated"].product_files is B.product_files
+    assert su["bench"].product_files is B.product_files
+    assert su["harness"].product_files is None
+    repo = os.path.dirname(HERE)
+    pf = set(B.product_files(repo))
+    for must in ("charge-interposer/machine.py",
+                 "charge-interposer/firmware/platformio.ini",
+                 "charge-interposer/firmware/build_identity.py",
+                 "charge-interposer/firmware/src/main.cpp",
+                 "charge-interposer/firmware/src/machine.h"):
+        assert must in pf, must
+    for never in ("run_scenario.py", "vehicle_sim.py", "charger_sim.py",
+                  "interposer_sim.py", "pack.py", "protocol.py", "bus.py",
+                  "replay.py", "regress.py", "bench_suite.py"):
+        assert "charge-interposer/" + never not in pf, never
+    assert not [p for p in pf if "/test/" in p or p.endswith(".md")], pf
+    # the same files source_digest hashes, plus machine.py
+    import build_identity as BI
+    fw = os.path.join(repo, "charge-interposer", "firmware")
+    n_src = sum(1 for d, _s, fs in os.walk(os.path.join(fw, "src"))
+                for f in fs if f.endswith(BI.SRC_SUFFIXES))
+    n_extra = sum(1 for x in BI.EXTRA_INPUTS
+                  if os.path.exists(os.path.join(fw, x)))
+    assert len(pf) == n_src + n_extra + 1, (len(pf), n_src, n_extra)
+    # every X2 image names the X2's chip, so a port that reaches another
+    # board writes nothing (methodology, 2026-10-20)
+    for n, im in su["bench"].images.items():
+        assert im.board == "x2" and (im.params or {}).get("chip") == {
+            "type": "ESP32-S3", "mac": s["x2_mac"]}, (n, im.params)
+    # the public repo holds no MAC: none in the suite's source
+    src = open(os.path.join(HERE, "bench_suite.py"), encoding="utf-8").read()
+    macs = re.findall(r"\b(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b", src)
+    assert not macs, "MAC literal(s) in bench_suite.py: %s" % macs
     e_sims = [c for g in su["emulated"].groups for c in g.checks
               if c.id.startswith("sim.")]
     assert len(e_sims) == 27 and all("--time-scale 1 " in _argv(c) + " "
@@ -453,6 +490,23 @@ def _plain_build_check(s):
                 c.argv = ["firmware/test/build_check.py"]
 
 
+def _harness_files(root):
+    return B.product_files(root) + ["charge-interposer/run_scenario.py"]
+
+
+def _no_machine(root):
+    return [p for p in B.product_files(root) if not p.endswith("machine.py")]
+
+
+def _product_in_harness(s):
+    s.product_files = B.product_files
+
+
+def _no_chip(s):
+    for im in s.images.values():
+        im.params.pop("chip", None)
+
+
 def _sim_into_harness(s):
     s.groups[0].checks.append(B.Check("sim.extra", ["run_scenario.py", "x"],
                                       python=True, cls="wallclock"))
@@ -501,7 +555,7 @@ _ORIG = {n: getattr(B, n) for n in ("script_judge", "recorded_judge",
                                     "scenario_judge", "c12_judge",
                                     "corrupt_pin_judge",
                                     "host_bridge_judge", "emulated", "bench",
-                                    "harness")}
+                                    "harness", "product_files")}
 _ORIG["bench_identify.PRODUCT_RE"] = B.bench_identify.PRODUCT_RE
 _ORIG["bench_identify.identify"] = B.bench_identify.identify
 
@@ -539,7 +593,13 @@ MUTANTS = {
         ("bench", _wrap_suite("bench", _bare_skip),
          "a skip with no spec item or ruling"),
         ("emulated", _wrap_suite("emulated", _plain_build_check),
-         "build-check in the shipped copy (e7d4)")],
+         "build-check in the shipped copy (e7d4)"),
+        ("bench", _wrap_suite("bench", _no_chip),
+         "X2 images name no chip"),
+        ("product_files", _harness_files, "run_scenario.py counted as product"),
+        ("product_files", _no_machine, "machine.py left out of the product"),
+        ("harness", _wrap_suite("harness", _product_in_harness),
+         "the harness suite gated on the product digest")],
 }
 
 

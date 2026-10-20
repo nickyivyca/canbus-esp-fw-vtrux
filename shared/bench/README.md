@@ -35,7 +35,7 @@ every group of checks, restore, record. The same command runs part of it.
 | `vtrux_bench/run/cli.py` | The command line. |
 | `vtrux_bench/decode.py` | Diag DBC schema identity (toolkit item 10, first part): `layout_hash`, `check_identity`, `check_history`. See "Diag DBC schema identity" below. |
 | `tests/test_decode.py` | Its tests (6), with `data/golden_layout.dbc` and its hand-written canonical text `data/golden_layout.txt`. `--can-fail` runs each test under each of its mutants (28); every one must fail. |
-| `tests/test_run_core.py` | The runner's own tests (33), with a fake suite, a fake two-board bench, `fake_esptool.py` and `fake_ssh.py`. `--can-fail` runs each with its rule switched off; every one must then fail. |
+| `tests/test_run_core.py` | The runner's own tests (36), with a fake suite, a fake two-board bench, `fake_esptool.py` and `fake_ssh.py`. `--can-fail` runs each with its rule switched off; every one must then fail. |
 
 ### Boards and images
 
@@ -55,8 +55,14 @@ against the first image the run needs on it, flashed if it reads anything
 else, and identified again: correctness rests on that, not on what the last
 run left. At the end, one best-effort restore per board to its standing
 image, also after a flash or identify failure stopped the bench; only a
-failed auto-reset check (no further flash), a lost lock or STOP `norestore`
-prevent it, and there is never a second attempt. A board the run used that
+failed auto-reset check or a chip-id mismatch (no further flash on that
+board), a lost lock or STOP `norestore` prevent it, and there is never a
+second attempt. Every esptool image must name its chip (`params["chip"] =
+{"type": "ESP32-S3", "mac": "..."}`, both keys) or nothing is written; if
+the auto-reset check reads another chip type or MAC, the port reached
+another board, and nothing is written. The repo is public: the MAC comes
+from a suite's local, unpublished settings at run time, never from a
+literal in a file (the tests use a made-up, locally administered MAC). A board the run used that
 ends off its standing image opens `board_state.txt`, `index.txt` and
 `record.json` (`not_on_standing`) with `NOT ON STANDING IMAGE: <board> on
 <image>, reason ...`; the tester copies that line into the release message
@@ -90,8 +96,17 @@ Otherwise it is NOT-RUN with the reason (after waiting up to
 the run refuses to start unless the newest finished run of that suite is
 on the same code and matched its reference (`settings.references`), or,
 with no reference yet, has no FAIL, ERROR or VOID. "The same code" is the
-code hash once it is logged (port plan goal 13); until then the commit, and
-only from a clean tree. That run must also be of the whole suite: a
+product digest (user, 2026-10-20) when the suite gives
+`Suite.product_files(root)`, the repo-relative paths of its product files
+(each project gives its own split; code_info must give the repo root as
+`repo`): sha256 over those files sorted by path, each as path, NUL, bytes,
+NUL. A harness-only commit keeps it. The harness identity (commit, dirty
+state, the suite's artifacts digest, the sha256 of each ship list) is
+recorded in record.json and index.txt and not gated on. A record with no
+product digest (older runs) is given the digest of its commit's tree from
+git (bridge), only if that tree was clean. A suite with no product files
+keeps the old identity: the code hash once it is logged, else the commit of
+a clean tree. `--resume` compares the same identity. That run must also be of the whole suite: a
 `--group` or `--check` selection is refused, and so is any NOT-RUN result
 that is not a declared skip (a check refused by a guard, a stopped run).
 

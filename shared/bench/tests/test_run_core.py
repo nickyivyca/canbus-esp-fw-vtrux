@@ -12,6 +12,7 @@ standing in for esptool. Scratch goes to the machine temp folder
 (<tempdir>/vtrux-bench-tests/), never into a synced folder.
 """
 
+import glob
 import json
 import re
 import os
@@ -35,13 +36,29 @@ from vtrux_bench.run.model import (Check, Figure, Group, Image, KnownFail,  # no
 PY = sys.executable
 SCRATCH = os.path.join(tempfile.gettempdir(), "vtrux-bench-tests")
 ROLE = "tester (test-suite)"
+# fake_esptool's chip: a locally administered MAC, no real board's
+FAKE_CHIP = {"type": "ESP32-S3", "mac": "02:00:00:00:00:01"}
 
 
 # ---- fixtures -----------------------------------------------------------
+def _rmtree(path):
+    """rmtree that also removes read-only files (git objects on Windows)."""
+    import stat
+
+    def force(func, p, _exc):
+        os.chmod(p, stat.S_IWRITE)
+        func(p)
+    if os.path.exists(path):
+        if sys.version_info >= (3, 12):
+            shutil.rmtree(path, onexc=force)
+        else:
+            shutil.rmtree(path, onerror=force)
+
+
 class Env:
     def __init__(self, name):
         self.root = os.path.join(SCRATCH, name)
-        shutil.rmtree(self.root, ignore_errors=True)
+        _rmtree(self.root)
         os.makedirs(self.root)
         self.runs = os.path.join(self.root, "runs")
         self.holder = os.path.join(self.root, "bench-holder.md")
@@ -77,7 +94,8 @@ class Env:
         with open(boot, "w") as f:
             f.write("BOOT")
         return Image(name, "esptool", params={"files": [["0x0", boot],
-                                                        ["0x10000", p]]},
+                                                        ["0x10000", p]],
+                                              "chip": dict(FAKE_CHIP)},
                      expect=content)
 
     def identify(self, image, ctx, logdir):
@@ -249,6 +267,64 @@ def test_flash_gate():
     calls = env.esptool_calls()
     assert len([c for c in calls if "write-flash" in c]) == 1, calls
     assert verdicts(rec) == {"g1/x": "NOT-RUN", "g2/y": "NOT-RUN"}
+
+
+def test_chip_mismatch():
+    """A chip-id that reads another chip type or MAC than the image names
+    writes nothing, also at the restore, and the board's NOT ON STANDING
+    IMAGE line names the mismatch (methodology, 2026-10-20)."""
+    for name, chip, mac in (("chiptype", "ESP32-C3", "02:00:00:00:00:01"),
+                            ("chipmac", "ESP32-S3", "aa:bb:cc:dd:ee:ff")):
+        env = Env(name)
+        os.environ["FAKE_ESPTOOL_CHIP"] = chip
+        os.environ["FAKE_ESPTOOL_MAC"] = mac
+        a, b = env.image("A", "IMG-A"), env.image("B", "IMG-B")
+        for im in (a, b):
+            im.params["chip"] = {"type": "ESP32-S3", "mac": "02:00:00:00:00:01"}
+        with open(env.board, "w") as f:
+            f.write("IMG-A")
+        s = suite([Group("g1", [chk("x", "pass")], needs_lock=True, image="B"),
+                   Group("g2", [chk("y", "pass")], needs_lock=True, image="A")],
+                  images={"A": a, "B": b}, standing_image="A",
+                  identify=env.identify)
+        eng, rec = run(env, s)
+        calls = env.esptool_calls()
+        assert not any("write-flash" in c for c in calls), (name, calls)
+        assert verdicts(rec) == {"g1/x": "NOT-RUN", "g2/y": "NOT-RUN"}, verdicts(rec)
+        off = rec["not_on_standing"]
+        assert len(off) == 1 and "chip-id mismatch" in off[0], (name, off)
+    # the same check passes on the right chip (the control)
+    env = Env("chipok")
+    a = env.image("A", "IMG-A")
+    a.params["chip"] = dict(FAKE_CHIP)
+    s = suite([Group("g1", [chk("x", "pass")], needs_lock=True, image="A")],
+              images={"A": a}, standing_image="A", identify=env.identify)
+    eng, rec = run(env, s)
+    assert verdicts(rec) == {"g1/x": "PASS"}, verdicts(rec)
+    assert len([c for c in env.esptool_calls() if "write-flash" in c]) == 1
+
+
+def test_chip_required():
+    """An esptool image that names no chip type or MAC is refused before
+    anything touches the board (methodology, 2026-10-20: a check an image
+    can skip by naming nothing is no check)."""
+    for name, chip in (("nochip", None), ("nomac", {"type": "ESP32-S3"}),
+                       ("notype", {"mac": FAKE_CHIP["mac"]})):
+        env = Env(name)
+        a = env.image("A", "IMG-A")
+        if chip is None:
+            a.params.pop("chip")
+        else:
+            a.params["chip"] = chip
+        s = suite([Group("g1", [chk("x", "pass")], needs_lock=True,
+                         image="A")],
+                  images={"A": a}, standing_image="A", identify=env.identify)
+        eng, rec = run(env, s)
+        assert not env.esptool_calls(), (name, env.esptool_calls())
+        assert verdicts(rec) == {"g1/x": "NOT-RUN"}, verdicts(rec)
+        ev = [e for e in rec["events"] if e["kind"] == "flash"]
+        assert ev and ev[0]["phase"] == "chip-unnamed" and "names no chip" in \
+            ev[0]["detail"], (name, ev)
 
 
 def test_image_schedule():
@@ -746,6 +822,107 @@ def test_subset_not_whole():
     assert refused() is None, refused()
 
 
+class GitTree:
+    """A throwaway git repo: product file p/a.c, harness file h/x.py."""
+    def __init__(self, env):
+        self.root = os.path.join(env.root, "repo")
+        os.makedirs(os.path.join(self.root, "p"))
+        os.makedirs(os.path.join(self.root, "h"))
+        self.git("init", "-q")
+        self.edit("p/a.c", "int a;\n")
+        self.edit("h/x.py", "x = 1\n")
+        self.commit()
+
+    def git(self, *args):
+        import subprocess
+        return subprocess.run(["git", "-C", self.root, "-c", "user.name=t",
+                               "-c", "user.email=t@t", "-c", "core.autocrlf=false"]
+                              + list(args), capture_output=True, text=True,
+                              check=True).stdout.strip()
+
+    def edit(self, rel, text):
+        with open(os.path.join(self.root, rel), "w", newline="\n") as f:
+            f.write(text)
+
+    def commit(self):
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "c")
+        return self.git("rev-parse", "HEAD")
+
+    def code_info(self, ctx):
+        return {"repo": self.root, "commit": self.git("rev-parse", "HEAD"),
+                "dirty": bool(self.git("status", "--porcelain"))}
+
+
+def _digest_suites(gt):
+    files = lambda root: ["p/a.c"]                     # noqa: E731
+    emu = suite([Group("e", [chk("x", "pass")])], name="emu",
+                code_info=gt.code_info, product_files=files)
+    bench = suite([Group("b", [chk("y", "pass")])], name="bench",
+                  requires="emu", code_info=gt.code_info, product_files=files)
+    return emu, bench
+
+
+def _refused(env, s):
+    try:
+        run(env, s)
+    except SuiteError as e:
+        return str(e)
+    return None
+
+
+def test_product_digest():
+    """The bench requires the emulated run on the same PRODUCT digest: a
+    harness-only commit keeps it, a product edit changes it (user
+    2026-10-20); the harness identity is recorded, not gated."""
+    env = Env("productdigest")
+    gt = GitTree(env)
+    emu, bench = _digest_suites(gt)
+    eng, rec = run(env, emu)
+    gt.edit("h/x.py", "x = 2\n")
+    gt.commit()                                  # harness-only commit
+    r = _refused(env, bench)
+    assert r is None, r
+    assert rec["code"]["product_digest"] and rec["code"]["product_files"] == 1
+    brec = json.load(open(sorted(glob.glob(os.path.join(
+        env.runs, "bench_*", "record.json")))[-1]))
+    assert brec["code"]["commit"] != rec["code"]["commit"]
+    assert brec["harness"]["gated"] is False and brec["harness"]["commit"]
+    idx = open(os.path.join(env.runs, brec["run_id"], "index.txt")).read()
+    assert "product digest (the code identity)" in idx and \
+        "harness (recorded, not gated)" in idx, idx
+    gt.edit("p/a.c", "int a, b;\n")
+    gt.commit()                                  # product commit
+    r = _refused(env, bench)
+    assert r and "other code" in r, r
+
+
+def test_digest_bridge():
+    """A record with no product digest (older runs) is given its commit's
+    digest from git, if its tree was clean; then it counts."""
+    env = Env("digestbridge")
+    gt = GitTree(env)
+    emu, bench = _digest_suites(gt)
+    eng, rec = run(env, emu)
+    p = os.path.join(env.runs, rec["run_id"], "record.json")
+    old = json.load(open(p))
+    for k in ("product_digest", "product_files"):
+        old["code"].pop(k)
+    json.dump(old, open(p, "w"))
+    gt.edit("h/x.py", "x = 3\n")
+    gt.commit()
+    r = _refused(env, bench)
+    assert r is None, r
+    brec = json.load(open(sorted(glob.glob(os.path.join(
+        env.runs, "bench_*", "record.json")))[-1]))
+    assert "bridged from commit %s" % rec["code"]["commit"][:12] in \
+        brec["requires_met"], brec["requires_met"]
+    old["code"]["dirty"] = True                  # a dirty record: no bridge
+    json.dump(old, open(p, "w"))
+    r = _refused(env, bench)
+    assert r and "not clean" in r, r
+
+
 def test_resume_code():
     """--resume refuses a run of another suite or on other code, and a run
     whose start records neither."""
@@ -1033,12 +1210,14 @@ def test_bare_shell():
 
 TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwrite,
          test_known_fail, test_lock_guard, test_flash_gate,
-         test_image_schedule, test_identify_error, test_identify_after,
+         test_chip_mismatch, test_chip_required, test_image_schedule,
+         test_identify_error, test_identify_after,
          test_void_resume,
          test_two_boards, test_start_identify, test_restore_after_stop,
          test_standing_line, test_stop_pause,
          test_throttle, test_after, test_wallclock_guard, test_requires,
          test_requires_whole, test_subset_mark, test_subset_not_whole,
+         test_product_digest, test_digest_bridge,
          test_resume_code,
          test_redact_scope, test_gate, test_skip, test_timeout,
          test_resume, test_compare, test_esptool_flasher, test_remote_command,
@@ -1096,6 +1275,12 @@ MUTANTS = {
     "test_known_fail": _rule("known_fail"),
     "test_lock_guard": _rule("lock_guard"),
     "test_flash_gate": _rule("flash_gate"),
+    "test_chip_mismatch": _patch(
+        __import__("vtrux_bench.run.flash", fromlist=["RULES"]), "RULES",
+        {"chip_match": False, "chip_required": True}),
+    "test_chip_required": _patch(
+        __import__("vtrux_bench.run.flash", fromlist=["RULES"]), "RULES",
+        {"chip_match": True, "chip_required": False}),
     "test_image_schedule": _rule("image_schedule"),
     "test_identify_error": _rule("identify_error"),
     "test_identify_after": _rule("identify_after"),
@@ -1112,6 +1297,8 @@ MUTANTS = {
     "test_requires_whole": _rule("requires_whole"),
     "test_subset_mark": _rule("subset_mark"),
     "test_subset_not_whole": _rule("subset_not_whole"),
+    "test_product_digest": _rule("product_digest"),
+    "test_digest_bridge": _rule("digest_bridge"),
     "test_resume_code": _rule("resume_code"),
     "test_redact_scope": _rule("redact_scope"),
     "test_gate": _rule("gate"),

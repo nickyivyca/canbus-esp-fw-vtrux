@@ -217,6 +217,10 @@ class Suite:
     redact: Optional[Callable] = None
     # code_info(ctx) -> dict recorded with the run
     code_info: Optional[Callable] = None
+    # product_files(root) -> repo-relative paths of the product's files in
+    # the tree at root (user 2026-10-20: "the same code" is the product
+    # digest over them; each project gives its own split).
+    product_files: Optional[Callable] = None
     on_flash_failure: str = "stop-bench"   # or "skip-image-groups"
     # the name of a suite whose newest run on the same code must have
     # matched its reference before this suite may start (the bench suite
