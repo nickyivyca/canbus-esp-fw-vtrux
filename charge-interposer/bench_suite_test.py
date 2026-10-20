@@ -99,6 +99,32 @@ def test_scenario_judge():
     assert _v(j(_run("no verdict\n", 0))) == [Verdict.ERROR]
 
 
+PIN_OK = (
+    "unit_monitor_6h05: 525609 steps\n"
+    "  FAIL  trace and golden do NOT match their pins\n"
+    "unit_override_6h05: 525610 steps\n"
+    "  FAIL  trace and golden do NOT match their pins\n"
+    "  ok    unit_monitor_6h05 on machine.cpp: IDENTICAL\n"
+    "  ok    unit_override_6h05 on machine.cpp: IDENTICAL\n\n2 FAILED\n")
+
+
+def test_corrupt_pin_judge():
+    j = B.corrupt_pin_judge
+    assert _v(j(_run(PIN_OK, 1))) == [Verdict.PASS]
+    assert _v(j(_run(PIN_OK.replace("  FAIL  trace and golden do NOT match",
+                                    "  ok    trace and golden match", 1), 1))) \
+        == [Verdict.FAIL], "one corrupted pin not caught"
+    assert _v(j(_run(PIN_OK.replace("FAIL  trace and golden do NOT match",
+                                    "ok    trace and golden match"), 0))) \
+        == [Verdict.FAIL], "neither caught, exit 0"
+    assert _v(j(_run(PIN_OK.replace("on machine.cpp: IDENTICAL\n\n",
+                                    "on machine.cpp: IDENTICAL\n"
+                                    "  FAIL  unit_override_6h05 on machine.cpp:"
+                                    " DIFFERS\n\n"), 1))) == [Verdict.FAIL], \
+        "a replay that differs as well"
+    assert _v(j(_run(PIN_OK, None))) == [Verdict.ERROR]
+
+
 C12_HEAD = ("C1-reset  CANSTAT  0x80\n\n"
             "--- against the fake (mcp2515_conformance_fake.txt): %d line(s) "
             "differ ---\n")
@@ -272,8 +298,29 @@ def test_suites():
                                      for c in e_sims), "27 sims at 1x"
 
 
+def test_mutant_wiring():
+    """The corrupt-pin check uses its judge; the prefix control gets the
+    pre-fix driver, staged in the shipped artifacts."""
+    s, su = _all()
+    mut = {c.id: c for g in su["harness"].groups if g.name == "m-mutants"
+           for c in g.checks}
+    assert mut["monitor-6h-diff-corrupt-pin"].judge is B.corrupt_pin_judge
+    assert all(c.judge is B.script_judge for k, c in mut.items()
+               if k != "monitor-6h-diff-corrupt-pin")
+    env = mut["rx-order-prefix-control"].env
+    name = "port_mcp2515_%s.cpp" % B.PRE_FIX_COMMIT
+    assert env.get("PRE_DRIVER") == "{work}/art/" + name, env
+    g = [g for g in su["harness"].groups if g.name == "m-mutants"][0]
+    staged = os.path.join(g.ship["art"], name)
+    assert os.path.getsize(staged) > 1000, "pre-fix driver not staged"
+    cur = os.path.join(HERE, "firmware", "src", "port_mcp2515.cpp")
+    assert open(staged, "rb").read() != open(cur, "rb").read(), \
+        "the staged driver is the current one"
+
+
 TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
-         test_c12_judge, test_host_bridge_judge, test_suites]
+         test_corrupt_pin_judge, test_c12_judge, test_host_bridge_judge,
+         test_suites, test_mutant_wiring]
 
 
 # ---- can-fail -----------------------------------------------------------
@@ -330,8 +377,24 @@ def _bare_skip(s):
     s.groups[-1].checks.append(B.Check("later", ["-"], skip="later"))
 
 
+def _plain_judges(s):
+    for g in s.groups:
+        for c in g.checks:
+            if c.judge is _ORIG["corrupt_pin_judge"]:
+                c.judge = B.script_judge
+
+
+def _no_pre_driver(s):
+    for g in s.groups:
+        for c in g.checks:
+            if c.env and "PRE_DRIVER" in c.env:
+                c.env = {k: v for k, v in c.env.items() if k != "PRE_DRIVER"}
+
+
+_ORIG_SCRIPT = B.script_judge
 _ORIG = {n: getattr(B, n) for n in ("script_judge", "recorded_judge",
                                     "scenario_judge", "c12_judge",
+                                    "corrupt_pin_judge",
                                     "host_bridge_judge", "emulated", "bench",
                                     "harness")}
 
@@ -342,6 +405,14 @@ MUTANTS = {
     "test_scenario_judge": [
         ("scenario_judge", _pass_all, "passes everything"),
         ("scenario_judge", _scen_ignores_rc, "ignores the exit code")],
+    "test_corrupt_pin_judge": [
+        ("corrupt_pin_judge", _pass_all, "passes everything"),
+        ("corrupt_pin_judge", _ORIG_SCRIPT, "reads exit 1 as FAIL")],
+    "test_mutant_wiring": [
+        ("harness", _wrap_suite("harness", _plain_judges),
+         "every mutant on the exit-code judge"),
+        ("harness", _wrap_suite("harness", _no_pre_driver),
+         "the prefix control without PRE_DRIVER")],
     "test_c12_judge": [
         ("c12_judge", _pass_all, "passes everything"),
         ("c12_judge", _c12_counts_c9, "fails on C9's DATASHEET line")],

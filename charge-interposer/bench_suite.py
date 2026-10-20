@@ -110,6 +110,10 @@ MADHOUSE_MUTANTS = [
     ("monitor-6h-diff-canfail", ["@python", "{work}/art/monitor_6h_diff.py", "--can-fail"]),
     ("monitor-6h-diff-corrupt-pin", ["@python", "{work}/art/monitor_6h_diff.py", "--corrupt-pin"]),
 ]
+# The driver before the rollover fix, for rx_order_prefix_control.sh: the
+# shipped tree has no git history, so it is extracted here (PRE_DRIVER).
+PRE_FIX_COMMIT = "9021d5e"
+MUTANT_JUDGES = {"monitor-6h-diff-corrupt-pin": "corrupt_pin_judge"}  # by name
 
 # Bench drivers with a --self-test (no hardware), run locally.
 SELF_TESTS = [
@@ -260,6 +264,25 @@ def host_bridge_judge(run):
     return out
 
 
+def corrupt_pin_judge(run):
+    """monitor_6h_diff.py --corrupt-pin flips each expected trace pin; its
+    documented outcome is both pin checks FAILING (exit 1) while both
+    machine.cpp replays still read IDENTICAL. PASS is exactly that."""
+    if run.rc is None:
+        return Result(Verdict.ERROR, detail="no exit code (killed)")
+    fails = _lines(run, r"^\s*FAIL\b")
+    pin = [ln for ln in fails if "do NOT match their pins" in ln]
+    other = [ln for ln in fails if ln not in pin]
+    same = _lines(run, r"^\s*ok\s+\S+ on machine\.cpp: IDENTICAL")
+    if run.rc == 1 and len(pin) == 2 and not other and len(same) == 2:
+        return Result(Verdict.PASS, detail="both corrupted pins caught; both "
+                      "replays IDENTICAL")
+    return Result(Verdict.FAIL, detail="rc=%s, %d pin FAIL(s) (want 2), "
+                  "%d other FAIL(s), %d IDENTICAL (want 2)%s" % (
+                      run.rc, len(pin), len(other), len(same),
+                      ("; " + other[0][:100]) if other else ""))
+
+
 def scenario_judge(run):
     """run_scenario.py: its final '-> PASS' / '-> FAIL' line."""
     v = _lines(run, r"^\s*-> (PASS|FAIL)")
@@ -335,6 +358,7 @@ class _Build:
         self.ship = {"code": self.code}
         if ship_art:
             self.ship["art"] = _stage_artifacts(settings)
+            _stage_pre_fix_driver(self.code, self.ship["art"])
         self.mad_env = {"INTERPOSER_CODE": "{work}/code",
                         "L3_STIMULUS": "{madhouse_artifacts}/l3_stimulus.txt"}
 
@@ -397,6 +421,19 @@ class _Build:
                 out["images"] = {k: v.note for k, v in images.items()}
             return out
         return info
+
+
+def _stage_pre_fix_driver(code, art):
+    import subprocess
+    r = subprocess.run(["git", "-C", os.path.dirname(code), "show",
+                        "%s:charge-interposer/firmware/src/port_mcp2515.cpp"
+                        % PRE_FIX_COMMIT], capture_output=True)
+    if r.returncode != 0 or not r.stdout:
+        raise ValueError("cannot extract port_mcp2515.cpp at %s: %s"
+                         % (PRE_FIX_COMMIT, r.stderr[-200:]))
+    with open(os.path.join(art, "port_mcp2515_%s.cpp" % PRE_FIX_COMMIT),
+              "wb") as f:
+        f.write(r.stdout)
 
 
 def _artifacts_digest(settings):
@@ -619,10 +656,17 @@ def harness(settings):
                cls="build", timeout_s=7200),
     ] + [b.mpy(t[:-3].replace("_", "-"), [t], cls="build", timeout_s=3600)
          for t in HARNESS_PY_TESTS])
+    def mutant(cid, argv):
+        kw = dict(cls="build", timeout_s=7200,
+                  judge=globals()[MUTANT_JUDGES.get(cid, "script_judge")])
+        if cid == "rx-order-prefix-control":
+            kw["env"] = dict(b.mad_env, PRE_DRIVER="{work}/art/port_mcp2515_%s.cpp"
+                             % PRE_FIX_COMMIT)
+        if argv[0] == "@python":
+            return b.mpy(cid, argv[1:], **kw)
+        return b.mbash(cid, argv, **kw)
     m_mut = Group("m-mutants", host="madhouse", ship=b.ship, checks=[
-        (b.mpy(cid, argv[1:], cls="build", timeout_s=7200) if argv[0] == "@python"
-         else b.mbash(cid, argv, cls="build", timeout_s=7200))
-        for cid, argv in MADHOUSE_MUTANTS])
+        mutant(cid, argv) for cid, argv in MADHOUSE_MUTANTS])
     l_harness = Group("l-harness", checks=[
         b.lpy("st." + s.replace("_", "-"), ["{interposer_artifacts}/%s.py" % s,
                                             "--self-test"], timeout_s=1800)
