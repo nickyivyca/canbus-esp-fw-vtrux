@@ -22,6 +22,14 @@ make asan && ./shim_test
 Builds `main/gen_inhibit.c` and `main/gen_inhibit_core.c` against mock
 platform headers in `mock/`. Needs pthreads; no ESP-IDF.
 
+**Exit codes:** 0 all cases pass, 1 a case failed, 2 a case was still running
+at its wall-clock budget (20 s, or what the case declares with
+`case_budget()`). A `SIGALRM` armed in `case_begin()` enforces the budget
+while the case runs, and the line before the exit names the case. Until
+2026-10-20 the budget was judged only in `case_end()`, which a hung case never
+reaches: the tester's run of `b341e0d` built with WSL gcc 9.4 sat in case 5
+for 17 minutes with the budget silent.
+
 `shim_test_autoarm` is the same sources with the boot auto-arm compiled in
 (`GEN_INHIBIT_AUTOARM_MODE=GEN_INHIBIT_PASSIVE`). It runs the one case that
 needs it (spec 3.2, "arming comes after it"); every other case arms by hand.
@@ -604,4 +612,6 @@ And the cases:
   as a stand-down when the worker leaves ARMED by row 6, 5 or 9.
 * **`shim_test_autoarm`**: `gen_inhibit_init(CAN_250K, listen-only)` with the
   auto-arm compiled in must install at 250K and listen-only, not can.c's
-  defaults.
+  defaults. **It has no wall-clock budget**: its `main()` does not go through
+  `case_begin()`, so the watchdog below never arms. Whoever gates it wraps it
+  in an outer timeout.

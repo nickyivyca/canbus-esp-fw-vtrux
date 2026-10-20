@@ -9,6 +9,7 @@
  *
  * Determinism: virtual time, one runnable thread at a time. See fake_twai.c.
  */
+#define _POSIX_C_SOURCE 200809L     /* alarm(), write(): the budget watchdog */
 #include "fake_twai.h"
 #include "gen_inhibit.h"
 #include "gen_inhibit_core.h"
@@ -18,10 +19,12 @@
 
 #include "can.h"
 
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 static int g_fail;
 
@@ -44,19 +47,48 @@ static int g_fail;
  */
 static int g_case_budget_s = CASE_BUDGET_S;
 
+static time_t g_case_start;
+static const char *g_case_name = "";
+
+/*
+ * THE BUDGET IS ENFORCED WHILE THE CASE RUNS, not only judged after it.
+ *
+ * Until 2026-10-20 case_end() compared the elapsed time with the budget, which
+ * a case that never returns never reaches: the tester's run of b341e0d under
+ * WSL gcc 9.4 sat in case 5 for 17 minutes with the 20 s budget silent. An
+ * alarm per case ends the process instead, naming the case, with exit 2 so a
+ * run gate sees a verdict rather than a stall. Async-signal-safe calls only.
+ */
+static void budget_expired(int sig)
+{
+    static const char a[] = "    FAIL: ";
+    static const char b[] = " -- still running at its wall-clock budget, "
+                            "so it is hung, not slow; stopping the suite\n";
+    (void)sig;
+    (void)!write(STDOUT_FILENO, a, sizeof(a) - 1);
+    (void)!write(STDOUT_FILENO, g_case_name, strlen(g_case_name));
+    (void)!write(STDOUT_FILENO, b, sizeof(b) - 1);
+    _exit(2);
+}
+
+static void budget_arm(void)
+{
+    signal(SIGALRM, budget_expired);
+    alarm((unsigned)g_case_budget_s);
+}
+
 static void case_budget(int seconds, const char *why)
 {
     g_case_budget_s = seconds;
+    budget_arm();       /* re-armed from here, with the declared budget */
     printf("           budget: %d s -- %s\n", seconds, why);
 }
-
-static time_t g_case_start;
-static const char *g_case_name = "";
 
 static void case_begin(const char *name)
 {
     g_case_name = name;
     g_case_start = time(NULL);
+    budget_arm();
     printf("  %s\n", name);
 }
 
@@ -74,6 +106,7 @@ static void print_timing_config(void)
 
 static void case_end(void)
 {
+    alarm(0);
     print_timing_config();
     const double took = difftime(time(NULL), g_case_start);
     /*
