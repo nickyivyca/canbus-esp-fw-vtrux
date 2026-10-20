@@ -5,16 +5,15 @@
  * tester's fault behaviour on top (spec_layer.h). Gen-inhibit tester,
  * 2026-10-20.
  *
- * The row, as each case judges it:
+ * The row, as each case judges it (nonode_judge.c):
  *   R1  no 0x051 from the device after its answer to the last VCM command;
  *   R2  the trips are evaluated once per received frame or per 200 ms receive
  *       timeout: the latch lands at a check point (the tick right after a
  *       twai_receive() return), never between two;
  *   R3  the latch and its reason follow spec 7 for the injected timing: trip 6
- *       if its threshold (10 error frames within 10 s) is met at an EARLIER
- *       check than the one that finds 0x051 stale (strictly earlier: a tie is
- *       trip 2; reviewer, 2026-10-20), otherwise trip 2, 0.5-0.7 s after the
- *       last 0x051;
+ *       if its threshold (10 error frames within 10 s) is met at a check
+ *       strictly earlier than the one that finds 0x051 stale (a tie is trip 2;
+ *       reviewer, 2026-10-20), otherwise trip 2, 0.5-0.7 s after the last 0x051;
  *   R4  a stuck diag frame does not block the worker (receive keeps
  *       returning), the status page (it answers) or the latch;
  *   R5  when traffic returns without a key-on the device stays latched and the
@@ -22,14 +21,17 @@
  *   R6  a key-on then clears the latch (7.1);
  *   R7  bus-off: the device starts no recovery and stays off the bus until a
  *       re-arm (or reboot), whatever traffic and key cycles come (spec 7).
- * And one check on the layer itself (reviewer, 2026-10-20): the device's err_n
- * moves with the layer's per-retry count, so trip 6 can be reached at all.
+ * And on the layer (reviewer, 2026-10-20): the device's err_n moves with the
+ * layer's per-retry count, so trip 6 can be reached at all; the layer injects
+ * no error before a frame waits.
  *
  * Expected values come from the spec and from what the layer injected and
- * observed, never from the product source. Every line is
+ * observed, never from the product source. One line per verdict:
  *   RESULT <case> <req> PASS|NOT-AS-SPECIFIED|VOID <detail>
- * VOID: the case did not set up what it meant to (a harness problem, never a
- * pass). Exit 0 only when every line is PASS.
+ * One case per process (`nonode_test <case>`; no argument lists the cases),
+ * because the firmware's statics outlive ft_reset() and trip 6's error history
+ * is one of them (only a key-on clears it, spec 7). Exit 0 only when every
+ * line is PASS.
  */
 #include "fake_twai.h"
 #include "gen_inhibit.h"
@@ -37,36 +39,23 @@
 #include "esp_log.h"
 #include "can.h"
 #include "spec_layer.h"
+#include "nonode_judge.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define MS 1000LL
-#define FRESH_US      (500 * MS)    /* spec 7: 0x051's freshness window */
-#define TRIP2_MAX_US  (700 * MS)    /* spec 12.4 row: 0.5-0.7 s after the last 0x051 */
-#define EDGE_US       (20 * MS)     /* keep check points this far from the 0.5 s edge */
-#define TRIP6_N       10            /* spec 7: 10 error frames within 10 s */
-#define TRIP6_WIN_US  (10000 * MS)
-#define STEP_US       100           /* the test's polling step, us */
-#define SLACK_US      50            /* a check point may share the instant of the last poll before it */
+#define MS       1000LL
+#define STEP_US  100            /* the test's polling step */
+#define WATCH_US (2000 * MS)    /* how long the silence is watched */
 
 static int g_pass, g_bad, g_void;
 
-static void result(const char *cs, const char *req, const char *v, const char *fmt, ...)
-    __attribute__((format(printf, 4, 5)));
-
-#include <stdarg.h>
-static void result(const char *cs, const char *req, const char *v, const char *fmt, ...)
+static void report(const char *cs, const char *req, nn_verdict_t v)
 {
-    va_list ap;
-    printf("RESULT %s %s %s ", cs, req, v);
-    va_start(ap, fmt);
-    vprintf(fmt, ap);
-    va_end(ap);
-    printf("\n");
-    if (!strcmp(v, "PASS")) g_pass++;
-    else if (!strcmp(v, "VOID")) g_void++;
+    printf("RESULT %s %s %s %s\n", cs, req, v.v, v.detail);
+    if (!strcmp(v.v, "PASS")) g_pass++;
+    else if (!strcmp(v.v, "VOID")) g_void++;
     else g_bad++;
     fflush(stdout);
 }
@@ -106,10 +95,10 @@ static void page_str(const char *p, const char *key, char *out, int n)
 }
 
 /* ----------------------------------------------------------- the traffic -- */
-/* The interlock set, encoded per epri-pt-bus.dbc (run.sh checks each payload
- * against the DBC with cantools): key on (0x592 B0 bit 4), contactors closed
- * (0x440 bcm_mainc_stat 11), SoC 50 %, VCM fault flag not 0xCA, shift position
- * set, and a VCM command at its engine-off null with zero torque. */
+/* The interlock set, encoded per epri-pt-bus.dbc (run_spec_shim.py checks each
+ * payload against the DBC with cantools): key on (0x592 B0 bit 4), contactors
+ * closed (0x440 bcm_mainc_stat 11), SoC 50 %, VCM fault flag not 0xCA, shift
+ * position set, and a VCM command at its engine-off null with zero torque. */
 static const uint8_t KEY_ON[8]  = { 0x10 };
 static const uint8_t KEY_OFF[8] = { 0x00 };
 static const uint8_t CONT[8]    = { 11 << 2 };
@@ -127,7 +116,6 @@ static void feed(uint32_t id, const uint8_t *d, uint8_t dlc, int64_t us)
     if (ft_rx_pending() > 0 && ft_in_receive()) ft_run(0);
 }
 
-/* One round of the interlock set, the VCM command last; `key` is 0x592. */
 static void round_of(const uint8_t *key, int64_t us_each)
 {
     uint8_t cmd[6];
@@ -147,25 +135,9 @@ static void traffic(const uint8_t *key, int64_t us)
     while (ft_now() < end) round_of(key, 1500);
 }
 
-/* ------------------------------------------------------------ one case -- */
-
-typedef struct
+static int diag_on_wire(void)
 {
-    const char *name;
-    int64_t retry_us;        /* > 0: a fixed retry period */
-    int64_t tenth_us;        /* > 0: the 10th error this long after the last 0x051 */
-    int     bus_off_after;   /* > 0: bus-off once this many errors were injected */
-    int     expect_region;   /* where the 10th error must land, by check points:
-                                0 any, 1 before the stale check's predecessor,
-                                2 between the stale check's predecessor and it
-                                (the tie), 3 after the stale check */
-} case_t;
-
-static int first_check_after(int64_t t)
-{
-    for (int i = 0; i < sl_rx_count(); i++)
-        if (sl_rx(i)->t > t) return i;
-    return -1;
+    return ft_wire_count_id(0x7F1) + ft_wire_count_id(0x7F2) + ft_wire_count_id(0x7F3) + ft_wire_count_id(0x7F8);
 }
 
 static void setup(void)
@@ -188,50 +160,68 @@ static void teardown(void)
     ft_stop_worker();
 }
 
-static void run_case(const case_t *c)
+/* Live on the interlock set, then the last VCM command, answered on a bus that
+ * still acknowledges. Returns false (and reports VOID) if that did not happen. */
+static bool live_and_answered(const char *cs, int64_t *t_last, int *sent_after_answer)
 {
-    char why[512], reason[160];
-    const char *cs = c->name;
-    setup();
-
-    /* live, on the interlock set */
     gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
     traffic(KEY_ON, 1500 * MS);
     if (!is_live(page()))
     {
-        result(cs, "setup", "VOID", "never went live on the interlock set: %.200s", page());
-        teardown();
-        return;
+        nn_verdict_t v = { "VOID", "" };
+        snprintf(v.detail, sizeof(v.detail), "never went live on the interlock set");
+        report(cs, "setup", v);
+        return false;
     }
-
-    /* the last VCM command, answered on a bus that still acknowledges */
-    const int sent_before = ft_sent_count_id(0x051);
-    const int wire_before = ft_wire_count_id(0x051);
+    const int sent_before = ft_sent_count_id(0x051), wire_before = ft_wire_count_id(0x051);
     uint8_t cmd[6];
     memcpy(cmd, VCM, sizeof(cmd));
     cmd[5] = (uint8_t)(g_ctr++ & 0x0F);
     ft_deliver(0x051, cmd, 6);
     for (int i = 0; i < 20 && ft_wire_count_id(0x051) == wire_before; i++) ft_run(100);
-    const int64_t t_last = ft_last_rx_time();
+    *t_last = ft_last_rx_time();
+    *sent_after_answer = ft_sent_count();
     if (ft_wire_count_id(0x051) != wire_before + 1 || ft_sent_count_id(0x051) != sent_before + 1)
     {
-        result(cs, "setup", "VOID", "the last command's answer did not complete (%d sent, %d on the wire)",
-               ft_sent_count_id(0x051) - sent_before, ft_wire_count_id(0x051) - wire_before);
-        teardown();
-        return;
+        nn_verdict_t v = { "VOID", "" };
+        snprintf(v.detail, sizeof(v.detail), "the last command's answer did not complete (%d sent, %d on the wire)",
+                 ft_sent_count_id(0x051) - sent_before, ft_wire_count_id(0x051) - wire_before);
+        report(cs, "setup", v);
+        return false;
     }
-    const int sent_after_answer = ft_sent_count(); /* every frame queued so far */
+    return true;
+}
 
-    /* no other node from here */
+/* ------------------------------------------------------------ the cases -- */
+
+typedef struct
+{
+    const char *name;
+    int64_t retry_us;        /* > 0: a fixed retry period */
+    int64_t tenth_us;        /* > 0: the 10th error this long after the last 0x051 */
+    int     bus_off_after;   /* > 0: bus-off once this many errors were injected */
+    int     region;          /* nn_obs_t.region */
+} case_t;
+
+static int64_t g_checks[SL_MAX_RX], g_errs[SL_MAX_ERR];
+
+static void run_case(const case_t *c)
+{
+    char reason[160] = "";
+    const char *cs = c->name;
+    int64_t t_last;
+    int sent_after_answer;
+    setup();
+    if (!live_and_answered(cs, &t_last, &sent_after_answer)) { teardown(); return; }
+
     if (c->tenth_us > 0) sl_silence_tenth_at(t_last, c->tenth_us);
     else sl_silence(c->retry_us);
     const int rx_at_silence = sl_rx_count();
 
-    int64_t t_latch = -1, t_unlatched = ft_now(), t_page_max_gap = 0, t_prev_page = ft_now();
+    int64_t t_latch = -1, t_unlatched = ft_now(), gap_max = 0, t_prev = ft_now();
     long err_n_max = -1;
     bool bus_off_done = false;
-    const int64_t end = t_last + 2000 * MS;
-    while (ft_now() < end)
+    while (ft_now() < t_last + WATCH_US)
     {
         ft_run(STEP_US);
         if (c->bus_off_after > 0 && !bus_off_done && sl_err_count() >= c->bus_off_after)
@@ -239,11 +229,11 @@ static void run_case(const case_t *c)
             sl_bus_off();
             bus_off_done = true;
         }
-        const char *p = page();             /* the status page answers, or the loop stalls */
+        const char *p = page();
         if (p[0])
         {
-            if (ft_now() - t_prev_page > t_page_max_gap) t_page_max_gap = ft_now() - t_prev_page;
-            t_prev_page = ft_now();
+            if (ft_now() - t_prev > gap_max) gap_max = ft_now() - t_prev;
+            t_prev = ft_now();
         }
         const long e = page_num(p, "err_n");
         if (e > err_n_max) err_n_max = e;
@@ -254,217 +244,173 @@ static void run_case(const case_t *c)
         }
         else if (t_latch < 0)
         {
-            t_unlatched = ft_now();     /* the latch, when it comes, is after this poll */
+            t_unlatched = ft_now();
         }
     }
 
-    /* R1: nothing 0x051 queued after the answer */
     int late051 = 0;
     for (int i = sent_after_answer; i < ft_sent_count(); i++)
         if (ft_sent(i)->id == 0x051) late051++;
-    result(cs, "R1", late051 == 0 ? "PASS" : "NOT-AS-SPECIFIED",
-           "%d 0x051 frame(s) queued after the answer to the last VCM command", late051);
+    report(cs, "R1", nn_r1_no_051(late051));
 
-    /* the check points after the last 0x051 */
-    const int i0 = first_check_after(t_last);
-    int i_stale = -1;
-    for (int i = (i0 < 0 ? sl_rx_count() : i0); i < sl_rx_count(); i++)
-        if (sl_rx(i)->t - t_last > FRESH_US) { i_stale = i; break; }
-    bool edge = false;
-    for (int i = (i0 < 0 ? sl_rx_count() : i0); i < sl_rx_count(); i++)
-    {
-        const int64_t a = sl_rx(i)->t - t_last - FRESH_US;
-        if (a > -EDGE_US && a < EDGE_US) edge = true;
-    }
-    int frames_in_silence = 0;
-    for (int i = rx_at_silence; i < sl_rx_count(); i++) frames_in_silence += sl_rx(i)->ok;
-    if (i0 < 0 || i_stale < 0 || edge || frames_in_silence)
-    {
-        result(cs, "R2/R3", "VOID", "check points unusable: first %d, stale %d, a check within %lld ms of the "
-               "0.5 s edge %d, frames received in the silence %d", i0, i_stale,
-               (long long)(EDGE_US / MS), edge, frames_in_silence);
-        teardown();
-        return;
-    }
-    const int64_t c_stale = sl_rx(i_stale)->t;
+    nn_obs_t o = { 0 };
+    o.t_last = t_last;
+    o.checks = g_checks;
+    for (int i = 0; i < sl_rx_count(); i++)
+        if (sl_rx(i)->t > t_last) g_checks[o.n_checks++] = sl_rx(i)->t;
+    for (int i = rx_at_silence; i < sl_rx_count(); i++) o.frames_in_silence += sl_rx(i)->ok;
+    o.errs = g_errs;
+    for (int k = 0; k < sl_err_count() && k < SL_MAX_ERR; k++) g_errs[o.n_errs++] = sl_err_time(k);
+    o.region = c->region;
+    o.t_unlatched = t_unlatched;
+    o.t_latch = t_latch;
+    o.reason = reason;
 
-    /* the first check at which >= 10 errors fall within 10 s of it */
-    int i6 = -1;
-    for (int i = i0; i < sl_rx_count() && i6 < 0; i++)
-    {
-        int n = 0;
-        for (int k = 0; k < sl_err_count() && k < SL_MAX_ERR; k++)
-        {
-            const int64_t te = sl_err_time(k);
-            if (te <= sl_rx(i)->t && te >= sl_rx(i)->t - TRIP6_WIN_US) n++;
-        }
-        if (n >= TRIP6_N) i6 = i;
-    }
-    const int64_t tenth = sl_err_count() >= TRIP6_N ? sl_err_time(TRIP6_N - 1) : -1;
-
-    /* did the case place the 10th error where it meant to? */
-    if (c->expect_region)
-    {
-        const int64_t c_pre = i_stale > i0 ? sl_rx(i_stale - 1)->t : t_last;
-        int region = tenth < 0 ? 3 : tenth <= c_pre ? 1 : tenth <= c_stale ? 2 : 3;
-        if (region != c->expect_region)
-        {
-            result(cs, "R3", "VOID", "the 10th error at +%lld ms is in region %d, not %d (checks +%lld, +%lld ms)",
-                   (long long)((tenth - t_last) / MS), region, c->expect_region,
-                   (long long)((c_pre - t_last) / MS), (long long)((c_stale - t_last) / MS));
-            teardown();
-            return;
-        }
-    }
-
-    const bool expect6 = i6 >= 0 && sl_rx(i6)->t < c_stale;
-    const int64_t c_exp = expect6 ? sl_rx(i6)->t : c_stale;
-
-    /* R2: the latch lands at a check point */
-    if (getenv("NN_DEBUG"))
-    {
-        printf("DEBUG t_last %lld t_latch %lld c_exp %lld\n", (long long)t_last, (long long)t_latch, (long long)c_exp);
-        for (int i = i0; i < sl_rx_count() && i < i0 + 6; i++)
-            printf("DEBUG rx %d t %lld ok %d id %03X\n", i, (long long)sl_rx(i)->t, sl_rx(i)->ok, (unsigned)sl_rx(i)->id);
-    }
-    int i_at = -1;
-    for (int i = i0; t_latch >= 0 && i < sl_rx_count(); i++)
-        if (sl_rx(i)->t <= t_latch && sl_rx(i)->t >= t_unlatched - SLACK_US) { i_at = i; }
-    if (t_latch < 0)
-        result(cs, "R2", "NOT-AS-SPECIFIED", "no latch within 2 s of the last 0x051");
+    nn_verdict_t why;
+    const nn_expect_t e = nn_expect(&o, &why);
+    if (!e.usable) report(cs, "R2/R3", why);
     else
-        result(cs, "R2", i_at >= 0 ? "PASS" : "NOT-AS-SPECIFIED",
-               "latched between +%lld.%03lld and +%lld.%03lld ms; %s",
-               (long long)((t_unlatched - t_last) / MS), (long long)((t_unlatched - t_last) % MS),
-               (long long)((t_latch - t_last) / MS), (long long)((t_latch - t_last) % MS),
-               i_at >= 0 ? "a receive return (a check point) in that span" :
-               "no receive return (frame or timeout) in that span");
-
-    /* R3: which trip, and when */
-    if (t_latch >= 0)
     {
-        const bool got6 = strncmp(reason, "error-frame rate", 16) == 0;
-        const bool got2 = strncmp(reason, "bus lost", 8) == 0;
-        const bool when_ok = c_exp <= t_latch && c_exp >= t_unlatched - SLACK_US;
-        bool ok = when_ok && (expect6 ? got6 : got2);
-        if (!expect6) ok = ok && c_exp - t_last >= FRESH_US && c_exp - t_last <= TRIP2_MAX_US;
-        snprintf(why, sizeof(why), "expected trip %d at the check +%lld ms (10th error %s%lld ms, stale check "
-                 "+%lld ms, retry %lld us, %d errors); got \"%s\" by +%lld ms",
-                 expect6 ? 6 : 2, (long long)((c_exp - t_last) / MS), tenth < 0 ? "none " : "+",
-                 (long long)(tenth < 0 ? 0 : (tenth - t_last) / MS), (long long)((c_stale - t_last) / MS),
-                 (long long)sl_retry_us(), sl_err_count(), reason, (long long)((t_latch - t_last) / MS));
-        result(cs, "R3", ok ? "PASS" : "NOT-AS-SPECIFIED", "%s", why);
+        report(cs, "R2", nn_r2_at_check(&o));
+        report(cs, "R3", nn_r3_trip(&o, &e));
     }
-
-    /* the layer reaches the product: err_n moved with the injected errors */
-    if (!c->bus_off_after || sl_err_count() > 0)
+    if (sl_err_count() > 0)
     {
-        const long want = sl_err_count() < 16 ? sl_err_count() : 16;
-        result(cs, "layer", (err_n_max >= (want < TRIP6_N ? want : TRIP6_N) && err_n_max > 0) ? "PASS" : "VOID",
-               "err_n reached %ld with %d errors injected", err_n_max, sl_err_count());
+        report(cs, "layer", nn_layer_reaches(err_n_max, sl_err_count()));
+        report(cs, "layer", nn_layer_waits(sl_err_time(0),
+                                           ft_sent_count() > sent_after_answer ? ft_sent(sent_after_answer)->t_queued : -1));
     }
-
-    /* R4: worker and status page never blocked */
-    int returns = sl_rx_count() - rx_at_silence;
-    const bool stuck = ft_wire_count() < ft_sent_count();
-    result(cs, "R4", (returns >= 8 && t_page_max_gap <= 2 * STEP_US && stuck) ? "PASS" :
-           (!stuck ? "VOID" : "NOT-AS-SPECIFIED"),
-           "%d receive returns in 2 s of silence, page gap max %lld us, %d frame(s) stuck",
-           returns, (long long)t_page_max_gap, ft_sent_count() - ft_wire_count());
+    report(cs, "R4", nn_r4_not_blocked(sl_rx_count() - rx_at_silence, gap_max, ft_sent_count() - ft_wire_count()));
 
     if (c->bus_off_after > 0)
     {
-        /* R7: bus-off */
         const int dropped0 = ft_rx_dropped_off(), installs0 = ft_install_count();
         traffic(KEY_ON, 500 * MS);
         traffic(KEY_OFF, 300 * MS);
         traffic(KEY_ON, 500 * MS);
-        const char *p = page();
-        result(cs, "R7", (sl_recovery_calls() == 0 && latched(p) && ft_rx_dropped_off() > dropped0 &&
-                          ft_install_count() == installs0) ? "PASS" : "NOT-AS-SPECIFIED",
-               "recovery calls %d; after traffic and a key cycle: latched %d, frames dropped %d, installs %d",
-               sl_recovery_calls(), latched(p), ft_rx_dropped_off() - dropped0,
-               ft_install_count() - installs0);
+        report(cs, "R7", nn_r7_stays_off(sl_recovery_calls(), latched(page()), ft_rx_dropped_off() - dropped0,
+                                         ft_install_count() - installs0));
         /* spec 7: a re-arm goes live only once the bus has been free of a qualifying
          * burst for 10 s, so the re-arm comes more than 10 s after the last error */
         gen_inhibit_set_mode(GEN_INHIBIT_OFF, 500);
-        while (ft_now() < sl_err_time(sl_err_count() - 1) + TRIP6_WIN_US + 500 * MS) ft_run(100 * MS);
+        while (ft_now() < sl_err_time(sl_err_count() - 1) + NN_TRIP6_WIN + 500 * MS) ft_run(100 * MS);
         gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
         sl_nodes_back();
+        const int rx0 = sl_rx_count();
         traffic(KEY_ON, 1000 * MS);
-        p = page();
-        int rx_frames = 0;
-        for (int i = sl_rx_count() - 50; i < sl_rx_count(); i++) if (i >= 0) rx_frames += sl_rx(i)->ok;
-        result(cs, "R7", (rx_frames > 0 && !latched(p)) ? "PASS" :
-               "NOT-AS-SPECIFIED", "after a re-arm: installs +%d, frames received %d, latched %d",
-               ft_install_count() - installs0, rx_frames, latched(p));
+        int frames = 0;
+        for (int i = rx0; i < sl_rx_count(); i++) frames += sl_rx(i)->ok;
+        report(cs, "R7", nn_r7_rearm(frames, latched(page())));
         teardown();
         return;
     }
 
-    /* R5: nodes back, no key-on */
-    const int head = sent_after_answer;     /* the first frame queued in the silence */
-    const ft_frame_t stuck_frame = *ft_sent(head);
-    const int diag_before = ft_wire_count_id(0x7F1) + ft_wire_count_id(0x7F2) +
-                            ft_wire_count_id(0x7F3) + ft_wire_count_id(0x7F8);
-    const int sent051 = ft_sent_count_id(0x051);
+    const ft_frame_t stuck = *ft_sent(sent_after_answer);   /* the first frame queued in the silence */
+    const int diag0 = diag_on_wire(), sent051 = ft_sent_count_id(0x051);
     sl_nodes_back();
     traffic(KEY_ON, 1000 * MS);
     bool completed = false;
     for (int i = 0; i < ft_wire_count(); i++)
-        if (ft_wire(i)->t_queued == stuck_frame.t_queued && ft_wire(i)->id == stuck_frame.id) completed = true;
-    const int diag_after = ft_wire_count_id(0x7F1) + ft_wire_count_id(0x7F2) +
-                           ft_wire_count_id(0x7F3) + ft_wire_count_id(0x7F8);
-    const char *p = page();
-    result(cs, "R5", (latched(p) && completed && diag_after > diag_before + 1 &&
-                      ft_sent_count_id(0x051) == sent051) ? "PASS" : "NOT-AS-SPECIFIED",
-           "after 1 s of traffic, key on throughout: latched %d, stuck frame 0x%03X completed %d, "
-           "diag pages on the wire +%d, 0x051 queued +%d",
-           latched(p), (unsigned)stuck_frame.id, completed, diag_after - diag_before,
-           ft_sent_count_id(0x051) - sent051);
+        if (ft_wire(i)->t_queued == stuck.t_queued && ft_wire(i)->id == stuck.id) completed = true;
+    report(cs, "R5", nn_r5_back(latched(page()), completed, diag_on_wire() - diag0,
+                                ft_sent_count_id(0x051) - sent051));
 
-    /* R6: a key-on clears the latch */
     traffic(KEY_OFF, 300 * MS);
     traffic(KEY_ON, 300 * MS);
-    p = page();
-    result(cs, "R6", !latched(p) ? "PASS" : "NOT-AS-SPECIFIED", "after key off 0.3 s then on: latched %d",
-           latched(p));
+    report(cs, "R6", nn_r6_key_on(latched(page())));
+    teardown();
+}
+
+/*
+ * THE LAYER ON ITS OWN, on a live device: no error before a frame waits; one
+ * per period after; bus_error_count and TEC as modelled; alerts latched and
+ * cleared on read, delivered only where enabled; bus-off; the recovery count.
+ * The device is a bystander here, so nothing about it is judged.
+ */
+static void layer_case(void)
+{
+    const char *cs = "layer";
+    int64_t t_last;
+    int sent_after_answer;
+    nn_verdict_t v;
+    setup();
+    if (!live_and_answered(cs, &t_last, &sent_after_answer)) { teardown(); return; }
+    twai_reconfigure_alerts(sl_alerts_enabled() | SL_ALERT_BUS_ERROR | SL_ALERT_ERR_PASS | SL_ALERT_BUS_OFF, NULL);
+    uint32_t a = 0;
+    while (twai_read_alerts(&a, 0) == ESP_OK) {}            /* clear what is pending */
+    sl_silence(1000);
+    const int64_t t0 = ft_now();
+    while (ft_now() < t0 + 600 * MS && ft_sent_count() == sent_after_answer) ft_run(STEP_US);
+    const int64_t t_wait = ft_sent_count() > sent_after_answer ? ft_sent(sent_after_answer)->t_queued : -1;
+    const int before_wait = sl_err_count();
+    ft_run(20 * MS);
+    twai_status_info_t s;
+    twai_get_status_info(&s);
+    const int n = sl_err_count();
+    bool spaced = n >= 10;
+    for (int k = 1; k < n && k < SL_MAX_ERR; k++) spaced = spaced && sl_err_time(k) - sl_err_time(k - 1) == 1000;
+
+    snprintf(v.detail, sizeof(v.detail), "a frame waiting from %lld us; %d error(s) before it, %d after 20 ms, "
+             "1 ms apart %d; bus_error_count %u; TEC %u", (long long)t_wait, before_wait, n, spaced,
+             s.bus_error_count, s.tx_error_counter);
+    v.v = (t_wait >= 0 && before_wait == 0 && n >= 15 && n <= 25 && spaced && s.bus_error_count == (uint32_t)n &&
+           s.tx_error_counter == 128) ? "PASS" : "NOT-AS-SPECIFIED";
+    report(cs, "errors", v);
+
+    a = 0;
+    const esp_err_t r1 = twai_read_alerts(&a, 0);
+    uint32_t a2 = 0;
+    const esp_err_t r2 = twai_read_alerts(&a2, 0);
+    snprintf(v.detail, sizeof(v.detail), "first read %d 0x%X, second read %d 0x%X", r1, a, r2, a2 & (SL_ALERT_BUS_ERROR |
+             SL_ALERT_ERR_PASS));
+    v.v = (r1 == ESP_OK && (a & SL_ALERT_BUS_ERROR) && (a & SL_ALERT_ERR_PASS) &&
+           !(a2 & (SL_ALERT_BUS_ERROR | SL_ALERT_ERR_PASS))) ? "PASS" : "NOT-AS-SPECIFIED";
+    report(cs, "alerts", v);
+
+    sl_bus_off();
+    const int n_off = sl_err_count();
+    ft_run(50 * MS);
+    twai_get_status_info(&s);
+    a = 0;
+    twai_read_alerts(&a, 0);
+    snprintf(v.detail, sizeof(v.detail), "state %d, errors +%d after bus-off, TEC %u, BUS_OFF alert %d",
+             (int)s.state, sl_err_count() - n_off, s.tx_error_counter, !!(a & SL_ALERT_BUS_OFF));
+    v.v = (s.state == TWAI_STATE_BUS_OFF && sl_err_count() == n_off && s.tx_error_counter == 256 &&
+           (a & SL_ALERT_BUS_OFF)) ? "PASS" : "NOT-AS-SPECIFIED";
+    report(cs, "busoff", v);
+
+    const int rc0 = sl_recovery_calls();
+    twai_initiate_recovery();
+    snprintf(v.detail, sizeof(v.detail), "one call counted as %d", sl_recovery_calls() - rc0);
+    v.v = sl_recovery_calls() - rc0 == 1 ? "PASS" : "NOT-AS-SPECIFIED";
+    report(cs, "recovery", v);
     teardown();
 }
 
 static const case_t CASES[] = {
-    /* name        retry_us  tenth_us   bus_off  region */
-    { "fast",          300,        0,       0,   1 },
-    { "before",          0,  300 * MS,      0,   1 },
-    { "tie",             0,  550 * MS,      0,   2 },
-    { "slow",            0, 1500 * MS,      0,   3 },
-    { "busoff_few",   1000,        0,       5,   3 },
-    { "busoff_many",   300,        0,      12,   1 },
+    /* name           retry_us  tenth_us   bus_off  region */
+    { "fast",              300,        0,       0,   1 },
+    { "before",              0,  300 * MS,      0,   1 },
+    { "tie",                 0,  550 * MS,      0,   2 },
+    { "slow",                0, 1500 * MS,      0,   3 },
+    { "busoff_few",       1000,        0,       5,   3 },
+    { "busoff_many",       300,        0,      12,   1 },
 };
 
-/*
- * ONE CASE PER PROCESS (`nonode_test <case>`; no argument lists them). The
- * firmware's statics outlive ft_reset(), and trip 6's error history is one of
- * them: only a key-on clears it (spec 7), so a case run after another could
- * inherit its errors. A fresh process is a fresh device.
- */
 int main(int argc, char **argv)
 {
     const size_t n = sizeof(CASES) / sizeof(CASES[0]);
     if (argc < 2)
     {
+        printf("layer\n");
         for (size_t i = 0; i < n; i++) printf("%s\n", CASES[i].name);
         return 0;
     }
-    for (size_t i = 0; i < n; i++)
-    {
-        if (strcmp(argv[1], CASES[i].name) == 0)
-        {
-            run_case(&CASES[i]);
-            printf("SUMMARY %s %d PASS, %d NOT-AS-SPECIFIED, %d VOID\n", CASES[i].name, g_pass, g_bad, g_void);
-            return (g_bad || g_void) ? 1 : 0;
-        }
-    }
-    printf("RESULT %s - VOID no such case\n", argv[1]);
-    return 2;
+    bool found = false;
+    if (strcmp(argv[1], "layer") == 0) { layer_case(); found = true; }
+    for (size_t i = 0; i < n && !found; i++)
+        if (strcmp(argv[1], CASES[i].name) == 0) { run_case(&CASES[i]); found = true; }
+    if (!found) { printf("RESULT %s - VOID no such case\n", argv[1]); return 2; }
+    printf("SUMMARY %s %d PASS, %d NOT-AS-SPECIFIED, %d VOID\n", argv[1], g_pass, g_bad, g_void);
+    return (g_bad || g_void) ? 1 : 0;
 }

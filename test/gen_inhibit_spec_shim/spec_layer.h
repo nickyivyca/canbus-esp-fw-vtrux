@@ -98,4 +98,8 @@ uint32_t       sl_alerts_delivered(void);   /* every injected alert bit the devi
  * harness test can drive it without a worker. */
 void sl_step(void);
 
+/* Not in the implementor's mock: the layer defines it, to count calls. */
+#include "esp_err.h"
+esp_err_t twai_initiate_recovery(void);
+
 #endif

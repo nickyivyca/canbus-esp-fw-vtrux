@@ -7,11 +7,14 @@
 set -e
 OUT=${1:?usage: build.sh <out binary> [extra CFLAGS...]}
 shift
+# a mutant replaces one of these three (mutate.py)
 LAYER=${SPEC_LAYER:-spec_layer.c}
+TEST=${NN_TEST:-nonode_test.c}
+JUDGE=${NN_JUDGE:-nonode_judge.c}
 CC=${CC:-gcc}
 $CC -std=c11 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable "$@" \
     -I. -I../gen_inhibit_shim -I../gen_inhibit_shim/mock -I../../main \
-    -o "$OUT" nonode_test.c "$LAYER" \
+    -o "$OUT" "$TEST" "$JUDGE" "$LAYER" \
     ../gen_inhibit_shim/fake_twai.c ../gen_inhibit_shim/fake_can.c \
     ../../main/gen_inhibit.c ../../main/gen_inhibit_core.c ../../main/gi_sched.c ../../main/can.c \
     -pthread \
