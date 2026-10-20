@@ -94,13 +94,18 @@ SERIAL_MARKERS = (
 
 # The diag schema identity (user ruling, 2026-10-19): the firmware's schema
 # constant -- the byte every 0x7F4 B0 and 0x7F7 B6 carries -- equals the
-# DiagSchemaVersion of the diag DBC in the same tree. Read with cantools
-# alone, not shared/bench, because madhouse builds from a shipped copy of
-# this folder only. The tree being one commit is the runner's part: it
-# records the code only from a clean tree.
+# DiagSchemaVersion of the diag DBC in the same tree. Read from the DBC's
+# text (see dbc_schema). The tree being one commit is the runner's part: it
+# records the code only from a clean tree, and on madhouse build-check runs
+# in a git checkout (build_check_in_clone.py).
 MACHINE_H = os.path.join(FW, "src", "machine.h")
 DIAG_DBC = os.path.normpath(os.path.join(FW, "..", "diag",
                                          "vtrux-interposer-diag.dbc"))
+# The database-level definition (BA_DEF_ with no object type) and value.
+DBC_VER_DEF_RE = re.compile(r'^[ \t]*BA_DEF_[ \t]+"DiagSchemaVersion"[ \t]+'
+                            r'([A-Z]+)', re.M)
+DBC_VER_RE = re.compile(r'^[ \t]*BA_[ \t]+"DiagSchemaVersion"[ \t]+'
+                        r'([^;\s]+)[ \t]*;', re.M)
 SCHEMA_RE = re.compile(r"^[ \t]*static[ \t]+const[ \t]+uint8_t[ \t]+"
                        r"DIAG_SCHEMA_VER[ \t]*=[ \t]*(\d+)[ \t]*;", re.M)
 # Any definition at all, in whatever form: a second or differently written
@@ -1129,18 +1134,22 @@ def firmware_schema(text):
 
 
 def dbc_schema(path):
-    """-> (the DBC's DiagSchemaVersion or None, problems)."""
-    import cantools
-    try:
-        db = cantools.database.load_file(path)
-    except Exception as e:
-        return None, ["%s does not load: %s" % (path, e)]
-    a = (db.dbc.attributes if db.dbc else {}).get("DiagSchemaVersion")
-    v = a.value if a is not None else None
-    if not isinstance(v, int) or isinstance(v, bool):
-        return None, ["%s states no integer DiagSchemaVersion (got %r)"
-                      % (path, v)]
-    return v, []
+    """-> (the DBC's DiagSchemaVersion or None, problems).
+
+    Read from the text, not with cantools: build_check runs under the
+    PlatformIO virtualenv's Python, which has no cantools (trial run 96bf,
+    2026-10-19), and it has been stdlib-only throughout. Strict: exactly
+    one database-level INT definition and exactly one integer value. The
+    full identity (DiagSchemaHash) is shared/bench's check_identity."""
+    with open(path, encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    defs = DBC_VER_DEF_RE.findall(text)
+    vals = DBC_VER_RE.findall(text)
+    if defs != ["INT"] or len(vals) != 1 or not re.fullmatch(r"\d+",
+                                                             vals[0]):
+        return None, ["%s states no integer DiagSchemaVersion (definitions "
+                      "%r, values %r)" % (path, defs, vals)]
+    return int(vals[0]), []
 
 
 def check_schema_version(machine_h=MACHINE_H, dbc=DIAG_DBC):

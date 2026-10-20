@@ -41,6 +41,8 @@ CASES = [
     ("another type", [(DECL, DECL.replace("uint8_t", "int"))], [],
      "found 0 in that form"),
     ("no attribute", [], [(VER + "\n", "")], "no integer DiagSchemaVersion"),
+    ("two values", [], [(VER, VER + "\n" + VER.replace("4", "5"))],
+     "no integer DiagSchemaVersion"),
     ("a string attribute", [],
      [('BA_DEF_ "DiagSchemaVersion" INT 0 255;',
        'BA_DEF_ "DiagSchemaVersion" STRING ;'),
