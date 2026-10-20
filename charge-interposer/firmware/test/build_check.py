@@ -92,6 +92,22 @@ SERIAL_MARKERS = (
     b"  LOSS veh(rx=",               # the loss line in status()
 )
 
+# The diag schema identity (user ruling, 2026-10-19): the firmware's schema
+# constant -- the byte every 0x7F4 B0 and 0x7F7 B6 carries -- equals the
+# DiagSchemaVersion of the diag DBC in the same tree. Read with cantools
+# alone, not shared/bench, because madhouse builds from a shipped copy of
+# this folder only. The tree being one commit is the runner's part: it
+# records the code only from a clean tree.
+MACHINE_H = os.path.join(FW, "src", "machine.h")
+DIAG_DBC = os.path.normpath(os.path.join(FW, "..", "diag",
+                                         "vtrux-interposer-diag.dbc"))
+SCHEMA_RE = re.compile(r"^[ \t]*static[ \t]+const[ \t]+uint8_t[ \t]+"
+                       r"DIAG_SCHEMA_VER[ \t]*=[ \t]*(\d+)[ \t]*;", re.M)
+# Any definition at all, in whatever form: a second or differently written
+# one is a problem, not something to skip past.
+SCHEMA_ANY_RE = re.compile(r"(#[ \t]*define[ \t]+DIAG_SCHEMA_VER\b"
+                           r"|\bDIAG_SCHEMA_VER[ \t]*=)")
+
 
 def environments():
     """Every [env:NAME] in platformio.ini, in file order."""
@@ -1101,6 +1117,47 @@ def check_build_links(fw_dir=FW, cfg=None):
     return problems
 
 
+def firmware_schema(text):
+    """-> (DIAG_SCHEMA_VER from machine.h's text or None, problems)."""
+    strict = SCHEMA_RE.findall(text)
+    loose = SCHEMA_ANY_RE.findall(text)
+    if len(strict) != 1 or len(loose) != 1:
+        return None, ["machine.h: expected one `static const uint8_t "
+                      "DIAG_SCHEMA_VER = N;`, found %d in that form and %d "
+                      "definition(s) in any form" % (len(strict), len(loose))]
+    return int(strict[0]), []
+
+
+def dbc_schema(path):
+    """-> (the DBC's DiagSchemaVersion or None, problems)."""
+    import cantools
+    try:
+        db = cantools.database.load_file(path)
+    except Exception as e:
+        return None, ["%s does not load: %s" % (path, e)]
+    a = (db.dbc.attributes if db.dbc else {}).get("DiagSchemaVersion")
+    v = a.value if a is not None else None
+    if not isinstance(v, int) or isinstance(v, bool):
+        return None, ["%s states no integer DiagSchemaVersion (got %r)"
+                      % (path, v)]
+    return v, []
+
+
+def check_schema_version(machine_h=MACHINE_H, dbc=DIAG_DBC):
+    """machine.h's DIAG_SCHEMA_VER == the diag DBC's DiagSchemaVersion."""
+    with open(machine_h, encoding="utf-8") as f:
+        fw, probs = firmware_schema(f.read())
+    db, p2 = dbc_schema(dbc)
+    probs += p2
+    if not probs and fw != db:
+        probs.append("machine.h DIAG_SCHEMA_VER = %d but %s states "
+                     "DiagSchemaVersion %d" % (fw, os.path.basename(dbc), db))
+    if not probs:
+        print("diag schema: machine.h DIAG_SCHEMA_VER = %d = the DBC's "
+              "DiagSchemaVersion (%s)" % (fw, os.path.relpath(dbc, FW)))
+    return probs
+
+
 def check_truck_is_silent():
     problems = []
     truck, bench = image(TRUCK_ENV), image(BENCH_ENV)
@@ -1170,6 +1227,9 @@ def main():
                     help="spec 9 C2b: only check that the witness and truck "
                          "environments differ from the bench one by their "
                          "allowed settings alone (no build)")
+    ap.add_argument("--schema", action="store_true",
+                    help="only check machine.h's DIAG_SCHEMA_VER against the "
+                         "diag DBC's DiagSchemaVersion (no build)")
     ap.add_argument("--envs", default="",
                     help="comma-separated subset of environments for "
                          "--reproducible (default: all)")
@@ -1194,6 +1254,16 @@ def main():
                 print("  - " + p_)
             return 1
         print("\nOK -- build links (spec 9 C2b)")
+        return 0
+
+    if a.schema:
+        probs = check_schema_version()
+        if probs:
+            print("\nFAIL -- %d problem(s):" % len(probs))
+            for p_ in probs:
+                print("  - " + p_)
+            return 1
+        print("\nOK -- diag schema version")
         return 0
 
     if a.diff_bins:
@@ -1256,6 +1326,7 @@ def main():
         problems += check_truck_is_silent()
         problems += check_diagnostics_are_gated()
         problems += check_build_links()
+        problems += check_schema_version()
 
     if problems:
         print("\nFAIL -- %d problem(s):" % len(problems))

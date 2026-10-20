@@ -291,7 +291,7 @@ def test_suites():
                     assert any(w in c.skip for w in ("spec", "reviewer",
                                                      "plan", "ruling")), \
                         "skip %s/%s names no spec item or ruling" % (g.name, c.id)
-    assert len(seen) == 166, "checks across the suites: %d" % len(seen)
+    assert len(seen) == 168, "checks across the suites: %d" % len(seen)
     e_sims = [c for g in su["emulated"].groups for c in g.checks
               if c.id.startswith("sim.")]
     assert len(e_sims) == 27 and all("--time-scale 1 " in _argv(c) + " "

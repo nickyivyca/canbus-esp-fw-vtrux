@@ -10,7 +10,7 @@ requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
-decode = ["cantools>=44.1"]
+decode = ["cantools>=41.3"]
 
 [project.scripts]
 vtrux-bench-run = "vtrux_bench.run.cli:main"

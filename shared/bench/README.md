@@ -4,7 +4,8 @@ Bench tooling shared by the two Vtrux ESP32 projects (gen-inhibit and
 charge-interposer). Item 8, "run", of the shared bench toolkit in the
 reverse-it plan `projects/vtrux/notes/plans/esp-shared-code-port.md`.
 Python >= 3.10. The runner is stdlib only; `vtrux_bench.decode` needs
-cantools (`pip install ".[decode]"`). Written by the charge-interposer
+cantools (`pip install ".[decode]"`; the golden test passes on 41.3.1
+and 44.1.0). Written by the charge-interposer
 tester (2026-10-17); each project writes its own suite on top.
 
 Install it at a pinned commit rather than copying it:

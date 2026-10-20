@@ -635,6 +635,11 @@ def harness(settings):
                timeout_s=3600),
         b.mpy("build-check-manifest-test",
               ["firmware/test/build_check_manifest_test.py"], cls="build"),
+        b.mpy("build-check-schema-test",
+              ["firmware/test/build_check_schema_test.py"], cls="build"),
+        b.mpy("build-check-schema-test-canfail",
+              ["firmware/test/build_check_schema_test.py", "--can-fail"],
+              cls="build"),
         b.mpio("digest-recheck-check", ["firmware/test/digest_recheck_check.py"],
                cls="build", timeout_s=7200),
     ] + [b.mpy(t[:-3].replace("_", "-"), [t], cls="build", timeout_s=3600)
