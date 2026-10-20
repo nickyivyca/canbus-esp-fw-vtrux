@@ -2,7 +2,7 @@
 """Mutants of suite_gen_inhibit.py; test_suite_gen_inhibit.py must fail on each BY A
 CHECK. A crash is not a kill, and an edit that does not apply is an error.
 
-    PYTHONPATH=<core 1c7bed2>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
+    PYTHONPATH=<core df5d2ec>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
         py -3.14 -B test_suite_gen_inhibit_mutants.py
 
 Each mutant copies suite_gen_inhibit.py, its test and the settings example into a fresh
@@ -90,6 +90,13 @@ MUTANTS = [
     ("a placeholder no setting fills", '"REMOTE": "{gi_host_ssh}"', '"REMOTE": "{gi_hostssh}"'),
     ("the WiCAN's standing image is not _man", 'standing_images={"wican": "wican_man", "x2": "x2_app"}',
      'standing_images={"wican": "wican_man2", "x2": "x2_app"}'),
+    ("code: an image from another commit is not dirty",
+     'clean = all(t["clean"] and t["at"] for t in trees.values()) and all(',
+     'clean = all(t["clean"] and t["at"] for t in trees.values()) or all('),
+    ("code: HEAD need not be gi_commit", 'st["at"] = bool(st["head"] and commit and st["head"].startswith(commit))',
+     'st["at"] = True'),
+    ("code: the emulated suite is never dirty", '"dirty": not (t["clean"] and t["at"])', '"dirty": False'),
+    ("the bench suite does not require the emulated one", 'requires="gen-inhibit-emulated",', 'requires=None,'),
     ("a bench check runs a bare bash (WSL's on Windows)",
      'kw = dict(id=cid, argv=["{bash}", "%s/%s" % (H, script)]', 'kw = dict(id=cid, argv=["bash", "%s/%s" % (H, script)]'),
     ("reads: a desk check reads nothing",
@@ -129,7 +136,8 @@ def main():
         killed += dead
         print("%s m%d %s  (exit %d, %d FAIL%s%s)" % (
             "KILLED  " if dead else "SURVIVED", n, name, r.returncode, len(fails),
-            ", CRASHED" if crashed else "", ("; " + fails[0][:100]) if fails else ""))
+            ", CRASHED: " + r.stderr.strip().splitlines()[-1][:120] if crashed else "",
+            ("; " + fails[0][:100]) if fails else ""))
         sys.stdout.flush()
     shutil.rmtree(base, ignore_errors=True)
     print("\n%d of %d killed by a check, %d errors" % (killed, len(MUTANTS), errors))

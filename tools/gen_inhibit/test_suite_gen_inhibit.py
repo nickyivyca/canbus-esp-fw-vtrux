@@ -4,7 +4,7 @@ cover the baseline index once each, keep the SSID out of what the record keeps, 
 their hooks say "could not look" (raise) rather than "not this image" (None) when a
 tool fails. No hardware: every tool the hooks run is stood in for.
 
-    PYTHONPATH=<core 1c7bed2>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
+    PYTHONPATH=<core df5d2ec>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
         py -3.14 -B test_suite_gen_inhibit.py
 
 Prints "ok ..." or "FAIL ..." per check and PASS or FAIL at the end; exit 0 only on
@@ -31,6 +31,18 @@ SSID = "WiCAN_00aa11bb22cc"        # made up for the test; the real one is never
 BASE = os.path.join(tempfile.gettempdir(), "gen-inhibit-suite-test", str(os.getpid()))
 fails = []
 oks = 0
+
+
+def rmtree(path):
+    """Remove a tree, including git's read-only object files (Windows), or raise.
+    ignore_errors would leave the tree behind, and a later run with the same pid finds it."""
+    import stat
+
+    def again(fn, p, exc):
+        os.chmod(p, stat.S_IWRITE)
+        fn(p)
+    if os.path.exists(path):
+        shutil.rmtree(path, onexc=again)
 
 
 def check(name, cond, detail=""):
@@ -64,7 +76,7 @@ def fake_bin(path, version, fill):
 
 
 def fixture():
-    shutil.rmtree(BASE, ignore_errors=True)
+    rmtree(BASE)
     os.makedirs(BASE)
     shas = {}
     for k, (name, d) in enumerate(sorted(SG.WICAN_BUILDS.items())):
@@ -81,7 +93,7 @@ def fixture():
     settings = {
         "reverse_it": BASE.replace("\\", "/"), "gi_tools": HERE.replace("\\", "/"), "gi_commit": "e3d9437",
         "gi_images": os.path.join(BASE, "images"), "gi_prod_dir": os.path.join(BASE, "prod"),
-        "interposer_code": os.path.join(BASE, "ic"), "x2_images": x2, "gi_fw": HERE, "gi_components": "x",
+        "interposer_code": os.path.join(BASE, "ic"), "x2_images": x2, "gi_fw": HERE, "gi_components": "x", "gi_checks_clone": HERE,
         "gi_host_ssh": "hosttest", "gi_host_root": "~/rt", "bash": shutil.which("bash"),
         "bench_holder": bh, "runs_root": os.path.join(BASE, "runs"),
         "hosts": {"local": {"python": [sys.executable, "-B"]}},
@@ -582,6 +594,61 @@ def test_flashers(settings, bench):
     check("x2_jammer: a failed jammer write stops further X2 flashes", not r["ok"] and r["recoverable"] is False, r)
 
 
+def git(repo, *a):
+    import subprocess
+    return subprocess.run(["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid"] + list(a),
+                          capture_output=True, text=True, check=True).stdout.strip()
+
+
+def test_code_info(settings):
+    """commit and dirty, read off the trees: what the core's Suite.requires compares."""
+    from vtrux_bench.run.engine import _code_ident
+    bench0 = SG.bench(settings)
+    ci = bench0.code_info({})
+    check("code: trees that are not git repos are dirty (no code identity)", ci["dirty"] is True, ci["trees"])
+    check("code: the bench suite requires the emulated suite on the same code",
+          bench0.requires == "gen-inhibit-emulated", bench0.requires)
+
+    repo = os.path.join(BASE, "repo")
+    os.makedirs(repo)
+    git(repo, "init", "-q")
+    with open(os.path.join(repo, ".gitignore"), "w") as f:
+        f.write("*.bin\n")
+    with open(os.path.join(repo, "src.c"), "w") as f:
+        f.write("int x;\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "c")
+    h = git(repo, "rev-parse", "--short=7", "HEAD")
+
+    def build(version_of=lambda n: h):
+        for k, (name, d) in enumerate(sorted(SG.WICAN_BUILDS.items())):
+            fake_bin(os.path.join(repo, "build-tester-" + d, "wican-fw_obd_t.bin"), version_of(name), 0x10 + k)
+        fake_bin(os.path.join(repo, "prod", "wican-fw_obd_p.bin"), version_of("wican_prod"), 0x70)
+    build()
+    s2 = dict(settings, gi_images=repo, gi_prod_dir=os.path.join(repo, "prod"), gi_fw=repo, gi_commit=h)
+    ci = SG.bench(s2).code_info({})
+    ce = SG.emulated(s2).code_info({})
+    check("code: clean trees at gi_commit, every image naming it: not dirty",
+          ci["dirty"] is False and ce["dirty"] is False, (ci["trees"], ce["gi_fw"]))
+    check("code: each image records its commit and clean state",
+          ci["images"]["wican_man"]["commit_clean"] == "%s clean=True" % h, ci["images"]["wican_man"])
+    check("code: the core reads the same code for both suites",
+          _code_ident(ci) == _code_ident(ce) == "commit:%s" % h, (_code_ident(ci), _code_ident(ce)))
+    check("code: gi_commit that is not HEAD is dirty",
+          SG.bench(dict(s2, gi_commit="0000000")).code_info({})["dirty"] is True
+          and SG.emulated(dict(s2, gi_commit="0000000")).code_info({})["dirty"] is True)
+    build(lambda n: "abcdef0" if n == "wican_rxq" else h)
+    ci = SG.bench(s2).code_info({})
+    check("code: one image built from another commit is dirty",
+          ci["dirty"] is True and ci["images"]["wican_rxq"]["commit_clean"].endswith("clean=False"),
+          ci["images"]["wican_rxq"])
+    build()
+    with open(os.path.join(repo, "src.c"), "a") as f:
+        f.write("int y;\n")
+    check("code: an uncommitted change is dirty, for both suites",
+          SG.bench(s2).code_info({})["dirty"] is True and SG.emulated(s2).code_info({})["dirty"] is True)
+
+
 def test_example(bench, emu):
     """The settings example names every key the suites need and every placeholder."""
     import re
@@ -606,6 +673,7 @@ def main():
         settings, shas = fixture()
         bench, emu = test_suites(settings, shas)
         test_example(bench, emu)
+        test_code_info(settings)
         test_ssid(settings, bench, emu)
         test_redact(settings)
         test_bins()
@@ -613,7 +681,7 @@ def main():
         test_identify(settings, bench)
         test_flashers(settings, bench)
     finally:
-        shutil.rmtree(BASE, ignore_errors=True)
+        rmtree(BASE)
     print("\n%s, %d ok, %d FAIL" % ("PASS" if not fails else "FAIL", oks, len(fails)))
     return 0 if not fails else 1
 

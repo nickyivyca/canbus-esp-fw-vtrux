@@ -76,7 +76,8 @@ def main():
         killed += dead
         print("%s m%d %s  (exit %d, %d FAIL%s%s)" % (
             "KILLED  " if dead else "SURVIVED", n, name, r.returncode, len(fails),
-            ", CRASHED" if crashed else "", ("; " + fails[0][:100]) if fails else ""))
+            ", CRASHED: " + r.stderr.strip().splitlines()[-1][:120] if crashed else "",
+            ("; " + fails[0][:100]) if fails else ""))
         sys.stdout.flush()
     shutil.rmtree(base, ignore_errors=True)
     print("\n%d of %d killed by a check, %d errors" % (killed, len(MUTANTS), errors))

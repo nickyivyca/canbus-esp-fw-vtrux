@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Gen-inhibit's two suites for the shared chain runner (shared/bench, vtrux_bench.run,
-pinned at charge-interposer/main 1c7bed2).
+pinned at charge-interposer/main df5d2ec).
 
 Gen-inhibit tester, 2026-10-18. Two suites on the one core (user, 2026-10-17):
     bench     part B only. Holds the bench lock from start to finish. The core runs the
@@ -31,10 +31,11 @@ Settings this suite reads, besides the core's (shared/bench/README.md):
     gi_images        the worktree holding build-tester-<name>/ (part C's builds)
     gi_prod_dir      the prod build's build/ folder
     gi_fw            the gen-inhibit clone whose commit the emulated suite builds and tests
-    gi_components    the -Components argument of c_checks_run.ps1
+    gi_checks_clone  the clone whose test/build_checks/ c_checks_run.ps1 runs (the tester clone)
+    gi_components    the -Components argument of c_checks_run.ps1: a managed_components
+                     tree its prod build verified (12.3 item 3)
     gi_host_ssh      the ssh host part H runs on (baseline_host_run.sh's own host)
     gi_host_root     the reverse-it root on that host
-    gi_images_clean  {image name: true/false}: was its tree clean (recorded, not checked)
     interposer_code  a charge-interposer/ clone (for x2_flash_custody and the X2's identify)
     x2_images        {"x2_app": {"files": [[off, path]...], "md5": {...}, "expect": ...},
                       "x2_slcan": {...}}: the X2 images the charge-interposer tester names
@@ -291,7 +292,7 @@ def make_hooks(settings, ssid, images=None):
     def identify(image, ctx, logdir):
         """What the board is on, whatever image is wanted: the engine compares it with
         image.expect. None means "on none of these"; a tool that could not look RAISES,
-        and the engine then stops the bench without flashing (core 1c7bed2)."""
+        and the engine then stops the bench without flashing (core df5d2ec)."""
         stamp = time.strftime("%Y%m%dT%H%M%S")
         if image.board == "wican":
             return wican_sha()
@@ -450,6 +451,7 @@ def suite(settings):
 
     return Suite(
         name="gen-inhibit-bench", role=ROLE, groups=groups, images=images, code_info=code_info_for(settings, images),
+        requires="gen-inhibit-emulated",   # user, 2026-10-17: the emulated run on this code first
         standing_images={"wican": "wican_man", "x2": "x2_app"},
         flashers={"ota": hooks["ota"], "x2-hold": hooks["x2_hold"], "x2-jammer": hooks["x2_jammer"]},
         identify=hooks["identify"], redact=hooks["redact"])
@@ -488,14 +490,25 @@ def git_state(path):
     return {"head": head or None, "clean": None if st is None else st == ""}
 
 
+def tree_at(path, commit):
+    """{"head", "clean", "at"}: the tree's HEAD, whether it is clean, and whether HEAD
+    is the commit (a short commit is a prefix of HEAD)."""
+    st = git_state(path)
+    st["at"] = bool(st["head"] and commit and st["head"].startswith(commit))
+    return st
+
+
 def code_info_for(settings, images):
-    """What the record keeps about the code (user, 2026-10-17): each image's code hash.
-    Until the code-hash tool exists, the image's commit (its descriptor's version field)
-    and whether its tree was clean go in the same field; clean is None where nothing
-    recorded it. The harness's own clone is recorded beside them."""
-    clean = settings.get("gi_images_clean") or {}
+    """What the record keeps about the code (user, 2026-10-17), and what the core's
+    Suite.requires compares: commit and dirty. Until the code-hash tool exists the
+    code is the commit, and only from a clean tree; so dirty is False only when the
+    image worktree and the prod tree are both clean at gi_commit and every WiCAN
+    image's descriptor names that commit. Read off the trees, never from settings."""
+    commit = settings.get("gi_commit")
 
     def code_info(ctx):
+        trees = {"gi_images": tree_at(need(settings, "gi_images"), commit),
+                 "gi_prod_dir": tree_at(need(settings, "gi_prod_dir"), commit)}
         per = {}
         for n, im in images.items():
             b = im.params.get("bin")
@@ -503,10 +516,25 @@ def code_info_for(settings, images):
                 per[n] = {"board": im.board, "expect": im.expect, "code_hash": None,
                           "note": "an X2 state named by the charge-interposer tester's settings"}
                 continue
+            tree = trees["gi_prod_dir" if n == "wican_prod" else "gi_images"]
             v = app_version(b)
             per[n] = {"board": im.board, "elf_sha256": im.expect, "code_hash": None,
-                      "commit_clean": "%s clean=%s" % (v, clean.get(n))}
-        return {"commit": settings.get("gi_commit"), "images": per, "gi_tools": git_state(need(settings, "gi_tools"))}
+                      "commit_clean": "%s clean=%s" % (v, tree["clean"] and tree["at"] and v == commit)}
+        clean = all(t["clean"] and t["at"] for t in trees.values()) and all(
+            app_version(im.params["bin"]) == commit for im in images.values() if im.params.get("bin"))
+        return {"commit": commit, "dirty": not clean, "code_hash": None, "trees": trees, "images": per,
+                "gi_tools": git_state(need(settings, "gi_tools"))}
+    return code_info
+
+
+def emulated_code_info(settings):
+    """The emulated suite's code: gi_fw, clean at gi_commit (same rule as the bench's)."""
+    commit = settings.get("gi_commit")
+
+    def code_info(ctx):
+        t = tree_at(need(settings, "gi_fw"), commit)
+        return {"commit": commit, "dirty": not (t["clean"] and t["at"]), "code_hash": None, "gi_fw": t,
+                "images": {}, "gi_tools": git_state(need(settings, "gi_tools"))}
     return code_info
 
 
@@ -531,7 +559,7 @@ def emulated(settings):
         ]),
         Group("build_checks", checks=[
             Check(id="C5_C6_scan", argv=["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                                         "{reverse_it}/%s/c_checks_run.ps1" % H, "-Clone", "{gi_fw}", "-Commit", C,
+                                         "{reverse_it}/%s/c_checks_run.ps1" % H, "-Clone", "{gi_checks_clone}", "-Commit", C,
                                          "-Components", "{gi_components}", "-OutDir", "{outdir}"],
                   cwd="{reverse_it}", timeout_s=7200, cls="build",
                   outputs=["%s_%s.txt" % (c, C) for c in ("stale_name_check", "name_once_check", "scan_scope_check")],
@@ -541,5 +569,4 @@ def emulated(settings):
         ]),
     ]
     return Suite(name="gen-inhibit-emulated", role=ROLE, groups=groups,
-                 code_info=lambda ctx: {"commit": commit, "gi_fw": git_state(need(settings, "gi_fw")),
-                                        "images": {}})
+                 code_info=emulated_code_info(settings))
