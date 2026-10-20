@@ -318,9 +318,81 @@ def test_mutant_wiring():
         "the staged driver is the current one"
 
 
+# The two HELLO? replies the bridge image gave in the 00:30 trial
+# (runs/charge-interposer_20261018T003009_7077/_bench/b-bridge/).
+REPLY_DIAG = ("=0 ovf=0 txf=0 silent=0 fw=9 schema=4\ndiag st=PASSTHROUGH "
+              "trip=0 flags=0xc0 ilim=- vmax=0 chgmax=0 soc=0.0 evap=0 chg=0 "
+              "mod=0 synth=0 ovf=0 txf=0 silent=0 fw=9 schema=4\n")
+REPLY_LOSS = (" boot=61522us switch=300/300us(last/max) drained=0\n  LOSS "
+              "veh(rx=0 tx=0 err=184 off=0 peak=0) chg(rx=0 tx=0 err=0 off=0 "
+              "ring=0/0) bridge=0 emit=0\n       bridged frames that missed "
+              "the vehicle: 0 (clears bridge_ok for that interval)\n")
+
+
+def test_identify():
+    """bench_identify: the product's serial lines are recognised on any
+    line, and a product image is never sent the SLCAN probe."""
+    I = B.bench_identify
+    for name, text in (("diag reply", REPLY_DIAG), ("loss reply", REPLY_LOSS),
+                       ("diag line not first", "x\ndiag st=MONITOR trip=0\n")):
+        assert I.PRODUCT_RE.search(text), "%s not seen as product" % name
+    for text in ("@HELLO c12_bench version=1 elf_sha256=" + "a" * 64 + "\n",
+                 "V0101\rNF001\r", "JAMMER ERR unknown_command\n",
+                 "INFO mcp2515 ready\n"):
+        assert not I.PRODUCT_RE.search(text), "%r seen as product" % text
+    calls = []
+
+    def fake(r7, rh, rs):
+        def f7(settings, logdir, tag):
+            calls.append("7f7")
+            if isinstance(r7, Exception):
+                raise r7
+            return r7
+
+        def fh(settings, logdir, tag):
+            calls.append("hello")
+            return rh if rh is not None else (None, False)
+
+        def fs(settings, logdir, tag):
+            calls.append("slcan")
+            return rs
+        return f7, fh, fs
+
+    saved = (I.read_7f7, I.read_hello, I.read_slcan)
+    try:
+        cases = [
+            (("756d6714", False), None, None, "756d6714", ["7f7"]),
+            ((None, True), None, None, "product-without-0x7F7", ["7f7"]),
+            ((None, False), (None, True), None, "product-without-0x7F7",
+             ["7f7", "hello"]),
+            ((None, False), ("c12_bench:x", False), None, "c12_bench:x",
+             ["7f7", "hello"]),
+            ((None, False), (None, False), "slcan:V0101:NF001",
+             "slcan:V0101:NF001", ["7f7", "hello", "slcan"]),
+        ]
+        img = B.Image("x", "esptool")
+        for r7, rh, rs, want, seq in cases:
+            del calls[:]
+            I.read_7f7, I.read_hello, I.read_slcan = fake(r7, rh, rs)
+            got = I.identify(img, {}, TMP, {})
+            assert got == want and calls == seq, (r7, rh, got, calls)
+        del calls[:]
+        I.read_7f7, I.read_hello, I.read_slcan = fake(
+            I.IdentifyError("no capture"), None, None)
+        try:
+            I.identify(img, {}, TMP, {})
+        except I.IdentifyError:
+            pass
+        else:
+            raise AssertionError("a failed boot capture did not raise")
+        assert calls == ["7f7"], calls
+    finally:
+        I.read_7f7, I.read_hello, I.read_slcan = saved
+
+
 TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_corrupt_pin_judge, test_c12_judge, test_host_bridge_judge,
-         test_suites, test_mutant_wiring]
+         test_suites, test_mutant_wiring, test_identify]
 
 
 # ---- can-fail -----------------------------------------------------------
@@ -391,12 +463,37 @@ def _no_pre_driver(s):
                 c.env = {k: v for k, v in c.env.items() if k != "PRE_DRIVER"}
 
 
+def _identify_ignores_product(image, ctx, logdir, settings):
+    I = B.bench_identify
+    got, _p = I.read_7f7(settings, logdir, "t")
+    if got is not None:
+        return got
+    got, _p = I.read_hello(settings, logdir, "t")
+    if got is not None:
+        return got
+    return I.read_slcan(settings, logdir, "t")
+
+
+import re as _re                                          # noqa: E402
+_OLD_PRODUCT_RE = _re.compile(r"serial>.*\b(MODE|spec 2\.3)|^diag st=|"
+                              r"\bfw=\d+ schema=\d+")
 _ORIG_SCRIPT = B.script_judge
+def _target(attr):
+    """(module, name) for a mutant attribute, "mod.name" or a name in
+    bench_suite."""
+    if "." in attr:
+        mod, name = attr.split(".", 1)
+        return getattr(B, mod), name
+    return B, attr
+
+
 _ORIG = {n: getattr(B, n) for n in ("script_judge", "recorded_judge",
                                     "scenario_judge", "c12_judge",
                                     "corrupt_pin_judge",
                                     "host_bridge_judge", "emulated", "bench",
                                     "harness")}
+_ORIG["bench_identify.PRODUCT_RE"] = B.bench_identify.PRODUCT_RE
+_ORIG["bench_identify.identify"] = B.bench_identify.identify
 
 # test -> [(module attribute, replacement, what the mutant does)]
 MUTANTS = {
@@ -413,6 +510,11 @@ MUTANTS = {
          "every mutant on the exit-code judge"),
         ("harness", _wrap_suite("harness", _no_pre_driver),
          "the prefix control without PRE_DRIVER")],
+    "test_identify": [
+        ("bench_identify.PRODUCT_RE", _OLD_PRODUCT_RE,
+         "PRODUCT_RE without re.M (the 00:30 form)"),
+        ("bench_identify.identify", _identify_ignores_product,
+         "identify goes on to SLCAN after a product reply")],
     "test_c12_judge": [
         ("c12_judge", _pass_all, "passes everything"),
         ("c12_judge", _c12_counts_c9, "fails on C9's DATASHEET line")],
@@ -444,7 +546,8 @@ def main():
                 print("FAIL  %s\n%s" % (t.__name__, traceback.format_exc()[-800:]))
             continue
         for attr, repl, what in MUTANTS[t.__name__]:
-            setattr(B, attr, repl)
+            mod, name = _target(attr)
+            setattr(mod, name, repl)
             try:
                 t()
                 bad += 1
@@ -453,7 +556,7 @@ def main():
                 print("ok    %s caught: %s (%s: %s)" % (
                     t.__name__, what, type(e).__name__, str(e)[:80]))
             finally:
-                setattr(B, attr, _ORIG[attr])
+                setattr(mod, name, _ORIG[attr])
     n = sum(len(v) for v in MUTANTS.values()) if can_fail else len(TESTS)
     print("\n%d of %d %s" % (n - bad, n, "mutants caught" if can_fail
                               else "passed"))

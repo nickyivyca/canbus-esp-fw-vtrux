@@ -38,7 +38,14 @@ import sys
 import time
 
 HELLO_RE = re.compile(r"^@HELLO (\S+) .*?elf_sha256=([0-9a-f]{64})")
-PRODUCT_RE = re.compile(r"serial>.*\b(MODE|spec 2\.3)|^diag st=|\bfw=\d+ schema=\d+")
+# The product's serial lines as seen on the bench, matched on any line
+# (re.M): the 1 Hz diag line, its fw/schema tail, the mode lines and the
+# loss summary. 2026-10-18: without re.M, "^diag st=" matched only at the
+# very start of a reply, and the loss summary matched nothing (the 00:30
+# trial's two HELLO? replies, now in bench_suite_test).
+PRODUCT_RE = re.compile(r"serial>.*\b(MODE|spec 2\.3)|^diag st=|\bfw=\d+ schema=\d+"
+                        r"|\bLOSS veh\(|bridged frames that missed the vehicle",
+                        re.M)
 
 
 class IdentifyError(RuntimeError):
