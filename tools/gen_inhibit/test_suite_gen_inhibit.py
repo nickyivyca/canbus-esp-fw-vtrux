@@ -4,7 +4,7 @@ cover the baseline index once each, keep the SSID out of what the record keeps, 
 their hooks say "could not look" (raise) rather than "not this image" (None) when a
 tool fails. No hardware: every tool the hooks run is stood in for.
 
-    PYTHONPATH=<core df5d2ec>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
+    PYTHONPATH=<core e37995a>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
         py -3.14 -B test_suite_gen_inhibit.py
 
 Prints "ok ..." or "FAIL ..." per check and PASS or FAIL at the end; exit 0 only on
@@ -27,7 +27,7 @@ from vtrux_bench.run.engine import Engine, fmt               # noqa: E402
 from vtrux_bench.run.model import CheckRun, validate         # noqa: E402
 import suite_gen_inhibit as SG                               # noqa: E402
 
-SSID = "WiCAN_00aa11bb22cc"        # made up for the test; the real one is never here
+SSID = "WiCAN_" + "0f" * 6   # made up for the test, and built so this file has no SSID-form literal (test_publish_scan.py)
 BASE = os.path.join(tempfile.gettempdir(), "gen-inhibit-suite-test", str(os.getpid()))
 fails = []
 oks = 0

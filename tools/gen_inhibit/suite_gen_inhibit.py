@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Gen-inhibit's two suites for the shared chain runner (shared/bench, vtrux_bench.run,
-pinned at charge-interposer/main df5d2ec).
+pinned at charge-interposer/main e37995a; it refuses an esptool write unless
+settings.esptool.chip names the X2's type and MAC, and the MAC lives only in the local
+settings, never in a published file).
 
 Gen-inhibit tester, 2026-10-18. Two suites on the one core (user, 2026-10-17):
     bench     part B only. Holds the bench lock from start to finish. The core runs the
@@ -292,7 +294,7 @@ def make_hooks(settings, ssid, images=None):
     def identify(image, ctx, logdir):
         """What the board is on, whatever image is wanted: the engine compares it with
         image.expect. None means "on none of these"; a tool that could not look RAISES,
-        and the engine then stops the bench without flashing (core df5d2ec)."""
+        and the engine then stops the bench without flashing (core df5d2ec on)."""
         stamp = time.strftime("%Y%m%dT%H%M%S")
         if image.board == "wican":
             return wican_sha()
