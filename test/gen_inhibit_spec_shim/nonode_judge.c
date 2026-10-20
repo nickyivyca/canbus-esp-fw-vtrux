@@ -156,6 +156,43 @@ nn_verdict_t nn_r7_stays_off(int recovery_calls, bool latched, int dropped, int 
                    recovery_calls, latched, dropped, installs);
 }
 
+nn_verdict_t nn_a1_answer_never_sent(bool answer_on_wire, int wire051_after_return)
+{
+    return verdict(!answer_on_wire && wire051_after_return == 0 ? PASS : NAS,
+                   "the stuck answer on the wire %d (ever, traffic back included); 0x051 on the wire after traffic "
+                   "returned %d", answer_on_wire, wire051_after_return);
+}
+
+nn_verdict_t nn_a2_standdown(long standdown_delta, long skipped_delta)
+{
+    return verdict(standdown_delta == 1 && skipped_delta == 0 ? PASS : NAS,
+                   "standdown %+ld, skipped %+ld since before the last command", standdown_delta, skipped_delta);
+}
+
+nn_verdict_t nn_a3_balance(int reads, int bad_reads, const char *first_bad)
+{
+    if (reads == 0) return verdict(VOID, "no page read");
+    return verdict(bad_reads == 0 ? PASS : NAS, "queued + carried_in = sent + dropped + withdrawn + depth + held, "
+                   "every class: %d of %d reads off%s%s", bad_reads, reads, bad_reads ? "; first: " : "",
+                   bad_reads ? first_bad : "");
+}
+
+nn_verdict_t nn_a4_equality(int reads_checked, int bad_reads, const char *first_bad)
+{
+    if (reads_checked == 0) return verdict(VOID, "no read outside a withdrawal");
+    return verdict(bad_reads == 0 ? PASS : NAS, "withdrawn + dropped = skipped + standdown (inhibit), on the %d reads "
+                   "with no inhibit frame held: %d off%s%s", reads_checked, bad_reads, bad_reads ? "; first: " : "",
+                   bad_reads ? first_bad : "");
+}
+
+nn_verdict_t nn_a5_not_held(int diag_handed_after, bool any_done_in_silence, bool first_done_on_return)
+{
+    if (any_done_in_silence) return verdict(VOID, "a frame completed in the silence: nothing could be held");
+    return verdict(diag_handed_after >= 1 && first_done_on_return ? PASS : NAS,
+                   "diag frames handed to the driver after the latch %d; the first of them completed when traffic "
+                   "returned %d", diag_handed_after, first_done_on_return);
+}
+
 nn_verdict_t nn_r7_rearm(int frames_received, bool latched)
 {
     return verdict(frames_received > 0 && !latched ? PASS : NAS,

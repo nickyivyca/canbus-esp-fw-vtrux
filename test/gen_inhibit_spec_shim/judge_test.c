@@ -199,6 +199,26 @@ int main(void)
     expect_v("R7: deaf after a re-arm", nn_r7_rearm(0, false), "NOT-AS-SPECIFIED");
     expect_v("R7: still latched after a re-arm", nn_r7_rearm(5, true), "NOT-AS-SPECIFIED");
 
+    /* the answer-stuck case */
+    expect_v("A1: the answer never sent, no 0x051 after the return", nn_a1_answer_never_sent(false, 0), "PASS");
+    expect_v("A1: the answer reached the wire", nn_a1_answer_never_sent(true, 0), "NOT-AS-SPECIFIED");
+    expect_v("A1: an 0x051 on the wire after the return", nn_a1_answer_never_sent(false, 1), "NOT-AS-SPECIFIED");
+    expect_v("A2: one stand-down, no skip", nn_a2_standdown(1, 0), "PASS");
+    expect_v("A2: counted as a skip", nn_a2_standdown(0, 1), "NOT-AS-SPECIFIED");
+    expect_v("A2: as both", nn_a2_standdown(1, 1), "NOT-AS-SPECIFIED");
+    expect_v("A2: as neither", nn_a2_standdown(0, 0), "NOT-AS-SPECIFIED");
+    expect_v("A2: twice", nn_a2_standdown(2, 0), "NOT-AS-SPECIFIED");
+    expect_v("A3: every read balances", nn_a3_balance(100, 0, ""), "PASS");
+    expect_v("A3: one read off", nn_a3_balance(100, 1, "x"), "NOT-AS-SPECIFIED");
+    expect_v("A3: no read", nn_a3_balance(0, 0, ""), "VOID");
+    expect_v("A4: the equality holds", nn_a4_equality(100, 0, ""), "PASS");
+    expect_v("A4: one read off", nn_a4_equality(100, 1, "x"), "NOT-AS-SPECIFIED");
+    expect_v("A4: no read outside a withdrawal", nn_a4_equality(0, 0, ""), "VOID");
+    expect_v("A5: a diag frame after the latch, completed on the return", nn_a5_not_held(2, false, true), "PASS");
+    expect_v("A5: no diag frame after the latch", nn_a5_not_held(0, false, false), "NOT-AS-SPECIFIED");
+    expect_v("A5: the later diag frame never completed", nn_a5_not_held(2, false, false), "NOT-AS-SPECIFIED");
+    expect_v("A5: a frame completed in the silence", nn_a5_not_held(2, true, true), "VOID");
+
     printf("\n%d ok, %d FAIL\n", g_ok, g_fail);
     return g_fail ? 1 : 0;
 }

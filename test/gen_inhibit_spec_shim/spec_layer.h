@@ -25,6 +25,13 @@
  *     in error-passive does not raise it; REC stays 0;
  *   - no frame is received (the test delivers none);
  *   - on request, bus-off (ft_bus_off): no more errors, TWAI_ALERT_BUS_OFF.
+ * ABORTING A FRAME THAT IS RETRYING is also the layer's model (reviewer,
+ * 2026-10-20). Between attempts a frame retrying unacknowledged is not on the
+ * wire, so the controller's abort can take it out. The answer-stuck case
+ * (nonode_test.c) presents the device's answer in that phase: held with the
+ * fakes' ft_stall_id(), which reads TS clear (awaiting arbitration), so the
+ * fakes' abort removes it and it never completes, before or after the nodes
+ * return. Every other frame reads as transmitting, as above.
  * The retry period and the alert pattern are this layer's choice, not a
  * measurement. Once the bench row ("a bus with no other node") has measured
  * the real alert pattern, the layer replays that pattern (spec 12.4, the

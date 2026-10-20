@@ -166,6 +166,7 @@ static bool live_and_answered(const char *cs, int64_t *t_last, int *sent_after_a
 {
     gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
     traffic(KEY_ON, 1500 * MS);
+    if (getenv("NN_PAGE")) printf("PAGE %s\n", page());
     if (!is_live(page()))
     {
         nn_verdict_t v = { "VOID", "" };
@@ -387,6 +388,222 @@ static void layer_case(void)
     teardown();
 }
 
+/* ------------------------------------------------- the answer-stuck case -- */
+
+/* A number inside the page's "sched" block, before its "cls" block. */
+static long sched_num(const char *p, const char *key)
+{
+    const char *s = strstr(p, "\"sched\":{");
+    if (!s) return -1;
+    const char *end = strstr(s, "\"cls\":");
+    char k[64];
+    snprintf(k, sizeof(k), "\"%s\":", key);
+    const char *q = strstr(s, k);
+    if (!q || (end && q > end)) return -1;
+    return strtol(q + strlen(k), NULL, 10);
+}
+
+/* A number in one class of "sched"."cls". */
+static long cls_num(const char *p, const char *cls, const char *key)
+{
+    const char *s = strstr(p, "\"cls\":");
+    if (!s) return -1;
+    char c[64], k[64];
+    snprintf(c, sizeof(c), "\"%s\":{", cls);
+    s = strstr(s, c);
+    if (!s) return -1;
+    const char *end = strchr(s + strlen(c), '}');
+    snprintf(k, sizeof(k), "\"%s\":", key);
+    const char *q = strstr(s, k);
+    if (!q || (end && q > end)) return -1;
+    return strtol(q + strlen(k), NULL, 10);
+}
+
+/* Spec 5.2 item 6 on one page: (balance ok, equality ok or not checkable). */
+static void identities(const char *p, int *bal_bad, char *bal_first, int *eq_checked, int *eq_bad, char *eq_first)
+{
+    static const char *CLS[] = { "inhibit", "probe", "telemetry" };
+    for (int i = 0; i < 3; i++)
+    {
+        const char *c = CLS[i];
+        const long l = cls_num(p, c, "queued") + cls_num(p, c, "carried_in");
+        const long r = cls_num(p, c, "sent") + cls_num(p, c, "dropped") + cls_num(p, c, "withdrawn") +
+                       cls_num(p, c, "depth") + cls_num(p, c, "held");
+        if (l != r || cls_num(p, c, "queued") < 0)
+        {
+            if (!(*bal_bad)++)
+                snprintf(bal_first, 160, "%s: queued+carried_in %ld, sent+dropped+withdrawn+depth+held %ld at %lld us",
+                         c, l, r, (long long)ft_now());
+        }
+    }
+    if (cls_num(p, "inhibit", "held") == 0)     /* not mid-withdrawal (5.2 item 6) */
+    {
+        (*eq_checked)++;
+        const long l = cls_num(p, "inhibit", "withdrawn") + cls_num(p, "inhibit", "dropped");
+        const long r = sched_num(p, "skipped") + sched_num(p, "standdown");
+        if (l != r || l < 0)
+            if (!(*eq_bad)++)
+                snprintf(eq_first, 160, "withdrawn+dropped %ld, skipped+standdown %ld at %lld us", l, r,
+                         (long long)ft_now());
+    }
+}
+
+/*
+ * The nodes go after the last VCM command but before the device's answer
+ * completes, so the answer is the stuck frame when the latch lands (reviewer,
+ * 2026-10-20). Spec 5.2 item 5: a section 7 trip that lands while an answer is
+ * still in the controller withdraws it as a stand-down, never a skip, never
+ * sent; item 6: the counts balance on every read, and the stand-down ends the
+ * wait for that answer, so later diag pages are not held behind it.
+ *
+ * THE ABORT IS THE LAYER'S MODEL (spec_layer.h): the answer is held in the
+ * controller as a frame between retries, awaiting arbitration (TS clear), where
+ * the controller's abort removes it (ft_stall_id); every other frame retries as
+ * in the other cases. Retries every 150 ms put the 10th error at about +1.5 s,
+ * so the expected latch is trip 2 at the stale check (0.5-0.7 s).
+ */
+static void answer_case(void)
+{
+    const char *cs = "answer_stuck";
+    char reason[160] = "", bal_first[160] = "", eq_first[160] = "";
+    setup();
+    gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
+    traffic(KEY_ON, 1500 * MS);
+    if (!is_live(page()))
+    {
+        nn_verdict_t v = { "VOID", "never went live on the interlock set" };
+        report(cs, "setup", v);
+        teardown();
+        return;
+    }
+    const char *p0 = page();
+    const long sd0 = sched_num(p0, "standdown"), sk0 = sched_num(p0, "skipped");
+    const int wire_at_silence = ft_wire_count();
+
+    ft_stall_id(0x051, 1);                      /* the answer: never on the wire, abortable */
+    sl_silence(150 * MS);
+    const int sent051 = ft_sent_count_id(0x051);
+    uint8_t cmd[6];
+    memcpy(cmd, VCM, sizeof(cmd));
+    cmd[5] = (uint8_t)(g_ctr++ & 0x0F);
+    ft_deliver(0x051, cmd, 6);
+    for (int i = 0; i < 20 && ft_sent_count_id(0x051) == sent051; i++) ft_run(100);
+    const int64_t t_last = ft_last_rx_time();
+    if (ft_sent_count_id(0x051) != sent051 + 1)
+    {
+        nn_verdict_t v = { "VOID", "" };
+        snprintf(v.detail, sizeof(v.detail), "the last command was answered %d times, not once",
+                 ft_sent_count_id(0x051) - sent051);
+        report(cs, "setup", v);
+        teardown();
+        return;
+    }
+    int answer = -1;
+    for (int i = ft_sent_count() - 1; i >= 0 && answer < 0; i--)
+        if (ft_sent(i)->id == 0x051) answer = i;
+    const int64_t answer_t = ft_sent(answer)->t_queued;
+    const int sent_after_answer = answer + 1;
+    const int rx_at_silence = sl_rx_count();
+
+    int64_t t_latch = -1, t_unlatched = ft_now(), gap_max = 0, t_prev = ft_now();
+    long err_n_max = -1;
+    int reads = 0, bal_bad = 0, eq_checked = 0, eq_bad = 0;
+    while (ft_now() < t_last + WATCH_US)
+    {
+        ft_run(STEP_US);
+        const char *p = page();
+        if (p[0])
+        {
+            if (ft_now() - t_prev > gap_max) gap_max = ft_now() - t_prev;
+            t_prev = ft_now();
+        }
+        reads++;
+        identities(p, &bal_bad, bal_first, &eq_checked, &eq_bad, eq_first);
+        const long e = page_num(p, "err_n");
+        if (e > err_n_max) err_n_max = e;
+        if (t_latch < 0 && latched(p))
+        {
+            t_latch = ft_now();
+            page_str(p, "abort_reason", reason, sizeof(reason));
+        }
+        else if (t_latch < 0)
+        {
+            t_unlatched = ft_now();
+        }
+    }
+    const char *pe = page();
+    const long sd1 = sched_num(pe, "standdown"), sk1 = sched_num(pe, "skipped");
+
+    int late051 = 0;
+    for (int i = sent_after_answer; i < ft_sent_count(); i++)
+        if (ft_sent(i)->id == 0x051) late051++;
+    report(cs, "R1", nn_r1_no_051(late051));
+
+    nn_obs_t o = { 0 };
+    o.t_last = t_last;
+    o.checks = g_checks;
+    for (int i = 0; i < sl_rx_count(); i++)
+        if (sl_rx(i)->t > t_last) g_checks[o.n_checks++] = sl_rx(i)->t;
+    for (int i = rx_at_silence; i < sl_rx_count(); i++) o.frames_in_silence += sl_rx(i)->ok;
+    o.errs = g_errs;
+    for (int k = 0; k < sl_err_count() && k < SL_MAX_ERR; k++) g_errs[o.n_errs++] = sl_err_time(k);
+    o.region = 3;
+    o.t_unlatched = t_unlatched;
+    o.t_latch = t_latch;
+    o.reason = reason;
+    nn_verdict_t why;
+    const nn_expect_t e = nn_expect(&o, &why);
+    if (!e.usable) report(cs, "R2/R3", why);
+    else
+    {
+        report(cs, "R2", nn_r2_at_check(&o));
+        report(cs, "R3", nn_r3_trip(&o, &e));
+    }
+    report(cs, "layer", nn_layer_reaches(err_n_max, sl_err_count()));
+    report(cs, "A2", nn_a2_standdown(sd1 - sd0, sk1 - sk0));
+    report(cs, "A3", nn_a3_balance(reads, bal_bad, bal_first));
+    report(cs, "A4", nn_a4_equality(eq_checked, eq_bad, eq_first));
+    report(cs, "R4", nn_r4_not_blocked(sl_rx_count() - rx_at_silence, gap_max, ft_sent_count() - ft_wire_count()));
+
+    /* the diag frames handed to the driver after the latch, and whether any frame completed in the silence */
+    int first_diag = -1, diag_after = 0;
+    for (int i = sent_after_answer; i < ft_sent_count(); i++)
+    {
+        const uint32_t id = ft_sent(i)->id;
+        if ((id == 0x7F1 || id == 0x7F2 || id == 0x7F3 || id == 0x7F8) && t_latch >= 0 &&
+            ft_sent(i)->t_queued >= t_unlatched - NN_SLACK_US)
+        {
+            diag_after++;
+            if (first_diag < 0) first_diag = i;
+        }
+    }
+    const bool done_in_silence = ft_wire_count() != wire_at_silence;
+    const ft_frame_t stuck = first_diag >= 0 ? *ft_sent(first_diag) : *ft_sent(answer);
+    const int diag0 = diag_on_wire(), q051 = ft_sent_count_id(0x051);
+
+    sl_nodes_back();
+    const int64_t t_return = ft_now();
+    traffic(KEY_ON, 1000 * MS);
+    bool stuck_done = false, answer_on_wire = false;
+    int wire051_after = 0;
+    for (int i = 0; i < ft_wire_count(); i++)
+    {
+        const ft_frame_t *w = ft_wire(i);
+        if (first_diag >= 0 && w->t_queued == stuck.t_queued && w->id == stuck.id) stuck_done = true;
+        if (w->id == 0x051 && w->t_queued == answer_t) answer_on_wire = true;
+        if (w->id == 0x051 && w->t_queued >= t_return) wire051_after++;
+    }
+    report(cs, "A5", nn_a5_not_held(diag_after, done_in_silence, stuck_done));
+    report(cs, "R5", nn_r5_back(latched(page()), stuck_done, diag_on_wire() - diag0, ft_sent_count_id(0x051) - q051));
+    traffic(KEY_OFF, 300 * MS);
+    traffic(KEY_ON, 300 * MS);
+    report(cs, "R6", nn_r6_key_on(latched(page())));
+    for (int i = 0; i < ft_wire_count(); i++)
+        if (ft_wire(i)->id == 0x051 && ft_wire(i)->t_queued == answer_t) answer_on_wire = true;
+    report(cs, "A1", nn_a1_answer_never_sent(answer_on_wire, wire051_after));
+    teardown();
+}
+
 static const case_t CASES[] = {
     /* name           retry_us  tenth_us   bus_off  region */
     { "fast",              300,        0,       0,   1 },
@@ -404,10 +621,12 @@ int main(int argc, char **argv)
     {
         printf("layer\n");
         for (size_t i = 0; i < n; i++) printf("%s\n", CASES[i].name);
+        printf("answer_stuck\n");
         return 0;
     }
     bool found = false;
     if (strcmp(argv[1], "layer") == 0) { layer_case(); found = true; }
+    if (strcmp(argv[1], "answer_stuck") == 0) { answer_case(); found = true; }
     for (size_t i = 0; i < n && !found; i++)
         if (strcmp(argv[1], CASES[i].name) == 0) { run_case(&CASES[i]); found = true; }
     if (!found) { printf("RESULT %s - VOID no such case\n", argv[1]); return 2; }

@@ -69,4 +69,13 @@ nn_verdict_t nn_r6_key_on(bool latched);
 nn_verdict_t nn_r7_stays_off(int recovery_calls, bool latched, int dropped, int installs);
 nn_verdict_t nn_r7_rearm(int frames_received, bool latched);
 
+/* The answer-stuck case (reviewer, 2026-10-20; spec 5.2 items 5 and 6): the
+ * device's answer to the last VCM command is the frame stuck in the controller
+ * when the latch lands, so the trip withdraws it as a stand-down. */
+nn_verdict_t nn_a1_answer_never_sent(bool answer_on_wire, int wire051_after_return);
+nn_verdict_t nn_a2_standdown(long standdown_delta, long skipped_delta);
+nn_verdict_t nn_a3_balance(int reads, int bad_reads, const char *first_bad);
+nn_verdict_t nn_a4_equality(int reads_checked, int bad_reads, const char *first_bad);
+nn_verdict_t nn_a5_not_held(int diag_handed_after, bool any_done_in_silence, bool first_done_on_return);
+
 #endif

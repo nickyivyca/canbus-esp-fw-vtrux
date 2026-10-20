@@ -48,7 +48,22 @@ emulated"**.
 | `slow` | placed | +1.5 s | trip 2 at the stale check |
 | `busoff_few` | a retry every 1 ms, bus-off after 5 | none | trip 2; R7 |
 | `busoff_many` | a retry every 300 us, bus-off after 12 | before bus-off | trip 6; R7 |
+| `answer_stuck` | the nodes go before the answer to the last command completes; a retry every 150 ms | +1.5 s | trip 2 at the stale check; A1-A5 below |
 | `layer` | the layer's own mechanics on a live device | | |
+
+**The answer-stuck case** (reviewer, 2026-10-20; spec 5.2 items 5 and 6): the
+device's answer to the last VCM command is the frame stuck in the controller
+when the latch lands, so the trip must withdraw it as a stand-down. How the
+controller's abort removes a frame that is retrying is the layer's model
+(`spec_layer.h`). Judged, besides R1-R6:
+
+| | |
+|---|---|
+| A1 | the answer never completes on the wire, traffic back included, and no `0x051` is on the wire after traffic returns |
+| A2 | counted as `standdown` +1, `skipped` +0 |
+| A3 | `queued + carried_in = sent + dropped + withdrawn + depth + held`, every class, on every page read |
+| A4 | `withdrawn + dropped = skipped + standdown` (inhibit) on every read with no inhibit frame held (not mid-withdrawal, which 5.2 item 6 excludes) |
+| A5 | the withdrawal ends the wait: a diag page is handed to the driver after the latch, becomes the stuck frame, and completes when traffic returns |
 
 A case whose check points or injected errors did not land where it meant
 (a check within 20 ms of the 0.5 s freshness edge, a frame received in the
