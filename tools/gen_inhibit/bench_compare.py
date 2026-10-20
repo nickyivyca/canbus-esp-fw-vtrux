@@ -135,10 +135,18 @@ def compare(index, first, reruns=(), ids_of=None):
         if any(c2 != c["verdict"] for c2 in e["verdicts"][1:] if c2 != NO_RESULT):
             e["flagged"] = True
             e["notes"].append("a re-run's verdict is not the baseline's")
-        if got[0]["verdict"] != c["verdict"] and c["verdict"] in e["verdicts"][1:]:
+        ran = [v for v in e["verdicts"] if v not in (NO_RESULT, "NOT-RUN")]
+        if len(set(ran)) > 1 and c["verdict"] in ran:
             # reviewer, 2026-10-19: the first run's verdict is the one reported; a FAIL
-            # that passes on re-run is never a PASS
-            e["notes"].append("flaky, needs review: %s first, %s on re-run" % (got[0]["verdict"], c["verdict"]))
+            # that passes on re-run is never a PASS. 2026-10-20: disagreement in either
+            # order (FAIL then PASS, PASS then FAIL) is flaky and reads the same, so the
+            # flaky note replaces the order-specific ones. NOT-RUN is not a verdict on the
+            # device and takes no part. The verdict line still shows the first run's; the
+            # check is already flagged (above) in either order.
+            e["notes"] = [n for n in e["notes"] if not n.startswith("VERDICT ")
+                          and n != "a re-run's verdict is not the baseline's"]
+            e["notes"].append("flaky, needs review: %s first, %s on re-run"
+                              % (ran[0], next(v for v in ran[1:] if v != ran[0])))
         out.append(e)
     return out
 

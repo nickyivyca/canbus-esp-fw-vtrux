@@ -172,6 +172,23 @@ def tests():
     E = cmp(record(X5=res("g/X4X5/X5", "FAIL", c=3)), [record(X5=res("g/X4X5/X5", "FAIL", c=3))])
     check("a FAIL that fails again is not called flaky",
           not any("flaky" in n for n in entry(E, "X5")["notes"]), entry(E, "X5")["notes"])
+    # reviewer, 2026-10-20: either order is flaky and reads the same
+    E = cmp(record(X5=res("g/X4X5/X5", c=4)), [record(X5=res("g/X4X5/X5", "FAIL", c=3))])
+    x5p = entry(E, "X5")
+    check("a PASS that fails on re-run: flagged, reported PASS first, noted flaky",
+          x5p["flagged"] and x5p["verdicts"][0] == "PASS"
+          and x5p["notes"] == ["flaky, needs review: PASS first, FAIL on re-run"], x5p)
+    check("both orders read the same: one flaky note, nothing order-specific",
+          x5["notes"] == ["flaky, needs review: FAIL first, PASS on re-run"], x5["notes"])
+    E = cmp(record(X5=res("g/X4X5/X5", "NOT-RUN")), [record()])
+    check("NOT-RUN then PASS is not called flaky (still flagged)",
+          entry(E, "X5")["flagged"] and not any("flaky" in n for n in entry(E, "X5")["notes"]), entry(E, "X5")["notes"])
+    E = cmp(record(), [record(X5=res("g/X4X5/X5", "NOT-RUN"))])
+    check("PASS then NOT-RUN on re-run is not called flaky",
+          not any("flaky" in n for n in entry(E, "X5")["notes"]), entry(E, "X5")["notes"])
+    E = cmp(record(X5=res("g/X4X5/X5", "FAIL", c=3)), [record(X5=res("g/X4X5/X5", "ERROR", c=3))])
+    check("FAIL then ERROR, neither the baseline's, is not called flaky",
+          entry(E, "X5")["flagged"] and not any("flaky" in n for n in entry(E, "X5")["notes"]), entry(E, "X5")["notes"])
     check("the report names what was re-run", "re-run: g/X1" in t, t.splitlines()[1])
 
     out = "lane bench:\nrun gen-inhibit-bench_20261019T0101_ab12: C:\\r\\runs\\gen-inhibit-bench_20261019T0101_ab12\\index.txt\n"
