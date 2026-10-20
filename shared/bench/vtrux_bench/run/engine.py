@@ -42,6 +42,13 @@ fails when the rule is switched off through RULES):
                   suite on the same code matched its reference
   requires_whole  the run Suite.requires accepts must have selected the
                   whole suite, with no NOT-RUN but declared skips
+  subset_mark     a run with a --group or --check selection is marked a
+                  subset run in its record (subset: true, and subset_cases:
+                  the ids of the cases selected); a whole run, subset: false
+  subset_not_whole  requires_whole refuses a run marked subset, or one
+                  whose selection is not empty, whatever the other says
+                  (user 2026-10-20: a subset run never satisfies a
+                  whole-run requirement)
   resume_code     --resume refuses a run of another suite or other code
   identify_error  an identify hook that fails (raises) stops the bench; it
                   never leads to a flash
@@ -74,7 +81,8 @@ RULES = {k: True for k in (
     "lock_guard", "flash_gate", "image_schedule", "identify_after",
     "no_verdict", "known_fail", "stop_pause", "throttle", "redact_scope",
     "gate", "timeout", "skip", "restore", "identify_error", "after",
-    "wallclock_guard", "requires", "requires_whole", "resume_code")}
+    "wallclock_guard", "requires", "requires_whole", "resume_code",
+    "subset_mark", "subset_not_whole")}
 
 IDENTIFY_ERROR = "<identify failed>"
 
@@ -757,11 +765,14 @@ class Engine:
                               ident))
         if RULES["requires_whole"]:
             sel = r.get("selection") or {}
-            if sel.get("groups") or sel.get("checks"):
-                return False, ("the newest %s run (%s) was partial (--group %s "
-                               "--check %s): the whole suite must have run"
-                               % (need, r.get("run_id"), sel.get("groups"),
-                                  sel.get("checks")))
+            if RULES["subset_not_whole"] and (
+                    r.get("subset") or sel.get("groups") or sel.get("checks")):
+                return False, ("the newest %s run (%s) was a partial, subset "
+                               "run (subset %s, --group %s --check %s, %s "
+                               "case(s)): the whole suite must have run"
+                               % (need, r.get("run_id"), r.get("subset"),
+                                  sel.get("groups"), sel.get("checks"),
+                                  len(r.get("subset_cases") or [])))
             nr = [x["id"] for x in r["results"]
                   if x["verdict"] == Verdict.NOT_RUN
                   and not str(x.get("detail", "")).startswith("skipped: ")]
@@ -863,10 +874,14 @@ class Engine:
         self.rec = Recorder(self.run_dir, self.run_id)
         carried = self._carried()
         sel = self.selected()
+        subset = bool(self.sel_groups or self.sel_checks) and RULES["subset_mark"]
+        cases = (["%s/%s" % (g.name, c.id) for g, items in sel for c in items]
+                 if subset else None)
         header = dict(
             suite=self.suite.name, role=self.suite.role, started=stamp(),
             host=socket.gethostname(),
             selection=dict(groups=self.sel_groups, checks=self.sel_checks),
+            subset=subset, subset_cases=cases,
             resume_from=self.resume, settings=self.settings,
             plan=self.plan_lines())
         code = {}
@@ -888,7 +903,7 @@ class Engine:
                 clocks[host] = "unreadable: %r" % (e,)
         header["host_clocks_epoch"] = clocks
         self.rec.event("start", run_id=self.run_id, suite=self.suite.name,
-                       code=code)
+                       code=code, subset=subset, subset_cases=cases)
         lanes = {}
         for g, items in sel:
             lanes.setdefault(g.lane, []).append((g, items))

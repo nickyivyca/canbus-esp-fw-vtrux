@@ -578,6 +578,78 @@ def test_requires_whole():
     assert refused() is None, refused()
 
 
+def test_subset_mark():
+    """A run with a --group or --check selection is marked a subset run in
+    record.json, index.txt and the start event, with the ids of the cases
+    it selected; a whole run is marked whole (user 2026-10-20)."""
+    env = Env("subsetmark")
+    s = suite([Group("e", [chk("x", "pass"), chk("y", "pass")]),
+               Group("f", [chk("z", "pass")])])
+
+    def marks(rec):
+        d = os.path.join(env.runs, rec["run_id"])
+        with open(os.path.join(d, "record.json"), encoding="utf-8") as f:
+            disk = json.load(f)
+        with open(os.path.join(d, "index.txt"), encoding="utf-8") as f:
+            index = f.read()
+        start = next(e for e in R.load_progress(d) if e.get("kind") == "start")
+        assert (start["subset"], start["subset_cases"]) == (
+            disk["subset"], disk["subset_cases"]), (start, disk)
+        return disk["subset"], disk["subset_cases"], index
+    sub, cases, index = marks(run(env, s)[1])
+    assert sub is False and cases is None, (sub, cases)
+    assert "whole suite" in index and "SUBSET" not in index, index
+    sub, cases, index = marks(run(env, s, groups=["e"])[1])
+    assert sub is True and cases == ["e/x", "e/y"], (sub, cases)
+    assert "SUBSET RUN" in index and "2 case(s)" in index and "e/y" in index, index
+    sub, cases, index = marks(run(env, s, checks=["e/y", "f/*"])[1])
+    assert sub is True and cases == ["e/y", "f/z"], (sub, cases)
+    head = index.split("\n\n")[0]
+    assert "SUBSET RUN" in head and "f/z" in head and "e/x" not in head, index
+
+
+def test_subset_not_whole():
+    """requires_whole refuses a run marked subset, read from the record
+    itself, and still refuses an unmarked record whose selection is not
+    empty; the whole run is accepted (user 2026-10-20)."""
+    env = Env("subsetwhole")
+    code = {"commit": "abc", "dirty": False}
+    emu = suite([Group("e", [chk("x", "pass")]),
+                 Group("f", [chk("z", "pass")])],
+                name="emu", code_info=lambda ctx: dict(code))
+    bench = suite([Group("b", [chk("y", "pass")])], name="bench",
+                  requires="emu", code_info=lambda ctx: dict(code))
+
+    def refused():
+        try:
+            run(env, bench)
+        except SuiteError as e:
+            return str(e)
+        return None
+
+    def edit(rec, **fields):
+        p = os.path.join(env.runs, rec["run_id"], "record.json")
+        with open(p, encoding="utf-8") as f:
+            r = json.load(f)
+        r.update(fields)
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(r, f)
+    rec = run(env, emu, groups=["e"])[1]
+    r = refused()
+    assert r and "subset run" in r and "1 case(s)" in r, r
+    edit(rec, selection={"groups": [], "checks": []})
+    r = refused()
+    assert r and "subset True" in r, r       # the marker alone refuses it
+    time.sleep(1.1)
+    rec = run(env, emu, checks=["f/z"])[1]
+    edit(rec, subset=False, subset_cases=None)
+    r = refused()
+    assert r and "subset run" in r and "'f/z'" in r, r   # the selection alone
+    time.sleep(1.1)
+    run(env, emu)
+    assert refused() is None, refused()
+
+
 def test_resume_code():
     """--resume refuses a run of another suite or on other code, and a run
     whose start records neither."""
@@ -869,7 +941,8 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_void_resume,
          test_two_boards, test_stop_pause,
          test_throttle, test_after, test_wallclock_guard, test_requires,
-         test_requires_whole, test_resume_code,
+         test_requires_whole, test_subset_mark, test_subset_not_whole,
+         test_resume_code,
          test_redact_scope, test_gate, test_skip, test_timeout,
          test_resume, test_compare, test_esptool_flasher, test_remote_command,
          test_remote_stop]
@@ -937,6 +1010,8 @@ MUTANTS = {
     "test_wallclock_guard": _rule("wallclock_guard"),
     "test_requires": _rule("requires"),
     "test_requires_whole": _rule("requires_whole"),
+    "test_subset_mark": _rule("subset_mark"),
+    "test_subset_not_whole": _rule("subset_not_whole"),
     "test_resume_code": _rule("resume_code"),
     "test_redact_scope": _rule("redact_scope"),
     "test_gate": _rule("gate"),

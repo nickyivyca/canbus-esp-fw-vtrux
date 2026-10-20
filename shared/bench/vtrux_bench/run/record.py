@@ -129,8 +129,17 @@ def index_text(record):
     res = record["results"]
     lines = ["Run %s -- suite %s" % (record["run_id"], record["suite"]),
              "started %s, ended %s" % (record["started"], record["ended"]),
-             "code: %s" % json.dumps(record.get("code", {}), sort_keys=True),
-             ""]
+             "code: %s" % json.dumps(record.get("code", {}), sort_keys=True)]
+    if record.get("subset"):
+        cases = record.get("subset_cases") or []
+        sel = record.get("selection") or {}
+        lines.append("SUBSET RUN (--group %s --check %s): evidence for these "
+                     "%d case(s) alone, never a whole-suite run: %s" % (
+                         sel.get("groups"), sel.get("checks"), len(cases),
+                         ", ".join(cases)))
+    else:
+        lines.append("whole suite: no --group or --check selection")
+    lines.append("")
     counts = {}
     for r in res:
         counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1

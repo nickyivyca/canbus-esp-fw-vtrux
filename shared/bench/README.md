@@ -35,7 +35,7 @@ every group of checks, restore, record. The same command runs part of it.
 | `vtrux_bench/run/cli.py` | The command line. |
 | `vtrux_bench/decode.py` | Diag DBC schema identity (toolkit item 10, first part): `layout_hash`, `check_identity`, `check_history`. See "Diag DBC schema identity" below. |
 | `tests/test_decode.py` | Its tests (6), with `data/golden_layout.dbc` and its hand-written canonical text `data/golden_layout.txt`. `--can-fail` runs each test under each of its mutants (28); every one must fail. |
-| `tests/test_run_core.py` | The runner's own tests (28), with a fake suite, a fake two-board bench, `fake_esptool.py` and `fake_ssh.py`. `--can-fail` runs each with its rule switched off; every one must then fail. |
+| `tests/test_run_core.py` | The runner's own tests (30), with a fake suite, a fake two-board bench, `fake_esptool.py` and `fake_ssh.py`. `--can-fail` runs each with its rule switched off; every one must then fail. |
 
 ### Boards and images
 
@@ -81,6 +81,16 @@ code hash once it is logged (port plan goal 13); until then the commit, and
 only from a clean tree. That run must also be of the whole suite: a
 `--group` or `--check` selection is refused, and so is any NOT-RUN result
 that is not a declared skip (a check refused by a guard, a stopped run).
+
+A run with a `--group` or `--check` selection is a subset run (user,
+2026-10-20): `record.json` and the start event carry `subset: true` and
+`subset_cases` (the `group/check` ids it selected), and `index.txt` says
+SUBSET RUN with those ids; a whole run carries `subset: false`. A subset run
+is evidence for the change it checks and never satisfies a whole-run
+requirement: the requirement refuses a run marked subset, or one whose
+selection is not empty, whichever of the two says so. Whether a change
+needs a whole run or a subset is the project reviewer's call. Subsets are
+chosen at run time; suites define none.
 
 `--resume RUN_DIR` carries only from a run of the same suite on the same
 code, as that run's start event records them; anything else is refused.
