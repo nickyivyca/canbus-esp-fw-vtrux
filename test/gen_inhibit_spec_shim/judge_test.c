@@ -216,6 +216,8 @@ int main(void)
     expect_v("A4: no read outside a withdrawal", nn_a4_equality(0, 0, ""), "VOID");
     expect_v("A5: a diag frame after the latch, completed on the return", nn_a5_not_held(2, false, true), "PASS");
     expect_v("A5: no diag frame after the latch", nn_a5_not_held(0, false, false), "NOT-AS-SPECIFIED");
+    expect_v("A5: none handed after the latch, whatever completed later", nn_a5_not_held(0, false, true),
+             "NOT-AS-SPECIFIED");
     expect_v("A5: the later diag frame never completed", nn_a5_not_held(2, false, false), "NOT-AS-SPECIFIED");
     expect_v("A5: a frame completed in the silence", nn_a5_not_held(2, true, true), "VOID");
 

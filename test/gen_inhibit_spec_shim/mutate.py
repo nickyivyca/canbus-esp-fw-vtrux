@@ -79,12 +79,14 @@ MUTANTS = [
     (L, "the 10th error misplaced", "L.retry_us = (L.tenth_ref + L.tenth_us - now) / 10;", "L.retry_us = (L.tenth_ref + L.tenth_us - now) / 5;"),
     # the case code, caught by a case
     (T, "the judge gets no errors", "for (int k = 0; k < sl_err_count() && k < SL_MAX_ERR; k++) g_errs[o.n_errs++]",
-     "for (int k = 0; k < 0; k++) g_errs[o.n_errs++]"),
+     "for (int k = 0; k < 0; k++) g_errs[o.n_errs++]", 2),
     (T, "the stuck answer cannot be aborted", "    ft_stall_id(0x051, 1);                      /* the answer",
      "    (void)0;                                    /* the answer"),
     (T, "the checks include returns before the last 0x051", "        if (sl_rx(i)->t > t_last) g_checks[o.n_checks++]",
-     "        if (sl_rx(i)->t > t_last - 1000000) g_checks[o.n_checks++]"),
+     "        if (sl_rx(i)->t > t_last - 1000000) g_checks[o.n_checks++]", 2),
 ]
+# A 5th element is how many places the edit must match (each case that gathers
+# the same observation); without it, exactly one.
 
 
 def wsl_path(p):
@@ -109,9 +111,11 @@ def main(argv):
     os.makedirs(base)
     caught = errors = 0
     picked = [(n, m) for n, m in enumerate(MUTANTS, 1) if only is None or n in only]
-    for n, (f, name, old, new) in picked:
+    for n, mut in picked:
+        f, name, old, new = mut[:4]
+        want = mut[4] if len(mut) > 4 else 1
         src = open(os.path.join(HERE, f), encoding="utf-8", newline="").read()
-        if src.count(old) != 1:
+        if src.count(old) != want:
             print("ERROR    m%d %s: edit matched %d times" % (n, name, src.count(old)))
             errors += 1
             continue
