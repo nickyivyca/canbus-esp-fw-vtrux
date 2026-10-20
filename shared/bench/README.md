@@ -71,6 +71,22 @@ and the board's section of bench-holder.md.
 An identify hook that raises (could not look) stops the bench; the runner
 never flashes a board whose state nobody read.
 
+Board hooks (user, 2026-10-20: a run killed without cleanup must not leave a
+board armed). A suite may give `on_start` and `on_end`, each called as
+`hook(board, image, ctx, logdir)` once per board the bench lane uses and
+returning `{"ok": bool, "detail": str, ...}`; a hook that raises or returns
+anything else has failed. `on_start` runs before the start pass identifies
+the board (image: the first one the run needs there); a failure stops the
+bench, so nothing is identified or flashed and every bench group is
+NOT-RUN. `on_end` runs after the restore on every run however it ended
+(image: the one the run believes the board is on, or None), but not once
+the lock is no longer ours; a failure, or not running, opens
+`board_state.txt`, `index.txt` and `record.json`
+(`release_not_confirmed`) with `RELEASE NOT CONFIRMED: <board>: ...`. Both
+results are in `record.json` (`board_hooks`) and `board_state.txt`. `on_end`
+cannot run after a hard kill, so `on_start` is the guard that counts. A
+suite without hooks behaves as before.
+
 A group with `after=[...]` waits for those groups, in any lane, before its
 first step -- e.g. bench groups that flash what a build group made -- and
 with `after_must_pass` (the default) runs only if all their results are

@@ -76,6 +76,17 @@ fails when the rule is switched off through RULES):
   restore         at the end, every board the run flashed is put back on
                   its standing image (unless a flash failure stopped the
                   bench, or STOP says norestore)
+  board_hooks     Suite.on_start runs for every board the bench lane uses
+                  before the start pass touches it, and Suite.on_end for
+                  every one after the restore, on every run however it
+                  ended (not after the lock is lost); both are recorded
+                  (user 2026-10-20: the WiCAN is rebooted at the start and
+                  at each release, so a killed run cannot leave it armed)
+  start_hook_stops  an on_start that fails (or raises) stops the bench
+                  before anything is identified or flashed: every group
+                  that needs the lock is NOT-RUN
+  release_line    an on_end that fails (or raises) opens board_state.txt,
+                  index.txt and the record with "RELEASE NOT CONFIRMED: ..."
 """
 
 import fnmatch
@@ -104,7 +115,8 @@ RULES = {k: True for k in (
     "gate", "timeout", "skip", "restore", "identify_error", "after",
     "wallclock_guard", "requires", "requires_whole", "resume_code",
     "subset_mark", "subset_not_whole", "start_identify", "restore_after_stop",
-    "standing_line", "product_digest", "digest_bridge")}
+    "standing_line", "product_digest", "digest_bridge", "board_hooks",
+    "start_hook_stops", "release_line")}
 
 IDENTIFY_ERROR = "<identify failed>"
 
@@ -157,6 +169,7 @@ class Engine:
         self.board_read = {}
         self.board_touched = set()
         self.restore_note = {}
+        self.hook_out = {"on_start": {}, "on_end": {}}
         self.requires_note = None
         self._bridged = {}
         self.no_more_flash = set()
@@ -748,15 +761,109 @@ class Engine:
             image=[si for _, si in todo], started=started, ended=stamp(),
             wall_s=round(time.monotonic() - t0, 1), status=status, checks=0))
 
+    # ---- board hooks ----------------------------------------------------
+    def _first_images(self, work):
+        """{board: the first image the lane needs on it}, in lane order."""
+        first = {}
+        for g, _items in work:
+            for name in g.image_list:
+                first.setdefault(self.suite.images[name].board, name)
+        return first
+
+    def _record_hook(self, which, board, image, out):
+        self.hook_out[which][board] = out
+        self.rec.event(which.replace("_", "-"), board=board,
+                       image=image.name if image else None, result=out)
+        return out
+
+    def _call_hook(self, which, board, image, logdir):
+        """One board hook; anything but {"ok": bool, ...} is a failure."""
+        try:
+            out = getattr(self.suite, which)(board, image, self.base_ctx(),
+                                             logdir)
+            if not isinstance(out, dict) or not isinstance(out.get("ok"), bool):
+                out = dict(ok=False, detail="%s returned %r, not a dict with "
+                           "ok" % (which, out))
+        except Exception as e:
+            out = dict(ok=False, detail="%s raised %r" % (which, e))
+        out = dict(out)
+        out["detail"] = str(out.get("detail", ""))
+        return self._record_hook(which, board, image, out)
+
+    def start_hooks(self, work):
+        """Suite.on_start for every board the lane uses, before the start
+        pass identifies or flashes anything; a failure stops the bench."""
+        if self.suite.on_start is None or not RULES["board_hooks"]:
+            return
+        first = self._first_images(work)
+        if not first:
+            return
+        t0 = time.monotonic()
+        started = stamp()
+        logdir = os.path.join(self.run_dir, "_bench", "on_start")
+        os.makedirs(logdir, exist_ok=True)
+        statuses = []
+        for board, name in first.items():
+            if self.bench_stopped:
+                statuses.append("%s: not run, bench stopped (%s)"
+                                % (board, self.bench_stopped))
+                continue
+            out = self._call_hook("on_start", board, self.suite.images[name],
+                                  logdir)
+            statuses.append("%s: %s%s" % (board, "" if out["ok"] else
+                                          "START HOOK FAILED: ", out["detail"]))
+            if not out["ok"] and RULES["start_hook_stops"]:
+                self.bench_stopped = "on_start for %s failed: %s" % (
+                    board, out["detail"])
+        status = "; ".join(statuses)
+        self.groups_out.append(dict(
+            name="on-start", lane="bench", host="local", needs_lock=True,
+            image=list(first.values()), started=started, ended=stamp(),
+            wall_s=round(time.monotonic() - t0, 1), status=status, checks=0))
+
+    def end_hooks(self, work):
+        """Suite.on_end for every board the lane used, after the restore,
+        however the run ended; not while another role holds the lock."""
+        if self.suite.on_end is None or not RULES["board_hooks"]:
+            return
+        boards = list(self._first_images(work))
+        boards += sorted(self.board_touched - set(boards))
+        if not boards:
+            return
+        t0 = time.monotonic()
+        started = stamp()
+        logdir = os.path.join(self.run_dir, "_bench", "on_end")
+        os.makedirs(logdir, exist_ok=True)
+        ok, h = self.lock_ours()
+        statuses = []
+        for board in boards:
+            name = self.board_image.get(board)
+            image = self.suite.images.get(name) if name else None
+            if not ok:
+                out = self._record_hook("on_end", board, image, dict(
+                    ok=False, detail="not run: the lock is not ours (%s)" % h))
+            else:
+                out = self._call_hook("on_end", board, image, logdir)
+            statuses.append("%s: %s%s" % (board, "" if out["ok"] else
+                                          "END HOOK FAILED: ", out["detail"]))
+        self.groups_out.append(dict(
+            name="on-end", lane="bench", host="local", needs_lock=True,
+            image=[self.board_image.get(b) for b in boards], started=started,
+            ended=stamp(), wall_s=round(time.monotonic() - t0, 1),
+            status="; ".join(statuses), checks=0))
+
+    def release_lines(self):
+        """One "RELEASE NOT CONFIRMED" line per board whose on_end failed."""
+        return ["RELEASE NOT CONFIRMED: %s: %s" % (board, out["detail"])
+                for board, out in sorted(self.hook_out["on_end"].items())
+                if not out.get("ok")]
+
     def start_identify(self, work):
         """Identify every board the lane uses against the first image the
         run needs on it, before the first group; flash it if it reads
         anything else (ensure_image). A failure is handled as any flash
         failure (the flash gate, on_flash_failure)."""
-        first = {}
-        for g, _items in work:
-            for name in g.image_list:
-                first.setdefault(self.suite.images[name].board, name)
+        first = self._first_images(work)
         if not first:
             return
         t0 = time.monotonic()
@@ -800,6 +907,23 @@ class Engine:
 
     def _lane(self, lane, work, carried):
         try:
+            self._lane_body(lane, work, carried)
+        finally:
+            if lane == "bench":
+                try:
+                    self.end_hooks(work)
+                except Exception as e:
+                    self.rec.event("end-hooks-crash", error=repr(e),
+                                   tb=traceback.format_exc()[-2000:])
+                    for board in self._first_images(work):
+                        if board not in self.hook_out["on_end"]:
+                            self._record_hook("on_end", board, None, dict(
+                                ok=False, detail="end hooks crashed: %r" % (e,)))
+
+    def _lane_body(self, lane, work, carried):
+        try:
+            if lane == "bench":
+                self.start_hooks(work)
             if lane == "bench" and RULES["start_identify"]:
                 self.start_identify(work)
             for g, items in work:
@@ -1069,18 +1193,29 @@ class Engine:
                     unmatched.append(kid)
         off = self.off_standing() if RULES["standing_line"] else []
         header["not_on_standing"] = off
-        for ln in off:
+        unconfirmed = self.release_lines() if RULES["release_line"] else []
+        header["release_not_confirmed"] = unconfirmed
+        header["board_hooks"] = self.hook_out
+        for ln in unconfirmed + off:
             self.out(ln)
         if self.needs_bench():
-            lines = off + ["Boards at the end of run %s (for the release "
-                           "message and the board sections, bench-holder "
-                           "rule 4):" % self.run_id]
-            for board in sorted(set(self.board_read) | set(self.board_image)):
+            lines = unconfirmed + off + [
+                "Boards at the end of run %s (for the release message and the "
+                "board sections, bench-holder rule 4):" % self.run_id]
+            for board in sorted(set(self.board_read) | set(self.board_image)
+                                | set(self.hook_out["on_start"])
+                                | set(self.hook_out["on_end"])):
                 lines.append("  %s: last identify read %s; image %s; flashed in "
                              "this run: %s" % (
                                  board, self.board_read.get(board),
                                  self.board_image.get(board) or "unknown",
                                  board in self.board_touched))
+                for which in ("on_start", "on_end"):
+                    o = self.hook_out[which].get(board)
+                    if o is not None:
+                        lines.append("    %s: %s, %s" % (
+                            which, "ok" if o.get("ok") else "FAILED",
+                            o.get("detail")))
             lines.append("  bench stopped: %s" % self.bench_stopped)
             write_new(os.path.join(self.run_dir, "board_state.txt"),
                       "\n".join(lines) + "\n")
