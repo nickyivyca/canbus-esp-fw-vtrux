@@ -697,6 +697,30 @@ def test_release_line():
     assert len(lines) == 2 and all("lock is not ours" in ln for ln in lines), lines
 
 
+def test_end_hooks_crash():
+    """If the end hooks themselves crash, every board on_end was owed to is
+    recorded as a failed on_end and opens the record: the lane's boards and
+    every board the run touched (charge-interposer reviewer, 2026-10-20)."""
+    env = Env("endcrash")
+    tb = Hooked(env)
+    tb.set("x2", "X2-APP")
+    tb.set("wican", "WC-1")
+    os.makedirs(env.runs)
+    eng = E.Engine(tb.suite(), env.settings(), out=lambda *a: None)
+
+    def crash(work):
+        eng.board_touched.add("third")
+        raise RuntimeError("end pass broke")
+    eng.end_hooks = crash
+    rec = eng.run()
+    oe = rec["board_hooks"]["on_end"]
+    assert sorted(oe) == ["third", "wican", "x2"], oe
+    assert all(v["ok"] is False and "end hooks crashed" in v["detail"]
+               for v in oe.values()), oe
+    lines = rec["release_not_confirmed"]
+    assert any(ln.startswith("RELEASE NOT CONFIRMED: third: ") for ln in lines), lines
+
+
 def test_stop_pause():
     """STOP ends the lane (rest NOT-RUN); PAUSE holds it until removed."""
     env = Env("stop")
@@ -1472,7 +1496,7 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_void_resume,
          test_two_boards, test_start_identify, test_restore_after_stop,
          test_standing_line, test_board_hooks, test_start_hook_stops,
-         test_release_line, test_stop_pause,
+         test_release_line, test_end_hooks_crash, test_stop_pause,
          test_throttle, test_after, test_wallclock_guard, test_requires,
          test_requires_whole, test_subset_mark, test_subset_not_whole,
          test_product_digest, test_digest_bridge,
@@ -1552,6 +1576,7 @@ MUTANTS = {
     "test_board_hooks": _rule("board_hooks"),
     "test_start_hook_stops": _rule("start_hook_stops"),
     "test_release_line": _rule("release_line"),
+    "test_end_hooks_crash": _rule("end_crash_boards"),
     "test_stop_pause": _rule("stop_pause"),
     "test_throttle": _rule("throttle"),
     "test_after": _rule("after"),

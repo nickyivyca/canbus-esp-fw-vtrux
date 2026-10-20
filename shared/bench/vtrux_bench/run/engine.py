@@ -78,7 +78,8 @@ fails when the rule is switched off through RULES):
                   bench, or STOP says norestore)
   board_hooks     Suite.on_start runs for every board the bench lane uses
                   before the start pass touches it, and Suite.on_end for
-                  every one after the restore, on every run however it
+                  every one after the restore (straight after a lane
+                  crash, which skips the restore), on every run however it
                   ended (not after the lock is lost); both are recorded
                   (user 2026-10-20: the WiCAN is rebooted at the start and
                   at each release, so a killed run cannot leave it armed)
@@ -87,6 +88,9 @@ fails when the rule is switched off through RULES):
                   that needs the lock is NOT-RUN
   release_line    an on_end that fails (or raises) opens board_state.txt,
                   index.txt and the record with "RELEASE NOT CONFIRMED: ..."
+  end_crash_boards  if the end hooks themselves crash, every board on_end
+                  was owed to (the lane's, and every board the run touched)
+                  is recorded as a failed on_end
   carry_check_end --resume carries a check only if its check-end event
                   (written after all its results) is in progress.jsonl: a
                   check killed between two results runs again
@@ -124,7 +128,8 @@ RULES = {k: True for k in (
     "wallclock_guard", "requires", "requires_whole", "resume_code",
     "subset_mark", "subset_not_whole", "start_identify", "restore_after_stop",
     "standing_line", "product_digest", "digest_bridge", "board_hooks",
-    "start_hook_stops", "release_line", "carry_finished", "carry_check_end")}
+    "start_hook_stops", "release_line", "end_crash_boards", "carry_finished",
+    "carry_check_end")}
 
 IDENTIFY_ERROR = "<identify failed>"
 
@@ -853,7 +858,8 @@ class Engine:
             wall_s=round(time.monotonic() - t0, 1), status=status, checks=0))
 
     def end_hooks(self, work):
-        """Suite.on_end for every board the lane used, after the restore,
+        """Suite.on_end for every board the lane used, after the restore (or
+        straight after a lane crash, which skips the restore),
         however the run ended; not while another role holds the lock."""
         if self.suite.on_end is None or not RULES["board_hooks"]:
             return
@@ -946,7 +952,10 @@ class Engine:
                 except Exception as e:
                     self.rec.event("end-hooks-crash", error=repr(e),
                                    tb=traceback.format_exc()[-2000:])
-                    for board in self._first_images(work):
+                    boards = list(self._first_images(work))
+                    if RULES["end_crash_boards"]:
+                        boards += sorted(self.board_touched - set(boards))
+                    for board in boards:
                         if board not in self.hook_out["on_end"]:
                             self._record_hook("on_end", board, None, dict(
                                 ok=False, detail="end hooks crashed: %r" % (e,)))
