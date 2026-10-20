@@ -31,7 +31,7 @@ every group of checks, restore, record. The same command runs part of it.
 | `vtrux_bench/run/procs.py` | Commands with timeouts that kill the whole tree; the remote (ssh) line with coreutils `timeout`; the build throttle (idle priority, one job) and the process-list scan for wall-clock tests. |
 | `vtrux_bench/run/record.py` | The run folder (never reused), `progress.jsonl`, `record.json` and `index.txt` (exclusive create), and `compare` with per-figure tolerances. |
 | `vtrux_bench/run/cli.py` | The command line. |
-| `tests/test_run_core.py` | The runner's own tests (24), with a fake suite, a fake two-board bench and `fake_esptool.py`. `--can-fail` runs each with its rule switched off; every one must then fail. |
+| `tests/test_run_core.py` | The runner's own tests (25), with a fake suite, a fake two-board bench and `fake_esptool.py`. `--can-fail` runs each with its rule switched off; every one must then fail. |
 
 ### Boards and images
 
@@ -52,6 +52,11 @@ A group with `after=[...]` waits for those groups, in any lane, before its
 first step -- e.g. bench groups that flash what a build group made -- and
 with `after_must_pass` (the default) runs only if all their results are
 PASS, KNOWN-FAIL or NOT-APPLICABLE. Cycles are refused.
+
+On Windows, a local check whose `argv[0]` is a bare `bash` or `sh` is
+refused: CreateProcess searches System32 before PATH and runs WSL's
+`bash.exe`, not Git Bash, although `shutil.which` finds Git Bash. Give the
+full path, e.g. a `{bash}` setting.
 
 The build throttle counts another role's bench lock as a wall-clock test
 running; under the suite's own lock, this run's own wall-clock checks and

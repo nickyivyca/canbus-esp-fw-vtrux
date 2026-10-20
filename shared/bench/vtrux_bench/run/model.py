@@ -21,6 +21,7 @@ that they are safe in paths, globs and records.
 
 import dataclasses
 import re
+import sys
 from typing import Any, Callable, Dict, List, Optional
 
 
@@ -45,6 +46,15 @@ class Verdict:
 
 
 ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+# On Windows, CreateProcess searches System32 before PATH, so a bare "bash"
+# runs WSL's bash.exe, not Git Bash, though shutil.which finds Git Bash
+# (gen-inhibit tester, 2026-10-18: exit 127, "/bin/bash: C:/...: No such
+# file or directory"). validate() refuses a bare shell in a local check
+# there; give the full path, e.g. from settings ("{bash}").
+WINDOWS = sys.platform == "win32"
+BARE_SHELLS = ("bash", "bash.exe", "sh", "sh.exe")
+RULES = {"bare_shell": True}
 
 
 @dataclasses.dataclass
@@ -292,6 +302,12 @@ def validate(suite: Suite, settings: Dict[str, Any], builtin_flashers=()):
                     errs.append("%s: cls %r" % (fid, c.cls))
                 if not c.argv:
                     errs.append("%s: empty argv" % fid)
+                elif (RULES["bare_shell"] and WINDOWS and g.host == "local"
+                      and str(c.argv[0]).lower() in BARE_SHELLS):
+                    errs.append("%s: argv[0] %r on Windows: CreateProcess "
+                                "searches System32 before PATH and runs WSL's "
+                                "bash, not Git Bash; give the full path"
+                                % (fid, c.argv[0]))
                 for o in c.outputs:
                     if any(ch in o for ch in "*?[") or o.startswith(("/", "..")):
                         errs.append("%s: output %r must be a plain relative "

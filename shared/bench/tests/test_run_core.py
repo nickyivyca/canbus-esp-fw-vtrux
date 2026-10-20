@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(HERE))
 from vtrux_bench.run import engine as E            # noqa: E402
 from vtrux_bench.run import record as R            # noqa: E402
 from vtrux_bench.run import procs as P             # noqa: E402
+from vtrux_bench.run import model as M             # noqa: E402
 from vtrux_bench.run.lock import LockError         # noqa: E402
 from vtrux_bench.run.model import (Check, Figure, Group, Image, KnownFail,  # noqa: E402
                                    Result, Suite, SuiteError, Tol, Verdict)
@@ -704,7 +705,37 @@ def test_remote_command():
     assert "nice" not in line and "PLATFORMIO" not in line, line
 
 
-TESTS = [test_validate, test_basic_verdicts, test_never_overwrite,
+def test_bare_shell():
+    """On Windows a local check whose argv[0] is a bare bash or sh is
+    refused (CreateProcess would find WSL's bash first); a full path or a
+    settings placeholder passes, as does a bare bash on a remote host or
+    off Windows."""
+    env = Env("bareshell")
+    saved = M.WINDOWS
+    st = env.settings(hosts={"local": {"python": [PY]},
+                             "far": {"ssh": "nowhere"}})
+    try:
+        M.WINDOWS = True
+        for a0 in ("bash", "BASH.EXE", "sh"):
+            s = suite([Group("g", [Check("c", [a0, "x.sh"])])])
+            try:
+                E.Engine(s, st)
+            except SuiteError as e:
+                assert "System32" in str(e), e
+            else:
+                raise AssertionError("accepted a bare %s" % a0)
+        for argv in (["C:/Program Files/Git/bin/bash.exe", "x.sh"],
+                     ["{bash}", "x.sh"]):
+            E.Engine(suite([Group("g", [Check("c", argv)])]), st)
+        E.Engine(suite([Group("g", [Check("c", ["bash", "x.sh"])],
+                              host="far")]), st)
+        M.WINDOWS = False
+        E.Engine(suite([Group("g", [Check("c", ["bash", "x.sh"])])]), st)
+    finally:
+        M.WINDOWS = saved
+
+
+TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwrite,
          test_known_fail, test_lock_guard, test_flash_gate,
          test_image_schedule, test_identify_error, test_identify_after,
          test_void_resume,
@@ -758,6 +789,7 @@ def _write_over(path, text):
 
 MUTANTS = {
     "test_validate": _patch(E, "validate", lambda *a, **k: None),
+    "test_bare_shell": _patch(M, "RULES", {"bare_shell": False}),
     "test_basic_verdicts": _rule("no_verdict"),
     "test_never_overwrite": _both(_patch(E, "new_run_dir", _reusing_run_dir),
                                   _patch(R, "write_new", _write_over)),
