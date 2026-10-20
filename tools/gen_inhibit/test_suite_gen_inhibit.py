@@ -82,7 +82,7 @@ def fixture():
         "reverse_it": BASE.replace("\\", "/"), "gi_tools": HERE.replace("\\", "/"), "gi_commit": "e3d9437",
         "gi_images": os.path.join(BASE, "images"), "gi_prod_dir": os.path.join(BASE, "prod"),
         "interposer_code": os.path.join(BASE, "ic"), "x2_images": x2, "gi_fw": HERE, "gi_components": "x",
-        "gi_host_ssh": "hosttest", "gi_host_root": "~/rt",
+        "gi_host_ssh": "hosttest", "gi_host_root": "~/rt", "bash": shutil.which("bash"),
         "bench_holder": bh, "runs_root": os.path.join(BASE, "runs"),
         "hosts": {"local": {"python": [sys.executable, "-B"]}},
         "esptool": {"argv": [sys.executable, "-c", "pass"], "port": "COM3"},
@@ -154,6 +154,13 @@ def test_suites(settings, shas):
               not any(c.skip for gg in bench.groups if gg.name == g for c in gg.checks if c.id == i)
               or idx.get(i, {}).get("verdict") == "NOT-RUN")
 
+    rd = SG.reads(bench)
+    check("reads: B13's desk step reads B13's arms and both B2 halves",
+          rd.get("man_held/B13") == ["man_app/B13arms", "man_app/B2app", "man_held/B2held"], rd.get("man_held/B13"))
+    check("reads: a check with no desk inputs reads nothing", rd.get("man_app/B1") == [], rd.get("man_app/B1"))
+    check("reads: the eight desk checks, and only they, read folders", len([f for f, v in rd.items() if v]) == 8,
+          sorted(f for f, v in rd.items() if v))
+
     # desk inputs: every {run_dir}/<group>/<check> names a check that runs before it
     order = []
     for g in bench.groups:
@@ -181,6 +188,9 @@ def test_ssid(settings, bench, emu):
     home = os.path.expanduser("~").replace("\\", "/")
     check("no argv or cwd carries a local path (they come from the settings)",
           BASE.replace("\\", "/") not in raw.replace("\\\\", "/") and home not in raw.replace("\\\\", "/"))
+    check("every bash check runs bash by the full path in the settings, never a bare bash",
+          all(c.argv[0] == "{bash}" for s in (bench, emu) for g in s.groups for c in g.checks
+              if not c.skip and c.argv[0] != "powershell"), [c.argv[0] for g in bench.groups for c in g.checks][:3])
     check("no argv names the host H runs on (gi_host_ssh does)",
           "madhouse" not in raw and "{gi_host_ssh}" in raw)
     blob = json.dumps(settings)
@@ -489,19 +499,55 @@ def test_flashers(settings, bench):
     hooks = SG.make_hooks(settings, SSID)
     wm, xh, xj = (bench.images[n] for n in ("wican_man", "x2_held", "x2_jammer"))
 
-    def ota(out, rc):
+    m2 = bench.images["wican_man2"]
+    TOOK, A1 = "...\nVERDICT: (c) TOOK -- page reads the image\n", "VERDICT: (a1) did NOT take: reset at 131072\n"
+
+    def ota(outs, page=m2.expect):
+        """outs: each upload's (stdout, rc), in order; page: what the WiCAN reads after
+        the first attempt fails (a sha, or an exception to raise)."""
         def t(tt):
-            tt.do["bench_flash.py"] = lambda a, e: (out, rc, {})
-            return hooks["ota"](wm, wm.params, settings, logdir())
+            seq = list(outs)
+            tt.do["bench_flash.py"] = lambda a, e: (seq.pop(0) + ({},)) if seq else ("", 1, {})
+
+            def pg():
+                if isinstance(page, Exception):
+                    raise page
+                return {"elf_sha256": page}
+            SG.wican_page = pg
+            try:            # the suite's own flasher, which knows its images; it must never raise
+                r = bench.flashers["ota"](wm, wm.params, settings, logdir())
+            except Exception as e:
+                r = {"ok": None, "recoverable": None, "detail": "RAISED %r" % e}
+            bins = [c[2][c[2].index("--bin") + 1] for c in tt.named("bench_flash.py")]
+            return r, bins
         return with_tools(t)
-    r = ota("...\nVERDICT: (c) TOOK -- page reads the image\n", 0)
-    check("ota: (c) TOOK with exit 0 is ok", r["ok"] and r["recoverable"] is True, r)
-    r = ota("VERDICT: (a1) did NOT take: reset at 131072\n", 1)
-    check("ota: (a1) is not ok, and another flash may follow", not r["ok"] and r["recoverable"] is True, r)
-    r = ota("VERDICT: (c) TOOK\n", 2)
-    check("ota: TOOK with a non-zero exit is not ok", not r["ok"], r)
-    r = ota("", 0)
+    target, cur = wm.params["bin"], m2.params["bin"]
+    r, bins = ota([(TOOK, 0)])
+    check("ota: (c) TOOK with exit 0 is ok, one upload", r["ok"] and bins == [target], (r, bins))
+    r, bins = ota([(A1, 1), (TOOK, 0), (TOOK, 0)])
+    check("ota: a failed upload, the running build restored over itself, then the image again",
+          r["ok"] and bins == [target, cur, target], (r, bins))
+    check("ota: the first attempt's failure line is kept", "attempt1 wican_man: VERDICT: (a1)" in r["detail"], r)
+    r, bins = ota([(A1, 1), (TOOK, 0), (A1, 1)])
+    check("ota: a second failure in a row is not ok (the core stops the run), the board restorable",
+          not r["ok"] and r["recoverable"] is True and bins == [target, cur, target]
+          and r["detail"].count("VERDICT: (a1)") == 2, (r, bins))
+    r, bins = ota([(A1, 1), (A1, 1)])
+    check("ota: a failed restore is not ok, no third upload, no more WiCAN flashes",
+          not r["ok"] and r["recoverable"] is False and bins == [target, cur], (r, bins))
+    r, bins = ota([(A1, 1)], page="ee" * 32)
+    check("ota: the WiCAN on a build this suite does not have: no restore, no more flashes",
+          not r["ok"] and r["recoverable"] is False and bins == [target], (r, bins))
+    r, bins = ota([(A1, 1)], page=OSError("no route"))
+    check("ota: the page unreadable after a failure: no restore on an unknown state",
+          not r["ok"] and r["recoverable"] is False and bins == [target], (r, bins))
+    r, bins = ota([("VERDICT: (c) TOOK\n", 2), (TOOK, 0), ("VERDICT: (c) TOOK\n", 2)])
+    check("ota: TOOK with a non-zero exit is not ok", not r["ok"] and len(bins) == 3, (r, bins))
+    r, bins = ota([("", 0), (TOOK, 0), ("", 0)])
     check("ota: no VERDICT line is not ok", not r["ok"] and "no VERDICT" in r["detail"], r)
+    r, bins = ota([(A1, 1), (TOOK, 0), (TOOK, 0)], page=wm.expect)
+    check("ota: the board already on the image after a failure: that image restored, then tried again",
+          r["ok"] and bins == [target, target, target], (r, bins))
 
     def hold(out, rc):
         def t(tt):

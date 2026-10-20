@@ -12,7 +12,9 @@
   "wallclock_patterns": [],
 
   "reverse_it": "<reverse-it>",
+  "bash": "<Git Bash's bash.exe, full path; a bare bash finds WSL's>",
   "gi_tools": "<tester clone>/tools/gen_inhibit",
+  "gi_index": "<reverse-it>/projects/vtrux/notes/artifacts/gen-inhibit/runs/baseline_e3d9437/suite_index_e3d9437.json",
   "gi_commit": "<short commit>",
   "gi_images": "<worktree holding build-tester-man/, -man2/, -rt/, -txabort/, -abortwin/, -rxq/>",
   "gi_prod_dir": "<prod build>/build",

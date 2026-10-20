@@ -24,6 +24,9 @@ baseline ran; a check's records go to its own folder (GI_OUT, GI_RUNS_DIR).
 Settings this suite reads, besides the core's (shared/bench/README.md):
     reverse_it       the reverse-it root, forward slashes
     gi_tools         this folder (tools/gen_inhibit of the tester clone)
+    bash             Git Bash's bash.exe, by full path: on Windows a bare "bash" goes
+                     through CreateProcess, which looks in System32 before PATH and
+                     finds WSL's bash.exe
     gi_commit        the short commit the images were built from
     gi_images        the worktree holding build-tester-<name>/ (part C's builds)
     gi_prod_dir      the prod build's build/ folder
@@ -159,7 +162,10 @@ def _text(path):
         return f.read()
 
 
-def make_hooks(settings, ssid):
+def make_hooks(settings, ssid, images=None):
+    """images: the suite's {name: Image}, filled in after this is called; the OTA's
+    dual-slot restore looks up the build the WiCAN is running in it."""
+    images = {} if images is None else images
     root = need(settings, "reverse_it")
     tools = need(settings, "gi_tools")
     harness = os.path.join(root, HARNESS)
@@ -187,17 +193,41 @@ def make_hooks(settings, ssid):
         redact([logpath] + [os.path.join(d, n) for n in sorted(set(os.listdir(d)) - before)])
         return rc
 
-    def ota(image, params, settings_, logdir):
-        """The WiCAN's OTA through bench_flash: verdict (c) TOOK or nothing. No retry."""
+    def upload(label, name, bin_path, settings_, logdir):
+        """One OTA through bench_flash: (ok, its VERDICT line). ok only on (c) TOOK."""
         stamp = time.strftime("%Y%m%dT%H%M%S")
-        txt = os.path.join(logdir, "ota_%s_%s.txt" % (image.name, stamp))
-        rec = os.path.join(logdir, "ota_%s_%s.json" % (image.name, stamp))
-        rc = run(_py(settings_) + [os.path.join(tools, "bench_flash.py"), "--bin", params["bin"], "--flash",
+        txt = os.path.join(logdir, "ota_%s_%s_%s.txt" % (label, name, stamp))
+        rec = os.path.join(logdir, "ota_%s_%s_%s.json" % (label, name, stamp))
+        rc = run(_py(settings_) + [os.path.join(tools, "bench_flash.py"), "--bin", bin_path, "--flash",
                                    "--record", rec], txt, base_env, 600)
         t = _text(txt)
         v = re.search(r"VERDICT: .*", t)
         ok = rc == 0 and "VERDICT: (c) TOOK" in t
-        return dict(ok=ok, phase="ota", detail=(v.group(0) if v else "no VERDICT line") + " (rc %s)" % rc,
+        return ok, "%s %s: %s (rc %s)" % (label, name, v.group(0) if v else "no VERDICT line", rc)
+
+    def ota(image, params, settings_, logdir):
+        """The WiCAN's OTA. A failed upload is never a reason to skip the image's checks
+        (user, 2026-10-19): the dual-slot restore (the build the board runs now, OTA'd
+        over itself so both slots hold it; the 2026-10-16 procedure), then one more
+        attempt. A second failure in a row stops the run (reviewer's bound): two in a
+        row points at the build, not the Wi-Fi. Every attempt's VERDICT line is kept."""
+        ok, d1 = upload("attempt1", image.name, params["bin"], settings_, logdir)
+        if ok:
+            return dict(ok=True, phase="ota", detail=d1, recoverable=True)
+        try:
+            sha = wican_sha()
+        except IdentifyError as e:
+            return dict(ok=False, phase="restore", detail="%s; then %s: no restore on an unknown state" % (d1, e),
+                        recoverable=False)
+        cur = [im for im in images.values() if im.board == "wican" and im.expect == sha]
+        if not cur:
+            return dict(ok=False, phase="restore", recoverable=False,
+                        detail="%s; the WiCAN reads %s, no image of this suite: no restore" % (d1, sha[:8]))
+        ok, d2 = upload("restore", cur[0].name, cur[0].params["bin"], settings_, logdir)
+        if not ok:
+            return dict(ok=False, phase="restore", detail="%s; %s" % (d1, d2), recoverable=False)
+        ok, d3 = upload("attempt2", image.name, params["bin"], settings_, logdir)
+        return dict(ok=ok, phase="ota" if ok else "ota-twice", detail="%s; %s; %s" % (d1, d2, d3),
                     recoverable=True)
 
     def x2_hold(image, params, settings_, logdir):
@@ -237,30 +267,34 @@ def make_hooks(settings, ssid):
                                                                                    params.get("build", JAMMER_MD5)),
                     recoverable=True)
 
+    def wican_sha():
+        """The WiCAN's elf_sha256 off its page, or IdentifyError (could not look)."""
+        for attempt in range(3):
+            try:
+                page = wican_page()
+                break
+            except Exception as e:
+                last = e
+                if attempt == 0:
+                    if tools not in sys.path:
+                        sys.path.insert(0, tools)
+                    import bench_flash as BF
+                    BF.join_ap(ssid)
+                _sleep(3)
+        else:
+            raise IdentifyError("the WiCAN's /gen_inhibit could not be read: %r" % (last,))
+        sha = page.get("elf_sha256") if isinstance(page, dict) else None
+        if not (isinstance(sha, str) and SHA_RX.match(sha)):
+            raise IdentifyError("the WiCAN's page has no elf_sha256 (%r)" % (sha,))
+        return sha
+
     def identify(image, ctx, logdir):
         """What the board is on, whatever image is wanted: the engine compares it with
         image.expect. None means "on none of these"; a tool that could not look RAISES,
         and the engine then stops the bench without flashing (core 1c7bed2)."""
         stamp = time.strftime("%Y%m%dT%H%M%S")
         if image.board == "wican":
-            for attempt in range(3):
-                try:
-                    page = wican_page()
-                    break
-                except Exception as e:
-                    last = e
-                    if attempt == 0:
-                        if tools not in sys.path:
-                            sys.path.insert(0, tools)
-                        import bench_flash as BF
-                        BF.join_ap(ssid)
-                    _sleep(3)
-            else:
-                raise IdentifyError("the WiCAN's /gen_inhibit could not be read: %r" % (last,))
-            sha = page.get("elf_sha256") if isinstance(page, dict) else None
-            if not (isinstance(sha, str) and SHA_RX.match(sha)):
-                raise IdentifyError("the WiCAN's page has no elf_sha256 (%r)" % (sha,))
-            return sha
+            return wican_sha()
         # The X2, in an order that cannot disturb what it finds. 1: the pins, read
         # without a reset, find a hold (on a running image esptool cannot sync).
         txt = os.path.join(logdir, "x2_hold_pins_%s.txt" % stamp)
@@ -302,10 +336,10 @@ def suite(settings):
     images_dir = need(settings, "gi_images")
     prod_dir = need(settings, "gi_prod_dir")
     ssid = wican_ssid(need(settings, "bench_holder"))
-    hooks = make_hooks(settings, ssid)
+    images = {}
+    hooks = make_hooks(settings, ssid, images)
     H = HARNESS
 
-    images = {}
     desc = {}
     for name, d in WICAN_BUILDS.items():
         b = image_bin(os.path.join(images_dir, "build-tester-" + d))
@@ -332,7 +366,7 @@ def suite(settings):
     def chk(cid, script, args, judge=None, outputs=(), timeout=3600, pw="wican_man", env=None, cls="wallclock"):
         e = dict(env0, GI_PW_IMAGE=desc[pw])
         e.update(env or {})
-        kw = dict(id=cid, argv=["bash", "%s/%s" % (H, script)] + list(args), cwd="{reverse_it}", env=e,
+        kw = dict(id=cid, argv=["{bash}", "%s/%s" % (H, script)] + list(args), cwd="{reverse_it}", env=e,
                   timeout_s=timeout, cls=cls, outputs=list(outputs) + ["check.log"])
         if judge:
             kw["judge"] = judge
@@ -424,6 +458,17 @@ def suite(settings):
 bench = suite
 
 
+def reads(s):
+    """{"group/check": ["group/check", ...]}: the checks whose folders a check's argv
+    names ({run_dir}/<group>/<check>, the desk steps). A re-run of a check takes these
+    with it, since a new run's folder holds only what that run ran."""
+    out = {}
+    for g in s.groups:
+        for c in g.checks:
+            out["%s/%s" % (g.name, c.id)] = [a[len("{run_dir}/"):] for a in c.argv if a.startswith("{run_dir}/")]
+    return out
+
+
 def app_version(path):
     """The app descriptor's version field (the commit the image says it was built from)."""
     with open(path, "rb") as f:
@@ -478,10 +523,10 @@ def emulated(settings):
                  "> \"{outdir}/B15_diag_decode_check_host_%s.txt\" 2>&1" % (H, C, C))
     groups = [
         Group("host", checks=[
-            Check(id="H", argv=["bash", "%s/baseline_host_run.sh" % H, C], cwd="{reverse_it}",
+            Check(id="H", argv=["{bash}", "%s/baseline_host_run.sh" % H, C], cwd="{reverse_it}",
                   env={"GI_OUT": "{outdir}", "FW": "{gi_fw}", "REMOTE": "{gi_host_ssh}"}, timeout_s=7200, outputs=["host_run.log"],
                   judge=judged("H")),
-            Check(id="B15host", argv=["bash", "-c", host_half], cwd="{reverse_it}", timeout_s=900,
+            Check(id="B15host", argv=["{bash}", "-c", host_half], cwd="{reverse_it}", timeout_s=900,
                   outputs=["B15_diag_decode_check_host_%s.txt" % C], judge=judged("B15host")),
         ]),
         Group("build_checks", checks=[
