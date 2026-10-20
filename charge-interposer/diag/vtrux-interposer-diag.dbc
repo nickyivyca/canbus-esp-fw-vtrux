@@ -1,0 +1,93 @@
+VERSION "vtrux-interposer-diag schema 4"
+
+NS_ :
+	CM_
+	BA_DEF_
+	BA_
+	VAL_
+	BO_TX_BU_
+	BA_DEF_DEF_
+	VAL_TABLE_
+
+BS_:
+
+BU_: INTP
+
+BO_ 2036 INTP_Status: 8 INTP
+ SG_ intp_schema_ver : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ intp_fw_ver : 8|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ intp_state : 16|8@1+ (1,0) [0|6] "" Vector__XXX
+ SG_ intp_trip_reason : 24|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ intp_flags : 32|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ intp_our_ilim_x10 : 40|8@1+ (0.1,0) [0|25.5] "A" Vector__XXX
+ SG_ intp_t_in_state_s : 48|16@1+ (1,0) [0|65535] "s" Vector__XXX
+
+BO_ 2037 INTP_Observed: 8 INTP
+ SG_ intp_vmax_mv : 0|16@1+ (1,0) [0|65535] "mV" Vector__XXX
+ SG_ intp_chg_max_ca : 16|16@1+ (0.01,0) [0|655.35] "A" Vector__XXX
+ SG_ intp_soc_half : 32|8@1+ (0.5,0) [0|127.5] "%" Vector__XXX
+ SG_ intp_chg_state : 40|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ intp_evse_cap_x10 : 48|8@1+ (0.1,0) [0|25.5] "A" Vector__XXX
+ SG_ intp_vcu_mode : 56|4@1+ (1,0) [0|4] "" Vector__XXX
+ SG_ intp_chg_silent_expected : 62|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ intp_evap_active : 63|1@1+ (1,0) [0|1] "" Vector__XXX
+
+BO_ 2038 INTP_Counters: 8 INTP
+ SG_ intp_modified : 0|32@1+ (1,0) [0|4294967295] "" Vector__XXX
+ SG_ intp_synth : 32|16@1+ (1,0) [0|65535] "" Vector__XXX
+ SG_ intp_rx_overflow : 48|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ intp_tx_fail_expected : 56|8@1+ (1,0) [0|255] "" Vector__XXX
+
+BO_ 2039 INTP_Build: 8 INTP
+ SG_ intp_build_id : 0|32@1+ (1,0) [0|4294967295] "" Vector__XXX
+ SG_ intp_fw_ver16 : 32|16@1+ (1,0) [0|65535] "" Vector__XXX
+ SG_ intp_schema_ver_build : 48|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ intp_uptime_min : 56|8@1+ (1,0) [0|255] "min" Vector__XXX
+
+BO_ 2565849313 INTP_Mirror_VCU_ChargerCmd_18EFC0E1: 8 INTP
+ SG_ chgcmd_page M : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ chgcmd_enable m0 : 8|8@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ chgcmd_mode m0 : 16|8@1+ (1,0) [0|4] "" Vector__XXX
+ SG_ chgcmd_p01_b1 m1 : 8|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ chgcmd_p03_sub m3 : 8|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ chgcmd_p09_b1 m9 : 8|8@1+ (1,0) [0|255] "" Vector__XXX
+
+BO_ 2566903777 INTP_Mirror_BELINV_hvBatteryAndCharger_18FFD7E1: 8 INTP
+ SG_ BELINV_hvBatteryVoltage : 0|16@1+ (0.05,0) [0|65535] "" Vector__XXX
+ SG_ BELINV_hvBatteryCurrent : 16|16@1- (0.05,0) [-32768|32767] "" Vector__XXX
+ SG_ BELINV_chargerInputVoltage : 32|16@1+ (0.05,0) [0|65535] "" Vector__XXX
+ SG_ BELINV_chargerInputCurrent : 48|16@1+ (0.05,0) [0|65535] "" Vector__XXX
+
+CM_ BO_ 2036 "Charge interposer self-telemetry, STATUS. 0x7F4, DLC 8, ~1 Hz plus one frame on every core state change, transmitted by the interposer board on the VEHICLE side of the bridge (never toward the charger). 0x7F4-0x7F7 sit beside the WiCAN's 0x7F1-0x7F3; nothing on the truck consumes the 0x7Fx range. Source of truth: interposer_diag_schema.md beside this file; behaviour: the charge interposer spec, section 8. Keep DBC, schema doc, bench and firmware in lockstep via intp_schema_ver.";
+CM_ BO_ 2037 "Charge interposer self-telemetry, OBSERVED. 0x7F5, DLC 8, ~1 Hz. What the core currently believes about the pack, the charger and the EVSE -- the inputs to its decisions.";
+CM_ BO_ 2038 "Charge interposer self-telemetry, COUNTERS. 0x7F6, DLC 8, ~1 Hz. Frames rewritten toward the charger, repeats of the VCU's standing page-00 command (intp_synth, spec 4.1), and bridge health.";
+CM_ SG_ 2038 intp_tx_fail_expected "Charger not acknowledging while expected (spec 2.2): failed transmissions TOWARD THE CHARGER while the VCU flow bit is 1, since boot, saturating at 255. Charger-port txDropped + txFailed + txAged, each failure counted once; vehicle-side and diagnostic transmit failures are NOT included. The flow bit gate is what makes it readable: the Bel unit is offline while the truck drives, so an ungated counter just measures driving. It reads 0 while driving however many frames bounce, and any non-zero value is a problem during a session. A board that boots mid-session counts nothing until the VCU next sends page 00. RENAMED AT SCHEMA 3 from intp_tx_fail, which counted every transmit failure on both ports -- same byte, different quantity, so the old name is gone rather than silently redefined.";
+CM_ BO_ 2039 "Charge interposer self-telemetry, BUILD. 0x7F7, DLC 8, ~1 Hz. Exact build fingerprint for matching a log to a firmware rev.";
+CM_ BO_ 2565849313 "MIRROR of 0x18EFC000 (VCU_ChargerCmd) exactly as the interposer SENT it to the charger, rebroadcast on the vehicle side with the J1939 source address replaced by 0xE1 (unused on this truck). Emitted for frames the interposer modified and for its repeats of the VCU's standing page-00 command (spec 4.1), so it is silent outside an override and its repeat bursts. The VCU's original is already on the vehicle bus; this is what the charger actually received. Same layout as VCU_ChargerCmd_18EFC000 in vtrux-powertrain-experimental.dbc.";
+CM_ BO_ 2566903777 "MIRROR of 0x18FFD7C0 (BELINV_hvBatteryAndCharger) exactly as RECEIVED from the charger, rebroadcast on the vehicle side with source address 0xE1, only when the interposer is masking the charger's reported current toward the VCU (mask_charger_telemetry, off by default). The modified version is what the vehicle bus sees natively; this is the original. Same layout as BELINV_hvBatteryAndCharger in BelInverter-v2.dbc.";
+CM_ SG_ 2036 intp_schema_ver "On-wire schema version. A decoder holding a different DBC version should flag a mismatch rather than trust the fields. Bump when any layout changes.";
+CM_ SG_ 2036 intp_fw_ver "Firmware build number, manually bumped per meaningful rev. Maps to a build in the schema doc's version table.";
+CM_ SG_ 2036 intp_state "machine.py STATE_NAMES.";
+CM_ SG_ 2036 intp_trip_reason "0 none; otherwise the TripReason enum of firmware/src/machine.h: 1 vmax over hard ceiling, 2 cell_overvolt, 3 RETIRED (was cell_undervolt; never emitted from fw 4 -- spec 6, B-7a. The code is kept rather than removed so every other code means the same thing at schema 2 and 3), 4 BMS EPO, 5 BMS alarm TYPE3, 6 HVIL open, 7 contactors not closed, 8 charger fault, 9 charger out of state 12, 10 BMS frames stale (which of 0x410/0x420/0x430/0x440 is in the event log, not in this byte), 11 charger frames stale, 12 override exceeded the 6 h cap.";
+CM_ SG_ 2036 intp_flags "bit0 bms_seen, bit1 chg_seen_charging, bit2 mainc_closed, bit3 evse_cap_known, bit4 vcu_flow, bit5 override_active (1 in OVERRIDE and in HOLD, schema 4), bit6 bridge_ok, bit7 serial_attached. bridge_ok is health SINCE THE PREVIOUS STATUS FRAME (schema 3, B-3): no RX overflow on either port, no controller entering bus-off, no bridged frame failing to reach the vehicle (added 2026-10-04), and neither controller bus-off now. The board's own diagnostic frames -- the 0x7F4-0x7F7 status frames and the 0xE1 mirrors -- do not count; they are not bridged traffic. It is also clear for the whole run on a board whose controllers did not both start (B-7d), which still sends 0x7F4 alone if the vehicle side came up.";
+CM_ SG_ 2036 intp_our_ilim_x10 "Our commanded current on page 01: the override command in OVERRIDE, the hold setpoint in HOLD (schema 4); raw 255 = not commanding.";
+CM_ SG_ 2037 intp_evap_active "Last vcm_evap_active (0x649 B4 bit 7) the core saw: the override gate input (spec 3). Schema 2.";
+CM_ SG_ 2037 intp_chg_silent_expected "Charger silent while expected (spec 2.2, schema 3): the VCU flow bit is 1 and no BELINV status frame (0x18FFD4C0) has arrived for 500 ms. The companion to intp_tx_fail_expected: that counter says frames toward the charger are not being acknowledged, this flag says nothing is coming back. Reads 0 while the flow bit is 0, including on a board that booted mid-session and has not yet heard a page 00.";
+CM_ SG_ 2037 intp_evse_cap_x10 "EVSE DC cap the core is honouring (charger's pilot-derived maxAvailableChargingCurrent capped by the VCU's own CC command); raw 255 = unknown.";
+CM_ SG_ 2039 intp_build_id "First 4 bytes of the application ELF SHA-256, from the ESP-IDF app descriptor. BYTE ORDER: decoding this signal as the Intel u32 it is declared to be (0|32@1+) and printing it as %08x gives the hash's first 4 bytes the same way round as elf_sha256 -- e.g. 7f197bfd. The RAW PAYLOAD IS THE REVERSE OF THAT: the firmware packs sha[0] as the u32's most significant byte (main.cpp buildId()) and then writes it little-endian (machine.cpp put32()), so B0-B3 on the wire are sha[3],sha[2],sha[1],sha[0] -- fd 7b 19 7f for that example. Reading the payload bytes in order yields fd7b197f, which matches no manifest row and surfaces as an unknown build on a healthy board; that defect was live in build_lookup.build_id_from_payload until 2026-10-06. Changes on every build; compare against esptool image-info of the .bin before flashing. Firmware versions 1-2 sent an FNV-1a hash of GIT_SHA here, which was always fnv1a(unknown) = 2608177081 because -DGIT_SHA was never passed.";
+
+BA_DEF_ "DiagSchemaVersion" INT 0 255;
+BA_DEF_ "DiagSchemaHash" STRING ;
+BA_DEF_ SG_ "RenamedFrom" STRING ;
+BA_DEF_DEF_ "DiagSchemaVersion" 0;
+BA_DEF_DEF_ "DiagSchemaHash" "";
+BA_DEF_DEF_ "RenamedFrom" "";
+BA_ "DiagSchemaVersion" 4;
+BA_ "DiagSchemaHash" "ed9822898522aa29";
+
+VAL_ 2036 intp_state 0 "PASSTHROUGH" 1 "MONITOR" 2 "OVERRIDE" 3 "reserved_was_RELEASING" 4 "TERMINATED" 5 "SAFE" 6 "HOLD";
+VAL_ 2037 intp_vcu_mode 0 "Export_Power_Mode" 1 "Charger_Mode" 2 "Stand_By" 3 "Charger_Low_Power_Mode" 4 "Invalid";
+VAL_ 2037 intp_evap_active 0 "not_pending" 1 "pending_or_purging";
+VAL_ 2037 intp_chg_silent_expected 0 "charger_heard_or_not_expected" 1 "silent_while_expected";
+VAL_ 2565849313 chgcmd_mode 0 "Export_Power_Mode" 1 "Charger_Mode" 2 "Stand_By" 3 "Charger_Low_Power_Mode" 4 "Invalid";
+VAL_ 2565849313 chgcmd_enable 0 "Turn_OFF_output" 1 "Turn_ON_output";
