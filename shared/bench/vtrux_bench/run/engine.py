@@ -87,10 +87,14 @@ fails when the rule is switched off through RULES):
                   that needs the lock is NOT-RUN
   release_line    an on_end that fails (or raises) opens board_state.txt,
                   index.txt and the record with "RELEASE NOT CONFIRMED: ..."
-  carry_finished  --resume carries results only from groups whose group-end
-                  event (written after identify-after and its amends) is in
-                  progress.jsonl: a run killed mid-group carries nothing from
-                  that group (user 2026-10-20, option A)
+  carry_check_end --resume carries a check only if its check-end event
+                  (written after all its results) is in progress.jsonl: a
+                  check killed between two results runs again
+  carry_finished  --resume carries a check of a group that uses a board only
+                  if the group's group-end event (written after
+                  identify-after and its amends) is there too: a board group
+                  killed mid-way carries nothing; a board-less one keeps its
+                  finished checks (user 2026-10-20, option A refined)
 """
 
 import fnmatch
@@ -120,7 +124,7 @@ RULES = {k: True for k in (
     "wallclock_guard", "requires", "requires_whole", "resume_code",
     "subset_mark", "subset_not_whole", "start_identify", "restore_after_stop",
     "standing_line", "product_digest", "digest_bridge", "board_hooks",
-    "start_hook_stops", "release_line", "carry_finished")}
+    "start_hook_stops", "release_line", "carry_finished", "carry_check_end")}
 
 IDENTIFY_ERROR = "<identify failed>"
 
@@ -214,15 +218,21 @@ class Engine:
             return {}
         by = {}
         prog = load_progress(self.resume)
-        # Only groups that finished (user 2026-10-20, option A): a run killed
-        # mid-group leaves results its identify-after never saw, or part of a
-        # check's results; neither is carried. A run from before the group-end
-        # event carries nothing.
-        ended = {e.get("group") for e in prog
-                 if e.get("type") == "event" and e.get("kind") == "group-end"}
+        # Only what finished (user 2026-10-20, option A with the per-check
+        # refinement): a check needs its check-end (all its results written);
+        # a check in a group that uses a board also needs the group's
+        # group-end (written after identify-after and amends). A board-less
+        # group killed mid-way keeps its finished checks. A run from before
+        # these events carries nothing.
+        ev = lambda kind, key: {e.get(key) for e in prog          # noqa: E731
+                                if e.get("type") == "event" and e.get("kind") == kind}
+        groups_ended, checks_ended = ev("group-end", "group"), ev("check-end", "check")
+        board_groups = {g.name for g in self.suite.groups if g.image_list}
         for e in prog:
-            if (e.get("type") == "result" and RULES["carry_finished"]
-                    and e.get("group") not in ended):
+            if e.get("type") == "result" and (
+                    (RULES["carry_check_end"] and e.get("check") not in checks_ended)
+                    or (RULES["carry_finished"] and e.get("group") in board_groups
+                        and e.get("group") not in groups_ended)):
                 continue
             if e.get("type") == "result":
                 by.setdefault(e["check"], []).append(e)
@@ -500,6 +510,7 @@ class Engine:
                 r2 = {k: v for k, v in r.items() if k not in ("type", "t")}
                 r2["carried_from"] = prev
                 self.rec.result(**r2)
+            self.rec.event("check-end", check=fid, group=g.name, results=len(rs))
             return all(r["verdict"] == Verdict.PASS for r in rs)
         if c.cls == "wallclock" and RULES["wallclock_guard"]:
             wait_s = float(self.settings.get("wallclock_wait_s", 0))
@@ -621,6 +632,9 @@ class Engine:
                 throttle_reason=why,
                 log=os.path.relpath(log_path, self.run_dir).replace("\\", "/"),
                 **extra)
+        # Written once every result of the check is: --resume carries a check
+        # only with it (a kill between two results leaves none).
+        self.rec.event("check-end", check=fid, group=g.name, results=len(res))
         return all_pass
 
     # ---- groups and lanes -----------------------------------------------

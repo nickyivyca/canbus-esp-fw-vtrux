@@ -138,12 +138,13 @@ chosen at run time; suites define none.
 
 `--resume RUN_DIR` carries only from a run of the same suite on the same
 code, as that run's start event records them; anything else is refused.
-It carries results only from groups that finished: each group ends with a
-`group-end` event in `progress.jsonl`, written after its identify-after
-and amends, and a group without one (the run was killed inside it)
-carries nothing, so neither a PASS its identify-after never saw nor part
-of a check's results is carried (user, 2026-10-20). A run from before the
-event existed carries nothing.
+It carries only what finished (user, 2026-10-20). A check needs its
+`check-end` event in `progress.jsonl`, written once all its results are,
+so a check killed between two results runs again. A check of a group that
+uses a board also needs the group's `group-end` event, written after its
+identify-after and amends, so no PASS its identify-after never saw is
+carried. A board-less group killed mid-way keeps its finished checks. A
+run from before these events carries nothing.
 
 `record.json` lists every image the run used (`images_used`): board,
 expected identity, what identify read, file digests, whether it was
