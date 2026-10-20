@@ -35,7 +35,7 @@ every group of checks, restore, record. The same command runs part of it.
 | `vtrux_bench/run/cli.py` | The command line. |
 | `vtrux_bench/decode.py` | Diag DBC schema identity (toolkit item 10, first part): `layout_hash`, `check_identity`, `check_history`. See "Diag DBC schema identity" below. |
 | `tests/test_decode.py` | Its tests (6), with `data/golden_layout.dbc` and its hand-written canonical text `data/golden_layout.txt`. `--can-fail` runs each test under each of its mutants (28); every one must fail. |
-| `tests/test_run_core.py` | The runner's own tests (27), with a fake suite, a fake two-board bench and `fake_esptool.py`. `--can-fail` runs each with its rule switched off; every one must then fail. |
+| `tests/test_run_core.py` | The runner's own tests (28), with a fake suite, a fake two-board bench, `fake_esptool.py` and `fake_ssh.py`. `--can-fail` runs each with its rule switched off; every one must then fail. |
 
 ### Boards and images
 
@@ -150,4 +150,6 @@ host). `record.json` carries each group's wall clock and whether it needed
 the bench, the code info from the suite, and a `code_hash` slot (null,
 pending a user ruling). Write `PAUSE` in the run folder to hold it between
 checks, `STOP` to end it (the board is still restored unless the file says
-`norestore`; `now` also kills the check in progress).
+`norestore`; `now` also kills the check in progress -- on a remote host
+too: the remote line records `timeout`'s pid in the check's outdir, and
+the runner kills that process group once the local ssh is gone).

@@ -780,6 +780,57 @@ def test_remote_command():
         assert part in line, (part, line)
     line = P.remote_command(["x"], None, {}, 100, False)
     assert "nice" not in line and "PLATFORMIO" not in line, line
+    line = P.remote_command(["x"], "/w", {"K": "v"}, 100, False, "/o/.pid")
+    assert line.startswith("cd /w && echo $$ > /o/.pid && exec env K=v "
+                           "timeout "), line
+
+
+def test_remote_stop():
+    """STOP now on a remote check kills its process group on the remote
+    host too: the remote line records timeout's pid in the check's outdir,
+    and after the local ssh is killed the runner sends the group kill for
+    that file (2026-10-19: a stopped run's sim ran on on madhouse)."""
+    env = Env("remotestop")
+    log = os.path.join(env.root, "ssh.jsonl")
+    os.environ["FAKE_SSH_LOG"] = log
+    fake = (PY, os.path.join(HERE, "fake_ssh.py"))
+    real_remote, real_fetch = P.run_remote, E.Engine._fetch
+    P.run_remote = lambda *a, **k: real_remote(*a, ssh=fake, **k)
+    E.Engine._fetch = lambda self, *a: 0
+    st = env.settings(hosts={"local": {"python": [PY]},
+                             "far": {"ssh": "farhost", "workroot": "/w",
+                                     "python": ["python3"]}})
+    s = suite([Group("g", [Check("long", ["run-forever"]),
+                           Check("after", ["never"])], host="far")])
+    eng = E.Engine(s, st, out=lambda *a: None)
+
+    def stopper():
+        for _ in range(300):
+            time.sleep(0.1)
+            if getattr(eng, "run_dir", None) and os.path.exists(log) and \
+                    "run-forever" in open(log).read():
+                with open(os.path.join(eng.run_dir, "STOP"), "w") as f:
+                    f.write("now")
+                return
+    t = threading.Thread(target=stopper)
+    t.start()
+    try:
+        rec = eng.run()
+    finally:
+        t.join()
+        P.run_remote, E.Engine._fetch = real_remote, real_fetch
+    v = verdicts(rec)
+    assert v["g/long"] != "PASS" and v["g/after"] == "NOT-RUN", v
+    calls = [json.loads(ln) for ln in open(log)]
+    pidfile = "/w/%s/out/g/long/.runner.pid" % eng.run_id
+    main = [i for i, c in enumerate(calls) if "run-forever" in c["line"]]
+    assert len(main) == 1, calls
+    assert ("echo $$ > %s && exec" % pidfile) in calls[main[0]]["line"], \
+        calls[main[0]]
+    kills = [c for c in calls[main[0] + 1:]
+             if c["line"] == P.remote_kill_line(pidfile)]
+    assert kills and kills[0]["host"] == "farhost", \
+        "no group kill after the stop: %s" % calls[main[0] + 1:]
 
 
 def test_bare_shell():
@@ -820,7 +871,8 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_throttle, test_after, test_wallclock_guard, test_requires,
          test_requires_whole, test_resume_code,
          test_redact_scope, test_gate, test_skip, test_timeout,
-         test_resume, test_compare, test_esptool_flasher, test_remote_command]
+         test_resume, test_compare, test_esptool_flasher, test_remote_command,
+         test_remote_stop]
 
 
 # ---- mutants: each test's rule switched off -----------------------------
@@ -896,6 +948,7 @@ MUTANTS = {
         __import__("vtrux_bench.run.flash", fromlist=["md5_of"]), "md5_of",
         lambda p: "0" * 32),
     "test_remote_command": _patch(P, "THROTTLE_ENV", {}),
+    "test_remote_stop": _patch(P, "RULES", {"remote_stop": False}),
 }
 
 

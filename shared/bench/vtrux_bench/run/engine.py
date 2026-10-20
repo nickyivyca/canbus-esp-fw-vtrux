@@ -493,9 +493,10 @@ class Engine:
             else:
                 procs.run_remote(cfg["ssh"], ["mkdir", "-p", ctx["outdir"]],
                                  None, None, 60, log_path)
-                rc, to = procs.run_remote(cfg["ssh"], argv, cwd, env,
-                                          timeout_s, log_path, throttled,
-                                          stop_now)
+                rc, to = procs.run_remote(
+                    cfg["ssh"], argv, cwd, env, timeout_s, log_path,
+                    throttled, stop_now,
+                    pidfile=ctx["outdir"] + "/.runner.pid")
                 self._fetch(host, ctx["outdir"], outdir)
         finally:
             if c.cls == "wallclock":

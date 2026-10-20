@@ -25,6 +25,9 @@ CREATE_NEW_PROCESS_GROUP = 0x00000200
 
 THROTTLE_ENV = {"PLATFORMIO_RUN_JOBS": "1", "MAKEFLAGS": "-j1",
                 "CMAKE_BUILD_PARALLEL_LEVEL": "1"}
+# remote_stop: a remote command whose local side is killed has its remote
+# process group killed too (see run_remote).
+RULES = {"remote_stop": True}
 
 
 def kill_tree(proc):
@@ -86,12 +89,17 @@ def run_local(argv, cwd, env, timeout_s, log_path, throttled=False,
                 return None, False
 
 
-def remote_command(argv, cwd, env, timeout_s, throttled):
+def remote_command(argv, cwd, env, timeout_s, throttled, pidfile=None):
     """The shell line run on a remote host over ssh. coreutils `timeout`
-    kills the remote side even if the ssh link drops."""
+    kills the remote side even if the ssh link drops. With `pidfile`, the
+    shell writes its pid there and execs into `timeout` (env execs too), so
+    the file holds timeout's pid -- which GNU timeout makes the leader of
+    the process group everything under it runs in."""
     parts = []
     if cwd:
         parts.append("cd %s &&" % shlex.quote(cwd))
+    if pidfile:
+        parts.append("echo $$ > %s && exec" % shlex.quote(pidfile))
     e = dict(env or {})
     if throttled:
         e.update(THROTTLE_ENV)
@@ -105,11 +113,34 @@ def remote_command(argv, cwd, env, timeout_s, throttled):
     return " ".join(parts)
 
 
+def remote_kill_line(pidfile):
+    """TERM, then KILL, to the process group named in pidfile."""
+    f = shlex.quote(pidfile)
+    return ('p=$(cat %s 2>/dev/null); if [ -n "$p" ]; then '
+            'kill -TERM -- -"$p" 2>/dev/null; sleep 5; '
+            'kill -KILL -- -"$p" 2>/dev/null; fi; true' % f)
+
+
 def run_remote(ssh_host, argv, cwd, env, timeout_s, log_path, throttled=False,
-               stop_check=None, ssh=("ssh", "-o", "BatchMode=yes")):
-    line = remote_command(argv, cwd, env, timeout_s, throttled)
-    return run_local(list(ssh) + [ssh_host, line], None, None,
-                     timeout_s + 90, log_path, False, stop_check)
+               stop_check=None, ssh=("ssh", "-o", "BatchMode=yes"),
+               pidfile=None):
+    """Run argv on ssh_host. If the local side is killed (STOP now, or the
+    local timeout) and `pidfile` was given, the process group the command
+    runs in on the remote host is killed too.
+
+    Killing the local ssh does not reach the remote side: on 2026-10-19 a
+    `STOP now` ended a run while its simulation on madhouse ran on, and
+    would have until its 4 h `timeout` (charge-interposer tester)."""
+    line = remote_command(argv, cwd, env, timeout_s, throttled, pidfile)
+    rc, to = run_local(list(ssh) + [ssh_host, line], None, None,
+                       timeout_s + 90, log_path, False, stop_check)
+    if rc is None and pidfile and RULES["remote_stop"]:
+        with open(log_path, "ab") as log:
+            log.write(("# runner: killing the process group left on %s "
+                       "(%s)\n" % (ssh_host, pidfile)).encode())
+        run_local(list(ssh) + [ssh_host, remote_kill_line(pidfile)], None,
+                  None, 120, log_path)
+    return rc, to
 
 
 def process_table(ssh_host=None, ssh=("ssh", "-o", "BatchMode=yes")):
