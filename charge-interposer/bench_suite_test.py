@@ -19,6 +19,7 @@ test to fail; exit 0 only if every mutant is caught.
 
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import traceback
@@ -291,7 +292,24 @@ def test_suites():
                     assert any(w in c.skip for w in ("spec", "reviewer",
                                                      "plan", "ruling")), \
                         "skip %s/%s names no spec item or ruling" % (g.name, c.id)
-    assert len(seen) == 168, "checks across the suites: %d" % len(seen)
+    assert len(seen) == 170, "checks across the suites: %d" % len(seen)
+    # build-check runs in a git checkout of HEAD, shipped as a bundle
+    # (user ruling 2026-10-19), never in the shipped copy
+    mb = [g for g in su["emulated"].groups if g.name == "m-build"][0]
+    bc = [c for c in mb.checks if c.id == "build-check"][0]
+    assert bc.argv[0] == "firmware/test/build_check_in_clone.py", bc.argv
+    head = subprocess.run(["git", "-C", os.path.dirname(HERE), "rev-parse",
+                           "HEAD"], capture_output=True, text=True,
+                          check=True).stdout.strip()
+    a = bc.argv
+    assert a[a.index("--commit") + 1] == head, (a, head)
+    assert a[a.index("--bundle") + 1] == "{work}/gitb/repo.bundle", a
+    assert a[a.index("--shipped") + 1] == "{work}/code", a
+    bundle = os.path.join(mb.ship["gitb"], "repo.bundle")
+    r = subprocess.run(["git", "-C", os.path.dirname(HERE), "bundle",
+                        "list-heads", bundle], capture_output=True, text=True)
+    assert r.returncode == 0 and head in r.stdout, (bundle, r.stdout,
+                                                    r.stderr)
     e_sims = [c for g in su["emulated"].groups for c in g.checks
               if c.id.startswith("sim.")]
     assert len(e_sims) == 27 and all("--time-scale 1 " in _argv(c) + " "
@@ -427,6 +445,14 @@ def _drop_requires(s):
     s.requires = None
 
 
+def _plain_build_check(s):
+    """The e7d4 form: build_check.py run in the shipped copy."""
+    for g in s.groups:
+        for c in g.checks:
+            if c.id == "build-check":
+                c.argv = ["firmware/test/build_check.py"]
+
+
 def _sim_into_harness(s):
     s.groups[0].checks.append(B.Check("sim.extra", ["run_scenario.py", "x"],
                                       python=True, cls="wallclock"))
@@ -511,7 +537,9 @@ MUTANTS = {
         ("emulated", _wrap_suite("emulated", _mutant_into_emulated),
          "a mutation script in emulated"),
         ("bench", _wrap_suite("bench", _bare_skip),
-         "a skip with no spec item or ruling")],
+         "a skip with no spec item or ruling"),
+        ("emulated", _wrap_suite("emulated", _plain_build_check),
+         "build-check in the shipped copy (e7d4)")],
 }
 
 

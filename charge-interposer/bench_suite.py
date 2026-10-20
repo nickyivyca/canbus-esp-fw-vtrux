@@ -345,6 +345,28 @@ def _stage_artifacts(settings):
     return d
 
 
+def _stage_git_bundle(code):
+    """A git bundle of the clone's HEAD, for build-check on madhouse
+    (build_check_in_clone.py): the shipped copy has no .git, and a build
+    there gets no manifest row (e7d4, 2026-10-19). -> (dir, full commit).
+    One folder per commit in the machine temp folder; reused if present."""
+    import subprocess
+    repo = os.path.dirname(code)
+    commit = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"],
+                            capture_output=True, text=True,
+                            check=True).stdout.strip()
+    d = os.path.join(tempfile.gettempdir(), "interposer-tester",
+                     "runner-stage", "gitb-" + commit[:12])
+    bundle = os.path.join(d, "repo.bundle")
+    if not os.path.isfile(bundle):
+        os.makedirs(d, exist_ok=True)
+        part = bundle + ".part"
+        subprocess.run(["git", "-C", repo, "bundle", "create", part, "HEAD"],
+                       capture_output=True, check=True)
+        os.replace(part, bundle)
+    return d, commit
+
+
 # ---- check builders -----------------------------------------------------
 class _Build:
     """The check builders and shared pieces the three suites use."""
@@ -437,9 +459,16 @@ def emulated(settings):
     """No hardware, no lock: builds, host suites, the 1x sims, the capture
     trace rebuild."""
     b = _Build(settings)
-    m_build = Group("m-build", host="madhouse", ship=b.ship, checks=[
-        b.mpio("build-check", ["firmware/test/build_check.py"], cls="build",
-               timeout_s=7200),
+    # build-check runs in a git checkout of this commit, not the shipped
+    # copy (user ruling, 2026-10-19; build_check_in_clone.py).
+    gitb, commit = _stage_git_bundle(b.code)
+    m_build = Group("m-build", host="madhouse",
+                    ship=dict(b.ship, gitb=gitb), checks=[
+        b.mpio("build-check", [
+            "firmware/test/build_check_in_clone.py",
+            "--bundle", "{work}/gitb/repo.bundle", "--commit", commit,
+            "--shipped", "{work}/code", "--dest", "{work}/clone"],
+            cls="build", timeout_s=7200),
         b.mpy("manifest-test", ["firmware/manifest_test.py"], cls="build"),
         b.mpy("manifest-offline-test", ["firmware/manifest_offline_test.py"]),
     ])
@@ -639,6 +668,11 @@ def harness(settings):
               ["firmware/test/build_check_schema_test.py"], cls="build"),
         b.mpy("build-check-schema-test-canfail",
               ["firmware/test/build_check_schema_test.py", "--can-fail"],
+              cls="build"),
+        b.mpy("build-check-in-clone-test",
+              ["firmware/test/build_check_in_clone_test.py"], cls="build"),
+        b.mpy("build-check-in-clone-test-canfail",
+              ["firmware/test/build_check_in_clone_test.py", "--can-fail"],
               cls="build"),
         b.mpio("digest-recheck-check", ["firmware/test/digest_recheck_check.py"],
                cls="build", timeout_s=7200),
