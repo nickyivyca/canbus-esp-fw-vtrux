@@ -164,6 +164,14 @@ def tests():
           "baseline=10  first=9  re-run 1=11" in t, t)
     check("a re-run's verdict that differs is flagged", entry(E, "X5")["flagged"], entry(E, "X5"))
     check("re-runs are decided by the first run only", reran(E) == ["X1"], reran(E))
+
+    E = cmp(record(X5=res("g/X4X5/X5", "FAIL", c=3)), [record()])
+    x5 = entry(E, "X5")
+    check("a FAIL that passes on re-run: still flagged, reported FAIL first, noted flaky",
+          x5["flagged"] and x5["verdicts"][0] == "FAIL" and any("flaky, needs review" in n for n in x5["notes"]), x5)
+    E = cmp(record(X5=res("g/X4X5/X5", "FAIL", c=3)), [record(X5=res("g/X4X5/X5", "FAIL", c=3))])
+    check("a FAIL that fails again is not called flaky",
+          not any("flaky" in n for n in entry(E, "X5")["notes"]), entry(E, "X5")["notes"])
     check("the report names what was re-run", "re-run: g/X1" in t, t.splitlines()[1])
 
     out = "lane bench:\nrun gen-inhibit-bench_20261019T0101_ab12: C:\\r\\runs\\gen-inhibit-bench_20261019T0101_ab12\\index.txt\n"

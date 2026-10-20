@@ -135,6 +135,10 @@ def compare(index, first, reruns=(), ids_of=None):
         if any(c2 != c["verdict"] for c2 in e["verdicts"][1:] if c2 != NO_RESULT):
             e["flagged"] = True
             e["notes"].append("a re-run's verdict is not the baseline's")
+        if got[0]["verdict"] != c["verdict"] and c["verdict"] in e["verdicts"][1:]:
+            # reviewer, 2026-10-19: the first run's verdict is the one reported; a FAIL
+            # that passes on re-run is never a PASS
+            e["notes"].append("flaky, needs review: %s first, %s on re-run" % (got[0]["verdict"], c["verdict"]))
         out.append(e)
     return out
 
