@@ -2,7 +2,8 @@
 """Mutants of suite_gen_inhibit.py; test_suite_gen_inhibit.py must fail on each BY A
 CHECK. A crash is not a kill, and an edit that does not apply is an error.
 
-    PYTHONPATH=<core e37995a>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
+    PYTHONPATH=<core 45a67ba>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
+        GI_HARNESS_DIR=<reverse-it>/projects/vtrux/notes/artifacts/gen-inhibit \
         py -3.14 -B test_suite_gen_inhibit_mutants.py
 
 Each mutant copies suite_gen_inhibit.py, its test and the settings example into a fresh
@@ -104,6 +105,40 @@ MUTANTS = [
      'out["%s/%s" % (g.name, c.id)] = []'),
     ("a setting the example does not name", 'prod_dir = need(settings, "gi_prod_dir")',
      'prod_dir = need(settings, "gi_prod_dir") or need(settings, "gi_prod_extra")'),
+    ("board step: the tool's exit is not looked at",
+     'ok=rc == 0 and rec.get("verdict") == "PASS"', 'ok=rec.get("verdict") == "PASS"'),
+    ("board step: the tool's verdict is not looked at",
+     'ok=rc == 0 and rec.get("verdict") == "PASS"', 'ok=rc == 0'),
+    ("board step: the X2 is rebooted too", '            if board != "wican":\n', '            if False:\n'),
+    ("board step: --known carries the X2's images too",
+     '                if im.board == "wican":\n                    known += [',
+     '                if True:\n                    known += ['),
+    ("board step: the start names a wanted image, not the first",
+     'want = ["--first", image.name]', 'want = ["--want", image.name]'),
+    ("board step: an end the core cannot name wants the standing image",
+     'want = ["--want", image.name] if image is not None else ["--want-unknown"]',
+     'want = ["--want", image.name if image is not None else "wican_man"]'),
+    ("board step: no AP join first",
+     "wican_sha()          # joins the WiCAN's AP when its page cannot be read", "pass"),
+    ("board step: a page it cannot read stops the step before the tool",
+     '            except IdentifyError:\n                pass                 # wican_reboot.py',
+     '            except ZeroDivisionError:\n                pass                 # wican_reboot.py'),
+    ("board step: the record is not named in what it found",
+     'record=os.path.basename(rec_path))', 'record=None)'),
+    ("board step: the tool's detail is dropped",
+     'detail=rec.get("detail") or "wican_reboot.py rc %s" % rc, found=found)',
+     'detail="wican_reboot.py rc %s" % rc, found=found)'),
+    ("board step: the before state is not kept",
+     'before_latched=(before.get("reasons") or {}).get("abort_latched"),', 'before_latched=None,'),
+    ("board step: the script from the wrong folder",
+     'os.path.join(harness, "wican_reboot.py")', 'os.path.join(tools, "wican_reboot.py")'),
+    ("board step: the tool's files are not redacted",
+     'rc = run(_py(settings) + [os.path.join(harness, "wican_reboot.py")',
+     'rc = (lambda a, l, e, t: _run(a, l, e, root, t))(_py(settings) + [os.path.join(harness, "wican_reboot.py")'),
+    ("board step: the suite has no start step",
+     'on_start=hooks["on_start"], on_end=hooks["on_end"])', 'on_start=None, on_end=hooks["on_end"])'),
+    ("board step: the suite's end step is the start step",
+     'on_end=board_step("release"))', 'on_end=board_step("start"))'),
     ("an argv carries a local path", '["{gi_images}", "{gi_prod_dir}"] + step.split()', '[images_dir, prod_dir] + step.split()'),
 ]
 

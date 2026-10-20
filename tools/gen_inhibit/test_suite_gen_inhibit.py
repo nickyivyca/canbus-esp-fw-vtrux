@@ -4,8 +4,12 @@ cover the baseline index once each, keep the SSID out of what the record keeps, 
 their hooks say "could not look" (raise) rather than "not this image" (None) when a
 tool fails. No hardware: every tool the hooks run is stood in for.
 
-    PYTHONPATH=<core e37995a>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
+    PYTHONPATH=<core 45a67ba>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
+        GI_HARNESS_DIR=<reverse-it>/projects/vtrux/notes/artifacts/gen-inhibit \
         py -3.14 -B test_suite_gen_inhibit.py
+
+GI_HARNESS_DIR is where wican_reboot.py and its test's fake WiCAN are: the board
+steps run the real script against that fake (no hardware either).
 
 Prints "ok ..." or "FAIL ..." per check and PASS or FAIL at the end; exit 0 only on
 PASS. Gen-inhibit tester, 2026-10-19.
@@ -17,6 +21,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -594,6 +599,191 @@ def test_flashers(settings, bench):
     check("x2_jammer: a failed jammer write stops further X2 flashes", not r["ok"] and r["recoverable"] is False, r)
 
 
+def reboot_tool(verdict="PASS", rc=0, write=True, extra=None, seen=None):
+    """Stands in for wican_reboot.py: writes the record where --out says."""
+    def fn(argv, env):
+        if seen is not None:
+            seen.append("wican_reboot")
+        if write:
+            rec = dict(verdict=verdict, detail="%s stand-in" % verdict, found_image="wican_man",
+                       found_sha="ab" * 32, differs_from_first=False, came_up_armed=False, disarmed=None,
+                       before={"mode": 3, "reasons": {"abort_latched": True}})
+            rec.update(extra or {})
+            with open(argv[argv.index("--out") + 1], "w", encoding="utf-8") as f:
+                json.dump(rec, f)
+        return "%s stand-in\n" % verdict, rc, {}
+    return fn
+
+
+def opts(argv, flag):
+    return [argv[i + 1] for i, a in enumerate(argv) if a == flag and i + 1 < len(argv)]
+
+
+def test_board_hooks(settings, bench, emu):
+    """The core's on_start / on_end (port plan step 4; user 2026-10-20): the WiCAN's
+    run wican_reboot.py and pass only on its PASS; the X2's do nothing."""
+    check("board hooks: the bench suite has on_start and on_end",
+          callable(bench.on_start) and callable(bench.on_end))
+    check("board hooks: the emulated suite has none (no hardware)", emu.on_start is None and emu.on_end is None)
+    wm, rt, xa = bench.images["wican_man"], bench.images["wican_rt"], bench.images["x2_app"]
+    wican = {n: im.expect for n, im in bench.images.items() if im.board == "wican"}
+    order = []
+    fake_module("bench_flash", join_ap=lambda s, timeout=40.0: order.append("join"),
+                image_elf_sha256=__import__("bench_flash").image_elf_sha256)
+
+    def page_up():
+        order.append("page")
+        return {"elf_sha256": "ab" * 32}
+
+    def call(which, board, image, tool=None, page=page_up):
+        def t(tt):
+            SG.wican_page = page
+            if tool is not None:
+                tt.do["wican_reboot.py"] = tool
+            d = logdir()
+            try:
+                out = getattr(bench, which)(board, image, {}, d)
+            except Exception as e:          # a step that raises is a failed check here, not a crash
+                out = dict(ok="raised", detail=repr(e), found={})
+            return out, tt.named("wican_reboot.py"), d
+        return with_tools(t)
+
+    out, calls, _ = call("on_start", "x2", xa, reboot_tool())
+    check("board hooks: the X2's start step does nothing and passes",
+          out["ok"] is True and calls == [], (out, calls))
+    out, calls, _ = call("on_end", "x2", None, reboot_tool())
+    check("board hooks: the X2's end step does nothing and passes", out["ok"] is True and calls == [], (out, calls))
+
+    out, calls, d = call("on_start", "wican", rt, reboot_tool())
+    argv = calls[0][2] if calls else []
+    known = dict(kv.split("=", 1) for kv in opts(argv, "--known"))
+    check("board hooks: the WiCAN's start runs wican_reboot.py once, from the harness folder",
+          len(calls) == 1 and os.path.normpath(argv[len(SG._py(settings))]) ==
+          os.path.normpath(os.path.join(settings["reverse_it"], SG.HARNESS, "wican_reboot.py")), argv)
+    check("board hooks: start names the run's first image (--first)",
+          opts(argv, "--first") == ["wican_rt"] and not opts(argv, "--want") and "--want-unknown" not in argv, argv)
+    check("board hooks: --known is every WiCAN image with its sha, and no X2 image",
+          known == wican and len(known) >= 4, (sorted(known), sorted(wican)))
+    check("board hooks: start passes on the tool's PASS, and keeps what it found",
+          out["ok"] is True and out["found"]["before_mode"] == 3 and out["found"]["before_latched"] is True
+          and out["found"]["found_image"] == "wican_man" and out["found"]["record"]
+          and os.path.exists(os.path.join(d, out["found"]["record"])), out)
+    check("board hooks: the record and the tool's log are in the hook's log folder",
+          sorted(os.path.splitext(n)[1] for n in os.listdir(d) if n.startswith("wican_reboot_start_"))
+          == [".json", ".txt"], os.listdir(d))
+
+    out, calls, _ = call("on_end", "wican", wm, reboot_tool())
+    argv = calls[0][2] if calls else []
+    check("board hooks: the end names the image the core believes (--want)",
+          opts(argv, "--want") == ["wican_man"] and not opts(argv, "--first") and out["ok"] is True, (argv, out))
+    out, calls, _ = call("on_end", "wican", None, reboot_tool())
+    argv = calls[0][2] if calls else []
+    check("board hooks: an end where the core does not know the image says so (--want-unknown)",
+          "--want-unknown" in argv and not opts(argv, "--want") and out["ok"] is True, (argv, out))
+
+    out, _, _ = call("on_start", "wican", wm, reboot_tool("FAIL", 1, extra={"detail": "FAIL start wican, found X"}))
+    check("board hooks: the tool's FAIL fails the step, with its detail",
+          out["ok"] is False and out["detail"] == "FAIL start wican, found X", out)
+    out, _, _ = call("on_start", "wican", wm, reboot_tool("FAIL", 0))
+    check("board hooks: exit 0 with a FAIL record still fails", out["ok"] is False, out)
+    out, _, _ = call("on_end", "wican", wm, reboot_tool("PASS", 1))
+    check("board hooks: a PASS record with a non-zero exit fails", out["ok"] is False, out)
+    out, _, _ = call("on_start", "wican", wm, reboot_tool(write=False, rc=1))
+    check("board hooks: no record fails, saying so", out["ok"] is False and "no record" in out["detail"], out)
+
+    out, _, d = call("on_start", "wican", wm, reboot_tool(extra={"note": "on " + SSID}))
+    check("board hooks: the SSID is out of the step's record and log",
+          out["ok"] and all(SSID not in open(os.path.join(d, n), encoding="utf-8").read() for n in os.listdir(d)),
+          os.listdir(d))
+
+    def down():
+        order.append("page")
+        raise OSError("no route")
+    order.clear()
+    out, calls, _ = call("on_start", "wican", wm, reboot_tool(seen=order), page=down)
+    check("board hooks: an unreadable page joins the AP before the reboot tool runs",
+          "join" in order and "wican_reboot" in order and order.index("join") < order.index("wican_reboot"), order)
+    check("board hooks: a page still unreadable is left to the tool (it runs and decides)",
+          len(calls) == 1 and out["ok"] is True, (calls, out))
+
+
+def test_board_hooks_e2e(settings, bench):
+    """Reviewer condition 5: a killed run leaves the WiCAN armed and latched; the next
+    start's hook reboots it, disarms what comes up armed, passes, and says what it
+    found. The real wican_reboot.py against test_wican_reboot.py's fake device."""
+    src = os.environ.get("GI_HARNESS_DIR")
+    if not src or not os.path.exists(os.path.join(src, "test_wican_reboot.py")):
+        check("board hooks e2e: GI_HARNESS_DIR names the gen-inhibit harness folder", False, src)
+        return
+    dst = os.path.join(settings["reverse_it"], SG.HARNESS)
+    os.makedirs(dst, exist_ok=True)
+    for n in ("wican_reboot.py", "page_state.py"):
+        shutil.copy(os.path.join(src, n), dst)
+    sys.path.insert(0, src)
+    try:
+        import test_wican_reboot as TW
+    finally:
+        sys.path.remove(src)
+    srv = TW.http.server.ThreadingHTTPServer(("127.0.0.1", 0), TW.Fake)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    saved_host, saved_page = os.environ.get("GI_WICAN_HOST"), SG.wican_page
+    os.environ["GI_WICAN_HOST"] = "127.0.0.1:%d" % srv.server_address[1]
+    man, rt = bench.images["wican_man"], bench.images["wican_rt"]
+
+    def case(which, image, dev):
+        TW.Fake.dev = dev
+        SG.wican_page = lambda: {"elf_sha256": dev.sha}
+        d = logdir()
+        try:
+            out = getattr(bench, which)("wican", image, {}, d)
+        except Exception as e:
+            out = dict(ok="raised", detail=repr(e), found={})
+        text = "".join(open(os.path.join(d, n), encoding="utf-8").read() for n in os.listdir(d))
+        return out, list(dev.paths), text
+    try:
+        out, paths, text = case("on_start", man, TW.Dev(sha=man.expect, mode=3, latched=True))
+        f = out.get("found") or {}
+        check("board hooks e2e: armed and latched by a killed run, the start reboots and passes",
+              out["ok"] is True and "POST /system_reboot" in paths, (out, paths))
+        check("board hooks e2e: and says what it found (mode 3, latched, on wican_man, the first image)",
+              f.get("before_mode") == 3 and f.get("before_latched") is True and f.get("found_image") == "wican_man"
+              and f.get("differs_from_first") is False and "before: mode 3, latched True" in out["detail"], out)
+        check("board hooks e2e: no other page field reaches the step's files",
+              "FAKE_SSID_VALUE" not in text and "FAKE_PASS_VALUE" not in text)
+
+        out, paths, _ = case("on_start", rt, TW.Dev(sha=man.expect, mode=2, boot_mode=2))
+        f = out.get("found") or {}
+        check("board hooks e2e: an image that comes up armed is disarmed, passes, and says so",
+              out["ok"] is True and f.get("came_up_armed") is True and f.get("disarmed") is True
+              and "POST /gen_inhibit_set?mode=0" in paths, (out, paths))
+        check("board hooks e2e: a suite image other than the run's first is marked",
+              f.get("differs_from_first") is True and "not the run's first image wican_rt" in out["detail"], out)
+
+        odd = "cd" * 32
+        out, _, _ = case("on_start", man, TW.Dev(sha=odd))
+        check("board hooks e2e: an unknown image refuses the start, naming the hash",
+              out["ok"] is False and odd in out["detail"], out)
+        out, _, _ = case("on_start", man, TW.Dev(sha=man.expect, after_latched=True))
+        check("board hooks e2e: a latch that survives the reboot fails the start", out["ok"] is False, out)
+
+        out, _, _ = case("on_end", man, TW.Dev(sha=man.expect, mode=2, boot_mode=2))
+        f = out.get("found") or {}
+        check("board hooks e2e: the release reboots, disarms and confirms the image the core believes",
+              out["ok"] is True and f.get("came_up_armed") is True and f.get("disarmed") is True, out)
+        out, _, _ = case("on_end", man, TW.Dev(sha=rt.expect))
+        check("board hooks e2e: a release on another image is not confirmed", out["ok"] is False, out)
+        out, _, _ = case("on_end", None, TW.Dev(sha=man.expect))
+        check("board hooks e2e: a release the core cannot name is not confirmed", out["ok"] is False, out)
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        SG.wican_page = saved_page
+        if saved_host is None:
+            os.environ.pop("GI_WICAN_HOST", None)
+        else:
+            os.environ["GI_WICAN_HOST"] = saved_host
+
+
 def git(repo, *a):
     import subprocess
     return subprocess.run(["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid"] + list(a),
@@ -680,6 +870,8 @@ def main():
         test_adapter()
         test_identify(settings, bench)
         test_flashers(settings, bench)
+        test_board_hooks(settings, bench, emu)
+        test_board_hooks_e2e(settings, bench)
     finally:
         rmtree(BASE)
     print("\n%s, %d ok, %d FAIL" % ("PASS" if not fails else "FAIL", oks, len(fails)))

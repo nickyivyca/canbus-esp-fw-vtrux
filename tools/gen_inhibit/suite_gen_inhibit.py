@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Gen-inhibit's two suites for the shared chain runner (shared/bench, vtrux_bench.run,
-pinned at charge-interposer/main e37995a; it refuses an esptool write unless
+pinned at 45a67ba, tester/core-board-hooks on e37995a: its on_start / on_end board
+steps reboot the WiCAN at each run's start and release; it refuses an esptool write unless
 settings.esptool.chip names the X2's type and MAC, and the MAC lives only in the local
 settings, never in a published file).
 
@@ -328,7 +329,49 @@ def make_hooks(settings, ssid, images=None):
         with open(recs[-1], encoding="utf-8") as f:
             return "jammer:banner" if json.load(f).get("banner_ok") else None
 
-    return dict(redact=redact, ota=ota, x2_hold=x2_hold, x2_jammer=x2_jammer, identify=identify)
+    def board_step(step):
+        """The core's on_start / on_end for the WiCAN (port plan, board images step 4; user
+        2026-10-20): wican_reboot.py reboots it, reads the page until a new boot shows,
+        disarms whatever comes up armed, and passes only on a SW reset, mode 0, nothing
+        latched or disabled, and a known image (start: any of this suite's WiCAN images;
+        end: the one the core believes the board is on). The X2 has no such step."""
+        def hook(board, image, ctx, logdir):
+            if board != "wican":
+                return dict(ok=True, detail="no %s step for the %s" % (step, board))
+            stamp = time.strftime("%Y%m%dT%H%M%S")
+            rec_path = os.path.join(logdir, "wican_reboot_%s_%s.json" % (step, stamp))
+            known = []
+            for n, im in sorted(images.items()):
+                if im.board == "wican":
+                    known += ["--known", "%s=%s" % (n, im.expect)]
+            if step == "start":
+                want = ["--first", image.name]
+            else:
+                want = ["--want", image.name] if image is not None else ["--want-unknown"]
+            try:
+                wican_sha()          # joins the WiCAN's AP when its page cannot be read
+            except IdentifyError:
+                pass                 # wican_reboot.py finds no page and fails, saying so
+            rc = run(_py(settings) + [os.path.join(harness, "wican_reboot.py"), "--label", "%s %s" % (step, board),
+                                      "--out", rec_path] + known + want,
+                     rec_path[:-len(".json")] + ".txt", base_env, 300)
+            try:
+                with open(rec_path, encoding="utf-8") as f:
+                    rec = json.load(f)
+            except (OSError, ValueError):
+                return dict(ok=False, detail="wican_reboot.py left no record (rc %s)" % rc)
+            before = rec.get("before") or {}
+            found = {k: rec.get(k) for k in ("found_image", "found_sha", "differs_from_first",
+                                             "came_up_armed", "disarmed")}
+            found.update(before_mode=before.get("mode"),
+                         before_latched=(before.get("reasons") or {}).get("abort_latched"),
+                         record=os.path.basename(rec_path))
+            return dict(ok=rc == 0 and rec.get("verdict") == "PASS",
+                        detail=rec.get("detail") or "wican_reboot.py rc %s" % rc, found=found)
+        return hook
+
+    return dict(redact=redact, ota=ota, x2_hold=x2_hold, x2_jammer=x2_jammer, identify=identify,
+                on_start=board_step("start"), on_end=board_step("release"))
 
 
 # ---------------------------------------------------------------- the suite
@@ -456,7 +499,8 @@ def suite(settings):
         requires="gen-inhibit-emulated",   # user, 2026-10-17: the emulated run on this code first
         standing_images={"wican": "wican_man", "x2": "x2_app"},
         flashers={"ota": hooks["ota"], "x2-hold": hooks["x2_hold"], "x2-jammer": hooks["x2_jammer"]},
-        identify=hooks["identify"], redact=hooks["redact"])
+        identify=hooks["identify"], redact=hooks["redact"],
+        on_start=hooks["on_start"], on_end=hooks["on_end"])
 
 
 bench = suite

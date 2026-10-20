@@ -21,7 +21,10 @@ from a repeatable one; the reviewer reviews every flagged difference either way.
 
 chain runs the bench suite (vtrux_bench.run run), compares, runs the flagged checks
 again in one more core run (with the checks their desk steps read), and writes
-compare_index.txt and compare_index.json into the first run's folder. The bench lock
+compare_index.txt and compare_index.json into the first run's folder. A run with no
+record.json (killed, or still running) is void and is never compared (user,
+2026-10-20): report prints VOID and exits 2; chain says the run did not finish and
+exits 2, or, for the re-run, reports the first run alone. The bench lock
 is held throughout; nothing here takes or releases it. The index is settings.gi_index.
 Gen-inhibit tester, 2026-10-19.
 """
@@ -195,6 +198,13 @@ def report_text(entries, run_names):
     return "\n".join(lines) + "\n"
 
 
+def run_record(run_dir):
+    """A run's record.json, or None: the core writes it only at the end, so a run that
+    was killed (or is still running) has none, and is void."""
+    p = os.path.join(run_dir, "record.json")
+    return load_json(p) if os.path.isfile(p) else None
+
+
 def write_new(path, text):
     with open(path, "x", encoding="utf-8", newline="\n") as f:
         f.write(text)
@@ -251,26 +261,34 @@ def main(argv=None):
     index = load_json(settings["gi_index"])
     reads_map, ids_of = suite_maps(settings)
     if a.cmd == "report":
-        recs = [load_json(os.path.join(d, "record.json")) for d in a.runs]
+        recs = [run_record(d) for d in a.runs]
+        void = [d for d, r in zip(a.runs, recs) if r is None]
+        if void:
+            for d in void:
+                print("VOID: %s has no record.json (killed, or still running); nothing compared" % d)
+            return 2
         sys.stdout.write(report_text(compare(index, recs[0], recs[1:], ids_of),
                                      [os.path.basename(os.path.normpath(d)) for d in a.runs]))
         return 0
     rc, first, _ = core_run(a.settings, a.group, a.check)
-    if not first:
-        print("chain: the core run did not start (rc %s); nothing to compare" % rc)
+    rec1 = run_record(first) if first else None
+    if rec1 is None:
+        print("chain: the core run did not finish (rc %s, %s): no record.json, so it is void; nothing "
+              "compared" % (rc, first or "no run folder named"))
         return 2
-    rec1 = load_json(os.path.join(first, "record.json"))
     entries = compare(index, rec1, (), ids_of)
     again = rerun_checks(entries, reads_map)
     dirs = [first]
     if again:
         print("chain: re-running %s" % ", ".join(again))
         rc2, second, _ = core_run(a.settings, (), again)
-        if second:
+        rec2 = run_record(second) if second else None
+        if rec2 is not None:
             dirs.append(second)
-            entries = compare(index, rec1, [load_json(os.path.join(second, "record.json"))], ids_of)
+            entries = compare(index, rec1, [rec2], ids_of)
         else:
-            print("chain: the re-run did not start (rc %s)" % rc2)
+            print("chain: the re-run did not finish (rc %s, %s): no record.json, so it is void; the "
+                  "first run is reported alone" % (rc2, second or "no run folder named"))
     return finish(entries, dirs, first)
 
 

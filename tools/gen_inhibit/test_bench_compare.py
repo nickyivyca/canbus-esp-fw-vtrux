@@ -265,6 +265,67 @@ def test_chain():
         except Exception as x:
             rc = "RAISED %r" % x
         check("chain: a run the core refused is not compared or re-run (exit 2)", rc == 2 and calls == [1], (rc, calls))
+
+        def killed(first_has_record, second_has_record, n):
+            """A core run killed after it made its folder: the folder, no record.json."""
+            def core_run(settings_path, groups=(), checks=()):
+                calls.append(1)
+                d = os.path.join(TMP, "killed%d_%d" % (n, len(calls)))
+                os.makedirs(d)
+                if (first_has_record if len(calls) == 1 else second_has_record):
+                    with open(os.path.join(d, "record.json"), "w") as f:
+                        json.dump(record(D=res("g/D/D", m=2)), f)
+                return (0 if len(calls) == 1 and first_has_record else None), d, ""
+            return core_run
+
+        def chain(core_run):
+            calls.clear()
+            BC.core_run = core_run
+            out = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(out):
+                    rc = BC.main(["chain", "--settings", sp])
+            except Exception as x:
+                rc = "RAISED %r" % x
+            return rc, out.getvalue()
+        rc, out = chain(killed(False, False, 1))
+        check("chain: a killed run (folder, no record.json) is void: not compared or re-run (exit 2)",
+              rc == 2 and calls == [1] and not os.path.exists(os.path.join(TMP, "killed1_1", "compare_index.txt")),
+              (rc, calls, out))
+        check("chain: and it says the run did not finish, not that it did not start",
+              "did not finish" in out and "void" in out and "did not start" not in out, out)
+        BC.core_run = lambda *a, **k: (calls.append(1), (None, None, ""))[1]
+        rc, out = chain(BC.core_run)
+        check("chain: a run killed before it named its folder did not finish either",
+              rc == 2 and "did not finish" in out and "did not start" not in out, (rc, out))
+        rc, out = chain(killed(True, False, 2))
+        rep = ""
+        if os.path.exists(os.path.join(TMP, "killed2_1", "compare_index.txt")):
+            rep = open(os.path.join(TMP, "killed2_1", "compare_index.txt"), encoding="utf-8").read()
+        runs = []
+        if os.path.exists(os.path.join(TMP, "killed2_1", "compare_index.json")):
+            runs = json.load(open(os.path.join(TMP, "killed2_1", "compare_index.json"), encoding="utf-8"))["runs"]
+        check("chain: a killed re-run is void: the first run is reported alone",
+              rc == 1 and calls == [1, 1] and "re-run 1" not in rep and "first=2" in rep
+              and rep.splitlines()[:1] == ["Compared with the baseline index: killed2_1"] and runs == ["killed2_1"]
+              and "the re-run did not finish" in out, (rc, calls, out, rep, runs))
+
+        def report(*dirs):
+            out = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(out):
+                    rc = BC.main(["report", "--settings", sp] + list(dirs))
+            except Exception as x:
+                rc = "RAISED %r" % x
+            return rc, out.getvalue()
+        good, dead = os.path.join(TMP, "killed2_1"), os.path.join(TMP, "killed1_1")
+        rc, out = report(good)
+        check("report: a finished run is compared (exit 0)", rc == 0 and "first=2" in out, (rc, out))
+        rc, out = report(dead)
+        check("report: a run with no record.json is VOID, named, exit 2, no traceback",
+              rc == 2 and ("VOID: %s has no record.json" % dead) in out, (rc, out))
+        rc, out = report(good, dead)
+        check("report: a void re-run voids the report too", rc == 2 and ("VOID: %s" % dead) in out, (rc, out))
     finally:
         BC.core_run, BC.suite_maps = saved
 
