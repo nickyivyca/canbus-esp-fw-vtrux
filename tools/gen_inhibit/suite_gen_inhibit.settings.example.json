@@ -1,0 +1,46 @@
+{
+  "_comment": "Settings for suite_gen_inhibit.py (bench and emulated). One copy per machine, outside git; every <...> is a local path or name. The WiCAN SSID is never put here: the suite reads it from bench_holder. Keys the core reads: runs_root, bench_holder, hosts, esptool, wallclock_patterns (shared/bench/README.md).",
+  "runs_root": "<reverse-it>/projects/vtrux/notes/artifacts/gen-inhibit/runs/chain",
+  "bench_holder": "<reverse-it>/firmware/bench-holder.md",
+  "hosts": {
+    "local": {
+      "python": ["py", "-3.14", "-B"],
+      "env": {"PYTHONPATH": "<core>/shared/bench;<interposer clone>/charge-interposer"}
+    }
+  },
+  "esptool": {"argv": ["py", "-3.14", "<esptool.py>"], "port": "COM3", "baud": 921600},
+  "wallclock_patterns": [],
+
+  "reverse_it": "<reverse-it>",
+  "gi_tools": "<tester clone>/tools/gen_inhibit",
+  "gi_commit": "<short commit>",
+  "gi_images": "<worktree holding build-tester-man/, -man2/, -rt/, -txabort/, -abortwin/, -rxq/>",
+  "gi_prod_dir": "<prod build>/build",
+  "gi_images_clean": {"wican_man": true, "wican_man2": true, "wican_rt": true, "wican_txabort": true,
+                      "wican_abortwin": true, "wican_rxq": true, "wican_prod": true},
+  "gi_fw": "<gen-inhibit clone at gi_commit>",
+  "gi_components": "<c_checks_run.ps1 -Components>",
+  "gi_host_ssh": "<ssh host for part H>",
+  "gi_host_root": "<reverse-it root on that host>",
+  "interposer_code": "<interposer clone>/charge-interposer",
+
+  "x2_images": {
+    "x2_app": {
+      "files": [["0x0", "<dir>/bootloader.bin"], ["0x8000", "<dir>/partitions.bin"],
+                ["0xe000", "<dir>/boot_app0.bin"], ["0x10000", "<dir>/firmware.bin"]],
+      "md5": {"<dir>/firmware.bin": "<md5 from the interposer manifest>"},
+      "expect": "756d6714"
+    },
+    "x2_slcan": {
+      "files": [["0x0", "<dir>/bootloader.bin"], ["0x8000", "<dir>/partitions.bin"],
+                ["0xe000", "<dir>/boot_app0.bin"], ["0x10000", "<dir>/interposer_36edf3e55552_slcan.bin"]],
+      "md5": {"<dir>/interposer_36edf3e55552_slcan.bin": "cee1bd8ca22fdc57eb223abbef53c085"},
+      "expect": "slcan:V0101:NF001"
+    }
+  },
+
+  "interposer_artifacts": "<as bench_identify.py reads it>",
+  "interposer_dbc": "<reverse-it>/projects/vtrux/vtrux-interposer-diag.dbc",
+  "serial_port": "COM3",
+  "wican_state": "<as bench_identify.py reads it>"
+}
