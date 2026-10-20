@@ -1230,6 +1230,56 @@ def test_resume():
     assert verdicts(rec2)["g/again"] == "PASS"
 
 
+def _killed_copy(env, eng, keep):
+    """A copy of a finished run's folder whose progress.jsonl stops where a
+    kill would have stopped it: the first `keep` lines, the rest never
+    written. Returns the copy's path."""
+    dst = os.path.join(env.root, "killed_%d_%s" % (keep, os.path.basename(eng.run_dir)))
+    os.makedirs(dst)
+    lines = open(os.path.join(eng.run_dir, "progress.jsonl")).readlines()
+    with open(os.path.join(dst, "progress.jsonl"), "w") as f:
+        f.writelines(lines[:keep])
+    return dst
+
+
+def _line_of(eng, pred):
+    for n, ln in enumerate(open(os.path.join(eng.run_dir, "progress.jsonl"))):
+        if pred(json.loads(ln)):
+            return n
+    raise AssertionError("no such line")
+
+
+def test_carry_finished():
+    """--resume carries only groups that finished (group-end written after
+    identify-after): a PASS from a group killed before its identify-after
+    runs again, and so does a check whose results were half written; a
+    group that finished before the kill is still carried (user 2026-10-20,
+    option A)."""
+    env = Env("carryfinished")
+    marks = {k: os.path.join(env.root, "%s.txt" % k) for k in ("one", "two", "multi")}
+    bump = lambda k: "open(%r,'a').write('x')" % marks[k]   # noqa: E731
+    two = lambda run: [Result(Verdict.PASS, "a"), Result(Verdict.PASS, "b")]  # noqa: E731
+    s = suite([Group("g1", [chk("one", bump("one"))]),
+               Group("g2", [chk("two", bump("two")),
+                            Check("multi", pc(bump("multi")), python=True, judge=two)])])
+    eng1, rec1 = run(env, s)
+    assert set(verdicts(rec1).values()) == {"PASS"}, verdicts(rec1)
+    # killed after g2/two's PASS was written, before g2's group-end
+    cut = _line_of(eng1, lambda e: e.get("id") == "g2/two") + 1
+    eng2, rec2 = run(env, s, resume=_killed_copy(env, eng1, cut))
+    got = {r["id"]: r.get("carried_from") for r in rec2["results"]}
+    assert got["g1/one"], ("a finished group is carried", got)
+    assert not got["g2/two"] and open(marks["two"]).read() == "xx", \
+        ("a PASS from an unfinished group was carried", got)
+    # killed between the two results of g2/multi
+    cut = _line_of(eng1, lambda e: e.get("id") == "g2/multi/a") + 1
+    eng3, rec3 = run(env, s, resume=_killed_copy(env, eng1, cut))
+    multi = [r for r in rec3["results"] if r["check"] == "g2/multi"]
+    assert sorted(r["id"] for r in multi) == ["g2/multi/a", "g2/multi/b"], multi
+    assert not any(r.get("carried_from") for r in multi), multi
+    assert open(marks["multi"]).read() == "xxx", "the half-written check did not run again"
+
+
 def test_compare():
     """compare reports changed verdicts and figures outside tolerance."""
     env = Env("compare")
@@ -1378,7 +1428,8 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_product_digest, test_digest_bridge,
          test_resume_code,
          test_redact_scope, test_gate, test_skip, test_timeout,
-         test_resume, test_compare, test_esptool_flasher, test_remote_command,
+         test_resume, test_carry_finished, test_compare, test_esptool_flasher,
+         test_remote_command,
          test_remote_stop]
 
 
@@ -1466,6 +1517,7 @@ MUTANTS = {
     "test_skip": _rule("skip"),
     "test_timeout": _rule("timeout"),
     "test_resume": _patch(E.Engine, "_carried", lambda self: {}),
+    "test_carry_finished": _rule("carry_finished"),
     "test_compare": _patch(R, "_within", lambda a, b, t: True),
     "test_esptool_flasher": _patch(
         __import__("vtrux_bench.run.flash", fromlist=["md5_of"]), "md5_of",

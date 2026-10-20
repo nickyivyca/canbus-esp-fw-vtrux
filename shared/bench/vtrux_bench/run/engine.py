@@ -87,6 +87,10 @@ fails when the rule is switched off through RULES):
                   that needs the lock is NOT-RUN
   release_line    an on_end that fails (or raises) opens board_state.txt,
                   index.txt and the record with "RELEASE NOT CONFIRMED: ..."
+  carry_finished  --resume carries results only from groups whose group-end
+                  event (written after identify-after and its amends) is in
+                  progress.jsonl: a run killed mid-group carries nothing from
+                  that group (user 2026-10-20, option A)
 """
 
 import fnmatch
@@ -116,7 +120,7 @@ RULES = {k: True for k in (
     "wallclock_guard", "requires", "requires_whole", "resume_code",
     "subset_mark", "subset_not_whole", "start_identify", "restore_after_stop",
     "standing_line", "product_digest", "digest_bridge", "board_hooks",
-    "start_hook_stops", "release_line")}
+    "start_hook_stops", "release_line", "carry_finished")}
 
 IDENTIFY_ERROR = "<identify failed>"
 
@@ -209,7 +213,17 @@ class Engine:
         if not self.resume:
             return {}
         by = {}
-        for e in load_progress(self.resume):
+        prog = load_progress(self.resume)
+        # Only groups that finished (user 2026-10-20, option A): a run killed
+        # mid-group leaves results its identify-after never saw, or part of a
+        # check's results; neither is carried. A run from before the group-end
+        # event carries nothing.
+        ended = {e.get("group") for e in prog
+                 if e.get("type") == "event" and e.get("kind") == "group-end"}
+        for e in prog:
+            if (e.get("type") == "result" and RULES["carry_finished"]
+                    and e.get("group") not in ended):
+                continue
             if e.get("type") == "result":
                 by.setdefault(e["check"], []).append(e)
             elif e.get("type") == "amend":
@@ -699,6 +713,9 @@ class Engine:
                             why, r["judged"], r.get("detail", ""))
                         self.rec.amend(r)
                 self.rec.event("void-group", group=g.name, reason=why)
+            # Written last: every result and amend of the group precedes it, so
+            # --resume knows the group finished (identify-after included).
+            self.rec.event("group-end", group=g.name, status=status)
         finally:
             self.groups_out.append(dict(
                 name=g.name, lane=g.lane, host=g.host, needs_lock=g.needs_lock,
