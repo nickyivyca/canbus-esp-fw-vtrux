@@ -61,20 +61,14 @@ So every `projects/vtrux/...` path in this README is a path in
 `reverse-it`, not in this repo. Relative links to them went stale the
 moment this folder moved and have been rewritten to say so.
 
-**Captures and DBCs are reached through two harness settings.**
-`VTRUX_DATA` points at `reverse-it`'s `projects/vtrux` (the captures and
-`canre`); `VTRUX_PUBLIC_REPO` points at a clone of the public
+**Captures and DBCs are reached through two harness settings**, read by
+`paths.py`. `REVERSE_IT_DIR` points at the root of the `reverse-it` project
+folder (`canre`, and `projects/vtrux` below it with the captures); it
+replaced `VTRUX_DATA`, which pointed at `projects/vtrux` (user,
+2026-10-20). `VTRUX_PUBLIC_REPO` points at a clone of the public
 `nickyivyca/canbus-reveng-vtrux-coda` for the vehicle DBCs, defaulting to
-`../canbus-reveng-vtrux-coda` from the repo root. Both are the tester's.
-They are described in
-`projects/vtrux/notes/plans/charge-interposer-acceptance-round-1.md` and
-move into the harness docs when the tester's path-fix commit lands.
-
-**Until that commit lands, not every command below runs from this clone.**
-The paths in them have been rewritten to this location, but `protocol.py`,
-`replay.py`, `bus.py` and `regress.py` still reach for the DBCs, `canre`
-and the captures by their old relative paths. Fixing those is a tester
-commit, not an implementor one.
+`../canbus-reveng-vtrux-coda` from the repo root. Both are the tester's,
+and are described in `reverse-it`'s `tools-reference.md`.
 
 ---
 
@@ -99,8 +93,8 @@ Low Power, 4 Invalid) is confirmed from the EPRI binary and on the bus; see
 | `protocol.py` | The `0x18EFC000` page map plus DBC-backed encode/decode for the BMS (`epri-pt-bus.dbc`) and charger (`BelInverter-v2.dbc`) frames. |
 | `pack.py` | 116-cell LFP pack model: OCV curve, IR drop, per-cell imbalance, passive balancing, and the BMS charge-current taper. Fitted to three real captures. |
 | `bus.py` | Transport factory (virtual `udp_multicast` or a real dongle brand) + `EchoSuppressor` + the segment-isolation guard. |
-| `paths.py` | **Where the data that is not in this repo lives.** The captures, the DBCs, the harness fixtures and `canre` are in SeaDrive, outside this clone; this resolves them from `VTRUX_DATA`, raising `PathsError` naming the variable rather than returning a wrong path, so a missing setting fails at the first call instead of producing an empty result set. Not every test needs it. Under WSL pass it with `WSLENV=VTRUX_DATA/p`. |
-| `paths_test.py` | Offline test for the above: every resolver, and the refusal when `VTRUX_DATA` is unset. Needs nothing set itself. |
+| `paths.py` | **Where the data that is not in this repo lives.** The captures, the DBCs, the harness fixtures and `canre` are in SeaDrive, outside this clone; this resolves them from `REVERSE_IT_DIR`, raising `PathsError` naming the variable rather than returning a wrong path, so a missing setting fails at the first call instead of producing an empty result set. Not every test needs it. Under WSL pass it with `WSLENV=REVERSE_IT_DIR/p`. |
+| `paths_test.py` | Offline test for the above: every resolver, and the refusal when `REVERSE_IT_DIR` is unset. Needs nothing set itself. |
 | `vehicle_sim.py` | VCU + A123 BMS + the VCM's evap flag (0x649). `--mode model` (closed loop) or `--mode replay` (real capture). |
 | `charger_sim.py` | Bel Fuse charger/inverter, including fault injection. |
 | `interposer_sim.py` | The board, as a process. I/O only -- all logic is in `machine.py`. |
@@ -115,7 +109,7 @@ Low Power, 4 Invalid) is confirmed from the EPRI binary and on the bus; see
 | `bus_gs_usb_test.py` | Test for `bus.open_gs_usb`, the charger segment's Innomaker adapter: no hardware. |
 | `stop_all.sh` | Stops every simulator process of a bench run. Read `firmware/esp-development.md` before running any of them -- killing processes on Windows does not work the way this script's Linux recipe suggests. |
 | `capture_pins.py` | **Spec 9.1 pinned stimulus.** Every capture-derived harness input is pinned by a hash HELD IN THIS REPO, never read from the input it covers: a hash stored inside its own file moves when a changed parser regenerates both. |
-| `capture_pins_test.py` | Tests for the above. Needs no `VTRUX_DATA`. |
+| `capture_pins_test.py` | Tests for the above. Needs no `REVERSE_IT_DIR`. |
 | `requirements.txt` | `cantools` and `python-can`, the only dependencies outside the standard library. |
 | `test_signals.py` | Cross-checks `machine.py`'s hand-rolled bit extraction against cantools over randomised frames. |
 | `test_machine.py` | Unit tests for the core's decisions: accept/override/guard-band, the startup transient, release, trips, TYPE2 vs TYPE3, staleness, byte-exact idle forwarding. Also spec 2.3's vehicle-port mode -- the boot into listen-only, the source-address test with its two negatives and a control, an unread 0xC0 id, the 2 s revert at its boundary, and a session boundary that must NOT touch it -- and spec 5.2's HOLD -- the entry, both step directions, both band edges, the 0.28 s cadence (asserted at the boundary, with a 0.298 s page-01 stream that steps on every frame and a short gap that is still skipped) and the gate that makes the release itself count as a step, the leader cell's own step down and its veto on a step up, the EVSE cap as a clamp that does NOT wait for that gate, the mid-hold derate, the floor at 0 A, each exit, and the setpoint as the diagnostics report it -- and spec 3's arming, which takes a case per term of the condition: a re-arm after a TERMINATED and after a VCU-ended hold must each wait out a charger restart, a state 12 the charger has stopped refreshing must not arm, and neither must the 12 an ended session left behind. |

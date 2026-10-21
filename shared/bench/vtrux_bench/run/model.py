@@ -213,6 +213,20 @@ class Suite:
     flashers: Dict[str, Callable] = dataclasses.field(default_factory=dict)
     # identify(image_name_expected, ctx, logdir) -> str or None
     identify: Optional[Callable] = None
+    # Board hooks (user 2026-10-20: a run killed without cleanup must not
+    # leave a board armed). Each is called once per board the bench lane
+    # uses, as hook(board, image, ctx, logdir), and returns a dict with
+    # "ok" (bool) and "detail" (str), plus anything the hook found
+    # ("found"), all of which is recorded. A hook that raises has failed.
+    #   on_start  before the start pass identifies the board; image is the
+    #             first image the run needs on it. A failure stops the bench:
+    #             no group that needs the lock runs, and nothing is flashed.
+    #   on_end    after the end-of-run restore, on every run however it
+    #             ended, unless the lock is no longer ours; image is the one
+    #             the run believes the board is on, or None if it does not
+    #             know. A failure is a "RELEASE NOT CONFIRMED" line.
+    on_start: Optional[Callable] = None
+    on_end: Optional[Callable] = None
     # redact(list_of_paths) -> None; sees only declared outputs
     redact: Optional[Callable] = None
     # code_info(ctx) -> dict recorded with the run

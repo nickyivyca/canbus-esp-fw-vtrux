@@ -540,6 +540,187 @@ def test_standing_line():
     assert rec["not_on_standing"] == [first.rstrip("\n")], rec["not_on_standing"]
 
 
+class Hooked(TwoBoards):
+    """TwoBoards with board hooks that log every call next to the flashes
+    and identifies, and answer from `answers` ({(which, board): out})."""
+    def __init__(self, env, answers=None):
+        TwoBoards.__init__(self, env)
+        self.calls = []
+        self.answers = answers or {}
+
+    def flasher(self, image, params, settings, logdir):
+        self.calls.append(("flash", image.board, image.name))
+        return TwoBoards.flasher(self, image, params, settings, logdir)
+
+    def identify(self, image, ctx, logdir):
+        self.calls.append(("identify", image.board, image.name))
+        return TwoBoards.identify(self, image, ctx, logdir)
+
+    def hook(self, which):
+        def h(board, image, ctx, logdir):
+            assert os.path.isdir(logdir), logdir
+            self.calls.append((which, board, image.name if image else None))
+            out = self.answers.get((which, board), dict(ok=True, detail="fine"))
+            if isinstance(out, Exception):
+                raise out
+            return out
+        return h
+
+    def suite(self, groups=None, **kw):
+        ims = {"x2app": Image("x2app", "fake", expect="X2-APP", board="x2"),
+               "w1": Image("w1", "fake", expect="WC-1", board="wican"),
+               "w2": Image("w2", "fake", expect="WC-2", board="wican")}
+        groups = groups or [
+            Group("a", [chk("x", "pass")], needs_lock=True, image=["w2", "x2app"]),
+            Group("b", [chk("y", "pass")], needs_lock=True, image="w1")]
+        return suite(groups, images=ims, flashers={"fake": self.flasher},
+                     identify=self.identify, on_start=self.hook("on_start"),
+                     on_end=self.hook("on_end"),
+                     standing_images={"x2": "x2app", "wican": "w1"}, **kw)
+
+
+def test_board_hooks():
+    """on_start runs for every board before the start pass touches it,
+    with the first image the run needs there; on_end runs for every board
+    after the restore, with the image the run believes it is on; both are
+    in the record and board_state.txt. on_end runs after a STOP too, and
+    after a failed start hook (user 2026-10-20)."""
+    env = Env("boardhooks")
+    tb = Hooked(env)
+    tb.set("x2", "X2-APP")
+    tb.set("wican", "WC-1")
+    eng, rec = run(env, tb.suite())
+    c = tb.calls
+    assert c[:2] == [("on_start", "wican", "w2"), ("on_start", "x2", "x2app")], c
+    assert c[2][0] == "identify" and c[-2:] == [("on_end", "wican", "w1"),
+                                               ("on_end", "x2", "x2app")], c
+    assert ("flash", "wican", "w2") in c and \
+        c.index(("flash", "wican", "w2")) > 1, c
+    assert set(verdicts(rec).values()) == {"PASS"}, verdicts(rec)
+    bh = rec["board_hooks"]
+    assert sorted(bh["on_start"]) == ["wican", "x2"] and \
+        sorted(bh["on_end"]) == ["wican", "x2"], bh
+    assert bh["on_end"]["wican"]["ok"] is True, bh
+    bs = open(os.path.join(eng.run_dir, "board_state.txt")).read()
+    assert "on_start: ok, fine" in bs and "on_end: ok, fine" in bs, bs
+    names = [g["name"] for g in rec["groups"]]
+    assert names[0] == "on-start" and names[-1] == "on-end", names
+    kinds = [e["kind"] for e in R.load_progress(eng.run_dir)
+             if e["type"] == "event"]
+    assert "on-start" in kinds and "on-end" in kinds, kinds
+    # a STOP before the first group: no group runs, the end hooks still do
+    env = Env("boardhooks_stop")
+    tb = Hooked(env)
+    tb.set("x2", "X2-APP")
+    tb.set("wican", "WC-1")
+    os.makedirs(env.runs)
+    s = tb.suite()
+    eng = E.Engine(s, env.settings(), out=lambda *a: None)
+    orig = eng.start_identify
+
+    def stop_then_identify(work):
+        with open(os.path.join(eng.run_dir, "STOP"), "w") as f:
+            f.write("test")
+        return orig(work)
+    eng.start_identify = stop_then_identify
+    rec = eng.run()
+    assert set(verdicts(rec).values()) == {"NOT-RUN"}, verdicts(rec)
+    # the start pass put the WiCAN on w2, the restore put it back on w1,
+    # and the end hook sees w1
+    assert [x for x in tb.calls if x[0] == "on_end"] == [
+        ("on_end", "wican", "w1"), ("on_end", "x2", "x2app")], tb.calls
+    assert tb.calls.index(("flash", "wican", "w1")) < tb.calls.index(
+        ("on_end", "wican", "w1")), tb.calls
+
+
+def test_start_hook_stops():
+    """A start hook that fails, or raises, stops the bench before anything
+    is identified or flashed; every bench group is NOT-RUN with the hook's
+    reason; the end hooks still run (user 2026-10-20)."""
+    for name, answer in (("fails", dict(ok=False, detail="armed and stays so")),
+                         ("raises", RuntimeError("no page")),
+                         ("garbage", "yes")):
+        env = Env("starthook_" + name)
+        tb = Hooked(env, {("on_start", "wican"): answer})
+        tb.set("x2", "X2-APP")
+        tb.set("wican", "WC-OLD")
+        eng, rec = run(env, tb.suite())
+        v = verdicts(rec)
+        assert v == {"a/x": "NOT-RUN", "b/y": "NOT-RUN"}, (name, v)
+        assert not [x for x in tb.calls if x[0] in ("flash", "identify")], \
+            (name, tb.calls)
+        assert ("on_start", "x2", "x2app") not in tb.calls, (name, tb.calls)
+        why = rec["results"][0]["detail"]
+        assert "on_start for wican failed" in why, (name, why)
+        assert {"armed and stays so": "fails", "no page": "raises",
+                "not a dict": "garbage"}[next(k for k in (
+                    "armed and stays so", "no page", "not a dict")
+                    if k in why)] == name, (name, why)
+        assert rec["board_hooks"]["on_start"]["wican"]["ok"] is False
+        assert [x[:2] for x in tb.calls if x[0] == "on_end"] == [
+            ("on_end", "wican"), ("on_end", "x2")], (name, tb.calls)
+
+
+def test_release_line():
+    """An end hook that fails, raises or answers garbage, or one not run
+    because the lock is no longer ours, opens board_state.txt, index.txt
+    and the record with RELEASE NOT CONFIRMED (user 2026-10-20)."""
+    for name, answer in (("fails", dict(ok=False, detail="still latched")),
+                         ("raises", RuntimeError("no page")),
+                         ("garbage", None)):
+        env = Env("release_" + name)
+        tb = Hooked(env, {("on_end", "wican"): answer})
+        tb.set("x2", "X2-APP")
+        tb.set("wican", "WC-1")
+        eng, rec = run(env, tb.suite())
+        assert set(verdicts(rec).values()) == {"PASS"}, (name, verdicts(rec))
+        first = open(os.path.join(eng.run_dir, "board_state.txt")).readline()
+        assert first.startswith("RELEASE NOT CONFIRMED: wican: "), (name, first)
+        assert {"fails": "still latched", "raises": "no page",
+                "garbage": "not a dict"}[name] in first, (name, first)
+        idx = open(os.path.join(eng.run_dir, "index.txt")).readline()
+        assert idx == first, (name, idx, first)
+        assert rec["release_not_confirmed"] == [first.rstrip("\n")], rec
+        assert not any("x2" in ln for ln in rec["release_not_confirmed"]), rec
+    # the lock lost mid-run: the end hooks are not run, and say so
+    env = Env("release_lock")
+    tb = Hooked(env)
+    tb.set("x2", "X2-APP")
+    tb.set("wican", "WC-1")
+    steal = ("open(%r, 'w').write('# Bench holder\\n\\n**Holder:** someone "
+             "else\\n')" % env.holder)
+    s = tb.suite([Group("a", [chk("x", steal)], needs_lock=True,
+                        image=["w1", "x2app"])])
+    eng, rec = run(env, s)
+    assert not [x for x in tb.calls if x[0] == "on_end"], tb.calls
+    lines = rec["release_not_confirmed"]
+    assert len(lines) == 2 and all("lock is not ours" in ln for ln in lines), lines
+
+
+def test_end_hooks_crash():
+    """If the end hooks themselves crash, every board on_end was owed to is
+    recorded as a failed on_end and opens the record: the lane's boards and
+    every board the run touched (charge-interposer reviewer, 2026-10-20)."""
+    env = Env("endcrash")
+    tb = Hooked(env)
+    tb.set("x2", "X2-APP")
+    tb.set("wican", "WC-1")
+    os.makedirs(env.runs)
+    eng = E.Engine(tb.suite(), env.settings(), out=lambda *a: None)
+
+    def crash(work):
+        eng.board_touched.add("third")
+        raise RuntimeError("end pass broke")
+    eng.end_hooks = crash
+    rec = eng.run()
+    oe = rec["board_hooks"]["on_end"]
+    assert sorted(oe) == ["third", "wican", "x2"], oe
+    assert all(v["ok"] is False and "end hooks crashed" in v["detail"]
+               for v in oe.values()), oe
+    lines = rec["release_not_confirmed"]
+    assert any(ln.startswith("RELEASE NOT CONFIRMED: third: ") for ln in lines), lines
+
+
 def test_stop_pause():
     """STOP ends the lane (rest NOT-RUN); PAUSE holds it until removed."""
     env = Env("stop")
@@ -1073,6 +1254,106 @@ def test_resume():
     assert verdicts(rec2)["g/again"] == "PASS"
 
 
+def _killed_copy(env, eng, keep):
+    """A copy of a finished run's folder whose progress.jsonl stops where a
+    kill would have stopped it: the first `keep` lines, the rest never
+    written. Returns the copy's path."""
+    dst = os.path.join(env.root, "killed_%d_%s" % (keep, os.path.basename(eng.run_dir)))
+    os.makedirs(dst)
+    lines = open(os.path.join(eng.run_dir, "progress.jsonl")).readlines()
+    with open(os.path.join(dst, "progress.jsonl"), "w") as f:
+        f.writelines(lines[:keep])
+    return dst
+
+
+def _line_of(eng, pred):
+    for n, ln in enumerate(open(os.path.join(eng.run_dir, "progress.jsonl"))):
+        if pred(json.loads(ln)):
+            return n
+    raise AssertionError("no such line")
+
+
+class Killed:
+    """One finished run of a suite with two board-less groups (lone; free:
+    two, multi) and one board group (board: three, multi3), each multi
+    check judged as two results; resume() resumes a copy cut where a kill
+    would have cut it and says what was carried and what ran again."""
+    def __init__(self, name):
+        self.env = Env(name)
+        self.tb = TwoBoards(self.env)
+        self.tb.set("wican", "WC-1")
+        ids = ("one", "two", "multi", "three", "multi3")
+        self.marks = {k: os.path.join(self.env.root, "%s.txt" % k) for k in ids}
+        bump = lambda k: pc("open(%r,'a').write('x')" % self.marks[k])   # noqa: E731
+        two = lambda run: [Result(Verdict.PASS, "a"), Result(Verdict.PASS, "b")]  # noqa: E731
+        self.s = suite(
+            [Group("lone", [Check("one", bump("one"), python=True)]),
+             Group("free", [Check("two", bump("two"), python=True),
+                            Check("multi", bump("multi"), python=True, judge=two)]),
+             # after=: the bench lane runs beside the logic lane; waiting
+             # puts the board group's lines after the others' in progress
+             Group("board", [Check("three", bump("three"), python=True),
+                             Check("multi3", bump("multi3"), python=True, judge=two)],
+                   needs_lock=True, image="w1", after=["free"])],
+            images={"w1": Image("w1", "fake", expect="WC-1", board="wican")},
+            flashers={"fake": self.tb.flasher}, identify=self.tb.identify,
+            standing_images={"wican": "w1"})
+        self.eng, rec = run(self.env, self.s)
+        assert set(verdicts(rec).values()) == {"PASS"}, verdicts(rec)
+        assert self.ran() == {k: 1 for k in ids}, self.ran()
+
+    def ran(self):
+        return {k: len(open(p).read()) if os.path.exists(p) else 0
+                for k, p in self.marks.items()}
+
+    def resume(self, pred, after=0):
+        """Cut `after` lines past the first progress line matching pred."""
+        before = self.ran()
+        cut = _line_of(self.eng, pred) + 1 + after
+        _e, rec = run(self.env, self.s, resume=_killed_copy(self.env, self.eng, cut))
+        assert set(verdicts(rec).values()) == {"PASS"}, verdicts(rec)
+        carried = {r["check"].split("/")[1] for r in rec["results"] if r.get("carried_from")}
+        again = {k for k, n in self.ran().items() if n > before[k]}
+        return carried, again
+
+
+def _is_check_end(cid):
+    return lambda e: e.get("kind") == "check-end" and e.get("check") == cid
+
+
+def test_carry_finished():
+    """--resume and a run killed inside a group (user 2026-10-20, option A
+    refined): a finished check of a board-less group is carried; a finished
+    check of a group that uses a board is not, until that group's group-end
+    (identify-after) is written; a group that ended before the kill is."""
+    k = Killed("carryfinished")
+    carried, again = k.resume(_is_check_end("free/two"))
+    assert carried == {"one", "two"} and again == {"multi", "three", "multi3"}, \
+        ("board-less group killed after a finished check", carried, again)
+    carried, again = k.resume(_is_check_end("board/three"))
+    assert "three" not in carried and "three" in again, \
+        ("a finished check of an unfinished board group was carried", carried, again)
+    assert carried == {"one", "two", "multi"}, carried
+    carried, again = k.resume(lambda e: e.get("kind") == "group-end"
+                              and e.get("group") == "board")
+    assert carried == {"one", "two", "multi", "three", "multi3"} and not again, \
+        ("a board group that ended", carried, again)
+
+
+def test_carry_check_end():
+    """--resume and a kill between two results of one check: the check runs
+    again, in a board-less group and in a board group alike (user
+    2026-10-20)."""
+    k = Killed("carrycheckend")
+    carried, again = k.resume(lambda e: e.get("id") == "free/multi/a")
+    assert "multi" not in carried and "multi" in again, \
+        ("a half-written check of a board-less group was carried", carried, again)
+    assert carried == {"one", "two"}, carried
+    carried, again = k.resume(lambda e: e.get("id") == "board/multi3/a")
+    assert "multi3" not in carried and "multi3" in again, \
+        ("a half-written check of a board group was carried", carried, again)
+
+
 def test_compare():
     """compare reports changed verdicts and figures outside tolerance."""
     env = Env("compare")
@@ -1214,13 +1495,16 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_identify_error, test_identify_after,
          test_void_resume,
          test_two_boards, test_start_identify, test_restore_after_stop,
-         test_standing_line, test_stop_pause,
+         test_standing_line, test_board_hooks, test_start_hook_stops,
+         test_release_line, test_end_hooks_crash, test_stop_pause,
          test_throttle, test_after, test_wallclock_guard, test_requires,
          test_requires_whole, test_subset_mark, test_subset_not_whole,
          test_product_digest, test_digest_bridge,
          test_resume_code,
          test_redact_scope, test_gate, test_skip, test_timeout,
-         test_resume, test_compare, test_esptool_flasher, test_remote_command,
+         test_resume, test_carry_finished, test_carry_check_end, test_compare,
+         test_esptool_flasher,
+         test_remote_command,
          test_remote_stop]
 
 
@@ -1289,6 +1573,10 @@ MUTANTS = {
     "test_start_identify": _rule("start_identify"),
     "test_restore_after_stop": _rule("restore_after_stop"),
     "test_standing_line": _rule("standing_line"),
+    "test_board_hooks": _rule("board_hooks"),
+    "test_start_hook_stops": _rule("start_hook_stops"),
+    "test_release_line": _rule("release_line"),
+    "test_end_hooks_crash": _rule("end_crash_boards"),
     "test_stop_pause": _rule("stop_pause"),
     "test_throttle": _rule("throttle"),
     "test_after": _rule("after"),
@@ -1305,6 +1593,8 @@ MUTANTS = {
     "test_skip": _rule("skip"),
     "test_timeout": _rule("timeout"),
     "test_resume": _patch(E.Engine, "_carried", lambda self: {}),
+    "test_carry_finished": _rule("carry_finished"),
+    "test_carry_check_end": _rule("carry_check_end"),
     "test_compare": _patch(R, "_within", lambda a, b, t: True),
     "test_esptool_flasher": _patch(
         __import__("vtrux_bench.run.flash", fromlist=["md5_of"]), "md5_of",
