@@ -35,7 +35,10 @@ WHAT IT REFUSES, and each refusal is a separate exit rather than a warning:
      tree is only its boot branch, which has no function of its own). Read
      from the ELF, after the build -- a second mechanism, not a restatement of
      5, because 5 reads what the build was asked to do and this reads what it
-     did.
+     did. The image judged is the one the build named in
+     `build/project_description.json` (`app_bin`), never the newest `.bin`
+     in `build/`; a missing name, or a name with no file, is a refusal
+     (added 2026-10-21);
 
 and on success it writes the commit, the image's md5 and its size beside the
 image, as `<image>.prod.json`. `test/build_checks/build_output.py` refuses an
@@ -613,16 +616,42 @@ def do_build(state):
     if r.returncode != 0:
         print("REFUSED: the build failed (exit %d)." % r.returncode)
         return None
-    return newest_image()
+    return built_image()
 
 
-def newest_image():
+def built_image():
+    """
+    The image THIS build named: build/project_description.json's "app_bin",
+    which idf.py writes at configure time. Until 2026-10-21 this took the
+    newest wican-fw_obd_*.bin in build/ by mtime, so a stray, newer .bin of
+    another name copied into build/ would have been the one judged by refusal
+    6 and named in the record (reviewer, 2026-10-21). A description that cannot
+    be read, a missing or empty key, or a name that is not a file in build/ is
+    a refusal, never a fallback to the old pick.
+    """
     bdir = os.path.join(REPO, "build")
-    cands = [os.path.join(bdir, f) for f in os.listdir(bdir)
-             if f.startswith("wican-fw_obd_") and f.endswith(".bin")]
-    if not cands:
+    desc = os.path.join(bdir, "project_description.json")
+    try:
+        with open(desc, encoding="utf-8") as fh:
+            name = json.load(fh).get("app_bin")
+    except (OSError, ValueError, AttributeError) as e:
+        fail("build/project_description.json cannot be read (%s), so which "
+             "image this build made is unknown." % e)
         return None
-    return max(cands, key=os.path.getmtime)
+    if not isinstance(name, str) or not name:
+        fail("build/project_description.json has no \"app_bin\", so which "
+             "image this build made is unknown.")
+        return None
+    if os.path.basename(name) != name:
+        fail("build/project_description.json's \"app_bin\" is %r, not a file "
+             "name in build/." % name)
+        return None
+    image = os.path.join(bdir, name)
+    if not os.path.isfile(image):
+        fail("build/project_description.json names %s as this build's image, "
+             "and build/ has no such file." % name)
+        return None
+    return image
 
 
 def write_record(image, state):
