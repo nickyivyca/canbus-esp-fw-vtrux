@@ -102,6 +102,8 @@ ROWS = [
      "10 while armed, gate held on 0x617, passes 1.5 s after the newest: latch, never live"),
     ("err-rate-stale-burst", [None], HOLD_617,
      "10 while armed, gate held on 0x617, live 11.5 s after the newest"),
+    ("err-rate-stale-edge-10p0", ["gate"], HOLD_617,
+     "10 while armed, gate passes exactly 10.0 s after the newest: latch at the gate"),
     ("err-rate-rearm-after-trip-expired", [3.0, None], LIVE_FIRST,
      "trip, re-arm 10.8 s after the newest: live, no re-trip"),
     ("err-rate-rearm-after-trip-recent", [3.0, "gate"], LIVE_FIRST,

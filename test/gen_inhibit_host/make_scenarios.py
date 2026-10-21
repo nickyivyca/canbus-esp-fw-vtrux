@@ -992,6 +992,20 @@ def s_err_stale_burst():
     return _held_by_617(err_bus([2 * S + k * 500 * MS for k in range(10)]), 18 * S, 24)
 
 
+@scenario("err-rate-stale-edge-10p0", """
+As err-rate-stale-burst, but 0x617 is withheld until 16.5 s, so the newest
+error (6.5 s) is EXACTLY 10.0 s before the gate passes.
+
+EXPECT: trip 6 latches at the gate (16.5 s), and the device never goes live.
+Spec 7: a burst trips while its newest error frame is no more than 10 s
+before the check, and "Exactly 10.0 s counts". With err-rate-armed-not-live
+and err-rate-stale-burst this pins the recency edge itself (reviewer,
+2026-10-20: a core with the recency test made strict survived every row).
+""")
+def s_err_stale_edge_10p0():
+    return _held_by_617(err_bus([2 * S + k * 500 * MS for k in range(10)]), 16500 * MS, 22)
+
+
 def _trip_then_rearm(t_rearm, end_s):
     """Trip 6 from twelve errors (2.1 .. 3.2 s), disarm at 5 s, re-arm at t_rearm."""
     L = err_bus([2 * S + i * 100 * MS for i in range(1, 13)])
