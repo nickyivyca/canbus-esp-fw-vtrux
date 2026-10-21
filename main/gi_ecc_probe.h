@@ -28,34 +28,26 @@
  * the driver sees the event. No alert is involved: the product enables only
  * TX_SUCCESS and TX_FAILED, and TWAI_ALERT_BUS_ERROR is not among them.
  *
- * HOW ECC IS CAPTURED WITHOUT LOSING EVENTS. The link wraps
+ * HOW ECC IS CAPTURED WITHOUT CHANGING THE COUNT. The link wraps
  * twai_hal_get_events() (-Wl,--wrap, the way gi_restart_quiesce.c wraps
- * esp_restart_noos). The wrapper calls the real function first, unchanged, and
- * only then, when the returned events carry TWAI_HAL_EVENT_BUS_ERR, reads ECC,
- * TEC, REC and the status register into one ring entry. So:
+ * esp_restart_noos), and the wrapper is a copy of the v5.4.1 function that
+ * keeps the value of the HAL's own ECC read instead of discarding it. So:
  *
  *   - One entry per driver count, by construction: the wrapper runs inside the
  *     same interrupt invocation and the same driver critical section as the
  *     bus_error_count++ it precedes. The page reports both totals.
- *   - The HAL's own read-to-release happens exactly as in the shipping build.
- *     Reading ECC BEFORE it would release the capture early, let a second
- *     error re-raise BEI into the same pending bit, and so change the count
- *     being measured. Reading after it is a read of a register already
- *     released, which re-arms nothing.
- *   - ASSUMED, NOT SHOWN: that ECC still holds the captured value after the
- *     HAL's read, until the next bus error is captured. The register
- *     description in this IDF says nothing either way. If every entry reads
- *     the same value, the assumption is wrong and the codes mean nothing --
- *     the bench run is what shows which.
- *   - A KNOWN RACE, for the caveat list (reviewer, 2026-10-20). The HAL's read
- *     releases the capture, so a NEW error captured in the ~1 us before this
- *     probe's read is logged under the EARLIER interrupt's row, in place of
- *     the code the HAL released; the new error then raises its own interrupt
- *     and row, which reads its own code. At 500 kbit/s the window is under one
- *     bit time, so it is rare at the jammer's pulse spacing, but a burst of
- *     10-12 counts from one pulse is exactly where errors come close enough
- *     together for it to happen. Two adjacent rows with the same ecc inside a
- *     burst may be this.
+ *   - The register reads are the shipping build's, in the same order, and no
+ *     others. The HAL's ECC read is the only one that can see the capture:
+ *     the ESP32-C3 TRM (v1.4, 31.4.3.7) says the register "will no longer
+ *     record new error information until it is cleared (via a read from the
+ *     CPU)", and it resets to 0. Reading ECC before the HAL would release the
+ *     capture early and could change the count being measured; reading it
+ *     after, as the first version of this probe did (8abf16b), reads the
+ *     cleared register, and every row of B6 session 1 read 0x00 (2026-10-20).
+ *   - The copy is pinned: another IDF version, or one of the errata options
+ *     whose branches it leaves out, refuses to build (gi_ecc_probe.c).
+ *   - Liveness is on the page: isr_distinct_ecc, and isr_undefined_seg, the
+ *     rows whose segment code the TRM does not define. 0x00 is one of those.
  *   - The ring overwrites its oldest entry, and the page says how many were
  *     overwritten, so a lost entry is never silent.
  *

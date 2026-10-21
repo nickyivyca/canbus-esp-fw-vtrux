@@ -10,11 +10,13 @@
 #include <string.h>
 
 #include "driver/twai.h"
+#include "esp_idf_version.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "hal/twai_hal.h"
 #include "hal/twai_ll.h"
+#include "sdkconfig.h"
 
 static const char *TAG = "gi_ecc";
 
@@ -37,8 +39,8 @@ typedef struct
     uint32_t seq;       /* this probe's count of bus-error interrupts since boot */
     uint32_t status;    /* status register (twai_ll_get_status), 9 bits */
     uint16_t events;    /* the TWAI_HAL_EVENT_* bits of this interrupt invocation */
-    uint8_t  ecc;       /* error code capture register, read after the HAL's release */
-    uint8_t  tec;
+    uint8_t  ecc;       /* error code capture register, as the HAL's own read saw it */
+    uint8_t  tec;       /* TEC, REC and status as the decode read them */
     uint8_t  rec;
 } ecc_entry_t;
 
@@ -69,27 +71,130 @@ static tick_entry_t s_snap_tick[TICK_RING];
 
 /* ------------------------------------------------------------ interrupt -- */
 
-uint32_t __real_twai_hal_get_events(twai_hal_context_t *hal_ctx);
+/*
+ * A COPY OF twai_hal_get_events() FROM ESP-IDF v5.4.1 (hal/twai_hal_iram.c,
+ * with its static helper twai_hal_decode_interrupt), for this chip's
+ * configuration, differing in one place: the HAL's read of the error code
+ * capture register, twai_ll_clear_err_code_cap(), discards the value, and this
+ * copy keeps it. That read is the only one that sees the capture: the ESP32-C3
+ * TRM (v1.4, 31.4.3.7) says the register "will no longer record new error
+ * information until it is cleared (via a read from the CPU)", and its reset
+ * value is 0, so any later read returns 0x00 -- which is what every row of B6
+ * session 1 read (2026-10-20). The copy makes the same register reads, in the
+ * same order, as the function it replaces, and no others; TEC, REC and status
+ * are the values the decode itself read, not read again.
+ *
+ * Pinned, because a copy can drift from the function it stands in for: a
+ * different IDF, or an errata option this copy leaves out, refuses to build.
+ * None of those options exists for the ESP32-C3 in v5.4.1.
+ */
+#if ESP_IDF_VERSION != ESP_IDF_VERSION_VAL(5, 4, 1)
+#error "gi_ecc_probe.c copies twai_hal_get_events() from ESP-IDF v5.4.1; re-check the copy against this IDF"
+#endif
+#if defined(CONFIG_TWAI_ERRATA_FIX_BUS_OFF_REC) || defined(CONFIG_TWAI_ERRATA_FIX_TX_INTR_LOST) || \
+    defined(CONFIG_TWAI_ERRATA_FIX_RX_FRAME_INVALID) || defined(CONFIG_TWAI_ERRATA_FIX_RX_FIFO_CORRUPT)
+#error "gi_ecc_probe.c's copy of twai_hal_get_events() leaves out this errata option's branch"
+#endif
+
 uint32_t __wrap_twai_hal_get_events(twai_hal_context_t *hal_ctx);
+
+/* twai_hal_decode_interrupt(), unchanged but for handing status/TEC/REC back. */
+static inline uint32_t ecc_decode_interrupt(twai_hal_context_t *hal_ctx,
+                                            uint32_t *status_out,
+                                            uint32_t *tec_out, uint32_t *rec_out)
+{
+    uint32_t events = 0;
+    uint32_t interrupts = twai_ll_get_and_clear_intrs(hal_ctx->dev);
+    uint32_t status = twai_ll_get_status(hal_ctx->dev);
+    uint32_t tec = twai_ll_get_tec(hal_ctx->dev);
+    uint32_t rec = twai_ll_get_rec(hal_ctx->dev);
+    uint32_t state_flags = hal_ctx->state_flags;
+
+    if (interrupts & TWAI_LL_INTR_EI) {
+        if (status & TWAI_LL_STATUS_BS) {
+            if (status & TWAI_LL_STATUS_ES) {
+                TWAI_HAL_SET_BITS(events, TWAI_HAL_EVENT_BUS_OFF);
+                TWAI_HAL_SET_BITS(state_flags, TWAI_HAL_STATE_FLAG_BUS_OFF);
+                TWAI_HAL_CLEAR_BITS(state_flags, TWAI_HAL_STATE_FLAG_RUNNING | TWAI_HAL_STATE_FLAG_TX_BUFF_OCCUPIED);
+            } else {
+                TWAI_HAL_SET_BITS(events, TWAI_HAL_EVENT_BUS_RECOV_PROGRESS);
+            }
+        } else {
+            if (status & TWAI_LL_STATUS_ES) {
+                TWAI_HAL_SET_BITS(events, TWAI_HAL_EVENT_ABOVE_EWL);
+                TWAI_HAL_SET_BITS(state_flags, TWAI_HAL_STATE_FLAG_ERR_WARN);
+            } else if (hal_ctx->state_flags & TWAI_HAL_STATE_FLAG_RECOVERING) {
+                TWAI_HAL_SET_BITS(events, TWAI_HAL_EVENT_BUS_RECOV_CPLT);
+                TWAI_HAL_CLEAR_BITS(state_flags, TWAI_HAL_STATE_FLAG_RECOVERING | TWAI_HAL_STATE_FLAG_BUS_OFF);
+            } else {
+                TWAI_HAL_SET_BITS(events, TWAI_HAL_EVENT_BELOW_EWL);
+                TWAI_HAL_CLEAR_BITS(state_flags, TWAI_HAL_STATE_FLAG_ERR_WARN);
+            }
+        }
+    }
+    if (interrupts & TWAI_LL_INTR_RI) {
+        TWAI_HAL_SET_BITS(events, TWAI_HAL_EVENT_RX_BUFF_FRAME);
+    }
+    if (interrupts & TWAI_LL_INTR_TI) {
+        TWAI_HAL_SET_BITS(events, TWAI_HAL_EVENT_TX_BUFF_FREE);
+        TWAI_HAL_CLEAR_BITS(state_flags, TWAI_HAL_STATE_FLAG_TX_BUFF_OCCUPIED);
+    }
+    if (interrupts & TWAI_LL_INTR_EPI) {
+        if (tec >= TWAI_ERR_PASS_THRESH || rec >= TWAI_ERR_PASS_THRESH) {
+            TWAI_HAL_SET_BITS(events, TWAI_HAL_EVENT_ERROR_PASSIVE);
+            TWAI_HAL_SET_BITS(state_flags, TWAI_HAL_STATE_FLAG_ERR_PASSIVE);
+        } else {
+            TWAI_HAL_SET_BITS(events, TWAI_HAL_EVENT_ERROR_ACTIVE);
+            TWAI_HAL_CLEAR_BITS(state_flags, TWAI_HAL_STATE_FLAG_ERR_PASSIVE);
+        }
+    }
+    if (interrupts & TWAI_LL_INTR_BEI) {
+        TWAI_HAL_SET_BITS(events, TWAI_HAL_EVENT_BUS_ERR);
+    }
+    if (interrupts & TWAI_LL_INTR_ALI) {
+        TWAI_HAL_SET_BITS(events, TWAI_HAL_EVENT_ARB_LOST);
+    }
+    hal_ctx->state_flags = state_flags;
+    *status_out = status;
+    *tec_out = tec;
+    *rec_out = rec;
+    return events;
+}
 
 /*
  * Runs in the TWAI interrupt, inside the driver's critical section, in place
- * of every call twai.c makes to twai_hal_get_events(). The real function runs
- * first and unchanged; see the header for why the order matters.
+ * of the one call twai.c makes to twai_hal_get_events(). The ring entry is
+ * written after the last register access, so it adds time but no access.
  */
 uint32_t __wrap_twai_hal_get_events(twai_hal_context_t *hal_ctx)
 {
-    uint32_t events = __real_twai_hal_get_events(hal_ctx);
+    uint32_t status, tec, rec;
+    uint32_t events = ecc_decode_interrupt(hal_ctx, &status, &tec, &rec);
+    uint32_t ecc = 0;
+
+    if (events & TWAI_HAL_EVENT_BUS_OFF) {
+        twai_ll_set_mode(hal_ctx->dev, TWAI_MODE_LISTEN_ONLY);
+    }
+    if (events & TWAI_HAL_EVENT_BUS_RECOV_CPLT) {
+        twai_ll_enter_reset_mode(hal_ctx->dev);
+    }
+    if (events & TWAI_HAL_EVENT_BUS_ERR) {
+        /* twai_ll_clear_err_code_cap(), keeping what it reads. */
+        ecc = hal_ctx->dev->error_code_capture_reg.val;
+    }
+    if (events & TWAI_HAL_EVENT_ARB_LOST) {
+        twai_ll_clear_arb_lost_cap(hal_ctx->dev);
+    }
+
     if (events & TWAI_HAL_EVENT_BUS_ERR)
     {
-        twai_dev_t *hw = hal_ctx->dev;
         portENTER_CRITICAL_ISR(&s_mux);
         ecc_entry_t *e = &s_ecc[s_ecc_total % ECC_RING];
         e->t_us   = esp_timer_get_time();
-        e->ecc    = (uint8_t)(hw->error_code_capture_reg.val & 0xFF);
-        e->tec    = (uint8_t)twai_ll_get_tec(hw);
-        e->rec    = (uint8_t)twai_ll_get_rec(hw);
-        e->status = twai_ll_get_status(hw);
+        e->ecc    = (uint8_t)(ecc & 0xFF);
+        e->tec    = (uint8_t)tec;
+        e->rec    = (uint8_t)rec;
+        e->status = status;
         e->events = (uint16_t)events;
         e->seq    = ++s_ecc_total;
         portEXIT_CRITICAL_ISR(&s_mux);
@@ -165,6 +270,19 @@ static const char *ecc_type_name(uint8_t ecc)
     return n[(ecc >> 6) & 0x3];
 }
 
+/*
+ * The segment codes the ESP32-C3 TRM (v1.4, Table 31.4-12) defines, one bit
+ * per code: 2-15, 17-19 and 22-28. 0 is not among them -- start of frame is
+ * 3 there, though IDF's twai_ll_err_seg_t calls it 0 -- so a row reading 0x00
+ * is never a real capture, and the cleared register reads 0x00.
+ */
+#define ECC_TRM_SEGS  0x1FCEFFFCu
+
+static bool ecc_seg_defined(uint8_t ecc)
+{
+    return (ECC_TRM_SEGS >> (ecc & 0x1F)) & 1u;
+}
+
 static esp_err_t send_fmt(httpd_req_t *req, char *b, size_t len, int n)
 {
     if (n < 0)
@@ -181,7 +299,9 @@ static esp_err_t send_fmt(httpd_req_t *req, char *b, size_t len, int n)
 /*
  * GET /gi_ecc. Oldest entry first in each array. Each "isr" row is
  * [t_us, seq, ecc, type, dir, seg, tec, rec, status, events] with dir 0 = TX,
- * 1 = RX and seg the 5-bit segment code (hal/twai_ll.h, twai_ll_err_seg_t);
+ * 1 = RX and seg the 5-bit segment code (ESP32-C3 TRM Table 31.4-12; IDF's
+ * twai_ll_err_seg_t differs from it for start of frame); isr_distinct_ecc and
+ * isr_undefined_seg are taken over the isr rows on the page;
  * each "ticks" row is [t_us, bus_error_count, pushed, err_n, seeded, latched].
  * driver_bus_error is null when the driver is not installed.
  */
@@ -219,10 +339,32 @@ static esp_err_t ecc_handler(httpd_req_t *req)
     {
         return ESP_FAIL;
     }
+    /*
+     * Two liveness figures over the rows on the page, so a dead readout shows
+     * on the page itself (B6 session 1 read 0x00 in all 578 rows): how many
+     * distinct ecc values they hold, and how many carry a segment code the
+     * TRM does not define. A live readout has isr_undefined_seg 0.
+     */
+    uint32_t seen[8] = { 0 };
+    uint32_t distinct = 0, undefined_seg = 0;
+    for (uint32_t i = 0; i < ecc_n; i++)
+    {
+        uint8_t v = s_snap_ecc[(ecc_total - ecc_n + i) % ECC_RING].ecc;
+        if (!(seen[v >> 5] & (1u << (v & 31))))
+        {
+            seen[v >> 5] |= 1u << (v & 31);
+            distinct++;
+        }
+        if (!ecc_seg_defined(v))
+        {
+            undefined_seg++;
+        }
+    }
     n = snprintf(b, sizeof(b),
+                 "\"isr_distinct_ecc\":%" PRIu32 ",\"isr_undefined_seg\":%" PRIu32 ","
                  "\"ticks_total\":%" PRIu32 ",\"ticks_overwritten\":%" PRIu32 ","
                  "\"isr\":[",
-                 tick_total, tick_total - tick_n);
+                 distinct, undefined_seg, tick_total, tick_total - tick_n);
     if (send_fmt(req, b, sizeof(b), n) != ESP_OK)
     {
         return ESP_FAIL;

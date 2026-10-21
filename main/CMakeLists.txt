@@ -32,9 +32,10 @@ endif()
 # TEC, REC and status register, and for every worker loop on which the counter
 # moved, what trip 6 booked; read on GET /gi_ecc, never on CAN. The source is
 # added only here, as gi_txabort_probe.c is, and the link wraps
-# twai_hal_get_events() (below, after the component exists) so the capture is
-# read after the HAL's own read-to-release -- gi_ecc_probe.h says why that order
-# leaves the count unchanged. `hal` and `soc` are already in `requires`.
+# twai_hal_get_events() (below, after the component exists) with a copy that
+# keeps the value of the HAL's own capture read -- gi_ecc_probe.h says why that
+# is the only read that sees it and why it leaves the count unchanged. `hal` and
+# `soc` are already in `requires`.
 #
 # Never flash a build configured this way to the truck. prod_build.py refuses it.
 if(GI_INSTRUMENT_ECC)
@@ -189,8 +190,9 @@ endif()
 
 # The B6 error-code probe, above. twai.c's calls to twai_hal_get_events() are in
 # another library (driver) from its definition (hal), so --wrap redirects every
-# one of them to __wrap_twai_hal_get_events in gi_ecc_probe.c, which reaches the
-# real function as __real_twai_hal_get_events -- the esp_restart_noos pattern.
+# one of them to __wrap_twai_hal_get_events in gi_ecc_probe.c. Unlike the
+# esp_restart_noos wrap it does not call the real function: it is a pinned copy
+# of it (gi_ecc_probe.c says why).
 if(GI_INSTRUMENT_ECC)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE GI_INSTRUMENT_ECC=1)
     target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=twai_hal_get_events")
