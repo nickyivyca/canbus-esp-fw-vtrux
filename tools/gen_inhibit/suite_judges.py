@@ -400,8 +400,9 @@ def nonode(F):
         return [result("NONODE", "ERROR", figs, "no termination recorded")]
     off = ["%s %s" % (a.get("n"), k) for a in judged_arms for k, x in a["verdicts"].items()
            if k not in ("answer",) and not x.startswith("PASS")]
-    if v == "PASS" and (off or len(mains) < 3):
-        return [result("NONODE", "ERROR", figs, "the record says PASS, but: %s" % (off or "%d main arms" % len(mains)))]
+    want = (rec.get("args") or {}).get("arms", 3)      # the run's own --arms
+    if v == "PASS" and (off or len(mains) < want):
+        return [result("NONODE", "ERROR", figs, "the record says PASS, but: %s" % (off or "%d main arms of %d" % (len(mains), want)))]
     verdict = ("PASS" if v == "PASS" else "FAIL" if v.startswith("NOT AS SPECIFIED") else
                "VOID" if v.startswith("VOID") else "INCONCLUSIVE" if v.startswith(("INCONCLUSIVE", "FLAKY")) else "ERROR")
     return [result("NONODE", verdict, figs, detail)]

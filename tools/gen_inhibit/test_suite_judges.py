@@ -83,6 +83,7 @@ EDITS = [
     ("NONODE", "bench", r"nonode_bench_\d{8}T\d{6}\.json", r'^ "verdict": "PASS"', ' "verdict": "FLAKY: the main arms disagree"', "INCONCLUSIVE"),
     ("NONODE", "bench", r"nonode_bench_\d{8}T\d{6}\.json", r'^ "verdict": "PASS"', ' "verdict": "INCONCLUSIVE: arm 2 latch"', "INCONCLUSIVE"),
     ("NONODE", "bench", r"nonode_bench_\d{8}T\d{6}\.json", r'^ "termination": "fixed[^"]*"', ' "termination": ""', "ERROR"),
+    ("NONODE", "bench", r"nonode_bench_\d{8}T\d{6}\.json", r'^  "arms": 3,', '  "arms": 4,', "ERROR"),
     ("NONODE", "bench", r"nonode_bench_\d{8}T\d{6}\.json", r'^(    "latched_tx": )"PASS: ', r'\g<1>"NOT AS SPECIFIED: ', "ERROR all"),
     ("B15host", "bench", r"B15_diag_decode_check_host_e3d9437\.txt", r"all emitted diag frames decode against the DBC", "2 diag frames do not decode", "FAIL"),
     ("B15", "bench", r"B15_wican_segment_probe\.txt", r"^restored: \{'mode': 0", "restored: {'mode': 3", "FAIL"),
