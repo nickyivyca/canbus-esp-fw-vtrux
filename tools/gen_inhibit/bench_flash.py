@@ -341,16 +341,6 @@ def upload_and_judge(post, read, before, image_sha, image_bytes, now, sleep, cap
             "verdict": verdict, "names": names, "detail": detail, "wire": wire}
 
 
-def check_status(host):
-    st, txt = http(host, "/check_status")
-    if st != 200:
-        return None, "GET /check_status returned %s" % st
-    try:
-        return json.loads(txt), None
-    except ValueError as e:
-        return None, "check_status was not JSON: %s" % e
-
-
 def join_ap(ssid, timeout=40.0):
     """Associate with the device's AP and wait for it, or explain why not."""
     rc, out = netsh("wlan", "connect", "name=%s" % ssid, "interface=%s" % WIFI_IFACE)
@@ -366,15 +356,27 @@ def join_ap(ssid, timeout=40.0):
     return False, "did not associate within %.0f s (now %r / %r)" % (timeout, cur, state)
 
 
-def wait_for_device(host, timeout=60.0):
-    deadline = time.time() + timeout
+def wait_for_device(host, timeout=60.0, now=None, sleep=None):
+    """(page, error): the first /gen_inhibit page, read leniently, that carries
+    elf_sha256 and uptime_ms.
+
+    NEVER /check_status (reviewer, 2026-10-20): it answers with the device's
+    config, credentials included, and that answer reached Wi-Fi captures and
+    console logs. /gen_inhibit names the image (elf_sha256) and the boot
+    (uptime_ms), which is all the preflight needs.
+    """
+    now, sleep = now or time.time, sleep or time.sleep
+    deadline = now() + timeout
     last = ""
-    while time.time() < deadline:
-        cfg, err = check_status(host)
-        if cfg is not None:
-            return cfg, None
+    while now() < deadline:
+        page, err = gi_status(host, strict=False)
+        if page is not None:
+            missing = [k for k in ("elf_sha256", "uptime_ms") if page.get(k) is None]
+            if not missing:
+                return page, None
+            err = "/gen_inhibit has no %s" % " or ".join(missing)
         last = err or "no answer"
-        time.sleep(2.0)
+        sleep(2.0)
     return None, "device did not answer within %.0f s (%s)" % (timeout, last)
 
 
@@ -536,24 +538,19 @@ def main():
             "%s -> %s" % (local_before, local_after))
 
     # ------------------------------------------------------------ the device --
-    cfg, err = wait_for_device(args.host)
-    need(cfg is not None, "device answers", err or "over its AP at %s" % args.host)
-    if cfg is None:
-        print("\nPREFLIGHT FAILED: %s" % ", ".join(fails))
-        return 1
-
-    say(True, "device reports", "git_version=%r fw_version=%r hw=%r"
-        % (cfg.get("git_version"), cfg.get("fw_version"), cfg.get("hw_version")))
-    need(cfg.get("wifi_mode") == "AP", "wifi_mode is AP",
-         "wifi_mode=%r -- spec 8 makes AP permanent for the build that flies"
-         % cfg.get("wifi_mode"))
-
     # LENIENT HERE, STRICT AFTER THE OTA. This page belongs to the image being
     # replaced; the mode is what preflight actually needs from it, and a device
     # whose status page is malformed is the very device that wants reflashing.
-    st, err = gi_status(args.host, strict=False)
-    need(st is not None, "gen_inhibit answers",
-         err or (st.get("_trailing", "") if st else ""))
+    # The device is reached through /gen_inhibit only (2026-10-20): no config
+    # read, so no wifi_mode check and no git/fw/hw_version line.
+    st, err = wait_for_device(args.host)
+    need(st is not None, "device answers",
+         err or "over its AP at %s%s" % (args.host, ("; " + st["_trailing"]) if st.get("_trailing") else ""))
+    if st is None:
+        print("\nPREFLIGHT FAILED: %s" % ", ".join(fails))
+        return 1
+    say(True, "device reports", "elf_sha256 %s... uptime %s ms"
+        % (str(st.get("elf_sha256"))[:16], st.get("uptime_ms")))
     if st is not None:
         mode = st.get("mode")
         say(True, "gen_inhibit mode", "%s (%s)" % (mode, MODES.get(mode, "?")))
