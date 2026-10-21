@@ -15,12 +15,16 @@ invisible to a suite that was green throughout:
 ## Running it
 
 ```sh
+export REVERSE_IT_DIR=<the reverse-it project folder>   # required, no default
 make && ./shim_test && ./shim_test_autoarm    # or: make run
 make asan && ./shim_test
 ```
 
 Builds `main/gen_inhibit.c` and `main/gen_inhibit_core.c` against mock
-platform headers in `mock/`. Needs pthreads; no ESP-IDF.
+platform headers in `mock/`. Needs pthreads and Python 3; no ESP-IDF.
+`make` also builds the long-arm stimulus first, from the project folder (see
+"Building the long-arm stimulus" below), and stops if `REVERSE_IT_DIR` is not
+set.
 
 **Exit codes:** 0 all cases pass, 1 a case failed, 2 a case was still running
 at its wall-clock budget (20 s, or what the case declares with
@@ -100,35 +104,42 @@ the recorded timestamps. It looks in this harness's `scenarios/` first and falls
 to `../gen_inhibit_host/scenarios/`, so the eight host replays are reusable here
 without being copied. Neither directory is in git.
 
-**Building the long-arm stimulus** (case 33). Not in git, rebuilt from a capture
-that *is* in the project repo. **23,241,533 bytes with LF line endings**, and
-706,283 frames (gen-inhibit tester's measurement of their own regeneration,
-2026-10-09, reported to the implementor; not independently checked here, because
-the file is generated and absent on this machine. The "~12 MB" this said until
-then was wrong by a factor of two and so could not have been used to notice a
-truncated rebuild).
+**Building the long-arm stimulus** (cases 33 and 53). `make` builds
+`scenarios/replay-longarm-300s-all.scn` before `shim_test`, through
+`build_longarm.py`, from a capture in the project folder:
+`projects/vtrux/notes/artifacts/gen-inhibit/runs/scottsvalley_armable_300s.log`,
+every id, channel 0, the first 300 s. It is never committed: the capture is not
+published, so nothing derived from it is either, and `scenarios/` is in
+`.gitignore`. **23,241,533 bytes with LF line endings**, and 706,283 frames
+(gen-inhibit tester's measurement of their own regeneration, 2026-10-09; the
+implementor's madhouse build of `38fd103` came out the same size. The "~12 MB"
+this said until then was wrong by a factor of two and so could not have been used
+to notice a truncated rebuild).
 
-```sh
-R=<project root>          # NOT a default: see below
-cd ../gen_inhibit_host
-py -3.14 from_capture.py \
-        $R/projects/vtrux/notes/artifacts/gen-inhibit/runs/scottsvalley_armable_300s.log \
-        --repo $R --channel 0 --at 0 --for 300 \
-        --all-ids --out ../gen_inhibit_shim/scenarios/replay-longarm-300s-all.scn
-```
+- **Where the project folder comes from:** `REVERSE_IT_DIR`, the absolute path of
+  the reverse-it folder on this machine (methodology, 2026-10-20). There is no
+  default; unset stops the build with a message naming the variable, and
+  `shim_test` is not run. `build_longarm.py` passes the same folder to
+  `from_capture.py` as `--project-dir`, so the capture and the `canre` parser that reads
+  it come from the same folder. Under WSL, pass a Windows value through with
+  `WSLENV=REVERSE_IT_DIR/p`.
+- **When it rebuilds:** when the file is missing, or older than the capture,
+  `../gen_inhibit_host/from_capture.py` or `build_longarm.py`, so a changed
+  converter cannot leave a stale file passing. Otherwise the step is a no-op. It
+  writes to a temporary name and renames it when complete, so an interrupted build
+  does not leave a truncated file that looks current.
+- **Which Python:** `python3`, or `make PYTHON=<interpreter>`. The suite builds
+  with gcc on Linux or WSL; on Windows a bare `python3` opens the Microsoft Store,
+  and the project's `python-executables-reference.md` is the per-machine table.
 
-**`--repo` is not optional on this machine, and the recipe above omitted it
-until 2026-10-09.** `from_capture.py:35` defaults the project repo to
-`$GEN_INHIBIT_REPO`, else a sync-client path under the user's home that does
-not exist on every machine holding this firmware repo -- this one included. The
-script refuses an absent repo by name rather than guessing (`:67`), so the old
-recipe did not produce a bad fixture, it stopped; but it stopped naming a
-directory that nothing here explained. Pass `--repo <project root>` or set
-`GEN_INHIBIT_REPO`.
+`stimulus.fnv` is what keeps a rebuilt file honest: each replay case checks the
+stimulus it ran on against the committed checksum (spec 12.4), so a rebuild that
+differs fails the case rather than quietly measuring something else.
 
-**`python3` was also wrong here** and is now `py -3.14`: on the Windows bench
-laptop a bare `python3` opens the Microsoft Store rather than an interpreter.
-The project's `python-executables-reference.md` is the per-machine table.
+Until 2026-10-20 this was a manual `from_capture.py` line run before the suite. A
+clean checkout without it failed cases 33 and 53 on a missing file, and the
+project folder came from `--repo` or `$GEN_INHIBIT_REPO`, which defaulted to a
+sync-client path that does not exist on every machine.
 
 **Pass `--all-ids`** — case 33 replays the whole capture. Do not generate it into the
 host harness's `scenarios/`: `run_tests.py` enumerates everything there, and
