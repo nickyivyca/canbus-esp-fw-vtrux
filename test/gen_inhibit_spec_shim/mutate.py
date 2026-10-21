@@ -76,6 +76,12 @@ MUTANTS = [
     (L, "reading the alerts does not clear them", "    L.pending &= ~mine;\n", "\n"),
     (L, "recovery calls not counted", "    L.recovery_calls++;\n", "\n"),
     (L, "errors go on after bus-off", "    if (L.silent && !L.bus_off)\n", "    if (L.silent)\n"),
+    (L, "the passive period is never used", "(L.passive_us > 0 && L.tec >= 128) ? L.passive_us : L.retry_us",
+     "L.retry_us"),
+    (L, "the passive period starts at TEC 120", "L.tec >= 128) ? L.passive_us", "L.tec >= 120) ? L.passive_us"),
+    (L, "the measured silence drops its passive period", "    L.passive_us = passive_us;\n", "\n"),
+    (T, "the bench cases run a fixed period", "    else if (c->passive_us > 0) sl_silence_measured(c->retry_us, c->passive_us);\n",
+     "    else if (c->passive_us > 0) sl_silence(c->retry_us);\n"),
     (L, "the 10th error misplaced", "L.retry_us = (L.tenth_ref + L.tenth_us - now) / 10;", "L.retry_us = (L.tenth_ref + L.tenth_us - now) / 5;"),
     # the case code, caught by a case
     (T, "the judge gets no errors", "for (int k = 0; k < sl_err_count() && k < SL_MAX_ERR; k++) g_errs[o.n_errs++]",

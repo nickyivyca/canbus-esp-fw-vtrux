@@ -32,10 +32,14 @@
  * fakes' ft_stall_id(), which reads TS clear (awaiting arbitration), so the
  * fakes' abort removes it and it never completes, before or after the nodes
  * return. Every other frame reads as transmitting, as above.
- * The retry period and the alert pattern are this layer's choice, not a
- * measurement. Once the bench row ("a bus with no other node") has measured
- * the real alert pattern, the layer replays that pattern (spec 12.4, the
- * emulated row's last sentence).
+ * The retry period and the alert pattern of sl_silence() and
+ * sl_silence_tenth_at() are this layer's choice, not a measurement.
+ * sl_silence_measured() replays the pattern the bench row ("a bus with no
+ * other node", nonode_bench.py, 2026-10-20 17:04) measured on the wire: one
+ * error frame per active_us until TEC reaches 128 (16 errors, error active),
+ * then one attempt per passive_us, each still an ACK error and a bus-error
+ * alert, TEC staying 128, REC 0, no bus-off (spec 12.4, the emulated row's
+ * last sentence; reviewer, 2026-10-20).
  *
  * WHAT IT OBSERVES. Every twai_receive() return (a frame or a timeout) with
  * its virtual time: the device evaluates its trips at the tick right after
@@ -80,6 +84,10 @@ void sl_silence(int64_t retry_us);
  * so the 10th error lands `tenth_us` after `t_ref` (a case's placement of the
  * threshold between two check points, whatever the diag cadence). */
 void sl_silence_tenth_at(int64_t t_ref, int64_t tenth_us);
+
+/* The bench's pattern: one error per `active_us` while TEC < 128, then one per
+ * `passive_us` (error passive). */
+void sl_silence_measured(int64_t active_us, int64_t passive_us);
 
 /* The period the layer used (after the first frame waited). */
 int64_t sl_retry_us(void);

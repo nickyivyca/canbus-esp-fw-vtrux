@@ -24,6 +24,8 @@ static struct
     int64_t  retry_us;
     int64_t  retry_t0;          /* -1: no frame waiting yet in this silence */
     int64_t  tenth_ref, tenth_us; /* tenth_us < 0: retry_us is fixed */
+    int64_t  passive_us;        /* > 0: the period once TEC is 128 (error passive) */
+    int64_t  last_err_t;        /* the last error's time in this wait (retry_t0 before the first) */
     int      retries_this_wait; /* errors injected since retry_t0 */
     uint32_t base_errors;       /* bus_error_count before this silence */
     uint32_t tec;
@@ -74,14 +76,19 @@ void sl_step(void)
                 if (L.retry_us < 1) L.retry_us = 1;
             }
             L.retries_this_wait = 0;
+            L.last_err_t = now;
         }
         if (L.retry_t0 >= 0)
         {
-            /* every retry whose time has come, at its own time, not at now */
-            while (L.retry_t0 + (int64_t)(L.retries_this_wait + 1) * L.retry_us <= now)
+            /* every retry whose time has come, at its own time, not at now; the
+             * period is passive_us once TEC is 128, when that is set */
+            for (;;)
             {
+                const int64_t gap = (L.passive_us > 0 && L.tec >= 128) ? L.passive_us : L.retry_us;
+                if (L.last_err_t + gap > now) break;
+                L.last_err_t += gap;
                 L.retries_this_wait++;
-                inject_error(L.retry_t0 + (int64_t)L.retries_this_wait * L.retry_us);
+                inject_error(L.last_err_t);
             }
         }
     }
@@ -105,6 +112,7 @@ void sl_silence(int64_t retry_us)
     L.silent = true;
     L.retry_us = retry_us;
     L.retry_t0 = -1;
+    L.passive_us = 0;
     L.tenth_us = -1;
     ft_set_air_time(AIR_NEVER);
 }
@@ -114,6 +122,12 @@ void sl_silence_tenth_at(int64_t t_ref, int64_t tenth_us)
     sl_silence(1000);
     L.tenth_ref = t_ref;
     L.tenth_us = tenth_us;
+}
+
+void sl_silence_measured(int64_t active_us, int64_t passive_us)
+{
+    sl_silence(active_us);
+    L.passive_us = passive_us;
 }
 
 int64_t sl_retry_us(void) { return L.retry_us; }

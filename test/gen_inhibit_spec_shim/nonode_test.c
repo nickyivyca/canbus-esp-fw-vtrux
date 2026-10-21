@@ -202,9 +202,29 @@ typedef struct
     int64_t tenth_us;        /* > 0: the 10th error this long after the last 0x051 */
     int     bus_off_after;   /* > 0: bus-off once this many errors were injected */
     int     region;          /* nn_obs_t.region */
+    int64_t passive_us;      /* > 0: retry_us until TEC 128, then this (the bench's pattern) */
 } case_t;
 
 static int64_t g_checks[SL_MAX_RX], g_errs[SL_MAX_ERR];
+
+/* Whether the errors injected so far follow the bench's pattern: after the first,
+ * 15 gaps of active_us (TEC 8 to 120), then passive_us; at least 30 errors. */
+static nn_verdict_t bench_pattern(int64_t active_us, int64_t passive_us)
+{
+    nn_verdict_t v;
+    const int n = sl_err_count() < SL_MAX_ERR ? sl_err_count() : SL_MAX_ERR;
+    int bad = 0, first_bad = -1;
+    for (int k = 1; k < n; k++)
+        if (sl_err_time(k) - sl_err_time(k - 1) != (k < 16 ? active_us : passive_us))
+        {
+            bad++;
+            if (first_bad < 0) first_bad = k;
+        }
+    snprintf(v.detail, sizeof(v.detail), "%d errors; gaps %lld us to TEC 128 then %lld us: %d off (first at %d); TEC %u",
+             sl_err_count(), (long long)active_us, (long long)passive_us, bad, first_bad, sl_tec());
+    v.v = (n >= 30 && bad == 0 && sl_tec() == 128) ? "PASS" : "NOT-AS-SPECIFIED";
+    return v;
+}
 
 static void run_case(const case_t *c)
 {
@@ -216,6 +236,7 @@ static void run_case(const case_t *c)
     if (!live_and_answered(cs, &t_last, &sent_after_answer)) { teardown(); return; }
 
     if (c->tenth_us > 0) sl_silence_tenth_at(t_last, c->tenth_us);
+    else if (c->passive_us > 0) sl_silence_measured(c->retry_us, c->passive_us);
     else sl_silence(c->retry_us);
     const int rx_at_silence = sl_rx_count();
 
@@ -282,6 +303,7 @@ static void run_case(const case_t *c)
                                            ft_sent_count() > sent_after_answer ? ft_sent(sent_after_answer)->t_queued : -1));
     }
     report(cs, "R4", nn_r4_not_blocked(sl_rx_count() - rx_at_silence, gap_max, ft_sent_count() - ft_wire_count()));
+    if (c->passive_us > 0) report(cs, "layer", bench_pattern(c->retry_us, c->passive_us));
 
     if (c->bus_off_after > 0)
     {
@@ -385,6 +407,37 @@ static void layer_case(void)
     snprintf(v.detail, sizeof(v.detail), "one call counted as %d", sl_recovery_calls() - rc0);
     v.v = sl_recovery_calls() - rc0 == 1 ? "PASS" : "NOT-AS-SPECIFIED";
     report(cs, "recovery", v);
+    teardown();
+}
+
+/* The layer's replay of the bench's pattern, on its own: from the frame's wait,
+ * 16 errors 246 us apart (TEC to 128), then 262 us apart, each a bus error. */
+static void layer_bench_case(void)
+{
+    const char *cs = "layer_bench";
+    int64_t t_last;
+    int sent_after_answer;
+    nn_verdict_t v;
+    setup();
+    if (!live_and_answered(cs, &t_last, &sent_after_answer)) { teardown(); return; }
+    sl_silence_measured(246, 262);
+    const int64_t t0 = ft_now();
+    while (ft_now() < t0 + 600 * MS && ft_sent_count() == sent_after_answer) ft_run(STEP_US);
+    const int64_t t_wait = ft_sent_count() > sent_after_answer ? ft_sent(sent_after_answer)->t_queued : -1;
+    const int before_wait = sl_err_count();
+    ft_run(20 * MS);
+    twai_status_info_t s;
+    twai_get_status_info(&s);
+    v = bench_pattern(246, 262);
+    const int n = sl_err_count();
+    const bool count_ok = n >= 70 && n <= 85;   /* 16 x 246 us, then ~16 ms / 262 us */
+    snprintf(v.detail + strlen(v.detail), sizeof(v.detail) - strlen(v.detail),
+             "; waiting from %lld us, %d before; bus_error_count %u, REC %u", (long long)t_wait, before_wait,
+             s.bus_error_count, s.rx_error_counter);
+    if (!(t_wait >= 0 && before_wait == 0 && count_ok && s.bus_error_count == (uint32_t)n &&
+          s.tx_error_counter == 128 && s.rx_error_counter == 0 && s.state == TWAI_STATE_RUNNING))
+        v.v = "NOT-AS-SPECIFIED";
+    report(cs, "pattern", v);
     teardown();
 }
 
@@ -612,6 +665,9 @@ static const case_t CASES[] = {
     { "slow",                0, 1500 * MS,      0,   3 },
     { "busoff_few",       1000,        0,       5,   3 },
     { "busoff_many",       300,        0,      12,   1 },
+    /* the bench's measured pattern (nonode_bench.py 2026-10-20 17:04): arm 1, and arms 2 and 3 */
+    { "bench_262",         246,        0,       0,   1, 262 },
+    { "bench_274",         258,        0,       0,   1, 274 },
 };
 
 int main(int argc, char **argv)
@@ -620,12 +676,14 @@ int main(int argc, char **argv)
     if (argc < 2)
     {
         printf("layer\n");
+        printf("layer_bench\n");
         for (size_t i = 0; i < n; i++) printf("%s\n", CASES[i].name);
         printf("answer_stuck\n");
         return 0;
     }
     bool found = false;
     if (strcmp(argv[1], "layer") == 0) { layer_case(); found = true; }
+    if (strcmp(argv[1], "layer_bench") == 0) { layer_bench_case(); found = true; }
     if (strcmp(argv[1], "answer_stuck") == 0) { answer_case(); found = true; }
     for (size_t i = 0; i < n && !found; i++)
         if (strcmp(argv[1], CASES[i].name) == 0) { run_case(&CASES[i]); found = true; }
