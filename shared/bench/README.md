@@ -35,7 +35,7 @@ every group of checks, restore, record. The same command runs part of it.
 | `vtrux_bench/run/cli.py` | The command line. |
 | `vtrux_bench/decode.py` | Diag DBC schema identity (toolkit item 10, first part): `layout_hash`, `check_identity`, `check_history`. See "Diag DBC schema identity" below. |
 | `tests/test_decode.py` | Its tests (6), with `data/golden_layout.dbc` and its hand-written canonical text `data/golden_layout.txt`. `--can-fail` runs each test under each of its mutants (28); every one must fail. |
-| `tests/test_run_core.py` | The runner's own tests (41), with a fake suite, a fake two-board bench, `fake_esptool.py` and `fake_ssh.py`. `--can-fail` runs each with its rule switched off; every one must then fail. |
+| `tests/test_run_core.py` | The runner's own tests (43), with a fake suite, a fake two-board bench, `fake_esptool.py` and `fake_ssh.py`. `--can-fail` runs each with its rule switched off; every one must then fail. |
 
 ### Boards and images
 
@@ -139,6 +139,13 @@ chosen at run time; suites define none.
 
 `--resume RUN_DIR` carries only from a run of the same suite on the same
 code, as that run's start event records them; anything else is refused.
+It carries only what finished (user, 2026-10-20). A check needs its
+`check-end` event in `progress.jsonl`, written once all its results are,
+so a check killed between two results runs again. A check of a group that
+uses a board also needs the group's `group-end` event, written after its
+identify-after and amends, so no PASS its identify-after never saw is
+carried. A board-less group killed mid-way keeps its finished checks. A
+run from before these events carries nothing.
 
 `record.json` lists every image the run used (`images_used`): board,
 expected identity, what identify read, file digests, whether it was

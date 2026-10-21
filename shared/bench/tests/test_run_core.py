@@ -1254,6 +1254,106 @@ def test_resume():
     assert verdicts(rec2)["g/again"] == "PASS"
 
 
+def _killed_copy(env, eng, keep):
+    """A copy of a finished run's folder whose progress.jsonl stops where a
+    kill would have stopped it: the first `keep` lines, the rest never
+    written. Returns the copy's path."""
+    dst = os.path.join(env.root, "killed_%d_%s" % (keep, os.path.basename(eng.run_dir)))
+    os.makedirs(dst)
+    lines = open(os.path.join(eng.run_dir, "progress.jsonl")).readlines()
+    with open(os.path.join(dst, "progress.jsonl"), "w") as f:
+        f.writelines(lines[:keep])
+    return dst
+
+
+def _line_of(eng, pred):
+    for n, ln in enumerate(open(os.path.join(eng.run_dir, "progress.jsonl"))):
+        if pred(json.loads(ln)):
+            return n
+    raise AssertionError("no such line")
+
+
+class Killed:
+    """One finished run of a suite with two board-less groups (lone; free:
+    two, multi) and one board group (board: three, multi3), each multi
+    check judged as two results; resume() resumes a copy cut where a kill
+    would have cut it and says what was carried and what ran again."""
+    def __init__(self, name):
+        self.env = Env(name)
+        self.tb = TwoBoards(self.env)
+        self.tb.set("wican", "WC-1")
+        ids = ("one", "two", "multi", "three", "multi3")
+        self.marks = {k: os.path.join(self.env.root, "%s.txt" % k) for k in ids}
+        bump = lambda k: pc("open(%r,'a').write('x')" % self.marks[k])   # noqa: E731
+        two = lambda run: [Result(Verdict.PASS, "a"), Result(Verdict.PASS, "b")]  # noqa: E731
+        self.s = suite(
+            [Group("lone", [Check("one", bump("one"), python=True)]),
+             Group("free", [Check("two", bump("two"), python=True),
+                            Check("multi", bump("multi"), python=True, judge=two)]),
+             # after=: the bench lane runs beside the logic lane; waiting
+             # puts the board group's lines after the others' in progress
+             Group("board", [Check("three", bump("three"), python=True),
+                             Check("multi3", bump("multi3"), python=True, judge=two)],
+                   needs_lock=True, image="w1", after=["free"])],
+            images={"w1": Image("w1", "fake", expect="WC-1", board="wican")},
+            flashers={"fake": self.tb.flasher}, identify=self.tb.identify,
+            standing_images={"wican": "w1"})
+        self.eng, rec = run(self.env, self.s)
+        assert set(verdicts(rec).values()) == {"PASS"}, verdicts(rec)
+        assert self.ran() == {k: 1 for k in ids}, self.ran()
+
+    def ran(self):
+        return {k: len(open(p).read()) if os.path.exists(p) else 0
+                for k, p in self.marks.items()}
+
+    def resume(self, pred, after=0):
+        """Cut `after` lines past the first progress line matching pred."""
+        before = self.ran()
+        cut = _line_of(self.eng, pred) + 1 + after
+        _e, rec = run(self.env, self.s, resume=_killed_copy(self.env, self.eng, cut))
+        assert set(verdicts(rec).values()) == {"PASS"}, verdicts(rec)
+        carried = {r["check"].split("/")[1] for r in rec["results"] if r.get("carried_from")}
+        again = {k for k, n in self.ran().items() if n > before[k]}
+        return carried, again
+
+
+def _is_check_end(cid):
+    return lambda e: e.get("kind") == "check-end" and e.get("check") == cid
+
+
+def test_carry_finished():
+    """--resume and a run killed inside a group (user 2026-10-20, option A
+    refined): a finished check of a board-less group is carried; a finished
+    check of a group that uses a board is not, until that group's group-end
+    (identify-after) is written; a group that ended before the kill is."""
+    k = Killed("carryfinished")
+    carried, again = k.resume(_is_check_end("free/two"))
+    assert carried == {"one", "two"} and again == {"multi", "three", "multi3"}, \
+        ("board-less group killed after a finished check", carried, again)
+    carried, again = k.resume(_is_check_end("board/three"))
+    assert "three" not in carried and "three" in again, \
+        ("a finished check of an unfinished board group was carried", carried, again)
+    assert carried == {"one", "two", "multi"}, carried
+    carried, again = k.resume(lambda e: e.get("kind") == "group-end"
+                              and e.get("group") == "board")
+    assert carried == {"one", "two", "multi", "three", "multi3"} and not again, \
+        ("a board group that ended", carried, again)
+
+
+def test_carry_check_end():
+    """--resume and a kill between two results of one check: the check runs
+    again, in a board-less group and in a board group alike (user
+    2026-10-20)."""
+    k = Killed("carrycheckend")
+    carried, again = k.resume(lambda e: e.get("id") == "free/multi/a")
+    assert "multi" not in carried and "multi" in again, \
+        ("a half-written check of a board-less group was carried", carried, again)
+    assert carried == {"one", "two"}, carried
+    carried, again = k.resume(lambda e: e.get("id") == "board/multi3/a")
+    assert "multi3" not in carried and "multi3" in again, \
+        ("a half-written check of a board group was carried", carried, again)
+
+
 def test_compare():
     """compare reports changed verdicts and figures outside tolerance."""
     env = Env("compare")
@@ -1402,7 +1502,9 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_product_digest, test_digest_bridge,
          test_resume_code,
          test_redact_scope, test_gate, test_skip, test_timeout,
-         test_resume, test_compare, test_esptool_flasher, test_remote_command,
+         test_resume, test_carry_finished, test_carry_check_end, test_compare,
+         test_esptool_flasher,
+         test_remote_command,
          test_remote_stop]
 
 
@@ -1491,6 +1593,8 @@ MUTANTS = {
     "test_skip": _rule("skip"),
     "test_timeout": _rule("timeout"),
     "test_resume": _patch(E.Engine, "_carried", lambda self: {}),
+    "test_carry_finished": _rule("carry_finished"),
+    "test_carry_check_end": _rule("carry_check_end"),
     "test_compare": _patch(R, "_within", lambda a, b, t: True),
     "test_esptool_flasher": _patch(
         __import__("vtrux_bench.run.flash", fromlist=["md5_of"]), "md5_of",
