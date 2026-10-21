@@ -9,6 +9,8 @@ suites (tester, 2026-10-18). No hardware, no runner, no ssh.
            can-fail, self-test) in emulated or bench; no wall-clock check
            in harness; no check id in two suites; every known FAIL names a
            check of its own suite; every skip names its spec item or ruling
+  pycache  no __pycache__ in charge-interposer/ or shared/bench/ makes the
+           clone dirty (a dirty clone cannot be resumed)
 
     py -3.14 charge-interposer/bench_suite_test.py [--can-fail]
 
@@ -436,9 +438,63 @@ def test_identify():
         I.read_7f7, I.read_hello, I.read_slcan = saved
 
 
+# The trees a run imports Python from. Bytecode written there must not make
+# the clone dirty, or --resume refuses it (2026-10-20: 20d3's first resume,
+# refused for shared/bench/vtrux_bench/__pycache__).
+PYCACHE_TREES = ("charge-interposer", "shared/bench")
+_PYCACHE_DROP = ()      # .gitignore files the check leaves out (mutant hook)
+
+
+def _pycache_unignored():
+    """(paths git would report, folders checked): one __pycache__/*.pyc per
+    folder holding a .py file in PYCACHE_TREES, asked of a scratch repo
+    holding only this repo's .gitignore files on those paths."""
+    repo = os.path.dirname(HERE)
+    probe = os.path.join(TMP, "pycache-probe")
+    shutil.rmtree(probe, ignore_errors=True)
+    os.makedirs(probe)
+    subprocess.run(["git", "init", "-q", probe], check=True)
+    ignores, paths = {".gitignore"}, []
+    for tree in PYCACHE_TREES:
+        parts = tree.split("/")
+        for i in range(1, len(parts)):
+            ignores.add("/".join(parts[:i] + [".gitignore"]))
+        for d, dirs, files in os.walk(os.path.join(repo, *parts)):
+            dirs[:] = [x for x in dirs
+                       if x not in (".pio", "__pycache__", ".git")]
+            rel = os.path.relpath(d, repo).replace(os.sep, "/")
+            if ".gitignore" in files:
+                ignores.add(rel + "/.gitignore")
+            if any(f.endswith(".py") for f in files):
+                paths.append(rel + "/__pycache__/m.cpython-314.pyc")
+    for g in sorted(ignores):
+        src = os.path.join(repo, *g.split("/"))
+        if g in _PYCACHE_DROP or not os.path.isfile(src):
+            continue
+        dst = os.path.join(probe, *g.split("/"))
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copyfile(src, dst)
+    # NUL-separated: in text mode Windows would turn "\n" into "\r\n" and
+    # no path would match.
+    r = subprocess.run(["git", "-C", probe, "check-ignore", "--stdin", "-z"],
+                       input="\0".join(paths) + "\0", capture_output=True,
+                       text=True)
+    if r.returncode not in (0, 1):
+        raise AssertionError("git check-ignore failed: %s" % r.stderr)
+    ignored = set(x for x in r.stdout.split("\0") if x)
+    shutil.rmtree(probe, ignore_errors=True)
+    return [p for p in paths if p not in ignored], len(paths)
+
+
+def test_pycache_ignored():
+    missing, n = _pycache_unignored()
+    assert n >= 5, "only %d Python folders found: the walk is wrong" % n
+    assert not missing, "bytecode git would report: %s" % missing[:4]
+
+
 TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_corrupt_pin_judge, test_c12_judge, test_host_bridge_judge,
-         test_suites, test_mutant_wiring, test_identify]
+         test_suites, test_mutant_wiring, test_identify, test_pycache_ignored]
 
 
 # ---- can-fail -----------------------------------------------------------
@@ -547,6 +603,8 @@ def _target(attr):
     bench_suite."""
     if "." in attr:
         mod, name = attr.split(".", 1)
+        if mod == "self":
+            return sys.modules[__name__], name
         return getattr(B, mod), name
     return B, attr
 
@@ -558,6 +616,7 @@ _ORIG = {n: getattr(B, n) for n in ("script_judge", "recorded_judge",
                                     "harness", "product_files")}
 _ORIG["bench_identify.PRODUCT_RE"] = B.bench_identify.PRODUCT_RE
 _ORIG["bench_identify.identify"] = B.bench_identify.identify
+_ORIG["self._PYCACHE_DROP"] = _PYCACHE_DROP
 
 # test -> [(module attribute, replacement, what the mutant does)]
 MUTANTS = {
@@ -600,6 +659,11 @@ MUTANTS = {
         ("product_files", _no_machine, "machine.py left out of the product"),
         ("harness", _wrap_suite("harness", _product_in_harness),
          "the harness suite gated on the product digest")],
+    "test_pycache_ignored": [
+        ("self._PYCACHE_DROP", ("shared/bench/.gitignore",),
+         "shared/bench without its .gitignore (the 20d3 resume refusal)"),
+        ("self._PYCACHE_DROP", ("charge-interposer/.gitignore",),
+         "charge-interposer without its .gitignore")],
 }
 
 
