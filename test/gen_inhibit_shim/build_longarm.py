@@ -14,9 +14,10 @@ converter is the point -- a changed converter must not leave a stale file
 passing (reviewer, 2026-10-20).
 
 The project folder comes from REVERSE_IT_DIR and nowhere else. Unset is an
-error, never a guess (methodology, 2026-10-20). from_capture.py reads the same
-variable, so the capture found here and the parser it is read with come from
-the same folder.
+error, never a guess (methodology, 2026-10-20). The folder is passed to
+from_capture.py explicitly (--repo), so the capture found here and the canre
+parser it is read with come from the same folder whatever from_capture.py's
+own default is (reviewer, 2026-10-20).
 """
 import os
 import subprocess
@@ -38,8 +39,7 @@ def project_dir():
             "and 53 cannot be built and shim_test is not run.\n"
             "  Set it to the absolute path of the reverse-it project folder on "
             "this machine, e.g.\n"
-            "    REVERSE_IT_DIR=\"/mnt/c/Users/<user>/seadrive_root/<library>/"
-            "My Libraries/NotGit/reverse-it\" make\n"
+            "    REVERSE_IT_DIR=/path/to/reverse-it make\n"
             "  Under WSL pass a Windows value through with "
             "WSLENV=REVERSE_IT_DIR/p.")
     v = os.path.normpath(v)
@@ -75,7 +75,7 @@ def main():
     # inputs and would therefore never be rebuilt.
     tmp = OUT + ".tmp"
     rc = subprocess.call(
-        [sys.executable, FROM_CAPTURE, capture,
+        [sys.executable, FROM_CAPTURE, capture, "--repo", root,
          "--channel", "0", "--at", "0", "--for", "300", "--all-ids",
          "--out", tmp],
         cwd=os.path.dirname(FROM_CAPTURE))

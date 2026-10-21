@@ -119,9 +119,10 @@ to notice a truncated rebuild).
 - **Where the project folder comes from:** `REVERSE_IT_DIR`, the absolute path of
   the reverse-it folder on this machine (methodology, 2026-10-20). There is no
   default; unset stops the build with a message naming the variable, and
-  `shim_test` is not run. `from_capture.py` reads the same variable, so the
-  capture and the parser that reads it come from the same folder. Under WSL, pass
-  a Windows value through with `WSLENV=REVERSE_IT_DIR/p`.
+  `shim_test` is not run. `build_longarm.py` passes the same folder to
+  `from_capture.py` as `--repo`, so the capture and the `canre` parser that reads
+  it come from the same folder. Under WSL, pass a Windows value through with
+  `WSLENV=REVERSE_IT_DIR/p`.
 - **When it rebuilds:** when the file is missing, or older than the capture,
   `../gen_inhibit_host/from_capture.py` or `build_longarm.py`, so a changed
   converter cannot leave a stale file passing. Otherwise the step is a no-op. It
