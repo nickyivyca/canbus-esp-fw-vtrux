@@ -15,7 +15,7 @@ passing (reviewer, 2026-10-20).
 
 The project folder comes from REVERSE_IT_DIR and nowhere else. Unset is an
 error, never a guess (methodology, 2026-10-20). The folder is passed to
-from_capture.py explicitly (--repo), so the capture found here and the canre
+from_capture.py explicitly (--project-dir), so the capture found here and the canre
 parser it is read with come from the same folder whatever from_capture.py's
 own default is (reviewer, 2026-10-20).
 """
@@ -75,7 +75,7 @@ def main():
     # inputs and would therefore never be rebuilt.
     tmp = OUT + ".tmp"
     rc = subprocess.call(
-        [sys.executable, FROM_CAPTURE, capture, "--repo", root,
+        [sys.executable, FROM_CAPTURE, capture, "--project-dir", root,
          "--channel", "0", "--at", "0", "--for", "300", "--all-ids",
          "--out", tmp],
         cwd=os.path.dirname(FROM_CAPTURE))

@@ -29,10 +29,9 @@ import argparse
 import os
 import sys
 
-# The parsers live in the project repo, which is a SEPARATE tree from this
-# firmware repo.
-DEFAULT_REPO = os.environ.get(
-    "GEN_INHIBIT_REPO", os.path.expanduser("~/Seafile/NotGit/reverse-it"))
+# The parsers live in the project folder, a SEPARATE tree from this firmware
+# repo: --project-dir, else $REVERSE_IT_DIR, with no default (project_dir.py).
+import project_dir
 
 CMD = 0x051
 RPM = 0x054
@@ -54,34 +53,17 @@ CONTACTOR = 0x440
 RELEVANT = (CMD, RPM, FB, SOC, SHIFT, FAULT, KEY, CONTACTOR)
 
 
-def load_parser(repo):
+def load_parser(given):
     #
-    # REFUSE AN ABSENT REPO, BY NAME (2026-10-04). DEFAULT_REPO is a Seafile
-    # path that does not exist on every machine holding this firmware repo --
-    # on NICKY-XPS the project tree is under `seadrive_root/<library>/...`, so
-    # the default misses and the bare import below raised
-    # `ModuleNotFoundError: No module named 'canre'`. That is loud, but it
-    # names the wrong thing: it reads as a missing Python package, so the fix
-    # looks like `pip install` rather than `--repo`.
+    # REFUSE A MISSING PROJECT FOLDER, BY NAME (2026-10-04; from 2026-10-20
+    # --project-dir / $REVERSE_IT_DIR with no default, project_dir.py). Left to
+    # the bare import below, a wrong path surfaces as `No module named 'canre'`,
+    # which reads as a missing Python package rather than a setting.
     #
-    if not os.path.isdir(repo):
-        sys.exit(
-            "--repo %r does not exist.\n"
-            "  It defaults to $GEN_INHIBIT_REPO, else ~/Seafile/NotGit/"
-            "reverse-it, and the project tree is NOT at that path on every\n"
-            "  machine -- SeaDrive puts it under seadrive_root/<library>/...\n"
-            "  Pass --repo <project root> or set GEN_INHIBIT_REPO.\n"
-            "  Left to the import below, this surfaces as 'No module named "
-            "canre', which points at Python rather than at this flag."
-            % repo)
-    if not os.path.isdir(os.path.join(repo, "canre")):
-        sys.exit(
-            "--repo %r exists but contains no canre/, so it is not the "
-            "project root.\n"
-            "  Worth refusing rather than letting the import decide: a "
-            "capture replayed through the WRONG parser still produces a\n"
-            "  .scn file, and the only symptom is that it disagrees with the "
-            "goldens later -- which reads as a firmware change." % repo)
+    try:
+        repo = project_dir.resolve(given)
+    except project_dir.ProjectDirError as e:
+        sys.exit(str(e))
     sys.path.insert(0, repo)
     from canre.parsers import parse_file
     return parse_file
@@ -205,7 +187,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("log")
-    ap.add_argument("--repo", default=DEFAULT_REPO)
+    ap.add_argument("--project-dir", help="the reverse-it root (default: $REVERSE_IT_DIR; no other default)")
     ap.add_argument("--scan", action="store_true")
     ap.add_argument("--gap", type=float, default=5.0,
                     help="scan: silence that counts as a wake event")
@@ -230,7 +212,7 @@ def main():
                          "note in the README alone does not travel with it.")
     args = ap.parse_args()
 
-    parse_file = load_parser(args.repo)
+    parse_file = load_parser(args.project_dir)
 
     if args.scan:
         do_scan(parse_file, args.log, args.gap, args.channel)

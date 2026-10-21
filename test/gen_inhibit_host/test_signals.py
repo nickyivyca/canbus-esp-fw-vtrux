@@ -35,10 +35,9 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROBE = os.path.join(HERE, "extract_probe")
 
-# The project repo is a SEPARATE tree from this firmware repo. Default to the
-# layout on madhouse-debian, override with --repo or GEN_INHIBIT_REPO.
-DEFAULT_REPO = os.environ.get(
-    "GEN_INHIBIT_REPO", os.path.expanduser("~/Seafile/NotGit/reverse-it"))
+# The project folder (the DBCs) is a SEPARATE tree from this firmware repo:
+# --project-dir, else $REVERSE_IT_DIR, with no default (project_dir.py).
+import project_dir
 
 # (kind, dbc file, message name, [signal names the C returns, in order])
 CASES = [
@@ -72,10 +71,16 @@ CASES = [
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--repo", default=DEFAULT_REPO)
+    ap.add_argument("--project-dir", help="the reverse-it root (default: $REVERSE_IT_DIR; no other default)")
     ap.add_argument("-n", type=int, default=2000)
     ap.add_argument("--seed", type=int, default=20260919)
     args = ap.parse_args()
+
+    try:
+        repo = project_dir.resolve(args.project_dir)
+    except project_dir.ProjectDirError as e:
+        print(str(e))
+        return 2
 
     try:
         import cantools
@@ -86,8 +91,7 @@ def main():
     if not os.path.exists(PROBE):
         print("build extract_probe first (make)")
         return 2
-
-    dbcdir = os.path.join(args.repo, "projects", "vtrux")
+    dbcdir = os.path.join(repo, "projects", "vtrux")
     rng = random.Random(args.seed)
     total_fail = 0
 
