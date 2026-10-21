@@ -44,11 +44,18 @@
  *     released, which re-arms nothing.
  *   - ASSUMED, NOT SHOWN: that ECC still holds the captured value after the
  *     HAL's read, until the next bus error is captured. The register
- *     description in this IDF says nothing either way. An error captured in
- *     the ~1 us between the two reads would be recorded here in place of the
- *     one the HAL released; at 500 kbit/s that is under one bit time. If every
- *     entry reads the same value, the assumption is wrong and the codes mean
- *     nothing -- the bench run is what shows which.
+ *     description in this IDF says nothing either way. If every entry reads
+ *     the same value, the assumption is wrong and the codes mean nothing --
+ *     the bench run is what shows which.
+ *   - A KNOWN RACE, for the caveat list (reviewer, 2026-10-20). The HAL's read
+ *     releases the capture, so a NEW error captured in the ~1 us before this
+ *     probe's read is logged under the EARLIER interrupt's row, in place of
+ *     the code the HAL released; the new error then raises its own interrupt
+ *     and row, which reads its own code. At 500 kbit/s the window is under one
+ *     bit time, so it is rare at the jammer's pulse spacing, but a burst of
+ *     10-12 counts from one pulse is exactly where errors come close enough
+ *     together for it to happen. Two adjacent rows with the same ecc inside a
+ *     burst may be this.
  *   - The ring overwrites its oldest entry, and the page says how many were
  *     overwritten, so a lost entry is never silent.
  *

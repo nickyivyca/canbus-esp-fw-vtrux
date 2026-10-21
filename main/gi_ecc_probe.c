@@ -19,11 +19,14 @@
 static const char *TAG = "gi_ecc";
 
 /*
- * Ring sizes. The longest burst on record is 12 counts from one pulse, and an
- * n10 threshold arm adds 9 single pulses, so 128 interrupt entries hold a whole
- * arm's burst with the rest of the arm around it. Tick entries are one per
- * worker loop on which the counter moved, which is at most one per interrupt
- * entry and usually fewer, because one loop can see several.
+ * Ring sizes. The longest burst on record is 12 counts from one pulse, and the
+ * tester's B6 arms run 29 pulses each (reviewer, 2026-10-20), so 128 interrupt
+ * entries hold a whole arm's single counts and a couple of bursts. Tick entries
+ * are one per worker loop on which the counter moved, which is at most one per
+ * interrupt entry and usually fewer, because one loop can see several, so 64
+ * hold the same arm. If an arm ever does not fit, isr_overwritten and
+ * ticks_overwritten on the page say so -- a dropped entry is counted, never
+ * silent.
  */
 #define ECC_RING   128
 #define TICK_RING  64
