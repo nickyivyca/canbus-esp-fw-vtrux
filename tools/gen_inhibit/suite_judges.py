@@ -380,6 +380,33 @@ def b14(F):
                    v.group(0) if v else "no verdict line")]
 
 
+@judge("NONODE", "B")
+def nonode(F):
+    # spec 12.4 "a bus with no other node" (nonode_bench.py, added 2026-10-20): the record's
+    # own run_verdict, and a PASS only if every main and answer-stuck arm's items read PASS
+    rec = json.loads(text(F.one(r"nonode_bench_%s\.json" % TS)))
+    text(F.one(r"NONODE_nonode_bench\.txt"))
+    v, arms = rec.get("verdict", ""), rec.get("arms", [])
+    judged_arms = [a for a in arms if a.get("kind") in ("main", "answer-stuck")]
+    mains = [a for a in judged_arms if a["kind"] == "main"]
+    lat = [re.match(r"PASS: latched by ([\d.]+) s", a["verdicts"].get("latch", "")) for a in mains]
+    figs = {"main_arms": fig(len(mains)), "answer_stuck_arms": fig(len(judged_arms) - len(mains))}
+    if mains and all(lat):
+        figs["latch_max_s"] = fig(max(float(m.group(1)) for m in lat), "s")
+    trips = sorted({a["recorded"]["trip"] for a in mains})
+    detail = "%s; trips %s" % (v, trips) + ("; release reboot not confirmed: %s" % rec["release_not_confirmed"]
+                                            if rec.get("release_not_confirmed") else "")
+    if not rec.get("termination"):
+        return [result("NONODE", "ERROR", figs, "no termination recorded")]
+    off = ["%s %s" % (a.get("n"), k) for a in judged_arms for k, x in a["verdicts"].items()
+           if k not in ("answer",) and not x.startswith("PASS")]
+    if v == "PASS" and (off or len(mains) < 3):
+        return [result("NONODE", "ERROR", figs, "the record says PASS, but: %s" % (off or "%d main arms" % len(mains)))]
+    verdict = ("PASS" if v == "PASS" else "FAIL" if v.startswith("NOT AS SPECIFIED") else
+               "VOID" if v.startswith("VOID") else "INCONCLUSIVE" if v.startswith(("INCONCLUSIVE", "FLAKY")) else "ERROR")
+    return [result("NONODE", verdict, figs, detail)]
+
+
 @judge("B15", "B")
 def b15(F):
     t = text(F.one(r"B15_wican_segment_probe\.txt"))

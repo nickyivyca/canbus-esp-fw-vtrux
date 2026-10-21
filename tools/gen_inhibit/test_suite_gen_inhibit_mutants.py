@@ -140,6 +140,10 @@ MUTANTS = [
     ("board step: the suite's end step is the start step",
      'on_end=board_step("release"))', 'on_end=board_step("start"))'),
     ("an argv carries a local path", '["{gi_images}", "{gi_prod_dir}"] + step.split()', '[images_dir, prod_dir] + step.split()'),
+    ("NONODE without a termination in the settings", '    need(settings, "gi_can1_termination")', '    settings.get("gi_can1_termination")'),
+    ("NONODE's termination is a fixed text", 'env={"GI_TERMINATION": "{gi_can1_termination}",', 'env={"GI_TERMINATION": "unknown",'),
+    ("NONODE's sha is the prod image's", '"GI_MAN_SHA": images["wican_man"].expect}', '"GI_MAN_SHA": images["wican_prod"].expect}'),
+    ("NONODE is not judged", 'judged("NONODE"), ["NONODE_nonode_bench.txt"]', 'None, ["NONODE_nonode_bench.txt"]'),
 ]
 
 

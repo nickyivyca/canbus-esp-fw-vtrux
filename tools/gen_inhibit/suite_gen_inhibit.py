@@ -382,6 +382,7 @@ def suite(settings):
     images_dir = need(settings, "gi_images")
     prod_dir = need(settings, "gi_prod_dir")
     ssid = wican_ssid(need(settings, "bench_holder"))
+    need(settings, "gi_can1_termination")      # NONODE's --termination: read on the bench by a person
     images = {}
     hooks = make_hooks(settings, ssid, images)
     H = HARNESS
@@ -455,6 +456,8 @@ def suite(settings):
             chk("B9", "baseline_b_hand.sh", ["B9"], judged("B9"), ["B9_wrong_bitrate_calibrate.txt"], 900),
             chk("B10", "baseline_b_hand.sh", ["B10"], judged("B10"), ["B10_trip6_rearm_check.txt"], 1200),
             chk("B14", "baseline_b_hand.sh", ["B14"], judged("B14"), ["B14_observe_ack_probe.txt"], 900),
+            chk("NONODE", "baseline_b_hand.sh", ["NONODE"], judged("NONODE"), ["NONODE_nonode_bench.txt"], 1200,
+                env={"GI_TERMINATION": "{gi_can1_termination}", "GI_MAN_SHA": images["wican_man"].expect}),
             desk("B13", "B13", ["man_app/B13arms", "man_app/B2app", "man_held/B2held"], judged("B13"),
                  ["B13_passive_analysis.txt", "B13_respond_booking_check.txt"]),
         ]),

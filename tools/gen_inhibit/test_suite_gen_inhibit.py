@@ -100,6 +100,7 @@ def fixture():
         "gi_images": os.path.join(BASE, "images"), "gi_prod_dir": os.path.join(BASE, "prod"),
         "interposer_code": os.path.join(BASE, "ic"), "x2_images": x2, "gi_fw": HERE, "gi_components": "x", "gi_checks_clone": HERE,
         "gi_host_ssh": "hosttest", "gi_host_root": "~/rt", "bash": shutil.which("bash"),
+        "gi_can1_termination": "fixed passive resistors (test)",
         "bench_holder": bh, "runs_root": os.path.join(BASE, "runs"),
         "hosts": {"local": {"python": [sys.executable, "-B"]}},
         "esptool": {"argv": [sys.executable, "-c", "pass"], "port": "COM3"},
@@ -170,6 +171,16 @@ def test_suites(settings, shas):
         check("bench: %s's B27-style skip only where the index says NOT-RUN" % i,
               not any(c.skip for gg in bench.groups if gg.name == g for c in gg.checks if c.id == i)
               or idx.get(i, {}).get("verdict") == "NOT-RUN")
+
+    nn = [c for gg in bench.groups if gg.name == "man_held" for c in gg.checks if c.id == "NONODE"]
+    check("bench: NONODE runs in man_held, with the X2 held", len(nn) == 1 and
+          [gg.image_list for gg in bench.groups if gg.name == "man_held"] == [["wican_man", "x2_held"]])
+    check("bench: NONODE takes the termination from the settings and _man's ELF sha", nn and
+          nn[0].env.get("GI_TERMINATION") == "{gi_can1_termination}" and
+          nn[0].env.get("GI_MAN_SHA") == bench.images["wican_man"].expect and nn[0].argv[-1] == "NONODE",
+          nn and nn[0].env)
+    s3 = {k: v for k, v in settings.items() if k != "gi_can1_termination"}
+    check("bench: no gi_can1_termination refuses the suite", raises(lambda: SG.bench(s3)) is not None)
 
     rd = SG.reads(bench)
     check("reads: B13's desk step reads B13's arms and both B2 halves",

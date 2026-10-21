@@ -17,6 +17,7 @@
   "gi_tools": "<tester clone>/tools/gen_inhibit",
   "gi_index": "<reverse-it>/projects/vtrux/notes/artifacts/gen-inhibit/runs/baseline_e3d9437/suite_index_e3d9437.json",
   "gi_commit": "<short commit>",
+  "gi_can1_termination": "<where the CAN1 terminators are, as read on the bench by a person; NONODE's --termination>",
   "gi_images": "<worktree holding build-tester-man/, -man2/, -rt/, -txabort/, -abortwin/, -rxq/>",
   "gi_prod_dir": "<prod build>/build",
   "gi_fw": "<gen-inhibit clone at gi_commit>",
