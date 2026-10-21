@@ -4,7 +4,7 @@ cover the baseline index once each, keep the SSID out of what the record keeps, 
 their hooks say "could not look" (raise) rather than "not this image" (None) when a
 tool fails. No hardware: every tool the hooks run is stood in for.
 
-    PYTHONPATH=<core 5fa86c6>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
+    PYTHONPATH=<core 8fdcec5>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
         GI_HARNESS_DIR=<reverse-it>/projects/vtrux/notes/artifacts/gen-inhibit \
         py -3.14 -B test_suite_gen_inhibit.py
 

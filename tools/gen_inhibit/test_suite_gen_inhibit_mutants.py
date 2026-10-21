@@ -2,7 +2,7 @@
 """Mutants of suite_gen_inhibit.py; test_suite_gen_inhibit.py must fail on each BY A
 CHECK. A crash is not a kill, and an edit that does not apply is an error.
 
-    PYTHONPATH=<core 5fa86c6>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
+    PYTHONPATH=<core 8fdcec5>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
         GI_HARNESS_DIR=<reverse-it>/projects/vtrux/notes/artifacts/gen-inhibit \
         py -3.14 -B test_suite_gen_inhibit_mutants.py
 
