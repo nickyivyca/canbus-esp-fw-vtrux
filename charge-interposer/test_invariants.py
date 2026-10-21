@@ -142,7 +142,7 @@ import protocol as P
 import paths                                                # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TRACES = paths.fixtures()               # SeaDrive, via VTRUX_DATA
+TRACES = paths.fixtures()               # SeaDrive, via REVERSE_IT_DIR
 
 FAILS = []
 

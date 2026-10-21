@@ -7,8 +7,8 @@ the replay produced on 2026-10-08 and fails each way it should -- an event
 missing, out of its window, out of order, or with the wrong state -- without
 the multi-GB capture.
 
-regress.py resolves VTRUX_DATA at import, so a throwaway data folder is
-built for it and removed.
+regress.py resolves REVERSE_IT_DIR at import, so a throwaway reverse-it
+root is built for it and removed.
 
 Run:  python charge-interposer/regress_offline_test.py
 """
@@ -159,10 +159,11 @@ def bus_cases():
 
 def main():
     tmp = tempfile.mkdtemp(dir=HERE, prefix="regress_test_")
-    saved = os.environ.get("VTRUX_DATA")
+    saved = os.environ.get("REVERSE_IT_DIR")
     try:
-        os.makedirs(os.path.join(tmp, "notes", "artifacts"))
-        os.environ["VTRUX_DATA"] = tmp
+        os.makedirs(os.path.join(tmp, "projects", "vtrux", "notes",
+                                 "artifacts"))
+        os.environ["REVERSE_IT_DIR"] = tmp
         import regress as RG
         want = RG.BY_NAME["above_ceiling_start"].expect["state_events"]
         check(len(want) == 2, "the 83 %% case declares two transitions (%s)"
@@ -193,9 +194,9 @@ def main():
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
         if saved is None:
-            os.environ.pop("VTRUX_DATA", None)
+            os.environ.pop("REVERSE_IT_DIR", None)
         else:
-            os.environ["VTRUX_DATA"] = saved
+            os.environ["REVERSE_IT_DIR"] = saved
 
     bus_cases()
 

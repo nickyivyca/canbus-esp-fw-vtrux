@@ -25,7 +25,7 @@ are dated 2026-09-19 / 2026-09-30, before every run in the evidence doc,
 so every result there was produced on exactly these bytes. Changing a pin
 is a harness change: say why in the commit, and re-run what used the input.
 
-    python capture_pins.py            # check traces + L3 in VTRUX_DATA
+    python capture_pins.py            # check traces + L3 in REVERSE_IT_DIR
     python capture_pins.py --file F   # check one input (host_bridge)
     python capture_pins.py --print    # print current hashes (to re-pin)
 """

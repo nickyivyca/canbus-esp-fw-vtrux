@@ -50,7 +50,7 @@ PT_ANCHORS = {0x051, CMD_ID, 0x410, 0x420, 0x430, 0x440,
 
 
 def _frames(path):
-    paths.add_canre()                  # canre from VTRUX_DATA (paths.py)
+    paths.add_canre()                  # canre from REVERSE_IT_DIR (paths.py)
     from canre.parsers import parse_file
     return parse_file(path)
 

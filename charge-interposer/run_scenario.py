@@ -4046,7 +4046,7 @@ def build_parser():
     ap.add_argument("--phys-port", type=int, default=43215,
                     help="UDP port for the HV physics link (see bus.py)")
     ap.add_argument("--outdir", default=None,
-                    help="default: interposer-runs/ under VTRUX_DATA "
+                    help="default: interposer-runs/ under REVERSE_IT_DIR "
                          "(paths.py)")
     return ap
 

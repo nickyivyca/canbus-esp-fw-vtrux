@@ -1265,7 +1265,7 @@ void caseReplay() {
   // timestamp quantisation or something else. Printed either way, so a
   // run under the override cannot be mistaken for the default one.
   // No repo-relative default since the move to git: l3::load() finds
-  // the stimulus through $VTRUX_DATA (charge-interposer/paths.py).
+  // the stimulus through $REVERSE_IT_DIR (charge-interposer/paths.py).
   const char* kPath = NULL;
   if (const char* over = std::getenv("L3_STIMULUS")) {
     kPath = over;

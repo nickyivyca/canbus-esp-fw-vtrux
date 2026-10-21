@@ -127,8 +127,8 @@ def main():
     # (user's call). Leaving this default behind would recreate the dead
     # directory the first time anyone ran it without --outdir.
     ap.add_argument("--outdir", default=None,
-                    help="default: notes/artifacts/interposer-firmware/ "
-                         "under VTRUX_DATA, which is what diff_all.sh reads")
+                    help="default: projects/vtrux/notes/artifacts/interposer-firmware/ "
+                         "under REVERSE_IT_DIR, which is what diff_all.sh reads")
     a = ap.parse_args()
     if a.outdir is None:
         import paths

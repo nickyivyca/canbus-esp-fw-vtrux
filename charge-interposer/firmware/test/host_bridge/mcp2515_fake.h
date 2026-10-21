@@ -16,7 +16,7 @@
 // 100 ms age-out, the no-ACK counting and the transmit-buffer ordering live.
 //
 // EVERY CITATION IS "p<n>" = the PDF page number printed by
-// `$VTRUX_DATA/notes/artifacts/interposer-firmware/mcp2515_datasheet_extract.py`
+// `$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/interposer-firmware/mcp2515_datasheet_extract.py`
 // (SeaDrive),
 // which is 1-based over the file and runs one ahead of the page number
 // printed in the document's own footer for most of the book. Each one below

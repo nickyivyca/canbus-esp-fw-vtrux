@@ -5,7 +5,7 @@ changed, a file missing, a capture-derived trace without a pin, and -- the
 reason the pins live in the repo -- a stimulus regenerated together with
 its own header hash.
 
-Needs no VTRUX_DATA: it works on small files in a temporary folder.
+Needs no REVERSE_IT_DIR: it works on small files in a temporary folder.
 """
 
 import hashlib

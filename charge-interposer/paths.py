@@ -9,18 +9,25 @@ machine-absolute is committed.
 
 Two settings, both environment variables:
 
-  VTRUX_DATA          REQUIRED for anything that reads data. The absolute
-                      path of SeaDrive's `projects/vtrux` on this machine.
-                      From it come the captures (`logs/`), the harness
+  REVERSE_IT_DIR      REQUIRED for anything that reads data. The absolute
+                      path of SeaDrive's reverse-it root on this machine (the
+                      folder holding canre/ and projects/). From it come the
+                      captures (`projects/vtrux/logs/`), the harness
                       fixtures -- traces, goldens, golden_regen_log.txt,
                       l3_stimulus.txt, the mutation scripts and the run
-                      folders (`notes/artifacts/interposer-firmware/`,
-                      `notes/artifacts/interposer-runs/`) -- and, for now,
-                      `canre` (two levels up). There is no default: unset
-                      is a clear error, never a guess.
+                      folders (`projects/vtrux/notes/artifacts/
+                      interposer-firmware/`, `.../interposer-runs/`) -- and,
+                      for now, `canre`. There is no default: unset is a
+                      clear error, never a guess.
   VTRUX_PUBLIC_REPO   Optional. The public canbus-reveng-vtrux-coda clone,
                       which supplies the vehicle DBCs. Default: the sibling
                       directory `../canbus-reveng-vtrux-coda` of this repo.
+
+REVERSE_IT_DIR replaced VTRUX_DATA (which named projects/vtrux) on
+2026-10-20: one variable for both firmware projects (user, via the
+methodology session). VTRUX_DATA is retired and never read; set alone it is
+refused with a message saying so, so an old environment fails loudly instead
+of resolving somewhere else.
 
 canre comes from SeaDrive, not the public clone, because the public copy
 (1bd6d1a) predates SeaDrive's parser fixes for signed BUSMASTER timestamp
@@ -28,7 +35,7 @@ components and midnight rollover, and regress must read the captures with the
 parser E1 ran on (reviewer, 2026-10-08). Switch canre_root() to the public
 repo once it is synced.
 
-Under WSL, pass the Windows value through with WSLENV=VTRUX_DATA/p, which
+Under WSL, pass the Windows value through with WSLENV=REVERSE_IT_DIR/p, which
 translates it to /mnt/c/...; the shell scripts read the same variable.
 
 Every function resolves when CALLED, so importing a module that uses these
@@ -47,22 +54,33 @@ class PathsError(RuntimeError):
     pass
 
 
-def data_dir():
-    """SeaDrive's projects/vtrux, from VTRUX_DATA."""
-    v = os.environ.get("VTRUX_DATA", "").strip()
+def reverse_it_dir():
+    """SeaDrive's reverse-it root, from REVERSE_IT_DIR."""
+    v = os.environ.get("REVERSE_IT_DIR", "").strip()
     if not v:
+        retired = ""
+        if os.environ.get("VTRUX_DATA", "").strip():
+            retired = (" (VTRUX_DATA is set, but it was retired on "
+                       "2026-10-20 and is not read: set REVERSE_IT_DIR to "
+                       "the folder two levels above it)")
         raise PathsError(
-            "VTRUX_DATA is not set. Set it to the absolute path of SeaDrive's "
-            "projects/vtrux on this machine (captures in logs/, the harness "
-            "fixtures in notes/artifacts/interposer-firmware/, canre two "
-            "levels up). Under WSL pass it with WSLENV=VTRUX_DATA/p. See "
-            "charge-interposer/paths.py.")
+            "REVERSE_IT_DIR is not set%s. Set it to the absolute path of "
+            "SeaDrive's reverse-it root on this machine (canre/ and "
+            "projects/vtrux/ inside it). Under WSL pass it with "
+            "WSLENV=REVERSE_IT_DIR/p. See charge-interposer/paths.py."
+            % retired)
     v = os.path.normpath(v)
-    if not os.path.isdir(os.path.join(v, "notes", "artifacts")):
+    if not os.path.isdir(os.path.join(v, "projects", "vtrux", "notes",
+                                      "artifacts")):
         raise PathsError(
-            "VTRUX_DATA=%s has no notes/artifacts/ -- it must be SeaDrive's "
-            "projects/vtrux" % v)
+            "REVERSE_IT_DIR=%s has no projects/vtrux/notes/artifacts/ -- it "
+            "must be SeaDrive's reverse-it root" % v)
     return v
+
+
+def data_dir():
+    """SeaDrive's projects/vtrux, under REVERSE_IT_DIR."""
+    return os.path.join(reverse_it_dir(), "projects", "vtrux")
 
 
 def artifacts():
@@ -103,9 +121,9 @@ def dbc_dir():
 
 def canre_root():
     """The directory holding canre/ -- SeaDrive's reverse-it root, for now."""
-    p = os.path.normpath(os.path.join(data_dir(), "..", ".."))
+    p = reverse_it_dir()
     if not os.path.isdir(os.path.join(p, "canre")):
-        raise PathsError("no canre/ at %s (two levels above VTRUX_DATA)" % p)
+        raise PathsError("no canre/ at %s (REVERSE_IT_DIR)" % p)
     return p
 
 
@@ -124,9 +142,9 @@ def add_canre(required=True):
 
 
 if __name__ == "__main__":
-    for name in ("data_dir", "fixtures", "runs_dir", "logs", "dbc_dir",
+    for name in ("reverse_it_dir", "data_dir", "fixtures", "runs_dir", "logs", "dbc_dir",
                  "canre_root"):
         try:
-            print("%-11s %s" % (name, globals()[name]()))
+            print("%-14s %s" % (name, globals()[name]()))
         except PathsError as e:
-            print("%-11s ERROR: %s" % (name, e))
+            print("%-14s ERROR: %s" % (name, e))

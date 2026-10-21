@@ -29,7 +29,7 @@ from pathlib import Path
 
 import can
 
-# canre's location comes from paths.py (VTRUX_DATA) since the move to git;
+# canre's location comes from paths.py (REVERSE_IT_DIR) since the move to git;
 # nothing here imports canre, so a missing setting is not an error.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import paths                                                # noqa: E402

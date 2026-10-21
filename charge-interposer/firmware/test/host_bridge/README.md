@@ -159,7 +159,7 @@ have sent the next reader looking for a conflict that is not there.
 
 ### Mutation-tested
 
-`$VTRUX_DATA/notes/artifacts/interposer-firmware/busoff_mutations.sh` (SeaDrive).
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/interposer-firmware/busoff_mutations.sh` (SeaDrive).
 B (transmitting while bus-off), C (recovery not clearing TEC), D (a 128-bit
 instead of 128x11 window) and E (removing the no-ACK pin, so the two error
 sources collapse into one) are each caught on their own check.
@@ -212,7 +212,7 @@ Fixed by ending the episode on a successful restart.
 
 ### Mutation-tested, including one mutation that must SURVIVE
 
-`$VTRUX_DATA/notes/artifacts/interposer-firmware/twai_mutations.sh` (SeaDrive) puts
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/interposer-firmware/twai_mutations.sh` (SeaDrive) puts
 each defect back. A and B (the max-form, and the unclosed bus-off episode)
 are caught on their own checks, as is D (dropping `rx_overrun_count` from
 the loss figure).
@@ -237,7 +237,7 @@ an **UNKNOWN** or **DEFERRED** line that differs is the bench answering
 what the document would not.
 
 The fake's transcript is kept at
-`$VTRUX_DATA/notes/artifacts/interposer-firmware/mcp2515_conformance_fake.txt` (SeaDrive).
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/interposer-firmware/mcp2515_conformance_fake.txt` (SeaDrive).
 
 **It does not name buffer numbers on the wire, and that is deliberate.** A
 dongle cannot see which of TXB0-2 a frame came from, so a sequence that
@@ -273,7 +273,7 @@ variants (three identifiers; one identifier three times), three reps each,
 and a control where C arrives only after B is taken, which must read
 A, B, C -- so the case is shown able to pass. The hook's own checks are in
 `test_mcp2515_fake` and are mutation-tested by
-`$VTRUX_DATA/notes/artifacts/interposer-firmware/rx_hook_mutations.sh`.
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/interposer-firmware/rx_hook_mutations.sh`.
 
 `rx-rollover-refill` is the reverse interleaving, which the reviewer asked
 for ahead of the fix:
@@ -301,7 +301,7 @@ and full after, and C delivered with B resident. Its checks are the
 `rx_hook_mutations.sh`).
 
 **Can-fail for all three cases:**
-`$VTRUX_DATA/notes/artifacts/interposer-firmware/rx_order_prefix_control.sh`
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/interposer-firmware/rx_order_prefix_control.sh`
 builds `test_l2_bridge` with the current driver (all three must pass) and
 then with `port_mcp2515.cpp` from a commit before the fix (default
 `9021d5e`). There `rx-rollover-order` and `rx-rollover-midread` must fail
@@ -338,7 +338,7 @@ model's RTS handling -- its transcript line stays UNKNOWN.
 
 ### It was mutation-tested before being trusted
 
-`$VTRUX_DATA/notes/artifacts/interposer-firmware/conformance_mutations.sh` (SeaDrive)
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/interposer-firmware/conformance_mutations.sh` (SeaDrive)
 breaks one DATASHEET behaviour at a time and requires the sequence to fail
 **on the line that behaviour belongs to** -- a failure somewhere else is
 incidental coverage and the script says so. Ten mutations: inverted

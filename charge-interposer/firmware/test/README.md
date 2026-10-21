@@ -67,7 +67,7 @@ wsl bash ".../firmware/test/host_unit/run.sh"
 
 Builds and runs every `test_*.cpp` in the folder with plain `g++ -std=c++11`,
 and needs no environment set (unlike `host_bridge/run.sh`, which wants
-`VTRUX_DATA`). Both rules below were kept out of `main.cpp` so they could be
+`REVERSE_IT_DIR`). Both rules below were kept out of `main.cpp` so they could be
 tested here; the rest of `main.cpp` needs the fake ports of spec 9.1 L2,
 which live in `host_bridge/` rather than in this folder.
 
@@ -119,7 +119,7 @@ would have recreated the dead directory the first time anyone ran it without
 before deletion.
 
 The pairs themselves live in SeaDrive, in
-`$VTRUX_DATA/notes/artifacts/interposer-firmware/` (see `../../paths.py`),
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/interposer-firmware/` (see `../../paths.py`),
 with their own README covering what each one exists for and the two
 regeneration traps.
 
@@ -177,7 +177,7 @@ of `firmware/esp-development.md`'s component table -- the checks they make and
 how each can fail.
 Paths below are relative to `charge-interposer/`. Each test runs with
 `py -3.14 <file>` (NICKY-XPS) or `python3 <file>` (madhouse-debian), with
-`VTRUX_DATA` and `VTRUX_PUBLIC_REPO` set (`paths.py`), and exits 0 only if
+`REVERSE_IT_DIR` and `VTRUX_PUBLIC_REPO` set (`paths.py`), and exits 0 only if
 every check passed.
 
 | file | what |
@@ -199,8 +199,8 @@ every check passed.
 | `protocol.py` | The `0x18EFC000` page map plus DBC-backed encode/decode for the BMS (`epri-pt-bus.dbc`) and charger (`BelInverter-v2.dbc`) frames |
 | `bus.py` | Transport factory (virtual `udp_multicast`, hop limit 0, or a named dongle -- never auto-detected), `EchoSuppressor`, the segment-isolation guard, and `open_gs_usb` (its test: `bus_gs_usb_test.py`) |
 | `replay.py` | Replays real captures, offline into the core or onto a live segment, at any speed |
-| `paths.py` | Where the data not in this repo lives (captures, DBCs, fixtures, `canre`), resolved from `VTRUX_DATA`; raises `PathsError` naming the variable rather than returning a wrong path, so a missing setting fails at the first call instead of producing an empty result. **Not every suite needs it** -- measured 2026-10-08 with it unset: `regress.py --all`, `test_invariants.py`, `test_released_into_hold.py`, `test_repeat_bursts.py` and `test_scorer_wiring.py` fail; `test_machine.py`, `test_signals.py`, `test_trips.py`, `paths_test.py`, `sims_test.py` and `run_scenario.py --list` do not. Under WSL pass it with `WSLENV=VTRUX_DATA/p` |
-| `paths_test.py` | `paths.py`'s test: every resolver, and the refusal when `VTRUX_DATA` is unset. Needs nothing set itself |
+| `paths.py` | Where the data not in this repo lives (captures, DBCs, fixtures, `canre`), resolved from `REVERSE_IT_DIR` (the reverse-it root; it replaced `VTRUX_DATA` on 2026-10-20, which is now refused if set alone); raises `PathsError` naming the variable rather than returning a wrong path, so a missing setting fails at the first call instead of producing an empty result. **Not every suite needs it** -- measured 2026-10-08 with it unset: `regress.py --all`, `test_invariants.py`, `test_released_into_hold.py`, `test_repeat_bursts.py` and `test_scorer_wiring.py` fail; `test_machine.py`, `test_signals.py`, `test_trips.py`, `paths_test.py`, `sims_test.py` and `run_scenario.py --list` do not. Under WSL pass it with `WSLENV=REVERSE_IT_DIR/p` |
+| `paths_test.py` | `paths.py`'s test: every resolver, and the refusals when `REVERSE_IT_DIR` is unset, wrong, or replaced by a retired `VTRUX_DATA`; and a scan that no file under `charge-interposer/` still reads `VTRUX_DATA`. Needs nothing set itself |
 | `stop_all.sh` | Stops every simulator process of a bench run. Read `firmware/esp-development.md` first: killing processes on Windows does not work the way this script's Linux recipe suggests |
 | `sims_test.py` | The simulators' pure parts (`vehicle_sim.py`, `charger_sim.py`, `pack.py`), no bus, no processes |
 | `regress.py` | Offline regression against the three real charge captures |
@@ -209,7 +209,7 @@ every check passed.
 | `build_lookup.py` | Which image is the board running: `0x7F7` decoded with cantools, the 4-byte build id resolved against `firmware/builds/manifest.json`; the identity is the ELF hash, and `elf_sha256_of_bin()` reads it out of an image file. Refuses with a distinct reason each (unknown id, no `0x7F7`, an ambiguous prefix, a missing or empty manifest); `require_witness()` guards arms meaningful only on the instrumented build. **Imported, never copied** -- also by gen-inhibit's `x2_flash_custody.py` (its `elf_sha256_of_bin` and `APP_DESC_MAGIC`), so a change to either goes to the gen-inhibit reviewer before it lands |
 | `build_lookup_offline_test.py` | `build_lookup.py`'s test: every reason code, no bus and no board; it imports the helper rather than re-deriving it (a test that re-derives the logic it checks agrees only with itself) |
 | `capture_pins.py` | Spec 9.1 pinned stimulus: every capture-derived input -- the three real-capture differential traces, the two L3 stimulus files and `regress.py`'s captures -- is pinned by a hash HELD IN THIS REPO, never read from the input it covers (a hash inside its own file moves when a changed parser regenerates both). A trace neither pinned nor in a synthetic family fails, so a new capture-derived trace cannot join the suite unpinned |
-| `capture_pins_test.py` | `capture_pins.py`'s test, and most of its cases must FAIL: a changed byte, a missing file, an unpinned capture-derived trace, and a stimulus regenerated together with its own header hash. Needs no `VTRUX_DATA` |
+| `capture_pins_test.py` | `capture_pins.py`'s test, and most of its cases must FAIL: a changed byte, a missing file, an unpinned capture-derived trace, and a stimulus regenerated together with its own header hash. Needs no `REVERSE_IT_DIR` |
 | `test_hold_wire.py` | A board run's spec 9 hold judged on the wire, and the vehicle stimulus premise, on synthetic witness rows and `--sp-log` receipts; each can-fail is one change to a record that passes. The hold below the table; the premise: a gap covered by a vehicle_sim stall -> VOID; a stale-BMS trip with no gap, a stall over 500 ms with the trip suppressed, a trip 300 ms into a gap, a gap no stall covers -> FAIL; the trailing gap (2026-10-15): BMS frames stopping 510 ms before a TRIP a=10 -> OK, "the bench's"; 300 ms -> FAIL; a stop in a session with no trip -> FAIL |
 | `bench_suite.py` | The interposer's suites for the shared chain runner (`shared/bench/`, `vtrux_bench.run`; tester, 2026-10-18): `emulated` (no hardware: builds, host bridge / unit / diff, the logic tests, the 27 closed-loop sims at 1x, the capture-trace rebuild), `bench` (hardware only, the lock from start to finish; refuses unless the newest emulated run is on the same clean commit and matched its reference) and `harness` (the harness tests, mutants and can-fails, run when the harness changes). Its judges read each check's output: `host_bridge_judge` gives one result per host-bridge test and per L2 case (a case that opened and never reported is an ERROR; fewer than 35 L2 cases FAILS), `scenario_judge` the final `-> PASS`, `corrupt_pin_judge` `monitor_6h_diff.py --corrupt-pin`'s documented outcome (both pin checks FAIL, exit 1, both replays IDENTICAL), `c12_judge` the C12 transcript (a DATASHEET line differing outside C9 FAILS). Known FAILs and skips name their spec item or ruling. The core's own tests (`shared/bench/tests/`, each with a can-fail) cover the runner; `bench_suite_test.py` covers this file |
 | `bench_suite_test.py` | `bench_suite.py`'s test: each judge driven to every verdict it gives, on output in the format its script prints (taken from the 2026-10-18 trial runs): a FAIL beside a VOID, `-> PASS` with a non-zero exit, the last verdict line, a DATASHEET line inside and outside C9's block, an L2 case opened and never reported, a host-bridge test with no line, fewer than 35 L2 cases. The corrupt-pin judge on one pin missed, exit 0, and a replay that differs. And `bench_identify`: the product's serial lines recognised on any line (the two HELLO? replies of the 2026-10-18 00:30 trial, which the first pattern missed), and a product reply never followed by the SLCAN probe. And the suites' shape: bench requires emulated; no lock or image outside bench; no mutation, can-fail or self-test in emulated or bench (`mcp-reset-canfail`, which needs the board, named as the one exception); no wall-clock check in harness; no check in two suites; every known FAIL names a check of its own suite; every skip names its spec item or ruling. `--can-fail` runs each test against a mutant (a judge that passes everything, one that ignores the exit code, bench without requires, a sim in harness, ...) and requires it to fail |

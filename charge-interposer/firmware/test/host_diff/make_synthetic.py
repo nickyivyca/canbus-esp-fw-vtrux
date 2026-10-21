@@ -1022,8 +1022,8 @@ def main():
     # command updated a directory the gate never looks at and got a clean
     # run from stale files. Changed 2026-10-05 after exactly that.
     ap.add_argument("--outdir", default=None,
-                    help="default: notes/artifacts/interposer-firmware/ "
-                         "under VTRUX_DATA")
+                    help="default: projects/vtrux/notes/artifacts/interposer-firmware/ "
+                         "under REVERSE_IT_DIR")
     a = ap.parse_args()
     if a.outdir is None:
         import paths
