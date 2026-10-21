@@ -76,6 +76,10 @@
  * two registrations below are the whole of its footprint in shipping code. */
 #include "gi_txabort_probe.h"
 #endif
+#if GI_INSTRUMENT_ECC
+/* B6 error-code measurement build only -- see main/CMakeLists.txt. */
+#include "gi_ecc_probe.h"
+#endif
 #if GI_TEST_RESTART_QUIESCE
 /* Restart test build only, spec 12.4 -- see main/CMakeLists.txt. */
 #include "gi_restart_test.h"
@@ -2531,6 +2535,10 @@ static httpd_handle_t config_server_init(void)
 	 * handler -- but the table is sized for them so that it is not full. */
 	config.max_uri_handlers += GI_RESTART_TEST_URI_COUNT;
 #endif
+#if GI_INSTRUMENT_ECC
+	/* The same arrangement for the B6 probe's page. */
+	config.max_uri_handlers += GI_ECC_URI_COUNT;
+#endif
 	config.stack_size = 5120;
     ESP_LOGI(TAG, "Starting server on port: '%d'", config.server_port);
     if (httpd_start(&server, &config) == ESP_OK)
@@ -2569,6 +2577,9 @@ static httpd_handle_t config_server_init(void)
 #if GI_TEST_RESTART_QUIESCE
 		gi_restart_test_register(server);
 #endif
+#if GI_INSTRUMENT_ECC
+		gi_ecc_register(server);
+#endif
         #if CONFIG_EXAMPLE_BASIC_AUTH
         httpd_register_basic_auth(server);
         #endif
@@ -2603,6 +2614,9 @@ void config_server_restart(void)
 		httpd_register_uri_handler(server, &system_reboot);
 		httpd_register_uri_handler(server, &store_canflt_uri);
 		httpd_register_uri_handler(server, &load_canflt_uri);
+#if GI_INSTRUMENT_ECC
+		gi_ecc_register(server);
+#endif
         return;
     }
 

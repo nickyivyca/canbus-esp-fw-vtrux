@@ -36,6 +36,9 @@
 #include "driver/twai.h"
 
 #include "can.h"
+#if GI_INSTRUMENT_ECC
+#include "gi_ecc_probe.h"   /* B6 measurement build only, main/CMakeLists.txt */
+#endif
 
 static const char *TAG = "gen_inhibit";
 
@@ -2136,7 +2139,15 @@ static void gen_inhibit_task(void *arg)
              */
             sched_advance(esp_timer_get_time(), &ev);
             bus_snapshot(&bus);
+#if GI_INSTRUMENT_ECC
+            /* B6 measurement build only: what trip 6 held before this tick. */
+            const bool     ecc_had_last = s_core.have_err_last;
+            const uint32_t ecc_last     = s_core.err_last;
+#endif
             gi_tick(&s_core, esp_timer_get_time(), &bus, &em, &ev);
+#if GI_INSTRUMENT_ECC
+            gi_ecc_note_tick(&bus, ecc_had_last, ecc_last, &s_core, &ev);
+#endif
             dispatch_emits(&em, &ev);
             report_events(&ev);
         }

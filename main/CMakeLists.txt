@@ -23,6 +23,24 @@ if(GI_INSTRUMENT_TXABORT)
     list(APPEND requires "hal" "soc")
 endif()
 
+# B6 ERROR-CODE MEASUREMENT BUILD (review tracker B6, user 2026-10-20:
+# investigate first).
+#
+#   idf.py -B build-ecc -DGI_INSTRUMENT_ECC=1 build      (image suffix _ecc)
+#
+# Records, for every bus-error interrupt, the controller's error code capture,
+# TEC, REC and status register, and for every worker loop on which the counter
+# moved, what trip 6 booked; read on GET /gi_ecc, never on CAN. The source is
+# added only here, as gi_txabort_probe.c is, and the link wraps
+# twai_hal_get_events() (below, after the component exists) so the capture is
+# read after the HAL's own read-to-release -- gi_ecc_probe.h says why that order
+# leaves the count unchanged. `hal` and `soc` are already in `requires`.
+#
+# Never flash a build configured this way to the truck. prod_build.py refuses it.
+if(GI_INSTRUMENT_ECC)
+    list(APPEND srcs "gi_ecc_probe.c")
+endif()
+
 # RESTART TEST BUILD, for spec 12.4's "no error frames at a restart" row.
 #
 #   idf.py -B build-restart-test -DGI_TEST_RESTART_QUIESCE=1 build
@@ -167,6 +185,17 @@ endif()
 if(GI_INSTRUMENT_ABORTWIN)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE GI_INSTRUMENT_ABORTWIN=1)
     message(STATUS "gen_inhibit: ABORT WINDOW counters ENABLED (measurement build)")
+endif()
+
+# The B6 error-code probe, above. twai.c's calls to twai_hal_get_events() are in
+# another library (driver) from its definition (hal), so --wrap redirects every
+# one of them to __wrap_twai_hal_get_events in gi_ecc_probe.c, which reaches the
+# real function as __real_twai_hal_get_events -- the esp_restart_noos pattern.
+if(GI_INSTRUMENT_ECC)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE GI_INSTRUMENT_ECC=1)
+    target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=twai_hal_get_events")
+    message(STATUS "gen_inhibit: B6 ERROR CODE probe ENABLED (measurement build) -- "
+                   "twai_hal_get_events() is wrapped and /gi_ecc is registered")
 endif()
 
 # AUTO-ARM BUILD, for spec 12.4's auto-arm row.

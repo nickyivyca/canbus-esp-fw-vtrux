@@ -27,7 +27,9 @@ WHAT IT REFUSES, and each refusal is a separate exit rather than a warning:
      _ELM327, _AUTOPID, _REALDASH). `idf.py reconfigure` does NOT clear a
      cache variable, so a `-D` given once to an earlier build in `build/` is
      still set in the next;
-  6. an image that carries the restart test build's symbols anyway, or that
+  6. an image that carries the restart test build's symbols anyway, or the B6
+     error-code probe's (`gi_ecc_register`, `__wrap_twai_hal_get_events`;
+     added 2026-10-20), or that
      lacks spec 3's restart step: `__wrap_esp_restart_noos` must be in the ELF
      and `esp_restart` and `panic_restart` must call it, never the unwrapped
      function; or that carries a stock feature's code anyway: its functions
@@ -114,6 +116,7 @@ FORBIDDEN_CACHE_FLAGS = (
     "GI_INSTRUMENT_RXQ",
     "GI_INSTRUMENT_TXABORT",
     "GI_INSTRUMENT_ABORTWIN",
+    "GI_INSTRUMENT_ECC",
     "OTA_HEALTH_FAULT_INJECT",
 )
 
@@ -131,8 +134,10 @@ STOCK_FEATURES_OFF = (
 # CMake's false constants; anything else set is true.
 CMAKE_FALSE = {"", "0", "OFF", "NO", "FALSE", "N", "IGNORE", "NOTFOUND"}
 
-# Refusal 6. Global symbols that only gi_restart_test.c defines.
-FORBIDDEN_SYMBOLS = ("gi_restart_test_register", "gi_restart_test_pre_install")
+# Refusal 6. Global symbols that only gi_restart_test.c defines, and those that
+# only the B6 error-code probe, gi_ecc_probe.c, defines (added 2026-10-20).
+FORBIDDEN_SYMBOLS = ("gi_restart_test_register", "gi_restart_test_pre_install",
+                     "gi_ecc_register", "__wrap_twai_hal_get_events")
 
 # Refusal 6. Global functions each stock feature's source defines, absent with
 # its switch off. RealDash has no source file in this tree, so it is judged by

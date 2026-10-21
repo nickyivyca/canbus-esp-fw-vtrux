@@ -156,7 +156,16 @@ if(GI_TEST_RESTART_QUIESCE)
 else()
     set(GI_TEST_SUFFIX "")
 endif()
-set(PRJ_BIN "${PROJECT_PREF}_${HW_PREF}_${GIT_SHA}${GI_ARM_SUFFIX}${GI_FAULT_SUFFIX}${GI_TEST_SUFFIX}")
+# THE B6 ERROR-CODE PROBE IS IN THE NAME TOO (main/CMakeLists.txt,
+# GI_INSTRUMENT_ECC), for the restart test build's reason and marked by absence
+# the same way. "_ecc" is 4: 13 + 7 + 4 + 4 = 28 clean fits, 34 dirty does not,
+# and an image the B6 investigation rests on must have a commit behind it.
+if(GI_INSTRUMENT_ECC)
+    set(GI_INSTR_SUFFIX "_ecc")
+else()
+    set(GI_INSTR_SUFFIX "")
+endif()
+set(PRJ_BIN "${PROJECT_PREF}_${HW_PREF}_${GIT_SHA}${GI_ARM_SUFFIX}${GI_FAULT_SUFFIX}${GI_TEST_SUFFIX}${GI_INSTR_SUFFIX}")
 
 #
 # esp_app_desc.project_name is a 32-byte field -- 31 characters plus the NUL -- and
@@ -187,6 +196,8 @@ if(PRJ_BIN_LEN GREATER 31)
         "the live one must have a commit behind it.\n"
         "  A restart test build adds GI_TEST_SUFFIX ('_rt', 3 more) and needs a "
         "CLEAN tree for the same reason.\n"
+        "  The B6 error-code probe build adds GI_INSTR_SUFFIX ('_ecc', 4 more) "
+        "and needs a CLEAN tree too.\n"
         "  Left unchecked this surfaces as a _Static_assert in "
         "components/esp_app_format/esp_app_desc.c, which does not point here.")
 endif()
