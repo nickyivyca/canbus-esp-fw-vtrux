@@ -16,7 +16,8 @@ ORDER is affected, and the behaviour difference in the emitted trace. Run it bef
 re-blessing, and read the per-scenario output.
 
     python3 replay_stimulus_delta.py            # uses ./scenarios and ./golden
-    python3 replay_stimulus_delta.py --regen    # rebuild the replays first
+    python3 replay_stimulus_delta.py --regen    # rebuild the replays first;
+                                                # needs $REVERSE_IT_DIR or --project-dir
 
 `--regen` moves the existing replay scenarios aside to scenarios/_pre_regen/ so the
 old stimulus is still readable afterwards; without it the script compares whatever
@@ -30,6 +31,8 @@ import re
 import shutil
 import subprocess
 import sys
+
+import project_dir   # --project-dir, else $REVERSE_IT_DIR, no default (2026-10-20)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCN = os.path.join(HERE, "scenarios")
@@ -69,14 +72,10 @@ REPLAYS = [
 FRAME_RE = re.compile(r"^\s*(\d+)\s+(?:RX|rx)?\s*0?x?([0-9A-Fa-f]{3,8})\b")
 
 
-def logs_dir():
-    """The project repo's Vtrux logs, per the README. Never guessed silently."""
-    for cand in (os.path.expanduser("~/Seafile/NotGit/reverse-it/projects/vtrux/logs"),
-                 os.path.expanduser("~/seadrive_root/nickivyc_1/My Libraries/NotGit/"
-                                    "reverse-it/projects/vtrux/logs")):
-        if os.path.isdir(cand):
-            return cand
-    return None
+def logs_dir(pdir):
+    """The project folder's Vtrux logs, or None. Never guessed silently."""
+    cand = os.path.join(pdir, "projects", "vtrux", "logs")
+    return cand if os.path.isdir(cand) else None
 
 
 def read_scn(path):
@@ -105,10 +104,10 @@ def read_scn(path):
     return head, rows
 
 
-def regen(name, log, chan, at, dur, note, ldir):
+def regen(name, log, chan, at, dur, note, ldir, pdir):
     out = os.path.join(SCN, name + ".scn")
     cmd = [sys.executable, os.path.join(HERE, "from_capture.py"),
-           os.path.join(ldir, log), "--channel", str(chan),
+           os.path.join(ldir, log), "--project-dir", pdir, "--channel", str(chan),
            "--at", str(at), "--for", str(dur), "--out", out]
     if note:
         cmd += ["--note", note]
@@ -132,14 +131,19 @@ def trace_of(name):
 def main(argv):
     ap = argparse.ArgumentParser()
     ap.add_argument("--regen", action="store_true")
+    ap.add_argument("--project-dir", help="the reverse-it root (default: $REVERSE_IT_DIR; no other default)")
     args = ap.parse_args(argv[1:])
 
     if args.regen:
-        ldir = logs_dir()
+        try:
+            pdir = project_dir.resolve(args.project_dir)
+        except project_dir.ProjectDirError as e:
+            print("NO REFERENCE: %s" % e)
+            return 2
+        ldir = logs_dir(pdir)
         if ldir is None:
-            print("NO REFERENCE: the project repo's projects/vtrux/logs was not "
-                  "found, so the replays cannot be rebuilt. Refusing to guess a "
-                  "path.")
+            print("NO REFERENCE: %s has no projects/vtrux/logs, so the replays "
+                  "cannot be rebuilt. Refusing to guess a path." % pdir)
             return 2
         os.makedirs(OLD, exist_ok=True)
         for name, _l, _c, _a, _d, _n in REPLAYS:
@@ -148,7 +152,7 @@ def main(argv):
                 shutil.copy2(src, os.path.join(OLD, name + ".scn"))
         print("existing replay scenarios copied to %s" % OLD)
         for name, log, chan, at, dur, note in REPLAYS:
-            rc, tail = regen(name, log, chan, at, dur, note, ldir)
+            rc, tail = regen(name, log, chan, at, dur, note, ldir, pdir)
             print("  regen %-30s %s" % (name, "ok" if rc == 0 else "FAILED " + tail))
         print("")
 

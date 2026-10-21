@@ -51,6 +51,7 @@ stays green forever.
 | `bus_on_check.py` | **Judges 0x7F1's `bus_on` bit against the SPEC, not a golden** (tester, 2026-10-09). Spec 11: true only in `TWAI_STATE_RUNNING`; section 10: the 0x7F1 bit (B3 bit1) means the same. Every 0x7F1 must carry bit1 equal to the controller input in force (the `bus` directive's first field; the runner starts at 1); a frame less than 100 ms after a change is skipped (test tolerance). PASS needs a judged frame while running, while stopped and while running again; otherwise INCONCLUSIVE. Scenarios, without goldens on purpose: `bus-on-stopped-live`, `bus-on-stopped-armed`. **Device-only, not covered:** the mapping from stopped / bus-off / recovering to the input, and the status page's `bus_on`, both built in the shim. `--selftest` 7/7, including the old "driver installed" meaning (bit stuck set) failing. |
 | `drained_check.py` | **Judges going live with a backlog against the SPEC, not a golden** (tester, 2026-10-12). Spec 7 gate condition 9 ("the receive queue is drained", user, 2026-10-10) and the 12.4 row "no stale answers on going live": the first inhibit frame after going live must carry the counter of the newest `0x051` the scenario had presented by then, plus one. Also FAILs if the `rx_waiting` in force when the device went live (the last `RXW` line before the live STATE line, in trace order) was not zero. INCONCLUSIVE if never live, no inhibit after it, or no `receive queue not drained` hold before it -- nothing was waiting, so the case could not fail. A FAIL outranks that. **`rx_waiting` comes from `host_runner`**: with `load` on, each dequeue sets it to the frames still queued and prints `<t> RXW n=<k>` when it changes; without `load` it stays 0 (drained). Scenario, without a golden on purpose: `golive-backlog-held` (the gate's last condition, `0x617`, arrives in a constructed 9.3 ms preemption with two `0x051`s behind it). `--control <main/ of another core>` builds the runner with `-DGI_NO_RX_WAITING` against it and requires every row to FAIL: on `fb61892` the first inhibit answers the older command. `--selftest` 16 cases, 14/14 mutants caught. |
 | `test_signals.py` | 2000 randomised frames per signal, C extractors vs cantools |
+| `project_dir.py` / `test_project_dir.py` | Where the project folder is: `--project-dir`, else `$REVERSE_IT_DIR`, no default (2026-10-20), for `from_capture.py`, `test_signals.py` and `replay_stimulus_delta.py`. The test needs no project folder (it makes a fake one in a temporary folder); `--mutants` runs its mutants |
 | `scenarios/` | Generated inputs. Not hand-edited |
 | `golden/` | Blessed traces |
 
@@ -62,13 +63,18 @@ python3 make_scenarios.py      # writes scenarios/
 python3 run_tests.py           # build, replay, diff
 python3 run_tests.py --only keyon
 python3 run_tests.py --bless   # after reading the diff
-python3 test_signals.py        # needs cantools and the project repo
+python3 test_signals.py        # needs cantools and the project folder
 ```
 
-`test_signals.py` and `from_capture.py` reach into the **project** repo
-(`reverse-it`), which is a separate tree — for the DBCs and for `canre`'s
-parsers. Point them at it with `--repo` or `$GEN_INHIBIT_REPO`; the default is
-the `madhouse-debian` layout, `~/Seafile/NotGit/reverse-it`.
+`test_signals.py`, `from_capture.py` and `replay_stimulus_delta.py --regen`
+reach into the **project folder** (`reverse-it`), which is a separate tree — for
+the DBCs, for `canre`'s parsers and for the captures. Point them at it with
+`--project-dir <reverse-it root>` or `$REVERSE_IT_DIR` (`project_dir.py`). There
+is **no default** (methodology, 2026-10-20; it replaced `--repo`,
+`$GEN_INHIBIT_REPO` and the `~/Seafile/NotGit/reverse-it` default): with neither
+set, each refuses with a message naming the variable and an example path. Under
+WSL, pass it across with `WSLENV=REVERSE_IT_DIR/p`. `test_project_dir.py` tests
+the resolver and its use in the three tools (`--mutants` runs its mutants).
 
 Prefer running all of this on `madhouse-debian`: the log corpus is on local
 disk there, so no SeaDrive hydration is involved, and it keeps the load off
@@ -219,7 +225,7 @@ scenario gains or loses a decision event** -- seven are pure timestamp shifts an
 `replay-shutdown-at-keyon` reorders two same-microsecond events without adding or
 dropping any.
 
-All five captures are copied into the project repo so this suite has one
+All five captures are copied into the project folder so this suite has one
 stable source instead of reaching into the Android auto-capture store. They
 are described in `projects/vtrux/logs/README.md` there. The copy is not
 ceremony: the original `replay-T20-drive` fixture broke precisely because its
@@ -236,20 +242,16 @@ another machine unchanged, and read the resulting six `[STIM ]` failures as the
 goldens having gone stale. The pin was right and the scenarios were old. A total
 that reconciles is not evidence that the population is what you think it is.*
 
-**`$L` and `--repo` below are machine-specific and the defaults do not fit every
-machine.** `from_capture.py`'s `DEFAULT_REPO` is `~/Seafile/NotGit/reverse-it`,
-which does not exist on `NICKY-XPS` — SeaDrive puts the project under
-`seadrive_root/<library>/...` — so the recipe cannot be pasted there unchanged.
-Set `GEN_INHIBIT_REPO`, or pass `--repo <project root>`. Since 2026-10-04
-`from_capture.py` refuses with a message naming the path it tried rather than
+**The project folder is machine-specific, so set `$REVERSE_IT_DIR` first.**
+`madhouse-debian` has it at `~/Seafile/NotGit/reverse-it`; SeaDrive puts it under
+`seadrive_root/<library>/...`. `from_capture.py` has no default for it: with
+`$REVERSE_IT_DIR` unset and no `--project-dir`, it refuses by name rather than
 letting the import fail as `No module named canre`, which points at Python
-instead of at the flag.
+instead of at the setting.
 
 ```sh
-# Adjust both paths for the machine. On NICKY-XPS:
-#   L=~/seadrive_root/<library>/NotGit/reverse-it/projects/vtrux/logs
-#   add --repo ~/seadrive_root/<library>/NotGit/reverse-it to every line below
-L=~/Seafile/NotGit/reverse-it/projects/vtrux/logs
+export REVERSE_IT_DIR=~/Seafile/NotGit/reverse-it   # this machine's reverse-it root
+L=$REVERSE_IT_DIR/projects/vtrux/logs
 python3 from_capture.py $L/vtrux_20260719_190019_T4.log --channel 2 --at 0 --for 220 \
         --out scenarios/replay-genrun-stop.scn
 python3 from_capture.py $L/vtrux_20260323_220148_T0.log --channel 1 --at 0 --for 300 \
