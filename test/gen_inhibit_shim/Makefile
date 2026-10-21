@@ -12,6 +12,7 @@ COREDIR ?= ../../main
 CFLAGS  ?= -std=c11 -O1 -g -Wall -Wextra -Wno-unused-parameter \
            -I. -Imock -I$(COREDIR)
 LDFLAGS ?= -pthread
+PYTHON  ?= python3
 
 # main/can.c is compiled AS SHIPPED, not reimplemented: the reviewing session
 # mutated the spec 3.2 refusal out of the real file and every case stayed green,
@@ -27,7 +28,17 @@ SRC := shim_test.c fake_twai.c fake_can.c \
 
 all: shim_test shim_test_autoarm
 
-shim_test: $(SRC) fake_twai.h
+# THE LONG-ARM STIMULUS. Cases 33 and 53 replay a real 300 s capture, and the
+# file they replay is generated, not in git. build_longarm.py builds it from the
+# capture in the project folder named by REVERSE_IT_DIR, rebuilds it when it is
+# older than the capture or the converter, and stops the build, naming the
+# variable, when the folder is not set. It runs on every make and is a no-op when
+# the file is current. An order-only prerequisite, so it never relinks shim_test.
+# shim_test_autoarm does not replay anything and does not wait on it.
+longarm:
+	$(PYTHON) build_longarm.py
+
+shim_test: $(SRC) fake_twai.h | longarm
 	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS)
 
 # THE AUTO-ARM BUILD (spec 3.2, "arming comes after it"): the same sources with
@@ -48,4 +59,4 @@ run: shim_test shim_test_autoarm
 clean:
 	rm -f shim_test shim_test_autoarm
 
-.PHONY: all asan run clean
+.PHONY: all longarm asan run clean
