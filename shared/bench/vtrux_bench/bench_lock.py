@@ -105,6 +105,7 @@ REQUIRED = {
 SHA_RE = re.compile(r"[0-9a-f]{64}\Z")
 DAMAGED_RE = re.compile(r"bench-log\.\d{8}T\d{6}\.damaged\.jsonl\Z")
 LOG_NAME = os.path.join("firmware", "bench-log.jsonl")
+REPAIR_TMP = ".repair-tmp"      # the new log while a repair writes it
 LOCK_WAIT_S = 10.0
 UNKNOWN = "BOARD STATE UNKNOWN"
 
@@ -539,6 +540,12 @@ def init(path, who):
     env_impl(env)
     if os.path.exists(path):
         raise Refused("%s exists already" % path)
+    if os.path.exists(path + REPAIR_TMP):
+        raise Refused("%s exists: a repair is replacing this log, or one "
+                      "crashed between its two renames (that file is the new "
+                      "log, the newest bench-log.*.damaged.jsonl the old one). "
+                      "Never init over it; if no repair is running, stop and "
+                      "report it" % (path + REPAIR_TMP))
     if not os.path.isdir(os.path.dirname(os.path.abspath(path))):
         raise Refused("no folder for %s" % path)
     ev = {"ts": now(), "who": who, "event": "init", "host": this_host(),
@@ -659,11 +666,14 @@ def repair(path, who, reason):
     anything is renamed; locked() refuses an unimplemented environment."""
     env = this_env()
     folder = os.path.dirname(os.path.abspath(path))
-    stamp = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
-    name = "bench-log.%s.damaged.jsonl" % stamp
+    name = aside_name()
     aside = os.path.join(folder, name)
-    tmp = path + ".repair-tmp"
+    tmp = path + REPAIR_TMP
     with locked(path) as f:
+        if os.path.exists(tmp):
+            raise Refused("%s exists: a repair of this log is running, or one "
+                          "crashed and left it. If none is running, delete it "
+                          "and repair again; nothing was moved" % tmp)
         f.seek(0)
         data = f.read()
         kept, state, bad, dropped = scan(data)
@@ -690,14 +700,27 @@ def repair(path, who, reason):
             t.flush()
             os.fsync(t.fileno())
     # every writer refuses the damaged log, so nothing appends between the
-    # unlock and the renames; Windows cannot rename a file held open
-    os.rename(path, aside)
+    # unlock and the renames; Windows cannot rename a file held open. Between
+    # the two renames the log does not exist; init refuses while tmp does.
+    try:
+        os.rename(path, aside)
+    except FileExistsError:
+        os.remove(tmp)
+        raise Refused("%s exists already (two repairs in the same second?): "
+                      "wait a second and repair again; nothing was moved"
+                      % aside)
     if sha256_file(aside) != ev["damaged"]["sha256"]:
         os.rename(aside, path)
         os.remove(tmp)
         raise Refused("the log changed during the repair; nothing replaced")
     os.rename(tmp, path)
     return after, line, aside
+
+
+def aside_name():
+    """The damaged log's new name, to the second."""
+    return "bench-log.%s.damaged.jsonl" % datetime.datetime.now().strftime(
+        "%Y%m%dT%H%M%S")
 
 
 def sha256_file(path):

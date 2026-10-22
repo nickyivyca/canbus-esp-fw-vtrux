@@ -771,6 +771,39 @@ def test_repair_changed():
     check(len(damaged_files(p)) == 1, "then repaired")
 
 
+def test_repair_leftovers():
+    """SPEC 3 repair (reviewer, 2026-10-22, on 404f264): init refuses while
+    <log>.repair-tmp exists (between repair's two renames the log does not
+    exist); a stale .repair-tmp or a taken aside name is a refusal naming
+    the file, and nothing moves."""
+    p = folder("repair_window")
+    with open(p + ".repair-tmp", "w") as f:
+        f.write("x\n")
+    msg = refused(B.init, p, CI)
+    check(".repair-tmp" in msg and not os.path.exists(p),
+          "init in the window between the renames: %s" % msg)
+    p = hand_log("repair_stale_tmp", [init_line(), "{x"])
+    with open(p + ".repair-tmp", "wb") as f:
+        f.write(b"stale\n")
+    orig = file_bytes(p)
+    msg = refused(B.repair, p, CI, "test")
+    check(p + ".repair-tmp" in msg and file_bytes(p) == orig and
+          not damaged_files(p) and file_bytes(p + ".repair-tmp") == b"stale\n",
+          "a stale .repair-tmp: refused, nothing moved: %s" % msg)
+    p = hand_log("repair_aside_taken", [init_line(), "{x"])
+    taken = os.path.join(os.path.dirname(p),
+                         "bench-log.20261022T010101.damaged.jsonl")
+    with open(taken, "wb") as f:
+        f.write(b"an earlier repair\n")
+    orig = file_bytes(p)
+    with patched(aside_name=lambda: os.path.basename(taken)):
+        msg = refused(B.repair, p, CI, "test")
+    check(taken in msg and file_bytes(p) == orig and
+          not os.path.exists(p + ".repair-tmp") and
+          file_bytes(taken) == b"an earlier repair\n",
+          "a taken aside name: refused, nothing moved, no tmp left: %s" % msg)
+
+
 def test_repair_cli():
     """SPEC 5 repair on the command line; exit 2 when refused."""
     p = fresh("repair_cli")
@@ -792,7 +825,7 @@ TESTS = [test_take_release, test_boards, test_pause_resume, test_run_once,
          test_env_refusal, test_env_mismatch, test_file_lock, test_lines,
          test_cli, test_repair, test_repair_init_bad, test_repair_holders,
          test_repair_where, test_repair_replay, test_repair_changed,
-         test_repair_cli]
+         test_repair_leftovers, test_repair_cli]
 
 
 # ---- mutants ------------------------------------------------------------
@@ -1172,6 +1205,20 @@ MUTANTS = {
         ("tmp left behind",
          _edit("        os.rename(aside, path)\n        os.remove(tmp)\n",
                "        os.rename(aside, path)\n")),
+    ],
+    "test_repair_leftovers": [
+        ("init in the rename window",
+         _edit("    if os.path.exists(path + REPAIR_TMP):\n        raise Refused(\"%s exists: a repair is replacing",
+               "    if False:\n        raise Refused(\"%s exists: a repair is replacing")),
+        ("a stale tmp is a raw error",
+         _edit("        if os.path.exists(tmp):\n            raise Refused(",
+               "        if False:\n            raise Refused(")),
+        ("a taken aside name is a raw error",
+         _edit("    except FileExistsError:\n        os.remove(tmp)\n        raise Refused(",
+               "    except ZeroDivisionError:\n        os.remove(tmp)\n        raise Refused(")),
+        ("tmp left after a taken aside name",
+         _edit("    except FileExistsError:\n        os.remove(tmp)\n",
+               "    except FileExistsError:\n")),
     ],
     "test_repair_cli": [
         ("no repair command",
