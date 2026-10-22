@@ -577,12 +577,222 @@ def test_cli():
     check(rc == 2 and "REVERSE_IT_DIR" in e, "no log and no REVERSE_IT_DIR")
 
 
+def jl(kind, who, **k):
+    """One hand-written log line."""
+    return json.dumps(dict(k, ts="2026-10-22T01:00:00-07:00", event=kind,
+                           who=who), separators=(",", ":"))
+
+
+def damaged_files(p):
+    d = os.path.dirname(p)
+    return sorted(n for n in os.listdir(d) if n.endswith(".damaged.jsonl"))
+
+
+def file_bytes(p):
+    with open(p, "rb") as f:
+        return f.read()
+
+
+def test_repair():
+    """SPEC 3 repair: refused on a log that replays; keeps the good lines
+    up to the first bad one, never skipping past; renames the damaged log
+    aside with its sha256 and each bad line; frees the lock, ends held and
+    paused runs, boards unknown (ruling a); dropped run ids stay used
+    (ruling d); 2 repair is the only way out."""
+    import hashlib
+    p = fresh("repair_clean")
+    w(p, "take", CI, pid=ME, run="r0")
+    before = file_bytes(p)
+    msg = refused(B.repair, p, CI, "nothing wrong")
+    check("replays" in msg and file_bytes(p) == before and not damaged_files(p),
+          "a log that replays is not repaired: %s" % msg)
+    gone = dead_pid()
+    good = [init_line(),
+            jl("take", CI, pid=gone, run="r1"),
+            jl("pause", CI, run="r1", boards=BD),
+            jl("take", GI, pid=gone, run="r2")]
+    bad_take = jl("take", GIM, pid=gone, run="r3")         # held: illegal
+    after_bad = jl("release", GI, boards=BD)               # legal on its own
+    p = hand_log("repair", good + [bad_take, after_bad, "{garbage",
+                                   jl("steal", GI)])
+    orig = file_bytes(p)
+    st, line, aside = B.repair(p, CI, "test: a take while held")
+    check(damaged_files(p) == [os.path.basename(aside)] and
+          file_bytes(aside) == orig, "the damaged log is kept, unchanged")
+    rep = json.loads(line)
+    d = rep["damaged"]
+    check(d["name"] == os.path.basename(aside) and
+          d["sha256"] == hashlib.sha256(orig).hexdigest(),
+          "damaged names the kept file and its sha256")
+    check(d["kept"] == 4 and [b["line"] for b in d["bad"]] == [5, 7, 8] and
+          "breaks the rules" in d["bad"][0]["error"] and
+          "not JSON" in d["bad"][1]["error"] and
+          "unknown event" in d["bad"][2]["error"],
+          "the first bad line and each later bad line, with errors: %s"
+          % d["bad"])
+    new = lines(p)
+    check(new[:4] == good and len(new) == 5 and after_bad not in new,
+          "truncated at the first bad line, the later good line not kept")
+    check(rep["dropped_runs"] == ["r3"] and rep["reason"] == "test: a take "
+          "while held", "dropped_runs and reason: %s" % rep)
+    check(st["holder"] is None and st["paused"] == {} and
+          not st["boards"]["known"], "free, no paused run, boards unknown")
+    check(any(B.UNKNOWN in s and "repaired" in s for s in B.status_lines(st)),
+          "status shows BOARD STATE UNKNOWN after a repair")
+    for r in ("r3", "r2", "r1"):
+        msg = refused(B.write, p, ev("take", CI, pid=ME, run=r))
+        check("used before" in msg, "run %s stays used: %s" % (r, msg))
+    st = w(p, "take", CI, pid=ME, run="r4")
+    check(B.held_by_run(st, CI, "r4"), "the repaired log takes a new run")
+    refused(B.repair, p, CI, "again")
+
+
+def test_repair_init_bad():
+    """SPEC 3 repair when line 1 is the bad line (ruling b): a fresh init
+    for this host and environment, then the repair event."""
+    gone = dead_pid()
+    cases = {
+        "garbage first": ["{not json", jl("take", GI, pid=gone, run="g1")],
+        "a take first": [jl("take", GI, pid=gone, run="g1"), init_line()],
+        "empty": [],
+    }
+    for what, ls in cases.items():
+        p = hand_log("repair_init_" + what.replace(" ", "_"), ls)
+        st, line, _aside = B.repair(p, GIM, "test: " + what)
+        new = [json.loads(x) for x in lines(p)]
+        check(len(new) == 2 and new[0]["event"] == "init" and
+              new[0]["host"] == socket.gethostname() and
+              new[0]["env"] == "windows" and new[0]["who"] == GIM,
+              "%s: a fresh init for this host and environment" % what)
+        rep = new[1]
+        check(rep["event"] == "repair" and rep["damaged"]["kept"] == 0 and
+              rep["damaged"]["bad"][0]["line"] == 1,
+              "%s: nothing kept, line 1 bad" % what)
+        check(rep["dropped_runs"] == (["g1"] if ls else []),
+              "%s: dropped_runs %s" % (what, rep["dropped_runs"]))
+        check(st["bench"]["host"] == socket.gethostname(), what)
+
+
+def test_repair_holders():
+    """SPEC 3 repair has clear's PID fail-safe (ruling c): refused while the
+    kept lines' holder, or the pid of a take among the dropped lines, is
+    alive in the bench environment; nothing moves when refused."""
+    for what in ("kept holder", "dropped take"):
+        holder = Live()
+        try:
+            if what == "kept holder":
+                ls = [init_line(), jl("take", CI, pid=holder.pid, run="h1"),
+                      "{garbage"]
+            else:
+                ls = [init_line(), "{garbage",
+                      jl("take", GI, pid=holder.pid, run="h2")]
+            p = hand_log("repair_holder_" + what.replace(" ", "_"), ls)
+            orig = file_bytes(p)
+            msg = refused(B.repair, p, CI, "test")
+            check(str(holder.pid) in msg and file_bytes(p) == orig and
+                  not damaged_files(p) and not os.path.exists(p + ".repair-tmp"),
+                  "%s alive: refused, nothing moved: %s" % (what, msg))
+        finally:
+            holder.stop()
+        B.repair(p, CI, "test: holder gone")
+        check(B.read_state(p)["holder"] is None, "%s gone: repaired" % what)
+
+
+def test_repair_where():
+    """SPEC 3 repair on the bench host and environment only, by the roles
+    that may take, with a reason; 4 never in another environment."""
+    gone = dead_pid()
+    ls = [init_line(host="OTHER-HOST"), jl("take", CI, pid=gone), "{x"]
+    p = hand_log("repair_host", ls)
+    msg = refused(B.repair, p, CI, "test")
+    check("OTHER-HOST" in msg and not damaged_files(p), "another host: %s" % msg)
+    p = hand_log("repair_who", [init_line(), "{x"])
+    for who, reason in (("reviewer (charge-interposer)", "test"), (CI, ""),
+                        (CI, None)):
+        refused(B.repair, p, who, reason)
+        check(not damaged_files(p), "refused before anything moved: %r %r"
+              % (who, reason))
+    with patched(this_env=lambda: "wsl"):
+        msg = refused(B.repair, p, CI, "test")
+    check("wsl" in msg and not damaged_files(p), "WSL: %s" % msg)
+
+
+def test_repair_replay():
+    """SPEC 3 the repair event's fields; 8 run ids used once (ruling d);
+    repair and init are never appended by write()."""
+    gone = dead_pid()
+    sha = "0" * 64
+    rep = dict(damaged={"name": "bench-log.20261022T010000.damaged.jsonl",
+                        "sha256": sha, "kept": 2,
+                        "bad": [{"line": 3, "error": "x"}]},
+               dropped_runs=["z1"], reason="r")
+    base = [init_line(), jl("take", CI, pid=gone, run="a1")]
+    st = B.replay(base + [jl("repair", CI, **rep)])
+    check("z1" in st["runs"] and st["holder"] is None, "dropped runs seen")
+    def with_(**k):
+        r = json.loads(json.dumps(rep))
+        for key, v in k.items():
+            if key in r:
+                r[key] = v
+            else:
+                r["damaged"][key] = v
+        return base + [jl("repair", CI, **r)]
+    for what, ls in {
+            "first bad not kept + 1": with_(bad=[{"line": 4, "error": "x"}]),
+            "no bad line": with_(bad=[]),
+            "bad lines out of order": with_(bad=[{"line": 3, "error": "x"},
+                                                 {"line": 3, "error": "y"}]),
+            "a wrong name": with_(name="bench-log.jsonl"),
+            "a short sha256": with_(sha256="abc"),
+            "an extra damaged key": with_(extra=1),
+            "a bad dropped run id": with_(dropped_runs=["a b"]),
+            "no reason": with_(reason=""),
+            "a reviewer": base + [jl("repair", "reviewer (x)", **rep)]}.items():
+        msg = refused(B.replay, ls)
+        check("line 3" in msg, "%s refused: %s" % (what, msg))
+    p = fresh("repair_write")
+    for kind in ("repair", "init"):
+        msg = refused(B.write, p, dict(rep, event=kind, who=CI))
+        check("never appended" in msg, "%s by write(): %s" % (kind, msg))
+    check(len(lines(p)) == 1, "nothing appended")
+
+
+def test_repair_changed():
+    """SPEC 1 repair keeps the original: if the renamed log's sha256 is not
+    the one the repair read, the log goes back and nothing is replaced."""
+    p = hand_log("repair_changed", [init_line(), "{x"])
+    orig = file_bytes(p)
+    with patched(sha256_file=lambda path: "f" * 64):
+        msg = refused(B.repair, p, CI, "test")
+    check("changed" in msg and file_bytes(p) == orig and not damaged_files(p)
+          and not os.path.exists(p + ".repair-tmp"),
+          "a changed log: put back, nothing replaced: %s" % msg)
+    B.repair(p, CI, "test")
+    check(len(damaged_files(p)) == 1, "then repaired")
+
+
+def test_repair_cli():
+    """SPEC 5 repair on the command line; exit 2 when refused."""
+    p = fresh("repair_cli")
+    rc, _o, e = cli("--log", p, "repair", "--who", CI, "--reason", "x")
+    check(rc == 2 and "replays" in e, "a clean log: rc %d %s" % (rc, e))
+    with open(p, "a", encoding="utf-8", newline="\n") as f:
+        f.write("{torn")
+    rc, o, e = cli("--log", p, "repair", "--who", CI, "--reason", "torn")
+    check(rc == 0 and "damaged log is kept as" in o and B.UNKNOWN in o,
+          "repair: rc %d %s %s" % (rc, o, e))
+    check(json.loads(lines(p)[-1])["damaged"]["bad"][0]["error"].startswith(
+        "no newline"), "the torn last line is the bad one")
+
+
 TESTS = [test_take_release, test_boards, test_pause_resume, test_run_once,
          test_held_by_run, test_queue, test_clear, test_take_alive,
          test_lock_timeout, test_pid_wrong_env,
          test_lost, test_replay_fails_closed, test_init, test_detect_env,
          test_env_refusal, test_env_mismatch, test_file_lock, test_lines,
-         test_cli]
+         test_cli, test_repair, test_repair_init_bad, test_repair_holders,
+         test_repair_where, test_repair_replay, test_repair_changed,
+         test_repair_cli]
 
 
 # ---- mutants ------------------------------------------------------------
@@ -851,10 +1061,124 @@ MUTANTS = {
         ("refusal exits 0",
          _edit("        return 2\n", "        return 0\n")),
         ("no appended line printed",
-         _edit("        print(line)\n", "")),
+         _edit("        st, line = write(path, ev)\n        print(line)\n",
+               "        st, line = write(path, ev)\n")),
         ("a lost command",
          _edit("    for name in (\"init\", \"take\", \"release\", \"pause\", \"request\", \"withdraw\",\n                 \"clear\"):",
                "    for name in (\"init\", \"take\", \"release\", \"pause\", \"request\", \"withdraw\",\n                 \"clear\", \"lost\"):")),
+    ],
+    "test_repair": [
+        ("repair of a log that replays",
+         _edit("    elif not bad:\n        raise Refused(\"the log replays",
+               "    elif False:\n        raise Refused(\"the log replays")),
+        ("skips past the first bad line",
+         _edit("        if bad or err is not None:\n", "        if err is not None:\n")),
+        ("later bad lines not listed",
+         _edit("        if err is None and bad:\n            try:\n                check_fields(ev)\n"
+               "            except Refused as e:\n                err = str(e)\n",
+               "        if err is None and bad:\n            pass\n")),
+        ("repair keeps the holder",
+         _edit("        state[\"holder\"] = None\n        state[\"paused\"] = {}\n",
+               "        state[\"paused\"] = {}\n")),
+        ("repair keeps paused runs",
+         _edit("        state[\"holder\"] = None\n        state[\"paused\"] = {}\n",
+               "        state[\"holder\"] = None\n")),
+        ("repair keeps the boards",
+         _edit("        state[\"boards\"] = {\"known\": False, \"why\": \"log repaired",
+               "        state[\"boards\"] = {\"known\": True, \"why\": \"log repaired")),
+        ("dropped runs reusable",
+         _edit("        state[\"runs\"] |= set(ev[\"dropped_runs\"])\n", "")),
+        ("dropped runs not collected",
+         _edit("            runs.add(r)\n", "            pass\n")),
+        ("the damaged log deleted",
+         _edit("    os.rename(tmp, path)\n    return after, line, aside",
+               "    os.rename(tmp, path)\n    os.remove(aside)\n    return after, line, aside")),
+        ("sha256 of nothing",
+         _edit("\"sha256\": hashlib.sha256(data).hexdigest(),",
+               "\"sha256\": hashlib.sha256(b\"\").hexdigest(),")),
+        ("kept count off by one",
+         _edit("\"kept\": len(kept), \"bad\": bad},", "\"kept\": len(kept) + 1, \"bad\": bad},")),
+    ],
+    "test_repair_init_bad": [
+        ("no fresh init",
+         _edit("            head = [line_of({\"ts\": now(), \"who\": who, \"event\": \"init\",",
+               "            head = [] and [line_of({\"ts\": now(), \"who\": who, \"event\": \"init\",")),
+        ("line 1 need not be init",
+         _edit("        elif err is None and n == 1 and (not isinstance(ev, dict)",
+               "        elif False and n == 1 and (not isinstance(ev, dict)")),
+        ("an empty log has no bad line",
+         _edit("    if not raw:\n        bad.append(", "    if False:\n        bad.append(")),
+    ],
+    "test_repair_holders": [
+        ("kept holder not checked",
+         _edit("    if h is not None and impl.pid_alive(h[\"pid\"]):",
+               "    if False:")),
+        ("dropped takes not checked",
+         _edit("    for p in dropped_pids:\n", "    for p in []:\n")),
+        ("dropped take pids not collected",
+         _edit("            pids.append(p)\n", "            pass\n")),
+        ("tmp written before the check",
+         _edit("        pids, runs = dropped_takes_and_runs(dropped)\n"
+               "        check_repair_holders(state, impl, pids)\n",
+               "        pids, runs = dropped_takes_and_runs(dropped)\n"
+               "        open(tmp, \"wb\").close()\n"
+               "        check_repair_holders(state, impl, pids)\n")),
+    ],
+    "test_repair_where": [
+        ("repair on any host",
+         _edit("            impl = bench_impl(state)\n            head = []",
+               "            impl = env_impl(env)\n            head = []")),
+        ("the new log not replayed first",
+         _edit("        after = replay(new)         # the new log must replay",
+               "        after = new_state()         # the new log must replay")),
+    ],
+    "test_repair_replay": [
+        ("repair appended by write",
+         _edit("    if ev.get(\"event\") in (\"init\", \"repair\"):\n",
+               "    if ev.get(\"event\") in (\"init\",):\n")),
+        ("init appended by write",
+         _edit("    if ev.get(\"event\") in (\"init\", \"repair\"):\n",
+               "    if ev.get(\"event\") in (\"repair\",):\n")),
+        ("first bad line unchecked",
+         _edit("        if i == 0 and b[\"line\"] != d[\"kept\"] + 1:", "        if False:")),
+        ("bad lines order unchecked",
+         _edit("        if b[\"line\"] <= last and i:", "        if False:")),
+        ("an empty bad list",
+         _edit("    if not isinstance(bad, list) or not bad:\n",
+               "    if not isinstance(bad, list):\n")),
+        ("any damaged name",
+         _edit("    if not isinstance(d[\"name\"], str) or not DAMAGED_RE.match(d[\"name\"]):",
+               "    if not isinstance(d[\"name\"], str):")),
+        ("any sha256",
+         _edit("    if not isinstance(d[\"sha256\"], str) or not SHA_RE.match(d[\"sha256\"]):",
+               "    if not isinstance(d[\"sha256\"], str):")),
+        ("extra damaged keys",
+         _edit("    if not isinstance(d, dict) or sorted(d) != [\"bad\", \"kept\", \"name\", \"sha256\"]:",
+               "    if not isinstance(d, dict):")),
+        ("any dropped run id",
+         _edit("                    isinstance(r, str) and RUN_RE.match(r) for r in d):",
+               "                    isinstance(r, str) for r in d):")),
+        ("repair without reason",
+         _edit("    \"repair\": (\"damaged\", \"dropped_runs\", \"reason\"),\n}\nSHA_RE",
+               "    \"repair\": (\"damaged\", \"dropped_runs\"),\n}\nSHA_RE")),
+    ],
+    "test_repair_changed": [
+        ("no check after the rename",
+         _edit("    if sha256_file(aside) != ev[\"damaged\"][\"sha256\"]:",
+               "    if False:")),
+        ("changed log not put back",
+         _edit("        os.rename(aside, path)\n        os.remove(tmp)\n",
+               "        os.remove(tmp)\n")),
+        ("tmp left behind",
+         _edit("        os.rename(aside, path)\n        os.remove(tmp)\n",
+               "        os.rename(aside, path)\n")),
+    ],
+    "test_repair_cli": [
+        ("no repair command",
+         _edit("        if a.cmd == \"repair\":\n            st, line, aside = repair(path, a.who, a.reason)",
+               "        if a.cmd == \"repair-x\":\n            st, line, aside = repair(path, a.who, a.reason)")),
+        ("torn line kept",
+         _edit("        if err is None and torn and n == len(raw):", "        if False:")),
     ],
 }
 
