@@ -141,7 +141,13 @@ SELF_TESTS = [
     "bench_powerup_round", "bench_rx_order", "bench_charger_silent",
     "bench_innomaker_clock", "bench_switch_loss", "bench_switch_errors",
     "bench_switch_pending", "bench_vport", "bench_c12", "bench_flight_silence",
-    "bench_usb_host", "bench_mcp_reset", "bench_hold12",
+    "bench_usb_host", "bench_mcp_reset", "bench_hold12", "bench_topology",
+]
+# Bench drivers whose --can-fail runs their self-test against each of their
+# MUTANTS (script_can_fail.py), run locally (test_script_coverage).
+CAN_FAILS = [
+    "bench_mcp_reset", "bench_switch_loss", "bench_topology", "bench_usb_host",
+    "bench_vport",
 ]
 
 # Local scripts in reverse-it interposer-firmware/ (they want pyserial or
@@ -598,8 +604,14 @@ def bench(settings):
         # The dependent cases read their baseline from the folder of the
         # case that wrote it (a25e: each case has its own folder, and
         # close-ack / bridge-cycles found none; test_usb_baselines).
+        # Stop lengths as the 2026-10-14 runs that met the premise (reverse-it
+        # runs/bench_usbhost_control_20261014T0528/CODE.txt: 240 s stops
+        # never filled the host side) -- 480 s for the not-reading boots,
+        # 600 s for the bridge cycles (4cdb: both noread cases VOID at the
+        # 240 s floor; test_usb_stops).
         bpy("usb-host-noread-ack", "bench_usb_host.py",
             ["--port", "{serial_port}", "--case", "noread-boots", "--ack",
+             "--stop-s", "480",
              "--wican-state", "{wican_state}", "--out", "{outdir}",
              "--baseline-dir", "{outdir}/../usb-host-baseline-ack"]),
         bpy("usb-host-close-ack", "bench_usb_host.py",
@@ -611,6 +623,7 @@ def bench(settings):
              "--wican-state", "{wican_state}", "--out", "{outdir}"]),
         bpy("usb-host-noread-noack", "bench_usb_host.py",
             ["--port", "{serial_port}", "--case", "noread-boots", "--noack",
+             "--stop-s", "480",
              "--wican-state", "{wican_state}", "--out", "{outdir}",
              "--baseline-dir", "{outdir}/../usb-host-baseline-noack"]),
         bpy("usb-host-bridge-absent", "bench_usb_host.py",
@@ -648,7 +661,12 @@ def bench(settings):
         bpy("innomaker-rate-runs-idle", "bench_innomaker_clock.py",
             ["--out", "{outdir}", "rate-runs", "--between", "idle:60"]),
         bpy("innomaker-rate-runs-reopen", "bench_innomaker_clock.py",
-            ["--out", "{outdir}", "rate-runs", "--between", "reopen"]),
+            ["--out", "{outdir}", "rate-runs", "--between", "reopen"],
+            skip=("plan Step 4 no-hands sheet item 1 (2026-10-14): reopening "
+                  "the Innomaker in the same process fails with libusb "
+                  "'Access denied', a harness defect, not fixed (a25e and "
+                  "4cdb failed the same way); reviewer 2026-10-22: a skip "
+                  "until it reopens in a fresh process")),
         Check("innomaker-replug", ["-"], skip=(
             "plan Step 4 no-hands sheet item 1: the Innomaker replug remedy "
             "needs hands (DEFERRED)")),
@@ -761,7 +779,10 @@ def harness(settings):
     l_harness = Group("l-harness", checks=[
         b.lpy("st." + s.replace("_", "-"), ["{interposer_artifacts}/%s.py" % s,
                                             "--self-test"], timeout_s=1800)
-        for s in SELF_TESTS] + [b.lpy(cid, argv, timeout_s=3600)
+        for s in SELF_TESTS] + [
+        b.lpy("cf." + s.replace("_", "-"), ["{interposer_artifacts}/%s.py" % s,
+                                            "--can-fail"], timeout_s=3600)
+        for s in CAN_FAILS] + [b.lpy(cid, argv, timeout_s=3600)
                                 for cid, argv in HARNESS_LOCAL] + [
         Check("cutover-verify-test", ["-"], skip=(
             "historical: the one-time 2026-10-08 cutover, verified then "

@@ -306,7 +306,8 @@ def test_suites():
                                                      "plan", "ruling")), \
                         "skip %s/%s names no spec item or ruling" % (g.name, c.id)
     # 171: vport-listen-wrong-rate split out of vport-listen (2026-10-21)
-    assert len(seen) == 171, "checks across the suites: %d" % len(seen)
+    # 177: st.bench-topology and the five cf.* can-fails (2026-10-22)
+    assert len(seen) == 177, "checks across the suites: %d" % len(seen)
     # build-check runs in a git checkout of HEAD, shipped as a bundle
     # (user ruling 2026-10-19), never in the shipped copy
     mb = [g for g in su["emulated"].groups if g.name == "m-build"][0]
@@ -676,6 +677,89 @@ def test_usb_baselines():
     assert n == 4, "%d dependent usb-host cases found, 4 expected" % n
 
 
+# The stop each bench_usb_host case needs before its premise can be met, as
+# in the 2026-10-14 runs that met it (reverse-it interposer-firmware
+# runs/bench_usbhost_control_20261014T0528/CODE.txt: five 240 s stops never
+# filled the host side -> 480 s for the not-reading boots, 600 s for the
+# bridge cycles). Only these two cases stop reading.
+USB_STOPS = {("noread-boots", "--ack"): "480", ("noread-boots", "--noack"): "480",
+             ("bridge", "cycles"): "600"}
+
+
+def test_usb_stops():
+    """Each bench_usb_host case that stops reading passes the stop the
+    2026-10-14 control showed it needs (4cdb: both noread cases VOID at the
+    script's 240 s floor), and no other case passes one."""
+    s, su = _all()
+    found = set()
+    for g in su["bench"].groups:
+        for c in g.checks:
+            argv = [str(a) for a in c.argv]
+            if not argv or not argv[0].endswith("bench_usb_host.py"):
+                continue
+            case = _opt(argv, "--case")
+            mode = "--ack" if "--ack" in argv else "--noack" \
+                if "--noack" in argv else _opt(argv, "--com3")
+            want = USB_STOPS.get((case, mode))
+            got = _opt(argv, "--stop-s")
+            assert got == want, "%s: --stop-s %s, want %s" % (c.id, got, want)
+            if want:
+                found.add((case, mode))
+    assert found == set(USB_STOPS), "stop cases missing: %s" % sorted(
+        set(USB_STOPS) - found)
+
+
+def test_script_coverage():
+    """Every bench driver in reverse-it interposer-firmware with a
+    --self-test is in SELF_TESTS, every script whose --can-fail runs
+    script_can_fail is in CAN_FAILS, and the harness suite runs each (4cdb:
+    bench_topology's self-test and all five can-fails were run by hand
+    only)."""
+    art = _artifacts()
+    st, cf = set(), set()
+    for n in sorted(os.listdir(art)):
+        if not n.endswith(".py"):
+            continue
+        src = open(os.path.join(art, n), encoding="utf-8",
+                   errors="replace").read()
+        if n.startswith("bench_") and '"--self-test"' in src:
+            st.add(n[:-3])
+        if "script_can_fail.run(" in src and n != "script_can_fail.py":
+            cf.add(n[:-3])
+    assert st == set(B.SELF_TESTS), "self-tests: found %s, listed %s" % (
+        sorted(st ^ set(B.SELF_TESTS)), "SELF_TESTS")
+    assert cf == set(B.CAN_FAILS), "can-fails: found %s, listed %s" % (
+        sorted(cf ^ set(B.CAN_FAILS)), "CAN_FAILS")
+    s, su = _all()
+    runs = set()
+    for g in su["harness"].groups:
+        for c in g.checks:
+            argv = [str(a) for a in c.argv]
+            if c.skip or not argv or not argv[0].endswith(".py"):
+                continue
+            name = os.path.basename(argv[0])[:-3]
+            runs |= {(name, m) for m in ("--self-test", "--can-fail")
+                     if m in argv[1:]}
+    for n in st:
+        assert (n, "--self-test") in runs, "harness never runs %s --self-test" % n
+    for n in cf:
+        assert (n, "--can-fail") in runs, "harness never runs %s --can-fail" % n
+
+
+def test_reopen_skip():
+    """innomaker-rate-runs-reopen stays listed with its argument line, and is
+    a skip naming the 2026-10-14 harness defect, so it shows NOT-RUN with
+    that reference (reviewer, 2026-10-22; a25e and 4cdb crashed on it)."""
+    s, su = _all()
+    c = next(c for g in su["bench"].groups for c in g.checks
+             if c.id == "innomaker-rate-runs-reopen")
+    argv = [str(a) for a in c.argv]
+    assert argv[0].endswith("bench_innomaker_clock.py") and \
+        _opt(argv, "--between") == "reopen", "the reopen line is gone"
+    assert c.skip and "Step 4 no-hands sheet item 1" in c.skip and \
+        "Access denied" in c.skip, "not a skip naming the defect: %r" % c.skip
+
+
 def test_vport_split():
     """vport-listen's two wrong-rate arms run as their own check, which is a
     registered KNOWN FAIL (reviewer, 2026-10-21); the rest stay judged in
@@ -712,7 +796,9 @@ def test_bench_argv():
 TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_corrupt_pin_judge, test_c12_judge, test_host_bridge_judge,
          test_suites, test_mutant_wiring, test_identify, test_pycache_ignored,
-         test_usb_baselines, test_vport_split, test_bench_argv]
+         test_usb_baselines, test_usb_stops, test_reopen_skip,
+         test_script_coverage,
+         test_vport_split, test_bench_argv]
 
 
 # ---- can-fail -----------------------------------------------------------
@@ -837,6 +923,15 @@ _ORIG["bench_identify.identify"] = B.bench_identify.identify
 _ORIG["self._PYCACHE_DROP"] = _PYCACHE_DROP
 _ORIG["self.NO_ARGPARSE"] = NO_ARGPARSE
 _ORIG["self._ARGV_PROBE"] = _ARGV_PROBE
+_ORIG["SELF_TESTS"] = B.SELF_TESTS
+_ORIG["CAN_FAILS"] = B.CAN_FAILS
+
+
+def _drop_harness_check(cid):
+    def fn(s):
+        for g in s.groups:
+            g.checks = [c for c in g.checks if c.id != cid]
+    return fn
 
 
 def _rc0_pass(run):
@@ -862,6 +957,30 @@ def _baseline_from(cid, src):
     def fn(s):
         c = _check(s, cid)
         c.argv[c.argv.index("--baseline-dir") + 1] = "{outdir}/../" + src
+    return fn
+
+
+def _set_stop(cid, value):
+    """value None drops --stop-s; otherwise sets it (adding it if absent)."""
+    def fn(s):
+        c = _check(s, cid)
+        if "--stop-s" in c.argv:
+            i = c.argv.index("--stop-s")
+            del c.argv[i:i + 2]
+        if value is not None:
+            c.argv[1:1] = ["--stop-s", value]
+    return fn
+
+
+def _unskip(cid):
+    def fn(s):
+        _check(s, cid).skip = None
+    return fn
+
+
+def _skip_reason(cid, reason):
+    def fn(s):
+        _check(s, cid).skip = reason
     return fn
 
 
@@ -906,6 +1025,33 @@ MUTANTS = {
         ("bench", _wrap_suite("bench", _baseline_from(
             "usb-host-noread-ack", "usb-host-close-ack")),
          "noread-ack reads a later check's folder")],
+    "test_usb_stops": [
+        ("bench", _wrap_suite("bench", _set_stop("usb-host-noread-ack", None)),
+         "noread-ack at the script's 240 s floor (4cdb)"),
+        ("bench", _wrap_suite("bench",
+                              _set_stop("usb-host-noread-noack", "240")),
+         "noread-noack stops 240 s"),
+        ("bench", _wrap_suite("bench",
+                              _set_stop("usb-host-bridge-cycles", "480")),
+         "bridge-cycles stops 480 s"),
+        ("bench", _wrap_suite("bench",
+                              _set_stop("usb-host-close-ack", "480")),
+         "a stop on a case that never stops reading")],
+    "test_script_coverage": [
+        ("SELF_TESTS", [n for n in B.SELF_TESTS if n != "bench_topology"],
+         "bench_topology's self-test unlisted (4cdb)"),
+        ("CAN_FAILS", [n for n in B.CAN_FAILS if n != "bench_switch_loss"],
+         "bench_switch_loss's can-fail unlisted"),
+        ("CAN_FAILS", B.CAN_FAILS + ["bench_c12"],
+         "a listed can-fail the script does not have"),
+        ("harness", _wrap_suite("harness", _drop_harness_check(
+            "cf.bench-usb-host")), "listed, but the harness never runs it")],
+    "test_reopen_skip": [
+        ("bench", _wrap_suite("bench", _unskip("innomaker-rate-runs-reopen")),
+         "the reopen case runs again (a25e, 4cdb)"),
+        ("bench", _wrap_suite("bench", _skip_reason(
+            "innomaker-rate-runs-reopen", "reviewer: later")),
+         "a skip that does not name the 2026-10-14 defect")],
     "test_vport_split": [
         ("bench", _wrap_suite("bench", _wrong_rate_back),
          "the wrong-rate arms back in vport-listen"),
