@@ -23,18 +23,22 @@ bound needs a measurement on the truck, not another look at these logs.
                    Not a fair test of the concept -- it is a test of the
                    failsafe, and the inhibitor should mostly refuse to fire.
 
-Usage, from the reverse-it root (or with REVERSE_IT_ROOT set to it):
+Usage, from the reverse-it root (or with REVERSE_IT_DIR set to it):
   python3.13 <this folder>/replay_inhibit.py --run
   python3.13 <this folder>/replay_inhibit.py --sweep
 
 The log parser (canre) and the capture live in the reverse-it repo, not in
 the firmware repo this file is published in, so their root is a setting:
-$REVERSE_IT_ROOT, default the current directory.
+$REVERSE_IT_DIR, default the current directory. It was $REVERSE_IT_ROOT until
+2026-10-22, the one name for that folder now being REVERSE_IT_DIR; the old name
+is refused if set, so an old environment fails loudly.
 """
 import os
 import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
-REVERSE_IT_ROOT = os.environ.get("REVERSE_IT_ROOT", ".")
+if os.environ.get("REVERSE_IT_ROOT", "").strip():
+    raise SystemExit("replay_inhibit: REVERSE_IT_ROOT is retired (2026-10-22): set REVERSE_IT_DIR instead")
+REVERSE_IT_ROOT = os.environ.get("REVERSE_IT_DIR", "").strip() or "."
 sys.path.insert(0, HERE)
 sys.path.insert(0, REVERSE_IT_ROOT)
 
@@ -45,7 +49,7 @@ try:
     from canre.parsers import parse_file
 except ImportError as e:
     raise SystemExit("replay_inhibit: cannot import canre from %r (%s). Run "
-                     "from the reverse-it root or set REVERSE_IT_ROOT to it."
+                     "from the reverse-it root or set REVERSE_IT_DIR to it."
                      % (os.path.abspath(REVERSE_IT_ROOT), e))
 from sync import SlotSync
 from inhibit import Inhibitor, FRAME_TIME

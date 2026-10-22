@@ -1,0 +1,57 @@
+{
+ "_comment": "sha256 pins of the bench harness's SeaDrive inputs (toolkit item 9), keyed by path relative to REVERSE_IT_DIR; a key ending / is a folder digest (gi_paths.tree_digest) over every file but its exclude list. Written by the gen-inhibit tester's tooling_move/move_pins.py, 2026-10-22.",
+ "files": {
+  "projects/vtrux/epri-pt-bus.dbc": "74551639ec05bd37a9a8645a8e4c9e88aff06f8eaddc99678c6a31a40d69fe80",
+  "projects/vtrux/logs/generator-on-then-off.log": "133e64f753186ac3621e0382517234b7d3e1eb2738d4cff28bab7665cef4878a",
+  "projects/vtrux/logs/vtrux_20260719_190019_T4.log": "6da3f3a3d35bfdbb479818f866e09433c066a30f520d8d640c21224eea04bd1a",
+  "projects/vtrux/logs/vtruxdrivetrainoverheattest.log": "cab32dec6c90b865efe770766264926f4bcb2f984ca804e6094d652e084548ae",
+  "projects/vtrux/logs/vtruxscottsvalleydrive.log": "44891499da42b7b9c4bf5271d19fdc84416c0b2bbc33447845d6f81ca0dcc775",
+  "projects/vtrux/notes/artifacts/gen-inhibit/runs/b6_ecc_20261020T214017/": {
+   "exclude": [],
+   "sha256": "3eb28bf1d2cc6d80e5b3dbceb6637ccf0d6a6c3b2c5af5c8307d1068b0f965b5"
+  },
+  "projects/vtrux/notes/artifacts/gen-inhibit/runs/b6_ecc_20261020T214017/x2_jam_threshold_20261020T214653.json": "3d3e905436281079a8ab4cae4e10107fd03db5b8790cbbeea9718808d3a7be89",
+  "projects/vtrux/notes/artifacts/gen-inhibit/runs/baseline_e3d9437/": {
+   "exclude": [
+    "bench/B11raw_e4_quiesce_inhibit_e3d9437_20261017T010417_arm1.pcapng",
+    "bench/B11raw_e4_quiesce_inhibit_e3d9437_20261017T010417_arm4.pcapng",
+    "bench/B11raw_e4_quiesce_inhibit_e3d9437_20261017T010417_arm5.pcapng",
+    "bench/B11raw_e4_quiesce_passive_e3d9437_20261017T010417_arm2.pcapng",
+    "bench/B11raw_e4_quiesce_passive_e3d9437_20261017T010417_arm3.pcapng",
+    "bench/B11raw_e4_quiesce_passive_e3d9437_20261017T010417_arm6.pcapng",
+    "bench/B21_e3d9437_image_20261016T232035.pcapng",
+    "bench/nonode_bench_20261020T170419.json",
+    "bench/ota_man_restore_20261017T010044.pcapng",
+    "bench/otagroup_abortwin_20261016T235021.pcapng",
+    "bench/otagroup_man2_20261017T000630.pcapng",
+    "bench/otagroup_man_back_20261017T000952.pcapng",
+    "bench/otagroup_man_back_20261017T002129.pcapng",
+    "bench/otagroup_prod_20261016T235951.pcapng",
+    "bench/otagroup_prod_20261017T001450.pcapng",
+    "bench/otagroup_rt_20261016T233322.pcapng",
+    "bench/otagroup_rt_self_20261016T234311.pcapng",
+    "bench/otagroup_rxq_20261016T235400.pcapng",
+    "bench/otagroup_txabort_20261016T234632.pcapng",
+    "suite_index_e3d9437.json"
+   ],
+   "sha256": "4cc7fb56abfea6256d0958a877bab5a9001ce8fd6b790c19d21de706fcefa8c8"
+  },
+  "projects/vtrux/notes/artifacts/gen-inhibit/runs/keyon_drivetrainoverheat_70s.log": "0f1806dfca5f73892b446136675ae716ddaa73e5dfaf27044f554524678f400e",
+  "projects/vtrux/notes/artifacts/gen-inhibit/runs/scottsvalley_armable_300s.log": "beefcf10cfb6fbddc1effa85902000959b3f86531c7c43d96889f537c1a87ab5",
+  "projects/vtrux/notes/artifacts/gen-inhibit/runs/trip_bench.json": "cd9c5ba199d963a34e085aabaad50df78180b01a404001d9b6b44bf50c5a7e21",
+  "projects/vtrux/notes/artifacts/gen-inhibit/runs/trip_bench_eea8f75.json": "00291f484f2127a3dd994e043804a0f4727b51a883d66a03278bfd258a7010b9",
+  "projects/vtrux/notes/artifacts/gen-inhibit/runs/truck_passive2.log": "9ef791e1d6e9db8ced696e1fa5584887d991288f887c5571cbd5b9276f13e3d1",
+  "projects/vtrux/notes/artifacts/gen-inhibit/x2_jammer/builds/a89ece8c467f90723a3ac26e72924aa8/boot_app0.bin": "f94c5d786a7a8fab06ac5d10e33bf37711a6697636dc037559ea19cc410a17f0",
+  "projects/vtrux/notes/artifacts/gen-inhibit/x2_jammer/builds/a89ece8c467f90723a3ac26e72924aa8/bootloader.bin": "e9d6ccf43eef52d63abd2a8d5657548555d649dc704630da1808e9fcd1271100",
+  "projects/vtrux/notes/artifacts/gen-inhibit/x2_jammer/builds/a89ece8c467f90723a3ac26e72924aa8/partitions.bin": "1d9cca96de0fe07ad7fc0648b9878ddecd9ce565e38b589ad20fea698ed4c80c",
+  "projects/vtrux/notes/artifacts/gen-inhibit/x2_jammer/builds/a89ece8c467f90723a3ac26e72924aa8/vtrux_jammer_x2_NOT_FOR_VEHICLE_bb20e4a37b64.bin": "9515d5de0aa24158ea677e90b6e7ab3793c73249ffa1ffe16d93e3390f167b0c",
+  "projects/vtrux/notes/artifacts/gen-inhibit/x2_jammer/builds/a89ece8c467f90723a3ac26e72924aa8/vtrux_jammer_x2_NOT_FOR_VEHICLE_bb20e4a37b64.elf": "370f919847c2cf1508f8c132a9f801828d12a6f4422c3365eff77ff054f96ad4",
+  "projects/vtrux/notes/artifacts/gen-inhibit/x2_jammer/builds/f4430f30149fd33c1473ed78f620ef0e/bootloader.bin": "e9d6ccf43eef52d63abd2a8d5657548555d649dc704630da1808e9fcd1271100",
+  "projects/vtrux/notes/artifacts/gen-inhibit/x2_jammer/builds/f4430f30149fd33c1473ed78f620ef0e/partitions.bin": "1d9cca96de0fe07ad7fc0648b9878ddecd9ce565e38b589ad20fea698ed4c80c",
+  "projects/vtrux/notes/artifacts/gen-inhibit/x2_jammer/builds/f4430f30149fd33c1473ed78f620ef0e/vtrux_jammer_x2_NOT_FOR_VEHICLE_e453ce322ce8.bin": "2af792f1de752e7bc5fdfda587595f5eaabcfae5ab31ebfb1f6b346d1afa5908",
+  "projects/vtrux/notes/artifacts/gen-inhibit/x2_jammer/builds/f4430f30149fd33c1473ed78f620ef0e/vtrux_jammer_x2_NOT_FOR_VEHICLE_e453ce322ce8.elf": "1bd021a177653c93a701aaa798834a837c8d1faefe76c4d6cba6ca074d1e83bb",
+  "projects/vtrux/vtrux-interposer-diag.dbc": "288fa703f3a279fad5f9c526dae1667360ce1ec172d28760371a6c572e994aff",
+  "projects/vtrux/vtrux-powertrain-experimental.dbc": "a1f4932cd6c8633680641243450ffd602dfec249e71a3ceee5a609069d59a8a3",
+  "projects/vtrux/vtrux-wican-diag.dbc": "fd6386df1c77044096f1eb181fe4e6dc69163127a852d6ba8931a3f2d17030e9"
+ }
+}

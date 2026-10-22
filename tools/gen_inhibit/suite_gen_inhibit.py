@@ -64,7 +64,18 @@ import suite_judges as SJ   # noqa: E402
 
 ROLE = "tester (gen-inhibit)"
 HOST = "192.168.80.1"
-HARNESS = "projects/vtrux/notes/artifacts/gen-inhibit"     # relative to the reverse-it root
+# The bench harness: bench/ of the gi_tools folder the settings name (moved from
+# SeaDrive, goal 20, 2026-10-22). In a check's argv it is this placeholder, which the
+# core fills from the settings, so no local path is recorded; the hooks join gi_tools
+# themselves (harness_dir). Its data stays in SeaDrive, found through REVERSE_IT_DIR.
+HARNESS = "{gi_tools}/bench"
+
+
+def harness_dir(settings):
+    return os.path.join(need(settings, "gi_tools"), "bench")
+# Part H and B15host still run the SeaDrive copy until the host-run commit moves them
+# to WSL on NICKY-XPS (reviewer, 2026-10-22: the move is behaviour-only).
+SEADRIVE_HARNESS = "projects/vtrux/notes/artifacts/gen-inhibit"     # relative to the reverse-it root
 JAMMER_MD5 = "a89ece8c467f90723a3ac26e72924aa8"            # baseline_b_jam.sh's build
 SSID_RX = re.compile(r"SoftAP `(WiCAN_[0-9a-fA-F]*)`")
 WICAN_BUILDS = {   # image name -> build-tester-<dir> in gi_images
@@ -173,8 +184,10 @@ def make_hooks(settings, ssid, images=None):
     images = {} if images is None else images
     root = need(settings, "reverse_it")
     tools = need(settings, "gi_tools")
-    harness = os.path.join(root, HARNESS)
-    base_env = {"GI_WICAN_SSID": ssid, "GI_FW_TOOLS": tools, "INTERPOSER_CODE": settings.get("interposer_code") or ""}
+    harness = harness_dir(settings)
+    # GI_FW_TOOLS is retired (2026-10-22): the bench tools find tools/gen_inhibit/ as
+    # their parent, and refuse it if set. REVERSE_IT_DIR is where their data is.
+    base_env = {"GI_WICAN_SSID": ssid, "REVERSE_IT_DIR": root, "INTERPOSER_CODE": settings.get("interposer_code") or ""}
 
     def redact(paths):
         """The SSID out of every text file named; anything else (a flash dump) untouched."""
@@ -408,7 +421,7 @@ def suite(settings):
     images["x2_jammer"] = Image("x2_jammer", "x2-jammer", {"build": JAMMER_MD5, "expect_elf": x2["x2_app"]["expect"]},
                                 "jammer:banner", board="x2", note="x2_flash_custody: dump, then the jammer")
 
-    env0 = {"GI_OUT": "{outdir}", "GI_RUNS_DIR": "{outdir}", "GI_COMMIT": commit, "GI_FW_TOOLS": "{gi_tools}",
+    env0 = {"GI_OUT": "{outdir}", "GI_RUNS_DIR": "{outdir}", "GI_COMMIT": commit, "REVERSE_IT_DIR": "{reverse_it}",
             "GI_IMAGES": "{gi_images}", "GI_WICAN_SSID": ssid, "INTERPOSER_CODE": "{interposer_code}"}
 
     def chk(cid, script, args, judge=None, outputs=(), timeout=3600, pw="wican_man", env=None, cls="wallclock"):
@@ -594,7 +607,7 @@ def emulated(settings):
     (baseline_host_run.sh); C's checks run idf.py here and are build-class, so the
     core throttles them while a wall-clock test runs."""
     commit = need(settings, "gi_commit")
-    H = HARNESS
+    H = SEADRIVE_HARNESS        # H and B15host: unchanged until the host-run commit
     C = commit
     host_half = ("ssh -o BatchMode=yes {gi_host_ssh} 'cd {gi_host_root} && python3 -B "
                  "%s/diag_decode_check.py ~/gi_baseline_%s/test/gen_inhibit_host 2>&1; echo \"exit $?\"' "
@@ -609,7 +622,7 @@ def emulated(settings):
         ]),
         Group("build_checks", checks=[
             Check(id="C5_C6_scan", argv=["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                                         "{reverse_it}/%s/c_checks_run.ps1" % H, "-Clone", "{gi_checks_clone}", "-Commit", C,
+                                         "%s/c_checks_run.ps1" % HARNESS, "-Clone", "{gi_checks_clone}", "-Commit", C,
                                          "-Components", "{gi_components}", "-OutDir", "{outdir}"],
                   cwd="{reverse_it}", timeout_s=7200, cls="build",
                   outputs=["%s_%s.txt" % (c, C) for c in ("stale_name_check", "name_once_check", "scan_scope_check")],

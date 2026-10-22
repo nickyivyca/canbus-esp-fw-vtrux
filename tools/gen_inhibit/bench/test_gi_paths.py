@@ -1,0 +1,229 @@
+#!/usr/bin/env python3
+"""Tests gi_paths.py, where the bench tools find what is not in this repo.
+
+Gen-inhibit tester, 2026-10-22 (the goal-20 move). On a fake reverse-it root in the
+machine's temp folder, with a fake pins file:
+
+  1. REVERSE_IT_DIR: unset, empty, or a folder without canre/ and projects/ is refused;
+     a real root resolves, and every data path (runs, captures, DBCs, the bench lock,
+     the jammer builds) lands under it, never under the repo.
+  2. The retired settings (GI_FW_TOOLS, GEN_INHIBIT_REPO, VTRUX_DATA, REVERSE_IT_ROOT)
+     are each refused, by check_retired and on import.
+  3. Pins: a pinned file that matches passes, one changed is refused, one spelt in
+     another case is still checked, an unpinned file passes. A pinned folder that
+     matches passes; a changed, renamed, added or removed file is refused; a change to an
+     excluded file is not, and an excluded file is never opened; a folder with no pin
+     is refused.
+  4. repo_root and fw_tools name this repo; use_canre puts the root on sys.path.
+
+    py -3.14 -B test_gi_paths.py           # exit 0 only if every check passes
+    py -3.14 -B test_gi_paths.py --real    # also: every entry of the real pins.json
+                                           # holds today (reads ~2.3 GB; REVERSE_IT_DIR set)
+
+Its mutants: test_gi_paths_mutants.py. GI_PATHS_DIR runs another copy of gi_paths.py.
+"""
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SRC_DIR = os.environ.get("GI_PATHS_DIR") or HERE
+FAILS = []
+
+
+def check(label, fn, detail=""):
+    try:
+        ok = bool(fn())
+    except Exception as e:      # noqa: BLE001  a crash is this check's FAIL
+        ok, detail = False, "CRASH %s: %s" % (type(e).__name__, e)
+    print("%s  %s  %s" % ("ok  " if ok else "FAIL", label, str(detail)[:150]))
+    if not ok:
+        FAILS.append(label)
+
+
+def raises(fn, text=""):
+    """True if fn raises an error whose message holds text."""
+    try:
+        fn()
+    except BaseException as e:      # noqa: BLE001  SystemExit included
+        return text in str(e)
+    return False
+
+
+def load(env):
+    """A fresh import of gi_paths (SRC_DIR's) under env; (module, None) or (None, error)."""
+    saved = dict(os.environ)
+    os.environ.clear()
+    os.environ.update(env)
+    try:
+        sys.modules.pop("gi_paths", None)
+        sys.path.insert(0, SRC_DIR)
+        try:
+            import gi_paths
+        finally:
+            sys.path.remove(SRC_DIR)
+        return gi_paths, None
+    except BaseException as e:      # noqa: BLE001
+        return None, e
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
+def fake_root(base):
+    root = os.path.join(base, "reverse it")          # a space, as SeaDrive's has
+    for d in ("canre", "projects/vtrux/logs", "projects/vtrux/notes/artifacts/gen-inhibit/runs/fix",
+              "projects/vtrux/notes/artifacts/gen-inhibit/x2_jammer/builds/abc", "firmware"):
+        os.makedirs(os.path.join(root, d))
+    files = {"projects/vtrux/logs/cap.log": b"capture\n",
+             "projects/vtrux/epri-pt-bus.dbc": b"VERSION \"\"\n",
+             "projects/vtrux/vtrux-wican-diag.dbc": b"VERSION \"diag\"\n",
+             "projects/vtrux/notes/artifacts/gen-inhibit/runs/fix/a.json": b"{}\n",
+             "projects/vtrux/notes/artifacts/gen-inhibit/runs/fix/b.txt": b"b\n",
+             "projects/vtrux/notes/artifacts/gen-inhibit/runs/fix/secret.pcapng": b"NOT-TO-BE-READ\n",
+             "projects/vtrux/notes/artifacts/gen-inhibit/x2_jammer/builds/abc/app.bin": b"\x00jam",
+             "projects/vtrux/logs/unpinned.log": b"x\n",
+             "firmware/bench-holder.md": b"lock\n"}
+    for rel, b in files.items():
+        with open(os.path.join(root, rel), "wb") as fh:
+            fh.write(b)
+    return root
+
+
+def write_pins(gp, root):
+    sha = lambda rel: hashlib.sha256(open(os.path.join(root, rel), "rb").read()).hexdigest()   # noqa: E731
+    G = "projects/vtrux/notes/artifacts/gen-inhibit"
+    tree = G + "/runs/fix/"
+    pins = {"projects/vtrux/logs/cap.log": sha("projects/vtrux/logs/cap.log"),
+            "projects/vtrux/epri-pt-bus.dbc": sha("projects/vtrux/epri-pt-bus.dbc"),
+            "projects/vtrux/vtrux-wican-diag.dbc": sha("projects/vtrux/vtrux-wican-diag.dbc"),
+            G + "/x2_jammer/builds/abc/app.bin": sha(G + "/x2_jammer/builds/abc/app.bin"),
+            tree: {"sha256": gp.tree_digest(os.path.join(root, tree), {"secret.pcapng"}), "exclude": ["secret.pcapng"]}}
+    p = os.path.join(os.path.dirname(root), "pins.json")
+    with open(p, "w", encoding="utf-8") as fh:
+        json.dump({"files": pins}, fh)
+    return p
+
+
+def main():
+    work = os.path.join(tempfile.gettempdir(), "gen-inhibit-gi-paths")
+    shutil.rmtree(work, ignore_errors=True)
+    os.makedirs(work)
+    base_env = {k: v for k, v in os.environ.items()
+                if k not in ("REVERSE_IT_DIR", "GI_FW_TOOLS", "GEN_INHIBIT_REPO", "VTRUX_DATA", "REVERSE_IT_ROOT")}
+    root = fake_root(work)
+
+    print("=== REVERSE_IT_DIR ===")
+    gp, err = load(base_env)
+    check("imports with no setting (every function resolves when called)", lambda: gp is not None, err)
+    os.environ.pop("REVERSE_IT_DIR", None)
+    check("unset is refused, naming it", lambda: raises(gp.reverse_it_dir, "REVERSE_IT_DIR is not set"))
+    os.environ["REVERSE_IT_DIR"] = "  "
+    check("empty is refused", lambda: raises(gp.reverse_it_dir, "REVERSE_IT_DIR is not set"))
+    os.environ["REVERSE_IT_DIR"] = work
+    check("a folder without canre/ and projects/ is refused", lambda: raises(gp.reverse_it_dir, "does not hold"))
+    os.environ["REVERSE_IT_DIR"] = root
+    check("a real root resolves", lambda: os.path.samefile(gp.reverse_it_dir(), root), gp.reverse_it_dir())
+    G = os.path.join(root, "projects", "vtrux", "notes", "artifacts", "gen-inhibit")
+    check("runs() is SeaDrive's runs/", lambda: os.path.normcase(gp.runs()) == os.path.normcase(os.path.join(G, "runs")),
+          gp.runs())
+    check("runs(x) joins under it", lambda: os.path.normcase(gp.runs("a", "b")) ==
+          os.path.normcase(os.path.join(G, "runs", "a", "b")))
+    check("data_dir() is the SeaDrive half", lambda: os.path.normcase(gp.data_dir()) == os.path.normcase(G))
+    check("bench_holder() is firmware/bench-holder.md",
+          lambda: os.path.normcase(gp.bench_holder()) == os.path.normcase(os.path.join(root, "firmware", "bench-holder.md")))
+    repo = os.path.normcase(gp.repo_root())
+    data = [gp.runs(), gp.data_dir(), gp.bench_holder(), gp.jammer_builds(), gp.project("projects")]
+    check("no data path lands in the repo",
+          lambda: all(not os.path.normcase(p).startswith(repo + os.sep) for p in data), data)
+    check("repo_root holds tools/gen_inhibit/bench/gi_paths.py",
+          lambda: os.path.isfile(os.path.join(gp.repo_root(), "tools", "gen_inhibit", "bench", "gi_paths.py")))
+    check("fw_tools holds suite_gen_inhibit.py",
+          lambda: os.path.isfile(os.path.join(gp.fw_tools(), "suite_gen_inhibit.py")))
+    sys.path[:] = [p for p in sys.path if os.path.normcase(p) != os.path.normcase(root)]
+    gp.use_canre()
+    check("use_canre puts the root on sys.path", lambda: root in sys.path)
+    sys.path.remove(root)
+
+    print("\n=== retired settings ===")
+    for k in ("GI_FW_TOOLS", "GEN_INHIBIT_REPO", "VTRUX_DATA", "REVERSE_IT_ROOT"):
+        check("check_retired refuses %s" % k, lambda: raises(lambda: gp.check_retired({k: "x"}), k))
+        m, e = load(dict(base_env, **{k: "somewhere"}))
+        check("import refuses %s" % k, lambda: m is None and k in str(e), e)
+    check("check_retired passes with none set", lambda: gp.check_retired({"PATH": "x"}) is None)
+    check("an empty retired value is not 'set'", lambda: gp.check_retired({"GI_FW_TOOLS": ""}) is None)
+
+    print("\n=== pins ===")
+    pins = write_pins(gp, root)
+    gp.PINS_FILE = pins
+    gp._checked.clear()
+    cap = os.path.join(root, "projects", "vtrux", "logs", "cap.log")
+    check("a pinned capture that matches passes", lambda: gp.capture("cap.log") == cap)
+    check("a pinned DBC that matches passes", lambda: gp.vehicle_dbc("epri-pt-bus.dbc") and gp.diag_dbc())
+    check("a pinned jammer build that matches passes", lambda: gp.jammer_builds("abc", "app.bin"))
+    check("an unpinned file passes unchanged", lambda: gp.verify(os.path.join(root, "projects", "vtrux", "logs",
+                                                                             "unpinned.log")))
+    check("a path outside the root passes unchanged", lambda: gp.verify(__file__) == __file__)
+    with open(cap, "ab") as fh:
+        fh.write(b"one more line\n")
+    check("a changed pinned capture is refused, naming it", lambda: raises(lambda: gp.capture("cap.log"),
+                                                                           "projects/vtrux/logs/cap.log"))
+    other_case = os.path.join(root, "projects", "VTRUX", "logs", "Cap.log")
+    if os.path.normcase("A") == os.path.normcase("a"):
+        check("... and spelt in another case, still refused", lambda: raises(lambda: gp.verify(other_case), "pinned"))
+    tree = os.path.join(G, "runs", "fix")
+    opened = []
+    real_sha = gp.sha256_file
+
+    def spy(p):
+        opened.append(os.path.basename(p))
+        return real_sha(p)
+    gp.sha256_file = spy
+    check("a pinned folder that matches passes", lambda: gp.pinned_tree(tree) == tree)
+    check("... and its excluded file was never opened", lambda: "secret.pcapng" not in opened and opened, opened)
+    with open(os.path.join(tree, "secret.pcapng"), "ab") as fh:
+        fh.write(b"changed")
+    check("a change to an excluded file is not refused", lambda: gp.pinned_tree(tree) == tree)
+    with open(os.path.join(tree, "b.txt"), "ab") as fh:
+        fh.write(b"changed")
+    check("a changed file in a pinned folder is refused", lambda: raises(lambda: gp.pinned_tree(tree), "changed"))
+    with open(os.path.join(tree, "b.txt"), "wb") as fh:
+        fh.write(b"b\n")
+    check("... restored, it passes again", lambda: gp.pinned_tree(tree) == tree)
+    os.rename(os.path.join(tree, "b.txt"), os.path.join(tree, "c.txt"))
+    check("a renamed file in a pinned folder is refused", lambda: raises(lambda: gp.pinned_tree(tree), "changed"))
+    os.rename(os.path.join(tree, "c.txt"), os.path.join(tree, "b.txt"))
+    with open(os.path.join(tree, "added.json"), "wb") as fh:
+        fh.write(b"{}")
+    check("an added file in a pinned folder is refused", lambda: raises(lambda: gp.pinned_tree(tree), "changed"))
+    os.remove(os.path.join(tree, "added.json"))
+    os.remove(os.path.join(tree, "a.json"))
+    check("a removed file in a pinned folder is refused", lambda: raises(lambda: gp.pinned_tree(tree), "changed"))
+    gp.sha256_file = real_sha
+    check("a folder with no pin is refused", lambda: raises(lambda: gp.pinned_tree(os.path.join(G, "runs")), "no tree pin"))
+
+    if "--real" in sys.argv:
+        print("\n=== the real pins.json holds today ===")
+        gp2, err = load(dict(base_env, REVERSE_IT_DIR=os.environ.get("REAL_REVERSE_IT_DIR", "")))
+        os.environ["REVERSE_IT_DIR"] = os.environ.get("REAL_REVERSE_IT_DIR", "")
+        real = json.load(open(os.path.join(SRC_DIR, "pins.json"), encoding="utf-8"))["files"]
+        for rel, pin in sorted(real.items()):
+            p = gp2.project(rel)
+            if rel.endswith("/"):
+                check("pin holds: %s" % rel, lambda: gp2.pinned_tree(p) == p)
+            else:
+                check("pin holds: %s" % rel, lambda: gp2.verify(p) == p)
+
+    shutil.rmtree(work, ignore_errors=True)
+    print("\nFAIL: %d check(s) failed" % len(FAILS) if FAILS else "\nPASS")
+    return 1 if FAILS else 0
+
+
+if __name__ == "__main__":
+    if "--real" in sys.argv and not os.environ.get("REAL_REVERSE_IT_DIR"):
+        os.environ["REAL_REVERSE_IT_DIR"] = os.environ.get("REVERSE_IT_DIR", "")
+    sys.exit(main())

@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""Mutants of test_only_inert.witness_listening (the PCAN marker control,
+2026-10-16); test_test_only_inert.py must fail on each BY A CHECK. A crash is
+not a kill, and an edit that does not apply is an error.
+
+    py -3.14 tools/gen_inhibit/bench/test_test_only_inert_marker_mutants.py
+
+Run from the reverse-it root, which goes on PYTHONPATH with this folder.
+"""
+import os
+import shutil
+import subprocess
+import tempfile
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SRC = "test_only_inert.py"
+TEST = "test_test_only_inert.py"
+
+MUTANTS = [
+    ("any frame counts (the old rule)",
+     "    got = {d for _t, i, d in seen if i == MARKER_ID}\n    return all(m in got for m in MARKERS)",
+     "    return len(seen) > 0"),
+    ("one marker is enough", "return all(m in got for m in MARKERS)", "return any(m in got for m in MARKERS)"),
+    ("the id is ignored", "got = {d for _t, i, d in seen if i == MARKER_ID}", "got = {d for _t, i, d in seen}"),
+    ("the payload is ignored", "return all(m in got for m in MARKERS)",
+     "return len(got) >= 1 and len([1 for _t, i, _d in seen if i == MARKER_ID]) >= 2"),
+]
+
+
+def main():
+    root = os.getcwd()
+    base = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "inert_marker_mutants")   # outside SeaDrive (AGENTS.md)
+    killed = errors = 0
+    for n, (name, old, new) in enumerate(MUTANTS, 1):
+        d = os.path.join(base, "m%d" % n)
+        shutil.rmtree(d, ignore_errors=True)
+        os.makedirs(d)
+        src = open(os.path.join(HERE, SRC), encoding="utf-8", newline="").read()
+        nl = "\r\n" if "\r\n" in src else "\n"
+        o, w = old.replace("\n", nl), new.replace("\n", nl)
+        if src.count(o) != 1:
+            print("ERROR    m%d %s: edit matched %d times" % (n, name, src.count(o)))
+            errors += 1
+            continue
+        open(os.path.join(d, SRC), "w", encoding="utf-8", newline="").write(src.replace(o, w))
+        shutil.copy(os.path.join(HERE, TEST), d)
+        r = subprocess.run([sys.executable, os.path.join(d, TEST)], cwd=root,
+                           env=dict(os.environ, PYTHONPATH=HERE + os.pathsep + root),
+                           capture_output=True, text=True)
+        fails = [l.strip() for l in r.stdout.splitlines() if l.strip().startswith("FAIL ")]
+        dead = bool(fails)
+        killed += dead
+        print("%s m%d %s  (exit %d, %d FAIL%s%s)" % (
+            "KILLED  " if dead else "SURVIVED", n, name, r.returncode, len(fails),
+            ", CRASHED" if "Traceback" in r.stderr else "", ("; " + fails[0][:80]) if fails else ""))
+    shutil.rmtree(base, ignore_errors=True)
+    print("\n%d of %d killed by a check, %d errors" % (killed, len(MUTANTS), errors))
+    return 0 if killed == len(MUTANTS) and not errors else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

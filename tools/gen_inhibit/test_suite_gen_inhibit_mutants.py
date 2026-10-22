@@ -3,12 +3,12 @@
 CHECK. A crash is not a kill, and an edit that does not apply is an error.
 
     PYTHONPATH=<core 8fdcec5>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
-        GI_HARNESS_DIR=<reverse-it>/projects/vtrux/notes/artifacts/gen-inhibit \
         py -3.14 -B test_suite_gen_inhibit_mutants.py
 
-Each mutant copies suite_gen_inhibit.py, its test and the settings example into a fresh
-folder in the machine's temp folder and applies one edit; everything else (suite_judges,
-bench_flash) is imported from this folder. Gen-inhibit tester, 2026-10-19.
+Each mutant copies suite_gen_inhibit.py, its test, the settings example and bench/
+(the suite's HARNESS, 2026-10-22) into a fresh folder in the machine's temp folder and
+applies one edit; everything else (suite_judges, bench_flash) is imported from this
+folder. Gen-inhibit tester, 2026-10-19.
 """
 import os
 import shutil
@@ -167,6 +167,10 @@ def main():
         open(os.path.join(d, SRC), "w", encoding="utf-8", newline="").write(src.replace(old, new))
         for f in (TEST, EXAMPLE):
             shutil.copy(os.path.join(HERE, f), d)
+        # The suite's HARNESS is bench/ beside it (2026-10-22); the e2e board-hook check
+        # runs wican_reboot.py from there.
+        shutil.copytree(os.path.join(HERE, "bench"), os.path.join(d, "bench"),
+                        ignore=shutil.ignore_patterns("__pycache__"))
         r = subprocess.run([sys.executable, "-B", os.path.join(d, TEST)], cwd=d, capture_output=True, text=True,
                            env=env)
         fails = [l.strip() for l in r.stdout.splitlines() if l.strip().startswith("FAIL ")]

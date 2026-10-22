@@ -5,11 +5,10 @@ their hooks say "could not look" (raise) rather than "not this image" (None) whe
 tool fails. No hardware: every tool the hooks run is stood in for.
 
     PYTHONPATH=<core 8fdcec5>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
-        GI_HARNESS_DIR=<reverse-it>/projects/vtrux/notes/artifacts/gen-inhibit \
         py -3.14 -B test_suite_gen_inhibit.py
 
-GI_HARNESS_DIR is where wican_reboot.py and its test's fake WiCAN are: the board
-steps run the real script against that fake (no hardware either).
+The board steps run the real wican_reboot.py from this folder's bench/ (the suite's
+HARNESS, 2026-10-22) against its test's fake WiCAN (no hardware either).
 
 Prints "ok ..." or "FAIL ..." per check and PASS or FAIL at the end; exit 0 only on
 PASS. Gen-inhibit tester, 2026-10-19.
@@ -670,7 +669,7 @@ def test_board_hooks(settings, bench, emu):
     known = dict(kv.split("=", 1) for kv in opts(argv, "--known"))
     check("board hooks: the WiCAN's start runs wican_reboot.py once, from the harness folder",
           len(calls) == 1 and os.path.normpath(argv[len(SG._py(settings))]) ==
-          os.path.normpath(os.path.join(settings["reverse_it"], SG.HARNESS, "wican_reboot.py")), argv)
+          os.path.normpath(os.path.join(SG.harness_dir(settings), "wican_reboot.py")), argv)
     check("board hooks: start names the run's first image (--first)",
           opts(argv, "--first") == ["wican_rt"] and not opts(argv, "--want") and "--want-unknown" not in argv, argv)
     check("board hooks: --known is every WiCAN image with its sha, and no X2 image",
@@ -722,14 +721,12 @@ def test_board_hooks_e2e(settings, bench):
     """Reviewer condition 5: a killed run leaves the WiCAN armed and latched; the next
     start's hook reboots it, disarms what comes up armed, passes, and says what it
     found. The real wican_reboot.py against test_wican_reboot.py's fake device."""
-    src = os.environ.get("GI_HARNESS_DIR")
-    if not src or not os.path.exists(os.path.join(src, "test_wican_reboot.py")):
-        check("board hooks e2e: GI_HARNESS_DIR names the gen-inhibit harness folder", False, src)
+    # The harness is bench/ of the settings' gi_tools (this folder here, 2026-10-22), which
+    # the hooks run in place: no copy into the fake reverse-it root, which held it before.
+    src = SG.harness_dir(settings)
+    if not os.path.exists(os.path.join(src, "test_wican_reboot.py")):
+        check("board hooks e2e: the suite's harness folder holds test_wican_reboot.py", False, src)
         return
-    dst = os.path.join(settings["reverse_it"], SG.HARNESS)
-    os.makedirs(dst, exist_ok=True)
-    for n in ("wican_reboot.py", "page_state.py"):
-        shutil.copy(os.path.join(src, n), dst)
     sys.path.insert(0, src)
     try:
         import test_wican_reboot as TW
