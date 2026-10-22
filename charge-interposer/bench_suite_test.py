@@ -308,7 +308,10 @@ def test_suites():
     # 171: vport-listen-wrong-rate split out of vport-listen (2026-10-21)
     # 177: st.bench-topology and the five cf.* can-fails (2026-10-22)
     # 178: cf.bench-powerup-round, its --strict-port mutants (2026-10-22)
-    assert len(seen) == 178, "checks across the suites: %d" % len(seen)
+    # 179: cf.bench-c12, its TAGS reply cap mutants (2026-10-22)
+    # 183: sb.test-decode, sb.test-run-core, each plain and -canfail (2026-10-22)
+    # 185: sb.test-bench-lock and its -canfail, with the bench-lock merge
+    assert len(seen) == 185, "checks across the suites: %d" % len(seen)
     # build-check runs in a git checkout of HEAD, shipped as a bundle
     # (user ruling 2026-10-19), never in the shipped copy
     mb = [g for g in su["emulated"].groups if g.name == "m-build"][0]
@@ -750,6 +753,31 @@ def test_script_coverage():
         assert (n, "--can-fail") in runs, "harness never runs %s --can-fail" % n
 
 
+def test_shared_bench_tests():
+    """Every shared/bench/tests/test_*.py is in SHARED_BENCH_TESTS, and the
+    harness suite runs each one plain and with --can-fail (reviewer,
+    2026-10-22: until then no suite ran them)."""
+    tests = os.path.join(os.path.dirname(HERE), "shared", "bench", "tests")
+    found = {n for n in os.listdir(tests)
+             if n.startswith("test_") and n.endswith(".py")}
+    assert found == set(B.SHARED_BENCH_TESTS), \
+        "shared/bench tests: found %s, listed %s" % (
+            sorted(found), sorted(B.SHARED_BENCH_TESTS))
+    s, su = _all()
+    runs = set()
+    for g in su["harness"].groups:
+        for c in g.checks:
+            argv = [str(a) for a in c.argv]
+            if c.skip or not argv or "/shared/bench/tests/" not in \
+                    argv[0].replace("\\", "/"):
+                continue
+            runs.add((os.path.basename(argv[0]), tuple(argv[1:])))
+    for n in found:
+        for extra in ((), ("--can-fail",)):
+            assert (n, extra) in runs, "harness never runs %s %s" % (
+                n, " ".join(extra))
+
+
 def test_reopen_skip():
     """innomaker-rate-runs-reopen stays listed with its argument line, and is
     a skip naming the 2026-10-14 harness defect, so it shows NOT-RUN with
@@ -844,7 +872,7 @@ TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_corrupt_pin_judge, test_c12_judge, test_host_bridge_judge,
          test_suites, test_mutant_wiring, test_identify, test_pycache_ignored,
          test_usb_baselines, test_usb_stops, test_reopen_skip,
-         test_script_coverage, test_strict_port_off,
+         test_script_coverage, test_shared_bench_tests, test_strict_port_off,
          test_vport_split, test_bench_argv]
 
 
@@ -972,6 +1000,7 @@ _ORIG["self.NO_ARGPARSE"] = NO_ARGPARSE
 _ORIG["self._ARGV_PROBE"] = _ARGV_PROBE
 _ORIG["SELF_TESTS"] = B.SELF_TESTS
 _ORIG["CAN_FAILS"] = B.CAN_FAILS
+_ORIG["SHARED_BENCH_TESTS"] = B.SHARED_BENCH_TESTS
 
 
 def _drop_harness_check(cid):
@@ -1095,10 +1124,17 @@ MUTANTS = {
          "bench_topology's self-test unlisted (4cdb)"),
         ("CAN_FAILS", [n for n in B.CAN_FAILS if n != "bench_switch_loss"],
          "bench_switch_loss's can-fail unlisted"),
-        ("CAN_FAILS", B.CAN_FAILS + ["bench_c12"],
+        ("CAN_FAILS", B.CAN_FAILS + ["bench_hold12"],
          "a listed can-fail the script does not have"),
         ("harness", _wrap_suite("harness", _drop_harness_check(
             "cf.bench-usb-host")), "listed, but the harness never runs it")],
+    "test_shared_bench_tests": [
+        ("SHARED_BENCH_TESTS", ["test_decode.py"], "test_run_core unlisted"),
+        ("harness", _wrap_suite("harness", _drop_harness_check(
+            "sb.test-decode-canfail")),
+         "the harness drops test_decode --can-fail"),
+        ("harness", _wrap_suite("harness", _drop_harness_check(
+            "sb.test-run-core")), "the harness drops test_run_core")],
     "test_reopen_skip": [
         ("bench", _wrap_suite("bench", _unskip("innomaker-rate-runs-reopen")),
          "the reopen case runs again (a25e, 4cdb)"),

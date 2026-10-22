@@ -260,8 +260,31 @@ def test_history():
         raise AssertionError("a shallow clone's history was accepted")
 
 
+def test_crosscheck():
+    """The gen-inhibit tester's independent implementation
+    (layout_hash_crosscheck.py, written from the agreed line format
+    without reading decode.py) gives the same canonical text as decode.py
+    and as the hand-written golden text, on the golden DBC and on every
+    SENSITIVE and INSENSITIVE edit of it."""
+    import layout_hash_crosscheck as X
+    db = D.load(GOLDEN_DBC)
+    with open(GOLDEN_TXT, encoding="utf-8") as f:
+        want = f.read()
+    assert X.canonical(db) == want, "the cross-check disagrees with the " \
+        "golden text: %s" % X.h(X.canonical(db))
+    base = golden_text()
+    differ = []
+    for name, e in [("unedited", [])] + SENSITIVE + INSENSITIVE:
+        db = D.load(text=edited(base, e))
+        if D.canonical_text(db) != X.canonical(db) or \
+                D.layout_hash(db) != X.h(X.canonical(db)):
+            differ.append(name)
+    assert not differ, "decode.py and the cross-check differ on: %s" % \
+        ", ".join(differ)
+
+
 TESTS = [test_golden, test_sensitive, test_insensitive, test_unsafe_choice,
-         test_identity, test_history]
+         test_identity, test_history, test_crosscheck]
 
 
 # ---- mutants (--can-fail) -------------------------------------------------
@@ -372,6 +395,15 @@ MUTANTS = {
                                          lambda rows: [])),
         ("shallow clone not refused", _patch("_git", _wrap(
             _shallow_unchecked))),
+    ],
+    "test_crosscheck": [
+        ("scale and offset by repr(x)", _patch("_num", repr)),
+        ("12 hex characters", _patch("HASH_CHARS", 12)),
+        ("no mux", _blank("_sig_line", 8)),
+        ("messages in file order", _patch("canonical_text", _msgs_unsorted)),
+        ("choices in file order", _patch("_choice_lines", _wrap(
+            lambda orig: lambda s: ["C|%d=%s" % (int(v), n) for v, n in
+                                    (s.choices or {}).items()]))),
     ],
 }
 
