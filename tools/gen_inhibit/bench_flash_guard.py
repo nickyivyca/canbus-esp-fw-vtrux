@@ -67,7 +67,8 @@ sys.path.insert(0, HERE)
 # Results belong in the bench's runs folder, not next to the tool:
 # bench_ota_guard.runs_dir() ($GI_RUNS_DIR once this folder is in the repo).
 from bench_ota_guard import (            # noqa: E402
-    MODES, gi_status, have_external_route, http, runs_dir, set_mode,
+    MODES, device_identity, gi_status, have_external_route, http, runs_dir,
+    set_mode,
 )
 
 # The five handlers spec 5.1 item 3 names, with the method each expects and a
@@ -203,7 +204,8 @@ def accepted_when_off(host):
         # liveness probe, and the row stands or falls on that.
         alive = None
         if code is None:
-            alive = http(host, "/check_status")[0] == 200
+            # /gen_inhibit, never /check_status (reviewer, 2026-10-20).
+            alive = gi_status(host, strict=False)[0] is not None
             if not alive:
                 say(False, "%s reached the handler when OFF" % path,
                     "no response, AND the device stopped answering -- so this "
@@ -249,18 +251,11 @@ def main():
         print("\n[ SKIP ] the accepted-when-OFF half: pass --check-accepted. "
               "The refusals above are the safety property.")
 
-    # THE VERSION IS ON /check_status, not on the inhibitor's page. The first
-    # version of this record wrote device=None, and a result that cannot name the
-    # image it was taken on is not much of a record.
-    ver = None
-    st_code, st_txt = http(args.host, "/check_status")
-    if st_code == 200:
-        try:
-            ver = json.loads(st_txt).get("git_version")
-        except ValueError:
-            ver = None
+    # A result that cannot name the image it was taken on is not much of a
+    # record (the first version wrote device=None). /gen_inhibit's elf_sha256
+    # names it; until 2026-10-21 this read git_version from /check_status.
     out = {"when": time.strftime("%Y-%m-%dT%H:%M:%S"),
-           "device": ver,
+           "device": device_identity(args.host),
            "host": args.host,
            "checked_accepted_when_off": bool(args.check_accepted),
            "rows": records,

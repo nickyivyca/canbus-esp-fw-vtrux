@@ -213,15 +213,19 @@ def _write_record(path, rec):
     return wrote
 
 
-def _device_version(host):
-    """The running image's version, from /check_status."""
-    st, txt = http(host, "/check_status")
-    if st != 200:
+def device_identity(host):
+    """The running image, from /gen_inhibit: elf_sha256 names the image file
+    (spec 11, "The page names the binary it runs"), with git_version and
+    uptime_ms beside it. None if the page does not answer.
+
+    NEVER /check_status (reviewer, 2026-10-20): it answers with the device's
+    config, credentials included. This read the version from it until
+    2026-10-21.
+    """
+    page, _ = gi_status(host, strict=False)
+    if page is None:
         return None
-    try:
-        return json.loads(txt).get("git_version")
-    except ValueError:
-        return None
+    return {k: page.get(k) for k in ("elf_sha256", "git_version", "uptime_ms")}
 
 
 def main():
@@ -314,10 +318,9 @@ def main():
 
     # The record goes to the runs folder (runs_dir), resolved at the start.
     rec = {"when": time.strftime("%Y-%m-%dT%H:%M:%S"),
-           # /load_config carries the CONFIG, not the build. The version is on
-           # /check_status, and a record that cannot name the image it was taken
-           # on is weak evidence.
-           "device": _device_version(args.host),
+           # A record that cannot name the image it was taken on is weak
+           # evidence; /gen_inhibit's elf_sha256 names it.
+           "device": device_identity(args.host),
            "host": args.host,
            "checked_accepted_when_off": bool(args.allow_ota_write),
            "rows": rows}
