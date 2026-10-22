@@ -85,7 +85,7 @@ for s in "$@"; do
       red "$D/B20_interlock_bench_run.txt" ;;
     NONODE)
       : "${GI_TERMINATION:?set GI_TERMINATION (where the CAN1 terminators are, as read on the bench)}"
-      : "${GI_MAN_SHA:?set GI_MAN_SHA (wican_man's elf_sha256)}"
+      : "${GI_MAN_SHA:?set GI_MAN_SHA (wican_man elf_sha256)}"
       GI_RUNS_DIR=$D py -3.14 -B $A/nonode_bench.py --termination "$GI_TERMINATION" --man-sha "$GI_MAN_SHA" \
         > "$D/NONODE_nonode_bench.txt" 2>&1; echo "NONODE exit $?"
       red "$D/NONODE_nonode_bench.txt" ;;
