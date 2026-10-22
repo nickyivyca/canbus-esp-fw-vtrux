@@ -308,7 +308,8 @@ def test_suites():
     # 171: vport-listen-wrong-rate split out of vport-listen (2026-10-21)
     # 177: st.bench-topology and the five cf.* can-fails (2026-10-22)
     # 178: cf.bench-powerup-round, its --strict-port mutants (2026-10-22)
-    assert len(seen) == 178, "checks across the suites: %d" % len(seen)
+    # 179: cf.bench-c12, its TAGS reply cap mutants (2026-10-22)
+    assert len(seen) == 179, "checks across the suites: %d" % len(seen)
     # build-check runs in a git checkout of HEAD, shipped as a bundle
     # (user ruling 2026-10-19), never in the shipped copy
     mb = [g for g in su["emulated"].groups if g.name == "m-build"][0]
@@ -1095,7 +1096,7 @@ MUTANTS = {
          "bench_topology's self-test unlisted (4cdb)"),
         ("CAN_FAILS", [n for n in B.CAN_FAILS if n != "bench_switch_loss"],
          "bench_switch_loss's can-fail unlisted"),
-        ("CAN_FAILS", B.CAN_FAILS + ["bench_c12"],
+        ("CAN_FAILS", B.CAN_FAILS + ["bench_hold12"],
          "a listed can-fail the script does not have"),
         ("harness", _wrap_suite("harness", _drop_harness_check(
             "cf.bench-usb-host")), "listed, but the harness never runs it")],
