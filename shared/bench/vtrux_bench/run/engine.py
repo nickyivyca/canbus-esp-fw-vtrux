@@ -73,6 +73,11 @@ fails when the rule is switched off through RULES):
                   rest is NOT-RUN, the record and index.txt open with
                   "STOPPED: <board> is <read>, expected <image>, cannot
                   flash", and the end release carries the identities read
+  resume_stop_kept  (log) the end restore skips the board the resume could
+                  not put back, which is left as found for the
+                  investigation; its restore note is "restore skipped:
+                  <STOPPED line>". Other boards restore as normal and the
+                  end hooks still run
   stop_no_resume  (log) STOP during a pause: the runner takes the lock back
                   for the restore and the release, but runs no start hooks
                   and re-identifies or flashes nothing before the lane ends
@@ -189,7 +194,7 @@ RULES = {k: True for k in (
     "take_first", "folder_release", "self_pause", "release_end",
     "keep_lock_one_step",
     "own_pid", "pause_hooks", "resume_identify", "resume_stop",
-    "stop_no_resume",
+    "resume_stop_kept", "stop_no_resume",
     "flash_gate", "image_schedule", "identify_after",
     "no_verdict", "known_fail", "stop_pause", "throttle", "redact_scope",
     "gate", "timeout", "skip", "restore", "identify_error", "after",
@@ -257,6 +262,7 @@ class Engine:
         self.took = False
         self.lock_lost = None
         self.resume_stopped = None
+        self.resume_stopped_board = None
         self.lock_release = None
         self.bench_work = []
         self.kf = {k.id: k.ref for k in suite.known_fails}
@@ -623,6 +629,7 @@ class Engine:
                         "STOPPED: %s is %s, expected %s, cannot flash"
                         % (board, read_text(self.board_read.get(board)),
                            im.expect))
+                    self.resume_stopped_board = board
                     self.bench_stopped = "%s (%s)" % (self.resume_stopped, why)
                     self.rec.event("resume-stopped", board=board, image=name,
                                    why=why, line=self.resume_stopped)
@@ -1280,6 +1287,13 @@ class Engine:
                 statuses.append("%s: RESTORE NOT RUN, lock not ours (%s)"
                                 % (board, h))
                 self.restore_note[board] = statuses[-1]
+                continue
+            if (board == self.resume_stopped_board
+                    and RULES["resume_stop_kept"]):
+                statuses.append("%s: restore skipped: %s"
+                                % (board, self.resume_stopped))
+                self.restore_note[board] = ("restore skipped: %s"
+                                            % self.resume_stopped)
                 continue
             if board in self.no_more_flash:
                 statuses.append("%s: RESTORE NOT RUN, no further flash "

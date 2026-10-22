@@ -416,7 +416,8 @@ class TwoBoards:
 
     def flasher(self, image, params, settings, logdir):
         self.flashes.append(image.name)
-        if getattr(self, "fail_flash", False):
+        ff = getattr(self, "fail_flash", False)
+        if ff is True or (ff and image.board in ff):
             return dict(ok=False, phase="write", detail="fake failure",
                         recoverable=True)
         self.set(image.board, image.expect)
@@ -1623,7 +1624,7 @@ def test_lost_record():
 
 
 def _pause_scenario(name, mode="log", during=None, fail_flash=False,
-                    second=None):
+                    second=None, image=("w1", "x2app")):
     """check 1 writes PAUSE. Another role takes the bench while the run is
     paused (log: once free_paused is in the log; holder: by the Holder
     line), `during` runs, the PAUSE file goes, and the other role hands the
@@ -1648,7 +1649,7 @@ def _pause_scenario(name, mode="log", during=None, fail_flash=False,
             env.holder], python=True)
     s = tb.suite([Group("a", [Check("first", ["-c", mk, "{run_dir}"],
                                     python=True), second],
-                        needs_lock=True, image=["w1", "x2app"])], role=CI)
+                        needs_lock=True, image=list(image))], role=CI)
     st = env.settings(bench_lock_log=p) if mode == "log" else env.settings()
     eng = E.Engine(s, st, out=lambda *a: None)
     seen = {}
@@ -1803,6 +1804,42 @@ def test_resume_stop():
     assert rl["event"] == "release" and rl["who"] == CI, rl
     assert rl["boards"]["x2"].startswith("OTHER, identified off the wire"), rl
     assert BL.read_state(p)["holder"] is None
+
+
+def test_resume_stop_kept():
+    """Section 6 (reviewer, 2026-10-22): after a resume STOP the end
+    restore skips the board the resume could not put back, so it is left as
+    found; its restore note is "restore skipped: <STOPPED line>". The other
+    board (here the WiCAN, on w2 for the group) is restored as normal, and
+    the end hooks still run for both."""
+    def change_x2(tb, eng, seen):
+        tb.set("x2", "OTHER")
+        tb.fail_flash = {"x2"}
+    env, p, tb, eng, rec, seen = _pause_scenario(
+        "resume_stop_kept", during=change_x2, image=("w2", "x2app"))
+    line = "STOPPED: x2 is OTHER, expected X2-APP, cannot flash"
+    assert verdicts(rec) == {"a/first": "PASS", "a/second": "NOT-RUN"}, \
+        verdicts(rec)
+    # w2 at the start, the failed x2app at the resume, w1 at the restore;
+    # no second x2app at the restore
+    assert tb.flashes == ["w2", "x2app", "w1"], tb.flashes
+    assert open(tb.path("x2")).read() == "OTHER"
+    assert open(tb.path("wican")).read() == "WC-1"
+    assert eng.restore_note["x2"] == "restore skipped: " + line, \
+        eng.restore_note
+    assert eng.restore_note["wican"].startswith("restored: "), \
+        eng.restore_note
+    off = rec["not_on_standing"]
+    assert len(off) == 1 and off[0].startswith(
+        "NOT ON STANDING IMAGE: x2 ") and off[0].endswith(
+        "reason: restore skipped: " + line), off
+    assert tb.calls[-2:] == [("on_end", "wican", "w1"),
+                             ("on_end", "x2", None)], tb.calls[-2:]
+    assert sorted(rec["board_hooks"]["on_end"]) == ["wican", "x2"], \
+        rec["board_hooks"]
+    rl = log_events(p)[-1]
+    assert rl["event"] == "release" and rl["who"] == CI, rl
+    assert rl["boards"]["x2"].startswith("OTHER, identified off the wire"), rl
 
 
 def test_stop_no_resume():
@@ -2002,7 +2039,7 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_remote_stop,
          test_lock_each_case, test_lost_record, test_pause_own_lock,
          test_self_pause, test_pause_hooks, test_resume_identify,
-         test_resume_stop, test_stop_no_resume,
+         test_resume_stop, test_resume_stop_kept, test_stop_no_resume,
          test_own_pid, test_take_first, test_folder_release, test_release_end,
          test_keep_lock]
 
@@ -2107,6 +2144,7 @@ MUTANTS = {
     "test_pause_hooks": _rule("pause_hooks"),
     "test_resume_identify": _rule("resume_identify"),
     "test_resume_stop": _rule("resume_stop"),
+    "test_resume_stop_kept": _rule("resume_stop_kept"),
     "test_stop_no_resume": _rule("stop_no_resume"),
     "test_own_pid": _rule("own_pid"),
     "test_take_first": _rule("take_first"),

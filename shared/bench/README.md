@@ -38,7 +38,7 @@ every group of checks, restore, record. The same command runs part of it.
 | `tests/test_bench_lock.py` | Its tests (29), each naming the spec sections it checks. `--can-fail` runs each under each of its mutants (130), source edits that must each make it fail. Native Windows only. |
 | `tests/test_decode.py` | Its tests (7), with `data/golden_layout.dbc` and its hand-written canonical text `data/golden_layout.txt`. `--can-fail` runs each test under each of its mutants (33); every one must fail. |
 | `tests/layout_hash_crosscheck.py` | The gen-inhibit tester's independent `layout_hash`, written from the agreed line format without reading `decode.py` (moved from reverse-it, 2026-10-22). `test_decode.py`'s `test_crosscheck` requires it to agree with `decode.py` and the golden text on every edit the other tests use. Also a CLI: `DBC [GOLDEN_TXT]`. |
-| `tests/test_run_core.py` | The runner's own tests (56, the bench-lock ones on a scratch `bench_lock` log), with a fake suite, a fake two-board bench, `fake_esptool.py` and `fake_ssh.py`. `--can-fail` runs each with its rule switched off; every one must then fail. |
+| `tests/test_run_core.py` | The runner's own tests (57, the bench-lock ones on a scratch `bench_lock` log), with a fake suite, a fake two-board bench, `fake_esptool.py` and `fake_ssh.py`. `--can-fail` runs each with its rule switched off; every one must then fail. |
 
 ### Boards and images
 
