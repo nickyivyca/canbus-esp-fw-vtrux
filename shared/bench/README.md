@@ -34,7 +34,8 @@ every group of checks, restore, record. The same command runs part of it.
 | `vtrux_bench/run/record.py` | The run folder (never reused), `progress.jsonl`, `record.json` and `index.txt` (exclusive create), and `compare` with per-figure tolerances. |
 | `vtrux_bench/run/cli.py` | The command line. |
 | `vtrux_bench/decode.py` | Diag DBC schema identity (toolkit item 10, first part): `layout_hash`, `check_identity`, `check_history`. See "Diag DBC schema identity" below. |
-| `tests/test_decode.py` | Its tests (6), with `data/golden_layout.dbc` and its hand-written canonical text `data/golden_layout.txt`. `--can-fail` runs each test under each of its mutants (28); every one must fail. |
+| `tests/test_decode.py` | Its tests (7), with `data/golden_layout.dbc` and its hand-written canonical text `data/golden_layout.txt`. `--can-fail` runs each test under each of its mutants (33); every one must fail. |
+| `tests/layout_hash_crosscheck.py` | The gen-inhibit tester's independent `layout_hash`, written from the agreed line format without reading `decode.py` (moved from reverse-it, 2026-10-22). `test_decode.py`'s `test_crosscheck` requires it to agree with `decode.py` and the golden text on every edit the other tests use. Also a CLI: `DBC [GOLDEN_TXT]`. |
 | `tests/test_run_core.py` | The runner's own tests (43), with a fake suite, a fake two-board bench, `fake_esptool.py` and `fake_ssh.py`. `--can-fail` runs each with its rule switched off; every one must then fail. |
 
 ### Boards and images
