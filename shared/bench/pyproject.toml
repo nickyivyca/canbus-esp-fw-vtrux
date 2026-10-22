@@ -14,6 +14,7 @@ decode = ["cantools>=41.3"]
 
 [project.scripts]
 vtrux-bench-run = "vtrux_bench.run.cli:main"
+vtrux-bench-lock = "vtrux_bench.bench_lock:main"
 
 [tool.setuptools.packages.find]
 include = ["vtrux_bench*"]
