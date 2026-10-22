@@ -7,8 +7,10 @@ not count), and an edit that does not apply is an error.
 
 Each mutant copies bench_ota_guard.py and bench_flash_guard.py into a fresh folder
 in the machine's temp folder, applies one edit to one of them, and runs the test
-against that folder (GUARDS_DIR). The control is both guards as they were at
-95aa77a, before they moved off /check_status: the test must fail there too.
+against that folder (GUARDS_DIR). A "both" mutant edits bench_ota_guard.py's
+wifi_mode() or ap_mode_detail(), which the flash guard imports. The control is
+both guards as they were at 95aa77a, before they moved off /check_status and
+read wifi_mode from /load_config: the test must fail there too.
 Gen-inhibit tester, 2026-10-21.
 """
 import os
@@ -46,6 +48,35 @@ MUTANTS = [
     ("flash: the device always counted alive", FLASH, ALIVE, "            alive = True\n"),
     ("flash: liveness from any answer, a failed one included", FLASH, ALIVE,
      "            alive = gi_status(host, strict=False) is not None\n"),
+    # The AP-mode precondition (user, 2026-10-21). The reviewer asked for the
+    # absent field by name: it must be caught, not read as AP.
+    ("both: an absent wifi_mode read as AP", OTA,
+     '    if value is None:\n        return None, "the config has no wifi_mode"\n',
+     '    if value is None:\n        value = "AP"\n'),
+    ("both: a value not read passes the precondition", OTA,
+     '    if value is None:\n        return False, "wifi_mode not read: %s" % err\n',
+     '    if value is None:\n        return True, "wifi_mode not read: %s" % err\n'),
+    ("both: a config that is not JSON read as AP", OTA,
+     '    except ValueError:\n        return None, "the config was not JSON"\n',
+     '    except ValueError:\n        return "AP", None\n'),
+    ("both: the whole config printed", OTA, "        cfg = json.loads(txt)\n",
+     "        print(txt)\n        cfg = json.loads(txt)\n"),
+    ("both: the error carries the config's text", OTA,
+     '        return None, "GET /load_config returned %s" % st\n',
+     '        return None, "GET /load_config returned %s %s" % (st, txt)\n'),
+    ("ota: the precondition not enforced", OTA, "    if not ap_ok:\n        return 2\n",
+     "    if False:\n        return 2\n"),
+    ("ota: the whole config recorded", OTA, '           "wifi_mode": mode_value,\n',
+     '           "wifi_mode": http(args.host, "/load_config")[1],\n'),
+    ("flash: the precondition not enforced", FLASH, "    if not ap_ok:\n        return False\n",
+     "    if False:\n        return False\n"),
+    ("flash: wifi_mode from /gen_inhibit again", FLASH, "    mode_value, err = wifi_mode(host)\n",
+     '    mode_value, err = page.get("wifi_mode"), "not on the page"\n'),
+    ("flash: the old reading, the page's value or AP when absent", FLASH,
+     "    mode_value, err = wifi_mode(host)\n", '    mode_value, err = page.get("wifi_mode") or "AP", None\n'),
+    ("flash: the value not recorded", FLASH,
+     '    say(ap_ok, "device is in AP mode", detail, wifi_mode=mode_value)\n',
+     '    say(ap_ok, "device is in AP mode", detail)\n'),
 ]
 
 

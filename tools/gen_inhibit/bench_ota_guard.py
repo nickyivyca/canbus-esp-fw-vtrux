@@ -104,14 +104,41 @@ def have_external_route():
     return False, None
 
 
-def device_config(host):
+def wifi_mode(host):
+    """(value, error): the config's wifi_mode from /load_config, and nothing else.
+
+    /load_config answers with the whole config, credentials included. Until the
+    WiCAN's factory reset only protocol, port_type, port and wifi_mode may be
+    read from it (user, 2026-10-21), so this keeps the one value and never
+    prints, records or returns the rest. A missing or unreadable value is an
+    error, which callers treat as a failed precondition.
+    """
     st, txt = http(host, "/load_config")
     if st != 200:
         return None, "GET /load_config returned %s" % st
     try:
-        return json.loads(txt), None
-    except ValueError as e:
-        return None, "config was not JSON: %s" % e
+        cfg = json.loads(txt)
+    except ValueError:
+        return None, "the config was not JSON"
+    if not isinstance(cfg, dict):
+        return None, "the config was not a JSON object"
+    value = cfg.get("wifi_mode")
+    if value is None:
+        return None, "the config has no wifi_mode"
+    return value, None
+
+
+def ap_mode_detail(value, err):
+    """The precondition's verdict on wifi_mode: (ok, detail). Only "AP" passes."""
+    if value is None:
+        return False, "wifi_mode not read: %s" % err
+    if value != "AP":
+        return False, ("wifi_mode=%r, not 'AP'. Spec section 8 makes AP permanent: "
+                       "the APStation reconnect path calls esp_wifi_stop()/start(), "
+                       "which has no place on a device transmitting to a live "
+                       "powertrain bus. A result from this configuration is not a "
+                       "result about the build that flies." % (value,))
+    return True, "wifi_mode='AP' -- the configuration that flies"
 
 
 def gi_status(host, strict=True):
@@ -257,20 +284,10 @@ def main():
               "that is genuinely fine.")
         return 2
 
-    cfg, err = device_config(args.host)
-    if cfg is None:
-        print("[ FAIL ] cannot read the device config: %s" % err)
-        return 2
-    wifi_mode = cfg.get("wifi_mode")
-    if wifi_mode == "AP":
-        print("[  ok  ] device is in AP mode -- the configuration that flies")
-    else:
-        print("[ FAIL ] device wifi_mode is %r, not 'AP'. Spec section 8 makes "
-              "AP permanent: the APStation reconnect path calls "
-              "esp_wifi_stop()/start(), which has no place on a device "
-              "transmitting to a live powertrain bus. A result from this "
-              "configuration is not a result about the build that flies."
-              % wifi_mode)
+    mode_value, err = wifi_mode(args.host)
+    ap_ok, detail = ap_mode_detail(mode_value, err)
+    print("[%s] device is in AP mode: %s" % ("  ok  " if ap_ok else " FAIL ", detail))
+    if not ap_ok:
         return 2
 
     st, _ = gi_status(args.host)
@@ -321,6 +338,7 @@ def main():
            # A record that cannot name the image it was taken on is weak
            # evidence; /gen_inhibit's elf_sha256 names it.
            "device": device_identity(args.host),
+           "wifi_mode": mode_value,
            "host": args.host,
            "checked_accepted_when_off": bool(args.allow_ota_write),
            "rows": rows}

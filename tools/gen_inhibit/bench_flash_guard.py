@@ -67,8 +67,8 @@ sys.path.insert(0, HERE)
 # Results belong in the bench's runs folder, not next to the tool:
 # bench_ota_guard.runs_dir() ($GI_RUNS_DIR once this folder is in the repo).
 from bench_ota_guard import (            # noqa: E402
-    MODES, device_identity, gi_status, have_external_route, http, runs_dir,
-    set_mode,
+    MODES, ap_mode_detail, device_identity, gi_status, have_external_route,
+    http, runs_dir, set_mode, wifi_mode,
 )
 
 # The five handlers spec 5.1 item 3 names, with the method each expects and a
@@ -140,12 +140,14 @@ def preconditions(host):
     if page is None:
         say(False, "gen_inhibit answers", err or "")
         return False
-    if page.get("wifi_mode") not in (None, "AP"):
-        say(False, "device is in AP mode",
-            "wifi_mode=%r -- spec 8 makes AP permanent for the build that flies"
-            % page.get("wifi_mode"))
+    # wifi_mode is in the config, not on /gen_inhibit (spec 11 does not put it
+    # there): read from /load_config, that one value only (user, 2026-10-21).
+    # Until then this read the page and passed when the field was absent.
+    mode_value, err = wifi_mode(host)
+    ap_ok, detail = ap_mode_detail(mode_value, err)
+    say(ap_ok, "device is in AP mode", detail, wifi_mode=mode_value)
+    if not ap_ok:
         return False
-    say(True, "device is in AP mode", "the configuration that flies")
     say(True, "inhibitor build present", "mode now %s"
         % MODES.get(page.get("mode"), page.get("mode")))
     return True
