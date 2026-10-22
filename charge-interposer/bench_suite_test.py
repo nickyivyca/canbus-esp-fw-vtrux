@@ -307,7 +307,8 @@ def test_suites():
                         "skip %s/%s names no spec item or ruling" % (g.name, c.id)
     # 171: vport-listen-wrong-rate split out of vport-listen (2026-10-21)
     # 177: st.bench-topology and the five cf.* can-fails (2026-10-22)
-    assert len(seen) == 177, "checks across the suites: %d" % len(seen)
+    # 178: cf.bench-powerup-round, its --strict-port mutants (2026-10-22)
+    assert len(seen) == 178, "checks across the suites: %d" % len(seen)
     # build-check runs in a git checkout of HEAD, shipped as a bundle
     # (user ruling 2026-10-19), never in the shipped copy
     mb = [g for g in su["emulated"].groups if g.name == "m-build"][0]
@@ -760,6 +761,49 @@ def test_reopen_skip():
         "Access denied" in c.skip, "not a skip naming the defect: %r" % c.skip
 
 
+def test_strict_port_off():
+    """No suite line passes bench_powerup_round's --strict-port, the ported
+    image's no-ACKer rule (u must be 0, port requirement (f)): the current
+    product is judged by the default, u <= 1 and t <= 1 independently (user
+    ruling 2026-10-22, relayed by the reviewer). bench_usb_host's no-ACKer
+    boots score through bench_powerup_round too, with its own options, so
+    it must have no such switch either."""
+    art = _artifacts()
+    src = open(os.path.join(art, "bench_powerup_round.py"),
+               encoding="utf-8").read()
+    assert 'add_argument("--strict-port"' in src, \
+        "bench_powerup_round has no --strict-port: this test pins nothing"
+    usb = open(os.path.join(art, "bench_usb_host.py"),
+               encoding="utf-8").read()
+    assert "strict" not in usb, "bench_usb_host can set the strict mode"
+    s, su = _all()
+    noack = []
+    for name, suite in su.items():
+        for g in suite.groups:
+            for c in g.checks:
+                argv = [str(a) for a in c.argv]
+                assert not any("strict-port" in a for a in argv), \
+                    "%s/%s passes --strict-port" % (name, c.id)
+                if argv and argv[0].endswith("bench_powerup_round.py") and \
+                        _opt(argv, "--mode") == "noack":
+                    noack.append(c.id)
+    assert noack == ["powerup-round-noack"], \
+        "the no-ACKer power-up check: %s" % noack
+
+
+def _add_arg(cid, arg):
+    def fn(s):
+        _check(s, cid).argv.append(arg)
+    return fn
+
+
+def _set_mode(cid, mode):
+    def fn(s):
+        c = _check(s, cid)
+        c.argv[c.argv.index("--mode") + 1] = mode
+    return fn
+
+
 def test_vport_split():
     """vport-listen's two wrong-rate arms run as their own check, which is a
     registered KNOWN FAIL (reviewer, 2026-10-21); the rest stay judged in
@@ -797,7 +841,7 @@ TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_corrupt_pin_judge, test_c12_judge, test_host_bridge_judge,
          test_suites, test_mutant_wiring, test_identify, test_pycache_ignored,
          test_usb_baselines, test_usb_stops, test_reopen_skip,
-         test_script_coverage,
+         test_script_coverage, test_strict_port_off,
          test_vport_split, test_bench_argv]
 
 
@@ -1052,6 +1096,16 @@ MUTANTS = {
         ("bench", _wrap_suite("bench", _skip_reason(
             "innomaker-rate-runs-reopen", "reviewer: later")),
          "a skip that does not name the 2026-10-14 defect")],
+    "test_strict_port_off": [
+        ("bench", _wrap_suite("bench", _add_arg("powerup-round-noack",
+                                                "--strict-port")),
+         "the no-ACKer power-up check under the ported image's rule"),
+        ("bench", _wrap_suite("bench", _add_arg("usb-host-baseline-noack",
+                                                "--strict-port")),
+         "a bench_usb_host line passes --strict-port"),
+        ("bench", _wrap_suite("bench", _set_mode("powerup-round-noack",
+                                                 "ack")),
+         "no no-ACKer power-up check left to pin")],
     "test_vport_split": [
         ("bench", _wrap_suite("bench", _wrong_rate_back),
          "the wrong-rate arms back in vport-listen"),
