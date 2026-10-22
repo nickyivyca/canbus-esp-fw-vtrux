@@ -71,8 +71,9 @@ fails when the rule is switched off through RULES):
   resume_stop     (log) a board the resume cannot put back is a stop, not a
                   lost lock (user, Q6 (i)): the lock stays the run's, the
                   rest is NOT-RUN, the record and index.txt open with
-                  "STOPPED: <board> is <read>, expected <image>, cannot
-                  flash", and the end release carries the identities read
+                  "STOPPED: <board> is <read>, expected <image> (<its
+                  expect value>), cannot flash", and the end release
+                  carries the identities read
   resume_stop_kept  (log) the end restore skips the board the resume could
                   not put back, which is left as found for the
                   investigation; its restore note is "restore skipped:
@@ -626,9 +627,9 @@ class Engine:
                 if not ok and RULES["resume_stop"]:
                     im = self.suite.images[name]
                     self.resume_stopped = (
-                        "STOPPED: %s is %s, expected %s, cannot flash"
+                        "STOPPED: %s is %s, expected %s (%s), cannot flash"
                         % (board, read_text(self.board_read.get(board)),
-                           im.expect))
+                           name, im.expect))
                     self.resume_stopped_board = board
                     self.bench_stopped = "%s (%s)" % (self.resume_stopped, why)
                     self.rec.event("resume-stopped", board=board, image=name,

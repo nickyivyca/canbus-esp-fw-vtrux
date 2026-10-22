@@ -1624,7 +1624,7 @@ def test_lost_record():
 
 
 def _pause_scenario(name, mode="log", during=None, fail_flash=False,
-                    second=None, image=("w1", "x2app")):
+                    second=None, image=("w1", "x2app"), keep_lock=None):
     """check 1 writes PAUSE. Another role takes the bench while the run is
     paused (log: once free_paused is in the log; holder: by the Holder
     line), `during` runs, the PAUSE file goes, and the other role hands the
@@ -1651,7 +1651,7 @@ def _pause_scenario(name, mode="log", during=None, fail_flash=False,
                                     python=True), second],
                         needs_lock=True, image=list(image))], role=CI)
     st = env.settings(bench_lock_log=p) if mode == "log" else env.settings()
-    eng = E.Engine(s, st, out=lambda *a: None)
+    eng = E.Engine(s, st, out=lambda *a: None, keep_lock=keep_lock)
     seen = {}
 
     def other():
@@ -1784,13 +1784,14 @@ def test_resume_stop():
     stop, not a lost lock. The runner keeps the lock (no `lost`, no
     lost-refused), records every remaining case NOT-RUN, opens its record
     and index.txt with "STOPPED: <board> is <image read>, expected
-    <image>, cannot flash", and releases with the identities it read."""
+    <image> (<its expect value>), cannot flash", and releases with the
+    identities it read."""
     def change_nofl(tb, eng, seen):
         tb.set("x2", "OTHER")
         tb.fail_flash = True
     env, p, tb, eng, rec, seen = _pause_scenario("resume_stop",
                                                  during=change_nofl)
-    line = "STOPPED: x2 is OTHER, expected X2-APP, cannot flash"
+    line = "STOPPED: x2 is OTHER, expected x2app (X2-APP), cannot flash"
     sec = [r for r in rec["results"] if r["id"] == "a/second"][0]
     assert sec["verdict"] == "NOT-RUN" and line in sec["detail"], sec
     assert first_line(eng, "index.txt") == line, first_line(eng, "index.txt")
@@ -1804,6 +1805,20 @@ def test_resume_stop():
     assert rl["event"] == "release" and rl["who"] == CI, rl
     assert rl["boards"]["x2"].startswith("OTHER, identified off the wire"), rl
     assert BL.read_state(p)["holder"] is None
+    # with --keep-lock the stop still hands the lock to the session
+    keeper = spawn_foreign("vtrux_resume_stop_%d" % os.getpid())
+    try:
+        env, p, tb, eng, rec, seen = _pause_scenario(
+            "resume_stop_keep", during=change_nofl, keep_lock=keeper)
+        assert rec["lock_lines"][0] == line, rec["lock_lines"]
+        rl, tk = log_events(p)[-2:]
+        assert rl["event"] == "release" and rl["who"] == CI and \
+            rl["boards"]["x2"].startswith("OTHER"), rl
+        assert tk["event"] == "take" and tk["who"] == CI and \
+            tk["pid"] == keeper and "run" not in tk, tk
+        assert BL.read_state(p)["holder"]["pid"] == keeper
+    finally:
+        kill_pid(keeper)
 
 
 def test_resume_stop_kept():
@@ -1817,7 +1832,7 @@ def test_resume_stop_kept():
         tb.fail_flash = {"x2"}
     env, p, tb, eng, rec, seen = _pause_scenario(
         "resume_stop_kept", during=change_x2, image=("w2", "x2app"))
-    line = "STOPPED: x2 is OTHER, expected X2-APP, cannot flash"
+    line = "STOPPED: x2 is OTHER, expected x2app (X2-APP), cannot flash"
     assert verdicts(rec) == {"a/first": "PASS", "a/second": "NOT-RUN"}, \
         verdicts(rec)
     # w2 at the start, the failed x2app at the resume, w1 at the restore;

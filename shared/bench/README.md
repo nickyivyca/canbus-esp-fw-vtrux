@@ -234,10 +234,15 @@ run is re-run. A STOP during a pause still takes the lock back, for the
 restore and the release, but runs no start hooks and flashes nothing. A
 board the resume cannot put back stops the run without losing the lock: the
 rest is NOT-RUN, the record and `index.txt` open with `STOPPED: <board> is
-<read>, expected <image>, cannot flash`, and the release carries what was
-read; if the bench is still free when you read that, investigate the board
-before any other run, try to explain why it could not be put back, and tell
-your reviewer. A session's own `take --run <id>` of the run is a lost lock:
+<read>, expected <image> (<its expect value>), cannot flash`, and the
+release carries what was read. The end restore leaves that board as found
+(its note: `restore skipped: <STOPPED line>`); the other boards are
+restored, and the end hooks still run on every board, the stopped one
+included. With `--keep-lock PID` the run still hands the lock to that
+session at the end, so a resume stop leaves the bench held by the session,
+not free. If the bench is still free when you read that (or your session
+holds it), investigate the board before any other run, try to explain why
+it could not be put back, and tell your reviewer. A session's own `take --run <id>` of the run is a lost lock:
 `LOCK LOST` in the record, nothing written to the log, nothing released.
 `STOP` ends the run (the board is still restored unless the file says
 `norestore`; `now` also kills the check in progress -- on a remote host
