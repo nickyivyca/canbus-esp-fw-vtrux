@@ -67,11 +67,16 @@ fails when the rule is switched off through RULES):
   resume_identify (log) after the resume take, before the next case, the
                   start hooks run again and every board the remaining cases
                   use is identified against its expected image and flashed
-                  back if it differs; a board that cannot be is a lost lock
+                  back if it differs
+  resume_stop     (log) a board the resume cannot put back is a stop, not a
+                  lost lock (user, Q6 (i)): the lock stays the run's, the
+                  rest is NOT-RUN, the record and index.txt open with
+                  "STOPPED: <board> is <read>, expected <image>, cannot
+                  flash", and the end release carries the identities read
   stop_no_resume  (log) STOP during a pause: the runner takes the lock back
                   for the restore and the release, but runs no start hooks
                   and re-identifies or flashes nothing before the lane ends
-  flash_gate     a failed flash (or failed auto-reset check) stops what
+  flash_gate      a failed flash (or failed auto-reset check) stops what
                   needs that image; no retry; after a failed auto-reset
                   check no further flash at all
   image_schedule  flash only when the board is not already on the image
@@ -183,7 +188,8 @@ RULES = {k: True for k in (
     "lock_guard", "lock_each_case", "pause_own_lock", "lost_record",
     "take_first", "folder_release", "self_pause", "release_end",
     "keep_lock_one_step",
-    "own_pid", "pause_hooks", "resume_identify", "stop_no_resume",
+    "own_pid", "pause_hooks", "resume_identify", "resume_stop",
+    "stop_no_resume",
     "flash_gate", "image_schedule", "identify_after",
     "no_verdict", "known_fail", "stop_pause", "throttle", "redact_scope",
     "gate", "timeout", "skip", "restore", "identify_error", "after",
@@ -194,6 +200,14 @@ RULES = {k: True for k in (
     "carry_check_end")}
 
 IDENTIFY_ERROR = "<identify failed>"
+
+
+def read_text(r):
+    """An identify read as words, for the STOPPED line."""
+    if r == IDENTIFY_ERROR:
+        return "unidentified (the identify failed)"
+    return "on no image identify knows" if r is None else r
+
 
 SHIP_EXCLUDE = {"__pycache__", ".pio", ".git", "build"}
 SSH = ("ssh", "-o", "BatchMode=yes")
@@ -242,6 +256,7 @@ class Engine:
         self.keep_lock = keep_lock
         self.took = False
         self.lock_lost = None
+        self.resume_stopped = None
         self.lock_release = None
         self.bench_work = []
         self.kf = {k.id: k.ref for k in suite.known_fails}
@@ -572,7 +587,10 @@ class Engine:
         start hooks again, then every board the remaining cases use is
         identified against the image expected on it, as at run start, and
         flashed and identified again if it differs. A board it cannot put
-        right is a lost lock. None to go on, else the LOCK LOST line."""
+        right is a stop, not a lost lock (user, Q6 (i)): the lock stays the
+        run's, the rest is NOT-RUN, the record opens with the STOPPED line
+        and the end release carries the identities read. None to go on,
+        else the LOCK LOST line."""
         t0 = time.monotonic()
         started = stamp()
         logdir = os.path.join(self.run_dir, "_bench", "resume")
@@ -599,6 +617,16 @@ class Engine:
             for board, name in expected.items():
                 ok, why = self.ensure_image(name, logdir)
                 statuses.append(("" if ok else "RESUME FAILED: ") + why)
+                if not ok and RULES["resume_stop"]:
+                    im = self.suite.images[name]
+                    self.resume_stopped = (
+                        "STOPPED: %s is %s, expected %s, cannot flash"
+                        % (board, read_text(self.board_read.get(board)),
+                           im.expect))
+                    self.bench_stopped = "%s (%s)" % (self.resume_stopped, why)
+                    self.rec.event("resume-stopped", board=board, image=name,
+                                   why=why, line=self.resume_stopped)
+                    break
                 if not ok:
                     lost = self.lost("at the resume, %s could not be put back "
                                      "on %s: %s" % (board, name, why))
@@ -683,6 +711,8 @@ class Engine:
         """The lines that open the record, index.txt and board_state.txt
         about the lock."""
         out = []
+        if self.resume_stopped:
+            out.append(self.resume_stopped)
         if self.lock_lost and RULES["lost_record"]:
             out.append(self.lock_lost)
         r = self.lock_release

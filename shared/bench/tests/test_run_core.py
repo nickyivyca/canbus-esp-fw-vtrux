@@ -21,6 +21,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -1519,8 +1520,19 @@ def log_env(name):
 
 
 def log_events(p):
-    with open(p, encoding="utf-8") as f:
-        return [json.loads(l) for l in f.read().splitlines()]
+    """The log's events. On Windows a read during another thread's locked
+    write is refused (PermissionError); the lock is brief, so retry for up
+    to 10 s rather than kill a scenario thread (2026-10-22: one died, and
+    its run waited on its PAUSE file for ever)."""
+    end = time.monotonic() + 10
+    while True:
+        try:
+            with open(p, encoding="utf-8") as f:
+                return [json.loads(l) for l in f.read().splitlines()]
+        except PermissionError:
+            if time.monotonic() > end:
+                raise
+            time.sleep(0.05)
 
 
 def bl_code(p, body):
@@ -1642,6 +1654,26 @@ def _pause_scenario(name, mode="log", during=None, fail_flash=False,
     seen = {}
 
     def other():
+        """The other role. If it fails, it still frees the run (STOP, no
+        PAUSE, GI's lock released) and the scenario raises its error,
+        rather than leave eng.run() waiting for ever."""
+        try:
+            other_steps()
+        except Exception:
+            seen["error"] = traceback.format_exc()
+            rd = getattr(eng, "run_dir", None)
+            if rd:
+                open(os.path.join(rd, "STOP"), "w").close()
+                if os.path.exists(os.path.join(rd, "PAUSE")):
+                    os.remove(os.path.join(rd, "PAUSE"))
+            try:
+                h = BL.read_state(p)["holder"]
+                if h is not None and h["who"] == GI:
+                    BL.release(p, GI, BD)
+            except Exception:
+                pass
+
+    def other_steps():
         for _ in range(150):
             time.sleep(0.1)
             if not getattr(eng, "run_dir", None):
@@ -1673,6 +1705,7 @@ def _pause_scenario(name, mode="log", during=None, fail_flash=False,
     t.start()
     rec = eng.run()
     t.join()
+    assert "error" not in seen, "the other role failed:\n%s" % seen["error"]
     return env, p, tb, eng, rec, seen
 
 
@@ -1730,8 +1763,8 @@ def test_resume_identify():
     """Section 6: after the resume take, before the next case, the start
     hooks run again and every board the remaining cases use is identified
     against its expected image; one that differs is flashed and identified
-    again; one that cannot be flashed is a lost lock. The record notes the
-    identities read at the resume."""
+    again (one that cannot be flashed: test_resume_stop). The record notes
+    the identities read at the resume."""
     def change(tb, eng, seen):
         tb.set("x2", "OTHER")
     env, p, tb, eng, rec, seen = _pause_scenario("resume_id", during=change)
@@ -1744,20 +1777,32 @@ def test_resume_identify():
     assert ri["identities"] == {"wican": "WC-1", "x2": "X2-APP"}, ri
     assert "resume" in [g["name"] for g in rec["groups"]]
 
+
+def test_resume_stop():
+    """Section 6 (user, Q6 (i)): a board the resume cannot put back is a
+    stop, not a lost lock. The runner keeps the lock (no `lost`, no
+    lost-refused), records every remaining case NOT-RUN, opens its record
+    and index.txt with "STOPPED: <board> is <image read>, expected
+    <image>, cannot flash", and releases with the identities it read."""
     def change_nofl(tb, eng, seen):
         tb.set("x2", "OTHER")
         tb.fail_flash = True
-    env, p, tb, eng, rec, seen = _pause_scenario("resume_noflash",
+    env, p, tb, eng, rec, seen = _pause_scenario("resume_stop",
                                                  during=change_nofl)
+    line = "STOPPED: x2 is OTHER, expected X2-APP, cannot flash"
     sec = [r for r in rec["results"] if r["id"] == "a/second"][0]
-    assert sec["verdict"] == "NOT-RUN" and "at the resume" in sec["detail"], sec
-    assert first_line(eng, "index.txt").startswith("LOCK LOST: at the resume")
-    # the run's own take still holds the lock, and section 8 allows no
-    # `lost` for the holder's run: refused and recorded, nothing released
+    assert sec["verdict"] == "NOT-RUN" and line in sec["detail"], sec
+    assert first_line(eng, "index.txt") == line, first_line(eng, "index.txt")
+    assert rec["lock_lines"][0] == line, rec["lock_lines"]
+    assert not rec["lock"]["lost"], rec["lock"]
+    kinds = [e["kind"] for e in rec["events"]]
+    assert "lost-refused" not in kinds and "lock-lost" not in kinds, kinds
     evs = log_events(p)
-    assert evs[-1]["event"] == "take" and evs[-1]["run"] == eng.run_id and \
-        evs[-1]["pid"] == os.getpid(), evs[-1]
-    assert "lost-refused" in [e["kind"] for e in rec["events"]]
+    assert not [e for e in evs if e["event"] == "lost"], evs
+    rl = evs[-1]
+    assert rl["event"] == "release" and rl["who"] == CI, rl
+    assert rl["boards"]["x2"].startswith("OTHER, identified off the wire"), rl
+    assert BL.read_state(p)["holder"] is None
 
 
 def test_stop_no_resume():
@@ -1957,7 +2002,7 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_remote_stop,
          test_lock_each_case, test_lost_record, test_pause_own_lock,
          test_self_pause, test_pause_hooks, test_resume_identify,
-         test_stop_no_resume,
+         test_resume_stop, test_stop_no_resume,
          test_own_pid, test_take_first, test_folder_release, test_release_end,
          test_keep_lock]
 
@@ -2061,6 +2106,7 @@ MUTANTS = {
     "test_self_pause": _rule("self_pause"),
     "test_pause_hooks": _rule("pause_hooks"),
     "test_resume_identify": _rule("resume_identify"),
+    "test_resume_stop": _rule("resume_stop"),
     "test_stop_no_resume": _rule("stop_no_resume"),
     "test_own_pid": _rule("own_pid"),
     "test_take_first": _rule("take_first"),
