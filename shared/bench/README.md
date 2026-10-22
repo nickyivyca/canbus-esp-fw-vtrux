@@ -35,7 +35,7 @@ every group of checks, restore, record. The same command runs part of it.
 | `vtrux_bench/run/cli.py` | The command line. |
 | `vtrux_bench/decode.py` | Diag DBC schema identity (toolkit item 10, first part): `layout_hash`, `check_identity`, `check_history`. See "Diag DBC schema identity" below. |
 | `vtrux_bench/bench_lock.py` | The bench lock as an append-only event log (reverse-it `firmware/bench-log.jsonl`), to reverse-it `firmware/bench-lock-spec.md`: the replay that fails closed, the command line (`init`, `status`, `take`, `release`, `pause`, `request`, `withdraw`, `clear`) and the runner's API (`take`, `lost`, `held_by_run`). One bench host and environment, recorded by `init`; native Windows only. Not the lock until the cutover (spec section 7), and not yet read by the runner. |
-| `tests/test_bench_lock.py` | Its tests (17), each naming the spec sections it checks. `--can-fail` runs each under each of its mutants (73), source edits that must each make it fail. Native Windows only. |
+| `tests/test_bench_lock.py` | Its tests (19), each naming the spec sections it checks. `--can-fail` runs each under each of its mutants (77), source edits that must each make it fail. Native Windows only. |
 | `tests/test_decode.py` | Its tests (6), with `data/golden_layout.dbc` and its hand-written canonical text `data/golden_layout.txt`. `--can-fail` runs each test under each of its mutants (28); every one must fail. |
 | `tests/test_run_core.py` | The runner's own tests (43), with a fake suite, a fake two-board bench, `fake_esptool.py` and `fake_ssh.py`. `--can-fail` runs each with its rule switched off; every one must then fail. |
 

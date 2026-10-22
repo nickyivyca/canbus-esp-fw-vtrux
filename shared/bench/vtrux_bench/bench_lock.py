@@ -32,7 +32,8 @@ who (a tester or implementor role, ROLE_RE) and event; any line may carry
 run and note. The other fields, per event (FIELDS):
 
     init      host, env
-    take      pid (required), run (optional)
+    take      pid (required, running in the bench environment), run
+              (optional)
     release   boards: {board: TEXT} for each of BOARDS, TEXT the image read
     pause     off the wire and when, or "not read: <why>"; pause also run
     request   note (required): what for and how long
@@ -84,6 +85,7 @@ REQUIRED = {
     "lost": ("run",),
 }
 LOG_NAME = os.path.join("firmware", "bench-log.jsonl")
+LOCK_WAIT_S = 10.0
 UNKNOWN = "BOARD STATE UNKNOWN"
 
 
@@ -114,10 +116,22 @@ class WindowsEnv:
             k.CloseHandle(h)
 
     @staticmethod
-    def lock(f):
+    def lock(f, wait_s):
+        """Wait up to wait_s for the lock; Refused if another writer keeps
+        it (msvcrt's own LK_LOCK would raise OSError after ~10 s)."""
         import msvcrt
-        f.seek(0)
-        msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+        import time
+        deadline = time.monotonic() + wait_s
+        while True:
+            f.seek(0)
+            try:
+                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+                return
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise Refused("the log is locked by another writer (waited "
+                                  "%g s); try again" % wait_s)
+                time.sleep(0.1)
 
     @staticmethod
     def unlock(f):
@@ -372,7 +386,7 @@ def locked(path):
         raise Refused("no bench log at %s (init creates it)" % path)
     f = open(path, "a+b")
     try:
-        impl.lock(f)
+        impl.lock(f, LOCK_WAIT_S)
         try:
             yield f
         finally:
@@ -413,6 +427,15 @@ def check_holder_gone(state):
                       % h["pid"])
 
 
+def check_pid_alive(state, pid):
+    """take's pid must be running in the bench environment: a mistyped pid
+    would make the lock clearable at once. Unsure counts as alive."""
+    if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
+        if not bench_impl(state).pid_alive(pid):
+            raise Refused("pid %d is not running in the bench environment: "
+                          "give the long-lived holder's" % pid)
+
+
 def write(path, ev):
     """Check ev against the log's state and append it, under the lock.
     Returns (state after, the line appended). A refusal names the holder."""
@@ -423,6 +446,8 @@ def write(path, ev):
         try:
             if ev["event"] == "clear":
                 check_holder_gone(state)
+            if ev["event"] == "take":
+                check_pid_alive(state, ev.get("pid"))
             apply(state, ev)
         except Refused as e:
             raise Refused("%s (%s)" % (e, holder_text(state)))

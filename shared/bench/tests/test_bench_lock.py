@@ -105,6 +105,25 @@ def alive(pid):
     return B.ENVS["windows"].pid_alive(pid)
 
 
+class Live:
+    """A child process of this test that stays alive until stop()."""
+
+    def __init__(self):
+        self.p = subprocess.Popen([sys.executable, "-c",
+                                   "import time; time.sleep(300)"])
+        self.pid = self.p.pid
+
+    def stop(self):
+        self.p.kill()
+        self.p.wait()
+
+    def __enter__(self):
+        return self.pid
+
+    def __exit__(self, *exc):
+        self.stop()
+
+
 def ev(kind, who, **k):
     return dict(k, event=kind, who=who)
 
@@ -271,10 +290,15 @@ def test_clear():
     refused(B.write, p, ev("clear", GI, reason="crashed?"))
     check(len(lines(p)) == 2, "a refused clear wrote nothing")
     p = fresh("clear2")
-    gone = dead_pid()
+    holder = Live()
+    try:
+        gone = holder.pid
+        w(p, "take", CI, pid=gone, run="r1")
+        refused(B.write, p, ev("clear", GI, reason="still running"))
+    finally:
+        holder.stop()
     check(not alive(gone), "a finished child is not alive")
     check(alive(ME), "this process is alive")
-    w(p, "take", CI, pid=gone, run="r1")
     refused(B.write, p, ev("clear", GI))
     st = w(p, "clear", GI, reason="session crashed")
     check(st["holder"] is None and not st["boards"]["known"],
@@ -284,6 +308,35 @@ def test_clear():
           st["boards"]["why"], "clear records the reason and the holder")
     refused(B.write, p, ev("take", CI, pid=ME, run="r1"))
     refused(B.write, p, ev("clear", GI, reason="again"))
+
+
+def test_take_alive():
+    """SPEC 4 pid is the long-lived holder (review of 7752f76: take refuses
+    a pid that is not running in the bench environment)."""
+    p = fresh("take_alive")
+    msg = refused(B.write, p, ev("take", CI, pid=dead_pid(), run="r1"))
+    check("not running" in msg and len(lines(p)) == 1,
+          "a dead pid is refused and nothing written: %s" % msg)
+    with Live() as pid:
+        st = w(p, "take", CI, pid=pid, run="r1")
+    check(st["holder"]["pid"] == pid, "a live pid is taken")
+
+
+def test_lock_timeout():
+    """SPEC 2 the OS file lock; 5 a refusal exits 2 (review of 7752f76: a
+    writer that cannot get the lock is refused, not a traceback)."""
+    p = fresh("lock_timeout")
+    with patched(LOCK_WAIT_S=0.5):
+        with B.locked(p):
+            t0 = time.monotonic()
+            msg = refused(B.write, p, ev("take", CI, pid=ME, run="r1"))
+            check("locked by another writer" in msg, "refusal: %s" % msg)
+            check(time.monotonic() - t0 < 5, "it waited LOCK_WAIT_S, not more")
+            rc, _o, e = cli("--log", p, "status")
+            check(rc == 2 and "locked by another writer" in e,
+                  "status while locked: %d %s" % (rc, e.strip()))
+    check(len(lines(p)) == 1, "nothing written")
+    check(B.read_state(p)["holder"] is None, "readable once released")
 
 
 def test_pid_wrong_env():
@@ -483,11 +536,16 @@ def test_cli():
     rc, _o, e = cli("--log", p, "take", "--who", CI, "--pid", str(ME))
     check(rc == 2 and "own PID" in e and len(lines(p)) == 1,
           "--pid of the command itself: %s" % e)
-    rc, out, _e = cli("--log", p, "take", "--who", CI, "--pid", "1",
-                      "--run", "r1")
-    check(rc == 0 and out.splitlines()[0] == lines(p)[-1],
-          "take prints the line it appended: %s" % out)
-    rc, _o, e = cli("--log", p, "take", "--who", GI, "--pid", "1")
+    holder = Live()
+    try:
+        rc, out, _e = cli("--log", p, "take", "--who", CI, "--pid",
+                          str(holder.pid), "--run", "r1")
+        check(rc == 0 and out.splitlines()[0] == lines(p)[-1],
+              "take prints the line it appended: %s" % out)
+        rc, _o, e = cli("--log", p, "take", "--who", GI, "--pid",
+                        str(holder.pid))
+    finally:
+        holder.stop()
     check(rc == 2 and CI in e and len(lines(p)) == 2,
           "second take: %d %s" % (rc, e))
     rc, _o, e = cli("--log", p, "pause", "--who", CI, "--board", "x2=ok")
@@ -520,7 +578,8 @@ def test_cli():
 
 
 TESTS = [test_take_release, test_boards, test_pause_resume, test_run_once,
-         test_held_by_run, test_queue, test_clear, test_pid_wrong_env,
+         test_held_by_run, test_queue, test_clear, test_take_alive,
+         test_lock_timeout, test_pid_wrong_env,
          test_lost, test_replay_fails_closed, test_init, test_detect_env,
          test_env_refusal, test_env_mismatch, test_file_lock, test_lines,
          test_cli]
@@ -662,6 +721,21 @@ MUTANTS = {
         ("cleared run resumable",
          _edit("            state[\"runs\"].add(run)\n", "            pass\n")),
     ],
+    "test_take_alive": [
+        ("take of a dead pid",
+         _edit("            if ev[\"event\"] == \"take\":\n                check_pid_alive(state, ev.get(\"pid\"))\n",
+               "")),
+        ("take pid checked in this environment",
+         _edit("        if not bench_impl(state).pid_alive(pid):",
+               "        if not env_impl(\"wsl\").pid_alive(pid):")),
+    ],
+    "test_lock_timeout": [
+        ("lock timeout is a traceback",
+         _edit("                    raise Refused(\"the log is locked by another writer",
+               "                    raise OSError(\"the log is locked by another writer")),
+        ("lock wait not bounded",
+         _edit("        impl.lock(f, LOCK_WAIT_S)", "        impl.lock(f, 10.0)")),
+    ],
     "test_pid_wrong_env": [
         ("PID checked in this environment",
          _edit("    if bench_impl(state).pid_alive(h[\"pid\"]):",
@@ -756,8 +830,8 @@ MUTANTS = {
     ],
     "test_file_lock": [
         ("no OS lock",
-         _edit("        msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)",
-               "        pass")),
+         _edit("                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)\n                return",
+               "                return")),
     ],
     "test_lines": [
         ("spaced JSON",
