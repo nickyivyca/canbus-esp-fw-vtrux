@@ -155,6 +155,10 @@ CAN_FAILS = [
 EMULATED_LOCAL = [
     ("rebuild-capture-traces", ["{interposer_artifacts}/rebuild_capture_traces.py"]),
 ]
+# shared/bench's own tests (the decode identity, the chain runner), each run
+# plain and with --can-fail (reviewer, 2026-10-22: no suite ran them).
+SHARED_BENCH_TESTS = ["test_decode.py", "test_run_core.py"]
+
 HARNESS_LOCAL = [
     ("board-reset-test", ["{interposer_code}/board_reset_test.py"]),
     ("bench-suite-test", ["{interposer_code}/bench_suite_test.py"]),
@@ -786,6 +790,11 @@ def harness(settings):
                                             "--can-fail"], timeout_s=3600)
         for s in CAN_FAILS] + [b.lpy(cid, argv, timeout_s=3600)
                                 for cid, argv in HARNESS_LOCAL] + [
+        b.lpy("sb.%s%s" % (t[:-3].replace("_", "-"), sfx),
+              ["{interposer_code}/../shared/bench/tests/%s" % t] + arg,
+              timeout_s=3600)
+        for t in SHARED_BENCH_TESTS
+        for sfx, arg in (("", []), ("-canfail", ["--can-fail"]))] + [
         Check("cutover-verify-test", ["-"], skip=(
             "historical: the one-time 2026-10-08 cutover, verified then "
             "(reviewer 2026-10-18; its --guard-test stays live)"))])
