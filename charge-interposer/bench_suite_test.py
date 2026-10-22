@@ -678,19 +678,22 @@ def test_usb_baselines():
     assert n == 4, "%d dependent usb-host cases found, 4 expected" % n
 
 
-# The stop each bench_usb_host case needs before its premise can be met, as
-# in the 2026-10-14 runs that met it (reverse-it interposer-firmware
-# runs/bench_usbhost_control_20261014T0528/CODE.txt: five 240 s stops never
-# filled the host side -> 480 s for the not-reading boots, 600 s for the
-# bridge cycles). Only these two cases stop reading.
-USB_STOPS = {("noread-boots", "--ack"): "480", ("noread-boots", "--noack"): "480",
+# The stop each bench_usb_host case passes. Bridge cycles 600 s, as in the
+# 2026-10-14 runs that met the premise (reverse-it interposer-firmware
+# runs/bench_usbhost_control_20261014T0528/CODE.txt). Not-reading boots
+# 720 s (reviewer ruling 2026-10-22): the host side's capacity is not
+# stable (12.6 kB on 2026-10-14, 98.6 kB in 700f), the premise check makes
+# a longer stop safe, and 700f's noread-ack was VOID at 480 s with ~539 s
+# needed at its rate (runs/noread_rate_compare_20261022.txt). Only these
+# cases stop reading.
+USB_STOPS = {("noread-boots", "--ack"): "720", ("noread-boots", "--noack"): "720",
              ("bridge", "cycles"): "600"}
 
 
 def test_usb_stops():
-    """Each bench_usb_host case that stops reading passes the stop the
-    2026-10-14 control showed it needs (4cdb: both noread cases VOID at the
-    script's 240 s floor), and no other case passes one."""
+    """Each bench_usb_host case that stops reading passes its ruled stop
+    (4cdb: both noread cases VOID at the script's 240 s floor; 700f:
+    noread-ack VOID at 480 s), and no other case passes one."""
     s, su = _all()
     found = set()
     for g in su["bench"].groups:
@@ -1075,6 +1078,12 @@ MUTANTS = {
         ("bench", _wrap_suite("bench",
                               _set_stop("usb-host-noread-noack", "240")),
          "noread-noack stops 240 s"),
+        ("bench", _wrap_suite("bench",
+                              _set_stop("usb-host-noread-ack", "480")),
+         "noread-ack stops 480 s (700f VOID)"),
+        ("bench", _wrap_suite("bench",
+                              _set_stop("usb-host-noread-noack", "480")),
+         "noread-noack stops 480 s"),
         ("bench", _wrap_suite("bench",
                               _set_stop("usb-host-bridge-cycles", "480")),
          "bridge-cycles stops 480 s"),

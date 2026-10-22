@@ -604,14 +604,16 @@ def bench(settings):
         # The dependent cases read their baseline from the folder of the
         # case that wrote it (a25e: each case has its own folder, and
         # close-ack / bridge-cycles found none; test_usb_baselines).
-        # Stop lengths as the 2026-10-14 runs that met the premise (reverse-it
-        # runs/bench_usbhost_control_20261014T0528/CODE.txt: 240 s stops
-        # never filled the host side) -- 480 s for the not-reading boots,
-        # 600 s for the bridge cycles (4cdb: both noread cases VOID at the
-        # 240 s floor; test_usb_stops).
+        # Stop lengths: 600 s for the bridge cycles, as the 2026-10-14 runs
+        # that met the premise (reverse-it
+        # runs/bench_usbhost_control_20261014T0528/CODE.txt); 720 s for the
+        # not-reading boots (reviewer ruling 2026-10-22: the host side held
+        # 12.6 kB on 2026-10-14 and 98.6 kB in 700f, so no fitted stop; 700f
+        # noread-ack VOID at 480 s, about 539 s needed at its rate;
+        # runs/noread_rate_compare_20261022.txt; test_usb_stops).
         bpy("usb-host-noread-ack", "bench_usb_host.py",
             ["--port", "{serial_port}", "--case", "noread-boots", "--ack",
-             "--stop-s", "480",
+             "--stop-s", "720",
              "--wican-state", "{wican_state}", "--out", "{outdir}",
              "--baseline-dir", "{outdir}/../usb-host-baseline-ack"]),
         bpy("usb-host-close-ack", "bench_usb_host.py",
@@ -623,7 +625,7 @@ def bench(settings):
              "--wican-state", "{wican_state}", "--out", "{outdir}"]),
         bpy("usb-host-noread-noack", "bench_usb_host.py",
             ["--port", "{serial_port}", "--case", "noread-boots", "--noack",
-             "--stop-s", "480",
+             "--stop-s", "720",
              "--wican-state", "{wican_state}", "--out", "{outdir}",
              "--baseline-dir", "{outdir}/../usb-host-baseline-noack"]),
         bpy("usb-host-bridge-absent", "bench_usb_host.py",
