@@ -639,9 +639,10 @@ def bench(settings):
             "deferral count)")),
     ])
     b_truck = Group("b-truck", needs_lock=True, image="truck", checks=[
+        # --pcan is a flag: the script opens the PCAN itself (a25e passed
+        # it a value and the script refused the argument line).
         bpy("flight-silence", "bench_flight_silence.py",
-            ["--port", "{serial_port}", "--pcan", "{pcan_channel}",
-             "--out", "{outdir}"]),
+            ["--port", "{serial_port}", "--pcan", "--out", "{outdir}"]),
         bpy("hold12-flight", "bench_hold12.py",
             ["--port", "{serial_port}", "--flight", "--out", "{outdir}"]),
     ])

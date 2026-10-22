@@ -492,9 +492,146 @@ def test_pycache_ignored():
     assert not missing, "bytecode git would report: %s" % missing[:4]
 
 
+# Runs a script up to its argument parsing and no further: parse_args is
+# replaced by one that parses, prints ARGV-OK and exits; a bad line exits 2
+# with argparse's error. Serial, CAN and USB opens raise, so no line of the
+# script can reach the bench even if it does work before parsing.
+_ARGV_PROBE = r"""
+import argparse, runpy, sys
+def _forbidden(*a, **k):
+    raise SystemExit("ARGV-PROBE: hardware opened before parse_args")
+for mod, names in (("serial", ("Serial", "serial_for_url")),
+                   ("can", ("Bus",)), ("can.interface", ("Bus",)),
+                   ("usb.core", ("find",))):
+    try:
+        m = __import__(mod, fromlist=["x"])
+    except Exception:
+        continue
+    for n in names:
+        setattr(m, n, _forbidden)
+_orig = argparse.ArgumentParser.parse_args
+_orig_known = argparse.ArgumentParser.parse_known_args
+def _done(r):
+    print("ARGV-OK")
+    sys.stdout.flush()
+    raise SystemExit(0)
+_inside = []
+def _pa(self, args=None, namespace=None):
+    _inside.append(1)
+    _done(_orig(self, args, namespace))
+def _pk(self, args=None, namespace=None):
+    if _inside:
+        return _orig_known(self, args, namespace)
+    _done(_orig_known(self, args, namespace))
+argparse.ArgumentParser.parse_args = _pa
+argparse.ArgumentParser.parse_known_args = _pk
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+"""
+# Scripts the probe cannot check, because they take no arguments through
+# argparse (it would run them whole): each is run with no arguments by its
+# check, which test_bench_argv also asserts, and every name here must be
+# one the walk met without argparse (no stale entries).
+NO_ARGPARSE = {"reset_check.py", "keepalive_probe.py"}
+
+
+def _artifacts():
+    root = os.environ.get("REVERSE_IT_DIR")
+    assert root, "REVERSE_IT_DIR is not set: the bench scripts live there"
+    art = os.path.join(root, "projects", "vtrux", "notes", "artifacts",
+                       "interposer-firmware")
+    assert os.path.isfile(os.path.join(art, "bench_flight_silence.py")), art
+    return art
+
+
+def _fill(a, s, outdir):
+    vals = dict(s, serial_port="COM99", pcan_channel="PCAN_USBBUS1",
+                outdir=outdir, wican_state="argv probe", reverse_it=".")
+    return re.sub(r"\{(\w+)\}", lambda m: str(vals.get(m.group(1), "X")), a)
+
+
+def _bench_argv_problems():
+    """[(check id, problem)] for every python check of the bench suite whose
+    argument line its own script's parser refuses, the number probed, and
+    the script names met without argparse."""
+    s = _settings()
+    s["interposer_artifacts"] = _artifacts()
+    outdir = os.path.join(TMP, "argv-out")
+    os.makedirs(outdir, exist_ok=True)
+    bad, n, plain = [], 0, set()
+    for g in B.bench(s).groups:
+        for c in g.checks:
+            if c.skip or not c.python or not c.argv:
+                continue
+            argv = [_fill(str(a), s, outdir) for a in c.argv]
+            script = argv[0]
+            name = os.path.basename(script)
+            if not os.path.isfile(script):
+                bad.append((c.id, "no script %s" % script))
+                continue
+            with open(script, encoding="utf-8", errors="replace") as f:
+                src = f.read()
+            if "parse_args" not in src and "parse_known_args" not in src:
+                plain.add(name)
+                if name not in NO_ARGPARSE:
+                    bad.append((c.id, "%s has no argparse and is not listed"
+                                % name))
+                elif len(argv) > 1:
+                    bad.append((c.id, "%s takes no arguments, given %s"
+                                % (name, argv[1:])))
+                continue
+            n += 1
+            err = _probe(argv)
+            if err:
+                bad.append((c.id, err))
+    return bad, n, plain
+
+
+def _probe(argv):
+    """None if argv[0]'s parser accepts argv[1:], else the error line."""
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONIOENCODING="utf-8")
+    r = subprocess.run([sys.executable, "-B", "-c", _ARGV_PROBE] + argv,
+                       capture_output=True, text=True, timeout=120, env=env,
+                       cwd=os.path.dirname(argv[0]))
+    if r.returncode == 0 and "ARGV-OK" in r.stdout:
+        return None
+    lines = (r.stderr + r.stdout).strip().splitlines() or ["rc %d" % r.returncode]
+    return lines[-1][:160]
+
+
+def _probe_controls():
+    """The probe must refuse the a25e flight-silence line, accept the fixed
+    one, and stop a script that opens a serial port before parsing."""
+    fs = os.path.join(_artifacts(), "bench_flight_silence.py")
+    bad = _probe([fs, "--port", "COM99", "--pcan", "PCAN_USBBUS1"])
+    assert bad and "unrecognized arguments" in bad, \
+        "the probe accepted the a25e line: %s" % bad
+    good = _probe([fs, "--port", "COM99", "--pcan", "--out", "x.txt"])
+    assert good is None, "the probe refused the fixed line: %s" % good
+    d = os.path.join(TMP, "argv-control")
+    os.makedirs(d, exist_ok=True)
+    early = os.path.join(d, "opens_first.py")
+    with open(early, "w") as f:
+        f.write("import argparse, serial\nserial.Serial('COM99')\n"
+                "argparse.ArgumentParser().parse_args()\n")
+    hw = _probe([early])
+    assert hw and "hardware opened before parse_args" in hw, \
+        "the probe let a serial open through: %s" % hw
+
+
+def test_bench_argv():
+    _probe_controls()
+    bad, n, plain = _bench_argv_problems()
+    assert n >= 40, "only %d checks probed: the walk is wrong" % n
+    assert plain == NO_ARGPARSE, "scripts without argparse: met %s, listed %s" \
+        % (sorted(plain), sorted(NO_ARGPARSE))
+    assert not bad, "argument lines their scripts refuse: %s" % bad[:4]
+
+
 TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_corrupt_pin_judge, test_c12_judge, test_host_bridge_judge,
-         test_suites, test_mutant_wiring, test_identify, test_pycache_ignored]
+         test_suites, test_mutant_wiring, test_identify, test_pycache_ignored,
+         test_bench_argv]
 
 
 # ---- can-fail -----------------------------------------------------------
@@ -617,6 +754,17 @@ _ORIG = {n: getattr(B, n) for n in ("script_judge", "recorded_judge",
 _ORIG["bench_identify.PRODUCT_RE"] = B.bench_identify.PRODUCT_RE
 _ORIG["bench_identify.identify"] = B.bench_identify.identify
 _ORIG["self._PYCACHE_DROP"] = _PYCACHE_DROP
+_ORIG["self.NO_ARGPARSE"] = NO_ARGPARSE
+_ORIG["self._ARGV_PROBE"] = _ARGV_PROBE
+
+
+def _flight_silence_a25e(s):
+    """The a25e line: a value after the --pcan flag."""
+    for g in s.groups:
+        for c in g.checks:
+            if c.id == "flight-silence":
+                i = c.argv.index("--pcan")
+                c.argv.insert(i + 1, "{pcan_channel}")
 
 # test -> [(module attribute, replacement, what the mutant does)]
 MUTANTS = {
@@ -664,6 +812,24 @@ MUTANTS = {
          "shared/bench without its .gitignore (the 20d3 resume refusal)"),
         ("self._PYCACHE_DROP", ("charge-interposer/.gitignore",),
          "charge-interposer without its .gitignore")],
+    "test_bench_argv": [
+        ("bench", _wrap_suite("bench", _flight_silence_a25e),
+         "flight-silence gives --pcan a value (the a25e line)"),
+        ("self.NO_ARGPARSE", {"reset_check.py", "keepalive_probe.py",
+                              "bench_topology.py"},
+         "a stale NO_ARGPARSE entry"),
+        ("self.NO_ARGPARSE", {"reset_check.py"},
+         "a script without argparse left unlisted"),
+        ("self._ARGV_PROBE", _ARGV_PROBE.replace(
+            "_done(_orig(self, args, namespace))", "_done(None)"),
+         "the probe never parses"),
+        ("self._ARGV_PROBE", _ARGV_PROBE.replace(
+            "        setattr(m, n, _forbidden)", "        pass"),
+         "the probe leaves serial, CAN and USB open"),
+        ("self._ARGV_PROBE", _ARGV_PROBE.replace(
+            "    if _inside:\n        return _orig_known(self, args, namespace)\n",
+            ""),
+         "parse_args's inner parse_known_args ends the probe (extras unchecked)")],
 }
 
 
