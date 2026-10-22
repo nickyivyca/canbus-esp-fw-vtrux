@@ -4,17 +4,67 @@ Lanes run in parallel threads: "bench" (every group that needs the bench,
 one after another, then the restore) and one "logic:<host>" lane per host
 for the rest. Within a lane, groups and their checks run in order.
 
-The bench lock (bench-holder rule 2, user 2026-10-17): a chained run holds
-the lock from start to finish. The tester takes it and messages the other
-tester before starting, and releases it after. The runner never edits
-bench-holder.md; it refuses to start a run that includes a bench group
-unless the suite's role holds the lock, and re-reads the Holder line before
-every bench group. Board changes during the run are in the run's own log
-(progress.jsonl, record.json, board_state.txt).
+The bench lock has two sources, chosen by the settings (reverse-it
+firmware/bench-lock-spec.md, sections 6 and 7):
+  - bench_lock_log unset (before the cutover): the Holder line of
+    bench-holder.md (settings bench_holder) is the lock (bench-holder rule
+    2, user 2026-10-17). The tester takes it and messages the other tester
+    before starting, and releases it after; the runner never edits the
+    file. A pause is manual (user 2026-10-22): the PAUSE file stops the run
+    at a case boundary and the role edits the Holder line by hand; the
+    paused run waits until the PAUSE file is gone and the Holder is its
+    role's again. Between cases with no pause under way, a Holder that is
+    not its role's is a lost lock.
+  - bench_lock_log set: the event log of vtrux_bench.bench_lock is the
+    lock. The runner forms its run id, takes the lock under its own PID and
+    that id, and only then makes the run folder (section 8). It goes on
+    only while the lock is held by its role, its run id and its PID. At a
+    case boundary with a PAUSE file it identifies its boards, runs the end
+    hooks, writes free_paused with those reads and waits, opening nothing;
+    once the file is gone it takes the lock back under its PID and run id,
+    waiting while another role holds it, then runs the start hooks again
+    and re-identifies (flashing back) every board its remaining cases use
+    before the next case (section 6). At its run's end it releases with
+    its board reads, or with
+    --keep-lock PID releases and takes again for its role, with no run,
+    under PID, in one locked step.
+In both, the lock is checked before every bench case, a case in progress
+always runs to its end, and any state but the run's own lock is lost: the
+record and index.txt open with "LOCK LOST: <state>", every remaining case is
+NOT-RUN, the end restore and the end hooks' board actions are skipped, and
+nothing is released (the log gets `lost`, unless it does not replay). Board
+changes during the run are in the run's own log (progress.jsonl,
+record.json, board_state.txt).
 
 Rules the engine enforces (each has a test in tests/test_run_core.py that
 fails when the rule is switched off through RULES):
-  lock_guard      no bench group runs unless the suite's role holds the lock
+  lock_guard      no bench group runs unless the suite's role holds the
+                  lock: refused at the start, checked at each group's start
+  lock_each_case  the lock is checked again before every bench case, not
+                  only at its group's start, in both sources (section 6)
+  pause_own_lock  a pause ends only on the run's own lock: the Holder line
+                  its role's again, or the runner's own take of its paused
+                  run; never on the PAUSE file alone (sections 6, 7)
+  lost_record     a lost lock appends `lost` to the log (unless the log does
+                  not replay) and opens the record and index.txt with
+                  "LOCK LOST: <state>"
+  take_first      (log) the lock is taken under the runner's PID and run id
+                  before the run folder exists: a refused take leaves none
+  self_pause      (log) a PAUSE file makes the runner write free_paused with
+                  its board reads at the next case boundary, then wait
+  release_end     (log) at the run's end the runner releases with its board
+                  reads, or "not read: <why>"; never after a LOCK LOST
+  keep_lock_one_step  (log) --keep-lock PID appends the release and the hand
+                  take under PID in one locked step, nothing in between
+  own_pid         (log) the run goes on only while the lock is held under
+                  its runner's own PID: a hand take --run <id> under a
+                  session's PID is a lost lock (section 6)
+  pause_hooks     (log) at a free_paused the end hooks run as at the end
+                  release (minus the restore), and their reads go in it
+  resume_identify (log) after the resume take, before the next case, the
+                  start hooks run again and every board the remaining cases
+                  use is identified against its expected image and flashed
+                  back if it differs; a board that cannot be is a lost lock
   flash_gate      a failed flash (or failed auto-reset check) stops what
                   needs that image; no retry; after a failed auto-reset
                   check no further flash at all
@@ -37,7 +87,8 @@ fails when the rule is switched off through RULES):
   no_verdict      a check that returns no verdict is an ERROR
   known_fail      registry FAILs become KNOWN-FAIL; a registry PASS is
                   flagged; registry entries never produced are listed
-  stop_pause      STOP ends the lane (the rest NOT-RUN), PAUSE waits
+  stop_pause      STOP ends the lane (the rest NOT-RUN), PAUSE waits; a
+                  pause under way ends on the run's own lock even with STOP
   throttle        build-class checks run throttled while a wall-clock test
                   runs on their host
   redact_scope    the redaction hook sees only declared outputs
@@ -114,15 +165,19 @@ import threading
 import time
 import traceback
 
+from .. import bench_lock as BL
 from . import lock as lockmod
 from . import procs
 from .flash import BUILTIN as BUILTIN_FLASHERS
 from .model import Check, CheckRun, Result, SuiteError, Verdict, validate
-from .record import (Recorder, compare, load_progress, new_run_dir, stamp,
-                     write_record, write_new)
+from .record import (Recorder, compare, load_progress, make_run_id,
+                     new_run_dir, stamp, write_record, write_new)
 
 RULES = {k: True for k in (
-    "lock_guard", "flash_gate", "image_schedule", "identify_after",
+    "lock_guard", "lock_each_case", "pause_own_lock", "lost_record",
+    "take_first", "self_pause", "release_end", "keep_lock_one_step",
+    "own_pid", "pause_hooks", "resume_identify",
+    "flash_gate", "image_schedule", "identify_after",
     "no_verdict", "known_fail", "stop_pause", "throttle", "redact_scope",
     "gate", "timeout", "skip", "restore", "identify_error", "after",
     "wallclock_guard", "requires", "requires_whole", "resume_code",
@@ -160,7 +215,8 @@ def fmt_any(v, ctx):
 
 class Engine:
     def __init__(self, suite, settings, runs_root=None, run_id=None,
-                 groups=None, checks=None, resume=None, out=print):
+                 groups=None, checks=None, resume=None, out=print,
+                 keep_lock=None):
         self.suite = suite
         self.settings = settings
         self.out = out
@@ -173,6 +229,14 @@ class Engine:
         self.sel_checks = list(checks or [])
         self.resume = resume
         self.bench_holder = settings.get("bench_holder")
+        # The lock's source (sections 6, 7): the log when the settings name
+        # it, else the Holder line. took: this run holds a take in the log.
+        self.lock_log = settings.get("bench_lock_log")
+        self.keep_lock = keep_lock
+        self.took = False
+        self.lock_lost = None
+        self.lock_release = None
+        self.bench_work = []
         self.kf = {k.id: k.ref for k in suite.known_fails}
         self._wc_lock = threading.Lock()
         self.active_wallclock = {}
@@ -180,6 +244,8 @@ class Engine:
         # this run flashed it, and boards whose auto-reset check failed.
         self.board_image = {}
         self.board_read = {}
+        self.board_read_ts = {}
+        self.hook_ts = {}
         self.board_touched = set()
         self.restore_note = {}
         self.hook_out = {"on_start": {}, "on_end": {}}
@@ -292,9 +358,15 @@ class Engine:
 
     # ---- lock and throttle ----------------------------------------------
     def lock_ours(self):
-        """(ok, holder text). Ours = the suite's role holds the lock."""
+        """(ok, holder text). Ours = the suite's role holds the lock; under
+        the log, its role and this run's id, not paused (section 6)."""
         if not RULES["lock_guard"]:
             return True, "rule off"
+        if self.lock_log:
+            st, why = self._log_state()
+            if st is None:
+                return False, "the bench log does not replay: %s" % why
+            return self.runner_holds(st), self._log_text(st)
         if not self.bench_holder:
             return False, "settings.bench_holder is not set"
         try:
@@ -303,22 +375,358 @@ class Engine:
             return False, "bench-holder unreadable: %s" % e
         return lockmod.held_by(h, self.suite.role), h
 
+    def _log_state(self):
+        """(state, None), or (None, why) when the log does not replay."""
+        try:
+            return BL.read_state(self.lock_log), None
+        except BL.Refused as e:
+            return None, str(e)
+
+    @staticmethod
+    def _log_text(st):
+        out = BL.holder_text(st)
+        for who, p in sorted(st["paused"].items()):
+            out += "; run %s of %s paused since %s" % (p["run"], who, p["ts"])
+        return out
+
+    def _other_holder(self):
+        """The holder's text when another role holds the bench lock, else
+        None. Raises if the lock cannot be read."""
+        if self.lock_log:
+            st = BL.read_state(self.lock_log)
+            h = st["holder"]
+            if h is not None and h["who"] != self.suite.role:
+                return BL.holder_text(st)
+            return None
+        h = lockmod.holder(self.bench_holder)
+        if not lockmod.is_free(h) and not lockmod.held_by(h, self.suite.role):
+            return h
+        return None
+
+    def _pause_path(self):
+        return os.path.join(self.run_dir, "PAUSE")
+
+    def _poll(self):
+        time.sleep(float(self.settings.get("pause_poll_s", 10)))
+
+    def case_gate(self):
+        """Before a bench case or group (section 6; the lock-gap fix in both
+        sources). None to go on, after any pause it waited through; else the
+        LOCK LOST line, the run having lost the lock (lost())."""
+        if self.lock_lost:
+            return self.lock_lost
+        if self.lock_log:
+            st, why = self._log_state()
+            if st is None:
+                return self.lost("the bench log does not replay: %s" % why,
+                                 append=False)
+            if RULES["lock_guard"] and not self.runner_holds(st):
+                return self.lost(self._log_text(st))
+            if RULES["stop_pause"] and os.path.exists(self._pause_path()):
+                if RULES["self_pause"]:
+                    return self.pause_log()
+                self.wait_pause()
+            return None
+        if RULES["stop_pause"] and os.path.exists(self._pause_path()):
+            # a pause under way (manual before the cutover, section 7): the
+            # Holder may already be another role's, which is not a loss
+            self.pause_holder()
+        ok, h = self.lock_ours()
+        if not ok:
+            return self.lost("not held by %s: %s" % (self.suite.role, h))
+        return None
+
+    def pause_holder(self):
+        """Before the cutover (section 7): wait until the PAUSE file is gone
+        (or STOP asks to end) and the Holder is this role's again."""
+        self.rec.event("pause", note="PAUSE file present; waiting until it is "
+                       "removed and the Holder is %s" % self.suite.role)
+        while True:
+            if not os.path.exists(self._pause_path()) or \
+                    self.stop_text() is not None:
+                if not RULES["pause_own_lock"]:
+                    break
+                ok, _h = self.lock_ours()
+                if ok:
+                    break
+            self._poll()
+        self.rec.event("resume", note="PAUSE removed and the lock is ours")
+
+    def pause_log(self):
+        """Section 6: free the bench with free_paused and this run's board
+        reads, wait (opening nothing) until the PAUSE file is gone or STOP
+        asks to end, then take the lock back under this runner's PID and run
+        id, waiting while another role holds it. None once the lock is ours
+        again; the LOCK LOST line if the run cannot get it back."""
+        boards = self.pause_reads()
+        try:
+            _st, line = BL.free_paused(self.lock_log, self.suite.role,
+                                       self.run_id, boards,
+                                       note="PAUSE file in the run folder")
+        except BL.Refused as e:
+            return self.lost("free_paused refused: %s" % e)
+        self.rec.event("free-paused", line=line, boards=boards)
+        while os.path.exists(self._pause_path()) and self.stop_text() is None:
+            self._poll()
+        if not RULES["pause_own_lock"]:
+            self.rec.event("resume", note="PAUSE removed")
+            return None
+        waiting = None
+        while True:
+            try:
+                _st, line = BL.take(self.lock_log, self.suite.role, os.getpid(),
+                                    run=self.run_id, note="resume")
+                self.rec.event("resume", line=line)
+                return self.resume_check()
+            except BL.Refused as e:
+                st, why = self._log_state()
+                if st is None:
+                    return self.lost("the bench log does not replay: %s" % why,
+                                     append=False)
+                mine = st["paused"].get(self.suite.role)
+                if not mine or mine["run"] != self.run_id:
+                    return self.lost("run %s is no longer paused: %s"
+                                     % (self.run_id, self._log_text(st)))
+                if waiting != str(e):
+                    waiting = str(e)
+                    self.rec.event("resume-waiting", reason=waiting)
+            self._poll()
+
+    def lost(self, state, append=True):
+        """The run lost the lock (section 6): every remaining case NOT-RUN,
+        no end restore, no end-hook board actions, no release. Appends
+        `lost` to the log unless the log does not replay. Returns the LOCK
+        LOST line."""
+        if self.lock_lost:
+            return self.lock_lost
+        self.lock_lost = "LOCK LOST: %s" % state
+        self.bench_stopped = self.lock_lost
+        self.rec.event("lock-lost", state=state)
+        if self.lock_log and append and self.took and RULES["lost_record"]:
+            try:
+                _st, line = BL.lost(self.lock_log, self.suite.role,
+                                    self.run_id, note=state[:300])
+                self.rec.event("lost-appended", line=line)
+            except BL.Refused as e:
+                self.rec.event("lost-refused", error=str(e))
+        return self.lock_lost
+
+    def runner_holds(self, st):
+        """Section 6: held by this suite's role, this run's id and this
+        runner's PID, not paused. A hand take --run <id> under a session's
+        PID is not the runner's lock."""
+        if not BL.held_by_run(st, self.suite.role,
+                              getattr(self, "run_id", None)):
+            return False
+        return not RULES["own_pid"] or st["holder"]["pid"] == os.getpid()
+
+    def pause_reads(self):
+        """free_paused's board reads (section 6): what the end release does,
+        minus the restore. Each board this run has an image for is
+        identified, and the end hooks run for every board the lane uses;
+        each read is that identify or hook read, or "not read: <why>"."""
+        work = self.bench_work
+        first = self._first_images(work)
+        logdir = os.path.join(self.run_dir, "_bench", "pause")
+        os.makedirs(logdir, exist_ok=True)
+        for board, name in first.items():
+            name = self.board_image.get(board) or name
+            self.identify(self.suite.images[name], logdir)
+        hooks = {}
+        if (self.suite.on_end is not None and RULES["board_hooks"]
+                and RULES["pause_hooks"]):
+            boards = list(first) + sorted(self.board_touched - set(first))
+            for board in boards:
+                name = self.board_image.get(board)
+                hooks[board] = self._call_hook(
+                    "on_end", board, self.suite.images.get(name) if name
+                    else None, logdir, record=False)
+            self.rec.event("pause-end-hooks", hooks=hooks)
+        return self.board_reads(hooks=hooks, why_unread="paused between "
+                                "cases")
+
+    def _expected_images(self):
+        """{board: image} the remaining cases use: the current group's
+        image on each of its boards, then the first image a later group
+        needs on any other board."""
+        names = [g.name for g, _items in self.bench_work]
+        cur = getattr(self, "current_group", None)
+        start = names.index(cur) if cur in names else 0
+        return self._first_images(self.bench_work[start:])
+
+    def resume_check(self):
+        """Section 6, after the resume take and before the next case: the
+        start hooks again, then every board the remaining cases use is
+        identified against the image expected on it, as at run start, and
+        flashed and identified again if it differs. A board it cannot put
+        right is a lost lock. None to go on, else the LOCK LOST line."""
+        t0 = time.monotonic()
+        started = stamp()
+        logdir = os.path.join(self.run_dir, "_bench", "resume")
+        os.makedirs(logdir, exist_ok=True)
+        expected = self._expected_images()
+        statuses = []
+        if (self.suite.on_start is not None and RULES["board_hooks"]):
+            hooks = {}
+            for board, name in expected.items():
+                out = self._call_hook("on_start", board,
+                                      self.suite.images[name], logdir,
+                                      record=False)
+                hooks[board] = out
+                statuses.append("%s: %s%s" % (board, "" if out["ok"] else
+                                              "START HOOK FAILED: ",
+                                              out["detail"]))
+                if not out["ok"] and RULES["start_hook_stops"]:
+                    self.bench_stopped = "on_start for %s failed at the " \
+                        "resume: %s" % (board, out["detail"])
+                    break
+            self.rec.event("resume-start-hooks", hooks=hooks)
+        lost = None
+        if RULES["resume_identify"] and not self.bench_stopped:
+            for board, name in expected.items():
+                ok, why = self.ensure_image(name, logdir)
+                statuses.append(("" if ok else "RESUME FAILED: ") + why)
+                if not ok:
+                    lost = self.lost("at the resume, %s could not be put back "
+                                     "on %s: %s" % (board, name, why))
+                    break
+        reads = {b: self.board_read.get(b) for b in expected}
+        status = "; ".join(statuses)
+        self.rec.event("resume-identify", status=status, identities=reads)
+        self.groups_out.append(dict(
+            name="resume", lane="bench", host="local", needs_lock=True,
+            image=list(expected.values()), started=started, ended=stamp(),
+            wall_s=round(time.monotonic() - t0, 1), status=status, checks=0))
+        return lost
+
+    def board_reads(self, hooks=None, why_unread=None):
+        """{board: TEXT} for each of bench_lock.BOARDS (section 8): what
+        this run read off the wire and when, or "not read: <why>". hooks:
+        {board: end-hook result with its time "t"}. An end hook that failed
+        leaves its board not read; an identify that failed or recognised
+        nothing counts as no read."""
+        out = {}
+        rid = self.run_id
+        hooks = hooks or {}
+        for name in BL.BOARDS:
+            hook = hooks.get(name)
+            if hook is not None and not hook.get("ok"):
+                out[name] = "not read: the end hook failed (%s); run %s" % (
+                    hook.get("detail"), rid)
+                continue
+            parts, unread = [], None
+            if name in self.board_read:
+                r, ts = self.board_read[name], self.board_read_ts.get(name)
+                if r == IDENTIFY_ERROR:
+                    unread = "identify failed at %s" % ts
+                elif r is None:
+                    unread = "identify at %s recognised no image it knows" % ts
+                else:
+                    parts.append("%s, identified off the wire %s" % (r, ts))
+            if hook is not None:
+                parts.append("end hook %s: %s" % (
+                    hook.get("t"), hook.get("detail") or "ok"))
+            if parts:
+                out[name] = "; ".join(parts) + "; run %s" % rid
+            else:
+                out[name] = "not read: %s; run %s" % (
+                    unread or why_unread or "run has no image or end hook for "
+                    "the %s" % name, rid)
+        return out
+
+    def release_end(self):
+        """At the run's end, after the restore and the end hooks (section
+        6): release with the board reads, or with --keep-lock PID release
+        and take for this role under PID in one step. Nothing after a LOCK
+        LOST."""
+        if not (self.lock_log and self.took and RULES["release_end"]) or \
+                self.lock_lost:
+            return
+        boards = self.board_reads(hooks={
+            b: dict(o, t=self.hook_ts.get(("on_end", b)))
+            for b, o in self.hook_out["on_end"].items()})
+        note = "end of run %s" % self.run_id
+        try:
+            if self.keep_lock is None:
+                _st, line = BL.release(self.lock_log, self.suite.role, boards,
+                                       note=note)
+                lines = [line]
+            elif RULES["keep_lock_one_step"]:
+                _st, lines = BL.release_and_take(
+                    self.lock_log, self.suite.role, boards, self.keep_lock,
+                    note=note)
+            else:
+                lines = [BL.release(self.lock_log, self.suite.role, boards,
+                                    note=note)[1],
+                         BL.take(self.lock_log, self.suite.role,
+                                 self.keep_lock, note=note)[1]]
+            self.lock_release = dict(ok=True, lines=lines, boards=boards)
+            self.rec.event("lock-release", lines=lines)
+        except BL.Refused as e:
+            self.lock_release = dict(ok=False, error=str(e), boards=boards)
+            self.rec.event("lock-release-refused", error=str(e))
+
+    def lock_lines(self):
+        """The lines that open the record, index.txt and board_state.txt
+        about the lock."""
+        out = []
+        if self.lock_lost and RULES["lost_record"]:
+            out.append(self.lock_lost)
+        r = self.lock_release
+        if r is not None and not r["ok"]:
+            out.append("LOCK NOT RELEASED: %s" % r["error"])
+        return out
+
+    def _take_at_start(self):
+        """Section 8 under the log: the run id first, then the take under
+        this runner's PID and that id, then the folder. A refused take
+        means no folder and no run."""
+        if self.keep_lock is not None:
+            kp = self.keep_lock
+            if not isinstance(kp, int) or isinstance(kp, bool) or kp <= 0 \
+                    or kp == os.getpid():
+                raise lockmod.LockError(
+                    "refusing to start: --keep-lock %r is not the long-lived "
+                    "process of the session taking over (never the runner's "
+                    "own)" % (kp,))
+            try:
+                BL.check_pid_alive(BL.read_state(self.lock_log), kp)
+            except BL.Refused as e:
+                raise lockmod.LockError("refusing to start: --keep-lock: %s"
+                                        % e)
+        rid = make_run_id(self.suite.name, self.run_id_req)
+        if os.path.exists(os.path.join(self.runs_root, rid)):
+            raise FileExistsError(os.path.join(self.runs_root, rid))
+        if not RULES["take_first"]:
+            self.run_id, self.run_dir = new_run_dir(self.runs_root,
+                                                    self.suite.name, rid)
+        try:
+            BL.take(self.lock_log, self.suite.role, os.getpid(), run=rid,
+                    note="run of suite %s" % self.suite.name)
+        except BL.Refused as e:
+            raise lockmod.LockError(
+                "refusing to start: the bench log refused the take for run "
+                "%s: %s" % (rid, e))
+        self.took = True
+        if RULES["take_first"]:
+            self.run_id, self.run_dir = new_run_dir(self.runs_root,
+                                                    self.suite.name, rid)
+
     def wallclock_running(self, host):
         with self._wc_lock:
             if self.active_wallclock.get(host, 0) > 0:
                 return True, "this run has a wall-clock check on %s" % host
-        if host == "local" and self.bench_holder:
+        if host == "local" and (self.bench_holder or self.lock_log):
             # Another role's lock means its wall-clock test may be running.
             # Under this suite's own role, nothing of the other project can
             # run, so this run's own wall-clock checks (above) and the
             # process scan (below) decide.
             try:
-                h = lockmod.holder(self.bench_holder)
-                if not lockmod.is_free(h) and not lockmod.held_by(
-                        h, self.suite.role):
+                h = self._other_holder()
+                if h:
                     return True, "bench lock held by another role: %s" % h[:80]
             except Exception as e:
-                return True, "bench-holder unreadable (%s): assume running" % e
+                return True, "bench lock unreadable (%s): assume running" % e
         hit = self.other_wallclock_process(host)
         if hit:
             return True, hit
@@ -351,14 +759,13 @@ class Engine:
             if self.active_wallclock.get(host, 0) > 0:
                 return True, ("this run already has a wall-clock check on %s"
                               % host)
-        if host == "local" and self.bench_holder:
+        if host == "local" and (self.bench_holder or self.lock_log):
             try:
-                h = lockmod.holder(self.bench_holder)
-                if not lockmod.is_free(h) and not lockmod.held_by(
-                        h, self.suite.role):
+                h = self._other_holder()
+                if h:
                     return True, "bench lock held by another role: %s" % h[:80]
             except Exception as e:
-                return True, "bench-holder unreadable (%s)" % e
+                return True, "bench lock unreadable (%s)" % e
         hit = self.other_wallclock_process(host)
         if hit:
             return True, hit
@@ -377,6 +784,7 @@ class Engine:
             self.rec.event("identify-error", board=image.board,
                            image=image.name, error=repr(e))
         self.board_read[image.board] = got
+        self.board_read_ts[image.board] = stamp()
         self.rec.event("identify", board=image.board, expected_image=image.name,
                        expected=image.expect, read=got)
         return got
@@ -664,6 +1072,9 @@ class Engine:
                 while not self.group_done[d].wait(2.0):
                     if self.stop_text() is not None:
                         break
+            if self.lock_lost:
+                status = skip_all(self.lock_lost)
+                return
             if self.stop_text() is not None and waits:
                 status = skip_all("STOP while waiting for %s" % ", ".join(waits))
                 return
@@ -676,15 +1087,16 @@ class Engine:
                         ", ".join(waits), len(bad), ", ".join(bad[:3])))
                     return
             if g.needs_lock:
+                self.current_group = g.name
                 if self.bench_stopped:
                     status = skip_all("bench stopped (%s)" % self.bench_stopped)
                     return
-                ok, h = self.lock_ours()
-                if not ok:
-                    self.bench_stopped = "lock not held by %s: %s" % (
-                        self.suite.role, h)
-                    self.rec.event("lock-lost", group=g.name, holder=h)
-                    status = skip_all(self.bench_stopped)
+                lost = self.case_gate()
+                if lost:
+                    status = skip_all(lost)
+                    return
+                if self.bench_stopped:          # a resume's start hook
+                    status = skip_all("bench stopped (%s)" % self.bench_stopped)
                     return
             for name in g.image_list:
                 os.makedirs(logdir, exist_ok=True)
@@ -701,12 +1113,32 @@ class Engine:
                 if gate_reason:
                     self._not_run(g, c, gate_reason)
                     continue
+                if self.lock_lost:
+                    status = self.lock_lost
+                    self._not_run(g, c, self.lock_lost)
+                    continue
                 st = self.stop_text()
                 if st is not None:
                     status = "stopped (%s)" % st
                     self._not_run(g, c, "STOP: %s" % st)
                     continue
-                self.wait_pause()
+                if g.needs_lock and RULES["lock_each_case"]:
+                    lost = self.case_gate()
+                    if lost:
+                        status = lost
+                        self._not_run(g, c, lost)
+                        continue
+                    if self.bench_stopped:      # a resume's start hook
+                        status = "bench stopped (%s)" % self.bench_stopped
+                        self._not_run(g, c, status)
+                        continue
+                    st = self.stop_text()       # a pause STOP ended
+                    if st is not None:
+                        status = "stopped (%s)" % st
+                        self._not_run(g, c, "STOP: %s" % st)
+                        continue
+                else:
+                    self.wait_pause()
                 passed = self.run_check(g, c, carried)
                 if c.gate and not passed and RULES["gate"]:
                     gate_reason = "gate %s/%s did not PASS" % (g.name, c.id)
@@ -754,6 +1186,16 @@ class Engine:
             if si and self.board_image.get(board) != si:
                 todo.append((board, si))
         if not todo:
+            return
+        if not self.lock_lost:
+            ok, h = self.lock_ours()
+            if not ok:
+                self.lost("at the end restore, not held by %s: %s"
+                          % (self.suite.role, h))
+        if self.lock_lost:
+            self.rec.event("restore-skipped", reason=self.lock_lost)
+            for board, _si in todo:
+                self.restore_note[board] = "restore skipped: %s" % self.lock_lost
             return
         if (self.bench_stopped and "flash" in self.bench_stopped
                 and not RULES["restore_after_stop"]):
@@ -808,12 +1250,15 @@ class Engine:
 
     def _record_hook(self, which, board, image, out):
         self.hook_out[which][board] = out
+        self.hook_ts[(which, board)] = stamp()
         self.rec.event(which.replace("_", "-"), board=board,
                        image=image.name if image else None, result=out)
         return out
 
-    def _call_hook(self, which, board, image, logdir):
-        """One board hook; anything but {"ok": bool, ...} is a failure."""
+    def _call_hook(self, which, board, image, logdir, record=True):
+        """One board hook; anything but {"ok": bool, ...} is a failure.
+        record=False (a pause's or resume's hooks): returned, and kept out
+        of the run's start and end hook results."""
         try:
             out = getattr(self.suite, which)(board, image, self.base_ctx(),
                                              logdir)
@@ -824,6 +1269,9 @@ class Engine:
             out = dict(ok=False, detail="%s raised %r" % (which, e))
         out = dict(out)
         out["detail"] = str(out.get("detail", ""))
+        if not record:
+            out["t"] = stamp()
+            return out
         return self._record_hook(which, board, image, out)
 
     def start_hooks(self, work):
@@ -871,7 +1319,12 @@ class Engine:
         started = stamp()
         logdir = os.path.join(self.run_dir, "_bench", "on_end")
         os.makedirs(logdir, exist_ok=True)
-        ok, h = self.lock_ours()
+        if not self.lock_lost:
+            ok, h = self.lock_ours()
+            if not ok:
+                self.lost("at the end hooks, not held by %s: %s"
+                          % (self.suite.role, h))
+        ok, h = (False, self.lock_lost) if self.lock_lost else (True, None)
         statuses = []
         for board in boards:
             name = self.board_image.get(board)
@@ -959,10 +1412,18 @@ class Engine:
                         if board not in self.hook_out["on_end"]:
                             self._record_hook("on_end", board, None, dict(
                                 ok=False, detail="end hooks crashed: %r" % (e,)))
+                try:
+                    self.release_end()
+                except Exception as e:
+                    self.lock_release = dict(ok=False, error="the release "
+                                             "crashed: %r" % (e,), boards=None)
+                    self.rec.event("lock-release-crash", error=repr(e),
+                                   tb=traceback.format_exc()[-2000:])
 
     def _lane_body(self, lane, work, carried):
         try:
             if lane == "bench":
+                self.bench_work = work
                 self.start_hooks(work)
             if lane == "bench" and RULES["start_identify"]:
                 self.start_identify(work)
@@ -1173,7 +1634,18 @@ class Engine:
             ok, why = self.resume_matches()
             if not ok:
                 raise SuiteError("refusing to resume: %s" % why)
-        if self.needs_bench():
+        if self.keep_lock is not None and not (self.lock_log
+                                               and self.needs_bench()):
+            raise lockmod.LockError(
+                "refusing to start: --keep-lock hands over the bench log's "
+                "lock, and %s" % ("this run includes no bench group"
+                                  if self.lock_log else
+                                  "the settings name no bench_lock_log: "
+                                  "before the cutover the Holder line is "
+                                  "edited by hand"))
+        if self.needs_bench() and self.lock_log:
+            self._take_at_start()
+        elif self.needs_bench():
             ok, h = self.lock_ours()
             if not ok:
                 raise lockmod.LockError(
@@ -1181,8 +1653,9 @@ class Engine:
                     "bench lock is not held by %s (Holder: %s). Take it and "
                     "message the other tester first (bench-holder rule 2)."
                     % (self.suite.role, h))
-        self.run_id, self.run_dir = new_run_dir(self.runs_root, self.suite.name,
-                                                self.run_id_req)
+        if not self.took:
+            self.run_id, self.run_dir = new_run_dir(
+                self.runs_root, self.suite.name, self.run_id_req)
         self.rec = Recorder(self.run_dir, self.run_id)
         carried = self._carried()
         sel = self.selected()
@@ -1236,10 +1709,17 @@ class Engine:
         unconfirmed = self.release_lines() if RULES["release_line"] else []
         header["release_not_confirmed"] = unconfirmed
         header["board_hooks"] = self.hook_out
-        for ln in unconfirmed + off:
+        locklines = self.lock_lines()
+        header["lock_lines"] = locklines
+        header["lock"] = dict(
+            source="log" if self.lock_log else "holder",
+            path=self.lock_log or self.bench_holder, took=self.took,
+            keep_lock=self.keep_lock, lost=self.lock_lost,
+            release=self.lock_release)
+        for ln in locklines + unconfirmed + off:
             self.out(ln)
         if self.needs_bench():
-            lines = unconfirmed + off + [
+            lines = locklines + unconfirmed + off + [
                 "Boards at the end of run %s (for the release message and the "
                 "board sections, bench-holder rule 4):" % self.run_id]
             for board in sorted(set(self.board_read) | set(self.board_image)
@@ -1257,6 +1737,10 @@ class Engine:
                             which, "ok" if o.get("ok") else "FAILED",
                             o.get("detail")))
             lines.append("  bench stopped: %s" % self.bench_stopped)
+            r = self.lock_release
+            if r is not None and r["ok"]:
+                lines.append("Lock released by the runner (bench log):")
+                lines.extend("  %s" % ln for ln in r["lines"])
             write_new(os.path.join(self.run_dir, "board_state.txt"),
                       "\n".join(lines) + "\n")
         self.rec.event("end")

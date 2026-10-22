@@ -30,11 +30,19 @@ def stamp(t=None):
     return (t or _now()).isoformat(timespec="seconds")
 
 
-def new_run_dir(runs_root, suite_name, run_id=None):
-    """Create the run folder. Refuses (FileExistsError) if it exists."""
+def make_run_id(suite_name, run_id=None):
+    """The run id: the one asked for, else <suite>_<time>_<4 hex>. Formed
+    before the folder, so a runner can take the bench log's lock with it
+    first (bench-lock-spec section 8)."""
     if run_id is None:
         run_id = "%s_%s_%s" % (suite_name, _now().strftime("%Y%m%dT%H%M%S"),
                                secrets.token_hex(2))
+    return run_id
+
+
+def new_run_dir(runs_root, suite_name, run_id=None):
+    """Create the run folder. Refuses (FileExistsError) if it exists."""
+    run_id = make_run_id(suite_name, run_id)
     path = os.path.join(runs_root, run_id)
     os.makedirs(runs_root, exist_ok=True)
     os.mkdir(path)          # FileExistsError if it is already there
@@ -127,7 +135,8 @@ def _fig_text(figs):
 def index_text(record):
     """Every check with its verdict; known FAILs and changes called out."""
     res = record["results"]
-    lines = list(record.get("release_not_confirmed") or []) + list(
+    lines = list(record.get("lock_lines") or []) + list(
+        record.get("release_not_confirmed") or []) + list(
         record.get("not_on_standing") or []) + [
              "Run %s -- suite %s" % (record["run_id"], record["suite"]),
              "started %s, ended %s" % (record["started"], record["ended"]),

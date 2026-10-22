@@ -3,6 +3,7 @@
     python -m vtrux_bench.run plan    --suite <file.py>:<NAME> --settings <json>
     python -m vtrux_bench.run run     --suite ... --settings ... [--group G]...
                                       [--check GLOB]... [--resume RUN_DIR]
+                                      [--keep-lock PID]
     python -m vtrux_bench.run compare <ref run dir> <new run dir>
 
 --suite names a Python file (or an importable module) and an attribute: a
@@ -64,6 +65,11 @@ def main(argv=None):
         if c == "run":
             p.add_argument("--resume")
             p.add_argument("--run-id")
+            p.add_argument("--keep-lock", type=int, metavar="PID",
+                           help="at the end, release the bench log's lock "
+                           "and take it again for the suite's role, with no "
+                           "run, under PID (the long-lived process of the "
+                           "session doing the follow-on work), in one step")
     p = sub.add_parser("compare")
     p.add_argument("ref")
     p.add_argument("new")
@@ -85,7 +91,8 @@ def main(argv=None):
         suite = load_suite(a.suite, settings)
         eng = Engine(suite, settings, groups=a.group, checks=a.check,
                      resume=getattr(a, "resume", None),
-                     run_id=getattr(a, "run_id", None))
+                     run_id=getattr(a, "run_id", None),
+                     keep_lock=getattr(a, "keep_lock", None))
         if a.cmd == "plan":
             for ln in eng.plan_lines():
                 print(ln)

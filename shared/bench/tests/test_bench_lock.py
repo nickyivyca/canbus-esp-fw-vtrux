@@ -191,13 +191,13 @@ def test_boards():
     for bad in ({"x2": BD["x2"]}, dict(BD, truck="?"), dict(BD, wican=" "),
                 "x2 756d6714", None):
         refused(B.write, p, ev("release", CI, boards=bad))
-        refused(B.write, p, ev("pause", CI, run="r1", boards=bad))
+        refused(B.write, p, ev("free_paused", CI, run="r1", boards=bad))
     st = w(p, "release", CI, boards=dict(BD, wican="not read: off the AP"))
     check(not st["boards"]["known"], "a release with an unread board")
     check(any(l.startswith(B.UNKNOWN) for l in B.status_lines(st)),
           "status says %s" % B.UNKNOWN)
     w(p, "take", CI, pid=ME, run="r2")
-    st = w(p, "pause", CI, run="r2", boards=dict(BD, x2="Not read: COM3 busy"))
+    st = w(p, "free_paused", CI, run="r2", boards=dict(BD, x2="Not read: COM3 busy"))
     check(not st["boards"]["known"], "a pause with an unread board")
     w(p, "take", CI, pid=ME, run="r2")
     st = w(p, "release", CI, boards=BD)
@@ -216,12 +216,12 @@ def test_pause_resume():
     """SPEC 3 pause, take after pause; 8 a role with a paused run."""
     p = fresh("pause_resume")
     w(p, "take", CI, pid=ME)
-    refused(B.write, p, ev("pause", CI, run=None, boards=BD))
+    refused(B.write, p, ev("free_paused", CI, run=None, boards=BD))
     w(p, "release", CI, boards=BD)
     w(p, "take", CI, pid=ME, run="r1")
-    refused(B.write, p, ev("pause", CI, run="r9", boards=BD))
-    refused(B.write, p, ev("pause", GI, run="r1", boards=BD))
-    st = w(p, "pause", CI, run="r1", boards=BD)
+    refused(B.write, p, ev("free_paused", CI, run="r9", boards=BD))
+    refused(B.write, p, ev("free_paused", GI, run="r1", boards=BD))
+    st = w(p, "free_paused", CI, run="r1", boards=BD)
     check(st["holder"] is None and st["paused"][CI]["run"] == "r1",
           "pause frees the lock and keeps the run")
     check(not B.held_by_run(st, CI, "r1"), "a paused run does not hold it")
@@ -241,6 +241,41 @@ def test_run_once():
     w(p, "release", CI, boards=BD)
     refused(B.write, p, ev("take", CI, pid=ME, run="r1"))
     refused(B.write, p, ev("take", GI, pid=ME, run="r1"))
+
+
+def test_runner_api():
+    """SPEC 3 free_paused, release; 6 the runner's pause, its end release and
+    --keep-lock's release and take in one step, nothing in between."""
+    p = fresh("runner_api")
+    B.take(p, CI, ME, run="r1")
+    refused(B.free_paused, p, CI, "r9", BD)
+    st, line = B.free_paused(p, CI, "r1", BD, note="PAUSE file")
+    e = json.loads(line)
+    check(e["event"] == "free_paused" and e["run"] == "r1"
+          and e["boards"] == BD and st["paused"][CI]["run"] == "r1",
+          "free_paused: %s" % line)
+    B.take(p, CI, ME, run="r1")
+    st, line = B.release(p, CI, BD, note="end of run r1")
+    check(json.loads(line)["event"] == "release" and st["holder"] is None
+          and st["boards"]["known"], "release: %s" % line)
+    B.take(p, CI, ME, run="r2")
+    n = len(lines(p))
+    gone = dead_pid()
+    refused(B.release_and_take, p, CI, BD, gone)
+    check(len(lines(p)) == n and B.held_by_run(B.read_state(p), CI, "r2"),
+          "a refused take appends neither line: the release is not left alone")
+    with Live() as keeper:
+        st, two = B.release_and_take(p, CI, BD, keeper, note="keep")
+        got = [json.loads(l) for l in lines(p)[n:]]
+        check(two == lines(p)[n:] and len(got) == 2, "two lines appended")
+        check(got[0]["event"] == "release" and got[0]["boards"] == BD
+              and got[1]["event"] == "take" and got[1]["who"] == CI
+              and got[1]["pid"] == keeper and "run" not in got[1]
+              and got[0]["ts"] == got[1]["ts"],
+              "release, then a hand take under the keeper's pid, no run: %s"
+              % got)
+        check(st["holder"]["pid"] == keeper and st["holder"]["run"] is None
+              and st["boards"]["known"], "held for the session, boards known")
 
 
 def test_held_by_run():
@@ -273,7 +308,7 @@ def test_queue():
     st = w(p, "request", GIM, note="bring-up, 2 h")
     check([q["who"] for q in st["queue"]] == [GI, GIM], "queue order")
     refused(B.write, p, ev("withdraw", CI))
-    w(p, "pause", CI, run="r1", boards=BD)
+    w(p, "free_paused", CI, run="r1", boards=BD)
     st = w(p, "take", GIM, pid=ME)
     check(st["holder"]["who"] == GIM, "take does not consult the queue")
     check([q["who"] for q in st["queue"]] == [GI],
@@ -357,7 +392,7 @@ def test_lost():
     refused(B.lost, p, CI, "r1")
     B.take(p, CI, ME, "r1")
     refused(B.lost, p, CI, "r1")
-    w(p, "pause", CI, run="r1", boards=BD)
+    w(p, "free_paused", CI, run="r1", boards=BD)
     refused(B.lost, p, GI, "r1")
     st = B.lost(p, CI, "r1")[0]
     check(not st["boards"]["known"] and "r1" in st["boards"]["why"],
@@ -548,12 +583,25 @@ def test_cli():
         holder.stop()
     check(rc == 2 and CI in e and len(lines(p)) == 2,
           "second take: %d %s" % (rc, e))
-    rc, _o, e = cli("--log", p, "pause", "--who", CI, "--board", "x2=ok")
-    check(rc == 2 and "wican" in e, "pause without the wican read: %s" % e)
-    rc, out, _e = cli("--log", p, "pause", "--who", CI, "--board",
-                      "wican=_man 02:00", "--board", "x2=756d6714 02:02")
+    for gone in ("free_paused", "pause"):
+        err = io.StringIO()
+        try:
+            with redirect_stderr(err), redirect_stdout(io.StringIO()):
+                rc = B.main(["--log", p, gone, "--who", CI, "--board",
+                             "wican=a", "--board", "x2=b"])
+        except SystemExit as e:
+            rc = e.code
+        check(rc == 2 and "invalid choice" in err.getvalue()
+              and len(lines(p)) == 2,
+              "no %s command (the runner's, section 5): %r %s"
+              % (gone, rc, err.getvalue()[-80:]))
+    rc, _o, e = cli("--log", p, "release", "--who", CI, "--board", "x2=ok")
+    check(rc == 2 and "wican" in e and len(lines(p)) == 2,
+          "release without the wican read: %s" % e)
+    B.free_paused(p, CI, "r1", {"wican": "_man 02:00", "x2": "756d6714 02:02"})
+    rc, out, _e = cli("--log", p, "status")
     check(rc == 0 and "paused: run r1" in out and "x2: 756d6714 02:02" in out,
-          "pause: %s" % out)
+          "status after the runner's free_paused: %s" % out)
     rc, out, _e = cli("--log", p, "request", "--who", GI, "--note", "B6, 1 h")
     check(rc == 0 and "B6, 1 h" in out, "request: %s" % out)
     rc, out, _e = cli("--log", p, "status", "--json")
@@ -609,7 +657,7 @@ def test_repair():
     gone = dead_pid()
     good = [init_line(),
             jl("take", CI, pid=gone, run="r1"),
-            jl("pause", CI, run="r1", boards=BD),
+            jl("free_paused", CI, run="r1", boards=BD),
             jl("take", GI, pid=gone, run="r2")]
     bad_take = jl("take", GIM, pid=gone, run="r3")         # held: illegal
     after_bad = jl("release", GI, boards=BD)               # legal on its own
@@ -882,7 +930,7 @@ def test_repair_cli():
 
 
 TESTS = [test_take_release, test_boards, test_pause_resume, test_run_once,
-         test_held_by_run, test_queue, test_clear, test_take_alive,
+         test_runner_api, test_held_by_run, test_queue, test_clear, test_take_alive,
          test_lock_timeout, test_pid_wrong_env,
          test_lost, test_replay_fails_closed, test_init, test_detect_env,
          test_env_refusal, test_env_mismatch, test_file_lock, test_lines,
@@ -922,22 +970,22 @@ MUTANTS = {
         ("anyone releases",
          _edit("        if h is None or h[\"who\"] != who:", "        if h is None:")),
         ("refusal hides the holder",
-         _edit("            raise Refused(\"%s (%s)\" % (e, holder_text(state)))",
+         _edit("            raise Refused(\"%s (%s)\" % (e, before))",
                "            raise")),
         ("refusal still appends",
-         _edit("            apply(state, ev)\n        except Refused as e:\n"
+         _edit("                apply(state, ev)\n        except Refused as e:\n"
                "            raise Refused(\"%s (%s)\"",
-               "            try:\n                apply(state, ev)\n"
-               "            except Refused:\n                pass\n"
+               "                try:\n                    apply(state, ev)\n"
+               "                except Refused:\n                    pass\n"
                "        except Refused as e:\n"
                "            raise Refused(\"%s (%s)\"")),
     ],
     "test_boards": [
         ("release without boards",
-         _edit("    \"release\": (\"boards\",),\n    \"pause\": (\"run\", \"boards\"),",
-               "    \"release\": (),\n    \"pause\": (\"run\", \"boards\"),")),
+         _edit("    \"release\": (\"boards\",),\n    \"free_paused\": (\"run\", \"boards\"),",
+               "    \"release\": (),\n    \"free_paused\": (\"run\", \"boards\"),")),
         ("pause without boards",
-         _edit("    \"pause\": (\"run\", \"boards\"),", "    \"pause\": (\"run\",),")),
+         _edit("    \"free_paused\": (\"run\", \"boards\"),", "    \"free_paused\": (\"run\",),")),
         ("any set of boards",
          _edit("not isinstance(b, dict) or sorted(b) != sorted(BOARDS)",
                "not isinstance(b, dict)")),
@@ -959,7 +1007,7 @@ MUTANTS = {
     ],
     "test_pause_resume": [
         ("pause without a run",
-         _edit("    \"pause\": (\"run\", \"boards\"),", "    \"pause\": (\"boards\",),")),
+         _edit("    \"free_paused\": (\"run\", \"boards\"),", "    \"free_paused\": (\"boards\",),")),
         ("pause names any run",
          _edit("            if run != h[\"run\"]:", "            if False:")),
         ("paused run not kept",
@@ -968,6 +1016,23 @@ MUTANTS = {
         ("paused role takes a new run",
          _edit("        if mine is not None and run != mine[\"run\"]:",
                "        if False:")),
+    ],
+    "test_runner_api": [
+        ("release and take in two steps",
+         _edit("    return write_all(path, [\n        {\"event\": \"release\", \"who\": who, \"boards\": boards, \"note\": note},\n        {\"event\": \"take\", \"who\": who, \"pid\": pid, \"note\": note}])",
+               "    a = write(path, {\"event\": \"release\", \"who\": who, \"boards\": boards, \"note\": note})\n    b = write(path, {\"event\": \"take\", \"who\": who, \"pid\": pid, \"note\": note})\n    return b[0], [a[1], b[1]]")),
+        ("later events not checked",
+         _edit("            for ev in evs:\n                if ev[\"event\"] == \"clear\":",
+               "            for ev in evs[:1]:\n                if ev[\"event\"] == \"clear\":")),
+        ("only the first line written",
+         _edit("        f.write(\"\".join(ln + \"\\n\" for ln in lines).encode(\"ascii\"))",
+               "        f.write((lines[0] + \"\\n\").encode(\"ascii\"))")),
+        ("the keeper's take names a run",
+         _edit("        {\"event\": \"take\", \"who\": who, \"pid\": pid, \"note\": note}])",
+               "        {\"event\": \"take\", \"who\": who, \"pid\": pid, \"run\": \"keep\", \"note\": note}])")),
+        ("free_paused writes a release",
+         _edit("    return write(path, {\"event\": \"free_paused\", \"who\": who, \"run\": run,",
+               "    return write(path, {\"event\": \"release\", \"who\": who, \"run\": run,")),
     ],
     "test_run_once": [
         ("run ids reusable",
@@ -1010,7 +1075,7 @@ MUTANTS = {
         ("clear a live holder",
          _edit("    if bench_impl(state).pid_alive(h[\"pid\"]):", "    if False:")),
         ("no clear check",
-         _edit("            if ev[\"event\"] == \"clear\":\n                check_holder_gone(state)\n",
+         _edit("                if ev[\"event\"] == \"clear\":\n                    check_holder_gone(state)\n",
                "")),
         ("pid_alive always False",
          _edit("        k = ctypes.WinDLL(\"kernel32\", use_last_error=True)\n",
@@ -1029,7 +1094,7 @@ MUTANTS = {
     ],
     "test_take_alive": [
         ("take of a dead pid",
-         _edit("            if ev[\"event\"] == \"take\":\n                check_pid_alive(state, ev.get(\"pid\"))\n",
+         _edit("                if ev[\"event\"] == \"take\":\n                    check_pid_alive(state, ev.get(\"pid\"))\n",
                "")),
         ("take pid checked in this environment",
          _edit("        if not bench_impl(state).pid_alive(pid):",
@@ -1079,8 +1144,8 @@ MUTANTS = {
          _edit("    if run is not None and (not isinstance(run, str) or not RUN_RE.match(run)):",
                "    if run is not None and not isinstance(run, str):")),
         ("take without pid",
-         _edit("    \"take\": (\"pid\",),\n    \"release\": (\"boards\",),\n    \"pause\": (\"run\"",
-               "    \"take\": (),\n    \"release\": (\"boards\",),\n    \"pause\": (\"run\"")),
+         _edit("    \"take\": (\"pid\",),\n    \"release\": (\"boards\",),\n    \"free_paused\": (\"run\"",
+               "    \"take\": (),\n    \"release\": (\"boards\",),\n    \"free_paused\": (\"run\"")),
         ("unknown fields allowed",
          _edit("    if extra:\n", "    if False:\n")),
         ("init anywhere",
@@ -1151,17 +1216,20 @@ MUTANTS = {
     "test_cli": [
         ("own PID accepted",
          _edit("        if a.cmd == \"take\" and a.pid == os.getpid():", "        if False:")),
-        ("pause names no run",
-         _edit("            ev[\"run\"] = st[\"holder\"][\"run\"] if st[\"holder\"] else None",
-               "            ev[\"run\"] = None")),
+        ("a free_paused command",
+         _edit("    for name in (\"init\", \"take\", \"release\", \"request\", \"withdraw\", \"clear\"):",
+               "    for name in (\"init\", \"take\", \"release\", \"request\", \"withdraw\", \"clear\",\n                 \"free_paused\"):")),
+        ("the pause command kept",
+         _edit("    for name in (\"init\", \"take\", \"release\", \"request\", \"withdraw\", \"clear\"):",
+               "    for name in (\"init\", \"take\", \"release\", \"request\", \"withdraw\", \"clear\",\n                 \"pause\"):")),
         ("refusal exits 0",
          _edit("        return 2\n", "        return 0\n")),
         ("no appended line printed",
          _edit("        st, line = write(path, ev)\n        print(line)\n",
                "        st, line = write(path, ev)\n")),
         ("a lost command",
-         _edit("    for name in (\"init\", \"take\", \"release\", \"pause\", \"request\", \"withdraw\",\n                 \"clear\"):",
-               "    for name in (\"init\", \"take\", \"release\", \"pause\", \"request\", \"withdraw\",\n                 \"clear\", \"lost\"):")),
+         _edit("    for name in (\"init\", \"take\", \"release\", \"request\", \"withdraw\", \"clear\"):",
+               "    for name in (\"init\", \"take\", \"release\", \"request\", \"withdraw\", \"clear\",\n                 \"lost\"):")),
     ],
     "test_repair": [
         ("repair of a log that replays",

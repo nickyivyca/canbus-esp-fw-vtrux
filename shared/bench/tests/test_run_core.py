@@ -132,7 +132,8 @@ def verdicts(rec):
 
 
 def suite(groups, **kw):
-    return Suite(name=kw.pop("name", "t"), role=ROLE, groups=groups, **kw)
+    return Suite(name=kw.pop("name", "t"), role=kw.pop("role", ROLE),
+                 groups=groups, **kw)
 
 
 # ---- tests --------------------------------------------------------------
@@ -229,11 +230,15 @@ def test_lock_guard():
              "**Since:** x\\n**For:** y\\n')" % env.holder)
     s = suite([Group("b1", [chk("steal", steal)], needs_lock=True),
                Group("b2", [chk("after", "pass")], needs_lock=True),
-               Group("logic", [chk("free", "pass")])])
+               Group("logic", [chk("free", "pass")], after=["b2"])])
     eng, rec = run(env, s)
     v = verdicts(rec)
     assert v["b1/steal"] == "PASS" and v["b2/after"] == "NOT-RUN", v
-    assert v["logic/free"] == "PASS", v
+    # a lost lock stops the run: the logic lane's remaining cases too
+    # (section 6, "every remaining case"; reviewer 2026-10-22)
+    nr = [r for r in rec["results"] if r["id"] == "logic/free"][0]
+    assert nr["verdict"] == "NOT-RUN" and nr["detail"].startswith(
+        "LOCK LOST"), nr
     # a logic-only run needs no lock at all
     env.set_holder("-- (free)")
     run(env, suite([Group("logic", [chk("free", "pass")])]))
@@ -410,6 +415,9 @@ class TwoBoards:
 
     def flasher(self, image, params, settings, logdir):
         self.flashes.append(image.name)
+        if getattr(self, "fail_flash", False):
+            return dict(ok=False, phase="write", detail="fake failure",
+                        recoverable=True)
         self.set(image.board, image.expect)
         return dict(ok=True, phase="done", detail="fake", recoverable=True)
 
@@ -1489,6 +1497,397 @@ def test_bare_shell():
         M.WINDOWS = saved
 
 
+# ---- the bench lock: both sources (bench-lock-spec sections 6, 7, 8) ----
+# Written from reverse-it firmware/bench-lock-spec.md (sha256 1f1d5551...,
+# user rulings of 2026-10-22). The log tests use a real bench_lock log in
+# the scratch folder (never firmware/bench-log.jsonl), the suite's role a
+# bench_lock role, and this test process as the runner (its PID is the
+# runner's).
+from vtrux_bench import bench_lock as BL          # noqa: E402
+
+CI = "tester (charge-interposer)"
+GI = "tester (gen-inhibit)"
+BENCH = os.path.dirname(HERE)
+BD = {"wican": "WC-1 read by hand", "x2": "X2-APP read by hand"}
+
+
+def log_env(name):
+    env = Env(name)
+    p = os.path.join(env.root, "bench-log.jsonl")
+    BL.init(p, GI)
+    return env, p
+
+
+def log_events(p):
+    with open(p, encoding="utf-8") as f:
+        return [json.loads(l) for l in f.read().splitlines()]
+
+
+def bl_code(p, body):
+    """A python -c check that acts on the log as another session would."""
+    code = ("import os, sys; sys.path.insert(0, %r); "
+            "from vtrux_bench import bench_lock as B; p = %r; %s"
+            % (BENCH, p, body))
+    return code.replace("{", "{{").replace("}", "}}")   # the runner formats argv
+
+
+def first_line(eng, name):
+    with open(os.path.join(eng.run_dir, name)) as f:
+        return f.readline().rstrip("\n")
+
+
+def _steal(mode, env, p):
+    """A check that takes the lock away between cases: in the Holder line,
+    or by a hand release of the run's lock and another role's take."""
+    if mode == "holder":
+        return chk("steal", "open(%r, 'w').write('## Lock\\n\\n**Holder:** "
+                   "tester (thief)\\n')" % env.holder)
+    return chk("steal", bl_code(p, "B.release(p, %r, %r); B.take(p, %r, %d)"
+                                % (CI, BD, GI, os.getpid())))
+
+
+def test_lock_each_case():
+    """Section 6 (and the lock-gap fix of section 7, in both sources): the
+    lock is checked before every bench case, not only at its group's
+    start; a case already running runs to its end."""
+    for mode in ("holder", "log"):
+        env, p = log_env("each_case_" + mode)
+        s = suite([Group("g", [_steal(mode, env, p), chk("next", "pass")],
+                         needs_lock=True)], role=CI)
+        env.set_holder(CI)
+        st = env.settings(bench_lock_log=p) if mode == "log" else \
+            env.settings()
+        eng, rec = run(env, s, settings=st)
+        v = verdicts(rec)
+        assert v["g/steal"] == "PASS", (mode, v)
+        nxt = [r for r in rec["results"] if r["id"] == "g/next"][0]
+        assert nxt["verdict"] == "NOT-RUN" and nxt["detail"].startswith(
+            "LOCK LOST"), (mode, nxt)
+        if mode == "log":
+            evs = log_events(p)
+            assert evs[-1]["event"] == "lost" and evs[-1]["who"] == CI and \
+                evs[-1]["run"] == eng.run_id, evs[-1]
+
+
+def test_lost_record():
+    """Section 6: a lost lock opens the record and index.txt with "LOCK
+    LOST: <state>"; the log gets `lost` (not when it does not replay);
+    every remaining case is NOT-RUN; the end restore, the end hooks' board
+    actions and the release are skipped."""
+    env, p = log_env("lost_holder")
+    env.set_holder(CI)
+    s = suite([Group("g", [_steal("holder", env, p), chk("n", "pass")],
+                     needs_lock=True)], role=CI)
+    eng, rec = run(env, s)
+    for name in ("index.txt", "board_state.txt"):
+        assert first_line(eng, name).startswith("LOCK LOST: not held by "
+                                                "%s" % CI), name
+    assert rec["lock_lines"][0].startswith("LOCK LOST: "), rec["lock_lines"]
+    # a log that does not replay: no lost line can be appended
+    env, p = log_env("lost_garbage")
+    s = suite([Group("g", [chk("spoil", "open(%r, 'a').write('garbage\\n')" % p),
+                           chk("n", "pass")], needs_lock=True)], role=CI)
+    eng, rec = run(env, s, settings=env.settings(bench_lock_log=p))
+    assert verdicts(rec)["g/n"] == "NOT-RUN", verdicts(rec)
+    idx = first_line(eng, "index.txt")
+    assert idx.startswith("LOCK LOST: the bench log does not replay"), idx
+    with open(p) as f:
+        assert f.read().endswith("garbage\n"), "appended to a broken log"
+    # with boards: lost after a flash -> no restore, no end hooks, no release
+    env, p = log_env("lost_boards")
+    tb = Hooked(env)
+    tb.set("x2", "X2-APP")
+    tb.set("wican", "WC-1")
+    s = tb.suite([Group("a", [_steal("log", env, p), chk("n", "pass")],
+                        needs_lock=True, image=["w2", "x2app"])], role=CI)
+    eng, rec = run(env, s, settings=env.settings(bench_lock_log=p))
+    assert tb.flashes == ["w2"], tb.flashes
+    assert not [c for c in tb.calls if c[0] == "on_end"], tb.calls
+    evs = log_events(p)
+    assert [e["event"] for e in evs[-3:]] == ["release", "take", "lost"], evs
+    assert not any(e["event"] == "release" and e["who"] == CI and
+                   e.get("note", "").startswith("end of run") for e in evs)
+    assert rec["lock"]["lost"].startswith("LOCK LOST"), rec["lock"]
+
+
+def _pause_scenario(name, mode="log", during=None, fail_flash=False,
+                    second=None):
+    """check 1 writes PAUSE. Another role takes the bench while the run is
+    paused (log: once free_paused is in the log; holder: by the Holder
+    line), `during` runs, the PAUSE file goes, and the other role hands the
+    bench back 1.2 s later. check 2 passes only if the lock is the run's
+    own when it starts."""
+    env, p = log_env(name)
+    env.set_holder(CI)
+    tb = Hooked(env)
+    tb.set("x2", "X2-APP")
+    tb.set("wican", "WC-1")
+    mk = "import os, sys; open(os.path.join(sys.argv[1], 'PAUSE'), 'w').close()"
+    if second is None and mode == "log":
+        second = Check("second", ["-c", (
+            "import json, sys; e = json.loads(open(sys.argv[1]).read()"
+            ".splitlines()[-1]); sys.exit(0 if (e['event'], e['who'], "
+            "e.get('run'), e['pid']) == ('take', %r, sys.argv[2], %d) else 1)"
+            % (CI, os.getpid())), p, "{run_id}"], python=True)
+    elif second is None:
+        second = Check("second", ["-c", (
+            "import sys; t = open(sys.argv[1]).read(); "
+            "sys.exit(0 if '**Holder:** %s' in t else 1)" % CI),
+            env.holder], python=True)
+    s = tb.suite([Group("a", [Check("first", ["-c", mk, "{run_dir}"],
+                                    python=True), second],
+                        needs_lock=True, image=["w1", "x2app"])], role=CI)
+    st = env.settings(bench_lock_log=p) if mode == "log" else env.settings()
+    eng = E.Engine(s, st, out=lambda *a: None)
+    seen = {}
+
+    def other():
+        for _ in range(150):
+            time.sleep(0.1)
+            if not getattr(eng, "run_dir", None):
+                continue
+            pause = os.path.join(eng.run_dir, "PAUSE")
+            if mode == "log":
+                ready = any(e["event"] == "free_paused" for e in log_events(p))
+            else:
+                ready = os.path.exists(pause)
+            if ready:
+                break
+        else:
+            seen["timeout"] = True
+        if mode == "log" and not seen.get("timeout"):
+            BL.take(p, GI, os.getpid(), note="between")
+        elif mode == "holder":
+            env.set_holder(GI)
+        if during:
+            during(tb, eng, seen)
+        if os.path.exists(os.path.join(eng.run_dir, "PAUSE")):
+            os.remove(os.path.join(eng.run_dir, "PAUSE"))
+        time.sleep(1.2)
+        seen["back"] = time.time()
+        if mode == "log" and not seen.get("timeout"):
+            BL.release(p, GI, BD)
+        elif mode == "holder":
+            env.set_holder(CI)
+    t = threading.Thread(target=other)
+    t.start()
+    rec = eng.run()
+    t.join()
+    return env, p, tb, eng, rec, seen
+
+
+def test_pause_own_lock():
+    """Sections 6 and 7: a pause ends only on the run's own lock. Before
+    the cutover, the run waits until the PAUSE file is gone and the Holder
+    is its role's again; under the log, the runner takes the lock back
+    under its PID and run id, waiting while another role holds it. Others'
+    takes and releases in between are not a loss."""
+    for mode in ("holder", "log"):
+        env, p, tb, eng, rec, seen = _pause_scenario("ownlock_" + mode, mode)
+        v = verdicts(rec)
+        assert v == {"a/first": "PASS", "a/second": "PASS"}, (mode, v)
+        assert not rec["lock"]["lost"], (mode, rec["lock"])
+        res = [e for e in rec["events"] if e["kind"] == "resume"]
+        assert res and res[0]["t"] >= R.stamp(
+            __import__("datetime").datetime.fromtimestamp(
+                int(seen["back"])).astimezone()), (mode, res, seen)
+
+
+def test_self_pause():
+    """Section 6 under the log: at the case boundary after a PAUSE file the
+    runner writes free_paused for its run with its board reads, and frees
+    the bench; the resume take is its own (PID and run id); the record
+    notes the resume."""
+    env, p, tb, eng, rec, seen = _pause_scenario("selfpause")
+    assert not seen.get("timeout"), "no free_paused within 15 s"
+    evs = log_events(p)
+    got = [(e["event"], e["who"]) for e in evs]
+    assert got == [("init", GI), ("take", CI), ("free_paused", CI),
+                   ("take", GI), ("release", GI), ("take", CI),
+                   ("release", CI)], got
+    fp, back = evs[2], evs[5]
+    assert fp["run"] == eng.run_id and back["run"] == eng.run_id and \
+        back["pid"] == os.getpid() == evs[1]["pid"], (fp, back)
+    assert fp["boards"]["x2"].startswith("X2-APP, identified off the wire"), fp
+    kinds = [e["kind"] for e in rec["events"]]
+    assert "free-paused" in kinds and "resume" in kinds, kinds
+
+
+def test_pause_hooks():
+    """Section 6: at a free_paused the runner does what it does at its end
+    release, minus the restore: the end hooks run (the WiCAN release
+    reboot), and each board's read is that hook or identify read."""
+    env, p, tb, eng, rec, seen = _pause_scenario("pausehooks")
+    fp = [e for e in log_events(p) if e["event"] == "free_paused"][0]
+    ends = [c for c in tb.calls if c[0] == "on_end"]
+    assert len(ends) == 4, ends          # two at the pause, two at the end
+    for b in ("wican", "x2"):
+        assert "end hook" in fp["boards"][b] and "fine" in fp["boards"][b], fp
+    assert not tb.flashes, "no restore at a pause: %s" % tb.flashes
+
+
+def test_resume_identify():
+    """Section 6: after the resume take, before the next case, the start
+    hooks run again and every board the remaining cases use is identified
+    against its expected image; one that differs is flashed and identified
+    again; one that cannot be flashed is a lost lock. The record notes the
+    identities read at the resume."""
+    def change(tb, eng, seen):
+        tb.set("x2", "OTHER")
+    env, p, tb, eng, rec, seen = _pause_scenario("resume_id", during=change)
+    assert verdicts(rec) == {"a/first": "PASS", "a/second": "PASS"}, \
+        verdicts(rec)
+    assert tb.flashes == ["x2app"], tb.flashes
+    starts = [c for c in tb.calls if c[0] == "on_start"]
+    assert len(starts) == 4, starts
+    ri = [e for e in rec["events"] if e["kind"] == "resume-identify"][0]
+    assert ri["identities"] == {"wican": "WC-1", "x2": "X2-APP"}, ri
+    assert "resume" in [g["name"] for g in rec["groups"]]
+
+    def change_nofl(tb, eng, seen):
+        tb.set("x2", "OTHER")
+        tb.fail_flash = True
+    env, p, tb, eng, rec, seen = _pause_scenario("resume_noflash",
+                                                 during=change_nofl)
+    sec = [r for r in rec["results"] if r["id"] == "a/second"][0]
+    assert sec["verdict"] == "NOT-RUN" and "at the resume" in sec["detail"], sec
+    assert first_line(eng, "index.txt").startswith("LOCK LOST: at the resume")
+    # the run's own take still holds the lock, and section 8 allows no
+    # `lost` for the holder's run: refused and recorded, nothing released
+    evs = log_events(p)
+    assert evs[-1]["event"] == "take" and evs[-1]["run"] == eng.run_id and \
+        evs[-1]["pid"] == os.getpid(), evs[-1]
+    assert "lost-refused" in [e["kind"] for e in rec["events"]]
+
+
+def test_own_pid():
+    """Section 6: the run goes on only while the lock is held by its role,
+    its run id and its PID; a hand take --run <id> under a session's PID
+    is a lost lock."""
+    env, p = log_env("own_pid")
+    hand = chk("hand", bl_code(p, (
+        "r = sys.argv[1]; B.free_paused(p, %r, r, %r); "
+        "B.take(p, %r, os.getpid(), run=r)" % (CI, BD, CI))))
+    hand.argv.append("{run_id}")
+    s = suite([Group("g", [hand, chk("n", "pass")], needs_lock=True)],
+              role=CI)
+    eng, rec = run(env, s, settings=env.settings(bench_lock_log=p))
+    n = [r for r in rec["results"] if r["id"] == "g/n"][0]
+    assert n["verdict"] == "NOT-RUN" and n["detail"].startswith("LOCK LOST"), n
+    evs = log_events(p)
+    assert evs[-1]["event"] == "take" and evs[-1]["pid"] != os.getpid(), \
+        "the runner released or wrote after the hand take: %s" % evs[-1]
+
+
+def test_take_first():
+    """Section 8: the runner takes the lock under its own PID and its run
+    id, formed first, before the run folder exists; a refused take leaves
+    no folder. A role that may not take is refused the same way."""
+    env, p = log_env("takefirst")
+    BL.take(p, GI, os.getpid())
+    s = suite([Group("g", [chk("x", "pass")], needs_lock=True)], role=CI)
+    for st_suite in (s, suite([Group("g", [chk("x", "pass")],
+                                     needs_lock=True)])):
+        try:
+            run(env, st_suite, settings=env.settings(bench_lock_log=p))
+        except LockError:
+            pass
+        else:
+            raise AssertionError("started without the log's take")
+        assert not os.path.exists(env.runs) or not os.listdir(env.runs), \
+            os.listdir(env.runs)
+    BL.release(p, GI, BD)
+    eng, rec = run(env, s, settings=env.settings(bench_lock_log=p))
+    tk = log_events(p)[-2]
+    assert tk["event"] == "take" and tk["who"] == CI and \
+        tk["pid"] == os.getpid() and tk["run"] == eng.run_id, tk
+
+
+def test_release_end():
+    """Section 6: at its run's end, after the restore and the end hooks,
+    the runner releases, each board's read the one it made or "not read:
+    <why>"."""
+    env, p = log_env("release_end")
+    tb = Hooked(env)
+    tb.set("x2", "X2-APP")
+    tb.set("wican", "WC-1")
+    eng, rec = run(env, tb.suite(role=CI),
+                   settings=env.settings(bench_lock_log=p))
+    rl = log_events(p)[-1]
+    assert rl["event"] == "release" and rl["who"] == CI, rl
+    x2 = rl["boards"]["x2"]
+    assert x2.startswith("X2-APP, identified off the wire") and \
+        "end hook" in x2 and eng.run_id in x2, x2
+    assert rl["boards"]["wican"].startswith("WC-1, identified"), rl
+    st = BL.read_state(p)
+    assert st["holder"] is None and st["boards"]["known"], st
+    bs = open(os.path.join(eng.run_dir, "board_state.txt")).read()
+    assert "Lock released by the runner" in bs, bs
+    # a suite with no image or hook for the WiCAN: "not read", so unknown
+    env, p = log_env("release_unread")
+    tb = TwoBoards(env)
+    tb.set("x2", "X2-APP")
+    s = suite([Group("a", [chk("x", "pass")], needs_lock=True,
+                     image="x2app")], role=CI,
+              images={"x2app": Image("x2app", "fake", expect="X2-APP",
+                                     board="x2")},
+              flashers={"fake": tb.flasher}, identify=tb.identify)
+    eng, rec = run(env, s, settings=env.settings(bench_lock_log=p))
+    rl = log_events(p)[-1]
+    assert rl["event"] == "release" and rl["boards"]["wican"].startswith(
+        "not read: run has no image or end hook for the wican"), rl
+    assert not BL.read_state(p)["boards"]["known"]
+
+
+def test_keep_lock():
+    """Section 6: with --keep-lock PID the runner releases and takes again
+    for its role, with no run, under PID, in one locked step. Refused at
+    start without a log, for the runner's own PID or a dead one."""
+    env, p = log_env("keeplock")
+    s = suite([Group("g", [chk("x", "pass")], needs_lock=True)], role=CI)
+    keeper = spawn_foreign("vtrux_keep_lock_%d" % os.getpid())
+    calls = []
+    real = BL.write_all
+
+    def spy(path, evs):
+        calls.append([e["event"] for e in evs])
+        return real(path, evs)
+    BL.write_all = spy
+    try:
+        eng, rec = run(env, s, settings=env.settings(bench_lock_log=p),
+                       keep_lock=keeper)
+    finally:
+        BL.write_all = real
+    try:
+        evs = log_events(p)
+        rl, tk = evs[-2], evs[-1]
+        assert rl["event"] == "release" and tk["event"] == "take" and \
+            tk["who"] == CI and tk["pid"] == keeper and "run" not in tk, evs
+        assert ["release", "take"] in calls, calls
+        st = BL.read_state(p)
+        assert st["holder"]["pid"] == keeper and st["holder"]["run"] is None
+        for kp, settings in ((keeper, env.settings()),
+                             (os.getpid(), env.settings(bench_lock_log=p)),
+                             (dead_child(), env.settings(bench_lock_log=p))):
+            before = os.listdir(env.runs)
+            try:
+                run(env, s, settings=settings, keep_lock=kp)
+            except LockError:
+                pass
+            else:
+                raise AssertionError("--keep-lock %r accepted" % kp)
+            assert os.listdir(env.runs) == before, "a folder was made"
+    finally:
+        kill_pid(keeper)
+
+
+def dead_child():
+    import subprocess
+    c = subprocess.Popen([PY, "-c", "pass"])
+    c.wait()
+    return c.pid
+
+
 TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwrite,
          test_known_fail, test_lock_guard, test_flash_gate,
          test_chip_mismatch, test_chip_required, test_image_schedule,
@@ -1505,7 +1904,10 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_resume, test_carry_finished, test_carry_check_end, test_compare,
          test_esptool_flasher,
          test_remote_command,
-         test_remote_stop]
+         test_remote_stop,
+         test_lock_each_case, test_lost_record, test_pause_own_lock,
+         test_self_pause, test_pause_hooks, test_resume_identify,
+         test_own_pid, test_take_first, test_release_end, test_keep_lock]
 
 
 # ---- mutants: each test's rule switched off -----------------------------
@@ -1601,6 +2003,16 @@ MUTANTS = {
         lambda p: "0" * 32),
     "test_remote_command": _patch(P, "THROTTLE_ENV", {}),
     "test_remote_stop": _patch(P, "RULES", {"remote_stop": False}),
+    "test_lock_each_case": _rule("lock_each_case"),
+    "test_lost_record": _rule("lost_record"),
+    "test_pause_own_lock": _rule("pause_own_lock"),
+    "test_self_pause": _rule("self_pause"),
+    "test_pause_hooks": _rule("pause_hooks"),
+    "test_resume_identify": _rule("resume_identify"),
+    "test_own_pid": _rule("own_pid"),
+    "test_take_first": _rule("take_first"),
+    "test_release_end": _rule("release_end"),
+    "test_keep_lock": _rule("keep_lock_one_step"),
 }
 
 

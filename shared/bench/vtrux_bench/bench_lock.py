@@ -3,21 +3,25 @@
 The specification is reverse-it firmware/bench-lock-spec.md (user,
 2026-10-21); section numbers below are its. NOT YET THE LOCK: until the
 cutover (section 7) the Holder line in bench-holder.md is the lock
-(vtrux_bench.run.lock), and the runner does not read this log yet.
+(vtrux_bench.run.lock). The runner uses this log only when its settings
+name it (bench_lock_log); without it, it reads the Holder line.
 
     python -m vtrux_bench.bench_lock [--log PATH] init --who W
     python -m vtrux_bench.bench_lock [--log PATH] status [--json]
     python -m vtrux_bench.bench_lock [--log PATH] take --who W --pid N [--run ID]
     python -m vtrux_bench.bench_lock [--log PATH] release --who W --board wican=TEXT --board x2=TEXT
-    python -m vtrux_bench.bench_lock [--log PATH] pause --who W --board wican=TEXT --board x2=TEXT
     python -m vtrux_bench.bench_lock [--log PATH] request --who W --note TEXT
     python -m vtrux_bench.bench_lock [--log PATH] withdraw --who W
     python -m vtrux_bench.bench_lock [--log PATH] clear --who W --reason TEXT
     python -m vtrux_bench.bench_lock [--log PATH] repair --who W --reason TEXT
 
-`lost` has no command: only a runner writes it, through lost() (section 3).
-A runner takes the lock for its run through take() with its own PID
-(section 8). --log defaults to $REVERSE_IT_DIR/firmware/bench-log.jsonl.
+`lost` and `free_paused` have no command: only a runner writes them,
+through lost() and free_paused() (sections 3, 5 and 6; the event was named
+`pause` until the user's ruling of 2026-10-22, renamed so it is not taken
+for the runner's PAUSE file). A runner takes the lock for its run through
+take() with its own PID (section 8), releases it at its run's end through
+release(), or hands it to a session through release_and_take() (section
+6, --keep-lock). --log defaults to $REVERSE_IT_DIR/firmware/bench-log.jsonl.
 Exit 0 done, 2 refused, with the reason on stderr.
 
 The bench host and environment (section 4). `init` writes the log's first
@@ -36,7 +40,8 @@ run and note. The other fields, per event (FIELDS):
     take      pid (required, running in the bench environment), run
               (optional)
     release   boards: {board: TEXT} for each of BOARDS, TEXT the image read
-    pause     off the wire and when, or "not read: <why>"; pause also run
+    free_paused  off the wire and when, or "not read: <why>"; free_paused
+              also run
     request   note (required): what for and how long
     clear     reason (required)
     lost      run (required)
@@ -48,7 +53,7 @@ the rules (sections 3 and 8), unknown fields included. A line that does not
 parse or breaks them makes every command refuse (fail closed). There is no
 second state file.
 
-The board state is known only after a release or pause whose every board
+The board state is known only after a release or free_paused whose every board
 was read off the wire (TEXT not "not read..."); it is unknown before any,
 after one with an unread board, and after a clear, a lost or a repair.
 
@@ -84,7 +89,7 @@ FIELDS = {
     "init": ("host", "env"),
     "take": ("pid",),
     "release": ("boards",),
-    "pause": ("boards",),
+    "free_paused": ("boards",),
     "request": (),
     "withdraw": (),
     "clear": ("reason",),
@@ -95,7 +100,7 @@ REQUIRED = {
     "init": ("host", "env"),
     "take": ("pid",),
     "release": ("boards",),
-    "pause": ("run", "boards"),
+    "free_paused": ("run", "boards"),
     "request": ("note",),
     "withdraw": (),
     "clear": ("reason",),
@@ -352,13 +357,13 @@ def apply(state, ev):
         state["holder"] = {"who": who, "run": run, "pid": ev["pid"],
                            "ts": ev["ts"]}
         state["queue"] = [q for q in state["queue"] if q["who"] != who]
-    elif kind in ("release", "pause"):
+    elif kind in ("release", "free_paused"):
         if h is None or h["who"] != who:
             raise Refused("%s by %s, who does not hold the lock" % (kind, who))
-        if kind == "pause":
+        if kind == "free_paused":
             if run != h["run"]:
-                raise Refused("pause names run %s, but the lock is held for "
-                              "run %s" % (run, h["run"]))
+                raise Refused("free_paused names run %s, but the lock is held "
+                              "for run %s" % (run, h["run"]))
             state["paused"][who] = {"run": run, "ts": ev["ts"]}
         state["holder"] = None
         b = dict(ev["boards"])
@@ -510,27 +515,40 @@ def check_pid_alive(state, pid):
 def write(path, ev):
     """Check ev against the log's state and append it, under the lock.
     Returns (state after, the line appended). A refusal names the holder."""
-    ev = dict(ev, ts=now())
-    ev = {k: v for k, v in ev.items() if v is not None}
-    if ev.get("event") in ("init", "repair"):
-        raise Refused("%s is never appended: init creates the log, repair "
-                      "replaces a damaged one" % ev["event"])
+    state, lines = write_all(path, [ev])
+    return state, lines[0]
+
+
+def write_all(path, evs):
+    """Check each event in turn against the state the ones before it leave,
+    and append them all in one locked step, or none: nothing can come in
+    between (release_and_take). Returns (state after, the lines appended).
+    A refusal names the holder as the log had it."""
+    ts = now()
+    evs = [{k: v for k, v in dict(ev, ts=ts).items() if v is not None}
+           for ev in evs]
+    for ev in evs:
+        if ev.get("event") in ("init", "repair"):
+            raise Refused("%s is never appended: init creates the log, repair "
+                          "replaces a damaged one" % ev["event"])
     with locked(path) as f:
         state = _read(f)
+        before = holder_text(state)
         try:
-            if ev["event"] == "clear":
-                check_holder_gone(state)
-            if ev["event"] == "take":
-                check_pid_alive(state, ev.get("pid"))
-            apply(state, ev)
+            for ev in evs:
+                if ev["event"] == "clear":
+                    check_holder_gone(state)
+                if ev["event"] == "take":
+                    check_pid_alive(state, ev.get("pid"))
+                apply(state, ev)
         except Refused as e:
-            raise Refused("%s (%s)" % (e, holder_text(state)))
-        line = line_of(ev)
+            raise Refused("%s (%s)" % (e, before))
+        lines = [line_of(ev) for ev in evs]
         f.seek(0, os.SEEK_END)
-        f.write((line + "\n").encode("ascii"))
+        f.write("".join(ln + "\n" for ln in lines).encode("ascii"))
         f.flush()
         os.fsync(f.fileno())
-    return state, line
+    return state, lines
 
 
 def init(path, who):
@@ -567,6 +585,29 @@ def take(path, who, pid, run=None, note=None):
 def lost(path, who, run, note=None):
     """The runner's record that its run lost the lock (section 6)."""
     return write(path, {"event": "lost", "who": who, "run": run, "note": note})
+
+
+def free_paused(path, who, run, boards, note=None):
+    """The runner frees the bench between cases, its run paused, with its
+    board reads (section 6). Nobody writes it by hand: it has no command."""
+    return write(path, {"event": "free_paused", "who": who, "run": run,
+                        "boards": boards, "note": note})
+
+
+def release(path, who, boards, note=None):
+    """A release with the board reads: the runner's at its run's end
+    (section 6), or the command line's."""
+    return write(path, {"event": "release", "who": who, "boards": boards,
+                        "note": note})
+
+
+def release_and_take(path, who, boards, pid, note=None):
+    """--keep-lock (section 6): the release, then a take for the same role
+    with no run under pid, in one locked step with nothing in between.
+    Returns (state after, [release line, take line])."""
+    return write_all(path, [
+        {"event": "release", "who": who, "boards": boards, "note": note},
+        {"event": "take", "who": who, "pid": pid, "note": note}])
 
 
 def scan(data):
@@ -830,8 +871,7 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("status")
     s.add_argument("--json", action="store_true")
-    for name in ("init", "take", "release", "pause", "request", "withdraw",
-                 "clear"):
+    for name in ("init", "take", "release", "request", "withdraw", "clear"):
         s = sub.add_parser(name)
         s.add_argument("--who", required=True)
         if name == "take":
@@ -840,7 +880,7 @@ def main(argv=None):
                            "(the Claude Code session's), never this command's")
             s.add_argument("--run")
             s.add_argument("--note")
-        elif name in ("release", "pause"):
+        elif name == "release":
             s.add_argument("--board", action="append", metavar="NAME=TEXT",
                            help="one each for %s: the image read off the "
                            "wire and when, or 'not read: <why>'"
@@ -885,11 +925,8 @@ def main(argv=None):
         if a.cmd == "take" and a.pid == os.getpid():
             raise Refused("--pid is this command's own PID, which exits at "
                           "once: give the long-lived holder's")
-        if a.cmd in ("release", "pause"):
+        if a.cmd == "release":
             ev["boards"] = parse_boards(a.board)
-        if a.cmd == "pause":
-            st = read_state(path)
-            ev["run"] = st["holder"]["run"] if st["holder"] else None
         st, line = write(path, ev)
         print(line)
         print("\n".join(status_lines(st)))

@@ -29,15 +29,15 @@ every group of checks, restore, record. The same command runs part of it.
 | `vtrux_bench/run/model.py` | The suite schema: `Suite`, `Group`, `Check`, `Image`, `KnownFail`, `Result`, `Figure`, `Tol`, the eight verdicts, and `validate`. Start here to write a suite. |
 | `vtrux_bench/run/engine.py` | Executes a suite. Lanes: "bench" (groups that need the bench, in order, then the restore) in parallel with one "logic:<host>" lane per host. Enforces the rules listed in its docstring. |
 | `vtrux_bench/run/flash.py` | The built-in `esptool` flasher: md5 against expectations, the auto-reset check (`chip-id`) before (no flash if it fails), verified write, the check again after; no retry; a failed check forbids any further flash in the run. Ported from the charge-interposer tester's `flash_custody*.sh`. |
-| `vtrux_bench/run/lock.py` | Reads the bench lock in reverse-it `firmware/bench-holder.md`. The runner never edits it (rule 2: a chained run holds the lock from start to finish; the tester takes it, messages, and releases it). |
+| `vtrux_bench/run/lock.py` | Reads the bench lock in reverse-it `firmware/bench-holder.md`, the lock before the cutover (settings with no `bench_lock_log`). The runner never edits it (rule 2: a chained run holds the lock from start to finish; the tester takes it, messages, and releases it). With `bench_lock_log` set the runner uses `bench_lock.py` instead (spec section 6). |
 | `vtrux_bench/run/procs.py` | Commands with timeouts that kill the whole tree; the remote (ssh) line with coreutils `timeout`; the build throttle (idle priority, one job) and the process-list scan for wall-clock tests. |
 | `vtrux_bench/run/record.py` | The run folder (never reused), `progress.jsonl`, `record.json` and `index.txt` (exclusive create), and `compare` with per-figure tolerances. |
 | `vtrux_bench/run/cli.py` | The command line. |
 | `vtrux_bench/decode.py` | Diag DBC schema identity (toolkit item 10, first part): `layout_hash`, `check_identity`, `check_history`. See "Diag DBC schema identity" below. |
-| `vtrux_bench/bench_lock.py` | The bench lock as an append-only event log (reverse-it `firmware/bench-log.jsonl`), to reverse-it `firmware/bench-lock-spec.md`: the replay that fails closed, the command line (`init`, `status`, `take`, `release`, `pause`, `request`, `withdraw`, `clear`, `repair`: a log that does not replay is replaced by its good lines up to the first bad one, then a `repair` event; the damaged log is kept aside) and the runner's API (`take`, `lost`, `held_by_run`). One bench host and environment, recorded by `init`; native Windows only. Not the lock until the cutover (spec section 7), and not yet read by the runner. |
-| `tests/test_bench_lock.py` | Its tests (28), each naming the spec sections it checks. `--can-fail` runs each under each of its mutants (124), source edits that must each make it fail. Native Windows only. |
+| `vtrux_bench/bench_lock.py` | The bench lock as an append-only event log (reverse-it `firmware/bench-log.jsonl`), to reverse-it `firmware/bench-lock-spec.md`: the replay that fails closed, the command line (`init`, `status`, `take`, `release`, `request`, `withdraw`, `clear`, `repair`: a log that does not replay is replaced by its good lines up to the first bad one, then a `repair` event; the damaged log is kept aside) and the runner's API (`take`, `free_paused`, `release`, `release_and_take`, `lost`, `held_by_run`; `free_paused` and `lost` have no command). One bench host and environment, recorded by `init`; native Windows only. Not the lock until the cutover (spec section 7); the runner uses it only when its settings name it (`bench_lock_log`). |
+| `tests/test_bench_lock.py` | Its tests (29), each naming the spec sections it checks. `--can-fail` runs each under each of its mutants (130), source edits that must each make it fail. Native Windows only. |
 | `tests/test_decode.py` | Its tests (6), with `data/golden_layout.dbc` and its hand-written canonical text `data/golden_layout.txt`. `--can-fail` runs each test under each of its mutants (28); every one must fail. |
-| `tests/test_run_core.py` | The runner's own tests (43), with a fake suite, a fake two-board bench, `fake_esptool.py` and `fake_ssh.py`. `--can-fail` runs each with its rule switched off; every one must then fail. |
+| `tests/test_run_core.py` | The runner's own tests (53, the bench-lock ones on a scratch `bench_lock` log), with a fake suite, a fake two-board bench, `fake_esptool.py` and `fake_ssh.py`. `--can-fail` runs each with its rule switched off; every one must then fail. |
 
 ### Boards and images
 
@@ -193,7 +193,12 @@ a change; a registry entry no selected check produced is listed (renamed?).
 ### Settings (one JSON per machine, not in git)
 
     runs_root        where run folders are created (SeaDrive, results stay there)
-    bench_holder     path of reverse-it firmware/bench-holder.md
+    bench_holder     path of reverse-it firmware/bench-holder.md (the lock
+                     before the cutover)
+    bench_lock_log   path of reverse-it firmware/bench-log.jsonl: when set,
+                     the runner takes, pauses, resumes and releases through
+                     bench_lock (spec section 6) instead of reading the
+                     Holder line; set at the cutover (section 7)
     hosts            {"local": {"python": [...], "env": {...}},
                       "<name>": {"ssh": "<alias>", "python": [...],
                                  "workroot": "/tmp/<project>-tester/runner",
@@ -213,7 +218,12 @@ and `ship_<host>_<name>.txt` (sha256 of every file shipped to a remote
 host). `record.json` carries each group's wall clock and whether it needed
 the bench, the code info from the suite, and a `code_hash` slot (null,
 pending a user ruling). Write `PAUSE` in the run folder to hold it between
-checks, `STOP` to end it (the board is still restored unless the file says
+checks: before the cutover it then waits until the file is gone and the
+Holder line is its role's again (the role edits the Holder by hand); with
+`bench_lock_log` it frees the bench itself (`free_paused` with its board
+reads) and takes it back once the file is gone (spec section 6). `run
+--keep-lock PID` (log only) ends the run by handing the lock to the session
+whose long-lived process is PID. `STOP` ends the run (the board is still restored unless the file says
 `norestore`; `now` also kills the check in progress -- on a remote host
 too: the remote line records `timeout`'s pid in the check's outdir, and
 the runner kills that process group once the local ssh is gone).
