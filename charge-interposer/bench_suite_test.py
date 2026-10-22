@@ -82,6 +82,15 @@ def test_script_judge():
         "a FAIL beside a VOID is a FAIL"
     assert _v(j(_run("", 3))) == [Verdict.FAIL], "rc 3, no lines: FAIL"
     assert _v(j(_run("", None))) == [Verdict.ERROR], "killed: ERROR"
+    noread = ("noread_ack_01: premise NOT met\n"
+              "  VOID noread_ack_01: VOID: no hole in the board's t= sequence\n"
+              "  VOID noread_ack_02: VOID: no hole in the board's t= sequence\n")
+    assert _v(j(_run(noread, 0))) == [Verdict.VOID], \
+        "rc 0 with every verdict VOID is VOID, not PASS (a25e noread-boots)"
+    assert _v(j(_run(noread, 3))) == [Verdict.VOID], \
+        "bench_usb_host's rc 3 for an all-VOID case is VOID"
+    assert _v(j(_run(noread + "  PASS noread_ack_03: boot window 12209 us\n",
+                     0))) == [Verdict.PASS], "a VOID beside a PASS stays PASS"
 
 
 def test_recorded_judge():
@@ -296,7 +305,10 @@ def test_suites():
                     assert any(w in c.skip for w in ("spec", "reviewer",
                                                      "plan", "ruling")), \
                         "skip %s/%s names no spec item or ruling" % (g.name, c.id)
-    assert len(seen) == 170, "checks across the suites: %d" % len(seen)
+    # 171: vport-listen-wrong-rate split out of vport-listen (2026-10-21)
+    # 177: st.bench-topology and the five cf.* can-fails (2026-10-22)
+    # 178: cf.bench-powerup-round, its --strict-port mutants (2026-10-22)
+    assert len(seen) == 178, "checks across the suites: %d" % len(seen)
     # build-check runs in a git checkout of HEAD, shipped as a bundle
     # (user ruling 2026-10-19), never in the shipped copy
     mb = [g for g in su["emulated"].groups if g.name == "m-build"][0]
@@ -492,9 +504,345 @@ def test_pycache_ignored():
     assert not missing, "bytecode git would report: %s" % missing[:4]
 
 
+# Runs a script up to its argument parsing and no further: parse_args is
+# replaced by one that parses, prints ARGV-OK and exits; a bad line exits 2
+# with argparse's error. Serial, CAN and USB opens raise, so no line of the
+# script can reach the bench even if it does work before parsing.
+_ARGV_PROBE = r"""
+import argparse, runpy, sys
+def _forbidden(*a, **k):
+    raise SystemExit("ARGV-PROBE: hardware opened before parse_args")
+for mod, names in (("serial", ("Serial", "serial_for_url")),
+                   ("can", ("Bus",)), ("can.interface", ("Bus",)),
+                   ("usb.core", ("find",))):
+    try:
+        m = __import__(mod, fromlist=["x"])
+    except Exception:
+        continue
+    for n in names:
+        setattr(m, n, _forbidden)
+_orig = argparse.ArgumentParser.parse_args
+_orig_known = argparse.ArgumentParser.parse_known_args
+def _done(r):
+    print("ARGV-OK")
+    sys.stdout.flush()
+    raise SystemExit(0)
+_inside = []
+def _pa(self, args=None, namespace=None):
+    _inside.append(1)
+    _done(_orig(self, args, namespace))
+def _pk(self, args=None, namespace=None):
+    if _inside:
+        return _orig_known(self, args, namespace)
+    _done(_orig_known(self, args, namespace))
+argparse.ArgumentParser.parse_args = _pa
+argparse.ArgumentParser.parse_known_args = _pk
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+"""
+# Scripts the probe cannot check, because they take no arguments through
+# argparse (it would run them whole): each is run with no arguments by its
+# check, which test_bench_argv also asserts, and every name here must be
+# one the walk met without argparse (no stale entries).
+NO_ARGPARSE = {"reset_check.py", "keepalive_probe.py"}
+
+
+def _artifacts():
+    root = os.environ.get("REVERSE_IT_DIR")
+    assert root, "REVERSE_IT_DIR is not set: the bench scripts live there"
+    art = os.path.join(root, "projects", "vtrux", "notes", "artifacts",
+                       "interposer-firmware")
+    assert os.path.isfile(os.path.join(art, "bench_flight_silence.py")), art
+    return art
+
+
+def _fill(a, s, outdir):
+    vals = dict(s, serial_port="COM99", pcan_channel="PCAN_USBBUS1",
+                outdir=outdir, wican_state="argv probe", reverse_it=".")
+    return re.sub(r"\{(\w+)\}", lambda m: str(vals.get(m.group(1), "X")), a)
+
+
+def _bench_argv_problems():
+    """[(check id, problem)] for every python check of the bench suite whose
+    argument line its own script's parser refuses, the number probed, and
+    the script names met without argparse."""
+    s = _settings()
+    s["interposer_artifacts"] = _artifacts()
+    outdir = os.path.join(TMP, "argv-out")
+    os.makedirs(outdir, exist_ok=True)
+    bad, n, plain = [], 0, set()
+    for g in B.bench(s).groups:
+        for c in g.checks:
+            if c.skip or not c.python or not c.argv:
+                continue
+            argv = [_fill(str(a), s, outdir) for a in c.argv]
+            script = argv[0]
+            name = os.path.basename(script)
+            if not os.path.isfile(script):
+                bad.append((c.id, "no script %s" % script))
+                continue
+            with open(script, encoding="utf-8", errors="replace") as f:
+                src = f.read()
+            if "parse_args" not in src and "parse_known_args" not in src:
+                plain.add(name)
+                if name not in NO_ARGPARSE:
+                    bad.append((c.id, "%s has no argparse and is not listed"
+                                % name))
+                elif len(argv) > 1:
+                    bad.append((c.id, "%s takes no arguments, given %s"
+                                % (name, argv[1:])))
+                continue
+            n += 1
+            err = _probe(argv)
+            if err:
+                bad.append((c.id, err))
+    return bad, n, plain
+
+
+def _probe(argv):
+    """None if argv[0]'s parser accepts argv[1:], else the error line."""
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONIOENCODING="utf-8")
+    r = subprocess.run([sys.executable, "-B", "-c", _ARGV_PROBE] + argv,
+                       capture_output=True, text=True, timeout=120, env=env,
+                       cwd=os.path.dirname(argv[0]))
+    if r.returncode == 0 and "ARGV-OK" in r.stdout:
+        return None
+    lines = (r.stderr + r.stdout).strip().splitlines() or ["rc %d" % r.returncode]
+    return lines[-1][:160]
+
+
+def _probe_controls():
+    """The probe must refuse the a25e flight-silence line, accept the fixed
+    one, and stop a script that opens a serial port before parsing."""
+    fs = os.path.join(_artifacts(), "bench_flight_silence.py")
+    bad = _probe([fs, "--port", "COM99", "--pcan", "PCAN_USBBUS1"])
+    assert bad and "unrecognized arguments" in bad, \
+        "the probe accepted the a25e line: %s" % bad
+    good = _probe([fs, "--port", "COM99", "--pcan", "--out", "x.txt"])
+    assert good is None, "the probe refused the fixed line: %s" % good
+    d = os.path.join(TMP, "argv-control")
+    os.makedirs(d, exist_ok=True)
+    early = os.path.join(d, "opens_first.py")
+    with open(early, "w") as f:
+        f.write("import argparse, serial\nserial.Serial('COM99')\n"
+                "argparse.ArgumentParser().parse_args()\n")
+    hw = _probe([early])
+    assert hw and "hardware opened before parse_args" in hw, \
+        "the probe let a serial open through: %s" % hw
+
+
+USB_BASELINE = {"noread-boots": "baseline-boots", "close-boots": "baseline-boots",
+                "bridge": "bridge"}
+
+
+def _opt(argv, name):
+    argv = [str(a) for a in argv]
+    return argv[argv.index(name) + 1] if name in argv else None
+
+
+def test_usb_baselines():
+    """Every bench_usb_host case that scores against a baseline names, by
+    --baseline-dir, the folder of an EARLIER check of its group that writes
+    that baseline: baseline-boots with the same --ack / --noack for the
+    boot cases, bridge --com3 absent for cycles (a25e: none did)."""
+    s, su = _all()
+    n = 0
+    for g in su["bench"].groups:
+        seen = {}
+        for c in g.checks:
+            argv = [str(a) for a in c.argv]
+            if not argv or not argv[0].endswith("bench_usb_host.py"):
+                continue
+            case = _opt(argv, "--case")
+            mode = "--ack" if "--ack" in argv else "--noack" \
+                if "--noack" in argv else _opt(argv, "--com3")
+            seen[c.id] = (case, mode)
+            needs = case in ("noread-boots", "close-boots") or \
+                (case == "bridge" and mode == "cycles")
+            bdir = _opt(argv, "--baseline-dir")
+            if not needs:
+                assert bdir is None, "%s needs no baseline dir" % c.id
+                continue
+            n += 1
+            assert bdir, "%s has no --baseline-dir" % c.id
+            m = re.match(r"^\{outdir\}/\.\./([\w.-]+)$", bdir)
+            assert m, "%s: --baseline-dir %s is not {outdir}/../<check>" \
+                % (c.id, bdir)
+            src = m.group(1)
+            assert src in seen, "%s reads %s, not an earlier check of %s" \
+                % (c.id, src, g.name)
+            want = ("baseline-boots", mode) if case != "bridge" \
+                else ("bridge", "absent")
+            assert seen[src] == want, "%s reads %s, which is %s, not %s" \
+                % (c.id, src, seen[src], want)
+    assert n == 4, "%d dependent usb-host cases found, 4 expected" % n
+
+
+# The stop each bench_usb_host case needs before its premise can be met, as
+# in the 2026-10-14 runs that met it (reverse-it interposer-firmware
+# runs/bench_usbhost_control_20261014T0528/CODE.txt: five 240 s stops never
+# filled the host side -> 480 s for the not-reading boots, 600 s for the
+# bridge cycles). Only these two cases stop reading.
+USB_STOPS = {("noread-boots", "--ack"): "480", ("noread-boots", "--noack"): "480",
+             ("bridge", "cycles"): "600"}
+
+
+def test_usb_stops():
+    """Each bench_usb_host case that stops reading passes the stop the
+    2026-10-14 control showed it needs (4cdb: both noread cases VOID at the
+    script's 240 s floor), and no other case passes one."""
+    s, su = _all()
+    found = set()
+    for g in su["bench"].groups:
+        for c in g.checks:
+            argv = [str(a) for a in c.argv]
+            if not argv or not argv[0].endswith("bench_usb_host.py"):
+                continue
+            case = _opt(argv, "--case")
+            mode = "--ack" if "--ack" in argv else "--noack" \
+                if "--noack" in argv else _opt(argv, "--com3")
+            want = USB_STOPS.get((case, mode))
+            got = _opt(argv, "--stop-s")
+            assert got == want, "%s: --stop-s %s, want %s" % (c.id, got, want)
+            if want:
+                found.add((case, mode))
+    assert found == set(USB_STOPS), "stop cases missing: %s" % sorted(
+        set(USB_STOPS) - found)
+
+
+def test_script_coverage():
+    """Every bench driver in reverse-it interposer-firmware with a
+    --self-test is in SELF_TESTS, every script whose --can-fail runs
+    script_can_fail is in CAN_FAILS, and the harness suite runs each (4cdb:
+    bench_topology's self-test and all five can-fails were run by hand
+    only)."""
+    art = _artifacts()
+    st, cf = set(), set()
+    for n in sorted(os.listdir(art)):
+        if not n.endswith(".py"):
+            continue
+        src = open(os.path.join(art, n), encoding="utf-8",
+                   errors="replace").read()
+        if n.startswith("bench_") and '"--self-test"' in src:
+            st.add(n[:-3])
+        if "script_can_fail.run(" in src and n != "script_can_fail.py":
+            cf.add(n[:-3])
+    assert st == set(B.SELF_TESTS), "self-tests: found %s, listed %s" % (
+        sorted(st ^ set(B.SELF_TESTS)), "SELF_TESTS")
+    assert cf == set(B.CAN_FAILS), "can-fails: found %s, listed %s" % (
+        sorted(cf ^ set(B.CAN_FAILS)), "CAN_FAILS")
+    s, su = _all()
+    runs = set()
+    for g in su["harness"].groups:
+        for c in g.checks:
+            argv = [str(a) for a in c.argv]
+            if c.skip or not argv or not argv[0].endswith(".py"):
+                continue
+            name = os.path.basename(argv[0])[:-3]
+            runs |= {(name, m) for m in ("--self-test", "--can-fail")
+                     if m in argv[1:]}
+    for n in st:
+        assert (n, "--self-test") in runs, "harness never runs %s --self-test" % n
+    for n in cf:
+        assert (n, "--can-fail") in runs, "harness never runs %s --can-fail" % n
+
+
+def test_reopen_skip():
+    """innomaker-rate-runs-reopen stays listed with its argument line, and is
+    a skip naming the 2026-10-14 harness defect, so it shows NOT-RUN with
+    that reference (reviewer, 2026-10-22; a25e and 4cdb crashed on it)."""
+    s, su = _all()
+    c = next(c for g in su["bench"].groups for c in g.checks
+             if c.id == "innomaker-rate-runs-reopen")
+    argv = [str(a) for a in c.argv]
+    assert argv[0].endswith("bench_innomaker_clock.py") and \
+        _opt(argv, "--between") == "reopen", "the reopen line is gone"
+    assert c.skip and "Step 4 no-hands sheet item 1" in c.skip and \
+        "Access denied" in c.skip, "not a skip naming the defect: %r" % c.skip
+
+
+def test_strict_port_off():
+    """No suite line passes bench_powerup_round's --strict-port, the ported
+    image's no-ACKer rule (u must be 0, port requirement (f)): the current
+    product is judged by the default, u <= 1 and t <= 1 independently (user
+    ruling 2026-10-22, relayed by the reviewer). bench_usb_host's no-ACKer
+    boots score through bench_powerup_round too, with its own options, so
+    it must have no such switch either."""
+    art = _artifacts()
+    src = open(os.path.join(art, "bench_powerup_round.py"),
+               encoding="utf-8").read()
+    assert 'add_argument("--strict-port"' in src, \
+        "bench_powerup_round has no --strict-port: this test pins nothing"
+    usb = open(os.path.join(art, "bench_usb_host.py"),
+               encoding="utf-8").read()
+    assert "strict" not in usb, "bench_usb_host can set the strict mode"
+    s, su = _all()
+    noack = []
+    for name, suite in su.items():
+        for g in suite.groups:
+            for c in g.checks:
+                argv = [str(a) for a in c.argv]
+                assert not any("strict-port" in a for a in argv), \
+                    "%s/%s passes --strict-port" % (name, c.id)
+                if argv and argv[0].endswith("bench_powerup_round.py") and \
+                        _opt(argv, "--mode") == "noack":
+                    noack.append(c.id)
+    assert noack == ["powerup-round-noack"], \
+        "the no-ACKer power-up check: %s" % noack
+
+
+def _add_arg(cid, arg):
+    def fn(s):
+        _check(s, cid).argv.append(arg)
+    return fn
+
+
+def _set_mode(cid, mode):
+    def fn(s):
+        c = _check(s, cid)
+        c.argv[c.argv.index("--mode") + 1] = mode
+    return fn
+
+
+def test_vport_split():
+    """vport-listen's two wrong-rate arms run as their own check, which is a
+    registered KNOWN FAIL (reviewer, 2026-10-21); the rest stay judged in
+    vport-listen; between them every listen arm runs exactly once."""
+    sys.path.insert(0, _artifacts())
+    import bench_vport as V
+    s, su = _all()
+    checks = {c.id: c for g in su["bench"].groups for c in g.checks}
+    arms = {}
+    for cid in ("vport-listen", "vport-listen-wrong-rate"):
+        c = checks[cid]
+        assert _opt(c.argv, "--steps") == "listen", cid
+        arms[cid] = V.listen_arm_keys(_opt(c.argv, "--listen-arms") or "all")
+    assert arms["vport-listen-wrong-rate"] == ["wrong-250k", "wrong-1m"]
+    assert not set(arms["vport-listen"]) & {"wrong-250k", "wrong-1m"}, \
+        "a known-fail arm left in the judged check"
+    allarms = arms["vport-listen"] + arms["vport-listen-wrong-rate"]
+    assert sorted(allarms) == sorted(V.LISTEN_ARMS), \
+        "listen arms lost or doubled: %s" % allarms
+    kf = {k.id for k in su["bench"].known_fails}
+    assert "b-vport/vport-listen-wrong-rate" in kf
+    assert "b-vport/vport-listen" not in kf
+
+
+def test_bench_argv():
+    _probe_controls()
+    bad, n, plain = _bench_argv_problems()
+    assert n >= 40, "only %d checks probed: the walk is wrong" % n
+    assert plain == NO_ARGPARSE, "scripts without argparse: met %s, listed %s" \
+        % (sorted(plain), sorted(NO_ARGPARSE))
+    assert not bad, "argument lines their scripts refuse: %s" % bad[:4]
+
+
 TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_corrupt_pin_judge, test_c12_judge, test_host_bridge_judge,
-         test_suites, test_mutant_wiring, test_identify, test_pycache_ignored]
+         test_suites, test_mutant_wiring, test_identify, test_pycache_ignored,
+         test_usb_baselines, test_usb_stops, test_reopen_skip,
+         test_script_coverage, test_strict_port_off,
+         test_vport_split, test_bench_argv]
 
 
 # ---- can-fail -----------------------------------------------------------
@@ -617,10 +965,154 @@ _ORIG = {n: getattr(B, n) for n in ("script_judge", "recorded_judge",
 _ORIG["bench_identify.PRODUCT_RE"] = B.bench_identify.PRODUCT_RE
 _ORIG["bench_identify.identify"] = B.bench_identify.identify
 _ORIG["self._PYCACHE_DROP"] = _PYCACHE_DROP
+_ORIG["self.NO_ARGPARSE"] = NO_ARGPARSE
+_ORIG["self._ARGV_PROBE"] = _ARGV_PROBE
+_ORIG["SELF_TESTS"] = B.SELF_TESTS
+_ORIG["CAN_FAILS"] = B.CAN_FAILS
+
+
+def _drop_harness_check(cid):
+    def fn(s):
+        for g in s.groups:
+            g.checks = [c for c in g.checks if c.id != cid]
+    return fn
+
+
+def _rc0_pass(run):
+    """The pre-a25e judge: exit code 0 is PASS whatever was printed."""
+    if run.rc == 0:
+        return Result(Verdict.PASS, detail="rc=0")
+    return _ORIG["script_judge"](run)
+
+
+def _check(s, cid):
+    return next(c for g in s.groups for c in g.checks if c.id == cid)
+
+
+def _drop_baseline_dir(cid):
+    def fn(s):
+        c = _check(s, cid)
+        i = c.argv.index("--baseline-dir")
+        del c.argv[i:i + 2]
+    return fn
+
+
+def _baseline_from(cid, src):
+    def fn(s):
+        c = _check(s, cid)
+        c.argv[c.argv.index("--baseline-dir") + 1] = "{outdir}/../" + src
+    return fn
+
+
+def _set_stop(cid, value):
+    """value None drops --stop-s; otherwise sets it (adding it if absent)."""
+    def fn(s):
+        c = _check(s, cid)
+        if "--stop-s" in c.argv:
+            i = c.argv.index("--stop-s")
+            del c.argv[i:i + 2]
+        if value is not None:
+            c.argv[1:1] = ["--stop-s", value]
+    return fn
+
+
+def _unskip(cid):
+    def fn(s):
+        _check(s, cid).skip = None
+    return fn
+
+
+def _skip_reason(cid, reason):
+    def fn(s):
+        _check(s, cid).skip = reason
+    return fn
+
+
+def _wrong_rate_back(s):
+    c = _check(s, "vport-listen")
+    c.argv[c.argv.index("--listen-arms") + 1] = "all"
+
+
+def _arm_lost(s):
+    c = _check(s, "vport-listen")
+    c.argv[c.argv.index("--listen-arms") + 1] = "no-ack,idle,flood-7F4,flood-649"
+
+
+def _known_fail_dropped(s):
+    s.known_fails = [k for k in s.known_fails
+                     if k.id != "b-vport/vport-listen-wrong-rate"]
+
+
+def _flight_silence_a25e(s):
+    """The a25e line: a value after the --pcan flag."""
+    for g in s.groups:
+        for c in g.checks:
+            if c.id == "flight-silence":
+                i = c.argv.index("--pcan")
+                c.argv.insert(i + 1, "{pcan_channel}")
 
 # test -> [(module attribute, replacement, what the mutant does)]
 MUTANTS = {
-    "test_script_judge": [("script_judge", _pass_all, "passes everything")],
+    "test_script_judge": [
+        ("script_judge", _pass_all, "passes everything"),
+        ("script_judge", _rc0_pass,
+         "rc 0 is PASS whatever it printed (a25e noread-boots)")],
+    "test_usb_baselines": [
+        ("bench", _wrap_suite("bench", _drop_baseline_dir("usb-host-close-ack")),
+         "close-ack without --baseline-dir (a25e)"),
+        ("bench", _wrap_suite("bench",
+                              _drop_baseline_dir("usb-host-bridge-cycles")),
+         "bridge-cycles without --baseline-dir (a25e)"),
+        ("bench", _wrap_suite("bench", _baseline_from(
+            "usb-host-noread-noack", "usb-host-baseline-ack")),
+         "noread-noack reads the ACKed baseline"),
+        ("bench", _wrap_suite("bench", _baseline_from(
+            "usb-host-noread-ack", "usb-host-close-ack")),
+         "noread-ack reads a later check's folder")],
+    "test_usb_stops": [
+        ("bench", _wrap_suite("bench", _set_stop("usb-host-noread-ack", None)),
+         "noread-ack at the script's 240 s floor (4cdb)"),
+        ("bench", _wrap_suite("bench",
+                              _set_stop("usb-host-noread-noack", "240")),
+         "noread-noack stops 240 s"),
+        ("bench", _wrap_suite("bench",
+                              _set_stop("usb-host-bridge-cycles", "480")),
+         "bridge-cycles stops 480 s"),
+        ("bench", _wrap_suite("bench",
+                              _set_stop("usb-host-close-ack", "480")),
+         "a stop on a case that never stops reading")],
+    "test_script_coverage": [
+        ("SELF_TESTS", [n for n in B.SELF_TESTS if n != "bench_topology"],
+         "bench_topology's self-test unlisted (4cdb)"),
+        ("CAN_FAILS", [n for n in B.CAN_FAILS if n != "bench_switch_loss"],
+         "bench_switch_loss's can-fail unlisted"),
+        ("CAN_FAILS", B.CAN_FAILS + ["bench_c12"],
+         "a listed can-fail the script does not have"),
+        ("harness", _wrap_suite("harness", _drop_harness_check(
+            "cf.bench-usb-host")), "listed, but the harness never runs it")],
+    "test_reopen_skip": [
+        ("bench", _wrap_suite("bench", _unskip("innomaker-rate-runs-reopen")),
+         "the reopen case runs again (a25e, 4cdb)"),
+        ("bench", _wrap_suite("bench", _skip_reason(
+            "innomaker-rate-runs-reopen", "reviewer: later")),
+         "a skip that does not name the 2026-10-14 defect")],
+    "test_strict_port_off": [
+        ("bench", _wrap_suite("bench", _add_arg("powerup-round-noack",
+                                                "--strict-port")),
+         "the no-ACKer power-up check under the ported image's rule"),
+        ("bench", _wrap_suite("bench", _add_arg("usb-host-baseline-noack",
+                                                "--strict-port")),
+         "a bench_usb_host line passes --strict-port"),
+        ("bench", _wrap_suite("bench", _set_mode("powerup-round-noack",
+                                                 "ack")),
+         "no no-ACKer power-up check left to pin")],
+    "test_vport_split": [
+        ("bench", _wrap_suite("bench", _wrong_rate_back),
+         "the wrong-rate arms back in vport-listen"),
+        ("bench", _wrap_suite("bench", _arm_lost),
+         "vport-listen loses its stall arm"),
+        ("bench", _wrap_suite("bench", _known_fail_dropped),
+         "the wrong-rate check not a known fail")],
     "test_recorded_judge": [("recorded_judge", _pass_all, "passes everything")],
     "test_scenario_judge": [
         ("scenario_judge", _pass_all, "passes everything"),
@@ -664,6 +1156,24 @@ MUTANTS = {
          "shared/bench without its .gitignore (the 20d3 resume refusal)"),
         ("self._PYCACHE_DROP", ("charge-interposer/.gitignore",),
          "charge-interposer without its .gitignore")],
+    "test_bench_argv": [
+        ("bench", _wrap_suite("bench", _flight_silence_a25e),
+         "flight-silence gives --pcan a value (the a25e line)"),
+        ("self.NO_ARGPARSE", {"reset_check.py", "keepalive_probe.py",
+                              "bench_topology.py"},
+         "a stale NO_ARGPARSE entry"),
+        ("self.NO_ARGPARSE", {"reset_check.py"},
+         "a script without argparse left unlisted"),
+        ("self._ARGV_PROBE", _ARGV_PROBE.replace(
+            "_done(_orig(self, args, namespace))", "_done(None)"),
+         "the probe never parses"),
+        ("self._ARGV_PROBE", _ARGV_PROBE.replace(
+            "        setattr(m, n, _forbidden)", "        pass"),
+         "the probe leaves serial, CAN and USB open"),
+        ("self._ARGV_PROBE", _ARGV_PROBE.replace(
+            "    if _inside:\n        return _orig_known(self, args, namespace)\n",
+            ""),
+         "parse_args's inner parse_known_args ends the probe (extras unchecked)")],
 }
 
 
