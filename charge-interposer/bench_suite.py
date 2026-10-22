@@ -177,6 +177,11 @@ EMULATED_KNOWN_FAILS = [
               "(reviewer 2026-10-16), the ported image must pass it"),
 ]
 BENCH_KNOWN_FAILS = [
+    KnownFail("b-vport/vport-listen-wrong-rate",
+              "spec 2.3 / spec 9 (reviewer 2026-10-21): in listen-only at a "
+              "wrong bit rate, error frames on the bus while a node "
+              "transmits, none with it closed (2026-10-16 discriminator; "
+              "a25e 77 and 55,359); the source is an open tracker item"),
     KnownFail("b-witness/switch-loss",
               "spec 2.3 / spec 12 (2026-10-15): each switch of the vehicle "
               "port loses 1-2 vehicle frames (44 over 41 switches at "
@@ -191,13 +196,19 @@ def _lines(run, pat):
 
 
 def script_judge(run):
-    """Exit code 0 is PASS. Otherwise VOID if the script printed a VOID
-    verdict (its premise was not met), else FAIL. FAIL / VOID lines go in
-    the detail."""
+    """Exit code 0 is PASS, unless the script printed VOID verdicts and no
+    PASS one: then nothing was tested, and it is VOID (a25e: noread-boots
+    printed three VOID boots and exited 0). Otherwise VOID if the script
+    printed a VOID verdict (its premise was not met), else FAIL. FAIL /
+    VOID lines go in the detail."""
     if run.rc is None:
         return Result(Verdict.ERROR, detail="no exit code (killed)")
     fails = _lines(run, r"^\s*(FAIL|VOID)\b")
     if run.rc == 0:
+        voids = [ln for ln in fails if ln.startswith("VOID")]
+        if voids and not _lines(run, r"^\s*PASS\b"):
+            return Result(Verdict.VOID, detail="rc=0 but every verdict "
+                          "VOID: %s" % "; ".join(voids[:3]))
         return Result(Verdict.PASS, detail="rc=0")
     if any(ln.startswith("VOID") for ln in fails) and \
             not any(ln.startswith("FAIL") for ln in fails):
@@ -584,25 +595,33 @@ def bench(settings):
         bpy("usb-host-baseline-ack", "bench_usb_host.py",
             ["--port", "{serial_port}", "--case", "baseline-boots", "--ack",
              "--wican-state", "{wican_state}", "--out", "{outdir}"]),
+        # The dependent cases read their baseline from the folder of the
+        # case that wrote it (a25e: each case has its own folder, and
+        # close-ack / bridge-cycles found none; test_usb_baselines).
         bpy("usb-host-noread-ack", "bench_usb_host.py",
             ["--port", "{serial_port}", "--case", "noread-boots", "--ack",
-             "--wican-state", "{wican_state}", "--out", "{outdir}"]),
+             "--wican-state", "{wican_state}", "--out", "{outdir}",
+             "--baseline-dir", "{outdir}/../usb-host-baseline-ack"]),
         bpy("usb-host-close-ack", "bench_usb_host.py",
             ["--port", "{serial_port}", "--case", "close-boots", "--ack",
-             "--wican-state", "{wican_state}", "--out", "{outdir}"]),
+             "--wican-state", "{wican_state}", "--out", "{outdir}",
+             "--baseline-dir", "{outdir}/../usb-host-baseline-ack"]),
         bpy("usb-host-baseline-noack", "bench_usb_host.py",
             ["--port", "{serial_port}", "--case", "baseline-boots", "--noack",
              "--wican-state", "{wican_state}", "--out", "{outdir}"]),
         bpy("usb-host-noread-noack", "bench_usb_host.py",
             ["--port", "{serial_port}", "--case", "noread-boots", "--noack",
-             "--wican-state", "{wican_state}", "--out", "{outdir}"]),
+             "--wican-state", "{wican_state}", "--out", "{outdir}",
+             "--baseline-dir", "{outdir}/../usb-host-baseline-noack"]),
         bpy("usb-host-bridge-absent", "bench_usb_host.py",
             ["--port", "{serial_port}", "--case", "bridge", "--com3", "absent",
              "--wican-state", "{wican_state}", "--out", "{outdir}"]),
         bpy("usb-host-bridge-cycles", "bench_usb_host.py",
             ["--port", "{serial_port}", "--case", "bridge", "--com3", "cycles",
              "--stop-s", "600", "--wican-state", "{wican_state}",
-             "--out", "{outdir}"], timeout_s=3 * 3600),
+             "--out", "{outdir}",
+             "--baseline-dir", "{outdir}/../usb-host-bridge-absent"],
+            timeout_s=3 * 3600),
         Check("brownout-cold-boot", ["-"], skip=(
             "spec 10 hardware mechanics, 'reset and brownout': a power cycle "
             "or brownout needs hands (no-hands sheet, DEFERRED)")),
@@ -657,15 +676,25 @@ def bench(settings):
              "{images_dir}/idf/c12_bench/c12_bench.elf", "--out", "{outdir}"],
             judge=recorded_judge),
     ])
+    def vport(cid, st, extra=()):
+        return bpy(cid, "bench_vport.py",
+                   ["--port", "{serial_port}", "--elf",
+                    "{images_dir}/idf/vport_bench/vport_bench.elf", "--steps",
+                    st] + list(extra) + ["--out", "{outdir}"],
+                   judge=recorded_judge if st in ("bitrate", "flood",
+                                                  "dominant", "recstart")
+                   else script_judge)
+
+    # vport-listen's two wrong-rate arms are a KNOWN FAIL (reviewer,
+    # 2026-10-21), so they run as their own check and the rest of the
+    # listen step stays judged.
     b_vport = Group("b-vport", needs_lock=True, image="vport_bench", checks=[
-        bpy("vport-" + st, "bench_vport.py",
-            ["--port", "{serial_port}", "--elf",
-             "{images_dir}/idf/vport_bench/vport_bench.elf", "--steps", st,
-             "--out", "{outdir}"],
-            judge=recorded_judge if st in ("bitrate", "flood", "dominant",
-                                           "recstart") else script_judge)
-        for st in ("listen", "bitrate", "flood", "stall", "dominant",
-                   "recstart")])
+        vport("vport-listen", "listen",
+              ["--listen-arms", "no-ack,idle,flood-7F4,flood-649,stall"]),
+        vport("vport-listen-wrong-rate", "listen",
+              ["--listen-arms", "wrong-250k,wrong-1m"])] + [
+        vport("vport-" + st, st)
+        for st in ("bitrate", "flood", "stall", "dominant", "recstart")])
 
     truck_only = Group("truck-only", checks=[
         Check("spec10-item%d" % i, ["-"], skip=(

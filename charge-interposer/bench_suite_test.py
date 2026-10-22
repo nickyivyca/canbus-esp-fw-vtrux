@@ -82,6 +82,15 @@ def test_script_judge():
         "a FAIL beside a VOID is a FAIL"
     assert _v(j(_run("", 3))) == [Verdict.FAIL], "rc 3, no lines: FAIL"
     assert _v(j(_run("", None))) == [Verdict.ERROR], "killed: ERROR"
+    noread = ("noread_ack_01: premise NOT met\n"
+              "  VOID noread_ack_01: VOID: no hole in the board's t= sequence\n"
+              "  VOID noread_ack_02: VOID: no hole in the board's t= sequence\n")
+    assert _v(j(_run(noread, 0))) == [Verdict.VOID], \
+        "rc 0 with every verdict VOID is VOID, not PASS (a25e noread-boots)"
+    assert _v(j(_run(noread, 3))) == [Verdict.VOID], \
+        "bench_usb_host's rc 3 for an all-VOID case is VOID"
+    assert _v(j(_run(noread + "  PASS noread_ack_03: boot window 12209 us\n",
+                     0))) == [Verdict.PASS], "a VOID beside a PASS stays PASS"
 
 
 def test_recorded_judge():
@@ -296,7 +305,8 @@ def test_suites():
                     assert any(w in c.skip for w in ("spec", "reviewer",
                                                      "plan", "ruling")), \
                         "skip %s/%s names no spec item or ruling" % (g.name, c.id)
-    assert len(seen) == 170, "checks across the suites: %d" % len(seen)
+    # 171: vport-listen-wrong-rate split out of vport-listen (2026-10-21)
+    assert len(seen) == 171, "checks across the suites: %d" % len(seen)
     # build-check runs in a git checkout of HEAD, shipped as a bundle
     # (user ruling 2026-10-19), never in the shipped copy
     mb = [g for g in su["emulated"].groups if g.name == "m-build"][0]
@@ -619,6 +629,77 @@ def _probe_controls():
         "the probe let a serial open through: %s" % hw
 
 
+USB_BASELINE = {"noread-boots": "baseline-boots", "close-boots": "baseline-boots",
+                "bridge": "bridge"}
+
+
+def _opt(argv, name):
+    argv = [str(a) for a in argv]
+    return argv[argv.index(name) + 1] if name in argv else None
+
+
+def test_usb_baselines():
+    """Every bench_usb_host case that scores against a baseline names, by
+    --baseline-dir, the folder of an EARLIER check of its group that writes
+    that baseline: baseline-boots with the same --ack / --noack for the
+    boot cases, bridge --com3 absent for cycles (a25e: none did)."""
+    s, su = _all()
+    n = 0
+    for g in su["bench"].groups:
+        seen = {}
+        for c in g.checks:
+            argv = [str(a) for a in c.argv]
+            if not argv or not argv[0].endswith("bench_usb_host.py"):
+                continue
+            case = _opt(argv, "--case")
+            mode = "--ack" if "--ack" in argv else "--noack" \
+                if "--noack" in argv else _opt(argv, "--com3")
+            seen[c.id] = (case, mode)
+            needs = case in ("noread-boots", "close-boots") or \
+                (case == "bridge" and mode == "cycles")
+            bdir = _opt(argv, "--baseline-dir")
+            if not needs:
+                assert bdir is None, "%s needs no baseline dir" % c.id
+                continue
+            n += 1
+            assert bdir, "%s has no --baseline-dir" % c.id
+            m = re.match(r"^\{outdir\}/\.\./([\w.-]+)$", bdir)
+            assert m, "%s: --baseline-dir %s is not {outdir}/../<check>" \
+                % (c.id, bdir)
+            src = m.group(1)
+            assert src in seen, "%s reads %s, not an earlier check of %s" \
+                % (c.id, src, g.name)
+            want = ("baseline-boots", mode) if case != "bridge" \
+                else ("bridge", "absent")
+            assert seen[src] == want, "%s reads %s, which is %s, not %s" \
+                % (c.id, src, seen[src], want)
+    assert n == 4, "%d dependent usb-host cases found, 4 expected" % n
+
+
+def test_vport_split():
+    """vport-listen's two wrong-rate arms run as their own check, which is a
+    registered KNOWN FAIL (reviewer, 2026-10-21); the rest stay judged in
+    vport-listen; between them every listen arm runs exactly once."""
+    sys.path.insert(0, _artifacts())
+    import bench_vport as V
+    s, su = _all()
+    checks = {c.id: c for g in su["bench"].groups for c in g.checks}
+    arms = {}
+    for cid in ("vport-listen", "vport-listen-wrong-rate"):
+        c = checks[cid]
+        assert _opt(c.argv, "--steps") == "listen", cid
+        arms[cid] = V.listen_arm_keys(_opt(c.argv, "--listen-arms") or "all")
+    assert arms["vport-listen-wrong-rate"] == ["wrong-250k", "wrong-1m"]
+    assert not set(arms["vport-listen"]) & {"wrong-250k", "wrong-1m"}, \
+        "a known-fail arm left in the judged check"
+    allarms = arms["vport-listen"] + arms["vport-listen-wrong-rate"]
+    assert sorted(allarms) == sorted(V.LISTEN_ARMS), \
+        "listen arms lost or doubled: %s" % allarms
+    kf = {k.id for k in su["bench"].known_fails}
+    assert "b-vport/vport-listen-wrong-rate" in kf
+    assert "b-vport/vport-listen" not in kf
+
+
 def test_bench_argv():
     _probe_controls()
     bad, n, plain = _bench_argv_problems()
@@ -631,7 +712,7 @@ def test_bench_argv():
 TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_corrupt_pin_judge, test_c12_judge, test_host_bridge_judge,
          test_suites, test_mutant_wiring, test_identify, test_pycache_ignored,
-         test_bench_argv]
+         test_usb_baselines, test_vport_split, test_bench_argv]
 
 
 # ---- can-fail -----------------------------------------------------------
@@ -758,6 +839,47 @@ _ORIG["self.NO_ARGPARSE"] = NO_ARGPARSE
 _ORIG["self._ARGV_PROBE"] = _ARGV_PROBE
 
 
+def _rc0_pass(run):
+    """The pre-a25e judge: exit code 0 is PASS whatever was printed."""
+    if run.rc == 0:
+        return Result(Verdict.PASS, detail="rc=0")
+    return _ORIG["script_judge"](run)
+
+
+def _check(s, cid):
+    return next(c for g in s.groups for c in g.checks if c.id == cid)
+
+
+def _drop_baseline_dir(cid):
+    def fn(s):
+        c = _check(s, cid)
+        i = c.argv.index("--baseline-dir")
+        del c.argv[i:i + 2]
+    return fn
+
+
+def _baseline_from(cid, src):
+    def fn(s):
+        c = _check(s, cid)
+        c.argv[c.argv.index("--baseline-dir") + 1] = "{outdir}/../" + src
+    return fn
+
+
+def _wrong_rate_back(s):
+    c = _check(s, "vport-listen")
+    c.argv[c.argv.index("--listen-arms") + 1] = "all"
+
+
+def _arm_lost(s):
+    c = _check(s, "vport-listen")
+    c.argv[c.argv.index("--listen-arms") + 1] = "no-ack,idle,flood-7F4,flood-649"
+
+
+def _known_fail_dropped(s):
+    s.known_fails = [k for k in s.known_fails
+                     if k.id != "b-vport/vport-listen-wrong-rate"]
+
+
 def _flight_silence_a25e(s):
     """The a25e line: a value after the --pcan flag."""
     for g in s.groups:
@@ -768,7 +890,29 @@ def _flight_silence_a25e(s):
 
 # test -> [(module attribute, replacement, what the mutant does)]
 MUTANTS = {
-    "test_script_judge": [("script_judge", _pass_all, "passes everything")],
+    "test_script_judge": [
+        ("script_judge", _pass_all, "passes everything"),
+        ("script_judge", _rc0_pass,
+         "rc 0 is PASS whatever it printed (a25e noread-boots)")],
+    "test_usb_baselines": [
+        ("bench", _wrap_suite("bench", _drop_baseline_dir("usb-host-close-ack")),
+         "close-ack without --baseline-dir (a25e)"),
+        ("bench", _wrap_suite("bench",
+                              _drop_baseline_dir("usb-host-bridge-cycles")),
+         "bridge-cycles without --baseline-dir (a25e)"),
+        ("bench", _wrap_suite("bench", _baseline_from(
+            "usb-host-noread-noack", "usb-host-baseline-ack")),
+         "noread-noack reads the ACKed baseline"),
+        ("bench", _wrap_suite("bench", _baseline_from(
+            "usb-host-noread-ack", "usb-host-close-ack")),
+         "noread-ack reads a later check's folder")],
+    "test_vport_split": [
+        ("bench", _wrap_suite("bench", _wrong_rate_back),
+         "the wrong-rate arms back in vport-listen"),
+        ("bench", _wrap_suite("bench", _arm_lost),
+         "vport-listen loses its stall arm"),
+        ("bench", _wrap_suite("bench", _known_fail_dropped),
+         "the wrong-rate check not a known fail")],
     "test_recorded_judge": [("recorded_judge", _pass_all, "passes everything")],
     "test_scenario_judge": [
         ("scenario_judge", _pass_all, "passes everything"),
