@@ -804,6 +804,69 @@ def test_repair_leftovers():
           "a taken aside name: refused, nothing moved, no tmp left: %s" % msg)
 
 
+def crashed(name):
+    """A repair stopped between its two renames: the damaged log aside, the
+    new log as <log>.repair-tmp, no log."""
+    p = hand_log(name, [init_line(), "{x"])
+    _st, _line, aside = B.repair(p, CI, "test")
+    os.rename(p, p + ".repair-tmp")
+    return p, p + ".repair-tmp", aside
+
+
+def test_repair_finish():
+    """SPEC 3 no hand rename is ever needed (reviewer, 2026-10-22): repair
+    finishes a repair stopped between its renames, only if the tmp replays
+    on this bench, ends in a repair event, and the damaged log it names is
+    beside it with its sha256; otherwise refused, nothing moved. init points
+    at repair."""
+    p, tmp, aside = crashed("repair_finish")
+    msg = refused(B.init, p, CI)
+    check("run repair" in msg, "init points at repair: %s" % msg)
+    new = file_bytes(tmp)
+    st, line, a2 = B.repair(p, GI, "finish")
+    check(file_bytes(p) == new and not os.path.exists(tmp) and a2 == aside and
+          json.loads(line)["event"] == "repair" and st["holder"] is None,
+          "finished: the tmp is the log, nothing else written")
+    check(B.read_state(p)["events"] == 2, "the finished log replays")
+
+    def broken(name, fn, want):
+        p, tmp, aside = crashed("repair_finish_" + name)
+        fn(p, tmp, aside)
+        t0, a0 = file_bytes(tmp), (file_bytes(aside) if os.path.exists(aside)
+                                   else None)
+        msg = refused(B.repair, p, CI, "finish")
+        check(want in msg and not os.path.exists(p) and file_bytes(tmp) == t0
+              and (file_bytes(aside) if os.path.exists(aside) else None) == a0,
+              "%s: refused, nothing moved: %s" % (name, msg))
+
+    def append(text):
+        def fn(p, tmp, aside):
+            with open(tmp, "ab") as f:
+                f.write(text.encode("ascii") + b"\n")
+        return fn
+
+    def other_host(p, tmp, aside):
+        ls = file_bytes(tmp).decode("ascii").splitlines()
+        ls[0] = init_line(host="OTHER-HOST")
+        with open(tmp, "wb") as f:
+            f.write(("\n".join(ls) + "\n").encode("ascii"))
+
+    def tamper(p, tmp, aside):
+        with open(aside, "ab") as f:
+            f.write(b"more\n")
+
+    broken("unreplayable", append("{x"), "does not replay")
+    broken("last_not_repair", append(jl("request", GI, note="x")),
+           "not a repair event")
+    broken("aside_missing", lambda p, tmp, aside: os.remove(aside), "missing")
+    broken("aside_changed", tamper, "sha256")
+    broken("other_host", other_host, "OTHER-HOST")
+    p, tmp, aside = crashed("repair_finish_cli")
+    rc, o, e = cli("--log", p, "repair", "--who", CI, "--reason", "finish")
+    check(rc == 0 and "finished an interrupted repair" in o and tmp in o and
+          aside in o, "the CLI names both files: rc %d %s %s" % (rc, o, e))
+
+
 def test_repair_cli():
     """SPEC 5 repair on the command line; exit 2 when refused."""
     p = fresh("repair_cli")
@@ -825,7 +888,7 @@ TESTS = [test_take_release, test_boards, test_pause_resume, test_run_once,
          test_env_refusal, test_env_mismatch, test_file_lock, test_lines,
          test_cli, test_repair, test_repair_init_bad, test_repair_holders,
          test_repair_where, test_repair_replay, test_repair_changed,
-         test_repair_leftovers, test_repair_cli]
+         test_repair_leftovers, test_repair_finish, test_repair_cli]
 
 
 # ---- mutants ------------------------------------------------------------
@@ -1220,10 +1283,34 @@ MUTANTS = {
          _edit("    except FileExistsError:\n        os.remove(tmp)\n",
                "    except FileExistsError:\n")),
     ],
+    "test_repair_finish": [
+        ("repair never finishes",
+         _edit("    if not os.path.exists(path) and os.path.exists(tmp):\n        return finish_repair(path)\n",
+               "")),
+        ("finish an unreplayable tmp",
+         _edit("        state = replay(ls)\n    except (Refused, UnicodeDecodeError)",
+               "        state = replay(ls[:2])\n    except (Refused, UnicodeDecodeError)")),
+        ("any last line",
+         _edit("    if last.get(\"event\") != \"repair\":", "    if False:")),
+        ("damaged log not required",
+         _edit("    if not os.path.isfile(aside):\n        raise Refused(\"%s: the damaged log",
+               "    if False:\n        raise Refused(\"%s: the damaged log")),
+        ("sha256 not compared",
+         _edit("    if sha256_file(aside) != last[\"damaged\"][\"sha256\"]:\n        raise Refused(\"%s: %s's sha256",
+               "    if False:\n        raise Refused(\"%s: %s's sha256")),
+        ("finish on any host",
+         _edit("        raise Refused(\"%s: it does not replay: %s; nothing moved\" % (why, e))\n    bench_impl(state)\n",
+               "        raise Refused(\"%s: it does not replay: %s; nothing moved\" % (why, e))\n")),
+        ("init does not point at repair",
+         _edit("if no repair is running, run repair to finish it",
+               "if no repair is running, stop and report it")),
+        ("the CLI does not say it finished",
+         _edit("            if finishing:\n", "            if False:\n")),
+    ],
     "test_repair_cli": [
         ("no repair command",
-         _edit("        if a.cmd == \"repair\":\n            st, line, aside = repair(path, a.who, a.reason)",
-               "        if a.cmd == \"repair-x\":\n            st, line, aside = repair(path, a.who, a.reason)")),
+         _edit("        if a.cmd == \"repair\":\n            finishing = (",
+               "        if a.cmd == \"repair-x\":\n            finishing = (")),
         ("torn line kept",
          _edit("        if err is None and torn and n == len(raw):", "        if False:")),
     ],

@@ -542,10 +542,9 @@ def init(path, who):
         raise Refused("%s exists already" % path)
     if os.path.exists(path + REPAIR_TMP):
         raise Refused("%s exists: a repair is replacing this log, or one "
-                      "crashed between its two renames (that file is the new "
-                      "log, the newest bench-log.*.damaged.jsonl the old one). "
-                      "Never init over it; if no repair is running, stop and "
-                      "report it" % (path + REPAIR_TMP))
+                      "stopped between its two renames. Never init over it; "
+                      "if no repair is running, run repair to finish it"
+                      % (path + REPAIR_TMP))
     if not os.path.isdir(os.path.dirname(os.path.abspath(path))):
         raise Refused("no folder for %s" % path)
     ev = {"ts": now(), "who": who, "event": "init", "host": this_host(),
@@ -669,6 +668,8 @@ def repair(path, who, reason):
     name = aside_name()
     aside = os.path.join(folder, name)
     tmp = path + REPAIR_TMP
+    if not os.path.exists(path) and os.path.exists(tmp):
+        return finish_repair(path)
     with locked(path) as f:
         if os.path.exists(tmp):
             raise Refused("%s exists: a repair of this log is running, or one "
@@ -715,6 +716,41 @@ def repair(path, who, reason):
         raise Refused("the log changed during the repair; nothing replaced")
     os.rename(tmp, path)
     return after, line, aside
+
+
+def finish_repair(path):
+    """Finish a repair that stopped between its two renames: the log is
+    missing and <log>.repair-tmp holds the new log (reviewer, 2026-10-22;
+    section 3: no hand rename is ever needed). Only if the tmp replays
+    cleanly on this bench, its last line is a repair event, and the damaged
+    log that event names is beside it with the event's sha256; then the tmp
+    becomes the log. Otherwise Refused, and nothing moves. Returns (state,
+    the repair line, the damaged log's path)."""
+    tmp = path + REPAIR_TMP
+    env_impl(this_env())
+    why = "cannot finish the interrupted repair (%s, no %s)" % (
+        tmp, os.path.basename(path))
+    try:
+        with open(tmp, "rb") as f:
+            ls = split_lines(f.read())
+        state = replay(ls)
+    except (Refused, UnicodeDecodeError) as e:
+        raise Refused("%s: it does not replay: %s; nothing moved" % (why, e))
+    bench_impl(state)
+    last = json.loads(ls[-1])
+    if last.get("event") != "repair":
+        raise Refused("%s: its last line is a %s, not a repair event; nothing "
+                      "moved" % (why, last.get("event")))
+    aside = os.path.join(os.path.dirname(os.path.abspath(path)),
+                         last["damaged"]["name"])
+    if not os.path.isfile(aside):
+        raise Refused("%s: the damaged log its repair event names, %s, is "
+                      "missing; nothing moved" % (why, aside))
+    if sha256_file(aside) != last["damaged"]["sha256"]:
+        raise Refused("%s: %s's sha256 is not the one its repair event "
+                      "records; nothing moved" % (why, aside))
+    os.rename(tmp, path)
+    return state, ls[-1], aside
 
 
 def aside_name():
@@ -825,8 +861,14 @@ def main(argv=None):
             print(init(path, a.who))
             return 0
         if a.cmd == "repair":
+            finishing = (not os.path.exists(path)
+                         and os.path.exists(path + REPAIR_TMP))
             st, line, aside = repair(path, a.who, a.reason)
-            print("the damaged log is kept as %s" % aside)
+            if finishing:
+                print("finished an interrupted repair: %s renamed to %s; the "
+                      "damaged log is %s" % (path + REPAIR_TMP, path, aside))
+            else:
+                print("the damaged log is kept as %s" % aside)
             print(line)
             print("\n".join(status_lines(st)))
             return 0
