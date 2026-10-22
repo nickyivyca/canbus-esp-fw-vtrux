@@ -1760,6 +1760,28 @@ def test_resume_identify():
     assert "lost-refused" in [e["kind"] for e in rec["events"]]
 
 
+def test_stop_no_resume():
+    """STOP during a pause (gen-inhibit reviewer, 2026-10-22): the runner
+    takes the lock back for the restore and the release, but runs no start
+    hooks and identifies or flashes nothing for cases that will not run."""
+    def stop(tb, eng, seen):
+        tb.set("x2", "OTHER")
+        with open(os.path.join(eng.run_dir, "STOP"), "w") as f:
+            f.write("STOP (test)")
+    env, p, tb, eng, rec, seen = _pause_scenario("stop_no_resume",
+                                                 during=stop)
+    v = verdicts(rec)
+    # the X2 changed under the group, so its finished case is VOID
+    assert v["a/first"] == "VOID" and v["a/second"] == "NOT-RUN", v
+    starts = [c for c in tb.calls if c[0] == "on_start"]
+    assert len(starts) == 2, "start hooks at the resume: %s" % starts
+    assert tb.flashes == [], "flashed after STOP: %s" % tb.flashes
+    evs = log_events(p)
+    assert (evs[-2]["event"], evs[-1]["event"]) == ("take", "release") and \
+        evs[-1]["who"] == CI, evs[-2:]
+    assert not rec["lock"]["lost"], rec["lock"]
+
+
 def test_own_pid():
     """Section 6: the run goes on only while the lock is held by its role,
     its run id and its PID; a hand take --run <id> under a session's PID
@@ -1801,6 +1823,34 @@ def test_take_first():
     tk = log_events(p)[-2]
     assert tk["event"] == "take" and tk["who"] == CI and \
         tk["pid"] == os.getpid() and tk["run"] == eng.run_id, tk
+
+
+def test_folder_release():
+    """Section 6: a take whose run folder then cannot be made is released
+    before the runner raises, each board "not read: run folder not
+    created"; no lock is left under a runner that exits."""
+    env, p = log_env("folder_release")
+    s = suite([Group("g", [chk("x", "pass")], needs_lock=True)], role=CI)
+    real = E.new_run_dir
+
+    def broken(runs_root, suite_name, run_id=None):
+        raise OSError("disk full (test)")
+    E.new_run_dir = broken
+    try:
+        run(env, s, settings=env.settings(bench_lock_log=p))
+    except OSError:
+        pass
+    else:
+        raise AssertionError("ran without a run folder")
+    finally:
+        E.new_run_dir = real
+    evs = log_events(p)
+    assert [e["event"] for e in evs[-2:]] == ["take", "release"], evs
+    rl = evs[-1]
+    assert rl["who"] == CI and all(
+        v.startswith("not read: run folder not created (disk full (test))")
+        and evs[-2]["run"] in v for v in rl["boards"].values()), rl
+    assert BL.read_state(p)["holder"] is None
 
 
 def test_release_end():
@@ -1907,7 +1957,9 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_remote_stop,
          test_lock_each_case, test_lost_record, test_pause_own_lock,
          test_self_pause, test_pause_hooks, test_resume_identify,
-         test_own_pid, test_take_first, test_release_end, test_keep_lock]
+         test_stop_no_resume,
+         test_own_pid, test_take_first, test_folder_release, test_release_end,
+         test_keep_lock]
 
 
 # ---- mutants: each test's rule switched off -----------------------------
@@ -2009,8 +2061,10 @@ MUTANTS = {
     "test_self_pause": _rule("self_pause"),
     "test_pause_hooks": _rule("pause_hooks"),
     "test_resume_identify": _rule("resume_identify"),
+    "test_stop_no_resume": _rule("stop_no_resume"),
     "test_own_pid": _rule("own_pid"),
     "test_take_first": _rule("take_first"),
+    "test_folder_release": _rule("folder_release"),
     "test_release_end": _rule("release_end"),
     "test_keep_lock": _rule("keep_lock_one_step"),
 }

@@ -50,6 +50,9 @@ fails when the rule is switched off through RULES):
                   "LOCK LOST: <state>"
   take_first      (log) the lock is taken under the runner's PID and run id
                   before the run folder exists: a refused take leaves none
+  folder_release  (log) a take whose run folder then cannot be made is
+                  released ("not read: run folder not created") before the
+                  runner raises: no lock is left under an exited runner
   self_pause      (log) a PAUSE file makes the runner write free_paused with
                   its board reads at the next case boundary, then wait
   release_end     (log) at the run's end the runner releases with its board
@@ -65,7 +68,10 @@ fails when the rule is switched off through RULES):
                   start hooks run again and every board the remaining cases
                   use is identified against its expected image and flashed
                   back if it differs; a board that cannot be is a lost lock
-  flash_gate      a failed flash (or failed auto-reset check) stops what
+  stop_no_resume  (log) STOP during a pause: the runner takes the lock back
+                  for the restore and the release, but runs no start hooks
+                  and re-identifies or flashes nothing before the lane ends
+  flash_gate     a failed flash (or failed auto-reset check) stops what
                   needs that image; no retry; after a failed auto-reset
                   check no further flash at all
   image_schedule  flash only when the board is not already on the image
@@ -175,8 +181,9 @@ from .record import (Recorder, compare, load_progress, make_run_id,
 
 RULES = {k: True for k in (
     "lock_guard", "lock_each_case", "pause_own_lock", "lost_record",
-    "take_first", "self_pause", "release_end", "keep_lock_one_step",
-    "own_pid", "pause_hooks", "resume_identify",
+    "take_first", "folder_release", "self_pause", "release_end",
+    "keep_lock_one_step",
+    "own_pid", "pause_hooks", "resume_identify", "stop_no_resume",
     "flash_gate", "image_schedule", "identify_after",
     "no_verdict", "known_fail", "stop_pause", "throttle", "redact_scope",
     "gate", "timeout", "skip", "restore", "identify_error", "after",
@@ -477,6 +484,12 @@ class Engine:
                 _st, line = BL.take(self.lock_log, self.suite.role, os.getpid(),
                                     run=self.run_id, note="resume")
                 self.rec.event("resume", line=line)
+                if RULES["stop_no_resume"] and self.stop_text() is not None:
+                    # the take is for the restore and the release; STOP
+                    # ends the lane before any case, so no hooks or flashes
+                    self.rec.event("resume-skipped", note="STOP during the "
+                                   "pause: no start hooks, no re-identify")
+                    return None
                 return self.resume_check()
             except BL.Refused as e:
                 st, why = self._log_state()
@@ -709,8 +722,27 @@ class Engine:
                 "%s: %s" % (rid, e))
         self.took = True
         if RULES["take_first"]:
-            self.run_id, self.run_dir = new_run_dir(self.runs_root,
-                                                    self.suite.name, rid)
+            try:
+                self.run_id, self.run_dir = new_run_dir(self.runs_root,
+                                                        self.suite.name, rid)
+            except Exception as e:
+                if RULES["folder_release"]:
+                    self._release_unstarted(rid, e)
+                raise
+
+    def _release_unstarted(self, rid, err):
+        """The take succeeded but the run folder could not be made: release
+        before raising, so a runner that exits leaves no lock held."""
+        why = "not read: run folder not created (%s); run %s" % (err, rid)
+        try:
+            BL.release(self.lock_log, self.suite.role,
+                       {b: why for b in BL.BOARDS},
+                       note="run %s never started" % rid)
+        except BL.Refused as e:
+            raise lockmod.LockError(
+                "run folder for %s not created (%s), and the release was "
+                "refused: %s" % (rid, err, e))
+        self.took = False
 
     def wallclock_running(self, host):
         with self._wc_lock:

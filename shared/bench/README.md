@@ -37,7 +37,7 @@ every group of checks, restore, record. The same command runs part of it.
 | `vtrux_bench/bench_lock.py` | The bench lock as an append-only event log (reverse-it `firmware/bench-log.jsonl`), to reverse-it `firmware/bench-lock-spec.md`: the replay that fails closed, the command line (`init`, `status`, `take`, `release`, `request`, `withdraw`, `clear`, `repair`: a log that does not replay is replaced by its good lines up to the first bad one, then a `repair` event; the damaged log is kept aside) and the runner's API (`take`, `free_paused`, `release`, `release_and_take`, `lost`, `held_by_run`; `free_paused` and `lost` have no command). One bench host and environment, recorded by `init`; native Windows only. Not the lock until the cutover (spec section 7); the runner uses it only when its settings name it (`bench_lock_log`). |
 | `tests/test_bench_lock.py` | Its tests (29), each naming the spec sections it checks. `--can-fail` runs each under each of its mutants (130), source edits that must each make it fail. Native Windows only. |
 | `tests/test_decode.py` | Its tests (6), with `data/golden_layout.dbc` and its hand-written canonical text `data/golden_layout.txt`. `--can-fail` runs each test under each of its mutants (28); every one must fail. |
-| `tests/test_run_core.py` | The runner's own tests (53, the bench-lock ones on a scratch `bench_lock` log), with a fake suite, a fake two-board bench, `fake_esptool.py` and `fake_ssh.py`. `--can-fail` runs each with its rule switched off; every one must then fail. |
+| `tests/test_run_core.py` | The runner's own tests (55, the bench-lock ones on a scratch `bench_lock` log), with a fake suite, a fake two-board bench, `fake_esptool.py` and `fake_ssh.py`. `--can-fail` runs each with its rule switched off; every one must then fail. |
 
 ### Boards and images
 
@@ -223,7 +223,15 @@ Holder line is its role's again (the role edits the Holder by hand); with
 `bench_lock_log` it frees the bench itself (`free_paused` with its board
 reads) and takes it back once the file is gone (spec section 6). `run
 --keep-lock PID` (log only) ends the run by handing the lock to the session
-whose long-lived process is PID. `STOP` ends the run (the board is still restored unless the file says
+whose long-lived process is PID. If PID dies during the run, that take is
+refused, and so is the release with it: the run ends LOCK NOT RELEASED and
+the lock stays under the exited runner's PID until someone runs `clear`
+(it fails closed). Before the cutover the Holder line is read before every
+case, so a momentary read failure (SeaDrive mid-sync) ends the run as LOCK
+LOST at any case boundary; that also fails closed (spec section 7), and the
+run is re-run. A STOP during a pause still takes the lock back, for the
+restore and the release, but runs no start hooks and flashes nothing.
+`STOP` ends the run (the board is still restored unless the file says
 `norestore`; `now` also kills the check in progress -- on a remote host
 too: the remote line records `timeout`'s pid in the check's outdir, and
 the runner kills that process group once the local ssh is gone).
