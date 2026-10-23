@@ -1,9 +1,13 @@
 # Bench lock: specification
 
-Approved by the user 2026-10-21. Drafted by the charge-interposer reviewer;
-the file is methodology's (it covers both projects). The gen-inhibit reviewer
-reads it before `bench_lock.py` merges. Not in force until the cutover
-(section 7); until then the Holder line in `bench-holder.md` is the lock.
+Approved by the user 2026-10-21. Drafted by the charge-interposer reviewer.
+Moved into git from reverse-it's `firmware/bench-lock-spec.md` (sha256
+`8c2a54eb...c5d7`) on 2026-10-23 (user); only this header and the paths into
+reverse-it changed. As a shared component's spec, it is changed by the
+reviewer whose project needs the change, ruled on by the user in that
+reviewer's session, and read by the other reviewer before merge (port plan
+goal 20). Not in force until the cutover (section 7); until then the Holder
+line in `$REVERSE_IT_DIR/firmware/bench-holder.md` is the lock.
 Source: the methodology session's shape (user, 2026-10-21) and its additions
 from the gen-inhibit reviewer's conditions (user, 2026-10-21).
 
@@ -11,12 +15,13 @@ from the gen-inhibit reviewer's conditions (user, 2026-10-21).
 
 One shared bench (the WiCAN, the X2 and the adapters on the bench host, today
 NICKY-XPS) and one lock on it. The lock's state is the replay of an append-only log,
-`firmware/bench-log.jsonl` in reverse-it. `shared/bench/vtrux_bench/bench_lock.py`
+`$REVERSE_IT_DIR/firmware/bench-log.jsonl`. `shared/bench/vtrux_bench/bench_lock.py`
 is the only code that writes it, through its command line or its API (the
 runner uses the API). Nothing edits or deletes a line, by hand or by code; a
 log that does not replay is replaced only by `repair` (section 3), which keeps
 the original.
-Board state, what is on each board, stays in `bench-holder.md`.
+Board state, what is on each board, stays in
+`$REVERSE_IT_DIR/firmware/bench-holder.md`.
 
 ## 2. The log
 
@@ -170,7 +175,7 @@ Board state, what is on each board, stays in `bench-holder.md`.
 ## 7. Cutover
 
 At cutover methodology rewrites the bench rules; the Holder and Since fields
-of `bench-holder.md` stop being the lock. Cutover waits until gen-inhibit has
+of `$REVERSE_IT_DIR/firmware/bench-holder.md` stop being the lock. Cutover waits until gen-inhibit has
 re-pinned the shared core to the commit carrying section 6, and the
 charge-interposer runner fix (lock checked before every case, a pause ending
 only on its own lock) goes in that same commit.
