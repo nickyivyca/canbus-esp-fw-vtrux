@@ -847,6 +847,86 @@ def test_code_info(settings):
           SG.bench(s2).code_info({})["dirty"] is True and SG.emulated(s2).code_info({})["dirty"] is True)
 
 
+FAKE_SSH = r"""#!/usr/bin/env bash
+# The host-group test's ssh: logs the host and the command; runs a copy (tar xf) here
+# with HOME set to the fake host's home, and answers anything else as a passing check.
+while [ "${1#-}" != "$1" ]; do [ "$1" = "-o" ] && shift; shift; done
+printf 'HOST %s CMD %s\n' "$1" "$2" >> "$SSH_LOG"
+case "$2" in
+  *"tar xf"*) HOME="$(cygpath -u "$FAKE_HOME")" bash -c "$2" ;;    # a POSIX home, as the host has
+  *) echo "pages seen: fake"; echo "all emitted diag frames decode against the DBC"; echo "exit 0" ;;
+esac
+"""
+
+
+def test_host_group(settings, emu):
+    """H and B15host run this clone's harness (host-run commit, 2026-10-22): H the repo's
+    baseline_host_run.sh with RROOT from gi_host_root; B15host copies its files to the
+    host and runs them there, under a fake ssh; a copy that fails stops the check."""
+    import subprocess
+    host = {c.id: c for g in emu.groups if g.name == "host" for c in g.checks}
+    h, b = host.get("H"), host.get("B15host")
+    check("the host group has H and B15host", h is not None and b is not None, sorted(host))
+    if h is None or b is None:
+        return
+    check("H runs the repo's baseline_host_run.sh (the suite's HARNESS)",
+          h.argv[:2] == ["{bash}", SG.HARNESS + "/baseline_host_run.sh"], h.argv)
+    check("H passes gi_host_root as RROOT", h.env.get("RROOT") == "{gi_host_root}", h.env)
+    raw = json.dumps([c.argv for c in host.values()])
+    check("no host check names the SeaDrive harness", "notes/artifacts/gen-inhibit" not in raw, raw[:300])
+
+    d = os.path.join(BASE, "hostgroup")
+    fbin, fhome, out = (os.path.join(d, x) for x in ("bin", "home", "out"))
+    for p in (fbin, fhome, out):
+        os.makedirs(p)
+    with open(os.path.join(fbin, "ssh"), "w", newline="\n") as f:
+        f.write(FAKE_SSH)
+
+    def run_b15(gi_tools, tag):
+        log = os.path.join(d, "ssh_%s.log" % tag)
+        ctx = {k: v for k, v in settings.items() if isinstance(v, str)}
+        ctx.update(gi_tools=gi_tools.replace("\\", "/"), outdir=out.replace("\\", "/"), run_dir="R", run_id="I",
+                   suite="S", check_id="B15host", group="host", jobs="1")
+        argv = [fmt(a, ctx) for a in b.argv]
+        e = dict(os.environ, PATH=fbin + os.pathsep + os.environ.get("PATH", ""), SSH_LOG=log, FAKE_HOME=fhome)
+        r = subprocess.run(argv, capture_output=True, text=True, env=e, stdin=subprocess.DEVNULL, timeout=120)
+        lines = open(log, encoding="utf-8").read().splitlines() if os.path.exists(log) else []
+        return r.returncode, lines, r.stdout + r.stderr
+
+    rc, lines, txt = run_b15(HERE, "good")
+    res = os.path.join(out, "B15_diag_decode_check_host_e3d9437.txt")
+    txt += open(res, encoding="utf-8", errors="replace").read() if os.path.exists(res) else ""   # the check's own output
+    dest = os.path.join(fhome, "gi_bench_e3d9437")
+    same = all(os.path.isfile(os.path.join(dest, f)) and
+               open(os.path.join(dest, f), "rb").read() == open(os.path.join(HERE, "bench", f), "rb").read()
+               for f in SG.B15_FILES)
+    check("B15host copies %s from bench/ to the host's ~/gi_bench_<commit>" % ", ".join(SG.B15_FILES),
+          rc == 0 and same, (rc, txt[-300:], os.listdir(dest) if os.path.isdir(dest) else None))
+    # the copy is enough on its own: the check's one local import, and the pins it reads
+    p = subprocess.run([sys.executable, "-B", "-c", "import gi_paths; print('pins', len(gi_paths.load_pins()))"],
+                       cwd=dest if os.path.isdir(dest) else d, capture_output=True, text=True, timeout=60,
+                       env=dict(os.environ, PYTHONPATH=""))
+    check("the copy holds gi_paths and the pins it loads", p.returncode == 0 and p.stdout.startswith("pins "),
+          (p.stdout + p.stderr)[-300:])
+    run = [l for l in lines if "tar xf" not in l]
+    want = ('HOST hosttest CMD cd ~/rt && REVERSE_IT_DIR="$PWD" python3 -B ~/gi_bench_e3d9437/diag_decode_check.py '
+            '~/gi_baseline_e3d9437/test/gen_inhibit_host 2>&1; echo "exit $?"')
+    check("B15host runs the copied check on gi_host_ssh, from gi_host_root, with REVERSE_IT_DIR set there",
+          run == [want], run)
+    check("both of B15host's ssh calls go to gi_host_ssh",
+          len(lines) == 2 and all(l.startswith("HOST hosttest CMD ") for l in lines), lines)
+    check("B15host's output file holds the host's answer",
+          os.path.exists(res) and "exit 0" in open(res, encoding="utf-8").read(), txt[-300:])
+
+    partial = os.path.join(d, "partial_tools")
+    os.makedirs(os.path.join(partial, "bench"))
+    for f in SG.B15_FILES[:-1]:
+        shutil.copy(os.path.join(HERE, "bench", f), os.path.join(partial, "bench"))
+    rc, lines, txt = run_b15(partial, "partial")
+    check("a file B15host cannot copy fails the check, and the check does not run",
+          rc != 0 and not [l for l in lines if "tar xf" not in l], (rc, lines, txt[-300:]))
+
+
 def test_example(bench, emu):
     """The settings example names every key the suites need and every placeholder."""
     import re
@@ -871,6 +951,7 @@ def main():
         settings, shas = fixture()
         bench, emu = test_suites(settings, shas)
         test_example(bench, emu)
+        test_host_group(settings, emu)
         test_code_info(settings)
         test_ssid(settings, bench, emu)
         test_redact(settings)

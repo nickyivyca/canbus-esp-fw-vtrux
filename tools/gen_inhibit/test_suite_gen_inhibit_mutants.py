@@ -144,6 +144,16 @@ MUTANTS = [
     ("NONODE's termination is a fixed text", 'env={"GI_TERMINATION": "{gi_can1_termination}",', 'env={"GI_TERMINATION": "unknown",'),
     ("NONODE's sha is the prod image's", '"GI_MAN_SHA": images["wican_man"].expect}', '"GI_MAN_SHA": images["wican_prod"].expect}'),
     ("NONODE is not judged", 'judged("NONODE"), ["NONODE_nonode_bench.txt"]', 'None, ["NONODE_nonode_bench.txt"]'),
+    # the host-run commit (2026-10-22): H and B15host run this clone's harness
+    ("H runs the SeaDrive copy", 'argv=["{bash}", "%s/baseline_host_run.sh" % HARNESS, C]',
+     'argv=["{bash}", "projects/vtrux/notes/artifacts/gen-inhibit/baseline_host_run.sh", C]'),
+    ("H gets no RROOT", ', "RROOT": "{gi_host_root}"}', '}'),
+    ("B15host copies no pins", 'B15_FILES = ("diag_decode_check.py", "gi_paths.py", "pins.json")',
+     'B15_FILES = ("diag_decode_check.py", "gi_paths.py")'),
+    ("B15host runs the check from another folder", '"~/gi_bench_%s/diag_decode_check.py', '"~/gi_bench_%.0s/diag_decode_check.py'),
+    ("B15host does not set REVERSE_IT_DIR", 'REVERSE_IT_DIR=\\"$PWD\\" python3 -B', 'python3 -B'),
+    ("B15host's copy failing is not seen", '"set -o pipefail; (tar', '"(tar'),
+    ("B15host runs the check after a failed copy", "tar xf - -C ~/gi_bench_%s' && \"", "tar xf - -C ~/gi_bench_%s'; \""),
 ]
 
 

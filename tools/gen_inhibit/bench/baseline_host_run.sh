@@ -22,6 +22,13 @@ REMOTE="${REMOTE:-madhouse-debian}"
 DEST="gi_baseline_$C"
 PY="${PY:-python3.13}"
 RROOT="${RROOT:?set RROOT to the reverse-it root on the remote}"
+# RROOT as one quoted word of the remote script (the heredoc below is unquoted, so it is
+# pasted in as text): a leading ~/ stays the remote's $HOME, and the rest is quoted, so a
+# root with spaces or other shell characters is one path (host-run commit, 2026-10-22).
+case "$RROOT" in
+  "~/"*) RQ='"$HOME"/'$(printf %q "${RROOT#"~/"}") ;;
+  *)     RQ=$(printf %q "$RROOT") ;;
+esac
 OUT="${GI_OUT:-${REVERSE_IT_DIR:?set REVERSE_IT_DIR}/projects/vtrux/notes/artifacts/gen-inhibit/runs/baseline_$C/host}"   # GI_OUT: the chain runner's check folder (2026-10-18)
 
 git -C "$FW" cat-file -e "$C^{commit}" || { echo "no commit $C in $FW" >&2; exit 2; }
@@ -42,9 +49,10 @@ step() { n="\$1"; shift; echo; echo "=== \$n"; "\$@"; echo "=== exit \$? (\$n)";
 # from_capture.py, from the commit whose test/gen_inhibit_host/project_dir.py exists.
 # Earlier commits read \$GEN_INHIBIT_REPO and take --repo, so both are set and the flag
 # is chosen by the archive itself.
-export REVERSE_IT_DIR=$RROOT GEN_INHIBIT_REPO=$RROOT
+RR=$RQ
+export REVERSE_IT_DIR="\$RR" GEN_INHIBIT_REPO="\$RR"
 if [ -e test/gen_inhibit_host/project_dir.py ]; then PDFLAG=--project-dir; else PDFLAG=--repo; fi
-echo "# project folder: $RROOT (from_capture \$PDFLAG)"
+echo "# project folder: \$RR (from_capture \$PDFLAG)"
 cd test/gen_inhibit_host
 step make make -s
 step make_scenarios $PY make_scenarios.py
@@ -71,13 +79,13 @@ step drained_check $PY drained_check.py
 # (found on 65e9446). Make it, and check the size, so a missing or truncated fixture
 # fails here by name rather than in shim case 33/53.
 mkdir -p ../gen_inhibit_shim/scenarios
-step longarm_fixture $PY from_capture.py $RROOT/projects/vtrux/notes/artifacts/gen-inhibit/runs/scottsvalley_armable_300s.log   \$PDFLAG $RROOT --channel 0 --at 0 --for 300 --all-ids --out ../gen_inhibit_shim/scenarios/replay-longarm-300s-all.scn
+step longarm_fixture $PY from_capture.py "\$RR/projects/vtrux/notes/artifacts/gen-inhibit/runs/scottsvalley_armable_300s.log" \$PDFLAG "\$RR" --channel 0 --at 0 --for 300 --all-ids --out ../gen_inhibit_shim/scenarios/replay-longarm-300s-all.scn
 echo "fixture: \$(wc -c < ../gen_inhibit_shim/scenarios/replay-longarm-300s-all.scn) bytes (README: 23241533)"
 step fixture_size test "\$(wc -c < ../gen_inhibit_shim/scenarios/replay-longarm-300s-all.scn)" = 23241533
 # The fixture is not in git, so its hash is the only proof a later run used the same one
 # (c65c45e baseline: runs/baseline_c65c45e/host/shim_fixture.sha256).
 echo "fixture sha256: \$(sha256sum < ../gen_inhibit_shim/scenarios/replay-longarm-300s-all.scn | cut -d' ' -f1)"
-echo "fixture source sha256: \$(sha256sum < $RROOT/projects/vtrux/notes/artifacts/gen-inhibit/runs/scottsvalley_armable_300s.log | cut -d' ' -f1)"
+echo "fixture source sha256: \$(sha256sum < "\$RR/projects/vtrux/notes/artifacts/gen-inhibit/runs/scottsvalley_armable_300s.log" | cut -d' ' -f1)"
 cd ../gen_inhibit_shim
 step shim_E1 bash -c 'make -s clean && make -s && ./shim_test'
 step shim_asan bash -c 'make -s clean && make -s asan && ./shim_test'
