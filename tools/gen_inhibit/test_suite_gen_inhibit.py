@@ -853,7 +853,8 @@ FAKE_SSH = r"""#!/usr/bin/env bash
 while [ "${1#-}" != "$1" ]; do [ "$1" = "-o" ] && shift; shift; done
 printf 'HOST %s CMD %s\n' "$1" "$2" >> "$SSH_LOG"
 case "$2" in
-  *"tar xf"*) HOME="$(cygpath -u "$FAKE_HOME")" bash -c "$2" ;;    # a POSIX home, as the host has
+  *"tar xf"*) h=$FAKE_HOME; command -v cygpath > /dev/null && h=$(cygpath -u "$h")   # a POSIX home, as the host has
+              HOME="$h" bash -c "$2" ;;
   *) echo "pages seen: fake"; echo "all emitted diag frames decode against the DBC"; echo "exit 0" ;;
 esac
 """
@@ -881,6 +882,7 @@ def test_host_group(settings, emu):
         os.makedirs(p)
     with open(os.path.join(fbin, "ssh"), "w", newline="\n") as f:
         f.write(FAKE_SSH)
+    os.chmod(os.path.join(fbin, "ssh"), 0o755)      # Linux needs it; Git Bash goes by the #! line
 
     def run_b15(gi_tools, tag):
         log = os.path.join(d, "ssh_%s.log" % tag)
