@@ -30,8 +30,8 @@ It has no other mode:
 - The resume message cannot start with `/`, `!` or `#`.
 - It refuses, typing nothing, if its own file is untracked or differs from
   `HEAD`.
-- One request runs per session at a time, and every call is logged, to
-  `scratch/session-compact/` in this worktree.
+- One request runs per session at a time. Every real call (not `--check`) is
+  logged, to `scratch/session-compact/` in this worktree.
 
 ## When to use it
 
