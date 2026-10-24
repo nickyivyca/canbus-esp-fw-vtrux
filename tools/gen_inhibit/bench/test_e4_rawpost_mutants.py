@@ -11,8 +11,8 @@ a kill. Added 2026-10-16 with the fix to run_arm's arm/pre-read wiring.
 import os
 import shutil
 import subprocess
-import tempfile
 import sys
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = "e4_device_calibration.py"
@@ -40,7 +40,7 @@ MUTANTS = [
 
 
 def main():
-    base = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "e4_rawpost_mutants")   # outside SeaDrive (AGENTS.md)
+    base = gi_paths.scratch("mutants-e4_rawpost_mutants")   # the worktree's scratch/ (AGENTS.md)
     killed = errors = 0
     for i, (name, old, new) in enumerate(MUTANTS, 1):
         d = os.path.join(base, "m%d" % i)

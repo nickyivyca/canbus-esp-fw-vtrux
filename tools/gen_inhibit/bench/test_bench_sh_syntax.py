@@ -16,6 +16,7 @@ import os
 import shutil
 import subprocess
 import sys
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -45,7 +46,7 @@ def main():
     v = subprocess.run([BASH, "--version"], capture_output=True, text=True, timeout=60).stdout.splitlines()
     check("bash is Git Bash, as the suite runs the scripts", bool(v) and "-pc-msys" in v[0], v[0] if v else "no output")
     # The check must be able to fail: the defect's own shape fails, the same line without it parses.
-    tmp = tempfile.mkdtemp(prefix="gi-sh-syntax-")
+    tmp = tempfile.mkdtemp(prefix="gi-sh-syntax-", dir=gi_paths.scratch("tmp", run=False))
     try:
         for name, line, want_fail in (
                 ("apostrophe", ': "${Q:?set Q (man\'s sha)}"', True),

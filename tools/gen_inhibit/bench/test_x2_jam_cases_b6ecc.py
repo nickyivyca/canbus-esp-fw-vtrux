@@ -453,7 +453,7 @@ def main():
         if src.count(old) != 1:
             print("ERROR    m%d %s: the substitution matches %d times" % (i, name, src.count(old)))
             continue
-        with tempfile.TemporaryDirectory(prefix="gi-jam-b6ecc-m%d-" % i) as tmp:
+        with tempfile.TemporaryDirectory(prefix="gi-jam-b6ecc-m%d-" % i, dir=gi_paths.scratch("tmp", run=False)) as tmp:
             mp = os.path.join(tmp, "x2_jam_cases.py")
             open(mp, "w", encoding="utf-8", newline="").write(src.replace(old, new))
             env = dict(os.environ, PYTHONPATH=HERE + os.pathsep + os.environ.get("PYTHONPATH", ""))

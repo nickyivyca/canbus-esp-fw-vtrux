@@ -3,7 +3,7 @@
 features off in this product). Gen-inhibit tester.
 
 Each mutant edits one of the firmware repo's test/build_checks files in a copy of
-the whole folder under the machine temp folder (outside SeaDrive), runs
+the whole folder in the worktree's scratch/, runs
 test_switch_rows.py and test_build_switches.py there, and must make one of them
 report a FAIL. test_refusal_pairs.py is tested against real images instead (its
 negative runs, recorded in the evidence doc).
@@ -27,7 +27,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 
 FW = os.environ.get("GI_FW") or gi_paths.repo_root()
@@ -85,7 +84,7 @@ def fails_in(d, pairs):
 
 
 def main():
-    base = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "build_checks_stock")
+    base = gi_paths.scratch("mutants-build_checks_stock")
     killed = errors = 0
     if "--pairs" in sys.argv:
         pairs = sys.argv[sys.argv.index("--pairs") + 1:]

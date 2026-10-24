@@ -15,8 +15,8 @@ the WiCAN's USB unplugged, --reset-wican reset nothing and said nothing.
 import os
 import shutil
 import subprocess
-import tempfile
 import sys
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = "x2_jam_cases.py"
@@ -72,7 +72,7 @@ MUTANTS = [
 
 def main():
     root = os.getcwd()
-    base = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "x2_jam_reset_mutants")   # outside SeaDrive (AGENTS.md)
+    base = gi_paths.scratch("mutants-x2_jam_reset_mutants")   # the worktree's scratch/ (AGENTS.md)
     killed = errors = 0
     for i, (name, old, new) in enumerate(MUTANTS, 1):
         d = os.path.join(base, "m%d" % i)

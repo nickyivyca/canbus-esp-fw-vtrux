@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Mutants of gi_paths.py; test_gi_paths.py must fail on each BY A CHECK. A crash is
 not a kill (a FAIL whose detail starts CRASH does not count), and an edit that does
-not apply is an error. Each mutant is a copy of gi_paths.py in the machine's temp
-folder with one edit, run through GI_PATHS_DIR. Gen-inhibit tester, 2026-10-22.
+not apply is an error. Each mutant is a copy of gi_paths.py in the worktree's
+scratch/ with one edit, run through GI_PATHS_DIR. Gen-inhibit tester, 2026-10-22.
 
     py -3.14 -B test_gi_paths_mutants.py
 """
@@ -10,7 +10,7 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TARGET = "gi_paths.py"
@@ -36,6 +36,14 @@ MUTANTS = [
      '            lines.append(r)'),
     ("the tree digest skips added names", '            lines.append("%s %s" % (r, sha256_file(p)))',
      '            lines.append(sha256_file(p))\n            lines.sort()'),
+    # scratch folders (harness-defects row, 2026-10-24)
+    ("scratch has no per-run part", '    if run:\n        d = os.path.join(d, "%s_%d"', '    if False:\n        d = os.path.join(d, "%s_%d"'),
+    ("scratch in the system temp folder",
+     '    d = os.path.join(worktree_of(start or HERE), "scratch", "gen-inhibit-tests", name)',
+     '    d = os.path.join(os.environ.get("TEMP") or "/tmp", "gen-inhibit-tests", name)'),
+    ("worktree_of counts up instead of finding .git",
+     '        if os.path.exists(os.path.join(d, ".git")):\n            return d\n',
+     '        return os.path.normpath(os.path.join(d, "..", "..", ".."))\n'),
 ]
 
 
@@ -61,7 +69,7 @@ def copy_tree(base, name, text):
 
 
 def main():
-    base = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "gi_paths")
+    base = gi_paths.scratch("mutants-gi_paths")
     src = open(os.path.join(HERE, TARGET), encoding="utf-8", newline="").read()
     killed = errors = 0
     dead, crashed, fails, rc = run_test(copy_tree(base, "control", src))

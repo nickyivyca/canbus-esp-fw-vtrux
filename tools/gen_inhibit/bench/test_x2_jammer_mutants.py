@@ -6,13 +6,12 @@ A crash is not a kill, and an edit that does not apply is an error.
 
 Written 2026-10-20 for the empty line sub_id sends before ID (the 2026-10-19 chain run:
 bench_identify's "V\r" "N\r" joined the ID line). Each mutant is a copy of the tool and
-the test in the machine's temp folder, one edit applied. Gen-inhibit tester.
+the test in the worktree's scratch/, one edit applied. Gen-inhibit tester.
 """
 import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -28,7 +27,7 @@ MUTANTS = [
 
 
 def main():
-    base = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "x2_jammer")
+    base = gi_paths.scratch("mutants-x2_jammer")
     src = open(os.path.join(HERE, SRC), encoding="utf-8", newline="").read().replace("\r\n", "\n")
     killed = errors = 0
     for n, (name, old, new) in enumerate(MUTANTS, 1):

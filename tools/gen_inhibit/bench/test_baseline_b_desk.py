@@ -9,7 +9,7 @@ records, exits 2 having written no result.
 Run from the reverse-it root, with REVERSE_IT_DIR set to it. suite_judges.py comes
 from this file's parent folder, tools/gen_inhibit (gi_paths.fw_tools()).
 DESK_SCRIPT overrides the script under test (the mutant runner). Scratch goes to the
-machine's temp folder. The full run takes about 10 minutes (B24 reads every arm).
+worktree's scratch/. The full run takes about 10 minutes (B24 reads every arm).
 Gen-inhibit tester, 2026-10-19.
 """
 import argparse
@@ -19,7 +19,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -74,7 +73,7 @@ def main():
     import suite_judges as SJ
     with open(os.path.join(base, "suite_index_e3d9437.json"), encoding="utf-8") as f:
         idx = {c["id"]: c for c in json.load(f)["checks"]}
-    tmp = os.path.join(tempfile.gettempdir(), "gen-inhibit-desk-test", "t%d" % os.getpid())
+    tmp = gi_paths.scratch("desk-test")
     shutil.rmtree(tmp, ignore_errors=True)
     try:
         # 1. the e3d9437 files: each step's output judges as the index says

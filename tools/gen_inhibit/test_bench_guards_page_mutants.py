@@ -6,7 +6,7 @@ not count), and an edit that does not apply is an error.
     py -3.14 test_bench_guards_page_mutants.py
 
 Each mutant copies bench_ota_guard.py and bench_flash_guard.py into a fresh folder
-in the machine's temp folder, applies one edit to one of them, and runs the test
+in the worktree's scratch/, applies one edit to one of them, and runs the test
 against that folder (GUARDS_DIR). A "both" mutant edits bench_ota_guard.py's
 wifi_mode() or ap_mode_detail(), which the flash guard imports. The control is
 both guards as they were at 95aa77a, before they moved off /check_status and
@@ -17,9 +17,10 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(HERE, "bench"))
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 TEST = "test_bench_guards_page.py"
 OTA, FLASH = "bench_ota_guard.py", "bench_flash_guard.py"
 CONTROL = "95aa77a"
@@ -96,7 +97,7 @@ def report(tag, name, dead, crashed, fails, rc):
 
 
 def main():
-    base = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "guards_page")
+    base = gi_paths.scratch("mutants-guards_page")
     src = {f: open(os.path.join(HERE, f), encoding="utf-8", newline="").read() for f in (OTA, FLASH)}
     killed = errors = 0
     for n, (name, target, old, new) in enumerate(MUTANTS, 1):

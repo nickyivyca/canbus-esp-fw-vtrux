@@ -20,12 +20,12 @@ import math
 import os
 import re
 import sys
-import tempfile
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# Scratch: the argument, or the machine's temp folder (never the repo; it was gen/ here).
-SCRATCH = sys.argv[1] if len(sys.argv) > 1 else os.path.join(tempfile.gettempdir(), "gen-inhibit-interlock-judge")
+# Scratch: the argument, or this run's own folder in the worktree's scratch/ (it was gen/ beside
+# this file once; then a fixed folder in the worktree's scratch/).
+SCRATCH = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else gi_paths.scratch("interlock_judge"))
 sys.path.insert(0, HERE)
 sys.path.insert(0, gi_paths.reverse_it_dir())
 # interlock_bench writes the stimulus files it builds to <GI_RUNS_DIR>/interlock_stimulus,
@@ -1023,8 +1023,7 @@ def main():
           and os.path.abspath(gi_paths.runs()) not in os.path.abspath(B.STIM_DIR), B.STIM_DIR)
     # Absolute (2026-10-16): make_scenarios runs with the firmware clone's host folder
     # as its cwd, so a relative scratch path wrote generated scenarios into that clone.
-    scratch = os.path.abspath(sys.argv[1] if len(sys.argv) > 1
-                              else os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "test_interlock_scratch"))
+    scratch = SCRATCH
     os.makedirs(scratch, exist_ok=True)
     test_soc()
     test_boundary()

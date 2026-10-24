@@ -17,6 +17,7 @@ import re
 import shutil
 import subprocess
 import sys
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -94,7 +95,7 @@ def tree(tmp, script_src):
 
 
 def run(script_src, **env_over):
-    tmp = tempfile.mkdtemp(prefix="gi-b6ecc-run-")
+    tmp = tempfile.mkdtemp(prefix="gi-b6ecc-run-", dir=gi_paths.scratch("tmp", run=False))
     try:
         root, b = tree(tmp, script_src)
         log = os.path.join(tmp, "log.txt")

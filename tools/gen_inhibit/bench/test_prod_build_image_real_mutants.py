@@ -6,8 +6,8 @@ correct. A crash is not a kill, and an edit that does not apply is an error.
     python test_prod_build_image_real_mutants.py --repo <clone at a fixed prod_build.py> [--harness PATH]
 
 Run it with ESP-IDF exported, as the harness needs (prod_image_real_run.ps1 does
-that: -Harness <this file>). Each mutant is a copy of the harness in the machine's
-temp folder with one edit, run on one case against --repo; every case is a real
+that: -Harness <this file>). Each mutant is a copy of the harness in the worktree's
+scratch/ with one edit, run on one case against --repo; every case is a real
 reconfigure and build. The control run on the parent of the fix shows the
 verdict checks failing; these show the checks that guard the harness itself.
 Afterwards, run the harness's plain case again: the mutants clear the clone's
@@ -18,7 +18,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 
 DEFAULT_HARNESS = os.path.join(gi_paths.repo_root(), "test", "build_checks", "test_prod_build_image_real.py")
@@ -41,7 +40,7 @@ def main():
     ap.add_argument("--harness", default=DEFAULT_HARNESS)
     a = ap.parse_args()
     src = open(a.harness, encoding="utf-8", newline="").read()
-    base = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "prod_image_real")
+    base = gi_paths.scratch("mutants-prod_image_real")
     killed = errors = 0
     for n, (name, case, old, new) in enumerate(MUTANTS, 1):
         if src.count(old) != 1:

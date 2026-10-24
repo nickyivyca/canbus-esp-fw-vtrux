@@ -12,6 +12,7 @@ import os
 import shutil
 import subprocess
 import sys
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -224,7 +225,7 @@ def main():
             print("ERROR    m%d %s: the substitution matches %d times" % (i, name, src.count(old)))
             errors += 1
             continue
-        tmp = tempfile.mkdtemp(prefix="gi-b6-codes-m%d-" % i)
+        tmp = tempfile.mkdtemp(prefix="gi-b6-codes-m%d-" % i, dir=gi_paths.scratch("tmp", run=False))
         try:
             for g in (f, "b6_session1_desk.py", "b6_class_count.py", "b6_multicount_landing.py", "gi_ecc.py", "x2_jammer.py"):
                 shutil.copy(os.path.join(HERE, g), tmp)

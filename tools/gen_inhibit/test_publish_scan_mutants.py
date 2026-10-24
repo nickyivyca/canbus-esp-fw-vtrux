@@ -4,7 +4,7 @@ FAIL by a check (a traceback is not a kill), and an edit that does not apply is 
 error. Gen-inhibit tester, 2026-10-22.
 
 Each mutant is a copy of test_publish_scan.py with one edit, in a folder of the
-machine's temp folder that also holds this folder's top-level .py files (the scan runs
+worktree's scratch/ that also holds this folder's top-level .py files (the scan runs
 bench_flash.py and imports bench_ota_guard from beside itself), run with
 PUBLISH_SCAN_ROOT naming this folder, so it scans the real tree. The control, the
 unmutated copy run the same way, must pass.
@@ -15,9 +15,10 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(HERE, "bench"))
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 TARGET = "test_publish_scan.py"
 MUTANTS = [
     (".sh not scanned", '".sh", ".ps1", ".c"', '".ps1", ".c"'),
@@ -54,7 +55,7 @@ def copy(base, name, text):
 
 
 def main():
-    base = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "publish_scan")
+    base = gi_paths.scratch("mutants-publish_scan")
     src = open(os.path.join(HERE, TARGET), encoding="utf-8", newline="").read()
     fails, crashed, rc = run(copy(base, "control", src))
     control_ok = rc == 0 and not fails and not crashed

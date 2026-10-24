@@ -5,15 +5,15 @@ an error.
 
     py -3.14 -B tools/gen_inhibit/bench/test_baseline_capture_stop_mutants.py
 
-Run from the reverse-it root. Each mutant is a copy of the five scripts in the machine's
-temp folder with one edit, run through the test's BATCH_DIR. BATCH_SRC names the scripts
+Run from the reverse-it root. Each mutant is a copy of the five scripts in the worktree's
+scratch/ with one edit, run through the test's BATCH_DIR. BATCH_SRC names the scripts
 to copy (default: this folder). About 25 minutes. Gen-inhibit tester, 2026-10-20.
 """
 import os
 import shutil
 import subprocess
 import sys
-import tempfile
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.environ.get("BATCH_SRC") or HERE
@@ -53,7 +53,7 @@ MUTANTS = [
 
 
 def main():
-    base = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "capture_stop")
+    base = gi_paths.scratch("mutants-capture_stop")
     srcs = {}
     for f in FILES:
         raw = open(os.path.join(SRC_DIR, f), encoding="utf-8", newline="").read()

@@ -8,7 +8,7 @@ Gen-inhibit tester, 2026-10-19.
 """
 import os
 import sys
-import tempfile
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -91,7 +91,7 @@ def main():
     check("windows: quiet is [quiet, pins)", q == [2, 3], q)
     check("windows: after is [pins, serial_after), the pin read included", af == [4, 5, 6, 7], af)
     check("windows: control is [control, end)", c == [10, 11, 12], c)
-    d = os.path.join(tempfile.gettempdir(), "gen-inhibit-pins-noreset-test")
+    d = gi_paths.scratch("pins-noreset-test")
     os.makedirs(d, exist_ok=True)
     for text, want, name in (
             ("## Lock\n\n**Holder:** tester (gen-inhibit)\n**Since:** x\n", True, "us"),

@@ -7,7 +7,7 @@ The fake ticks until it gets CTRL_BREAK (then prints "broke" and exits 0), or ig
 (--deaf), or exits by itself (--die-after S --rc N). Cases: stopped by the stop file;
 a deaf child killed; the max bound; a child that exits early; a stop file left over
 before the start refused with no child started. CAPTURE_WINDOW overrides the script
-under test (the mutant runner). Scratch in the machine's temp folder. Gen-inhibit
+under test (the mutant runner). Scratch in the worktree's scratch/. Gen-inhibit
 tester, 2026-10-20.
 """
 import json
@@ -15,7 +15,7 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -76,7 +76,7 @@ def cw(tmp, name, fake_args, extra=(), stop_after=None, timeout=60):
 
 
 def main():
-    tmp = os.path.join(tempfile.gettempdir(), "gen-inhibit-capture-window-test", "t%d" % os.getpid())
+    tmp = gi_paths.scratch("capture-window-test")
     shutil.rmtree(tmp, ignore_errors=True)
     os.makedirs(tmp)
     open(os.path.join(tmp, "fake.py"), "w").write(FAKE)

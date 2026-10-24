@@ -16,7 +16,7 @@ the first PASSes); no page at all (FAIL, nothing sent). Every case checks that o
 /gen_inhibit, /system_reboot and /gen_inhibit_set?mode=0 were asked for and that no other
 page field (a fake SSID and password) reaches the record or the output. The boot-time
 rule is also tested directly. WICAN_REBOOT overrides the script under test. Scratch in
-the machine's temp folder. Gen-inhibit tester, 2026-10-20.
+the worktree's scratch/. Gen-inhibit tester, 2026-10-20.
 """
 import http.server
 import importlib.util
@@ -25,7 +25,7 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 import threading
 import time
 
@@ -155,7 +155,7 @@ def direct():
 
 
 def tests():
-    tmp = os.path.join(tempfile.gettempdir(), "gen-inhibit-wican-reboot-test", "t%d" % os.getpid())
+    tmp = gi_paths.scratch("wican-reboot-test")
     shutil.rmtree(tmp, ignore_errors=True)
     os.makedirs(tmp)
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fake)
@@ -285,7 +285,7 @@ MUTANTS = [
 
 def mutants():
     src = open(SCRIPT, encoding="utf-8", newline="").read().replace("\r\n", "\n")
-    base = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "wican_reboot")
+    base = gi_paths.scratch("mutants-wican_reboot")
     killed = errors = 0
     for n, (name, old, new) in enumerate(MUTANTS, 1):
         if src.count(old) != 1:

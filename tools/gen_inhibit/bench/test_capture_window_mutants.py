@@ -12,7 +12,7 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = "capture_window.py"
@@ -32,7 +32,7 @@ MUTANTS = [
 
 
 def main():
-    base = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "capture_window")
+    base = gi_paths.scratch("mutants-capture_window")
     src = open(os.path.join(HERE, SRC), encoding="utf-8", newline="").read().replace("\r\n", "\n")
     killed = errors = 0
     for n, (name, old, new) in enumerate(MUTANTS, 1):

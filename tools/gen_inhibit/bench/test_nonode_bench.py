@@ -5,7 +5,7 @@
     py -3.14 -B tools/gen_inhibit/bench/test_nonode_bench.py [--mutants]
 
 Prints ok/FAIL per check; exit 0 only with no FAIL. --mutants applies each edit in
-MUTANTS to a copy of nonode_bench.py in the temp folder and requires a FAIL line (a
+MUTANTS to a copy of nonode_bench.py in the worktree's scratch/ and requires a FAIL line (a
 crash is not a kill). Gen-inhibit tester, 2026-10-20.
 """
 import copy
@@ -14,7 +14,7 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.environ.get("NONODE_BENCH") or os.path.join(HERE, "nonode_bench.py")
@@ -206,8 +206,7 @@ def tests():
                                ("unknown", "a register was not read", False)]:
         check("x2: %s is %s" % (verdict, "held" if held else "not held"), m.x2_held(pl % (verdict, why)) == held)
     check("x2: no pins line is not held", not m.x2_held("no pins line (rc 1)"))
-    fake = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "nonode_x2_fake_%d.py" % os.getpid())
-    os.makedirs(os.path.dirname(fake), exist_ok=True)
+    fake = os.path.join(gi_paths.scratch("nonode_bench"), "nonode_x2_fake.py")
     open(fake, "w").write("import sys\nprint('noise')\nprint('pins: TX (GPIO7) recessive -- x; RX (GPIO6) level 1' "
                           "if sys.argv[1:] == ['pins'] else 'wrong argv %s' % sys.argv[1:])\n")
     got = m.x2_pins("", tool=fake)
@@ -320,7 +319,7 @@ MUTANTS = [
 
 def mutants():
     src = open(SCRIPT, encoding="utf-8", newline="").read()
-    base = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "nonode_bench")
+    base = gi_paths.scratch("mutants-nonode_bench")
     killed = errors = 0
     for n, (name, old, new) in enumerate(MUTANTS, 1):
         if src.count(old) != 1:

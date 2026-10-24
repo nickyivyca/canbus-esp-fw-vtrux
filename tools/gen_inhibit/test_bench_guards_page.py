@@ -29,10 +29,25 @@ import json
 import os
 import shutil
 import sys
-import tempfile
 import urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def scratch_dir(name):
+    """This run's own folder in the worktree's gitignored scratch/ (AGENTS.md "Files and
+    folders"), never the system temp folder: bench/gi_paths.scratch()'s rule, written out
+    here because a mutant's copy of this file has no bench/ beside it. The worktree is
+    found by walking up to its .git, so a copy in its scratch/ finds the same one."""
+    import time
+    d = os.path.dirname(os.path.abspath(__file__))
+    while not os.path.exists(os.path.join(d, ".git")):
+        if os.path.dirname(d) == d:
+            raise RuntimeError("%s is in no git worktree" % __file__)
+        d = os.path.dirname(d)
+    d = os.path.join(d, "scratch", "gen-inhibit-tests", name, "%s_%d" % (time.strftime("%Y%m%dT%H%M%S"), os.getpid()))
+    os.makedirs(d, exist_ok=True)
+    return d
 sys.path.insert(0, os.environ.get("GUARDS_DIR") or HERE)
 import bench_ota_guard as G       # noqa: E402
 import bench_flash_guard as F     # noqa: E402
@@ -141,7 +156,7 @@ def record(d, name):
 
 
 def main():
-    work = os.path.join(tempfile.gettempdir(), "gen-inhibit-guards-page")
+    work = scratch_dir("guards_page")
     shutil.rmtree(work, ignore_errors=True)
     os.makedirs(work)
     os.environ[G.RUNS_ENV] = work

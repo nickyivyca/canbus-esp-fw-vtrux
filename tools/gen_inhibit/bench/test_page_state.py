@@ -7,7 +7,7 @@ Cases: a good page carrying keys that must not be copied (a fake SSID and passwo
 two bad answers then a good one (retried, three GETs, two errors kept); no good answer
 (exit 1, no page); a page missing fields (recorded as None). Every case checks that
 only /gen_inhibit was asked for. PAGE_STATE overrides the script under test. Scratch in
-the machine's temp folder. Gen-inhibit tester, 2026-10-20.
+the worktree's scratch/. Gen-inhibit tester, 2026-10-20.
 """
 import http.server
 import json
@@ -15,7 +15,7 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 import threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -64,7 +64,7 @@ def run(srv, tmp, name, answers, extra=()):
 
 
 def tests():
-    tmp = os.path.join(tempfile.gettempdir(), "gen-inhibit-page-state-test", "t%d" % os.getpid())
+    tmp = gi_paths.scratch("page-state-test")
     shutil.rmtree(tmp, ignore_errors=True)
     os.makedirs(tmp)
     srv = http.server.HTTPServer(("127.0.0.1", 0), Fake)
@@ -118,7 +118,7 @@ MUTANTS = [
 
 def mutants():
     src = open(SCRIPT, encoding="utf-8", newline="").read().replace("\r\n", "\n")
-    base = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "page_state")
+    base = gi_paths.scratch("mutants-page_state")
     killed = errors = 0
     for n, (name, old, new) in enumerate(MUTANTS, 1):
         if src.count(old) != 1:

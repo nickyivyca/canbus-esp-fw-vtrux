@@ -346,7 +346,7 @@ def main():
         if src.count(old) != 1:
             print("ERROR    m%d %s: the substitution matches %d times" % (i, name, src.count(old)))
             continue
-        with tempfile.TemporaryDirectory(prefix="gi-ecc-m%d-" % i) as tmp:
+        with tempfile.TemporaryDirectory(prefix="gi-ecc-m%d-" % i, dir=gi_paths.scratch("tmp", run=False)) as tmp:
             mp = os.path.join(tmp, "gi_ecc.py")
             open(mp, "w", encoding="utf-8").write(src.replace(old, new))
             r = subprocess.run([sys.executable, "-B", os.path.abspath(__file__), "--module", mp],

@@ -5,7 +5,7 @@ is an error.
 
     GI_BASH="C:/Program Files/Git/usr/bin/bash.EXE" py -3.14 -B tools/gen_inhibit/bench/test_bench_sh_syntax_mutants.py
 
-Each mutant is a copy of every .sh here in the machine's temp folder, one edit applied to
+Each mutant is a copy of every .sh here in the worktree's scratch/, one edit applied to
 one script, checked through GI_SH_DIR. Gen-inhibit tester, 2026-10-22.
 """
 import glob
@@ -13,7 +13,7 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEST = "test_bench_sh_syntax.py"
@@ -25,7 +25,7 @@ MUTANTS = [   # (name, script, old, new)
 
 
 def main():
-    base = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "bench_sh_syntax")
+    base = gi_paths.scratch("mutants-bench_sh_syntax")
     killed = errors = 0
     for n, (name, script, old, new) in enumerate(MUTANTS, 1):
         src = open(os.path.join(HERE, script), encoding="utf-8", newline="").read()

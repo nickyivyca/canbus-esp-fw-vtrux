@@ -14,16 +14,31 @@ import json
 import os
 import shutil
 import sys
-import tempfile
 import contextlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def scratch_dir(name):
+    """This run's own folder in the worktree's gitignored scratch/ (AGENTS.md "Files and
+    folders"), never the system temp folder: bench/gi_paths.scratch()'s rule, written out
+    here because a mutant's copy of this file has no bench/ beside it. The worktree is
+    found by walking up to its .git, so a copy in its scratch/ finds the same one."""
+    import time
+    d = os.path.dirname(os.path.abspath(__file__))
+    while not os.path.exists(os.path.join(d, ".git")):
+        if os.path.dirname(d) == d:
+            raise RuntimeError("%s is in no git worktree" % __file__)
+        d = os.path.dirname(d)
+    d = os.path.join(d, "scratch", "gen-inhibit-tests", name, "%s_%d" % (time.strftime("%Y%m%dT%H%M%S"), os.getpid()))
+    os.makedirs(d, exist_ok=True)
+    return d
 sys.path.insert(0, HERE)
 import bench_compare as BC   # noqa: E402
 
 fails = []
 oks = 0
-TMP = os.path.join(tempfile.gettempdir(), "gen-inhibit-bench-compare-test", str(os.getpid()))
+TMP = scratch_dir("bench_compare")
 
 
 def check(name, cond, detail=""):

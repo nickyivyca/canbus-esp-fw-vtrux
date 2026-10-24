@@ -8,7 +8,7 @@ Gen-inhibit tester, 2026-10-16 (adds the stock features and the AutoPID control)
 
 Images are <tree>/build-tester-<name>/wican-fw_obd_<sha>_man[_rt|_flt].bin, the
 names baseline_builds.ps1 gives them. The no-ELF control copies the product image
-alone into the machine temp folder.
+alone into the worktree's scratch/.
 """
 import argparse
 import glob
@@ -16,7 +16,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 
 FW = os.environ.get("GI_FW") or gi_paths.repo_root()
@@ -60,8 +59,7 @@ def main():
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
     t = args.tree
-    noelf = os.path.join(tempfile.gettempdir(), "gen-inhibit-refusal-pairs", "noelf")
-    shutil.rmtree(noelf, ignore_errors=True)
+    noelf = os.path.join(gi_paths.scratch("refusal_pairs"), "noelf")
     os.makedirs(noelf)
     man = image(t, "man")
     noelf_bin = os.path.join(noelf, os.path.basename(man))

@@ -36,13 +36,13 @@ import hashlib
 import io
 import os
 import subprocess
-import tempfile
 import sys
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HARNESS = os.path.join(HERE, "diag_build_page_check.py")
 TEST = os.path.join(HERE, "autoarm_bit_offline_test.py")
-BACKUP = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "diag_build_page_check.py.mutation-backup")
+BACKUP = os.path.join(gi_paths.scratch("mutants-autoarm_bit"), "diag_build_page_check.py.mutation-backup")
 
 #
 # (name, old, new, expect, cases)

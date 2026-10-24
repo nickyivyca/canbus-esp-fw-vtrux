@@ -4,16 +4,17 @@ A crash is not a kill, and an edit that does not apply is an error.
 
     py -3.14 -B test_bench_compare_mutants.py
 
-Each mutant copies bench_compare.py and its test into a fresh folder in the machine's
-temp folder and applies one edit. Gen-inhibit tester, 2026-10-19.
+Each mutant copies bench_compare.py and its test into a fresh folder in the worktree's
+scratch/ and applies one edit. Gen-inhibit tester, 2026-10-19.
 """
 import os
 import shutil
 import subprocess
 import sys
-import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(HERE, "bench"))
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 SRC = "bench_compare.py"
 TEST = "test_bench_compare.py"
 
@@ -82,7 +83,7 @@ MUTANTS = [
 
 
 def main():
-    base = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "bench_compare")
+    base = gi_paths.scratch("mutants-bench_compare")
     src = open(os.path.join(HERE, SRC), encoding="utf-8", newline="").read()
     killed = errors = 0
     for n, (name, old, new) in enumerate(MUTANTS, 1):

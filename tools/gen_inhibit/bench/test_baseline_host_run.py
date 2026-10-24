@@ -116,7 +116,7 @@ def fake_root(base, rel):
 
 def checks(script_dir):
     want_sha = hashlib.sha256(CAPTURE_BODY).hexdigest()
-    with tempfile.TemporaryDirectory(prefix="gi-host-run-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="gi-host-run-", dir=gi_paths.scratch("tmp", run=False)) as tmp:
         rc, s, out = remote_script(script_dir, tmp)
         check("the script runs to the end with the fake ssh", rc == 0 and s, (rc, out[-300:]))
         new = os.path.join(tmp, "new", "test", "gen_inhibit_host")
@@ -215,7 +215,7 @@ def main():
         return 1 if FAILS else 0
     killed = 0
     for i, (name, old, new) in enumerate(MUTANTS, 1):
-        with tempfile.TemporaryDirectory(prefix="gi-host-run-m%d-" % i) as tmp:
+        with tempfile.TemporaryDirectory(prefix="gi-host-run-m%d-" % i, dir=gi_paths.scratch("tmp", run=False)) as tmp:
             src = open(os.path.join(HERE, SCRIPT), encoding="utf-8", newline="").read()
             if src.count(old) != 1:
                 print("ERROR    m%d %s: the substitution matches %d times" % (i, name, src.count(old)))

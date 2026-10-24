@@ -12,7 +12,7 @@ before the window; a device segment after the FIN on another connection only; a 
 record stopped by the max bound, not clean, stopped before the window ended, missing; a
 folder (B21 and B11raw names paired with their records), an empty folder, and a folder
 with one bad capture. CAPTURE_STOP_CHECK overrides the script under test. Scratch in the
-machine's temp folder. Gen-inhibit tester, 2026-10-20.
+worktree's scratch/. Gen-inhibit tester, 2026-10-20.
 """
 import importlib.util
 import json
@@ -21,7 +21,7 @@ import shutil
 import struct
 import subprocess
 import sys
-import tempfile
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.environ.get("CAPTURE_STOP_CHECK") or os.path.join(HERE, "capture_stop_check.py")
@@ -86,7 +86,7 @@ def cli(folder):
 
 
 def tests():
-    tmp = os.path.join(tempfile.gettempdir(), "gen-inhibit-capture-stop-check-test", "t%d" % os.getpid())
+    tmp = gi_paths.scratch("capture-stop-check-test")
     shutil.rmtree(tmp, ignore_errors=True)
     os.makedirs(tmp)
     try:
@@ -184,7 +184,7 @@ MUTANTS = [
 
 def mutants():
     src = open(SCRIPT, encoding="utf-8", newline="").read().replace("\r\n", "\n")
-    base = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "capture_stop_check")
+    base = gi_paths.scratch("mutants-capture_stop_check")
     killed = errors = 0
     for n, (name, old, new) in enumerate(MUTANTS, 1):
         if src.count(old) != 1:
