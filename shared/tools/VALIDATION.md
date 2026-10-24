@@ -1,0 +1,253 @@
+# Shared build tooling: validation evidence
+
+Why each requirement in `SPEC.md` is written as it is. Test evidence, that
+the tooling meets them, is in `VERIFICATION.md`.
+
+**How to read this file.** Each requirement has:
+- **Basis:** the ruling, measurement or reading the requirement rests on.
+  Most rest on a user ruling, cited with its date and where it is recorded.
+- **Exposed by** (where there is one): the finding that showed the earlier
+  wording or tooling was wrong. A finding is cited as what exposed the
+  problem. The basis is the correction or ruling that followed.
+- **Context** (where there is one): a measurement made on another toolchain,
+  board or code base. It points the same way but is not a basis for this
+  requirement.
+- **Status:** *complete*, or *basis pending*, saying what is missing.
+  Validation may be incomplete, but never silently.
+
+A pass recorded against the tooling this replaces (gen-inhibit's
+`prod_build.py` and build checks, the interposer's PlatformIO build scripts)
+verified that tooling. It is not cited here.
+
+**Where things are.** The port plan is
+`$REVERSE_IT_DIR/projects/vtrux/notes/plans/esp-shared-code-port.md`.
+gen-inhibit's spec, tracker and test evidence are
+`$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-wican-spec.md`,
+`gen-inhibit-review-2026-09-22.md` and `gen-inhibit-test-evidence.md` in the
+same folder. The interposer's test evidence is
+`charge-interposer-test-evidence.md` there.
+
+## 2. Identity
+
+### R1. Image hash
+- **Basis:** port plan goal 13 (user, 2026-10-17).
+- **Status:** complete.
+
+### R2. Code hash
+- **Basis:** port plan goal 13, "The code hash covers the flashed image, not
+  the ELF" (user, 2026-10-17). The ELF's debug sections, never flashed,
+  differ between host OSes because each host's prebuilt toolchain records
+  its own internal header paths, so the code hash is taken over the `.bin`
+  with the host-dependent fields blanked.
+- **Context:** interposer test evidence, "Reproducible builds and the
+  manifest's git fields", part (b), 2026-10-08. Same commit built on
+  NICKY-XPS and on madhouse-debian, six images: equal lengths, differing
+  only in 32 bytes at 0xb0 (the descriptor's ELF hash) and the trailing 33
+  bytes. Those were PlatformIO/Arduino images, not ESP-IDF 5.4.1 project
+  builds.
+- **Measurement:** gen-inhibit test evidence, section 13, "What a cross-host IDF 5.4.1 build differs in, for the code-identical clause" (tester, 2026-10-23; run files `$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/runs/repro_a24de99/`, `compare_cross_host.json` sha256 `362121ef...`, `compare_madhouse.json` sha256 `1d526a5d...`). `gen-inhibit/main` `a24de99` with
+  `CONFIG_APP_REPRODUCIBLE_BUILD` on, built at two paths on madhouse-debian
+  and two on NICKY-XPS. Across hosts the `.bin`s have the same length and
+  segments and differ in three runs only: the descriptor's ELF hash (32
+  bytes at 0xb0), the trailing checksum (1) and the trailing SHA-256 (32),
+  all inside the blank list. The ELFs differ only in `.debug_info`,
+  `.debug_line` and `.debug_line_str`, as goal 13 expected. A control with
+  one line of code duplicated differs throughout the code segment.
+  Checked by the reviewer: the code hash as R2 defines it, computed
+  independently on the four images, is the same for all four
+  (`8f02c415...`) and different for the control.
+- **Why version and date/time are blanked too:** they do not differ across
+  hosts (the date and time are zero with the reproducible option on). The
+  version is blanked so that a commit that changes no code keeps its code
+  hash (R3); the date and time cover a build without the option.
+- **Status:** complete.
+
+### R3. Evidence cites the code hash
+- **Basis:** port plan goal 13 (user, 2026-10-17): a commit that changes no
+  code keeps its evidence across branches and merges. gen-inhibit tracker A5
+  (user, 2026-10-19): bench results carry to a release build by code hash.
+- **Status:** complete.
+
+### R4. The commit enters the image once
+- **Basis:** port plan goal 13 (user, 2026-10-17). gen-inhibit's `0x7F3`
+  moves to the image-hash prefix with the tooling (user, 2026-10-19, tracker
+  A3/A8; plan step 0c).
+- **Status:** complete.
+
+### R5. Identity independent of branch, clone path and host OS
+- **Basis:** port plan goal 11 (user, 2026-10-17): a feature-branch build
+  and a `main` build of the same files get the same identity. Goal 13 for
+  the code hash across host OSes. Plan step 0b (user, 2026-10-17): without
+  `CONFIG_APP_REPRODUCIBLE_BUILD`, absolute source paths baked in by
+  `ESP_ERROR_CHECK` and `assert` give identical code in two clones two code
+  hashes.
+- **Context:** the interposer's same-host builds at two paths gave identical
+  ELF and `.bin` (interposer test evidence, same entry as R2, part (a)).
+  PlatformIO, not ESP-IDF 5.4.1.
+- **Measurement:** the R2 entry. Same host at two paths: byte-identical,
+  `.bin` and ELF, on both hosts. Across hosts: the same code hash.
+- **Status:** complete.
+
+### R6. Identity never rests on the version string or the file name
+- **Basis:** user, 2026-10-23 (requirements list review), following goals 11
+  and 13: with identity in the image hash and code hash, a name is only a
+  label.
+- **Exposed by:** gen-inhibit spec 12.3 item 3 records two builds that
+  produced new code under an old clean-looking name: 2026-09-29 (five edited
+  files rebuilt as `5364648`, overwriting the verified image of that name)
+  and 2026-10-13 (an `idf.py build` over edited `.c` files, named `a3394ca`).
+- **Status:** complete.
+
+### R7. Component digest
+- **Basis:** port plan goal 13 and "The split", Rules (user, 2026-10-17):
+  content plus relative paths, never a git ref, so a component that moves
+  folder keeps its digest. The documents are left out by name rather than
+  code being listed by type (user, 2026-10-23; gen-inhibit tracker D6):
+  writing evidence into `VERIFICATION.md` beside the code would otherwise
+  change the digest that evidence names, and a new or unexpected file type
+  is counted rather than missed.
+- **Exposed by:** the gen-inhibit reviewer's read of the bench lock spec's
+  move to `shared/bench/SPEC.md` (2026-10-23). Under the definition then in
+  force, adding `SPEC.md` changed `shared/bench`'s digest, and goal 20 item 6
+  puts `VERIFICATION.md` beside the code.
+- **Status:** complete.
+
+## 3. Release builds
+
+### R8. Clean worktree
+- **Basis:** gen-inhibit spec 12.3 item 3, "Prod builds are built on a clean
+  tree" (user, 2026-10-05). Port plan goal 13 (user, 2026-10-17) and Layer 0,
+  which keeps `prod_build.py` refusal 1 as a generic mechanism.
+- **Why it stays** (user, 2026-10-23, in the gen-inhibit reviewer's session,
+  on the reviewer's reading): the original reason was a stale image name
+  (R6). With identity no longer in the name, what remains is that the
+  record's commit (R13) must describe the image, which holds only if nothing
+  outside that commit was built.
+- **Status:** complete.
+
+### R9. Reconfigure first
+- **Basis:** gen-inhibit spec 12.3 item 3 (user, 2026-10-05): ESP-IDF fixes
+  the embedded version when CMake configures, not when it builds. Under R4
+  the commit is in that version field, so a build without a reconfigure can
+  carry an old commit. Port plan Layer 0 keeps refusal 4.
+- **Status:** complete.
+
+### R10. Downloaded components checked after the reconfigure
+- **Basis:** gen-inhibit spec 12.3 item 3 (user, 2026-10-05): the
+  `CHECKSUMS.json` and `dependencies.lock` checks. Port plan Layer 0 keeps
+  refusal 3. "After the reconfigure" is the correction below.
+- **Exposed by:** gen-inhibit test evidence, 12.3, on `e3d9437`, NOT AS
+  SPECIFIED (reviewer's ruling): on a fresh clone the component check ran
+  before the reconfigure fetched `espressif__mdns`, reported "managed
+  components: none on disk", and no row covered the component in the image.
+  Fixed in `2df3c17`.
+- **Status:** complete.
+
+### R11. The image is the one the build names
+- **Basis:** reviewer's reading of gen-inhibit spec 12.3 item 3, 2026-10-21
+  (tracker finding row): the image is `build/project_description.json`'s
+  `app_bin`, and a missing name or file is a refusal.
+- **Exposed by:** `prod_build.py` recorded the newest `.bin` in `build/`,
+  not the image the build named. Fixed in `95aa77a`, closed on tester
+  evidence 2026-10-21.
+- **Status:** complete.
+
+### R12. Reproducible build on
+- **Basis:** gen-inhibit tracker A4 (user, 2026-10-19); port plan step 0b
+  (user, 2026-10-17), for the reason under R5.
+- **Measurement, in part:** the R2 entry shows the second half of step 0b's
+  acceptance, a rebuild from a second clone path giving the same code hash,
+  with the option on.
+- **Status:** basis pending for the first half: a comparison of builds with
+  the option off and on, showing that only path strings and the build date
+  and time change. Every build in the R2 entry had the option on.
+
+### R13. One record per release build
+- **Basis:** port plan goal 13 (user, 2026-10-17): one record named by the
+  image hash, with the `.elf` and `.bin`, under `$REVERSE_IT_DIR`, stopping
+  if it is unset; never edited, so SeaDrive has nothing to conflict on. The
+  record's contents: user, 2026-10-23 (requirements list review). The pin
+  fields follow goal 20 item 8 (user, 2026-10-23): reproducing a result
+  needs the project commit and each pinned shared version. Recording the
+  build tooling's own pin: user, 2026-10-23, in the gen-inhibit reviewer's
+  session.
+- **Status:** complete.
+
+### R14. Bench and dev builds exempt
+- **Basis:** gen-inhibit spec 12.3 item 3 (user, 2026-10-07): a bench image
+  is normally built on a dirty tree, so applying the release rules to it
+  would fire on every bench run and mean nothing. gen-inhibit tracker A5
+  (user, 2026-10-19) for carrying results by code hash.
+- **Status:** complete.
+
+### R15. Bench runs log the code hash
+- **Basis:** gen-inhibit tracker A5 (user, 2026-10-19); port plan, shared
+  bench toolkit item 8 (user, 2026-10-17).
+- **Status:** complete.
+
+### R16. Shared code only at a pinned tag
+- **Basis:** port plan goal 12 (user, 2026-10-17): every shared component
+  pinned at a tag, `override_path` only while working on a shared change.
+  Goal 20 item 8 (user, 2026-10-23, confirmed in the gen-inhibit reviewer's
+  session): a pin may name a topic commit only on a project's topic branch,
+  never on its main branch. The refusal of a build tooling pin that names a
+  commit: user, 2026-10-23, in the gen-inhibit reviewer's session.
+- **Status:** complete.
+
+## 4. Checks
+
+### R17. Scope
+- **Basis:** port plan goal 13 (user, 2026-10-17). The release-build clause
+  (shared code only from `managed_components/`): user, 2026-10-23, in goal
+  13, confirmed in the gen-inhibit reviewer's session.
+- **Status:** complete.
+
+### R18. Options
+- **Basis:** port plan goal 13 (user, 2026-10-17).
+- **Status:** complete.
+
+### R19. Reproducible
+- **Basis:** port plan goal 13 (user, 2026-10-17).
+- **Measurement:** the R2 entry. The madhouse-debian builds, run twice, gave
+  the same sha256s both times, and the builds at two paths on each host are
+  byte-identical.
+- **Status:** complete.
+
+### R20. Build switches
+- **Basis:** gen-inhibit spec 12.3 item 3, "Every build-time switch is
+  classified" (user, 2026-10-13; the stock-off class 2026-10-16). Port plan
+  Layer 0 (user, 2026-10-17) keeps the mechanism, with the tables as
+  per-project data.
+- **Exposed by:** the restart trial's linker wrap, a switch that lived in a
+  CMake file with no `#if` (recorded in spec 12.3 item 3, 2026-10-13). It is
+  why CMake files are in scope and are taken from the build's own record
+  rather than a list kept by hand.
+- **Status:** complete.
+
+### R21. Board data
+- **Basis:** port plan Layer 0 (user, 2026-10-17): the partition row with
+  its reference and the slot and flash-size rows become board data, and the
+  tool prefix comes from `IDF_TARGET`. Goal 5 (user, 2026-10-16/17): the
+  build checks take the toolchain from the board's chip, not from the C3's
+  RISC-V tool names. gen-inhibit spec 12.3 item 3 for the WiCAN's values
+  (partition table byte-identical to stock, 1,781,760-byte slot).
+- **Status:** complete.
+
+## 5. Data, not code
+
+### R22
+- **Basis:** port plan goal 13 (user, 2026-10-17): the shared tooling knows
+  nothing about Arduino, so removing Arduino in the interposer's stage (b)
+  changes data, not tooling. Layer 0 for the per-project and per-board
+  split. Goal 3 (user, 2026-10-22): the interposer has its own project
+  root.
+- **Status:** complete.
+
+## 6. Running the tooling
+
+### R23. From a read-only checkout at the pin
+- **Basis:** port plan goal 20 item 8 (user, 2026-10-23): shared Python
+  tooling is used from a separate checkout at the pinned tag, with the
+  harness checking the checkout's digest against the pin. Applied to the
+  build tooling: user, 2026-10-23, in the gen-inhibit reviewer's session.
+- **Status:** complete.
