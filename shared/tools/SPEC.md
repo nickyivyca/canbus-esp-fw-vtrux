@@ -62,8 +62,10 @@ unless the image changes, which the reproducible check (R19) shows.
 - **R4. The commit enters the image once,** in the app descriptor's version
   field. Nothing else compiles it in.
 - **R5. Identity does not depend on branch, clone path or host OS:**
-  - the same files built on the same host OS, on any branch or at any clone
-    path, give the same image hash;
+  - the same commit built on the same host OS, on any branch or at any clone
+    path, gives the same image hash. The image hash includes the commit
+    (R4), so two commits with identical files give two image hashes; the
+    code hash is what stays the same (R2, R3);
   - the same files built on either host OS give the same code hash. The
     image hash may differ between host OSes.
 - **R6. Identity never rests on the version string or the file name.** Both
@@ -77,7 +79,10 @@ unless the image changes, which the reproducible check (R19) shows.
 ## 3. Release builds
 
 - **R8. Clean worktree.** A release build is refused unless the worktree has
-  no uncommitted changes and no untracked files.
+  no uncommitted changes and no untracked files when it starts, and again
+  after the reconfigure (R9), before anything is compiled. It is also
+  refused if HEAD or the worktree has changed by the time the build
+  finishes.
 - **R9. Reconfigure first.** A release build runs `idf.py reconfigure`, then
   builds, in one run.
 - **R10. Downloaded components checked after the reconfigure.** After the
