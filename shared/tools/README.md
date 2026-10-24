@@ -50,6 +50,17 @@ wins over it. The build is refused unless `build/CMakeCache.txt` has
 `CCACHE_ENABLE` off, after the reconfigure and again after the build, on
 either build path.
 
+That setting is only one way in: `CMAKE_C_COMPILER_LAUNCHER` (and its CXX
+and ASM forms), from the environment or the cache, launches ccache with
+`CCACHE_ENABLE` off. So the effect is checked too. Every compile command
+CMake wrote into `build.ninja`, as ninja would run it, must start with the
+compiler CMake chose for its language
+(`CMakeFiles/<version>/CMake<LANG>Compiler.cmake`). Anything in front of
+it is refused: ccache, or any other launcher. This is checked in `build/`
+after the reconfigure, and in every CMake build folder under `build/` after
+the build, the bootloader's included, since the build configures it. A
+folder with no compile commands, or no recorded compiler, is refused too.
+
 ## A project's build data (R22)
 
 The tooling holds no project facts. A project gives them in
@@ -69,13 +80,14 @@ environment, with the Component Manager's overwrite setting
 (`IDF_COMPONENT_OVERWRITE_MANAGED_COMPONENTS`) not set at all (R10); a
 clean worktree (R8); `idf.py --no-ccache reconfigure` with
 `IDF_COMPONENT_STRICT_CHECKSUM=1` (R9, R10); the worktree still clean and
-HEAD unchanged (R8); `CCACHE_ENABLE` off in `build/CMakeCache.txt` (R9);
-every downloaded component's `.component_hash` against
+HEAD unchanged (R8); `CCACHE_ENABLE` off in `build/CMakeCache.txt` and no compiler
+launcher in its compile commands (R9); every downloaded component's `.component_hash` against
 `dependencies.lock`, and a registry download against its `CHECKSUMS.json`,
 unlisted files included (R10, after the reconfigure); no shared component
 from a local folder (R16, `override_path` clause); `idf.py --no-ccache
 build`, or `ninja -C build -j N all` with `--jobs N`, also strict;
-`CCACHE_ENABLE` still off (R9); the image `project_description.json` names
+`CCACHE_ENABLE` still off and no launcher in any build folder's compile
+commands (R9); the image `project_description.json` names
 (R11); HEAD unchanged and the worktree clean at the end (R8); the record
 (R13). Its docstring has the detail.
 
@@ -107,7 +119,7 @@ record therefore holds the identity of the checkout the tooling ran from
 | `options()` | `config/sdkconfig.json`: the options in effect |
 | `cmake_cache()` | `CMakeCache.txt` as `{name: (type, value)}` |
 | `ninja_deps(current_only=True)` | `.ninja_deps` as `{output: [files]}`; by default only outputs in today's `build.ninja` (matches `ninja -t deps`) |
-| `ninja_edges()` | every build statement, includes followed, variables expanded, as `Edge`s (`rule`, `outputs`, `implicit_outputs`, `inputs`, `implicit`, `order_only`, `validations`) |
+| `ninja_edges()` | every build statement, includes followed, variables expanded, as `Edge`s (`rule`, `outputs`, `implicit_outputs`, `inputs`, `implicit`, `order_only`, `validations`, `bindings`: its own variables, `command`: its rule's command as ninja would run it, `None` for phony) |
 | `cmake_inputs()` | the CMake files the configure read (the `RERUN_CMAKE` edge's inputs) |
 | `files_read()` | the union of the three above, absolute and normalised |
 | `resolve(p)` | a ninja path made absolute |

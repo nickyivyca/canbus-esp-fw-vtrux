@@ -179,6 +179,38 @@ class NinjaGraph(unittest.TestCase):
         with self.assertRaises(BuildDirError):
             bd.cmake_inputs()
 
+    def test_bindings_and_command(self):
+        e = self.edges["esp-idf/main/CMakeFiles/m.dir/a.c.obj"]
+        self.assertEqual(e.bindings, {"FLAGS": "-O2"})
+        self.assertEqual(e.command, "gcc C:/proj/main/a.c")
+        self.assertIsNone(self.edges["dollar$sign"].command)    # phony
+
+    def test_command_scopes(self):
+        """$in and $out, then the edge's bindings, then the rule's, then the
+        file scope, as ninja looks them up; blank and comment lines inside
+        a binding block are skipped."""
+        text = ("top = T\nboth = from_file\n"
+                "rule r\n  pre = R\n  both = from_rule\n\n  # note\n"
+                "  command = ${LAUNCHER}$pre $top $both $FLAGS -o $out $in\n"
+                "build o1 | o1.d: r i1 i2 | imp\n  FLAGS = -O1\n\n"
+                "  LAUNCHER = ccache \n"
+                "build o2: r i3\n  both = from_edge\n  pre = E\n")
+        got = {e.outputs[0]: e for e in parse_ninja_text(text, ".")}
+        self.assertEqual(got["o1"].command,
+                         "ccache R T from_rule -O1 -o o1 i1 i2")
+        self.assertEqual(got["o1"].bindings,
+                         {"FLAGS": "-O1", "LAUNCHER": "ccache "})
+        self.assertEqual(got["o2"].command, "E T from_edge  -o o2 i3")
+
+    def test_rules_follow_include_not_subninja_back(self):
+        bd = build_dir("graph_rules", {
+            "build.ninja": "include r.ninja\nsubninja s.ninja\n"
+                           "build b: late x\nbuild a: cc a.c\n",
+            "r.ninja": "rule cc\n  command = gcc $in\n",
+            "s.ninja": "rule late\n  command = never\nbuild s: cc s.c\n"})
+        got = {e.outputs[0]: e.command for e in bd.ninja_edges()}
+        self.assertEqual(got, {"a": "gcc a.c", "s": "gcc s.c", "b": None})
+
     def test_text_errors(self):
         for bad in ("build a b\n", "build a: rule ${unclosed\n",
                     "build a: rule $!\n"):

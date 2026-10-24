@@ -12,7 +12,8 @@ CMake or idf.py, so it works on a copied build folder and in tests.
     bd.cmake_cache()     CMakeCache.txt: {name: (type, value)}
     bd.ninja_deps()      .ninja_deps: {output: [files its depfile recorded]}
     bd.ninja_edges()     build.ninja (and the files it includes): every
-                         build statement as an Edge
+                         build statement as an Edge, with its own bindings
+                         and its rule's command as ninja would run it
     bd.cmake_inputs()    the files CMake read, as build.ninja's re-run rule
                          records them
     bd.components()      {component name: its folder}, from the description
@@ -43,13 +44,16 @@ class BuildDirError(ValueError):
 
 
 class Edge:
-    """One ninja build statement."""
+    """One ninja build statement. bindings are its own indented variables,
+    expanded in the file scope as ninja does; command is its rule's command
+    as ninja would run it (None for phony or a rule with no command)."""
 
     __slots__ = ("rule", "outputs", "implicit_outputs", "inputs",
-                 "implicit", "order_only", "validations")
+                 "implicit", "order_only", "validations", "bindings",
+                 "command")
 
     def __init__(self, rule, outputs, implicit_outputs, inputs, implicit,
-                 order_only, validations):
+                 order_only, validations, bindings=None, command=None):
         self.rule = rule
         self.outputs = outputs
         self.implicit_outputs = implicit_outputs
@@ -57,6 +61,8 @@ class Edge:
         self.implicit = implicit
         self.order_only = order_only
         self.validations = validations
+        self.bindings = bindings or {}
+        self.command = command
 
     def as_dict(self):
         return {k: getattr(self, k) for k in self.__slots__}
@@ -388,26 +394,70 @@ def _split_colon(s):
 _BINDING = re.compile(r"^([A-Za-z0-9_.-]+)\s*=\s?(.*)$")
 
 
-def parse_ninja_text(text, base, _seen=None, env=None):
+def _edge_command(rule, bindings, env, inputs, outputs):
+    """A rule's command as ninja runs it for one edge: $in and $out, then
+    the edge's bindings, then the rule's, then the file scope."""
+    if not rule or "command" not in rule:
+        return None
+    scope = dict(env)
+    scope.update(bindings)
+    scope["in"] = " ".join(inputs)
+    scope["out"] = " ".join(outputs)
+    for k, v in rule.items():
+        if k != "command" and k not in bindings and k not in ("in", "out"):
+            scope[k] = _expand(v, scope, keep_escapes=False)
+    return _expand(rule["command"], scope, keep_escapes=False)
+
+
+def parse_ninja_text(text, base, _seen=None, env=None, rules=None):
     """Every build statement in a ninja file's text, following include
     (same scope) and subninja (a child scope), with paths relative to base,
     the build folder. Paths in a build line are expanded with the file-scope
-    variables bound above it, as ninja does; an edge's own indented
-    bindings never change its paths and are not read."""
+    variables bound above it, as ninja does. An edge's own indented
+    bindings never change its paths; they are kept in Edge.bindings, and
+    its rule's command in Edge.command."""
     env = {} if env is None else env
+    rules = {} if rules is None else rules
     edges = []
-    for ln in _ninja_lines(text):
+    lines = _ninja_lines(text)
+    i = 0
+    while i < len(lines):
+        ln = lines[i]
+        i += 1
         if not ln or ln.startswith("#") or ln[0] in " \t":
             continue
         word, _, rest = ln.partition(" ")
+        body = {}
+        if word in ("build", "rule", "pool"):
+            # Its indented bindings; blank and comment lines are skipped, as
+            # ninja's lexer skips them.
+            while i < len(lines):
+                nxt = lines[i]
+                if not nxt.strip() or nxt.strip().startswith("#"):
+                    i += 1
+                    continue
+                if nxt[0] not in " \t":
+                    break
+                # A value keeps its trailing spaces: CMake's LAUNCHER ends
+                # in one, and the command runs ${LAUNCHER}<compiler>.
+                m = _BINDING.match(nxt.lstrip(" \t"))
+                if m:
+                    body[m.group(1)] = m.group(2)
+                i += 1
         if word in ("include", "subninja"):
             p = _expand(rest.strip(), env, keep_escapes=False)
             if not os.path.isabs(p):
                 p = os.path.join(base, p)
-            scope = env if word == "include" else dict(env)
-            edges.extend(parse_ninja_file(p, base, _seen, scope))
+            if word == "include":
+                edges.extend(parse_ninja_file(p, base, _seen, env, rules))
+            else:
+                edges.extend(parse_ninja_file(p, base, _seen, dict(env),
+                                              dict(rules)))
             continue
-        if word not in ("build", "rule", "pool", "default"):
+        if word == "rule":
+            rules[rest.strip()] = body
+            continue
+        if word not in ("build", "pool", "default"):
             m = _BINDING.match(ln)
             if m:
                 env[m.group(1)] = _expand(m.group(2), env, keep_escapes=False)
@@ -431,12 +481,17 @@ def parse_ninja_text(text, base, _seen=None, env=None):
                 key = t
                 continue
             groups[key].append(t)
+        bindings = {k: _expand(v, env, keep_escapes=False)
+                    for k, v in body.items()}
+        command = _edge_command(rules.get(rule), bindings, env, groups[""],
+                                outputs)
         edges.append(Edge(rule, outputs, implicit_outputs, groups[""],
-                          groups["|"], groups["||"], groups["|@"]))
+                          groups["|"], groups["||"], groups["|@"],
+                          bindings, command))
     return edges
 
 
-def parse_ninja_file(path, base, _seen=None, env=None):
+def parse_ninja_file(path, base, _seen=None, env=None, rules=None):
     _seen = set() if _seen is None else _seen
     key = os.path.normcase(os.path.abspath(path))
     if key in _seen:
@@ -447,4 +502,4 @@ def parse_ninja_file(path, base, _seen=None, env=None):
             text = f.read()
     except OSError as e:
         raise BuildDirError("%s cannot be read (%s)" % (path, e))
-    return parse_ninja_text(text, base, _seen, env)
+    return parse_ninja_text(text, base, _seen, env, rules)

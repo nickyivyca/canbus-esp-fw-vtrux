@@ -23,7 +23,11 @@ In order, each refusal an exit, never a warning:
      manager stops the configure on a component whose files no longer
      match its recorded hash. --no-ccache wins over IDF_CCACHE_ENABLE,
      which the IDF export sets wherever ccache is installed;
-     R9: build/CMakeCache.txt has CCACHE_ENABLE, and off;
+     R9: build/CMakeCache.txt has CCACHE_ENABLE, and off; and, by its
+     effect, every compile command CMake wrote into build.ninja starts
+     with the compiler CMake chose for its language, not a launcher.
+     CCACHE_ENABLE is only one way in: CMAKE_<LANG>_COMPILER_LAUNCHER, from
+     the environment or the cache, launches ccache with it off;
      R8 again: HEAD is the same and the worktree still clean, before
      anything is compiled (a reconfigure that rewrites a tracked file,
      sdkconfig for example, is refused here);
@@ -45,7 +49,9 @@ In order, each refusal an exit, never a warning:
      build in one run, not for idf.py build (gen-inhibit reviewer,
      2026-10-23). A configure ninja itself reruns keeps the cache's
      CCACHE_ENABLE;
-     R9 again: CCACHE_ENABLE still off after the build, either way;
+     R9 again after the build, either way: CCACHE_ENABLE still off, and
+     no launcher in the compile commands of any CMake build folder under
+     build/, the bootloader's included (it is configured during the build);
   9. R11: the image is the one build/project_description.json names as
      app_bin (builddir.py), with its app_elf;
  10. R8 at the end: HEAD is still the commit step 4 read and the worktree
@@ -58,7 +64,9 @@ the shared/main tag scheme. A bench or dev build (R14) does not use this
 script.
 """
 
+import glob
 import os
+import re
 import shutil
 import subprocess
 
@@ -170,6 +178,104 @@ def check_no_ccache(build_dir, when):
                       "compiler cache is on, and a release build is built "
                       "with it off (R9)" % (when, value))
     ok("compiler cache off (R9)", "%s, CCACHE_ENABLE=%s" % (when, value))
+
+
+COMPILE_RULE = re.compile(r"^(C|CXX|ASM)_COMPILER__")
+_SET_COMPILER = re.compile(r'^set\(CMAKE_(C|CXX|ASM)_COMPILER "([^"]*)"\)$')
+
+
+def configured_compilers(build_dir):
+    """{language: compiler} as CMake chose them for this build folder, from
+    its CMakeFiles/<cmake version>/CMake<LANG>Compiler.cmake. Two different
+    answers for one language raise BuildDirError."""
+    out = {}
+    pat = os.path.join(build_dir, "CMakeFiles", "*", "CMake*Compiler.cmake")
+    for f in sorted(glob.glob(pat)):
+        with open(f, encoding="utf-8", errors="replace") as fh:
+            for ln in fh:
+                m = _SET_COMPILER.match(ln.strip())
+                if not m:
+                    continue
+                lang, cc = m.groups()
+                if lang in out and out[lang] != cc:
+                    raise BuildDirError("%s names two %s compilers, %s and %s"
+                                        % (build_dir, lang, out[lang], cc))
+                out[lang] = cc
+    return out
+
+
+def first_word(command):
+    """The program a command runs: its first word, quotes removed."""
+    c = command.lstrip()
+    if c.startswith('"'):
+        end = c.find('"', 1)
+        return c[1:end] if end > 0 else c[1:]
+    return c.split(None, 1)[0] if c else ""
+
+
+def _same_path(a, b):
+    return (os.path.normcase(os.path.normpath(a))
+            == os.path.normcase(os.path.normpath(b)))
+
+
+def cmake_build_folders(build_dir):
+    """build_dir, then every folder under it that CMake configured (it has
+    both CMakeCache.txt and build.ninja): the bootloader's, once the build
+    has configured it."""
+    out = [build_dir]
+    for d, _, files in os.walk(build_dir):
+        if (d != build_dir and "CMakeCache.txt" in files
+                and "build.ninja" in files):
+            out.append(d)
+    return out
+
+
+def check_no_launcher(build_dir, when, folders=None):
+    """R9, by its effect: in each CMake build folder (build_dir alone by
+    default), every compile edge's command, as ninja would run it, starts
+    with the compiler CMake chose for its language. Anything else in front,
+    from CCACHE_ENABLE (IDF's RULE_LAUNCH_COMPILE) or from
+    CMAKE_<LANG>_COMPILER_LAUNCHER, is refused. A folder with no compile
+    edges, or no recorded compiler, is refused too: then nothing shows the
+    compiler runs alone."""
+    folders = folders or [build_dir]
+    total = 0
+    for b in folders:
+        name = os.path.relpath(b, os.path.dirname(build_dir))
+        try:
+            compilers = configured_compilers(b)
+            edges = BuildDir(b).ninja_edges()
+        except (BuildDirError, OSError) as e:
+            raise Refused("%s, the compile commands in %s cannot be read: %s"
+                          % (when, name, e))
+        comp = [e for e in edges if COMPILE_RULE.match(e.rule)]
+        if not comp:
+            raise Refused("%s, %s has no compile commands, so nothing shows "
+                          "they run without a compiler launcher (R9)"
+                          % (when, name))
+        bad = []
+        for e in comp:
+            lang = COMPILE_RULE.match(e.rule).group(1)
+            cc = compilers.get(lang)
+            if cc is None:
+                raise Refused("%s, %s records no %s compiler, so its compile "
+                              "commands cannot be checked for a launcher (R9)"
+                              % (when, name, lang))
+            word = first_word(e.command or "")
+            if not word or not _same_path(word, cc):
+                bad.append((e.outputs[0], word))
+        if bad:
+            shown = "\n".join("    %s runs %s" % (o, w or "(nothing)")
+                              for o, w in bad[:5])
+            raise Refused("%s, %d of the %d compile commands in %s do not "
+                          "start with the compiler: a compiler launcher "
+                          "(ccache or another) runs them, and a release "
+                          "build is built without one (R9).\n%s"
+                          % (when, len(bad), len(comp), name, shown))
+        total += len(comp)
+    ok("no compiler launcher (R9)", "%s, %d compile commands in %s"
+       % (when, total, ", ".join(os.path.relpath(b, os.path.dirname(build_dir))
+                                 for b in folders)))
 
 
 def check_no_overwrite(environ=None):
@@ -339,6 +445,7 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
     ok("reconfigure (R9)")
     check_clean(root, "after the reconfigure", commit)
     check_no_ccache(build_dir, "after the reconfigure")
+    check_no_launcher(build_dir, "after the reconfigure")
 
     try:
         good, report = components.check_managed(root)
@@ -388,6 +495,8 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
     if rc != 0:
         raise Refused("%s failed (exit %d)" % (what, rc))
     check_no_ccache(build_dir, "after the build")
+    check_no_launcher(build_dir, "after the build",
+                      cmake_build_folders(build_dir))
 
     bd = BuildDir(build_dir)
     try:

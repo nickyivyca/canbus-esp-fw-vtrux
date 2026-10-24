@@ -10,6 +10,7 @@ and checks the refusal and that nothing after it ran. Needs git.
 """
 
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -27,8 +28,9 @@ from imagekit import descriptor, make_image              # noqa: E402
 from vtrux_build import cli, record                      # noqa: E402
 from vtrux_build.builddir import BuildDir                # noqa: E402
 from vtrux_build.image import AppImage                   # noqa: E402
-from vtrux_build.release import (Refused, cmake_false,   # noqa: E402
-                                 ninja_runner, release)
+from vtrux_build.release import (Refused, check_no_launcher,  # noqa: E402
+                                 cmake_build_folders, cmake_false,
+                                 first_word, ninja_runner, release)
 
 GIT_ENV = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
                GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
@@ -37,6 +39,17 @@ COMP_FILES = {"CMakeLists.txt": b"idf_component_register()\n",
               "m.c": b"int m;\n"}
 TC_RUN = (lambda argv: (0, "riscv32-esp-elf-gcc (crosstool-NG) 14.2.0\n"))
 STRICT = {"IDF_COMPONENT_STRICT_CHECKSUM": "1"}
+# The compiler as CMake records it (CMake<LANG>Compiler.cmake) and as the
+# Ninja generator writes it into a command: on Windows the same file with
+# backslashes, as a real IDF configure gives.
+if os.name == "nt":
+    CC_CMAKE, CXX_CMAKE = "C:/tc/bin/riscv32-esp-elf-gcc.exe", \
+        "C:/tc/bin/riscv32-esp-elf-g++.exe"
+    CC_NINJA, CXX_NINJA = (CC_CMAKE.replace("/", "\\"),
+                           CXX_CMAKE.replace("/", "\\"))
+else:
+    CC_CMAKE, CXX_CMAKE = "/tc/bin/riscv32-esp-elf-gcc", "/tc/bin/riscv32-esp-elf-g++"
+    CC_NINJA, CXX_NINJA = CC_CMAKE, CXX_CMAKE
 
 
 def git(root, *args):
@@ -103,6 +116,9 @@ class FakeIdf:
             if e.get("reconfigure_rc"):
                 return e["reconfigure_rc"]
             self._cache(e.get("ccache_value", "1" if ccache else "0"))
+            self._generate(os.path.join(self.root, "build"),
+                           ccache or e.get("rule_ccache"), e.get("launcher"),
+                           not e.get("no_compile_edges"))
             self._component("espressif__m", e.get("component_files", COMP_FILES))
             if e.get("shared_on_disk"):
                 # A git download: no CHECKSUMS.json, as the manager gives it.
@@ -119,8 +135,53 @@ class FakeIdf:
         if action == "build":
             if flags != ["--no-ccache"] and ccache:
                 self._cache("1")    # idf.py reruns CMake with it on
+                self._generate(os.path.join(self.root, "build"), True)
             return self._build()
         raise AssertionError(args)
+
+    def _generate(self, b, ccache, launcher=None, compile_edges=True):
+        """What CMake's Ninja generator writes into build folder b, in the
+        shape IDF's configure gives it: CCACHE_ENABLE puts ccache into each
+        compile rule's command (IDF's RULE_LAUNCH_COMPILE), and
+        CMAKE_C_COMPILER_LAUNCHER (from the environment, as CMake reads it,
+        or launcher) into the C edges' LAUNCHER binding."""
+        if launcher is None:
+            launcher = os.environ.get("CMAKE_C_COMPILER_LAUNCHER")
+        e = self.edit
+        cmk = os.path.join(b, "CMakeFiles", "3.30.2")
+        for lang, cc in (("C", CC_CMAKE), ("CXX", CXX_CMAKE),
+                         ("ASM", CC_CMAKE)):
+            if lang == "C" and e.get("no_c_compiler"):
+                continue
+            scratch.write(os.path.join(cmk, "CMake%sCompiler.cmake" % lang),
+                          'set(CMAKE_%s_COMPILER "%s")\n'
+                          'set(CMAKE_%s_COMPILER_ARG1 "")\n' % (lang, cc, lang))
+        pre = "ccache " if ccache else ""
+        rules = []
+        for lang, cc in (("C", CC_NINJA), ("CXX", CXX_NINJA),
+                         ("ASM", CC_NINJA)):
+            rules.append("rule %s_COMPILER__m_unscanned_\n"
+                         "  depfile = $DEP_FILE\n  deps = gcc\n"
+                         "  command = %s${LAUNCHER}${CODE_CHECK}%s $DEFINES "
+                         "$FLAGS -o $out -c $in\n" % (lang, pre, cc))
+        rules.append("rule CUSTOM_COMMAND\n  command = $COMMAND\n")
+        scratch.write(os.path.join(b, "CMakeFiles", "rules.ninja"),
+                      "\n".join(rules))
+        out = ["ninja_required_version = 1.5", "",
+               "include CMakeFiles/rules.ninja", ""]
+        if compile_edges:
+            for lang, src in (("C", "m.c"), ("CXX", "k.cpp"), ("ASM", "s.S")):
+                out.append("build m.dir/%s.obj: %s_COMPILER__m_unscanned_ "
+                           "C$:/proj/main/%s || order" % (src, lang, src))
+                out.append("  DEFINES = -DX=1")
+                out.append("  DEP_FILE = m.dir/%s.obj.d" % src)
+                out.append("  FLAGS = -O2")
+                if lang == "C" and launcher:
+                    out.append("  LAUNCHER = %s " % launcher)
+                out.append("")
+        out += ["build gen.txt: CUSTOM_COMMAND", "  COMMAND = ccache -s", "",
+                "build order: phony", ""]
+        scratch.write(os.path.join(b, "build.ninja"), "\n".join(out))
 
     def _cache(self, value):
         """build/CMakeCache.txt, with CCACHE_ENABLE as idf.py defines it
@@ -145,6 +206,11 @@ class FakeIdf:
             return e["build_rc"]
         if e.get("build_turns_ccache_on"):
             self._cache("ON")
+        # The bootloader subproject, which the build itself configures.
+        boot = os.path.join(self.root, "build", "bootloader")
+        scratch.write(os.path.join(boot, "CMakeCache.txt"),
+                      "CCACHE_ENABLE:UNINITIALIZED=0\n")
+        self._generate(boot, False, e.get("bootloader_launcher"))
         elf = b"\x7fELF built from " + git(self.root, "rev-parse",
                                             "HEAD").encode()
         sha = hashlib.sha256(elf).digest()
@@ -511,6 +577,63 @@ class Release(unittest.TestCase):
             dest = records_dir(root)
             self.assertFalse(os.path.isdir(dest) and os.listdir(dest))
 
+    def test_r9_launcher_from_the_environment(self):
+        """CMAKE_C_COMPILER_LAUNCHER=ccache launches ccache with
+        CCACHE_ENABLE off: refused by its effect, before the build, on
+        either build path."""
+        for jobs in (None, 1):
+            root, cc = project("rel_r9_envlaunch")
+            with mock.patch.dict(os.environ,
+                                 {"CMAKE_C_COMPILER_LAUNCHER": "ccache"}):
+                self.assertRefused(
+                    run(root, cc, jobs=jobs),
+                    ["R9", "after the reconfigure", "launcher",
+                     "1 of the 3 compile commands", "m.c.obj runs ccache"],
+                    ["reconfigure"])
+
+    def test_r9_any_launcher(self):
+        root, cc = project("rel_r9_sccache")
+        self.assertRefused(run(root, cc, {"launcher": "C:/t/sccache.exe"}),
+                           ["R9", "runs C:/t/sccache.exe"], ["reconfigure"])
+
+    def test_r9_ccache_in_the_rules_with_the_setting_off(self):
+        """The effect is checked, not only CCACHE_ENABLE."""
+        root, cc = project("rel_r9_rules")
+        self.assertRefused(run(root, cc, {"rule_ccache": True}),
+                           ["R9", "3 of the 3 compile commands", "runs ccache"],
+                           ["reconfigure"])
+
+    def test_r9_nothing_to_check_is_refused(self):
+        for name, edit, words in (
+                ("rel_r9_noedges", {"no_compile_edges": True},
+                 ["no compile commands"]),
+                ("rel_r9_nocc", {"no_c_compiler": True},
+                 ["records no C compiler"])):
+            root, cc = project(name)
+            self.assertRefused(run(root, cc, edit), ["R9"] + words,
+                               ["reconfigure"])
+
+    def test_r9_bootloader_launcher_after_the_build(self):
+        """The bootloader is configured during the build, so its compile
+        commands are checked after it, on either build path; no record."""
+        for jobs, step in ((None, "build"), (1, "ninja")):
+            root, cc = project("rel_r9_boot")
+            self.assertRefused(
+                run(root, cc, {"bootloader_launcher": "ccache"}, jobs=jobs),
+                ["R9", "after the build", "bootloader", "runs ccache"],
+                ["reconfigure", step])
+            dest = records_dir(root)
+            self.assertFalse(os.path.isdir(dest) and os.listdir(dest))
+
+    def test_r9_clean_build_checks_the_bootloader_too(self):
+        root, cc = project("rel_r9_bootok")
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            p, _, why = run(root, cc)
+        self.assertIsNone(why)
+        self.assertIn("after the build, 6 compile commands in build, "
+                      + os.path.join("build", "bootloader"), out.getvalue())
+
     def test_jobs_without_ninja_on_path_stops_first(self):
         root, cc = project("rel_jobs_noninja")
         idf = FakeIdf(root, cc)
@@ -533,6 +656,57 @@ class CmakeFalse(unittest.TestCase):
     def test_true(self):
         for v in ("1", "ON", "yes", "TRUE", "Y", "2", "-1", "0.5", "x"):
             self.assertFalse(cmake_false(v), repr(v))
+
+
+class LauncherCheck(unittest.TestCase):
+    """R9's launcher check on hand-written build folders."""
+
+    def folder(self, name, command, compiler='C:/tc/gcc.exe', extra=""):
+        b = scratch.fresh(name)
+        scratch.write(os.path.join(b, "CMakeFiles", "3.30.2",
+                                   "CMakeCCompiler.cmake"),
+                      'set(CMAKE_C_COMPILER "%s")\n' % compiler + extra)
+        scratch.write(os.path.join(b, "build.ninja"),
+                      "rule C_COMPILER__x_\n  command = %s -c $in\n\n"
+                      "build a.obj: C_COMPILER__x_ a.c\n" % command)
+        return b
+
+    def test_compiler_alone_passes(self):
+        for name, cmd, compiler in (
+                ("lc_plain", "C:\\tc\\gcc.exe", "C:/tc/gcc.exe"),
+                ("lc_quoted", '"C:\\t c\\gcc.exe"', "C:/t c/gcc.exe")):
+            with mock.patch("sys.stdout"):
+                check_no_launcher(self.folder(name, cmd, compiler), "t")
+
+    def test_anything_in_front_is_refused(self):
+        for name, cmd in (("lc_ccache", "ccache C:\\tc\\gcc.exe"),
+                          ("lc_env", "C:/x/env.exe C:\\tc\\gcc.exe"),
+                          ("lc_other", "C:\\tc\\clang.exe")):
+            with self.assertRaises(Refused, msg=name) as cm:
+                check_no_launcher(self.folder(name, cmd), "t")
+            self.assertIn("1 of the 1 compile commands", str(cm.exception))
+
+    def test_two_compilers_for_one_language(self):
+        b = self.folder("lc_two", "C:\\tc\\gcc.exe",
+                        extra='set(CMAKE_C_COMPILER "C:/other/gcc.exe")\n')
+        with self.assertRaises(Refused) as cm:
+            check_no_launcher(b, "t")
+        self.assertIn("two C compilers", str(cm.exception))
+
+    def test_first_word(self):
+        for cmd, word in (("gcc -c a", "gcc"), ('  "C:/a b/gcc" -c', "C:/a b/gcc"),
+                          ("", ""), ("ccache gcc", "ccache")):
+            self.assertEqual(first_word(cmd), word)
+
+    def test_cmake_build_folders(self):
+        b = scratch.fresh("lc_folders")
+        for d in ("bootloader", "deep/sub"):
+            scratch.write(os.path.join(b, d, "CMakeCache.txt"), "")
+            scratch.write(os.path.join(b, d, "build.ninja"), "")
+        scratch.write(os.path.join(b, "half", "build.ninja"), "")
+        self.assertEqual(
+            [os.path.relpath(p, b) for p in cmake_build_folders(b)],
+            [".", "bootloader", os.path.join("deep", "sub")])
 
 
 class NinjaRunner(unittest.TestCase):
