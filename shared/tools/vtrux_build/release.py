@@ -14,7 +14,7 @@ In order, each refusal an exit, never a warning:
      if it is unset, before anything is built);
   3. the ESP-IDF environment is exported, and R10: the Component Manager's
      overwrite setting (IDF_COMPONENT_OVERWRITE_MANAGED_COMPONENTS) is not
-     set at all;
+     set at all; this IDF's tool list (tools.json) reads, for R9;
   4. R8: the worktree has no uncommitted changes and no untracked files
      (git status, ignored files excepted). The commit is HEAD.
      --check-only stops here.
@@ -28,6 +28,10 @@ In order, each refusal an exit, never a warning:
      with the compiler CMake chose for its language, not a launcher.
      CCACHE_ENABLE is only one way in: CMAKE_<LANG>_COMPILER_LAUNCHER, from
      the environment or the cache, launches ccache with it off;
+     R9, positively: every compiler CMake chose is this IDF's toolchain
+     binary (toolchain.py), since a copy, link or wrapper of ccache named
+     after the compiler and first on PATH (masquerade mode) runs every
+     compile with nothing in front of it;
      R8 again: HEAD is the same and the worktree still clean, before
      anything is compiled (a reconfigure that rewrites a tracked file,
      sdkconfig for example, is refused here);
@@ -52,8 +56,9 @@ In order, each refusal an exit, never a warning:
      2026-10-23). A configure ninja itself reruns keeps the cache's
      CCACHE_ENABLE;
      R9 again after the build, either way: CCACHE_ENABLE still off, and
-     no launcher in the compile commands of any CMake build folder under
-     build/, the bootloader's included (it is configured during the build);
+     no launcher in the compile commands, and only the toolchain's own
+     compilers, in every CMake build folder under build/, the bootloader's
+     included (it is configured during the build);
   9. R11: the image is the one build/project_description.json names as
      app_bin (builddir.py), with its app_elf;
  10. R8 at the end: HEAD is still the commit step 4 read and the worktree
@@ -77,6 +82,7 @@ from .builddir import BuildDir, BuildDirError
 from .digest import component_digest
 from .image import AppImage, ImageError
 from .project import Project, ProjectError
+from .toolchain import Toolchain, ToolchainError
 
 TOOLS_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -220,16 +226,6 @@ def _same_path(a, b):
             == os.path.normcase(os.path.normpath(b)))
 
 
-def is_ccache(path):
-    """True if path, or the file its links resolve to, is a ccache binary
-    (basename ccache or ccache.exe): ccache's masquerade mode puts a link
-    named after the compiler on PATH, and CMake then chooses that link."""
-    for p in (path, os.path.realpath(path)):
-        if os.path.basename(p).lower() in ("ccache", "ccache.exe"):
-            return True
-    return False
-
-
 def cmake_build_folders(build_dir):
     """build_dir, then every folder under it that CMake configured (it has
     both CMakeCache.txt and build.ninja): the bootloader's, once the build
@@ -247,10 +243,10 @@ def check_no_launcher(build_dir, when, folders=None):
     default), every compile edge's command, as ninja would run it, starts
     with the compiler CMake chose for its language. Anything else in front,
     from CCACHE_ENABLE (IDF's RULE_LAUNCH_COMPILE) or from
-    CMAKE_<LANG>_COMPILER_LAUNCHER, is refused. So is a chosen compiler
-    that is itself ccache once its links are resolved (masquerade mode). A
-    folder with no compile edges, or no recorded compiler, is refused too:
-    then nothing shows the compiler runs alone."""
+    CMAKE_<LANG>_COMPILER_LAUNCHER, is refused. A folder with no compile
+    edges, or no recorded compiler, is refused too: then nothing shows the
+    compiler runs alone. That the chosen compiler is not itself ccache is
+    check_compilers' part."""
     folders = folders or [build_dir]
     total = 0
     for b in folders:
@@ -274,12 +270,6 @@ def check_no_launcher(build_dir, when, folders=None):
                 raise Refused("%s, %s records no %s compiler, so its compile "
                               "commands cannot be checked for a launcher (R9)"
                               % (when, name, lang))
-            if is_ccache(cc):
-                raise Refused("%s, the %s compiler CMake chose in %s is %s, "
-                              "which is ccache (%s): ccache runs every "
-                              "compile, and a release build is built "
-                              "without it (R9)"
-                              % (when, lang, name, cc, os.path.realpath(cc)))
             word = first_word(e.command or "")
             if not word or not _same_path(word, cc):
                 bad.append((e.outputs[0], word))
@@ -295,6 +285,49 @@ def check_no_launcher(build_dir, when, folders=None):
     ok("no compiler launcher (R9)", "%s, %d compile commands in %s"
        % (when, total, ", ".join(os.path.relpath(b, os.path.dirname(build_dir))
                                  for b in folders)))
+
+
+def check_compilers(build_dir, when, toolchain, folders=None):
+    """R9, positively: in each CMake build folder (build_dir alone by
+    default), every compiler CMake chose, and C at least, is this IDF's
+    toolchain binary for its language (toolchain.py), so no copy, link or
+    wrapper of ccache named after the compiler runs the compiles."""
+    folders = folders or [build_dir]
+    used = set()
+    for b in folders:
+        name = os.path.relpath(b, os.path.dirname(build_dir))
+        try:
+            tfile = BuildDir(b).cmake_cache().get("CMAKE_TOOLCHAIN_FILE",
+                                                  ("", ""))[1]
+            if not tfile:
+                raise ToolchainError("its CMakeCache.txt has no "
+                                     "CMAKE_TOOLCHAIN_FILE")
+            names = toolchain.compiler_names(tfile)
+            compilers = configured_compilers(b)
+        except (BuildDirError, OSError, ToolchainError) as e:
+            raise Refused("%s, the compilers in %s cannot be checked: %s, so "
+                          "nothing shows they are the toolchain's own (R9)"
+                          % (when, name, e))
+        for lang in sorted(set(compilers) | {"C"}):
+            if lang not in compilers:
+                raise Refused("%s, %s records no %s compiler, so nothing "
+                              "shows it is the toolchain's own (R9)"
+                              % (when, name, lang))
+            if lang not in names:
+                raise Refused("%s, %s compiles %s, but its toolchain file %s "
+                              "names no %s compiler (R9)"
+                              % (when, name, lang, tfile, lang))
+            try:
+                tool, ver, _ = toolchain.check(names[lang], compilers[lang])
+            except ToolchainError as e:
+                raise Refused("%s, the %s compiler CMake chose in %s is not "
+                              "this IDF's: %s, and a release build is built "
+                              "without ccache (R9)" % (when, lang, name, e))
+            used.add("%s %s" % (tool, ver))
+    ok("compilers are the toolchain's (R9)", "%s, %s in %s"
+       % (when, ", ".join(sorted(used)),
+          ", ".join(os.path.relpath(b, os.path.dirname(build_dir))
+                    for b in folders)))
 
 
 def check_no_overwrite(environ=None):
@@ -423,12 +456,12 @@ def tooling_identity(root=TOOLS_ROOT):
 
 
 def release(project_root, check_only=False, idf=None, toolchain_run=None,
-            dest=None, jobs=None, ninja=None):
+            dest=None, jobs=None, ninja=None, toolchain=None):
     """The release build. Returns the record's path (None for check_only).
     Raises Refused with the reason. jobs is --jobs: None builds with
-    idf.py build, N with ninja -j N. idf, ninja, toolchain_run and dest
-    replace the real idf.py and ninja runners, the compiler call and the
-    record folder (tests)."""
+    idf.py build, N with ninja -j N. idf, ninja, toolchain_run, dest and
+    toolchain replace the real idf.py and ninja runners, the compiler call,
+    the record folder and the IDF install's toolchain (tests)."""
     root = os.path.abspath(project_root)
     try:
         proj = Project.load(root)
@@ -449,6 +482,11 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
     if jobs is not None and ninja is None:
         ninja = ninja_runner()
     check_no_overwrite()
+    if toolchain is None:
+        try:
+            toolchain = Toolchain.from_environ()
+        except ToolchainError as e:
+            raise Refused("this IDF's toolchain cannot be read: %s (R9)" % e)
 
     commit = check_clean(root)
     if check_only:
@@ -465,6 +503,7 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
     check_clean(root, "after the reconfigure", commit)
     check_no_ccache(build_dir, "after the reconfigure")
     check_no_launcher(build_dir, "after the reconfigure")
+    check_compilers(build_dir, "after the reconfigure", toolchain)
 
     lock_path = os.path.join(root, "dependencies.lock")
     if not os.path.isfile(lock_path):
@@ -519,8 +558,9 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
     if rc != 0:
         raise Refused("%s failed (exit %d)" % (what, rc))
     check_no_ccache(build_dir, "after the build")
-    check_no_launcher(build_dir, "after the build",
-                      cmake_build_folders(build_dir))
+    folders = cmake_build_folders(build_dir)
+    check_no_launcher(build_dir, "after the build", folders)
+    check_compilers(build_dir, "after the build", toolchain, folders)
 
     bd = BuildDir(build_dir)
     try:
@@ -545,7 +585,7 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
                             "image": img.idf_ver},
             "components": {n: {"dir": d, "digest": component_digest(d)}
                            for n, d in sorted(comps.items())},
-            "dependencies_lock_sha256": lockfile.file_sha256(lock_path),
+            "dependencies_lock_sha256_lf": lockfile.file_lf_sha256(lock_path),
             "shared_components": shared,
             "tooling": tooling_identity(),
             "release_checks": {"managed_components": report},

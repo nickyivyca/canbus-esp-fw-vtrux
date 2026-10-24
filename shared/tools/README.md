@@ -56,12 +56,27 @@ and ASM forms), from the environment or the cache, launches ccache with
 CMake wrote into `build.ninja`, as ninja would run it, must start with the
 compiler CMake chose for its language
 (`CMakeFiles/<version>/CMake<LANG>Compiler.cmake`). Anything in front of
-it is refused: ccache, or any other launcher. So is a chosen compiler that
-is ccache itself once its links are resolved (ccache's masquerade mode, a
-link named after the compiler on `PATH`). This is checked in `build/`
-after the reconfigure, and in every CMake build folder under `build/` after
-the build, the bootloader's included, since the build configures it. A
-folder with no compile commands, or no recorded compiler, is refused too.
+it is refused: ccache, or any other launcher. A folder with no compile
+commands, or no recorded compiler, is refused too.
+
+Nor may the chosen compiler be ccache itself. In ccache's masquerade mode a
+copy, hardlink or link of it, or a wrapper script, named after the
+compiler and first on `PATH` becomes the compiler CMake chooses, and the
+compile commands then show nothing in front of it. Looking for ccache
+cannot see a copy or a wrapper, so the check is positive
+(`vtrux_build/toolchain.py`): every compiler CMake chose, C at least, must
+be this IDF's own toolchain binary. The build folder's
+`CMAKE_TOOLCHAIN_FILE`, which must be in `$IDF_PATH/tools/cmake/`, names
+each language's compiler. Exactly one tool in `$IDF_PATH/tools/tools.json`,
+at the version it marks recommended and installed under `IDF_TOOLS_PATH`
+(`~/.espressif` if unset, as `idf_tools.py` has it), holds a file of that
+name. The chosen compiler has that name and, with its links resolved, is a
+file in that tool's folder. It trusts the IDF install itself: a toolchain
+whose own files were replaced is not detected.
+
+Both checks run in `build/` after the reconfigure, and in every CMake build
+folder under `build/` after the build, the bootloader's included, since the
+build configures it.
 
 ## A project's build data (R22)
 
@@ -156,8 +171,9 @@ the module docstring (`RECORD_SCHEMA` 1).
 | `vtrux_build/components.py` | downloaded components against the lock and, where the registry supplied one, their `CHECKSUMS.json`: R10, with the Component Manager's strict mode doing the re-hash |
 | `vtrux_build/project.py` | a project's `vtrux_build.json`: R22 |
 | `vtrux_build/record.py` | the release record: R13 |
+| `vtrux_build/toolchain.py` | this IDF's toolchain, from its `tools.json` and toolchain file: R9's check that each chosen compiler is the toolchain's own |
 | `vtrux_build/release.py` | the release build: R8 to R11, R13, R16 (`override_path`) |
 | `vtrux_build/cli.py`, `__main__.py`, `__init__.py` | the command line |
-| `tests/test_*.py` | unit tests, one file per module; each runs alone (`python -B shared/tools/tests/test_image.py`) or all with `python -B -m unittest discover -s shared/tools/tests` |
+| `tests/test_*.py` | unit tests, one file per module (`toolchain.py`'s are in `test_release.py`, with the check that uses it); each runs alone (`python -B shared/tools/tests/test_image.py`) or all with `python -B -m unittest discover -s shared/tools/tests` |
 | `tests/imagekit.py` | synthetic app images for the tests, so no firmware image is committed |
 | `tests/scratch.py` | the tests' scratch folders: `<worktree>/scratch/shared-tools-tests/` where git ignores `scratch/` (a project worktree), else the machine temp folder's `vtrux-build-tests/` |

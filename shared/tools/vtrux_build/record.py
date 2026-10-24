@@ -29,7 +29,10 @@ The record's fields (RECORD_SCHEMA 1):
                               git_revision, "image": the descriptor's idf_ver}
     components                {name: {"dir", "digest"}}: every component the
                               build used (R7)
-    dependencies_lock_sha256  SHA-256 of dependencies.lock's bytes
+    dependencies_lock_sha256_lf
+                              SHA-256 of dependencies.lock with its CRLF
+                              line endings normalised to LF, so one lock
+                              gives one hash on any host and checkout
     shared_components         {name: {"version", "git", "path"} from the
                               project's idf_component.yml, the pinned tag
                               being "version", and "lock_version", the

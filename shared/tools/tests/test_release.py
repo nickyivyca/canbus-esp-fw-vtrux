@@ -28,10 +28,11 @@ from imagekit import descriptor, make_image              # noqa: E402
 from vtrux_build import cli, record                      # noqa: E402
 from vtrux_build.builddir import BuildDir                # noqa: E402
 from vtrux_build.image import AppImage                   # noqa: E402
-from vtrux_build.release import (Refused, check_no_launcher,  # noqa: E402
-                                 cmake_build_folders, cmake_false,
-                                 first_word, is_ccache, ninja_runner,
+from vtrux_build.release import (Refused, check_compilers,  # noqa: E402
+                                 check_no_launcher, cmake_build_folders,
+                                 cmake_false, first_word, ninja_runner,
                                  release)
+from vtrux_build.toolchain import Toolchain, ToolchainError  # noqa: E402
 
 GIT_ENV = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
                GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
@@ -40,17 +41,63 @@ COMP_FILES = {"CMakeLists.txt": b"idf_component_register()\n",
               "m.c": b"int m;\n"}
 TC_RUN = (lambda argv: (0, "riscv32-esp-elf-gcc (crosstool-NG) 14.2.0\n"))
 STRICT = {"IDF_COMPONENT_STRICT_CHECKSUM": "1"}
-# The compiler as CMake records it (CMake<LANG>Compiler.cmake) and as the
-# Ninja generator writes it into a command: on Windows the same file with
-# backslashes, as a real IDF configure gives.
-if os.name == "nt":
-    CC_CMAKE, CXX_CMAKE = "C:/tc/bin/riscv32-esp-elf-gcc.exe", \
-        "C:/tc/bin/riscv32-esp-elf-g++.exe"
-    CC_NINJA, CXX_NINJA = (CC_CMAKE.replace("/", "\\"),
-                           CXX_CMAKE.replace("/", "\\"))
-else:
-    CC_CMAKE, CXX_CMAKE = "/tc/bin/riscv32-esp-elf-gcc", "/tc/bin/riscv32-esp-elf-g++"
-    CC_NINJA, CXX_NINJA = CC_CMAKE, CXX_CMAKE
+EXE = ".exe" if os.name == "nt" else ""
+TC_VER = "esp-14.2.0_20241119"
+TOOLCHAIN_CMAKE = ("set(CMAKE_SYSTEM_NAME Generic)\n\n"
+                   "set(CMAKE_C_COMPILER riscv32-esp-elf-gcc)\n"
+                   "set(CMAKE_CXX_COMPILER riscv32-esp-elf-g++)\n"
+                   "set(CMAKE_ASM_COMPILER riscv32-esp-elf-gcc)\n")
+
+
+def fake_idf(name, installed=TC_VER):
+    """An IDF checkout and its tools folder, in the shape the export gives:
+    idf/tools/tools.json and the esp32c3 toolchain file, and under
+    espressif/tools/ the riscv32-esp-elf toolchain at `installed` (the
+    recommended version unless changed), ccache and ninja. Returns
+    (Toolchain, {name: path}): gcc, g++, ccache, the toolchain file."""
+    d = scratch.fresh(name)
+    idf, tools = os.path.join(d, "idf"), os.path.join(d, "espressif")
+    scratch.write(os.path.join(idf, "tools", "tools.json"), json.dumps({
+        "version": 2, "tools": [
+            {"name": "riscv32-esp-elf",
+             "export_paths": [["riscv32-esp-elf", "bin"]],
+             "versions": [{"name": TC_VER, "status": "recommended"},
+                          {"name": "esp-13.2.0_20240530",
+                           "status": "supported"}]},
+            {"name": "ccache", "export_paths": [["ccache-4.10.2"]],
+             "versions": [{"name": "4.10.2", "status": "recommended"}]},
+            {"name": "ninja", "export_paths": [[""]],
+             "versions": [{"name": "1.12.1", "status": "recommended"}]}]}))
+    tfile = scratch.write(os.path.join(idf, "tools", "cmake",
+                                       "toolchain-esp32c3.cmake"),
+                          TOOLCHAIN_CMAKE)
+    bin_ = os.path.join(tools, "tools", "riscv32-esp-elf", installed,
+                        "riscv32-esp-elf", "bin")
+    paths = {"toolchain_file": tfile}
+    for n in ("gcc", "g++"):
+        paths[n] = scratch.write(
+            os.path.join(bin_, "riscv32-esp-elf-%s%s" % (n, EXE)), b"real " + n.encode())
+    paths["ccache"] = scratch.write(
+        os.path.join(tools, "tools", "ccache", "4.10.2", "ccache-4.10.2",
+                     "ccache" + EXE), b"ccache 4.10.2")
+    scratch.write(os.path.join(tools, "tools", "ninja", "1.12.1",
+                               "ninja" + EXE), b"ninja")
+    return Toolchain(idf, tools), paths
+
+
+def cmake_form(path):
+    return path.replace("\\", "/")
+
+
+def ninja_form(path):
+    """As the Ninja generator writes a compiler into a command: on Windows
+    the same file with backslashes, as a real IDF configure gives."""
+    return path.replace("/", "\\") if os.name == "nt" else path
+
+
+TOOLCHAIN, TC_FILES = fake_idf("fake_idf")
+# The compilers CMake chose (CMake<LANG>Compiler.cmake): the toolchain's own.
+CC_CMAKE, CXX_CMAKE = cmake_form(TC_FILES["gcc"]), cmake_form(TC_FILES["g++"])
 
 
 def git(root, *args):
@@ -119,7 +166,7 @@ class FakeIdf:
             self._cache(e.get("ccache_value", "1" if ccache else "0"))
             self._generate(os.path.join(self.root, "build"),
                            ccache or e.get("rule_ccache"), e.get("launcher"),
-                           not e.get("no_compile_edges"))
+                           not e.get("no_compile_edges"), e.get("compilers"))
             self._component("espressif__m", e.get("component_files", COMP_FILES))
             if e.get("shared_on_disk"):
                 # A git download: no CHECKSUMS.json, as the manager gives it.
@@ -140,18 +187,23 @@ class FakeIdf:
             return self._build()
         raise AssertionError(args)
 
-    def _generate(self, b, ccache, launcher=None, compile_edges=True):
+    def _generate(self, b, ccache, launcher=None, compile_edges=True,
+                  compilers=None):
         """What CMake's Ninja generator writes into build folder b, in the
         shape IDF's configure gives it: CCACHE_ENABLE puts ccache into each
         compile rule's command (IDF's RULE_LAUNCH_COMPILE), and
         CMAKE_C_COMPILER_LAUNCHER (from the environment, as CMake reads it,
-        or launcher) into the C edges' LAUNCHER binding."""
+        or launcher) into the C edges' LAUNCHER binding. compilers is
+        {language: path} where CMake chose another compiler than the
+        toolchain's own (a ccache masquerade first on PATH)."""
         if launcher is None:
             launcher = os.environ.get("CMAKE_C_COMPILER_LAUNCHER")
         e = self.edit
+        chosen = {"C": CC_CMAKE, "CXX": CXX_CMAKE, "ASM": CC_CMAKE}
+        chosen.update(compilers or {})
         cmk = os.path.join(b, "CMakeFiles", "3.30.2")
-        for lang, cc in (("C", CC_CMAKE), ("CXX", CXX_CMAKE),
-                         ("ASM", CC_CMAKE)):
+        for lang in ("C", "CXX", "ASM"):
+            cc = chosen[lang]
             if lang == "C" and e.get("no_c_compiler"):
                 continue
             scratch.write(os.path.join(cmk, "CMake%sCompiler.cmake" % lang),
@@ -159,8 +211,8 @@ class FakeIdf:
                           'set(CMAKE_%s_COMPILER_ARG1 "")\n' % (lang, cc, lang))
         pre = "ccache " if ccache else ""
         rules = []
-        for lang, cc in (("C", CC_NINJA), ("CXX", CXX_NINJA),
-                         ("ASM", CC_NINJA)):
+        for lang in ("C", "CXX", "ASM"):
+            cc = ninja_form(chosen[lang])
             rules.append("rule %s_COMPILER__m_unscanned_\n"
                          "  depfile = $DEP_FILE\n  deps = gcc\n"
                          "  command = %s${LAUNCHER}${CODE_CHECK}%s $DEFINES "
@@ -188,7 +240,10 @@ class FakeIdf:
         """build/CMakeCache.txt, with CCACHE_ENABLE as idf.py defines it
         (value None: no entry)."""
         lines = ["# This is the CMakeCache file.",
-                 "CMAKE_GENERATOR:INTERNAL=Ninja"]
+                 "CMAKE_GENERATOR:INTERNAL=Ninja",
+                 "CMAKE_TOOLCHAIN_FILE:FILEPATH=%s"
+                 % self.edit.get("toolchain_file",
+                                 cmake_form(TC_FILES["toolchain_file"]))]
         if value is not None:
             lines.append("CCACHE_ENABLE:UNINITIALIZED=%s" % value)
         scratch.write(os.path.join(self.root, "build", "CMakeCache.txt"),
@@ -210,8 +265,11 @@ class FakeIdf:
         # The bootloader subproject, which the build itself configures.
         boot = os.path.join(self.root, "build", "bootloader")
         scratch.write(os.path.join(boot, "CMakeCache.txt"),
-                      "CCACHE_ENABLE:UNINITIALIZED=0\n")
-        self._generate(boot, False, e.get("bootloader_launcher"))
+                      "CCACHE_ENABLE:UNINITIALIZED=0\n"
+                      "CMAKE_TOOLCHAIN_FILE:FILEPATH=%s\n"
+                      % cmake_form(TC_FILES["toolchain_file"]))
+        self._generate(boot, False, e.get("bootloader_launcher"),
+                       compilers=e.get("bootloader_compilers"))
         elf = b"\x7fELF built from " + git(self.root, "rev-parse",
                                             "HEAD").encode()
         sha = hashlib.sha256(elf).digest()
@@ -290,7 +348,7 @@ def run(root, cc, edit=None, check_only=False, dest="default", jobs=None):
     try:
         p = release(root, check_only=check_only, idf=idf,
                     toolchain_run=TC_RUN, dest=dest, jobs=jobs,
-                    ninja=idf.ninja)
+                    ninja=idf.ninja, toolchain=TOOLCHAIN)
         return p, idf, None
     except Refused as e:
         return None, idf, str(e)
@@ -322,11 +380,33 @@ class Release(unittest.TestCase):
                          "riscv32-esp-elf-gcc (crosstool-NG) 14.2.0")
         self.assertEqual(r["idf_version"], {"project": "v5.4.1",
                                             "image": "v5.4.1"})
-        self.assertEqual(r["dependencies_lock_sha256"], hashlib.sha256(
+        self.assertEqual(r["dependencies_lock_sha256_lf"], hashlib.sha256(
             scratch.read(os.path.join(root, "dependencies.lock"))).hexdigest())
         self.assertEqual(sorted(r["tooling"]),
                          ["commit", "digest", "dirty", "tag"])
         self.assertEqual(len(r["tooling"]["digest"]), 64)
+
+    def test_r13_lock_hash_ignores_crlf(self):
+        """R13: one lock gives one hash in any checkout. The same lock, in
+        one project as LF and in another as CRLF (committed as it is, so
+        both worktrees are clean), records one hash: the LF lock's."""
+        hashes = []
+        for name, crlf in (("rel_r13_lf", False), ("rel_r13_crlf", True)):
+            root, cc = project(name)
+            lp = os.path.join(root, "dependencies.lock")
+            lf = scratch.read(lp)
+            self.assertNotIn(b"\r", lf)
+            if crlf:
+                scratch.write(os.path.join(root, ".gitattributes"),
+                              "dependencies.lock -text\n")
+                scratch.write(lp, lf.replace(b"\n", b"\r\n"))
+                git(root, "add", "-A")
+                git(root, "commit", "-qm", "the lock as CRLF")
+                self.assertIn(b"\r\n", scratch.read(lp))
+            p, _, why = run(root, cc)
+            self.assertIsNone(why)
+            hashes.append(record.read(p)["dependencies_lock_sha256_lf"])
+        self.assertEqual(hashes, [hashlib.sha256(lf).hexdigest()] * 2)
 
     def test_r11_named_image_not_newest(self):
         root, cc = project("rel_r11")
@@ -651,8 +731,60 @@ class Release(unittest.TestCase):
         with mock.patch("vtrux_build.release.shutil.which", return_value=None):
             with self.assertRaises(Refused) as cm:
                 release(root, idf=idf, toolchain_run=TC_RUN,
-                        dest=records_dir(root), jobs=1)
+                        dest=records_dir(root), jobs=1, toolchain=TOOLCHAIN)
         self.assertIn("ninja", str(cm.exception))
+        self.assertEqual(idf.calls, [])
+
+    def test_r9_masquerade_after_the_reconfigure(self):
+        """The tester's case: a copy of ccache named after the toolchain's
+        compilers, first on PATH, which CMake then chose. Its compile
+        commands start with the chosen compiler, so only the positive
+        check sees it; nothing is built."""
+        root, cc = project("rel_r9_masq")
+        d = scratch.fresh("rel_r9_masq_path")
+        masq = {}
+        for lang, n in (("C", "gcc"), ("CXX", "g++"), ("ASM", "gcc")):
+            masq[lang] = cmake_form(os.path.join(d, "riscv32-esp-elf-%s%s"
+                                                 % (n, EXE)))
+            shutil.copyfile(TC_FILES["ccache"], masq[lang])
+        self.assertRefused(run(root, cc, {"compilers": masq}),
+                           ["R9", "after the reconfigure", "not this IDF's",
+                            "riscv32-esp-elf-gcc", TC_VER],
+                           ["reconfigure"])
+
+    def test_r9_masquerade_in_the_bootloader(self):
+        """The bootloader is configured during the build: a masquerade
+        there is refused after it, on either build path; no record."""
+        d = scratch.fresh("rel_r9_bmasq_path")
+        gcc = cmake_form(os.path.join(d, "riscv32-esp-elf-gcc" + EXE))
+        shutil.copyfile(TC_FILES["ccache"], gcc)
+        for jobs, step in ((None, "build"), (1, "ninja")):
+            root, cc = project("rel_r9_bmasq")
+            self.assertRefused(
+                run(root, cc, {"bootloader_compilers": {"C": gcc}}, jobs=jobs),
+                ["R9", "after the build", "bootloader", "not this IDF's"],
+                ["reconfigure", step])
+            dest = records_dir(root)
+            self.assertFalse(os.path.isdir(dest) and os.listdir(dest))
+
+    def test_r9_toolchain_file_not_this_idfs(self):
+        root, cc = project("rel_r9_tfile")
+        other = scratch.write(os.path.join(scratch.fresh("rel_r9_tfile_x"),
+                                           "toolchain-esp32c3.cmake"),
+                              TOOLCHAIN_CMAKE)
+        self.assertRefused(run(root, cc, {"toolchain_file": cmake_form(other)}),
+                           ["R9", "not one of this IDF's"], ["reconfigure"])
+
+    def test_r9_no_idf_toolchain_stops_first(self):
+        root, cc = project("rel_r9_noidf")
+        idf = FakeIdf(root, cc)
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("IDF_PATH", None)
+            with self.assertRaises(Refused) as cm:
+                release(root, idf=idf, toolchain_run=TC_RUN,
+                        dest=records_dir(root), ninja=idf.ninja)
+        self.assertIn("IDF_PATH", str(cm.exception))
+        self.assertIn("R9", str(cm.exception))
         self.assertEqual(idf.calls, [])
 
 
@@ -697,36 +829,6 @@ class LauncherCheck(unittest.TestCase):
                 check_no_launcher(self.folder(name, cmd), "t")
             self.assertIn("1 of the 1 compile commands", str(cm.exception))
 
-    def test_compiler_that_is_ccache(self):
-        """CMake chose ccache itself: named so, or a link named after the
-        compiler that resolves to ccache (masquerade mode)."""
-        for name, compiler in (("lc_cc_name", "C:/cc/ccache.exe"),
-                               ("lc_cc_name2", "/usr/lib/ccache/CCACHE")):
-            cmd = compiler.replace("/", "\\")
-            with self.assertRaises(Refused, msg=name) as cm:
-                check_no_launcher(self.folder(name, cmd, compiler), "t")
-            self.assertIn("which is ccache", str(cm.exception))
-        link = "C:/mask/riscv32-esp-elf-gcc.exe"
-        real = os.path.realpath
-        with mock.patch("vtrux_build.release.os.path.realpath",
-                        lambda p: "C:/t/ccache.exe" if p == link else real(p)):
-            with self.assertRaises(Refused) as cm:
-                check_no_launcher(self.folder("lc_cc_link", "C:\\mask\\"
-                                              "riscv32-esp-elf-gcc.exe", link),
-                                  "t")
-        self.assertIn("C:/t/ccache.exe", str(cm.exception))
-
-    def test_compiler_link_to_ccache_on_disk(self):
-        d = scratch.fresh("lc_cc_symlink")
-        target = scratch.write(os.path.join(d, "ccache.exe"), b"")
-        link = os.path.join(d, "riscv32-esp-elf-gcc.exe")
-        try:
-            os.symlink(target, link)
-        except (OSError, NotImplementedError) as e:
-            self.skipTest("no symlinks here (%s)" % e)
-        self.assertTrue(is_ccache(link))
-        self.assertFalse(is_ccache(target.replace("ccache", "gcc")))
-
     def test_two_compilers_for_one_language(self):
         b = self.folder("lc_two", "C:\\tc\\gcc.exe",
                         extra='set(CMAKE_C_COMPILER "C:/other/gcc.exe")\n')
@@ -748,6 +850,214 @@ class LauncherCheck(unittest.TestCase):
         self.assertEqual(
             [os.path.relpath(p, b) for p in cmake_build_folders(b)],
             [".", "bootloader", os.path.join("deep", "sub")])
+
+
+class Compilers(unittest.TestCase):
+    """R9's positive check: each compiler CMake chose is this IDF's
+    toolchain binary (toolchain.py), on hand-written build folders."""
+
+    def folder(self, name, compilers=None, toolchain_file=None):
+        """A CMake build folder whose chosen compilers are the toolchain's
+        own unless compilers ({language: path}) says otherwise."""
+        b = scratch.fresh(name)
+        chosen = {"C": TC_FILES["gcc"], "CXX": TC_FILES["g++"],
+                  "ASM": TC_FILES["gcc"]}
+        chosen.update(compilers or {})
+        for lang, cc in chosen.items():
+            if cc is None:
+                continue
+            scratch.write(os.path.join(b, "CMakeFiles", "3.30.2",
+                                       "CMake%sCompiler.cmake" % lang),
+                          'set(CMAKE_%s_COMPILER "%s")\n' % (lang, cmake_form(cc)))
+        scratch.write(os.path.join(b, "CMakeCache.txt"),
+                      "CMAKE_TOOLCHAIN_FILE:FILEPATH=%s\n" % cmake_form(
+                          toolchain_file or TC_FILES["toolchain_file"]))
+        return b
+
+    def refused(self, b, *words, toolchain=TOOLCHAIN):
+        with self.assertRaises(Refused) as cm:
+            check_compilers(b, "t", toolchain)
+        for w in ("R9",) + words:
+            self.assertIn(w, str(cm.exception))
+        return str(cm.exception)
+
+    def masq_dir(self, name):
+        return scratch.fresh(name)
+
+    def test_the_toolchains_own_pass(self):
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            check_compilers(self.folder("cc_own"), "t", TOOLCHAIN)
+        self.assertIn("riscv32-esp-elf %s" % TC_VER, out.getvalue())
+
+    def test_copy_of_ccache_named_after_the_compiler(self):
+        """The tester's case: a copy, which no link resolution sees."""
+        d = self.masq_dir("cc_copy_path")
+        for lang, n in (("C", "gcc"), ("CXX", "g++"), ("ASM", "gcc")):
+            gcc = os.path.join(d, "riscv32-esp-elf-%s%s" % (n, EXE))
+            shutil.copyfile(TC_FILES["ccache"], gcc)
+            self.refused(self.folder("cc_copy", {lang: gcc}),
+                         "the %s compiler" % lang, "not this IDF's",
+                         "not the toolchain's own")
+
+    def test_hardlink_of_ccache(self):
+        d = self.masq_dir("cc_hard_path")
+        gcc = os.path.join(d, "riscv32-esp-elf-gcc" + EXE)
+        try:
+            os.link(TC_FILES["ccache"], gcc)
+        except (OSError, NotImplementedError) as e:
+            self.skipTest("no hardlinks here (%s)" % e)
+        self.assertEqual(os.stat(gcc).st_ino, os.stat(TC_FILES["ccache"]).st_ino)
+        self.refused(self.folder("cc_hard", {"C": gcc}), "not this IDF's")
+
+    def test_wrapper_script(self):
+        """A script named after the compiler that runs ccache: refused by
+        where it is, whether or not it has the compiler's exact name."""
+        d = self.masq_dir("cc_wrap_path")
+        for n in ("riscv32-esp-elf-gcc", "riscv32-esp-elf-gcc.cmd"):
+            w = scratch.write(os.path.join(d, n),
+                              "#!/bin/sh\nexec ccache riscv32-esp-elf-gcc \"$@\"\n")
+            self.refused(self.folder("cc_wrap", {"C": w}), "not this IDF's")
+
+    def test_symlink_to_ccache(self):
+        d = self.masq_dir("cc_sym_path")
+        gcc = os.path.join(d, "riscv32-esp-elf-gcc" + EXE)
+        try:
+            os.symlink(TC_FILES["ccache"], gcc)
+        except (OSError, NotImplementedError) as e:
+            self.skipTest("no symlinks here (%s)" % e)
+        why = self.refused(self.folder("cc_sym", {"C": gcc}), "resolved")
+        self.assertIn("ccache", why)
+
+    def test_symlink_to_the_toolchains_own_passes(self):
+        """A link elsewhere that resolves to the toolchain's binary runs
+        that binary, and is its own."""
+        d = self.masq_dir("cc_symok_path")
+        gcc = os.path.join(d, "riscv32-esp-elf-gcc" + EXE)
+        try:
+            os.symlink(TC_FILES["gcc"], gcc)
+        except (OSError, NotImplementedError) as e:
+            self.skipTest("no symlinks here (%s)" % e)
+        with mock.patch("sys.stdout"):
+            check_compilers(self.folder("cc_symok", {"C": gcc}), "t",
+                            TOOLCHAIN)
+
+    def test_links_resolved_mocked(self):
+        """The two symlink cases where links need a privilege (Windows):
+        realpath gives what a link would resolve to."""
+        d = self.masq_dir("cc_mlink_path")
+        gcc = os.path.join(d, "riscv32-esp-elf-gcc" + EXE)
+        scratch.write(gcc, b"")
+        real = os.path.realpath
+        for target, passes in ((TC_FILES["ccache"], False),
+                               (TC_FILES["gcc"], True)):
+            with mock.patch("vtrux_build.toolchain.os.path.realpath",
+                            lambda p: target if p == cmake_form(gcc) else real(p)):
+                b = self.folder("cc_mlink", {"C": gcc})
+                if passes:
+                    with mock.patch("sys.stdout"):
+                        check_compilers(b, "t", TOOLCHAIN)
+                else:
+                    self.assertIn("resolved: %s" % TC_FILES["ccache"],
+                                  self.refused(b, "not this IDF's"))
+
+    def test_another_name_in_the_toolchain_folder(self):
+        cc = os.path.join(os.path.dirname(TC_FILES["gcc"]),
+                          "riscv32-esp-elf-cc" + EXE)
+        scratch.write(cc, b"real cc")
+        try:
+            self.refused(self.folder("cc_name", {"C": cc}),
+                         "not the riscv32-esp-elf-gcc the toolchain file names")
+        finally:
+            os.remove(cc)
+
+    def test_missing_compiler_file(self):
+        gone = os.path.join(self.masq_dir("cc_gone_path"),
+                            "riscv32-esp-elf-gcc" + EXE)
+        self.refused(self.folder("cc_gone", {"C": gone}), "not a file")
+
+    def test_recommended_version_not_installed(self):
+        """Only the supported, not the recommended, toolchain is installed:
+        not the one this IDF's export uses."""
+        tc, files = fake_idf("cc_oldtc", installed="esp-13.2.0_20240530")
+        b = self.folder("cc_old", {"C": files["gcc"], "CXX": files["g++"],
+                                   "ASM": files["gcc"]},
+                        toolchain_file=files["toolchain_file"])
+        self.refused(b, "not installed", toolchain=tc)
+
+    def test_compiler_name_in_two_tool_folders(self):
+        """A copy dropped into another tool's folder makes the toolchain's
+        own folder ambiguous: refused rather than guessed."""
+        tc, files = fake_idf("cc_twice")
+        extra = os.path.join(os.path.dirname(files["ccache"]),
+                             "riscv32-esp-elf-gcc" + EXE)
+        shutil.copyfile(files["ccache"], extra)
+        b = self.folder("cc_two", {"C": files["gcc"], "CXX": files["g++"],
+                                   "ASM": files["gcc"]},
+                        toolchain_file=files["toolchain_file"])
+        self.refused(b, "2 tool folders", toolchain=tc)
+
+    def test_toolchain_file_outside_the_idf(self):
+        other = scratch.write(os.path.join(scratch.fresh("cc_tfile_x"),
+                                           "toolchain-esp32c3.cmake"),
+                              TOOLCHAIN_CMAKE)
+        self.refused(self.folder("cc_tfile", toolchain_file=other),
+                     "not one of this IDF's")
+
+    def test_no_toolchain_file_recorded(self):
+        b = self.folder("cc_notfile")
+        scratch.write(os.path.join(b, "CMakeCache.txt"), "X:STRING=1\n")
+        self.refused(b, "no CMAKE_TOOLCHAIN_FILE")
+
+    def test_no_c_compiler_recorded(self):
+        self.refused(self.folder("cc_noc", {"C": None}), "records no C compiler")
+
+    def test_language_the_toolchain_file_does_not_name(self):
+        tfile = scratch.write(os.path.join(
+            os.path.dirname(TC_FILES["toolchain_file"]), "toolchain-noasm.cmake"),
+            "set(CMAKE_C_COMPILER riscv32-esp-elf-gcc)\n"
+            "set(CMAKE_CXX_COMPILER riscv32-esp-elf-g++)\n")
+        try:
+            self.refused(self.folder("cc_lang", toolchain_file=tfile),
+                         "names no ASM compiler")
+        finally:
+            os.remove(tfile)
+
+    def test_every_folder_is_checked(self):
+        """build/ passes and the bootloader's has the masquerade."""
+        good = self.folder("cc_folders")
+        d = self.masq_dir("cc_folders_path")
+        gcc = os.path.join(d, "riscv32-esp-elf-gcc" + EXE)
+        shutil.copyfile(TC_FILES["ccache"], gcc)
+        boot = os.path.join(good, "bootloader")
+        shutil.copytree(self.folder("cc_folders_boot", {"C": gcc}), boot)
+        with self.assertRaises(Refused) as cm:
+            with mock.patch("sys.stdout"):
+                check_compilers(good, "t", TOOLCHAIN, [good, boot])
+        self.assertIn(os.path.join("cc_folders", "bootloader"), str(cm.exception))
+
+
+class ToolchainFromEnviron(unittest.TestCase):
+
+    def test_tools_path(self):
+        idf = TOOLCHAIN.idf_path
+        tc = Toolchain.from_environ({"IDF_PATH": idf,
+                                     "IDF_TOOLS_PATH": TOOLCHAIN.tools_path})
+        self.assertEqual(tc.tools_path, TOOLCHAIN.tools_path)
+        tc = Toolchain.from_environ({"IDF_PATH": idf})
+        self.assertEqual(tc.tools_path, os.path.abspath(
+            os.path.expanduser(os.path.join("~", ".espressif"))))
+        self.assertIn(("ccache", "4.10.2", os.path.join(
+            tc.tools_path, "tools", "ccache", "4.10.2", "ccache-4.10.2")),
+            tc.folders)
+        self.assertNotIn("esp-13.2.0_20240530",
+                         [v for _, v, _ in tc.folders])
+
+    def test_no_idf(self):
+        with self.assertRaises(ToolchainError):
+            Toolchain.from_environ({})
+        with self.assertRaises(ToolchainError):
+            Toolchain(scratch.fresh("tc_noidf"), TOOLCHAIN.tools_path)
 
 
 class NinjaRunner(unittest.TestCase):
