@@ -184,6 +184,7 @@ def self_test():
         c = chosen_compiler(build)
         print("  %s chosen compiler, %s: %s" % ("ok  " if c == want else "FAIL", label, c))
         ok &= c == want
+    ok &= self_test_r8(I.scratch("release-cases-selftest-r8"))
     print("\nself-test: %s" % ("every broken input caught, the faithful one passed" if ok else "FAILED"))
     return 0 if ok else 1
 
@@ -1061,6 +1062,216 @@ def c_r13_lock_crlf(ctx, log):
     reset(ctx.mini, "main", "main")
 
 
+# ---------- R8: the sdkconfig the build used is committed (a43c6e8, shared/main c1a502c) ----------
+
+def config_file(proj):
+    """project_description.json's config_file after the build's reconfigure, normalised, or None."""
+    try:
+        p = json.load(open(os.path.join(proj, "build", "project_description.json"))).get("config_file")
+    except (OSError, ValueError):
+        return None
+    return os.path.normcase(os.path.normpath(p)) if p else None
+
+
+def ignored(proj, rel):
+    """git's own answer, asked here: is rel matched by an ignore rule (tracked or not)?"""
+    return run(["git", "-C", proj, "check-ignore", "-q", "--no-index", rel])[0] == 0
+
+
+def tracked(proj, rel):
+    return run(["git", "-C", proj, "ls-files", "--error-unmatch", rel])[0] == 0
+
+
+def header_has(proj, name):
+    p = os.path.join(proj, "build", "config", "sdkconfig.h")
+    return os.path.exists(p) and re.search(r"^#define %s " % name, open(p, errors="replace").read(), re.M) is not None
+
+
+def fx_sdkconfig(ctx, branch, edit, msg, log, settle=False):
+    """branch on top of the fixture with edit(proj) committed; settle: then commit what a reconfigure
+    rewrites (normalise(), as the fixture was made), so R8's clean check is not what refuses."""
+    reset(ctx.p1, "fixture")
+    git(ctx.p1, "checkout", "-q", "-B", branch, "origin/fixture")
+    edit(ctx.p1)
+    git(ctx.p1, "add", "-A")
+    git(ctx.p1, "commit", "-q", "-m", msg)
+    if settle:
+        with open(log, "a") as fx:
+            normalise(ctx, ctx.p1, branch, fx)
+    rmtree(os.path.join(ctx.p1, "build"))
+
+
+def set_sdkconfig_line(proj, value):
+    """set(SDKCONFIG ...) in the top-level CMakeLists.txt, before project.cmake is included."""
+    p = os.path.join(proj, "CMakeLists.txt")
+    s = open(p, newline="").read()
+    inc = "include($ENV{IDF_PATH}/tools/cmake/project.cmake)"
+    if s.count(inc) != 1:
+        raise RuntimeError("CMakeLists.txt: %d project.cmake includes" % s.count(inc))
+    with open(p, "w", newline="") as f:
+        f.write(s.replace(inc, 'set(SDKCONFIG "%s")\n%s' % (value, inc)))
+
+
+def append(proj, rel, line):
+    with open(os.path.join(proj, rel), "a", newline="") as f:
+        f.write("\n" + line + "\n")
+
+
+def r8_sdkconfig_refused(ctx, name, log, want_path, note, after=None):
+    """Refused, no record; VOID unless the reconfigure ran and config_file names want_path."""
+    before = snapshot(ctx.records())
+    rc, _ = release(ctx, ctx.p1, log, jobs=ctx.jobs)
+    cf = config_file(ctx.p1)
+    want = os.path.normcase(os.path.normpath(want_path))
+    extra = after() if after else (True, "")
+    refusal(ctx, name, ctx.p1, rc, before, extra_ok=cf == want and extra[0],
+            note="R8 sdkconfig: %s; config_file %s%s" % (note, "is it" if cf == want else "is %s, not %s" % (cf, want),
+                                                        "; " + extra[1] if extra[1] else ""))
+    reset(ctx.p1, "fixture")
+    rmtree(os.path.join(ctx.p1, "build"))
+
+
+def self_test_r8(d):
+    """The R8 sdkconfig helpers on a small repo: what git says is tracked and ignored, config_file, and
+    the SDKCONFIG line."""
+    ok = True
+    run(["git", "init", "-q", d], check=True)
+    for n, text in (("sdkconfig", "x\n"), ("kept", "x\n"), ("loose", "x\n"),
+                    ("CMakeLists.txt", "cmake_minimum_required(VERSION 3.5)\n"
+                                       "include($ENV{IDF_PATH}/tools/cmake/project.cmake)\nproject(p)\n")):
+        open(os.path.join(d, n), "w", newline="").write(text)
+    git(d, "add", "sdkconfig", "kept", "CMakeLists.txt")
+    git(d, "commit", "-q", "-m", "x")
+    append(d, ".gitignore", "/sdkconfig")
+    for label, got, want in (("tracked, ignored", (tracked(d, "sdkconfig"), ignored(d, "sdkconfig")), (True, True)),
+                             ("tracked, not ignored", (tracked(d, "kept"), ignored(d, "kept")), (True, False)),
+                             ("untracked", (tracked(d, "loose"), ignored(d, "loose")), (False, False))):
+        print("  %s r8 git helpers, %s: %s" % ("ok  " if got == want else "FAIL", label, got))
+        ok &= got == want
+    os.makedirs(os.path.join(d, "build"))
+    for label, desc, want in (("named", {"config_file": os.path.join(d, "sdkconfig").replace("\\", "/")},
+                               os.path.normcase(os.path.join(d, "sdkconfig"))),
+                              ("not named", {}, None)):
+        with open(os.path.join(d, "build", "project_description.json"), "w") as f:
+            json.dump(desc, f)
+        got = config_file(d)
+        print("  %s r8 config_file, %s: %s" % ("ok  " if got == want else "FAIL", label, got))
+        ok &= got == want
+    set_sdkconfig_line(d, "${CMAKE_CURRENT_LIST_DIR}/configs/s")
+    lines = open(os.path.join(d, "CMakeLists.txt")).read().splitlines()
+    good = lines[1] == 'set(SDKCONFIG "${CMAKE_CURRENT_LIST_DIR}/configs/s")' and lines[2].startswith("include(")
+    print("  %s r8 SDKCONFIG line before project.cmake: %s" % ("ok  " if good else "FAIL", lines[1]))
+    return ok & good
+
+
+def c_r8_sdk_ignored(ctx, log):
+    """The default sdkconfig, still tracked, matched by a committed .gitignore rule."""
+    fx_sdkconfig(ctx, "r8-sdk-ignored", lambda p: append(p, ".gitignore", "/sdkconfig"),
+                 "case: sdkconfig matched by .gitignore, still tracked", log)
+    if not (tracked(ctx.p1, "sdkconfig") and ignored(ctx.p1, "sdkconfig")):
+        report("r8_sdkconfig_ignored", "VOID", "sdkconfig tracked %s, ignored %s" % (
+            tracked(ctx.p1, "sdkconfig"), ignored(ctx.p1, "sdkconfig")), ctx.log)
+        return
+    r8_sdkconfig_refused(ctx, "r8_sdkconfig_ignored", log, os.path.join(ctx.p1, "sdkconfig"),
+                         "tracked, ignored by .gitignore")
+
+
+def c_r8_sdk_excluded(ctx, log):
+    """The default sdkconfig, tracked, matched by .git/info/exclude (no commit)."""
+    reset(ctx.p1, "fixture")
+    rmtree(os.path.join(ctx.p1, "build"))
+    ex = os.path.join(ctx.p1, ".git", "info", "exclude")
+    os.makedirs(os.path.dirname(ex), exist_ok=True)
+    old = open(ex, "rb").read() if os.path.exists(ex) else None
+    try:
+        with open(ex, "ab") as f:
+            f.write(b"\n/sdkconfig\n")
+        if not (tracked(ctx.p1, "sdkconfig") and ignored(ctx.p1, "sdkconfig")):
+            report("r8_sdkconfig_excluded", "VOID", "the exclude rule did not take", ctx.log)
+            return
+        r8_sdkconfig_refused(ctx, "r8_sdkconfig_excluded", log, os.path.join(ctx.p1, "sdkconfig"),
+                             "tracked, ignored by .git/info/exclude")
+    finally:
+        if old is None:
+            os.remove(ex)
+        else:
+            open(ex, "wb").write(old)
+
+
+def c_r8_sdk_untracked(ctx, log):
+    """The default sdkconfig out of the index and ignored: on disk, untracked, no clean-check hit."""
+    def edit(p):
+        git(p, "rm", "-q", "--cached", "sdkconfig")
+        append(p, ".gitignore", "/sdkconfig")
+    fx_sdkconfig(ctx, "r8-sdk-untracked", edit, "case: sdkconfig untracked and ignored", log)
+    if tracked(ctx.p1, "sdkconfig") or not os.path.exists(os.path.join(ctx.p1, "sdkconfig")):
+        report("r8_sdkconfig_untracked", "VOID", "sdkconfig still tracked, or not on disk", ctx.log)
+        return
+    r8_sdkconfig_refused(ctx, "r8_sdkconfig_untracked", log, os.path.join(ctx.p1, "sdkconfig"),
+                         "untracked and ignored, on disk")
+
+
+def c_r8_sdk_elsewhere(ctx, log):
+    """SDKCONFIG set in CMakeLists.txt to a committed configs/sdkconfig.release, a copy of the fixture's
+    with CONFIG_LOG_COLORS off so the build shows which file it used: builds and records."""
+    def edit(p):
+        os.makedirs(os.path.join(p, "configs"), exist_ok=True)
+        s = open(os.path.join(p, "sdkconfig"), newline="").read()
+        if s.count("CONFIG_LOG_COLORS=y") != 1:
+            raise RuntimeError("sdkconfig: no single CONFIG_LOG_COLORS=y")
+        with open(os.path.join(p, "configs", "sdkconfig.release"), "w", newline="") as f:
+            f.write(s.replace("CONFIG_LOG_COLORS=y", "# CONFIG_LOG_COLORS is not set"))
+        set_sdkconfig_line(p, "${CMAKE_CURRENT_LIST_DIR}/configs/sdkconfig.release")
+    fx_sdkconfig(ctx, "r8-sdk-elsewhere", edit, "case: SDKCONFIG = configs/sdkconfig.release, committed", log,
+                 settle=True)
+    before = snapshot(ctx.records())
+    rc, _ = release(ctx, ctx.p1, log, jobs=ctx.jobs)
+    cf = config_file(ctx.p1)
+    want = os.path.normcase(os.path.normpath(os.path.join(ctx.p1, "configs", "sdkconfig.release")))
+    used = cf == want and not header_has(ctx.p1, "CONFIG_LOG_COLORS")
+    added = sorted(set(snapshot(ctx.records())) - set(before))
+    with open(log, "a") as f:
+        f.write("config_file %s; CONFIG_LOG_COLORS in sdkconfig.h %s; new record files %s; status '%s'\n" % (
+            cf, header_has(ctx.p1, "CONFIG_LOG_COLORS"), added, git(ctx.p1, "status", "--porcelain")))
+    if not used:
+        report("r8_sdkconfig_elsewhere", "VOID", "the build did not use configs/sdkconfig.release (config_file %s)"
+               % cf, ctx.log)
+    elif rc or len(added) != 3:
+        report("r8_sdkconfig_elsewhere", "FAIL", "exit %d, %d new record files; SPEC allows a committed sdkconfig "
+               "anywhere in the project" % (rc, len(added)), ctx.log)
+    else:
+        report("r8_sdkconfig_elsewhere", "PASS", "built and recorded from the committed configs/sdkconfig.release",
+               ctx.log)
+    reset(ctx.p1, "fixture")
+    rmtree(os.path.join(ctx.p1, "build"))
+
+
+def c_r8_sdk_generated(ctx, log):
+    """SDKCONFIG set to configs/sdkconfig.gen, ignored and absent: the reconfigure writes it, untracked."""
+    def edit(p):
+        set_sdkconfig_line(p, "${CMAKE_CURRENT_LIST_DIR}/configs/sdkconfig.gen")
+        append(p, ".gitignore", "/configs/sdkconfig.gen*")      # and the .old IDF writes beside it
+    fx_sdkconfig(ctx, "r8-sdk-generated", edit, "case: SDKCONFIG = configs/sdkconfig.gen, ignored, absent", log)
+    gen = os.path.join(ctx.p1, "configs", "sdkconfig.gen")
+    r8_sdkconfig_refused(ctx, "r8_sdkconfig_generated", log, gen, "written by the reconfigure, ignored",
+                         after=lambda: (os.path.exists(gen) and not tracked(ctx.p1, "configs/sdkconfig.gen"),
+                                        "after: on disk %s" % os.path.exists(gen)))
+
+
+def c_r8_sdk_outside(ctx, log):
+    """SDKCONFIG set to <project>_outside/sdkconfig, a copy beside the project whose name starts like it."""
+    out = ctx.p1 + "_outside"
+
+    def edit(p):
+        os.makedirs(out, exist_ok=True)
+        shutil.copyfile(os.path.join(p, "sdkconfig"), os.path.join(out, "sdkconfig"))
+        set_sdkconfig_line(p, "${CMAKE_CURRENT_LIST_DIR}_outside/sdkconfig")
+    fx_sdkconfig(ctx, "r8-sdk-outside", edit, "case: SDKCONFIG outside the project", log)
+    r8_sdkconfig_refused(ctx, "r8_sdkconfig_outside", log, os.path.join(out, "sdkconfig"),
+                         "outside the project, beside it with a name that starts like it")
+    rmtree(out)
+
+
 CASES = [
     ("pre_unset_ri", c_pre_unset_ri),
     ("pre_overwrite", c_pre_overwrite),
@@ -1093,6 +1304,12 @@ CASES = [
     ("r16_override_path", c_r16),
     ("r22_mini", c_r22_mini),
     ("r13_lock_crlf", c_r13_lock_crlf),
+    ("r8_sdkconfig_ignored", c_r8_sdk_ignored),
+    ("r8_sdkconfig_excluded", c_r8_sdk_excluded),
+    ("r8_sdkconfig_untracked", c_r8_sdk_untracked),
+    ("r8_sdkconfig_elsewhere", c_r8_sdk_elsewhere),
+    ("r8_sdkconfig_generated", c_r8_sdk_generated),
+    ("r8_sdkconfig_outside", c_r8_sdk_outside),
 ]
 
 
