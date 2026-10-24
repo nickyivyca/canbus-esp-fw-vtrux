@@ -15,6 +15,21 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import x2_jammer as X                                           # noqa: E402
 
+# The jammer is built on the charge interposer's platform: its pin in
+# charge-interposer/firmware/platformio.ini on charge-interposer/main.
+PLATFORM = "https://github.com/pioarduino/platform-espressif32/releases/download/54.03.21-2/platform-espressif32.zip"
+JAMMER_INI = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "x2_jammer", "platformio.ini")
+
+
+def ini_platforms(text):
+    """Every 'platform = ...' value in a platformio.ini, comment lines skipped."""
+    out = []
+    for ln in text.splitlines():
+        k, sep, v = ln.partition("=")
+        if sep and k.strip() == "platform" and not ln.lstrip().startswith(";"):
+            out.append(v.strip())
+    return out
+
 PARSE = [
     ("JAMMER ACK TRAIN w_us=20 p_us=200 ms=2000 t0_us=123",
      {"kind": "ACK", "what": "TRAIN", "w_us": 20, "ms": 2000}),
@@ -226,6 +241,15 @@ def main():
                                        [x for _t, x, _p in jam.out]))
     if not ok:
         bad.append("fake jammer control")
+    got = ini_platforms(open(JAMMER_INI, encoding="utf-8").read())
+    ok = got == [PLATFORM]
+    print("  %-4s ini      %-60s %s" % ("ok" if ok else "FAIL", "the jammer pins the interposer's platform", got))
+    if not ok:
+        bad.append("platform pin")
+    ok = ini_platforms("[env:x]\nplatform = espressif32\n") == ["espressif32"]
+    print("  %-4s ini      %-60s" % ("ok" if ok else "FAIL", "control: a bare platform line is read as it is"))
+    if not ok:
+        bad.append("platform control")
     print("\n=== %s ===" % ("PASS" if not bad else "FAIL: " + "; ".join(bad)))
     return 1 if bad else 0
 

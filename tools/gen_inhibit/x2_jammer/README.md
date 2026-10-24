@@ -23,7 +23,7 @@ back and printed in the banner.
 
 | File | What |
 |---|---|
-| `platformio.ini` | One env, `vtrux_jammer_x2_NOT_FOR_VEHICLE`. Same toolchain and board settings as the interposer's (pioarduino espressif32, `esp32-s3-devkitc-1`, USB-Serial-JTAG as `Serial`). `build_dir` is under `%LOCALAPPDATA%`, so objects do not sync. |
+| `platformio.ini` | One env, `vtrux_jammer_x2_NOT_FOR_VEHICLE`. Same toolchain and board settings as the interposer's: its pinned pioarduino espressif32 54.03.21-2, by release URL (pinned here too since 2026-10-24; before, a bare `espressif32`), `esp32-s3-devkitc-1`, USB-Serial-JTAG as `Serial`. Changing this file changes the source digest `jammer_name.py` takes, so the next build gets a new name; images already built keep theirs. `bench/test_x2_jammer.py` checks the pin. `build_dir` is under `%LOCALAPPDATA%`, so objects do not sync. |
 | `src/main.cpp` | The firmware. The header comment has the safety design and the command set. |
 | `jammer_name.py` | Pre-build script. Names the image `vtrux_jammer_x2_NOT_FOR_VEHICLE_<digest12>` after a sha256 of `platformio.ini`, both scripts and `src/`, and compiles the full digest into the banner. This folder is not in git, so the digest stands in for a commit. It identifies the **sources**, not the image. |
 | `jammer_archive.py` | Post-build script. Copies the app `.bin`/`.elf`, bootloader, partition table and `boot_app0` into `builds/<app md5>/`, and **appends** a row to `builds/manifest.json` with the md5, the app sha256, the ELF sha256 and the flash offsets. Builds are not reproducible, so rows are keyed by md5 and never replaced. |
