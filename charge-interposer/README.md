@@ -70,6 +70,7 @@ branch; until then reverse-it's `firmware/esp-development.md`). Paths starting
 | `diag_cadence.py` | Spec 8.2 on the wire: the status-frame cadence and the immediate `0x7F4` | Tester |
 | `diag_cadence_test.py` | Test for `diag_cadence.py`; no hardware | Tester |
 | `bench_suite.py`, `bench_suite_test.py`, `bench_identify.py` | The chain runner's three suites, their test and its identify hook (reviewer, 2026-10-19) | Tester |
+| `bench_wican.py`, `bench_wican_test.py` | The WiCAN as a board of the bench suite, read and rebooted but never flashed, and its test (reviewer, 2026-10-24) | Tester |
 | `firmware/test/host_diff/` | The reference-vs-port differential | Tester |
 | `firmware/test/host_bridge/` | Whole directory, fakes included | Tester |
 | `firmware/test/build_check.py` | Builds every PlatformIO environment, checks the truck image is silent, and checks the manifest rows and the diag schema version (review item C2b) | Tester |
@@ -108,3 +109,21 @@ and its test, on `gen-inhibit/main`) imports `build_lookup.py` through
 `.bin` path in, the ELF SHA-256 hex string out) and the `APP_DESC_MAGIC`
 constant. A change to either name's signature, result or value goes to the
 gen-inhibit reviewer before it lands (reviewer, 2026-10-08).
+
+The other way round, `bench_wican.py` reads from gen-inhibit, read-only,
+never copying anything onto this branch (both reviewers, 2026-10-23/24):
+- the key `gi_images` in gen-inhibit's local chain settings
+  (`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/chain_settings_<host>.json`),
+  and in `<gi_images>/build-tester-man/` exactly one file matching
+  `wican-fw_obd_*.bin`, the glob of gen-inhibit's `image_bin()`;
+- that image's identity through `elf_sha256_of_bin` above (the app
+  descriptor's ELF SHA-256 at 0xB0);
+- `tools/gen_inhibit/bench/wican_reboot.py`, its options `--label`, `--out`,
+  `--known`, `--first`, `--want` and `--want-unknown`, and
+  `page_state.read_page(timeout)`, from a detached worktree at a pinned
+  `gen-inhibit/main` commit (`interposer-tester-gi-tools-<commit>`), named in
+  the tester's local settings as `gi_tools`.
+
+A change to any of these on either side goes to both reviewers first.
+gen-inhibit keeps the same list in `tools/gen_inhibit/README.md`, under
+"Cross-project dependencies".
