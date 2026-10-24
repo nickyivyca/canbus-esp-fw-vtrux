@@ -8,7 +8,7 @@ the Bel Fuse charger and the rest of the powertrain bus so the truck can be
 charged to 100 % even while the VCU's evap-purge routine wants to stop it at
 80 %.
 
-Same shape as the Coda DLCM flash bench
+Same shape as the Coda DLCM flash simulator
 (`projects/coda/notes/dlcm/flash_sim/`): endpoint simulators talking to each
 other over a localhost virtual bus, with the same code able to drive real
 dongles later.
@@ -23,7 +23,7 @@ dongles later.
 The **physics link** is not a CAN bus. The charger and the pack are joined by
 copper the interposer does not sit in, so the charger publishes the current it
 is really delivering and the pack publishes its terminal voltage back. Without
-it the bench has a hole: the pack would be charged *by a CAN telemetry frame*,
+it the simulator has a hole: the pack would be charged *by a CAN telemetry frame*,
 so the interposer could "charge the battery" by rewriting a status message, and
 `--stealth` (which zeroes exactly that telemetry) would appear to stop the
 charge dead.
@@ -38,7 +38,7 @@ charger, then `vehicle_sim.py` for the real truck.
 
 Specified in **`projects/vtrux/notes/charge-interposer-spec.md`**, the single source of
 truth for arming, the override, the release, the trips and the diagnostics.
-This file covers only the simulator. One design fact the bench code leans on
+This file covers only the simulator. One design fact the simulator code leans on
 directly and is easy to get wrong: page 00 `cmd_Mode` 3 is a **hold**, not a
 completion state -- the charger keeps delivering ~2.4 A in it, and 3 -> 1
 restarts full current. The enum (0 Export, 1 Charger, 2 Stand-By, 3 Charger
@@ -62,11 +62,11 @@ python3.13 charge-interposer/test_hold_wire.py
 # offline regression against the real truck captures  (~4 min, no CAN)
 python3.13 charge-interposer/regress.py --all
 
-# the live three-way bench
+# the live three-way simulator
 python3.13 charge-interposer/run_scenario.py --list
 python3.13 charge-interposer/run_scenario.py evap-override
 
-# the same bench with the REAL BOARD in the middle (Stage 2)
+# the same simulator with the REAL BOARD in the middle (Stage 2)
 py -3.12 charge-interposer/run_scenario.py evap-override     --external-interposer --serial-port COM7     --vehicle-transport kvaser --charger-transport pcan
 ```
 
@@ -203,14 +203,14 @@ STAND_BY (the handle was pulled before 75 s).
 **A virtual CAN bus is not automatically local.** `python-can`'s
 `udp_multicast` defaults to `hop_limit=1`, and the kernel routes 239.0.0.0/8 out
 the default interface -- so every simulated frame goes on the real LAN. On
-2026-09-01 this bench pushed 66,450 pps / 13.6 MB/s onto the house network and
+2026-09-01 this simulator pushed 66,450 pps / 13.6 MB/s onto the house network and
 disrupted it. `bus.py` now forces `hop_limit=0` and **refuses to start** if the
 socket's multicast TTL is not 0. Do not "fix" that guard by removing it, and do
 not additionally pin `IP_MULTICAST_IF` to loopback -- python-can joins the group
 with `INADDR_ANY`, so sending via a different interface means nothing is
 received. See the "Simulators, Virtual CAN Buses" section of `AGENTS.md`.
 
-**Use `stop_all.sh` to stop the bench, not `pkill -f`.** `run_scenario.py`
+**Use `stop_all.sh` to stop the simulator, not `pkill -f`.** `run_scenario.py`
 spawns children via `sys.executable`, so their command lines start with
 `/usr/bin/python3.13` and an anchored `^python3\.13` pattern misses them --
 orphans survive and keep transmitting. And `pkill -f interposer` also matches the
@@ -232,7 +232,7 @@ start such a run.
 
 **The core is clocked in SIMULATED time.** Every threshold in `machine.py` is in
 vehicle time (a 60 s arming delay means 60 s of charging). Feeding it wall time
-on an accelerated bench silently divides all of them by `--time-scale`.
+on an accelerated simulation silently divides all of them by `--time-scale`.
 
 **`--time-scale` 25 is the ceiling; 40 breaks.** Bus timing is expressed in
 simulated time, so accelerating means proportionally more frames per wall
@@ -240,7 +240,7 @@ second. Measured on this machine: at 25x the interposer forwards 29,741 of
 30,000 expected frames with zero saturation warnings, and scenarios run clean.
 At 40x runs trip on `BMS frames stale` -- not a core defect but an artifact of
 the 500 ms staleness window shrinking to 12.5 ms of wall time. Use 25x for the
-live bench and the offline harness (`regress.py`) for anything faster.
+live simulator and the offline harness (`regress.py`) for anything faster.
 
 (An earlier version of this note blamed saturation above 30x. That was really a
 64-frame cap on how many frames the interposer would retire per loop pass, which
@@ -271,7 +271,7 @@ and may never be seen at all if the capture or the board starts mid-session.
 ## Current results
 
 The table below is from the original vmax-based release and predates the
-2026-09-16 spec; it is kept as the bench's baseline. Hardware results and
+2026-09-16 spec; it is kept as the simulator's baseline. Hardware results and
 everything since live in `projects/vtrux/notes/interposer-firmware-bringup.md`.
 
 All seven scenarios and all three offline regressions passed, on this machine, at
