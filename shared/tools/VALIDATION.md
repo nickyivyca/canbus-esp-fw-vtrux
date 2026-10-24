@@ -242,6 +242,14 @@ same folder. The interposer's test evidence is
   needs the project commit and each pinned shared version. Recording the
   build tooling's own pin: user, 2026-10-23, in the gen-inhibit reviewer's
   session.
+- **The lock's hash is taken LF-normalised** (user, 2026-10-24, in the
+  gen-inhibit reviewer's session, option A of three, per AGENTS.md "Line
+  endings"). On NICKY-XPS the reconfigure rewrites `dependencies.lock` with
+  CRLF, which `git status` does not show, so two release builds of one
+  commit to one image recorded two lock hashes (the gen-inhibit tester's C6f
+  follow-ups, an observation). Hashing the committed blob instead would tie
+  the record to git, which R7 avoids; hashing the bytes on disk would let
+  records differ by host.
 - **Status:** complete.
 
 ### R14. Bench and dev builds exempt
@@ -271,6 +279,20 @@ same folder. The interposer's test evidence is
 - **Basis:** port plan goal 13 (user, 2026-10-17). The release-build clause
   (shared code only from `managed_components/`): user, 2026-10-23, in goal
   13, confirmed in the gen-inhibit reviewer's session.
+- **Readings** (user, 2026-10-24, in the gen-inhibit reviewer's session),
+  raised by the gen-inhibit tester before writing the check:
+  - IDF includes the chosen toolchain's folder and `CMAKE_ROOT`, both from
+    the build's own record (option a of three). Measured on a gen-inhibit
+    release build on NICKY-XPS: of 5400 files read, 258 are under the
+    toolchain's folder (newlib and gcc headers and libraries) and 42 under
+    CMake's modules, both outside `IDF_PATH`; IDF_PATH alone would fail
+    every build. All of the IDF tools folder would also accept another
+    toolchain or ccache's folder.
+  - "At the version" is the manifest `version` (option a of three). Content
+    is R10's, for release builds; R14 frees bench and dev builds from R10.
+  - Bench and dev `shared/` reads may come from any worktree of this repo or
+    a `../shared-<tag>/` checkout (option a of two), so a bench build can test
+    a shared change through `override_path` to the worktree it is made in.
 - **Status:** complete.
 
 ### R18. Options
