@@ -107,7 +107,7 @@ Low Power, 4 Invalid) is confirmed from the EPRI binary and on the bus; see
 | `regress_offline_test.py` | Offline test for `regress.py`'s own machinery -- no captures, so it runs anywhere. |
 | `sims_test.py` | Offline test for the simulators' pure parts (`vehicle_sim.py`, `charger_sim.py`, `pack.py`): no bus, no processes. |
 | `bus_gs_usb_test.py` | Test for `bus.open_gs_usb`, the charger segment's Innomaker adapter: no hardware. |
-| `stop_all.sh` | Stops every simulator process of a bench run. Read `firmware/esp-development.md` before running any of them -- killing processes on Windows does not work the way this script's Linux recipe suggests. |
+| `stop_all.sh` | Stops every simulator process of a bench run, Linux only: it refuses (rc 2) anywhere else, since there it would match nothing and report "survivors: 0". `--self-test` kills a dummy under a `charge-interposer/` path and counts a live one as 1; `--can-fail` runs it on 4 mutants (the pre-2026-10-23 `tools/interposer`-only pattern among them). Read `firmware/esp-development.md` before running any of them. |
 | `capture_pins.py` | **Spec 9.1 pinned stimulus.** Every capture-derived harness input is pinned by a hash HELD IN THIS REPO, never read from the input it covers: a hash stored inside its own file moves when a changed parser regenerates both. |
 | `capture_pins_test.py` | Tests for the above. Needs no `REVERSE_IT_DIR`. |
 | `requirements.txt` | `cantools` and `python-can`, the only dependencies outside the standard library. |
@@ -297,8 +297,12 @@ received. See the "Simulators, Virtual CAN Buses" section of `AGENTS.md`.
 spawns children via `sys.executable`, so their command lines start with
 `/usr/bin/python3.13` and an anchored `^python3\.13` pattern misses them --
 orphans survive and keep transmitting. And `pkill -f interposer` also matches the
-shell running your own command. `stop_all.sh` matches by path fragment, filters
-on `/proc/<pid>/comm`, and verifies afterwards.
+shell running your own command. `stop_all.sh` matches by path fragment
+(`charge-interposer|tools/interposer`), filters on `/proc/<pid>/comm`, and
+verifies afterwards. Until 2026-10-23 it matched only `tools/interposer`, the
+path before the move, so in this repo it killed nothing and still reported
+"survivors: 0"; `bash stop_all.sh --self-test` on the Linux host proves the
+match before you rely on it.
 
 **Two virtual segments must differ by PORT, not just by multicast group.**
 Verified on this machine: two `udp_multicast` buses sharing a UDP port receive
