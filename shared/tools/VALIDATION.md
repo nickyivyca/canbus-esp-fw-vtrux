@@ -86,6 +86,9 @@ same folder. The interposer's test evidence is
   PlatformIO, not ESP-IDF 5.4.1.
 - **Measurement:** the R2 entry. Same host at two paths: byte-identical,
   `.bin` and ELF, on both hosts. Across hosts: the same code hash.
+  On NICKY-XPS the first pair was built with ccache on; rebuilt with it
+  off (gen-inhibit test evidence, section 13, "x1 and x2 again with
+  ccache off", 2026-10-23), both gave the same bytes.
 - **Corrected 2026-10-23 (user):** the first bullet read "the same files ...
   give the same image hash", which R4 makes false across commits. Exposed by
   the implementor's reading on C6f. The basis, goal 11's "same files, same
@@ -250,6 +253,9 @@ same folder. The interposer's test evidence is
 - **Measurement:** the R2 entry. The madhouse-debian builds, run twice, gave
   the same sha256s both times, and the builds at two paths on each host are
   byte-identical.
+  On NICKY-XPS the first pair was built with ccache on; rebuilt with it
+  off (gen-inhibit test evidence, section 13, "x1 and x2 again with
+  ccache off", 2026-10-23), both gave the same bytes.
 - **Status:** complete.
 
 ### R20. Build switches
