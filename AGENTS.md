@@ -637,9 +637,13 @@ section changes in the same merge.
   and carry the same lines: the root one on `gen-inhibit/main`,
   `shared/.gitattributes` and `charge-interposer/.gitattributes`. Change
   them together. Component digests and embedded files hash the bytes on
-  disk, so line endings change them. **Save files as LF:** a file an editor
-  saves as CRLF still shows as clean in `git status`, because git compares
-  after normalising, while the build and the digest see the CRLF bytes.
+  disk, so line endings change them. **Save files as LF,** and don't rely on
+  `git status` to catch a CRLF file. A file committed as LF and then saved
+  as CRLF shows as modified, with an empty diff. But when the CRLF bytes are
+  what git last checked out or added, such as a file a tool generated as
+  CRLF that was then added, `git status` shows it clean while the build and
+  the digest see the CRLF bytes. `git ls-files --eol` shows the line endings
+  on disk (`w/crlf`).
 
 ### Python
 
