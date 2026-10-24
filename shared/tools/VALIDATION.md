@@ -327,10 +327,10 @@ same folder. The interposer's test evidence is
   - "Match" means the options the profile names (option a of two). A stored
     copy of the whole `sdkconfig` was turned down: git is the reference
     copy, and R8 already holds the build to the commit.
-  - gen-inhibit's release profile is its spec 12.4 row 22, items 1 to 5
-    (rollback on; secure boot and flash encryption unset; virtual eFuses
-    off; `CONFIG_TWAI_ISR_IN_IRAM` unset; the watchdogs as its spec 9.1
-    records them), plus R12.
+  - gen-inhibit's release profile is the first five settings of its spec
+    12.3 item 3, the build-output checks (rollback on; secure boot and
+    flash encryption unset; virtual eFuses off; `CONFIG_TWAI_ISR_IN_IRAM`
+    unset; the watchdogs as its spec 9.1 records them), plus R12.
   - It is a check on the finished release build, run by any session, not a
     refusal in the release build (option a of three), and only for release
     builds. Port plan step 0b's "the options check refuses a release build"
