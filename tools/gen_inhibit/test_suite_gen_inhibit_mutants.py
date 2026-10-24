@@ -89,6 +89,8 @@ MUTANTS = [
     ("a desk step reads a check that runs after it", 'desk("B2", "B2", ["man_app/B2app", "man_held/B2held"]',
      'desk("B2", "B2", ["man_app/B2app", "man_held/B9"]'),
     ("a placeholder no setting fills", '"REMOTE": "{gi_host_ssh}"', '"REMOTE": "{gi_hostssh}"'),
+    ("the suite's role is not the one the bench lock names", 'ROLE = "tester (gen-inhibit)"',
+     'ROLE = "tester (gen-inhibit-x)"'),
     ("the WiCAN's standing image is not _man", 'standing_images={"wican": "wican_man", "x2": "x2_app"}',
      'standing_images={"wican": "wican_man2", "x2": "x2_app"}'),
     ("code: an image from another commit is not dirty",

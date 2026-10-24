@@ -75,6 +75,8 @@ error observed at run time rather than from a constant.
 | `gi_vbus.py` | **The host-confinement guard for the virtual bus.** A trimmed copy of the interposer's `bus.py`, made when this folder moved into the firmware repo and could no longer import it. Opens only the `virtual` transport, sets `IP_MULTICAST_TTL` to 0 and **verifies it by reading it back**. Note what it does on a non-zero hop limit: it *corrects* it rather than refusing, and refuses only if the set fails, if the read-back disagrees, or if it cannot find the socket to check at all. That last case used to return silently -- fail-open exactly where a python-can internal rename would land -- and now raises. Why any of this matters: `python-can`'s `udp_multicast` defaults to `hop_limit=1` and `239.0.0.0/8` routes out the default interface, which on 2026-09-01 put 66,450 packets/s on the house LAN for twenty minutes. |
 | `test_gi_vbus.py` | Tests for the guard, including that each bench entry point actually routes through it. |
 | `test_publish_scan.py` | Checks this folder is safe to publish: no credentials, SSIDs, MACs, private addresses or absolute paths committed. **Since 2026-10-22 it also scans `bench/` and `x2_jammer/`** (recursively), every text kind they hold (`.sh`, `.ps1`, `.c`, `.cpp`, `.h` too), a MAC written bare on either bench board's vendor prefix (as in a dump file's name), and allows only `192.168.80.1` and `.2` on the WiCAN's subnet and the RFC 7042 documentation MACs; its section 5 plants each in a temporary tree laid out like this folder and must find them. `test_publish_scan_mutants.py` runs 9 mutants (each new extension, each subfolder, the recursion, the bare-MAC pattern, the two allowances, the hit count) and a control (the unmutated scan, which must pass); each mutant must fail by a check. |
+| `suite_gen_inhibit.py` | **gen-inhibit's two suites for the shared chain runner** (tester): `bench` (part B, holds the bench lock from start to finish) and `emulated` (parts H and C, no hardware). The runner is shared/bench's `vtrux_bench.run` at a pinned commit; the suite's docstring names it and the settings it reads. Which lock a bench run takes is the settings' choice: with `bench_lock_log` the event log `$REVERSE_IT_DIR/firmware/bench-log.jsonl` (from the cutover, shared/bench/SPEC.md (shared/main) section 7), without it the Holder line of `bench-holder.md`. Three of its parts are a cross-project dependency (below). `suite_gen_inhibit.settings.example.json` has every key the suites read. |
+| `test_suite_gen_inhibit.py` / `test_suite_gen_inhibit_mutants.py` | Its tests on the pinned core, no hardware (`PYTHONPATH` the core's `shared/bench`, `GI_BASELINE_DIR` the e3d9437 baseline folder), among them whole runs on the core that show a settings file naming `bench_lock_log` puts the run on that log under the suite's role and the runner's PID, and one without keeps it on the Holder line and never writes the log. The mutants edit the suite one at a time; each must fail by a check. |
 | `bench/` | **gen-inhibit's bench harness** (tester): the bench harnesses, judges, runners and rig scripts, their tests and mutant runners, and `gi_paths.py`, through which they find their data in SeaDrive (`$REVERSE_IT_DIR`, required). Moved from SeaDrive's `projects/vtrux/notes/artifacts/gen-inhibit/` on 2026-10-22 (goal 20), behaviour unchanged; its own `README.md` has the files. |
 | `x2_jammer/` | **The X2 CAN error-frame jammer -- TEST EQUIPMENT, NOT FOR VEHICLE** (tester): its source (`src/main.cpp`, `platformio.ini`, the two build scripts) and `README.md`. Moved with `bench/` on 2026-10-22; its build binaries and their `manifest.json` stay in SeaDrive, where the build archives them (`$REVERSE_IT_DIR` required). |
 | `requirements.txt` | `python-can`. The core, the offline bench and the tests need nothing. |
@@ -90,6 +92,26 @@ machine. Each refuses or falls back loudly rather than guessing.
 | `--ssid` or `$GI_WICAN_SSID` | `bench_flash.py` | The WiCAN's SoftAP SSID, which embeds the device MAC. The script refuses to run without one. |
 | `$GI_RUNS_DIR` | `bench_flash_guard.py`, `bench_ota_guard.py` | Where run records are written. |
 | `$REVERSE_IT_DIR` | `replay_inhibit.py` (default the current directory); every tool in `bench/` (required) | SeaDrive's `reverse-it` root, for `canre`, the captures, the DBCs, the bench lock and the run folders. Never a committed absolute path. It was `$REVERSE_IT_ROOT` in `replay_inhibit.py` until 2026-10-22; the old name, and `GI_FW_TOOLS`, `GEN_INHIBIT_REPO` and `VTRUX_DATA`, are refused if set. |
+
+### Cross-project dependencies
+
+The charge-interposer's runner reads the WiCAN's standing identity from this
+folder, read-only (gen-inhibit reviewer, 2026-10-24). A change to any of
+these goes to both projects' reviewers first:
+
+- `gi_images` in the standing settings, `chain_settings_NICKY-XPS.json`;
+- `image_bin()` in `suite_gen_inhibit.py`: exactly one `wican-fw_obd_*.bin` in
+  `build-tester-man/`, a folder that also holds `ota_data_initial.bin`;
+- the ELF SHA-256 at offset 0xB0 of that image (`elf_sha256_of_bin()`; the
+  interposer's own copy is `build_lookup.elf_sha256_of_bin`);
+- `bench/wican_reboot.py`, loaded by path from a pinned `gen-inhibit/main`
+  checkout: its options `--label`, `--out`, `--known NAME=SHA`, `--first`,
+  `--want` and `--want-unknown`, and its record's `verdict`, `detail`,
+  `found_image`, `found_sha`, `came_up_armed` and `disarmed`;
+- `bench/page_state.py`, loaded the same way: `read_page(timeout)` returning
+  the page as a dict with `elf_sha256`.
+
+Each of them carries the same note in its code.
 
 ## Quick start
 
