@@ -1,9 +1,12 @@
 """Component digest (SPEC R7).
 
 A component's digest covers the content of every file under the component's
-root, with each file's path relative to that root, except Markdown documents
-and .gitignore. It never covers a git ref, so the same files give the same
-digest whether they came from a tag, a commit or a working tree, and at
+root, with each file's path relative to that root, written with "/" on every
+host OS, so one tree gives one digest on Windows and on Linux. It leaves out,
+in any folder, files whose name ends ".md" and files named ".gitignore",
+matched case-sensitively. Every other file is counted, ".markdown" and
+"README.MD" included. It never covers a git ref, so the same files give the
+same digest whether they came from a tag, a commit or a working tree, and at
 whatever folder the component sits.
 
 Exactly what is hashed:

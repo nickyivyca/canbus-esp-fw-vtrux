@@ -416,6 +416,16 @@ class Release(unittest.TestCase):
         self.assertRefused(run(root, cc, {"component_files": bad}),
                            ["R10"], ["reconfigure"])
 
+    def test_r10_no_lock_after_the_reconfigure(self):
+        # A project that downloads nothing still needs a lock (R10), and
+        # the refusal names the rule rather than a missing file.
+        root, cc = project("rel_r10_nolock")
+        git(root, "rm", "-q", "dependencies.lock")
+        git(root, "commit", "-qm", "no lock")
+        self.assertRefused(run(root, cc),
+                           ["R10", "no dependencies.lock",
+                            "component manifest"], ["reconfigure"])
+
     def test_r10_added_file(self):
         root, cc = project("rel_r10_add")
         extra = dict(COMP_FILES)

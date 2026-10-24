@@ -31,7 +31,9 @@ In order, each refusal an exit, never a warning:
      R8 again: HEAD is the same and the worktree still clean, before
      anything is compiled (a reconfigure that rewrites a tracked file,
      sdkconfig for example, is refused here);
-  6. R10: every downloaded component's .component_hash against
+  6. R10: dependencies.lock exists after the reconfigure, even for a
+     project that downloads nothing (it carries a component manifest so
+     that it has a lock); every downloaded component's .component_hash against
      dependencies.lock, and a registry download against its CHECKSUMS.json,
      unlisted files included (components.py), after the reconfigure
      fetched them;
@@ -464,6 +466,12 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
     check_no_ccache(build_dir, "after the reconfigure")
     check_no_launcher(build_dir, "after the reconfigure")
 
+    lock_path = os.path.join(root, "dependencies.lock")
+    if not os.path.isfile(lock_path):
+        raise Refused("no dependencies.lock after the reconfigure (R10): a "
+                      "project that downloads nothing still needs a "
+                      "component manifest (idf_component.yml), so that it "
+                      "has a lock")
     try:
         good, report = components.check_managed(root)
     except (OSError, lockfile.LockError) as e:
@@ -493,7 +501,6 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
         ok("downloaded components (R10)", "none in the lock or on disk")
 
     bd = BuildDir(build_dir)
-    lock_path = os.path.join(root, "dependencies.lock")
     try:
         locks = lockfile.read(lock_path)
         shared = check_shared_pins(proj, locks, build_manifests(bd))
