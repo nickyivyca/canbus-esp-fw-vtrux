@@ -17,6 +17,8 @@ REMOTE="${REMOTE:-madhouse-debian}"
 DEST="${DEST:?set DEST to the synced tree under ~ on the remote}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 STAMP="$(date +%Y%m%dT%H%M%S)"
+ID="$(ssh "$REMOTE" "bash -s" < "$HERE/host_identity.sh")"   # host and compiler; stops here if missing
+echo "$ID"
 scp -q "$HERE/shim_wire_probe.c" "$REMOTE:$DEST/test/shim_wire_probe.c"
 ssh "$REMOTE" "bash -s" "$DEST" <<'EOS'
 set -euo pipefail
@@ -33,7 +35,8 @@ echo "built"
 EOS
 for name in "$@"; do
   out="$HERE/runs/shim_wire_probe_${name}_${STAMP}.txt"
-  ssh "$REMOTE" "cd $DEST/test/gen_inhibit_shim_wireprobe && timeout 120 ./shim_wire_probe $name" > "$out" \
+  echo "$ID" > "$out"
+  ssh "$REMOTE" "cd $DEST/test/gen_inhibit_shim_wireprobe && timeout 120 ./shim_wire_probe $name" >> "$out" \
     || echo "$name: exit $? (124 = the 120 s timeout)"
-  echo "$name -> $out ($(grep -c '^W ' "$out") wire frames; $(head -1 "$out"))"
+  echo "$name -> $out ($(grep -c '^W ' "$out") wire frames; $(sed -n 2p "$out"))"
 done

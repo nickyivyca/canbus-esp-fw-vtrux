@@ -157,6 +157,10 @@ tar -C "$FW" -czf - \
 # this list; drained_check.py was added the same day. All four are in it now,
 # and the three spec judges run under --checks.
 
+# The host and compiler every mode below builds with, first in the run's output
+# (2026-10-24); the run stops here if either is missing.
+ssh "$REMOTE" "bash -s" < "$(dirname "${BASH_SOURCE[0]}")/host_identity.sh"
+
 case "$mode" in
   sync)
     ssh "$REMOTE" "cd ~/$DEST && git status >/dev/null 2>&1 || true; ls -l main test/gen_inhibit_host | head -20"

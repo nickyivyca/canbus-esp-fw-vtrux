@@ -17,6 +17,7 @@
 # then shows nothing, and must not read as "unchanged".
 set -euo pipefail
 REMOTE="${REMOTE:-madhouse-debian}"
+ssh "$REMOTE" "bash -s" < "$(dirname "$0")/host_identity.sh"   # host and compiler; stops here if missing
 for dest in "$@"; do
   echo "=== $dest"
   ssh "$REMOTE" "bash -s" "$dest" <<'EOS'
