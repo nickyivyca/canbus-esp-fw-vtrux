@@ -86,6 +86,9 @@ same folder. The interposer's test evidence is
   PlatformIO, not ESP-IDF 5.4.1.
 - **Measurement:** the R2 entry. Same host at two paths: byte-identical,
   `.bin` and ELF, on both hosts. Across hosts: the same code hash.
+  On NICKY-XPS the first pair was built with ccache on; rebuilt with it
+  off (gen-inhibit test evidence, section 13, "x1 and x2 again with
+  ccache off", 2026-10-23), both gave the same bytes.
 - **Corrected 2026-10-23 (user):** the first bullet read "the same files ...
   give the same image hash", which R4 makes false across commits. Exposed by
   the implementor's reading on C6f. The basis, goal 11's "same files, same
@@ -110,6 +113,19 @@ same folder. The interposer's test evidence is
   writing evidence into `VERIFICATION.md` beside the code would otherwise
   change the digest that evidence names, and a new or unexpected file type
   is counted rather than missed.
+- **Line endings** (user, 2026-10-23): the digest hashes bytes on disk, so
+  line endings change it. Checkouts are pinned to LF by `.gitattributes`
+  (`shared/` `440aa80`). A file an editor saves as CRLF still changes the
+  digest; that gap is accepted, with no byte check (ruled in the
+  methodology owner's session, recorded in the port plan; AGENTS.md "Line
+  endings").
+- **Edges** (user, 2026-10-24, in the gen-inhibit reviewer's session): a
+  `.gitignore` is left out in any folder, not only at the root; only names
+  ending `.md`, matched case-sensitively, are documents, so `.markdown` and
+  `README.MD` are counted, by the same rule that an unexpected file is
+  counted rather than missed; paths use `/` on every host OS, so a pin (R23)
+  checks the same on Windows and on Linux. Raised by the gen-inhibit
+  tester's R7 cases, C6f part A.
 - **Exposed by:** the gen-inhibit reviewer's read of the bench lock spec's
   move to `shared/bench/SPEC.md` (2026-10-23). Under the definition then in
   force, adding `SPEC.md` changed `shared/bench`'s digest, and goal 20 item 6
@@ -132,6 +148,23 @@ same folder. The interposer's test evidence is
   file (`sdkconfig`, `dependencies.lock`), or a HEAD that moves during the
   build, leaves an image the record's commit does not describe. Raised by
   the implementor on C6f; not yet seen on a real build.
+- **`sdkconfig` committed** (user, 2026-10-24, in the gen-inhibit reviewer's
+  session, option a of two): raised by the interposer reviewer on reading
+  R18. R18 compares only the options a profile names and leaves the rest to
+  the committed `sdkconfig` through this check, but a project that ignored
+  `sdkconfig` would pass it, since git does not report ignored files.
+  gen-inhibit commits its `sdkconfig` today; the interposer will in its
+  step 2a. It is the file the build used, from `CMakeCache.txt`, since IDF
+  lets a build take `SDKCONFIG` from elsewhere (the interposer reviewer, on
+  reading this clause).
+- **Not covered, accepted** (user, 2026-10-23): a file whose CRLF bytes are
+  what git last checked out or added passes the clean check, while the
+  build and the R7 digest see the CRLF bytes. No byte check is added (see
+  R7). Corrected 2026-10-24: this note first said any CRLF save passes. The
+  gen-inhibit tester measured on git 2.52.0.windows.1 and 2.47.3 that a CRLF
+  save over a file committed as LF shows as modified, so R8 refuses it
+  (shared/tools VERIFICATION.md, "R9, R13 fixes, and R17's shared/ roots";
+  AGENTS.md corrected by the methodology owner, 2026-10-24).
 - **Status:** complete.
 
 ### R9. Reconfigure first
@@ -180,6 +213,18 @@ same folder. The interposer's test evidence is
     unlisted-file check stays.
   Using the manager's own check, rather than recomputing its hash, avoids
   keeping a copy of its file rules in step with it.
+- **No lock** (user, 2026-10-24, in the gen-inhibit reviewer's session,
+  option A of two): a release build without `dependencies.lock` is refused,
+  rather than allowed when nothing is downloaded. One rule with no carve-out,
+  and it fails closed: a project that does download components but has no
+  lock after the reconfigure is caught by the same refusal. The cost is a
+  one-line manifest in a project that downloads nothing. gen-inhibit has a
+  lock today. The interposer, still PlatformIO, has none of its own (the
+  manifest and lock at its branch's root are upstream WiCAN's); its IDF
+  project gets a manifest, and so a lock, at port stage (a) step 2a, where
+  arduino-esp32 comes from the Component Manager. Raised by the gen-inhibit tester's R22 case (IDF's
+  hello_world, C6f part A), which was refused with a raw file-not-found
+  error.
 - **Status:** complete.
 
 ### R11. The image is the one the build names
@@ -210,6 +255,17 @@ same folder. The interposer's test evidence is
   needs the project commit and each pinned shared version. Recording the
   build tooling's own pin: user, 2026-10-23, in the gen-inhibit reviewer's
   session.
+- **The lock's hash is taken LF-normalised** (user, 2026-10-24, in the
+  gen-inhibit reviewer's session, option A of three, per AGENTS.md "Line
+  endings"). On NICKY-XPS two release builds of one commit to one image
+  recorded two lock hashes (the gen-inhibit tester's C6f follow-ups, an
+  observation): the Component Manager writes `dependencies.lock` as CRLF on
+  Windows, and that CRLF lock was what git had last added, so `git status`
+  showed it clean (the tester's "R9, R13 fixes" entry, 2026-10-24, which
+  corrects the first account, that the reconfigure rewrites it unseen).
+  Hashing the committed blob instead would tie
+  the record to git, which R7 avoids; hashing the bytes on disk would let
+  records differ by host.
 - **Status:** complete.
 
 ### R14. Bench and dev builds exempt
@@ -239,10 +295,40 @@ same folder. The interposer's test evidence is
 - **Basis:** port plan goal 13 (user, 2026-10-17). The release-build clause
   (shared code only from `managed_components/`): user, 2026-10-23, in goal
   13, confirmed in the gen-inhibit reviewer's session.
+- **Readings** (user, 2026-10-24, in the gen-inhibit reviewer's session),
+  raised by the gen-inhibit tester before writing the check:
+  - IDF includes the chosen toolchain's folder and `CMAKE_ROOT`, both from
+    the build's own record (option a of three). Measured on a gen-inhibit
+    release build on NICKY-XPS: of 5400 files read, 258 are under the
+    toolchain's folder (newlib and gcc headers and libraries) and 42 under
+    CMake's modules, both outside `IDF_PATH`; IDF_PATH alone would fail
+    every build. All of the IDF tools folder would also accept another
+    toolchain or ccache's folder.
+  - "At the version" is the manifest `version` (option a of three). Content
+    is R10's, for release builds; R14 frees bench and dev builds from R10.
+  - Bench and dev `shared/` reads may come from any worktree of this repo or
+    a `../shared-<tag>/` checkout (option a of two), so a bench build can test
+    a shared change through `override_path` to the worktree it is made in.
 - **Status:** complete.
 
 ### R18. Options
 - **Basis:** port plan goal 13 (user, 2026-10-17).
+- **Readings** (user, 2026-10-24, in the gen-inhibit reviewer's session),
+  raised by the gen-inhibit tester before writing the check:
+  - The build's options are its `sdkconfig.json` in each CMake build folder
+    (option a of three; compiler flags follow from it, and `-D` switches are
+    R20's).
+  - "Match" means the options the profile names (option a of two). A stored
+    copy of the whole `sdkconfig` was turned down: git is the reference
+    copy, and R8 already holds the build to the commit.
+  - gen-inhibit's release profile is its spec 12.4 row 22, items 1 to 5
+    (rollback on; secure boot and flash encryption unset; virtual eFuses
+    off; `CONFIG_TWAI_ISR_IN_IRAM` unset; the watchdogs as its spec 9.1
+    records them), plus R12.
+  - It is a check on the finished release build, run by any session, not a
+    refusal in the release build (option a of three), and only for release
+    builds. Port plan step 0b's "the options check refuses a release build"
+    is read as this check failing it.
 - **Status:** complete.
 
 ### R19. Reproducible
@@ -250,6 +336,9 @@ same folder. The interposer's test evidence is
 - **Measurement:** the R2 entry. The madhouse-debian builds, run twice, gave
   the same sha256s both times, and the builds at two paths on each host are
   byte-identical.
+  On NICKY-XPS the first pair was built with ccache on; rebuilt with it
+  off (gen-inhibit test evidence, section 13, "x1 and x2 again with
+  ccache off", 2026-10-23), both gave the same bytes.
 - **Status:** complete.
 
 ### R20. Build switches

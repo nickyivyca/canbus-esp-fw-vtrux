@@ -72,8 +72,11 @@ unless the image changes, which the reproducible check (R19) shows.
   are labels. No check compares a name against the tree.
 - **R7. Component digest.** A component's digest covers the content of every
   file under the component's root, with each file's path relative to that
-  root, except Markdown documents (`*.md`) and `.gitignore`. It never covers
-  a git ref, so a component taken from a tag or from a tree gives the same
+  root, written with `/` on every host OS, so one tree gives one digest on
+  Windows and on Linux. It leaves out, in any folder, files whose name ends
+  `.md` and files named `.gitignore`, matched case-sensitively. Every other
+  file is counted, `.markdown` and `README.MD` included. It never covers a
+  git ref, so a component taken from a tag or from a tree gives the same
   digest.
 
 ## 3. Release builds
@@ -82,7 +85,10 @@ unless the image changes, which the reproducible check (R19) shows.
   no uncommitted changes and no untracked files when it starts, and again
   after the reconfigure (R9), before anything is compiled. It is also
   refused if HEAD or the worktree has changed by the time the build
-  finishes.
+  finishes. And it is refused unless the `sdkconfig` the build used
+  (`SDKCONFIG` in its `CMakeCache.txt`) is committed in the project:
+  tracked by git and not ignored, so that this check sees any change to it.
+  R18 leaves the options a profile does not name to it.
 - **R9. Reconfigure first.** A release build runs `idf.py reconfigure`, then
   builds, in one run, with the compiler cache (ccache) off whatever the
   environment sets. A build whose configuration still has it on is refused.
@@ -95,7 +101,9 @@ unless the image changes, which the reproducible check (R19) shows.
   has a `.component_hash` equal to the `component_hash` `dependencies.lock`
   gives it, and one that came with a `CHECKSUMS.json` (a registry download)
   matches it file for file, with no file it does not list. A mismatch is a
-  refusal.
+  refusal. A release build is also refused if the project has no
+  `dependencies.lock` after the reconfigure, even one that downloads nothing:
+  such a project carries a manifest so that it has a lock.
 - **R11. The image is the one the build names.** The image recorded is the
   one `build/project_description.json` names as `app_bin`. A missing name or
   a missing file is a refusal.
@@ -110,7 +118,8 @@ unless the image changes, which the reproducible check (R19) shows.
   - the image hash, the code hash and the image size;
   - the host OS, the toolchain version and the IDF version;
   - the digest of each component the build used, and the hash of
-    `dependencies.lock`;
+    `dependencies.lock`, taken with its line endings normalised to LF, so
+    one lock gives one hash on any host and in any checkout;
   - the tag of each pinned shared firmware component;
   - the build tooling's own pin: its tag, commit and digest.
 - **R14. Bench and dev builds** need not meet R8 to R11 or R16. Their results
@@ -126,13 +135,27 @@ unless the image changes, which the reproducible check (R19) shows.
 
 - **R17. Scope.** From ninja's dependency records, every file the build read
   comes from the project root, IDF or `managed_components/`, and each
-  managed component is at the version `dependencies.lock` records. For a
-  bench or dev build, files under `shared/` may also be read directly. For a
-  release build they may not: shared code counts only from
-  `managed_components/`, so a release build that reads another worktree
-  fails.
-- **R18. Options.** The build's options match the project's release
-  profile.
+  managed component is at the version `dependencies.lock` records: its own
+  manifest's `version` is the lock's. IDF here is `IDF_PATH` plus exactly
+  two folders named by the build's own record: the install folder of the
+  toolchain whose compiler CMake chose (`CMake<LANG>Compiler.cmake`), and
+  CMake's own `CMAKE_ROOT` (`CMakeCache.txt`). Nothing else beside them in
+  the IDF tools folder counts. For a bench or dev build, files under
+  `shared/` may also be read directly: the `shared/` folder of any worktree
+  of this repo, or a `../shared-<tag>/` checkout. For a release build they
+  may not: shared code counts only from `managed_components/`, so a release
+  build that reads another worktree fails.
+- **R18. Options.** A release build's options match the project's release
+  profile. The build's options are the configuration it compiled with,
+  `config/sdkconfig.json` in every CMake build folder, the app's and the
+  bootloader's. The release profile is per-project data (R22) naming
+  options and their values, each value citing the line of the project's
+  spec it comes from. Every option the profile names has the profile's
+  value, "unset" meaning absent or off; options it does not name are free.
+  The whole `sdkconfig` is not compared: it is committed, and R8 holds the
+  build to the commit. Like the other checks here, it runs on the finished
+  build and is not a refusal in the release build; any session may run it.
+  Bench and dev builds are not checked.
 - **R19. Reproducible.** Rebuilding the same tree on the same host OS gives
   the same image hash.
 - **R20. Build switches.** Every preprocessor symbol the project's source

@@ -18,8 +18,8 @@ this_env, or by writing an init line by hand.
 A mutant is a text edit of bench_lock.py's source, executed into the module
 in place of the original; an edit whose text is not found exactly once is
 reported NOT APPLIED and counts as a failure, never a silent no-op. Logs go
-to <tempdir>/vtrux-bench-tests/bench_lock/, never the real
-firmware/bench-log.jsonl.
+to this run's own folder, <worktree>/scratch/vtrux-bench-tests/bench_lock/<time>_<pid>/
+(_scratch.py), never the real firmware/bench-log.jsonl.
 """
 
 import io
@@ -30,7 +30,6 @@ import shutil
 import socket
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from contextlib import redirect_stderr, redirect_stdout
@@ -39,8 +38,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
 from vtrux_bench import bench_lock as B             # noqa: E402
+import _scratch                                     # noqa: E402
 
-SCRATCH = os.path.join(tempfile.gettempdir(), "vtrux-bench-tests", "bench_lock")
+SCRATCH = _scratch.run_dir("bench_lock")  # this run's own folder in the worktree's scratch/ (_scratch.py)
 SRC = os.path.join(os.path.dirname(HERE), "vtrux_bench", "bench_lock.py")
 CI = "tester (charge-interposer)"
 GI = "tester (gen-inhibit)"
