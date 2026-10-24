@@ -136,7 +136,7 @@ class FakeIdf:
 
 
 def project(name, data=None, lock_text=None, manifest=MANIFEST):
-    root = scratch.fresh(name)
+    root = os.path.join(scratch.fresh(name), "proj")   # records beside it
     files = {
         "vtrux_build.json": json.dumps(data or {"project": "proj",
                                                 "shared_components": []}),
@@ -157,10 +157,16 @@ def project(name, data=None, lock_text=None, manifest=MANIFEST):
     return root, cc
 
 
+def records_dir(root):
+    """The record folder for a test project: beside it, inside the
+    test's own fresh folder, so no earlier run's records survive."""
+    return os.path.join(os.path.dirname(root), "records")
+
+
 def run(root, cc, edit=None, check_only=False, dest="default"):
     idf = FakeIdf(root, cc, edit)
     if dest == "default":
-        dest = os.path.join(root + "-records")
+        dest = records_dir(root)
     try:
         p = release(root, check_only=check_only, idf=idf,
                     toolchain_run=TC_RUN, dest=dest)
@@ -320,7 +326,7 @@ class Release(unittest.TestCase):
         p, idf, why = run(root, cc, {"elf_bytes": b"\x7fELF other"})
         self.assertIsNone(p)
         self.assertIn("no record written", why)
-        dest = root + "-records"
+        dest = records_dir(root)
         self.assertFalse(os.path.isdir(dest) and os.listdir(dest))
 
     def test_tree_changed_by_build_is_recorded(self):

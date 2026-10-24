@@ -121,4 +121,4 @@ the module docstring (`RECORD_SCHEMA` 1).
 | `vtrux_build/cli.py`, `__main__.py`, `__init__.py` | the command line |
 | `tests/test_*.py` | unit tests, one file per module; each runs alone (`python -B shared/tools/tests/test_image.py`) or all with `python -B -m unittest discover -s shared/tools/tests` |
 | `tests/imagekit.py` | synthetic app images for the tests, so no firmware image is committed |
-| `tests/scratch.py` | scratch folders in the machine temp folder (`vtrux-build-tests/`) |
+| `tests/scratch.py` | the tests' scratch folders: `<worktree>/scratch/shared-tools-tests/` where git ignores `scratch/` (a project worktree), else the machine temp folder's `vtrux-build-tests/` |
