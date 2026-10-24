@@ -25,9 +25,10 @@ sys.path.insert(0, HERE)
 import scratch                                           # noqa: E402
 from imagekit import descriptor, make_image              # noqa: E402
 from vtrux_build import cli, record                      # noqa: E402
+from vtrux_build.builddir import BuildDir                # noqa: E402
 from vtrux_build.image import AppImage                   # noqa: E402
-from vtrux_build.release import (Refused, ninja_runner,  # noqa: E402
-                                 release)
+from vtrux_build.release import (Refused, cmake_false,   # noqa: E402
+                                 ninja_runner, release)
 
 GIT_ENV = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
                GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
@@ -81,14 +82,27 @@ class FakeIdf:
         self.root, self.cc, self.edit = root, cc, edit or {}
         self.calls = []
         self.envs = {}
+        self.argv = {}
 
     def __call__(self, args, env):
-        self.calls.append(args[0])
-        self.envs[args[0]] = dict(env)
+        action = args[-1]
+        self.calls.append(action)
+        self.envs[action] = dict(env)
+        self.argv[action] = list(args)
+        # idf.py's --ccache/--no-ccache: the flag given wins, else
+        # IDF_CCACHE_ENABLE; every idf.py call writes it into the cache.
+        flags = args[:-1]
+        if "--no-ccache" in flags:
+            ccache = False
+        elif "--ccache" in flags:
+            ccache = True
+        else:
+            ccache = os.environ.get("IDF_CCACHE_ENABLE", "0") not in ("", "0")
         e = self.edit
-        if args == ["reconfigure"]:
+        if action == "reconfigure":
             if e.get("reconfigure_rc"):
                 return e["reconfigure_rc"]
+            self._cache(e.get("ccache_value", "1" if ccache else "0"))
             self._component("espressif__m", e.get("component_files", COMP_FILES))
             if e.get("shared_on_disk"):
                 # A git download: no CHECKSUMS.json, as the manager gives it.
@@ -102,9 +116,21 @@ class FakeIdf:
                 git(self.root, "add", "early.txt")
                 git(self.root, "commit", "-qm", "early")
             return 0
-        if args == ["build"]:
+        if action == "build":
+            if flags != ["--no-ccache"] and ccache:
+                self._cache("1")    # idf.py reruns CMake with it on
             return self._build()
         raise AssertionError(args)
+
+    def _cache(self, value):
+        """build/CMakeCache.txt, with CCACHE_ENABLE as idf.py defines it
+        (value None: no entry)."""
+        lines = ["# This is the CMakeCache file.",
+                 "CMAKE_GENERATOR:INTERNAL=Ninja"]
+        if value is not None:
+            lines.append("CCACHE_ENABLE:UNINITIALIZED=%s" % value)
+        scratch.write(os.path.join(self.root, "build", "CMakeCache.txt"),
+                      "\n".join(lines) + "\n")
 
     def ninja(self, args, env):
         """The --jobs build step: ninja, in place of idf.py build."""
@@ -117,6 +143,8 @@ class FakeIdf:
         e = self.edit
         if e.get("build_rc"):
             return e["build_rc"]
+        if e.get("build_turns_ccache_on"):
+            self._cache("ON")
         elf = b"\x7fELF built from " + git(self.root, "rev-parse",
                                             "HEAD").encode()
         sha = hashlib.sha256(elf).digest()
@@ -425,6 +453,8 @@ class Release(unittest.TestCase):
                 "-j", str(n), "all"])
             self.assertEqual(idf.envs["reconfigure"], STRICT)
             self.assertEqual(idf.envs["ninja"], STRICT)
+            self.assertEqual(idf.argv["reconfigure"],
+                             ["--no-ccache", "reconfigure"])
             self.assertEqual(record.read(p)["image"]["built_as"], "app.bin")
 
     def test_jobs_build_failure(self):
@@ -437,6 +467,50 @@ class Release(unittest.TestCase):
             root, cc = project("rel_jobs_bad")
             self.assertRefused(run(root, cc, jobs=bad), ["--jobs"], [])
 
+    def test_r9_no_ccache_on_both_idf_calls(self):
+        """--no-ccache on the reconfigure and on idf.py build, so it wins
+        over IDF_CCACHE_ENABLE, which the IDF export sets."""
+        root, cc = project("rel_r9_noccache")
+        with mock.patch.dict(os.environ, {"IDF_CCACHE_ENABLE": "1"}):
+            p, idf, why = run(root, cc)
+        self.assertIsNone(why)
+        self.assertEqual(idf.argv, {"reconfigure": ["--no-ccache", "reconfigure"],
+                                    "build": ["--no-ccache", "build"]})
+        cache = BuildDir(os.path.join(root, "build")).cmake_cache()
+        self.assertEqual(cache["CCACHE_ENABLE"][1], "0")
+
+    def test_r9_ccache_on_after_the_reconfigure(self):
+        """Refused before the build, on either build path."""
+        for jobs in (None, 1):
+            for value in ("1", "ON"):
+                root, cc = project("rel_r9_on")
+                self.assertRefused(
+                    run(root, cc, {"ccache_value": value}, jobs=jobs),
+                    ["R9", "CCACHE_ENABLE=%s" % value, "after the reconfigure"],
+                    ["reconfigure"])
+
+    def test_r9_no_ccache_entry(self):
+        for jobs in (None, 1):
+            root, cc = project("rel_r9_none")
+            self.assertRefused(
+                run(root, cc, {"ccache_value": None}, jobs=jobs),
+                ["R9", "no CCACHE_ENABLE"], ["reconfigure"])
+
+    def test_r9_off_written_as_off(self):
+        root, cc = project("rel_r9_off")
+        self.assertIsNone(run(root, cc, {"ccache_value": "OFF"}, jobs=1)[2])
+
+    def test_r9_ccache_on_after_the_build(self):
+        """A configure during the build that turns it on: refused, no
+        record, on either build path."""
+        for jobs, step in ((None, "build"), (1, "ninja")):
+            root, cc = project("rel_r9_late")
+            self.assertRefused(
+                run(root, cc, {"build_turns_ccache_on": True}, jobs=jobs),
+                ["R9", "after the build"], ["reconfigure", step])
+            dest = records_dir(root)
+            self.assertFalse(os.path.isdir(dest) and os.listdir(dest))
+
     def test_jobs_without_ninja_on_path_stops_first(self):
         root, cc = project("rel_jobs_noninja")
         idf = FakeIdf(root, cc)
@@ -446,6 +520,19 @@ class Release(unittest.TestCase):
                         dest=records_dir(root), jobs=1)
         self.assertIn("ninja", str(cm.exception))
         self.assertEqual(idf.calls, [])
+
+
+class CmakeFalse(unittest.TestCase):
+    """R9's reading of CCACHE_ENABLE: CMake's if() truth."""
+
+    def test_false(self):
+        for v in ("0", "OFF", "off", "No", "FALSE", "n", "IGNORE",
+                  "NOTFOUND", "", "CCACHE-NOTFOUND", "0.0", " 0 "):
+            self.assertTrue(cmake_false(v), repr(v))
+
+    def test_true(self):
+        for v in ("1", "ON", "yes", "TRUE", "Y", "2", "-1", "0.5", "x"):
+            self.assertFalse(cmake_false(v), repr(v))
 
 
 class NinjaRunner(unittest.TestCase):

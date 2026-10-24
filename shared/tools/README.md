@@ -43,6 +43,13 @@ jobs option, so with `--jobs N` the build step is `ninja -C build -j N all`
 (what `idf.py build` runs), in the same strict environment, after the same
 strict `idf.py reconfigure`. Without `--jobs` it is `idf.py build`.
 
+The compiler cache is off in a release build (R9), whatever the
+environment sets: the IDF export sets `IDF_CCACHE_ENABLE=1` wherever ccache
+is installed, and `idf.py`'s `--no-ccache`, which both `idf.py` calls pass,
+wins over it. The build is refused unless `build/CMakeCache.txt` has
+`CCACHE_ENABLE` off, after the reconfigure and again after the build, on
+either build path.
+
 ## A project's build data (R22)
 
 The tooling holds no project facts. A project gives them in
@@ -60,16 +67,17 @@ The tooling holds no project facts. A project gives them in
 data; `REVERSE_IT_DIR` set (R13, before anything is built); the IDF
 environment, with the Component Manager's overwrite setting
 (`IDF_COMPONENT_OVERWRITE_MANAGED_COMPONENTS`) not set at all (R10); a
-clean worktree (R8); `idf.py reconfigure` with
+clean worktree (R8); `idf.py --no-ccache reconfigure` with
 `IDF_COMPONENT_STRICT_CHECKSUM=1` (R9, R10); the worktree still clean and
-HEAD unchanged (R8); every downloaded component's `.component_hash`
-against `dependencies.lock`, and a registry download against its
-`CHECKSUMS.json`, unlisted files included (R10, after the reconfigure); no
-shared component from a local folder (R16, `override_path` clause);
-`idf.py build`, or `ninja -C build -j N all` with `--jobs N`, also strict;
-the image `project_description.json` names (R11); HEAD
-unchanged and the worktree clean at the end (R8); the record (R13). Its
-docstring has the detail.
+HEAD unchanged (R8); `CCACHE_ENABLE` off in `build/CMakeCache.txt` (R9);
+every downloaded component's `.component_hash` against
+`dependencies.lock`, and a registry download against its `CHECKSUMS.json`,
+unlisted files included (R10, after the reconfigure); no shared component
+from a local folder (R16, `override_path` clause); `idf.py --no-ccache
+build`, or `ninja -C build -j N all` with `--jobs N`, also strict;
+`CCACHE_ENABLE` still off (R9); the image `project_description.json` names
+(R11); HEAD unchanged and the worktree clean at the end (R8); the record
+(R13). Its docstring has the detail.
 
 Not here yet: R16's refusal of a tooling pin that names a commit, and R23,
 which both wait on the `shared/main` tag scheme (SPEC section 8). The

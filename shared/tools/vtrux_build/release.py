@@ -18,9 +18,12 @@ In order, each refusal an exit, never a warning:
   4. R8: the worktree has no uncommitted changes and no untracked files
      (git status, ignored files excepted). The commit is HEAD.
      --check-only stops here.
-  5. R9: `idf.py reconfigure`, with IDF_COMPONENT_STRICT_CHECKSUM=1 in its
-     environment (R10), so the manager stops the configure on a component
-     whose files no longer match its recorded hash;
+  5. R9: `idf.py --no-ccache reconfigure`, with
+     IDF_COMPONENT_STRICT_CHECKSUM=1 in its environment (R10), so the
+     manager stops the configure on a component whose files no longer
+     match its recorded hash. --no-ccache wins over IDF_CCACHE_ENABLE,
+     which the IDF export sets wherever ccache is installed;
+     R9: build/CMakeCache.txt has CCACHE_ENABLE, and off;
      R8 again: HEAD is the same and the worktree still clean, before
      anything is compiled (a reconfigure that rewrites a tracked file,
      sdkconfig for example, is refused here);
@@ -32,14 +35,17 @@ In order, each refusal an exit, never a warning:
      names is taken from a local folder: its dependencies.lock source is
      not "local", and no idf_component.yml of the build gives it an
      override_path;
-  8. `idf.py build`, in the same run as 5, also in strict mode, so a
-     configure the build itself triggers is strict too. With --jobs N,
+  8. `idf.py --no-ccache build`, in the same run as 5, also in strict
+     mode, so a configure the build itself triggers is strict too and
+     keeps the cache off. With --jobs N,
      `ninja -C build -j N all` instead: what `idf.py build` runs, at N
      jobs (idf.py has no jobs option), in the same strict environment.
      --jobs 1 from an Idle shell is the throttled form of AGENTS.md
      "Builds during wall-clock tests". R9 asks for a reconfigure and a
      build in one run, not for idf.py build (gen-inhibit reviewer,
-     2026-10-23);
+     2026-10-23). A configure ninja itself reruns keeps the cache's
+     CCACHE_ENABLE;
+     R9 again: CCACHE_ENABLE still off after the build, either way;
   9. R11: the image is the one build/project_description.json names as
      app_bin (builddir.py), with its app_elf;
  10. R8 at the end: HEAD is still the commit step 4 read and the worktree
@@ -129,6 +135,41 @@ def check_jobs(jobs):
         raise Refused("--jobs must be a whole number of at least 1 (given "
                       "%r)" % (jobs,))
     ok("build jobs", "ninja -j %d" % jobs)
+
+
+# CMake's false constants; a number is true unless it is 0.
+CMAKE_FALSE = ("0", "OFF", "NO", "FALSE", "N", "IGNORE", "NOTFOUND", "")
+
+
+def cmake_false(value):
+    """True if CMake's if() reads value as false."""
+    v = value.strip().upper()
+    if v in CMAKE_FALSE or v.endswith("-NOTFOUND"):
+        return True
+    try:
+        return float(v) == 0
+    except ValueError:
+        return False
+
+
+def check_no_ccache(build_dir, when):
+    """R9: the build's configuration has the compiler cache off:
+    CCACHE_ENABLE is in build/CMakeCache.txt and CMake reads it as false.
+    Missing is refused too, since then nothing shows it is off."""
+    try:
+        cache = BuildDir(build_dir).cmake_cache()
+    except BuildDirError as e:
+        raise Refused("%s, the compiler cache setting cannot be read: %s"
+                      % (when, e))
+    if "CCACHE_ENABLE" not in cache:
+        raise Refused("%s, build/CMakeCache.txt has no CCACHE_ENABLE, so "
+                      "nothing shows the compiler cache is off (R9)" % when)
+    value = cache["CCACHE_ENABLE"][1]
+    if not cmake_false(value):
+        raise Refused("%s, build/CMakeCache.txt has CCACHE_ENABLE=%s: the "
+                      "compiler cache is on, and a release build is built "
+                      "with it off (R9)" % (when, value))
+    ok("compiler cache off (R9)", "%s, CCACHE_ENABLE=%s" % (when, value))
 
 
 def check_no_overwrite(environ=None):
@@ -290,12 +331,14 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
 
     # R10: the manager's strict mode for every configure this run makes.
     strict = {components.STRICT_ENV: "1"}
-    say("\nidf.py reconfigure (%s=1) ..." % components.STRICT_ENV)
-    rc = idf(["reconfigure"], strict)
+    build_dir = os.path.join(root, "build")
+    say("\nidf.py --no-ccache reconfigure (%s=1) ..." % components.STRICT_ENV)
+    rc = idf(["--no-ccache", "reconfigure"], strict)
     if rc != 0:
         raise Refused("idf.py reconfigure failed (exit %d)" % rc)
     ok("reconfigure (R9)")
     check_clean(root, "after the reconfigure", commit)
+    check_no_ccache(build_dir, "after the reconfigure")
 
     try:
         good, report = components.check_managed(root)
@@ -325,7 +368,6 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
     if not report:
         ok("downloaded components (R10)", "none in the lock or on disk")
 
-    build_dir = os.path.join(root, "build")
     bd = BuildDir(build_dir)
     lock_path = os.path.join(root, "dependencies.lock")
     try:
@@ -336,8 +378,8 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
 
     if jobs is None:
         what = "idf.py build"
-        say("\n%s (%s=1) ..." % (what, components.STRICT_ENV))
-        rc = idf(["build"], strict)
+        say("\nidf.py --no-ccache build (%s=1) ..." % components.STRICT_ENV)
+        rc = idf(["--no-ccache", "build"], strict)
     else:
         what = "ninja -j %d build" % jobs
         args = ["-C", build_dir, "-j", str(jobs), "all"]
@@ -345,6 +387,7 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
         rc = ninja(args, strict)
     if rc != 0:
         raise Refused("%s failed (exit %d)" % (what, rc))
+    check_no_ccache(build_dir, "after the build")
 
     bd = BuildDir(build_dir)
     try:
