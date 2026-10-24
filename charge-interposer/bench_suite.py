@@ -17,10 +17,19 @@ project", 2026-10-18):
             Python logic tests), the 27 closed-loop sims at 1x and the
             capture-trace rebuild. The implementor's self-check; evidence
             when the tester runs it.
-  bench     charge-interposer-bench: hardware only, the lock from start to
-            finish (bench-holder rule 2). Refuses to start unless the
-            newest emulated run is on the same code and matched its
-            reference (Suite.requires).
+  bench     charge-interposer-bench: hardware only, holding the bench lock
+            from start to finish: before the cutover the Holder line,
+            taken and released by hand; under the bench log
+            (settings.bench_lock_log) the runner takes and releases it
+            itself. Refuses to start unless the newest emulated run is on
+            the same code and matched its reference (Suite.requires).
+            Its boards are the X2 and the WiCAN (bench_wican.py: never
+            flashed, identified off its page). The WiCAN's start and
+            release reboots are the suite's own hooks, so the hand reboots
+            before and after a run end here (reviewer, 2026-10-23).
+            gen-inhibit's wican_reboot.py disarms a WiCAN that comes up
+            armed, so every run, and every pause, leaves the WiCAN
+            rebooted and disarmed (mode 0).
   harness   charge-interposer-harness: the tester's harness tests and
             mutants -- the checks that test the checks. Run when the
             harness changes.
@@ -39,7 +48,9 @@ Settings beyond the core's (see the NICKY-XPS settings JSON in reverse-it
 interposer-firmware/): reverse_it (the root the artifacts scripts run from), interposer_code,
 interposer_artifacts, interposer_dbc,
 images_dir, images_src, boot_app0, serial_port, pcan_channel, wican_state,
-madhouse_pio.
+madhouse_pio; for the bench suite's WiCAN (bench_wican.py), gi_tools
+(gen-inhibit's tools/gen_inhibit, read-only) and gi_chain_settings
+(gen-inhibit's chain settings JSON, read for its gi_images).
 """
 
 import glob
@@ -58,6 +69,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared", "bench"))
 from vtrux_bench.run import (Check, Figure, Group, Image, KnownFail,  # noqa: E402
                              Result, Suite, Verdict)
 import bench_identify  # noqa: E402
+import bench_wican  # noqa: E402
 sys.path.insert(0, os.path.join(HERE, "firmware"))
 import build_identity  # noqa: E402
 
@@ -164,6 +176,9 @@ HARNESS_LOCAL = [
     ("bench-suite-test", ["{interposer_code}/bench_suite_test.py"]),
     ("bench-suite-test-canfail",
      ["{interposer_code}/bench_suite_test.py", "--can-fail"]),
+    ("bench-wican-test", ["{interposer_code}/bench_wican_test.py"]),
+    ("bench-wican-test-canfail",
+     ["{interposer_code}/bench_wican_test.py", "--can-fail"]),
     ("cutover-verify-guard-test",
      ["{interposer_artifacts}/cutover_verify_test.py", "--guard-test"]),
     ("rebuild-capture-traces-canfail",
@@ -498,6 +513,16 @@ class _Build:
             if images:
                 out["images_src"] = settings["images_src"]
                 out["images"] = {k: v.note for k, v in images.items()}
+                # gen-inhibit's tree the WiCAN's hooks run from (read-only)
+                gi = settings.get("gi_tools")
+                if gi:
+                    out["gi_tools"] = {
+                        "commit": subprocess.run(
+                            ["git", "-C", gi, "rev-parse", "HEAD"],
+                            capture_output=True, text=True).stdout.strip(),
+                        "dirty": bool(subprocess.run(
+                            ["git", "-C", gi, "status", "--porcelain"],
+                            capture_output=True, text=True).stdout.strip())}
             return out
         return info
 
@@ -736,14 +761,26 @@ def bench(settings):
         "c12_bench": _idf_image("c12_bench", settings),
         "vport_bench": _idf_image("vport_bench", settings),
     }
+    # The WiCAN is a board of every bench group (bench_wican.py), so the
+    # runner identifies it, runs its start and release reboots and reads it
+    # at every release and free_paused (shared/bench SPEC.md section 6).
+    wican = bench_wican.make(settings)
+    images[bench_wican.IMAGE] = wican["image"]
+    for g in (b_bridge, b_witness, b_truck, b_c12, b_vport):
+        g.image = [g.image, bench_wican.IMAGE]
 
     def identify(image, ctx, logdir):
+        if image.board == bench_wican.BOARD:
+            return wican["identify"](image, ctx, logdir)
         return bench_identify.identify(image, ctx, logdir, settings)
 
     return Suite(
         name="charge-interposer-bench", role=ROLE,
         groups=[b_bridge, b_witness, b_truck, b_c12, b_vport, truck_only],
-        images=images, standing_images={"x2": "bridge"},
+        images=images,
+        standing_images={"x2": "bridge", bench_wican.BOARD: bench_wican.IMAGE},
+        flashers={bench_wican.FLASHER: wican["flasher"]},
+        on_start=wican["on_start"], on_end=wican["on_end"],
         known_fails=BENCH_KNOWN_FAILS, identify=identify,
         code_info=b.code_info(images), requires="charge-interposer-emulated",
         product_files=product_files)

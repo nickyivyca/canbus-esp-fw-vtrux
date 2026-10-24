@@ -253,10 +253,15 @@ def _settings():
         with open(os.path.join(d, "images", "idf", name, name + ".elf"),
                   "wb") as f:
             f.write(name.encode())
+    # the WiCAN's sources: bench_wican_test's fake gen-inhibit tree
+    import bench_wican_test as WT
+    ws, _root = WT.fixture("for-bench-suite-test")
     return {"interposer_code": HERE, "interposer_artifacts": art,
             "images_dir": os.path.join(d, "images"),
             "images_src": "36edf3e55552", "boot_app0": "boot_app0.bin",
             "x2_mac": "02:00:00:00:00:01",
+            "gi_tools": ws["gi_tools"],
+            "gi_chain_settings": ws["gi_chain_settings"],
             "hosts": {"local": {}, "madhouse": {}}}
 
 
@@ -330,7 +335,8 @@ def test_suites():
     # 183: sb.test-decode, sb.test-run-core, each plain and -canfail (2026-10-22)
     # 185: sb.test-bench-lock and its -canfail, with the bench-lock merge
     # 186: cf.bench-hold12, its fresh-board gate mutants (2026-10-23)
-    assert len(seen) == 186, "checks across the suites: %d" % len(seen)
+    # 188: bench-wican-test and its -canfail, with the WiCAN board
+    assert len(seen) == 188, "checks across the suites: %d" % len(seen)
     # build-check runs in a git checkout of HEAD, shipped as a bundle
     # (user ruling 2026-10-19), never in the shipped copy
     mb = [g for g in su["emulated"].groups if g.name == "m-build"][0]
@@ -377,6 +383,8 @@ def test_suites():
     # every X2 image names the X2's chip, so a port that reaches another
     # board writes nothing (methodology, 2026-10-20)
     for n, im in su["bench"].images.items():
+        if n == B.bench_wican.IMAGE:
+            continue        # never flashed: test_wican_board
         assert im.board == "x2" and (im.params or {}).get("chip") == {
             "type": "ESP32-S3", "mac": s["x2_mac"]}, (n, im.params)
     # the public repo holds no MAC: none in the suite's source
@@ -387,6 +395,41 @@ def test_suites():
               if c.id.startswith("sim.")]
     assert len(e_sims) == 27 and all("--time-scale 1 " in _argv(c) + " "
                                      for c in e_sims), "27 sims at 1x"
+
+
+def test_wican_board():
+    """The bench suite carries the WiCAN (bench_wican.py; reviewer,
+    2026-10-23, for the bench-lock cutover): every bench group that holds
+    the lock names wican_man beside its X2 image; the WiCAN's standing
+    image is wican_man, its identity is the fake gen-inhibit build's, its
+    flasher refuses, its hooks are bench_wican's (the X2 gets no step), and
+    identify sends the WiCAN to its page, not to the X2's identify."""
+    import bench_wican_test as WT
+    s, su = _all()
+    b = su["bench"]
+    W = B.bench_wican
+    locked = [g for g in b.groups if g.needs_lock]
+    assert len(locked) == 5, [g.name for g in locked]
+    for g in locked:
+        il = g.image_list
+        assert len(il) == 2 and [b.images[x].board for x in il] == [
+            "x2", W.BOARD] and il[1] == W.IMAGE, (g.name, il)
+    assert b.standing_images == {"x2": "bridge", W.BOARD: W.IMAGE}, \
+        b.standing_images
+    im = b.images[W.IMAGE]
+    assert (im.board, im.flasher, im.expect) == (W.BOARD, W.FLASHER,
+                                                 WT.MAN_SHA), im
+    res = b.flashers[W.FLASHER](im, {}, s, TMP)
+    assert res["ok"] is False and res["recoverable"] is False, res
+    assert b.identify(im, None, TMP) == WT.MAN_SHA
+    d = os.path.join(TMP, "wican_hooks")
+    os.makedirs(d, exist_ok=True)
+    x2 = b.on_start("x2", b.images["bridge"], None, d)
+    assert x2["ok"] is True and "no start step" in x2["detail"], x2
+    for hook, flag in ((b.on_start, "--first"), (b.on_end, "--want")):
+        out = hook(W.BOARD, im, None, d)
+        a = WT.calls(os.path.dirname(os.environ["FAKE_WICAN_ARGV"]))[-1]
+        assert out["ok"] is True and a[a.index(flag) + 1] == W.IMAGE, (out, a)
 
 
 def test_mutant_wiring():
@@ -892,7 +935,7 @@ TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_suites, test_mutant_wiring, test_identify, test_pycache_ignored,
          test_usb_baselines, test_usb_stops, test_reopen_skip,
          test_script_coverage, test_shared_bench_tests, test_strict_port_off,
-         test_vport_split, test_bench_argv]
+         test_vport_split, test_bench_argv, test_wican_board]
 
 
 # ---- can-fail -----------------------------------------------------------
@@ -1111,7 +1154,38 @@ def _flight_silence_a25e(s):
                 c.argv.insert(i + 1, "{pcan_channel}")
 
 # test -> [(module attribute, replacement, what the mutant does)]
+def _no_wican_in(group):
+    def fn(s):
+        g = [x for x in s.groups if x.name == group][0]
+        g.image = [x for x in g.image_list if x != B.bench_wican.IMAGE][0]
+    return fn
+
+
+def _no_wican_standing(s):
+    s.standing_images = {"x2": "bridge"}
+
+
+def _no_release_hook(s):
+    s.on_end = None
+
+
+def _wican_identify_off(s):
+    x2_identify = s.identify
+    s.identify = lambda image, ctx, logdir: (
+        None if image.board == B.bench_wican.BOARD
+        else x2_identify(image, ctx, logdir))
+
+
 MUTANTS = {
+    "test_wican_board": [
+        ("bench", _wrap_suite("bench", _no_wican_in("b-vport")),
+         "a bench group without the WiCAN"),
+        ("bench", _wrap_suite("bench", _no_wican_standing),
+         "no standing image for the WiCAN"),
+        ("bench", _wrap_suite("bench", _no_release_hook),
+         "no release hook (the WiCAN unread at every release)"),
+        ("bench", _wrap_suite("bench", _wican_identify_off),
+         "identify never reads the WiCAN")],
     "test_script_judge": [
         ("script_judge", _pass_all, "passes everything"),
         ("script_judge", _rc0_pass,
