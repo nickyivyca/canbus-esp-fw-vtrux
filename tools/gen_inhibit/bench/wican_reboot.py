@@ -33,6 +33,13 @@ The record names the image found (or the unknown hash), whether the board came u
 and was disarmed, and every check. Reads /gen_inhibit only, never /check_status or any
 config. Exit 0 on PASS, 1 otherwise. GI_WICAN_HOST overrides the device's address (the
 harness test's fake). Gen-inhibit tester, 2026-10-20.
+
+Cross-project dependency (gen-inhibit reviewer, 2026-10-24): the charge-interposer's
+runner loads this file by path, read-only, from a pinned gen-inhibit/main checkout, and
+relies on its options --label, --out, --known NAME=SHA, --first, --want and
+--want-unknown, and on its record's verdict, detail, found_image, found_sha,
+came_up_armed and disarmed. A change to any of them goes to both reviewers first (the
+full list is in tools/gen_inhibit/README.md).
 """
 import argparse
 import json

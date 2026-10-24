@@ -6,10 +6,15 @@ an esptool write unless settings.esptool.chip names the X2's type and MAC, the M
 only in the local settings, never in a published file; plus --resume's carry rules,
 f60ebf3 / 45a67ba,
 cleared by both reviewers 2026-10-20; plus the bench lock, 0e6f633 and its follow-up
-b9896a0, cleared 2026-10-22. These settings name no bench_lock_log, so the runner stays
-on bench_holder's Holder line: it reads it before every bench case, a PAUSE waits until
-the file is gone and the Holder is gen-inhibit's again, and a lost lock skips the end
-restore and the end hooks' board actions).
+b9896a0, cleared 2026-10-22. The settings choose the lock (reverse-it
+firmware/bench-lock-spec.md, sections 6 and 7). From the cutover they name bench_lock_log,
+reverse-it's firmware/bench-log.jsonl: the runner takes the lock in that log under its
+own PID and run id, at a PAUSE frees it with its board reads and takes it back once the
+file is gone, and releases it with its board reads at the end. Settings with no
+bench_lock_log keep bench_holder's Holder line, as before the cutover: the runner reads
+it before every bench case, and a PAUSE waits until the file is gone and the Holder is
+gen-inhibit's again. In both, a lost lock skips the end restore and the end hooks' board
+actions).
 
 Gen-inhibit tester, 2026-10-18. Two suites on the one core (user, 2026-10-17):
     bench     part B only. Holds the bench lock from start to finish. The core runs the
@@ -114,6 +119,13 @@ def wican_ssid(bench_holder):
     return m.group(1)
 
 
+# Cross-project dependency (gen-inhibit reviewer, 2026-10-24): the charge-interposer's
+# runner reads the WiCAN's standing identity, read-only, from gi_images in the standing
+# settings (chain_settings_NICKY-XPS.json), image_bin()'s choice of exactly one
+# wican-fw_obd_*.bin in build-tester-man/ (which also holds ota_data_initial.bin), and
+# the ELF SHA-256 at offset 0xB0 of that image (elf_sha256_of_bin; its own copy is
+# build_lookup.elf_sha256_of_bin). bench/wican_reboot.py and bench/page_state.py are
+# the rest (their docstrings). A change to any of them goes to both reviewers first.
 def image_bin(folder):
     got = sorted(glob.glob(os.path.join(folder, "wican-fw_obd_*.bin")))
     if len(got) != 1:

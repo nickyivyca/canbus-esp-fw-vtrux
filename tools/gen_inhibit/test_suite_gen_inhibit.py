@@ -2,7 +2,9 @@
 """Tests for suite_gen_inhibit.py: both suites load and validate on the pinned core,
 cover the baseline index once each, keep the SSID out of what the record keeps, and
 their hooks say "could not look" (raise) rather than "not this image" (None) when a
-tool fails. No hardware: every tool the hooks run is stood in for.
+tool fails, and a settings file naming bench_lock_log puts a run on that log while one
+without keeps it on the Holder line. No hardware: every tool the hooks run is stood in
+for.
 
     PYTHONPATH=<core b9896a0>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
         py -3.14 -B test_suite_gen_inhibit.py
@@ -847,6 +849,136 @@ def test_code_info(settings):
           SG.bench(s2).code_info({})["dirty"] is True and SG.emulated(s2).code_info({})["dirty"] is True)
 
 
+def test_lock_source(settings):
+    """The settings choose the bench lock (reverse-it firmware/bench-lock-spec.md sections
+    6 and 7): a settings file naming bench_lock_log puts the run on that log, under this
+    suite's role and the runner's PID; one without keeps it on bench_holder's Holder
+    line, and the log is never written. Whole runs on the core, of man_app/B1, from
+    clean code with a passing emulated run (Suite.requires). Every tool the hooks run is
+    stood in for, and the WiCAN's start step fails, which stops the bench before
+    anything is identified or flashed (the core's start_hook_stops): no case runs, and
+    bash is a path that does not exist in case one did."""
+    from vtrux_bench import bench_lock as BL
+    from vtrux_bench.run.lock import LockError
+    d = os.path.join(BASE, "lock")
+    repo = os.path.join(d, "repo")
+    os.makedirs(repo)
+    git(repo, "init", "-q")
+    with open(os.path.join(repo, ".gitignore"), "w") as f:
+        f.write("*.bin\n")
+    with open(os.path.join(repo, "src.c"), "w") as f:
+        f.write("int x;\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "c")
+    h = git(repo, "rev-parse", "--short=7", "HEAD")
+    for k, (name, b) in enumerate(sorted(SG.WICAN_BUILDS.items())):
+        fake_bin(os.path.join(repo, "build-tester-" + b, "wican-fw_obd_t.bin"), h, 0x10 + k)
+    fake_bin(os.path.join(repo, "prod", "wican-fw_obd_p.bin"), h, 0x70)
+    other = "tester (charge-interposer)"
+    fake_module("bench_flash", join_ap=lambda s, timeout=40.0: None,
+                image_elf_sha256=__import__("bench_flash").image_elf_sha256)
+    fake_module("bench_identify", identify=lambda image, ctx, logdir_, settings_: None)
+    n = [0]
+
+    def run(log, holder, log_taken_by=None):
+        """One run: (outcome, the log's lines before, after, the Holder file unchanged,
+        record.json or None). log: name the scratch log in the settings, or not; it is
+        made in both cases."""
+        n[0] += 1
+        c = os.path.join(d, "c%d" % n[0])
+        runs = os.path.join(c, "runs")
+        emu = os.path.join(runs, "emu")
+        os.makedirs(emu)
+        with open(os.path.join(emu, "record.json"), "w", encoding="utf-8") as f:
+            json.dump({"suite": "gen-inhibit-emulated", "run_id": "emu", "ended": "2026-10-24T00:00:00",
+                       "code": {"commit": h, "dirty": False, "code_hash": None},
+                       "selection": {"groups": [], "checks": []}, "subset": False, "results": []}, f)
+        bh = os.path.join(c, "bench-holder.md")
+        with open(bh, "w", encoding="utf-8", newline="\n") as f:
+            f.write("# Bench holder\n\n## WiCAN\nSoftAP `%s`, page at 192.168.80.1\n\n"
+                    "## Lock\n\n**Holder:** %s\n" % (SSID, holder))
+        held = open(bh, "rb").read()
+        lp = os.path.join(c, "bench-log.jsonl")
+        BL.init(lp, "tester (gen-inhibit)")
+        if log_taken_by:
+            BL.take(lp, log_taken_by, os.getpid(), note="held by the other role")
+        before = open(lp, encoding="ascii").read().splitlines()
+        s = dict(settings, gi_images=repo, gi_prod_dir=os.path.join(repo, "prod"), gi_fw=repo, gi_commit=h,
+                 runs_root=runs, bench_holder=bh, bash=os.path.join(c, "no-bash.exe"))
+        if log:
+            s["bench_lock_log"] = lp
+        sp = os.path.join(c, "settings.json")
+        with open(sp, "w", encoding="utf-8") as f:
+            json.dump(s, f)
+
+        def go(t):
+            t.do["wican_reboot.py"] = reboot_tool("FAIL", 1, extra={"detail": "FAIL stand-in start, test"})
+            SG.wican_page = lambda: {"elf_sha256": "ab" * 32}
+            s2 = CLI.load_settings(sp)
+            eng = Engine(SG.bench(s2), s2, checks=["man_app/B1"])
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                try:
+                    eng.run()
+                    res = "ran"
+                except LockError as e:
+                    res = "refused: %s" % e
+                except Exception as e:
+                    res = "error: %r" % (e,)
+            rec = None
+            if getattr(eng, "run_dir", None) and os.path.exists(os.path.join(eng.run_dir, "record.json")):
+                with open(os.path.join(eng.run_dir, "record.json"), encoding="utf-8") as f:
+                    rec = json.load(f)
+            return res, rec, getattr(eng, "run_id", None)
+        res, rec, rid = with_tools(go)
+        after = open(lp, encoding="ascii").read().splitlines()
+        return res, before, after, open(bh, "rb").read() == held, rec, rid
+
+    def ev(lines):
+        return [json.loads(l) for l in lines]
+
+    def results(rec):
+        return [(r["id"], r["verdict"]) for r in (rec or {}).get("results", [])]
+
+    # the log named, free, the Holder line free: the run goes on the log
+    res, before, after, same, rec, rid = run(True, "-- (free)")
+    new = ev(after[len(before):])
+    check("lock: bench_lock_log named, log free, Holder line free: the run starts (%s)" % res[:80],
+          res == "ran" and rec is not None, res)
+    check("lock: it takes the log under this suite's role, the runner's PID and its run id, and releases",
+          [(e["event"], e["who"]) for e in new] == [("take", SG.ROLE), ("release", SG.ROLE)]
+          and new[0].get("pid") == os.getpid() and new[0].get("run") == rid and SG.ROLE == "tester (gen-inhibit)",
+          new)
+    check("lock: the record says the lock was the log, taken", rec and rec.get("lock", {}).get("source") == "log"
+          and rec["lock"].get("took") is True, rec and rec.get("lock"))
+    check("lock: nothing ran on the bench (the start step stood in and failed)",
+          rec and results(rec) and all(v == "NOT-RUN" for _, v in results(rec)), results(rec))
+    check("lock: the run on the log leaves the Holder line alone", same)
+
+    # the log named, held by the other role, the Holder line ours: refused by the log
+    res, before, after, same, rec, _ = run(True, "%s, 2026-10-24 00:00 (test)" % SG.ROLE, log_taken_by=other)
+    check("lock: bench_lock_log named and held by the other role: refused by the log, though the Holder line is ours",
+          res.startswith("refused: ") and "bench log refused the take" in res, res)
+    check("lock: that refusal writes nothing to the log, and makes no run", after == before and rec is None,
+          (after[len(before):], rec is None))
+
+    # no bench_lock_log, the Holder line free: refused by the Holder line
+    res, before, after, same, rec, _ = run(False, "-- (free)")
+    check("lock: no bench_lock_log, the Holder line free: refused by the Holder line",
+          res.startswith("refused: ") and "Holder: -- (free)" in res and "bench log" not in res, res)
+    check("lock: that refusal writes nothing to the log", after == before, after[len(before):])
+
+    # no bench_lock_log, the Holder line ours, the log held by the other role: runs on the Holder line
+    res, before, after, same, rec, _ = run(False, "%s, 2026-10-24 00:00 (test)" % SG.ROLE, log_taken_by=other)
+    check("lock: no bench_lock_log, the Holder line ours: the run starts, whoever holds the log",
+          res == "ran" and rec is not None, res)
+    check("lock: the record says the lock was the Holder line, nothing taken",
+          rec and rec.get("lock", {}).get("source") == "holder" and rec["lock"].get("took") is False,
+          rec and rec.get("lock"))
+    check("lock: the run on the Holder line writes nothing to the log, and leaves the Holder file alone",
+          after == before and same, (after[len(before):], same))
+
+
 FAKE_SSH = r"""#!/usr/bin/env bash
 # The host-group test's ssh: logs the host and the command; runs a copy (tar xf) here
 # with HOME set to the fake host's home, and answers anything else as a passing check.
@@ -942,7 +1074,7 @@ def test_example(bench, emu):
             for c in g.checks:
                 for a in list(c.argv) + list(c.env.values()) + [c.cwd or ""]:
                     needed |= set(re.findall(r"\{(\w+)\}", a)) - run_keys
-    needed |= {"x2_images", "hosts", "esptool", "runs_root", "bench_holder"}
+    needed |= {"x2_images", "hosts", "esptool", "runs_root", "bench_holder", "bench_lock_log"}
     check("the settings example has every key the suites need: %s" % ",".join(sorted(needed)),
           needed <= set(ex), sorted(needed - set(ex)))
     check("the settings example has no WiCAN SSID", not re.search(r"WiCAN_[0-9a-fA-F]{4}", json.dumps(ex)))
@@ -955,6 +1087,7 @@ def main():
         test_example(bench, emu)
         test_host_group(settings, emu)
         test_code_info(settings)
+        test_lock_source(settings)
         test_ssid(settings, bench, emu)
         test_redact(settings)
         test_bins()

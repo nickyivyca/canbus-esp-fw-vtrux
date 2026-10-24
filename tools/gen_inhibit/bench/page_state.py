@@ -11,6 +11,12 @@ one did, 1 when none did (the record then says so). GI_WICAN_HOST overrides the
 device's address (the harness test's fake). Added 2026-10-20 (reviewer): B12's rt step
 ends with it, because without rt_self's OTA the next step starts from whatever the rt
 step leaves.
+
+Cross-project dependency (gen-inhibit reviewer, 2026-10-24): the charge-interposer's
+runner loads this file by path, read-only, from a pinned gen-inhibit/main checkout (as
+wican_reboot.py does), and relies on read_page(timeout) returning the page as a dict
+with elf_sha256. A change to it goes to both reviewers first (the full list is in
+tools/gen_inhibit/README.md).
 """
 import argparse
 import json

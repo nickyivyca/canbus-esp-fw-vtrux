@@ -1,7 +1,8 @@
 {
-  "_comment": "Settings for suite_gen_inhibit.py (bench and emulated). One copy per machine, outside git; every <...> is a local path or name. The WiCAN SSID is never put here: the suite reads it from bench_holder. Keys the core reads: runs_root, bench_holder, hosts, esptool, wallclock_patterns (shared/bench/README.md).",
+  "_comment": "Settings for suite_gen_inhibit.py (bench and emulated). One copy per machine, outside git; every <...> is a local path or name. The WiCAN SSID is never put here: the suite reads it from bench_holder. Keys the core reads: runs_root, bench_holder, bench_lock_log, hosts, esptool, wallclock_patterns (shared/bench/README.md). bench_lock_log puts the bench lock on that log; without it the Holder line of bench_holder is the lock, as before the cutover (reverse-it firmware/bench-lock-spec.md section 7).",
   "runs_root": "<reverse-it>/projects/vtrux/notes/artifacts/gen-inhibit/runs/chain",
   "bench_holder": "<reverse-it>/firmware/bench-holder.md",
+  "bench_lock_log": "<reverse-it>/firmware/bench-log.jsonl",
   "hosts": {
     "local": {
       "python": ["py", "-3.14", "-B"],
