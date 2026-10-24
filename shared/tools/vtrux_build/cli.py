@@ -1,6 +1,7 @@
 """The command line.
 
     python -B -m vtrux_build release [--project DIR] [--check-only]
+                                     [--jobs N]
     python -B -m vtrux_build image BIN...     what the image library reads
                                               from each .bin, as JSON
     python -B -m vtrux_build digest DIR...    the R7 digest of each folder
@@ -49,6 +50,9 @@ def main(argv=None):
                    help="the ESP-IDF project root (default: here)")
     r.add_argument("--check-only", action="store_true",
                    help="the pre-build refusals only; build nothing")
+    r.add_argument("--jobs", type=int, metavar="N",
+                   help="build with ninja -j N instead of idf.py build "
+                        "(--jobs 1 from an Idle shell is the throttled form)")
     i = sub.add_parser("image", help="read app images")
     i.add_argument("bins", nargs="+")
     d = sub.add_parser("digest", help="R7 component digests")

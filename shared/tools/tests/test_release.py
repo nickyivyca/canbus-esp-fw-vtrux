@@ -24,9 +24,10 @@ sys.path.insert(0, HERE)
 
 import scratch                                           # noqa: E402
 from imagekit import descriptor, make_image              # noqa: E402
-from vtrux_build import record                           # noqa: E402
+from vtrux_build import cli, record                      # noqa: E402
 from vtrux_build.image import AppImage                   # noqa: E402
-from vtrux_build.release import Refused, release         # noqa: E402
+from vtrux_build.release import (Refused, ninja_runner,  # noqa: E402
+                                 release)
 
 GIT_ENV = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
                GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
@@ -34,6 +35,7 @@ CHASH = "ab" * 32
 COMP_FILES = {"CMakeLists.txt": b"idf_component_register()\n",
               "m.c": b"int m;\n"}
 TC_RUN = (lambda argv: (0, "riscv32-esp-elf-gcc (crosstool-NG) 14.2.0\n"))
+STRICT = {"IDF_COMPONENT_STRICT_CHECKSUM": "1"}
 
 
 def git(root, *args):
@@ -101,27 +103,37 @@ class FakeIdf:
                 git(self.root, "commit", "-qm", "early")
             return 0
         if args == ["build"]:
-            if e.get("build_rc"):
-                return e["build_rc"]
-            elf = b"\x7fELF built from " + git(self.root, "rev-parse",
-                                                "HEAD").encode()
-            sha = hashlib.sha256(elf).digest()
-            data, _ = make_image(desc=descriptor(version="abc1234",
-                                                 elf_sha256=sha))
-            b = os.path.join(self.root, "build")
-            if not e.get("no_bin"):
-                scratch.write(os.path.join(b, "app.bin"), data)
-            scratch.write(os.path.join(b, "app.elf"),
-                          e.get("elf_bytes", elf))
-            scratch.write(os.path.join(b, "stray_newer.bin"), data)
-            if e.get("commit_during_build"):
-                scratch.write(os.path.join(self.root, "late.txt"), "x")
-                git(self.root, "add", "late.txt")
-                git(self.root, "commit", "-qm", "late")
-            if e.get("dirty_after"):
-                scratch.write(os.path.join(self.root, "sdkconfig"), "changed\n")
-            return 0
+            return self._build()
         raise AssertionError(args)
+
+    def ninja(self, args, env):
+        """The --jobs build step: ninja, in place of idf.py build."""
+        self.calls.append("ninja")
+        self.envs["ninja"] = dict(env)
+        self.ninja_args = list(args)
+        return self._build()
+
+    def _build(self):
+        e = self.edit
+        if e.get("build_rc"):
+            return e["build_rc"]
+        elf = b"\x7fELF built from " + git(self.root, "rev-parse",
+                                            "HEAD").encode()
+        sha = hashlib.sha256(elf).digest()
+        data, _ = make_image(desc=descriptor(version="abc1234",
+                                             elf_sha256=sha))
+        b = os.path.join(self.root, "build")
+        if not e.get("no_bin"):
+            scratch.write(os.path.join(b, "app.bin"), data)
+        scratch.write(os.path.join(b, "app.elf"), e.get("elf_bytes", elf))
+        scratch.write(os.path.join(b, "stray_newer.bin"), data)
+        if e.get("commit_during_build"):
+            scratch.write(os.path.join(self.root, "late.txt"), "x")
+            git(self.root, "add", "late.txt")
+            git(self.root, "commit", "-qm", "late")
+        if e.get("dirty_after"):
+            scratch.write(os.path.join(self.root, "sdkconfig"), "changed\n")
+        return 0
 
     def _component(self, name, files, checksums=True):
         cdir = os.path.join(self.root, "managed_components", name)
@@ -176,13 +188,14 @@ def records_dir(root):
     return os.path.join(os.path.dirname(root), "records")
 
 
-def run(root, cc, edit=None, check_only=False, dest="default"):
+def run(root, cc, edit=None, check_only=False, dest="default", jobs=None):
     idf = FakeIdf(root, cc, edit)
     if dest == "default":
         dest = records_dir(root)
     try:
         p = release(root, check_only=check_only, idf=idf,
-                    toolchain_run=TC_RUN, dest=dest)
+                    toolchain_run=TC_RUN, dest=dest, jobs=jobs,
+                    ninja=idf.ninja)
         return p, idf, None
     except Refused as e:
         return None, idf, str(e)
@@ -398,6 +411,85 @@ class Release(unittest.TestCase):
                                         "shared_components": ["a", "a"]})):
             root, cc = project(name, data=data)
             self.assertRefused(run(root, cc), ["vtrux_build.json"], [])
+
+    def test_jobs_builds_with_ninja(self):
+        """--jobs N: the build step is ninja -C build -j N all, in the same
+        strict environment, after the strict idf.py reconfigure."""
+        for n in (1, 4):
+            root, cc = project("rel_jobs_%d" % n)
+            p, idf, why = run(root, cc, jobs=n)
+            self.assertIsNone(why)
+            self.assertEqual(idf.calls, ["reconfigure", "ninja"])
+            self.assertEqual(idf.ninja_args, [
+                "-C", os.path.join(os.path.abspath(root), "build"),
+                "-j", str(n), "all"])
+            self.assertEqual(idf.envs["reconfigure"], STRICT)
+            self.assertEqual(idf.envs["ninja"], STRICT)
+            self.assertEqual(record.read(p)["image"]["built_as"], "app.bin")
+
+    def test_jobs_build_failure(self):
+        root, cc = project("rel_jobs_fail")
+        self.assertRefused(run(root, cc, {"build_rc": 1}, jobs=1),
+                           ["ninja -j 1 build failed"], ["reconfigure", "ninja"])
+
+    def test_jobs_must_be_a_whole_number(self):
+        for bad in (0, -1, "2", 1.0, True):
+            root, cc = project("rel_jobs_bad")
+            self.assertRefused(run(root, cc, jobs=bad), ["--jobs"], [])
+
+    def test_jobs_without_ninja_on_path_stops_first(self):
+        root, cc = project("rel_jobs_noninja")
+        idf = FakeIdf(root, cc)
+        with mock.patch("vtrux_build.release.shutil.which", return_value=None):
+            with self.assertRaises(Refused) as cm:
+                release(root, idf=idf, toolchain_run=TC_RUN,
+                        dest=records_dir(root), jobs=1)
+        self.assertIn("ninja", str(cm.exception))
+        self.assertEqual(idf.calls, [])
+
+
+class NinjaRunner(unittest.TestCase):
+    """The real ninja runner --jobs uses: its command line and environment."""
+
+    def test_command_line_and_environment(self):
+        """The strict setting goes to ninja's environment, on top of this
+        process's, and not into this process's own."""
+        before = os.environ.get("IDF_COMPONENT_STRICT_CHECKSUM")
+        with mock.patch("vtrux_build.release.shutil.which",
+                        return_value="C:/x/ninja.exe"), \
+                mock.patch("vtrux_build.release.subprocess.run") as sp, \
+                mock.patch.dict(os.environ, {"VTRUX_TEST_KEEP": "kept"}):
+            sp.return_value.returncode = 3
+            rc = ninja_runner()(["-C", "b", "-j", "1", "all"], STRICT)
+            self.assertEqual(os.environ.get("IDF_COMPONENT_STRICT_CHECKSUM"),
+                             before)
+        self.assertEqual(rc, 3)
+        self.assertEqual(sp.call_args.args[0],
+                         ["C:/x/ninja.exe", "-C", "b", "-j", "1", "all"])
+        env = sp.call_args.kwargs["env"]
+        self.assertEqual(env["IDF_COMPONENT_STRICT_CHECKSUM"], "1")
+        self.assertEqual(env["VTRUX_TEST_KEEP"], "kept")
+
+    def test_no_ninja_on_path(self):
+        with mock.patch("vtrux_build.release.shutil.which", return_value=None):
+            self.assertRaises(Refused, ninja_runner)
+
+
+class Cli(unittest.TestCase):
+
+    def test_jobs_option(self):
+        for argv, jobs in ((["release"], None),
+                           (["release", "--jobs", "2"], 2)):
+            with mock.patch("vtrux_build.release.release",
+                            return_value="r.json") as rel, \
+                    mock.patch("sys.stdout"):
+                self.assertEqual(cli.main(argv), 0)
+            self.assertEqual(rel.call_args.kwargs["jobs"], jobs)
+
+    def test_jobs_not_a_number(self):
+        with mock.patch("sys.stderr"), self.assertRaises(SystemExit) as cm:
+            cli.main(["release", "--jobs", "x"])
+        self.assertEqual(cm.exception.code, 2)
 
 
 if __name__ == "__main__":

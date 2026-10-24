@@ -27,6 +27,7 @@ root, with `REVERSE_IT_DIR` set:
     $env:PYTHONPATH = "<checkout>\shared\tools"     # PowerShell
     python -B -m vtrux_build release                # a release build
     python -B -m vtrux_build release --check-only   # its pre-build refusals only
+    python -B -m vtrux_build release --jobs 1       # built with ninja -j 1
     python -B -m vtrux_build image <file.bin>...    # what an image holds, as JSON
     python -B -m vtrux_build digest <folder>...     # R7 digests
 
@@ -34,10 +35,13 @@ root, with `REVERSE_IT_DIR` set:
 digest (R7 counts every file but Markdown and `.gitignore`), and the record
 holds the tooling's digest.
 
-The release build runs `idf.py` at whatever priority its shell has. While a
+The release build runs at whatever priority its shell has. While a
 wall-clock test runs on the machine, the build is throttled as `AGENTS.md`
-"Builds during wall-clock tests" says (on `NICKY-XPS`, the shell's priority
-class set to Idle first), or waits.
+"Builds during wall-clock tests" says, or waits. On `NICKY-XPS` that is
+`--jobs 1` from a shell whose priority class is Idle. `idf.py build` has no
+jobs option, so with `--jobs N` the build step is `ninja -C build -j N all`
+(what `idf.py build` runs), in the same strict environment, after the same
+strict `idf.py reconfigure`. Without `--jobs` it is `idf.py build`.
 
 ## A project's build data (R22)
 
@@ -62,7 +66,8 @@ HEAD unchanged (R8); every downloaded component's `.component_hash`
 against `dependencies.lock`, and a registry download against its
 `CHECKSUMS.json`, unlisted files included (R10, after the reconfigure); no
 shared component from a local folder (R16, `override_path` clause);
-`idf.py build`; the image `project_description.json` names (R11); HEAD
+`idf.py build`, or `ninja -C build -j N all` with `--jobs N`, also strict;
+the image `project_description.json` names (R11); HEAD
 unchanged and the worktree clean at the end (R8); the record (R13). Its
 docstring has the detail.
 

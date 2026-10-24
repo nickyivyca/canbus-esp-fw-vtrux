@@ -1,6 +1,7 @@
 """The release build (SPEC section 3): an image meant for a vehicle.
 
     python -B -m vtrux_build release [--project DIR] [--check-only]
+                                     [--jobs N]
 
 Run from an exported ESP-IDF shell (IDF_PATH and IDF_PYTHON_ENV_PATH set),
 with REVERSE_IT_DIR set. DIR is the ESP-IDF project root (default: the
@@ -32,7 +33,13 @@ In order, each refusal an exit, never a warning:
      not "local", and no idf_component.yml of the build gives it an
      override_path;
   8. `idf.py build`, in the same run as 5, also in strict mode, so a
-     configure the build itself triggers is strict too;
+     configure the build itself triggers is strict too. With --jobs N,
+     `ninja -C build -j N all` instead: what `idf.py build` runs, at N
+     jobs (idf.py has no jobs option), in the same strict environment.
+     --jobs 1 from an Idle shell is the throttled form of AGENTS.md
+     "Builds during wall-clock tests". R9 asks for a reconfigure and a
+     build in one run, not for idf.py build (gen-inhibit reviewer,
+     2026-10-23);
   9. R11: the image is the one build/project_description.json names as
      app_bin (builddir.py), with its app_elf;
  10. R8 at the end: HEAD is still the commit step 4 read and the worktree
@@ -46,6 +53,7 @@ script.
 """
 
 import os
+import shutil
 import subprocess
 
 from . import components, lockfile, manifest, record
@@ -95,6 +103,32 @@ def idf_runner(project_root):
         return subprocess.run([py, idf_py, "-C", project_root] + list(args),
                               env=full).returncode
     return run
+
+
+def ninja_runner():
+    """A callable run(args, env) that runs ninja <args>, the one on PATH
+    (the exported environment's), with this process's environment updated
+    with env, and returns its exit code."""
+    exe = shutil.which("ninja")
+    if not exe:
+        raise Refused("ninja is not on PATH; run this from an exported "
+                      "ESP-IDF shell")
+
+    def run(args, env):
+        full = dict(os.environ)
+        full.update(env)
+        return subprocess.run([exe] + list(args), env=full).returncode
+    return run
+
+
+def check_jobs(jobs):
+    """--jobs: None, or a whole number of at least 1."""
+    if jobs is None:
+        return
+    if isinstance(jobs, bool) or not isinstance(jobs, int) or jobs < 1:
+        raise Refused("--jobs must be a whole number of at least 1 (given "
+                      "%r)" % (jobs,))
+    ok("build jobs", "ninja -j %d" % jobs)
 
 
 def check_no_overwrite(environ=None):
@@ -223,10 +257,12 @@ def tooling_identity(root=TOOLS_ROOT):
 
 
 def release(project_root, check_only=False, idf=None, toolchain_run=None,
-            dest=None):
+            dest=None, jobs=None, ninja=None):
     """The release build. Returns the record's path (None for check_only).
-    Raises Refused with the reason. idf, toolchain_run and dest replace the
-    real idf.py runner, the compiler call and the record folder (tests)."""
+    Raises Refused with the reason. jobs is --jobs: None builds with
+    idf.py build, N with ninja -j N. idf, ninja, toolchain_run and dest
+    replace the real idf.py and ninja runners, the compiler call and the
+    record folder (tests)."""
     root = os.path.abspath(project_root)
     try:
         proj = Project.load(root)
@@ -243,6 +279,9 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
     if idf is None:
         idf = idf_runner(root)
     ok("ESP-IDF environment", os.environ.get("IDF_PATH", "(test runner)"))
+    check_jobs(jobs)
+    if jobs is not None and ninja is None:
+        ninja = ninja_runner()
     check_no_overwrite()
 
     commit = check_clean(root)
@@ -286,7 +325,8 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
     if not report:
         ok("downloaded components (R10)", "none in the lock or on disk")
 
-    bd = BuildDir(os.path.join(root, "build"))
+    build_dir = os.path.join(root, "build")
+    bd = BuildDir(build_dir)
     lock_path = os.path.join(root, "dependencies.lock")
     try:
         locks = lockfile.read(lock_path)
@@ -294,12 +334,19 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
     except (OSError, lockfile.LockError, BuildDirError) as e:
         raise Refused("the pins cannot be read: %s" % e)
 
-    say("\nidf.py build (%s=1) ..." % components.STRICT_ENV)
-    rc = idf(["build"], strict)
+    if jobs is None:
+        what = "idf.py build"
+        say("\n%s (%s=1) ..." % (what, components.STRICT_ENV))
+        rc = idf(["build"], strict)
+    else:
+        what = "ninja -j %d build" % jobs
+        args = ["-C", build_dir, "-j", str(jobs), "all"]
+        say("\nninja %s (%s=1) ..." % (" ".join(args), components.STRICT_ENV))
+        rc = ninja(args, strict)
     if rc != 0:
-        raise Refused("idf.py build failed (exit %d)" % rc)
+        raise Refused("%s failed (exit %d)" % (what, rc))
 
-    bd = BuildDir(os.path.join(root, "build"))
+    bd = BuildDir(build_dir)
     try:
         bin_path, elf_path = bd.app_bin(), bd.app_elf()
         desc = bd.description()
@@ -342,7 +389,8 @@ def main(args):
     say("RELEASE BUILD (shared/tools SPEC section 3)")
     say("=" * 72)
     try:
-        path = release(args.project, check_only=args.check_only)
+        path = release(args.project, check_only=args.check_only,
+                       jobs=args.jobs)
     except Refused as e:
         say("\nREFUSED: %s" % e)
         say("\nNOT BUILT, or no record written. Every refusal is a condition "
