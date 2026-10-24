@@ -154,9 +154,15 @@ same folder. The interposer's test evidence is
   the committed `sdkconfig` through this check, but a project that ignored
   `sdkconfig` would pass it, since git does not report ignored files.
   gen-inhibit commits its `sdkconfig` today; the interposer will in its
-  step 2a. It is the file the build used, from `CMakeCache.txt`, since IDF
-  lets a build take `SDKCONFIG` from elsewhere (the interposer reviewer, on
-  reading this clause).
+  step 2a. It is the file the build used, since IDF lets a build take
+  `SDKCONFIG` from elsewhere (the interposer reviewer, on reading this
+  clause). That file is `project_description.json`'s `config_file`, IDF's
+  `SDKCONFIG` build property: it covers `-D SDKCONFIG`, a preset, a
+  `set(SDKCONFIG)` in the project's `CMakeLists.txt` and the default
+  `<project>/sdkconfig` (IDF v5.4.1 `tools/cmake/project.cmake`,
+  `build.cmake`, `project_description.json.in`). `CMakeCache.txt`, named
+  first, holds `SDKCONFIG` only when it was given with `-D` or a preset
+  (the implementor, on reading the clause).
 - **Not covered, accepted** (user, 2026-10-23): a file whose CRLF bytes are
   what git last checked out or added passes the clean check, while the
   build and the R7 digest see the CRLF bytes. No byte check is added (see
