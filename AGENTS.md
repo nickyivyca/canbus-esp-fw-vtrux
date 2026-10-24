@@ -339,6 +339,25 @@ accepted (user, 2026-10-23). So are WiCAN firmware defaults such as its
 hotspot addresses `192.168.80.1` (device) and `192.168.80.2` (laptop), which
 are not home-network details (user, 2026-10-20).
 
+**The scan script is an aid to this review, not a replacement for it.**
+Run it first:
+
+```bash
+<python> $REVERSE_IT_DIR/firmware/prepush-scan/prepush_scan.py <worktree> <branch>
+```
+
+It fetches, then scans what the command above lists: every commit-message
+line, every added line (binaries as text, merges by their combined diff) and
+every added or changed file's path. It looks for the categories above and
+the real values in its private value file, and prints every hit masked, the
+counts of what it scanned, and the files added or changed, with binaries and
+captures flagged. Exit 0 is clean, 1 is hits to review, 2 is refused: a
+refusal means nothing was checked, so don't push on it. Then read the
+`git log -p` output yourself for what no pattern matches, such as
+copyrighted text or personal details. The script stays in reverse-it,
+because its patterns and values name what it looks for; its README
+(`firmware/prepush-scan/README.md`) has the details and the known limits.
+
 ## The bench and builds
 
 ### The shared bench
