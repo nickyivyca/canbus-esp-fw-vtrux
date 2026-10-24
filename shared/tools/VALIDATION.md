@@ -113,6 +113,12 @@ same folder. The interposer's test evidence is
   writing evidence into `VERIFICATION.md` beside the code would otherwise
   change the digest that evidence names, and a new or unexpected file type
   is counted rather than missed.
+- **Line endings** (user, 2026-10-23): the digest hashes bytes on disk, so
+  line endings change it. Checkouts are pinned to LF by `.gitattributes`
+  (`shared/` `440aa80`). A file an editor saves as CRLF still changes the
+  digest; that gap is accepted, with no byte check (ruled in the
+  methodology owner's session, recorded in the port plan; AGENTS.md "Line
+  endings").
 - **Exposed by:** the gen-inhibit reviewer's read of the bench lock spec's
   move to `shared/bench/SPEC.md` (2026-10-23). Under the definition then in
   force, adding `SPEC.md` changed `shared/bench`'s digest, and goal 20 item 6
@@ -135,6 +141,10 @@ same folder. The interposer's test evidence is
   file (`sdkconfig`, `dependencies.lock`), or a HEAD that moves during the
   build, leaves an image the record's commit does not describe. Raised by
   the implementor on C6f; not yet seen on a real build.
+- **Not covered, accepted** (user, 2026-10-23): a file an editor saves as
+  CRLF passes the clean check, since git compares after normalising line
+  endings, while the build and the R7 digest see the CRLF bytes. No byte
+  check is added (see R7).
 - **Status:** complete.
 
 ### R9. Reconfigure first
