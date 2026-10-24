@@ -18,7 +18,7 @@ python3 mutate.py         # do the cases actually notice?
 |---|---|
 | `fake_buf.c/.h` | **The controller's single TX buffer and its abort, modelled from the measurement** — every constant traceable to `artifacts/gen-inhibit/runs/txabort_full.json` (firmware `f6eb9ec`, 254 trials). Air time 249 us, abort-to-free 7 us, the three `TS=1` outcomes, and the property that matters most: `fb_wire_count()` and `fb_outstanding()` are **different questions**, because the hardware reports an aborted frame exactly as a real transmission. Contention figures are labelled STRESS at each call site (spec 12.2: bench replays are burstier than the truck). |
 | `sched_test.c` | Ten cases. Two exist because a review found the defect they now pin (`D1` the deadline purge, `D2` the sliding skip window); one exists because the mutation harness reported its guard uncovered (`D3`). |
-| `mutate.py` | Removes one guard at a time from a **copy** and checks the cases notice. A build failure is reported as INCONCLUSIVE, never as caught. |
+| `mutate.py` | Removes one guard at a time from a **copy** and checks the cases notice. A build failure is reported as INCONCLUSIVE, never as caught, and a mutation whose anchor does not match exactly once is a SKIP; either fails the run. |
 
 ## Three things this suite found that reading the code did not
 
@@ -72,6 +72,13 @@ Two of the three needed more than a re-point:
 **Read the match counts, not just the verdicts.** `(pattern found 0 times)` and
 `(pattern found 2 times)` are the same shape of failure as a filter returning
 nothing because its premise is wrong.
+
+**It happened again, so a SKIP now fails the run** (2026-10-24). ae7b3cb added
+gs_tick's `!s->aborting` guard to `gs_command_received` as well, so the
+guard's anchor matched twice and that mutation was skipped from then on, with
+neither site mutated and the run exiting 0. It is now two mutations, one per
+site, each anchored with the line above it, and each names its own case.
+`mutate.py` lists every skipped mutation and exits 1.
 
 ### Round 15: D8, and the third case of mine that argued with the spec
 
