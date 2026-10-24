@@ -5,8 +5,11 @@
 # shim_test must then fail cases 33 and 53. Under WSL, after verify_longarm_build.sh,
 # with REVERSE_IT_DIR passed through WSLENV:
 #   wsl.exe -e bash <this script> <clone>
-# Gen-inhibit tester.
+# Gen-inhibit tester. Since 2026-10-24 a WSL build on NICKY-XPS is a self-check only
+# (user, through the reviewer); the first output line is host_identity.sh's host and
+# compiler.
 set -u
+bash "$(cd "$(dirname "$0")" && pwd)/host_identity.sh" || exit 2
 cd "${1:?clone}/test/gen_inhibit_shim" || exit 2
 SCN=scenarios/replay-longarm-300s-all.scn
 [ -e "$SCN" ] || { echo "no $SCN"; exit 2; }

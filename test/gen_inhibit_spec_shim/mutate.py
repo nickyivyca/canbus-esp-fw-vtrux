@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Mutants of the spec 12.4 shim harness: each must be caught BY A CHECK.
 
-    py -3.14 -B mutate.py [--only N,N...]          (from Windows; builds in WSL)
-    python3 -B mutate.py --local [--only ...]       (on a Linux host with gcc)
+    python3 -B mutate.py --local [--only ...]       (on madhouse-debian: the run that counts)
+    py -3.14 -B mutate.py [--only N,N...]          (from Windows, builds in WSL: a self-check)
 
 A judge mutant (nonode_judge.c) is caught when judge_test prints a FAIL line. A
 layer or case mutant (spec_layer.c, nonode_test.c) is caught when a case run
@@ -10,31 +10,19 @@ prints a RESULT line that is not PASS. A crash, a build failure or a run with no
 RESULT line is NOT a catch, and an edit that does not apply is an error. Each
 mutant is a copy in this run's own folder in the worktree's scratch/, with its
 binary beside it, so two runs at once share nothing; nothing here is edited.
-Gen-inhibit tester, 2026-10-20.
+The output's second line is the host and compiler the build shell reported
+(host_env.py); a run where either is missing is an error. Only a run built on
+madhouse-debian with its gcc 14.2 counts for VERIFICATION.md (user, 2026-10-24,
+through the reviewer). Gen-inhibit tester, 2026-10-20.
 """
 import os
-import re
 import shutil
-import subprocess
 import sys
-import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from host_env import describe, host_identity, missing, scratch_dir, sh, wsl_path  # noqa: E402
 
-
-def scratch_dir(name):
-    """This run's own folder in the worktree's gitignored scratch/ (AGENTS.md "Files and
-    folders"), never the system temp folder: tools/gen_inhibit/bench/gi_paths.scratch()'s
-    rule, written out here. The worktree is found by walking up to its .git
-    (harness-defects row, 2026-10-24)."""
-    d = HERE
-    while not os.path.exists(os.path.join(d, ".git")):
-        if os.path.dirname(d) == d:
-            raise RuntimeError("%s is in no git worktree" % HERE)
-        d = os.path.dirname(d)
-    d = os.path.join(d, "scratch", "gen-inhibit-tests", name, "%s_%d" % (time.strftime("%Y%m%dT%H%M%S"), os.getpid()))
-    os.makedirs(d, exist_ok=True)
-    return d
 
 J, L, T = "nonode_judge.c", "spec_layer.c", "nonode_test.c"
 MUTANTS = [
@@ -111,17 +99,6 @@ MUTANTS = [
 # the same observation); without it, exactly one.
 
 
-def wsl_path(p):
-    p = os.path.abspath(p).replace("\\", "/")
-    return "/mnt/" + p[0].lower() + p[2:] if re.match(r"^[A-Za-z]:/", p) else p
-
-
-def sh(cmd, local, timeout=900):
-    argv = ["bash", "-c", cmd] if local else ["wsl", "-e", "bash", "-c", cmd]
-    r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-    return r.returncode, r.stdout, r.stderr
-
-
 def main(argv):
     local = "--local" in argv
     only = None
@@ -130,6 +107,12 @@ def main(argv):
     here = HERE if local else wsl_path(HERE)
     base = scratch_dir("mutants-spec_shim")
     print("work folder: %s" % base)
+    ident = host_identity(local)
+    print(describe(ident))
+    if missing(ident):
+        print("ERROR    not recorded: %s" % ", ".join(missing(ident)))
+        shutil.rmtree(base, ignore_errors=True)
+        return 1
     caught = errors = 0
     picked = [(n, m) for n, m in enumerate(MUTANTS, 1) if only is None or n in only]
     for n, mut in picked:

@@ -14,12 +14,16 @@
 #    and shim_test is neither built nor run.
 # 5. git status is clean afterwards (the .scn and any .tmp ignored).
 # Each point prints "POINT n: PASS|FAIL <why>". Gen-inhibit tester.
+# Since 2026-10-24 a WSL build on NICKY-XPS is a self-check only (user, through the
+# reviewer); the second output line is host_identity.sh's host and compiler.
 set -u
+HERE=$(cd "$(dirname "$0")" && pwd)
 CL=${1:?clone}; C=${2:?commit}
 cd "$CL" || exit 2
 [ "$(git rev-parse --short=7 HEAD)" = "$C" ] || { echo "clone is not at $C"; exit 2; }
 [ -z "$(git status --porcelain)" ] || { echo "clone not clean at the start"; git status --short; exit 2; }
 echo "# commit $(git rev-parse HEAD), $(date -Is), $(uname -sr), $(gcc --version | head -1), $(python3 --version 2>&1)"
+bash "$HERE/host_identity.sh" || exit 2
 echo "# REVERSE_IT_DIR set: $([ -n "${REVERSE_IT_DIR:-}" ] && echo yes || echo no)"
 cd test/gen_inhibit_shim
 SCN=scenarios/replay-longarm-300s-all.scn
