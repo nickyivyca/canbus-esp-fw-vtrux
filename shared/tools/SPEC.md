@@ -72,8 +72,11 @@ unless the image changes, which the reproducible check (R19) shows.
   are labels. No check compares a name against the tree.
 - **R7. Component digest.** A component's digest covers the content of every
   file under the component's root, with each file's path relative to that
-  root, except Markdown documents (`*.md`) and `.gitignore`. It never covers
-  a git ref, so a component taken from a tag or from a tree gives the same
+  root, written with `/` on every host OS, so one tree gives one digest on
+  Windows and on Linux. It leaves out, in any folder, files whose name ends
+  `.md` and files named `.gitignore`, matched case-sensitively. Every other
+  file is counted, `.markdown` and `README.MD` included. It never covers a
+  git ref, so a component taken from a tag or from a tree gives the same
   digest.
 
 ## 3. Release builds

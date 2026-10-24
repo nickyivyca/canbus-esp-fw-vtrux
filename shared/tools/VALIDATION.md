@@ -119,6 +119,13 @@ same folder. The interposer's test evidence is
   digest; that gap is accepted, with no byte check (ruled in the
   methodology owner's session, recorded in the port plan; AGENTS.md "Line
   endings").
+- **Edges** (user, 2026-10-24, in the gen-inhibit reviewer's session): a
+  `.gitignore` is left out in any folder, not only at the root; only names
+  ending `.md`, matched case-sensitively, are documents, so `.markdown` and
+  `README.MD` are counted, by the same rule that an unexpected file is
+  counted rather than missed; paths use `/` on every host OS, so a pin (R23)
+  checks the same on Windows and on Linux. Raised by the gen-inhibit
+  tester's R7 cases, C6f part A.
 - **Exposed by:** the gen-inhibit reviewer's read of the bench lock spec's
   move to `shared/bench/SPEC.md` (2026-10-23). Under the definition then in
   force, adding `SPEC.md` changed `shared/bench`'s digest, and goal 20 item 6
