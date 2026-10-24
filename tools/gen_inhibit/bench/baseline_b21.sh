@@ -8,7 +8,7 @@
 #      and then the whole running image, each with an unelevated dumpcap of the
 #      laptop's Wi-Fi, joined by ota_guard_pcap_join.py --expect=no-rst
 #
-#   GI_COMMIT=e3d9437 GI_FW_TOOLS=... GI_WICAN_SSID=... [GI_B21_STEPS="guards probe"] bash baseline_b21.sh <running image .bin>
+#   GI_COMMIT=e3d9437 REVERSE_IT_DIR=<reverse-it root> GI_WICAN_SSID=... [GI_B21_STEPS="guards probe"] bash baseline_b21.sh <running image .bin>
 # Before a first run, read the INCIDENT in plans/gen-inhibit-wican-implementation.md
 # (~line 1672): no write in the OFF half may leave a bad config.
 set -u

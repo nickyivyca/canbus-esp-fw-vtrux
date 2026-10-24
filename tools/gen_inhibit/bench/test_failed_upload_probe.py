@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests failed_upload_probe.py. No device: loopback servers and synthetic pages.
 
-    GI_FW_TOOLS=<firmware repo>/tools/gen_inhibit py -3.14 test_failed_upload_probe.py [--mutants]
+    REVERSE_IT_DIR=<reverse-it root> py -3.14 test_failed_upload_probe.py [--mutants]
 
 short_post runs against a local server that counts the body bytes it receives
 and when the client's FIN arrives, and either replies after it or just closes.

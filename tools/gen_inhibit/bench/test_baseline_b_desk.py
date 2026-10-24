@@ -6,8 +6,8 @@ records, exits 2 having written no result.
     GI_BASELINE_DIR=<.../runs/baseline_e3d9437> py -3.14 -B \
         tools/gen_inhibit/bench/test_baseline_b_desk.py [--steps B13,B3]
 
-Run from the reverse-it root. GI_FW_TOOLS names the tester clone's tools/gen_inhibit
-(for suite_judges.py; default ~/Git/wican-fw-vtrux-tester/tools/gen_inhibit).
+Run from the reverse-it root, with REVERSE_IT_DIR set to it. suite_judges.py comes
+from this file's parent folder, tools/gen_inhibit (gi_paths.fw_tools()).
 DESK_SCRIPT overrides the script under test (the mutant runner). Scratch goes to the
 machine's temp folder. The full run takes about 10 minutes (B24 reads every arm).
 Gen-inhibit tester, 2026-10-19.

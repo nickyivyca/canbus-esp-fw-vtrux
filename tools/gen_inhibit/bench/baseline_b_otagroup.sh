@@ -5,7 +5,7 @@
 # half (_man2) -- then _man back. The same runs as on c65c45e. Gen-inhibit tester,
 # 2026-10-16 (run by hand before; this records them).
 #
-#   GI_COMMIT=e3d9437 GI_FW_TOOLS=... GI_WICAN_SSID=... bash baseline_b_otagroup.sh <worktree> <prod build dir> [step ...]
+#   GI_COMMIT=e3d9437 REVERSE_IT_DIR=<reverse-it root> GI_WICAN_SSID=... bash baseline_b_otagroup.sh <worktree> <prod build dir> [step ...]
 #   steps: rt txabort abortwin rxq prod man2 man   (default: all, in that order)
 #   also: prod_rxq30 (B19's RXQ probe 30 s after QUIESCE, on prod; not in the default)
 #   GI_NO_OTA=1: each step's own OTA is left to the chain runner (2026-10-18)

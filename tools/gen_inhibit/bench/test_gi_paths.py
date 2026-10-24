@@ -25,6 +25,7 @@ Its mutants: test_gi_paths_mutants.py. GI_PATHS_DIR runs another copy of gi_path
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -109,6 +110,23 @@ def write_pins(gp, root):
     return p
 
 
+def retired_usage(top, retired):
+    """[(file name, line number, setting)]: lines under top, test_gi_paths*.py aside (they
+    plant them), that assign a retired setting (NAME=...), as a usage line would."""
+    rx = re.compile(r"\b(%s)=" % "|".join(sorted(retired)))
+    out = []
+    for d, dirs, files in os.walk(top):
+        dirs[:] = [x for x in dirs if x not in ("__pycache__", ".pio")]
+        for n in sorted(files):
+            if not n.endswith((".py", ".sh", ".ps1", ".md", ".ini", ".json")) or n.startswith("test_gi_paths"):
+                continue
+            with open(os.path.join(d, n), encoding="utf-8", errors="replace") as fh:
+                for k, ln in enumerate(fh, 1):
+                    for m in rx.finditer(ln):
+                        out.append((n, k, m.group(1)))
+    return out
+
+
 def main():
     work = os.path.join(tempfile.gettempdir(), "gen-inhibit-gi-paths")
     shutil.rmtree(work, ignore_errors=True)
@@ -156,6 +174,18 @@ def main():
         check("import refuses %s" % k, lambda: m is None and k in str(e), e)
     check("check_retired passes with none set", lambda: gp.check_retired({"PATH": "x"}) is None)
     check("an empty retired value is not 'set'", lambda: gp.check_retired({"GI_FW_TOOLS": ""}) is None)
+    # No usage line or docstring tells a reader to set a retired setting, which the tool
+    # would then refuse (harness-defects row, 2026-10-24). baseline_host_run.sh exports
+    # GEN_INHIBIT_REPO on the host, for the host suite there, not for these tools.
+    tools = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    allowed = {("baseline_host_run.sh", "GEN_INHIBIT_REPO"), ("test_baseline_host_run.py", "GEN_INHIBIT_REPO")}
+    hits = [h for h in retired_usage(tools, gp.RETIRED) if (h[0], h[2]) not in allowed]
+    check("no file under tools/gen_inhibit sets a retired setting in a usage line", lambda: not hits, hits[:5])
+    with open(os.path.join(root, "usage.py"), "w", encoding="utf-8") as fh:
+        fh.write('"""\n    GI_FW_TOOLS=<firmware repo>/tools/gen_inhibit py -3.14 x.py\n"""\n')
+    check("control: such a usage line is found",
+          lambda: [h[0] for h in retired_usage(root, gp.RETIRED)] == ["usage.py"])
+    os.remove(os.path.join(root, "usage.py"))
 
     print("\n=== pins ===")
     pins = write_pins(gp, root)

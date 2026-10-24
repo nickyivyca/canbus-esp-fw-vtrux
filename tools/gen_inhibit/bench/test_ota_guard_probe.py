@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests ota_guard_raw_probe.py (--body, raw_post's ending) and ota_guard_pcap_join.py.
 
-    GI_FW_TOOLS=<firmware repo>/tools/gen_inhibit py -3.14 test_ota_guard_probe.py
+    REVERSE_IT_DIR=<reverse-it root> py -3.14 test_ota_guard_probe.py
 
 raw_post is run against a local server that answers 403 and then either closes
 cleanly after reading the whole request (FIN) or aborts with unread bytes and

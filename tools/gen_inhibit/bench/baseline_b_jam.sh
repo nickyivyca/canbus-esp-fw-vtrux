@@ -3,7 +3,7 @@
 # as on c65c45e, with the X2 under the gen-inhibit tester's custody. Gen-inhibit
 # tester, 2026-10-16 (on c65c45e these were run by hand; this records them).
 #
-#   GI_COMMIT=e3d9437 GI_FW_TOOLS=... GI_WICAN_SSID=... INTERPOSER_CODE=... VTRUX_DATA=... \
+#   GI_COMMIT=e3d9437 REVERSE_IT_DIR=<reverse-it root> GI_WICAN_SSID=... INTERPOSER_CODE=... \
 #     bash baseline_b_jam.sh custody|jam|restore
 #
 #   custody  dump the X2 (two reads must match; the dump holds NVS and is

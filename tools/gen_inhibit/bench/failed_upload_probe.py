@@ -23,7 +23,7 @@ SAFETY: refused unless the device is in mode 0 and runs the image given (its
 page's elf_sha256), and unless --cut is strictly inside the image, so neither kind
 can carry anything but a part of the running build.
 
-    GI_FW_TOOLS=<firmware repo>/tools/gen_inhibit py -3.14 failed_upload_probe.py --kind short|truncated --image <running .bin> [--cut N] [--stall 3] [--after 35]
+    REVERSE_IT_DIR=<reverse-it root> py -3.14 failed_upload_probe.py --kind short|truncated --image <running .bin> [--cut N] [--stall 3] [--after 35]
 Writes runs/failed_upload_<kind>_<stamp>.json. Tested by test_failed_upload_probe.py.
 """
 import argparse
