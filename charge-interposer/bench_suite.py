@@ -27,6 +27,9 @@ project", 2026-10-18):
             flashed, identified off its page). The WiCAN's start and
             release reboots are the suite's own hooks, so the hand reboots
             before and after a run end here (reviewer, 2026-10-23).
+            gen-inhibit's wican_reboot.py disarms a WiCAN that comes up
+            armed, so every run, and every pause, leaves the WiCAN
+            rebooted and disarmed (mode 0).
   harness   charge-interposer-harness: the tester's harness tests and
             mutants -- the checks that test the checks. Run when the
             harness changes.
