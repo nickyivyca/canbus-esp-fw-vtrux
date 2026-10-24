@@ -2,6 +2,9 @@
 
     python -B -m vtrux_checks scope --build DIR (--release | --bench)
                                     R17: the files the build read
+    python -B -m vtrux_checks options --build DIR
+                                    R18: a release build's options against the
+                                    project's release profile
 
 Exit 0 when the check passes, 1 when it fails or cannot read the build, 2 on
 a usage error.
@@ -10,7 +13,7 @@ a usage error.
 import argparse
 import sys
 
-from . import scope
+from . import options, scope
 
 
 def main(argv=None):
@@ -23,8 +26,10 @@ def main(argv=None):
                       help="a release build: shared code only from managed_components/")
     kind.add_argument("--bench", dest="kind", action="store_const", const="bench",
                       help="a bench or dev build: shared/ may also be read directly")
+    o = sub.add_parser("options", help="R18: a release build's options against the release profile")
+    o.add_argument("--build", required=True, help="the build folder of a release build (<project>/build)")
     args = ap.parse_args(argv)
-    return scope.main(args)
+    return {"scope": scope, "options": options}[args.cmd].main(args)
 
 
 if __name__ == "__main__":

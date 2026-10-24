@@ -23,6 +23,7 @@ none and must pass. A check that no fake can fail is not a check.
 
 | `release_cases.py` | Real release builds: R5, R8-R11, R13, R14 with R3, R16 (`override_path`), R22. Cases include, for R8: staged, deleted and untracked files, and a committed sdkconfig the reconfigure rewrites. For R9: ccache launchers and ccache masquerading as the compiler on PATH, as a copy (Windows), a symlink (Linux) or a hard link (either), judged by the compiler CMake chose and the compiles ccache cached in its own `CCACHE_DIR`. For R13: each record judged field by field, its lock hash against the lock's sha256 with line endings as LF; and the R22 project built with its committed lock on disk as CRLF and as LF, each record giving the committed lock's sha256. For R10: a project with no `dependencies.lock`. It clones gen-inhibit at `--base` into `--root` and adds a fixture commit: `vtrux_build.json`, reproducible build on, and the tracked files as `idf.py reconfigure` writes them. Branch `fx-r11` deletes the build's own `.bin`; branch `fx-r16` takes a shared component from a local folder. A minimal second project for R22 is IDF's `hello_world` on esp32c3. Records go to a stand-in `REVERSE_IT_DIR` under `--root`. Each case judges from outside: the exit code, the record folder before and after, the build folder and git. It never judges message wording. A case whose trigger did not happen is VOID. Before each case it checks the bench lock, the "No builds" line and running simulators, and stops if any is set. `--self-test` runs the R13 record judge, the second-build judge, the refusal verdict, the LF-normalised lock hash and the masquerade's evidence readers against broken inputs. |
 | `scope_cases.py` | R17's check (`../vtrux_checks/scope.py`) on real builds of `release_cases.py`'s fixture: a clean release build passes `--release` and `--bench`; the same tree with a managed component's manifest version changed, or with a managed component the lock does not list, fails; a header included from outside the project root fails both; a shared component taken by `override_path` from a `../shared-<tag>/shared/` folder passes `--bench` and fails `--release`; the same from a folder that is not a `shared/` fails both. Each case confirms its trigger without the check's reader (ninja's `-t deps`, or `build.ninja`'s text), and judges the check's exit code and whether its output names the planted file. `--self-test` runs that judge against broken inputs. |
+| `options_cases.py` | R18's check (`../vtrux_checks/options.py`) on real release builds of `release_cases.py`'s fixture, each with one sdkconfig change committed on top (and what the reconfigure then rewrites), judged against `--profile` (a project's `vtrux_checks.json`, copied in after the build): the fixture as it is passes; the same build with the bootloader's `config/sdkconfig.json` moved aside fails as unreadable, naming the folder; `CONFIG_APP_REPRODUCIBLE_BUILD` off, `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` off and `CONFIG_ESP_TASK_WDT_PANIC` on each fail on that option; `CONFIG_LOG_COLORS` off, which the profile does not name, passes. The failures the check must name, folder by folder, come from each build folder's `config/sdkconfig.h`, not the check's reader; a case whose change does not show there is VOID. `--self-test` runs its judges against broken inputs. |
 
 ## Running
 
@@ -36,10 +37,11 @@ py -3.14 -B verify_digest.py --self-test
 py -3.14 -B verify_digest.py [--commit <commit> [--component shared/tools]]
 py -3.14 -B release_cases.py --self-test
 py -3.14 -B scope_cases.py --self-test
+py -3.14 -B options_cases.py --self-test
 ```
 
-`scope_cases.py` runs like `release_cases.py`, with the same `--root` (the fixture must
-already be there) and `--out`.
+`scope_cases.py` and `options_cases.py` run like `release_cases.py`, with the same `--root`
+(the fixture must already be there) and `--out`; `options_cases.py` also takes `--profile`.
 
 `release_cases.py` runs from an exported ESP-IDF shell, with its Python:
 `python -B release_cases.py --root <short folder in scratch/> --out <run folder>
