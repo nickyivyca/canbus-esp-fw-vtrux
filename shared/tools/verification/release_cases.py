@@ -81,7 +81,7 @@ def judge_record(rec, files, facts):
     want("toolchain version", (rec.get("toolchain") or {}).get("version"), facts["toolchain"])
     want("IDF version in the image", (rec.get("idf_version") or {}).get("image"), facts["idf_image"])
     want("IDF version of the project", (rec.get("idf_version") or {}).get("project"), facts["idf_describe"])
-    want("dependencies.lock sha256", rec.get("dependencies_lock_sha256"), facts["lock_sha256"])
+    want("dependencies.lock sha256, line endings as LF", rec.get("dependencies_lock_sha256_lf"), facts["lock_sha256"])
     comps = rec.get("components") or {}
     for name, d in facts["component_digests"].items():
         want("component %s digest" % name, (comps.get(name) or {}).get("digest"), d)
@@ -109,7 +109,7 @@ def self_test():
     b = I.with_field(b, "elf_sha256", bytes.fromhex(h))
     rec = {"image_hash": h, "code_hash": I.code_hash(b), "image_size": len(b), "commit": "c" * 40, "project": "p",
            "host_os": {"system": "Windows"}, "toolchain": {"version": "gcc 14"},
-           "idf_version": {"image": "v5.4.1", "project": "v5.4.1"}, "dependencies_lock_sha256": "l" * 64,
+           "idf_version": {"image": "v5.4.1", "project": "v5.4.1"}, "dependencies_lock_sha256_lf": "l" * 64,
            "components": {"main": {"digest": "d" * 64}}, "shared_components": {},
            "tooling": {"tag": None, "commit": "t" * 40, "dirty": False, "digest": "g" * 64}}
     files = {h + ".bin": b, h + ".elf": e, h + ".json": b"{}"}
@@ -131,13 +131,23 @@ def self_test():
                         ("wrong host", "host_os", {"system": "Linux"}), ("wrong toolchain", "toolchain", {"version": "x"}),
                         ("wrong IDF in image", "idf_version", {"image": "v5.3", "project": "v5.4.1"}),
                         ("wrong IDF of project", "idf_version", {"image": "v5.4.1", "project": "v5.3"}),
-                        ("wrong lock hash", "dependencies_lock_sha256", "m" * 64),
+                        ("wrong lock hash", "dependencies_lock_sha256_lf", "m" * 64),
                         ("wrong component digest", "components", {"main": {"digest": "e" * 64}}),
                         ("a component missing", "components", {}),
                         ("wrong shared components", "shared_components", {"x": {}}),
                         ("tooling dirty", "tooling", dict(rec["tooling"], dirty=True)),
                         ("tooling digest", "tooling", dict(rec["tooling"], digest="h" * 64))):
         ok &= broken(label, rec2=dict(rec, **{k: v}))
+    old = {k: v for k, v in rec.items() if k != "dependencies_lock_sha256_lf"}
+    ok &= broken("lock hash only under the old field name", rec2=dict(old, dependencies_lock_sha256="l" * 64))
+    lf, crlf = b"a: 1\nb: 2\n", b"a: 1\r\nb: 2\r\n"
+    for label, x, y, same in (("CRLF and LF give one hash", crlf, lf, True),
+                              ("a changed byte gives another", lf, lf.replace(b"2", b"3"), False),
+                              ("a lone CR is kept", b"a: 1\rb: 2\n", b"a: 1b: 2\n", False)):
+        good = (sha256_lf_bytes(x) == sha256_lf_bytes(y)) == same
+        print("  %s LF-normalised lock hash, %s" % ("ok  " if good else "FAIL", label))
+        ok &= good
+    ok &= sha256_lf_bytes(lf) == hashlib.sha256(lf).hexdigest()
     ok &= broken("named by something other than the ELF's sha256",
                  rec2=dict(rec, image_hash="a" * 64), files2={"a" * 64 + x: files[h + x] for x in (".bin", ".elf", ".json")})
     ok &= broken("the .elf missing", files2={k: v for k, v in files.items() if not k.endswith(".elf")})
@@ -202,6 +212,11 @@ def git(repo, *args, env=None):
 def sha256_file(p):
     with open(p, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
+
+
+def sha256_lf_bytes(b):
+    """SPEC R13: the lock's hash with its line endings normalised to LF (CRLF -> LF)."""
+    return hashlib.sha256(b.replace(b"\r\n", b"\n")).hexdigest()
 
 
 def snapshot(folder):
@@ -454,7 +469,7 @@ def facts_for(ctx, proj, project, shared):
     return {"app_bin_sha256": hashlib.sha256(b).hexdigest(), "commit": git(proj, "rev-parse", "HEAD"),
             "project": project, "system": platform.system(), "toolchain": gcc,
             "idf_image": I.field(b, "idf_ver").rstrip(b"\0").decode(), "idf_describe": idf_describe,
-            "lock_sha256": (sha256_file(os.path.join(proj, "dependencies.lock"))
+            "lock_sha256": (sha256_lf_bytes(open(os.path.join(proj, "dependencies.lock"), "rb").read())
                             if os.path.exists(os.path.join(proj, "dependencies.lock")) else None),
             "component_digests": pick, "shared_components": shared,
             "tooling": {"tag": None, "commit": git(TOOLS, "rev-parse", "HEAD"),
@@ -764,22 +779,35 @@ def c_r9(ctx, log, name, var):
             note="R9: %s=ccache in the environment; %s" % (var, "CMake took it" if took else "CMake did not take it"))
 
 
-def c_r9_masquerade(ctx, log):
+def c_r9_masquerade(ctx, log, case="r9_masquerade", hardlink=False):
     """ccache in the compiler's place on PATH: a link named after the compiler (Linux), or a copy
-    of ccache.exe under that name (Windows, where ccache's docs masquerade by copying)."""
+    of ccache.exe under that name (Windows, where ccache's docs masquerade by copying). With
+    hardlink, a hard link to ccache under that name on either host: the same file, not a copy."""
     reset(ctx.p1, "fixture")
     rmtree(os.path.join(ctx.p1, "build"))
     cc = shutil.which("ccache")
     if not cc:
-        report("r9_masquerade", "VOID", "R9: no ccache on this host to masquerade with", ctx.log)
+        report(case, "VOID", "R9: no ccache on this host to masquerade with", ctx.log)
         return
     masq = os.path.join(ctx.root, "masq")
     rmtree(masq)
     os.makedirs(masq)
     win = platform.system() == "Windows"
+    how = "a hard link" if hardlink else "a copy" if win else "a link"
     for name in ("riscv32-esp-elf-gcc", "riscv32-esp-elf-g++"):
         dst = os.path.join(masq, name + (".exe" if win else ""))
-        if win:
+        if hardlink:
+            try:
+                os.link(cc, dst)
+            except OSError as e:
+                report(case, "VOID", "R9: cannot hard-link ccache here (%s)" % e, ctx.log)
+                rmtree(masq)
+                return
+            if not os.path.samefile(cc, dst):
+                report(case, "VOID", "R9: the hard link is not ccache's own file", ctx.log)
+                rmtree(masq)
+                return
+        elif win:
             shutil.copyfile(cc, dst)
         else:
             os.symlink(cc, dst)
@@ -795,9 +823,9 @@ def c_r9_masquerade(ctx, log):
                            capture_output=True, text=True).stdout
     cached = ccache_compiles(stats)
     note = "R9: ccache as %s named riscv32-esp-elf-gcc first on PATH; CMake chose %s; ccache cached %d compiles" % (
-        "a copy" if win else "a link", chosen or "nothing found", cached)
+        how, chosen or "nothing found", cached)
     # A build that exits 0 with nothing cached may have run ccache disabled: not a finding either way.
-    refusal(ctx, "r9_masquerade", ctx.p1, rc, before, trigger=took and (rc != 0 or cached > 0), note=note)
+    refusal(ctx, case, ctx.p1, rc, before, trigger=took and (rc != 0 or cached > 0), note=note)
     rmtree(masq)
     rmtree(cdir)
 
@@ -968,6 +996,54 @@ def c_r22_mini(ctx, log):
     check_success(ctx, "r22_mini", ctx.mini, rc, before, project="vtrux-mini-test")
 
 
+def c_r13_lock_crlf(ctx, log):
+    """SPEC R13 (5ec6f53): the lock's hash is taken with its line endings as LF, so one lock gives
+    one hash in any checkout. The mini project is built twice, its committed lock (LF in git) on
+    disk first as CRLF and then as LF, each into an empty record folder (the earlier one is moved
+    aside, since the same image is never recorded twice). Both records must give the sha256 of
+    the committed lock."""
+    name = "r13_lock_crlf"
+    if not os.path.exists(os.path.join(ctx.mini, ".git")):
+        make_mini(ctx)
+    reset(ctx.mini, "main", "main")
+    lp = os.path.join(ctx.mini, "dependencies.lock")
+    blob = subprocess.run(["git", "-C", ctx.mini, "show", "HEAD:dependencies.lock"], capture_output=True).stdout
+    if not blob or b"\r" in blob:
+        report(name, "VOID", "the committed lock is missing or already has CR bytes", ctx.log)
+        return
+    want = hashlib.sha256(blob).hexdigest()
+    got = {}
+    for ending, data in (("CRLF", blob.replace(b"\n", b"\r\n")), ("LF", blob)):
+        recs = ctx.records("vtrux-mini-test")
+        if os.path.exists(recs):
+            os.rename(recs, "%s.aside-%d" % (recs, time.time_ns()))
+        rmtree(os.path.join(ctx.mini, "build"))
+        with open(lp, "wb") as f:
+            f.write(data)
+        st = git(ctx.mini, "status", "--porcelain")
+        if st:
+            report("%s (%s)" % (name, ending), "VOID", "git status shows the lock changed: %s" % st, ctx.log)
+            continue
+        before = snapshot(recs)
+        rc, _ = release(ctx, ctx.mini, log, jobs=ctx.jobs)
+        crlf_after = b"\r\n" in open(lp, "rb").read()
+        with open(log, "a") as f:
+            f.write("lock on disk before the build: %s; after: %s\n" % (ending, "CRLF" if crlf_after else "LF"))
+        rec = check_success(ctx, "%s (%s)" % (name, ending), ctx.mini, rc, before, project="vtrux-mini-test")
+        if rec:
+            got[ending] = (rec.get("dependencies_lock_sha256_lf"), crlf_after == (ending == "CRLF"))
+    if set(got) != {"CRLF", "LF"}:
+        report(name, "VOID", "needs both builds recorded; got %s" % sorted(got), ctx.log)
+    elif not all(kept for _h, kept in got.values()):
+        report(name, "VOID", "a build changed the lock's line endings on disk", ctx.log)
+    elif all(h == want for h, _k in got.values()):
+        report(name, "PASS", "CRLF and LF on disk: both records give the committed lock's sha256 %s" % want[:16], ctx.log)
+    else:
+        report(name, "FAIL", "records give %s (CRLF on disk) and %s (LF); the committed lock's sha256 is %s" % (
+            str(got["CRLF"][0])[:16], str(got["LF"][0])[:16], want[:16]), ctx.log)
+    reset(ctx.mini, "main", "main")
+
+
 CASES = [
     ("pre_unset_ri", c_pre_unset_ri),
     ("pre_overwrite", c_pre_overwrite),
@@ -986,6 +1062,7 @@ CASES = [
     ("r9_launcher_c", lambda c, l: c_r9(c, l, "r9_launcher_c", "CMAKE_C_COMPILER_LAUNCHER")),
     ("r9_launcher_cxx", lambda c, l: c_r9(c, l, "r9_launcher_cxx", "CMAKE_CXX_COMPILER_LAUNCHER")),
     ("r9_masquerade", c_r9_masquerade),
+    ("r9_masquerade_hardlink", lambda c, l: c_r9_masquerade(c, l, "r9_masquerade_hardlink", hardlink=True)),
     ("r8_reconfigure_rewrites", c_r8_rewrites),
     ("r10_no_lock", c_r10_no_lock),
     ("r8_during_reconfigure", c_r8_reconf),
@@ -998,6 +1075,7 @@ CASES = [
     ("r11_bin_missing", c_r11),
     ("r16_override_path", c_r16),
     ("r22_mini", c_r22_mini),
+    ("r13_lock_crlf", c_r13_lock_crlf),
 ]
 
 
