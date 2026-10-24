@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vtrux-build"
+version = "0.1.0"
+description = "Shared build tooling for the Vtrux ESP32 firmware projects: the image library, the release build script and its record."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+vtrux-build = "vtrux_build.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["vtrux_build*"]

@@ -1,0 +1,344 @@
+"""Tests of the release build (vtrux_build.release): SPEC R8, R9, R10, R11,
+R13 and R16's override_path clause, end to end on a scratch git project.
+
+    python -B shared/tools/tests/test_release.py
+
+idf.py is replaced by FakeIdf, which on "reconfigure" downloads a managed
+component and writes build/project_description.json, and on "build" writes
+the image and its ELF, as a real build would. Each test changes one thing
+and checks the refusal and that nothing after it ran. Needs git.
+"""
+
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
+sys.path.insert(0, HERE)
+
+import scratch                                           # noqa: E402
+from imagekit import descriptor, make_image              # noqa: E402
+from vtrux_build import record                           # noqa: E402
+from vtrux_build.image import AppImage                   # noqa: E402
+from vtrux_build.release import Refused, release         # noqa: E402
+
+GIT_ENV = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
+               GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+CHASH = "ab" * 32
+COMP_FILES = {"CMakeLists.txt": b"idf_component_register()\n",
+              "m.c": b"int m;\n"}
+TC_RUN = (lambda argv: (0, "riscv32-esp-elf-gcc (crosstool-NG) 14.2.0\n"))
+
+
+def git(root, *args):
+    return subprocess.run(["git", "-C", root, "-c", "core.autocrlf=false"]
+                          + list(args), check=True, env=GIT_ENV,
+                          capture_output=True, text=True).stdout
+
+
+def lock(extra=""):
+    return ("dependencies:\n"
+            "  espressif/m:\n"
+            "    component_hash: %s\n"
+            "    source:\n"
+            "      registry_url: https://components.espressif.com/\n"
+            "      type: service\n"
+            "    version: 1.0.0\n%s"
+            "  idf:\n    source:\n      type: idf\n    version: 5.4.1\n"
+            "target: esp32c3\nversion: 2.0.0\n" % (CHASH, extra))
+
+
+GIT_DEP = ("  twai_port:\n"
+           "    component_hash: %s\n"
+           "    source:\n"
+           "      git: https://example.invalid/r.git\n"
+           "      path: shared/components/twai_port\n"
+           "      type: git\n"
+           "    version: 0123456789abcdef0123456789abcdef01234567\n" % CHASH)
+LOCAL_DEP = ("  twai_port:\n"
+             "    source:\n"
+             "      path: C:/w/shared/components/twai_port\n"
+             "      type: local\n"
+             "    version: '*'\n")
+MANIFEST = ('dependencies:\n  espressif/m: "1.0.0"\n'
+            '  twai_port:\n    version: "twai-v1"\n'
+            '    git: https://example.invalid/r.git\n'
+            '    path: shared/components/twai_port\n')
+
+
+class FakeIdf:
+    """The parts of idf.py reconfigure and build the script relies on."""
+
+    def __init__(self, root, cc, edit=None):
+        self.root, self.cc, self.edit = root, cc, edit or {}
+        self.calls = []
+
+    def __call__(self, args):
+        self.calls.append(args[0])
+        e = self.edit
+        if args == ["reconfigure"]:
+            if e.get("reconfigure_rc"):
+                return e["reconfigure_rc"]
+            self._component("espressif__m", e.get("component_files", COMP_FILES))
+            if e.get("shared_on_disk"):
+                self._component("twai_port", COMP_FILES)
+            self._description()
+            return 0
+        if args == ["build"]:
+            if e.get("build_rc"):
+                return e["build_rc"]
+            elf = b"\x7fELF built from " + git(self.root, "rev-parse",
+                                                "HEAD").encode()
+            sha = hashlib.sha256(elf).digest()
+            data, _ = make_image(desc=descriptor(version="abc1234",
+                                                 elf_sha256=sha))
+            b = os.path.join(self.root, "build")
+            if not e.get("no_bin"):
+                scratch.write(os.path.join(b, "app.bin"), data)
+            scratch.write(os.path.join(b, "app.elf"),
+                          e.get("elf_bytes", elf))
+            scratch.write(os.path.join(b, "stray_newer.bin"), data)
+            if e.get("commit_during_build"):
+                scratch.write(os.path.join(self.root, "late.txt"), "x")
+                git(self.root, "add", "late.txt")
+                git(self.root, "commit", "-qm", "late")
+            if e.get("dirty_after"):
+                scratch.write(os.path.join(self.root, "sdkconfig"), "changed\n")
+            return 0
+        raise AssertionError(args)
+
+    def _component(self, name, files):
+        cdir = os.path.join(self.root, "managed_components", name)
+        for rel, data in files.items():
+            scratch.write(os.path.join(cdir, rel), data)
+        scratch.write(os.path.join(cdir, "CHECKSUMS.json"), json.dumps({
+            "algorithm": "sha256", "files": [
+                {"path": r, "size": len(d), "hash": hashlib.sha256(d).hexdigest()}
+                for r, d in COMP_FILES.items()]}))
+        scratch.write(os.path.join(cdir, ".component_hash"), CHASH)
+
+    def _description(self):
+        main = os.path.join(self.root, "main").replace("\\", "/")
+        comp = os.path.join(self.root, "managed_components",
+                            "espressif__m").replace("\\", "/")
+        scratch.write(os.path.join(self.root, "build",
+                                   "project_description.json"), json.dumps({
+            "app_bin": "app.bin", "app_elf": "app.elf", "c_compiler": self.cc,
+            "git_revision": "v5.4.1",
+            "build_components": ["main", "espressif__m", ""],
+            "build_component_info": {"main": {"dir": main},
+                                     "espressif__m": {"dir": comp}}}))
+
+
+def project(name, data=None, lock_text=None, manifest=MANIFEST):
+    root = scratch.fresh(name)
+    files = {
+        "vtrux_build.json": json.dumps(data or {"project": "proj",
+                                                "shared_components": []}),
+        "CMakeLists.txt": "project(proj)\n",
+        "dependencies.lock": lock_text or lock(),
+        "main/CMakeLists.txt": "idf_component_register(SRCS m.c)\n",
+        "main/m.c": "int main_c;\n",
+        "main/idf_component.yml": manifest,
+        "sdkconfig": "CONFIG_X=y\n",
+        ".gitignore": "build/\nmanaged_components/\n",
+    }
+    for rel, text in files.items():
+        scratch.write(os.path.join(root, *rel.split("/")), text)
+    git(root, "init", "-q")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "init")
+    cc = scratch.write(os.path.join(scratch.ROOT, "fake-gcc.exe"), b"")
+    return root, cc
+
+
+def run(root, cc, edit=None, check_only=False, dest="default"):
+    idf = FakeIdf(root, cc, edit)
+    if dest == "default":
+        dest = os.path.join(root + "-records")
+    try:
+        p = release(root, check_only=check_only, idf=idf,
+                    toolchain_run=TC_RUN, dest=dest)
+        return p, idf, None
+    except Refused as e:
+        return None, idf, str(e)
+
+
+@unittest.skipUnless(shutil.which("git"), "needs git")
+class Release(unittest.TestCase):
+
+    def assertRefused(self, result, words, calls):
+        p, idf, why = result
+        self.assertIsNone(p)
+        self.assertIsNotNone(why, "not refused")
+        for w in words:
+            self.assertIn(w, why)
+        self.assertEqual(idf.calls, calls)
+
+    def test_records_a_clean_build(self):
+        root, cc = project("rel_ok")
+        p, idf, why = run(root, cc)
+        self.assertIsNone(why)
+        self.assertEqual(idf.calls, ["reconfigure", "build"])
+        r = record.read(p)
+        bin_path = os.path.join(root, "build", "app.bin")
+        self.assertEqual(r["image_hash"], AppImage.read(bin_path).image_hash)
+        self.assertEqual(r["image"]["built_as"], "app.bin")
+        self.assertEqual(r["commit"], git(root, "rev-parse", "HEAD").strip())
+        self.assertEqual(sorted(r["components"]), ["espressif__m", "main"])
+        self.assertEqual(r["toolchain"]["version"],
+                         "riscv32-esp-elf-gcc (crosstool-NG) 14.2.0")
+        self.assertEqual(r["idf_version"], {"project": "v5.4.1",
+                                            "image": "v5.4.1"})
+        self.assertEqual(r["dependencies_lock_sha256"], hashlib.sha256(
+            scratch.read(os.path.join(root, "dependencies.lock"))).hexdigest())
+        self.assertEqual(r["release_checks"]["tree_after_build"], [])
+        self.assertEqual(sorted(r["tooling"]),
+                         ["commit", "digest", "dirty", "tag"])
+        self.assertEqual(len(r["tooling"]["digest"]), 64)
+
+    def test_r11_named_image_not_newest(self):
+        root, cc = project("rel_r11")
+        p, _, _ = run(root, cc)
+        self.assertEqual(record.read(p)["image"]["built_as"], "app.bin")
+        root, cc = project("rel_r11_missing")
+        self.assertRefused(run(root, cc, {"no_bin": True}),
+                           ["app.bin"], ["reconfigure", "build"])
+
+    def test_r8_modified_file(self):
+        root, cc = project("rel_r8_mod")
+        scratch.write(os.path.join(root, "main", "m.c"), "int edited;\n")
+        self.assertRefused(run(root, cc), ["R8", "main/m.c"], [])
+
+    def test_r8_untracked_file(self):
+        root, cc = project("rel_r8_new")
+        scratch.write(os.path.join(root, "main", "new.c"), "")
+        self.assertRefused(run(root, cc), ["R8", "main/new.c"], [])
+
+    def test_r8_ignored_files_are_fine(self):
+        root, cc = project("rel_r8_ign")
+        scratch.write(os.path.join(root, "build", "old.o"), "")
+        self.assertIsNone(run(root, cc)[2])
+
+    def test_r8_staged_change(self):
+        root, cc = project("rel_r8_staged")
+        scratch.write(os.path.join(root, "main", "m.c"), "int staged;\n")
+        git(root, "add", "-A")
+        self.assertRefused(run(root, cc), ["R8"], [])
+
+    def test_check_only_builds_nothing(self):
+        root, cc = project("rel_check")
+        p, idf, why = run(root, cc, check_only=True)
+        self.assertEqual((p, why, idf.calls), (None, None, []))
+
+    def test_r13_no_reverse_it_dir_stops_first(self):
+        root, cc = project("rel_r13")
+        env = dict(os.environ)
+        env.pop("REVERSE_IT_DIR", None)
+        old = os.environ.copy()
+        os.environ.clear()
+        os.environ.update(env)
+        try:
+            self.assertRefused(run(root, cc, dest=None), ["REVERSE_IT_DIR"],
+                               [])
+        finally:
+            os.environ.clear()
+            os.environ.update(old)
+
+    def test_r9_reconfigure_failure(self):
+        root, cc = project("rel_r9")
+        self.assertRefused(run(root, cc, {"reconfigure_rc": 2}),
+                           ["reconfigure"], ["reconfigure"])
+
+    def test_r10_after_the_reconfigure(self):
+        root, cc = project("rel_r10")
+        bad = dict(COMP_FILES)
+        bad["m.c"] = b"int m = 1;\n"
+        self.assertRefused(run(root, cc, {"component_files": bad}),
+                           ["R10"], ["reconfigure"])
+
+    def test_r10_added_file(self):
+        root, cc = project("rel_r10_add")
+        extra = dict(COMP_FILES)
+        extra["extra.c"] = b""
+        self.assertRefused(run(root, cc, {"component_files": extra}),
+                           ["R10"], ["reconfigure"])
+
+    def test_r16_shared_from_local_folder(self):
+        root, cc = project("rel_r16_local",
+                           data={"project": "proj",
+                                 "shared_components": ["twai_port"]},
+                           lock_text=lock(LOCAL_DEP))
+        self.assertRefused(run(root, cc), ["R16", "local folder"],
+                           ["reconfigure"])
+
+    def test_r16_override_path_in_manifest(self):
+        root, cc = project(
+            "rel_r16_override",
+            data={"project": "proj", "shared_components": ["twai_port"]},
+            lock_text=lock(GIT_DEP),
+            manifest=MANIFEST + '    override_path: "../shared/twai_port"\n')
+        self.assertRefused(run(root, cc, {"shared_on_disk": True}),
+                           ["R16", "override_path"], ["reconfigure"])
+
+    def test_r16_not_pinned(self):
+        root, cc = project("rel_r16_unpinned",
+                           data={"project": "proj",
+                                 "shared_components": ["twai_port"]})
+        self.assertRefused(run(root, cc), ["R16", "not pinned"],
+                           ["reconfigure"])
+
+    def test_r16_pinned_is_recorded(self):
+        root, cc = project("rel_r16_ok",
+                           data={"project": "proj",
+                                 "shared_components": ["twai_port"]},
+                           lock_text=lock(GIT_DEP))
+        p, _, why = run(root, cc, {"shared_on_disk": True})
+        self.assertIsNone(why)
+        self.assertEqual(record.read(p)["shared_components"]["twai_port"], {
+            "version": "twai-v1", "git": "https://example.invalid/r.git",
+            "path": "shared/components/twai_port",
+            "lock_version": "0123456789abcdef0123456789abcdef01234567"})
+
+    def test_build_failure(self):
+        root, cc = project("rel_buildfail")
+        self.assertRefused(run(root, cc, {"build_rc": 1}), ["build failed"],
+                           ["reconfigure", "build"])
+
+    def test_head_moved(self):
+        root, cc = project("rel_head")
+        self.assertRefused(run(root, cc, {"commit_during_build": True}),
+                           ["HEAD moved"], ["reconfigure", "build"])
+
+    def test_elf_not_the_embedded_one(self):
+        root, cc = project("rel_elf")
+        p, idf, why = run(root, cc, {"elf_bytes": b"\x7fELF other"})
+        self.assertIsNone(p)
+        self.assertIn("no record written", why)
+        dest = root + "-records"
+        self.assertFalse(os.path.isdir(dest) and os.listdir(dest))
+
+    def test_tree_changed_by_build_is_recorded(self):
+        root, cc = project("rel_after")
+        p, _, why = run(root, cc, {"dirty_after": True})
+        self.assertIsNone(why)
+        self.assertEqual(record.read(p)["release_checks"]["tree_after_build"],
+                         [" M sdkconfig"])
+
+    def test_project_data(self):
+        for name, data in (("rel_pd1", {"project": "Gen Inhibit",
+                                        "shared_components": []}),
+                           ("rel_pd2", {"project": "p"}),
+                           ("rel_pd3", {"project": "p",
+                                        "shared_components": ["a", "a"]})):
+            root, cc = project(name, data=data)
+            self.assertRefused(run(root, cc), ["vtrux_build.json"], [])
+
+
+if __name__ == "__main__":
+    unittest.main()
