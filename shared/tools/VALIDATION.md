@@ -205,8 +205,11 @@ same folder. The interposer's test evidence is
   rather than allowed when nothing is downloaded. One rule with no carve-out,
   and it fails closed: a project that does download components but has no
   lock after the reconfigure is caught by the same refusal. The cost is a
-  one-line manifest in a project that downloads nothing. Both projects have
-  a lock today. Raised by the gen-inhibit tester's R22 case (IDF's
+  one-line manifest in a project that downloads nothing. gen-inhibit has a
+  lock today. The interposer, still PlatformIO, has none of its own (the
+  manifest and lock at its branch's root are upstream WiCAN's); its IDF
+  project gets a manifest, and so a lock, at port stage (a) step 2a, where
+  arduino-esp32 comes from the Component Manager. Raised by the gen-inhibit tester's R22 case (IDF's
   hello_world, C6f part A), which was refused with a raw file-not-found
   error.
 - **Status:** complete.
