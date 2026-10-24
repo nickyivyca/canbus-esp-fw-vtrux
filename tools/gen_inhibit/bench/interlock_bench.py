@@ -235,7 +235,7 @@ def host_scn(name, gen_dir):
         _, log, chan, at, dur, note = row
         out = os.path.join(gen_dir, name + ".scn")
         cmd = [sys.executable, os.path.join(HOSTDIR, "from_capture.py"), os.path.join(LOGS, log),
-               "--repo", ROOT, "--channel", str(chan), "--at", str(at), "--for", str(dur), "--out", out]
+               "--project-dir", ROOT, "--channel", str(chan), "--at", str(at), "--for", str(dur), "--out", out]
         if note:
             cmd += ["--note", note]
         r = subprocess.run(cmd, capture_output=True, text=True, cwd=HOSTDIR)
