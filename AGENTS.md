@@ -226,9 +226,9 @@ decoder cross-checks, bench harnesses and the harness's own tests. If a
 file's owner is unclear, the project's reviewer decides and edits its file
 map directly.
 
-**The methodology owner**, the "ESP development methodology" session, owns
-this `AGENTS.md`, the role skills and the ownership split itself, and changes
-to them go through it (user, 2026-10-10). It commits them on its own
+**The methodology owner**, a methodology session, owns this `AGENTS.md`,
+the role skills and the ownership split itself, and changes to them go
+through it (user, 2026-10-10). It commits them on its own
 `methodology/<topic>` branch and tells each running session they affect.
 Each one cherry-picks the commit onto its own branch, then re-reads the
 changed file in full. **Never edit this file or a skill by hand on a role
