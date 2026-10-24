@@ -85,7 +85,9 @@ unless the image changes, which the reproducible check (R19) shows.
   no uncommitted changes and no untracked files when it starts, and again
   after the reconfigure (R9), before anything is compiled. It is also
   refused if HEAD or the worktree has changed by the time the build
-  finishes.
+  finishes. And it is refused unless the project's `sdkconfig` is
+  committed: tracked by git and not ignored, so that this check sees any
+  change to it. R18 leaves the options a profile does not name to it.
 - **R9. Reconfigure first.** A release build runs `idf.py reconfigure`, then
   builds, in one run, with the compiler cache (ccache) off whatever the
   environment sets. A build whose configuration still has it on is refused.

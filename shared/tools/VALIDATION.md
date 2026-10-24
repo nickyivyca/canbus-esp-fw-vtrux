@@ -148,10 +148,21 @@ same folder. The interposer's test evidence is
   file (`sdkconfig`, `dependencies.lock`), or a HEAD that moves during the
   build, leaves an image the record's commit does not describe. Raised by
   the implementor on C6f; not yet seen on a real build.
-- **Not covered, accepted** (user, 2026-10-23): a file an editor saves as
-  CRLF passes the clean check, since git compares after normalising line
-  endings, while the build and the R7 digest see the CRLF bytes. No byte
-  check is added (see R7).
+- **`sdkconfig` committed** (user, 2026-10-24, in the gen-inhibit reviewer's
+  session, option a of two): raised by the interposer reviewer on reading
+  R18. R18 compares only the options a profile names and leaves the rest to
+  the committed `sdkconfig` through this check, but a project that ignored
+  `sdkconfig` would pass it, since git does not report ignored files.
+  gen-inhibit commits its `sdkconfig` today; the interposer will in its
+  step 2a.
+- **Not covered, accepted** (user, 2026-10-23): a file whose CRLF bytes are
+  what git last checked out or added passes the clean check, while the
+  build and the R7 digest see the CRLF bytes. No byte check is added (see
+  R7). Corrected 2026-10-24: this note first said any CRLF save passes. The
+  gen-inhibit tester measured on git 2.52.0.windows.1 and 2.47.3 that a CRLF
+  save over a file committed as LF shows as modified, so R8 refuses it
+  (shared/tools VERIFICATION.md, "R9, R13 fixes, and R17's shared/ roots";
+  AGENTS.md corrected by the methodology owner, 2026-10-24).
 - **Status:** complete.
 
 ### R9. Reconfigure first
@@ -244,10 +255,13 @@ same folder. The interposer's test evidence is
   session.
 - **The lock's hash is taken LF-normalised** (user, 2026-10-24, in the
   gen-inhibit reviewer's session, option A of three, per AGENTS.md "Line
-  endings"). On NICKY-XPS the reconfigure rewrites `dependencies.lock` with
-  CRLF, which `git status` does not show, so two release builds of one
-  commit to one image recorded two lock hashes (the gen-inhibit tester's C6f
-  follow-ups, an observation). Hashing the committed blob instead would tie
+  endings"). On NICKY-XPS two release builds of one commit to one image
+  recorded two lock hashes (the gen-inhibit tester's C6f follow-ups, an
+  observation): the Component Manager writes `dependencies.lock` as CRLF on
+  Windows, and that CRLF lock was what git had last added, so `git status`
+  showed it clean (the tester's "R9, R13 fixes" entry, 2026-10-24, which
+  corrects the first account, that the reconfigure rewrites it unseen).
+  Hashing the committed blob instead would tie
   the record to git, which R7 avoids; hashing the bytes on disk would let
   records differ by host.
 - **Status:** complete.
