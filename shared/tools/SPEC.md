@@ -86,7 +86,8 @@ unless the image changes, which the reproducible check (R19) shows.
   after the reconfigure (R9), before anything is compiled. It is also
   refused if HEAD or the worktree has changed by the time the build
   finishes. And it is refused unless the `sdkconfig` the build used
-  (`SDKCONFIG` in its `CMakeCache.txt`) is committed in the project:
+  (`config_file` in its `project_description.json`) is committed in the
+  project:
   tracked by git and not ignored, so that this check sees any change to it.
   R18 leaves the options a profile does not name to it.
 - **R9. Reconfigure first.** A release build runs `idf.py reconfigure`, then
