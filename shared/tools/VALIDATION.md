@@ -150,6 +150,24 @@ same folder. The interposer's test evidence is
   before the reconfigure fetched `espressif__mdns`, reported "managed
   components: none on disk", and no row covered the component in the image.
   Fixed in `2df3c17`.
+- **Changed 2026-10-23 (user), option (a):** as first written, R10 required
+  a `CHECKSUMS.json` for every component, which the Component Manager
+  supplies only for registry downloads, so a shared component pinned by git
+  (port plan goal 12) would have refused every release build. Raised by the
+  implementor on C6f. From the Component Manager's source (2.5.2, in
+  IDF 5.4.1's environment; the implementor's read, 2026-10-23):
+  - `dependencies.lock` carries a `component_hash` for every downloaded
+    component, git sources included;
+  - strict mode (`IDF_COMPONENT_STRICT_CHECKSUM`, off by default) re-hashes
+    each component's folder at configure time and stops the configure on a
+    changed file; for a git component that re-hash also catches an added
+    file;
+  - `IDF_COMPONENT_OVERWRITE_MANAGED_COMPONENTS` skips the check entirely;
+  - for a component with a `CHECKSUMS.json`, strict mode checks only the
+    files it lists and never looks for an unlisted one, so R10's own
+    unlisted-file check stays.
+  Using the manager's own check, rather than recomputing its hash, avoids
+  keeping a copy of its file rules in step with it.
 - **Status:** complete.
 
 ### R11. The image is the one the build names

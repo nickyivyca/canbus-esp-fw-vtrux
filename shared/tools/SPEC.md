@@ -85,10 +85,16 @@ unless the image changes, which the reproducible check (R19) shows.
   finishes.
 - **R9. Reconfigure first.** A release build runs `idf.py reconfigure`, then
   builds, in one run.
-- **R10. Downloaded components checked after the reconfigure.** After the
-  reconfigure has fetched them, every component in `managed_components/` is
-  checked against its own `CHECKSUMS.json`, and its `.component_hash`
-  against `dependencies.lock`. A mismatch is a refusal.
+- **R10. Downloaded components checked after the reconfigure.** The
+  reconfigure runs with the Component Manager's strict checksum mode on
+  (`IDF_COMPONENT_STRICT_CHECKSUM`), and a release build is refused if
+  anything is set that lets the manager overwrite managed components; a
+  component whose files differ from its recorded hash then stops the
+  configure. After the reconfigure, every component in `managed_components/`
+  has a `.component_hash` equal to the `component_hash` `dependencies.lock`
+  gives it, and one that came with a `CHECKSUMS.json` (a registry download)
+  matches it file for file, with no file it does not list. A mismatch is a
+  refusal.
 - **R11. The image is the one the build names.** The image recorded is the
   one `build/project_description.json` names as `app_bin`. A missing name or
   a missing file is a refusal.
