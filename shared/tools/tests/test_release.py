@@ -88,6 +88,13 @@ class FakeIdf:
             if e.get("shared_on_disk"):
                 self._component("twai_port", COMP_FILES)
             self._description()
+            if e.get("dirty_reconfigure"):
+                scratch.write(os.path.join(self.root, "sdkconfig"),
+                              "CONFIG_X=y\r\n")
+            if e.get("commit_during_reconfigure"):
+                scratch.write(os.path.join(self.root, "early.txt"), "x")
+                git(self.root, "add", "early.txt")
+                git(self.root, "commit", "-qm", "early")
             return 0
         if args == ["build"]:
             if e.get("build_rc"):
@@ -203,7 +210,6 @@ class Release(unittest.TestCase):
                                             "image": "v5.4.1"})
         self.assertEqual(r["dependencies_lock_sha256"], hashlib.sha256(
             scratch.read(os.path.join(root, "dependencies.lock"))).hexdigest())
-        self.assertEqual(r["release_checks"]["tree_after_build"], [])
         self.assertEqual(sorted(r["tooling"]),
                          ["commit", "digest", "dirty", "tag"])
         self.assertEqual(len(r["tooling"]["digest"]), 64)
@@ -329,12 +335,26 @@ class Release(unittest.TestCase):
         dest = records_dir(root)
         self.assertFalse(os.path.isdir(dest) and os.listdir(dest))
 
-    def test_tree_changed_by_build_is_recorded(self):
-        root, cc = project("rel_after")
-        p, _, why = run(root, cc, {"dirty_after": True})
-        self.assertIsNone(why)
-        self.assertEqual(record.read(p)["release_checks"]["tree_after_build"],
-                         [" M sdkconfig"])
+    def test_r8_reconfigure_rewrites_a_tracked_file(self):
+        """Refused after the reconfigure, before anything is compiled."""
+        root, cc = project("rel_r8_reconf")
+        self.assertRefused(run(root, cc, {"dirty_reconfigure": True}),
+                           ["R8", "after the reconfigure", "sdkconfig"],
+                           ["reconfigure"])
+
+    def test_r8_head_moved_during_reconfigure(self):
+        root, cc = project("rel_r8_reconf_head")
+        self.assertRefused(run(root, cc, {"commit_during_reconfigure": True}),
+                           ["HEAD moved", "after the reconfigure"],
+                           ["reconfigure"])
+
+    def test_r8_build_leaves_the_tree_changed(self):
+        root, cc = project("rel_r8_after")
+        self.assertRefused(run(root, cc, {"dirty_after": True}),
+                           ["R8", "at the end of the build", "sdkconfig"],
+                           ["reconfigure", "build"])
+        dest = records_dir(root)
+        self.assertFalse(os.path.isdir(dest) and os.listdir(dest))
 
     def test_project_data(self):
         for name, data in (("rel_pd1", {"project": "Gen Inhibit",

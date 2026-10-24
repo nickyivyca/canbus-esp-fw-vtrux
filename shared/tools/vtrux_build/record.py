@@ -39,8 +39,7 @@ The record's fields (RECORD_SCHEMA 1):
                               null when HEAD has no tag
     release_checks            what the build script checked on the way, for
                               the reader: "managed_components" (R10's
-                              report) and "tree_after_build" (git status
-                              lines after the build, [] when clean)
+                              report)
 """
 
 import json

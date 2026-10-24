@@ -16,6 +16,9 @@ In order, each refusal an exit, never a warning:
      (git status, ignored files excepted). The commit is HEAD.
      --check-only stops here.
   5. R9: `idf.py reconfigure`;
+     R8 again: HEAD is the same and the worktree still clean, before
+     anything is compiled (a reconfigure that rewrites a tracked file,
+     sdkconfig for example, is refused here);
   6. R10: every downloaded component checks against its CHECKSUMS.json and
      dependencies.lock (components.py), after the reconfigure fetched them;
   7. R16, override_path clause: no shared firmware component the project
@@ -25,8 +28,8 @@ In order, each refusal an exit, never a warning:
   8. `idf.py build`, in the same run as 5;
   9. R11: the image is the one build/project_description.json names as
      app_bin (builddir.py), with its app_elf;
- 10. HEAD is still the commit step 4 read, so the record's commit is the
-     one that was built;
+ 10. R8 at the end: HEAD is still the commit step 4 read and the worktree
+     is still clean, so the record's commit describes what was built;
  11. R13: the record (record.py).
 
 Not done here: the build checks (R17 to R21, the tester's), the tooling-pin
@@ -107,19 +110,24 @@ def worktree_state(root):
     return head.strip(), [ln for ln in st.splitlines() if ln.strip()]
 
 
-def check_clean(root):
-    """R8. Returns the commit."""
-    commit, dirty = worktree_state(root)
+def check_clean(root, when="at the start", commit=None):
+    """R8: the worktree is clean, and, given commit, HEAD is still it.
+    Returns HEAD."""
+    head, dirty = worktree_state(root)
+    if commit is not None and head != commit:
+        raise Refused("HEAD moved %s (%s, now %s), so no one commit describes "
+                      "the image (R8)" % (when, commit, head))
     if dirty:
         shown = "\n".join("    " + ln for ln in dirty[:20])
         more = ("\n    ... and %d more" % (len(dirty) - 20)
                 if len(dirty) > 20 else "")
-        raise Refused("the worktree has %d uncommitted change(s) or untracked "
-                      "file(s). A release build is built from a clean "
-                      "worktree (R8), so that its record's commit describes "
-                      "the image.\n%s%s" % (len(dirty), shown, more))
-    ok("worktree clean (R8)", "HEAD %s" % commit)
-    return commit
+        raise Refused("%s, the worktree has %d uncommitted change(s) or "
+                      "untracked file(s). A release build is built from a "
+                      "clean worktree and leaves it clean (R8), so that its "
+                      "record's commit describes the image.\n%s%s"
+                      % (when, len(dirty), shown, more))
+    ok("worktree clean (R8)", "%s, HEAD %s" % (when, head))
+    return head
 
 
 def build_manifests(bd):
@@ -220,6 +228,7 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
     if rc != 0:
         raise Refused("idf.py reconfigure failed (exit %d)" % rc)
     ok("reconfigure (R9)")
+    check_clean(root, "after the reconfigure", commit)
 
     try:
         good, report = components.check_managed(root)
@@ -267,10 +276,7 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
         raise Refused(str(e))
     ok("image named by the build (R11)", os.path.basename(bin_path))
 
-    head_now, after = worktree_state(root)
-    if head_now != commit:
-        raise Refused("HEAD moved during the build (%s, now %s), so no one "
-                      "commit describes the image" % (commit, head_now))
+    check_clean(root, "at the end of the build", commit)
 
     try:
         tc = record.toolchain(desc.get("c_compiler"),
@@ -286,8 +292,7 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
             "dependencies_lock_sha256": lockfile.file_sha256(lock_path),
             "shared_components": shared,
             "tooling": tooling_identity(),
-            "release_checks": {"managed_components": report,
-                               "tree_after_build": after},
+            "release_checks": {"managed_components": report},
         }
         path = record.write(proj.name, bin_path, elf_path, fields,
                             dest=out_dir)
@@ -296,11 +301,6 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
     ok("record (R13)", path)
     say("           image hash %s" % img.image_hash)
     say("           code hash  %s" % img.code_hash)
-    if after:
-        say("NOTE: the build changed the worktree; the record lists it under "
-            "release_checks.tree_after_build:")
-        for ln in after[:20]:
-            say("    " + ln)
     return path
 
 

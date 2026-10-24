@@ -54,12 +54,13 @@ The tooling holds no project facts. A project gives them in
 
 `vtrux_build/release.py`, in order, each refusal an exit: the project's
 data; `REVERSE_IT_DIR` set (R13, before anything is built); the IDF
-environment; a clean worktree (R8); `idf.py reconfigure` (R9); downloaded
-components against `CHECKSUMS.json` and `dependencies.lock` (R10, after the
-reconfigure); no shared component from a local folder (R16,
-`override_path` clause); `idf.py build`; the image
-`project_description.json` names (R11); HEAD unchanged since the start; the
-record (R13). Its docstring has the detail.
+environment; a clean worktree (R8); `idf.py reconfigure` (R9); the
+worktree still clean and HEAD unchanged (R8); downloaded components against
+`CHECKSUMS.json` and `dependencies.lock` (R10, after the reconfigure); no
+shared component from a local folder (R16, `override_path` clause);
+`idf.py build`; the image `project_description.json` names (R11); HEAD
+unchanged and the worktree clean at the end (R8); the record (R13). Its
+docstring has the detail.
 
 Not here yet: R16's refusal of a tooling pin that names a commit, and R23,
 which both wait on the `shared/main` tag scheme (SPEC section 8). The
