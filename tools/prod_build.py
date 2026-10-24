@@ -78,10 +78,11 @@ RUN IT FROM AN EXPORTED IDF SHELL. On `NICKY-XPS` that means PowerShell with
 the 3.11 directory prepended to PATH before sourcing `export.ps1`; see
 `tools-reference.md`. The Bash tool cannot be used -- `idf_tools.py` refuses
 to run when `MSYSTEM` is set, which it is under Git Bash, and unsetting it
-does not work because MSYS re-injects it.
+does not work because MSYS re-injects it. The two folders below are
+placeholders; this machine's values are in `local-paths.md`, "Builds".
 
-    $env:IDF_PATH = "C:\\Users\\Nicky\\esp\\esp-idf"
-    $env:PATH = "C:\\Users\\Nicky\\AppData\\Local\\Programs\\Python\\Python311-32;" + $env:PATH
+    $env:IDF_PATH = "<esp-idf>"
+    $env:PATH = "<32-bit Python 3.11 folder>;" + $env:PATH
     . "$env:IDF_PATH\\export.ps1"
     python tools\\prod_build.py
     python tools\\prod_build.py --check-only     # refusals only, no build

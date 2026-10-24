@@ -44,7 +44,10 @@ import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-WORK = os.path.join(tempfile.gettempdir(), "gen-inhibit-prodbuild-image")
+# AGENTS.md "Files and folders": this worktree's scratch/, never the system
+# temp folder. One folder per run, so two runs at once never share one.
+SCRATCH = os.path.join(os.path.dirname(HERE), "scratch", "gen-inhibit-prodbuild")
+WORK = None                             # this run's, made by main()
 NAMED = "wican-fw_obd_1234567_man.bin"
 STRAY = "wican-fw_obd_7654321_man_ecc.bin"
 
@@ -166,6 +169,9 @@ def main():
     ap.add_argument("--script", default=os.path.join(HERE, "prod_build.py"))
     args = ap.parse_args()
 
+    global WORK
+    os.makedirs(SCRATCH, exist_ok=True)
+    WORK = tempfile.mkdtemp(prefix="image-", dir=SCRATCH)
     print("script under test: %s" % args.script)
     print("scratch repo: %s" % WORK)
     cases = ["stray", "no-desc", "no-key", "no-file"]

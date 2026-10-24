@@ -46,7 +46,10 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 COMPONENT = "espressif__mdns"
-WORK = os.path.join(tempfile.gettempdir(), "gen-inhibit-prodbuild-selftest")
+# AGENTS.md "Files and folders": this worktree's scratch/, never the system
+# temp folder. One folder per run, so two runs at once never share one.
+SCRATCH = os.path.join(REPO, "scratch", "gen-inhibit-prodbuild")
+WORK = None                             # this run's, made by main()
 
 
 def git(args, cwd):
@@ -128,6 +131,9 @@ def main():
                   % COMPONENT)
             return 2
 
+    global WORK
+    os.makedirs(SCRATCH, exist_ok=True)
+    WORK = tempfile.mkdtemp(prefix="fetch-", dir=SCRATCH)
     head = git(["rev-parse", "HEAD"], REPO)
 
     def fetch_good(clone):

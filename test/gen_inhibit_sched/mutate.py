@@ -21,6 +21,10 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MAIN = os.path.normpath(os.path.join(HERE, "..", "..", "main"))
+# AGENTS.md "Files and folders": this worktree's scratch/, never the system
+# temp folder. Each mutant gets its own folder in this run's.
+SCRATCH = os.path.normpath(os.path.join(HERE, "..", "..", "scratch",
+                                        "gen-inhibit-sched-mutants"))
 
 # (name, file, old, new, the case that must fail)
 MUTATIONS = [
@@ -203,8 +207,10 @@ def main():
         return 2
     print("  baseline passes\n")
 
+    os.makedirs(SCRATCH, exist_ok=True)
+    run = tempfile.mkdtemp(prefix="run-", dir=SCRATCH)
     for name, fname, old, new, expect_case in MUTATIONS:
-        tmp = tempfile.mkdtemp(prefix="gsmut_")
+        tmp = tempfile.mkdtemp(prefix="gsmut_", dir=run)
         try:
             # test/gen_inhibit_sched, so that the Makefile's ../../main
             # resolves INSIDE the temp tree. One level too shallow and every
@@ -261,6 +267,7 @@ def main():
                     survived.append(name + " (wrong case caught it)")
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+    shutil.rmtree(run, ignore_errors=True)
 
     print()
     if uncovered:
