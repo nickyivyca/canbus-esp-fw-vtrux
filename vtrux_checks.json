@@ -1,0 +1,40 @@
+{
+  "release_profile": {
+    "CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE": {
+      "value": true,
+      "spec": "gen-inhibit spec 12.3 item 3 (build-output checks), setting 1: CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y; section 9.1"
+    },
+    "CONFIG_SECURE_BOOT": {
+      "value": "unset",
+      "spec": "gen-inhibit spec 12.3 item 3, setting 2: secure boot unset; section 2, 'Never burn eFuses': CONFIG_SECURE_BOOT unset"
+    },
+    "CONFIG_SECURE_FLASH_ENC_ENABLED": {
+      "value": "unset",
+      "spec": "gen-inhibit spec 12.3 item 3, setting 2: flash encryption unset; section 2, 'Never burn eFuses': CONFIG_SECURE_FLASH_ENC_ENABLED unset"
+    },
+    "CONFIG_FLASH_ENCRYPTION_ENABLED": {
+      "value": "unset",
+      "spec": "gen-inhibit spec 12.3 item 3, setting 2: flash encryption unset, which also counts this option (shared/tools VALIDATION R18 reading, user 2026-10-24)"
+    },
+    "CONFIG_EFUSE_VIRTUAL": {
+      "value": "unset",
+      "spec": "gen-inhibit spec 12.3 item 3, setting 3: CONFIG_EFUSE_VIRTUAL off; section 2, 'Never burn eFuses'"
+    },
+    "CONFIG_TWAI_ISR_IN_IRAM": {
+      "value": "unset",
+      "spec": "gen-inhibit spec 12.3 item 3, setting 4: CONFIG_TWAI_ISR_IN_IRAM unset; section 5"
+    },
+    "CONFIG_BOOTLOADER_WDT_DISABLE_IN_USER_CODE": {
+      "value": "unset",
+      "spec": "gen-inhibit spec 12.3 item 3, setting 5: watchdog settings as section 9.1 records; section 9.1: CONFIG_BOOTLOADER_WDT_DISABLE_IN_USER_CODE is not set"
+    },
+    "CONFIG_ESP_TASK_WDT_PANIC": {
+      "value": "unset",
+      "spec": "gen-inhibit spec 12.3 item 3, setting 5: watchdog settings as section 9.1 records; section 9.1: CONFIG_ESP_TASK_WDT_PANIC unset"
+    },
+    "CONFIG_APP_REPRODUCIBLE_BUILD": {
+      "value": true,
+      "spec": "shared/tools SPEC R12: the release profile has CONFIG_APP_REPRODUCIBLE_BUILD on"
+    }
+  }
+}
