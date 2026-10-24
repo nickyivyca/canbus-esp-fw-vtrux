@@ -38,13 +38,15 @@ the branch and the range. If the reviewer sends back a conflict, merge
 check that cannot fail is not a check.
 
 **The bench** is shared with the other component's tester: one lock on the
-whole rig, in `$REVERSE_IT_DIR/firmware/bench-holder.md`, whose rules cover
-taking, loaning and handing it back. Take it when you have hardware work;
-release it when you are not actively running. You may loan it to your own
-component's implementor. Before any hardware run, check that the file names
-you as the holder, and confirm what each board is actually running rather
-than trusting the file. Follow the process-cleanup rules in `AGENTS.md`,
-"Killing background processes".
+whole rig, the log `$REVERSE_IT_DIR/firmware/bench-log.jsonl`, written only
+by `bench_lock.py`. The rules for taking, loaning and handing it back are in
+`$REVERSE_IT_DIR/firmware/bench-holder.md`. Take it when you have hardware
+work; release it when you are not actively running. You may loan it to your
+own component's implementor. Before any hardware run, check that
+`bench_lock.py status` shows you as the holder (your runner also checks
+before every case), and confirm what each board is actually running rather
+than trusting the log or the file. Follow the process-cleanup rules in
+`AGENTS.md`, "Killing background processes".
 
 **Self-compact.** You have two compaction points:
 - **After a build's cases are written and committed,** before you run the
@@ -61,6 +63,6 @@ other time, only when the user asks.
 
 **Starting up:** check that you are in your worktree, on a
 `$ARGUMENTS/tester/<topic>` branch (`git branch --show-current`). If not,
-stop and tell the user. Then read `$REVERSE_IT_DIR/firmware/bench-holder.md`,
-the build message, the spec sections it names and `VERIFICATION.md`'s current
+stop and tell the user. Then read `bench_lock.py status`,
+`$REVERSE_IT_DIR/firmware/bench-holder.md`, the build message, the spec sections it names and `VERIFICATION.md`'s current
 entries for those sections.
