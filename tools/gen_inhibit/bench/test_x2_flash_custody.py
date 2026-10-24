@@ -8,7 +8,7 @@ left behind.
 
 The dump record's path (2026-10-23): sub_dump records it relative to the data
 folder and _checked_dump / check-dump read it back from there, through a fake
-esptool and a fake data folder in the temp folder; a recorded path that is
+esptool and a fake data folder in the worktree's scratch/; a recorded path that is
 absolute or has a ".." part is refused by both readers, naming the record.
 test_x2_flash_custody_mutants.py runs the mutants of that.
 
@@ -18,7 +18,6 @@ import os
 import shutil
 import struct
 import sys
-import tempfile
 import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -31,7 +30,7 @@ import x2_flash_custody as C                                    # noqa: E402
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-WORK = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "_test_custody_tmp")   # outside SeaDrive (AGENTS.md)
+WORK = gi_paths.scratch("x2_flash_custody")   # the worktree's scratch/ (AGENTS.md)
 FAKE_DATA = os.path.join(WORK, "data")      # stands in for gi_paths.data_dir() in the record cases
 APP_DESC_AT = 32
 ELF_SHA_AT = APP_DESC_AT + 4 + 4 + 8 + 32 + 32 + 16 + 16 + 32

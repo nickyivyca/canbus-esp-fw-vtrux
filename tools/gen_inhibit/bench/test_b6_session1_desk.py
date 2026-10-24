@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import sys
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -158,7 +159,7 @@ def arm_checks(S):
 
 
 def phase3_checks(S):
-    tmp = tempfile.mkdtemp(prefix="gi-b6-desk-p3-")
+    tmp = tempfile.mkdtemp(prefix="gi-b6-desk-p3-", dir=gi_paths.scratch("tmp", run=False))
     recs = {"a/x2_jam_threshold_20261016T000001.json": "WiCAN e3d9437 _man",
             "b/x2_jam_threshold_20261016T000002_VOID_noreset.json": "WiCAN c65c45e _man",
             "c/x2_jam_threshold_20261020T000003.json": "12 V; WiCAN _ecc 637e1af1",
@@ -242,7 +243,7 @@ def main():
             print("ERROR    m%d %s: the substitution matches %d times" % (i, name, src.count(old)))
             errors += 1
             continue
-        tmp = tempfile.mkdtemp(prefix="gi-b6-desk-m%d-" % i)
+        tmp = tempfile.mkdtemp(prefix="gi-b6-desk-m%d-" % i, dir=gi_paths.scratch("tmp", run=False))
         try:
             for g in (f, "b6_class_count.py", "b6_multicount_landing.py", "gi_ecc.py", "x2_jammer.py"):
                 shutil.copy(os.path.join(HERE, g), tmp)

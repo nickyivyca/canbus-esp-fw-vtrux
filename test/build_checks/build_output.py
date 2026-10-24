@@ -325,14 +325,26 @@ def check_partitions(build_dir=None):
 
 # ------------------------------------------------------- diag schema and DBC --
 
-# The DBC and the schema doc live in the analysis project, not in the firmware
-# repo, so these are defaults to be overridden rather than guarantees. A missing
-# one is reported as NO REFERENCE, never as a pass.
-_PROJ = os.path.join(REPO, "..", "..", "seadrive_root", "nickivyc_1",
-                     "My Libraries", "NotGit", "reverse-it", "projects", "vtrux")
-DEFAULT_DBC = os.path.join(_PROJ, "vtrux-wican-diag.dbc")
-DEFAULT_SCHEMA_DOC = os.path.join(_PROJ, "notes", "artifacts", "gen-inhibit",
-                                  "wican_diag_schema.md")
+# The DBC and the schema doc live in the analysis project (reverse-it), not in the
+# firmware repo, and that folder is somewhere else on every machine. So the
+# defaults come from $REVERSE_IT_DIR (projects/vtrux/ under it), and with it unset
+# there are none. A missing one is reported as NO REFERENCE, never as a pass, and
+# never looked for at a guessed path (harness-defects row, 2026-10-24).
+def _proj():
+    root = os.environ.get("REVERSE_IT_DIR", "").strip()
+    return os.path.join(os.path.expanduser(root), "projects", "vtrux") if root else None
+
+
+_PROJ = _proj()
+DEFAULT_DBC = os.path.join(_PROJ, "vtrux-wican-diag.dbc") if _PROJ else None
+DEFAULT_SCHEMA_DOC = (os.path.join(_PROJ, "notes", "artifacts", "gen-inhibit", "wican_diag_schema.md")
+                      if _PROJ else None)
+
+
+def _no_ref(what, path, flag):
+    """The detail for a reference that is not there: where it was looked for, and how to give one."""
+    how = "pass %s, or set REVERSE_IT_DIR to the reverse-it root" % flag
+    return "no %s at %s -- %s" % (what, path, how) if path else "no %s given: %s" % (what, how)
 
 
 def core_schema_ver():
@@ -366,7 +378,7 @@ def check_diag(dbc_path):
 
     if not dbc_path or not os.path.exists(dbc_path):
         row("DBC defines every diag ID", None,
-            "no DBC at %s -- pass --dbc" % dbc_path, ref_missing=True)
+            _no_ref("DBC", dbc_path, "--dbc"), ref_missing=True)
         return
 
     try:
@@ -1178,7 +1190,7 @@ def check_abort_reason_parity(dbc_path):
 
     if not dbc_path or not os.path.exists(dbc_path):
         row("abort reasons are all in the DBC", None,
-            "no DBC at %s" % dbc_path, ref_missing=True)
+            _no_ref("DBC", dbc_path, "--dbc"), ref_missing=True)
         return
     val_line = None
     for line in open(dbc_path, encoding="utf-8", errors="replace"):
@@ -1528,7 +1540,7 @@ def check_schema_doc(doc_path):
     ver = core_schema_ver()
     if not doc_path or not os.path.exists(doc_path):
         row("schema doc version matches", None,
-            "no schema doc at %s" % doc_path, ref_missing=True)
+            _no_ref("schema doc", doc_path, "--schema-doc"), ref_missing=True)
         return
     text = open(doc_path, encoding="utf-8").read()
     m = re.search(r"diag_schema_ver[^|]*\|[^|]*?\*\*(\d+)\*\*", text)
@@ -1589,7 +1601,7 @@ def check_fw_version(doc_path, src_path=None):
     src = source_fw_version(src_path)
     if not doc_path or not os.path.exists(doc_path):
         row("DIAG_FW_VERSION is the schema doc's latest rev", None,
-            "no schema doc at %s" % doc_path, ref_missing=True)
+            _no_ref("schema doc", doc_path, "--schema-doc"), ref_missing=True)
         return
     doc = doc_latest_fw_rev(open(doc_path, encoding="utf-8").read())
     if src is None or doc is None:

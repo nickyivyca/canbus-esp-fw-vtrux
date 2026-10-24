@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests ota_guard_raw_probe.py (--body, raw_post's ending) and ota_guard_pcap_join.py.
 
-    GI_FW_TOOLS=<firmware repo>/tools/gen_inhibit py -3.14 test_ota_guard_probe.py
+    REVERSE_IT_DIR=<reverse-it root> py -3.14 test_ota_guard_probe.py
 
 raw_post is run against a local server that answers 403 and then either closes
 cleanly after reading the whole request (FIN) or aborts with unread bytes and
@@ -19,8 +19,8 @@ import shutil
 import socket
 import struct
 import subprocess
-import tempfile
 import sys
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 import threading
 import time
 
@@ -236,7 +236,7 @@ MUTANTS = [
 
 
 def mutants():
-    base = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "ota_guard_probe_mutants")   # outside SeaDrive (AGENTS.md)
+    base = gi_paths.scratch("mutants-ota_guard_probe_mutants")   # the worktree's scratch/ (AGENTS.md)
     killed = errors = 0
     for n, m in enumerate(MUTANTS, 1):
         fname, name = m[0], m[1]

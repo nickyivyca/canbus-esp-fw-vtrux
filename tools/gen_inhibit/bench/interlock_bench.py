@@ -235,7 +235,7 @@ def host_scn(name, gen_dir):
         _, log, chan, at, dur, note = row
         out = os.path.join(gen_dir, name + ".scn")
         cmd = [sys.executable, os.path.join(HOSTDIR, "from_capture.py"), os.path.join(LOGS, log),
-               "--repo", ROOT, "--channel", str(chan), "--at", str(at), "--for", str(dur), "--out", out]
+               "--project-dir", ROOT, "--channel", str(chan), "--at", str(at), "--for", str(dur), "--out", out]
         if note:
             cmd += ["--note", note]
         r = subprocess.run(cmd, capture_output=True, text=True, cwd=HOSTDIR)
@@ -345,7 +345,9 @@ def build(case_name, gen_dir):
                          fr, [(int(SLICE_ARM_S * 1e6), 3, 500)], end)
         info["change_at_s"] = SLICE_CHANGE_S
     parsed = parse_scn(open(path, encoding="ascii").read())
-    info.update(file=os.path.relpath(path, HERE).replace("\\", "/"), sha256=stim_sha(path),
+    # relative to the run folder that holds it (RUNS): relative to HERE, since the move
+    # into the repo (2026-10-22) the recorded path climbed out of it
+    info.update(file=os.path.relpath(path, RUNS).replace("\\", "/"), sha256=stim_sha(path),
                 frames=len(parsed["frames"]), modes=parsed["modes"],
                 seconds=round(parsed["end"] / 1e6, 3), refused=parsed["refused"],
                 adjacent_identical_0x051=stimulus_premise(parsed))

@@ -6,14 +6,14 @@ an error.
     py -3.14 -B tools/gen_inhibit/bench/test_x2_flash_custody_mutants.py
 
 Needs REVERSE_IT_DIR and INTERPOSER_CODE, as the test does. Each mutant is a copy of
-x2_flash_custody.py with one edit, in the machine's temp folder, imported by the test
+x2_flash_custody.py with one edit, in the worktree's scratch/, imported by the test
 through CUSTODY_DIR. A few seconds each. Gen-inhibit tester, 2026-10-23.
 """
 import os
 import shutil
 import subprocess
 import sys
-import tempfile
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = "x2_flash_custody.py"
@@ -34,7 +34,7 @@ MUTANTS = [
 
 
 def main():
-    base = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "custody_path")
+    base = gi_paths.scratch("mutants-custody_path")
     src = open(os.path.join(HERE, SRC), encoding="utf-8", newline="").read()
     killed = errors = 0
     for n, (name, old, new) in enumerate(MUTANTS, 1):

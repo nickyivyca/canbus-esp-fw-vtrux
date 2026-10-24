@@ -3,14 +3,14 @@
 wire, synthetic pages) and ota_armed_bench.wait_live on a fake page reader. No
 device. --mutants runs its mutants; each must make a check fail.
 
-    GI_FW_TOOLS=<firmware repo>/tools/gen_inhibit py -3.14 tools/gen_inhibit/bench/test_batch3_bench_judge.py [--mutants]
+    REVERSE_IT_DIR=<reverse-it root> py -3.14 tools/gen_inhibit/bench/test_batch3_bench_judge.py [--mutants]
 Run from the reverse-it root. Added 2026-10-16.
 """
 import os
 import shutil
 import subprocess
 import sys
-import tempfile
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -243,7 +243,7 @@ MUTANTS = [
 
 
 def mutants():
-    base = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "batch3_bench_judge_mutants")   # outside SeaDrive
+    base = gi_paths.scratch("mutants-batch3_bench_judge_mutants")   # the worktree's scratch/ (AGENTS.md)
     killed = errors = 0
     for n, (fname, name, old, new) in enumerate(MUTANTS, 1):
         src = open(os.path.join(HERE, fname), encoding="utf-8").read()

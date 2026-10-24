@@ -13,16 +13,31 @@
 3. With no files, every judge says ERROR, never PASS; so does a judge that raises
    or returns nothing.
 
-Copies go to the machine's temp folder. Gen-inhibit tester, 2026-10-18.
+Copies go to the worktree's scratch/. Gen-inhibit tester, 2026-10-18.
 """
 import json
 import os
 import re
 import shutil
 import sys
-import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def scratch_dir(name):
+    """This run's own folder in the worktree's gitignored scratch/ (AGENTS.md "Files and
+    folders"), never the system temp folder: bench/gi_paths.scratch()'s rule, written out
+    here because a mutant's copy of this file has no bench/ beside it. The worktree is
+    found by walking up to its .git, so a copy in its scratch/ finds the same one."""
+    import time
+    d = os.path.dirname(os.path.abspath(__file__))
+    while not os.path.exists(os.path.join(d, ".git")):
+        if os.path.dirname(d) == d:
+            raise RuntimeError("%s is in no git worktree" % __file__)
+        d = os.path.dirname(d)
+    d = os.path.join(d, "scratch", "gen-inhibit-tests", name, "%s_%d" % (time.strftime("%Y%m%dT%H%M%S"), os.getpid()))
+    os.makedirs(d, exist_ok=True)
+    return d
 sys.path.insert(0, HERE)
 import suite_judges as J   # noqa: E402
 
@@ -155,7 +170,7 @@ def main():
         return 1
     with open(os.path.join(base, "suite_index_e3d9437.json"), encoding="utf-8") as f:
         index = {c["id"]: c for c in json.load(f)["checks"]}
-    scratch = os.path.join(tempfile.gettempdir(), "gen-inhibit-suite-judges")
+    scratch = scratch_dir("suite_judges")
     shutil.rmtree(scratch, ignore_errors=True)
     real = os.path.join(scratch, "real")
     copy_tree(base, real)

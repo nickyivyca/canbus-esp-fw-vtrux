@@ -15,6 +15,8 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(HERE, "bench"))
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 SRC = "bench_flash.py"
 TEST = "test_bench_flash_outcome.py"
 
@@ -73,7 +75,7 @@ MUTANTS = [
 
 
 def main():
-    base = os.path.join(HERE, "_mutants_bench_flash")
+    base = gi_paths.scratch("mutants-bench_flash_outcome")
     killed = errors = 0
     for n, (name, old, new) in enumerate(MUTANTS, 1):
         d = os.path.join(base, "m%d" % n)

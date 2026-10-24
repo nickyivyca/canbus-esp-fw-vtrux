@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Tests gi_paths.py, where the bench tools find what is not in this repo.
 
-Gen-inhibit tester, 2026-10-22 (the goal-20 move). On a fake reverse-it root in the
-machine's temp folder, with a fake pins file:
+Gen-inhibit tester, 2026-10-22 (the goal-20 move). On a fake reverse-it root in this
+run's scratch/ folder (the machine's temp folder until 2026-10-24), with a fake pins file:
 
   1. REVERSE_IT_DIR: unset, empty, or a folder without canre/ and projects/ is refused;
      a real root resolves, and every data path (runs, captures, DBCs, the bench lock,
@@ -25,10 +25,11 @@ Its mutants: test_gi_paths_mutants.py. GI_PATHS_DIR runs another copy of gi_path
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
-import tempfile
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.environ.get("GI_PATHS_DIR") or HERE
@@ -109,8 +110,25 @@ def write_pins(gp, root):
     return p
 
 
+def retired_usage(top, retired):
+    """[(file name, line number, setting)]: lines under top, test_gi_paths*.py aside (they
+    plant them), that assign a retired setting (NAME=...), as a usage line would."""
+    rx = re.compile(r"\b(%s)=" % "|".join(sorted(retired)))
+    out = []
+    for d, dirs, files in os.walk(top):
+        dirs[:] = [x for x in dirs if x not in ("__pycache__", ".pio")]
+        for n in sorted(files):
+            if not n.endswith((".py", ".sh", ".ps1", ".md", ".ini", ".json")) or n.startswith("test_gi_paths"):
+                continue
+            with open(os.path.join(d, n), encoding="utf-8", errors="replace") as fh:
+                for k, ln in enumerate(fh, 1):
+                    for m in rx.finditer(ln):
+                        out.append((n, k, m.group(1)))
+    return out
+
+
 def main():
-    work = os.path.join(tempfile.gettempdir(), "gen-inhibit-gi-paths")
+    work = gi_paths.scratch("gi-paths")
     shutil.rmtree(work, ignore_errors=True)
     os.makedirs(work)
     base_env = {k: v for k, v in os.environ.items()
@@ -136,10 +154,12 @@ def main():
     check("data_dir() is the SeaDrive half", lambda: os.path.normcase(gp.data_dir()) == os.path.normcase(G))
     check("bench_holder() is firmware/bench-holder.md",
           lambda: os.path.normcase(gp.bench_holder()) == os.path.normcase(os.path.join(root, "firmware", "bench-holder.md")))
-    repo = os.path.normcase(gp.repo_root())
+    # Each data path is under the reverse-it root, so none lands elsewhere in the repo.
+    # (The fake root is in the worktree's scratch/ since 2026-10-24, not the temp folder,
+    # so "not under the repo" no longer says it.)
     data = [gp.runs(), gp.data_dir(), gp.bench_holder(), gp.jammer_builds(), gp.project("projects")]
-    check("no data path lands in the repo",
-          lambda: all(not os.path.normcase(p).startswith(repo + os.sep) for p in data), data)
+    check("no data path lands in the repo: each is under the reverse-it root",
+          lambda: all(os.path.normcase(p).startswith(os.path.normcase(root) + os.sep) for p in data), data)
     check("repo_root holds tools/gen_inhibit/bench/gi_paths.py",
           lambda: os.path.isfile(os.path.join(gp.repo_root(), "tools", "gen_inhibit", "bench", "gi_paths.py")))
     check("fw_tools holds suite_gen_inhibit.py",
@@ -149,6 +169,35 @@ def main():
     check("use_canre puts the root on sys.path", lambda: root in sys.path)
     sys.path.remove(root)
 
+    print("\n=== scratch folders (harness-defects row, 2026-10-24) ===")
+    wt = os.path.join(work, "wt")
+    tool = os.path.join(wt, "a", "b", "tool.py")
+    os.makedirs(os.path.dirname(tool))
+    with open(os.path.join(wt, ".git"), "w") as fh:
+        fh.write("gitdir: elsewhere\n")      # a worktree's .git is a file
+    check("worktree_of walks up to the nearest .git", lambda: os.path.samefile(gp.worktree_of(tool), wt))
+    check("a path with no .git above it is refused",
+          lambda: raises(lambda: gp.worktree_of(os.path.abspath(os.sep)), "no git worktree"))
+    s1 = gp.scratch("t", start=tool)
+    check("scratch is <worktree>/scratch/gen-inhibit-tests/<name>/<time>_<pid>, and made",
+          lambda: os.path.isdir(s1) and os.path.normcase(os.path.dirname(s1)) == os.path.normcase(
+              os.path.join(wt, "scratch", "gen-inhibit-tests", "t"))
+          and re.fullmatch(r"\d{8}T\d{6}_%d" % os.getpid(), os.path.basename(s1)), s1)
+    check("scratch without run is the name's own folder",
+          lambda: os.path.normcase(gp.scratch("t", run=False, start=tool))
+          == os.path.normcase(os.path.join(wt, "scratch", "gen-inhibit-tests", "t")))
+    child = subprocess.run([sys.executable, "-B", "-c", "import sys; sys.path.insert(0, sys.argv[1]); import gi_paths; "
+                            "print(gi_paths.scratch('t', start=sys.argv[2]))", SRC_DIR, tool],
+                           capture_output=True, text=True, env=base_env)
+    check("another run (process) gets another folder",
+          lambda: child.returncode == 0 and os.path.isdir(child.stdout.strip())
+          and os.path.normcase(child.stdout.strip()) != os.path.normcase(s1), (child.stdout, child.stderr[-200:]))
+    own = gp.scratch("t", run=False)
+    check("by default, the worktree that holds gi_paths.py itself, never the system temp folder",
+          lambda: os.path.normcase(own) == os.path.normcase(os.path.join(gp.worktree_of(gp.HERE), "scratch",
+                                                                         "gen-inhibit-tests", "t"))
+          and not os.path.normcase(own).startswith(os.path.normcase(os.environ.get("TEMP") or "/tmp")), own)
+
     print("\n=== retired settings ===")
     for k in ("GI_FW_TOOLS", "GEN_INHIBIT_REPO", "VTRUX_DATA", "REVERSE_IT_ROOT"):
         check("check_retired refuses %s" % k, lambda: raises(lambda: gp.check_retired({k: "x"}), k))
@@ -156,6 +205,18 @@ def main():
         check("import refuses %s" % k, lambda: m is None and k in str(e), e)
     check("check_retired passes with none set", lambda: gp.check_retired({"PATH": "x"}) is None)
     check("an empty retired value is not 'set'", lambda: gp.check_retired({"GI_FW_TOOLS": ""}) is None)
+    # No usage line or docstring tells a reader to set a retired setting, which the tool
+    # would then refuse (harness-defects row, 2026-10-24). baseline_host_run.sh exports
+    # GEN_INHIBIT_REPO on the host, for the host suite there, not for these tools.
+    tools = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    allowed = {("baseline_host_run.sh", "GEN_INHIBIT_REPO"), ("test_baseline_host_run.py", "GEN_INHIBIT_REPO")}
+    hits = [h for h in retired_usage(tools, gp.RETIRED) if (h[0], h[2]) not in allowed]
+    check("no file under tools/gen_inhibit sets a retired setting in a usage line", lambda: not hits, hits[:5])
+    with open(os.path.join(root, "usage.py"), "w", encoding="utf-8") as fh:
+        fh.write('"""\n    GI_FW_TOOLS=<firmware repo>/tools/gen_inhibit py -3.14 x.py\n"""\n')
+    check("control: such a usage line is found",
+          lambda: [h[0] for h in retired_usage(root, gp.RETIRED)] == ["usage.py"])
+    os.remove(os.path.join(root, "usage.py"))
 
     print("\n=== pins ===")
     pins = write_pins(gp, root)

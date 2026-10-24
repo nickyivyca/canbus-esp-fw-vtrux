@@ -11,7 +11,7 @@ timeout), in each non-OFF mode, --reps times, then returns the device to OFF.
 It records; it does not judge. The device's uptime is read before and after,
 so a restart would show.
 
-    GI_FW_TOOLS=<firmware repo>/tools/gen_inhibit py -3.14 ota_guard_raw_probe.py [--reps 5] [--body multipart|empty]
+    REVERSE_IT_DIR=<reverse-it root> py -3.14 ota_guard_raw_probe.py [--reps 5] [--body multipart|empty]
 Writes runs/ota_guard_raw_probe_<body>_<stamp>.json.
 
 --body (2026-10-16, the B21 addendum, reviewer): `multipart` is the guard's 184-byte

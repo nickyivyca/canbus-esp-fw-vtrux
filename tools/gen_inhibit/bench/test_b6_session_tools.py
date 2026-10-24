@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import sys
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -71,7 +72,7 @@ def class_checks(C):
         ("p", 0, 9, None, None, None, None, None),                    # no delta
         ("p", 0, 10, 1, E, None, (E - 250e-6, 0x051, "00"), None),    # before the error: other
     ]
-    tmp = tempfile.mkdtemp(prefix="gi-b6-class-")
+    tmp = tempfile.mkdtemp(prefix="gi-b6-class-", dir=gi_paths.scratch("tmp", run=False))
     try:
         open(os.path.join(tmp, "x2_jam_threshold_20261020T000000.json"), "w").write("{}")
         real = C.L.arm_rows
@@ -108,7 +109,7 @@ def summary_checks(S):
                     "caveats": [], "problems": ["/gi_ecc not read: timed out"], "pulses": []},
             "ecc_page": None}
     rec = {"args": {"lead_s": 1.5}, "verdict": "INCONCLUSIVE", "arms": [arm0, arm1]}
-    tmp = tempfile.mkdtemp(prefix="gi-b6-summary-")
+    tmp = tempfile.mkdtemp(prefix="gi-b6-summary-", dir=gi_paths.scratch("tmp", run=False))
     try:
         json.dump(rec, open(os.path.join(tmp, "x2_jam_threshold_20261020T000000.json"), "w"))
         # Shaped like a record, so reading it as one shows as a second record, not a crash.
@@ -173,7 +174,7 @@ def main():
             print("ERROR    m%d %s: the substitution matches %d times" % (i, name, src.count(old)))
             errors += 1
             continue
-        tmp = tempfile.mkdtemp(prefix="gi-b6-tools-m%d-" % i)
+        tmp = tempfile.mkdtemp(prefix="gi-b6-tools-m%d-" % i, dir=gi_paths.scratch("tmp", run=False))
         try:
             for g in ("b6_class_count.py", "b6_ecc_session_summary.py", "b6_multicount_landing.py", "gi_ecc.py",
                       "x2_jammer.py"):

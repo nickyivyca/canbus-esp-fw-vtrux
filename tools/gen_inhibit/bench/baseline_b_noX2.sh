@@ -3,7 +3,7 @@
 # nor a reflash: B4, B11 and B13, the same arms as on c65c45e. Gen-inhibit tester,
 # 2026-10-16 (on c65c45e these were run by hand; this records the commands).
 #
-#   GI_COMMIT=e3d9437 GI_FW_TOOLS=... GI_WICAN_SSID=... bash baseline_b_noX2.sh [B4] [B11] [B13] [B11raw]
+#   GI_COMMIT=e3d9437 REVERSE_IT_DIR=<reverse-it root> GI_WICAN_SSID=... bash baseline_b_noX2.sh [B4] [B11] [B13] [B11raw]
 #
 # B11raw (2026-10-17, not in the default set): B11's arms with raw POSTs and a
 # Wi-Fi capture per arm, for b11_rawpost_judge.py.

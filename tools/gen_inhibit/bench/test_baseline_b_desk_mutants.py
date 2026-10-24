@@ -6,14 +6,14 @@ A crash is not a kill, and an edit that does not apply is an error.
         tools/gen_inhibit/bench/test_baseline_b_desk_mutants.py
 
 Run from the reverse-it root. Each mutant is a copy of the script with one edit, in the
-machine's temp folder, tested on the one step the edit touches (DESK_SCRIPT, --steps).
+worktree's scratch/, tested on the one step the edit touches (DESK_SCRIPT, --steps).
 About 10 minutes, most of it the B24 mutant. Gen-inhibit tester, 2026-10-19.
 """
 import os
 import shutil
 import subprocess
 import sys
-import tempfile
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(HERE, "baseline_b_desk.sh")
@@ -48,7 +48,7 @@ def main():
     if not os.environ.get("GI_BASELINE_DIR"):
         print("ERROR GI_BASELINE_DIR is not set; the test cannot run, so no mutant can be killed")
         return 1
-    base = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "baseline_b_desk")
+    base = gi_paths.scratch("mutants-baseline_b_desk")
     src = open(SRC, encoding="utf-8", newline="").read()
     killed = errors = 0
     for n, (name, step, old, new) in enumerate(MUTANTS, 1):

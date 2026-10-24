@@ -4,14 +4,13 @@ each BY A CHECK. A crash is not a kill, and an edit that does not apply is an er
 
     py -3.14 -B tools/gen_inhibit/bench/test_x2_pins_noreset_check_mutants.py
 
-Each mutant is a copy of the tool and the test in the machine's temp folder, one edit
+Each mutant is a copy of the tool and the test in the worktree's scratch/, one edit
 applied. Version 2 of the tool. Gen-inhibit tester, 2026-10-19.
 """
 import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -58,7 +57,7 @@ MUTANTS = [
 
 
 def main():
-    base = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "x2_pins_noreset")
+    base = gi_paths.scratch("mutants-x2_pins_noreset")
     src = open(os.path.join(HERE, SRC), encoding="utf-8", newline="").read()
     killed = errors = 0
     for n, (name, old, new) in enumerate(MUTANTS, 1):

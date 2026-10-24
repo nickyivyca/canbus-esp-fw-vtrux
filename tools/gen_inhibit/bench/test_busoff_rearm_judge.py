@@ -142,9 +142,10 @@ def main():
           j["verdict"].startswith("FAILS AS EXPECTED") and j["trail_0x051_noarm"] == 1, (j["verdict"], j["trail_0x051_noarm"]))
 
     import gzip, json, os, tempfile
-    if len(sys.argv) > 1:
-        os.makedirs(sys.argv[1], exist_ok=True)
-    d = tempfile.mkdtemp(dir=sys.argv[1] if len(sys.argv) > 1 else None)
+    import gi_paths   # the worktree's scratch/, not the system temp folder (harness-defects row, 2026-10-24)
+    base = sys.argv[1] if len(sys.argv) > 1 else gi_paths.scratch("busoff_rearm_judge")
+    os.makedirs(base, exist_ok=True)
+    d = tempfile.mkdtemp(dir=base)
     fr = frames()[:50]
     p = C.save_witness(os.path.join(d, "w.json.gz"), fr, [100.0, 101.0], "kvaser_hw")
     back = json.load(gzip.open(p, "rt"))

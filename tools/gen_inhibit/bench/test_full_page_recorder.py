@@ -6,7 +6,6 @@ the bottom (--mutants): each must make a check fail.
 """
 import os
 import subprocess
-import tempfile
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -55,8 +54,9 @@ MUTANTS = [
 
 def mutants():
     import shutil
+    import gi_paths   # here, not at the top: the mutant copies hold only this test and its target
     src = open(os.path.join(HERE, "full_page_recorder.py"), encoding="utf-8").read()
-    base = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "full_page_recorder_mutants")   # outside SeaDrive (AGENTS.md)
+    base = gi_paths.scratch("mutants-full_page_recorder_mutants")   # the worktree's scratch/ (AGENTS.md)
     killed = 0
     for n, (name, old, new) in enumerate(MUTANTS, 1):
         if src.count(old) != 1:

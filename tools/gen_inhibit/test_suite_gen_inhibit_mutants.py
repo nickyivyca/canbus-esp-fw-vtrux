@@ -6,7 +6,7 @@ CHECK. A crash is not a kill, and an edit that does not apply is an error.
         py -3.14 -B test_suite_gen_inhibit_mutants.py
 
 Each mutant copies suite_gen_inhibit.py, its test, the settings example and bench/
-(the suite's HARNESS, 2026-10-22) into a fresh folder in the machine's temp folder and
+(the suite's HARNESS, 2026-10-22) into a fresh folder in the worktree's scratch/ and
 applies one edit; everything else (suite_judges, bench_flash) is imported from this
 folder. Gen-inhibit tester, 2026-10-19.
 """
@@ -14,9 +14,10 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(HERE, "bench"))
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 SRC = "suite_gen_inhibit.py"
 TEST = "test_suite_gen_inhibit.py"
 EXAMPLE = "suite_gen_inhibit.settings.example.json"   # the test reads it beside itself
@@ -163,7 +164,7 @@ def main():
     if not os.environ.get("GI_BASELINE_DIR"):
         print("ERROR GI_BASELINE_DIR is not set; the test cannot run, so no mutant can be killed")
         return 1
-    base = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "suite_gen_inhibit")
+    base = gi_paths.scratch("mutants-suite_gen_inhibit")
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(p for p in (env.get("PYTHONPATH"), HERE) if p)
     killed = errors = 0

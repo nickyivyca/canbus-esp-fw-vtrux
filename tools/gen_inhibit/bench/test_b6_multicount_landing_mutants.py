@@ -4,14 +4,14 @@ BY A CHECK. A crash is not a kill, and an edit that does not apply is an error.
 
     py -3.14 -B tools/gen_inhibit/bench/test_b6_multicount_landing_mutants.py
 
-Each mutant is a copy of the script in the machine's temp folder, one edit applied, run
+Each mutant is a copy of the script in the worktree's scratch/, one edit applied, run
 by the test through LANDING_SCRIPT. Gen-inhibit tester, 2026-10-20.
 """
 import os
 import shutil
 import subprocess
 import sys
-import tempfile
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = "b6_multicount_landing.py"
@@ -34,7 +34,7 @@ MUTANTS = [
 
 
 def main():
-    base = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "b6_landing")
+    base = gi_paths.scratch("mutants-b6_landing")
     src = open(os.path.join(HERE, SRC), encoding="utf-8", newline="").read().replace("\r\n", "\n")
     killed = errors = 0
     for n, (name, old, new) in enumerate(MUTANTS, 1):

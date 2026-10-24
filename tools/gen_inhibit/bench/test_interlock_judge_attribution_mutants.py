@@ -14,8 +14,8 @@ Added 2026-10-16 with the sender-log attribution (reviewer).
 import os
 import shutil
 import subprocess
-import tempfile
 import sys
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = "interlock_judge.py"
@@ -39,7 +39,7 @@ MUTANTS = [
 
 def main():
     root = os.getcwd()
-    base = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "interlock_attr_mutants")   # outside SeaDrive (AGENTS.md)
+    base = gi_paths.scratch("mutants-interlock_attr_mutants")   # the worktree's scratch/ (AGENTS.md)
     killed = errors = 0
     for n, (name, old, new) in enumerate(MUTANTS, 1):
         d = os.path.join(base, "m%d" % n)

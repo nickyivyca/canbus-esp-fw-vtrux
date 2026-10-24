@@ -7,14 +7,13 @@ its own folder). Gen-inhibit tester.
 
 For each tool: imported in a fresh interpreter, its RUNS is GI_RUNS_DIR when set, and
 gi_paths.runs() when unset or empty. Then each tool's copy with the override taken out
-(the line as it was before 2026-10-18), in the machine's temp folder, must fail the
+(the line as it was before 2026-10-18), in the worktree's scratch/, must fail the
 same check: a check that cannot fail is not a check.
 """
 import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -37,7 +36,7 @@ def runs_of(folder, tool, value):
 
 
 def follows(folder, tool):
-    want_set = os.path.join(tempfile.gettempdir(), "gen-inhibit-runs-dir-probe")
+    want_set = gi_paths.scratch("runs-dir-probe")
     default = gi_paths.runs()
     got = (runs_of(folder, tool, want_set), runs_of(folder, tool, None), runs_of(folder, tool, ""))
     return got == (want_set, default, default), got
@@ -45,7 +44,7 @@ def follows(folder, tool):
 
 def main():
     fails = 0
-    scratch = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "runs_dir")
+    scratch = gi_paths.scratch("mutants-runs_dir")
     for t in TOOLS:
         ok, got = follows(HERE, t)
         print("%s %s follows GI_RUNS_DIR%s" % ("ok  " if ok else "FAIL", t, "" if ok else "  -- %s" % (got,)))

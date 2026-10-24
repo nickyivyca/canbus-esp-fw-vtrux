@@ -27,7 +27,7 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BATCH = os.environ.get("BATCH_DIR") or HERE
@@ -149,7 +149,7 @@ def windows_ok(name, cap_recs, win_recs, start_key, end_key):
 
 
 def main():
-    tmp = os.path.join(tempfile.gettempdir(), "gen-inhibit-capture-stop-test", "t%d" % os.getpid())
+    tmp = gi_paths.scratch("capture-stop-test")
     shutil.rmtree(tmp, ignore_errors=True)
     os.makedirs(os.path.join(tmp, "bin"))
     with open(os.path.join(tmp, "bin", "py"), "w", newline="\n") as f:

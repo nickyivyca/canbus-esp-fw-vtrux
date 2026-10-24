@@ -3,14 +3,16 @@
 replay_stimulus_delta.py (the project-folder variable, methodology 2026-10-20).
 
 Needs no project folder: it makes a fake one (a canre/ with a parser that
-returns no frames, and projects/vtrux/logs/) in a temporary folder, and runs the
-tools as subprocesses with $REVERSE_IT_DIR set, unset or wrong.
+returns no frames, and projects/vtrux/logs/) in a temporary folder under the
+worktree's scratch/, and runs the tools as subprocesses with $REVERSE_IT_DIR set,
+unset or wrong.
 
     python3 test_project_dir.py            # the checks
     python3 test_project_dir.py --mutants  # each mutant must fail a check
 """
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -20,6 +22,22 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = ("project_dir.py", "from_capture.py", "test_signals.py", "replay_stimulus_delta.py")
 
 FAILS = []
+# A machine's own path: a home folder, a sync client's folder (home-path ruling B, user 2026-10-23).
+MACHINE_PATH = re.compile(r"Seafile/|seadrive_root|NotGit|nickivyc|/home/[a-z]|[A-Za-z]:[\\/]+Users")
+
+
+def scratch_base():
+    """<worktree>/scratch/gen-inhibit-tests/tmp, where this test's temporary folders go
+    (AGENTS.md "Files and folders": not the system temp folder). The worktree is found
+    by walking up to its .git (harness-defects row, 2026-10-24)."""
+    d = HERE
+    while not os.path.exists(os.path.join(d, ".git")):
+        if os.path.dirname(d) == d:
+            raise RuntimeError("%s is in no git worktree" % HERE)
+        d = os.path.dirname(d)
+    d = os.path.join(d, "scratch", "gen-inhibit-tests", "tmp")
+    os.makedirs(d, exist_ok=True)
+    return d
 
 
 def check(name, ok, detail=""):
@@ -61,6 +79,10 @@ def checks(tree, tmp):
     nocanre = os.path.join(tmp, "nocanre")
     os.makedirs(nocanre)
     gone = os.path.join(tmp, "gone")
+    own = os.path.normcase(os.path.abspath(tmp))
+    check("its temporary folder is in the worktree's scratch/, not the system temp folder",
+          own.startswith(os.path.normcase(scratch_base()) + os.sep)
+          and not own.startswith(os.path.normcase(tempfile.gettempdir())), tmp)
 
     # ---- the resolver
     check("resolve: --project-dir is used", _resolves(pd, good, {}) == good)
@@ -102,6 +124,17 @@ def checks(tree, tmp):
           e is not None and "--project-dir" in e and gone in e, e)
     e = err(None, {"REVERSE_IT_DIR": nocanre})
     check("resolve: a folder with no canre/ is refused", e is not None and "canre" in e and nocanre in e, e)
+
+    # ---- no machine's own path (home-path ruling B, user 2026-10-23)
+    check("machine paths: the scan finds a planted home path in each form",
+          all(MACHINE_PATH.search(t) for t in ("~/Seafile/NotGit/reverse-it", "/home/someone/rit",
+                                               "C:\\Users\\someone\\rit", "seadrive_root/lib/rit")))
+    hits = ["%s: %s" % (f, m.group(0)) for f in TOOLS
+            for m in MACHINE_PATH.finditer(open(os.path.join(tree, f), encoding="utf-8").read())]
+    check("machine paths: none in the tools, their docstrings or the example", not hits, hits)
+    hits = MACHINE_PATH.findall(open(os.path.join(HERE, "README.md"), encoding="utf-8").read())
+    check("machine paths: none in this folder's README", not hits, hits)
+    check("the example is a placeholder, not a home folder", not pd.EXAMPLE.startswith("~"), pd.EXAMPLE)
 
     # ---- from_capture.py
     rc, out = run(tree, "from_capture.py", [os.path.join(good, "x.log"), "--scan"], None)
@@ -186,6 +219,8 @@ MUTANTS = [
      '    if False:\n'),
     ("project_dir.py", "a missing folder is accepted", '    if not os.path.isdir(p):\n', '    if False:\n'),
     ("project_dir.py", "~ is not expanded", '    p = os.path.expanduser(p)\n', '\n'),
+    ("project_dir.py", "the example is a home folder again", 'EXAMPLE = "/path/to/reverse-it"',
+     'EXAMPLE = "~/Seafile/NotGit/reverse-it"'),
     ("from_capture.py", "from_capture ignores --project-dir", "parse_file = load_parser(args.project_dir)",
      "parse_file = load_parser(None)"),
     ("from_capture.py", "from_capture lets the import fail instead",
@@ -204,13 +239,13 @@ MUTANTS = [
 
 def main():
     if "--mutants" not in sys.argv[1:]:
-        with tempfile.TemporaryDirectory(prefix="gi-project-dir-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="gi-project-dir-", dir=scratch_base()) as tmp:
             checks(copy_tree(os.path.join(tmp, "tree")), tmp)
         print("%d FAIL" % len(FAILS) if FAILS else "all ok")
         return 1 if FAILS else 0
     killed = 0
     for i, (f, name, old, new) in enumerate(MUTANTS, 1):
-        with tempfile.TemporaryDirectory(prefix="gi-project-dir-m%d-" % i) as tmp:
+        with tempfile.TemporaryDirectory(prefix="gi-project-dir-m%d-" % i, dir=scratch_base()) as tmp:
             tree = copy_tree(os.path.join(tmp, "tree"))
             p = os.path.join(tree, f)
             s = open(p, encoding="utf-8").read()
@@ -234,7 +269,7 @@ def main():
 
 if __name__ == "__main__":
     if sys.argv[1:2] == ["--in-tree"]:
-        with tempfile.TemporaryDirectory(prefix="gi-project-dir-t-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="gi-project-dir-t-", dir=scratch_base()) as tmp:
             checks(sys.argv[2], tmp)
         print("%d FAIL" % len(FAILS) if FAILS else "all ok")
         sys.exit(1 if FAILS else 0)

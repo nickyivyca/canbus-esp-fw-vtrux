@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests failed_upload_probe.py. No device: loopback servers and synthetic pages.
 
-    GI_FW_TOOLS=<firmware repo>/tools/gen_inhibit py -3.14 test_failed_upload_probe.py [--mutants]
+    REVERSE_IT_DIR=<reverse-it root> py -3.14 test_failed_upload_probe.py [--mutants]
 
 short_post runs against a local server that counts the body bytes it receives
 and when the client's FIN arrives, and either replies after it or just closes.
@@ -17,7 +17,7 @@ import shutil
 import socket
 import subprocess
 import sys
-import tempfile
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 import threading
 import time
 
@@ -191,7 +191,7 @@ MUTANTS = [
 
 def mutants():
     src0 = open(os.path.join(HERE, "failed_upload_probe.py"), encoding="utf-8").read()
-    base = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "failed_upload_mutants")   # outside SeaDrive
+    base = gi_paths.scratch("mutants-failed_upload_mutants")   # the worktree's scratch/ (AGENTS.md)
     killed = errors = 0
     for n, (name, old, new) in enumerate(MUTANTS, 1):
         if src0.count(old) != 1:

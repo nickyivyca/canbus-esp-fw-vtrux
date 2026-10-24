@@ -11,7 +11,7 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -234,7 +234,7 @@ MUTANTS = [
 
 def mutants():
     src = open(os.path.join(HERE, "mode_change_judge.py"), encoding="utf-8").read()
-    base = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "mode_change_mutants")   # outside SeaDrive
+    base = gi_paths.scratch("mutants-mode_change_mutants")   # the worktree's scratch/ (AGENTS.md)
     killed = errors = 0
     for n, (name, old, new) in enumerate(MUTANTS, 1):
         if src.count(old) != 1:

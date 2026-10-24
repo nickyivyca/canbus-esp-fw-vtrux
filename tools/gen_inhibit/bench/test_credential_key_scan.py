@@ -12,6 +12,7 @@ import io
 import os
 import subprocess
 import sys
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 import tempfile
 from contextlib import redirect_stdout
 
@@ -51,7 +52,7 @@ def tree(root):
 
 
 def checks(M):
-    with tempfile.TemporaryDirectory(prefix="gi-cks-") as root:
+    with tempfile.TemporaryDirectory(prefix="gi-cks-", dir=gi_paths.scratch("tmp", run=False)) as root:
         tree(root)
         buf = io.StringIO()
         with redirect_stdout(buf):
@@ -111,7 +112,7 @@ def main():
         if name == "the value is captured as the key":
             mut = mut.replace('out["key:%s" % m.group(1).decode("ascii", "replace").lower()] += 1',
                               'out["key:%s=%s" % (m.group(1).decode("ascii", "replace").lower(), m.group(2).decode())] += 1')
-        with tempfile.TemporaryDirectory(prefix="gi-cks-m%d-" % i) as tmp:
+        with tempfile.TemporaryDirectory(prefix="gi-cks-m%d-" % i, dir=gi_paths.scratch("tmp", run=False)) as tmp:
             mp = os.path.join(tmp, "credential_key_scan.py")
             open(mp, "w", encoding="utf-8").write(mut)
             r = subprocess.run([sys.executable, "-B", os.path.abspath(__file__), "--module", mp],

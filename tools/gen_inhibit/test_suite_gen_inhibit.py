@@ -21,11 +21,26 @@ import json
 import os
 import shutil
 import sys
-import tempfile
 import threading
 import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def scratch_dir(name):
+    """This run's own folder in the worktree's gitignored scratch/ (AGENTS.md "Files and
+    folders"), never the system temp folder: bench/gi_paths.scratch()'s rule, written out
+    here because a mutant's copy of this file has no bench/ beside it. The worktree is
+    found by walking up to its .git, so a copy in its scratch/ finds the same one."""
+    import time
+    d = os.path.dirname(os.path.abspath(__file__))
+    while not os.path.exists(os.path.join(d, ".git")):
+        if os.path.dirname(d) == d:
+            raise RuntimeError("%s is in no git worktree" % __file__)
+        d = os.path.dirname(d)
+    d = os.path.join(d, "scratch", "gen-inhibit-tests", name, "%s_%d" % (time.strftime("%Y%m%dT%H%M%S"), os.getpid()))
+    os.makedirs(d, exist_ok=True)
+    return d
 sys.path.insert(0, HERE)
 
 from vtrux_bench.run import cli as CLI                       # noqa: E402
@@ -34,7 +49,7 @@ from vtrux_bench.run.model import CheckRun, validate         # noqa: E402
 import suite_gen_inhibit as SG                               # noqa: E402
 
 SSID = "WiCAN_" + "0f" * 6   # made up for the test, and built so this file has no SSID-form literal (test_publish_scan.py)
-BASE = os.path.join(tempfile.gettempdir(), "gen-inhibit-suite-test", str(os.getpid()))
+BASE = scratch_dir("suite_gen_inhibit")
 fails = []
 oks = 0
 

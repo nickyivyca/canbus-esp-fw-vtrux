@@ -82,6 +82,34 @@ def fw_tools():
     return os.path.normpath(os.path.join(HERE, ".."))
 
 
+def worktree_of(path):
+    """The git worktree holding path: the nearest folder upwards with a .git (a folder
+    in a clone, a file in a worktree). Found by walking up, not by counting, so a copy
+    of a file in that worktree's scratch/ (a mutant's) finds the same one."""
+    d = os.path.abspath(path)
+    while True:
+        if os.path.exists(os.path.join(d, ".git")):
+            return d
+        up = os.path.dirname(d)
+        if up == d:
+            raise PathsError("%s is in no git worktree" % path)
+        d = up
+
+
+def scratch(name, run=True, start=None):
+    """A test's or mutant runner's own folder in the worktree's gitignored scratch/
+    (AGENTS.md "Files and folders"), never the system temp folder:
+    <worktree>/scratch/gen-inhibit-tests/<name>/<time>_<pid> with run, so two runs at
+    once never share one; without run, <...>/<name> itself. Created; start is the file
+    whose worktree is meant (default this module's). Harness-defects row, 2026-10-24."""
+    import time
+    d = os.path.join(worktree_of(start or HERE), "scratch", "gen-inhibit-tests", name)
+    if run:
+        d = os.path.join(d, "%s_%d" % (time.strftime("%Y%m%dT%H%M%S"), os.getpid()))
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
 def reverse_it_dir():
     """SeaDrive's reverse-it root, from REVERSE_IT_DIR."""
     v = os.environ.get("REVERSE_IT_DIR", "").strip()

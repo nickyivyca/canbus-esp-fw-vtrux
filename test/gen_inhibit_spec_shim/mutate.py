@@ -8,7 +8,8 @@ A judge mutant (nonode_judge.c) is caught when judge_test prints a FAIL line. A
 layer or case mutant (spec_layer.c, nonode_test.c) is caught when a case run
 prints a RESULT line that is not PASS. A crash, a build failure or a run with no
 RESULT line is NOT a catch, and an edit that does not apply is an error. Each
-mutant is a copy in the machine's temp folder; nothing here is edited.
+mutant is a copy in this run's own folder in the worktree's scratch/, with its
+binary beside it, so two runs at once share nothing; nothing here is edited.
 Gen-inhibit tester, 2026-10-20.
 """
 import os
@@ -16,9 +17,24 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def scratch_dir(name):
+    """This run's own folder in the worktree's gitignored scratch/ (AGENTS.md "Files and
+    folders"), never the system temp folder: tools/gen_inhibit/bench/gi_paths.scratch()'s
+    rule, written out here. The worktree is found by walking up to its .git
+    (harness-defects row, 2026-10-24)."""
+    d = HERE
+    while not os.path.exists(os.path.join(d, ".git")):
+        if os.path.dirname(d) == d:
+            raise RuntimeError("%s is in no git worktree" % HERE)
+        d = os.path.dirname(d)
+    d = os.path.join(d, "scratch", "gen-inhibit-tests", name, "%s_%d" % (time.strftime("%Y%m%dT%H%M%S"), os.getpid()))
+    os.makedirs(d, exist_ok=True)
+    return d
 
 J, L, T = "nonode_judge.c", "spec_layer.c", "nonode_test.c"
 MUTANTS = [
@@ -112,9 +128,8 @@ def main(argv):
     if "--only" in argv:
         only = {int(x) for x in argv[argv.index("--only") + 1].split(",")}
     here = HERE if local else wsl_path(HERE)
-    base = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "spec_shim")
-    shutil.rmtree(base, ignore_errors=True)
-    os.makedirs(base)
+    base = scratch_dir("mutants-spec_shim")
+    print("work folder: %s" % base)
     caught = errors = 0
     picked = [(n, m) for n, m in enumerate(MUTANTS, 1) if only is None or n in only]
     for n, mut in picked:
@@ -130,7 +145,8 @@ def main(argv):
         mp = os.path.join(d, f)
         open(mp, "w", encoding="utf-8", newline="").write(src.replace(old, new))
         m = mp if local else wsl_path(mp)
-        bin_ = "/tmp/spec_shim_m%d" % n
+        bin_ = os.path.join(d, "spec_shim_m%d" % n)          # this mutant's folder, not a shared /tmp name
+        bin_ = bin_ if local else wsl_path(bin_)
         if f == J:
             cmd = ('cd "%s" && gcc -std=c11 -I. -o %s judge_test.c "%s" && %s; rm -f %s'
                    % (here, bin_, m, bin_, bin_))

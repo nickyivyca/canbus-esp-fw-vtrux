@@ -1,9 +1,9 @@
 """Where the reverse-it project folder is, for the tools in this folder.
 
 The project folder (canre, the DBCs, the captures) is a SEPARATE tree from this
-firmware repo, and it is somewhere else on every machine: under
-seadrive_root/<library>/... where SeaDrive holds it, under ~/Seafile/... on
-madhouse-debian. So there is no default path (methodology, 2026-10-20): it
+firmware repo, and it is wherever that machine's SeaDrive or Seafile client
+syncs it (each worktree's local-paths.md records the value). So there is no
+default path (methodology, 2026-10-20): it
 comes from --project-dir, else from $REVERSE_IT_DIR, and neither is an error
 that names the variable. A default that missed used to fail later as
 "No module named 'canre'", which points at Python rather than at the setting.
@@ -15,7 +15,7 @@ interposer's tools); under WSL it crosses over with WSLENV=REVERSE_IT_DIR/p.
 import os
 
 VAR = "REVERSE_IT_DIR"
-EXAMPLE = "~/Seafile/NotGit/reverse-it"
+EXAMPLE = "/path/to/reverse-it"     # a placeholder: no real machine's path (user, 2026-10-23)
 
 
 class ProjectDirError(Exception):

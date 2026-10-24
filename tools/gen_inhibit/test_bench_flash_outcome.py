@@ -17,6 +17,22 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def scratch_dir(name):
+    """This run's own folder in the worktree's gitignored scratch/ (AGENTS.md "Files and
+    folders"), never the system temp folder: bench/gi_paths.scratch()'s rule, written out
+    here because a mutant's copy of this file has no bench/ beside it. The worktree is
+    found by walking up to its .git, so a copy in its scratch/ finds the same one."""
+    import time
+    d = os.path.dirname(os.path.abspath(__file__))
+    while not os.path.exists(os.path.join(d, ".git")):
+        if os.path.dirname(d) == d:
+            raise RuntimeError("%s is in no git worktree" % __file__)
+        d = os.path.dirname(d)
+    d = os.path.join(d, "scratch", "gen-inhibit-tests", name, "%s_%d" % (time.strftime("%Y%m%dT%H%M%S"), os.getpid()))
+    os.makedirs(d, exist_ok=True)
+    return d
 sys.path.insert(0, HERE)
 import bench_flash as B      # noqa: E402
 
@@ -304,7 +320,7 @@ def main():
     blob[0x20:0x24] = (0xABCD5432).to_bytes(4, "little")
     blob[0x20 + 0x70:0x20 + 0x90] = b"\x11" * 32
     blob[0x20 + 0x90:0x20 + 0xB0] = bytes(range(32))
-    with tempfile.TemporaryDirectory() as td:
+    with tempfile.TemporaryDirectory(dir=scratch_dir("bench_flash_outcome")) as td:
         path = os.path.join(td, "img.bin")
         open(path, "wb").write(bytes(blob))
         got = B.image_elf_sha256(path)

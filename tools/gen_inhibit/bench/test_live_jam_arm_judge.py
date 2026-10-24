@@ -13,6 +13,13 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import live_jam_arm as L                                        # noqa: E402
+import gi_paths                                                 # noqa: E402
+
+# The fixture's record, in SeaDrive since the move (goal 20, 2026-10-22): the
+# 2026-10-12 livetrain runs went into the baseline folder (reviewer, 2026-10-24),
+# and this is the file's sha256 there and in madhouse's copy.
+FIXTURE = ("baseline_c65c45e", "bench", "x2_jam_livetrain_20261012T185212.json")
+FIXTURE_SHA256 = "d4f9c7c5106a02a13fd48ea317439c41f6e5f49ec7b378a847681a8487420d66"
 
 TRIP6 = "error-frame rate exceeded"
 
@@ -175,15 +182,25 @@ CASES = [
 ]
 
 
+def fixture_record(raw):
+    """The fixture's record from its bytes, refused (ValueError) unless they hash to
+    FIXTURE_SHA256."""
+    import hashlib
+    import json
+    got = hashlib.sha256(raw).hexdigest()
+    if got != FIXTURE_SHA256:
+        raise ValueError("%s has sha256 %s, not the fixture's %s" % ("/".join(FIXTURE), got, FIXTURE_SHA256))
+    return json.loads(raw.decode("ascii"))
+
+
 def fixture_185212_arm2(bump=False):
-    """The real pair: runs/x2_jam_livetrain_20261012T185212.json arm 2, shaped as
+    """The real pair: x2_jam_livetrain_20261012T185212.json arm 2 (FIXTURE), shaped as
     x2_jam_cases.case_livetrain shapes it for the judge. bump=True raises tx_ok by
     one on every reading from +1.30 s after the jam start: the same frames with the
-    device having completed a transmit must read as a device frame."""
-    import json
-    here = os.path.dirname(os.path.abspath(__file__))
-    r = json.load(open(os.path.join(here, "runs", "x2_jam_livetrain_20261012T185212.json"),
-                       encoding="ascii"))
+    device having completed a transmit must read as a device frame. A file whose
+    sha256 is not FIXTURE_SHA256 is refused, not judged."""
+    with open(gi_paths.runs(*FIXTURE), "rb") as f:
+        r = fixture_record(f.read())
     arm = r["arms"][2]
     ph = arm["phases"]
     lo, hi = ph["replay_start"] - 1, ph["mode0_posted"] + 1
@@ -222,6 +239,18 @@ def main():
                                       out.get("device_reset_seen_rel_jam_s")))
         if not ok:
             failures.append(label)
+    with open(gi_paths.runs(*FIXTURE), "rb") as f:
+        raw = f.read()
+    refused = []
+    for what, bad in (("one byte changed", raw[:-2] + bytes([raw[-2] ^ 1]) + raw[-1:]), ("one byte added", raw + b" ")):
+        try:
+            fixture_record(bad)
+        except ValueError:
+            refused.append(what)
+    ok = len(refused) == 2 and fixture_record(raw)["arms"][2]
+    print("  %-4s %-40s %s" % ("ok" if ok else "FAIL", "fixture: other bytes are refused", refused))
+    if not ok:
+        failures.append("fixture: other bytes are refused")
     out = L.judge(fixture_185212_arm2())
     ok = (out["B"] == "PASS" and len(out["vcm_duplicates_not_judged"]) == 1
           and abs(out["vcm_duplicates_not_judged"][0] - 1.2698) < 0.001)

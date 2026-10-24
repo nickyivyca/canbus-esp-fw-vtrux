@@ -7,7 +7,7 @@ Three pulses 1 s apart; the device's bus_error reads +1, +11, +1 over them; fram
 the wire put an 0x051 260 us after pulse 2's error frame and 6.65 ms before it. The
 script must find one multi-count pulse (pulse 2, delta 11), with those neighbours, and
 two others. LANDING_SCRIPT overrides the script under test (the mutant runner).
-Scratch goes to the machine's temp folder. Gen-inhibit tester, 2026-10-20.
+Scratch goes to the worktree's scratch/. Gen-inhibit tester, 2026-10-20.
 """
 import gzip
 import importlib.util
@@ -16,7 +16,7 @@ import json
 import os
 import shutil
 import sys
-import tempfile
+import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 from contextlib import redirect_stdout
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -68,7 +68,7 @@ def make(root):
 
 
 def main():
-    root = os.path.join(tempfile.gettempdir(), "gen-inhibit-landing-test", "t%d" % os.getpid())
+    root = gi_paths.scratch("landing-test")
     shutil.rmtree(root, ignore_errors=True)
     os.makedirs(root)
     try:

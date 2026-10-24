@@ -14,7 +14,7 @@ SAFETY: refused unless the device is in mode 0 and runs the image given (its
 page's elf_sha256), so an upload that was wrongly taken could only re-install the
 running build.
 
-    GI_FW_TOOLS=<firmware repo>/tools/gen_inhibit GI_WICAN_SSID=... py -3.14 ota_armed_bench.py --image <running .bin> [--seconds 40] [--lead 3]
+    REVERSE_IT_DIR=<reverse-it root> GI_WICAN_SSID=... py -3.14 ota_armed_bench.py --image <running .bin> [--seconds 40] [--lead 3]
 Writes runs/ota_armed_<stamp>.json (+ the e4 run and the page recording beside it).
 Tested by test_batch3_bench_judge.py (its record handling).
 """

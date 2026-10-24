@@ -33,9 +33,24 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def scratch_dir(name):
+    """This run's own folder in the worktree's gitignored scratch/ (AGENTS.md "Files and
+    folders"), never the system temp folder: bench/gi_paths.scratch()'s rule, written out
+    here because a mutant's copy of this file has no bench/ beside it. The worktree is
+    found by walking up to its .git, so a copy in its scratch/ finds the same one."""
+    import time
+    d = os.path.dirname(os.path.abspath(__file__))
+    while not os.path.exists(os.path.join(d, ".git")):
+        if os.path.dirname(d) == d:
+            raise RuntimeError("%s is in no git worktree" % __file__)
+        d = os.path.dirname(d)
+    d = os.path.join(d, "scratch", "gen-inhibit-tests", name, "%s_%d" % (time.strftime("%Y%m%dT%H%M%S"), os.getpid()))
+    os.makedirs(d, exist_ok=True)
+    return d
 TEXT_EXT = (".py", ".md", ".txt", ".json", ".ini", ".cfg", ".toml", ".csv", ".sh", ".ps1", ".c", ".cpp", ".h")
 SUBDIRS = ("bench", "x2_jammer")          # scanned recursively; this folder's own files are not
 
@@ -108,7 +123,7 @@ def report(root, own=None, quiet=False):
 
 def reach_check():
     """Section 5: a planted tree, each plant in a place or kind the scan must reach."""
-    d = os.path.join(tempfile.gettempdir(), "gen-inhibit-publish-scan-reach")
+    d = scratch_dir("publish_scan_reach")
     shutil.rmtree(d, ignore_errors=True)
     plants = {
         "bench/x2_tool.py": (b"DUMP = 'canx2_s3_3c0f02a1b2c3_full_%s.bin'\n", "bare MAC (a bench board's vendor prefix)"),

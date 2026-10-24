@@ -20,14 +20,18 @@ import math
 import os
 import re
 import sys
-import tempfile
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# Scratch: the argument, or the machine's temp folder (never the repo; it was gen/ here).
-SCRATCH = sys.argv[1] if len(sys.argv) > 1 else os.path.join(tempfile.gettempdir(), "gen-inhibit-interlock-judge")
+# Scratch: the argument, or this run's own folder in the worktree's scratch/ (it was gen/ beside
+# this file once; then a fixed folder in the worktree's scratch/).
+SCRATCH = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else gi_paths.scratch("interlock_judge"))
 sys.path.insert(0, HERE)
 sys.path.insert(0, gi_paths.reverse_it_dir())
+# interlock_bench writes the stimulus files it builds to <GI_RUNS_DIR>/interlock_stimulus,
+# fixed at import. Unset, that is SeaDrive's runs/, and every run of this test rewrote
+# the stimuli the bench runs recorded (harness-defects row, 2026-10-24).
+os.environ["GI_RUNS_DIR"] = os.path.join(os.path.abspath(SCRATCH), "runs")
 
 import interlock_judge as J      # noqa: E402
 import interlock_bench as B      # noqa: E402
@@ -774,6 +778,9 @@ def test_common():
         check("build: %s records the injected frame and the payload it replaced" % case,
               len(inj) == 2 * dlc and len(orig) == 12 and inj[:10] == orig[:10] and inj != orig,
               "%r %r" % (inj, orig))
+        check("build: %s records its stimulus file relative to the run folder that holds it" % case,
+              info.get("file") == "interlock_stimulus/%s.scn" % case
+              and os.path.isfile(os.path.join(B.RUNS, info["file"])), info.get("file"))
     h0 = "080080ff7f0b"
     h1 = B.encode_sig(J.PTX, 0x051, h0, "gen_torque_cmd", -50)
     d = J.decode(J.PTX, 0x051, h1)
@@ -999,11 +1006,24 @@ def test_modes_at(scratch):
     check("modes_at: a mode line after the last frame is refused", refused)
 
 
+def seadrive_stimuli():
+    """{path: (mtime_ns, size)} of the stimulus files in SeaDrive's runs/interlock_stimulus/."""
+    d = os.path.join(gi_paths.runs(), "interlock_stimulus")
+    out = {}
+    for n in (os.listdir(d) if os.path.isdir(d) else []):
+        st = os.stat(os.path.join(d, n))
+        out[n] = (st.st_mtime_ns, st.st_size)
+    return out
+
+
 def main():
+    seadrive_before = seadrive_stimuli()
+    check("stimulus files are built under the scratch folder, not SeaDrive's runs/",
+          os.path.commonpath([os.path.abspath(B.STIM_DIR), os.path.abspath(SCRATCH)]) == os.path.abspath(SCRATCH)
+          and os.path.abspath(gi_paths.runs()) not in os.path.abspath(B.STIM_DIR), B.STIM_DIR)
     # Absolute (2026-10-16): make_scenarios runs with the firmware clone's host folder
     # as its cwd, so a relative scratch path wrote generated scenarios into that clone.
-    scratch = os.path.abspath(sys.argv[1] if len(sys.argv) > 1
-                              else os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "test_interlock_scratch"))
+    scratch = SCRATCH
     os.makedirs(scratch, exist_ok=True)
     test_soc()
     test_boundary()
@@ -1024,6 +1044,10 @@ def main():
     test_model_vs_host(scratch)
     test_model_rekey(scratch)
     test_modes_at(scratch)
+    after = seadrive_stimuli()
+    check("no stimulus file in SeaDrive's runs/interlock_stimulus/ was written or added",
+          after == seadrive_before, sorted(n for n in set(after) | set(seadrive_before)
+                                           if after.get(n) != seadrive_before.get(n))[:5])
     print("\n%d checks, %d failed" % (NCHK, NFAIL))
     return 1 if NFAIL else 0
 
