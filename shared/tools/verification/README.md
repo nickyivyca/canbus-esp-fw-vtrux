@@ -21,6 +21,8 @@ none and must pass. A check that no fake can fail is not a check.
 | `verify_image.py` | R1, R2 and R15 (the library side). On synthetic images: the code hash and its blanked ranges, which fields keep it and which change it, refusal of a truncated, padded or badly sealed image, and that reading never patches the file. With `--same`, `--different` and `--expect-code`, on real images: the same checks, plus one shared code hash across builds of the same files. Where an `.elf` sits beside a `.bin`, it also checks R1 against the ELF's sha256. 8 fakes. |
 | `verify_digest.py` | R7, by its properties only, since SPEC does not define the serialisation. Pairs that R7 says cover the same thing give one digest: a copy elsewhere, an mtime change, `*.md` added, a root `.gitignore`, an empty folder, a `.git` above. Pairs that differ in what it covers give two: a content byte, a rename or move, an empty file, `__pycache__`, CRLF, `README.md.txt`, a dotfile. `component_files` lists exactly what R7 covers. With `--commit`, the component checked out at a commit and exported with `git archive` give one digest. 12 fakes. Left out until the reviewer rules: `.gitignore` below the root, `.markdown`, `*.md` case, and the path separator across host OSes. |
 
+| `release_cases.py` | Real release builds: R5, R8-R11, R13, R14 with R3, R16 (`override_path`), R22. It clones gen-inhibit at `--base` into `--root` and adds a fixture commit: `vtrux_build.json`, reproducible build on, and the tracked files as `idf.py reconfigure` writes them. Branch `fx-r11` deletes the build's own `.bin`; branch `fx-r16` takes a shared component from a local folder. A minimal second project for R22 is IDF's `hello_world` on esp32c3. Records go to a stand-in `REVERSE_IT_DIR` under `--root`. Each case judges from outside: the exit code, the record folder before and after, the build folder and git. It never judges message wording. A case whose trigger did not happen is VOID. Before each case it checks the bench lock, the "No builds" line and running simulators, and stops if any is set. `--self-test` runs the R13 record judge and the second-build judge against broken inputs. |
+
 ## Running
 
 From this folder, with the Python command in `local-paths.md` and `-B` (a
@@ -31,7 +33,14 @@ py -3.14 -B verify_image.py --self-test
 py -3.14 -B verify_image.py [--same A.bin B.bin ...] [--different C.bin] [--expect-code PREFIX]
 py -3.14 -B verify_digest.py --self-test
 py -3.14 -B verify_digest.py [--commit <commit> [--component shared/tools]]
+py -3.14 -B release_cases.py --self-test
 ```
+
+`release_cases.py` runs from an exported ESP-IDF shell, with its Python:
+`python -B release_cases.py --root <short folder in scratch/> --out <run folder>
+--base <gen-inhibit commit> [--cases a,b] [--jobs N] [--fixture <repo>]`.
+Set `REAL_REVERSE_IT_DIR` to the real reverse-it folder so it can read the "No
+builds" line. Keep `--root` short: the IDF build paths under it are long.
 
 Exit 0 is all ok, 1 is a FAIL. The run records go to the gen-inhibit harness
 folder in reverse-it (`projects/vtrux/notes/artifacts/gen-inhibit/runs/`), and
