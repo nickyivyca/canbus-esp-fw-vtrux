@@ -14,9 +14,10 @@ machine's.
 The files in `vtrux_build/` and `tests/` listed below are the implementor's:
 product tooling and its unit tests (gen-inhibit reviewer, 2026-10-23, batch
 C6f). The build checks, SPEC R17 to R21, and the comparison tool of port
-plan goal 6 are the tester's (the same ruling), in files of their own,
-added to this table when they land. They read the build through the
-interface below and do not change it.
+plan goal 6 are the tester's (the same ruling), in files of their own:
+`verification/` and `vtrux_checks/` in the table below, with the rest
+added when they land. They read the build through the interface below and
+do not change it.
 
 ## Running it
 
@@ -177,3 +178,5 @@ the module docstring (`RECORD_SCHEMA` 1).
 | `tests/test_*.py` | unit tests, one file per module (`toolchain.py`'s are in `test_release.py`, with the check that uses it); each runs alone (`python -B shared/tools/tests/test_image.py`) or all with `python -B -m unittest discover -s shared/tools/tests` |
 | `tests/imagekit.py` | synthetic app images for the tests, so no firmware image is committed |
 | `tests/scratch.py` | the tests' scratch folders: `<worktree>/scratch/shared-tools-tests/` where git ignores `scratch/` (a project worktree), else the machine temp folder's `vtrux-build-tests/` |
+| `verification/` | the tester's: its verification of this tooling against `SPEC.md`, the evidence behind `VERIFICATION.md`, and the build checks' real-build cases; its `README.md` lists the files |
+| `vtrux_checks/` | the tester's: the build checks, SPEC R17 to R21, reading a finished build through the interface above; their per-project data is the tester's `vtrux_checks.json` in the project's root; its `README.md` lists the checks |
