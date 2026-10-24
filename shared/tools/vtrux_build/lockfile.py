@@ -99,9 +99,8 @@ def read(path):
 
 def lf_sha256(data):
     """SHA-256 of data (bytes) with CRLF line endings normalised to LF
-    (SPEC R13): the reconfigure on Windows rewrites dependencies.lock with
-    CRLF while git status stays clean, so one lock gives one hash on any
-    host and in any checkout."""
+    (SPEC R13), so one lock gives one hash whatever its line endings, on
+    any host and in any checkout."""
     return hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()
 
 
