@@ -171,6 +171,14 @@ Board state, what is on each board, stays in
   session releases by hand when it is done.
 - After a LOCK LOST the runner releases nothing. If the runner dies, the
   lock stays held under its PID until `clear`.
+- **Board reads after a LOCK LOST are not prevented** (user, 2026-10-24):
+  the runner may still identify boards after it has lost the lock, and
+  nothing enforces otherwise. A role that sees such reads in its run's
+  record tells the session that held the bench at that time, with what was
+  read, how and when, so that session can re-run any test that looked off
+  nominal around then. Seen first in the gen-inhibit tester's cutover
+  check, run `b014` (2026-10-24): after LOCK LOST it identified the WiCAN
+  by HTTP and the X2 off the wire.
 
 ## 7. Cutover
 
