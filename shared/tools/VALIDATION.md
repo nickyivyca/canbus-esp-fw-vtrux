@@ -86,6 +86,10 @@ same folder. The interposer's test evidence is
   PlatformIO, not ESP-IDF 5.4.1.
 - **Measurement:** the R2 entry. Same host at two paths: byte-identical,
   `.bin` and ELF, on both hosts. Across hosts: the same code hash.
+- **Corrected 2026-10-23 (user):** the first bullet read "the same files ...
+  give the same image hash", which R4 makes false across commits. Exposed by
+  the implementor's reading on C6f. The basis, goal 11's "same files, same
+  identity", is met by the code hash.
 - **Status:** complete.
 
 ### R6. Identity never rests on the version string or the file name
@@ -123,6 +127,11 @@ same folder. The interposer's test evidence is
   (R6). With identity no longer in the name, what remains is that the
   record's commit (R13) must describe the image, which holds only if nothing
   outside that commit was built.
+- **Extended 2026-10-23 (user):** the checks after the reconfigure and at the
+  end follow from the same reason: a reconfigure that rewrites a tracked
+  file (`sdkconfig`, `dependencies.lock`), or a HEAD that moves during the
+  build, leaves an image the record's commit does not describe. Raised by
+  the implementor on C6f; not yet seen on a real build.
 - **Status:** complete.
 
 ### R9. Reconfigure first
