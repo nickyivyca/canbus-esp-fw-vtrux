@@ -1,0 +1,2 @@
+# What make builds here (all and asan both write this one binary).
+/sched_test
