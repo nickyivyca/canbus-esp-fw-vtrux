@@ -1117,7 +1117,7 @@ there is no `--case` flag) replays the whole 9,221 s session from plug-in,
 where the pilot timer reads 0, so the core joins the session and overrides
 the ceiling at t=7427.0 s (18,753 frames modified, verified 2026-09-30 --
 it is 18,735 since the plug-out rule landed, see the `evap_80pct` row in
-`../README.md`). Read the two together -- the differential proves the
+`../SIMULATOR.md`). Read the two together -- the differential proves the
 C++ port matches `machine.py`, and `regress.py` proves the decision is right
 on the truck's own bytes. Decided with the review session 2026-09-30.
 

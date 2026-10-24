@@ -1,6 +1,9 @@
-# charge-interposer/
+# charge-interposer simulator
 
-Three-way CAN bench for the Vtrux charge interposer: a board that sits between
+Who owns each file: `README.md`. Paths beginning `projects/vtrux/` are in the
+`reverse-it` project on SeaDrive, not in this repository.
+
+Three-way CAN simulator for the Vtrux charge interposer: a board that sits between
 the Bel Fuse charger and the rest of the powertrain bus so the truck can be
 charged to 100 % even while the VCU's evap-purge routine wants to stop it at
 80 %.
@@ -31,102 +34,16 @@ charger, then `vehicle_sim.py` for the real truck.
 
 ---
 
-## Where this tree lives, and what not to build from it
-
-This folder is `charge-interposer/` at the root of
-`nickyivyca/canbus-esp-fw-vtrux`. It moved here on 2026-10-08 from
-`projects/vtrux/tools/interposer/` in the `reverse-it` SeaDrive project;
-that copy is frozen and is being replaced by a pointer.
-
-**Never build or flash WiCAN firmware from this clone.** The WiCAN tree
-around this folder is `gen-inhibit/rollback-fix` at `45b6871`, 92 commits
-behind: diag schema 2, four versions behind the bench's 6, and no
-transmit scheduler. (Verified in this clone: `GI_DIAG_SCHEMA_VER 2` at
-`main/gen_inhibit_core.h:112` here, against 6 at :220 in
-`~/Git/wican-fw-vtrux`.) Nothing here depends on it
-and nothing here should be used to produce a WiCAN image. The gen-inhibit
-component builds only from `~/Git/wican-fw-vtrux`.
-
-**The spec and its paperwork did not move.** They stay in `reverse-it`
-under `projects/vtrux/notes/`:
-
-| What | Where, in `reverse-it` |
-|---|---|
-| Spec -- the source of truth for behaviour | `projects/vtrux/notes/charge-interposer-spec.md` |
-| Review tracker | `projects/vtrux/notes/charge-interposer/charge-interposer-review.md` |
-| Test evidence | `projects/vtrux/notes/charge-interposer-test-evidence.md` |
-| Bench harnesses and captures | `projects/vtrux/notes/artifacts/interposer-firmware/` |
-
-So every `projects/vtrux/...` path in this README is a path in
-`reverse-it`, not in this repo. Relative links to them went stale the
-moment this folder moved and have been rewritten to say so.
-
-**Captures and DBCs are reached through two harness settings**, read by
-`paths.py`. `REVERSE_IT_DIR` points at the root of the `reverse-it` project
-folder (`canre`, and `projects/vtrux` below it with the captures); it
-replaced `VTRUX_DATA`, which pointed at `projects/vtrux` (user,
-2026-10-20). `VTRUX_PUBLIC_REPO` points at a clone of the public
-`nickyivyca/canbus-reveng-vtrux-coda` for the vehicle DBCs, defaulting to
-`../canbus-reveng-vtrux-coda` from the repo root. Both are the tester's,
-and are described in `reverse-it`'s `tools-reference.md`.
-
----
-
 ## What the interposer does
 
 Specified in **`projects/vtrux/notes/charge-interposer-spec.md`**, the single source of
 truth for arming, the override, the release, the trips and the diagnostics.
-This README covers only the bench. One design fact the bench code leans on
+This file covers only the simulator. One design fact the bench code leans on
 directly and is easy to get wrong: page 00 `cmd_Mode` 3 is a **hold**, not a
 completion state -- the charger keeps delivering ~2.4 A in it, and 3 -> 1
 restarts full current. The enum (0 Export, 1 Charger, 2 Stand-By, 3 Charger
 Low Power, 4 Invalid) is confirmed from the EPRI binary and on the bus; see
 `projects/vtrux/notes/epri-decompile.md`.
-
----
-
-## Files
-
-| File | What |
-|------|------|
-| `machine.py` | **The state machine.** Pure: no imports at all, integer arithmetic in fixed units, time passed in as a parameter. This is what ports to the micro; everything else exists to exercise it. |
-| `protocol.py` | The `0x18EFC000` page map plus DBC-backed encode/decode for the BMS (`epri-pt-bus.dbc`) and charger (`BelInverter-v2.dbc`) frames. |
-| `pack.py` | 116-cell LFP pack model: OCV curve, IR drop, per-cell imbalance, passive balancing, and the BMS charge-current taper. Fitted to three real captures. |
-| `bus.py` | Transport factory (virtual `udp_multicast` or a real dongle brand) + `EchoSuppressor` + the segment-isolation guard. |
-| `paths.py` | **Where the data that is not in this repo lives.** The captures, the DBCs, the harness fixtures and `canre` are in SeaDrive, outside this clone; this resolves them from `REVERSE_IT_DIR`, raising `PathsError` naming the variable rather than returning a wrong path, so a missing setting fails at the first call instead of producing an empty result set. Not every test needs it. Under WSL pass it with `WSLENV=REVERSE_IT_DIR/p`. |
-| `paths_test.py` | Offline test for the above: every resolver, and the refusal when `REVERSE_IT_DIR` is unset. Needs nothing set itself. |
-| `vehicle_sim.py` | VCU + A123 BMS + the VCM's evap flag (0x649). `--mode model` (closed loop) or `--mode replay` (real capture). |
-| `charger_sim.py` | Bel Fuse charger/inverter, including fault injection. |
-| `interposer_sim.py` | The board, as a process. I/O only -- all logic is in `machine.py`. |
-| `replay.py` | Replays real captures: offline into the core, or onto a live segment, at any speed. |
-| `run_scenario.py` | Runs the live three-way bench through named scenarios and checks the outcome. |
-| `diag_cadence.py` | Spec 8.2 on the wire: the status-frame cadence and the immediate `0x7F4` on a state change, judged for a board run against a PCAN witness and the serial event lines. |
-| `regress.py` | Offline regression against the three real charge captures. |
-| `build_lookup.py` | **Which firmware image is the board actually running?** Reads `0x7F7` off the wire and resolves the 4-byte build id against `firmware/builds/manifest.json`; the identity is the ELF hash (reviewer, 2026-10-07), and it refuses rather than guessing. Imported by bench harnesses, never copied -- including gen-inhibit's `x2_flash_custody.py`, so a change to `elf_sha256_of_bin()` or `APP_DESC_MAGIC` goes to the gen-inhibit reviewer before it lands. |
-| `build_lookup_offline_test.py` | Offline test for the above: no bus and no board. |
-| `regress_offline_test.py` | Offline test for `regress.py`'s own machinery -- no captures, so it runs anywhere. |
-| `sims_test.py` | Offline test for the simulators' pure parts (`vehicle_sim.py`, `charger_sim.py`, `pack.py`): no bus, no processes. |
-| `bus_gs_usb_test.py` | Test for `bus.open_gs_usb`, the charger segment's Innomaker adapter: no hardware. |
-| `stop_all.sh` | Stops every simulator process of a bench run, Linux only: it refuses (rc 2) anywhere else, since there it would match nothing and report "survivors: 0". `--self-test` kills a dummy under a `charge-interposer/` path and counts a live one as 1; `--can-fail` runs it on 4 mutants (the pre-2026-10-23 `tools/interposer`-only pattern among them). Read `firmware/esp-development.md` before running any of them. |
-| `capture_pins.py` | **Spec 9.1 pinned stimulus.** Every capture-derived harness input is pinned by a hash HELD IN THIS REPO, never read from the input it covers: a hash stored inside its own file moves when a changed parser regenerates both. |
-| `capture_pins_test.py` | Tests for the above. Needs no `REVERSE_IT_DIR`. |
-| `requirements.txt` | `cantools` and `python-can`, the only dependencies outside the standard library. |
-| `test_signals.py` | Cross-checks `machine.py`'s hand-rolled bit extraction against cantools over randomised frames. |
-| `test_machine.py` | Unit tests for the core's decisions: accept/override/guard-band, the startup transient, release, trips, TYPE2 vs TYPE3, staleness, byte-exact idle forwarding. Also spec 2.3's vehicle-port mode -- the boot into listen-only, the source-address test with its two negatives and a control, an unread 0xC0 id, the 2 s revert at its boundary, and a session boundary that must NOT touch it -- and spec 5.2's HOLD -- the entry, both step directions, both band edges, the 0.28 s cadence (asserted at the boundary, with a 0.298 s page-01 stream that steps on every frame and a short gap that is still skipped) and the gate that makes the release itself count as a step, the leader cell's own step down and its veto on a step up, the EVSE cap as a clamp that does NOT wait for that gate, the mid-hold derate, the floor at 0 A, each exit, and the setpoint as the diagnostics report it -- and spec 3's arming, which takes a case per term of the condition: a re-arm after a TERMINATED and after a VCU-ended hold must each wait out a charger restart, a state 12 the charger has stopped refreshing must not arm, and neither must the 12 an ended session left behind. |
-| `test_trips.py` | Spec 6: one test per fault source, from MONITOR and from OVERRIDE, plus the healthy-bus control. Carries its own copy of the `Bench` driver, since `test_machine.py` is the implementor's. |
-| `test_invariants.py` | Specs 4, 4.1 and 8.1: the rules with no golden behind them, checked over every differential trace and over randomised traffic. The complement to the differential, which cannot see a mistake both cores make. |
-| `test_released_into_hold.py` | Tests the HARNESS, not the core: scores spec 5.2's release-into-HOLD against the saved acceptance logs and against mutations of a real charger log. |
-| `test_scorer_wiring.py` | Tests the HARNESS: that each scenario asks for the checks the spec requires, and that the literals come from the spec rather than from `machine.py`. |
-| `test_repeat_bursts.py` | Tests the HARNESS: spec 4.1's repeat check, against the saved acceptance logs and mutations of them. |
-| `test_hold_wire.py` | Tests the HARNESS for board runs (reviewer, 2026-10-15): spec 9's hold judged on the wire, from what `charger_sim` received against the PCAN witness, and the vehicle stimulus premise behind spec 6's trip. |
-| `board_reset_test.py` | Tests the HARNESS: `run_scenario.py`'s `SerialTap` board reset and the bench's start order (reviewer, 2026-10-14). No hardware. |
-| `diag_cadence_test.py` | Test for `diag_cadence.py`: no hardware. |
-| `firmware/` | **The real board.** ESP32-CAN-X2 firmware: `machine.py` ported to C++ plus the two CAN port drivers. See `firmware/README.md`. The port is verified against this folder's Python by a differential trace test; `machine.py` remains the reference implementation. Stage 0 board self-test passed on hardware 2026-09-10 (18 checks / 0 failed); Stages 1-2, which need dongles, are not run. |
-
-The harness's own checks and can-fails are not described here, so that the
-description changes where the harness does (reviewer, 2026-10-15). They are in
-`firmware/test/README.md`, which is the tester's, under "Harness files in
-`charge-interposer/`".
 
 ---
 
