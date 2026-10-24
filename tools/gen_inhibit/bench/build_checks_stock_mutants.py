@@ -13,7 +13,15 @@ each with its .elf), which then runs in every mutant's copy too: a FAIL line tha
 the unmutated copy does not print also kills. That is how the rows that need a real
 image (check_no_stock_features writing them at all) are covered.
 
-    GI_FW=<firmware repo> py -3.14 tools/gen_inhibit/bench/build_checks_stock_mutants.py [--pairs --off <bin> --on SW=<bin> ...]
+    GI_FW=<firmware repo> py -3.14 tools/gen_inhibit/bench/build_checks_stock_mutants.py --tree <worktree>
+    GI_FW=<firmware repo> py -3.14 tools/gen_inhibit/bench/build_checks_stock_mutants.py --pairs --off <bin> --on SW=<bin> ...
+
+--tree takes the images from a worktree's build-tester-<name>/ folders (the names
+baseline_builds.ps1 gives them), forming the same arguments refusal_pairs_runs.py
+passes for its positive run. One of the pairs is required: "the image rows never
+written" is killed only by them, so a run without real images refuses to start
+rather than report it SURVIVED (harness-defects row, 2026-10-24). The arguments
+used are printed first.
 """
 import os
 import shutil
@@ -79,7 +87,18 @@ def fails_in(d, pairs):
 def main():
     base = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "build_checks_stock")
     killed = errors = 0
-    pairs = sys.argv[sys.argv.index("--pairs") + 1:] if "--pairs" in sys.argv else None
+    if "--pairs" in sys.argv:
+        pairs = sys.argv[sys.argv.index("--pairs") + 1:]
+    elif "--tree" in sys.argv[:-1]:
+        import refusal_pairs_runs as RP
+        pairs = RP.argv(sys.argv[sys.argv.index("--tree") + 1])
+    else:
+        pairs = []
+    if not pairs:
+        print("REFUSED: give --tree <worktree with build-tester-*/> or --pairs <test_refusal_pairs args>: "
+              "the real-image pairs are the only kill for 'the image rows never written'")
+        return 2
+    print("pairs: %s" % " ".join(pairs))
     known = set()
     if pairs is not None:
         d = os.path.join(base, "m0")
