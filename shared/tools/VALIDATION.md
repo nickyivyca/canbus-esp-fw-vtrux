@@ -297,6 +297,22 @@ same folder. The interposer's test evidence is
 
 ### R18. Options
 - **Basis:** port plan goal 13 (user, 2026-10-17).
+- **Readings** (user, 2026-10-24, in the gen-inhibit reviewer's session),
+  raised by the gen-inhibit tester before writing the check:
+  - The build's options are its `sdkconfig.json` in each CMake build folder
+    (option a of three; compiler flags follow from it, and `-D` switches are
+    R20's).
+  - "Match" means the options the profile names (option a of two). A stored
+    copy of the whole `sdkconfig` was turned down: git is the reference
+    copy, and R8 already holds the build to the commit.
+  - gen-inhibit's release profile is its spec 12.4 row 22, items 1 to 5
+    (rollback on; secure boot and flash encryption unset; virtual eFuses
+    off; `CONFIG_TWAI_ISR_IN_IRAM` unset; the watchdogs as its spec 9.1
+    records them), plus R12.
+  - It is a check on the finished release build, run by any session, not a
+    refusal in the release build (option a of three), and only for release
+    builds. Port plan step 0b's "the options check refuses a release build"
+    is read as this check failing it.
 - **Status:** complete.
 
 ### R19. Reproducible
