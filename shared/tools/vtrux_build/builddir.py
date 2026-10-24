@@ -8,6 +8,7 @@ CMake or idf.py, so it works on a copied build folder and in tests.
     bd.description()     project_description.json, as a dict
     bd.app_bin()         R11: the image this build named (absolute path)
     bd.app_elf()         the ELF it named, the same way
+    bd.config_file()     R8: the sdkconfig it used (absolute path)
     bd.options()         build/config/sdkconfig.json: the options in effect
     bd.cmake_cache()     CMakeCache.txt: {name: (type, value)}
     bd.ninja_deps()      .ninja_deps: {output: [files its depfile recorded]}
@@ -128,6 +129,20 @@ class BuildDir:
 
     def app_elf(self):
         return self._named("app_elf")
+
+    def config_file(self):
+        """R8: the sdkconfig the build used, project_description.json's
+        config_file (IDF's SDKCONFIG build property, however it was set),
+        as an absolute normalised path. It need not exist."""
+        p = self.description().get("config_file")
+        if not isinstance(p, str) or not p:
+            raise BuildDirError("build/project_description.json has no "
+                                "config_file, so which sdkconfig this build "
+                                "used is unknown")
+        if not os.path.isabs(p):
+            raise BuildDirError("build/project_description.json's config_file "
+                                "is %r, not an absolute path" % p)
+        return os.path.normpath(p)
 
     def components(self):
         """{name: folder} for every component the build used
