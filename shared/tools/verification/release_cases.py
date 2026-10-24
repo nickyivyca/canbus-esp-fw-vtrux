@@ -306,7 +306,7 @@ def report(name, verdict, detail, log):
 
 def set_repro(proj):
     p = os.path.join(proj, "sdkconfig")
-    lines = open(p, newline="").read().split("\n")
+    lines = open(p, newline="").read().replace("\r\n", "\n").split("\n")      # IDF writes CRLF on Windows
     n = lines.count(REPRO_OFF)
     if n != 1 and REPRO_ON not in lines:
         raise RuntimeError("sdkconfig: %d '%s' lines" % (n, REPRO_OFF))
@@ -565,6 +565,27 @@ def need_a(ctx, name):
     return a
 
 
+def differing(a_bin, b_bin):
+    """Which descriptor fields differ, and how many bytes differ after R2's blanking outside
+    project_name (the name stamp)."""
+    out = [f for f in I.FIELDS if I.field(a_bin, f) != I.field(b_bin, f)]
+    if len(a_bin) != len(b_bin):
+        return "fields %s; sizes differ" % out
+
+    def blank(d):
+        x = bytearray(d)
+        for o, n in I.blanks(d) + [I.FIELDS["project_name"]]:
+            x[o:o + n] = bytes(n)
+        return x
+    x, y = blank(a_bin), blank(b_bin)
+    return "fields differing %s; bytes differing outside them and R2's blanks: %d" % (
+        out, sum(1 for i in range(len(x)) if x[i] != y[i]))
+
+
+def rec_bin(ctx, rec):
+    return open(os.path.join(ctx.records(), rec["image_hash"] + ".bin"), "rb").read()
+
+
 def c_r5_p2_same_commit(ctx, log):
     a = need_a(ctx, "r5_p2_same_commit")
     if not a:
@@ -603,9 +624,9 @@ def c_r5_p2_new_commit(ctx, log):
         return
     same_code = rec["code_hash"] == a["code_hash"]
     report("r5_p2_new_commit", "PASS" if same_code and rec["image_hash"] != a["image_hash"] else "FAIL",
-           "identical files, another commit: code hash %s vs a_release %s (%s); image hash %s vs %s" % (
+           "identical files, another commit: code hash %s vs a_release %s (%s); image hash %s vs %s; %s" % (
                rec["code_hash"][:16], a["code_hash"][:16], "same" if same_code else "DIFFERENT",
-               rec["image_hash"][:16], a["image_hash"][:16]), ctx.log)
+               rec["image_hash"][:16], a["image_hash"][:16], differing(rec_bin(ctx, a), rec_bin(ctx, rec))), ctx.log)
 
 
 def c_bench_dirty(ctx, log):
@@ -626,9 +647,9 @@ def c_bench_dirty(ctx, log):
     b = open(os.path.join(bd, pd["app_bin"]), "rb").read()
     same = I.code_hash(b) == a["code_hash"]
     report("bench_dirty", "PASS" if same else "FAIL",
-           "R14/R3: bench build in a modified tree (%s, version %s): code hash %s vs a_release %s (%s)" % (
+           "R14/R3: bench build in a modified tree (%s, version %s): code hash %s vs a_release %s (%s); %s" % (
                pd["app_bin"], I.field(b, "version").rstrip(b"\0").decode(), I.code_hash(b)[:16], a["code_hash"][:16],
-               "same" if same else "DIFFERENT"), ctx.log)
+               "same" if same else "DIFFERENT", differing(rec_bin(ctx, a), b)), ctx.log)
 
 
 def mdns_dir(ctx):
@@ -641,6 +662,8 @@ def mdns_dir(ctx):
 
 def c_r10(ctx, log, name, mutate, note):
     reset(ctx.p1, "fixture")
+    if not mdns_dir(ctx):
+        idf(ctx, ctx.p1, "reconfigure", log=log)       # fetch it again (a non-release reconfigure)
     d = mdns_dir(ctx)
     if not d:
         report(name, "VOID", "no managed mdns component (run a_release first)", ctx.log)
