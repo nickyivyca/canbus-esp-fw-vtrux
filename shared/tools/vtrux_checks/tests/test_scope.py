@@ -141,6 +141,21 @@ class Readers(unittest.TestCase):
         self.assertEqual(S.shared_roots(os.path.join(self.d, "nogit")),
                          [S.norm(os.path.join(self.d, "shared-v1", "shared"))])
 
+    def test_shared_roots_project_in_subfolder(self):
+        """A project in a subfolder of its worktree: ../shared-<tag>/ is beside the worktree
+        root, and a shared-* folder beside the project, inside the worktree, is not one."""
+        wt = os.path.join(self.d, "wt")
+        proj = os.path.join(wt, "charge-interposer")
+        os.makedirs(proj)
+        os.makedirs(os.path.join(self.d, "shared-v2", "shared"))
+        os.makedirs(os.path.join(wt, "shared-inside", "shared"))
+        subprocess.run(["git", "init", "-q", wt], check=True)
+        subprocess.run(["git", "-C", wt, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
+                        "--allow-empty", "-m", "x"], check=True)
+        got = S.shared_roots(proj)
+        self.assertEqual(got, sorted(S.norm(p) for p in (os.path.join(wt, "shared"),
+                                                         os.path.join(self.d, "shared-v2", "shared"))))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

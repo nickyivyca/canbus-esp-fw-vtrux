@@ -17,7 +17,7 @@ come from one of:
     for every language recorded), and CMAKE_ROOT (CMakeCache.txt);
   - for a bench or dev build only, shared/: the shared/ folder of any
     worktree of this repo (git worktree list, from the project root), or of
-    a ../shared-<tag>/ checkout beside the project root.
+    a ../shared-<tag>/ checkout beside the worktree root.
 
 A release build that reads a shared/ folder directly fails, even one inside
 the project root: shared code counts only from managed_components/.
@@ -74,20 +74,25 @@ def toolchains(folder):
     return out
 
 
-def worktrees(project):
+def _git(project, *args):
     try:
-        r = subprocess.run(["git", "worktree", "list", "--porcelain"], cwd=project,
-                           capture_output=True, text=True)
+        r = subprocess.run(["git"] + list(args), cwd=project, capture_output=True, text=True)
     except OSError:
-        return []
-    if r.returncode != 0:
-        return []
-    return [ln[len("worktree "):] for ln in r.stdout.splitlines() if ln.startswith("worktree ")]
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def worktrees(project):
+    out = _git(project, "worktree", "list", "--porcelain") or ""
+    return [ln[len("worktree "):] for ln in out.splitlines() if ln.startswith("worktree ")]
 
 
 def shared_roots(project):
+    """shared/ of every worktree, and of every ../shared-<tag>/ beside the worktree root (not
+    the project root: a project may sit in a subfolder of its worktree)."""
+    top = (_git(project, "rev-parse", "--show-toplevel") or "").strip() or project
     roots = [os.path.join(w, "shared") for w in worktrees(project)]
-    roots += [os.path.join(d, "shared") for d in glob.glob(os.path.join(os.path.dirname(os.path.abspath(project)), "shared-*"))
+    roots += [os.path.join(d, "shared") for d in glob.glob(os.path.join(os.path.dirname(os.path.abspath(top)), "shared-*"))
               if os.path.isdir(d)]
     return sorted(set(norm(r) for r in roots))
 
