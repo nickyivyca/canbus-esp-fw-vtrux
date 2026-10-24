@@ -18,8 +18,8 @@ Plan: $REVERSE_IT_DIR/tools/plans/session-compact.md. Procedure: SKILL.md beside
    types nothing. The waiter records itself in the lock; a later call clears a lock whose
    owner is no longer running, or one older than the timeout plus 5 minutes.
 
-Every call is logged to scratch/session-compact/session_compact_<hostname>.log.jsonl in the
-worktree (gitignored).
+Every real call (not --check) is logged to
+scratch/session-compact/session_compact_<hostname>.log.jsonl in the worktree (gitignored).
 Output is ASCII only.
 """
 import argparse
