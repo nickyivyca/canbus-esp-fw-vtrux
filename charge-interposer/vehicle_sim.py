@@ -138,8 +138,11 @@ P12_PARTS_W = 266.0
 
 
 # Logged once, when bcm_soc first reads 100 on the bus (spec 9's high-cell
-# scenarios release before it; run_scenario.SOC100 reads it).
-SOC100_FMT = "BMS: bcm_soc reads 100 %% on the bus at t=%.1fs"
+# scenarios release before it; run_scenario.SOC100 reads it). Its time, like
+# the load step's below, is logged to the ms (user, 2026-10-23): the hold
+# judge places each load step from the two, and at %.1f the placement was
+# off by up to 100 ms (c40b's evap-override-imbalanced-hold).
+SOC100_FMT = "BMS: bcm_soc reads 100 %% on the bus at t=%.3fs"
 
 
 def hv_draw_a(p12_w, pack_v):
@@ -173,7 +176,7 @@ class AuxSchedule(object):
         while (self.steps and self.t_chg0 is not None
                and t >= self.t_chg0 + self.steps[0][0]):
             delay, watts = self.steps.pop(0)
-            lines.append("12 V load step: %.1f -> %.1f W at t=%.1fs (+%.1fs "
+            lines.append("12 V load step: %.1f -> %.1f W at t=%.3fs (+%.1fs "
                          "after chg_max reached 0 A)"
                          % (self.p12_w, watts, t, delay))
             self.p12_w = watts

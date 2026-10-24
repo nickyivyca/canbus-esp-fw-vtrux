@@ -364,6 +364,40 @@ def _f(x):
     return "-" if x is None else "%.2f" % x
 
 
+def anchor_precision_problems(soc_fmt=None, sched=None):
+    """The two lines the hold judge places a load step from (user,
+    2026-10-23): vehicle_sim's SOC100 line and its 12 V load step line carry
+    their sim time to the ms, and run_scenario's own regexes read it back to
+    the ms; old logs (one decimal) still parse. `soc_fmt` / `sched` replace
+    the format and the schedule class, for the can-fail."""
+    import vehicle_sim as VS
+    import run_scenario as RS
+    fmt = soc_fmt or VS.SOC100_FMT
+    cls = sched or VS.AuxSchedule
+    probs = []
+    m = RS.SOC100.search(fmt % 650.1234)
+    if not m or abs(float(m.group(1)) - 650.123) > 0.0006:
+        probs.append("the SOC100 line does not carry its time to the ms: %r"
+                     % (fmt % 650.1234))
+    s = cls(266.0, [(60.0, 136.0)])
+    s.update(1000.0, 0.0)
+    _a, lines = s.update(1060.0456, 0.0)
+    got = [RS.AUX_STEP_AT.search(x) for x in lines]
+    got = [float(g.group(3)) for g in got if g]
+    if len(got) != 1 or abs(got[0] - 1060.046) > 0.0006:
+        probs.append("the load step line does not carry its time to the ms: "
+                     "%r" % lines)
+    old = ("BMS: bcm_soc reads 100 % on the bus at t=650.0s\n"
+           "12 V load step: 266.0 -> 136.0 W at t=900.0s (+200.0s after "
+           "chg_max reached 0 A)")
+    m = RS.SOC100.search(old)
+    s2 = RS.AUX_STEP_AT.findall(old)
+    if not m or float(m.group(1)) != 650.0 or s2 != [("266.0", "136.0",
+                                                      "900.0")]:
+        probs.append("an old (one-decimal) log no longer parses")
+    return probs
+
+
 def silence_problems(cls=None, scenarios=None):
     """vehicle_sim.SilenceStop (--stop-after-charger-silence-s, 2026-10-23):
     due only once a charger frame has been seen, and only after_s after the
@@ -729,6 +763,20 @@ def main():
           "can fail: a positive (low) outlier is not taken for the leader")
     check(bool(high_cell_problems(fmt="BMS: SoC 100 at t=%.1fs")),
           "can fail: a reworded SoC-100 line is caught")
+    for p in anchor_precision_problems():
+        check(False, "vehicle_sim anchors: " + p)
+    check(not anchor_precision_problems(), "vehicle_sim logs the SOC100 "
+          "line and the 12 V load step at %.3f, read back to the ms by "
+          "run_scenario; old one-decimal logs still parse")
+
+    class OneDecimalSteps(VS.AuxSchedule):
+        def update(self, t, chg_max):
+            return VS.AuxSchedule.update(self, round(t, 1), chg_max)
+    check(bool(anchor_precision_problems(
+        soc_fmt="BMS: bcm_soc reads 100 %% on the bus at t=%.1fs")),
+          "can fail: the SOC100 line at %.1f (before 2026-10-23) is caught")
+    check(bool(anchor_precision_problems(sched=OneDecimalSteps)),
+          "can fail: a load step logged to 0.1 s is caught")
     for p in aux_problems():
         check(False, "vehicle_sim: " + p)
     check(not aux_problems(), "vehicle_sim --aux-step: 12 V load steps "

@@ -501,6 +501,17 @@ WALK_STEP_MS = 300 + PAGE01_PERIOD_MS
 HOLD_STEP_GAP_MS = 280
 
 
+# A load drop's walk-down exemption opens this long BEFORE the drop's placed
+# time (user, 2026-10-23, after c40b's evap-override-imbalanced-hold): with
+# vehicle_sim logging both anchors at %.3f, the placed time is exact to the
+# loop, so a frame carrying the step can land early only by the witness's
+# stamp jitter -- 0x410 intervals 93..106 ms (+/- 7 ms) on the bench, and
+# the bcm_soc 100 to step frame interval within 1 ms of whole periods over
+# 764 s. c40b's frame landed 1 ms early only because both anchors were
+# logged to 0.1 s. A frame 11 ms early, or one period early, is judged.
+WALK_LEAD_MS = 10
+
+
 def _walk_down_window(sp, drop):
     """-> (start, end, why): spec 826925f4's exemption after an injected
     load drop at `drop` (trace ms), read per the reviewer's 2026-10-13
@@ -658,7 +669,8 @@ def _hold_follows_loads(series, veh_text, band=(2.6, 3.3), settle_s=120.0,
                         _clamp_move=True, _anchor_later=True,
                         _entry_grace=True, _clamp_step=True,
                         _wire_anchor=True, _one_count=True,
-                        _walk_down=True, _step_gap_ms=HOLD_STEP_GAP_MS):
+                        _walk_down=True, _step_gap_ms=HOLD_STEP_GAP_MS,
+                        _walk_lead=True):
     """-> (ok, why). See hold_follows_loads(). `_step_gap_ms` is clause
     2's cadence (300 = the rule before dfc11cbb). The underscored switches
     exist only for test_scorer_wiring's can-fail: False is the rule before
@@ -668,7 +680,9 @@ def _hold_follows_loads(series, veh_text, band=(2.6, 3.3), settle_s=120.0,
     reviewer's 2026-10-13 ruling (the injected steps placed at the trace's
     first chg_max 0 plus D, with no bcm_ibat cross-check), and before spec
     826925f4 (clause 1 with no tolerance: one bcm_ibat count over fails;
-    a load drop exempting a fixed 2 s rather than its walk-down)."""
+    a load drop exempting a fixed 2 s rather than its walk-down), and
+    before the user's 2026-10-23 ruling (`_walk_lead` False: the walk-down
+    opens at the placed drop itself, not WALK_LEAD_MS before it)."""
     if series is None:
         return (False, "no flight trace -- the hold cannot be judged (a "
                        "board run has none)")
@@ -704,10 +718,13 @@ def _hold_follows_loads(series, veh_text, band=(2.6, 3.3), settle_s=120.0,
                                            series["chgmax"][1:])
              if b < a - tol]
     # spans exempt as [a, b]; a walk-down's end is the hold / up frame,
-    # which is itself judged, so it is exempt as [a, b - 1 ms]
+    # which is itself judged, so it is exempt as [a, b - 1 ms]; it opens
+    # WALK_LEAD_MS before the placed drop (user, 2026-10-23)
+    lead = WALK_LEAD_MS if _walk_lead else 0
     if _walk_down:
         walks = [_walk_down_window(series["sp"], d) for d in drops]
-        exempt = [(f, f + drop_exempt_s * 1000) for f in falls] +             [(a, b - 1) for a, b, _w in walks]
+        exempt = [(f, f + drop_exempt_s * 1000) for f in falls] + \
+            [(a - lead, b - 1) for a, b, _w in walks]
     else:
         walks = []
         exempt = [(d, d + drop_exempt_s * 1000) for d in drops + falls]

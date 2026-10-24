@@ -469,6 +469,27 @@ def p3_walk_down_cases():
     check(not ok and "1: pack current above" in why
           and "first at t=302.9 s" in why,
           "...ON the hold frame fails: it is judged, not exempt -> %s" % why)
+    # the walk-down opens WALK_LEAD_MS (10 ms) before the placed drop (user,
+    # 2026-10-23, c40b): the drop is placed at 300.000 s here
+    ok, why = run(_hs(sp=walk_sp(), ibat=base_ib + [(299990, 0.5)]),
+                  DROP_LINE)
+    check(ok, "above chg_max 10 ms before the placed drop passes (the "
+          "witness's stamp jitter) -> %s" % why)
+    ok, why = run(_hs(sp=walk_sp(), ibat=base_ib + [(299990, 0.5)]),
+                  DROP_LINE, _walk_lead=False)
+    check(not ok and "1: pack current above" in why,
+          "...and fails under the rule before (the walk-down opening at the "
+          "placed drop) -> %s" % why)
+    ok, why = run(_hs(sp=walk_sp(), ibat=base_ib + [(299989, 0.5)]),
+                  DROP_LINE)
+    check(not ok and "1: pack current above" in why,
+          "can fail: above chg_max 11 ms before the placed drop fails -> %s"
+          % why)
+    ok, why = run(_hs(sp=walk_sp(), ibat=base_ib + [(299900, 0.5)]),
+                  DROP_LINE)
+    check(not ok and "1: pack current above" in why,
+          "can fail: above chg_max one 0x410 period (100 ms) before the "
+          "placed drop fails -> %s" % why)
     ok, why = run(_hs(ibat=base_ib + [(301000, 0.5)]), DROP_LINE)
     check(not ok and "1: pack current above" in why
           and "(a hold frame)" in why,
