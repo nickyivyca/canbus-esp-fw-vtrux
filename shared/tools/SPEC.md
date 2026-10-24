@@ -115,7 +115,8 @@ unless the image changes, which the reproducible check (R19) shows.
   - the image hash, the code hash and the image size;
   - the host OS, the toolchain version and the IDF version;
   - the digest of each component the build used, and the hash of
-    `dependencies.lock`;
+    `dependencies.lock`, taken with its line endings normalised to LF, so
+    one lock gives one hash on any host and in any checkout;
   - the tag of each pinned shared firmware component;
   - the build tooling's own pin: its tag, commit and digest.
 - **R14. Bench and dev builds** need not meet R8 to R11 or R16. Their results
@@ -131,11 +132,16 @@ unless the image changes, which the reproducible check (R19) shows.
 
 - **R17. Scope.** From ninja's dependency records, every file the build read
   comes from the project root, IDF or `managed_components/`, and each
-  managed component is at the version `dependencies.lock` records. For a
-  bench or dev build, files under `shared/` may also be read directly. For a
-  release build they may not: shared code counts only from
-  `managed_components/`, so a release build that reads another worktree
-  fails.
+  managed component is at the version `dependencies.lock` records: its own
+  manifest's `version` is the lock's. IDF here is `IDF_PATH` plus exactly
+  two folders named by the build's own record: the install folder of the
+  toolchain whose compiler CMake chose (`CMake<LANG>Compiler.cmake`), and
+  CMake's own `CMAKE_ROOT` (`CMakeCache.txt`). Nothing else beside them in
+  the IDF tools folder counts. For a bench or dev build, files under
+  `shared/` may also be read directly: the `shared/` folder of any worktree
+  of this repo, or a `../shared-<tag>/` checkout. For a release build they
+  may not: shared code counts only from `managed_components/`, so a release
+  build that reads another worktree fails.
 - **R18. Options.** The build's options match the project's release
   profile.
 - **R19. Reproducible.** Rebuilding the same tree on the same host OS gives
