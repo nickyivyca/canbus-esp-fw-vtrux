@@ -22,8 +22,10 @@ emulated"**.
 | `judge_test.c` | The judge on made-up observations: each verdict shown to pass and to fail. No fakes, no product code. |
 | `nonode_test.c` | The cases. One case per process (`nonode_test <case>`; no argument lists them): the firmware's statics outlive `ft_reset()`, and trip 6's error history is one of them. |
 | `build.sh` | Builds `nonode_test` (`bash build.sh <out>`). `SPEC_LAYER`, `NN_TEST`, `NN_JUDGE` substitute a source (the mutants). |
-| `mutate.py` | Mutants of the judge (caught by `judge_test`), the layer and the cases (caught by a case's RESULT line). A crash, a build failure or no RESULT line is not a catch. Each run works in its own folder in the worktree's `scratch/gen-inhibit-tests/mutants-spec_shim/`, each mutant's binary in that mutant's folder (2026-10-24; before, a fixed system temp folder and a fixed `/tmp` binary name, shared by two runs at once). |
-| `run_spec_shim.py` | The evidence run: the product identity (HEAD, `main/`'s tree against `--base`, nothing modified, each built file's md5), the stimulus decoded with the DBCs, `judge_test`, every case. Writes `identity.json`, `payloads.txt`, `judge_test.txt`, `cases.txt`, `summary.txt` into `--out`. |
+| `mutate.py` | Mutants of the judge (caught by `judge_test`), the layer and the cases (caught by a case's RESULT line). A crash, a build failure or no RESULT line is not a catch. Each run works in its own folder in the worktree's `scratch/gen-inhibit-tests/mutants-spec_shim/`, each mutant's binary in that mutant's folder (2026-10-24; before, a fixed system temp folder and a fixed `/tmp` binary name, shared by two runs at once). Its second output line is the build's host and compiler; a run with either missing stops there with an error (2026-10-24). |
+| `run_spec_shim.py` | The evidence run: the product identity (HEAD, `main/`'s tree against `--base`, nothing modified, each built file's md5), the build's host and compiler, the stimulus decoded with the DBCs, `judge_test`, every case. Writes `identity.json`, `payloads.txt`, `judge_test.txt`, `cases.txt`, `summary.txt` into `--out`. `--local` builds in the local bash, for madhouse-debian; without it, in WSL. Since 2026-10-24: `identity.json` has `host`, `compiler` and `build_env`, and the summary a line for them, which says "a self-check only" for a WSL build. A run with either value missing FAILs. The binaries go in the run's own folder in the worktree's `scratch/gen-inhibit-tests/spec_shim_run/` (before, fixed `/tmp` names). |
+| `host_env.py` | What both runners share: the build shell (WSL or `--local`), paths as it sees them, the per-run scratch folder, and `host_identity()`. That asks the build shell for `uname -n` and the first line of `gcc --version`, and `describe()` makes the summary line (2026-10-24). |
+| `test_host_env.py` | Its test, with `--dbc-dir`. The pure checks run anywhere. The real-shell checks run on Linux only (on Windows a bare `bash` is WSL's): the identity command in a real bash with a fake gcc on PATH and with none, `run_spec_shim.py --local` with each (`identity.json`, the summary line, a FAIL naming the missing compiler), and `mutate.py --local` with no gcc. `--mutants`: 8 of 8 killed on madhouse-debian, each in a copy of the repo's layout, and the unmutated copy must pass. |
 
 ## The row, as judged
 
@@ -71,7 +73,18 @@ silence, the 10th error outside the case's region) is VOID, never a pass.
 
 ## Running
 
-From Windows (WSL's gcc):
+**Only a run built on madhouse-debian with its gcc 14.2 counts for
+VERIFICATION.md.** A WSL build on NICKY-XPS (gcc 9.4) is a self-check only
+(user, 2026-10-24, through the reviewer). On madhouse-debian, in a clone at the
+commit under test:
+
+```
+python3 -B test/gen_inhibit_spec_shim/run_spec_shim.py --local --out <run folder> --dbc-dir <reverse-it>/projects/vtrux
+python3 -B test/gen_inhibit_spec_shim/mutate.py --local
+python3 -B test/gen_inhibit_spec_shim/test_host_env.py --dbc-dir <reverse-it>/projects/vtrux [--mutants]
+```
+
+From Windows, as a self-check (WSL's gcc):
 
 ```
 py -3.14 -B test/gen_inhibit_spec_shim/run_spec_shim.py --out <run folder> --dbc-dir <reverse-it>/projects/vtrux
