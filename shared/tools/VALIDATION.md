@@ -200,6 +200,15 @@ same folder. The interposer's test evidence is
     unlisted-file check stays.
   Using the manager's own check, rather than recomputing its hash, avoids
   keeping a copy of its file rules in step with it.
+- **No lock** (user, 2026-10-24, in the gen-inhibit reviewer's session,
+  option A of two): a release build without `dependencies.lock` is refused,
+  rather than allowed when nothing is downloaded. One rule with no carve-out,
+  and it fails closed: a project that does download components but has no
+  lock after the reconfigure is caught by the same refusal. The cost is a
+  one-line manifest in a project that downloads nothing. Both projects have
+  a lock today. Raised by the gen-inhibit tester's R22 case (IDF's
+  hello_world, C6f part A), which was refused with a raw file-not-found
+  error.
 - **Status:** complete.
 
 ### R11. The image is the one the build names

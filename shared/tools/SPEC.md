@@ -98,7 +98,9 @@ unless the image changes, which the reproducible check (R19) shows.
   has a `.component_hash` equal to the `component_hash` `dependencies.lock`
   gives it, and one that came with a `CHECKSUMS.json` (a registry download)
   matches it file for file, with no file it does not list. A mismatch is a
-  refusal.
+  refusal. A release build is also refused if the project has no
+  `dependencies.lock` after the reconfigure, even one that downloads nothing:
+  such a project carries a manifest so that it has a lock.
 - **R11. The image is the one the build names.** The image recorded is the
   one `build/project_description.json` names as `app_bin`. A missing name or
   a missing file is a refusal.
