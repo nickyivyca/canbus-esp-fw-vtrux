@@ -90,3 +90,8 @@ tools/wican-log-viewer/*.exe
 test/gen_inhibit_host/artifacts/fuzz-*.scn
 __pycache__/
 *.pyc
+
+# Agent sessions: per-worktree files, never committed
+local-paths.md
+scratch/
+.claude/memory/
