@@ -32,8 +32,8 @@ root, with `REVERSE_IT_DIR` set:
     python -B -m vtrux_build digest <folder>...     # R7 digests
 
 `-B` matters: a `__pycache__` written into this folder changes its own
-digest (R7 counts every file but Markdown and `.gitignore`), and the record
-holds the tooling's digest.
+digest (R7 counts every file but those whose name ends `.md` and those named
+`.gitignore`, case-sensitively), and the record holds the tooling's digest.
 
 The release build runs at whatever priority its shell has. While a
 wall-clock test runs on the machine, the build is throttled as `AGENTS.md`
@@ -88,7 +88,9 @@ environment, with the Component Manager's overwrite setting
 clean worktree (R8); `idf.py --no-ccache reconfigure` with
 `IDF_COMPONENT_STRICT_CHECKSUM=1` (R9, R10); the worktree still clean and
 HEAD unchanged (R8); `CCACHE_ENABLE` off in `build/CMakeCache.txt` and no compiler
-launcher in its compile commands (R9); every downloaded component's `.component_hash` against
+launcher in its compile commands (R9); a `dependencies.lock` after the
+reconfigure, even for a project that downloads nothing (R10); every
+downloaded component's `.component_hash` against
 `dependencies.lock`, and a registry download against its `CHECKSUMS.json`,
 unlisted files included (R10, after the reconfigure); no shared component
 from a local folder (R16, `override_path` clause); `idf.py --no-ccache
