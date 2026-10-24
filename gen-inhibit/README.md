@@ -79,13 +79,17 @@ reverse-it and not yet moved.
 
 `shared/bench/` (the chain-runner core, package `vtrux_bench`) was written by
 the charge-interposer tester. The gen-inhibit tester owns gen-inhibit's suite
-definition, judges and flash kinds on top of it, and installs the core at a
-pinned commit. **One exception:** `shared/bench/tests/layout_hash_crosscheck.py`
+definition, judges and flash kinds on top of it. It takes the core from a
+read-only sibling checkout, `../shared-<tag>/`, at a pinned tag, checked
+against a committed pin file (port plan goal 20 item 8, user, 2026-10-23);
+until it moves to that, it installs the core at a pinned commit.
+**One exception:** `shared/bench/tests/layout_hash_crosscheck.py`
 is owned by the gen-inhibit tester (both reviewers, 2026-10-22). It is that
 tester's independent `layout_hash`, worth something only while it stays
 independent of `decode.py`'s author, so only the gen-inhibit tester changes its
 code; the charge-interposer tester may commit those changes on the shared
-branch. These notes move to `shared/bench/README.md` once it exists.
+branch. This paragraph stays here until `shared/bench/README.md` records the
+change rule.
 
 ## Cross-project dependency
 
