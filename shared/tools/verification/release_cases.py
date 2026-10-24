@@ -1012,6 +1012,13 @@ def c_r13_lock_crlf(ctx, log):
         report(name, "VOID", "the committed lock is missing or already has CR bytes", ctx.log)
         return
     want = hashlib.sha256(blob).hexdigest()
+    # The mini project has no .gitattributes, so without this git normalises only where the host's
+    # core.autocrlf says so (NICKY-XPS: input; madhouse-debian: unset, and a CRLF lock is then other
+    # content). Give the lock the attributes gen-inhibit's root .gitattributes gives it, untracked.
+    attrs = os.path.join(ctx.mini, git(ctx.mini, "rev-parse", "--git-path", "info/attributes"))
+    os.makedirs(os.path.dirname(attrs), exist_ok=True)
+    with open(attrs, "w", newline="") as f:
+        f.write("dependencies.lock text=auto eol=lf\n")
     got = {}
     for ending, data in (("CRLF", blob.replace(b"\n", b"\r\n")), ("LF", blob)):
         recs = ctx.records("vtrux-mini-test")
@@ -1050,6 +1057,7 @@ def c_r13_lock_crlf(ctx, log):
     else:
         report(name, "FAIL", "records give %s (CRLF on disk) and %s (LF); the committed lock's sha256 is %s" % (
             str(got["CRLF"][0])[:16], str(got["LF"][0])[:16], want[:16]), ctx.log)
+    os.remove(attrs)
     reset(ctx.mini, "main", "main")
 
 
