@@ -389,6 +389,10 @@ def make_mini(ctx):
         f.write("build/\nmanaged_components/\n")
     with open(os.path.join(ctx.mini, "vtrux_build.json"), "w", newline="") as f:
         f.write('{"project": "vtrux-mini-test", "shared_components": []}\n')
+    # a manifest, so the reconfigure writes a dependencies.lock: the tooling refuses a project
+    # without one (whether SPEC allows that is with the reviewer, 2026-10-24)
+    with open(os.path.join(ctx.mini, "main", "idf_component.yml"), "w", newline="") as f:
+        f.write('dependencies:\n  idf:\n    version: ">=5.0"\n')
     run(["git", "init", "-q", "-b", "main", ctx.mini], check=True)
     rc, _ = idf(ctx, ctx.mini, "set-target", "esp32c3")
     if rc:
@@ -518,6 +522,15 @@ def check_success(ctx, name, proj, rc, before, project="gen-inhibit", shared=Non
     if rc:
         report(name, "FAIL", "exit %d; SPEC says this build is a release build" % rc, ctx.log)
         return None
+    note = ""
+    if not new:
+        # the same build recorded by an earlier run (the fixture's commits are deterministic):
+        # R13 then writes nothing new, so judge the record whose commit is this HEAD
+        head = git(proj, "rev-parse", "HEAD")
+        for n in after:
+            if n.endswith(".json") and json.load(open(os.path.join(ctx.records(project), n))).get("commit") == head:
+                new = [n[:-5] + x for x in (".bin", ".elf", ".json")]
+                note = " (recorded by an earlier run; none new)"
     if len(new) != 3:
         report(name, "FAIL", "exit 0 but new record files %s, want 3" % new, ctx.log)
         return None
@@ -526,8 +539,8 @@ def check_success(ctx, name, proj, rc, before, project="gen-inhibit", shared=Non
     files = {n: open(os.path.join(ctx.records(project), n), "rb").read() for n in new}
     bad = judge_record(rec, files, facts_for(ctx, proj, project, shared or {}))
     bad += own_checks(proj)
-    report(name, "PASS" if not bad else "FAIL", "record %s; code %s%s" % (rec["image_hash"][:16], rec["code_hash"][:16],
-                                                                           "" if not bad else "; " + "; ".join(bad)), ctx.log)
+    report(name, "PASS" if not bad else "FAIL", "record %s; code %s%s%s" % (
+        rec["image_hash"][:16], rec["code_hash"][:16], note, "" if not bad else "; " + "; ".join(bad)), ctx.log)
     return rec
 
 
