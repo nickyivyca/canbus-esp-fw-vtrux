@@ -1480,7 +1480,12 @@ SCENARIOS = [
         "Staleness trips at 500 ms, and 20 s later the silence boundary "
         "resets the working state -- but NOT SAFE. Silence must not undo "
         "the latch that silence set.",
+        # The run ends 120 s after the last charger frame reaches the
+        # vehicle segment (tester, 2026-10-23; reviewer's go 2026-10-20):
+        # the trip (500 ms) and the silence boundary (20 s) come well inside
+        # it. Before, it idled to the 8000 s cap: 5,382 s of quiet in 20d3.
         vehicle=["--evap", "--soc", "79", "--stop-on-done",
+                 "--stop-after-charger-silence-s", "120",
                  "--max-sim-s", "8000"],
         charger=["--silent-at", "2600"],
         timeout=600,

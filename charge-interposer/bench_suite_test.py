@@ -91,6 +91,24 @@ def test_script_judge():
         "bench_usb_host's rc 3 for an all-VOID case is VOID"
     assert _v(j(_run(noread + "  PASS noread_ack_03: boot window 12209 us\n",
                      0))) == [Verdict.PASS], "a VOID beside a PASS stays PASS"
+    # bench_vport's TEST FAULT rule (reviewer, 2026-10-23, c40b): a run whose
+    # only bad arm faulted ends on a VOID line, and that arm's scorer lines
+    # are marked "not judged", so the suite reads it VOID; a valid FAIL
+    # beside the fault ends on a FAIL line and stays FAIL
+    vport = ("  1M, idle: TEST FAULT: 1M idle: the witness's receive failed "
+             "1249 time(s) in the window (queue overflow)\n"
+             "    not judged (the window faulted): FAIL: 66 error frame(s)\n"
+             "== verdicts\n"
+             "  bitrate/1M/idle              VOID (TEST FAULT)\n"
+             "VOID: TEST FAULT on bitrate/1M/idle, and no arm FAILs on a "
+             "valid measurement\n")
+    assert _v(j(_run(vport, 1))) == [Verdict.VOID], \
+        "bench_vport's fault-only run is VOID"
+    assert _v(j(_run(vport.replace(
+        "VOID: TEST FAULT on bitrate/1M/idle, and no arm FAILs on a valid "
+        "measurement", "FAIL: flood/7F4; TEST FAULT, not measured: "
+        "bitrate/1M/idle"), 1))) == [Verdict.FAIL], \
+        "bench_vport's fault beside a valid FAIL is FAIL"
 
 
 def test_recorded_judge():
@@ -1017,6 +1035,14 @@ def _rc0_pass(run):
     return _ORIG["script_judge"](run)
 
 
+def _any_fail_text(run):
+    """A FAIL anywhere in the log beats a VOID line, as if a faulted arm's
+    scorer lines were read (bench_vport before its "not judged" marking)."""
+    if run.rc not in (0, None) and "FAIL" in run.log_text():
+        return Result(Verdict.FAIL, detail="FAIL text")
+    return _ORIG["script_judge"](run)
+
+
 def _check(s, cid):
     return next(c for g in s.groups for c in g.checks if c.id == cid)
 
@@ -1088,7 +1114,9 @@ MUTANTS = {
     "test_script_judge": [
         ("script_judge", _pass_all, "passes everything"),
         ("script_judge", _rc0_pass,
-         "rc 0 is PASS whatever it printed (a25e noread-boots)")],
+         "rc 0 is PASS whatever it printed (a25e noread-boots)"),
+        ("script_judge", _any_fail_text,
+         "any FAIL text beats a VOID line (bench_vport's TEST FAULT, c40b)")],
     "test_usb_baselines": [
         ("bench", _wrap_suite("bench", _drop_baseline_dir("usb-host-close-ack")),
          "close-ack without --baseline-dir (a25e)"),

@@ -180,6 +180,29 @@ class AuxSchedule(object):
         return self.p12_w, lines
 
 
+class SilenceStop(object):
+    """--stop-after-charger-silence-s (tester, 2026-10-23; the reviewer's go
+    of 2026-10-20 for charger-silence-after-trip): end the run once no
+    charger frame (spec 2.3's identifier test) has reached the vehicle
+    segment for `after_s` simulated seconds, counted from the last one seen,
+    and only once one has been seen. That scenario silences the charger on
+    purpose; everything it judges (the staleness trip at 500 ms, the
+    silence boundary at 20 s, the SAFE latch) comes well inside the window,
+    and without it the run idled to --max-sim-s (5,382 s of quiet in 20d3).
+    `after_s` None disables it."""
+
+    def __init__(self, after_s):
+        self.after_s = after_s
+        self.last = None
+
+    def seen(self, t):
+        self.last = t
+
+    def due(self, t):
+        return (self.after_s is not None and self.last is not None
+                and t - self.last >= self.after_s)
+
+
 def parse_aux_step(s):
     """'DELAY:WATTS' -> (delay_s, watts), both floats, both >= 0."""
     d, a = s.split(":")
@@ -787,6 +810,7 @@ def run_model(args, b, phys):
     soc100_t = None
     aux = AuxSchedule(args.p12_w, [parse_aux_step(s)
                                    for s in (args.aux_step or [])])
+    silence = SilenceStop(args.stop_after_charger_silence_s)
     charger_i = 0.0             # last current the charger reported (A, + = charging)
     t = 0.0                     # simulated seconds
     wall0 = time.time()
@@ -830,6 +854,7 @@ def run_model(args, b, phys):
             if msg.is_extended_id and _dc.is_charger_frame(
                     msg.arbitration_id):
                 VPORT.charger(t)
+                silence.seen(t)
             elif msg.arbitration_id in DIAG_IDS:
                 VPORT.status(t, msg.arbitration_id)
             if msg.arbitration_id in DIAG_IDS and len(msg.data) >= 8:
@@ -955,6 +980,11 @@ def run_model(args, b, phys):
         if args.max_sim_s and t >= args.max_sim_s:
             log.info("reached --max-sim-s, stopping")
             return
+        if silence.due(t):
+            log.info("no charger frame for %.0f s (the last at t=%.1fs), "
+                     "stopping (--stop-after-charger-silence-s)",
+                     silence.after_s, silence.last)
+            return
         if (args.stop_on_done and vcu.standby_t is not None
                 and t - vcu.standby_t >= args.post_standby_s):
             log.info("VCU commanded STAND_BY, session over, stopping "
@@ -1070,6 +1100,13 @@ def main():
     ap.add_argument("--report-every", type=float, default=300.0,
                     help="simulated seconds between status lines")
     ap.add_argument("--max-sim-s", type=float, default=0.0)
+    ap.add_argument("--stop-after-charger-silence-s", type=float,
+                    default=None, metavar="S",
+                    help="end the run once no charger frame has reached the "
+                         "vehicle segment for S simulated seconds (counted "
+                         "from the last one, once one has been seen): for a "
+                         "scenario that silences the charger on purpose. "
+                         "--max-sim-s still caps the run.")
     ap.add_argument("--stop-on-done", action="store_true",
                     help="end the run --post-standby-s after the VCU commands "
                          "STAND_BY, i.e. when the session is genuinely over. "

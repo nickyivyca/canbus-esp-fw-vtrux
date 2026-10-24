@@ -364,6 +364,54 @@ def _f(x):
     return "-" if x is None else "%.2f" % x
 
 
+def silence_problems(cls=None, scenarios=None):
+    """vehicle_sim.SilenceStop (--stop-after-charger-silence-s, 2026-10-23):
+    due only once a charger frame has been seen, and only after_s after the
+    LAST one; a later frame restarts the count; None never stops. And the
+    one scenario that silences the charger passes it, with a window that
+    holds its 20 s silence boundary. `cls` / `scenarios` replace the class
+    and run_scenario's table, for the can-fail."""
+    import vehicle_sim as VS
+    cls = cls or VS.SilenceStop
+    probs = []
+    s = cls(120.0)
+    if s.due(5000.0):
+        probs.append("due before any charger frame was seen")
+    s.seen(10.0)
+    if s.due(129.9):
+        probs.append("due 119.9 s after the last frame (early)")
+    if not s.due(130.0):
+        probs.append("not due 120 s after the last frame")
+    s.seen(200.0)
+    if s.due(319.9):
+        probs.append("a later frame did not restart the count")
+    if not s.due(320.0):
+        probs.append("not due 120 s after the later frame")
+    n = cls(None)
+    n.seen(0.0)
+    if n.due(1e9):
+        probs.append("None stops the run")
+    if scenarios is None:
+        import run_scenario as RS
+        scenarios = RS.BY_NAME
+    sc = scenarios.get("charger-silence-after-trip")
+    v = list(sc.vehicle) if sc else []
+    if "--stop-after-charger-silence-s" not in v:
+        probs.append("charger-silence-after-trip does not pass "
+                     "--stop-after-charger-silence-s")
+    else:
+        w = float(v[v.index("--stop-after-charger-silence-s") + 1])
+        if w < 60.0:
+            probs.append("charger-silence-after-trip's window %.0f s is "
+                         "under 60 s (its silence boundary is at 20 s)" % w)
+    others = [k for k, x in scenarios.items()
+              if k != "charger-silence-after-trip"
+              and "--stop-after-charger-silence-s" in x.vehicle]
+    if others:
+        probs.append("other scenarios pass it: %s" % others)
+    return probs
+
+
 def aux_problems(sched=None):
     """vehicle_sim.AuxSchedule (2026-10-09, spec 9's injected load steps):
     the 12 V load (W, since P3a 2026-10-10) is the base until chg_max
@@ -706,6 +754,39 @@ def main():
           "is caught")
     check(bool(aux_problems(ReAnchors)),
           "can fail: a schedule that re-anchors on a later chg_max 0 A is "
+          "caught")
+
+    for p in silence_problems():
+        check(False, "vehicle_sim --stop-after-charger-silence-s: " + p)
+    check(not silence_problems(), "vehicle_sim --stop-after-charger-silence-"
+          "s: due only after a charger frame, S after the last one; "
+          "charger-silence-after-trip passes it with S >= 60, no other "
+          "scenario does")
+
+    class FromStart0(_VS.SilenceStop):
+        def __init__(self, after_s):
+            _VS.SilenceStop.__init__(self, after_s)
+            self.last = 0.0                 # counted from the start instead
+
+    class FirstOnly(_VS.SilenceStop):
+        def seen(self, t):
+            if self.last is None:
+                self.last = t               # a later frame is ignored
+    import copy
+    import run_scenario as _RS
+    no_opt = dict(_RS.BY_NAME)
+    sc = copy.copy(no_opt["charger-silence-after-trip"])
+    v = list(sc.vehicle)
+    i = v.index("--stop-after-charger-silence-s")
+    sc.vehicle = v[:i] + v[i + 2:]
+    no_opt["charger-silence-after-trip"] = sc
+    check(bool(silence_problems(FromStart0)),
+          "can fail: a silence counted from the start is caught")
+    check(bool(silence_problems(FirstOnly)),
+          "can fail: a silence counted from the first frame, not the last, "
+          "is caught")
+    check(bool(silence_problems(scenarios=no_opt)),
+          "can fail: charger-silence-after-trip without the option is "
           "caught")
 
     for p in vport_problems():
