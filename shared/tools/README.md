@@ -72,7 +72,12 @@ The tooling holds no project facts. A project gives them in
 |---|---|---|
 | `project` | the build script | the record folder's name, `firmware/builds/<project>/` |
 | `shared_components` | the build script | the dependency names of the shared firmware components it pins; R16 and the record use them. `[]` for none |
-| anything else | the build checks | the release profile, switch table and board data, in the form the checks define |
+
+The build checks' data (the release profile, the switch table and its
+refusal rows, and the project's board data) is not in this file. It is in
+`vtrux_checks.json` in the project's root, which the tester owns, in the form
+the checks define. `project.py` reads only the two keys above: it neither
+rejects other keys nor relies on any.
 
 ## The release build (SPEC section 3)
 

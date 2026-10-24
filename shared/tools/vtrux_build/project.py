@@ -13,8 +13,9 @@ The keys the build script reads:
                        R13 records the version each is pinned at. [] when it
                        pins none.
 
-Any other key is left for whoever reads it (the build checks: the release
-profile, the switch table and the board's data) and is not checked here.
+Other keys are neither rejected nor read. The build checks' data (the
+release profile, the switch table and the board's data) is not kept here but
+in vtrux_checks.json, which the tester owns.
 """
 
 import json
