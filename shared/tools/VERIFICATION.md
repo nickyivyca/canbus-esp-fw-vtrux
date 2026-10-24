@@ -82,3 +82,37 @@ every broken input. **Hosts:** NICKY-XPS (Python 3.14.6; IDF v5.4.1 with its Pyt
 | R10 | PASS | A project with no manifest and no `dependencies.lock`, which downloads nothing: the reconfigure runs, no lock exists after it, and the build is refused with nothing compiled and no record. | `xps_release_2/SHA256SUMS` |
 | R22 | PASS | A second project (IDF's `hello_world`, `vtrux-mini-test`) builds and records with no tooling change, judged field by field. Without a manifest it is refused (R10, above), as SPEC R10 now requires. | `xps_release_2/SHA256SUMS` |
 | R13 | PASS | `a_release` again, from an empty record folder: one record, `91acd964...`, judged field by field. | `xps_release_2/SHA256SUMS` |
+
+## R17 scope (C6f, 2026-10-24)
+
+**Tooling tested:** builds made by `shared/tools/build-tooling` at `e9a03fd`
+(`vtrux_build/` tree `39a9d5f`, the same in every commit below). **SPEC:** R17 in
+shared/main `5ec6f53`, with the user's rulings of 2026-10-24: IDF is `IDF_PATH` plus the
+chosen toolchain's install folder and `CMAKE_ROOT`, both from the build's own record; a
+managed component is at the lock's version when its own manifest `version` is the lock's;
+a bench build may read the `shared/` folder of any worktree of this repo or of a
+`../shared-<tag>/` checkout. **Check:** `vtrux_checks/scope.py` (`python -B -m
+vtrux_checks scope --build <dir> --release|--bench`) at `0b77a84`, written from SPEC
+R17. Its 11 unit tests in `vtrux_checks/tests/` show each rule failing on a planted input
+and passing on a faithful one, and three mutants of its rules each fail them. They pass on
+Python 3.14.6 and 3.11.9 (NICKY-XPS) and 3.13.5 (madhouse-debian). **Cases:**
+`verification/scope_cases.py` at `0b77a84`, and at `9332101` for the second run of the two
+override cases; its `--self-test` catches every broken input. Each case confirms its trigger
+without the check's reader (`ninja -t deps` or `build.ninja`). **Hosts:** NICKY-XPS (IDF
+v5.4.1, its Python 3.11.9) and madhouse-debian. **Run files:**
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/runs/sharedtools_c6f/`
+(`README.md`, section "R17 scope check").
+
+| Case | Result | What was tested |
+|---|---|---|
+| Clean release build | PASS | The fixture's release build (5721 files read, app and bootloader): exit 0 with `--release` and `--bench`. |
+| Managed component version | PASS | mdns's manifest `version` changed from the lock's 1.4.0: exit 1 both ways, naming `espressif__mdns`. |
+| Managed component not in the lock | PASS | An extra folder in `managed_components/` the lock does not list: exit 1 both ways, naming it. |
+| File outside the scope | PASS | A bench build whose `main.c` includes a header from a folder beside the project: exit 1 both ways, naming the header. |
+| `shared/` in a bench build | PASS | A shared component taken by `override_path` from a `../shared-<tag>/shared/` folder: exit 0 with `--bench`, exit 1 with `--release` naming its source. |
+| A folder that is not `shared/` | PASS | The same component from another folder: exit 1 both ways, naming its source. |
+| Across host OSes | PASS | madhouse-debian's own release build of the fixture, with the system CMake 3.31's `CMAKE_ROOT`: exit 0 both ways (5725 files). |
+
+Run files (sha256): `xps_scope_r17/SHA256SUMS` (`f26ce864...42a7`), which hashes every
+NICKY-XPS log and `scope_results.json`; `r17_linux/scope_a_release.txt` (madhouse-debian)
+(`5c531355...2129c5`).
