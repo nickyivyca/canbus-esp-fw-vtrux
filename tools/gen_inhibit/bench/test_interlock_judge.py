@@ -778,6 +778,9 @@ def test_common():
         check("build: %s records the injected frame and the payload it replaced" % case,
               len(inj) == 2 * dlc and len(orig) == 12 and inj[:10] == orig[:10] and inj != orig,
               "%r %r" % (inj, orig))
+        check("build: %s records its stimulus file relative to the run folder that holds it" % case,
+              info.get("file") == "interlock_stimulus/%s.scn" % case
+              and os.path.isfile(os.path.join(B.RUNS, info["file"])), info.get("file"))
     h0 = "080080ff7f0b"
     h1 = B.encode_sig(J.PTX, 0x051, h0, "gen_torque_cmd", -50)
     d = J.decode(J.PTX, 0x051, h1)

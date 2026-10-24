@@ -345,7 +345,9 @@ def build(case_name, gen_dir):
                          fr, [(int(SLICE_ARM_S * 1e6), 3, 500)], end)
         info["change_at_s"] = SLICE_CHANGE_S
     parsed = parse_scn(open(path, encoding="ascii").read())
-    info.update(file=os.path.relpath(path, HERE).replace("\\", "/"), sha256=stim_sha(path),
+    # relative to the run folder that holds it (RUNS): relative to HERE, since the move
+    # into the repo (2026-10-22) the recorded path climbed out of it
+    info.update(file=os.path.relpath(path, RUNS).replace("\\", "/"), sha256=stim_sha(path),
                 frames=len(parsed["frames"]), modes=parsed["modes"],
                 seconds=round(parsed["end"] / 1e6, 3), refused=parsed["refused"],
                 adjacent_identical_0x051=stimulus_premise(parsed))
