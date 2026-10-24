@@ -61,6 +61,11 @@ reverse-it and not yet moved.
   and never product code (since 2026-10-08; moved in by `ad0cab3`).
 - The host suite `test/gen_inhibit_host/` (runner, scenarios, golden traces)
   and the build checks `test/build_checks/` (user, 2026-10-07).
+- `vtrux_checks.json` at the repo root: gen-inhibit's data for the shared
+  build checks (`shared/tools/vtrux_checks/`), today its release profile for
+  shared/tools R18, each value citing its spec line (reviewer, 2026-10-24).
+  The implementor's `vtrux_build.json` holds only `project` and
+  `shared_components`.
 - `test/gen_inhibit_spec_shim/`: the spec 12.4 requirement tests on the
   mock-HAL shim. They build against the implementor's `test/gen_inhibit_shim/`
   fakes and add their own fault behaviour on top, never by editing those fakes
