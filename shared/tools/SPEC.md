@@ -84,7 +84,8 @@ unless the image changes, which the reproducible check (R19) shows.
   refused if HEAD or the worktree has changed by the time the build
   finishes.
 - **R9. Reconfigure first.** A release build runs `idf.py reconfigure`, then
-  builds, in one run.
+  builds, in one run, with the compiler cache (ccache) off whatever the
+  environment sets. A build whose configuration still has it on is refused.
 - **R10. Downloaded components checked after the reconfigure.** The
   reconfigure runs with the Component Manager's strict checksum mode on
   (`IDF_COMPONENT_STRICT_CHECKSUM`), and a release build is refused if
