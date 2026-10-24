@@ -6,6 +6,12 @@ read from the image itself, otadata picks the boot slot only when its CRC is
 valid, an app slot with no app descriptor yields None, and no slice file is
 left behind.
 
+The dump record's path (2026-10-23): sub_dump records it relative to the data
+folder and _checked_dump / check-dump read it back from there, through a fake
+esptool and a fake data folder in the temp folder; a recorded path that is
+absolute or has a ".." part is refused by both readers, naming the record.
+test_x2_flash_custody_mutants.py runs the mutants of that.
+
 Run: py -3.14 tools/gen_inhibit/bench/test_x2_flash_custody.py
 """
 import os
@@ -16,12 +22,17 @@ import tempfile
 import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# CUSTODY_DIR: a folder holding a mutant x2_flash_custody.py, imported in place of
+# this folder's (test_x2_flash_custody_mutants.py); gi_paths still comes from here.
+if os.environ.get("CUSTODY_DIR"):
+    sys.path.insert(0, os.environ["CUSTODY_DIR"])
 
 import x2_flash_custody as C                                    # noqa: E402
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORK = os.path.join(tempfile.gettempdir(), "gen-inhibit-mutants", "_test_custody_tmp")   # outside SeaDrive (AGENTS.md)
+FAKE_DATA = os.path.join(WORK, "data")      # stands in for gi_paths.data_dir() in the record cases
 APP_DESC_AT = 32
 ELF_SHA_AT = APP_DESC_AT + 4 + 4 + 8 + 32 + 32 + 16 + 16 + 32
 OTADATA, OTA0, OTA1 = 0xD000, 0x10000, 0x20000
@@ -71,6 +82,19 @@ CASES = [
 ]
 
 
+class fake_data:
+    """gi_paths.data_dir() and C.BACKUPS pointed at FAKE_DATA for the block, restored after."""
+    def __enter__(self):
+        self.saved = gi_paths.data_dir, C.BACKUPS
+        gi_paths.data_dir = lambda *parts: os.path.join(FAKE_DATA, *parts)
+        C.BACKUPS = os.path.join(FAKE_DATA, "board-backups")
+        os.makedirs(C.BACKUPS, exist_ok=True)
+
+    def __exit__(self, *exc):
+        gi_paths.data_dir, C.BACKUPS = self.saved
+        shutil.rmtree(FAKE_DATA, ignore_errors=True)
+
+
 def check_dump_cases():
     """sub_check_dump on synthetic dumps: PASS only when the file still matches
     its record AND a slot carries the expected ELF."""
@@ -79,7 +103,14 @@ def check_dump_cases():
     import io
     import json
     bad = []
-    dump = os.path.join(WORK, "synthetic_dump.bin")
+    with fake_data():
+        bad += _check_dump_cases(argparse, contextlib, io, json)
+    return bad
+
+
+def _check_dump_cases(argparse, contextlib, io, json):
+    bad = []
+    dump = os.path.join(C.BACKUPS, "synthetic_dump.bin")
     record = os.path.join(WORK, "synthetic_dump_record.json")
 
     def run(img, rec_sha=None):
@@ -103,11 +134,95 @@ def check_dump_cases():
             ("check-dump: no slot carries it -> FAIL",
              image(OTHER, None, seq=1), None, "FAIL")):
         got = run(img, rec_sha)
-        ok = got == want and sorted(os.listdir(WORK)) == sorted(
-            [os.path.basename(dump), os.path.basename(record)])
+        ok = got == want and os.listdir(C.BACKUPS) == [os.path.basename(dump)]
         print("  %-4s %-48s %s" % ("ok" if ok else "FAIL", label, got))
         if not ok:
             bad.append(label)
+    return bad
+
+
+def record_path_cases():
+    """sub_dump -> record -> _checked_dump, sub_check_dump and sub_restore, on a fake
+    esptool: the recorded path is relative to the data folder and resolves to the dump
+    it names; an absolute or ".." path is refused by both readers, naming the record."""
+    import argparse
+    import contextlib
+    import io
+    import json
+    bad = []
+    img = image(OTHER, GOOD, seq=2)
+    calls = []
+
+    def fake_esptool(port, *args):
+        calls.append(args)
+        if args[0] == "read-flash":
+            with open(args[-1], "wb") as fh:
+                fh.write(img)
+        return 0, []
+
+    def check(label, ok, got):
+        print("  %-4s %-48s %s" % ("ok" if ok else "FAIL", label, got))
+        if not ok:
+            bad.append(label)
+
+    def outcome(fn, *args):
+        """("refused", message) for a SystemExit naming the refusal, else what happened."""
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                r = fn(*args)
+        except SystemExit as e:
+            return ("refused" if "refusing dump record" in str(e) else "exit", str(e))
+        except Exception as e:  # a crash is reported, never passed
+            return ("crash", "%s: %s" % (type(e).__name__, e))
+        return ("returned", r)
+
+    saved = C.esptool
+    C.esptool = fake_esptool
+    try:
+        with fake_data():
+            rec = {"when": "TEST"}
+            with contextlib.redirect_stdout(io.StringIO()):
+                C.sub_dump(argparse.Namespace(port="FAKE", expect_elf="7f197bfd"), rec)
+            dump = os.path.join(C.BACKUPS, "canx2_s3_full_TEST_a.bin")
+            check("dump: PASS, one read kept", rec.get("verdict") == "PASS"
+                  and os.listdir(C.BACKUPS) == [os.path.basename(dump)], rec.get("verdict"))
+            check("dump: path recorded relative to the data folder",
+                  rec.get("dump") == "board-backups/canx2_s3_full_TEST_a.bin", rec.get("dump"))
+            record = os.path.join(WORK, "dump_record.json")
+
+            def write_record(path_field):
+                with open(record, "w", encoding="ascii") as fh:
+                    json.dump(dict(rec, dump=path_field), fh)
+
+            write_record(rec.get("dump"))
+            ns = argparse.Namespace(dump_record=record, expect_elf="7f197bfd", port="FAKE")
+            got = outcome(C._checked_dump, ns)
+            check("_checked_dump resolves the recorded path to the dump",
+                  got[0] == "returned" and os.path.exists(got[1][1])
+                  and os.path.samefile(got[1][1], dump), got[0])
+            del calls[:]
+            r2 = {}
+            got = outcome(C.sub_restore, ns, r2)
+            writes = [c for c in calls if c[0] == "write-flash"]
+            check("restore writes back that dump, VERIFIED",
+                  got[0] == "returned" and r2.get("verdict") == "VERIFIED" and len(writes) == 1
+                  and os.path.samefile(writes[0][-1], dump), r2.get("verdict"))
+            r3 = {}
+            got = outcome(C.sub_check_dump, ns, r3)
+            check("check-dump on the same record: PASS", r3.get("verdict") == "PASS", r3.get("verdict"))
+            # what a24de99 wrote: the path relative to this folder, the repo's bench/
+            here_rel = os.path.relpath(dump, HERE).replace("\\", "/")
+            for label, field in (("absolute", os.path.abspath(dump)),
+                                 ("'..' part", "board-backups/../board-backups/" + os.path.basename(dump)),
+                                 ("relative to bench/ (a24de99)", here_rel)):
+                write_record(field)
+                for reader, fn, args in (("_checked_dump", C._checked_dump, (ns,)),
+                                         ("check-dump", C.sub_check_dump, (ns, {}))):
+                    got = outcome(fn, *args)
+                    check("%s refuses a path %s" % (reader, label),
+                          got[0] == "refused" and record in got[1], got[0])
+    finally:
+        C.esptool = saved
     return bad
 
 
@@ -163,6 +278,7 @@ def main():
         if not ok:
             bad.append("blank")
         bad += check_dump_cases()
+        bad += record_path_cases()
         bad += import_refusals()
     finally:
         shutil.rmtree(WORK, ignore_errors=True)

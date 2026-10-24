@@ -188,7 +188,9 @@ def sub_dump(a, rec):
             raise SystemExit("refusing to overwrite %s" % p)
         rc, tail = esptool(a.port, "read-flash", "0", "ALL", p)
         size = os.path.getsize(p) if os.path.exists(p) else None
-        rec["reads"].append({"path": os.path.relpath(p, HERE).replace("\\", "/"),
+        # relative to the data folder, which is what dump_path() reads it against
+        # (2026-10-23: relative to HERE, the repo's bench/, it no longer resolved)
+        rec["reads"].append({"path": os.path.relpath(p, gi_paths.data_dir()).replace("\\", "/"),
                              "rc": rc, "size": size,
                              "sha256": sha256_file(p) if size else None,
                              "esptool_tail": tail})
@@ -243,7 +245,7 @@ def sub_check_dump(a, rec):
     with open(a.dump_record, encoding="ascii") as fh:
         dr = json.load(fh)
     rec["dump_record"] = a.dump_record.replace("\\", "/")
-    path = gi_paths.data_dir(dr["dump"])
+    path = dump_path(a.dump_record, dr["dump"])
     rec["dump"] = dr["dump"]
     size = os.path.getsize(path) if os.path.exists(path) else None
     got = sha256_file(path) if size else None
@@ -258,12 +260,23 @@ def sub_check_dump(a, rec):
     analyse(path, a.expect_elf, rec)
 
 
+def dump_path(record_path, rel):
+    """A dump record's "dump" field, resolved against the data folder. Refuses an
+    absolute path or one with a ".." part rather than resolving it: a record written
+    by a24de99 (relative to the repo's bench/) then stops here, naming the record."""
+    parts = rel.replace("\\", "/").split("/")
+    if os.path.isabs(rel) or rel.startswith(("/", "\\")) or ".." in parts:
+        raise SystemExit("refusing dump record %s: its dump path %r is not relative to the "
+                         "data folder (absolute, or has a '..' part)" % (record_path, rel))
+    return gi_paths.data_dir(*parts)
+
+
 def _checked_dump(a):
     with open(a.dump_record, encoding="ascii") as fh:
         d = json.load(fh)
     if d.get("verdict") != "PASS":
         raise SystemExit("dump record is not PASS: %s" % d.get("verdict"))
-    p = gi_paths.data_dir(d["dump"])
+    p = dump_path(a.dump_record, d["dump"])
     now = sha256_file(p)
     if now != d["dump_sha256"]:
         raise SystemExit("dump file sha256 changed: %s != %s" % (now, d["dump_sha256"]))
