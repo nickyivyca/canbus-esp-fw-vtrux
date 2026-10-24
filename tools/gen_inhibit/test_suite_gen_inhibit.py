@@ -850,7 +850,7 @@ def test_code_info(settings):
 
 
 def test_lock_source(settings):
-    """The settings choose the bench lock (reverse-it firmware/bench-lock-spec.md sections
+    """The settings choose the bench lock (shared/bench/SPEC.md (shared/main), sections
     6 and 7): a settings file naming bench_lock_log puts the run on that log, under this
     suite's role and the runner's PID; one without keeps it on bench_holder's Holder
     line, and the log is never written. Whole runs on the core, of man_app/B1, from

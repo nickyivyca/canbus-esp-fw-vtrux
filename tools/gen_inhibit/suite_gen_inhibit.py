@@ -6,8 +6,8 @@ an esptool write unless settings.esptool.chip names the X2's type and MAC, the M
 only in the local settings, never in a published file; plus --resume's carry rules,
 f60ebf3 / 45a67ba,
 cleared by both reviewers 2026-10-20; plus the bench lock, 0e6f633 and its follow-up
-b9896a0, cleared 2026-10-22. The settings choose the lock (reverse-it
-firmware/bench-lock-spec.md, sections 6 and 7). From the cutover they name bench_lock_log,
+b9896a0, cleared 2026-10-22. The settings choose the lock (shared/bench/SPEC.md
+(shared/main), sections 6 and 7). From the cutover they name bench_lock_log,
 reverse-it's firmware/bench-log.jsonl: the runner takes the lock in that log under its
 own PID and run id, at a PAUSE frees it with its board reads and takes it back once the
 file is gone, and releases it with its board reads at the end. Settings with no
