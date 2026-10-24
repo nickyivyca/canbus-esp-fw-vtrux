@@ -36,7 +36,7 @@ sys.path.insert(0, HERE)
 import release_cases as RC  # noqa: E402
 
 TOOLS = RC.TOOLS
-SC = "vtrux-fx-shared"
+SC = "vtrux_fx_shared"           # the component's folder name: IDF names a component by it
 
 
 def norm(p):
