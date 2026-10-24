@@ -999,9 +999,9 @@ def c_r22_mini(ctx, log):
 def c_r13_lock_crlf(ctx, log):
     """SPEC R13 (5ec6f53): the lock's hash is taken with its line endings as LF, so one lock gives
     one hash in any checkout. The mini project is built twice, its committed lock (LF in git) on
-    disk first as CRLF and then as LF, each into an empty record folder (the earlier one is moved
-    aside, since the same image is never recorded twice). Both records must give the sha256 of
-    the committed lock."""
+    disk first as CRLF and then as LF, each clean to git and built into an empty record folder (the
+    earlier one is moved aside, since the same image is never recorded twice). Both records must
+    give the sha256 of the committed lock."""
     name = "r13_lock_crlf"
     if not os.path.exists(os.path.join(ctx.mini, ".git")):
         make_mini(ctx)
@@ -1020,7 +1020,16 @@ def c_r13_lock_crlf(ctx, log):
         rmtree(os.path.join(ctx.mini, "build"))
         with open(lp, "wb") as f:
             f.write(data)
+        # git calls a file modified when its size differs from the one the index cached, even if
+        # it normalises to the same blob (crlf_lock/ in the run folder). A lock git last added as
+        # CRLF is clean, as batch 1's was: add it with CRLF -> LF conversion, so the index blob
+        # stays the committed one and only the cached size changes.
+        git(ctx.mini, "-c", "core.autocrlf=input", "add", "dependencies.lock")
+        same_blob = subprocess.run(["git", "-C", ctx.mini, "diff", "--cached", "--quiet"]).returncode == 0
         st = git(ctx.mini, "status", "--porcelain")
+        if not same_blob:
+            report("%s (%s)" % (name, ending), "VOID", "git add changed the index blob of the lock", ctx.log)
+            continue
         if st:
             report("%s (%s)" % (name, ending), "VOID", "git status shows the lock changed: %s" % st, ctx.log)
             continue
