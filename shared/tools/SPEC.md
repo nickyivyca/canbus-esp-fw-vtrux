@@ -72,8 +72,11 @@ unless the image changes, which the reproducible check (R19) shows.
   are labels. No check compares a name against the tree.
 - **R7. Component digest.** A component's digest covers the content of every
   file under the component's root, with each file's path relative to that
-  root, except Markdown documents (`*.md`) and `.gitignore`. It never covers
-  a git ref, so a component taken from a tag or from a tree gives the same
+  root, written with `/` on every host OS, so one tree gives one digest on
+  Windows and on Linux. It leaves out, in any folder, files whose name ends
+  `.md` and files named `.gitignore`, matched case-sensitively. Every other
+  file is counted, `.markdown` and `README.MD` included. It never covers a
+  git ref, so a component taken from a tag or from a tree gives the same
   digest.
 
 ## 3. Release builds
@@ -95,7 +98,9 @@ unless the image changes, which the reproducible check (R19) shows.
   has a `.component_hash` equal to the `component_hash` `dependencies.lock`
   gives it, and one that came with a `CHECKSUMS.json` (a registry download)
   matches it file for file, with no file it does not list. A mismatch is a
-  refusal.
+  refusal. A release build is also refused if the project has no
+  `dependencies.lock` after the reconfigure, even one that downloads nothing:
+  such a project carries a manifest so that it has a lock.
 - **R11. The image is the one the build names.** The image recorded is the
   one `build/project_description.json` names as `app_bin`. A missing name or
   a missing file is a refusal.
