@@ -22,7 +22,7 @@ emulated"**.
 | `judge_test.c` | The judge on made-up observations: each verdict shown to pass and to fail. No fakes, no product code. |
 | `nonode_test.c` | The cases. One case per process (`nonode_test <case>`; no argument lists them): the firmware's statics outlive `ft_reset()`, and trip 6's error history is one of them. |
 | `build.sh` | Builds `nonode_test` (`bash build.sh <out>`). `SPEC_LAYER`, `NN_TEST`, `NN_JUDGE` substitute a source (the mutants). |
-| `mutate.py` | Mutants of the judge (caught by `judge_test`), the layer and the cases (caught by a case's RESULT line). A crash, a build failure or no RESULT line is not a catch. |
+| `mutate.py` | Mutants of the judge (caught by `judge_test`), the layer and the cases (caught by a case's RESULT line). A crash, a build failure or no RESULT line is not a catch. Each run works in its own folder in the worktree's `scratch/gen-inhibit-tests/mutants-spec_shim/`, each mutant's binary in that mutant's folder (2026-10-24; before, a fixed system temp folder and a fixed `/tmp` binary name, shared by two runs at once). |
 | `run_spec_shim.py` | The evidence run: the product identity (HEAD, `main/`'s tree against `--base`, nothing modified, each built file's md5), the stimulus decoded with the DBCs, `judge_test`, every case. Writes `identity.json`, `payloads.txt`, `judge_test.txt`, `cases.txt`, `summary.txt` into `--out`. |
 
 ## The row, as judged

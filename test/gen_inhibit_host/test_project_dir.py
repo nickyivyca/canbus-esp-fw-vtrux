@@ -3,8 +3,9 @@
 replay_stimulus_delta.py (the project-folder variable, methodology 2026-10-20).
 
 Needs no project folder: it makes a fake one (a canre/ with a parser that
-returns no frames, and projects/vtrux/logs/) in a temporary folder, and runs the
-tools as subprocesses with $REVERSE_IT_DIR set, unset or wrong.
+returns no frames, and projects/vtrux/logs/) in a temporary folder under the
+worktree's scratch/, and runs the tools as subprocesses with $REVERSE_IT_DIR set,
+unset or wrong.
 
     python3 test_project_dir.py            # the checks
     python3 test_project_dir.py --mutants  # each mutant must fail a check
@@ -23,6 +24,20 @@ TOOLS = ("project_dir.py", "from_capture.py", "test_signals.py", "replay_stimulu
 FAILS = []
 # A machine's own path: a home folder, a sync client's folder (home-path ruling B, user 2026-10-23).
 MACHINE_PATH = re.compile(r"Seafile/|seadrive_root|NotGit|nickivyc|/home/[a-z]|[A-Za-z]:[\\/]+Users")
+
+
+def scratch_base():
+    """<worktree>/scratch/gen-inhibit-tests/tmp, where this test's temporary folders go
+    (AGENTS.md "Files and folders": not the system temp folder). The worktree is found
+    by walking up to its .git (harness-defects row, 2026-10-24)."""
+    d = HERE
+    while not os.path.exists(os.path.join(d, ".git")):
+        if os.path.dirname(d) == d:
+            raise RuntimeError("%s is in no git worktree" % HERE)
+        d = os.path.dirname(d)
+    d = os.path.join(d, "scratch", "gen-inhibit-tests", "tmp")
+    os.makedirs(d, exist_ok=True)
+    return d
 
 
 def check(name, ok, detail=""):
@@ -64,6 +79,10 @@ def checks(tree, tmp):
     nocanre = os.path.join(tmp, "nocanre")
     os.makedirs(nocanre)
     gone = os.path.join(tmp, "gone")
+    own = os.path.normcase(os.path.abspath(tmp))
+    check("its temporary folder is in the worktree's scratch/, not the system temp folder",
+          own.startswith(os.path.normcase(scratch_base()) + os.sep)
+          and not own.startswith(os.path.normcase(tempfile.gettempdir())), tmp)
 
     # ---- the resolver
     check("resolve: --project-dir is used", _resolves(pd, good, {}) == good)
@@ -220,13 +239,13 @@ MUTANTS = [
 
 def main():
     if "--mutants" not in sys.argv[1:]:
-        with tempfile.TemporaryDirectory(prefix="gi-project-dir-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="gi-project-dir-", dir=scratch_base()) as tmp:
             checks(copy_tree(os.path.join(tmp, "tree")), tmp)
         print("%d FAIL" % len(FAILS) if FAILS else "all ok")
         return 1 if FAILS else 0
     killed = 0
     for i, (f, name, old, new) in enumerate(MUTANTS, 1):
-        with tempfile.TemporaryDirectory(prefix="gi-project-dir-m%d-" % i) as tmp:
+        with tempfile.TemporaryDirectory(prefix="gi-project-dir-m%d-" % i, dir=scratch_base()) as tmp:
             tree = copy_tree(os.path.join(tmp, "tree"))
             p = os.path.join(tree, f)
             s = open(p, encoding="utf-8").read()
@@ -250,7 +269,7 @@ def main():
 
 if __name__ == "__main__":
     if sys.argv[1:2] == ["--in-tree"]:
-        with tempfile.TemporaryDirectory(prefix="gi-project-dir-t-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="gi-project-dir-t-", dir=scratch_base()) as tmp:
             checks(sys.argv[2], tmp)
         print("%d FAIL" % len(FAILS) if FAILS else "all ok")
         sys.exit(1 if FAILS else 0)
