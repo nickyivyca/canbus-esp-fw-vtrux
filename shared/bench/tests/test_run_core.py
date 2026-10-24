@@ -8,8 +8,9 @@
 
 Each test builds a small suite of fake checks (python -c one-liners), a
 fake bench-holder.md and, where flashing is involved, fake_esptool.py
-standing in for esptool. Scratch goes to the machine temp folder
-(<tempdir>/vtrux-bench-tests/), never into a synced folder.
+standing in for esptool. Scratch goes to this run's own folder,
+<worktree>/scratch/vtrux-bench-tests/run_core/<time>_<pid>/ (_scratch.py), never
+into a synced folder or the system temp folder.
 """
 
 import glob
@@ -18,7 +19,6 @@ import re
 import os
 import shutil
 import sys
-import tempfile
 import threading
 import time
 import traceback
@@ -27,6 +27,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
 from vtrux_bench.run import engine as E            # noqa: E402
+import _scratch                                    # noqa: E402
 from vtrux_bench.run import record as R            # noqa: E402
 from vtrux_bench.run import procs as P             # noqa: E402
 from vtrux_bench.run import model as M             # noqa: E402
@@ -35,7 +36,7 @@ from vtrux_bench.run.model import (Check, Figure, Group, Image, KnownFail,  # no
                                    Result, Suite, SuiteError, Tol, Verdict)
 
 PY = sys.executable
-SCRATCH = os.path.join(tempfile.gettempdir(), "vtrux-bench-tests")
+SCRATCH = _scratch.run_dir("run_core")  # this run's own folder in the worktree's scratch/ (_scratch.py)
 ROLE = "tester (test-suite)"
 # fake_esptool's chip: a locally administered MAC, no real board's
 FAKE_CHIP = {"type": "ESP32-S3", "mac": "02:00:00:00:00:01"}
@@ -1114,6 +1115,100 @@ def test_digest_bridge():
     assert r and "not clean" in r, r
 
 
+def _digest_spy(env, spy):
+    """Point the engine's digest folder at env's and its product_digest at
+    spy; returns the undo."""
+    saved = (E.DIGEST_ROOT, E.product_digest)
+    E.DIGEST_ROOT = os.path.join(env.root, "digest")
+
+    def undo():
+        E.DIGEST_ROOT, E.product_digest = saved
+    E.product_digest = spy
+    return undo
+
+
+def test_digest_own_folder():
+    """Two digests of one commit at once each extract into a folder of their
+    own (before 2026-10-24 every call wiped and refilled one folder per
+    commit, so two runners at once could digest each other's half-written
+    tree)."""
+    env = Env("digestown")
+    gt = GitTree(env)
+    commit = gt.git("rev-parse", "HEAD")
+    emu, _ = _digest_suites(gt)
+    engs = [E.Engine(emu, env.settings(), out=lambda *a: None) for _ in range(2)]
+    real = E.product_digest
+    seen, out, errs = [], [None, None], []
+    both_in = threading.Barrier(2, timeout=30)
+
+    def spy(work, files):
+        seen.append(work)
+        both_in.wait()                           # both calls inside at once
+        return real(work, files)
+
+    def call(i):
+        try:
+            out[i] = engs[i]._digest_at(gt.root, commit)
+        except Exception as e:                   # reported below, not lost
+            errs.append(repr(e))
+    undo = _digest_spy(env, spy)
+    try:
+        ts = [threading.Thread(target=call, args=(i,)) for i in range(2)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(60)
+    finally:
+        undo()
+    assert not errs, errs
+    assert len(seen) == 2 and seen[0] != seen[1], seen
+    assert out[0] and out[0] == out[1], out
+
+
+def test_digest_folder_removed():
+    """A digest's folder is gone after the call, when it succeeds and when
+    the digest fails."""
+    env = Env("digestgone")
+    gt = GitTree(env)
+    commit = gt.git("rev-parse", "HEAD")
+    emu, _ = _digest_suites(gt)
+    eng = E.Engine(emu, env.settings(), out=lambda *a: None)
+    real = E.product_digest
+    seen = []
+
+    def spy(work, files):
+        seen.append(os.path.isdir(work))
+        return real(work, files)
+
+    def boom(work, files):
+        seen.append(os.path.isdir(work))
+        raise RuntimeError("digest failed")
+    undo = _digest_spy(env, spy)
+    root = E.DIGEST_ROOT
+    try:
+        d = eng._digest_at(gt.root, commit)
+        assert d and seen == [True], (d, seen)
+        assert os.listdir(root) == [], os.listdir(root)
+        eng._bridged.clear()
+        E.product_digest = boom
+        try:
+            eng._digest_at(gt.root, commit)
+            raise AssertionError("the failing digest was not raised")
+        except RuntimeError:
+            pass
+        assert seen == [True, True], seen
+        assert os.listdir(root) == [], os.listdir(root)
+    finally:
+        undo()
+
+
+def _fixed_mkdtemp(prefix="", dir=None, **_k):
+    """mkdtemp's mutant: one folder per prefix, shared by every call."""
+    d = os.path.join(dir, prefix + "fixed")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
 def test_resume_code():
     """--resume refuses a run of another suite or on other code, and a run
     whose start records neither."""
@@ -2046,6 +2141,7 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_throttle, test_after, test_wallclock_guard, test_requires,
          test_requires_whole, test_subset_mark, test_subset_not_whole,
          test_product_digest, test_digest_bridge,
+         test_digest_own_folder, test_digest_folder_removed,
          test_resume_code,
          test_redact_scope, test_gate, test_skip, test_timeout,
          test_resume, test_carry_finished, test_carry_check_end, test_compare,
@@ -2138,6 +2234,8 @@ MUTANTS = {
     "test_subset_not_whole": _rule("subset_not_whole"),
     "test_product_digest": _rule("product_digest"),
     "test_digest_bridge": _rule("digest_bridge"),
+    "test_digest_own_folder": _patch(__import__("tempfile"), "mkdtemp", _fixed_mkdtemp),
+    "test_digest_folder_removed": _patch(shutil, "rmtree", lambda *a, **k: None),
     "test_resume_code": _rule("resume_code"),
     "test_redact_scope": _rule("redact_scope"),
     "test_gate": _rule("gate"),

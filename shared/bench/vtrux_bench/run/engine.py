@@ -215,6 +215,11 @@ def read_text(r):
     return "on no image identify knows" if r is None else r
 
 
+# Where _digest_at extracts a commit's tree: None is <temp>/vtrux-bench/digest.
+# Each call makes a folder of its own there and removes it (tests point this at
+# their own scratch folder to see that).
+DIGEST_ROOT = None
+
 SHIP_EXCLUDE = {"__pycache__", ".pio", ".git", "build"}
 SSH = ("ssh", "-o", "BatchMode=yes")
 
@@ -1646,13 +1651,18 @@ class Engine:
         import tempfile
         tar = subprocess.run(["git", "-C", repo, "archive", commit],
                              capture_output=True, check=True).stdout
-        work = os.path.join(tempfile.gettempdir(), "vtrux-bench", "digest",
-                            commit[:12])
-        shutil.rmtree(work, ignore_errors=True)
-        os.makedirs(work)
-        with tarfile.open(fileobj=io.BytesIO(tar)) as tf:
-            tf.extractall(work, filter="data")
-        d = product_digest(work, self.suite.product_files(work))
+        # A folder of this call's own, removed after: two runners digesting
+        # the same commit at once never share one (before 2026-10-24 every
+        # call wiped and refilled <temp>/vtrux-bench/digest/<commit>).
+        base = DIGEST_ROOT or os.path.join(tempfile.gettempdir(), "vtrux-bench", "digest")
+        os.makedirs(base, exist_ok=True)
+        work = tempfile.mkdtemp(prefix=commit[:12] + "_", dir=base)
+        try:
+            with tarfile.open(fileobj=io.BytesIO(tar)) as tf:
+                tf.extractall(work, filter="data")
+            d = product_digest(work, self.suite.product_files(work))
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
         self._bridged[commit] = d
         return d
 
