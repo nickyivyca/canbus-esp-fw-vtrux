@@ -152,3 +152,41 @@ all, on Python 3.14.6 and 3.11.9) puts a project in a subfolder: it finds the ch
 the worktree and not a `shared-*` folder beside the project, and reverting the fix fails it.
 The real-build cases in the R17 entry are unaffected: there the project root is the worktree
 root.
+
+## R18 options (C6f, 2026-10-24)
+
+**SPEC:** R18 in shared/main `b5d5477`, with the user's readings of 2026-10-24: the
+options are `config/sdkconfig.json` in every CMake build folder; every option the
+profile names has the profile's value, "unset" meaning absent or off, and the rest are
+free; a check on finished release builds, not a refusal. **Check:**
+`vtrux_checks/options.py` (`python -B -m vtrux_checks options --build <dir>`) at
+`632962f`, written from SPEC R18. Its 16 unit tests in `vtrux_checks/tests/` show each rule
+failing on a planted input and passing on a faithful one, and nine mutants of the check each
+fail them. They pass on Python 3.14.6 and 3.11.9. **Profile:** gen-inhibit's
+`vtrux_checks.json` at `gen-inhibit/tester/release-profile` `b565924`: its spec 12.3 item 3
+settings 1 to 5 (rollback on; secure boot, flash encryption, with
+`CONFIG_FLASH_ENCRYPTION_ENABLED` too, and virtual eFuses off;
+`CONFIG_TWAI_ISR_IN_IRAM` unset; the two watchdog settings section 9.1 records), plus R12's
+`CONFIG_APP_REPRODUCIBLE_BUILD` on. Each value cites its spec line. **Builds:** release
+builds by `shared/tools/build-tooling` at `30279ba` (`vtrux_build/` tree `7a9eaf6`) of the
+fixture of the earlier entries (gen-inhibit `d2e0bb5`), each with one `sdkconfig` change
+committed on top. **Cases:** `verification/options_cases.py` at `632962f`, whose
+`--self-test` catches every broken input. The failures each case expects, folder by folder,
+come from each build folder's `config/sdkconfig.h`, not from the check's reader. **Host:**
+NICKY-XPS (IDF v5.4.1, its Python 3.11.9). **Run files:**
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/runs/sharedtools_c6f/`
+(`README.md`, section "R18 options check"); `xps_options_r18/SHA256SUMS`
+(`f87d4860...fbdf10`) hashes every log and `options_results.json`.
+
+| Case | Result | What was tested |
+|---|---|---|
+| Profile met | PASS | The fixture (reproducible build on): exit 0, with the app's and the bootloader's options read. |
+| Bootloader's options missing | PASS | The same build with `build/bootloader/config/sdkconfig.json` moved aside: exit 1, cannot read, naming `build/bootloader`. |
+| A set option off | PASS | `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` off: exit 1, naming it in `build` and `build/bootloader`, and nothing else. |
+| An unset option on | PASS | `CONFIG_ESP_TASK_WDT_PANIC` on: exit 1, naming it in both folders, and nothing else. |
+| An option the profile does not name | PASS | `CONFIG_LOG_COLORS` off: exit 0. |
+| R12's option off | PASS | `CONFIG_APP_REPRODUCIBLE_BUILD` off: exit 1, naming it in both folders, and nothing else. |
+
+| Req | Result | What was tested |
+|---|---|---|
+| R18, gen-inhibit's release builds | **not met, cause step 0b** | The `CONFIG_APP_REPRODUCIBLE_BUILD` off case is gen-inhibit `d2e0bb5` as committed: its tree differs from that commit only by `vtrux_build.json`, with `sdkconfig` and `sdkconfig.old` the same. Its release build fails R18 on `CONFIG_APP_REPRODUCIBLE_BUILD` alone, in both folders. Every other option the profile names is at its value. `gen-inhibit/main` `b1bd01e` differs from `d2e0bb5` only in `AGENTS.md`. Port step 0b turns the option on. |
