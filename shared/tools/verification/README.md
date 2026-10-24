@@ -6,8 +6,8 @@ The tester's verification of the build tooling against `../SPEC.md`. The
 expected values come from SPEC and from ESP-IDF's published app image format,
 never from `vtrux_build`'s source: `independent.py` is the tester's own reading,
 and each check compares the library's answer with it, or tests a property SPEC
-states. The build checks (R17-R21) are not here; they will be in
-`../vtrux_checks/`.
+states. The build checks (R17-R21) are not here; they are in
+`../vtrux_checks/`, and their real-build cases are here.
 
 Each script has a `--self-test` that runs the same checks against fake
 libraries: each fake breaks one rule and must be caught, and one fake breaks
@@ -22,6 +22,7 @@ none and must pass. A check that no fake can fail is not a check.
 | `verify_digest.py` | R7, by its properties only, since SPEC does not define the serialisation. Pairs that R7 says cover the same thing give one digest: a copy elsewhere, an mtime change, `*.md` added, a root `.gitignore`, an empty folder, a `.git` above. Pairs that differ in what it covers give two: a content byte, a rename or move, an empty file, `__pycache__`, CRLF, `README.md.txt`, `.markdown`, `README.MD`, a dotfile. A `.gitignore` in a subfolder is left out too. These are R7's edges as the user ruled them (2026-10-24, SPEC `904b98a`). `component_files` lists exactly what R7 covers. With `--commit`, the component checked out at a commit and exported with `git archive` give one digest. With `--expect-digest`, that digest must equal the other host OS's. 16 fakes. |
 
 | `release_cases.py` | Real release builds: R5, R8-R11, R13, R14 with R3, R16 (`override_path`), R22. Cases include, for R8: staged, deleted and untracked files, and a committed sdkconfig the reconfigure rewrites. For R9: ccache launchers and ccache masquerading as the compiler on PATH, judged by the compiler CMake chose and the compiles ccache cached in its own `CCACHE_DIR`. For R10: a project with no `dependencies.lock`. It clones gen-inhibit at `--base` into `--root` and adds a fixture commit: `vtrux_build.json`, reproducible build on, and the tracked files as `idf.py reconfigure` writes them. Branch `fx-r11` deletes the build's own `.bin`; branch `fx-r16` takes a shared component from a local folder. A minimal second project for R22 is IDF's `hello_world` on esp32c3. Records go to a stand-in `REVERSE_IT_DIR` under `--root`. Each case judges from outside: the exit code, the record folder before and after, the build folder and git. It never judges message wording. A case whose trigger did not happen is VOID. Before each case it checks the bench lock, the "No builds" line and running simulators, and stops if any is set. `--self-test` runs the R13 record judge, the second-build judge, the refusal verdict and the masquerade's evidence readers against broken inputs. |
+| `scope_cases.py` | R17's check (`../vtrux_checks/scope.py`) on real builds of `release_cases.py`'s fixture: a clean release build passes `--release` and `--bench`; the same tree with a managed component's manifest version changed, or with a managed component the lock does not list, fails; a header included from outside the project root fails both; a shared component taken by `override_path` from a `../shared-<tag>/shared/` folder passes `--bench` and fails `--release`; the same from a folder that is not a `shared/` fails both. Each case confirms its trigger without the check's reader (ninja's `-t deps`, or `build.ninja`'s text), and judges the check's exit code and whether its output names the planted file. `--self-test` runs that judge against broken inputs. |
 
 ## Running
 
@@ -34,7 +35,11 @@ py -3.14 -B verify_image.py [--same A.bin B.bin ...] [--different C.bin] [--expe
 py -3.14 -B verify_digest.py --self-test
 py -3.14 -B verify_digest.py [--commit <commit> [--component shared/tools]]
 py -3.14 -B release_cases.py --self-test
+py -3.14 -B scope_cases.py --self-test
 ```
+
+`scope_cases.py` runs like `release_cases.py`, with the same `--root` (the fixture must
+already be there) and `--out`.
 
 `release_cases.py` runs from an exported ESP-IDF shell, with its Python:
 `python -B release_cases.py --root <short folder in scratch/> --out <run folder>
