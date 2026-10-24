@@ -139,6 +139,18 @@ same folder. The interposer's test evidence is
   the embedded version when CMake configures, not when it builds. Under R4
   the commit is in that version field, so a build without a reconfigure can
   carry an old commit. Port plan Layer 0 keeps refusal 4.
+- **Changed 2026-10-23 (user): ccache off.** The implementor's end-to-end
+  self-check on `3b6da97` showed `idf.py`'s CMake call carrying
+  `-DCCACHE_ENABLE=1` on NICKY-XPS. Read in ESP-IDF v5.4.1: `idf.py`'s
+  `--ccache/--no-ccache` option defaults off but reads `IDF_CCACHE_ENABLE`
+  (`tools/idf_py_actions/core_ext.py`), and the IDF export sets
+  `IDF_CCACHE_ENABLE=1` wherever the ccache tool is installed (its
+  `export_vars` in `tools/tools.json`). So whether a release build used the
+  cache depended on how the host's IDF was installed. With the cache on, the
+  R19 rebuild is served from the first build's objects and shows nothing
+  about the compile. A release build gains little from the cache: every
+  source includes `sdkconfig.h`, so bench and dev builds with other options
+  leave nothing a release build can reuse. Ruled off (option A of three).
 - **Status:** complete.
 
 ### R10. Downloaded components checked after the reconfigure
