@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Verify vtrux_build.digest against SPEC R7, by its properties.
 
-    python -B verify_digest.py [--commit C [--component shared/tools]]
+    python -B verify_digest.py [--commit C [--component shared/tools] [--expect-digest D]]
     python -B verify_digest.py --self-test      # the same checks against fake libraries
 
 SPEC R7 defines what a digest covers, not how it is serialised, so these checks
@@ -11,11 +11,15 @@ pair that differs in anything it covers must give two. component_files must list
 exactly the files R7 covers. With --commit, the component at that commit is taken
 from a clone checked out at the commit and from a `git archive` export of its tree
 (no git at all), and the two must give one digest (R7: "never covers a git ref").
+--expect-digest is that component's digest as the other host OS gave it: R7 writes
+paths with "/" on every host OS, so one tree gives one digest on Windows and Linux.
 --self-test runs the synthetic checks against fakes that each break one rule and
-must each be caught, and one fake that breaks none and must pass.
+must each be caught, and one fake that breaks none and must pass. There the other
+host's digest is the faithful fake's.
 
-Left out until the reviewer rules (asked 2026-10-24): .gitignore below the root,
-.markdown files, *.md case, and the path separator across host OSes.
+R7's edges as the user ruled them (2026-10-24, SPEC 904b98a): .gitignore is left out
+in any folder; only names ending ".md", matched case-sensitively, are left out, so
+.markdown and README.MD count; paths use "/" on every host OS.
 
 Gen-inhibit tester, 2026-10-24 (C6f verification).
 """
@@ -70,7 +74,9 @@ def edit(base, **kw):
     return t
 
 
-def synthetic(lib, tmp):
+def synthetic(lib, tmp, other=None):
+    """other: the other host OS's digest of a tree, in the self-test only (the faithful fake);
+    a real run compares across hosts with --expect-digest instead."""
     T = Trees(tmp)
     D = lib.component_digest
     base = T.make(BASE)
@@ -91,6 +97,7 @@ def synthetic(lib, tmp):
     same("README.md added at the root", T.make(edit(BASE, add={"README.md": b"# r\n"})))
     same("notes.md added in a subfolder", T.make(edit(BASE, add={"sub/deep/notes.md": b"n\n"})))
     same(".gitignore added at the root", T.make(edit(BASE, add={".gitignore": b"*.pyc\n"})))
+    same(".gitignore added in a subfolder", T.make(edit(BASE, add={"sub/deep/.gitignore": b"*.o\n"})))
     same("an empty folder added", T.make(BASE, dirs=["empty", "sub/empty2"]))
     t = T.make(BASE, under="repo")
     gitdir = os.path.join(os.path.dirname(os.path.dirname(t)), ".git")
@@ -113,6 +120,9 @@ def synthetic(lib, tmp):
               T.make(edit(BASE, add={"__pycache__/a.cpython-314.pyc": b"\x00\x01pyc"})))
     different("a.py saved with CRLF", T.make(edit(BASE, add={"a.py": b"print(1)\r\n"})))
     different("README.md.txt added (not *.md)", T.make(edit(BASE, add={"README.md.txt": b"r\n"})))
+    different("notes.markdown added (only .md is left out)", T.make(edit(BASE, add={"notes.markdown": b"m\n"})))
+    different("README.MD added (matched case-sensitively)", T.make(edit(BASE, add={"README.MD": b"u\n"})))
+    different("sub/x.Md added (matched case-sensitively)", T.make(edit(BASE, add={"sub/x.Md": b"u\n"})))
     different(".gitattributes changed (a dotfile is a file)",
               T.make(edit(BASE, add={".gitattributes": b"* -text\n"})))
     different("a file removed", T.make(edit(BASE, drop={"sub/deep/c.bin": 1})))
@@ -124,22 +134,30 @@ def synthetic(lib, tmp):
     check("R7: different digest: one file against the same bytes split over two",
           D(T.make({"f": b"xy"})) != D(T.make({"f": b"x", "g": b"y"})))
 
-    extra = edit(BASE, add={"README.md": b"r\n", "sub/n.md": b"n\n", ".gitignore": b"x\n",
-                            "__pycache__/m.pyc": b"c", "README.md.txt": b"t\n"})
+    extra = edit(BASE, add={"README.md": b"r\n", "sub/n.md": b"n\n", ".gitignore": b"x\n", "sub/.gitignore": b"y\n",
+                            "__pycache__/m.pyc": b"c", "README.md.txt": b"t\n", "x.markdown": b"k\n",
+                            "sub/deep/NOTES.MD": b"u\n"})      # not beside a .md of the same name: NTFS folds case
     t = T.make(extra, dirs=["empty"])
-    want = sorted(k for k in extra if not k.endswith(".md") and k != ".gitignore")
+    want = sorted(k for k in extra if not k.endswith(".md") and k.split("/")[-1] != ".gitignore")
     got = lib.component_files(t)
     rels = sorted(r.replace("\\", "/") for r, _a in got)
     check("R7: component_files lists exactly what R7 covers", rels == want, (rels, want))
     check("R7: component_files: each entry's path is that file under the root",
           all(os.path.samefile(a, os.path.join(t, *r.replace("\\", "/").split("/"))) for r, a in got))
+    if other:
+        check("R7: the same tree (with subfolders) on the other host OS gives one digest", D(base) == other(base),
+              (D(base), other(base)))
+
+
+def cross_host(digest, expect):
+    check("R7: the same tree on this host and the other host OS gives one digest", digest == expect, (digest, expect))
 
 
 def git(*args, **kw):
     return subprocess.run(["git"] + list(args), check=True, capture_output=True, **kw).stdout
 
 
-def real(lib, tmp, commit, component):
+def real(lib, tmp, commit, component, expect=None):
     repo = HERE
     while not os.path.exists(os.path.join(repo, ".git")):
         repo = os.path.dirname(repo)
@@ -157,6 +175,8 @@ def real(lib, tmp, commit, component):
     check("R7: the checkout at the commit and the git-archive export give one digest", da == db, (da, db))
     check("R7: ... with the same file list",
           sorted(r for r, _ in lib.component_files(a)) == sorted(r for r, _ in lib.component_files(b)))
+    if expect:
+        cross_host(da, expect)
 
 
 class Fake:
@@ -175,9 +195,16 @@ class Fake:
             for f in sorted(files):
                 p = os.path.join(d, f)
                 rel = os.path.relpath(p, folder).replace(os.sep, "/")
+                if self.broken == "writes paths with a backslash":
+                    rel = rel.replace("/", "\\")
                 if f.endswith(".md") and self.broken != "includes .md":
                     continue
-                if f == ".gitignore" and self.broken != "includes .gitignore":
+                if self.broken == "leaves out .markdown too" and f.endswith(".markdown"):
+                    continue
+                if self.broken == "matches .md case-insensitively" and f.lower().endswith(".md"):
+                    continue
+                if f == ".gitignore" and self.broken != "includes .gitignore" and not (
+                        self.broken == "leaves out .gitignore at the root only" and d != folder):
                     continue
                 if self.broken == "skips every dotfile" and f.startswith("."):
                     continue
@@ -218,7 +245,9 @@ class Fake:
 
 BROKEN = ["includes .md", "includes .gitignore", "content only, no paths", "uses mtime", "skips __pycache__",
           "normalises CRLF", "skips every dotfile", "absolute paths", "mixes in the git HEAD above it",
-          "skips empty files", "path and content with no separator", "skips subfolders"]
+          "skips empty files", "path and content with no separator", "skips subfolders",
+          "leaves out .gitignore at the root only", "leaves out .markdown too", "matches .md case-insensitively",
+          "writes paths with a backslash"]
 
 
 def main(argv):
@@ -231,7 +260,7 @@ def main(argv):
                 print("--- fake: %s" % (b or "nothing broken (must pass)"))
                 sub = os.path.join(tmp, "fake%02d" % (BROKEN.index(b) + 1 if b else 0))
                 os.makedirs(sub)
-                synthetic(Fake(b), sub)
+                synthetic(Fake(b), sub, other=Fake(None).component_digest)
                 caught = bool(FAILS)
                 ok &= caught == (b is not None)
                 print("%s %s  (%d failing check(s))" % ("CAUGHT  " if caught and b else "PASSED  " if not b and not caught
@@ -243,7 +272,8 @@ def main(argv):
         synthetic(lib, os.path.join(tmp))
         if "--commit" in argv:
             comp = argv[argv.index("--component") + 1] if "--component" in argv else "shared/tools"
-            real(lib, tmp, argv[argv.index("--commit") + 1], comp)
+            exp = argv[argv.index("--expect-digest") + 1] if "--expect-digest" in argv else None
+            real(lib, tmp, argv[argv.index("--commit") + 1], comp, exp)
         print("\n%s" % ("all ok" if not FAILS else "%d FAIL: %s" % (len(FAILS), "; ".join(FAILS))))
         return 1 if FAILS else 0
     finally:

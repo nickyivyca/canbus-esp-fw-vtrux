@@ -734,6 +734,94 @@ def c_r9(ctx, log, name, var):
             note="R9: %s=ccache in the environment; %s" % (var, "CMake took it" if took else "CMake did not take it"))
 
 
+def c_r9_masquerade(ctx, log):
+    """ccache in the compiler's place on PATH: a link named after the compiler (Linux), or a copy
+    of ccache.exe under that name (Windows, where ccache's docs masquerade by copying)."""
+    reset(ctx.p1, "fixture")
+    rmtree(os.path.join(ctx.p1, "build"))
+    cc = shutil.which("ccache")
+    if not cc:
+        report("r9_masquerade", "VOID", "R9: no ccache on this host to masquerade with", ctx.log)
+        return
+    masq = os.path.join(ctx.root, "masq")
+    rmtree(masq)
+    os.makedirs(masq)
+    win = platform.system() == "Windows"
+    for name in ("riscv32-esp-elf-gcc", "riscv32-esp-elf-g++"):
+        dst = os.path.join(masq, name + (".exe" if win else ""))
+        if win:
+            shutil.copyfile(cc, dst)
+        else:
+            os.symlink(cc, dst)
+    before = snapshot(ctx.records())
+    rc, _ = release(ctx, ctx.p1, log, jobs=ctx.jobs, env={"PATH": masq + os.pathsep + os.environ["PATH"]})
+    cache = os.path.join(ctx.p1, "build", "CMakeCache.txt")
+    m = re.search(r"^CMAKE_C_COMPILER:[A-Z]+=(.*)$", open(cache).read(), re.M) if os.path.exists(cache) else None
+    took = bool(m) and os.path.normcase(os.path.abspath(m.group(1).strip())).startswith(os.path.normcase(masq))
+    refusal(ctx, "r9_masquerade", ctx.p1, rc, before, extra_ok=took,
+            note="R9: ccache as %s named riscv32-esp-elf-gcc first on PATH; CMake chose %s" % (
+                "a copy" if win else "a link", m.group(1).strip() if m else "nothing"))
+    rmtree(masq)
+
+
+def c_pre_staged(ctx, log):
+    reset(ctx.p1, "fixture")
+    open(os.path.join(ctx.p1, "staged_probe.txt"), "w").write("x\n")
+    git(ctx.p1, "add", "staged_probe.txt")
+    before = snapshot(ctx.records())
+    rc, _ = release(ctx, ctx.p1, log, check_only=True)
+    refusal(ctx, "pre_staged", ctx.p1, rc, before, note="R8: a new file staged, not committed")
+    git(ctx.p1, "reset", "-q")
+    reset(ctx.p1, "fixture")
+
+
+def c_pre_deleted(ctx, log):
+    reset(ctx.p1, "fixture")
+    os.remove(os.path.join(ctx.p1, "main", "main.c"))
+    before = snapshot(ctx.records())
+    rc, _ = release(ctx, ctx.p1, log, check_only=True)
+    refusal(ctx, "pre_deleted", ctx.p1, rc, before, note="R8: a tracked file deleted (main/main.c)")
+    reset(ctx.p1, "fixture")
+
+
+def c_r8_rewrites(ctx, log):
+    """The fixture's first commit, before its sdkconfig was committed as the reconfigure writes
+    it: the release build's own reconfigure rewrites a tracked file."""
+    reset(ctx.p1, "fx-r8", "origin/fixture~1")
+    rmtree(os.path.join(ctx.p1, "build"))
+    before = snapshot(ctx.records())
+    rc, _ = release(ctx, ctx.p1, log, jobs=ctx.jobs)
+    st = git(ctx.p1, "status", "--porcelain")
+    compiled = ninja_lines(ctx.p1)
+    refusal(ctx, "r8_reconfigure_rewrites", ctx.p1, rc, before, extra_ok="sdkconfig" in st and compiled == 0,
+            note="R8: committed sdkconfig the reconfigure rewrites; after: status '%s', ninja log lines %d" % (
+                st.replace("\n", "; "), compiled))
+    reset(ctx.p1, "fixture")
+    rmtree(os.path.join(ctx.p1, "build"))
+
+
+def c_r10_no_lock(ctx, log):
+    """A project that downloads nothing and has no manifest, so no dependencies.lock: refused
+    (SPEC R10, 0d2431b)."""
+    if not os.path.exists(os.path.join(ctx.mini, ".git")):
+        make_mini(ctx)
+    if not git(ctx.mini, "branch", "--list", "nolock"):
+        git(ctx.mini, "checkout", "-q", "-b", "nolock", "main")
+        git(ctx.mini, "rm", "-q", os.path.join("main", "idf_component.yml"), "dependencies.lock")
+        git(ctx.mini, "commit", "-q", "-m", "mini nolock: no manifest, no dependencies.lock")
+    reset(ctx.mini, "nolock", "nolock")
+    rmtree(os.path.join(ctx.mini, "build"))
+    before = snapshot(ctx.records("vtrux-mini-test"))
+    rc, out = release(ctx, ctx.mini, log, jobs=ctx.jobs)
+    reconfigured = os.path.exists(os.path.join(ctx.mini, "build", "CMakeCache.txt"))
+    no_lock = not os.path.exists(os.path.join(ctx.mini, "dependencies.lock"))
+    refusal(ctx, "r10_no_lock", ctx.mini, rc, before, project="vtrux-mini-test",
+            extra_ok=reconfigured and no_lock and ninja_lines(ctx.mini) == 0,
+            note="R10: no manifest; after the reconfigure: dependencies.lock %s, ninja log lines %d" % (
+                "absent" if no_lock else "PRESENT", ninja_lines(ctx.mini)))
+    reset(ctx.mini, "main", "main")
+
+
 def watch_then(cond, act, fired, timeout=3000):
     def w():
         t0 = time.time()
@@ -832,6 +920,8 @@ CASES = [
     ("pre_overwrite", c_pre_overwrite),
     ("pre_untracked", c_pre_untracked),
     ("pre_modified", c_pre_modified),
+    ("pre_staged", c_pre_staged),
+    ("pre_deleted", c_pre_deleted),
     ("a_release", c_a_release),
     ("a_again", c_a_again),
     ("r5_p2_same_commit", c_r5_p2_same_commit),
@@ -842,6 +932,9 @@ CASES = [
     ("r10_extra_file", lambda c, l: c_r10(c, l, "r10_extra_file", mut_extra, "R10: a file CHECKSUMS.json does not list")),
     ("r9_launcher_c", lambda c, l: c_r9(c, l, "r9_launcher_c", "CMAKE_C_COMPILER_LAUNCHER")),
     ("r9_launcher_cxx", lambda c, l: c_r9(c, l, "r9_launcher_cxx", "CMAKE_CXX_COMPILER_LAUNCHER")),
+    ("r9_masquerade", c_r9_masquerade),
+    ("r8_reconfigure_rewrites", c_r8_rewrites),
+    ("r10_no_lock", c_r10_no_lock),
     ("r8_during_reconfigure", c_r8_reconf),
     ("r8_build_untracked", lambda c, l: c_r8_build(c, l, "r8_build_untracked",
                                                    lambda: open(os.path.join(c.p1, "r8_probe.txt"), "w").write("x\n"),
