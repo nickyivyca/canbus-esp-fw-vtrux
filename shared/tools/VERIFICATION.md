@@ -190,3 +190,35 @@ NICKY-XPS (IDF v5.4.1, its Python 3.11.9). **Run files:**
 | Req | Result | What was tested |
 |---|---|---|
 | R18, gen-inhibit's release builds | **not met, cause step 0b** | The `CONFIG_APP_REPRODUCIBLE_BUILD` off case is gen-inhibit `d2e0bb5` as committed: its tree differs from that commit only by `vtrux_build.json`, with `sdkconfig` and `sdkconfig.old` the same. Its release build fails R18 on `CONFIG_APP_REPRODUCIBLE_BUILD` alone, in both folders. Every other option the profile names is at its value. `gen-inhibit/main` `b1bd01e` differs from `d2e0bb5` only in `AGENTS.md`. Port step 0b turns the option on. |
+
+## R8's sdkconfig clause (C6f, 2026-10-24)
+
+**Tooling tested:** `shared/tools/build-tooling` at `a43c6e8` (`vtrux_build/` tree
+`c5e5024`), merged into `shared/tools/checks` as `547ee26`. **SPEC:** R8 in shared/main
+`c1a502c`: a release build is refused unless the `sdkconfig` it used
+(`project_description.json`'s `config_file`) is committed in the project, tracked by git and
+not ignored. **Checks:** `verification/release_cases.py` at `7384214`, and at `2cf217f` for
+the second run of the generated-file case; each commit's `--self-test` catches every broken
+input. The self-test checks the new helpers on a small repo, and four mutants of them each
+fail it. The release command takes no `-D`, so a case that moves `SDKCONFIG` sets it in the
+top-level `CMakeLists.txt` before `project.cmake` is included, a form VALIDATION R8 lists.
+Each case confirms from the build that `config_file` names the file it planted, and asks git
+itself whether that file is tracked and ignored. **Project:** the fixture of the earlier
+entries (gen-inhibit `d2e0bb5`), with each case's change committed on top. **Host:**
+NICKY-XPS (IDF v5.4.1, its Python 3.11.9). **Run files:**
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/runs/sharedtools_c6f/`
+(`README.md`, section "R8's sdkconfig clause"); `xps_r8_sdkconfig/SHA256SUMS`
+(`297484c7...c3f7ff`) hashes every log and `results.json`.
+
+| Case | Result | What was tested |
+|---|---|---|
+| The default `sdkconfig` | PASS | The fixture's release build: one record, `91acd964...`, judged field by field. |
+| Ignored by `.gitignore` | PASS | The root `sdkconfig`, still tracked, matched by a committed `.gitignore` line: refused, no record. |
+| Ignored by `.git/info/exclude` | PASS | The same, matched by `.git/info/exclude`: refused, no record. |
+| Untracked | PASS | The root `sdkconfig` out of the index and ignored, still on disk: refused, no record. |
+| Untracked, written by the reconfigure | PASS | `SDKCONFIG` at an ignored `sdkconfig.gen` in the project root that the reconfigure writes: refused, no record. The first run was VOID, a fault in the case: it named a file in a folder that did not exist, and the reconfigure failed before the check. |
+| Outside the project | PASS | `SDKCONFIG` at a copy in a folder beside the project whose name starts like the project's: refused, no record. |
+| Committed elsewhere in the project | PASS | `SDKCONFIG` at a committed `configs/sdkconfig.release` with `CONFIG_LOG_COLORS` off: built and recorded, and `CONFIG_LOG_COLORS` is absent from the build's `sdkconfig.h`, so the build used that file. |
+
+**Not tested:** a symbolic link or junction inside the project pointing outside it (SPEC says
+"in the project"; the build message says the tooling resolves links, which no case here shows).
