@@ -218,6 +218,16 @@ def _same_path(a, b):
             == os.path.normcase(os.path.normpath(b)))
 
 
+def is_ccache(path):
+    """True if path, or the file its links resolve to, is a ccache binary
+    (basename ccache or ccache.exe): ccache's masquerade mode puts a link
+    named after the compiler on PATH, and CMake then chooses that link."""
+    for p in (path, os.path.realpath(path)):
+        if os.path.basename(p).lower() in ("ccache", "ccache.exe"):
+            return True
+    return False
+
+
 def cmake_build_folders(build_dir):
     """build_dir, then every folder under it that CMake configured (it has
     both CMakeCache.txt and build.ninja): the bootloader's, once the build
@@ -235,9 +245,10 @@ def check_no_launcher(build_dir, when, folders=None):
     default), every compile edge's command, as ninja would run it, starts
     with the compiler CMake chose for its language. Anything else in front,
     from CCACHE_ENABLE (IDF's RULE_LAUNCH_COMPILE) or from
-    CMAKE_<LANG>_COMPILER_LAUNCHER, is refused. A folder with no compile
-    edges, or no recorded compiler, is refused too: then nothing shows the
-    compiler runs alone."""
+    CMAKE_<LANG>_COMPILER_LAUNCHER, is refused. So is a chosen compiler
+    that is itself ccache once its links are resolved (masquerade mode). A
+    folder with no compile edges, or no recorded compiler, is refused too:
+    then nothing shows the compiler runs alone."""
     folders = folders or [build_dir]
     total = 0
     for b in folders:
@@ -261,6 +272,12 @@ def check_no_launcher(build_dir, when, folders=None):
                 raise Refused("%s, %s records no %s compiler, so its compile "
                               "commands cannot be checked for a launcher (R9)"
                               % (when, name, lang))
+            if is_ccache(cc):
+                raise Refused("%s, the %s compiler CMake chose in %s is %s, "
+                              "which is ccache (%s): ccache runs every "
+                              "compile, and a release build is built "
+                              "without it (R9)"
+                              % (when, lang, name, cc, os.path.realpath(cc)))
             word = first_word(e.command or "")
             if not word or not _same_path(word, cc):
                 bad.append((e.outputs[0], word))

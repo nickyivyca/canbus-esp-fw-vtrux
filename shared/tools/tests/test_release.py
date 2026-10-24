@@ -30,7 +30,8 @@ from vtrux_build.builddir import BuildDir                # noqa: E402
 from vtrux_build.image import AppImage                   # noqa: E402
 from vtrux_build.release import (Refused, check_no_launcher,  # noqa: E402
                                  cmake_build_folders, cmake_false,
-                                 first_word, ninja_runner, release)
+                                 first_word, is_ccache, ninja_runner,
+                                 release)
 
 GIT_ENV = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
                GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
@@ -685,6 +686,36 @@ class LauncherCheck(unittest.TestCase):
             with self.assertRaises(Refused, msg=name) as cm:
                 check_no_launcher(self.folder(name, cmd), "t")
             self.assertIn("1 of the 1 compile commands", str(cm.exception))
+
+    def test_compiler_that_is_ccache(self):
+        """CMake chose ccache itself: named so, or a link named after the
+        compiler that resolves to ccache (masquerade mode)."""
+        for name, compiler in (("lc_cc_name", "C:/cc/ccache.exe"),
+                               ("lc_cc_name2", "/usr/lib/ccache/CCACHE")):
+            cmd = compiler.replace("/", "\\")
+            with self.assertRaises(Refused, msg=name) as cm:
+                check_no_launcher(self.folder(name, cmd, compiler), "t")
+            self.assertIn("which is ccache", str(cm.exception))
+        link = "C:/mask/riscv32-esp-elf-gcc.exe"
+        real = os.path.realpath
+        with mock.patch("vtrux_build.release.os.path.realpath",
+                        lambda p: "C:/t/ccache.exe" if p == link else real(p)):
+            with self.assertRaises(Refused) as cm:
+                check_no_launcher(self.folder("lc_cc_link", "C:\\mask\\"
+                                              "riscv32-esp-elf-gcc.exe", link),
+                                  "t")
+        self.assertIn("C:/t/ccache.exe", str(cm.exception))
+
+    def test_compiler_link_to_ccache_on_disk(self):
+        d = scratch.fresh("lc_cc_symlink")
+        target = scratch.write(os.path.join(d, "ccache.exe"), b"")
+        link = os.path.join(d, "riscv32-esp-elf-gcc.exe")
+        try:
+            os.symlink(target, link)
+        except (OSError, NotImplementedError) as e:
+            self.skipTest("no symlinks here (%s)" % e)
+        self.assertTrue(is_ccache(link))
+        self.assertFalse(is_ccache(target.replace("ccache", "gcc")))
 
     def test_two_compilers_for_one_language(self):
         b = self.folder("lc_two", "C:\\tc\\gcc.exe",

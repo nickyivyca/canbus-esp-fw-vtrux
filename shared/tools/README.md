@@ -56,7 +56,9 @@ and ASM forms), from the environment or the cache, launches ccache with
 CMake wrote into `build.ninja`, as ninja would run it, must start with the
 compiler CMake chose for its language
 (`CMakeFiles/<version>/CMake<LANG>Compiler.cmake`). Anything in front of
-it is refused: ccache, or any other launcher. This is checked in `build/`
+it is refused: ccache, or any other launcher. So is a chosen compiler that
+is ccache itself once its links are resolved (ccache's masquerade mode, a
+link named after the compiler on `PATH`). This is checked in `build/`
 after the reconfigure, and in every CMake build folder under `build/` after
 the build, the bootloader's included, since the build configures it. A
 folder with no compile commands, or no recorded compiler, is refused too.
