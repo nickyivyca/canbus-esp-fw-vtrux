@@ -32,6 +32,11 @@ In order, each refusal an exit, never a warning:
      binary (toolchain.py), since a copy, link or wrapper of ccache named
      after the compiler and first on PATH (masquerade mode) runs every
      compile with nothing in front of it;
+     R8: the sdkconfig the build used, build/project_description.json's
+     config_file (IDF takes it from -D SDKCONFIG, a preset or the
+     project's CMakeLists.txt as well as <project>/sdkconfig), exists, is
+     inside the project, is tracked by git and is matched by no ignore
+     rule, so the clean-worktree checks see any change to it;
      R8 again: HEAD is the same and the worktree still clean, before
      anything is compiled (a reconfigure that rewrites a tracked file,
      sdkconfig for example, is refused here);
@@ -388,6 +393,50 @@ def check_clean(root, when="at the start", commit=None):
     return head
 
 
+def _inside(path, root):
+    """path's location relative to root, with /, or None if it is not
+    under root (another drive included). Both have their links resolved."""
+    real, top = os.path.realpath(path), os.path.realpath(root)
+    try:
+        rel = os.path.relpath(real, top)
+    except ValueError:
+        return None
+    if (rel in (os.curdir, os.pardir) or rel.startswith(os.pardir + os.sep)
+            or os.path.isabs(rel)):
+        return None
+    return rel.replace(os.sep, "/")
+
+
+def check_sdkconfig(root, sdkconfig, when):
+    """R8: the sdkconfig the build used is committed in the project: it
+    exists, is inside root, is tracked by git and no ignore rule matches
+    it (check-ignore --no-index, so a tracked file is matched too). Then
+    R8's clean-worktree checks see any change to it."""
+    if not os.path.isfile(sdkconfig):
+        raise Refused("%s, the sdkconfig the build used, %s, does not exist "
+                      "(R8)" % (when, sdkconfig))
+    rel = _inside(sdkconfig, root)
+    if rel is None:
+        raise Refused("%s, the sdkconfig the build used, %s, is outside the "
+                      "project %s, so the project's commit does not hold it "
+                      "(R8)" % (when, os.path.realpath(sdkconfig), root))
+    rc, _ = git(root, "ls-files", "--error-unmatch", "--", rel)
+    if rc != 0:
+        raise Refused("%s, the sdkconfig the build used, %s, is not tracked "
+                      "by git, so the clean-worktree check cannot see a "
+                      "change to it (R8)" % (when, rel))
+    rc, rule = git(root, "check-ignore", "-v", "--no-index", "--", rel)
+    if rc == 0:
+        raise Refused("%s, the sdkconfig the build used, %s, is matched by "
+                      "an ignore rule (%s), so a change to it can be hidden "
+                      "from the clean-worktree check (R8)"
+                      % (when, rel, rule.strip().split("\t")[0]))
+    if rc != 1:
+        raise Refused("%s, git check-ignore failed (exit %d) on the sdkconfig "
+                      "the build used, %s (R8)" % (when, rc, rel))
+    ok("sdkconfig committed (R8)", "%s, %s" % (when, rel))
+
+
 def build_manifests(bd):
     """{component dir: parsed idf_component.yml} for every component the
     build used that has one."""
@@ -500,6 +549,12 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
     if rc != 0:
         raise Refused("idf.py reconfigure failed (exit %d)" % rc)
     ok("reconfigure (R9)")
+    # The sdkconfig first, so a problem with it is named as one.
+    try:
+        sdkconfig = BuildDir(build_dir).config_file()
+    except BuildDirError as e:
+        raise Refused("after the reconfigure, %s (R8)" % e)
+    check_sdkconfig(root, sdkconfig, "after the reconfigure")
     check_clean(root, "after the reconfigure", commit)
     check_no_ccache(build_dir, "after the reconfigure")
     check_no_launcher(build_dir, "after the reconfigure")

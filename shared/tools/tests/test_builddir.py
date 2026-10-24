@@ -263,6 +263,18 @@ class Description(unittest.TestCase):
         with self.assertRaises(BuildDirError):
             self.bd("desc_ghost", d).components()
 
+    def test_config_file(self):
+        """R8: the sdkconfig the build used, as IDF writes it (/ on every
+        host), normalised; it need not exist."""
+        where = os.path.join(os.path.abspath(scratch.ROOT), "cfg", "sdkconfig")
+        bd = self.bd("desc_cfg", dict(DESC, config_file=where.replace("\\",
+                                                                      "/")))
+        self.assertEqual(bd.config_file(), os.path.normpath(where))
+        for name, value in (("desc_cfg_none", None), ("desc_cfg_empty", ""),
+                            ("desc_cfg_rel", "sdkconfig")):
+            with self.assertRaises(BuildDirError, msg=name):
+                self.bd(name, dict(DESC, config_file=value)).config_file()
+
 
 class Options(unittest.TestCase):
 

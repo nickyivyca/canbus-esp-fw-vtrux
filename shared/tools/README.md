@@ -79,6 +79,18 @@ Both checks run in `build/` after the reconfigure, and in every CMake build
 folder under `build/` after the build, the bootloader's included, since the
 build configures it.
 
+The `sdkconfig` the build used must be committed in the project (R8), since
+R18 leaves the options a release profile does not name to it. It is
+`config_file` in `build/project_description.json`, IDF's `SDKCONFIG` build
+property, so it covers every way IDF takes one (`-D SDKCONFIG`, a preset,
+the project's `CMakeLists.txt`) as well as the default
+`<project>/sdkconfig`. After the reconfigure, before the worktree is checked
+again, the build is refused if that file is missing, is outside the project
+(links resolved), is not tracked by git (`git ls-files --error-unmatch`), or
+is matched by any ignore rule (`git check-ignore --no-index`, so a tracked
+file is matched too). An ignored `sdkconfig` would otherwise pass the
+clean-worktree check whatever it held.
+
 ## A project's build data (R22)
 
 The tooling holds no project facts. A project gives them in
@@ -102,7 +114,8 @@ data; `REVERSE_IT_DIR` set (R13, before anything is built); the IDF
 environment, with the Component Manager's overwrite setting
 (`IDF_COMPONENT_OVERWRITE_MANAGED_COMPONENTS`) not set at all (R10); a
 clean worktree (R8); `idf.py --no-ccache reconfigure` with
-`IDF_COMPONENT_STRICT_CHECKSUM=1` (R9, R10); the worktree still clean and
+`IDF_COMPONENT_STRICT_CHECKSUM=1` (R9, R10); the `sdkconfig` the build
+used, inside the project, tracked and not ignored (R8); the worktree still clean and
 HEAD unchanged (R8); `CCACHE_ENABLE` off in `build/CMakeCache.txt` and no compiler
 launcher in its compile commands (R9); a `dependencies.lock` after the
 reconfigure, even for a project that downloads nothing (R10); every
@@ -140,6 +153,7 @@ record therefore holds the identity of the checkout the tooling ran from
 |---|---|
 | `description()` | `project_description.json` |
 | `app_bin()`, `app_elf()` | R11: the files it names; `BuildDirError` if a name or file is missing, never a guess |
+| `config_file()` | R8: the `sdkconfig` the build used (`config_file`), absolute; `BuildDirError` if not named |
 | `components()` | `{name: folder}` of every component the build used |
 | `options()` | `config/sdkconfig.json`: the options in effect |
 | `cmake_cache()` | `CMakeCache.txt` as `{name: (type, value)}` |

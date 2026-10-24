@@ -172,6 +172,9 @@ class FakeIdf:
                 # A git download: no CHECKSUMS.json, as the manager gives it.
                 self._component("twai_port", COMP_FILES, checksums=False)
             self._description()
+            if e.get("write_config_file"):
+                # IDF writes the sdkconfig it is given if it is not there.
+                scratch.write(e["config_file"], "CONFIG_X=y\n")
             if e.get("dirty_reconfigure"):
                 scratch.write(os.path.join(self.root, "sdkconfig"),
                               "CONFIG_X=y\r\n")
@@ -304,13 +307,22 @@ class FakeIdf:
         main = os.path.join(self.root, "main").replace("\\", "/")
         comp = os.path.join(self.root, "managed_components",
                             "espressif__m").replace("\\", "/")
-        scratch.write(os.path.join(self.root, "build",
-                                   "project_description.json"), json.dumps({
+        desc = {
             "app_bin": "app.bin", "app_elf": "app.elf", "c_compiler": self.cc,
             "git_revision": "v5.4.1",
+            # IDF's SDKCONFIG build property: <project>/sdkconfig unless
+            # -D SDKCONFIG, a preset or the CMakeLists.txt sets another.
+            "config_file": self.edit.get(
+                "config_file", os.path.join(self.root, "sdkconfig")
+            ).replace("\\", "/"),
             "build_components": ["main", "espressif__m", ""],
             "build_component_info": {"main": {"dir": main},
-                                     "espressif__m": {"dir": comp}}}))
+                                     "espressif__m": {"dir": comp}}}
+        if self.edit.get("no_config_file"):
+            del desc["config_file"]
+        scratch.write(os.path.join(self.root, "build",
+                                   "project_description.json"),
+                      json.dumps(desc))
 
 
 def project(name, data=None, lock_text=None, manifest=MANIFEST):
@@ -587,6 +599,100 @@ class Release(unittest.TestCase):
                            ["reconfigure", "build"])
         dest = records_dir(root)
         self.assertFalse(os.path.isdir(dest) and os.listdir(dest))
+
+    # R8: the sdkconfig the build used (project_description.json's
+    # config_file) is committed in the project. Every refusal comes after
+    # the reconfigure, before anything is compiled.
+
+    def test_r8_sdkconfig_default_path(self):
+        root, cc = project("rel_r8_sdk_default")
+        p, idf, why = run(root, cc)
+        self.assertIsNone(why)
+        desc = json.loads(scratch.read(os.path.join(
+            root, "build", "project_description.json")))
+        self.assertEqual(os.path.normpath(desc["config_file"]),
+                         os.path.normpath(os.path.join(root, "sdkconfig")))
+
+    def test_r8_sdkconfig_elsewhere_committed(self):
+        """config_file pointing at another committed file in the project
+        (-D SDKCONFIG, say) is fine, though <project>/sdkconfig is gone."""
+        root, cc = project("rel_r8_sdk_other_ok")
+        scratch.write(os.path.join(root, "configs", "sdkconfig.release"),
+                      "CONFIG_X=y\n")
+        git(root, "rm", "-q", "sdkconfig")
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "sdkconfig elsewhere")
+        other = os.path.join(root, "configs", "sdkconfig.release")
+        p, idf, why = run(root, cc, {"config_file": other})
+        self.assertIsNone(why)
+
+    def test_r8_sdkconfig_default_ignored_and_untracked(self):
+        """The hole R8's clause closes: an ignored sdkconfig leaves the
+        worktree clean whatever it holds."""
+        root, cc = project("rel_r8_sdk_ign_untracked")
+        scratch.write(os.path.join(root, ".gitignore"),
+                      "build/\nmanaged_components/\nsdkconfig\n")
+        git(root, "rm", "-q", "--cached", "sdkconfig")
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "ignore sdkconfig")
+        self.assertEqual(git(root, "status", "--porcelain"), "")
+        self.assertRefused(run(root, cc),
+                           ["R8", "after the reconfigure", "sdkconfig",
+                            "not tracked"], ["reconfigure"])
+
+    def test_r8_sdkconfig_elsewhere_untracked(self):
+        """-D SDKCONFIG naming a file that is not there: the reconfigure
+        writes it, untracked. Named as the sdkconfig, not only as an
+        untracked file."""
+        root, cc = project("rel_r8_sdk_other_untracked")
+        other = os.path.join(root, "sdkconfig.local")
+        self.assertRefused(run(root, cc, {"config_file": other,
+                                          "write_config_file": True}),
+                           ["R8", "sdkconfig.local", "not tracked"],
+                           ["reconfigure"])
+
+    def test_r8_sdkconfig_tracked_but_ignored(self):
+        root, cc = project("rel_r8_sdk_tracked_ign")
+        scratch.write(os.path.join(root, ".gitignore"),
+                      "build/\nmanaged_components/\nsdkconfig\n")
+        git(root, "add", "-A")
+        git(root, "commit", "-qm", "ignore the tracked sdkconfig")
+        self.assertIn("sdkconfig", git(root, "ls-files"))
+        self.assertRefused(run(root, cc),
+                           ["R8", "ignore rule", ".gitignore"],
+                           ["reconfigure"])
+
+    def test_r8_sdkconfig_ignored_by_info_exclude(self):
+        """Any ignore source counts, not only a committed .gitignore."""
+        root, cc = project("rel_r8_sdk_exclude")
+        scratch.write(os.path.join(root, ".git", "info", "exclude"),
+                      "/sdkconfig\n")
+        self.assertRefused(run(root, cc),
+                           ["R8", "ignore rule", "exclude"], ["reconfigure"])
+
+    def test_r8_sdkconfig_missing(self):
+        root, cc = project("rel_r8_sdk_missing")
+        self.assertRefused(
+            run(root, cc, {"config_file": os.path.join(root, "nope",
+                                                        "sdkconfig")}),
+            ["R8", "does not exist"], ["reconfigure"])
+
+    def test_r8_sdkconfig_outside_the_project(self):
+        """Outside, including a sibling folder whose name starts with the
+        project's."""
+        for name, where in (("rel_r8_sdk_out", ".."),
+                            ("rel_r8_sdk_sibling", os.path.join("..",
+                                                                "proj2"))):
+            root, cc = project(name)
+            other = os.path.normpath(os.path.join(root, where, "sdkconfig"))
+            scratch.write(other, "CONFIG_X=y\n")
+            self.assertRefused(run(root, cc, {"config_file": other}),
+                               ["R8", "outside the project"], ["reconfigure"])
+
+    def test_r8_sdkconfig_not_named(self):
+        root, cc = project("rel_r8_sdk_unnamed")
+        self.assertRefused(run(root, cc, {"no_config_file": True}),
+                           ["R8", "config_file"], ["reconfigure"])
 
     def test_project_data(self):
         for name, data in (("rel_pd1", {"project": "Gen Inhibit",
