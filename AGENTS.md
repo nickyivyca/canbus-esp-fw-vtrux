@@ -632,6 +632,14 @@ section changes in the same merge.
 - **Explorations that use reverse-it's data** (digging through CAN logs,
   captures, notes) put their scratchpads and results in reverse-it's
   `artifacts/` folders, under its rules (see "Reverse-it").
+- **Line endings: LF everywhere** (user, 2026-10-23), except `.bat` and
+  `.cmd` files, which are CRLF. The repo's `.gitattributes` files pin this
+  and carry the same lines: the root one on `gen-inhibit/main`,
+  `shared/.gitattributes` and `charge-interposer/.gitattributes`. Change
+  them together. Component digests and embedded files hash the bytes on
+  disk, so line endings change them. **Save files as LF:** a file an editor
+  saves as CRLF still shows as clean in `git status`, because git compares
+  after normalising, while the build and the digest see the CRLF bytes.
 
 ### Python
 
