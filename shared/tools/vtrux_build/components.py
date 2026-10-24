@@ -1,26 +1,32 @@
-"""Downloaded components checked against their own manifests (SPEC R10).
+"""Downloaded components checked against the lock and their own manifests
+(SPEC R10, as ruled 2026-10-23, option (a)).
 
-Run after `idf.py reconfigure`, which is what downloads them on a fresh
-clone. Before it, managed_components/ may not exist, and a check run then
-finds nothing and passes having judged nothing (gen-inhibit test evidence
-12.3 on e3d9437: the component that went into the image was never checked).
+Two parts. The first is the Component Manager's own: the release
+reconfigure runs in strict checksum mode (release.py sets
+STRICT_ENV in idf.py's environment and refuses if OVERWRITE_ENV is set), so
+a component whose folder no longer hashes to its recorded hash stops the
+configure. For a component without a CHECKSUMS.json (a git download) that
+re-hash covers every file, an added one included.
 
-For every folder in managed_components/:
-  - every file CHECKSUMS.json lists is there, with its size and SHA-256;
-  - every file there is listed, except CHECKSUMS.json and .component_hash
-    themselves. A manifest speaks only about the files it names, so an added
-    file leaves every listed hash intact;
+The second is this module, run after the reconfigure, which is what
+downloads the components on a fresh clone. Before it, managed_components/
+may not exist, and a check run then finds nothing and passes having judged
+nothing (gen-inhibit test evidence 12.3 on e3d9437). For every folder in
+managed_components/:
   - its .component_hash equals the component_hash dependencies.lock gives
-    for it.
+    it;
+  - if it came with a CHECKSUMS.json (a registry download): every file it
+    lists is there with its size and SHA-256, and every file there is
+    listed, except CHECKSUMS.json and .component_hash themselves. The
+    manager's strict mode checks only the listed files and never looks for
+    an unlisted one (hash_tools/validate.py, validate_checksums_eq_hashdir),
+    so the added-file check is this one's;
+  - no CHECKSUMS.json is not a problem in itself.
 And every component dependencies.lock says is downloaded (DOWNLOADED_TYPES)
 is on disk.
 
-Why re-hash rather than trust the Component Manager: managed_components/ is
-git-ignored, so a clean worktree says nothing about it. The manager's default
-validation compares the text of .component_hash against the lock and does not
-re-hash the tree (STRICT_CHECKSUM defaults to False), and its directory hash
-leaves .component_hash out, so an edited component can still present a
-matching one.
+managed_components/ is git-ignored, so a clean worktree says nothing about
+it.
 """
 
 import hashlib
@@ -31,15 +37,48 @@ from . import lockfile
 
 MANIFEST_EXEMPT = {".component_hash", "CHECKSUMS.json"}
 
+# The Component Manager's settings (idf_component_tools/environment.py in
+# idf-component-manager 2.5.2; environment variables only, no aliases).
+STRICT_ENV = "IDF_COMPONENT_STRICT_CHECKSUM"
+OVERWRITE_ENV = "IDF_COMPONENT_OVERWRITE_MANAGED_COMPONENTS"
+
 
 def check_component(cdir, lock_entry):
     """Problems (a list of strings, empty when the component is clean) and
-    the number of listed files verified, for one component folder."""
-    problems = []
-    checked = 0
+    the number of CHECKSUMS.json-listed files verified, for one component
+    folder."""
+    problems = _check_hash_file(cdir, lock_entry)
     cpath = os.path.join(cdir, "CHECKSUMS.json")
     if not os.path.isfile(cpath):
-        return ["no CHECKSUMS.json"], 0
+        return problems, 0
+    listed_problems, checked = _check_listed(cdir, cpath)
+    return listed_problems + problems, checked
+
+
+def _check_hash_file(cdir, lock_entry):
+    """.component_hash against the lock's component_hash."""
+    hp = os.path.join(cdir, ".component_hash")
+    on_disk = None
+    if os.path.isfile(hp):
+        with open(hp, encoding="utf-8") as fh:
+            on_disk = fh.read().strip()
+    want = (lock_entry or {}).get("component_hash")
+    if lock_entry is None:
+        return ["not in dependencies.lock"]
+    if want is None:
+        return ["dependencies.lock gives no component_hash"]
+    if on_disk is None:
+        return ["no .component_hash"]
+    if on_disk != want:
+        return [".component_hash %s != dependencies.lock %s" % (on_disk, want)]
+    return []
+
+
+def _check_listed(cdir, cpath):
+    """A registry download against its CHECKSUMS.json, unlisted files
+    included."""
+    problems = []
+    checked = 0
     try:
         with open(cpath, encoding="utf-8") as fh:
             man = json.load(fh)
@@ -74,22 +113,6 @@ def check_component(cdir, lock_entry):
             if rel in listed or rel in MANIFEST_EXEMPT:
                 continue
             problems.append("not listed in CHECKSUMS.json: %s" % rel)
-
-    hp = os.path.join(cdir, ".component_hash")
-    on_disk = None
-    if os.path.isfile(hp):
-        with open(hp, encoding="utf-8") as fh:
-            on_disk = fh.read().strip()
-    want = (lock_entry or {}).get("component_hash")
-    if lock_entry is None:
-        problems.append("not in dependencies.lock")
-    elif want is None:
-        problems.append("dependencies.lock gives no component_hash")
-    elif on_disk is None:
-        problems.append("no .component_hash")
-    elif on_disk != want:
-        problems.append(".component_hash %s != dependencies.lock %s"
-                        % (on_disk, want))
     return problems, checked
 
 

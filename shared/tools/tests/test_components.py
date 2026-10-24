@@ -105,9 +105,38 @@ class Managed(unittest.TestCase):
         probs, _ = self.problems(project("comp_nohash", comp_hash=None))
         self.assertEqual(probs, ["no .component_hash"])
 
-    def test_no_checksums(self):
-        probs, _ = self.problems(project("comp_nosums", checksums=False))
-        self.assertEqual(probs, ["no CHECKSUMS.json"])
+    def test_no_checksums_passes_on_the_lock_hash(self):
+        """A git download has no CHECKSUMS.json: the strict reconfigure
+        re-hashed it, and here .component_hash must match the lock."""
+        probs, rep = self.problems(project(
+            "comp_nosums", lock_entries=(("twai_port", "git", CHASH),),
+            dirname="twai_port", checksums=False))
+        self.assertEqual(probs, [])
+        self.assertEqual(rep["twai_port"]["files_checked"], 0)
+
+    def test_no_checksums_still_checks_the_lock_hash(self):
+        for name, ch in (("comp_nosums_bad", "cd" * 32),
+                         ("comp_nosums_none", None)):
+            probs, _ = self.problems(project(
+                name, lock_entries=(("twai_port", "git", CHASH),),
+                dirname="twai_port", checksums=False, comp_hash=ch))
+            self.assertEqual(len(probs), 1, name)
+            self.assertIn(".component_hash", probs[0])
+
+    def test_no_checksums_unlisted_files_not_judged_here(self):
+        """Without a CHECKSUMS.json there is no list to judge an added file
+        by; the strict reconfigure's re-hash is what catches it."""
+        root = project("comp_nosums_extra",
+                       lock_entries=(("twai_port", "git", CHASH),),
+                       dirname="twai_port", checksums=False)
+        scratch.write(os.path.join(root, "managed_components", "twai_port",
+                                   "extra.c"), b"")
+        self.assertEqual(self.problems(root)[0], [])
+
+    def test_settings_names(self):
+        self.assertEqual(components.STRICT_ENV, "IDF_COMPONENT_STRICT_CHECKSUM")
+        self.assertEqual(components.OVERWRITE_ENV,
+                         "IDF_COMPONENT_OVERWRITE_MANAGED_COMPONENTS")
 
     def test_lock_names_one_not_on_disk(self):
         probs, rep = self.problems(project("comp_absent", dirname=None))

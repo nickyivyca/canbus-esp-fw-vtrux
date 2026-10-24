@@ -11,21 +11,28 @@ In order, each refusal an exit, never a warning:
   1. the project's build data reads (project.py);
   2. REVERSE_IT_DIR is set and has a firmware/ folder (R13: the build stops
      if it is unset, before anything is built);
-  3. the ESP-IDF environment is exported;
+  3. the ESP-IDF environment is exported, and R10: the Component Manager's
+     overwrite setting (IDF_COMPONENT_OVERWRITE_MANAGED_COMPONENTS) is not
+     set at all;
   4. R8: the worktree has no uncommitted changes and no untracked files
      (git status, ignored files excepted). The commit is HEAD.
      --check-only stops here.
-  5. R9: `idf.py reconfigure`;
+  5. R9: `idf.py reconfigure`, with IDF_COMPONENT_STRICT_CHECKSUM=1 in its
+     environment (R10), so the manager stops the configure on a component
+     whose files no longer match its recorded hash;
      R8 again: HEAD is the same and the worktree still clean, before
      anything is compiled (a reconfigure that rewrites a tracked file,
      sdkconfig for example, is refused here);
-  6. R10: every downloaded component checks against its CHECKSUMS.json and
-     dependencies.lock (components.py), after the reconfigure fetched them;
+  6. R10: every downloaded component's .component_hash against
+     dependencies.lock, and a registry download against its CHECKSUMS.json,
+     unlisted files included (components.py), after the reconfigure
+     fetched them;
   7. R16, override_path clause: no shared firmware component the project
      names is taken from a local folder: its dependencies.lock source is
      not "local", and no idf_component.yml of the build gives it an
      override_path;
-  8. `idf.py build`, in the same run as 5;
+  8. `idf.py build`, in the same run as 5, also in strict mode, so a
+     configure the build itself triggers is strict too;
   9. R11: the image is the one build/project_description.json names as
      app_bin (builddir.py), with its app_elf;
  10. R8 at the end: HEAD is still the commit step 4 read and the worktree
@@ -65,8 +72,9 @@ def git(root, *args):
 
 
 def idf_runner(project_root):
-    """A callable that runs idf.py <args> in project_root with the exported
-    environment's Python and returns its exit code. Output goes to this
+    """A callable run(args, env) that runs idf.py <args> in project_root
+    with the exported environment's Python, this process's environment
+    updated with env, and returns its exit code. Output goes to this
     process's stdout and stderr."""
     idf_path = os.environ.get("IDF_PATH")
     env_path = os.environ.get("IDF_PYTHON_ENV_PATH")
@@ -81,10 +89,27 @@ def idf_runner(project_root):
             raise Refused("%s does not exist; the ESP-IDF environment is not "
                           "the one exported" % p)
 
-    def run(args):
-        return subprocess.run([py, idf_py, "-C", project_root] + list(args)
-                              ).returncode
+    def run(args, env):
+        full = dict(os.environ)
+        full.update(env)
+        return subprocess.run([py, idf_py, "-C", project_root] + list(args),
+                              env=full).returncode
     return run
+
+
+def check_no_overwrite(environ=None):
+    """R10: nothing set that lets the Component Manager overwrite managed
+    components. Its only such setting is OVERWRITE_ENV, read from the
+    environment; it is refused if present at all, whatever its value, so
+    no reading of the value can let it through."""
+    environ = os.environ if environ is None else environ
+    if components.OVERWRITE_ENV in environ:
+        raise Refused("%s is set (%r). It lets the Component Manager replace "
+                      "managed components without checking them, so a "
+                      "release build is refused (R10); unset it."
+                      % (components.OVERWRITE_ENV,
+                         environ[components.OVERWRITE_ENV]))
+    ok("no managed-component overwrite", "%s unset" % components.OVERWRITE_ENV)
 
 
 def say(msg):
@@ -218,13 +243,16 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
     if idf is None:
         idf = idf_runner(root)
     ok("ESP-IDF environment", os.environ.get("IDF_PATH", "(test runner)"))
+    check_no_overwrite()
 
     commit = check_clean(root)
     if check_only:
         return None
 
-    say("\nidf.py reconfigure ...")
-    rc = idf(["reconfigure"])
+    # R10: the manager's strict mode for every configure this run makes.
+    strict = {components.STRICT_ENV: "1"}
+    say("\nidf.py reconfigure (%s=1) ..." % components.STRICT_ENV)
+    rc = idf(["reconfigure"], strict)
     if rc != 0:
         raise Refused("idf.py reconfigure failed (exit %d)" % rc)
     ok("reconfigure (R9)")
@@ -241,15 +269,20 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
                 say("             %s" % p)
             if len(r["problems"]) > 10:
                 say("             ... and %d more" % (len(r["problems"]) - 10))
-        else:
+        elif r["files_checked"]:
             ok("component %s" % name,
                "%d files match CHECKSUMS.json; .component_hash matches the "
                "lock" % r["files_checked"])
+        else:
+            ok("component %s" % name,
+               "no CHECKSUMS.json; .component_hash matches the lock (the "
+               "strict reconfigure re-hashed its files)")
     if not good:
-        raise Refused("a downloaded component differs from its CHECKSUMS.json "
-                      "or from dependencies.lock, or one the lock names is "
-                      "missing (R10). managed_components/ is git-ignored, so "
-                      "the clean worktree says nothing about it.")
+        raise Refused("a downloaded component's .component_hash differs from "
+                      "dependencies.lock, or it differs from its CHECKSUMS.json, "
+                      "or one the lock names is missing (R10). "
+                      "managed_components/ is git-ignored, so the clean "
+                      "worktree says nothing about it.")
     if not report:
         ok("downloaded components (R10)", "none in the lock or on disk")
 
@@ -261,8 +294,8 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
     except (OSError, lockfile.LockError, BuildDirError) as e:
         raise Refused("the pins cannot be read: %s" % e)
 
-    say("\nidf.py build ...")
-    rc = idf(["build"])
+    say("\nidf.py build (%s=1) ..." % components.STRICT_ENV)
+    rc = idf(["build"], strict)
     if rc != 0:
         raise Refused("idf.py build failed (exit %d)" % rc)
 

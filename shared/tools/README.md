@@ -54,9 +54,13 @@ The tooling holds no project facts. A project gives them in
 
 `vtrux_build/release.py`, in order, each refusal an exit: the project's
 data; `REVERSE_IT_DIR` set (R13, before anything is built); the IDF
-environment; a clean worktree (R8); `idf.py reconfigure` (R9); the
-worktree still clean and HEAD unchanged (R8); downloaded components against
-`CHECKSUMS.json` and `dependencies.lock` (R10, after the reconfigure); no
+environment, with the Component Manager's overwrite setting
+(`IDF_COMPONENT_OVERWRITE_MANAGED_COMPONENTS`) not set at all (R10); a
+clean worktree (R8); `idf.py reconfigure` with
+`IDF_COMPONENT_STRICT_CHECKSUM=1` (R9, R10); the worktree still clean and
+HEAD unchanged (R8); every downloaded component's `.component_hash`
+against `dependencies.lock`, and a registry download against its
+`CHECKSUMS.json`, unlisted files included (R10, after the reconfigure); no
 shared component from a local folder (R16, `override_path` clause);
 `idf.py build`; the image `project_description.json` names (R11); HEAD
 unchanged and the worktree clean at the end (R8); the record (R13). Its
@@ -115,7 +119,7 @@ the module docstring (`RECORD_SCHEMA` 1).
 | `vtrux_build/builddir.py` | the build folder readers: R11, and the records the checks read |
 | `vtrux_build/lockfile.py` | `dependencies.lock` reader |
 | `vtrux_build/manifest.py` | `idf_component.yml` dependency reader (the pinned tag, `override_path`) |
-| `vtrux_build/components.py` | downloaded components against their manifests: R10 |
+| `vtrux_build/components.py` | downloaded components against the lock and, where the registry supplied one, their `CHECKSUMS.json`: R10, with the Component Manager's strict mode doing the re-hash |
 | `vtrux_build/project.py` | a project's `vtrux_build.json`: R22 |
 | `vtrux_build/record.py` | the release record: R13 |
 | `vtrux_build/release.py` | the release build: R8 to R11, R13, R16 (`override_path`) |

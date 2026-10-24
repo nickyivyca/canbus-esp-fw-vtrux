@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -77,16 +78,19 @@ class FakeIdf:
     def __init__(self, root, cc, edit=None):
         self.root, self.cc, self.edit = root, cc, edit or {}
         self.calls = []
+        self.envs = {}
 
-    def __call__(self, args):
+    def __call__(self, args, env):
         self.calls.append(args[0])
+        self.envs[args[0]] = dict(env)
         e = self.edit
         if args == ["reconfigure"]:
             if e.get("reconfigure_rc"):
                 return e["reconfigure_rc"]
             self._component("espressif__m", e.get("component_files", COMP_FILES))
             if e.get("shared_on_disk"):
-                self._component("twai_port", COMP_FILES)
+                # A git download: no CHECKSUMS.json, as the manager gives it.
+                self._component("twai_port", COMP_FILES, checksums=False)
             self._description()
             if e.get("dirty_reconfigure"):
                 scratch.write(os.path.join(self.root, "sdkconfig"),
@@ -119,14 +123,16 @@ class FakeIdf:
             return 0
         raise AssertionError(args)
 
-    def _component(self, name, files):
+    def _component(self, name, files, checksums=True):
         cdir = os.path.join(self.root, "managed_components", name)
         for rel, data in files.items():
             scratch.write(os.path.join(cdir, rel), data)
-        scratch.write(os.path.join(cdir, "CHECKSUMS.json"), json.dumps({
-            "algorithm": "sha256", "files": [
-                {"path": r, "size": len(d), "hash": hashlib.sha256(d).hexdigest()}
-                for r, d in COMP_FILES.items()]}))
+        if checksums:
+            scratch.write(os.path.join(cdir, "CHECKSUMS.json"), json.dumps({
+                "algorithm": "sha256", "files": [
+                    {"path": r, "size": len(d),
+                     "hash": hashlib.sha256(d).hexdigest()}
+                    for r, d in COMP_FILES.items()]}))
         scratch.write(os.path.join(cdir, ".component_hash"), CHASH)
 
     def _description(self):
@@ -242,6 +248,34 @@ class Release(unittest.TestCase):
         scratch.write(os.path.join(root, "main", "m.c"), "int staged;\n")
         git(root, "add", "-A")
         self.assertRefused(run(root, cc), ["R8"], [])
+
+    def test_r10_strict_mode_in_the_reconfigure(self):
+        root, cc = project("rel_r10_strict")
+        _, idf, why = run(root, cc)
+        self.assertIsNone(why)
+        self.assertEqual(idf.envs["reconfigure"],
+                         {"IDF_COMPONENT_STRICT_CHECKSUM": "1"})
+        self.assertEqual(idf.envs["build"],
+                         {"IDF_COMPONENT_STRICT_CHECKSUM": "1"})
+
+    def test_r10_overwrite_setting_refused(self):
+        """Set at all is refused, "0" too: no reading of the value can let
+        it through. --check-only refuses it as well."""
+        for value in ("1", "0", ""):
+            root, cc = project("rel_r10_overwrite")
+            with mock.patch.dict(os.environ, {
+                    "IDF_COMPONENT_OVERWRITE_MANAGED_COMPONENTS": value}):
+                self.assertRefused(run(root, cc), [
+                    "IDF_COMPONENT_OVERWRITE_MANAGED_COMPONENTS", "R10"], [])
+                self.assertRefused(run(root, cc, check_only=True), [
+                    "IDF_COMPONENT_OVERWRITE_MANAGED_COMPONENTS"], [])
+
+    def test_r10_strict_reconfigure_failure_stops(self):
+        """The manager stopping the strict configure (a changed component)
+        is a reconfigure failure: nothing is built."""
+        root, cc = project("rel_r10_modified")
+        self.assertRefused(run(root, cc, {"reconfigure_rc": 1}),
+                           ["reconfigure failed"], ["reconfigure"])
 
     def test_check_only_builds_nothing(self):
         root, cc = project("rel_check")
