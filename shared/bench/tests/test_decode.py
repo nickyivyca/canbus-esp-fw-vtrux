@@ -14,8 +14,9 @@ canonical text (data/golden_layout.txt) was written by hand from the rules
 in decode.py's docstring, not generated, and GOLDEN_HASH is that text's
 hash: a change to the canonical form fails here first.
 
-Needs cantools and git. Scratch git repos go to the machine temp folder
-(<tempdir>/vtrux-bench-tests/), never into a synced folder.
+Needs cantools and git. Scratch git repos go to this run's own folder,
+<worktree>/scratch/vtrux-bench-tests/decode/<time>_<pid>/ (_scratch.py), never
+into a synced folder or the system temp folder.
 """
 
 import os
@@ -23,18 +24,18 @@ import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
 from vtrux_bench import decode as D                 # noqa: E402
+import _scratch                                     # noqa: E402
 
 DATA = os.path.join(HERE, "data")
 GOLDEN_DBC = os.path.join(DATA, "golden_layout.dbc")
 GOLDEN_TXT = os.path.join(DATA, "golden_layout.txt")
 GOLDEN_HASH = "8c585cd221163525"
-SCRATCH = os.path.join(tempfile.gettempdir(), "vtrux-bench-tests")
+SCRATCH = _scratch.run_dir("decode")  # this run's own folder in the worktree's scratch/ (_scratch.py)
 
 
 def golden_text():
