@@ -28,6 +28,7 @@ simulator running (AGENTS.md "Builds during wall-clock tests"). Otherwise it sto
 
 Gen-inhibit tester, 2026-10-24 (C6f verification, part A real builds).
 """
+import glob
 import hashlib
 import json
 import os
@@ -151,6 +152,28 @@ def self_test():
         good = bool(r) == want_bad
         print("  %s second build, %s: %s" % ("ok  " if good else "FAIL", label, r))
         ok &= good
+    for label, args, want in (("refused", (1, False), "PASS"), ("built", (0, False), "FAIL"),
+                              ("refused, record folder changed", (1, True), "FAIL"),
+                              ("built, trigger missing", (0, False, False), "VOID"),
+                              ("refused, trigger missing", (1, False, False), "VOID"),
+                              ("refused, after-condition missing", (1, False, True, False), "VOID")):
+        v = verdict(*args)[0]
+        print("  %s refusal verdict, %s: %s" % ("ok  " if v == want else "FAIL", label, v))
+        ok &= v == want
+    stats = "cache_miss\t5\ndirect_cache_hit\t2\npreprocessed_cache_hit\t1\ncalled_for_link\t9\nfiles_in_cache\t40\n"
+    for label, text, want in (("hits and misses", stats, 8), ("nothing cached", stats.replace("5", "0").replace(
+            "2", "0").replace("1", "0"), 0), ("no output", "", 0)):
+        n = ccache_compiles(text)
+        print("  %s ccache compiles, %s: %d" % ("ok  " if n == want else "FAIL", label, n))
+        ok &= n == want
+    d = I.scratch("release-cases-selftest")
+    os.makedirs(os.path.join(d, "CMakeFiles", "3.30.2"))
+    open(os.path.join(d, "CMakeFiles", "3.30.2", "CMakeCCompiler.cmake"), "w").write(
+        'set(CMAKE_C_COMPILER_ARG1 "")\nset(CMAKE_C_COMPILER "C:/m/riscv32-esp-elf-gcc.exe")\n')
+    for label, build, want in (("found", d, "C:/m/riscv32-esp-elf-gcc.exe"), ("no build folder", d + "_none", None)):
+        c = chosen_compiler(build)
+        print("  %s chosen compiler, %s: %s" % ("ok  " if c == want else "FAIL", label, c))
+        ok &= c == want
     print("\nself-test: %s" % ("every broken input caught, the faithful one passed" if ok else "FAILED"))
     return 0 if ok else 1
 
@@ -466,16 +489,23 @@ def own_checks(proj):
 
 # ---------- the cases ----------
 
-def refusal(ctx, name, proj, rc, before, project="gen-inhibit", extra_ok=True, note=""):
-    after = snapshot(ctx.records(project))
+def verdict(rc, changed, trigger=True, extra_ok=True, note=""):
+    """A refusal case's verdict. trigger: the case's stimulus happened (else VOID, whatever the
+    exit code); extra_ok: what else the case needs after a refusal (else VOID)."""
+    if not trigger:
+        return "VOID", "the trigger did not happen (exit %d)" % rc + ("; " + note if note else "")
     if rc == 0:
-        report(name, "FAIL", "built and exited 0; SPEC says refuse" + (" (%s)" % note if note else ""), ctx.log)
-    elif before != after:
-        report(name, "FAIL", "exit %d, but the record folder changed" % rc, ctx.log)
-    elif not extra_ok:
-        report(name, "VOID", note, ctx.log)
-    else:
-        report(name, "PASS", "refused (exit %d), no record written%s" % (rc, "; " + note if note else ""), ctx.log)
+        return "FAIL", "built and exited 0; SPEC says refuse" + (" (%s)" % note if note else "")
+    if changed:
+        return "FAIL", "exit %d, but the record folder changed" % rc
+    if not extra_ok:
+        return "VOID", note
+    return "PASS", "refused (exit %d), no record written%s" % (rc, "; " + note if note else "")
+
+
+def refusal(ctx, name, proj, rc, before, project="gen-inhibit", trigger=True, extra_ok=True, note=""):
+    v, detail = verdict(rc, before != snapshot(ctx.records(project)), trigger, extra_ok, note)
+    report(name, v, detail, ctx.log)
 
 
 def c_pre_unset_ri(ctx, log):
@@ -730,7 +760,7 @@ def c_r9(ctx, log, name, var):
         for n in files:
             if n.endswith(".ninja") and "ccache" in open(os.path.join(d, n), errors="replace").read():
                 took = True
-    refusal(ctx, name, ctx.p1, rc, before, extra_ok=took,
+    refusal(ctx, name, ctx.p1, rc, before, trigger=took,
             note="R9: %s=ccache in the environment; %s" % (var, "CMake took it" if took else "CMake did not take it"))
 
 
@@ -753,15 +783,38 @@ def c_r9_masquerade(ctx, log):
             shutil.copyfile(cc, dst)
         else:
             os.symlink(cc, dst)
+    # Its own cache folder, so that what it cached is this build's alone.
+    cdir = os.path.join(ctx.root, "masq_cache")
+    rmtree(cdir)
     before = snapshot(ctx.records())
-    rc, _ = release(ctx, ctx.p1, log, jobs=ctx.jobs, env={"PATH": masq + os.pathsep + os.environ["PATH"]})
-    cache = os.path.join(ctx.p1, "build", "CMakeCache.txt")
-    m = re.search(r"^CMAKE_C_COMPILER:[A-Z]+=(.*)$", open(cache).read(), re.M) if os.path.exists(cache) else None
-    took = bool(m) and os.path.normcase(os.path.abspath(m.group(1).strip())).startswith(os.path.normcase(masq))
-    refusal(ctx, "r9_masquerade", ctx.p1, rc, before, extra_ok=took,
-            note="R9: ccache as %s named riscv32-esp-elf-gcc first on PATH; CMake chose %s" % (
-                "a copy" if win else "a link", m.group(1).strip() if m else "nothing"))
+    rc, _ = release(ctx, ctx.p1, log, jobs=ctx.jobs,
+                    env={"PATH": masq + os.pathsep + os.environ["PATH"], "CCACHE_DIR": cdir})
+    chosen = chosen_compiler(os.path.join(ctx.p1, "build"))
+    took = bool(chosen) and os.path.normcase(os.path.abspath(chosen)).startswith(os.path.normcase(masq))
+    stats = subprocess.run([cc, "--print-stats"], env=dict(os.environ, CCACHE_DIR=cdir),
+                           capture_output=True, text=True).stdout
+    cached = ccache_compiles(stats)
+    note = "R9: ccache as %s named riscv32-esp-elf-gcc first on PATH; CMake chose %s; ccache cached %d compiles" % (
+        "a copy" if win else "a link", chosen or "nothing found", cached)
+    # A build that exits 0 with nothing cached may have run ccache disabled: not a finding either way.
+    refusal(ctx, "r9_masquerade", ctx.p1, rc, before, trigger=took and (rc != 0 or cached > 0), note=note)
     rmtree(masq)
+    rmtree(cdir)
+
+
+def chosen_compiler(build):
+    """The C compiler CMake chose, from CMakeFiles/<version>/CMakeCCompiler.cmake."""
+    for p in glob.glob(os.path.join(build, "CMakeFiles", "*", "CMakeCCompiler.cmake")):
+        m = re.search(r'^set\(CMAKE_C_COMPILER "([^"]*)"\)', open(p).read(), re.M)
+        if m:
+            return m.group(1)
+    return None
+
+
+def ccache_compiles(stats):
+    """Compiles ccache handled through its cache (hits and misses), from --print-stats."""
+    n = dict(l.split("\t", 1) for l in stats.splitlines() if "\t" in l)
+    return sum(int(n.get(k, 0)) for k in ("direct_cache_hit", "preprocessed_cache_hit", "cache_miss"))
 
 
 def c_pre_staged(ctx, log):
@@ -870,7 +923,7 @@ def c_r8_build(ctx, log, name, act, note):
     w = watch_then(lambda: ninja_lines(ctx.p1) > 100, act, fired)
     before = snapshot(ctx.records())
     rc, _ = release(ctx, ctx.p1, log, jobs=ctx.jobs, watcher=w)
-    refusal(ctx, name, ctx.p1, rc, before, extra_ok=bool(fired),
+    refusal(ctx, name, ctx.p1, rc, before, trigger=bool(fired),
             note="%s; watcher %s at ninja log line > 100" % (note, "fired" if fired else "NEVER FIRED"))
     reset(ctx.p1, "fixture")
 
@@ -899,7 +952,7 @@ def c_r16(ctx, log):
     rc, _ = release(ctx, ctx.p1, log, jobs=ctx.jobs)
     lock = open(os.path.join(ctx.p1, "dependencies.lock")).read()
     local = "vtrux/vtrux_fx_shared" in lock and "type: local" in lock
-    refusal(ctx, "r16_override_path", ctx.p1, rc, before, extra_ok=local,
+    refusal(ctx, "r16_override_path", ctx.p1, rc, before, trigger=local,
             note="R16: shared component vtrux/vtrux_fx_shared by override_path; lock source local: %s" % local)
     reset(ctx.p1, "fixture")
     rmtree(os.path.join(ctx.p1, "build"))
