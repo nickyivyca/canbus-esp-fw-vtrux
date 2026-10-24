@@ -91,7 +91,7 @@ and tell the user.
   name commits, and a rebase would rewrite them.
 
 **Skills follow the branch.** Each worktree has the role skills of the branch
-it has checked out, with the anchor's copy as the fallback. Each branch keeps
+it has checked out. Each branch keeps
 only its own role's skill current; changes reach other branches by
 cherry-pick. After a cherry-pick that touches your skill, re-read its
 `SKILL.md`. On Linux every worktree shares the anchor's `settings.local.json`;
