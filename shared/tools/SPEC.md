@@ -142,8 +142,17 @@ unless the image changes, which the reproducible check (R19) shows.
   of this repo, or a `../shared-<tag>/` checkout. For a release build they
   may not: shared code counts only from `managed_components/`, so a release
   build that reads another worktree fails.
-- **R18. Options.** The build's options match the project's release
-  profile.
+- **R18. Options.** A release build's options match the project's release
+  profile. The build's options are the configuration it compiled with,
+  `config/sdkconfig.json` in every CMake build folder, the app's and the
+  bootloader's. The release profile is per-project data (R22) naming
+  options and their values, each value citing the line of the project's
+  spec it comes from. Every option the profile names has the profile's
+  value, "unset" meaning absent or off; options it does not name are free.
+  The whole `sdkconfig` is not compared: it is committed, and R8 holds the
+  build to the commit. Like the other checks here, it runs on the finished
+  build and is not a refusal in the release build; any session may run it.
+  Bench and dev builds are not checked.
 - **R19. Reproducible.** Rebuilding the same tree on the same host OS gives
   the same image hash.
 - **R20. Build switches.** Every preprocessor symbol the project's source
