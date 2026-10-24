@@ -61,11 +61,27 @@ MUTATIONS = [
      """        && s->q[GS_CLASS_INHIBIT].n > 0)""",
      "item 4: no abort command while TRANSMITTING"),
 
-    ("drop the !aborting guard on the completion path",
+    # THE GUARD IS IN TWO PLACES, so each anchor carries the line above it.
+    # ae7b3cb added the same `!s->aborting` guard to gs_command_received, and
+    # from then on the bare `if` matched twice and this mutation was skipped:
+    # neither site was mutated. gs_tick's sits under its comment block, the
+    # command path's under the GI_INSTRUMENT_ABORTWIN `#endif`; neither anchor
+    # holds prose.
+    ("drop the !aborting guard on gs_tick's completion path",
      "gi_sched.c",
-     """    if (s->held && !s->aborting && !s->hal->outstanding(s->hal->ctx))""",
-     """    if (s->held && !s->hal->outstanding(s->hal->ctx))""",
+     """     */
+    if (s->held && !s->aborting && !s->hal->outstanding(s->hal->ctx))""",
+     """     */
+    if (s->held && !s->hal->outstanding(s->hal->ctx))""",
      "item 5: an abort is not credited as a send"),
+
+    ("drop the !aborting guard on gs_command_received's completion path",
+     "gi_sched.c",
+     """#endif
+    if (s->held && !s->aborting && !s->hal->outstanding(s->hal->ctx))""",
+     """#endif
+    if (s->held && !s->hal->outstanding(s->hal->ctx))""",
+     "abort: a departure seen by gs_command_received is not credited as sent"),
 
     ("D3: an inhibit queue-full is not counted as a skip",
      "gi_sched.c",
@@ -187,6 +203,7 @@ def main():
     survived = []
     uncovered = []
     build_failed = []
+    skipped = []
 
     # BASELINE FIRST. Without it, a suite that fails for an unrelated reason
     # reports every mutation as caught -- the same "failure looks like success"
@@ -240,6 +257,8 @@ def main():
             if body.count(old) != 1:
                 print("[SKIP] %-52s (pattern found %d times)"
                       % (name, body.count(old)))
+                skipped.append("%s (pattern found %d times)"
+                               % (name, body.count(old)))
                 continue
             with open(target, "w") as fh:
                 fh.write(body.replace(old, new))
@@ -284,7 +303,16 @@ def main():
         print("MUTANTS THAT SURVIVED AND SHOULD NOT HAVE:")
         for x in survived:
             print("  - %s" % x)
-    if survived or build_failed:
+    # A SKIP FAILS THE RUN. A mutation whose anchor no longer matches exactly
+    # once was never applied, so its property is unpinned -- and the line below
+    # stayed true while one was skipped, which is how two such runs read as
+    # clean (README, "Three mutations were skipped").
+    if skipped:
+        print("MUTATIONS THAT WERE SKIPPED -- never applied, so the run proves")
+        print("nothing about them; fix the anchor:")
+        for k in skipped:
+            print("  - %s" % k)
+    if survived or build_failed or skipped:
         return 1
     print("every mutation with a matching case was caught")
     return 0
