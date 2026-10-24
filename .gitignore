@@ -80,3 +80,8 @@ tools/wican-log-viewer/*.pdb
 tools/wican-log-viewer/*.dll
 tools/wican-log-viewer/*.exe
 
+
+# Agent sessions: per-worktree files, never committed
+local-paths.md
+scratch/
+.claude/memory/
