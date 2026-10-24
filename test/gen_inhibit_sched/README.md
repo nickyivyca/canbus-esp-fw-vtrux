@@ -5,8 +5,12 @@ emulation does not count toward acceptance, so every pass criterion here is one 
 bench witness can also read: which frames reached the wire, in what order, and how
 late.
 
-Needs only gcc. `NICKY-XPS` has no native gcc — run on `madhouse-debian`
-(gcc 14.2.0, python3 3.13.5), per `tools-reference.md`.
+Needs only gcc, make and python3 (user, 2026-10-24):
+- **Self-checks** run in WSL on `NICKY-XPS` (Ubuntu-20.04: gcc 9.4.0, GNU Make
+  4.2.1, python3 3.10.7), from the worktree's `/mnt/c/...` path, compiling and
+  running in one `wsl -e` call (`tools-reference.md`, "WSL", its two traps).
+- **Evidence runs** stay on `madhouse-debian` (gcc 14.2.0, python3 3.13.5), in
+  the tester's part H.
 
 ```sh
 make && ./sched_test      # the cases

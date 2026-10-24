@@ -1,7 +1,8 @@
 # The transmit scheduler's cases, spec 5.2 item 10 (emulation half).
 #
-# Needs only gcc. NICKY-XPS has no native gcc -- run this on madhouse-debian
-# (gcc 14.2.0, python3 3.13.5), per tools-reference.md.
+# Needs only gcc (user, 2026-10-24): self-checks in WSL on NICKY-XPS
+# (Ubuntu-20.04, gcc 9.4.0); evidence runs on madhouse-debian (gcc 14.2.0).
+# See README.md.
 #
 #   make && ./sched_test
 #   make asan && ./sched_test
