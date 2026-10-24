@@ -1247,14 +1247,15 @@ def c_r8_sdk_elsewhere(ctx, log):
 
 
 def c_r8_sdk_generated(ctx, log):
-    """SDKCONFIG set to configs/sdkconfig.gen, ignored and absent: the reconfigure writes it, untracked."""
+    """SDKCONFIG set to sdkconfig.gen in the project root, ignored and absent: the reconfigure writes it,
+    untracked. (In the root: kconfgen does not make a missing folder, and git keeps no empty one.)"""
     def edit(p):
-        set_sdkconfig_line(p, "${CMAKE_CURRENT_LIST_DIR}/configs/sdkconfig.gen")
-        append(p, ".gitignore", "/configs/sdkconfig.gen*")      # and the .old IDF writes beside it
-    fx_sdkconfig(ctx, "r8-sdk-generated", edit, "case: SDKCONFIG = configs/sdkconfig.gen, ignored, absent", log)
-    gen = os.path.join(ctx.p1, "configs", "sdkconfig.gen")
+        set_sdkconfig_line(p, "${CMAKE_CURRENT_LIST_DIR}/sdkconfig.gen")
+        append(p, ".gitignore", "/sdkconfig.gen*")      # and the .old IDF writes beside it
+    fx_sdkconfig(ctx, "r8-sdk-generated", edit, "case: SDKCONFIG = sdkconfig.gen, ignored, absent", log)
+    gen = os.path.join(ctx.p1, "sdkconfig.gen")
     r8_sdkconfig_refused(ctx, "r8_sdkconfig_generated", log, gen, "written by the reconfigure, ignored",
-                         after=lambda: (os.path.exists(gen) and not tracked(ctx.p1, "configs/sdkconfig.gen"),
+                         after=lambda: (os.path.exists(gen) and not tracked(ctx.p1, "sdkconfig.gen"),
                                         "after: on disk %s" % os.path.exists(gen)))
 
 
