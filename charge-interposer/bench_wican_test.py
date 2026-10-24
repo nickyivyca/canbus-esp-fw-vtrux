@@ -31,7 +31,6 @@ import shutil
 import struct
 import subprocess
 import sys
-import tempfile
 import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -50,8 +49,9 @@ else:
 
 import build_lookup                                       # noqa: E402
 
-TMP = os.path.join(tempfile.gettempdir(), "interposer-tester",
-                   "bench-wican-test")
+# scratch/ at the repo root (AGENTS.md, "Files and folders"; gitignored)
+TMP = os.path.join(os.path.dirname(HERE), "scratch",
+                   "charge-interposer-tests", "bench-wican-test")
 MAN_SHA = "a1" * 32
 OTHER_SHA = "b2" * 32
 
