@@ -147,7 +147,7 @@ SELF_TESTS = [
 # MUTANTS (script_can_fail.py), run locally (test_script_coverage).
 CAN_FAILS = [
     "bench_c12", "bench_mcp_reset", "bench_powerup_round", "bench_switch_loss",
-    "bench_topology", "bench_usb_host", "bench_vport",
+    "bench_topology", "bench_usb_host", "bench_vport", "bench_hold12",
 ]
 
 # Local scripts in reverse-it interposer-firmware/ (they want pyserial or

@@ -329,7 +329,8 @@ def test_suites():
     # 179: cf.bench-c12, its TAGS reply cap mutants (2026-10-22)
     # 183: sb.test-decode, sb.test-run-core, each plain and -canfail (2026-10-22)
     # 185: sb.test-bench-lock and its -canfail, with the bench-lock merge
-    assert len(seen) == 185, "checks across the suites: %d" % len(seen)
+    # 186: cf.bench-hold12, its fresh-board gate mutants (2026-10-23)
+    assert len(seen) == 186, "checks across the suites: %d" % len(seen)
     # build-check runs in a git checkout of HEAD, shipped as a bundle
     # (user ruling 2026-10-19), never in the shipped copy
     mb = [g for g in su["emulated"].groups if g.name == "m-build"][0]
@@ -1152,7 +1153,7 @@ MUTANTS = {
          "bench_topology's self-test unlisted (4cdb)"),
         ("CAN_FAILS", [n for n in B.CAN_FAILS if n != "bench_switch_loss"],
          "bench_switch_loss's can-fail unlisted"),
-        ("CAN_FAILS", B.CAN_FAILS + ["bench_hold12"],
+        ("CAN_FAILS", B.CAN_FAILS + ["bench_rx_order"],
          "a listed can-fail the script does not have"),
         ("harness", _wrap_suite("harness", _drop_harness_check(
             "cf.bench-usb-host")), "listed, but the harness never runs it")],
