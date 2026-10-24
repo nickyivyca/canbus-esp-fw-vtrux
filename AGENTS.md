@@ -245,7 +245,7 @@ the other.
 
 **Plans, handoffs and working logs** belong to the role session that writes
 them, named on an `**Owner:**` line at the top. A file without one gets an
-owner from the reviewer. A file that holds evidence the spec rests on is not
+owner from the reviewer. A file that holds validation the spec rests on is not
 a working log for this rule; the reviewer rules on it (user, 2026-10-10).
 
 **Published-interface documents are spec** (user, 2026-10-07): the diag
@@ -266,6 +266,11 @@ questions.
   or rewritten, the old code's pass entries carry no weight for the new code:
   they are not copied across, and they are not cited as validation. Their
   tests can be pointed at the new code to make new entries.
+
+**Never write "evidence" or "the evidence doc" without saying which.** Both
+documents hold evidence: `VALIDATION.md` for the basis of a requirement,
+`VERIFICATION.md` for a test result. Name the file, in docs, skills, trackers
+and messages between sessions.
 
 Rules for `VALIDATION.md`:
 - **A verification finding that led to a correction** (a NOT AS SPECIFIED, a
