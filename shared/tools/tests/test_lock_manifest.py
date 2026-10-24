@@ -4,6 +4,7 @@
     python -B shared/tools/tests/test_lock_manifest.py
 """
 
+import hashlib
 import os
 import sys
 import unittest
@@ -108,6 +109,17 @@ class Lock(unittest.TestCase):
             lockfile.parse("target: esp32c3\n")
         with self.assertRaises(lockfile.LockError):
             lockfile.parse("dependencies:\n   odd: indent\n")
+
+    def test_lf_hash(self):
+        """R13: the same lock as LF and as CRLF gives one hash, the LF
+        bytes' SHA-256; a different lock gives another."""
+        lf = LOCK.encode("utf-8")
+        crlf = lf.replace(b"\n", b"\r\n")
+        self.assertNotEqual(lf, crlf)
+        self.assertEqual(lockfile.lf_sha256(crlf), lockfile.lf_sha256(lf))
+        self.assertEqual(lockfile.lf_sha256(lf), hashlib.sha256(lf).hexdigest())
+        self.assertNotEqual(lockfile.lf_sha256(lf.replace(b"1.4.0", b"1.4.1")),
+                            lockfile.lf_sha256(lf))
 
     def test_dir_name(self):
         self.assertEqual(lockfile.managed_dir_name("espressif/mdns"),

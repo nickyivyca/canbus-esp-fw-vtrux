@@ -585,7 +585,7 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
                             "image": img.idf_ver},
             "components": {n: {"dir": d, "digest": component_digest(d)}
                            for n, d in sorted(comps.items())},
-            "dependencies_lock_sha256": lockfile.file_sha256(lock_path),
+            "dependencies_lock_sha256_lf": lockfile.file_lf_sha256(lock_path),
             "shared_components": shared,
             "tooling": tooling_identity(),
             "release_checks": {"managed_components": report},

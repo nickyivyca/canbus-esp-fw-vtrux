@@ -97,9 +97,17 @@ def read(path):
         return parse(f.read())
 
 
-def file_sha256(path):
+def lf_sha256(data):
+    """SHA-256 of data (bytes) with CRLF line endings normalised to LF
+    (SPEC R13): the reconfigure on Windows rewrites dependencies.lock with
+    CRLF while git status stays clean, so one lock gives one hash on any
+    host and in any checkout."""
+    return hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()
+
+
+def file_lf_sha256(path):
     with open(path, "rb") as f:
-        return hashlib.sha256(f.read()).hexdigest()
+        return lf_sha256(f.read())
 
 
 def managed_dir_name(name):

@@ -380,11 +380,33 @@ class Release(unittest.TestCase):
                          "riscv32-esp-elf-gcc (crosstool-NG) 14.2.0")
         self.assertEqual(r["idf_version"], {"project": "v5.4.1",
                                             "image": "v5.4.1"})
-        self.assertEqual(r["dependencies_lock_sha256"], hashlib.sha256(
+        self.assertEqual(r["dependencies_lock_sha256_lf"], hashlib.sha256(
             scratch.read(os.path.join(root, "dependencies.lock"))).hexdigest())
         self.assertEqual(sorted(r["tooling"]),
                          ["commit", "digest", "dirty", "tag"])
         self.assertEqual(len(r["tooling"]["digest"]), 64)
+
+    def test_r13_lock_hash_ignores_crlf(self):
+        """R13: one lock gives one hash in any checkout. The same lock, in
+        one project as LF and in another as CRLF (committed as it is, so
+        both worktrees are clean), records one hash: the LF lock's."""
+        hashes = []
+        for name, crlf in (("rel_r13_lf", False), ("rel_r13_crlf", True)):
+            root, cc = project(name)
+            lp = os.path.join(root, "dependencies.lock")
+            lf = scratch.read(lp)
+            self.assertNotIn(b"\r", lf)
+            if crlf:
+                scratch.write(os.path.join(root, ".gitattributes"),
+                              "dependencies.lock -text\n")
+                scratch.write(lp, lf.replace(b"\n", b"\r\n"))
+                git(root, "add", "-A")
+                git(root, "commit", "-qm", "the lock as CRLF")
+                self.assertIn(b"\r\n", scratch.read(lp))
+            p, _, why = run(root, cc)
+            self.assertIsNone(why)
+            hashes.append(record.read(p)["dependencies_lock_sha256_lf"])
+        self.assertEqual(hashes, [hashlib.sha256(lf).hexdigest()] * 2)
 
     def test_r11_named_image_not_newest(self):
         root, cc = project("rel_r11")
