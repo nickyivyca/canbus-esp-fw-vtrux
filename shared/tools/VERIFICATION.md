@@ -116,3 +116,39 @@ v5.4.1, its Python 3.11.9) and madhouse-debian. **Run files:**
 Run files (sha256): `xps_scope_r17/SHA256SUMS` (`f26ce864...42a7`), which hashes every
 NICKY-XPS log and `scope_results.json`; `r17_linux/scope_a_release.txt` (madhouse-debian)
 (`5c531355...2129c5`).
+
+## R9, R13 fixes, and R17's shared/ roots (C6f, 2026-10-24)
+
+**Tooling tested:** `shared/tools/build-tooling` at `8efba37` (`vtrux_build/` tree `3a42bbd`):
+`8624d11` for R9 and `8efba37` for R13. It is merged into `shared/tools/checks` as `4467812`.
+**SPEC:** shared/main `5ec6f53`: R9, and R13's lock-hash bullet ("taken with its line endings
+normalised to LF, so one lock gives one hash on any host and in any checkout"). **Checks:**
+`verification/release_cases.py` at `adab508`, and at `fbcd9ca` and `92c4434` for the later runs
+of `r13_lock_crlf`; each commit's `--self-test` catches every broken input. The record judge
+compares the record's `dependencies_lock_sha256_lf` with the tester's own LF-normalised hash
+of the lock on disk. Its self-test catches a record carrying only the old field name, and a
+mutant of the judge without the normalisation fails it. **Hosts:** NICKY-XPS (IDF v5.4.1, its
+Python 3.11.9) and, for `r13_lock_crlf`, madhouse-debian (Python 3.13.5). **Run files:**
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/runs/sharedtools_c6f/`
+(`README.md`, section "R9 and R13 fixes" and its subsections).
+
+| Req | Result | What was tested | Run file (sha256) |
+|---|---|---|---|
+| R9 | PASS (was FAIL against `e9a03fd`) | ccache's own `ccache.exe` named `riscv32-esp-elf-gcc.exe` and `riscv32-esp-elf-g++.exe`, first on PATH and chosen by CMake, as a copy and as a hard link: each is refused right after the reconfigure, with nothing compiled and no record. `CMAKE_C_COMPILER_LAUNCHER` and `CMAKE_CXX_COMPILER_LAUNCHER=ccache` are refused. A clean release build passes and is recorded. | `xps_release_3/SHA256SUMS` (`5bbfd1ae...f595d3`) |
+| R13 | PASS | `a_release`: one record, judged field by field, its lock hash the tester's LF hash of the lock (`17f7c654...`). A second build leaves the record folder unchanged. `r13_lock_crlf`: the R22 project with its committed lock on disk as CRLF and then as LF, each clean to git and built into an empty record folder. Both records give the committed lock's sha256 `03bbd78d...`, on NICKY-XPS and on madhouse-debian. | `xps_release_3/SHA256SUMS`, `r13_linux/SHA256SUMS` (`2f7d4d29...db29f9a`) |
+| R22 | PASS | The second project builds and records with no tooling change, judged field by field. | `xps_release_3/SHA256SUMS` |
+
+**How the lock reaches CRLF.** The Component Manager writes `dependencies.lock` only when its
+content changes, and on Windows it writes CRLF. git calls a file committed LF "modified" when
+its size on disk differs from the size the index cached, so a lock git last added as CRLF is
+clean, and a CRLF rewrite after checkout is not. That was observed on git 2.52.0.windows.1 and
+2.47.3, and it is how the first batch's CRLF lock passed R8. Evidence: `crlf_lock/SHA256SUMS`
+(`0ecb4140...cb3b`). `r13_lock_crlf` reaches the clean CRLF state the same way.
+
+**R17 follow-up.** At the reviewer's note on `0b77a84`, `vtrux_checks/scope.py` (`e469205`)
+looks for `../shared-<tag>/` beside the worktree root (`git rev-parse --show-toplevel`), not
+beside the project root, which may be a subfolder of the worktree. Its new unit test (12 in
+all, on Python 3.14.6 and 3.11.9) puts a project in a subfolder: it finds the checkout beside
+the worktree and not a `shared-*` folder beside the project, and reverting the fix fails it.
+The real-build cases in the R17 entry are unaffected: there the project root is the worktree
+root.
