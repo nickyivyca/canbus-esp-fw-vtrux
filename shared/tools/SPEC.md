@@ -149,7 +149,10 @@ unless the image changes, which the reproducible check (R19) shows.
 - **R22.** The tooling knows nothing about Arduino or about any one project.
   Release profiles, switch tables, `sdkconfig` needs and component lists
   are per-project data. Partition tables, slot sizes and flash sizes are
-  per-board data. A project with its own project root (the interposer, goal
+  per-board data. A board's data is in `shared/` when more than one project
+  or shared tool builds images for it (the X2: the interposer and the X2
+  jammer), and in the project's own root when only that project does (the
+  WiCAN). A project with its own project root (the interposer, goal
   3) supplies its own data and needs no change to the tooling.
 
 ## 6. Running the tooling

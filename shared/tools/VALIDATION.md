@@ -231,7 +231,8 @@ same folder. The interposer's test evidence is
   build checks take the toolchain from the board's chip, not from the C3's
   RISC-V tool names. gen-inhibit spec 12.3 item 3 for the WiCAN's values
   (partition table byte-identical to stock, 1,781,760-byte slot).
-- **Status:** complete.
+- **Status:** complete for the WiCAN. The X2's values: basis pending, with
+  port step 2a.
 
 ## 5. Data, not code
 
@@ -240,7 +241,10 @@ same folder. The interposer's test evidence is
   nothing about Arduino, so removing Arduino in the interposer's stage (b)
   changes data, not tooling. Layer 0 for the per-project and per-board
   split. Goal 3 (user, 2026-10-22): the interposer has its own project
-  root.
+  root. Where board data lives: user, 2026-10-23, in the gen-inhibit
+  reviewer's session. The X2 jammer is shared test tooling, alongside the
+  bench toolkit, not part of the shared firmware code, and it builds for the
+  X2 as the interposer does.
 - **Status:** complete.
 
 ## 6. Running the tooling
