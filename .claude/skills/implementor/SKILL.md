@@ -51,7 +51,14 @@ committed, you have sent the "batch lands" message, and your batch already
 names the next step. Then you may run `/self-compact`, with a resume message
 that names that next step and the batch it comes from. Not mid-step, not
 with uncommitted changes, not with a question to the reviewer open, and not
-while you hold the bench on loan. At any other time, only when the user asks.
+while you hold the bench on loan.
+
+When the idle-compaction hook asks (AGENTS.md, "Compacting your own
+context"), that is a compaction point too, whatever state you are in: an
+hour idle means no work is in progress. Before it, write in your working log
+what is uncommitted, any question to the reviewer still open, and whether
+you hold the bench on loan. The resume message names what you were waiting
+for. At any other time, only when the user asks.
 
 **Starting up:** check that you are in your worktree, on a
 `$ARGUMENTS/implementor/<topic>` branch (`git branch --show-current`). If

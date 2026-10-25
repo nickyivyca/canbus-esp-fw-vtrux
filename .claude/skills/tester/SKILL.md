@@ -56,7 +56,14 @@ than trusting the file. Follow the process-cleanup rules in `AGENTS.md`,
 
 At either point you may run `/self-compact`. Not during a hardware run, not
 with uncommitted harness changes, not with a question to the reviewer open,
-and not while you hold the bench lock: take it after the resume. At any
+and not while you hold the bench lock: take it after the resume.
+
+When the idle-compaction hook asks (AGENTS.md, "Compacting your own
+context"), that is a compaction point too, whatever state you are in: an
+hour idle means no work is in progress. Before it, write in your working log
+what is uncommitted, any question to the reviewer still open, and any run or
+bench lock you hold, with its task id. The resume message names what you
+were waiting for. The compaction does not release the bench lock. At any
 other time, only when the user asks.
 
 **Starting up:** check that you are in your worktree, on a
