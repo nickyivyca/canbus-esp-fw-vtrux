@@ -410,3 +410,60 @@ symbol set.
 The first run of the cases, on `f05ad48` (before the flash size), is in `xps_board_r21/`
 (`SHA256SUMS` `14986bd4...55eebc`). All 9 results passed there; that check is superseded by
 `6fc499b`.
+
+## R23, R16's tooling-pin clause and R13's tooling field (2026-10-25)
+
+**SPEC:** shared/main `1224b24`: R23 (the tooling runs from `../shared-<tag>/` beside the
+project's worktree root and refuses to start unless that checkout's R7 digest matches the
+project's committed pin; a missing checkout is refused with the command that creates it), R16's
+second clause (a release build is refused if the tooling's own pin names a commit rather than a
+tag) and R13's last field (the record holds the tooling's pin: its tag, commit and digest).
+**Tooling tested:** `shared/tools/pin` at `963290c`, merged into shared/main as `1224b24`
+(`vtrux_build/` tree `37737eb`). It ran from checkouts of `shared/tools/pin-verify` `7d28045`,
+whose `vtrux_build/` is the same; that commit differs from `1224b24` only in the tester's
+`verification/`. **Checks:** `verification/release_cases.py` at `7d28045`, written from SPEC,
+not from `pin.py`. Every case now runs the tooling from a pinned checkout: the fixture repo tags
+the tooling's commit `2000.01.01` (a tag no real shared/main commit carries), every fixture
+commit and the minimal project commit the matching `shared_pins.json`, and each project's
+checkout is a `git worktree add --detach` of the fixture repo beside it. Its `--self-test`
+catches every broken input, including the new pin verdict and printed-command reader, and 13
+mutants of those and of the record judge's tooling fields each fail it. **Project:** the fixture
+of the earlier entries (gen-inhibit `d2e0bb5` with its fixture commits, now carrying the pin).
+**Host:** NICKY-XPS (IDF v5.4.1, its Python 3.11.9). **Run files:**
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/runs/sharedtools_c6f/`
+(`README.md`, section "R23, R16's tooling pin and R13's tooling field"); `xps_pin_r23/SHA256SUMS`
+(`e217acd8...35261`) hashes every log, `results.json` and `tests_7d28045.txt`.
+
+The pin cases run on their own clone of the fixture. Each changes one thing from `r23_control`,
+and each refusal is judged from outside: refused with `--check-only` and again as a full release
+build, with no `build/` folder made (so it never started) and no record written. Each case first
+confirms its own trigger, reading the checkout's digest, HEAD and tags itself.
+
+| Case | Result | What was tested |
+|---|---|---|
+| `r23_control` | PASS | The checkout `../shared-2000.01.01/` beside the project, at the pin: `--check-only` exit 0. |
+| `r23_md_edited` | PASS | The same, with the checkout's `README.md` changed: the digest is still the pin's (R7 leaves out `.md`), and `--check-only` exits 0. |
+| `r23_missing` | PASS | No checkout beside the project; the tooling run from another checkout at the pin: refused. The refusal prints `git -C <project> worktree add --detach ../shared-2000.01.01 2000.01.01`; run from the project's root, it made the checkout at the pin's commit, and `--check-only` from it then exits 0. |
+| `r23_wrong_copy` | PASS | The tooling run from a byte-for-byte copy of the checkout's `shared/tools` elsewhere (same digest), the checkout beside the project: refused. |
+| `r23_wrong_other` | PASS | The tooling run from another real checkout at the pin (`p1`'s), not the one beside this project: refused. |
+| `r23_digest_changed` | PASS | One tracked non-`.md` file in the checkout changed (`pyproject.toml`): refused. |
+| `r23_digest_added` | PASS | One untracked non-`.md` file added to the checkout's `shared/tools`: refused. |
+| `r23_head_moved` | PASS | The checkout's HEAD a commit beside the pin's that adds one file outside `shared/tools`, so the digest is the pin's: refused. |
+| `r23_tag_other` | PASS | The pin's tag `2000.01.02` marks that other commit; the checkout at the pin's commit, digest the pin's: refused. |
+| `r16_tag_absent` | PASS | The pin's tag `2000.01.03`, which no repository here has; the checkout at the pin's commit: refused. |
+| `r16_tag_commit` | PASS | The pin's tag the commit's 40-hex id, which is also a real tag marking that commit, so absence is not why: refused. |
+| `r16_tag_short` | PASS | The same with the 7-hex id: refused. |
+| `r16_no_tag` | PASS | A pin with no tag: refused. |
+| `r16_branch` | PASS | The pin's tag a branch name at the pin's commit, not a tag: refused. |
+
+| Req | Result | What was tested |
+|---|---|---|
+| R13, the tooling field | PASS | Each record's tooling field (`a_release`, `r22_mini`, `r13_tooling_dirty`) against the committed pin's tag, the checkout's HEAD, the digest read here from the checkout and `git status` of the checkout's `shared/tools`: `2000.01.01`, `7d28045`, `e16aec27...`, dirty false. `r13_tooling_dirty` builds the minimal project with the checkout's `README.md` edited (the digest is unchanged, so the build runs): record `ae734ba4...`, dirty true. |
+| R8, R10, R13 refusals from the checkout | PASS | `pre_unset_ri`, `pre_overwrite`, `pre_untracked`, `pre_modified`, `pre_staged`, `pre_deleted`: each refused as in the first entry, the tooling now from the pinned checkout. |
+| R5, R16 (`override_path`), R22, R13 second build | PASS | `a_release` (record `6469e156...`), `a_again` (skipped, the record folder unchanged), `r5_p2_same_commit` (the same image hash from another clone path and branch), `r16_override_path` (refused, no record) and `r22_mini` (record `a45eaf28...`), each as in the earlier entries, the tooling now from the pinned checkout. |
+
+26 cases, all PASS.
+
+**Not tested:** a checkout replaced by a plain copy with no git at its exact place beside the
+project (the HEAD and tag checks would read nothing there). R25's tag form is not checked by any
+case: SPEC R23 and R16 refuse by digest, commit and tag, not by the tag's name.
