@@ -21,11 +21,48 @@ do not change it.
 
 ## Running it
 
-Until R23 (running from a pinned `../shared-<tag>/` checkout) lands, put
-this folder on the path. From an exported ESP-IDF shell, in the project's
+A project runs the tooling from the read-only checkout of the tag it pins,
+`../shared-<tag>/` beside its worktree's root (R23), not from a worktree of
+its own. The pin is the `"shared/tools"` entry of `shared_pins.json` in the
+project's root, committed with the project (`vtrux_build/pin.py`):
+
+    {"shared/tools": {"tag": "2026.10.24",
+                      "commit": "<the commit the tag marks, 40 hex digits>",
+                      "digest": "<R7 digest of shared/tools there, 64 hex digits>"}}
+
+The file is keyed by component so that other shared tooling can pin itself
+there too; the tooling reads only its own entry. The checkout is made once
+per tag, from any worktree of the repository:
+
+    git -C <worktree> worktree add --detach ../shared-<tag> <tag>
+
+and the digest for a new pin is `python -B -m vtrux_build digest
+../shared-<tag>/shared/tools`, run from that checkout.
+
+A release build refuses to start, `--check-only` included, unless:
+- the project has the pin, and (R16) it names a tag, not a commit: an entry
+  with no tag, or one that reads as a commit id (7 to 40 hex digits), is
+  refused, and so is a tag the checkout's repository does not have (a
+  branch name, say);
+- the checkout exists; if not, the refusal prints the command above for it;
+- the `shared/tools` folder the tooling runs from is that checkout's, not a
+  copy of it elsewhere;
+- its R7 digest is the pin's, so a changed file, or one added such as a
+  `__pycache__`, is refused;
+- the checkout's HEAD is the pin's commit, and the pin's tag marks that
+  commit.
+
+The record's `tooling` holds the pin's tag, commit and digest, as checked,
+and `dirty`: whether git sees uncommitted changes under the checkout's
+`shared/tools`, which can only be in files the digest leaves out.
+
+A project usually starts the checkout's code through a small launcher of its
+own that reads the tag from its pin and nothing else, so that a missing
+checkout is named before any of it runs; every check above is here, in the
+pinned code. Without one, from an exported ESP-IDF shell, in the project's
 root, with `REVERSE_IT_DIR` set:
 
-    $env:PYTHONPATH = "<checkout>\shared\tools"     # PowerShell
+    $env:PYTHONPATH = "..\shared-<tag>\shared\tools" # PowerShell
     python -B -m vtrux_build release                # a release build
     python -B -m vtrux_build release --check-only   # its pre-build refusals only
     python -B -m vtrux_build release --jobs 1       # built with ninja -j 1
@@ -135,7 +172,8 @@ rejects other keys nor relies on any.
 ## The release build (SPEC section 3)
 
 `vtrux_build/release.py`, in order, each refusal an exit: the project's
-data; `REVERSE_IT_DIR` set (R13, before anything is built); the IDF
+data; the tooling's pin (R23, and R16's tooling-pin clause; "Running it"
+above); `REVERSE_IT_DIR` set (R13, before anything is built); the IDF
 environment, with the Component Manager's overwrite setting
 (`IDF_COMPONENT_OVERWRITE_MANAGED_COMPONENTS`) not set at all (R10); the
 environment ESP-IDF runs in, from an empty one (R24); a
@@ -156,11 +194,6 @@ environment;
 commands (R9); the image `project_description.json` names
 (R11); HEAD unchanged and the worktree clean at the end (R8); the record
 (R13). Its docstring has the detail.
-
-Not here yet: R16's refusal of a tooling pin that names a commit, and R23,
-which both wait on the `shared/main` tag scheme (SPEC section 8). The
-record therefore holds the identity of the checkout the tooling ran from
-(tag, commit, dirty, digest), not a pin file's contents.
 
 ## The interface (stable: the build checks and the bench toolkit use it)
 
@@ -216,10 +249,12 @@ the module docstring (`RECORD_SCHEMA` 1).
 | `vtrux_build/record.py` | the release record: R13 |
 | `vtrux_build/toolchain.py` | this IDF's toolchain, from its `tools.json` and toolchain file: R9's check that each chosen compiler is the toolchain's own |
 | `vtrux_build/buildenv.py` | a release build's environment, from an empty one: R24, and R9's `SOURCE_DATE_EPOCH` |
-| `vtrux_build/release.py` | the release build: R8 to R11, R13, R16 (`override_path`), R24 |
+| `vtrux_build/pin.py` | the tooling's own pin in `shared_pins.json`, and the check that the tooling runs from the pinned checkout: R23, R16's tooling-pin clause |
+| `vtrux_build/release.py` | the release build: R8 to R11, R13, R16 (both clauses, the tooling pin through `pin.py`), R23, R24 |
 | `vtrux_build/cli.py`, `__main__.py`, `__init__.py` | the command line |
 | `tests/test_*.py` | unit tests, one file per module (`toolchain.py`'s are in `test_release.py`, with the check that uses it); each runs alone (`python -B shared/tools/tests/test_image.py`) or all with `python -B -m unittest discover -s shared/tools/tests`. `test_buildenv.py`'s `RealConfigure` runs ESP-IDF itself, two configures of a small project (about 40 s), so it is skipped unless `VTRUX_IDF_TESTS=1` is set in an exported ESP-IDF shell; it is a build for `AGENTS.md` "Builds during wall-clock tests" |
 | `tests/imagekit.py` | synthetic app images for the tests, so no firmware image is committed |
+| `tests/pinkit.py` | a pinned checkout for the tests: a small tagged repository at `<folder>/shared-<tag>/` and the pin that matches it; `test_release.py` gives every test project one |
 | `tests/scratch.py` | the tests' scratch folders: `<worktree>/scratch/shared-tools-tests/` where git ignores `scratch/` (a project worktree), else the machine temp folder's `vtrux-build-tests/` |
 | `verification/` | the tester's: its verification of this tooling against `SPEC.md`, the evidence behind `VERIFICATION.md`, and the build checks' real-build cases; its `README.md` lists the files |
 | `vtrux_checks/` | the tester's: the build checks, SPEC R17 to R21, reading a finished build through the interface above; their per-project data is the tester's `vtrux_checks.json` in the project's root; its `README.md` lists the checks |

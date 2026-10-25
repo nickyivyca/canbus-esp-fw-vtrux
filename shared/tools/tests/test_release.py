@@ -24,9 +24,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 
+import pinkit                                            # noqa: E402
 import scratch                                           # noqa: E402
 from imagekit import descriptor, make_image              # noqa: E402
-from vtrux_build import buildenv, cli, components, record  # noqa: E402
+from vtrux_build import buildenv, cli, components, pin, record  # noqa: E402
 from vtrux_build.builddir import BuildDir                # noqa: E402
 from vtrux_build.image import AppImage                   # noqa: E402
 from vtrux_build.release import (Refused, check_compilers,  # noqa: E402
@@ -326,9 +327,16 @@ class FakeIdf:
                       json.dumps(desc))
 
 
-def project(name, data=None, lock_text=None, manifest=MANIFEST):
-    root = os.path.join(scratch.fresh(name), "proj")   # records beside it
+def project(name, data=None, lock_text=None, manifest=MANIFEST, pins=None):
+    """A clean scratch project, <fresh>/proj, with its build tooling pinned
+    (R23): shared_pins.json committed, and the pinned checkout beside it at
+    <fresh>/shared-<tag>/ (pinkit). pins replaces shared_pins.json's text.
+    Returns (root, the fake compiler)."""
+    d = scratch.fresh(name)
+    root = os.path.join(d, "proj")   # records beside it
+    _, good = pinkit.checkout(d)
     files = {
+        pin.PIN_FILE: pinkit.pins_text(good) if pins is None else pins,
         "vtrux_build.json": json.dumps(data or {"project": "proj",
                                                 "shared_components": []}),
         "CMakeLists.txt": "project(proj)\n",
@@ -348,6 +356,13 @@ def project(name, data=None, lock_text=None, manifest=MANIFEST):
     return root, cc
 
 
+def tools_of(root):
+    """The pinned checkout's shared/tools for a test project: the folder
+    release() is told it runs from (R23)."""
+    return os.path.join(os.path.dirname(root), "shared-" + pinkit.TAG,
+                        "shared", "tools")
+
+
 def records_dir(root):
     """The record folder for a test project: beside it, inside the
     test's own fresh folder, so no earlier run's records survive."""
@@ -361,7 +376,8 @@ def run(root, cc, edit=None, check_only=False, dest="default", jobs=None):
     try:
         p = release(root, check_only=check_only, idf=idf,
                     toolchain_run=TC_RUN, dest=dest, jobs=jobs,
-                    ninja=idf.ninja, toolchain=TOOLCHAIN)
+                    ninja=idf.ninja, toolchain=TOOLCHAIN,
+                    tools_root=tools_of(root))
         return p, idf, None
     except Refused as e:
         return None, idf, str(e)
@@ -395,9 +411,37 @@ class Release(unittest.TestCase):
                                             "image": "v5.4.1"})
         self.assertEqual(r["dependencies_lock_sha256_lf"], hashlib.sha256(
             scratch.read(os.path.join(root, "dependencies.lock"))).hexdigest())
-        self.assertEqual(sorted(r["tooling"]),
-                         ["commit", "digest", "dirty", "tag"])
-        self.assertEqual(len(r["tooling"]["digest"]), 64)
+        self.assertEqual(r["tooling"], dict(pin.read(root), dirty=False))
+
+    # R23 and R16's tooling-pin clause: refused before anything else is
+    # checked or run, --check-only included.
+
+    def test_r23_not_the_pinned_version(self):
+        root, cc = project("rel_r23_digest")
+        scratch.write(os.path.join(tools_of(root), "vtrux_build",
+                                   "__init__.py"), "x = 2\n")
+        for check_only in (False, True):
+            self.assertRefused(run(root, cc, check_only=check_only),
+                               ["R23", "digest"], [])
+
+    def test_r23_no_pin(self):
+        root, cc = project("rel_r23_nopin")
+        git(root, "rm", "-q", pin.PIN_FILE)
+        git(root, "commit", "-qm", "no pin")
+        self.assertRefused(run(root, cc), ["R23", pin.PIN_FILE], [])
+
+    def test_r23_missing_checkout(self):
+        root, cc = project("rel_r23_nocheckout")
+        shutil.rmtree(os.path.dirname(os.path.dirname(tools_of(root))),
+                      onerror=scratch._writable)
+        self.assertRefused(run(root, cc),
+                           ["does not exist", "worktree add --detach"], [])
+
+    def test_r16_tooling_pinned_at_a_commit(self):
+        at_commit = pinkit.pins_text({"tag": "e40f5cb", "commit": "c" * 40,
+                                      "digest": "d" * 64})
+        root, cc = project("rel_r16_commitpin", pins=at_commit)
+        self.assertRefused(run(root, cc), ["R16", "commit id"], [])
 
     def test_r13_lock_hash_ignores_crlf(self):
         """R13: one lock gives one hash in any checkout. The same lock, in
@@ -878,7 +922,8 @@ class Release(unittest.TestCase):
         with mock.patch("vtrux_build.release.shutil.which", return_value=None):
             with self.assertRaises(Refused) as cm:
                 release(root, idf=idf, toolchain_run=TC_RUN,
-                        dest=records_dir(root), jobs=1, toolchain=TOOLCHAIN)
+                        dest=records_dir(root), jobs=1, toolchain=TOOLCHAIN,
+                        tools_root=tools_of(root))
         self.assertIn("ninja", str(cm.exception))
         self.assertEqual(idf.calls, [])
 
@@ -929,7 +974,8 @@ class Release(unittest.TestCase):
             os.environ.pop("IDF_PATH", None)
             with self.assertRaises(Refused) as cm:
                 release(root, idf=idf, toolchain_run=TC_RUN,
-                        dest=records_dir(root), ninja=idf.ninja)
+                        dest=records_dir(root), ninja=idf.ninja,
+                        tools_root=tools_of(root))
         self.assertIn("IDF_PATH", str(cm.exception))
         self.assertIn("R9", str(cm.exception))
         self.assertEqual(idf.calls, [])
