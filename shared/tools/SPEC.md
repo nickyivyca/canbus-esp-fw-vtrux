@@ -215,6 +215,13 @@ unless the image changes, which the reproducible test (R19) shows.
   build that uses the component. Like R18, the check runs on the finished
   release build and any session may run it. Bench and dev builds are not
   checked.
+
+  **Build switches are CMake build options.** A project or a shared
+  firmware component that needs a build switch makes it a CMake option, set
+  from the CMake cache or with `idf.py -D`, and turns it into compile
+  definitions in its own CMake files. It is never a Kconfig option. A
+  shared component's switches use the same mechanism, listed in its own
+  table (above).
 - **R21. Board data.** The partition table is byte-identical to the board's
   reference, the image fits the board's application slot, the flash size in
   the headers of the images the build writes (the app's and the
@@ -272,8 +279,5 @@ unless the image changes, which the reproducible test (R19) shows.
 
 ## 8. Still open
 
-- If the port turns build switches into `CONFIG_*` options, R20 must be
-  extended to classify them, because it excludes `CONFIG_*` as written
-  (gen-inhibit spec 12.3 item 3).
 - The comparison tool's requirements (goal 6: compares two images component
   by component and lists which evidence entries still stand).

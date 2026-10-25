@@ -482,6 +482,19 @@ same folder. The interposer's test evidence is
     own compiled source tests it, which the C scan finds (user, 2026-10-24,
     option b of two, raised by the interposer reviewer; the other listed
     every definition the project's CMake sets on a target in its table).
+- **Build switches are CMake build options:** user, 2026-10-25, in the
+  interposer reviewer's session, for every project and every shared
+  firmware component. Raised by the interposer's switch table for port step
+  2a: its PlatformIO variants (bench, witness, flight and the separate
+  test images) need a new way to be chosen under ESP-IDF. It replaces the
+  open item that asked for R20 to be extended if the port turned switches
+  into `CONFIG_*` options (gen-inhibit spec 12.3 item 3), since that case
+  no longer arises.
+  - **Context:** gen-inhibit already chooses its variants this way: its
+    arm, fault-injection, restart-test and TX-abort builds and its four
+    stock-off switches are CMake options its CMake files turn into compile
+    definitions, and its `main/Kconfig.projbuild` holds only upstream
+    WiCAN's example menu (gen-inhibit/main `0c707e9`, read 2026-10-25).
 - **Status:** complete.
 
 ### R21. Board data
