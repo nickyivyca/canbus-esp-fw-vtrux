@@ -222,3 +222,39 @@ NICKY-XPS (IDF v5.4.1, its Python 3.11.9). **Run files:**
 
 **Not tested:** a symbolic link or junction inside the project pointing outside it (SPEC says
 "in the project"; the build message says the tooling resolves links, which no case here shows).
+
+## R19 reproducible (C6f, 2026-10-24)
+
+**SPEC:** R19 in shared/main `d4c16e9` (merged as `4369101`): one clean commit, built twice on one
+machine in two folders, each time by the release build script, gives the same image hash; a test
+of the tooling, rerun when the build script, record writer, image library, ESP-IDF or its Python
+environment, compiler, CMake or Ninja changes, and run once by each project when it first builds
+with the tooling. With R9's fixed `SOURCE_DATE_EPOCH` (same commit). **Tooling tested:**
+`shared/tools/build-tooling` at `3543457` (`vtrux_build/` tree `4e33d70`), merged into
+`shared/tools/checks` as `4949fcd`. **Test:** `verification/repro_cases.py` at `8c58880`, written
+from SPEC R19. It clones each commit into two new folders of different length and depth, runs
+the release build in each with its own stand-in record folder, and reads each image hash three
+ways (the record, `vtrux_build.image` and the tester's own reader), which must agree. A case is
+VOID unless both clones are clean at the same commit with no build folder, and its trigger (the
+reproducible-build setting in `sdkconfig.h`, the case's marker in the `.bin`) shows. Its
+`--self-test` catches every broken input, and 11 mutants each fail it. **Rerun triggers
+recorded:** ESP-IDF v5.4.1 with its Python 3.11.9 environment (`pip freeze` hash recorded),
+esptool v4.12.0, riscv32-esp-elf-gcc 14.2.0 (esp-14.2.0_20241119), CMake 3.30.2, Ninja 1.12.1.
+**Host:** NICKY-XPS. **Run files:**
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/runs/sharedtools_c6f/`
+(`README.md`, section "R19 reproducible test, again"); `xps_repro_r19_3543457/SHA256SUMS`
+(`cc4b2d26...04ab`) hashes every log, `repro_results.json` and `tests_4949fcd.txt`.
+
+| Case | Result | What was tested |
+|---|---|---|
+| The fixture | PASS, met | gen-inhibit `d2e0bb5` with `vtrux_build.json` and reproducible build on: `91acd964...` both times. |
+| The minimal project | PASS, met | hello_world for esp32c3, reproducible build on: `22638905...` both times. |
+| `__DATE__` and `__TIME__` | PASS, met | The minimal project printing both: `7ff7a771...` both times, the marker string in both images. R9's fixed `SOURCE_DATE_EPOCH` is what this case needs. |
+| A build-path define (control) | PASS, not met | The minimal project printing a define holding `CMAKE_BINARY_DIR`: two hashes, the images of different sizes. The test can fail. |
+
+| Req | Result | What was tested |
+|---|---|---|
+| R19, gen-inhibit's own run | **FAIL** | Observed: gen-inhibit as committed (`d2e0bb5`, reproducible build off), plus `vtrux_build.json`, built twice gives `340767d6...` and `e1dc80c8...`. The two `.bin` files differ only in the descriptor's `elf_sha256` field: 0 bytes outside it and R2's blanks. Spec: the same image hash both times. `gen-inhibit/main` at `2a30345` has the same `sdkconfig`, the option still off. |
+
+The earlier run of this test (tooling `a43c6e8`, in the run folder's section "R19 reproducible
+test") predates the merged SPEC and the fixed `SOURCE_DATE_EPOCH`; it is not cited here.
