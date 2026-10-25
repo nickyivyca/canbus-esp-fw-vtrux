@@ -14,8 +14,9 @@ reverse-it and not yet moved.
 
 - The spec: `$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-wican-spec.md`.
 - Published interfaces, which are spec: the diag schema
-  `$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/wican_diag_schema.md`
-  and its DBC `$REVERSE_IT_DIR/projects/vtrux/vtrux-wican-diag.dbc`.
+  `gen-inhibit/diag/wican_diag_schema.md` and its DBC
+  `gen-inhibit/diag/vtrux-wican-diag.dbc` (moved from reverse-it 2026-10-24,
+  schema 7; the reverse-it copies stay, frozen, until the tools read these).
 - The review tracker:
   `$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-review-2026-09-22.md`.
 - Validation: `$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-wican-firmware.md`,
