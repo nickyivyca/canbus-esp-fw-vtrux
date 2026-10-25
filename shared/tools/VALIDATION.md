@@ -564,6 +564,28 @@ same folder. The interposer's test evidence is
   and profile do not name it yet.
 - **Status:** complete.
 
+### R28. Each project sets its own log levels
+- **Basis:** user, 2026-10-25, in the interposer reviewer's session:
+  log levels made common between the projects "in a sensible way for
+  each", as the same mechanism with each project's own values. Raised by
+  the interposer's review of its PlatformIO `-D` lines for port step 2a,
+  where `CORE_DEBUG_LEVEL` set the Arduino core's level per variant. A
+  level set in the `sdkconfig` is seen by the options check (R18); a `-D`
+  is not, since R20 does not list compile definitions for themselves
+  (ruling b, 2026-10-24).
+- **Context** (read 2026-10-25): both projects compile framework logs in
+  and silence them at run time today. gen-inhibit's committed `sdkconfig`
+  has ESP-IDF's default and maximum levels at info, and `app_main` calls
+  `esp_log_level_set("*", ESP_LOG_NONE)` (upstream WiCAN code); its spec
+  sets no level. The interposer's flight build compiles the Arduino
+  core's logs out with `CORE_DEBUG_LEVEL=0` and silences ESP-IDF's prebuilt
+  logs (error level) in `setup()`. A run-time silence misses what prints
+  before the call, and arduino-esp32 3.2.1's `isr_log_*` macros print with
+  `ets_printf`, ignoring the run-time level. The interposer's spec 8.3 sets
+  none for ESP-IDF and the Arduino core and error for the bootloader, from
+  its step 2a (user, 2026-10-25).
+- **Status:** complete.
+
 ## 5. Data, not code
 
 ### R22

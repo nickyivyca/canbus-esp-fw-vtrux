@@ -19,7 +19,7 @@ other project's reviewer (charge interposer) reads it before it merges into
   spec 12.3 item 3,
   `$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-wican-spec.md`.
 
-Requirements are numbered R1 to R27. The numbers are stable: the two evidence
+Requirements are numbered R1 to R28. The numbers are stable: the two evidence
 documents cite them.
 
 ## Terms
@@ -238,6 +238,14 @@ unless the image changes, which the reproducible test (R19) shows.
   release profile names `CONFIG_FREERTOS_HZ`, with the value its own spec
   sets and cites. The tooling sets no common value. The options check (R18)
   fails a release build whose project's profile does not name it.
+- **R28. Each project sets its own log levels.** Every project's release
+  profile names `CONFIG_LOG_DEFAULT_LEVEL`, `CONFIG_LOG_MAXIMUM_LEVEL` and
+  `CONFIG_BOOTLOADER_LOG_LEVEL`, and a project that compiles the Arduino
+  core also names `CONFIG_ARDUHAL_LOG_DEFAULT_LEVEL`, each with the value
+  its own spec sets and cites. Log levels are set only in the `sdkconfig`,
+  never by a `-D` in a build file (`CORE_DEBUG_LEVEL`, `LOG_LOCAL_LEVEL`).
+  The tooling sets no common value. The options check (R18) fails a
+  release build whose project's profile does not name them.
 
 ## 5. Data, not code
 
