@@ -87,6 +87,15 @@ same folder. The interposer's test evidence is
   tagged commit gets the tag name alone), was also put to the user and not
   taken (user, 2026-10-25): tags may later name a project commit, for
   example a development build promoted to a truck build.
+- **`project_name`** (user, 2026-10-25, in the gen-inhibit reviewer's
+  session): written once here because both projects set it the same way.
+  gen-inhibit's spec 12.3 item 3 keeps its variant suffixes (`_man` or
+  `_auto`, `_flt`, `_rt`), which its build-output checks read, for
+  example to refuse a flight image named for a test-only variant. The
+  interposer's spec 8.2 takes `interposer_<variant>` from its step 2a
+  (user, 2026-10-25, in the interposer reviewer's session), moving the
+  variant tag from the image's file name into the descriptor. The variant
+  is the label inside the image; the image hash is its identity (R6).
 - **Status:** complete.
 
 ### R5. Identity independent of branch, clone path and host OS
