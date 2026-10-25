@@ -151,11 +151,11 @@ MUTANTS = [
     ("H runs the SeaDrive copy", 'argv=["{bash}", "%s/baseline_host_run.sh" % HARNESS, C]',
      'argv=["{bash}", "projects/vtrux/notes/artifacts/gen-inhibit/baseline_host_run.sh", C]'),
     ("H gets no RROOT", ', "RROOT": "{gi_host_root}"}', '}'),
-    ("B15host copies no pins", 'B15_FILES = ("diag_decode_check.py", "gi_paths.py", "pins.json")',
-     'B15_FILES = ("diag_decode_check.py", "gi_paths.py")'),
+    ("B15host copies no pins", 'B15_FILES = ("diag_decode_check.py", "gi_diag.py", "pins.json")',
+     'B15_FILES = ("diag_decode_check.py", "gi_diag.py")'),
     ("B15host runs the check from another folder", '"~/gi_bench_%s/diag_decode_check.py', '"~/gi_bench_%.0s/diag_decode_check.py'),
     ("B15host does not set REVERSE_IT_DIR", 'REVERSE_IT_DIR=\\"$PWD\\" python3 -B', 'python3 -B'),
-    ("B15host's copy failing is not seen", '"set -o pipefail; (tar', '"(tar'),
+    ("B15host's copy failing is not seen", '"set -o pipefail; (%s', '"(%s'),
     ("B15host runs the check after a failed copy", "tar xf - -C ~/gi_bench_%s' && \"", "tar xf - -C ~/gi_bench_%s'; \""),
 ]
 
