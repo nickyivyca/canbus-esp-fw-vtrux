@@ -453,6 +453,11 @@ same folder. The interposer's test evidence is
     2026-10-24). The image embeds the ELF's SHA-256 (R1), so an ELF rule
     judges the code in that image. gen-inhibit's RealDash row, ELF only,
     closed under its spec 12.3 item 3.
+  - A compile definition a project's CMake sets (for example a `-D` on a
+    target) is not listed for itself; it is listed only when the project's
+    own compiled source tests it, which the C scan finds (user, 2026-10-24,
+    option b of two, raised by the interposer reviewer; the other listed
+    every definition the project's CMake sets on a target in its table).
 - **Status:** complete.
 
 ### R21. Board data
@@ -462,6 +467,34 @@ same folder. The interposer's test evidence is
   build checks take the toolchain from the board's chip, not from the C3's
   RISC-V tool names. gen-inhibit spec 12.3 item 3 for the WiCAN's values
   (partition table byte-identical to stock, 1,781,760-byte slot).
+- **Flash size** (user, 2026-10-24, option B of three, in the gen-inhibit
+  reviewer's session): checked against the board's. No check had it until
+  then. A flash size smaller than the chip already fails the build, since
+  the partition table no longer fits; a larger one builds and passes the
+  partition check. The other options were leaving it out, and naming it in
+  each project's release profile, which would put a board fact in project
+  data (R22).
+- **Readings** (gen-inhibit reviewer, 2026-10-24, raised by the gen-inhibit
+  tester before writing the check, and shown to the user):
+  - The table compared is the build's own `partition-table.bin`, byte for
+    byte, as gen-inhibit's check does today.
+  - The reference is a `.bin` named by path in the board data, with no
+    stored hash beside it: git is the reference copy (user, 2026-10-24,
+    R18).
+  - The slot is the smallest app partition of the board's reference table,
+    not a separate number, and the image fits when its `.bin` is no larger.
+    For the WiCAN, `ota_0` and `ota_1` are both 1,781,760 bytes, today's
+    number.
+  - The tool prefix is a property of the checks (goal 5): no check
+    hard-codes a tool name, and each tool a check runs is named from the
+    board's `IDF_TARGET`, by ESP-IDF's own per-target files. A build whose
+    target is not the board's fails.
+  - A board used by one project has its data in that project's
+    `vtrux_checks.json`. A shared board's data reaches a release build only
+    inside the shared board component pinned in `dependencies.lock`, under
+    `managed_components/` (R17, goal 20).
+  - Release builds only, like R18 and R20. The bootloader's contents are
+    not compared, only the partition table.
 - **Status:** complete for the WiCAN. The X2's values: basis pending, with
   port step 2a.
 
