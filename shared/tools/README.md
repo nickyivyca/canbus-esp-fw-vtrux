@@ -41,8 +41,33 @@ wall-clock test runs on the machine, the build is throttled as `AGENTS.md`
 "Builds during wall-clock tests" says, or waits. On `NICKY-XPS` that is
 `--jobs 1` from a shell whose priority class is Idle. `idf.py build` has no
 jobs option, so with `--jobs N` the build step is `ninja -C build -j N all`
-(what `idf.py build` runs), in the same strict environment, after the same
-strict `idf.py reconfigure`. Without `--jobs` it is `idf.py build`.
+(what `idf.py build` runs), in the same environment, after the same
+`idf.py reconfigure`. Without `--jobs` it is `idf.py build`.
+
+ESP-IDF runs in an environment the tooling builds from an empty one (R24,
+`vtrux_build/buildenv.py`), so nothing in the caller's environment reaches
+the build unless it is on the tooling's list: `EXTRA_CFLAGS` and its
+`CXX`/`CPP` forms, which ESP-IDF adds to every compile, `CFLAGS`,
+`IDF_TARGET`, the Component Manager's settings and `PYTHONPATH` are all
+dropped. The list holds what ESP-IDF needs to find itself and its tools,
+as the export sets them (`PATH`, `IDF_PATH`, `IDF_PYTHON_ENV_PATH`,
+`IDF_TOOLS_PATH`, `ESP_ROM_ELF_DIR`), and what the host OS needs to run
+programs: on Windows `SYSTEMROOT`, `PROCESSOR_ARCHITECTURE`, `TEMP` and
+`TMP`, each found by a configure or build that failed without it; on Linux
+only `TMPDIR`, not yet tried on a Linux host. A name the build needs and the
+list lacks fails the build. Then the tooling adds its own settings:
+`IDF_COMPONENT_STRICT_CHECKSUM=1` (R10), `SOURCE_DATE_EPOCH` (R9, below),
+and `IDF_TOOLS_PATH` when the caller's is unset or empty, set to the
+`~/.espressif` default R9's toolchain check read. The build prints the
+names it passed and the names it dropped, never values, and the record
+lists the names passed (`environment_passed`). Bench and dev builds are not
+constrained.
+
+`SOURCE_DATE_EPOCH` is one fixed value, `1767225600` (2026-01-01T00:00:00Z),
+for every project and commit (R9): GCC takes `__DATE__` and `__TIME__` from
+it, so source using them, the Arduino core the interposer compiles among
+it, builds the same each time. ESP-IDF v5.4.1 never sets it. It is a
+stopgap, to be removed when no project compiles that core.
 
 The compiler cache is off in a release build (R9), whatever the
 environment sets: the IDF export sets `IDF_CCACHE_ENABLE=1` wherever ccache
@@ -112,9 +137,11 @@ rejects other keys nor relies on any.
 `vtrux_build/release.py`, in order, each refusal an exit: the project's
 data; `REVERSE_IT_DIR` set (R13, before anything is built); the IDF
 environment, with the Component Manager's overwrite setting
-(`IDF_COMPONENT_OVERWRITE_MANAGED_COMPONENTS`) not set at all (R10); a
-clean worktree (R8); `idf.py --no-ccache reconfigure` with
-`IDF_COMPONENT_STRICT_CHECKSUM=1` (R9, R10); the `sdkconfig` the build
+(`IDF_COMPONENT_OVERWRITE_MANAGED_COMPONENTS`) not set at all (R10); the
+environment ESP-IDF runs in, from an empty one (R24); a
+clean worktree (R8); `idf.py --no-ccache reconfigure` in that environment,
+with `IDF_COMPONENT_STRICT_CHECKSUM=1` and the fixed `SOURCE_DATE_EPOCH`
+(R9, R10); the `sdkconfig` the build
 used, inside the project, tracked and not ignored (R8); the worktree still clean and
 HEAD unchanged (R8); `CCACHE_ENABLE` off in `build/CMakeCache.txt` and no compiler
 launcher in its compile commands (R9); a `dependencies.lock` after the
@@ -123,7 +150,8 @@ downloaded component's `.component_hash` against
 `dependencies.lock`, and a registry download against its `CHECKSUMS.json`,
 unlisted files included (R10, after the reconfigure); no shared component
 from a local folder (R16, `override_path` clause); `idf.py --no-ccache
-build`, or `ninja -C build -j N all` with `--jobs N`, also strict;
+build`, or `ninja -C build -j N all` with `--jobs N`, in the same
+environment;
 `CCACHE_ENABLE` still off and no launcher in any build folder's compile
 commands (R9); the image `project_description.json` names
 (R11); HEAD unchanged and the worktree clean at the end (R8); the record
@@ -187,9 +215,10 @@ the module docstring (`RECORD_SCHEMA` 1).
 | `vtrux_build/project.py` | a project's `vtrux_build.json`: R22 |
 | `vtrux_build/record.py` | the release record: R13 |
 | `vtrux_build/toolchain.py` | this IDF's toolchain, from its `tools.json` and toolchain file: R9's check that each chosen compiler is the toolchain's own |
-| `vtrux_build/release.py` | the release build: R8 to R11, R13, R16 (`override_path`) |
+| `vtrux_build/buildenv.py` | a release build's environment, from an empty one: R24, and R9's `SOURCE_DATE_EPOCH` |
+| `vtrux_build/release.py` | the release build: R8 to R11, R13, R16 (`override_path`), R24 |
 | `vtrux_build/cli.py`, `__main__.py`, `__init__.py` | the command line |
-| `tests/test_*.py` | unit tests, one file per module (`toolchain.py`'s are in `test_release.py`, with the check that uses it); each runs alone (`python -B shared/tools/tests/test_image.py`) or all with `python -B -m unittest discover -s shared/tools/tests` |
+| `tests/test_*.py` | unit tests, one file per module (`toolchain.py`'s are in `test_release.py`, with the check that uses it); each runs alone (`python -B shared/tools/tests/test_image.py`) or all with `python -B -m unittest discover -s shared/tools/tests`. `test_buildenv.py`'s `RealConfigure` runs ESP-IDF itself, two configures of a small project (about 40 s), so it is skipped unless `VTRUX_IDF_TESTS=1` is set in an exported ESP-IDF shell; it is a build for `AGENTS.md` "Builds during wall-clock tests" |
 | `tests/imagekit.py` | synthetic app images for the tests, so no firmware image is committed |
 | `tests/scratch.py` | the tests' scratch folders: `<worktree>/scratch/shared-tools-tests/` where git ignores `scratch/` (a project worktree), else the machine temp folder's `vtrux-build-tests/` |
 | `verification/` | the tester's: its verification of this tooling against `SPEC.md`, the evidence behind `VERIFICATION.md`, and the build checks' real-build cases; its `README.md` lists the files |

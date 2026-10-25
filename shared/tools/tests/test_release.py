@@ -1,5 +1,5 @@
 """Tests of the release build (vtrux_build.release): SPEC R8, R9, R10, R11,
-R13 and R16's override_path clause, end to end on a scratch git project.
+R13, R16's override_path clause and R24, end to end on a scratch git project.
 
     python -B shared/tools/tests/test_release.py
 
@@ -9,6 +9,7 @@ the image and its ELF, as a real build would. Each test changes one thing
 and checks the refusal and that nothing after it ran. Needs git.
 """
 
+import contextlib
 import hashlib
 import io
 import json
@@ -25,13 +26,13 @@ sys.path.insert(0, HERE)
 
 import scratch                                           # noqa: E402
 from imagekit import descriptor, make_image              # noqa: E402
-from vtrux_build import cli, record                      # noqa: E402
+from vtrux_build import buildenv, cli, components, record  # noqa: E402
 from vtrux_build.builddir import BuildDir                # noqa: E402
 from vtrux_build.image import AppImage                   # noqa: E402
 from vtrux_build.release import (Refused, check_compilers,  # noqa: E402
                                  check_no_launcher, cmake_build_folders,
-                                 cmake_false, first_word, ninja_runner,
-                                 release)
+                                 cmake_false, first_word, idf_runner,
+                                 ninja_runner, release)
 from vtrux_build.toolchain import Toolchain, ToolchainError  # noqa: E402
 
 GIT_ENV = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
@@ -453,10 +454,48 @@ class Release(unittest.TestCase):
         root, cc = project("rel_r10_strict")
         _, idf, why = run(root, cc)
         self.assertIsNone(why)
-        self.assertEqual(idf.envs["reconfigure"],
-                         {"IDF_COMPONENT_STRICT_CHECKSUM": "1"})
-        self.assertEqual(idf.envs["build"],
-                         {"IDF_COMPONENT_STRICT_CHECKSUM": "1"})
+        for action in ("reconfigure", "build"):
+            self.assertEqual(
+                idf.envs[action]["IDF_COMPONENT_STRICT_CHECKSUM"], "1")
+
+    def test_r24_environment(self):
+        """Every ESP-IDF call gets the environment buildenv builds from
+        this one, and nothing else: a caller's EXTRA_CFLAGS, CFLAGS or
+        IDF_TARGET never reaches it. The dropped names are printed, the
+        values never; the epoch (R9) is in every call."""
+        root, cc = project("rel_r24_env")
+        caller = {"EXTRA_CFLAGS": "-DVTRUX_SECRET_FLAG", "CFLAGS": "-DY",
+                  "IDF_TARGET": "esp32"}
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, caller), \
+                contextlib.redirect_stdout(out):
+            want = buildenv.environment(
+                default_tools_path=TOOLCHAIN.tools_path)[0]
+            p, idf, why = run(root, cc)
+        self.assertIsNone(why)
+        for action in ("reconfigure", "build"):
+            self.assertEqual(idf.envs[action], want)
+            self.assertEqual(idf.envs[action]["SOURCE_DATE_EPOCH"],
+                             buildenv.EPOCH)
+            for name in caller:
+                self.assertNotIn(name, idf.envs[action])
+        printed = out.getvalue()
+        dropped = [ln for ln in printed.splitlines() if " dropped: " in ln]
+        self.assertEqual(len(dropped), 1, printed)
+        for name in caller:
+            self.assertIn(name, dropped[0].split())
+        self.assertNotIn("VTRUX_SECRET_FLAG", printed)
+
+    def test_r24_record_lists_the_names_passed(self):
+        root, cc = project("rel_r24_record")
+        p, idf, why = run(root, cc)
+        self.assertIsNone(why)
+        passed = buildenv.environment(
+            default_tools_path=TOOLCHAIN.tools_path)[1]
+        self.assertTrue(passed)
+        self.assertEqual(record.read(p)["environment_passed"], passed)
+        self.assertNotIn(os.environ.get("PATH"),
+                         record.read(p)["environment_passed"])
 
     def test_r10_overwrite_setting_refused(self):
         """Set at all is refused, "0" too: no reading of the value can let
@@ -714,8 +753,10 @@ class Release(unittest.TestCase):
             self.assertEqual(idf.ninja_args, [
                 "-C", os.path.join(os.path.abspath(root), "build"),
                 "-j", str(n), "all"])
-            self.assertEqual(idf.envs["reconfigure"], STRICT)
-            self.assertEqual(idf.envs["ninja"], STRICT)
+            self.assertEqual(idf.envs["ninja"], idf.envs["reconfigure"])
+            self.assertEqual(idf.envs["ninja"][components.STRICT_ENV], "1")
+            self.assertEqual(idf.envs["ninja"]["SOURCE_DATE_EPOCH"],
+                             buildenv.EPOCH)
             self.assertEqual(idf.argv["reconfigure"],
                              ["--no-ccache", "reconfigure"])
             self.assertEqual(record.read(p)["image"]["built_as"], "app.bin")
@@ -1170,13 +1211,13 @@ class NinjaRunner(unittest.TestCase):
     """The real ninja runner --jobs uses: its command line and environment."""
 
     def test_command_line_and_environment(self):
-        """The strict setting goes to ninja's environment, on top of this
-        process's, and not into this process's own."""
+        """ninja runs in the environment it is given and nothing else
+        (R24): not this process's, which it leaves alone."""
         before = os.environ.get("IDF_COMPONENT_STRICT_CHECKSUM")
         with mock.patch("vtrux_build.release.shutil.which",
                         return_value="C:/x/ninja.exe"), \
                 mock.patch("vtrux_build.release.subprocess.run") as sp, \
-                mock.patch.dict(os.environ, {"VTRUX_TEST_KEEP": "kept"}):
+                mock.patch.dict(os.environ, {"VTRUX_TEST_DROP": "dropped"}):
             sp.return_value.returncode = 3
             rc = ninja_runner()(["-C", "b", "-j", "1", "all"], STRICT)
             self.assertEqual(os.environ.get("IDF_COMPONENT_STRICT_CHECKSUM"),
@@ -1184,9 +1225,29 @@ class NinjaRunner(unittest.TestCase):
         self.assertEqual(rc, 3)
         self.assertEqual(sp.call_args.args[0],
                          ["C:/x/ninja.exe", "-C", "b", "-j", "1", "all"])
-        env = sp.call_args.kwargs["env"]
-        self.assertEqual(env["IDF_COMPONENT_STRICT_CHECKSUM"], "1")
-        self.assertEqual(env["VTRUX_TEST_KEEP"], "kept")
+        self.assertEqual(sp.call_args.kwargs["env"], STRICT)
+
+
+class IdfRunner(unittest.TestCase):
+    """The real idf.py runner: the exported Python, and the environment it
+    is given and nothing else (R24)."""
+
+    def test_command_line_and_environment(self):
+        exported = {"IDF_PATH": "C:/idf", "IDF_PYTHON_ENV_PATH": "C:/venv",
+                    "VTRUX_TEST_DROP": "dropped"}
+        with mock.patch("vtrux_build.release.os.path.isfile",
+                        return_value=True), \
+                mock.patch("vtrux_build.release.subprocess.run") as sp, \
+                mock.patch.dict(os.environ, exported):
+            sp.return_value.returncode = 0
+            rc = idf_runner("C:/proj")(["--no-ccache", "reconfigure"], STRICT)
+        self.assertEqual(rc, 0)
+        argv = sp.call_args.args[0]
+        self.assertEqual(argv[1:], [os.path.join("C:/idf", "tools", "idf.py"),
+                                    "-C", "C:/proj", "--no-ccache",
+                                    "reconfigure"])
+        self.assertTrue(argv[0].startswith(os.path.join("C:/venv", "")))
+        self.assertEqual(sp.call_args.kwargs["env"], STRICT)
 
     def test_no_ninja_on_path(self):
         with mock.patch("vtrux_build.release.shutil.which", return_value=None):

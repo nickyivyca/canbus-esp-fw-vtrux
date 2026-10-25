@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Real release builds against SPEC R5, R8 to R11, R13, R14 (with R3), R16 (override_path) and R22.
+"""Real release builds against SPEC R5, R8 to R11, R13, R14 (with R3), R16 (override_path), R22,
+R9's fixed SOURCE_DATE_EPOCH and R24.
 
     (from an exported ESP-IDF shell, with its Python)
     python -B release_cases.py --root <short scratch dir> --out <run folder> --base <commit>
@@ -185,6 +186,7 @@ def self_test():
         print("  %s chosen compiler, %s: %s" % ("ok  " if c == want else "FAIL", label, c))
         ok &= c == want
     ok &= self_test_r8(I.scratch("release-cases-selftest-r8"))
+    ok &= self_test_epoch_env()
     print("\nself-test: %s" % ("every broken input caught, the faithful one passed" if ok else "FAILED"))
     return 0 if ok else 1
 
@@ -1273,6 +1275,254 @@ def c_r8_sdk_outside(ctx, log):
     rmtree(out)
 
 
+# ---------- R9's fixed SOURCE_DATE_EPOCH and R24's environment (shared/main d4c16e9) ----------
+
+STAMP = re.compile(rb"R9STAMP\[([A-Z][a-z]{2} [ 0-9][0-9] [0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2})\]")
+R24_ROUTES = {      # caller variable -> the define it carries, each printed by the mini r24 commit
+    "EXTRA_CFLAGS": "R24_EXTRA_C", "EXTRA_CPPFLAGS": "R24_EXTRA_CPP", "CFLAGS": "R24_CFLAGS", "CPPFLAGS": "R24_CPPFLAGS"}
+R24_PROBE = re.compile(r"R24 probe \[(.*?)\]")
+
+
+def gcc_stamp(epoch):
+    """__DATE__ " " __TIME__ as gcc gives them for SOURCE_DATE_EPOCH=epoch (UTC, day space-padded)."""
+    t = time.gmtime(int(epoch))
+    return "%s %2d %d %02d:%02d:%02d" % (("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov",
+                                          "Dec")[t.tm_mon - 1], t.tm_mday, t.tm_year, t.tm_hour, t.tm_min, t.tm_sec)
+
+
+def stamps_in(b):
+    return sorted(set(m.decode() for m in STAMP.findall(b)))
+
+
+def judge_epoch(probe, builds):
+    """R9: one fixed SOURCE_DATE_EPOCH for every project and commit, whatever the caller sets.
+    probe: (caller epoch, stamps) of a plain idf.py build, which shows gcc takes the caller's
+    value (else VOID); builds: [(label, caller epoch or None, stamps)] of release builds."""
+    pe, ps = probe
+    if ps != [gcc_stamp(pe)]:
+        return "VOID", "the plain build with SOURCE_DATE_EPOCH=%s gives %s, not %r: the probe shows nothing" % (
+            pe, ps, gcc_stamp(pe))
+    one = [st for _l, _e, st in builds if len(st) != 1]
+    if one:
+        return "FAIL", "a release image without exactly one stamp: %s" % [(l, st) for l, _e, st in builds]
+    got = sorted(set(st[0] for _l, _e, st in builds))
+    if len(got) != 1:
+        return "FAIL", "release builds give different stamps: %s" % [(l, e, st[0]) for l, e, st in builds]
+    callers = [gcc_stamp(e) for _l, e, _st in builds if e is not None]
+    if got[0] in callers:
+        return "FAIL", "the release stamp %r is a caller's SOURCE_DATE_EPOCH" % got[0]
+    return "PASS", "%d release builds (%s), one stamp %r; caller values %s not taken" % (
+        len(builds), ", ".join(l for l, _e, _s in builds), got[0], [e for _l, e, _s in builds if e is not None])
+
+
+def judge_env(plain, rel, planted, caller_names, windows):
+    """R24 on one release build. plain/rel: {"probe": the configure probe's value or None,
+    "marks": defines whose marker is in the .bin, "out": output}; rel also "rc" and "passed" (the
+    record's environment_passed, None if the build recorded nothing). A route counts only where
+    the plain idf.py build shows it reaching the build; with none, VOID."""
+    routes = [v for v in sorted(planted) if v in R24_ROUTES and R24_ROUTES[v] in plain["marks"]]
+    probe_seen = plain["probe"] == planted.get("R24_PLANTED")
+    if not routes and not probe_seen:
+        return "VOID", "the plain build shows no planted variable reaching it (probe %r, marks %s)" % (
+            plain["probe"], plain["marks"])
+    if rel["rc"]:
+        return "FAIL", "the release build exited %d; R24's list must still let it build" % rel["rc"]
+    bad = []
+    if probe_seen and rel["probe"] is None:
+        probe_seen = False          # the release output does not show the configure: not judged
+        if not routes:
+            return "VOID", "only the CMake probe shows a route, and the release output lacks its line"
+    if probe_seen and rel["probe"] != "":
+        bad.append("configure probe %r, want empty" % rel["probe"])
+    for v in routes:
+        if R24_ROUTES[v] in rel["marks"]:
+            bad.append("%s reached the compile (%s in the .bin)" % (v, R24_ROUTES[v]))
+    for v in sorted(planted):
+        if not re.search(r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(v), rel["out"]):
+            bad.append("%s not among the names it printed" % v)
+    norm = (lambda n: n.upper()) if windows else (lambda n: n)
+    passed = rel["passed"]
+    if not isinstance(passed, list) or not all(isinstance(n, str) for n in passed):
+        bad.append("the record's environment_passed is %r, want a list of names" % (passed,))
+        passed = []
+    for v in sorted(planted):
+        if norm(v) in {norm(n) for n in passed}:
+            bad.append("%s in the record's environment_passed" % v)
+    extra = sorted(n for n in passed if norm(n) not in {norm(c) for c in caller_names})
+    note = "routes shown by the plain build: %s%s; passed %s%s" % (
+        ", ".join(routes) or "none", ", CMake $ENV probe" if probe_seen else "", sorted(passed),
+        ("; not from the caller: %s" % extra) if extra else "")
+    return ("FAIL", "; ".join(bad) + "; " + note) if bad else ("PASS", note)
+
+
+def mini_commit(ctx, branch, edits, msg, base="main"):
+    """A mini branch: base plus edits [(rel, anchor, inserted after it)], anchor None to append."""
+    if not os.path.exists(os.path.join(ctx.mini, ".git")):
+        make_mini(ctx)
+    reset(ctx.mini, "main", "main")
+    git(ctx.mini, "checkout", "-q", "-f", "-B", branch, base)
+    for rel, anchor, text in edits:
+        f = os.path.join(ctx.mini, rel)
+        cur = open(f, newline="").read()
+        if anchor is not None and cur.count(anchor) != 1:
+            raise RuntimeError("%s: anchor %r found %d times" % (rel, anchor, cur.count(anchor)))
+        cur = cur + text if anchor is None else cur.replace(anchor, anchor + text)
+        with open(f, "w", newline="") as o:
+            o.write(cur)
+    git(ctx.mini, "commit", "-q", "-am", msg)
+
+
+MAIN_C = "main/hello_world_main.c"
+APP_MAIN = "void app_main(void)\n{\n"
+
+
+def plain_build(ctx, proj, env, log):
+    """idf.py build with the caller's environment plus env (no tooling): (rc, out, .bin bytes)."""
+    rmtree(os.path.join(proj, "build"))
+    e = idf_env(**env)
+    rc, out = run([sys.executable, os.path.join(os.environ["IDF_PATH"], "tools", "idf.py"), "--no-ccache", "build"],
+                  cwd=proj, env=e, log=log)
+    b = b""
+    if rc == 0:
+        pd = json.load(open(os.path.join(proj, "build", "project_description.json")))
+        b = open(os.path.join(proj, "build", pd["app_bin"]), "rb").read()
+    rmtree(os.path.join(proj, "build"))
+    return rc, out, b
+
+
+def release_bin(ctx, rec, project):
+    return open(os.path.join(ctx.records(project), rec["image_hash"] + ".bin"), "rb").read()
+
+
+def c_r9_epoch(ctx, log):
+    """SPEC R9 (d4c16e9): a release build sets SOURCE_DATE_EPOCH to one fixed value, the same for
+    every project and commit. The mini project prints "R9STAMP[" __DATE__ " " __TIME__ "]". A plain
+    idf.py build with SOURCE_DATE_EPOCH=12345 must show gcc's stamp for 12345 (the probe can see
+    the variable). Then three release builds: commit A (caller sets none), commit B (A plus a
+    line; caller 12345), and commit C (A as another project, vtrux-mini-two; caller 99999). All
+    three stamps must be one value, and none a caller's."""
+    name = "r9_epoch"
+    stamp_c = 'static const char r9_stamp[] = "R9STAMP[" __DATE__ " " __TIME__ "]";\n\n'
+    mini_commit(ctx, "r9-a", [(MAIN_C, "#include \"esp_system.h\"\n\n", stamp_c),
+                              (MAIN_C, APP_MAIN, '    printf("%s\\n", r9_stamp);\n')], "r9 case: print the compile date stamp")
+    mini_commit(ctx, "r9-b", [(MAIN_C, APP_MAIN, '    printf("r9 commit b\\n");\n')], "r9 case: commit b", base="r9-a")
+    git(ctx.mini, "checkout", "-q", "-f", "-B", "r9-c", "r9-a")
+    with open(os.path.join(ctx.mini, "vtrux_build.json"), "w", newline="") as f:
+        f.write('{"project": "vtrux-mini-two", "shared_components": []}\n')
+    git(ctx.mini, "commit", "-q", "-am", "r9 case: commit a as another project")
+    reset(ctx.mini, "r9-a", "r9-a")
+    rc, _out, b = plain_build(ctx, ctx.mini, {"SOURCE_DATE_EPOCH": "12345"}, log)
+    if rc:
+        report(name, "VOID", "the plain build failed (exit %d)" % rc, ctx.log)
+        return
+    probe = ("12345", stamps_in(b))
+    builds = []
+    for label, branch, project, epoch in (("A", "r9-a", "vtrux-mini-test", None), ("B", "r9-b", "vtrux-mini-test", "12345"),
+                                          ("C", "r9-c", "vtrux-mini-two", "99999")):
+        reset(ctx.mini, branch, branch)
+        rmtree(os.path.join(ctx.mini, "build"))
+        before = snapshot(ctx.records(project))
+        rc, _ = release(ctx, ctx.mini, log, jobs=ctx.jobs, env={"SOURCE_DATE_EPOCH": epoch})
+        rec = check_success(ctx, "%s (%s)" % (name, label), ctx.mini, rc, before, project=project)
+        if not rec:
+            report(name, "VOID", "release build %s was not recorded" % label, ctx.log)
+            reset(ctx.mini, "main", "main")
+            return
+        builds.append((label, epoch, stamps_in(release_bin(ctx, rec, project))))
+    with open(log, "a") as f:
+        f.write("r9_epoch stamps: probe %s; %s\n" % (probe, builds))
+    report(name, *judge_epoch(probe, builds), ctx.log)
+    reset(ctx.mini, "main", "main")
+
+
+def c_r24_env(ctx, log):
+    """SPEC R24 (d4c16e9): a release build runs ESP-IDF in an environment built from an empty one
+    plus the tooling's list, prints the names it dropped, and records the names it passed. The
+    mini r24 commit prints a marker for each of four defines and its CMakeLists.txt prints
+    $ENV{R24_PLANTED} at configure. The caller plants R24_PLANTED and EXTRA_CFLAGS, EXTRA_CPPFLAGS,
+    CFLAGS and CPPFLAGS each carrying one define. A plain idf.py build with them shows which
+    routes reach a build (only those are judged); the release build must build, show none of
+    them, print every planted name, and keep them out of environment_passed."""
+    name = "r24_env"
+    marks = "".join('#ifdef %s\n    printf("R24MARK %s\\n");\n#endif\n' % (d, d) for d in sorted(R24_ROUTES.values()))
+    mini_commit(ctx, "r24", [(MAIN_C, APP_MAIN, marks),
+                             ("CMakeLists.txt", None, 'message(STATUS "R24 probe [$ENV{R24_PLANTED}]")\n')],
+                "r24 case: markers for four defines, a configure probe")
+    planted = dict({v: "-D" + d for v, d in R24_ROUTES.items()}, R24_PLANTED="r24-seen")
+
+    def seen(out, b):
+        m = R24_PROBE.findall(out)
+        return {"probe": m[-1] if m else None, "out": out,
+                "marks": sorted(d for d in R24_ROUTES.values() if ("R24MARK %s" % d).encode() in b)}
+    reset(ctx.mini, "r24", "r24")
+    rc, out, b = plain_build(ctx, ctx.mini, planted, log)
+    if rc:
+        report(name, "VOID", "the plain build failed (exit %d)" % rc, ctx.log)
+        reset(ctx.mini, "main", "main")
+        return
+    plain = seen(out, b)
+    reset(ctx.mini, "r24", "r24")
+    rmtree(os.path.join(ctx.mini, "build"))
+    before = snapshot(ctx.records("vtrux-mini-test"))
+    caller = sorted(set(idf_env(PYTHONPATH=TOOLS, REVERSE_IT_DIR=ctx.ri, **planted)))
+    rc, out = release(ctx, ctx.mini, log, jobs=ctx.jobs, env=planted)
+    rec = check_success(ctx, "%s (record)" % name, ctx.mini, rc, before, project="vtrux-mini-test") if rc == 0 else None
+    rel = seen(out, release_bin(ctx, rec, "vtrux-mini-test") if rec else b"")
+    rel.update(rc=rc, passed=(rec or {}).get("environment_passed"))
+    report(name, *judge_env(plain, rel, planted, caller, platform.system() == "Windows"), ctx.log)
+    reset(ctx.mini, "main", "main")
+
+
+def self_test_epoch_env():
+    ok = True
+    s0, s1 = gcc_stamp(1767225600), gcc_stamp(12345)
+    for label, got, want in (("12345 is 1970-01-01 03:25:45", s1, "Jan  1 1970 03:25:45"),
+                             ("a two-digit day", gcc_stamp(1767225600 + 86400 * 10), "Jan 11 2026 00:00:00"),
+                             ("one stamp found", stamps_in(b"x R9STAMP[Jan  1 1970 03:25:45] y"), [s1]),
+                             ("no stamp", stamps_in(b"R9STAMP[today]"), [])):
+        print("  %s %s: %r" % ("ok  " if got == want else "FAIL", label, got))
+        ok &= got == want
+    probe = ("12345", [s1])
+    good = [("A", None, [s0]), ("B", "12345", [s0]), ("C", "99999", [s0])]
+    for label, args, want in (
+            ("one stamp, no caller's", (probe, good), "PASS"),
+            ("probe shows nothing", (("12345", [s0]), good), "VOID"),
+            ("probe without a stamp", (("12345", []), good), "VOID"),
+            ("commits differ", (probe, good[:2] + [("C", "99999", [gcc_stamp(1)])]), "FAIL"),
+            ("caller's value taken by all", (probe, [(l, e, [s1]) for l, e, _s in good]), "FAIL"),
+            ("a stamp missing", (probe, good[:2] + [("C", "99999", [])]), "FAIL")):
+        v = judge_epoch(*args)[0]
+        print("  %s judge_epoch(), %s: %s" % ("ok  " if v == want else "FAIL", label, v))
+        ok &= v == want
+    planted = dict({v: "-D" + d for v, d in R24_ROUTES.items()}, R24_PLANTED="r24-seen")
+    printed = "dropped: " + " ".join(sorted(planted))
+    plain = {"probe": "r24-seen", "marks": ["R24_EXTRA_C", "R24_EXTRA_CPP"], "out": ""}
+    rel = {"rc": 0, "probe": "", "marks": [], "out": printed, "passed": ["PATH", "IDF_PATH"]}
+    caller = ["PATH", "IDF_PATH", "Path"] + sorted(planted)
+    for label, args, want in (
+            ("dropped, printed, not passed", (plain, rel, planted, caller, False), "PASS"),
+            ("no route reaches even a plain build", (dict(plain, probe="", marks=[]), rel, planted, caller, False), "VOID"),
+            ("release fails", (plain, dict(rel, rc=2), planted, caller, False), "FAIL"),
+            ("probe sees it", (plain, dict(rel, probe="r24-seen"), planted, caller, False), "FAIL"),
+            ("probe line not shown, markers still judged", (plain, dict(rel, probe=None), planted, caller, False), "PASS"),
+            ("probe line not shown, no other route", (dict(plain, marks=[]), dict(rel, probe=None), planted, caller,
+                                                      False), "VOID"),
+            ("EXTRA_CFLAGS reaches", (plain, dict(rel, marks=["R24_EXTRA_C"]), planted, caller, False), "FAIL"),
+            ("a route the plain build lacks is not judged", (plain, dict(rel, marks=["R24_CFLAGS"]), planted, caller,
+                                                              False), "PASS"),
+            ("a name not printed", (plain, dict(rel, out=printed.replace(" CFLAGS", " ")), planted, caller, False), "FAIL"),
+            ("printed only inside a longer name", (plain, dict(rel, out=printed.replace(" CFLAGS", " XCFLAGS")), planted,
+                                                    caller, False), "FAIL"),
+            ("a planted name passed", (plain, dict(rel, passed=["PATH", "CFLAGS"]), planted, caller, False), "FAIL"),
+            ("a planted name passed, other case, Windows", (plain, dict(rel, passed=["PATH", "cflags"]), planted, caller,
+                                                            True), "FAIL"),
+            ("no environment_passed", (plain, dict(rel, passed=None), planted, caller, False), "FAIL")):
+        v = judge_env(*args)[0]
+        print("  %s judge_env(), %s: %s" % ("ok  " if v == want else "FAIL", label, v))
+        ok &= v == want
+    return ok
+
+
 CASES = [
     ("pre_unset_ri", c_pre_unset_ri),
     ("pre_overwrite", c_pre_overwrite),
@@ -1311,6 +1561,8 @@ CASES = [
     ("r8_sdkconfig_elsewhere", c_r8_sdk_elsewhere),
     ("r8_sdkconfig_generated", c_r8_sdk_generated),
     ("r8_sdkconfig_outside", c_r8_sdk_outside),
+    ("r9_epoch", c_r9_epoch),
+    ("r24_env", c_r24_env),
 ]
 
 
