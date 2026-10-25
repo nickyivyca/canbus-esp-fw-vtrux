@@ -143,9 +143,18 @@ keyboard, with the `/self-compact` skill. It types `/compact` into this session'
 naming the next step. It is the only sanctioned way for a session to type
 into its own input.
 
-- **When:** only when the user asks for it, or at the compaction point your
-  role skill names. A session without a role skill has no self-compaction
-  point.
+- **When:** only when the user asks for it, at the compaction point your
+  role skill names, or when the idle-compaction hook asks for it (user,
+  2026-10-24). A session without a role skill has no self-compaction point
+  of its own, but the hook still applies.
+- **The idle-compaction hook.** Claude Code compacts a session of 200K
+  tokens or more that has been idle about 54 minutes, before its prompt
+  cache expires, with no instructions. In this repo a PreCompact hook,
+  `.claude/skills/self-compact/idle_compact_hook.py`, blocks the first such
+  attempt and wakes the session with a message asking it to self-compact.
+  Do it, per the skill. If you can't, say so in one line; the hook lets the
+  next attempt through, as a plain compaction. Its two entries go in each
+  machine's `settings.local.json`, in the guarded form its header gives.
 - **Before it:** write everything worth keeping to its files. The summary
   loses detail; files do not.
 - **After it:** the resume starts a fresh turn from a summary. Re-read your
