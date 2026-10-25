@@ -9,7 +9,8 @@ followed by a made-up schema 8. Schema 8 renames diag_shift_pos to diag_shift_le
 page 0x7FA, so each rule has an input where it matters.
 
   1. The schema set from git: the real repo gives schema 7 at 9c54669, hash
-     7af6adef1d948197, at HEAD. A history of 7, 7 (comment only) and 8 gives two
+     7af6adef1d948197, and schema 8 at 564c129, hash 00401e953c405902, at HEAD
+     (port step 0c). A history of 7, 7 (comment only) and 8 gives two
      schemas, the later commit of 7, HEAD 8. A version with two layouts, a stated hash
      that is not the DBC's own, a schema signal away from the table's byte and a DBC
      with no schema signal are each refused.
@@ -143,10 +144,12 @@ SET2 = G.SchemaSet.from_git(R2)
 
 def t1():
     real = G.SchemaSet.from_git(REPO)
-    e = real.get(7)
-    check("1 the real repo: schema 7 at 9c54669, hash 7af6adef1d948197, at HEAD",
-          lambda: (sorted(real.entries), e.commit[:7], e.hash, real.head_version) ==
-          ([7], "9c54669", "7af6adef1d948197", 7), (sorted(real.entries), e.commit[:7], e.hash))
+    e, e8 = real.get(7), real.get(8)
+    check("1 the real repo: schema 7 at 9c54669, hash 7af6adef1d948197; schema 8 at 564c129, hash "
+          "00401e953c405902, at HEAD",
+          lambda: (sorted(real.entries), e.commit[:7], e.hash, e8.commit[:7], e8.hash, real.head_version) ==
+          ([7, 8], "9c54669", "7af6adef1d948197", "564c129", "00401e953c405902", 8),
+          (sorted(real.entries), e.commit[:7], e.hash, e8.commit[:7], e8.hash, real.head_version))
     check("1 7, 7 (comment), 8: schemas 7 and 8, HEAD 8",
           lambda: (sorted(SET2.entries), SET2.head_version) == ([7, 8], 8))
     check("1 the later commit of a version is the one kept", lambda: SET2.get(7).commit == C2[1])

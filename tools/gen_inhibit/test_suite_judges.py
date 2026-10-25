@@ -142,6 +142,33 @@ EDITS = [
     ("C2scan", "root", r"scan_scope_check_e3d9437\.txt", r"^PASS ", "FAIL ", "FAIL"),
 ]
 
+# B18's verdict block on schema 8, as diag_build_page_check.py prints it (step 0c).
+H8 = "a5df3fde" + "0" * 56
+B18_SCHEMA8_TEXT = (
+    "VERDICT (schema 8)\n"
+    "  diag_build_id on the wire   a5df3fde\n"
+    "  image hash, first 4 bytes   a5df3fde\n"
+    "  page elf_sha256, first 4    a5df3fde\n"
+    "  ok   diag_build_id decoded as a u32: 2782871518\n"
+    "  ok   the flashed image's hash read: '%s'\n"
+    "  ok   the page's elf_sha256 read: '%s'\n"
+    "  ok   build id = the image hash's first four bytes: wire a5df3fde, image a5df3fde\n"
+    "  ok   build id = the page elf_sha256's first four bytes: wire a5df3fde, page a5df3fde\n"
+    "  ok   page elf_sha256 = the image hash: page %s, image %s\n"
+    "  ok   the page's elf_sha256 the same before and after: %s, %s\n"
+    "  MATCH -- the wire, the page and the image file name the same image\n"
+    "  diag_fw_ver16 = 3, diag_schema_ver_build = 8\n" % ((H8,) * 6))
+B18_SCHEMA8 = [
+    ("as printed", None, "PASS"),
+    ("the wire's build id another", ("wire   a5df3fde", "wire   a5df3fdf"), "FAIL"),
+    ("the image's first four bytes another", ("first 4 bytes   a5df3fde", "first 4 bytes   00000000"), "FAIL"),
+    ("the page's first four bytes another", ("first 4    a5df3fde", "first 4    00000000"), "FAIL"),
+    ("a row FAIL", ("  ok   page elf_sha256 = the image hash", "  FAIL page elf_sha256 = the image hash"), "FAIL"),
+    ("a row missing", ("  ok   the page's elf_sha256 the same before and after: %s, %s\n" % (H8, H8), ""), "FAIL"),
+    ("MISMATCH", ("  MATCH -- the wire", "  MISMATCH -- the wire"), "FAIL"),
+    ("no verdict line", ("  MATCH -- the wire, the page and the image file name the same image\n", ""), "FAIL"),
+]
+
 KEEP = (".txt", ".json", ".log")
 
 
@@ -239,6 +266,22 @@ def main():
         check("edit %d: %s reads %s after %r -> %r" % (n, cid, want, old[:40], new[:30]),
               lambda: v == [want] and not moved, (v, after[cid][0]["detail"], moved))
         shutil.rmtree(d, ignore_errors=True)
+
+    # 2b. B18's schema 8 form (port step 0c), which no baseline file has: the check's verdict
+    #     block as diag_build_page_check.py prints it, then one change per case.
+    b8 = os.path.join(scratch, "b18_schema8")
+    for label, edit, want in B18_SCHEMA8:
+        shutil.rmtree(b8, ignore_errors=True)
+        os.makedirs(b8)
+        t = B18_SCHEMA8_TEXT
+        if edit:
+            assert t.count(edit[0]) == 1, edit[0]
+            t = t.replace(*edit)
+        open(os.path.join(b8, "B18_diag_build_page_check.txt"), "w", encoding="utf-8").write(t)
+        res = J.judge_one("B18", b8)
+        check("B18 schema 8, %s: %s" % (label, want), lambda: [r["verdict"] for r in res] == [want]
+              and (want != "PASS" or figures(res) == {"diag_build_id": "a5df3fde"}), res)
+    shutil.rmtree(b8, ignore_errors=True)
 
     # 3. No files, a judge that raises, a judge that returns nothing.
     empty = os.path.join(scratch, "empty")
