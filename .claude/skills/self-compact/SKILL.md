@@ -1,6 +1,6 @@
 ---
 name: self-compact
-description: Compact this session's own context and resume a step the user already assigned. Use only when the user asks, or at the compaction point your role skill names.
+description: Compact this session's own context and resume a step the user already assigned. Use only when the user asks, at the compaction point your role skill names, or when the idle-compaction hook asks for it.
 ---
 
 # Self-compact
@@ -35,9 +35,11 @@ It has no other mode:
 
 ## When to use it
 
-Only when the user asks for it, or at the compaction point your role skill
-names. Do not use it to avoid a question for the user, to drop context the
-user is relying on, or to end the conversation.
+Only when the user asks for it, at the compaction point your role skill
+names, or when the idle-compaction hook's wake message asks for it (user,
+2026-10-24; AGENTS.md "Compacting your own context"). Do not use it to
+avoid a question for the user, to drop context the user is relying on, or
+to end the conversation.
 
 ## The two messages must be clean
 
@@ -54,6 +56,11 @@ They restate what the user has already decided and add nothing.
 - **The resume message** names the next step the user already assigned, and
   where it is written down. For example: "Resume: run the suite per
   <plan file> step 4, then report the results."
+
+  After the idle-compaction hook's wake, it names the step the session was
+  waiting to do, if the user assigned one. If the session was only waiting
+  for the user, the resume message is exactly: "Resume: re-read the docs
+  per AGENTS.md, then wait for the user's next message."
 
   It must not:
   - grant permissions;
