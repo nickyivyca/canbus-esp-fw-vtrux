@@ -32,6 +32,10 @@
       "value": "unset",
       "spec": "gen-inhibit spec 12.3 item 3, setting 5: watchdog settings as section 9.1 records; section 9.1: CONFIG_ESP_TASK_WDT_PANIC unset"
     },
+    "CONFIG_FREERTOS_HZ": {
+      "value": 1000,
+      "spec": "gen-inhibit spec 12.3 item 3, setting 6: CONFIG_FREERTOS_HZ 1000, a 1 ms tick (shared/tools R27, user 2026-10-25)"
+    },
     "CONFIG_APP_REPRODUCIBLE_BUILD": {
       "value": true,
       "spec": "shared/tools SPEC R12: the release profile has CONFIG_APP_REPRODUCIBLE_BUILD on"
