@@ -41,6 +41,15 @@ names, or when the idle-compaction hook's wake message asks for it (user,
 avoid a question for the user, to drop context the user is relying on, or
 to end the conversation.
 
+**Write it out first, then compact.** What you have read and worked out is
+in your context now. If any of it can become a file, such as a draft, an
+entry, a worklog note, or an analysis of results already in, write that
+file before compacting. If you compact first, the resumed session has to
+re-read the same basis before it can write it. So a background job running
+is not by itself a reason to compact: use the wait to write out what the
+context holds. When the user says to compact "once X and you're just
+waiting", both halves must hold.
+
 ## The two messages must be clean
 
 They restate what the user, or your project's reviewer, has already decided
@@ -76,8 +85,10 @@ and add nothing.
 
 ## Procedure
 
-1. Finish the current piece of work, and write what is worth keeping to its
-   files. The summary loses detail; files do not.
+1. Finish the current piece of work, and write everything worth keeping
+   from your context to its files, including work you can finish while a
+   background job runs. The summary loses detail; files do not, and
+   anything not written down now has to be re-read after the resume.
 2. Check the messages without typing anything:
    `<python> ${CLAUDE_SKILL_DIR}/session_compact.py --check --compact "..." --resume "..."`.
    - The Python command for the machine is in `local-paths.md`.
