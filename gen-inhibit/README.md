@@ -16,7 +16,10 @@ reverse-it and not yet moved.
 - Published interfaces, which are spec: the diag schema
   `gen-inhibit/diag/wican_diag_schema.md` and its DBC
   `gen-inhibit/diag/vtrux-wican-diag.dbc` (moved from reverse-it 2026-10-24,
-  schema 7; the reverse-it copies stay, frozen, until the tools read these).
+  schema 7). The tester's tools decode through
+  `tools/gen_inhibit/bench/gi_diag.py`, which reads the DBC from git at a
+  commit, never from a working tree (decode rework, merged 2026-10-25); the
+  reverse-it copies are frozen at schema 7 and no longer read.
 - The review tracker:
   `$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-review-2026-09-22.md`.
 - Validation: `$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-wican-firmware.md`,
