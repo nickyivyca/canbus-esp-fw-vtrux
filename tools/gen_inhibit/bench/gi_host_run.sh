@@ -157,6 +157,7 @@ tar -C "$FW" -czf - \
     test/gen_inhibit_host/spec_expect_check.py \
     test/gen_inhibit_host/bus_on_check.py \
     test/gen_inhibit_host/drained_check.py \
+    test/gen_inhibit_host/test_cfg_build_id.py \
     test/gen_inhibit_host/replay_stimulus_delta.py \
     test/gen_inhibit_host/golden \
     -C "$EXPORT_PARENT" diag_schemas \
@@ -205,7 +206,8 @@ case "$mode" in
       && echo '--- load_margin (spec 5.1 item 5 gate)' && $PY load_margin.py \
       && echo '--- spec_expect_check (trip 6)' && $PY spec_expect_check.py \
       && echo '--- bus_on_check' && $PY bus_on_check.py \
-      && echo '--- drained_check (gate condition 9)' && $PY drained_check.py"
+      && echo '--- drained_check (gate condition 9)' && $PY drained_check.py \
+      && echo '--- test_cfg_build_id (0x7F3 build id, port step 0c)' && $PY test_cfg_build_id.py"
     ;;
   margin)
     ssh "$REMOTE" "cd ~/$DEST/test/gen_inhibit_host && $PY load_margin.py $*"
