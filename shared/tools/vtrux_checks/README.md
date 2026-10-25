@@ -90,4 +90,4 @@ such as a project's test triggers, are the project's own and ignored here.
 | `tests/test_switches.py` | R20: the C and CMake scans on the ways a switch could hide; the table's reader; the ELF reader on synthetic ELFs (and against `nm` on a real one, given `VTRUX_TEST_ELF` and `VTRUX_TEST_NM`); each refusal rule and the project rows file; the judge; the build reader and the command line on a small configured build. Runs alone: `python -B shared/tools/vtrux_checks/tests/test_switches.py` |
 
 The checks on real builds, passing and failing, are in `../verification/scope_cases.py`
-(R17) and `../verification/options_cases.py` (R18).
+(R17), `../verification/options_cases.py` (R18) and `../verification/switches_cases.py` (R20).
