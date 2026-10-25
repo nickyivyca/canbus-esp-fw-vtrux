@@ -628,7 +628,8 @@ def bins_0x051(frames, t0, t1, step=0.1):
     return out
 
 
-def arm_busoff(a, con, wit, k, with_train):
+def arm_busoff(a, con, wit, k, with_train, decoder=None):
+    """decoder: the record's gi_diag.run_identity(), which judge_bus_on holds the 0x7F1s to."""
     arm = {"n": k, "train": with_train}
     LF.dev_post("/gen_inhibit_set?mode=2")
     arm["mode_posted"] = time.time()
@@ -653,7 +654,7 @@ def arm_busoff(a, con, wit, k, with_train):
     w7f1 = [(t, h) for t, a_, h in frames if a_ == 0x7F1
             and arm["mode_posted"] <= t <= arm["mode0_posted"]]
     shaped = {"baseline": {"samples": [{"pt": t, "snap": s} for t, s in pol.samples]},
-              "wire_0x7F1": w7f1}
+              "wire_0x7F1": w7f1, "decoder": decoder}
     arm["clock"] = clock
     arm["judge_bus_on"] = TB.judge_bus_on(shaped)
     arm["transitions_rel_train_s"] = state_transitions(pol.samples, t_tr)
@@ -674,7 +675,7 @@ def case_busoff(a, rec, con, wit):
     rec["arms"] = []
     plan = [True] * a.arms + ([False] if a.control else [])
     for k, tr in enumerate(plan):
-        arm = arm_busoff(a, con, wit, k, tr)
+        arm = arm_busoff(a, con, wit, k, tr, rec.get("decoder"))
         rec["arms"].append(arm)
         jb = arm["judge_bus_on"]
         print("arm %d train=%s: %s | %s | transitions %s" % (
@@ -862,7 +863,7 @@ def case_livetrain(a, rec, con, wit):
                                <= ph["mode0_posted"] + 1],
                       "witness_error_pts": [t for t in errs if ph["replay_start"] - 1 <= t
                                             <= ph["mode0_posted"] + 1],
-                      "witness_sees_replay": True}
+                      "witness_sees_replay": True, "decoder": rec.get("decoder")}
             j = LJ.judge(shaped)
             unused = {key: j.pop(key) for key in
                       ("witness_error_frames_in_jam", "delivered_error_rate_per_s",
