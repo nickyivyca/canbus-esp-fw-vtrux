@@ -7,7 +7,8 @@
  *
  * It does NOT edit the implementor's shim_test.c: it includes it, renames its main,
  * and reuses its setup(), hexnib() and the fake driver. Built by shim_wire_probe.sh on
- * madhouse-debian (no C compiler on NICKY-XPS), in a copy of the shim folder.
+ * madhouse-debian, where host C runs count for VERIFICATION.md (NICKY-XPS's WSL gcc is
+ * for self-checks only), in a copy of the shim folder.
  *
  * WHY ITS OWN REPLAY LOOP. shim_test.c's replay_scn() drains the receive queue with
  * `while (ft_rx_pending() > 0) ft_run(0);`, which never ends once the worker stops
