@@ -334,7 +334,7 @@ def check_partitions(build_dir=None):
 # row: the build message's "refuse a DBC with uncommitted changes". A repo without
 # them is reported as NO REFERENCE, never as a pass, and never looked for elsewhere.
 REF_PATHS = ("gen-inhibit/diag/vtrux-wican-diag.dbc", "gen-inhibit/diag/wican_diag_schema.md")
-REF = {}    # refs_from_git's gi_diag module and schema set, for the emitted-frames row
+DIAG_REF = {}    # refs_from_git's gi_diag module and schema set, for the emitted-frames row
 
 
 def _no_ref(what, path, flag="--ref-repo"):
@@ -382,7 +382,7 @@ def refs_from_git(repo):
         with open(dst, "wb") as fh:
             fh.write(gi_diag.git(repo, "show", "HEAD:%s" % rp))
         paths.append(dst)
-    REF.update(gi_diag=gi_diag, schemas=gi_diag.SchemaSet.from_git(repo), dbc=paths[0])
+    DIAG_REF.update(gi_diag=gi_diag, schemas=gi_diag.SchemaSet.from_git(repo), dbc=paths[0])
     row(name, True, "HEAD %s: the DBC at %s, schema %d, hash %s; the doc beside it"
         % (head[:10], ident["dbc_commit"][:10], ident["dbc_version"], ident["dbc_hash"]))
     return paths[0], paths[1]
@@ -470,11 +470,11 @@ def _decode_emitted(dbc_path):
         row("emitted diag frames decode", None,
             "no goldens to decode", ref_missing=True)
         return
-    if not REF or REF.get("dbc") != dbc_path:
+    if not DIAG_REF or DIAG_REF.get("dbc") != dbc_path:
         row("emitted diag frames decode", None,
             "no diag schema set from git for %s (refs_from_git)" % dbc_path, ref_missing=True)
         return
-    G, schemas = REF["gi_diag"], REF["schemas"]
+    G, schemas = DIAG_REF["gi_diag"], DIAG_REF["schemas"]
 
     seen = 0
     errs = []

@@ -21,7 +21,7 @@ MUTANTS = [
     ("gi_diag's history checks skipped", "        ident = gi_diag.run_identity(repo)", "        ident = {\"dbc_commit\": \"x\" * 40, \"dbc_version\": 0, \"dbc_hash\": \"-\"}"),
     ("a repo without the references passes", "    if missing:\n        row(name, None,", "    if False:\n        row(name, None,"),
     ("the emitted-frames row decodes without the schema set",
-     '    if not REF or REF.get("dbc") != dbc_path:', "    if not REF:"),
+     '    if not DIAG_REF or DIAG_REF.get("dbc") != dbc_path:', "    if not DIAG_REF:"),
     ("the reverse-it default is back", "REF_PATHS = (", "DEFAULT_DBC = os.path.join(os.environ.get(\"REVERSE_IT_DIR\", \"\"), \"projects\", \"vtrux\", \"x\")\nREF_PATHS = ("),
 ]
 
