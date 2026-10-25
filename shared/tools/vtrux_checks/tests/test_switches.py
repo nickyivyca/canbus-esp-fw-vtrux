@@ -10,6 +10,7 @@ an expression, #elif, a continuation line, a commented-out #if, CMake conditions
 keywords, variables and comments, and the narrow reading of "set by the file itself".
 """
 
+import gc
 import json
 import os
 import shutil
@@ -17,6 +18,7 @@ import struct
 import subprocess
 import sys
 import unittest
+import warnings
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.path.dirname(os.path.dirname(HERE))
@@ -554,6 +556,13 @@ class Collect(unittest.TestCase):
         os.utime(os.path.join(self.b, "build.ninja"))
         self.assertEqual(what(W.judge(W.collect(self.b))), [(W.PROJECT, "A_NEW", "unlisted")])
         self.assertEqual(self.run_main(), 1)
+
+    def test_no_file_left_open(self):
+        with warnings.catch_warnings(record=True) as seen:
+            warnings.simplefilter("always", ResourceWarning)
+            W.collect(self.b)
+            gc.collect()
+        self.assertEqual([str(w.message) for w in seen if issubclass(w.category, ResourceWarning)], [])
 
     def test_shared_component_without_table(self):
         self.write("vtrux_build.json", json.dumps({"project": "proj", "shared_components": ["other/lib", "ns/comp"]}))
