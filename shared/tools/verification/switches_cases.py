@@ -31,12 +31,14 @@ rows file) is VOID.
                       `if(R20_OWN_CM)`: fails, naming R20_PLANTED_C and R20_PLANTED_CM only
     on_<switch>       a build with one test-only or stock-off switch on (idf.py -D, a bench
                       build: the check reads any build folder): fails on that switch's refusal
-                      rules and no other's. The R20 "shown failing ... and passing" evidence;
-                      release_pass is the image built without
+                      rules. Other entries may be named too, as refusals only, never as a pass
+                      (R20 reading (a), gen-inhibit reviewer, 2026-10-24: a row may refuse more
+                      images than its own switch's); the detail names them. The R20 "shown
+                      failing ... and passing" evidence; release_pass is the image built without
     on_autopid, control_autopid
                       AutoPID cannot be built without MQTT and ELM327: its ON build has all
-                      three; the control (MQTT and ELM327) must fail on those two and not on
-                      AutoPID
+                      three; the control (MQTT and ELM327) must fail on those two and must not
+                      name AutoPID
 
 Before each case it checks the bench lock, the "No builds" line and running simulators, as
 release_cases.py does.
@@ -80,8 +82,9 @@ def named(out):
     return sorted(set(_FAIL.findall(out)))
 
 
-def judge(rc, out, want):
-    """(verdict, detail): want is the sorted list of (scope, symbol, kind) the check must name."""
+def judge(rc, out, want, extra_refusals=False, never=()):
+    """(verdict, detail): want is the sorted list of (scope, symbol, kind) the check must name.
+    With extra_refusals, it may also name other entries as refusals, but none in never."""
     if rc not in (0, 1):
         return "ERROR", "the check exited %d" % rc
     if "cannot read the build" in out:
@@ -91,9 +94,17 @@ def judge(rc, out, want):
         return "FAIL", "the check exited %d, wanted %d; it names %s" % (rc, 1 if want else 0, got)
     if ("PASS R20" in out) != (rc == 0):
         return "FAIL", "exit %d but %s PASS R20" % (rc, "prints" if rc else "does not print")
-    if got != want:
+    extra = [g for g in got if g not in want]
+    allowed = extra_refusals and all(k == "refusal" and sym not in never for _sc, sym, k in extra)
+    if [w for w in want if w not in got] or (extra and not allowed):
         return "FAIL", "the check names %s, wanted %s" % (got, want)
-    return "PASS", "exit %d%s" % (rc, (", names " + "; ".join("%s %s %s" % w for w in want)) if want else "")
+    also = ("; also names " + "; ".join("%s %s %s" % g for g in extra)) if extra else ""
+    return "PASS", "exit %d%s%s" % (rc, (", names " + "; ".join("%s %s %s" % w for w in want)) if want else "", also)
+
+
+def scope_unlisted(out, scope):
+    """The symbols the check names unlisted under scope."""
+    return sorted(sym for sc, sym, k in named(out) if sc == scope and k == "unlisted")
 
 
 def refusals(switches):
@@ -108,6 +119,7 @@ def self_test():
     w1 = [(MDNS, "MDNS_Y", "stale"), (PROJECT, "R20_X", "unlisted")]
     out2 = ("FAIL R20: 2 failure(s)\n    the project: GI_INSTRUMENT_RXQ refusal: the image carries '\"rxq\":{'\n"
             "    the project: GI_INSTRUMENT_RXQ refusal: the ELF defines rxq_reset\n")
+    rd = "    the project: WICAN_FEATURE_REALDASH refusal: project row 'no boot-time bus enable in app_main': FAIL\n"
     for label, args, want in (
             ("passes as wanted", (0, "R20 ...\nPASS R20\n", []), "PASS"),
             ("fails as wanted", (1, out1, w1), "PASS"),
@@ -124,10 +136,28 @@ def self_test():
             ("unreadable build", (1, "FAIL R20: cannot read the build or its tables: x\n", w1), "FAIL"),
             ("crashes", (2, "Traceback", []), "ERROR"),
             ("no table named", (1, "FAIL R20: 1\n    espressif/mdns: - no table: named\n",
-                                [("espressif/mdns", "-", "no table")]), "PASS")):
+                                [("espressif/mdns", "-", "no table")]), "PASS"),
+            ("one too many refusals, exact", (1, out2 + rd, refusals(["GI_INSTRUMENT_RXQ"])), "FAIL"),
+            ("an extra refusal, allowed", (1, out2 + rd, refusals(["GI_INSTRUMENT_RXQ"]), True), "PASS"),
+            ("an extra refusal in never", (1, out2 + rd, refusals(["GI_INSTRUMENT_RXQ"]), True,
+                                           ("WICAN_FEATURE_REALDASH",)), "FAIL"),
+            ("an extra unlisted, refusals allowed", (1, out2 + "    the project: R20_Z unlisted: a:1\n",
+                                                     refusals(["GI_INSTRUMENT_RXQ"]), True), "FAIL"),
+            ("only the extra, refusals allowed", (1, "FAIL R20: 1\n" + rd, refusals(["GI_INSTRUMENT_RXQ"]), True),
+             "FAIL"),
+            ("passes, refusals allowed", (0, "PASS R20\n", refusals(["GI_INSTRUMENT_RXQ"]), True), "FAIL")):
         v = judge(*args)[0]
         print("  %s judge(), %s: %s" % ("ok  " if v == want else "FAIL", label, v))
         ok &= v == want
+    listing = ("  espressif__mdns: 14 tested, no table, not judged\nPASS R20\n", [])
+    judged = ("  espressif__mdns: 3 tested, 1 listed\n    MDNS_A  shipping variant  x.c:1\n"
+              "FAIL R20: 3 failure(s)\n    espressif__mdns: MDNS_B unlisted: x.c:2\n"
+              "    espressif__mdns: MDNS_C unlisted: x.c:3\n    the project: R20_X unlisted: main/main.c:3\n"
+              "    espressif__mdns: MDNS_R20_PROBE stale: listed, no longer tested\n", ["MDNS_B", "MDNS_C"])
+    for label, (out, want) in (("no table: no listing", listing), ("probe table: its unlisted only", judged)):
+        got = scope_unlisted(out, MDNS)
+        print("  %s scope_unlisted(), %s: %s" % ("ok  " if got == want else "FAIL", label, got))
+        ok &= got == want
     for label, args, want in (("a -D taken", ("X=1", "X:UNINITIALIZED=1\n"), True),
                               ("a bool ON", ("F=ON", "F:BOOL=ON\n"), True),
                               ("absent", ("X=1", "Y:BOOL=ON\n"), False),
@@ -190,9 +220,9 @@ def release_built(ctx, name, log, branch="fixture"):
     return rc == 0
 
 
-def run_check(ctx, name, log, want):
+def run_check(ctx, name, log, want, **kw):
     rc, out = check(ctx.p1, log)
-    RC.report(name, *judge(rc, out, sorted(want)), ctx.log)
+    RC.report(name, *judge(rc, out, sorted(want), **kw), ctx.log)
 
 
 # ---------- cases ----------
@@ -232,21 +262,22 @@ def c_stale_entry(ctx, log):
 
 
 def mdns_symbols(ctx, log):
-    """The symbols the build read in managed_components/espressif__mdns/, as the check prints them
-    (its listing, not its judgement), with that folder's files in the deps log as the premise."""
+    """The symbols the build tests in managed_components/espressif__mdns/: a probe table there
+    listing one symbol nothing tests makes the check judge that folder, and it names every
+    tested symbol unlisted (a component without a table gets no listing). Premise: that
+    folder's files are in the deps log, and the check names the probe stale (it read the table)."""
     if not any(f.startswith("managed_components/%s/" % MDNS) for f in deps_files(ctx.p1)):
         return None
-    _rc, out = check(ctx.p1, log)
-    syms, inside = [], False
-    for line in out.splitlines():
-        if line.startswith("  %s:" % MDNS):
-            inside = True
-            continue
-        if inside and line.startswith("    ") and not line.startswith("     "):
-            syms.append(line.split()[0])
-        elif inside:
-            break
-    return syms
+    p = os.path.join(ctx.p1, "managed_components", MDNS, "vtrux_checks.json")
+    try:
+        with open(p, "w", newline="\n") as f:
+            json.dump({"build_switches": {"MDNS_R20_PROBE": {"class": "shipping variant", "reason": "probe"}}}, f)
+        _rc, out = check(ctx.p1, log)
+    finally:
+        os.remove(p)
+    if (MDNS, "MDNS_R20_PROBE", "stale") not in named(out):
+        return None
+    return scope_unlisted(out, MDNS)
 
 
 def c_component_table(ctx, log):
@@ -326,7 +357,8 @@ def c_switch_on(ctx, log, name):
         RC.report(name, "VOID", "not in CMakeCache.txt: %s; rows file %s" % (missing, "written" if rows else "absent"),
                   ctx.log)
         return
-    run_check(ctx, name, log, refusals(failing))
+    never = () if name != "control_autopid" else ("WICAN_FEATURE_AUTOPID",)
+    run_check(ctx, name, log, refusals(failing), extra_refusals=True, never=never)
 
 
 def make_case(name):
