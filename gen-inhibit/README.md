@@ -31,10 +31,15 @@ reverse-it and not yet moved.
 - The Python reference in `tools/gen_inhibit/`: `sync.py`, `inhibit.py`,
   `models.py`, `test_core.py`, `vehicle_runner.py`, `README.md`,
   `HANDOFF.md`, `requirements.txt`.
-- `tools/prod_build.py` and its tests `tools/test_prod_build_fetch.py`
-  (reviewer, 2026-10-17), `tools/test_prod_build_image.py` and
-  `tools/test_prod_build_image_mutants.py` (reviewer, 2026-10-21);
-  `tools/README.md`.
+- The shared build tooling's launcher `tools/vtrux_tools.py` and its
+  self-test `tools/test_vtrux_tools.py`; `vtrux_build.json` at the repo root
+  (`project`, `shared_components`); `tools/README.md`. `tools/prod_build.py`
+  and its tests retired at port step 0 (spec 12.3 item 3, user, 2026-10-25).
+- `shared_pins.json` at the repo root, the project's pins of shared tooling,
+  owned per entry (reviewer, 2026-10-25): the `shared/tools` entry is the
+  implementor's, and a `shared/bench` entry, when the bench toolkit's pin
+  moves in, is the tester's. A pin moves only on a batch from the reviewer,
+  since moving it is also the decision to re-test (port plan goal 12).
 
 ## Tester: harness and verification
 
