@@ -19,7 +19,7 @@ other project's reviewer (charge interposer) reads it before it merges into
   spec 12.3 item 3,
   `$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-wican-spec.md`.
 
-Requirements are numbered R1 to R25. The numbers are stable: the two evidence
+Requirements are numbered R1 to R26. The numbers are stable: the two evidence
 documents cite them.
 
 ## Terms
@@ -213,6 +213,13 @@ unless the image changes, which the reproducible test (R19) shows.
   the headers of the images the build writes (the app's and the
   bootloader's) is the board's, and the tool prefix comes from the board's
   `IDF_TARGET`.
+- **R26. No eFuse-burning features in a release build.** Every release
+  build has `CONFIG_SECURE_BOOT`, `CONFIG_SECURE_FLASH_ENC_ENABLED` and
+  `CONFIG_FLASH_ENCRYPTION_ENABLED` unset, and `CONFIG_EFUSE_VIRTUAL` off,
+  in every project, whatever the project's release profile names. The
+  options check (R18) applies it to every release build, so a project's
+  profile need not list these options. Like R18, it is a check on the
+  finished release build, and bench and dev builds are not checked.
 
 ## 5. Data, not code
 
