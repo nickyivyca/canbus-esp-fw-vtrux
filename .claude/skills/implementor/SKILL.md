@@ -46,12 +46,22 @@ the branch and the range. If the reviewer sends back a conflict, merge
 commit or build id, the spec sections touched and the files changed. Do not say
 what you tested or what passed.
 
-**Self-compact.** Your compaction point is the end of a step: the step is
-committed, you have sent the "batch lands" message, and your batch already
-names the next step. Then you may run `/self-compact`, with a resume message
-that names that next step and the batch it comes from. Not mid-step, not
-with uncommitted changes, not with a question to the reviewer open, and not
-while you hold the bench on loan.
+**Self-compact.** You have two compaction points:
+- **The end of a step:** the step is committed, you have sent the "batch
+  lands" message, and your batch already names the next step. The resume
+  message names that next step and the batch it comes from.
+- **After you start a long self-check run as a background task,** such as
+  the emulated suite, a mutant run or a long build, once it is under way.
+  First write in your working log: the task id, where its output goes, what
+  the run checks, each uncommitted change and what it is for, and what you
+  will do with the result. The resume message names the step and its batch,
+  and says to wait for the task's notification without polling, then read
+  the result and carry on with the step.
+
+At either point you may run `/self-compact`. Not partway through an edit,
+not with a question to the reviewer open, and not while you are driving the
+bench by hand on loan. A run that a background runner drives on the loaned
+bench doesn't count.
 
 When the idle-compaction hook asks (AGENTS.md, "Compacting your own
 context"), that is a compaction point too, whatever state you are in: an
