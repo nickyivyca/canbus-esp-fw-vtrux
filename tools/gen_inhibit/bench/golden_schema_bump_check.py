@@ -19,6 +19,14 @@ signal on one side only is a difference. So "only the schema moved" means:
      NEW trace --new-ver;
   3. no golden is added or removed.
 
+--same-value OLD=NEW (port step 0c, 2026-10-25): in the OLD trace only, the
+signal OLD is compared as NEW, its value unchanged. 0x7F3 B0-B3 were
+diag_git_hash through schema 7 and are diag_build_id from schema 8; the DBC has
+no RenamedFrom between them because the meaning changed, not the bytes, so
+without the option every 0x7F3 would differ. With it, a golden whose 0x7F3 kept
+B0-B3 (0 in every golden: the scenarios never set the build id) passes, and one
+whose value moved is still a difference. Only the pairs named are mapped.
+
 Phase 2 reports every 0x7F1 in the NEW goldens whose bus_on (diag_flags bit1,
 by name) is clear: under schema 6 that bit means "controller running", so a
 scenario that models a stopped or bus-off controller would show it clear.
@@ -30,11 +38,13 @@ bump to pass and each bad one to be rejected, so the check can fail.
 
 Usage (project root):
   py -3.14 tools/gen_inhibit/bench/golden_schema_bump_check.py OLD NEW [--repo PATH]
+      [--same-value OLD_SIGNAL=NEW_SIGNAL ...]
   py -3.14 tools/gen_inhibit/bench/golden_schema_bump_check.py --dirs OLD_DIR NEW_DIR
       (a re-bless done on the remote, not in git yet: the two golden folders)
 """
 import argparse
 import os
+import re
 import subprocess
 import sys
 
@@ -59,13 +69,35 @@ def schema_bytes(text, schemas):
     return out
 
 
-def pair_problems(old, new, old_ver, new_ver, schemas):
-    """[] if `old` -> `new` moves only the schema, else the reasons."""
+BODY_RE = re.compile(r"^(?P<head>.* id=[0-9A-F]{3} dlc=\d+ \{)(?P<body>[^}]*)(?P<tail>\}.*)$")
+
+
+def same_value(lines, same):
+    """Normalised lines with each signal named in `same` ({old name: new name}) renamed,
+    the body re-sorted as normalise_trace sorts it. Values are left alone."""
+    if not same:
+        return lines
+    out = []
+    for ln in lines:
+        m = BODY_RE.match(ln)
+        if not m or not m.group("body"):
+            out.append(ln)
+            continue
+        sigs = sorted((same.get(k, k), v) for k, v in (kv.split("=", 1) for kv in m.group("body").split(" ")))
+        out.append(m.group("head") + " ".join("%s=%s" % kv for kv in sigs) + m.group("tail"))
+    return out
+
+
+def pair_problems(old, new, old_ver, new_ver, schemas, same=None):
+    """[] if `old` -> `new` moves only the schema, else the reasons. `same`: {old signal:
+    new signal}, compared by value under the new name (--same-value)."""
     probs = []
     try:
-        eq, a, b = gi_diag.compare_traces(old, new, schemas)
+        _eq, a, b = gi_diag.compare_traces(old, new, schemas)
     except gi_diag.DiagError as e:
         return ["refused: %s" % e]
+    a = same_value(a, same)
+    eq = a == b
     if not eq:
         first = next((k for k, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
         probs.append("decoded lines differ (old %d, new %d lines), first at line %d: %r -> %r"
@@ -79,7 +111,7 @@ def pair_problems(old, new, old_ver, new_ver, schemas):
     return probs
 
 
-def check_sets(old_files, new_files, old_ver, new_ver, schemas):
+def check_sets(old_files, new_files, old_ver, new_ver, schemas, same=None):
     """old_files, new_files: {name: text}. -> (pairs checked, [(name, reason)])."""
     problems = []
     for n in sorted(set(old_files) ^ set(new_files)):
@@ -88,7 +120,7 @@ def check_sets(old_files, new_files, old_ver, new_ver, schemas):
     for n in sorted(set(old_files) & set(new_files)):
         if old_files[n] == new_files[n]:
             continue
-        p = pair_problems(old_files[n], new_files[n], old_ver, new_ver, schemas)
+        p = pair_problems(old_files[n], new_files[n], old_ver, new_ver, schemas, same)
         problems.extend((n, why) for why in p)
         n_ok += 1
     return n_ok, problems
@@ -131,6 +163,15 @@ def self_test(repo=None):
          # phase 2: bus_on (diag_flags bit1) clear is counted, set is not
          bus_on_clear({"a.trace": good, "b.trace": good.replace("data=0801030600", "data=0801030400")}, s)
          == ({"b.trace": 1}, 2)]
+    # --same-value, on the real schemas 7 and 8 from git (port step 0c): 0x7F3 B0-B3 are
+    # diag_git_hash on 7 and diag_build_id on 8, no RenamedFrom between them.
+    real = gi_diag.SchemaSet.from_git(repo)
+    pair = {"diag_git_hash": "diag_build_id"}
+    r += [check_sets({"a.trace": old}, {"a.trace": good}, 7, 8, real, pair)[1] == [],
+          check_sets({"a.trace": old}, {"a.trace": good}, 7, 8, real)[1] != [],
+          check_sets({"a.trace": old}, {"a.trace": good.replace("data=0000000001000800", "data=0100000001000800")},
+                     7, 8, real, pair)[1] != [],
+          check_sets({"a.trace": old}, {"a.trace": good}, 7, 8, real, {"diag_fw_ver16": "diag_build_id"})[1] != []]
     return all(r), r
 
 
@@ -169,11 +210,15 @@ def main():
     ap.add_argument("--path", default="test/gen_inhibit_host/golden")
     ap.add_argument("--old-ver", type=int, default=5)
     ap.add_argument("--new-ver", type=int, default=6)
+    ap.add_argument("--same-value", action="append", default=[], metavar="OLD=NEW",
+                    help="in the old trace, compare signal OLD as NEW, its value unchanged (repeatable)")
     a = ap.parse_args()
+    same = dict(kv.split("=", 1) for kv in a.same_value)
 
     st_ok, st = self_test(a.repo)
     print("self-test (good bump accepted; flag change, counter change, wrong new version, old already new, extra line, unknown "
-          "schema, added golden rejected; bus_on clear counted): %s %s" % ("PASS" if st_ok else "FAIL", st))
+          "schema, added golden rejected; bus_on clear counted; --same-value: the real 7->8 bump passes with the pair, not without "
+          "it, nor with a moved value or another pair): %s %s" % ("PASS" if st_ok else "FAIL", st))
     if not st_ok:
         return 2
 
@@ -188,7 +233,9 @@ def main():
         allfiles = git(a.repo, "diff", "--name-only", a.old, a.new).split()
         outside = [f for f in allfiles if f.startswith("test/") and not f.startswith(a.path)]
         print("  test/ files changed outside %s: %s" % (a.path, outside or "none"))
-    n, problems = check_sets(old, new, a.old_ver, a.new_ver, schemas)
+    if same:
+        print("same value: %s" % ", ".join("%s (old) = %s (new)" % kv for kv in sorted(same.items())))
+    n, problems = check_sets(old, new, a.old_ver, a.new_ver, schemas, same)
     changed = sum(1 for k in set(old) & set(new) if old[k] != new[k])
     print("\nphase 1: %s, %d golden files changed, %d compared decoded" % (where, changed, n))
     per = {}
