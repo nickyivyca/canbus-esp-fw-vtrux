@@ -84,11 +84,6 @@ device transmitted thousands of times. The two counters are mutually exclusive
 by mode, and that is a property worth being able to **check** rather than one
 every reader has to remember to apply.
 
-**Cadence.** The round-robin is now over four pages at `diag_period_ms` (300 ms)
-each, so a given page repeats every 1.2 s rather than 0.9 s. Spec 10 says
-"~1 Hz each"; this is within that, but it is a change and a decoder that times
-out on a missing page needs to know.
-
 ### 0x7F9 — WICAN_Diag_Skips  *(schema 5)*
 | Byte | Field | Meaning |
 |---|---|---|
@@ -128,18 +123,19 @@ pages. This replaces the 2026-09-27 wording, which put all of them on one page.
 ### 0x7F3 — WICAN_Diag_Build
 | Byte | Field | Meaning |
 |---|---|---|
-| B0-B3 | diag_git_hash | FNV-1a 32-bit hash of the build's name: the commit of the tree the image was built from, with `-dirty` if that tree had uncommitted changes (spec 10, 12.3 item 3; an edit saved during a build is seen only by the next build). **Names the source, not the binary**: two builds of one commit differ. The status page's `elf_sha256` names the binary (spec 11) (*corrected 2026-10-14, user*) |
+| B0-B3 | diag_build_id | the first four bytes of the running image's image hash: the ELF SHA-256 ESP-IDF embeds in the app descriptor (`esp_app_get_description()->app_elf_sha256`, shared/tools R1), read at run time. **Names the binary.** Packed as the charge interposer's `0x7F7` build id: a u32 with hash byte 0 most significant, sent little-endian, so the raw bytes B0..B3 are hash bytes 3, 2, 1, 0, and the DBC's unsigned value printed as `%08x` reads as the hash's first four bytes in order (schema 8, spec 10; user, 2026-10-19 and 2026-10-25). Through schema 7 these bytes were `diag_git_hash`, an FNV-1a hash of the build's name |
 | B4-B5 | diag_fw_ver16 | the same behaviour/capability revision as `diag_fw_ver`, as u16 |
 | B6 | diag_schema_ver_build | schema version (echoed for a build-only decoder) |
 | B7 | — | reserved |
 
 ## Versions
 
-`diag_schema_ver` = **7**. Bump on any layout change, and update the DBC and this
+`diag_schema_ver` = **8**. Bump on any layout change, and update the DBC and this
 doc together. The DBC carries the shared decoder's identity attributes
 (`shared/bench`, `vtrux_bench.decode`): `DiagSchemaVersion`, the schema byte its
-frames carry, and `DiagSchemaHash`, its own layout hash (`7af6adef1d948197` at
-schema 7); a bump changes both. The schema byte sits at `0x7F1` B0 and `0x7F3`
+frames carry, and `DiagSchemaHash`, its own layout hash (`00401e953c405902` at
+schema 8, `7af6adef1d948197` at schema 7); a bump changes the version, and the
+hash whenever a name, position or value table changes. The schema byte sits at `0x7F1` B0 and `0x7F3`
 B6. **A change of meaning counts too**, even when no field moves --
 see version 6.
 
@@ -176,9 +172,7 @@ come from **spec section 7.1**, the key-state rules.
 
 
 `diag_fw_ver` is a **behaviour/capability revision**, not a build identity;
-`diag_git_hash` names the commit of the tree the image was built from, with
-`-dirty` for uncommitted changes, not the binary (spec 10; *corrected
-2026-10-14, user*).
+`0x7F3`'s `diag_build_id` names the binary (spec 10).
 - **When to bump:** bump `DIAG_FW_VERSION` in `gen_inhibit.c`, and add a row
   here, in either case:
   - correctly parsed values must be **interpreted** differently (rev 2: the
@@ -189,13 +183,23 @@ come from **spec section 7.1**, the key-state rules.
 - **Not this field's job:** where the bytes are, and which pages exist,
   belong to `diag_schema_ver`. So **`diag_fw_ver` does not predict page
   presence**; read `diag_schema_ver` for that.
-- **The name is historical.** A rename (e.g. `diag_behaviour_ver`) is
-  deferred to the next schema bump, so it causes no decoder break of its own
-  (user, 2026-10-04). Deferred again at schema 7 (user, 2026-10-12), with a
-  standing instruction: **the rename goes into the next schema bump after 7
-  without asking again.**
+- **The name is historical, and stays.** The hand-kept number retires in
+  stage (b) of the shared-code port, in the one diag layout both projects
+  share, so it is not renamed first (user, 2026-10-25: no churn for a field
+  that is going). This withdraws the standing instruction of 2026-10-12 to
+  rename it at the next schema bump after 7.
 
 The table:
+
+**Version 8** (2026-10-25, user; port step 0c) changes what **`0x7F3` B0-B3**
+mean and moves no field. They are now `diag_build_id`, the first four bytes of
+the running image's image hash, packed as the interposer's `0x7F7` build id
+(see the page above). Through schema 7 they were `diag_git_hash`, an FNV-1a
+hash of the build's name, which named the source and not the binary. A
+schema-7 decoder reads every other field correctly but would read the build id
+as a name hash, so the field takes a new name and no `RenamedFrom`: the meaning
+changed, not only the name. `diag_fw_ver` stays 7: the schema bump guards the
+decoder, and the hand-kept number retires in stage (b) (user, 2026-10-25).
 
 **Version 7** (2026-10-10, user) adds `diag_arm_block` value **15**, "receive queue not drained" (spec 7 gate condition 9), and moves no field. A schema-6 decoder reads every field correctly but has no name for 15. It also changes what **`diag_would_tx`** means: it resets on every arm, as `diag_tx_ok` does, where through schema 6 it counted since boot across every arm (spec 3.1, user, 2026-10-12). A reader holding the old meaning would difference a per-arm count. The bump follows this doc's rule that an appended value bumps the schema.
 
@@ -302,9 +306,13 @@ Unchanged at 4 across `4a0a796` (the `!aborting` guard): no diag field's
 meaning changed. The counters the fix affects are on the status page only (spec
 section 11).
 
-`diag_git_hash` names the commit of the tree the image was built from, not the
-binary (spec 10; *corrected 2026-10-14, user*); `diag_fw_ver` is the human-readable handle. If a log shows a hash not in a build's records, decode `diag_fw_ver` and
-cross-check the rev table.
+`diag_build_id` names the binary (spec 10). Look it up in the release build
+records and the bench run records, which name each image by its full hash: a
+build id that matches no record is unknown, and one that matches two is
+ambiguous, never guessed. `diag_fw_ver` is the human-readable handle; for a
+build id with no record, decode `diag_fw_ver` and cross-check the rev table.
+On a schema 7 or older log, B0-B3 are `diag_git_hash`, the hash of the build's
+name.
 
 ## `0x7F0`: the RESPOND timing probe
 

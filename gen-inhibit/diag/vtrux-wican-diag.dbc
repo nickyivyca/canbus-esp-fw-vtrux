@@ -1,4 +1,4 @@
-VERSION "wican-gen-inhibit-diag schema 7"
+VERSION "wican-gen-inhibit-diag schema 8"
 
 NS_ :
 	CM_
@@ -46,7 +46,7 @@ BO_ 2041 WICAN_Diag_Skips: 8 WICAN
  SG_ diag_skips_late : 32|32@1+ (1,0) [0|4294967295] "" Vector__XXX
 
 BO_ 2035 WICAN_Diag_Build: 8 WICAN
- SG_ diag_git_hash : 0|32@1+ (1,0) [0|4294967295] "" Vector__XXX
+ SG_ diag_build_id : 0|32@1+ (1,0) [0|4294967295] "" Vector__XXX
  SG_ diag_fw_ver16 : 32|16@1+ (1,0) [0|65535] "" Vector__XXX
  SG_ diag_schema_ver_build : 48|8@1+ (1,0) [0|255] "" Vector__XXX
 
@@ -60,9 +60,9 @@ CM_ BO_ 2034 "WiCAN gen-inhibit self-telemetry, COUNTERS. 0x7F2, DLC 8, ~1 Hz. I
 CM_ BO_ 2041 "WiCAN gen-inhibit self-telemetry, SKIPS. 0x7F9, DLC 8, added at schema 5 (spec 5.2 item 5, section 10). Skipped inhibit frames since the device was armed, split by kind. WHY THIS PAGE EXISTS: a skipped inhibit means the generator inverter acted on the VCM's real torque command for one cycle, and before schema 5 the only trace of that in a CAN log was diag_abort_reason 15 -- the trip that three skips within one second cause. An isolated skip left no trace at all, and nobody is connected to the HTTP status page during a drive. The rest of the transmit scheduler's counters are deliberately NOT here: they are on the status page only (spec section 11), because lost telemetry already shows in a CAN log as a gap in these pages themselves.";
 CM_ SG_ 2041 diag_skips_withdrawn "Inhibit frames withdrawn at their deadline -- removed before reaching the wire, so the inverter never saw ours. Since arming; resets to 0 on a re-arm, so differencing across an arm boundary can step negative.";
 CM_ SG_ 2041 diag_skips_late "Inhibit frames that went out late, or may have. The device cannot tell these apart: the TWAI driver reports an aborted frame and a real transmission identically, as TX_SUCCESS with msgs_to_tx falling to 0 (169 of 169 measured). Counted separately from withdrawn because a reader deciding whether our frame reached the bus needs to know which happened, and summing them would destroy exactly that. Since arming.";
-CM_ BO_ 2035 "WiCAN gen-inhibit self-telemetry, BUILD. 0x7F3, DLC 8, ~1 Hz. Exact build fingerprint for matching a log to a firmware rev.";
+CM_ BO_ 2035 "WiCAN gen-inhibit self-telemetry, BUILD. 0x7F3, DLC 8, ~1 Hz. Names the running binary by the first four bytes of its image hash (schema 8, port step 0c), for matching a log to one image file.";
 CM_ SG_ 2033 diag_schema_ver "On-wire schema version. A decoder holding a different DBC version should flag a mismatch rather than trust the fields. Bump when any layout changes.";
-CM_ SG_ 2033 diag_fw_ver "Behaviour/capability revision, hand-bumped when correctly parsed values must be interpreted differently or a behaviour someone would gate on changes. The name is historical. diag_git_hash names the commit of the tree the image was built from, with -dirty for uncommitted changes, not the binary (spec 10, corrected 2026-10-14); diag_schema_ver governs layout and which pages exist. Rev table in the schema doc.";
+CM_ SG_ 2033 diag_fw_ver "Behaviour/capability revision, hand-bumped when correctly parsed values must be interpreted differently or a behaviour someone would gate on changes. The name is historical; it stays, by hand, until stage (b) of the shared-code port retires it (user, 2026-10-25). diag_schema_ver governs layout and which pages exist. Rev table in the schema doc.";
 CM_ SG_ 2033 diag_flags "bit0 disabled, bit1 bus_on (the CONTROLLER is running: set only while twai_get_status_info() reports TWAI_STATE_RUNNING, clear when it is stopped, bus-off or recovering, and clear when the driver is not installed -- spec 11. MEANING CHANGED AT SCHEMA 6: through schema 5 this bit reported only that the TWAI driver was installed. On the wire the change is not visible in practice: a controller that is not running transmits nothing, so a bus-off shows in a CAN log as a gap in the diag pages under either meaning. The difference shows on the status page, where on 2026-10-06 bus_on read true through 42.1 s of bus-off. The schema bump exists so that a decoder does not attach the new meaning to a schema-5 log. Check diag_schema_ver before reading it), bit2 bus_ours, bit3 autoarm_build, bit4 shutdown_suppressed (0x051 B0 = 0x10; live, non-latching, spec 6.3), bit5 inhibit_live (spec 7 arm interlocks satisfied and transmitting; distinct from diag_mode 3, which is only what was requested), bit6 key_on (0x592 B0 bit4 reading on AND fresh; spec 7.1 gates transmission on it, and 0 covers both a key-off and a bus with no 0x592 at all -- bit1/bit2 separate those), bit7 abort_latched (a spec 7 abort has stood the device down; it stays armed and keeps sending diag, and a key-off-to-key-on clears it).";
 CM_ BO_ 2040 "WiCAN gen-inhibit self-telemetry, STATUS2. 0x7F8, DLC 8, added at schema 4 (review B1). Carries what a PASSIVE dry run needs to be readable: WHICH section 7 trip latched (diag_flags on 0x7F1 says only that one did), why the inhibit is not live, the spec 6.2 SoC-valid marker, and the would-transmit count. Appended as a fourth frame rather than repacking 0x7F1, which is full to B7 -- so a schema-3 decoder reads 0x7F1-0x7F3 unchanged and simply does not see this page.";
 CM_ SG_ 2040 diag_abort_reason "Which spec 7 trip latched the inhibit off. gi_abort_t in gen_inhibit_core.h, in order -- APPEND ONLY, since reordering silently changes what every recorded log means. 14 tx_late is RETIRED (2026-09-27, spec 7 trip 7 amended): nothing sets it any more, and it is kept because captures from before that date carry it. 15 skips_3_in_1s replaced it -- a single late or withdrawn inhibit frame is now a counted skip, and three within one second trip.";
@@ -70,7 +70,7 @@ CM_ SG_ 2040 diag_arm_block "Why the inhibit is not live. 0 means the gate is sa
 CM_ SG_ 2040 diag_flags2 "bit0 soc_valid (spec 6.2: the main contactors have reported closed and the BMS has not slept since, so 0x411 readings count), bit1 soc_since_valid (an 0x411 has arrived since the marker was set), bit2 tx_pending (an inhibit frame was outstanding when this page was built), bit3 emit_refused (a code path tried to transmit a real 0x051 from a mode that must not -- ALWAYS 0; non-zero is a firmware bug, not a bus event).";
 CM_ SG_ 2040 diag_would_tx "PASSIVE (diag_mode 4) counts one of these wherever INHIBIT would have transmitted, since the last arm (reset on every arm, like diag_tx_ok, from schema 7; through schema 6 it counted since boot). Deliberately NOT folded into diag_tx_ok: a decoder that ignored diag_mode would otherwise read a dry run as a drive in which the device transmitted thousands of times. The two are mutually exclusive by mode, which is a property worth being able to check.";
 CM_ SG_ 2040 diag_tx_queued_behind "Spec 5's hazard, counted: inhibit frames queued into the controller behind a frame of ours that had not finished. Saturates at 255. Any non-zero value on the bench is the thing the full-replay run exists to measure.";
-CM_ SG_ 2035 diag_git_hash "FNV-1a 32-bit hash of the build's name: the commit of the tree the image was built from, with -dirty if that tree had uncommitted changes (spec 10, 12.3 item 3; an edit saved during a build is seen only by the next build). Names the source, not the binary: two builds of one commit differ. The status page's elf_sha256 names the binary (spec 11). Corrected 2026-10-14.";
+CM_ SG_ 2035 diag_build_id "The first four bytes of the running image's image hash: the ELF SHA-256 ESP-IDF embeds in the app descriptor (shared/tools R1), read at run time. Packed as the charge interposer's 0x7F7 build id: hash byte 0 most significant, sent little-endian, so this unsigned value printed as eight hex digits reads as the hash's first four bytes in order. Look it up in the release build records and the bench run records, which name each image by its full hash: no match is unknown, two matches are ambiguous, never guessed. Schema 8 (port step 0c, user 2026-10-19 and 2026-10-25); through schema 7 these bytes were diag_git_hash, an FNV-1a hash of the build's name.";
 
 BA_DEF_ "DiagSchemaVersion" INT 0 255;
 BA_DEF_ "DiagSchemaHash" STRING ;
@@ -78,8 +78,8 @@ BA_DEF_ SG_ "RenamedFrom" STRING ;
 BA_DEF_DEF_ "DiagSchemaVersion" 0;
 BA_DEF_DEF_ "DiagSchemaHash" "";
 BA_DEF_DEF_ "RenamedFrom" "";
-BA_ "DiagSchemaVersion" 7;
-BA_ "DiagSchemaHash" "7af6adef1d948197";
+BA_ "DiagSchemaVersion" 8;
+BA_ "DiagSchemaHash" "00401e953c405902";
 
 VAL_ 2033 diag_mode 0 "OFF" 1 "OBSERVE" 2 "RESPOND" 3 "INHIBIT" 4 "PASSIVE";
 VAL_ 2040 diag_abort_reason 0 "none" 1 "tx_failed" 2 "vcm_fault" 3 "bus_lost" 4 "inverter_lost" 5 "engine_turning" 6 "error_rate" 7 "stale_soc" 8 "stale_contactor" 9 "stale_fault" 10 "stale_shift" 11 "stale_rpm" 12 "short_vcm_frame" 13 "tx_not_queued" 14 "tx_late_retired_2026_09_27" 15 "skips_3_in_1s";
