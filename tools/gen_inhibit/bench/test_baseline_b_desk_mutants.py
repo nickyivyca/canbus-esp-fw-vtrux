@@ -5,9 +5,15 @@ A crash is not a kill, and an edit that does not apply is an error.
     GI_BASELINE_DIR=<.../runs/baseline_e3d9437> py -3.14 -B \
         tools/gen_inhibit/bench/test_baseline_b_desk_mutants.py
 
-Run from the reverse-it root. Each mutant is a copy of the script with one edit, in the
-worktree's scratch/, tested on the one step the edit touches (DESK_SCRIPT, --steps).
-About 10 minutes, most of it the B24 mutant. Gen-inhibit tester, 2026-10-19.
+Run from the reverse-it root. The mutants run in a shared clone of this repo at HEAD,
+made in the worktree's scratch/, with this folder copied over the clone's
+tools/gen_inhibit/bench/; each writes the script there with one edit and is tested on
+the one step the edit touches (DESK_SCRIPT, --steps). The script runs its tools from its
+own folder ($A), and quiesce_analysis and passive_analysis decode through gi_diag, which
+reads the DBC's git history from three folders up: a copy of the script alone in a bare
+folder failed every step's index check with no edit at all. The unmutated copy runs
+first, on every step a mutant uses, as the control: if it fails a check, no kill counts. About 10 minutes, most of it the B24 mutant. Gen-inhibit
+tester, 2026-10-19.
 """
 import os
 import shutil
@@ -51,20 +57,31 @@ def main():
     base = gi_paths.scratch("mutants-baseline_b_desk")
     src = open(SRC, encoding="utf-8", newline="").read()
     killed = errors = 0
+    d = clone(base)
+
+    def run(steps, text):
+        script = os.path.join(d, "baseline_b_desk.sh")
+        open(script, "w", encoding="utf-8", newline="").write(text)
+        env = dict(os.environ, DESK_SCRIPT=script)
+        r = subprocess.run([sys.executable, "-B", TEST, "--steps", steps], capture_output=True, text=True, env=env)
+        fails = [l.strip() for l in r.stdout.splitlines() if l.strip().startswith("FAIL ")]
+        return r, fails, "Traceback" in r.stderr
+
+    # The unmutated copy first, on every step a mutant uses: if it fails a check, every
+    # mutant would be killed by it.
+    steps = ",".join(sorted({m[1] for m in MUTANTS}))
+    r, fails, crashed = run(steps, src)
+    control_ok = r.returncode == 0 and not fails and not crashed
+    print("%s control: the unmutated copy [%s]  (exit %d, %d FAIL%s)%s" % (
+        "PASS    " if control_ok else "FAILED  ", steps, r.returncode, len(fails), ", CRASHED" if crashed else "",
+        "".join("\n           " + f[:130] for f in fails[:3])))
+    sys.stdout.flush()
     for n, (name, step, old, new) in enumerate(MUTANTS, 1):
         if src.count(old) != 1:
             print("ERROR    m%d %s: edit matched %d times" % (n, name, src.count(old)))
             errors += 1
             continue
-        d = os.path.join(base, "m%d" % n)
-        shutil.rmtree(d, ignore_errors=True)
-        os.makedirs(d)
-        script = os.path.join(d, "baseline_b_desk.sh")
-        open(script, "w", encoding="utf-8", newline="").write(src.replace(old, new))
-        env = dict(os.environ, DESK_SCRIPT=script)
-        r = subprocess.run([sys.executable, "-B", TEST, "--steps", step], capture_output=True, text=True, env=env)
-        fails = [l.strip() for l in r.stdout.splitlines() if l.strip().startswith("FAIL ")]
-        crashed = "Traceback" in r.stderr
+        r, fails, crashed = run(step, src.replace(old, new))
         dead = bool(fails)
         killed += dead
         print("%s m%d %s [%s]  (exit %d, %d FAIL%s%s)" % (
@@ -72,8 +89,26 @@ def main():
             ", CRASHED" if crashed else "", ("; " + fails[0][:100]) if fails else ""))
         sys.stdout.flush()
     shutil.rmtree(base, ignore_errors=True)
-    print("\n%d of %d killed by a check, %d errors" % (killed, len(MUTANTS), errors))
-    return 0 if killed == len(MUTANTS) and not errors else 1
+    print("\n%d of %d killed by a check, %d errors; the control %s"
+          % (killed, len(MUTANTS), errors, "passes" if control_ok else "DOES NOT PASS"))
+    return 0 if killed == len(MUTANTS) and not errors and control_ok else 1
+
+
+def clone(base):
+    """base/repo: a shared clone of this worktree at HEAD, with this folder copied over
+    its tools/gen_inhibit/bench/, so the script's tools sit beside it ($A) and gi_diag,
+    which quiesce_analysis and passive_analysis decode through, finds the DBC's git
+    history from there. Returns that folder."""
+    wt = gi_paths.worktree_of(HERE)
+    head = subprocess.run(["git", "-C", wt, "rev-parse", "HEAD"], capture_output=True, text=True,
+                          check=True).stdout.strip()
+    repo = os.path.join(base, "repo")
+    subprocess.run(["git", "clone", "-q", "--shared", "--no-checkout", wt, repo], check=True)
+    subprocess.run(["git", "-C", repo, "-c", "advice.detachedHead=false", "checkout", "-q", head], check=True)
+    d = os.path.join(repo, "tools", "gen_inhibit", "bench")
+    shutil.rmtree(d)
+    shutil.copytree(HERE, d, ignore=shutil.ignore_patterns("__pycache__"))
+    return d
 
 
 if __name__ == "__main__":
