@@ -27,7 +27,7 @@ the firmware's `diag_period_ms` of 240.)
 ### 0x7F1 — WICAN_Diag_Status
 | Byte | Field | Meaning |
 |---|---|---|
-| B0 | diag_schema_ver | on-wire schema version (currently **7**) |
+| B0 | diag_schema_ver | on-wire schema version (currently **8**) |
 | B1 | diag_fw_ver | behaviour/capability revision, hand-bumped (see the rule and table below; the name is historical) |
 | B2 | diag_mode | 0 OFF, 1 OBSERVE, 2 RESPOND, 3 INHIBIT, **4 PASSIVE** |
 | B3 | diag_flags | bit0 disabled, bit1 bus_on (**controller running**, not driver installed -- meaning changed at schema 6), bit2 bus_ours, bit3 autoarm_build, bit4 shutdown_suppressed, bit5 inhibit_live, bit6 key_on, bit7 abort_latched |
