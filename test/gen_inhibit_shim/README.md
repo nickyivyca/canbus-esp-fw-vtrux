@@ -621,6 +621,12 @@ And the cases:
   nothing, one that was up counts one and forces nothing.
 * **Case 58** is the exit action: an answer held in the controller is given up
   as a stand-down when the worker leaves ARMED by row 6, 5 or 9.
+* **Case 59** is spec 10's `0x7F3` build id, the host half of the 12.4 row
+  "0x7F3 carries the build id" (port step 0c): the first `0x7F3` on the wire
+  in PASSIVE is `ff f0 0f 00 07 00 08 00`, held as a literal. The mock's
+  image hash starts `00 0f f0 ff`, so the build id is `0x000FF0FF`, hash
+  byte 0 most significant as the interposer's `0x7F7`, sent little-endian;
+  then `diag_fw_ver16` 7 and schema 8.
 * **`shim_test_autoarm`**: `gen_inhibit_init(CAN_250K, listen-only)` with the
   auto-arm compiled in must install at 250K and listen-only, not can.c's
   defaults. **It has no wall-clock budget**: its `main()` does not go through

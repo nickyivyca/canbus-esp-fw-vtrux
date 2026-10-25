@@ -178,6 +178,10 @@ def test_suites(settings, shas):
     for cid, c in sorted(idx.items()):
         mine = cb if c["part"] == "B" else ce
         other = ce if c["part"] == "B" else cb
+        if cid in SG.SJ.RETIRED:
+            check("index %s (part %s) is retired, so no suite judges or skips it" % (cid, c["part"]),
+                  cid not in mine and cid not in other, (mine.get(cid), other.get(cid)))
+            continue
         check("index %s (part %s) is judged or skipped exactly once, in its own suite" % (cid, c["part"]),
               len(mine.get(cid, [])) == 1 and cid not in other, (mine.get(cid), other.get(cid)))
     extra = sorted(set(cb) | set(ce) - set(idx))

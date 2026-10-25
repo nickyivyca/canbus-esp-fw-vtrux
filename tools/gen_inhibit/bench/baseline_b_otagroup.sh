@@ -29,11 +29,13 @@ ota() {   # ota <label> <image>
   # GI_NO_OTA=1 (the chain runner, 2026-10-18): the runner has already put the step's
   # image on the board, so the OTA named after the step is skipped. Others still run.
   if [ -n "${GI_NO_OTA:-}" ] && [ "$1" = "$s" ]; then echo "OTA $1 left to the runner"; return 0; fi
+  [ -f "$2" ] || { echo "OTA $1: no image $2: the group stops here"; exit 1; }
   local stem="$D/otagroup_$1_$(date +%Y%m%dT%H%M%S)"
   bash $A/ota_pcap.sh "$2" "$stem"
   grep -q "VERDICT: (c) TOOK" "$stem.txt" || { echo "OTA $1 did not TOOK: the group stops here ($stem.txt)"; exit 1; }
 }
-img() { ls "$W/build-tester-$1"/wican-fw_obd_${C}_man*.bin; }
+. "$A/bench_images.sh"   # img_in: the image of $C, named with or without the commit (port step 0c)
+img() { img_in "$W/build-tester-$1"; }
 inert() { local tag=$1 expect=$2; shift 2
   py -3.14 -B $A/test_only_inert.py --expect $expect "$@" --power "$PWR; image $tag" > "$D/B19_${expect}_$tag.txt" 2>&1
   echo "B19 $expect $tag exit $?"; tail -2 "$D/B19_${expect}_$tag.txt"; }
@@ -83,11 +85,11 @@ for s in $STEPS; do
       done
       ;;
     prod)
-      ota prod "$P/wican-fw_obd_${C}_man.bin"
+      ota prod "$(img_in "$P" "")"
       inert prod absent --switch GI_TEST_RESTART_QUIESCE --switch GI_INSTRUMENT_RXQ \
         --switch GI_INSTRUMENT_ABORTWIN --switch OTA_HEALTH_FAULT_INJECT
       inert prod_txabort absent --switch GI_INSTRUMENT_TXABORT
-      py -3.14 -B $A/spec11_page_check.py --image "$P/wican-fw_obd_${C}_man.bin" --other "$(img man2)" \
+      py -3.14 -B $A/spec11_page_check.py --image "$(img_in "$P" "")" --other "$(img man2)" \
         --out "$D/B19_spec11_page_prod.json" > "$D/B19_spec11_page_prod.txt" 2>&1; echo "prod page exit $?"
       ;;
     prod_rxq30)   # RXQ again 30 s after the QUIESCE probe, on prod (reviewer, 2026-10-17; e3d9437 00:58)

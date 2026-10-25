@@ -204,8 +204,8 @@ extern "C" {
  *    inside the window before the reason cleared. Section 10's rule is written as
  *    1.2 s / pages, so a sixth page changes this number again.
  *
- * artifacts/gen-inhibit/wican_diag_schema.md is the source of truth for the
- * layout and vtrux-wican-diag.dbc is the decoder; all three change together
+ * gen-inhibit/diag/wican_diag_schema.md is the source of truth for the
+ * layout and vtrux-wican-diag.dbc beside it is the decoder; all three change together
  * or a log becomes unreadable.
  */
 /*
@@ -223,10 +223,15 @@ extern "C" {
  * change because a decoder holding the old table reads 15 as unknown, so the
  * version is what tells it to fetch a newer table rather than to guess.
  *
- * wican_diag_schema.md's Version 7 entry and the DBC's VERSION line carry the
- * same number; the three move together or a log becomes unreadable.
+ * 7 -> 8 at port step 0c (user, 2026-10-25): 0x7F3 B0-B3 carry diag_build_id,
+ * the first four bytes of the image hash, where they carried diag_git_hash, an
+ * FNV-1a hash of the build's name (spec 10). No byte moves; what they mean does.
+ *
+ * wican_diag_schema.md's Version 8 entry and the DBC's VERSION line and
+ * DiagSchemaVersion carry the same number; they move together or a log becomes
+ * unreadable.
  */
-#define GI_DIAG_SCHEMA_VER  7
+#define GI_DIAG_SCHEMA_VER  8
 
 /*
  * Slots in the trip 6 error-frame history. It only ever has to hold
@@ -331,8 +336,9 @@ typedef struct
                                  * together when a page is added */
     uint32_t max_rx_errors;     /* consecutive hard RX errors -> self-disarm */
     uint16_t fw_version;        /* reported in diag */
-    uint32_t git_hash;          /* reported in diag; FNV-1a of GIT_SHA
-                                 * (esp_app_desc.version on the device) */
+    uint32_t build_id;          /* reported in diag, 0x7F3 B0-B3; the image
+                                 * hash's first four bytes, byte 0 most
+                                 * significant (spec 10) */
     bool     autoarm_configured;/* diag flags bit3 -- build auto-arms */
 } gi_config_t;
 

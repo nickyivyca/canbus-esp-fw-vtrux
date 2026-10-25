@@ -3005,8 +3005,8 @@ static void case_long_arm(void)
  *
  * THE PIN (spec 12.4, widened 2026-10-03): the scenario is rebuilt from a capture
  * through the project's parser and is not in git, so the case records a checksum of
- * what it ran on. FNV-1a 64 rather than sha256 -- it runs here in C, the spec says
- * "checksum", and FNV-1a is already what this firmware hashes GIT_SHA with for 0x7F3.
+ * what it ran on. FNV-1a 64 rather than sha256 -- it runs here in C and the spec says
+ * "checksum".
  * Stimulus lines FAIL on a mismatch; comment lines are a notice, exactly as
  * run_tests.py's pin behaves.
  */
@@ -5830,6 +5830,55 @@ static void case_leaving_armed_withdraws(void)
     case_end();
 }
 
+/*
+ * CASE 59 -- spec 10, "0x7F3 names the binary" (port step 0c; user, 2026-10-19
+ * and 2026-10-25), the host half of the 12.4 row "0x7F3 carries the build id".
+ *
+ * The bench compares the decoded build id with the flashed image's hash. What
+ * that cannot see is a byte-order slip its decoder and the firmware would
+ * share, so this holds the page's bytes as literals. The mock's hash starts
+ * 00 0f f0 ff (mock/esp_app_desc.h): the build id is 0x000FF0FF, hash byte 0
+ * most significant, as the interposer's 0x7F7, and it goes out little-endian,
+ * so B0..B3 are ff f0 0f 00. A big-endian send, a reversed pack, a dropped
+ * leading zero or bytes from the wrong end of the hash each give other bytes.
+ * B4-B5 are diag_fw_ver16 (7), B6 the schema (8), B7 reserved.
+ */
+static void case_build_page_carries_the_build_id(void)
+{
+    case_begin("case 59: 0x7F3 carries the image hash's first four bytes in "
+               "the 0x7F7 byte order (spec 10)");
+    setup();
+    gen_inhibit_set_mode(GEN_INHIBIT_PASSIVE, 500);
+    /* Traffic, so the worker turns over and the round-robin reaches 0x7F3;
+     * PASSIVE sends none of its own (spec 3.1). */
+    static const uint8_t KEY[8] = { 0x10 };
+    for (int i = 0; i < 75; i++)
+    {
+        feed(0x592, KEY, 8, 20000);
+    }
+
+    static const uint8_t want[8] = { 0xff, 0xf0, 0x0f, 0x00, 0x07, 0x00, 0x08, 0x00 };
+    const ft_frame_t *page = NULL;
+    for (int i = 0; i < ft_wire_count() && !page; i++)
+    {
+        if (ft_wire(i)->id == 0x7F3) page = ft_wire(i);
+    }
+    CHECK(page != NULL, "PRECONDITION: no 0x7F3 reached the wire in 1.5 s of "
+          "PASSIVE: %s", stats());
+    if (page)
+    {
+        CHECK(page->dlc == 8 && memcmp(page->data, want, 8) == 0,
+              "0x7F3 is dlc %u, %02x %02x %02x %02x %02x %02x %02x %02x; want "
+              "ff f0 0f 00 07 00 08 00 (build id 0x000FF0FF little-endian, "
+              "fw_ver 7, schema 8)", page->dlc,
+              page->data[0], page->data[1], page->data[2], page->data[3],
+              page->data[4], page->data[5], page->data[6], page->data[7]);
+    }
+
+    teardown();
+    case_end();
+}
+
 #if !SHIM_AUTOARM_BUILD
 int main(int argc, char **argv)
 {
@@ -5915,6 +5964,7 @@ int main(int argc, char **argv)
     case_ota_goes_through_the_worker();
     case_worker_mode_rows();
     case_leaving_armed_withdraws();
+    case_build_page_carries_the_build_id();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
     return g_fail ? 1 : 0;

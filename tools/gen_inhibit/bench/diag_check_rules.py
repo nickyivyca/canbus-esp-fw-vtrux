@@ -66,7 +66,9 @@ def build_checks(st, bd, s2, sk, dbc_schema):
         # label is what a reader of the output wants to see, and diag_mode's
         # VAL_ table is the thing being relied on either way.
         "mode==INHIBIT": str(st["diag_mode"]) == "INHIBIT",
-        "git_hash nonzero": raw(bd["diag_git_hash"]) != 0,
+        # 0x7F3 B0-B3: diag_build_id from schema 8 (port step 0c), diag_git_hash before;
+        # gi_diag decoded the page with its own schema's DBC.
+        "0x7F3 build id nonzero": raw(bd["diag_build_id"] if "diag_build_id" in bd else bd["diag_git_hash"]) != 0,
         "bus_on flag set": (flags & 0x02) != 0,
         # Spec 7.1 bit6. The PCAN stimulus sends 0x592 key-on, so this must
         # read set -- and if it does not, nothing this device does with 0x051

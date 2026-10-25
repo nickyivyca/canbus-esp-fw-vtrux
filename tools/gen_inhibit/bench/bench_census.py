@@ -160,7 +160,9 @@ def main():
         for fid, d in r["wican_last_decoded"].items():
             print("  wican %s %s" % (fid, d))
         b = r["wican_last_decoded"].get("0x7F3")
-        if isinstance(b, dict) and "diag_git_hash" in b:
+        if isinstance(b, dict) and "diag_build_id" in b:   # schema 8 on (port step 0c)
+            print("  0x7F3 build id %08x" % b["diag_build_id"])
+        elif isinstance(b, dict) and "diag_git_hash" in b:
             print("  0x7F3 hash 0x%08X" % b["diag_git_hash"])
         for fid, raw in r["x2_last_raw"].items():
             print("  x2 %s raw %s" % (fid, raw))

@@ -38,6 +38,7 @@ e4() {   # e4 <name> <args...>: one e4 arm, as B2 on e3d9437
   echo "$n exit $?"
 }
 red() { for f in "$@"; do [ -f "$f" ] && sed -i "s/$GI_WICAN_SSID/<GI_WICAN_SSID>/g" "$f"; done; }
+. "$A/bench_images.sh"   # img_in: the image of $C, named with or without the commit (port step 0c)
 b2() {   # b2 <x2app|x2held>
   e4 B2_e4_presence_inhibit_${C}_$1 --capture "$GD/runs/truck_passive2.log" --window-start 0 --seconds 30 --mode inhibit
   e4 B2_e4_presence_respond_${C}_$1 --capture "$GD/runs/truck_passive2.log" --window-start 20 --seconds 30 --mode respond
@@ -69,12 +70,16 @@ for s in "$@"; do
       red "$D/B16_page_only_baseline.txt" ;;
     B17a)
       [ -n "$W" ] || { echo "B17a needs GI_IMAGES"; exit 2; }
-      py -3.14 -B $A/spec11_page_check.py --image "$W/build-tester-man/wican-fw_obd_${C}_man.bin" \
-        --other "$W/build-tester-man2/wican-fw_obd_${C}_man.bin" --out "$D/B17_spec11_page_${C}_man.json" \
+      M=$(img_in "$W/build-tester-man" "") && M2=$(img_in "$W/build-tester-man2" "") || exit 2
+      py -3.14 -B $A/spec11_page_check.py --image "$M" \
+        --other "$M2" --out "$D/B17_spec11_page_${C}_man.json" \
         > "$D/B17_spec11_page_${C}_man.txt" 2>&1; echo "B17a exit $?"
       red "$D/B17_spec11_page_${C}_man.txt" ;;
-    B18)
-      py -3.14 -B $A/diag_build_page_check.py --expect-sha $C --out "$D/B18_diag_build_page_check.json" \
+    B18)   # schema 8 (port step 0c): the build id against the flashed _man image; --expect-sha for schema 7
+      [ -n "$W" ] || { echo "B18 needs GI_IMAGES"; exit 2; }
+      M=$(img_in "$W/build-tester-man" "") || exit 2
+      py -3.14 -B $A/diag_build_page_check.py --image "$M" --expect-sha $C \
+        --out "$D/B18_diag_build_page_check.json" \
         > "$D/B18_diag_build_page_check.txt" 2>&1; echo "B18 exit $?"
       red "$D/B18_diag_build_page_check.txt" ;;
     B20)   # every case interlock_bench lists, as on e3d9437 (28 then)

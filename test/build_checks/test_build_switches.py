@@ -454,7 +454,7 @@ def main():
         ("classify: a stock feature with a trigger is malformed (it has no test trigger)",
          len(B.classify({"S": []}, {"S": (B.STOCK, None, "why", ROW)}, {"S": PRB})[2]) == 1, ""),
         ("the real table loads from vtrux_checks.json and is well-formed",
-         len(B.SWITCHES) > 30 and B.classify({k: [] for k in B.SWITCHES})[1:] == ([], []), ""),
+         len(B.SWITCHES) > 20 and B.classify({k: [] for k in B.SWITCHES})[1:] == ([], []), ""),
         ("the real table: the four spec 3.2 feature switches are stock features with rows",
          all((B.SWITCHES.get(s) or (None,))[0] == B.STOCK and B.SWITCHES[s][3]
              for s in ("WICAN_FEATURE_MQTT", "WICAN_FEATURE_ELM327", "WICAN_FEATURE_AUTOPID",

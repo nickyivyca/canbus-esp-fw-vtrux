@@ -358,7 +358,10 @@ for fid in sorted(DIAG_IDS):
         record["decoded"]["0x%X" % fid] = {k: str(v) for k, v in LAST[fid].items()}
 if LAST.get(0x7F3):
     _b = LAST[0x7F3]
-    record["device_wire_git_hash"] = "0x%08X" % int(_b["diag_git_hash"])
+    if "diag_build_id" in _b:      # schema 8 on (port step 0c): the image hash's first four bytes
+        record["device_wire_build_id"] = "%08x" % int(_b["diag_build_id"])
+    else:
+        record["device_wire_git_hash"] = "0x%08X" % int(_b["diag_git_hash"])
 if LAST.get(0x7F9) and LAST.get(0x7F8):
     _sk = LAST[0x7F9]
     _s2 = LAST[0x7F8]

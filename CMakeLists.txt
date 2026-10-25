@@ -30,25 +30,13 @@ add_definitions(-DWICAN_V300_STR="${WICAN_V300_STR}")
 add_definitions(-DWICAN_USB_V100_STR="${WICAN_USB_V100_STR}")
 add_definitions(-DWICAN_PRO_STR="${WICAN_PRO_STR}")
 
-# THE NAME IS RE-CHECKED ON EVERY BUILD, not only when CMake configures (spec
-# 12.3 item 3, "Every build names its image from the tree it compiled", added
-# 2026-10-13, user). git_tree_name() runs the same `git describe --tags --always
-# --dirty` as before, and also makes every build -- `idf.py build` or `ninja`
-# directly -- run it again first and re-run CMake if the answer changed, so an
-# edit is never compiled under the clean name of the commit before it. If git
-# cannot answer, the build fails. How, and why it runs before anything is
-# compiled: cmake/git_tree_name.cmake.
-#
-# THE NAME ENTERS THE BUILD ONCE (spec 12.3 item 3, same day, user): the call
-# also sets PROJECT_VER, which ESP-IDF embeds as esp_app_desc.version, and the
-# firmware reads the name from there at runtime. There is no -DGIT_SHA: as a
-# define on every compile line it recompiled the whole project on each name
-# change, and the name now changes on a tree's first edit and on its revert.
-# GIT_SHA below is only the dot-stripped form for the image name.
-include(${CMAKE_CURRENT_LIST_DIR}/cmake/git_tree_name.cmake)
-git_tree_name(GIT_SHA)
-
-string(REPLACE "." "" GIT_SHA "${GIT_SHA}")
+# THE VERSION IS ESP-IDF'S OWN (spec 12.3 item 3, port step 0c; shared/tools
+# R4). Nothing here sets PROJECT_VER, there is no version.txt and project()
+# below gets no VERSION, so ESP-IDF runs `git describe --always --tags --dirty`
+# at configure and embeds it as esp_app_desc.version. That is the only place
+# the commit enters the image; the project name below carries none. Both are
+# labels (shared/tools R6): the image is named by its image hash, which 0x7F3
+# carries (spec 10).
 
 # Uncomment and use one of the following as needed
 # set(HARDWARE_VER ${WICAN_V210})
@@ -107,13 +95,11 @@ set(WICAN_FEATURE_REALDASH OFF CACHE BOOL "RealDash boot branch (main.c); off in
 # STATIC discriminator readable without flashing -- which the runtime marker
 # (0x7F1 diag_flags bit3) is not. `build_output.py`'s project-name row reads it.
 #
-# WHY "_auto"/"_man" AND NOT "_autoarm"/"_manual". The budget below is 31
-# characters. "wican-fw_obd_" is 13 and a DIRTY GIT_SHA is 13 ("<sha>-dirty"),
-# so a dirty tree leaves exactly 5. "_manual" is 7 and would therefore break
-# EVERY dirty build, not merely dirty auto-arm ones -- that is, the ordinary
-# edit-and-build loop. The first version of this block used the long forms and
-# called the fallout deliberate, having worked the arithmetic for the auto-arm
-# case only. "_auto" is 5 and "_man" is 4, so both fit a dirty tree.
+# WHY "_auto"/"_man" AND NOT "_autoarm"/"_manual". Until port step 0c the name
+# also carried the commit, and with a dirty one ("<sha>-dirty", 13) the
+# 31-character budget below left exactly 5 for this suffix. The name no longer
+# carries a commit (spec 12.3 item 3, shared/tools R4), but the short forms stay:
+# the build checks and the records already read them.
 if(GEN_INHIBIT_AUTOARM)
     set(GI_ARM_SUFFIX "_auto")
 else()
@@ -121,24 +107,20 @@ else()
 endif()
 
 # THE FAULT INJECTION IS IN THE NAME TOO, and for a sharper reason than the arm
-# state. Both `git_version` over HTTP and the 0x7F3 wire hash are derived from
-# GIT_SHA, so a rollback-rehearsal build and a good build AT THE SAME COMMIT are
-# indistinguishable through every channel the device exposes. The only static
-# discriminator that survives into the image is esp_app_desc.project_name; the
-# only runtime one is the `FAULT INJECT:` console line, which requires a serial
-# capture to be running at the right moment to be seen at all.
+# state. `git_version` over HTTP is the commit, so a rollback-rehearsal build and
+# a good build AT THE SAME COMMIT report the same one. Their image hashes differ,
+# and 0x7F3 carries the hash's first four bytes (spec 10), but a hash says which
+# variant it is only once it is looked up in a record. The only static
+# discriminator that survives into the image and reads as a variant is
+# esp_app_desc.project_name; the only runtime one is the `FAULT INJECT:` console
+# line, which requires a serial capture to be running at the right moment to be
+# seen at all.
 #
 # THIS ONE IS MARKED BY ABSENCE AND THE ARM STATE IS NOT, which contradicts the
-# block above unless the difference is stated. Two reasons. (1) Both arm states
-# are legitimate things to deploy, so a bare name is ambiguous between two live
-# options; a fault-injected image must never ship, so absence means "an ordinary
-# build" and is ambiguous between nothing. (2) The 31-character budget: spelling
-# out the good case as "_ok" costs 3 characters on EVERY build, which takes a
-# dirty tree to 33 and so breaks the ordinary edit-and-build loop -- exactly the
-# arithmetic that chose "_man" over "_manual". A fault build at 28 clean fits;
-# at 34 dirty it does not, and the FATAL_ERROR below is the right answer there,
-# because a rehearsal image whose provenance is "some uncommitted tree" is
-# worthless regardless of its name.
+# block above unless the difference is stated. Both arm states are legitimate
+# things to deploy, so a bare name is ambiguous between two live options; a
+# fault-injected image must never ship, so absence means "an ordinary build" and
+# is ambiguous between nothing.
 if(OTA_HEALTH_FAULT_INJECT)
     set(GI_FAULT_SUFFIX "_flt")
 else()
@@ -149,16 +131,13 @@ endif()
 # the fault build's reason: at the same commit it and the normal manual image
 # would otherwise share a filename, a project_name and a git_version, and the
 # test build's own symbols and strings are the only other thing that tells them
-# apart. Marked by absence, like "_flt", and for the same two reasons. "_rt" is
-# 3: 13 + 7 + 4 + 3 = 27 clean fits, 13 + 13 + 4 + 3 = 33 dirty does not, and
-# the FATAL_ERROR below is again the right answer -- a test image that evidence
-# rests on must have a commit behind it.
+# apart. Marked by absence, like "_flt", and for the same reason.
 if(GI_TEST_RESTART_QUIESCE)
     set(GI_TEST_SUFFIX "_rt")
 else()
     set(GI_TEST_SUFFIX "")
 endif()
-set(PRJ_BIN "${PROJECT_PREF}_${HW_PREF}_${GIT_SHA}${GI_ARM_SUFFIX}${GI_FAULT_SUFFIX}${GI_TEST_SUFFIX}")
+set(PRJ_BIN "${PROJECT_PREF}_${HW_PREF}${GI_ARM_SUFFIX}${GI_FAULT_SUFFIX}${GI_TEST_SUFFIX}")
 
 #
 # esp_app_desc.project_name is a 32-byte field -- 31 characters plus the NUL -- and
@@ -168,27 +147,20 @@ set(PRJ_BIN "${PROJECT_PREF}_${HW_PREF}_${GIT_SHA}${GI_ARM_SUFFIX}${GI_FAULT_SUF
 # anyone would look for it. So check it here, where the name is built, and say what
 # to do.
 #
-# With "_auto"/"_man" nothing in normal use trips this: 20 + 5 = 25 clean, 26 + 5 = 31
-# dirty, which is exactly the limit. It is kept because the margin is zero on a dirty
-# tree, so anything that lengthens GIT_SHA takes it over -- and the obvious candidate
-# is a TAG. `git describe --tags --always --dirty` returns the short sha only while
-# the repo has no tags (checked 2026-10-04: it has none). Tag it `v1.0` and GIT_SHA
-# becomes something like `v10-3-g82e4e09`, which overflows at once. This message is
-# what that day should produce instead of a static assert about a struct field.
+# The name holds no commit (spec 12.3 item 3), so nothing in a build's tree
+# changes its length: the longest today is "wican-fw_obd_pro" (16) with "_auto",
+# "_flt" and "_rt", 28. It is kept for the suffix that would take it over 31,
+# which should produce this message instead of a static assert about a struct
+# field.
 #
 string(LENGTH "${PRJ_BIN}" PRJ_BIN_LEN)
 if(PRJ_BIN_LEN GREATER 31)
     message(FATAL_ERROR
         "project name '${PRJ_BIN}' is ${PRJ_BIN_LEN} characters; "
         "esp_app_desc.project_name holds 31 plus a NUL.\n"
-        "  Commit the working tree (that drops '-dirty', 6 characters), or shorten "
-        "GI_ARM_SUFFIX in CMakeLists.txt.\n"
-        "  A rollback-rehearsal build adds GI_FAULT_SUFFIX ('_flt', 4 more) and so "
-        "needs a CLEAN tree: 13 + 7 + 4 + 4 = 28 fits, 13 + 13 + 4 + 4 = 34 does "
-        "not. Commit rather than shortening -- an image built to be flashed over "
-        "the live one must have a commit behind it.\n"
-        "  A restart test build adds GI_TEST_SUFFIX ('_rt', 3 more) and needs a "
-        "CLEAN tree for the same reason.\n"
+        "  It is PROJECT_PREF, HW_PREF and this build configuration's "
+        "GI_ARM_SUFFIX, GI_FAULT_SUFFIX and GI_TEST_SUFFIX (CMakeLists.txt): "
+        "shorten a suffix.\n"
         "  Left unchecked this surfaces as a _Static_assert in "
         "components/esp_app_format/esp_app_desc.c, which does not point here.")
 endif()

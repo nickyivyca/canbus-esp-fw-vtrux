@@ -627,7 +627,7 @@ static int cfg_set(gi_config_t *c, const char *k, long long v)
     else if (!strcmp(k, "diag_period_ms"))  c->diag_period_ms  = (uint32_t)v;
     else if (!strcmp(k, "max_rx_errors"))   c->max_rx_errors   = (uint32_t)v;
     else if (!strcmp(k, "fw_version"))      c->fw_version      = (uint16_t)v;
-    else if (!strcmp(k, "git_hash"))        c->git_hash        = (uint32_t)v;
+    else if (!strcmp(k, "build_id"))        c->build_id        = (uint32_t)v;   /* git_hash before port step 0c */
     else if (!strcmp(k, "autoarm"))         c->autoarm_configured = v != 0;
     else return 0;
     return 1;

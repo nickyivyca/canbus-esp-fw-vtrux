@@ -1,6 +1,7 @@
-# Baseline part C5, C6 and the scan-scope check (baseline_run_list.md): the firmware
-# repo's stale_name_check.py, name_once_check.py and scan_scope_check.py, one after
-# another, from an IDF-exported shell. Each runs idf.py itself and cannot be
+# Baseline part C's scan-scope check (baseline_run_list.md): the firmware repo's
+# scan_scope_check.py, from an IDF-exported shell. C5 (stale_name_check.py) and C6
+# (name_once_check.py) were retired at port step 0c with their spec 12.4 rows (user,
+# 2026-10-25). It runs idf.py itself and cannot be
 # throttled, so run this only when no wall-clock test of either project is running
 # (firmware/esp-development.md). Gen-inhibit tester, 2026-10-17 (run by hand on
 # c65c45e; this records it).
@@ -27,7 +28,7 @@ Remove-Item Env:MSYSTEM -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 $OutDir = (Resolve-Path $OutDir).Path
 $checks = Join-Path $Clone "test\build_checks"
-foreach ($c in @("stale_name_check", "name_once_check", "scan_scope_check")) {
+foreach ($c in @("scan_scope_check")) {
     $txt = Join-Path $OutDir "$($c)_$Commit.txt"
     $json = Join-Path $OutDir "$($c)_$Commit.json"
     "start $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $c --commit $Commit (clone HEAD $(& git -C $Clone rev-parse --short HEAD))" |

@@ -120,6 +120,7 @@ import time
 import urllib.request
 import zlib
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
+import image_elf_sha  # noqa: E402  the app descriptor's fields
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -239,12 +240,17 @@ def image_facts(path):
     name = None
     if i >= 0:
         name = data[i:i + 32].split(b"\x00")[0].decode("ascii", "replace")
+    try:
+        version = image_elf_sha.read_desc(data)["version"]
+    except ValueError:
+        version = None
     return {
         "path": path,
         "exists": True,
         "size": len(data),
         "md5": hashlib.md5(data).hexdigest(),
         "project_name": name,
+        "version": version,
         "has_fault_string": FAULT_MARKER in data,
     }
 
@@ -275,18 +281,12 @@ def judge_images(good, faulty):
     rows.append(("good name does not carry _flt",
                  bool(good["project_name"]
                       and not good["project_name"].endswith("_flt"))))
-    rows.append(("same commit in both names",
-                 _commit_of(good["project_name"]) ==
-                 _commit_of(faulty["project_name"])))
+    # The commit is the app descriptor's version (shared/tools R4). This row read it out of
+    # project_name until port step 0c took it out of there (2026-10-25): both names then gave
+    # "man" and the row passed on any two images.
+    rows.append(("same commit in both versions",
+                 bool(good.get("version")) and good.get("version") == faulty.get("version")))
     return rows
-
-
-def _commit_of(name):
-    """wican-fw_obd_<sha>_man[_flt] -> <sha>."""
-    if not name:
-        return None
-    parts = name.split("_")
-    return parts[2] if len(parts) >= 3 else None
 
 
 # ---------------------------------------------------------------- serial
@@ -1273,8 +1273,8 @@ def phase_verify(args):
          state.get("device_id") == args.expect_device_id),
         ("reading is >= 60 s after the last OTA (bring-up row 1.5b)",
          settled or bool(args.assume_settled)),
-        ("git_version matches the good image",
-         state["git_version"] == _commit_of(good.get("project_name"))),
+        ("git_version matches the good image's version",    # the descriptor's (R4), since port step 0c
+         bool(good.get("version")) and state["git_version"] == good.get("version")),
         ("mode is 0", state["mode"] == 0),
         ("not live", state["inhibit_live"] is False),
         ("no latched abort", state["abort_latched"] is False),
