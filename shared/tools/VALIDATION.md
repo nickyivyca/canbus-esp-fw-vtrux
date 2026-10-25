@@ -594,7 +594,15 @@ same folder. The interposer's test evidence is
   changes data, not tooling. Layer 0 for the per-project and per-board
   split. Goal 3 (user, 2026-10-22): the interposer has its own project
   root. Where board data lives: user, 2026-10-23, in the gen-inhibit
-  reviewer's session. The X2 jammer is shared test tooling, alongside the
+  reviewer's session; **changed 2026-10-25** (user, same session): every
+  board under `shared/boards/`, as the port plan's Layer 1 has it, the
+  WiCAN's included. The 2026-10-23 rule kept a board's data in a project's
+  root when only that project builds for it, which put the WiCAN's apart
+  from the plan's `shared/boards/wican_v3/`; the interposer reviewer found
+  the conflict. The WiCAN's board config sits beside the stock WiCAN code
+  that moves to `shared/` at step 1a and is written for that hardware.
+  gen-inhibit's board data stays in its `vtrux_checks.json` until step 1a
+  moves it. The X2 jammer is shared test tooling, alongside the
   bench toolkit, not part of the shared firmware code, and it builds for the
   X2 as the interposer does.
 - **Status:** complete.
