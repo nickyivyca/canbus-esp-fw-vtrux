@@ -373,18 +373,17 @@ because its patterns and values name what it looks for; its README
 
 **The bench is shared by the per-component testers.** It is the whole rig
 -- both boards, the PC, the USB adapters and the CAN segments -- and one
-hardware test runs at a time, so `$REVERSE_IT_DIR/firmware/bench-holder.md`
-is one lock on all of it. Whichever tester has hardware work first takes
-it, and releases it when it is not actively running. A tester can loan it
-to its own component's implementor for bring-up. The rules for taking,
-loaning and handing back are in that file. It stays out of git: it changes
-at every hand-off, and it records home-bench details.
-
-The lock's planned move to an append-only log, written only by
-`bench_lock.py`, is specified in `shared/bench/SPEC.md` on `shared/main`.
-Until that cutover, `bench-holder.md`'s rules apply as written. **The
-cutover's merge carries the rewrite of this paragraph** and of
-`bench-holder.md`'s rules (see "Docs change with the tooling").
+hardware test runs at a time. **The lock is
+`$REVERSE_IT_DIR/firmware/bench-log.jsonl`,** an append-only log written
+only by `shared/bench`'s `bench_lock.py`, through its command line or the
+chain runner, on the bench host the log names (spec: `shared/bench/SPEC.md`
+on `shared/main`). Nothing edits or deletes a line of it. Whichever tester
+has hardware work first takes it, and releases it when it is not actively
+running. A tester can loan it to its own component's implementor for
+bring-up. The rules for taking, loaning and handing back, and each board's
+state, are in `$REVERSE_IT_DIR/firmware/bench-holder.md`. Both files stay
+out of git: they change at every hand-off, and they record home-bench
+details.
 
 ### Build tooling
 
@@ -416,8 +415,9 @@ The cause was never isolated (user, 2026-10-15, for all of this section):
    of either project is running, every build on the shared machine, of either
    project, is throttled (point 3). A full-speed build waits until no
    wall-clock test is running. The tester's own heavy local work counts the
-   same. Before a build, check both `$REVERSE_IT_DIR/firmware/bench-holder.md` and the process
-   list for running simulators.
+   same. Before a build, check `bench_lock.py status`, the "No builds" line
+   in `$REVERSE_IT_DIR/firmware/bench-holder.md`, and the process list for
+   running simulators.
 2. **The trials behind it** (2026-10-15/16). Interposer: a full-speed build
    failed (about 128 `charger_sim` STALLs a minute, worst 461 ms, a staleness
    trip). A throttled build passed (one STALL of 48 ms in 672 s) but took 3.3
@@ -442,8 +442,10 @@ The cause was never isolated (user, 2026-10-15, for all of this section):
 4. **Testers raise their simulators** to above-normal priority, never High or
    Realtime, which can starve the USB stack the CAN adapters need.
 5. **The tester's own timing checks** still decide whether a run counts. A
-   tester can mark a particularly expensive run "no builds" in
-   `$REVERSE_IT_DIR/firmware/bench-holder.md`.
+   tester can mark a particularly expensive run "no builds" on the "No
+   builds" line of `$REVERSE_IT_DIR/firmware/bench-holder.md`, set when the
+   run starts and cleared at its release. The bench log has no place for
+   it.
 6. **HTTP round trips to the device are slowed by load too.** Under the build,
    gen-inhibit's arm POST took 39 ms instead of 18 ms. Testers time windows
    from when a request was sent, not from when it returned.

@@ -28,14 +28,14 @@ to the user or restate the reviewer's options; the user rules on it in the
 reviewer's session. Your part resumes when the spec changes.
 
 **The bench belongs to the testers.** It is one rig shared by both projects,
-with one lock on all of it in `$REVERSE_IT_DIR/firmware/bench-holder.md`, so
-the other project's tester may be running on it. Answer any question about
-whether the bench is clear from that file and a process list, never from
-memory. For bring-up work that is easier to do with the hardware in hand, ask
-your component's tester for a loan. While you hold it, your hardware runs
-still do not go in `VERIFICATION.md`. When you are done, follow the hand-back
-rules in `$REVERSE_IT_DIR/firmware/bench-holder.md` and tell the tester that
-loaned it.
+with one lock on all of it, the log `$REVERSE_IT_DIR/firmware/bench-log.jsonl`,
+so the other project's tester may be running on it. Answer any question about
+whether the bench is clear from `bench_lock.py status` and a process list,
+never from memory. For bring-up work that is easier to do with the hardware in
+hand, ask your component's tester for a loan. While you hold it, your
+hardware runs still do not go in `VERIFICATION.md`. When you are done,
+release it per the rules in `$REVERSE_IT_DIR/firmware/bench-holder.md` and
+tell the tester that loaned it.
 
 **Commit on your topic branch, `<project>/<role>/<topic>`, in your own
 worktree.** Never push, and never touch `<project>/main`. Tell the reviewer
