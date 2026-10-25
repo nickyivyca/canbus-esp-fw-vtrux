@@ -60,12 +60,19 @@ unless the image changes, which the reproducible test (R19) shows.
 - **R3. Evidence cites the code hash.** Bench results carry to a release
   build with the same code hash.
 - **R4. The commit enters the image once,** in the app descriptor's version
-  field. Nothing else compiles it in.
+  field. Nothing else compiles it in. The field holds ESP-IDF's default
+  version string, `git describe --always --tags --dirty` run at configure:
+  a project sets no `PROJECT_VER`, no `version.txt` and no `VERSION`
+  argument to `project()`, and leaves `CONFIG_APP_PROJECT_VER_FROM_CONFIG`
+  off. `project_name` carries no commit.
 - **R5. Identity does not depend on branch, clone path or host OS:**
-  - the same commit built on the same host OS, on any branch or at any clone
-    path, gives the same image hash. The image hash includes the commit
-    (R4), so two commits with identical files give two image hashes; the
-    code hash is what stays the same (R2, R3);
+  - the same commit built on the same host OS, on any branch, in any
+    worktree of one clone, gives the same image hash. The image hash
+    includes the version string (R4), so two commits with identical files
+    give two image hashes, and two clones of one commit can too, since the
+    version string depends on the clone (how far git abbreviates the
+    commit, and which tags it holds). The code hash is what stays the same
+    (R2, R3);
   - the same files built on either host OS give the same code hash. The
     image hash may differ between host OSes.
 - **R6. Identity never rests on the version string or the file name.** Both
