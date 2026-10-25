@@ -49,16 +49,23 @@ than trusting the log or the file. Follow the process-cleanup rules in
 `AGENTS.md`, "Killing background processes".
 
 **Self-compact.** You have two compaction points:
-- **After a build's cases are written and committed,** before you run the
-  suite. The resume message names the build and says to run its suite and
-  report per `VERIFICATION.md`.
+- **After you start a build's suite, or another long run, as a background
+  task.** The build's cases are written and committed, and the run is under
+  way: the boards are identified and the first case is running. Write the
+  task id, the run folder and the next steps in your working log first. The
+  resume message names the build and says to wait for the task's
+  notification without polling, then judge the run and report per
+  `VERIFICATION.md`.
 - **After you have reported a build,** when the next build message has
   already arrived. The resume message names that build and says to start on
   it per its build message.
 
-At either point you may run `/self-compact`. Not during a hardware run, not
-with uncommitted harness changes, not with a question to the reviewer open,
-and not while you hold the bench lock: take it after the resume.
+At either point you may run `/self-compact`. Not while you are driving
+hardware steps by hand, not while you hold a bench lock you took by hand,
+not with uncommitted harness changes, and not with a question to the
+reviewer open. A lock that a background runner holds itself doesn't count.
+If you are about to take the lock by hand, compact first and take it after
+the resume.
 
 When the idle-compaction hook asks (AGENTS.md, "Compacting your own
 context"), that is a compaction point too, whatever state you are in: an
