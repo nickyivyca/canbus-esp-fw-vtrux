@@ -15,7 +15,13 @@ remote script) and writes nothing else. Then the script's project-folder lines,
 its long-arm step and its fixture-source hash are run in fake archive trees, one
 with project_dir.py and one without, with `step` printing each argument in
 brackets; then again for a root with spaces and a root under ~/. Nothing reaches
-madhouse-debian. Needs a gen-inhibit tree (FW, default this repo, gi_paths.repo_root())
+madhouse-debian.
+
+The archive (2026-10-25): the fake ssh saves what the copy's tar would unpack. A
+commit with tools/gen_inhibit/bench/gi_diag.py (GI_TEST_DECODE_COMMIT, default this
+tree's HEAD) ships gi_diag.py, pins.json and the diag_schemas/ export beside main/
+and test/; the old commit ships main/ and test/ only. The test_cfg_build_id step
+runs where the archive has the test, and not where it does not. Needs a gen-inhibit tree (FW, default this repo, gi_paths.repo_root())
 for `git archive`.
 
     py -3.14 -B tools/gen_inhibit/bench/test_baseline_host_run.py
@@ -36,6 +42,7 @@ SCRIPT = "baseline_host_run.sh"
 BASH = shutil.which("bash") or r"C:/Program Files/Git/usr/bin/bash.exe"
 FW = os.environ.get("FW") or gi_paths.repo_root()
 COMMIT = os.environ.get("GI_TEST_COMMIT", "2a1a0f1")
+DECODE_COMMIT = os.environ.get("GI_TEST_DECODE_COMMIT", "HEAD")    # has gi_diag.py (toolkit item 10 on)
 RROOT = "fake-rit-root"
 SPACED = "fake rit/My Libraries"            # spaces, as NICKY-XPS's own root has (relative, made in the tree)
 TILDE = "~/fake-rit"                        # as the settings' gi_host_root is written
@@ -58,24 +65,26 @@ FAKE_SSH = r"""#!/usr/bin/env bash
 # the second argument is the remote command; "bash -s" carries the script on stdin
 case "$2" in
   "bash -s") cat > "$CAPTURE"; echo "=== exit 0 (fake)" ;;
+  *"tar xf"*) if [ -n "$ARCHIVE" ]; then cat > "$ARCHIVE"; else cat > /dev/null; fi ;;
   *) cat > /dev/null ;;
 esac
 exit 0
 """
 
 
-def remote_script(script_dir, tmp, rroot=RROOT, tag="plain"):
+def remote_script(script_dir, tmp, rroot=RROOT, tag="plain", commit=None):
     bin_ = os.path.join(tmp, "bin")
     if not os.path.isdir(bin_):
         os.makedirs(bin_)
         with open(os.path.join(bin_, "ssh"), "w", newline="\n") as fh:
             fh.write(FAKE_SSH)
     cap = os.path.join(tmp, "remote_%s.sh" % tag)
+    arc = os.path.join(tmp, "archive_%s.tar" % tag)
     e = dict(os.environ)
-    e.update({"PATH": fw(bin_) + os.pathsep + e.get("PATH", ""), "CAPTURE": fw(cap), "FW": fw(FW),
+    e.update({"PATH": fw(bin_) + os.pathsep + e.get("PATH", ""), "CAPTURE": fw(cap), "ARCHIVE": fw(arc), "FW": fw(FW),
               "RROOT": rroot, "PY": "PYTHON", "GI_OUT": fw(os.path.join(tmp, "out_" + tag)), "REMOTE": "nowhere",
               "MSYS_NO_PATHCONV": "1"})
-    r = subprocess.run([BASH, fw(os.path.join(script_dir, SCRIPT)), COMMIT], capture_output=True, text=True,
+    r = subprocess.run([BASH, fw(os.path.join(script_dir, SCRIPT)), commit or COMMIT], capture_output=True, text=True,
                        env=e, timeout=300)
     s = open(cap, encoding="utf-8").read() if os.path.exists(cap) else ""
     return r.returncode, s, r.stdout + r.stderr
@@ -106,6 +115,24 @@ def run_lines(s, tree, home=None):
     return r.stdout + r.stderr, len(keep)
 
 
+def archive_names(tmp, tag):
+    """The members of the archive the fake ssh saved for `tag`, without the leading ./"""
+    import tarfile
+    p = os.path.join(tmp, "archive_%s.tar" % tag)
+    if not os.path.exists(p) or not os.path.getsize(p):
+        return []
+    with tarfile.open(p) as t:
+        return [n[2:] if n.startswith("./") else n for n in t.getnames()]
+
+
+def cfg_step(s, tree):
+    """The test_cfg_build_id lines of the remote script, run in `tree` with `step` printing."""
+    keep = [ln for ln in s.splitlines() if "test_cfg_build_id" in ln and not ln.startswith("#")]
+    body = "\n".join(["step() { printf 'STEP %s\\n' \"$1\"; }"] + keep)
+    r = subprocess.run([BASH, "-c", body], cwd=tree, capture_output=True, text=True, timeout=60)
+    return r.stdout + r.stderr, len(keep)
+
+
 def fake_root(base, rel):
     """A reverse-it root at base/rel holding the long-arm capture."""
     p = os.path.join(base, *rel.split("/"), *CAPTURE_REL.split("/"))
@@ -119,6 +146,31 @@ def checks(script_dir):
     with tempfile.TemporaryDirectory(prefix="gi-host-run-", dir=gi_paths.scratch("tmp", run=False)) as tmp:
         rc, s, out = remote_script(script_dir, tmp)
         check("the script runs to the end with the fake ssh", rc == 0 and s, (rc, out[-300:]))
+        names = archive_names(tmp, "plain")
+        check("an old commit (%s): the copy holds main/ and test/, and no tools/ or diag_schemas/" % COMMIT,
+              any(n.startswith("main/") for n in names) and any(n.startswith("test/") for n in names)
+              and not any(n.startswith(("tools/", "diag_schemas")) for n in names), sorted(set(n.split("/")[0] for n in names)))
+        rc4, s4, out4 = remote_script(script_dir, tmp, tag="decode", commit=DECODE_COMMIT)
+        names = archive_names(tmp, "decode")
+        check("a commit with gi_diag.py (%s): the script runs to the end" % DECODE_COMMIT, rc4 == 0 and s4, (rc4, out4[-300:]))
+        check("a commit with gi_diag.py: the copy holds gi_diag.py and pins.json",
+              "tools/gen_inhibit/bench/gi_diag.py" in names and "tools/gen_inhibit/bench/pins.json" in names,
+              [n for n in names if n.startswith("tools/")])
+        check("a commit with gi_diag.py: the copy holds the diag_schemas export at its root",
+              "diag_schemas/manifest.json" in names, [n for n in names if n.startswith("diag")])
+        check("a commit with gi_diag.py: the copy holds main/ and test/ too",
+              any(n.startswith("main/") for n in names) and any(n.startswith("test/") for n in names), "")
+        has = os.path.join(tmp, "cfg_has")
+        hasnt = os.path.join(tmp, "cfg_hasnt")
+        os.makedirs(has)
+        os.makedirs(hasnt)
+        open(os.path.join(has, "test_cfg_build_id.py"), "w").close()
+        out_has, nk = cfg_step(s4, has)
+        out_hasnt, _ = cfg_step(s4, hasnt)
+        check("test_cfg_build_id: one line in the remote script", nk == 1, nk)
+        check("test_cfg_build_id: a step where the archive has the test", out_has.strip() == "STEP test_cfg_build_id",
+              out_has)
+        check("test_cfg_build_id: no step where it does not", out_hasnt.strip() == "", out_hasnt)
         new = os.path.join(tmp, "new", "test", "gen_inhibit_host")
         old = os.path.join(tmp, "old", "test", "gen_inhibit_host")
         os.makedirs(new)
@@ -204,6 +256,15 @@ MUTANTS = [
      '< "\\$RR/projects/vtrux/notes/artifacts/gen-inhibit/runs/scottsvalley_armable_300s.log" | cut',
      "< \\$RR/projects/vtrux/notes/artifacts/gen-inhibit/runs/scottsvalley_armable_300s.log | cut"),
     ("RROOT is pasted in without printf %q", '*)     RQ=$(printf %q "$RROOT") ;;', '*)     RQ=$RROOT ;;'),
+    # the archive and the build-id step (2026-10-25)
+    ("gi_diag.py and pins.json not shipped",
+     '  git -C "$FW" archive "$C" tools/gen_inhibit/bench/gi_diag.py tools/gen_inhibit/bench/pins.json | tar -x -C "$STAGE" || exit 2\n', ""),
+    ("the export not made", '  ${LOCAL_PY:-py -3.14} -B "$FW/tools/gen_inhibit/bench/gi_diag.py" export "$STAGE/diag_schemas" >/dev/null || exit 2\n', ""),
+    ("the decode files shipped for every commit", 'if git -C "$FW" cat-file -e "$C:tools/gen_inhibit/bench/gi_diag.py" 2>/dev/null; then',
+     'if true; then'),
+    ("the build-id step not guarded", "if [ -e test_cfg_build_id.py ]; then step test_cfg_build_id $PY test_cfg_build_id.py; fi",
+     "step test_cfg_build_id $PY test_cfg_build_id.py"),
+    ("the build-id step dropped", "if [ -e test_cfg_build_id.py ]; then step test_cfg_build_id $PY test_cfg_build_id.py; fi\n", ""),
     ("a leading ~/ is quoted as a literal ~", '''  "~/"*) RQ='"$HOME"/'$(printf %q "${RROOT#"~/"}") ;;\n''', ""),
 ]
 
