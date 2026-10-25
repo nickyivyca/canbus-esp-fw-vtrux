@@ -64,7 +64,9 @@ unless the image changes, which the reproducible test (R19) shows.
   version string, `git describe --always --tags --dirty` run at configure:
   a project sets no `PROJECT_VER`, no `version.txt` and no `VERSION`
   argument to `project()`, and leaves `CONFIG_APP_PROJECT_VER_FROM_CONFIG`
-  off. `project_name` carries no commit.
+  off. `project_name` names the project and its build variant, is fixed
+  for each build configuration, and carries no commit; each project's spec
+  lists its variants.
 - **R5. Identity does not depend on branch, clone path or host OS:**
   - the same commit built on the same host OS, on any branch, in any
     worktree of one clone, gives the same image hash. The image hash
