@@ -39,15 +39,15 @@ documents cite them.
 The build tooling lives in `shared/tools/` and never enters a firmware image.
 It covers:
 - the build script and the record writer;
-- the three build checks (scope, options, reproducible) and the build-switch
-  check;
+- the two build checks (scope, options), the build-switch check and the
+  reproducible test;
 - the image-reading library: the app descriptor parser and the image hash
   read from a `.bin`;
 - the comparison tool of goal 6, which the tester owns. Its requirements are
   not written yet (section 8).
 
 It sits outside the layer table of goal 6: a change to it voids no evidence
-unless the image changes, which the reproducible check (R19) shows.
+unless the image changes, which the reproducible test (R19) shows.
 
 ## 2. Identity
 
@@ -157,8 +157,12 @@ unless the image changes, which the reproducible check (R19) shows.
   build to the commit. Like the other checks here, it runs on the finished
   build and is not a refusal in the release build; any session may run it.
   Bench and dev builds are not checked.
-- **R19. Reproducible.** Rebuilding the same tree on the same host OS gives
-  the same image hash.
+- **R19. Reproducible.** One clean commit, built twice on the same machine
+  in two different folders, each time by the release build script, gives
+  the same image hash both times. This is a test of the tooling, not a check
+  on each release build. It is rerun whenever something that can reach the
+  image changes: the build script or the record writer, the image-reading
+  library, the ESP-IDF version, or the compiler, CMake or Ninja version.
 - **R20. Build switches.** Every preprocessor symbol the project's source
   tests (other than ESP-IDF's `CONFIG_*` and header guards), and every build
   option tested by a CMake file the build reads from the repo, is listed in

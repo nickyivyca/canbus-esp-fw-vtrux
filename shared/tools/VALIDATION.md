@@ -345,6 +345,26 @@ same folder. The interposer's test evidence is
   On NICKY-XPS the first pair was built with ccache on; rebuilt with it
   off (gen-inhibit test evidence, section 13, "x1 and x2 again with
   ccache off", 2026-10-23), both gave the same bytes.
+- **Readings** (user, 2026-10-24, in the gen-inhibit reviewer's session),
+  raised by the gen-inhibit tester before writing the test:
+  - A test of the tooling, rerun when a change could reach the image, not a
+    check run on each release build. The test makes its own two builds, so
+    whether a check only compares or also builds is not a question for it.
+  - "The same tree" is one clean commit in any two folders on one machine
+    (option b of two; the other was the same folder rebuilt). With
+    reproducible builds on, ESP-IDF maps the project, IDF, build and
+    toolchain paths to placeholders (its guide, "Reproducible Builds"), and
+    the R2 measurement's builds at two paths were byte-identical.
+  - A project's reproducible-build setting is not this test's concern. For
+    gen-inhibit it is in the release profile
+    (`CONFIG_APP_REPRODUCIBLE_BUILD`), so R18 checks it on each release
+    build. gen-inhibit fails both until port plan step 0b turns it on.
+  - **Known gap, accepted** (option a of three): ESP-IDF's guide says source
+    that uses `__DATE__` or `__TIME__` makes a build unreproducible whatever
+    the setting, and a test rerun only on tooling changes would not see such
+    a change in product code. On 2026-10-24 neither macro appears in
+    gen-inhibit's `main/` or `components/`. Turned down: a rerun before each
+    truck flash, and a text check for the macros beside R20.
 - **Status:** complete.
 
 ### R20. Build switches
