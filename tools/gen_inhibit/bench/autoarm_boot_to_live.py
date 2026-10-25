@@ -43,8 +43,7 @@ import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 RUNS = gi_paths.runs()
-BENCH_FLASH = os.path.join(os.path.expanduser("~"), "Git", "wican-fw-vtrux-tester", "tools",
-                           "gen_inhibit", "bench_flash.py")
+BENCH_FLASH = os.path.join(gi_paths.repo_root(), "tools", "gen_inhibit", "bench_flash.py")
 
 
 def boot_instant(reads):
