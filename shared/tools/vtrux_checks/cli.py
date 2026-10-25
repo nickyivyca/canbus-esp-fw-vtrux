@@ -8,6 +8,9 @@
     python -B -m vtrux_checks switches --build DIR
                                     R20: every switch the release build's source tests
                                     is in the table, and each refusal row passes
+    python -B -m vtrux_checks board --build DIR
+                                    R21: the partition table, the application slot
+                                    and the target against the board's data
 
 Exit 0 when the check passes, 1 when it fails or cannot read the build, 2 on
 a usage error.
@@ -16,7 +19,7 @@ a usage error.
 import argparse
 import sys
 
-from . import options, scope, switches
+from . import board, options, scope, switches
 
 
 def main(argv=None):
@@ -33,8 +36,10 @@ def main(argv=None):
     o.add_argument("--build", required=True, help="the build folder of a release build (<project>/build)")
     w = sub.add_parser("switches", help="R20: build switches and their refusal rows")
     w.add_argument("--build", required=True, help="the build folder of a release build (<project>/build)")
+    b = sub.add_parser("board", help="R21: partition table, slot and target against the board data")
+    b.add_argument("--build", required=True, help="the build folder of a release build (<project>/build)")
     args = ap.parse_args(argv)
-    return {"scope": scope, "options": options, "switches": switches}[args.cmd].main(args)
+    return {"scope": scope, "options": options, "switches": switches, "board": board}[args.cmd].main(args)
 
 
 if __name__ == "__main__":

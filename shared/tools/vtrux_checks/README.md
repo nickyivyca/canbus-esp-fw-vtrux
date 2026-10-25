@@ -17,6 +17,7 @@ python -B -m vtrux_checks scope --build build --release    # R17, a release buil
 python -B -m vtrux_checks scope --build build --bench      # R17, a bench or dev build
 python -B -m vtrux_checks options --build build            # R18, a finished release build only
 python -B -m vtrux_checks switches --build build           # R20, a finished release build only
+python -B -m vtrux_checks board --build build              # R21, a finished release build only
 ```
 
 Any session may run them; they change nothing. With ESP-IDF exported, from the
@@ -45,8 +46,8 @@ is a CMake built-in (gen-inhibit spec 12.3 item 3's readings, carried over, user
 A compile definition the project's CMake sets is not listed unless the project's own compiled
 source tests it (user, 2026-10-24, option b): the C scan finds it there.
 
-Run `options` and `switches` on release builds only (SPEC R18, R20): bench and dev builds are
-not checked, and the checks do not tell them apart.
+Run `options`, `switches` and `board` on release builds only (SPEC R18, R20, R21): bench and dev
+builds are not checked, and the checks do not tell them apart.
 
 ### `vtrux_checks.json`
 
@@ -63,7 +64,8 @@ rest.
     "GI_INSTRUMENT_RXQ": {"class": "test-only", "reason": "...",
                           "refusal": [{"bin_strings_absent": ["..."]}, {"elf_symbols_absent": ["..."]}]},
     "WICAN_FEATURE_REALDASH": {"class": "stock feature off in this product", "reason": "...",
-                               "refusal": [{"project_row": "no boot-time bus enable in app_main"}]}}}
+                               "refusal": [{"project_row": "no boot-time bus enable in app_main"}]}},
+ "board": {"target": "esp32c3", "partition_table": "test/build_checks/reference/stock-v4.13-partition-table.bin"}}
 ```
 
 `build_switches` (R20): the classes are `shipping variant`, `test-only`, `stock feature off in
@@ -76,6 +78,17 @@ which the project's harness writes for the image it judged: `{"image_hash": "<R1
 that component's table (SPEC R20), applied wherever the release build uses it. Other keys,
 such as a project's test triggers, are the project's own and ignored here.
 
+`board` (R21, gen-inhibit reviewer's readings of 2026-10-24): the board's `target`, an ESP-IDF
+target name, and `partition_table`, the path from the project root to the board's reference
+partition-table `.bin`, committed (git holds the reference; no hash is stored beside it). The
+application slot is the smallest app partition in that table, and the tool prefix is the one
+ESP-IDF's `tools/cmake/toolchain-<target>.cmake` sets; neither is written here. This inline form
+is for a board only this project builds for (R22: the WiCAN). A board named by a string, from a
+shared board component pinned in `dependencies.lock` and found as `boards/<name>/` under
+`managed_components/`, is **not built yet**: no board component exists until the interposer's
+port step 2a, and the check refuses the form, naming that. Flash size is not checked (with the
+user).
+
 ## Files
 
 | File | What |
@@ -84,9 +97,13 @@ such as a project's test triggers, are the project's own and ignored here.
 | `scope.py` | R17 |
 | `options.py` | R18 |
 | `switches.py` | R20 |
+| `board.py` | R21; `tool()` is where a check names a tool, from the board's target |
+| `parttable.py` | ESP-IDF's binary partition table, read from its published format, for R21 |
 | `tests/test_scope.py` | R17's rules, each shown failing on a planted input and passing on a faithful one; its readers on small files. Runs alone: `python -B shared/tools/vtrux_checks/tests/test_scope.py` |
 | `tests/test_options.py` | R18's rules, each shown failing on a planted input and passing on a faithful one; the profile's reader; the command line on a small build tree. Runs alone: `python -B shared/tools/vtrux_checks/tests/test_options.py` |
 | `tests/test_switches.py` | R20: the C and CMake scans on the ways a switch could hide; the table's reader; the ELF reader on synthetic ELFs (and against `nm` on a real one, given `VTRUX_TEST_ELF` and `VTRUX_TEST_NM`); each refusal rule and the project rows file; the judge; the build reader and the command line on a small configured build. Runs alone: `python -B shared/tools/vtrux_checks/tests/test_switches.py` |
+| `tests/test_board.py` | R21: the partition-table reader on built and broken tables; the board data's reader; the slot; the tool prefix from a fake ESP-IDF (and the real one, given `IDF_PATH`); that no check names a chip's tool; the build reader and the command line on a small build folder. Runs alone: `python -B shared/tools/vtrux_checks/tests/test_board.py` |
 
 The checks on real builds, passing and failing, are in `../verification/scope_cases.py`
-(R17), `../verification/options_cases.py` (R18) and `../verification/switches_cases.py` (R20).
+(R17), `../verification/options_cases.py` (R18), `../verification/switches_cases.py` (R20) and
+`../verification/board_cases.py` (R21).
