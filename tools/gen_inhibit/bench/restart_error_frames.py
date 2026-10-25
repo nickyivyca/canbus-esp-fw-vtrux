@@ -146,15 +146,13 @@ def hook_judged(reads, reboot_epoch, want):
 
 
 def trigger_post(name, repo=None):
-    """The POST path of a test-only switch's trigger, from the firmware repo's table.
-    One table, so the test runs and the 12.4 inert check send the same request."""
-    import importlib.util
+    """The POST path of a test-only switch's trigger, from the firmware repo's table
+    (vtrux_checks.json, "inert_triggers"). One table, so the test runs and the 12.4
+    inert check send the same request."""
     repo = repo or os.environ.get("GI_FW_REPO") or gi_paths.repo_root()
-    spec = importlib.util.spec_from_file_location(
-        "build_switches", os.path.join(repo, "test", "build_checks", "build_switches.py"))
-    bs = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(bs)
-    posts = [p for m, p in bs.TRIGGERS[name]["probes"] if m == "POST"]
+    with open(os.path.join(repo, "vtrux_checks.json"), encoding="utf-8") as fh:
+        probes = json.load(fh)["inert_triggers"][name]["probes"]
+    posts = [p for m, p in probes if m == "POST"]
     if len(posts) != 1:
         raise SystemExit("trigger %s has %d POST probes, expected 1" % (name, len(posts)))
     return posts[0]
@@ -197,7 +195,7 @@ def main():
     ap.add_argument("--restart", choices=("reboot", "crash"), default="reboot")
     ap.add_argument("--crash-path", default=None, help="POST path of the test-only crash trigger")
     ap.add_argument("--trigger", default=None,
-                    help="take the crash path from the firmware repo's trigger table (build_switches.TRIGGERS), "
+                    help="take the crash path from the firmware repo's trigger table (vtrux_checks.json inert_triggers), "
                          "e.g. GI_TEST_RESTART_QUIESCE; the repo is $GI_FW_REPO or this one")
     ap.add_argument("--page-keys", default="", help="extra /gen_inhibit fields recorded before and after")
     ap.add_argument("--record-get", default=None, help="a GET path whose JSON is recorded after the restart")

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Spec 12.3 item 3, the switch scan's CMake scope, shown both ways on real
-configures (spec 13 "Checks, not built", 2026-10-13, user via reviewer).
+builds (spec 13 "Checks, not built", 2026-10-13, user via reviewer). Each step
+is a build, not only a reconfigure, since 2026-10-24: the scan's C side reads
+the files the build compiled from its deps log (reading changed, reviewer).
 
     python scan_scope_check.py --commit <sha> --components <a tree's managed_components> --out run.json
 
@@ -10,7 +12,7 @@ WHAT IT SHOWS. The scan takes its CMake files from the build's own record, not
 from a list, and a build option is a variable that can be set from outside the
 file that tests it. So:
 
-    baseline    the commit as it is, `idf.py reconfigure`  -> the scan's result
+    baseline    the commit as it is, `idf.py build`        -> the scan's result
     planted     a NEW repo file, cmake/gi_planted_option.cmake, included from the
                 top-level CMakeLists.txt, testing GI_PLANTED_OPTION; configured
                 with -DGI_PLANTED_OPTION=ON          -> the scan FAILS, naming it
@@ -92,7 +94,7 @@ def git(args, cwd):
 
 def configure(tree, log, defines=()):
     cmd = [sys.executable, os.path.join(os.environ["IDF_PATH"], "tools", "idf.py")]
-    cmd += ["-D%s" % d for d in defines] + ["reconfigure"]
+    cmd += ["-D%s" % d for d in defines] + ["build"]
     t0 = time.time()
     r = subprocess.run(cmd, cwd=tree, capture_output=True, text=True)
     out = r.stdout + r.stderr

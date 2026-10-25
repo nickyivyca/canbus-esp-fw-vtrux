@@ -1007,11 +1007,61 @@ def check_switches_classified(build_dir=None):
         else "every entry has a class, a reason, and (test-only) a refusal row")
 
 
-def check_test_only_refused():
-    """Each test-only switch's refusal row is one this run actually produced.
+APP_ELF_SHA_OFF = 0xB0           # esp_app_desc_t.app_elf_sha256, at 0x90 in the descriptor
+ROWS_FILE = "vtrux_project_rows.json"
 
-    Run AFTER the image rows. A table entry naming a row that does not exist
-    -- renamed, or never written -- would otherwise be a refusal on paper only.
+
+def image_hash(path):
+    """The ELF's SHA-256 the image embeds (shared/tools SPEC R1), hex, or None."""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(APP_ELF_SHA_OFF)
+            b = fh.read(32)
+    except OSError:
+        return None
+    return b.hex() if len(b) == 32 and app_desc(path) is not None else None
+
+
+def judge_rule(rule, img, syms, project, produced):
+    """(ok, detail) for one of a switch's refusal rules, as shared/tools R20 reads
+    them. ok None: no reference (no image, no ELF or no nm). syms: the ELF's
+    defined symbols or None; produced: {row name: ok} of the rows this run wrote."""
+    (k, v), = rule.items()
+    if k == "project_row":
+        if v not in produced:
+            return False, "row %r was not produced by this run" % v
+        return True, "row %r produced" % v
+    if k == "bin_strings_absent":
+        if img is None:
+            return None, "no image"
+        hits = [x for x in v if x.encode("latin-1") in img]
+        return not hits, "image carries %s" % ", ".join(repr(h) for h in hits) if hits else "%d strings absent" % len(v)
+    if k == "project_name_token_absent":
+        if project is None:
+            return None, "no project name"
+        hit = v.strip("_") in project.split("_")
+        return not hit, "project_name %r%s" % (project, " has the token %r" % v if hit else "")
+    if syms is None:
+        return None, "no ELF symbols"
+    if k == "elf_symbols_absent":
+        hits = sorted(x for x in v if x in syms)
+    else:
+        hits = sorted(x for x in syms if any(x.startswith(pre) for pre in v))
+    return not hits, "ELF defines %s" % ", ".join(hits[:3]) if hits else "none defined"
+
+
+def check_test_only_refused(path=None):
+    """Each test-only switch's, and each stock feature's, refusal rules pass on
+    this image.
+
+    Run AFTER the image rows. The rules are the table's (vtrux_checks.json,
+    "build_switches", moved there 2026-10-24 so the shared R20 check reads the
+    same table): strings absent from the image, symbols absent from the ELF,
+    a project-name token absent, or a row this run produced. A project_row rule
+    whose row was never produced -- renamed, or never written -- would otherwise
+    be a refusal on paper only. Evaluated here as well as by the shared check, so
+    this gate stays as strong as it was until gen-inhibit's release builds move
+    to the shared tooling (reviewer, 2026-10-24).
     """
     try:
         import build_switches as BS
@@ -1020,14 +1070,70 @@ def check_test_only_refused():
             row("every %s has a refusal row" % label, None,
                 "cannot import build_switches (%s)" % e, ref_missing=True)
         return
-    names = {r[0] for r in rows}
+    produced = {r[0]: r[1] for r in rows}
+    img = syms = project = None
+    if path is not None:
+        try:
+            img = open(path, "rb").read()
+        except OSError:
+            img = None
+        d = app_desc(path) if img is not None else None
+        project = d[1] if d else None
+        elf = os.path.splitext(path)[0] + ".elf"
+        exe = None
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from elf_checks import find_nm
+            exe = find_nm()
+        except ImportError:
+            pass
+        if exe and os.path.exists(elf):
+            r = subprocess.run((exe, "--defined-only", elf), capture_output=True, text=True)
+            if r.returncode == 0:
+                syms = defined_symbols(r.stdout)
     for cls, label in ((BS.TEST, "test-only switch"), (BS.STOCK, "stock feature off in this product")):
-        missing = sorted("%s -> %r" % (s, e[3]) for s, e in BS.SWITCHES.items()
-                         if e[0] == cls and e[3] not in names)
-        n = sum(1 for e in BS.SWITCHES.values() if e[0] == cls)
-        row("every %s has a refusal row" % label, not missing,
-            "no such row: " + "; ".join(missing) if missing
-            else "all %d name a row this run produced" % n)
+        entries = sorted((s, e) for s, e in BS.SWITCHES.items() if e[0] == cls)
+        bad, noref = [], []
+        for s, e in entries:
+            rules = e[3] if isinstance(e[3], list) else []
+            if not rules:
+                bad.append("%s: no refusal rules" % s)
+            for rule in rules:
+                if not (isinstance(rule, dict) and len(rule) == 1):
+                    bad.append("%s: malformed rule %r" % (s, rule))
+                    continue
+                ok, detail = judge_rule(rule, img, syms, project, produced)
+                if ok is None:
+                    noref.append("%s: %s" % (s, detail))
+                elif not ok:
+                    bad.append("%s: %s" % (s, detail))
+        if bad:
+            row("every %s has a refusal row" % label, False, "; ".join(bad))
+        elif noref:
+            row("every %s has a refusal row" % label, None, "no reference: " + "; ".join(noref),
+                ref_missing=True)
+        else:
+            row("every %s has a refusal row" % label, True,
+                "all %d pass their table rules on this image" % len(entries))
+
+
+def write_project_rows(path):
+    """build/vtrux_project_rows.json for the shared R20 check (Q8, reviewer
+    2026-10-24): this run's rows, PASS or FAIL (a NO REF is not a pass), bound to
+    the image they judged by its image hash. Written beside the image, in its
+    build directory. Returns the file's path, or None with no image hash."""
+    h = image_hash(path)
+    if h is None:
+        return None
+    verdicts = {}
+    for name, ok, _detail, ref_missing in rows:
+        v = "PASS" if ok is True and not ref_missing else "FAIL"
+        verdicts[name] = "FAIL" if verdicts.get(name) == "FAIL" else v
+    out = os.path.join(os.path.dirname(os.path.abspath(path)), ROWS_FILE)
+    with open(out, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump({"image_hash": h, "rows": verdicts}, fh, indent=1, sort_keys=True)
+        fh.write("\n")
+    return out
 
 
 def _count_calls(rel, needle):
@@ -1698,7 +1804,10 @@ def main():
         row(BUS_STATE_ROW, None, "no image to inspect", ref_missing=True)
         row("prod-build record present", None,
             "no image to inspect", ref_missing=True)
-    check_test_only_refused()
+    check_test_only_refused(b)
+    if b is not None:
+        rf = write_project_rows(b)
+        print("project rows for shared/tools R20: %s" % (rf or "not written (no image hash)"))
 
     print()
     bad = 0

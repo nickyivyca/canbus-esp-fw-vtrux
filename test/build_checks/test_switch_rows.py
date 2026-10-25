@@ -9,9 +9,13 @@
 - "every build-time switch classified" / "no stale switch entries" / "switch
   table well-formed": driven through a substituted scan and table, so each
   finding is shown to reach its own row and only that row;
-- "every test-only switch has a refusal row": a table naming a row that this
-  run did not produce fails it; and the same for "every stock feature off in
-  this product has a refusal row" (2026-10-16);
+- "every test-only switch has a refusal row": each entry's table rules
+  (vtrux_checks.json since 2026-10-24) evaluated on the image: a project_row
+  naming a row this run did not produce fails it, a string rule fails on an image
+  carrying the string, and a rule with nothing to judge is NO REF; the same for
+  "every stock feature off in this product has a refusal row" (2026-10-16);
+- vtrux_project_rows.json, the rows file the shared R20 check reads: written
+  beside the image with its embedded ELF hash, a NO REF row as FAIL;
 - the stock-feature rows (spec 3.2, 12.3 item 3; 2026-10-16): call_sites on
   synthetic objdump text in both line shapes, and stock_rows on synthetic symbol
   sets and call sites, each feature and each bus-state breach reaching its own
@@ -43,6 +47,71 @@ def image(name, payload):
     return p
 
 
+def rule_checks():
+    """The table's declarative rules, through check_test_only_refused and judge_rule."""
+    TR = "every test-only switch has a refusal row"
+    out = []
+    os.makedirs(TMP, exist_ok=True)
+    try:
+        BS.SWITCHES = {"B": (BS.TEST, None, "why", [{"bin_strings_absent": ["/gi_marker"]}])}
+        for label, payload, want in (("a clean image passes", b"nothing here", True),
+                                     ("an image carrying the string fails", b"x /gi_marker x", False)):
+            BO.rows.clear()
+            BO.check_test_only_refused(image("r.bin", payload))
+            got = {n: ok for n, ok, _d, _r in BO.rows}
+            out.append(("rules: string absent, %s" % label, got.get(TR) is want))
+        BO.rows.clear()
+        BO.check_test_only_refused(None)
+        out.append(("rules: no image is NO REF, not a pass", {n: ok for n, ok, _d, _r in BO.rows}.get(TR) is None))
+        BS.SWITCHES = {"B": (BS.TEST, None, "why", [{"elf_symbols_absent": ["x_init"]}])}
+        BO.rows.clear()
+        BO.check_test_only_refused(image("noelf.bin", b"clean"))
+        out.append(("rules: an ELF rule with no ELF beside the image is NO REF",
+                    {n: ok for n, ok, _d, _r in BO.rows}.get(TR) is None))
+        BS.SWITCHES = {"B": (BS.TEST, None, "why", [])}
+        BO.rows.clear()
+        BO.check_test_only_refused(image("r.bin", b"clean"))
+        out.append(("rules: an entry with no rules fails", {n: ok for n, ok, _d, _r in BO.rows}.get(TR) is False))
+        j = BO.judge_rule
+        out.append(("judge_rule: whole ELF names, and prefixes",
+                    [j({"elf_symbols_absent": ["mqtt_init"]}, b"", s, "p", {})[0] for s in
+                     ({"mqtt_init"}, {"mqtt_init_x"}, set())] == [False, True, True]
+                    and j({"elf_symbol_prefixes_absent": ["esp_mqtt_"]}, b"", {"esp_mqtt_client_init"}, "p", {})[0]
+                    is False))
+        out.append(("judge_rule: the project-name token is a whole '_' token",
+                    [j({"project_name_token_absent": "_rt"}, b"", set(), n, {})[0] for n in
+                     ("wican-fw_obd_x_man_rt", "x_rt_DIAG", "x_rtc", "x_art")] == [False, False, True, True]))
+        out.append(("judge_rule: a project row counts only if this run produced it",
+                    [j({"project_row": "r"}, b"", set(), "p", prod)[0] for prod in ({"r": True}, {"q": True})]
+                    == [True, False]))
+        # the rows file: an image with a descriptor and an embedded ELF hash
+        desc = bytearray(0x120)
+        desc[0x20:0x24] = BO.struct.pack("<I", BO.APP_DESC_MAGIC)
+        desc[0x50:0x55] = b"proj\0"
+        desc[0xB0:0xD0] = bytes(range(32))           # esp_app_desc_t.app_elf_sha256, image offset 0x20 + 0x90
+        p = os.path.join(TMP, "img.bin")
+        with open(p, "wb") as fh:
+            fh.write(bytes(desc))
+        BO.rows.clear()
+        BO.row("good row", True, "")
+        BO.row("bad row", False, "")
+        BO.row("noref row", None, "", ref_missing=True)
+        BO.row("twice", False, "")
+        BO.row("twice", True, "")
+        f = BO.write_project_rows(p)
+        import json
+        d = json.load(open(f)) if f else {}
+        out.append(("rows file: beside the image, with its embedded ELF hash",
+                    f == os.path.join(TMP, BO.ROWS_FILE) and d.get("image_hash") == bytes(range(32)).hex()))
+        out.append(("rows file: PASS, FAIL, NO REF as FAIL, a repeated name FAIL if any failed",
+                    d.get("rows") == {"good row": "PASS", "bad row": "FAIL", "noref row": "FAIL", "twice": "FAIL"}))
+        out.append(("rows file: not written for an image with no descriptor",
+                    BO.write_project_rows(image("nodesc.bin", b"" * 0x120)) is None))
+    finally:
+        shutil.rmtree(TMP, ignore_errors=True)
+    return out
+
+
 def main():
     shutil.rmtree(TMP, ignore_errors=True)
     os.makedirs(TMP)
@@ -68,7 +137,7 @@ def main():
         shutil.rmtree(TMP, ignore_errors=True)
 
     real_scan, real_table, real_triggers, real_record = BS.scan, BS.SWITCHES, BS.TRIGGERS, BS.read_record
-    ok_t = {"A": (BS.SHIP, None, "why", None), "B": (BS.TEST, None, "why", "row b")}
+    ok_t = {"A": (BS.SHIP, None, "why", None), "B": (BS.TEST, None, "why", [{"project_row": "row b"}])}
     try:
         def drive(found, table):
             # classify() reads TRIGGERS too, so a substituted table needs triggers
@@ -122,7 +191,7 @@ def main():
         checks.append(("refused: a shipping variant needs no refusal row",
                        got.get("every test-only switch has a refusal row") is True))
         SR = "every stock feature off in this product has a refusal row"
-        BS.SWITCHES = {"S": (BS.STOCK, None, "why", "row s")}
+        BS.SWITCHES = {"S": (BS.STOCK, None, "why", [{"project_row": "row s"}])}
         BO.rows.clear()
         BO.row("row s", True, "")
         BO.check_test_only_refused()
@@ -133,6 +202,7 @@ def main():
         BO.check_test_only_refused()
         got = {n: ok for n, ok, _d, _r in BO.rows}
         checks.append(("refused: a stock feature whose row did not run fails", got.get(SR) is False))
+        checks.extend(rule_checks())
     finally:
         BS.scan, BS.SWITCHES, BS.TRIGGERS, BS.read_record = real_scan, real_table, real_triggers, real_record
         BO.rows.clear()
