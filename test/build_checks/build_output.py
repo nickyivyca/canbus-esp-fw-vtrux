@@ -4,6 +4,7 @@
     python3 build_output.py                       # newest build/*.bin
     python3 build_output.py --bin build/wican-fw_obd_abc1234.bin
     python3 build_output.py --ref-repo <a worktree of this repo>
+    python3 build_output.py --records <a folder of release records>   # default $REVERSE_IT_DIR/firmware/builds/gen-inhibit
 
 WHAT ROW 22 ASKS FOR, and each is a separate check below:
 
@@ -1535,14 +1536,27 @@ def _blob_same(rel, ver):
             and a.stdout.strip() == b.stdout.strip() != "")
 
 
-def check_prod_record(path):
-    """Spec 12.3 item 3: a truck image must carry its prod-build record.
+RECORDS = ("firmware", "builds", "gen-inhibit")
 
-    `tools/prod_build.py` writes `<image>.prod.json` after refusing to build on
-    a dirty tree or against a modified `managed_components/`, and after forcing
-    a reconfigure. The record is the only evidence that those refusals ran, and
-    the spec says the build-output checks refuse an image that has no such
-    record.
+
+def records_dir():
+    """Where shared/tools SPEC R13 puts gen-inhibit's release records:
+    `$REVERSE_IT_DIR/firmware/builds/gen-inhibit/`, or None with the variable unset."""
+    ri = os.environ.get("REVERSE_IT_DIR")
+    return os.path.join(ri, *RECORDS) if ri else None
+
+
+def check_prod_record(path, folder=None):
+    """Spec 12.3 item 3: a truck image must have its release build record.
+
+    A prod build is a release build of the shared build tooling at the pinned
+    version (moved there at port step 0, user, 2026-10-25; `tools/prod_build.py`
+    and its `<image>.prod.json` are retired). That build refuses a worktree with
+    uncommitted changes, reconfigures first and checks the downloaded
+    components, and only then writes one record, named by the image hash, with
+    the image beside it (shared/tools SPEC R13), in `folder` (default
+    `records_dir()`). So the record's existence is the evidence that those
+    refusals ran: the record holds no flag for them to assert.
 
     WHY THE RECORD RATHER THAN RE-CHECKING HERE. The conditions are about the
     MOMENT OF THE BUILD and cannot be reconstructed afterwards: the tree can be
@@ -1558,44 +1572,60 @@ def check_prod_record(path):
     bench run and meant nothing. The truck pre-flash checklist is what refuses
     such an image (bring-up row 1.3b), not this row. A record that IS present
     but unreadable or disagrees with the image is still a FAIL: that is a
-    claim to be a prod build that does not hold.
+    claim to be a prod build that does not hold. The record is found by the
+    image hash read from the image itself, never by the file's name.
+
+    WHICH .bin IS THE RECORD'S. R13 puts the `.bin` beside the record but does
+    not name it, so the one the record names under `image.bin` is read, and
+    with none named, `<image hash>.bin`. Either must be this image, byte for
+    byte: the image hash is the ELF's, so it alone would not see bytes changed
+    after the build.
     """
-    rec_path = path + ".prod.json"
-    if not os.path.exists(rec_path):
-        row("prod-build record present", None,
-            "not a prod build: no %s beside the image, so nothing establishes "
-            "it was built on a clean tree with verified components after a "
-            "reconfigure. A truck image must be built with tools/prod_build.py "
-            "(spec 12.3 item 3); the pre-flash checklist refuses this one."
-            % os.path.basename(rec_path), ref_missing=True)
+    name = "prod-build record present"
+    h = image_hash(path)
+    if h is None:
+        row(name, None, "not a prod build: no image hash can be read from the image, so no release record "
+            "(shared/tools R13) can name it; the pre-flash checklist refuses this one", ref_missing=True)
+        return
+    folder = folder or records_dir()
+    if folder is None:
+        row(name, None, "REVERSE_IT_DIR is unset, so the release records (shared/tools R13) cannot be looked "
+            "for; give the folder with --records", ref_missing=True)
+        return
+    rec_path = os.path.join(folder, h + ".json")
+    if not os.path.isfile(rec_path):
+        row(name, None, "not a prod build: no release record %s.json in %s, so nothing establishes it was "
+            "built by the shared tooling's release build (spec 12.3 item 3); the pre-flash checklist "
+            "refuses this one" % (h, folder), ref_missing=True)
         return
     try:
         with open(rec_path, encoding="utf-8") as fh:
             rec = json.load(fh)
+        if not isinstance(rec, dict):
+            raise ValueError("not a JSON object")
     except Exception as e:
-        row("prod-build record present", False,
-            "%s is unreadable: %s" % (os.path.basename(rec_path), e))
+        row(name, False, "%s.json is unreadable: %s" % (h, e))
         return
 
     data = open(path, "rb").read()
-    got_md5 = hashlib.md5(data).hexdigest()
     problems = []
-    if rec.get("md5") != got_md5:
-        problems.append("md5 %s != recorded %s" % (got_md5, rec.get("md5")))
-    if rec.get("size") != len(data):
-        problems.append("size %d != recorded %s" % (len(data), rec.get("size")))
-    if not rec.get("clean_tree"):
-        problems.append("record does not assert a clean tree")
-    if not rec.get("reconfigured"):
-        problems.append("record does not assert a reconfigure")
-    for name, c in (rec.get("components") or {}).items():
-        if c.get("problems"):
-            problems.append("component %s had %d problem(s) at build time"
-                            % (name, len(c["problems"])))
-    row("prod-build record present", not problems,
+    if rec.get("image_hash") != h:
+        problems.append("image hash %s != recorded %s" % (h, rec.get("image_hash")))
+    if rec.get("project") != "gen-inhibit":
+        problems.append("project %r, not gen-inhibit" % rec.get("project"))
+    if rec.get("image_size") != len(data):
+        problems.append("size %d != recorded %s" % (len(data), rec.get("image_size")))
+    named = (rec.get("image") or {}).get("bin") if isinstance(rec.get("image"), dict) else None
+    beside = os.path.join(folder, os.path.basename(named) if isinstance(named, str) and named else h + ".bin")
+    if not os.path.isfile(beside):
+        problems.append("no %s beside the record" % os.path.basename(beside))
+    elif open(beside, "rb").read() != data:
+        problems.append("%s beside the record is not this image" % os.path.basename(beside))
+    tooling = rec.get("tooling") if isinstance(rec.get("tooling"), dict) else {}
+    row(name, not problems,
         "; ".join(problems) if problems else
-        "built from %s on a clean tree, components verified, md5 %s"
-        % ((rec.get("commit") or "?")[:7], got_md5))
+        "release record %s.json: built from %s by shared/tools %s, image beside it identical"
+        % (h[:16], (rec.get("commit") or "?")[:7], tooling.get("tag") or "?"))
 
 
 def check_source():
@@ -1784,6 +1814,8 @@ def main():
     ap.add_argument("--bin")
     ap.add_argument("--ref-repo", default=REPO,
                     help="the git worktree whose HEAD gives the diag DBC and schema doc (default this repo)")
+    ap.add_argument("--records",
+                    help="the folder of gen-inhibit's release records (default $REVERSE_IT_DIR/firmware/builds/gen-inhibit)")
     args = ap.parse_args()
 
     b = pick_bin(args.bin)
@@ -1847,7 +1879,7 @@ def main():
         check_no_restart_test(b)
         check_no_stock_features(b)
         check_sources_older_than_image(b)
-        check_prod_record(b)
+        check_prod_record(b, args.records)
     else:
         row("no measurement instrument in the image", None,
             "no image to inspect", ref_missing=True)
