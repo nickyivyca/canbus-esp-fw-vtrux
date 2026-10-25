@@ -82,7 +82,11 @@ same folder. The interposer's test evidence is
   (R6). A fixed form, the commit cut to a set length, was put to the user
   and not taken: evidence carries by the code hash, which blanks the field
   (R2, R3), and the image hash only has to name a build, which a
-  clone-dependent string still does.
+  clone-dependent string still does. A rule that no tag is cut on a project
+  branch, which would keep the commit in every version string (a build at a
+  tagged commit gets the tag name alone), was also put to the user and not
+  taken (user, 2026-10-25): tags may later name a project commit, for
+  example a development build promoted to a truck build.
 - **Status:** complete.
 
 ### R5. Identity independent of branch, clone path and host OS
@@ -107,8 +111,9 @@ same folder. The interposer's test evidence is
 - **Narrowed 2026-10-25 (user, in the gen-inhibit reviewer's session):** the
   first bullet read "at any clone path". ESP-IDF's default version string
   (R4) depends on the clone: git lengthens its abbreviation of the commit as
-  the clone's object count grows, and a tag reachable from the commit
-  replaces the bare commit. So the image hash is promised across worktrees
+  the clone's object count grows, and a reachable tag prefixes the commit
+  (`<tag>-<n>-g<sha>`), while a commit exactly at a tag gets the tag name
+  alone. So the image hash is promised across worktrees
   of one clone only; across clones, the code hash. Step 0b's two-path
   rebuild (two worktrees of one clone, gen-inhibit tracker, 2026-10-25) is
   within the narrowed bullet.
