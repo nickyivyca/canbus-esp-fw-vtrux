@@ -238,14 +238,16 @@ unless the image changes, which the reproducible test (R19) shows.
   release profile names `CONFIG_FREERTOS_HZ`, with the value its own spec
   sets and cites. The tooling sets no common value. The options check (R18)
   fails a release build whose project's profile does not name it.
-- **R28. Each project sets its own log levels.** Every project's release
-  profile names `CONFIG_LOG_DEFAULT_LEVEL`, `CONFIG_LOG_MAXIMUM_LEVEL` and
-  `CONFIG_BOOTLOADER_LOG_LEVEL`, and a project that compiles the Arduino
-  core also names `CONFIG_ARDUHAL_LOG_DEFAULT_LEVEL`, each with the value
-  its own spec sets and cites. Log levels are set only in the `sdkconfig`,
-  never by a `-D` in a build file (`CORE_DEBUG_LEVEL`, `LOG_LOCAL_LEVEL`).
-  The tooling sets no common value. The options check (R18) fails a
-  release build whose project's profile does not name them.
+- **R28. One set of log levels for every release build.** Every release
+  build, of every project, has `CONFIG_LOG_DEFAULT_LEVEL` 0 (none),
+  `CONFIG_LOG_MAXIMUM_LEVEL` 0 (none) and `CONFIG_BOOTLOADER_LOG_LEVEL` 1
+  (error), and, in a project that compiles the Arduino core,
+  `CONFIG_ARDUHAL_LOG_DEFAULT_LEVEL` 0 (none). The options check (R18)
+  applies it to every release build whatever the project's profile names,
+  as R26 does. Log levels are set only in the `sdkconfig`, never by a `-D`
+  in a build file (`CORE_DEBUG_LEVEL`, `LOG_LOCAL_LEVEL`). Test-only and
+  development builds set their own levels in their own spec; they are not
+  release builds and are not checked.
 
 ## 5. Data, not code
 
