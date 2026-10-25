@@ -46,11 +46,13 @@ test images are identified by their @HELLO and ELF sha256.
 
 Settings beyond the core's (see the NICKY-XPS settings JSON in reverse-it
 interposer-firmware/): reverse_it (the root the artifacts scripts run from), interposer_code,
-interposer_artifacts, interposer_dbc,
+interposer_artifacts,
 images_dir, images_src, boot_app0, serial_port, pcan_channel, wican_state,
 madhouse_pio; for the bench suite's WiCAN (bench_wican.py), gi_tools
 (gen-inhibit's tools/gen_inhibit, read-only) and gi_chain_settings
-(gen-inhibit's chain settings JSON, read for its gi_images).
+(gen-inhibit's chain settings JSON, read for its gi_images). The diag DBC
+is the git copy (paths.diag_dbc()); interposer_dbc is retired and refused
+(bench_identify).
 """
 
 import glob
@@ -181,6 +183,9 @@ HARNESS_LOCAL = [
      ["{interposer_code}/bench_wican_test.py", "--can-fail"]),
     ("cutover-verify-guard-test",
      ["{interposer_artifacts}/cutover_verify_test.py", "--guard-test"]),
+    # script_can_fail's baseline run: an unmutated script that fails where
+    # the mutants run makes every catch meaningless (2026-10-24)
+    ("script-can-fail-test", ["{interposer_artifacts}/script_can_fail_test.py"]),
     ("rebuild-capture-traces-canfail",
      ["{interposer_artifacts}/rebuild_capture_traces.py", "--can-fail"]),
     ("clause1-fall-mutations", ["{interposer_artifacts}/clause1_fall_mutations.py"]),

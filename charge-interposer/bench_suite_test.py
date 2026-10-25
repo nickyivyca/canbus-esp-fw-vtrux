@@ -336,7 +336,8 @@ def test_suites():
     # 185: sb.test-bench-lock and its -canfail, with the bench-lock merge
     # 186: cf.bench-hold12, its fresh-board gate mutants (2026-10-23)
     # 188: bench-wican-test and its -canfail, with the WiCAN board
-    assert len(seen) == 188, "checks across the suites: %d" % len(seen)
+    # 189: script-can-fail-test, script_can_fail's baseline run (2026-10-24)
+    assert len(seen) == 189, "checks across the suites: %d" % len(seen)
     # build-check runs in a git checkout of HEAD, shipped as a bundle
     # (user ruling 2026-10-19), never in the shipped copy
     mb = [g for g in su["emulated"].groups if g.name == "m-build"][0]
@@ -511,6 +512,17 @@ def test_identify():
         else:
             raise AssertionError("a failed boot capture did not raise")
         assert calls == ["7f7"], calls
+        # interposer_dbc is retired (2026-10-24): refused before any read
+        del calls[:]
+        I.read_7f7, I.read_hello, I.read_slcan = fake(
+            ("756d6714", False), None, None)
+        try:
+            I.identify(img, {}, TMP, {"interposer_dbc": "x.dbc"})
+        except I.IdentifyError as e:
+            assert "retired" in str(e), e
+        else:
+            raise AssertionError("settings with interposer_dbc not refused")
+        assert calls == [], calls
     finally:
         I.read_7f7, I.read_hello, I.read_slcan = saved
 

@@ -35,6 +35,9 @@ components and midnight rollover, and regress must read the captures with the
 parser E1 ran on (reviewer, 2026-10-08). Switch canre_root() to the public
 repo once it is synced.
 
+The interposer diag DBC is in this repo (diag/), so diag_dbc() needs no
+setting; it is here so that every reader names one path.
+
 Under WSL, pass the Windows value through with WSLENV=REVERSE_IT_DIR/p, which
 translates it to /mnt/c/...; the shell scripts read the same variable.
 
@@ -117,6 +120,17 @@ def public_repo():
 def dbc_dir():
     """The vehicle DBCs: the public repo's projects/vtrux."""
     return os.path.join(public_repo(), "projects", "vtrux")
+
+
+def diag_dbc():
+    """The interposer diag DBC: the git copy in diag/ beside this file, the
+    published interface from schema 4 (user, 2026-10-19). Needs no setting.
+    The reverse-it copy, projects/vtrux/vtrux-interposer-diag.dbc, is not
+    read: the readers in this repo moved here (reviewer, 2026-10-24)."""
+    p = os.path.join(_HERE, "diag", "vtrux-interposer-diag.dbc")
+    if not os.path.isfile(p):
+        raise PathsError("no diag DBC at %s" % p)
+    return p
 
 
 def canre_root():

@@ -138,8 +138,7 @@ def load_state_names():
     never by hand: the DBC is the published interface)."""
     import cantools
     import paths
-    db = cantools.database.load_file(
-        os.path.join(paths.data_dir(), "vtrux-interposer-diag.dbc"))
+    db = cantools.database.load_file(paths.diag_dbc())
     sig = db.get_message_by_frame_id(0x7F4).get_signal_by_name("intp_state")
     return db, {int(k): str(v) for k, v in sig.choices.items()}
 

@@ -1032,8 +1032,7 @@ def main():
     # the diag DBC, parsed here rather than trusted
     import cantools
     import paths
-    db = cantools.database.load_file(
-        os.path.join(paths.data_dir(), "vtrux-interposer-diag.dbc"))
+    db = cantools.database.load_file(paths.diag_dbc())
     cm = db.get_message_by_frame_id(0x7F4).get_signal_by_name(
         "intp_trip_reason").comment
     bad = [k for k, c in R.TRIP_CODE.items() if (" %d %s" % (c, k)) not in cm]

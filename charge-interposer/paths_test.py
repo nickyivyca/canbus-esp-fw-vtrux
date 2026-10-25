@@ -8,11 +8,16 @@
   - add_canre(required=False) tolerates a missing setting;
   - `run_scenario.py --list` runs with REVERSE_IT_DIR unset (only touching
     data needs it);
+  - diag_dbc() is the git copy, diag/vtrux-interposer-diag.dbc beside
+    paths.py, and needs no setting (the readers moved off the reverse-it
+    copy: reviewer, 2026-10-24);
   - nothing under charge-interposer/ holds a machine-absolute path, no
     .py / .sh / .cpp / .h still climbs `..` out of the repo to SeaDrive's
-    notes/, and no .py / .sh / .cpp / .h other than paths.py and this file
-    still names VTRUX_DATA --
-    all three scans proven able to fail on a planted line.
+    notes/, no .py / .sh / .cpp / .h other than paths.py and this file
+    still names VTRUX_DATA, and no code but paths.py and
+    firmware/test/build_check.py names the diag DBC's file (every other
+    reader goes through diag_dbc()) --
+    all four scans proven able to fail on a planted line.
 
 Fake trees are built in a throwaway folder beside this file and removed.
 
@@ -62,6 +67,11 @@ CLIMB_RE = re.compile(r"\.\.[\"'/\\, ]+\.\..*notes")
 # The retired variable, in fragments so the pattern is not a literal here.
 RETIRED_RE = re.compile("VTRUX" + "_DATA")
 RETIRED_OK = ("paths.py", "paths_test.py")
+# The diag DBC's file name in code. Only paths.py names it, and
+# build_check.py, which reads the same git copy from the tree it checks
+# (and this test, in its docstring).
+DIAG_RE = re.compile("vtrux-interposer-" + r"diag\.dbc")
+DIAG_OK = ("paths.py", "build_check.py", "paths_test.py")
 
 
 def scan(root, exts, pattern, code_only):
@@ -153,6 +163,21 @@ def main():
         check(PA.dbc_dir() == os.path.join(pub, "projects", "vtrux"),
               "VTRUX_PUBLIC_REPO is honoured")
         os.environ.pop("VTRUX_PUBLIC_REPO")
+        os.environ.pop("REVERSE_IT_DIR")
+        dd = PA.diag_dbc()
+        check(os.path.normpath(dd) == os.path.normpath(os.path.join(
+            HERE, "diag", "vtrux-interposer-" + "diag.dbc")),
+              "diag_dbc() is diag/ beside paths.py, REVERSE_IT_DIR unset")
+        with open(dd, encoding="utf-8", errors="replace") as f:
+            first = f.readline()
+        check(first.startswith('VERSION "vtrux-interposer-diag schema'),
+              "... and it is the diag DBC (%r)" % first.strip()[:60])
+        os.environ["REVERSE_IT_DIR"] = root
+        open(os.path.join(vtrux, "vtrux-interposer-" + "diag.dbc"),
+             "w").close()
+        check(PA.diag_dbc() == dd,
+              "a reverse-it copy under REVERSE_IT_DIR is not read: "
+              "diag_dbc() is still the git copy")
         check(os.path.normpath(PA.PUBLIC_DEFAULT) == os.path.normpath(
             os.path.join(HERE, "..", "..", "canbus-reveng-vtrux-coda")),
               "the default public repo is the sibling clone, by relative "
@@ -187,6 +212,13 @@ def main():
                 and os.path.basename(h.split(":", 1)[0]) not in RETIRED_OK]
         check(not hits, "no .py / .sh / .cpp / .h but paths.py and this "
               "test names the retired variable (%s)" % hits[:3])
+        hits = [h for h in scan(HERE, (".py", ".sh", ".cpp", ".h"),
+                                DIAG_RE, True)
+                if not h.startswith(os.path.basename(tmp))
+                and os.path.basename(h.split(":", 1)[0]) not in DIAG_OK]
+        check(not hits, "no code but paths.py and build_check.py names the "
+              "diag DBC's file: every other reader uses diag_dbc() (%s)"
+              % hits[:3])
         plant = os.path.join(tmp, "plant")
         os.makedirs(plant)
         with open(os.path.join(plant, "a.py"), "w") as f:
@@ -194,6 +226,9 @@ def main():
             up = '"' + '..", "' + '.."'      # in fragments: no self-match
             f.write('Y = os.path.join(HERE, ' + up + ', "notes", "x")\n')
             f.write('# Z = os.path.join(HERE, ' + up + ', "notes", "x")\n')
+            dn = '"vtrux-interposer-' + 'diag.dbc"'
+            f.write('D = os.path.join(paths.data_dir(), ' + dn + ')\n')
+            f.write('# D = os.path.join(paths.data_dir(), ' + dn + ')\n')
         with open(os.path.join(plant, "b.cpp"), "w") as f:
             f.write('const char* v = std::getenv("VTRUX' + '_DATA");\n')
         check(len(scan(plant, (".py",), ABS_RE, False)) == 1,
@@ -203,6 +238,9 @@ def main():
               "comment")
         check(len(scan(plant, (".cpp",), RETIRED_RE, False)) == 1,
               "the retired-variable scan catches a planted getenv")
+        check(len(scan(plant, (".py",), DIAG_RE, True)) == 1,
+              "the diag DBC scan catches a planted reverse-it read, and "
+              "skips it in a comment")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
         for k, v in saved.items():

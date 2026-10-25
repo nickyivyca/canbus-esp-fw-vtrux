@@ -7,7 +7,8 @@ rule 4). Published identities, tried in this order:
   1. 0x7F7 (the diag images: bridge, witness, truck). One ACKed boot through
      bench_powerup_round.py --mode ack (PCAN normal, ACKing; the board reset
      over USB only); the 0x7F7 the witness captured is decoded with cantools
-     against vtrux-interposer-diag.dbc. Identity: the build id as 8
+     against the git copy of the diag DBC, paths.diag_dbc() (the
+     reverse-it copy is not read). Identity: the build id as 8
      lowercase hex digits, e.g. "756d6714".
   2. @HELLO (the standalone test images c12_bench and vport_bench, which
      send no status frames): "HELLO?" on the serial port, answered by
@@ -26,8 +27,10 @@ cannot run, identify RAISES: the runner then stops rather than flash a
 board whose state nobody read. Returns None when nothing answers.
 
 Settings used: interposer_artifacts (holding bench_powerup_round.py),
-interposer_dbc, serial_port, wican_state, hosts.local.python and
-hosts.local.env (the boot capture imports the clone's run_scenario).
+serial_port, wican_state, hosts.local.python and hosts.local.env (the boot
+capture imports the clone's run_scenario). The key interposer_dbc is
+retired (2026-10-24): settings that still carry it are refused, before
+anything runs, so a value nobody reads cannot look like it is in force.
 """
 
 import glob
@@ -36,6 +39,9 @@ import re
 import subprocess
 import sys
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import paths  # noqa: E402
 
 HELLO_RE = re.compile(r"^@HELLO (\S+) .*?elf_sha256=([0-9a-f]{64})")
 # The product's serial lines as seen on the bench, matched on any line
@@ -87,7 +93,7 @@ def read_7f7(settings, logdir, tag):
         raise IdentifyError("the ACKed-boot capture did not run (%s): see %s"
                             % (text.strip().splitlines()[-1][:160] if text.strip()
                                else "no output", log))
-    db = cantools.database.load_file(settings["interposer_dbc"])
+    db = cantools.database.load_file(paths.diag_dbc())
     m = db.get_message_by_frame_id(0x7F7)
     ids = []
     for wf in witness:
@@ -175,6 +181,11 @@ _n = [0]
 
 
 def identify(image, ctx, logdir, settings):
+    if "interposer_dbc" in settings:
+        raise IdentifyError(
+            "settings carry interposer_dbc, retired on 2026-10-24: the diag "
+            "DBC is the git copy beside this file (paths.diag_dbc()). Delete "
+            "the key")
     _n[0] += 1
     tag = "%02d_%s" % (_n[0], image.name)
     got, product = read_7f7(settings, logdir, tag)
