@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Baseline part B, the OTA group (baseline_run_list.md): the rows that need another
 # image on the WiCAN -- B12 and B19 present (_man_rt), B19 and B23 (txabort), B19
-# (abortwin), B19 and B26 (rxq), B19 absent and the prod page (prod), B17's second
-# half (_man2) -- then _man back. The same runs as on c65c45e. Gen-inhibit tester,
+# (abortwin), B19 and B26 (rxq), B17's second half (rxq_page, on rxq; _man2 until 2026-10-25),
+# B19 absent and the prod page (prod) -- then _man back. The same runs as on c65c45e. Gen-inhibit tester,
 # 2026-10-16 (run by hand before; this records them).
 #
 #   GI_COMMIT=e3d9437 REVERSE_IT_DIR=<reverse-it root> GI_WICAN_SSID=... bash baseline_b_otagroup.sh <worktree> <prod build dir> [step ...]
-#   steps: rt txabort abortwin rxq prod man2 man   (default: all, in that order)
+#   steps: rt txabort abortwin rxq rxq_page prod man   (default: all, in that order)
+#   rxq_page (2026-10-25, reviewer): B17b on the board already on rxq, --other man. With reproducible
+#   builds (step 0b) a second clean build (_man2, the old step) is byte-identical to _man, so the
+#   rxq image, a different binary, is the control here and in the prod page check.
 #   also: prod_rxq30 (B19's RXQ probe 30 s after QUIESCE, on prod; not in the default)
 #   GI_NO_OTA=1: each step's own OTA is left to the chain runner (2026-10-18)
 #
@@ -22,7 +25,7 @@ DATA=projects/vtrux/notes/artifacts/gen-inhibit   # the SeaDrive half, relative 
 C=${GI_COMMIT:?set GI_COMMIT}
 D=${GI_OUT:-$DATA/runs/baseline_$C/bench}   # GI_OUT: the chain runner's check folder (2026-10-18)
 mkdir -p "$D"
-STEPS=${*:-rt txabort abortwin rxq prod man2 man}
+STEPS=${*:-rt txabort abortwin rxq rxq_page prod man}
 PWR="12 V on OBD pin 16, USB unplugged (no COM4); X2 756d6714 not held"
 export MSYS_NO_PATHCONV=1   # restart_error_frames' /path arguments
 ota() {   # ota <label> <image>
@@ -89,7 +92,7 @@ for s in $STEPS; do
       inert prod absent --switch GI_TEST_RESTART_QUIESCE --switch GI_INSTRUMENT_RXQ \
         --switch GI_INSTRUMENT_ABORTWIN --switch OTA_HEALTH_FAULT_INJECT
       inert prod_txabort absent --switch GI_INSTRUMENT_TXABORT
-      py -3.14 -B $A/spec11_page_check.py --image "$(img_in "$P" "")" --other "$(img man2)" \
+      py -3.14 -B $A/spec11_page_check.py --image "$(img_in "$P" "")" --other "$(img rxq)" \
         --out "$D/B19_spec11_page_prod.json" > "$D/B19_spec11_page_prod.txt" 2>&1; echo "prod page exit $?"
       ;;
     prod_rxq30)   # RXQ again 30 s after the QUIESCE probe, on prod (reviewer, 2026-10-17; e3d9437 00:58)
@@ -97,10 +100,9 @@ for s in $STEPS; do
         --gap-s 30 --power "$PWR; image prod" > "$D/B19_absent_prod_rxq_gap30.txt" 2>&1
       echo "B19 absent prod rxq gap30 exit $?"; tail -3 "$D/B19_absent_prod_rxq_gap30.txt"
       ;;
-    man2)
-      ota man2 "$(img man2)"
-      py -3.14 -B $A/spec11_page_check.py --image "$(img man2)" --other "$(img man)" \
-        --out "$D/B17_spec11_page_${C}_man2.json" > "$D/B17_spec11_page_${C}_man2.txt" 2>&1; echo "B17b exit $?"
+    rxq_page)   # B17b, the board already on rxq (no OTA here: the rxq step made it)
+      py -3.14 -B $A/spec11_page_check.py --image "$(img rxq)" --other "$(img man)" \
+        --out "$D/B17_spec11_page_${C}_rxq.json" > "$D/B17_spec11_page_${C}_rxq.txt" 2>&1; echo "B17b exit $?"
       ;;
     man)
       ota man_back "$(img man)"

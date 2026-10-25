@@ -484,7 +484,8 @@ def b17a(F):
 
 @judge("B17b", "B")
 def b17b(F):
-    return spec11(F, "B17b", r"B17_spec11_page_%s_man2\.txt" % C7)
+    # _man2 at the e3d9437 baseline; _rxq since 2026-10-25 (reproducible builds: man2 = man)
+    return spec11(F, "B17b", r"B17_spec11_page_%s_(?:man2|rxq)\.txt" % C7)
 
 
 @judge("B18", "B")

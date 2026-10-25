@@ -199,6 +199,26 @@ def test_suites(settings, shas):
           nn[0].env.get("GI_TERMINATION") == "{gi_can1_termination}" and
           nn[0].env.get("GI_MAN_SHA") == bench.images["wican_man"].expect and nn[0].argv[-1] == "NONODE",
           nn and nn[0].env)
+    # Reproducible builds (step 0b) make _man2 byte-identical to _man (reviewer, 2026-10-25): no
+    # man2 image or group; B17b runs in rxq after B26, on the board already on rxq; the control
+    # image (--other) of B17a and of the prod page is rxq.
+    check("bench: no wican_man2 image and no man2 group",
+          "wican_man2" not in bench.images and not any(g.name == "man2" for g in bench.groups),
+          (sorted(bench.images), [g.name for g in bench.groups]))
+    rxq = [[c.id for c in g.checks] for g in bench.groups if g.name == "rxq"]
+    b17b = [(g.name, c) for g in bench.groups for c in g.checks if c.id == "B17b"]
+    check("bench: B17b runs once, in rxq, right after B26", rxq and rxq[0][:2] == ["B26", "B17b"] and len(b17b) == 1,
+          (rxq, [n for n, _ in b17b]))
+    check("bench: B17b is the OTA group's rxq_page step, its file _rxq",
+          b17b and b17b[0][1].argv[-1] == "rxq_page" and any("_rxq.txt" in o for o in b17b[0][1].outputs),
+          b17b and (b17b[0][1].argv, b17b[0][1].outputs))
+    otag_sh = open(os.path.join(HERE, "bench", "baseline_b_otagroup.sh"), encoding="utf-8").read()
+    hand_sh = open(os.path.join(HERE, "bench", "baseline_b_hand.sh"), encoding="utf-8").read()
+    check("baseline_b_otagroup.sh: rxq_page checks rxq against man; the prod page's other is rxq; no man2 step",
+          '--image "$(img rxq)" --other "$(img man)"' in otag_sh and '--other "$(img rxq)"' in otag_sh
+          and "img man2" not in otag_sh and "\n    man2)" not in otag_sh, "")
+    check("baseline_b_hand.sh: B17a's other image is rxq", 'M2=$(img_in "$W/build-tester-rxq" "")' in hand_sh
+          and "build-tester-man2" not in hand_sh, "")
     s3 = {k: v for k, v in settings.items() if k != "gi_can1_termination"}
     check("bench: no gi_can1_termination refuses the suite", raises(lambda: SG.bench(s3)) is not None)
 
@@ -547,7 +567,7 @@ def test_flashers(settings, bench):
     hooks = SG.make_hooks(settings, SSID)
     wm, xh, xj = (bench.images[n] for n in ("wican_man", "x2_held", "x2_jammer"))
 
-    m2 = bench.images["wican_man2"]
+    m2 = bench.images["wican_rxq"]     # an image other than _man (wican_man2 until 2026-10-25)
     TOOK, A1 = "...\nVERDICT: (c) TOOK -- page reads the image\n", "VERDICT: (a1) did NOT take: reset at 131072\n"
 
     def ota(outs, page=m2.expect):

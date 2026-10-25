@@ -70,7 +70,9 @@ for s in "$@"; do
       red "$D/B16_page_only_baseline.txt" ;;
     B17a)
       [ -n "$W" ] || { echo "B17a needs GI_IMAGES"; exit 2; }
-      M=$(img_in "$W/build-tester-man" "") && M2=$(img_in "$W/build-tester-man2" "") || exit 2
+      # --other: the rxq image, a different binary (reviewer, 2026-10-25): with reproducible builds
+      # (step 0b) a second clean build, man2, is byte-identical to man and can be no control.
+      M=$(img_in "$W/build-tester-man" "") && M2=$(img_in "$W/build-tester-rxq" "") || exit 2
       py -3.14 -B $A/spec11_page_check.py --image "$M" \
         --other "$M2" --out "$D/B17_spec11_page_${C}_man.json" \
         > "$D/B17_spec11_page_${C}_man.txt" 2>&1; echo "B17a exit $?"
