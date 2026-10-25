@@ -10,6 +10,12 @@ current folder), holding the project's vtrux_build.json (R22).
 In order, each refusal an exit, never a warning:
 
   1. the project's build data reads (project.py);
+     R23: this tooling is the version the project pins (pin.py): it runs
+     from ../shared-<tag>/shared/tools beside the project's worktree root,
+     at the tag shared_pins.json names, with the pin's digest (R7) and
+     commit; a missing checkout is refused with the command that creates
+     it. R16, the tooling-pin clause: a pin naming a commit rather than a
+     tag is refused;
   2. REVERSE_IT_DIR is set and has a firmware/ folder (R13: the build stops
      if it is unset, before anything is built);
   3. the ESP-IDF environment is exported, and R10: the Component Manager's
@@ -74,12 +80,11 @@ In order, each refusal an exit, never a warning:
      app_bin (builddir.py), with its app_elf;
  10. R8 at the end: HEAD is still the commit step 4 read and the worktree
      is still clean, so the record's commit describes what was built;
- 11. R13: the record (record.py).
+ 11. R13: the record (record.py), with the tooling's pin as step 1 checked
+     it.
 
-Not done here: the build checks (R17 to R21, the tester's), the tooling-pin
-refusal of R16 and running from the pinned checkout (R23), both waiting on
-the shared/main tag scheme. A bench or dev build (R14) does not use this
-script.
+Not done here: the build checks (R17 to R21, the tester's). A bench or dev
+build (R14) does not use this script.
 """
 
 import glob
@@ -88,7 +93,7 @@ import re
 import shutil
 import subprocess
 
-from . import buildenv, components, lockfile, manifest, record
+from . import buildenv, components, lockfile, manifest, pin, record
 from .builddir import BuildDir, BuildDirError
 from .digest import component_digest
 from .image import AppImage, ImageError
@@ -487,38 +492,27 @@ def check_shared_pins(proj, locks, manifests):
     return out
 
 
-def tooling_identity(root=TOOLS_ROOT):
-    """{"tag", "commit", "dirty", "digest"} of the shared/tools folder this
-    module runs from. Outside a git checkout, tag, commit and dirty are
-    None."""
-    ident = {"tag": None, "commit": None, "dirty": None,
-             "digest": component_digest(root)}
-    rc, head = git(root, "rev-parse", "--verify", "HEAD")
-    if rc != 0:
-        return ident
-    ident["commit"] = head.strip()
-    rc, st = git(root, "status", "--porcelain=v1", "--untracked-files=all",
-                 "--", ".")
-    ident["dirty"] = bool(st.strip()) if rc == 0 else None
-    rc, tag = git(root, "describe", "--tags", "--exact-match", "HEAD")
-    if rc == 0 and tag.strip():
-        ident["tag"] = tag.strip()
-    return ident
-
-
 def release(project_root, check_only=False, idf=None, toolchain_run=None,
-            dest=None, jobs=None, ninja=None, toolchain=None):
+            dest=None, jobs=None, ninja=None, toolchain=None,
+            tools_root=TOOLS_ROOT):
     """The release build. Returns the record's path (None for check_only).
     Raises Refused with the reason. jobs is --jobs: None builds with
-    idf.py build, N with ninja -j N. idf, ninja, toolchain_run, dest and
-    toolchain replace the real idf.py and ninja runners, the compiler call,
-    the record folder and the IDF install's toolchain (tests)."""
+    idf.py build, N with ninja -j N. idf, ninja, toolchain_run, dest,
+    toolchain and tools_root replace the real idf.py and ninja runners, the
+    compiler call, the record folder, the IDF install's toolchain and the
+    shared/tools folder R23 checks (tests)."""
     root = os.path.abspath(project_root)
     try:
         proj = Project.load(root)
     except ProjectError as e:
         raise Refused(str(e))
     ok("project build data", "%s (%s)" % (proj.name, proj.root))
+    try:
+        tooling = pin.check(root, tools_root)
+    except pin.PinError as e:
+        raise Refused(str(e))
+    ok("tooling pin (R23, R16)", "%s at %s, digest %s"
+       % (tooling["tag"], tooling["commit"][:12], tooling["digest"][:12]))
 
     try:
         out_dir = dest or record.builds_dir(proj.name)
@@ -649,7 +643,7 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
                            for n, d in sorted(comps.items())},
             "dependencies_lock_sha256_lf": lockfile.file_lf_sha256(lock_path),
             "shared_components": shared,
-            "tooling": tooling_identity(),
+            "tooling": tooling,
             "environment_passed": passed,
             "release_checks": {"managed_components": report},
         }

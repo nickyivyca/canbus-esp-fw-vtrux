@@ -37,9 +37,13 @@ The record's fields (RECORD_SCHEMA 1):
                               project's idf_component.yml, the pinned tag
                               being "version", and "lock_version", the
                               commit the lock resolved it to}
-    tooling                   {"tag", "commit", "dirty", "digest"} of the
-                              shared/tools checkout this ran from; tag is
-                              null when HEAD has no tag
+    tooling                   the build tooling's pin, as R23 checked it
+                              (pin.py): "tag", "commit" and "digest" from
+                              the project's shared_pins.json, which the
+                              checkout it ran from matched, and "dirty",
+                              whether git saw uncommitted changes under that
+                              checkout's shared/tools (only files the digest
+                              leaves out can differ there)
     environment_passed        R24: the names, never the values, the build
                               took from its caller's environment, sorted
     release_checks            what the build script checked on the way, for
