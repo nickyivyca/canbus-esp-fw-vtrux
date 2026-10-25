@@ -651,7 +651,8 @@ def collect(build):
     named = []
     if os.path.exists(vb):
         try:
-            shared = json.load(open(vb, encoding="utf-8")).get("shared_components", [])
+            with open(vb, encoding="utf-8") as f:
+                shared = json.load(f).get("shared_components", [])
         except ValueError as e:
             raise SwitchesError("vtrux_build.json cannot be read (%s)" % e)
         named = sorted(n for n in shared if (scopes.get(component_folder(n)) or {}).get("table") is None)
