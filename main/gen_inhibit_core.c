@@ -86,7 +86,7 @@ void gi_config_defaults(gi_config_t *c)
     c->max_rx_errors = 20;
 
     c->fw_version = 1;
-    c->git_hash   = 0;
+    c->build_id   = 0;
     c->autoarm_configured = false;
 }
 
@@ -1361,7 +1361,7 @@ static void build_diag(const gi_state_t *st, const gi_bus_t *bus, int64_t now,
     }
     else                    /* BUILD -> 0x7F3 */
     {
-        uint32_t h = st->cfg.git_hash;
+        uint32_t h = st->cfg.build_id;
         f->id = GI_DIAG_ID_BUILD;
         f->data[0] = (uint8_t)h;
         f->data[1] = (uint8_t)(h >> 8);

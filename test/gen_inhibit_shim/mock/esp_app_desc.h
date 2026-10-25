@@ -1,9 +1,9 @@
 /*
- * Mock esp_app_desc.h. gen_inhibit.c hashes the build's name for 0x7F3 from
- * esp_app_get_description()->version (spec 12.3 item 3, "The name enters the
- * build once"). "unknown" is the string the shim hashed before, when the name
- * was a -DGIT_SHA define the shim build never passed. Only the fields read are
- * mocked; their sizes are the real ones (ESP-IDF v5.4.1 esp_app_desc.h).
+ * Mock esp_app_desc.h. gen_inhibit.c reads app_elf_sha256 for the page's
+ * elf_sha256 (spec 11) and for 0x7F3's build id (spec 10, case 59). version is
+ * not read by the shim build; "unknown" stays as a plain placeholder. Only the
+ * fields read are mocked; their sizes are the real ones (ESP-IDF v5.4.1
+ * esp_app_desc.h).
  */
 #ifndef MOCK_ESP_APP_DESC_H
 #define MOCK_ESP_APP_DESC_H
@@ -17,10 +17,11 @@ typedef struct {
 
 /*
  * The ELF SHA-256 the page reports (spec 11, "The page names the binary it
- * runs"). Chosen so a formatting slip shows: a leading zero byte (dropped by an
- * unpadded %x), both nibbles above 9 (case), and no two bytes alike in a way
- * that would hide a byte-order swap. Case 46 holds the expected hex as a
- * literal, so it does not share this file's arithmetic.
+ * runs") and whose first four bytes 0x7F3 carries (spec 10). Chosen so a
+ * formatting slip shows: a leading zero byte (dropped by an unpadded %x), both
+ * nibbles above 9 (case), and no two bytes alike in a way that would hide a
+ * byte-order swap. Cases 46 and 59 hold the expected text and bytes as
+ * literals, so they do not share this file's arithmetic.
  */
 #define MOCK_ELF_SHA256 { \
     0x00, 0x0f, 0xf0, 0xff, 0x01, 0x23, 0x45, 0x67, \

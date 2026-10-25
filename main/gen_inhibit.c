@@ -85,7 +85,7 @@ _Static_assert(GEN_INHIBIT_PROBE_ID == GI_PROBE_ID, "id drift");
 #endif
 
 /* Bump per meaningful firmware rev and add a row to the table in
- * projects/vtrux/notes/artifacts/gen-inhibit/wican_diag_schema.md.
+ * gen-inhibit/diag/wican_diag_schema.md.
  *
  * 2 is the first build in which a latched section 6 release clears
  * inhibit_live, which is visible on the wire as diag_flags byte3 0x27 -> 0x07.
@@ -158,16 +158,16 @@ _Static_assert(GEN_INHIBIT_PROBE_ID == GI_PROBE_ID, "id drift");
 #define DIAG_FW_VERSION              7
 #endif
 /*
- * THE BUILD'S NAME IS esp_app_desc.version, read at runtime (spec 12.3 item 3,
- * "The name enters the build once"): cmake/git_tree_name.cmake sets PROJECT_VER
- * to the `git describe` it names the image from, and ESP-IDF embeds it. These
- * two settings would put something else there.
+ * THE COMMIT ENTERS THE IMAGE ONCE, in esp_app_desc.version (spec 12.3 item 3,
+ * shared/tools R4): ESP-IDF's default, the `git describe` it runs at configure.
+ * It is a label (shared/tools R6); 0x7F3 names the binary by its image hash.
+ * These two settings would put something else in the version field.
  */
 #if defined(CONFIG_APP_EXCLUDE_PROJECT_VER_VAR) && CONFIG_APP_EXCLUDE_PROJECT_VER_VAR
-#error "CONFIG_APP_EXCLUDE_PROJECT_VER_VAR empties esp_app_desc.version, which is the build's name (0x7F3 git_hash)"
+#error "CONFIG_APP_EXCLUDE_PROJECT_VER_VAR empties esp_app_desc.version, where the commit enters the image (shared/tools R4)"
 #endif
 #if defined(CONFIG_APP_PROJECT_VER_FROM_CONFIG) && CONFIG_APP_PROJECT_VER_FROM_CONFIG
-#error "CONFIG_APP_PROJECT_VER_FROM_CONFIG replaces the build's name in esp_app_desc.version (0x7F3 git_hash)"
+#error "CONFIG_APP_PROJECT_VER_FROM_CONFIG replaces ESP-IDF's git describe in esp_app_desc.version (shared/tools R4)"
 #endif
 
 /* Receive timeout: 200 ms rather than a full second only so a disarm is
@@ -768,17 +768,6 @@ static void rx_backlog_sample(void)
     }
     rxq_note((uint32_t)info.msgs_to_rx + 1);
     s_rx_waiting = needed ? (uint32_t)info.msgs_to_rx : 1u;
-}
-
-static uint32_t fnv1a32(const char *s)
-{
-    uint32_t h = 2166136261u;
-    while (*s)
-    {
-        h ^= (uint8_t)*s++;
-        h *= 16777619u;
-    }
-    return h;
 }
 
 static void bus_snapshot(gi_bus_t *b)
@@ -2299,6 +2288,23 @@ static void elf_sha256_hex(char out[GI_ELF_SHA256_HEX_LEN + 1])
     out[GI_ELF_SHA256_HEX_LEN] = '\0';
 }
 
+/*
+ * SPEC 10, "0x7F3 NAMES THE BINARY" (port step 0c; user, 2026-10-19 and
+ * 2026-10-25): diag_build_id, the first four bytes of the same hash, packed as
+ * the charge interposer's 0x7F7 build id -- hash byte 0 most significant. The
+ * encoder sends the u32 little-endian, so B0..B3 on the wire are hash bytes
+ * 3, 2, 1, 0, and the DBC's unsigned value printed as eight hex digits reads
+ * as the hash's first four bytes in order. Read through a volatile pointer for
+ * elf_sha256_hex()'s reason.
+ */
+static uint32_t build_id(void)
+{
+    const volatile uint8_t *b = esp_app_get_description()->app_elf_sha256;
+
+    return ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) |
+           ((uint32_t)b[2] << 8)  |  (uint32_t)b[3];
+}
+
 static int hist_json(const gi_hist_t *h, const char *name, char *buf, int buflen)
 {
     int n = snprintf(buf, buflen,
@@ -2807,9 +2813,7 @@ void gen_inhibit_init(uint8_t bitrate, uint8_t silent)
     gi_config_t cfg;
     gi_config_defaults(&cfg);
     cfg.fw_version = DIAG_FW_VERSION;
-    /* Spec 10 0x7F3: FNV-1a of GIT_SHA, which is the descriptor's version --
-     * the same `git describe` string the -DGIT_SHA define carried before. */
-    cfg.git_hash   = fnv1a32(esp_app_get_description()->version);
+    cfg.build_id   = build_id();     /* spec 10, 0x7F3 */
     cfg.autoarm_configured = (GEN_INHIBIT_AUTOARM_MODE != GEN_INHIBIT_OFF);
 
     gi_init(&s_core, &cfg);
