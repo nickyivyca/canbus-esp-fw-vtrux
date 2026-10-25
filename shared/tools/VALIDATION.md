@@ -564,7 +564,7 @@ same folder. The interposer's test evidence is
   and profile do not name it yet.
 - **Status:** complete.
 
-### R28. Each project sets its own log levels
+### R28. One set of log levels for every release build
 - **Basis:** user, 2026-10-25, in the interposer reviewer's session:
   log levels made common between the projects "in a sensible way for
   each", as the same mechanism with each project's own values. Raised by
@@ -584,6 +584,18 @@ same folder. The interposer's test evidence is
   `ets_printf`, ignoring the run-time level. The interposer's spec 8.3 sets
   none for ESP-IDF and the Arduino core and error for the bootloader, from
   its step 2a (user, 2026-10-25).
+- **Made common 2026-10-25** (user, in the gen-inhibit reviewer's session):
+  one value set for every project's release builds, the interposer's,
+  where the first wording left each project to its own. Test-only and
+  development builds may raise theirs, so gen-inhibit's OTA rollback
+  rehearsal, which reads bootloader and app log lines, keeps them on its
+  fault-injection build. Its other console tools match the ROM's reset
+  banner and panic output, which ESP-IDF's log levels do not silence.
+  gen-inhibit adopts the values at its own port step after 1a (which brings
+  the `sdkconfig` layering its test builds need), accepted by a full suite
+  run; until then its release builds do not meet R28, a known anomaly of
+  the port. The value names are ESP-IDF v5.4.1's (`components/log/Kconfig.level`,
+  `components/bootloader/Kconfig.log`).
 - **Status:** complete.
 
 ## 5. Data, not code
