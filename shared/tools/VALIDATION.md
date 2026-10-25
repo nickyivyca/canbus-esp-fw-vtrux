@@ -498,6 +498,22 @@ same folder. The interposer's test evidence is
 - **Status:** complete for the WiCAN. The X2's values: basis pending, with
   port step 2a.
 
+### R26. No eFuse-burning features in a release build
+- **Basis:** user, 2026-10-25, in the interposer reviewer's session: the
+  rule is common to every project, so it is written once here rather than
+  in each project's release profile. Secure boot and flash encryption burn
+  eFuses on the first boot of an image that enables them, which cannot be
+  undone on a vehicle's board. Virtual eFuses are a test feature, which
+  keeps eFuse state in memory or flash instead of burning the eFuses.
+- **Context:** gen-inhibit already holds the same four settings, in its
+  spec section 2 ("Never burn eFuses") and 12.3 item 3, settings 2 and 3,
+  and in its release profile (R18 readings above). The interposer's
+  Arduino build has all four off: the prebuilt arduino-esp32 libraries'
+  `esp32s3/sdkconfig`, as installed for its pinned PlatformIO platform
+  on NICKY-XPS (read 2026-10-25). It had no release profile before port
+  step 2a.
+- **Status:** complete.
+
 ## 5. Data, not code
 
 ### R22
