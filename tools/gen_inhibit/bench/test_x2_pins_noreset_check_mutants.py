@@ -52,8 +52,8 @@ MUTANTS = [
     ("only the name banner counts", 'r"rst:0x[0-9a-fA-F]+ \\(|Vtrux charge interposer"', 'r"Vtrux charge interposer"'),
     ("any 0x before a paren counts", 'r"rst:0x[0-9a-fA-F]+ \\(|Vtrux charge interposer"',
      'r"0x[0-9a-fA-F]+ \\(|Vtrux charge interposer"'),
-    ("any holder will do", "return bool(m and m.group(1).strip().startswith(ROLE))", "return bool(m)"),
 ]
+# The lock check moved to bench_held.py (2026-10-25); its mutants are test_bench_held_mutants.py.
 
 
 def main():
@@ -71,6 +71,7 @@ def main():
         open(os.path.join(d, SRC), "w", encoding="utf-8", newline="").write(src.replace(old, new))
         shutil.copy(os.path.join(HERE, TEST), d)
         shutil.copy(os.path.join(HERE, "gi_paths.py"), d)   # the moved tool imports it
+        shutil.copy(os.path.join(HERE, "bench_held.py"), d)   # and its lock check
         r = subprocess.run([sys.executable, "-B", os.path.join(d, TEST)], cwd=d, capture_output=True, text=True)
         fails = [l.strip() for l in r.stdout.splitlines() if l.strip().startswith("FAIL ")]
         crashed = "Traceback" in r.stderr

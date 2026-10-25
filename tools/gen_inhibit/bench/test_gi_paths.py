@@ -184,10 +184,12 @@ def main():
     check("data_dir() is the SeaDrive half", lambda: os.path.normcase(gp.data_dir()) == os.path.normcase(G))
     check("bench_holder() is firmware/bench-holder.md",
           lambda: os.path.normcase(gp.bench_holder()) == os.path.normcase(os.path.join(root, "firmware", "bench-holder.md")))
+    check("bench_log() is firmware/bench-log.jsonl",
+          lambda: os.path.normcase(gp.bench_log()) == os.path.normcase(os.path.join(root, "firmware", "bench-log.jsonl")))
     # Each data path is under the reverse-it root, so none lands elsewhere in the repo.
     # (The fake root is in the worktree's scratch/ since 2026-10-24, not the temp folder,
     # so "not under the repo" no longer says it.)
-    data = [gp.runs(), gp.data_dir(), gp.bench_holder(), gp.jammer_builds(), gp.project("projects")]
+    data = [gp.runs(), gp.data_dir(), gp.bench_holder(), gp.bench_log(), gp.jammer_builds(), gp.project("projects")]
     check("no data path lands in the repo: each is under the reverse-it root",
           lambda: all(os.path.normcase(p).startswith(os.path.normcase(root) + os.sep) for p in data), data)
     check("repo_root holds tools/gen_inhibit/bench/gi_paths.py",
