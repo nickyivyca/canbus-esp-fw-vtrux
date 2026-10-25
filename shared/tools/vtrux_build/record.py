@@ -40,6 +40,8 @@ The record's fields (RECORD_SCHEMA 1):
     tooling                   {"tag", "commit", "dirty", "digest"} of the
                               shared/tools checkout this ran from; tag is
                               null when HEAD has no tag
+    environment_passed        R24: the names, never the values, the build
+                              took from its caller's environment, sorted
     release_checks            what the build script checked on the way, for
                               the reader: "managed_components" (R10's
                               report)

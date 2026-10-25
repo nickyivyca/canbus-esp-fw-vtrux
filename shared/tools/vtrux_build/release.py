@@ -15,14 +15,20 @@ In order, each refusal an exit, never a warning:
   3. the ESP-IDF environment is exported, and R10: the Component Manager's
      overwrite setting (IDF_COMPONENT_OVERWRITE_MANAGED_COMPONENTS) is not
      set at all; this IDF's tool list (tools.json) reads, for R9;
+     R24: the environment every ESP-IDF call below runs in, built from an
+     empty one (buildenv.py): only the names on its pass list come from
+     the caller, then the tooling's own settings, R10's
+     IDF_COMPONENT_STRICT_CHECKSUM=1 and R9's fixed SOURCE_DATE_EPOCH.
+     The names passed are printed and recorded, the names dropped
+     printed;
   4. R8: the worktree has no uncommitted changes and no untracked files
      (git status, ignored files excepted). The commit is HEAD.
      --check-only stops here.
-  5. R9: `idf.py --no-ccache reconfigure`, with
-     IDF_COMPONENT_STRICT_CHECKSUM=1 in its environment (R10), so the
-     manager stops the configure on a component whose files no longer
-     match its recorded hash. --no-ccache wins over IDF_CCACHE_ENABLE,
-     which the IDF export sets wherever ccache is installed;
+  5. R9: `idf.py --no-ccache reconfigure`, in the R24 environment, whose
+     IDF_COMPONENT_STRICT_CHECKSUM=1 (R10) makes the manager stop the
+     configure on a component whose files no longer match its recorded
+     hash. --no-ccache wins over IDF_CCACHE_ENABLE, which the IDF export
+     sets wherever ccache is installed (and R24 drops);
      R9: build/CMakeCache.txt has CCACHE_ENABLE, and off; and, by its
      effect, every compile command CMake wrote into build.ninja starts
      with the compiler CMake chose for its language, not a launcher.
@@ -50,11 +56,11 @@ In order, each refusal an exit, never a warning:
      names is taken from a local folder: its dependencies.lock source is
      not "local", and no idf_component.yml of the build gives it an
      override_path;
-  8. `idf.py --no-ccache build`, in the same run as 5, also in strict
-     mode, so a configure the build itself triggers is strict too and
-     keeps the cache off. With --jobs N,
+  8. `idf.py --no-ccache build`, in the same run as 5 and the same R24
+     environment, so a configure the build itself triggers is strict too
+     and keeps the cache off. With --jobs N,
      `ninja -C build -j N all` instead: what `idf.py build` runs, at N
-     jobs (idf.py has no jobs option), in the same strict environment.
+     jobs (idf.py has no jobs option), in the same environment.
      --jobs 1 from an Idle shell is the throttled form of AGENTS.md
      "Builds during wall-clock tests". R9 asks for a reconfigure and a
      build in one run, not for idf.py build (gen-inhibit reviewer,
@@ -82,7 +88,7 @@ import re
 import shutil
 import subprocess
 
-from . import components, lockfile, manifest, record
+from . import buildenv, components, lockfile, manifest, record
 from .builddir import BuildDir, BuildDirError
 from .digest import component_digest
 from .image import AppImage, ImageError
@@ -108,8 +114,8 @@ def git(root, *args):
 
 def idf_runner(project_root):
     """A callable run(args, env) that runs idf.py <args> in project_root
-    with the exported environment's Python, this process's environment
-    updated with env, and returns its exit code. Output goes to this
+    with the exported environment's Python, in env and nothing else (R24:
+    buildenv.environment()), and returns its exit code. Output goes to this
     process's stdout and stderr."""
     idf_path = os.environ.get("IDF_PATH")
     env_path = os.environ.get("IDF_PYTHON_ENV_PATH")
@@ -125,26 +131,22 @@ def idf_runner(project_root):
                           "the one exported" % p)
 
     def run(args, env):
-        full = dict(os.environ)
-        full.update(env)
         return subprocess.run([py, idf_py, "-C", project_root] + list(args),
-                              env=full).returncode
+                              env=env).returncode
     return run
 
 
 def ninja_runner():
     """A callable run(args, env) that runs ninja <args>, the one on PATH
-    (the exported environment's), with this process's environment updated
-    with env, and returns its exit code."""
+    (the exported environment's), in env and nothing else (R24), and
+    returns its exit code."""
     exe = shutil.which("ninja")
     if not exe:
         raise Refused("ninja is not on PATH; run this from an exported "
                       "ESP-IDF shell")
 
     def run(args, env):
-        full = dict(os.environ)
-        full.update(env)
-        return subprocess.run([exe] + list(args), env=full).returncode
+        return subprocess.run([exe] + list(args), env=env).returncode
     return run
 
 
@@ -536,16 +538,21 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
             toolchain = Toolchain.from_environ()
         except ToolchainError as e:
             raise Refused("this IDF's toolchain cannot be read: %s (R9)" % e)
+    # R24: every ESP-IDF call this run makes gets this environment and no
+    # other, with R10's strict mode and R9's SOURCE_DATE_EPOCH in it.
+    env, passed, dropped = buildenv.environment(
+        default_tools_path=toolchain.tools_path)
+    ok("environment (R24)", "%d passed: %s" % (len(passed), " ".join(passed)))
+    say("           %d dropped: %s" % (len(dropped),
+                                       " ".join(dropped) or "(none)"))
 
     commit = check_clean(root)
     if check_only:
         return None
 
-    # R10: the manager's strict mode for every configure this run makes.
-    strict = {components.STRICT_ENV: "1"}
     build_dir = os.path.join(root, "build")
-    say("\nidf.py --no-ccache reconfigure (%s=1) ..." % components.STRICT_ENV)
-    rc = idf(["--no-ccache", "reconfigure"], strict)
+    say("\nidf.py --no-ccache reconfigure (R24 environment) ...")
+    rc = idf(["--no-ccache", "reconfigure"], env)
     if rc != 0:
         raise Refused("idf.py reconfigure failed (exit %d)" % rc)
     ok("reconfigure (R9)")
@@ -603,13 +610,13 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
 
     if jobs is None:
         what = "idf.py build"
-        say("\nidf.py --no-ccache build (%s=1) ..." % components.STRICT_ENV)
-        rc = idf(["--no-ccache", "build"], strict)
+        say("\nidf.py --no-ccache build (R24 environment) ...")
+        rc = idf(["--no-ccache", "build"], env)
     else:
         what = "ninja -j %d build" % jobs
         args = ["-C", build_dir, "-j", str(jobs), "all"]
-        say("\nninja %s (%s=1) ..." % (" ".join(args), components.STRICT_ENV))
-        rc = ninja(args, strict)
+        say("\nninja %s (R24 environment) ..." % " ".join(args))
+        rc = ninja(args, env)
     if rc != 0:
         raise Refused("%s failed (exit %d)" % (what, rc))
     check_no_ccache(build_dir, "after the build")
@@ -643,6 +650,7 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
             "dependencies_lock_sha256_lf": lockfile.file_lf_sha256(lock_path),
             "shared_components": shared,
             "tooling": tooling_identity(),
+            "environment_passed": passed,
             "release_checks": {"managed_components": report},
         }
         path = record.write(proj.name, bin_path, elf_path, fields,
