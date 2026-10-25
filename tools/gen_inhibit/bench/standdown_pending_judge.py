@@ -60,9 +60,10 @@ def residual(page):
     return (w + d) - (s + sd)
 
 
-def judge(frames, posts, rows, settle=SETTLE_S):
-    c = J.Ctx(frames, posts)
+def judge(frames, posts, rows, settle=SETTLE_S, identity=None):
+    c = J.Ctx(frames, posts, identity=identity)
     v = J.Verdict()
+    J.diag_errors(c, v)
     m4 = [t for t, p in c.series(0x639, J.PTX, "shift_lever_pos") if p == 4]
     v.need("shift_lever_pos 4 on the wire", len(m4) >= 3, "%d frames" % len(m4))
     if not m4:
@@ -129,7 +130,7 @@ def judge_files(run_path, page_path, settle=SETTLE_S):
     w = json.load(gzip.open(run_path[:-5] + "_witness.json.gz"))["frames"]
     frames = [(r[0], r[1], r[2]) for r in w]
     rows = [json.loads(line) for line in open(page_path) if line.strip()]
-    return judge(frames, d["posts"], rows, settle)
+    return judge(frames, d["posts"], rows, settle, identity=d.get("decoder"))
 
 
 def main(argv):

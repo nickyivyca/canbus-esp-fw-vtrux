@@ -167,9 +167,12 @@ def bsn(lat=True, live=False, st="bus_off", mode=3):
     return {"mode": mode, "abort_latched": lat, "inhibit_live": live, "drv_state": st}
 
 
-F_OK = "0000009500000000"      # flags byte 3 = 0x95: bit7 set, bit5 clear
-F_LIVE = "000000b500000000"    # bit5 set
-F_NOLAT = "0000001500000000"   # bit7 clear
+# 0x7F1 on HEAD's schema (byte 0; gi_diag refuses a schema no DBC in git states, and
+# these read schema 0 until 2026-10-24, when byte 3 was read by hand).
+_S = "%02x" % C.gi_diag.schemas_for().head_version
+F_OK = _S + "00009500000000"      # diag_flags = 0x95: bit7 set, bit5 clear
+F_LIVE = _S + "0000b500000000"    # bit5 set
+F_NOLAT = _S + "00001500000000"   # bit7 clear
 LATCH_SAMPLES = [(10.0, bsn(st="running")), (10.2, bsn()), (10.4, bsn()), (25.0, bsn(mode=0))]
 B_CASES = [
     ("bus-off, latched, no 0x051 after (the case B shape)", LATCH_SAMPLES, [], [9.9], "PASS"),

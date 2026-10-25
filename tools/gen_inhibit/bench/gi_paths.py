@@ -12,11 +12,14 @@ One setting, an environment variable:
   REVERSE_IT_DIR   REQUIRED for anything that reads or writes data: the absolute path
                    of SeaDrive's reverse-it root on this machine (the folder holding
                    canre/ and projects/). From it come the captures
-                   (projects/vtrux/logs/), the vehicle DBCs and the diag DBCs not yet
-                   in git, the bench lock (firmware/bench-holder.md), the run folders
-                   and fixtures (projects/vtrux/notes/artifacts/gen-inhibit/runs/), the
-                   X2 jammer's build binaries, and, for now, canre. No default: unset
-                   is an error, never a guess.
+                   (projects/vtrux/logs/), the vehicle DBCs, the bench lock
+                   (firmware/bench-holder.md), the run folders and fixtures
+                   (projects/vtrux/notes/artifacts/gen-inhibit/runs/), the X2 jammer's
+                   build binaries, and, for now, canre. No default: unset is an error,
+                   never a guess.
+
+The diag DBCs are not here: gi_diag.py reads both from git (toolkit item 10,
+2026-10-24), and this module no longer resolves them.
 
 Retired, and refused if set (reviewer, 2026-10-22), so an old environment fails
 loudly instead of resolving somewhere else: GI_FW_TOOLS (the moved tools find
@@ -32,7 +35,7 @@ canre comes from SeaDrive through REVERSE_IT_DIR, as in the interposer (reviewer
 PINS. pins.json beside this file holds the sha256 of the inputs the reviewer listed
 (toolkit item 9): captures, cut replays, DBCs, the jammer binaries, and the run
 records the harness tests read. A pinned file is checked when a tool resolves it
-(capture(), vehicle_dbc(), diag_dbc(), jammer_builds(), verify(), pinned_tree()); a
+(capture(), vehicle_dbc(), jammer_builds(), verify(), pinned_tree()); a
 mismatch is refused. A file that is not pinned passes through verify() unchanged.
 
 Every function resolves when CALLED, so importing a module that uses these does not
@@ -149,12 +152,6 @@ def capture(name):
 
 def vehicle_dbc(name):
     """A vehicle DBC in projects/vtrux/, checked against its pin."""
-    return verify(project("projects", "vtrux", name))
-
-
-def diag_dbc(name="vtrux-wican-diag.dbc"):
-    """A diag DBC in projects/vtrux/ (gen-inhibit's until it is in git, and the
-    interposer's SeaDrive copy, which stays until every reader moves)."""
     return verify(project("projects", "vtrux", name))
 
 

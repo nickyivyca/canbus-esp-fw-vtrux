@@ -25,6 +25,7 @@ import json
 import os
 import re
 import sys
+import gi_diag  # noqa: E402  the diag DBC from git, by schema byte (toolkit item 10)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -51,6 +52,14 @@ def observe_verdict(span):
     return "VIOLATION: a device frame %.1f ms after the OBSERVE POST" % span["last_ms"]
 
 
+def live_page_times(wire, identity=None):
+    """(times of the 0x7F1 pages with inhibit_live set (diag_flags bit5), the Decoder).
+    Decoded by gi_diag on each page's own schema, never read from byte 3 by hand
+    (toolkit item 10, reading Q7, 2026-10-24); an unknown schema raises."""
+    pages, dec = gi_diag.decode_pages(wire, identity=identity, decode_choices=False, allow_truncated=True)
+    return sorted(t for t, i, p in pages if i == 0x7F1 and p and int(p.get("diag_flags", 0)) & 0x20), dec
+
+
 def analyse(run):
     import provenance_classifier as P
     d = json.load(open(run, encoding="utf-8"))
@@ -61,7 +70,7 @@ def analyse(run):
     wire = P.read_witness(os.path.join(os.path.dirname(run), a["witness_raw"]))
     dev_cmd = sorted(r["device_times"])
     dev_other = sorted(t for t, i, _d in wire if i in WICAN_IDS)
-    live_pages = sorted(t for t, i, dd in wire if i == 0x7F1 and len(dd) > 3 and dd[3] & 0x20)
+    live_pages, dec = live_page_times(wire, d.get("decoder"))
     sched = a.get("post_schedule") or []
     posts = [(rep[e["index"]], e["mode"], e) for e in sched if e.get("index") is not None]
     bounds = [rep[0]] + [t for t, _m, _e in posts] + [rep[-1] + 0.5]
@@ -106,7 +115,8 @@ def analyse(run):
             "late": r["late"], "double": r["double"], "unexplained": r["unexplained"],
             "provenance": r["verdict"], "spans": spans,
             "end_page": {"mode": g("mode"), "self_off": g("self_off"), "uptime_ms": g("uptime_ms"),
-                         "reset_reason": g("reset_reason"), "abort_reason": g("abort_reason")}}
+                         "reset_reason": g("reset_reason"), "abort_reason": g("abort_reason")},
+            "diag_decode": dec.summary()}
 
 
 def main():

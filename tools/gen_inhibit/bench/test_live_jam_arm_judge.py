@@ -13,6 +13,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import live_jam_arm as L                                        # noqa: E402
+SCHEMA = L.gi_diag.schemas_for().head_version
 import gi_paths                                                 # noqa: E402
 
 # The fixture's record, in SeaDrive since the move (goal 20, 2026-10-22): the
@@ -35,7 +36,9 @@ def vcm(pt, ctr):
 
 
 def f7f1(pt, flags):
-    return (pt, 0x7F1, "060103%02x000000ff" % flags)
+    """A 0x7F1 on HEAD's schema (gi_diag refuses a schema no DBC in git states; it read
+    schema 6 until 2026-10-24, when byte 3 was read by hand)."""
+    return (pt, 0x7F1, "%02x0103%02x000000ff" % (SCHEMA, flags))
 
 
 def base():

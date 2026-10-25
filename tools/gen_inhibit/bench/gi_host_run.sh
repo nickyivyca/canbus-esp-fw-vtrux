@@ -115,9 +115,26 @@ fi
 # run where ESP-IDF is (NICKY-XPS), while config_vs_spec.py compiles
 # config_probe.c and needs a host C compiler, which NICKY-XPS does not have.
 MAIN_HDRS="$(cd "$FW" && ls main/*.h)"
+
+# THE DIAG DBCS (2026-10-24, port plan toolkit item 10). run_tests.py compares the
+# goldens' diag lines decoded by name, and the probes decode too, all through
+# tools/gen_inhibit/bench/gi_diag.py, which reads the DBCs from git. ~/gi_host has
+# no git, so gi_diag exports them here first -- one DBC per schema from the DBC's
+# history, the pinned vtrux_bench decode.py, the interposer's DBC at its pin and
+# this tree's run identity -- and they go to ~/$DEST/diag_schemas/, replacing the
+# last export, with gi_diag.py and pins.json beside the rest. The export refuses
+# a working-tree DBC that is not HEAD's, which stops the run here.
+LOCAL_PY="${LOCAL_PY:-py -3.14}"
+EXPORT_PARENT="$FW/scratch/gi-host-export"
+rm -rf "$EXPORT_PARENT"
+mkdir -p "$EXPORT_PARENT"
+$LOCAL_PY -B "$FW/tools/gen_inhibit/bench/gi_diag.py" export "$EXPORT_PARENT/diag_schemas" >/dev/null
+
 echo "--- sync $FW -> $REMOTE:~/$DEST"
 tar -C "$FW" -czf - \
     $MAIN_HDRS \
+    tools/gen_inhibit/bench/gi_diag.py \
+    tools/gen_inhibit/bench/pins.json \
     main/gen_inhibit.c \
     main/can.c \
     test/gen_inhibit_shim \
@@ -142,7 +159,8 @@ tar -C "$FW" -czf - \
     test/gen_inhibit_host/drained_check.py \
     test/gen_inhibit_host/replay_stimulus_delta.py \
     test/gen_inhibit_host/golden \
-  | ssh "$REMOTE" "mkdir -p ~/$DEST && tar xzf - -C ~/$DEST"
+    -C "$EXPORT_PARENT" diag_schemas \
+  | ssh "$REMOTE" "mkdir -p ~/$DEST && rm -rf ~/$DEST/diag_schemas && tar xzf - -C ~/$DEST"
 
 # THE FOUR ABOVE run_tests.py WERE MISSING UNTIL 2026-09-26, and the way that
 # fails is the reason the golden warning further up exists.

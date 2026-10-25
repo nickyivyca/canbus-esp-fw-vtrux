@@ -13,8 +13,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import tec_busoff_sweep as T                                    # noqa: E402
 
-BIT1 = "06010406000000ff"      # 0x7F1 with flags byte (B3) = 0x06: bit1 set
-NOBIT1 = "06010404000000ff"    # flags 0x04: bit1 clear
+# 0x7F1 on HEAD's schema (B0; gi_diag refuses a schema no DBC in git states, and these
+# read schema 6 until 2026-10-24, when B3 was read by hand).
+_S = "%02x" % T.gi_diag.schemas_for().head_version
+BIT1 = _S + "010406000000ff"      # 0x7F1 with diag_flags = 0x06: bit1 set
+NOBIT1 = _S + "010404000000ff"    # diag_flags 0x04: bit1 clear
 
 
 def sn(state, bus_on):

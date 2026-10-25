@@ -33,6 +33,20 @@ first, and the device's reason must be one of them. The 0x051 that is the
 evidence may itself be answered; every one after it must not be (spec 7, "A
 single signal lost on a live bus still trips"; user ruling 2026-10-16, after
 B20 showed seven cases answering exactly that frame).
+
+DIAG PAGES ARE DECODED BY gi_diag (toolkit item 10, 2026-10-24). Ctx runs one
+gi_diag.Decoder over the record's diag pages in time order: the DBC comes from git
+(or the export of a copy with no git), picked by each schema page's byte, and checked
+against the run identity a record gives (Ctx's identity; reading Q1). TWO KINDS OF
+FAILURE, AND THEY ARE NOT THE SAME (reading Q6):
+  - a schema byte no DBC states, or one that is not the record's DBC, RAISES
+    (gi_diag.UnknownSchema, SchemaMismatch): the record is refused, never judged;
+  - any other page that does not decode keeps the old behaviour and is left out of
+    p7f1/p7f8/p7f2, as absent.
+A page before the first schema page is neither: it is UNDECODABLE (reading Q2), counted
+in Ctx.undecodable, and judge() returns ERROR when there is one, because every judge
+here reads the diag pages of the whole record. Decoding it with a schema seen later
+would be a fallback.
 """
 
 import bisect
@@ -41,15 +55,16 @@ import sys
 
 import cantools
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
+import gi_diag  # noqa: E402  the diag DBC from git, by schema byte (toolkit item 10)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def project_root():
-    """The reverse-it root: five levels up from here, or -- for a copy run from a
-    scratch dir, as the mutant runner does -- the sys.path entry that holds it."""
+    """The reverse-it root (the vehicle DBCs): REVERSE_IT_DIR, or -- for a copy run
+    from a scratch dir, as the mutant runner does -- the sys.path entry that holds it."""
     for cand in [gi_paths.reverse_it_dir()] + list(sys.path):
-        if os.path.isfile(os.path.join(cand, "projects", "vtrux", "vtrux-wican-diag.dbc")):
+        if os.path.isfile(os.path.join(cand, "projects", "vtrux", "epri-pt-bus.dbc")):
             return os.path.normpath(cand)
     raise RuntimeError("cannot find the project root (projects/vtrux/*.dbc)")
 
@@ -68,16 +83,31 @@ SOC_MIN_RAW = 2100      # 21.00 %, spec 6.2: below it releases
 DEBOUNCE_N = 5          # spec 6.2: 5 consecutive valid readings
 
 _DB = {}
+_SCHEMAS = []
+
+
+def schemas():
+    """The diag schema set (gi_diag.schemas_for), loaded once."""
+    if not _SCHEMAS:
+        _SCHEMAS.append(gi_diag.schemas_for())
+    return _SCHEMAS[0]
 
 
 def db(name):
+    """A vehicle DBC from REVERSE_IT_DIR; for DIAG, HEAD's diag DBC from git, which is
+    for encoding test frames and naming choices only: diag pages are decoded by Ctx."""
+    if name == DIAG:
+        return schemas().head().db
     if name not in _DB:
         _DB[name] = cantools.database.load_file(os.path.join(DBC_DIR, name), strict=False)
     return _DB[name]
 
 
 def decode(dbc, ident, hexs):
-    """Raw (unscaled) signal values, or None if the frame does not decode."""
+    """Raw (unscaled) signal values of a vehicle frame, or None if it does not decode.
+    Not for diag pages, which only decode in order (Ctx)."""
+    if dbc == DIAG:
+        raise ValueError("diag pages are decoded in order by Ctx (gi_diag), never one at a time")
     try:
         return db(dbc).decode_message(ident, bytes.fromhex(hexs), scaling=False,
                                       decode_choices=False, allow_truncated=True)
@@ -85,13 +115,20 @@ def decode(dbc, ident, hexs):
         return None
 
 
-def choice(dbc, ident, sig, v):
-    m = db(dbc).get_message_by_frame_id(ident)
+def choice(dbc, ident, sig, v, schema=None):
+    """A signal value's choice name; for DIAG, from the DBC of the page's schema."""
+    d = schemas().get(schema).db if (dbc == DIAG and schema is not None) else db(dbc)
+    m = d.get_message_by_frame_id(ident)
     c = m.get_signal_by_name(sig).choices or {}
     return str(c.get(v, v))
 
 
-DIAG = "vtrux-wican-diag.dbc"
+class Page(dict):
+    """A decoded diag page (raw values), with the schema it was decoded on."""
+    __slots__ = ("schema",)
+
+
+DIAG = "wican-diag"     # a key, not a file: db(DIAG) is gi_diag's HEAD DBC from git
 PT = "epri-pt-bus.dbc"
 PTX = "vtrux-powertrain-experimental.dbc"
 
@@ -190,11 +227,13 @@ class Ctx:
 
     frames: [(t, id, hex)] on one clock; posts: [{"mode", "t_ret", ...}].
     sent: the sender's log [(t, id, hex, ok)]; given, 0x051 is attributed by it
-    (attribute_by_sender), else by the content rule above.
+    (attribute_by_sender), else by the content rule above. identity: the record's
+    gi_diag run identity, when it has one; every schema page must be on its DBC.
     """
 
-    def __init__(self, frames, posts=None, samples=None, alias=None, sent=None):
+    def __init__(self, frames, posts=None, samples=None, alias=None, sent=None, identity=None):
         self.frames = sorted(frames, key=lambda x: x[0])
+        self._decode_diag(identity)
         # alias: {injected 0x051 hex: the payload it replaced}. The device's
         # answer to the frame before an injected one copies the command the VCM
         # would have sent, i.e. the original; without this the content rule
@@ -219,13 +258,31 @@ class Ctx:
         self.p7f8 = self._pages(0x7F8)
         self.p7f2 = self._pages(0x7F2)
 
+    def _decode_diag(self, identity):
+        """Every diag page, in time order, through one gi_diag.Decoder."""
+        dec = gi_diag.Decoder(schemas(), identity)
+        self.diag = {}
+        self.undecodable = []
+        for t, i, h in self.frames:
+            if i not in dec.ids:
+                continue
+            try:
+                d = dec.feed(i, bytes.fromhex(h), t=t, scaling=False, decode_choices=False,
+                             allow_truncated=True)
+            except gi_diag.DiagError:
+                raise
+            except Exception:       # noqa: BLE001  any other failure: absent, as before
+                continue
+            if isinstance(d, gi_diag.Undecodable):
+                self.undecodable.append((t, i, d.reason))
+                continue
+            pg = Page(d)
+            pg.schema = dec.version
+            self.diag.setdefault(i, []).append((t, pg))
+        self.diag_summary = dec.summary()
+
     def _pages(self, ident):
-        out = []
-        for t, h in self.by_id.get(ident, []):
-            d = decode(DIAG, ident, h)
-            if d is not None:
-                out.append((t, d))
-        return out
+        return list(self.diag.get(ident, []))
 
     def times(self, ident):
         return [t for t, _ in self.by_id.get(ident, [])]
@@ -277,15 +334,15 @@ def flag(d, bit, sig="diag_flags"):
 
 
 def abort_name(d):
-    return choice(DIAG, 0x7F8, "diag_abort_reason", int(d["diag_abort_reason"]))
+    return choice(DIAG, 0x7F8, "diag_abort_reason", int(d["diag_abort_reason"]), getattr(d, "schema", None))
 
 
 def block_name(d):
-    return choice(DIAG, 0x7F8, "diag_arm_block", int(d["diag_arm_block"]))
+    return choice(DIAG, 0x7F8, "diag_arm_block", int(d["diag_arm_block"]), getattr(d, "schema", None))
 
 
 def disable_name(d):
-    return choice(DIAG, 0x7F1, "diag_disable_reason", int(d["diag_disable_reason"]))
+    return choice(DIAG, 0x7F1, "diag_disable_reason", int(d["diag_disable_reason"]), getattr(d, "schema", None))
 
 
 # ----------------------------------------------------------------- the verdict
@@ -294,7 +351,11 @@ class Verdict:
     def __init__(self):
         self.pre = []        # (name, ok, detail): the case tested what it says
         self.checks = []     # (name, ok, detail): spec requirements
+        self.errors = []     # (name, detail): the record could not be judged
         self.facts = {}
+
+    def error(self, name, detail=""):
+        self.errors.append((name, detail))
 
     def need(self, name, ok, detail=""):
         self.pre.append((name, bool(ok), detail))
@@ -303,7 +364,9 @@ class Verdict:
         self.checks.append((name, bool(ok), detail))
 
     def result(self):
-        if any(not ok for _, ok, _ in self.pre):
+        if self.errors:
+            v = "ERROR"
+        elif any(not ok for _, ok, _ in self.pre):
             v = "INCONCLUSIVE"
         elif any(not ok for _, ok, _ in self.checks):
             v = "NOT AS SPECIFIED"
@@ -312,6 +375,7 @@ class Verdict:
         return {"verdict": v,
                 "preconditions": [{"name": n, "ok": o, "detail": d} for n, o, d in self.pre],
                 "checks": [{"name": n, "ok": o, "detail": d} for n, o, d in self.checks],
+                "errors": [{"name": n, "detail": d} for n, d in self.errors],
                 "facts": self.facts}
 
 
@@ -980,9 +1044,19 @@ def diag_gaps(c):
     return out, spans
 
 
-def judge(kind, frames, posts, samples, case, sent=None):
-    c = Ctx(frames, posts, samples, case.get("alias"), sent=sent)
+def diag_errors(c, v):
+    """Record the decode summary; an undecodable page makes the verdict ERROR, never an
+    absence (reading Q2). Every judge on a Ctx calls this."""
+    v.facts["diag_decode"] = c.diag_summary
+    if c.undecodable:
+        v.error("every diag page decoded", "%d undecodable, first %s"
+                % (len(c.undecodable), ["%.3f 0x%03X %s" % u for u in c.undecodable[:3]]))
+
+
+def judge(kind, frames, posts, samples, case, sent=None, identity=None):
+    c = Ctx(frames, posts, samples, case.get("alias"), sent=sent, identity=identity)
     v = Verdict()
+    diag_errors(c, v)
     v.facts["device_0x051"] = len(c.dev)
     v.facts["vcm_0x051"] = len(c.vcm)
     if c.attribution is not None:

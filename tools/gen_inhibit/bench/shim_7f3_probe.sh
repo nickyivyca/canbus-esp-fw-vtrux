@@ -15,14 +15,21 @@
 #
 # A tree whose copy prints no 0x7F3 at all is reported as such: the comparison
 # then shows nothing, and must not read as "unchanged".
+#
+# THE PAYLOADS ARE ALSO DECODED BY NAME (2026-10-24, port plan toolkit item 10): each
+# distinct payload goes through the synced tree's gi_diag.py, against the diag_schemas/
+# export gi_host_run.sh copies with it, on the schema its own byte states. A schema no
+# DBC in the export states is refused (DECODE REFUSED), never decoded with a fallback.
 set -euo pipefail
 REMOTE="${REMOTE:-madhouse-debian}"
+PY="${PY:-python3.13}"
 ssh "$REMOTE" "bash -s" < "$(dirname "$0")/host_identity.sh"   # host and compiler; stops here if missing
 for dest in "$@"; do
   echo "=== $dest"
-  ssh "$REMOTE" "bash -s" "$dest" <<'EOS'
+  ssh "$REMOTE" "bash -s" "$dest" "$PY" <<'EOS'
 set -euo pipefail
 dest="$1"
+py="$2"
 src="$HOME/$dest/test/gen_inhibit_shim"
 probe="$HOME/$dest/test/gen_inhibit_shim_7f3probe"
 rm -rf "$probe"
@@ -37,5 +44,7 @@ make -s shim_test >/dev/null 2>&1 || make shim_test
 ./shim_test >/dev/null 2>"$probe/stderr.txt" || echo "shim_test exit $?"
 echo "0x7F3 payloads (count payload):"
 grep -o "PROBE7F3 [0-9a-f]*" "$probe/stderr.txt" | sort | uniq -c | sort -rn || echo "  NONE -- no 0x7F3 was transmitted"
+echo "0x7F3 payloads decoded (gi_diag, by name):"
+grep -o "PROBE7F3 [0-9a-f]*" "$probe/stderr.txt" | sort -u | sed 's/^PROBE7F3 /7F3 /'   | "$py" -B "$HOME/$dest/tools/gen_inhibit/bench/gi_diag.py" decode || echo "  DECODE REFUSED or failed (above)"
 EOS
 done

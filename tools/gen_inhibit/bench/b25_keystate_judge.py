@@ -49,8 +49,8 @@ def key_on_at(keys, t):
     return False
 
 
-def judge(frames, posts):
-    c = J.Ctx(frames, posts, [], None)
+def judge(frames, posts, identity=None):
+    c = J.Ctx(frames, posts, [], None, identity=identity)
     keys = c.series(0x592, J.PT, "IgnitionKeyState")
     checks, facts = [], {}
 
@@ -112,6 +112,9 @@ def judge(frames, posts):
     verdict = "AS SPECIFIED" if all(x["ok"] for x in checks) else "NOT AS SPECIFIED"
     if not ons:
         verdict = "INCONCLUSIVE (no key-on edge)"
+    facts["diag_decode"] = c.diag_summary
+    if c.undecodable:
+        verdict = "ERROR (%d diag page(s) undecodable)" % len(c.undecodable)    # reading Q2
     return {"verdict": verdict, "checks": checks, "facts": facts}
 
 
@@ -120,7 +123,7 @@ def main(paths):
     for p in paths:
         d = json.load(open(p))
         w = json.load(gzip.open(p[:-5] + "_witness.json.gz"))["frames"]
-        r = judge([(x[0], x[1], x[2]) for x in w], d["posts"])
+        r = judge([(x[0], x[1], x[2]) for x in w], d["posts"], d.get("decoder"))
         t0 = d["t0_epoch"]
         print("== %s: %s" % (os.path.basename(p), r["verdict"]))
         for ch in r["checks"]:

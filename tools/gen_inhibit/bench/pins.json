@@ -50,8 +50,20 @@
   "projects/vtrux/notes/artifacts/gen-inhibit/x2_jammer/builds/f4430f30149fd33c1473ed78f620ef0e/partitions.bin": "1d9cca96de0fe07ad7fc0648b9878ddecd9ce565e38b589ad20fea698ed4c80c",
   "projects/vtrux/notes/artifacts/gen-inhibit/x2_jammer/builds/f4430f30149fd33c1473ed78f620ef0e/vtrux_jammer_x2_NOT_FOR_VEHICLE_e453ce322ce8.bin": "2af792f1de752e7bc5fdfda587595f5eaabcfae5ab31ebfb1f6b346d1afa5908",
   "projects/vtrux/notes/artifacts/gen-inhibit/x2_jammer/builds/f4430f30149fd33c1473ed78f620ef0e/vtrux_jammer_x2_NOT_FOR_VEHICLE_e453ce322ce8.elf": "1bd021a177653c93a701aaa798834a837c8d1faefe76c4d6cba6ca074d1e83bb",
-  "projects/vtrux/vtrux-interposer-diag.dbc": "288fa703f3a279fad5f9c526dae1667360ce1ec172d28760371a6c572e994aff",
-  "projects/vtrux/vtrux-powertrain-experimental.dbc": "a1f4932cd6c8633680641243450ffd602dfec249e71a3ceee5a609069d59a8a3",
-  "projects/vtrux/vtrux-wican-diag.dbc": "fd6386df1c77044096f1eb181fe4e6dc69163127a852d6ba8931a3f2d17030e9"
+  "projects/vtrux/vtrux-powertrain-experimental.dbc": "a1f4932cd6c8633680641243450ffd602dfec249e71a3ceee5a609069d59a8a3"
+ },
+ "_comment_git": "Files read from git at a pinned commit, never from a working tree (gi_diag.py; reviewer, 2026-10-24, reading Q5): path -> commit and the file's sha256 there. An unpinned read is refused.",
+ "git": {
+  "charge-interposer/diag/vtrux-interposer-diag.dbc": {
+   "commit": "d83fc878f0d427fc7861702dc38f0a8f80cd0253",
+   "sha256": "3c14042fa5992d464bcc34e4e4ceb9d0503a2026ed42ede7c49e044b739aa286"
+  }
+ },
+ "_comment_core": "shared/bench's vtrux_bench.decode, at the suite's core pin (shared/main b9896a0; reviewer, 2026-10-24): gi_diag.core() refuses a decode.py whose git blob id is not this.",
+ "core": {
+  "shared/bench/vtrux_bench/decode.py": {
+   "commit": "b9896a03afd0c8245e14a5941021fe6a9e19ae32",
+   "blob": "1d3a89f9b69023f01e851b149c581217f1934f79"
+  }
  }
 }

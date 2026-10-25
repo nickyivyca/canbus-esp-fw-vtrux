@@ -156,10 +156,11 @@ def posts_from_run(d, arm="idle"):
     return out
 
 
-def judge(frames, posts, rows):
+def judge(frames, posts, rows, decoder=None):
     """frames: witness [(t, id, hex)] (epoch); posts: posts_from_run(); rows: page recording."""
-    c = J.Ctx(frames, [{"mode": p["mode"], "t_ret": p["t_ret"]} for p in posts])
+    c = J.Ctx(frames, [{"mode": p["mode"], "t_ret": p["t_ret"]} for p in posts], identity=decoder)
     v = J.Verdict()
+    J.diag_errors(c, v)
     pages = [r for r in rows if isinstance(r.get("page"), dict)]
     seq = [p["mode"] for p in posts]
     n33 = sum(1 for a, b in zip(seq, seq[1:]) if a == 3 and b == 3)
@@ -247,7 +248,7 @@ def judge_files(run_path, page_path, arm="idle"):
         run_path[:-5] + "_%s_witness.log.gz" % arm
     frames = [(t, i, b.hex()) for t, i, b in P.read_witness(wpath)]
     rows = [json.loads(line) for line in open(page_path) if line.strip()]
-    return judge(frames, posts_from_run(d, arm), rows)
+    return judge(frames, posts_from_run(d, arm), rows, decoder=d.get("decoder"))
 
 
 def main(argv):

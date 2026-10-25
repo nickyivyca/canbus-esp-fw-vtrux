@@ -68,6 +68,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import can                                                      # noqa: E402
 import lowid_flood_skip_bench as LF                             # noqa: E402
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
+import gi_diag  # noqa: E402  the diag DBC from git, by schema byte (toolkit item 10)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RUNS = gi_paths.runs()
@@ -300,12 +301,16 @@ def judge(rec):
         out["B"] = "NOT EXERCISED (no abort latched)"
     else:
         problems = []
-        nxt = next(((pt, hx) for pt, arb, hx in frames
-                    if arb == 0x7F1 and pt > lat["pt"]), None)
+        # diag_flags by name, every diag page decoded in order by gi_diag (reading Q7,
+        # 2026-10-24; byte 3 by hand before). An unknown schema raises.
+        pages, _dec = gi_diag.decode_pages(frames, identity=rec.get("decoder"), decode_choices=False)
+        nxt = next(((pt, pg) for pt, arb, pg in pages if arb == 0x7F1 and pt > lat["pt"]), None)
         if nxt is None:
             problems.append("no 0x7F1 on the wire after the latch")
+        elif isinstance(nxt[1], gi_diag.Undecodable):
+            problems.append("ERROR: the next 0x7F1 after the latch is undecodable (%s)" % nxt[1].reason)
         else:
-            fl = bytes.fromhex(nxt[1])[3]
+            fl = int(nxt[1]["diag_flags"])
             out["next_0x7F1_flags"] = "0x%02X" % fl
             if fl & 0x20:
                 problems.append("next 0x7F1 has bit5 inhibit_live set")
@@ -364,6 +369,7 @@ def main():
     print("build %s" % build)
     stim = LF.build_stimulus()
     rec = {"when": stamp, "build": build, "pre": snap(p),
+           "decoder": gi_diag.run_identity(),
            "jam_offered": a.jam_offered, "jam_bitrate": WRONG,
            "stimulus": LF.CAPTURE, "phases": {}, "samples": []}
     ph = rec["phases"]

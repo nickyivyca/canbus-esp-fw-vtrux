@@ -84,8 +84,11 @@ HARNESS = "{gi_tools}/bench"
 def harness_dir(settings):
     return os.path.join(need(settings, "gi_tools"), "bench")
 # What B15host copies to gi_host_ssh, from this clone's bench/, to run there: the check,
-# the paths module it imports and the pins that module checks the DBCs against.
-B15_FILES = ("diag_decode_check.py", "gi_paths.py", "pins.json")
+# gi_diag (the diag decoder it imports) and the pins gi_diag checks against. With them goes
+# gi_diag's export of the diag DBCs from git, made into the run folder first
+# (B15host_export/diag_schemas), since the host's copy has no git (toolkit item 10,
+# 2026-10-24; gi_paths and SeaDrive's DBC before).
+B15_FILES = ("diag_decode_check.py", "gi_diag.py", "pins.json")
 JAMMER_MD5 = "a89ece8c467f90723a3ac26e72924aa8"            # baseline_b_jam.sh's build
 SSID_RX = re.compile(r"SoftAP `(WiCAN_[0-9a-fA-F]*)`")
 WICAN_BUILDS = {   # image name -> build-tester-<dir> in gi_images
@@ -630,12 +633,14 @@ def emulated(settings):
     # files to ~/gi_bench_<commit> first. The data they read is the host's reverse-it
     # root (gi_host_root); gi_paths checks the DBCs there against this clone's pins.
     # (a subshell, not braces, round both: the core reads braces as placeholders)
-    host_half = ("set -o pipefail; (tar cf - -C \"%s\" %s | ssh -o BatchMode=yes {gi_host_ssh} "
+    py = " ".join('"%s"' % x.replace("\\", "/") for x in _py(settings))      # bash: no backslashes
+    host_half = ("set -o pipefail; (%s \"%s/gi_diag.py\" export \"{outdir}/B15host_export/diag_schemas\" && "
+                 "tar cf - -C \"%s\" %s -C \"{outdir}/B15host_export\" diag_schemas | ssh -o BatchMode=yes {gi_host_ssh} "
                  "'rm -rf ~/gi_bench_%s && mkdir -p ~/gi_bench_%s && tar xf - -C ~/gi_bench_%s' && "
                  "ssh -o BatchMode=yes {gi_host_ssh} 'cd {gi_host_root} && REVERSE_IT_DIR=\"$PWD\" python3 -B "
                  "~/gi_bench_%s/diag_decode_check.py ~/gi_baseline_%s/test/gen_inhibit_host 2>&1; echo \"exit $?\"') "
                  "> \"{outdir}/B15_diag_decode_check_host_%s.txt\" 2>&1"
-                 % (HARNESS, " ".join(B15_FILES), C, C, C, C, C, C))
+                 % (py, HARNESS, HARNESS, " ".join(B15_FILES), C, C, C, C, C, C))
     groups = [
         Group("host", checks=[
             Check(id="H", argv=["{bash}", "%s/baseline_host_run.sh" % HARNESS, C], cwd="{reverse_it}",

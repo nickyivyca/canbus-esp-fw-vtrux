@@ -27,11 +27,10 @@ import bisect
 import json
 import os
 import sys
-import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
+import gi_diag  # noqa: E402  the diag DBC from git, by schema byte (toolkit item 10)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-DBC = gi_paths.diag_dbc()
 
 
 def judge_intervals(samples, cmd_times):
@@ -85,17 +84,26 @@ def from_zero(samples, cmd_times, t_arm):
     return r
 
 
-def decode_diag(wire):
-    import cantools
-    db = cantools.database.load_file(DBC)
+def decode_diag(wire, identity=None):
+    """-> ([(t, id, signals)] for 0x7F1, 0x7F2 and 0x7F8, decoder summary). Every diag
+    page goes through one gi_diag.Decoder in wire order (toolkit item 10): by its schema
+    byte, from git; an unknown schema raises. A page before the first schema page is
+    counted in the summary, not decoded (reading Q2); analyse() then reports an error.
+    Any other decode failure is skipped, as before."""
+    dec = gi_diag.Decoder(gi_diag.schemas_for(), identity)
     out = []
-    for t, i, d in wire:
-        if i in (0x7F1, 0x7F2, 0x7F8):
-            try:
-                out.append((t, i, db.decode_message(i, d, decode_choices=False)))
-            except Exception:
-                pass
-    return out
+    for t, i, d in sorted(wire, key=lambda f: f[0]):
+        if i not in dec.ids:
+            continue
+        try:
+            s = dec.feed(i, d, t=t, decode_choices=False)
+        except gi_diag.DiagError:
+            raise
+        except Exception:       # noqa: BLE001
+            continue
+        if s and i in (0x7F1, 0x7F2, 0x7F8):
+            out.append((t, i, s))
+    return out, dec.summary()
 
 
 def analyse(run):
@@ -105,7 +113,7 @@ def analyse(run):
     a = d["arms"][arm]
     r = P.rejudge(run, arm, keep_frames=True)
     wire = P.read_witness(os.path.join(os.path.dirname(run), a["witness_raw"]))
-    diag = decode_diag(wire)
+    diag, dsum = decode_diag(wire, d.get("decoder"))
     cmds = sorted(r["vcm_times"])
     rep = r["replayed_wire_times"]
     idx = lambda t: bisect.bisect_right(rep, t) - 1
@@ -128,7 +136,7 @@ def analyse(run):
     dev = json.dumps(a.get("device") or {})
     import re
     g = lambda k: (lambda m: m.group(1) if m else None)(re.search(r'"%s": ("[^"]*"|\d+)' % k, dev))
-    return {"run": os.path.basename(run), "mode": mode, "diag_modes": modes,
+    out = {"run": os.path.basename(run), "mode": mode, "diag_modes": modes,
             "provenance": r["verdict"], "device_0x051": r["device_frames"],
             "replayed_found": "%s/%s" % (r["replayed_found"], r["replayed_frames"]),
             "counter": "diag_would_tx" if mode == "passive" else "diag_tx_ok",
@@ -140,7 +148,12 @@ def analyse(run):
             "live_pages_replay_index": [live_pages[0], live_pages[-1]] if live_pages else None,
             "first_abort_latched_page": latch,
             "block_abort_sequence_by_replay_index": seq,
-            "abort_reason_end": g("abort_reason")}
+            "abort_reason_end": g("abort_reason"),
+            "diag_decode": dsum}
+    if dsum["undecodable"]:
+        # Reading Q2: the counters this judges come from those pages; ERROR, not absent.
+        out["error"] = "%d diag page(s) undecodable: %s" % (dsum["undecodable"], dsum["undecodable_by_reason"])
+    return out
 
 
 def main():

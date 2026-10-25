@@ -36,12 +36,11 @@ edit to `autoarm_verdict` rather than trusting a green run.
 import os
 import sys
 
-import cantools
-import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
+import gi_diag  # noqa: E402  the diag DBC from git, by schema byte (toolkit item 10)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO = gi_paths.reverse_it_dir()
-DBC = gi_paths.diag_dbc()
+SCHEMAS = gi_diag.SchemaSet.from_git()
+HEAD = SCHEMAS.head()
 
 sys.path.insert(0, HERE)
 #
@@ -58,10 +57,9 @@ except ImportError as exc:
         "  It needs python-can even though this test touches no hardware.\n"
         "  Install it for this interpreter, or run under py -3.14 on NICKY-XPS." % exc)
 
-db = cantools.database.load_file(DBC)
-msg = db.get_message_by_frame_id(STATUS_ID)
-print("DBC %s -> %s, signals: %s"
-      % (os.path.relpath(DBC, REPO), msg.name,
+msg = HEAD.db.get_message_by_frame_id(STATUS_ID)
+print("DBC %s at %s (schema %d) -> %s, signals: %s"
+      % (gi_diag.DBC_PATH, HEAD.commit[:10], HEAD.version, msg.name,
          ", ".join(s.name for s in msg.signals)))
 print("harness: diag_build_page_check.autoarm_verdict, AUTOARM_BIT = 0x%02X"
       % AUTOARM_BIT)
@@ -70,7 +68,7 @@ print("harness: diag_build_page_check.autoarm_verdict, AUTOARM_BIT = 0x%02X"
 def status_payload(flags):
     """A plausible 0x7F1 with the given diag_flags byte."""
     return msg.encode({
-        "diag_schema_ver": 5,
+        "diag_schema_ver": HEAD.version,
         "diag_fw_ver": 4,
         "diag_mode": 3,
         "diag_flags": flags,
@@ -88,8 +86,8 @@ def status_payload(flags):
 SHIPPING = 0x02 | 0x04 | 0x20 | 0x40
 AUTOARM = SHIPPING | AUTOARM_BIT
 
-ship_pages = [msg.decode(status_payload(SHIPPING)) for _ in range(25)]
-auto_pages = [msg.decode(status_payload(AUTOARM)) for _ in range(25)]
+ship_pages = [gi_diag.Decoder(SCHEMAS).feed(STATUS_ID, status_payload(SHIPPING)) for _ in range(25)]
+auto_pages = [gi_diag.Decoder(SCHEMAS).feed(STATUS_ID, status_payload(AUTOARM)) for _ in range(25)]
 
 print("\nshipping flag byte 0x%02X decodes to diag_flags=%s"
       % (SHIPPING, ship_pages[0]["diag_flags"]))

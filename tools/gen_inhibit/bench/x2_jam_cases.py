@@ -66,6 +66,7 @@ import tec_busoff_sweep as TB                                   # noqa: E402
 import x2_jammer as XJ                                          # noqa: E402
 import gi_ecc as GE                                             # noqa: E402
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
+import gi_diag  # noqa: E402  the diag DBC from git, by schema byte (toolkit item 10)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # GI_RUNS_DIR: the chain runner points a check's records at its own folder (2026-10-18).
@@ -306,7 +307,7 @@ def replay_rate_device_off(frames, ph):
     return round(sum(1 for t, a, _ in frames if a == 0x051 and t0 <= t < t1) / (t1 - t0), 1)
 
 
-def judge_b_busoff(samples, wire, dev_0x051, t_latch, margin_s=0.05):
+def judge_b_busoff(samples, wire, dev_0x051, t_latch, margin_s=0.05, identity=None):
     """(B) as the reviewer ruled 2026-10-08 for a latch followed by bus-off.
 
     samples: [(t, snap)]; wire: [(t, arb, hex)]; dev_0x051: times of the
@@ -328,8 +329,14 @@ def judge_b_busoff(samples, wire, dev_0x051, t_latch, margin_s=0.05):
     late = [t for t in dev_0x051 if t > t_latch + margin_s]
     if late:
         problems.append("%d device 0x051 after the latch" % len(late))
-    f7 = [(t, h) for t, a, h in wire if a == 0x7F1 and t > t_latch]
-    bad = [(t, h) for t, h in f7 if (bytes.fromhex(h)[3] & 0x20) or not (bytes.fromhex(h)[3] & 0x80)]
+    # diag_flags by name, every diag page decoded in order by gi_diag (reading Q7,
+    # 2026-10-24; byte 3 by hand before). An unknown schema raises.
+    pages, _dec = gi_diag.decode_pages(wire, identity=identity, decode_choices=False)
+    f7 = [(t, p) for t, a, p in pages if a == 0x7F1 and t > t_latch]
+    undec = [t for t, p in f7 if isinstance(p, gi_diag.Undecodable)]
+    if undec:
+        problems.append("ERROR: %d 0x7F1 after the latch undecodable" % len(undec))
+    bad = [(t, p) for t, p in f7 if p and ((int(p["diag_flags"]) & 0x20) or not (int(p["diag_flags"]) & 0x80))]
     if bad:
         problems.append("%d 0x7F1 after the latch with bit5 set or bit7 clear" % len(bad))
     boff = next((t for t, s in after if s.get("drv_state") == "bus_off"), None)
@@ -1424,7 +1431,7 @@ def main():
         print("REFUSED: %s" % why)
         return 2
     rec = {"when": time.strftime("%Y%m%dT%H%M%S"), "case": a.case, "args": vars(a),
-           "build": build, "power": a.power,
+           "build": build, "power": a.power, "decoder": gi_diag.run_identity(),
            "jammer": "X2 CAN1, x2_jammer bb20e4a37b64 / md5 a89ece8c...",
            "witness": "Kvaser, normal mode"}
     global CC

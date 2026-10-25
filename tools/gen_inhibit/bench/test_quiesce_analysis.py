@@ -9,6 +9,22 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import quiesce_analysis as Q                                       # noqa: E402
+
+
+def _live_wire(gd):
+    v = gd.schemas_for().head_version
+    return [(0.0, 0x7F1, bytes([v, 1, 3, 0x26, 0, 0, 0, 0])), (1.0, 0x7F1, bytes([v, 1, 3, 0x06, 0, 0, 0, 0])),
+            (1.5, 0x7F2, bytes(8)), (2.0, 0x7F1, bytes([v, 1, 3, 0x66, 0, 0, 0, 0])), (2.5, 0x051, bytes(6))]
+
+
+def _raises_cls(fn, cls):
+    try:
+        fn()
+    except cls:
+        return True
+    except Exception:       # noqa: BLE001
+        return False
+    return False
 import e4_device_calibration as E                                  # noqa: E402
 
 
@@ -19,7 +35,14 @@ def main():
     span_ok = Q.span_report(3.0, 6.0, quiet, [])
     span_bad = Q.span_report(3.0, 6.0, sorted(late), [])
     span_tail = Q.span_report(3.0, 6.0, [3.0004, 3.0104], [3.02])
+    LIVE_WIRE = _live_wire(Q.gi_diag)
     checks = [
+        # live pages via gi_diag (toolkit item 10, reading Q7, 2026-10-24)
+        ("live pages: 0x7F1 with diag_flags bit5 set, decoded on its schema",
+         Q.live_page_times(LIVE_WIRE)[0] == [0.0, 2.0]),
+        ("live pages: a 0x7F1 on a schema no DBC states raises, never read by hand",
+         _raises_cls(lambda: Q.live_page_times(LIVE_WIRE + [(3.0, 0x7F1, bytes([0xEE, 1, 3, 0x26, 0, 0, 0, 0]))]),
+                     Q.gi_diag.UnknownSchema)),
         ("schedule parses in time order", E.parse_schedule("20:3,10:1") == [(10.0, 1), (20.0, 3)]),
         ("schedule refuses a mode outside 0-4",
          _raises(lambda: E.parse_schedule("10:7"))),

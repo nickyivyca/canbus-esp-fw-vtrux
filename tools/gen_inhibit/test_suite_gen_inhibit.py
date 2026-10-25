@@ -1051,12 +1051,18 @@ def test_host_group(settings, emu):
                for f in SG.B15_FILES)
     check("B15host copies %s from bench/ to the host's ~/gi_bench_<commit>" % ", ".join(SG.B15_FILES),
           rc == 0 and same, (rc, txt[-300:], os.listdir(dest) if os.path.isdir(dest) else None))
-    # the copy is enough on its own: the check's one local import, and the pins it reads
-    p = subprocess.run([sys.executable, "-B", "-c", "import gi_paths; print('pins', len(gi_paths.load_pins()))"],
-                       cwd=dest if os.path.isdir(dest) else d, capture_output=True, text=True, timeout=60,
+    # the copy is enough on its own, with no git: gi_diag finds the export beside it, and
+    # reads the schema set, its identity and the interposer DBC from it (toolkit item 10)
+    p = subprocess.run([sys.executable, "-B", "-c",
+                        "import gi_diag; s = gi_diag.schemas_for(); i = gi_diag.interposer_dbc(); "
+                        "print('schemas', sorted(s.entries), s.source.split()[0], bool(s.identity), len(i.messages))"],
+                       cwd=dest if os.path.isdir(dest) else d, capture_output=True, text=True, timeout=120,
                        env=dict(os.environ, PYTHONPATH=""))
-    check("the copy holds gi_paths and the pins it loads", p.returncode == 0 and p.stdout.startswith("pins "),
+    check("the copy holds gi_diag, its pins and the export: schemas, identity and interposer DBC from the export",
+          p.returncode == 0 and p.stdout.startswith("schemas ") and " export True " in p.stdout,
           (p.stdout + p.stderr)[-300:])
+    check("the export stays in the run folder (B15host_export/diag_schemas/manifest.json)",
+          os.path.isfile(os.path.join(out, "B15host_export", "diag_schemas", "manifest.json")))
     run = [l for l in lines if "tar xf" not in l]
     want = ('HOST hosttest CMD cd ~/rt && REVERSE_IT_DIR="$PWD" python3 -B ~/gi_bench_e3d9437/diag_decode_check.py '
             '~/gi_baseline_e3d9437/test/gen_inhibit_host 2>&1; echo "exit $?"')

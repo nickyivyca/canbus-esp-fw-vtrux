@@ -9,6 +9,19 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import passive_analysis as A                                       # noqa: E402
 
+# A 0x7F1 on HEAD's schema: the pages after it decode on that schema (gi_diag, 2026-10-24).
+S7 = bytes([A.gi_diag.schemas_for().head_version, 1, 3, 0x06, 0, 0, 0, 0])
+
+
+def raises(fn, cls):
+    try:
+        fn()
+    except cls:
+        return True
+    except Exception:       # noqa: BLE001
+        return False
+    return False
+
 CMDS = [i * 0.01 for i in range(1000)]          # a command every 10 ms for 10 s
 
 
@@ -59,11 +72,18 @@ def main():
          and A.from_zero([(5.5, 100)], CMDS, 5.0)["ok"] is False),
         ("from_zero: no sample after the arm -> None, not a pass",
          A.from_zero([(1.0, 0)], CMDS, 5.0)["ok"] is None),
-        ("the diag decoder reads would_tx from 0x7F8 and tx_ok from 0x7F2 via the DBC",
-         (lambda d: [s.get("diag_would_tx", s.get("diag_tx_ok")) for _t, _i, s in d] == [0x1234, 77])(
-             A.decode_diag([(0.0, 0x7F8, bytes([0, 0, 0, 0x34, 0x12, 0, 0, 0])),
+        ("the diag decoder reads would_tx from 0x7F8 and tx_ok from 0x7F2 via the DBC (after a 0x7F1)",
+         (lambda d: [s.get("diag_would_tx", s.get("diag_tx_ok")) for _t, i, s in d[0] if i != 0x7F1]
+          == [0x1234, 77] and d[1]["undecodable"] == 0)(
+             A.decode_diag([(-0.1, 0x7F1, S7),
+                            (0.0, 0x7F8, bytes([0, 0, 0, 0x34, 0x12, 0, 0, 0])),
                             (0.1, 0x7F2, bytes([77, 0, 0, 0, 0, 0, 0, 0])),
                             (0.2, 0x123, bytes(8))]))),
+        ("a 0x7F8 before the first schema page is counted undecodable, not decoded (reading Q2)",
+         (lambda d: [i for _t, i, _s in d[0]] == [0x7F1] and d[1]["undecodable"] == 1)(
+             A.decode_diag([(0.0, 0x7F8, bytes([0, 0, 0, 0x34, 0x12, 0, 0, 0])), (0.1, 0x7F1, S7)]))),
+        ("an unknown schema byte raises (gi_diag.UnknownSchema)",
+         raises(lambda: A.decode_diag([(0.0, 0x7F1, bytes([0xEE] + [0] * 7))]), A.gi_diag.UnknownSchema)),
     ]
     fails = []
     for label, okk in checks:

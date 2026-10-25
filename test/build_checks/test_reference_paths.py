@@ -1,13 +1,16 @@
-"""Test of where build_output.py looks for the diag DBC and the schema doc by default.
+"""Test of where build_output.py gets the diag DBC and the schema doc.
 
-Both live in the reverse-it project folder, not in this repo, and that folder is
-somewhere else on every machine. So the defaults come from $REVERSE_IT_DIR
-(projects/vtrux/ under it), and with it unset there is no default: the rows report
-NO REFERENCE and say how to give one, never a pass and never a guessed path
-(harness-defects row, 2026-10-24; home-path ruling B, user 2026-10-23: no literal
-home path in the repo). Each case imports build_output.py afresh in a subprocess
-with the variable set, unset or empty, so the module-level defaults are read as a
-real run reads them.
+Since 2026-10-24 (port plan toolkit item 10; the gen-inhibit reviewer's build message
+of that day) both are in this repo, gen-inhibit/diag/, and build_output.py reads them
+from GIT: HEAD's copies of --ref-repo (default this repo), never the working tree and
+never $REVERSE_IT_DIR's frozen copies. A working-tree copy with uncommitted changes is
+refused as a FAIL row; a repo without them is NO REFERENCE, naming --ref-repo; a DBC
+history that fails gi_diag's checks is a FAIL. The emitted-frames row decodes the
+goldens through gi_diag's schema set from the same refs, and is NO REFERENCE without it.
+
+Each case imports build_output.py afresh in a subprocess, with REVERSE_IT_DIR pointing
+at a fake root holding a different DBC, so a read of the old path would show. The fake
+repositories are made in this run's scratch/ folder (AGENTS.md "Files and folders").
 
 Run:  python test/build_checks/test_reference_paths.py   (exit 0 = all pass)
       python test/build_checks/test_reference_paths.py --target <copy of build_output.py>
@@ -15,40 +18,87 @@ Run:  python test/build_checks/test_reference_paths.py   (exit 0 = all pass)
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
 FAILS = []
+DBC, DOC = "gen-inhibit/diag/vtrux-wican-diag.dbc", "gen-inhibit/diag/wican_diag_schema.md"
+ROWS = ("diag references from git", "DBC defines every diag page", "emitted diag frames decode",
+        "abort reasons are all in the DBC", "schema doc version matches",
+        "DIAG_FW_VERSION is the schema doc's latest rev")
 
 PROBE = r"""
 import json, os, sys
 sys.path.insert(0, sys.argv[1])
 import build_output as B
+B.REPO = os.environ["REF_TEST_REPO"]      # this repo, also for a copy under test (--target)
 del B.rows[:]
-B.check_diag(B.DEFAULT_DBC)
-B.check_schema_doc(B.DEFAULT_SCHEMA_DOC)
-B.check_fw_version(B.DEFAULT_SCHEMA_DOC)
-B.check_abort_reason_parity(B.DEFAULT_DBC)
-print(json.dumps({"dbc": B.DEFAULT_DBC, "doc": B.DEFAULT_SCHEMA_DOC,
-                  "rows": [[r[0], r[1], r[2], r[3]] for r in B.rows]}))
+dbc, doc = B.refs_from_git(sys.argv[2])
+B.check_diag(dbc)
+B.check_schema_doc(doc)
+B.check_fw_version(doc)
+B.check_abort_reason_parity(dbc)
+extra = []
+if len(sys.argv) > 3:
+    del B.rows[:]
+    B.check_diag(sys.argv[3])
+    extra = [[r[0], r[1], r[2], r[3]] for r in B.rows]
+print(json.dumps({"dbc": dbc, "doc": doc, "has_default": hasattr(B, "DEFAULT_DBC") or hasattr(B, "DEFAULT_SCHEMA_DOC"),
+                  "dbc_bytes": open(dbc, "rb").read().hex() if dbc else None,
+                  "rows": [[r[0], r[1], r[2], r[3]] for r in B.rows] if not extra else extra}))
 """
 
 
 def check(name, ok, detail=""):
-    print("%s  %s%s" % ("ok  " if ok else "FAIL", name, "" if ok else "  -- %r" % (detail,)))
+    print("%s  %s%s" % ("ok  " if ok else "FAIL", name, "" if ok else "  -- %r" % (str(detail)[:300],)))
     if not ok:
         FAILS.append(name)
 
 
-def probe(target_dir, rit):
-    env = {k: v for k, v in os.environ.items() if k != "REVERSE_IT_DIR"}
-    if rit is not None:
-        env["REVERSE_IT_DIR"] = rit
-    r = subprocess.run([sys.executable, "-B", "-c", PROBE, target_dir], capture_output=True, text=True,
-                       env=env, cwd=target_dir, timeout=120)
+def git(repo, *a):
+    return subprocess.run(["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                           "-c", "core.autocrlf=false"] + list(a), check=True, capture_output=True).stdout
+
+
+def scratch():
+    d = os.path.join(REPO, "scratch", "build-checks-tests", "reference_paths_%d" % os.getpid())
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(d)
+    return d
+
+
+def fake_rit(base):
+    """A fake reverse-it root whose projects/vtrux/ holds a DBC and doc unlike the repo's."""
+    root = os.path.join(base, "reverse it")
+    os.makedirs(os.path.join(root, "projects", "vtrux", "notes", "artifacts", "gen-inhibit"))
+    open(os.path.join(root, "projects", "vtrux", "vtrux-wican-diag.dbc"), "w").write('VERSION "fake"\n')
+    open(os.path.join(root, "projects", "vtrux", "notes", "artifacts", "gen-inhibit", "wican_diag_schema.md"),
+         "w").write("fake\n")
+    return root
+
+
+def fake_repo(base, name, texts):
+    """A git repo holding gen-inhibit/diag/: texts is [(DBC text, doc text)], one commit each."""
+    d = os.path.join(base, name)
+    os.makedirs(os.path.join(d, "gen-inhibit", "diag"))
+    git(d, "init", "-q")
+    for k, (dbc, doc) in enumerate(texts):
+        open(os.path.join(d, DBC), "w", encoding="utf-8", newline="").write(dbc)
+        open(os.path.join(d, DOC), "w", encoding="utf-8", newline="").write(doc)
+        git(d, "add", "-A")
+        git(d, "commit", "-q", "-m", "c%d" % k)
+    return d
+
+
+def probe(target_dir, ref_repo, rit, extra=None):
+    env = dict(os.environ, REVERSE_IT_DIR=rit, REF_TEST_REPO=REPO)
+    r = subprocess.run([sys.executable, "-B", "-c", PROBE, target_dir, ref_repo] + ([extra] if extra else []),
+                       capture_output=True, text=True, env=env, cwd=target_dir, timeout=300)
     if r.returncode != 0:
-        return {"crash": (r.stdout + r.stderr)[-400:]}
+        return {"crash": (r.stdout + r.stderr)[-600:]}
     return json.loads(r.stdout.strip().splitlines()[-1])
 
 
@@ -64,36 +114,103 @@ def main():
     if "--target" in sys.argv[1:]:
         target = os.path.abspath(sys.argv[sys.argv.index("--target") + 1])
     tdir = os.path.dirname(target)
-    fake = os.path.join(os.path.abspath(os.sep), "no-such-rit", "reverse it")   # a space, as SeaDrive's has
-    want_dbc = os.path.join(fake, "projects", "vtrux", "vtrux-wican-diag.dbc")
-    want_doc = os.path.join(fake, "projects", "vtrux", "notes", "artifacts", "gen-inhibit", "wican_diag_schema.md")
+    base = scratch()
+    rit = fake_rit(base)
+    real_dbc = git(REPO, "show", "9c54669:%s" % DBC).decode("utf-8")
+    real_doc = git(REPO, "show", "9c54669:%s" % DOC).decode("utf-8")
 
-    res = probe(tdir, fake)
-    check("set: the module imports", "crash" not in res, res.get("crash"))
-    check("set: the DBC default is projects/vtrux/vtrux-wican-diag.dbc under $REVERSE_IT_DIR",
-          os.path.normcase(os.path.normpath(res.get("dbc") or "")) == os.path.normcase(want_dbc), res.get("dbc"))
-    check("set: the schema doc default is projects/vtrux/notes/artifacts/gen-inhibit/wican_diag_schema.md under it",
-          os.path.normcase(os.path.normpath(res.get("doc") or "")) == os.path.normcase(want_doc), res.get("doc"))
-    r = row(res, "DBC defines every diag ID")
-    check("set, but no DBC there: the DBC row is NO REFERENCE naming the path",
-          r is not None and r[1] is None and r[3] and want_dbc in r[2], r)
+    # 1. This repo: HEAD's copies, read from git, whatever REVERSE_IT_DIR says.
+    res = probe(tdir, REPO, rit)
+    check("this repo: the module imports and runs the rows", "crash" not in res, res.get("crash"))
+    check("this repo: no REVERSE_IT_DIR default is left (DEFAULT_DBC, DEFAULT_SCHEMA_DOC)",
+          res.get("has_default") is False, res.get("has_default"))
+    r = row(res, "diag references from git")
+    check("this repo: 'diag references from git' passes, naming HEAD and the DBC's commit and hash",
+          r is not None and r[1] is True and "schema" in r[2] and "hash" in r[2], r)
+    head_dbc = git(REPO, "show", "HEAD:%s" % DBC)
+    check("this repo: the DBC the rows read is HEAD's bytes, not the fake root's",
+          res.get("dbc_bytes") == head_dbc.hex(), (res.get("dbc") or "")[-80:])
+    check("this repo: the copies are written under this repo's scratch/",
+          all(os.path.normcase(p or "").startswith(os.path.normcase(os.path.join(REPO, "scratch")))
+              for p in (res.get("dbc"), res.get("doc"))), (res.get("dbc"), res.get("doc")))
+    for name in ROWS[1:]:
+        r = row(res, name)
+        check("this repo: '%s' passes" % name, r is not None and r[1] is True, r)
 
-    for label, val in (("unset", None), ("empty", ""), ("blank", "  ")):
-        res = probe(tdir, val)
-        check("%s: the module imports" % label, "crash" not in res, res.get("crash"))
-        check("%s: no DBC default (None), not a guessed path" % label, res.get("dbc", "x") is None, res.get("dbc"))
-        check("%s: no schema doc default (None)" % label, res.get("doc", "x") is None, res.get("doc"))
-        for name, flag in (("DBC defines every diag ID", "--dbc"), ("abort reasons are all in the DBC", "--dbc"),
-                           ("schema doc version matches", "--schema-doc"),
-                           ("DIAG_FW_VERSION is the schema doc's latest rev", "--schema-doc")):
-            r = row(res, name)
-            check("%s: '%s' is NO REFERENCE, naming %s and REVERSE_IT_DIR" % (label, name, flag),
-                  r is not None and r[1] is None and r[3] and flag in r[2] and "REVERSE_IT_DIR" in r[2], r)
+    # 2. A working-tree change is refused, and is never what is read.
+    d = fake_repo(base, "dirty_dbc", [(real_dbc, real_doc)])
+    open(os.path.join(d, DBC), "a", encoding="utf-8").write("\n")
+    res = probe(tdir, d, rit)
+    r = row(res, "diag references from git")
+    check("a modified DBC: 'diag references from git' FAILS, uncommitted", r is not None and r[1] is False
+          and "uncommitted" in r[2], r)
+    # With no DBC, check_diag stops at its "every diag ID" row, before the page rows.
+    for name in ("DBC defines every diag ID",) + ROWS[3:]:
+        r = row(res, name)
+        check("a modified DBC: '%s' is NO REFERENCE, not a pass" % name, r is not None and r[1] is None and r[3], r)
+    check("a modified DBC: no DBC row passes",
+          not [r for r in res.get("rows", []) if r[1] is True and r[0] != "diag schema version readable"
+               and r[0] != "diag IDs readable"], [r[0] for r in res.get("rows", []) if r[1] is True])
+    d = fake_repo(base, "dirty_doc", [(real_dbc, real_doc)])
+    open(os.path.join(d, DOC), "a", encoding="utf-8").write("x\n")
+    r = row(probe(tdir, d, rit), "diag references from git")
+    check("a modified schema doc: FAILS, uncommitted", r is not None and r[1] is False and "uncommitted" in r[2], r)
+    d = fake_repo(base, "staged", [(real_dbc, real_doc)])
+    open(os.path.join(d, DBC), "a", encoding="utf-8").write("\n")
+    git(d, "add", DBC)
+    r = row(probe(tdir, d, rit), "diag references from git")
+    check("a staged DBC: FAILS, uncommitted", r is not None and r[1] is False and "uncommitted" in r[2], r)
+    d = fake_repo(base, "clean", [(real_dbc, real_doc)])
+    r = row(probe(tdir, d, rit), "diag references from git")
+    check("a clean fake repo: passes", r is not None and r[1] is True, r)
+    # A working-tree change git status does not show (assume-unchanged): what is read must
+    # still be HEAD's bytes, which only a read from git gives.
+    d = fake_repo(base, "hidden", [(real_dbc, real_doc)])
+    git(d, "update-index", "--assume-unchanged", DBC)
+    open(os.path.join(d, DBC), "a", encoding="utf-8").write('CM_ "hidden working-tree edit";\n')
+    res = probe(tdir, d, rit)
+    check("a hidden working-tree edit: the DBC read is HEAD's bytes, not the working tree's",
+          res.get("dbc_bytes") == git(d, "show", "HEAD:%s" % DBC).hex(), (res.get("crash") or "")[-200:])
+
+    # 3. Not there.
+    d = os.path.join(base, "no_diag")
+    os.makedirs(d)
+    git(d, "init", "-q")
+    open(os.path.join(d, "x"), "w").write("x")
+    git(d, "add", "x")
+    git(d, "commit", "-q", "-m", "x")
+    res = probe(tdir, d, rit)
+    r = row(res, "diag references from git")
+    check("a repo without gen-inhibit/diag/: NO REFERENCE naming --ref-repo",
+          r is not None and r[1] is None and r[3] and "--ref-repo" in r[2], r)
+    r = row(res, "abort reasons are all in the DBC")
+    check("... and the DBC rows NO REFERENCE too", r is not None and r[1] is None and r[3], r)
+    d = os.path.join(base, "not_git")
+    os.makedirs(d)
+    r = row(probe(tdir, d, rit), "diag references from git")
+    check("a folder that is not a git worktree: NO REFERENCE", r is not None and r[1] is None and r[3], r)
+
+    # 4. A history gi_diag refuses.
+    other = real_dbc.replace(" SG_ diag_ctr_bad : 40|8@1+", " SG_ diag_ctr_bad : 40|4@1+")
+    d = fake_repo(base, "stale_hash", [(other, real_doc)])
+    r = row(probe(tdir, d, rit), "diag references from git")
+    check("a DBC whose DiagSchemaHash is not its own: FAILS", r is not None and r[1] is False and "layout_hash" in r[2], r)
+
+    # 5. The emitted-frames row only decodes with the schema set it read.
+    loose = os.path.join(base, "loose.dbc")
+    open(loose, "w", encoding="utf-8", newline="").write(real_dbc)
+    res = probe(tdir, REPO, rit, extra=loose)
+    r = row(res, "emitted diag frames decode")
+    check("check_diag on a DBC file refs_from_git did not write: the emitted-frames row is NO REFERENCE",
+          r is not None and r[1] is None and r[3], r)
 
     src = open(target, encoding="utf-8").read()
     bad = [m.group(0) for m in re.finditer(r"seadrive_root|nickivyc|My Libraries|NotGit|Seafile|C:[\\/]+Users", src)]
     check("no machine-specific path in build_output.py", not bad, bad)
+    old = [m.group(0) for m in re.finditer(r'"projects", "vtrux"|projects/vtrux/vtrux-wican-diag|REVERSE_IT_DIR"', src)]
+    check("build_output.py no longer builds a reverse-it path to the DBC or the doc", not old, old)
 
+    shutil.rmtree(base, ignore_errors=True)
     print("%d FAIL" % len(FAILS) if FAILS else "all ok")
     return 1 if FAILS else 0
 

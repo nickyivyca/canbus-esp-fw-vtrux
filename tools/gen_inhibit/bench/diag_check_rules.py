@@ -57,8 +57,9 @@ def build_checks(st, bd, s2, sk, dbc_schema):
         # Pinned to the schema this DBC describes, not to a literal. These
         # read ==1 until 2026-09-22 and had been stale since schema 2 landed
         # on 2026-09-19 -- the script would have failed against the very build
-        # the hardware suite passed on. Compare against the DBC's own VERSION
-        # string so the two cannot drift apart again silently.
+        # the hardware suite passed on. Compare against the DBC's own schema
+        # (its DiagSchemaVersion since 2026-10-24, its VERSION string before)
+        # so the two cannot drift apart again silently.
         "schema_ver matches the DBC": raw(st["diag_schema_ver"]) == dbc_schema,
         "fw_ver >= 3 (spec 7.1)": raw(st["diag_fw_ver"]) >= 3,
         # Left as a label comparison rather than converted to raw()==3: the

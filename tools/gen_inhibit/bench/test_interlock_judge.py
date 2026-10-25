@@ -61,8 +61,12 @@ DISABLE = rev(J.DIAG, 0x7F1, "diag_disable_reason")
 
 
 def enc(dbc, ident, **sig):
+    """A frame encoded with the DBC; a diag page states HEAD's schema on its schema
+    signal, as the device does (gi_diag refuses schema 0, 2026-10-24)."""
     m = J.db(dbc).get_message_by_frame_id(ident)
     vals = {s.name: 0 for s in m.signals}
+    if dbc == J.DIAG:
+        vals.update({n: J.schemas().head_version for n in ("diag_schema_ver", "diag_schema_ver_build") if n in vals})
     vals.update(sig)
     return m.encode(vals, scaling=False, strict=False).hex()
 
@@ -755,11 +759,16 @@ def test_rekey():
 def test_common():
     s = soc_sim()
     s.f = [x for x in s.f if x[1] != 0x7F8]
+    # The refused 0x7F8 pages replace the sim's own; the 0x7F1/0x7F2 that pages() adds
+    # beside them are dropped, and the sim's own kept, so each 0x7F8 follows a schema
+    # page (until 2026-10-24 every 0x7F1 was dropped, which gi_diag rightly cannot decode).
+    n = len(s.f)
     s.pages(0.31, 12.0, lambda t: {"refused": True})
-    s.f = [x for x in s.f if not (x[1] in (0x7F1, 0x7F2) and abs(x[0] * 100 % 100 - 31) < 2)]
+    s.f = s.f[:n] + [x for x in s.f[n:] if x[1] not in (0x7F1, 0x7F2)]
     res = run("soc_latch", s)
     check("emit_refused fails any case", any(c["name"] == "emit_refused never set" and not c["ok"]
-                                            for c in res["checks"]), res["verdict"])
+                                            for c in res["checks"]) and res["verdict"] == "NOT AS SPECIFIED",
+          res["verdict"])
     # Content split: an adjacent identical pair in a stimulus is caught before a run.
     p = B.parse_scn("mode 0 3 500\nf 1000 051 6 080080FF7F01\nf 2000 051 6 080080FF7F01\nend 3000\n")
     check("premise: adjacent identical 0x051 counted", B.stimulus_premise(p) == 1, B.stimulus_premise(p))
@@ -1016,6 +1025,90 @@ def seadrive_stimuli():
     return out
 
 
+def test_decoding():
+    """Diag pages through gi_diag (toolkit item 10; readings Q1, Q2, Q6, 2026-10-24)."""
+    import gi_diag
+    base = soc_sim()
+    res = run("soc_latch", base)
+    check("decoding: the sim's pages all decode, on HEAD's schema",
+          res["facts"]["diag_decode"]["undecodable"] == 0 and
+          res["facts"]["diag_decode"]["schemas"] == [J.schemas().head_version], res["facts"]["diag_decode"])
+    first7f1 = min(t for t, i, h in base.f if i == 0x7F1)
+    s = soc_sim()
+    s.f.append((round(first7f1 - 0.05, 6), 0x7F8, enc(J.DIAG, 0x7F8)))
+    res = run("soc_latch", s)
+    check("decoding: a 0x7F8 before the first schema page makes the verdict ERROR, not absent",
+          res["verdict"] == "ERROR" and res["errors"] and "before the first schema page" in res["errors"][0]["detail"],
+          (res["verdict"], res.get("errors")))
+    s = soc_sim()
+    k = next(n for n, x in enumerate(s.f) if x[1] == 0x7F1)
+    bad = bytearray(bytes.fromhex(s.f[k][2]))
+    bad[0] = 0xEE
+    s.f[k] = (s.f[k][0], 0x7F1, bytes(bad).hex())
+    try:
+        run("soc_latch", s)
+        raised = None
+    except gi_diag.UnknownSchema as e:
+        raised = str(e)
+    check("decoding: an unknown schema byte raises (refused, not judged)", raised and "schema byte 238" in raised, raised)
+    s = soc_sim()
+    s.f = [x if x[1] != 0x7F2 else (x[0], x[1], x[2][:4]) for x in s.f]
+    res = run("soc_latch", s)
+    check("decoding: a page that fails otherwise (2 bytes of 0x7F2, truncated) is not an ERROR",
+          res["verdict"] != "ERROR", res["verdict"])
+    other = {"dbc_hash": "0" * 16, "dbc_commit": "0" * 40}
+    try:
+        J.judge("soc_latch", base.f, base.posts, [], {}, identity=other)
+        raised = None
+    except gi_diag.SchemaMismatch as e:
+        raised = str(e)
+    check("decoding: a record whose identity names another DBC is refused", raised and "run record" in raised, raised)
+    mine = gi_diag.run_identity(schemas=J.schemas()) if J.schemas().source.startswith("git") else None
+    check("decoding: the record's own identity judges as before",
+          mine is None or J.judge("soc_latch", base.f, base.posts, [], {}, identity=mine)["verdict"] ==
+          run("soc_latch", base)["verdict"])
+    try:
+        J.decode(J.DIAG, 0x7F8, "00" * 8)
+        raised = None
+    except ValueError as e:
+        raised = str(e)
+    check("decoding: J.decode refuses a diag page on its own", raised and "in order" in raised, raised)
+    # interlock_bench.rejudge_file passes the record's own identity, when it has one.
+    import gzip
+    import json
+    d = os.path.join(SCRATCH, "rejudge")
+    os.makedirs(d, exist_ok=True)
+    name = next(iter(B.BY_NAME))
+    with gzip.open(os.path.join(d, "w.json.gz"), "wt", encoding="ascii") as fh:
+        json.dump({"frames": base.f, "sent": [], "clock": None, "errs": []}, fh)
+
+    def rec_with(decoder):
+        p = os.path.join(d, "run_%s.json" % ("none" if decoder is None else decoder["dbc_hash"][:4]))
+        r = {"stimulus": {"case": name, "judge": "soc_latch"}, "t0_epoch": 0.0, "witness_file": "w.json.gz",
+             "posts": base.posts, "samples": []}
+        if decoder is not None:
+            r["decoder"] = decoder
+        json.dump(r, open(p, "w", encoding="ascii"))
+        return p
+    try:
+        B.rejudge_file(rec_with(other))
+        raised = None
+    except gi_diag.SchemaMismatch as e:
+        raised = str(e)
+    check("rejudge_file: a record whose decoder identity names another DBC is refused", raised, raised)
+    try:
+        res2, _out = B.rejudge_file(rec_with(None))
+        got = res2["judged"]["facts"]["diag_decode"]["schemas"]
+    except Exception as e:      # noqa: BLE001
+        got = "CRASH %s" % e
+    check("rejudge_file: a record with no identity (before 2026-10-24) decodes by schema byte",
+          got == [J.schemas().head_version], got)
+    c = J.Ctx(base.f, base.posts)
+    pg = c.p7f8[0][1]
+    check("decoding: each page carries the schema it was decoded on",
+          getattr(pg, "schema", None) == J.schemas().head_version, getattr(pg, "schema", None))
+
+
 def main():
     seadrive_before = seadrive_stimuli()
     check("stimulus files are built under the scratch folder, not SeaDrive's runs/",
@@ -1040,6 +1133,7 @@ def main():
     test_gate_refuse()
     test_rekey()
     test_common()
+    test_decoding()
     test_attribution()
     test_model_vs_host(scratch)
     test_model_rekey(scratch)
