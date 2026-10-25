@@ -338,3 +338,75 @@ cases accept extra names as refusals and never as a pass. The first run (on `3ca
 `run1_3cab845/`, `SHA256SUMS` `be26f7b2...89dd02`) judged them against the exact set, and those
 four cases failed on that extra name alone. Its `component_table` case was VOID, a fault in the
 case, fixed in `5c43ada`.
+
+## R21 board data (C6f, 2026-10-24)
+
+**SPEC:** R21 in shared/main `9e0daa9`, the merge of `a5e7c46`, whose wording the check and
+the board data cite. It adds the flash size, in both the app's and the bootloader's headers
+(user, 2026-10-24, option B; the user confirmed that reading, through the gen-inhibit
+reviewer). The gen-inhibit reviewer's readings of 2026-10-24 (Q1 to Q7), which `VALIDATION.md`
+R21 records: the table compared is the build's own `partition-table.bin`, byte for byte; the reference is a `.bin` named by path in the board data, with no stored hash; the
+slot is the smallest app partition of the reference table, and the image fits when it is no
+larger; the tool prefix is a property of the checks, named from the board's `IDF_TARGET` by
+ESP-IDF's own per-target files, and a build whose target is not the board's fails; a board used
+by one project has its data inline in that project's `vtrux_checks.json`, while a shared
+board's comes from a shared board component under `managed_components/`; release builds only,
+and of the bootloader only its header is read, never its contents. The WiCAN's flash size,
+4 MB, is from gen-inhibit spec section 2.
+**Check:** `vtrux_checks/board.py` (`python -B -m vtrux_checks board --build <dir>`) at
+`shared/tools/board-data` `6fc499b`, written from SPEC R21. The board data is `{"target",
+"partition_table", "flash_size"}`. The tool prefix is the `_CMAKE_TOOLCHAIN_PREFIX` of the build's
+ESP-IDF `tools/cmake/toolchain-<target>.cmake`. The flash size field (the high four bits of
+header byte 3), its values and the header's magic byte come from that ESP-IDF's
+`esp_app_format.h`. Its 32 unit tests show each rule failing on a planted input and passing on
+a faithful one. They pass on Python 3.14.6 and 3.11.9, reading the real ESP-IDF v5.4.1 too
+(`riscv32-esp-elf-`, `xtensa-esp32s3-elf-`, magic `0xE9`, 4MB = 2, 8MB = 3). 29 mutants of
+the check and of the partition-table reader each fail them. One of the tests scans every
+module in `vtrux_checks/` for a string constant naming a chip's tool and finds none. **The
+named-board form is not built yet** (reading Q7 (a)): no board component exists until the
+interposer's port step 2a, and the check refuses the form, naming that. `41bcc51` on the same
+branch carries two follow-ups from the R20 review: `switches.py` closes `vtrux_build.json`, with a
+test that no file is left open, and the README's switches row is back inside its table.
+**Board data:** gen-inhibit `gen-inhibit/tester/board-data` `a46087a`, whose `vtrux_checks.json`
+`board` is `esp32c3`, `test/build_checks/reference/stock-v4.13-partition-table.bin` and `4MB`.
+Its `test/build_checks/test_board_data.py` (14 checks, each shown failing on a planted input,
+and 5 mutants each fail it) checks that data against gen-inhibit's spec: the target is the
+committed `sdkconfig`'s, the reference is tracked by git, its smallest app partition is spec
+12.3 item 3's 1,781,760 bytes, and the flash size is section 2's 4 MB and the committed
+`sdkconfig`'s.
+**Builds:** release builds by `vtrux_build/` at `6fc499b` of `release_cases.py`'s fixture
+(gen-inhibit `d2e0bb5` with its fixture commits), and of the minimal project set to esp32s3.
+**Cases:** `verification/board_cases.py` at `6fc499b`. Its `--self-test` catches every broken
+input, and 18 mutants of its readings and judges each fail it. Each case works out what the
+check must name without the check's reader: the table bytes, the reference's app entries read
+here, the flash size field of each header read here against its own table of the image format,
+`sdkconfig.h`'s target and flash size, and the build's `monitor_toolprefix`. **Host:** NICKY-XPS
+(IDF v5.4.1, its Python 3.11.9). **Run files:**
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/runs/sharedtools_c6f/`
+(`README.md`, section "R21 board-data check"); `xps_board_r21b/SHA256SUMS`
+(`23b8e046...d27214`) hashes every log, `board_results.json`, the board data copy and
+`tests_6fc499b.txt`.
+
+| Case | Result | What was tested |
+|---|---|---|
+| WiCAN, faithful | PASS | The fixture's release build with the WiCAN's board data: exit 0, the table identical, the image under the 1,781,760-byte slot, both headers 4MB, prefix `riscv32-esp-elf-`. |
+| Another target | PASS | The same build, the board's target `esp32s3`: exit 1, naming the target only; the prefix printed is `xtensa-esp32s3-elf-`. |
+| A smaller slot | PASS | The same build, the reference a copy of the stock table with `ota_0` one byte smaller than the image: exit 1, naming the slot, and the table, which then differs. |
+| No reference file | PASS | The same build, the reference path naming no file: exit 1, cannot read. |
+| A named board | PASS | The same build, `board` a name: exit 1, cannot read, "not built yet". |
+| Table differs | PASS | A release build of a commit making `storage` 296K in the partition CSV: exit 1, naming the table only. |
+| Flash size larger | PASS | A release build of a commit setting the committed `sdkconfig`'s flash size to 8MB, both headers then giving 8MB: exit 1, naming the flash size of the app's and the bootloader's header, and nothing else. |
+| esp32s3, faithful | PASS | The minimal project set to esp32s3, its own table and flash size (2MB) as the board's: exit 0, prefix `xtensa-esp32s3-elf-`; R17's scope check passes on it too. |
+| esp32s3 build, esp32c3 board | PASS | The same build, the board's target `esp32c3`: exit 1, naming the target only. |
+
+**Not a case: a smaller flash size.** By `VALIDATION.md` R21 it fails the build itself, since
+the partition table no longer fits.
+
+**Also: R20's ELF reader on an Xtensa ELF** (asked for by the interposer reviewer). Its unit
+tests had compared it with `riscv32-esp-elf-nm` only. `s3_elf_reader` runs `test_switches.py`'s
+`test_as_nm` on the esp32s3 build's ELF against `xtensa-esp32s3-elf-nm`: PASS, the same
+symbol set.
+
+The first run of the cases, on `f05ad48` (before the flash size), is in `xps_board_r21/`
+(`SHA256SUMS` `14986bd4...55eebc`). All 9 results passed there; that check is superseded by
+`6fc499b`.
