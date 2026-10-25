@@ -67,7 +67,7 @@ def wire(ps, dead_before=None, pages_gap=None):
     s.pages(0.3, 19.5, lambda t: {"live": mode_at(ps, t) == 3})
     s.f = [x for x in s.f if not (x[1] in (0x7F1, 0x7F2, 0x7F8) and not keep(x[0]))]
     for i, off in ((0x7F3, 0.33), (0x7F9, 0.34)):
-        s.train(i, off, 19.5, 1.0, lambda t: "00" * 8)
+        s.train(i, off, 19.5, 1.0, lambda t, i=i: T.enc(T.J.DIAG, i))   # HEAD's schema on 0x7F3 (gi_diag)
         s.f = [x for x in s.f if not (x[1] == i and not keep(x[0]))]
     return s.f
 

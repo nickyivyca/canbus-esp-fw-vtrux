@@ -21,10 +21,14 @@ cantools"). Run on madhouse-debian, where the host suite builds:
 import os
 import subprocess
 import sys
-import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
+import gi_diag  # noqa: E402  the diag DBCs from git or its export (toolkit item 10)
 
-
-DBC = gi_paths.diag_dbc()
+# THE DBCS (2026-10-24, toolkit item 10). The WiCAN's comes from gi_diag: in this
+# repo, from git, with this tree's run identity; in B15host's copy on madhouse-debian
+# (no git), from the diag_schemas/ export copied beside this file, which carries the
+# identity of the tree it was made from. Each scenario's pages are decoded in order by
+# their schema byte, and a page on another schema than the identity's is refused. The
+# interposer's DBC is read the same way, at its pin in pins.json (reading Q5).
 
 # One scenario per mode worth sampling. PASSIVE is the point of schema 4, so it
 # must be in here; INHIBIT is the comparison.
@@ -40,7 +44,6 @@ DIAG_IDS = (0x7F1, 0x7F2, 0x7F3, 0x7F8)
 # wican_diag_schema.md. Schema 4 shipped its fourth page on 0x7F4, which is the
 # interposer's INTP_Status, and it was caught in review rather than by anything
 # automatic. This is the automatic thing.
-INTERPOSER_DBC = gi_paths.diag_dbc("vtrux-interposer-diag.dbc")
 
 
 def run_scenario(host_dir, name, mode):
@@ -82,17 +85,20 @@ def diag_frames(trace):
 def main():
     host_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser(
         "~/gi_host/test/gen_inhibit_host")
-    import cantools
-    db = cantools.database.load_file(DBC)
-    print("DBC: %s" % db.version)
+    schemas = gi_diag.schemas_for()
+    ident = schemas.identity or gi_diag.run_identity(schemas=schemas)
+    db = schemas.get(ident["dbc_version"]).db
+    print("DBC: %s at %s, schema %d, hash %s (%s)"
+          % (ident["dbc_path"], ident["dbc_commit"][:10], ident["dbc_version"], ident["dbc_hash"],
+             schemas.source))
 
     bad = 0
 
     # --- the check that would have caught the 0x7F4 clash -----------------
     try:
-        idb = cantools.database.load_file(INTERPOSER_DBC)
+        idb = gi_diag.interposer_dbc()
     except Exception as exc:                              # noqa: BLE001
-        print("  [WARN] cannot load %s: %s" % (INTERPOSER_DBC, exc))
+        print("  [WARN] cannot load %s: %s" % (gi_diag.INTERPOSER_DBC_PATH, exc))
         idb = None
     if idb is not None:
         mine = {m.frame_id: m.name for m in db.messages}
@@ -113,19 +119,31 @@ def main():
         trace = run_scenario(host_dir, scenario, mode)
         frames = diag_frames(trace)
         seen = {}
-        for ident, data in frames:
-            seen.setdefault(ident, 0)
-            seen[ident] += 1
+        decoder = gi_diag.Decoder(schemas, ident)
+        last7f8 = None
+        for fid, data in frames:
+            seen.setdefault(fid, 0)
+            seen[fid] += 1
             try:
-                dec = db.decode_message(ident, data)
+                dec = decoder.feed(fid, data)
+            except gi_diag.DiagError as exc:
+                print("  [FAIL] %s 0x%03X %s: REFUSED, %s" % (label, fid, data.hex(), exc))
+                bad += 1
+                break
             except Exception as exc:                      # noqa: BLE001
-                print("  [FAIL] %s 0x%03X %s: %s" % (label, ident, data.hex(), exc))
+                print("  [FAIL] %s 0x%03X %s: %s" % (label, fid, data.hex(), exc))
                 bad += 1
                 continue
-            if ident == 0x7F1:
-                # The DBC's own VERSION line, not a literal: this was pinned to 4
-                # until 2026-10-12 and would have failed every build since schema 5.
-                want = int(db.version.rsplit(None, 1)[-1])
+            if isinstance(dec, gi_diag.Undecodable):
+                print("  [FAIL] %s 0x%03X %s: undecodable, %s" % (label, fid, data.hex(), dec.reason))
+                bad += 1
+                continue
+            if fid == 0x7F8:
+                last7f8 = (data, dec)
+            if fid == 0x7F1:
+                # The DBC's own schema, not a literal: this was pinned to 4 until
+                # 2026-10-12 and would have failed every build since schema 5.
+                want = ident["dbc_version"]
                 if int(dec["diag_schema_ver"]) != want:
                     print("  [FAIL] %s 0x7F1 schema_ver=%s, the DBC says %d"
                           % (label, dec["diag_schema_ver"], want))
@@ -134,7 +152,7 @@ def main():
                 if got != label:
                     print("  [FAIL] %s 0x7F1 diag_mode decodes as %s" % (label, got))
                     bad += 1
-            if ident == 0x7F8 and int(dec["diag_flags2"]) & 0x08:
+            if fid == 0x7F8 and int(dec["diag_flags2"]) & 0x08:
                 print("  [FAIL] %s 0x7F8 emit_refused set -- firmware bug" % label)
                 bad += 1
 
@@ -148,12 +166,11 @@ def main():
         # Show the LAST 0x7F8, not the first: the first is built at t=0 before
         # anything has happened, so every counter reads zero and the frame
         # proves only that it parses.
-        last = [d for i, d in frames if i == 0x7F8]
-        if last:
-            dec = db.decode_message(0x7F8, last[-1])
-            print("    0x7F8 %s -> %s" % (last[-1].hex(),
+        if last7f8:
+            print("    0x7F8 %s -> %s" % (last7f8[0].hex(),
                                           ", ".join("%s=%s" % kv
-                                                    for kv in dec.items())))
+                                                    for kv in last7f8[1].items())))
+        print("    decoder: %s" % decoder.summary())
 
     print()
     print("%s" % ("all emitted diag frames decode against the DBC"

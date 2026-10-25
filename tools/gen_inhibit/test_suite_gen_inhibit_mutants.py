@@ -5,10 +5,13 @@ CHECK. A crash is not a kill, and an edit that does not apply is an error.
     PYTHONPATH=<core b9896a0>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
         py -3.14 -B test_suite_gen_inhibit_mutants.py
 
-Each mutant copies suite_gen_inhibit.py, its test, the settings example and bench/
-(the suite's HARNESS, 2026-10-22) into a fresh folder in the worktree's scratch/ and
-applies one edit; everything else (suite_judges, bench_flash) is imported from this
-folder. Gen-inhibit tester, 2026-10-19.
+The mutants run in a shared clone of this repo at HEAD, made in the worktree's scratch/,
+so the copy sits at tools/gen_inhibit/ as the suite does and gi_diag finds the DBC's
+git history from bench/ (B15host exports it; in a bare folder it found no history, and
+every mutant failed the same six B15host checks). This folder's test, settings example
+and bench/ (the suite's HARNESS, 2026-10-22) are copied over the clone's; each mutant
+writes suite_gen_inhibit.py there with one edit. The unmutated copy runs first, as the
+control: if it fails a check, no kill counts. Gen-inhibit tester, 2026-10-19.
 """
 import os
 import shutil
@@ -151,11 +154,11 @@ MUTANTS = [
     ("H runs the SeaDrive copy", 'argv=["{bash}", "%s/baseline_host_run.sh" % HARNESS, C]',
      'argv=["{bash}", "projects/vtrux/notes/artifacts/gen-inhibit/baseline_host_run.sh", C]'),
     ("H gets no RROOT", ', "RROOT": "{gi_host_root}"}', '}'),
-    ("B15host copies no pins", 'B15_FILES = ("diag_decode_check.py", "gi_paths.py", "pins.json")',
-     'B15_FILES = ("diag_decode_check.py", "gi_paths.py")'),
+    ("B15host copies no pins", 'B15_FILES = ("diag_decode_check.py", "gi_diag.py", "pins.json")',
+     'B15_FILES = ("diag_decode_check.py", "gi_diag.py")'),
     ("B15host runs the check from another folder", '"~/gi_bench_%s/diag_decode_check.py', '"~/gi_bench_%.0s/diag_decode_check.py'),
     ("B15host does not set REVERSE_IT_DIR", 'REVERSE_IT_DIR=\\"$PWD\\" python3 -B', 'python3 -B'),
-    ("B15host's copy failing is not seen", '"set -o pipefail; (tar', '"(tar'),
+    ("B15host's copy failing is not seen", '"set -o pipefail; (%s', '"(%s'),
     ("B15host runs the check after a failed copy", "tar xf - -C ~/gi_bench_%s' && \"", "tar xf - -C ~/gi_bench_%s'; \""),
 ]
 
@@ -165,39 +168,62 @@ def main():
         print("ERROR GI_BASELINE_DIR is not set; the test cannot run, so no mutant can be killed")
         return 1
     base = gi_paths.scratch("mutants-suite_gen_inhibit")
+    d = clone(base)
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(p for p in (env.get("PYTHONPATH"), HERE) if p)
     killed = errors = 0
     src = open(os.path.join(HERE, SRC), encoding="utf-8", newline="").read()
-    for n, (name, old, new) in enumerate(MUTANTS, 1):
-        d = os.path.join(base, "m%d" % n)
-        shutil.rmtree(d, ignore_errors=True)
-        os.makedirs(d)
-        if src.count(old) != 1:
-            print("ERROR    m%d %s: edit matched %d times" % (n, name, src.count(old)))
-            errors += 1
-            continue
-        open(os.path.join(d, SRC), "w", encoding="utf-8", newline="").write(src.replace(old, new))
-        for f in (TEST, EXAMPLE):
-            shutil.copy(os.path.join(HERE, f), d)
-        # The suite's HARNESS is bench/ beside it (2026-10-22); the e2e board-hook check
-        # runs wican_reboot.py from there.
-        shutil.copytree(os.path.join(HERE, "bench"), os.path.join(d, "bench"),
-                        ignore=shutil.ignore_patterns("__pycache__"))
+
+    def run(text):
+        open(os.path.join(d, SRC), "w", encoding="utf-8", newline="").write(text)
         r = subprocess.run([sys.executable, "-B", os.path.join(d, TEST)], cwd=d, capture_output=True, text=True,
                            env=env)
         fails = [l.strip() for l in r.stdout.splitlines() if l.strip().startswith("FAIL ")]
         crashed = "Traceback" in r.stderr
+        return r, fails, (", CRASHED: " + r.stderr.strip().splitlines()[-1][:120] if crashed else "")
+
+    r, fails, crash = run(src)
+    control_ok = r.returncode == 0 and not fails and not crash
+    print("%s control: the unmutated copy  (exit %d, %d FAIL%s)%s" % (
+        "PASS    " if control_ok else "FAILED  ", r.returncode, len(fails), crash,
+        "".join("\n           " + f[:130] for f in fails[:3])))
+    sys.stdout.flush()
+    for n, (name, old, new) in enumerate(MUTANTS, 1):
+        if src.count(old) != 1:
+            print("ERROR    m%d %s: edit matched %d times" % (n, name, src.count(old)))
+            errors += 1
+            continue
+        r, fails, crash = run(src.replace(old, new))
         dead = bool(fails)
         killed += dead
         print("%s m%d %s  (exit %d, %d FAIL%s%s)" % (
-            "KILLED  " if dead else "SURVIVED", n, name, r.returncode, len(fails),
-            ", CRASHED: " + r.stderr.strip().splitlines()[-1][:120] if crashed else "",
+            "KILLED  " if dead else "SURVIVED", n, name, r.returncode, len(fails), crash,
             ("; " + fails[0][:100]) if fails else ""))
         sys.stdout.flush()
     shutil.rmtree(base, ignore_errors=True)
-    print("\n%d of %d killed by a check, %d errors" % (killed, len(MUTANTS), errors))
-    return 0 if killed == len(MUTANTS) and not errors else 1
+    print("\n%d of %d killed by a check, %d errors; the control %s"
+          % (killed, len(MUTANTS), errors, "passes" if control_ok else "DOES NOT PASS"))
+    return 0 if killed == len(MUTANTS) and not errors and control_ok else 1
+
+
+def clone(base):
+    """base/repo: a shared clone of this worktree at HEAD, with this folder's test,
+    settings example and bench/ copied over its tools/gen_inhibit/. Returns that folder."""
+    wt = gi_paths.worktree_of(HERE)
+    head = subprocess.run(["git", "-C", wt, "rev-parse", "HEAD"], capture_output=True, text=True,
+                          check=True).stdout.strip()
+    repo = os.path.join(base, "repo")
+    subprocess.run(["git", "clone", "-q", "--shared", "--no-checkout", wt, repo], check=True)
+    subprocess.run(["git", "-C", repo, "-c", "advice.detachedHead=false", "checkout", "-q", head], check=True)
+    d = os.path.join(repo, "tools", "gen_inhibit")
+    for f in (TEST, EXAMPLE):
+        shutil.copy(os.path.join(HERE, f), d)
+    # The suite's HARNESS is bench/ beside it (2026-10-22); the e2e board-hook check
+    # runs wican_reboot.py from there.
+    shutil.rmtree(os.path.join(d, "bench"))
+    shutil.copytree(os.path.join(HERE, "bench"), os.path.join(d, "bench"),
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    return d
 
 
 if __name__ == "__main__":

@@ -20,6 +20,15 @@ Two consequences worth keeping in mind:
     output against.
   - the goldens were blessed against code that has never run on the truck.
     Section 13 of the spec clears on BENCH proof, not on a green run here.
+
+THE DIAG LINES ARE COMPARED DECODED, BY SIGNAL NAME (2026-10-24, port plan
+toolkit item 10; the reviewer's reading Q3). Each TX line of a diag id, in the
+golden and in the current trace, is decoded by gi_diag on the schema its own
+trace's latest schema page states (the DBCs from git, or from the diag_schemas/
+export gi_host_run.sh copies here), and compared by name, raw values, without
+diag_schema_ver and diag_schema_ver_build: a schema bump that moves nothing else
+leaves a golden passing, and a signal on one side only is a difference. Every
+other line is compared as text. A schema no DBC states is refused: [ERROR].
 """
 
 import argparse
@@ -30,6 +39,9 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# gi_diag sits in tools/gen_inhibit/bench/ of this tree, here and in ~/gi_host.
+sys.path.insert(0, os.path.normpath(os.path.join(HERE, "..", "..", "tools", "gen_inhibit", "bench")))
+import gi_diag  # noqa: E402  the diag DBCs, by schema byte (toolkit item 10)
 SCN = os.path.join(HERE, "scenarios")
 GOLD = os.path.join(HERE, "golden")
 RUNNER = os.path.join(HERE, "host_runner")
@@ -133,6 +145,17 @@ def build():
         print("build warnings:")
         print(r.stderr)
     return True
+
+
+_SCHEMAS = []
+
+
+def schemas():
+    """The diag schema set: from git in a worktree, else this copy's diag_schemas/."""
+    if not _SCHEMAS:
+        _SCHEMAS.append(gi_diag.schemas_for())
+        print("diag schemas %s from %s" % (sorted(_SCHEMAS[0].entries), _SCHEMAS[0].source))
+    return _SCHEMAS[0]
 
 
 def main():
@@ -294,12 +317,20 @@ def main():
 
         with open(gpath) as fh:
             want = fh.read()
-        if want == out:
-            print("[ok    ] %-30s %d lines" % (name, out.count("\n")))
+        try:
+            same, wnorm, onorm = gi_diag.compare_traces(want, out, schemas())
+        except gi_diag.DiagError as e:
+            print("[ERROR ] %-30s diag lines refused: %s" % (name, e))
+            nfail += 1
+            failed.append(name)
+            continue
+        if same:
+            print("[ok    ] %-30s %d lines%s" % (name, out.count("\n"),
+                                                "" if want == out else " (equal decoded; the raw diag bytes differ)"))
             npass += 1
         else:
-            print("[DIFF  ] %-30s" % name)
-            d = difflib.unified_diff(want.splitlines(), out.splitlines(),
+            print("[DIFF  ] %-30s (diag lines decoded by name)" % name)
+            d = difflib.unified_diff(wnorm, onorm,
                                      "golden", "current", n=args.context,
                                      lineterm="")
             shown = 0

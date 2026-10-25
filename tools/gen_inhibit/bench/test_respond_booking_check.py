@@ -8,6 +8,19 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import respond_booking_check as R                                  # noqa: E402
 
+def raises(fn, cls):
+    try:
+        fn()
+    except cls:
+        return True
+    except Exception:       # noqa: BLE001
+        return False
+    return False
+
+
+# A 0x7F1 on HEAD's schema before each fixture's probes, as on the wire (gi_diag, 2026-10-24).
+S7 = (-1.0, 0x7F1, bytes([R.gi_diag.schemas_for().head_version, 1, 2, 0x06, 0, 0, 0, 0]))
+
 
 def sc(on, unv, mx, sent=2993):
     return {"ontime": on, "ontime_unverified": unv, "unverified_max_backlog": mx,
@@ -47,38 +60,48 @@ def main():
              R.balance(dict(sc(2900, 80, 3), cls={"probe": {"sent": 2993, "withdrawn": 1}}), 13))),
         ("balance: no witness count -> None", R.balance(sc(2900, 80, 3), None)["balanced"] is None),
         ("late_probes: each probe right after its own command -> 0 late of 3",
-         R.late_probes([(0.0, 0x051, bytes([8, 0, 0, 0, 0, 0x0F])), (0.001, 0x7F0, bytes([0] * 6 + [0x0F, 0x5A])),
+         R.late_probes([S7, (0.0, 0x051, bytes([8, 0, 0, 0, 0, 0x0F])), (0.001, 0x7F0, bytes([0] * 6 + [0x0F, 0x5A])),
                         (0.010, 0x051, bytes([8, 0, 0, 0, 0, 0x00])), (0.011, 0x7F0, bytes([0] * 6 + [0x00, 0x5A])),
                         (0.020, 0x051, bytes([8, 0, 0, 0, 0, 0x01])), (0.021, 0x7F0, bytes([0] * 6 + [0x01, 0x5A]))])
          == (0, 3, 0)),
         ("late_probes: a probe after the next command (answers 0x0F with 0x00 already on the wire) is late",
-         R.late_probes([(0.0, 0x051, bytes([8, 0, 0, 0, 0, 0x0F])), (0.010, 0x051, bytes([8, 0, 0, 0, 0, 0x00])),
+         R.late_probes([S7, (0.0, 0x051, bytes([8, 0, 0, 0, 0, 0x0F])), (0.010, 0x051, bytes([8, 0, 0, 0, 0, 0x00])),
                         (0.011, 0x7F0, bytes([0] * 6 + [0x0F, 0x5A])), (0.012, 0x7F0, bytes([0] * 6 + [0x00, 0x5A]))])
          == (1, 2, 0)),
         ("late_probes: input out of time order is sorted first",
-         R.late_probes([(0.001, 0x7F0, bytes([0] * 6 + [0x0F, 0x5A])), (0.0, 0x051, bytes([8, 0, 0, 0, 0, 0x0F]))])
+         R.late_probes([S7, (0.001, 0x7F0, bytes([0] * 6 + [0x0F, 0x5A])), (0.0, 0x051, bytes([8, 0, 0, 0, 0, 0x0F]))])
          == (0, 1, 0)),
         ("late_probes: a probe before any 0x051 is not judged; a short frame is skipped",
-         R.late_probes([(0.0, 0x7F0, bytes([0] * 6 + [0x0F, 0x5A])), (0.001, 0x051, bytes([8, 0, 0])),
+         R.late_probes([S7, (0.0, 0x7F0, bytes([0] * 6 + [0x0F, 0x5A])), (0.001, 0x051, bytes([8, 0, 0])),
                         (0.002, 0x7F0, bytes([0] * 6 + [0x01, 0x5A]))]) == (0, 0, 0)),
         ("late_probes: other ids are ignored",
-         R.late_probes([(0.0, 0x051, bytes([8, 0, 0, 0, 0, 0x03])), (0.001, 0x7F1, bytes([0] * 8)),
+         R.late_probes([S7, (0.0, 0x051, bytes([8, 0, 0, 0, 0, 0x03])), (0.001, 0x7F1, S7[2]),
                         (0.002, 0x7F0, bytes([0] * 6 + [0x03, 0x5A]))]) == (0, 1, 0)),
         ("late_probes: the 0x051 counter is B5's low nibble",
-         R.late_probes([(0.0, 0x051, bytes([8, 0, 0, 0, 0, 0x13])), (0.001, 0x7F0, bytes([0] * 6 + [0x03, 0x5A]))])
+         R.late_probes([S7, (0.0, 0x051, bytes([8, 0, 0, 0, 0, 0x13])), (0.001, 0x7F0, bytes([0] * 6 + [0x03, 0x5A]))])
          == (0, 1, 0)),
         ("late_probes: B6 outside 0-15 is malformed, never judged (the published probe_vcm_ctr is 0-15)",
-         R.late_probes([(0.0, 0x051, bytes([8, 0, 0, 0, 0, 0x03])), (0.001, 0x7F0, bytes([0] * 6 + [0x23, 0x5A]))])
+         R.late_probes([S7, (0.0, 0x051, bytes([8, 0, 0, 0, 0, 0x03])), (0.001, 0x7F0, bytes([0] * 6 + [0x23, 0x5A]))])
          == (0, 0, 1)),
         ("late_probes: a marker other than 0x5A is malformed, never judged",
-         R.late_probes([(0.0, 0x051, bytes([8, 0, 0, 0, 0, 0x03])), (0.001, 0x7F0, bytes([0] * 6 + [0x03, 0x5B]))])
+         R.late_probes([S7, (0.0, 0x051, bytes([8, 0, 0, 0, 0, 0x03])), (0.001, 0x7F0, bytes([0] * 6 + [0x03, 0x5B]))])
          == (0, 0, 1)),
         ("late_probes: a 7-byte probe is malformed",
-         R.late_probes([(0.0, 0x051, bytes([8, 0, 0, 0, 0, 0x03])), (0.001, 0x7F0, bytes([0] * 6 + [0x03]))])
+         R.late_probes([S7, (0.0, 0x051, bytes([8, 0, 0, 0, 0, 0x03])), (0.001, 0x7F0, bytes([0] * 6 + [0x03]))])
          == (0, 0, 1)),
         ("late_probes: B6 is read from the DBC's probe_vcm_ctr (bit 48, 8 bits)",
-         R.probe_message().get_signal_by_name("probe_vcm_ctr").start == 48
-         and R.probe_message().get_signal_by_name("probe_vcm_ctr").length == 8),
+         (lambda m: m.get_signal_by_name("probe_vcm_ctr").start == 48
+          and m.get_signal_by_name("probe_vcm_ctr").length == 8)(
+             R.gi_diag.schemas_for().head().db.get_message_by_frame_id(0x7F0))),
+        ("late_probes: a probe before the first schema page is judged (0x7F0 is outside the schema; reading Q8)",
+         R.late_probes([(0.0, 0x051, bytes([8, 0, 0, 0, 0, 0x03])), (0.001, 0x7F0, bytes([0] * 6 + [0x03, 0x5A]))])
+         == (0, 1, 0)),
+        ("late_probes: ... and a late one there is counted late",
+         R.late_probes([(0.0, 0x051, bytes([8, 0, 0, 0, 0, 0x03])), (0.010, 0x051, bytes([8, 0, 0, 0, 0, 0x04])),
+                        (0.011, 0x7F0, bytes([0] * 6 + [0x03, 0x5A]))]) == (1, 1, 0)),
+        ("late_probes: an unknown schema byte raises",
+         raises(
+             lambda: R.late_probes([(0.0, 0x7F1, bytes([0xEE] + [0] * 7))]), R.gi_diag.UnknownSchema)),
         ("judge_balance: balanced -> PASS", R.judge_balance(R.balance(sc(2900, 80, 3), 13))[0] == "PASS"),
         ("judge_balance: 13 unbooked against 12 late -> FAIL",
          R.judge_balance(R.balance(sc(2900, 80, 3), 12))[0] == "FAIL"),

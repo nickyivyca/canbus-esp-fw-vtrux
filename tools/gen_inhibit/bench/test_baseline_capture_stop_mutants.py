@@ -5,9 +5,12 @@ an error.
 
     py -3.14 -B tools/gen_inhibit/bench/test_baseline_capture_stop_mutants.py
 
-Run from the reverse-it root. Each mutant is a copy of the five scripts in the worktree's
-scratch/ with one edit, run through the test's BATCH_DIR. BATCH_SRC names the scripts
-to copy (default: this folder). About 25 minutes. Gen-inhibit tester, 2026-10-20.
+Run from the reverse-it root. Each mutant is a copy of this folder in the worktree's
+scratch/, with the five scripts from BATCH_SRC (default: this folder) and one edit, run
+through the test's BATCH_DIR. The whole folder, since the scripts run tools beside them
+($A, capture_window.py among them): a copy of the five alone failed the same five checks
+with no edit at all. The unmutated copy runs first, as the control: if it fails a check,
+no kill counts. About 25 minutes. Gen-inhibit tester, 2026-10-20.
 """
 import os
 import shutil
@@ -59,29 +62,43 @@ def main():
         raw = open(os.path.join(SRC_DIR, f), encoding="utf-8", newline="").read()
         srcs[f] = (raw.replace("\r\n", "\n"), "\r\n" if "\r\n" in raw else "\n")
     killed = errors = 0
-    for n, (name, target, old, new) in enumerate(MUTANTS, 1):
-        if srcs[target][0].count(old) != 1:
-            print("ERROR    m%d %s: edit matched %d times" % (n, name, srcs[target][0].count(old)))
-            errors += 1
-            continue
-        d = os.path.join(base, "m%d" % n)
+
+    def run(label, target=None, old=None, new=None):
+        # The whole of bench/, since the scripts run tools from their own folder ($A), and
+        # the fake py runs capture_window.py from there for real; then the five scripts.
+        d = os.path.join(base, label)
         shutil.rmtree(d, ignore_errors=True)
-        os.makedirs(d)
+        shutil.copytree(HERE, d, ignore=shutil.ignore_patterns("__pycache__"))
         for f, (t, nl) in srcs.items():
             if f == target:
                 t = t.replace(old, new)
             open(os.path.join(d, f), "w", encoding="utf-8", newline="").write(t.replace("\n", nl))
         r = subprocess.run([sys.executable, "-B", os.path.join(HERE, TEST)], capture_output=True, text=True,
                            env=dict(os.environ, BATCH_DIR=d.replace("\\", "/")), timeout=1800)
-        fails = [l.strip() for l in r.stdout.splitlines() if l.strip().startswith("FAIL ")]
+        return r, [l.strip() for l in r.stdout.splitlines() if l.strip().startswith("FAIL ")]
+
+    # The unmutated copy first: if it fails a check, every mutant would be killed by it.
+    r, fails = run("control")
+    control_ok = r.returncode == 0 and not fails
+    print("%s control: the unmutated copy  (exit %d, %d FAIL)%s" % (
+        "PASS    " if control_ok else "FAILED  ", r.returncode, len(fails),
+        "".join("\n           " + f[:130] for f in fails[:3])))
+    sys.stdout.flush()
+    for n, (name, target, old, new) in enumerate(MUTANTS, 1):
+        if srcs[target][0].count(old) != 1:
+            print("ERROR    m%d %s: edit matched %d times" % (n, name, srcs[target][0].count(old)))
+            errors += 1
+            continue
+        r, fails = run("m%d" % n, target, old, new)
         dead = any("ran without raising" not in f for f in fails)
         killed += dead
         print("%s m%d %s  (exit %d, %d FAIL%s)" % ("KILLED  " if dead else "SURVIVED", n, name, r.returncode,
                                                   len(fails), ("; " + fails[0][:100]) if fails else ""))
         sys.stdout.flush()
     shutil.rmtree(base, ignore_errors=True)
-    print("\n%d of %d killed by a check, %d errors" % (killed, len(MUTANTS), errors))
-    return 0 if killed == len(MUTANTS) and not errors else 1
+    print("\n%d of %d killed by a check, %d errors; the control %s"
+          % (killed, len(MUTANTS), errors, "passes" if control_ok else "DOES NOT PASS"))
+    return 0 if killed == len(MUTANTS) and not errors and control_ok else 1
 
 
 if __name__ == "__main__":

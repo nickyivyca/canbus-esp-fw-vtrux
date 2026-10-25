@@ -29,18 +29,19 @@ the spec sets no bound on it. Verdicts:
 Exit status 0 only if every row PASSes.
 """
 import os
-import re
 import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# gi_diag sits in tools/gen_inhibit/bench/ of this tree, here and in ~/gi_host.
+sys.path.insert(0, os.path.normpath(os.path.join(HERE, "..", "..", "tools", "gen_inhibit", "bench")))
+import gi_diag  # noqa: E402  the diag DBCs, by schema byte (toolkit item 10)
 RUNNER = os.path.join(HERE, "host_runner")
 SCN = os.path.join(HERE, "scenarios")
 ROWS = ("bus-on-stopped-live", "bus-on-stopped-armed")
 SLACK_US = 100000           # test tolerance, not spec
-BUS_ON = 0x02               # diag_flags bit1 (schema doc, 0x7F1 B3)
-
-TX_RE = re.compile(r"^(\d+) TX DIAG id=7F1 dlc=8 data=([0-9A-Fa-f]{16})")
+SCHEMA = None
+BUS_ON = 0x02               # diag_flags bit1 (schema doc, 0x7F1 diag_flags)
 
 
 def controller_input(scn_lines):
@@ -62,14 +63,14 @@ def running_at(inp, t):
     return r
 
 
-def status_frames(trace_lines):
-    """[(t, flags byte)] for every 0x7F1 in the trace."""
-    out = []
-    for ln in trace_lines:
-        m = TX_RE.match(ln)
-        if m:
-            out.append((int(m.group(1)), int(m.group(2)[6:8], 16)))
-    return out
+def status_frames(trace_lines, schemas=None):
+    """[(t, diag_flags)] for every 0x7F1 in the trace, by name: every TX line of a diag
+    id decoded in order by gi_diag, on the schema its latest schema page states (2026-10-24,
+    toolkit item 10; B3 read by hand before). A schema no DBC states raises."""
+    frames = [(int(m.group("t")), int(m.group("id"), 16), m.group("data"))
+              for m in (gi_diag.TRACE_RE.match(ln) for ln in trace_lines) if m]
+    pages, _dec = gi_diag.decode_pages(frames, schemas, decode_choices=False)
+    return [(t, int(pg["diag_flags"])) for t, i, pg in pages if i == 0x7F1 and pg]
 
 
 def judge(scn_lines, trace_lines):
@@ -113,11 +114,13 @@ def _fake(stop, back, end, period, bit_of):
     tr = []
     for t in range(0, end, period):
         b = 0x04 | (BUS_ON if bit_of(t, running_at(inp, t)) else 0)
-        tr.append("%d TX DIAG id=7F1 dlc=8 data=060103%02X00028813 ok=1" % (t, b))
+        tr.append("%d TX DIAG id=7F1 dlc=8 data=%s0103%02X00028813 ok=1" % (t, SCHEMA, b))
     return scn, tr
 
 
 def selftest():
+    global SCHEMA
+    SCHEMA = "%02X" % gi_diag.schemas_for().head_version     # the 0x7F1s state HEAD's schema
     S = 1000000
     cases = [
         ("bit follows the controller", lambda t, r: r, 1200000, "PASS"),
@@ -138,13 +141,24 @@ def selftest():
                                                        "" if ok else detail))
     # A frame inside the slack after a change is not judged either way.
     scn, tr = _fake(5 * S, 8 * S, 11 * S, 1200000, lambda t, r: r)
-    tr.append("%d TX DIAG id=7F1 dlc=8 data=0601030600028813 ok=1" % (5 * S + 50000))
+    tr.append("%d TX DIAG id=7F1 dlc=8 data=%s01030600028813 ok=1" % (5 * S + 50000, SCHEMA))
     got, _ = judge(scn, sorted(tr, key=lambda x: int(x.split()[0])))
     ok = got == "PASS"
     fails += not ok
     print("  %-4s %-52s want %-12s got %s" % ("ok" if ok else "FAIL",
                                              "stale bit 50 ms after the stop is skipped",
                                              "PASS", got))
+    # A 0x7F1 on a schema no DBC states is refused, never read by hand.
+    scn, tr = _fake(5 * S, 8 * S, 11 * S, 1200000, lambda t, r: r)
+    tr[0] = tr[0].replace("data=%s" % SCHEMA, "data=EE")
+    try:
+        judge(scn, tr)
+        got = "decoded"
+    except gi_diag.UnknownSchema:
+        got = "refused"
+    ok = got == "refused"
+    fails += not ok
+    print("  %-4s %-52s want %-12s got %s" % ("ok" if ok else "FAIL", "a 0x7F1 on an unknown schema", "refused", got))
     print("selftest: %s" % ("PASS" if not fails else "FAIL (%d)" % fails))
     return 1 if fails else 0
 
@@ -167,7 +181,10 @@ def main():
             print("[ERROR       ] %-24s host_runner rc %d" % (name, r.returncode))
             worst = 1
             continue
-        verdict, detail = judge(scn, r.stdout.decode("ascii", "replace").splitlines())
+        try:
+            verdict, detail = judge(scn, r.stdout.decode("ascii", "replace").splitlines())
+        except gi_diag.DiagError as e:
+            verdict, detail = "ERROR", "diag pages refused: %s" % e
         print("[%-12s] %-24s %s" % (verdict, name, detail))
         if verdict != "PASS":
             worst = 1

@@ -39,7 +39,7 @@ def wire(live_from=1.0, silent=None, diag_gap=None, t_end=19.5):
     s.device(lambda t: t >= live_from and not (silent and silent[0] <= t < silent[1]))
     s.pages(0.3, t_end, lambda t: {"live": t >= live_from})
     for i, off in ((0x7F3, 0.33), (0x7F9, 0.34)):
-        s.train(i, off, t_end, 1.0, lambda t: "00" * 8)
+        s.train(i, off, t_end, 1.0, lambda t, i=i: T.enc(T.J.DIAG, i))   # HEAD's schema on 0x7F3 (gi_diag)
     if diag_gap:
         s.f = [x for x in s.f if not (x[1] in T.J.DIAG_IDS and diag_gap[0] <= x[0] < diag_gap[1])]
     return s.f

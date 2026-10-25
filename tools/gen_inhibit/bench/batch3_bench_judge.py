@@ -97,7 +97,8 @@ def judge_armed(rec, frames, rows, arm_post):
     if up is None:
         return v.result()
     t0, t1 = up["epoch_start"], up["epoch_end"]
-    c = J.Ctx(frames, [arm_post])
+    c = J.Ctx(frames, [arm_post], identity=rec.get("decoder"))
+    J.diag_errors(c, v)
     ps = pages_of(rows)
     before = [r for r in ps if r["t_resp"] < t0]
     after = [r for r in ps if r["t_req"] >= t1]
@@ -178,7 +179,8 @@ def judge_failed(rec, frames_after, arm_post_after):
     pb, pz = before[-1]["page"], after[-1]["page"]
     v.check("bus_violations unchanged", "bus_violations" in pb and pb.get("bus_violations") == pz.get("bus_violations"),
             "%s -> %s" % (pb.get("bus_violations"), pz.get("bus_violations")))
-    c = J.Ctx(frames_after, [arm_post_after])
+    c = J.Ctx(frames_after, [arm_post_after], identity=rec.get("decoder"))
+    J.diag_errors(c, v)
     n = len(c.dev_answering(arm_post_after["t_ret"], float("inf")))
     v.check("the arm after it works (the device answers the VCM)", n >= MIN_ANSWERS, "%d answers" % n)
     v.facts.update({"kind": kind, "verdict": rec.get("bench_flash_verdict"), "predicted": PREDICTED[kind],

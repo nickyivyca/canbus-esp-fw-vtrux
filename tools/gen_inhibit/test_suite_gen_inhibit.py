@@ -1051,12 +1051,18 @@ def test_host_group(settings, emu):
                for f in SG.B15_FILES)
     check("B15host copies %s from bench/ to the host's ~/gi_bench_<commit>" % ", ".join(SG.B15_FILES),
           rc == 0 and same, (rc, txt[-300:], os.listdir(dest) if os.path.isdir(dest) else None))
-    # the copy is enough on its own: the check's one local import, and the pins it reads
-    p = subprocess.run([sys.executable, "-B", "-c", "import gi_paths; print('pins', len(gi_paths.load_pins()))"],
-                       cwd=dest if os.path.isdir(dest) else d, capture_output=True, text=True, timeout=60,
+    # the copy is enough on its own, with no git: gi_diag finds the export beside it, and
+    # reads the schema set, its identity and the interposer DBC from it (toolkit item 10)
+    p = subprocess.run([sys.executable, "-B", "-c",
+                        "import gi_diag; s = gi_diag.schemas_for(); i = gi_diag.interposer_dbc(); "
+                        "print('schemas', sorted(s.entries), s.source.split()[0], bool(s.identity), len(i.messages))"],
+                       cwd=dest if os.path.isdir(dest) else d, capture_output=True, text=True, timeout=120,
                        env=dict(os.environ, PYTHONPATH=""))
-    check("the copy holds gi_paths and the pins it loads", p.returncode == 0 and p.stdout.startswith("pins "),
+    check("the copy holds gi_diag, its pins and the export: schemas, identity and interposer DBC from the export",
+          p.returncode == 0 and p.stdout.startswith("schemas ") and " export True " in p.stdout,
           (p.stdout + p.stderr)[-300:])
+    check("the export stays in the run folder (B15host_export/diag_schemas/manifest.json)",
+          os.path.isfile(os.path.join(out, "B15host_export", "diag_schemas", "manifest.json")))
     run = [l for l in lines if "tar xf" not in l]
     want = ('HOST hosttest CMD cd ~/rt && REVERSE_IT_DIR="$PWD" python3 -B ~/gi_bench_e3d9437/diag_decode_check.py '
             '~/gi_baseline_e3d9437/test/gen_inhibit_host 2>&1; echo "exit $?"')
@@ -1067,13 +1073,28 @@ def test_host_group(settings, emu):
     check("B15host's output file holds the host's answer",
           os.path.exists(res) and "exit 0" in open(res, encoding="utf-8").read(), txt[-300:])
 
-    partial = os.path.join(d, "partial_tools")
-    os.makedirs(os.path.join(partial, "bench"))
-    for f in SG.B15_FILES[:-1]:
-        shutil.copy(os.path.join(HERE, "bench", f), os.path.join(partial, "bench"))
+    # A tree missing a file tar copies but neither file gi_diag's export reads (gi_diag.py,
+    # pins.json), so the export passes and only tar fails, after sending what it could:
+    # the host's tar xf takes that, so with no pipefail ssh's exit would hide the failure.
+    # A shared clone at HEAD, since the export reads the DBC's git history from three
+    # folders above bench/; this folder's bench/ over its own.
+    top = subprocess.run(["git", "-C", HERE, "rev-parse", "--show-toplevel"], capture_output=True, text=True,
+                         check=True).stdout.strip()
+    head = subprocess.run(["git", "-C", top, "rev-parse", "HEAD"], capture_output=True, text=True,
+                          check=True).stdout.strip()
+    repo = os.path.join(d, "partial_repo")
+    subprocess.run(["git", "clone", "-q", "--shared", "--no-checkout", top, repo], check=True)
+    subprocess.run(["git", "-C", repo, "-c", "advice.detachedHead=false", "checkout", "-q", head], check=True)
+    partial = os.path.join(repo, "tools", "gen_inhibit")
+    shutil.rmtree(os.path.join(partial, "bench"))
+    shutil.copytree(os.path.join(HERE, "bench"), os.path.join(partial, "bench"),
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    os.remove(os.path.join(partial, "bench", SG.B15_FILES[0]))
     rc, lines, txt = run_b15(partial, "partial")
     check("a file B15host cannot copy fails the check, and the check does not run",
           rc != 0 and not [l for l in lines if "tar xf" not in l], (rc, lines, txt[-300:]))
+    check("in that case the export passed and the copy reached the host: it is tar that failed",
+          [l for l in lines if "tar xf" in l] != [], (rc, lines, txt[-300:]))
 
 
 def test_example(bench, emu):

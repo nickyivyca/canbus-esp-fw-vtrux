@@ -45,9 +45,9 @@ def wire(latch=LATCH, pages_stop=False, no_7f9=False, answer_before=False):
     s.pages(0.3, end, lambda t: {"live": t < 3.0, "disabled": t >= 3.0,
                                  "dis": "m_mode" if t >= 3.0 else "none",
                                  "block": "none" if t < 3.0 else "disabled"})
-    s.train(0x7F3, 0.33, end, 1.0, lambda t: "00" * 8)
+    s.train(0x7F3, 0.33, end, 1.0, lambda t: T.enc(T.J.DIAG, 0x7F3))   # HEAD's schema (gi_diag)
     if not no_7f9:
-        s.train(0x7F9, 0.34, end, 1.0, lambda t: "00" * 8)
+        s.train(0x7F9, 0.34, end, 1.0, lambda t: T.enc(T.J.DIAG, 0x7F9))
     return s
 
 

@@ -581,7 +581,10 @@ def raise_priority():
 def run_case(can, LF, info, parsed, power, stamp):
     name = info["case"]
     rec = {"when": stamp, "case": name, "stimulus": info, "power": power, "build": LF.build_id(),
-           "witness": "Kvaser, normal mode", "sender": "PCAN, normal mode"}
+           "witness": "Kvaser, normal mode", "sender": "PCAN, normal mode",
+           # The diag decoder's run identity (toolkit item 10): refused before anything
+           # runs if the working tree's DBC is not HEAD's; the judge holds every page to it.
+           "decoder": J.gi_diag.run_identity(schemas=J.schemas())}
     rec["reboot"] = reboot(LF)
     if not rec["reboot"].get("ok"):
         rec["verdict"] = "VOID: the WiCAN did not come back in mode 0 after the reboot"
@@ -641,7 +644,7 @@ def run_case(can, LF, info, parsed, power, stamp):
         case["resume_at_epoch"] = rec["t0_epoch"] + info["resume_at_s"]
     if "injected_hex" in info:
         case["alias"] = {info["injected_hex"]: info["original_hex"]}
-    res = J.judge(info["judge"], frames, posts, pol.samples, case, sent=sent)
+    res = J.judge(info["judge"], frames, posts, pol.samples, case, sent=sent, identity=rec["decoder"])
     if short:
         res["preconditions"].append({"name": "every sent frame on the wire", "ok": False,
                                      "detail": "fewer seen than sent: %s" % short})
@@ -701,8 +704,10 @@ def rejudge_file(path):
     frames = [tuple(x) for x in w["frames"]]
     sent = [tuple(x) for x in w["sent"]]
     info = dict(rec["stimulus"], _t0_epoch=rec["t0_epoch"])
+    # A record from before 2026-10-24 has no decoder identity: its pages are then
+    # decoded by schema byte alone (reading Q1).
     res = J.judge(info["judge"], frames, rec.get("posts") or [], rec.get("samples") or [],
-                  case_of(info), sent=sent)
+                  case_of(info), sent=sent, identity=rec.get("decoder"))
     old = (rec.get("judged") or {}).get("preconditions") or []
     for p_ in old:
         if not p_.get("ok") and p_["name"].startswith(CARRIED):

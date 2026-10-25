@@ -22,6 +22,7 @@ import time
 import urllib.request
 
 import can                                              # noqa: E402
+import gi_diag  # noqa: E402  the diag DBC from git, by schema byte (toolkit item 10)
 
 HOST = "192.168.80.1"
 BITRATE = 500000
@@ -49,7 +50,22 @@ def decode(flags):
     return ",".join(n for i, n in enumerate(FLAG_NAMES) if flags & (1 << i))
 
 
+def flag_rows(frames, dec):
+    """[(t, diag_flags)] of the 0x7F1 pages in frames [(t, id, data)], every diag page
+    fed to the gi_diag Decoder in order, so each is read on its schema (reading Q7)."""
+    rows = []
+    for t, fid, data in frames:
+        pg = dec.feed(fid, data, t=t, decode_choices=False, allow_truncated=True)
+        if fid == STATUS and pg and "diag_flags" in pg:
+            rows.append((t, int(pg["diag_flags"])))
+    return rows
+
+
 def main():
+    # The decoder first: a working-tree DBC that is not HEAD's is refused before the bus opens.
+    schemas = gi_diag.SchemaSet.from_git()
+    IDENT = gi_diag.run_identity(schemas=schemas)
+    DEC = gi_diag.Decoder(schemas, IDENT)
     found = {}
     for cfg in can.detect_available_configs(["pcan", "kvaser"]):
         if "Virtual" not in cfg.get("device_name", ""):
@@ -69,6 +85,7 @@ def main():
     print("settled, dropped %d backlog frames" % n)
 
     rows = []
+    frames = []
     polls = []
     try:
         post("/gen_inhibit_set?mode=3")
@@ -86,8 +103,8 @@ def main():
             i += 1
             m = kvaser.recv(timeout=0.005)
             while m is not None:
-                if m.arbitration_id == STATUS and len(m.data) >= 4:
-                    rows.append((time.time() - t0, m.data[3]))
+                if m.arbitration_id in DEC.ids:
+                    frames.append((time.time() - t0, m.arbitration_id, bytes(m.data)))
                 m = kvaser.recv(timeout=0.0)
             if time.time() >= next_poll:
                 next_poll += 1.0
@@ -103,6 +120,10 @@ def main():
             except Exception:
                 pass
 
+    # diag_flags by name, every diag page decoded in order by gi_diag against HEAD's DBC
+    # (reading Q7, 2026-10-24; byte 3 by hand before). Another schema is refused.
+    rows = flag_rows(frames, DEC)
+    print("decoder: %s %s" % (IDENT, DEC.summary()))
     print("\n0x051 sent: %d, key frames: %d" % (i, (i + 9) // 10))
     print("\n%d x 0x7F1 captured:" % len(rows))
     for t, f in rows:

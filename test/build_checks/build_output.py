@@ -3,7 +3,7 @@
 
     python3 build_output.py                       # newest build/*.bin
     python3 build_output.py --bin build/wican-fw_obd_abc1234.bin
-    python3 build_output.py --dbc /path/vtrux-wican-diag.dbc
+    python3 build_output.py --ref-repo <a worktree of this repo>
 
 WHAT ROW 22 ASKS FOR, and each is a separate check below:
 
@@ -325,26 +325,67 @@ def check_partitions(build_dir=None):
 
 # ------------------------------------------------------- diag schema and DBC --
 
-# The DBC and the schema doc live in the analysis project (reverse-it), not in the
-# firmware repo, and that folder is somewhere else on every machine. So the
-# defaults come from $REVERSE_IT_DIR (projects/vtrux/ under it), and with it unset
-# there are none. A missing one is reported as NO REFERENCE, never as a pass, and
-# never looked for at a guessed path (harness-defects row, 2026-10-24).
-def _proj():
-    root = os.environ.get("REVERSE_IT_DIR", "").strip()
-    return os.path.join(os.path.expanduser(root), "projects", "vtrux") if root else None
+# THE DBC AND THE SCHEMA DOC ARE IN THIS REPO since 2026-10-24 (gen-inhibit/diag/,
+# port plan toolkit item 10), and they are read from GIT, never from a working tree:
+# refs_from_git() writes HEAD's copies of --ref-repo (default this repo) to its
+# scratch/ and the rows read those. Before, they came from $REVERSE_IT_DIR's frozen
+# copies. The DBC's history must pass gi_diag's checks (each commit's identity, one
+# layout per schema), and a working-tree DBC or doc with uncommitted changes is a FAIL
+# row: the build message's "refuse a DBC with uncommitted changes". A repo without
+# them is reported as NO REFERENCE, never as a pass, and never looked for elsewhere.
+REF_PATHS = ("gen-inhibit/diag/vtrux-wican-diag.dbc", "gen-inhibit/diag/wican_diag_schema.md")
+DIAG_REF = {}    # refs_from_git's gi_diag module and schema set, for the emitted-frames row
 
 
-_PROJ = _proj()
-DEFAULT_DBC = os.path.join(_PROJ, "vtrux-wican-diag.dbc") if _PROJ else None
-DEFAULT_SCHEMA_DOC = (os.path.join(_PROJ, "notes", "artifacts", "gen-inhibit", "wican_diag_schema.md")
-                      if _PROJ else None)
-
-
-def _no_ref(what, path, flag):
+def _no_ref(what, path, flag="--ref-repo"):
     """The detail for a reference that is not there: where it was looked for, and how to give one."""
-    how = "pass %s, or set REVERSE_IT_DIR to the reverse-it root" % flag
+    how = "pass %s, a git worktree of this repo holding gen-inhibit/diag/" % flag
     return "no %s at %s -- %s" % (what, path, how) if path else "no %s given: %s" % (what, how)
+
+
+def refs_from_git(repo):
+    """-> (DBC path, schema doc path): HEAD's copies of both, written under this repo's
+    scratch/, after gi_diag's checks; (None, None) with a row saying why if not."""
+    name = "diag references from git"
+    bench = os.path.join(REPO, "tools", "gen_inhibit", "bench")
+    if bench not in sys.path:
+        sys.path.insert(0, bench)
+    try:
+        import gi_diag
+    except Exception as e:      # noqa: BLE001
+        row(name, None, "cannot import gi_diag from %s: %s" % (bench, e), ref_missing=True)
+        return None, None
+    try:
+        head = gi_diag.git(repo, "rev-parse", "HEAD").decode().strip()
+        missing = [rp for rp in REF_PATHS if gi_diag.git(repo, "ls-files", "--", rp).strip() == b""]
+    except gi_diag.DiagError as e:
+        row(name, None, _no_ref("git worktree", repo) + " (%s)" % e, ref_missing=True)
+        return None, None
+    if missing:
+        row(name, None, _no_ref(", ".join(missing), repo), ref_missing=True)
+        return None, None
+    dirty = gi_diag.git(repo, "status", "--porcelain", "--", *REF_PATHS).decode().strip()
+    if dirty:
+        row(name, False, "uncommitted changes, refused (HEAD's are not what the tree holds): %s"
+            % dirty.replace("\n", "; "))
+        return None, None
+    try:
+        ident = gi_diag.run_identity(repo)
+    except gi_diag.DiagError as e:
+        row(name, False, str(e))
+        return None, None
+    out = os.path.join(REPO, "scratch", "build-output-refs", head[:12])
+    os.makedirs(out, exist_ok=True)
+    paths = []
+    for rp in REF_PATHS:
+        dst = os.path.join(out, os.path.basename(rp))
+        with open(dst, "wb") as fh:
+            fh.write(gi_diag.git(repo, "show", "HEAD:%s" % rp))
+        paths.append(dst)
+    DIAG_REF.update(gi_diag=gi_diag, schemas=gi_diag.SchemaSet.from_git(repo), dbc=paths[0])
+    row(name, True, "HEAD %s: the DBC at %s, schema %d, hash %s; the doc beside it"
+        % (head[:10], ident["dbc_commit"][:10], ident["dbc_version"], ident["dbc_hash"]))
+    return paths[0], paths[1]
 
 
 def core_schema_ver():
@@ -378,7 +419,7 @@ def check_diag(dbc_path):
 
     if not dbc_path or not os.path.exists(dbc_path):
         row("DBC defines every diag ID", None,
-            _no_ref("DBC", dbc_path, "--dbc"), ref_missing=True)
+            _no_ref("DBC", dbc_path), ref_missing=True)
         return
 
     try:
@@ -415,16 +456,25 @@ def check_diag(dbc_path):
     # row 22 that a definition check cannot do: the DBC can define every ID and
     # still disagree with the bytes the firmware puts in them. The goldens hold
     # real emitted diag frames, so they are the sample.
-    _decode_emitted(db, defined)
+    _decode_emitted(dbc_path)
 
 
-def _decode_emitted(db, defined):
-    """Decode every diag frame in the host goldens against the DBC."""
+def _decode_emitted(dbc_path):
+    """Decode every diag frame in the host goldens, each trace in order through one
+    gi_diag.Decoder: by its schema byte, from the DBC's git history (toolkit item 10).
+    Needs the schema set refs_from_git() read along with dbc_path; with none, or with
+    a dbc_path that is not the one it wrote, the row is NO REFERENCE, never a decode
+    against a DBC whose history was not checked."""
     gold = os.path.join(REPO, "test", "gen_inhibit_host", "golden")
     if not os.path.isdir(gold):
         row("emitted diag frames decode", None,
             "no goldens to decode", ref_missing=True)
         return
+    if not DIAG_REF or DIAG_REF.get("dbc") != dbc_path:
+        row("emitted diag frames decode", None,
+            "no diag schema set from git for %s (refs_from_git)" % dbc_path, ref_missing=True)
+        return
+    G, schemas = DIAG_REF["gi_diag"], DIAG_REF["schemas"]
 
     seen = 0
     errs = []
@@ -432,6 +482,7 @@ def _decode_emitted(db, defined):
     for fn in sorted(os.listdir(gold)):
         if not fn.endswith(".trace"):
             continue
+        dec = G.Decoder(schemas)
         with open(os.path.join(gold, fn)) as fh:
             for line in fh:
                 if " TX DIAG " not in line:
@@ -443,16 +494,23 @@ def _decode_emitted(db, defined):
                 ident = int(m.group(1), 16)
                 data = bytes.fromhex(m.group(3))
                 ids_seen.add(ident)
-                if ident not in defined:
-                    errs.append("%s: 0x%03X is emitted but not in the DBC"
+                if ident not in dec.ids:
+                    errs.append("%s: 0x%03X is emitted but in no schema's DBC"
                                 % (fn, ident))
                     continue
                 try:
-                    db.decode_message(ident, data)
-                    seen += 1
+                    d = dec.feed(ident, data)
+                except G.DiagError as e:
+                    errs.append("%s: 0x%03X %s -- refused: %s" % (fn, ident, data.hex().upper(), e))
+                    break
                 except Exception as e:      # noqa: BLE001 -- report anything
                     errs.append("%s: 0x%03X %s -- %s"
                                 % (fn, ident, data.hex().upper(), e))
+                    continue
+                if isinstance(d, G.Undecodable):
+                    errs.append("%s: 0x%03X %s -- undecodable: %s" % (fn, ident, data.hex().upper(), d.reason))
+                    continue
+                seen += 1
 
     if seen == 0 and not errs:
         row("emitted diag frames decode", None,
@@ -1296,7 +1354,7 @@ def check_abort_reason_parity(dbc_path):
 
     if not dbc_path or not os.path.exists(dbc_path):
         row("abort reasons are all in the DBC", None,
-            _no_ref("DBC", dbc_path, "--dbc"), ref_missing=True)
+            _no_ref("DBC", dbc_path), ref_missing=True)
         return
     val_line = None
     for line in open(dbc_path, encoding="utf-8", errors="replace"):
@@ -1646,7 +1704,7 @@ def check_schema_doc(doc_path):
     ver = core_schema_ver()
     if not doc_path or not os.path.exists(doc_path):
         row("schema doc version matches", None,
-            _no_ref("schema doc", doc_path, "--schema-doc"), ref_missing=True)
+            _no_ref("schema doc", doc_path), ref_missing=True)
         return
     text = open(doc_path, encoding="utf-8").read()
     m = re.search(r"diag_schema_ver[^|]*\|[^|]*?\*\*(\d+)\*\*", text)
@@ -1707,7 +1765,7 @@ def check_fw_version(doc_path, src_path=None):
     src = source_fw_version(src_path)
     if not doc_path or not os.path.exists(doc_path):
         row("DIAG_FW_VERSION is the schema doc's latest rev", None,
-            _no_ref("schema doc", doc_path, "--schema-doc"), ref_missing=True)
+            _no_ref("schema doc", doc_path), ref_missing=True)
         return
     doc = doc_latest_fw_rev(open(doc_path, encoding="utf-8").read())
     if src is None or doc is None:
@@ -1724,8 +1782,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--bin")
-    ap.add_argument("--dbc", default=DEFAULT_DBC)
-    ap.add_argument("--schema-doc", default=DEFAULT_SCHEMA_DOC)
+    ap.add_argument("--ref-repo", default=REPO,
+                    help="the git worktree whose HEAD gives the diag DBC and schema doc (default this repo)")
     args = ap.parse_args()
 
     b = pick_bin(args.bin)
@@ -1772,13 +1830,14 @@ def main():
         check_image(b)
 
     check_partitions(build_dir)
-    check_diag(args.dbc)
-    check_schema_doc(args.schema_doc)
-    check_fw_version(args.schema_doc)
+    dbc, doc = refs_from_git(os.path.abspath(args.ref_repo))
+    check_diag(dbc)
+    check_schema_doc(doc)
+    check_fw_version(doc)
     check_source()
     check_one_transmit_owner()
     check_lateness_has_a_detector()
-    check_abort_reason_parity(args.dbc)
+    check_abort_reason_parity(dbc)
     check_private_abort_confined()
     check_switches_classified(build_dir)
     check_image_identity(img_ver)

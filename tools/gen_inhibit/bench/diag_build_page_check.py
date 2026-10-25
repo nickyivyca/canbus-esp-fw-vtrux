@@ -18,8 +18,9 @@ HOW THE EXPECTED VALUE IS DERIVED. `diag_git_hash` is FNV-1a 32-bit over the GIT
 string, and GIT_SHA comes from `git describe --tags --always --dirty` at CMake configure
 time. So the expectation is computed here from the SHA, with the same FNV-1a constants
 the firmware uses, rather than from a number recorded by an earlier session. Decoding is
-via cantools against `vtrux-wican-diag.dbc`, never by hand -- a field at the wrong offset
-or a width that truncates then shows up as a wrong value rather than as nothing.
+via cantools against the diag DBC (gi_diag.py: from git, by schema byte), never by hand
+-- a field at the wrong offset or a width that truncates then shows up as a wrong value
+rather than as nothing. The record keeps the decoder's run identity (toolkit item 10).
 
 TWO BENCH RULES THIS OBEYS, BOTH LEARNED THE HARD WAY HERE.
 
@@ -61,12 +62,10 @@ from collections import defaultdict
 
 
 import can                                                          # noqa: E402
-import cantools                                                     # noqa: E402
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
+import gi_diag  # noqa: E402  the diag DBC from git, by schema byte (toolkit item 10)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO = gi_paths.reverse_it_dir()
-DBC = gi_paths.diag_dbc()
 
 WICAN = "http://192.168.80.1"
 
@@ -242,7 +241,12 @@ def main():
     if not os.path.isabs(out) and os.path.dirname(out) in ("", "runs"):
         out = gi_paths.runs(os.path.basename(out))
 
-    db = cantools.database.load_file(DBC)
+    # The decoder's identity first: a working-tree DBC that is not HEAD's is refused
+    # here, before the device is touched, and every page must be on this DBC's schema.
+    schemas = gi_diag.SchemaSet.from_git()
+    ident = gi_diag.run_identity(schemas=schemas)
+    dec = gi_diag.Decoder(schemas, ident)
+    db = schemas.head().db
     msg = db.get_message_by_frame_id(BUILD_ID)
     #
     # Not fatal if 0x7F1 is missing from the DBC: this tool is about 0x7F3,
@@ -260,10 +264,10 @@ def main():
             "--expect-autoarm needs 0x%03X in %s and it is not there.\n"
             "  Refusing to run: skipping the assertion would report a pass "
             "for a check that never happened."
-            % (STATUS_ID, os.path.relpath(DBC, REPO)))
+            % (STATUS_ID, gi_diag.DBC_PATH))
     print("0x7F3 BUILD page check")
-    print("  DBC %s -> message %s, DLC %d, signals %s"
-          % (os.path.relpath(DBC, REPO), msg.name, msg.length,
+    print("  DBC %s at %s (schema %d) -> message %s, DLC %d, signals %s"
+          % (gi_diag.DBC_PATH, ident["dbc_commit"][:10], ident["dbc_version"], msg.name, msg.length,
              ", ".join(s.name for s in msg.signals)))
 
     # --- what the device says about itself over HTTP, before anything else
@@ -320,12 +324,21 @@ def main():
                         break
                     if m.arbitration_id in DIAG_IDS:
                         counts[bname][m.arbitration_id] += 1
+                    # Every diag page off the witness goes through one decoder, in
+                    # order, so a page is read on the schema the device last stated.
+                    page = None
+                    if bname == "kvaser" and m.arbitration_id in dec.ids:
+                        try:
+                            page = dec.feed(m.arbitration_id, bytes(m.data), t=m.timestamp)
+                        except gi_diag.DiagError:
+                            raise
+                        except Exception as exc:
+                            page = {"_decode_error": repr(exc)}
+                        if isinstance(page, gi_diag.Undecodable):
+                            page = {"_decode_error": page.reason}
                     if m.arbitration_id == BUILD_ID and bname == "kvaser":
                         raw_build.append(bytes(m.data))
-                        try:
-                            decoded.append(msg.decode(bytes(m.data)))
-                        except Exception as exc:
-                            decoded.append({"_decode_error": repr(exc)})
+                        decoded.append(page)
                     #
                     # Same witness as 0x7F3 deliberately. Reading the two
                     # pages off different adapters would mean a disagreement
@@ -335,12 +348,7 @@ def main():
                     #
                     if (m.arbitration_id == STATUS_ID and bname == "kvaser"
                             and status_msg is not None):
-                        try:
-                            status_decoded.append(
-                                status_msg.decode(bytes(m.data)))
-                        except Exception as exc:
-                            status_decoded.append(
-                                {"_decode_error": repr(exc)})
+                        status_decoded.append(page)
     finally:
         if armed:
             try:
@@ -379,6 +387,7 @@ def main():
                    for b, per in counts.items()},
         "mode_before": st_before.get("mode"),
         "mode_after": st_after.get("mode"),
+        "decoder": dict(ident, **dec.summary()),
     }
 
     # --- the hard failure: no page at all must NOT read as "nothing wrong"

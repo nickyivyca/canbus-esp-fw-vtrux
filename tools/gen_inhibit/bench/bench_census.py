@@ -18,9 +18,11 @@ actually honours (tools-reference.md: `listen_only=True` is swallowed):
 A silent adapter's "0 error frames" says nothing about the segment
 (tools-reference.md).
 
-Per adapter it prints the ID census, the WiCAN diag pages decoded against
-vtrux-wican-diag.dbc (schema, fw_ver, flags, git hash), and the raw 0x7F4-0x7F7
-payloads so the interposer side can identify its own board with its own tool.
+Per adapter it prints the ID census, the WiCAN diag pages decoded by gi_diag.py
+(the diag DBC from git, by schema byte, checked against the run identity the record
+keeps; a page on another schema is refused for that adapter, never decoded), and the
+raw 0x7F4-0x7F7 payloads so the interposer side can identify its own board with its
+own tool.
 
 Usage (project root):
   py -3.14 tools/gen_inhibit/bench/bench_census.py [--seconds 8] [--only kvaser,pcan,gs_usb]
@@ -35,13 +37,12 @@ import time
 
 
 import can                                                      # noqa: E402
-import cantools                                                 # noqa: E402
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
+import gi_diag  # noqa: E402  the diag DBC from git, by schema byte (toolkit item 10)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # GI_RUNS_DIR: the chain runner points a check's records at its own folder (2026-10-18).
 RUNS = os.environ.get("GI_RUNS_DIR") or gi_paths.runs()
-DBC = gi_paths.diag_dbc()
 BITRATE = 500000
 WICAN_IDS = (0x7F1, 0x7F2, 0x7F3, 0x7F8, 0x7F9)
 X2_IDS = (0x7F4, 0x7F5, 0x7F6, 0x7F7)
@@ -76,7 +77,9 @@ def open_adapter(name):
     raise ValueError(name)
 
 
-def census(name, seconds, db):
+def census(name, seconds, schemas, ident=None):
+    """One adapter's census. Its diag pages go through one gi_diag.Decoder in the order
+    received; the last page of each WiCAN id is kept decoded."""
     out = {"adapter": name}
     try:
         bus, how = open_adapter(name)
@@ -87,6 +90,9 @@ def census(name, seconds, db):
     ids = collections.Counter()
     errs = 0
     last = {}
+    dec = gi_diag.Decoder(schemas, ident)
+    wican = {}
+    refused = None
     first_t = last_t = None
     t_end = time.time() + seconds
     try:
@@ -99,6 +105,20 @@ def census(name, seconds, db):
                 continue
             ids[m.arbitration_id] += 1
             last[m.arbitration_id] = bytes(m.data)
+            if m.arbitration_id in WICAN_IDS and refused is None:
+                key = "0x%03X" % m.arbitration_id
+                try:
+                    d = dec.feed(m.arbitration_id, bytes(m.data), t=m.timestamp, decode_choices=False)
+                except gi_diag.DiagError as e:
+                    refused = "%s: %s" % (type(e).__name__, e)
+                    continue
+                except Exception as e:
+                    wican[key] = "decode failed: %r" % (e,)
+                    continue
+                if isinstance(d, gi_diag.Undecodable):
+                    wican[key] = "undecodable: %s" % d.reason
+                else:
+                    wican[key] = {k: (int(v) if float(v).is_integer() else float(v)) for k, v in d.items()}
             first_t = first_t if first_t is not None else m.timestamp
             last_t = m.timestamp
     finally:
@@ -107,17 +127,10 @@ def census(name, seconds, db):
     out["error_frames"] = errs
     out["seconds"] = seconds
     out["ids"] = {"0x%03X" % k: v for k, v in sorted(ids.items())}
-    wican = {}
-    for fid in WICAN_IDS:
-        if fid in last:
-            try:
-                d = db.decode_message(fid, last[fid], decode_choices=False)
-                wican["0x%03X" % fid] = {k: (int(v) if float(v).is_integer()
-                                             else float(v))
-                                         for k, v in d.items()}
-            except Exception as e:
-                wican["0x%03X" % fid] = "decode failed: %r" % (e,)
+    if refused:
+        wican = {}
     out["wican_last_decoded"] = wican
+    out["wican_decode"] = dict(dec.summary(), refused=refused)
     out["x2_last_raw"] = {"0x%03X" % f: last[f].hex() for f in X2_IDS
                           if f in last}
     return out
@@ -128,12 +141,13 @@ def main():
     ap.add_argument("--seconds", type=float, default=8.0)
     ap.add_argument("--only", default="kvaser,pcan,gs_usb")
     a = ap.parse_args()
-    db = cantools.database.load_file(DBC)
+    schemas = gi_diag.SchemaSet.from_git()
+    ident = gi_diag.run_identity(schemas=schemas)
     stamp = time.strftime("%Y%m%dT%H%M%S")
-    rec = {"when": stamp, "dbc": DBC, "adapters": []}
+    rec = {"when": stamp, "decoder": ident, "adapters": []}
     for name in a.only.split(","):
         print("--- %s, %.0f s" % (name, a.seconds))
-        r = census(name, a.seconds, db)
+        r = census(name, a.seconds, schemas, ident)
         rec["adapters"].append(r)
         if "error" in r:
             print("  %s" % r["error"])
@@ -141,6 +155,8 @@ def main():
         print("  mode %s: %d frames, %d error frames, %d ids"
               % (r["mode"], r["frames"], r["error_frames"], len(r["ids"])))
         print("  ids: %s" % ", ".join("%s:%d" % kv for kv in r["ids"].items()))
+        if r["wican_decode"]["refused"]:
+            print("  wican pages REFUSED, not decoded: %s" % r["wican_decode"]["refused"])
         for fid, d in r["wican_last_decoded"].items():
             print("  wican %s %s" % (fid, d))
         b = r["wican_last_decoded"].get("0x7F3")

@@ -107,6 +107,7 @@ import urllib.request
 
 import can                                                     # noqa: E402
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
+import gi_diag  # noqa: E402  the diag DBC from git, by schema byte (toolkit item 10)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RUNS = gi_paths.runs()
@@ -735,6 +736,7 @@ def main():
 
     rec = {
         "when": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "decoder": gi_diag.run_identity(),
         "question": "can this bench drive the C3 to bus-off, and does bus-off "
                     "raise TWAI_ALERT_TX_FAILED",
         "supersedes": "the interference half of txfailed_busoff_probe.py "
@@ -1099,8 +1101,14 @@ def judge_bus_on(rec):
                and x["snap"].get("drv_state") == "bus_off"]
     wire = rec.get("wire_0x7F1") or []
     clear = []
-    for pt, hx in wire:
-        if not bytes.fromhex(hx)[3] & 0x02:
+    # bus_on is diag_flags bit1, decoded by gi_diag (each 0x7F1 carries its schema byte;
+    # reading Q7, 2026-10-24: byte 3 by hand before). An unknown schema raises.
+    pages, _dec = gi_diag.decode_pages([(pt, 0x7F1, hx) for pt, hx in wire], identity=rec.get("decoder"),
+                                       decode_choices=False)
+    for (pt, _i, pg), (_pt, hx) in zip(pages, sorted(wire, key=lambda w: w[0])):
+        if isinstance(pg, gi_diag.Undecodable):
+            clear.append({"pt": pt, "data": hx, "undecodable": pg.reason})
+        elif not int(pg["diag_flags"]) & 0x02:
             clear.append({"pt": pt, "data": hx})
     out = {"page_samples": len(snaps), "page_states": states,
            "page_mismatches": bad[:20], "page_mismatch_count": len(bad),

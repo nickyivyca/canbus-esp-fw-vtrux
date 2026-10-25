@@ -35,14 +35,12 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-import cantools                                               # noqa: E402
-
 from diag_check_rules import build_checks, raw                # noqa: E402
-import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
+import gi_diag  # noqa: E402  the diag DBC from git, by schema byte (toolkit item 10)
 
-DBC = gi_paths.diag_dbc()
-db = cantools.database.load_file(DBC)
-DBC_SCHEMA = int(db.version.rsplit(None, 1)[-1])
+SCHEMAS = gi_diag.SchemaSet.from_git()
+db = SCHEMAS.head().db
+DBC_SCHEMA = SCHEMAS.head().version
 
 # A good run: bus_on (0x02), bus_ours (0x04), inhibit_live (0x20), key_on
 # (0x40) -- 0x66, which is what diag_flags_trace.py measured in six of seven
@@ -52,7 +50,8 @@ FLAGS_ABORTED = FLAGS_GOOD | 0x80
 
 
 def frames(flags=FLAGS_GOOD, abort=0, arm_block=0):
-    """Encode then decode, so the rules see what the bench would hand them."""
+    """Encode with HEAD's DBC, then decode through gi_diag in page order, so the rules
+    see what the bench would hand them."""
     st = {"diag_schema_ver": DBC_SCHEMA, "diag_fw_ver": 3, "diag_mode": 3,
           "diag_flags": flags, "diag_disable_reason": 0,
           "diag_shift_pos": 0, "diag_soc_x100": 77.0}
@@ -63,9 +62,10 @@ def frames(flags=FLAGS_GOOD, abort=0, arm_block=0):
           "diag_tx_queued_behind": 0}
     sk = {"diag_skips_withdrawn": 0, "diag_skips_late": 0}
     out = []
+    dec = gi_diag.Decoder(SCHEMAS)
     for fid, payload in ((0x7F1, st), (0x7F3, bd), (0x7F8, s2), (0x7F9, sk)):
         data = db.encode_message(fid, payload)
-        out.append(db.decode_message(fid, data))
+        out.append(dec.feed(fid, data))
     return out
 
 

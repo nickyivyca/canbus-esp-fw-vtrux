@@ -15,7 +15,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bench_census as BC                                       # noqa: E402
-import cantools                                                 # noqa: E402
+import gi_diag  # noqa: E402  the diag DBC from git, by schema byte (toolkit item 10)
 
 HOST = "192.168.80.1"
 
@@ -33,9 +33,10 @@ def page():
 
 
 def main():
-    db = cantools.database.load_file(BC.DBC)
+    schemas = gi_diag.SchemaSet.from_git()
+    ident = gi_diag.run_identity(schemas=schemas)
     stamp = time.strftime("%Y%m%dT%H%M%S")
-    rec = {"when": stamp, "adapters": []}
+    rec = {"when": stamp, "decoder": ident, "adapters": []}
     try:
         rec["post_mode3"] = post_mode(3)
         time.sleep(2.0)
@@ -45,7 +46,7 @@ def main():
                               "arm_block", "abort_reason")}
         print("page in mode 3:", json.dumps(rec["page_mode3"])[:400])
         for name in ("kvaser", "pcan", "gs_usb"):
-            r = BC.census(name, 6.0, db)
+            r = BC.census(name, 6.0, schemas, ident)
             rec["adapters"].append(r)
             print("--- %s %s: %s frames, ids %s" % (name, r.get("mode", r.get("error")),
                   r.get("frames"), r.get("ids")))

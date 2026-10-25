@@ -25,6 +25,7 @@ import json
 import os
 import statistics
 import sys
+import gi_diag  # noqa: E402  the diag DBC from git, by schema byte (toolkit item 10)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -93,6 +94,14 @@ def post_rows(posts, dev_cmd, dev_any, live_pages, end):
     return rows
 
 
+def live_page_times(wire, identity=None):
+    """(times of the 0x7F1 pages with inhibit_live set (diag_flags bit5), the Decoder).
+    Decoded by gi_diag on each page's own schema, never read from byte 3 by hand
+    (toolkit item 10, reading Q7, 2026-10-24); an unknown schema raises."""
+    pages, dec = gi_diag.decode_pages(wire, identity=identity, decode_choices=False, allow_truncated=True)
+    return sorted(t for t, i, p in pages if i == 0x7F1 and p and int(p.get("diag_flags", 0)) & 0x20), dec
+
+
 def analyse(run):
     import provenance_classifier as P
     d = json.load(open(run, encoding="utf-8"))
@@ -103,10 +112,11 @@ def analyse(run):
     wire = P.read_witness(os.path.join(os.path.dirname(run), a["witness_raw"]))
     dev_cmd = sorted(r["device_times"])
     dev_any = sorted(set(dev_cmd) | {t for t, i, _d in wire if i in WICAN_IDS and i != 0x051})
-    live_pages = sorted(t for t, i, dd in wire if i == 0x7F1 and len(dd) > 3 and dd[3] & 0x20)
+    live_pages, dec = live_page_times(wire, d.get("decoder"))
     posts = [(rep[e["index"]], e["mode"], e) for e in (a.get("post_schedule") or []) if e.get("index") is not None]
     return {"run": os.path.basename(run), "device": d.get("device"), "initial_mode": d.get("mode"),
-            "posts": post_rows(posts, dev_cmd, dev_any, live_pages, rep[-1] + 0.5)}
+            "posts": post_rows(posts, dev_cmd, dev_any, live_pages, rep[-1] + 0.5),
+            "diag_decode": dec.summary()}
 
 
 def main():

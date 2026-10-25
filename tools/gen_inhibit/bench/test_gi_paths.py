@@ -84,7 +84,7 @@ def fake_root(base):
         os.makedirs(os.path.join(root, d))
     files = {"projects/vtrux/logs/cap.log": b"capture\n",
              "projects/vtrux/epri-pt-bus.dbc": b"VERSION \"\"\n",
-             "projects/vtrux/vtrux-wican-diag.dbc": b"VERSION \"diag\"\n",
+             "projects/vtrux/vtrux-powertrain-experimental.dbc": b"VERSION \"diag\"\n",
              "projects/vtrux/notes/artifacts/gen-inhibit/runs/fix/a.json": b"{}\n",
              "projects/vtrux/notes/artifacts/gen-inhibit/runs/fix/b.txt": b"b\n",
              "projects/vtrux/notes/artifacts/gen-inhibit/runs/fix/secret.pcapng": b"NOT-TO-BE-READ\n",
@@ -103,7 +103,7 @@ def write_pins(gp, root):
     tree = G + "/runs/fix/"
     pins = {"projects/vtrux/logs/cap.log": sha("projects/vtrux/logs/cap.log"),
             "projects/vtrux/epri-pt-bus.dbc": sha("projects/vtrux/epri-pt-bus.dbc"),
-            "projects/vtrux/vtrux-wican-diag.dbc": sha("projects/vtrux/vtrux-wican-diag.dbc"),
+            "projects/vtrux/vtrux-powertrain-experimental.dbc": sha("projects/vtrux/vtrux-powertrain-experimental.dbc"),
             G + "/x2_jammer/builds/abc/app.bin": sha(G + "/x2_jammer/builds/abc/app.bin"),
             tree: {"sha256": gp.tree_digest(os.path.join(root, tree), {"secret.pcapng"}), "exclude": ["secret.pcapng"]}}
     p = os.path.join(os.path.dirname(root), "pins.json")
@@ -265,7 +265,7 @@ def main():
     gp._checked.clear()
     cap = os.path.join(root, "projects", "vtrux", "logs", "cap.log")
     check("a pinned capture that matches passes", lambda: gp.capture("cap.log") == cap)
-    check("a pinned DBC that matches passes", lambda: gp.vehicle_dbc("epri-pt-bus.dbc") and gp.diag_dbc())
+    check("a pinned DBC that matches passes", lambda: gp.vehicle_dbc("epri-pt-bus.dbc") and gp.vehicle_dbc("vtrux-powertrain-experimental.dbc"))
     check("a pinned jammer build that matches passes", lambda: gp.jammer_builds("abc", "app.bin"))
     check("an unpinned file passes unchanged", lambda: gp.verify(os.path.join(root, "projects", "vtrux", "logs",
                                                                              "unpinned.log")))

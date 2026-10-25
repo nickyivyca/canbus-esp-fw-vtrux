@@ -1,4 +1,10 @@
-"""Verify the WiCAN diagnostic frames decode against vtrux-wican-diag.dbc."""
+"""Verify the WiCAN diagnostic frames decode against the diag DBC.
+
+The DBC is read from git by gi_diag.py (toolkit item 10, 2026-10-24): HEAD's, refused
+if the working tree's differs, and every page is decoded in the order received, on the
+schema its latest schema page states, which must be HEAD's (the record keeps the run
+identity). A page on another schema is refused, never decoded.
+"""
 import os
 import sys, time
 
@@ -13,8 +19,9 @@ from bench_interlocks import send_interlocks, prime_interlocks   # noqa: E402
 # it necessary. diag_check_rules_test.py runs THESE rules, not a copy.
 from diag_check_rules import build_checks                        # noqa: E402
 
-import can, cantools, urllib.request, json
+import can, urllib.request, json
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
+import gi_diag  # noqa: E402  the diag DBC from git, by schema byte (toolkit item 10)
 
 
 # --- dongle backlog ------------------------------------------------------
@@ -41,7 +48,9 @@ def settle(*buses, seconds=SETTLE_S):
     return dropped
 
 
-db = cantools.database.load_file(gi_paths.diag_dbc())
+SCHEMAS = gi_diag.SchemaSet.from_git()
+IDENT = gi_diag.run_identity(schemas=SCHEMAS)
+db = SCHEMAS.head().db
 
 #
 # THE PAGE SET COMES FROM THE DBC, NOT FROM A LITERAL (2026-10-04, reviewing
@@ -80,11 +89,11 @@ if _missing_core:
 print("diag pages required (from the DBC): %s"
       % ", ".join("0x%X %s" % (i, DIAG_IDS[i]) for i in sorted(DIAG_IDS)))
 
-# The DBC's VERSION line is "wican-gen-inhibit-diag schema N". The schema doc
-# (wican_diag_schema.md) is the source of truth and the DBC is kept in sync
-# with it, so reading N here means this check follows a schema bump instead of
+# The schema HEAD's DBC states (its DiagSchemaVersion; until 2026-10-24 parsed from
+# its VERSION line). The schema doc is the source of truth and the DBC is kept in
+# sync with it, so reading N here means this check follows a schema bump instead of
 # going stale behind one.
-DBC_SCHEMA = int(db.version.rsplit(None, 1)[-1])
+DBC_SCHEMA = IDENT["dbc_version"]
 
 # Spec 7.1: without 0x592 the device reads the key OFF and transmits nothing,
 # so the 0x051 stimulus below would produce a device that looks armed and
@@ -163,6 +172,7 @@ try:
     # its own history instead of needing a second script.
     seen = {}
     all_pages = {}
+    stream = []         # every diag page in the order received, for one decoder
     status_series = []
     t0 = time.time()
     for i in range(600):
@@ -191,6 +201,7 @@ try:
                 #
                 all_pages.setdefault(m.arbitration_id, []).append(
                     (round(time.time() - t0, 3), bytes(m.data)))
+                stream.append((round(time.time() - t0, 3), m.arbitration_id, bytes(m.data)))
                 if m.arbitration_id == 0x7F1 and len(m.data) >= 4:
                     status_series.append((time.time()-t0, m.data[3]))
             m = kvaser.recv(timeout=0.0)
@@ -239,8 +250,21 @@ finally:
 # as from HTTP, so the record names what it ran against by the same two
 # independent paths diag_build_page_check.py uses.
 #
+# Decode every page once, in the order received (gi_diag.Decoder): SEQ holds each id's
+# decoded pages with their times, LAST the last of each. An unknown schema, or one that
+# is not HEAD's, raises here: the run is refused, not judged.
+DEC = gi_diag.Decoder(SCHEMAS, IDENT)
+SEQ, LAST = {}, {}
+for _t, _fid, _data in stream:
+    _d = DEC.feed(_fid, _data, t=_t)
+    if _d is None:
+        continue
+    SEQ.setdefault(_fid, []).append((_t, _d))
+    LAST[_fid] = _d
+
 record = {
     "when": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    "decoder": dict(IDENT, **DEC.summary()),
     "dbc_schema": DBC_SCHEMA,
     "pages_required": {"0x%X" % i: DIAG_IDS[i] for i in sorted(DIAG_IDS)},
     "pages_seen": {"0x%X" % i: len(all_pages.get(i, ()))
@@ -277,13 +301,15 @@ if len(status_series) < 2:
 #
 print("\nPAGE SEQUENCES (the assertions use the LAST of each)")
 for fid in (0x7F1, 0x7F8):
-    rows = all_pages.get(fid, [])
+    rows = SEQ.get(fid, [])
     print("  0x%X %-8s %d pages%s"
           % (fid, DIAG_IDS.get(fid, "?"), len(rows),
              "" if len(rows) >= MIN_PAGES
              else "   <-- fewer than MIN_PAGES=%d, not settled" % MIN_PAGES))
-    for t, data in rows:
-        d = db.decode_message(fid, data)
+    for t, d in rows:
+        if isinstance(d, gi_diag.Undecodable):
+            print("      t=%6.2fs UNDECODABLE: %s" % (t, d.reason))
+            continue
         if fid == 0x7F1:
             print("      t=%6.2fs flags=0x%02X live=%d key=%d block_src=0x7F1"
                   % (t, int(d["diag_flags"]), 1 if int(d["diag_flags"]) & 0x20
@@ -296,13 +322,16 @@ ok = True
 for fid in sorted(DIAG_IDS):
     if fid not in seen:
         print("  MISSING 0x%X %s" % (fid, DIAG_IDS[fid])); ok = False; continue
-    dec = db.decode_message(fid, seen[fid])
+    dec = LAST[fid]
+    if isinstance(dec, gi_diag.Undecodable):
+        # A page the run needs and could not decode is an ERROR, never an absence.
+        print("  UNDECODABLE 0x%X %s: %s" % (fid, DIAG_IDS[fid], dec.reason)); ok = False; continue
     print("  0x%X %-9s %s" % (fid, DIAG_IDS[fid], {k: (str(v)) for k,v in dec.items()}))
 if ok:
-    st = db.decode_message(0x7F1, seen[0x7F1])
-    bd = db.decode_message(0x7F3, seen[0x7F3])
-    s2 = db.decode_message(0x7F8, seen[0x7F8])
-    sk = db.decode_message(0x7F9, seen[0x7F9])
+    st = LAST[0x7F1]
+    bd = LAST[0x7F3]
+    s2 = LAST[0x7F8]
+    sk = LAST[0x7F9]
     checks = build_checks(st, bd, s2, sk, DBC_SCHEMA)
     for k,v in checks.items(): print("  [%s] %s" % ("PASS" if v else "FAIL", k))
     ok = all(checks.values())
@@ -325,15 +354,14 @@ print("=== %s ===" % ("PASS" if ok else "FAIL"))
 # carries the numbers and not just the verdicts.
 record["decoded"] = {}
 for fid in sorted(DIAG_IDS):
-    if fid in seen:
-        record["decoded"]["0x%X" % fid] = {
-            k: str(v) for k, v in db.decode_message(fid, seen[fid]).items()}
-if 0x7F3 in seen:
-    _b = db.decode_message(0x7F3, seen[0x7F3])
+    if fid in seen and LAST.get(fid):
+        record["decoded"]["0x%X" % fid] = {k: str(v) for k, v in LAST[fid].items()}
+if LAST.get(0x7F3):
+    _b = LAST[0x7F3]
     record["device_wire_git_hash"] = "0x%08X" % int(_b["diag_git_hash"])
-if 0x7F9 in seen and 0x7F8 in seen:
-    _sk = db.decode_message(0x7F9, seen[0x7F9])
-    _s2 = db.decode_message(0x7F8, seen[0x7F8])
+if LAST.get(0x7F9) and LAST.get(0x7F8):
+    _sk = LAST[0x7F9]
+    _s2 = LAST[0x7F8]
     record["reported_not_asserted"] = {
         "skips_withdrawn": int(_sk["diag_skips_withdrawn"]),
         "skips_late": int(_sk["diag_skips_late"]),

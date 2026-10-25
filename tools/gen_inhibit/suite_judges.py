@@ -298,14 +298,22 @@ def b10(F):
                    "%d of %d judged arms as specified" % (spec, len(judged)))]
 
 
+def row_errors(rows):
+    """An analysis row's "error" (passive_analysis, quiesce_analysis): a judged figure it
+    could not compute from decodable diag pages. The check is then ERROR, never graded
+    on the rest (reviewer, 2026-10-25, decode rework reading Q9). "" if none."""
+    return "; ".join("%s: %s" % (r.get("run"), r["error"]) for r in rows if r.get("error"))
+
+
 @judge("B11", "B")
 def b11(F):
     rows = json_lines(F.one(r"B11_quiesce_analysis\.txt"))
     bad = [r["run"] for r in rows if r.get("provenance") != "as specified" or r.get("late") or r.get("double")
            or (r["initial_mode"] == "inhibit" and not (r.get("tx_ok_vs_last_inhibit_span") or {}).get("agree"))]
     ok = len(rows) == 6 and not bad
-    return [result("B11", "PASS" if ok else "FAIL", {"arms": fig(len(rows))},
-                   "; ".join(bad) or "6 arms as specified, tx_ok agrees with every INHIBIT span")]
+    err = row_errors(rows)
+    return [result("B11", "ERROR" if err else "PASS" if ok else "FAIL", {"arms": fig(len(rows))},
+                   err or "; ".join(bad) or "6 arms as specified, tx_ok agrees with every INHIBIT span")]
 
 
 @judge("B11raw", "B")
@@ -323,13 +331,14 @@ def b11raw(F):
     prov = json_lines(F.one(r"B11raw_quiesce_analysis\.txt"))
     pbad = [r["run"] for r in prov if r.get("provenance") != "as specified"]
     ok = len(verdicts) == 6 and not fails and not pbad and others == 0
-    return [result("B11raw", "PASS" if ok else "FAIL",
+    err = row_errors(prov)
+    return [result("B11raw", "ERROR" if err else "PASS" if ok else "FAIL",
                    {"observe_posts": fig(len(verdicts)), "pass": fig(len(passing)), "not_applicable": fig(len(na)),
                     "pass_on_ack": fig(verdicts.count("strict FAIL, PASS on ACK")),
                     "send_to_first_byte_ms_min": fig(min(sends) if sends else None, "ms"),
                     "send_to_first_byte_ms_max": fig(max(sends) if sends else None, "ms"),
                     "other_requests_in_progress": fig(others)},
-                   "; ".join(fails + pbad) or "%d PASS (%d on ACK), %d not applicable" % (
+                   err or "; ".join(fails + pbad) or "%d PASS (%d on ACK), %d not applicable" % (
                        len(passing), verdicts.count("strict FAIL, PASS on ACK"), len(na)))]
 
 
@@ -365,9 +374,10 @@ def b13(F):
     book = re.findall(r"^\[(\w+) *\] ", text(F.one(r"B13_respond_booking_check\.txt")), re.M)
     bfail = [b for b in book if b != "PASS"]
     ok = len(rows) == 8 and not bad and book and not bfail
-    return [result("B13", "PASS" if ok else "FAIL", {"arms": fig(len(rows)), "booking_rows": fig(len(book)),
-                                                     "booking_fail": fig(len(bfail))},
-                   "; ".join(bad) or "%d arms ok, booking %s" % (len(rows), "PASS" if not bfail else bfail))]
+    err = row_errors(rows)
+    return [result("B13", "ERROR" if err else "PASS" if ok else "FAIL",
+                   {"arms": fig(len(rows)), "booking_rows": fig(len(book)), "booking_fail": fig(len(bfail))},
+                   err or "; ".join(bad) or "%d arms ok, booking %s" % (len(rows), "PASS" if not bfail else bfail))]
 
 
 @judge("B14", "B")
