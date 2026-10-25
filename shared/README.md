@@ -9,7 +9,9 @@ charge interposer.
   reviewer has read it.
 - **How projects use it.** A project takes shared code only as a pinned tag
   cut from `shared/main`. It never merges this branch, and this branch never
-  merges a project branch.
+  merges a project branch. Tags are dated, `YYYY.MM.DD` (then `.2`, `.3` the
+  same day), cut when a project is about to pin one, and never moved or
+  deleted (`tools/SPEC.md` R25).
 - **No history before the first commit, by design** (user, 2026-10-23). Git
   then refuses a merge between `shared/main` and a project branch, which
   would otherwise apply this branch's changes to the project's tree. The

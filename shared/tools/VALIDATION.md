@@ -519,3 +519,19 @@ same folder. The interposer's test evidence is
   harness checking the checkout's digest against the pin. Applied to the
   build tooling: user, 2026-10-23, in the gen-inhibit reviewer's session.
 - **Status:** complete.
+
+### R25. Tags on `shared/main`
+- **Basis:** port plan goal 12 (user, 2026-10-17) pins shared code at tags,
+  and goal 20 item 7 left the naming scheme open. Ruled by the user,
+  2026-10-24, in the gen-inhibit reviewer's session, on four questions:
+  - One sequence for all of `shared/main` (option A of two; the other was a
+    sequence per component). Each project still chooses a tag per
+    component, and the one checkout per tag (R23) needs no change.
+  - The date as the name (option A of two; the other was a counter, `v1`,
+    `v2`, which reads like upstream WiCAN's version numbers).
+  - Cut only when a project is about to pin it, by the reviewer who merged
+    the change (option A of two; the other was a tag after every merge), so
+    every tag is one a project uses.
+  - Never moved or deleted: pins and run records name tags, and a pin's
+    digest (R7) would refuse a moved tag anyway.
+- **Status:** complete.

@@ -19,7 +19,7 @@ other project's reviewer (charge interposer) reads it before it merges into
   spec 12.3 item 3,
   `$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-wican-spec.md`.
 
-Requirements are numbered R1 to R24. The numbers are stable: the two evidence
+Requirements are numbered R1 to R25. The numbers are stable: the two evidence
 documents cite them.
 
 ## Terms
@@ -233,6 +233,15 @@ unless the image changes, which the reproducible test (R19) shows.
   unless that checkout's digest (R7) matches the project's committed pin. If
   the checkout is missing, it refuses and prints the command that creates
   it.
+- **R25. Tags on `shared/main`.** One sequence of tags covers the whole of
+  `shared/main`: a tag marks the branch at one commit, and each project
+  still pins each shared component at whichever tag it chooses. A tag is
+  the date it is cut, `YYYY.MM.DD`, with `.2`, `.3` and so on for a second
+  or later tag the same day (for example `2026.10.24`, `2026.10.24.2`). A
+  tag is cut on a `shared/main` commit only when a project is about to pin
+  it, by the reviewer who merged the change, after the pre-push check. A
+  tag is never moved and never deleted. Its checkout is `../shared-<tag>/`
+  (R23).
 
 ## 7. Not in this spec
 
@@ -245,7 +254,6 @@ unless the image changes, which the reproducible test (R19) shows.
 
 ## 8. Still open
 
-- The tag naming scheme for `shared/main`, which R16 and R23 use.
 - If the port turns build switches into `CONFIG_*` options, R20 must be
   extended to classify them, because it excludes `CONFIG_*` as written
   (gen-inhibit spec 12.3 item 3).
