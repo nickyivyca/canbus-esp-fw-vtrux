@@ -139,8 +139,6 @@ EDITS = [
     ("C1C7", "root", r"tester_rows_e3d9437\.txt", r"(== prod [\s\S]*?\n)  ok   (bus state changed only)", r"\g<1>  FAIL \g<2>", "FAIL"),
     ("C1C7", "root", r"tester_rows_e3d9437\.txt", r"^== prod \(checks", "== man (checks", "FAIL"),
     ("C3", "root", r"test_refusal_pairs_e3d9437\.txt", r"11 of 11 negatives", "10 of 11 negatives", "FAIL"),
-    ("C5", "root", r"stale_name_check_e3d9437\.txt", r"^PASS$", "FAIL", "FAIL"),
-    ("C6", "root", r"name_once_check_e3d9437\.txt", r"^  ok   (overlong)", r"  FAIL \g<1>", "FAIL"),
     ("C2scan", "root", r"scan_scope_check_e3d9437\.txt", r"^PASS ", "FAIL ", "FAIL"),
 ]
 
@@ -185,9 +183,11 @@ def main():
     # 1. The judges give the hand-written index.
     got = judge_all(real)
     check("every judge has an index entry", lambda: not set(J.JUDGES) - set(index), sorted(set(J.JUDGES) - set(index)))
-    check("every index entry has a judge, or is NOT-RUN",
-          lambda: all(c in J.JUDGES or index[c]["verdict"] == "NOT-RUN" for c in index),
-          [c for c in index if c not in J.JUDGES and index[c]["verdict"] != "NOT-RUN"])
+    check("every index entry has a judge, or is NOT-RUN, or is retired",
+          lambda: all(c in J.JUDGES or index[c]["verdict"] == "NOT-RUN" or c in J.RETIRED for c in index),
+          [c for c in index if c not in J.JUDGES and index[c]["verdict"] != "NOT-RUN" and c not in J.RETIRED])
+    check("no retired id has a judge", lambda: not set(J.RETIRED) & set(J.JUDGES), sorted(set(J.RETIRED) & set(J.JUDGES)))
+    check("every retired id is in the index", lambda: set(J.RETIRED) <= set(index), sorted(set(J.RETIRED) - set(index)))
     for cid, res in got.items():
         if cid not in index:
             continue

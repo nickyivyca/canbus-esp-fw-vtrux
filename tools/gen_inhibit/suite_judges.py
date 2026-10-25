@@ -84,6 +84,13 @@ def base(path):
 
 JUDGES = {}
 
+# Index ids retired by a spec change: no suite runs or judges them, and a run against the
+# baseline reports them as retired, never compared (reviewer, 2026-10-25, step 0c Q3).
+RETIRED = {
+    "C5": "spec 12.4 'no stale image name', retired at port step 0c (user, 2026-10-25)",
+    "C6": "spec 12.4 'the name enters the build once', retired at port step 0c (user, 2026-10-25)",
+}
+
 
 def judge(cid, part):
     def reg(fn):
@@ -729,16 +736,6 @@ def c3(F):
     return [result("C3", "PASS" if ok else "FAIL",
                    {"negatives": fig(int(m.group(3)) if m else None), "caught": fig(int(m.group(2)) if m else None)},
                    m.group(0) if m else "no SUMMARY line")]
-
-
-@judge("C5", "C")
-def c5(F):
-    return [ok_pass("C5", F.one(r"stale_name_check_%s\.txt" % C7))]
-
-
-@judge("C6", "C")
-def c6(F):
-    return [ok_pass("C6", F.one(r"name_once_check_%s\.txt" % C7))]
 
 
 @judge("C2scan", "C")

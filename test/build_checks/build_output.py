@@ -15,8 +15,8 @@ WHAT ROW 22 ASKS FOR, and each is a separate check below:
     5  watchdog settings as section 9.1 records
     6  partition table byte-identical to stock
     7  image size against the 1,781,760-byte slot
-    8  no `-dirty`
-    9  GIT_SHA embedded
+    8  (retired at port step 0c: no `-dirty`)
+    9  (retired at port step 0c: GIT_SHA embedded)
     10 DIAG_FW_VERSION, the schema doc and the DBC consistent
 
 Added 2026-09-26 from review, as the source-check half of two spec 12.4 rows
@@ -248,6 +248,16 @@ def app_desc(path):
     return version, project, idf, btime, bdate
 
 
+HEX_RUN = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{7,40}(?![0-9a-fA-F])")
+
+
+def names_commit(h):
+    """Does the hex run `h` resolve to a commit of this repo?"""
+    r = subprocess.run(("git", "-C", REPO, "rev-parse", "--verify", "-q", h + "^{commit}"),
+                       capture_output=True, text=True)
+    return r.returncode == 0 and bool(r.stdout.strip())
+
+
 def check_image(path):
     size = os.path.getsize(path)
 
@@ -265,24 +275,20 @@ def check_image(path):
         return
     version, project, idf, btime, bdate = d
 
-    # 8 -- no -dirty, read from the IMAGE.
-    dirty = "dirty" in version
-    row("no -dirty in the version", not dirty,
-        "embedded version %r%s" % (version,
-                                   "  <-- uncommitted changes were built"
-                                   if dirty else ""))
+    # 8 and 9 -- no `-dirty` and GIT_SHA embedded -- are retired (spec 12.3 item
+    # 3, port step 0c, user, 2026-10-25): the version is a label that nothing
+    # checks against the tree (shared/tools R6). It is shown, not judged.
+    row("version (a label, not judged)", True, "embedded version %r" % version)
 
-    # 9 -- GIT_SHA embedded. ESP-IDF puts the describe output in `version`, so a
-    # bare 7-or-more hex digit run is the sha.
-    has_sha = bool(re.search(r"\b[0-9a-f]{7,40}\b", version))
-    row("git sha embedded", has_sha,
-        "embedded version %r" % version)
-
-    # The project name carries the git describe in this build system, so an
-    # equality test against "wican-fw" fails a perfectly correct image. A prefix
-    # is the real invariant; the rest is informational.
-    row("project name", project.startswith("wican-fw"),
-        "project_name=%r" % project)
+    # The project name is a fixed string with no commit in it (spec 12.3 item 3,
+    # port step 0c; shared/tools R4), so the commit enters the image once. Read
+    # by the reviewer (2026-10-25): a run of 7 or more hex digits that resolves
+    # to a commit of this repo fails; the "wican-fw" prefix stays. The exact
+    # string is not pinned: the spec does not state it.
+    named = [h for h in HEX_RUN.findall(project) if names_commit(h)]
+    row("project name", project.startswith("wican-fw") and not named,
+        "project_name=%r%s" % (project, ", which names commit %s" % ", ".join(named) if named else
+                               "" if project.startswith("wican-fw") else ", not wican-fw..."))
     row("build stamp", True, "idf=%r built %s %s" % (idf, bdate, btime))
 
 
@@ -523,72 +529,6 @@ def _decode_emitted(dbc_path):
         "%d frames on %s decoded clean%s"
         % (seen, ", ".join("0x%03X" % i for i in sorted(ids_seen)),
            "" if not errs else "; %d problem(s): %s" % (len(errs), errs[0])))
-
-
-def git(*args):
-    """Run git in the repo, or return None if that is not possible."""
-    try:
-        r = subprocess.run(("git",) + args, cwd=REPO, capture_output=True,
-                           text=True, timeout=30)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if r.returncode != 0:
-        return None
-    return r.stdout.strip()
-
-
-def check_image_identity(img_ver):
-    """Was this image built from the commit that is checked out now?
-
-    ADDED 2026-09-26 AFTER THIS EXACT TRAP CAUGHT US. ESP-IDF fixes the output
-    filename and the esp_app_desc_t version at *configure* time, so a rebuild
-    after a commit -- without `idf.py reconfigure` -- produces new bytes carrying
-    the PREVIOUS commit's name. It happened between 4b28547 and 3a1f9b8: the
-    binary changed size and was written 20 s before 3a1f9b8 was committed, while
-    still embedding "4b28547" and no `-dirty`. Every row above passed on it, and
-    the image of the commit it claimed to be no longer existed anywhere.
-
-    The rows above cannot see this. `no -dirty` and `git sha embedded` read the
-    same configure-time string, and the config-applies-to-this-image comparison
-    reads build/project_description.json, which is written at configure time too
-    -- so it agrees with the stale name and confirms nothing. Every instrument
-    in this file was downstream of the same moment. The repo's HEAD is the one
-    reference that is not.
-
-    A mismatch is a FAIL rather than a NO REF: the file's whole premise is that
-    it is run on the image about to be flashed, and an image whose provenance is
-    misstated must not be flashed whatever else is true of it. Auditing an older
-    image on purpose (--bin) is expected to fail this row, and says why.
-    """
-    head = git("rev-parse", "--short", "HEAD")
-    if head is None:
-        row("image built from HEAD", None,
-            "not a git repository, or git is unavailable", ref_missing=True)
-        return
-    if img_ver is None:
-        row("image built from HEAD", None,
-            "no version could be read from the image", ref_missing=True)
-        return
-
-    # A dirty tree cannot be identified by a commit at all, and ESP-IDF's own
-    # `-dirty` suffix is itself configure-time, so it is no help here.
-    dirty = git("status", "--porcelain")
-    if dirty:
-        n = len(dirty.splitlines())
-        row("working tree clean", False,
-            "%d uncommitted change(s), so no commit identifies these bytes" % n)
-    else:
-        row("working tree clean", True, "no uncommitted changes")
-
-    # The embedded string is `git describe`-shaped, so HEAD's short sha may be a
-    # prefix of it rather than equal to it.
-    ok = img_ver.startswith(head) or head.startswith(img_ver)
-    row("image built from HEAD", ok,
-        "embedded %r, HEAD is %r" % (img_ver, head) if ok else
-        "embedded %r but HEAD is %r -- run `idf.py reconfigure` and rebuild; "
-        "the filename and embedded version are fixed at configure time, so "
-        "these bytes are almost certainly a later commit wearing an earlier "
-        "name" % (img_ver, head))
 
 
 def check_no_instrument(path):
@@ -1437,105 +1377,6 @@ def check_lateness_has_a_detector():
     del core_trips
 
 
-def check_sources_older_than_image(path):
-    """Row 22: no tracked source may be newer than the image.
-
-    WHY THIS EXISTS AND WHY THE VERSION STRING IS NOT ENOUGH. GIT_SHA and the app
-    descriptor both come from `git describe --dirty` inside execute_process() in
-    the top-level CMakeLists.txt, which CMake evaluates at CONFIGURE time. Editing
-    a .c file and rebuilding does not re-run CMake, so the version string stays
-    exactly as it was -- clean, with no -dirty marker -- while the image contains
-    uncommitted code. Editing a CMakeLists DOES force a re-run, so the marker
-    works or not depending on which files changed. Measured on a real artifact
-    2026-09-27: build-txabort/wican-fw_obd_bff3c21.bin reported version 'bff3c21'
-    while carrying code that existed only in an uncommitted diff, and the
-    measurement records it produced claimed that commit.
-
-    Mtimes are independent of every version string and of whether CMake re-ran,
-    and the failure names the offending files instead of being a silent pass.
-    This is the check tools-reference.md already prescribes for the interposer
-    board, which has no git checkout to ask.
-
-    A NEWER FILE IS NOT ALWAYS A CHANGED ONE (2026-10-09, reviewer). A branch
-    switch rewrites every file that differs between the branches, so switching
-    away and back leaves files newer than the image with exactly the content it
-    was built from, and the row failed on them. So each newer file is compared,
-    through git's own hashing (line-ending filters included), with the same
-    path at the commit the image names:
-      - content differs, or the image's commit cannot be read (no version,
-        `-dirty`, not in this repo)          -> FAIL, as before;
-      - content identical                    -> NO REFERENCE, not a pass: an
-        edit, a build and then a revert looks exactly the same, and mtimes
-        cannot tell it from a branch switch.
-    """
-    if not os.path.exists(path):
-        row("sources older than the image", None, "no image", ref_missing=True)
-        return
-    try:
-        img_mtime = os.path.getmtime(path)
-    except OSError as e:
-        row("sources older than the image", None, "cannot stat the image (%s)" % e,
-            ref_missing=True)
-        return
-    r = subprocess.run(("git", "-C", REPO, "ls-files", "main", "components",
-                        "CMakeLists.txt", "sdkconfig",
-                        "wican_partitions_table.csv"),
-                       capture_output=True, text=True)
-    if r.returncode != 0:
-        row("sources older than the image", None,
-            "git ls-files failed (%d)" % r.returncode, ref_missing=True)
-        return
-    d = app_desc(path)
-    ver = d[0] if d else None
-    newer = []
-    for rel in r.stdout.split("\n"):
-        rel = rel.strip()
-        if not rel:
-            continue
-        p = os.path.join(REPO, rel)
-        try:
-            if os.path.getmtime(p) > img_mtime + 1.0:
-                newer.append(rel)
-        except OSError:
-            continue
-    changed = [rel for rel in newer if not _blob_same(rel, ver)]
-    same = [rel for rel in newer if rel not in changed]
-    if changed:
-        row("sources older than the image", False,
-            "%d tracked source(s) are NEWER than the image and differ from (or cannot "
-            "be compared with) %s, so it was not built from them: %s%s"
-            % (len(changed), ver if _commitish(ver) else "any commit the image names",
-               ", ".join(sorted(changed)[:6]), " ..." if len(changed) > 6 else ""))
-    elif same:
-        row("sources older than the image", None,
-            "%d tracked source(s) are newer than the image but byte-identical to %s "
-            "(a branch switch, or an edit-build-revert -- mtimes cannot tell which): "
-            "%s%s" % (len(same), ver, ", ".join(sorted(same)[:6]),
-                      " ..." if len(same) > 6 else ""),
-            ref_missing=True)
-    else:
-        row("sources older than the image", True,
-            "every tracked source under main/, components/ and the build files is "
-            "older than the image")
-
-
-def _commitish(ver):
-    """A version string that names one commit: hex, no -dirty."""
-    return bool(ver) and re.fullmatch(r"[0-9a-f]{7,40}", ver) is not None
-
-
-def _blob_same(rel, ver):
-    """Is the working file's content the blob at `ver`:`rel`? False if unknowable."""
-    if not _commitish(ver):
-        return False
-    a = subprocess.run(("git", "-C", REPO, "rev-parse", "--verify", "-q",
-                        "%s:%s" % (ver, rel)), capture_output=True, text=True)
-    b = subprocess.run(("git", "-C", REPO, "hash-object", "--path", rel,
-                        os.path.join(REPO, rel)), capture_output=True, text=True)
-    return (a.returncode == 0 and b.returncode == 0
-            and a.stdout.strip() == b.stdout.strip() != "")
-
-
 RECORDS = ("firmware", "builds", "gen-inhibit")
 
 
@@ -1563,8 +1404,8 @@ def check_prod_record(path, folder=None):
     committed after a dirty build, a component can be restored after being
     modified, and `git describe` has already been baked in at configure time.
     Re-running the checks now would pass on an image that was built when they
-    would have failed -- which is the same trap `check_sources_older_than_image`
-    exists for, one level up.
+    would have failed -- which is the same trap the retired sources-older row
+    (port step 0c) existed for, one level up.
 
     NO RECORD IS NO REFERENCE, NOT A FAILURE (spec 12.3 item 3, changed
     2026-10-07, user). An image with no record is "not a prod build". A bench
@@ -1872,13 +1713,11 @@ def main():
     check_abort_reason_parity(dbc)
     check_private_abort_confined()
     check_switches_classified(build_dir)
-    check_image_identity(img_ver)
     if b is not None:
         check_no_instrument(b)
         check_not_rollback_rehearsal(b)
         check_no_restart_test(b)
         check_no_stock_features(b)
-        check_sources_older_than_image(b)
         check_prod_record(b, args.records)
     else:
         row("no measurement instrument in the image", None,
