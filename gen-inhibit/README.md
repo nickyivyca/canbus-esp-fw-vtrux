@@ -62,9 +62,12 @@ reverse-it and not yet moved.
 - The host suite `test/gen_inhibit_host/` (runner, scenarios, golden traces)
   and the build checks `test/build_checks/` (user, 2026-10-07).
 - `vtrux_checks.json` at the repo root: gen-inhibit's data for the shared
-  build checks (`shared/tools/vtrux_checks/`), today its release profile for
-  shared/tools R18, each value citing its spec line (reviewer, 2026-10-24).
-  The implementor's `vtrux_build.json` holds only `project` and
+  build checks (`shared/tools/vtrux_checks/`), owned by the tester. Its keys:
+  `release_profile`, the options for shared/tools R18, each value citing its
+  spec line; `build_switches`, the switch table for shared/tools R20, also
+  read by `test/build_checks/build_switches.py` and `build_output.py`; and
+  `inert_triggers`, the triggers the spec 12.4 inert row's bench rigs send
+  (reviewer, 2026-10-24). The implementor's `vtrux_build.json` holds only `project` and
   `shared_components`.
 - `test/gen_inhibit_spec_shim/`: the spec 12.4 requirement tests on the
   mock-HAL shim. They build against the implementor's `test/gen_inhibit_shim/`
