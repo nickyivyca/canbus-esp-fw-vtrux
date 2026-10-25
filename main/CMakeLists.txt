@@ -32,9 +32,9 @@ endif()
 # build (gi_restart_quiesce.c, below); this adds only what lets a bench see it.
 # The source is added to the component only here, as gi_txabort_probe.c is.
 #
-# Never in a prod build (spec 12.4). tools/prod_build.py refuses a build
-# directory whose CMake cache sets this flag, and refuses an image carrying the
-# test symbols.
+# Never in a prod build (spec 12.4). The shared build tooling's build-switch
+# check (shared/tools SPEC R20, rows in vtrux_checks.json) refuses a release
+# image carrying the test symbols.
 if(GI_TEST_RESTART_QUIESCE)
     list(APPEND srcs "gi_restart_test.c")
 endif()

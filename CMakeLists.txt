@@ -82,7 +82,9 @@ add_definitions(-DHARDWARE_VERSION="${HW_VER}")
 # ON; gen-inhibit's build turns all four OFF here, so their code is not
 # compiled into this product. CACHE, so `idf.py -D<switch>=ON` still overrides
 # it. That also means a build directory once configured ON stays ON until it
-# is deleted, which tools/prod_build.py refuses.
+# is deleted. A release build's image carrying a stock feature's code is
+# refused by the shared build tooling's build-switch check (shared/tools SPEC
+# R20, rows in vtrux_checks.json), which judges the image, not the flag.
 set(WICAN_FEATURE_MQTT     OFF CACHE BOOL "MQTT CAN logging and transmit (mqtt.c); off in gen-inhibit, spec 3.2")
 set(WICAN_FEATURE_ELM327   OFF CACHE BOOL "ELM327 command path (elm327.c); off in gen-inhibit, spec 3.2")
 set(WICAN_FEATURE_AUTOPID  OFF CACHE BOOL "AutoPID (autopid.c), needs ELM327 and MQTT; off in gen-inhibit, spec 3.2")

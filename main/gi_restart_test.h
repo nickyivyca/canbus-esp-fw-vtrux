@@ -10,8 +10,9 @@
  * The source is not in the component unless the build defines
  * GI_TEST_RESTART_QUIESCE -- see main/CMakeLists.txt -- for the reason
  * gi_txabort_probe.c is kept out: a source that is not in the build cannot be
- * linked by accident. tools/prod_build.py refuses a build directory configured
- * with the flag, and refuses an image that carries these symbols.
+ * linked by accident. The shared build tooling's build-switch check
+ * (shared/tools SPEC R20, rows in vtrux_checks.json) refuses a release image
+ * that carries these symbols.
  *
  *   idf.py -B build-restart-test -DGI_TEST_RESTART_QUIESCE=1 build
  *
