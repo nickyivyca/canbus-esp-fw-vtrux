@@ -2,11 +2,14 @@
 #
 # Push the gen_inhibit core + host suite to madhouse-debian and run it there.
 #
-# WHY THIS EXISTS. There is no host C compiler on NICKY-XPS -- no gcc, no make,
-# no MSYS/MinGW toolchain -- so the host suite cannot be built where the
-# firmware repo lives. `~/gi_host/` on madhouse-debian is the working copy that
-# gets built; `~/Git/wican-fw-vtrux` on NICKY-XPS is the source of truth. The
-# copy is one-way and this script is the only thing that should write it.
+# WHY THIS EXISTS. The host suite's runs that count for VERIFICATION.md are on
+# madhouse-debian (gcc 14.2). NICKY-XPS has a host C compiler only in WSL
+# (Ubuntu 20.04, gcc 9.4.0, ASan included), and a pass there is a self-check
+# that does not count for VERIFICATION.md (user, 2026-10-24, through the
+# reviewer). `~/gi_host/` on madhouse-debian is the working copy that gets
+# built; this repo, the worktree this script is in ($FW below), is the source of
+# truth. The copy is one-way and this script is the only thing that should
+# write it.
 #
 # It is also the right machine for a second reason: `scenarios/` is generated,
 # gitignored and EMPTY in the repo -- the replay fixtures are cut from the log
