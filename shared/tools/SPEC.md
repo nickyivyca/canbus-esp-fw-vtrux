@@ -209,8 +209,10 @@ unless the image changes, which the reproducible test (R19) shows.
   release build and any session may run it. Bench and dev builds are not
   checked.
 - **R21. Board data.** The partition table is byte-identical to the board's
-  reference, the image fits the board's application slot, and the tool
-  prefix comes from the board's `IDF_TARGET`.
+  reference, the image fits the board's application slot, the flash size in
+  the headers of the images the build writes (the app's and the
+  bootloader's) is the board's, and the tool prefix comes from the board's
+  `IDF_TARGET`.
 
 ## 5. Data, not code
 
