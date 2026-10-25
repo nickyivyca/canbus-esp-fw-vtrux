@@ -643,10 +643,11 @@ section changes in the same merge.
   `artifacts/` folders, under its rules (see "Reverse-it").
 - **Line endings: LF everywhere** (user, 2026-10-23), except `.bat` and
   `.cmd` files, which are CRLF. The repo's `.gitattributes` files pin this
-  and carry the same lines: the root one on `gen-inhibit/main`,
-  `shared/.gitattributes` and `charge-interposer/.gitattributes`. Change
-  them together. Component digests and embedded files hash the bytes on
-  disk, so line endings change them. **Save files as LF,** and don't rely on
+  and carry the same lines: the root one on `gen-inhibit/main` and on
+  `charge-interposer/main`, `shared/.gitattributes` and
+  `charge-interposer/.gitattributes`. Change them together. Component
+  digests and embedded files hash the bytes on disk, so line endings change
+  them. **Save files as LF,** and don't rely on
   `git status` to catch a CRLF file. A file committed as LF and then saved
   as CRLF shows as modified, with an empty diff. But when the CRLF bytes are
   what git last checked out or added, such as a file a tool generated as
