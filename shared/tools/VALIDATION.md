@@ -514,6 +514,19 @@ same folder. The interposer's test evidence is
   step 2a.
 - **Status:** complete.
 
+### R27. Each project sets its own FreeRTOS tick rate
+- **Basis:** user, 2026-10-25, in the interposer reviewer's session: no
+  shared tick rate, but every project must define one. A project's
+  timings are written against its tick, so the value is a project
+  requirement, and a profile that leaves it out would let the committed
+  `sdkconfig` change it unchecked.
+- **Context:** both projects run at 1000 Hz today: gen-inhibit's committed
+  `sdkconfig`, and the prebuilt arduino-esp32 libraries' `esp32s3/sdkconfig`
+  for the interposer (read 2026-10-25). The interposer's spec section 9
+  sets 1000 Hz (port plan goal 3, user, 2026-10-22). gen-inhibit's spec
+  and profile do not name it yet.
+- **Status:** complete.
+
 ## 5. Data, not code
 
 ### R22

@@ -19,7 +19,7 @@ other project's reviewer (charge interposer) reads it before it merges into
   spec 12.3 item 3,
   `$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-wican-spec.md`.
 
-Requirements are numbered R1 to R26. The numbers are stable: the two evidence
+Requirements are numbered R1 to R27. The numbers are stable: the two evidence
 documents cite them.
 
 ## Terms
@@ -220,6 +220,10 @@ unless the image changes, which the reproducible test (R19) shows.
   options check (R18) applies it to every release build, so a project's
   profile need not list these options. Like R18, it is a check on the
   finished release build, and bench and dev builds are not checked.
+- **R27. Each project sets its own FreeRTOS tick rate.** Every project's
+  release profile names `CONFIG_FREERTOS_HZ`, with the value its own spec
+  sets and cites. The tooling sets no common value. The options check (R18)
+  fails a release build whose project's profile does not name it.
 
 ## 5. Data, not code
 
