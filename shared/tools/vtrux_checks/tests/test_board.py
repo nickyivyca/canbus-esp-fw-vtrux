@@ -1,7 +1,8 @@
 """R21 board-data check: each rule shown failing on a planted input and passing on a faithful one.
 Runs alone: python -B shared/tools/vtrux_checks/tests/test_board.py
 
-    IDF_PATH=<an ESP-IDF>   also reads the real toolchain files for esp32c3 and esp32s3
+    IDF_PATH=<an ESP-IDF>   also reads the real toolchain files for esp32c3 and esp32s3, and its
+                            esp_app_format.h
 
 The partition tables are built here from ESP-IDF's published format, so no table is committed.
 """
@@ -43,6 +44,27 @@ def table(rows=None, md5=True):
 
 TOOLCHAIN = 'set(CMAKE_SYSTEM_NAME Generic)\nset(CMAKE_C_COMPILER %sgcc)\nset(_CMAKE_TOOLCHAIN_PREFIX %s)\n'
 
+# esp_app_format.h as ESP-IDF writes it, with made-up names and values so that the check is seen
+# to take them from the file: XMB is field value 5, YMB 6, MAX ignored.
+APP_FORMAT = '''/* header */
+typedef enum {
+    ESP_IMAGE_SPI_SPEED_DIV_2,  /*!< not this enum */
+} esp_image_spi_freq_t;
+
+typedef enum {
+    ESP_IMAGE_FLASH_SIZE_XMB = 5,   /*!< SPI flash size X MB */
+    ESP_IMAGE_FLASH_SIZE_YMB,       // SPI flash size Y MB
+    ESP_IMAGE_FLASH_SIZE_MAX        /*!< SPI flash size MAX */
+} esp_image_flash_size_t;
+
+#define ESP_IMAGE_HEADER_MAGIC 0xA7 /*!< The magic word */
+'''
+
+
+def image(size_value, n=1000, magic=0xA7, speed=0xF):
+    '''An image of n bytes whose header gives flash size field size_value (and speed in the low four bits).'''
+    return bytes([magic, 3, 2, (size_value << 4) | speed]) + b"\x00" * (n - 4)
+
 
 class Table(unittest.TestCase):
     def test_read(self):
@@ -79,9 +101,9 @@ class Data(unittest.TestCase):
             json.dump(obj if obj is not None else {}, f)
 
     def test_inline(self):
-        self.data({"board": {"target": "esp32c3", "partition_table": "ref/pt.bin"}})
-        t, ref = B.read_board(self.d)
-        self.assertEqual((t, ref), ("esp32c3", os.path.normpath(os.path.join(self.d, "ref/pt.bin"))))
+        self.data({"board": {"target": "esp32c3", "partition_table": "ref/pt.bin", "flash_size": "4MB"}})
+        got = B.read_board(self.d)
+        self.assertEqual(got, ("esp32c3", os.path.normpath(os.path.join(self.d, "ref/pt.bin")), "4MB"))
 
     def test_named_board_not_built(self):
         self.data({"board": "x2"})
@@ -89,10 +111,15 @@ class Data(unittest.TestCase):
             B.read_board(self.d)
 
     def test_bad(self):
-        for label, b in (("no board", None), ("extra key", {"target": "esp32c3", "partition_table": "p", "slot": 1}),
-                         ("missing key", {"target": "esp32c3"}), ("bad target", {"target": "ESP32-C3", "partition_table": "p"}),
-                         ("absolute path", {"target": "esp32c3", "partition_table": os.path.abspath("p")}),
-                         ("empty path", {"target": "esp32c3", "partition_table": ""})):
+        good = {"target": "esp32c3", "partition_table": "p", "flash_size": "4MB"}
+        for label, b in (("no board", None), ("extra key", dict(good, slot=1)),
+                         ("missing key", {"target": "esp32c3"}),
+                         ("no flash size", {"target": "esp32c3", "partition_table": "p"}),
+                         ("bad target", dict(good, target="ESP32-C3")),
+                         ("absolute path", dict(good, partition_table=os.path.abspath("p"))),
+                         ("empty path", dict(good, partition_table="")),
+                         ("flash size a number", dict(good, flash_size=4)),
+                         ("empty flash size", dict(good, flash_size=""))):
             self.data({"board": b} if b is not None else {})
             with self.assertRaises(B.BoardError, msg=label):
                 B.read_board(self.d)
@@ -162,6 +189,64 @@ class Prefix(unittest.TestCase):
         self.assertEqual(B.tool_prefix(idf, "esp32s3"), "xtensa-esp32s3-elf-")
 
 
+class ImageFormat(unittest.TestCase):
+    """The flash size field's values and the header magic, from ESP-IDF's esp_app_format.h."""
+
+    def setUp(self):
+        self.d = scratch()
+        self.h = os.path.join(self.d, *B.APP_FORMAT)
+        os.makedirs(os.path.dirname(self.h))
+
+    def tearDown(self):
+        shutil.rmtree(self.d)
+
+    def header(self, text):
+        with open(self.h, "w", newline="\n") as f:
+            f.write(text)
+
+    def test_from_idf(self):
+        self.header(APP_FORMAT)
+        self.assertEqual(B.image_format(self.d), (0xA7, {5: "XMB", 6: "YMB"}))
+
+    def test_values_as_c_gives_them(self):
+        self.header(APP_FORMAT.replace("ESP_IMAGE_FLASH_SIZE_YMB,", "ESP_IMAGE_FLASH_SIZE_YMB = 0x9,")
+                    .replace("ESP_IMAGE_FLASH_SIZE_XMB = 5,", "ESP_IMAGE_FLASH_SIZE_XMB,"))
+        self.assertEqual(B.image_format(self.d)[1], {0: "XMB", 9: "YMB"})
+
+    def test_unreadable(self):
+        with self.assertRaises(B.BoardError, msg="no file"):
+            B.image_format(self.d)
+        for label, text in (("no magic", APP_FORMAT.replace("#define ESP_IMAGE_HEADER_MAGIC", "#define OTHER")),
+                            ("no enum", APP_FORMAT.replace("esp_image_flash_size_t;", "other_t;")),
+                            ("two enums", APP_FORMAT + APP_FORMAT.split("#define")[0]),
+                            ("an enumerator not read", APP_FORMAT.replace("ESP_IMAGE_FLASH_SIZE_YMB,", "OTHER_NAME,")),
+                            ("a name twice", APP_FORMAT.replace("ESP_IMAGE_FLASH_SIZE_YMB,", "ESP_IMAGE_FLASH_SIZE_XMB,")),
+                            ("only MAX", APP_FORMAT.replace("ESP_IMAGE_FLASH_SIZE_XMB = 5,", "")
+                             .replace("ESP_IMAGE_FLASH_SIZE_YMB,", ""))):
+            self.header(text)
+            with self.assertRaises(B.BoardError, msg=label):
+                B.image_format(self.d)
+
+    def test_header_reader(self):
+        p = os.path.join(self.d, "img.bin")
+        for label, data, want in (("high four bits", image(6), "YMB"), ("speed bits ignored", image(5, speed=0), "XMB"),
+                                  ("a value ESP-IDF does not name", image(2), "unknown value 2")):
+            with open(p, "wb") as f:
+                f.write(data)
+            self.assertEqual(B.header_flash_size(p, 0xA7, {5: "XMB", 6: "YMB"}), want, label)
+        for label, data in (("wrong magic", image(5, magic=0xE9)), ("too short", image(5)[:3]), ("empty", b"")):
+            with open(p, "wb") as f:
+                f.write(data)
+            with self.assertRaises(B.BoardError, msg=label):
+                B.header_flash_size(p, 0xA7, {5: "XMB", 6: "YMB"})
+
+    @unittest.skipUnless(os.environ.get("IDF_PATH"), "IDF_PATH not set")
+    def test_real_idf(self):
+        magic, sizes = B.image_format(os.environ["IDF_PATH"])
+        self.assertEqual(magic, 0xE9)
+        self.assertEqual((sizes[2], sizes[3]), ("4MB", "8MB"))
+
+
 TOOL_NAME = r"(riscv32|xtensa|esp32ulp)[-\w]*-elf-"
 
 
@@ -211,15 +296,20 @@ class Collect(unittest.TestCase):
         os.makedirs(os.path.join(self.idf, "tools", "cmake"))
         with open(os.path.join(self.idf, "tools", "cmake", "toolchain-chipa.cmake"), "w", newline="\n") as f:
             f.write(TOOLCHAIN % ("arch-a-elf-", "arch-a-elf-"))
+        os.makedirs(os.path.dirname(os.path.join(self.idf, *B.APP_FORMAT)))
+        with open(os.path.join(self.idf, *B.APP_FORMAT), "w", newline="\n") as f:
+            f.write(APP_FORMAT)
         self.write("ref/pt.bin", table())
         self.write("build/partition_table/partition-table.bin", table())
-        self.write("build/proj.bin", b"\xe9" * 1000)
+        self.write("build/proj.bin", image(5))
+        self.write("build/bootloader/bootloader.bin", image(5, 300))
         self.write("build/config/sdkconfig.json", json.dumps({"IDF_TARGET": "chipa"}))
         self.write("build/flasher_args.json", json.dumps(
-            {"partition-table": {"offset": "0x8000", "file": "partition_table/partition-table.bin"}}))
+            {"partition-table": {"offset": "0x8000", "file": "partition_table/partition-table.bin"},
+             "bootloader": {"offset": "0x0", "file": "bootloader/bootloader.bin"}}))
         self.write("build/project_description.json", json.dumps(
             {"project_path": self.p.replace(os.sep, "/"), "idf_path": self.idf.replace(os.sep, "/"), "app_bin": "proj.bin"}))
-        self.board({"target": "chipa", "partition_table": "ref/pt.bin"})
+        self.board({"target": "chipa", "partition_table": "ref/pt.bin", "flash_size": "XMB"})
 
     def tearDown(self):
         shutil.rmtree(self.d)
@@ -241,6 +331,7 @@ class Collect(unittest.TestCase):
     def test_faithful_passes(self):
         f = B.collect(self.b)
         self.assertEqual((f["slot"], f["image_size"], f["prefix"], f["build_target"]), (SLOT, 1000, "arch-a-elf-", "chipa"))
+        self.assertEqual([(w, s) for w, _p, s in f["headers"]], [("app", "XMB"), ("bootloader", "XMB")])
         self.assertEqual(B.judge(f), [])
         self.assertEqual(self.run_main(), 0)
 
@@ -253,9 +344,9 @@ class Collect(unittest.TestCase):
         self.assertEqual(self.run_main(), 1)
 
     def test_image_at_and_over_the_slot(self):
-        self.write("build/proj.bin", b"\xe9" * SLOT)
+        self.write("build/proj.bin", image(5, SLOT))
         self.assertEqual(B.judge(B.collect(self.b)), [])
-        self.write("build/proj.bin", b"\xe9" * (SLOT + 1))
+        self.write("build/proj.bin", image(5, SLOT + 1))
         self.assertIn("over the %d-byte slot by 1" % SLOT, B.judge(B.collect(self.b))[0])
         self.assertEqual(self.run_main(), 1)
 
@@ -271,13 +362,14 @@ class Collect(unittest.TestCase):
         self.assertEqual(self.run_main(), 1)
 
     def test_board_target_without_toolchain(self):
-        self.board({"target": "chipz", "partition_table": "ref/pt.bin"})
+        self.board({"target": "chipz", "partition_table": "ref/pt.bin", "flash_size": "XMB"})
         with self.assertRaises(B.BoardError):
             B.collect(self.b)
         self.assertEqual(self.run_main(), 1)
 
     def test_cannot_read(self):
-        for rel in ("build/flasher_args.json", "build/partition_table/partition-table.bin", "ref/pt.bin", "build/proj.bin"):
+        for rel in ("build/flasher_args.json", "build/partition_table/partition-table.bin", "ref/pt.bin", "build/proj.bin",
+                    "build/bootloader/bootloader.bin", "../idf/components/bootloader_support/include/esp_app_format.h"):
             p = os.path.join(self.p, rel)
             os.rename(p, p + ".aside")
             try:
@@ -285,6 +377,32 @@ class Collect(unittest.TestCase):
             finally:
                 os.rename(p + ".aside", p)
         self.assertEqual(self.run_main(), 0)
+
+    def test_flash_size_app_or_bootloader(self):
+        for rel, what in (("build/proj.bin", "app"), ("build/bootloader/bootloader.bin", "bootloader")):
+            with open(os.path.join(self.p, rel), "rb") as f:
+                keep = f.read()
+            self.write(rel, image(6, len(keep)))
+            self.assertEqual(B.judge(B.collect(self.b)),
+                             ["the %s image's header gives flash size YMB, the board's is XMB" % what], rel)
+            self.assertEqual(self.run_main(), 1)
+            self.write(rel, keep)
+        self.assertEqual(self.run_main(), 0)
+
+    def test_flash_size_both_and_unknown(self):
+        self.write("build/proj.bin", image(6))
+        self.write("build/bootloader/bootloader.bin", image(7, 300))
+        self.assertEqual(B.judge(B.collect(self.b)),
+                         ["the app image's header gives flash size YMB, the board's is XMB",
+                          "the bootloader image's header gives flash size unknown value 7, the board's is XMB"])
+
+    def test_board_flash_size_from_idf(self):
+        self.board({"target": "chipa", "partition_table": "ref/pt.bin", "flash_size": "YMB"})
+        self.assertEqual(len(B.judge(B.collect(self.b))), 2)
+        self.board({"target": "chipa", "partition_table": "ref/pt.bin", "flash_size": "4MB"})
+        with self.assertRaisesRegex(B.BoardError, r"not one ESP-IDF names \(XMB, YMB\)"):
+            B.collect(self.b)
+        self.assertEqual(self.run_main(), 1)
 
     def test_named_board_refused(self):
         self.board("x2")

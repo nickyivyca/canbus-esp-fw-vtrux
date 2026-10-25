@@ -13,13 +13,15 @@ release build sees a clean tree.
 
 What each case expects is worked out here, not by the check's reader: the table by comparing
 build/partition_table/partition-table.bin with the reference file byte for byte; the slot by
-this file's own reading of the reference table (the smallest app entry); the build's target
+this file's own reading of the reference table (the smallest app entry); the flash size by
+reading the high four bits of byte 3 of the app .bin and of build/bootloader/bootloader.bin,
+against this file's own table of ESP-IDF's image format (FLASH_FIELD); the build's target
 from build/config/sdkconfig.h. The tool prefix the check prints must be the build's own
 monitor_toolprefix (project_description.json) when the targets agree, else the compiler
 ESP-IDF's toolchain-<board target>.cmake names, less "gcc". A case whose trigger does not show
 there is VOID.
 
-    release_pass       the fixture and the WiCAN's board data: passes
+    release_pass       the fixture and the WiCAN's board data (4MB): passes
     other_target       the same build, the board's target esp32s3: fails on the target
     small_slot         the same build, the reference a copy of the stock table with ota_0 one
                        byte smaller than the image (MD5 entry redone): fails on the slot, and
@@ -29,10 +31,17 @@ there is VOID.
                        named form is not built yet)
     table_differs      a release build of a commit making storage 296K in the partition CSV:
                        fails on the table
+    flash_larger       a release build of a commit setting the committed sdkconfig's flash size
+                       to 8MB: fails on the flash size (both headers), and on nothing else
     s3_pass            the minimal project set to esp32s3, its own partition table committed as
-                       the reference: passes, the prefix xtensa-esp32s3-elf-; and the R17 scope
-                       check passes on it (--release)
+                       the reference, its own flash size as the board's: passes, the prefix
+                       xtensa-esp32s3-elf-; and the R17 scope check passes on it (--release)
     s3_board_c3        the same build, the board's target esp32c3: fails on the target
+    s3_elf_reader      not R21: R20's ELF reader (test_switches.py's test_as_nm) on the esp32s3
+                       build's ELF, against that toolchain's nm (the build's monitor_toolprefix)
+
+A smaller flash size than the board's is not a case: the partition table no longer fits, so the
+build itself fails.
 
 Before each case it checks the bench lock, the "No builds" line and running simulators, as
 release_cases.py does.
@@ -59,7 +68,15 @@ CSV_NEW = "storage,  data, spiffs, ,        296K,"
 _TARGET = re.compile(r'^#define CONFIG_IDF_TARGET "([^"]+)"$', re.M)
 _PREFIX_LINE = re.compile(r"^  tool prefix +(\S+)", re.M)
 _COMPILER = re.compile(r"^\s*set\(\s*CMAKE_C_COMPILER\s+(\S+)gcc\s*\)", re.M)
-KINDS = (("table", "not byte-identical"), ("slot", "-byte slot by "), ("target", "CONFIG_IDF_TARGET is "))
+_FLASHSIZE = re.compile(r'^#define CONFIG_ESPTOOLPY_FLASHSIZE "([^"]+)"$', re.M)
+KINDS = (("table", "not byte-identical"), ("slot", "-byte slot by "), ("flash", "header gives flash size "),
+         ("target", "CONFIG_IDF_TARGET is "))
+# ESP-IDF's image format: the flash size field (byte 3, high four bits) of an image header
+FLASH_FIELD = {"1MB": 0, "2MB": 1, "4MB": 2, "8MB": 3, "16MB": 4, "32MB": 5, "64MB": 6, "128MB": 7}
+SDK_OLD = ("CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y", "# CONFIG_ESPTOOLPY_FLASHSIZE_8MB is not set",
+           'CONFIG_ESPTOOLPY_FLASHSIZE="4MB"')
+SDK_NEW = ("# CONFIG_ESPTOOLPY_FLASHSIZE_4MB is not set", "CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y",
+           'CONFIG_ESPTOOLPY_FLASHSIZE="8MB"')
 
 
 # ---------- the tester's own readings (pure; --self-test runs them on fakes) ----------
@@ -90,14 +107,21 @@ def shrink_ota0(table, size):
     return bytes(b)
 
 
-def expected(built, reference, image_size, build_target, board_target):
-    """The failure kinds the check must name."""
+def flash_field(image):
+    """The flash size field of an image's header: the high four bits of byte 3."""
+    return image[3] >> 4 if len(image) > 3 and image[0] == 0xE9 else None
+
+
+def expected(built, reference, image_size, build_target, board_target, fields=(), board_flash=None):
+    """The failure kinds the check must name; fields: the headers' flash size fields."""
     want = []
     if built != reference:
         want.append("table")
     sizes = app_sizes(reference)
     if sizes and image_size > min(sizes):
         want.append("slot")
+    if any(f != FLASH_FIELD.get(board_flash) for f in fields):
+        want.append("flash")
     if build_target != board_target:
         want.append("target")
     return want
@@ -127,6 +151,13 @@ def judge(rc, out, want, prefix):
     return "PASS", "exit %d%s; tool prefix %s" % (rc, (", names " + ", ".join(want)) if want else "", prefix)
 
 
+def judge_elf_reader(rc, out):
+    out = out.replace("\r\n", "\n")      # unittest's output through a Windows pipe
+    if rc != 0 or not re.search(r"^test_as_nm .*\.\.\. ok$", out, re.M):
+        return "FAIL", "exit %d; wanted test_as_nm run and ok: %s" % (rc, out.strip().splitlines()[-1:] if out.strip() else "")
+    return "PASS", "test_as_nm ran and passed"
+
+
 def judge_unreadable(rc, out, mark):
     if rc != 1 or "FAIL R21: cannot read" not in out:
         return "FAIL", "exit %d; wanted 1 with 'cannot read'" % rc
@@ -153,7 +184,15 @@ def self_test():
               ("over the slot", expected(t, t, 101, "c3", "c3"), ["slot"]),
               ("table differs", expected(t[:-1] + b"\x00", t, 1, "c3", "c3"), ["table"]),
               ("target", expected(t, t, 1, "c3", "s3"), ["target"]),
-              ("all three", expected(shrink_ota0(t, 5), t, 101, "c3", "s3"), ["table", "slot", "target"]))
+              ("all three", expected(shrink_ota0(t, 5), t, 101, "c3", "s3"), ["table", "slot", "target"]),
+              ("flash size field", flash_field(bytes([0xE9, 3, 2, 0x2F])), 2),
+              ("flash size field, not an image", flash_field(bytes([0xE8, 3, 2, 0x2F])), None),
+              ("flash size as the board's", expected(t, t, 1, "c3", "c3", (2, 2), "4MB"), []),
+              ("app header larger", expected(t, t, 1, "c3", "c3", (3, 2), "4MB"), ["flash"]),
+              ("bootloader header larger", expected(t, t, 1, "c3", "c3", (2, 3), "4MB"), ["flash"]),
+              ("no header read", expected(t, t, 1, "c3", "c3", (None, 2), "4MB"), ["flash"]),
+              ("all four", expected(shrink_ota0(t, 5), t, 101, "c3", "s3", (3, 3), "4MB"),
+               ["table", "slot", "flash", "target"]))
     for label, got, want in checks:
         print("  %s %s: %s" % ("ok  " if got == want else "FAIL", label, got))
         ok &= got == want
@@ -166,6 +205,8 @@ def self_test():
     out_t = ("R21 board: ...\n  tool prefix      a-elf- (x)\nFAIL R21: 1 failure(s)\n"
              "    the build's partition table is not byte-identical to the board's reference\n")
     out_p = "R21 board: ...\n  tool prefix      a-elf- (x)\nPASS R21\n"
+    out_f = ("R21 board: ...\n  tool prefix      a-elf- (x)\nFAIL R21: 1 failure(s)\n"
+             "    the app image's header gives flash size 8MB, the board's is 4MB\n")
     for label, args, want in (("passes as wanted", (0, out_p, [], "a-elf-"), "PASS"),
                               ("fails as wanted", (1, out_t, ["table"], "a-elf-"), "PASS"),
                               ("wrong prefix", (0, out_p, [], "b-elf-"), "FAIL"),
@@ -175,6 +216,9 @@ def self_test():
                               ("names another kind", (1, out_t, ["slot"], "a-elf-"), "FAIL"),
                               ("names one too many", (1, out_t + "    the image is 9 bytes, over the 8-byte slot by 1\n",
                                                       ["table"], "a-elf-"), "FAIL"),
+                              ("flash named", (1, out_f, ["flash"], "a-elf-"), "PASS"),
+                              ("flash not named", (1, out_t, ["table", "flash"], "a-elf-"), "FAIL"),
+                              ("flash named, not wanted", (1, out_t + out_f.split("\n", 3)[3], ["table"], "a-elf-"), "FAIL"),
                               ("exit 0 without PASS", (0, "  tool prefix      a-elf- (x)\n", [], "a-elf-"), "FAIL"),
                               ("exit 1 with PASS", (1, out_t + "PASS R21\n", ["table"], "a-elf-"), "FAIL"),
                               ("cannot read", (1, "FAIL R21: cannot read the build or its board data: x\n", ["table"], "a-elf-"), "FAIL"),
@@ -191,6 +235,15 @@ def self_test():
                               ("passes instead", (0, "PASS R21", "not built yet"), "FAIL")):
         v = judge_unreadable(*args)[0]
         print("  %s judge_unreadable(), %s: %s" % ("ok  " if v == want else "FAIL", label, v))
+        ok &= v == want
+    for label, args, want in (("ran and passed", (0, "test_as_nm (x.Elf.test_as_nm) ... ok\n\nOK\n"), "PASS"),
+                              ("ran and passed, CRLF", (0, "test_as_nm (x) ... ok\r\n\r\nOK\r\n"), "PASS"),
+                              ("skipped", (0, "test_as_nm (x) ... skipped 'no real ELF and nm'\n\nOK (skipped=1)\n"), "FAIL"),
+                              ("ok, but exit 1", (1, "test_as_nm (x) ... ok\n\nOK\n"), "FAIL"),
+                              ("failed", (1, "test_as_nm (x) ... FAIL\n\nFAILED (failures=1)\n"), "FAIL"),
+                              ("ran nothing", (0, "Ran 0 tests\n\nOK\n"), "FAIL")):
+        v = judge_elf_reader(*args)[0]
+        print("  %s judge_elf_reader(), %s: %s" % ("ok  " if v == want else "FAIL", label, v))
         ok &= v == want
     print("\nself-test: %s" % ("every broken input caught" if ok else "FAILED"))
     return 0 if ok else 1
@@ -227,8 +280,12 @@ def facts(proj, board):
     ref_p = os.path.join(proj, board["partition_table"])
     ref = read(ref_p) if os.path.exists(ref_p) else b""
     image = os.path.getsize(os.path.join(b, desc["app_bin"]))
-    m = _TARGET.findall(read(os.path.join(b, "config", "sdkconfig.h"), "r"))
+    sdk = read(os.path.join(b, "config", "sdkconfig.h"), "r")
+    m = _TARGET.findall(sdk)
     target = m[0] if len(m) == 1 else None
+    fs = _FLASHSIZE.findall(sdk)
+    sdk_flash = fs[0] if len(fs) == 1 else None
+    fields = tuple(flash_field(read(os.path.join(b, x))[:4]) for x in (desc["app_bin"], "bootloader/bootloader.bin"))
     if target == board["target"]:
         prefix = desc.get("monitor_toolprefix")
     else:
@@ -236,9 +293,11 @@ def facts(proj, board):
         c = _COMPILER.findall(read(tc, "r")) if os.path.exists(tc) else []
         prefix = c[0] if len(c) == 1 else None
     sizes = app_sizes(ref)
-    note = "table %s; image %d, slot %s; build target %s, board %s; prefix %s" % (
-        "same" if built == ref else "differs", image, min(sizes) if sizes else None, target, board["target"], prefix)
-    return expected(built, ref, image, target, board["target"]), prefix, note, (built, ref, image, sizes, target)
+    note = "table %s; image %d, slot %s; flash fields app/bootloader %s, sdkconfig %s, board %s; build target %s, board %s; prefix %s" % (
+        "same" if built == ref else "differs", image, min(sizes) if sizes else None, "/".join(map(str, fields)),
+        sdk_flash, board["flash_size"], target, board["target"], prefix)
+    return (expected(built, ref, image, target, board["target"], fields, board["flash_size"]), prefix, note,
+            (built, ref, image, sizes, target, fields, sdk_flash))
 
 
 def judge_case(ctx, name, proj, log, board, trigger):
@@ -254,18 +313,21 @@ def judge_case(ctx, name, proj, log, board, trigger):
     RC.report(name, *judge(rc, out, want, prefix), ctx.log)
 
 
-def fixture_built(ctx, name, log, csv=False):
+def fixture_built(ctx, name, log, change=None):
+    """A release build of the fixture; change: (file, old lines, new lines, message) committed first."""
     RC.reset(ctx.p1, "fixture")
-    if csv:
+    if change:
+        rel, old, new, msg = change
         RC.git(ctx.p1, "checkout", "-q", "-B", "r21-" + name, "origin/fixture")
-        p = os.path.join(ctx.p1, "wican_partitions_table.csv")
-        s = read(p, "r")
-        lines = s.replace("\r\n", "\n").split("\n")
-        if lines.count(CSV_OLD) != 1:
-            raise RuntimeError("wican_partitions_table.csv: %d %r lines" % (lines.count(CSV_OLD), CSV_OLD))
+        p = os.path.join(ctx.p1, rel)
+        lines = read(p, "r").replace("\r\n", "\n").split("\n")
+        for o in old:
+            if lines.count(o) != 1:
+                raise RuntimeError("%s: %d %r lines" % (rel, lines.count(o), o))
+        swap = dict(zip(old, new))
         with open(p, "w", newline="") as f:
-            f.write("\n".join(CSV_NEW if x == CSV_OLD else x for x in lines))
-        RC.git(ctx.p1, "commit", "-q", "-am", "board case %s: storage 296K" % name)
+            f.write("\n".join(swap.get(x, x) for x in lines))
+        RC.git(ctx.p1, "commit", "-q", "-am", "board case %s: %s" % (name, msg))
         with open(log, "a") as fx:
             RC.normalise(ctx, ctx.p1, name, fx)
             fx.write("%s: %s\n" % (name, RC.git(ctx.p1, "rev-parse", "HEAD")))
@@ -286,6 +348,9 @@ def need(ctx, name, flag, first):
 
 # ---------- cases ----------
 
+WICAN = {"target": "esp32c3", "partition_table": STOCK, "flash_size": "4MB"}
+
+
 def c_release_pass(ctx, log):
     if fixture_built(ctx, "release_pass", log):
         ctx.pass_built = True
@@ -294,7 +359,7 @@ def c_release_pass(ctx, log):
 
 def c_other_target(ctx, log):
     if need(ctx, "other_target", "pass_built", "release_pass"):
-        judge_case(ctx, "other_target", ctx.p1, log, {"target": "esp32s3", "partition_table": STOCK},
+        judge_case(ctx, "other_target", ctx.p1, log, dict(WICAN, target="esp32s3"),
                    lambda w, r: w == ["target"])
 
 
@@ -307,14 +372,14 @@ def c_small_slot(ctx, log):
     rel = "build/r21_small_slot.bin"        # build/ is ignored, so the tree stays clean
     with open(os.path.join(ctx.p1, rel), "wb") as f:
         f.write(shrink_ota0(read(os.path.join(ctx.p1, STOCK)), image - 1))
-    judge_case(ctx, "small_slot", ctx.p1, log, {"target": "esp32c3", "partition_table": rel},
+    judge_case(ctx, "small_slot", ctx.p1, log, dict(WICAN, partition_table=rel),
                lambda w, r: w == ["table", "slot"] and min(r[3]) == image - 1)
 
 
 def c_missing_reference(ctx, log):
     if not need(ctx, "missing_reference", "pass_built", "release_pass"):
         return
-    write_data(ctx, ctx.p1, {"target": "esp32c3", "partition_table": "test/build_checks/reference/r21-none.bin"})
+    write_data(ctx, ctx.p1, dict(WICAN, partition_table="test/build_checks/reference/r21-none.bin"))
     rc, out = check(ctx.p1, log)
     RC.report("missing_reference", *judge_unreadable(rc, out, "reference partition table cannot be read"), ctx.log)
 
@@ -328,8 +393,14 @@ def c_named_board(ctx, log):
 
 
 def c_table_differs(ctx, log):
-    if fixture_built(ctx, "table_differs", log, csv=True):
+    if fixture_built(ctx, "table_differs", log, ("wican_partitions_table.csv", (CSV_OLD,), (CSV_NEW,), "storage 296K")):
         judge_case(ctx, "table_differs", ctx.p1, log, None, lambda w, r: w == ["table"])
+
+
+def c_flash_larger(ctx, log):
+    if fixture_built(ctx, "flash_larger", log, ("sdkconfig", SDK_OLD, SDK_NEW, "flash size 8MB")):
+        judge_case(ctx, "flash_larger", ctx.p1, log, None,
+                   lambda w, r: w == ["flash"] and r[5] == (FLASH_FIELD["8MB"],) * 2 and r[6] == "8MB")
 
 
 def s3_mini(ctx, log):
@@ -363,8 +434,9 @@ def c_s3_pass(ctx, log):
         RC.report("s3_pass", "VOID", "the release build failed (exit %d)" % rc, ctx.log)
         return
     ctx.s3_built = True
-    judge_case(ctx, "s3_pass", ctx.mini, log, {"target": "esp32s3", "partition_table": "ref/pt-s3.bin"},
-               lambda w, r: w == [] and r[4] == "esp32s3")
+    fs = _FLASHSIZE.findall(read(os.path.join(ctx.mini, "build", "config", "sdkconfig.h"), "r"))
+    ctx.s3_board = {"target": "esp32s3", "partition_table": "ref/pt-s3.bin", "flash_size": fs[0] if len(fs) == 1 else None}
+    judge_case(ctx, "s3_pass", ctx.mini, log, ctx.s3_board, lambda w, r: w == [] and r[4] == "esp32s3")
     rc, out = check(ctx.mini, log, "scope", "--release")
     RC.report("s3_pass (R17 scope)", "PASS" if rc == 0 and "PASS R17" in out else "FAIL",
               "scope --release on the esp32s3 build: exit %d" % rc, ctx.log)
@@ -372,13 +444,28 @@ def c_s3_pass(ctx, log):
 
 def c_s3_board_c3(ctx, log):
     if need(ctx, "s3_board_c3", "s3_built", "s3_pass"):
-        judge_case(ctx, "s3_board_c3", ctx.mini, log, {"target": "esp32c3", "partition_table": "ref/pt-s3.bin"},
+        judge_case(ctx, "s3_board_c3", ctx.mini, log, dict(ctx.s3_board, target="esp32c3"),
                    lambda w, r: w == ["target"])
+
+
+def c_s3_elf_reader(ctx, log):
+    if not need(ctx, "s3_elf_reader", "s3_built", "s3_pass"):
+        return
+    b = os.path.join(ctx.mini, "build")
+    desc = json.loads(read(os.path.join(b, "project_description.json"), "r"))
+    elf, nm = os.path.join(b, desc["app_elf"]), desc["monitor_toolprefix"] + "nm"
+    with open(log, "a") as f:
+        f.write("s3_elf_reader: VTRUX_TEST_ELF %s, VTRUX_TEST_NM %s\n" % (elf, nm))
+    e = RC.idf_env(PYTHONPATH=TOOLS, VTRUX_TEST_ELF=elf, VTRUX_TEST_NM=nm)
+    rc, out = RC.run([sys.executable, "-B", "-m", "unittest", "-v", "vtrux_checks.tests.test_switches.Elf.test_as_nm"],
+                     cwd=TOOLS, env=e, log=log)
+    RC.report("s3_elf_reader", *judge_elf_reader(rc, out), ctx.log)
 
 
 CASES = [("release_pass", c_release_pass), ("other_target", c_other_target), ("small_slot", c_small_slot),
          ("missing_reference", c_missing_reference), ("named_board", c_named_board),
-         ("table_differs", c_table_differs), ("s3_pass", c_s3_pass), ("s3_board_c3", c_s3_board_c3)]
+         ("table_differs", c_table_differs), ("flash_larger", c_flash_larger), ("s3_pass", c_s3_pass),
+         ("s3_board_c3", c_s3_board_c3), ("s3_elf_reader", c_s3_elf_reader)]
 
 
 def main(argv):
