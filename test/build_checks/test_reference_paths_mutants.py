@@ -7,12 +7,13 @@ not a crash). Each copy is in this run's scratch/ folder. Gen-inhibit tester, 20
     py -3.14 -B test/build_checks/test_reference_paths_mutants.py
 """
 import os
-import shutil
 import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
+sys.path.insert(0, HERE)
+import test_reference_paths as TRP  # noqa: E402  remove_tree (read-only git objects on Windows)
 MUTANTS = [
     ("uncommitted changes accepted", "    if dirty:\n        row(name, False, \"uncommitted", "    if False:\n        row(name, False, \"uncommitted"),
     ("the working tree's copies read, not HEAD's",
@@ -28,7 +29,7 @@ MUTANTS = [
 
 def main():
     base = os.path.join(REPO, "scratch", "build-checks-tests", "reference_paths_mutants_%d" % os.getpid())
-    shutil.rmtree(base, ignore_errors=True)
+    TRP.remove_tree(base)
     src = open(os.path.join(HERE, "build_output.py"), encoding="utf-8", newline="").read()
     killed = errors = 0
 
@@ -40,10 +41,11 @@ def main():
         r = subprocess.run([sys.executable, "-B", os.path.join(HERE, "test_reference_paths.py"), "--target", t],
                            capture_output=True, text=True, timeout=900)
         fails = [l for l in r.stdout.splitlines() if l.startswith("FAIL")]
-        return r.returncode, fails, "Traceback" in r.stderr
+        crash = r.stderr.strip().splitlines()[-1:] if "Traceback" in r.stderr else []
+        return r.returncode, fails, crash
 
     rc, fails, crashed = run("control", src)
-    control_ok = rc == 0 and not fails
+    control_ok = rc == 0 and not fails and not crashed
     print("%s control  (exit %d, %d FAIL)" % ("PASS    " if control_ok else "FAILED  ", rc, len(fails)))
     for n, (label, old, new) in enumerate(MUTANTS, 1):
         if src.count(old) != 1:
@@ -51,11 +53,15 @@ def main():
             errors += 1
             continue
         rc, fails, crashed = run("m%d" % n, src.replace(old, new))
-        dead = rc != 0 and bool(fails) and not crashed
+        if crashed:     # a crash is neither a kill nor a survivor (2026-10-25: it printed SURVIVED)
+            print("ERROR    m%d %s: the test crashed (exit %d): %s" % (n, label, rc, crashed[0][:160]))
+            errors += 1
+            continue
+        dead = rc != 0 and bool(fails)
         killed += dead
         print("%s m%d %s  (exit %d, %d FAIL)%s" % ("KILLED  " if dead else "SURVIVED", n, label, rc, len(fails),
                                                 "".join("\n           " + f[:120] for f in fails[:2])))
-    shutil.rmtree(base, ignore_errors=True)
+    TRP.remove_tree(base)
     print("\n%d of %d killed by a check, %d errors; the control %s"
           % (killed, len(MUTANTS), errors, "passes" if control_ok else "DOES NOT PASS"))
     return 0 if killed == len(MUTANTS) and not errors and control_ok else 1
