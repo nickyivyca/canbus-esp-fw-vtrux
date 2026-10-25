@@ -44,9 +44,11 @@ write-up sits between them and it.
 - When the implementor or tester sends you something, your output is one line: what arrived and what you did with it. The details go in your messages to the other sessions, not in your output.
 - Do not restate the list of open items. Say only what changed, by item id. Write the full list again only when the user asks for it.
 
-**Self-compact.** You have no compaction point. The user rules in this chat
-and scrolls back through it, so run `/self-compact` only when the user asks
-for it. Before it, update the tracker's status table.
+**Self-compact.** You have no compaction point of your own. The user rules
+in this chat and scrolls back through it, so run `/self-compact` only when
+the user asks for it, or when the idle-compaction hook asks (AGENTS.md,
+"Compacting your own context"). Before it, update the tracker's status
+table.
 
 **Starting up:** check that you are in your worktree, on `$ARGUMENTS/main`
 (`git branch --show-current`). If not, stop and tell the user. Then read the
