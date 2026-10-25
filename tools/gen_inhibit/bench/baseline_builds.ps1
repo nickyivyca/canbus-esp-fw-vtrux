@@ -7,7 +7,7 @@
 # start/end times and exit code, to <Out>\build_<name>.txt. A build directory
 # that already exists is refused rather than reused (each must be a clean build).
 # Names: man, man2 (a second clean build of the same tree, spec 11's control),
-# rt, rxq, txabort, abortwin, flt. The prod build is tools/prod_build.py, not this.
+# rt, rxq, txabort, abortwin, flt. A prod build is the shared tooling's release build (tools/vtrux_tools.py release), not this.
 param(
     [Parameter(Mandatory=$true)][string]$Tree,
     [Parameter(Mandatory=$true)][string]$Out,

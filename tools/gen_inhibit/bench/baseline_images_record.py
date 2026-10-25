@@ -39,7 +39,7 @@ def record(label, d):
     r["descriptor_equals_elf_sha256"] = r["elf_file_sha256"] == r["elf_sha256"]
     cfg = os.path.join(d, "config", "sdkconfig.json")
     r["sdkconfig_json_sha256"] = sha256(cfg) if os.path.exists(cfg) else None
-    prod = bins[0] + ".prod.json"
+    prod = bins[0] + ".prod.json"   # the retired tools/prod_build.py's record, on images from before port step 0
     r["prod_record"] = json.load(open(prod, encoding="utf-8")) if os.path.exists(prod) else None
     r.update(label=label, dir=os.path.basename(d), ok=r["descriptor_equals_elf_sha256"])
     return r
