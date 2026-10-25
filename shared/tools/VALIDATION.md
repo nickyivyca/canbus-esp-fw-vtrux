@@ -72,6 +72,17 @@ same folder. The interposer's test evidence is
 - **Basis:** port plan goal 13 (user, 2026-10-17). gen-inhibit's `0x7F3`
   moves to the image-hash prefix with the tooling (user, 2026-10-19, tracker
   A3/A8; plan step 0c).
+- **The version string's form** (user, 2026-10-25, in the gen-inhibit
+  reviewer's session): ESP-IDF's default, written once here so that both
+  projects cite one rule. In ESP-IDF v5.4.1, `tools/cmake/project.cmake`
+  takes `PROJECT_VER` from, in order, a set `PROJECT_VER`, `version.txt`,
+  `project()`'s `VERSION` argument, then `git describe` with `--always
+  --tags --dirty` (`GetGitRevisionDescription.cmake`), and
+  `CONFIG_APP_PROJECT_VER_FROM_CONFIG` overrides it. The string is a label
+  (R6). A fixed form, the commit cut to a set length, was put to the user
+  and not taken: evidence carries by the code hash, which blanks the field
+  (R2, R3), and the image hash only has to name a build, which a
+  clone-dependent string still does.
 - **Status:** complete.
 
 ### R5. Identity independent of branch, clone path and host OS
@@ -93,6 +104,14 @@ same folder. The interposer's test evidence is
   give the same image hash", which R4 makes false across commits. Exposed by
   the implementor's reading on C6f. The basis, goal 11's "same files, same
   identity", is met by the code hash.
+- **Narrowed 2026-10-25 (user, in the gen-inhibit reviewer's session):** the
+  first bullet read "at any clone path". ESP-IDF's default version string
+  (R4) depends on the clone: git lengthens its abbreviation of the commit as
+  the clone's object count grows, and a tag reachable from the commit
+  replaces the bare commit. So the image hash is promised across worktrees
+  of one clone only; across clones, the code hash. Step 0b's two-path
+  rebuild (two worktrees of one clone, gen-inhibit tracker, 2026-10-25) is
+  within the narrowed bullet.
 - **Status:** complete.
 
 ### R6. Identity never rests on the version string or the file name
