@@ -19,7 +19,7 @@ other project's reviewer (charge interposer) reads it before it merges into
   spec 12.3 item 3,
   `$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-wican-spec.md`.
 
-Requirements are numbered R1 to R23. The numbers are stable: the two evidence
+Requirements are numbered R1 to R24. The numbers are stable: the two evidence
 documents cite them.
 
 ## Terms
@@ -39,15 +39,15 @@ documents cite them.
 The build tooling lives in `shared/tools/` and never enters a firmware image.
 It covers:
 - the build script and the record writer;
-- the three build checks (scope, options, reproducible) and the build-switch
-  check;
+- the two build checks (scope, options), the build-switch check and the
+  reproducible test;
 - the image-reading library: the app descriptor parser and the image hash
   read from a `.bin`;
 - the comparison tool of goal 6, which the tester owns. Its requirements are
   not written yet (section 8).
 
 It sits outside the layer table of goal 6: a change to it voids no evidence
-unless the image changes, which the reproducible check (R19) shows.
+unless the image changes, which the reproducible test (R19) shows.
 
 ## 2. Identity
 
@@ -93,6 +93,10 @@ unless the image changes, which the reproducible check (R19) shows.
 - **R9. Reconfigure first.** A release build runs `idf.py reconfigure`, then
   builds, in one run, with the compiler cache (ccache) off whatever the
   environment sets. A build whose configuration still has it on is refused.
+  It also runs with `SOURCE_DATE_EPOCH` set to one fixed value, the same for
+  every project and commit, so that source using `__DATE__` or `__TIME__`
+  builds the same each time (R19). This is a stopgap for the Arduino core
+  the interposer compiles, to be removed when no project compiles it.
 - **R10. Downloaded components checked after the reconfigure.** The
   reconfigure runs with the Component Manager's strict checksum mode on
   (`IDF_COMPONENT_STRICT_CHECKSUM`), and a release build is refused if
@@ -131,6 +135,13 @@ unless the image changes, which the reproducible check (R19) shows.
   - any shared firmware component is taken from a local folder
     (`override_path`) rather than its pinned version; or
   - the build tooling's own pin names a commit rather than a tag.
+- **R24. A release build's environment.** A release build runs ESP-IDF in
+  an environment the tooling builds from an empty one. It passes through
+  from its caller only the variables on its own list, which holds only what
+  ESP-IDF needs to find itself and its tools and what the host OS needs to
+  run programs, and it adds its own settings (R9, R10). It prints the names
+  it dropped, and the record lists the names it passed. Bench and dev builds
+  are not constrained.
 
 ## 4. Checks
 
@@ -157,15 +168,25 @@ unless the image changes, which the reproducible check (R19) shows.
   build to the commit. Like the other checks here, it runs on the finished
   build and is not a refusal in the release build; any session may run it.
   Bench and dev builds are not checked.
-- **R19. Reproducible.** Rebuilding the same tree on the same host OS gives
-  the same image hash.
-- **R20. Build switches.** Every preprocessor symbol the project's source
-  tests (other than ESP-IDF's `CONFIG_*` and header guards), and every build
-  option tested by a CMake file the build reads from the repo, is listed in
-  the project's table. The CMake files are taken from the build's own record
-  of the files it read. A build option is a variable that can be set from
-  outside the file that tests it. An unlisted symbol fails the check. Each
-  entry has a class and a reason:
+- **R19. Reproducible.** One clean commit, built twice on the same machine
+  in two different folders, each time by the release build script, gives
+  the same image hash both times. This is a test of the tooling, not a check
+  on each release build. It is rerun whenever something that can reach the
+  image changes: the build script or the record writer, the image-reading
+  library, the ESP-IDF version or its Python environment (esptool, which
+  writes the `.bin`, included), or the compiler, CMake or Ninja version.
+  Each project also runs it once when it first builds with this tooling,
+  since some causes show only in a project's own source.
+- **R20. Build switches.** Every preprocessor symbol tested by the project's
+  source that the release build compiled (other than ESP-IDF's `CONFIG_*`
+  and header guards), and every build option tested by a CMake file the
+  build reads from the repo, is listed in the project's table. Both sets of
+  files are taken from the build's own record of the files it read. A build
+  option is a variable that can be set from outside the file that tests it:
+  the CMake cache, a `-D`, or the environment. A variable the file sets
+  itself before testing it, and CMake's built-in variables, are not build
+  options. An unlisted symbol fails the check, and so does a listed one that
+  those files no longer test. Each entry has a class and a reason:
   - **shipping variant**;
   - **test-only**;
   - **stock feature off in this product**;
@@ -174,8 +195,19 @@ unless the image changes, which the reproducible check (R19) shows.
 
   Each test-only or stock-off entry has a row that refuses an image
   containing its feature. The row judges the image and the ELF, never the
-  flag, and is shown failing on an image built with the switch on and
-  passing on one built without it.
+  flag, so a switch set off but not wired to its code is still caught. A
+  row is data the check evaluates where it can be (for example a string
+  absent from the `.bin` or a symbol absent from the ELF), and otherwise
+  names a test in the project's own harness whose result for this image the
+  check reads. Each row is shown failing on an image built with the switch
+  on and passing on one built without it. That is test evidence, made once
+  and made again when the switch's code or its row changes.
+
+  A shared firmware component's switches are listed in its own table, by
+  that component's owner, and the check applies that table in every release
+  build that uses the component. Like R18, the check runs on the finished
+  release build and any session may run it. Bench and dev builds are not
+  checked.
 - **R21. Board data.** The partition table is byte-identical to the board's
   reference, the image fits the board's application slot, and the tool
   prefix comes from the board's `IDF_TARGET`.
