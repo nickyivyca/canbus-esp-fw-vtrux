@@ -296,6 +296,22 @@ same folder. The interposer's test evidence is
   commit: user, 2026-10-23, in the gen-inhibit reviewer's session.
 - **Status:** complete.
 
+### R24. A release build's environment
+- **Basis:** user, 2026-10-24, in the gen-inhibit reviewer's session: "we
+  should constrain how env vars can affect the builds", as a list of what
+  passes rather than of what is refused, which would miss a route nobody
+  listed (option b of two), for release builds only.
+- **Exposed by:** the R20 readings, which asked how environment variables
+  reach a build. Read by the gen-inhibit reviewer in ESP-IDF v5.4.1:
+  `tools/cmake/project.cmake` adds `EXTRA_CFLAGS`, `EXTRA_CXXFLAGS` and
+  `EXTRA_CPPFLAGS` to every compile, and its comment there says the
+  environment's `CFLAGS`, `CXXFLAGS` and `CPPFLAGS` also reach builds (not
+  tried). The release script passed its caller's environment through,
+  refusing only R10's overwrite setting and a cache left on, so a `-D` for a
+  test-only switch could reach a release build with no file changed.
+- **Status:** basis complete. The list itself is the implementor's to find,
+  for each host OS.
+
 ## 4. Checks
 
 ### R17. Scope
@@ -398,6 +414,45 @@ same folder. The interposer's test evidence is
   CMake file with no `#if` (recorded in spec 12.3 item 3, 2026-10-13). It is
   why CMake files are in scope and are taken from the build's own record
   rather than a list kept by hand.
+- **Readings** (user, 2026-10-24, in the gen-inhibit reviewer's session),
+  raised by the gen-inhibit tester before writing the shared check:
+  - The source scanned is what the release build compiled, from its own
+    record (option a of three; the others were folders named in the
+    project's data, and the project root minus `build/`,
+    `managed_components/` and `test/`). A file the release build does not
+    compile cannot reach its image, and what decides whether it is compiled
+    is in the CMake files, which are scanned. On a gen-inhibit fixture
+    release build the record names 44 of the 63 tracked files in `main/` and
+    `components/` (the gen-inhibit tester, an observation); the others are
+    stock-off sources and headers nothing includes, and their entries leave
+    the table.
+  - A shared firmware component's switches are its owner's to classify, in
+    its own table, applied in each release build that uses it (option a of
+    three; the others were listing them in each project's table, in full or
+    only for components the project names as shared).
+  - The scan rules carry over from gen-inhibit spec 12.3 item 3 and its
+    check: the scan is textual and over-inclusive (every identifier in an
+    `#if` counts, function-like macros included); a header guard is
+    recognised only in its exact shape (first directive `#ifndef X`, then
+    `#define X` with no value); "sets itself" is read narrowly (only a
+    file-scope `set(VAR value)` before the test, with no `CACHE`), every
+    `$ENV{}` is a build option, and CMake's built-ins are the recorded
+    `cmake`'s `--help-variable-list`; and a listed symbol no longer tested
+    fails, so a stale entry cannot pass as coverage.
+  - Refusal rows are data where they can be, a named project test otherwise
+    (option c of three). On gen-inhibit's rows only the RealDash one (no
+    boot-time bus enable in `app_main`, an objdump call-site check) needs a
+    project test.
+  - The switch-on proof is test evidence, made once per row and made again
+    on a change (option a of two; the other built every switch-on variant on
+    every run).
+  - Release builds only (option a of two): "release builds are the only ones
+    that really need the check anyways" (user).
+  - "Judges the image and the ELF" sets the build's outputs against the
+    flag; it does not require a rule on each (gen-inhibit reviewer,
+    2026-10-24). The image embeds the ELF's SHA-256 (R1), so an ELF rule
+    judges the code in that image. gen-inhibit's RealDash row, ELF only,
+    closed under its spec 12.3 item 3.
 - **Status:** complete.
 
 ### R21. Board data
