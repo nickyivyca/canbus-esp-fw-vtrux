@@ -15,7 +15,7 @@ remote script) and writes nothing else. Then the script's project-folder lines,
 its long-arm step and its fixture-source hash are run in fake archive trees, one
 with project_dir.py and one without, with `step` printing each argument in
 brackets; then again for a root with spaces and a root under ~/. Nothing reaches
-madhouse-debian. Needs the tester clone (FW, default ~/Git/wican-fw-vtrux-tester)
+madhouse-debian. Needs a gen-inhibit tree (FW, default this repo, gi_paths.repo_root())
 for `git archive`.
 
     py -3.14 -B tools/gen_inhibit/bench/test_baseline_host_run.py

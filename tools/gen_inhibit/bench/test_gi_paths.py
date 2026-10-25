@@ -8,7 +8,9 @@ run's scratch/ folder (the machine's temp folder until 2026-10-24), with a fake 
      a real root resolves, and every data path (runs, captures, DBCs, the bench lock,
      the jammer builds) lands under it, never under the repo.
   2. The retired settings (GI_FW_TOOLS, GEN_INHIBIT_REPO, VTRUX_DATA, REVERSE_IT_ROOT)
-     are each refused, by check_retired and on import.
+     are each refused, by check_retired and on import. No file under tools/gen_inhibit
+     sets one in a usage line, or names the retired tester clone as a default
+     (home-paths ruling B, 2026-10-24); autoarm_boot_to_live's bench_flash.py is this repo's.
   3. Pins: a pinned file that matches passes, one changed is refused, one spelt in
      another case is still checked, an unpinned file passes. A pinned folder that
      matches passes; a changed, renamed, added or removed file is refused; a change to an
@@ -127,6 +129,34 @@ def retired_usage(top, retired):
     return out
 
 
+OLD_CLONE = "wican-fw-vtrux" + "-tester"    # built from parts, so this file does not name it
+
+
+def old_clone_names(top):
+    """[(file name, line number)]: lines under top, test_gi_paths*.py aside, naming the retired
+    tester clone, in a path string or as a path part."""
+    out = []
+    for d, dirs, files in os.walk(top):
+        dirs[:] = [x for x in dirs if x not in ("__pycache__", ".pio")]
+        for n in sorted(files):
+            if not n.endswith((".py", ".sh", ".ps1", ".md", ".ini", ".json")) or n.startswith("test_gi_paths"):
+                continue
+            with open(os.path.join(d, n), encoding="utf-8", errors="replace") as fh:
+                out += [(n, k) for k, ln in enumerate(fh, 1) if OLD_CLONE in ln]
+    return out
+
+
+def autoarm_bench_flash():
+    """BENCH_FLASH as autoarm_boot_to_live.py computes it, read from its source (importing it
+    would need the bench), with this folder's own gi_paths (GI_PATHS_DIR's copy lives elsewhere)."""
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "autoarm_boot_to_live.py"), encoding="utf-8") as fh:
+        m = re.search(r"^BENCH_FLASH = (.+)$", fh.read(), re.M)
+    try:
+        return eval(m.group(1), {"os": os, "gi_paths": gi_paths}) if m else None
+    except SyntaxError:         # an expression over more than one line: not this repo's form
+        return None
+
+
 def main():
     work = gi_paths.scratch("gi-paths")
     shutil.rmtree(work, ignore_errors=True)
@@ -217,6 +247,17 @@ def main():
     check("control: such a usage line is found",
           lambda: [h[0] for h in retired_usage(root, gp.RETIRED)] == ["usage.py"])
     os.remove(os.path.join(root, "usage.py"))
+    # Nor names the retired tester clone as a default (home-paths ruling B; gen-inhibit
+    # reviewer, 2026-10-24): every tool's default is this repo, gi_paths.repo_root().
+    hits = old_clone_names(tools)
+    check("no file under tools/gen_inhibit names the retired tester clone", lambda: not hits, hits[:5])
+    with open(os.path.join(root, "flash.py"), "w", encoding="utf-8") as fh:
+        fh.write('X = os.path.join(os.path.expanduser("~"), "Git", "%s", "tools")\n' % OLD_CLONE)
+    check("control: such a default is found", lambda: [h[0] for h in old_clone_names(root)] == ["flash.py"])
+    os.remove(os.path.join(root, "flash.py"))
+    check("autoarm_boot_to_live's bench_flash.py is this repo's, and exists",
+          lambda: autoarm_bench_flash() == os.path.join(gi_paths.repo_root(), "tools", "gen_inhibit", "bench_flash.py")
+          and os.path.isfile(autoarm_bench_flash()), autoarm_bench_flash())
 
     print("\n=== pins ===")
     pins = write_pins(gp, root)
