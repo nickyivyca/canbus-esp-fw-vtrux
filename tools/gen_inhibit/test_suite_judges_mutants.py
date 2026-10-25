@@ -19,6 +19,9 @@ SRC = "suite_judges.py"
 TEST = "test_suite_judges.py"
 
 MUTANTS = [
+    ("B11: an analysis row's error is ignored", 'return [result("B11", "ERROR" if err else', 'return [result("B11", "ERROR" if False else'),
+    ("B11raw: an analysis row's error is ignored", 'return [result("B11raw", "ERROR" if err else', 'return [result("B11raw", "ERROR" if False else'),
+    ("B13: an analysis row's error is ignored", 'return [result("B13", "ERROR" if err else', 'return [result("B13", "ERROR" if False else'),
     ("B1: no commands is a pass", 'ok = s["commands"] > 0 and', 'ok = s["commands"] >= 0 and'),
     ("B2: X2 frames not counted", 'x2 = sum(int(v) for r in rows for v in r[1:])', 'x2 = 0'),
     ("B2: device count is the device's own word", 'and p["dev"] == p["dev_says"]', 'and True'),

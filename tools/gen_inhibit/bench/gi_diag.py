@@ -16,11 +16,21 @@ vtrux_bench.decode.check_history clean, and each DBC's own schema signals where 
 table says. A schema byte no DBC in the history states is refused (UnknownSchema),
 never decoded with a fallback.
 
-PAGES WITHOUT A SCHEMA BYTE (0x7F0, 0x7F2, 0x7F8, 0x7F9) take the schema of the latest
+PAGES WITHOUT A SCHEMA BYTE (0x7F2, 0x7F8, 0x7F9) take the schema of the latest
 schema page before them in the same capture. Before the first one they are
 UNDECODABLE (reading Q2): Decoder.feed() returns an Undecodable and counts it, the
 capture is not failed on them, and a judge that needs one reads ERROR, never "absent".
 A capture spanning two schemas switches at each schema page.
+
+FRAMES OUTSIDE THE SCHEMA (UNVERSIONED: 0x7F0, the RESPOND probe WICAN_Probe). The schema
+doc: 0x7F0 "is not a diag frame and carries no schema version", and its layout changes
+only through that doc and the DBC first. So it is decoded at any point in a capture,
+before the first schema page too, with its layout from the set's DBCs, and it never
+moves the schema (reviewer, 2026-10-25, reading Q8 of the decode rework). The guard that
+keeps this reading honest: every DBC the set can select must give WICAN_Probe the same
+layout (id, length, and each signal's bits, sign, scale, offset, range, unit and
+choices), or the set is refused, so a future probe change cannot be decoded silently
+with another commit's layout.
 
 RUN RECORDS (reading Q1). A live run records run_identity(): the harness commit, and
 the DBC's commit, schema version and layout hash. A Decoder given that identity
@@ -72,6 +82,9 @@ INTERPOSER_DBC_PATH = "charge-interposer/diag/vtrux-interposer-diag.dbc"
 # "Versions"; reviewer, 2026-10-24): frame id -> (signal name, payload byte).
 SCHEMA_PAGES = {0x7F1: ("diag_schema_ver", 0), 0x7F3: ("diag_schema_ver_build", 6)}
 SCHEMA_SIGNALS = frozenset(n for n, _b in SCHEMA_PAGES.values())
+# Frames outside the schema: frame id -> message name (wican_diag_schema.md, "0x7F0: the
+# RESPOND timing probe"; reviewer, 2026-10-25, reading Q8).
+UNVERSIONED = {0x7F0: "WICAN_Probe"}
 MANIFEST = "manifest.json"
 INTERPOSER_FILE = "vtrux-interposer-diag.dbc"
 EXPORT_DIR = "diag_schemas"
@@ -213,6 +226,33 @@ def check_table(db, version):
     return probs
 
 
+def message_layout(db, frame_id):
+    """A message's layout, everything that decides its decode, or None if absent."""
+    try:
+        m = db.get_message_by_frame_id(frame_id)
+    except KeyError:
+        return None
+    sigs = []
+    for g in sorted(m.signals, key=lambda x: x.name):
+        ch = sorted((int(k), str(v)) for k, v in (g.choices or {}).items())
+        sigs.append((g.name, g.start, g.length, g.byte_order, g.is_signed, float(g.scale), float(g.offset),
+                     g.minimum, g.maximum, g.unit, tuple(ch)))
+    return (m.frame_id, m.name, m.length, tuple(sigs))
+
+
+def check_unversioned(entries):
+    """Problems: a frame outside the schema whose layout is not the same in every DBC."""
+    probs = []
+    for fid, name in sorted(UNVERSIONED.items()):
+        lay = {v: message_layout(e.db, fid) for v, e in entries.items()}
+        if len(set(lay.values())) > 1 or None in lay.values() or any(l[1] != name for l in lay.values() if l):
+            probs.append("0x%03X %s is outside the schema but its layout differs between the DBCs (%s)"
+                         % (fid, name, ", ".join("schema %s: %s" % (v, "absent" if lay[v] is None else
+                                                                     "%d signals" % len(lay[v][3]))
+                                                 for v in sorted(lay))))
+    return probs
+
+
 class Entry(object):
     __slots__ = ("version", "commit", "hash", "text", "db")
 
@@ -279,6 +319,9 @@ class SchemaSet(object):
             entries[v] = Entry(v, c, h, text, db)
         if not entries:
             raise DiagError("no diag DBC in %s" % source)
+        probs = check_unversioned(entries)
+        if probs:
+            raise DiagError("%s: %s" % (source, "; ".join(probs)))
         return cls(entries, source, head_version)
 
     def get(self, version):
@@ -293,6 +336,10 @@ class SchemaSet(object):
         if self.head_version is None:
             raise DiagError("%s has no HEAD schema" % self.source)
         return self.get(self.head_version)
+
+    def unversioned(self, frame_id):
+        """A frame outside the schema: its message, the same in every DBC (_build checks)."""
+        return self.get(self.head_version if self.head_version in self.entries else max(self.entries))             .db.get_message_by_frame_id(frame_id)
 
     def frame_ids(self):
         return frozenset(m.frame_id for e in self.entries.values() for m in e.db.messages)
@@ -411,6 +458,8 @@ class Decoder(object):
         if frame_id not in self.ids:
             return None
         data = bytes(data)
+        if frame_id in UNVERSIONED:             # outside the schema: any time, never moves it
+            return self.schemas.unversioned(frame_id).decode(data, **decode_kw)
         if frame_id in SCHEMA_PAGES:
             byte = SCHEMA_PAGES[frame_id][1]
             if len(data) <= byte:

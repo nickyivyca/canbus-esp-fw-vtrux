@@ -18,7 +18,10 @@ page 0x7FA, so each rule has an input where it matters.
      decoded with the latest schema page's layout, switching at each one, from 0x7F1
      and from 0x7F3; a schema page too short for its byte and a page the current
      schema does not have are Undecodable; a frame of another id is None. Against a
-     run identity, a schema page whose DBC is not the record's is refused.
+     run identity, a schema page whose DBC is not the record's is refused. A 0x7F0
+     probe, outside the schema (reading Q8, 2026-10-25), decodes before the first schema
+     page and after a switch alike, uncounted; a history whose WICAN_Probe layout changes
+     (width, scale) or drops it is refused, a comment-only change is not.
   3. run_identity: a modified, staged or deleted DBC is refused; a clean one gives the
      harness commit and the DBC's commit, version and hash.
   4. Off git: an export reads back the same set; a manifest hash, a DBC text and a
@@ -221,6 +224,38 @@ def t2():
     d = G.Decoder(SET2, ident8)
     check("2 against a run identity: refused on 0x7F3 too",
           lambda: raises(lambda: d.feed(*page(0x7F3, "0000000001000700")), G.SchemaMismatch))
+
+    # 0x7F0 is outside the schema (reviewer, 2026-10-25, reading Q8): decoded before the
+    # first schema page, never counted undecodable, never moving the schema.
+    d = G.Decoder(SET2)
+    p = d.feed(*page(0x7F0, "40420F00F401035A"), t=1, decode_choices=False)
+    check("2 a 0x7F0 probe before the first schema page decodes",
+          lambda: isinstance(p, dict) and p["probe_marker"] == 0x5A and p["probe_vcm_ctr"] == 3, p)
+    check("2 ... it is not counted undecodable and sets no schema",
+          lambda: not d.undecodable and d.version is None and not d.switches, (d.undecodable, d.version))
+    d.feed(*page(0x7F1, "0801030600FF0000"), t=2)
+    p8 = d.feed(*page(0x7F0, "40420F00F401035A"), t=3, decode_choices=False)
+    check("2 ... and decodes the same after a schema 8 page", lambda: p8 == p, p8)
+    d = G.Decoder(SET2, ident8)
+    check("2 a probe is decoded against a run identity too (it carries no schema)",
+          lambda: d.feed(*page(0x7F0, "40420F00F401035A"), decode_choices=False)["probe_vcm_ctr"] == 3)
+    # The guard: WICAN_Probe's layout must be the same in every DBC the set can select.
+    narrowed = rehash(S8.replace(" SG_ probe_vcm_ctr : 48|8@1+ (1,0) [0|15]", " SG_ probe_vcm_ctr : 48|4@1+ (1,0) [0|15]"))
+    r, _c, _g = fake_repo("probe_changed", [REAL7, narrowed])
+    check("2 a history whose WICAN_Probe layout changes is refused",
+          lambda: raises(lambda: G.SchemaSet.from_git(r), G.DiagError, "outside the schema"))
+    scaled = rehash(S8.replace(' SG_ probe_offset_us : 32|16@1+ (1,0) [0|65535] "us"',
+                               ' SG_ probe_offset_us : 32|16@1+ (2,0) [0|65535] "us"'))   # the scale alone
+    r, _c, _g = fake_repo("probe_scaled", [REAL7, scaled])
+    check("2 ... a changed scale too",
+          lambda: raises(lambda: G.SchemaSet.from_git(r), G.DiagError, "outside the schema"))
+    import re as _re
+    gone = rehash(_re.sub(r"BO_ 2032 WICAN_Probe: 8 WICAN\n(?: SG_ [^\n]*\n)+\n", "", S8))
+    r, _c, _g = fake_repo("probe_gone", [REAL7, gone])
+    check("2 ... and a DBC without WICAN_Probe",
+          lambda: "WICAN_Probe" not in gone and raises(lambda: G.SchemaSet.from_git(r), G.DiagError, "outside the schema"))
+    check("2 a comment-only change to the probe is not a layout change (the set with it builds)",
+          lambda: "Constant 0x5A, always." in comment_only(REAL7) and SET2.get(8) is not None)
 
 
 # ---------------------------------------------------------------- 3. run_identity

@@ -82,6 +82,19 @@ def main():
         ("a 0x7F8 before the first schema page is counted undecodable, not decoded (reading Q2)",
          (lambda d: [i for _t, i, _s in d[0]] == [0x7F1] and d[1]["undecodable"] == 1)(
              A.decode_diag([(0.0, 0x7F8, bytes([0, 0, 0, 0x34, 0x12, 0, 0, 0])), (0.1, 0x7F1, S7)]))),
+        # Reading Q9 (2026-10-25): "error" only when a judged figure cannot be computed.
+        ("figure_error: a refused page with every figure computable -> no error",
+         A.figure_error([(1.0, 0), (2.0, 100)], [(0.5, {})], {"undecodable": 1, "undecodable_by_reason": {"x": 1}},
+                        "diag_tx_ok") is None),
+        ("figure_error: one counter sample -> the intervals cannot be computed",
+         (lambda e: e is not None and "intervals" in e and "from_zero" not in e)(
+             A.figure_error([(1.0, 0)], [(0.5, {})], {"undecodable": 3, "undecodable_by_reason": {"x": 3}}, "diag_tx_ok"))),
+        ("figure_error: no counter sample -> intervals and from_zero, naming the refused pages",
+         (lambda e: e is not None and "from_zero" in e and "3 page(s) refused" in e)(
+             A.figure_error([], [(0.5, {})], {"undecodable": 3, "undecodable_by_reason": {"x": 3}}, "diag_would_tx"))),
+        ("figure_error: no 0x7F1 -> diag_modes",
+         (lambda e: e is not None and "diag_modes" in e)(
+             A.figure_error([(1.0, 0), (2.0, 100)], [], {"undecodable": 0, "undecodable_by_reason": {}}, "diag_tx_ok"))),
         ("an unknown schema byte raises (gi_diag.UnknownSchema)",
          raises(lambda: A.decode_diag([(0.0, 0x7F1, bytes([0xEE] + [0] * 7))]), A.gi_diag.UnknownSchema)),
     ]

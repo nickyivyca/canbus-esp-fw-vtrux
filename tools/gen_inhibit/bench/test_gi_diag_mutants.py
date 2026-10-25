@@ -51,6 +51,13 @@ MUTANTS = [
     ("decode_pages does not sort by time", "    for t, i, d in sorted(frames, key=lambda f: f[0]):\n        if i not in dec.ids:",
      "    for t, i, d in frames:\n        if i not in dec.ids:"),
     ("the export leaves out the identity", '"identity": identity, "core"', '"identity": None, "core"'),
+    # reading Q8 (2026-10-25): 0x7F0 is outside the schema, guarded by its layout
+    ("the probe layout guard is not run", "        probs = check_unversioned(entries)\n",
+     "        probs = []\n"),
+    ("the guard compares signal names only", "        sigs.append((g.name, g.start, g.length,", "        sigs.append((g.name, 0, 0,"),
+    ("the guard ignores scale and offset", "g.is_signed, float(g.scale), float(g.offset),", "g.is_signed, 1.0, 0.0,"),
+    ("a probe waits for a schema page like a diag page", "        if frame_id in UNVERSIONED:             # outside",
+     "        if False:             # outside"),
 ]
 
 

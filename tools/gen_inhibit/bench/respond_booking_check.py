@@ -83,24 +83,23 @@ def judge_balance(b):
 
 
 def late_probes(frames, identity=None):
-    """(late, judged, malformed, undecodable) from the witness: [(t, can_id, data bytes)]
-    in any order.
+    """(late, judged, malformed) from the witness: [(t, can_id, data bytes)] in any order.
 
     The published layout (wican_diag_schema.md, "0x7F0: the RESPOND timing probe"; the
     DBC's WICAN_Probe, user 2026-10-12): probe_vcm_ctr (B6) is the counter (0x051 B5 low
     nibble) of the most recent 0x051 the device received, the one the probe answers, and
     probe_marker (B7) is 0x5A. A probe is LATE when its probe_vcm_ctr differs from the
     newest 0x051 counter on the wire before it: the VCM's next command arrived first.
-    B6 and B7 are decoded by gi_diag, every diag page in time order through one decoder:
-    the probe takes the schema of the latest schema page before it (toolkit item 10). A
-    probe before the first schema page is UNDECODABLE: counted, never judged, and the
-    caller reads it as ERROR (reading Q2); an unknown schema raises. A probe with no
-    0x051 before it is
-    not judged. A probe that is not 8 bytes, whose marker is not 0x5A or whose counter is
+    B6 and B7 are decoded by gi_diag (toolkit item 10). 0x7F0 is outside the diag schema
+    (the schema doc: it carries no schema version), so a probe decodes wherever it falls,
+    before the first schema page too, with WICAN_Probe's layout, which gi_diag holds the
+    same in every DBC it can select (reviewer, 2026-10-25, reading Q8). The diag pages go
+    through the same decoder in time order, so an unknown schema, or a page on another DBC
+    than the record's identity, raises. A probe with no 0x051 before it is not judged. A probe that is not 8 bytes, whose marker is not 0x5A or whose counter is
     outside 0-15 is MALFORMED: counted, never judged, so it cannot pass as on time. The
     0x051 counter has no DBC signal, so its low nibble is read directly."""
     dec = gi_diag.Decoder(gi_diag.schemas_for(), identity)
-    late = judged = malformed = undecodable = 0
+    late = judged = malformed = 0
     newest = None
     for t, cid, data in sorted(frames, key=lambda f: f[0]):
         if cid == 0x051 and len(data) >= 6:
@@ -110,9 +109,6 @@ def late_probes(frames, identity=None):
                 malformed += 1
                 continue
             sig = dec.feed(cid, bytes(data), t=t, decode_choices=False)
-            if isinstance(sig, gi_diag.Undecodable):
-                undecodable += 1
-                continue
             ctr, marker = int(sig["probe_vcm_ctr"]), int(sig["probe_marker"])
             if marker != 0x5A or not 0 <= ctr <= 15:
                 malformed += 1
@@ -124,7 +120,7 @@ def late_probes(frames, identity=None):
                 late += 1
         elif cid in dec.ids:
             dec.feed(cid, bytes(data), t=t)      # a schema page sets the schema; others are not judged here
-    return late, judged, malformed, undecodable
+    return late, judged, malformed
 
 
 def read_witness(path):
@@ -169,12 +165,10 @@ def main():
                 import os
                 wp = os.path.join(os.path.dirname(path), wl)
                 if os.path.exists(wp):
-                    late, judged, malformed, undec = late_probes(read_witness(wp), d.get("decoder"))
+                    late, judged, malformed = late_probes(read_witness(wp), d.get("decoder"))
                     bv, bdet = judge_balance(balance(dev.get("sched"), late))
                     if malformed:
                         bv, bdet = "UNRESOLVED", "%d malformed probe(s); %s" % (malformed, bdet)
-                    if undec:
-                        bv, bdet = "ERROR", "%d probe(s) before the first schema page, undecodable; %s" % (undec, bdet)
                     print("[%-12s]   balance: %s; late probes %d of %d judged, %d malformed"
                           % (bv, bdet, late, judged, malformed))
                     rc |= bv != "PASS"

@@ -88,8 +88,9 @@ def decode_diag(wire, identity=None):
     """-> ([(t, id, signals)] for 0x7F1, 0x7F2 and 0x7F8, decoder summary). Every diag
     page goes through one gi_diag.Decoder in wire order (toolkit item 10): by its schema
     byte, from git; an unknown schema raises. A page before the first schema page is
-    counted in the summary, not decoded (reading Q2); analyse() then reports an error.
-    Any other decode failure is skipped, as before."""
+    counted in the summary, not decoded (reading Q2). Any other decode failure is
+    skipped, as before. Whether that leaves a judged figure without pages is
+    figure_error()'s call."""
     dec = gi_diag.Decoder(gi_diag.schemas_for(), identity)
     out = []
     for t, i, d in sorted(wire, key=lambda f: f[0]):
@@ -104,6 +105,25 @@ def decode_diag(wire, identity=None):
         if s and i in (0x7F1, 0x7F2, 0x7F8):
             out.append((t, i, s))
     return out, dec.summary()
+
+
+def figure_error(samples, status_pages, dsum, counter):
+    """The arm's "error", or None (reviewer, 2026-10-25, reading Q9): set only when a
+    judged figure cannot be computed from the decodable pages -- the intervals need two
+    counter samples, from_zero one, diag_modes one 0x7F1 -- never merely because pages
+    were refused. Refused pages are counted and reported in diag_decode either way, and
+    from_zero is judged from the first decodable counter page."""
+    missing = []
+    if len(samples) < 2:
+        missing.append("intervals (%d decodable %s page(s), need 2)" % (len(samples), counter))
+    if not samples:
+        missing.append("from_zero (no decodable %s page)" % counter)
+    if not status_pages:
+        missing.append("diag_modes (no decodable 0x7F1)")
+    if not missing:
+        return None
+    return "judged figure(s) not computable from decodable pages: %s; %d page(s) refused %s" % (
+        "; ".join(missing), dsum["undecodable"], dsum["undecodable_by_reason"])
 
 
 def analyse(run):
@@ -150,9 +170,9 @@ def analyse(run):
             "block_abort_sequence_by_replay_index": seq,
             "abort_reason_end": g("abort_reason"),
             "diag_decode": dsum}
-    if dsum["undecodable"]:
-        # Reading Q2: the counters this judges come from those pages; ERROR, not absent.
-        out["error"] = "%d diag page(s) undecodable: %s" % (dsum["undecodable"], dsum["undecodable_by_reason"])
+    err = figure_error(samples, st, dsum, out["counter"])
+    if err:
+        out["error"] = err
     return out
 
 
