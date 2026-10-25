@@ -190,6 +190,7 @@ same folder. The interposer's test evidence is
   about the compile. A release build gains little from the cache: every
   source includes `sdkconfig.h`, so bench and dev builds with other options
   leave nothing a release build can reuse. Ruled off (option A of three).
+- **The fixed `SOURCE_DATE_EPOCH`:** see R19's readings (user, 2026-10-24).
 - **Status:** complete.
 
 ### R10. Downloaded components checked after the reconfigure
@@ -345,6 +346,47 @@ same folder. The interposer's test evidence is
   On NICKY-XPS the first pair was built with ccache on; rebuilt with it
   off (gen-inhibit test evidence, section 13, "x1 and x2 again with
   ccache off", 2026-10-23), both gave the same bytes.
+- **Readings** (user, 2026-10-24, in the gen-inhibit reviewer's session),
+  raised by the gen-inhibit tester before writing the test:
+  - A test of the tooling, rerun when a change could reach the image, not a
+    check run on each release build. The test makes its own two builds, so
+    whether a check only compares or also builds is not a question for it.
+  - "The same tree" is one clean commit in any two folders on one machine
+    (option b of two; the other was the same folder rebuilt). With
+    reproducible builds on, ESP-IDF maps the project, IDF, build and
+    toolchain paths to placeholders (its guide, "Reproducible Builds"), and
+    the R2 measurement's builds at two paths were byte-identical.
+  - A project's reproducible-build setting is not this test's concern. For
+    gen-inhibit it is in the release profile
+    (`CONFIG_APP_REPRODUCIBLE_BUILD`), so R18 checks it on each release
+    build. gen-inhibit fails R18 until port plan step 0b turns it on.
+  - **The compile date: a fixed `SOURCE_DATE_EPOCH`** (R9), a stopgap until
+    no project compiles the Arduino core (user, 2026-10-24). ESP-IDF's
+    guide says source that uses `__DATE__` or `__TIME__` makes a build
+    unreproducible whatever the setting. The user first accepted that as a
+    known gap, since gen-inhibit's `main/` and `components/` use neither
+    macro (option a of three; the others were a rerun before each truck
+    flash and a text check beside R20). The interposer reviewer's read then
+    showed it live: from port step 2a the interposer compiles the
+    arduino-esp32 core, which uses both (`cores/esp32/chip-debug-report.cpp`
+    and `cores/esp32/firmware_msc_fat.c`, read in 3.2.1), and its PlatformIO
+    build already fixes `SOURCE_DATE_EPOCH` for this
+    (`charge-interposer/firmware/reproducible.py`: "the same sources built
+    a minute apart differed"). GCC takes both macros from
+    `SOURCE_DATE_EPOCH` when it is set; ESP-IDF v5.4.1's `tools/cmake` never
+    sets it. The other options were the commit's own time, which would give
+    two commits with identical files two different dates and so break the
+    code-hash carry-over (R3, R5), a value in each project's data, and
+    keeping the gap. Because gcc applies it to every `__DATE__`, it also
+    fixes the date and time in the app descriptor when
+    `CONFIG_APP_COMPILE_TIME_DATE` is on.
+  - **Rerun on the Python environment too** (user, 2026-10-24, raised by the
+    interposer reviewer): esptool writes the `.bin`, and ESP-IDF pins it only
+    to a range (`esptool~=4.8` in v5.4's `espidf.constraints.v5.4.txt`), so
+    reinstalling the environment can move it within one ESP-IDF version.
+  - **Once per project** (user, 2026-10-24, raised by the interposer
+    reviewer): causes in a project's own source, like the date above, show
+    only on that project.
 - **Status:** complete.
 
 ### R20. Build switches
