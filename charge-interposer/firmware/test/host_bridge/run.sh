@@ -50,9 +50,10 @@ for t in "$HERE"/test_*.cpp; do
       srcs+=("$SRC/port_mcp2515.cpp")
       defs+=(-DINTP_TX_TRACE=1)
       ;;
-    # Likewise the only build that defines INTP_ORDER_WITNESS. No
-    # PlatformIO environment defines it either, and build_check.py
-    # asserts the truck image is byte-identical with and without it.
+    # Likewise the only host build that defines INTP_ORDER_WITNESS. One
+    # PlatformIO environment defines it, [env:esp32-can-x2-witness] (the
+    # bench's order-witness image); build_check.py allows it there only
+    # and refuses it in any other environment or in [common].
     test_order_witness)
       srcs+=("$SRC/port_mcp2515.cpp")
       defs+=(-DINTP_ORDER_WITNESS=1)
