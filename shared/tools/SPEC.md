@@ -93,6 +93,10 @@ unless the image changes, which the reproducible test (R19) shows.
 - **R9. Reconfigure first.** A release build runs `idf.py reconfigure`, then
   builds, in one run, with the compiler cache (ccache) off whatever the
   environment sets. A build whose configuration still has it on is refused.
+  It also runs with `SOURCE_DATE_EPOCH` set to one fixed value, the same for
+  every project and commit, so that source using `__DATE__` or `__TIME__`
+  builds the same each time (R19). This is a stopgap for the Arduino core
+  the interposer compiles, to be removed when no project compiles it.
 - **R10. Downloaded components checked after the reconfigure.** The
   reconfigure runs with the Component Manager's strict checksum mode on
   (`IDF_COMPONENT_STRICT_CHECKSUM`), and a release build is refused if
@@ -162,7 +166,10 @@ unless the image changes, which the reproducible test (R19) shows.
   the same image hash both times. This is a test of the tooling, not a check
   on each release build. It is rerun whenever something that can reach the
   image changes: the build script or the record writer, the image-reading
-  library, the ESP-IDF version, or the compiler, CMake or Ninja version.
+  library, the ESP-IDF version or its Python environment (esptool, which
+  writes the `.bin`, included), or the compiler, CMake or Ninja version.
+  Each project also runs it once when it first builds with this tooling,
+  since some causes show only in a project's own source.
 - **R20. Build switches.** Every preprocessor symbol the project's source
   tests (other than ESP-IDF's `CONFIG_*` and header guards), and every build
   option tested by a CMake file the build reads from the repo, is listed in
