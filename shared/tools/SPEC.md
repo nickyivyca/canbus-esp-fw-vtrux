@@ -254,8 +254,9 @@ unless the image changes, which the reproducible test (R19) shows.
   are per-project data. Partition tables, slot sizes and flash sizes are
   per-board data. Every board's data is in its own folder under
   `shared/boards/` (port plan Layer 1), however many projects build for it:
-  the WiCAN's and the X2's alike. A project with its own project root (the interposer, goal
-  3) supplies its own data and needs no change to the tooling.
+  the WiCAN's and the X2's alike. A project with its own project root (the
+  interposer, goal 3) supplies its own per-project data and needs no change
+  to the tooling.
 
 ## 6. Running the tooling
 
