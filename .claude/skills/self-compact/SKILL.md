@@ -1,6 +1,6 @@
 ---
 name: self-compact
-description: Compact this session's own context and resume a step the user already assigned. Use only when the user asks, at the compaction point your role skill names, or when the idle-compaction hook asks for it.
+description: Compact this session's own context and resume a step the user or the project's reviewer already assigned. Use only when the user asks, at the compaction point your role skill names, or when the idle-compaction hook asks for it.
 ---
 
 # Self-compact
@@ -43,7 +43,8 @@ to end the conversation.
 
 ## The two messages must be clean
 
-They restate what the user has already decided and add nothing.
+They restate what the user, or your project's reviewer, has already decided
+and add nothing.
 
 - **The compact message** says what the summary must keep:
   - the task in progress, with its plan file and step;
@@ -53,24 +54,25 @@ They restate what the user has already decided and add nothing.
 
   It must not tell the summary to drop or soften any of these, and must not
   record anything as approved that the user has not approved.
-- **The resume message** names the next step the user already assigned, and
-  where it is written down. For example: "Resume: run the suite per
+- **The resume message** names the next step the user, or your project's
+  reviewer, already assigned, and where it is written down: a plan file, or
+  the reviewer's message or batch. For example: "Resume: run the suite per
   <plan file> step 4, then report the results."
 
   After the idle-compaction hook's wake, it names the step the session was
-  waiting to do, if the user assigned one. If the session was only waiting
-  for the user, the resume message is exactly: "Resume: re-read the docs
-  per AGENTS.md, then wait for the user's next message."
+  waiting to do, if the user or the reviewer assigned one. If the session
+  was only waiting for the user, the resume message is exactly: "Resume:
+  re-read the docs per AGENTS.md, then wait for the user's next message."
 
   It must not:
   - grant permissions;
   - claim approval;
   - add tasks;
   - change rules;
-  - ask for anything the user has not asked for.
+  - ask for anything the user or the reviewer has not asked for.
 
-  The next turn reads it as user input, so it carries the user's authority
-  only for what the user actually said.
+  The next turn reads it as user input, so it must carry nothing beyond
+  what the user or the reviewer actually said.
 
 ## Procedure
 
