@@ -1,23 +1,33 @@
 #!/usr/bin/env python3
 """Read the 0x7F3 BUILD page off the WIRE and check it names the running firmware.
 
-WHY THE WIRE AND NOT HTTP. `GET /check_status` already returns `git_version`, and after
-the 2026-10-03 flash it returned `4a0a796`. That is the device answering about itself
-through the web server -- one instrument. The 0x7F3 BUILD page is the same fact arriving
-by a completely different path: built by `gen_inhibit`'s own diag packer from
-`fnv1a32(GIT_SHA)`, handed to the TWAI controller, put on the wire, and decoded by a
-separate dongle against the DBC. If the two agree, the running image's identity does not
-rest on either one alone.
+SCHEMA 8 (port step 0c, user, 2026-10-25): spec 12.4 "0x7F3 carries the build id", the
+bench half, and "the page names the binary". `diag_build_id`, decoded with the schema 8
+DBC and printed as eight hex digits, must equal the first four bytes of the flashed image
+file's image hash (`--image`, read from its app descriptor by image_elf_sha.py) and of the
+page's `elf_sha256`; and the page's `elf_sha256` must be that image hash in full. Three
+instruments, each by its own path: the image file on disk, the device over HTTP, and the
+device's own diag packer on the wire, read by a separate dongle.
+
+SCHEMA 7 AND OLDER: B0-B3 are `diag_git_hash`, FNV-1a 32-bit over the build's GIT_SHA, and
+are judged as before against `--expect-sha`. gi_diag picks the DBC by the schema byte, so a
+schema 7 device or page reads its own field. `/check_status` is no longer asked for the
+sha: it is off limits on the bench (bench-holder.md), so a schema 7 page needs --expect-sha.
+
+WHY THE WIRE AND NOT HTTP ALONE. The page is the device answering about itself through the
+web server -- one instrument. The 0x7F3 BUILD page is the same fact arriving by a
+completely different path: built by `gen_inhibit`'s own diag packer, handed to the TWAI
+controller, put on the wire, and decoded by a separate dongle against the DBC. If they
+agree, the running image's identity does not rest on either one alone.
 
 It is also the check that matters for every LOG. A capture carries no HTTP, so 0x7F3 is
 the only way a log can be matched to a firmware rev afterwards -- which is the whole
 reason the page exists. A page that is wrong, stale or absent would make every future
 capture unattributable, and nothing else would reveal it.
 
-HOW THE EXPECTED VALUE IS DERIVED. `diag_git_hash` is FNV-1a 32-bit over the GIT_SHA
-string, and GIT_SHA comes from `git describe --tags --always --dirty` at CMake configure
-time. So the expectation is computed here from the SHA, with the same FNV-1a constants
-the firmware uses, rather than from a number recorded by an earlier session. Decoding is
+HOW THE EXPECTED VALUE IS DERIVED. On schema 8, from the image file named by --image, never
+from a number recorded by an earlier session. On schema 7, `diag_git_hash` is FNV-1a 32-bit
+over the GIT_SHA string, computed here from --expect-sha with the firmware's constants. Decoding is
 via cantools against the diag DBC (gi_diag.py: from git, by schema byte), never by hand
 -- a field at the wrong offset or a width that truncates then shows up as a wrong value
 rather than as nothing. The record keeps the decoder's run identity (toolkit item 10).
@@ -47,8 +57,8 @@ ACKed -- a lone transmitter with no other node on the segment never completes a 
 Bench only. Needs PCAN and Kvaser on the desk segment and the WiCAN at 192.168.80.1.
 
 Usage:
-    py -3.11 diag_build_page_check.py --expect-sha 4a0a796
-    py -3.11 diag_build_page_check.py            # takes the SHA from /check_status
+    py -3.14 diag_build_page_check.py --image <the flashed .bin>   # schema 8
+    py -3.14 diag_build_page_check.py --expect-sha 4a0a796         # schema 7 and older
 """
 
 import argparse
@@ -64,6 +74,7 @@ from collections import defaultdict
 import can                                                          # noqa: E402
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 import gi_diag  # noqa: E402  the diag DBC from git, by schema byte (toolkit item 10)
+import image_elf_sha  # noqa: E402  the image file's app descriptor, no ESP-IDF code
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -91,6 +102,33 @@ def fnv1a32(s):
         h ^= ch
         h = (h * 16777619) & 0xFFFFFFFF
     return h
+
+
+BUILD_ID_SCHEMA = 8   # 0x7F3 B0-B3 are diag_build_id from this schema on (port step 0c)
+
+
+def build_id_verdict(build_id, image_hash, page_elf_sha):
+    """Schema 8: spec 12.4 "0x7F3 carries the build id" (bench) and "the page names the
+    binary". build_id: diag_build_id as decoded (an int); image_hash: the flashed image
+    file's image hash, hex; page_elf_sha: the page's elf_sha256. Returns (ok, rows), each
+    row (label, ok, detail). Anything missing or malformed fails its row."""
+    def hex64(x):
+        return isinstance(x, str) and len(x) == 64 and all(c in "0123456789abcdef" for c in x.lower())
+
+    rows = []
+    wire = "%08x" % build_id if isinstance(build_id, int) and 0 <= build_id <= 0xFFFFFFFF else None
+    img = image_hash.lower() if hex64(image_hash) else None
+    page = page_elf_sha.lower() if hex64(page_elf_sha) else None
+    rows.append(("diag_build_id decoded as a u32", wire is not None, "%r" % (build_id,)))
+    rows.append(("the flashed image's hash read", img is not None, "%r" % (image_hash,)))
+    rows.append(("the page's elf_sha256 read", page is not None, "%r" % (page_elf_sha,)))
+    rows.append(("build id = the image hash's first four bytes", bool(wire and img) and wire == img[:8],
+                 "wire %s, image %s" % (wire, img and img[:8])))
+    rows.append(("build id = the page elf_sha256's first four bytes", bool(wire and page) and wire == page[:8],
+                 "wire %s, page %s" % (wire, page and page[:8])))
+    rows.append(("page elf_sha256 = the image hash", bool(img and page) and img == page,
+                 "page %s, image %s" % (page, img)))
+    return all(r[1] for r in rows), rows
 
 
 def get_json(path):
@@ -216,10 +254,12 @@ def main():
                     help="capture window. The page repeats at diag_period_ms "
                          "240, so 6 s is ~25 pages -- enough that one corrupt "
                          "frame cannot decide the result.")
+    ap.add_argument("--image", default=None,
+                    help="the flashed image file (.bin). Schema 8: the build id must be "
+                         "the first four bytes of its image hash, and the page's "
+                         "elf_sha256 that hash.")
     ap.add_argument("--expect-sha", default=None,
-                    help="the GIT_SHA the page should name. Default: whatever "
-                         "/check_status reports, which still cross-checks the "
-                         "wire against HTTP.")
+                    help="schema 7 and older only: the GIT_SHA the page should name.")
     ap.add_argument("--expect-autoarm", type=int, default=None,
                     choices=(0, 1),
                     help="assert 0x7F1 diag_flags bit3 (autoarm_build): 0 "
@@ -237,6 +277,15 @@ def main():
     ap.add_argument("--out", default="runs/diag_build_page_check.json")
     args = ap.parse_args()
 
+    if not args.image and not args.expect_sha:
+        raise SystemExit("give --image (schema 8) or --expect-sha (schema 7 and older): with neither "
+                         "there is nothing to judge the page against")
+    image = None
+    if args.image:
+        try:
+            image = image_elf_sha.read_file(args.image)
+        except (OSError, ValueError) as exc:
+            raise SystemExit("cannot read the image hash of %s: %s" % (args.image, exc))
     out = args.out
     if not os.path.isabs(out) and os.path.dirname(out) in ("", "runs"):
         out = gi_paths.runs(os.path.basename(out))
@@ -270,22 +319,13 @@ def main():
           % (gi_diag.DBC_PATH, ident["dbc_commit"][:10], ident["dbc_version"], msg.name, msg.length,
              ", ".join(s.name for s in msg.signals)))
 
-    # --- what the device says about itself over HTTP, before anything else
-    try:
-        cs = get_json("/check_status")
-    except Exception as exc:
-        print("device did not answer /check_status: %r" % exc)
-        print("Join its AP first.")
-        return 2
-    http_sha = cs.get("git_version")
-    expect_sha = args.expect_sha or http_sha
-    expect_hash = fnv1a32(expect_sha)
-    print("  HTTP /check_status git_version = %s" % http_sha)
-    print("  expecting diag_git_hash = fnv1a32(%r) = 0x%08X" % (expect_sha, expect_hash))
-    if args.expect_sha and args.expect_sha != http_sha:
-        print("  NOTE: --expect-sha differs from what HTTP reports. The wire is "
-              "being checked against the ARGUMENT, and the HTTP disagreement is "
-              "itself a finding.")
+    # --- what the page is to be judged against, before the device is touched
+    expect_sha = args.expect_sha
+    expect_hash = fnv1a32(expect_sha) if expect_sha else None
+    if image:
+        print("  image %s: image hash %s" % (args.image, image["elf_sha256"]))
+    if expect_sha:
+        print("  schema 7 expectation: diag_git_hash = fnv1a32(%r) = 0x%08X" % (expect_sha, expect_hash))
 
     print("  opening buses (PCAN first -- see rule 1):")
     buses = open_buses(args.ixxat)
@@ -300,7 +340,12 @@ def main():
     drained = settle(buses)
     print("  settled 2 s, drained %s" % (drained or "0 frames"))
 
-    st_before = get_json("/gen_inhibit")
+    try:
+        st_before = get_json("/gen_inhibit")
+    except Exception as exc:
+        print("device did not answer /gen_inhibit: %r" % exc)
+        print("Join its AP first.")
+        return 2
     print("  device before: mode=%s bus_on=%s abort_latched=%s"
           % (st_before.get("mode"), st_before.get("bus_on"),
              st_before.get("abort_latched")))
@@ -376,9 +421,12 @@ def main():
 
     result = {
         "when": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "http_git_version": http_sha,
+        "image": args.image,
+        "image_hash": image["elf_sha256"] if image else None,
+        "page_elf_sha256": st_before.get("elf_sha256"),
+        "page_elf_sha256_after": st_after.get("elf_sha256"),
         "expect_sha": expect_sha,
-        "expect_git_hash": "0x%08X" % expect_hash,
+        "expect_git_hash": "0x%08X" % expect_hash if expect_hash is not None else None,
         "seconds": args.seconds,
         "buses_opened": sorted(buses.keys()),
         "open_order": "pcan first, then kvaser" + (", then ixxat" if args.ixxat else ""),
@@ -420,31 +468,54 @@ def main():
         else:
             print("  %-24s VARIES across pages: %s" % (k, ", ".join(vals)))
 
-    got_hash = decoded[0].get("diag_git_hash")
     fw_ver = decoded[0].get("diag_fw_ver16")
     schema = decoded[0].get("diag_schema_ver_build")
-    hash_ok = (got_hash == expect_hash)
     stable = (len(uniq) == 1)
-
     result.update({
         "pages_decoded": len(decoded),
         "distinct_payloads": [p.hex(" ") for p in uniq],
-        "diag_git_hash": got_hash,
-        "diag_git_hash_hex": ("0x%08X" % got_hash
-                              if isinstance(got_hash, int) else None),
         "diag_fw_ver16": fw_ver,
         "diag_schema_ver_build": schema,
-        "hash_matches_expected": hash_ok,
         "payload_stable": stable,
     })
-
-    print("\nVERDICT")
-    print("  diag_git_hash on the wire   0x%08X"
-          % got_hash if isinstance(got_hash, int) else "  diag_git_hash NOT AN INT")
-    print("  expected from %-13s 0x%08X" % (expect_sha, expect_hash))
-    print("  %s" % ("MATCH -- the wire names the same build HTTP reports"
-                    if hash_ok else
-                    "MISMATCH -- the wire does NOT name the expected build"))
+    print("\nVERDICT (schema %s)" % schema)
+    if isinstance(schema, int) and schema >= BUILD_ID_SCHEMA:
+        got = decoded[0].get("diag_build_id")
+        page_sha = st_before.get("elf_sha256")
+        if image is None:
+            id_ok, rows = False, [("--image given (schema 8 judges against the flashed image)", False,
+                                   "only --expect-sha was given")]
+        else:
+            id_ok, rows = build_id_verdict(got, image["elf_sha256"], page_sha)
+        same_after = st_after.get("elf_sha256") == page_sha
+        rows.append(("the page's elf_sha256 the same before and after", same_after,
+                     "%s, %s" % (page_sha, st_after.get("elf_sha256"))))
+        id_ok = id_ok and same_after
+        result.update({"diag_build_id": got, "diag_build_id_hex": "%08x" % got if isinstance(got, int) else None,
+                       "rows": [{"row": r[0], "ok": r[1], "detail": r[2]} for r in rows],
+                       "build_id_ok": id_ok})
+        print("  diag_build_id on the wire   %s" % ("%08x" % got if isinstance(got, int) else "NOT AN INT %r" % (got,)))
+        print("  image hash, first 4 bytes   %s" % (image["elf_sha256"][:8] if image else "-"))
+        print("  page elf_sha256, first 4    %s" % ((page_sha or "-")[:8]))
+        for label, ok_, detail in rows:
+            print("  %-4s %s: %s" % ("ok" if ok_ else "FAIL", label, detail))
+        print("  %s" % ("MATCH -- the wire, the page and the image file name the same image" if id_ok else
+                        "MISMATCH -- the wire, the page and the image file do NOT all name the same image"))
+    else:
+        got_hash = decoded[0].get("diag_git_hash")
+        id_ok = expect_hash is not None and got_hash == expect_hash
+        result.update({"diag_git_hash": got_hash,
+                       "diag_git_hash_hex": ("0x%08X" % got_hash if isinstance(got_hash, int) else None),
+                       "hash_matches_expected": id_ok})
+        print("  diag_git_hash on the wire   0x%08X"
+              % got_hash if isinstance(got_hash, int) else "  diag_git_hash NOT AN INT")
+        if expect_hash is None:
+            print("  FAIL: a schema %s page needs --expect-sha to be judged" % schema)
+        else:
+            print("  expected from %-13s 0x%08X" % (expect_sha, expect_hash))
+        print("  %s" % ("MATCH -- the wire names the expected build"
+                        if id_ok else
+                        "MISMATCH -- the wire does NOT name the expected build"))
     print("  diag_fw_ver16 = %s, diag_schema_ver_build = %s" % (fw_ver, schema))
     if not stable:
         print("  WARNING: the payload varied between pages. A build page must be "
@@ -492,7 +563,7 @@ def main():
         detail["verdict"] = "ok" if autoarm_ok else "FAIL"
         result["autoarm"] = detail
 
-    ok = hash_ok and stable and autoarm_ok
+    ok = id_ok and stable and autoarm_ok
     result["verdict"] = ("ok" if ok else "FAIL")
     io.open(out, "w", encoding="utf-8", newline="\n").write(
         json.dumps(result, indent=1) + "\n")

@@ -73,8 +73,10 @@ for s in "$@"; do
         --other "$W/build-tester-man2/wican-fw_obd_${C}_man.bin" --out "$D/B17_spec11_page_${C}_man.json" \
         > "$D/B17_spec11_page_${C}_man.txt" 2>&1; echo "B17a exit $?"
       red "$D/B17_spec11_page_${C}_man.txt" ;;
-    B18)
-      py -3.14 -B $A/diag_build_page_check.py --expect-sha $C --out "$D/B18_diag_build_page_check.json" \
+    B18)   # schema 8 (port step 0c): the build id against the flashed _man image; --expect-sha for schema 7
+      [ -n "$W" ] || { echo "B18 needs GI_IMAGES"; exit 2; }
+      py -3.14 -B $A/diag_build_page_check.py --image "$W/build-tester-man/wican-fw_obd_${C}_man.bin" --expect-sha $C \
+        --out "$D/B18_diag_build_page_check.json" \
         > "$D/B18_diag_build_page_check.txt" 2>&1; echo "B18 exit $?"
       red "$D/B18_diag_build_page_check.txt" ;;
     B20)   # every case interlock_bench lists, as on e3d9437 (28 then)

@@ -22,8 +22,7 @@ import time
 # Tests that need no build, image or network. test_refusal_pairs.py needs images
 # (refusal_pairs_runs.py), so it is not here.
 LIGHT = ("test_build_switches.py", "test_switch_rows.py", "test_scan_scope_check.py", "test_flt_row.py",
-         "test_fw_version_row.py", "test_partition_row.py", "test_prod_record.py", "test_sources_row.py",
-         "test_stale_name_check.py", "test_name_once_check.py")
+         "test_fw_version_row.py", "test_partition_row.py", "test_prod_record.py", "test_image_rows.py")
 
 
 def run(cmd, cwd):

@@ -49,14 +49,17 @@ FLAGS_GOOD = 0x66
 FLAGS_ABORTED = FLAGS_GOOD | 0x80
 
 
-def frames(flags=FLAGS_GOOD, abort=0, arm_block=0):
-    """Encode with HEAD's DBC, then decode through gi_diag in page order, so the rules
-    see what the bench would hand them."""
-    st = {"diag_schema_ver": DBC_SCHEMA, "diag_fw_ver": 3, "diag_mode": 3,
+def frames(flags=FLAGS_GOOD, abort=0, arm_block=0, build_id=0x5A4AEA1, schema=None):
+    """Encode with HEAD's DBC (or `schema`'s), then decode through gi_diag in page order,
+    so the rules see what the bench would hand them. 0x7F3 B0-B3 are diag_build_id from
+    schema 8 (port step 0c) and diag_git_hash before."""
+    schema = schema or DBC_SCHEMA
+    sdb = SCHEMAS.get(schema).db
+    st = {"diag_schema_ver": schema, "diag_fw_ver": 3, "diag_mode": 3,
           "diag_flags": flags, "diag_disable_reason": 0,
           "diag_shift_pos": 0, "diag_soc_x100": 77.0}
-    bd = {"diag_git_hash": 0x5A4AEA1, "diag_fw_ver16": 3,
-          "diag_schema_ver_build": DBC_SCHEMA}
+    bd = {"diag_build_id" if schema >= 8 else "diag_git_hash": build_id, "diag_fw_ver16": 3,
+          "diag_schema_ver_build": schema}
     s2 = {"diag_abort_reason": abort, "diag_flags2": 0,
           "diag_arm_block": arm_block, "diag_would_tx": 0,
           "diag_tx_queued_behind": 0}
@@ -64,7 +67,7 @@ def frames(flags=FLAGS_GOOD, abort=0, arm_block=0):
     out = []
     dec = gi_diag.Decoder(SCHEMAS)
     for fid, payload in ((0x7F1, st), (0x7F3, bd), (0x7F8, s2), (0x7F9, sk)):
-        data = db.encode_message(fid, payload)
+        data = sdb.encode_message(fid, payload)
         out.append(dec.feed(fid, data))
     return out
 
@@ -79,6 +82,10 @@ SCENARIOS = [
      {"0x7F8 abort_reason none", "0x7F8 abort_reason agrees with bit7"}),
     ("disagree_b_bit7_without_reason", dict(flags=FLAGS_ABORTED, abort=0),
      {"abort_latched clear (bit7)", "0x7F8 abort_reason agrees with bit7"}),
+    # 0x7F3 B0-B3 (port step 0c): the build id on schema 8, the git hash on schema 7.
+    ("build_id_zero", dict(build_id=0), {"0x7F3 build id nonzero"}),
+    ("schema7_page", dict(schema=7), set()),
+    ("schema7_git_hash_zero", dict(schema=7, build_id=0), {"0x7F3 build id nonzero"}),
 ]
 
 
@@ -96,7 +103,7 @@ def main():
     for name, kwargs, want_fail in SCENARIOS:
         st, bd, s2, sk = frames(**kwargs)
         try:
-            checks = build_checks(st, bd, s2, sk, DBC_SCHEMA)
+            checks = build_checks(st, bd, s2, sk, kwargs.get("schema", DBC_SCHEMA))
         except Exception as exc:
             print("  CRASH %-32s build_checks raised %s: %s"
                   % (name, type(exc).__name__, exc))

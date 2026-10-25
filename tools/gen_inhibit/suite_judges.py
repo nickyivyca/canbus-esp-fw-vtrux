@@ -84,6 +84,13 @@ def base(path):
 
 JUDGES = {}
 
+# Index ids retired by a spec change: no suite runs or judges them, and a run against the
+# baseline reports them as retired, never compared (reviewer, 2026-10-25, step 0c Q3).
+RETIRED = {
+    "C5": "spec 12.4 'no stale image name', retired at port step 0c (user, 2026-10-25)",
+    "C6": "spec 12.4 'the name enters the build once', retired at port step 0c (user, 2026-10-25)",
+}
+
 
 def judge(cid, part):
     def reg(fn):
@@ -483,6 +490,24 @@ def b17b(F):
 @judge("B18", "B")
 def b18(F):
     t = text(F.one(r"B18_diag_build_page_check\.txt"))
+    w8 = re.search(r"^  diag_build_id on the wire +([0-9a-f]{8})$", t, re.M)
+    if w8:
+        # Schema 8 (port step 0c): the wire's build id, the image file's hash and the page's
+        # elf_sha256 name one image (spec 12.4 "0x7F3 carries the build id", bench half, and
+        # "the page names the binary"). Every row the check printed must be ok.
+        end = re.search(r"^  (MATCH|MISMATCH) -- ", t[w8.start():], re.M)
+        sec = t[w8.start():w8.start() + end.start()] if end else ""
+        img = re.search(r"^  image hash, first 4 bytes +([0-9a-f]{8})$", sec, re.M)
+        page = re.search(r"^  page elf_sha256, first 4 +([0-9a-f]{8})$", sec, re.M)
+        rows = re.findall(r"^  (ok|FAIL) +\S", sec, re.M)
+        ok = (end and end.group(1) == "MATCH" and img and page and w8.group(1) == img.group(1) == page.group(1)
+              and len(rows) >= 7 and all(r == "ok" for r in rows))
+        return [result("B18", "PASS" if ok else "FAIL", {"diag_build_id": fig(w8.group(1))},
+                       "MATCH, %d rows ok" % len(rows) if ok else
+                       "wire %s, image %s, page %s, %d of %d rows ok, %s" % (
+                           w8.group(1), img and img.group(1), page and page.group(1), rows.count("ok"), len(rows),
+                           end.group(1) if end else "no verdict line"))]
+    # Schema 7 and older: diag_git_hash against fnv1a32 of the expected sha.
     w = re.search(r"diag_git_hash on the wire +(0x[0-9A-F]+)", t)
     e = re.search(r"expected from \S+ +(0x[0-9A-F]+)", t)
     ok = w and e and w.group(1) == e.group(1) and "MATCH --" in t
@@ -729,16 +754,6 @@ def c3(F):
     return [result("C3", "PASS" if ok else "FAIL",
                    {"negatives": fig(int(m.group(3)) if m else None), "caught": fig(int(m.group(2)) if m else None)},
                    m.group(0) if m else "no SUMMARY line")]
-
-
-@judge("C5", "C")
-def c5(F):
-    return [ok_pass("C5", F.one(r"stale_name_check_%s\.txt" % C7))]
-
-
-@judge("C6", "C")
-def c6(F):
-    return [ok_pass("C6", F.one(r"name_once_check_%s\.txt" % C7))]
 
 
 @judge("C2scan", "C")

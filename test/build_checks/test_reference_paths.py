@@ -19,6 +19,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 
@@ -52,6 +53,17 @@ print(json.dumps({"dbc": dbc, "doc": doc, "has_default": hasattr(B, "DEFAULT_DBC
 """
 
 
+# records_dir() reads REVERSE_IT_DIR for the release records (shared/tools R13); no other
+# code in build_output.py may, since the DBC and the schema doc come from git.
+RECORDS_DEF = re.compile(r"\ndef records_dir\(\):\n(?:(?:[ \t]+[^\n]*)?\n)*")
+OLD_PATH = re.compile(r'"projects", "vtrux"|projects/vtrux/vtrux-wican-diag|REVERSE_IT_DIR"')
+
+
+def reverse_it_paths(src):
+    """The old reverse-it DBC and doc defaults left in `src`, outside records_dir()."""
+    return [m.group(0) for m in OLD_PATH.finditer(RECORDS_DEF.sub("\n", src))]
+
+
 def check(name, ok, detail=""):
     print("%s  %s%s" % ("ok  " if ok else "FAIL", name, "" if ok else "  -- %r" % (str(detail)[:300],)))
     if not ok:
@@ -63,9 +75,20 @@ def git(repo, *a):
                            "-c", "core.autocrlf=false"] + list(a), check=True, capture_output=True).stdout
 
 
+def remove_tree(d):
+    """rmtree that also removes read-only files: on Windows git's objects are read-only, and
+    ignore_errors=True left them behind, so a later run given the same PID found the folder
+    there and crashed in makedirs (2026-10-25: 101 leftovers, a crashed run every few)."""
+    def writable(func, path, _exc):
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+    if os.path.exists(d):
+        shutil.rmtree(d, onexc=writable)
+
+
 def scratch():
     d = os.path.join(REPO, "scratch", "build-checks-tests", "reference_paths_%d" % os.getpid())
-    shutil.rmtree(d, ignore_errors=True)
+    remove_tree(d)
     os.makedirs(d)
     return d
 
@@ -207,10 +230,29 @@ def main():
     src = open(target, encoding="utf-8").read()
     bad = [m.group(0) for m in re.finditer(r"seadrive_root|nickivyc|My Libraries|NotGit|Seafile|C:[\\/]+Users", src)]
     check("no machine-specific path in build_output.py", not bad, bad)
-    old = [m.group(0) for m in re.finditer(r'"projects", "vtrux"|projects/vtrux/vtrux-wican-diag|REVERSE_IT_DIR"', src)]
+    old = reverse_it_paths(src)
     check("build_output.py no longer builds a reverse-it path to the DBC or the doc", not old, old)
+    # The check itself: records_dir() may read REVERSE_IT_DIR (the release records, shared/tools
+    # R13, since a9ac0ff); the old DBC default, anywhere else, still fails it.
+    old_default = '\ndef _ref_root():\n    root = os.environ.get("REVERSE_IT_DIR", "").strip()\n'
+    check("the check: a REVERSE_IT_DIR read outside records_dir() fails it",
+          reverse_it_paths(src + old_default) == ['REVERSE_IT_DIR"'], reverse_it_paths(src + old_default))
+    check("the check: the old projects/vtrux join fails it",
+          reverse_it_paths('x = os.path.join(root, "projects", "vtrux")\n') == ['"projects", "vtrux"'], "")
+    check("the check: build_output.py does read REVERSE_IT_DIR, inside records_dir()",
+          'REVERSE_IT_DIR"' in src and 'REVERSE_IT_DIR"' in RECORDS_DEF.search(src).group(0), "")
 
-    shutil.rmtree(base, ignore_errors=True)
+    # remove_tree itself: a folder holding a read-only file, as git leaves its objects.
+    left = os.path.join(base, "leftover", "objects")
+    os.makedirs(left)
+    ro = os.path.join(left, "ab")
+    open(ro, "w").close()
+    os.chmod(ro, stat.S_IREAD)
+    remove_tree(os.path.dirname(left))
+    check("remove_tree removes a folder holding a read-only file (git's objects on Windows)",
+          not os.path.exists(os.path.dirname(left)), "left behind")
+
+    remove_tree(base)
     print("%d FAIL" % len(FAILS) if FAILS else "all ok")
     return 1 if FAILS else 0
 

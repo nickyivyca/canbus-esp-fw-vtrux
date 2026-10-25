@@ -109,8 +109,8 @@ def run(fn):
         raise
 
 
-def cmp(rec, reruns=()):
-    return BC.compare(INDEX, rec, reruns, IDS_OF)
+def cmp(rec, reruns=(), index=None):
+    return BC.compare(index or INDEX, rec, reruns, IDS_OF)
 
 
 def tests():
@@ -136,6 +136,14 @@ def tests():
           flagged(E) == [] and any(r[1] == "identity" for r in entry(E, "X2")["rows"]), entry(E, "X2"))
     E = cmp(record(X2=res("g/X2/X2", "FAIL", page_elf_sha256="bbbb2222")))
     check("an identity check must still PASS", flagged(E) == ["X2"] and reran(E) == ["X2"], flagged(E))
+    # Port step 0c: B18's figure is diag_git_hash on the schema 7 baseline and diag_build_id
+    # on a schema 8 run. Both are identity, so the rename is labelled, not flagged.
+    E = cmp(record(X2=res("g/X2/X2", diag_build_id="a5df3fde")), index={"checks": [
+        dict(c, figures={"diag_git_hash": "0x2FE85674"}) if c["id"] == "X2" else c for c in INDEX["checks"]]})
+    rows = {r[0]: r[1] for r in entry(E, "X2")["rows"]}
+    check("diag_git_hash in the baseline and diag_build_id in the run are both identity, not flagged",
+          flagged(E) == [] and rows.get("diag_git_hash") == "identity" and rows.get("diag_build_id") == "identity",
+          (flagged(E), entry(E, "X2")))
 
     E = cmp(record(X3=res("h/X3/X3", "FAIL", k=9)))
     check("a stage (a) check is labelled, not compared", flagged(E) == [] and reran(E) == []

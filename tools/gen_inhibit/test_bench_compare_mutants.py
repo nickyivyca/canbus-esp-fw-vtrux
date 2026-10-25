@@ -27,6 +27,8 @@ MUTANTS = [
      'rows.append((k, "DIFF", False, "no baseline spread: any change re-runs"))'),
     ("the spread pair is not looked up", 'if not m:\n        return None', 'if True:\n        return None'),
     ("identity figures are flagged", 'if k in IDENTITY:', 'if False:'),
+    ("diag_build_id not identity", 'IDENTITY = {"page_elf_sha256", "diag_git_hash", "diag_build_id"}',
+     'IDENTITY = {"page_elf_sha256", "diag_git_hash"}'),
     ("a figure that differs is not flagged", '            if state == "DIFF":\n                e["flagged"] = True',
      '            if state == "DIFF":\n                pass'),
     ("a verdict that differs is not flagged", 'if got[0]["verdict"] != c["verdict"]:', 'if False:'),

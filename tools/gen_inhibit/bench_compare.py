@@ -8,8 +8,8 @@ The rule (user, 2026-10-19, option a; the reviewer's ruling the same day):
   - a flagged figure re-runs its check once, automatically: a figure with a baseline
     spread (its _min/_max pair across arms) when it falls outside that spread; any
     other figure on any change;
-  - identity figures (page_elf_sha256, diag_git_hash) change with every image: labelled,
-    not flagged. Their checks must still PASS;
+  - identity figures (page_elf_sha256, diag_git_hash, and diag_build_id from schema 8)
+    change with every image: labelled, not flagged. Their checks must still PASS;
   - part C checks marked stage_a in the index are replaced in stage (a): labelled, not
     compared.
 A verdict that differs is flagged and re-run too, so a re-run can tell a one-off FAIL
@@ -36,7 +36,7 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-IDENTITY = {"page_elf_sha256", "diag_git_hash"}
+IDENTITY = {"page_elf_sha256", "diag_git_hash", "diag_build_id"}
 NO_RESULT = "-"
 RUN_LINE = re.compile(r"^run (\S+): (.+)index\.txt\s*$", re.M)
 
