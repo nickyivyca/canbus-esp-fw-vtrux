@@ -19,6 +19,8 @@ MUTANTS = [
     ("the new schema not checked", "    if any(v != new_ver for v in sn):", "    if False:"),
     ("an added or removed golden ignored", "    for n in sorted(set(old_files) ^ set(new_files)):", "    for n in []:"),
     ("a refusal passes", '        return ["refused: %s" % e]', "        return []"),
+    ("--same-value ignored", "    a = same_value(a, same)\n", ""),
+    ("--same-value renames every signal", "        sigs = sorted((same.get(k, k), v)", "        sigs = sorted((next(iter(same.values())), v)"),
     ("phase 2 reads the wrong bit", '                if not int(p["diag_flags"]) & 0x02:', '                if not int(p["diag_flags"]) & 0x04:'),
 ]
 

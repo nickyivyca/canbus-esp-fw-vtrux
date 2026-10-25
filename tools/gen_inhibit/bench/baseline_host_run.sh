@@ -35,8 +35,20 @@ git -C "$FW" cat-file -e "$C^{commit}" || { echo "no commit $C in $FW" >&2; exit
 mkdir -p "$OUT"
 [ -e "$OUT/host_run.log" ] && { echo "$OUT/host_run.log exists; not overwriting" >&2; exit 2; }
 
-git -C "$FW" archive "$C" main test \
-  | ssh "$REMOTE" "rm -rf ~/$DEST && mkdir -p ~/$DEST && tar xf - -C ~/$DEST"
+# THE DIAG DBCS (2026-10-25). Since port plan toolkit item 10 (2026-10-24) run_tests.py and the
+# host checkers decode the diag lines through tools/gen_inhibit/bench/gi_diag.py, which a main+test
+# archive lacks, and ~/$DEST has no git. So a commit that has gi_diag.py also ships it and pins.json
+# from its own archive, and gi_diag's diag_schemas/ export at the copy's root, made here by this
+# tree's gi_diag (the DBCs from its git history), as gi_host_run.sh does. A commit before item 10
+# ships neither, as before. The copy is staged in this tree's scratch/ first.
+STAGE="$FW/scratch/baseline-host-stage/$C"
+rm -rf "$STAGE" && mkdir -p "$STAGE"
+git -C "$FW" archive "$C" main test | tar -x -C "$STAGE" || exit 2
+if git -C "$FW" cat-file -e "$C:tools/gen_inhibit/bench/gi_diag.py" 2>/dev/null; then
+  git -C "$FW" archive "$C" tools/gen_inhibit/bench/gi_diag.py tools/gen_inhibit/bench/pins.json | tar -x -C "$STAGE" || exit 2
+  ${LOCAL_PY:-py -3.14} -B "$FW/tools/gen_inhibit/bench/gi_diag.py" export "$STAGE/diag_schemas" >/dev/null || exit 2
+fi
+tar -C "$STAGE" -cf - . | ssh "$REMOTE" "rm -rf ~/$DEST && mkdir -p ~/$DEST && tar xf - -C ~/$DEST"
 
 ssh "$REMOTE" "bash -s" > "$OUT/host_run.log" 2>&1 <<EOF
 cd ~/$DEST
@@ -71,6 +83,8 @@ step spec_expect_check $PY spec_expect_check.py
 step bus_on_check $PY bus_on_check.py
 step drained_selftest $PY drained_check.py --selftest
 step drained_check $PY drained_check.py
+# 0x7F3's build id through the runner's cfg key (port step 0c, 2026-10-25), where the archive has it.
+if [ -e test_cfg_build_id.py ]; then step test_cfg_build_id $PY test_cfg_build_id.py; fi
 # Shim case 33's long-arm stimulus is generated, not in git (test/gen_inhibit_shim/
 # README.md). The 2026-10-15 baseline's first shim run lacked it and failed case 33
 # on the missing file alone (runs/baseline_c65c45e/host/shim_rerun.log).
