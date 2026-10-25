@@ -387,12 +387,20 @@ details.
 
 ### Build tooling
 
-**Build tooling is specified.** Until the shared-code merge, each project's
-spec holds its own build-identity and build-option rules (user,
-2026-10-13). The shared-code and ESP-IDF port plan is
-`$REVERSE_IT_DIR/projects/vtrux/notes/plans/esp-shared-code-port.md`. When
-shared build tooling takes over a project's builds, this paragraph changes
-in the same merge.
+**Build tooling is specified.** gen-inhibit's release builds are made by
+the shared build tooling (`shared/tools` on `shared/main`) under
+`shared/tools/SPEC.md`, at the version gen-inhibit pins in
+`shared_pins.json` at its repo root. They run from that version's read-only
+checkout `../shared-<tag>/`, started by `tools/vtrux_tools.py`. If the
+checkout is missing, it refuses and prints the command that creates it. A
+gen-inhibit prod build is such a release build (gen-inhibit spec 12.3 item
+3, user, 2026-10-25), and none is made during the shared-code port.
+gen-inhibit's bench and dev builds stay `idf.py` / `ninja` builds, which
+need not meet the release rules (shared/tools SPEC R14). The interposer
+keeps its own spec's build-identity and build-option rules (user,
+2026-10-13) until its builds move onto the shared tooling at port step 2a;
+this paragraph changes in that merge. The port plan is
+`$REVERSE_IT_DIR/projects/vtrux/notes/plans/esp-shared-code-port.md`.
 
 ### Builds during wall-clock tests
 
@@ -420,8 +428,10 @@ The cause was never isolated (user, 2026-10-15, for all of this section):
    plan.
 3. **The throttled form on `NICKY-XPS`.** From the exported PowerShell, set the
    shell's priority class to Idle with `(Get-Process -Id $PID).PriorityClass =
-   'Idle'`. Then build: for gen-inhibit `ninja -C build -j 1`, for the
-   interposer `$env:PLATFORMIO_RUN_JOBS=1; py -3.14 -m platformio run`. The
+   'Idle'`. Then build: for a gen-inhibit release build,
+   `py -3.14 -B tools/vtrux_tools.py release --jobs 1` from the repo root;
+   for a gen-inhibit bench or dev build, `ninja -C build -j 1`; for the
+   interposer, `$env:PLATFORMIO_RUN_JOBS=1; py -3.14 -m platformio run`. The
    processes the build starts inherit the class. Idle lowers CPU priority
    only, not disk priority. It also does not reach Windows Defender, which
    scans fresh build output in its own process. If (b) still disturbs the
