@@ -529,9 +529,11 @@ same folder. The interposer's test evidence is
     component, and the one checkout per tag (R23) needs no change.
   - The date as the name (option A of two; the other was a counter, `v1`,
     `v2`, which reads like upstream WiCAN's version numbers).
-  - Cut only when a project is about to pin it, by the reviewer who merged
-    the change (option A of two; the other was a tag after every merge), so
-    every tag is one a project uses.
+  - Cut only when a project is about to pin it (option A of two; the other
+    was a tag after every merge), so every tag is one a project uses. By
+    the reviewer of the project about to pin it, since a commit may hold
+    merges by both reviewers (the interposer reviewer's reading of the
+    first wording, "the reviewer who merged the change").
   - Never moved or deleted: pins and run records name tags, and a pin's
     digest (R7) would refuse a moved tag anyway.
 - **Status:** complete.

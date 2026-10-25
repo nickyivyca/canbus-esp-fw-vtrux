@@ -239,8 +239,8 @@ unless the image changes, which the reproducible test (R19) shows.
   the date it is cut, `YYYY.MM.DD`, with `.2`, `.3` and so on for a second
   or later tag the same day (for example `2026.10.24`, `2026.10.24.2`). A
   tag is cut on a `shared/main` commit only when a project is about to pin
-  it, by the reviewer who merged the change, after the pre-push check. A
-  tag is never moved and never deleted. Its checkout is `../shared-<tag>/`
+  it, by the reviewer of that project, after the pre-push check. A tag is
+  never moved and never deleted. Its checkout is `../shared-<tag>/`
   (R23).
 
 ## 7. Not in this spec
