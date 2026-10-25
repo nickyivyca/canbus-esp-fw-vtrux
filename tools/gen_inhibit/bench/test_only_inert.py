@@ -3,7 +3,8 @@
 For every test-only build switch, its trigger is sent to the image on the device
 exactly as a test run sends it, and the effect the switch exists to produce is looked
 for on the bus and on the device. The triggers come from ONE table, the firmware
-repo's build_switches.TRIGGERS, which restart_error_frames.py --trigger also reads.
+repo's vtrux_checks.json ("inert_triggers", beside the switch table since
+2026-10-24), which restart_error_frames.py --trigger also reads.
 
 The same code runs in both directions:
   --expect absent    on the flight image: every effect must be absent, AND the device
@@ -38,7 +39,6 @@ carries credentials until the WiCAN's reset).
 Writes runs/test_only_inert_<expect>_<stamp>.json.
 """
 import argparse
-import importlib.util
 import json
 import os
 import re
@@ -60,12 +60,13 @@ ROLLBACK_WAIT_S = 70.0
 
 
 def load_triggers(repo=None):
+    """{switch: {"probes": ((method, path), ...), "state", "effect", "observe": (...)}} from the
+    firmware repo's vtrux_checks.json, key "inert_triggers"."""
     repo = repo or os.environ.get("GI_FW_REPO") or gi_paths.repo_root()
-    spec = importlib.util.spec_from_file_location(
-        "build_switches", os.path.join(repo, "test", "build_checks", "build_switches.py"))
-    bs = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(bs)
-    return bs
+    with open(os.path.join(repo, "vtrux_checks.json"), encoding="utf-8") as fh:
+        t = json.load(fh)["inert_triggers"]
+    return {s: {"probes": tuple(tuple(x) for x in e["probes"]), "state": e.get("state"),
+                "effect": e.get("effect"), "observe": tuple(e.get("observe", ()))} for s, e in t.items()}
 
 
 # ------------------------------------------------------------------ judgements --
@@ -366,7 +367,7 @@ def main():
     ap.add_argument("--gap-s", type=float, default=0.0,
                     help="wait this long between one switch's probe and the next (default 0)")
     a = ap.parse_args()
-    bs = load_triggers()
+    triggers = load_triggers()
     stamp = time.strftime("%Y%m%dT%H%M%S")
     run = {"when": stamp, "expect": a.expect, "power": a.power, "gap_s": a.gap_s,
            "build_at_start": {"elf_sha256": (lf().page() or {}).get("elf_sha256"), "from": "/gen_inhibit"},
@@ -374,7 +375,7 @@ def main():
     rc = 0
     prev_end = None
     for k, name in enumerate(a.switch):
-        trig = bs.TRIGGERS[name]
+        trig = triggers[name]
         observes = trig["observe"]
         time.sleep(wait_before(k, a.gap_s))
         before = alive()

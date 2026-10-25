@@ -47,11 +47,11 @@ def probe_json_run(body='{"probe":"gi_ecc"}'):
 
 
 def main():
-    bs = T.load_triggers()
-    crash_obs = bs.TRIGGERS["GI_TEST_RESTART_QUIESCE"]["observe"]
-    tx_obs = bs.TRIGGERS["GI_INSTRUMENT_TXABORT"]["observe"]
-    rxq_obs = bs.TRIGGERS["GI_INSTRUMENT_RXQ"]["observe"]
-    rb_obs = bs.TRIGGERS["OTA_HEALTH_FAULT_INJECT"]["observe"]
+    triggers = T.load_triggers()
+    crash_obs = triggers["GI_TEST_RESTART_QUIESCE"]["observe"]
+    tx_obs = triggers["GI_INSTRUMENT_TXABORT"]["observe"]
+    rxq_obs = triggers["GI_INSTRUMENT_RXQ"]["observe"]
+    rb_obs = triggers["OTA_HEALTH_FAULT_INJECT"]["observe"]
     inert_crash = {"reset": False, "http_status": {"GET": 404, "POST": 404}, "kept_running": True}
     checks = [
         ("kept running: uptime advanced by the elapsed time, same reason and build",
@@ -152,7 +152,7 @@ def main():
         ("every trigger in the table has an observable this rig can judge",
          all(all(T.effect_present(o, {}) is None and (o in ("http_status", "reset", "tagged_frames", "rollback")
                                                       or o.startswith("page_key:") or o.startswith("probe_json:"))
-                 for o in t["observe"]) for t in bs.TRIGGERS.values())),
+                 for o in t["observe"]) for t in triggers.values())),
         # probe_json (GI_INSTRUMENT_ECC, 2026-10-20): the body must name the probe.
         ("probe_json: an answer naming the probe is the effect",
          T.effect_present("probe_json:gi_ecc", {"probe_json": {"/gi_ecc": "gi_ecc"}}) is True),

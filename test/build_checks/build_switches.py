@@ -9,13 +9,16 @@ every build option tested by a CMake file the build reads from the repo, is
 listed as one of:
 
     shipping variant   a configuration that may fly (auto-arm, for example);
-    test-only          must never reach a vehicle; has a refusal row in
-                       build_output.py that judges the image and the ELF;
-    stock feature, off in this product
-                       (class added 2026-10-16, user) one of the spec 3.2
-                       feature switches: on in the shared code, off here. It
-                       has the same kind of refusal row as a test-only switch,
-                       but no test trigger, so it is not in TRIGGERS;
+    test-only          must never reach a vehicle; has refusal rules that
+                       judge the image and the ELF (build_output.py evaluates
+                       them);
+    stock feature off in this product
+                       (class added 2026-10-16, user; written as shared/tools
+                       SPEC R20 writes it since the table moved) one of the
+                       spec 3.2 feature switches: on in the shared code, off
+                       here. It has the same kind of refusal rules as a
+                       test-only switch, but no test trigger, so it is not in
+                       TRIGGERS;
     not a switch       a default value, a value the build injects, or a
                        library macro -- each with its reason. Those three are
                        the spec's examples, not a closed list (reviewer's
@@ -25,9 +28,15 @@ An unlisted one fails the build checks. So does a listed one the source no
 longer tests: a renamed switch would otherwise leave a stale entry beside an
 unlisted new name, and the stale entry would read as coverage.
 
-Product source is `main/` and `components/` (the repo's own). The downloaded
-components (`managed_components/`) and `test/` are not product source (spec
-reading, reviewer 2026-10-13).
+Product source is what the build compiled: every file ninja's deps log says
+a compile read (`ninja -t deps`, VALID records, in the build directory and each
+CMake build folder below it, such as the bootloader's), inside the repo, minus
+the build directory and `managed_components/`. READING CHANGED 2026-10-24
+(gen-inhibit reviewer, Q12 of shared/tools R20, after the user's Q1 ruling on
+the shared check): it was `main/` and `components/`, walked whole (reviewer
+2026-10-13). A file the build does not compile cannot reach the image, and what
+decides whether it is compiled is in the CMake files, which are still scanned.
+So the C scan needs a built tree, not only a configured one.
 
 THE CMAKE FILES come from the build's own record of what it read, not from a
 list kept here (spec, changed 2026-10-13, user): the inputs of build.ninja's
@@ -37,9 +46,10 @@ regeneration rule (`ninja -t query build.ninja`), keeping CMakeLists.txt and
 reviewer 2026-10-13). Files outside the repo -- the IDF install, CMake's own
 modules -- are not the repo's. So a new include() is scanned the first time
 the build reads it, with nothing to update here. The scan therefore needs a
-configured build directory, and it refuses (fails, never falls back to a walk)
+built build directory, and it refuses (fails, never falls back to a walk)
 when:
-  - there is no build.ninja, or ninja cannot answer the query;
+  - there is no build.ninja, or ninja cannot answer the query or list its deps;
+  - the deps log names no file compiled from the repo (configured, not built);
   - the scanned list is empty or lacks the top-level CMakeLists.txt (the record
     is not this tree's -- a filter that came back empty must not read as clean);
   - a scanned file is newer than build.ninja (the record may predate an edit,
@@ -79,13 +89,17 @@ directive is `#ifndef X` and the next is `#define X` with no value. The same
 `#ifndef X` followed by `#define X 60000` is a default value, which a `-D`
 can override, and it has to be listed.
 
-This file is ALSO the switch list that 12.4's "test-only features are inert in
-the build that will fly" draws its trigger table from (spec: "This list is also
-what keeps the trigger table ... complete").
+THE TABLE is in the repo root's vtrux_checks.json (key "build_switches"), with
+the trigger table that 12.4's "test-only features are inert in the build that
+will fly" draws from (key "inert_triggers"; spec: "This list is also what keeps
+the trigger table ... complete"). Moved there 2026-10-24 (gen-inhibit reviewer,
+shared/tools R20 Q7) so the shared R20 check reads the same table. This check
+stays until gen-inhibit's release builds move to the shared tooling (Q9).
 """
 
 import argparse
 import collections
+import json
 import os
 import re
 import subprocess
@@ -95,173 +109,51 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
 
 SHIP, TEST, NOT = "shipping variant", "test-only", "not a switch"
-STOCK = "stock feature, off in this product"
+STOCK = "stock feature off in this product"     # shared/tools SPEC R20's wording, the table's since the move
 CLASSES = (SHIP, TEST, STOCK, NOT)
-REFUSED = (TEST, STOCK)            # the classes whose entry names a refusal row
+REFUSED = (TEST, STOCK)            # the classes whose entry carries refusal rules
 # A "not a switch" entry carries a kind and a reason. The spec's kinds (default
 # value, injected value, library macro) are examples, not a closed list
 # (reviewer's reading, 2026-10-13), so the kind is checked for presence only.
 
-# symbol -> (class, kind or None, reason, refusal row or None)
-# A test-only entry names the build_output.py row that refuses its image. A
-# CMake option and the C symbol it defines are separate entries when their
-# names differ (GEN_INHIBIT_AUTOARM -> GEN_INHIBIT_AUTOARM_MODE), and one entry
-# when they share a name: either can change without the other, and the scan
-# finds each where it is tested.
-INSTR = "no measurement instrument in the image"
-SWITCHES = {
-    # ---- shipping variants
-    "GEN_INHIBIT_AUTOARM": (SHIP, None,
-        "CMake option for the auto-arm image (boots armed in the given mode); "
-        "spec names auto-arm as a shipping variant", None),
-    "GEN_INHIBIT_AUTOARM_MODE": (SHIP, None,
-        "the C symbol GEN_INHIBIT_AUTOARM defines; defaults to GEN_INHIBIT_OFF "
-        "(the manual image)", None),
-    # ---- test-only
-    "GI_INSTRUMENT_RXQ": (TEST, None,
-        "RX-queue backlog measurement build; perturbs what it measures", INSTR),
-    "GI_INSTRUMENT_TXABORT": (TEST, None,
-        "TX-abort measurement build; writes the abort register from outside "
-        "the driver and exposes /gi_txabort", INSTR),
-    "GI_INSTRUMENT_ABORTWIN": (TEST, None,
-        "abort-window measurement build", INSTR),
-    "OTA_HEALTH_FAULT_INJECT": (TEST, None,
-        "rollback-rehearsal build; fails its health gate and rolls back 60 s "
-        "after every boot", "no OTA fault injection in the image"),
-    "GI_TEST_RESTART_QUIESCE": (TEST, None,
-        "restart test build (spec 12.4 'no error frames at a restart'): the "
-        "crash trigger and the restart record", "no restart test feature in the image"),
-    # ---- stock features, off in this product (spec 3.2, 12.3 item 3; user
-    # 2026-10-16). Each is a CMake option (the top-level CMakeLists.txt sets it
-    # OFF in the cache, main/CMakeLists.txt defaults it ON) and the C symbol of the
-    # same name (defined 0 or 1 on every file of main), so one entry each.
-    "WICAN_FEATURE_MQTT": (STOCK, None,
-        "MQTT CAN logging and transmit (mqtt.c), and its can_enable() before a "
-        "transmit and at boot", "no MQTT feature in the ELF"),
-    "WICAN_FEATURE_ELM327": (STOCK, None,
-        "the ELM327 command path (elm327.c): ATSP's can_disable/can_enable, the "
-        "receive-queue flush, can_send", "no ELM327 feature in the ELF"),
-    "WICAN_FEATURE_AUTOPID": (STOCK, None,
-        "AutoPID (autopid.c), which drives ELM327 and publishes over MQTT and "
-        "cannot be built without both", "no AutoPID feature in the ELF"),
-    "WICAN_FEATURE_REALDASH": (STOCK, None,
-        "the RealDash boot branch in main.c, a boot-time can_enable(); no symbol "
-        "of its own", "no boot-time bus enable in app_main"),
-    # ---- not a switch
-    "GEN_INHIBIT_AUTOARM_OFFSET_US": (SHIP, None,
-        "part of the auto-arm configuration (an #ifndef default of 500 us beside "
-        "GEN_INHIBIT_AUTOARM_MODE); reviewer's ruling 2026-10-13", None),
-    "DIAG_FW_VERSION": (NOT, "default value",
-        "#ifndef default for the diag fw_version; build_output.py row 10 checks "
-        "it against the schema doc", None),
-    "OTA_HEALTH_TIMEOUT_MS": (NOT, "default value",
-        "#ifndef default (60000 ms) for the health gate's window", None),
-    "DEBUG_LOGS_ENABLE": (NOT, "default value",
-        "#ifndef default (1) in the stock debug_logs component; also gates that "
-        "component's code", None),
-    "DEBUG_LOGS_LEVEL": (NOT, "default value", "#ifndef default in debug_logs_config.h", None),
-    "DEBUG_LOGS_MAX_MESSAGE": (NOT, "default value", "#ifndef default in debug_logs_config.h", None),
-    "DEBUG_LOGS_QUEUE_LEN": (NOT, "default value", "#ifndef default in debug_logs_config.h", None),
-    "DEBUG_LOGS_UDP_DEST_IP": (NOT, "default value", "#ifndef default in debug_logs_config.h", None),
-    "DEBUG_LOGS_UDP_PORT": (NOT, "default value", "#ifndef default in debug_logs_config.h", None),
-    # GIT_SHA left the list with e998385 ("the name enters the build once"):
-    # it is no longer a compile define, and nothing tests it.
-    "HARDWARE_VER": (SHIP, None,
-        "the board, set by the top-level CMakeLists.txt (WICAN_V300 for the OBD); "
-        "reviewer's ruling 2026-10-13", None),
-    "WICAN_PRO": (SHIP, None,
-        "the board id HARDWARE_VER is compared with (stock's other board); "
-        "reviewer's ruling 2026-10-13", None),
-    # WICAN_USB_V100 and WICAN_V210 left the list 2026-10-13: the top-level
-    # CMakeLists.txt sets both unconditionally before it tests them, so by the
-    # spec's definition of a build option they are not one, and no C source
-    # tests them. (WICAN_PRO stays: hw_config.h and wifi_network.c test it.)
-    "PRJ_BIN_LEN": (NOT, "computed value",
-        "computed by the build from the project name, used only to refuse a name "
-        "over 31 characters; reviewer's ruling 2026-10-13", None),
-    # cmake/git_tree_name.cmake (spec 12.3 item 3, "every build names its image
-    # from the tree it compiled"). Each is set by the module itself, but not by
-    # a file-scope set() before its test, so the narrow reading lists it.
-    "GTN_DESCRIBE": (NOT, "module internal",
-        "git_tree_name()'s DESCRIBE arguments, from cmake_parse_arguments, "
-        "defaulting to --tags --always --dirty", None),
-    "GTN_STAMP": (NOT, "module internal",
-        "the stamp path the module's own check target passes to its cmake -P run", None),
-    "_gtn_now": (NOT, "module internal",
-        "the check's fresh describe, an out-parameter of _git_tree_name_describe", None),
-    "_gtn_was": (NOT, "module internal",
-        "the check's previous name, read from the stamp", None),
-    "res": (NOT, "module internal",
-        "git describe's exit status (execute_process RESULT_VARIABLE), in a function", None),
-    "name": (NOT, "module internal",
-        "git describe's output (execute_process OUTPUT_VARIABLE, then an "
-        "out-parameter), in a function", None),
-    "called": (NOT, "module internal",
-        "the once-only guard, read from a global property, in a function", None),
-    "git": (NOT, "module internal",
-        "the git executable, from find_program NO_CACHE, in a function", None),
-    "stamp": (NOT, "module internal",
-        "the stamp file path under the build directory, set in a function", None),
-    "was": (NOT, "module internal",
-        "the stamp's previous contents, set in a function", None),
-    "len": (NOT, "module internal",
-        "the name's length (string(LENGTH)), refused over 31, in a function", None),
-    "PROJECT_VER": (NOT, "guard",
-        "if(DEFINED PROJECT_VER) refuses any value set from outside, so no setting "
-        "of it changes the image; reviewer's ruling 2026-10-13", None),
-    "MIN": (NOT, "library macro", "#ifndef fallback definition in ftp.h", None),
-    "MAX": (NOT, "library macro", "#ifndef fallback definition in ftp.h", None),
-    "ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED": (NOT, "library macro",
-        "ESP-IDF ADC calibration capability (soc caps), not a CONFIG_ option", None),
-    "ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED": (NOT, "library macro",
-        "ESP-IDF ADC calibration capability (soc caps), not a CONFIG_ option", None),
-    "__cplusplus": (NOT, "library macro",
-        "compiler-defined; the extern \"C\" wrappers in headers", None),
-    # GEN_INHIBIT_SOC_MIN_PCT is deliberately NOT listed: an #ifdef that changes
-    # the SoC floor, settable only by -D. Its class (or its deletion) waits on the
-    # user (reviewer, 2026-10-13), and until then it fails as unclassified.
-}
-
+# THE TABLE IS DATA, in the repo root's vtrux_checks.json (moved 2026-10-24, the
+# gen-inhibit reviewer's ruling on shared/tools R20 Q7), so this check, the shared
+# R20 check (shared/tools/vtrux_checks/switches.py) and the bench rigs read one
+# table:
+#   "build_switches": symbol -> {"class", "reason", "kind" (not a switch),
+#                                "refusal": [rule, ...] (test-only, stock-off)}
+#   "inert_triggers": symbol -> {"probes": [[method, path], ...], "state",
+#                                "effect", "observe": [...]}
+# A rule judges the image or the ELF, never the flag (shared/tools SPEC R20):
+# bin_strings_absent, elf_symbols_absent, elf_symbol_prefixes_absent,
+# project_name_token_absent, or project_row (a row build_output.py writes).
+# build_output.py's check_test_only_refused evaluates every rule on the image.
+#
 # Spec 12.4 "test-only features are inert in the build that will fly": for every
 # test-only switch, the trigger a test run sends, the device state it is sent in,
 # the effect it exists to produce, and what the inert check observes. The bench rigs
-# READ THEIR REQUESTS FROM HERE (restart_error_frames.py --trigger, test_only_inert.py),
-# so a changed trigger changes the negative check and the test runs together, and the
-# negative check cannot go on probing a path the feature no longer uses.
-#   probes: (method, path) sent exactly as listed; state: the device state;
-#   observe: what the inert rig judges; effect: what the switch-on build does.
-TRIGGERS = {
-    "GI_TEST_RESTART_QUIESCE": {
-        "probes": (("POST", "/gi_quiesce?crash=illegal"), ("GET", "/gi_quiesce")),
-        "state": "live INHIBIT under replay (mode 3 at 5 s, the request at 20 s)",
-        "effect": "a panic 300 ms after the POST (reset reason PANIC); GET answers 200 with the restart record",
-        "observe": ("reset", "http_status"),
-    },
-    "GI_INSTRUMENT_TXABORT": {
-        "probes": (("POST", "/gi_txabort?phase=control&reps=2&settle=20"),),
-        "state": "mode 0, the PCAN open as the ACKing node",
-        "effect": "trial frames tagged AB 7E / AB 7F in bytes 2-3 on the wire, and a JSON answer",
-        "observe": ("tagged_frames", "http_status"),
-    },
-    "GI_INSTRUMENT_RXQ": {
-        "probes": (("GET", "/gen_inhibit"),),
-        "state": "live INHIBIT under replay",
-        "effect": "an \"rxq\" object on the page",
-        "observe": ("page_key:rxq",),
-    },
-    "GI_INSTRUMENT_ABORTWIN": {
-        "probes": (("GET", "/gen_inhibit"),),
-        "state": "live INHIBIT under replay",
-        "effect": "an \"abortwin\" object on the page (present at 0 when the state is not reached)",
-        "observe": ("page_key:abortwin",),
-    },
-    "OTA_HEALTH_FAULT_INJECT": {
-        "probes": (("OTA", "<the image>"),),
-        "state": "mode 0, then 70 s with no further request",
-        "effect": "the health gate fails and the device rolls back to the previous slot after 60 s",
-        "observe": ("rollback",),
-    },
-}
+# READ THEIR REQUESTS FROM THE SAME FILE (restart_error_frames.py --trigger,
+# test_only_inert.py), so a changed trigger changes the negative check and the test
+# runs together, and the negative check cannot go on probing a path the feature no
+# longer uses.
+TABLE_FILE = os.path.join(REPO, "vtrux_checks.json")
+
+
+def load_table(path=TABLE_FILE):
+    """(SWITCHES, TRIGGERS) from vtrux_checks.json.
+    SWITCHES: symbol -> (class, kind or None, reason, refusal rules or None);
+    TRIGGERS: symbol -> {"probes": ((method, path), ...), "state", "effect", "observe": (...)}."""
+    with open(path, encoding="utf-8") as fh:
+        d = json.load(fh)
+    sw = {s: (e.get("class"), e.get("kind"), e.get("reason"), e.get("refusal"))
+          for s, e in d.get("build_switches", {}).items()}
+    tr = {s: {"probes": tuple(tuple(x) for x in t.get("probes", ())), "state": t.get("state"),
+              "effect": t.get("effect"), "observe": tuple(t.get("observe", ()))}
+          for s, t in d.get("inert_triggers", {}).items()}
+    return sw, tr
+
+
+SWITCHES, TRIGGERS = load_table()
 
 
 CMAKE_KEYWORDS = {
@@ -272,7 +164,6 @@ CMAKE_KEYWORDS = {
     "VERSION_LESS_EQUAL", "VERSION_GREATER_EQUAL", "TRUE", "FALSE", "ON", "OFF",
     "YES", "NO", "Y", "N", "IGNORE", "NOTFOUND", "ENV", "CACHE",
 }
-C_EXTS = (".c", ".h", ".cpp", ".hpp", ".cc")
 IDENT = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
 DIRECTIVE = re.compile(r"^\s*#\s*(ifdef|ifndef|if|elifdef|elifndef|elif|define)\b(.*)$")
 
@@ -503,7 +394,7 @@ class RecordError(Exception):
 
 
 EXCLUDED_DIRS = {"managed_components": "downloaded, pinned by dependencies.lock (reviewer 2026-10-13)"}
-Record = collections.namedtuple("Record", "build_dir scanned excluded outside is_builtin cmake")
+Record = collections.namedtuple("Record", "build_dir scanned excluded outside is_builtin cmake c_files")
 
 
 def parse_query(text):
@@ -649,13 +540,69 @@ def read_record(repo, build_dir, run=subprocess.run):
         raise RecordError("cmake --help-variable-list gave nothing")
     scanned, excluded, outside = record_files(parse_query(q.stdout), repo, build_dir)
     check_record(scanned, repo, bn)
+    c_files = set()
+    for folder in build_folders(build_dir):
+        try:
+            d = run([ninja, "-t", "deps"], cwd=folder, capture_output=True, text=True)
+        except OSError as e:
+            raise RecordError("cannot run ninja: %s" % e)
+        if d.returncode != 0:
+            raise RecordError("ninja -t deps in %s failed: %s" % (folder, (d.stderr or d.stdout).strip()[:200]))
+        c_files.update(c_record_files(parse_deps(d.stdout), repo, build_dir, folder))
+    if not c_files:
+        raise RecordError("the build's deps log names no file compiled from the repo: build first")
     return Record(build_dir, scanned, excluded, outside,
-                  builtin_matcher(v.stdout.splitlines(), project_names(repo, scanned)), cmake)
+                  builtin_matcher(v.stdout.splitlines(), project_names(repo, scanned)), cmake, sorted(c_files))
+
+
+def parse_deps(text):
+    """The dependency paths `ninja -t deps` prints, for every output whose record
+    is VALID: a STALE record is an output this build no longer has, or one older
+    than its record."""
+    paths, keep = [], False
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        if not line[0].isspace():
+            keep = "(STALE)" not in line
+        elif keep:
+            paths.append(line.strip())
+    return paths
+
+
+def build_folders(build_dir):
+    """build_dir and every CMake build folder below it (its own CMakeCache.txt and
+    build.ninja, such as the bootloader's)."""
+    out = [build_dir]
+    for d, dirs, files in os.walk(build_dir):
+        dirs.sort()
+        if not _inside(d, build_dir) or _norm(d) == _norm(build_dir):
+            continue
+        if "CMakeCache.txt" in files and "build.ninja" in files:
+            out.append(d)
+    return out
+
+
+def c_record_files(paths, repo, build_dir, folder):
+    """Repo-relative paths of the files the compiles read (a relative path is
+    relative to the folder ninja ran in), minus the build directory and
+    EXCLUDED_DIRS."""
+    out = set()
+    for p in paths:
+        a = os.path.join(folder, p)
+        if _inside(a, build_dir) or not _inside(a, repo):
+            continue
+        rel = os.path.relpath(a, repo).replace(os.sep, "/")
+        if rel.split("/")[0] in EXCLUDED_DIRS:
+            continue
+        out.add(rel)
+    return sorted(out)
 
 
 def scan(repo=REPO, record=None):
-    """{symbol: [where, ...]} over the product source, CONFIG_* excluded: the C
-    sources under main/ and components/, and the CMake files in the record."""
+    """{symbol: [where, ...]} over the product source, CONFIG_* excluded: the
+    files the build compiled (the record's c_files) and the CMake files in the
+    record."""
     found = {}
 
     def add(sym, where):
@@ -663,25 +610,44 @@ def scan(repo=REPO, record=None):
             return
         found.setdefault(sym, []).append(where)
 
-    for top in ("main", "components"):
-        root = os.path.join(repo, top)
-        for d, dirs, files in os.walk(root):
-            dirs.sort()
-            for f in sorted(files):
-                if not f.endswith(C_EXTS):
-                    continue
-                p = os.path.join(d, f)
-                rel = os.path.relpath(p, repo).replace(os.sep, "/")
-                text = open(p, encoding="utf-8", errors="replace").read()
-                for s, ln in c_symbols(text):
-                    add(s, "%s:%d" % (rel, ln))
     if record is None:
         record = read_record(repo, os.path.join(repo, "build"))
+    for rel in record.c_files:
+        text = open(os.path.join(repo, rel), encoding="utf-8", errors="replace").read()
+        for s, ln in c_symbols(text):
+            add(s, "%s:%d" % (rel, ln))
     for rel in record.scanned:
         text = open(os.path.join(repo, rel), encoding="utf-8", errors="replace").read()
         for s, ln in cmake_symbols(text, record.is_builtin):
             add(s, "%s:%d" % (rel, ln))
     return found
+
+
+LIST_RULES = ("bin_strings_absent", "elf_symbols_absent", "elf_symbol_prefixes_absent")
+TEXT_RULES = ("project_name_token_absent", "project_row")
+
+
+def rule_problems(refusal):
+    """What is wrong with an entry's refusal rules, as shared/tools R20 reads them:
+    a list of one-key objects, a list rule a non-empty list of non-empty strings,
+    a text rule a non-empty string."""
+    if not isinstance(refusal, list):
+        return ["refusal is not a list of rules"]
+    out = []
+    for k, r in enumerate(refusal, 1):
+        if not isinstance(r, dict) or len(r) != 1:
+            out.append("refusal rule %d is not one key" % k)
+            continue
+        (name, v), = r.items()
+        if name in LIST_RULES:
+            if not isinstance(v, list) or not v or not all(isinstance(x, str) and x for x in v):
+                out.append("refusal rule %d (%s) wants a non-empty list of strings" % (k, name))
+        elif name in TEXT_RULES:
+            if not isinstance(v, str) or not v.strip():
+                out.append("refusal rule %d (%s) wants a non-empty string" % (k, name))
+        else:
+            out.append("refusal rule %d: %r is not a rule" % (k, name))
+    return out
 
 
 def classify(found, table=None, triggers=None):
@@ -703,6 +669,10 @@ def classify(found, table=None, triggers=None):
             bad.append("%s: no reason" % s)
         if cls in REFUSED and not refusal:
             bad.append("%s: %s with no refusal row" % (s, cls))
+        if cls not in REFUSED and refusal:
+            bad.append("%s: refusal rules on a %s entry" % (s, cls))
+        if cls in REFUSED and refusal:
+            bad += ["%s: %s" % (s, why) for why in rule_problems(refusal)]
         if cls == TEST and not (triggers.get(s) or {}).get("probes"):
             bad.append("%s: test-only with no trigger (12.4 inert check)" % s)
     for s in sorted(triggers):
@@ -714,7 +684,7 @@ def classify(found, table=None, triggers=None):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--repo", default=REPO, help="the tree to scan (default: this checkout)")
-    ap.add_argument("--build", help="its configured build directory (default: <repo>/build)")
+    ap.add_argument("--build", help="its built build directory (default: <repo>/build)")
     a = ap.parse_args()
     repo = os.path.abspath(a.repo)
     build_dir = os.path.abspath(a.build or os.path.join(repo, "build"))
@@ -729,6 +699,7 @@ def main():
     for r, why in rec.excluded:
         print("  excluded  %s  (%s)" % (r, why))
     print("  outside the repo: %d (IDF install, CMake modules)" % rec.outside)
+    print("Files the build compiled, from its deps log: %d" % len(rec.c_files))
     print()
     found = scan(repo, rec)
     unlisted, stale, bad = classify(found)

@@ -9,10 +9,11 @@ cases are the ways a switch could hide from a textual scan: a default value
 shaped like a header guard, a guard that is not the file's first directive,
 defined() inside an expression, #elif, a continuation line, a commented-out
 #if, a CMake condition with keywords, variables and comments. Plus the scope
-(managed_components/ and test/ are not product C source), the build's record
-of its CMake files (spec, changed 2026-10-13, user) with its guards, the
-build-option definition read narrowly (reviewer, 2026-10-13), and the table's
-own rules (unlisted, stale, malformed entries).
+(the C files are those the build compiled, by its deps log, minus the build
+directory and managed_components/: reading changed 2026-10-24, reviewer), the
+build's record of its CMake files (spec, changed 2026-10-13, user) with its
+guards, the build-option definition read narrowly (reviewer, 2026-10-13), and
+the table's own rules (unlisted, stale, malformed entries and refusal rules).
 
 No ninja or cmake is run: the record is given as text, and read_record()'s
 process calls are substituted.
@@ -44,6 +45,8 @@ FILES = {
                         "#if __has_include(\"INSIDE_STRING.h\") && AFTER_STRING\n#endif\n"),
     "main/sub/deep.h": "#ifdef DEEP_SWITCH\n#endif\n",
     "main/notc.txt": "#ifdef NOT_C_SOURCE\n#endif\n",
+    "main/uncompiled.c": "#ifdef UNCOMPILED_ONLY\n#endif\n",
+    "main/inc.inc": "#if INCLUDED_INC\n#endif\n",
     "components/comp/x.c": "#ifndef COMP_DEFAULT\n#define COMP_DEFAULT 3\n#endif\n#if COMP_DEFAULT\n#endif\n",
     "managed_components/m/y.c": "#ifdef MANAGED_ONLY\n#endif\n",
     "test/t.c": "#ifdef TEST_DIR_ONLY\n#endif\n",
@@ -148,7 +151,7 @@ EXPECT = {
     "TOP_LEVEL_ONLY", "COMP_CM",
     "LATE_SET", "SOMETHING_ELSE", "COND_SET", "CACHED", "PS", "EMPTYSET", "OWN_B", "TAINT",
     "ENVSET", "ENV_OPT", "ENV_OPT2", "QUOTED_REF", "other_SOURCE_DIR", "FOO_ROOT", "FN_SET",
-    "STRLEN_OUT", "AFTER_QUOTE", "WHILE_OPT", "AFTER_PAREN",
+    "STRLEN_OUT", "AFTER_QUOTE", "WHILE_OPT", "AFTER_PAREN", "INCLUDED_INC",
 }
 
 # A slice of `cmake --help-variable-list` (3.30), placeholders included.
@@ -159,6 +162,12 @@ CMAKE_<LANG>_FLAGS
 <PackageName>_ROOT
 WIN32
 """
+
+# What the deps log says the compiles read (the build's record of its C files):
+# compiled product files, a non-.c file a compile included, and files the scan
+# must leave out (the build directory, managed_components/, outside the repo).
+COMPILED = ["components/comp/x.c", "main/comments.c", "main/cont.c", "main/default.h", "main/expr.c",
+            "main/guard.h", "main/guard2.h", "main/inc.inc", "main/late.c", "main/sub/deep.h"]
 
 SCANNED = ["CMakeLists.txt", "cmake/extra.cmake", "components/comp/CMakeLists.txt", "main/CMakeLists.txt"]
 EXCLUDED = {"build/CMakeFiles/git-data/grabRef.cmake", "build/CMakeFiles/3.30.2/CMakeSystem.cmake",
@@ -197,15 +206,33 @@ def query_text(repo, build):
     ])
 
 
+def deps_text(repo, valid=True):
+    """What `ninja -t deps` prints, in its shape: a VALID record with absolute and
+    build-relative paths, and a STALE record whose files must not count."""
+    j = lambda *p: os.path.join(*p).replace(os.sep, "/")
+    lines = ["esp-idf/main/CMakeFiles/__idf_main.dir/expr.c.obj: #deps 9, deps mtime 1 (%s)"
+             % ("VALID" if valid else "STALE")]
+    lines += ["    " + j(repo, r) for r in COMPILED if r not in ("main/default.h", "main/inc.inc")]
+    lines += ["    ../main/default.h", "    ../main/inc.inc", "    config/sdkconfig.h",
+              "    " + j(repo, "managed_components", "m", "y.c"), "    " + j(os.path.dirname(repo), "idf", "x.h"), "",
+              "esp-idf/main/CMakeFiles/__idf_main.dir/old.c.obj: #deps 1, deps mtime 1 (STALE)",
+              "    " + j(repo, "main", "uncompiled.c"), ""]
+    return "\n".join(lines)
+
+
 class Done:
     def __init__(self, rc, out, err=""):
         self.returncode, self.stdout, self.stderr = rc, out, err
 
 
-def fake_run(query, varlist, q_rc=0):
+def fake_run(query, varlist, q_rc=0, deps=None, d_rc=0, seen=None):
     def run(cmd, **kw):
         if "query" in cmd:
             return Done(q_rc, query, "ninja: error" if q_rc else "")
+        if "deps" in cmd:
+            if seen is not None:
+                seen.append(kw.get("cwd"))
+            return Done(d_rc, deps_text(REPO) if deps is None else deps, "ninja: error" if d_rc else "")
         return Done(0, varlist)
     return run
 
@@ -227,8 +254,10 @@ def main():
         paths = B.parse_query(query_text(REPO, build))
         scanned, excluded, outside = B.record_files(paths, REPO, build)
         is_builtin = B.builtin_matcher(CMAKE_VARS.splitlines(), B.project_names(REPO, scanned))
-        found = B.scan(REPO, B.Record(build, scanned, excluded, outside, is_builtin, "cmake"))
+        c_files = B.c_record_files(B.parse_deps(deps_text(REPO)), REPO, build, build)
+        found = B.scan(REPO, B.Record(build, scanned, excluded, outside, is_builtin, "cmake", c_files))
         got = set(found)
+        stale_only = B.c_record_files(B.parse_deps(deps_text(REPO, valid=False)), REPO, build, build)
 
         # read_record end to end, ninja and cmake substituted
         with open(os.path.join(build, "CMakeCache.txt"), "w") as fh:
@@ -237,11 +266,19 @@ def main():
         open(bn, "w").close()
         future = time.time() + 100
         os.utime(bn, (future, future))
-        good = None
+        boot = os.path.join(build, "bootloader")
+        os.makedirs(boot, exist_ok=True)
+        for n in ("CMakeCache.txt", "build.ninja"):
+            open(os.path.join(boot, n), "w").close()
+        good, seen = None, []
         try:
-            good = B.read_record(REPO, build, fake_run(query_text(REPO, build), CMAKE_VARS))
+            good = B.read_record(REPO, build, fake_run(query_text(REPO, build), CMAKE_VARS, seen=seen))
         except B.RecordError as e:
             good_refused = str(e)
+        deps_failed = refused(lambda: B.read_record(REPO, build, fake_run(query_text(REPO, build), CMAKE_VARS,
+                                                                             d_rc=1)))
+        not_built = refused(lambda: B.read_record(REPO, build, fake_run(query_text(REPO, build), CMAKE_VARS,
+                                                                           deps="")))
         no_ninja_file = refused(lambda: B.read_record(REPO, os.path.join(REPO, "no_such_build")))
         query_failed = refused(lambda: B.read_record(      # the text is good: only the exit status refuses
             REPO, build, fake_run(query_text(REPO, build), CMAKE_VARS, q_rc=1)))
@@ -260,7 +297,8 @@ def main():
         shutil.rmtree(TMP, ignore_errors=True)
 
     ok_entry = (B.NOT, "default value", "a reason", None)
-    t_ok = {"A": ok_entry, "B": (B.TEST, None, "why", "some row"), "C": (B.SHIP, None, "why", None)}
+    ROW = [{"project_row": "some row"}]
+    t_ok = {"A": ok_entry, "B": (B.TEST, None, "why", ROW), "C": (B.SHIP, None, "why", None)}
     PRB = {"probes": (("GET", "/x"),)}
     TRG = {"B": PRB}
     at = found.get
@@ -285,7 +323,12 @@ def main():
         ("CONFIG_* is excluded, from C and CMake", not any(s.startswith("CONFIG_") for s in got), ""),
         ("managed_components/ and test/ are not product C source",
          not ({"MANAGED_ONLY", "TEST_DIR_ONLY"} & got), ""),
-        ("only C sources are scanned in main/", "NOT_C_SOURCE" not in got, ""),
+        ("only files the build compiled are scanned (reading changed 2026-10-24)",
+         not ({"NOT_C_SOURCE", "UNCOMPILED_ONLY", "IN_BUILD_FOLDER"} & got), ""),
+        ("a file a compile included is scanned whatever its extension", "INCLUDED_INC" in got, ""),
+        ("deps: the compiled files, build-relative paths resolved; build/, managed, outside left out",
+         c_files == COMPILED, "%r" % c_files),
+        ("deps: a STALE record's files do not count", stale_only == [], "%r" % stale_only),
         ("CMake: keywords and a commented if() are not symbols",
          not ({"AND", "NOT", "DEFINED", "EQUAL", "STREQUAL", "CM_COMMENTED",
                "NOT_TESTED_HERE", "literal"} & got), ""),
@@ -313,6 +356,14 @@ def main():
          not ({"NOT_IN_RECORD", "TEST_DIR_CM", "BUILD_DIR_CM", "MANAGED_CM"} & got), ""),
         ("read_record: end to end, it reads the same files", good is not None and good.scanned == SCANNED
          and good.cmake == "/x/cmake", "%r" % ((good.scanned,) if good else good_refused)),
+        ("read_record: it lists the compiled files", good is not None and good.c_files == COMPILED,
+         "%r" % (good.c_files if good else good_refused)),
+        ("read_record: it asks the deps log of every CMake build folder (the bootloader's too)",
+         [os.path.normcase(os.path.abspath(x)) for x in seen]
+         == [os.path.normcase(os.path.abspath(x)) for x in (build, boot)], "%r" % seen),
+        ("read_record: a failed ninja -t deps refuses", deps_failed is not None, ""),
+        ("read_record: a configured, unbuilt tree (no compiled file) refuses",
+         not_built is not None and "build first" in not_built, "%r" % not_built),
         ("read_record: no build.ninja refuses", no_ninja_file is not None, ""),
         ("read_record: a failed ninja query refuses", query_failed is not None, ""),
         ("read_record: no built-in variable list refuses", no_vars is not None, ""),
@@ -376,9 +427,20 @@ def main():
         ("classify: an entry needs a reason",
          len(B.classify({"A": []}, {"A": (B.SHIP, None, "  ", None)}, {})[2]) == 1, ""),
         ("classify: a test-only switch with no trigger is malformed (12.4 inert check)",
-         len(B.classify({"B": []}, {"B": (B.TEST, None, "why", "some row")}, {})[2]) == 1, ""),
+         len(B.classify({"B": []}, {"B": (B.TEST, None, "why", ROW)}, {})[2]) == 1, ""),
         ("classify: a trigger with no probes counts as no trigger",
-         len(B.classify({"B": []}, {"B": (B.TEST, None, "why", "some row")}, {"B": {"probes": ()}})[2]) == 1, ""),
+         len(B.classify({"B": []}, {"B": (B.TEST, None, "why", ROW)}, {"B": {"probes": ()}})[2]) == 1, ""),
+        ("classify: refusal rules on a shipping entry are malformed",
+         len(B.classify({"C": []}, {"C": (B.SHIP, None, "why", ROW)}, {})[2]) == 1, ""),
+        ("classify: a malformed refusal rule is reported, one line each",
+         [len(B.classify({"S": []}, {"S": (B.STOCK, None, "why", r)}, {})[2]) for r in
+          ("some row", [{"project_row": ""}], [{"elf_symbols_absent": []}], [{"elf_symbols_absent": "x"}],
+           [{"flag_off": "S"}], [{"bin_strings_absent": ["a"], "project_row": "b"}], ["project_row"])]
+         == [1] * 7, ""),
+        ("classify: every rule kind is accepted",
+         B.classify({"S": []}, {"S": (B.STOCK, None, "why", [
+             {"bin_strings_absent": ["a"]}, {"elf_symbols_absent": ["b"]}, {"elf_symbol_prefixes_absent": ["c_"]},
+             {"project_name_token_absent": "_x"}, {"project_row": "r"}])}, {}) == ([], [], []), ""),
         ("classify: a trigger for a switch that is not test-only is malformed",
          len(B.classify({"C": []}, {"C": (B.SHIP, None, "why", None)}, {"C": PRB})[2]) == 1, ""),
         ("classify: a trigger for an unlisted name is malformed",
@@ -386,11 +448,13 @@ def main():
         ("the real tables agree: every test-only switch has a trigger, every trigger a test-only switch",
          sorted(k for k, e in B.SWITCHES.items() if e[0] == B.TEST) == sorted(B.TRIGGERS), ""),
         ("classify: a stock feature off in this product is a class (2026-10-16)",
-         B.classify({"S": []}, {"S": (B.STOCK, None, "why", "row s")}, {}) == ([], [], []), ""),
+         B.classify({"S": []}, {"S": (B.STOCK, None, "why", ROW)}, {}) == ([], [], []), ""),
         ("classify: a stock feature needs a refusal row",
          len(B.classify({"S": []}, {"S": (B.STOCK, None, "why", None)}, {})[2]) == 1, ""),
         ("classify: a stock feature with a trigger is malformed (it has no test trigger)",
-         len(B.classify({"S": []}, {"S": (B.STOCK, None, "why", "row s")}, {"S": PRB})[2]) == 1, ""),
+         len(B.classify({"S": []}, {"S": (B.STOCK, None, "why", ROW)}, {"S": PRB})[2]) == 1, ""),
+        ("the real table loads from vtrux_checks.json and is well-formed",
+         len(B.SWITCHES) > 30 and B.classify({k: [] for k in B.SWITCHES})[1:] == ([], []), ""),
         ("the real table: the four spec 3.2 feature switches are stock features with rows",
          all((B.SWITCHES.get(s) or (None,))[0] == B.STOCK and B.SWITCHES[s][3]
              for s in ("WICAN_FEATURE_MQTT", "WICAN_FEATURE_ELM327", "WICAN_FEATURE_AUTOPID",
