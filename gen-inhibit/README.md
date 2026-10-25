@@ -65,7 +65,10 @@ reverse-it and not yet moved.
   build checks (`shared/tools/vtrux_checks/`), owned by the tester. Its keys:
   `release_profile`, the options for shared/tools R18, each value citing its
   spec line; `build_switches`, the switch table for shared/tools R20, also
-  read by `test/build_checks/build_switches.py` and `build_output.py`; and
+  read by `test/build_checks/build_switches.py` and `build_output.py`;
+  `board`, the WiCAN's board data for shared/tools R21 (`target`,
+  `partition_table`, the path of the reference table, and `flash_size`),
+  checked against the spec by `test/build_checks/test_board_data.py`; and
   `inert_triggers`, the triggers the spec 12.4 inert row's bench rigs send
   (reviewer, 2026-10-24). The implementor's `vtrux_build.json` holds only `project` and
   `shared_components`.
