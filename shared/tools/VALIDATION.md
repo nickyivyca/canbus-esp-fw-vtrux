@@ -190,6 +190,7 @@ same folder. The interposer's test evidence is
   about the compile. A release build gains little from the cache: every
   source includes `sdkconfig.h`, so bench and dev builds with other options
   leave nothing a release build can reuse. Ruled off (option A of three).
+- **The fixed `SOURCE_DATE_EPOCH`:** see R19's readings (user, 2026-10-24).
 - **Status:** complete.
 
 ### R10. Downloaded components checked after the reconfigure
@@ -295,6 +296,22 @@ same folder. The interposer's test evidence is
   commit: user, 2026-10-23, in the gen-inhibit reviewer's session.
 - **Status:** complete.
 
+### R24. A release build's environment
+- **Basis:** user, 2026-10-24, in the gen-inhibit reviewer's session: "we
+  should constrain how env vars can affect the builds", as a list of what
+  passes rather than of what is refused, which would miss a route nobody
+  listed (option b of two), for release builds only.
+- **Exposed by:** the R20 readings, which asked how environment variables
+  reach a build. Read by the gen-inhibit reviewer in ESP-IDF v5.4.1:
+  `tools/cmake/project.cmake` adds `EXTRA_CFLAGS`, `EXTRA_CXXFLAGS` and
+  `EXTRA_CPPFLAGS` to every compile, and its comment there says the
+  environment's `CFLAGS`, `CXXFLAGS` and `CPPFLAGS` also reach builds (not
+  tried). The release script passed its caller's environment through,
+  refusing only R10's overwrite setting and a cache left on, so a `-D` for a
+  test-only switch could reach a release build with no file changed.
+- **Status:** basis complete. The list itself is the implementor's to find,
+  for each host OS.
+
 ## 4. Checks
 
 ### R17. Scope
@@ -327,10 +344,10 @@ same folder. The interposer's test evidence is
   - "Match" means the options the profile names (option a of two). A stored
     copy of the whole `sdkconfig` was turned down: git is the reference
     copy, and R8 already holds the build to the commit.
-  - gen-inhibit's release profile is its spec 12.4 row 22, items 1 to 5
-    (rollback on; secure boot and flash encryption unset; virtual eFuses
-    off; `CONFIG_TWAI_ISR_IN_IRAM` unset; the watchdogs as its spec 9.1
-    records them), plus R12.
+  - gen-inhibit's release profile is the first five settings of its spec
+    12.3 item 3, the build-output checks (rollback on; secure boot and
+    flash encryption unset; virtual eFuses off; `CONFIG_TWAI_ISR_IN_IRAM`
+    unset; the watchdogs as its spec 9.1 records them), plus R12.
   - It is a check on the finished release build, run by any session, not a
     refusal in the release build (option a of three), and only for release
     builds. Port plan step 0b's "the options check refuses a release build"
@@ -345,6 +362,47 @@ same folder. The interposer's test evidence is
   On NICKY-XPS the first pair was built with ccache on; rebuilt with it
   off (gen-inhibit test evidence, section 13, "x1 and x2 again with
   ccache off", 2026-10-23), both gave the same bytes.
+- **Readings** (user, 2026-10-24, in the gen-inhibit reviewer's session),
+  raised by the gen-inhibit tester before writing the test:
+  - A test of the tooling, rerun when a change could reach the image, not a
+    check run on each release build. The test makes its own two builds, so
+    whether a check only compares or also builds is not a question for it.
+  - "The same tree" is one clean commit in any two folders on one machine
+    (option b of two; the other was the same folder rebuilt). With
+    reproducible builds on, ESP-IDF maps the project, IDF, build and
+    toolchain paths to placeholders (its guide, "Reproducible Builds"), and
+    the R2 measurement's builds at two paths were byte-identical.
+  - A project's reproducible-build setting is not this test's concern. For
+    gen-inhibit it is in the release profile
+    (`CONFIG_APP_REPRODUCIBLE_BUILD`), so R18 checks it on each release
+    build. gen-inhibit fails R18 until port plan step 0b turns it on.
+  - **The compile date: a fixed `SOURCE_DATE_EPOCH`** (R9), a stopgap until
+    no project compiles the Arduino core (user, 2026-10-24). ESP-IDF's
+    guide says source that uses `__DATE__` or `__TIME__` makes a build
+    unreproducible whatever the setting. The user first accepted that as a
+    known gap, since gen-inhibit's `main/` and `components/` use neither
+    macro (option a of three; the others were a rerun before each truck
+    flash and a text check beside R20). The interposer reviewer's read then
+    showed it live: from port step 2a the interposer compiles the
+    arduino-esp32 core, which uses both (`cores/esp32/chip-debug-report.cpp`
+    and `cores/esp32/firmware_msc_fat.c`, read in 3.2.1), and its PlatformIO
+    build already fixes `SOURCE_DATE_EPOCH` for this
+    (`charge-interposer/firmware/reproducible.py`: "the same sources built
+    a minute apart differed"). GCC takes both macros from
+    `SOURCE_DATE_EPOCH` when it is set; ESP-IDF v5.4.1's `tools/cmake` never
+    sets it. The other options were the commit's own time, which would give
+    two commits with identical files two different dates and so break the
+    code-hash carry-over (R3, R5), a value in each project's data, and
+    keeping the gap. Because gcc applies it to every `__DATE__`, it also
+    fixes the date and time in the app descriptor when
+    `CONFIG_APP_COMPILE_TIME_DATE` is on.
+  - **Rerun on the Python environment too** (user, 2026-10-24, raised by the
+    interposer reviewer): esptool writes the `.bin`, and ESP-IDF pins it only
+    to a range (`esptool~=4.8` in v5.4's `espidf.constraints.v5.4.txt`), so
+    reinstalling the environment can move it within one ESP-IDF version.
+  - **Once per project** (user, 2026-10-24, raised by the interposer
+    reviewer): causes in a project's own source, like the date above, show
+    only on that project.
 - **Status:** complete.
 
 ### R20. Build switches
@@ -356,6 +414,45 @@ same folder. The interposer's test evidence is
   CMake file with no `#if` (recorded in spec 12.3 item 3, 2026-10-13). It is
   why CMake files are in scope and are taken from the build's own record
   rather than a list kept by hand.
+- **Readings** (user, 2026-10-24, in the gen-inhibit reviewer's session),
+  raised by the gen-inhibit tester before writing the shared check:
+  - The source scanned is what the release build compiled, from its own
+    record (option a of three; the others were folders named in the
+    project's data, and the project root minus `build/`,
+    `managed_components/` and `test/`). A file the release build does not
+    compile cannot reach its image, and what decides whether it is compiled
+    is in the CMake files, which are scanned. On a gen-inhibit fixture
+    release build the record names 44 of the 63 tracked files in `main/` and
+    `components/` (the gen-inhibit tester, an observation); the others are
+    stock-off sources and headers nothing includes, and their entries leave
+    the table.
+  - A shared firmware component's switches are its owner's to classify, in
+    its own table, applied in each release build that uses it (option a of
+    three; the others were listing them in each project's table, in full or
+    only for components the project names as shared).
+  - The scan rules carry over from gen-inhibit spec 12.3 item 3 and its
+    check: the scan is textual and over-inclusive (every identifier in an
+    `#if` counts, function-like macros included); a header guard is
+    recognised only in its exact shape (first directive `#ifndef X`, then
+    `#define X` with no value); "sets itself" is read narrowly (only a
+    file-scope `set(VAR value)` before the test, with no `CACHE`), every
+    `$ENV{}` is a build option, and CMake's built-ins are the recorded
+    `cmake`'s `--help-variable-list`; and a listed symbol no longer tested
+    fails, so a stale entry cannot pass as coverage.
+  - Refusal rows are data where they can be, a named project test otherwise
+    (option c of three). On gen-inhibit's rows only the RealDash one (no
+    boot-time bus enable in `app_main`, an objdump call-site check) needs a
+    project test.
+  - The switch-on proof is test evidence, made once per row and made again
+    on a change (option a of two; the other built every switch-on variant on
+    every run).
+  - Release builds only (option a of two): "release builds are the only ones
+    that really need the check anyways" (user).
+  - "Judges the image and the ELF" sets the build's outputs against the
+    flag; it does not require a rule on each (gen-inhibit reviewer,
+    2026-10-24). The image embeds the ELF's SHA-256 (R1), so an ELF rule
+    judges the code in that image. gen-inhibit's RealDash row, ELF only,
+    closed under its spec 12.3 item 3.
 - **Status:** complete.
 
 ### R21. Board data
