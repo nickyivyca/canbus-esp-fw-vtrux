@@ -5,6 +5,9 @@
     python -B -m vtrux_checks options --build DIR
                                     R18: a release build's options against the
                                     project's release profile
+    python -B -m vtrux_checks switches --build DIR
+                                    R20: every switch the release build's source tests
+                                    is in the table, and each refusal row passes
 
 Exit 0 when the check passes, 1 when it fails or cannot read the build, 2 on
 a usage error.
@@ -13,7 +16,7 @@ a usage error.
 import argparse
 import sys
 
-from . import options, scope
+from . import options, scope, switches
 
 
 def main(argv=None):
@@ -28,8 +31,10 @@ def main(argv=None):
                       help="a bench or dev build: shared/ may also be read directly")
     o = sub.add_parser("options", help="R18: a release build's options against the release profile")
     o.add_argument("--build", required=True, help="the build folder of a release build (<project>/build)")
+    w = sub.add_parser("switches", help="R20: build switches and their refusal rows")
+    w.add_argument("--build", required=True, help="the build folder of a release build (<project>/build)")
     args = ap.parse_args(argv)
-    return {"scope": scope, "options": options}[args.cmd].main(args)
+    return {"scope": scope, "options": options, "switches": switches}[args.cmd].main(args)
 
 
 if __name__ == "__main__":

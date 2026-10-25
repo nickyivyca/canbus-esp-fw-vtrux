@@ -283,3 +283,58 @@ hash every log and `results.json`.
 | R24, environment from an empty one | PASS on both hosts | The caller plants `EXTRA_CFLAGS`, `EXTRA_CPPFLAGS`, `CFLAGS` and `CPPFLAGS`, each carrying a define the project prints, and `R24_PLANTED`, which its configure prints. A plain build shows `EXTRA_CFLAGS`, `EXTRA_CPPFLAGS` and `R24_PLANTED` reaching a build; `CFLAGS` and `CPPFLAGS` reach none, so they are not judged. The release build builds, shows none of the three, prints every planted name among those it dropped, and its record's `environment_passed` lists none of them. It lists 8 names on NICKY-XPS and 4 on madhouse-debian, all set by the caller. |
 
 The code hashes of each build agree across the two hosts.
+
+## R20 build switches (C6f, 2026-10-24)
+
+**SPEC:** R20 in shared/main `d4c16e9`, with the readings of 2026-10-24 (the user's and the
+gen-inhibit reviewer's, Q1 to Q12): the source files are the C and C++ files the build's own
+record says it read from the project root, minus `build/` and `managed_components/`, plus the
+CMake files it read from the repo; the scan rules carry over from gen-inhibit's spec 12.3
+item 3 and its `build_switches.py`; refusal rows are declarative image or ELF rules where they
+can be, otherwise a named row in the project's harness, read from the rows file it writes
+beside the build; a managed component carrying a table has it applied, and a
+`shared_components` entry with none fails. Also the user's option (b): a compile definition a
+project's CMake sets is not listed unless the project's own compiled source tests it. And the
+reviewer's reading (a): a refusal row may refuse more images than its own switch's.
+**Check:** `vtrux_checks/switches.py` (`python -B -m vtrux_checks switches --build <dir>`) at
+`shared/tools/switches` `5c43ada`, written from SPEC R20. Its 42 unit tests show each scan
+rule, the table reader, each refusal rule, the rows file and the judge failing on a planted
+input and passing on a faithful one. They pass on Python 3.14.6 and 3.11.9, with the ELF reader
+matching `riscv32-esp-elf-nm` on a real ELF, and 26 mutants of the check each fail them.
+`48a13f0` removed the check's empty hook for extra scanners, per option (b), and added the test
+for compile definitions set by CMake. No scanner was ever registered, so no result changes.
+**Builds:** release builds by `vtrux_build/` tree `c5e5024` (build-tooling `a43c6e8`) of
+gen-inhibit at `gen-inhibit/tester/switch-table` `ef18e9a`, whose `vtrux_checks.json` holds its
+table and whose `build_output.py` writes the rows file. The switch-on builds are bench builds
+(`idf.py -D`), since a release build cannot turn a switch on. **Cases:**
+`verification/switches_cases.py` at `5c43ada`. Its `--self-test` catches every broken input,
+and 13 mutants of its judge each fail it. Each case confirms its trigger without the check's
+reader: the deps log, `CMakeCache.txt`, the rows file. **Host:** NICKY-XPS (IDF v5.4.1, its
+Python 3.11.9). **Run files:**
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/runs/sharedtools_c6f/`
+(`README.md`, section "R20 build-switch check"); `xps_switches_r20/SHA256SUMS`
+(`abc53df2...a6c2d1`) hashes every log, `switches_results.json` and `tests_5c43ada.txt`.
+
+| Case | Result | What was tested |
+|---|---|---|
+| Every symbol listed | PASS | gen-inhibit's release build, its own RealDash row passing: exit 0, nothing named. |
+| A stale entry | PASS | The same build, the table with an entry nothing tests: exit 1, naming it stale. |
+| A managed component's table | PASS | A table planted in `managed_components/espressif__mdns/` listing all but one symbol the build tests there, plus one it does not: exit 1, naming both under that component. |
+| A shared component without a table | PASS | `vtrux_build.json` naming `espressif/mdns` as shared, with no table there: exit 1, naming it. |
+| Planted symbols | PASS | A commit testing a new symbol in compiled C, in an uncompiled header, and as a build option in a `CMakeLists.txt`, plus a variable the file sets before testing it: exit 1, naming the C one and the CMake option only. |
+
+| Refusal row | Shown failing (switch on) | Shown passing (switch off) |
+|---|---|---|
+| `GI_INSTRUMENT_RXQ`, `GI_INSTRUMENT_TXABORT`, `GI_INSTRUMENT_ABORTWIN`, `OTA_HEALTH_FAULT_INJECT`, `GI_TEST_RESTART_QUIESCE` (test-only) | PASS: each switch on alone, exit 1, naming its own refusal only | PASS: the release build names none |
+| `WICAN_FEATURE_MQTT`, `WICAN_FEATURE_ELM327` (stock off) | PASS: each on alone, exit 1, naming its own refusal, and RealDash's (below) | PASS |
+| `WICAN_FEATURE_REALDASH` (stock off; a project row) | PASS: on alone, exit 1, naming its own refusal only | PASS: the row passes in the rows file, and the check names nothing |
+| `WICAN_FEATURE_AUTOPID` (stock off) | PASS: on with MQTT and ELM327, which it needs, exit 1, naming all three, and RealDash's. A control with only MQTT and ELM327 on names those two and RealDash's, never AutoPID's | PASS |
+
+**Observation: RealDash's row refuses the MQTT and ELM327 images too.** Its only rule is the
+project row "no boot-time bus enable in app_main". The gen-inhibit reviewer gives the cause: that
+row is a property of the image, that no stock feature enabling the bus at boot is present, and
+MQTT and ELM327 both enable the bus at boot. By reading (a) that is allowed, so the switch-on
+cases accept extra names as refusals and never as a pass. The first run (on `3cab845`, in
+`run1_3cab845/`, `SHA256SUMS` `be26f7b2...89dd02`) judged them against the exact set, and those
+four cases failed on that extra name alone. Its `component_table` case was VOID, a fault in the
+case, fixed in `5c43ada`.
