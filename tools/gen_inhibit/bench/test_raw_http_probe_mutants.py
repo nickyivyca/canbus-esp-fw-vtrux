@@ -9,6 +9,13 @@ import are copied into <scratch dir>/<target>_<n>/ with the mutation applied, an
 the test is run there. A kill is a FAIL line from a check. A mutant the test
 passes is a check that cannot fail (SURVIVED); one that crashes the test without
 a FAIL line is BROKEN. Both count against the run.
+
+Each suite first runs its unmodified copy, laid out the same way, as the control. If
+the control fails a check or crashes, the suite's kills mean nothing: none counts, and
+the run fails. Only the tests in TAKES_SCRATCH get the copy's scratch/ folder as their
+argument; test_image_elf_sha.py's optional argument is a real image, and passing it a
+folder crashed its unmodified copy after every synthetic check had passed (gen-inhibit
+tester, 2026-10-25).
 """
 
 import os
@@ -206,59 +213,81 @@ SUITES = [
     ]),
 ]
 
+# The tests whose first argument is a scratch folder; the others get none.
+TAKES_SCRATCH = {"test_reply_golive_report.py", "test_busoff_rearm_judge.py", "test_interlock_judge.py"}
+
+
+def run_copy(scratch, tag, target, text, test, extra):
+    """Copy target (as text), its test and extra into scratch/tag and run the test there.
+    Returns (exit code, FAIL lines, last stderr line)."""
+    d = os.path.join(scratch, tag)
+    os.makedirs(d, exist_ok=True)
+    for x in extra:
+        shutil.copy(os.path.join(HERE, x), d)
+    open(os.path.join(d, target), "w", encoding="utf-8").write(text)
+    shutil.copy(os.path.join(HERE, test), d)
+    # NOT -I: isolated mode drops the script's own directory from sys.path, the
+    # test then cannot import the mutated target, and every mutant "dies" on a
+    # ModuleNotFoundError -- which is how the first run of this file read 14 of
+    # 14 killed with no check having run (2026-10-14).
+    # The project root (canre) and this folder (the target's sibling modules)
+    # come after the script's own directory, so the mutated copy still wins.
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([ROOT, HERE]))
+    args = [os.path.join(d, "scratch")] if test in TAKES_SCRATCH else []
+    r = subprocess.run([sys.executable, os.path.join(d, test)] + args,
+                       capture_output=True, text=True, cwd=d, timeout=900, env=env)
+    fails = [ln for ln in r.stdout.splitlines() if ln.startswith("FAIL")]
+    return r.returncode, fails, (r.stderr.strip().splitlines() or [""])[-1]
+
 
 def run_suite(scratch, target, test, extra, muts):
+    """Returns (killed, not killed, whether the control passed)."""
     src = open(os.path.join(HERE, target), encoding="utf-8").read()
     killed, survived = 0, []
     print("== %s against %s" % (target, test))
+    tag = "%s_control" % os.path.splitext(target)[0]
+    rc, fails, err = run_copy(scratch, tag, target, src, test, extra)
+    control_ok = rc == 0 and not fails
+    print("%-9s %-26s %-30s %s" % ("PASS" if control_ok else "FAILED", tag, "control: the unmodified copy",
+                                   "" if control_ok else (fails[0][:90] if fails else err[:90])))
     for n, (label, old, new) in enumerate(muts):
         tag = "%s_%d" % (os.path.splitext(target)[0], n)
         if src.count(old) != 1:
             print("BAD MUTANT %s %s: pattern found %d times" % (tag, label, src.count(old)))
             survived.append(label + " (bad pattern)")
             continue
-        d = os.path.join(scratch, tag)
-        os.makedirs(d, exist_ok=True)
-        for x in extra:
-            shutil.copy(os.path.join(HERE, x), d)
-        open(os.path.join(d, target), "w", encoding="utf-8").write(src.replace(old, new))
-        shutil.copy(os.path.join(HERE, test), d)
-        # NOT -I: isolated mode drops the script's own directory from sys.path, the
-        # test then cannot import the mutated target, and every mutant "dies" on a
-        # ModuleNotFoundError -- which is how the first run of this file read 14 of
-        # 14 killed with no check having run (2026-10-14).
-        # The project root (canre) and this folder (the target's sibling modules)
-        # come after the script's own directory, so the mutated copy still wins.
-        env = dict(os.environ, PYTHONPATH=os.pathsep.join([ROOT, HERE]))
-        r = subprocess.run([sys.executable, os.path.join(d, test), os.path.join(d, "scratch")],
-                           capture_output=True, text=True, cwd=d, timeout=900, env=env)
-        fails = [ln for ln in r.stdout.splitlines() if ln.startswith("FAIL")]
-        dead = r.returncode != 0 and bool(fails)
-        verdict = "KILLED" if dead else ("BROKEN" if r.returncode != 0 else "SURVIVED")
-        why = fails[0][:90] if fails else ((r.stderr.strip().splitlines() or [""])[-1][:90])
+        rc, fails, err = run_copy(scratch, tag, target, src.replace(old, new), test, extra)
+        dead = rc != 0 and bool(fails)
+        verdict = "KILLED" if dead else ("BROKEN" if rc != 0 else "SURVIVED")
+        why = fails[0][:90] if fails else err[:90]
         print("%-9s %-26s %-30s %s" % (verdict, tag, label, why))
-        if dead:
+        if dead and control_ok:
             killed += 1
-        else:
+        elif not dead:
             survived.append("%s (%s)" % (label, verdict))
-    return killed, survived
+    return killed, survived, control_ok
 
 
 def main():
     scratch = sys.argv[1]
-    killed, survived, total = 0, [], 0
+    killed, survived, total, bad_controls = 0, [], 0, []
     only = sys.argv[2:]              # optional: run only these targets
     for target, test, extra, muts in SUITES:
         if only and target not in only:
             continue
-        k, s = run_suite(scratch, target, test, extra, muts)
+        k, s, ok = run_suite(scratch, target, test, extra, muts)
         killed += k
         survived += s
         total += len(muts)
+        if not ok:
+            bad_controls.append(target)
     for x in survived:
         print("NOT KILLED: %s" % x)
-    print("\n%d of %d killed" % (killed, total))
-    return 1 if survived else 0
+    for x in bad_controls:
+        print("CONTROL FAILED: %s" % x)
+    print("\n%d of %d killed; %s" % (killed, total, "every control passes" if not bad_controls
+                                      else "%d control(s) FAIL" % len(bad_controls)))
+    return 1 if survived or bad_controls else 0
 
 
 if __name__ == "__main__":
