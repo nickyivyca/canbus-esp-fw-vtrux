@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real release builds against SPEC R5, R8 to R11, R13, R14 (with R3), R16 (override_path), R22,
+"""Real release builds against SPEC R5, R8 to R11, R13, R14 (with R3), R16, R22, R23,
 R9's fixed SOURCE_DATE_EPOCH and R24.
 
     (from an exported ESP-IDF shell, with its Python)
@@ -16,8 +16,18 @@ more branches sit on it: fx-r11 (the build deletes its own .bin last) and fx-r16
 made that way instead (another host, for R5 across host OSes). REVERSE_IT_DIR is a
 stand-in folder under --root, so no record reaches the real firmware/builds/.
 
+The tooling under test is this checkout's HEAD, committed. SPEC R23 runs it only from
+../shared-<tag>/ beside the project's worktree root, at the pin the project commits in
+shared_pins.json. So the fixture repo tags that commit TAG (a tag no real shared/main
+commit carries), every fixture commit and the minimal project commit the matching pin,
+and each project gets its checkout, a `git worktree add --detach` of the fixture repo, made
+when first needed. The pin cases (r23_*, r16_* but r16_override_path) use their own clone,
+root/pin/a, each changing one thing from r23_control: the checkout missing, the tooling run
+from another folder, the checkout's digest, HEAD or tag, or the pin's tag. Each is run with
+--check-only and as a full release build, and must refuse both before anything is built.
+
 Each case runs the release build as a user would (`python -B -m vtrux_build
-release`, the tooling from this checkout's shared/tools), then judges what it did
+release`, the tooling from the project's pinned checkout), then judges what it did
 from outside: the exit code, the record folder before and after, the build folder,
 git. A refusal case judges only that the build stopped, wrote no record, and got as
 far as the case needs. It never judges the wording. A case whose trigger did not
@@ -35,6 +45,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -52,6 +63,11 @@ GIT_ID = {"GIT_AUTHOR_NAME": "tester", "GIT_AUTHOR_EMAIL": "tester@invalid", "GI
           "GIT_COMMITTER_DATE": "2026-10-24T00:00:00+0000"}
 REPRO_OFF = "# CONFIG_APP_REPRODUCIBLE_BUILD is not set"
 REPRO_ON = "CONFIG_APP_REPRODUCIBLE_BUILD=y"
+PINS = "shared_pins.json"
+TAG = "2000.01.01"          # the tooling under test, tagged in the fixture repo only
+TAG_OTHER = "2000.01.02"    # r23_tag_other: marks a commit beside TAG's, shared/tools the same
+TAG_ABSENT = "2000.01.03"   # r16_tag_absent: no repository here has it
+BRANCH = "r16-branch"       # r16_branch: a branch at TAG's commit, named as the pin's tag
 RESULTS = []
 
 
@@ -102,6 +118,35 @@ def judge_again(rc, before, after):
     return None if rc is not None else "no exit code"
 
 
+def printed_command(out):
+    """SPEC R23: a refusal for a missing checkout prints the command that creates it. The first
+    `git ... worktree add ...` in out, up to a backquote or the line's end, as argv, quotes
+    removed; None if there is none. Whether it creates the checkout is judged by running it."""
+    for line in out.splitlines():
+        m = re.search(r"\bgit\b[^`\n]*?\bworktree\s+add\b[^`\n]*", line)
+        if m:
+            return [t.strip("\"'") for t in shlex.split(m.group(0).rstrip(" .;"), posix=False)]
+    return None
+
+
+def pin_verdict(rc_check, rc_full, built, changed, trigger=True, note=""):
+    """A pin case (SPEC R23, R16's tooling-pin clause): refused with --check-only and as a full
+    release build, before starting (no build/ folder made) and with no record written.
+    rc_full is None when the full build was not run, since --check-only already went through."""
+    tail = "; " + note if note else ""
+    if not trigger:
+        return "VOID", "the trigger did not happen" + tail
+    if rc_check == 0 or rc_full == 0 or rc_full is None:
+        return "FAIL", "exit %s with --check-only, %s without; SPEC says refuse" % (
+            rc_check, "not run" if rc_full is None else rc_full) + tail
+    if built:
+        return "FAIL", "refused (exits %d, %d), but a build/ folder was made: it started" % (rc_check, rc_full) + tail
+    if changed:
+        return "FAIL", "refused (exits %d, %d), but the record folder changed" % (rc_check, rc_full) + tail
+    return "PASS", "refused with --check-only (exit %d) and without (exit %d); no build/, no record%s" % (
+        rc_check, rc_full, tail)
+
+
 def self_test():
     ok = True
     b = I.build()
@@ -112,12 +157,12 @@ def self_test():
            "host_os": {"system": "Windows"}, "toolchain": {"version": "gcc 14"},
            "idf_version": {"image": "v5.4.1", "project": "v5.4.1"}, "dependencies_lock_sha256_lf": "l" * 64,
            "components": {"main": {"digest": "d" * 64}}, "shared_components": {},
-           "tooling": {"tag": None, "commit": "t" * 40, "dirty": False, "digest": "g" * 64}}
+           "tooling": {"tag": TAG, "commit": "t" * 40, "dirty": False, "digest": "g" * 64}}
     files = {h + ".bin": b, h + ".elf": e, h + ".json": b"{}"}
     facts = {"app_bin_sha256": hashlib.sha256(b).hexdigest(), "commit": "c" * 40, "project": "p",
              "system": "Windows", "toolchain": "gcc 14", "idf_image": "v5.4.1", "idf_describe": "v5.4.1",
              "lock_sha256": "l" * 64, "component_digests": {"main": "d" * 64}, "shared_components": {},
-             "tooling": {"tag": None, "commit": "t" * 40, "dirty": False, "digest": "g" * 64}}
+             "tooling": {"tag": TAG, "commit": "t" * 40, "dirty": False, "digest": "g" * 64}}
     r = judge_record(rec, files, facts)
     print("  %s faithful record passes %s" % ("ok  " if not r else "FAIL", r))
     ok &= not r
@@ -137,8 +182,13 @@ def self_test():
                         ("a component missing", "components", {}),
                         ("wrong shared components", "shared_components", {"x": {}}),
                         ("tooling dirty", "tooling", dict(rec["tooling"], dirty=True)),
-                        ("tooling digest", "tooling", dict(rec["tooling"], digest="h" * 64))):
+                        ("tooling digest", "tooling", dict(rec["tooling"], digest="h" * 64)),
+                        ("tooling tag missing", "tooling", dict(rec["tooling"], tag=None)),
+                        ("tooling tag another", "tooling", dict(rec["tooling"], tag=TAG_OTHER)),
+                        ("tooling commit", "tooling", dict(rec["tooling"], commit="u" * 40))):
         ok &= broken(label, rec2=dict(rec, **{k: v}))
+    ok &= broken("dirty recorded false when the checkout is dirty",
+                 facts2=dict(facts, tooling=dict(facts["tooling"], dirty=True)))
     old = {k: v for k, v in rec.items() if k != "dependencies_lock_sha256_lf"}
     ok &= broken("lock hash only under the old field name", rec2=dict(old, dependencies_lock_sha256="l" * 64))
     lf, crlf = b"a: 1\nb: 2\n", b"a: 1\r\nb: 2\r\n"
@@ -171,6 +221,33 @@ def self_test():
         v = verdict(*args)[0]
         print("  %s refusal verdict, %s: %s" % ("ok  " if v == want else "FAIL", label, v))
         ok &= v == want
+    for label, args, want in (("refused both ways", (1, 1, False, False), "PASS"),
+                              ("--check-only went through", (0, None, False, False), "FAIL"),
+                              ("--check-only went through, the build refused", (0, 1, False, False), "FAIL"),
+                              ("the full build went through", (1, 0, False, False), "FAIL"),
+                              ("the full build not run", (1, None, False, False), "FAIL"),
+                              ("refused after making build/", (1, 1, True, False), "FAIL"),
+                              ("refused, record folder changed", (1, 1, False, True), "FAIL"),
+                              ("trigger missing", (1, 1, False, False, False), "VOID")):
+        v = pin_verdict(*args)[0]
+        print("  %s pin verdict, %s: %s" % ("ok  " if v == want else "FAIL", label, v))
+        ok &= v == want
+    for label, text, want in (
+            ("found", "refused: no ../shared-x/\n  git -C C:/w/a worktree add --detach ../shared-x x\n",
+             ["git", "-C", "C:/w/a", "worktree", "add", "--detach", "../shared-x", "x"]),
+            ("a quoted path with a space", 'git -C "C:/my w/a" worktree add --detach ../shared-x x',
+             ["git", "-C", "C:/my w/a", "worktree", "add", "--detach", "../shared-x", "x"]),
+            ("backslashes kept", "git -C C:\\w\\a worktree add --detach ..\\shared-x x",
+             ["git", "-C", "C:\\w\\a", "worktree", "add", "--detach", "..\\shared-x", "x"]),
+            ("in backquotes, ending a sentence", "make it: `git -C /w worktree add --detach ../shared-2.1 2.1`.",
+             ["git", "-C", "/w", "worktree", "add", "--detach", "../shared-2.1", "2.1"]),
+            ("a dotted tag ending a line", "git worktree add --detach ../shared-2000.01.01 2000.01.01.",
+             ["git", "worktree", "add", "--detach", "../shared-2000.01.01", "2000.01.01"]),
+            ("none", "refused: the digest is not the pin's\ngit status\n", None),
+            ("worktree list is not it", "git worktree list\n", None)):
+        got = printed_command(text)
+        print("  %s printed command, %s: %s" % ("ok  " if got == want else "FAIL", label, got))
+        ok &= got == want
     stats = "cache_miss\t5\ndirect_cache_hit\t2\npreprocessed_cache_hit\t1\ncalled_for_link\t9\nfiles_in_cache\t40\n"
     for label, text, want in (("hits and misses", stats, 8), ("nothing cached", stats.replace("5", "0").replace(
             "2", "0").replace("1", "0"), 0), ("no output", "", 0)):
@@ -284,6 +361,8 @@ class Ctx:
         self.p1 = os.path.join(self.root, "a")
         self.p2 = os.path.join(self.root, "path_b_longer", "deeper")
         self.mini = os.path.join(self.root, "mini")
+        self.pp = os.path.join(self.root, "pin")          # the pin cases' project and checkouts
+        self.pq = os.path.join(self.pp, "a")
         self.src = a.fixture or os.path.join(self.root, "src")
         self.made_fixture = not a.fixture
         self.log = os.path.join(self.out, "driver.log")
@@ -305,8 +384,81 @@ def idf(ctx, proj, *args, log=None):
                cwd=proj, env=idf_env(), log=log or ctx.log)
 
 
-def release(ctx, proj, log, jobs=None, check_only=False, env=None, watcher=None):
-    e = idf_env(PYTHONPATH=TOOLS, REVERSE_IT_DIR=ctx.ri)
+def ref(repo, name):
+    """The commit name resolves to in repo, or "" if it does not."""
+    return run(["git", "-C", repo, "rev-parse", "-q", "--verify", name + "^{commit}"])[1].strip()
+
+
+def committed_pin(proj):
+    """The "shared/tools" entry of the shared_pins.json committed at proj's HEAD."""
+    return json.loads(git(proj, "show", "HEAD:" + PINS))["shared/tools"]
+
+
+def checkout_dir(proj, tag):
+    """SPEC R23: ../shared-<tag>/, relative to proj's worktree root."""
+    top = os.path.normpath(git(proj, "rev-parse", "--show-toplevel"))
+    return os.path.join(os.path.dirname(top), "shared-" + tag)
+
+
+def tools_of(co):
+    return os.path.join(co, "shared", "tools")
+
+
+def digest_of(tools):
+    import vtrux_build.digest as D
+    return D.component_digest(tools)
+
+
+def pin_of(co, tag):
+    """The pin a project commits for the checkout co: its tag, HEAD and shared/tools digest."""
+    return {"tag": tag, "commit": git(co, "rev-parse", "HEAD"), "digest": digest_of(tools_of(co))}
+
+
+def pins_text(pin):
+    return json.dumps({"shared/tools": pin}, indent=2) + "\n"
+
+
+def add_checkout(ctx, co, rev):
+    """co: a detached worktree of the fixture repo at rev, as README's command makes one."""
+    os.makedirs(os.path.dirname(co), exist_ok=True)
+    git(ctx.src, "worktree", "add", "--detach", co, rev)
+
+
+def remove_checkout(ctx, co):
+    rmtree(co)
+    for repo in (ctx.src, getattr(ctx, "pq", None)):
+        if repo and os.path.isdir(os.path.join(repo, ".git")):
+            git(repo, "worktree", "prune")
+
+
+def default_tools(ctx, proj):
+    """The shared/tools proj's release build runs from: ../shared-<tag>/ beside its worktree
+    root, <tag> from its committed pin, made from the fixture repo if missing."""
+    co = checkout_dir(proj, committed_pin(proj)["tag"])
+    if not os.path.exists(co):
+        add_checkout(ctx, co, committed_pin(proj)["tag"])
+    return tools_of(co)
+
+
+def make_pin(ctx):
+    """Tag the tooling under test (this checkout's HEAD) TAG in the fixture repo, make its checkout
+    root/shared-TAG (beside p1 and the minimal project), and return the pin that matches it."""
+    c = git(TOOLS, "rev-parse", "HEAD")
+    have = ref(ctx.src, "refs/tags/" + TAG)
+    if not have:
+        git(ctx.src, "tag", TAG, c)
+    elif have != c:
+        raise RuntimeError("the fixture repo's %s marks %s, the tooling under test is %s: use a new --root"
+                           % (TAG, have[:12], c[:12]))
+    co = os.path.join(ctx.root, "shared-" + TAG)
+    if not os.path.exists(co):
+        add_checkout(ctx, co, TAG)
+    return pin_of(co, TAG)
+
+
+def release(ctx, proj, log, jobs=None, check_only=False, env=None, watcher=None, tools=None):
+    tools = tools or default_tools(ctx, proj)
+    e = idf_env(PYTHONPATH=tools, REVERSE_IT_DIR=ctx.ri)
     e.update(env or {})
     for k, v in list(e.items()):
         if v is None:
@@ -317,8 +469,8 @@ def release(ctx, proj, log, jobs=None, check_only=False, env=None, watcher=None)
     if jobs:
         cmd += ["--jobs", str(jobs)]
     with open(log, "a", encoding="utf-8") as f:
-        f.write("env: REVERSE_IT_DIR=%s IDF_CCACHE_ENABLE=%s %s\n" % (
-            e.get("REVERSE_IT_DIR", "(unset)"), e.get("IDF_CCACHE_ENABLE", "(unset)"),
+        f.write("tooling from: %s\nenv: REVERSE_IT_DIR=%s IDF_CCACHE_ENABLE=%s %s\n" % (
+            tools, e.get("REVERSE_IT_DIR", "(unset)"), e.get("IDF_CCACHE_ENABLE", "(unset)"),
             " ".join("%s=%s" % (k, v) for k, v in (env or {}).items())))
     th = None
     if watcher:
@@ -378,11 +530,16 @@ def make_fixture(ctx):
         base = git(ctx.src, "rev-parse", ctx.base + "^{commit}")
         fx.write("base: %s (%s)\n" % (base, ctx.base))
         git(ctx.src, "checkout", "-q", "-b", "fixture", base)
+        pin = make_pin(ctx)
+        fx.write("tooling pin: %s\n" % json.dumps(pin))
         with open(os.path.join(ctx.src, "vtrux_build.json"), "w", newline="") as f:
             f.write('{"project": "gen-inhibit", "shared_components": []}\n')
+        with open(os.path.join(ctx.src, PINS), "w", newline="") as f:
+            f.write(pins_text(pin))
         set_repro(ctx.src)
-        git(ctx.src, "add", "vtrux_build.json", "sdkconfig")
-        git(ctx.src, "commit", "-q", "-m", "fixture: vtrux_build.json; CONFIG_APP_REPRODUCIBLE_BUILD on")
+        git(ctx.src, "add", "vtrux_build.json", "sdkconfig", PINS)
+        git(ctx.src, "commit", "-q", "-m", "fixture: vtrux_build.json; CONFIG_APP_REPRODUCIBLE_BUILD on; "
+            "the tooling's pin")
         normalise(ctx, ctx.src, "fixture", fx)
         fx.write("fixture: %s\n" % git(ctx.src, "rev-parse", "HEAD"))
 
@@ -430,6 +587,8 @@ def make_mini(ctx):
         f.write("build/\nmanaged_components/\n")
     with open(os.path.join(ctx.mini, "vtrux_build.json"), "w", newline="") as f:
         f.write('{"project": "vtrux-mini-test", "shared_components": []}\n')
+    with open(os.path.join(ctx.mini, PINS), "w", newline="") as f:
+        f.write(pins_text(make_pin(ctx)))
     # a manifest, so the reconfigure writes a dependencies.lock: the tooling refuses a project
     # without one (whether SPEC allows that is with the reviewer, 2026-10-24)
     with open(os.path.join(ctx.mini, "main", "idf_component.yml"), "w", newline="") as f:
@@ -468,15 +627,19 @@ def facts_for(ctx, proj, project, shared):
     pick = {n: D.component_digest(d) for n, d in comps.items() if n in ("main", "espressif__mdns", "mdns")}
     gcc = run([pd.get("c_compiler") or "riscv32-esp-elf-gcc", "--version"])[1].splitlines()[0].strip()
     idf_describe = run(["git", "-C", os.environ["IDF_PATH"], "describe", "--tags", "--dirty"])[1].strip()
-    tools_wt = git(TOOLS, "rev-parse", "--show-toplevel")
+    # SPEC R13: the tooling's pin, as checked, plus whether its checkout's shared/tools is dirty;
+    # read here from the checkout the build ran from and from the project's committed pin
+    tools = default_tools(ctx, proj)
+    co = os.path.dirname(os.path.dirname(tools))
     return {"app_bin_sha256": hashlib.sha256(b).hexdigest(), "commit": git(proj, "rev-parse", "HEAD"),
             "project": project, "system": platform.system(), "toolchain": gcc,
             "idf_image": I.field(b, "idf_ver").rstrip(b"\0").decode(), "idf_describe": idf_describe,
             "lock_sha256": (sha256_lf_bytes(open(os.path.join(proj, "dependencies.lock"), "rb").read())
                             if os.path.exists(os.path.join(proj, "dependencies.lock")) else None),
             "component_digests": pick, "shared_components": shared,
-            "tooling": {"tag": None, "commit": git(TOOLS, "rev-parse", "HEAD"),
-                        "dirty": bool(git(tools_wt, "status", "--porcelain")), "digest": D.component_digest(TOOLS)}}
+            "tooling": {"tag": committed_pin(proj).get("tag"), "commit": git(co, "rev-parse", "HEAD"),
+                        "dirty": bool(git(co, "status", "--porcelain", "--", "shared/tools")),
+                        "digest": D.component_digest(tools)}}
 
 
 def own_checks(proj):
@@ -1523,6 +1686,264 @@ def self_test_epoch_env():
     return ok
 
 
+# ---------- the tooling's pin: SPEC R23, R16's tooling-pin clause, R13's tooling field ----------
+
+def pin_setup(ctx):
+    """The refs the pin cases need, in the fixture repo, then root/pin/a, a clone of it made after
+    them so it has them too. Returns (TAG's commit, r23-other's commit)."""
+    c = ref(ctx.src, "refs/tags/" + TAG)
+    c2 = ref(ctx.src, "refs/heads/r23-other")
+    if not c2:
+        # a commit beside TAG's, one file added outside shared/tools, so shared/tools' digest is the same
+        mk = os.path.join(ctx.pp, "mk")
+        remove_checkout(ctx, mk)
+        add_checkout(ctx, mk, TAG)
+        with open(os.path.join(mk, "r23_probe.txt"), "w", newline="") as f:
+            f.write("outside shared/tools\n")
+        git(mk, "add", "r23_probe.txt")
+        git(mk, "commit", "-q", "-m", "r23: beside the tagged commit, shared/tools unchanged")
+        c2 = git(mk, "rev-parse", "HEAD")
+        git(ctx.src, "branch", "r23-other", c2)
+        remove_checkout(ctx, mk)
+    for name, at in ((TAG_OTHER, c2), (c, c), (c[:7], c)):     # tags named as the commit id, so that
+        if not ref(ctx.src, "refs/tags/" + name):                # "absent" is not why they are refused
+            git(ctx.src, "tag", name, at)
+    if not ref(ctx.src, "refs/heads/" + BRANCH):
+        git(ctx.src, "branch", BRANCH, c)
+    if not os.path.exists(ctx.pq):
+        os.makedirs(ctx.pp, exist_ok=True)
+        run(["git", "clone", "-q", "-b", "fixture", ctx.src, ctx.pq], check=True)
+    reset(ctx.pq, "fixture")
+    rmtree(os.path.join(ctx.pq, "build"))
+    return c, c2
+
+
+def pin_checkout(ctx, tag=TAG, at=None):
+    """root/pin/shared-<tag>, fresh, at `at` (default: the tag)."""
+    co = os.path.join(ctx.pp, "shared-" + tag)
+    remove_checkout(ctx, co)
+    add_checkout(ctx, co, at or tag)
+    return co
+
+
+def pin_branch(ctx, name, pin):
+    """root/pin/a on branch pin-<name>: the fixture with shared_pins.json holding pin, committed."""
+    reset(ctx.pq, "fixture")
+    git(ctx.pq, "checkout", "-q", "-B", "pin-" + name)
+    with open(os.path.join(ctx.pq, PINS), "w", newline="") as f:
+        f.write(pins_text(pin))
+    git(ctx.pq, "commit", "-q", "-am", "pin case %s" % name)
+
+
+def dirty(co):
+    return bool(git(co, "status", "--porcelain", "--", "shared/tools"))
+
+
+def pin_case(ctx, name, log, tools, trigger, note):
+    """Run root/pin/a's release build with the tooling from tools, --check-only and then in full
+    (not when --check-only went through), and report. Returns --check-only's output."""
+    q = ctx.pq
+    if not trigger:
+        report(name, *pin_verdict(None, None, False, False, False, note), log=ctx.log)
+        return ""
+    rmtree(os.path.join(q, "build"))
+    before = snapshot(ctx.records())
+    rc1, out = release(ctx, q, log, check_only=True, tools=tools)
+    rc2 = release(ctx, q, log, jobs=ctx.jobs, tools=tools)[0] if rc1 else None
+    built = os.path.exists(os.path.join(q, "build"))
+    report(name, *pin_verdict(rc1, rc2, built, before != snapshot(ctx.records()), True, note), log=ctx.log)
+    rmtree(os.path.join(q, "build"))
+    return out
+
+
+def c_r23_control(ctx, log):
+    pin_setup(ctx)
+    co = pin_checkout(ctx)
+    premise = committed_pin(ctx.pq) == pin_of(co, TAG)
+    rc, _ = release(ctx, ctx.pq, log, check_only=True, tools=tools_of(co))
+    note = "--check-only from ../shared-%s/ beside the project, at the pin: exit %d" % (TAG, rc)
+    report("r23_control", "VOID" if not premise else ("PASS" if rc == 0 else "FAIL"),
+           note if premise else "the checkout is not the pin's; " + note, ctx.log)
+
+
+def c_r23_missing(ctx, log):
+    c, _ = pin_setup(ctx)
+    co = os.path.join(ctx.pp, "shared-" + TAG)
+    remove_checkout(ctx, co)
+    other = tools_of(os.path.join(ctx.root, "shared-" + TAG))     # p1's: at the pin, but not beside this project
+    note = "R23: no ../shared-%s/ beside the project; the tooling from p1's checkout" % TAG
+    out = pin_case(ctx, "r23_missing", log, other, not os.path.exists(co) and os.path.isdir(other), note)
+    if RESULTS[-1]["verdict"] != "PASS":
+        return
+    # SPEC R23: it prints the command that creates the checkout. Run it, from the project's root.
+    argv = printed_command(out)
+    made, rc3 = False, None
+    if argv:
+        run(argv, cwd=ctx.pq, log=log)
+        made = os.path.isdir(co) and ref(co, "HEAD") == c
+        if made:
+            rc3 = release(ctx, ctx.pq, log, check_only=True, tools=tools_of(co))[0]
+    good = made and rc3 == 0
+    RESULTS[-1]["verdict"] = "PASS" if good else "FAIL"
+    RESULTS[-1]["detail"] += "; the printed command %s; run from the project's root it %s; --check-only from it: %s" % (
+        " ".join(argv) if argv else "NOT FOUND", "made ../shared-%s/ at the pin's commit" % TAG if made
+        else "made no checkout at the pin's commit", "exit %d" % rc3 if rc3 is not None else "not run")
+    with open(ctx.log, "a", encoding="utf-8") as f:
+        f.write("RESULT (amended) r23_missing %s %s\n\n" % (RESULTS[-1]["verdict"], RESULTS[-1]["detail"]))
+    print("  amended: %s %s" % (RESULTS[-1]["verdict"], RESULTS[-1]["detail"]), flush=True)
+    remove_checkout(ctx, co)
+
+
+def c_r23_wrong_copy(ctx, log):
+    pin_setup(ctx)
+    co = pin_checkout(ctx)
+    cp = os.path.join(ctx.pp, "copy", "shared-" + TAG)
+    rmtree(os.path.dirname(cp))
+    shutil.copytree(tools_of(co), tools_of(cp))
+    pin_case(ctx, "r23_wrong_copy", log, tools_of(cp), digest_of(tools_of(cp)) == committed_pin(ctx.pq)["digest"],
+             "R23: the tooling from a byte-for-byte copy of the checkout's shared/tools elsewhere; "
+             "the checkout is beside the project")
+    rmtree(os.path.dirname(cp))
+
+
+def c_r23_wrong_other(ctx, log):
+    c, _ = pin_setup(ctx)
+    pin_checkout(ctx)
+    other = os.path.join(ctx.root, "shared-" + TAG)
+    pin_case(ctx, "r23_wrong_other", log, tools_of(other),
+             ref(other, "HEAD") == c and digest_of(tools_of(other)) == committed_pin(ctx.pq)["digest"],
+             "R23: the tooling from another checkout at the pin (p1's), not the one beside the project")
+
+
+def c_r23_digest(ctx, log, name, change, note):
+    pin_setup(ctx)
+    co = pin_checkout(ctx)
+    change(tools_of(co))
+    pin_case(ctx, name, log, tools_of(co), digest_of(tools_of(co)) != committed_pin(ctx.pq)["digest"] and dirty(co),
+             note)
+    pin_checkout(ctx)
+
+
+def c_r23_md_edited(ctx, log):
+    """The control for the digest cases: a .md file changed leaves the digest, so it builds."""
+    pin_setup(ctx)
+    co = pin_checkout(ctx)
+    with open(os.path.join(tools_of(co), "README.md"), "a", newline="") as f:
+        f.write("\nr23 probe: a .md change\n")
+    premise = digest_of(tools_of(co)) == committed_pin(ctx.pq)["digest"] and dirty(co)
+    rc, _ = release(ctx, ctx.pq, log, check_only=True, tools=tools_of(co))
+    report("r23_md_edited", "VOID" if not premise else ("PASS" if rc == 0 else "FAIL"),
+           "R7/R23: README.md changed in the checkout, the digest the pin's: --check-only exit %d" % rc, ctx.log)
+    pin_checkout(ctx)
+
+
+def c_r23_head_moved(ctx, log):
+    c, c2 = pin_setup(ctx)
+    co = pin_checkout(ctx, at=c2)
+    pin_case(ctx, "r23_head_moved", log, tools_of(co),
+             ref(co, "HEAD") == c2 != c and digest_of(tools_of(co)) == committed_pin(ctx.pq)["digest"],
+             "R23: the checkout's HEAD a commit beside the pin's (one file outside shared/tools), the digest the pin's")
+    pin_checkout(ctx)
+
+
+def c_r23_tag_other(ctx, log):
+    c, c2 = pin_setup(ctx)
+    pin = committed_pin(ctx.pq)
+    pin_branch(ctx, "tag-other", dict(pin, tag=TAG_OTHER))
+    co = pin_checkout(ctx, TAG_OTHER, at=c)
+    pin_case(ctx, "r23_tag_other", log, tools_of(co),
+             ref(ctx.src, "refs/tags/" + TAG_OTHER) == c2 != c and ref(co, "HEAD") == c
+             and digest_of(tools_of(co)) == pin["digest"],
+             "R23: the pin's tag %s marks a commit beside the pin's; the checkout at the pin's commit" % TAG_OTHER)
+    remove_checkout(ctx, co)
+    reset(ctx.pq, "fixture")
+
+
+def c_r16_tag(ctx, log, name, tag_of, note, tag_is_ref=None):
+    """The pin's tag replaced by tag_of(commit); its checkout ../shared-<that>/ at the pin's commit."""
+    c, _ = pin_setup(ctx)
+    pin = committed_pin(ctx.pq)
+    tag = tag_of(c)
+    pin_branch(ctx, name, dict(pin, tag=tag))
+    co = pin_checkout(ctx, tag, at=c)
+    trig = ref(co, "HEAD") == c and digest_of(tools_of(co)) == pin["digest"]
+    if tag_is_ref is not None:
+        trig = trig and tag_is_ref(tag)
+    pin_case(ctx, name, log, tools_of(co), trig, note % tag)
+    remove_checkout(ctx, co)
+    reset(ctx.pq, "fixture")
+
+
+def c_r16_no_tag(ctx, log):
+    pin_setup(ctx)
+    pin = committed_pin(ctx.pq)
+    pin_branch(ctx, "no-tag", {k: v for k, v in pin.items() if k != "tag"})
+    co = pin_checkout(ctx)
+    pin_case(ctx, "r16_no_tag", log, tools_of(co), "tag" not in committed_pin(ctx.pq),
+             "R16: the pin has no tag; the checkout ../shared-%s/ at the pin's commit" % TAG)
+    reset(ctx.pq, "fixture")
+
+
+def c_r13_tooling_dirty(ctx, log):
+    """SPEC R13: the record's tooling dirty is true when the checkout's shared/tools has a change
+    git sees that the digest leaves out (a .md file), on a minimal-project commit of its own."""
+    mini_commit(ctx, "r13-dirty", [(MAIN_C, APP_MAIN, '    printf("r13 tooling dirty\\n");\n')],
+                "mini: an image of its own for r13_tooling_dirty")
+    tools = default_tools(ctx, ctx.mini)
+    readme = os.path.join(tools, "README.md")
+    orig = open(readme, "rb").read()
+    try:
+        with open(readme, "ab") as f:
+            f.write(b"\nr13 probe: a .md change, which the digest leaves out\n")
+        co = os.path.dirname(os.path.dirname(tools))
+        if not (dirty(co) and digest_of(tools) == committed_pin(ctx.mini)["digest"]):
+            report("r13_tooling_dirty", "VOID", "the checkout is not dirty with the pin's digest", ctx.log)
+            return
+        rmtree(os.path.join(ctx.mini, "build"))
+        before = snapshot(ctx.records("vtrux-mini-test"))
+        rc, _ = release(ctx, ctx.mini, log, jobs=ctx.jobs)
+        check_success(ctx, "r13_tooling_dirty", ctx.mini, rc, before, project="vtrux-mini-test")
+    finally:
+        with open(readme, "wb") as f:
+            f.write(orig)
+        reset(ctx.mini, "main", "main")
+
+
+def append_to(rel, text):
+    def change(tools):
+        with open(os.path.join(tools, rel), "a", newline="") as f:
+            f.write(text)
+    return change
+
+
+PIN_CASES = [
+    ("r23_control", c_r23_control),
+    ("r23_missing", c_r23_missing),
+    ("r23_wrong_copy", c_r23_wrong_copy),
+    ("r23_wrong_other", c_r23_wrong_other),
+    ("r23_digest_changed", lambda c, l: c_r23_digest(c, l, "r23_digest_changed", append_to("pyproject.toml", "\n# r23 probe\n"),
+                                                     "R23: one tracked non-.md file in the checkout changed (pyproject.toml)")),
+    ("r23_digest_added", lambda c, l: c_r23_digest(c, l, "r23_digest_added", append_to("r23_probe.txt", "x\n"),
+                                                   "R23: one untracked non-.md file added to the checkout's shared/tools")),
+    ("r23_md_edited", c_r23_md_edited),
+    ("r23_head_moved", c_r23_head_moved),
+    ("r23_tag_other", c_r23_tag_other),
+    ("r16_tag_absent", lambda c, l: c_r16_tag(c, l, "r16_tag_absent", lambda _c: TAG_ABSENT,
+                                              "R16: the pin's tag %s, which no repository here has",
+                                              lambda t: not ref(c.src, "refs/tags/" + t) and not ref(c.pq, "refs/tags/" + t))),
+    ("r16_tag_commit", lambda c, l: c_r16_tag(c, l, "r16_tag_commit", lambda x: x,
+                                              "R16: the pin's tag the commit id %s (40 hex digits), also a real tag",
+                                              lambda t: ref(c.src, "refs/tags/" + t) == t)),
+    ("r16_tag_short", lambda c, l: c_r16_tag(c, l, "r16_tag_short", lambda x: x[:7],
+                                             "R16: the pin's tag the commit id %s (7 hex digits), also a real tag",
+                                             lambda t: bool(ref(c.src, "refs/tags/" + t)))),
+    ("r16_no_tag", c_r16_no_tag),
+    ("r16_branch", lambda c, l: c_r16_tag(c, l, "r16_branch", lambda _c: BRANCH,
+                                          "R16: the pin's tag %s, a branch at the pin's commit, not a tag",
+                                          lambda t: bool(ref(c.src, "refs/heads/" + t)) and not ref(c.src, "refs/tags/" + t))),
+]
+
+
 CASES = [
     ("pre_unset_ri", c_pre_unset_ri),
     ("pre_overwrite", c_pre_overwrite),
@@ -1530,6 +1951,7 @@ CASES = [
     ("pre_modified", c_pre_modified),
     ("pre_staged", c_pre_staged),
     ("pre_deleted", c_pre_deleted),
+    *PIN_CASES,
     ("a_release", c_a_release),
     ("a_again", c_a_again),
     ("r5_p2_same_commit", c_r5_p2_same_commit),
@@ -1554,6 +1976,7 @@ CASES = [
     ("r11_bin_missing", c_r11),
     ("r16_override_path", c_r16),
     ("r22_mini", c_r22_mini),
+    ("r13_tooling_dirty", c_r13_tooling_dirty),
     ("r13_lock_crlf", c_r13_lock_crlf),
     ("r8_sdkconfig_ignored", c_r8_sdk_ignored),
     ("r8_sdkconfig_excluded", c_r8_sdk_excluded),
@@ -1597,6 +2020,8 @@ def main(argv):
         if not ctx.made_fixture:
             ap.error("--fixture %s does not exist" % ctx.src)
         make_fixture(ctx)
+    else:
+        make_pin(ctx)       # the fixture's tag must mark the tooling under test
     clones(ctx)
     for n, fn in CASES:
         if n not in names:
