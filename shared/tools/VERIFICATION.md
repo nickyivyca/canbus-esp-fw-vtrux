@@ -258,3 +258,28 @@ esptool v4.12.0, riscv32-esp-elf-gcc 14.2.0 (esp-14.2.0_20241119), CMake 3.30.2,
 
 The earlier run of this test (tooling `a43c6e8`, in the run folder's section "R19 reproducible
 test") predates the merged SPEC and the fixed `SOURCE_DATE_EPOCH`; it is not cited here.
+
+## R9's fixed SOURCE_DATE_EPOCH and R24's environment (C6f, 2026-10-24)
+
+**SPEC:** R9 and R24 in shared/main `d4c16e9`. R9: a release build runs with `SOURCE_DATE_EPOCH`
+set to one fixed value, the same for every project and commit. R24: a release build runs ESP-IDF
+in an environment the tooling builds from an empty one, passing through only the caller's
+variables on its own list, adding its own settings; it prints the names it dropped, and the
+record lists the names it passed. **Tooling tested:** `shared/tools/build-tooling` at `3543457`
+(`vtrux_build/` tree `4e33d70`), merged into `shared/tools/checks` as `4949fcd`. **Checks:**
+`verification/release_cases.py` at `1ea1495` (on `shared/tools/epoch-env`), written from SPEC,
+not from the tooling's source or its pass lists. Its `--self-test` catches every broken input,
+and 16 mutants of the R9 and R24 judges each fail it. **Project:** branches of the minimal project
+of the earlier entries (`4100948`). **Hosts:** NICKY-XPS (IDF v5.4.1, its Python 3.11.9) and
+madhouse-debian (IDF v5.4.1), the first release build there with the tooling's Linux list.
+**Run files:** `$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/runs/sharedtools_c6f/`
+(`README.md`, section "R9's fixed `SOURCE_DATE_EPOCH` and R24's environment");
+`xps_epoch_env/SHA256SUMS` (`5e27354b...31cc8f`) and `r924_linux/SHA256SUMS` (`6d6fc85a...4dc0`)
+hash every log and `results.json`.
+
+| Req | Result | What was tested |
+|---|---|---|
+| R9, fixed `SOURCE_DATE_EPOCH` | PASS on both hosts | The project prints its `__DATE__` and `__TIME__`. A plain build with the caller's `SOURCE_DATE_EPOCH=12345` shows gcc's stamp for it, so the variable reaches the compiler. Release builds of commit A (caller sets none), commit B (caller 12345) and commit A as another project (caller 99999) each hold one stamp, `Jan  1 2026 00:00:00`, the same in all three and on both hosts, and no caller's. |
+| R24, environment from an empty one | PASS on both hosts | The caller plants `EXTRA_CFLAGS`, `EXTRA_CPPFLAGS`, `CFLAGS` and `CPPFLAGS`, each carrying a define the project prints, and `R24_PLANTED`, which its configure prints. A plain build shows `EXTRA_CFLAGS`, `EXTRA_CPPFLAGS` and `R24_PLANTED` reaching a build; `CFLAGS` and `CPPFLAGS` reach none, so they are not judged. The release build builds, shows none of the three, prints every planted name among those it dropped, and its record's `environment_passed` lists none of them. It lists 8 names on NICKY-XPS and 4 on madhouse-debian, all set by the caller. |
+
+The code hashes of each build agree across the two hosts.
