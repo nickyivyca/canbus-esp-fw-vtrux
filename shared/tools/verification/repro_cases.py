@@ -7,8 +7,9 @@
 
 Run from an exported ESP-IDF shell, with its Python, like release_cases.py, whose fixture
 and minimal project (under --root) and plumbing it reuses. R19 is a test of the tooling: rerun
-it when the build script or record writer, the image-reading library, the ESP-IDF version, or
-the compiler, CMake or Ninja version changes. The driver log records each of those.
+it when the build script or record writer, the image-reading library, the ESP-IDF version, its
+Python environment (esptool included), or the compiler, CMake or Ninja version changes, and once
+for each project when it first builds with the tooling. The driver log records each of those.
 
 Each case takes one commit and clones it into two new folders, --root/r19/<key>/a and
 --root/r19/<key>/b_longer/deeper (paths of another length and depth), then runs the release
@@ -19,22 +20,26 @@ The three must agree within a build. R19 is met when the two builds give the sam
 
 A case is VOID unless both clones are clean at the same commit in different folders, with no
 build folder before the build, and its trigger shows in each build: the reproducible-build
-setting in config/sdkconfig.h, and for time_macro the case's marker string in the .bin.
+setting in config/sdkconfig.h, and for time_macro and build_path the case's marker string in
+the .bin.
 
     fixture     release_cases.py's fixture commit (reproducible build on): R19 met
     repro_off   the fixture with CONFIG_APP_REPRODUCIBLE_BUILD off, which is gen-inhibit as
-                it is until port step 0b: R19 not met
+                it is until port step 0b: gen-inhibit's own R19 run, so R19 met
     mini        the minimal project (hello_world, esp32c3, reproducible build on): R19 met
-    time_macro  the minimal project printing __DATE__ and __TIME__, the gap VALIDATION
-                accepts: R19 not met although reproducible build is on
+    time_macro  the minimal project printing __DATE__ and __TIME__: R19 met, since the release
+                build sets one fixed SOURCE_DATE_EPOCH (R9)
+    build_path  the minimal project printing a define that holds CMAKE_BINARY_DIR, which
+                differs between the two folders: R19 not met
 
-The case verdict is PASS when R19's result is the one the case wants, so a "not met" case
-passing shows the test can fail.
+The case verdict is PASS when R19's result is the one the case wants, so build_path passing
+shows the test can fail.
 
 Before each case it checks the bench lock, the "No builds" line and running simulators, as
 release_cases.py does.
 """
 
+import hashlib
 import json
 import os
 import platform
@@ -51,6 +56,9 @@ import options_cases as OC  # noqa: E402
 TOOLS = RC.TOOLS
 MARK = "r19 time_macro built"
 TIME_LINE = '    printf("%s %%s %%s\\n", __DATE__, __TIME__);\n' % MARK
+PATH_MARK = "r19 build_path in"
+PATH_LINE = '    printf("%s %%s\\n", R19_BUILD_DIR);\n' % PATH_MARK
+PATH_DEFINE = '\ntarget_compile_definitions(${COMPONENT_LIB} PRIVATE "R19_BUILD_DIR=\\"${CMAKE_BINARY_DIR}\\"")\n'
 
 
 # ---------- judges (pure; --self-test runs them on fakes) ----------
@@ -199,6 +207,8 @@ def tool_versions():
             "idf": RC.run(["git", "-C", os.environ["IDF_PATH"], "describe", "--tags", "--dirty"])[1].strip(),
             "gcc": first(["riscv32-esp-elf-gcc", "--version"]), "cmake": first(["cmake", "--version"]),
             "ninja": first(["ninja", "--version"]), "python": platform.python_version(),
+            "idf_python_env": sys.prefix, "esptool": first([sys.executable, "-m", "esptool", "version"]),
+            "pip_freeze_sha256": hashlib.sha256(RC.run([sys.executable, "-m", "pip", "freeze"])[1].encode()).hexdigest(),
             "host": platform.node(), "os": platform.platform()}
 
 
@@ -235,7 +245,7 @@ def build_one(ctx, key, side, repo, commit, log, want_repro, marker):
         return info, None
     b = app_bin(path)
     info["repro_seen"] = repro_seen(path)
-    info["marker"] = (MARK.encode() in open(b, "rb").read()) if marker else None
+    info["marker"] = (marker.encode() in open(b, "rb").read()) if marker else None
     project = json.load(open(os.path.join(path, "vtrux_build.json")))["project"]
     h = hashes(b, os.path.join(ri, "firmware", "builds", project))
     with open(log, "a") as f:
@@ -244,7 +254,7 @@ def build_one(ctx, key, side, repo, commit, log, want_repro, marker):
     return info, h
 
 
-def run_case(ctx, key, name, log, repo, commit, want_met, want_repro, marker=False):
+def run_case(ctx, key, name, log, repo, commit, want_met, want_repro, marker=None):
     res = []
     for side in ("a", "b"):
         info, h = build_one(ctx, key, side, repo, commit, log, want_repro, marker)
@@ -278,7 +288,7 @@ def c_repro_off(ctx, log):
         RC.git(p, "checkout", "-q", "-b", "r19-repro-off")
         OC.set_line(p, RC.REPRO_ON, RC.REPRO_OFF)
     repo, commit = prep(ctx, "off", ctx.src, "fixture", edit, "r19 case repro_off: reproducible build off")
-    run_case(ctx, "off", "repro_off", log, repo, commit, False, False)
+    run_case(ctx, "off", "repro_off", log, repo, commit, True, False)
 
 
 def mini_source(ctx):
@@ -292,21 +302,36 @@ def c_mini(ctx, log):
     run_case(ctx, "mini", "mini", log, repo, commit, True, True)
 
 
+def add_print(p, line):
+    f = os.path.join(p, "main", "hello_world_main.c")
+    s = open(f, newline="").read()
+    anchor = '    printf("Hello world!\\n");\n'
+    if s.count(anchor) != 1:
+        raise RuntimeError("hello_world_main.c: %d '%s' lines" % (s.count(anchor), anchor.strip()))
+    with open(f, "w", newline="") as o:
+        o.write(s.replace(anchor, anchor + line))
+
+
 def c_time_macro(ctx, log):
     def edit(p):
         RC.git(p, "checkout", "-q", "-b", "r19-time-macro")
-        f = os.path.join(p, "main", "hello_world_main.c")
-        s = open(f, newline="").read()
-        anchor = '    printf("Hello world!\\n");\n'
-        if s.count(anchor) != 1:
-            raise RuntimeError("hello_world_main.c: %d '%s' lines" % (s.count(anchor), anchor.strip()))
-        with open(f, "w", newline="") as o:
-            o.write(s.replace(anchor, anchor + TIME_LINE))
+        add_print(p, TIME_LINE)
     repo, commit = prep(ctx, "time", mini_source(ctx), "main", edit, "r19 case time_macro: print __DATE__ __TIME__")
-    run_case(ctx, "time", "time_macro", log, repo, commit, False, True, marker=True)
+    run_case(ctx, "time", "time_macro", log, repo, commit, True, True, marker=MARK)
 
 
-CASES = [("fixture", c_fixture), ("repro_off", c_repro_off), ("mini", c_mini), ("time_macro", c_time_macro)]
+def c_build_path(ctx, log):
+    def edit(p):
+        RC.git(p, "checkout", "-q", "-b", "r19-build-path")
+        add_print(p, PATH_LINE)
+        with open(os.path.join(p, "main", "CMakeLists.txt"), "a", newline="") as f:
+            f.write(PATH_DEFINE)
+    repo, commit = prep(ctx, "path", mini_source(ctx), "main", edit, "r19 case build_path: print CMAKE_BINARY_DIR")
+    run_case(ctx, "path", "build_path", log, repo, commit, False, True, marker=PATH_MARK)
+
+
+CASES = [("fixture", c_fixture), ("repro_off", c_repro_off), ("mini", c_mini), ("time_macro", c_time_macro),
+         ("build_path", c_build_path)]
 
 
 def main(argv):
