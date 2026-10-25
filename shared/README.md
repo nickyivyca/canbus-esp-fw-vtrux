@@ -20,4 +20,4 @@ charge interposer.
 | Folder | What |
 |---|---|
 | `bench/` | The shared bench toolkit (`vtrux_bench`). See `bench/README.md`. |
-| `tools/` | The shared build tooling. Its spec so far, no code yet: see `tools/SPEC.md`. |
+| `tools/` | The shared build tooling (`vtrux_build`): the image library, the release build and its record, to `tools/SPEC.md`. See `tools/README.md`. |
