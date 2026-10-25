@@ -43,8 +43,8 @@ What counts as tested, in `switches.py`'s docstring: the C scan is textual (ever
 `#if` or `#elif`, `CONFIG_*` left out), a header guard is left out only in its exact shape, and a
 CMake variable is a build option unless the file set it itself at file scope before the test, or it
 is a CMake built-in (gen-inhibit spec 12.3 item 3's readings, carried over, user 2026-10-24).
-Whether compile definitions a project's CMake sets must be listed is open with the user;
-`EXTRA_SCANNERS` is where a ruling adds its scanner.
+A compile definition the project's CMake sets is not listed unless the project's own compiled
+source tests it (user, 2026-10-24, option b): the C scan finds it there.
 
 Run `options` and `switches` on release builds only (SPEC R18, R20): bench and dev builds are
 not checked, and the checks do not tell them apart.

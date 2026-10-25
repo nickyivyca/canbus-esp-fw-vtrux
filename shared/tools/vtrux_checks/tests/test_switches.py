@@ -161,14 +161,18 @@ class Scan(unittest.TestCase):
         for s in ("CMAKE_BUILD_TYPE", "WIN32", "CMAKE_C_FLAGS", "wican_SOURCE_DIR"):
             self.assertIn(s, found)
 
-    def test_extra_scanner_hook(self):
-        old = list(W.EXTRA_SCANNERS)
-        try:
-            W.EXTRA_SCANNERS.append(lambda c, cm: [("FROM_HOOK", "hook")])
-            self.assertEqual(W.found_symbols({}, {}, matcher())["FROM_HOOK"], ["hook"])
-        finally:
-            W.EXTRA_SCANNERS[:] = old
-        self.assertNotIn("FROM_HOOK", W.found_symbols({}, {}, matcher()))
+    def test_cmake_compile_definitions_not_listed(self):
+        # R20 ruling (user, 2026-10-24, option b): a compile definition the project's CMake
+        # sets is not a switch to list unless its own compiled source tests it.
+        cm = {"main/CMakeLists.txt": 'target_compile_definitions(${COMPONENT_LIB} PRIVATE R20_DEF=1 "R20_STR=\\"x\\"")\n'
+                                     "add_compile_definitions(R20_ADD)\nadd_definitions(-DR20_OLD)\n"
+                                     "idf_build_set_property(COMPILE_DEFINITIONS R20_PROP APPEND)\n"}
+        found = W.found_symbols({}, cm, matcher())
+        for s in ("R20_DEF", "R20_STR", "R20_ADD", "R20_OLD", "R20_PROP"):
+            self.assertNotIn(s, found)
+        found = W.found_symbols({"main/a.c": "#if R20_DEF\n#endif\n"}, cm, matcher())
+        self.assertEqual(found["R20_DEF"], ["main/a.c:1"])
+        self.assertNotIn("R20_ADD", found)
 
 
 # ---------- the ELF ----------

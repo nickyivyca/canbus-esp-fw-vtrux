@@ -419,12 +419,6 @@ def project_names(cmake_texts):
     return sorted(names)
 
 
-# Further scanners, each (C texts, CMake texts) -> [(symbol, where)]. Empty: whether
-# compile definitions a project's CMake sets must be listed is open with the user
-# (2026-10-24), and a ruling adds its scanner here.
-EXTRA_SCANNERS = []
-
-
 def found_symbols(c_texts, cmake_texts, is_builtin):
     """{symbol: [where]} for one set of files; c_texts and cmake_texts are
     {label: text}. CONFIG_* is left out."""
@@ -439,9 +433,6 @@ def found_symbols(c_texts, cmake_texts, is_builtin):
     for rel, text in sorted(cmake_texts.items()):
         for s, ln in cmake_symbols(text, is_builtin):
             add(s, "%s:%d" % (rel, ln))
-    for scan in EXTRA_SCANNERS:
-        for s, where in scan(c_texts, cmake_texts):
-            add(s, where)
     return found
 
 
