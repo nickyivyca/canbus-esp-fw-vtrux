@@ -92,7 +92,8 @@ B15_FILES = ("diag_decode_check.py", "gi_diag.py", "pins.json")
 JAMMER_MD5 = "a89ece8c467f90723a3ac26e72924aa8"            # baseline_b_jam.sh's build
 SSID_RX = re.compile(r"SoftAP `(WiCAN_[0-9a-fA-F]*)`")
 WICAN_BUILDS = {   # image name -> build-tester-<dir> in gi_images
-    "wican_man": "man", "wican_man2": "man2", "wican_rt": "rt", "wican_txabort": "txabort",
+    # no wican_man2 since 2026-10-25: reproducible builds (step 0b) make it byte-identical to wican_man
+    "wican_man": "man", "wican_rt": "rt", "wican_txabort": "txabort",
     "wican_abortwin": "abortwin", "wican_rxq": "rxq",
 }
 SHA_RX = re.compile(r"^[0-9a-f]{64}$")
@@ -511,14 +512,15 @@ def suite(settings):
         Group("rxq", needs_lock=True, image=["wican_rxq", "x2_app"], checks=[
             otag("B26", "rxq", judged("B26"), ["B26_rxq_idle_a.txt", "B26_rxq_idle_b.txt", "B26_rxq_loaded.txt",
                                                "B19_present_rxq.txt"], "wican_rxq"),
+            # B17b on rxq after B26 (reviewer, 2026-10-25): an OTA to a different binary, then the page names
+            # it; until then on _man2, which reproducible builds made identical to _man.
+            otag("B17b", "rxq_page", judged("B17b"), ["B17_spec11_page_%s_rxq.txt" % C], "wican_rxq"),
             desk("B19present", "B19present", ["rt/B12", "txabort/B23", "abortwin/abortwin", "rxq/B26"],
                  judged("B19present"), [])]),
         Group("prod", needs_lock=True, image=["wican_prod", "x2_app"], checks=[
             otag("B19absent", "prod prod_rxq30", judged("B19absent", "B19page"),
                  ["B19_absent_prod.txt", "B19_absent_prod_txabort.txt", "B19_absent_prod_rxq_gap30.txt",
                   "B19_spec11_page_prod.txt"], "wican_prod")]),
-        Group("man2", needs_lock=True, image=["wican_man2", "x2_app"], checks=[
-            otag("B17b", "man2", judged("B17b"), ["B17_spec11_page_%s_man2.txt" % C], "wican_man2")]),
         Group("man_jammer", needs_lock=True, image=["wican_man", "x2_jammer"], checks=[
             chk("B5_B8", "baseline_b_jam.sh", ["jam"], judged("B5", "B6", "B7", "B8"),
                 ["B5_livetrain_p5000.txt"] + ["B5_livetrain_p2000_run%d.txt" % r for r in (1, 2, 3)]

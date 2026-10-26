@@ -13,7 +13,7 @@ One setting, an environment variable:
                    of SeaDrive's reverse-it root on this machine (the folder holding
                    canre/ and projects/). From it come the captures
                    (projects/vtrux/logs/), the vehicle DBCs, the bench lock
-                   (firmware/bench-holder.md), the run folders and fixtures
+                   (firmware/bench-log.jsonl) and bench-holder.md, the run folders and fixtures
                    (projects/vtrux/notes/artifacts/gen-inhibit/runs/), the X2 jammer's
                    build binaries, and, for now, canre. No default: unset is an error,
                    never a guess.
@@ -141,8 +141,15 @@ def runs(*parts):
 
 
 def bench_holder():
-    """The bench lock file, firmware/bench-holder.md."""
+    """firmware/bench-holder.md: the bench's rules, its board state and the lock's
+    history before the 2026-10-24 cutover. Not the lock: that is bench_log()."""
     return project("firmware", "bench-holder.md")
+
+
+def bench_log():
+    """The bench lock, firmware/bench-log.jsonl, since the 2026-10-24 cutover; read
+    and written only through shared/bench's bench_lock (bench_held.py reads it)."""
+    return project("firmware", "bench-log.jsonl")
 
 
 def capture(name):

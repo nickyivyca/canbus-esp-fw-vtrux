@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Tests for x2_pins_noreset_check.py (version 2): its judge, serial parsing and lock
-check, on made-up readings. No hardware.
+"""Tests for x2_pins_noreset_check.py (version 2): its judge and serial parsing, on
+made-up readings. No hardware. Its lock check is bench_held.py's, tested in
+test_bench_held.py (2026-10-25).
 
     py -3.14 -B tools/gen_inhibit/bench/test_x2_pins_noreset_check.py
 
@@ -8,7 +9,6 @@ Gen-inhibit tester, 2026-10-19.
 """
 import os
 import sys
-import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -91,20 +91,7 @@ def main():
     check("windows: quiet is [quiet, pins)", q == [2, 3], q)
     check("windows: after is [pins, serial_after), the pin read included", af == [4, 5, 6, 7], af)
     check("windows: control is [control, end)", c == [10, 11, 12], c)
-    d = gi_paths.scratch("pins-noreset-test")
-    os.makedirs(d, exist_ok=True)
-    for text, want, name in (
-            ("## Lock\n\n**Holder:** tester (gen-inhibit)\n**Since:** x\n", True, "us"),
-            ("## Lock\n\n**Holder:** tester (charge-interposer)\n", False, "the other tester"),
-            ("## Lock\n\n**Holder:** -- (free)\n", False, "free"),
-            ("## Lock\n\nHolder: tester (gen-inhibit)\n", False, "not the Holder field"),
-    ):
-        p = os.path.join(d, "bh.md")
-        with open(p, "w", encoding="utf-8") as f:
-            f.write(text)
-        check("lock: %s -> %s" % (name, want), T.held_by_us(p) is want)
-    os.remove(p)
-    os.rmdir(d)
+    # The lock check is bench_held.py's, tested in test_bench_held.py (2026-10-25).
     print("\n%s, %d ok, %d FAIL" % ("PASS" if not fails else "FAIL", oks, len(fails)))
     return 0 if not fails else 1
 

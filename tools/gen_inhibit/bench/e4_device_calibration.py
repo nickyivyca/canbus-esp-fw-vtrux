@@ -333,6 +333,28 @@ def gi(path, method="GET", timeout=6.0):
         return None, "%s: %s" % (type(e).__name__, e)
 
 
+def device_identity():
+    """(elf_sha256, None) for the running image, or (None, why): one GET of /gen_inhibit,
+    whose elf_sha256 names the image file (spec 11, "The page names the binary it runs").
+
+    NEVER /check_status (reviewer, 2026-10-20): it answers with the device's config,
+    credentials included, and B11raw's Wi-Fi capture of port 80 kept that answer in the
+    clear. Until 2026-10-25 this file read git_version, fw_version and wifi_mode from it
+    as its first request.
+    """
+    st, txt = gi("/gen_inhibit")
+    if st != 200:
+        return None, "HTTP %s: %s" % (st, txt[:120])
+    try:
+        page = json.loads(txt)
+    except ValueError:
+        return None, "HTTP 200 but the page does not parse (%d bytes)" % len(txt)
+    sha = page.get("elf_sha256") if isinstance(page, dict) else None
+    if not (isinstance(sha, str) and len(sha) == 64 and all(c in "0123456789abcdef" for c in sha)):
+        return None, "the page names no elf_sha256 (%r)" % (str(sha)[:70],)
+    return sha, None
+
+
 def status(timeout=6.0, tries=1):
     """The status page, or None.
 
@@ -1497,15 +1519,13 @@ def main():
 
     print("E4 device calibration -- full-bus truck replay into the WiCAN")
 
-    cfg_st, cfg_txt = gi("/check_status")
-    if cfg_st != 200:
-        print("device did not answer /check_status: %s" % cfg_txt)
+    device_sha, why = device_identity()
+    if device_sha is None:
+        print("device did not answer /gen_inhibit with its elf_sha256: %s" % why)
         print("Join its AP first: bench_flash.py --status, in the firmware repo's "
               "tools/gen_inhibit/ (set GI_WICAN_SSID; see tools-reference.md)")
         return 2
-    cfg = json.loads(cfg_txt)
-    print("device %s, fw %s, wifi_mode %s"
-          % (cfg.get("git_version"), cfg.get("fw_version"), cfg.get("wifi_mode")))
+    print("device elf_sha256 %s (from /gen_inhibit)" % device_sha)
 
     global WINDOW_START, CAPTURE
     if args.capture:
@@ -1572,7 +1592,7 @@ def main():
            # Where each arm's raw witness log goes; consumed by run_arm().
            "_raw_dir": os.path.dirname(os.path.abspath(args.out)),
            "_raw_stem": os.path.splitext(os.path.basename(args.out))[0],
-           "device": cfg.get("git_version"),
+           "device": device_sha,      # elf_sha256 since 2026-10-25; /check_status git_version before
            "capture": os.path.basename(CAPTURE),
            "window_start": WINDOW_START, "seconds": args.seconds,
            "intended_fps": round(len(frames) / span, 1),

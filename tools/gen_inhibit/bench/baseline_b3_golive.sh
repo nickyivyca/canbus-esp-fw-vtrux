@@ -17,6 +17,10 @@ C=${GI_COMMIT:-c65c45e}
 D=${GI_OUT:-$DATA/runs/baseline_$C/bench}   # GI_OUT: the chain runner's check folder (2026-10-18)
 mkdir -p "$D"
 MODES=${*:-off observe respond passive}
+# An arm that exits non-zero makes the script exit 1 after the
+# rest have run (reviewer, 2026-10-25): the arms cases have no judge, so they were a
+# PASS on exit 0 while every arm failed (6926fb0 re-run 2, a Wi-Fi outage).
+ARMS_FAILED=0
 for m in $MODES; do
   for n in 1 2 3 4 5; do
     stamp=$(date +%Y%m%dT%H%M%S)
@@ -29,6 +33,9 @@ for m in $MODES; do
     echo "$(date +%H:%M:%S) $m arm $n -> $out.json"
     py -3.14 $A/e4_device_calibration.py --arm idle --capture runs/scottsvalley_armable_300s.log \
       --seconds 35 --offset-us 500 $extra --out "$out.json" > "$out.txt" 2>&1
-    echo "  exit $?"
+    r=$?
+    echo "  exit $r"
+    [ $r -eq 0 ] || ARMS_FAILED=$((ARMS_FAILED + 1))
   done
 done
+[ "$ARMS_FAILED" -eq 0 ] || { echo "$ARMS_FAILED arm(s) exited non-zero"; exit 1; }

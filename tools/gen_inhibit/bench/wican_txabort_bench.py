@@ -171,9 +171,13 @@ def gi_status():
     return json.loads(b)
 
 
-def check_status():
-    _s, b = http("/check_status")
-    return json.loads(b)
+def device_id(page):
+    """The running image for the record: /gen_inhibit's elf_sha256 (spec 11, the page names
+    the binary it runs). NEVER /check_status (reviewer, 2026-10-20): it answers with the
+    device's config, credentials included. Until 2026-10-25 the record's device and
+    device_after held git_version and batt_voltage from it; the battery voltage is on no
+    other page, so it is no longer recorded."""
+    return {"elf_sha256": page.get("elf_sha256")}
 
 
 # What the header calls each thing we can send, and how to compare it. The
@@ -693,10 +697,8 @@ def main():
                     default="quiet,control,noabort,idle,held,contend,retry")
     args = ap.parse_args()
 
-    st0 = check_status()
     gi0 = gi_status()
-    print("device git_version %s, gen_inhibit mode %d, batt %s"
-          % (st0["git_version"], gi0["mode"], st0.get("batt_voltage")))
+    print("device elf_sha256 %s, gen_inhibit mode %d" % (gi0.get("elf_sha256"), gi0["mode"]))
     if gi0["mode"] != 0:
         raise SystemExit("gen_inhibit must be OFF (mode 0) -- it is %d. "
                          "POST /gen_inhibit_set?mode=0 first." % gi0["mode"])
@@ -721,8 +723,7 @@ def main():
     out = {
         "probe": "wican_txabort_bench",
         "when_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "device": {"git_version": st0["git_version"],
-                   "batt_voltage": st0.get("batt_voltage")},
+        "device": device_id(gi0),
         "witnesses": [w.name for w in wits],
         "flood_ids": ["0x%03X" % i for i in FLOOD_IDS],
         "phases": {},
@@ -821,10 +822,8 @@ def main():
                   reps=args.contend_reps, d0=0, d1=args.contend_d1,
                   step=args.contend_step, settle=5)
 
-        st1 = check_status()
         gi1 = gi_status()
-        out["device_after"] = {"git_version": st1["git_version"],
-                               "batt_voltage": st1.get("batt_voltage")}
+        out["device_after"] = device_id(gi1)
         out["gen_inhibit_after"] = {"mode": gi1["mode"], "drv": gi1.get("drv")}
         # Uptime bracket across every phase, so a reboot mid-run is legible
         # rather than showing up as a page of aborted frames.

@@ -47,12 +47,11 @@ import sys
 import threading
 import time
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
+import bench_held  # noqa: E402  the bench lock is the bench log (2026-10-25)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RUNS = os.environ.get("GI_RUNS_DIR") or gi_paths.runs()
-BENCH_HOLDER = gi_paths.bench_holder()
 ROUND = (0x7F4, 0x7F5, 0x7F6, 0x7F7)
-ROLE = "tester (gen-inhibit)"
 DIAG_RX = re.compile(r"\bdiag st=")
 T_RX = re.compile(r"\bt=(\d+)s\b")
 BANNER_RX = re.compile(r"rst:0x[0-9a-fA-F]+ \(|Vtrux charge interposer")
@@ -104,12 +103,6 @@ def windows(seen, marks):
     return between("quiet", "pins"), between("pins", "serial_after"), between("control", "end")
 
 
-def held_by_us(path):
-    with open(path, encoding="utf-8") as f:
-        m = re.search(r"^\*\*Holder:\*\*\s*(.*)$", f.read(), re.M)
-    return bool(m and m.group(1).strip().startswith(ROLE))
-
-
 class Witness(threading.Thread):
     """Drains the bus into (time, id) for the whole check."""
 
@@ -148,8 +141,9 @@ def main():
     ap.add_argument("--quiet", type=float, default=3.0)
     ap.add_argument("--after", type=float, default=3.0)
     a = ap.parse_args()
-    if not held_by_us(BENCH_HOLDER):
-        print("REFUSED: bench-holder.md does not name %s as the holder" % ROLE)
+    ok, who = bench_held.held_by_us()
+    if not ok:
+        print("REFUSED: the bench lock is not ours: %s" % (who,))
         return 2
     import can
     sys.path.insert(0, HERE)

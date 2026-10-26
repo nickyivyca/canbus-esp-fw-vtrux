@@ -33,10 +33,10 @@ thread so the frames keep their schedule.
   py -3.14 ... interlock_bench.py stimulus [CASE ...]     build and check, no bench
   py -3.14 ... interlock_bench.py run CASE [CASE ...] --power "12 V only"
 
-`run` needs the bench lock (firmware/bench-holder.md names the gen-inhibit
-tester), the WiCAN in mode 0, and reboots the WiCAN before each case: the
-section 6 latches clear only on a reset, and every host scenario starts from a
-boot. Per case it writes runs/interlock_<case>_<stamp>.json and
+`run` needs the bench lock (the bench log, firmware/bench-log.jsonl, names the
+gen-inhibit tester as its holder; bench_held.py), the WiCAN in mode 0, and
+reboots the WiCAN before each case: the section 6 latches clear only on a
+reset, and every host scenario starts from a boot. Per case it writes runs/interlock_<case>_<stamp>.json and
 ..._witness.json.gz (every frame the Kvaser saw, and every frame sent).
 Verdicts are interlock_judge.py's, from the wire.
 The run is INCONCLUSIVE, whatever the judge says, if a sent frame is missing
@@ -63,6 +63,7 @@ sys.path.insert(0, HERE)
 
 import interlock_judge as J                                      # noqa: E402
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
+import bench_held  # noqa: E402  the bench lock is the bench log (2026-10-25)
 
 ROOT = J.project_root()
 sys.path.insert(1, ROOT)
@@ -73,7 +74,6 @@ STIM_DIR = os.path.join(RUNS, "interlock_stimulus")
 TESTER_REPO = os.environ.get("GI_TESTER_REPO") or gi_paths.repo_root()
 HOSTDIR = os.path.join(TESTER_REPO, "test", "gen_inhibit_host")
 LOGS = gi_paths.project("projects", "vtrux", "logs")
-HOLDER = gi_paths.bench_holder()
 BITRATE = 500000
 X2_IDS = (0x7F4, 0x7F5, 0x7F6, 0x7F7, 0x18EFC0E1, 0x18FFD7E1)   # vtrux-interposer-diag.dbc
 
@@ -369,27 +369,6 @@ def stimulus_ok(info):
 
 
 # --------------------------------------------------------------------- bench
-
-ME = "tester (gen-inhibit)"
-
-
-def holder_ok(txt=None):
-    """The bench is ours when bench-holder.md's lock names us as the holder with
-    no loan out, or names us in "Loaned to:" (the holder lent it). A holder of
-    ours with the bench loaned to someone else is not ours. Returns (ok, who)."""
-    if txt is None:
-        try:
-            txt = open(HOLDER, encoding="utf-8").read()
-        except OSError:
-            return False, "cannot read bench-holder.md"
-    m = re.search(r"^\*\*Holder:\*\*\s*(.+)$", txt, re.M)
-    who = m.group(1).strip() if m else None
-    m = re.search(r"^\*\*Loaned to:\*\*\s*(.*)$", txt, re.M)
-    loan = m.group(1).strip() if m else ""
-    if loan.strip("- ") == "":
-        return who == ME, who
-    return loan.startswith(ME), "%s, loaned to %s" % (who, loan)
-
 
 class Witness(threading.Thread):
     """Kvaser, normal mode: every frame and error frame, hardware and receipt time."""
@@ -783,9 +762,9 @@ def main(argv=None):
     if not a.power:
         print("run needs --power")
         return 2
-    ok, who = holder_ok()
+    ok, who = bench_held.held_by_us()
     if not ok:
-        print("REFUSED: bench-holder.md names %r as the holder" % (who,))
+        print("REFUSED: the bench lock is not ours: %s" % (who,))
         return 2
     if any(b[2] for b in built):
         print("REFUSED: a stimulus failed its checks")

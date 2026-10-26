@@ -835,14 +835,7 @@ def test_common():
           any(x.startswith("0x617 planned") for x in st), "%s" % st)
     if sys.platform == "win32":
         check("raise_priority: the sender runs above normal", B.raise_priority() == "above_normal", "")
-    lock = "## Lock\n\n**Holder:** %s\n**Loaned to:** %s\n**Since:** x\n"
-    for holder, loan, want in (("tester (gen-inhibit)", "--", True),
-                               ("tester (charge-interposer)", "--", False),
-                               ("tester (charge-interposer)", "tester (gen-inhibit), 2026-10-15 06:00", True),
-                               ("tester (gen-inhibit)", "implementor (gen-inhibit), bring-up", False),
-                               ("tester (charge-interposer)", "implementor (gen-inhibit)", False)):
-        got = B.holder_ok(lock % (holder, loan))[0]
-        check("holder_ok: holder %s, loaned to %s -> %s" % (holder, loan, want), got == want, "%s" % got)
+    # The lock check is bench_held.py's, tested in test_bench_held.py (2026-10-25).
     gen = os.path.join(SCRATCH, "gen")
     st = {}
     for case in ("gate-open", "gate-open-control"):

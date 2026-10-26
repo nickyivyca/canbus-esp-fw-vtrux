@@ -283,6 +283,25 @@ def main():
               and (want != "PASS" or figures(res) == {"diag_build_id": "a5df3fde"}), res)
     shutil.rmtree(b8, ignore_errors=True)
 
+    # 2c. B17b on rxq (reviewer, 2026-10-25): reproducible builds made _man2 = _man, so the second
+    #     image is rxq and the file is ..._rxq.txt. The baseline's own text under that name.
+    b17 = os.path.join(scratch, "b17b_rxq")
+    t17 = open(os.path.join(base, "bench", "B17_spec11_page_e3d9437_man2.txt"), encoding="utf-8").read()
+    for label, files, want in (
+            ("the baseline's text as _rxq", {"B17_spec11_page_e3d9437_rxq.txt": t17}, "PASS"),
+            ("_rxq NOT AS SPECIFIED", {"B17_spec11_page_e3d9437_rxq.txt": t17.replace("AS SPECIFIED", "NOT AS SPECIFIED", 1)},
+             "FAIL"),
+            ("both _man2 and _rxq", {"B17_spec11_page_e3d9437_rxq.txt": t17, "B17_spec11_page_e3d9437_man2.txt": t17},
+             "ERROR"),
+            ("another suffix", {"B17_spec11_page_e3d9437_rt.txt": t17}, "ERROR")):
+        shutil.rmtree(b17, ignore_errors=True)
+        os.makedirs(b17)
+        for n, body in files.items():
+            open(os.path.join(b17, n), "w", encoding="utf-8").write(body)
+        res = J.judge_one("B17b", b17)
+        check("B17b, %s: %s" % (label, want), lambda: [r["verdict"] for r in res] == [want], res)
+    shutil.rmtree(b17, ignore_errors=True)
+
     # 3. No files, a judge that raises, a judge that returns nothing.
     empty = os.path.join(scratch, "empty")
     os.makedirs(empty)
