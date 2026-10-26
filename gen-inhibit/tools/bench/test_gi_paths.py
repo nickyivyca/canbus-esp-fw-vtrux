@@ -8,7 +8,7 @@ run's scratch/ folder (the machine's temp folder until 2026-10-24), with a fake 
      a real root resolves, and every data path (runs, captures, DBCs, the bench lock,
      the jammer builds) lands under it, never under the repo.
   2. The retired settings (GI_FW_TOOLS, GEN_INHIBIT_REPO, VTRUX_DATA, REVERSE_IT_ROOT)
-     are each refused, by check_retired and on import. No file under tools/gen_inhibit
+     are each refused, by check_retired and on import. No file under gen-inhibit/tools
      sets one in a usage line, or names the retired tester clone as a default
      (home-paths ruling B, 2026-10-24); autoarm_boot_to_live's bench_flash.py is this repo's.
   3. Pins: a pinned file that matches passes, one changed is refused, one spelt in
@@ -16,7 +16,9 @@ run's scratch/ folder (the machine's temp folder until 2026-10-24), with a fake 
      matches passes; a changed, renamed, added or removed file is refused; a change to an
      excluded file is not, and an excluded file is never opened; a folder with no pin
      is refused.
-  4. repo_root and fw_tools name this repo; use_canre puts the root on sys.path.
+  4. project_root, firmware_root, repo_root and fw_tools name this repo's folders (the
+     layout of port step 0d); old_path and path_at give a project path's place in a
+     commit before the move and after; use_canre puts the root on sys.path.
 
     py -3.14 -B test_gi_paths.py           # exit 0 only if every check passes
     py -3.14 -B test_gi_paths.py --real    # also: every entry of the real pins.json
@@ -192,8 +194,46 @@ def main():
     data = [gp.runs(), gp.data_dir(), gp.bench_holder(), gp.bench_log(), gp.jammer_builds(), gp.project("projects")]
     check("no data path lands in the repo: each is under the reverse-it root",
           lambda: all(os.path.normcase(p).startswith(os.path.normcase(root) + os.sep) for p in data), data)
-    check("repo_root holds tools/gen_inhibit/bench/gi_paths.py",
-          lambda: os.path.isfile(os.path.join(gp.repo_root(), "tools", "gen_inhibit", "bench", "gi_paths.py")))
+    check("project_root holds tools/bench/gi_paths.py",
+          lambda: os.path.isfile(os.path.join(gp.project_root(), "tools", "bench", "gi_paths.py")))
+    check("project_root is the folder named gen-inhibit (port step 0d)",
+          lambda: os.path.basename(gp.project_root()) == "gen-inhibit", gp.project_root())
+    check("firmware_root is the project folder's firmware/",
+          lambda: gp.firmware_root() == os.path.join(gp.project_root(), "firmware"), gp.firmware_root())
+    check("repo_root is the project folder's parent",
+          lambda: os.path.normcase(gp.repo_root()) == os.path.normcase(os.path.dirname(gp.project_root())),
+          gp.repo_root())
+    # old_path: a project path as it was before port step 0d (repo-relative)
+    for new, old in (("firmware/main/gen_inhibit.c", "main/gen_inhibit.c"), ("firmware", ""),
+                     ("firmware/vtrux_checks.json", "vtrux_checks.json"), ("vtrux_tools.py", "tools/vtrux_tools.py"),
+                     ("tools/bench/gi_diag.py", "tools/gen_inhibit/bench/gi_diag.py"), ("tools", "tools/gen_inhibit"),
+                     ("test/gen_inhibit_host/golden", "test/gen_inhibit_host/golden"), ("README.md", None),
+                     ("toolsx/a.py", None)):
+        check("old_path(%r) is %r" % (new, old), lambda new=new, old=old: gp.old_path(new) == old, gp.old_path(new))
+    # path_at, in this repo's git: e7263bb is before the move; HEAD has at least the tester's
+    # half of it (tools/, test/ and vtrux_checks.json under gen-inhibit/), and the merge all of it
+    for rev, rel, want in (("e7263bb", "test/gen_inhibit_host/golden", "test/gen_inhibit_host/golden"),
+                           ("e7263bb", "tools/bench/gi_diag.py", "tools/gen_inhibit/bench/gi_diag.py"),
+                           ("e7263bb", "firmware/main/gen_inhibit.c", "main/gen_inhibit.c"),
+                           ("e7263bb", "firmware/vtrux_checks.json", "vtrux_checks.json"),
+                           ("HEAD", "test/gen_inhibit_host/golden", "gen-inhibit/test/gen_inhibit_host/golden"),
+                           ("HEAD", "tools/bench/gi_diag.py", "gen-inhibit/tools/bench/gi_diag.py"),
+                           ("HEAD", "firmware/vtrux_checks.json", "gen-inhibit/firmware/vtrux_checks.json"),
+                           ("HEAD", "no/such/path", "gen-inhibit/no/such/path"),
+                           ("HEAD", "test/no_such_file", "gen-inhibit/test/no_such_file")):
+        check("path_at(%s, %r) is %r" % (rev, rel, want),
+              lambda rev=rev, rel=rel, want=want: gp.path_at(rev, rel) == want, gp.path_at(rev, rel))
+    # a planted repo whose one commit has a path in both places: the moved one wins
+    pr = os.path.join(work, "both")
+    for f in ("gen-inhibit/test/x.txt", "test/x.txt", "main/m.c"):
+        os.makedirs(os.path.dirname(os.path.join(pr, f)), exist_ok=True)
+        open(os.path.join(pr, f), "w").write(f)
+    for args in (["init", "-q"], ["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "x"]):
+        subprocess.run(["git", "-C", pr] + args, check=True, capture_output=True)
+    check("path_at: a path in both places is the moved one",
+          lambda: gp.path_at("HEAD", "test/x.txt", pr) == "gen-inhibit/test/x.txt", gp.path_at("HEAD", "test/x.txt", pr))
+    check("path_at: a path only in its old place is the old one",
+          lambda: gp.path_at("HEAD", "firmware/main/m.c", pr) == "main/m.c", gp.path_at("HEAD", "firmware/main/m.c", pr))
     check("fw_tools holds suite_gen_inhibit.py",
           lambda: os.path.isfile(os.path.join(gp.fw_tools(), "suite_gen_inhibit.py")))
     sys.path[:] = [p for p in sys.path if os.path.normcase(p) != os.path.normcase(root)]
@@ -243,22 +283,22 @@ def main():
     tools = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     allowed = {("baseline_host_run.sh", "GEN_INHIBIT_REPO"), ("test_baseline_host_run.py", "GEN_INHIBIT_REPO")}
     hits = [h for h in retired_usage(tools, gp.RETIRED) if (h[0], h[2]) not in allowed]
-    check("no file under tools/gen_inhibit sets a retired setting in a usage line", lambda: not hits, hits[:5])
+    check("no file under gen-inhibit/tools sets a retired setting in a usage line", lambda: not hits, hits[:5])
     with open(os.path.join(root, "usage.py"), "w", encoding="utf-8") as fh:
-        fh.write('"""\n    GI_FW_TOOLS=<firmware repo>/tools/gen_inhibit py -3.14 x.py\n"""\n')
+        fh.write('"""\n    GI_FW_TOOLS=<firmware repo>/gen-inhibit/tools py -3.14 x.py\n"""\n')
     check("control: such a usage line is found",
           lambda: [h[0] for h in retired_usage(root, gp.RETIRED)] == ["usage.py"])
     os.remove(os.path.join(root, "usage.py"))
     # Nor names the retired tester clone as a default (home-paths ruling B; gen-inhibit
-    # reviewer, 2026-10-24): every tool's default is this repo, gi_paths.repo_root().
+    # reviewer, 2026-10-24): every tool's default is this repo (gi_paths' roots).
     hits = old_clone_names(tools)
-    check("no file under tools/gen_inhibit names the retired tester clone", lambda: not hits, hits[:5])
+    check("no file under gen-inhibit/tools names the retired tester clone", lambda: not hits, hits[:5])
     with open(os.path.join(root, "flash.py"), "w", encoding="utf-8") as fh:
         fh.write('X = os.path.join(os.path.expanduser("~"), "Git", "%s", "tools")\n' % OLD_CLONE)
     check("control: such a default is found", lambda: [h[0] for h in old_clone_names(root)] == ["flash.py"])
     os.remove(os.path.join(root, "flash.py"))
     check("autoarm_boot_to_live's bench_flash.py is this repo's, and exists",
-          lambda: autoarm_bench_flash() == os.path.join(gi_paths.repo_root(), "tools", "gen_inhibit", "bench_flash.py")
+          lambda: autoarm_bench_flash() == os.path.join(gi_paths.fw_tools(), "bench_flash.py")
           and os.path.isfile(autoarm_bench_flash()), autoarm_bench_flash())
 
     print("\n=== pins ===")

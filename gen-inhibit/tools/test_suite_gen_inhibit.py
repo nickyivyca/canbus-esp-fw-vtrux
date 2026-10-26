@@ -1100,8 +1100,9 @@ def test_host_group(settings, emu):
     # A tree missing a file tar copies but neither file gi_diag's export reads (gi_diag.py,
     # pins.json), so the export passes and only tar fails, after sending what it could:
     # the host's tar xf takes that, so with no pipefail ssh's exit would hide the failure.
-    # A shared clone at HEAD, since the export reads the DBC's git history from three
-    # folders above bench/; this folder's bench/ over its own.
+    # A shared clone at HEAD, since the export reads the DBC's git history from the repo
+    # root above bench/; this folder's bench/ over its own, at the same place in the clone
+    # as here (gen-inhibit/tools/ since port step 0d).
     top = subprocess.run(["git", "-C", HERE, "rev-parse", "--show-toplevel"], capture_output=True, text=True,
                          check=True).stdout.strip()
     head = subprocess.run(["git", "-C", top, "rev-parse", "HEAD"], capture_output=True, text=True,
@@ -1109,7 +1110,7 @@ def test_host_group(settings, emu):
     repo = os.path.join(d, "partial_repo")
     subprocess.run(["git", "clone", "-q", "--shared", "--no-checkout", top, repo], check=True)
     subprocess.run(["git", "-C", repo, "-c", "advice.detachedHead=false", "checkout", "-q", head], check=True)
-    partial = os.path.join(repo, "tools", "gen_inhibit")
+    partial = os.path.join(repo, os.path.relpath(HERE, top))
     shutil.rmtree(os.path.join(partial, "bench"))
     shutil.copytree(os.path.join(HERE, "bench"), os.path.join(partial, "bench"),
                     ignore=shutil.ignore_patterns("__pycache__"))

@@ -2,7 +2,7 @@
 """Harness test: every shell runner in this folder parses, by `bash -n` with the bash the
 suite runs them with (settings "bash", Git Bash).
 
-    GI_BASH="C:/Program Files/Git/usr/bin/bash.EXE" py -3.14 -B tools/gen_inhibit/bench/test_bench_sh_syntax.py
+    GI_BASH="C:/Program Files/Git/usr/bin/bash.EXE" py -3.14 -B gen-inhibit/tools/bench/test_bench_sh_syntax.py
 
 Written 2026-10-22: baseline_b_hand.sh had failed to parse since its NONODE step was added
 (2026-10-20). An apostrophe in a "${VAR:?message}" opened a quote that ran to the end of the

@@ -1,6 +1,6 @@
 """Harness test for respond_offset_sweep: comparability flags, grouping, plans.
 
-    py -3.14 tools/gen_inhibit/bench/test_respond_offset_sweep.py
+    py -3.14 gen-inhibit/tools/bench/test_respond_offset_sweep.py
 """
 import os
 import sys

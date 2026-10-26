@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Does /gi_txabort actually REFUSE a request it cannot honour? Spec 5.2 item 9.
 
-    py -3.11 tools/gen_inhibit/bench/txabort_refusal_check.py
+    py -3.11 gen-inhibit/tools/bench/txabort_refusal_check.py
 
 Needs the GI_INSTRUMENT_TXABORT measurement build on the device.
 

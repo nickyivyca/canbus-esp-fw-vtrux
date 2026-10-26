@@ -4,8 +4,8 @@ Synthetic witness streams, no bus. Each classification and each judge outcome
 has a case where it must come out the other way, so neither can pass by
 construction.
 
-Run from the project root:
-  py -3.14 tools/gen_inhibit/bench/test_skip_method_judge.py
+Run from the repo root:
+  py -3.14 gen-inhibit/tools/bench/test_skip_method_judge.py
 """
 import os
 import sys

@@ -4,7 +4,7 @@ threshold) and of the witness controller state (kvaser_flags,
 witness_state_summary; added 2026-10-16, item 4), and of the trip 6 judge (max_in_window's
 edge, the latch bound; added 2026-10-20); test_x2_jam_cases.py must fail on each.
 
-    py -3.14 tools/gen_inhibit/bench/test_x2_jam_cases_reset_mutants.py
+    py -3.14 gen-inhibit/tools/bench/test_x2_jam_cases_reset_mutants.py
 
 Run from the reverse-it root (the test imports canre). Each mutant copies the
 two files into a fresh folder under runs/, applies one edit, and runs the test

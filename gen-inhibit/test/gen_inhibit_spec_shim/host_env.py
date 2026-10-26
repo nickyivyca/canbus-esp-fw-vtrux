@@ -19,7 +19,7 @@ IDENTITY_CMD = ('printf "host=%s\\n" "$(uname -n)"; '
 
 def scratch_dir(name):
     """This run's own folder in the worktree's gitignored scratch/ (AGENTS.md "Files and
-    folders"), never the system temp folder: tools/gen_inhibit/bench/gi_paths.scratch()'s
+    folders"), never the system temp folder: gen-inhibit/tools/bench/gi_paths.scratch()'s
     rule, written out here. The worktree is found by walking up to its .git
     (harness-defects row, 2026-10-24)."""
     d = HERE

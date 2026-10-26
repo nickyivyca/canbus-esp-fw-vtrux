@@ -50,7 +50,7 @@ THE DRAIN IS ON ITS OWN THREAD. A loop interleaving send and receive paces
 itself to ~970 fps with no exception to announce the cap; every sparse
 stimulus in this investigation traced to that shape.
 
-    py -3.14 tools/gen_inhibit/bench/witness_rate_fidelity.py
+    py -3.14 gen-inhibit/tools/bench/witness_rate_fidelity.py
     py -3.14 ... --rates 1000,3750 --seconds 40
 """
 

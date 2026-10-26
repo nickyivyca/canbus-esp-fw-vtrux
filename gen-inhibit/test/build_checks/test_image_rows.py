@@ -15,7 +15,7 @@ runs check_image() on it, classifying rows the way build_output.main() does.
 Against the code before 0c (564c129) the "-dirty" and commit-in-name cases
 fail, so the test can fail.
 
-Run:  py -3.14 test/build_checks/test_image_rows.py   (exit 0 = all pass)
+Run:  py -3.14 gen-inhibit/test/build_checks/test_image_rows.py   (exit 0 = all pass)
 """
 import os
 import shutil
@@ -28,7 +28,7 @@ sys.path.insert(0, HERE)
 
 import build_output as B                                        # noqa: E402
 
-TMP = os.path.join(B.REPO, "scratch", "build-checks", "test_image_rows")
+TMP = os.path.join(B.WORKTREE, "scratch", "build-checks", "test_image_rows")
 RETIRED = ("no -dirty in the version", "git sha embedded", "working tree clean", "image built from HEAD",
            "sources older than the image")
 

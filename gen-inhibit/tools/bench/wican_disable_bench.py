@@ -18,7 +18,7 @@ since the disable latches until reboot):
     3. inject 0x639 shift_lever_pos = 3 (Drive) -> STILL disabled (latched)
 
 Usage:
-    py -3.12 tools/gen_inhibit/bench/wican_disable_bench.py --phase soc
+    py -3.12 gen-inhibit/tools/bench/wican_disable_bench.py --phase soc
     py -3.12 ...\\wican_disable_bench.py --phase mmode
 """
 

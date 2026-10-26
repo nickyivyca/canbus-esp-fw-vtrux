@@ -106,7 +106,7 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
+REPO = os.path.join(os.path.abspath(os.path.join(HERE, "..", "..")), "firmware")   # the WiCAN tree (port step 0d)
 
 SHIP, TEST, NOT = "shipping variant", "test-only", "not a switch"
 STOCK = "stock feature off in this product"     # shared/tools SPEC R20's wording, the table's since the move

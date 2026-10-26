@@ -41,7 +41,7 @@ recording a string of arms that never started. The first attempt on 2026-10-10 r
 all nine arms into a dropped laptop WLAN, each refusing at its first status read,
 and then crashed taking a median of nothing.
 
-    GI_WICAN_SSID=... py -3.14 tools/gen_inhibit/bench/respond_offset_sweep.py [--plan offsets|wifi]
+    GI_WICAN_SSID=... py -3.14 gen-inhibit/tools/bench/respond_offset_sweep.py [--plan offsets|wifi]
     py -3.14 .../respond_offset_sweep.py --summarise-only STAMP [--plan ...]
 Writes runs/respond_offset_sweep_<plan>_<stamp>.json and one e4 run file per arm.
 """

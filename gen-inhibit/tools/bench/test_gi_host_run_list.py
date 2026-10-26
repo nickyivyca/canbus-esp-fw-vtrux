@@ -13,9 +13,14 @@ run there and its replay files went stale.
   4. Controls: the real list with project_dir.py taken out must be flagged for
      from_capture.py and replay_stimulus_delta.py; a planted folder where a.py imports
      b inside a function must be flagged with b.py unlisted and pass with it listed.
+  5. Every folder a shipped .py puts on sys.path as os.path.join(HERE, "..", ...) is in
+     this tree and holds shipped files (port step 0d, 2026-10-26: run_tests.py reached
+     gi_diag at ../../tools/gen_inhibit/bench, which a stale ~/gi_host still had, so a
+     wrong path there passes on the stale copy). Control: a planted file pointing at a
+     folder that is not shipped is flagged.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_gi_host_run_list.py
-    py -3.14 -B tools/gen_inhibit/bench/test_gi_host_run_list.py --mutants
+    py -3.14 -B gen-inhibit/tools/bench/test_gi_host_run_list.py
+    py -3.14 -B gen-inhibit/tools/bench/test_gi_host_run_list.py --mutants
 
 --mutants runs the test on copies of gi_host_run.sh with one edit (GI_HOST_RUN_SH names
 the copy). Gen-inhibit tester, 2026-10-26 (reviewer item: the project_dir.py sync gap).
@@ -28,7 +33,7 @@ import sys
 import gi_paths  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = gi_paths.repo_root()
+ROOT = gi_paths.project_root()      # the list is relative to $FW, the project folder (port step 0d)
 SCRIPT = os.environ.get("GI_HOST_RUN_SH") or os.path.join(HERE, "gi_host_run.sh")
 START = 'tar -C "$FW" -czf - \\'
 END = '-C "$EXPORT_PARENT"'
@@ -100,6 +105,36 @@ def missing_imports(listed, root):
     return out
 
 
+def path_folders(path):
+    """[(line, folder parts)] for each sys.path.insert(_, ...os.path.join(HERE, "a", "b"...)...)
+    in the file whose join arguments after HERE are all string constants."""
+    out = []
+    for node in ast.walk(ast.parse(open(path, "rb").read(), path)):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "insert"
+                and ast.unparse(node.func.value) == "sys.path" and len(node.args) == 2):
+            continue
+        for j in ast.walk(node.args[1]):
+            if (isinstance(j, ast.Call) and ast.unparse(j.func) == "os.path.join" and j.args
+                    and ast.unparse(j.args[0]) == "HERE"
+                    and all(isinstance(a, ast.Constant) and isinstance(a.value, str) for a in j.args[1:])):
+                out.append((node.lineno, [a.value for a in j.args[1:]]))
+    return out
+
+
+def bad_path_folders(listed, root):
+    """[(shipped .py, line, folder)] for each sys.path folder that is not in root or holds no shipped file."""
+    ship = shipped_files(listed, root)
+    out = []
+    for f in sorted(ship):
+        if not f.endswith(".py") or not os.path.isfile(os.path.join(root, f)):
+            continue
+        for line, parts in path_folders(os.path.join(root, f)):
+            folder = os.path.normpath(os.path.join(os.path.dirname(f), *parts)).replace("\\", "/")
+            if not os.path.isdir(os.path.join(root, folder)) or not any(s.startswith(folder + "/") for s in ship):
+                out.append((f, line, folder))
+    return out
+
+
 def checks():
     listed = sync_list(open(SCRIPT, encoding="utf-8").read())
     check("1 the sync list is found and names more than 20 paths", len(listed) > 20, len(listed))
@@ -112,6 +147,11 @@ def checks():
     check("4a control: without project_dir.py, from_capture.py and replay_stimulus_delta.py are flagged",
           {("test/gen_inhibit_host/from_capture.py", "project_dir"),
            ("test/gen_inhibit_host/replay_stimulus_delta.py", "project_dir")} <= set(ctl), ctl)
+    found = sum(len(path_folders(os.path.join(ROOT, f))) for f in shipped_files(listed, ROOT)
+                if f.endswith(".py") and os.path.isfile(os.path.join(ROOT, f)))
+    check("5 shipped files put folders on sys.path (at least run_tests.py's gi_diag)", found >= 1, found)
+    bad = bad_path_folders(listed, ROOT)
+    check("5 every sys.path folder of a shipped .py is in this tree and shipped", not bad, bad)
     base = gi_paths.scratch("test_gi_host_run_list")
     try:
         os.makedirs(os.path.join(base, "t"))
@@ -124,6 +164,15 @@ def checks():
         check("4c control: the same with b.py listed: not flagged", got == [], got)
         got = missing_imports(["t"], base)
         check("4d control: the same folder listed whole: not flagged", got == [], got)
+        os.makedirs(os.path.join(base, "u", "lib"))
+        open(os.path.join(base, "u", "lib", "m.py"), "w").close()
+        with open(os.path.join(base, "t", "c.py"), "w") as fh:
+            fh.write('import os, sys\nHERE = os.path.dirname(os.path.abspath(__file__))\n'
+                     'sys.path.insert(0, os.path.normpath(os.path.join(HERE, "..", "u", "lib")))\n')
+        got = bad_path_folders(["t/c.py"], base)
+        check("5 control: a sys.path folder that is not shipped is flagged", got == [("t/c.py", 3, "u/lib")], got)
+        got = bad_path_folders(["t/c.py", "u/lib"], base)
+        check("5 control: the same with the folder shipped: not flagged", got == [], got)
     finally:
         shutil.rmtree(base, ignore_errors=True)
     return FAILS
@@ -132,6 +181,7 @@ def checks():
 MUTANTS = [
     ("project_dir.py dropped from the sync", "    test/gen_inhibit_host/project_dir.py \\\n", ""),
     ("a path in the sync misspelled", "    test/gen_inhibit_host/run_tests.py \\\n", "    test/gen_inhibit_host/run_test.py \\\n"),
+    ("gi_diag.py and pins.json not shipped", "    tools/bench/gi_diag.py \\\n    tools/bench/pins.json \\\n", ""),
 ]
 
 

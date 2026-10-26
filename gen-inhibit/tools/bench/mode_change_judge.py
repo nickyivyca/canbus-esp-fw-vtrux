@@ -33,7 +33,7 @@ Preconditions: each POST has a full page before and after it; the bus is live in
 the 0.5 s before each POST (the device answering out of INHIBIT, VCM 0x051 on the
 wire out of PASSIVE); the schedule has at least one 3->3 and one 3->4->3.
 
-    py -3.14 tools/gen_inhibit/bench/mode_change_judge.py <e4 run .json> <fullpage .jsonl>
+    py -3.14 gen-inhibit/tools/bench/mode_change_judge.py <e4 run .json> <fullpage .jsonl>
 Run from the reverse-it root. Tested by test_mode_change_judge.py.
 """
 import json

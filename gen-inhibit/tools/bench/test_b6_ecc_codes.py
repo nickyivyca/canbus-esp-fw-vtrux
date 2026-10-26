@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Test b6_ecc_codes.py on synthetic pulse rows (b6_session1_desk.session_arms stubbed).
 
-    py -3.14 -B tools/gen_inhibit/bench/test_b6_ecc_codes.py [--mutants]
+    py -3.14 -B gen-inhibit/tools/bench/test_b6_ecc_codes.py [--mutants]
 
 Gen-inhibit tester, 2026-10-20.
 """

@@ -3,7 +3,7 @@
 must fail on each BY A CHECK. A crash is not a kill, and an edit that does not apply is
 an error.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_x2_flash_custody_mutants.py
+    py -3.14 -B gen-inhibit/tools/bench/test_x2_flash_custody_mutants.py
 
 Needs REVERSE_IT_DIR and INTERPOSER_CODE, as the test does. Each mutant is a copy of
 x2_flash_custody.py with one edit, in the worktree's scratch/, imported by the test

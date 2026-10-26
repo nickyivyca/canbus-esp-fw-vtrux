@@ -58,6 +58,12 @@ MUTANTS = [
     ("the guard ignores scale and offset", "g.is_signed, float(g.scale), float(g.offset),", "g.is_signed, 1.0, 0.0,"),
     ("a probe waits for a schema page like a diag page", "        if frame_id in UNVERSIONED:             # outside",
      "        if False:             # outside"),
+    # port step 0d (2026-10-26): DBC_PATH is repo-relative, so a folder inside the worktree is taken to its root
+    ("run_identity reads DBC_PATH against the folder it is given",
+     "    repo = toplevel(repo or repo_root())\n    dirty = git(", "    repo = repo or repo_root()\n    dirty = git("),
+    # and a copy with no git has its export at the project folder's root, two above tools/bench/
+    ("the export looked for at the repo root", "os.path.join(project_root(), EXPORT_DIR)):",
+     "os.path.join(repo_root(), EXPORT_DIR)):"),
 ]
 
 

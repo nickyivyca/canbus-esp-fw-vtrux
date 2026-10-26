@@ -24,7 +24,7 @@ The `- dropped` is not a typo. A dropped inhibit is ALSO counted as a skip
 (gs_queue_frame, the D3 path), so it would otherwise be counted twice.
 
 Usage:
-    py -3.11 tools/gen_inhibit/bench/sched_identity_check.py
+    py -3.11 gen-inhibit/tools/bench/sched_identity_check.py
     py -3.11 ... sched_identity_check.py runs/e4_case3_final.json
 """
 

@@ -2,7 +2,7 @@
 """Mutants of b6_multicount_landing.py; test_b6_multicount_landing.py must fail on each
 BY A CHECK. A crash is not a kill, and an edit that does not apply is an error.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_b6_multicount_landing_mutants.py
+    py -3.14 -B gen-inhibit/tools/bench/test_b6_multicount_landing_mutants.py
 
 Each mutant is a copy of the script in the worktree's scratch/, one edit applied, run
 by the test through LANDING_SCRIPT. Gen-inhibit tester, 2026-10-20.

@@ -5,7 +5,7 @@ every test/build_checks/test_* that needs no build or image. Gen-inhibit tester,
 2026-10-16 (written for e3d9437; part C on c65c45e was run by hand).
 
     py -3.14 build_checks_light.py --checks <a test/build_checks folder> --repo <worktree> \
-        --build <worktree>/build-tester-man --image <bin> [--image <bin> ...] --out <file>
+        --build <WiCAN tree>/build-tester-man --image <bin> [--image <bin> ...] --out <file>
 
 --checks picks WHICH copy of the checks runs: the commit's own (in the worktree), or
 the tester's clone with unpublished harness changes. Run under py -3.14, which has

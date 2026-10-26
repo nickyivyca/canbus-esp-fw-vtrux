@@ -34,7 +34,7 @@ Probes, by the table's "observe":
 The build is read from /gen_inhibit's elf_sha256, never /check_status (2026-10-20: it
 carries credentials until the WiCAN's reset).
 
-    GI_WICAN_SSID=... py -3.14 tools/gen_inhibit/bench/test_only_inert.py \
+    GI_WICAN_SSID=... py -3.14 gen-inhibit/tools/bench/test_only_inert.py \
         --expect absent|present --switch NAME [--switch NAME ...] --power "..."
 Writes runs/test_only_inert_<expect>_<stamp>.json.
 """
@@ -62,7 +62,7 @@ ROLLBACK_WAIT_S = 70.0
 def load_triggers(repo=None):
     """{switch: {"probes": ((method, path), ...), "state", "effect", "observe": (...)}} from the
     firmware repo's vtrux_checks.json, key "inert_triggers"."""
-    repo = repo or os.environ.get("GI_FW_REPO") or gi_paths.repo_root()
+    repo = repo or os.environ.get("GI_FW_REPO") or gi_paths.firmware_root()   # the folder holding vtrux_checks.json
     with open(os.path.join(repo, "vtrux_checks.json"), encoding="utf-8") as fh:
         t = json.load(fh)["inert_triggers"]
     return {s: {"probes": tuple(tuple(x) for x in e["probes"]), "state": e.get("state"),

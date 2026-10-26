@@ -3,7 +3,7 @@
 test_wrong_bitrate_sequence.py must fail on each BY A CHECK. A crash is not a kill, and an
 edit that does not apply is an error. The unmutated copy runs first as the control.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_wrong_bitrate_sequence_mutants.py
+    py -3.14 -B gen-inhibit/tools/bench/test_wrong_bitrate_sequence_mutants.py
 
 Each mutant is a copy of wrong_bitrate_errors.py in the worktree's scratch/, one edit
 applied, run through WRONG_BITRATE_DIR. About 20 s a mutant. Gen-inhibit tester, 2026-10-25.

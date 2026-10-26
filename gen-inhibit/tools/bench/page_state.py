@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """One read of the WiCAN's /gen_inhibit page, recorded: the state a step leaves behind.
 
-    py -3.14 -B tools/gen_inhibit/bench/page_state.py --label L --out F.json
+    py -3.14 -B gen-inhibit/tools/bench/page_state.py --label L --out F.json
 
 Records mode, uptime, reset reason, the image (elf_sha256), the live, disabled and
 self_off flags and the fields that say why an arm is not live or what latched (test_only_inert's
@@ -16,7 +16,7 @@ Cross-project dependency (gen-inhibit reviewer, 2026-10-24): the charge-interpos
 runner loads this file by path, read-only, from a pinned gen-inhibit/main checkout (as
 wican_reboot.py does), and relies on read_page(timeout) returning the page as a dict
 with elf_sha256. A change to it goes to both reviewers first (the full list is in
-tools/gen_inhibit/README.md).
+gen-inhibit/tools/README.md).
 """
 import argparse
 import json

@@ -21,7 +21,7 @@ MUTANTS = [
     ("a root without canre/ and projects/ accepted",
      '    if not (os.path.isdir(os.path.join(v, "canre")) and os.path.isdir(os.path.join(v, "projects"))):',
      '    if False:'),
-    ("GI_FW_TOOLS no longer retired", '    "GI_FW_TOOLS": "the bench tools find tools/gen_inhibit/ as their parent folder",\n', ""),
+    ("GI_FW_TOOLS no longer retired", '    "GI_FW_TOOLS": "the bench tools find gen-inhibit/tools/ as their parent folder",\n', ""),
     ("the retired check not run on import", "\ncheck_retired()\n", "\n"),
     ("runs() inside the repo", '    return data_dir("runs", *parts)', '    return os.path.join(repo_root(), "runs", *parts)'),
     ("verify never compares", "    if _checked[key] != want:", "    if False:"),
@@ -44,6 +44,20 @@ MUTANTS = [
     ("worktree_of counts up instead of finding .git",
      '        if os.path.exists(os.path.join(d, ".git")):\n            return d\n',
      '        return os.path.normpath(os.path.join(d, "..", "..", ".."))\n'),
+    # the project layout (port step 0d, 2026-10-26)
+    ("project_root three up, as tools/gen_inhibit/bench/ was",
+     '    return os.path.normpath(os.path.join(HERE, "..", ".."))',
+     '    return os.path.normpath(os.path.join(HERE, "..", "..", ".."))'),
+    ("repo_root is the project folder", "    return os.path.dirname(project_root())", "    return project_root()"),
+    ("firmware_root is the project folder", '    return os.path.join(project_root(), "firmware")',
+     "    return project_root()"),
+    ("old_path keeps firmware/", '(("firmware/", ""),', '(("firmware/", "firmware/"),'),
+    ("old_path keeps the tools folder flat", '("tools/", "tools/gen_inhibit/")', '("tools/", "tools/")'),
+    ("path_at never maps into gen-inhibit/", "    if has(moved):\n        return moved\n", ""),
+    ("path_at always maps into gen-inhibit/", "    return old if old is not None and has(old) else moved",
+     "    return moved"),
+    ("path_at takes the old place without asking git",
+     "    return old if old is not None and has(old) else moved", "    return old if old is not None else moved"),
 ]
 
 
@@ -57,9 +71,9 @@ def run_test(d):
 
 
 def copy_tree(base, name, text):
-    """A copy laid out as the repo is (tools/gen_inhibit/bench/), so repo_root and
-    fw_tools resolve as they do in place; the folder of the copied gi_paths.py."""
-    d = os.path.join(base, name, "tools", "gen_inhibit", "bench")
+    """A copy laid out as the repo is (gen-inhibit/tools/bench/), so project_root,
+    repo_root and fw_tools resolve as they do in place; the folder of the copied gi_paths.py."""
+    d = os.path.join(base, name, "gen-inhibit", "tools", "bench")
     shutil.rmtree(os.path.join(base, name), ignore_errors=True)
     os.makedirs(d)
     open(os.path.join(d, TARGET), "w", encoding="utf-8", newline="").write(text)

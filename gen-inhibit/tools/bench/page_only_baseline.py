@@ -56,7 +56,7 @@ outage that was not a reboot.
 the start and at the end of the run, for bring-up 1.5b after an OTA. Never /check_status
 (reviewer, 2026-10-20); until 2026-10-25 this read its `git_version`.
 
-    GI_WICAN_SSID=... py -3.14 tools/gen_inhibit/bench/page_only_baseline.py
+    GI_WICAN_SSID=... py -3.14 gen-inhibit/tools/bench/page_only_baseline.py
         --power "..." [--seconds 360] [--period 1.0] [--pulse-rts-at 30]
 Writes runs/page_only_baseline_<stamp>.json.
 """

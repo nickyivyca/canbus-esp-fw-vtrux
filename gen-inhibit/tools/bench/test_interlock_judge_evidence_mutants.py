@@ -3,7 +3,7 @@
 the evidence 0x051 may be answered; the inhibit stops from the next one);
 test_interlock_judge.py must fail on each BY A CHECK, not by crashing.
 
-    py -3.14 tools/gen_inhibit/bench/test_interlock_judge_evidence_mutants.py
+    py -3.14 gen-inhibit/tools/bench/test_interlock_judge_evidence_mutants.py
 
 Run from the reverse-it root, which goes on PYTHONPATH (the judge finds the
 project root from sys.path when run as a copy). A mutant counts as killed only

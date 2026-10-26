@@ -24,7 +24,7 @@ so a request for it shows in the URLs asked for and in what comes back.
              (a control finds one in a probe file); none names "device_id" or "sta_mac"
              (seven files with txabort_refusal_check)
 
-    py -3.14 -B tools/gen_inhibit/bench/test_stale_bench_reads.py
+    py -3.14 -B gen-inhibit/tools/bench/test_stale_bench_reads.py
 Mutants: test_stale_bench_reads_mutants.py (STALE_READS_DIR runs another copy of the six).
 Gen-inhibit tester, 2026-10-25.
 """

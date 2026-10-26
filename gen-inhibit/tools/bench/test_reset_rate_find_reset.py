@@ -3,7 +3,7 @@
 The key case is the last-but-one: unanswered pages (an HTTP stall) must NOT
 count as a reset, which is the reviewer's 2026-10-07 rule.
 
-Run: py -3.14 tools/gen_inhibit/bench/test_reset_rate_find_reset.py
+Run: py -3.14 gen-inhibit/tools/bench/test_reset_rate_find_reset.py
 """
 import os
 import sys

@@ -2,7 +2,7 @@
 """Test credential_key_scan.py on a synthetic tree with made-up values: the counts and
 names it reports, and that NO value it matched ever appears in its output.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_credential_key_scan.py [--mutants]
+    py -3.14 -B gen-inhibit/tools/bench/test_credential_key_scan.py [--mutants]
 
 Gen-inhibit tester, 2026-10-20.
 """

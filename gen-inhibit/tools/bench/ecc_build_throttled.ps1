@@ -3,7 +3,7 @@
 # point 3: the shell at Idle priority, ninja -j 1; the build's processes inherit it).
 # Gen-inhibit tester, 2026-10-20. Run from Windows PowerShell:
 #
-#   powershell -ExecutionPolicy Bypass -File ecc_build_throttled.ps1 -Tree <clean worktree> -Log <file>
+#   powershell -ExecutionPolicy Bypass -File ecc_build_throttled.ps1 -Tree <WiCAN tree of a clean worktree: its gen-inhibit/firmware> -Log <file>
 #
 # Logs git HEAD and status before, both commands, their full output, times and exit
 # codes. Refuses an existing build-tester-ecc directory (each build must be clean).

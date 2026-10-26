@@ -13,7 +13,7 @@ GI_CHAIN_SETTINGS (the module reads the WiCAN's identity when imported):
   - no version in either: the commit row fails (empty is not a match);
   - a file with no descriptor: no version, the commit row fails.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_ota_rehearsal_images.py [--mutants]
+    py -3.14 -B gen-inhibit/tools/bench/test_ota_rehearsal_images.py [--mutants]
 
 Gen-inhibit tester, 2026-10-25.
 """

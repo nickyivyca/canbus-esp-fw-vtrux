@@ -12,8 +12,8 @@ Each case imports build_output.py afresh in a subprocess, with REVERSE_IT_DIR po
 at a fake root holding a different DBC, so a read of the old path would show. The fake
 repositories are made in this run's scratch/ folder (AGENTS.md "Files and folders").
 
-Run:  python test/build_checks/test_reference_paths.py   (exit 0 = all pass)
-      python test/build_checks/test_reference_paths.py --target <copy of build_output.py>
+Run:  python gen-inhibit/test/build_checks/test_reference_paths.py   (exit 0 = all pass)
+      python gen-inhibit/test/build_checks/test_reference_paths.py --target <copy of build_output.py>
 """
 import json
 import os
@@ -24,7 +24,9 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
+REPO = os.path.abspath(os.path.join(HERE, "..", ".."))   # the project folder, gen-inhibit/ since port step 0d
+WORKTREE = os.path.dirname(REPO)                         # the repo root, with scratch/
+FIRMWARE = os.path.join(REPO, "firmware")                # the WiCAN tree, build_output's REPO
 FAILS = []
 DBC, DOC = "gen-inhibit/diag/vtrux-wican-diag.dbc", "gen-inhibit/diag/wican_diag_schema.md"
 ROWS = ("diag references from git", "DBC defines every diag page", "emitted diag frames decode",
@@ -35,7 +37,8 @@ PROBE = r"""
 import json, os, sys
 sys.path.insert(0, sys.argv[1])
 import build_output as B
-B.REPO = os.environ["REF_TEST_REPO"]      # this repo, also for a copy under test (--target)
+B.REPO = os.environ["REF_TEST_REPO"]      # this repo's WiCAN tree, also for a copy under test (--target)
+B.WORKTREE = os.environ["REF_TEST_WORKTREE"]    # and its root, where scratch/ is
 del B.rows[:]
 dbc, doc = B.refs_from_git(sys.argv[2])
 B.check_diag(dbc)
@@ -87,7 +90,7 @@ def remove_tree(d):
 
 
 def scratch():
-    d = os.path.join(REPO, "scratch", "build-checks-tests", "reference_paths_%d" % os.getpid())
+    d = os.path.join(WORKTREE, "scratch", "build-checks-tests", "reference_paths_%d" % os.getpid())
     remove_tree(d)
     os.makedirs(d)
     return d
@@ -117,7 +120,7 @@ def fake_repo(base, name, texts):
 
 
 def probe(target_dir, ref_repo, rit, extra=None):
-    env = dict(os.environ, REVERSE_IT_DIR=rit, REF_TEST_REPO=REPO)
+    env = dict(os.environ, REVERSE_IT_DIR=rit, REF_TEST_REPO=FIRMWARE, REF_TEST_WORKTREE=WORKTREE)
     r = subprocess.run([sys.executable, "-B", "-c", PROBE, target_dir, ref_repo] + ([extra] if extra else []),
                        capture_output=True, text=True, env=env, cwd=target_dir, timeout=300)
     if r.returncode != 0:
@@ -142,7 +145,8 @@ def main():
     real_dbc = git(REPO, "show", "9c54669:%s" % DBC).decode("utf-8")
     real_doc = git(REPO, "show", "9c54669:%s" % DOC).decode("utf-8")
 
-    # 1. This repo: HEAD's copies, read from git, whatever REVERSE_IT_DIR says.
+    # 1. This repo: HEAD's copies, read from git, whatever REVERSE_IT_DIR says. Given the
+    # project folder (gen-inhibit/, port step 0d), which refs_from_git takes to the root.
     res = probe(tdir, REPO, rit)
     check("this repo: the module imports and runs the rows", "crash" not in res, res.get("crash"))
     check("this repo: no REVERSE_IT_DIR default is left (DEFAULT_DBC, DEFAULT_SCHEMA_DOC)",
@@ -154,7 +158,7 @@ def main():
     check("this repo: the DBC the rows read is HEAD's bytes, not the fake root's",
           res.get("dbc_bytes") == head_dbc.hex(), (res.get("dbc") or "")[-80:])
     check("this repo: the copies are written under this repo's scratch/",
-          all(os.path.normcase(p or "").startswith(os.path.normcase(os.path.join(REPO, "scratch")))
+          all(os.path.normcase(p or "").startswith(os.path.normcase(os.path.join(WORKTREE, "scratch")))
               for p in (res.get("dbc"), res.get("doc"))), (res.get("dbc"), res.get("doc")))
     for name in ROWS[1:]:
         r = row(res, name)

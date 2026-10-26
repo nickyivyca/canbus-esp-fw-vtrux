@@ -1,6 +1,6 @@
 """Harness test for slcan_refusal_probe.judge (spec 3.2).
 
-    py -3.14 tools/gen_inhibit/bench/test_slcan_refusal_probe.py   (from the project root)
+    py -3.14 gen-inhibit/tools/bench/test_slcan_refusal_probe.py   (from the repo root)
 """
 import os
 import sys

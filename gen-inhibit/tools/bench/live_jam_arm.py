@@ -53,7 +53,7 @@ floor, and the run is INCONCLUSIVE for (B) if that floor is not zero.
 
 THIS JAMS THE SHARED SEGMENT. Warn the interposer tester first.
 
-  py -3.14 tools/gen_inhibit/bench/live_jam_arm.py [--jam-seconds 5] [--dry-run]
+  py -3.14 gen-inhibit/tools/bench/live_jam_arm.py [--jam-seconds 5] [--dry-run]
 Writes runs/live_jam_arm_<stamp>.json (never overwrites).
 """
 import argparse

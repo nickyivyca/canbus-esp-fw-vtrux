@@ -16,7 +16,7 @@ Spec 7.1, as checked here (key = 0x592 IgnitionKeyState, fresh within 0.5 s):
                 interlock_judge's check, run separately).
 Records the key edges, the latches and the resumptions as facts.
 
-    py -3.14 tools/gen_inhibit/bench/b25_keystate_judge.py <run.json> [...]
+    py -3.14 gen-inhibit/tools/bench/b25_keystate_judge.py <run.json> [...]
 Run from the reverse-it root. Tested by test_b25_keystate_judge.py.
 """
 import bisect

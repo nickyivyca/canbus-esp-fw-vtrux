@@ -36,7 +36,7 @@ After `dump` and after `restore`, identify the board from the wire with
 interposer-firmware/bench_identify_board.py; this script does not, because
 esptool and the CAN witness are separate steps and each is recorded.
 
-  py -3.14 tools/gen_inhibit/bench/x2_flash_custody.py dump
+  py -3.14 gen-inhibit/tools/bench/x2_flash_custody.py dump
   py -3.14 ... flash-jammer --dump-record runs/x2_flash_custody_dump_<stamp>.json --build <md5>
   py -3.14 ... restore --dump-record runs/x2_flash_custody_dump_<stamp>.json
 """

@@ -51,6 +51,7 @@ import gi_paths  # noqa: E402  scratch/ folders
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.environ.get("GI_DIAG_DIR") or HERE
 REPO = gi_paths.repo_root()
+PROJECT = gi_paths.project_root()     # gen-inhibit/ since port step 0d: tools/ and test/
 FAILS = []
 
 spec = importlib.util.spec_from_file_location("gi_diag_under_test", os.path.join(SRC_DIR, "gi_diag.py"))
@@ -280,6 +281,10 @@ def t3():
     open(p, "a", encoding="utf-8").write("\n")
     check("3 a modified DBC is refused",
           lambda: raises(lambda: G.run_identity(r), G.DiagError, "uncommitted"))
+    # given a folder inside the worktree (the project folder, gen-inhibit/, since port step 0d),
+    # DBC_PATH is still read from the worktree's root
+    check("3 a modified DBC is refused when given the project folder",
+          lambda: raises(lambda: G.run_identity(os.path.join(r, "gen-inhibit")), G.DiagError, "uncommitted"))
     g("add", G.DBC_PATH)
     check("3 a staged DBC is refused", lambda: raises(lambda: G.run_identity(r), G.DiagError, "uncommitted"))
     g("reset", "-q", "--hard")
@@ -406,8 +411,8 @@ NAMES = ("vtrux-wican-diag.dbc", "wican_diag_schema.md", "vtrux-interposer-diag.
 # A git path of the copies in this repo is how a reader names them (build_output.py reads
 # them with git show); any other string naming them is a path outside git.
 GIT_PATHS = ("gen-inhibit/diag/", "charge-interposer/diag/")
-ALLOWED = {"tools/gen_inhibit/bench/gi_diag.py", "tools/gen_inhibit/bench/test_gi_diag.py",
-           "tools/gen_inhibit/bench/test_gi_diag_mutants.py",
+ALLOWED = {"tools/bench/gi_diag.py", "tools/bench/test_gi_diag.py",
+           "tools/bench/test_gi_diag_mutants.py",
            # plants a fake reverse-it copy, to show build_output.py does not read it
            "test/build_checks/test_reference_paths.py"}
 
@@ -427,12 +432,15 @@ def string_hits(path):
 
 
 def t7():
-    files = G.git(REPO, "ls-files", "tools", "test").decode().split()
+    # from the project folder, so the names are project-relative, as ALLOWED's are
+    files = G.git(PROJECT, "ls-files", "tools", "test").decode().split()
+    check("7 the scan has files to read (tools/ and test/ of the project folder)",
+          lambda: sum(f.endswith(".py") for f in files) > 100, len(files))
     hits = {}
     for f in files:
         if f in ALLOWED or "/golden/" in f:
             continue
-        p = os.path.join(REPO, f)
+        p = os.path.join(PROJECT, f)
         if not os.path.isfile(p):
             continue
         if f.endswith(".py"):
@@ -446,8 +454,8 @@ def t7():
             hits[f] = h
     check("7 no file under tools/ or test/ names a diag DBC or the schema doc as a string, but by its git path",
           lambda: not hits, hits)
-    calls = [f for f in files if f.endswith((".py", ".sh")) and f not in ALLOWED and os.path.isfile(os.path.join(REPO, f))
-             and "diag_dbc(" in open(os.path.join(REPO, f), encoding="utf-8", errors="replace").read()]
+    calls = [f for f in files if f.endswith((".py", ".sh")) and f not in ALLOWED and os.path.isfile(os.path.join(PROJECT, f))
+             and "diag_dbc(" in open(os.path.join(PROJECT, f), encoding="utf-8", errors="replace").read()]
     check("7 no file calls a diag_dbc() (gi_paths' retired resolver)", lambda: not calls, calls)
     planted = os.path.join(BASE, "planted.py")
     open(planted, "w").write('"""doc naming vtrux-wican-diag.dbc"""\nX = "vtrux-wican-diag.dbc"\n'
@@ -479,9 +487,10 @@ def t8():
     check("8 an export whose interposer DBC differs from its pin is refused",
           lambda: raises(lambda: G.interposer_dbc(export=d2), G.DiagError, "its pin is"))
     # A copy laid out as B15host's (gi_diag.py, pins.json, diag_schemas/ beside them) and as
-    # the host suite's (tools/gen_inhibit/bench/ under a root holding diag_schemas/), no git.
+    # the host suite's (tools/bench/ under a root holding diag_schemas/, the project layout
+    # since port step 0d), no git.
     for label, top, sub in (("B15host's copy", "b15copy", ""), ("the host suite's copy", "hostcopy",
-                                                                 os.path.join("tools", "gen_inhibit", "bench"))):
+                                                                 os.path.join("tools", "bench"))):
         root = os.path.join(BASE, top)
         here = os.path.join(root, sub) if sub else os.path.join(root, "gi_bench_x")
         os.makedirs(here, exist_ok=True)

@@ -5,7 +5,7 @@ Synthetic inputs, no hardware. Every verdict has a case that must come out
 the other way, so no judge can pass by construction. The firmware's console
 lines below are copied from the format strings in x2_jammer/src/main.cpp.
 
-Run: py -3.14 tools/gen_inhibit/bench/test_x2_jammer.py
+Run: py -3.14 gen-inhibit/tools/bench/test_x2_jammer.py
 """
 import os
 import sys

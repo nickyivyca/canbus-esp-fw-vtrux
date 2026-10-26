@@ -538,7 +538,7 @@ def c_bus_lost(pcan, kvaser, stim):
 # repo"), so its path is per-machine and not derivable from here. Env var
 # first, then the documented clone path.
 #
-DEFAULT_FW = os.environ.get("GEN_INHIBIT_FW") or gi_paths.repo_root()
+DEFAULT_FW = os.environ.get("GEN_INHIBIT_FW") or gi_paths.firmware_root()
 
 
 def main():
@@ -546,9 +546,9 @@ def main():
     ap.add_argument("--out", default=os.path.join(OUT_DIR, "trip_bench.json"))
     ap.add_argument("--only", default=None)
     ap.add_argument("--fw-source", default=DEFAULT_FW,
-                    help="firmware repo root, for the reason-string "
-                         "cross-check (default $GEN_INHIBIT_FW or "
-                         "this repo)")
+                    help="the WiCAN tree (main/; gen-inhibit/firmware/ since port "
+                         "step 0d), for the reason-string cross-check (default "
+                         "$GEN_INHIBIT_FW or this repo's)")
     ap.add_argument("--check-strings", action="store_true",
                     help="cross-check the expected reason strings against "
                          "the firmware source and exit. Needs no hardware "

@@ -14,7 +14,7 @@ image hash and a page elf_sha256. A payload packed the other way round, a page n
 another image, and every missing or malformed input must each fail. The schema 7 DBC
 must decode the same bytes as diag_git_hash, so an old capture still reads its own field.
 
-Run:  py -3.14 -B tools/gen_inhibit/bench/test_build_id_verdict.py   (exit 0 = all pass)
+Run:  py -3.14 -B gen-inhibit/tools/bench/test_build_id_verdict.py   (exit 0 = all pass)
 """
 import hashlib
 import os

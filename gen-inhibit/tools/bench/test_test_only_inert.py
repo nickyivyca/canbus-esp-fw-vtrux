@@ -1,6 +1,6 @@
 """Harness test for test_only_inert.py's judgements (no bus, no device).
 
-    py -3.14 tools/gen_inhibit/bench/test_test_only_inert.py   (from the project root)
+    py -3.14 gen-inhibit/tools/bench/test_test_only_inert.py   (from the repo root)
 """
 import os
 import sys

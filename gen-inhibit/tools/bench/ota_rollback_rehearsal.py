@@ -99,14 +99,14 @@ PHASES
             answer is a legitimate state, so this phase RECORDS rather than
             passing or failing the device.
 
-    py -3.14 tools/gen_inhibit/bench/ota_rollback_rehearsal.py \
+    py -3.14 gen-inhibit/tools/bench/ota_rollback_rehearsal.py \
         --phase images
     ... --phase baseline
     ... --phase control
     ... --phase fault
     ... --phase restore --phase verify
 
-Run from the project root. The host must be joined to the WiCAN's SoftAP.
+Run from the repo root. The host must be joined to the WiCAN's SoftAP.
 """
 
 import argparse
@@ -166,7 +166,7 @@ EXPECT_MAC, EXPECT_DEVICE_ID = expected_ids()   # base MAC; SoftAP MAC = base + 
 # than after someone notices a board rebooting mid-arm.
 RE_ESPTOOL_MAC = re.compile(r"MAC:\s*([0-9a-fA-F:]{17})")
 
-FW_DEFAULT = os.environ.get("GEN_INHIBIT_FW") or gi_paths.repo_root()
+FW_DEFAULT = os.environ.get("GEN_INHIBIT_FW") or gi_paths.firmware_root()   # the WiCAN tree, its build/ folders
 
 # subtype -> label, from ESP_PARTITION_SUBTYPE_APP_OTA_0 = 0x10.
 SUBTYPE_LABEL = {16: "ota_0", 17: "ota_1"}

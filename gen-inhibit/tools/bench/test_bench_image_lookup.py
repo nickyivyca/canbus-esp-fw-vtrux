@@ -14,7 +14,7 @@ bash, in fake folders (C=abc1234):
   - neither script names an image file by the commit any more, and both source the
     helper.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_bench_image_lookup.py [--mutants]
+    py -3.14 -B gen-inhibit/tools/bench/test_bench_image_lookup.py [--mutants]
 
 Gen-inhibit tester, 2026-10-25.
 """

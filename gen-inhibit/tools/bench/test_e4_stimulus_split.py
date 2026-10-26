@@ -1,6 +1,6 @@
 """Harness test for e4_device_calibration.vcm_commands_on_wire (the stimulus check).
 
-    py -3.14 tools/gen_inhibit/bench/test_e4_stimulus_split.py
+    py -3.14 gen-inhibit/tools/bench/test_e4_stimulus_split.py
 """
 import os
 import sys

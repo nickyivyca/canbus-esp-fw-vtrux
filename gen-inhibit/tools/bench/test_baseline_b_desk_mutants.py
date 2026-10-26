@@ -3,14 +3,14 @@
 A crash is not a kill, and an edit that does not apply is an error.
 
     GI_BASELINE_DIR=<.../runs/baseline_e3d9437> py -3.14 -B \
-        tools/gen_inhibit/bench/test_baseline_b_desk_mutants.py
+        gen-inhibit/tools/bench/test_baseline_b_desk_mutants.py
 
 Run from the reverse-it root. The mutants run in a shared clone of this repo at HEAD,
-made in the worktree's scratch/, with this folder copied over the clone's
-tools/gen_inhibit/bench/; each writes the script there with one edit and is tested on
+made in the worktree's scratch/, with this folder copied over the clone's copy of it
+(gen-inhibit/tools/bench/ since port step 0d); each writes the script there with one edit and is tested on
 the one step the edit touches (DESK_SCRIPT, --steps). The script runs its tools from its
 own folder ($A), and quiesce_analysis and passive_analysis decode through gi_diag, which
-reads the DBC's git history from three folders up: a copy of the script alone in a bare
+reads the DBC's git history from the repo root above it: a copy of the script alone in a bare
 folder failed every step's index check with no edit at all. The unmutated copy runs
 first, on every step a mutant uses, as the control: if it fails a check, no kill counts. About 10 minutes, most of it the B24 mutant. Gen-inhibit
 tester, 2026-10-19.
@@ -96,7 +96,7 @@ def main():
 
 def clone(base):
     """base/repo: a shared clone of this worktree at HEAD, with this folder copied over
-    its tools/gen_inhibit/bench/, so the script's tools sit beside it ($A) and gi_diag,
+    its copy of this folder, so the script's tools sit beside it ($A) and gi_diag,
     which quiesce_analysis and passive_analysis decode through, finds the DBC's git
     history from there. Returns that folder."""
     wt = gi_paths.worktree_of(HERE)
@@ -105,7 +105,7 @@ def clone(base):
     repo = os.path.join(base, "repo")
     subprocess.run(["git", "clone", "-q", "--shared", "--no-checkout", wt, repo], check=True)
     subprocess.run(["git", "-C", repo, "-c", "advice.detachedHead=false", "checkout", "-q", head], check=True)
-    d = os.path.join(repo, "tools", "gen_inhibit", "bench")
+    d = os.path.join(repo, os.path.relpath(HERE, wt))
     shutil.rmtree(d)
     shutil.copytree(HERE, d, ignore=shutil.ignore_patterns("__pycache__"))
     return d

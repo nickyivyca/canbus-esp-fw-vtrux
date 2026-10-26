@@ -2,7 +2,7 @@
 """Tests full_page_recorder.field() and around(); no device. Its mutants are at
 the bottom (--mutants): each must make a check fail.
 
-    py -3.14 tools/gen_inhibit/bench/test_full_page_recorder.py [--mutants]
+    py -3.14 gen-inhibit/tools/bench/test_full_page_recorder.py [--mutants]
 """
 import os
 import subprocess

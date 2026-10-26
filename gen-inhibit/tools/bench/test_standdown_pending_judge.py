@@ -3,7 +3,7 @@
 Sim and synthetic full-page rows; no device. --mutants runs its mutants; each must
 make a check fail.
 
-    py -3.14 tools/gen_inhibit/bench/test_standdown_pending_judge.py [--mutants]
+    py -3.14 gen-inhibit/tools/bench/test_standdown_pending_judge.py [--mutants]
 Run from the reverse-it root.
 """
 import os

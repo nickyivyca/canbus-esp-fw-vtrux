@@ -1,6 +1,6 @@
 """Harness test for golive_stale_check: which device 0x051 are stale, and the verdict.
 
-    py -3.14 tools/gen_inhibit/bench/test_golive_stale_check.py   (from the project root)
+    py -3.14 gen-inhibit/tools/bench/test_golive_stale_check.py   (from the repo root)
 """
 import os
 import sys

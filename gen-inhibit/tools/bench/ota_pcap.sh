@@ -15,7 +15,7 @@ img="$1"; stem="$2"
 : "${GI_WICAN_SSID:?set GI_WICAN_SSID}"
 DUMPCAP="/c/Program Files/Wireshark/dumpcap.exe"
 IFACE='\Device\NPF_{2D126A09-0299-425A-88DC-51DA04E0C70C}'   # Wi-Fi on NICKY-XPS (dumpcap -D)
-BF="$(cygpath -m "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)")/bench_flash.py"   # tools/gen_inhibit
+BF="$(cygpath -m "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)")/bench_flash.py"   # gen-inhibit/tools
 "$DUMPCAP" -q -i "$IFACE" -f "host 192.168.80.1 and tcp port 80" -a duration:200 -w "$stem.pcapng" 2>"$stem.dumpcap.txt" &
 cap=$!
 sleep 3

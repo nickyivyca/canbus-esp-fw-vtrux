@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Did a capture stopped by capture_window.py come out complete? (reviewer, 2026-10-20)
 
-    py -3.14 -B tools/gen_inhibit/bench/capture_stop_check.py <folder> [--out F.json]
+    py -3.14 -B gen-inhibit/tools/bench/capture_stop_check.py <folder> [--out F.json]
 
 For every B21 capture (B21_<commit>_<body>_<stamp>.pcapng, with B21_capture_<body>_<stamp>.json
 and B21_probe_window_<body>_<stamp>.json) and every B11raw capture (<n>.pcapng, with

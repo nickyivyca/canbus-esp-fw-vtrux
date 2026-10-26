@@ -294,7 +294,7 @@
   },
   "board": {
     "target": "esp32c3",
-    "partition_table": "test/build_checks/reference/stock-v4.13-partition-table.bin",
+    "partition_table": "../test/build_checks/reference/stock-v4.13-partition-table.bin",
     "flash_size": "4MB"
   },
   "inert_triggers": {

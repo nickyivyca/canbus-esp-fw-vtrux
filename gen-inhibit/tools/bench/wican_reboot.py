@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Reboot the WiCAN and confirm it: the board step at every run's start and every release.
 
-    py -3.14 -B tools/gen_inhibit/bench/wican_reboot.py --label L --out F.json
+    py -3.14 -B gen-inhibit/tools/bench/wican_reboot.py --label L --out F.json
         --known NAME=SHA [--known NAME=SHA]...  (--first NAME | --want NAME | --want-unknown)
 
 User 2026-10-20 (port plan, board images step 4): the WiCAN is rebooted at the start of
@@ -39,7 +39,7 @@ runner loads this file by path, read-only, from a pinned gen-inhibit/main checko
 relies on its options --label, --out, --known NAME=SHA, --first, --want and
 --want-unknown, and on its record's verdict, detail, found_image, found_sha,
 came_up_armed and disarmed. A change to any of them goes to both reviewers first (the
-full list is in tools/gen_inhibit/README.md).
+full list is in gen-inhibit/tools/README.md).
 """
 import argparse
 import json

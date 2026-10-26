@@ -30,7 +30,7 @@ The console is opened with DTR and RTS pre-set low so opening and closing do
 not reset the S3 (tools-reference.md); `boot-silence` resets it deliberately
 with esptool's USB-JTAG ordering (console_capture.pulse_rts).
 
-  py -3.14 tools/gen_inhibit/bench/x2_jammer.py <sub> [...]
+  py -3.14 gen-inhibit/tools/bench/x2_jammer.py <sub> [...]
 """
 import argparse
 import json

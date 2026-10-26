@@ -3,7 +3,7 @@
 BY A CHECK. A crash is not a kill, and an edit that does not apply is an error. The
 unmutated copy runs first as the control.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_stale_bench_reads_mutants.py
+    py -3.14 -B gen-inhibit/tools/bench/test_stale_bench_reads_mutants.py
 
 Each mutant is a copy of the seven files in the worktree's scratch/, one edit applied to one
 of them, run through STALE_READS_DIR. Gen-inhibit tester, 2026-10-25.

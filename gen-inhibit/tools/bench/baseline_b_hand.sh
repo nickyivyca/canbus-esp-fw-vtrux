@@ -4,7 +4,7 @@
 # transcripts recorded them (2026-10-17). Gen-inhibit tester, 2026-10-18, for the
 # chain runner; each step is one check.
 #
-#   GI_COMMIT=e3d9437 REVERSE_IT_DIR=<reverse-it root> GI_IMAGES=<worktree with build-tester-*> \
+#   GI_COMMIT=e3d9437 REVERSE_IT_DIR=<reverse-it root> GI_IMAGES=<WiCAN tree with build-tester-*> \
 #   GI_PW_IMAGE="image e3d9437 _man (md5 95977df0, elf 25f50ac0)" [GI_OUT=<dir>] \
 #   bash baseline_b_hand.sh <step> ...
 #   steps: B1 B2app B2held B9 B10 B14 B15 B16 B17a B18 B20 NONODE
@@ -17,7 +17,7 @@
 # unset (that file is its only home) and redacted from this script's .txt outputs.
 # Run from the reverse-it root.
 set -u
-A=$(cygpath -m "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)")   # this folder, tools/gen_inhibit/bench
+A=$(cygpath -m "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)")   # this folder, gen-inhibit/tools/bench
 cd "${REVERSE_IT_DIR:?set REVERSE_IT_DIR to the reverse-it root}" || exit 2
 DATA=projects/vtrux/notes/artifacts/gen-inhibit   # the SeaDrive half, relative to REVERSE_IT_DIR: runs/ and fixtures
 [ -z "${GI_FW_TOOLS:-}" ] || { echo "GI_FW_TOOLS is retired (2026-10-22): unset it"; exit 2; }

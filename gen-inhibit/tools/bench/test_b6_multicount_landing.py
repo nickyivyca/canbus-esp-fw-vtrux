@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Test b6_multicount_landing.py on a synthetic threshold record whose answers are known.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_b6_multicount_landing.py
+    py -3.14 -B gen-inhibit/tools/bench/test_b6_multicount_landing.py
 
 Three pulses 1 s apart; the device's bus_error reads +1, +11, +1 over them; frames on
 the wire put an 0x051 260 us after pulse 2's error frame and 6.65 ms before it. The

@@ -3,7 +3,7 @@
 test_build_id_page.py must fail on each BY A CHECK. A crash is not a kill, and an edit
 that does not apply is an error. The unmutated copy runs first as the control.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_build_id_page_mutants.py
+    py -3.14 -B gen-inhibit/tools/bench/test_build_id_page_mutants.py
 
 Each mutant is a copy of every non-test .py in this folder but gi_paths.py, in the
 worktree's scratch/, one edit applied to one file, run through BUILD_ID_DIR. Gen-inhibit tester, 2026-10-25.

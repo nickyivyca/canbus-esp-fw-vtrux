@@ -2,7 +2,7 @@
 """Test that the chain settings name the X2's chip as the shared core's mandatory chip
 check (core e37995a, flash.py) needs, using the core's own functions.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_chain_settings_chip.py [SETTINGS]
+    py -3.14 -B gen-inhibit/tools/bench/test_chain_settings_chip.py [SETTINGS]
 
 SETTINGS defaults to chain_settings_NICKY-XPS.json beside this file (local, unpublished:
 it holds the X2's MAC, which no published file may). The core is imported from the

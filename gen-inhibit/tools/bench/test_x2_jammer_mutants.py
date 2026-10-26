@@ -2,7 +2,7 @@
 """Mutants of x2_jammer.py's sub_id; test_x2_jammer.py must fail on each BY A CHECK.
 A crash is not a kill, and an edit that does not apply is an error.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_x2_jammer_mutants.py
+    py -3.14 -B gen-inhibit/tools/bench/test_x2_jammer_mutants.py
 
 Written 2026-10-20 for the empty line sub_id sends before ID (the 2026-10-19 chain run:
 bench_identify's "V\r" "N\r" joined the ID line). Each mutant is a copy of the tool and

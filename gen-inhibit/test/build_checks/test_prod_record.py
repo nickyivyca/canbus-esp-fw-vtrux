@@ -18,7 +18,7 @@ count. The last two cases feed the OLD missing-record row (a plain False)
 through the same classifier and require it to come out FAIL, so the
 assertion on the first case can fail.
 
-Run:  py -3.14 test/build_checks/test_prod_record.py   (exit 0 = all pass)
+Run:  py -3.14 gen-inhibit/test/build_checks/test_prod_record.py   (exit 0 = all pass)
 """
 import hashlib
 import json
@@ -32,7 +32,7 @@ sys.path.insert(0, HERE)
 
 import build_output as B                                        # noqa: E402
 
-TMP = os.path.join(B.REPO, "scratch", "build-checks", "test_prod_record")
+TMP = os.path.join(B.WORKTREE, "scratch", "build-checks", "test_prod_record")
 
 
 def mark(row):

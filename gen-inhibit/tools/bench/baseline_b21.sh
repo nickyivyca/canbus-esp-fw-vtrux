@@ -2,7 +2,7 @@
 # Baseline B21 (baseline_run_list.md): flash and OTA writes refused while armed in
 # each non-OFF mode, as on c65c45e and c6fdab5. Gen-inhibit tester, 2026-10-16
 # (run by hand before; this records the commands).
-#   1. bench_flash_guard.py --check-accepted   (firmware repo tools/gen_inhibit)
+#   1. bench_flash_guard.py --check-accepted   (firmware repo gen-inhibit/tools)
 #   2. bench_ota_guard.py --allow-ota-write    (OFF gets a deliberately invalid image)
 #   3. ota_guard_raw_probe.py, 5 reps per non-OFF mode, the 184-byte multipart body
 #      and then the whole running image, each with an unelevated dumpcap of the
@@ -13,7 +13,7 @@
 # (~line 1672): no write in the OFF half may leave a bad config.
 set -u
 img=${1:?the running image}
-A=$(cygpath -m "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)")   # this folder, tools/gen_inhibit/bench
+A=$(cygpath -m "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)")   # this folder, gen-inhibit/tools/bench
 cd "${REVERSE_IT_DIR:?set REVERSE_IT_DIR to the reverse-it root}" || exit 2
 DATA=projects/vtrux/notes/artifacts/gen-inhibit   # the SeaDrive half, relative to REVERSE_IT_DIR: runs/ and fixtures
 [ -z "${GI_FW_TOOLS:-}" ] || { echo "GI_FW_TOOLS is retired (2026-10-22): unset it"; exit 2; }

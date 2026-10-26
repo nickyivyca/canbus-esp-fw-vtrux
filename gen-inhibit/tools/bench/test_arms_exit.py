@@ -19,7 +19,7 @@ The fakes are test_baseline_capture_stop.py's (a fake `py` first on PATH, a fake
 through GI_DUMPCAP_PRE), with the e4 fake failing on the call FAKE_E4_FAIL_AT names and
 the dumpcap fake exiting FAKE_DUMPCAP_RC when stopped.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_arms_exit.py
+    py -3.14 -B gen-inhibit/tools/bench/test_arms_exit.py
 Mutants: test_arms_exit_mutants.py (BATCH_DIR names another copy of the scripts).
 About a minute. Gen-inhibit tester, 2026-10-25.
 """

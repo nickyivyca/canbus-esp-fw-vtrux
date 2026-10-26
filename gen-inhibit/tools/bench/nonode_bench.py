@@ -68,14 +68,14 @@ bus-off; the PCAN's error and status reports in the silence and the attempt coun
 at which the copies start; the retry period; whether the device goes live again
 after the key-on (7.1's design).
 
-    py -3.14 -B tools/gen_inhibit/bench/nonode_bench.py \
+    py -3.14 -B gen-inhibit/tools/bench/nonode_bench.py \
         --termination "<where the CAN1 terminators are>" [--arms 3]
 Writes nonode_bench_<stamp>.json in GI_RUNS_DIR (or runs/). Exit 0 only when every
 main and answer-stuck arm passes every judged item (run_verdict: an item NOT AS
 SPECIFIED in any of them is the run's verdict, an INCONCLUSIVE item makes the run
 INCONCLUSIVE).
 
-    py -3.14 -B tools/gen_inhibit/bench/nonode_bench.py --rejudge <nonode_bench_<stamp>.json>
+    py -3.14 -B gen-inhibit/tools/bench/nonode_bench.py --rejudge <nonode_bench_<stamp>.json>
 judges a record's stored arms again with run_verdict and writes <stem>_rejudged.json
 beside it, the record unchanged (for records from before 2026-10-25, when main arms that
 disagreed on the trip were FLAKY).

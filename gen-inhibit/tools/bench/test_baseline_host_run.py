@@ -18,14 +18,21 @@ brackets; then again for a root with spaces and a root under ~/. Nothing reaches
 madhouse-debian.
 
 The archive (2026-10-25): the fake ssh saves what the copy's tar would unpack. A
-commit with tools/gen_inhibit/bench/gi_diag.py (GI_TEST_DECODE_COMMIT, default this
-tree's HEAD) ships gi_diag.py, pins.json and the diag_schemas/ export beside main/
-and test/; the old commit ships main/ and test/ only. The test_cfg_build_id step
-runs where the archive has the test, and not where it does not. Needs a gen-inhibit tree (FW, default this repo, gi_paths.repo_root())
-for `git archive`.
+commit with the bench's gi_diag.py ships it, pins.json and the diag_schemas/ export beside
+main/ and test/; the old commit ships main/ and test/ only. The test_cfg_build_id step
+runs where the archive has the test, and not where it does not.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_baseline_host_run.py
-    py -3.14 -B tools/gen_inhibit/bench/test_baseline_host_run.py --mutants
+Each commit at its own layout (port step 0d, 2026-10-26): a commit before the move
+(GI_TEST_ROOT_COMMIT, default e7263bb) gives a copy with main/, test/ and
+tools/gen_inhibit/bench/; a commit from the move on (GI_TEST_DECODE_COMMIT, default this
+tree's HEAD, so run it at a merge of both halves of the move) gives firmware/main/, test/
+and tools/bench/, and no main/ at the root; a commit with only the tester's half of the
+move (c6c7fe4) is refused. The remote script takes the WiCAN sources from firmware/main/
+where the copy has it, else main/. Needs a gen-inhibit worktree (FW, default this project
+folder, gi_paths.project_root()) for `git archive`.
+
+    py -3.14 -B gen-inhibit/tools/bench/test_baseline_host_run.py
+    py -3.14 -B gen-inhibit/tools/bench/test_baseline_host_run.py --mutants
 
 Run from the reverse-it root. Gen-inhibit tester.
 """
@@ -40,9 +47,11 @@ import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = "baseline_host_run.sh"
 BASH = shutil.which("bash") or r"C:/Program Files/Git/usr/bin/bash.exe"
-FW = os.environ.get("FW") or gi_paths.repo_root()
+FW = os.environ.get("FW") or gi_paths.project_root()
 COMMIT = os.environ.get("GI_TEST_COMMIT", "2a1a0f1")
-DECODE_COMMIT = os.environ.get("GI_TEST_DECODE_COMMIT", "HEAD")    # has gi_diag.py (toolkit item 10 on)
+DECODE_COMMIT = os.environ.get("GI_TEST_DECODE_COMMIT", "HEAD")    # the project layout, with gi_diag.py
+ROOT_COMMIT = os.environ.get("GI_TEST_ROOT_COMMIT", "e7263bb")      # the root layout, with gi_diag.py
+PART_COMMIT = "c6c7fe4"                                             # only the tester's half of the move
 RROOT = "fake-rit-root"
 SPACED = "fake rit/My Libraries"            # spaces, as NICKY-XPS's own root has (relative, made in the tree)
 TILDE = "~/fake-rit"                        # as the settings' gi_host_root is written
@@ -150,16 +159,43 @@ def checks(script_dir):
         check("an old commit (%s): the copy holds main/ and test/, and no tools/ or diag_schemas/" % COMMIT,
               any(n.startswith("main/") for n in names) and any(n.startswith("test/") for n in names)
               and not any(n.startswith(("tools/", "diag_schemas")) for n in names), sorted(set(n.split("/")[0] for n in names)))
-        rc4, s4, out4 = remote_script(script_dir, tmp, tag="decode", commit=DECODE_COMMIT)
-        names = archive_names(tmp, "decode")
-        check("a commit with gi_diag.py (%s): the script runs to the end" % DECODE_COMMIT, rc4 == 0 and s4, (rc4, out4[-300:]))
-        check("a commit with gi_diag.py: the copy holds gi_diag.py and pins.json",
+        rc5, s5, out5 = remote_script(script_dir, tmp, tag="rootdecode", commit=ROOT_COMMIT)
+        names = archive_names(tmp, "rootdecode")
+        check("a root-layout commit with gi_diag.py (%s): the script runs to the end" % ROOT_COMMIT,
+              rc5 == 0 and s5, (rc5, out5[-300:]))
+        check("a root-layout commit with gi_diag.py: the copy holds gi_diag.py and pins.json in tools/gen_inhibit/bench/",
               "tools/gen_inhibit/bench/gi_diag.py" in names and "tools/gen_inhibit/bench/pins.json" in names,
               [n for n in names if n.startswith("tools/")])
-        check("a commit with gi_diag.py: the copy holds the diag_schemas export at its root",
+        check("a root-layout commit with gi_diag.py: the diag_schemas export at the copy's root, main/ and test/ too",
+              "diag_schemas/manifest.json" in names and any(n.startswith("main/") for n in names)
+              and any(n.startswith("test/") for n in names) and not any(n.startswith("firmware/") for n in names),
+              sorted(set(n.split("/")[0] for n in names)))
+        rc4, s4, out4 = remote_script(script_dir, tmp, tag="decode", commit=DECODE_COMMIT)
+        names = archive_names(tmp, "decode")
+        check("a project-layout commit (%s): the script runs to the end" % DECODE_COMMIT, rc4 == 0 and s4, (rc4, out4[-300:]))
+        check("a project-layout commit: the copy holds gi_diag.py and pins.json in tools/bench/",
+              "tools/bench/gi_diag.py" in names and "tools/bench/pins.json" in names,
+              [n for n in names if n.startswith("tools/")])
+        check("a project-layout commit: the copy holds the diag_schemas export at its root",
               "diag_schemas/manifest.json" in names, [n for n in names if n.startswith("diag")])
-        check("a commit with gi_diag.py: the copy holds main/ and test/ too",
-              any(n.startswith("main/") for n in names) and any(n.startswith("test/") for n in names), "")
+        check("a project-layout commit: the copy holds firmware/main/ and test/, and no main/ at its root",
+              "firmware/main/gen_inhibit_core.c" in names and "test/gen_inhibit_host/Makefile" in names
+              and "test/gen_inhibit_shim/Makefile" in names and not any(n.startswith("main/") for n in names),
+              sorted(set("/".join(n.split("/")[:2]) for n in names)))
+        rc6, s6, out6 = remote_script(script_dir, tmp, tag="part", commit=PART_COMMIT)
+        check("a commit with only part of the move (%s) is refused, before anything is sent" % PART_COMMIT,
+              rc6 == 2 and not s6 and not archive_names(tmp, "part") and "neither layout" in out6, (rc6, out6[-300:]))
+        # the remote script takes the WiCAN sources from the copy's own layout
+        for label, sub, want in (("a project-layout copy", "firmware/main", "firmware/main"), ("a root-layout copy", "main", "main")):
+            tree = os.path.join(tmp, "M_" + sub.replace("/", "_"))
+            os.makedirs(os.path.join(tree, *sub.split("/")))
+            keep = [ln for ln in s4.splitlines() if ln.startswith("M=")]
+            r = subprocess.run([BASH, "-c", "\n".join(keep + ['echo "M IS $M"'])], cwd=tree, capture_output=True,
+                               text=True, timeout=60)
+            check("%s: the WiCAN sources are read from %s/" % (label, want),
+                  len(keep) == 1 and r.stdout.strip() == "M IS %s" % want, (keep, r.stdout, r.stderr[-200:]))
+        check("the source hashes read the WiCAN sources through $M",
+              "sha256sum $M/gen_inhibit_core.c $M/gen_inhibit.c $M/gi_sched.c $M/can.c" in s4, "")
         has = os.path.join(tmp, "cfg_has")
         hasnt = os.path.join(tmp, "cfg_hasnt")
         os.makedirs(has)
@@ -258,10 +294,17 @@ MUTANTS = [
     ("RROOT is pasted in without printf %q", '*)     RQ=$(printf %q "$RROOT") ;;', '*)     RQ=$RROOT ;;'),
     # the archive and the build-id step (2026-10-25)
     ("gi_diag.py and pins.json not shipped",
-     '  git -C "$FW" archive "$C" tools/gen_inhibit/bench/gi_diag.py tools/gen_inhibit/bench/pins.json | tar -x -C "$STAGE" || exit 2\n', ""),
-    ("the export not made", '  ${LOCAL_PY:-py -3.14} -B "$FW/tools/gen_inhibit/bench/gi_diag.py" export "$STAGE/diag_schemas" >/dev/null || exit 2\n', ""),
-    ("the decode files shipped for every commit", 'if git -C "$FW" cat-file -e "$C:tools/gen_inhibit/bench/gi_diag.py" 2>/dev/null; then',
-     'if true; then'),
+     '  for f in gi_diag.py pins.json; do git -C "$TOP" show "$C:$BENCH/$f" > "$STAGE/$BENCH_AT/$f" || exit 2; done\n', ""),
+    ("the export not made", '  ${LOCAL_PY:-py -3.14} -B "$TOP/gen-inhibit/tools/bench/gi_diag.py" export "$STAGE/diag_schemas" >/dev/null || exit 2\n', ""),
+    ("the decode files shipped for every commit", 'if tree "$BENCH/gi_diag.py"; then', 'if true; then'),
+    # each commit at its own layout (port step 0d, 2026-10-26)
+    ("the project layout never chosen", "if tree gen-inhibit/firmware/main && tree gen-inhibit/test; then", "if false; then"),
+    ("a project commit's main/ at the copy's root", "put gen-inhibit/firmware/main firmware/main", "put gen-inhibit/firmware/main main"),
+    ("a project commit's bench in the old place", "BENCH_AT=tools/bench\n", "BENCH_AT=tools/gen_inhibit/bench\n"),
+    ("a part-moved commit taken as the root layout", "elif tree main && tree test && ! tree gen-inhibit/test; then",
+     "elif tree main && tree test; then"),
+    ("the remote script always reads main/", "M=main; [ -d firmware/main ] && M=firmware/main", "M=main"),
+    ("the source hashes read main/ whatever the layout", "sha256sum \\$M/gen_inhibit_core.c", "sha256sum main/gen_inhibit_core.c"),
     ("the build-id step not guarded", "if [ -e test_cfg_build_id.py ]; then step test_cfg_build_id $PY test_cfg_build_id.py; fi",
      "step test_cfg_build_id $PY test_cfg_build_id.py"),
     ("the build-id step dropped", "if [ -e test_cfg_build_id.py ]; then step test_cfg_build_id $PY test_cfg_build_id.py; fi\n", ""),

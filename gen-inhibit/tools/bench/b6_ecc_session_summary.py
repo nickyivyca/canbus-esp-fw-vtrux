@@ -7,7 +7,7 @@ against the witness's, where trip 6 latched (pulse number), the over-counts, the
 type, dir and seg values seen in the isr rows, and the caveats. Observations only; no
 judgement beyond what the records already carry. Gen-inhibit tester, 2026-10-20.
 
-    py -3.14 -B tools/gen_inhibit/bench/b6_ecc_session_summary.py <session folder>
+    py -3.14 -B gen-inhibit/tools/bench/b6_ecc_session_summary.py <session folder>
 """
 import collections
 import glob

@@ -149,7 +149,7 @@ def trigger_post(name, repo=None):
     """The POST path of a test-only switch's trigger, from the firmware repo's table
     (vtrux_checks.json, "inert_triggers"). One table, so the test runs and the 12.4
     inert check send the same request."""
-    repo = repo or os.environ.get("GI_FW_REPO") or gi_paths.repo_root()
+    repo = repo or os.environ.get("GI_FW_REPO") or gi_paths.firmware_root()   # the folder holding vtrux_checks.json
     with open(os.path.join(repo, "vtrux_checks.json"), encoding="utf-8") as fh:
         probes = json.load(fh)["inert_triggers"][name]["probes"]
     posts = [p for m, p in probes if m == "POST"]
@@ -196,7 +196,7 @@ def main():
     ap.add_argument("--crash-path", default=None, help="POST path of the test-only crash trigger")
     ap.add_argument("--trigger", default=None,
                     help="take the crash path from the firmware repo's trigger table (vtrux_checks.json inert_triggers), "
-                         "e.g. GI_TEST_RESTART_QUIESCE; the repo is $GI_FW_REPO or this one")
+                         "e.g. GI_TEST_RESTART_QUIESCE; the folder holding it is $GI_FW_REPO or this repo's gen-inhibit/firmware/")
     ap.add_argument("--page-keys", default="", help="extra /gen_inhibit fields recorded before and after")
     ap.add_argument("--record-get", default=None, help="a GET path whose JSON is recorded after the restart")
     a = ap.parse_args()

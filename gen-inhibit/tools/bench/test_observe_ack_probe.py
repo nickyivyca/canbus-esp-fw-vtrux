@@ -1,6 +1,6 @@
 """Harness test for observe_ack_probe: the verdict, and the PCAN status reading.
 
-    py -3.14 tools/gen_inhibit/bench/test_observe_ack_probe.py
+    py -3.14 gen-inhibit/tools/bench/test_observe_ack_probe.py
 """
 import os
 import sys

@@ -19,7 +19,7 @@ made-up value, so a request for it shows in the paths asked for and in what come
              module or in any of its callers (a control finds one in a probe file); every
              bench file that calls build_id() is among those scanned
 
-    py -3.14 -B tools/gen_inhibit/bench/test_build_id_page.py
+    py -3.14 -B gen-inhibit/tools/bench/test_build_id_page.py
 Mutants: test_build_id_page_mutants.py. BUILD_ID_DIR runs another copy of the files (the
 mutants use it). Gen-inhibit tester, 2026-10-25.
 """

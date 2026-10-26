@@ -2,7 +2,7 @@
 """Tests b25_keystate_judge on synthetic runs built with test_interlock_judge's Sim;
 no device. --mutants runs its mutants; each must make a check fail.
 
-    py -3.14 tools/gen_inhibit/bench/test_b25_keystate_judge.py [--mutants]
+    py -3.14 gen-inhibit/tools/bench/test_b25_keystate_judge.py [--mutants]
 Run from the reverse-it root.
 """
 import os

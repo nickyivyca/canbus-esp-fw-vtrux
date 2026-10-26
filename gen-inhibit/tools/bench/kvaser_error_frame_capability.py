@@ -67,7 +67,7 @@ PCAN is opened with auto_reset=True on purpose: at the wrong bitrate it WILL go
 bus-off, and recovering is what keeps errors being generated instead of the
 transmitter falling silent after the first burst.
 
-    py -3.14 tools/gen_inhibit/bench/kvaser_error_frame_capability.py
+    py -3.14 gen-inhibit/tools/bench/kvaser_error_frame_capability.py
 """
 
 import json

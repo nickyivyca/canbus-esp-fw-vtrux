@@ -1,7 +1,7 @@
 # Baseline part C builds (baseline_run_list.md): clean builds of one commit, one
 # build directory each, in a tree nobody else uses. Run from Windows PowerShell:
 #
-#   powershell -ExecutionPolicy Bypass -File baseline_builds.ps1 -Tree <worktree> -Out <log dir> -Builds man,rt,rxq
+#   powershell -ExecutionPolicy Bypass -File baseline_builds.ps1 -Tree <WiCAN tree: a worktree's gen-inhibit/firmware> -Out <log dir> -Builds man,rt,rxq
 #
 # Each build: git status and HEAD before, the idf.py command, its full output,
 # start/end times and exit code, to <Out>\build_<name>.txt. A build directory

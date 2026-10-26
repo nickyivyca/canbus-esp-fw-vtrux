@@ -98,7 +98,7 @@ ENTRIES = [
 
 
 def plan():
-    base = ("GI_WICAN_SSID=... py -3.14 tools/gen_inhibit/bench/e4_device_calibration.py "
+    base = ("GI_WICAN_SSID=... py -3.14 gen-inhibit/tools/bench/e4_device_calibration.py "
             "--arm idle --capture runs/scottsvalley_armable_300s.log --seconds 35 --offset-us 500 %s "
             "--out runs/e4_golive_%s_<stamp>_arm<n>.json")
     for label, args in ENTRIES:

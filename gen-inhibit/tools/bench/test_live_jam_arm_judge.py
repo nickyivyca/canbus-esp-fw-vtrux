@@ -3,8 +3,8 @@
 Every criterion has at least one case where it must FAIL, so none of them is
 a check that cannot fail.
 
-Run from the project root:
-  py -3.14 tools/gen_inhibit/bench/test_live_jam_arm_judge.py
+Run from the repo root:
+  py -3.14 gen-inhibit/tools/bench/test_live_jam_arm_judge.py
 """
 import copy
 import os

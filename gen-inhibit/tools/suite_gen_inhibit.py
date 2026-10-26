@@ -26,10 +26,10 @@ Gen-inhibit tester, 2026-10-18. Two suites on the one core (user, 2026-10-17):
 The core's rules are in its engine.py; nothing here repeats them.
 
     PYTHONPATH="<core>/shared/bench;<interposer clone>/charge-interposer" \
-    py -3.14 -B -m vtrux_bench.run plan --suite tools/gen_inhibit/suite_gen_inhibit.py:bench \
+    py -3.14 -B -m vtrux_bench.run plan --suite gen-inhibit/tools/suite_gen_inhibit.py:bench \
         --settings <settings.json>
     ... run [--group G] [--check "man_app/B1"]
-    ... --suite tools/gen_inhibit/suite_gen_inhibit.py:emulated
+    ... --suite gen-inhibit/tools/suite_gen_inhibit.py:emulated
 
 Checks run from the reverse-it root ({reverse_it}) through the recorded runners in
 the harness folder (baseline_b_*.sh), so a check is the same command the e3d9437
@@ -37,15 +37,19 @@ baseline ran; a check's records go to its own folder (GI_OUT, GI_RUNS_DIR).
 
 Settings this suite reads, besides the core's (shared/bench/README.md):
     reverse_it       the reverse-it root, forward slashes
-    gi_tools         this folder (tools/gen_inhibit of the tester clone)
+    gi_tools         this folder (gen-inhibit/tools of the tester worktree)
     bash             Git Bash's bash.exe, by full path: on Windows a bare "bash" goes
                      through CreateProcess, which looks in System32 before PATH and
                      finds WSL's bash.exe
     gi_commit        the short commit the images were built from
-    gi_images        the worktree holding build-tester-<name>/ (part C's builds)
+    gi_images        the WiCAN tree holding build-tester-<name>/ (part C's builds): a
+                     worktree's gen-inhibit/firmware/ from port step 0d (2026-10-26), its
+                     root before
     gi_prod_dir      the prod build's build/ folder
-    gi_fw            the gen-inhibit clone whose commit the emulated suite builds and tests
-    gi_checks_clone  the clone whose test/build_checks/ c_checks_run.ps1 runs (the tester clone)
+    gi_fw            the gen-inhibit worktree (or a folder in it) whose commit the emulated
+                     suite builds and tests
+    gi_checks_clone  the project folder whose test/build_checks/ c_checks_run.ps1 runs (the
+                     tester worktree's gen-inhibit/ from port step 0d, its root before)
     gi_components    the -Components argument of c_checks_run.ps1: a managed_components
                      tree its prod build verified (12.3 item 3)
     gi_host_ssh      the ssh host part H and B15host run on (madhouse-debian, user, 2026-10-22)
@@ -206,7 +210,7 @@ def make_hooks(settings, ssid, images=None):
     root = need(settings, "reverse_it")
     tools = need(settings, "gi_tools")
     harness = harness_dir(settings)
-    # GI_FW_TOOLS is retired (2026-10-22): the bench tools find tools/gen_inhibit/ as
+    # GI_FW_TOOLS is retired (2026-10-22): the bench tools find gen-inhibit/tools/ as
     # their parent, and refuse it if set. REVERSE_IT_DIR is where their data is.
     base_env = {"GI_WICAN_SSID": ssid, "REVERSE_IT_DIR": root, "INTERPOSER_CODE": settings.get("interposer_code") or ""}
 

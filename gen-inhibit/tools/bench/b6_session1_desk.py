@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """B6 session 1 desk points (reviewer, 2026-10-20), from the records only. Gen-inhibit tester.
 
-    py -3.14 -B tools/gen_inhibit/bench/b6_session1_desk.py SESSION_DIR RUNS_ROOT
+    py -3.14 -B gen-inhibit/tools/bench/b6_session1_desk.py SESSION_DIR RUNS_ROOT
 
 Per arm of the session it builds one row per commanded pulse: the jammer's own PULSE line
 (k, t_us), the witness error frames and the device's /gi_ecc isr rows assigned to it, and

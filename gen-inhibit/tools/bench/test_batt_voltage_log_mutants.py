@@ -2,7 +2,7 @@
 """Mutants of batt_voltage_log.py's park; test_batt_voltage_log.py must fail on each BY A
 CHECK. An edit that does not apply is an error. The unmutated copy runs first as the control.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_batt_voltage_log_mutants.py
+    py -3.14 -B gen-inhibit/tools/bench/test_batt_voltage_log_mutants.py
 
 Each mutant is a copy of batt_voltage_log.py in the worktree's scratch/, one edit applied,
 imported by the test from there (BATT_DIR). Gen-inhibit tester, 2026-10-25.

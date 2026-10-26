@@ -3,7 +3,7 @@
 must fail on each BY A CHECK. A crash is not a kill, and an edit that does not apply
 is an error. Needs the pinned core's shared/bench on PYTHONPATH, as the test does.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_bench_held_mutants.py
+    py -3.14 -B gen-inhibit/tools/bench/test_bench_held_mutants.py
 
 Each mutant is a copy of the files in the worktree's scratch/, one edit applied to
 one of them. Gen-inhibit tester, 2026-10-25.

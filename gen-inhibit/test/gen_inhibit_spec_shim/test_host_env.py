@@ -141,9 +141,9 @@ def checks(folder, dbc, tmp):
 
 
 def copy_tree(d):
-    """The repo's layout under d (main/, the fakes, this folder), so run_spec_shim.py
-    finds ../../main as it does here; returns the copy of this folder."""
-    shutil.copytree(os.path.join(REPO, "main"), os.path.join(d, "main"))
+    """The project folder's layout under d (firmware/main/, the fakes, this folder), so
+    run_spec_shim.py finds ../../firmware/main as it does here; returns the copy of this folder."""
+    shutil.copytree(os.path.join(REPO, "firmware", "main"), os.path.join(d, "firmware", "main"))
     shutil.copytree(os.path.join(REPO, "test", "gen_inhibit_shim"), os.path.join(d, "test", "gen_inhibit_shim"))
     shutil.copytree(HERE, os.path.join(d, "test", "gen_inhibit_spec_shim"),
                     ignore=shutil.ignore_patterns("__pycache__"))

@@ -10,8 +10,8 @@ logically sound:
   Phase 4  replay     - replay real 0x051 frames from a Vtrux capture across the
                         link at 100 Hz and confirm every frame arrives intact
 
-Run from the project root:
-    py -3.12 tools/gen_inhibit/bench/bench_link_check.py
+Run from the repo root:
+    py -3.12 gen-inhibit/tools/bench/bench_link_check.py
 """
 
 import sys

@@ -27,7 +27,8 @@ The planted file must be in the record in both steps, or the step proves
 nothing.
 
 It runs in a throwaway detached worktree of the commit beside the repo, with
-managed_components/ copied in, and removes it afterwards. Nothing is committed.
+managed_components/ copied into its WiCAN tree (gen-inhibit/firmware/ from port step
+0d, the worktree's root before), and removes it afterwards. Nothing is committed.
 """
 
 import argparse
@@ -115,6 +116,13 @@ def scan_tree(tree):
     return rec.scanned, found, unlisted, stale, bad, None
 
 
+def wican_tree(wt, commit, repo):
+    """The WiCAN tree (the IDF build root) in worktree wt of commit: gen-inhibit/firmware/
+    from port step 0d (2026-10-26) on, the worktree itself before."""
+    moved = git(["cat-file", "-e", "%s:gen-inhibit/firmware/CMakeLists.txt" % commit], repo).returncode == 0
+    return os.path.join(wt, "gen-inhibit", "firmware") if moved else wt
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--commit", required=True)
@@ -134,8 +142,12 @@ def main():
     if r.returncode != 0:
         print("FAIL: worktree add: %s" % r.stderr.strip())
         return 2
+    # The WiCAN tree, the IDF build root: gen-inhibit/firmware/ in a commit from port step 0d
+    # (2026-10-26) on, the worktree itself before. Everything below configures and scans there.
+    wt, tree = tree, wican_tree(tree, c0, repo)
     shutil.copytree(a.components, os.path.join(tree, "managed_components"))
-    record = {"commit": c0, "tree": os.path.basename(tree), "steps": [],
+    record = {"commit": c0, "tree": os.path.basename(wt), "project": os.path.relpath(tree, wt).replace("\\", "/"),
+              "steps": [],
               "started": time.strftime("%Y-%m-%dT%H:%M:%S")}
     try:
         # baseline
@@ -180,8 +192,8 @@ def main():
         record["verdict"] = ("PASS" if len(steps) == 3 and all(s["ok"] for s in steps) else "FAIL")
         record["finished"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         if not a.keep:
-            git(["worktree", "remove", "--force", tree], repo)
-            record["removed"] = not os.path.exists(tree)
+            git(["worktree", "remove", "--force", wt], repo)
+            record["removed"] = not os.path.exists(wt)
         with open(a.out, "w", encoding="utf-8") as fh:
             json.dump(record, fh, indent=1)
     print("%s  (%s)" % (record["verdict"], a.out))

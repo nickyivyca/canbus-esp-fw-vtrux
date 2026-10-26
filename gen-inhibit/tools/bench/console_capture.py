@@ -19,7 +19,7 @@ both by default, and on the C3 they drive reset/boot-select), as in
 serial_boot_log.py. Lines are redacted with redact_secrets before they are
 kept, because the boot log prints the device's config including passwords.
 
-  py -3.14 tools/gen_inhibit/bench/console_capture.py --selftest
+  py -3.14 gen-inhibit/tools/bench/console_capture.py --selftest
       opens COM4, puts the WiCAN in mode 3, pulses RTS for 200 ms (esptool's
       USB-JTAG hard-reset timing), and reports: did the post-state show a reset
       (mode 0, tx_ok 0, drv null), did the port drop and come back, and did any

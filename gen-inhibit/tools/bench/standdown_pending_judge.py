@@ -27,7 +27,7 @@ a full page before the latch and one SETTLE_S after; the after page reads disabl
 Inputs: an interlock_bench run (its _witness.json.gz beside it) and the
 full_page_recorder.py recording made beside it.
 
-    py -3.14 tools/gen_inhibit/bench/standdown_pending_judge.py \\
+    py -3.14 gen-inhibit/tools/bench/standdown_pending_judge.py \\
         runs/<...>/interlock_liveflag-mmode-hold_<stamp>.json runs/<...>/fullpage_<...>.jsonl
 Run from the reverse-it root. Tested by test_standdown_pending_judge.py.
 """

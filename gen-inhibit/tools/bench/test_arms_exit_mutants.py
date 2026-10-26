@@ -2,7 +2,7 @@
 """Mutants of the arms scripts' exit codes; test_arms_exit.py must fail on each BY A
 CHECK. A crash or a time-out is not a kill, and an edit that does not apply is an error.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_arms_exit_mutants.py
+    py -3.14 -B gen-inhibit/tools/bench/test_arms_exit_mutants.py
 
 Each mutant is a copy of the three scripts (with bench_images.sh and capture_window.py,
 which they call from their own folder) in the worktree's scratch/, one edit applied, run

@@ -4,8 +4,8 @@ threshold_refusal, identity (from /gen_inhibit, never /check_status), ecc_entry,
 case_threshold run end to end with stubs for the bench (arm_live, the reset, the
 witness, /gi_ecc). Synthetic, no hardware.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_x2_jam_cases_b6ecc.py
-    py -3.14 -B tools/gen_inhibit/bench/test_x2_jam_cases_b6ecc.py --mutants
+    py -3.14 -B gen-inhibit/tools/bench/test_x2_jam_cases_b6ecc.py
+    py -3.14 -B gen-inhibit/tools/bench/test_x2_jam_cases_b6ecc.py --mutants
 
 The reviewer's plan: 29 pulses at 1000 ms in one PULSES command (the jammer's limit
 is n x interval + 100 ms <= 30 s), trip 6 judged on the first 10 as B6 does, every

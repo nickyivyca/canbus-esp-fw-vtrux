@@ -2,7 +2,7 @@
 """B6 multi-count pulses: where each jammer pulse landed relative to the frames on the
 wire, for the reviewer's request of 2026-10-20 (a). Gen-inhibit tester.
 
-    py -3.14 -B tools/gen_inhibit/bench/b6_multicount_landing.py [ROOT ...]
+    py -3.14 -B gen-inhibit/tools/bench/b6_multicount_landing.py [ROOT ...]
 
 Scans x2_jam_threshold_*.json under each ROOT (default: this folder's runs/), with the
 witness file named in each record. Per arm, the device's bus_error delta per pulse comes

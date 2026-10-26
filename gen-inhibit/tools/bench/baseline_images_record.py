@@ -2,7 +2,7 @@
 """Record the baseline's images (part C of baseline_run_list.md): one JSON row per
 image, from the image file itself, never from its name.
 
-    py -3.14 tools/gen_inhibit/bench/baseline_images_record.py \
+    py -3.14 gen-inhibit/tools/bench/baseline_images_record.py \
         --out runs/baseline_c65c45e/images_c65c45e.json label=<dir containing the .bin> [...]
 
 Per image: the app descriptor (version, project_name, time, date, idf_ver and

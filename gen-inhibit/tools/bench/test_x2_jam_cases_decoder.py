@@ -7,8 +7,8 @@ never checked: the record would name a DBC its own judgement was not held to.
 case_busoff and case_livetrain run end to end with the bench stubbed (the device,
 the jammer console, the poller and the witness). Synthetic, no hardware.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_x2_jam_cases_decoder.py
-    py -3.14 -B tools/gen_inhibit/bench/test_x2_jam_cases_decoder.py --mutants
+    py -3.14 -B gen-inhibit/tools/bench/test_x2_jam_cases_decoder.py
+    py -3.14 -B gen-inhibit/tools/bench/test_x2_jam_cases_decoder.py --mutants
 
 Gen-inhibit tester.
 """

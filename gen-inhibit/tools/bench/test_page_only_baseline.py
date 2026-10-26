@@ -5,7 +5,7 @@ an unanswered page, a dropped WLAN, or both in sequence; two separate drops are
 two outages; a clean run is no outage; a poll not in mode 0 is reported. Also
 --power is required.
 
-  py -3.14 tools/gen_inhibit/bench/test_page_only_baseline.py
+  py -3.14 gen-inhibit/tools/bench/test_page_only_baseline.py
 """
 import os
 import sys

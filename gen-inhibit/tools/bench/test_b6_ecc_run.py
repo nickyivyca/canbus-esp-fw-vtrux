@@ -7,8 +7,8 @@ with a made-up SSID. A fake `py` first on PATH logs its argv and prints the SSID
 redaction can be seen. Checks the three threshold calls, the custody/restore order, the
 refusals and the redaction.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_b6_ecc_run.py
-    py -3.14 -B tools/gen_inhibit/bench/test_b6_ecc_run.py --mutants
+    py -3.14 -B gen-inhibit/tools/bench/test_b6_ecc_run.py
+    py -3.14 -B gen-inhibit/tools/bench/test_b6_ecc_run.py --mutants
 
 Gen-inhibit tester, 2026-10-20.
 """

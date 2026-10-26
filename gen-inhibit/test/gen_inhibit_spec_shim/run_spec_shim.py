@@ -32,13 +32,20 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import host_env  # noqa: E402
-REPO = os.path.normpath(os.path.join(HERE, "..", ".."))
-BUILT = ["main/gen_inhibit.c", "main/gen_inhibit_core.c", "main/gi_sched.c", "main/can.c",
+REPO = os.path.normpath(os.path.join(HERE, "..", ".."))   # the project folder, gen-inhibit/ since port step 0d
+MAIN = "firmware/main"                                     # the WiCAN sources, relative to it
+BUILT = [MAIN + "/gen_inhibit.c", MAIN + "/gen_inhibit_core.c", MAIN + "/gi_sched.c", MAIN + "/can.c",
          "test/gen_inhibit_shim/fake_twai.c", "test/gen_inhibit_shim/fake_can.c"]
 
 
 def git(*a):
     return subprocess.run(["git", "-C", REPO] + list(a), capture_output=True, text=True).stdout.strip()
+
+
+def main_tree(rev):
+    """rev's main/ tree id: gen-inhibit/firmware/main from port step 0d (2026-10-26), main at
+    the root before. A pure move keeps the id, so a base from before the move still compares."""
+    return git("rev-parse", "-q", "--verify", "%s:gen-inhibit/%s" % (rev, MAIN)) or git("rev-parse", "%s:main" % rev)
 
 
 def payloads():
@@ -95,9 +102,9 @@ def main():
         rc, out, err = host_env.sh(cmd, a.local, timeout=1800)
         return rc, out + err
 
-    ident = {"head": git("rev-parse", "HEAD"), "main_tree": git("rev-parse", "HEAD:main"),
-             "base": a.base, "base_main_tree": git("rev-parse", "%s:main" % a.base),
-             "modified": git("status", "--porcelain", "--", "main", "test/gen_inhibit_shim"),
+    ident = {"head": git("rev-parse", "HEAD"), "main_tree": main_tree("HEAD"),
+             "base": a.base, "base_main_tree": main_tree(a.base),
+             "modified": git("status", "--porcelain", "--", MAIN, "test/gen_inhibit_shim"),
              "spec_shim_modified": git("status", "--porcelain", "--", "test/gen_inhibit_spec_shim"),
              "md5": {f: hashlib.md5(open(os.path.join(REPO, f), "rb").read()).hexdigest() for f in BUILT},
              "started": time.strftime("%Y-%m-%dT%H:%M:%S")}

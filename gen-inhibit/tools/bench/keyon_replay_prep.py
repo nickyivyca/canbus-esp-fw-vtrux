@@ -17,7 +17,7 @@ Times are offsets from the source's first frame in FILE order, as cut_replay_win
 computes them, so the edge is found on the same scale the cut uses.
 
 Run on madhouse-debian (the source is in the library there), from the project root:
-  python3.13 tools/gen_inhibit/bench/keyon_replay_prep.py \\
+  python3.13 gen-inhibit/tools/bench/keyon_replay_prep.py \\
       --capture projects/vtrux/logs/vtruxdrivetrainoverheattest.log --channel 3 --expect-req 7.741 \\
       --out projects/vtrux/notes/artifacts/gen-inhibit/runs/keyon_drivetrainoverheat_70s.log
 """

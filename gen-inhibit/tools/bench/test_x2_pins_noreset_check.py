@@ -3,7 +3,7 @@
 made-up readings. No hardware. Its lock check is bench_held.py's, tested in
 test_bench_held.py (2026-10-25).
 
-    py -3.14 -B tools/gen_inhibit/bench/test_x2_pins_noreset_check.py
+    py -3.14 -B gen-inhibit/tools/bench/test_x2_pins_noreset_check.py
 
 Gen-inhibit tester, 2026-10-19.
 """

@@ -1,6 +1,6 @@
 """Harness test for b11_rawpost_judge.py's pure parts (no records, no capture, no device).
 
-    py -3.14 tools/gen_inhibit/bench/test_b11_rawpost_judge.py   (from the project root)
+    py -3.14 gen-inhibit/tools/bench/test_b11_rawpost_judge.py   (from the repo root)
 """
 import os
 import sys

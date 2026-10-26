@@ -29,7 +29,7 @@ GAP, which turned its strongest result into a failure. Each case below is
 classified three ways: caught (a fail naming the right thing), MISSED (no fail,
 or a fail about something else), or CRASH (judge raised).
 
-    py -3.14 tools/gen_inhibit/bench/trip_reason_offline_test.py
+    py -3.14 gen-inhibit/tools/bench/trip_reason_offline_test.py
 """
 
 import copy

@@ -5,7 +5,7 @@
 # commit -- never from a hand-synced tree (gi_host_run.sh's comments record what
 # a stale copy did, several times). Tester, 2026-10-15.
 #
-#   bash tools/gen_inhibit/bench/baseline_host_run.sh c65c45e
+#   bash gen-inhibit/tools/bench/baseline_host_run.sh c65c45e   (from the repo root)
 #
 # Remote: ~/gi_baseline_<commit> (made fresh; nothing else touches it).
 # Local:  runs/baseline_<commit>/host/host_run.log, and traces_scenarios_golden.tgz
@@ -17,7 +17,8 @@
 set -uo pipefail
 
 C="${1:?usage: baseline_host_run.sh <commit>}"
-FW="${FW:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"   # default: this repo
+FW="${FW:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"   # default: this project folder; any folder of a worktree will do
+TOP="$(git -C "$FW" rev-parse --show-toplevel)" || { echo "$FW is in no git worktree" >&2; exit 2; }
 REMOTE="${REMOTE:-madhouse-debian}"
 DEST="gi_baseline_$C"
 PY="${PY:-python3.13}"
@@ -31,22 +32,44 @@ case "$RROOT" in
 esac
 OUT="${GI_OUT:-${REVERSE_IT_DIR:?set REVERSE_IT_DIR}/projects/vtrux/notes/artifacts/gen-inhibit/runs/baseline_$C/host}"   # GI_OUT: the chain runner's check folder (2026-10-18)
 
-git -C "$FW" cat-file -e "$C^{commit}" || { echo "no commit $C in $FW" >&2; exit 2; }
+git -C "$TOP" cat-file -e "$C^{commit}" || { echo "no commit $C in $TOP" >&2; exit 2; }
 mkdir -p "$OUT"
 [ -e "$OUT/host_run.log" ] && { echo "$OUT/host_run.log exists; not overwriting" >&2; exit 2; }
 
 # THE DIAG DBCS (2026-10-25). Since port plan toolkit item 10 (2026-10-24) run_tests.py and the
-# host checkers decode the diag lines through tools/gen_inhibit/bench/gi_diag.py, which a main+test
+# host checkers decode the diag lines through the bench's gi_diag.py, which a main+test
 # archive lacks, and ~/$DEST has no git. So a commit that has gi_diag.py also ships it and pins.json
 # from its own archive, and gi_diag's diag_schemas/ export at the copy's root, made here by this
 # tree's gi_diag (the DBCs from its git history), as gi_host_run.sh does. A commit before item 10
-# ships neither, as before. The copy is staged in this tree's scratch/ first.
-STAGE="$FW/scratch/baseline-host-stage/$C"
+# ships neither, as before. The copy is staged in the worktree's scratch/ first.
+#
+# EACH COMMIT AT ITS OWN LAYOUT (port step 0d, 2026-10-26). A commit from the move on has the
+# WiCAN tree in gen-inhibit/firmware/ and the harness in gen-inhibit/test/ and gen-inhibit/tools/;
+# an earlier one has main/ and test/ at the repo root and the bench in tools/gen_inhibit/bench/.
+# The copy keeps the commit's own layout, which its Makefiles and run_tests.py expect: firmware/main/,
+# test/ and tools/bench/ for the first, main/, test/ and tools/gen_inhibit/bench/ for the second.
+# Every git call runs from the worktree's top level, with each tree named in full as <commit>:<path>
+# (no pathspec, which git would read against -C's folder: the first 0d move's defect, 2026-10-26).
+# A commit with only part of the move (one topic of it) has neither layout, and is refused.
+STAGE="$TOP/scratch/baseline-host-stage/$C"
 rm -rf "$STAGE" && mkdir -p "$STAGE"
-git -C "$FW" archive "$C" main test | tar -x -C "$STAGE" || exit 2
-if git -C "$FW" cat-file -e "$C:tools/gen_inhibit/bench/gi_diag.py" 2>/dev/null; then
-  git -C "$FW" archive "$C" tools/gen_inhibit/bench/gi_diag.py tools/gen_inhibit/bench/pins.json | tar -x -C "$STAGE" || exit 2
-  ${LOCAL_PY:-py -3.14} -B "$FW/tools/gen_inhibit/bench/gi_diag.py" export "$STAGE/diag_schemas" >/dev/null || exit 2
+tree() { git -C "$TOP" cat-file -e "$C:$1" 2>/dev/null; }
+put() { mkdir -p "$STAGE/$2" && git -C "$TOP" archive "$C:$1" | tar -x -C "$STAGE/$2"; }   # tree $1 of C at $2 in the copy
+if tree gen-inhibit/firmware/main && tree gen-inhibit/test; then
+  LAYOUT=project; put gen-inhibit/firmware/main firmware/main || exit 2; put gen-inhibit/test test || exit 2
+  BENCH=gen-inhibit/tools/bench; BENCH_AT=tools/bench
+elif tree main && tree test && ! tree gen-inhibit/test; then
+  LAYOUT=root; put main main || exit 2; put test test || exit 2
+  BENCH=tools/gen_inhibit/bench; BENCH_AT=tools/gen_inhibit/bench
+else
+  echo "$C has neither layout (main/ and test/ at the root, or gen-inhibit/firmware/main/ and gen-inhibit/test/): refused" >&2
+  exit 2
+fi
+echo "commit $C: $LAYOUT layout"
+if tree "$BENCH/gi_diag.py"; then
+  mkdir -p "$STAGE/$BENCH_AT"
+  for f in gi_diag.py pins.json; do git -C "$TOP" show "$C:$BENCH/$f" > "$STAGE/$BENCH_AT/$f" || exit 2; done
+  ${LOCAL_PY:-py -3.14} -B "$TOP/gen-inhibit/tools/bench/gi_diag.py" export "$STAGE/diag_schemas" >/dev/null || exit 2
 fi
 tar -C "$STAGE" -cf - . | ssh "$REMOTE" "rm -rf ~/$DEST && mkdir -p ~/$DEST && tar xf - -C ~/$DEST"
 
@@ -54,7 +77,9 @@ ssh "$REMOTE" "bash -s" > "$OUT/host_run.log" 2>&1 <<EOF
 cd ~/$DEST
 echo "# baseline host/emulation run: commit $C (git archive), \$(date -Is), \$(hostname)"
 echo "# \$(gcc --version | head -1); $PY \$($PY --version 2>&1)"
-sha256sum main/gen_inhibit_core.c main/gen_inhibit.c main/gi_sched.c main/can.c \
+M=main; [ -d firmware/main ] && M=firmware/main     # the commit's own layout (port step 0d)
+echo "# layout: $LAYOUT (WiCAN sources in \$M)"
+sha256sum \$M/gen_inhibit_core.c \$M/gen_inhibit.c \$M/gi_sched.c \$M/can.c \
   test/gen_inhibit_host/host_runner.c test/gen_inhibit_host/golden/stimulus.sha256
 step() { n="\$1"; shift; echo; echo "=== \$n"; "\$@"; echo "=== exit \$? (\$n)"; }
 # The project folder (methodology, 2026-10-20): \$REVERSE_IT_DIR, and --project-dir on

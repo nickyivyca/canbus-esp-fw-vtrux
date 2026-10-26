@@ -23,7 +23,7 @@ The diag DBCs are not here: gi_diag.py reads both from git (toolkit item 10,
 
 Retired, and refused if set (reviewer, 2026-10-22), so an old environment fails
 loudly instead of resolving somewhere else: GI_FW_TOOLS (the moved tools find
-tools/gen_inhibit/ as their parent), GEN_INHIBIT_REPO and VTRUX_DATA (replaced by
+gen-inhibit/tools/ as their parent), GEN_INHIBIT_REPO and VTRUX_DATA (replaced by
 REVERSE_IT_DIR on 2026-10-20), REVERSE_IT_ROOT (an old name in the artifacts index).
 
 Run records never land in the repo: runs() is the SeaDrive runs/ folder. A tool that
@@ -53,7 +53,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PINS_FILE = os.path.join(HERE, "pins.json")
 DATA_REL = "projects/vtrux/notes/artifacts/gen-inhibit"
 RETIRED = {
-    "GI_FW_TOOLS": "the bench tools find tools/gen_inhibit/ as their parent folder",
+    "GI_FW_TOOLS": "the bench tools find gen-inhibit/tools/ as their parent folder",
     "GEN_INHIBIT_REPO": "use REVERSE_IT_DIR (2026-10-20)",
     "VTRUX_DATA": "use REVERSE_IT_DIR (2026-10-20)",
     "REVERSE_IT_ROOT": "use REVERSE_IT_DIR",
@@ -75,13 +75,72 @@ def check_retired(environ=None):
                             "; ".join("%s: %s" % (k, RETIRED[k]) for k in bad)))
 
 
+def project_root():
+    """gen-inhibit's project folder, gen-inhibit/ in the repo since port step 0d
+    (2026-10-26): firmware/ (the WiCAN tree, the IDF build root), test/, tools/ (flat;
+    tools/bench/ is two below the project folder) and vtrux_tools.py. A copy with no git
+    (the host suite's ~/gi_host) has the same layout."""
+    return os.path.normpath(os.path.join(HERE, "..", ".."))
+
+
+def firmware_root():
+    """The WiCAN tree, gen-inhibit/firmware/: main/, CMakeLists.txt, vtrux_checks.json,
+    shared_pins.json and vtrux_build.json, and the build folders."""
+    return os.path.join(project_root(), "firmware")
+
+
 def repo_root():
-    """This firmware repo's root (tools/gen_inhibit/bench/ is three below it)."""
-    return os.path.normpath(os.path.join(HERE, "..", "..", ".."))
+    """This firmware repo's root, one above the project folder: where the repo's own
+    files and scratch/ are, and what a repo-relative git path is relative to."""
+    return os.path.dirname(project_root())
+
+
+PROJECT_DIR = "gen-inhibit"
+# Before port step 0d the project's files were at the repo root, with the tooling one
+# folder deeper. Each entry maps a path relative to the project folder now (the prefix)
+# to its path in a commit before the move; the first prefix that matches wins.
+OLD_LAYOUT = (("firmware/", ""), ("vtrux_tools.py", "tools/vtrux_tools.py"),
+              ("tools/", "tools/gen_inhibit/"), ("test/", "test/"))
+
+
+def old_path(rel):
+    """rel (relative to the project folder, as laid out since port step 0d) as it was
+    before the move, relative to the repo root; None for a path that had no place then."""
+    rel = rel.replace("\\", "/")
+    for new, old in OLD_LAYOUT:
+        if not new.endswith("/"):
+            if rel == new:
+                return old
+        elif rel.startswith(new):
+            return old + rel[len(new):]
+        elif rel == new[:-1]:               # the folder itself
+            return old.rstrip("/")
+    return None
+
+
+def path_at(rev, rel, repo=None):
+    """The repo-relative git path, at commit rev, of rel, a path relative to the project
+    folder as laid out since port step 0d (test/gen_inhibit_host/golden,
+    tools/bench/gi_diag.py, firmware/main/gen_inhibit.c): gen-inhibit/<rel> where rev has
+    it there, else its place before the move (old_path), as in every commit before.
+    For `git show rev:<path>` and pathspecs given at the repo root. Asked per path, so a
+    commit on a topic branch that has moved only part of the tree answers right too.
+    A path in neither place is returned in the new layout."""
+    import subprocess
+    repo = repo or repo_root()
+    moved = "%s/%s" % (PROJECT_DIR, rel.replace("\\", "/"))
+
+    def has(p):
+        return subprocess.run(["git", "-C", repo, "cat-file", "-e", "%s:%s" % (rev, p)],
+                              capture_output=True).returncode == 0
+    if has(moved):
+        return moved
+    old = old_path(rel)
+    return old if old is not None and has(old) else moved
 
 
 def fw_tools():
-    """tools/gen_inhibit/ of this repo: the suite, the judges, the guards."""
+    """gen-inhibit/tools/ (flat since port step 0d): the suite, the judges, the guards."""
     return os.path.normpath(os.path.join(HERE, ".."))
 
 

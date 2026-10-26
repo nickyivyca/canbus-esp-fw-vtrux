@@ -29,7 +29,7 @@ brownout) would be caught.
 The WiCAN is powered from the PC's USB only (user, 2026-10-08); there is no
 rail to meter on this rig.
 
-  py -3.14 tools/gen_inhibit/bench/reset_rate_arms.py [--arms 10] [--live-seconds 60]
+  py -3.14 gen-inhibit/tools/bench/reset_rate_arms.py [--arms 10] [--live-seconds 60]
 Writes runs/reset_rate_<stamp>.json (never overwrites).
 """
 import argparse

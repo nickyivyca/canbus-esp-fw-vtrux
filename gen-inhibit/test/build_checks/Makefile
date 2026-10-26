@@ -1,6 +1,6 @@
 # E3 build-output checks. See elf_checks.py and config_vs_spec.py.
 CC      ?= gcc
-COREDIR ?= ../../main
+COREDIR ?= ../../firmware/main
 CFLAGS  ?= -std=c11 -O1 -Wall -Wextra -I$(COREDIR)
 
 all: config_probe

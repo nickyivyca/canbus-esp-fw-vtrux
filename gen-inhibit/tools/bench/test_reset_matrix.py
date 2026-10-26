@@ -9,7 +9,7 @@ as three boots.
 The mutation step swaps in boots() variants that each drop one rule and
 requires every variant to get at least one case wrong, so each rule is tested.
 
-  py -3.14 tools/gen_inhibit/bench/test_reset_matrix.py
+  py -3.14 gen-inhibit/tools/bench/test_reset_matrix.py
 """
 import os
 import re

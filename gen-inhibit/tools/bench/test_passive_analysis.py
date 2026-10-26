@@ -1,6 +1,6 @@
 """Harness test for passive_analysis: interval judgement and diag decoding.
 
-    py -3.14 tools/gen_inhibit/bench/test_passive_analysis.py
+    py -3.14 gen-inhibit/tools/bench/test_passive_analysis.py
 """
 import os
 import sys

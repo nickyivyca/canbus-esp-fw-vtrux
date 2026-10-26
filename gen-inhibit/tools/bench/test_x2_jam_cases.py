@@ -6,7 +6,7 @@ Synthetic, no hardware. Every verdict of judge_threshold has a case that must
 come out the other way, including the one the reviewer cares most about: trip 6
 latching before the 10th delivered error frame.
 
-Run: py -3.14 tools/gen_inhibit/bench/test_x2_jam_cases.py
+Run: py -3.14 gen-inhibit/tools/bench/test_x2_jam_cases.py
 """
 import os
 import sys

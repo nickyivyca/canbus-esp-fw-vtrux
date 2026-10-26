@@ -6,7 +6,7 @@
 # (firmware/esp-development.md). Gen-inhibit tester, 2026-10-17 (run by hand on
 # c65c45e; this records it).
 #
-#   powershell -NoProfile -ExecutionPolicy Bypass -File c_checks_run.ps1 -Clone <tester clone> -Commit <sha> -Components <verified managed_components> -OutDir <runs dir>
+#   powershell -NoProfile -ExecutionPolicy Bypass -File c_checks_run.ps1 -Clone <tester worktree>/gen-inhibit -Commit <sha> -Components <verified managed_components> -OutDir <runs dir>
 #
 # Writes <OutDir>/<check>_<commit>.{json,log,txt}; .txt is stdout plus a start and
 # an end line (time, exit code). -Components must be a tree whose prod build

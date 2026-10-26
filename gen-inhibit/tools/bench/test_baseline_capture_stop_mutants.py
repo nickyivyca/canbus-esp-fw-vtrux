@@ -3,7 +3,7 @@
 must fail on each BY A CHECK. A crash is not a kill, and an edit that does not apply is
 an error.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_baseline_capture_stop_mutants.py
+    py -3.14 -B gen-inhibit/tools/bench/test_baseline_capture_stop_mutants.py
 
 Run from the reverse-it root. Each mutant is a copy of this folder in the worktree's
 scratch/, with the five scripts from BATCH_SRC (default: this folder) and one edit, run

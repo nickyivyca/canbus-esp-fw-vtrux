@@ -58,7 +58,9 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
+PROJECT = os.path.abspath(os.path.join(HERE, "..", ".."))   # the project folder, gen-inhibit/ since port step 0d
+REPO = os.path.join(PROJECT, "firmware")                    # the WiCAN tree: main/, sdkconfig, build/
+WORKTREE = os.path.dirname(PROJECT)                         # the repo root: scratch/, repo-relative git paths
 REF = os.path.join(HERE, "reference")
 
 # Spec 9.3 / row 22: the OTA slot the image has to fit.
@@ -352,9 +354,11 @@ def _no_ref(what, path, flag="--ref-repo"):
 
 def refs_from_git(repo):
     """-> (DBC path, schema doc path): HEAD's copies of both, written under this repo's
-    scratch/, after gi_diag's checks; (None, None) with a row saying why if not."""
+    scratch/, after gi_diag's checks; (None, None) with a row saying why if not. REF_PATHS
+    are repo-relative, so repo is taken to its worktree's root first: from the project
+    folder (gen-inhibit/, since port step 0d) the ls-files below would find nothing."""
     name = "diag references from git"
-    bench = os.path.join(REPO, "tools", "gen_inhibit", "bench")
+    bench = os.path.join(PROJECT, "tools", "bench")
     if bench not in sys.path:
         sys.path.insert(0, bench)
     try:
@@ -363,6 +367,7 @@ def refs_from_git(repo):
         row(name, None, "cannot import gi_diag from %s: %s" % (bench, e), ref_missing=True)
         return None, None
     try:
+        repo = gi_diag.toplevel(repo)
         head = gi_diag.git(repo, "rev-parse", "HEAD").decode().strip()
         missing = [rp for rp in REF_PATHS if gi_diag.git(repo, "ls-files", "--", rp).strip() == b""]
     except gi_diag.DiagError as e:
@@ -381,7 +386,7 @@ def refs_from_git(repo):
     except gi_diag.DiagError as e:
         row(name, False, str(e))
         return None, None
-    out = os.path.join(REPO, "scratch", "build-output-refs", head[:12])
+    out = os.path.join(WORKTREE, "scratch", "build-output-refs", head[:12])
     os.makedirs(out, exist_ok=True)
     paths = []
     for rp in REF_PATHS:
@@ -472,7 +477,7 @@ def _decode_emitted(dbc_path):
     Needs the schema set refs_from_git() read along with dbc_path; with none, or with
     a dbc_path that is not the one it wrote, the row is NO REFERENCE, never a decode
     against a DBC whose history was not checked."""
-    gold = os.path.join(REPO, "test", "gen_inhibit_host", "golden")
+    gold = os.path.join(PROJECT, "test", "gen_inhibit_host", "golden")
     if not os.path.isdir(gold):
         row("emitted diag frames decode", None,
             "no goldens to decode", ref_missing=True)
@@ -1492,7 +1497,7 @@ def check_source():
     it.
     """
     can_c = os.path.join(REPO, "main", "can.c")
-    ms_py = os.path.join(REPO, "test", "gen_inhibit_host", "make_scenarios.py")
+    ms_py = os.path.join(PROJECT, "test", "gen_inhibit_host", "make_scenarios.py")
     wifi_c = os.path.join(REPO, "main", "wifi_network.c")
 
     fw_depth = None
@@ -1653,7 +1658,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--bin")
-    ap.add_argument("--ref-repo", default=REPO,
+    ap.add_argument("--ref-repo", default=WORKTREE,
                     help="the git worktree whose HEAD gives the diag DBC and schema doc (default this repo)")
     ap.add_argument("--records",
                     help="the folder of gen-inhibit's release records (default $REVERSE_IT_DIR/firmware/builds/gen-inhibit)")

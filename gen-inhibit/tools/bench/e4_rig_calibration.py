@@ -56,7 +56,7 @@ Phases (`--phase`):
            where a single full-rate arm on its own could not.
 
 Usage:
-    py -3.11 tools/gen_inhibit/bench/e4_rig_calibration.py --phase quiet
+    py -3.11 gen-inhibit/tools/bench/e4_rig_calibration.py --phase quiet
     py -3.11 ... --phase airtime
     py -3.11 ... --phase replay --seconds 30
     py -3.11 ... --phase all

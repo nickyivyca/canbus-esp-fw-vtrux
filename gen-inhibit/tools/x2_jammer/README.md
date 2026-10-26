@@ -35,7 +35,7 @@ tests `test_x2_jammer.py` and `test_x2_flash_custody.py`.
 
 Build from PowerShell, with `REVERSE_IT_DIR` set (the build archives the image into
 SeaDrive, `projects/vtrux/notes/artifacts/gen-inhibit/x2_jammer/builds/`; the sources
-are here, in the firmware repo, since 2026-10-22): `py -3.14 -m platformio run -d tools/gen_inhibit/x2_jammer`
+are here, in the firmware repo, since 2026-10-22): `py -3.14 -m platformio run -d gen-inhibit/tools/x2_jammer`
 
 ## Pins and port
 

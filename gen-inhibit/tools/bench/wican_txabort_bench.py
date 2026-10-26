@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """What does the C3's TWAI abort command actually DO? Spec 5.2 item 9.
 
-    py -3.11 tools/gen_inhibit/bench/wican_txabort_bench.py
+    py -3.11 gen-inhibit/tools/bench/wican_txabort_bench.py
 
 Needs the GI_INSTRUMENT_TXABORT measurement build on the device (build-txabort).
 The shipping image has no /gi_txabort endpoint and E3 refuses any image that does.

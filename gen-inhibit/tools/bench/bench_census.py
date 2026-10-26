@@ -24,8 +24,8 @@ keeps; a page on another schema is refused for that adapter, never decoded), and
 raw 0x7F4-0x7F7 payloads so the interposer side can identify its own board with its
 own tool.
 
-Usage (project root):
-  py -3.14 tools/gen_inhibit/bench/bench_census.py [--seconds 8] [--only kvaser,pcan,gs_usb]
+Usage (repo root):
+  py -3.14 gen-inhibit/tools/bench/bench_census.py [--seconds 8] [--only kvaser,pcan,gs_usb]
 Writes runs/bench_census_<stamp>.json (never overwrites).
 """
 import argparse

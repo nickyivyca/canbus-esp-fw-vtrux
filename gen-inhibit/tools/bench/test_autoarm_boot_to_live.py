@@ -1,6 +1,6 @@
 """Harness test for autoarm_boot_to_live: boot instant, clock offset, first live frame.
 
-    py -3.14 tools/gen_inhibit/bench/test_autoarm_boot_to_live.py   (from the project root)
+    py -3.14 gen-inhibit/tools/bench/test_autoarm_boot_to_live.py   (from the repo root)
 """
 import os
 import sys

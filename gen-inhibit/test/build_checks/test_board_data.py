@@ -22,7 +22,7 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.dirname(os.path.dirname(HERE))
+REPO = os.path.join(os.path.dirname(os.path.dirname(HERE)), "firmware")   # the WiCAN tree (port step 0d)
 SLOT = 1781760          # spec 12.3 item 3
 FLASH = "4MB"           # spec section 2: "ESP32-C3, 4 MB flash"
 _TARGET = re.compile(r'^CONFIG_IDF_TARGET="([^"]+)"\s*$', re.M)

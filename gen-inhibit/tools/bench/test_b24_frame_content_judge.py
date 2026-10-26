@@ -3,7 +3,7 @@
 provenance_classifier.classify on a synthetic replay); no device. --mutants runs
 its mutants; each must make a check fail.
 
-    py -3.14 tools/gen_inhibit/bench/test_b24_frame_content_judge.py [--mutants]
+    py -3.14 gen-inhibit/tools/bench/test_b24_frame_content_judge.py [--mutants]
 """
 import os
 import shutil

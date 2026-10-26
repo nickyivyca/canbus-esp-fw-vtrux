@@ -24,7 +24,7 @@ fake netsh, a fake device whose /check_status answers a made-up value, fake imag
   source           no string constant outside a docstring names /check_status (a control
                    finds one in a probe file)
 
-    py -3.14 -B tools/gen_inhibit/bench/test_ota_rehearsal_identity.py
+    py -3.14 -B gen-inhibit/tools/bench/test_ota_rehearsal_identity.py
 Mutants: test_ota_rehearsal_identity_mutants.py (REHEARSAL_DIR runs another copy).
 Gen-inhibit tester, 2026-10-25.
 """

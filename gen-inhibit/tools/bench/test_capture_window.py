@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Test capture_window.py with a fake capture in place of dumpcap.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_capture_window.py
+    py -3.14 -B gen-inhibit/tools/bench/test_capture_window.py
 
 The fake ticks until it gets CTRL_BREAK (then prints "broke" and exits 0), or ignores it
 (--deaf), or exits by itself (--die-after S --rc N). Cases: stopped by the stop file;

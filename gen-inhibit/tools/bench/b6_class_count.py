@@ -5,7 +5,7 @@ device's bus_error count for that pulse (1 = single-count, >1 = over-count by th
 Uses b6_multicount_landing.arm_rows, so the grouping and the frame lookup are that
 tool's. Reads records only. Gen-inhibit tester.
 
-    py -3.14 -B tools/gen_inhibit/bench/b6_class_count.py ROOT [ROOT ...]
+    py -3.14 -B gen-inhibit/tools/bench/b6_class_count.py ROOT [ROOT ...]
 """
 import collections
 import glob

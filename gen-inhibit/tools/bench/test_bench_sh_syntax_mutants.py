@@ -3,7 +3,7 @@
 CHECK that names the mutated script. A crash is not a kill, and an edit that does not apply
 is an error.
 
-    GI_BASH="C:/Program Files/Git/usr/bin/bash.EXE" py -3.14 -B tools/gen_inhibit/bench/test_bench_sh_syntax_mutants.py
+    GI_BASH="C:/Program Files/Git/usr/bin/bash.EXE" py -3.14 -B gen-inhibit/tools/bench/test_bench_sh_syntax_mutants.py
 
 Each mutant is a copy of every .sh here in the worktree's scratch/, one edit applied to
 one script, checked through GI_SH_DIR. Gen-inhibit tester, 2026-10-22.

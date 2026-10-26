@@ -4,7 +4,7 @@ run once on the right images (must PASS), then once per negative control, each o
 which must FAIL on the check it targets (a FAIL elsewhere does not count).
 Gen-inhibit tester, 2026-10-16 (adds the stock features and the AutoPID control).
 
-    GI_FW=<firmware repo> py -3.14 refusal_pairs_runs.py --tree <worktree> --sha e3d9437 --out <file>
+    GI_FW=<project folder> py -3.14 refusal_pairs_runs.py --tree <WiCAN tree with build-tester-*/> --sha e3d9437 --out <file>
 
 Images are <tree>/build-tester-<name>/wican-fw_obd_<sha>_man[_rt|_flt].bin, the
 names baseline_builds.ps1 gives them. The no-ELF control copies the product image
@@ -18,7 +18,7 @@ import subprocess
 import sys
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 
-FW = os.environ.get("GI_FW") or gi_paths.repo_root()
+FW = os.environ.get("GI_FW") or gi_paths.project_root()   # a project folder (gen-inhibit/ since port step 0d)
 PAIRS = os.path.join(FW, "test", "build_checks", "test_refusal_pairs.py")
 ON = {"GI_TEST_RESTART_QUIESCE": "rt", "GI_INSTRUMENT_RXQ": "rxq", "GI_INSTRUMENT_TXABORT": "txabort",
       "GI_INSTRUMENT_ABORTWIN": "abortwin", "OTA_HEALTH_FAULT_INJECT": "flt", "WICAN_FEATURE_MQTT": "fmqtt",

@@ -4,7 +4,7 @@
 caught up with it, or at latch + PAGE_LAG_S if that comes first);
 test_interlock_judge.py must fail on each BY A CHECK, not by crashing.
 
-    py -3.14 tools/gen_inhibit/bench/test_interlock_judge_phase_mutants.py
+    py -3.14 gen-inhibit/tools/bench/test_interlock_judge_phase_mutants.py
 
 Run from the reverse-it root, which goes on PYTHONPATH (the judge finds the
 project root from sys.path when run as a copy). A mutant counts as killed only

@@ -39,8 +39,8 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# gi_diag sits in tools/gen_inhibit/bench/ of this tree, here and in ~/gi_host.
-sys.path.insert(0, os.path.normpath(os.path.join(HERE, "..", "..", "tools", "gen_inhibit", "bench")))
+# gi_diag sits in tools/bench/ of the project folder, here and in ~/gi_host (port step 0d).
+sys.path.insert(0, os.path.normpath(os.path.join(HERE, "..", "..", "tools", "bench")))
 import gi_diag  # noqa: E402  the diag DBCs, by schema byte (toolkit item 10)
 SCN = os.path.join(HERE, "scenarios")
 GOLD = os.path.join(HERE, "golden")

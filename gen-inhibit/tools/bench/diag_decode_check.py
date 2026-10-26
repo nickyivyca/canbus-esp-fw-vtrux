@@ -14,7 +14,7 @@ drifted from the enum shows up as a wrong value rather than as nothing.
 It is the first piece of review E3 ("decode emitted diag frames with
 cantools"). Run on madhouse-debian, where the host suite builds:
 
-  python3.13 tools/gen_inhibit/bench/diag_decode_check.py \\
+  python3.13 gen-inhibit/tools/bench/diag_decode_check.py \\
       ~/gi_host/test/gen_inhibit_host
 """
 

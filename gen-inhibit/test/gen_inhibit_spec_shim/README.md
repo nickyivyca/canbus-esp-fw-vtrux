@@ -77,19 +77,19 @@ silence, the 10th error outside the case's region) is VOID, never a pass.
 **Only a run built on madhouse-debian with its gcc 14.2 counts for
 VERIFICATION.md.** A WSL build on NICKY-XPS (gcc 9.4) is a self-check only
 (user, 2026-10-24, through the reviewer). On madhouse-debian, in a clone at the
-commit under test:
+commit under test, from the clone's root (before port step 0d, without `gen-inhibit/`):
 
 ```
-python3 -B test/gen_inhibit_spec_shim/run_spec_shim.py --local --out <run folder> --dbc-dir <reverse-it>/projects/vtrux
-python3 -B test/gen_inhibit_spec_shim/mutate.py --local
-python3 -B test/gen_inhibit_spec_shim/test_host_env.py --dbc-dir <reverse-it>/projects/vtrux [--mutants]
+python3 -B gen-inhibit/test/gen_inhibit_spec_shim/run_spec_shim.py --local --out <run folder> --dbc-dir <reverse-it>/projects/vtrux
+python3 -B gen-inhibit/test/gen_inhibit_spec_shim/mutate.py --local
+python3 -B gen-inhibit/test/gen_inhibit_spec_shim/test_host_env.py --dbc-dir <reverse-it>/projects/vtrux [--mutants]
 ```
 
 From Windows, as a self-check (WSL's gcc):
 
 ```
-py -3.14 -B test/gen_inhibit_spec_shim/run_spec_shim.py --out <run folder> --dbc-dir <reverse-it>/projects/vtrux
-py -3.14 -B test/gen_inhibit_spec_shim/mutate.py
+py -3.14 -B gen-inhibit/test/gen_inhibit_spec_shim/run_spec_shim.py --out <run folder> --dbc-dir <reverse-it>/projects/vtrux
+py -3.14 -B gen-inhibit/test/gen_inhibit_spec_shim/mutate.py
 ```
 
 Run files go to the gen-inhibit harness folder in reverse-it

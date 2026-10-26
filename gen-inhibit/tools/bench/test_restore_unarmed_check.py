@@ -1,6 +1,6 @@
 """Harness test for restore_unarmed_check.judge.
 
-    py -3.14 tools/gen_inhibit/bench/test_restore_unarmed_check.py   (from the project root)
+    py -3.14 gen-inhibit/tools/bench/test_restore_unarmed_check.py   (from the repo root)
 """
 import os
 import sys

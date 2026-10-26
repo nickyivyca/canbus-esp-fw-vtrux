@@ -14,6 +14,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import scan_scope_check as S                                       # noqa: E402
 import build_switches as BS                                        # noqa: E402
+REPO = S.git(["rev-parse", "--show-toplevel"], HERE).stdout.strip()
 
 REC = ["CMakeLists.txt", S.PLANTED, "main/CMakeLists.txt"]
 ON = "-- " + S.SAYS_ON + "\n"
@@ -60,6 +61,12 @@ def main():
         ("the planted file's message is the marker the judgements look for",
          S.SAYS_ON in S.PLANTED_TEXT and S.SAYS_ON in S.SET_FIRST_TEXT),
         ("the include names the planted file", S.PLANTED in S.INCLUDE),
+        # the WiCAN tree per commit (port step 0d, 2026-10-26): e7263bb is before the move,
+        # 43f0ae2 (the implementor's half of it) has gen-inhibit/firmware/CMakeLists.txt
+        ("a commit before the move configures in the worktree itself",
+         S.wican_tree("W", "e7263bb", REPO) == "W"),
+        ("a commit from the move on configures in gen-inhibit/firmware/",
+         S.wican_tree("W", "43f0ae2", REPO) == os.path.join("W", "gen-inhibit", "firmware")),
     ]
     fails = 0
     for label, ok in checks:

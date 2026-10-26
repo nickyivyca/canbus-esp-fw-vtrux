@@ -2,7 +2,7 @@
 """Test capture_stop_check.py on synthetic captures read by the real tshark. With
 --mutants, run its mutants.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_capture_stop_check.py [--mutants]
+    py -3.14 -B gen-inhibit/tools/bench/test_capture_stop_check.py [--mutants]
 
 The captures are classic pcap files written here (Ethernet, IPv4, TCP, port 80; tshark
 reads them by content whatever the name). Cases: a complete capture whose last client

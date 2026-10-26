@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Test page_state.py against a local fake device. With --mutants, run its mutants.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_page_state.py [--mutants]
+    py -3.14 -B gen-inhibit/tools/bench/test_page_state.py [--mutants]
 
 Cases: a good page carrying keys that must not be copied (a fake SSID and password);
 two bad answers then a good one (retried, three GETs, two errors kept); no good answer

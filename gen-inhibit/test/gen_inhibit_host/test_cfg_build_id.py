@@ -22,7 +22,7 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.normpath(os.path.join(HERE, "..", "..", "tools", "gen_inhibit", "bench")))
+sys.path.insert(0, os.path.normpath(os.path.join(HERE, "..", "..", "tools", "bench")))
 import gi_diag  # noqa: E402  the diag DBCs, by schema byte
 
 RUNNER = os.path.join(HERE, "host_runner")

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The test of test_raw_http_probe_mutants.py's control, on its image_elf_sha suite (about 30 s).
 
-    py -3.14 -B tools/gen_inhibit/bench/test_raw_http_probe_mutants_control.py
+    py -3.14 -B gen-inhibit/tools/bench/test_raw_http_probe_mutants_control.py
 
 1. The runner as it is: the control passes, 6 of 6 killed, exit 0.
 2. Two broken layouts, each of which must make the run report the control FAILED, count 0

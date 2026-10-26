@@ -28,7 +28,7 @@ MUTANTS = [
 def main():
     base = gi_paths.scratch("mutants-golden_schema_bump_check")
     src = open(os.path.join(HERE, TARGET), encoding="utf-8", newline="").read()
-    gold = os.path.join(gi_paths.repo_root(), "test", "gen_inhibit_host", "golden")
+    gold = os.path.join(gi_paths.project_root(), "test", "gen_inhibit_host", "golden")
     killed = errors = 0
 
     def run(name, text):

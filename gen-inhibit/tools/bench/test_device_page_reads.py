@@ -17,7 +17,7 @@ it shows in the paths asked for, in what is printed and in the record.
           asked; device_id() keeps elf_sha256 only
   source  no string constant outside a docstring names /check_status in either file
 
-    py -3.14 -B tools/gen_inhibit/bench/test_device_page_reads.py
+    py -3.14 -B gen-inhibit/tools/bench/test_device_page_reads.py
 Mutants: test_device_page_reads_mutants.py. DEVICE_READS_DIR runs another copy of the two
 tools (the mutants use it). Gen-inhibit tester, 2026-10-25.
 """

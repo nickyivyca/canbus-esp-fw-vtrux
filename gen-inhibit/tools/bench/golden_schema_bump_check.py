@@ -36,10 +36,10 @@ The self-test feeds synthetic traces through the same checker, on a schema set
 of the real schema 7 and a schema 8 made from it here, and requires the good
 bump to pass and each bad one to be rejected, so the check can fail.
 
-Usage (project root):
-  py -3.14 tools/gen_inhibit/bench/golden_schema_bump_check.py OLD NEW [--repo PATH]
+Usage (repo root; --repo is the repo root, --path is relative to the project folder):
+  py -3.14 gen-inhibit/tools/bench/golden_schema_bump_check.py OLD NEW [--repo PATH]
       [--same-value OLD_SIGNAL=NEW_SIGNAL ...]
-  py -3.14 tools/gen_inhibit/bench/golden_schema_bump_check.py --dirs OLD_DIR NEW_DIR
+  py -3.14 gen-inhibit/tools/bench/golden_schema_bump_check.py --dirs OLD_DIR NEW_DIR
       (a re-bless done on the remote, not in git yet: the two golden folders)
 """
 import argparse
@@ -197,6 +197,9 @@ def read_dir(d):
 
 
 def read_rev(repo, rev, path):
+    """The goldens at rev. path is relative to the project folder, so a rev from before
+    port step 0d reads it at the repo root and a later one under gen-inhibit/."""
+    path = gi_paths.path_at(rev, path, repo)
     names = [n for n in git(repo, "ls-tree", "-r", "--name-only", rev, path).split() if n.endswith(".trace")]
     return {os.path.basename(n): git(repo, "show", "%s:%s" % (rev, n)) for n in names}
 
@@ -207,7 +210,7 @@ def main():
     ap.add_argument("new", nargs="?")
     ap.add_argument("--dirs", nargs=2, metavar=("OLD_DIR", "NEW_DIR"))
     ap.add_argument("--repo", default=gi_paths.repo_root())
-    ap.add_argument("--path", default="test/gen_inhibit_host/golden")
+    ap.add_argument("--path", default="test/gen_inhibit_host/golden", help="relative to the project folder")
     ap.add_argument("--old-ver", type=int, default=5)
     ap.add_argument("--new-ver", type=int, default=6)
     ap.add_argument("--same-value", action="append", default=[], metavar="OLD=NEW",
@@ -230,7 +233,13 @@ def main():
     else:
         old, new = read_rev(a.repo, a.old, a.path), read_rev(a.repo, a.new, a.path)
         where = "%s..%s" % (a.old, a.new)
-        allfiles = git(a.repo, "diff", "--name-only", a.old, a.new).split()
+        # project-relative names; a file only moved into gen-inhibit/ (port step 0d) is not a change
+        allfiles = []
+        for ln in git(a.repo, "diff", "--name-status", "-M", a.old, a.new).splitlines():
+            st, *names = ln.split("\t")
+            if st != "R100":
+                f = names[-1]
+                allfiles.append(f[len(gi_paths.PROJECT_DIR) + 1:] if f.startswith(gi_paths.PROJECT_DIR + "/") else f)
         outside = [f for f in allfiles if f.startswith("test/") and not f.startswith(a.path)]
         print("  test/ files changed outside %s: %s" % (a.path, outside or "none"))
     if same:

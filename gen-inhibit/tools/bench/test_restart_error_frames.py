@@ -1,6 +1,6 @@
 """Harness test for restart_error_frames' analysis (no bus).
 
-    py -3.14 tools/gen_inhibit/bench/test_restart_error_frames.py   (from the project root)
+    py -3.14 gen-inhibit/tools/bench/test_restart_error_frames.py   (from the repo root)
 """
 import os
 import sys

@@ -26,7 +26,7 @@ including the cross-page invariant's agree and disagree cases:
   disagree_a   abort_reason set, bit7 CLEAR   -> invariant fails
   disagree_b   abort_reason none, bit7 SET    -> invariant fails
 
-    py -3.14 tools/gen_inhibit/bench/diag_check_rules_test.py
+    py -3.14 gen-inhibit/tools/bench/diag_check_rules_test.py
 """
 
 import os

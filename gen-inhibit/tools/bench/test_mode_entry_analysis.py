@@ -1,6 +1,6 @@
 """Harness test for mode_entry_analysis and e4's --arm-after poster.
 
-    py -3.14 tools/gen_inhibit/bench/test_mode_entry_analysis.py
+    py -3.14 gen-inhibit/tools/bench/test_mode_entry_analysis.py
 """
 import os
 import sys

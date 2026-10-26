@@ -1,6 +1,6 @@
 """Harness test for provenance_classifier: synthetic replays with known answers.
 
-    py -3.14 tools/gen_inhibit/bench/test_provenance_classifier.py
+    py -3.14 gen-inhibit/tools/bench/test_provenance_classifier.py
 """
 import os
 import random

@@ -3,7 +3,7 @@
 wire, synthetic pages) and ota_armed_bench.wait_live on a fake page reader. No
 device. --mutants runs its mutants; each must make a check fail.
 
-    REVERSE_IT_DIR=<reverse-it root> py -3.14 tools/gen_inhibit/bench/test_batch3_bench_judge.py [--mutants]
+    REVERSE_IT_DIR=<reverse-it root> py -3.14 gen-inhibit/tools/bench/test_batch3_bench_judge.py [--mutants]
 Run from the reverse-it root. Added 2026-10-16.
 """
 import os

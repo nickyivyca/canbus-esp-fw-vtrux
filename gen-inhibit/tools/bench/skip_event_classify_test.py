@@ -12,7 +12,7 @@ They cannot prove the method's shape is what hardware will produce.
 
 The classifier is imported, not reimplemented.
 
-    py -3.14 tools/gen_inhibit/bench/skip_event_classify_test.py
+    py -3.14 gen-inhibit/tools/bench/skip_event_classify_test.py
 """
 
 import os

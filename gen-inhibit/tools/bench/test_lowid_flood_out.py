@@ -9,7 +9,7 @@ Each check below is paired with the way it would fail if the guard were
 removed, and the self-check at the end runs a deliberately overwriting writer
 through the same assertion to show the assertion can fail.
 
-Run from the project root:  py -3.14 tools/gen_inhibit/bench/test_lowid_flood_out.py
+Run from the repo root:  py -3.14 gen-inhibit/tools/bench/test_lowid_flood_out.py
 """
 import json
 import os

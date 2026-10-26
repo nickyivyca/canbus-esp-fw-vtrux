@@ -1,6 +1,6 @@
 """Harness test for quiesce_analysis and e4's --post-schedule.
 
-    py -3.14 tools/gen_inhibit/bench/test_quiesce_analysis.py
+    py -3.14 gen-inhibit/tools/bench/test_quiesce_analysis.py
 """
 import os
 import sys

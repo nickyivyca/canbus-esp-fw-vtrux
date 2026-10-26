@@ -70,7 +70,7 @@ as a pass: if the board stops transmitting, both adapters see nothing, the
 counts agree trivially, and nothing is established. So a minimum frame count is
 required on the BUSIER adapter before any verdict is given.
 
-    py -3.14 tools/gen_inhibit/bench/witness_fidelity_check.py
+    py -3.14 gen-inhibit/tools/bench/witness_fidelity_check.py
     py -3.14 ... --seconds 30
 """
 

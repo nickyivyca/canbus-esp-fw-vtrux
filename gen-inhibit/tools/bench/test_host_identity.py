@@ -9,8 +9,8 @@ host_identity.sh, except baseline_host_run.sh, whose remote log's first lines
 record $(hostname) and gcc --version's first line; a planted script that builds
 without it must be flagged, and one that calls it must not.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_host_identity.py
-    py -3.14 -B tools/gen_inhibit/bench/test_host_identity.py --mutants
+    py -3.14 -B gen-inhibit/tools/bench/test_host_identity.py
+    py -3.14 -B gen-inhibit/tools/bench/test_host_identity.py --mutants
 
 Gen-inhibit tester, 2026-10-24 (every host C run records its host and compiler).
 """

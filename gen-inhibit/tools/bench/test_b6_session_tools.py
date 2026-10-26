@@ -6,7 +6,7 @@ b6_class_count: the class is "the next frame after the error frame is an 0x051 s
 b6_ecc_session_summary: per arm the verdict, groups, the first post-latch pulse, the
 over-counts, the isr values and the caveats; totals over the session.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_b6_session_tools.py [--mutants]
+    py -3.14 -B gen-inhibit/tools/bench/test_b6_session_tools.py [--mutants]
 
 Gen-inhibit tester, 2026-10-20.
 """

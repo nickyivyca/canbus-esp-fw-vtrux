@@ -2,8 +2,8 @@
 """Test gi_ecc.py, the /gi_ecc reader: format checks, the reviewer's three caveats,
 alignment with the witness and the per-pulse split. Synthetic pages, no hardware.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_gi_ecc.py
-    py -3.14 -B tools/gen_inhibit/bench/test_gi_ecc.py --mutants
+    py -3.14 -B gen-inhibit/tools/bench/test_gi_ecc.py
+    py -3.14 -B gen-inhibit/tools/bench/test_gi_ecc.py --mutants
 
 Gen-inhibit tester, 2026-10-20.
 """

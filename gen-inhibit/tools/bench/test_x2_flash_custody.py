@@ -12,7 +12,7 @@ esptool and a fake data folder in the worktree's scratch/; a recorded path that 
 absolute or has a ".." part is refused by both readers, naming the record.
 test_x2_flash_custody_mutants.py runs the mutants of that.
 
-Run: py -3.14 tools/gen_inhibit/bench/test_x2_flash_custody.py
+Run: py -3.14 gen-inhibit/tools/bench/test_x2_flash_custody.py
 """
 import os
 import shutil

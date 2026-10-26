@@ -20,7 +20,7 @@ Now:
 main() runs against fakes put in sys.modules: can (PCAN, Kvaser), lowid_flood_skip_bench
 (the device: a log of POSTs and page reads) and skip_method_bench (the Player). About 10 s.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_wrong_bitrate_sequence.py
+    py -3.14 -B gen-inhibit/tools/bench/test_wrong_bitrate_sequence.py
 Mutants: test_wrong_bitrate_sequence_mutants.py (WRONG_BITRATE_DIR runs another copy).
 Gen-inhibit tester, 2026-10-25.
 """

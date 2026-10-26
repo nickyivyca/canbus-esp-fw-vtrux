@@ -13,9 +13,9 @@ TEST=${NN_TEST:-nonode_test.c}
 JUDGE=${NN_JUDGE:-nonode_judge.c}
 CC=${CC:-gcc}
 $CC -std=c11 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable "$@" \
-    -I. -I../gen_inhibit_shim -I../gen_inhibit_shim/mock -I../../main \
+    -I. -I../gen_inhibit_shim -I../gen_inhibit_shim/mock -I../../firmware/main \
     -o "$OUT" "$TEST" "$JUDGE" "$LAYER" \
     ../gen_inhibit_shim/fake_twai.c ../gen_inhibit_shim/fake_can.c \
-    ../../main/gen_inhibit.c ../../main/gen_inhibit_core.c ../../main/gi_sched.c ../../main/can.c \
+    ../../firmware/main/gen_inhibit.c ../../firmware/main/gen_inhibit_core.c ../../firmware/main/gi_sched.c ../../firmware/main/can.c \
     -pthread \
     -Wl,--wrap=twai_receive,--wrap=twai_get_status_info,--wrap=twai_read_alerts,--wrap=twai_reconfigure_alerts,--wrap=twai_driver_install

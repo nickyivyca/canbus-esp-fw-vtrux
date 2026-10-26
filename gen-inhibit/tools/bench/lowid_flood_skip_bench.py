@@ -121,7 +121,7 @@ there because of 2026-10-06: the device can sit in bus-off, silent, with
 `bus_on` reading true, and from the wire that is indistinguishable from an
 unbroken run of withdrawn frames.
 
-    py -3.14 tools/gen_inhibit/bench/lowid_flood_skip_bench.py
+    py -3.14 gen-inhibit/tools/bench/lowid_flood_skip_bench.py
     py -3.14 ... --flood-occupancy 0.85 --burst-seconds 30
     py -3.14 ... --dry-run        # preconditions and arming only, no flood
 """

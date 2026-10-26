@@ -2,7 +2,7 @@
 """Harness test for nonode_bench.py: judge_arm, arm_verdict, longest_retry_run and the
 0x592 key encoding, on made-up arm records. No hardware.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_nonode_bench.py [--mutants]
+    py -3.14 -B gen-inhibit/tools/bench/test_nonode_bench.py [--mutants]
 
 Prints ok/FAIL per check; exit 0 only with no FAIL. --mutants applies each edit in
 MUTANTS to a copy of nonode_bench.py in the worktree's scratch/ and requires a FAIL line (a

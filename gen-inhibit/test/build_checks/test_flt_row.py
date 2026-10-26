@@ -12,7 +12,7 @@ project name and no fault-injection format string, so only the name row can
 refuse it. The last step swaps the old endswith() predicate back in and
 requires at least one case to come out wrong, so these assertions can fail.
 
-Run:  python test/build_checks/test_flt_row.py   (exit 0 = all pass)
+Run:  python gen-inhibit/test/build_checks/test_flt_row.py   (exit 0 = all pass)
 """
 import os
 import re

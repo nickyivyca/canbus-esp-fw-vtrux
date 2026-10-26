@@ -52,7 +52,7 @@ NO DEVICE INVOLVEMENT. This measures our transmitter and our witness. The WiCAN
 may be in any state; it is not asked anything and nothing here depends on it. A
 quiet bus is better, so prefer mode 0.
 
-    py -3.14 tools/gen_inhibit/bench/pcan_backtoback_capability.py
+    py -3.14 gen-inhibit/tools/bench/pcan_backtoback_capability.py
 """
 
 import json

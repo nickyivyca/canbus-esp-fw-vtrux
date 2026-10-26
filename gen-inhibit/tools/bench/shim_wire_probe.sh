@@ -9,8 +9,8 @@
 # (a sibling of gen_inhibit_host, so replay_scn finds the host scenarios) and the
 # probe is built there; the synced tree's own files are not touched.
 #
-# Usage, from the project root, after gi_host_run.sh --sync-only and --scenarios:
-#   DEST=gi_host_tester_c65c45e bash tools/gen_inhibit/bench/shim_wire_probe.sh \
+# Usage, from the repo root, after gi_host_run.sh --sync-only and --scenarios:
+#   DEST=gi_host_tester_c65c45e bash gen-inhibit/tools/bench/shim_wire_probe.sh \
 #       disable-clears-live-flag rearm-keeps-section6-latch
 set -euo pipefail
 REMOTE="${REMOTE:-madhouse-debian}"

@@ -90,7 +90,7 @@ came up is recorded so the other session can align its own counters.
 THIS TRANSMITS ON THE SHARED VEHICLE SEGMENT. The interposer session's board
 is on this wire and its error counters will move. Tell them before running.
 
-    py -3.14 tools/gen_inhibit/bench/tec_busoff_sweep.py
+    py -3.14 gen-inhibit/tools/bench/tec_busoff_sweep.py
     py -3.14 ... --step-seconds 20 --ladder 0.2,0.5,0.8,0.95
     py -3.14 ... --dry-run            # preconditions only, nothing transmitted
 """

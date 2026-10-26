@@ -2,7 +2,7 @@
 """Mutants of capture_window.py; test_capture_window.py must fail on each BY A CHECK.
 A crash is not a kill, and an edit that does not apply is an error.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_capture_window_mutants.py
+    py -3.14 -B gen-inhibit/tools/bench/test_capture_window_mutants.py
 
 Not run as a mutant: dropping the child's own process group. CTRL_BREAK would then go
 to the console group this runner shares and stop the runner itself, so it cannot be

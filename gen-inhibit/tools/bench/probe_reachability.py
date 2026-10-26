@@ -21,7 +21,7 @@ ICMP is deliberately not probed here -- it is answered inside lwIP's own thread
 and so tells us only that the stack lives, which the 3333 connect already covers
 with the added information that an application task ran.
 
-    py -3.11 tools/gen_inhibit/bench/probe_reachability.py \
+    py -3.11 gen-inhibit/tools/bench/probe_reachability.py \
         --seconds 180 --out runs/reboot_hang_probe.csv
 
 Prints a line per state CHANGE, so a long outage is one line rather than

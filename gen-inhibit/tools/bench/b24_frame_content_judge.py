@@ -16,7 +16,7 @@ by a VCM command whose B0 is not 0x08. If every command in front reads 0x08, a
 device that mirrored B0 would pass too, so the verdict on B0 is then "consistent,
 not discriminating".
 
-    py -3.14 tools/gen_inhibit/bench/b24_frame_content_judge.py <run.json> [...]
+    py -3.14 gen-inhibit/tools/bench/b24_frame_content_judge.py <run.json> [...]
 Run from the reverse-it root. Tested by test_b24_frame_content_judge.py.
 """
 import bisect

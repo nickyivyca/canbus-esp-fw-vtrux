@@ -12,7 +12,7 @@ so a sag between two reads is invisible; and a reading can repeat a stale
 last value with nothing to mark it. "0.0V" means no reading (batt_v None,
 batt_voltage kept as sent). Good for before/after, not for catching a reset.
 
-    py -3.14 tools/gen_inhibit/bench/batt_voltage_log.py <label>
+    py -3.14 gen-inhibit/tools/bench/batt_voltage_log.py <label>
 Appends one JSON line to runs/batt_voltage_log_<YYYYMMDD>.jsonl and prints it.
 
 PARKED since 2026-10-25 (gen-inhibit reviewer): main() refuses at start with the reason and

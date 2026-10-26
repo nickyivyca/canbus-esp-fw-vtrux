@@ -7,7 +7,7 @@ opened in normal mode and labelled ACKING, and the PCAN listen-only. A label
 claiming silence for the Kvaser, or a Kvaser opened with driver_mode=False,
 fails.
 
-  py -3.14 tools/gen_inhibit/bench/test_bench_census_labels.py
+  py -3.14 gen-inhibit/tools/bench/test_bench_census_labels.py
 """
 import os
 import sys

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Harness test for interlock_judge.py and interlock_bench.py's stimulus side.
 
-    py -3.14 tools/gen_inhibit/bench/test_interlock_judge.py <scratch dir>
+    py -3.14 gen-inhibit/tools/bench/test_interlock_judge.py <scratch dir>
 
 Synthetic wire records only: a VCM train, the stimulus signals, a device that
 answers each VCM frame with a copy of the next one while it is live, and 1 Hz

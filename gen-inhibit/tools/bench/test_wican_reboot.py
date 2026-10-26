@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Test wican_reboot.py against a local fake WiCAN. With --mutants, run its mutants.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_wican_reboot.py [--mutants]
+    py -3.14 -B gen-inhibit/tools/bench/test_wican_reboot.py [--mutants]
 
 The fake keeps a boot time: GET /gen_inhibit answers uptime from it, POST /system_reboot
 (when it behaves) answers 200, keeps serving the old boot for a moment, refuses for a

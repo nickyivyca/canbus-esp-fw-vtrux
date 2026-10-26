@@ -7,17 +7,18 @@
 # (Ubuntu 20.04, gcc 9.4.0, ASan included), and a pass there is a self-check
 # that does not count for VERIFICATION.md (user, 2026-10-24, through the
 # reviewer). `~/gi_host/` on madhouse-debian is the working copy that gets
-# built; this repo, the worktree this script is in ($FW below), is the source of
-# truth. The copy is one-way and this script is the only thing that should
-# write it.
+# built; this repo, the project folder this script is in ($FW below), is the
+# source of truth. ~/gi_host has the project folder's layout (port step 0d,
+# 2026-10-26): firmware/main/, test/ and tools/bench/. The copy is one-way and
+# this script is the only thing that should write it.
 #
 # It is also the right machine for a second reason: `scenarios/` is generated,
 # gitignored and EMPTY in the repo -- the replay fixtures are cut from the log
 # corpus, which is on local disk there and would hydrate gigabytes over
 # SeaDrive here.
 #
-# Usage, from the project root:
-#   bash tools/gen_inhibit/bench/gi_host_run.sh            # sync + full suite
+# Usage, from the repo root:
+#   bash gen-inhibit/tools/bench/gi_host_run.sh            # sync + full suite
 #   bash .../gi_host_run.sh --only keyon                                      # sync + subset
 #   bash .../gi_host_run.sh --asan                                            # sanitiser build
 #   bash .../gi_host_run.sh --signals                                         # cantools cross-check
@@ -31,12 +32,12 @@
 #
 set -euo pipefail
 
-FW="${FW:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"   # default: this repo
+FW="${FW:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"   # default: this project folder
 REMOTE="${REMOTE:-madhouse-debian}"
 DEST="${DEST:-gi_host}"
 PY="${PY:-python3.13}"
 
-[ -d "$FW/main" ] || { echo "no firmware tree at $FW" >&2; exit 1; }
+[ -d "$FW/firmware/main" ] || { echo "no WiCAN tree at $FW/firmware" >&2; exit 1; }
 
 mode="suite"
 case "${1:-}" in
@@ -114,32 +115,32 @@ fi
 # miss: build_output.py and elf_checks.py need the built image and ELF and so
 # run where ESP-IDF is (NICKY-XPS), while config_vs_spec.py compiles
 # config_probe.c and needs a host C compiler, which NICKY-XPS does not have.
-MAIN_HDRS="$(cd "$FW" && ls main/*.h)"
+MAIN_HDRS="$(cd "$FW" && ls firmware/main/*.h)"
 
 # THE DIAG DBCS (2026-10-24, port plan toolkit item 10). run_tests.py compares the
 # goldens' diag lines decoded by name, and the probes decode too, all through
-# tools/gen_inhibit/bench/gi_diag.py, which reads the DBCs from git. ~/gi_host has
+# tools/bench/gi_diag.py, which reads the DBCs from git. ~/gi_host has
 # no git, so gi_diag exports them here first -- one DBC per schema from the DBC's
 # history, the pinned vtrux_bench decode.py, the interposer's DBC at its pin and
 # this tree's run identity -- and they go to ~/$DEST/diag_schemas/, replacing the
 # last export, with gi_diag.py and pins.json beside the rest. The export refuses
 # a working-tree DBC that is not HEAD's, which stops the run here.
 LOCAL_PY="${LOCAL_PY:-py -3.14}"
-EXPORT_PARENT="$FW/scratch/gi-host-export"
+EXPORT_PARENT="$(git -C "$FW" rev-parse --show-toplevel)/scratch/gi-host-export"
 rm -rf "$EXPORT_PARENT"
 mkdir -p "$EXPORT_PARENT"
-$LOCAL_PY -B "$FW/tools/gen_inhibit/bench/gi_diag.py" export "$EXPORT_PARENT/diag_schemas" >/dev/null
+$LOCAL_PY -B "$FW/tools/bench/gi_diag.py" export "$EXPORT_PARENT/diag_schemas" >/dev/null
 
 echo "--- sync $FW -> $REMOTE:~/$DEST"
 tar -C "$FW" -czf - \
     $MAIN_HDRS \
-    tools/gen_inhibit/bench/gi_diag.py \
-    tools/gen_inhibit/bench/pins.json \
-    main/gen_inhibit.c \
-    main/can.c \
+    tools/bench/gi_diag.py \
+    tools/bench/pins.json \
+    firmware/main/gen_inhibit.c \
+    firmware/main/can.c \
     test/gen_inhibit_shim \
-    main/gen_inhibit_core.c \
-    main/gi_sched.c \
+    firmware/main/gen_inhibit_core.c \
+    firmware/main/gi_sched.c \
     test/gen_inhibit_sched \
     test/build_checks \
     test/gen_inhibit_host/Makefile \
@@ -191,7 +192,7 @@ ssh "$REMOTE" "bash -s" < "$(dirname "${BASH_SOURCE[0]}")/host_identity.sh"
 
 case "$mode" in
   sync)
-    ssh "$REMOTE" "cd ~/$DEST && git status >/dev/null 2>&1 || true; ls -l main test/gen_inhibit_host | head -20"
+    ssh "$REMOTE" "cd ~/$DEST && git status >/dev/null 2>&1 || true; ls -l firmware/main test/gen_inhibit_host | head -20"
     ;;
   scenarios)
     ssh "$REMOTE" "cd ~/$DEST/test/gen_inhibit_host && $PY make_scenarios.py"

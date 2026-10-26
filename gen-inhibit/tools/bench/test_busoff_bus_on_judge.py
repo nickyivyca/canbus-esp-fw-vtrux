@@ -3,8 +3,8 @@
 Synthetic records, no bus. Each case states the verdict the judge must give;
 the FAIL and INCONCLUSIVE cases are what show the check can fail.
 
-Run from the project root:
-  py -3.14 tools/gen_inhibit/bench/test_busoff_bus_on_judge.py
+Run from the repo root:
+  py -3.14 gen-inhibit/tools/bench/test_busoff_bus_on_judge.py
 """
 import os
 import sys

@@ -119,9 +119,24 @@ class Undecodable(object):
 
 # ---------------------------------------------------------------- git and pins
 
+def project_root():
+    """The project folder (gen-inhibit/ since port step 0d, 2026-10-26), two above this
+    module (tools/bench/); a copy with no git has the same layout, with its export at
+    this root."""
+    return os.path.normpath(os.path.join(HERE, "..", ".."))
+
+
 def repo_root():
-    """This firmware repo's root (tools/gen_inhibit/bench/ is three below it)."""
-    return os.path.normpath(os.path.join(HERE, "..", "..", ".."))
+    """This firmware repo's root, one above the project folder. DBC_PATH and the other
+    git paths here are relative to it."""
+    return os.path.dirname(project_root())
+
+
+def toplevel(repo):
+    """The root of the worktree holding repo. DBC_PATH is repo-relative, and git
+    reads a pathspec against -C's folder, so `status -- DBC_PATH` given the project
+    folder (gen-inhibit/ since port step 0d) would match nothing and pass."""
+    return os.path.normpath(git(repo, "rev-parse", "--show-toplevel").decode().strip())
 
 
 def git(repo, *args):
@@ -274,7 +289,7 @@ class SchemaSet(object):
     @classmethod
     def from_git(cls, repo=None, path=DBC_PATH):
         D = core()
-        repo = repo or repo_root()
+        repo = toplevel(repo or repo_root())
         probs = D.check_history(repo, path)
         if probs:
             raise DiagError("%s's history in git is not clean: %s" % (path, "; ".join(probs)))
@@ -401,11 +416,11 @@ def in_git():
 def find_export():
     """The diag_schemas/ export of a copy with no git: beside this module (B15host's
     copy) or at the copy's root (the host suite's)."""
-    for d in (os.path.join(HERE, EXPORT_DIR), os.path.join(repo_root(), EXPORT_DIR)):
+    for d in (os.path.join(HERE, EXPORT_DIR), os.path.join(project_root(), EXPORT_DIR)):
         if os.path.isfile(os.path.join(d, MANIFEST)):
             return d
     raise DiagError("no git here (%s) and no %s/%s beside %s or at %s"
-                    % (repo_root(), EXPORT_DIR, MANIFEST, HERE, repo_root()))
+                    % (repo_root(), EXPORT_DIR, MANIFEST, HERE, project_root()))
 
 
 def schemas_for(root=None):
@@ -424,7 +439,7 @@ def schemas_for(root=None):
 def run_identity(repo=None, schemas=None):
     """What a live run's record keeps about its decoder (reading Q1). Refuses a
     working-tree DBC that is not HEAD's."""
-    repo = repo or repo_root()
+    repo = toplevel(repo or repo_root())
     dirty = git(repo, "status", "--porcelain", "--", DBC_PATH).decode().strip()
     if dirty:
         raise DiagError("%s has uncommitted changes (%s): a run decodes only a committed DBC" % (DBC_PATH, dirty))

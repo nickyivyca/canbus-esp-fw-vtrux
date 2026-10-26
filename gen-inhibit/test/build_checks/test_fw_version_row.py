@@ -7,7 +7,7 @@ file and a doc, runs the row, and classifies it the way build_output.main()
 does. The FAIL cases are the point: a bump the doc does not record, a doc row
 the source never reached.
 
-Run:  python test/build_checks/test_fw_version_row.py   (exit 0 = all pass)
+Run:  python gen-inhibit/test/build_checks/test_fw_version_row.py   (exit 0 = all pass)
 """
 import os
 import shutil

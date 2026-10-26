@@ -1,6 +1,6 @@
 """Harness test for x2_hold: the read-mem parser and the TX pin verdict.
 
-    py -3.14 tools/gen_inhibit/bench/test_x2_hold.py
+    py -3.14 gen-inhibit/tools/bench/test_x2_hold.py
 """
 import os
 import sys

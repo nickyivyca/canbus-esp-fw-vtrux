@@ -13,7 +13,7 @@ default, which reboots the chip -- and rebooting the device you are trying to
 observe boot is a way to lose the very event you came for. So the port is
 configured before it is opened and both lines are left deasserted.
 
-    py -3.11 tools/gen_inhibit/bench/serial_boot_log.py \
+    py -3.11 gen-inhibit/tools/bench/serial_boot_log.py \
         --out runs/reboot_hang_console.log --seconds 120
 
 --reset IS OPT-IN, AND THE DEFAULT STAYS OFF. Everything above is why. But after a

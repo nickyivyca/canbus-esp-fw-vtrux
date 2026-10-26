@@ -51,7 +51,7 @@ latches is attributed by its reason -- any abort other than trip 7 makes the
 arm INCONCLUSIVE for the trip-7 question and is reported (reviewer,
 2026-10-07: an error-rate trip under this method is a result in itself).
 
-  py -3.14 tools/gen_inhibit/bench/skip_method_bench.py [--arms w3,w2,...] [--dry-run]
+  py -3.14 gen-inhibit/tools/bench/skip_method_bench.py [--arms w3,w2,...] [--dry-run]
 Writes runs/skip_method_<stamp>.json (never overwrites).
 """
 import argparse

@@ -10,8 +10,8 @@
 # builds and runs it, and prints the distinct 0x7F3 payloads with their counts.
 # The synced trees themselves are not touched; nothing is committed.
 #
-# Usage, from the project root, after gi_host_run.sh --sync-only for each tree:
-#   bash tools/gen_inhibit/bench/shim_7f3_probe.sh gi_host_tester_d74777d gi_host_tester_e998385
+# Usage, from the repo root, after gi_host_run.sh --sync-only for each tree:
+#   bash gen-inhibit/tools/bench/shim_7f3_probe.sh gi_host_tester_d74777d gi_host_tester_e998385
 #
 # A tree whose copy prints no 0x7F3 at all is reported as such: the comparison
 # then shows nothing, and must not read as "unchanged".
@@ -32,6 +32,9 @@ dest="$1"
 py="$2"
 src="$HOME/$dest/test/gen_inhibit_shim"
 probe="$HOME/$dest/test/gen_inhibit_shim_7f3probe"
+# the tree's gi_diag: tools/bench/ in a copy of the project layout (port step 0d, 2026-10-26),
+# tools/gen_inhibit/bench/ in a copy synced before it
+gd="$HOME/$dest/tools/bench/gi_diag.py"; [ -e "$gd" ] || gd="$HOME/$dest/tools/gen_inhibit/bench/gi_diag.py"
 rm -rf "$probe"
 cp -r "$src" "$probe"
 line='    if (g_nsent < SENTMAX) g_sent[g_nsent++] = *f;'
@@ -45,6 +48,6 @@ make -s shim_test >/dev/null 2>&1 || make shim_test
 echo "0x7F3 payloads (count payload):"
 grep -o "PROBE7F3 [0-9a-f]*" "$probe/stderr.txt" | sort | uniq -c | sort -rn || echo "  NONE -- no 0x7F3 was transmitted"
 echo "0x7F3 payloads decoded (gi_diag, by name):"
-grep -o "PROBE7F3 [0-9a-f]*" "$probe/stderr.txt" | sort -u | sed 's/^PROBE7F3 /7F3 /'   | "$py" -B "$HOME/$dest/tools/gen_inhibit/bench/gi_diag.py" decode || echo "  DECODE REFUSED or failed (above)"
+grep -o "PROBE7F3 [0-9a-f]*" "$probe/stderr.txt" | sort -u | sed 's/^PROBE7F3 /7F3 /'   | "$py" -B "$gd" decode || echo "  DECODE REFUSED or failed (above)"
 EOS
 done

@@ -13,7 +13,7 @@ missing log, one that does not replay, the wrong host, a free lock, the other te
 or an implementor (a loan is the implementor's own take) are each not ours, with the
 reason in the second value.
 
-    py -3.14 -B tools/gen_inhibit/bench/bench_held.py     prints the answer; exit 0 ours, 2 not
+    py -3.14 -B gen-inhibit/tools/bench/bench_held.py     prints the answer; exit 0 ours, 2 not
 
 Gen-inhibit tester, 2026-10-25: B20 of the 6926fb0 bench run refused at "bench-holder.md
 names 'free' as the holder" with the runner holding the lock in the log.

@@ -2,7 +2,7 @@
 """Mutants of x2_pins_noreset_check.py; test_x2_pins_noreset_check.py must fail on
 each BY A CHECK. A crash is not a kill, and an edit that does not apply is an error.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_x2_pins_noreset_check_mutants.py
+    py -3.14 -B gen-inhibit/tools/bench/test_x2_pins_noreset_check_mutants.py
 
 Each mutant is a copy of the tool and the test in the worktree's scratch/, one edit
 applied. Version 2 of the tool. Gen-inhibit tester, 2026-10-19.

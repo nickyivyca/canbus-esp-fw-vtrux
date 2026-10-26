@@ -1,6 +1,6 @@
 """Harness test for respond_booking_check.judge (spec 11 (l)).
 
-    py -3.14 tools/gen_inhibit/bench/test_respond_booking_check.py   (from the project root)
+    py -3.14 gen-inhibit/tools/bench/test_respond_booking_check.py   (from the repo root)
 """
 import os
 import sys

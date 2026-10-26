@@ -3,7 +3,7 @@
 test_b11_rawpost_judge.py must fail on each BY A CHECK. A crash is not a kill, and
 an edit that does not apply is an error.
 
-    py -3.14 tools/gen_inhibit/bench/test_b11_rawpost_judge_mutants.py
+    py -3.14 gen-inhibit/tools/bench/test_b11_rawpost_judge_mutants.py
 
 Run from the reverse-it root, which goes on PYTHONPATH with this folder.
 """

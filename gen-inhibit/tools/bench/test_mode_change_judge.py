@@ -4,7 +4,7 @@
 pages read every 0.25 s. No device. --mutants runs its mutants; each must make a
 check fail.
 
-    py -3.14 tools/gen_inhibit/bench/test_mode_change_judge.py [--mutants]
+    py -3.14 gen-inhibit/tools/bench/test_mode_change_judge.py [--mutants]
 Run from the reverse-it root.
 """
 import os

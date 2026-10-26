@@ -13,10 +13,10 @@ each with its .elf), which then runs in every mutant's copy too: a FAIL line tha
 the unmutated copy does not print also kills. That is how the rows that need a real
 image (check_no_stock_features writing them at all) are covered.
 
-    GI_FW=<firmware repo> py -3.14 tools/gen_inhibit/bench/build_checks_stock_mutants.py --tree <worktree>
-    GI_FW=<firmware repo> py -3.14 tools/gen_inhibit/bench/build_checks_stock_mutants.py --pairs --off <bin> --on SW=<bin> ...
+    GI_FW=<project folder> py -3.14 gen-inhibit/tools/bench/build_checks_stock_mutants.py --tree <WiCAN tree>
+    GI_FW=<project folder> py -3.14 gen-inhibit/tools/bench/build_checks_stock_mutants.py --pairs --off <bin> --on SW=<bin> ...
 
---tree takes the images from a worktree's build-tester-<name>/ folders (the names
+--tree takes the images from a WiCAN tree's build-tester-<name>/ folders (the names
 baseline_builds.ps1 gives them), forming the same arguments refusal_pairs_runs.py
 passes for its positive run. One of the pairs is required: "the image rows never
 written" is killed only by them, so a run without real images refuses to start
@@ -29,7 +29,7 @@ import subprocess
 import sys
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 
-FW = os.environ.get("GI_FW") or gi_paths.repo_root()
+FW = os.environ.get("GI_FW") or gi_paths.project_root()   # a project folder (gen-inhibit/ since port step 0d)
 SRC = os.path.join(FW, "test", "build_checks")
 TESTS = ("test_switch_rows.py", "test_build_switches.py")
 

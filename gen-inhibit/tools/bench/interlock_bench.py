@@ -29,7 +29,7 @@ directive (host-modelled faults, `cfg`) is refused. Frames go out on the PCAN at
 their scenario times; each `mode` is a POST at its time, in order, from its own
 thread so the frames keep their schedule.
 
-  py -3.14 tools/gen_inhibit/bench/interlock_bench.py list
+  py -3.14 gen-inhibit/tools/bench/interlock_bench.py list
   py -3.14 ... interlock_bench.py stimulus [CASE ...]     build and check, no bench
   py -3.14 ... interlock_bench.py run CASE [CASE ...] --power "12 V only"
 
@@ -71,7 +71,7 @@ sys.path.insert(1, ROOT)
 # GI_RUNS_DIR: the chain runner points a check's records at its own folder (2026-10-18).
 RUNS = os.environ.get("GI_RUNS_DIR") or gi_paths.runs()
 STIM_DIR = os.path.join(RUNS, "interlock_stimulus")
-TESTER_REPO = os.environ.get("GI_TESTER_REPO") or gi_paths.repo_root()
+TESTER_REPO = os.environ.get("GI_TESTER_REPO") or gi_paths.project_root()   # a project folder (port step 0d)
 HOSTDIR = os.path.join(TESTER_REPO, "test", "gen_inhibit_host")
 LOGS = gi_paths.project("projects", "vtrux", "logs")
 BITRATE = 500000

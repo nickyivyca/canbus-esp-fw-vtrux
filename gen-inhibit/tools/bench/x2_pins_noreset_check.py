@@ -6,7 +6,7 @@ which reads the pins with esptool --before no_reset on whatever the X2 runs (the
 charge-interposer tester's suggestion, 2026-10-19: one measured case before relying on
 it). Bench only, under the lock, X2 on its own image.
 
-    py -3.14 -B tools/gen_inhibit/bench/x2_pins_noreset_check.py
+    py -3.14 -B gen-inhibit/tools/bench/x2_pins_noreset_check.py
 
 Run from the reverse-it root. Version 2 (2026-10-19). Version 1 read the uptime on
 0x7F7 and could not pass: 756d6714 is silent on CAN1 after its power-up round

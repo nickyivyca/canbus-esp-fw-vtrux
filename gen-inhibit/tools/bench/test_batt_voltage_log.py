@@ -4,7 +4,7 @@ A status page carrying any other key (credentials, SSIDs, URLs) must not leak
 into the record, and "14.1V" must read as 14.1. Fails if extract() passes
 through another key or misreads the voltage.
 
-  py -3.14 tools/gen_inhibit/bench/test_batt_voltage_log.py
+  py -3.14 gen-inhibit/tools/bench/test_batt_voltage_log.py
 """
 import os
 import sys

@@ -13,7 +13,7 @@ would touch the bench (reviewer, 2026-10-20):
   5. baseline_b_otagroup.sh: no rt_self OTA; the rt step ends with page_state.py, after
      test_only_inert, writing B12_rt_end_page.json into GI_OUT (reviewer, 2026-10-20).
 
-    py -3.14 -B tools/gen_inhibit/bench/test_baseline_capture_stop.py
+    py -3.14 -B gen-inhibit/tools/bench/test_baseline_capture_stop.py
 
 Run from the reverse-it root (the scripts use paths relative to it). A fake `py` goes
 first on PATH: it runs capture_window.py for real and fakes every other tool by name; a

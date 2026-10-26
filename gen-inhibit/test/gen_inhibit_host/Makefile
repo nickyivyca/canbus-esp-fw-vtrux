@@ -7,7 +7,7 @@
 CC      ?= gcc
 CFLAGS  ?= -std=c11 -O2 -g -Wall -Wextra -Wpedantic -Wconversion -Wshadow \
            -Wstrict-prototypes -Wmissing-prototypes
-COREDIR ?= ../../main
+COREDIR ?= ../../firmware/main
 INCS    := -I$(COREDIR)
 
 BIN := host_runner extract_probe

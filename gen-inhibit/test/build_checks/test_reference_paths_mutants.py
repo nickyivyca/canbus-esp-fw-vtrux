@@ -4,14 +4,14 @@ row); test_reference_paths.py --target <copy> must fail on each by a check (a FA
 not a crash). Each copy is in this run's scratch/ folder. Gen-inhibit tester, 2026-10-24
 (toolkit item 10).
 
-    py -3.14 -B test/build_checks/test_reference_paths_mutants.py
+    py -3.14 -B gen-inhibit/test/build_checks/test_reference_paths_mutants.py
 """
 import os
 import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
+REPO = os.path.abspath(os.path.join(HERE, "..", ".."))   # the project folder, gen-inhibit/ since port step 0d
 sys.path.insert(0, HERE)
 import test_reference_paths as TRP  # noqa: E402  remove_tree (read-only git objects on Windows)
 MUTANTS = [
@@ -23,12 +23,14 @@ MUTANTS = [
     ("a repo without the references passes", "    if missing:\n        row(name, None,", "    if False:\n        row(name, None,"),
     ("the emitted-frames row decodes without the schema set",
      '    if not DIAG_REF or DIAG_REF.get("dbc") != dbc_path:', "    if not DIAG_REF:"),
-    ("the reverse-it default is back", "REF_PATHS = (", "DEFAULT_DBC = os.path.join(os.environ.get(\"REVERSE_IT_DIR\", \"\"), \"projects\", \"vtrux\", \"x\")\nREF_PATHS = ("),
+    # port step 0d (2026-10-26): a folder inside the worktree (the project folder) is taken to its root
+    ("the given folder read as it is", "        repo = gi_diag.toplevel(repo)\n", ""),
+    ("the reverse-it default is back", "REF_PATHS = (","DEFAULT_DBC = os.path.join(os.environ.get(\"REVERSE_IT_DIR\", \"\"), \"projects\", \"vtrux\", \"x\")\nREF_PATHS = ("),
 ]
 
 
 def main():
-    base = os.path.join(REPO, "scratch", "build-checks-tests", "reference_paths_mutants_%d" % os.getpid())
+    base = os.path.join(os.path.dirname(REPO), "scratch", "build-checks-tests", "reference_paths_mutants_%d" % os.getpid())
     TRP.remove_tree(base)
     src = open(os.path.join(HERE, "build_output.py"), encoding="utf-8", newline="").read()
     killed = errors = 0

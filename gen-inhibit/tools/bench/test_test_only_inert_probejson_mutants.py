@@ -2,9 +2,10 @@
 """Mutants of test_only_inert.py's probe_json observable and its page-only build read
 (GI_INSTRUMENT_ECC, 2026-10-20); test_test_only_inert.py must fail on each BY A CHECK.
 A crash is not a kill, and an edit that does not apply is an error. Run with GI_FW_REPO
-naming a tree whose build_switches.py lists GI_INSTRUMENT_ECC.
+naming the firmware folder (gen-inhibit/firmware/ since port step 0d) of a tree whose
+build_switches.py lists GI_INSTRUMENT_ECC.
 
-    GI_FW_REPO=<tree> py -3.14 tools/gen_inhibit/bench/test_test_only_inert_probejson_mutants.py
+    GI_FW_REPO=<tree>/gen-inhibit/firmware py -3.14 gen-inhibit/tools/bench/test_test_only_inert_probejson_mutants.py
 
 Run from the reverse-it root, which goes on PYTHONPATH with this folder. The dispatch
 in main() (the probe_json branch) is not reached without the bench; the inert run on

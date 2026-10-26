@@ -42,7 +42,7 @@ lag ~1 ms, measured each run and recorded).
                 tested here -- the bench cannot place two pulses exactly 10.0 s
                 apart -- so it is judged on the host (spec_expect_check.py).
 
-  py -3.14 tools/gen_inhibit/bench/x2_jam_cases.py busoff --arms 3 [--control]
+  py -3.14 gen-inhibit/tools/bench/x2_jam_cases.py busoff --arms 3 [--control]
   py -3.14 ... livetrain --arms 3 [--p 5000 --ms 5000]   (arm (i): a steady, slower train)
   Every case needs --power (how the WiCAN is powered; recorded as given).
   py -3.14 ... threshold --arms 3 --n 10 --interval-ms 1000

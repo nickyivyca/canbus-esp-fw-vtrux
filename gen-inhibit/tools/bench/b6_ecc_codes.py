@@ -2,7 +2,7 @@
 """The error code of every /gi_ecc isr row in a B6 _ecc session, by pulse category
 (reviewer, 2026-10-20, for session 2). Gen-inhibit tester.
 
-    py -3.14 -B tools/gen_inhibit/bench/b6_ecc_codes.py SESSION_DIR
+    py -3.14 -B gen-inhibit/tools/bench/b6_ecc_codes.py SESSION_DIR
 
 Rows are paired with pulses by b6_session1_desk.arm_table (the jammer's PULSE line, the
 witness error frames, the isr rows and their ticks). Each row's raw ecc is decoded here

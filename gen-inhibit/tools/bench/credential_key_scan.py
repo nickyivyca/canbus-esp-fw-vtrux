@@ -16,7 +16,7 @@ Scanned: text-like files (.json .jsonl .txt .log .csv .stamped .trace .sha256 .p
 HTTP answer would sit in the clear). Not opened: .bin (flash dumps; SENSITIVE, never
 read), .scn and .tgz (generated CAN stimulus and host traces), listed by count.
 
-    py -3.14 -B tools/gen_inhibit/bench/credential_key_scan.py <root> [...]
+    py -3.14 -B gen-inhibit/tools/bench/credential_key_scan.py <root> [...]
 
 Gen-inhibit tester. Read-only.
 """

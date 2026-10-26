@@ -6,7 +6,8 @@ CHECK. A crash is not a kill, and an edit that does not apply is an error.
         py -3.14 -B test_suite_gen_inhibit_mutants.py
 
 The mutants run in a shared clone of this repo at HEAD, made in the worktree's scratch/,
-so the copy sits at tools/gen_inhibit/ as the suite does and gi_diag finds the DBC's
+so the copy sits where the suite does (gen-inhibit/tools/ since port step 0d) and
+gi_diag finds the DBC's
 git history from bench/ (B15host exports it; in a bare folder it found no history, and
 every mutant failed the same six B15host checks). This folder's test, settings example
 and bench/ (the suite's HARNESS, 2026-10-22) are copied over the clone's; each mutant
@@ -214,14 +215,14 @@ def main():
 
 def clone(base):
     """base/repo: a shared clone of this worktree at HEAD, with this folder's test,
-    settings example and bench/ copied over its tools/gen_inhibit/. Returns that folder."""
+    settings example and bench/ copied over its copy of this folder. Returns that folder."""
     wt = gi_paths.worktree_of(HERE)
     head = subprocess.run(["git", "-C", wt, "rev-parse", "HEAD"], capture_output=True, text=True,
                           check=True).stdout.strip()
     repo = os.path.join(base, "repo")
     subprocess.run(["git", "clone", "-q", "--shared", "--no-checkout", wt, repo], check=True)
     subprocess.run(["git", "-C", repo, "-c", "advice.detachedHead=false", "checkout", "-q", head], check=True)
-    d = os.path.join(repo, "tools", "gen_inhibit")
+    d = os.path.join(repo, os.path.relpath(HERE, wt))
     for f in (TEST, EXAMPLE):
         shutil.copy(os.path.join(HERE, f), d)
     # The suite's HARNESS is bench/ beside it (2026-10-22); the e2e board-hook check

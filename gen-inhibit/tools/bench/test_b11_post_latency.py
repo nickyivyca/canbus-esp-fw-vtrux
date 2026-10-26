@@ -1,6 +1,6 @@
 """Harness test for b11_post_latency.py's per-POST rows (no records, no device).
 
-    py -3.14 tools/gen_inhibit/bench/test_b11_post_latency.py   (from the project root)
+    py -3.14 gen-inhibit/tools/bench/test_b11_post_latency.py   (from the repo root)
 """
 import os
 import sys

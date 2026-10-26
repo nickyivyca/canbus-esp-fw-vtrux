@@ -4,7 +4,7 @@ bench_lock (init, take, release), so they are logs the real writer makes. And th
 two tools that check the lock themselves ask bench_held, not bench-holder.md. No
 hardware. Needs the pinned core's shared/bench on PYTHONPATH, as bench_held does.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_bench_held.py
+    py -3.14 -B gen-inhibit/tools/bench/test_bench_held.py
 
 Gen-inhibit tester, 2026-10-25.
 """

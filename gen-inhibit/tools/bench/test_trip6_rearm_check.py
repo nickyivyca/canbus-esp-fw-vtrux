@@ -1,6 +1,6 @@
 """Harness test for trip6_rearm_check: the expired-arm and recent-arm judges.
 
-    py -3.14 tools/gen_inhibit/bench/test_trip6_rearm_check.py   (from the project root)
+    py -3.14 gen-inhibit/tools/bench/test_trip6_rearm_check.py   (from the repo root)
 """
 import os
 import sys

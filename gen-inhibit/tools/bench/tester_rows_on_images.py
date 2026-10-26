@@ -16,7 +16,7 @@ import os
 import sys
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 
-FW = os.environ.get("GI_FW") or gi_paths.repo_root()
+FW = os.environ.get("GI_FW") or gi_paths.project_root()   # a project folder (gen-inhibit/ since port step 0d)
 sys.path.insert(0, os.path.join(FW, "test", "build_checks"))
 import build_output as BO      # noqa: E402
 import build_switches as BS    # noqa: E402

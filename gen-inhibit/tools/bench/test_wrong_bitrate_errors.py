@@ -1,7 +1,7 @@
 """Harness test for wrong_bitrate_errors: schedule parsing, the sliding 10 s window,
 per-burst attribution.
 
-    py -3.14 tools/gen_inhibit/bench/test_wrong_bitrate_errors.py   (from the project root)
+    py -3.14 gen-inhibit/tools/bench/test_wrong_bitrate_errors.py   (from the repo root)
 """
 import os
 import sys

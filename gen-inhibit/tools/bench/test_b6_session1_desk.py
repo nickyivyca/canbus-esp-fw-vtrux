@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Test b6_session1_desk.py on synthetic records.
 
-    py -3.14 -B tools/gen_inhibit/bench/test_b6_session1_desk.py [--mutants]
+    py -3.14 -B gen-inhibit/tools/bench/test_b6_session1_desk.py [--mutants]
 
 Gen-inhibit tester, 2026-10-20.
 """
