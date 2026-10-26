@@ -57,9 +57,11 @@ than trusting the log or the file. Follow the process-cleanup rules in
   notification without polling, then judge the run and report per
   `VERIFICATION.md`.
 - **After you have reported a piece of work,** a build or any other item
-  the reviewer assigned, once the reviewer's reply naming your next work has
-  arrived. The resume message names that work and the reviewer message it
-  is in, and says to start on it.
+  the reviewer assigned, once the reviewer's reply has arrived. If it names
+  your next work, the resume message names that work and the reviewer
+  message it is in, and says to start on it. If it says to wait, for a build
+  message or for another session, the resume message names what you are
+  waiting for and where that is written, and says to wait for it.
 
 At either point you may run `/self-compact`. Not while you are driving
 hardware steps by hand, not while you hold a bench lock you took by hand,
