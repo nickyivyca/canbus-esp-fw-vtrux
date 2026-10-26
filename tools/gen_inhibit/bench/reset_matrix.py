@@ -345,6 +345,16 @@ def rel(t, t0):
     return None if t is None else round(t - t0, 3)
 
 
+def build_matches(build, expect):
+    """True when --expect-elf is unset, or the running image's elf_sha256 (build_id(),
+    from /gen_inhibit) starts with it; an expectation under 8 hex digits matches nothing."""
+    if not expect:
+        return True
+    sha = (build or {}).get("elf_sha256") or ""
+    expect = expect.lower()
+    return len(expect) >= 8 and sha.startswith(expect)
+
+
 def build_parser():
     ap = argparse.ArgumentParser()
     ap.add_argument("--power", required=True,
@@ -368,8 +378,9 @@ def build_parser():
                          "run starts from a boot it captured")
     ap.add_argument("--halt-wait", type=float, default=10.0)
     ap.add_argument("--rejoin-after", type=float, default=4.0)
-    ap.add_argument("--expect-git", default=None,
-                    help="refuse unless /check_status git_version is this")
+    ap.add_argument("--expect-elf", default=None,
+                    help="refuse unless /gen_inhibit's elf_sha256 starts with this (8+ hex digits); "
+                         "it was --expect-git, a git_version, until 2026-10-25")
     return ap
 
 
@@ -389,8 +400,8 @@ def main():
             return 1
         git = LF.build_id()
         rec["build"] = git
-        if a.expect_git and a.expect_git not in json.dumps(git):
-            print("FAIL: device reports %r, expected %s" % (git, a.expect_git))
+        if not build_matches(git, a.expect_elf):
+            print("FAIL: device reports %r, expected elf_sha256 %s..." % (git, a.expect_elf))
             return 1
         print("build %s" % git)
 

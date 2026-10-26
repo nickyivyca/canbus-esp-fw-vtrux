@@ -52,8 +52,9 @@ and `uptime_check` reads reboots from them directly, with no stall threshold:
 `agree` then compares the two detectors: a reboot no outage covers is a reboot
 the stall detector missed; an outage with no reboot in it is a stall-detector
 outage that was not a reboot.
---build-check: reads /check_status `git_version` (and nothing else from it) at
-the start and at the end of the run, for bring-up 1.5b after an OTA.
+--build-check: reads /gen_inhibit's `elf_sha256` (lowid_flood_skip_bench.build_id) at
+the start and at the end of the run, for bring-up 1.5b after an OTA. Never /check_status
+(reviewer, 2026-10-20); until 2026-10-25 this read its `git_version`.
 
     GI_WICAN_SSID=... py -3.14 tools/gen_inhibit/bench/page_only_baseline.py
         --power "..." [--seconds 360] [--period 1.0] [--pulse-rts-at 30]
@@ -272,7 +273,7 @@ def build_parser():
     ap.add_argument("--pulse-rts-at", type=float, default=None,
                     help="validation only (USB connected): one USB-JTAG reset at this time")
     ap.add_argument("--build-check", action="store_true",
-                    help="read /check_status git_version at the start and the end (1.5b)")
+                    help="read /gen_inhibit's elf_sha256 at the start and the end (1.5b)")
     return ap
 
 
@@ -287,7 +288,7 @@ def main():
     stamp = time.strftime("%Y%m%dT%H%M%S")
     rec = {"when": stamp, "power": a.power, "args": vars(a), "events": [], "samples": []}
     if a.build_check:
-        rec["build_start"] = {"wall": stamp, "git_version": (LF.build_id() or {}).get("git_version")}
+        rec["build_start"] = {"wall": stamp, "elf_sha256": (LF.build_id() or {}).get("elf_sha256")}
     t0 = time.perf_counter()
     lost_since = None
     try:
@@ -345,7 +346,7 @@ def main():
                 pass
     if a.build_check:
         rec["build_end"] = {"t": round(time.perf_counter() - t0, 3),
-                            "git_version": (LF.build_id() or {}).get("git_version")}
+                            "elf_sha256": (LF.build_id() or {}).get("elf_sha256")}
     rec["judge"] = judge(rec["samples"], a.stall_s, a.unplug_window)
     path = os.path.join(RUNS, "page_only_baseline_%s.json" % stamp)
     with open(path, "w", encoding="utf-8") as f:
@@ -382,8 +383,8 @@ def main():
           % ("agree" if g["agree"] else "DISAGREE", g["reboots_stall_missed"],
              len(g["outages_not_reboot"])))
     if a.build_check:
-        print("build: start %s, end %s at %.1f s" % (rec["build_start"]["git_version"],
-                                                    rec["build_end"]["git_version"],
+        print("build: start %s, end %s at %.1f s" % (rec["build_start"]["elf_sha256"],
+                                                    rec["build_end"]["elf_sha256"],
                                                     rec["build_end"]["t"]))
     print("events", rec["events"])
     print("wrote", path)

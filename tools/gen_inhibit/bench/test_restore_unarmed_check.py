@@ -14,11 +14,12 @@ def cmd(c):
 
 
 SENT = [(k * 0.01, 0x051, cmd(k)) for k in range(100)] + [(k * 0.01 + 0.003, 0x617, bytes(8)) for k in range(100)]
-OK_PAGE = {"mode": 0, "drv": None, "git_version": "dace947"}
+SHA = "dace9470" + "1f" * 28
+OK_PAGE = {"mode": 0, "drv": None, "elf_sha256": SHA}   # /gen_inhibit's; never /check_status (2026-10-25)
 
 
 def main():
-    J = lambda seen, b=OK_PAGE, a=OK_PAGE: R.judge(SENT, seen, b, a, "dace947")[0]   # noqa: E731
+    J = lambda seen, b=OK_PAGE, a=OK_PAGE, e="dace9470": R.judge(SENT, seen, b, a, e)[0]   # noqa: E731
     seen = [(t + 0.0002, i, d) for t, i, d in SENT]
     # an answer: the device steals the next counter, right after the VCM's frame
     answered = sorted(seen + [(0.5003, 0x051, cmd(51))], key=lambda f: f[0])
@@ -31,7 +32,12 @@ def main():
         ("the probe id on the wire -> FAIL", J(seen + [(0.5, 0x7F0, bytes(8))]) == "FAIL"),
         ("mode 3 after -> FAIL", J(seen, a=dict(OK_PAGE, mode=3)) == "FAIL"),
         ("driver installed before -> FAIL", J(seen, b=dict(OK_PAGE, drv={"state": "running"})) == "FAIL"),
-        ("the wrong build -> FAIL", J(seen, a=dict(OK_PAGE, git_version="dace947x")) == "FAIL"),
+        ("the wrong build -> FAIL", J(seen, a=dict(OK_PAGE, elf_sha256="dace9471" + SHA[8:])) == "FAIL"),
+        ("the whole elf_sha256 expected -> PASS", J(seen, e=SHA) == "PASS"),
+        ("an expectation of 7 hex digits -> FAIL (too short to name an image)", J(seen, e="dace947") == "FAIL"),
+        ("a page with no elf_sha256 -> FAIL", J(seen, b={"mode": 0, "drv": None}) == "FAIL"),
+        ("a git_version where elf_sha256 belongs is not read -> FAIL",
+         J(seen, a={"mode": 0, "drv": None, "git_version": "dace9470"}) == "FAIL"),
         ("page unread -> UNREAD", J(seen, b=None) == "UNREAD"),
         ("a deaf witness -> VOID, never PASS", J([]) == "VOID"),
         ("witness missing 6 percent -> VOID", J([f for k, f in enumerate(seen) if not (f[1] == 0x051 and k % 16 == 0)])
