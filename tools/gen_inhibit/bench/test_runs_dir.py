@@ -19,7 +19,8 @@ import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = ["slcan_refusal_probe", "x2_hold", "wrong_bitrate_errors", "trip6_rearm_check", "observe_ack_probe",
          "bench_census", "page_only_baseline", "interlock_bench", "test_only_inert", "restart_error_frames",
-         "skip_method_bench", "x2_jam_cases", "wican_txabort_bench", "x2_flash_custody", "x2_jammer"]
+         "skip_method_bench", "x2_jam_cases", "wican_txabort_bench", "x2_flash_custody", "x2_jammer",
+         "txabort_refusal_check"]
 LINE = 'RUNS = os.environ.get("GI_RUNS_DIR") or gi_paths.runs()'
 BEFORE = 'RUNS = gi_paths.runs()'
 PROBE = "import sys; sys.path.insert(0, '.'); sys.path.insert(0, sys.argv[2]); sys.path.insert(0, sys.argv[1]); import %s as T; print(T.RUNS)"

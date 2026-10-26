@@ -52,12 +52,17 @@ broken endpoint gives is not a check:
 """
 
 import json
+import os
 import sys
 import time
 import urllib.error
 import urllib.request
+import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 
 HOST = "192.168.80.1"
+# GI_RUNS_DIR, else SeaDrive's runs/ (2026-10-25, reviewer): until then this wrote under this
+# folder's runs/, inside the worktree and not gitignored, one `git add` from being published.
+RUNS = os.environ.get("GI_RUNS_DIR") or gi_paths.runs()
 
 
 def post(path, timeout=30.0):
@@ -202,12 +207,10 @@ def main():
            "cases": results,
            "control_valid_request_ok": ctl_ok,
            "unknown_key_note": note}
-    import os
-    runs = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs")
-    os.makedirs(runs, exist_ok=True)
+    os.makedirs(RUNS, exist_ok=True)
     stamp = time.strftime("%Y%m%d_%H%M%S", time.gmtime())
-    for p in (os.path.join(runs, "txabort_refusals_%s.json" % stamp),
-              os.path.join(runs, "txabort_refusals.json")):
+    for p in (os.path.join(RUNS, "txabort_refusals_%s.json" % stamp),
+              os.path.join(RUNS, "txabort_refusals.json")):
         with open(p, "w") as fh:
             json.dump(out, fh, indent=1)
         print("wrote %s" % p)
