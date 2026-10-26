@@ -80,7 +80,7 @@ def fake_settings():
     one here, so the test never reads the real (local) file."""
     path = os.path.join(SCRATCH, "fake_chain_settings.json")
     with open(path, "w", encoding="utf-8") as fh:
-        fh.write('{"wican": {"base_mac": "00:00:00:00:00:00", "device_id": "fake-device"}}')
+        fh.write('{"wican": {"base_mac": "00:00:5e:00:53:10", "device_id": "fake-device"}}')
     os.environ["GI_CHAIN_SETTINGS"] = path
 
 
