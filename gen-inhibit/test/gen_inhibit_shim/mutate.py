@@ -70,7 +70,8 @@ READ rc, NOT THE TEXT. The reviewer's original scraped lines containing "FAIL",
 which also matches the harness's own "twai_receive failed: ESP_FAIL" log lines,
 so a surviving mutation was reported as CAUGHT. rc is the only signal.
 
-Usage, from a tree containing main/ and test/:
+Usage, with BASE a copy of the project folder, gen-inhibit/, which holds
+firmware/main/ and test/:
     BASE=~/gi_review python3 mutate.py
 """
 
@@ -90,7 +91,7 @@ COPY = """        twai_message_t tx = { 0 };
 PREFIX = "\n        "
 
 MUT = {
- "M1_632af32_alert_completion": ("main/gen_inhibit.c", [(
+ "M1_632af32_alert_completion": ("firmware/main/gen_inhibit.c", [(
   """    uint32_t alerts = 0;
     if (twai_read_alerts(&alerts, 0) == ESP_OK
         && (alerts & TWAI_ALERT_TX_FAILED))
@@ -114,25 +115,25 @@ MUT = {
     {
         return;
     }""")]),
- "M2_no_diag_deferral": ("main/gen_inhibit_core.c", [(
+ "M2_no_diag_deferral": ("firmware/main/gen_inhibit_core.c", [(
   "    if (st->tx_pending)\n    {\n        /* fall through to the interlocks; the page goes out next tick */\n    }\n    else if (",
   "    if (0)\n    {\n    }\n    else if (")]),
- "M3_real_can_c_refusal_removed": ("main/can.c", [(
+ "M3_real_can_c_refusal_removed": ("firmware/main/can.c", [(
   "\tif(gen_inhibit_owns_bus())\n\t{\n\t\tstatic int64_t s_last_refusal_log;",
   "\tif(0)\n\t{\n\t\tstatic int64_t s_last_refusal_log;")]),
- "M4_quiesce_self_off_removed": ("main/gen_inhibit.c", [(
+ "M4_quiesce_self_off_removed": ("firmware/main/gen_inhibit.c", [(
   "    s_core.self_off = GI_SELF_OFF_QUIESCE;", "    ")]),
- "M5_rx_error_self_off_removed": ("main/gen_inhibit_core.c", [(
+ "M5_rx_error_self_off_removed": ("firmware/main/gen_inhibit_core.c", [(
   "        st->self_off = GI_SELF_OFF_RX_ERRORS;", "        ")]),
- "M6_passive_builds_frame": ("main/gen_inhibit_core.c", [(
+ "M6_passive_builds_frame": ("firmware/main/gen_inhibit_core.c", [(
   "            st->would_tx++;\n            return;", "            st->would_tx++;")]),
- "M7_no_predrain": ("main/gen_inhibit.c", [(
+ "M7_no_predrain": ("firmware/main/gen_inhibit.c", [(
   "            (void)twai_read_alerts(&stale, 0);", "            (void)stale;")]),
- "N1_completion_off_by_one": ("main/gen_inhibit.c", [(
+ "N1_completion_off_by_one": ("firmware/main/gen_inhibit.c", [(
   "    if (info.msgs_to_tx == 0)", "    if (info.msgs_to_tx <= 1)")]),
- "N2_behind_forced_false": ("main/gen_inhibit.c", [(
+ "N2_behind_forced_false": ("firmware/main/gen_inhibit.c", [(
   "                behind = (before.msgs_to_tx > 0);", "                behind = false;")]),
- "N3_alerts_config_failure_ignored": ("main/gen_inhibit.c", [(
+ "N3_alerts_config_failure_ignored": ("firmware/main/gen_inhibit.c", [(
   """        if (twai_reconfigure_alerts(TWAI_ALERT_TX_SUCCESS | TWAI_ALERT_TX_FAILED,
                                     NULL) != ESP_OK)
         {
@@ -141,28 +142,28 @@ MUT = {
         }""",
   """        (void)twai_reconfigure_alerts(TWAI_ALERT_TX_SUCCESS | TWAI_ALERT_TX_FAILED,
                                       NULL);""")]),
- "N4_observe_not_listen_only": ("main/gen_inhibit.c", [(
+ "N4_observe_not_listen_only": ("firmware/main/gen_inhibit.c", [(
   "        const bool want_listen_only = (mode == GEN_INHIBIT_OBSERVE);",
   "        const bool want_listen_only = false;")]),
- "N5_quiesce_does_not_wait": ("main/gen_inhibit.c", [(
+ "N5_quiesce_does_not_wait": ("firmware/main/gen_inhibit.c", [(
   "    for (int i = 0; i < 100 && !s_parked; i++)",
   "    for (int i = 0; i < 0 && !s_parked; i++)")]),
- "N6_offset_limit_relaxed": ("main/gen_inhibit.c", [(
+ "N6_offset_limit_relaxed": ("firmware/main/gen_inhibit.c", [(
   "    if (offset_us > 4000)", "    if (offset_us > 40000)")]),
- "N7_no_tx_late": ("main/gen_inhibit_core.c", [(
+ "N7_no_tx_late": ("firmware/main/gen_inhibit_core.c", [(
   "    if (st->tx_pending && st->inhibit_live)", "    if (0)")]),
  # Round 3 (reviewing session, 2026-09-25) mutated the CORE. These four were
  # real survivors and now have scenarios; K01 and K12 were judged equivalent and
  # are not here -- K01's reasoning is recorded in bus_alive_since()'s comment.
- "K06_rearm_keeps_abort_latch": ("main/gen_inhibit_core.c", [(
+ "K06_rearm_keeps_abort_latch": ("firmware/main/gen_inhibit_core.c", [(
   "    st->abort_latched = false;\n    st->rpm_over = false;",
   "    st->rpm_over = false;")]),
- "K08_keyon_keeps_rpm_ever": ("main/gen_inhibit_core.c", [(
+ "K08_keyon_keeps_rpm_ever": ("firmware/main/gen_inhibit_core.c", [(
   "    st->rpm_ever      = false;\n}", "}")]),
- "K17_soc_threshold_le": ("main/gen_inhibit_core.c", [(
+ "K17_soc_threshold_le": ("firmware/main/gen_inhibit_core.c", [(
   "            if (raw < st->cfg.soc_min_raw)",
   "            if (raw <= st->cfg.soc_min_raw)")]),
- "K21_soc_recovery_unlatches": ("main/gen_inhibit_core.c", [(
+ "K21_soc_recovery_unlatches": ("firmware/main/gen_inhibit_core.c", [(
   "            else\n            {\n                st->soc_low_count = 0;\n            }",
   "            else\n            {\n                st->soc_low_count = 0;\n                st->disabled = false;\n            }")]),
  # ---- ROUND 6: the shim -> driver copy boundary ---------------------------
@@ -185,27 +186,27 @@ MUT = {
  # check in shim_test.c's teardown, which catches the loop by its behaviour
  # rather than by the flag that caused it.
 
- "V01_rtr_set": ("main/gen_inhibit.c", [(
+ "V01_rtr_set": ("firmware/main/gen_inhibit.c", [(
   COPY, COPY + PREFIX + "tx.rtr = 1;")]),
 
- "V02_dlc_8_not_6": ("main/gen_inhibit.c", [(
+ "V02_dlc_8_not_6": ("firmware/main/gen_inhibit.c", [(
   "        tx.data_length_code = f->dlc;",
   "        tx.data_length_code = 8;")]),
 
- "V03_memcpy_6_of_8": ("main/gen_inhibit.c", [(
+ "V03_memcpy_6_of_8": ("firmware/main/gen_inhibit.c", [(
   "        memcpy(tx.data, f->data, 8);",
   "        memcpy(tx.data, f->data, 6);")]),
 
- "V04_extd_set": ("main/gen_inhibit.c", [(
+ "V04_extd_set": ("firmware/main/gen_inhibit.c", [(
   COPY, COPY + PREFIX + "tx.extd = 1;")]),
 
- "V05_self_set": ("main/gen_inhibit.c", [(
+ "V05_self_set": ("firmware/main/gen_inhibit.c", [(
   COPY, COPY + PREFIX + "tx.self = 1;")]),
 
- "V06_probe_ignores_offset": ("main/gen_inhibit.c", [(
+ "V06_probe_ignores_offset": ("firmware/main/gen_inhibit.c", [(
   "        if (f->have_due)", "        if (0)")]),
 
- "V07_single_shot": ("main/gen_inhibit.c", [(
+ "V07_single_shot": ("firmware/main/gen_inhibit.c", [(
   COPY, COPY + PREFIX + "tx.ss = 1;")]),
  # These three are the reviewing session's own round-6 mutations, carried over
  # rather than paraphrased. They reach past the copy boundary into what the
@@ -236,18 +237,18 @@ MUT = {
  # The `continue` that keeps a diag frame's result away from the core. Without
  # it a diag completion is reported as an inhibit's -- the dc571cb
  # mis-crediting class, arriving by a different route.
- "V08_diag_fed_to_core": ("main/gen_inhibit.c", [(
+ "V08_diag_fed_to_core": ("firmware/main/gen_inhibit.c", [(
   "        if (f->kind == GI_TX_DIAG)", "        if (0)")]),
 
  # Diag pages emitted in OFF. The device is meant to be silent there, not
  # merely not-inhibiting; caught by the empty allowed set every teardown
  # declares after the mode change.
- "V09_diag_in_off_mode": ("main/gen_inhibit_core.c", [(
+ "V09_diag_in_off_mode": ("firmware/main/gen_inhibit_core.c", [(
   "    if (st->mode == GI_OFF)", "    if (0 && st->mode == GI_OFF)")]),
 
  # The probe's offset field zeroed. It still waits the right length of time --
  # only its report of that is wrong, which no timing assertion can see.
- "V10_probe_offset_byte": ("main/gen_inhibit_core.c", [(
+ "V10_probe_offset_byte": ("firmware/main/gen_inhibit_core.c", [(
   "    f->data[4] = (uint8_t)(st->offset_us);", "    f->data[4] = 0;")]),
  # ---- THE 2026-09-25 RULINGS ----------------------------------------------
  #
@@ -260,7 +261,7 @@ MUT = {
  # whole key cycle on a 300 ms bus glitch while blaming 0x617 for it.
  # Caught by bus-dropout-450-fault-worst-phase, which is written to sit 70 ms
  # inside the 1.0 s window at 0x617's worst phase.
- "W01_fault_window_back_to_fresh_us": ("main/gen_inhibit_core.c", [(
+ "W01_fault_window_back_to_fresh_us": ("firmware/main/gen_inhibit_core.c", [(
   'c->fault_fresh_us = 1000000;    /* 0x617 only; spec 7 "Freshness" */',
   'c->fault_fresh_us = 500000;')]),
 
@@ -268,7 +269,7 @@ MUT = {
  # still asking for an 0x051 after 0.5 s. That is a different and much weaker
  # rule than spec 7 states, and it is the mistake the call site's comment
  # exists to warn against -- so it needs a mutation rather than a comment.
- "W02_evidence_window_mismatch": ("main/gen_inhibit_core.c", [(
+ "W02_evidence_window_mismatch": ("firmware/main/gen_inhibit_core.c", [(
   """        && bus_alive_since_w(st, st->have_fault, st->seen_fault,
                              (int64_t)st->cfg.fault_fresh_us))""",
   """        && bus_alive_since_w(st, st->have_fault, st->seen_fault,
@@ -279,7 +280,7 @@ MUT = {
  # behaviour the old ordering produced whenever both went quiet together.
  # Caught by gene-family-quiet-together; gene-rpm-stale-while-fb-fresh proves
  # the other direction is not broken by the fix.
- "W03_gene_order_reverted": ("main/gen_inhibit_core.c", [(
+ "W03_gene_order_reverted": ("firmware/main/gen_inhibit_core.c", [(
   "    if (st->fb_ever && !gi_fresh(st, st->have_fb, st->seen_fb, now)",
   """    if (st->fb_ever && gi_fresh(st, st->have_rpm, st->seen_rpm, now)
         && !gi_fresh(st, st->have_fb, st->seen_fb, now)""")]),
@@ -288,7 +289,7 @@ MUT = {
  # low-soc-debounce; what changed today is that spec 6.2 states the number, so
  # config_vs_spec can trace it. Both should object -- the scenario because four
  # readings now release, the build check because 4 != 5.
- "W04_soc_debounce_4": ("main/gen_inhibit_core.c", [(
+ "W04_soc_debounce_4": ("firmware/main/gen_inhibit_core.c", [(
   "c->soc_debounce = 5;", "c->soc_debounce = 4;")]),
 }
 # A GREEN MUTATION RUN MEANS NOTHING IF THE BASELINE IS RED: every mutant is

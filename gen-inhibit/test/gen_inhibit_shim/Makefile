@@ -8,7 +8,7 @@
 # as well as our own, and their warnings would drown ours. The core keeps it.
 
 CC      ?= gcc
-COREDIR ?= ../../main
+COREDIR ?= ../../firmware/main
 CFLAGS  ?= -std=c11 -O1 -g -Wall -Wextra -Wno-unused-parameter \
            -I. -Imock -I$(COREDIR)
 LDFLAGS ?= -pthread

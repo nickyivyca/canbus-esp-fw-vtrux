@@ -20,10 +20,11 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-MAIN = os.path.normpath(os.path.join(HERE, "..", "..", "main"))
-# AGENTS.md "Files and folders": this worktree's scratch/, never the system
-# temp folder. Each mutant gets its own folder in this run's.
-SCRATCH = os.path.normpath(os.path.join(HERE, "..", "..", "scratch",
+MAIN = os.path.normpath(os.path.join(HERE, "..", "..", "firmware", "main"))
+# AGENTS.md "Files and folders": this worktree's scratch/, at its root above
+# gen-inhibit/, never the system temp folder. Each mutant gets its own folder
+# in this run's.
+SCRATCH = os.path.normpath(os.path.join(HERE, "..", "..", "..", "scratch",
                                         "gen-inhibit-sched-mutants"))
 
 # (name, file, old, new, the case that must fail)
@@ -229,15 +230,15 @@ def main():
     for name, fname, old, new, expect_case in MUTATIONS:
         tmp = tempfile.mkdtemp(prefix="gsmut_", dir=run)
         try:
-            # test/gen_inhibit_sched, so that the Makefile's ../../main
-            # resolves INSIDE the temp tree. One level too shallow and every
-            # mutant fails to build for a reason that has nothing to do with the
-            # mutation.
+            # test/gen_inhibit_sched, so that the Makefile's
+            # ../../firmware/main resolves INSIDE the temp tree. One level too
+            # shallow and every mutant fails to build for a reason that has
+            # nothing to do with the mutation.
             wd = os.path.join(tmp, "test", "gen_inhibit_sched")
             shutil.copytree(HERE, wd,
                             ignore=shutil.ignore_patterns("sched_test", "*.o",
                                                           "__pycache__"))
-            m = os.path.join(tmp, "main")
+            m = os.path.join(tmp, "firmware", "main")
             os.makedirs(m)
             for f in ("gi_sched.c", "gi_sched.h", "gen_inhibit_core.h"):
                 src = os.path.join(MAIN, f)

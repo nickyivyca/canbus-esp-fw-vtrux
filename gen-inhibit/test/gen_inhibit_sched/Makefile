@@ -9,13 +9,13 @@
 
 CC      ?= gcc
 CFLAGS  ?= -std=c11 -Wall -Wextra -Werror -g -O1
-INC     := -I../../main -I.
+INC     := -I../../firmware/main -I.
 
-SRC := sched_test.c fake_buf.c ../../main/gi_sched.c
+SRC := sched_test.c fake_buf.c ../../firmware/main/gi_sched.c
 
 all: sched_test
 
-sched_test: $(SRC) ../../main/gi_sched.h fake_buf.h
+sched_test: $(SRC) ../../firmware/main/gi_sched.h fake_buf.h
 	$(CC) $(CFLAGS) $(INC) $(SRC) -o $@
 
 # The scheduler copies frames and indexes ring buffers; an out-of-bounds write

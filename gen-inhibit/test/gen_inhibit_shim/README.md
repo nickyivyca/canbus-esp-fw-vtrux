@@ -254,7 +254,9 @@ point of `fake_can.c` being platform stubs rather than a reimplementation.
 ## The negative control
 
 `mutate.py` is the standing one, adopted from the reviewing session. It applies
-seven mutations one at a time to a scratch copy and reports `rc`:
+seven mutations one at a time to a scratch copy and reports `rc`. `BASE` is a
+copy of the project folder, `gen-inhibit/`, which holds `firmware/main/` and
+`test/`:
 
 ```sh
 BASE=~/gi_review python3 mutate.py

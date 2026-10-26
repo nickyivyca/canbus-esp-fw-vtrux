@@ -1,4 +1,13 @@
-# tools/gen_inhibit/
+# `tools/`
+
+The generator inhibitor's host-side tools: the pure core (`sync.py`,
+`inhibit.py`, `models.py`), the on-vehicle runner, the benches, and the
+virtual-bus host-confinement guard. Nothing here is built into an image or runs
+on the device. Moved here from the `reverse-it` repo on 2026-10-08 so the
+reference and its firmware port live together, as `tools/gen_inhibit/`; flat in
+`gen-inhibit/tools/` since port step 0d (2026-10-26). The build tooling's
+launcher is `../vtrux_tools.py`, and upstream WiCAN's own tools are in
+`../firmware/tools/`. `HANDOFF.md` has the field procedure.
 
 A prototype of the generator-inhibit idea: transmit 0x051 frames carrying zero
 generator torque, timed against the VCM's own 0x051 slot, so the GENE MCU never
@@ -78,9 +87,17 @@ error observed at run time rather than from a constant.
 | `suite_gen_inhibit.py` | **gen-inhibit's two suites for the shared chain runner** (tester): `bench` (part B, holds the bench lock from start to finish) and `emulated` (parts H and C, no hardware). The runner is shared/bench's `vtrux_bench.run` at a pinned commit; the suite's docstring names it and the settings it reads. Which lock a bench run takes is the settings' choice: with `bench_lock_log` the event log `$REVERSE_IT_DIR/firmware/bench-log.jsonl` (from the cutover, shared/bench/SPEC.md (shared/main) section 7), without it the Holder line of `bench-holder.md`. Three of its parts are a cross-project dependency (below). `suite_gen_inhibit.settings.example.json` has every key the suites read. |
 | `test_suite_gen_inhibit.py` / `test_suite_gen_inhibit_mutants.py` | Its tests on the pinned core, no hardware (`PYTHONPATH` the core's `shared/bench`, `GI_BASELINE_DIR` the e3d9437 baseline folder), among them whole runs on the core that show a settings file naming `bench_lock_log` puts the run on that log under the suite's role and the runner's PID, and one without keeps it on the Holder line and never writes the log. The mutants edit the suite one at a time, in a shared clone of this repo at HEAD (so `gi_diag` finds the DBC's git history from the copy's `bench/`); each must fail by a check, and the unmutated copy, run first as the control, must pass. |
 | `suite_judges.py` / `test_suite_judges.py` / `test_suite_judges_mutants.py` | **The suites' judges**: one per check id, each reading its check's output files and giving a verdict and figures. Since 2026-10-25 (decode rework, reading Q9) B11, B11raw and B13 give ERROR when an analysis row carries `error` (a judged figure that could not be computed from decodable diag pages). The test runs every judge over the `e3d9437` baseline (`GI_BASELINE_DIR`) against the hand-written `suite_index_e3d9437.json`, then plants one defect per edit and checks the judge moves alone; the mutant runner shows each rule failing it. **B9** (reviewer, 2026-10-25) reads `wrong_bitrate_errors.py`'s json too: trip 6 counts only on a live arm latched by the bursts, so `live_before` true, no abort in a page sample before the first burst, every sample before the latch live, and a clean live sample within 0.5 s (`B9_PRE_S`) before the first burst, and the record's `pre_burst_window` showing 0 witness error frames from that sample to the first burst (a record from the tool before 2026-10-25 has none), else INCONCLUSIVE; then the FIRST latch trip 6 and every burst drawing error frames, else FAIL. Every B9 record on file (`e3d9437` to `6926fb0`) reads INCONCLUSIVE: none was live before the first burst. The test keeps the accepted index as written and names the ruled verdict in `RULED`; 17 synthetic B9 records cover each rule. |
+| `bench_compare.py` | **Compares chain-runner bench runs with the baseline index, and re-runs what moved** (tester; rule: user, 2026-10-19, option a): every verdict must match the index, every figure that differs is flagged with no threshold, and a flagged figure re-runs its check once. Identity figures are labelled, not flagged. |
+| `test_bench_compare.py` | Its tests, on a made-up index and made-up core records: what is flagged, what re-runs, what is labelled, and the chain's control flow. No hardware. |
+| `test_bench_compare_mutants.py` | Mutants of `bench_compare.py`; `test_bench_compare.py` must fail on each by a check. |
 | `bench/` | **gen-inhibit's bench harness** (tester): the bench harnesses, judges, runners and rig scripts, their tests and mutant runners, and `gi_paths.py`, through which they find their data in SeaDrive (`$REVERSE_IT_DIR`, required). Moved from SeaDrive's `projects/vtrux/notes/artifacts/gen-inhibit/` on 2026-10-22 (goal 20), behaviour unchanged; its own `README.md` has the files. |
 | `x2_jammer/` | **The X2 CAN error-frame jammer -- TEST EQUIPMENT, NOT FOR VEHICLE** (tester): its source (`src/main.cpp`, `platformio.ini`, the two build scripts) and `README.md`. Moved with `bench/` on 2026-10-22; its build binaries and their `manifest.json` stay in SeaDrive, where the build archives them (`$REVERSE_IT_DIR` required). |
 | `requirements.txt` | `python-can`. The core, the offline bench and the tests need nothing. |
+
+A note for anyone adding to this folder: it is published in a public repo, and
+`test_publish_scan.py` fails the build of anyone who commits a credential, an
+SSID, a MAC, a private address or an absolute path into a user's home.
+Settings with no committed default are listed below.
 
 ### Settings that have no committed default
 
@@ -117,18 +134,18 @@ Each of them carries the same note in its code.
 ## Quick start
 
 ```bash
-python3.13 tools/gen_inhibit/test_core.py
-python3.13 tools/gen_inhibit/replay_inhibit.py --run
-python3.13 tools/gen_inhibit/replay_inhibit.py --sweep
-python3.13 tools/gen_inhibit/live_bench.py
+python3.13 gen-inhibit/tools/test_core.py
+python3.13 gen-inhibit/tools/replay_inhibit.py --run
+python3.13 gen-inhibit/tools/replay_inhibit.py --sweep
+python3.13 gen-inhibit/tools/live_bench.py
 
 # rehearse the on-vehicle tool against a simulated truck, two terminals
-python3.13 tools/gen_inhibit/bench_vehicle.py --receiver counter
-python3.13 tools/gen_inhibit/vehicle_runner.py \
+python3.13 gen-inhibit/tools/bench_vehicle.py --receiver counter
+python3.13 gen-inhibit/tools/vehicle_runner.py \
     --interface udp_multicast --channel 239.0.2.4 --port 43217 --live
 
 # on the truck: observe first, always
-python3.13 tools/gen_inhibit/vehicle_runner.py --channel can0
+python3.13 gen-inhibit/tools/vehicle_runner.py --channel can0
 ```
 
 Saved output is in `../../notes/artifacts/gen-inhibit/`.
