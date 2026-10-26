@@ -468,7 +468,8 @@ The cause was never isolated (user, 2026-10-15, for all of this section):
 which covers every simulator there, Coda's `flash_sim` included. The
 methodology owner keeps them in step: a change to either goes through it and
 is made to both at once. The deliberate differences: that copy covers
-`flash_sim`, and this one describes the shared tooling's run guard.
+`flash_sim` and its kill patterns also match reverse-it's
+`tools/interposer`, and this one describes the shared tooling's run guard.
 
 These rules exist because on 2026-09-01 the Vtrux interposer bench flooded the
 house LAN with **66,450 packets/s (13.6 MB/s, ~109 Mbit/s)** for roughly twenty
@@ -586,7 +587,7 @@ hunting PIDs.
 
 ```powershell
 $me = $PID
-$pat = '(charge-interposer|gen-inhibit/tools)'   # build the pattern in a variable
+$pat = '(charge-interposer|gen-inhibit[/\\]tools)'   # build the pattern in a variable
 Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
   Where-Object { $_.ProcessId -ne $me -and $_.CommandLine -match $pat } |
   ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
