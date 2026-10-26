@@ -204,13 +204,20 @@ def page():
 
 
 def build_id():
-    """The running image, from /check_status -- /gen_inhibit has no such field."""
-    try:
-        d, _ = json.JSONDecoder().raw_decode(dev_get("/check_status").lstrip())
-        return {"git_version": d.get("git_version"),
-                "fw_version": d.get("fw_version")}
-    except Exception:
-        return None
+    """The running image, {"elf_sha256": ...}, from one GET of /gen_inhibit, whose
+    elf_sha256 names the image file (spec 11, "The page names the binary it runs"); None
+    when the page does not answer, does not parse, or names no 64 lower-case hex digits.
+
+    NEVER /check_status (reviewer, 2026-10-20): it answers with the device's config,
+    credentials included. Until 2026-10-25 this read git_version and fw_version from it,
+    and the suite's B1, B4, B9, B10, B12 and B20 called it (gen-inhibit reviewer,
+    2026-10-25).
+    """
+    p = page()
+    sha = p.get("elf_sha256") if isinstance(p, dict) else None
+    if isinstance(sha, str) and len(sha) == 64 and all(c in "0123456789abcdef" for c in sha):
+        return {"elf_sha256": sha}
+    return None
 
 
 def snap(p):
@@ -622,7 +629,7 @@ def main():
     rec["build"] = build_id()
     rec["pre"] = snap(pre)
     print("pre: mode %s  build %s" % (pre.get("mode"),
-                                      (rec["build"] or {}).get("git_version")))
+                                      (rec["build"] or {}).get("elf_sha256")))
     if (pre.get("drv") or {}).get("tec") is None and pre.get("drv"):
         print("NOTE: this image predates the spec 11 state/tec/rec fields; "
               "the bus-off attribution below will be blind.")

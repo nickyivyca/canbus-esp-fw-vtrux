@@ -9,7 +9,9 @@ not from the page alone. (2026-10-10 did this inline: runs/restore_unarmed_check
 The PCAN replays the first --seconds of a capture with real 0x051 traffic; the Kvaser
 witnesses. judge() requires:
   - the page before and after: mode 0 and the driver not installed (drv null), and the
-    expected git_version;
+    expected elf_sha256 (--expect, 8 or more hex digits of it; /gen_inhibit names the image,
+    spec 11; until 2026-10-25 this was git_version, from /check_status, which is never
+    read: reviewer, 2026-10-20);
   - no WiCAN frame on the wire (0x7F0-0x7F3, 0x7F8, 0x7F9: probe and diag pages);
   - no 0x051 the PCAN did not send: the witness's 0x051 payloads, as a multiset, inside
     the sent ones. An answer steals the next counter, so its payload is one the replay
@@ -21,7 +23,7 @@ witnesses. judge() requires:
   - the witness saw >= WITNESS_MIN of the sent 0x051, else VOID: a deaf witness would
     pass every other test.
 
-    GI_WICAN_SSID=... py -3.14 restore_unarmed_check.py --expect dace947 [--seconds 15]
+    GI_WICAN_SSID=... py -3.14 restore_unarmed_check.py --expect 3639f8b2 [--seconds 15]
 Writes runs/restore_unarmed_check_<stamp>.json.
 """
 import argparse
@@ -49,8 +51,9 @@ def judge(sent, seen, before, after, expect):
             why.append("mode %s %r" % (name, p.get("mode")))
         if p.get("drv") is not None:
             why.append("driver installed %s (%r)" % (name, p.get("drv")))
-        if p.get("git_version") != expect:
-            why.append("git_version %s %r, expected %r" % (name, p.get("git_version"), expect))
+        sha = p.get("elf_sha256") or ""
+        if not (len(expect) >= 8 and sha.startswith(expect.lower())):
+            why.append("elf_sha256 %s %r, expected %r..." % (name, sha[:16], expect))
     wican = sorted({hex(i) for _t, i, _d in seen if i in WICAN_IDS})
     if wican:
         why.append("WiCAN frames on the wire: %s" % wican)
@@ -80,16 +83,15 @@ class Witness(threading.Thread):
 def page_state():
     import lowid_flood_skip_bench as LF
     p = LF.page()
-    b = LF.build_id() or {}
     if p is None:
         return None
-    return {"mode": p.get("mode"), "drv": p.get("drv"), "git_version": b.get("git_version"),
+    return {"mode": p.get("mode"), "drv": p.get("drv"), "elf_sha256": p.get("elf_sha256"),
             "uptime_ms": p.get("uptime_ms"), "reset_reason": p.get("reset_reason")}
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--expect", required=True, help="the git_version the restored image reports")
+    ap.add_argument("--expect", required=True, help="the restored image's elf_sha256, or 8+ hex digits of it")
     ap.add_argument("--capture", default="runs/scottsvalley_armable_300s.log")
     ap.add_argument("--seconds", type=float, default=15.0)
     a = ap.parse_args()

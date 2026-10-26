@@ -384,7 +384,7 @@ def main():
         print("cycle %d %s: hook %s, reset %s, build %s, live_at_post %s, boot %.3f s after POST, errors %s, burst %s, sends failed %d, "
               "lost (non-0x051) %d, in window %s, wrote %s" % (
                   cyc, tag, (rec["hook"] or {}).get("readback_before_restart"), rec["reset_reasons_after"],
-                  (rec["build_after"] or {}).get("git_version"), rec.get("live_at_post"), rec["boot_rel_post_s"] or -1,
+                  (rec["build_after"] or {}).get("elf_sha256"), rec.get("live_at_post"), rec["boot_rel_post_s"] or -1,
                   len(errs), {k: b.get(k) for k in ("in_window", "first_rel_boot_s", "last_rel_boot_s",
                                                     "first_rel_post_s", "clumps", "largest_gap_ms")}
                   if isinstance(b, dict) else b,
