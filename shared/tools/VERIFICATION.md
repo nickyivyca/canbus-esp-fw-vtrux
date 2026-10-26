@@ -3,7 +3,7 @@
 Test evidence that the tooling in `shared/tools/` meets each requirement in
 `SPEC.md`. Why each requirement is written as it is: `VALIDATION.md`.
 
-Each entry names the requirements it covers (R1 to R23), the commit of the
+Each entry names the requirements it covers (R1 to R28), the commit of the
 tooling it tested, and its run files under `$REVERSE_IT_DIR`, with each
 file's hash where a verdict rests on it (port plan goal 20). Entries arrive
 as commits on the tester's branch, and the reviewer pushes them.
@@ -467,3 +467,55 @@ confirms its own trigger, reading the checkout's digest, HEAD and tags itself.
 **Not tested:** a checkout replaced by a plain copy with no git at its exact place beside the
 project (the HEAD and tag checks would read nothing there). R25's tag form is not checked by any
 case: SPEC R23 and R16 refuse by digest, commit and tag, not by the tag's name.
+
+## R26, R27 and R28 options (2026-10-25)
+
+**SPEC:** shared/main `5151e77`: R26 (`CONFIG_SECURE_BOOT`, `CONFIG_SECURE_FLASH_ENC_ENABLED`
+and `CONFIG_FLASH_ENCRYPTION_ENABLED` unset and `CONFIG_EFUSE_VIRTUAL` off in every release
+build, whatever the profile names), R27 (every project's profile names `CONFIG_FREERTOS_HZ`) and
+R28 (the three log levels at none, none and error, `CONFIG_ARDUHAL_LOG_DEFAULT_LEVEL` none where
+the Arduino core is compiled, and no `-D` for `CORE_DEBUG_LEVEL` or `LOG_LOCAL_LEVEL` in a build
+file), all applied by the options check. With the reviewer's rulings of 2026-10-25: the Arduino
+core is detected by two signals (a build folder's options naming
+`CONFIG_ARDUHAL_LOG_DEFAULT_LEVEL`, and an Arduino component among its components), and a
+disagreement between them fails; the `-D` search reads each
+CMake build folder's `compile_commands.json`; a profile that contradicts R26 or R28 is refused;
+R27's value must be an integer. **Check:** `vtrux_checks/options.py` on
+`shared/tools/options-r26-r28` at `aa0d67a` (the check `369c1a8`, the cases `8d65e6b` and
+`aa0d67a`, from `5151e77`), written from SPEC. Its 39 unit tests in `vtrux_checks/tests/` show
+each rule failing on a planted input and passing on a faithful one, the Arduino signals and the
+lookalike defines among them, and 14 mutants of the R26-R28 rules each fail them; the other
+`vtrux_checks` tests still pass. **Builds:** release builds by `vtrux_build/` tree `37737eb`
+(`5151e77`'s), run from a checkout pinned at `aa0d67a` as in the R23 entry, of a fixture made from
+gen-inhibit `3efad4c`, each case with its `sdkconfig` (and, for one, `main/CMakeLists.txt`)
+change committed on top. **Profile:** gen-inhibit's `vtrux_checks.json` at `3efad4c`
+(sha256 `7761ca4e...285def`), which names `CONFIG_FREERTOS_HZ` 1000. **Cases:**
+`verification/options_cases.py` at `aa0d67a`, whose `--self-test` catches every broken input.
+The failures each case expects, rule by rule and folder by folder, come from each build folder's
+`config/sdkconfig.h` and `compile_commands.json`, not from the check's reader; a case passes when
+the check names exactly those, prints PASS for each rule with none, and exits 1 when any rule has
+one. **Host:** NICKY-XPS (IDF v5.4.1, its Python 3.11.9). **Run files:**
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/runs/sharedtools_c6f/`
+(`README.md`, section "R26, R27 and R28 options check"); `xps_options_r26_r28/SHA256SUMS`
+(`ef7a1286...a41f7a`) hashes every log, `options_results.json`, `tests_aa0d67a.txt` and a void
+first attempt (a fixture made before R23, stopped at the pin before building).
+
+| Case | Result | What was tested |
+|---|---|---|
+| `release_pass` | PASS | gen-inhibit's options as committed: R18, R26 and R27 pass (R27 reads 1000); R28 fails on `CONFIG_LOG_DEFAULT_LEVEL`, `CONFIG_LOG_MAXIMUM_LEVEL` and `CONFIG_BOOTLOADER_LOG_LEVEL` (3, info) in `build` and `build/bootloader`, and nothing else; exit 1. |
+| `bootloader_missing` | PASS | The same build with `build/bootloader/config/sdkconfig.json` moved aside: exit 1, cannot read, naming `build/bootloader`. |
+| `r27_no_tick` | PASS | The same build, judged against the profile with `CONFIG_FREERTOS_HZ` taken out: R27 fails, R28 as above, nothing else; exit 1. |
+| `r26_efuse_virtual` | PASS | `CONFIG_EFUSE_VIRTUAL` on: R26 fails on it in both folders, and R18 too (the profile names it off), R28 as above, nothing else; exit 1. |
+| `r28_levels_none` | PASS | The levels at ESP-IDF's none and the bootloader's error: every rule passes, exit 0. |
+| `r28_define` | PASS | The same plus `LOG_LOCAL_LEVEL` defined by `target_compile_definitions` in `main/CMakeLists.txt`: R28 fails on the `-D` in `build` alone, nothing else; exit 1. |
+
+| Req | Result | What was tested |
+|---|---|---|
+| R26, R27, R28 on a real release build | PASS | The check reads, judges and names each of them on real builds, as in the cases above. |
+| R26 and R27, gen-inhibit's release builds | PASS | `release_pass`: gen-inhibit `3efad4c`'s options, release-built, with its profile. |
+| R28, gen-inhibit's release builds | **not met, known anomaly 5** | `release_pass`: the three log levels are 3 (info) in both folders, against none, none and error. No `-D` is found, and the Arduino core is not compiled. `gen-inhibit/main` `ad4c367` differs from `3efad4c` only in skills. |
+
+**Not tested on a real build:** a project that compiles the Arduino core (R28's
+`CONFIG_ARDUHAL_LOG_DEFAULT_LEVEL` and the two signals), a `-D CORE_DEBUG_LEVEL`, the other three
+R26 options set, and a contradicting or non-integer profile. The unit tests cover each of these.
+R18's own cases of its entry were not run again on `aa0d67a`.

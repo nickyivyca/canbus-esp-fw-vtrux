@@ -3,8 +3,9 @@
     python -B -m vtrux_checks scope --build DIR (--release | --bench)
                                     R17: the files the build read
     python -B -m vtrux_checks options --build DIR
-                                    R18: a release build's options against the
-                                    project's release profile
+                                    R18, R26-R28: a release build's options against
+                                    the project's release profile and the options
+                                    every release build shares
     python -B -m vtrux_checks switches --build DIR
                                     R20: every switch the release build's source tests
                                     is in the table, and each refusal row passes
@@ -32,7 +33,7 @@ def main(argv=None):
                       help="a release build: shared code only from managed_components/")
     kind.add_argument("--bench", dest="kind", action="store_const", const="bench",
                       help="a bench or dev build: shared/ may also be read directly")
-    o = sub.add_parser("options", help="R18: a release build's options against the release profile")
+    o = sub.add_parser("options", help="R18, R26-R28: a release build's options against the release profile and the options every release build shares")
     o.add_argument("--build", required=True, help="the build folder of a release build (<project>/build)")
     w = sub.add_parser("switches", help="R20: build switches and their refusal rows")
     w.add_argument("--build", required=True, help="the build folder of a release build (<project>/build)")
