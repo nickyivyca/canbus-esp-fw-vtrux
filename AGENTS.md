@@ -11,7 +11,7 @@ pushed, so every push passes the pre-push check first (see "Pushing").
 
 | Project | Hardware | Framework | Branch | Code |
 |---|---|---|---|---|
-| Generator inhibitor (`gen-inhibit`) | MeatPi WiCAN OBD, ESP32-C3 | ESP-IDF | `gen-inhibit/main` | the WiCAN tree, with its tooling in `tools/gen_inhibit/` and tests in `test/` |
+| Generator inhibitor (`gen-inhibit`) | MeatPi WiCAN OBD, ESP32-C3 | ESP-IDF | `gen-inhibit/main` | the WiCAN tree in `gen-inhibit/firmware/`, with its tooling in `gen-inhibit/tools/` and tests in `gen-inhibit/test/` |
 | Charge interposer (`charge-interposer`) | Autosport Labs ESP32-CAN-X2, ESP32-S3 | PlatformIO / Arduino, porting to ESP-IDF | `charge-interposer/main` | `charge-interposer/` |
 | Shared code | used by both | | `shared/main` | `shared/<component>/` |
 
@@ -205,6 +205,16 @@ user, even to recommend an option: the user has one place to argue it (user,
 Specs not yet moved into this repo are in reverse-it; the file map gives
 their path under `$REVERSE_IT_DIR`.
 
+**Project layout** (user, 2026-10-26). A project folder holds its file map,
+`<project>/README.md`; its firmware build root, `<project>/firmware/`; and
+its host-side tooling and tests, laid out as the file map says.
+gen-inhibit's `firmware/` is the upstream WiCAN tree as upstream lays it
+out. The interposer's ESP-IDF project goes in `charge-interposer/firmware/`
+at port step 2a. **No path in the tree may have a branch's name.** An IDF
+`main/` directly in a project folder would make `<project>/main` both a
+branch and a path, and git then refuses the bare branch name in `log`,
+`show`, `diff` and `reset`.
+
 ### Shared code
 
 Shared components live under `shared/<component>/` on `shared/main` (plan:
@@ -390,8 +400,9 @@ details.
 **Build tooling is specified.** gen-inhibit's release builds are made by
 the shared build tooling (`shared/tools` on `shared/main`) under
 `shared/tools/SPEC.md`, at the version gen-inhibit pins in
-`shared_pins.json` at its repo root. They run from that version's read-only
-checkout `../shared-<tag>/`, started by `tools/vtrux_tools.py`. If the
+`gen-inhibit/firmware/shared_pins.json`. They run from that version's
+read-only checkout `../shared-<tag>/`, started by
+`gen-inhibit/vtrux_tools.py`. If the
 checkout is missing, it refuses and prints the command that creates it. A
 gen-inhibit prod build is such a release build (gen-inhibit spec 12.3 item
 3, user, 2026-10-25), and none is made during the shared-code port.
@@ -429,8 +440,9 @@ The cause was never isolated (user, 2026-10-15, for all of this section):
 3. **The throttled form on `NICKY-XPS`.** From the exported PowerShell, set the
    shell's priority class to Idle with `(Get-Process -Id $PID).PriorityClass =
    'Idle'`. Then build: for a gen-inhibit release build,
-   `py -3.14 -B tools/vtrux_tools.py release --jobs 1` from the repo root;
-   for a gen-inhibit bench or dev build, `ninja -C build -j 1`; for the
+   `py -3.14 -B gen-inhibit/vtrux_tools.py release --jobs 1` from the repo
+   root; for a gen-inhibit bench or dev build,
+   `ninja -C gen-inhibit/firmware/build -j 1`; for the
    interposer, `$env:PLATFORMIO_RUN_JOBS=1; py -3.14 -m platformio run`. The
    processes the build starts inherit the class. Idle lowers CPU priority
    only, not disk priority. It also does not reach Windows Defender, which
@@ -489,7 +501,7 @@ so sending via a different interface means receivers see nothing. TTL 0 alone is
 both necessary and sufficient.
 
 The interposer's `charge-interposer/bus.py` and gen-inhibit's
-`tools/gen_inhibit/gi_vbus.py` do this correctly and verify it at startup.
+`gen-inhibit/tools/gi_vbus.py` do this correctly and verify it at startup.
 
 ### Measure, do not assume
 
@@ -529,7 +541,7 @@ Use this instead -- it matches by path fragment, filters to real interpreter
 processes via `/proc/<pid>/comm`, and cannot match the bash wrapper:
 
 ```bash
-for pid in $(pgrep -f 'charge-interposer|tools/gen_inhibit' || true); do
+for pid in $(pgrep -f 'charge-interposer|gen-inhibit/tools' || true); do
   case "$(cat /proc/$pid/comm 2>/dev/null)" in
     python*) kill -9 "$pid" 2>/dev/null || true ;;
   esac
@@ -574,7 +586,7 @@ hunting PIDs.
 
 ```powershell
 $me = $PID
-$pat = '(charge-interposer|tools/gen_inhibit)'   # build the pattern in a variable
+$pat = '(charge-interposer|gen-inhibit/tools)'   # build the pattern in a variable
 Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
   Where-Object { $_.ProcessId -ne $me -and $_.CommandLine -match $pat } |
   ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
