@@ -88,17 +88,24 @@ and add nothing.
 1. Finish the current piece of work, and write everything worth keeping
    from your context to its files, including work you can finish while a
    background job runs. The summary loses detail; files do not, and
-   anything not written down now has to be re-read after the resume.
-2. Check the messages without typing anything:
+   anything not written down now has to be re-read after the resume. Write
+   the files in their own tool calls, never in the same call as the command
+   in step 2 or 3, so a refusal can't take the write with it.
+2. Check the messages without typing anything, with a Bash call that
+   contains only this command:
    `<python> ${CLAUDE_SKILL_DIR}/session_compact.py --check --compact "..." --resume "..."`.
    - The Python command for the machine is in `local-paths.md`.
    - Claude Code fills in this skill folder's absolute path when the skill
      loads, so the path above is already written out in full. Copy it
-     exactly as shown. The auto-mode allow rule covers only that path, with
-     no variables such as `$PWD` and no flags other than `--compact`,
-     `--resume`, `--check` and `--timeout`.
-3. Run the same command without `--check`. Run it **on its own**, not
-   alongside another tool call, as the last action of the turn.
+     exactly as shown. The auto-mode allow rule allows the tool only in
+     exactly this form: that path, with no variables such as `$PWD` and no
+     flags other than `--compact`, `--resume`, `--check` and `--timeout`.
+   - Nothing else goes in that Bash call: no `cd`, no `&&`, `;` or pipe, no
+     heredoc, no second command. A compound command doesn't fit the rule,
+     and auto mode refuses it as self-typing.
+3. Run the same command without `--check`, the same way: a Bash call with
+   only this command, sent on its own and not alongside another tool call,
+   as the last action of the turn.
 4. End the turn with one line: a compaction is queued, and the step it resumes
    with.
 5. **If auto mode blocks the call,** do not retry it, reword it or run it
