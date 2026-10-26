@@ -101,7 +101,7 @@ MUTANTS = [
      'good.get("project_name", "").split("_")[2:3] == faulty.get("project_name", "").split("_")[2:3]))'),
     ("an empty version matches", 'bool(good.get("version")) and good.get("version") == faulty.get("version")))',
      'good.get("version") == faulty.get("version")))'),
-    ("the version not read", '        version = image_elf_sha.read_desc(data)["version"]', '        version = "x"'),
+    ("the version not read", '        version, elf = desc["version"], desc["elf_sha256"]', '        version, elf = "x", desc["elf_sha256"]'),
     ("the commit row always passes", 'rows.append(("same commit in both versions",\n                 bool(',
      'rows.append(("same commit in both versions",\n                 True or bool('),
 ]
