@@ -80,7 +80,7 @@ def fake_settings():
     one here, so the test never reads the real (local) file."""
     path = os.path.join(SCRATCH, "fake_chain_settings.json")
     with open(path, "w", encoding="utf-8") as fh:
-        fh.write('{"wican": {"base_mac": "00:00:00:00:00:00", "device_id": "fake-device"}}')
+        fh.write('{"wican": {"base_mac": "00:00:5e:00:53:10", "device_id": "fake-device"}}')
     os.environ["GI_CHAIN_SETTINGS"] = path
 
 
@@ -101,7 +101,7 @@ MUTANTS = [
      'good.get("project_name", "").split("_")[2:3] == faulty.get("project_name", "").split("_")[2:3]))'),
     ("an empty version matches", 'bool(good.get("version")) and good.get("version") == faulty.get("version")))',
      'good.get("version") == faulty.get("version")))'),
-    ("the version not read", '        version = image_elf_sha.read_desc(data)["version"]', '        version = "x"'),
+    ("the version not read", '        version, elf = desc["version"], desc["elf_sha256"]', '        version, elf = "x", desc["elf_sha256"]'),
     ("the commit row always passes", 'rows.append(("same commit in both versions",\n                 bool(',
      'rows.append(("same commit in both versions",\n                 True or bool('),
 ]

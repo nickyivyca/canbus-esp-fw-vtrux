@@ -148,6 +148,7 @@ tar -C "$FW" -czf - \
     test/gen_inhibit_host/extract_probe.c \
     test/gen_inhibit_host/make_scenarios.py \
     test/gen_inhibit_host/from_capture.py \
+    test/gen_inhibit_host/project_dir.py \
     test/gen_inhibit_host/run_tests.py \
     test/gen_inhibit_host/test_signals.py \
     test/gen_inhibit_host/invariants.py \
@@ -163,6 +164,11 @@ tar -C "$FW" -czf - \
     -C "$EXPORT_PARENT" diag_schemas \
   | ssh "$REMOTE" "mkdir -p ~/$DEST && rm -rf ~/$DEST/diag_schemas && tar xzf - -C ~/$DEST"
 
+# project_dir.py WAS MISSING UNTIL 2026-10-26: from_capture.py,
+# replay_stimulus_delta.py and test_signals.py import it, so none of them could run
+# in ~/gi_host, and its replay files went stale. test_gi_host_run_list.py now checks that every module a
+# shipped host .py imports from its own folder is shipped too.
+#
 # THE FOUR ABOVE run_tests.py WERE MISSING UNTIL 2026-09-26, and the way that
 # fails is the reason the golden warning further up exists.
 #

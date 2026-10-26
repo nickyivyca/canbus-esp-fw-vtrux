@@ -44,9 +44,9 @@ import gi_paths                      # noqa: E402
 import image_elf_sha as M            # noqa: E402
 
 SCRATCH = gi_paths.scratch("ota-rehearsal-identity")
-DEVICE_ID = "02a1b2c3d4e5"           # made up
-BASE_MAC = "02:a1:b2:c3:d4:e4"       # made up, device id - 1
-OTHER = "02a1b2c3d4e6"
+DEVICE_ID = "00005e005311"           # made up, in the RFC 7042 documentation range
+BASE_MAC = "00:00:5e:00:53:10"       # RFC 7042 documentation MAC, device id - 1
+OTHER = "00005e005322"
 MADE_UP = "made-up-value-not-a-credential"
 FAILS = []
 
