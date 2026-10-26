@@ -18,7 +18,7 @@ sys.path.insert(0, HERE)
 
 import build_output as B                                        # noqa: E402
 
-TMP = os.path.join(HERE, "_test_fw_version_tmp")
+TMP = os.path.join(B.WORKTREE, "scratch", "build-checks", "test_fw_version_row")   # not beside this file (0d finding 6)
 
 SRC = """#include "x.h"
 #ifndef DIAG_FW_VERSION
