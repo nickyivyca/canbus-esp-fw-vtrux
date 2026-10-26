@@ -39,6 +39,7 @@ sys.path.insert(0, sys.argv[1])
 import build_output as B
 B.REPO = os.environ["REF_TEST_REPO"]      # this repo's WiCAN tree, also for a copy under test (--target)
 B.WORKTREE = os.environ["REF_TEST_WORKTREE"]    # and its root, where scratch/ is
+B.PROJECT = os.environ["REF_TEST_PROJECT"]      # and the project folder, where tools/bench/ is
 del B.rows[:]
 dbc, doc = B.refs_from_git(sys.argv[2])
 B.check_diag(dbc)
@@ -120,7 +121,8 @@ def fake_repo(base, name, texts):
 
 
 def probe(target_dir, ref_repo, rit, extra=None):
-    env = dict(os.environ, REVERSE_IT_DIR=rit, REF_TEST_REPO=FIRMWARE, REF_TEST_WORKTREE=WORKTREE)
+    env = dict(os.environ, REVERSE_IT_DIR=rit, REF_TEST_REPO=FIRMWARE, REF_TEST_WORKTREE=WORKTREE,
+               REF_TEST_PROJECT=REPO)
     r = subprocess.run([sys.executable, "-B", "-c", PROBE, target_dir, ref_repo] + ([extra] if extra else []),
                        capture_output=True, text=True, env=env, cwd=target_dir, timeout=300)
     if r.returncode != 0:
@@ -216,6 +218,12 @@ def main():
     os.makedirs(d)
     r = row(probe(tdir, d, rit), "diag references from git")
     check("a folder that is not a git worktree: NO REFERENCE", r is not None and r[1] is None and r[3], r)
+    # port step 0d: refs_from_git takes a tracked folder (the project folder) up to its worktree's
+    # root, so an untracked one inside a worktree (base is under scratch/) must not be taken up too
+    inside = subprocess.run(["git", "-C", d, "rev-parse", "--show-toplevel"], capture_output=True).returncode == 0
+    check("... the folder sits inside a worktree, so the case can fail", inside, d)
+    check("... and the detail says it holds no tracked file",
+          r is not None and "no tracked file" in (r[2] or ""), r)
 
     # 4. A history gi_diag refuses.
     other = real_dbc.replace(" SG_ diag_ctr_bad : 40|8@1+", " SG_ diag_ctr_bad : 40|4@1+")

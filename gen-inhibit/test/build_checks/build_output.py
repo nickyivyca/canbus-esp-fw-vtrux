@@ -356,7 +356,9 @@ def refs_from_git(repo):
     """-> (DBC path, schema doc path): HEAD's copies of both, written under this repo's
     scratch/, after gi_diag's checks; (None, None) with a row saying why if not. REF_PATHS
     are repo-relative, so repo is taken to its worktree's root first: from the project
-    folder (gen-inhibit/, since port step 0d) the ls-files below would find nothing."""
+    folder (gen-inhibit/, since port step 0d) the ls-files below would find nothing. A folder
+    holding no tracked file (an ignored one under scratch/) is not taken up to the worktree
+    around it: it is not a worktree of this repo."""
     name = "diag references from git"
     bench = os.path.join(PROJECT, "tools", "bench")
     if bench not in sys.path:
@@ -367,6 +369,8 @@ def refs_from_git(repo):
         row(name, None, "cannot import gi_diag from %s: %s" % (bench, e), ref_missing=True)
         return None, None
     try:
+        if gi_diag.git(repo, "ls-files", "--", ".").strip() == b"":
+            raise gi_diag.DiagError("no tracked file in it; it sits in the worktree at %s" % gi_diag.toplevel(repo))
         repo = gi_diag.toplevel(repo)
         head = gi_diag.git(repo, "rev-parse", "HEAD").decode().strip()
         missing = [rp for rp in REF_PATHS if gi_diag.git(repo, "ls-files", "--", rp).strip() == b""]

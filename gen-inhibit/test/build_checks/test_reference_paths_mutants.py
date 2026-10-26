@@ -25,6 +25,8 @@ MUTANTS = [
      '    if not DIAG_REF or DIAG_REF.get("dbc") != dbc_path:', "    if not DIAG_REF:"),
     # port step 0d (2026-10-26): a folder inside the worktree (the project folder) is taken to its root
     ("the given folder read as it is", "        repo = gi_diag.toplevel(repo)\n", ""),
+    ("an untracked folder taken up to the worktree around it",
+     '        if gi_diag.git(repo, "ls-files", "--", ".").strip() == b"":', "        if False:"),
     ("the reverse-it default is back", "REF_PATHS = (","DEFAULT_DBC = os.path.join(os.environ.get(\"REVERSE_IT_DIR\", \"\"), \"projects\", \"vtrux\", \"x\")\nREF_PATHS = ("),
 ]
 
