@@ -61,9 +61,11 @@ def tcp_up(host, port, timeout):
 
 
 def http_up(host, timeout):
+    """A real HTTP GET of /gen_inhibit. Never /check_status (reviewer, 2026-10-20): it answers
+    with the device's config, credentials included; this probed it until 2026-10-25."""
     t = time.time()
     try:
-        with urllib.request.urlopen("http://%s/check_status" % host,
+        with urllib.request.urlopen("http://%s/gen_inhibit" % host,
                                     timeout=timeout) as r:
             body = r.read()
         return True, time.time() - t, "%d bytes" % len(body)

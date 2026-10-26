@@ -305,13 +305,15 @@ def main():
         print("no phase matched %r" % a.only)
         return 2
 
+    # The image from /gen_inhibit's elf_sha256 (spec 11), never /check_status, which answers
+    # with the device's config, credentials included (reviewer, 2026-10-20). Until 2026-10-25
+    # this printed sta_mac (a MAC of the unit) and git from it.
     try:
         info = json.loads(urllib.request.urlopen(
-            "http://%s/check_status" % HOST, timeout=8).read().decode())
-        print("device %s git=%s" % (info.get("sta_mac", "?"),
-                                    info.get("git", "?")))
+            "http://%s/gen_inhibit" % HOST, timeout=8).read().decode())
+        print("device elf_sha256 %s" % info.get("elf_sha256", "?"))
     except Exception as exc:                            # noqa: BLE001
-        print("could not read /check_status: %s" % exc)
+        print("could not read /gen_inhibit: %s" % exc)
     results = {}
     ok_all = True
 

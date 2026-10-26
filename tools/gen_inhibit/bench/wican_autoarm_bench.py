@@ -131,7 +131,8 @@ def gi(path, method="GET", timeout=4.0):
 
 
 def build_id():
-    """The running build, from /check_status -- NOT from /gen_inhibit.
+    """The running image: /gen_inhibit's elf_sha256 since 2026-10-25 (the comment after this
+    docstring). Until then the running build, from /check_status -- NOT from /gen_inhibit.
 
     THIS IS WHY "device" WAS NULL IN EVERY 2026-09-26 RECORD, and the cause is
     not what either session assumed. main() read `page.get("git_version")` off
@@ -147,15 +148,14 @@ def build_id():
     /check_status returns git_version 'f363674', /gen_inhibit returns no such
     key.
     """
-    st, txt = gi("/check_status")
-    if st != 200:
-        return None
-    try:
-        page, _ = json.JSONDecoder().raw_decode(txt.lstrip())
-    except ValueError:
-        return None
-    v = (page.get("git_version") or "").strip()
-    return v or None
+    # SINCE 2026-10-25: the image from /gen_inhibit's elf_sha256 (spec 11, "The page names the
+    # binary it runs"), never /check_status, which answers with the device's config,
+    # credentials included (reviewer, 2026-10-20). git_version above is history.
+    page = status()
+    sha = page.get("elf_sha256") if isinstance(page, dict) else None
+    if isinstance(sha, str) and len(sha) == 64 and all(c in "0123456789abcdef" for c in sha):
+        return sha
+    return None
 
 
 def status():
@@ -465,14 +465,14 @@ def phase_boot(out, tx, kv, frames):
     last_ok, first_fail = time.perf_counter(), None
     deadline = time.perf_counter() + REBOOT_WAIT_S
     while time.perf_counter() < deadline:
-        st, _ = gi("/check_status", timeout=2.0)
+        st, _ = gi("/gen_inhibit", timeout=2.0)
         now = time.perf_counter()
         if st == 200:
             last_ok = now
         else:
             # Two in a row, because one slow reply under truck-rate load is not
             # a reset -- that misreading ended this loop early on 2026-09-26.
-            st2, _ = gi("/check_status", timeout=2.0)
+            st2, _ = gi("/gen_inhibit", timeout=2.0)
             if st2 != 200:
                 first_fail = now
                 break
@@ -649,12 +649,12 @@ def phase_reset_engine_running(out, tx, kv, frames):
     last_ok, first_fail = time.perf_counter(), None
     deadline = time.perf_counter() + REBOOT_WAIT_S
     while time.perf_counter() < deadline:
-        s, _ = gi("/check_status", timeout=2.0)
+        s, _ = gi("/gen_inhibit", timeout=2.0)
         now = time.perf_counter()
         if s == 200:
             last_ok = now
         else:
-            s2, _ = gi("/check_status", timeout=2.0)
+            s2, _ = gi("/gen_inhibit", timeout=2.0)
             if s2 != 200:
                 first_fail = now
                 break
@@ -902,7 +902,7 @@ def main():
     if page is None:
         print("device did not answer at %s -- join its AP first" % HOST)
         return 2
-    build = build_id()          # /check_status, not /gen_inhibit -- see above
+    build = build_id()          # /gen_inhibit's elf_sha256 since 2026-10-25 -- see above
     print("device %s, mode %s, live %s"
           % (build or "?", page.get("mode"), page.get("inhibit_live")))
 
@@ -922,7 +922,7 @@ def main():
     #
     if not build:
         if not args.allow_unknown_build:
-            print("\nREFUSING TO RUN: the device does not report git_version, "
+            print("\nREFUSING TO RUN: the device names no elf_sha256 on /gen_inhibit, "
                   "so nothing measured here could be tied to an image.")
             print("  That is exactly how the 2026-09-26 gate/live figures "
                   "became unusable -- device was null in every record.")
