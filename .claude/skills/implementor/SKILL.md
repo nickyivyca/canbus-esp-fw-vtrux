@@ -48,8 +48,8 @@ what you tested or what passed.
 
 **Self-compact.** You have two compaction points:
 - **The end of a step:** the step is committed, you have sent the "batch
-  lands" message, and your batch already names the next step. The resume
-  message names that next step and the batch it comes from.
+  lands" message, and your batch or the reviewer's reply already names your
+  next work. The resume message names that work and where it is written.
 - **After you start a long self-check run as a background task,** such as
   the emulated suite, a mutant run or a long build, once it is under way.
   First write in your working log: the task id, where its output goes, what
