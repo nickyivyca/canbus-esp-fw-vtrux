@@ -74,6 +74,11 @@ Writes nonode_bench_<stamp>.json in GI_RUNS_DIR (or runs/). Exit 0 only when eve
 main and answer-stuck arm passes every judged item (run_verdict: an item NOT AS
 SPECIFIED in any of them is the run's verdict, an INCONCLUSIVE item makes the run
 INCONCLUSIVE).
+
+    py -3.14 -B tools/gen_inhibit/bench/nonode_bench.py --rejudge <nonode_bench_<stamp>.json>
+judges a record's stored arms again with run_verdict and writes <stem>_rejudged.json
+beside it, the record unchanged (for records from before 2026-10-25, when main arms that
+disagreed on the trip were FLAKY).
 """
 import argparse
 import json
@@ -231,22 +236,22 @@ def arm_verdict(v):
 def run_verdict(arms, want):
     """The run's verdict from its arms (kind, passed, verdicts), main and answer-stuck alike
     (2026-10-20): NOT AS SPECIFIED if any judged arm has such an item; VOID with fewer than
-    `want` main arms; INCONCLUSIVE if any judged arm has such an item; FLAKY if the main arms
-    disagree on the trip; PASS if every judged arm passed."""
+    `want` main arms; INCONCLUSIVE if any judged arm has such an item; PASS if every judged
+    arm passed. Arms that disagree on a judged item resolve through that order. Which trip
+    latched is recorded per arm, never compared: spec 12.4's row says "Recorded, not judged:
+    which trip latched (2 or 6) and when" (reviewer, 2026-10-25; until then main arms that
+    disagreed on the trip were FLAKY)."""
     judged = [x for x in arms if x["kind"] in ("main", "answer-stuck")]
     mains = [x for x in judged if x["kind"] == "main"]
     items = lambda word: ["arm %d %s" % (x.get("n", i + 1), k) for i, x in enumerate(judged)
                           for k, v in x["verdicts"].items() if v.startswith(word)]
     bad, unsure = items("NOT AS SPECIFIED"), items("INCONCLUSIVE")
-    trips = sorted({x["recorded"]["trip"] for x in mains})
     if bad:
         return "NOT AS SPECIFIED: %s" % ", ".join(bad)
     if len(mains) < want:
         return "VOID: %d main arms of %d" % (len(mains), want)
     if unsure:
         return "INCONCLUSIVE: %s" % ", ".join(unsure)
-    if len(trips) > 1:
-        return "FLAKY: the main arms disagree (%s)" % trips
     if all(x["passed"] for x in judged):
         return "PASS"
     return "ERROR: an arm did not pass, with no item NOT AS SPECIFIED or INCONCLUSIVE"
@@ -560,7 +565,31 @@ def run_arm(n, kv_open, pc_wit, LF, stim, kf, a):
     return arm
 
 
+def rejudge(path):
+    """--rejudge <nonode_bench_<stamp>.json>: run_verdict again over the record's stored arms,
+    with the run's own --arms, and write <stem>_rejudged.json beside it. The record itself is
+    not changed, and the arms' own verdicts (judge_arm) are taken as stored. For a record made
+    before the trip stopped being compared (reviewer, 2026-10-25)."""
+    with open(path, encoding="utf-8") as fh:
+        rec = json.load(fh)
+    want = (rec.get("args") or {}).get("arms", 3)
+    out = {"rejudged_from": os.path.basename(path), "rejudged_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+           "rule": "run_verdict without the trip comparison (spec 12.4: the trip is recorded, not judged)",
+           "want_main_arms": want, "verdict_before": rec.get("verdict"),
+           "verdict": run_verdict(rec["arms"], want),
+           "arms": [{"n": x.get("n"), "kind": x["kind"], "passed": x["passed"],
+                     "trip": (x.get("recorded") or {}).get("trip"), "latch": x["verdicts"].get("latch")}
+                    for x in rec["arms"]]}
+    dst = os.path.splitext(path)[0] + "_rejudged.json"
+    with open(dst, "w", encoding="utf-8") as fh:
+        json.dump(out, fh, indent=1)
+    print("verdict: %s (was %s); wrote %s" % (out["verdict"], out["verdict_before"], dst))
+    return 0 if out["verdict"] == "PASS" else 1
+
+
 def main():
+    if sys.argv[1:2] == ["--rejudge"]:
+        return rejudge(sys.argv[2])
     ap = argparse.ArgumentParser()
     ap.add_argument("--termination", required=True, help="where the CAN1 terminators are, as read on the bench")
     ap.add_argument("--man-sha", required=True, help="wican_man's elf_sha256 (64 hex), for wican_reboot.py")

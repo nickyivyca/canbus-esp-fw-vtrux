@@ -10,6 +10,7 @@ crash is not a kill). Gen-inhibit tester, 2026-10-20.
 """
 import copy
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -233,11 +234,41 @@ def tests():
     r = m.run_verdict(mains[:1] + [arm("main", latch="NOT AS SPECIFIED: x")], 3)
     check("run: NOT AS SPECIFIED outranks too few arms", r.startswith("NOT AS SPECIFIED"), r)
     r = m.run_verdict(mains[:2] + [arm("main", trip="bus lost -- no 0x051")], 3)
-    check("run: main arms that disagree on the trip are FLAKY", r.startswith("FLAKY"), r)
+    check("run: main arms that disagree on the trip pass (recorded, not judged; 2026-10-25)", r == "PASS", r)
     r = m.run_verdict(mains + [arm("VOID", void="VOID: x")], 3)
     check("run: a VOID arm beside three main arms passes", r == "PASS", r)
     r = m.run_verdict(mains + [arm("answer-stuck", trip="bus lost -- no 0x051")], 3)
     check("run: a stuck arm's trip is not compared", r == "PASS", r)
+    # --rejudge (2026-10-25): run_verdict again over a stored record, written beside it, the record unchanged
+    rj = gi_paths.scratch("nonode_bench_rejudge")
+    def rejudged(rec, name):
+        src = os.path.join(rj, name + ".json")
+        with open(src, "w", encoding="utf-8") as fh:
+            json.dump(rec, fh)
+        before = open(src, "rb").read()
+        rc = m.rejudge(src)
+        dst = os.path.join(rj, name + "_rejudged.json")
+        out = json.load(open(dst, encoding="utf-8")) if os.path.exists(dst) else {}
+        return rc, out, open(src, "rb").read() == before
+    flaky = mains[:2] + [arm("main", trip="bus lost -- no 0x051")]
+    rc, out, same = rejudged({"verdict": "FLAKY: the main arms disagree", "args": {"arms": 3}, "arms": flaky}, "r1")
+    check("rejudge: a trip-only FLAKY record rejudges PASS, exit 0", out.get("verdict") == "PASS" and rc == 0,
+          (rc, out.get("verdict")))
+    check("rejudge: the old verdict is kept beside the new", out.get("verdict_before") == "FLAKY: the main arms disagree",
+          out.get("verdict_before"))
+    check("rejudge: each arm's trip is listed", [a.get("trip") for a in out.get("arms", [])]
+          == ["error-frame rate exceeded", "error-frame rate exceeded", "bus lost -- no 0x051"], out.get("arms"))
+    check("rejudge: the record itself is not changed", same)
+    rc, out, _ = rejudged({"verdict": "PASS", "args": {"arms": 4}, "arms": mains}, "r2")
+    check("rejudge: the run's own --arms is used (3 main arms of 4 are VOID)",
+          str(out.get("verdict")).startswith("VOID") and rc == 1, (rc, out.get("verdict")))
+    rc, out, _ = rejudged({"verdict": "PASS", "arms": mains}, "r3")
+    check("rejudge: no args means 3 arms", out.get("verdict") == "PASS", out.get("verdict"))
+    rc, out, _ = rejudged({"verdict": "FLAKY: x", "args": {"arms": 3},
+                           "arms": mains[:2] + [arm("main", trip="bus lost", latch="NOT AS SPECIFIED: not latched")]}, "r4")
+    check("rejudge: an arm NOT AS SPECIFIED stays the verdict, exit 1",
+          str(out.get("verdict")).startswith("NOT AS SPECIFIED") and rc == 1, (rc, out.get("verdict")))
+    shutil.rmtree(rj, ignore_errors=True)
     ok_reboot, held = {"rc": 0, "line": "PASS"}, pl % ("recessive", "x")
     check("start: a confirmed reboot and a held X2 start", m.start_refusal({"reboot_start": ok_reboot, "x2_pins_start": held}) is None)
     r = m.start_refusal({"reboot_start": {"rc": 1, "line": "FAIL"}, "x2_pins_start": held})
@@ -310,9 +341,15 @@ MUTANTS = [
     ("too few arms outranks NOT AS SPECIFIED", "    if bad:\n        return \"NOT AS SPECIFIED: %s\" % \", \".join(bad)\n",
      "    if bad and len(mains) >= want:\n        return \"NOT AS SPECIFIED: %s\" % \", \".join(bad)\n"),
     ("the run takes fewer main arms", "    if len(mains) < want:\n", "    if len(mains) < want - 1:\n"),
-    ("stuck arms' trips are compared", "trips = sorted({x[\"recorded\"][\"trip\"] for x in mains})",
-     "trips = sorted({x[\"recorded\"][\"trip\"] for x in judged})"),
-    ("FLAKY is not looked for", "    if len(trips) > 1:\n", "    if False:\n"),
+    # the trip comparison went on 2026-10-25 (spec 12.4: recorded, not judged); these put it back
+    ("main arms' trips are compared again", "    if unsure:\n",
+     "    if len({x[\"recorded\"][\"trip\"] for x in mains}) > 1:\n        return \"FLAKY: trips\"\n    if unsure:\n"),
+    ("rejudge writes over the record", "    dst = os.path.splitext(path)[0] + \"_rejudged.json\"", "    dst = path"),
+    ("rejudge keeps the record's verdict", "           \"verdict\": run_verdict(rec[\"arms\"], want),",
+     "           \"verdict\": rec.get(\"verdict\"),"),
+    ("rejudge ignores the run's --arms", "    want = (rec.get(\"args\") or {}).get(\"arms\", 3)", "    want = 3"),
+    ("rejudge exits 0 whatever the verdict", "    return 0 if out[\"verdict\"] == \"PASS\" else 1", "    return 0"),
+    ("rejudge lists no trips", "\"trip\": (x.get(\"recorded\") or {}).get(\"trip\")", "\"trip\": None"),
     ("the reboot start gate is not applied", "    if rec[\"reboot_start\"][\"rc\"] != 0:", "    if False:"),
 ]
 
