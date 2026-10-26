@@ -274,14 +274,17 @@ record = {
     "status_flag_series": [[round(t, 3), "0x%02X" % f]
                            for t, f in status_series],
 }
+# The running image from /gen_inhibit's elf_sha256 (spec 11), never /check_status, which
+# answers with the device's config, credentials included (reviewer, 2026-10-20). Until
+# 2026-10-25 this recorded device_http_git_version from it.
 try:
-    _cs = urllib.request.urlopen(
-        "http://192.168.80.1/check_status", timeout=5).read()
-    record["device_http_git_version"] = (
+    _gi = urllib.request.urlopen(
+        "http://192.168.80.1/gen_inhibit", timeout=5).read()
+    record["device_elf_sha256"] = (
         json.JSONDecoder().raw_decode(
-            _cs.decode("utf-8", "replace").lstrip())[0].get("git_version"))
+            _gi.decode("utf-8", "replace").lstrip())[0].get("elf_sha256"))
 except Exception as _e:
-    record["device_http_git_version"] = None
+    record["device_elf_sha256"] = None
     record["device_http_error"] = "%s: %s" % (type(_e).__name__, _e)
 
 print("diag IDs captured: %s" % sorted("0x%X"%k for k in seen))

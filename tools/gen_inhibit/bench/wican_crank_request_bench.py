@@ -250,10 +250,11 @@ def main():
     results = []
     stats_end = {}
     try:
-        st = json.loads(dev_get("/check_status"))
-        print("device %s git=%s can=%s" % (st["device_id"], st["git_version"],
-                                           st["can_mode"]))
+        # The image from /gen_inhibit's elf_sha256 (spec 11), never /check_status, which answers
+        # with the device's config, credentials included (reviewer, 2026-10-20). Until
+        # 2026-10-25 this printed device_id (the unit's MAC), git_version and can_mode from it.
         pre = json.loads(dev_get("/gen_inhibit"))
+        print("device elf_sha256 %s" % pre.get("elf_sha256"))
         if pre.get("disabled"):
             print("FAIL: device is already latched disabled (%s). A disable "
                   "latch survives until reboot, so this must run on a fresh "

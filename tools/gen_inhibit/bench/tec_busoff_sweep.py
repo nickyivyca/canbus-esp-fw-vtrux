@@ -154,21 +154,20 @@ def page():
 
 
 def build_id():
-    """The running image, from /check_status.
+    """The running image, {"elf_sha256": ...}, from /gen_inhibit, whose elf_sha256 names the
+    image file (spec 11); None when the page does not answer or names no 64 lower-case hex.
 
-    NOT from /gen_inhibit -- that page has no git_version field, so reading it
-    there yields null and the run record silently fails to identify the build.
-    `txfailed_busoff_probe.py` does exactly that, which is why its record's
-    `git_version` is null.
+    NEVER /check_status (reviewer, 2026-10-20): it answers with the device's config,
+    credentials included. Until 2026-10-25 this read git_version, fw_version and hw_version
+    from it, because /gen_inhibit had no git_version field (`txfailed_busoff_probe.py`'s
+    null git_version came from reading it there).
     """
     try:
-        with urllib.request.urlopen("http://%s/check_status" % HOST,
-                                    timeout=5.0) as r:
-            d, _ = json.JSONDecoder().raw_decode(
-                r.read().decode("utf-8", "replace").lstrip())
-        return {"git_version": d.get("git_version"),
-                "fw_version": d.get("fw_version"),
-                "hw_version": d.get("hw_version")}
+        d = page()
+        sha = d.get("elf_sha256") if isinstance(d, dict) else None
+        if isinstance(sha, str) and len(sha) == 64 and all(c in "0123456789abcdef" for c in sha):
+            return {"elf_sha256": sha}
+        return None
     except Exception:
         return None
 
@@ -783,9 +782,9 @@ def main():
     rec["pre"] = snap(pre)
     print("\npre: mode %s  bus_on %s  build %s"
           % (pre.get("mode"), pre.get("bus_on"),
-             (rec["build"] or {}).get("git_version")))
-    if not rec["build"] or not rec["build"].get("git_version"):
-        print("FAIL: could not read the running build from /check_status. A "
+             (rec["build"] or {}).get("elf_sha256")))
+    if not rec["build"] or not rec["build"].get("elf_sha256"):
+        print("FAIL: could not read the running image from /gen_inhibit's elf_sha256. A "
               "run that cannot name its image is not evidence about an image.")
         return 1
 
