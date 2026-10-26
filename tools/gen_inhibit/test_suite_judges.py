@@ -78,7 +78,6 @@ EDITS = [
     ("B7", "bench", r"B7_busoff_rearm\.txt", r"^arm 1: AS SPECIFIED", "arm 1: NOT AS SPECIFIED", "FAIL"),
     ("B8", "bench", r"B8_busoff\.txt", r"^arm 1 train=True: PASS", "arm 1 train=True: FAIL", "FAIL"),
     ("B8", "bench", r"B8_busoff\.txt", r"^arm 3 train=False: INCONCLUSIVE", "arm 3 train=False: FAIL", "FAIL"),
-    ("B9", "bench", r"B9_wrong_bitrate_calibrate\.txt", r"'aborts': \['error-frame rate exceeded'\]", "'aborts': []", "FAIL"),
     ("B10", "bench", r"B10_trip6_rearm_check\.txt", r"^(A3 recent .*?)  as specified", r"\g<1>  NOT as specified", "FAIL"),
     ("B10", "bench", r"B10_trip6_rearm_check\.txt", r"^(A4 expired .*\n +history )as specified", r"\g<1>NOT", "FAIL"),
     ("B11", "bench", r"B11_quiesce_analysis\.txt", r'(_arm4\.json".*?"agree": )true', r"\g<1>false", "FAIL"),
@@ -169,6 +168,72 @@ B18_SCHEMA8 = [
     ("no verdict line", ("  MATCH -- the wire, the page and the image file name the same image\n", ""), "FAIL"),
 ]
 
+# Verdicts ruled since the index was written: the judge's verdict on the baseline's own files
+# differs from the index, and the index (the accepted baseline) is left as it was written.
+RULED = {
+    # The B9 record was never live and had latched before the first burst; the judge now needs
+    # a live arm and a latch after the first burst (reviewer, 2026-10-25).
+    "B9": "INCONCLUSIVE",
+}
+
+# B9 on synthetic records (2026-10-25): wrong_bitrate_errors.py's text and json, a live arm whose
+# page samples run from -4 s to the latch, then one change per case.
+B9_TEXT = "".join("  burst at %.3f s, %d ms -> witness error frames %d\n" % (3.0 * k, ms, 2600 + k)
+                  for k, ms in enumerate((1, 1, 1, 5, 5, 5, 20, 20, 20))) + (
+    "summary {'bus_error_delta': 23000, 'tec_max': 68, 'rec_max': 134, 'states': ['running'], "
+    "'aborts': ['error-frame rate exceeded'], 'live_at_end': False} witness total 23436 max in 10 s 11000\n")
+
+
+def b9_series(latch_t=0.4, reason="error-frame rate exceeded", start=-4.0):
+    out, t = [], start
+    while t < 36.0:
+        on = latch_t is not None and t >= latch_t - 1e-9
+        out.append({"t": round(t, 4), "mode": 3, "live": not on, "abort": reason if on else "", "state": "running",
+                    "tec": 0, "rec": 0, "bus_error": 0})
+        t += 0.2
+    return out
+
+
+def b9_record(**kw):
+    rec = {"when": "20261025T200000", "cmd": "calibrate", "live_before": True, "series": b9_series()}
+    rec.update(kw)
+    return rec
+
+
+def b9_not_live_at(t_off):
+    s = b9_series()
+    for x in s:
+        if abs(x["t"] - t_off) < 1e-6:
+            x["live"] = False
+    return s
+
+
+B9_CASES = [
+    # (label, record, text, verdict, a phrase the detail must hold)
+    ("a live arm, trip 6 latched after the first burst", b9_record(), B9_TEXT, "PASS", "latched at +0.40 s"),
+    ("live_before false", b9_record(live_before=False), B9_TEXT, "INCONCLUSIVE", "not live before the first burst"),
+    ("live_before missing", {k: v for k, v in b9_record().items() if k != "live_before"}, B9_TEXT, "INCONCLUSIVE",
+     "live_before None"),
+    ("latched before the first burst", b9_record(series=b9_series(latch_t=-1.0)), B9_TEXT, "INCONCLUSIVE",
+     "latched before the first burst"),
+    ("latched at the first sample, as every record on file", b9_record(series=b9_series(latch_t=-4.0)), B9_TEXT,
+     "INCONCLUSIVE", "latched before the first burst"),
+    ("the newest clean sample 0.1 s before the burst, the latch read 0.1 s after it",
+     b9_record(series=b9_series(latch_t=0.0, start=-3.9)), B9_TEXT, "PASS", "latched at +0.10 s"),
+    ("no clean sample in the 0.5 s before the burst", b9_record(series=[x for x in b9_series() if not -0.7 < x["t"] < 0]),
+     B9_TEXT, "INCONCLUSIVE", "cannot be placed after the first burst"),
+    ("no sample at all before the burst", b9_record(series=[x for x in b9_series() if x["t"] >= 0]),
+     B9_TEXT, "INCONCLUSIVE", "the last at none"),
+    ("not live before the latch", b9_record(series=b9_not_live_at(-2.0)), B9_TEXT, "INCONCLUSIVE", "not live at -2.00 s"),
+    ("live throughout, nothing latched", b9_record(series=b9_series(latch_t=None)), B9_TEXT, "FAIL", "no trip latched"),
+    ("trip 7 latched after the first burst", b9_record(series=b9_series(reason="3 inhibit frames skipped within 1 s")),
+     B9_TEXT, "FAIL", "NOT latched ('3 inhibit frames"),
+    ("a burst that drew no error frames", b9_record(), B9_TEXT.replace("witness error frames 2604", "witness error frames 0"),
+     "FAIL", "latched at +0.40 s"),
+    ("no page samples", b9_record(series=[]), B9_TEXT, "ERROR", "no page samples"),
+    ("no record", None, B9_TEXT, "ERROR", "files"),
+]
+
 KEEP = (".txt", ".json", ".log")
 
 
@@ -219,8 +284,9 @@ def main():
         if cid not in index:
             continue
         want = index[cid]
-        check("%s: the verdict is the index's (%s)" % (cid, want["verdict"]),
-              lambda: [r["verdict"] for r in res] == [want["verdict"]], [(r["verdict"], r["detail"]) for r in res])
+        wv = RULED.get(cid, want["verdict"])
+        check("%s: the verdict is the index's (%s)%s" % (cid, want["verdict"], ", ruled %s since" % wv if cid in RULED else ""),
+              lambda: [r["verdict"] for r in res] == [wv], [(r["verdict"], r["detail"]) for r in res])
         f = figures(res)
         check("%s: every figure is the index's, and no other" % cid, lambda: f == want["figures"],
               {k: (f.get(k), want["figures"].get(k)) for k in set(f) | set(want["figures"])
@@ -301,6 +367,20 @@ def main():
         res = J.judge_one("B17b", b17)
         check("B17b, %s: %s" % (label, want), lambda: [r["verdict"] for r in res] == [want], res)
     shutil.rmtree(b17, ignore_errors=True)
+
+    # 2d. B9 on synthetic records (reviewer, 2026-10-25): a live arm and a latch after the first
+    #     burst, or INCONCLUSIVE; then trip 6 and every burst drawing error frames, or FAIL.
+    b9 = os.path.join(scratch, "b9_synthetic")
+    for label, rec, txt, want, phrase in B9_CASES:
+        shutil.rmtree(b9, ignore_errors=True)
+        os.makedirs(b9)
+        open(os.path.join(b9, "B9_wrong_bitrate_calibrate.txt"), "w", encoding="utf-8").write(txt)
+        if rec is not None:
+            json.dump(rec, open(os.path.join(b9, "wrong_bitrate_calibrate_20261025T200000.json"), "w", encoding="utf-8"))
+        res = J.judge_one("B9", b9)
+        check("B9, %s: %s, %r" % (label, want, phrase), lambda: [r["verdict"] for r in res] == [want]
+              and phrase in res[0]["detail"] and (want != "PASS" or figures(res).get("trip6_latched") == 1), res)
+    shutil.rmtree(b9, ignore_errors=True)
 
     # 3. No files, a judge that raises, a judge that returns nothing.
     empty = os.path.join(scratch, "empty")

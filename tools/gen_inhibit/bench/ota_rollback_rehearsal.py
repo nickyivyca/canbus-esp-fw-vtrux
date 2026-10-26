@@ -74,8 +74,9 @@ PHASES
             contains the "FAULT INJECT" format string at all. The last is the
             direct static proof the fault is compiled in -- with the mask at 0
             the `if (0 & bits)` body is dead code and the string is dropped.
-  baseline  HTTP /check_status + /gen_inhibit. Refuses to continue unless the
-            device is in mode 0 and not live.
+  baseline  HTTP /gen_inhibit, and the connected AP's BSSID against the expected
+            unit (value-blind). Refuses to continue unless it is the unit and the
+            device is in mode 0 and not live. Never /check_status (2026-10-25).
   otadata   esptool read of the otadata partition, parsed. Needs COM4 free and
             RESETS the device; run it only between phases.
   control   OTA the GOOD image. Engagement: gate armed with state
@@ -135,8 +136,9 @@ PORT = "COM4"
 # are checked rather than recorded.
 #
 # THE TWO VALUES DIFFER BY ONE AND THAT IS CORRECT. `EXPECT_MAC` is the BASE
-# MAC, which is what esptool prints. `device_id` on /check_status and the SoftAP
-# SSID both carry the SoftAP MAC, which is base + 1. Written out here because
+# MAC, which is what esptool prints. `device_id` on /check_status, the SoftAP
+# SSID and the SoftAP's BSSID all carry the SoftAP MAC, which is base + 1; the
+# BSSID is what unit_check compares (2026-10-25). Written out here because
 # two values one apart read exactly like an off-by-one bug, and the repair
 # someone would reach for is to make them match.
 #
@@ -241,9 +243,10 @@ def image_facts(path):
     if i >= 0:
         name = data[i:i + 32].split(b"\x00")[0].decode("ascii", "replace")
     try:
-        version = image_elf_sha.read_desc(data)["version"]
+        desc = image_elf_sha.read_desc(data)
+        version, elf = desc["version"], desc["elf_sha256"]
     except ValueError:
-        version = None
+        version = elf = None
     return {
         "path": path,
         "exists": True,
@@ -251,6 +254,7 @@ def image_facts(path):
         "md5": hashlib.md5(data).hexdigest(),
         "project_name": name,
         "version": version,
+        "elf_sha256": elf,
         "has_fault_string": FAULT_MARKER in data,
     }
 
@@ -725,16 +729,53 @@ def esptool_mac(stdout):
     return mac, mac == EXPECT_MAC
 
 
-def device_state():
-    st = http_json("/check_status")
+def connected_bssid(run=subprocess.run):
+    """(bssid, None): the BSSID of the access point this host is joined to, from `netsh wlan
+    show interfaces`, as 12 lower-case hex digits; or (None, why) when there is not exactly
+    one. It is the unit's SoftAP MAC, so it is never printed or recorded (reviewer,
+    2026-10-25)."""
+    try:
+        out = run(["netsh", "wlan", "show", "interfaces"], capture_output=True, text=True,
+                  timeout=15).stdout or ""
+    except (OSError, subprocess.SubprocessError) as e:
+        return None, "netsh failed (%s)" % type(e).__name__
+    found = [re.sub(r"[^0-9a-f]", "", m.lower())
+             for m in re.findall(r"^\s*(?:AP )?BSSID\s*:\s*(\S+)", out, re.M)]
+    found = [b for b in found if len(b) == 12]
+    if len(found) != 1:
+        return None, "%d BSSIDs read from netsh, not one" % len(found)
+    return found[0], None
+
+
+def unit_check(expect_device_id, read=None):
+    """(ok, why): is the access point this host is joined to the expected unit?
+
+    The connected BSSID is the SoftAP MAC, the value `device_id` on /check_status carried
+    (checked value-blind on the bench, 2026-10-25). It is compared with the settings'
+    wican.device_id and neither is printed, recorded or returned. No expectation, or no
+    single BSSID, fails closed. /check_status is never read (reviewer, 2026-10-20; this row
+    moved off it 2026-10-25)."""
+    want = re.sub(r"[^0-9a-f]", "", (expect_device_id or "").lower())
+    if len(want) != 12:
+        return False, "no expected device id of 12 hex digits"
+    got, why = (read or connected_bssid)()
+    if got is None:
+        return False, why
+    return (True, "the connected BSSID matches") if got == want else (False, "the connected BSSID does not match")
+
+
+def device_state(expect_device_id=None):
+    """The device's state from /gen_inhibit, and whether the AP this host is joined to is the
+    expected unit (unit_check). NEVER /check_status (reviewer, 2026-10-20): it answers with
+    the device's config, credentials included. Until 2026-10-25 this read device_id,
+    git_version, fw_version, hw_version, wifi_mode and batt_voltage from it."""
     gi = http_json("/gen_inhibit")
+    ok, why = unit_check(EXPECT_DEVICE_ID if expect_device_id is None else expect_device_id)
     return {
-        "device_id": st.get("device_id"),
-        "git_version": st.get("git_version"),
-        "fw_version": st.get("fw_version"),
-        "hw_version": st.get("hw_version"),
-        "wifi_mode": st.get("wifi_mode"),
-        "batt_voltage": st.get("batt_voltage"),
+        "unit_matches": ok,
+        "unit_why": why,
+        "elf_sha256": gi.get("elf_sha256"),
+        "uptime_ms": gi.get("uptime_ms"),
         "mode": gi.get("mode"),
         "bus_on": gi.get("bus_on"),
         "bus_ours": gi.get("bus_ours"),
@@ -746,7 +787,7 @@ def device_state():
     }
 
 
-def ota_precondition(state, expect_device_id=EXPECT_DEVICE_ID):
+def ota_precondition(state):
     """Spec 9.3 refuses OTA in any armed mode, and the handler returns 403.
 
     Checked here too so the refusal arrives before an image is pushed rather
@@ -754,13 +795,13 @@ def ota_precondition(state, expect_device_id=EXPECT_DEVICE_ID):
 
     THE UNIT IS CHECKED FIRST, because it is the one row whose failure means
     everything after it is about the wrong device. The MAC is the unit's serial
-    number (user, 2026-10-05) and `device_id` is the only identity HTTP
-    exposes -- `/check_status` has no serial field and `git_version` names a
-    build, which several units could share.
+    number (user, 2026-10-05). `device_id` on /check_status was the only identity
+    HTTP exposed, and that page is never read (reviewer, 2026-10-20); the row reads
+    the same SoftAP MAC as the connected AP's BSSID (unit_check, 2026-10-25).
     """
     rows = [
-        ("device_id names the expected unit",
-         state.get("device_id") == expect_device_id),
+        ("the connected AP is the expected unit (BSSID, value-blind)",
+         state.get("unit_matches") is True),
         ("mode is 0", state["mode"] == 0),
         ("not live", state["inhibit_live"] is False),
         ("bus not ours", state["bus_ours"] is False),
@@ -770,10 +811,10 @@ def ota_precondition(state, expect_device_id=EXPECT_DEVICE_ID):
 
 def phase_baseline(args):
     log("=== baseline ===")
-    state = device_state()
+    state = device_state(args.expect_device_id)
     for k in sorted(state):
         log("  %-14s %s" % (k, state[k]))
-    rows = ota_precondition(state, args.expect_device_id)
+    rows = ota_precondition(state)
     fails = [n for n, ok in rows if not ok]
     for n, ok in rows:
         log("  %-4s %s" % ("ok" if ok else "FAIL", n))
@@ -842,8 +883,8 @@ def _do_ota(args, label, image, watch_s):
         log("  FAIL: image missing: %s" % image)
         return {"verdict": "FAIL", "why": "image missing", "image": facts}, 1
 
-    before = device_state()
-    pre = ota_precondition(before, args.expect_device_id)
+    before = device_state(args.expect_device_id)
+    pre = ota_precondition(before)
     bad = [n for n, ok in pre if not ok]
     if bad:
         log("  FAIL preconditions: %s" % ", ".join(bad))
@@ -852,8 +893,8 @@ def _do_ota(args, label, image, watch_s):
 
     log("  image  %s  %d bytes  md5 %s"
         % (facts["project_name"], facts["size"], facts["md5"]))
-    log("  before git_version=%s mode=%s"
-        % (before["git_version"], before["mode"]))
+    log("  before elf_sha256=%s mode=%s"
+        % ((before.get("elf_sha256") or "")[:16], before["mode"]))
 
     serial_name = "rollback_%s_console.log" % label
     proc, serial_path = start_serial(serial_name, watch_s)
@@ -896,7 +937,7 @@ def _do_ota(args, label, image, watch_s):
     after = None
     for _ in range(24):
         try:
-            after = device_state()
+            after = device_state(args.expect_device_id)
             break
         except Exception:
             time.sleep(5.0)
@@ -1239,7 +1280,8 @@ def seconds_since_last_ota():
 def phase_verify(args):
     """End state, with the one row the bring-up procedure turns on.
 
-    THE 60 s WAIT IS THE CHECK, not a politeness. A `git_version` read taken
+    THE 60 s WAIT IS THE CHECK, not a politeness. (The image is read from /gen_inhibit's
+    elf_sha256 since 2026-10-25; this was git_version from /check_status.) A version read taken
     ten seconds after an OTA names an image that is about to be rolled back,
     and reads exactly like a successful update. That is the whole content of
     `gen-inhibit-truck-bringup.md` row 1.5b (added 2026-10-05 with the user's
@@ -1255,7 +1297,7 @@ def phase_verify(args):
     in the run file so the assertion is attributable.
     """
     log("=== verify ===")
-    state = device_state()
+    state = device_state(args.expect_device_id)
     for k in sorted(state):
         log("  %-14s %s" % (k, state[k]))
     good = image_facts(args.good)
@@ -1269,12 +1311,12 @@ def phase_verify(args):
     settled = (since is not None and since >= GATE_TIMEOUT_MS / 1000.0)
     rows = [
         ("device reachable", True),
-        ("device_id names the expected unit",
-         state.get("device_id") == args.expect_device_id),
+        ("the connected AP is the expected unit (BSSID, value-blind)",
+         state.get("unit_matches") is True),
         ("reading is >= 60 s after the last OTA (bring-up row 1.5b)",
          settled or bool(args.assume_settled)),
-        ("git_version matches the good image's version",    # the descriptor's (R4), since port step 0c
-         bool(good.get("version")) and state["git_version"] == good.get("version")),
+        ("elf_sha256 matches the good image's",    # /gen_inhibit's against the image's descriptor (2026-10-25)
+         bool(good.get("elf_sha256")) and state.get("elf_sha256") == good.get("elf_sha256")),
         ("mode is 0", state["mode"] == 0),
         ("not live", state["inhibit_live"] is False),
         ("no latched abort", state["abort_latched"] is False),
@@ -1314,7 +1356,7 @@ def main():
                     help="parse an existing esptool dump instead of reading")
     ap.add_argument("--expect-device-id", default=EXPECT_DEVICE_ID,
                     help="the unit this run is meant to be talking to; "
-                         "/check_status device_id, i.e. the SoftAP MAC")
+                         "compared, never printed, with the connected AP's BSSID (the SoftAP MAC)")
     ap.add_argument("--bootloader-file",
                     help="parse an existing 0x0..0x8000 dump instead of reading")
     ap.add_argument("--assume-settled", action="store_true",
