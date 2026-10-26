@@ -195,7 +195,8 @@ def b9_series(latch_t=0.4, reason="error-frame rate exceeded", start=-4.0):
 
 
 def b9_record(**kw):
-    rec = {"when": "20261025T200000", "cmd": "calibrate", "live_before": True, "series": b9_series()}
+    rec = {"when": "20261025T200000", "cmd": "calibrate", "live_before": True, "series": b9_series(),
+           "pre_burst_window": {"from_s": -0.2, "errors": 0, "error_times_s": []}}
     rec.update(kw)
     return rec
 
@@ -230,6 +231,14 @@ B9_CASES = [
      B9_TEXT, "FAIL", "NOT latched ('3 inhibit frames"),
     ("a burst that drew no error frames", b9_record(), B9_TEXT.replace("witness error frames 2604", "witness error frames 0"),
      "FAIL", "latched at +0.40 s"),
+    ("witness error frames between the last clean sample and the first burst",
+     b9_record(pre_burst_window={"from_s": -0.2, "errors": 2, "error_times_s": [-0.15, -0.1]}), B9_TEXT, "INCONCLUSIVE",
+     "2 witness error frames between the last clean live sample"),
+    ("no pre-burst witness count (a record from the tool before 2026-10-25)",
+     {k: v for k, v in b9_record().items() if k != "pre_burst_window"}, B9_TEXT, "INCONCLUSIVE",
+     "no witness count between the last clean live sample"),
+    ("a pre-burst window with no count", b9_record(pre_burst_window={"from_s": None, "errors": None, "error_times_s": []}),
+     B9_TEXT, "INCONCLUSIVE", "no witness count between the last clean live sample"),
     ("no page samples", b9_record(series=[]), B9_TEXT, "ERROR", "no page samples"),
     ("no record", None, B9_TEXT, "ERROR", "files"),
 ]

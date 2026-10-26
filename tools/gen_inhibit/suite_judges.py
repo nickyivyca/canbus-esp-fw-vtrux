@@ -284,7 +284,9 @@ def b9(F):
     # sample before the first burst (t < 0, the series' clock); every sample before the latch
     # live; and a live sample without an abort within B9_PRE_S before the first burst, so the
     # latch is placed after the burst to the page's 5 Hz resolution (a burst latches within a
-    # poll period, so no clean sample can come after it). Short of that it is INCONCLUSIVE.
+    # poll period, so no clean sample can come after it); and the tool's pre_burst_window
+    # showing 0 witness error frames from that sample to the first burst, so a latch in the gap
+    # cannot be credited to the bursts (reviewer, 2026-10-25). Short of that it is INCONCLUSIVE.
     # Then, as before, trip 6 the latch and every burst drawing error frames, or FAIL.
     t = text(F.one(r"B9_wrong_bitrate_calibrate\.txt"))
     bursts = [int(n) for n in re.findall(r"^  burst at [\d.]+ s, \d+ ms -> witness error frames (\d+)$", t, re.M)]
@@ -314,6 +316,13 @@ def b9(F):
         last = [x for x in before if x["t"] < 0]
         why = ("the latch cannot be placed after the first burst: no live sample without an abort within "
                "%.1f s before it (the last at %s)" % (B9_PRE_S, "%+.2f s" % last[-1]["t"] if last else "none"))
+    elif not isinstance(rec.get("pre_burst_window"), dict) or rec["pre_burst_window"].get("errors") is None:
+        why = ("the record has no witness count between the last clean live sample and the first burst "
+               "(wrong_bitrate_errors.py before 2026-10-25)")
+    elif rec["pre_burst_window"]["errors"] != 0:
+        why = ("%d witness error frames between the last clean live sample (%+.2f s) and the first burst, "
+               "so a latch in that gap cannot be credited to the bursts"
+               % (rec["pre_burst_window"]["errors"], rec["pre_burst_window"].get("from_s") or 0.0))
     else:
         why = None
     if why:

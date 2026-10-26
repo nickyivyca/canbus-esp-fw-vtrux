@@ -21,6 +21,12 @@ Adapters on the WiCAN segment (bench-holder.md): only two, so
 The status page is polled at --poll-hz throughout (state, TEC, REC, bus_error,
 inhibit_live, abort_reason), which is part of the condition.
 
+Since 2026-10-25 (reviewer): the WiCAN is armed on a quiet bus and the slice starts once
+its driver reports running, and the slice stops before the disarm (the order
+trip6_rearm_check.py uses), because an unACKed slice is itself an error source. The record
+keeps pre_burst_window: the witness's error frames, with times, between the last live page
+sample without an abort and the first burst; the B9 judge needs 0 there.
+
   calibrate: bursts of each --burst-ms, --gap-s apart, a few each: how many error
              frames one burst makes at the witness and in the device's bus_error,
              and what it does to TEC/REC. No verdict.
@@ -76,6 +82,22 @@ def per_burst(burst_starts, errors, tail_s=0.5):
         end = burst_starts[k + 1] if k + 1 < len(burst_starts) else t + tail_s
         out.append(sum(1 for e in errors if t <= e < end))
     return out
+
+
+def pre_burst_window(series, errors, first_burst):
+    """The witness's error frames between the last live page sample without an abort before
+    the first burst and the burst itself: {"from_s", "errors", "error_times_s"}, times on the
+    burst clock (first burst 0). With no such sample, from_s and errors are None. The B9 judge
+    needs errors == 0, so a latch in that gap is never credited to the bursts (reviewer,
+    2026-10-25). `series` and `errors` are on the host clock, as the poller and witness keep
+    them."""
+    clean = [s["t"] for s in series
+             if s["t"] < first_burst and s.get("live") is True and not s.get("abort")]
+    if not clean:
+        return {"from_s": None, "errors": None, "error_times_s": []}
+    t0 = clean[-1]
+    times = [round(e - first_burst, 4) for e in errors if t0 <= e < first_burst]
+    return {"from_s": round(t0 - first_burst, 4), "errors": len(times), "error_times_s": times}
 
 
 class PcanWitness(threading.Thread):
@@ -162,14 +184,29 @@ def main():
     rec = {"when": stamp, "cmd": a.cmd, "x2": a.x2, "power": a.power, "build": LF.build_id(),
            "plan": plan, "source": "Kvaser at 250 kbit, id 0x%03X" % SOURCE_ID}
     pc = kv = player = wit = poll = None
+    starts = []
     try:
+        stim = LF.build_stimulus()
         pc = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=500000)
         wit = PcanWitness(pc)
         wit.start()
-        player = S.Player(pc, LF.build_stimulus())
-        player.start()
-        time.sleep(2.0)
+        # THE SLICE PLAYS ONLY WHILE THE WICAN IS ARMED (trip6_rearm_check.py, 2026-10-10; here
+        # since 2026-10-25, reviewer). With the X2 held, the Kvaser closed and the WiCAN in mode
+        # 0, nothing on the segment ACKs the PCAN, and its frames retransmit as ACK-error frames
+        # that the WiCAN counts the moment it arms. This started the slice 2 s before arming,
+        # and no B9 record from 2026-10-10 to 2026-10-25 was ever live before its first burst.
+        # So: arm on a quiet bus, start the slice once the driver reports running.
         LF.dev_post("/gen_inhibit_set?mode=3")
+        t0 = time.perf_counter()
+        running = False
+        while time.perf_counter() - t0 < 3.0:
+            if ((LF.page() or {}).get("drv") or {}).get("state") == "running":
+                running = True
+                break
+            time.sleep(0.05)
+        rec["driver_running_before_slice"] = running
+        player = S.Player(pc, stim)
+        player.start()
         t0 = time.perf_counter()
         while time.perf_counter() - t0 < 10 and not (LF.page() or {}).get("inhibit_live"):
             time.sleep(0.2)
@@ -178,7 +215,6 @@ def main():
         poll.start()
         time.sleep(2.0)
         base = time.perf_counter()
-        starts = []
         for at, ms in plan:
             while time.perf_counter() < base + at:
                 time.sleep(0.001)
@@ -188,13 +224,16 @@ def main():
         if poll is not None:
             poll.stop.set()
             poll.join(3)
+        # Stop the slice while the WiCAN still ACKs, let the PCAN's queue drain, THEN disarm
+        # (trip6_rearm_check.py's order): disarmed first, the slice's frames go unACKed.
+        if player is not None:
+            player.stop_flag.set()
+            player.join(15)
+        time.sleep(0.15)
         try:
             LF.dev_post("/gen_inhibit_set?mode=0")
         except Exception:
             pass
-        if player is not None:
-            player.stop_flag.set()
-            player.join(15)
         if wit is not None:
             wit.stop.set()
             wit.join(3)
@@ -215,6 +254,9 @@ def main():
     rec["pcan_status_end"] = pc_status
     rec["witness_window_max_10s"] = window_max(errs)
     rec["series"] = [dict(x, t=round(x["t"] - t_ref, 4)) for x in series]
+    rec["pre_burst_window"] = (pre_burst_window(series, errs, st[0]) if st else
+                               {"from_s": None, "errors": None, "error_times_s": []})
+    rec["witness_errors_before_first_burst"] = sum(1 for e in errs if st and e < st[0])
     be = [x["bus_error"] for x in series if x.get("bus_error") is not None]
     rec["summary"] = {"bus_error_delta": (be[-1] - be[0]) if be else None,
                       "tec_max": max([x["tec"] or 0 for x in series], default=None),
@@ -229,6 +271,10 @@ def main():
         print("  burst at %.3f s, %g ms -> witness error frames %d" % (b["t"], b["ms"], b["witness_error_frames"]))
     print("summary", rec["summary"], "witness total", rec["witness_error_frames"],
           "max in 10 s", rec["witness_window_max_10s"])
+    w = rec["pre_burst_window"]
+    print("before the first burst: driver running before the slice %s; witness error frames %d, %s since the last "
+          "clean live sample (%s)" % (rec.get("driver_running_before_slice"), rec["witness_errors_before_first_burst"],
+                                      w["errors"], "%+.3f s" % w["from_s"] if w["from_s"] is not None else "none"))
     print("wrote", path)
     return 0
 
