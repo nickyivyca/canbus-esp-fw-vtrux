@@ -21,10 +21,10 @@
 #   bash gen-inhibit/tools/bench/gi_host_run.sh            # sync + full suite
 #   bash .../gi_host_run.sh --only keyon                                      # sync + subset
 #   bash .../gi_host_run.sh --asan                                            # sanitiser build
-#   bash .../gi_host_run.sh --signals                                         # cantools cross-check
+#   RROOT=<remote reverse-it root> bash .../gi_host_run.sh --signals          # cantools cross-check
 #   bash .../gi_host_run.sh --checks                                          # the four checkers run_tests.py does not invoke
 #   bash .../gi_host_run.sh --margin                                          # spec 5.1 item 5 gate on its own
-#   bash .../gi_host_run.sh --shim                                            # E1, the shim suite
+#   RROOT=<remote reverse-it root> bash .../gi_host_run.sh --shim             # E1, the shim suite
 #   bash .../gi_host_run.sh --sched                                           # the transmit-scheduler cases
 #   bash .../gi_host_run.sh --sync-only
 #   bash .../gi_host_run.sh --pull-goldens                                    # after a --bless
@@ -50,6 +50,27 @@ case "${1:-}" in
   --shim)          mode=shim;      shift ;;
   --sched)         mode=sched;     shift ;;
   --pull-goldens)  mode=pull;      shift ;;
+esac
+
+# THE PROJECT FOLDER ON THE REMOTE (2026-10-26, port step 0d finding 5). The shim's
+# Makefile builds the long-arm stimulus from a capture in the reverse-it folder
+# (build_longarm.py), and test_signals.py finds its logs through project_dir.py, both
+# from $REVERSE_IT_DIR with no default. The shell an ssh command runs in on the remote
+# does not have it, so --shim and --signals stopped there unless it was set by hand.
+# RROOT is the reverse-it root on the remote, as baseline_host_run.sh takes it (the
+# suite's gi_host_root), with no default, checked before the sync. It goes into the
+# remote command as one quoted word, a leading ~/ kept as the remote's $HOME, and is
+# exported there. test_gi_host_run_env.py runs both modes' remote commands.
+RX=""
+case "$mode" in
+  shim|signals)
+    RROOT="${RROOT:?set RROOT to the reverse-it root on the remote (--shim and --signals need it)}"
+    case "$RROOT" in
+      "~/"*) RQ='"$HOME"/'$(printf %q "${RROOT#"~/"}") ;;
+      *)     RQ=$(printf %q "$RROOT") ;;
+    esac
+    RX="export REVERSE_IT_DIR=$RQ && "
+    ;;
 esac
 
 # BLESSING HAPPENS ON THE REMOTE, SO THE GOLDENS HAVE TO COME BACK.
@@ -223,7 +244,7 @@ case "$mode" in
   # host against test/gen_inhibit_shim/mock, so it needs the sync above to have
   # carried main/ -- which it did not until 2026-09-26.
   shim)
-    ssh "$REMOTE" "cd ~/$DEST/test/gen_inhibit_shim && make -s clean && make -s && ./shim_test"
+    ssh "$REMOTE" "${RX}cd ~/$DEST/test/gen_inhibit_shim && make -s clean && make -s && ./shim_test"
     ;;
   # The transmit-scheduler cases (spec 5.2 item 10's emulation half), against
   # fake_buf's calibrated buffer model. Needs main/gi_sched.c from the sync.
@@ -234,7 +255,7 @@ case "$mode" in
     ssh "$REMOTE" "cd ~/$DEST/test/gen_inhibit_host && make -s clean && make -s asan && $PY run_tests.py $*"
     ;;
   signals)
-    ssh "$REMOTE" "cd ~/$DEST/test/gen_inhibit_host && make -s clean && make -s && $PY test_signals.py"
+    ssh "$REMOTE" "${RX}cd ~/$DEST/test/gen_inhibit_host && make -s clean && make -s && $PY test_signals.py"
     ;;
   *)
     ssh "$REMOTE" "cd ~/$DEST/test/gen_inhibit_host && $PY run_tests.py $*"

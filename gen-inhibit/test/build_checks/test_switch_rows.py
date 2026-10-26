@@ -31,7 +31,7 @@ sys.path.insert(0, HERE)
 import build_output as BO                                          # noqa: E402
 import build_switches as BS                                        # noqa: E402
 
-TMP = os.path.join(HERE, "_test_switch_rows_tmp")
+TMP = os.path.join(BO.WORKTREE, "scratch", "build-checks", "test_switch_rows")   # not beside this file (0d finding 6)
 
 
 def rows_of(fn, *a):

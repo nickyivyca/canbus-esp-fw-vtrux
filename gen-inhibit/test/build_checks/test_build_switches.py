@@ -3,8 +3,8 @@
 
     python3 test_build_switches.py
 
-Each case writes a throwaway tree under _test_build_switches_tmp/ (removed
-afterwards) and checks what the scan finds and how the table judges it. The
+Each case writes a throwaway tree under the worktree's
+scratch/build-checks/test_build_switches/ (removed afterwards) and checks what the scan finds and how the table judges it. The
 cases are the ways a switch could hide from a textual scan: a default value
 shaped like a header guard, a guard that is not the file's first directive,
 defined() inside an expression, #elif, a continuation line, a commented-out
@@ -27,8 +27,10 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import build_switches as B                                         # noqa: E402
+from build_output import WORKTREE                                  # noqa: E402
 
-TMP = os.path.join(HERE, "_test_build_switches_tmp")
+# In the worktree's gitignored scratch/, not beside this file (port step 0d finding 6, 2026-10-26)
+TMP = os.path.join(WORKTREE, "scratch", "build-checks", "test_build_switches")
 REPO = os.path.join(TMP, "repo")       # the tree; TMP/idf beside it stands for the IDF install
 
 FILES = {

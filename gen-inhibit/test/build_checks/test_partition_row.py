@@ -23,7 +23,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import build_output as B                                        # noqa: E402
 
-TMP = os.path.join(HERE, "_test_partition_tmp")
+TMP = os.path.join(B.WORKTREE, "scratch", "build-checks", "test_partition_row")   # not beside this file (0d finding 6)
 STOCK = os.path.join(B.REF, "stock-v4.13-partition-table.bin")
 
 
@@ -51,7 +51,7 @@ def main():
         ("matching table beside the image -> ok", stock, True, None),
         ("one byte differs -> FAIL", bytes(bad), False, None),
         ("no table beside the image -> FAIL naming its dir", None, False,
-         "_test_partition_tmp"),
+         os.path.basename(TMP)),
     ]
     fails = 0
     try:
