@@ -272,22 +272,57 @@ def b8(F):
                    "train %d of %d PASS; control %s" % (train.count("PASS"), len(train), control))]
 
 
+B9_PRE_S = 0.5     # the newest clean, live page sample may be this far before the first burst
+
+
 @judge("B9", "B")
 def b9(F):
+    # Trip 6 on a LIVE arm, latched by the wrong-bit-rate bursts (reviewer, 2026-10-25). Until
+    # then this read only "error-frame rate exceeded" among the aborts, and every B9 record on
+    # file (e3d9437 to 6926fb0) was never live and had latched before the first burst. Now the
+    # record (wrong_bitrate_errors.py's json) must show: live_before true; no abort in any page
+    # sample before the first burst (t < 0, the series' clock); every sample before the latch
+    # live; and a live sample without an abort within B9_PRE_S before the first burst, so the
+    # latch is placed after the burst to the page's 5 Hz resolution (a burst latches within a
+    # poll period, so no clean sample can come after it). Short of that it is INCONCLUSIVE.
+    # Then, as before, trip 6 the latch and every burst drawing error frames, or FAIL.
     t = text(F.one(r"B9_wrong_bitrate_calibrate\.txt"))
     bursts = [int(n) for n in re.findall(r"^  burst at [\d.]+ s, \d+ ms -> witness error frames (\d+)$", t, re.M)]
     m = re.search(r"^summary (\{.*\}) witness total (\d+)", t, re.M)
     if not m or not bursts:
         return [result("B9", "ERROR", detail="no summary or no bursts")]
     s = ast.literal_eval(m.group(1))
-    latched = "error-frame rate exceeded" in s["aborts"]
+    rec = json.loads(text(F.one(r"wrong_bitrate_calibrate_%s\.json" % TS)))
+    series = [x for x in rec.get("series") or [] if isinstance(x.get("t"), (int, float))]
+    first = next((x for x in series if x.get("abort")), None)
+    latched = bool(first) and first["abort"] == "error-frame rate exceeded"
+    figs = {"bursts": fig(len(bursts)), "burst_errors_min": fig(min(bursts)), "burst_errors_max": fig(max(bursts)),
+            "witness_error_frames": fig(int(m.group(2))), "tec_max": fig(s["tec_max"]),
+            "trip6_latched": fig(int(latched))}
+    head = "%d bursts, %d witness error frames, TEC max %d" % (len(bursts), int(m.group(2)), s["tec_max"])
+    if not series:
+        return [result("B9", "ERROR", figs, "the record has no page samples")]
+    before = series[:series.index(first)] if first else series
+    if rec.get("live_before") is not True:
+        why = "the device was not live before the first burst (live_before %r)" % rec.get("live_before")
+    elif first is not None and first["t"] < 0:
+        why = "latched before the first burst: %r at %+.2f s" % (first["abort"], first["t"])
+    elif any(x.get("live") is not True for x in before):
+        x = next(x for x in before if x.get("live") is not True)
+        why = "not live at %+.2f s, before any latch" % x["t"]
+    elif not any(-B9_PRE_S <= x["t"] < 0 for x in before):
+        last = [x for x in before if x["t"] < 0]
+        why = ("the latch cannot be placed after the first burst: no live sample without an abort within "
+               "%.1f s before it (the last at %s)" % (B9_PRE_S, "%+.2f s" % last[-1]["t"] if last else "none"))
+    else:
+        why = None
+    if why:
+        return [result("B9", "INCONCLUSIVE", figs, "%s; %s" % (head, why))]
     ok = latched and min(bursts) > 0
-    return [result("B9", "PASS" if ok else "FAIL",
-                   {"bursts": fig(len(bursts)), "burst_errors_min": fig(min(bursts)), "burst_errors_max": fig(max(bursts)),
-                    "witness_error_frames": fig(int(m.group(2))), "tec_max": fig(s["tec_max"]),
-                    "trip6_latched": fig(int(latched))},
-                   "%d bursts, %d witness error frames, TEC max %d, trip 6 %s" % (
-                       len(bursts), int(m.group(2)), s["tec_max"], "latched" if latched else "NOT latched"))]
+    return [result("B9", "PASS" if ok else "FAIL", figs,
+                   "%s, trip 6 %s" % (head, "latched at %+.2f s (first burst 0)" % first["t"] if latched else
+                                      "NOT latched (%s)" % ("%r at %+.2f s" % (first["abort"], first["t"]) if first
+                                                            else "no trip latched")))]
 
 
 @judge("B10", "B")
