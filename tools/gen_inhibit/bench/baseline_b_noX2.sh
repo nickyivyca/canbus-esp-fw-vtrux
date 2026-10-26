@@ -19,6 +19,10 @@ C=${GI_COMMIT:?set GI_COMMIT}
 D=${GI_OUT:-$DATA/runs/baseline_$C/bench}   # GI_OUT: the chain runner's check folder (2026-10-18)
 mkdir -p "$D"
 STEPS=${*:-B4 B11 B13}
+# An arm (or B11raw capture) that exits non-zero makes the script exit 1 after the
+# rest have run (reviewer, 2026-10-25): the arms cases have no judge, so they were a
+# PASS on exit 0 while every arm failed (6926fb0 re-run 2, a Wi-Fi outage).
+ARMS_FAILED=0   # B4 is judged from its own output and is not counted
 DUMPCAP=${GI_DUMPCAP:-"/c/Program Files/Wireshark/dumpcap.exe"}
 DUMPCAP_PRE=${GI_DUMPCAP_PRE:-}   # a command put in front of dumpcap (the test's fake); empty here
 # B11raw's capture stops TAIL s after its arm (reviewer, 2026-10-20; a fixed 75 s before).
@@ -40,7 +44,9 @@ e4() {   # e4 <out name> <args...>
   local n=$1; shift
   echo "$(date +%H:%M:%S) $n"
   py -3.14 -B $A/e4_device_calibration.py --arm idle --offset-us 500 "$@" --out "$D/$n.json" > "$D/$n.txt" 2>&1
-  echo "  exit $?"
+  local r=$?
+  echo "  exit $r"
+  [ $r -eq 0 ] || ARMS_FAILED=$((ARMS_FAILED + 1))
 }
 for s in $STEPS; do
   case $s in
@@ -80,7 +86,8 @@ for s in $STEPS; do
         post=$(uptime_line); t1=$(date +%s.%N)
         sleep $TAIL
         : > "$D/$n.stop"
-        wait $cap; echo "  capture exit $?"
+        wait $cap; r=$?; echo "  capture exit $r"
+        [ $r -eq 0 ] || ARMS_FAILED=$((ARMS_FAILED + 1))
         rm -f "$D/$n.stop"
         echo "{\"arm_start\": $t0, \"arm_end\": $t1, \"tail_s\": $TAIL}" > "$D/window_$n.json"
         echo "arm$k $m pre=[$pre] post=[$post] wall_s=$(py -3.14 -c "print('%.2f' % ($t1 - $t0))") capture $(stat -c %s "$D/$n.pcapng") bytes" >> "$D/B11raw_quiesce_uptime_$stamp.txt"
@@ -104,3 +111,4 @@ for s in $STEPS; do
     *) echo "unknown step $s"; exit 2 ;;
   esac
 done
+[ "$ARMS_FAILED" -eq 0 ] || { echo "$ARMS_FAILED arm(s) or capture(s) exited non-zero"; exit 1; }

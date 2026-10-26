@@ -32,10 +32,17 @@ G=$A
 GD=$(cygpath -m "$PWD/$DATA")
 PW_APP="12 V on OBD pin 16, USB unplugged; $GI_PW_IMAGE; X2 756d6714 not held"
 PW_HELD="12 V on OBD pin 16, USB unplugged; $GI_PW_IMAGE; X2 756d6714 held in ROM (x2_hold.py)"
+# A B2 arm that exits non-zero makes the script exit 1 after the
+# rest have run (reviewer, 2026-10-25): the arms cases have no judge, so they were a
+# PASS on exit 0 while every arm failed (6926fb0 re-run 2, a Wi-Fi outage).
+# The judged steps are judged from their own outputs and are not counted.
+ARMS_FAILED=0
 e4() {   # e4 <name> <args...>: one e4 arm, as B2 on e3d9437
   local n=$1; shift
   py -3.14 -B "$G/e4_device_calibration.py" --arm idle --offset-us 500 "$@" --out "$D/$n.json" > "$D/$n.txt" 2>&1
-  echo "$n exit $?"
+  local r=$?
+  echo "$n exit $r"
+  [ $r -eq 0 ] || ARMS_FAILED=$((ARMS_FAILED + 1))
 }
 red() { for f in "$@"; do [ -f "$f" ] && sed -i "s/$GI_WICAN_SSID/<GI_WICAN_SSID>/g" "$f"; done; }
 . "$A/bench_images.sh"   # img_in: the image of $C, named with or without the commit (port step 0c)
@@ -100,3 +107,4 @@ for s in "$@"; do
   esac
 done
 echo "== $(date +%H:%M:%S) done"
+[ "$ARMS_FAILED" -eq 0 ] || { echo "$ARMS_FAILED B2 arm(s) exited non-zero"; exit 1; }
