@@ -7,7 +7,9 @@ and failing.
     python -B options_cases.py --self-test
 
 Run from an exported ESP-IDF shell, with its Python, like release_cases.py, whose fixture
-(a clone of gen-inhibit with fixture commits, under --root) and plumbing it reuses. Each case
+(a clone of gen-inhibit with fixture commits, under --root) and plumbing it reuses. It makes
+the fixture as release_cases.py does if --root has none, and refuses a --root whose fixture
+tags older tooling than this checkout's HEAD (SPEC R23's pin). Each case
 commits its sdkconfig lines (and, for one, a CMake line) on top of the fixture, commits what
 the reconfigure then rewrites (as the fixture itself was made), and runs the release build.
 --profile is copied into the project root as vtrux_checks.json after the build, so the
@@ -449,7 +451,11 @@ def main(argv):
             RC.git(TOOLS, "rev-parse", "HEAD"), RC.git(TOOLS, "status", "--porcelain") or "clean",
             ctx.profile, RC.sha256_file(ctx.profile), names))
     if not os.path.exists(ctx.src):
-        ap.error("no fixture at %s: make it with release_cases.py first" % ctx.src)
+        if not ctx.made_fixture:
+            ap.error("--fixture %s does not exist" % ctx.src)
+        RC.make_fixture(ctx)
+    else:
+        RC.make_pin(ctx)    # the fixture's tag must mark the tooling under test (refuses an older root)
     RC.clones(ctx)
     for n, fn in CASES:
         if n not in names:
