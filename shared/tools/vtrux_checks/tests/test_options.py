@@ -1,5 +1,5 @@
-"""R18 options check: each rule shown failing on a planted input and passing on a
-faithful one. Runs alone: python -B shared/tools/vtrux_checks/tests/test_options.py
+"""R18, R26, R27 and R28 options check: each rule shown failing on a planted input and passing
+on a faithful one. Runs alone: python -B shared/tools/vtrux_checks/tests/test_options.py
 """
 
 import contextlib
@@ -17,8 +17,12 @@ from vtrux_checks import cli  # noqa: E402
 from test_scope import scratch  # noqa: E402
 
 PROFILE = {"CONFIG_ON": (True, "spec 1"), "CONFIG_OFF": (O.UNSET, "spec 2"),
-           "CONFIG_NUM": (1000, "spec 3"), "CONFIG_STR": ("a", "spec 4")}
-GOOD = {"ON": True, "OFF": False, "NUM": 1000, "STR": "a", "FREE": 7}
+           "CONFIG_NUM": (1000, "spec 3"), "CONFIG_STR": ("a", "spec 4"),
+           "CONFIG_FREERTOS_HZ": (1000, "spec 5")}
+# R26 and R28 as every release build has them; SECURE_BOOT absent, EFUSE_VIRTUAL off.
+COMMON = {"SECURE_FLASH_ENC_ENABLED": False, "FLASH_ENCRYPTION_ENABLED": False, "EFUSE_VIRTUAL": False,
+          "LOG_DEFAULT_LEVEL": 0, "LOG_MAXIMUM_LEVEL": 0, "BOOTLOADER_LOG_LEVEL": 1}
+GOOD = dict({"ON": True, "OFF": False, "NUM": 1000, "STR": "a", "FREERTOS_HZ": 1000, "FREE": 7}, **COMMON)
 
 
 def opts(**kw):
@@ -62,6 +66,92 @@ class Judge(unittest.TestCase):
         self.assertEqual(sorted(f for f, _, _, _ in got), ["build", "build/bootloader"])
 
 
+class Common(unittest.TestCase):
+    """R26 and R28's fixed options, whatever the profile names."""
+
+    def test_faithful(self):
+        self.assertEqual(O.judge(O.R26, {"build": GOOD, "build/bootloader": GOOD}), [])
+        self.assertEqual(O.judge(O.R28, {"build": GOOD, "build/bootloader": GOOD}), [])
+
+    def test_r26_each_on(self):
+        for name in ("SECURE_BOOT", "SECURE_FLASH_ENC_ENABLED", "FLASH_ENCRYPTION_ENABLED", "EFUSE_VIRTUAL"):
+            got = O.judge(O.R26, {"build": GOOD, "build/bootloader": opts(**{name: True})})
+            self.assertEqual(got, [("build/bootloader", "CONFIG_" + name, O.UNSET, True)], name)
+
+    def test_r28_each_level(self):
+        for name, wrong in (("LOG_DEFAULT_LEVEL", 3), ("LOG_MAXIMUM_LEVEL", 3), ("BOOTLOADER_LOG_LEVEL", 0),
+                            ("LOG_DEFAULT_LEVEL", O.ABSENT), ("BOOTLOADER_LOG_LEVEL", "1"),
+                            ("LOG_DEFAULT_LEVEL", False)):
+            got = O.judge(O.R28, {"build": opts(**{name: wrong}), "build/bootloader": GOOD})
+            self.assertEqual([(f, n) for f, n, _, _ in got], [("build", "CONFIG_" + name)], (name, wrong))
+
+    def test_tick(self):
+        self.assertIsNone(O.judge_tick(PROFILE))
+        p = dict(PROFILE)
+        del p["CONFIG_FREERTOS_HZ"]
+        self.assertIn("does not name CONFIG_FREERTOS_HZ", O.judge_tick(p))
+
+
+class Arduino(unittest.TestCase):
+    """R28's Arduino question: the Kconfig and the components must agree (ruling (c))."""
+
+    def test_neither(self):
+        self.assertEqual(O.arduino({"build": GOOD}, {"build": ["main", "freertos"]}), (False, None))
+
+    def test_both(self):
+        self.assertEqual(O.arduino({"build": opts(ARDUHAL_LOG_DEFAULT_LEVEL=0)}, {"build": ["main", "arduino"]}),
+                         (True, None))
+
+    def test_kconfig_only(self):
+        compiles, why = O.arduino({"build": opts(ARDUHAL_LOG_DEFAULT_LEVEL=0)}, {"build": ["main"]})
+        self.assertTrue(compiles)
+        self.assertIn("no Arduino component is built", why)
+        self.assertIn("build", why)
+
+    def test_component_only(self):
+        compiles, why = O.arduino({"build": GOOD}, {"build": ["main", "espressif__arduino-esp32"]})
+        self.assertTrue(compiles)
+        self.assertIn("espressif__arduino-esp32", why)
+        self.assertIn("CONFIG_ARDUHAL_LOG_DEFAULT_LEVEL", why)
+
+    def test_component_names(self):
+        for c in ("arduino", "arduino-esp32", "arduino_esp32", "espressif__arduino-esp32", "Arduino"):
+            self.assertTrue(O._ARDUINO_COMPONENT.match(c), c)
+        for c in ("myarduino", "arduino_ish", "arduino-esp32-libs", "esp_arduino", "main"):
+            self.assertFalse(O._ARDUINO_COMPONENT.match(c), c)
+
+    def test_level(self):
+        self.assertEqual(O.judge_arduino({"build": opts(ARDUHAL_LOG_DEFAULT_LEVEL=0), "build/bootloader": GOOD}), [])
+        self.assertEqual(O.judge_arduino({"build": opts(ARDUHAL_LOG_DEFAULT_LEVEL=3), "build/bootloader": GOOD}),
+                         [("build", "CONFIG_ARDUHAL_LOG_DEFAULT_LEVEL", 0, 3)])
+
+
+class Defines(unittest.TestCase):
+    """R28: no -DCORE_DEBUG_LEVEL / -DLOG_LOCAL_LEVEL in a compile command (ruling (a))."""
+
+    def cmd(self, c, f="a.c"):
+        return {"directory": "/b", "file": f, "command": c}
+
+    def test_none(self):
+        self.assertEqual(O.log_defines({"build": [self.cmd("gcc -DESP_PLATFORM -DLOG_COLORS=0 -c a.c")]}), [])
+
+    def test_found(self):
+        got = O.log_defines({"build": [self.cmd("gcc -DLOG_LOCAL_LEVEL=3 -c a.c"),
+                                       self.cmd("gcc -DLOG_LOCAL_LEVEL -c b.c", "b.c")],
+                             "build/bootloader": [{"file": "c.c", "arguments": ["gcc", "-D", "CORE_DEBUG_LEVEL=0"]}]})
+        self.assertEqual(got, [("build", "LOG_LOCAL_LEVEL", ["a.c", "b.c"]),
+                               ("build/bootloader", "CORE_DEBUG_LEVEL", ["c.c"])])
+
+    def test_quoted(self):
+        self.assertEqual(O.log_defines({"build": [self.cmd('gcc "-DCORE_DEBUG_LEVEL=5" -c a.c')]}),
+                         [("build", "CORE_DEBUG_LEVEL", ["a.c"])])
+
+    def test_lookalikes(self):
+        for c in ("gcc -DLOG_LOCAL_LEVEL_X=1", "gcc -DXLOG_LOCAL_LEVEL=1", "gcc -DMY_CORE_DEBUG_LEVEL=1",
+                  "gcc -UCORE_DEBUG_LEVEL", "gcc -I/x/LOG_LOCAL_LEVEL"):
+            self.assertEqual(O.log_defines({"build": [self.cmd(c)]}), [], c)
+
+
 class Profile(unittest.TestCase):
     def setUp(self):
         self.d = scratch()
@@ -78,6 +168,14 @@ class Profile(unittest.TestCase):
                   "other_check": {}})
         self.assertEqual(O.read_profile(self.d), {"CONFIG_A": (True, "s 1"), "CONFIG_B": ("unset", "s 2"),
                                                   "CONFIG_C": (3, "s 3"), "CONFIG_D": ("x", "s 4")})
+
+    def test_agreeing_with_r26_r28_reads(self):
+        self.put({"release_profile": {"CONFIG_SECURE_BOOT": {"value": "unset", "spec": "s"},
+                                      "CONFIG_LOG_DEFAULT_LEVEL": {"value": 0, "spec": "s"},
+                                      "CONFIG_BOOTLOADER_LOG_LEVEL": {"value": 1, "spec": "s"},
+                                      "CONFIG_ARDUHAL_LOG_DEFAULT_LEVEL": {"value": 0, "spec": "s"},
+                                      "CONFIG_FREERTOS_HZ": {"value": 100, "spec": "s"}}})
+        self.assertEqual(len(O.read_profile(self.d)), 5)
 
     def test_refused(self):
         for data in ("{not json", [], {}, {"release_profile": {}}, {"release_profile": []},
@@ -100,6 +198,19 @@ class Profile(unittest.TestCase):
             with self.assertRaises(O.OptionsError, msg=data):
                 O.read_profile(self.d)
 
+    def test_contradictions_refused(self):
+        for name, value, rule in (("CONFIG_SECURE_BOOT", True, "R26"), ("CONFIG_EFUSE_VIRTUAL", True, "R26"),
+                                  ("CONFIG_FLASH_ENCRYPTION_ENABLED", "y", "R26"),
+                                  ("CONFIG_LOG_DEFAULT_LEVEL", 3, "R28"), ("CONFIG_LOG_MAXIMUM_LEVEL", "0", "R28"),
+                                  ("CONFIG_BOOTLOADER_LOG_LEVEL", 0, "R28"), ("CONFIG_LOG_DEFAULT_LEVEL", "unset", "R28"),
+                                  ("CONFIG_BOOTLOADER_LOG_LEVEL", True, "R28"),        # true is not 1
+                                  ("CONFIG_ARDUHAL_LOG_DEFAULT_LEVEL", 2, "R28"),
+                                  ("CONFIG_FREERTOS_HZ", "1000", "R27"), ("CONFIG_FREERTOS_HZ", True, "R27"),
+                                  ("CONFIG_FREERTOS_HZ", "unset", "R27")):
+            self.put({"release_profile": {name: {"value": value, "spec": "s"}}})
+            with self.assertRaisesRegex(O.OptionsError, "%s: .*%s" % (name, rule), msg=(name, value)):
+                O.read_profile(self.d)
+
     def test_false_says_unset(self):
         self.put({"release_profile": {"CONFIG_A": {"value": False, "spec": "s"}}})
         with self.assertRaisesRegex(O.OptionsError, 'CONFIG_A: false; write "unset"'):
@@ -116,12 +227,21 @@ class Build(unittest.TestCase):
     def setUp(self):
         self.d = scratch()
         self.b = os.path.join(self.d, "build")
-        self.write("build/project_description.json", {"project_path": self.d})
+        self.desc("build", ["main", "freertos"])
         self.write("build/config/sdkconfig.json", GOOD)
+        self.write("build/compile_commands.json", [{"directory": "/b", "file": "main.c", "command": "gcc -c main.c"}])
         self.write("build/bootloader/CMakeCache.txt", "")
         self.write("build/bootloader/build.ninja", "")
+        self.desc("build/bootloader", ["bootloader", "log"])
         self.write("build/bootloader/config/sdkconfig.json", GOOD)
+        self.write("build/bootloader/compile_commands.json",
+                   [{"directory": "/b", "file": "boot.c", "command": "gcc -c boot.c"}])
         self.write(O.DATA_FILE, {"release_profile": {n: {"value": v, "spec": s} for n, (v, s) in PROFILE.items()}})
+
+    def desc(self, folder, comps):
+        self.write(folder + "/project_description.json",
+                   {"project_path": self.d, "build_components": comps + [""],
+                    "build_component_info": {c: {"dir": os.path.join(self.d, "c", c)} for c in comps}})
 
     def write(self, rel, data):
         p = os.path.join(self.d, rel)
@@ -136,14 +256,17 @@ class Build(unittest.TestCase):
         return rc, buf.getvalue()
 
     def test_collect(self):
-        project, got = O.collect(self.b)
+        project, got, comps, cmds = O.collect(self.b)
         self.assertEqual(os.path.normcase(project), os.path.normcase(self.d))
         self.assertEqual(sorted(got), ["build", "build/bootloader"])
+        self.assertEqual(comps["build"], ["freertos", "main"])
+        self.assertEqual(len(cmds["build/bootloader"]), 1)
 
     def test_cli_passes(self):
         rc, out = self.run_cli()
         self.assertEqual(rc, 0, out)
-        self.assertIn("PASS R18", out)
+        for rule in ("PASS R18", "PASS R26", "PASS R28", "PASS R27: CONFIG_FREERTOS_HZ 1000 (spec 5)"):
+            self.assertIn(rule, out)
 
     def test_cli_fails_on_bootloader(self):
         self.write("build/bootloader/config/sdkconfig.json", opts(ON=False))
@@ -158,12 +281,72 @@ class Build(unittest.TestCase):
         self.assertEqual(rc, 1, out)
         self.assertIn("build: CONFIG_OFF is true, the profile says unset (spec 2)", out)
 
+    def test_cli_r26(self):
+        self.write("build/config/sdkconfig.json", opts(SECURE_BOOT=True))
+        rc, out = self.run_cli()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL R26", out)
+        self.assertIn("build: CONFIG_SECURE_BOOT is true, R26 says unset", out)
+        self.assertIn("PASS R18", out)
+        self.assertIn("PASS R28", out)
+
+    def test_cli_r28_level(self):
+        self.write("build/bootloader/config/sdkconfig.json", opts(BOOTLOADER_LOG_LEVEL=3))
+        rc, out = self.run_cli()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL R28", out)
+        self.assertIn("build/bootloader: CONFIG_BOOTLOADER_LOG_LEVEL is 3, R28 says 1", out)
+        self.assertIn("PASS R26", out)
+
+    def test_cli_r28_define(self):
+        self.write("build/bootloader/compile_commands.json",
+                   [{"directory": "/b", "file": "boot.c", "command": "gcc -DLOG_LOCAL_LEVEL=5 -c boot.c"}])
+        rc, out = self.run_cli()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("build/bootloader: -DLOG_LOCAL_LEVEL in 1 compile command(s), e.g. boot.c", out)
+
+    def test_cli_r28_arduino(self):
+        self.desc("build", ["main", "arduino"])
+        rc, out = self.run_cli()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("the Arduino core: an Arduino component is built (build: arduino)", out)
+        self.write("build/config/sdkconfig.json", opts(ARDUHAL_LOG_DEFAULT_LEVEL=0))
+        rc, out = self.run_cli()
+        self.assertEqual(rc, 0, out)
+        self.assertIn("Arduino core compiled: yes", out)
+        self.write("build/config/sdkconfig.json", opts(ARDUHAL_LOG_DEFAULT_LEVEL=3))
+        rc, out = self.run_cli()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("build: CONFIG_ARDUHAL_LOG_DEFAULT_LEVEL is 3, R28 says 0", out)
+
+    def test_cli_r27(self):
+        prof = {n: {"value": v, "spec": s} for n, (v, s) in PROFILE.items() if n != "CONFIG_FREERTOS_HZ"}
+        self.write(O.DATA_FILE, {"release_profile": prof})
+        rc, out = self.run_cli()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL R27: the profile does not name CONFIG_FREERTOS_HZ", out)
+
+    def test_cli_contradicting_profile(self):
+        prof = {n: {"value": v, "spec": s} for n, (v, s) in PROFILE.items()}
+        prof["CONFIG_LOG_DEFAULT_LEVEL"] = {"value": 3, "spec": "s"}
+        self.write(O.DATA_FILE, {"release_profile": prof})
+        rc, out = self.run_cli()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("CONFIG_LOG_DEFAULT_LEVEL: 3 contradicts R28", out)
+
     def test_cli_missing_options(self):
         os.remove(os.path.join(self.b, "bootloader", "config", "sdkconfig.json"))
         rc, out = self.run_cli()
         self.assertEqual(rc, 1, out)
         self.assertIn("FAIL R18: cannot read", out)
         self.assertIn("build/bootloader", out)
+
+    def test_cli_missing_compile_commands(self):
+        os.remove(os.path.join(self.b, "compile_commands.json"))
+        rc, out = self.run_cli()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("compile_commands.json cannot be read", out)
+        self.assertIn("R26, R27 and R28 not checked", out)
 
     def test_cli_missing_profile(self):
         os.remove(os.path.join(self.d, O.DATA_FILE))
