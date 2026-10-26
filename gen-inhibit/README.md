@@ -2,13 +2,16 @@
 
 The Vtrux generator inhibitor: firmware for the MeatPi WiCAN OBD (ESP32-C3),
 built with ESP-IDF on the WiCAN codebase, on branch `gen-inhibit/main`. This
-folder is the project's own; its spec, `VALIDATION.md` and `VERIFICATION.md`
-can move here later.
+folder is the project's own (port step 0d, 2026-10-26, AGENTS.md "Project
+layout"): its firmware build root `firmware/`, its host-side tools `tools/`,
+its tests `test/`, its diag interface `diag/` and the release launcher
+`vtrux_tools.py`. Its spec, `VALIDATION.md` and `VERIFICATION.md` can move
+here later.
 
 This file is the project's file map: who owns each file. It belongs to the
 gen-inhibit reviewer, who decides ownership when it is unclear and records it
-here (`AGENTS.md`, "Who owns what"). Paths starting `$REVERSE_IT_DIR` are in
-reverse-it and not yet moved.
+here (`AGENTS.md`, "Who owns what"). Paths are from the repo root. Paths
+starting `$REVERSE_IT_DIR` are in reverse-it and not yet moved.
 
 ## Reviewer
 
@@ -17,7 +20,7 @@ reverse-it and not yet moved.
   `gen-inhibit/diag/wican_diag_schema.md` and its DBC
   `gen-inhibit/diag/vtrux-wican-diag.dbc` (moved from reverse-it 2026-10-24,
   schema 7). The tester's tools decode through
-  `tools/gen_inhibit/bench/gi_diag.py`, which reads the DBC from git at a
+  `gen-inhibit/tools/bench/gi_diag.py`, which reads the DBC from git at a
   commit, never from a working tree (decode rework, merged 2026-10-25); the
   reverse-it copies are frozen at schema 7 and no longer read.
 - The review tracker:
@@ -28,21 +31,45 @@ reverse-it and not yet moved.
 
 ## Implementor: product code
 
-- The WiCAN tree on `gen-inhibit/main`, except the tester's `test/` folders
-  and the tester's files in `tools/gen_inhibit/` listed below.
-- Unit tests: `test/gen_inhibit_sched/`, `test/gen_inhibit_shim/`.
-- The Python reference in `tools/gen_inhibit/`: `sync.py`, `inhibit.py`,
-  `models.py`, `test_core.py`, `vehicle_runner.py`, `README.md`,
-  `HANDOFF.md`, `requirements.txt`.
-- The shared build tooling's launcher `tools/vtrux_tools.py` and its
-  self-test `tools/test_vtrux_tools.py`; `vtrux_build.json` at the repo root
-  (`project`, `shared_components`); `tools/README.md`. `tools/prod_build.py`
-  and its tests retired at port step 0 (spec 12.3 item 3, user, 2026-10-25).
-- `shared_pins.json` at the repo root, the project's pins of shared tooling,
-  owned per entry (reviewer, 2026-10-25): the `shared/tools` entry is the
-  implementor's, and a `shared/bench` entry, when the bench toolkit's pin
-  moves in, is the tester's. A pin moves only on a batch from the reviewer,
-  since moving it is also the decision to re-test (port plan goal 12).
+- The WiCAN tree, `gen-inhibit/firmware/`, except the tester's
+  `vtrux_checks.json` there. `gen-inhibit/firmware/README.md` describes it.
+- Unit tests: `gen-inhibit/test/gen_inhibit_sched/`,
+  `gen-inhibit/test/gen_inhibit_shim/`.
+- The Python reference in `gen-inhibit/tools/`: `sync.py`, `inhibit.py`,
+  `models.py`, `test_core.py`, `vehicle_runner.py`, `HANDOFF.md`,
+  `requirements.txt`, and the folder's `README.md`, which the tester's rows
+  in it are sent to the implementor to change.
+- `gen-inhibit/vtrux_tools.py`: **starts the shared build tooling**
+  (`shared/tools`, on `shared/main`) at the version this project pins in
+  `gen-inhibit/firmware/shared_pins.json`, from its read-only checkout
+  `../shared-<tag>/` beside the worktree's root (shared/tools SPEC R23):
+  `release` (a release build and its record, that spec's section 3), `image`
+  and `digest`. Run from the repo root as
+  `py -3.14 -B gen-inhibit/vtrux_tools.py ...`; `release` is given
+  `--project gen-inhibit/firmware` unless it names one (an abbreviation
+  counts). A prod build is a `release` at the pinned version (spec 12.3 item
+  3); none is made during the shared-code port. It reads only the pin's tag,
+  and if the checkout is missing it refuses and prints the command that
+  creates it; every check of the pin is the pinned tooling's own. It keeps
+  bytecode out of the checkout, whose digest that check compares.
+  `tools/prod_build.py` and its tests retired at port step 0 (spec 12.3 item
+  3, user, 2026-10-25).
+- `gen-inhibit/test_vtrux_tools.py`: the implementor's self-test of
+  `vtrux_tools.py`, on a copy of it in a scratch worktree laid out as this
+  repo is: no pin, a pin with no tag, a pin anywhere but
+  `gen-inhibit/firmware/` (not read), a missing checkout (the refusal names
+  the command), and a stand-in checkout whose command line gets the
+  arguments and keeps no `__pycache__`; `release` gets `--project` with
+  `gen-inhibit/firmware/` unless it names one, and nothing is added to the
+  other commands. Not evidence.
+- `gen-inhibit/firmware/vtrux_build.json`, the project's build data for the
+  tooling (`project`, `shared_components`).
+- `gen-inhibit/firmware/shared_pins.json`, the project's pins of shared
+  tooling, owned per entry (reviewer, 2026-10-25): the `shared/tools` entry
+  is the implementor's, and a `shared/bench` entry, when the bench toolkit's
+  pin moves in, is the tester's. A pin moves only on a batch from the
+  reviewer, since moving it is also the decision to re-test (port plan goal
+  12).
 
 ## Tester: harness and verification
 
@@ -50,7 +77,7 @@ reverse-it and not yet moved.
   Some of its entries are also measurements that a requirement's validation
   cites as its basis (for example section 13's cross-host build comparison,
   cited by `shared/tools/VALIDATION.md` R2).
-- In `tools/gen_inhibit/`: `bench_vehicle.py`, `live_bench.py`, `gi_vbus.py`,
+- In `gen-inhibit/tools/`: `bench_vehicle.py`, `live_bench.py`, `gi_vbus.py`,
   `test_gi_vbus.py`, `test_publish_scan.py`, `replay_inhibit.py`,
   `bench_flash.py`, `bench_flash_guard.py`, `bench_ota_guard.py` (reviewer,
   2026-10-08), `bench_flash_wire.py`, `test_bench_flash_wire.py`,
@@ -61,39 +88,49 @@ reverse-it and not yet moved.
   `suite_gen_inhibit.py`, `suite_gen_inhibit.settings.example.json`,
   `suite_judges.py`, `bench_compare.py` and their `test_suite_*` and
   `test_bench_compare*` files (reviewer, 2026-10-23).
-- `tools/gen_inhibit/bench/`: the bench harnesses, judges, runners and rig
+- `gen-inhibit/tools/bench/`: the bench harnesses, judges, runners and rig
   scripts with their tests and mutant runners, moved in from reverse-it by
   `ad0cab3` (port plan goal 20; reviewer, 2026-10-22). This includes the X2
   flash custody check, `x2_flash_custody.py`, with
   `test_x2_flash_custody.py` and `test_x2_flash_custody_mutants.py`.
-- `tools/gen_inhibit/x2_jammer/`: the X2 error-frame jammer, test equipment
+- `gen-inhibit/tools/x2_jammer/`: the X2 error-frame jammer, test equipment
   and never product code (since 2026-10-08; moved in by `ad0cab3`).
-- The host suite `test/gen_inhibit_host/` (runner, scenarios, golden traces)
-  and the build checks `test/build_checks/` (user, 2026-10-07).
-- `vtrux_checks.json` at the repo root: gen-inhibit's data for the shared
+- The host suite `gen-inhibit/test/gen_inhibit_host/` (runner, scenarios,
+  golden traces) and the build checks `gen-inhibit/test/build_checks/`
+  (user, 2026-10-07).
+- `gen-inhibit/firmware/vtrux_checks.json`: gen-inhibit's data for the shared
   build checks (`shared/tools/vtrux_checks/`), owned by the tester. Its keys:
   `release_profile`, the options for shared/tools R18, each value citing its
   spec line; `build_switches`, the switch table for shared/tools R20, also
-  read by `test/build_checks/build_switches.py` and `build_output.py`;
-  `board`, the WiCAN's board data for shared/tools R21 (`target`,
-  `partition_table`, the path of the reference table, and `flash_size`),
-  checked against the spec by `test/build_checks/test_board_data.py`; and
-  `inert_triggers`, the triggers the spec 12.4 inert row's bench rigs send
-  (reviewer, 2026-10-24). The implementor's `vtrux_build.json` holds only `project` and
+  read by `gen-inhibit/test/build_checks/build_switches.py` and
+  `build_output.py`; `board`, the WiCAN's board data for shared/tools R21
+  (`target`, `partition_table`, the path of the reference table, and
+  `flash_size`), checked against the spec by
+  `gen-inhibit/test/build_checks/test_board_data.py`; and `inert_triggers`,
+  the triggers the spec 12.4 inert row's bench rigs send (reviewer,
+  2026-10-24). The implementor's `vtrux_build.json` holds only `project` and
   `shared_components`.
-- `test/gen_inhibit_spec_shim/`: the spec 12.4 requirement tests on the
-  mock-HAL shim. They build against the implementor's `test/gen_inhibit_shim/`
-  fakes and add their own fault behaviour on top, never by editing those fakes
-  (reviewer, 2026-10-20: a test that judges product code is not written by the
-  implementor).
+- `gen-inhibit/test/gen_inhibit_spec_shim/`: the spec 12.4 requirement tests
+  on the mock-HAL shim. They build against the implementor's
+  `gen-inhibit/test/gen_inhibit_shim/` fakes and add their own fault
+  behaviour on top, never by editing those fakes (reviewer, 2026-10-20: a
+  test that judges product code is not written by the implementor).
 - In reverse-it, `$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/`:
-  what stays out of git, as `tools/gen_inhibit/bench/README.md` lists it (run
+  what stays out of git, as `gen-inhibit/tools/bench/README.md` lists it (run
   folders and fixtures, the jammer's builds and their `manifest.json`, the X2
   flash dumps in `board-backups/`, which never enter git, one-off checks and
   corpus investigations), and that folder's index `README.md` (reviewer,
   2026-10-10).
 
-`tools/wican-log-viewer/` is upstream WiCAN's.
+## Upstream
+
+`gen-inhibit/firmware/tools/wican-log-viewer/`, `docs/`, `sch/`,
+`vehicle_profiles*`, `.vehicle_profiles/` and `minify.bat` in
+`gen-inhibit/firmware/` are upstream WiCAN's. At the repo root, `README.md`,
+`LICENSE` and `.github/` are upstream's and stay there, where GitHub reads
+them (reviewer, 2026-10-26). Upstream's workflows in `.github/workflows/`
+filter on the pre-0d paths, so they no longer run on this branch; they are
+not maintained here.
 
 ## Shared code
 
@@ -113,7 +150,7 @@ change rule.
 
 ## Cross-project dependency
 
-gen-inhibit's custody check, `tools/gen_inhibit/bench/x2_flash_custody.py` and
+gen-inhibit's custody check, `gen-inhibit/tools/bench/x2_flash_custody.py` and
 its test `test_x2_flash_custody.py`, imports the charge-interposer tester's
 `charge-interposer/build_lookup.py` through `INTERPOSER_CODE` and uses exactly
 two names from it: `elf_sha256_of_bin` (a `.bin` path in, the ELF SHA-256 hex

@@ -58,19 +58,19 @@ Mkfile.old
 dkms.conf
 
 # docs
-docs/.nuxt
-docs/node_modules
+gen-inhibit/firmware/docs/.nuxt
+gen-inhibit/firmware/docs/node_modules
 
 #Vehicle Profiles
-.vehicle_profiles/node_modules/
+gen-inhibit/firmware/.vehicle_profiles/node_modules/
 .vscode/
 managed_components/
 
-# Rust (tools/wican-log-viewer)
-tools/wican-log-viewer/target/
+# Rust (gen-inhibit/firmware/tools/wican-log-viewer)
+gen-inhibit/firmware/tools/wican-log-viewer/target/
 **/target/
 *.rs.bk
-tools/wican-log-viewer/.cargo/
+gen-inhibit/firmware/tools/wican-log-viewer/.cargo/
 
 # Rust coverage / profiling
 **/llvm-profdata
@@ -79,15 +79,15 @@ tools/wican-log-viewer/.cargo/
 *.profdata
 
 # OS-specific junk inside Rust tool dir
-tools/wican-log-viewer/*.dSYM/
-tools/wican-log-viewer/*.pdb
-tools/wican-log-viewer/*.dll
-tools/wican-log-viewer/*.exe
+gen-inhibit/firmware/tools/wican-log-viewer/*.dSYM/
+gen-inhibit/firmware/tools/wican-log-viewer/*.pdb
+gen-inhibit/firmware/tools/wican-log-viewer/*.dll
+gen-inhibit/firmware/tools/wican-log-viewer/*.exe
 
 
 # Fuzz inputs are regenerated from a seed; only a kept failure is worth saving
 # by hand, and it should be copied somewhere deliberate if so.
-test/gen_inhibit_host/artifacts/fuzz-*.scn
+gen-inhibit/test/gen_inhibit_host/artifacts/fuzz-*.scn
 __pycache__/
 *.pyc
 
