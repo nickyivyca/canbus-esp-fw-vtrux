@@ -5,7 +5,7 @@ unmutated copy runs first as the control.
 
     py -3.14 -B tools/gen_inhibit/bench/test_stale_bench_reads_mutants.py
 
-Each mutant is a copy of the six files in the worktree's scratch/, one edit applied to one
+Each mutant is a copy of the seven files in the worktree's scratch/, one edit applied to one
 of them, run through STALE_READS_DIR. Gen-inhibit tester, 2026-10-25.
 """
 import os
@@ -17,8 +17,8 @@ import gi_paths  # noqa: E402
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEST = os.path.join(HERE, "test_stale_bench_reads.py")
 FILES = ("wican_autoarm_bench.py", "wican_keystate_bench.py", "wican_crank_request_bench.py", "wican_diag_check.py",
-         "tec_busoff_sweep.py", "probe_reachability.py")
-AB, KS, CR, DC, TB, PR = FILES
+         "tec_busoff_sweep.py", "probe_reachability.py", "txabort_refusal_check.py")
+AB, KS, CR, DC, TB, PR, TX = FILES
 MUTANTS = [
     (None, None, None, None),
     ("tec_busoff_sweep.build_id reads /check_status again", TB,
@@ -39,6 +39,11 @@ MUTANTS = [
      'print("device elf_sha256 %s" % pre.get("elf_sha256"))', 'print("device %s" % pre.get("device_id"))'),
     ("wican_keystate_bench prints sta_mac again", KS,
      'info.get("elf_sha256", "?")', 'info.get("sta_mac", "?")'),
+    ("txabort_refusal_check reads its image from /check_status again", TX,
+     '        sha = get_json("/gen_inhibit").get("elf_sha256")', '        sha = get_json("/check_status").get("git_version")'),
+    ("txabort_refusal_check takes any elf_sha256", TX,
+     '    if isinstance(sha, str) and len(sha) == 64 and all(c in "0123456789abcdef" for c in sha):\n        return sha',
+     '    if sha:\n        return sha'),
     ("wican_diag_check reads /check_status again", DC,
      '"http://192.168.80.1/gen_inhibit"', '"http://192.168.80.1/check_status"'),
 ]

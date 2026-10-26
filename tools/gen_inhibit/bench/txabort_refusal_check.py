@@ -74,6 +74,18 @@ def get_json(path):
         return json.loads(r.read())
 
 
+def device_image():
+    """The running image's elf_sha256 from /gen_inhibit, or None when the page does not
+    answer or names no 64 lower-case hex digits."""
+    try:
+        sha = get_json("/gen_inhibit").get("elf_sha256")
+    except Exception:
+        return None
+    if isinstance(sha, str) and len(sha) == 64 and all(c in "0123456789abcdef" for c in sha):
+        return sha
+    return None
+
+
 def snapshot():
     """The state a refused request must not have changed.
 
@@ -109,10 +121,13 @@ CASES = [
 
 
 def main():
-    st = get_json("/check_status")
-    print("device git_version %s" % st["git_version"])
-    if st["git_version"] == "":
-        raise SystemExit("no git version from the device")
+    # The image from /gen_inhibit's elf_sha256 (spec 11), never /check_status, which answers
+    # with the device's config, credentials included (reviewer, 2026-10-20). Until 2026-10-25
+    # this read git_version from it, its only use of that page.
+    sha = device_image()
+    print("device elf_sha256 %s" % sha)
+    if sha is None:
+        raise SystemExit("the device names no elf_sha256 on /gen_inhibit")
 
     before = snapshot()
     print("before: mode=%s drv=%s tx_ok=%s tx_fail=%s\n"
@@ -183,7 +198,7 @@ def main():
     print("        %s" % note)
 
     out = {"when_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-           "git_version": st["git_version"],
+           "elf_sha256": sha,
            "cases": results,
            "control_valid_request_ok": ctl_ok,
            "unknown_key_note": note}

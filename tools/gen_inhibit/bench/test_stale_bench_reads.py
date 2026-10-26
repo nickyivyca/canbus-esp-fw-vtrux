@@ -9,16 +9,20 @@ answers with the device's config, credentials included). Moved, each with a curr
   wican_diag_check.py         the diag pages on the bench (diag_check_rules.py's rules)
   tec_busoff_sweep.py         its build_id(); its judge_bus_on() is B8's
   probe_reachability.py       the httpd-vs-socket probe
-Proposed for retiring instead, not moved: batt_voltage_log.py, txabort_refusal_check.py,
-wican_inhibit_bench.py, wican_timing_bench.py.
+  txabort_refusal_check.py    the over-long-argument refusal check (reviewer, 2026-10-25: its
+                              only use of /check_status was the build id)
+batt_voltage_log.py is parked instead (test_batt_voltage_log.py); wican_inhibit_bench.py and
+wican_timing_bench.py are retired (reviewer, 2026-10-25).
 
 urllib.request.urlopen is faked: /gen_inhibit answers a page, /check_status a made-up value,
 so a request for it shows in the URLs asked for and in what comes back.
-  behaviour  tec_busoff_sweep.build_id(), wican_autoarm_bench.build_id() (a good page, no
+  behaviour  tec_busoff_sweep.build_id(), wican_autoarm_bench.build_id(),
+             txabort_refusal_check.device_image() (a good page, no
              answer, no elf_sha256, a short or upper-case one) and probe_reachability.http_up()
              ask only /gen_inhibit and never return the made-up value
   source     no string constant outside a docstring names /check_status in any of the six
              (a control finds one in a probe file); none names "device_id" or "sta_mac"
+             (seven files with txabort_refusal_check)
 
     py -3.14 -B tools/gen_inhibit/bench/test_stale_bench_reads.py
 Mutants: test_stale_bench_reads_mutants.py (STALE_READS_DIR runs another copy of the six).
@@ -39,7 +43,7 @@ sys.path.insert(0, HERE)
 import gi_paths      # noqa: E402
 
 MOVED = ("wican_autoarm_bench.py", "wican_keystate_bench.py", "wican_crank_request_bench.py", "wican_diag_check.py",
-         "tec_busoff_sweep.py", "probe_reachability.py")
+         "tec_busoff_sweep.py", "probe_reachability.py", "txabort_refusal_check.py")
 SCRATCH = gi_paths.scratch("stale-bench-reads")
 MADE_UP = "made-up-value-not-a-credential"
 SHA = "3639f8b2" + "c0" * 28
@@ -100,6 +104,7 @@ def behaviour():
         TB = load("tec_busoff_sweep.py")
         AB = load("wican_autoarm_bench.py")
         PR = load("probe_reachability.py")
+        TX = load("txabort_refusal_check.py")
         for label, page, want in PAGES:
             dev = Device(page)
             urllib.request.urlopen = dev.urlopen
@@ -114,6 +119,13 @@ def behaviour():
             check("wican_autoarm_bench.build_id asks only /gen_inhibit (%s)" % label, set(dev.urls) == {"/gen_inhibit"},
                   dev.urls)
             check("wican_autoarm_bench.build_id: the made-up value nowhere (%s)" % label, MADE_UP not in str(got))
+        for label, page, want in PAGES:
+            dev = Device(page)
+            urllib.request.urlopen = dev.urlopen
+            got = TX.device_image()
+            check("txabort_refusal_check.device_image, %s" % label, got == want, got)
+            check("txabort_refusal_check.device_image asks only /gen_inhibit (%s)" % label,
+                  set(dev.urls) == {"/gen_inhibit"}, dev.urls)
         dev = Device({"elf_sha256": SHA})
         urllib.request.urlopen = dev.urlopen
         up = PR.http_up("192.168.80.1", 1.0)

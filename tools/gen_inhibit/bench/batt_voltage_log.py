@@ -14,6 +14,10 @@ batt_voltage kept as sent). Good for before/after, not for catching a reset.
 
     py -3.14 tools/gen_inhibit/bench/batt_voltage_log.py <label>
 Appends one JSON line to runs/batt_voltage_log_<YYYYMMDD>.jsonl and prints it.
+
+PARKED since 2026-10-25 (gen-inhibit reviewer): main() refuses at start with the reason and
+requests nothing, because batt_voltage is on /check_status only and that page is not read
+until the WiCAN's factory reset (reviewer, 2026-10-20).
 """
 import json
 import os
@@ -40,7 +44,19 @@ def extract(status):
     return out
 
 
+PARKED = ("batt_voltage is on /check_status only, and no /check_status request is made until the WiCAN's "
+          "factory reset (reviewer, 2026-10-20); parked, not retired (gen-inhibit reviewer, 2026-10-25)")
+
+
 def main():
+    """PARKED: refuses before any request, and writes nothing. read_and_log() is the tool as
+    it ran on 2026-10-09; main() calls it again once the bar is lifted."""
+    print("REFUSED: batt_voltage_log is parked: %s. Nothing was requested or written." % PARKED)
+    return 2
+
+
+def read_and_log():
+    """The tool as it ran until 2026-10-25. Not called while parked."""
     label = sys.argv[1] if len(sys.argv) > 1 else ""
     import lowid_flood_skip_bench as LF
     rec = {"t": time.strftime("%Y-%m-%dT%H:%M:%S"), "label": label}

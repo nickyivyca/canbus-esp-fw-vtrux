@@ -8,7 +8,7 @@ a fault raised by commanding the engine-off state mid-crank-request -- needs a
 real VCM and cannot be tested here. The other, and the mechanics of the hold
 itself, can.
 
-`wican_inhibit_bench.py` does not cover this: the stream it replays is real
+`wican_inhibit_bench.py` (retired 2026-10-25) did not cover this: the stream it replayed is real
 VCM traffic in which B0 never leaves 0x08, so the device is never asked to
 hold against a generator request. This synthesises one.
 
