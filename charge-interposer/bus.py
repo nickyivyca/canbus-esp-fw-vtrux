@@ -27,7 +27,9 @@ A plain two-node run (no interposer) puts both nodes on the vehicle segment.
 import can
 
 # Nothing here imports canre (replay.py takes the pinned one through
-# paths.add_canre), so bus.py puts no canre on sys.path.
+# paths.add_canre), so bus.py puts no canre on sys.path. canbench comes
+# from REVERSE_IT_DIR through paths.import_canbench(), only when a real
+# dongle other than gs_usb is opened.
 
 VEHICLE_SEGMENT = "239.0.2.1"
 CHARGER_SEGMENT = "239.0.2.2"
@@ -196,6 +198,8 @@ def open_bus(args, *, prefix="", default_channel=VEHICLE_SEGMENT,
                            receive_own_messages=receive_own_messages,
                            logger=logger)
 
+    import paths
+    paths.import_canbench()     # from REVERSE_IT_DIR, without its canre/
     from canbench.live.receiver import detect_all_can_interfaces
     if logger:
         logger.info("Detecting %s interfaces at %d bps...", transport, bitrate)

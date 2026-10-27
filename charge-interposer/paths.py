@@ -32,7 +32,10 @@ canre comes from the public repo at the commit pins.json pins, installed
 and checked by canre_pin.py (port step 0 for the interposer, reviewer,
 2026-10-26). It carries both parser fixes (signed BUSMASTER timestamp
 components and midnight rollover) that kept canre on SeaDrive's copy from
-2026-10-08 until then. SeaDrive's canre is never read.
+2026-10-08 until then. SeaDrive's canre is never read. canbench, the
+adapter detection bus.open_bus uses for real dongles, is not in the public
+repo and still comes from REVERSE_IT_DIR, by import_canbench(), which loads
+that one package without putting the reverse-it root on sys.path.
 
 The interposer diag DBC is in this repo (diag/), so diag_dbc() needs no
 setting; it is here so that every reader names one path.
@@ -177,6 +180,36 @@ def add_canre():
         return canre_pin.use()
     except canre_pin.CanrePinError as e:
         raise PathsError(str(e))
+
+
+def import_canbench():
+    """reverse-it's canbench package (bus.open_bus's adapter detection),
+    imported from REVERSE_IT_DIR/canbench by file. The reverse-it root is
+    never put on sys.path: that is how it came in before port step 0, and
+    it would bring SeaDrive's canre/ with it."""
+    import importlib.util
+    d = os.path.join(reverse_it_dir(), "canbench")
+    init = os.path.join(d, "__init__.py")
+    have = sys.modules.get("canbench")
+    if have is not None:
+        if os.path.normpath(getattr(have, "__file__", "") or "") \
+                != os.path.normpath(init):
+            raise PathsError("canbench is already imported from %s, not %s"
+                             % (getattr(have, "__file__", None), d))
+        return have
+    if not os.path.isfile(init):
+        raise PathsError("no canbench/ at %s (REVERSE_IT_DIR)"
+                         % reverse_it_dir())
+    spec = importlib.util.spec_from_file_location(
+        "canbench", init, submodule_search_locations=[d])
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["canbench"] = mod
+    try:
+        spec.loader.exec_module(mod)
+    except BaseException:
+        del sys.modules["canbench"]
+        raise
+    return mod
 
 
 if __name__ == "__main__":

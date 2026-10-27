@@ -10,6 +10,10 @@
   - canre is the pinned install (canre_pin.py), with or without
     REVERSE_IT_DIR, and never a canre/ under REVERSE_IT_DIR (port step 0,
     reviewer 2026-10-26; canre_pin_test.py tests the pin itself);
+  - import_canbench() loads REVERSE_IT_DIR/canbench without putting the
+    root on sys.path or making its canre/ importable, shown able to fail
+    on the old way (the root on sys.path), and refuses a missing canbench/
+    or one already imported from elsewhere;
   - `run_scenario.py --list` runs with REVERSE_IT_DIR unset (only touching
     data needs it);
   - diag_dbc() is the git copy, diag/vtrux-interposer-diag.dbc beside
@@ -103,6 +107,88 @@ def scan(root, exts, pattern, code_only):
     return hits
 
 
+def _drop_canbench():
+    for k in [k for k in sys.modules if k.split(".")[0] == "canbench"]:
+        del sys.modules[k]
+
+
+def _root_exposed(root):
+    """Whether the reverse-it root is on sys.path or its canre/ is the one
+    an `import canre` would find."""
+    import importlib.util
+    r = os.path.normcase(os.path.normpath(root))
+    on_path = any(os.path.normcase(os.path.normpath(p or ".")) == r
+                  for p in sys.path)
+    saved = sys.modules.pop("canre", None)
+    try:
+        spec = importlib.util.find_spec("canre")
+    finally:
+        if saved is not None:
+            sys.modules["canre"] = saved
+    locs = list(getattr(spec, "submodule_search_locations", None) or []) \
+        if spec else []
+    if spec and spec.origin:
+        locs.append(spec.origin)
+    fake = any(os.path.normcase(os.path.normpath(l)).startswith(r + os.sep)
+               for l in locs)
+    return on_path or fake
+
+
+def canbench_checks(root, tmp):
+    """import_canbench(): canbench from REVERSE_IT_DIR, the root never on
+    sys.path (it would bring SeaDrive's canre/ with it, as bus.py's
+    add_canre(required=False) did before port step 0)."""
+    for rel, text in (("canbench/__init__.py", "WHO = 'fake root'\n"),
+                      ("canbench/live/__init__.py", ""),
+                      ("canbench/live/receiver.py", "X = 1\n"),
+                      ("canre/__init__.py", "FAKE = True\n")):
+        p = os.path.join(root, *rel.split("/"))
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w") as f:
+            f.write(text)
+    path0 = list(sys.path)
+    _drop_canbench()
+    try:
+        cb = PA.import_canbench()
+        import canbench.live.receiver as rcv
+        check(getattr(cb, "WHO", None) == "fake root"
+              and getattr(rcv, "X", None) == 1,
+              "import_canbench() loads REVERSE_IT_DIR/canbench, and "
+              "canbench.live.receiver imports from it")
+        check(not _root_exposed(root),
+              "... with the reverse-it root not on sys.path and its canre/ "
+              "not importable")
+        check(PA.import_canbench() is cb, "a second call returns the same "
+              "module")
+
+        # the check above can fail: the old way, the root on sys.path
+        _drop_canbench()
+        sys.path.insert(0, root)
+        import canbench                          # noqa: F401
+        check(_root_exposed(root),
+              "can-fail: the root put on sys.path (the old way) is caught")
+        sys.path[:] = path0
+        _drop_canbench()
+
+        other = os.path.join(tmp, "other")
+        os.makedirs(os.path.join(other, "canbench"))
+        with open(os.path.join(other, "canbench", "__init__.py"), "w") as f:
+            f.write("")
+        sys.path.insert(0, other)
+        import canbench                          # noqa: F401,F811
+        sys.path[:] = path0
+        check(raises(PA.import_canbench, "already imported from"),
+              "a canbench already imported from elsewhere is refused")
+        _drop_canbench()
+
+        shutil.rmtree(os.path.join(root, "canbench"))
+        check(raises(PA.import_canbench, "no canbench/"),
+              "no canbench/ under REVERSE_IT_DIR is a PathsError")
+    finally:
+        sys.path[:] = path0
+        _drop_canbench()
+
+
 def main():
     names = ("REVERSE_IT_DIR", "VTRUX_DATA", "VTRUX_PUBLIC_REPO", "CANRE_DIR",
              "INTERPOSER_CODE")
@@ -164,6 +250,7 @@ def main():
             os.environ.pop("CANRE_DIR")
         else:
             os.environ["CANRE_DIR"] = saved["CANRE_DIR"]
+        canbench_checks(root, tmp)
         os.environ["VTRUX_DATA"] = os.path.join(tmp, "elsewhere")
         check(PA.data_dir() == vtrux,
               "a stale VTRUX_DATA beside REVERSE_IT_DIR changes nothing")
