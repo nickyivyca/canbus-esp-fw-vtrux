@@ -101,3 +101,39 @@ gen-inhibit's spec is
   - the required settings: B3 (user, 2026-10-26). gen-inhibit's spec sets
     them in 9.1, 9.4 and 12.3 item 3.
 - **Status:** complete.
+
+## 3. `x2`
+
+- **Basis:**
+  - target, flash size and frequency, and the partition table: the board
+    itself, read 2026-10-25 by the charge-interposer reviewer from its
+    2026-09-29 flash backup (the table at 0x8000; chip id 9, size code 3 in
+    the bootloader and app headers), and confirmed by that project's tester
+    the same day against the baseline images (`36edf3e55552`, built at
+    `4a59647`): the baseline `partitions.bin` is byte-identical to the
+    board's table, and the header bytes are the same in all six images
+    (charge-interposer review tracker, "X2 board data"). The table is
+    PlatformIO's `default_8MB.csv`, which the interposer's `platformio.ini`
+    has used since `7a27421` (2026-10-08);
+  - flash mode: `platformio.ini` sets QIO; the headers read DIO because
+    ESP-IDF writes DIO for QIO (`components/esptool_py/Kconfig.projbuild`,
+    v5.4.1, read 2026-10-26);
+  - the errata workaround: ESP-IDF's TWAI Kconfig lists the S3 among the
+    affected chips; it is on in the prebuilt Arduino libraries the
+    interposer builds with today, and that project's spec 2.3 relies on a
+    silent listen-only port;
+  - the required settings: B3 (user, 2026-10-26), with the same list as
+    `wican_v3`, plus PSRAM, which the module carries, and the core dump,
+    for which the table has a partition (user, 2026-10-27). The charge
+    interposer's spec sets them at its port step 2a;
+  - pins and crystal: the port plan's Layer 1, the interposer's board
+    wiring in `firmware/src/main.cpp` and `port_mcp2515.h`, arduino-esp32's
+    `aslcanx2` variant, and the Autosport Labs wiki for INT on GPIO3, which
+    the variant lacks; STBY hardwired: the interposer's `main.cpp` header,
+    from the board;
+  - console hardware: the interposer's first bring-up, 2026-09-10 (UART0
+    pins with nothing attached);
+  - the LED on GPIO2: the `aslcanx2` variant only.
+- **Status:** basis pending for the LED: not yet seen to light on the
+  board (a blink test is asked of the charge-interposer tester,
+  2026-10-27). Complete otherwise.

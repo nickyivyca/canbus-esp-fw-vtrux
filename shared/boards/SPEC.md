@@ -119,4 +119,50 @@ Requirements in section 1 are numbered B1 to B7. The numbers are stable.
 
 ## 3. `x2`: Autosport Labs ESP32-CAN-X2
 
-Drafted by the charge-interposer reviewer and ruled in its session.
+Approved by the user on 2026-10-27, in the charge-interposer reviewer's
+session.
+
+- **Target** `esp32s3`, dual core. **Hardware name** `ESP32-CAN-X2`.
+- **Fixed by the board:**
+  - Flash: 8 MB, 80 MHz, QIO. As for `wican_v3`, ESP-IDF writes DIO into
+    the image headers and the bootloader switches to quad itself; R21
+    checks the size, not the mode.
+  - Partition table: byte-identical to the one the X2 carries, PlatformIO's
+    `default_8MB.csv`:
+
+    | Name | Type | Offset | Size |
+    |---|---|---|---|
+    | `nvs` | data, nvs | 0x9000 | 20K |
+    | `otadata` | data, ota | 0xe000 | 8K |
+    | `app0` | app, ota_0 | 0x10000 | 0x330000 (3,342,336 bytes) |
+    | `app1` | app, ota_1 | 0x340000 | 0x330000 (3,342,336 bytes) |
+    | `spiffs` | data, spiffs | 0x670000 | 1536K, present but not mounted by the interposer |
+    | `coredump` | data, coredump | 0x7f0000 | 64K |
+
+    The reference is the charge interposer's baseline `partitions.bin`,
+    3072 bytes, sha256
+    `1d9cca96de0fe07ad7fc0648b9878ddecd9ce565e38b589ad20fea698ed4c80c`. The
+    application slot is 3,342,336 bytes.
+  - `CONFIG_TWAI_ERRATA_FIX_LISTEN_ONLY_DOM=y`: without it the S3's TWAI
+    controller sends dominant bits in listen-only mode when it sees an
+    error.
+- **Required of the project:**
+  - the console;
+  - the watchdogs' behaviour on a hang: `CONFIG_BOOTLOADER_WDT_DISABLE_IN_USER_CODE`
+    and `CONFIG_ESP_TASK_WDT_PANIC`;
+  - Bluetooth on or off: `CONFIG_BT_ENABLED`;
+  - PSRAM on or off: `CONFIG_SPIRAM`. The module carries 8 MB of PSRAM;
+    its mode is fixed here when a project first turns it on;
+  - where a core dump goes: the `ESP_COREDUMP_TO_FLASH_OR_UART` choice
+    (`CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH`, `_TO_UART` or `_TO_NONE`),
+    since the table has a `coredump` partition.
+- **CAN:** two ports. Port 0 is the S3's TWAI, TX on GPIO7 and RX on GPIO6.
+  Port 1 is an MCP2515 on SPI2 (HSPI): CS GPIO10, SCK GPIO12, MISO GPIO13,
+  MOSI GPIO11, INT GPIO3 (active low), with a 16 MHz crystal. The SPI clock
+  is the driver's choice. Neither port has a standby line: both MCP2562
+  transceivers have STBY hardwired, so `board_can_standby` returns "not
+  supported" for both.
+- **Offered:** LED `led1` (GPIO2).
+- **Console hardware:** nothing is attached to UART0 (GPIO43/44); the USB
+  connector reaches the S3's USB-Serial/JTAG. Which console a project uses
+  is project data.
