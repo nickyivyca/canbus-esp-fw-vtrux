@@ -200,8 +200,8 @@ SUITES = [
         ("witness stall hides an unpaired ID", 'bad.append("%s planned %d seen %d" % (k, len(p), len(w)))',
          "pass"),
         ("priority not raised", "k.SetPriorityClass(ctypes.c_void_p(h), ABOVE_NORMAL)", "pass"),
-        ("lock ignores the loan", 'if loan.strip("- ") == "":', "if True:"),
-        ("lock accepts any loan", "return loan.startswith(ME),", "return True,"),
+        # The lock check left this file for bench_held.py (9b74ba0, 2026-10-25); its mutants,
+        # the loan and the gate here included, are test_bench_held_mutants.py's.
     ]),
     ("spec11_page_check.py", "test_spec11_page_check.py", ["image_elf_sha.py"], [
         ("no VOID on equal builds", "if mine == other:", "if False:"),
