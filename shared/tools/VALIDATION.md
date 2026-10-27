@@ -535,14 +535,35 @@ same folder. The interposer's test evidence is
     hard-codes a tool name, and each tool a check runs is named from the
     board's `IDF_TARGET`, by ESP-IDF's own per-target files. A build whose
     target is not the board's fails.
-  - A board used by one project has its data in that project's
-    `vtrux_checks.json`. A shared board's data reaches a release build only
-    inside the shared board component pinned in `dependencies.lock`, under
-    `managed_components/` (R17, goal 20).
+  - The first reading put the data of a board used by one project in that
+    project's `vtrux_checks.json`. R22 superseded it (user, 2026-10-25):
+    every board's data is under `shared/boards/`. A board's data reaches a release
+    build only inside the board component pinned in `dependencies.lock`,
+    under `managed_components/` (R17, goal 20).
+- **Which board** (user, 2026-10-26, in the gen-inhibit reviewer's session,
+  proposed by the charge-interposer reviewer): the project's one
+  `shared/boards/*` dependency, and nothing else, so the fact is recorded
+  once (`shared/boards/VALIDATION.md` B2).
   - Release builds only, like R18 and R20. The bootloader's contents are
     not compared, only the partition table.
 - **Status:** complete for the WiCAN. The X2's values: basis pending, with
   port step 2a.
+
+### R29. Board settings
+- **Basis:** user, 2026-10-26, in the gen-inhibit reviewer's session: a
+  board fixes some settings, and lists others that every project building
+  for it must set itself, such as the console, the watchdogs and Bluetooth
+  (`shared/boards/VALIDATION.md` B3). Checked in the options check, as R26
+  to R28 are, so a committed `sdkconfig` cannot drift from its board, and a
+  project cannot leave a required setting to a default.
+- **Status:** complete.
+
+### R30. Pins stay in the board
+- **Basis:** user, 2026-10-26, in the gen-inhibit reviewer's session: pins
+  in a separate header, with a listed exception for stock files that still
+  use them (`shared/boards/VALIDATION.md` B6). The dependency records are
+  the ones R17 reads, so the check sees every header an object read.
+- **Status:** complete.
 
 ### R26. No eFuse-burning features in a release build
 - **Basis:** user, 2026-10-25, in the interposer reviewer's session: the
