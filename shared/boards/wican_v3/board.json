@@ -1,0 +1,14 @@
+{
+  "target": "esp32c3",
+  "flash_size": "4MB",
+  "partition_table": "stock-v4.13-partition-table.bin",
+  "required": [
+    {"setting": "the console",
+     "choice": ["CONFIG_ESP_CONSOLE_UART_DEFAULT", "CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG",
+                "CONFIG_ESP_CONSOLE_UART_CUSTOM", "CONFIG_ESP_CONSOLE_NONE"]},
+    {"setting": "the bootloader watchdog in user code", "option": "CONFIG_BOOTLOADER_WDT_DISABLE_IN_USER_CODE"},
+    {"setting": "the task watchdog's panic", "option": "CONFIG_ESP_TASK_WDT_PANIC"},
+    {"setting": "Bluetooth on or off", "option": "CONFIG_BT_ENABLED"}
+  ],
+  "hardware_name": "OBD"
+}
