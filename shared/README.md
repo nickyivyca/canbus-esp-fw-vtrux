@@ -23,4 +23,5 @@ charge interposer.
 | Folder | What |
 |---|---|
 | `bench/` | The shared bench toolkit (`vtrux_bench`). See `bench/README.md`. |
+| `boards/` | The board layer: one ESP-IDF component per board, to `boards/SPEC.md`. See `boards/README.md`. |
 | `tools/` | The shared build tooling (`vtrux_build`): the image library, the release build and its record, to `tools/SPEC.md`. See `tools/README.md`. |

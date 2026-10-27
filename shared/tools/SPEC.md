@@ -19,7 +19,7 @@ other project's reviewer (charge interposer) reads it before it merges into
   spec 12.3 item 3,
   `$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-wican-spec.md`.
 
-Requirements are numbered R1 to R28. The numbers are stable: the two evidence
+Requirements are numbered R1 to R30. The numbers are stable: the two evidence
 documents cite them.
 
 ## Terms
@@ -228,7 +228,22 @@ unless the image changes, which the reproducible test (R19) shows.
   reference, the image fits the board's application slot, the flash size in
   the headers of the images the build writes (the app's and the
   bootloader's) is the board's, and the tool prefix comes from the board's
-  `IDF_TARGET`.
+  `IDF_TARGET`. The board is the one `shared/boards/*` component in the
+  project's `dependencies.lock`, and its data is read from that component
+  in `managed_components/` (`shared/boards/SPEC.md` B2 and B4). A release
+  build is refused unless there is exactly one.
+- **R29. Board settings.** Every option the board's `sdkconfig.board` names
+  has the board's value in the build, and the project's release profile
+  names every setting the board lists as required of the project, with the
+  value the project's own spec sets and cites (`shared/boards/SPEC.md` B3).
+  The options check (R18) applies it, on the finished release build; bench
+  and dev builds are not checked.
+- **R30. Pins stay in the board.** From ninja's dependency records, no
+  object compiled from the project root read the board's
+  `include/board_pins.h` unless its source file is on the project's list of
+  stock files that still use pins (`shared/boards/SPEC.md` B6). The list is
+  per-project data (R22). Like R18, the check runs on the finished release
+  build; bench and dev builds are not checked.
 - **R26. No eFuse-burning features in a release build.** Every release
   build has `CONFIG_SECURE_BOOT`, `CONFIG_SECURE_FLASH_ENC_ENABLED` and
   `CONFIG_FLASH_ENCRYPTION_ENABLED` unset, and `CONFIG_EFUSE_VIRTUAL` off,
