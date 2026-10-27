@@ -8,6 +8,8 @@ The partition tables are built here from ESP-IDF's published format, so no table
 """
 
 import ast
+import contextlib
+import io
 import glob
 import hashlib
 import json
@@ -23,6 +25,7 @@ sys.path.insert(0, TOOLS)
 from vtrux_checks import board as B  # noqa: E402
 from vtrux_checks import parttable as P  # noqa: E402
 from vtrux_checks.tests.test_scope import scratch  # noqa: E402
+from vtrux_checks.tests import boardkit as K  # noqa: E402
 
 SLOT = 0x1B3000
 
@@ -96,37 +99,27 @@ class Data(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.d)
 
-    def data(self, obj):
-        with open(os.path.join(self.d, B.DATA_FILE), "w", newline="\n") as f:
-            json.dump(obj if obj is not None else {}, f)
+    def test_from_the_board_component(self):
+        f = K.board(self.d, K.data(target="esp32c3", flash_size="4MB"))
+        self.assertEqual(B.read_board(self.d),
+                         ("esp32c3", os.path.normpath(os.path.join(f, "ref/pt.bin")), "4MB", K.NAME))
 
-    def test_inline(self):
-        self.data({"board": {"target": "esp32c3", "partition_table": "ref/pt.bin", "flash_size": "4MB"}})
-        got = B.read_board(self.d)
-        self.assertEqual(got, ("esp32c3", os.path.normpath(os.path.join(self.d, "ref/pt.bin")), "4MB"))
-
-    def test_named_board_not_built(self):
-        self.data({"board": "x2"})
-        with self.assertRaisesRegex(B.BoardError, "not built yet"):
+    def test_no_board_component(self):
+        K.lock(self.d, {})
+        with self.assertRaisesRegex(B.BoardError, "0 shared/boards"):
             B.read_board(self.d)
 
-    def test_bad(self):
-        good = {"target": "esp32c3", "partition_table": "p", "flash_size": "4MB"}
-        for label, b in (("no board", None), ("extra key", dict(good, slot=1)),
-                         ("missing key", {"target": "esp32c3"}),
-                         ("no flash size", {"target": "esp32c3", "partition_table": "p"}),
-                         ("bad target", dict(good, target="ESP32-C3")),
-                         ("absolute path", dict(good, partition_table=os.path.abspath("p"))),
-                         ("empty path", dict(good, partition_table="")),
-                         ("flash size a number", dict(good, flash_size=4)),
-                         ("empty flash size", dict(good, flash_size=""))):
-            self.data({"board": b} if b is not None else {})
-            with self.assertRaises(B.BoardError, msg=label):
-                B.read_board(self.d)
-
-    def test_no_file(self):
-        with self.assertRaises(B.BoardError):
+    def test_board_data_checked(self):
+        K.board(self.d, K.data(flash_size=""))
+        with self.assertRaisesRegex(B.BoardError, "flash_size"):
             B.read_board(self.d)
+
+    def test_project_data_not_read(self):
+        """The old inline form in vtrux_checks.json neither names the board nor stops the check."""
+        K.board(self.d)
+        with open(os.path.join(self.d, "vtrux_checks.json"), "w", newline="\n") as f:
+            json.dump({"board": {"target": "chipz", "partition_table": "p", "flash_size": "ZMB"}}, f)
+        self.assertEqual(B.read_board(self.d)[0], "chipa")
 
     def test_slot_is_smallest_app(self):
         p = os.path.join(self.d, "pt.bin")
@@ -299,7 +292,8 @@ class Collect(unittest.TestCase):
         os.makedirs(os.path.dirname(os.path.join(self.idf, *B.APP_FORMAT)))
         with open(os.path.join(self.idf, *B.APP_FORMAT), "w", newline="\n") as f:
             f.write(APP_FORMAT)
-        self.write("ref/pt.bin", table())
+        self.ref = os.path.relpath(os.path.join(K.folder(self.p), "ref", "pt.bin"), self.p)
+        self.write(self.ref, table())
         self.write("build/partition_table/partition-table.bin", table())
         self.write("build/proj.bin", image(5))
         self.write("build/bootloader/bootloader.bin", image(5, 300))
@@ -309,7 +303,7 @@ class Collect(unittest.TestCase):
              "bootloader": {"offset": "0x0", "file": "bootloader/bootloader.bin"}}))
         self.write("build/project_description.json", json.dumps(
             {"project_path": self.p.replace(os.sep, "/"), "idf_path": self.idf.replace(os.sep, "/"), "app_bin": "proj.bin"}))
-        self.board({"target": "chipa", "partition_table": "ref/pt.bin", "flash_size": "XMB"})
+        self.board()
 
     def tearDown(self):
         shutil.rmtree(self.d)
@@ -320,8 +314,8 @@ class Collect(unittest.TestCase):
         with open(p, "wb" if isinstance(data, bytes) else "w", **({} if isinstance(data, bytes) else {"newline": "\n"})) as f:
             f.write(data)
 
-    def board(self, b):
-        self.write(B.DATA_FILE, json.dumps({"release_profile": {}, "board": b}))
+    def board(self, **kw):
+        K.board(self.p, K.data(**kw))
 
     def run_main(self):
         class A:
@@ -352,7 +346,7 @@ class Collect(unittest.TestCase):
 
     def test_slot_from_the_reference_not_the_build(self):
         small = table([(P.APP, 0x10, 0x10000, 500, "ota_0"), (P.APP, 0x11, 0x20000, 0x1000, "ota_1")])
-        self.write("ref/pt.bin", small)
+        self.write(self.ref, small)
         self.write("build/partition_table/partition-table.bin", small)
         self.assertEqual([x for x in B.judge(B.collect(self.b)) if "slot" in x], ["the image is 1000 bytes, over the 500-byte slot by 500"])
 
@@ -362,13 +356,13 @@ class Collect(unittest.TestCase):
         self.assertEqual(self.run_main(), 1)
 
     def test_board_target_without_toolchain(self):
-        self.board({"target": "chipz", "partition_table": "ref/pt.bin", "flash_size": "XMB"})
+        self.board(target="chipz")
         with self.assertRaises(B.BoardError):
             B.collect(self.b)
         self.assertEqual(self.run_main(), 1)
 
     def test_cannot_read(self):
-        for rel in ("build/flasher_args.json", "build/partition_table/partition-table.bin", "ref/pt.bin", "build/proj.bin",
+        for rel in ("build/flasher_args.json", "build/partition_table/partition-table.bin", self.ref, "build/proj.bin",
                     "build/bootloader/bootloader.bin", "../idf/components/bootloader_support/include/esp_app_format.h"):
             p = os.path.join(self.p, rel)
             os.rename(p, p + ".aside")
@@ -397,16 +391,28 @@ class Collect(unittest.TestCase):
                           "the bootloader image's header gives flash size unknown value 7, the board's is XMB"])
 
     def test_board_flash_size_from_idf(self):
-        self.board({"target": "chipa", "partition_table": "ref/pt.bin", "flash_size": "YMB"})
+        self.board(flash_size="YMB")
         self.assertEqual(len(B.judge(B.collect(self.b))), 2)
-        self.board({"target": "chipa", "partition_table": "ref/pt.bin", "flash_size": "4MB"})
+        self.board(flash_size="4MB")
         with self.assertRaisesRegex(B.BoardError, r"not one ESP-IDF names \(XMB, YMB\)"):
             B.collect(self.b)
         self.assertEqual(self.run_main(), 1)
 
-    def test_named_board_refused(self):
-        self.board("x2")
+    def test_board_from_the_lock(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(self.run_main(), 0)
+        self.assertIn("R21 board %s: target chipa, reference %s" % (K.NAME, self.ref.replace(os.sep, "/")), out.getvalue())
+
+    def test_not_exactly_one_board(self):
+        K.lock(self.p, {})
         self.assertEqual(self.run_main(), 1)
+        K.lock(self.p, {K.NAME: K.GIT, "vtrux/board_b": dict(K.GIT, path="shared/boards/board_b")})
+        self.assertEqual(self.run_main(), 1)
+        K.lock(self.p, {K.NAME: dict(K.GIT, type="local", path="../w/shared/boards/board_a")})
+        self.assertEqual(self.run_main(), 1)
+        K.lock(self.p, {K.NAME: K.GIT})
+        self.assertEqual(self.run_main(), 0)
 
 
 if __name__ == "__main__":

@@ -46,6 +46,23 @@ profile need not list them (readings ruled by the gen-inhibit reviewer, 2026-10-
 A profile that names one of R26's or R28's options at another value, or
 CONFIG_FREERTOS_HZ as anything but an integer, is refused, naming the rule.
 
+SPEC R29 (shared/main 2f72a20), board settings. The board is the project's one
+shared/boards/* component, read from managed_components/ (boarddata.py;
+shared/boards/SPEC.md B2-B4):
+
+  fixed     every option the board's sdkconfig.board names has the board's value
+            in the app's build folder (build/), and in every other build folder
+            that defines it. The bootloader's folder defines only the options of
+            the components it builds: its options are a subset of the app's, from
+            the same sdkconfig, so an option absent there is not judged there
+            ("unset" passes absent anyway).
+  required  the profile names every setting board.json lists as required of the
+            project: a single option with any value (R18 then holds the build to
+            it); a choice with exactly one member true. Each option of a required
+            setting is in the app's build folder, and in every folder that
+            defines a choice's members exactly one is true, so a misspelt option
+            or a choice list that has gone stale fails.
+
 Release builds only; bench and dev builds are not checked. The check does
 not tell them apart: run it on a finished release build.
 """
@@ -56,6 +73,7 @@ import re
 
 from vtrux_build.builddir import BuildDir, BuildDirError
 
+from . import boarddata
 from .scope import build_folders
 
 DATA_FILE = "vtrux_checks.json"
@@ -151,6 +169,48 @@ def judge(profile, options):
             got = opts.get(name[len("CONFIG_"):], ABSENT)
             if not meets(want, got):
                 bad.append((folder, name, want, got))
+    return bad
+
+
+def judge_fixed(fixed, options, app):
+    """R29, settings fixed by the board. fixed: {CONFIG_<NAME>: value} from sdkconfig.board; app:
+    the app's build folder's label in options. [(folder, option, want, got)]: not at the board's
+    value in the app's folder, or in another folder that defines it."""
+    bad = []
+    for folder, opts in sorted(options.items()):
+        for name, want in sorted(fixed.items()):
+            got = opts.get(name[len("CONFIG_"):], ABSENT)
+            if got is ABSENT and folder != app:
+                continue
+            if not meets(want, got):
+                bad.append((folder, name, want, got))
+    return bad
+
+
+def judge_required(required, profile, options, app):
+    """R29, settings required of the project. required: boarddata.read()'s "required"; app: as
+    judge_fixed's. [reason] for each one the profile does not name, or the build cannot show."""
+    bad = []
+    app_opts = options.get(app, {})
+    for r in required:
+        opts, what = r["options"], r["setting"]
+        for o in opts:
+            if o[len("CONFIG_"):] not in app_opts:
+                bad.append("%s: %s is not in the app's build folder's options" % (what, o))
+        if r["kind"] == "option":
+            if opts[0] not in profile:
+                bad.append("%s: the profile does not name %s" % (what, opts[0]))
+            continue
+        chosen = [o for o in opts if o in profile and profile[o][0] is True]
+        if len(chosen) != 1:
+            bad.append("%s: the profile sets %s of its choice's options true (%s); it needs exactly one" % (
+                what, len(chosen), ", ".join(chosen) or "none"))
+        for folder, o in sorted(options.items()):
+            present = [x for x in opts if x[len("CONFIG_"):] in o]
+            on = [x for x in present if o[x[len("CONFIG_"):]] is True]
+            if present and len(on) != 1:
+                bad.append("%s: %s has %d of its choice's options true (%s)" % (
+                    what, folder, len(on), ", ".join(on) or "none"))
     return bad
 
 
@@ -286,4 +346,40 @@ def main(args):
         print("FAIL R27: %s" % why)
     else:
         print("PASS R27: %s %s (%s)" % (TICK, show(profile[TICK][0]), profile[TICK][1]))
+
+    app = os.path.relpath(build_folders(args.build)[0], project).replace(os.sep, "/")
+    if not board_settings(project, options, profile, folders, app):
+        failed = True
     return 1 if failed else 0
+
+
+def board_settings(project, options, profile, folders, app):
+    """R29, printed; True when it passes."""
+    try:
+        name, folder = boarddata.find(project)
+        board = boarddata.read(folder)
+        fixed = boarddata.read_sdkconfig_board(folder)
+    except boarddata.BoardError as e:
+        print("FAIL R29: cannot read the board: %s" % e)
+        return False
+    print("R29 board settings: %s (%s)" % (name, os.path.relpath(folder, project).replace(os.sep, "/")))
+    print("  fixed by the board (%s), absent from a folder other than the app's is not judged there:"
+          % boarddata.SDKCONFIG_BOARD)
+    for opt, want in sorted(fixed.items()):
+        got = ", ".join("%s %s" % (f, show(options[f].get(opt[len("CONFIG_"):], ABSENT))) for f in folders)
+        print("  %-44s board   %-8s  %s" % (opt, label(want), got))
+    print("  required of the project (%s):" % boarddata.BOARD_JSON)
+    for r in board["required"]:
+        named = ["%s %s" % (o, label(profile[o][0])) for o in r["options"] if o in profile]
+        print("  %-44s profile %s" % (r["setting"], ", ".join(named) or "names none of " + ", ".join(r["options"])))
+    bad_fixed = judge_fixed(fixed, options, app)
+    bad_req = judge_required(board["required"], profile, options, app)
+    if not bad_fixed and not bad_req:
+        print("PASS R29")
+        return True
+    print("FAIL R29")
+    for folder, opt, want, got in bad_fixed:
+        print("    %s: %s is %s, the board's %s says %s" % (folder, opt, show(got), boarddata.SDKCONFIG_BOARD, label(want)))
+    for b in bad_req:
+        print("    %s" % b)
+    return False
