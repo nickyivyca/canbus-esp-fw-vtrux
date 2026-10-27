@@ -41,6 +41,8 @@ class Find(unittest.TestCase):
                                   ("other", "../shared-x/shared/tools", False)):
             self.assertEqual(D.is_board({"source": {"type": "local", "path": path}}), want, label)
         self.assertFalse(D.is_board({"source": {"type": "service"}}), "a registry component")
+        self.assertFalse(D.is_board({"source": {"type": "service", "path": "shared/boards/b"}}),
+                         "a registry component, whatever path it carries")
         self.assertFalse(D.is_board({"source": {"type": "idf"}}), "ESP-IDF")
         self.assertFalse(D.is_board({}), "no source")
 
