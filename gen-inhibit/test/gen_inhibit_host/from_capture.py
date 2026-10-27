@@ -29,9 +29,16 @@ import argparse
 import os
 import sys
 
-# The parsers live in the project folder, a SEPARATE tree from this firmware
+# The captures live in the project folder, a SEPARATE tree from this firmware
 # repo: --project-dir, else $REVERSE_IT_DIR, with no default (project_dir.py).
 import project_dir
+
+# canre, the parser, does not come from the project folder any more: it is the
+# public repo's, at the commit tools/bench/pins.json pins, and canre_pin.py refuses
+# any other (the canre-pin step, 2026-10-26).
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.normpath(os.path.join(HERE, "..", "..", "tools", "bench")))
+import canre_pin  # noqa: E402
 
 CMD = 0x051
 RPM = 0x054
@@ -60,11 +67,17 @@ def load_parser(given):
     # the bare import below, a wrong path surfaces as `No module named 'canre'`,
     # which reads as a missing Python package rather than a setting.
     #
+    # Since the canre-pin step (2026-10-26) canre is the pinned one (canre_pin.use)
+    # and not the project folder's; the folder is still checked, as the captures'.
+    #
     try:
-        repo = project_dir.resolve(given)
+        project_dir.resolve(given)
     except project_dir.ProjectDirError as e:
         sys.exit(str(e))
-    sys.path.insert(0, repo)
+    try:
+        canre_pin.use()
+    except canre_pin.CanrePinError as e:
+        sys.exit("from_capture: %s" % e)
     from canre.parsers import parse_file
     return parse_file
 

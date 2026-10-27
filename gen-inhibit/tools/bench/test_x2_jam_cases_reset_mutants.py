@@ -6,9 +6,11 @@ edge, the latch bound; added 2026-10-20); test_x2_jam_cases.py must fail on each
 
     py -3.14 gen-inhibit/tools/bench/test_x2_jam_cases_reset_mutants.py
 
-Run from the reverse-it root (the test imports canre). Each mutant copies the
-two files into a fresh folder under runs/, applies one edit, and runs the test
-from the root with this folder on PYTHONPATH for everything else. An edit that
+The test imports canre, which comes from the pin (gi_paths.use_canre,
+canre_pin.py; the canre-pin step, 2026-10-26), so it no longer has to run from the
+reverse-it root. Each mutant copies the two files into a fresh folder under the
+worktree's scratch/, applies one edit, and runs the test from the current folder
+with this folder on PYTHONPATH for everything else. An edit that
 does not apply is an error, not a kill. Added 2026-10-16 with the fix: with
 the WiCAN's USB unplugged, --reset-wican reset nothing and said nothing.
 """

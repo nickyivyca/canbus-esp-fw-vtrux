@@ -29,6 +29,7 @@
 #   bash .../gi_host_run.sh --sync-only
 #   bash .../gi_host_run.sh --pull-goldens                                    # after a --bless
 #   bash .../gi_host_run.sh --scenarios                                       # regenerate synthetic scenarios
+#   bash .../gi_host_run.sh --canre                                           # install/check the pinned canre there
 #
 set -euo pipefail
 
@@ -50,6 +51,7 @@ case "${1:-}" in
   --shim)          mode=shim;      shift ;;
   --sched)         mode=sched;     shift ;;
   --pull-goldens)  mode=pull;      shift ;;
+  --canre)         mode=canre;     shift ;;
 esac
 
 # THE PROJECT FOLDER ON THE REMOTE (2026-10-26, port step 0d finding 5). The shim's
@@ -157,6 +159,7 @@ tar -C "$FW" -czf - \
     $MAIN_HDRS \
     tools/bench/gi_diag.py \
     tools/bench/pins.json \
+    tools/bench/canre_pin.py \
     firmware/main/gen_inhibit.c \
     firmware/main/can.c \
     test/gen_inhibit_shim \
@@ -243,8 +246,19 @@ case "$mode" in
   # E1, the shim suite. Builds gen_inhibit.c, can.c and gen_inhibit_core.c on the
   # host against test/gen_inhibit_shim/mock, so it needs the sync above to have
   # carried main/ -- which it did not until 2026-09-26.
+  #
+  # CANRE AT THE PINNED COMMIT (the canre-pin step, 2026-10-26). from_capture.py takes
+  # canre only from canre_pin.py's install of the commit pins.json pins, which on the
+  # remote is ~/$DEST/scratch/canre/<commit> (no git there): installed once, from the
+  # public repo, and checked every time. --canre does that on its own (for from_capture.py
+  # or replay_stimulus_delta.py --regen by hand); --shim does it before the build, since
+  # the shim's long-arm stimulus is cut with from_capture.py. The sync never touches
+  # scratch/. test_gi_host_run_env.py runs both remote commands.
+  canre)
+    ssh "$REMOTE" "$PY -B ~/$DEST/tools/bench/canre_pin.py install"
+    ;;
   shim)
-    ssh "$REMOTE" "${RX}cd ~/$DEST/test/gen_inhibit_shim && make -s clean && make -s && ./shim_test"
+    ssh "$REMOTE" "${RX}$PY -B ~/$DEST/tools/bench/canre_pin.py install && cd ~/$DEST/test/gen_inhibit_shim && make -s clean && make -s && ./shim_test"
     ;;
   # The transmit-scheduler cases (spec 5.2 item 10's emulation half), against
   # fake_buf's calibrated buffer model. Needs main/gi_sched.c from the sync.

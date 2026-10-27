@@ -22,10 +22,8 @@ import os
 import shutil
 import subprocess
 import sys
-import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = gi_paths.reverse_it_dir()
 
 PROBE_MUTANTS = [
     ("RST read as FIN", 'rec["ending"] = "rst"', 'rec["ending"] = "fin"'),
@@ -230,9 +228,11 @@ def run_copy(scratch, tag, target, text, test, extra):
     # test then cannot import the mutated target, and every mutant "dies" on a
     # ModuleNotFoundError -- which is how the first run of this file read 14 of
     # 14 killed with no check having run (2026-10-14).
-    # The project root (canre) and this folder (the target's sibling modules)
-    # come after the script's own directory, so the mutated copy still wins.
-    env = dict(os.environ, PYTHONPATH=os.pathsep.join([ROOT, HERE]))
+    # This folder (the target's sibling modules) comes after the script's own
+    # directory, so the mutated copy still wins. The reverse-it root is no longer
+    # on it: it was there for canre, which comes from the pin since the canre-pin
+    # step (2026-10-26; gi_paths.use_canre, canre_pin.py).
+    env = dict(os.environ, PYTHONPATH=HERE)
     args = [os.path.join(d, "scratch")] if test in TAKES_SCRATCH else []
     r = subprocess.run([sys.executable, os.path.join(d, test)] + args,
                        capture_output=True, text=True, cwd=d, timeout=900, env=env)

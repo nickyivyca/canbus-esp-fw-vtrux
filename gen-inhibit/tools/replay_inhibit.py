@@ -27,11 +27,13 @@ Usage, from the reverse-it root (or with REVERSE_IT_DIR set to it):
   python3.13 <this folder>/replay_inhibit.py --run
   python3.13 <this folder>/replay_inhibit.py --sweep
 
-The log parser (canre) and the capture live in the reverse-it repo, not in
-the firmware repo this file is published in, so their root is a setting:
-$REVERSE_IT_DIR, default the current directory. It was $REVERSE_IT_ROOT until
-2026-10-22, the one name for that folder now being REVERSE_IT_DIR; the old name
-is refused if set, so an old environment fails loudly.
+The capture lives in the reverse-it repo, not in the firmware repo this file
+is published in, so its root is a setting: $REVERSE_IT_DIR, default the current
+directory. It was $REVERSE_IT_ROOT until 2026-10-22, the one name for that
+folder now being REVERSE_IT_DIR; the old name is refused if set, so an old
+environment fails loudly. The log parser, canre, came from that root too until
+the canre-pin step (2026-10-26); it is now the public repo's at the commit
+bench/pins.json pins, through bench/canre_pin.py, which refuses any other.
 """
 import os
 import sys
@@ -40,17 +42,17 @@ if os.environ.get("REVERSE_IT_ROOT", "").strip():
     raise SystemExit("replay_inhibit: REVERSE_IT_ROOT is retired (2026-10-22): set REVERSE_IT_DIR instead")
 REVERSE_IT_ROOT = os.environ.get("REVERSE_IT_DIR", "").strip() or "."
 sys.path.insert(0, HERE)
-sys.path.insert(0, REVERSE_IT_ROOT)
+sys.path.append(os.path.join(HERE, "bench"))
 
 import argparse
 import random
 
+import canre_pin
 try:
-    from canre.parsers import parse_file
-except ImportError as e:
-    raise SystemExit("replay_inhibit: cannot import canre from %r (%s). Run "
-                     "from the reverse-it root or set REVERSE_IT_DIR to it."
-                     % (os.path.abspath(REVERSE_IT_ROOT), e))
+    canre_pin.use()
+except canre_pin.CanrePinError as e:
+    raise SystemExit("replay_inhibit: %s" % e)
+from canre.parsers import parse_file
 from sync import SlotSync
 from inhibit import Inhibitor, FRAME_TIME
 import models as M

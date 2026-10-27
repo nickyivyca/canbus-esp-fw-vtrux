@@ -8,8 +8,8 @@
 # B11raw (2026-10-17, not in the default set): B11's arms with raw POSTs and a
 # Wi-Fi capture per arm, for b11_rawpost_judge.py.
 #
-# Run from the reverse-it root (skip_method_bench imports canre). One arm at a
-# time; each arm's stdout is kept beside its record in runs/baseline_<commit>/bench/.
+# It runs from the reverse-it root, which it cd's to (DATA below is relative to it);
+# canre comes from the pin since 2026-10-26 (canre_pin.py). One arm at a time; each arm's stdout is kept beside its record in runs/baseline_<commit>/bench/.
 set -u
 A=$(cygpath -m "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)")   # this folder, gen-inhibit/tools/bench
 cd "${REVERSE_IT_DIR:?set REVERSE_IT_DIR to the reverse-it root}" || exit 2
