@@ -109,7 +109,7 @@ machine. Each refuses or falls back loudly rather than guessing.
 |---|---|---|
 | `--ssid` or `$GI_WICAN_SSID` | `bench_flash.py` | The WiCAN's SoftAP SSID, which embeds the device MAC. The script refuses to run without one. |
 | `$GI_RUNS_DIR` | `bench_flash_guard.py`, `bench_ota_guard.py` | Where run records are written. |
-| `$REVERSE_IT_DIR` | `replay_inhibit.py` (default the current directory); every tool in `bench/` (required) | SeaDrive's `reverse-it` root, for `canre`, the captures, the DBCs, the bench lock and the run folders. Never a committed absolute path. It was `$REVERSE_IT_ROOT` in `replay_inhibit.py` until 2026-10-22; the old name, and `GI_FW_TOOLS`, `GEN_INHIBIT_REPO` and `VTRUX_DATA`, are refused if set. |
+| `$REVERSE_IT_DIR` | `replay_inhibit.py` (default the current directory); every tool in `bench/` (required) | SeaDrive's `reverse-it` root, for the captures, the DBCs, the bench lock and the run folders. Never a committed absolute path. `canre` no longer comes from it (the canre-pin step, 2026-10-26): it is the public repo's, at the commit `bench/pins.json` pins, through `bench/canre_pin.py`, and `canre_pin.py install` puts it in `scratch/canre/<commit>/`. It was `$REVERSE_IT_ROOT` in `replay_inhibit.py` until 2026-10-22; the old name, and `GI_FW_TOOLS`, `GEN_INHIBIT_REPO` and `VTRUX_DATA`, are refused if set. |
 
 ### Cross-project dependencies
 

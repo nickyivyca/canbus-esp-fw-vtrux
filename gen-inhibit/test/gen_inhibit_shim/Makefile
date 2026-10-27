@@ -31,7 +31,8 @@ all: shim_test shim_test_autoarm
 # THE LONG-ARM STIMULUS. Cases 33 and 53 replay a real 300 s capture, and the
 # file they replay is generated, not in git. build_longarm.py builds it from the
 # capture in the project folder named by REVERSE_IT_DIR, rebuilds it when it is
-# older than the capture or the converter, and stops the build, naming the
+# older than the capture or the converter or was parsed with another canre pin
+# (../../tools/bench/pins.json), and stops the build, naming the
 # variable, when the folder is not set. It runs on every make and is a no-op when
 # the file is current. An order-only prerequisite, so it never relinks shim_test.
 # shim_test_autoarm does not replay anything and does not wait on it.
