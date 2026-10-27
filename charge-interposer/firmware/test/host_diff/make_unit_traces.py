@@ -31,7 +31,6 @@ import sys
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _INTERPOSER = os.path.normpath(os.path.join(_HERE, "..", "..", ".."))
 sys.path.insert(0, _INTERPOSER)
-sys.path.insert(0, ".")
 
 import machine as M            # noqa: E402
 import test_trips as T         # noqa: E402

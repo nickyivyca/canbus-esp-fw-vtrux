@@ -245,9 +245,6 @@ def _settings():
     checked only at flash time) and stand-in ELFs for the IDF images."""
     d = os.path.join(TMP, "settings")
     shutil.rmtree(d, ignore_errors=True)
-    art = os.path.join(d, "art")
-    os.makedirs(art)
-    open(os.path.join(art, "x_mutations.sh"), "w").close()
     for name in ("c12_bench", "vport_bench"):
         os.makedirs(os.path.join(d, "images", "idf", name))
         with open(os.path.join(d, "images", "idf", name, name + ".elf"),
@@ -256,7 +253,7 @@ def _settings():
     # the WiCAN's sources: bench_wican_test's fake gen-inhibit tree
     import bench_wican_test as WT
     ws, _root = WT.fixture("for-bench-suite-test")
-    return {"interposer_code": HERE, "interposer_artifacts": art,
+    return {"interposer_code": HERE,
             "images_dir": os.path.join(d, "images"),
             "images_src": "36edf3e55552", "boot_app0": "boot_app0.bin",
             "x2_mac": "02:00:00:00:00:01",
@@ -337,7 +334,18 @@ def test_suites():
     # 186: cf.bench-hold12, its fresh-board gate mutants (2026-10-23)
     # 188: bench-wican-test and its -canfail, with the WiCAN board
     # 189: script-can-fail-test, script_can_fail's baseline run (2026-10-24)
-    assert len(seen) == 189, "checks across the suites: %d" % len(seen)
+    # 191: canre-pin-test and its -canfail, with the canre pin (2026-10-26)
+    assert len(seen) == 191, "checks across the suites: %d" % len(seen)
+    # madhouse gets the pinned canre beside the code, named by CANRE_DIR
+    mad = 0
+    for name in ("emulated", "harness"):
+        for g in su[name].groups:
+            if g.host == "madhouse":
+                mad += 1
+                assert g.ship.get("canre") and os.path.isdir(g.ship["canre"]),                     "%s/%s ships no canre: %s" % (name, g.name, g.ship)
+                for c in g.checks:
+                    assert c.env.get("CANRE_DIR") == "{work}/canre",                         "%s/%s has CANRE_DIR %r" % (g.name, c.id, c.env.get("CANRE_DIR"))
+    assert mad == 5, "madhouse groups seen: %d" % mad
     # build-check runs in a git checkout of HEAD, shipped as a bundle
     # (user ruling 2026-10-19), never in the shipped copy
     mb = [g for g in su["emulated"].groups if g.name == "m-build"][0]
@@ -620,22 +628,22 @@ runpy.run_path(sys.argv[0], run_name="__main__")
 # Scripts the probe cannot check, because they take no arguments through
 # argparse (it would run them whole): each is run with no arguments by its
 # check, which test_bench_argv also asserts, and every name here must be
-# one the walk met without argparse (no stale entries).
-NO_ARGPARSE = {"reset_check.py", "keepalive_probe.py"}
+# one the walk met without argparse (no stale entries). reset_check.py
+# took argparse with its --serial-log in the move into git (2026-10-26).
+NO_ARGPARSE = {"keepalive_probe.py"}
 
 
-def _artifacts():
-    root = os.environ.get("REVERSE_IT_DIR")
-    assert root, "REVERSE_IT_DIR is not set: the bench scripts live there"
-    art = os.path.join(root, "projects", "vtrux", "notes", "artifacts",
-                       "interposer-firmware")
-    assert os.path.isfile(os.path.join(art, "bench_flight_silence.py")), art
-    return art
+def _drivers():
+    """bench_drivers/ in this tree: the bench scripts since port step 0
+    (2026-10-26); reverse-it's interposer-firmware/ folder before."""
+    d = os.path.join(HERE, "bench_drivers")
+    assert os.path.isfile(os.path.join(d, "bench_flight_silence.py")), d
+    return d
 
 
 def _fill(a, s, outdir):
     vals = dict(s, serial_port="COM99", pcan_channel="PCAN_USBBUS1",
-                outdir=outdir, wican_state="argv probe", reverse_it=".")
+                outdir=outdir, wican_state="argv probe")
     return re.sub(r"\{(\w+)\}", lambda m: str(vals.get(m.group(1), "X")), a)
 
 
@@ -644,7 +652,6 @@ def _bench_argv_problems():
     argument line its own script's parser refuses, the number probed, and
     the script names met without argparse."""
     s = _settings()
-    s["interposer_artifacts"] = _artifacts()
     outdir = os.path.join(TMP, "argv-out")
     os.makedirs(outdir, exist_ok=True)
     bad, n, plain = [], 0, set()
@@ -691,7 +698,7 @@ def _probe(argv):
 def _probe_controls():
     """The probe must refuse the a25e flight-silence line, accept the fixed
     one, and stop a script that opens a serial port before parsing."""
-    fs = os.path.join(_artifacts(), "bench_flight_silence.py")
+    fs = os.path.join(_drivers(), "bench_flight_silence.py")
     bad = _probe([fs, "--port", "COM99", "--pcan", "PCAN_USBBUS1"])
     assert bad and "unrecognized arguments" in bad, \
         "the probe accepted the a25e line: %s" % bad
@@ -791,12 +798,11 @@ def test_usb_stops():
 
 
 def test_script_coverage():
-    """Every bench driver in reverse-it interposer-firmware with a
-    --self-test is in SELF_TESTS, every script whose --can-fail runs
-    script_can_fail is in CAN_FAILS, and the harness suite runs each (4cdb:
-    bench_topology's self-test and all five can-fails were run by hand
-    only)."""
-    art = _artifacts()
+    """Every bench driver in bench_drivers/ with a --self-test is in
+    SELF_TESTS, every script whose --can-fail runs script_can_fail is in
+    CAN_FAILS, and the harness suite runs each (4cdb: bench_topology's
+    self-test and all five can-fails were run by hand only)."""
+    art = _drivers()
     st, cf = set(), set()
     for n in sorted(os.listdir(art)):
         if not n.endswith(".py"):
@@ -873,7 +879,7 @@ def test_strict_port_off():
     ruling 2026-10-22, relayed by the reviewer). bench_usb_host's no-ACKer
     boots score through bench_powerup_round too, with its own options, so
     it must have no such switch either."""
-    art = _artifacts()
+    art = _drivers()
     src = open(os.path.join(art, "bench_powerup_round.py"),
                encoding="utf-8").read()
     assert 'add_argument("--strict-port"' in src, \
@@ -913,7 +919,7 @@ def test_vport_split():
     """vport-listen's two wrong-rate arms run as their own check, which is a
     registered KNOWN FAIL (reviewer, 2026-10-21); the rest stay judged in
     vport-listen; between them every listen arm runs exactly once."""
-    sys.path.insert(0, _artifacts())
+    sys.path.insert(0, _drivers())
     import bench_vport as V
     s, su = _all()
     checks = {c.id: c for g in su["bench"].groups for c in g.checks}
@@ -942,12 +948,63 @@ def test_bench_argv():
     assert not bad, "argument lines their scripts refuse: %s" % bad[:4]
 
 
+# What a check may not name since the scripts moved into git (port step 0,
+# 2026-10-26): the reverse-it folder they ran from, and its staged copy.
+OUT_OF_TREE = ("{interposer_artifacts}", "{reverse_it}", "{work}/art",
+               "interposer-firmware")
+
+
+def _script_of(c):
+    """The script a check runs, or None (a bare command, a skip)."""
+    argv = [str(a) for a in c.argv]
+    if c.skip or not argv or argv == ["-"]:
+        return None
+    if argv[0] == "bash":
+        return argv[1]
+    if c.python or argv[0].endswith((".py", ".sh")):
+        return argv[0]
+    return None
+
+
+def test_scripts_in_tree():
+    """Every script a check of any suite runs is a file in this tree: local
+    checks by {interposer_code}/..., madhouse checks relative to the shipped
+    code ({work}/code); none names reverse-it's interposer-firmware/ folder,
+    in its argv or its cwd, and no group ships the old "art" staging."""
+    s, su = _all()
+    n = 0
+    for name, suite in su.items():
+        for g in suite.groups:
+            assert "art" not in (g.ship or {}), "%s/%s ships art" % (name, g.name)
+            for c in g.checks:
+                text = " ".join(str(a) for a in c.argv) + " " + str(c.cwd or "")
+                hit = [m for m in OUT_OF_TREE if m in text]
+                assert not hit, "%s/%s names %s: %s" % (name, c.id, hit, text[:120])
+                script = _script_of(c)
+                if script is None:
+                    continue
+                if script.startswith("{interposer_code}/"):
+                    path = os.path.join(HERE, script[len("{interposer_code}/"):])
+                elif g.host == "madhouse" and not script.startswith("{"):
+                    assert c.cwd == "{work}/code", "%s/%s cwd %s" % (
+                        name, c.id, c.cwd)
+                    path = os.path.join(HERE, script)
+                else:
+                    raise AssertionError("%s/%s runs %s, not from this tree"
+                                         % (name, c.id, script))
+                assert os.path.isfile(path), "%s/%s: no %s" % (name, c.id, path)
+                n += 1
+    # the walk saw the moved scripts, not only the ones already in git
+    assert n >= 150, "only %d scripts checked: the walk is wrong" % n
+
+
 TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_corrupt_pin_judge, test_c12_judge, test_host_bridge_judge,
          test_suites, test_mutant_wiring, test_identify, test_pycache_ignored,
          test_usb_baselines, test_usb_stops, test_reopen_skip,
          test_script_coverage, test_shared_bench_tests, test_strict_port_off,
-         test_vport_split, test_bench_argv, test_wican_board]
+         test_vport_split, test_bench_argv, test_wican_board,
+         test_scripts_in_tree]
 
 
 # ---- can-fail -----------------------------------------------------------
@@ -1165,6 +1222,25 @@ def _flight_silence_a25e(s):
                 i = c.argv.index("--pcan")
                 c.argv.insert(i + 1, "{pcan_channel}")
 
+def _artifacts_script(s):
+    """A bench check run from reverse-it's folder again (before port step 0)."""
+    _check(s, "hold12").argv[0] = "{interposer_artifacts}/bench_hold12.py"
+
+
+def _reverse_it_cwd(s):
+    _check(s, "st.bench-vport").cwd = "{reverse_it}"
+
+
+def _staged_art(s):
+    for g in s.groups:
+        if g.name == "m-mutants":
+            g.ship = dict(g.ship, art="art")
+
+
+def _missing_script(s):
+    _check(s, "l2-mutations").argv[1] = "harness_checks/no_such_mutations.sh"
+
+
 # test -> [(module attribute, replacement, what the mutant does)]
 def _no_wican_in(group):
     def fn(s):
@@ -1316,13 +1392,21 @@ MUTANTS = {
          "shared/bench without its .gitignore (the 20d3 resume refusal)"),
         ("self._PYCACHE_DROP", ("charge-interposer/.gitignore",),
          "charge-interposer without its .gitignore")],
+    "test_scripts_in_tree": [
+        ("bench", _wrap_suite("bench", _artifacts_script),
+         "a bench driver run from {interposer_artifacts}"),
+        ("harness", _wrap_suite("harness", _reverse_it_cwd),
+         "a self-test with cwd {reverse_it}"),
+        ("harness", _wrap_suite("harness", _staged_art),
+         "the madhouse mutants shipping an art staging"),
+        ("harness", _wrap_suite("harness", _missing_script),
+         "a madhouse mutant naming a script the tree lacks")],
     "test_bench_argv": [
         ("bench", _wrap_suite("bench", _flight_silence_a25e),
          "flight-silence gives --pcan a value (the a25e line)"),
-        ("self.NO_ARGPARSE", {"reset_check.py", "keepalive_probe.py",
-                              "bench_topology.py"},
+        ("self.NO_ARGPARSE", {"keepalive_probe.py", "bench_topology.py"},
          "a stale NO_ARGPARSE entry"),
-        ("self.NO_ARGPARSE", {"reset_check.py"},
+        ("self.NO_ARGPARSE", set(),
          "a script without argparse left unlisted"),
         ("self._ARGV_PROBE", _ARGV_PROBE.replace(
             "_done(_orig(self, args, namespace))", "_done(None)"),

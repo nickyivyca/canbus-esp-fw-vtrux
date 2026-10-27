@@ -1,0 +1,8 @@
+{
+  "_comment_canre": "canre, the CAN analysis library, from the public repo at one commit (port plan \"The CAN analysis library\"; reviewer, 2026-10-26, port step 0 for the interposer): canre_pin.py installs that commit into the worktree's scratch/ and refuses any other canre.",
+  "canre": {
+    "repo": "https://github.com/nickyivyca/canbus-reveng-vtrux-coda",
+    "version": "0.1.0",
+    "commit": "ffbe0291f7b817360f03f1082e07240804cf6084"
+  }
+}

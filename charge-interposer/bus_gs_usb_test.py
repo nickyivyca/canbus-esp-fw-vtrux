@@ -78,6 +78,8 @@ def main():
     print("open by index, not by auto-detection")
     # open_bus must never reach canbench's detection for gs_usb: replace it
     # with one that fails loudly if called
+    import paths
+    paths.import_canbench()
     import canbench.live.receiver as rcv
     real_detect = rcv.detect_all_can_interfaces
 

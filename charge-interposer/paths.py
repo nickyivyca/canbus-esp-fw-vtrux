@@ -16,9 +16,8 @@ Two settings, both environment variables:
                       fixtures -- traces, goldens, golden_regen_log.txt,
                       l3_stimulus.txt, the mutation scripts and the run
                       folders (`projects/vtrux/notes/artifacts/
-                      interposer-firmware/`, `.../interposer-runs/`) -- and,
-                      for now, `canre`. There is no default: unset is a
-                      clear error, never a guess.
+                      interposer-firmware/`, `.../interposer-runs/`). There
+                      is no default: unset is a clear error, never a guess.
   VTRUX_PUBLIC_REPO   Optional. The public canbus-reveng-vtrux-coda clone,
                       which supplies the vehicle DBCs. Default: the sibling
                       directory `../canbus-reveng-vtrux-coda` of this repo.
@@ -29,11 +28,14 @@ methodology session). VTRUX_DATA is retired and never read; set alone it is
 refused with a message saying so, so an old environment fails loudly instead
 of resolving somewhere else.
 
-canre comes from SeaDrive, not the public clone, because the public copy
-(1bd6d1a) predates SeaDrive's parser fixes for signed BUSMASTER timestamp
-components and midnight rollover, and regress must read the captures with the
-parser E1 ran on (reviewer, 2026-10-08). Switch canre_root() to the public
-repo once it is synced.
+canre comes from the public repo at the commit pins.json pins, installed
+and checked by canre_pin.py (port step 0 for the interposer, reviewer,
+2026-10-26). It carries both parser fixes (signed BUSMASTER timestamp
+components and midnight rollover) that kept canre on SeaDrive's copy from
+2026-10-08 until then. SeaDrive's canre is never read. canbench, the
+adapter detection bus.open_bus uses for real dongles, is not in the public
+repo and still comes from REVERSE_IT_DIR, by import_canbench(), which loads
+that one package without putting the reverse-it root on sys.path.
 
 The interposer diag DBC is in this repo (diag/), so diag_dbc() needs no
 setting; it is here so that every reader names one path.
@@ -79,6 +81,23 @@ def reverse_it_dir():
             "REVERSE_IT_DIR=%s has no projects/vtrux/notes/artifacts/ -- it "
             "must be SeaDrive's reverse-it root" % v)
     return v
+
+
+def code_dir():
+    """charge-interposer/, the folder this file is in: the code a script in
+    this tree tests, found from its own location since the scripts moved
+    into git (port step 0, reviewer 2026-10-26; port plan goal 20 item 9).
+    INTERPOSER_CODE is not needed; if it is set, it must name this same
+    folder, or it is refused rather than one tree tested with another's
+    scripts."""
+    v = os.environ.get("INTERPOSER_CODE", "").strip()
+    if v and os.path.normcase(os.path.realpath(v)) != \
+            os.path.normcase(os.path.realpath(_HERE)):
+        raise PathsError(
+            "INTERPOSER_CODE=%s is not this tree's charge-interposer/ (%s): "
+            "a script tests the tree it is in; unset INTERPOSER_CODE or run "
+            "the other tree's copy" % (v, _HERE))
+    return _HERE
 
 
 def data_dir():
@@ -133,26 +152,64 @@ def diag_dbc():
     return p
 
 
+def _canre_pin():
+    """canre_pin.py beside this file."""
+    if _HERE not in sys.path:
+        sys.path.insert(0, _HERE)
+    import canre_pin
+    return canre_pin
+
+
 def canre_root():
-    """The directory holding canre/ -- SeaDrive's reverse-it root, for now."""
-    p = reverse_it_dir()
-    if not os.path.isdir(os.path.join(p, "canre")):
-        raise PathsError("no canre/ at %s (REVERSE_IT_DIR)" % p)
-    return p
-
-
-def add_canre(required=True):
-    """Put canre's parent on sys.path. With required=False a missing
-    setting is not an error -- for modules that never import canre."""
+    """The directory holding canre/: the pinned install (canre_pin.py), not
+    SeaDrive's. Checked, not imported."""
+    canre_pin = _canre_pin()
     try:
-        p = canre_root()
-    except PathsError:
-        if required:
-            raise
-        return None
-    if p not in sys.path:
-        sys.path.insert(0, p)
-    return p
+        d = canre_pin.folder()
+        canre_pin.verify(d)
+    except canre_pin.CanrePinError as e:
+        raise PathsError(str(e))
+    return d
+
+
+def add_canre():
+    """Put the pinned canre first on sys.path and import it
+    (canre_pin.use: all four checks). Refuses any other canre."""
+    canre_pin = _canre_pin()
+    try:
+        return canre_pin.use()
+    except canre_pin.CanrePinError as e:
+        raise PathsError(str(e))
+
+
+def import_canbench():
+    """reverse-it's canbench package (bus.open_bus's adapter detection),
+    imported from REVERSE_IT_DIR/canbench by file. The reverse-it root is
+    never put on sys.path: that is how it came in before port step 0, and
+    it would bring SeaDrive's canre/ with it."""
+    import importlib.util
+    d = os.path.join(reverse_it_dir(), "canbench")
+    init = os.path.join(d, "__init__.py")
+    have = sys.modules.get("canbench")
+    if have is not None:
+        if os.path.normpath(getattr(have, "__file__", "") or "") \
+                != os.path.normpath(init):
+            raise PathsError("canbench is already imported from %s, not %s"
+                             % (getattr(have, "__file__", None), d))
+        return have
+    if not os.path.isfile(init):
+        raise PathsError("no canbench/ at %s (REVERSE_IT_DIR)"
+                         % reverse_it_dir())
+    spec = importlib.util.spec_from_file_location(
+        "canbench", init, submodule_search_locations=[d])
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["canbench"] = mod
+    try:
+        spec.loader.exec_module(mod)
+    except BaseException:
+        del sys.modules["canbench"]
+        raise
+    return mod
 
 
 if __name__ == "__main__":
