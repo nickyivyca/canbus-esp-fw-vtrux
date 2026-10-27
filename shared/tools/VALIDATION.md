@@ -570,7 +570,9 @@ same folder. The interposer's test evidence is
   `sdkconfig`, and the prebuilt arduino-esp32 libraries' `esp32s3/sdkconfig`
   for the interposer (read 2026-10-25). The interposer's spec section 9
   sets 1000 Hz (port plan goal 3, user, 2026-10-22). gen-inhibit's spec
-  and profile do not name it yet.
+  names it in 12.3 item 3, setting 6 (1000 Hz, user, 2026-10-25), and its
+  release profile does too (`vtrux_checks.json`, from gen-inhibit
+  `064d73b`).
 - **Status:** complete.
 
 ### R28. One set of log levels for every release build
