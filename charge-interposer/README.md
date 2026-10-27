@@ -21,7 +21,7 @@ branch; until then reverse-it's `firmware/esp-development.md`). Paths starting
 | `$REVERSE_IT_DIR/projects/vtrux/notes/charge-interposer-test-evidence.md` | Verification | Tester |
 | `$REVERSE_IT_DIR/projects/vtrux/notes/interposer-firmware-bringup.md` | The implementor's working log | Implementor |
 | `$REVERSE_IT_DIR/projects/vtrux/notes/plans/interposer-outstanding-work.md`, `interposer-verification-round-2.md` | Two earlier plans (reviewer, 2026-10-10) | Implementor |
-| `$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/interposer-firmware/` | The trace / golden fixtures, `l3_stimulus.txt`, the mutation scripts, the run folders, every `bench_*.py` and every other script the tester wrote there, among them `acceptance_round1_step2.py`, `cutover_verify.py`, `cutover_verify_test.py` and `charger_fault_flag_timing.py` (reviewer, 2026-10-08); and that folder's `README.md` (reviewer, 2026-10-07) | Tester |
+| `$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/interposer-firmware/` | The trace / golden fixtures, `l3_stimulus.txt`, the run folders, the scripts the tester wrote there that were not moved (reviewer, 2026-10-08), and that folder's `README.md` (reviewer, 2026-10-07). The 39 scripts the suites run moved into `bench_drivers/`, `harness_checks/` and `rebuild_capture_traces.py` here (port step 0, reviewer 2026-10-26); their SeaDrive copies are pointers until nothing reads them | Tester |
 
 ## This folder
 
@@ -43,8 +43,10 @@ branch; until then reverse-it's `firmware/esp-development.md`). Paths starting
 | `protocol.py` | The `0x18EFC000` page map and DBC-backed encode/decode for the BMS and charger frames | Tester |
 | `pack.py` | 116-cell LFP pack model, fitted to three real captures | Tester |
 | `bus.py` | Transport factory (virtual `udp_multicast` or a real dongle), `EchoSuppressor` and the segment-isolation guard | Tester |
-| `paths.py` | Resolves the data outside this repo from `REVERSE_IT_DIR`; refuses when it is unset | Tester |
+| `paths.py` | Resolves the data outside this repo from `REVERSE_IT_DIR`, refusing when it is unset; gives `code_dir()` (refuses an `INTERPOSER_CODE` naming another tree), the pinned canre, and `import_canbench()` (canbench from `REVERSE_IT_DIR`, the root never on `sys.path`) | Tester |
 | `paths_test.py` | Offline test for `paths.py` | Tester |
+| `pins.json` | The harness pin file: canre at the pinned public-repo commit (port step 0, reviewer 2026-10-26) | Tester |
+| `canre_pin.py`, `canre_pin_test.py` | Install and check the pinned canre (`scratch/canre/<commit>`; `CANRE_DIR` on madhouse), and its test | Tester |
 | `vehicle_sim.py` | VCU, A123 BMS and the VCM's evap flag (0x649), as a model or a capture replay | Tester |
 | `charger_sim.py` | Bel Fuse charger/inverter, with fault injection | Tester |
 | `interposer_sim.py` | The board as a process: I/O only; the logic is `machine.py` | Tester |
@@ -66,11 +68,14 @@ branch; until then reverse-it's `firmware/esp-development.md`). Paths starting
 | `build_lookup_offline_test.py` | Offline test for `build_lookup.py` | Tester |
 | `capture_pins.py` | Spec 9.1: hashes held in this repo that pin every capture-derived harness input (tester, 2026-10-08) | Tester |
 | `capture_pins_test.py` | Tests for `capture_pins.py` | Tester |
+| `rebuild_capture_traces.py` | Rebuilds the capture-derived traces against their pins (spec 9.1). Moved from reverse-it (port step 0, reviewer 2026-10-26) | Tester |
 | `bus_gs_usb_test.py` | Test for `bus.open_gs_usb`, the charger segment's adapter; no hardware | Tester |
 | `diag_cadence.py` | Spec 8.2 on the wire: the status-frame cadence and the immediate `0x7F4` | Tester |
 | `diag_cadence_test.py` | Test for `diag_cadence.py`; no hardware | Tester |
 | `bench_suite.py`, `bench_suite_test.py`, `bench_identify.py` | The chain runner's three suites, their test and its identify hook (reviewer, 2026-10-19) | Tester |
 | `bench_wican.py`, `bench_wican_test.py` | The WiCAN as a board of the bench suite, read and rebooted but never flashed, and its test (reviewer, 2026-10-24) | Tester |
+| `bench_drivers/` | Whole directory: the bench suite's hardware drivers and helpers, `reset_check`, `keepalive_probe`, and `script_can_fail` with its test. Moved from reverse-it (port step 0, reviewer 2026-10-26); `README.md` inside | Tester |
+| `harness_checks/` | Whole directory: the harness suite's mutants, can-fails and controls. Moved from reverse-it (port step 0, reviewer 2026-10-26); `README.md` inside | Tester |
 | `firmware/test/host_diff/` | The reference-vs-port differential | Tester |
 | `firmware/test/host_bridge/` | Whole directory, fakes included | Tester |
 | `firmware/test/build_check.py` | Builds every PlatformIO environment, checks the truck image is silent, and checks the manifest rows and the diag schema version (review item C2b) | Tester |
