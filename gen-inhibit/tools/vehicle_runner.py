@@ -39,25 +39,40 @@ SIGNALS WATCHED (all confirmed, see notes/powertrain-messages.md)
   0x053 B0-B1  generator/system mode status
   0x617 B7     VCM fault flag  0xC8 normal / 0xC9 secondary / 0xCA FAULT ACTIVE
 """
+import os
 import sys
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
 
 
-def _repo_root():
-    """Walk up to the directory that holds `canre`.
+def reverse_it_dir(environ=None):
+    """SeaDrive's reverse-it root, from REVERSE_IT_DIR: --interface auto finds
+    the dongle with its canbench. gi_paths' rule: no default, and refused if
+    unset or if the folder does not hold canre/ and projects/.
 
-    Counting `.parents[N]` is how this breaks -- it is off by one the moment
-    the file moves, and AGENTS.md flags it. Searching for the marker cannot be.
+    Until 2026-10-26 this walked up from this file for a canre/, which worked
+    while the file lived in reverse-it and found nothing once it moved into the
+    firmware repo (2026-10-08): it fell back to the filesystem root, and the
+    canbench import failed as a missing module rather than a missing setting.
+    Only --interface auto calls it, so the other interfaces need no setting.
     """
-    for d in _HERE.parents:
-        if (d / "canre").is_dir():
-            return d
-    return _HERE.parents[-1]
+    environ = os.environ if environ is None else environ
+    v = environ.get("REVERSE_IT_DIR", "").strip()
+    if not v:
+        raise SystemExit(
+            "vehicle_runner: --interface auto needs REVERSE_IT_DIR, SeaDrive's "
+            "reverse-it root on this machine (the folder holding canre/ and "
+            "projects/), for canbench's interface detection. Set it, or name "
+            "the interface with --interface.")
+    v = os.path.normpath(v)
+    if not (os.path.isdir(os.path.join(v, "canre"))
+            and os.path.isdir(os.path.join(v, "projects"))):
+        raise SystemExit("vehicle_runner: REVERSE_IT_DIR=%s does not hold "
+                         "canre/ and projects/" % v)
+    return v
 
 
-REPO_ROOT = _repo_root()
 sys.path.insert(0, str(_HERE))
 
 import argparse
@@ -406,8 +421,9 @@ class Runner:
         elif a.interface == "auto":
             # Same detection path the rest of the project uses, so a dongle
             # that works for can_logger.py works here.
-            if str(REPO_ROOT) not in sys.path:
-                sys.path.insert(0, str(REPO_ROOT))
+            root = reverse_it_dir()
+            if root not in sys.path:
+                sys.path.insert(0, root)
             from canbench.live.receiver import detect_all_can_interfaces
             print("detecting CAN interfaces at %d bps..." % a.bitrate)
             found = detect_all_can_interfaces(a.bitrate)

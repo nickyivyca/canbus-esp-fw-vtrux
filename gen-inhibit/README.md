@@ -36,7 +36,9 @@ starting `$REVERSE_IT_DIR` are in reverse-it and not yet moved.
 - Unit tests: `gen-inhibit/test/gen_inhibit_sched/`,
   `gen-inhibit/test/gen_inhibit_shim/`.
 - The Python reference in `gen-inhibit/tools/`: `sync.py`, `inhibit.py`,
-  `models.py`, `test_core.py`, `vehicle_runner.py`, `HANDOFF.md`,
+  `models.py`, `test_core.py`, `vehicle_runner.py`,
+  `test_vehicle_runner_root.py` (the implementor's self-test of
+  `vehicle_runner.py`'s reverse-it root; not evidence), `HANDOFF.md`,
   `requirements.txt`, and the folder's `README.md`, which the tester's rows
   in it are sent to the implementor to change.
 - `gen-inhibit/vtrux_tools.py`: **starts the shared build tooling**

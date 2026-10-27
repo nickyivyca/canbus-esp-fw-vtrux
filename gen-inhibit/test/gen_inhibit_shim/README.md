@@ -16,15 +16,16 @@ invisible to a suite that was green throughout:
 
 ```sh
 export REVERSE_IT_DIR=<the reverse-it project folder>   # required, no default
+python3 -B ../../tools/bench/canre_pin.py install         # once per worktree
 make && ./shim_test && ./shim_test_autoarm    # or: make run
 make asan && ./shim_test
 ```
 
-Builds `main/gen_inhibit.c` and `main/gen_inhibit_core.c` against mock
+Builds `../../firmware/main/gen_inhibit.c` and `gen_inhibit_core.c` against mock
 platform headers in `mock/`. Needs pthreads and Python 3; no ESP-IDF.
-`make` also builds the long-arm stimulus first, from the project folder (see
-"Building the long-arm stimulus" below), and stops if `REVERSE_IT_DIR` is not
-set.
+`make` also builds the long-arm stimulus first, from the project folder with the
+pinned `canre` (see "Building the long-arm stimulus" below), and stops if
+`REVERSE_IT_DIR` is not set or that `canre` is not installed.
 
 **Exit codes:** 0 all cases pass, 1 a case failed, 2 a case was still running
 at its wall-clock budget (20 s, or what the case declares with
@@ -120,14 +121,26 @@ to notice a truncated rebuild).
   the reverse-it folder on this machine (methodology, 2026-10-20). There is no
   default; unset stops the build with a message naming the variable, and
   `shim_test` is not run. `build_longarm.py` passes the same folder to
-  `from_capture.py` as `--project-dir`, so the capture and the `canre` parser that reads
-  it come from the same folder. Under WSL, pass a Windows value through with
-  `WSLENV=REVERSE_IT_DIR/p`.
+  `from_capture.py` as `--project-dir`, so the capture it found is the one converted.
+  Under WSL, pass a Windows value through with `WSLENV=REVERSE_IT_DIR/p`.
+- **Where the `canre` parser comes from:** not the project folder, since the canre-pin
+  step (2026-10-26). `from_capture.py` takes the public repo's `canre` at the commit
+  `../../tools/bench/pins.json` pins, installed by
+  `../../tools/bench/canre_pin.py install` (once per worktree, into
+  `scratch/canre/<commit>/`), and refuses any other. `gi_host_run.sh --shim` runs that
+  install on the remote before the build.
 - **When it rebuilds:** when the file is missing, or older than the capture,
   `../gen_inhibit_host/from_capture.py` or `build_longarm.py`, so a changed
-  converter cannot leave a stale file passing. Otherwise the step is a no-op. It
-  writes to a temporary name and renames it when complete, so an interrupted build
-  does not leave a truncated file that looks current.
+  converter cannot leave a stale file passing; and when the `canre` entry of
+  `pins.json` differs from the one it was built with, which each build records beside
+  it in `scenarios/replay-longarm-300s-all.scn.canre`, so a pin move cannot leave a
+  file parsed by the old `canre` passing (reviewer, 2026-10-26). A missing or
+  unreadable record rebuilds too. Only that entry counts, not `pins.json`'s mtime,
+  which its other entries also change. Otherwise the step is a no-op. It writes to a
+  temporary name and renames it when complete, so an interrupted build does not leave
+  a truncated file that looks current. `test_build_longarm.py` is the implementor's
+  self-test of this rule (`python3 -B test_build_longarm.py`), on stand-ins in
+  `scratch/build-longarm-test/`; not evidence.
 - **Which Python:** `python3`, or `make PYTHON=<interpreter>`. The suite builds
   with gcc on Linux or WSL; on Windows a bare `python3` opens the Microsoft Store,
   and the project's `python-executables-reference.md` is the per-machine table.
