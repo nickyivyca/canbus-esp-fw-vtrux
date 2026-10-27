@@ -10,29 +10,45 @@
 # (so the power-up round after the reset completes); the Innomaker sends the
 # 2.3 keep-alive 0x18FF5AC0 (extended, SA 0xC0, no DBC defines it) every
 # 100 ms so the vehicle port is normal and the 1 Hz status frames flow.
-# Usage (PYTHONPATH = the tester clone's charge-interposer):
-#   py -3.14 reset_check.py > reset_check.txt
+# Usage: py -3.14 reset_check.py [--serial-log FILE] > reset_check.txt
+# Moved from reverse-it's runs/step4_nohands_20261014T1730/ into git with
+# the bench suite's scripts (port step 0, 2026-10-26). The diag DBC is
+# the git copy (paths.diag_dbc(); the SeaDrive copy it read before, schema
+# 3, differs from it in the version line, comments and attributes, with
+# every signal's layout and scaling the same), and the serial log goes to
+# --serial-log, by default where it went before (that run folder).
+import argparse
 import os
 import sys
 import threading
 import time
 
-sys.path.insert(0, ".")
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "..", ".."))
+# bench_drivers/ (bench_charger_witness) first, then charge-interposer/
+# (paths, run_scenario): both found from this file.
+sys.path.insert(0, os.path.dirname(HERE))
+sys.path.insert(0, HERE)
 
 import can
 import cantools
 import bench_charger_witness as bcw
 from run_scenario import SerialTap, BOOT_LINE
+import paths
 
-DBC = os.path.join(HERE, "..", "..", "..", "..", "..", "vtrux-interposer-diag.dbc")
+DBC = paths.diag_dbc()
+_ap = argparse.ArgumentParser()
+_ap.add_argument("--serial-log", default=None,
+                 help="the board's serial log; default where it went before "
+                      "the move, reverse-it's runs/step4_nohands_20261014T1730/")
+SERIAL_LOG = _ap.parse_args().serial_log or os.path.join(
+    paths.fixtures(), "runs", "step4_nohands_20261014T1730",
+    "reset_check.serial.log")
 KA = 0x18FF5AC0
 db = cantools.database.load_file(DBC)
 stop = threading.Event()
 frames = []                       # (host t, id, data)
 
-tap = SerialTap("COM3", 115200, os.path.join(HERE, "reset_check.serial.log"))
+tap = SerialTap("COM3", 115200, SERIAL_LOG)
 tap.start()
 pc = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=500000)
 tx = bcw.open_gs_usb()

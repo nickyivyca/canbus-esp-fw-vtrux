@@ -21,13 +21,25 @@
 # And first, as the positive half, the same build with the unmutated
 # driver must pass all three -- so the difference is the edit alone.
 #
-# Run:  INTERPOSER_CODE=<clone>/charge-interposer bash ".../rx_order_prefix_control.sh"
-#       (under WSL pass it with WSLENV=INTERPOSER_CODE/p:REVERSE_IT_DIR/p)
+# Run:  bash charge-interposer/harness_checks/rx_order_prefix_control.sh
+#       (REVERSE_IT_DIR = SeaDrive's reverse-it root, for the fixtures;
+#        under WSL pass it with WSLENV=REVERSE_IT_DIR/p)
 set -u
-: "${INTERPOSER_CODE:?INTERPOSER_CODE is not set -- the charge-interposer code root}"
-HB="$(cd "$INTERPOSER_CODE/firmware/test/host_bridge" && pwd)"
+
+# The code is the tree this script is in (moved into git from reverse-it's
+# interposer-firmware/ folder, port step 0, 2026-10-26). INTERPOSER_CODE is
+# not needed; if it is set, it must name this same charge-interposer/.
+CODE="$(cd "$(dirname "$0")/.." && pwd -P)"
+if [ -n "${INTERPOSER_CODE:-}" ] && \
+   [ "$(cd "$INTERPOSER_CODE" 2>/dev/null && pwd -P)" != "$CODE" ]; then
+  echo "INTERPOSER_CODE=$INTERPOSER_CODE is not this tree's charge-interposer/ ($CODE)" >&2
+  exit 2
+fi
+HB="$(cd "$CODE/firmware/test/host_bridge" && pwd)"
 SRC="$(cd "$HB/../../src" && pwd)"
-L3_STIMULUS="$(cd "$(dirname "$0")" && pwd)/l3_stimulus.txt"
+# The fixture stays in SeaDrive (beside this script before the move): the
+# runner's L3_STIMULUS if set, else under REVERSE_IT_DIR.
+L3_STIMULUS="${L3_STIMULUS:-${REVERSE_IT_DIR:?REVERSE_IT_DIR is not set -- the SeaDrive reverse-it root}/projects/vtrux/notes/artifacts/interposer-firmware/l3_stimulus.txt}"
 export L3_STIMULUS
 WORK="${TMPDIR:-/tmp}/rx_prefix_$$"
 rm -rf "$WORK"

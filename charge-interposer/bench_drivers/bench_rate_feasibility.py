@@ -43,7 +43,7 @@ What it measures, per adapter, from the wire's point of view:
 It transmits. The board is the only other node and acknowledges, so there
 is no unacknowledged-transmitter storm (spec 2.2).
 
-    py -3.14 projects/vtrux/notes/artifacts/interposer-firmware/bench_rate_feasibility.py
+    py -3.14 charge-interposer/bench_drivers/bench_rate_feasibility.py
 
 Output is written to bench_rate_feasibility_<date>.txt beside this script
 as well as to stdout, because the run that produced the 1,869 left no
@@ -57,7 +57,10 @@ import sys
 import threading
 import time
 
-sys.path.insert(0, ".")
+# bench_drivers/ (the sibling drivers) first, then charge-interposer/
+# (paths, protocol, run_scenario): both found from this file, never from
+# the working folder (port step 0, 2026-10-26).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import bench_pacer                                            # noqa: E402
@@ -441,7 +444,10 @@ def main():
                     help="run the no-hardware pacer check and stop")
     args = ap.parse_args()
 
-    here = os.path.dirname(os.path.abspath(__file__))
+    # with no --out, the default output goes where it went before the
+    # move: SeaDrive's interposer-firmware/ folder, never this tree
+    import paths
+    here = None if args.out else paths.fixtures()
     # A SELF-TEST RUN MUST NOT CLAIM THE BENCH RUN'S FILENAME. The
     # self-test opens no adapter and measures no hardware, so a file
     # named bench_rate_feasibility_<date>.txt containing only self-test

@@ -22,7 +22,7 @@ Expected:
 
 Run on a machine with g++ (madhouse-debian), with INTERPOSER_CODE (the
 clone's charge-interposer/) and L3_STIMULUS set:
-  python3 -B projects/vtrux/notes/artifacts/interposer-firmware/switch_discard_witness.py
+  python3 -B charge-interposer/harness_checks/switch_discard_witness.py
 """
 
 import glob
@@ -32,9 +32,11 @@ import subprocess
 import sys
 import tempfile
 
-CODE = os.environ.get("INTERPOSER_CODE", "").strip()
-if not CODE:
-    raise SystemExit("INTERPOSER_CODE is not set")
+# charge-interposer/, found from this file (port step 0, 2026-10-26):
+# paths.code_dir() refuses an INTERPOSER_CODE naming another tree.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import paths                                           # noqa: E402
+CODE = paths.code_dir()
 HB = os.path.join(CODE, "firmware", "test", "host_bridge")
 SRC = os.path.join(CODE, "firmware", "src")
 WORK = os.path.join(tempfile.gettempdir(), "interposer-tester",

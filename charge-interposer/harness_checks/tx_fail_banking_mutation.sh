@@ -14,11 +14,20 @@
 # pass. The mutation verifies that it applied: a sed that matches nothing
 # would make a "clean" run that tested nothing.
 #
-# Run:  wsl bash ".../interposer-firmware/tx_fail_banking_mutation.sh"
-#       (INTERPOSER_CODE = the charge-interposer code root; WSLENV=.../p)
+# Run:  bash charge-interposer/harness_checks/tx_fail_banking_mutation.sh
+#       (under WSL: wsl bash ..., from any folder)
 set -u
-: "${INTERPOSER_CODE:?INTERPOSER_CODE is not set -- the charge-interposer code root}"
-FW="$(cd "$INTERPOSER_CODE/firmware" && pwd)"
+
+# The code is the tree this script is in (moved into git from reverse-it's
+# interposer-firmware/ folder, port step 0, 2026-10-26). INTERPOSER_CODE is
+# not needed; if it is set, it must name this same charge-interposer/.
+CODE="$(cd "$(dirname "$0")/.." && pwd -P)"
+if [ -n "${INTERPOSER_CODE:-}" ] && \
+   [ "$(cd "$INTERPOSER_CODE" 2>/dev/null && pwd -P)" != "$CODE" ]; then
+  echo "INTERPOSER_CODE=$INTERPOSER_CODE is not this tree's charge-interposer/ ($CODE)" >&2
+  exit 2
+fi
+FW="$(cd "$CODE/firmware" && pwd)"
 WORK="${TMPDIR:-/tmp}/txfail_mut_$$"
 rm -rf "$WORK"
 mkdir -p "$WORK"

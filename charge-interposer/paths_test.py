@@ -5,6 +5,8 @@
     old VTRUX_DATA, included), only the retired VTRUX_DATA set, no public
     repo -- is a clear PathsError, not a wrong path (REVERSE_IT_DIR replaced
     VTRUX_DATA on 2026-10-20: user, via the methodology session);
+  - code_dir() is charge-interposer/ itself, and an INTERPOSER_CODE naming
+    another tree is refused (the moved scripts test the tree they are in);
   - canre is the pinned install (canre_pin.py), with or without
     REVERSE_IT_DIR, and never a canre/ under REVERSE_IT_DIR (port step 0,
     reviewer 2026-10-26; canre_pin_test.py tests the pin itself);
@@ -102,7 +104,8 @@ def scan(root, exts, pattern, code_only):
 
 
 def main():
-    names = ("REVERSE_IT_DIR", "VTRUX_DATA", "VTRUX_PUBLIC_REPO", "CANRE_DIR")
+    names = ("REVERSE_IT_DIR", "VTRUX_DATA", "VTRUX_PUBLIC_REPO", "CANRE_DIR",
+             "INTERPOSER_CODE")
     saved = {k: os.environ.get(k) for k in names}
     tmp = tempfile.mkdtemp(dir=HERE, prefix="paths_test_")
     try:
@@ -195,6 +198,19 @@ def main():
             os.path.join(HERE, "..", "..", "canbus-reveng-vtrux-coda")),
               "the default public repo is the sibling clone, by relative "
               "path")
+
+        os.environ.pop("INTERPOSER_CODE", None)
+        check(PA.code_dir() == HERE, "code_dir() is the folder paths.py is in, "
+              "with INTERPOSER_CODE unset")
+        os.environ["INTERPOSER_CODE"] = HERE + os.sep
+        check(PA.code_dir() == HERE, "... and with INTERPOSER_CODE naming it")
+        os.environ["INTERPOSER_CODE"] = tmp
+        check(raises(PA.code_dir, "is not this tree's charge-interposer/"),
+              "an INTERPOSER_CODE naming another tree is refused")
+        if saved["INTERPOSER_CODE"] is None:
+            os.environ.pop("INTERPOSER_CODE")
+        else:
+            os.environ["INTERPOSER_CODE"] = saved["INTERPOSER_CODE"]
 
         env = dict(os.environ)
         env.pop("REVERSE_IT_DIR", None)

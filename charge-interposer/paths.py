@@ -80,6 +80,23 @@ def reverse_it_dir():
     return v
 
 
+def code_dir():
+    """charge-interposer/, the folder this file is in: the code a script in
+    this tree tests, found from its own location since the scripts moved
+    into git (port step 0, reviewer 2026-10-26; port plan goal 20 item 9).
+    INTERPOSER_CODE is not needed; if it is set, it must name this same
+    folder, or it is refused rather than one tree tested with another's
+    scripts."""
+    v = os.environ.get("INTERPOSER_CODE", "").strip()
+    if v and os.path.normcase(os.path.realpath(v)) != \
+            os.path.normcase(os.path.realpath(_HERE)):
+        raise PathsError(
+            "INTERPOSER_CODE=%s is not this tree's charge-interposer/ (%s): "
+            "a script tests the tree it is in; unset INTERPOSER_CODE or run "
+            "the other tree's copy" % (v, _HERE))
+    return _HERE
+
+
 def data_dir():
     """SeaDrive's projects/vtrux, under REVERSE_IT_DIR."""
     return os.path.join(reverse_it_dir(), "projects", "vtrux")

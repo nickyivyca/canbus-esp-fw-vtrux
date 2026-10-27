@@ -54,7 +54,10 @@ import sys
 import threading
 import time
 
-sys.path.insert(0, ".")
+# bench_drivers/ (the sibling drivers) first, then charge-interposer/
+# (paths, protocol, run_scenario): both found from this file, never from
+# the working folder (port step 0, 2026-10-26).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 WRAP_US = 1 << 32                 # gs_usb's timestamp_us is 32 bits
@@ -449,7 +452,10 @@ def main():
         return self_test()
     if args.mode is None:
         ap.error("a mode (clock, echo, rate-runs) or --self-test")
-    here = os.path.dirname(os.path.abspath(__file__))
+    # with no --out, the default output goes where it went before the
+    # move: SeaDrive's interposer-firmware/ folder, never this tree
+    import paths
+    here = None if args.out else paths.fixtures()
     out = args.out or os.path.join(here, "bench_innomaker_clock_%s_%s.txt" % (
         args.mode, datetime.datetime.now().strftime("%Y%m%dT%H%M%S")))
     import bench_charger_witness as bcw

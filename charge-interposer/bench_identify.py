@@ -26,9 +26,10 @@ so a diag image is never sent HELLO? or V. If the boot capture itself
 cannot run, identify RAISES: the runner then stops rather than flash a
 board whose state nobody read. Returns None when nothing answers.
 
-Settings used: interposer_artifacts (holding bench_powerup_round.py),
-serial_port, wican_state, hosts.local.python and hosts.local.env (the boot
-capture imports the clone's run_scenario). The key interposer_dbc is
+Settings used: serial_port, wican_state, hosts.local.python and hosts.local.env (the boot
+capture imports the clone's run_scenario). bench_powerup_round.py is the
+one in this tree's bench_drivers/ (port step 0, 2026-10-26; it was in
+reverse-it's interposer-firmware/ folder before). The key interposer_dbc is
 retired (2026-10-24): settings that still carry it are refused, before
 anything runs, so a value nobody reads cannot look like it is in force.
 """
@@ -74,10 +75,11 @@ def _env(settings):
 def read_7f7(settings, logdir, tag):
     """One ACKed boot. Returns (build id or None, product serial seen)."""
     import cantools
-    art = settings["interposer_artifacts"]
+    drivers = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "bench_drivers")
     out = os.path.join(logdir, "ack_%s" % tag)
     log = out + "_run.txt"
-    cmd = _python(settings) + [os.path.join(art, "bench_powerup_round.py"),
+    cmd = _python(settings) + [os.path.join(drivers, "bench_powerup_round.py"),
                                "--port", settings["serial_port"], "--mode", "ack",
                                "--boots", "1", "--wican-state",
                                settings.get("wican_state", "not recorded"),
@@ -85,7 +87,7 @@ def read_7f7(settings, logdir, tag):
     with open(log, "w", encoding="utf-8") as f:
         subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT,
                        env=_env(settings), timeout=180,
-                       cwd=settings.get("reverse_it") or art)
+                       cwd=drivers)
     with open(log, encoding="utf-8", errors="replace") as f:
         text = f.read()
     witness = sorted(glob.glob(os.path.join(out, "witness_ack_0*.txt")))

@@ -9,10 +9,12 @@ folder), runs the comparison against it, mutates
 it three ways, and removes it afterwards. scratch_dir() refuses any folder
 inside the project tree.
 
-Run from the project root:
-  py -3.14 projects/vtrux/notes/artifacts/interposer-firmware/cutover_verify_test.py
-  py -3.14 projects/vtrux/notes/artifacts/interposer-firmware/cutover_verify_test.py --guard-test
+Run with REVERSE_IT_DIR set:
+  py -3.14 charge-interposer/harness_checks/cutover_verify_test.py
+  py -3.14 charge-interposer/harness_checks/cutover_verify_test.py --guard-test
 The second form tests only the scratch-folder guard; it needs no source tree.
+Since the move into git (port step 0, 2026-10-26) the guard also refuses a
+folder inside this git tree, where this file now is.
 """
 
 import os
@@ -22,7 +24,10 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(HERE, "..", "..", "..", "..", ".."))
+sys.path.insert(0, os.path.dirname(HERE))
+import paths                           # noqa: E402
+PROJECT_ROOT = paths.reverse_it_dir()      # the reverse-it root, on SeaDrive
+TREE = os.path.dirname(paths.code_dir())   # this git tree
 SCRATCH = os.path.join(tempfile.gettempdir(), "interposer-tester", "cutover_test")
 sys.path.insert(0, HERE)
 import cutover_verify as CV            # noqa: E402
@@ -63,10 +68,13 @@ def inside(path, root):
 
 def scratch_dir(base=SCRATCH):
     """A fresh throwaway folder under base; refuses one inside the project
-    tree, which is on SeaDrive."""
+    tree, which is on SeaDrive, or inside this git tree."""
     if inside(base, PROJECT_ROOT):
         raise SystemExit("REFUSED: scratch folder %s is inside the project "
                          "tree (SeaDrive); use a folder outside it" % base)
+    if inside(base, TREE):
+        raise SystemExit("REFUSED: scratch folder %s is inside the git tree "
+                         "%s; use a folder outside it" % (base, TREE))
     os.makedirs(base, exist_ok=True)
     return tempfile.mkdtemp(dir=base, prefix="cutover_test_")
 
@@ -74,7 +82,8 @@ def scratch_dir(base=SCRATCH):
 def guard_test():
     premise = os.path.isfile(os.path.join(PROJECT_ROOT, "AGENTS.md"))
     check(premise, "premise: PROJECT_ROOT %s holds AGENTS.md" % PROJECT_ROOT)
-    for bad in (HERE, os.path.join(HERE, "sub"), PROJECT_ROOT):
+    for bad in (HERE, os.path.join(HERE, "sub"), PROJECT_ROOT,
+                os.path.join(PROJECT_ROOT, "projects", "vtrux"), TREE):
         try:
             scratch_dir(bad)
             refused = False

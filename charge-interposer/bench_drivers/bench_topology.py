@@ -38,7 +38,7 @@ the port must fall back to listen-only (2 s with no charger frame) and a
 quiet control window must hear no pages, or nothing can be attributed.
 classify_charger_up() decides; phase 2's forwarded probe then confirms.
 
-    py -3.14 projects/vtrux/notes/artifacts/interposer-firmware/bench_topology.py
+    py -3.14 charge-interposer/bench_drivers/bench_topology.py
     py -3.14 .../bench_topology.py --self-test | --can-fail
 """
 
@@ -49,7 +49,10 @@ import sys
 import threading
 import time
 
-sys.path.insert(0, ".")
+# bench_drivers/ (the sibling drivers) first, then charge-interposer/
+# (paths, protocol, run_scenario): both found from this file, never from
+# the working folder (port step 0, 2026-10-26).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import can                                                   # noqa: E402

@@ -9,7 +9,7 @@ fail at least one case, and the real rule must pass them all:
   noframes exempt any scenario that showed no diag frames
   none     no exemption at all (spec 9 as it stood before 2026-10-10)
 
-Usage (INTERPOSER_CODE and REVERSE_IT_DIR set):
+Usage (REVERSE_IT_DIR set):
     py -3.14 bypass_diag_mutations.py
 """
 
@@ -18,8 +18,11 @@ import io
 import os
 import sys
 
-CODE = os.environ["INTERPOSER_CODE"]
-sys.path.insert(0, CODE)
+# charge-interposer/, found from this file (port step 0, 2026-10-26):
+# paths.code_dir() refuses an INTERPOSER_CODE naming another tree.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import paths                                           # noqa: E402
+CODE = paths.code_dir()
 
 import run_scenario as R                               # noqa: E402
 import test_scorer_wiring as W                         # noqa: E402

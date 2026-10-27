@@ -45,14 +45,21 @@ are flashed, and identify must read their build id back. The two ESP-IDF
 test images are identified by their @HELLO and ELF sha256.
 
 Settings beyond the core's (see the NICKY-XPS settings JSON in reverse-it
-interposer-firmware/): reverse_it (the root the artifacts scripts run from), interposer_code,
-interposer_artifacts,
+interposer-firmware/): interposer_code,
 images_dir, images_src, boot_app0, serial_port, pcan_channel, wican_state,
 madhouse_pio; for the bench suite's WiCAN (bench_wican.py), gi_tools
 (gen-inhibit's tools/gen_inhibit, read-only) and gi_chain_settings
 (gen-inhibit's chain settings JSON, read for its gi_images). The diag DBC
 is the git copy (paths.diag_dbc()); interposer_dbc is retired and refused
 (bench_identify).
+
+Every script a check runs is in this tree (port step 0, reviewer
+2026-10-26): the bench drivers in bench_drivers/, the mutants and other
+checks of the checks in harness_checks/, rebuild_capture_traces.py here.
+Until then they ran from reverse-it's interposer-firmware/ folder (the
+settings interposer_artifacts and reverse_it, now unread), and the run
+record carried their digest as artifacts_sha256; the commit carries them
+now. canre is the pinned install (canre_pin.py), shipped to madhouse.
 """
 
 import glob
@@ -60,7 +67,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import sys
 import tempfile
 
@@ -133,25 +139,26 @@ HARNESS_PY_TESTS = [
 ]
 MADHOUSE_PIO_PATH = "{madhouse_pio_dir}:/usr/local/bin:/usr/bin:/bin"
 
-# Mutation / can-fail scripts in reverse-it interposer-firmware/ (run on
-# madhouse from a staged copy, INTERPOSER_CODE = the shipped tree).
+# Mutation / can-fail scripts in harness_checks/, run on madhouse from the
+# shipped code (cwd {work}/code; each finds the code from its own place).
 MADHOUSE_MUTANTS = [
-    ("l2-mutations", ["bash", "{work}/art/l2_mutations.sh"]),
-    ("twai-mutations", ["bash", "{work}/art/twai_mutations.sh"]),
-    ("hold-mutations", ["bash", "{work}/art/hold_mutations.sh"]),
-    ("busoff-mutations", ["bash", "{work}/art/busoff_mutations.sh"]),
-    ("rx-hook-mutations", ["bash", "{work}/art/rx_hook_mutations.sh"]),
-    ("conformance-mutations", ["bash", "{work}/art/conformance_mutations.sh"]),
-    ("tx-fail-banking-mutation", ["bash", "{work}/art/tx_fail_banking_mutation.sh"]),
-    ("hold-cadence-gate-mutation", ["bash", "{work}/art/hold_cadence_gate_mutation.sh"]),
-    ("rx-order-prefix-control", ["bash", "{work}/art/rx_order_prefix_control.sh"]),
-    ("switch-discard-witness", ["@python", "{work}/art/switch_discard_witness.py"]),
-    ("monitor-6h-diff-canfail", ["@python", "{work}/art/monitor_6h_diff.py", "--can-fail"]),
-    ("monitor-6h-diff-corrupt-pin", ["@python", "{work}/art/monitor_6h_diff.py", "--corrupt-pin"]),
+    ("l2-mutations", ["bash", "harness_checks/l2_mutations.sh"]),
+    ("twai-mutations", ["bash", "harness_checks/twai_mutations.sh"]),
+    ("hold-mutations", ["bash", "harness_checks/hold_mutations.sh"]),
+    ("busoff-mutations", ["bash", "harness_checks/busoff_mutations.sh"]),
+    ("rx-hook-mutations", ["bash", "harness_checks/rx_hook_mutations.sh"]),
+    ("conformance-mutations", ["bash", "harness_checks/conformance_mutations.sh"]),
+    ("tx-fail-banking-mutation", ["bash", "harness_checks/tx_fail_banking_mutation.sh"]),
+    ("hold-cadence-gate-mutation", ["bash", "harness_checks/hold_cadence_gate_mutation.sh"]),
+    ("rx-order-prefix-control", ["bash", "harness_checks/rx_order_prefix_control.sh"]),
+    ("switch-discard-witness", ["@python", "harness_checks/switch_discard_witness.py"]),
+    ("monitor-6h-diff-canfail", ["@python", "harness_checks/monitor_6h_diff.py", "--can-fail"]),
+    ("monitor-6h-diff-corrupt-pin", ["@python", "harness_checks/monitor_6h_diff.py", "--corrupt-pin"]),
 ]
 MUTANT_JUDGES = {"monitor-6h-diff-corrupt-pin": "corrupt_pin_judge"}  # by name
 
-# Bench drivers with a --self-test (no hardware), run locally.
+# Bench drivers in bench_drivers/ with a --self-test (no hardware), run
+# locally.
 SELF_TESTS = [
     "bench_powerup_round", "bench_rx_order", "bench_charger_silent",
     "bench_innomaker_clock", "bench_switch_loss", "bench_switch_errors",
@@ -165,10 +172,9 @@ CAN_FAILS = [
     "bench_topology", "bench_usb_host", "bench_vport", "bench_hold12",
 ]
 
-# Local scripts in reverse-it interposer-firmware/ (they want pyserial or
-# the Windows side).
+# Local scripts (they want pyserial or the Windows side).
 EMULATED_LOCAL = [
-    ("rebuild-capture-traces", ["{interposer_artifacts}/rebuild_capture_traces.py"]),
+    ("rebuild-capture-traces", ["{interposer_code}/rebuild_capture_traces.py"]),
 ]
 # shared/bench's own tests (the decode identity, the chain runner), each run
 # plain and with --can-fail (reviewer, 2026-10-22: no suite ran them).
@@ -183,18 +189,21 @@ HARNESS_LOCAL = [
     ("bench-wican-test-canfail",
      ["{interposer_code}/bench_wican_test.py", "--can-fail"]),
     ("cutover-verify-guard-test",
-     ["{interposer_artifacts}/cutover_verify_test.py", "--guard-test"]),
+     ["{interposer_code}/harness_checks/cutover_verify_test.py", "--guard-test"]),
     # script_can_fail's baseline run: an unmutated script that fails where
     # the mutants run makes every catch meaningless (2026-10-24)
-    ("script-can-fail-test", ["{interposer_artifacts}/script_can_fail_test.py"]),
+    ("script-can-fail-test",
+     ["{interposer_code}/bench_drivers/script_can_fail_test.py"]),
     ("rebuild-capture-traces-canfail",
-     ["{interposer_artifacts}/rebuild_capture_traces.py", "--can-fail"]),
-    ("clause1-fall-mutations", ["{interposer_artifacts}/clause1_fall_mutations.py"]),
+     ["{interposer_code}/rebuild_capture_traces.py", "--can-fail"]),
+    ("clause1-fall-mutations",
+     ["{interposer_code}/harness_checks/clause1_fall_mutations.py"]),
     ("clause1-fall-mutations-canfail",
-     ["{interposer_artifacts}/clause1_fall_mutations.py", "--can-fail"]),
-    ("bypass-diag-mutations", ["{interposer_artifacts}/bypass_diag_mutations.py"]),
-    ("e5-arming-controls", ["{interposer_artifacts}/e5_arming_controls.py"]),
-    ("clamp-frame-cases", ["{interposer_artifacts}/clamp_frame_cases.py"]),
+     ["{interposer_code}/harness_checks/clause1_fall_mutations.py", "--can-fail"]),
+    ("bypass-diag-mutations",
+     ["{interposer_code}/harness_checks/bypass_diag_mutations.py"]),
+    ("e5-arming-controls", ["{interposer_code}/harness_checks/e5_arming_controls.py"]),
+    ("clamp-frame-cases", ["{interposer_code}/harness_checks/clamp_frame_cases.py"]),
 ]
 
 EMULATED_KNOWN_FAILS = [
@@ -410,20 +419,6 @@ def _idf_image(name, settings):
 
 
 # ---- staging for madhouse -----------------------------------------------
-def _stage_artifacts(settings):
-    """The artifacts scripts madhouse runs, copied to the machine temp folder
-    (regenerable) so exactly these bytes are shipped and hashed."""
-    d = os.path.join(tempfile.gettempdir(), "interposer-tester", "runner-stage",
-                     "art")
-    shutil.rmtree(d, ignore_errors=True)
-    os.makedirs(d)
-    art = settings["interposer_artifacts"]
-    for p in sorted(glob.glob(os.path.join(art, "*.py")) +
-                    glob.glob(os.path.join(art, "*.sh"))):
-        shutil.copy2(p, d)
-    return d
-
-
 def _stage_git_bundle(code):
     """A git bundle of the clone's HEAD, for build-check on madhouse
     (build_check_in_clone.py): the shipped copy has no .git, and a build
@@ -450,7 +445,7 @@ def _stage_git_bundle(code):
 class _Build:
     """The check builders and shared pieces the three suites use."""
 
-    def __init__(self, settings, ship_art=False):
+    def __init__(self, settings):
         self.settings = settings
         self.code = settings["interposer_code"]
         # madhouse gets the pinned canre this host checked, beside the code
@@ -459,8 +454,6 @@ class _Build:
         canre = canre_pin.folder()
         canre_pin.verify(canre)
         self.ship = {"code": self.code, "canre": canre}
-        if ship_art:
-            self.ship["art"] = _stage_artifacts(settings)
         self.mad_env = {"INTERPOSER_CODE": "{work}/code",
                         "CANRE_DIR": "{work}/canre",
                         "L3_STIMULUS": "{madhouse_artifacts}/l3_stimulus.txt"}
@@ -485,7 +478,7 @@ class _Build:
     def lpy(self, cid, argv, **kw):
         kw.setdefault("judge", script_judge)
         kw.setdefault("cls", "build")    # idle priority beside a wall-clock test
-        kw.setdefault("cwd", "{reverse_it}")    # the artifacts scripts' root
+        kw.setdefault("cwd", "{interposer_code}")
         return Check(cid, argv, python=True, **kw)
 
     def bpy(self, cid, script, args, **kw):
@@ -496,17 +489,18 @@ class _Build:
                     for a in args]
         kw.setdefault("judge", script_judge)
         kw.setdefault("cls", "wallclock")
-        kw.setdefault("cwd", "{reverse_it}")
+        kw.setdefault("cwd", "{interposer_code}")
         kw.setdefault("timeout_s", 3600)
-        return Check(cid, ["{interposer_artifacts}/%s" % script] + args,
+        return Check(cid, ["{interposer_code}/bench_drivers/%s" % script] + args,
                      python=True, **kw)
 
     def code_info(self, images=None):
         """What the run tested. For the emulated and bench suites the
         identity is the product digest over product_files(), which the core
-        adds (user 2026-10-20); the commit, dirty state and the artifacts
-        digest (the harness scripts in reverse-it, which git does not
-        cover) are the harness identity, recorded and not gated. The
+        adds (user 2026-10-20); the commit and dirty state are the harness
+        identity, recorded and not gated: every script a check runs is in
+        the tree since port step 0 (2026-10-26), so the artifacts digest
+        of the scripts in reverse-it is no longer recorded. The
         harness suite gives no product files, so its identity stays the
         commit of a clean tree."""
         code, settings = self.code, self.settings
@@ -520,8 +514,7 @@ class _Build:
                                    capture_output=True, text=True).stdout.strip()
             out = {"repo": repo, "commit": head, "dirty": bool(dirty),
                    "dirty_files": dirty.splitlines()[:20],
-                   "code_hash": None,
-                   "artifacts_sha256": _artifacts_digest(settings)}
+                   "code_hash": None}
             if images:
                 out["images_src"] = settings["images_src"]
                 out["images"] = {k: v.note for k, v in images.items()}
@@ -537,19 +530,6 @@ class _Build:
                             capture_output=True, text=True).stdout.strip())}
             return out
         return info
-
-
-def _artifacts_digest(settings):
-    """sha256 over (name, sha256) of every top-level .py and .sh in the
-    artifacts folder: the harness scripts the run used."""
-    h = hashlib.sha256()
-    art = settings["interposer_artifacts"]
-    for p in sorted(glob.glob(os.path.join(art, "*.py")) +
-                    glob.glob(os.path.join(art, "*.sh"))):
-        with open(p, "rb") as f:
-            h.update(("%s %s\n" % (os.path.basename(p),
-                                   hashlib.sha256(f.read()).hexdigest())).encode())
-    return h.hexdigest()
 
 
 # ---- emulated -----------------------------------------------------------
@@ -636,9 +616,11 @@ def bench(settings):
             ["run", "--port", "{serial_port}", "--out", "{outdir}"]),
         bpy("mcp-reset-canfail", "bench_mcp_reset.py",
             ["canfail", "--port", "{serial_port}", "--out", "{outdir}"]),
-        bpy("reset-check", "runs/step4_nohands_20261014T1730/reset_check.py", []),
-        bpy("keepalive-probe", "runs/step4_nohands_20261014T1730/keepalive_probe.py",
-            [], judge=recorded_judge),
+        # moved from reverse-it's runs/step4_nohands_20261014T1730/; the
+        # serial log now goes to the check's own folder
+        bpy("reset-check", "reset_check.py",
+            ["--serial-log", "{outdir}/reset_check.serial.log"]),
+        bpy("keepalive-probe", "keepalive_probe.py", [], judge=recorded_judge),
         bpy("usb-host-baseline-ack", "bench_usb_host.py",
             ["--port", "{serial_port}", "--case", "baseline-boots", "--ack",
              "--wican-state", "{wican_state}", "--out", "{outdir}"]),
@@ -802,7 +784,7 @@ def bench(settings):
 def harness(settings):
     """The tester's checks of the checks: harness tests, mutants, can-fails
     and the bench drivers' self-tests. Run when the harness changes."""
-    b = _Build(settings, ship_art=True)
+    b = _Build(settings)
     m_harness = Group("m-harness", host="madhouse", ship=b.ship, checks=[
         b.mpio("build-check-links-test",
                ["firmware/test/build_check_links_test.py"], cls="build",
@@ -834,11 +816,13 @@ def harness(settings):
     m_mut = Group("m-mutants", host="madhouse", ship=b.ship, checks=[
         mutant(cid, argv) for cid, argv in MADHOUSE_MUTANTS])
     l_harness = Group("l-harness", checks=[
-        b.lpy("st." + s.replace("_", "-"), ["{interposer_artifacts}/%s.py" % s,
-                                            "--self-test"], timeout_s=1800)
+        b.lpy("st." + s.replace("_", "-"),
+              ["{interposer_code}/bench_drivers/%s.py" % s, "--self-test"],
+              timeout_s=1800)
         for s in SELF_TESTS] + [
-        b.lpy("cf." + s.replace("_", "-"), ["{interposer_artifacts}/%s.py" % s,
-                                            "--can-fail"], timeout_s=3600)
+        b.lpy("cf." + s.replace("_", "-"),
+              ["{interposer_code}/bench_drivers/%s.py" % s, "--can-fail"],
+              timeout_s=3600)
         for s in CAN_FAILS] + [b.lpy(cid, argv, timeout_s=3600)
                                 for cid, argv in HARNESS_LOCAL] + [
         b.lpy("sb.%s%s" % (t[:-3].replace("_", "-"), sfx),

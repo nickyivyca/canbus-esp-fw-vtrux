@@ -12,7 +12,7 @@ uses (test_trips.M swapped; protocol.py is the current one). E4 armed on a
 re-arm check must report it; whatever E4 does in the other two is printed.
 The E4 file's sha256 is printed and must differ from the current machine.py.
 
-Usage (INTERPOSER_CODE = the tester clone's charge-interposer):
+Usage (the code is the tree this file is in):
     py -3.14 e5_arming_controls.py [e4_sha]
 """
 
@@ -22,8 +22,11 @@ import os
 import subprocess
 import sys
 
-CODE = os.environ["INTERPOSER_CODE"]
-sys.path.insert(0, CODE)
+# charge-interposer/, found from this file (port step 0, 2026-10-26):
+# paths.code_dir() refuses an INTERPOSER_CODE naming another tree.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import paths                                           # noqa: E402
+CODE = paths.code_dir()
 
 import test_trips as T                                 # noqa: E402
 

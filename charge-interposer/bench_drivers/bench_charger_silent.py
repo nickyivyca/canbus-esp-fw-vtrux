@@ -58,7 +58,10 @@ import sys
 import threading
 import time
 
-sys.path.insert(0, ".")
+# bench_drivers/ (the sibling drivers) first, then charge-interposer/
+# (paths, protocol, run_scenario): both found from this file, never from
+# the working folder (port step 0, 2026-10-26).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 AGE_OUT_S = 0.100
@@ -775,7 +778,10 @@ def main():
         ap.error("--port is required: with the vehicle port listen-only "
                  "the CAN diag frames stop, and the serial diag line is the "
                  "only record of phase B")
-    here = os.path.dirname(os.path.abspath(__file__))
+    # with no --out, the default output goes where it went before the
+    # move: SeaDrive's interposer-firmware/ folder, never this tree
+    import paths
+    here = None if args.out else paths.fixtures()
     out = args.out or os.path.join(here, "bench_charger_silent_%s.txt"
                                    % datetime.datetime.now()
                                    .strftime("%Y%m%dT%H%M%S"))

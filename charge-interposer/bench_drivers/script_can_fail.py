@@ -44,8 +44,11 @@ def run(script, mutants, timeout_s=300):
                      os.path.splitext(name)[0])
     shutil.rmtree(d, ignore_errors=True)
     os.makedirs(d)
+    # the copy runs from the temp folder, so it finds its siblings
+    # (bench_drivers/) and the code (charge-interposer/) through PYTHONPATH
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONIOENCODING="utf-8",
-               PYTHONPATH=HERE + os.pathsep + os.environ.get("PYTHONPATH", ""))
+               PYTHONPATH=os.pathsep.join([HERE, os.path.dirname(HERE)] + [
+                   p for p in [os.environ.get("PYTHONPATH", "")] if p]))
     path = os.path.join(d, name)
 
     def self_test(text):

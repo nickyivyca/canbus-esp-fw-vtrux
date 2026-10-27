@@ -10,14 +10,22 @@
 # DIFFER from their goldens; the control (unmutated copy) must match. The
 # mutation verifies that it applied.
 #
-# Run:  wsl bash ".../interposer-firmware/hold_cadence_gate_mutation.sh"
-#       (INTERPOSER_CODE = the charge-interposer code root, REVERSE_IT_DIR =
-#        SeaDrive's reverse-it root; WSLENV=INTERPOSER_CODE/p:REVERSE_IT_DIR/p.
-#        REVERSE_IT_DIR replaced VTRUX_DATA on 2026-10-20)
+# Run:  bash charge-interposer/harness_checks/hold_cadence_gate_mutation.sh
+#       (REVERSE_IT_DIR = SeaDrive's reverse-it root, for the fixtures;
+#        under WSL pass it with WSLENV=REVERSE_IT_DIR/p)
 set -u
-: "${INTERPOSER_CODE:?INTERPOSER_CODE is not set -- the charge-interposer code root}"
+
+# The code is the tree this script is in (moved into git from reverse-it's
+# interposer-firmware/ folder, port step 0, 2026-10-26). INTERPOSER_CODE is
+# not needed; if it is set, it must name this same charge-interposer/.
+CODE="$(cd "$(dirname "$0")/.." && pwd -P)"
+if [ -n "${INTERPOSER_CODE:-}" ] && \
+   [ "$(cd "$INTERPOSER_CODE" 2>/dev/null && pwd -P)" != "$CODE" ]; then
+  echo "INTERPOSER_CODE=$INTERPOSER_CODE is not this tree's charge-interposer/ ($CODE)" >&2
+  exit 2
+fi
 : "${REVERSE_IT_DIR:?REVERSE_IT_DIR is not set -- the SeaDrive reverse-it root}"
-FW="$(cd "$INTERPOSER_CODE/firmware" && pwd)"
+FW="$(cd "$CODE/firmware" && pwd)"
 HD="$FW/test/host_diff"
 FIX="$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/interposer-firmware"
 WORK="${TMPDIR:-/tmp}/cadmut_$$"

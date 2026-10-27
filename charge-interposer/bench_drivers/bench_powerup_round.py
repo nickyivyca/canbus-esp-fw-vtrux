@@ -57,6 +57,10 @@ import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# bench_drivers/ (the sibling drivers) first, then charge-interposer/
+# (paths, protocol, run_scenario): both found from this file, never
+# from the working folder (port step 0, 2026-10-26).
+sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 
 STATUS_IDS = (0x7F4, 0x7F5, 0x7F6, 0x7F7)
@@ -467,7 +471,8 @@ def run_boot(args, out_dir, n, mode):
 
 def run_bench(args):
     stamp = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
-    out_dir = args.out or os.path.join(HERE, "runs",
+    import paths      # no --out: SeaDrive, as before the move, never the tree
+    out_dir = args.out or os.path.join(paths.fixtures(), "runs",
                                        "bench_powerup_round_%s" % stamp)
     os.makedirs(out_dir, exist_ok=True)
     modes = {"ack": ["ack"], "noack": ["noack"],

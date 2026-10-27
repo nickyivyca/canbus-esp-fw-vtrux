@@ -22,19 +22,27 @@
 # mutation names a file under the work tree, is compared against its own
 # pristine copy, and is compiled from the place it was mutated.
 #
-# Run:  wsl bash ".../interposer-firmware/l2_mutations.sh"
+# Run:  bash charge-interposer/harness_checks/l2_mutations.sh
+#       (REVERSE_IT_DIR = SeaDrive's reverse-it root, for the fixtures;
+#        under WSL pass it with WSLENV=REVERSE_IT_DIR/p)
 set -u
 
-# INTERPOSER_CODE (required since 2026-10-08): the charge-interposer code
-# root to test -- a clone's charge-interposer/ (repo canbus-esp-fw-vtrux).
-# The SeaDrive copy it used to default to is gone; under WSL pass it with
-# WSLENV=INTERPOSER_CODE/p.
-: "${INTERPOSER_CODE:?INTERPOSER_CODE is not set -- the charge-interposer code root, a clone of canbus-esp-fw-vtrux/charge-interposer}"
-HB="$(cd "${INTERPOSER_CODE:?INTERPOSER_CODE is not set -- the charge-interposer code root, a clone of canbus-esp-fw-vtrux/charge-interposer}/firmware/test/host_bridge" && pwd)"
+# The code is the tree this script is in (moved into git from reverse-it's
+# interposer-firmware/ folder, port step 0, 2026-10-26). INTERPOSER_CODE is
+# not needed; if it is set, it must name this same charge-interposer/.
+CODE="$(cd "$(dirname "$0")/.." && pwd -P)"
+if [ -n "${INTERPOSER_CODE:-}" ] && \
+   [ "$(cd "$INTERPOSER_CODE" 2>/dev/null && pwd -P)" != "$CODE" ]; then
+  echo "INTERPOSER_CODE=$INTERPOSER_CODE is not this tree's charge-interposer/ ($CODE)" >&2
+  exit 2
+fi
+HB="$(cd "$CODE/firmware/test/host_bridge" && pwd)"
 SRC="$(cd "$HB/../../src" && pwd)"
 # The work tree is outside the project, so l3_replay.cpp's relative
 # candidates for its pinned stimulus cannot resolve; it reads this first.
-L3_STIMULUS="$(cd "$(dirname "$0")" && pwd)/l3_stimulus.txt"
+# The fixture stays in SeaDrive (beside this script before the move): the
+# runner's L3_STIMULUS if set, else under REVERSE_IT_DIR.
+L3_STIMULUS="${L3_STIMULUS:-${REVERSE_IT_DIR:?REVERSE_IT_DIR is not set -- the SeaDrive reverse-it root}/projects/vtrux/notes/artifacts/interposer-firmware/l3_stimulus.txt}"
 export L3_STIMULUS
 WORK="${TMPDIR:-/tmp}/l2_mut_$$"
 rm -rf "$WORK"

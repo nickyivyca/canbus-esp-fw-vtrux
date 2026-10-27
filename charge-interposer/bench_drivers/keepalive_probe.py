@@ -11,9 +11,10 @@ import sys
 import threading
 import time
 
-sys.path.insert(0, ".")
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "..", ".."))
+# Moved from reverse-it's runs/step4_nohands_20261014T1730/ into git with
+# the bench suite's scripts (port step 0, 2026-10-26): bench_drivers/
+# (bench_charger_witness), found from this file.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import can
 import serial

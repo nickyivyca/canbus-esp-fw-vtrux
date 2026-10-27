@@ -42,6 +42,10 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# bench_drivers/ (the sibling drivers) first, then charge-interposer/
+# (paths, protocol, run_scenario): both found from this file, never
+# from the working folder (port step 0, 2026-10-26).
+sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 
 ROM_LINE = re.compile(r"^(ESP-ROM:|Build:|rst:|Saved PC:|SPIWP:|mode:|load:|"
@@ -212,8 +216,9 @@ def main():
     log("run at %s; port %s; unread %.0f s + drain %.0f s, read %.0f s"
         % (datetime.datetime.now().isoformat(), a.port, a.unread_s,
            a.drain_s, a.read_s))
+    import paths      # no --out: SeaDrive, as before the move, never the tree
     serial_path = (os.path.splitext(a.out)[0] + "_serial.txt") if a.out \
-        else os.path.join(HERE, "flight_silence_serial.txt")
+        else os.path.join(paths.fixtures(), "flight_silence_serial.txt")
     rx = None
     if a.pcan:
         rx = U.Rx(U.open_pcan(True), "pcan")

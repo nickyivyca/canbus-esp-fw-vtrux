@@ -54,14 +54,22 @@ import sys
 import threading
 import time
 
-sys.path.insert(0, ".")
+# bench_drivers/ (the sibling drivers) first, then charge-interposer/
+# (paths, protocol, run_scenario): both found from this file, never from
+# the working folder (port step 0, 2026-10-26).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-FAKE_TRANSCRIPT = os.path.join(HERE, "mcp2515_conformance_fake.txt")
-if not os.path.exists(FAKE_TRANSCRIPT):       # a --can-fail copy runs from
-    FAKE_TRANSCRIPT = os.path.abspath(         # temp, with cwd this folder
-        "mcp2515_conformance_fake.txt")
+
+
+def fake_transcript():
+    """The host fake's stored transcript, a fixture that stays in
+    SeaDrive (paths.fixtures(); beside this script before the move)."""
+    import paths
+    return os.path.join(paths.fixtures(), "mcp2515_conformance_fake.txt")
+
+
 ECHO_WAIT_S = 1.0
 DRAIN_S = 0.05
 REPLY_MAX_CHARS = 200     # the board's line_buf and RX ring are 256 bytes
@@ -368,11 +376,11 @@ def report(hello, body, status, h, elf_sha, step):
         f = ln.split()
         if ln.startswith("  ") and len(f) >= 2 and f[1] == "wire.delivered":
             print(host_count_line(h.tag_counts))
-    fake = parse_transcript(open(FAKE_TRANSCRIPT).read().splitlines())
+    fake = parse_transcript(open(fake_transcript()).read().splitlines())
     sil = parse_transcript(body)
     d = diff_transcripts(fake, sil)
     print("\n--- against the fake (%s): %d line(s) differ ---"
-          % (os.path.basename(FAKE_TRANSCRIPT), len(d)))
+          % (os.path.basename(fake_transcript()), len(d)))
     for s, k, fv, sv, st in d:
         print("  %-24s %-24s fake %-10s silicon %-10s %s%s"
               % (s, k, fv, sv, st, "  <-- a DATASHEET line" if
@@ -509,7 +517,7 @@ def self_test():
     del sil[("C12-rx-rollover", "AB.rx-flags")]
     check(any(x[3] == "(absent)" for x in diff_transcripts(fake, sil)),
           "a line missing from the silicon run is reported")
-    real = parse_transcript(open(FAKE_TRANSCRIPT).read().splitlines())
+    real = parse_transcript(open(fake_transcript()).read().splitlines())
     check(len(real) >= 50 and ("C12-rx-rollover", "noBUKT.RXB0D0") in real,
           "the stored fake transcript parses (%d lines)" % len(real))
 
@@ -595,7 +603,8 @@ def main():
         return script_can_fail.run(__file__, MUTANTS)
     if not args.port:
         ap.error("--port (or --self-test)")
-    out = args.out or os.path.join(HERE, "bench_c12_%s_%s.txt" % (
+    import paths      # no --out: SeaDrive, as before the move, never the tree
+    out = args.out or os.path.join(paths.fixtures(), "bench_c12_%s_%s.txt" % (
         args.step, datetime.datetime.now().strftime("%Y%m%dT%H%M%S")))
     import bench_charger_witness as bcw
     tee = bcw.Tee(out)

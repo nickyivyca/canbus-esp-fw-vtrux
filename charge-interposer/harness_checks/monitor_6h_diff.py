@@ -31,9 +31,9 @@ DIFFERS, and override_6h05 must still be IDENTICAL. --corrupt-pin flips
 one hex digit of each expected trace pin, and both pin checks must FAIL
 (the run exits 1).
 
-Run from the project root, on a machine with bash and g++ (madhouse-debian),
-with INTERPOSER_CODE (the clone's charge-interposer/) set:
-  python3 -B projects/vtrux/notes/artifacts/interposer-firmware/monitor_6h_diff.py [--can-fail] [--print-pins] [--corrupt-pin]
+Run on a machine with bash and g++ (madhouse-debian),
+from anywhere (the code is the tree this file is in):
+  python3 -B charge-interposer/harness_checks/monitor_6h_diff.py [--can-fail] [--print-pins] [--corrupt-pin]
 """
 
 import hashlib
@@ -43,10 +43,11 @@ import subprocess
 import sys
 import tempfile
 
-CODE = os.environ.get("INTERPOSER_CODE", "").strip()
-if not CODE:
-    raise SystemExit("INTERPOSER_CODE is not set: the charge-interposer code "
-                     "root, a clone's charge-interposer/")
+# charge-interposer/, found from this file (port step 0, 2026-10-26):
+# paths.code_dir() refuses an INTERPOSER_CODE naming another tree.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import paths                                           # noqa: E402
+CODE = paths.code_dir()
 HOST_DIFF = os.path.join(CODE, "firmware", "test", "host_diff")
 SRC = os.path.join(CODE, "firmware", "src")
 sys.path.insert(0, CODE)

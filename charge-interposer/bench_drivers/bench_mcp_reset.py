@@ -21,7 +21,7 @@ The instrument:
 THE ESP-DOWN WINDOW IS TAKEN FROM CAN1, NOT FROM THE RESET MARK: from the
 last bridged frame before the reset to the first power-up-round frame after
 it. A reset that did not happen leaves no such window and is a TEST FAULT
-rather than a pass. Each boot's 0x7F7 (cantools, vtrux-interposer-diag.dbc)
+rather than a pass. Each boot's 0x7F7 (cantools, the diag DBC)
 must read build 0x756D6714.
 
 Per boot: >= MIN_ACKED echoes inside the window -> ACKED WITH THE ESP DOWN;
@@ -73,6 +73,10 @@ import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# bench_drivers/ (the sibling drivers) first, then charge-interposer/
+# (paths, protocol, run_scenario): both found from this file, never
+# from the working folder (port step 0, 2026-10-26).
+sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 
 STREAM_ID = 0x0CFF01C0

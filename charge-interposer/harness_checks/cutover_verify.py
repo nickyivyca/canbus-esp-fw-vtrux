@@ -26,8 +26,9 @@ Exit 0 = byte-identical throughout; 2 = every difference is EOL-ONLY;
 1 = anything else. A comparison that matched zero files would pass by finding
 no differences, so the population is reported and a floor is enforced.
 
-Usage (from the project root):
-  py -3.14 projects/vtrux/notes/artifacts/interposer-firmware/cutover_verify.py \\
+Usage (REVERSE_IT_DIR set; moved into git with the bench suite's
+scripts, port step 0, 2026-10-26):
+  py -3.14 charge-interposer/harness_checks/cutover_verify.py \\
       <clone>/charge-interposer [--manifest <git_cutover_manifest.txt>]
 """
 
@@ -37,7 +38,11 @@ import os
 import re
 import sys
 
-SEADRIVE = os.path.join("projects", "vtrux", "tools", "interposer")
+# reverse-it's copy, through paths.py (was relative to the reverse-it root)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import paths                                           # noqa: E402
+SEADRIVE = os.path.join(paths.reverse_it_dir(), "projects", "vtrux", "tools",
+                        "interposer")
 EXCLUDE_DIRS = {"__pycache__", ".pio"}
 EXCLUDE_PATHS = {"firmware/datasheets"}
 CLONE_ONLY_OK = {".gitignore", ".gitattributes"}

@@ -22,9 +22,10 @@ sha256 compared with capture_pins.TRACE_PINS -- the pin, never the fixture
 file. --can-fail rebuilds each with the window ending 1 s early and with the
 wrong bus, and requires every one of those to MISS its pin.
 
-Run from the project root, with INTERPOSER_CODE (the clone's
-charge-interposer/) and REVERSE_IT_DIR set:
-  py -3.14 -B projects/vtrux/notes/artifacts/interposer-firmware/rebuild_capture_traces.py [--can-fail]
+Run from anywhere, with REVERSE_IT_DIR set (the captures); the code is
+the tree this file is in (moved into git from reverse-it's
+interposer-firmware/ folder, port step 0, 2026-10-26):
+  py -3.14 -B charge-interposer/rebuild_capture_traces.py [--can-fail]
 """
 
 import hashlib
@@ -33,16 +34,16 @@ import subprocess
 import sys
 import tempfile
 
-CODE = os.environ.get("INTERPOSER_CODE", "").strip()
-if not CODE:
-    raise SystemExit("INTERPOSER_CODE is not set: the charge-interposer code "
-                     "root, a clone's charge-interposer/")
-sys.path.insert(0, CODE)
+# this file is in charge-interposer/ itself; paths.code_dir() refuses an
+# INTERPOSER_CODE naming another tree (port step 0, 2026-10-26)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import paths                       # noqa: E402
+CODE = paths.code_dir()
 import capture_pins as CP           # noqa: E402
 
 MAKE_GOLDEN = os.path.join(CODE, "firmware", "test", "host_diff",
                            "make_golden.py")
-LOGS = os.path.join("projects", "vtrux", "logs")
+LOGS = paths.logs()                 # was relative to the reverse-it root
 OUT = os.path.join(tempfile.gettempdir(), "interposer-tester",
                    "rebuild_traces")
 

@@ -45,7 +45,7 @@ nothing must read SURVIVED, an edit that does not match must be REFUSED,
 and a mutant caught only on a case other than its named one must not
 count as caught.
 
-Usage (from anywhere; INTERPOSER_CODE and REVERSE_IT_DIR set):
+Usage (from anywhere; REVERSE_IT_DIR set):
     py -3.14 clause1_fall_mutations.py [--can-fail]
 """
 
@@ -55,8 +55,11 @@ import os
 import sys
 from contextlib import redirect_stdout
 
-CODE = os.environ["INTERPOSER_CODE"]
-sys.path.insert(0, CODE)
+# charge-interposer/, found from this file (port step 0, 2026-10-26):
+# paths.code_dir() refuses an INTERPOSER_CODE naming another tree.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import paths                                           # noqa: E402
+CODE = paths.code_dir()
 
 import test_scorer_wiring as W                       # noqa: E402
 

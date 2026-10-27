@@ -9,15 +9,20 @@
 # Mutation A is the one the test's own comment claims ("the max-form would
 # have booked 0 here"). A claim in a comment is not evidence; this runs it.
 #
-# Run:  wsl bash ".../interposer-firmware/twai_mutations.sh"
+# Run:  bash charge-interposer/harness_checks/twai_mutations.sh
+#       (under WSL: wsl bash ..., from any folder)
 set -u
 
-# INTERPOSER_CODE (required since 2026-10-08): the charge-interposer code
-# root to test -- a clone's charge-interposer/ (repo canbus-esp-fw-vtrux).
-# The SeaDrive copy it used to default to is gone; under WSL pass it with
-# WSLENV=INTERPOSER_CODE/p.
-: "${INTERPOSER_CODE:?INTERPOSER_CODE is not set -- the charge-interposer code root, a clone of canbus-esp-fw-vtrux/charge-interposer}"
-HB="$(cd "${INTERPOSER_CODE:?INTERPOSER_CODE is not set -- the charge-interposer code root, a clone of canbus-esp-fw-vtrux/charge-interposer}/firmware/test/host_bridge" && pwd)"
+# The code is the tree this script is in (moved into git from reverse-it's
+# interposer-firmware/ folder, port step 0, 2026-10-26). INTERPOSER_CODE is
+# not needed; if it is set, it must name this same charge-interposer/.
+CODE="$(cd "$(dirname "$0")/.." && pwd -P)"
+if [ -n "${INTERPOSER_CODE:-}" ] && \
+   [ "$(cd "$INTERPOSER_CODE" 2>/dev/null && pwd -P)" != "$CODE" ]; then
+  echo "INTERPOSER_CODE=$INTERPOSER_CODE is not this tree's charge-interposer/ ($CODE)" >&2
+  exit 2
+fi
+HB="$(cd "$CODE/firmware/test/host_bridge" && pwd)"
 SRC="$(cd "$HB/../../src" && pwd)"
 WORK=/tmp/twai_mut
 rm -rf "$WORK"

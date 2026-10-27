@@ -5,13 +5,16 @@ question: does either clamp synthetic have a due step (down, or up) on a
 clamp frame?
 
 Usage: py -3.14 clamp_frame_cases.py <trace> [<trace> ...]
-Needs REVERSE_IT_DIR and INTERPOSER_CODE (the tester clone's charge-interposer).
+Needs REVERSE_IT_DIR; the code is the tree this file is in.
 """
 import os
 import sys
 
-sys.path.insert(0, ".")
-sys.path.insert(0, os.environ["INTERPOSER_CODE"])
+# charge-interposer/, found from this file (port step 0, 2026-10-26):
+# paths.code_dir() refuses an INTERPOSER_CODE naming another tree.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import paths                                           # noqa: E402
+CODE = paths.code_dir()
 import test_invariants as TI
 from test_invariants import M, P
 
