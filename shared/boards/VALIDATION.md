@@ -133,7 +133,9 @@ gen-inhibit's spec is
     from the board;
   - console hardware: the interposer's first bring-up, 2026-09-10 (UART0
     pins with nothing attached);
-  - the LED on GPIO2: the `aslcanx2` variant only.
-- **Status:** basis pending for the LED: not yet seen to light on the
-  board (a blink test is asked of the charge-interposer tester,
-  2026-10-27). Complete otherwise.
+  - the LED on GPIO2: the `aslcanx2` variant, and the board itself: a
+    throwaway image toggling GPIO2 every 500 ms blinked LED1, seen by the
+    user (charge-interposer test evidence, section 9, "BOARD DATA ONLY --
+    the X2's LED1 is on GPIO2", 2026-10-27). Its polarity was not
+    separated.
+- **Status:** complete.
