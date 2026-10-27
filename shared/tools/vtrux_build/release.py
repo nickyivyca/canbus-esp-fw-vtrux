@@ -62,6 +62,10 @@ In order, each refusal an exit, never a warning:
      names is taken from a local folder: its dependencies.lock source is
      not "local", and no idf_component.yml of the build gives it an
      override_path;
+     R21, the board: dependencies.lock has exactly one shared/boards/*
+     component, a dependency whose source path, git or local, is a folder
+     directly under shared/boards/ (shared/boards SPEC B2). The board's
+     data is the checks' to read, not this script's;
   8. `idf.py --no-ccache build`, in the same run as 5 and the same R24
      environment, so a configure the build itself triggers is strict too
      and keeps the cache off. With --jobs N,
@@ -83,8 +87,9 @@ In order, each refusal an exit, never a warning:
  11. R13: the record (record.py), with the tooling's pin as step 1 checked
      it.
 
-Not done here: the build checks (R17 to R21, the tester's). A bench or dev
-build (R14) does not use this script.
+Not done here: the build checks (R17 to R21, the tester's), apart from
+R21's one-board refusal in step 7. A bench or dev build (R14) does not use
+this script.
 """
 
 import glob
@@ -492,6 +497,41 @@ def check_shared_pins(proj, locks, manifests):
     return out
 
 
+# A board component's folder: directly under shared/boards/, as a git
+# source's path (from the repository's root) or a local source's path ends.
+BOARD_PATH = re.compile(r"(?:^|/)shared/boards/[^/]+$")
+
+
+def board_components(locks):
+    """{name: source path} of the dependencies.lock entries that are
+    shared/boards/* components: their source path, git or local, is a
+    folder directly under shared/boards/."""
+    out = {}
+    for name, entry in locks.items():
+        p = entry.get("source", {}).get("path")
+        if p and BOARD_PATH.search(p.replace("\\", "/").rstrip("/")):
+            out[name] = p
+    return out
+
+
+def check_one_board(locks):
+    """R21 and shared/boards B2: the project names its board by its
+    dependency, so dependencies.lock has exactly one shared/boards/*
+    component. Returns its name."""
+    boards = board_components(locks)
+    if len(boards) != 1:
+        found = "".join("\n    %s (%s)" % (n, p)
+                        for n, p in sorted(boards.items()))
+        raise Refused("dependencies.lock has %d shared/boards/* components, "
+                      "and a release build has exactly one: the board, which "
+                      "a project names by its dependency and nowhere else "
+                      "(R21, shared/boards B2)%s"
+                      % (len(boards), found and ":" + found))
+    (name, path), = boards.items()
+    ok("one board (R21)", "%s (%s)" % (name, path))
+    return name
+
+
 def release(project_root, check_only=False, idf=None, toolchain_run=None,
             dest=None, jobs=None, ninja=None, toolchain=None,
             tools_root=TOOLS_ROOT):
@@ -601,6 +641,7 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
         shared = check_shared_pins(proj, locks, build_manifests(bd))
     except (OSError, lockfile.LockError, BuildDirError) as e:
         raise Refused("the pins cannot be read: %s" % e)
+    check_one_board(locks)
 
     if jobs is None:
         what = "idf.py build"
