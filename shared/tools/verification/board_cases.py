@@ -304,9 +304,10 @@ def board_dir(proj):
 
 
 def unplant(proj):
-    """The planted board removed and dependencies.lock as committed."""
+    """The planted board removed and dependencies.lock as committed (when git tracks one)."""
     RC.rmtree(board_dir(proj))
-    RC.git(proj, "checkout", "-q", "--", "dependencies.lock")
+    if RC.run(["git", "-C", proj, "ls-files", "--error-unmatch", "dependencies.lock"])[0] == 0:
+        RC.git(proj, "checkout", "-q", "--", "dependencies.lock")
 
 
 def plant(ctx, proj, edit=None, extra=None, entries=None):
@@ -512,6 +513,7 @@ def c_s3_pass(ctx, log):
     ctx.s3_board = {"target": "esp32s3", "partition_table": "pt-s3.bin", "flash_size": fs[0] if len(fs) == 1 else None}
     ctx.s3_ref = {"pt-s3.bin": read(os.path.join(ctx.mini, "ref", "pt-s3.bin"))}
     judge_case(ctx, "s3_pass", ctx.mini, log, ctx.s3_board, lambda w, r: w == [] and r[4] == "esp32s3", ctx.s3_ref)
+    unplant(ctx.mini)           # R17 judges the build as built; the planted board was not built
     rc, out = check(ctx.mini, log, "scope", "--release")
     RC.report("s3_pass (R17 scope)", "PASS" if rc == 0 and "PASS R17" in out else "FAIL",
               "scope --release on the esp32s3 build: exit %d" % rc, ctx.log)
