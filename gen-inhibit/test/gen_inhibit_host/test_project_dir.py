@@ -2,10 +2,14 @@
 """Tests for project_dir.py and its use in from_capture.py, test_signals.py and
 replay_stimulus_delta.py (the project-folder variable, methodology 2026-10-20).
 
-Needs no project folder: it makes a fake one (a canre/ with a parser that
-returns no frames, and projects/vtrux/logs/) in a temporary folder under the
-worktree's scratch/, and runs the tools as subprocesses with $REVERSE_IT_DIR set,
-unset or wrong.
+Needs no project folder: it makes a fake one (a canre/ that refuses to be
+imported, and projects/vtrux/logs/) in a temporary folder under the worktree's
+scratch/, and runs the tools as subprocesses with $REVERSE_IT_DIR set, unset or
+wrong. The copy of the tools is laid out as the project folder is
+(test/gen_inhibit_host/ and tools/bench/canre_pin.py with pins.json), and its
+from_capture.py must parse with the pinned canre (the canre-pin step,
+2026-10-26), never the fake folder's: it needs that install in this worktree
+(py -3.14 -B gen-inhibit/tools/bench/canre_pin.py install).
 
     python3 test_project_dir.py            # the checks
     python3 test_project_dir.py --mutants  # each mutant must fail a check
@@ -20,6 +24,9 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = ("project_dir.py", "from_capture.py", "test_signals.py", "replay_stimulus_delta.py")
+BENCH = os.path.normpath(os.path.join(HERE, "..", "..", "tools", "bench"))
+PIN_FILES = ("canre_pin.py", "pins.json")
+FAKE = "FAKE CANRE"     # what the fake folder's canre says when it is imported
 
 FAILS = []
 # A machine's own path: a home folder, a sync client's folder (home-path ruling B, user 2026-10-23).
@@ -47,28 +54,35 @@ def check(name, ok, detail=""):
 
 
 def fake_project(root):
-    """A reverse-it root with just enough for the tools: canre.parsers.parse_file."""
+    """A reverse-it root with just enough for the tools: a canre/ (which exits saying
+    FAKE when imported: the tools must not take it), projects/vtrux/logs/ and x.log,
+    two 0x051 frames in candump form."""
     os.makedirs(os.path.join(root, "canre", "parsers"))
     os.makedirs(os.path.join(root, "projects", "vtrux", "logs"))
-    open(os.path.join(root, "canre", "__init__.py"), "w").close()
-    with open(os.path.join(root, "canre", "parsers", "__init__.py"), "w") as fh:
-        fh.write("def parse_file(path, *a, **k):\n    return iter(())\n")
+    with open(os.path.join(root, "canre", "__init__.py"), "w") as fh:
+        fh.write("raise SystemExit(%r)\n" % (FAKE + ": the project folder's canre was imported"))
+    open(os.path.join(root, "canre", "parsers", "__init__.py"), "w").close()
     with open(os.path.join(root, "x.log"), "w") as fh:
-        fh.write("")
+        fh.write("(1700000000.000000) can0 051#0000000000000000\n(1700000001.000000) can0 051#0000000000000000\n")
     return root
+
+
+def host(tree):
+    """The copy's test/gen_inhibit_host/, where the four tools are."""
+    return os.path.join(tree, "test", "gen_inhibit_host")
 
 
 def run(tree, script, args, env_dir):
     env = {k: v for k, v in os.environ.items() if k not in ("REVERSE_IT_DIR", "GEN_INHIBIT_REPO")}
     if env_dir is not None:
         env["REVERSE_IT_DIR"] = env_dir
-    r = subprocess.run([sys.executable, "-B", os.path.join(tree, script)] + args, cwd=tree,
+    r = subprocess.run([sys.executable, "-B", os.path.join(host(tree), script)] + args, cwd=host(tree),
                        capture_output=True, text=True, env=env, timeout=120)
     return r.returncode, r.stdout + r.stderr
 
 
 def checks(tree, tmp):
-    sys.path.insert(0, tree)
+    sys.path.insert(0, host(tree))
     try:
         for m in ("project_dir",):
             sys.modules.pop(m, None)
@@ -130,7 +144,7 @@ def checks(tree, tmp):
           all(MACHINE_PATH.search(t) for t in ("~/Seafile/NotGit/reverse-it", "/home/someone/rit",
                                                "C:\\Users\\someone\\rit", "seadrive_root/lib/rit")))
     hits = ["%s: %s" % (f, m.group(0)) for f in TOOLS
-            for m in MACHINE_PATH.finditer(open(os.path.join(tree, f), encoding="utf-8").read())]
+            for m in MACHINE_PATH.finditer(open(os.path.join(host(tree), f), encoding="utf-8").read())]
     check("machine paths: none in the tools, their docstrings or the example", not hits, hits)
     hits = MACHINE_PATH.findall(open(os.path.join(HERE, "README.md"), encoding="utf-8").read())
     check("machine paths: none in this folder's README", not hits, hits)
@@ -140,10 +154,17 @@ def checks(tree, tmp):
     rc, out = run(tree, "from_capture.py", [os.path.join(good, "x.log"), "--scan"], None)
     check("from_capture: unset refuses by name, not 'No module named canre'",
           rc != 0 and "REVERSE_IT_DIR" in out and "No module named" not in out, (rc, out[-300:]))
+    r = subprocess.run([sys.executable, "-B", "-c", "import sys; sys.path.insert(0, sys.argv[1]); import canre", good],
+                       capture_output=True, text=True, timeout=60)
+    check("control: the fake folder's canre, imported, says %s" % FAKE,
+          r.returncode != 0 and FAKE in r.stdout + r.stderr, (r.returncode, (r.stdout + r.stderr)[-200:]))
     rc, out = run(tree, "from_capture.py", [os.path.join(good, "x.log"), "--scan"], good)
-    check("from_capture: $REVERSE_IT_DIR reaches the parser", rc == 0 and "REVERSE_IT_DIR" not in out, (rc, out[-300:]))
+    check("from_capture: $REVERSE_IT_DIR is taken, and the pinned canre parses (2 frames)",
+          rc == 0 and "REVERSE_IT_DIR" not in out and "0x051 frames: 2" in out, (rc, out[-300:]))
+    check("from_capture: the project folder's canre is not imported", FAKE not in out, out[-300:])
     rc, out = run(tree, "from_capture.py", [os.path.join(good, "x.log"), "--scan", "--project-dir", good], None)
-    check("from_capture: --project-dir reaches the parser", rc == 0, (rc, out[-300:]))
+    check("from_capture: --project-dir is taken, and the pinned canre parses",
+          rc == 0 and "0x051 frames: 2" in out and FAKE not in out, (rc, out[-300:]))
     rc, out = run(tree, "from_capture.py", [os.path.join(good, "x.log"), "--scan", "--project-dir", nocanre], good)
     check("from_capture: a wrong --project-dir is refused even with $REVERSE_IT_DIR right",
           rc != 0 and "canre" in out, (rc, out[-300:]))
@@ -188,7 +209,7 @@ def _resolves(pd, given, environ):
 
 
 def REPLAY_NAMES(tree):
-    sys.path.insert(0, tree)
+    sys.path.insert(0, host(tree))
     try:
         sys.modules.pop("replay_stimulus_delta", None)
         sys.modules.pop("project_dir", None)
@@ -199,9 +220,13 @@ def REPLAY_NAMES(tree):
 
 
 def copy_tree(dst):
-    os.makedirs(dst)
+    """A copy laid out as the project folder is; returns its root."""
+    os.makedirs(host(dst))
+    os.makedirs(os.path.join(dst, "tools", "bench"))
     for f in TOOLS:
-        shutil.copy2(os.path.join(HERE, f), os.path.join(dst, f))
+        shutil.copy2(os.path.join(HERE, f), os.path.join(host(dst), f))
+    for f in PIN_FILES:
+        shutil.copy2(os.path.join(BENCH, f), os.path.join(dst, "tools", "bench", f))
     return dst
 
 
@@ -224,8 +249,11 @@ MUTANTS = [
     ("from_capture.py", "from_capture ignores --project-dir", "parse_file = load_parser(args.project_dir)",
      "parse_file = load_parser(None)"),
     ("from_capture.py", "from_capture lets the import fail instead",
-     "        repo = project_dir.resolve(given)\n    except project_dir.ProjectDirError as e:\n        sys.exit(str(e))\n",
-     "        repo = given or os.environ.get('REVERSE_IT_DIR', '')\n    except project_dir.ProjectDirError as e:\n        sys.exit(str(e))\n"),
+     "        project_dir.resolve(given)\n    except project_dir.ProjectDirError as e:\n        sys.exit(str(e))\n",
+     "        pass\n    except project_dir.ProjectDirError as e:\n        sys.exit(str(e))\n"),
+    ("from_capture.py", "from_capture takes canre from the project folder again (before 2026-10-26)",
+     "    try:\n        canre_pin.use()\n    except canre_pin.CanrePinError as e:\n        sys.exit(\"from_capture: %s\" % e)\n",
+     "    sys.path.insert(0, project_dir.resolve(given))\n"),
     ("test_signals.py", "test_signals ignores --project-dir", "repo = project_dir.resolve(args.project_dir)",
      "repo = project_dir.resolve(None)"),
     ("replay_stimulus_delta.py", "regen does not pass the folder to from_capture",
@@ -247,7 +275,7 @@ def main():
     for i, (f, name, old, new) in enumerate(MUTANTS, 1):
         with tempfile.TemporaryDirectory(prefix="gi-project-dir-m%d-" % i, dir=scratch_base()) as tmp:
             tree = copy_tree(os.path.join(tmp, "tree"))
-            p = os.path.join(tree, f)
+            p = os.path.join(host(tree), f)
             s = open(p, encoding="utf-8").read()
             if s.count(old) != 1:
                 print("ERROR    m%d %s: the substitution matches %d times" % (i, name, s.count(old)))

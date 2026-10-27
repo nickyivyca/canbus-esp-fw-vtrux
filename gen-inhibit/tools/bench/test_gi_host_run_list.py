@@ -9,7 +9,10 @@ run there and its replay files went stale.
   1. The list (the `tar -C "$FW" -czf -` block) is found and names more than 20 paths.
   2. Every path it names exists in this tree.
   3. No shipped .py imports a module of its own folder that is not shipped (imports
-     anywhere in the file, inside functions too).
+     anywhere in the file, inside functions too), nor one of a folder it puts on
+     sys.path (check 5's form): from_capture.py reaches canre_pin.py in tools/bench/
+     that way (the canre-pin step, 2026-10-26), and that folder is shipped for
+     gi_diag.py, so check 5 alone passes without canre_pin.py.
   4. Controls: the real list with project_dir.py taken out must be flagged for
      from_capture.py and replay_stimulus_delta.py; a planted folder where a.py imports
      b inside a function must be flagged with b.py unlisted and pass with it listed.
@@ -91,17 +94,22 @@ def imported(path):
 
 
 def missing_imports(listed, root):
-    """[(shipped .py, module)] for each module of the importer's own folder that the list does not ship."""
+    """[(shipped .py, module)] for each module of the importer's own folder, or of a folder
+    it puts on sys.path, that the list does not ship."""
     ship = shipped_files(listed, root)
     out = []
     for f in sorted(ship):
         if not f.endswith(".py") or not os.path.isfile(os.path.join(root, f)):
             continue
-        folder = os.path.dirname(f)
+        own = os.path.dirname(f)
+        folders = [own] + [os.path.normpath(os.path.join(own, *parts)).replace("\\", "/")
+                           for _, parts in path_folders(os.path.join(root, f))]
         for name in sorted(imported(os.path.join(root, f))):
-            sib = (folder + "/" if folder else "") + name + ".py"
-            if os.path.isfile(os.path.join(root, sib)) and sib not in ship:
-                out.append((f, name))
+            for folder in folders:
+                sib = (folder + "/" if folder and folder != "." else "") + name + ".py"
+                if os.path.isfile(os.path.join(root, sib)) and sib not in ship:
+                    out.append((f, name))
+                    break
     return out
 
 
@@ -141,7 +149,7 @@ def checks():
     absent = [p for p in listed if not os.path.exists(os.path.join(ROOT, p))]
     check("2 every path in the sync list exists in this tree", not absent, absent)
     miss = missing_imports(listed, ROOT)
-    check("3 no shipped .py imports an unshipped module of its own folder", not miss, miss)
+    check("3 no shipped .py imports an unshipped module of its folder or of a sys.path folder", not miss, miss)
     pd = "test/gen_inhibit_host/project_dir.py"
     ctl = missing_imports([p for p in listed if p != pd], ROOT)
     check("4a control: without project_dir.py, from_capture.py and replay_stimulus_delta.py are flagged",
@@ -173,6 +181,15 @@ def checks():
         check("5 control: a sys.path folder that is not shipped is flagged", got == [("t/c.py", 3, "u/lib")], got)
         got = bad_path_folders(["t/c.py", "u/lib"], base)
         check("5 control: the same with the folder shipped: not flagged", got == [], got)
+        open(os.path.join(base, "u", "lib", "n.py"), "w").close()
+        with open(os.path.join(base, "t", "e.py"), "w") as fh:
+            fh.write('import os, sys\nHERE = os.path.dirname(os.path.abspath(__file__))\n'
+                     'sys.path.insert(0, os.path.normpath(os.path.join(HERE, "..", "u", "lib")))\nimport n\n')
+        got = missing_imports(["t/e.py", "u/lib/m.py"], base)
+        check("3 control: a module of a sys.path folder, unlisted (the folder shipped for another): flagged",
+              got == [("t/e.py", "n")], got)
+        got = missing_imports(["t/e.py", "u/lib"], base)
+        check("3 control: the same with it listed: not flagged", got == [], got)
     finally:
         shutil.rmtree(base, ignore_errors=True)
     return FAILS
@@ -182,6 +199,7 @@ MUTANTS = [
     ("project_dir.py dropped from the sync", "    test/gen_inhibit_host/project_dir.py \\\n", ""),
     ("a path in the sync misspelled", "    test/gen_inhibit_host/run_tests.py \\\n", "    test/gen_inhibit_host/run_test.py \\\n"),
     ("gi_diag.py and pins.json not shipped", "    tools/bench/gi_diag.py \\\n    tools/bench/pins.json \\\n", ""),
+    ("canre_pin.py not shipped", "    tools/bench/canre_pin.py \\\n", ""),
 ]
 
 

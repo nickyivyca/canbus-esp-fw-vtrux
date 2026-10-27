@@ -18,6 +18,11 @@ REVERSE_IT_DIR they see:
      (the fake ssh never called).
   4. Control: --sched with RROOT unset still runs (only the two modes need it), and a
      remote command without the export sees no REVERSE_IT_DIR (the check can fail).
+  5. canre at the pinned commit (the canre-pin step, 2026-10-26): --shim's remote
+     command runs $PY -B ~/gi_host/tools/bench/canre_pin.py install before make, and
+     when that install fails, nothing after it runs.
+  6. --canre, RROOT unset: exit 0, and its remote command runs that install and nothing
+     else.
 
 The sync is the real one, from this project folder, into the fake ssh; the export goes
 to the worktree's scratch/gi-host-export, which every gi_host_run.sh run replaces.
@@ -66,13 +71,16 @@ def setup(base):
     script(os.path.join(b, "ssh"), 'd="$FAKE_CALLS"; n=$(ls "$d" | wc -l); printf %s "${@: -1}" > "$d/$n"; '
                                    'cat > /dev/null; exit 0\n')
     script(os.path.join(b, "fakepy"), 'mkdir -p "${@: -1}"\n')                 # LOCAL_PY: gi_diag export
-    script(os.path.join(b, "make"), "exit 0\n")
-    script(os.path.join(b, "sigpy"), 'printf "%s|%s" "${REVERSE_IT_DIR-UNSET}" "$1" > "$FAKE_SEEN"\n')   # $PY
+    script(os.path.join(b, "make"), 'echo make >> "$FAKE_LOG"\n')
+    # $PY: write down REVERSE_IT_DIR and its first argument, log its command line, and
+    # fail when FAKE_PY_FAIL is set
+    script(os.path.join(b, "sigpy"), 'printf "%s|%s" "${REVERSE_IT_DIR-UNSET}" "$1" > "$FAKE_SEEN"\n'
+                                     'echo "py $*" >> "$FAKE_LOG"\n[ -z "${FAKE_PY_FAIL:-}" ]\n')
     home = os.path.join(base, "home")
     os.makedirs(os.path.join(home, "gi_host", "test", "gen_inhibit_host"))
     os.makedirs(os.path.join(home, "gi_host", "test", "gen_inhibit_shim"))
     script(os.path.join(home, "gi_host", "test", "gen_inhibit_shim", "shim_test"),
-           'printf "%s|shim" "${REVERSE_IT_DIR-UNSET}" > "$FAKE_SEEN"\n')
+           'printf "%s|shim" "${REVERSE_IT_DIR-UNSET}" > "$FAKE_SEEN"\necho shim_test >> "$FAKE_LOG"\n')
     return b, home
 
 
@@ -98,15 +106,22 @@ def run_mode(base, bindir, mode, rroot):
     return r.returncode, r.stderr, cmds
 
 
-def remote(base, bindir, home, cmd):
-    """What the remote command's shim_test or $PY saw as REVERSE_IT_DIR, and the remote's $HOME."""
-    seen = os.path.join(base, "seen.txt")
-    if os.path.exists(seen):
-        os.remove(seen)
-    e = env_for(base, bindir, {"HOME": fwd(home), "FAKE_SEEN": fwd(seen)})
+def remote(base, bindir, home, cmd, py_fails=False, log=None):
+    """What the remote command's shim_test or $PY saw as REVERSE_IT_DIR, and the remote's $HOME;
+    with log a list, the lines $PY, make and shim_test logged, in order, are put in it."""
+    seen, logf = os.path.join(base, "seen.txt"), os.path.join(base, "log.txt")
+    for f in (seen, logf):
+        if os.path.exists(f):
+            os.remove(f)
+    extra = {"HOME": fwd(home), "FAKE_SEEN": fwd(seen), "FAKE_LOG": fwd(logf)}
+    if py_fails:
+        extra["FAKE_PY_FAIL"] = "1"
+    e = env_for(base, bindir, extra)
     rhome = subprocess.run([BASH, "-c", 'printf %s "$HOME"'], capture_output=True, text=True, env=e).stdout
     subprocess.run([BASH, "-c", cmd], capture_output=True, text=True, stdin=subprocess.DEVNULL, env=e, timeout=60)
     got = open(seen, encoding="utf-8").read() if os.path.exists(seen) else None
+    if log is not None:
+        log[:] = open(logf, encoding="utf-8").read().splitlines() if os.path.exists(logf) else []
     return got, rhome
 
 
@@ -134,13 +149,28 @@ def checks():
               rc == 0 and cmds and "gen_inhibit_sched" in cmds[-1], (rc, err[-200:], cmds[-1:]))
         got, _ = remote(base, bindir, home, "cd ~/gi_host/test/gen_inhibit_shim && ./shim_test")
         check("4 control: a remote command without the export sees no REVERSE_IT_DIR", got == "UNSET|shim", got)
+
+        rc, err, cmds = run_mode(base, bindir, "--shim", "/srv/rit")
+        log = []
+        _, rhome = remote(base, bindir, home, cmds[-1] if cmds else "", log=log)
+        install = "py -B %s/gi_host/tools/bench/canre_pin.py install" % rhome
+        check("5 --shim: the pinned canre is installed and checked before make, then the shim runs",
+              rc == 0 and log[:1] == [install] and log[1:] == ["make", "make", "shim_test"], (rc, log))
+        remote(base, bindir, home, cmds[-1] if cmds else "", py_fails=True, log=log)
+        check("5 --shim: when the canre install fails, nothing after it runs", log == [install], log)
+        rc, err, cmds = run_mode(base, bindir, "--canre", None)
+        check("6 --canre with RROOT unset: exit 0, its command sent", rc == 0 and len(cmds) >= 2, (rc, err[-200:], len(cmds)))
+        remote(base, bindir, home, cmds[-1] if cmds else "", log=log)
+        check("6 --canre: the remote command installs and checks the pinned canre, and does nothing else",
+              log == [install], log)
     finally:
         shutil.rmtree(base, ignore_errors=True)
     return FAILS
 
 
 MUTANTS = [
-    ("--shim sends no export", '"${RX}cd ~/$DEST/test/gen_inhibit_shim', '"cd ~/$DEST/test/gen_inhibit_shim'),
+    ("--shim sends no export", '"${RX}$PY -B ~/$DEST/tools/bench/canre_pin.py install && cd ~/$DEST/test/gen_inhibit_shim',
+     '"$PY -B ~/$DEST/tools/bench/canre_pin.py install && cd ~/$DEST/test/gen_inhibit_shim'),
     ("--signals sends no export", '"${RX}cd ~/$DEST/test/gen_inhibit_host', '"cd ~/$DEST/test/gen_inhibit_host'),
     ("RROOT not quoted", '      *)     RQ=$(printf %q "$RROOT") ;;\n    esac\n    RX=',
      '      *)     RQ=$RROOT ;;\n    esac\n    RX='),
@@ -148,6 +178,13 @@ MUTANTS = [
      '      "~/"*) RQ=$(printf %q "$RROOT") ;;'),
     ("RROOT given a default", 'RROOT="${RROOT:?set RROOT', 'RROOT="${RROOT:-/srv/default}"; : "${RROOT:?set RROOT'),
     ("the export only for --shim", "  shim|signals)\n    RROOT=", "  shim)\n    RROOT="),
+    ("--shim without the canre install", '"${RX}$PY -B ~/$DEST/tools/bench/canre_pin.py install && cd ~/$DEST/test/gen_inhibit_shim',
+     '"${RX}cd ~/$DEST/test/gen_inhibit_shim'),
+    ("--shim builds even when the canre install fails", "canre_pin.py install && cd ~/$DEST/test/gen_inhibit_shim",
+     "canre_pin.py install; cd ~/$DEST/test/gen_inhibit_shim"),
+    ("--canre not a mode", "  --canre)         mode=canre;     shift ;;\n", ""),
+    ("--canre checks instead of installing", '    ssh "$REMOTE" "$PY -B ~/$DEST/tools/bench/canre_pin.py install"\n',
+     '    ssh "$REMOTE" "$PY -B ~/$DEST/tools/bench/canre_pin.py check"\n'),
 ]
 
 

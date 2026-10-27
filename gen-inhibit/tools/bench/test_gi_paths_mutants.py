@@ -58,6 +58,14 @@ MUTANTS = [
      "    return moved"),
     ("path_at takes the old place without asking git",
      "    return old if old is not None and has(old) else moved", "    return old if old is not None else moved"),
+    # canre from the pin (the canre-pin step, 2026-10-26)
+    ("use_canre takes canre from the reverse-it root again",
+     "    import canre_pin\n    try:\n        return canre_pin.use()\n",
+     "    import canre_pin\n    root = reverse_it_dir()\n    sys.path.insert(0, root)\n    return root\n    try:\n"
+     "        return canre_pin.use()\n"),
+    ("use_canre also puts the reverse-it root on sys.path",
+     "    import canre_pin\n    try:\n        return canre_pin.use()\n",
+     "    import canre_pin\n    sys.path.append(reverse_it_dir())\n    try:\n        return canre_pin.use()\n"),
 ]
 
 

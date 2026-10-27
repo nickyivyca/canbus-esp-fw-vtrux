@@ -70,7 +70,12 @@ python3 test_signals.py        # needs cantools and the project folder
 
 `test_signals.py`, `from_capture.py` and `replay_stimulus_delta.py --regen`
 reach into the **project folder** (`reverse-it`), which is a separate tree — for
-the DBCs, for `canre`'s parsers and for the captures. Point them at it with
+the DBCs and for the captures. `from_capture.py`'s parser, `canre`, is not the
+project folder's since the canre-pin step (2026-10-26): it is the public repo's, at
+the commit `gen-inhibit/tools/bench/pins.json` pins, installed once per worktree
+with `py -3.14 -B gen-inhibit/tools/bench/canre_pin.py install` (on
+`madhouse-debian`, `gi_host_run.sh --canre`), and `canre_pin.py` refuses any other
+canre. Point them at the project folder with
 `--project-dir <reverse-it root>` or `$REVERSE_IT_DIR` (`project_dir.py`). There
 is **no default** (methodology, 2026-10-20; it replaced `--repo`,
 `$GEN_INHIBIT_REPO` and a home-folder default): with neither

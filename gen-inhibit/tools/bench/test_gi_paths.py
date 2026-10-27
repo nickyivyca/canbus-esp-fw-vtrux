@@ -18,7 +18,9 @@ run's scratch/ folder (the machine's temp folder until 2026-10-24), with a fake 
      is refused.
   4. project_root, firmware_root, repo_root and fw_tools name this repo's folders (the
      layout of port step 0d); old_path and path_at give a project path's place in a
-     commit before the move and after; use_canre puts the root on sys.path.
+     commit before the move and after; use_canre loads the pinned canre (canre_pin.py,
+     the canre-pin step, 2026-10-26), not the reverse-it root's: it needs that install
+     in this worktree (canre_pin.py install).
 
     py -3.14 -B test_gi_paths.py           # exit 0 only if every check passes
     py -3.14 -B test_gi_paths.py --real    # also: every entry of the real pins.json
@@ -237,9 +239,17 @@ def main():
     check("fw_tools holds suite_gen_inhibit.py",
           lambda: os.path.isfile(os.path.join(gp.fw_tools(), "suite_gen_inhibit.py")))
     sys.path[:] = [p for p in sys.path if os.path.normcase(p) != os.path.normcase(root)]
+    sys.path.insert(0, root)            # the old way's root first: the pin must still win
+    import canre_pin
+    got = gp.use_canre()
+    mod = sys.modules.get("canre")
+    check("use_canre loads the pinned canre: canre_pin's folder, first on sys.path",
+          lambda: got == canre_pin.folder() and sys.path[0] == got and mod is not None
+          and os.path.normcase(mod.__file__).startswith(os.path.normcase(got) + os.sep),
+          (got, getattr(mod, "__file__", None)))
+    sys.path[:] = [p for p in sys.path if os.path.normcase(p) != os.path.normcase(root)]
     gp.use_canre()
-    check("use_canre puts the root on sys.path", lambda: root in sys.path)
-    sys.path.remove(root)
+    check("use_canre does not put the reverse-it root on sys.path", lambda: root not in sys.path)
 
     print("\n=== scratch folders (harness-defects row, 2026-10-24) ===")
     wt = os.path.join(work, "wt")

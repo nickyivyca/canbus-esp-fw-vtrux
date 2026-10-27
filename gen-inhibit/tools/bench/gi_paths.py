@@ -15,8 +15,9 @@ One setting, an environment variable:
                    (projects/vtrux/logs/), the vehicle DBCs, the bench lock
                    (firmware/bench-log.jsonl) and bench-holder.md, the run folders and fixtures
                    (projects/vtrux/notes/artifacts/gen-inhibit/runs/), the X2 jammer's
-                   build binaries, and, for now, canre. No default: unset is an error,
-                   never a guess.
+                   build binaries. No default: unset is an error, never a guess. The
+                   root still holds canre/, which marks it, but canre is not taken
+                   from there (below).
 
 The diag DBCs are not here: gi_diag.py reads both from git (toolkit item 10,
 2026-10-24), and this module no longer resolves them.
@@ -29,8 +30,9 @@ REVERSE_IT_DIR on 2026-10-20), REVERSE_IT_ROOT (an old name in the artifacts ind
 Run records never land in the repo: runs() is the SeaDrive runs/ folder. A tool that
 honours GI_RUNS_DIR still does, around runs().
 
-canre comes from SeaDrive through REVERSE_IT_DIR, as in the interposer (reviewer,
-2026-10-22); the public pin (ffbe029) is a later step with its own re-run.
+canre comes from the public repo at the commit pins.json pins (the canre-pin step,
+2026-10-26; before it, from SeaDrive through REVERSE_IT_DIR): use_canre() hands over
+to canre_pin.py, which refuses any other canre.
 
 PINS. pins.json beside this file holds the sha256 of the inputs the reviewer listed
 (toolkit item 9): captures, cut replays, DBCs, the jammer binaries, and the run
@@ -229,11 +231,14 @@ def jammer_builds(*parts):
 
 
 def use_canre():
-    """Put the reverse-it root on sys.path, for `import canre`."""
-    root = reverse_it_dir()
-    if root not in sys.path:
-        sys.path.insert(0, root)
-    return root
+    """Make `import canre` load the pinned commit (canre_pin.use): its install folder
+    goes first on sys.path, and any other canre is refused. Not the reverse-it root,
+    which is where canre came from before the canre-pin step (2026-10-26)."""
+    import canre_pin
+    try:
+        return canre_pin.use()
+    except canre_pin.CanrePinError as e:
+        raise PathsError(str(e))
 
 
 def _rel(path):

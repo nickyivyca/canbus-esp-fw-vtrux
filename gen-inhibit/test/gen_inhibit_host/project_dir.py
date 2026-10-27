@@ -1,7 +1,9 @@
 """Where the reverse-it project folder is, for the tools in this folder.
 
-The project folder (canre, the DBCs, the captures) is a SEPARATE tree from this
-firmware repo, and it is wherever that machine's SeaDrive or Seafile client
+The project folder (the DBCs, the captures) is a SEPARATE tree from this
+firmware repo. Its canre/ still marks it, but since the canre-pin step
+(2026-10-26) the tools take canre from the pin, ../../tools/bench/canre_pin.py,
+not from it. The folder is wherever that machine's SeaDrive or Seafile client
 syncs it (each worktree's local-paths.md records the value). So there is no
 default path (methodology, 2026-10-20): it
 comes from --project-dir, else from $REVERSE_IT_DIR, and neither is an error
