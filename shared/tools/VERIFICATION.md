@@ -3,7 +3,7 @@
 Test evidence that the tooling in `shared/tools/` meets each requirement in
 `SPEC.md`. Why each requirement is written as it is: `VALIDATION.md`.
 
-Each entry names the requirements it covers (R1 to R28), the commit of the
+Each entry names the requirements it covers (R1 to R30), the commit of the
 tooling it tested, and its run files under `$REVERSE_IT_DIR`, with each
 file's hash where a verdict rests on it (port plan goal 20). Entries arrive
 as commits on the tester's branch, and the reviewer pushes them.
@@ -519,3 +519,61 @@ first attempt (a fixture made before R23, stopped at the pin before building).
 `CONFIG_ARDUHAL_LOG_DEFAULT_LEVEL` and the two signals), a `-D CORE_DEBUG_LEVEL`, the other three
 R26 options set, and a contradicting or non-integer profile. The unit tests cover each of these.
 R18's own cases of its entry were not run again on `aa0d67a`.
+
+## R21 from the board component, R29 board settings and R30 pins (gen-inhibit step 1a, 2026-10-27)
+
+**SPEC:** shared/main `2f72a20`: R21 widened (the board is the one `shared/boards/*` component in
+`dependencies.lock`, its data read from that component in `managed_components/`), R29 and R30,
+with `../boards/SPEC.md` B2-B4 and B6. **Check:** `vtrux_checks/` on `shared/tools/board-checks`
+at `653ee07` (from `2f72a20`: the checks `73ab1ec`, the cases' fix `0579b8e`, a test `653ee07`),
+written from SPEC. `boarddata.py` finds the board: a git source whose path is exactly
+`shared/boards/<board>`, or a local one whose path ends so; a release build is refused unless
+there is exactly one, and a local one is refused because it is not in `managed_components/`.
+`board.py` reads R21's target, flash size and reference table from its `board.json`; the old
+inline `board` key in `vtrux_checks.json` is no longer read. R29 is in `options.py`, R30 in
+`pins.py` (`python -B -m vtrux_checks pins --build <dir>`). **Unit tests:** `test_boarddata.py`
+16, `test_board.py` 33, `test_options.py` 56 and `test_pins.py` 11. Each rule is shown failing
+on a planted input and passing on a faithful one. `test_scope.py` and `test_switches.py` still
+pass, and `test_board.py` also passes against the real ESP-IDF v5.4.1. 37 mutants of
+`boarddata.py`, R21's lock part, R29 and R30 each fail them. The first mutant run missed one,
+a registry source carrying a `shared/boards/` path; `653ee07` adds that test. The board reader
+reads gen-inhibit's `wican_v3` folder (`shared/boards/wican-v3-data` `3690cfe` merged with the
+implementor's `b66a151`): its `board.json`, and its `sdkconfig.board` as 9 options.
+**Board data:** `shared/boards/wican_v3/board.json` at `3690cfe`: `esp32c3`, `4MB`, the
+reference `stock-v4.13-partition-table.bin` (sha256 `98d193a6...2185e`, SPEC section 2), the
+four settings required of the project, and `OBD`. **Builds:** release builds by `vtrux_build/`
+at `0579b8e` of `release_cases.py`'s fixture made from gen-inhibit `d2e0bb5`, the base the
+R21 entry above used. gen-inhibit's tree has been in `gen-inhibit/firmware/` since port step 0d,
+and the fixture still expects it at the root; that is a harness fix to come. The minimal
+project was set to esp32s3 for the esp32s3 cases. No board component is built yet, so after
+each build `board_cases.py` plants `wican_v3` in `managed_components/vtrux__wican_v3/`, with a
+git entry for it added to `dependencies.lock`. **Cases:** `verification/board_cases.py` at
+`0579b8e`, whose `--self-test` catches every broken input; it now also covers the planted lock
+entry, read by the checks' own lock reader. **Host:** NICKY-XPS (IDF v5.4.1, its Python 3.11.9),
+throttled (Idle, `--jobs 1`). **Run files:**
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/runs/board_cases_0579b8e_20261027/`.
+Its `SHA256SUMS` (`c7172208...6051b`) hashes every log, `board_results.json`, the board data
+copy, `tests_0579b8e.txt`, and the mutant runs with their script. A first run on `73ab1ec`
+(`board_cases_73ab1ec_20261027/`) is void: its fixture was made from gen-inhibit `8919fb3`,
+and two plumbing faults of the cases were fixed in `0579b8e`.
+
+| Case | Result | What was tested |
+|---|---|---|
+| `release_pass` | PASS | The fixture's release build with `wican_v3` planted: exit 0, prefix `riscv32-esp-elf-`. |
+| `other_target` | PASS | The same build, `board.json`'s target `esp32s3`: exit 1, naming the target only. |
+| `small_slot` | PASS | The same build, the reference a copy of the stock table with `ota_0` one byte smaller than the image: exit 1, naming the table and the slot. |
+| `missing_reference` | PASS | The same build, the reference naming no file: exit 1, cannot read. |
+| `no_board` | PASS | The same build, no `shared/boards/*` entry in the lock: exit 1, cannot read, 0 components. |
+| `two_boards` | PASS | The same build, a second `shared/boards/*` git entry: exit 1, cannot read, 2 components. |
+| `local_board` | PASS | The same build, the board's entry a local folder: exit 1, cannot read, from a local folder. |
+| `table_differs` | PASS | A release build of a commit making `storage` 296K: exit 1, naming the table only. |
+| `flash_larger` | PASS | A release build of a commit setting the flash size to 8MB: exit 1, naming the flash size only. |
+| `s3_pass` | PASS | The minimal project on esp32s3, its own table and flash size planted as the board's: exit 0, prefix `xtensa-esp32s3-elf-`; R17's scope check passes on the build as built. |
+| `s3_board_c3` | PASS | The same build, the board's target `esp32c3`: exit 1, naming the target only. |
+| `s3_elf_reader` | PASS | R20's ELF reader on the esp32s3 ELF against `xtensa-esp32s3-elf-nm`. |
+
+| Req | Result | What was tested |
+|---|---|---|
+| R21 on a real release build, the board from its component | PASS | The cases above. |
+| R29 | **unit tests only** | Not yet on a real build. Its reading of an option missing from the bootloader's folder, and of a required Kconfig choice, is open with the gen-inhibit reviewer (2026-10-27). Real-build cases come with the first build that takes `wican_v3` (gen-inhibit step 1a). |
+| R30 | **unit tests only** | Not yet on a real build: that needs a project compiling `board_pins.h` from the component (gen-inhibit step 1a). |
