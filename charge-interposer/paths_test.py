@@ -5,7 +5,9 @@
     old VTRUX_DATA, included), only the retired VTRUX_DATA set, no public
     repo -- is a clear PathsError, not a wrong path (REVERSE_IT_DIR replaced
     VTRUX_DATA on 2026-10-20: user, via the methodology session);
-  - add_canre(required=False) tolerates a missing setting;
+  - canre is the pinned install (canre_pin.py), with or without
+    REVERSE_IT_DIR, and never a canre/ under REVERSE_IT_DIR (port step 0,
+    reviewer 2026-10-26; canre_pin_test.py tests the pin itself);
   - `run_scenario.py --list` runs with REVERSE_IT_DIR unset (only touching
     data needs it);
   - diag_dbc() is the git copy, diag/vtrux-interposer-diag.dbc beside
@@ -14,10 +16,12 @@
   - nothing under charge-interposer/ holds a machine-absolute path, no
     .py / .sh / .cpp / .h still climbs `..` out of the repo to SeaDrive's
     notes/, no .py / .sh / .cpp / .h other than paths.py and this file
-    still names VTRUX_DATA, and no code but paths.py and
+    still names VTRUX_DATA, no code but paths.py and
     firmware/test/build_check.py names the diag DBC's file (every other
-    reader goes through diag_dbc()) --
-    all four scans proven able to fail on a planted line.
+    reader goes through diag_dbc()), and no .py puts the working folder
+    ("." or os.getcwd()) on sys.path, which is how the reverse-it root's
+    canre/ used to come in with the scripts run from it --
+    all five scans proven able to fail on a planted line.
 
 Fake trees are built in a throwaway folder beside this file and removed.
 
@@ -34,6 +38,7 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import paths as PA                     # noqa: E402
+import canre_pin                       # noqa: E402
 
 failures = 0
 
@@ -72,6 +77,8 @@ RETIRED_OK = ("paths.py", "paths_test.py")
 # (and this test, in its docstring).
 DIAG_RE = re.compile("vtrux-interposer-" + r"diag\.dbc")
 DIAG_OK = ("paths.py", "build_check.py", "paths_test.py")
+# The working folder put on sys.path: "." or os.getcwd(), in code.
+CWD_RE = re.compile(r"sys\.path\.(insert|append)\([^)]*(['\"]\.['\"]|getcwd)")
 
 
 def scan(root, exts, pattern, code_only):
@@ -95,7 +102,7 @@ def scan(root, exts, pattern, code_only):
 
 
 def main():
-    names = ("REVERSE_IT_DIR", "VTRUX_DATA", "VTRUX_PUBLIC_REPO")
+    names = ("REVERSE_IT_DIR", "VTRUX_DATA", "VTRUX_PUBLIC_REPO", "CANRE_DIR")
     saved = {k: os.environ.get(k) for k in names}
     tmp = tempfile.mkdtemp(dir=HERE, prefix="paths_test_")
     try:
@@ -105,8 +112,10 @@ def main():
               "REVERSE_IT_DIR unset: a PathsError naming the setting")
         check(raises(PA.fixtures, "REVERSE_IT_DIR is not set"),
               "... and fixtures() says the same, not a wrong path")
-        check(PA.add_canre(required=False) is None,
-              "add_canre(required=False) tolerates the missing setting")
+        pinned = os.path.normpath(canre_pin.folder())
+        check(os.path.normpath(PA.canre_root()) == pinned,
+              "canre_root() is the pinned install (%s), REVERSE_IT_DIR unset"
+              % os.path.relpath(pinned, os.path.dirname(HERE)))
 
         os.environ["REVERSE_IT_DIR"] = tmp
         check(raises(PA.data_dir, "has no projects/vtrux/notes/artifacts"),
@@ -126,8 +135,6 @@ def main():
         check(raises(PA.data_dir, "VTRUX_DATA is set, but it was retired"),
               "only the retired VTRUX_DATA set (to a valid projects/vtrux): "
               "refused, saying it is retired -- never read as a fallback")
-        check(PA.add_canre(required=False) is None,
-              "... and add_canre(required=False) takes no canre from it")
         os.environ.pop("VTRUX_DATA")
 
         os.environ["REVERSE_IT_DIR"] = root
@@ -143,11 +150,17 @@ def main():
               "runs_dir() is projects/vtrux/notes/artifacts/interposer-runs/")
         check(PA.logs() == os.path.join(vtrux, "logs"),
               "logs() is projects/vtrux/logs/")
-        check(raises(PA.canre_root, "no canre/"),
-              "no canre/ in REVERSE_IT_DIR is refused")
         os.makedirs(os.path.join(root, "canre"))
-        check(os.path.normpath(PA.canre_root()) == os.path.normpath(root),
-              "canre_root() is REVERSE_IT_DIR itself")
+        check(os.path.normpath(PA.canre_root()) == pinned,
+              "a canre/ under REVERSE_IT_DIR is not taken: canre_root() is "
+              "still the pinned install")
+        os.environ["CANRE_DIR"] = os.path.join(tmp, "no-canre-here")
+        check(raises(PA.canre_root, "not installed"),
+              "a missing pinned install is a PathsError, not a fallback")
+        if saved["CANRE_DIR"] is None:
+            os.environ.pop("CANRE_DIR")
+        else:
+            os.environ["CANRE_DIR"] = saved["CANRE_DIR"]
         os.environ["VTRUX_DATA"] = os.path.join(tmp, "elsewhere")
         check(PA.data_dir() == vtrux,
               "a stale VTRUX_DATA beside REVERSE_IT_DIR changes nothing")
@@ -219,6 +232,11 @@ def main():
         check(not hits, "no code but paths.py and build_check.py names the "
               "diag DBC's file: every other reader uses diag_dbc() (%s)"
               % hits[:3])
+        hits = [h for h in scan(HERE, (".py",), CWD_RE, True)
+                if not h.startswith(os.path.basename(tmp))
+                and os.path.basename(h.split(":", 1)[0]) != "paths_test.py"]
+        check(not hits, "no .py puts the working folder on sys.path (%s)"
+              % hits[:3])
         plant = os.path.join(tmp, "plant")
         os.makedirs(plant)
         with open(os.path.join(plant, "a.py"), "w") as f:
@@ -229,6 +247,10 @@ def main():
             dn = '"vtrux-interposer-' + 'diag.dbc"'
             f.write('D = os.path.join(paths.data_dir(), ' + dn + ')\n')
             f.write('# D = os.path.join(paths.data_dir(), ' + dn + ')\n')
+            f.write('sys.path.insert(0, "' + '.")\n')
+            f.write('# sys.path.insert(0, "' + '.")\n')
+        with open(os.path.join(plant, "c.py"), "w") as f:
+            f.write('sys.path.append(os.' + 'getcwd())\n')
         with open(os.path.join(plant, "b.cpp"), "w") as f:
             f.write('const char* v = std::getenv("VTRUX' + '_DATA");\n')
         check(len(scan(plant, (".py",), ABS_RE, False)) == 1,
@@ -241,6 +263,9 @@ def main():
         check(len(scan(plant, (".py",), DIAG_RE, True)) == 1,
               "the diag DBC scan catches a planted reverse-it read, and "
               "skips it in a comment")
+        check(len(scan(plant, (".py",), CWD_RE, True)) == 2,
+              "the working-folder scan catches a planted '.' and getcwd(), "
+              "and skips them in a comment")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
         for k, v in saved.items():

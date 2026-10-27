@@ -337,7 +337,18 @@ def test_suites():
     # 186: cf.bench-hold12, its fresh-board gate mutants (2026-10-23)
     # 188: bench-wican-test and its -canfail, with the WiCAN board
     # 189: script-can-fail-test, script_can_fail's baseline run (2026-10-24)
-    assert len(seen) == 189, "checks across the suites: %d" % len(seen)
+    # 191: canre-pin-test and its -canfail, with the canre pin (2026-10-26)
+    assert len(seen) == 191, "checks across the suites: %d" % len(seen)
+    # madhouse gets the pinned canre beside the code, named by CANRE_DIR
+    mad = 0
+    for name in ("emulated", "harness"):
+        for g in su[name].groups:
+            if g.host == "madhouse":
+                mad += 1
+                assert g.ship.get("canre") and os.path.isdir(g.ship["canre"]),                     "%s/%s ships no canre: %s" % (name, g.name, g.ship)
+                for c in g.checks:
+                    assert c.env.get("CANRE_DIR") == "{work}/canre",                         "%s/%s has CANRE_DIR %r" % (g.name, c.id, c.env.get("CANRE_DIR"))
+    assert mad == 5, "madhouse groups seen: %d" % mad
     # build-check runs in a git checkout of HEAD, shipped as a bundle
     # (user ruling 2026-10-19), never in the shipped copy
     mb = [g for g in su["emulated"].groups if g.name == "m-build"][0]

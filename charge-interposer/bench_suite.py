@@ -72,6 +72,7 @@ from vtrux_bench.run import (Check, Figure, Group, Image, KnownFail,  # noqa: E4
                              Result, Suite, Verdict)
 import bench_identify  # noqa: E402
 import bench_wican  # noqa: E402
+import canre_pin  # noqa: E402
 sys.path.insert(0, os.path.join(HERE, "firmware"))
 import build_identity  # noqa: E402
 
@@ -128,7 +129,7 @@ HARNESS_PY_TESTS = [
     "test_scorer_wiring.py", "test_hold_wire.py",
     "sims_test.py", "regress_offline_test.py", "capture_pins_test.py",
     "build_lookup_offline_test.py", "paths_test.py", "diag_cadence_test.py",
-    "bus_gs_usb_test.py",
+    "bus_gs_usb_test.py", "canre_pin_test.py",
 ]
 MADHOUSE_PIO_PATH = "{madhouse_pio_dir}:/usr/local/bin:/usr/bin:/bin"
 
@@ -452,10 +453,16 @@ class _Build:
     def __init__(self, settings, ship_art=False):
         self.settings = settings
         self.code = settings["interposer_code"]
-        self.ship = {"code": self.code}
+        # madhouse gets the pinned canre this host checked, beside the code
+        # (canre_pin.py: CANRE_DIR names it in a copy with no git, and the
+        # same checks run there before any import).
+        canre = canre_pin.folder()
+        canre_pin.verify(canre)
+        self.ship = {"code": self.code, "canre": canre}
         if ship_art:
             self.ship["art"] = _stage_artifacts(settings)
         self.mad_env = {"INTERPOSER_CODE": "{work}/code",
+                        "CANRE_DIR": "{work}/canre",
                         "L3_STIMULUS": "{madhouse_artifacts}/l3_stimulus.txt"}
 
     def mpy(self, cid, argv, **kw):
@@ -815,7 +822,9 @@ def harness(settings):
         b.mpio("digest-recheck-check", ["firmware/test/digest_recheck_check.py"],
                cls="build", timeout_s=7200),
     ] + [b.mpy(t[:-3].replace("_", "-"), [t], cls="build", timeout_s=3600)
-         for t in HARNESS_PY_TESTS])
+         for t in HARNESS_PY_TESTS] + [
+        b.mpy("canre-pin-test-canfail", ["canre_pin_test.py", "--can-fail"],
+              cls="build", timeout_s=3600)])
     def mutant(cid, argv):
         kw = dict(cls="build", timeout_s=7200,
                   judge=globals()[MUTANT_JUDGES.get(cid, "script_judge")])

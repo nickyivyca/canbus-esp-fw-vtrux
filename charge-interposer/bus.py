@@ -24,17 +24,10 @@ Segment map for this bench:
 A plain two-node run (no interposer) puts both nodes on the vehicle segment.
 """
 
-import sys
-from pathlib import Path
-
 import can
 
-# canre's location comes from paths.py (REVERSE_IT_DIR) since the move to git;
-# nothing here imports canre, so a missing setting is not an error.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import paths                                                # noqa: E402
-
-REPO_ROOT = paths.add_canre(required=False)
+# Nothing here imports canre (replay.py takes the pinned one through
+# paths.add_canre), so bus.py puts no canre on sys.path.
 
 VEHICLE_SEGMENT = "239.0.2.1"
 CHARGER_SEGMENT = "239.0.2.2"
