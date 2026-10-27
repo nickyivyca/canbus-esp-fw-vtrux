@@ -34,6 +34,13 @@ gen-inhibit's spec is
   the plan's Layer 1 list of `wican_v3` chip defaults: the 20 ms erase
   yield and the watchdog settings are gen-inhibit spec requirements (9.3
   and 9.1), so they stay project data.
+- **ESP-IDF options only** (user, 2026-10-27, in the gen-inhibit reviewer's
+  session, raised by the charge-interposer reviewer): the options check
+  judges every build folder, and the bootloader's has no options from
+  downloaded components (the finding that kept
+  `CONFIG_ARDUHAL_LOG_DEFAULT_LEVEL` out of the interposer's profile). No
+  board fact needs one: the cases are settings such as mDNS's or the Arduino
+  core's, which are one project's choice. Revisit if a board needs one.
 - **Status:** complete.
 
 ### B4. `board.json`
@@ -51,7 +58,9 @@ gen-inhibit's spec is
   because gen-inhibit's restart guard handles only standby pins below 32 and
   the WiCAN Pro's is GPIO 38. Offered outputs and inputs: B3. The hardware
   name comes from the board (user, 2026-10-26), replacing the string upstream
-  WiCAN sets from `HARDWARE_VER`.
+  WiCAN sets from `HARDWARE_VER`; it is board data whether or not a project
+  has a status page to show it (wording, user, 2026-10-27, raised by the
+  charge-interposer reviewer: the X2 has none yet).
 - **Status:** complete.
 
 ### B6. Pins in `include/board_pins.h`
