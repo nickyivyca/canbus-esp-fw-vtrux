@@ -9,12 +9,21 @@ R9's fixed SOURCE_DATE_EPOCH and R24.
 
 The project is gen-inhibit at --base, cloned into --root, with a fixture commit on
 top that no gen-inhibit branch has: vtrux_build.json ({"project": "gen-inhibit",
-"shared_components": []}), CONFIG_APP_REPRODUCIBLE_BUILD on, and the tracked files as
-`idf.py reconfigure` rewrites them. What it rewrote is listed in fixture.txt. Two
+"shared_components": []}) where --base has none (the project's own is kept: since port step
+1a C it names the board), CONFIG_APP_REPRODUCIBLE_BUILD on, and the tracked files as
+`idf.py reconfigure` rewrites them. What it rewrote is listed in fixture.txt. The record's
+shared components are expected from the project's own files (expected_shared). The tags its
+git dependencies are pinned at, which R17 resolves in the project's repository, are in every
+clone, as a clone takes every tag (fixture.txt names each). Two
 more branches sit on it: fx-r11 (the build deletes its own .bin last) and fx-r16
 (a shared component taken from a local folder). --fixture uses a repo already
 made that way instead (another host, for R5 across host OSes). REVERSE_IT_DIR is a
 stand-in folder under --root, so no record reaches the real firmware/builds/.
+
+The project is the WiCAN tree, wherever --base keeps it: in gen-inhibit/firmware/ (SUB,
+port step 0d on), or at the repository's root (before, as at d2e0bb5). Each clone's
+project is that folder in it (Ctx.src, p1, p2, pq); clones, tags and branches are made in
+the repository (Ctx.repo_src and the like). fixture.txt names the folder.
 
 The tooling under test is this checkout's HEAD, committed. SPEC R23 runs it only from
 ../shared-<tag>/ beside the project's worktree root, at the pin the project commits in
@@ -64,6 +73,7 @@ GIT_ID = {"GIT_AUTHOR_NAME": "tester", "GIT_AUTHOR_EMAIL": "tester@invalid", "GI
 REPRO_OFF = "# CONFIG_APP_REPRODUCIBLE_BUILD is not set"
 REPRO_ON = "CONFIG_APP_REPRODUCIBLE_BUILD=y"
 PINS = "shared_pins.json"
+SUB = "gen-inhibit/firmware"    # gen-inhibit's build root in the repository since port step 0d
 TAG = "2000.01.01"          # the tooling under test, tagged in the fixture repo only
 TAG_OTHER = "2000.01.02"    # r23_tag_other: marks a commit beside TAG's, shared/tools the same
 TAG_ABSENT = "2000.01.03"   # r16_tag_absent: no repository here has it
@@ -264,6 +274,12 @@ def self_test():
         ok &= c == want
     ok &= self_test_r8(I.scratch("release-cases-selftest-r8"))
     ok &= self_test_epoch_env()
+    ok &= self_test_layout(I.scratch("release-cases-selftest-layout"))
+    ok &= self_test_shared(I.scratch("release-cases-selftest-shared"))
+    rc, out = run([sys.executable, "-c", "print('PASS R30'); print('x')"])
+    good = rc == 0 and out == "PASS R30\nx\n"
+    print("  %s run(): a child's lines end in LF alone, so a judge's ^...$ matches them: %r" % ("ok  " if good else "FAIL", out))
+    ok &= good
     print("\nself-test: %s" % ("every broken input caught, the faithful one passed" if ok else "FAILED"))
     return 0 if ok else 1
 
@@ -273,7 +289,7 @@ def self_test():
 def run(cmd, cwd=None, env=None, log=None, check=False, timeout=7200):
     t0 = time.time()
     p = subprocess.run(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
-    out = p.stdout.decode("utf-8", "replace")
+    out = p.stdout.decode("utf-8", "replace").replace("\r\n", "\n")      # a Windows child prints CRLF
     if log:
         with open(log, "a", encoding="utf-8") as f:
             f.write("$ %s  (in %s)\n%s\n[exit %d, %.0f s]\n\n" % (" ".join(cmd), cwd or os.getcwd(), out, p.returncode,
@@ -354,19 +370,40 @@ def bench_clear(log):
     return why
 
 
+def layout_of(repo, rev):
+    """SUB when gen-inhibit's tree at rev is in gen-inhibit/firmware/ (port step 0d on), else ""
+    (the WiCAN tree at the repository's root, as at d2e0bb5)."""
+    return SUB if run(["git", "-C", repo, "cat-file", "-e", "%s:%s/CMakeLists.txt" % (rev, SUB)])[0] == 0 else ""
+
+
+def in_sub(repo, sub):
+    return os.path.join(repo, *sub.split("/")) if sub else repo
+
+
 class Ctx:
+    """Each clone of the fixture has its repository (repo_src, repo_p1, repo_p2, repo_pq) and its
+    project, the build root inside it (src, p1, p2, pq): the same folder, or <repo>/SUB."""
+
     def __init__(self, a):
         self.root, self.out, self.jobs, self.base = os.path.abspath(a.root), os.path.abspath(a.out), a.jobs, a.base
         self.ri = os.path.join(self.root, "ri")
-        self.p1 = os.path.join(self.root, "a")
-        self.p2 = os.path.join(self.root, "path_b_longer", "deeper")
+        self.repo_p1 = os.path.join(self.root, "a")
+        self.repo_p2 = os.path.join(self.root, "path_b_longer", "deeper")
         self.mini = os.path.join(self.root, "mini")
         self.pp = os.path.join(self.root, "pin")          # the pin cases' project and checkouts
-        self.pq = os.path.join(self.pp, "a")
-        self.src = a.fixture or os.path.join(self.root, "src")
+        self.repo_pq = os.path.join(self.pp, "a")
+        self.repo_src = a.fixture or os.path.join(self.root, "src")
         self.made_fixture = not a.fixture
         self.log = os.path.join(self.out, "driver.log")
         self.shared = {}
+        made = os.path.isdir(os.path.join(self.repo_src, ".git"))
+        self.set_sub(layout_of(self.repo_src, "fixture") if made else "")
+
+    def set_sub(self, sub):
+        """The project's folder in the repository: "" or SUB."""
+        self.sub = sub
+        for n in ("src", "p1", "p2", "pq"):
+            setattr(self, n, in_sub(getattr(self, "repo_" + n), sub))
 
     def records(self, project="gen-inhibit"):
         return os.path.join(self.ri, "firmware", "builds", project)
@@ -391,7 +428,7 @@ def ref(repo, name):
 
 def committed_pin(proj):
     """The "shared/tools" entry of the shared_pins.json committed at proj's HEAD."""
-    return json.loads(git(proj, "show", "HEAD:" + PINS))["shared/tools"]
+    return json.loads(git(proj, "show", "HEAD:./" + PINS))["shared/tools"]     # ./: from proj, not the root
 
 
 def checkout_dir(proj, tag):
@@ -421,12 +458,12 @@ def pins_text(pin):
 def add_checkout(ctx, co, rev):
     """co: a detached worktree of the fixture repo at rev, as README's command makes one."""
     os.makedirs(os.path.dirname(co), exist_ok=True)
-    git(ctx.src, "worktree", "add", "--detach", co, rev)
+    git(ctx.repo_src, "worktree", "add", "--detach", co, rev)
 
 
 def remove_checkout(ctx, co):
     rmtree(co)
-    for repo in (ctx.src, getattr(ctx, "pq", None)):
+    for repo in (ctx.repo_src, getattr(ctx, "repo_pq", None)):
         if repo and os.path.isdir(os.path.join(repo, ".git")):
             git(repo, "worktree", "prune")
 
@@ -444,9 +481,9 @@ def make_pin(ctx):
     """Tag the tooling under test (this checkout's HEAD) TAG in the fixture repo, make its checkout
     root/shared-TAG (beside p1 and the minimal project), and return the pin that matches it."""
     c = git(TOOLS, "rev-parse", "HEAD")
-    have = ref(ctx.src, "refs/tags/" + TAG)
+    have = ref(ctx.repo_src, "refs/tags/" + TAG)
     if not have:
-        git(ctx.src, "tag", TAG, c)
+        git(ctx.repo_src, "tag", TAG, c)
     elif have != c:
         raise RuntimeError("the fixture repo's %s marks %s, the tooling under test is %s: use a new --root"
                            % (TAG, have[:12], c[:12]))
@@ -525,15 +562,25 @@ def make_fixture(ctx):
     me = HERE
     while not os.path.exists(os.path.join(me, ".git")):
         me = os.path.dirname(me)
-    run(["git", "clone", "-q", "--no-checkout", me, ctx.src], check=True)
+    run(["git", "clone", "-q", "--no-checkout", me, ctx.repo_src], check=True)
     with open(os.path.join(ctx.out, "fixture.txt"), "w") as fx:
-        base = git(ctx.src, "rev-parse", ctx.base + "^{commit}")
+        base = git(ctx.repo_src, "rev-parse", ctx.base + "^{commit}")
         fx.write("base: %s (%s)\n" % (base, ctx.base))
-        git(ctx.src, "checkout", "-q", "-b", "fixture", base)
+        git(ctx.repo_src, "checkout", "-q", "-b", "fixture", base)
+        ctx.set_sub(layout_of(ctx.repo_src, base))
+        fx.write("project folder: %s\n" % (ctx.sub or "the repository's root"))
         pin = make_pin(ctx)
         fx.write("tooling pin: %s\n" % json.dumps(pin))
-        with open(os.path.join(ctx.src, "vtrux_build.json"), "w", newline="") as f:
-            f.write('{"project": "gen-inhibit", "shared_components": []}\n')
+        vb = os.path.join(ctx.src, "vtrux_build.json")
+        if os.path.exists(vb):      # the project's own (gen-inhibit names its board there since port step 1a C)
+            if json.load(open(vb)).get("project") != "gen-inhibit":
+                raise RuntimeError("%s names another project" % vb)
+            fx.write("vtrux_build.json: the project's own, kept: %s\n" % json.dumps(json.load(open(vb))))
+        else:
+            with open(vb, "w", newline="") as f:
+                f.write('{"project": "gen-inhibit", "shared_components": []}\n')
+        for tag in dep_tags(ctx.src):
+            fx.write("dependency tag %s: %s\n" % (tag, ref(ctx.repo_src, "refs/tags/" + tag) or "NOT IN THE REPOSITORY"))
         with open(os.path.join(ctx.src, PINS), "w", newline="") as f:
             f.write(pins_text(pin))
         set_repro(ctx.src)
@@ -568,8 +615,10 @@ def make_fixture(ctx):
                       "    version: \"1.0.0\"\n    override_path: \"../fx_shared/vtrux_fx_shared\"\n", 1)
         with open(y, "w", newline="") as f:
             f.write(s)
+        data = json.load(open(os.path.join(ctx.src, "vtrux_build.json")))
+        data["shared_components"] = list(data.get("shared_components") or []) + ["vtrux/vtrux_fx_shared"]
         with open(os.path.join(ctx.src, "vtrux_build.json"), "w", newline="") as f:
-            f.write('{"project": "gen-inhibit", "shared_components": ["vtrux/vtrux_fx_shared"]}\n')
+            f.write(json.dumps(data) + "\n")
         git(ctx.src, "add", "-A")
         git(ctx.src, "commit", "-q", "-m", "fixture fx-r16: a shared component from a local folder")
         normalise(ctx, ctx.src, "fx-r16", fx)
@@ -607,15 +656,45 @@ def make_mini(ctx):
 
 
 def clones(ctx):
-    if not os.path.exists(ctx.p1):
-        run(["git", "clone", "-q", "-b", "fixture", ctx.src, ctx.p1], check=True)
-    if not os.path.exists(ctx.p2):
-        os.makedirs(os.path.dirname(ctx.p2), exist_ok=True)
-        run(["git", "clone", "-q", "--no-checkout", ctx.src, ctx.p2], check=True)
-        git(ctx.p2, "checkout", "-q", "-b", "other", "origin/fixture")
+    if not os.path.exists(ctx.repo_p1):
+        run(["git", "clone", "-q", "-b", "fixture", ctx.repo_src, ctx.repo_p1], check=True)
+    if not os.path.exists(ctx.repo_p2):
+        os.makedirs(os.path.dirname(ctx.repo_p2), exist_ok=True)
+        run(["git", "clone", "-q", "--no-checkout", ctx.repo_src, ctx.repo_p2], check=True)
+        git(ctx.repo_p2, "checkout", "-q", "-b", "other", "origin/fixture")
+
+
+def dep_tags(proj):
+    """The tags proj's main/idf_component.yml pins its git dependencies at (a git source's version),
+    which R17 resolves in the project's repository. A clone has every tag of the repository it was
+    cloned from, on its branches' history or not (self_test_shared), so the fixture's clones have
+    the board's tag as a worktree of the real repository does; fixture.txt names each."""
+    import yaml
+    p = os.path.join(proj, "main", "idf_component.yml")
+    deps = ((yaml.safe_load(open(p)) or {}).get("dependencies") or {}) if os.path.exists(p) else {}
+    return sorted({str(d["version"]) for d in deps.values() if isinstance(d, dict) and d.get("git") and d.get("version")})
 
 
 # ---------- what the tester reads itself ----------
+
+def expected_shared(proj):
+    """R13's shared components, read by the tester: each component the project's vtrux_build.json
+    names, with the version, git and path its main/idf_component.yml declares (the pinned tag is
+    the version) and, for a git source, the commit that tag names in the project's repository,
+    which is what the lock resolves it to (R17)."""
+    import yaml
+    names = json.load(open(os.path.join(proj, "vtrux_build.json"))).get("shared_components") or []
+    p = os.path.join(proj, "main", "idf_component.yml")
+    deps = ((yaml.safe_load(open(p)) or {}).get("dependencies") or {}) if os.path.exists(p) else {}
+    out = {}
+    for n in names:
+        d = deps.get(n)
+        d = d if isinstance(d, dict) else {"version": d}
+        tag = None if d.get("version") is None else str(d["version"])
+        out[n] = {"version": tag, "git": d.get("git"), "path": d.get("path"),
+                  "lock_version": (ref(proj, "refs/tags/" + tag) or None) if d.get("git") and tag else None}
+    return out
+
 
 def facts_for(ctx, proj, project, shared):
     bd = os.path.join(proj, "build")
@@ -748,7 +827,7 @@ def check_success(ctx, name, proj, rc, before, project="gen-inhibit", shared=Non
     jn = [n for n in new if n.endswith(".json")][0]
     rec = json.load(open(os.path.join(ctx.records(project), jn)))
     files = {n: open(os.path.join(ctx.records(project), n), "rb").read() for n in new}
-    bad = judge_record(rec, files, facts_for(ctx, proj, project, shared or {}))
+    bad = judge_record(rec, files, facts_for(ctx, proj, project, expected_shared(proj) if shared is None else shared))
     bad += own_checks(proj)
     report(name, "PASS" if not bad else "FAIL", "record %s; code %s%s%s" % (
         rec["image_hash"][:16], rec["code_hash"][:16], note, "" if not bad else "; " + "; ".join(bad)), ctx.log)
@@ -1296,6 +1375,102 @@ def r8_sdkconfig_refused(ctx, name, log, want_path, note, after=None):
     rmtree(os.path.join(ctx.p1, "build"))
 
 
+def self_test_layout(d):
+    """The project's folder in a fixture repository: the WiCAN tree at the root (as at d2e0bb5) or
+    in SUB (port step 0d on), Ctx's paths for each, and the pin and .git paths read from SUB."""
+    ok = True
+    repo = os.path.join(d, "src")
+    run(["git", "init", "-q", "-b", "fixture", repo], check=True)
+
+    def put(rel, text):
+        p = os.path.join(repo, *rel.split("/"))
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", newline="") as f:
+            f.write(text)
+    put("CMakeLists.txt", "project(p)\n")
+    put(PINS, pins_text({"tag": "root", "commit": "c" * 40, "digest": "d" * 64}))
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "at the root")
+    c1 = git(repo, "rev-parse", "HEAD")
+    git(repo, "mv", "CMakeLists.txt", "x.txt")
+    put(SUB + "/CMakeLists.txt", "project(p)\n")
+    put(SUB + "/" + PINS, pins_text({"tag": "sub", "commit": "c" * 40, "digest": "d" * 64}))
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "in SUB, a decoy pin left at the root")
+    for label, got, want in (("tree at the root", layout_of(repo, c1), ""), ("tree in SUB", layout_of(repo, "HEAD"), SUB),
+                             ("no such commit", layout_of(repo, "f" * 40), ""), ("in_sub, none", in_sub(d, ""), d)):
+        print("  %s layout, %s: %r" % ("ok  " if got == want else "FAIL", label, got))
+        ok &= got == want
+
+    class A:
+        root, out, jobs, base, fixture = os.path.join(d, "root"), d, None, None, repo
+    ctx = Ctx(A)
+    want = {"sub": SUB, "src": in_sub(repo, SUB), "repo_p1": os.path.join(A.root, "a"),
+            "p1": in_sub(os.path.join(A.root, "a"), SUB), "pq": in_sub(os.path.join(A.root, "pin", "a"), SUB)}
+    for k, v in sorted(want.items()):
+        good = os.path.normcase(getattr(ctx, k)) == os.path.normcase(v)
+        print("  %s Ctx on a SUB fixture: %s %s" % ("ok  " if good else "FAIL", k, getattr(ctx, k)))
+        ok &= good
+    tag = committed_pin(ctx.src)["tag"]
+    print("  %s the pin read from SUB, not the root's decoy: %s" % ("ok  " if tag == "sub" else "FAIL", tag))
+    ok &= tag == "sub"
+    ex = os.path.normcase(os.path.normpath(os.path.join(ctx.src, git(ctx.src, "rev-parse", "--git-path", "info/exclude"))))
+    good = ex == os.path.normcase(os.path.join(repo, ".git", "info", "exclude"))
+    print("  %s .git/info/exclude found from SUB: %s" % ("ok  " if good else "FAIL", ex))
+    ok &= good
+    git(repo, "checkout", "-q", "-B", "fixture", c1)
+    ctx = Ctx(A)
+    good = ctx.sub == "" and ctx.src == repo
+    print("  %s Ctx on a fixture at the root: sub %r" % ("ok  " if good else "FAIL", ctx.sub))
+    ok &= good
+    return ok
+
+
+def self_test_shared(d):
+    """dep_tags, a clone's tags and expected_shared on a small repo whose project pins a git
+    dependency at a tag on a commit off the fixture branch, as the board's tag is on shared/main."""
+    ok = True
+    repo, a = os.path.join(d, "src"), os.path.join(d, "a")
+    run(["git", "init", "-q", "-b", "fixture", repo], check=True)
+    proj = in_sub(repo, SUB)
+
+    def put(rel, text):
+        p = os.path.join(proj, *rel.split("/"))
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", newline="") as f:
+            f.write(text)
+    put("vtrux_build.json", '{"project": "gen-inhibit", "shared_components": ["vtrux/wican_v3", "x/local", "x/absent"]}\n')
+    put("main/idf_component.yml", 'dependencies:\n  espressif/mdns: "*"\n  vtrux/wican_v3:\n    git: https://h/r.git\n'
+        '    path: shared/boards/wican_v3\n    version: "2026.10.27"\n  y/other:\n    git: https://h/o.git\n'
+        '    version: 9.9.9\n  x/local:\n    path: ../x\n    version: "1.0.0"\n')
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "project")
+    git(repo, "checkout", "-q", "-b", "shared-main")
+    git(repo, "commit", "-q", "--allow-empty", "-m", "the board's tag, off the fixture branch")
+    tagged = git(repo, "rev-parse", "HEAD")
+    git(repo, "tag", "2026.10.27")
+    git(repo, "checkout", "-q", "fixture")
+    git(repo, "branch", "-q", "-D", "shared-main")
+    run(["git", "clone", "-q", "-b", "fixture", repo, a], check=True)
+
+    tags = dep_tags(proj)
+    have = ref(a, "refs/tags/2026.10.27")
+    got = expected_shared(in_sub(a, SUB))
+    want = {"vtrux/wican_v3": {"version": "2026.10.27", "git": "https://h/r.git", "path": "shared/boards/wican_v3",
+                               "lock_version": tagged},
+            "x/local": {"version": "1.0.0", "git": None, "path": "../x", "lock_version": None},
+            "x/absent": {"version": None, "git": None, "path": None, "lock_version": None}}
+    for label, good in (("dep_tags: the git dependencies' versions: %s" % tags, tags == ["2026.10.27", "9.9.9"]),
+                        ("a clone has the tag off its branch, at its commit (the fixture relies on it)", have == tagged),
+                        ("a tag the repository lacks is not there", ref(a, "refs/tags/9.9.9") == ""),
+                        ("expected_shared: %s" % json.dumps(got), got == want),
+                        ("expected_shared's lock version is the tag's commit, not HEAD's",
+                         got["vtrux/wican_v3"]["lock_version"] != git(a, "rev-parse", "HEAD"))):
+        print("  %s %s" % ("ok  " if good else "FAIL", label))
+        ok &= good
+    return ok
+
+
 def self_test_r8(d):
     """The R8 sdkconfig helpers on a small repo: what git says is tracked and ignored, config_file, and
     the SDKCONFIG line."""
@@ -1345,7 +1520,7 @@ def c_r8_sdk_excluded(ctx, log):
     """The default sdkconfig, tracked, matched by .git/info/exclude (no commit)."""
     reset(ctx.p1, "fixture")
     rmtree(os.path.join(ctx.p1, "build"))
-    ex = os.path.join(ctx.p1, ".git", "info", "exclude")
+    ex = os.path.join(ctx.p1, git(ctx.p1, "rev-parse", "--git-path", "info/exclude"))  # relative to p1
     os.makedirs(os.path.dirname(ex), exist_ok=True)
     old = open(ex, "rb").read() if os.path.exists(ex) else None
     try:
@@ -1710,9 +1885,9 @@ def pin_setup(ctx):
             git(ctx.src, "tag", name, at)
     if not ref(ctx.src, "refs/heads/" + BRANCH):
         git(ctx.src, "branch", BRANCH, c)
-    if not os.path.exists(ctx.pq):
+    if not os.path.exists(ctx.repo_pq):
         os.makedirs(ctx.pp, exist_ok=True)
-        run(["git", "clone", "-q", "-b", "fixture", ctx.src, ctx.pq], check=True)
+        run(["git", "clone", "-q", "-b", "fixture", ctx.repo_src, ctx.repo_pq], check=True)
     reset(ctx.pq, "fixture")
     rmtree(os.path.join(ctx.pq, "build"))
     return c, c2

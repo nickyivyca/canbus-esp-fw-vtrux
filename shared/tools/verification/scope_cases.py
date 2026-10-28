@@ -10,9 +10,17 @@ case makes a build, confirms its trigger by an observation that does not use the
 own reader (ninja's `-t deps`, or the text of build.ninja), then runs the check's command
 line and judges its exit code and whether its output names the planted file.
 
-    clean_release     the fixture by the release build: passes --release and --bench
+    clean_release     the fixture by the release build: passes --release and --bench (since port
+                      step 1a C with the board taken from git at its tag, R17's git clause)
     version_edited    then its mdns manifest's version changed: fails (restored after)
     managed_unlisted  then a managed component the lock does not list: fails (removed after)
+  R17's git clause (ruled 2026-10-27), on clean_release's build, each undone after; each needs
+  clean_release to have passed both ways and the board taken from git with its tag naming the
+  lock's commit (else VOID), and fails both ways naming managed_components/vtrux__wican_v3:
+    git_lock_commit   the lock's board commit changed to the tag commit's parent
+    git_tag_absent    the pinned tag deleted from the project's repository
+    git_tag_branch    the tag deleted and a branch of its name made at its commit
+    git_own_version   the downloaded board's own idf_component.yml given a version
     outside_header    a bench build whose main.c includes a header from outside the
                       project root: fails --bench and --release, naming the header
     shared_override   a bench build taking the fx-r16 shared component by override_path
@@ -74,6 +82,7 @@ def self_test():
         v = judge(*args)[0]
         print("  %s %s: %s" % ("ok  " if v == want else "FAIL", label, v))
         ok &= v == want
+    ok &= self_test_git(RC.I.scratch("scope-cases-selftest-git"))
     print("\nself-test: %s" % ("every broken input caught" if ok else "FAILED"))
     return 0 if ok else 1
 
@@ -107,11 +116,15 @@ def mentions(text, path):
 
 def two(ctx, name, proj, log, want, names=()):
     """Run the check both ways; want = {"release": rc, "bench": rc}. names (paths already
-    norm()ed, or component folder names) must appear in a failing run's output."""
+    norm()ed, or component folder names) must appear in a failing run's output. Returns the two
+    verdicts."""
+    verdicts = []
     for kind in ("release", "bench"):
         rc, out = check(ctx, proj, kind, log)
         v, d = judge(rc, out, want[kind], names if want[kind] == 1 else ())
         RC.report("%s --%s" % (name, kind), v, d, ctx.log)
+        verdicts.append(v)
+    return verdicts
 
 
 def bench_build(ctx, proj, log):
@@ -136,7 +149,9 @@ def c_clean_release(ctx, log):
     if rc:
         RC.report("clean_release", "VOID", "the release build failed (exit %d)" % rc, ctx.log)
         return
-    two(ctx, "clean_release", ctx.p1, log, {"release": 0, "bench": 0})
+    with open(log, "a") as f:
+        f.write("board facts (tag, its commit, its ref, the lock's commit): %s\n" % (board_facts(ctx),))
+    ctx.clean_passed = two(ctx, "clean_release", ctx.p1, log, {"release": 0, "bench": 0}) == ["PASS", "PASS"]
     ctx.clean_built = True
 
 
@@ -172,6 +187,181 @@ def c_managed_unlisted(ctx, log):
         two(ctx, "managed_unlisted", ctx.p1, log, {"release": 1, "bench": 1}, names=["tester__r17_probe"])
     finally:
         RC.rmtree(d)
+
+
+BOARD = "vtrux/wican_v3"
+
+
+def self_test_git(d):
+    """The git cases' plumbing on a small repo (the check itself replaced by a recorder): each
+    case's change shows, the check is run once, and everything is undone after."""
+    global two
+    ok = True
+    proj = os.path.join(d, "p")
+    RC.run(["git", "init", "-q", "-b", "fixture", proj], check=True)
+    RC.git(proj, "commit", "-q", "--allow-empty", "-m", "c0")
+    RC.git(proj, "commit", "-q", "--allow-empty", "-m", "c1")
+    c1 = RC.git(proj, "rev-parse", "HEAD")
+    RC.git(proj, "tag", "-a", "-m", "the board's tag", "2026.10.27")
+    os.makedirs(os.path.join(proj, "main"))
+    with open(os.path.join(proj, "main", "idf_component.yml"), "w", newline="") as f:
+        f.write('dependencies:\n  vtrux/wican_v3:\n    git: https://h/r.git\n    path: shared/boards/wican_v3\n'
+                '    version: "2026.10.27"\n')
+    with open(os.path.join(proj, "dependencies.lock"), "w", newline="") as f:
+        f.write("dependencies:\n  espressif/mdns:\n    version: 1.4.0\n  vtrux/wican_v3:\n    source:\n"
+                "      type: git\n    version: %s\nmanifest_hash: x\n" % c1)
+    md = os.path.join(proj, "managed_components", "vtrux__wican_v3")
+    os.makedirs(md)
+    with open(os.path.join(md, "idf_component.yml"), "w", newline="") as f:
+        f.write("dependencies:\n  idf: '>=5.4'\n")
+    with open(os.path.join(proj, ".gitignore"), "w", newline="") as f:
+        f.write("managed_components/\n")
+    RC.git(proj, "add", "-A")
+    RC.git(proj, "commit", "-q", "-m", "project")
+
+    class C:
+        p1, clean_built, clean_passed, log = proj, True, True, os.path.join(d, "driver.log")
+    calls = []
+    real_two, real_report = two, RC.report
+    reports = []
+    two = lambda ctx, name, p, log, want, names=(): calls.append((name, board_facts(ctx), open(
+        os.path.join(md, "idf_component.yml")).read(), RC.ref(proj, "refs/heads/2026.10.27")))
+    RC.report = lambda name, v, detail, log: reports.append((name, v))
+    try:
+        before = board_facts(C)
+        files = (open(os.path.join(proj, "dependencies.lock"), "rb").read(), open(os.path.join(md, "idf_component.yml"), "rb").read())
+        for fn, shows in ((c_git_lock_commit, lambda f, m, b: f[3] != f[1] and f[3] == RC.git(proj, "rev-parse", "HEAD~2")),
+                          (c_git_tag_absent, lambda f, m, b: f[1] == "" and b == ""),
+                          (c_git_tag_branch, lambda f, m, b: f[1] == "" and b == c1),
+                          (c_git_own_version, lambda f, m, b: m.startswith('version: "2026.10.27"'))):
+            del calls[:], reports[:]
+            fn(C, os.path.join(d, "case.log"))
+            after = board_facts(C)
+            same = after == before and files == (open(os.path.join(proj, "dependencies.lock"), "rb").read(),
+                                                  open(os.path.join(md, "idf_component.yml"), "rb").read()) \
+                and RC.ref(proj, "refs/heads/2026.10.27") == ""
+            good = len(calls) == 1 and shows(*calls[0][1:]) and same and not reports
+            print("  %s %s: the change shown to the check (%s), undone after: %s" % (
+                "ok  " if good else "FAIL", fn.__name__, calls[0][1] if calls else reports, same))
+            ok &= good
+        good = before == ("2026.10.27", c1, RC.git(proj, "rev-parse", "refs/tags/2026.10.27"), c1) and before[2] != c1
+        print("  %s board_facts: the tag, its commit, its (annotated) tag object, the lock's commit" % ("ok  " if good else "FAIL"))
+        ok &= good
+        C.clean_passed = False
+        del calls[:], reports[:]
+        c_git_tag_absent(C, os.path.join(d, "case.log"))
+        good = not calls and reports and reports[0][1] == "VOID"
+        print("  %s clean_release built but did not pass: VOID, no check run" % ("ok  " if good else "FAIL"))
+        ok &= bool(good)
+        C.clean_built = False
+        del calls[:], reports[:]
+        c_git_tag_absent(C, os.path.join(d, "case.log"))
+        good = not calls and reports and reports[0][1] == "VOID"
+        print("  %s without clean_release: VOID, no check run" % ("ok  " if good else "FAIL"))
+        ok &= bool(good)
+    finally:
+        two, RC.report = real_two, real_report
+    return ok
+
+
+def board_facts(ctx):
+    """(tag, the commit refs/tags/<tag> names, the tag's ref target, the lock's board version) by
+    the tester's own reading: the tag main/idf_component.yml pins the board at, git, and the lock's
+    text. None when the fixture takes no board from git."""
+    import yaml
+    deps = (yaml.safe_load(open(os.path.join(ctx.p1, "main", "idf_component.yml"))) or {}).get("dependencies") or {}
+    b = deps.get(BOARD)
+    if not isinstance(b, dict) or not b.get("git"):
+        return None
+    tag = str(b["version"])
+    lock = (yaml.safe_load(open(os.path.join(ctx.p1, "dependencies.lock"))) or {}).get("dependencies") or {}
+    return (tag, RC.ref(ctx.p1, "refs/tags/" + tag), RC.run(["git", "-C", ctx.p1, "rev-parse", "-q", "--verify",
+                                                             "refs/tags/" + tag])[1].strip(),
+            str((lock.get(BOARD) or {}).get("version")))
+
+
+def git_case(ctx, log, name, change, undo):
+    """clean_release's build with the board's git facts changed by change(facts) -> trigger shown
+    (else VOID), undone by undo(facts) whatever happens: R17 fails both ways, naming the board's
+    managed folder. VOID unless clean_release passed both ways, since only then does naming the
+    folder show the change was seen."""
+    if not getattr(ctx, "clean_built", False):
+        RC.report(name, "VOID", "needs clean_release in the same batch", ctx.log)
+        return
+    if not getattr(ctx, "clean_passed", False):
+        RC.report(name, "VOID", "clean_release did not pass, and a failing clean build may name the board's "
+                  "folder already", ctx.log)
+        return
+    f = board_facts(ctx)
+    if f is None or not f[1] or f[1] != f[3]:
+        RC.report(name, "VOID", "no git board whose tag names the lock's commit to change: %s" % (f,), ctx.log)
+        return
+    try:
+        shown = change(f)
+        with open(log, "a") as fx:
+            fx.write("%s: board facts before %s; after %s; trigger %s\n" % (name, f, board_facts(ctx), shown))
+        if not shown:
+            RC.report(name, "VOID", "the change did not show: %s" % (board_facts(ctx),), ctx.log)
+        else:
+            two(ctx, name, ctx.p1, log, {"release": 1, "bench": 1}, names=["managed_components/vtrux__wican_v3:"])
+    finally:
+        undo(f)
+        with open(log, "a") as fx:
+            fx.write("%s: board facts restored %s\n" % (name, board_facts(ctx)))
+
+
+def c_git_lock_commit(ctx, log):
+    lp = os.path.join(ctx.p1, "dependencies.lock")
+
+    def change(f):
+        other = RC.git(ctx.p1, "rev-parse", f[1] + "^")
+        text = open(lp, newline="").read()
+        if text.count("version: %s" % f[3]) != 1:
+            return False
+        with open(lp, "w", newline="") as fh:
+            fh.write(text.replace("version: %s" % f[3], "version: %s" % other))
+        g = board_facts(ctx)
+        return g[3] == other and g[1] != other
+    git_case(ctx, log, "git_lock_commit", change, lambda f: RC.git(ctx.p1, "checkout", "-q", "--", "dependencies.lock"))
+
+
+def c_git_tag_absent(ctx, log):
+    def change(f):
+        RC.git(ctx.p1, "tag", "-d", f[0])
+        return RC.ref(ctx.p1, "refs/tags/" + f[0]) == ""
+    git_case(ctx, log, "git_tag_absent", change, lambda f: RC.git(ctx.p1, "update-ref", "refs/tags/" + f[0], f[2]))
+
+
+def c_git_tag_branch(ctx, log):
+    def change(f):
+        RC.git(ctx.p1, "tag", "-d", f[0])
+        RC.git(ctx.p1, "branch", f[0], f[1])
+        return RC.ref(ctx.p1, "refs/tags/" + f[0]) == "" and RC.ref(ctx.p1, "refs/heads/" + f[0]) == f[1]
+
+    def undo(f):
+        RC.run(["git", "-C", ctx.p1, "branch", "-q", "-D", f[0]])
+        RC.git(ctx.p1, "update-ref", "refs/tags/" + f[0], f[2])
+    git_case(ctx, log, "git_tag_branch", change, undo)
+
+
+def c_git_own_version(ctx, log):
+    p = os.path.join(ctx.p1, "managed_components", "vtrux__wican_v3", "idf_component.yml")
+    keep = {}
+
+    def change(f):
+        keep["raw"] = open(p, "rb").read() if os.path.exists(p) else None
+        with open(p, "wb") as fh:
+            fh.write(b'version: "%s"\n' % f[0].encode() + (keep["raw"] or b""))
+        return True
+
+    def undo(f):
+        if keep.get("raw") is None:
+            if os.path.exists(p):
+                os.remove(p)
+        else:
+            with open(p, "wb") as fh:
+                fh.write(keep["raw"])
+    git_case(ctx, log, "git_own_version", change, undo)
 
 
 def c_outside_header(ctx, log):
@@ -228,7 +418,9 @@ def c_other_override(ctx, log):
 
 
 CASES = [("clean_release", c_clean_release), ("version_edited", c_version_edited),
-         ("managed_unlisted", c_managed_unlisted), ("outside_header", c_outside_header),
+         ("managed_unlisted", c_managed_unlisted), ("git_lock_commit", c_git_lock_commit),
+         ("git_tag_absent", c_git_tag_absent), ("git_tag_branch", c_git_tag_branch),
+         ("git_own_version", c_git_own_version), ("outside_header", c_outside_header),
          ("shared_override", c_shared_override), ("other_override", c_other_override)]
 
 

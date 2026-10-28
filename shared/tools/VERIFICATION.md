@@ -575,8 +575,8 @@ and two plumbing faults of the cases were fixed in `0579b8e`.
 | Req | Result | What was tested |
 |---|---|---|
 | R21 on a real release build, the board from its component | PASS | The cases above. |
-| R29 | **unit tests only** | Not yet on a real build. Its reading of an option missing from the bootloader's folder, and of a required Kconfig choice, is open with the gen-inhibit reviewer (2026-10-27). Real-build cases come with the first build that takes `wican_v3` (gen-inhibit step 1a). |
-| R30 | **unit tests only** | Not yet on a real build: that needs a project compiling `board_pins.h` from the component (gen-inhibit step 1a). |
+| R29 | **unit tests only** | Not yet on a real build. Its reading of an option missing from the bootloader's folder, and of a required Kconfig choice, is open with the gen-inhibit reviewer (2026-10-27). Real-build cases come with the first build that takes `wican_v3` (gen-inhibit step 1a). Real builds: the entry of 2026-10-28 below. |
+| R30 | **unit tests only** | Not yet on a real build: that needs a project compiling `board_pins.h` from the component (gen-inhibit step 1a). Real builds: the entry of 2026-10-28 below. |
 
 ## R18 and R29 by folder, R29's choices, R17's git components (gen-inhibit step 1a, 2026-10-27)
 
@@ -625,6 +625,87 @@ absent from the bootloader's folder. The profile is the check's input, not gen-i
 
 | Req | Result | What was tested |
 |---|---|---|
-| R18, by folder | **unit tests only** | Not yet on a real build; `options_cases.py` runs again with C's builds (gen-inhibit step 1a). |
-| R29, by folder and choices | **unit tests only** | As the entry above: real-build cases come with the first build that takes `wican_v3`. `499c31b`'s judging was also run on a real build's options (above), which is not a release build of the board. |
-| R17, git components | **unit tests only** | No build takes a component from git yet; real-build cases come with C's builds. |
+| R18, by folder | **unit tests only** | Not yet on a real build; `options_cases.py` runs again with C's builds (gen-inhibit step 1a). Real builds: the entry of 2026-10-28 below. |
+| R29, by folder and choices | **unit tests only** | As the entry above: real-build cases come with the first build that takes `wican_v3`. `499c31b`'s judging was also run on a real build's options (above), which is not a release build of the board. Real builds: the entry of 2026-10-28 below. |
+| R17, git components | **unit tests only** | No build takes a component from git yet; real-build cases come with C's builds. Real builds: the entry of 2026-10-28 below. |
+
+## Real builds of gen-inhibit's step 1a C: R17's git clause, R18 and R29 by folder, R30, R21 on the built board (gen-inhibit step 1a, 2026-10-28)
+
+**SPEC:** shared/main `77e114f` (tag `2026.10.27`), R17's git clause and R18 and R29 by folder as
+ruled 2026-10-27 (the entry above), R21 and R30 as in the entry before it. **Check and tooling:**
+`vtrux_checks/` and `vtrux_build/` at `77e114f`, the tag gen-inhibit pins. The cases run from
+`shared/tools/fixture-layout` at `0df0757`, `e839370` and `ccdd525`, which merge `77e114f`
+(`793ebc8`) and change only `verification/`, so the checks and the tooling are the same in all
+three runs. **Builds:** release builds by that tooling of `release_cases.py`'s fixture made from
+gen-inhibit `b6bee3f` (`gen-inhibit/tester/board-1a`: `gen-inhibit/main` `7a91650`, the
+implementor's C, plus the tester's `3487cab`, R20's rows). Its project, `gen-inhibit/firmware/`,
+takes `vtrux/wican_v3` from git at tag `2026.10.27`, whose commit is the lock's (`77e114f`); a
+fresh fixture in each run, with the same code hash `ee41cace...` in all three. The board cases'
+`--board` is `../shared-2026.10.27/shared/boards/wican_v3` (`board.json` sha256 `f0e6d65f...`).
+`options_cases.py`'s profile is the project's own `vtrux_checks.json` at `b6bee3f`. **Cases:**
+`verification/` at the three commits; every `--self-test` passes at each. **Host:** NICKY-XPS,
+IDF v5.4.1 with its Python 3.11.9; no wall-clock test was running (bench check clear before each
+case, "No builds" clear), so the builds were not throttled. **Run files**, each with a
+`SHA256SUMS` hashing every file in it, under
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/runs/`:
+`c1a_realbuild_0df0757_20261028/` (`cb3ea1c0...3f49`; release, scope, options, board, pins),
+`c1a_realbuild_e839370_20261028/` (`343a398c...69f4`; release and scope) and
+`c1a_realbuild_ccdd525_20261028/` (`f531f3c0...63e3`; release, the esp32s3 board cases, pins
+`release_pass`, and R17 on the tester's own bench build of `b6bee3f`).
+
+**Harness faults found by the first run, fixed in `e839370`,** each with a self-test that fails
+on the old code. A child process's output, CRLF on Windows, was matched line by line as LF, so
+pins `release_pass` read `PASS R30` as missing; the mutant restoring the old reading is caught.
+The esp32s3 minimal project had no board in its lock, which a release build now refuses (R21), so
+its three cases were VOID; it now takes `vtrux/s3fx` from git at a tag, from a small repository
+beside it. The R17 git cases were judged PASS although the clean build they change already fails
+naming the same folder; they are now VOID unless `clean_release` passes. The `e839370` run's
+board and pins cases are not evidence: a README commit (`ccdd525`) mid-run moved the tooling
+under test, and they refused to start. They were run again at `ccdd525`.
+
+**Observed vs spec (R17):**
+- **F1.** A clean release build of the fixture, and the tester's bench build of `b6bee3f`, read
+  two files from outside the project root, IDF and `managed_components/`: the repository's
+  `.git/HEAD` and the checked-out branch's ref (in a linked worktree, the anchor clone's
+  `.git/worktrees/<worktree>/HEAD` and `.git/refs/heads/<branch>`). The check fails both builds,
+  `--release` and `--bench`, naming them. R17: every file the build read comes from the project
+  root, IDF or `managed_components/`. Seen where the repository's `.git` is outside the project
+  root (gen-inhibit's project is `gen-inhibit/firmware/` since port step 0d); not on the esp32s3
+  minimal project, whose `.git` is in its project root.
+- **F2.** The check reports `managed_components/vtrux__wican_v3: taken from git, and no
+  idf_component.yml of the project pins vtrux/wican_v3 at a tag`, its summary `pinned nowhere`, on
+  the fixture's release build and on the tester's bench build of `b6bee3f`; likewise for
+  `vtrux/s3fx` on the esp32s3 build. In each, the project's `main/idf_component.yml` names the
+  component with `git`, `path: shared/boards/<board>` and `version` the tag; the tag resolves
+  under `refs/tags/` from the project root to the lock's commit; the downloaded component's
+  manifest has no `version` (`realtree_pin_b6bee3f.txt`). R17: the lock's commit is the one the
+  tag the project pins names, and the component's manifest has no `version`. The same builds'
+  release tooling reports the component pinned (R16).
+
+| Case | Run | Result | What was tested |
+|---|---|---|---|
+| `release_cases` `pre_unset_ri`, `a_release` | all three | PASS | The fixture's release build: refused with `REVERSE_IT_DIR` unset; built and recorded. |
+| scope `clean_release` | `0df0757`, `e839370` | **FAIL** | The fixture's clean release build, `--release` and `--bench`: exit 1, F1 and F2. On the tester's bench build of `b6bee3f`, the same, both ways (`realtree_scope_b6bee3f.txt`). |
+| scope `version_edited`, `managed_unlisted` | `0df0757`, `e839370` | PASS | Exit 1 both ways, naming `espressif__mdns` and the planted component. |
+| scope `outside_header`, `other_override` | `0df0757`, `e839370` | PASS | Exit 1 both ways, naming the planted file. |
+| scope `shared_override` | `0df0757`, `e839370` | PASS `--release`; FAIL `--bench` | `--release` exit 1 naming the override's three files; `--bench` exit 1 on F1 and F2 alone, the override not named, as R17 allows a bench build. |
+| scope `git_lock_commit`, `git_tag_absent`, `git_tag_branch`, `git_own_version` | `e839370` | VOID | `clean_release` did not pass. At `0df0757` they were judged PASS, which does not count (above). |
+| options `release_pass` | `0df0757` | PASS | R18 by folder, R26, R27 and R29 pass; R28 fails on the three log levels in both folders, gen-inhibit's own known anomaly 5, as the case expects; nothing else. |
+| options `bootloader_missing`, `repro_off`, `rollback_off`, `wdt_panic_on`, `free_option`, `r26_efuse_virtual`, `r27_no_tick`, `r28_levels_none`, `r28_define` | `0df0757` | PASS | Each as in the R18 and R26-R28 entries above, on the built board. |
+| options `r29_unnamed_choice`, `r29_unnamed_option`, `r29_two_on` | `0df0757` | PASS | Judged against the profile without the secondary console, without `CONFIG_BT_ENABLED`, and with `CONFIG_ESP_CONSOLE_UART_DEFAULT` also true: R29 fails on that required setting (and R18 on the console option for the last, in both folders). |
+| options `r29_fixed_off` | `0df0757` | PASS | `CONFIG_TWAI_ERRATA_FIX_LISTEN_ONLY_DOM` off, which the board's `sdkconfig.board` fixes on: R29 fails on it in `build` only. |
+| board `release_pass` to `flash_larger` (9 cases) | `0df0757` | PASS | As in the R21 entry above, on the board the build downloaded. |
+| board `s3_pass` | `ccdd525` | PASS | The minimal project on esp32s3, its board `vtrux/s3fx` from git: exit 0, prefix `xtensa-esp32s3-elf-`. |
+| board `s3_pass`, R17 scope | `ccdd525` | **FAIL** | `scope --release` on that build: exit 1, F2 alone. |
+| board `s3_board_c3`, `s3_elf_reader` | `ccdd525` | PASS | The board's target `esp32c3`: exit 1, naming the target; R20's ELF reader against `xtensa-esp32s3-elf-nm`. |
+| pins `release_pass` | `ccdd525` | PASS | Exit 0, `PASS R30`, nothing named. At `0df0757` it failed on the harness's CRLF fault (above). |
+| pins `unlisted`, `listed_absent`, `listed_twice`, `no_list`, `new_reader` | `0df0757` | PASS | Exit 1 naming `main/main.c`; cannot read, three ways; naming `main/can.c` and not `main/main.c`. |
+
+| Req | Result | What was tested |
+|---|---|---|
+| R17 on a real release build | **FAIL** | F1 and F2, on the fixture and on gen-inhibit's own bench build. The planted cases are each named, both ways. |
+| R17, git components | **FAIL** | F2. The planted git cases are VOID until a clean build passes. |
+| R18, by folder | PASS | On real release builds that take `wican_v3`. |
+| R29, by folder and choices | PASS | On real release builds that take `wican_v3`. |
+| R30 | PASS | On real release builds compiling `board_pins.h` from the component. |
+| R21, the board the build downloaded | PASS | Both targets. |

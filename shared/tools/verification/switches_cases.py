@@ -166,6 +166,17 @@ def self_test():
         got = cache_has(args[1], args[0])
         print("  %s cache_has(), %s: %s" % ("ok  " if got == want else "FAIL", label, got))
         ok &= got == want
+    d = RC.I.scratch("switches-cases-selftest-harness")
+    rel = os.path.join("test", "build_checks", "build_output.py")
+    for label, root, proj in (("the tree at the root", "old", "old"),
+                              ("gen-inhibit/firmware beside gen-inhibit/test", "gi", os.path.join("gi", "firmware"))):
+        h = os.path.join(d, root, rel)
+        os.makedirs(os.path.dirname(h))
+        open(h, "w").close()
+        got = harness(os.path.join(d, proj))
+        good = os.path.normcase(os.path.normpath(got)) == os.path.normcase(h)
+        print("  %s harness(), %s: %s" % ("ok  " if good else "FAIL", label, got))
+        ok &= good
     print("\nself-test: %s" % ("every broken input caught" if ok else "FAILED"))
     return 0 if ok else 1
 
@@ -185,13 +196,21 @@ def check(proj, log):
                   cwd=proj, env=RC.idf_env(PYTHONPATH=TOOLS), log=log)
 
 
+def harness(proj):
+    """The project's build_output.py: in its test/ (the WiCAN tree at the root, as at d2e0bb5), or
+    beside its firmware/ folder in gen-inhibit/test/ (port step 0d on)."""
+    rel = os.path.join("test", "build_checks", "build_output.py")
+    old = os.path.join(proj, rel)
+    return old if os.path.exists(old) else os.path.join(os.path.dirname(os.path.abspath(proj)), rel)
+
+
 def project_rows(proj, log):
     """The project's harness on the build's image: writes build/vtrux_project_rows.json. Returns
     the rows, or None."""
     bd = os.path.join(proj, "build")
     pd = json.load(open(os.path.join(bd, "project_description.json")))
-    RC.run([sys.executable, "-B", os.path.join(proj, "test", "build_checks", "build_output.py"),
-            "--bin", os.path.join(bd, pd["app_bin"])], cwd=proj, env=RC.idf_env(), log=log)
+    RC.run([sys.executable, "-B", harness(proj), "--bin", os.path.join(bd, pd["app_bin"])],
+           cwd=proj, env=RC.idf_env(), log=log)
     p = os.path.join(bd, "vtrux_project_rows.json")
     return json.load(open(p)) if os.path.exists(p) else None
 
