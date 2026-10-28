@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))
@@ -44,9 +45,15 @@ def facts(**kw):
                    j(TOOL, "riscv32-esp-elf", "include", "stdio.h"), j(CMR, "Modules", "CMakeDetermineSystem.cmake")],
          "lock": {"espressif/mdns": {"version": "1.4.0", "source": {"type": "service"}},
                   "idf": {"version": "5.4.1", "source": {"type": "idf"}}},
-         "managed": {"espressif__mdns": "1.4.0"}, "pins": {}, "tags": {}, "folders": [j(PROJ, "build")]}
+         "managed": {"espressif__mdns": "1.4.0"}, "pins": {}, "tags": {}, "folders": [j(PROJ, "build")],
+         "git_record": RECORD}
     f.update(kw)
     return f
+
+
+GITD = j(ROOT, "w", "anchor", ".git")      # the clone's git folder; PROJ is a linked worktree of it
+RECORD = [j(GITD, "worktrees", "proj", "HEAD"), j(GITD, "refs", "heads", "topic"),
+          j(GITD, "logs", "refs", "heads", "topic")]
 
 
 SHA = "0123456789abcdef0123456789abcdef01234567"
@@ -123,6 +130,21 @@ class Judge(unittest.TestCase):
         got = S.judge(git_facts(managed={"espressif__mdns": "1.4.1", "vtrux__b": None}), "release")
         self.assertEqual(got, [("version", "managed_components/espressif__mdns: version 1.4.1, dependencies.lock 1.4.0")])
 
+    def test_git_record_read_passes_both_kinds(self):
+        f = facts(files=facts()["files"] + RECORD)
+        self.assertEqual(S.judge(f, "release"), [])
+        self.assertEqual(S.judge(f, "bench"), [])
+
+    def test_git_folder_otherwise_fails_both_kinds(self):
+        other = j(ROOT, "w", "other", ".git")
+        for p in (j(GITD, "packed-refs"), j(GITD, "refs", "heads", "other"), j(GITD, "logs", "HEAD"),
+                  j(GITD, "worktrees", "proj", "logs", "HEAD"), j(GITD, "worktrees", "proj", "index"),
+                  j(GITD, "refs", "tags", TAG), j(GITD, "config"), j(GITD, "HEAD"),   # the clone's own HEAD
+                  j(other, "HEAD"), j(other, "refs", "heads", "topic")):              # another repository's
+            f = facts(files=facts()["files"] + RECORD + [p])
+            for kind in ("release", "bench"):
+                self.assertEqual(S.judge(f, kind), [("outside", p)], (p, kind))
+
     def test_empty_records_fail(self):
         for kw in ({"files": []}, {"toolchains": {}}, {"cmake_roots": []}):
             self.assertIn("records", rules(S.judge(facts(**kw), "bench")), kw)
@@ -187,6 +209,42 @@ class Readers(unittest.TestCase):
         self.write("proj/main/idf_component.yml", "dependencies:\n  vtrux/b: {version: x}\n")
         with self.assertRaises(S.ScopeError):
             S.git_pins(proj, comps, lock)
+
+    def test_git_record(self):
+        def git(*a):
+            subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t"] + list(a), check=True,
+                           capture_output=True)
+
+        def rec(*parts):
+            return sorted(S.norm(os.path.join(self.d, *p.split("/"))) for p in parts)
+
+        for r in ("repo", "other"):
+            git("init", "-q", os.path.join(self.d, r))
+            git("-C", os.path.join(self.d, r), "commit", "-q", "--allow-empty", "-m", "x")
+            git("-C", os.path.join(self.d, r), "checkout", "-q", "-b", "br")
+        os.makedirs(os.path.join(self.d, "repo", "sub", "proj"))
+        git("-C", os.path.join(self.d, "repo"), "worktree", "add", "-q", "-b", "wtb", os.path.join(self.d, "wt"))
+        git("-C", os.path.join(self.d, "repo"), "worktree", "add", "-q", "--detach", os.path.join(self.d, "wtd"))
+        main = rec("repo/.git/HEAD", "repo/.git/refs/heads/br", "repo/.git/logs/refs/heads/br")
+        self.assertEqual(S.git_record(os.path.join(self.d, "repo")), main)
+        self.assertEqual(S.git_record(os.path.join(self.d, "repo", "sub", "proj")), main)     # project in a subfolder
+        linked = rec("repo/.git/worktrees/wt/HEAD", "repo/.git/refs/heads/wtb", "repo/.git/logs/refs/heads/wtb")
+        self.assertEqual(S.git_record(os.path.join(self.d, "wt")), linked)
+        self.assertEqual(S.git_record(os.path.join(self.d, "wtd")), rec("repo/.git/worktrees/wtd/HEAD"))
+        os.makedirs(os.path.join(self.d, "nogit"))
+        with mock.patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": self.d}):   # scratch/ is in a worktree
+            self.assertEqual(S.git_record(os.path.join(self.d, "nogit")), [])
+        # Judged: the linked worktree's record passes both ways; another file in the git folders, or
+        # the same two files in another repository's git folder, still fail both ways.
+        base = facts(git_record=S.git_record(os.path.join(self.d, "wt")))
+        base["files"] = base["files"] + linked
+        for kind in ("release", "bench"):
+            self.assertEqual(S.judge(base, kind), [], kind)
+        for p in rec("repo/.git/packed-refs", "repo/.git/refs/heads/br", "repo/.git/HEAD",
+                     "other/.git/HEAD", "other/.git/refs/heads/wtb"):
+            f = dict(base, files=base["files"] + [p])
+            for kind in ("release", "bench"):
+                self.assertEqual(S.judge(f, kind), [("outside", p)], (p, kind))
 
     def test_collect_pins_beside_bootloader_main(self):
         """The project's main/ pins the board, and the bootloader's build folder has a main of its
