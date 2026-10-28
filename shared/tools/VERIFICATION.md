@@ -577,3 +577,39 @@ and two plumbing faults of the cases were fixed in `0579b8e`.
 | R21 on a real release build, the board from its component | PASS | The cases above. |
 | R29 | **unit tests only** | Not yet on a real build. Its reading of an option missing from the bootloader's folder, and of a required Kconfig choice, is open with the gen-inhibit reviewer (2026-10-27). Real-build cases come with the first build that takes `wican_v3` (gen-inhibit step 1a). |
 | R30 | **unit tests only** | Not yet on a real build: that needs a project compiling `board_pins.h` from the component (gen-inhibit step 1a). |
+
+## R18 and R29 by folder, R29's choices, R17's git components (gen-inhibit step 1a, 2026-10-27)
+
+**SPEC:** `shared/boards/spec-folders` `6a00663` (user, 2026-10-27, in the gen-inhibit
+reviewer's session): R18 and R29 judged folder by folder (an option set to a value is in the
+app's build folder with it, and has it in any other folder that has the option at all; "unset"
+is absent or off); R29's required choices (named by exactly one member on, and in each folder
+that has the choice exactly one listed member on); R17's clause for a component taken from git
+(the lock's commit is the one the pinned tag names, and the component's manifest has no
+`version`). **Check:** `vtrux_checks/` on `shared/tools/board-checks` at `0bbe9ff`, written
+from SPEC. `options.py`'s `judge()` takes the app's folder for R18 and for R29's fixed options;
+R26 and R28 still judge every folder, absent included. `scope.py` reads the tag a git component
+is pinned at from the `idf_component.yml` of the project's own components (those the build used
+from the project root, not from `managed_components/`), which must name one and agree, resolves
+it under `refs/tags/` from the project root (a branch or a commit is not a tag), and compares
+its commit with the lock's. R29's choices were already read so at `653ee07`; the entry above
+lists them as open, and they are now ruled. **Unit tests:** `test_options.py` 62 and
+`test_scope.py` 17, each rule shown failing on a planted input and passing on a faithful one,
+the pins read from a small repository with an annotated tag and a branch. Every other unit test
+file of `shared/tools` still passes (424 tests in all), as does `board_cases.py --self-test`.
+51 mutants of `boarddata.py`, R21's lock part, R18's and R29's folders, R29's choices, R17's git
+clause and R30 each fail them. The board reader reads `wican_v3` from `3690cfe` merged with the
+implementor's `3946c5e`. R17 on an existing release build (`board_cases.py`'s `release_pass`
+fixture, which takes nothing from git) passes, with no git component to judge. The `options`
+run there could not read the build's profile, because that fixture carries no
+`vtrux_checks.json`, so it is not evidence. **Host:** NICKY-XPS, Python 3.14, Idle priority,
+run while the interposer's bench suite was paused. **Run files:**
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/runs/checks_0bbe9ff_20261027/`;
+its `SHA256SUMS` (`eed6518f...fc4e501`) hashes the test and mutant outputs, the mutant script,
+and the two check logs.
+
+| Req | Result | What was tested |
+|---|---|---|
+| R18, by folder | **unit tests only** | Not yet on a real build; `options_cases.py` runs again with C's builds (gen-inhibit step 1a). |
+| R29, by folder and choices | **unit tests only** | As the entry above: real-build cases come with the first build that takes `wican_v3`. |
+| R17, git components | **unit tests only** | No build takes a component from git yet; real-build cases come with C's builds. |
