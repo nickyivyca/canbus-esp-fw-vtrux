@@ -26,6 +26,17 @@ Each folder in managed_components/ must be at the version dependencies.lock
 records: its own idf_component.yml's top-level `version` is the lock's
 `version` for that component (the lock's name with "/" as "__").
 
+For a component the lock says was taken from git (source type "git"), the
+lock's `version` is the commit the Component Manager resolved, not a version
+(shared/boards/spec-folders 6a00663, user 2026-10-27): that commit must be
+the one the tag the project pins names, and the component's own
+idf_component.yml has no top-level `version`. The tag pinned is the
+dependency's `version` in the idf_component.yml of the project's own
+components (those the build used from the project root, not from
+managed_components/); they must name one, and agree. It must be a tag in the
+project's repository (refs/tags/, resolved to its commit by git from the
+project root): a branch or a commit named there is not a tag.
+
 A build whose records name no files fails: an empty list proves nothing.
 """
 
@@ -34,7 +45,7 @@ import os
 import re
 import subprocess
 
-from vtrux_build import lockfile
+from vtrux_build import lockfile, manifest
 from vtrux_build.builddir import BuildDir, BuildDirError
 
 _COMPILER = re.compile(r'^set\(CMAKE_([A-Z]+)_COMPILER "([^"]+)"\)', re.M)
@@ -107,6 +118,32 @@ def manifest_version(folder):
     return m.group(1) if m else None
 
 
+def git_pins(project, components, lock):
+    """For each git component in the lock: (pins, tags). pins: {lock name: [(manifest, version)]}
+    from the idf_component.yml of each component in components ({name: folder}) under the
+    project root and not under managed_components/; tags: {version pinned: the commit refs/tags/
+    names, or None}."""
+    proj, mdir = norm(project), norm(os.path.join(project, "managed_components"))
+    names = [n for n, e in sorted((lock or {}).items()) if e.get("source", {}).get("type") == "git"]
+    pins = {n: [] for n in names}
+    for d in sorted(set(norm(x) for x in components.values())):
+        p = os.path.join(d, "idf_component.yml")
+        if not under(d, proj) or under(d, mdir) or not os.path.isfile(p):
+            continue
+        try:
+            deps = manifest.read(p)
+        except manifest.ManifestError as e:
+            raise ScopeError("%s cannot be read: %s" % (p, e))
+        for n in names:
+            if n in deps and "version" in deps[n]:
+                pins[n].append((os.path.relpath(p, proj).replace(os.sep, "/"), deps[n]["version"]))
+    tags = {}
+    for v in sorted(set(v for ps in pins.values() for _, v in ps)):
+        out = _git(project, "rev-parse", "--verify", "--quiet", "refs/tags/%s^{commit}" % v)
+        tags[v] = out.strip() if out and out.strip() else None
+    return pins, tags
+
+
 def collect(build):
     """The facts judge() needs, all from the build's own records."""
     folders = build_folders(build)
@@ -132,9 +169,13 @@ def collect(build):
         for n in sorted(os.listdir(mdir)):
             if os.path.isdir(os.path.join(mdir, n)):
                 managed[n] = manifest_version(os.path.join(mdir, n))
+    components = {}
+    for f in folders:
+        components.update(BuildDir(f).components())
+    pins, tags = git_pins(project, components, lock)
     return {"project": norm(project), "idf": norm(idf), "toolchains": tools, "cmake_roots": sorted(croots),
             "shared": shared_roots(project), "files": sorted(files), "lock": lock, "managed": managed,
-            "folders": folders}
+            "pins": pins, "tags": tags, "folders": folders}
 
 
 def judge(facts, kind):
@@ -158,11 +199,37 @@ def judge(facts, kind):
         entries = [k for k in (lock or {}) if lockfile.managed_dir_name(k) == name]
         if not entries:
             bad.append(("version", "managed_components/%s: no entry in dependencies.lock" % name))
+        elif lock[entries[0]].get("source", {}).get("type") == "git":
+            bad += [("version", "managed_components/%s: %s" % (name, why))
+                    for why in judge_git(entries[0], version, lock[entries[0]], facts["pins"], facts["tags"])]
         elif version is None:
             bad.append(("version", "managed_components/%s: no version in its idf_component.yml" % name))
         elif lock[entries[0]].get("version") != version:
             bad.append(("version", "managed_components/%s: version %s, dependencies.lock %s" % (
                 name, version, lock[entries[0]].get("version"))))
+    return bad
+
+
+def judge_git(name, version, entry, pins, tags):
+    """A git component's version clause: [reason]. version: its own manifest's; entry: its
+    lock entry; pins, tags: git_pins()'s."""
+    bad = []
+    if version is not None:
+        bad.append("taken from git, but its idf_component.yml has a version of its own (%s)" % version)
+    found = pins.get(name, [])
+    pinned = sorted(set(v for _, v in found))
+    if not pinned:
+        bad.append("taken from git, and no idf_component.yml of the project pins %s at a tag" % name)
+        return bad
+    if len(pinned) > 1:
+        bad.append("the project's manifests pin %s at %d versions: %s" % (
+            name, len(pinned), ", ".join("%s %s" % (m, v) for m, v in found)))
+        return bad
+    tag, commit = pinned[0], tags.get(pinned[0])
+    if commit is None:
+        bad.append("%s pins %s at %s, which is not a tag in the project's repository" % (found[0][0], name, tag))
+    elif (entry.get("version") or "").lower() != commit.lower():
+        bad.append("dependencies.lock records commit %s, but tag %s names %s" % (entry.get("version"), tag, commit))
     return bad
 
 
@@ -185,6 +252,10 @@ def main(args):
         print("  shared/       %s  (%s)" % (d, "allowed" if args.kind == "bench" else "not allowed"))
     for name, v in sorted(facts["managed"].items()):
         print("  managed       %s %s" % (name, v))
+    for name, found in sorted(facts["pins"].items()):
+        print("  git           %s, lock commit %s; pinned %s" % (
+            name, facts["lock"][name].get("version"),
+            ", ".join("%s in %s (tag %s)" % (v, m, facts["tags"].get(v) or "none") for m, v in found) or "nowhere"))
     for rule in ("records", "outside", "shared", "version"):
         hits = [d for r, d in bad if r == rule]
         if hits:

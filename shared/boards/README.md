@@ -7,9 +7,9 @@ which a project takes at a pinned tag (port plan goal 5 and Layer 1).
 |---|---|
 | `SPEC.md` | The board layer's spec: the common rules (B1 to B7) and one section per board. |
 | `VALIDATION.md` | Why each requirement is written as it is. |
+| `wican_v3/` | The MeatPi WiCAN OBD, hardware v3 (SPEC section 2), from gen-inhibit's port step 1a. See `wican_v3/README.md`. |
 
-No board component has code yet. `wican_v3/` comes at gen-inhibit's port
-step 1a, and `x2/` at the charge interposer's step 2a. Each board's own
+`x2/` comes at the charge interposer's step 2a. Each board's own
 `README.md` records who owns each of its files (SPEC B7). `VERIFICATION.md`
 is the tester's, written when there is code to test.
 

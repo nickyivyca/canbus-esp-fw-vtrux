@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 """R21 board-data check (vtrux_checks board) on real release builds, shown passing and failing.
 
-    python -B board_cases.py --root <short folder in scratch/> --out <run folder> --data <vtrux_checks.json>
+    python -B board_cases.py --root <short folder in scratch/> --out <run folder> --board <board folder>
                              [--cases a,b] [--jobs N] [--fixture <repo>]
     python -B board_cases.py --self-test
 
 Run from an exported ESP-IDF shell, with its Python, like release_cases.py, whose fixture (a
 clone of gen-inhibit with fixture commits, under --root), minimal project and plumbing it
-reuses. --data is gen-inhibit's vtrux_checks.json, holding the WiCAN's board data; it is
-copied into the project root after the build (a case may change its "board" object), so the
-release build sees a clean tree.
+reuses. --board is a board component's folder, shared/boards/wican_v3 at the commit under test,
+holding board.json and the reference table. The board is the project's one shared/boards/*
+component in dependencies.lock, read from managed_components/ (SPEC R21, shared/main 2f72a20).
+No board component is built yet, so after each release build the case plants one: the folder
+copied to managed_components/vtrux__wican_v3/ (a case may change its board.json or add a file),
+and a git entry for it, path shared/boards/wican_v3, added to the project's dependencies.lock.
+The release build sees a clean tree; the planted folder is removed and the lock restored before
+the next build and at the end.
 
 What each case expects is worked out here, not by the check's reader: the table by comparing
 build/partition_table/partition-table.bin with the reference file byte for byte; the slot by
@@ -27,8 +32,10 @@ there is VOID.
                        byte smaller than the image (MD5 entry redone): fails on the slot, and
                        on the table, which then differs
     missing_reference  the same build, the reference path naming no file: cannot read
-    named_board        the same build, "board" naming a board by name: cannot read (the
-                       named form is not built yet)
+    no_board           the same build, no shared/boards/* entry in the lock: cannot read
+    two_boards         the same build, a second shared/boards/* git entry: cannot read
+    local_board        the same build, the board's entry a local folder (override_path):
+                       cannot read, since it is not downloaded into managed_components/
     table_differs      a release build of a commit making storage 296K in the partition CSV:
                        fails on the table
     flash_larger       a release build of a commit setting the committed sdkconfig's flash size
@@ -62,7 +69,6 @@ sys.path.insert(0, HERE)
 import release_cases as RC  # noqa: E402
 
 TOOLS = RC.TOOLS
-STOCK = "test/build_checks/reference/stock-v4.13-partition-table.bin"
 CSV_OLD = "storage,  data, spiffs, ,        300K,"
 CSV_NEW = "storage,  data, spiffs, ,        296K,"
 _TARGET = re.compile(r'^#define CONFIG_IDF_TARGET "([^"]+)"$', re.M)
@@ -245,6 +251,21 @@ def self_test():
         v = judge_elf_reader(*args)[0]
         print("  %s judge_elf_reader(), %s: %s" % ("ok  " if v == want else "FAIL", label, v))
         ok &= v == want
+    # the planted lock entry, read by the lock reader the checks use: the old entries kept
+    from vtrux_build import lockfile
+    from vtrux_checks import boarddata
+    old = ("dependencies:\r\n  espressif/mdns:\r\n    component_hash: ab\r\n    source:\r\n"
+           "      registry_url: https://example.invalid/\r\n      type: service\r\n    version: 1.0.0\r\n"
+           "  idf:\r\n    source:\r\n      type: idf\r\n    version: 5.4.1\r\ndirect_dependencies:\r\n- idf\r\n")
+    for label, entries, want in (("one git board", {BOARD: GIT_SOURCE}, [BOARD]),
+                                 ("none", {}, []),
+                                 ("local", {BOARD: {"type": "local", "path": "../s/shared/boards/wican_v3"}}, [BOARD])):
+        got = lockfile.parse(lock_with(old, entries))
+        boards = sorted(n for n, e in got.items() if boarddata.is_board(e))
+        good = boards == want and got.get("espressif/mdns", {}).get("version") == "1.0.0" and "idf" in got \
+            and all(got[n]["source"] == entries[n] for n in entries)
+        print("  %s lock_with(), %s: boards %s, %d entries" % ("ok  " if good else "FAIL", label, boards, len(got)))
+        ok &= good
     print("\nself-test: %s" % ("every broken input caught" if ok else "FAILED"))
     return 0 if ok else 1
 
@@ -262,14 +283,52 @@ def read(p, mode="rb"):
         return f.read()
 
 
-def write_data(ctx, proj, board):
-    """vtrux_checks.json in the project root: --data's, with "board" replaced when board is given."""
-    d = json.loads(read(ctx.data, "r"))
-    if board is not None:
-        d["board"] = board
-    with open(os.path.join(proj, "vtrux_checks.json"), "w", newline="\n") as f:
-        json.dump(d, f, indent=2)
-    return d["board"]
+BOARD = "vtrux/wican_v3"
+GIT_SOURCE = {"type": "git", "git": "https://example.invalid/vtrux.git", "path": "shared/boards/wican_v3"}
+
+
+def lock_with(text, entries):
+    """dependencies.lock's text with entries {name: source} added first under dependencies:, as
+    the Component Manager writes a downloaded component's entry."""
+    lines = text.replace("\r\n", "\n").split("\n")
+    i = lines.index("dependencies:")
+    add = []
+    for name, src in entries.items():
+        add += ["  %s:" % name, "    component_hash: %s" % ("0" * 64), "    source:"]
+        add += ["      %s: %s" % kv for kv in sorted(src.items())] + ["    version: 2026.10.27"]
+    return "\n".join(lines[:i + 1] + add + lines[i + 1:])
+
+
+def board_dir(proj):
+    return os.path.join(proj, "managed_components", BOARD.replace("/", "__", 1))
+
+
+def unplant(proj):
+    """The planted board removed and dependencies.lock as committed (when git tracks one)."""
+    RC.rmtree(board_dir(proj))
+    if RC.run(["git", "-C", proj, "ls-files", "--error-unmatch", "dependencies.lock"])[0] == 0:
+        RC.git(proj, "checkout", "-q", "--", "dependencies.lock")
+
+
+def plant(ctx, proj, edit=None, extra=None, entries=None):
+    """--board copied to managed_components/vtrux__wican_v3/, its board.json updated with edit,
+    extra {file: bytes} written beside it, and the lock given entries (default: the board's git
+    entry). The board's data as planted, the reference table's path absolute."""
+    unplant(proj)
+    d = board_dir(proj)
+    shutil.copytree(ctx.board, d)
+    data = json.loads(read(os.path.join(d, "board.json"), "r"))
+    data.update(edit or {})
+    with open(os.path.join(d, "board.json"), "w", newline="\n") as f:
+        json.dump(data, f, indent=2)
+    for name, b in (extra or {}).items():
+        with open(os.path.join(d, name), "wb") as f:
+            f.write(b)
+    lp = os.path.join(proj, "dependencies.lock")
+    text = lock_with(read(lp, "r"), entries if entries is not None else {BOARD: GIT_SOURCE})
+    with open(lp, "w", newline="\n") as f:
+        f.write(text)
+    return dict(data, partition_table=os.path.join(d, data["partition_table"]))
 
 
 def facts(proj, board):
@@ -277,7 +336,7 @@ def facts(proj, board):
     b = os.path.join(proj, "build")
     desc = json.loads(read(os.path.join(b, "project_description.json"), "r"))
     built = read(os.path.join(b, "partition_table", "partition-table.bin"))
-    ref_p = os.path.join(proj, board["partition_table"])
+    ref_p = board["partition_table"]
     ref = read(ref_p) if os.path.exists(ref_p) else b""
     image = os.path.getsize(os.path.join(b, desc["app_bin"]))
     sdk = read(os.path.join(b, "config", "sdkconfig.h"), "r")
@@ -300,9 +359,10 @@ def facts(proj, board):
             (built, ref, image, sizes, target, fields, sdk_flash))
 
 
-def judge_case(ctx, name, proj, log, board, trigger):
-    """board: the "board" object to write (None: --data's own); trigger(want, raw) must hold, else VOID."""
-    board = write_data(ctx, proj, board)
+def judge_case(ctx, name, proj, log, edit, trigger, extra=None):
+    """edit: board.json's changes for this case (None: --board's own); trigger(want, raw) must hold,
+    else VOID."""
+    board = plant(ctx, proj, edit, extra)
     want, prefix, note, raw = facts(proj, board)
     with open(log, "a") as f:
         f.write("%s: %s; expected %s\n" % (name, note, want))
@@ -315,6 +375,7 @@ def judge_case(ctx, name, proj, log, board, trigger):
 
 def fixture_built(ctx, name, log, change=None):
     """A release build of the fixture; change: (file, old lines, new lines, message) committed first."""
+    unplant(ctx.p1)
     RC.reset(ctx.p1, "fixture")
     if change:
         rel, old, new, msg = change
@@ -348,9 +409,6 @@ def need(ctx, name, flag, first):
 
 # ---------- cases ----------
 
-WICAN = {"target": "esp32c3", "partition_table": STOCK, "flash_size": "4MB"}
-
-
 def c_release_pass(ctx, log):
     if fixture_built(ctx, "release_pass", log):
         ctx.pass_built = True
@@ -359,7 +417,7 @@ def c_release_pass(ctx, log):
 
 def c_other_target(ctx, log):
     if need(ctx, "other_target", "pass_built", "release_pass"):
-        judge_case(ctx, "other_target", ctx.p1, log, dict(WICAN, target="esp32s3"),
+        judge_case(ctx, "other_target", ctx.p1, log, {"target": "esp32s3"},
                    lambda w, r: w == ["target"])
 
 
@@ -369,27 +427,43 @@ def c_small_slot(ctx, log):
     b = os.path.join(ctx.p1, "build")
     desc = json.loads(read(os.path.join(b, "project_description.json"), "r"))
     image = os.path.getsize(os.path.join(b, desc["app_bin"]))
-    rel = "build/r21_small_slot.bin"        # build/ is ignored, so the tree stays clean
-    with open(os.path.join(ctx.p1, rel), "wb") as f:
-        f.write(shrink_ota0(read(os.path.join(ctx.p1, STOCK)), image - 1))
-    judge_case(ctx, "small_slot", ctx.p1, log, dict(WICAN, partition_table=rel),
-               lambda w, r: w == ["table", "slot"] and min(r[3]) == image - 1)
+    ref = json.loads(read(os.path.join(ctx.board, "board.json"), "r"))["partition_table"]
+    small = shrink_ota0(read(os.path.join(ctx.board, ref)), image - 1)
+    judge_case(ctx, "small_slot", ctx.p1, log, {"partition_table": "r21_small_slot.bin"},
+               lambda w, r: w == ["table", "slot"] and min(r[3]) == image - 1, {"r21_small_slot.bin": small})
 
 
 def c_missing_reference(ctx, log):
     if not need(ctx, "missing_reference", "pass_built", "release_pass"):
         return
-    write_data(ctx, ctx.p1, dict(WICAN, partition_table="test/build_checks/reference/r21-none.bin"))
+    plant(ctx, ctx.p1, {"partition_table": "r21-none.bin"})
     rc, out = check(ctx.p1, log)
     RC.report("missing_reference", *judge_unreadable(rc, out, "reference partition table cannot be read"), ctx.log)
 
 
-def c_named_board(ctx, log):
-    if not need(ctx, "named_board", "pass_built", "release_pass"):
+def lock_case(ctx, log, name, entries, mark):
+    """The faithful board planted, the lock given entries instead of its one git entry."""
+    if not need(ctx, name, "pass_built", "release_pass"):
         return
-    write_data(ctx, ctx.p1, "wican")
+    plant(ctx, ctx.p1, entries=entries)
+    with open(log, "a") as f:
+        f.write("%s: lock entries %s\n" % (name, json.dumps(entries, sort_keys=True)))
     rc, out = check(ctx.p1, log)
-    RC.report("named_board", *judge_unreadable(rc, out, "not built yet"), ctx.log)
+    RC.report(name, *judge_unreadable(rc, out, mark), ctx.log)
+
+
+def c_no_board(ctx, log):
+    lock_case(ctx, log, "no_board", {}, "0 shared/boards/* components")
+
+
+def c_two_boards(ctx, log):
+    lock_case(ctx, log, "two_boards", {BOARD: GIT_SOURCE, "vtrux/x2": dict(GIT_SOURCE, path="shared/boards/x2")},
+              "2 shared/boards/* components")
+
+
+def c_local_board(ctx, log):
+    lock_case(ctx, log, "local_board", {BOARD: {"type": "local", "path": "../shared-x/shared/boards/wican_v3"}},
+              "comes from a local folder")
 
 
 def c_table_differs(ctx, log):
@@ -428,6 +502,7 @@ def s3_mini(ctx, log):
 
 def c_s3_pass(ctx, log):
     s3_mini(ctx, log)
+    unplant(ctx.mini)
     RC.rmtree(os.path.join(ctx.mini, "build"))
     rc, _ = RC.release(ctx, ctx.mini, log, jobs=ctx.jobs)
     if rc:
@@ -435,8 +510,10 @@ def c_s3_pass(ctx, log):
         return
     ctx.s3_built = True
     fs = _FLASHSIZE.findall(read(os.path.join(ctx.mini, "build", "config", "sdkconfig.h"), "r"))
-    ctx.s3_board = {"target": "esp32s3", "partition_table": "ref/pt-s3.bin", "flash_size": fs[0] if len(fs) == 1 else None}
-    judge_case(ctx, "s3_pass", ctx.mini, log, ctx.s3_board, lambda w, r: w == [] and r[4] == "esp32s3")
+    ctx.s3_board = {"target": "esp32s3", "partition_table": "pt-s3.bin", "flash_size": fs[0] if len(fs) == 1 else None}
+    ctx.s3_ref = {"pt-s3.bin": read(os.path.join(ctx.mini, "ref", "pt-s3.bin"))}
+    judge_case(ctx, "s3_pass", ctx.mini, log, ctx.s3_board, lambda w, r: w == [] and r[4] == "esp32s3", ctx.s3_ref)
+    unplant(ctx.mini)           # R17 judges the build as built; the planted board was not built
     rc, out = check(ctx.mini, log, "scope", "--release")
     RC.report("s3_pass (R17 scope)", "PASS" if rc == 0 and "PASS R17" in out else "FAIL",
               "scope --release on the esp32s3 build: exit %d" % rc, ctx.log)
@@ -445,7 +522,7 @@ def c_s3_pass(ctx, log):
 def c_s3_board_c3(ctx, log):
     if need(ctx, "s3_board_c3", "s3_built", "s3_pass"):
         judge_case(ctx, "s3_board_c3", ctx.mini, log, dict(ctx.s3_board, target="esp32c3"),
-                   lambda w, r: w == ["target"])
+                   lambda w, r: w == ["target"], ctx.s3_ref)
 
 
 def c_s3_elf_reader(ctx, log):
@@ -463,7 +540,8 @@ def c_s3_elf_reader(ctx, log):
 
 
 CASES = [("release_pass", c_release_pass), ("other_target", c_other_target), ("small_slot", c_small_slot),
-         ("missing_reference", c_missing_reference), ("named_board", c_named_board),
+         ("missing_reference", c_missing_reference), ("no_board", c_no_board), ("two_boards", c_two_boards),
+         ("local_board", c_local_board),
          ("table_differs", c_table_differs), ("flash_larger", c_flash_larger), ("s3_pass", c_s3_pass),
          ("s3_board_c3", c_s3_board_c3), ("s3_elf_reader", c_s3_elf_reader)]
 
@@ -474,7 +552,7 @@ def main(argv):
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("--root")
     ap.add_argument("--out")
-    ap.add_argument("--data", help="gen-inhibit's vtrux_checks.json, with the WiCAN's board data")
+    ap.add_argument("--board", help="the board component's folder: shared/boards/wican_v3 at the commit under test")
     ap.add_argument("--base", default="gen-inhibit/main")
     ap.add_argument("--fixture")
     ap.add_argument("--cases")
@@ -482,10 +560,10 @@ def main(argv):
     a = ap.parse_args(argv)
     if a.self_test:
         return self_test()
-    if not (a.root and a.out and a.data) or "IDF_PATH" not in os.environ:
-        ap.error("--root, --out and --data, from an exported ESP-IDF shell")
+    if not (a.root and a.out and a.board) or "IDF_PATH" not in os.environ:
+        ap.error("--root, --out and --board, from an exported ESP-IDF shell")
     ctx = RC.Ctx(a)
-    ctx.data = os.path.abspath(a.data)
+    ctx.board = os.path.abspath(a.board)
     ctx.log = os.path.join(ctx.out, "board_driver.log")
     os.makedirs(ctx.out, exist_ok=True)
     os.makedirs(os.path.join(ctx.ri, "firmware"), exist_ok=True)
@@ -494,11 +572,11 @@ def main(argv):
     if unknown:
         ap.error("unknown cases %s" % sorted(unknown))
     with open(ctx.log, "a", encoding="utf-8") as f:
-        f.write("=== %s  host %s  %s  python %s\nIDF %s  tooling %s (%s)\ndata %s sha256 %s\ncases %s\n\n" % (
+        f.write("=== %s  host %s  %s  python %s\nIDF %s  tooling %s (%s)\nboard %s board.json sha256 %s\ncases %s\n\n" % (
             time.strftime("%Y-%m-%dT%H:%M:%S"), platform.node(), platform.platform(), platform.python_version(),
             RC.run(["git", "-C", os.environ["IDF_PATH"], "describe", "--tags", "--dirty"])[1].strip(),
             RC.git(TOOLS, "rev-parse", "HEAD"), RC.git(TOOLS, "status", "--porcelain") or "clean",
-            ctx.data, RC.sha256_file(ctx.data), names))
+            ctx.board, RC.sha256_file(os.path.join(ctx.board, "board.json")), names))
     if not os.path.exists(ctx.src):
         ap.error("no fixture at %s: make it with release_cases.py first" % ctx.src)
     RC.clones(ctx)
@@ -517,11 +595,10 @@ def main(argv):
             RC.report(n, "ERROR", repr(e)[:300], ctx.log)
         with open(ctx.log, "a") as f:
             f.write("%s took %.0f s\n\n" % (n, time.time() - t0))
-    RC.reset(ctx.p1, "fixture")
     for p in (ctx.p1, ctx.mini):
-        q = os.path.join(p, "vtrux_checks.json")
-        if os.path.exists(q) and RC.git(p, "status", "--porcelain", "--", "vtrux_checks.json").startswith("??"):
-            os.remove(q)
+        if os.path.exists(os.path.join(p, ".git")):
+            unplant(p)
+    RC.reset(ctx.p1, "fixture")
     with open(os.path.join(ctx.out, "board_results.json"), "a") as f:
         for r in RC.RESULTS:
             f.write(json.dumps(r) + "\n")

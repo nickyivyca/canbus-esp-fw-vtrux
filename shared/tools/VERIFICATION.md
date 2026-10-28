@@ -3,7 +3,7 @@
 Test evidence that the tooling in `shared/tools/` meets each requirement in
 `SPEC.md`. Why each requirement is written as it is: `VALIDATION.md`.
 
-Each entry names the requirements it covers (R1 to R28), the commit of the
+Each entry names the requirements it covers (R1 to R30), the commit of the
 tooling it tested, and its run files under `$REVERSE_IT_DIR`, with each
 file's hash where a verdict rests on it (port plan goal 20). Entries arrive
 as commits on the tester's branch, and the reviewer pushes them.
@@ -519,3 +519,112 @@ first attempt (a fixture made before R23, stopped at the pin before building).
 `CONFIG_ARDUHAL_LOG_DEFAULT_LEVEL` and the two signals), a `-D CORE_DEBUG_LEVEL`, the other three
 R26 options set, and a contradicting or non-integer profile. The unit tests cover each of these.
 R18's own cases of its entry were not run again on `aa0d67a`.
+
+## R21 from the board component, R29 board settings and R30 pins (gen-inhibit step 1a, 2026-10-27)
+
+**SPEC:** shared/main `2f72a20`: R21 widened (the board is the one `shared/boards/*` component in
+`dependencies.lock`, its data read from that component in `managed_components/`), R29 and R30,
+with `../boards/SPEC.md` B2-B4 and B6. **Check:** `vtrux_checks/` on `shared/tools/board-checks`
+at `653ee07` (from `2f72a20`: the checks `73ab1ec`, the cases' fix `0579b8e`, a test `653ee07`),
+written from SPEC. `boarddata.py` finds the board: a git source whose path is exactly
+`shared/boards/<board>`, or a local one whose path ends so; a release build is refused unless
+there is exactly one, and a local one is refused because it is not in `managed_components/`.
+`board.py` reads R21's target, flash size and reference table from its `board.json`; the old
+inline `board` key in `vtrux_checks.json` is no longer read. R29 is in `options.py`, R30 in
+`pins.py` (`python -B -m vtrux_checks pins --build <dir>`). **Unit tests:** `test_boarddata.py`
+16, `test_board.py` 33, `test_options.py` 56 and `test_pins.py` 11. Each rule is shown failing
+on a planted input and passing on a faithful one. `test_scope.py` and `test_switches.py` still
+pass, and `test_board.py` also passes against the real ESP-IDF v5.4.1. 37 mutants of
+`boarddata.py`, R21's lock part, R29 and R30 each fail them. The first mutant run missed one,
+a registry source carrying a `shared/boards/` path; `653ee07` adds that test. The board reader
+reads gen-inhibit's `wican_v3` folder (`shared/boards/wican-v3-data` `3690cfe` merged with the
+implementor's `b66a151`): its `board.json`, and its `sdkconfig.board` as 9 options.
+**Board data:** `shared/boards/wican_v3/board.json` at `3690cfe`: `esp32c3`, `4MB`, the
+reference `stock-v4.13-partition-table.bin` (sha256 `98d193a6...2185e`, SPEC section 2), the
+four settings required of the project, and `OBD`. **Builds:** release builds by `vtrux_build/`
+at `0579b8e` of `release_cases.py`'s fixture made from gen-inhibit `d2e0bb5`, the base the
+R21 entry above used. gen-inhibit's tree has been in `gen-inhibit/firmware/` since port step 0d,
+and the fixture still expects it at the root; that is a harness fix to come. The minimal
+project was set to esp32s3 for the esp32s3 cases. No board component is built yet, so after
+each build `board_cases.py` plants `wican_v3` in `managed_components/vtrux__wican_v3/`, with a
+git entry for it added to `dependencies.lock`. **Cases:** `verification/board_cases.py` at
+`0579b8e`, whose `--self-test` catches every broken input; it now also covers the planted lock
+entry, read by the checks' own lock reader. **Host:** NICKY-XPS (IDF v5.4.1, its Python 3.11.9),
+throttled (Idle, `--jobs 1`). **Run files:**
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/runs/board_cases_0579b8e_20261027/`.
+Its `SHA256SUMS` (`c7172208...6051b`) hashes every log, `board_results.json`, the board data
+copy, `tests_0579b8e.txt`, and the mutant runs with their script. A first run on `73ab1ec`
+(`board_cases_73ab1ec_20261027/`) is void: its fixture was made from gen-inhibit `8919fb3`,
+and two plumbing faults of the cases were fixed in `0579b8e`.
+
+| Case | Result | What was tested |
+|---|---|---|
+| `release_pass` | PASS | The fixture's release build with `wican_v3` planted: exit 0, prefix `riscv32-esp-elf-`. |
+| `other_target` | PASS | The same build, `board.json`'s target `esp32s3`: exit 1, naming the target only. |
+| `small_slot` | PASS | The same build, the reference a copy of the stock table with `ota_0` one byte smaller than the image: exit 1, naming the table and the slot. |
+| `missing_reference` | PASS | The same build, the reference naming no file: exit 1, cannot read. |
+| `no_board` | PASS | The same build, no `shared/boards/*` entry in the lock: exit 1, cannot read, 0 components. |
+| `two_boards` | PASS | The same build, a second `shared/boards/*` git entry: exit 1, cannot read, 2 components. |
+| `local_board` | PASS | The same build, the board's entry a local folder: exit 1, cannot read, from a local folder. |
+| `table_differs` | PASS | A release build of a commit making `storage` 296K: exit 1, naming the table only. |
+| `flash_larger` | PASS | A release build of a commit setting the flash size to 8MB: exit 1, naming the flash size only. |
+| `s3_pass` | PASS | The minimal project on esp32s3, its own table and flash size planted as the board's: exit 0, prefix `xtensa-esp32s3-elf-`; R17's scope check passes on the build as built. |
+| `s3_board_c3` | PASS | The same build, the board's target `esp32c3`: exit 1, naming the target only. |
+| `s3_elf_reader` | PASS | R20's ELF reader on the esp32s3 ELF against `xtensa-esp32s3-elf-nm`. |
+
+| Req | Result | What was tested |
+|---|---|---|
+| R21 on a real release build, the board from its component | PASS | The cases above. |
+| R29 | **unit tests only** | Not yet on a real build. Its reading of an option missing from the bootloader's folder, and of a required Kconfig choice, is open with the gen-inhibit reviewer (2026-10-27). Real-build cases come with the first build that takes `wican_v3` (gen-inhibit step 1a). |
+| R30 | **unit tests only** | Not yet on a real build: that needs a project compiling `board_pins.h` from the component (gen-inhibit step 1a). |
+
+## R18 and R29 by folder, R29's choices, R17's git components (gen-inhibit step 1a, 2026-10-27)
+
+**SPEC:** `shared/boards/spec-folders` `6a00663` (user, 2026-10-27, in the gen-inhibit
+reviewer's session): R18 and R29 judged folder by folder (an option set to a value is in the
+app's build folder with it, and has it in any other folder that has the option at all; "unset"
+is absent or off); R29's required choices (named by exactly one member on, and in each folder
+that has the choice exactly one listed member on); R17's clause for a component taken from git
+(the lock's commit is the one the pinned tag names, and the component's manifest has no
+`version`). **Check:** `vtrux_checks/` on `shared/tools/board-checks` at `0bbe9ff`, written
+from SPEC. `options.py`'s `judge()` takes the app's folder for R18 and for R29's fixed options;
+R26 and R28 still judge every folder, absent included. `scope.py` reads the tag a git component
+is pinned at from the `idf_component.yml` of the project's own components (those the build used
+from the project root, not from `managed_components/`), which must name one and agree, resolves
+it under `refs/tags/` from the project root (a branch or a commit is not a tag), and compares
+its commit with the lock's. R29's choices were already read so at `653ee07`; the entry above
+lists them as open, and they are now ruled. **Unit tests:** `test_options.py` 62 and
+`test_scope.py` 17, each rule shown failing on a planted input and passing on a faithful one,
+the pins read from a small repository with an annotated tag and a branch. Every other unit test
+file of `shared/tools` still passes (424 tests in all), as does `board_cases.py --self-test`.
+51 mutants of `boarddata.py`, R21's lock part, R18's and R29's folders, R29's choices, R17's git
+clause and R30 each fail them. The board reader reads `wican_v3` from `3690cfe` merged with the
+implementor's `3946c5e`. R17 on an existing release build (`board_cases.py`'s `release_pass`
+fixture, which takes nothing from git) passes, with no git component to judge. The `options`
+run there could not read the build's profile, because that fixture carries no
+`vtrux_checks.json`, so it is not evidence. **Host:** NICKY-XPS, Python 3.14, Idle priority,
+run while the interposer's bench suite was paused. **Run files:**
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/runs/checks_0bbe9ff_20261027/`;
+its `SHA256SUMS` (`5616df27...a5eb5a7a`) hashes the test and mutant outputs, the mutant scripts,
+the two check logs and the real-build R29 check with its script.
+
+**Then `499c31b`** (the gen-inhibit reviewer's reading, 2026-10-27, R29's text): a required
+choice's member absent from a folder is not judged, and the app's folder must have the choice
+(at least one member); a single required option must still be in the app's folder. Kconfig
+does not write a choice member whose dependencies are not met: in both c3 builds checked,
+`CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG` is absent beside a USB-Serial/JTAG primary, so
+`653ee07`'s rule that every member be in the app's folder would have failed the secondary
+console that `wican_v3` now requires (`shared/boards/wican-v3-data` `77c0151`, section 2 at
+`d196233`). `test_options.py` 65; 14 mutants of `options.py` each fail them
+(`mutants_499c31b_options.txt`, 19:34:39 to 19:35:00, during the interposer's suite with its
+tester's agreement). `r29_real.py` judges `77c0151`'s required settings, with a profile naming
+the USB-Serial/JTAG console, no secondary console and Bluetooth on, against the options of
+gen-inhibit `6926fb0`'s c3 build (`r29_real_prodstandin.txt`): R29's required settings and R18
+by folder pass, while R18 judged in every folder, the old reading, fails on `CONFIG_BT_ENABLED`
+absent from the bootloader's folder. The profile is the check's input, not gen-inhibit's.
+
+| Req | Result | What was tested |
+|---|---|---|
+| R18, by folder | **unit tests only** | Not yet on a real build; `options_cases.py` runs again with C's builds (gen-inhibit step 1a). |
+| R29, by folder and choices | **unit tests only** | As the entry above: real-build cases come with the first build that takes `wican_v3`. `499c31b`'s judging was also run on a real build's options (above), which is not a release build of the board. |
+| R17, git components | **unit tests only** | No build takes a component from git yet; real-build cases come with C's builds. |

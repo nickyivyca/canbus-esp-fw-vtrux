@@ -1,0 +1,9 @@
+## wican_v3: MeatPi WiCAN OBD, hardware v3 (shared/boards/SPEC.md section 2).
+## A project takes it from git at a pinned tag of shared/main, as the
+## dependency vtrux/wican_v3 (README.md). No version here: the tag is its
+## version, and dependencies.lock records the commit the tag marks.
+description: "Board layer for the MeatPi WiCAN OBD, hardware v3"
+targets:
+  - esp32c3
+dependencies:
+  idf: ">=5.4"

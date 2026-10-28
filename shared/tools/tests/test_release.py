@@ -1,5 +1,6 @@
 """Tests of the release build (vtrux_build.release): SPEC R8, R9, R10, R11,
-R13, R16's override_path clause and R24, end to end on a scratch git project.
+R13, R16's override_path clause, R21's one-board refusal and R24, end to end on
+a scratch git project.
 
     python -B shared/tools/tests/test_release.py
 
@@ -27,11 +28,13 @@ sys.path.insert(0, HERE)
 import pinkit                                            # noqa: E402
 import scratch                                           # noqa: E402
 from imagekit import descriptor, make_image              # noqa: E402
-from vtrux_build import buildenv, cli, components, pin, record  # noqa: E402
+from vtrux_build import (buildenv, cli, components, lockfile,  # noqa: E402
+                         pin, record)
 from vtrux_build.builddir import BuildDir                # noqa: E402
 from vtrux_build.image import AppImage                   # noqa: E402
-from vtrux_build.release import (Refused, check_compilers,  # noqa: E402
-                                 check_no_launcher, cmake_build_folders,
+from vtrux_build.release import (Refused, board_components,  # noqa: E402
+                                 check_compilers, check_no_launcher,
+                                 cmake_build_folders,
                                  cmake_false, first_word, idf_runner,
                                  ninja_runner, release)
 from vtrux_build.toolchain import Toolchain, ToolchainError  # noqa: E402
@@ -108,7 +111,22 @@ def git(root, *args):
                           capture_output=True, text=True).stdout
 
 
-def lock(extra=""):
+def board_dep(name="vtrux/board_x", path="shared/boards/board_x"):
+    """A board component (shared/boards B2) as the lock records a git one."""
+    return ("  %s:\n"
+            "    component_hash: %s\n"
+            "    source:\n"
+            "      git: https://example.invalid/r.git\n"
+            "      path: %s\n"
+            "      type: git\n"
+            "    version: 89abcdef0123456789abcdef0123456789abcdef\n"
+            % (name, CHASH, path))
+
+
+def lock(extra="", board=None):
+    """A lock with one registry download, the board (board_dep() unless
+    board gives other entries, "" for none) and extra."""
+    extra = (board_dep() if board is None else board) + extra
     return ("dependencies:\n"
             "  espressif/m:\n"
             "    component_hash: %s\n"
@@ -170,6 +188,17 @@ class FakeIdf:
                            ccache or e.get("rule_ccache"), e.get("launcher"),
                            not e.get("no_compile_edges"), e.get("compilers"))
             self._component("espressif__m", e.get("component_files", COMP_FILES))
+            # The board, and any other git download from a shared/boards/
+            # folder, as the lock names it: no CHECKSUMS.json, as the
+            # manager gives a git download.
+            lp = os.path.join(self.root, "dependencies.lock")
+            locks = lockfile.read(lp) if os.path.isfile(lp) else {}
+            for n, ent in sorted(locks.items()):
+                src = ent.get("source", {})
+                if (src.get("type") == "git"
+                        and "shared/boards/" in src.get("path", "")):
+                    self._component(lockfile.managed_dir_name(n), COMP_FILES,
+                                    checksums=False)
             if e.get("shared_on_disk"):
                 # A git download: no CHECKSUMS.json, as the manager gives it.
                 self._component("twai_port", COMP_FILES, checksums=False)
@@ -644,6 +673,67 @@ class Release(unittest.TestCase):
             "path": "shared/components/twai_port",
             "lock_version": "0123456789abcdef0123456789abcdef01234567"})
 
+    # R21 and shared/boards B2: exactly one shared/boards/* component in
+    # the lock, refused after the reconfigure, before anything is built.
+
+    def test_r21_no_board(self):
+        root, cc = project("rel_r21_none", lock_text=lock(board=""))
+        self.assertRefused(run(root, cc),
+                           ["R21", "B2", "0 shared/boards/* components"],
+                           ["reconfigure"])
+
+    def test_r21_two_boards(self):
+        root, cc = project("rel_r21_two", lock_text=lock(
+            board=board_dep() + board_dep("vtrux/board_y",
+                                          "shared/boards/board_y")))
+        self.assertRefused(run(root, cc),
+                           ["R21", "2 shared/boards/* components",
+                            "vtrux/board_x (git shared/boards/board_x)",
+                            "vtrux/board_y (git shared/boards/board_y)"],
+                           ["reconfigure"])
+
+    LOCAL_BOARD = ("  board_z:\n"
+                   "    source:\n"
+                   "      path: C:/w/shared/boards/board_z\n"
+                   "      type: local\n"
+                   "    version: '*'\n")
+
+    def test_r21_a_local_board_counts(self):
+        root, cc = project("rel_r21_local", lock_text=lock(self.LOCAL_BOARD))
+        self.assertRefused(run(root, cc),
+                           ["R21", "2 shared/boards/* components",
+                            "board_z (local C:/w/shared/boards/board_z)"],
+                           ["reconfigure"])
+
+    def test_r16_the_one_board_from_a_local_folder(self):
+        # Not in the project's shared list, so check_shared_pins passes it;
+        # a board is refused from a local folder all the same (B1).
+        root, cc = project("rel_r16_local_board",
+                           lock_text=lock(board=self.LOCAL_BOARD))
+        self.assertRefused(run(root, cc),
+                           ["R16", "B1", "board_z",
+                            "local folder C:/w/shared/boards/board_z"],
+                           ["reconfigure"])
+
+    def test_r21_a_git_path_counts_only_from_the_root(self):
+        # A git source under some other folder's shared/boards/ is not the
+        # board; with no other, there is none.
+        root, cc = project("rel_r21_git_deep", lock_text=lock(
+            board=board_dep("vtrux/board_q", "vendor/shared/boards/board_q")))
+        self.assertRefused(run(root, cc),
+                           ["R21", "0 shared/boards/* components"],
+                           ["reconfigure"])
+
+    def test_r21_one_board_builds(self):
+        root, cc = project("rel_r21_one")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            p, idf, why = run(root, cc)
+        self.assertIsNone(why)
+        self.assertEqual(idf.calls, ["reconfigure", "build"])
+        self.assertIn("one board (R21)", out.getvalue())
+        self.assertIn("vtrux/board_x (shared/boards/board_x)", out.getvalue())
+
     def test_build_failure(self):
         root, cc = project("rel_buildfail")
         self.assertRefused(run(root, cc, {"build_rc": 1}), ["build failed"],
@@ -979,6 +1069,43 @@ class Release(unittest.TestCase):
         self.assertIn("IDF_PATH", str(cm.exception))
         self.assertIn("R9", str(cm.exception))
         self.assertEqual(idf.calls, [])
+
+
+class BoardComponents(unittest.TestCase):
+    """Which lock entries are shared/boards/* components (B2)."""
+
+    def entry(self, path, type_="git"):
+        return {"source": {"path": path, "type": type_}}
+
+    def test_git_exactly_shared_boards_from_the_root(self):
+        for p in ("shared/boards/wican_v3", "shared/boards/wican_v3/",
+                  "./shared/boards/x2", "shared\\boards\\x2"):
+            e = self.entry(p)
+            self.assertEqual(board_components({"b": e}), {"b": e["source"]},
+                             p)
+
+    def test_local_ending_in_shared_boards(self):
+        for p in ("shared/boards/wican_v3", "C:/w/shared/boards/x2",
+                  "C:\\w\\shared\\boards\\x2",
+                  "/home/u/repo/shared/boards/x2/"):
+            e = self.entry(p, "local")
+            self.assertEqual(board_components({"b": e}), {"b": e["source"]},
+                             p)
+
+    def test_not_a_board(self):
+        locks = {
+            "a": self.entry("shared/boards"),
+            "b": self.entry("shared/boards/x2/include"),
+            "c": self.entry("shared/components/twai_port"),
+            "d": self.entry("myshared/boards/x2"),
+            "e": self.entry("shared/myboards/x2"),
+            "f": {"source": {"type": "service"}, "version": "1.0.0"},
+            "g": self.entry("vendor/shared/boards/x2"),
+            "h": self.entry("/shared/boards/x2"),
+            "i": self.entry("shared/boards/x2", "service"),
+            "idf": {"source": {"type": "idf"}, "version": "5.4.1"},
+        }
+        self.assertEqual(board_components(locks), {})
 
 
 class CmakeFalse(unittest.TestCase):

@@ -13,7 +13,8 @@ machine's.
 
 The files in `vtrux_build/` and `tests/` listed below are the implementor's:
 product tooling and its unit tests (gen-inhibit reviewer, 2026-10-23, batch
-C6f). The build checks, SPEC R17 to R21, and the comparison tool of port
+C6f). The build checks, SPEC R17 to R21, R29 and R30 (apart from R21's
+one-board refusal, which the release build makes), and the comparison tool of port
 plan goal 6 are the tester's (the same ruling), in files of their own:
 `verification/` and `vtrux_checks/` in the table below, with the rest
 added when they land. They read the build through the interface below and
@@ -164,10 +165,21 @@ The tooling holds no project facts. A project gives them in
 | `shared_components` | the build script | the dependency names of the shared firmware components it pins; R16 and the record use them. `[]` for none |
 
 The build checks' data (the release profile, the switch table and its
-refusal rows, and the project's board data) is not in this file. It is in
-`vtrux_checks.json` in the project's root, which the tester owns, in the form
-the checks define. `project.py` reads only the two keys above: it neither
-rejects other keys nor relies on any.
+refusal rows) is not in this file. It is in `vtrux_checks.json` in the
+project's root, which the tester owns, in the form the checks define.
+`project.py` reads only the two keys above: it neither rejects other keys
+nor relies on any.
+
+Nor is the project's board. A project names it by its dependency and
+nowhere else (R21, `shared/boards/SPEC.md` B2): the one `shared/boards/*`
+component in its `dependencies.lock`: a git source whose path is exactly
+`shared/boards/<board>`, from the repository's root, or a local source whose
+path ends in it. A release build is refused after the reconfigure unless
+there is exactly one, and unless it is the git one: a board is never taken
+from a local folder, whether or not the project lists it as shared (R16,
+`shared/boards/SPEC.md` B1). The board's data
+is that component's `board.json`, which the checks read from
+`managed_components/`, so the board checked is the board built.
 
 ## The release build (SPEC section 3)
 
@@ -187,7 +199,10 @@ reconfigure, even for a project that downloads nothing (R10); every
 downloaded component's `.component_hash` against
 `dependencies.lock`, and a registry download against its `CHECKSUMS.json`,
 unlisted files included (R10, after the reconfigure); no shared component
-from a local folder (R16, `override_path` clause); `idf.py --no-ccache
+from a local folder (R16, `override_path` clause); exactly one
+`shared/boards/*` component in `dependencies.lock` (R21, the board), and
+that one from git (R16);
+`idf.py --no-ccache
 build`, or `ninja -C build -j N all` with `--jobs N`, in the same
 environment;
 `CCACHE_ENABLE` still off and no launcher in any build folder's compile
@@ -250,11 +265,11 @@ the module docstring (`RECORD_SCHEMA` 1).
 | `vtrux_build/toolchain.py` | this IDF's toolchain, from its `tools.json` and toolchain file: R9's check that each chosen compiler is the toolchain's own |
 | `vtrux_build/buildenv.py` | a release build's environment, from an empty one: R24, and R9's `SOURCE_DATE_EPOCH` |
 | `vtrux_build/pin.py` | the tooling's own pin in `shared_pins.json`, and the check that the tooling runs from the pinned checkout: R23, R16's tooling-pin clause |
-| `vtrux_build/release.py` | the release build: R8 to R11, R13, R16 (both clauses, the tooling pin through `pin.py`), R23, R24 |
+| `vtrux_build/release.py` | the release build: R8 to R11, R13, R16 (both clauses, the tooling pin through `pin.py`), R21's one-board refusal, R23, R24 |
 | `vtrux_build/cli.py`, `__main__.py`, `__init__.py` | the command line |
 | `tests/test_*.py` | unit tests, one file per module (`toolchain.py`'s are in `test_release.py`, with the check that uses it); each runs alone (`python -B shared/tools/tests/test_image.py`) or all with `python -B -m unittest discover -s shared/tools/tests`. `test_buildenv.py`'s `RealConfigure` runs ESP-IDF itself, two configures of a small project (about 40 s), so it is skipped unless `VTRUX_IDF_TESTS=1` is set in an exported ESP-IDF shell; it is a build for `AGENTS.md` "Builds during wall-clock tests" |
 | `tests/imagekit.py` | synthetic app images for the tests, so no firmware image is committed |
 | `tests/pinkit.py` | a pinned checkout for the tests: a small tagged repository at `<folder>/shared-<tag>/` and the pin that matches it; `test_release.py` gives every test project one |
 | `tests/scratch.py` | the tests' scratch folders: `<worktree>/scratch/shared-tools-tests/` where git ignores `scratch/` (a project worktree), else the machine temp folder's `vtrux-build-tests/` |
 | `verification/` | the tester's: its verification of this tooling against `SPEC.md`, the evidence behind `VERIFICATION.md`, and the build checks' real-build cases; its `README.md` lists the files |
-| `vtrux_checks/` | the tester's: the build checks, SPEC R17 to R21, reading a finished build through the interface above; their per-project data is the tester's `vtrux_checks.json` in the project's root; its `README.md` lists the checks |
+| `vtrux_checks/` | the tester's: the build checks, SPEC R17 to R21, R29 and R30, reading a finished build through the interface above; their per-project data is the tester's `vtrux_checks.json` in the project's root; its `README.md` lists the checks |

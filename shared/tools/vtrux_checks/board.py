@@ -2,22 +2,13 @@
 
     python -B -m vtrux_checks board --build <project>/build
 
-SPEC R21 as worded in a5e7c46 (shared/tools/spec-r21; the flash size: user,
-2026-10-24, option B), with the gen-inhibit reviewer's readings of
-2026-10-24. The board data is the "board" object in vtrux_checks.json in the
-project root (project_description.json's project_path), for a board only
-this project builds for (R22: the WiCAN):
-
-    {"board": {"target": "<IDF_TARGET>",
-               "partition_table": "<the reference partition-table .bin, from the project root>",
-               "flash_size": "<the board's flash size, as ESP-IDF names it: 4MB>"}}
-
-A board named by a string instead (R22: a board more than one project
-builds for, the X2) comes from a shared board component pinned in
-dependencies.lock, found as boards/<name>/ under managed_components/
-(reading Q7 (a)). That form is not built yet, since no board component
-exists until the interposer's port step 2a; the check refuses it, naming
-that.
+SPEC R21 (shared/main 2f72a20), with the gen-inhibit reviewer's readings of
+2026-10-24. The board is the one shared/boards/* component in the project's
+dependencies.lock (project_description.json's project_path), and its data is
+board.json in that component's folder in managed_components/ (boarddata.py;
+shared/boards/SPEC.md B2 and B4): the target, the flash size and the
+reference partition table. The check fails when there is not exactly one,
+or it is not downloaded there.
 
 It fails when:
 
@@ -55,13 +46,10 @@ import re
 
 from vtrux_build.builddir import BuildDir, BuildDirError
 
-from . import parttable
+from . import boarddata, parttable
+from .boarddata import BoardError
 
-DATA_FILE = "vtrux_checks.json"
-KEY = "board"
-KEYS = ("target", "partition_table", "flash_size")
 _PREFIX = re.compile(r"^\s*set\(\s*_CMAKE_TOOLCHAIN_PREFIX\s+(\S+?)\s*\)", re.M)
-_TARGET = re.compile(r"^[a-z0-9]+$")
 APP_FORMAT = ("components", "bootloader_support", "include", "esp_app_format.h")
 _SIZE_ENUM = re.compile(r"typedef\s+enum\s*\{([^}]*)\}\s*esp_image_flash_size_t\s*;")
 _MAGIC = re.compile(r"^\s*#define\s+ESP_IMAGE_HEADER_MAGIC\s+(0x[0-9A-Fa-f]+|\d+)\b", re.M)
@@ -69,34 +57,11 @@ _ENUMERATOR = re.compile(r"^ESP_IMAGE_FLASH_SIZE_(\w+?)\s*(?:=\s*(0x[0-9A-Fa-f]+
 _COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
 
 
-class BoardError(ValueError):
-    pass
-
-
 def read_board(project):
-    """(target, reference table path, flash size name) from the project's vtrux_checks.json."""
-    p = os.path.join(project, DATA_FILE)
-    try:
-        with open(p, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError) as e:
-        raise BoardError("%s cannot be read (%s)" % (DATA_FILE, e))
-    b = data.get(KEY) if isinstance(data, dict) else None
-    if isinstance(b, str):
-        raise BoardError("%s names board %r: a named board comes from a shared board component in "
-                         "managed_components/, which is not built yet" % (DATA_FILE, b))
-    if not isinstance(b, dict):
-        raise BoardError("%s has no %r object" % (DATA_FILE, KEY))
-    if set(b) != set(KEYS):
-        raise BoardError("%s %r: needs exactly %s, has %s" % (DATA_FILE, KEY, ", ".join('"%s"' % k for k in KEYS), sorted(b)))
-    t, ref, flash = b["target"], b["partition_table"], b["flash_size"]
-    if not isinstance(t, str) or not _TARGET.match(t):
-        raise BoardError("%s %r: target %r is not an IDF_TARGET name" % (DATA_FILE, KEY, t))
-    if not isinstance(ref, str) or not ref or os.path.isabs(ref):
-        raise BoardError("%s %r: partition_table %r is not a path from the project root" % (DATA_FILE, KEY, ref))
-    if not isinstance(flash, str) or not flash:
-        raise BoardError("%s %r: flash_size %r is not a size name" % (DATA_FILE, KEY, flash))
-    return t, os.path.normpath(os.path.join(project, ref)), flash
+    """(target, reference table path, flash size name, board lock name) from the project's board."""
+    name, folder = boarddata.find(project)
+    b = boarddata.read(folder)
+    return b["target"], b["partition_table"], b["flash_size"], name
 
 
 def tool_prefix(idf_path, target):
@@ -190,11 +155,11 @@ def collect(build):
     project, idf = d.get("project_path"), d.get("idf_path")
     if not project or not idf:
         raise BoardError("project_description.json has no project_path or idf_path")
-    target, reference, flash = read_board(project)
+    target, reference, flash, name = read_board(project)
     magic, sizes = image_format(idf)
     if flash not in sizes.values():
-        raise BoardError("%s %r: flash_size %r is not one ESP-IDF names (%s)" % (
-            DATA_FILE, KEY, flash, ", ".join(sizes[v] for v in sorted(sizes))))
+        raise BoardError("%s: flash_size %r is not one ESP-IDF names (%s)" % (
+            boarddata.BOARD_JSON, flash, ", ".join(sizes[v] for v in sorted(sizes))))
     size_slot, apps = slot(reference)
     table = flasher_file(bd, "partition-table")
     with open(table, "rb") as f:
@@ -205,7 +170,7 @@ def collect(build):
     bootloader = flasher_file(bd, "bootloader")
     headers = [("app", image, header_flash_size(image, magic, sizes)),
                ("bootloader", bootloader, header_flash_size(bootloader, magic, sizes))]
-    return {"project": project, "target": target, "reference": reference, "slot": size_slot, "apps": apps,
+    return {"project": project, "board": name, "target": target, "reference": reference, "slot": size_slot, "apps": apps,
             "table": table, "table_same": built == ref, "image": image, "image_size": os.path.getsize(image),
             "flash": flash, "headers": headers,
             "build_target": bd.options().get("IDF_TARGET"), "prefix": tool_prefix(idf, target)}
@@ -234,7 +199,7 @@ def main(args):
         print("FAIL R21: cannot read the build or its board data: %s" % e)
         return 1
     rel = lambda p: os.path.relpath(p, f["project"]).replace(os.sep, "/")
-    print("R21 board: target %s, reference %s, flash size %s" % (f["target"], rel(f["reference"]), f["flash"]))
+    print("R21 board %s: target %s, reference %s, flash size %s" % (f["board"], f["target"], rel(f["reference"]), f["flash"]))
     print("  partition table  %s %s the reference" % (rel(f["table"]), "is identical to" if f["table_same"] else "DIFFERS from"))
     print("  slot             %d bytes (smallest of %s)" % (f["slot"], ", ".join("%s %d" % (a[0], a[3]) for a in f["apps"])))
     print("  image            %s, %d bytes, %d free" % (rel(f["image"]), f["image_size"], f["slot"] - f["image_size"]))
