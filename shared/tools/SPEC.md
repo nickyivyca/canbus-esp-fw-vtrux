@@ -173,6 +173,10 @@ unless the image changes, which the reproducible test (R19) shows.
   options and their values, each value citing the line of the project's
   spec it comes from. Every option the profile names has the profile's
   value, "unset" meaning absent or off; options it does not name are free.
+  A build folder holds only the options of the components it builds, so
+  the bootloader's lacks many of the app's. An option the profile sets to a
+  value must be in the app's folder with that value, and in any other
+  folder has that value where the folder has the option at all.
   The whole `sdkconfig` is not compared: it is committed, and R8 holds the
   build to the commit. Like the other checks here, it runs on the finished
   build and is not a refusal in the release build; any session may run it.
@@ -233,9 +237,13 @@ unless the image changes, which the reproducible test (R19) shows.
   in `managed_components/` (`shared/boards/SPEC.md` B2 and B4). A release
   build is refused unless there is exactly one.
 - **R29. Board settings.** Every option the board's `sdkconfig.board` names
-  has the board's value in the build, and the project's release profile
-  names every setting the board lists as required of the project, with the
-  value the project's own spec sets and cites (`shared/boards/SPEC.md` B3).
+  has the board's value in the build, folder by folder as R18 judges, and
+  the project's release profile names every setting the board lists as
+  required of the project, with the value the project's own spec sets and
+  cites (`shared/boards/SPEC.md` B3). A required choice is named when the
+  profile sets exactly one of its members on, and in each folder that has
+  the choice exactly one listed member is on, so a stale member list
+  fails.
   The options check (R18) applies it, on the finished release build; bench
   and dev builds are not checked.
 - **R30. Pins stay in the board.** From ninja's dependency records, no

@@ -385,6 +385,15 @@ same folder. The interposer's test evidence is
     refusal in the release build (option a of three), and only for release
     builds. Port plan step 0b's "the options check refuses a release build"
     is read as this check failing it.
+- **Folders** (user, 2026-10-27, in the gen-inhibit reviewer's session,
+  raised by the gen-inhibit tester on a real build, gen-inhibit `6926fb0`):
+  a build folder holds only the options of the components it builds. The
+  bootloader's has 652 of the app's 1351, all with the app's values, and
+  lacks for example `CONFIG_BT_ENABLED`, defined in `components/bt/Kconfig`.
+  Read as absent, so as unset, a profile's `CONFIG_BT_ENABLED=y` would fail
+  every release build. So an option set to a value must be in the app's
+  folder with it, and elsewhere has it where the folder has the option;
+  both folders read the same `sdkconfig`.
 - **Status:** complete.
 
 ### R19. Reproducible
@@ -550,6 +559,10 @@ same folder. The interposer's test evidence is
   section 2 for the WiCAN and section 3 for the X2 (2026-10-27).
 
 ### R29. Board settings
+- **Folders and choices** (user, 2026-10-27, in the gen-inhibit reviewer's
+  session, read by the gen-inhibit tester on a real build): judged folder
+  by folder as R18 is, and a required choice is named by exactly one member
+  on (`shared/boards/VALIDATION.md` B3).
 - **Basis:** user, 2026-10-26, in the gen-inhibit reviewer's session: a
   board fixes some settings, and lists others that every project building
   for it must set itself, such as the console, the watchdogs and Bluetooth

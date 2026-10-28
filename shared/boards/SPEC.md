@@ -3,7 +3,8 @@
 **Status:** the common section (1) and the `wican_v3` section (2) were
 approved by the user on 2026-10-26, in the gen-inhibit reviewer's session,
 and drafted that day by the gen-inhibit reviewer; B3 and B5 amended there
-2026-10-27, after the charge-interposer reviewer's read. The `x2` section (3) is
+2026-10-27, after the charge-interposer reviewer's read, and B3 again that
+day, after the gen-inhibit tester's reading of a real build. The `x2` section (3) is
 drafted by the charge-interposer reviewer and ruled in its session. As a
 shared component's spec this follows port plan goal 20: the reviewer whose
 project needs a section drafts it, the user rules in that reviewer's
@@ -40,13 +41,13 @@ Requirements in section 1 are numbered B1 to B7. The numbers are stable.
      leaves to the project but that every project building for it must
      decide. The project's spec sets and cites each value, and its release
      profile names it. A release build whose profile leaves one out fails
-     (`shared/tools` R29).
+     (`shared/tools` R29). A required setting is one option, or one of
+     ESP-IDF's pick-one choices (such as the console) listed with its
+     member options; the project decides a choice by setting exactly one
+     member on.
   3. *Offered.* Outputs and inputs the board provides through calls, such
      as LEDs and buttons. A project uses them or not.
 
-  The settings of kinds 1 and 2 are ESP-IDF's own options, never ones a
-  downloaded component defines, so the options check finds them in every
-  build folder, the bootloader's included.
 - **B4. `board.json` is the checks' data:** `target`, `flash_size`, the
   path of the reference partition table `.bin`, the project-required
   settings (B3.2), and the hardware name. It holds no pins. The application

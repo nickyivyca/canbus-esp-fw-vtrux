@@ -34,13 +34,22 @@ gen-inhibit's spec is
   the plan's Layer 1 list of `wican_v3` chip defaults: the 20 ms erase
   yield and the watchdog settings are gen-inhibit spec requirements (9.3
   and 9.1), so they stay project data.
-- **ESP-IDF options only** (user, 2026-10-27, in the gen-inhibit reviewer's
-  session, raised by the charge-interposer reviewer): the options check
-  judges every build folder, and the bootloader's has no options from
-  downloaded components (the finding that kept
-  `CONFIG_ARDUHAL_LOG_DEFAULT_LEVEL` out of the interposer's profile). No
-  board fact needs one: the cases are settings such as mDNS's or the Arduino
-  core's, which are one project's choice. Revisit if a board needs one.
+- **Any option, judged in the app's folder** (user, 2026-10-27, in the
+  gen-inhibit reviewer's session). Earlier that day the user limited board
+  settings to ESP-IDF's own options, on the charge-interposer reviewer's
+  point that the bootloader's build folder has no options from downloaded
+  components. The gen-inhibit tester then read a real build (gen-inhibit
+  `6926fb0`, IDF 5.4.1): the bootloader folder builds 22 components and
+  holds 652 options against the app's 1351, all with the app's values, and
+  lacks ESP-IDF's own `CONFIG_BT_ENABLED` and
+  `CONFIG_TWAI_ERRATA_FIX_LISTEN_ONLY_DOM`. So the limit did not do what it
+  was for. The ruling that replaced it: a setting must be in the app's
+  folder with its value, and in other folders where they have it
+  (`shared/tools` R18 and R29); the limit was dropped.
+- **Choices** (user, 2026-10-27, read by the gen-inhibit tester): the
+  console is ESP-IDF's pick-one `ESP_CONSOLE_UART`, not one option, so a
+  required setting may be a choice with its members listed, decided by
+  exactly one member on.
 - **Status:** complete.
 
 ### B4. `board.json`
