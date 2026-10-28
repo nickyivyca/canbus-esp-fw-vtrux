@@ -9,8 +9,12 @@ R9's fixed SOURCE_DATE_EPOCH and R24.
 
 The project is gen-inhibit at --base, cloned into --root, with a fixture commit on
 top that no gen-inhibit branch has: vtrux_build.json ({"project": "gen-inhibit",
-"shared_components": []}), CONFIG_APP_REPRODUCIBLE_BUILD on, and the tracked files as
-`idf.py reconfigure` rewrites them. What it rewrote is listed in fixture.txt. Two
+"shared_components": []}) where --base has none (the project's own is kept: since port step
+1a C it names the board), CONFIG_APP_REPRODUCIBLE_BUILD on, and the tracked files as
+`idf.py reconfigure` rewrites them. What it rewrote is listed in fixture.txt. The record's
+shared components are expected from the project's own files (expected_shared). The tags its
+git dependencies are pinned at, which R17 resolves in the project's repository, are in every
+clone, as a clone takes every tag (fixture.txt names each). Two
 more branches sit on it: fx-r11 (the build deletes its own .bin last) and fx-r16
 (a shared component taken from a local folder). --fixture uses a repo already
 made that way instead (another host, for R5 across host OSes). REVERSE_IT_DIR is a
@@ -271,6 +275,7 @@ def self_test():
     ok &= self_test_r8(I.scratch("release-cases-selftest-r8"))
     ok &= self_test_epoch_env()
     ok &= self_test_layout(I.scratch("release-cases-selftest-layout"))
+    ok &= self_test_shared(I.scratch("release-cases-selftest-shared"))
     print("\nself-test: %s" % ("every broken input caught, the faithful one passed" if ok else "FAILED"))
     return 0 if ok else 1
 
@@ -562,8 +567,16 @@ def make_fixture(ctx):
         fx.write("project folder: %s\n" % (ctx.sub or "the repository's root"))
         pin = make_pin(ctx)
         fx.write("tooling pin: %s\n" % json.dumps(pin))
-        with open(os.path.join(ctx.src, "vtrux_build.json"), "w", newline="") as f:
-            f.write('{"project": "gen-inhibit", "shared_components": []}\n')
+        vb = os.path.join(ctx.src, "vtrux_build.json")
+        if os.path.exists(vb):      # the project's own (gen-inhibit names its board there since port step 1a C)
+            if json.load(open(vb)).get("project") != "gen-inhibit":
+                raise RuntimeError("%s names another project" % vb)
+            fx.write("vtrux_build.json: the project's own, kept: %s\n" % json.dumps(json.load(open(vb))))
+        else:
+            with open(vb, "w", newline="") as f:
+                f.write('{"project": "gen-inhibit", "shared_components": []}\n')
+        for tag in dep_tags(ctx.src):
+            fx.write("dependency tag %s: %s\n" % (tag, ref(ctx.repo_src, "refs/tags/" + tag) or "NOT IN THE REPOSITORY"))
         with open(os.path.join(ctx.src, PINS), "w", newline="") as f:
             f.write(pins_text(pin))
         set_repro(ctx.src)
@@ -598,8 +611,10 @@ def make_fixture(ctx):
                       "    version: \"1.0.0\"\n    override_path: \"../fx_shared/vtrux_fx_shared\"\n", 1)
         with open(y, "w", newline="") as f:
             f.write(s)
+        data = json.load(open(os.path.join(ctx.src, "vtrux_build.json")))
+        data["shared_components"] = list(data.get("shared_components") or []) + ["vtrux/vtrux_fx_shared"]
         with open(os.path.join(ctx.src, "vtrux_build.json"), "w", newline="") as f:
-            f.write('{"project": "gen-inhibit", "shared_components": ["vtrux/vtrux_fx_shared"]}\n')
+            f.write(json.dumps(data) + "\n")
         git(ctx.src, "add", "-A")
         git(ctx.src, "commit", "-q", "-m", "fixture fx-r16: a shared component from a local folder")
         normalise(ctx, ctx.src, "fx-r16", fx)
@@ -645,7 +660,37 @@ def clones(ctx):
         git(ctx.repo_p2, "checkout", "-q", "-b", "other", "origin/fixture")
 
 
+def dep_tags(proj):
+    """The tags proj's main/idf_component.yml pins its git dependencies at (a git source's version),
+    which R17 resolves in the project's repository. A clone has every tag of the repository it was
+    cloned from, on its branches' history or not (self_test_shared), so the fixture's clones have
+    the board's tag as a worktree of the real repository does; fixture.txt names each."""
+    import yaml
+    p = os.path.join(proj, "main", "idf_component.yml")
+    deps = ((yaml.safe_load(open(p)) or {}).get("dependencies") or {}) if os.path.exists(p) else {}
+    return sorted({str(d["version"]) for d in deps.values() if isinstance(d, dict) and d.get("git") and d.get("version")})
+
+
 # ---------- what the tester reads itself ----------
+
+def expected_shared(proj):
+    """R13's shared components, read by the tester: each component the project's vtrux_build.json
+    names, with the version, git and path its main/idf_component.yml declares (the pinned tag is
+    the version) and, for a git source, the commit that tag names in the project's repository,
+    which is what the lock resolves it to (R17)."""
+    import yaml
+    names = json.load(open(os.path.join(proj, "vtrux_build.json"))).get("shared_components") or []
+    p = os.path.join(proj, "main", "idf_component.yml")
+    deps = ((yaml.safe_load(open(p)) or {}).get("dependencies") or {}) if os.path.exists(p) else {}
+    out = {}
+    for n in names:
+        d = deps.get(n)
+        d = d if isinstance(d, dict) else {"version": d}
+        tag = None if d.get("version") is None else str(d["version"])
+        out[n] = {"version": tag, "git": d.get("git"), "path": d.get("path"),
+                  "lock_version": (ref(proj, "refs/tags/" + tag) or None) if d.get("git") and tag else None}
+    return out
+
 
 def facts_for(ctx, proj, project, shared):
     bd = os.path.join(proj, "build")
@@ -778,7 +823,7 @@ def check_success(ctx, name, proj, rc, before, project="gen-inhibit", shared=Non
     jn = [n for n in new if n.endswith(".json")][0]
     rec = json.load(open(os.path.join(ctx.records(project), jn)))
     files = {n: open(os.path.join(ctx.records(project), n), "rb").read() for n in new}
-    bad = judge_record(rec, files, facts_for(ctx, proj, project, shared or {}))
+    bad = judge_record(rec, files, facts_for(ctx, proj, project, expected_shared(proj) if shared is None else shared))
     bad += own_checks(proj)
     report(name, "PASS" if not bad else "FAIL", "record %s; code %s%s%s" % (
         rec["image_hash"][:16], rec["code_hash"][:16], note, "" if not bad else "; " + "; ".join(bad)), ctx.log)
@@ -1374,6 +1419,51 @@ def self_test_layout(d):
     good = ctx.sub == "" and ctx.src == repo
     print("  %s Ctx on a fixture at the root: sub %r" % ("ok  " if good else "FAIL", ctx.sub))
     ok &= good
+    return ok
+
+
+def self_test_shared(d):
+    """dep_tags, a clone's tags and expected_shared on a small repo whose project pins a git
+    dependency at a tag on a commit off the fixture branch, as the board's tag is on shared/main."""
+    ok = True
+    repo, a = os.path.join(d, "src"), os.path.join(d, "a")
+    run(["git", "init", "-q", "-b", "fixture", repo], check=True)
+    proj = in_sub(repo, SUB)
+
+    def put(rel, text):
+        p = os.path.join(proj, *rel.split("/"))
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", newline="") as f:
+            f.write(text)
+    put("vtrux_build.json", '{"project": "gen-inhibit", "shared_components": ["vtrux/wican_v3", "x/local", "x/absent"]}\n')
+    put("main/idf_component.yml", 'dependencies:\n  espressif/mdns: "*"\n  vtrux/wican_v3:\n    git: https://h/r.git\n'
+        '    path: shared/boards/wican_v3\n    version: "2026.10.27"\n  y/other:\n    git: https://h/o.git\n'
+        '    version: 9.9.9\n  x/local:\n    path: ../x\n    version: "1.0.0"\n')
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "project")
+    git(repo, "checkout", "-q", "-b", "shared-main")
+    git(repo, "commit", "-q", "--allow-empty", "-m", "the board's tag, off the fixture branch")
+    tagged = git(repo, "rev-parse", "HEAD")
+    git(repo, "tag", "2026.10.27")
+    git(repo, "checkout", "-q", "fixture")
+    git(repo, "branch", "-q", "-D", "shared-main")
+    run(["git", "clone", "-q", "-b", "fixture", repo, a], check=True)
+
+    tags = dep_tags(proj)
+    have = ref(a, "refs/tags/2026.10.27")
+    got = expected_shared(in_sub(a, SUB))
+    want = {"vtrux/wican_v3": {"version": "2026.10.27", "git": "https://h/r.git", "path": "shared/boards/wican_v3",
+                               "lock_version": tagged},
+            "x/local": {"version": "1.0.0", "git": None, "path": "../x", "lock_version": None},
+            "x/absent": {"version": None, "git": None, "path": None, "lock_version": None}}
+    for label, good in (("dep_tags: the git dependencies' versions: %s" % tags, tags == ["2026.10.27", "9.9.9"]),
+                        ("a clone has the tag off its branch, at its commit (the fixture relies on it)", have == tagged),
+                        ("a tag the repository lacks is not there", ref(a, "refs/tags/9.9.9") == ""),
+                        ("expected_shared: %s" % json.dumps(got), got == want),
+                        ("expected_shared's lock version is the tag's commit, not HEAD's",
+                         got["vtrux/wican_v3"]["lock_version"] != git(a, "rev-parse", "HEAD"))):
+        print("  %s %s" % ("ok  " if good else "FAIL", label))
+        ok &= good
     return ok
 
 
