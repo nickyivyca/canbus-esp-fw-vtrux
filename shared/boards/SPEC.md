@@ -125,9 +125,12 @@ Requirements in section 1 are numbered B1 to B7. The numbers are stable.
   - the console: ESP-IDF's pick-one "Channel for console output"
     (esp_system Kconfig), with members `CONFIG_ESP_CONSOLE_UART_DEFAULT`,
     `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG`, `CONFIG_ESP_CONSOLE_UART_CUSTOM`
-    and `CONFIG_ESP_CONSOLE_NONE` on the C3. The secondary console is not
-    required: with USB-Serial/JTAG as the primary, ESP-IDF forces it to
-    none;
+    and `CONFIG_ESP_CONSOLE_NONE` on the C3;
+  - the secondary console: ESP-IDF's pick-one "Channel for console
+    secondary output", with members `CONFIG_ESP_CONSOLE_SECONDARY_NONE`
+    and `CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG`. A USB-Serial/JTAG
+    primary forces it to none; a UART primary leaves it open, so it is
+    required;
   - the watchdogs' behaviour on a hang: `CONFIG_BOOTLOADER_WDT_DISABLE_IN_USER_CODE`
     and `CONFIG_ESP_TASK_WDT_PANIC`;
   - Bluetooth on or off: `CONFIG_BT_ENABLED`.

@@ -63,7 +63,10 @@ gen-inhibit's spec is
   by its members only (charge-interposer reviewer, IDF 5.4.1
   `esp_system/Kconfig`, 2026-10-27). The members are listed in each
   board's section, which `board.json` is checked against (user,
-  2026-10-27).
+  2026-10-27). The secondary console is a second required choice on
+  `wican_v3` (user, 2026-10-27, raised by the charge-interposer reviewer):
+  only a USB-Serial/JTAG primary forces it to none, and a UART primary
+  would leave it to ESP-IDF's default.
 - **Status:** complete.
 
 ### B4. `board.json`
