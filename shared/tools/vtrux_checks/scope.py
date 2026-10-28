@@ -120,7 +120,7 @@ def manifest_version(folder):
 
 def git_pins(project, components, lock):
     """For each git component in the lock: (pins, tags). pins: {lock name: [(manifest, version)]}
-    from the idf_component.yml of each component in components ({name: folder}) under the
+    from the idf_component.yml of each component in components ({key: folder}) under the
     project root and not under managed_components/; tags: {version pinned: the commit refs/tags/
     names, or None}."""
     proj, mdir = norm(project), norm(os.path.join(project, "managed_components"))
@@ -170,8 +170,9 @@ def collect(build):
             if os.path.isdir(os.path.join(mdir, n)):
                 managed[n] = manifest_version(os.path.join(mdir, n))
     components = {}
-    for f in folders:
-        components.update(BuildDir(f).components())
+    for f in folders:   # keyed by build folder too: the bootloader's build has a main of its own, in IDF
+        for n, d in BuildDir(f).components().items():
+            components["%s %s" % (os.path.relpath(f, folders[0]), n)] = d
     pins, tags = git_pins(project, components, lock)
     return {"project": norm(project), "idf": norm(idf), "toolchains": tools, "cmake_roots": sorted(croots),
             "shared": shared_roots(project), "files": sorted(files), "lock": lock, "managed": managed,

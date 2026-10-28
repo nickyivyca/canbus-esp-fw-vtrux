@@ -188,6 +188,68 @@ class Readers(unittest.TestCase):
         with self.assertRaises(S.ScopeError):
             S.git_pins(proj, comps, lock)
 
+    def test_collect_pins_beside_bootloader_main(self):
+        """The project's main/ pins the board, and the bootloader's build folder has a main of its
+        own, in IDF: collect() reads the pin whichever build folder comes first. A project
+        component used only by the bootloader's build pins it too."""
+        proj, idf = os.path.join(self.d, "proj"), os.path.join(self.d, "idf")
+        subprocess.run(["git", "init", "-q", proj], check=True)
+        subprocess.run(["git", "-C", proj, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
+                        "--allow-empty", "-m", "x"], check=True)
+        subprocess.run(["git", "-C", proj, "tag", TAG], check=True)
+        head = subprocess.run(["git", "-C", proj, "rev-parse", "HEAD"], capture_output=True, text=True,
+                              check=True).stdout.strip()
+        self.write("proj/dependencies.lock",
+                   "dependencies:\n  vtrux/b:\n    source:\n      git: https://example.invalid/r.git\n"
+                   "      path: shared/boards/b\n      type: git\n    version: %s\ntarget: chipa\n" % head)
+        self.write("proj/managed_components/vtrux__b/idf_component.yml", "description: the board\n")
+        pin = "dependencies:\n  vtrux/b:\n    git: https://example.invalid/r.git\n    path: shared/boards/b\n" \
+              "    version: \"%s\"\n" % TAG
+        app, boot = os.path.join(proj, "build"), os.path.join(proj, "build", "bootloader")
+        app_main, boot_main = os.path.join(proj, "main"), os.path.join(idf, "bootloader", "subproject", "main")
+        boot_comp = os.path.join(proj, "bootloader_components", "bc")
+        self.write("proj/main/idf_component.yml", pin)
+        self.write("idf/bootloader/subproject/main/idf_component.yml", "dependencies:\n  idf: '>=5.0'\n")
+        mb = {"vtrux__b": os.path.join(proj, "managed_components", "vtrux__b")}
+
+        class Fake:
+            comps = {}
+
+            def __init__(self, f):
+                self.f = S.norm(f)
+
+            def description(self):
+                return {"project_path": proj, "idf_path": idf}
+
+            def files_read(self):
+                return [os.path.join(proj, "main", "main.c")]
+
+            def cmake_cache(self):
+                return {"CMAKE_ROOT": ("INTERNAL", os.path.join(idf, "cmake"))}
+
+            def components(self):
+                return Fake.comps[self.f]
+
+        saved = S.BuildDir, S.build_folders, S.toolchains
+        self.addCleanup(lambda: setattr(S, "BuildDir", saved[0]) or setattr(S, "build_folders", saved[1])
+                        or setattr(S, "toolchains", saved[2]))
+        S.BuildDir, S.toolchains = Fake, lambda f: {"C": os.path.join(idf, "tc")}
+        for label, order, comps in (
+                ("app first", [app, boot], {app: dict(mb, main=app_main), boot: {"main": boot_main}}),
+                ("bootloader first", [boot, app], {app: dict(mb, main=app_main), boot: {"main": boot_main}}),
+                ("pin only in the bootloader's build", [app, boot],
+                 {app: dict(mb, main=boot_main), boot: {"main": boot_main, "bc": boot_comp}})):
+            if label.startswith("pin only"):
+                self.write("proj/bootloader_components/bc/idf_component.yml", pin)
+            Fake.comps = {S.norm(k): v for k, v in comps.items()}
+            S.build_folders = lambda b, o=order: o
+            f = S.collect(app)
+            want = "bootloader_components/bc/idf_component.yml" if label.startswith("pin only") \
+                else "main/idf_component.yml"
+            self.assertEqual(f["pins"], {"vtrux/b": [(want, TAG)]}, label)
+            self.assertEqual(f["tags"], {TAG: head}, label)
+            self.assertEqual([b for b in S.judge(f, "bench") if b[0] == "version"], [], label)
+
     def test_build_folders(self):
         for rel in ("build/CMakeCache.txt", "build/build.ninja", "build/bootloader/CMakeCache.txt",
                     "build/bootloader/build.ninja", "build/esp-idf/CMakeCache.txt"):
