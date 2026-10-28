@@ -17,6 +17,14 @@ gen-inhibit's spec is
   definitions in shared code; `shared/tools` R22 (user, 2026-10-25), every
   board's data in its own folder under `shared/boards/`; goal 20 items 7 and
   8, shared code only as a pinned tag.
+- **Dev builds at a tag, no layering** (user, 2026-10-27, in the
+  gen-inhibit reviewer's session, raised by the gen-inhibit implementor's
+  first build): ESP-IDF checks that an `SDKCONFIG_DEFAULTS` file exists in
+  `project()` (`project.cmake`), before the Component Manager downloads
+  anything (`build.cmake`), so a fresh checkout cannot layer a downloaded
+  board's `sdkconfig.board`. `CONFIG_PARTITION_TABLE_CUSTOM_FILENAME` can
+  name the downloaded `partitions.csv`, and does, so a board has no
+  `override_path` form.
 - **Status:** complete.
 
 ### B2. A project names its board by its dependency
@@ -34,13 +42,31 @@ gen-inhibit's spec is
   the plan's Layer 1 list of `wican_v3` chip defaults: the 20 ms erase
   yield and the watchdog settings are gen-inhibit spec requirements (9.3
   and 9.1), so they stay project data.
-- **ESP-IDF options only** (user, 2026-10-27, in the gen-inhibit reviewer's
-  session, raised by the charge-interposer reviewer): the options check
-  judges every build folder, and the bootloader's has no options from
-  downloaded components (the finding that kept
-  `CONFIG_ARDUHAL_LOG_DEFAULT_LEVEL` out of the interposer's profile). No
-  board fact needs one: the cases are settings such as mDNS's or the Arduino
-  core's, which are one project's choice. Revisit if a board needs one.
+- **Any option, judged in the app's folder** (user, 2026-10-27, in the
+  gen-inhibit reviewer's session). Earlier that day the user limited board
+  settings to ESP-IDF's own options, on the charge-interposer reviewer's
+  point that the bootloader's build folder has no options from downloaded
+  components. The gen-inhibit tester then read a real build (gen-inhibit
+  `6926fb0`, IDF 5.4.1): the bootloader folder builds 22 components and
+  holds 652 options against the app's 1351, all with the app's values, and
+  lacks ESP-IDF's own `CONFIG_BT_ENABLED` and
+  `CONFIG_TWAI_ERRATA_FIX_LISTEN_ONLY_DOM`. So the limit did not do what it
+  was for. The ruling that replaced it: a setting must be in the app's
+  folder with its value, and in other folders where they have it
+  (`shared/tools` R18 and R29); the limit was dropped.
+- **Choices** (user, 2026-10-27, read by the gen-inhibit tester): the
+  console is ESP-IDF's pick-one "Channel for console output" (esp_system
+  Kconfig), not one option, so a required setting may be a choice with its
+  members listed, decided by exactly one member on. The choice's own
+  symbol never reaches `sdkconfig`, and `CONFIG_ESP_CONSOLE_UART` there is a
+  separate derived bool (on for the UART members), so a choice is judged
+  by its members only (charge-interposer reviewer, IDF 5.4.1
+  `esp_system/Kconfig`, 2026-10-27). The members are listed in each
+  board's section, which `board.json` is checked against (user,
+  2026-10-27). The secondary console is a second required choice on
+  `wican_v3` (user, 2026-10-27, raised by the charge-interposer reviewer):
+  only a USB-Serial/JTAG primary forces it to none, and a UART primary
+  would leave it to ESP-IDF's default.
 - **Status:** complete.
 
 ### B4. `board.json`
@@ -61,6 +87,15 @@ gen-inhibit's spec is
   WiCAN sets from `HARDWARE_VER`; it is board data whether or not a project
   has a status page to show it (wording, user, 2026-10-27, raised by the
   charge-interposer reviewer: the X2 has none yet).
+- **Init call** (user, 2026-10-27, raised by the gen-inhibit implementor):
+  the standby line must be made an output before it is driven, which is
+  more than a register write; a start-up call keeps the restart path to
+  the one write it makes today.
+- **Per-model values** (user, 2026-10-27, raised by the gen-inhibit
+  implementor): upstream WiCAN picks the filesystem mount point and the
+  hotspot address by model at compile time (`hw_config.h`,
+  `wifi_network.c`). As board data, the WiCAN Pro can later be added with
+  no change to project code (goal 5).
 - **Status:** complete.
 
 ### B6. Pins in `include/board_pins.h`
@@ -94,6 +129,8 @@ gen-inhibit's spec is
     port, 2026-09-10);
   - pins and the hardware name: upstream WiCAN's `main/hw_config.h` and
     top-level `CMakeLists.txt`, `WICAN_V300` (read 2026-10-26);
+  - the per-model values: `hw_config.h`'s non-Pro `FS_MOUNT_POINT` and
+    `wifi_network.c`'s non-Pro hotspot address (read 2026-10-27);
   - standby polarity and the pull-up: gen-inhibit spec section 14 item 1,
     which describes the wiring (that section binds nothing), and the stock
     code, which sets GPIO6 high at boot and low on the bus (`main.c`,
@@ -133,7 +170,9 @@ gen-inhibit's spec is
     from the board;
   - console hardware: the interposer's first bring-up, 2026-09-10 (UART0
     pins with nothing attached);
-  - the LED on GPIO2: the `aslcanx2` variant only.
-- **Status:** basis pending for the LED: not yet seen to light on the
-  board (a blink test is asked of the charge-interposer tester,
-  2026-10-27). Complete otherwise.
+  - the LED on GPIO2: the `aslcanx2` variant, and the board itself: a
+    throwaway image toggling GPIO2 every 500 ms blinked LED1, seen by the
+    user (charge-interposer test evidence, section 9, "BOARD DATA ONLY --
+    the X2's LED1 is on GPIO2", 2026-10-27). Its polarity was not
+    separated.
+- **Status:** complete.

@@ -61,10 +61,13 @@ project's one shared/boards/* component, read from managed_components/
             every other build folder that has it.
   required  the profile names every setting board.json lists as required of the
             project: a single option with any value (R18 then holds the build to
-            it); a choice with exactly one member true. Each option of a required
-            setting is in the app's build folder, and in every folder that has
-            any of a choice's members exactly one is true, so a misspelt option
-            or a choice list that has gone stale fails.
+            it); a choice with exactly one member true. A required option is in
+            the app's build folder; a required choice is there too (at least one
+            member), and in every folder that has any of its members exactly one
+            is true, so a misspelt option or a choice list that has gone stale
+            fails. A member absent from a folder is not judged: a member whose
+            Kconfig dependencies are not met is not written (gen-inhibit reviewer's
+            reading, 2026-10-27).
 
 Release builds only; bench and dev builds are not checked. The check does
 not tell them apart: run it on a finished release build.
@@ -192,13 +195,17 @@ def judge_required(required, profile, options, app):
     app_opts = options.get(app, {})
     for r in required:
         opts, what = r["options"], r["setting"]
-        for o in opts:
-            if o[len("CONFIG_"):] not in app_opts:
-                bad.append("%s: %s is not in the app's build folder's options" % (what, o))
         if r["kind"] == "option":
+            if opts[0][len("CONFIG_"):] not in app_opts:
+                bad.append("%s: %s is not in the app's build folder's options" % (what, opts[0]))
             if opts[0] not in profile:
                 bad.append("%s: the profile does not name %s" % (what, opts[0]))
             continue
+        # a member whose Kconfig dependencies are not met is absent, such as the secondary
+        # console's USB-Serial/JTAG beside a USB-Serial/JTAG primary: not judged
+        if not any(o[len("CONFIG_"):] in app_opts for o in opts):
+            bad.append("%s: none of its choice's options is in the app's build folder's options (%s)" % (
+                what, ", ".join(opts)))
         chosen = [o for o in opts if o in profile and profile[o][0] is True]
         if len(chosen) != 1:
             bad.append("%s: the profile sets %s of its choice's options true (%s); it needs exactly one" % (

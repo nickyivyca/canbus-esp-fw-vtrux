@@ -1,0 +1,23 @@
+# wican_v3: what the hardware fixes (shared/boards/SPEC.md B3.1 and section 2).
+# ESP-IDF's own options only (B3). A project's build has these values
+# (shared/tools R29), checked on its release build.
+
+# Target: the ESP32-C3.
+CONFIG_IDF_TARGET="esp32c3"
+
+# Flash: 4 MB, 80 MHz, QIO. ESP-IDF writes DIO into the image headers for QIO
+# and the bootloader switches to quad itself.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+
+# Partition table: this component's partitions.csv, byte-identical to stock
+# WiCAN v4.13 at 0x8000, with its MD5 entry. The path is from the project
+# root, so the project names the dependency vtrux/wican_v3.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="managed_components/vtrux__wican_v3/partitions.csv"
+CONFIG_PARTITION_TABLE_OFFSET=0x8000
+CONFIG_PARTITION_TABLE_MD5=y
+
+# Chip-bug workaround: TWAI sends no dominant bits in listen-only mode.
+CONFIG_TWAI_ERRATA_FIX_LISTEN_ONLY_DOM=y

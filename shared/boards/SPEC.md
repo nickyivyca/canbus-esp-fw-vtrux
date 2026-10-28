@@ -3,7 +3,11 @@
 **Status:** the common section (1) and the `wican_v3` section (2) were
 approved by the user on 2026-10-26, in the gen-inhibit reviewer's session,
 and drafted that day by the gen-inhibit reviewer; B3 and B5 amended there
-2026-10-27, after the charge-interposer reviewer's read. The `x2` section (3) is
+2026-10-27, after the charge-interposer reviewer's read, and B1, B3 and B5
+again that day, after the gen-inhibit tester's reading of a real build and
+the gen-inhibit implementor's first build of `wican_v3`; section 2's
+console members listed 2026-10-27, after the charge-interposer reviewer's
+read. The `x2` section (3) is
 drafted by the charge-interposer reviewer and ruled in its session. As a
 shared component's spec this follows port plan goal 20: the reviewer whose
 project needs a section drafts it, the user rules in that reviewer's
@@ -26,6 +30,12 @@ Requirements in section 1 are numbered B1 to B7. The numbers are stable.
   component on `shared/main`. A project takes it at a pinned tag like any
   shared firmware component (`shared/tools` R16 and R25), through the
   Component Manager, so it is recorded in the project's `dependencies.lock`.
+  The project's build takes the partition table from the downloaded copy
+  in `managed_components/`, so every build, dev builds included, takes the
+  board at a tag, never through `override_path`; a board change is tried
+  at a tag, if need be in a scratch repo. The board's settings are not
+  layered into the project's: the project's committed `sdkconfig` carries
+  the board's fixed values, and `shared/tools` R29 holds it to them.
 - **B2. A project names its board by its dependency, and nowhere else.** A
   release build is refused unless `dependencies.lock` has exactly one
   `shared/boards/*` component. The checks read that component's data from
@@ -40,13 +50,13 @@ Requirements in section 1 are numbered B1 to B7. The numbers are stable.
      leaves to the project but that every project building for it must
      decide. The project's spec sets and cites each value, and its release
      profile names it. A release build whose profile leaves one out fails
-     (`shared/tools` R29).
+     (`shared/tools` R29). A required setting is one option, or one of
+     ESP-IDF's pick-one choices (such as the console) listed with its
+     member options; the project decides a choice by setting exactly one
+     member on.
   3. *Offered.* Outputs and inputs the board provides through calls, such
      as LEDs and buttons. A project uses them or not.
 
-  The settings of kinds 1 and 2 are ESP-IDF's own options, never ones a
-  downloaded component defines, so the options check finds them in every
-  build folder, the bootloader's included.
 - **B4. `board.json` is the checks' data:** `target`, `flash_size`, the
   path of the reference partition table `.bin`, the project-required
   settings (B3.2), and the hardware name. It holds no pins. The application
@@ -58,6 +68,10 @@ Requirements in section 1 are numbered B1 to B7. The numbers are stable.
   - `board_twai_pins(port)`: the ESP's own TWAI pins, for a TWAI port.
   - `board_spi_can(port)`: the controller, SPI host, pins and crystal, for
     an SPI CAN port.
+  - `board_can_init(port)`: run once at start-up, outside the restart path.
+    It sets up the port's standby line and puts the transceiver into
+    standby. It returns "not supported" where the board has no standby
+    line.
   - `board_can_standby(port, on)`: puts the port's transceiver into standby
     (on) or normal operation (off). It returns "not supported" where the
     board has no standby line. It is safe to call from the restart path: no
@@ -68,6 +82,10 @@ Requirements in section 1 are numbered B1 to B7. The numbers are stable.
     them.
   - `board_hw_name()`: the hardware name, which a status page shows where
     the project has one.
+  - Values upstream code sets per hardware model and uses at compile time,
+    such as WiCAN's filesystem mount point and hotspot address, are macros
+    in `include/board.h`, under the names that code uses, so a second model
+    of the family needs no change to project code.
 - **B6. Pins live in `include/board_pins.h`.** `board.c` includes it, and so
   may test equipment such as gen-inhibit's X2 jammer. A project file may
   include it only if it is on that project's list of stock files that still
@@ -104,7 +122,15 @@ Requirements in section 1 are numbered B1 to B7. The numbers are stable.
     the stock v4.13 full flash set. The application slot is 1,781,760 bytes.
   - `CONFIG_TWAI_ERRATA_FIX_LISTEN_ONLY_DOM=y`.
 - **Required of the project:**
-  - the console;
+  - the console: ESP-IDF's pick-one "Channel for console output"
+    (esp_system Kconfig), with members `CONFIG_ESP_CONSOLE_UART_DEFAULT`,
+    `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG`, `CONFIG_ESP_CONSOLE_UART_CUSTOM`
+    and `CONFIG_ESP_CONSOLE_NONE` on the C3;
+  - the secondary console: ESP-IDF's pick-one "Channel for console
+    secondary output", with members `CONFIG_ESP_CONSOLE_SECONDARY_NONE`
+    and `CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG`. A USB-Serial/JTAG
+    primary forces it to none; a UART primary leaves it open, so it is
+    required;
   - the watchdogs' behaviour on a hang: `CONFIG_BOOTLOADER_WDT_DISABLE_IN_USER_CODE`
     and `CONFIG_ESP_TASK_WDT_PANIC`;
   - Bluetooth on or off: `CONFIG_BT_ENABLED`.
@@ -116,6 +142,9 @@ Requirements in section 1 are numbered B1 to B7. The numbers are stable.
   (GPIO7); the Bluetooth-enable input (GPIO5, low is enabled).
 - **Console hardware:** the board's internal USB connector reaches the C3's
   USB-Serial/JTAG. Which console a project uses is project data.
+- **Per-model values** (B5): the filesystem mount point `FS_MOUNT_POINT`,
+  `/spiffs` (the `storage` partition); the hotspot address 192.168.80.1,
+  which is also the gateway, with netmask 255.255.255.0.
 
 ## 3. `x2`: Autosport Labs ESP32-CAN-X2
 

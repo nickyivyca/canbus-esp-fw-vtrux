@@ -365,6 +365,22 @@ same folder. The interposer's test evidence is
   - Bench and dev `shared/` reads may come from any worktree of this repo or
     a `../shared-<tag>/` checkout (option a of two), so a bench build can test
     a shared change through `override_path` to the worktree it is made in.
+    A board cannot be (`shared/boards/SPEC.md` B1, 2026-10-27).
+- **Git-sourced components** (user, 2026-10-27, in the gen-inhibit
+  reviewer's session, raised by the gen-inhibit implementor's first build
+  of `wican_v3`): for a component taken from git, the Component Manager's
+  lock records the commit it resolved, not a version, so the manifest
+  clause would fail every shared component. Read as the lock's commit
+  being the pinned tag's, with no `version` in the component's own
+  manifest, so no second record can disagree with the tag.
+  - Readings (gen-inhibit reviewer, 2026-10-27, raised by the gen-inhibit
+    tester before writing the check, and shown to the user): the pinned
+    tag is the dependency's `version` in the manifests of the project's own
+    components that the build used (not those in `managed_components/`);
+    none, or two that differ, fails. It must resolve under `refs/tags/` in
+    the project's repository; a branch or a commit hash fails, even one
+    naming the lock's commit. The dependency's `git` URL is not checked:
+    the lock's commit must still be the tag's commit in this repository.
 - **Status:** complete.
 
 ### R18. Options
@@ -385,6 +401,15 @@ same folder. The interposer's test evidence is
     refusal in the release build (option a of three), and only for release
     builds. Port plan step 0b's "the options check refuses a release build"
     is read as this check failing it.
+- **Folders** (user, 2026-10-27, in the gen-inhibit reviewer's session,
+  raised by the gen-inhibit tester on a real build, gen-inhibit `6926fb0`):
+  a build folder holds only the options of the components it builds. The
+  bootloader's has 652 of the app's 1351, all with the app's values, and
+  lacks for example `CONFIG_BT_ENABLED`, defined in `components/bt/Kconfig`.
+  Read as absent, so as unset, a profile's `CONFIG_BT_ENABLED=y` would fail
+  every release build. So an option set to a value must be in the app's
+  folder with it, and elsewhere has it where the folder has the option;
+  both folders read the same `sdkconfig`.
 - **Status:** complete.
 
 ### R19. Reproducible
@@ -546,10 +571,14 @@ same folder. The interposer's test evidence is
   once (`shared/boards/VALIDATION.md` B2).
   - Release builds only, like R18 and R20. The bootloader's contents are
     not compared, only the partition table.
-- **Status:** complete for the WiCAN. The X2's values: basis pending, with
-  port step 2a.
+- **Status:** complete. The board values are in `shared/boards/VALIDATION.md`,
+  section 2 for the WiCAN and section 3 for the X2 (2026-10-27).
 
 ### R29. Board settings
+- **Folders and choices** (user, 2026-10-27, in the gen-inhibit reviewer's
+  session, read by the gen-inhibit tester on a real build): judged folder
+  by folder as R18 is, and a required choice is named by exactly one member
+  on (`shared/boards/VALIDATION.md` B3).
 - **Basis:** user, 2026-10-26, in the gen-inhibit reviewer's session: a
   board fixes some settings, and lists others that every project building
   for it must set itself, such as the console, the watchdogs and Bluetooth
