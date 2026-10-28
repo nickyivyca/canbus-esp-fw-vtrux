@@ -32,9 +32,21 @@
       "value": "unset",
       "spec": "gen-inhibit spec 12.3 item 3, setting 5: watchdog settings as section 9.1 records; section 9.1: CONFIG_ESP_TASK_WDT_PANIC unset"
     },
+    "CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG": {
+      "value": true,
+      "spec": "gen-inhibit spec 12.3 item 3, setting 6: the console on the USB-Serial/JTAG, as stock (shared/boards wican_v3, a required choice)"
+    },
+    "CONFIG_ESP_CONSOLE_SECONDARY_NONE": {
+      "value": true,
+      "spec": "gen-inhibit spec 12.3 item 3, setting 6: with no secondary console (shared/boards wican_v3, a required choice)"
+    },
+    "CONFIG_BT_ENABLED": {
+      "value": true,
+      "spec": "gen-inhibit spec 12.3 item 3, setting 7: Bluetooth on until its held removal; section 9.4: its removal is held, CONFIG_BT_ENABLED=y (user, 2026-10-17 and 2026-10-26)"
+    },
     "CONFIG_FREERTOS_HZ": {
       "value": 1000,
-      "spec": "gen-inhibit spec 12.3 item 3, setting 6: CONFIG_FREERTOS_HZ 1000, a 1 ms tick (shared/tools R27, user 2026-10-25)"
+      "spec": "gen-inhibit spec 12.3 item 3, setting 8: CONFIG_FREERTOS_HZ 1000, a 1 ms tick (shared/tools R27, user 2026-10-25)"
     },
     "CONFIG_APP_REPRODUCIBLE_BUILD": {
       "value": true,
@@ -263,14 +275,6 @@
       "reason": "#ifndef default in debug_logs_config.h",
       "kind": "default value"
     },
-    "HARDWARE_VER": {
-      "class": "shipping variant",
-      "reason": "the board, set by the top-level CMakeLists.txt (WICAN_V300 for the OBD); reviewer's ruling 2026-10-13"
-    },
-    "WICAN_PRO": {
-      "class": "shipping variant",
-      "reason": "the board id HARDWARE_VER is compared with (stock's other board); reviewer's ruling 2026-10-13"
-    },
     "PRJ_BIN_LEN": {
       "class": "not a switch",
       "reason": "computed by the build from the project name, used only to refuse a name over 31 characters; reviewer's ruling 2026-10-13",
@@ -292,11 +296,7 @@
       "kind": "library macro"
     }
   },
-  "board": {
-    "target": "esp32c3",
-    "partition_table": "../test/build_checks/reference/stock-v4.13-partition-table.bin",
-    "flash_size": "4MB"
-  },
+  "stock_files_using_pins": ["main/main.c", "main/gi_restart_test.c"],
   "inert_triggers": {
     "GI_TEST_RESTART_QUIESCE": {
       "probes": [

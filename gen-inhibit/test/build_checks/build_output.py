@@ -61,7 +61,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PROJECT = os.path.abspath(os.path.join(HERE, "..", ".."))   # the project folder, gen-inhibit/ since port step 0d
 REPO = os.path.join(PROJECT, "firmware")                    # the WiCAN tree: main/, sdkconfig, build/
 WORKTREE = os.path.dirname(PROJECT)                         # the repo root: scratch/, repo-relative git paths
-REF = os.path.join(HERE, "reference")
+sys.path.insert(0, HERE)
+import board_ref  # noqa: E402  the board component: the stock partition table (port step 1a)
 
 # Spec 9.3 / row 22: the OTA slot the image has to fit.
 OTA_SLOT_BYTES = 1781760
@@ -304,20 +305,33 @@ def check_partitions(build_dir=None):
     -B build-tester-<sha> FAILED this row for a file it never looked for --
     and, worse, an image checked while build/ held some other build would
     have been judged by that build's table.
+
+    Stock is the board's reference table, the one copy (gen-inhibit reviewer,
+    2026-10-27): the file board.json names in the copy of the board component
+    this build downloaded, <project>/managed_components/vtrux__wican_v3/, the
+    project being project_description.json's project_path (else REPO).
     """
     if build_dir is None:
         build_dir = os.path.join(REPO, "build")
     built = os.path.join(build_dir, "partition_table", "partition-table.bin")
-    stock = os.path.join(REF, "stock-v4.13-partition-table.bin")
+    try:
+        with open(os.path.join(build_dir, "project_description.json"), encoding="utf-8") as fh:
+            project = json.load(fh).get("project_path") or REPO
+    except (OSError, ValueError):
+        project = REPO
+    try:
+        _board, stock = board_ref.read(board_ref.managed_folder(project))
+    except board_ref.BoardRefError as e:
+        stock, why = None, str(e)
 
     if not os.path.exists(built):
         row("partition table matches stock", False,
             "no %s to check" % os.path.relpath(built, REPO).replace("\\", "/"))
         return
-    if not os.path.exists(stock):
+    if stock is None or not os.path.exists(stock):
         row("partition table matches stock", None,
-            "no stock reference at %s -- extract partition-table.bin from the "
-            "stock release zip" % os.path.relpath(stock, REPO),
+            "no stock reference: %s -- the board component, vtrux/wican_v3, "
+            "in this build's managed_components/" % (why if stock is None else "no file at %s" % stock),
             ref_missing=True)
         return
 
