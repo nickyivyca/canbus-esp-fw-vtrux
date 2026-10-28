@@ -212,32 +212,35 @@ def tool_versions():
             "host": platform.node(), "os": platform.platform()}
 
 
-def prep(ctx, key, source, branch, edit=None, msg=None):
-    """A work clone of source at branch, with edit committed and settled as the fixture was made.
+def prep(ctx, key, source, branch, edit=None, msg=None, sub=""):
+    """A work clone of the repository source at branch, with edit (given the project's folder,
+    sub inside the clone) committed and settled as the fixture was made.
     Returns (repo to clone from, commit)."""
     w = os.path.join(ctx.root, "r19", key, "prep")
     RC.rmtree(w)
     RC.run(["git", "clone", "-q", "-b", branch, source, w], check=True)
     if edit:
-        edit(w)
-        RC.git(w, "commit", "-q", "-am", msg)
+        p = RC.in_sub(w, sub)
+        edit(p)
+        RC.git(p, "commit", "-q", "-am", msg)
         with open(os.path.join(ctx.out, "repro_fixture.txt"), "a") as fx:
-            RC.normalise(ctx, w, key, fx)
+            RC.normalise(ctx, p, key, fx)
             fx.write("%s: %s\n" % (key, RC.git(w, "rev-parse", "HEAD")))
     return w, RC.git(w, "rev-parse", "HEAD")
 
 
-def build_one(ctx, key, side, repo, commit, log, want_repro, marker):
-    path = os.path.join(ctx.root, "r19", key, *(("a",) if side == "a" else ("b_longer", "deeper")))
+def build_one(ctx, key, side, repo, commit, log, want_repro, marker, sub=""):
+    clone = os.path.join(ctx.root, "r19", key, *(("a",) if side == "a" else ("b_longer", "deeper")))
+    path = RC.in_sub(clone, sub)        # the project's folder in the clone
     ri = os.path.join(ctx.root, "r19", key, "ri_" + side)
-    RC.rmtree(path)
+    RC.rmtree(clone)
     RC.rmtree(ri)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    os.makedirs(os.path.dirname(clone), exist_ok=True)
     os.makedirs(os.path.join(ri, "firmware"))
-    RC.run(["git", "clone", "-q", "--no-checkout", repo, path], check=True)
-    RC.git(path, "checkout", "-q", "-b", "r19-" + side, commit)
-    info = {"path": path, "commit": RC.git(path, "rev-parse", "HEAD"),
-            "status": RC.git(path, "status", "--porcelain", "--untracked-files=all"),
+    RC.run(["git", "clone", "-q", "--no-checkout", repo, clone], check=True)
+    RC.git(clone, "checkout", "-q", "-b", "r19-" + side, commit)
+    info = {"path": path, "commit": RC.git(clone, "rev-parse", "HEAD"),
+            "status": RC.git(clone, "status", "--porcelain", "--untracked-files=all"),
             "build_before": os.path.exists(os.path.join(path, "build")), "repro": want_repro}
     rc, _ = RC.release(ctx, path, log, jobs=ctx.jobs, env={"REVERSE_IT_DIR": ri})
     info["rc"] = rc
@@ -254,10 +257,10 @@ def build_one(ctx, key, side, repo, commit, log, want_repro, marker):
     return info, h
 
 
-def run_case(ctx, key, name, log, repo, commit, want_met, want_repro, marker=None):
+def run_case(ctx, key, name, log, repo, commit, want_met, want_repro, marker=None, sub=""):
     res = []
     for side in ("a", "b"):
-        info, h = build_one(ctx, key, side, repo, commit, log, want_repro, marker)
+        info, h = build_one(ctx, key, side, repo, commit, log, want_repro, marker, sub)
         if h is None:
             RC.report(name, "VOID", "build %s: the release build failed (exit %d)" % (side, info["rc"]), ctx.log)
             return
@@ -279,16 +282,17 @@ def run_case(ctx, key, name, log, repo, commit, want_met, want_repro, marker=Non
 # ---------- cases ----------
 
 def c_fixture(ctx, log):
-    repo, commit = prep(ctx, "fx", ctx.src, "fixture")
-    run_case(ctx, "fx", "fixture", log, repo, commit, True, True)
+    repo, commit = prep(ctx, "fx", ctx.repo_src, "fixture", sub=ctx.sub)
+    run_case(ctx, "fx", "fixture", log, repo, commit, True, True, sub=ctx.sub)
 
 
 def c_repro_off(ctx, log):
     def edit(p):
         RC.git(p, "checkout", "-q", "-b", "r19-repro-off")
         OC.set_line(p, RC.REPRO_ON, RC.REPRO_OFF)
-    repo, commit = prep(ctx, "off", ctx.src, "fixture", edit, "r19 case repro_off: reproducible build off")
-    run_case(ctx, "off", "repro_off", log, repo, commit, True, False)
+    repo, commit = prep(ctx, "off", ctx.repo_src, "fixture", edit, "r19 case repro_off: reproducible build off",
+                        sub=ctx.sub)
+    run_case(ctx, "off", "repro_off", log, repo, commit, True, False, sub=ctx.sub)
 
 
 def mini_source(ctx):

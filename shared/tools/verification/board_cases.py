@@ -595,8 +595,8 @@ def main(argv):
             RC.report(n, "ERROR", repr(e)[:300], ctx.log)
         with open(ctx.log, "a") as f:
             f.write("%s took %.0f s\n\n" % (n, time.time() - t0))
-    for p in (ctx.p1, ctx.mini):
-        if os.path.exists(os.path.join(p, ".git")):
+    for p, repo in ((ctx.p1, ctx.repo_p1), (ctx.mini, ctx.mini)):
+        if os.path.exists(os.path.join(repo, ".git")):
             unplant(p)
     RC.reset(ctx.p1, "fixture")
     with open(os.path.join(ctx.out, "board_results.json"), "a") as f:
