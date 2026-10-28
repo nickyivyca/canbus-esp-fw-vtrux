@@ -164,12 +164,10 @@ unless the image changes, which the reproducible test (R19) shows.
   two folders named by the build's own record: the install folder of the
   toolchain whose compiler CMake chose (`CMake<LANG>Compiler.cmake`), and
   CMake's own `CMAKE_ROOT` (`CMakeCache.txt`). Nothing else beside them in
-  the IDF tools folder counts. The build may also read git's record of
-  what is checked out, which IDF copies to keep the version (R4) current:
-  `HEAD`, and the branch file it names or that branch's log, in the git
-  folder of the repository that holds the project root (for a linked
-  worktree, its own git folder for `HEAD` and the clone's for the branch).
-  Nothing else in that folder counts. For a bench or dev build, files under
+  the IDF tools folder counts. The build may also read any file in the git
+  folder of the repository that holds the project root, which IDF reads to
+  keep the version (R4) current: for a linked worktree, both its own git
+  folder and the clone's. For a bench or dev build, files under
   `shared/` may also be read directly: the `shared/` folder of any worktree
   of this repo, or a `../shared-<tag>/` checkout. For a release build they
   may not: shared code counts only from `managed_components/`, so a release

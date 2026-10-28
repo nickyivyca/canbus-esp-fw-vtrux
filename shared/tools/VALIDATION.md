@@ -399,6 +399,21 @@ same folder. The interposer's test evidence is
   ruling (its spec 12.3 item 3, port step 0c). Counting the whole
   repository as the root would let a release build read uncommitted files
   at the worktree's root, such as `scratch/`.
+  - **Widened to the whole git folder** (user, 2026-10-28, later, in the
+    gen-inhibit reviewer's session, raised by the gen-inhibit tester before
+    the check's real-build run): in a detached linked worktree the `.in`
+    file, having moved to the clone's folder through `commondir`, copies
+    the clone's `HEAD`, not the worktree's, so the list above failed that
+    build (a real configure of a fixture repository and a worktree added
+    with `--detach`; the gen-inhibit tester's run
+    `f1_gitrecord_23b57b1_20261028`). Rather than follow IDF's internals
+    file by file, any file in the repository's git folder counts, the
+    worktree's own and the clone's (option a of two; adding the clone's
+    `HEAD` alone was turned down). The folder holds git's own records and
+    no source a compiler includes (the clone's holds the other worktrees'
+    records too, under `worktrees/`); another worktree's checked-out
+    files, the worktree's uncommitted files and any other outside header
+    still fail.
 - **Status:** complete.
 
 ### R18. Options
