@@ -55,9 +55,15 @@ gen-inhibit's spec is
   folder with its value, and in other folders where they have it
   (`shared/tools` R18 and R29); the limit was dropped.
 - **Choices** (user, 2026-10-27, read by the gen-inhibit tester): the
-  console is ESP-IDF's pick-one `ESP_CONSOLE_UART`, not one option, so a
-  required setting may be a choice with its members listed, decided by
-  exactly one member on.
+  console is ESP-IDF's pick-one "Channel for console output" (esp_system
+  Kconfig), not one option, so a required setting may be a choice with its
+  members listed, decided by exactly one member on. The choice's own
+  symbol never reaches `sdkconfig`, and `CONFIG_ESP_CONSOLE_UART` there is a
+  separate derived bool (on for the UART members), so a choice is judged
+  by its members only (charge-interposer reviewer, IDF 5.4.1
+  `esp_system/Kconfig`, 2026-10-27). The members are listed in each
+  board's section, which `board.json` is checked against (user,
+  2026-10-27).
 - **Status:** complete.
 
 ### B4. `board.json`
