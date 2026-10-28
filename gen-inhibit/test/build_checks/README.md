@@ -42,6 +42,7 @@ python3 elf_checks.py
 python3 test_image_rows.py              # tests the image rows (version, project name)
 python3 test_prod_record.py             # tests the prod-record row itself
 python3 test_partition_row.py           # tests the partition-table row itself
+python3 test_board_data.py              # tests the pinned board's data against the spec
 python3 test_flt_row.py                 # tests the rehearsal-name row itself
 python3 test_fw_version_row.py          # tests the DIAG_FW_VERSION row itself
 python3 test_reference_paths.py         # tests where the DBC and schema doc defaults come from
