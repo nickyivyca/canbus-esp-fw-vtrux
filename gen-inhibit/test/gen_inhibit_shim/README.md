@@ -23,6 +23,9 @@ make asan && ./shim_test
 
 Builds `../../firmware/main/gen_inhibit.c` and `gen_inhibit_core.c` against mock
 platform headers in `mock/`. Needs pthreads and Python 3; no ESP-IDF.
+`mock/board.h` stands in for the board component's `board.h` (shared/boards
+SPEC B5), and `fake_can.c` answers as `wican_v3` does: port 0's TWAI pins,
+and its standby line, which `fake_board_standby()` reads back.
 `make` also builds the long-arm stimulus first, from the project folder with the
 pinned `canre` (see "Building the long-arm stimulus" below), and stops if
 `REVERSE_IT_DIR` is not set or that `canre` is not installed.

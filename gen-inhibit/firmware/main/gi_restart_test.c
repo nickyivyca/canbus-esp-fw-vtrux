@@ -9,8 +9,8 @@
  *                   RTC memory: gi_restart_quiesce.c)
  *   at_app_start    the controller and CAN_STDBY as the new boot found them,
  *                   read by a constructor -- before app_main, so before
- *                   main.c:432-434 writes CAN_STDBY and before any driver
- *                   install
+ *                   its board_can_init() writes CAN_STDBY and before any
+ *                   driver install
  *   pre_install     the same, immediately before the first
  *                   twai_driver_install() of this boot (can_enable), or null
  *                   if there has been none -- mode 0 never installs one
@@ -19,6 +19,12 @@
  * pre_install should read twai_in_reset 1 and stdby_out 1. After a power-on the
  * clock is off and the peripheral is held in reset (clk.c:237), and the
  * controller's registers are not read.
+ *
+ * TEST EQUIPMENT, SO IT READS THE PIN (shared/boards SPEC B6). The snapshots
+ * read CAN_STDBY's output and enable bits straight from the GPIO registers,
+ * which no board call offers, so this file includes the board's board_pins.h
+ * and is on the project's list of files that still use pins (shared/tools
+ * SPEC R30). It is compiled only in the restart test build.
  */
 #include <stdint.h>
 #include <stdbool.h>
@@ -39,9 +45,13 @@
 #include "soc/system_reg.h"
 #include "soc/gpio_reg.h"
 
-#include "hw_config.h"
+#include "board_pins.h"
 #include "gi_restart_quiesce.h"
 #include "gi_restart_test.h"
+
+_Static_assert(CAN_STDBY_GPIO_NUM < 32,
+               "the snapshots read CAN_STDBY from GPIO_OUT_REG and "
+               "GPIO_ENABLE_REG, which cover GPIO0-31 only");
 
 static const char *TAG = "gi_restart_test";
 

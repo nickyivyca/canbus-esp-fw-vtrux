@@ -56,6 +56,7 @@
 #include "ver.h"
 #include "math.h"
 #include "dev_status.h"
+#include "hw_config.h"
 
 #define TAG 			  __func__
 

@@ -1,6 +1,14 @@
 ## IDF Component Manager Manifest File
 dependencies:
   espressif/mdns: "*"
+  # The board (shared/boards SPEC B1 and B2): the one shared/boards/*
+  # component, at the shared/main tag this project pins, from git, never
+  # through override_path. sdkconfig names its partition table by this
+  # dependency's managed_components/ folder, vtrux__wican_v3.
+  vtrux/wican_v3:
+    git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
+    path: shared/boards/wican_v3
+    version: "2026.10.27"
   ## Required IDF version
   idf:
     version: ">=4.1.0"
