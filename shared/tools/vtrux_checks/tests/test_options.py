@@ -114,9 +114,24 @@ class BoardSettings(unittest.TestCase):
         self.assertEqual(O.judge_required(REQUIRED, PROFILE, self.both(b=b), "build"), [])
 
     def test_required_option_missing_from_app(self):
-        for name in ("REQ", "CON_C"):
-            got = O.judge_required(REQUIRED, PROFILE, self.both(a=app(**{name: O.ABSENT})), "build")
-            self.assertIn("CONFIG_%s is not in the app's build folder's options" % name, got[0], name)
+        got = O.judge_required(REQUIRED, PROFILE, self.both(a=app(REQ=O.ABSENT)), "build")
+        self.assertEqual(got, ["a single option: CONFIG_REQ is not in the app's build folder's options"])
+
+    def test_choice_member_absent_not_judged(self):
+        """A member whose Kconfig dependencies are not met is not written, in any folder."""
+        a, b = app(CON_C=O.ABSENT), opts(CON_C=O.ABSENT)
+        self.assertEqual(O.judge_required(REQUIRED, PROFILE, self.both(a=a, b=b), "build"), [])
+
+    def test_choice_absent_from_app(self):
+        a = app(CON_A=O.ABSENT, CON_B=O.ABSENT, CON_C=O.ABSENT)
+        got = O.judge_required(REQUIRED, PROFILE, self.both(a=a), "build")
+        self.assertEqual(got, ["a choice: none of its choice's options is in the app's build folder's options "
+                               "(CONFIG_CON_A, CONFIG_CON_B, CONFIG_CON_C)"])
+
+    def test_choice_member_on_absent_from_app(self):
+        """The member the profile sets on missing from the app's folder: none there is on."""
+        got = O.judge_required(REQUIRED, PROFILE, self.both(a=app(CON_B=O.ABSENT)), "build")
+        self.assertEqual(got, ["a choice: build has 0 of its choice's options true (none)"])
 
 
 class Judge(unittest.TestCase):
