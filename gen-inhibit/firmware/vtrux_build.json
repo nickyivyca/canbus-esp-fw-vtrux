@@ -1,4 +1,4 @@
 {
   "project": "gen-inhibit",
-  "shared_components": []
+  "shared_components": ["vtrux/wican_v3"]
 }

@@ -34,7 +34,7 @@
 #include "lwip/sockets.h"
 #include "driver/twai.h"
 #include "can.h"
-#include "hw_config.h"
+#include "board.h"
 #include "gen_inhibit.h"
 #if GI_TEST_RESTART_QUIESCE
 /* Restart test build only, spec 12.4 -- see main/CMakeLists.txt. */
@@ -83,9 +83,17 @@ static can_cfg_t can_cfg = {.bus_state = END_BUS, .auto_bitrate = 0, .mask = 0xF
                                                                     .intr_flags = ESP_INTR_FLAG_LEVEL1}
 
 
-static const twai_general_config_t g_config_normal = TWAI_GENERAL_CONFIG_DEFAULT(TX_GPIO_NUM, RX_GPIO_NUM, TWAI_MODE_NORMAL);
-static const twai_general_config_t g_config_silent = TWAI_GENERAL_CONFIG_DEFAULT(TX_GPIO_NUM, RX_GPIO_NUM, TWAI_MODE_LISTEN_ONLY);
-//static const twai_general_config_t g_config_no_ack = TWAI_GENERAL_CONFIG_DEFAULT(TX_GPIO_NUM, RX_GPIO_NUM, TWAI_MODE_NO_ACK);
+/*
+ * THE BOARD'S CAN PORT 0 (shared/boards SPEC B5; port step 1a). This file asks
+ * the board for the port's TWAI pins and drives its standby line through it,
+ * never by pin number. The configs below carry no pins: the local copy in
+ * can_enable() takes them from board_twai_pins() just before the install.
+ */
+#define CAN_BOARD_PORT		0
+
+static const twai_general_config_t g_config_normal = TWAI_GENERAL_CONFIG_DEFAULT(TWAI_IO_UNUSED, TWAI_IO_UNUSED, TWAI_MODE_NORMAL);
+static const twai_general_config_t g_config_silent = TWAI_GENERAL_CONFIG_DEFAULT(TWAI_IO_UNUSED, TWAI_IO_UNUSED, TWAI_MODE_LISTEN_ONLY);
+//static const twai_general_config_t g_config_no_ack = TWAI_GENERAL_CONFIG_DEFAULT(TWAI_IO_UNUSED, TWAI_IO_UNUSED, TWAI_MODE_NO_ACK);
 
 static twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
@@ -222,6 +230,10 @@ void can_enable(void)
 	twai_general_config_t g_config = can_cfg.silent ? g_config_silent
 	                                                : g_config_normal;
 	g_config.rx_queue_len = CAN_RX_QUEUE_LEN;
+	board_twai_pins_t pins;
+	ESP_ERROR_CHECK(board_twai_pins(CAN_BOARD_PORT, &pins));
+	g_config.tx_io = pins.tx;
+	g_config.rx_io = pins.rx;
 
 #if GI_TEST_RESTART_QUIESCE
 	/* The far end of spec 3's "until the driver is installed again". */
@@ -233,7 +245,8 @@ void can_enable(void)
 	twai_clear_receive_queue();
 	can_unblock();
 	can_cfg.bus_state = ON_BUS;
-	gpio_set_level(CAN_STDBY_GPIO_NUM, 0);
+	/* Normal operation. "Not supported" is a board with no standby line. */
+	(void)board_can_standby(CAN_BOARD_PORT, false);
 }
 
 void can_disable(void)
@@ -253,7 +266,7 @@ void can_disable(void)
 
 	if(can_cfg.bus_state == ON_BUS)
 	{
-		gpio_set_level(CAN_STDBY_GPIO_NUM, 1);
+		(void)board_can_standby(CAN_BOARD_PORT, true);
 		can_block();
 		twai_stop();
 		twai_driver_uninstall();

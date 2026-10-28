@@ -58,19 +58,24 @@
  *      to clear it (reviewer's reading of the trial, 2026-10-13). The hook
  *      reads the two bits rather than assuming either.
  *
- *   2. STANDBY: CAN_STDBY (GPIO6 on this board) driven 1, the level main.c
- *      uses for standby. app_main writes 1 again (main.c:432-434) and holds it
- *      until can_enable() takes it to 0, so the transceiver is in standby from
- *      the hook until the bus is wanted. This half does not depend on the
- *      controller's state surviving; reset mode does not depend on the pin.
+ *   2. STANDBY: board_can_standby(0, true), the board's restart-safe call
+ *      (shared/boards SPEC B5): one register write, in IRAM. On wican_v3 it
+ *      drives the transceiver's STBY, GPIO6, to 1. app_main's board_can_init()
+ *      puts it in standby again and it stays there until can_enable() takes it
+ *      out, so the transceiver is in standby from the hook until the bus is
+ *      wanted. This half does not depend on the controller's state surviving;
+ *      reset mode does not depend on the pin. The record's did_stdby says
+ *      whether the board did it: a board with no standby line answers "not
+ *      supported".
  *
  * THE RECORD is written in every build, so that the test build runs exactly
  * the hook a prod build runs. Only a test build reads it (gi_restart_test.c).
  *
  * IRAM, AND NOTHING THAT NEEDS THE CACHE. The wrapper and what it calls are in
- * IRAM or ROM, and it touches registers and the RTC record only. Its callers
- * have the cache enabled when they get here, but the real function disables
- * it, and nothing here should depend on where that line is.
+ * IRAM or ROM (board_can_standby() by B5), and it touches registers and the
+ * RTC record only. Its callers have the cache enabled when they get here, but
+ * the real function disables it, and nothing here should depend on where that
+ * line is.
  */
 #include <stdint.h>
 #include <stdbool.h>
@@ -83,15 +88,10 @@
 #include "hal/twai_ll.h"
 #include "soc/soc.h"
 #include "soc/system_reg.h"
-#include "soc/gpio_reg.h"
 
-#include "hw_config.h"
+#include "board.h"
 #include "gen_inhibit.h"
 #include "gi_restart_quiesce.h"
-
-_Static_assert(CAN_STDBY_GPIO_NUM < 32,
-               "the hook drives CAN_STDBY through GPIO_OUT_W1TS_REG, which "
-               "covers GPIO0-31 only");
 
 #define QZ_WAIT_MAX_US  1000u
 #define QZ_WAIT_STEP_US 2u
@@ -190,8 +190,7 @@ void IRAM_ATTR __wrap_esp_restart_noos(void)
         r.did_twai  = 1;
     }
 
-    REG_WRITE(GPIO_OUT_W1TS_REG, BIT(CAN_STDBY_GPIO_NUM));
-    r.did_stdby = 1;
+    r.did_stdby = (board_can_standby(0, true) == ESP_OK) ? 1u : 0u;
 
     r.check = qz_sum(&r);
     s_rec = r;

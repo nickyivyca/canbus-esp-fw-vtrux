@@ -34,6 +34,7 @@
  #include "config_server.h"
  #include "dev_status.h"
  #include "ota_health.h"
+ #include "board.h"
  
  #define WIFI_CONNECTED_BIT 			BIT0
  #define WIFI_FAIL_BIT     			BIT1
@@ -371,15 +372,12 @@
          ESP_LOGE(WIFI_TAG, "Failed to set hostname: %s", esp_err_to_name(hostname_err));
      }
      
+     /* The hotspot's address, which is also its gateway, and netmask are the
+      * board's (shared/boards SPEC B5 and section 2, "Per-model values"). */
      esp_netif_ip_info_t ipInfo;
-     #if HARDWARE_VER == WICAN_PRO
-     IP4_ADDR(&ipInfo.ip, 192,168,0,10);
-     IP4_ADDR(&ipInfo.gw, 192,168,0,10);
-     #else
-     IP4_ADDR(&ipInfo.ip, 192,168,80,1);
-     IP4_ADDR(&ipInfo.gw, 192,168,80,1);
-     #endif
-     IP4_ADDR(&ipInfo.netmask, 255,255,255,0);
+     ESP_ERROR_CHECK(esp_netif_str_to_ip4(BOARD_AP_IP_ADDR, &ipInfo.ip));
+     ESP_ERROR_CHECK(esp_netif_str_to_ip4(BOARD_AP_IP_ADDR, &ipInfo.gw));
+     ESP_ERROR_CHECK(esp_netif_str_to_ip4(BOARD_AP_NETMASK, &ipInfo.netmask));
      esp_netif_dhcps_stop(ap_netif);
      esp_netif_set_ip_info(ap_netif, &ipInfo);
      esp_netif_dhcps_start(ap_netif);

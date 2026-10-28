@@ -51,6 +51,10 @@
 #include "autopid.h"
 #include "wc_mdns.h"
 #include "hw_config.h"
+/* The LEDs and the Bluetooth-enable input below still go by pin, so this file
+ * is on the project's list of stock files that still use pins (shared/tools
+ * SPEC R30, shared/boards B6). The CAN port goes through board.h. */
+#include "board_pins.h"
 #include "dev_status.h"
 #include "ota_health.h"
 #include "gen_inhibit.h"
@@ -459,9 +463,9 @@ void app_main(void)
 	gpio_set_level(CONNECTED_LED_GPIO_NUM, 1);
 	gpio_set_level(ACTIVE_LED_GPIO_NUM, 1);
 
-    gpio_reset_pin(CAN_STDBY_GPIO_NUM);
-    gpio_set_direction(CAN_STDBY_GPIO_NUM, GPIO_MODE_OUTPUT);
-    gpio_set_level(CAN_STDBY_GPIO_NUM, 1);
+    /* The CAN port's standby line, an output in standby until can_enable()
+     * (shared/boards B5). "Not supported" is a board with no standby line. */
+    (void)board_can_init(0);
 
     xMsg_Rx_Queue = xQueueCreate(16, sizeof( xdev_buffer) );
     xMsg_Tx_Queue = xQueueCreate(16, sizeof( xdev_buffer) );
@@ -624,7 +628,7 @@ void app_main(void)
 		{
 			ESP_LOGI(TAG, "Failed to extract firmware version");
 		}
-		sprintf(hardware_version, "WiCAN-%s", HARDWARE_VERSION);
+		snprintf(hardware_version, sizeof(hardware_version), "WiCAN-%s", board_hw_name());
 		ESP_LOGI(TAG, "Hardware version: %s", hardware_version);
 
         if(strstr(running_app_info.project_name, "usb") != 0)

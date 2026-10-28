@@ -9,12 +9,14 @@
  * worse than no test: it reports safety it has not checked.
  *
  * So main/can.c is compiled as-is now, and this file provides only what the
- * platform would: an event group, a GPIO, and the queues it declares. If
- * can.c's dependencies grow, add stubs here rather than copying behaviour.
+ * platform would: an event group, a GPIO, the board, and the queues it
+ * declares. If can.c's dependencies grow, add stubs here rather than copying
+ * behaviour.
  */
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "driver/gpio.h"
+#include "board.h"
 
 #include <stdint.h>
 #include <stddef.h>
@@ -50,7 +52,32 @@ EventBits_t xEventGroupWaitBits(EventGroupHandle_t g, EventBits_t bits,
     return g_bits;
 }
 
-/* The transceiver standby line. Recorded so a case could assert on it. */
+/* The board (mock/board.h), as wican_v3: one TWAI port, TX GPIO0 and RX
+ * GPIO3, and its transceiver's standby line, recorded so a case can assert
+ * on it. */
+static int g_board_standby = -1;
+
+esp_err_t board_twai_pins(int port, board_twai_pins_t *out)
+{
+    if (port != 0 || out == NULL) return ESP_ERR_INVALID_ARG;
+    out->tx = 0;
+    out->rx = 3;
+    return ESP_OK;
+}
+
+esp_err_t board_can_standby(int port, bool on)
+{
+    if (port != 0) return ESP_ERR_INVALID_ARG;
+    g_board_standby = on ? 1 : 0;
+    return ESP_OK;
+}
+
+int fake_board_standby(void)
+{
+    return g_board_standby;
+}
+
+/* GPIO levels, for whatever still drives a pin directly. */
 static int g_gpio_level[64];
 
 int gpio_set_level(gpio_num_t pin, uint32_t level)
