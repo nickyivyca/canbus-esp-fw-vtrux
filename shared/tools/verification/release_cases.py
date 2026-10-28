@@ -276,6 +276,10 @@ def self_test():
     ok &= self_test_epoch_env()
     ok &= self_test_layout(I.scratch("release-cases-selftest-layout"))
     ok &= self_test_shared(I.scratch("release-cases-selftest-shared"))
+    rc, out = run([sys.executable, "-c", "print('PASS R30'); print('x')"])
+    good = rc == 0 and out == "PASS R30\nx\n"
+    print("  %s run(): a child's lines end in LF alone, so a judge's ^...$ matches them: %r" % ("ok  " if good else "FAIL", out))
+    ok &= good
     print("\nself-test: %s" % ("every broken input caught, the faithful one passed" if ok else "FAILED"))
     return 0 if ok else 1
 
@@ -285,7 +289,7 @@ def self_test():
 def run(cmd, cwd=None, env=None, log=None, check=False, timeout=7200):
     t0 = time.time()
     p = subprocess.run(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
-    out = p.stdout.decode("utf-8", "replace")
+    out = p.stdout.decode("utf-8", "replace").replace("\r\n", "\n")      # a Windows child prints CRLF
     if log:
         with open(log, "a", encoding="utf-8") as f:
             f.write("$ %s  (in %s)\n%s\n[exit %d, %.0f s]\n\n" % (" ".join(cmd), cwd or os.getcwd(), out, p.returncode,

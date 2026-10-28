@@ -46,9 +46,11 @@ there is VOID.
                        partitions.csv, storage 296K, in sdkconfig): fails on the table
     flash_larger       a release build of a commit setting the committed sdkconfig's flash size
                        to 8MB: fails on the flash size (both headers), and on nothing else
-    s3_pass            the minimal project set to esp32s3, its own partition table committed as
-                       the reference, its own flash size as the board's: passes, the prefix
-                       xtensa-esp32s3-elf-; and the R17 scope check passes on it (--release)
+    s3_pass            the minimal project set to esp32s3, taking an esp32s3 board from git at a
+                       tag (a scratch repo, the tag fetched into the mini's; since C) whose
+                       reference is the mini's own partition table and whose flash size is the
+                       mini's: passes, the prefix xtensa-esp32s3-elf-; and the R17 scope check
+                       passes on it (--release)
     s3_board_c3        the same build, the board's target esp32c3: fails on the target
     s3_elf_reader      not R21: R20's ELF reader (test_switches.py's test_as_nm) on the esp32s3
                        build's ELF, against that toolchain's nm (the build's monitor_toolprefix)
@@ -338,6 +340,19 @@ def self_test_built(d, old):
                          sorted(lockfile.parse(lock_without(lock_with(old, real), BOARD))) == sorted(lockfile.parse(old)))):
         print("  %s built board: %s" % ("ok  " if good else "FAIL", label))
         ok &= bool(good)
+    s3 = os.path.join(d, "s3")
+    RC.run(["git", "init", "-q", "-b", "fixture", s3], check=True)
+    for label, entries, want in (("another board's name", {S3_BOARD: dict(GIT_SOURCE, path="shared/boards/s3fx")}, S3_BOARD),
+                                 ("two git boards: none", {BOARD: GIT_SOURCE, S3_BOARD: dict(GIT_SOURCE, path="shared/boards/s3fx")}, None),
+                                 ("a git entry outside shared/boards/: none", {S3_BOARD: dict(GIT_SOURCE, path="shared/x/s3fx")}, None)):
+        with open(os.path.join(s3, "dependencies.lock"), "w", newline="\n") as f:
+            f.write(lock_with(old, entries))
+        RC.git(s3, "add", "-A")
+        RC.git(s3, "commit", "-q", "-m", label)
+        got = lock_board(s3)
+        good = got == want and (want is None or board_dir(s3) == os.path.join(s3, "managed_components", "vtrux__s3fx"))
+        print("  %s lock_board, %s: %s" % ("ok  " if good else "FAIL", label, got))
+        ok &= good
     return ok
 
 
@@ -380,20 +395,27 @@ def lock_without(text, name):
     return "\n".join(lines[:i] + lines[j:])
 
 
-def board_dir(proj):
-    return os.path.join(proj, "managed_components", BOARD.replace("/", "__", 1))
-
-
-def built_board(proj):
-    """True when the project's committed dependencies.lock has the board's git entry, as since port
-    step 1a C: the release build downloads the board, so a case changes that copy (kept aside after
-    each build, kept_dir) instead of planting --board, and leaves the lock's entry as it is."""
+def lock_board(proj):
+    """The name of the one git shared/boards/* entry in the project's committed dependencies.lock,
+    else None: since port step 1a C the release build downloads the board (the fixture's
+    vtrux/wican_v3, the esp32s3 mini's S3_BOARD), so a case changes that copy (kept aside after each
+    build, kept_dir) instead of planting --board, and leaves the lock's entry as it is."""
     import yaml
     rc, text = RC.run(["git", "-C", proj, "show", "HEAD:./dependencies.lock"])
     if rc:
-        return False
-    src = (((yaml.safe_load(text) or {}).get("dependencies") or {}).get(BOARD) or {}).get("source") or {}
-    return src.get("type") == "git" and src.get("path") == GIT_SOURCE["path"]
+        return None
+    deps = (yaml.safe_load(text) or {}).get("dependencies") or {}
+    names = [n for n, e in deps.items() if isinstance(e, dict) and (e.get("source") or {}).get("type") == "git"
+             and str((e.get("source") or {}).get("path", "")).startswith("shared/boards/")]
+    return names[0] if len(names) == 1 else None
+
+
+def built_board(proj):
+    return lock_board(proj) is not None
+
+
+def board_dir(proj):
+    return os.path.join(proj, "managed_components", (lock_board(proj) or BOARD).replace("/", "__", 1))
 
 
 def kept_dir(proj):
@@ -442,7 +464,7 @@ def plant(ctx, proj, edit=None, extra=None, entries=None):
     if not built:
         text = lock_with(read(lp, "r"), entries if entries is not None else {BOARD: GIT_SOURCE})
     elif entries is not None:
-        text = lock_with(lock_without(read(lp, "r"), BOARD), entries)
+        text = lock_with(lock_without(read(lp, "r"), lock_board(proj)), entries)
     else:
         text = None
     if text is not None:
@@ -637,27 +659,74 @@ def c_flash_larger(ctx, log):
                    lambda w, r: w == ["flash"] and r[5] == (FLASH_FIELD["8MB"],) * 2 and r[6] == "8MB")
 
 
+S3_BOARD = "vtrux/s3fx"
+S3_TAG = "2026.10.28"
+
+
+def s3_board_repo(ctx, table, flash_size):
+    """A scratch repository beside the mini holding shared/boards/s3fx at the annotated tag S3_TAG
+    (shared/boards B1: a board change is tried at a tag, if need be in a scratch repo): board.json
+    for the esp32s3 mini, the mini's own default partition table as its reference, and a component
+    with no sources. Its path."""
+    repo = os.path.join(os.path.dirname(ctx.mini), "s3board")
+    RC.rmtree(repo)
+    d = os.path.join(repo, "shared", "boards", "s3fx")
+    os.makedirs(d)
+    with open(os.path.join(d, "board.json"), "w", newline="\n") as f:
+        json.dump({"target": "esp32s3", "flash_size": flash_size, "partition_table": "pt-s3.bin", "required": [],
+                   "hardware_name": "S3 fixture"}, f, indent=2)
+    with open(os.path.join(d, "pt-s3.bin"), "wb") as f:
+        f.write(table)
+    with open(os.path.join(d, "CMakeLists.txt"), "w", newline="\n") as f:
+        f.write("idf_component_register()\n")
+    with open(os.path.join(d, "idf_component.yml"), "w", newline="\n") as f:
+        f.write('description: "board_cases.py esp32s3 fixture board"\ntargets:\n  - esp32s3\n')
+    RC.run(["git", "init", "-q", "-b", "main", repo], check=True)
+    RC.git(repo, "add", "-A")
+    RC.git(repo, "commit", "-q", "-m", "s3fx: the esp32s3 mini's board")
+    RC.git(repo, "tag", "-a", "-m", "s3fx board", S3_TAG)
+    return repo
+
+
 def s3_mini(ctx, log):
-    """The minimal project on branch r21-s3: set to esp32s3, reproducible build on, its own default
-    partition table committed as ref/pt-s3.bin, tracked files as the reconfigure writes them."""
+    """The minimal project on branch r21-s3: set to esp32s3, reproducible build on, taking S3_BOARD
+    from git at S3_TAG (s3_board_repo, with the mini's own default partition table and flash size),
+    the tag fetched into the mini's repository, where R17 resolves it, and listed in vtrux_build.json
+    as the fixture lists its board; tracked files as the reconfigure writes them."""
     if not os.path.exists(os.path.join(ctx.mini, ".git")):
         RC.make_mini(ctx)
     RC.reset(ctx.mini, "main", "main")
     RC.git(ctx.mini, "checkout", "-q", "-f", "-B", "r21-s3", "main")
     RC.rmtree(os.path.join(ctx.mini, "build"))
+    RC.rmtree(os.path.join(ctx.mini, "managed_components"))
     for args in (("set-target", "esp32s3"), ("partition-table",)):
         rc, _ = RC.idf(ctx, ctx.mini, *args, log=log)
         if rc:
             raise RuntimeError("mini esp32s3: idf.py %s failed" % " ".join(args))
     RC.set_repro(ctx.mini)
-    os.makedirs(os.path.join(ctx.mini, "ref"), exist_ok=True)
-    shutil.copyfile(os.path.join(ctx.mini, "build", "partition_table", "partition-table.bin"),
-                    os.path.join(ctx.mini, "ref", "pt-s3.bin"))
+    table = read(os.path.join(ctx.mini, "build", "partition_table", "partition-table.bin"))
+    fs = _FLASHSIZE.findall(read(os.path.join(ctx.mini, "build", "config", "sdkconfig.h"), "r"))
+    if len(fs) != 1:
+        raise RuntimeError("mini esp32s3: %d flash sizes in sdkconfig.h" % len(fs))
+    repo = s3_board_repo(ctx, table, fs[0])
+    RC.git(ctx.mini, "fetch", "-q", repo, "refs/tags/%s:refs/tags/%s" % (S3_TAG, S3_TAG))
+    with open(os.path.join(ctx.mini, "main", "idf_component.yml"), "w", newline="\n") as f:
+        f.write('dependencies:\n  idf:\n    version: ">=5.0"\n  %s:\n    git: %s\n    path: shared/boards/s3fx\n'
+                '    version: "%s"\n' % (S3_BOARD, repo.replace(os.sep, "/"), S3_TAG))
+    vb = os.path.join(ctx.mini, "vtrux_build.json")
+    data = json.loads(read(vb, "r"))
+    data["shared_components"] = [S3_BOARD]
+    with open(vb, "w", newline="\n") as f:
+        f.write(json.dumps(data) + "\n")
+    rc, _ = RC.idf(ctx, ctx.mini, "reconfigure", log=log)
+    if rc:
+        raise RuntimeError("mini esp32s3: idf.py reconfigure with the board failed")
     RC.git(ctx.mini, "add", "-A")
-    RC.git(ctx.mini, "commit", "-q", "-m", "r21 case: esp32s3, its partition table as the reference")
+    RC.git(ctx.mini, "commit", "-q", "-m", "r21 case: esp32s3, the board %s from git at %s" % (S3_BOARD, S3_TAG))
     with open(log, "a") as fx:
         RC.normalise(ctx, ctx.mini, "r21-s3", fx)
-        fx.write("r21-s3: %s\n" % RC.git(ctx.mini, "rev-parse", "HEAD"))
+        fx.write("r21-s3: %s; board %s at %s, commit %s\n" % (RC.git(ctx.mini, "rev-parse", "HEAD"), S3_BOARD, S3_TAG,
+                                                            RC.ref(ctx.mini, "refs/tags/" + S3_TAG)))
 
 
 def c_s3_pass(ctx, log):
@@ -668,12 +737,13 @@ def c_s3_pass(ctx, log):
     if rc:
         RC.report("s3_pass", "VOID", "the release build failed (exit %d)" % rc, ctx.log)
         return
+    if lock_board(ctx.mini) != S3_BOARD:
+        RC.report("s3_pass", "VOID", "the mini's committed lock does not take %s from git" % S3_BOARD, ctx.log)
+        return
+    keep(ctx.mini)
     ctx.s3_built = True
-    fs = _FLASHSIZE.findall(read(os.path.join(ctx.mini, "build", "config", "sdkconfig.h"), "r"))
-    ctx.s3_board = {"target": "esp32s3", "partition_table": "pt-s3.bin", "flash_size": fs[0] if len(fs) == 1 else None}
-    ctx.s3_ref = {"pt-s3.bin": read(os.path.join(ctx.mini, "ref", "pt-s3.bin"))}
-    judge_case(ctx, "s3_pass", ctx.mini, log, ctx.s3_board, lambda w, r: w == [] and r[4] == "esp32s3", ctx.s3_ref)
-    unplant(ctx.mini)           # R17 judges the build as built; the planted board was not built
+    judge_case(ctx, "s3_pass", ctx.mini, log, None, lambda w, r: w == [] and r[4] == "esp32s3")
+    unplant(ctx.mini)
     rc, out = check(ctx.mini, log, "scope", "--release")
     RC.report("s3_pass (R17 scope)", "PASS" if rc == 0 and "PASS R17" in out else "FAIL",
               "scope --release on the esp32s3 build: exit %d" % rc, ctx.log)
@@ -681,8 +751,7 @@ def c_s3_pass(ctx, log):
 
 def c_s3_board_c3(ctx, log):
     if need(ctx, "s3_board_c3", "s3_built", "s3_pass"):
-        judge_case(ctx, "s3_board_c3", ctx.mini, log, dict(ctx.s3_board, target="esp32c3"),
-                   lambda w, r: w == ["target"], ctx.s3_ref)
+        judge_case(ctx, "s3_board_c3", ctx.mini, log, {"target": "esp32c3"}, lambda w, r: w == ["target"])
 
 
 def c_s3_elf_reader(ctx, log):

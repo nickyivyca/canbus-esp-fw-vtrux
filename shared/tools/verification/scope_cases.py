@@ -15,8 +15,8 @@ line and judges its exit code and whether its output names the planted file.
     version_edited    then its mdns manifest's version changed: fails (restored after)
     managed_unlisted  then a managed component the lock does not list: fails (removed after)
   R17's git clause (ruled 2026-10-27), on clean_release's build, each undone after; each needs
-  the board taken from git with its tag naming the lock's commit (else VOID), and fails both
-  ways naming managed_components/vtrux__wican_v3:
+  clean_release to have passed both ways and the board taken from git with its tag naming the
+  lock's commit (else VOID), and fails both ways naming managed_components/vtrux__wican_v3:
     git_lock_commit   the lock's board commit changed to the tag commit's parent
     git_tag_absent    the pinned tag deleted from the project's repository
     git_tag_branch    the tag deleted and a branch of its name made at its commit
@@ -116,11 +116,15 @@ def mentions(text, path):
 
 def two(ctx, name, proj, log, want, names=()):
     """Run the check both ways; want = {"release": rc, "bench": rc}. names (paths already
-    norm()ed, or component folder names) must appear in a failing run's output."""
+    norm()ed, or component folder names) must appear in a failing run's output. Returns the two
+    verdicts."""
+    verdicts = []
     for kind in ("release", "bench"):
         rc, out = check(ctx, proj, kind, log)
         v, d = judge(rc, out, want[kind], names if want[kind] == 1 else ())
         RC.report("%s --%s" % (name, kind), v, d, ctx.log)
+        verdicts.append(v)
+    return verdicts
 
 
 def bench_build(ctx, proj, log):
@@ -147,7 +151,7 @@ def c_clean_release(ctx, log):
         return
     with open(log, "a") as f:
         f.write("board facts (tag, its commit, its ref, the lock's commit): %s\n" % (board_facts(ctx),))
-    two(ctx, "clean_release", ctx.p1, log, {"release": 0, "bench": 0})
+    ctx.clean_passed = two(ctx, "clean_release", ctx.p1, log, {"release": 0, "bench": 0}) == ["PASS", "PASS"]
     ctx.clean_built = True
 
 
@@ -216,7 +220,7 @@ def self_test_git(d):
     RC.git(proj, "commit", "-q", "-m", "project")
 
     class C:
-        p1, clean_built, log = proj, True, os.path.join(d, "driver.log")
+        p1, clean_built, clean_passed, log = proj, True, True, os.path.join(d, "driver.log")
     calls = []
     real_two, real_report = two, RC.report
     reports = []
@@ -243,6 +247,12 @@ def self_test_git(d):
         good = before == ("2026.10.27", c1, RC.git(proj, "rev-parse", "refs/tags/2026.10.27"), c1) and before[2] != c1
         print("  %s board_facts: the tag, its commit, its (annotated) tag object, the lock's commit" % ("ok  " if good else "FAIL"))
         ok &= good
+        C.clean_passed = False
+        del calls[:], reports[:]
+        c_git_tag_absent(C, os.path.join(d, "case.log"))
+        good = not calls and reports and reports[0][1] == "VOID"
+        print("  %s clean_release built but did not pass: VOID, no check run" % ("ok  " if good else "FAIL"))
+        ok &= bool(good)
         C.clean_built = False
         del calls[:], reports[:]
         c_git_tag_absent(C, os.path.join(d, "case.log"))
@@ -273,9 +283,14 @@ def board_facts(ctx):
 def git_case(ctx, log, name, change, undo):
     """clean_release's build with the board's git facts changed by change(facts) -> trigger shown
     (else VOID), undone by undo(facts) whatever happens: R17 fails both ways, naming the board's
-    managed folder."""
+    managed folder. VOID unless clean_release passed both ways, since only then does naming the
+    folder show the change was seen."""
     if not getattr(ctx, "clean_built", False):
         RC.report(name, "VOID", "needs clean_release in the same batch", ctx.log)
+        return
+    if not getattr(ctx, "clean_passed", False):
+        RC.report(name, "VOID", "clean_release did not pass, and a failing clean build may name the board's "
+                  "folder already", ctx.log)
         return
     f = board_facts(ctx)
     if f is None or not f[1] or f[1] != f[3]:
