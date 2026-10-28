@@ -149,6 +149,24 @@ class Judge(unittest.TestCase):
         got = O.judge(PROFILE, {"build": opts(OFF=True), "build/bootloader": opts(OFF=True)})
         self.assertEqual(sorted(f for f, _, _, _ in got), ["build", "build/bootloader"])
 
+    def test_absent_elsewhere_not_judged(self):
+        b = opts(ON=O.ABSENT, NUM=O.ABSENT, STR=O.ABSENT, OFF=O.ABSENT)
+        self.assertEqual(O.judge(PROFILE, {"build": GOOD, "build/bootloader": b}, "build"), [])
+
+    def test_absent_from_app_fails(self):
+        for name in ("ON", "NUM", "STR"):
+            got = O.judge(PROFILE, {"build": opts(**{name: O.ABSENT}), "build/bootloader": GOOD}, "build")
+            self.assertEqual(got, [("build", "CONFIG_" + name, PROFILE["CONFIG_" + name][0], O.ABSENT)], name)
+
+    def test_present_elsewhere_still_judged(self):
+        got = O.judge(PROFILE, {"build": GOOD, "build/bootloader": opts(ON=False, OFF=True)}, "build")
+        self.assertEqual(got, [("build/bootloader", "CONFIG_OFF", O.UNSET, True),
+                               ("build/bootloader", "CONFIG_ON", True, False)])
+
+    def test_app_is_the_named_folder(self):
+        got = O.judge(PROFILE, {"build": GOOD, "build/bootloader": opts(ON=O.ABSENT)}, "build/bootloader")
+        self.assertEqual(got, [("build/bootloader", "CONFIG_ON", True, O.ABSENT)])
+
 
 class Common(unittest.TestCase):
     """R26 and R28's fixed options, whatever the profile names."""
@@ -362,6 +380,22 @@ class Build(unittest.TestCase):
         self.assertEqual(rc, 1, out)
         self.assertIn("build/bootloader: CONFIG_ON is false, the profile says true (spec 1)", out)
         self.assertNotIn("PASS R18", out)
+
+    def test_cli_absent_from_bootloader(self):
+        self.write("build/bootloader/config/sdkconfig.json", opts(ON=O.ABSENT, NUM=O.ABSENT))
+        rc, out = self.run_cli()
+        self.assertEqual(rc, 0, out)
+        self.assertIn("PASS R18", out)
+        self.write("build/config/sdkconfig.json", app(ON=O.ABSENT))
+        rc, out = self.run_cli()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("build: CONFIG_ON is absent, the profile says true (spec 1)", out)
+
+    def test_cli_r26_r28_absent_from_bootloader(self):
+        self.write("build/bootloader/config/sdkconfig.json", opts(BOOTLOADER_LOG_LEVEL=O.ABSENT))
+        rc, out = self.run_cli()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("build/bootloader: CONFIG_BOOTLOADER_LOG_LEVEL is absent, R28 says 1", out)
 
     def test_cli_fails_on_app_unset(self):
         self.write("build/config/sdkconfig.json", app(OFF=True))

@@ -44,7 +44,20 @@ def facts(**kw):
                    j(TOOL, "riscv32-esp-elf", "include", "stdio.h"), j(CMR, "Modules", "CMakeDetermineSystem.cmake")],
          "lock": {"espressif/mdns": {"version": "1.4.0", "source": {"type": "service"}},
                   "idf": {"version": "5.4.1", "source": {"type": "idf"}}},
-         "managed": {"espressif__mdns": "1.4.0"}, "folders": [j(PROJ, "build")]}
+         "managed": {"espressif__mdns": "1.4.0"}, "pins": {}, "tags": {}, "folders": [j(PROJ, "build")]}
+    f.update(kw)
+    return f
+
+
+SHA = "0123456789abcdef0123456789abcdef01234567"
+TAG = "2026.10.28"
+
+
+def git_facts(**kw):
+    """facts() with a board taken from git at a tag, as R17 wants it."""
+    lock = dict(facts()["lock"], **{"vtrux/b": {"version": SHA, "source": {"type": "git", "path": "shared/boards/b"}}})
+    f = facts(lock=lock, managed={"espressif__mdns": "1.4.0", "vtrux__b": None},
+              pins={"vtrux/b": [("main/idf_component.yml", TAG)]}, tags={TAG: SHA})
     f.update(kw)
     return f
 
@@ -84,6 +97,32 @@ class Judge(unittest.TestCase):
                          ["version"])
         self.assertEqual(rules(S.judge(facts(lock=None), "release")), ["version"])
 
+    def test_git_faithful(self):
+        self.assertEqual(S.judge(git_facts(), "release"), [])
+        self.assertEqual(S.judge(git_facts(tags={TAG: SHA.upper()}), "release"), [])
+
+    def test_git_each_fails(self):
+        two = [("main/idf_component.yml", TAG), ("components/x/idf_component.yml", "2026.10.29")]
+        for label, kw, want in (
+                ("own version", {"managed": {"espressif__mdns": "1.4.0", "vtrux__b": "1.0.0"}}, "a version of its own (1.0.0)"),
+                ("pinned nowhere", {"pins": {"vtrux/b": []}}, "no idf_component.yml of the project pins vtrux/b"),
+                ("pinned twice, apart", {"pins": {"vtrux/b": two}}, "pin vtrux/b at 2 versions"),
+                ("not a tag", {"tags": {TAG: None}}, "which is not a tag"),
+                ("another commit", {"tags": {TAG: "f" * 40}}, "records commit %s, but tag %s names %s" % (SHA, TAG, "f" * 40))):
+            got = S.judge(git_facts(**kw), "release")
+            self.assertEqual(rules(got), ["version"], label)
+            self.assertEqual(len(got), 1, (label, got))
+            self.assertIn(want, got[0][1], label)
+            self.assertIn("managed_components/vtrux__b: ", got[0][1], label)
+
+    def test_git_pinned_twice_alike(self):
+        same = [("main/idf_component.yml", TAG), ("components/x/idf_component.yml", TAG)]
+        self.assertEqual(S.judge(git_facts(pins={"vtrux/b": same}), "release"), [])
+
+    def test_service_clause_unchanged_beside_git(self):
+        got = S.judge(git_facts(managed={"espressif__mdns": "1.4.1", "vtrux__b": None}), "release")
+        self.assertEqual(got, [("version", "managed_components/espressif__mdns: version 1.4.1, dependencies.lock 1.4.0")])
+
     def test_empty_records_fail(self):
         for kw in ({"files": []}, {"toolchains": {}}, {"cmake_roots": []}):
             self.assertIn("records", rules(S.judge(facts(**kw), "bench")), kw)
@@ -118,6 +157,36 @@ class Readers(unittest.TestCase):
         self.assertEqual(S.manifest_version(os.path.join(self.d, "m2")), "2.0.1")
         self.assertIsNone(S.manifest_version(os.path.join(self.d, "m3")))
         self.assertIsNone(S.manifest_version(os.path.join(self.d, "m4")))
+
+    def test_git_pins(self):
+        proj = os.path.join(self.d, "proj")
+        subprocess.run(["git", "init", "-q", proj], check=True)
+        subprocess.run(["git", "-C", proj, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
+                        "--allow-empty", "-m", "x"], check=True)
+        head = subprocess.run(["git", "-C", proj, "rev-parse", "HEAD"], capture_output=True, text=True,
+                              check=True).stdout.strip()
+        subprocess.run(["git", "-C", proj, "-c", "user.name=t", "-c", "user.email=t@t", "tag", "-a", "-m", "t", TAG],
+                       check=True)    # annotated: its commit
+        subprocess.run(["git", "-C", proj, "branch", "br"], check=True)
+        dep = "dependencies:\n  vtrux/b:\n    git: https://example.invalid/r.git\n    path: shared/boards/b\n    version: %s\n"
+        self.write("proj/main/idf_component.yml", dep % TAG)
+        self.write("proj/components/c/idf_component.yml", dep % "br")
+        self.write("proj/components/d/idf_component.yml", "dependencies:\n  espressif/mdns: '1.4.0'\n")
+        self.write("proj/managed_components/vtrux__x/idf_component.yml", dep % "9.9.9")   # not the project's
+        self.write("outside/idf_component.yml", dep % "8.8.8")                           # not under the root
+        comps = {n: os.path.join(self.d, p) for n, p in (
+            ("main", "proj/main"), ("c", "proj/components/c"), ("d", "proj/components/d"),
+            ("vtrux__x", "proj/managed_components/vtrux__x"), ("o", "outside"), ("none", "proj/components/none"))}
+        lock = {"vtrux/b": {"version": head, "source": {"type": "git"}},
+                "espressif/mdns": {"version": "1.4.0", "source": {"type": "service"}}}
+        pins, tags = S.git_pins(proj, comps, lock)
+        self.assertEqual(pins, {"vtrux/b": [("components/c/idf_component.yml", "br"),
+                                            ("main/idf_component.yml", TAG)]})
+        self.assertEqual(tags, {TAG: head, "br": None})
+        self.assertEqual(S.git_pins(proj, comps, None), ({}, {}))
+        self.write("proj/main/idf_component.yml", "dependencies:\n  vtrux/b: {version: x}\n")
+        with self.assertRaises(S.ScopeError):
+            S.git_pins(proj, comps, lock)
 
     def test_build_folders(self):
         for rel in ("build/CMakeCache.txt", "build/build.ninja", "build/bootloader/CMakeCache.txt",

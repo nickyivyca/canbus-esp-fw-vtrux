@@ -14,11 +14,14 @@ vtrux_build's BuildDir.options() reads them. The release profile is the
         ...}}
 
 A value is true, an integer, a string, or "unset". Every option the profile
-names must have the profile's value in every build folder: "unset" passes
-when the option is absent or off (false); any other value must be present
-with that value and type (true is not 1). Options the profile does not name
-are free. The whole sdkconfig is not compared: R8 holds the build to the
-committed one.
+names must have the profile's value (shared/boards/spec-folders 6a00663,
+user 2026-10-27): "unset" passes when the option is absent or off (false) in
+every build folder; any other value must be in the app's build folder
+(build/) with that value and type (true is not 1), and has it in every other
+folder that has the option at all. A build folder holds only the options of
+the components it builds, so the bootloader's lacks many of the app's.
+Options the profile does not name are free. The whole sdkconfig is not
+compared: R8 holds the build to the committed one.
 
 false is refused in the profile: write "unset", which is what the spec means
 by an option being off. Every entry needs a non-empty "spec"; an entry with
@@ -46,21 +49,21 @@ profile need not list them (readings ruled by the gen-inhibit reviewer, 2026-10-
 A profile that names one of R26's or R28's options at another value, or
 CONFIG_FREERTOS_HZ as anything but an integer, is refused, naming the rule.
 
-SPEC R29 (shared/main 2f72a20), board settings. The board is the project's one
-shared/boards/* component, read from managed_components/ (boarddata.py;
-shared/boards/SPEC.md B2-B4):
+R26 and R28 are not R18: their options are judged in every build folder, absent
+included.
 
-  fixed     every option the board's sdkconfig.board names has the board's value
-            in the app's build folder (build/), and in every other build folder
-            that defines it. The bootloader's folder defines only the options of
-            the components it builds: its options are a subset of the app's, from
-            the same sdkconfig, so an option absent there is not judged there
-            ("unset" passes absent anyway).
+SPEC R29 (shared/boards/spec-folders 6a00663), board settings. The board is the
+project's one shared/boards/* component, read from managed_components/
+(boarddata.py; shared/boards/SPEC.md B2-B4):
+
+  fixed     every option the board's sdkconfig.board names has the board's value,
+            folder by folder as R18 judges: in the app's build folder, and in
+            every other build folder that has it.
   required  the profile names every setting board.json lists as required of the
             project: a single option with any value (R18 then holds the build to
             it); a choice with exactly one member true. Each option of a required
-            setting is in the app's build folder, and in every folder that
-            defines a choice's members exactly one is true, so a misspelt option
+            setting is in the app's build folder, and in every folder that has
+            any of a choice's members exactly one is true, so a misspelt option
             or a choice list that has gone stale fails.
 
 Release builds only; bench and dev builds are not checked. The check does
@@ -160,13 +163,17 @@ def show(v):
     return "absent" if v is ABSENT else json.dumps(v)
 
 
-def judge(profile, options):
-    """profile: read_profile()'s; options: {folder label: {name without CONFIG_: value}}.
+def judge(profile, options, app=None):
+    """profile: read_profile()'s; options: {folder label: {name without CONFIG_: value}}; app:
+    the app's build folder's label in options, where R18 judges an option absent from any other
+    folder as not there to judge; None (R26, R28) judges every folder, absent included.
     [(folder, option, want, got)] for every option not at the profile's value."""
     bad = []
-    for folder, opts in options.items():
+    for folder, opts in sorted(options.items()):
         for name, (want, _) in sorted(profile.items()):
             got = opts.get(name[len("CONFIG_"):], ABSENT)
+            if got is ABSENT and app is not None and folder != app:
+                continue
             if not meets(want, got):
                 bad.append((folder, name, want, got))
     return bad
@@ -174,17 +181,8 @@ def judge(profile, options):
 
 def judge_fixed(fixed, options, app):
     """R29, settings fixed by the board. fixed: {CONFIG_<NAME>: value} from sdkconfig.board; app:
-    the app's build folder's label in options. [(folder, option, want, got)]: not at the board's
-    value in the app's folder, or in another folder that defines it."""
-    bad = []
-    for folder, opts in sorted(options.items()):
-        for name, want in sorted(fixed.items()):
-            got = opts.get(name[len("CONFIG_"):], ABSENT)
-            if got is ABSENT and folder != app:
-                continue
-            if not meets(want, got):
-                bad.append((folder, name, want, got))
-    return bad
+    as judge()'s. [(folder, option, want, got)], judged as R18 judges the profile."""
+    return judge({name: (want, None) for name, want in fixed.items()}, options, app)
 
 
 def judge_required(required, profile, options, app):
@@ -296,11 +294,13 @@ def main(args):
         print("FAIL R18: cannot read the build or its profile: %s (R26, R27 and R28 not checked)" % e)
         return 1
     folders = sorted(options)
+    app = os.path.relpath(build_folders(args.build)[0], project).replace(os.sep, "/")
     failed = False
 
-    bad = judge(profile, options)
-    print("R18 options: %d option(s) in %s, %d build folder(s)" % (
-        len(profile), os.path.normpath(os.path.join(project, DATA_FILE)), len(options)))
+    bad = judge(profile, options, app)
+    print("R18 options: %d option(s) in %s, %d build folder(s); an option absent from a folder other "
+          "than the app's (%s) is not judged there" % (
+              len(profile), os.path.normpath(os.path.join(project, DATA_FILE)), len(options), app))
     for name, (want, spec) in sorted(profile.items()):
         got = ", ".join("%s %s" % (f, show(options[f].get(name[len("CONFIG_"):], ABSENT))) for f in folders)
         print("  %-44s profile %-8s  %s" % (name, label(want), got))
@@ -347,7 +347,6 @@ def main(args):
     else:
         print("PASS R27: %s %s (%s)" % (TICK, show(profile[TICK][0]), profile[TICK][1]))
 
-    app = os.path.relpath(build_folders(args.build)[0], project).replace(os.sep, "/")
     if not board_settings(project, options, profile, folders, app):
         failed = True
     return 1 if failed else 0
