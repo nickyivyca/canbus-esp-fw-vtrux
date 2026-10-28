@@ -4,31 +4,14 @@ cmake_minimum_required(VERSION 3.5)
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
-set(WICAN_V210 1)
-set(WICAN_V300 2)
-set(WICAN_USB_V100 3)
-set(WICAN_PRO 4)
-
-set(WICAN_V210_STR "OBD")
-set(WICAN_V300_STR "OBD")
-set(WICAN_USB_V100_STR "USB")
-set(WICAN_PRO_STR "OBD-PRO")
-
-# Set these without quotes, as they're string literals
-set(WICAN_V210_PREF "obd")
-set(WICAN_V300_PREF "obd")
-set(WICAN_USB_V100_PREF "usb")
-set(WICAN_PRO_PREF "obd_pro")
-
-add_definitions(-DWICAN_V210=${WICAN_V210})
-add_definitions(-DWICAN_V300=${WICAN_V300})
-add_definitions(-DWICAN_USB_V100=${WICAN_USB_V100})
-add_definitions(-DWICAN_PRO=${WICAN_PRO})
-
-add_definitions(-DWICAN_V210_STR="${WICAN_V210_STR}")
-add_definitions(-DWICAN_V300_STR="${WICAN_V300_STR}")
-add_definitions(-DWICAN_USB_V100_STR="${WICAN_USB_V100_STR}")
-add_definitions(-DWICAN_PRO_STR="${WICAN_PRO_STR}")
+# THE BOARD IS THE DEPENDENCY (shared/boards SPEC B1 and B2; port step 1a).
+# Stock WiCAN picked its hardware here with HARDWARE_VER and passed the model
+# numbers and the hardware name down as -D definitions. This project names
+# its board by its one shared/boards/* dependency, vtrux/wican_v3 in
+# main/idf_component.yml, and nowhere else: the pins and per-model values come
+# from the board's headers, the hardware name from board_hw_name(), and the
+# model numbers project_hardware_rev holds are in main/hw_config.h. The
+# partition table is the board's, through sdkconfig.
 
 # THE VERSION IS ESP-IDF'S OWN (spec 12.3 item 3, port step 0c; shared/tools
 # R4). Nothing here sets PROJECT_VER, there is no version.txt and project()
@@ -38,32 +21,14 @@ add_definitions(-DWICAN_PRO_STR="${WICAN_PRO_STR}")
 # labels (shared/tools R6): the image is named by its image hash, which 0x7F3
 # carries (spec 10).
 
-# Uncomment and use one of the following as needed
-# set(HARDWARE_VER ${WICAN_V210})
-set(HARDWARE_VER ${WICAN_V300})
-# set(HARDWARE_VER ${WICAN_USB_V100})
-# set(HARDWARE_VER ${WICAN_PRO})
-
-add_definitions(-DHARDWARE_VER=${HARDWARE_VER})
-
 set(PROJECT_PREF "wican-fw")
 
-# Set HW_PREF based on HARDWARE_VER
-if (HARDWARE_VER EQUAL ${WICAN_PRO})
-    set(HW_PREF "${WICAN_PRO_PREF}")
-    set(HW_VER "${WICAN_PRO_STR}")
-elseif (HARDWARE_VER EQUAL ${WICAN_USB_V100})
-    set(HW_PREF "${WICAN_USB_V100_PREF}")
-    set(HW_VER "${WICAN_USB_V100_STR}")
-elseif (HARDWARE_VER EQUAL ${WICAN_V210})
-    set(HW_PREF "${WICAN_V210_PREF}")
-    set(HW_VER "${WICAN_V210_STR}")
-else()
-    set(HW_PREF "${WICAN_V300_PREF}")
-    set(HW_VER "${WICAN_V300_STR}")
-endif()
-
-add_definitions(-DHARDWARE_VERSION="${HW_VER}")
+# The image name's model part, "obd" as stock names its OBD builds. It is
+# fixed here, not taken from the board: project() below runs before the
+# Component Manager fetches the board, and the name is this product's label,
+# which the build checks and records read (shared/tools R6). main.c reads
+# "usb" or "hv210" in it to set project_hardware_rev; "obd" gives WICAN_V300.
+set(HW_PREF "obd")
 
 # STOCK FEATURES, OFF IN THIS PRODUCT (spec 3.2 and 12.3 item 3, user
 # 2026-10-16). main/CMakeLists.txt is the shared code and defaults each switch
@@ -148,8 +113,8 @@ set(PRJ_BIN "${PROJECT_PREF}_${HW_PREF}${GI_ARM_SUFFIX}${GI_FAULT_SUFFIX}${GI_TE
 # to do.
 #
 # The name holds no commit (spec 12.3 item 3), so nothing in a build's tree
-# changes its length: the longest today is "wican-fw_obd_pro" (16) with "_auto",
-# "_flt" and "_rt", 28. It is kept for the suffix that would take it over 31,
+# changes its length: the longest today is "wican-fw_obd" (12) with "_auto",
+# "_flt" and "_rt", 24. It is kept for the suffix that would take it over 31,
 # which should produce this message instead of a static assert about a struct
 # field.
 #

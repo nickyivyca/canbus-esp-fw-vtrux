@@ -21,42 +21,23 @@
 
 #include "esp_err.h"
 
-#if HARDWARE_VER == WICAN_PRO
-#define FS_MOUNT_POINT              "/fatfs"
-#define TX_GPIO_NUM             	2
-#define RX_GPIO_NUM             	1
-#define CAN_STDBY_GPIO_NUM			38
+/* THE BOARD IS THE DEPENDENCY (shared/boards SPEC B1, B2 and B5; port step
+ * 1a). Stock WiCAN chose its pins and per-model values here by HARDWARE_VER,
+ * set in the top-level CMakeLists.txt. The project now names its board by its
+ * one shared/boards/* dependency, so HARDWARE_VER is gone:
+ *   - the pins are in the board's board_pins.h, which only the stock files on
+ *     the project's R30 list include (shared/tools SPEC R30);
+ *   - the per-model values, FS_MOUNT_POINT and the hotspot's address, are
+ *     macros in the board's board.h, included here so that stock code that
+ *     reads FS_MOUNT_POINT through this file builds unchanged. */
+#include "board.h"
 
-#define SDCARD_CLK                  21                 
-#define SDCARD_CMD                  47
-#define SDCARD_D0                   14
-#define SDCARD_D1                   13
-#define SDCARD_D2                   12
-#define SDCARD_D3                   48
-
-#define OBD_RESET_PIN           (GPIO_NUM_41)
-#define OBD_LED_EN_PIN          (GPIO_NUM_42)
-#define OBD_READY_PIN           (GPIO_NUM_7)    // High = Active, Low = Sleep
-// #define CONNECTED_LED_GPIO_NUM		41  //NC pin
-// #define ACTIVE_LED_GPIO_NUM			41  //NC pin
-// #define BLE_EN_PIN_NUM				42  //NC pin
-// #define PWR_LED_GPIO_NUM			41  //NC pin
-
-#define BUTTON_GPIO_NUM			    8
-#define IMU_INT_GPIO_NUM			3
-
-#else
-
-#define FS_MOUNT_POINT              "/spiffs"
-#define TX_GPIO_NUM             	0
-#define RX_GPIO_NUM             	3
-#define CONNECTED_LED_GPIO_NUM		8
-#define ACTIVE_LED_GPIO_NUM			9
-#define BLE_EN_PIN_NUM				5
-#define PWR_LED_GPIO_NUM			7
-#define CAN_STDBY_GPIO_NUM			6
-
-#endif
+/* Stock's model numbers, which project_hardware_rev (ver.h) holds at run time.
+ * They were -D definitions from the top-level CMakeLists.txt. */
+#define WICAN_V210                  1
+#define WICAN_V300                  2
+#define WICAN_USB_V100              3
+#define WICAN_PRO                   4
 
 esp_err_t hw_config_get_device_id(char *uid);
 

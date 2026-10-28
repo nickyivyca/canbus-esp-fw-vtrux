@@ -895,7 +895,7 @@ static esp_err_t check_status_handler(httpd_req_t *req)
 	} 
 
     sprintf(fver, "%ld.%02ld", firmware_ver_major, firmware_ver_minor);
-    sprintf(hver, "WiCAN-%s", HARDWARE_VERSION);
+    snprintf(hver, sizeof(hver), "WiCAN-%s", board_hw_name());
 
 	cJSON_AddStringToObject(root, "wifi_mode", device_config.wifi_mode);
 	cJSON_AddStringToObject(root, "ap_ch", device_config.ap_ch);
