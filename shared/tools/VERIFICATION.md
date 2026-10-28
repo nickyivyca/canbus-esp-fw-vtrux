@@ -605,11 +605,26 @@ run there could not read the build's profile, because that fixture carries no
 `vtrux_checks.json`, so it is not evidence. **Host:** NICKY-XPS, Python 3.14, Idle priority,
 run while the interposer's bench suite was paused. **Run files:**
 `$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/runs/checks_0bbe9ff_20261027/`;
-its `SHA256SUMS` (`eed6518f...fc4e501`) hashes the test and mutant outputs, the mutant script,
-and the two check logs.
+its `SHA256SUMS` (`5616df27...a5eb5a7a`) hashes the test and mutant outputs, the mutant scripts,
+the two check logs and the real-build R29 check with its script.
+
+**Then `499c31b`** (the gen-inhibit reviewer's reading, 2026-10-27, R29's text): a required
+choice's member absent from a folder is not judged, and the app's folder must have the choice
+(at least one member); a single required option must still be in the app's folder. Kconfig
+does not write a choice member whose dependencies are not met: in both c3 builds checked,
+`CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG` is absent beside a USB-Serial/JTAG primary, so
+`653ee07`'s rule that every member be in the app's folder would have failed the secondary
+console that `wican_v3` now requires (`shared/boards/wican-v3-data` `77c0151`, section 2 at
+`d196233`). `test_options.py` 65; 14 mutants of `options.py` each fail them
+(`mutants_499c31b_options.txt`, 19:34:39 to 19:35:00, during the interposer's suite with its
+tester's agreement). `r29_real.py` judges `77c0151`'s required settings, with a profile naming
+the USB-Serial/JTAG console, no secondary console and Bluetooth on, against the options of
+gen-inhibit `6926fb0`'s c3 build (`r29_real_prodstandin.txt`): R29's required settings and R18
+by folder pass, while R18 judged in every folder, the old reading, fails on `CONFIG_BT_ENABLED`
+absent from the bootloader's folder. The profile is the check's input, not gen-inhibit's.
 
 | Req | Result | What was tested |
 |---|---|---|
 | R18, by folder | **unit tests only** | Not yet on a real build; `options_cases.py` runs again with C's builds (gen-inhibit step 1a). |
-| R29, by folder and choices | **unit tests only** | As the entry above: real-build cases come with the first build that takes `wican_v3`. |
+| R29, by folder and choices | **unit tests only** | As the entry above: real-build cases come with the first build that takes `wican_v3`. `499c31b`'s judging was also run on a real build's options (above), which is not a release build of the board. |
 | R17, git components | **unit tests only** | No build takes a component from git yet; real-build cases come with C's builds. |
