@@ -373,6 +373,14 @@ same folder. The interposer's test evidence is
   clause would fail every shared component. Read as the lock's commit
   being the pinned tag's, with no `version` in the component's own
   manifest, so no second record can disagree with the tag.
+  - Readings (gen-inhibit reviewer, 2026-10-27, raised by the gen-inhibit
+    tester before writing the check, and shown to the user): the pinned
+    tag is the dependency's `version` in the manifests of the project's own
+    components that the build used (not those in `managed_components/`);
+    none, or two that differ, fails. It must resolve under `refs/tags/` in
+    the project's repository; a branch or a commit hash fails, even one
+    naming the lock's commit. The dependency's `git` URL is not checked:
+    the lock's commit must still be the tag's commit in this repository.
 - **Status:** complete.
 
 ### R18. Options

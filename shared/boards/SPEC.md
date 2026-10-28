@@ -5,7 +5,9 @@ approved by the user on 2026-10-26, in the gen-inhibit reviewer's session,
 and drafted that day by the gen-inhibit reviewer; B3 and B5 amended there
 2026-10-27, after the charge-interposer reviewer's read, and B1, B3 and B5
 again that day, after the gen-inhibit tester's reading of a real build and
-the gen-inhibit implementor's first build of `wican_v3`. The `x2` section (3) is
+the gen-inhibit implementor's first build of `wican_v3`; section 2's
+console members listed 2026-10-27, after the charge-interposer reviewer's
+read. The `x2` section (3) is
 drafted by the charge-interposer reviewer and ruled in its session. As a
 shared component's spec this follows port plan goal 20: the reviewer whose
 project needs a section drafts it, the user rules in that reviewer's
@@ -120,7 +122,15 @@ Requirements in section 1 are numbered B1 to B7. The numbers are stable.
     the stock v4.13 full flash set. The application slot is 1,781,760 bytes.
   - `CONFIG_TWAI_ERRATA_FIX_LISTEN_ONLY_DOM=y`.
 - **Required of the project:**
-  - the console;
+  - the console: ESP-IDF's pick-one "Channel for console output"
+    (esp_system Kconfig), with members `CONFIG_ESP_CONSOLE_UART_DEFAULT`,
+    `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG`, `CONFIG_ESP_CONSOLE_UART_CUSTOM`
+    and `CONFIG_ESP_CONSOLE_NONE` on the C3;
+  - the secondary console: ESP-IDF's pick-one "Channel for console
+    secondary output", with members `CONFIG_ESP_CONSOLE_SECONDARY_NONE`
+    and `CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG`. A USB-Serial/JTAG
+    primary forces it to none; a UART primary leaves it open, so it is
+    required;
   - the watchdogs' behaviour on a hang: `CONFIG_BOOTLOADER_WDT_DISABLE_IN_USER_CODE`
     and `CONFIG_ESP_TASK_WDT_PANIC`;
   - Bluetooth on or off: `CONFIG_BT_ENABLED`.
