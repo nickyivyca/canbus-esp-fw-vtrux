@@ -4,6 +4,7 @@
  *
  * Project code asks the board for a port, never for a pin. The pins are in
  * board_pins.h, which project code does not include (B6, shared/tools R30).
+ * The per-model values stock code uses at compile time are macros here.
  *
  * Return values: ESP_OK; ESP_ERR_INVALID_ARG for a port the board does not
  * have or a NULL out; ESP_ERR_NOT_SUPPORTED for a port that has no such
@@ -81,6 +82,13 @@ bool board_ble_enable_input(void);
 
 /* The hardware name, which a status page shows: "OBD". */
 const char *board_hw_name(void);
+
+/* Per-model values (B5, section 2), which upstream code sets per WiCAN model
+ * and uses at compile time. FS_MOUNT_POINT is upstream's name; the hotspot's
+ * have none upstream, and are dotted strings for esp_netif_str_to_ip4(). */
+#define FS_MOUNT_POINT              "/spiffs"           /* the storage partition */
+#define BOARD_AP_IP_ADDR            "192.168.80.1"      /* also the gateway */
+#define BOARD_AP_NETMASK            "255.255.255.0"
 
 #ifdef __cplusplus
 }

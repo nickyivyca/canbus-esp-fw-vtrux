@@ -9,13 +9,13 @@ The board component for the MeatPi WiCAN OBD, hardware v3: an ESP32-C3 with
 | File | What | Owner |
 |---|---|---|
 | `board.c` | the B5 calls for this board | the implementor of the project that needs the change |
-| `include/board.h` | the B5 interface: CAN ports, TWAI pins, SPI CAN, standby, the offered LEDs and input, the hardware name | the same |
+| `include/board.h` | the B5 interface: CAN ports, TWAI pins, SPI CAN, standby, the offered LEDs and input, the hardware name, the per-model values | the same |
 | `include/board_pins.h` | the pins, by upstream WiCAN's names (B6) | the same |
 | `sdkconfig.board` | the ESP-IDF options the hardware fixes (B3.1) | the same |
 | `partitions.csv` | the partition table, byte-identical to stock WiCAN v4.13 | the same |
 | `CMakeLists.txt`, `idf_component.yml`, `README.md` | the component itself | the same |
 | `board.json` | the checks' data (B4): target, flash size, the reference table's path, the settings required of the project, the hardware name | the tester of the project that needs the change |
-| the reference partition table `.bin` | what `partitions.csv` must build to (B4, `shared/tools` R21) | the same |
+| `stock-v4.13-partition-table.bin` | the reference partition table, extracted from the stock MeatPi v4.13 release: what `partitions.csv` must build to (B4, `shared/tools` R21) | the same |
 
 gen-inhibit's implementor and tester wrote them first, at gen-inhibit's port
 step 1a. Writing a file first does not make a project its owner.
@@ -36,7 +36,9 @@ records it as the project's one `shared/boards/*` component (B2). The name is
 fixed: `sdkconfig.board` names the partition table by its path from the
 project root, `managed_components/vtrux__wican_v3/partitions.csv`, so a
 project whose dependency had another name, or that took the component from a
-local folder (`override_path`), would not find it.
+local folder (`override_path`), would not find it. So every build, dev builds
+included, takes the board at a tag, and a board change is tried at a tag, in
+a scratch repo if need be (B1).
 
 The project's committed `sdkconfig` carries every option `sdkconfig.board`
 names, with the board's value; a release build is checked for them
@@ -65,6 +67,18 @@ Project code includes `board.h` and asks for a port, never a pin:
 - `board_ble_enable_input()`: the Bluetooth-enable input, GPIO5, true when it
   is low; set up as an input on first use.
 - `board_hw_name()`: `"OBD"`.
+
+The per-model values that stock WiCAN code sets per model and uses at compile
+time are macros in `board.h` (B5, SPEC section 2 "Per-model values"), so a
+second WiCAN model's board needs no change to project code:
+
+- `FS_MOUNT_POINT`: `"/spiffs"`, the `storage` partition, under upstream's
+  name.
+- `BOARD_AP_IP_ADDR`: `"192.168.80.1"`, the hotspot's address, which is also
+  its gateway.
+- `BOARD_AP_NETMASK`: `"255.255.255.0"`.
+
+The hotspot's two are dotted strings, for `esp_netif_str_to_ip4()`.
 
 `board_pins.h` holds the pins under upstream WiCAN's names (`TX_GPIO_NUM`,
 `CAN_STDBY_GPIO_NUM`, the LED names, `BLE_EN_PIN_NUM`), so stock code builds
