@@ -44,7 +44,8 @@ def project(board_folder, board_json=None):
     with open(os.path.join(BUILD, "project_description.json"), "w") as fh:
         json.dump({"project_path": TMP}, fh)
     if board_folder is not None:
-        dst = R.managed_folder(TMP)
+        # spelled here, not taken from board_ref: the name is fixed by the board's README
+        dst = os.path.join(TMP, "managed_components", "vtrux__wican_v3")
         os.makedirs(dst)
         board, table = R.read(board_folder)
         shutil.copyfile(table, os.path.join(dst, board["partition_table"]))

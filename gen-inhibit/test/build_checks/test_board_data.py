@@ -151,7 +151,8 @@ def main():
             ("not pinned", "dependencies:\n  espressif/mdns: '*'\n", None),
             ("another dependency's version below it", "dependencies:\n  vtrux/wican_v3:\n    path: p\n"
                                                       "  other/x:\n    version: 9.9.9\n", None),
-            ("a longer name", "dependencies:\n  vtrux/wican_v3x:\n    version: 1\n", None)):
+            ("a longer name", "dependencies:\n  vtrux/wican_v3x:\n    version: 1\n", None),
+            ("a name ending so", "dependencies:\n  other_vtrux/wican_v3:\n    version: 1\n", None)):
         got = R.parse_pin(text)
         checks.append(("the pin, %s: %s" % (label, got), got == want))
     try:
