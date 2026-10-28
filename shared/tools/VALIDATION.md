@@ -410,8 +410,10 @@ same folder. The interposer's test evidence is
     file by file, any file in the repository's git folder counts, the
     worktree's own and the clone's (option a of two; adding the clone's
     `HEAD` alone was turned down). The folder holds git's own records and
-    no source a compiler includes; another worktree, the worktree's
-    uncommitted files and any other outside header still fail.
+    no source a compiler includes (the clone's holds the other worktrees'
+    records too, under `worktrees/`); another worktree's checked-out
+    files, the worktree's uncommitted files and any other outside header
+    still fail.
 - **Status:** complete.
 
 ### R18. Options
