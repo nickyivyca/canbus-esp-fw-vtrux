@@ -381,6 +381,24 @@ same folder. The interposer's test evidence is
     the project's repository; a branch or a commit hash fails, even one
     naming the lock's commit. The dependency's `git` URL is not checked:
     the lock's commit must still be the tag's commit in this repository.
+- **Git's record of the checkout** (user, 2026-10-28, in the gen-inhibit
+  reviewer's session, raised by the gen-inhibit tester's real builds, F1 in
+  shared/tools VERIFICATION.md "Real builds of gen-inhibit's step 1a C"):
+  with no version set, IDF names the version with `git describe`. So that
+  CMake runs again when the commit moves, its
+  `tools/cmake/third_party/GetGitRevisionDescription.cmake` (IDF v5.4.1)
+  copies `HEAD`, and the branch file `HEAD` names (that branch's log when
+  the file is absent; `HEAD` alone when detached), into the build folder
+  with `configure_file`, so ninja records both as read. `git describe`
+  itself runs as a process, which ninja does not record. Since gen-inhibit's
+  port step 0d its project root is `gen-inhibit/firmware/`, and git's
+  folder is outside it; in a linked worktree it is in the anchor clone's
+  `.git/`. The files hold a branch name and a commit hash, no code, and R8
+  already holds a release build to its commit. Allowed as those files only
+  (option a of three). A fixed version would reverse gen-inhibit's version
+  ruling (its spec 12.3 item 3, port step 0c). Counting the whole
+  repository as the root would let a release build read uncommitted files
+  at the worktree's root, such as `scratch/`.
 - **Status:** complete.
 
 ### R18. Options
