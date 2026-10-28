@@ -17,6 +17,14 @@ gen-inhibit's spec is
   definitions in shared code; `shared/tools` R22 (user, 2026-10-25), every
   board's data in its own folder under `shared/boards/`; goal 20 items 7 and
   8, shared code only as a pinned tag.
+- **Dev builds at a tag, no layering** (user, 2026-10-27, in the
+  gen-inhibit reviewer's session, raised by the gen-inhibit implementor's
+  first build): ESP-IDF checks that an `SDKCONFIG_DEFAULTS` file exists in
+  `project()` (`project.cmake`), before the Component Manager downloads
+  anything (`build.cmake`), so a fresh checkout cannot layer a downloaded
+  board's `sdkconfig.board`. `CONFIG_PARTITION_TABLE_CUSTOM_FILENAME` can
+  name the downloaded `partitions.csv`, and does, so a board has no
+  `override_path` form.
 - **Status:** complete.
 
 ### B2. A project names its board by its dependency
@@ -70,6 +78,15 @@ gen-inhibit's spec is
   WiCAN sets from `HARDWARE_VER`; it is board data whether or not a project
   has a status page to show it (wording, user, 2026-10-27, raised by the
   charge-interposer reviewer: the X2 has none yet).
+- **Init call** (user, 2026-10-27, raised by the gen-inhibit implementor):
+  the standby line must be made an output before it is driven, which is
+  more than a register write; a start-up call keeps the restart path to
+  the one write it makes today.
+- **Per-model values** (user, 2026-10-27, raised by the gen-inhibit
+  implementor): upstream WiCAN picks the filesystem mount point and the
+  hotspot address by model at compile time (`hw_config.h`,
+  `wifi_network.c`). As board data, the WiCAN Pro can later be added with
+  no change to project code (goal 5).
 - **Status:** complete.
 
 ### B6. Pins in `include/board_pins.h`
@@ -103,6 +120,8 @@ gen-inhibit's spec is
     port, 2026-09-10);
   - pins and the hardware name: upstream WiCAN's `main/hw_config.h` and
     top-level `CMakeLists.txt`, `WICAN_V300` (read 2026-10-26);
+  - the per-model values: `hw_config.h`'s non-Pro `FS_MOUNT_POINT` and
+    `wifi_network.c`'s non-Pro hotspot address (read 2026-10-27);
   - standby polarity and the pull-up: gen-inhibit spec section 14 item 1,
     which describes the wiring (that section binds nothing), and the stock
     code, which sets GPIO6 high at boot and low on the bus (`main.c`,

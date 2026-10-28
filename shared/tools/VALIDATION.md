@@ -365,6 +365,14 @@ same folder. The interposer's test evidence is
   - Bench and dev `shared/` reads may come from any worktree of this repo or
     a `../shared-<tag>/` checkout (option a of two), so a bench build can test
     a shared change through `override_path` to the worktree it is made in.
+    A board cannot be (`shared/boards/SPEC.md` B1, 2026-10-27).
+- **Git-sourced components** (user, 2026-10-27, in the gen-inhibit
+  reviewer's session, raised by the gen-inhibit implementor's first build
+  of `wican_v3`): for a component taken from git, the Component Manager's
+  lock records the commit it resolved, not a version, so the manifest
+  clause would fail every shared component. Read as the lock's commit
+  being the pinned tag's, with no `version` in the component's own
+  manifest, so no second record can disagree with the tag.
 - **Status:** complete.
 
 ### R18. Options
