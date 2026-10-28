@@ -24,7 +24,7 @@
 /* THE BOARD IS THE DEPENDENCY (shared/boards SPEC B1, B2 and B5; port step
  * 1a). Stock WiCAN chose its pins and per-model values here by HARDWARE_VER,
  * set in the top-level CMakeLists.txt. The project now names its board by its
- * one shared/boards/* dependency, so HARDWARE_VER is gone:
+ * one dependency under shared/boards/, so HARDWARE_VER is gone:
  *   - the pins are in the board's board_pins.h, which only the stock files on
  *     the project's R30 list include (shared/tools SPEC R30);
  *   - the per-model values, FS_MOUNT_POINT and the hotspot's address, are
