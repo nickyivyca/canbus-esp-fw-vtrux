@@ -28,7 +28,7 @@ set(PROJECT_PREF "wican-fw")
 # Component Manager fetches the board, and the name is this product's label,
 # which the build checks and records read (shared/tools R6). main.c reads
 # "usb" or "hv210" in it to set project_hardware_rev; "obd" gives WICAN_V300.
-set(HW_PREF "obd")
+set(HW_PREF "obd")   # must match the board dependency, vtrux/wican_v3 in main/idf_component.yml
 
 # STOCK FEATURES, OFF IN THIS PRODUCT (spec 3.2 and 12.3 item 3, user
 # 2026-10-16). main/CMakeLists.txt is the shared code and defaults each switch
