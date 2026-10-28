@@ -275,14 +275,6 @@
       "reason": "#ifndef default in debug_logs_config.h",
       "kind": "default value"
     },
-    "HARDWARE_VER": {
-      "class": "shipping variant",
-      "reason": "the board, set by the top-level CMakeLists.txt (WICAN_V300 for the OBD); reviewer's ruling 2026-10-13"
-    },
-    "WICAN_PRO": {
-      "class": "shipping variant",
-      "reason": "the board id HARDWARE_VER is compared with (stock's other board); reviewer's ruling 2026-10-13"
-    },
     "PRJ_BIN_LEN": {
       "class": "not a switch",
       "reason": "computed by the build from the project name, used only to refuse a name over 31 characters; reviewer's ruling 2026-10-13",
