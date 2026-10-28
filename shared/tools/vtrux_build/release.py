@@ -63,9 +63,11 @@ In order, each refusal an exit, never a warning:
      not "local", and no idf_component.yml of the build gives it an
      override_path;
      R21, the board: dependencies.lock has exactly one shared/boards/*
-     component, a dependency whose source path, git or local, is a folder
-     directly under shared/boards/ (shared/boards SPEC B2). The board's
-     data is the checks' to read, not this script's;
+     component, a git source whose path is exactly shared/boards/<board>
+     or a local source whose path ends in it (shared/boards SPEC B2), and
+     by R16 it is the git one, whether or not the project lists it as
+     shared (B1). The board's data is the checks' to read, not this
+     script's;
   8. `idf.py --no-ccache build`, in the same run as 5 and the same R24
      environment, so a configure the build itself triggers is strict too
      and keeps the cache off. With --jobs N,
@@ -497,38 +499,53 @@ def check_shared_pins(proj, locks, manifests):
     return out
 
 
-# A board component's folder: directly under shared/boards/, as a git
-# source's path (from the repository's root) or a local source's path ends.
-BOARD_PATH = re.compile(r"(?:^|/)shared/boards/[^/]+$")
+# A board component's folder, directly under shared/boards/: a git source's
+# path is exactly that, from the repository's root; a local source's path
+# ends in it. vtrux_checks' boarddata.is_board draws the same line.
+BOARD_GIT_PATH = re.compile(r"^shared/boards/[^/]+$")
+BOARD_LOCAL_PATH = re.compile(r"(?:^|/)shared/boards/[^/]+$")
 
 
 def board_components(locks):
-    """{name: source path} of the dependencies.lock entries that are
-    shared/boards/* components: their source path, git or local, is a
-    folder directly under shared/boards/."""
+    """{name: source} of the dependencies.lock entries that are
+    shared/boards/* components: a git source whose path is exactly
+    shared/boards/<board>, or a local source whose path ends in it."""
     out = {}
     for name, entry in locks.items():
-        p = entry.get("source", {}).get("path")
-        if p and BOARD_PATH.search(p.replace("\\", "/").rstrip("/")):
-            out[name] = p
+        src = entry.get("source", {})
+        p = (src.get("path") or "").replace("\\", "/").rstrip("/")
+        if p.startswith("./"):
+            p = p[2:]
+        if src.get("type") == "git":
+            is_board = BOARD_GIT_PATH.match(p)
+        else:
+            is_board = src.get("type") == "local" and BOARD_LOCAL_PATH.search(p)
+        if is_board:
+            out[name] = src
     return out
 
 
 def check_one_board(locks):
     """R21 and shared/boards B2: the project names its board by its
     dependency, so dependencies.lock has exactly one shared/boards/*
-    component. Returns its name."""
+    component; and R16: it is taken from git at its pin, never from a local
+    folder, whether or not the project lists it as shared. Returns its
+    name."""
     boards = board_components(locks)
     if len(boards) != 1:
-        found = "".join("\n    %s (%s)" % (n, p)
-                        for n, p in sorted(boards.items()))
+        found = "".join("\n    %s (%s %s)" % (n, s.get("type"), s.get("path"))
+                        for n, s in sorted(boards.items()))
         raise Refused("dependencies.lock has %d shared/boards/* components, "
                       "and a release build has exactly one: the board, which "
                       "a project names by its dependency and nowhere else "
                       "(R21, shared/boards B2)%s"
                       % (len(boards), found and ":" + found))
-    (name, path), = boards.items()
-    ok("one board (R21)", "%s (%s)" % (name, path))
+    (name, src), = boards.items()
+    if src.get("type") != "git":
+        raise Refused("the board %s is taken from the local folder %s, not "
+                      "its pinned version (R16, shared/boards B1)"
+                      % (name, src.get("path")))
+    ok("one board (R21)", "%s (%s)" % (name, src.get("path")))
     return name
 
 
