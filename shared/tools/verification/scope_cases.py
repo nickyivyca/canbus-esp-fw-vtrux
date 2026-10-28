@@ -23,6 +23,10 @@ line and judges its exit code and whether its output names the planted file.
     git_own_version   the downloaded board's own idf_component.yml given a version
     outside_header    a bench build whose main.c includes a header from outside the
                       project root: fails --bench and --release, naming the header
+    detached_worktree a bench build in a detached linked worktree of the fixture clone, which
+                      reads the clone's HEAD beside its own (R17's git folder, ruled
+                      2026-10-28): passes both; VOID unless its CMakeFiles/git-data/head-ref
+                      holds the clone's HEAD and the worktree's own HEAD is a commit
     shared_override   a bench build taking the fx-r16 shared component by override_path
                       from a ../shared-fx/shared/ checkout: passes --bench, fails --release
     other_override    the same from ../elsewhere/, not a shared/ folder: fails both
@@ -81,6 +85,16 @@ def self_test():
                               ("crashes", (2, "Traceback", 0), "ERROR")):
         v = judge(*args)[0]
         print("  %s %s: %s" % ("ok  " if v == want else "FAIL", label, v))
+        ok &= v == want
+    sha, ref = b"0123456789abcdef0123456789abcdef01234567\n", b"ref: refs/heads/fixture\n"
+    for label, args, want in (("the clone's HEAD copied, the worktree detached", (sha, ref, ref), True),
+                              ("head-ref is the worktree's own HEAD", (sha, ref, sha), False),
+                              ("no head-ref", (sha, ref, None), False),
+                              ("the worktree on a branch", (ref, ref, ref), False),
+                              ("the clone detached at the same commit", (sha, sha, sha), False),
+                              ("no clone HEAD", (sha, None, ref), False)):
+        v = detached_read_clone_head(*args)[0]
+        print("  %s detached trigger, %s: %s" % ("ok  " if v == want else "FAIL", label, v))
         ok &= v == want
     ok &= self_test_git(RC.I.scratch("scope-cases-selftest-git"))
     print("\nself-test: %s" % ("every broken input caught" if ok else "FAILED"))
@@ -382,6 +396,50 @@ def c_outside_header(ctx, log):
     RC.reset(ctx.p1, "fixture")
 
 
+def detached_read_clone_head(own_head, clone_head, head_ref):
+    """(read, why): the build copied the clone's HEAD (its CMakeFiles/git-data/head-ref holds
+    the clone's HEAD bytes) while the worktree's own HEAD is detached (a commit, not a ref)."""
+    own, clone, got = [(b or b"").strip() for b in (own_head, clone_head, head_ref)]
+    if not re.fullmatch(rb"[0-9a-f]{40}", own):
+        return False, "the worktree's HEAD is not a detached commit: %r" % own[:60]
+    if clone == own:
+        return False, "the clone's HEAD is the worktree's, so a copy proves nothing"
+    if got != clone:
+        return False, "head-ref %r is not the clone's HEAD %r" % (got[:60], clone[:60])
+    return True, "head-ref is the clone's HEAD %r; the worktree's is %s" % (clone[:60].decode(errors="replace"),
+                                                                        own.decode())
+
+
+def c_detached_worktree(ctx, log):
+    RC.reset(ctx.p1, "fixture")
+    wt = os.path.join(ctx.root, "wtd")
+    RC.rmtree(wt)
+    RC.git(ctx.repo_p1, "worktree", "prune")
+    RC.git(ctx.repo_p1, "worktree", "add", "-q", "--detach", wt, "fixture")
+    try:
+        proj = RC.in_sub(wt, ctx.sub)
+        rc = bench_build(ctx, proj, log)
+        gd = RC.git(proj, "rev-parse", "--absolute-git-dir")
+        common = RC.git(proj, "rev-parse", "--path-format=absolute", "--git-common-dir")
+
+        def raw(*p):
+            try:
+                with open(os.path.join(*p), "rb") as f:
+                    return f.read()
+            except OSError:
+                return None
+        read, why = detached_read_clone_head(raw(gd, "HEAD"), raw(common, "HEAD"),
+                                             raw(proj, "build", "CMakeFiles", "git-data", "head-ref"))
+        with open(log, "a") as f:
+            f.write("detached worktree %s: git dir %s, clone's %s; build exit %d; %s\n" % (wt, gd, common, rc, why))
+        if rc or not read:
+            RC.report("detached_worktree", "VOID", "build exit %d; %s" % (rc, why), ctx.log)
+        else:
+            two(ctx, "detached_worktree", proj, log, {"release": 0, "bench": 0})
+    finally:
+        RC.git(ctx.repo_p1, "worktree", "remove", "--force", wt)
+
+
 def override(ctx, log, name, folder, want):
     """fx-r16 with its shared component copied to folder and taken from there by override_path."""
     RC.reset(ctx.p1, "fx-r16")
@@ -421,6 +479,7 @@ CASES = [("clean_release", c_clean_release), ("version_edited", c_version_edited
          ("managed_unlisted", c_managed_unlisted), ("git_lock_commit", c_git_lock_commit),
          ("git_tag_absent", c_git_tag_absent), ("git_tag_branch", c_git_tag_branch),
          ("git_own_version", c_git_own_version), ("outside_header", c_outside_header),
+         ("detached_worktree", c_detached_worktree),
          ("shared_override", c_shared_override), ("other_override", c_other_override)]
 
 

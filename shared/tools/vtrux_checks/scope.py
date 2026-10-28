@@ -15,11 +15,10 @@ come from one of:
     the toolchain whose compiler CMake chose (the folder above the bin/ that
     holds CMAKE_<LANG>_COMPILER in CMakeFiles/<version>/CMake<LANG>Compiler.cmake,
     for every language recorded), and CMAKE_ROOT (CMakeCache.txt);
-  - git's record of the checkout (shared/main d23964b, user 2026-10-28): HEAD in the git folder of the repository that holds the
-    project root, and, when HEAD names a branch, that branch's file and its
-    log. For a linked worktree HEAD is in its own git folder (git rev-parse
-    --git-dir) and the branch in the clone's (--git-common-dir). Nothing else
-    in either folder counts;
+  - the git folder of the repository that holds the project root, any file in
+    it (shared/main 642b4ae, user 2026-10-28): for a linked worktree, both
+    its own (git rev-parse --git-dir) and the clone's (--git-common-dir),
+    which holds the other worktrees' records too, under worktrees/;
   - for a bench or dev build only, shared/: the shared/ folder of any
     worktree of this repo (git worktree list, from the project root), or of
     a ../shared-<tag>/ checkout beside the worktree root.
@@ -55,7 +54,6 @@ from vtrux_build.builddir import BuildDir, BuildDirError
 
 _COMPILER = re.compile(r'^set\(CMAKE_([A-Z]+)_COMPILER "([^"]+)"\)', re.M)
 _VERSION = re.compile(r"""^version:\s*['"]?([^'"\s#]+)""", re.M)
-_HEAD_REF = re.compile(r"ref:\s*(refs/heads/\S+)\s*$")
 SHOW = 20
 
 
@@ -114,26 +112,14 @@ def shared_roots(project):
     return sorted(set(norm(r) for r in roots))
 
 
-def git_record(project):
-    """git's record of the checkout, which the build may read: HEAD in the git folder of the
-    repository that holds the project root (a linked worktree's own, --git-dir), and when HEAD
-    names a branch, that branch's file and its log in the clone's (--git-common-dir). Detached,
-    HEAD alone; outside a repository, nothing."""
+def git_folders(project):
+    """The git folder of the repository that holds the project root, whose files the build may
+    read: for a linked worktree, its own (--git-dir) and the clone's (--git-common-dir); one
+    folder otherwise; none outside a repository."""
     dirs = (_git(project, "rev-parse", "--git-dir", "--git-common-dir") or "").splitlines()
     if len(dirs) != 2:
         return []
-    gd, common = (os.path.join(project, d) for d in dirs)   # relative to the project root, or absolute
-    head = os.path.join(gd, "HEAD")
-    out = [head]
-    try:
-        with open(head, encoding="utf-8", errors="replace") as f:
-            m = _HEAD_REF.match(f.read())
-    except OSError:
-        m = None
-    if m:
-        ref = m.group(1).split("/")
-        out += [os.path.join(common, *ref), os.path.join(common, "logs", *ref)]
-    return sorted(set(norm(p) for p in out))
+    return sorted(set(norm(os.path.join(project, d)) for d in dirs))   # relative to the project root, or absolute
 
 
 def manifest_version(folder):
@@ -203,7 +189,7 @@ def collect(build):
             components["%s %s" % (os.path.relpath(f, folders[0]), n)] = d
     pins, tags = git_pins(project, components, lock)
     return {"project": norm(project), "idf": norm(idf), "toolchains": tools, "cmake_roots": sorted(croots),
-            "shared": shared_roots(project), "git_record": git_record(project), "files": sorted(files),
+            "shared": shared_roots(project), "git_folders": git_folders(project), "files": sorted(files),
             "lock": lock, "managed": managed, "pins": pins, "tags": tags, "folders": folders}
 
 
@@ -221,7 +207,8 @@ def judge(facts, kind):
         if any(under(p, s) for s in facts["shared"]):
             if kind == "release":
                 bad.append(("shared", p))
-        elif not (under(p, facts["project"]) or any(under(p, r) for r in idf) or p in facts["git_record"]):
+        elif not (under(p, facts["project"]) or any(under(p, r) for r in idf)
+                  or any(under(p, g) for g in facts["git_folders"])):
             bad.append(("outside", p))
     lock = facts["lock"]
     for name, version in sorted(facts["managed"].items()):
@@ -279,8 +266,8 @@ def main(args):
         print("  CMAKE_ROOT    %s" % d)
     for d in facts["shared"]:
         print("  shared/       %s  (%s)" % (d, "allowed" if args.kind == "bench" else "not allowed"))
-    for p in facts["git_record"]:
-        print("  git record    %s" % p)
+    for d in facts["git_folders"]:
+        print("  git folder    %s" % d)
     for name, v in sorted(facts["managed"].items()):
         print("  managed       %s %s" % (name, v))
     for name, found in sorted(facts["pins"].items()):
