@@ -104,3 +104,37 @@ message(STATUS "vtrux/wican: SLCAN_COMMANDS=${WICAN_SLCAN_COMMANDS} "
                "MQTT=${WICAN_FEATURE_MQTT} ELM327=${WICAN_FEATURE_ELM327} "
                "AUTOPID=${WICAN_FEATURE_AUTOPID} "
                "REALDASH=${WICAN_FEATURE_REALDASH}, board ${wican_boards}")
+
+# ROLLBACK REHEARSAL BUILD (W7), test-only, off by default -- an image that
+# deliberately fails its health gate:
+#
+#   idf.py -B build-otafault -DOTA_HEALTH_FAULT_INJECT=1 build
+#
+# A bare `idf.py -D` sets a CMake cache variable, not a preprocessor macro, so
+# without this forwarding ota_health.c's hook stays at 0 and the build is an
+# ordinary image with no fault in it, silently: a rehearsal that reports "it
+# did not roll back" about an image that was never faulty.
+#
+# The value is the BIT MASK of subsystems whose report is suppressed
+# (OTA_HEALTH_WIFI_AP = 1, OTA_HEALTH_HTTPD = 2, from ota_health.h).
+#
+# SUPPRESS EXACTLY ONE. The gate then logs `have 0x02, need 0x03 (missing 0x01)`,
+# which separates a gate that waited for a specific missing bit from a gate that
+# received nothing at all. Suppress both and `have 0x00` is equally consistent
+# with an event group that never worked.
+#
+# IT SUPPRESSES THE REPORT, NOT THE SUBSYSTEM. ota_health_report() is
+# intercepted at its entry; the SoftAP and the HTTP server are already up, so a
+# fault-injected image stays reachable over HTTP for its whole gate window and
+# after it, and can be replaced over the air.
+#
+# The image name is the project's: a project marks a fault build in it from
+# the same cache variable in its top-level CMakeLists.txt. Never flash a build
+# configured this way to a vehicle.
+if(OTA_HEALTH_FAULT_INJECT)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        OTA_HEALTH_FAULT_INJECT=${OTA_HEALTH_FAULT_INJECT})
+    message(STATUS "vtrux/wican: ota_health FAULT INJECTION ENABLED, mask "
+                   "${OTA_HEALTH_FAULT_INJECT} -- this image is built to fail "
+                   "its health gate and roll back")
+endif()

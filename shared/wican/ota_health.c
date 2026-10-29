@@ -24,9 +24,11 @@ static volatile EventBits_t s_pending_bits = 0;
  * and NOT by passing -DOTA_HEALTH_FAULT_INJECT to the compiler yourself. This
  * comment used to say the latter; `idf.py -D` sets a CMake cache variable, so
  * the macro below stayed at 0 and the build produced an ordinary image with no
- * warning. main/CMakeLists.txt now forwards the value as a real compile
- * definition and puts "_flt" in the image name, so a fault build is visible in
- * the filename and in esp_app_desc.project_name rather than only in behaviour.
+ * warning. This component's CMakeLists.txt now forwards the value as a real
+ * compile definition (SPEC.md W7), and a project can put a marker such as
+ * "_flt" in the image name from the same cache variable, so a fault build is
+ * visible in the filename and in esp_app_desc.project_name rather than only in
+ * behaviour.
  *
  * NOTE WHAT THIS DOES NOT DO: it suppresses the REPORT, not the subsystem. The
  * SoftAP and HTTP server are already up by the time their reports are
