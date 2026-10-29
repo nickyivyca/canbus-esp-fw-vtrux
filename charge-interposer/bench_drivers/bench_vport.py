@@ -1766,7 +1766,7 @@ def process_snapshot(path):
 
 
 def window(board, wit, node, seconds, command=None, label=None,
-           rows_dir=None):
+           rows_dir=None, from_command=False):
     """Clear both logs, optionally start a command, wait, return
     (rows, node_sent). The node's send log for the window is kept in
     node.window_log and the window's load in node.window_load (reviewer,
@@ -1776,7 +1776,11 @@ def window(board, wit, node, seconds, command=None, label=None,
     windows, then every witness window): the witness is read on for
     STAMP_DRAIN_S after the cut, and the rows kept, from the start's take,
     the cut's and the drain's, are those stamped within the node's window
-    (stamp_bounds). wit.window_stamp says what was kept and dropped;
+    (stamp_bounds). from_command: the board's frames come from the
+    command, so the window starts at the command if that is earlier than
+    the node's first send (user ruling 2026-10-28: the STALL burst goes
+    out before the node's first send). wit.window_stamp says what was kept
+    and dropped;
     wit.window_reader holds the reader's figures (reader_stats, the cut's
     and the drain's together) and wit.window_stamp_fault a TEST FAULT line
     when the reader fell behind or its stamps are not on this clock
@@ -1791,7 +1795,9 @@ def window(board, wit, node, seconds, command=None, label=None,
     node.take()
     node.take_fails()
     node.take_log()
+    t_cmd = None
     if command:
+        t_cmd = time.perf_counter()
         board.cmd(command)
     time.sleep(seconds)
     raw = wit.take()
@@ -1807,7 +1813,8 @@ def window(board, wit, node, seconds, command=None, label=None,
     time.sleep(STAMP_DRAIN_S)
     drained = wit.take()
     st_drain = getattr(wit, "stats", None)
-    lo, hi = stamp_bounds(node.window_log, t_w0, t_wcut)
+    lo, hi = stamp_bounds(node.window_log, t_w0, t_wcut,
+                          t_cmd if from_command else None)
     rows, wit.window_stamp = assign_by_stamp(pre, raw, drained, lo, hi)
     wit.window_bounds = (lo, hi)
     wit.window_reader = merge_stats(st_cut, st_drain)
@@ -1825,7 +1832,13 @@ def window(board, wit, node, seconds, command=None, label=None,
                        if HOST is not None else "")
     wit.window_saved = save_rows(rows, label or command, rows_dir)
     print("    diagnostic, witness: " + stamp_line(wit.window_stamp) + "; "
-          + reader_line(wit.window_reader, rows, lo, hi))
+          + reader_line(wit.window_reader, rows, lo, hi)
+          + ("; the window from the command (%s), %.1f ms before the "
+             "node's first send" % (command, 1000 * (
+                 min(x[3] for x in node.window_log) - t_cmd))
+             if from_command and t_cmd is not None and node.window_log
+             else "; the window from the command (%s), no node sends"
+             % command if from_command and t_cmd is not None else ""))
     if EDGE_DIAG:
         # diagnostic only (reviewer, 2026-10-25): after the cut, what the
         # witness and the node log next; the next window's start discards
@@ -1852,6 +1865,14 @@ EDGE_POST_S = 0.5   # how long after a window's cut its next rows are kept
 STAMP_DRAIN_S = 0.5     # the witness is read on this long after the cut
 STAMP_LEAD_S = 0.005    # a window starts this long before its first send call
 STAMP_TAIL_S = 0.100    # and ends this long after its last send returned
+# A window whose board frames come from its command starts at the command
+# when that is earlier (user ruling 2026-10-28; run 6019's vport-stall kept
+# 3 of the 16 STALL frames, the other 13 stamped before the node's first
+# send): the stall step, and the vport-listen windows that send a command
+# (the wrong-rate, flood and stall arms), where a board frame the command
+# let out must be seen. Not the FLOOD windows of steps 2 and m1, whose
+# flood runs the whole window and is judged on its rate and timing, nor
+# step 3's, which open FLOOD_SETTLE_S after the flood started.
 # the reader (user ruling 2026-10-25: it must keep up with a wrong-bit-rate
 # error storm, and a reader that falls behind must not pass): a row read
 # more than READER_LAG_TOL_S after its stamp faults the window, and so does
@@ -1861,14 +1882,17 @@ READER_LAG_TOL_S = 0.25
 STAMP_CLOCK_TOL_S = 0.005
 
 
-def stamp_bounds(log, t_lo, t_hi):
+def stamp_bounds(log, t_lo, t_hi, t_cmd=None):
     """-> (lo, hi): the node's window in witness-stamp time, from its first
     send call less STAMP_LEAD_S to its last send's return plus
     STAMP_TAIL_S; with no sends logged, [t_lo, t_hi] (the bench's own
-    window)."""
+    window). t_cmd, a window from its command: lo is the command if that
+    is earlier."""
     if log:
-        return (min(x[3] for x in log) - STAMP_LEAD_S,
-                max(x[4] for x in log) + STAMP_TAIL_S)
+        lo = min(x[3] for x in log) - STAMP_LEAD_S
+        if t_cmd is not None:
+            lo = min(lo, t_cmd)
+        return (lo, max(x[4] for x in log) + STAMP_TAIL_S)
     return t_lo, t_hi
 
 
@@ -2129,7 +2153,8 @@ def listen_window(board, wit, node, secs, name, cmds):
     node, the witness or the stamps' clock faulted the window."""
     if cmds:
         board.cmd(cmds[0])
-    rows, sent = window(board, wit, node, secs, cmds[1] if cmds else None)
+    rows, sent = window(board, wit, node, secs, cmds[1] if cmds else None,
+                        from_command=bool(cmds))
     board.cmd("STOP")
     ok, lines = score_listen(rows, sent)
     nfs = [nf for nf in (node_fault(node, "listen-only, " + name),
@@ -2643,7 +2668,8 @@ def run_bench(args):
             print("\n== 4 stalled task")
             wit = set_witness(wit, False)
             board.cmd("MODE normal")
-            rows, _s = window(board, wit, node, 2.0, "STALL %d" % STALL_N)
+            rows, _s = window(board, wit, node, 2.0, "STALL %d" % STALL_N,
+                              from_command=True)
             ok, _m, lines = score_stall(rows, STALL_N, acked=True)
             verdicts.append(("stall/acked", ok))
             for ln in lines:
@@ -2652,7 +2678,8 @@ def run_bench(args):
             if args.no_acker_ready:
                 node.close()
                 node = NoNode()
-                rows, _s = window(board, wit, node, 5.0, "STALL %d" % STALL_N)
+                rows, _s = window(board, wit, node, 5.0,
+                                  "STALL %d" % STALL_N, from_command=True)
                 board.cmd("STATUS")
                 ok, _m, lines = score_stall(rows, STALL_N, acked=False)
                 verdicts.append(("stall/no-acker", ok))
@@ -3681,6 +3708,82 @@ def self_test():
           "return + 100 ms -> %.4f..%.4f" % (lo, hi))
     check(stamp_bounds([], 3.0, 4.0) == (3.0, 4.0),
           "stamp window: no node log -> the bench's own window")
+    lo_c, hi_c = stamp_bounds(slog, 0.0, 1.0, 199.95)
+    check(abs(lo_c - 199.95) < 1e-9 and abs(hi_c - hi) < 1e-9
+          and stamp_bounds(slog, 0.0, 1.0, 199.999) == (lo, hi)
+          and stamp_bounds([], 3.0, 4.0, 3.5) == (3.0, 4.0),
+          "stamp window from the command: starts at the command when it "
+          "is earlier than the first send - 5 ms, else as before -> "
+          "%.4f..%.4f" % (lo_c, hi_c))
+    # run 6019's vport-stall: the 16 frames go out at the command, before
+    # the node's first send
+    burst = [_bframe(199.96 + 0.0003 * k, STALL_ID, k) for k in range(16)]
+    k_c, _i = assign_by_stamp([], burst + [sp(848)], [], lo_c, hi_c)
+    ok_c, _m, ln_c = score_stall(k_c, STALL_N, acked=True)
+    k_n, i_n = assign_by_stamp([], burst + [sp(848)], [], lo, hi)
+    ok_n, _m, ln_n = score_stall(k_n, STALL_N, acked=True)
+    check(ok_c and not ok_n and i_n[3] == 16
+          and "only 0 of the 16" in ln_n[0],
+          "stall burst before the node's first send: kept from the command "
+          "(%s), 16 dropped from the node's send (%s)" % (ln_c[0], ln_n[0]))
+    # through window(): the board stamps its burst at the command, its
+    # reply comes 60 ms later, the node's sends start 30 ms after the command
+    class _CB(object):
+        t = None
+
+        def cmd(self, c, *a):
+            self.t = time.perf_counter()
+            time.sleep(0.060)
+            return "@OK"
+
+    class _CW(object):
+        def __init__(self, b):
+            self.b, self.n, self.stats = b, 0, None
+
+        def take(self):
+            self.n += 1
+            if self.n != 2:
+                return []
+            return [_bframe(self.b.t + 0.0005 + 0.0003 * k, STALL_ID, k)
+                    for k in range(16)]
+
+        def take_incomplete(self):
+            return 0
+
+    class _CN(object):
+        def __init__(self, b):
+            self.b, self.n = b, 0
+
+        def take(self):
+            return []
+
+        def take_fails(self):
+            return 0
+
+        def take_log(self):
+            self.n += 1
+            if self.n != 2:
+                return []
+            t0 = self.b.t + 0.030
+            return [(q, 0.0, 1, t0 + 0.01 * q, t0 + 0.01 * q + 0.0006)
+                    for q in range(10)]
+    for fc in (True, False):
+        b = _CB()
+        try:
+            rows_w, _s = window(b, _CW(b), _CN(b), 0.0, "STALL 16",
+                                from_command=fc)
+            ok_w, _m, ln_w = score_stall(rows_w, STALL_N, acked=True)
+        except Exception as exc:                           # noqa: BLE001
+            ok_w, ln_w = "an exception", [fail_text(exc)]
+        check(ok_w is fc,
+              "%sa STALL window through window(), from_command=%s -> %s"
+              % ("" if fc else "can-fail: ", fc, ln_w[0]))
+    import inspect
+    src = inspect.getsource(run_bench) + inspect.getsource(listen_window)
+    check(src.count("from_command=True") == 2
+          and "from_command=bool(cmds)" in src,
+          "the stall step's two windows and the listen windows with a "
+          "command start at the command; no other window does")
 
     def sl(pre, cut, drain):
         k, info = assign_by_stamp(pre, cut, drain, lo, hi)
@@ -3975,8 +4078,20 @@ MUTANTS = [
     ("stamp: no tail after the last send",
      "STAMP_TAIL_S = 0.100", "STAMP_TAIL_S = 0.0"),
     ("stamp: the bench's window, not the node's sends",
-     "    if log:\n        return (min(x[3] for x in log)",
-     "    if False:\n        return (min(x[3] for x in log)"),
+     "    if log:\n        lo = min(x[3] for x in log)",
+     "    if False:\n        lo = min(x[3] for x in log)"),
+    ("stamp: a window from the command starts at the first send",
+     "        if t_cmd is not None:\n            lo = min(lo, t_cmd)",
+     "        if False:\n            lo = min(lo, t_cmd)"),
+    ("stamp: every window from the command",
+     "                          t_cmd if from_command else None)",
+     "                          t_cmd)"),
+    ("stamp: the stall step not from the command",
+     "                              from_command=True)\n",
+     "                              from_command=False)\n"),
+    ("stamp: the command's time taken after its reply",
+     "        t_cmd = time.perf_counter()\n        board.cmd(command)\n",
+     "        board.cmd(command)\n        t_cmd = time.perf_counter()\n"),
     ("stamp: the drain not read",
      "    drained = wit.take()\n    st_drain",
      "    drained = []\n    st_drain"),

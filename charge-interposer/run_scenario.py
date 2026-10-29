@@ -2839,7 +2839,7 @@ def _repeat_bursts(intp_text, veh_text, frames=None, chg_text=""):
                          for s in superseded)))
 
 
-def _diag_check(sc, diag, fstate, intp="", veh=""):
+def _diag_check(sc, diag, fstate, intp="", veh="", at_stop=None):
     """-> (ok, why) for diag_frames_ok(). Spec 9 at c383868a834b6158 (user,
     2026-10-10): every scenario decodes the diagnostic CAN frames "except a
     scenario that runs the core in bypass, which is exempt by its own
@@ -2850,7 +2850,7 @@ def _diag_check(sc, diag, fstate, intp="", veh=""):
     if "--bypass" in sc.interposer:
         return (True, "not applicable: the scenario declares --bypass, so "
                       "there is no core to report (spec 9)")
-    return _diag_frames_ok(diag, fstate, intp=intp, veh=veh)
+    return _diag_frames_ok(diag, fstate, intp=intp, veh=veh, at_stop=at_stop)
 
 
 # Spec 2.3 (d9f49ea6, user 2026-10-13) in the sims' logs: interposer_sim's
@@ -2864,11 +2864,13 @@ VPORT_DROPPED = re.compile(r"vport: .*?(\d+) frame\(s\) toward the vehicle "
                            r"dropped in listen-only")
 
 
-def _diag_frames_ok(diag, fstate, intp="", veh=""):
+def _diag_frames_ok(diag, fstate, intp="", veh="", at_stop=None):
     """-> (ok, why). Every frame carries the schema and firmware version the
-    harness was built against, and the last 0x7F4 agrees with the final
-    state. A wrong version is the one error a decoder cannot otherwise see:
-    the fields are all in range and all mean something else."""
+    harness was built against, and the last 0x7F4 agrees with the core's
+    state when it was sent: at_stop, a board run's (state, when) from
+    board_state_at_vehicle_stop(), else the final state. A wrong version is
+    the one error a decoder cannot otherwise see: the fields are all in
+    range and all mean something else."""
     if not diag:
         return (False, "none seen on the vehicle segment")
     by_id = {}
@@ -2919,10 +2921,16 @@ def _diag_frames_ok(diag, fstate, intp="", veh=""):
     # Spec 2.3: the last 0x7F4 is judged against the core's state when it
     # was sent. A run that ends in listen-only sent its last frame before
     # the port fell back, so that is the state at the last fall-back
-    # (reviewer, 2026-10-13); otherwise the run's final state.
+    # (reviewer, 2026-10-13). Otherwise it is the state when vehicle_sim
+    # stopped (user, 2026-10-28): on a board run at_stop, read off the
+    # serial log, since the board's final state can come after the trailing
+    # trip the stop causes; an emulated run has no settle, so its final
+    # state is the state at the stop.
     sw = VPORT_SWITCH.findall(intp or "")
     if sw and sw[-1][0] == "listen-only":
         want, when = sw[-1][1], "when the port went listen-only"
+    elif at_stop is not None:
+        want, when = at_stop
     else:
         want, when = fstate, "at the end of the run"
     if last_state != want:
@@ -3268,6 +3276,40 @@ def earliest_sim_stop(witness_rows):
     if chg:
         ends.append((max(chg), "charger_sim", CHG_STALE_CODE))
     return min(ends) if ends else None
+
+
+# --- the diag check's last 0x7F4 on a board run (user, 2026-10-28)
+#
+# The tap runs on after vehicle_sim exits (teardown's settle, so that the
+# trailing a=10 trip's 0x7F4 is seen), and the board's last status line can
+# fall either side of that trip: restart-after-standby's final state was
+# SAFE in run 6019 and OVERRIDE in c40b, with the same last 0x7F4. So on a
+# board run the last 0x7F4 is judged against the board's state when
+# vehicle_sim stopped: its last 0x410-0x440 on the witness, the stop
+# earliest_sim_stop() takes, and the state on the latest serial line that
+# carries one at or before it (an event line, the 1 Hz diag line or the
+# 5 s status line).
+BOARD_STATE_LINE = re.compile(r"^(?:\[\s*\d+(?:\.\d+)?\]\s+([A-Z_]+)\s"
+                              r"|diag st=([A-Z_]+)\b|t=\d+s state=([A-Z_]+)\b)")
+
+
+def board_state_at_vehicle_stop(stamped_rows, witness_rows):
+    """-> (state, when) for _diag_frames_ok(), or None if the witness has no
+    vehicle_sim frame or no serial line before it carries a state."""
+    bms = [r[0] for r in witness_rows if r[2] in VEH_BMS_IDS]
+    if not bms:
+        return None
+    t_stop = max(bms)
+    best = None
+    for h, ln in stamped_rows:
+        m = BOARD_STATE_LINE.match(ln)
+        if m and h <= t_stop and (best is None or h >= best[0]):
+            best = (h, next(g for g in m.groups() if g))
+    if best is None:
+        return None
+    return (best[1], "when the vehicle sim stopped (its last 0x410-0x440 "
+            "on the witness, host %.3f; the board's line at host %.3f)"
+            % (t_stop, best[0]))
 
 
 def no_trip_to_first_stop(pattern, stamped_rows, witness_rows):
@@ -3924,7 +3966,13 @@ def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
             results.append((ok, "P3a, the simulation against the truck's "
                                 "holds: %s" % why))
         elif kind == "diag_frames_ok":
-            ok, why = _diag_check(sc, diag, fstate, intp=intp, veh=veh)
+            at_stop = None
+            if wrows is not None and stamped.exists():
+                import diag_cadence
+                at_stop = board_state_at_vehicle_stop(
+                    diag_cadence.read_stamped(str(stamped)), wrows)
+            ok, why = _diag_check(sc, diag, fstate, intp=intp, veh=veh,
+                                  at_stop=at_stop)
             results.append((ok, "diag frames: %s" % why))
         elif kind == "fault_or_flow_first":
             ok, why = _fault_or_flow_first(intp, veh, chg, diag, val,
