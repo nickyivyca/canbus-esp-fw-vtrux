@@ -69,6 +69,13 @@ readings of gen-inhibit's code below are of `gen-inhibit/main` at `0b03841`,
   calls" in the config server counted differently; the code has the four
   above, besides the two endpoints' handlers, which move out whole (W8).
   The refusal bodies name gen-inhibit's endpoint.
+- **Context, a known limit** (the charge-interposer reviewer's read,
+  2026-10-29): `owns_bus()` does two jobs, keeping stock code off the bus
+  and refusing flash writes. The interposer needs the first always and the
+  second only by its own gate, so its stage (b) takes the flash-write
+  decision away from `owns_bus()` (the plan's "flash write still
+  permitted" callback), defaulting so gen-inhibit is unchanged. Until then
+  `owns_bus()` covers both.
 - **Status:** complete.
 
 ### W6. SLCAN commands are a build switch
@@ -103,6 +110,11 @@ readings of gen-inhibit's code below are of `gen-inhibit/main` at `0b03841`,
 - **Basis:** `shared/boards` B2 (user, 2026-10-26): a project names its
   board by its dependency and nowhere else, so a shared component naming
   one would be a second record.
+- **Context, a known limit** (the charge-interposer reviewer's read,
+  2026-10-29): the component builds for the WiCAN family today, whose
+  boards share pin names (`shared/boards` B6). A board of another family,
+  such as `x2`, which offers only `led1`, needs W10's pin users moved to
+  board calls first, in the interposer's stage (b).
 - **Status:** complete.
 
 ### W10. Pins
