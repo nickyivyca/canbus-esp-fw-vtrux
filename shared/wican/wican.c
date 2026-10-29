@@ -52,12 +52,13 @@
 #include "wc_mdns.h"
 #include "hw_config.h"
 /* The LEDs and the Bluetooth-enable input below still go by pin, so this file
- * is on the project's list of stock files that still use pins (shared/tools
- * SPEC R30, shared/boards B6). The CAN port goes through board.h. */
+ * is on this component's list of files that use pins, pins.json (SPEC.md
+ * W10; shared/tools SPEC R30, shared/boards B6). The CAN port goes through
+ * board.h. */
 #include "board_pins.h"
 #include "dev_status.h"
 #include "ota_health.h"
-#include "gen_inhibit.h"
+#include "wican.h"
 #include "wican_features.h"
 #include "debug_logs.h"
 #include "debug_logs_config.h"
@@ -79,6 +80,9 @@ static xdev_buffer ucTCP_RX_Buffer;
 static xdev_buffer ucTCP_TX_Buffer;
 
 static uint8_t protocol = SLCAN;
+/* The configured bitrate: wican_init() reads it, wican_start()'s protocol
+ * branches use it. */
+static int8_t can_datarate = -1;
 
 uint8_t project_hardware_rev;
 int FTP_TASK_FINISH_BIT = BIT2;
@@ -93,6 +97,95 @@ static char hardware_version[16];
 static char firmware_version[10];
 // Wrapper so we can provide a function pointer for network readiness
 static bool dbg_net_ready(void) { return wifi_network_is_connected(); }
+
+/*
+ * THE PROJECT'S HOOKS (SPEC.md W5, W8), registered before wican_init(). Where
+ * a project registers none, each accessor below gives upstream's behaviour:
+ * the bus is never owned, an OTA always proceeds, nothing is told, and no
+ * URIs are added.
+ */
+static wican_bus_owner_t s_owner;
+static wican_uri_hook_t s_uri_hook;
+static size_t s_uri_slots;
+
+void wican_register_bus_owner(const wican_bus_owner_t *owner)
+{
+	if(owner != NULL)
+	{
+		s_owner = *owner;
+	}
+	else
+	{
+		memset(&s_owner, 0, sizeof(s_owner));
+	}
+}
+
+void wican_register_uris(wican_uri_hook_t hook, size_t slots)
+{
+	s_uri_hook = hook;
+	s_uri_slots = (hook != NULL) ? slots : 0;
+}
+
+bool wican_owns_bus(void)
+{
+	return s_owner.owns_bus != NULL && s_owner.owns_bus();
+}
+
+wican_ota_answer_t wican_ota_begin(void)
+{
+	return (s_owner.ota_begin != NULL) ? s_owner.ota_begin() : WICAN_OTA_GO;
+}
+
+void wican_ota_failed(void)
+{
+	if(s_owner.ota_failed != NULL)
+	{
+		s_owner.ota_failed();
+	}
+}
+
+void wican_command_refused(void)
+{
+	if(s_owner.command_refused != NULL)
+	{
+		s_owner.command_refused();
+	}
+}
+
+/* The refusal bodies are the project's; these stand in where it gave none. */
+const char *wican_flash_write_refused_body(void)
+{
+	return (s_owner.flash_write_refused_body != NULL)
+		? s_owner.flash_write_refused_body
+		: "the bus is owned; a flash write would stall CAN receive";
+}
+
+const char *wican_ota_refused_body(void)
+{
+	return (s_owner.ota_refused_body != NULL)
+		? s_owner.ota_refused_body
+		: "OTA refused by the bus owner";
+}
+
+const char *wican_ota_no_answer_body(void)
+{
+	return (s_owner.ota_no_answer_body != NULL)
+		? s_owner.ota_no_answer_body
+		: "the bus owner did not answer; nothing touched";
+}
+
+void wican_uri_hook_call(httpd_handle_t server, bool restart)
+{
+	if(s_uri_hook != NULL)
+	{
+		s_uri_hook(server, restart);
+	}
+}
+
+size_t wican_uri_slots(void)
+{
+	return s_uri_slots;
+}
 
 #if WICAN_FEATURE_MQTT && WICAN_FEATURE_ELM327
 static void log_can_to_mqtt(twai_message_t *frame, uint8_t type)
@@ -194,6 +287,31 @@ static void can_tx_task(void *pvParameters)
 		uint8_t* msg_ptr = ucTCP_RX_Buffer.ucElement;
 		int temp_len = ucTCP_RX_Buffer.usLen;
 
+		/* SLCAN COMMANDS ARE A BUILD SWITCH (SPEC.md W6). On, as upstream, every
+		 * channel reaches the parser; off, no call to it is compiled. */
+#if WICAN_SLCAN_COMMANDS
+		if(config_server_ws_connected())
+		{
+			if(ucTCP_RX_Buffer.dev_channel == DEV_WIFI_WS)
+			{
+				slcan_parse_str(msg_ptr, temp_len, &tx_msg, &xmsg_ws_tx_queue);
+			}
+		}
+		if(protocol == SLCAN)
+		{
+			if(ucTCP_RX_Buffer.dev_channel == DEV_WIFI)
+			{
+				slcan_parse_str(msg_ptr, temp_len, &tx_msg, &xMsg_Tx_Queue);
+			}
+			else if(ucTCP_RX_Buffer.dev_channel == DEV_UART)
+			{
+				if(!config_server_mqtt_en_config())
+				{
+					slcan_parse_str(msg_ptr, temp_len, &tx_msg, &xmsg_uart_tx_queue);
+				}
+			}
+		}
+#else
 		/*
 		 * SPEC 3.2 (review A3): THE SLCAN COMMAND PARSER IS DISABLED ON EVERY
 		 * CHANNEL.
@@ -235,8 +353,8 @@ static void can_tx_task(void *pvParameters)
 			 * every inbound buffer on every channel, an ELM327 command
 			 * included, which as a log is merely noisy; as a count it would
 			 * be wrong, because an ELM327 command is not a refused SLCAN
-			 * attempt. The conditions below mirror the if(0) block exactly
-			 * and must be changed with it.
+			 * attempt. The conditions below mirror the parser calls above exactly
+			 * (WICAN_SLCAN_COMMANDS on) and must be changed with them.
 			 */
 			const bool slcan_would_have_run =
 				(config_server_ws_connected()
@@ -248,7 +366,7 @@ static void can_tx_task(void *pvParameters)
 					&& !config_server_mqtt_en_config());
 			if(slcan_would_have_run)
 			{
-				gen_inhibit_note_refused_slcan();
+				wican_command_refused();
 			}
 
 			static int64_t s_last_refusal_log;
@@ -257,34 +375,15 @@ static void can_tx_task(void *pvParameters)
 			{
 				s_last_refusal_log = now_us;
 				ESP_LOGW(__func__, "SLCAN command refused on channel %d "
-						 "(%d bytes): the parser is disabled, spec 3.2",
+						 "(%d bytes): WICAN_SLCAN_COMMANDS is off",
 						 (int)ucTCP_RX_Buffer.dev_channel, temp_len);
 			}
 		}
-		if(0)   /* spec 3.2: retained for diff-ability against upstream */
+		if(protocol == SLCAN)
 		{
-			if(config_server_ws_connected())
-			{
-				if(ucTCP_RX_Buffer.dev_channel == DEV_WIFI_WS)
-				{
-					slcan_parse_str(msg_ptr, temp_len, &tx_msg, &xmsg_ws_tx_queue);
-				}
-			}
-			if(protocol == SLCAN)
-			{
-				if(ucTCP_RX_Buffer.dev_channel == DEV_WIFI)
-				{
-					slcan_parse_str(msg_ptr, temp_len, &tx_msg, &xMsg_Tx_Queue);
-				}
-				else if(ucTCP_RX_Buffer.dev_channel == DEV_UART)
-				{
-					if(!config_server_mqtt_en_config())
-					{
-						slcan_parse_str(msg_ptr, temp_len, &tx_msg, &xmsg_uart_tx_queue);
-					}
-				}
-			}
+			/* refused above: no call to the parser is compiled (W6) */
 		}
+#endif
 #if WICAN_FEATURE_ELM327
 		else if(protocol == OBD_ELM327)
 		{
@@ -335,7 +434,7 @@ static void can_rx_task(void *pvParameters)
 		
 		dev_status_wait_for_bits(DEV_AWAKE_BIT, portMAX_DELAY);
 
-        if(gen_inhibit_owns_bus())
+        if(wican_owns_bus())
         {
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
@@ -437,7 +536,7 @@ static void can_rx_task(void *pvParameters)
 	}
 }
 
-void app_main(void)
+void wican_init(void)
 {
 	dev_status_init();
 	dev_status_set_bits(DEV_AWAKE_BIT);
@@ -486,7 +585,7 @@ void app_main(void)
 	config_server_start(&xmsg_ws_tx_queue, &xMsg_Rx_Queue, CONNECTED_LED_GPIO_NUM, (char*)&uid[0]);
 	slcan_init(&send_to_host);
 
-	int8_t can_datarate = config_server_get_can_rate();
+	can_datarate = config_server_get_can_rate();
 	(can_datarate != -1) ? can_init(can_datarate):can_init(CAN_500K);
 	ota_health_report(OTA_HEALTH_CAN);
 
@@ -494,17 +593,10 @@ void app_main(void)
 	{
 		ESP_LOGE(TAG, "error going to default CAN_500K");
 	}
-	/*
-	 * SPEC 3.2, "THE BOOT-TIME CONFIGURATION STAYS, AND ARMING COMES AFTER IT"
-	 * (user, 2026-10-16). The configured bitrate and can_mode used to be
-	 * stored here AFTER gen_inhibit_init(), whose auto-arm had already
-	 * installed the driver with can.c's defaults; both setters then did
-	 * nothing (ON_BUS). gen_inhibit_init() now stores them first and only then
-	 * starts the worker and arms.
-	 */
-	gen_inhibit_init((can_datarate != -1) ? (uint8_t)can_datarate : CAN_500K,
-	                 (config_server_get_can_mode() == CAN_NORMAL) ? 0 : 1);
+}
 
+void wican_start(void)
+{
 	protocol = config_server_protocol();
 //	protocol = OBD_ELM327;
 

@@ -69,17 +69,7 @@
 #include "esp_ota_ops.h"
 #include "esp_app_desc.h"
 #include "ota_health.h"
-#include "gen_inhibit.h"
-#if GI_INSTRUMENT_TXABORT
-/* Measurement build only, spec 5.2 item 9. The source is not in the component
- * unless the flag is set -- see main/CMakeLists.txt -- so this include and the
- * two registrations below are the whole of its footprint in shipping code. */
-#include "gi_txabort_probe.h"
-#endif
-#if GI_TEST_RESTART_QUIESCE
-/* Restart test build only, spec 12.4 -- see main/CMakeLists.txt. */
-#include "gi_restart_test.h"
-#endif
+#include "wican.h"
 #include "can.h"
 #include "sleep_mode.h"
 #include "autopid.h"
@@ -393,15 +383,14 @@ static esp_err_t index_handler(httpd_req_t *req)
  */
 static bool flash_write_refused(httpd_req_t *req, const char *what)
 {
-    if(!gen_inhibit_owns_bus())
+    if(!wican_owns_bus())
     {
         return false;
     }
-    ESP_LOGE(TAG, "%s refused: gen_inhibit owns the bus, and a flash erase "
-                  "stalls the TWAI ISR for up to 20 ms (spec 5.1 item 3)", what);
+    ESP_LOGE(TAG, "%s refused: the bus is owned, and a flash erase "
+                  "stalls the TWAI ISR for up to 20 ms", what);
     httpd_resp_send_err(req, HTTPD_403_FORBIDDEN,
-                        "gen_inhibit is armed; a flash write would stall CAN "
-                        "receive. POST /gen_inhibit_set?mode=0 first");
+                        wican_flash_write_refused_body());
     return true;
 }
 
@@ -1108,13 +1097,12 @@ static esp_err_t upload_post_handler(httpd_req_t *req)
      * worker takes the request at its update point: from IDLE it hands the bus
      * over (UPDATING) and only then does this tear it down; armed, it refuses.
      */
-    const esp_err_t ob = gen_inhibit_ota_begin();
-    if(ob == ESP_ERR_INVALID_STATE)
+    const wican_ota_answer_t ob = wican_ota_begin();
+    if(ob == WICAN_OTA_REFUSED)
     {
-        ESP_LOGE(TAG, "OTA refused: gen_inhibit is armed");
+        ESP_LOGE(TAG, "OTA refused by the bus owner");
         /* IDF's httpd_err_code_t has no 409, so 403 carries the refusal. */
-        httpd_resp_send_err(req, HTTPD_403_FORBIDDEN,
-                            "gen_inhibit is armed; POST /gen_inhibit_set?mode=0 first");
+        httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, wican_ota_refused_body());
         /*
          * ESP_OK, so the server reads off the image body after the 403 instead
          * of closing on it, which lost the reply to a RST (see
@@ -1124,12 +1112,11 @@ static esp_err_t upload_post_handler(httpd_req_t *req)
          */
         return ESP_OK;
     }
-    if(ob != ESP_OK)
+    if(ob != WICAN_OTA_GO)
     {
-        /* The worker did not take the request within 1 s; nothing touched. */
+        /* The bus owner did not answer; nothing touched. */
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                            "gen_inhibit worker did not answer within 1 s; "
-                            "nothing touched");
+                            wican_ota_no_answer_body());
         return ESP_OK;
     }
 
@@ -1143,7 +1130,7 @@ static esp_err_t upload_post_handler(httpd_req_t *req)
     const esp_err_t r = upload_post_body(req, &succeeded);
     if(!succeeded)
     {
-        gen_inhibit_ota_failed();
+        wican_ota_failed();
     }
     return r;
 }
@@ -1670,120 +1657,6 @@ static const httpd_uri_t ws = {
 };
 static struct file_server_data server_data = {.base_path = FS_MOUNT_POINT""};
 //static struct file_server_data *server_data = NULL;
-
-/* ---- gen_inhibit control --------------------------------------------------
- * GET  /gen_inhibit                       -> state and statistics as JSON
- * POST /gen_inhibit_set?mode=N&offset=N   -> 0 off, 1 observe, 2 respond,
- *                                            3 inhibit, 4 passive
- *
- * The setter is POST so that a browser prefetch or a stray GET cannot start
- * the device transmitting. `offset` applies to RESPOND only, which emits
- * GEN_INHIBIT_PROBE_ID (0x7F0) and never 0x051. Mode 3 transmits the real
- * command ID -- see gen_inhibit.h.
- */
-/*
- * D10: the size comes from gen_inhibit.h, which records why it is not 1400.
- */
-static esp_err_t gen_inhibit_get_handler(httpd_req_t *req)
-{
-    static char out[GI_STATUS_PAGE_CAP];
-    int n = gen_inhibit_get_stats_json(out, sizeof(out));
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, out, n);
-    return ESP_OK;
-}
-
-static esp_err_t gen_inhibit_set_handler(httpd_req_t *req)
-{
-    char query[128];
-    char val[16];
-    int mode = -1;
-    uint32_t offset_us = 500;
-
-    /*
-     * EVERY ERROR EXIT HERE RETURNS ESP_OK after its 400, for the reason
-     * flash_write_refused() gives: ESP_FAIL closes the socket with any request
-     * body unread, and lwIP's RST can then take the reply with it.
-     */
-    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK)
-    {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "expected ?mode=0|1|2|3|4[&offset=us]");
-        return ESP_OK;
-    }
-    if (httpd_query_key_value(query, "mode", val, sizeof(val)) == ESP_OK)
-    {
-        mode = atoi(val);
-    }
-    if (httpd_query_key_value(query, "offset", val, sizeof(val)) == ESP_OK)
-    {
-        offset_us = (uint32_t)atoi(val);
-    }
-    if (mode < 0 || mode > 4)
-    {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                            "mode must be 0..4 (3=INHIBIT, 4=PASSIVE)");
-        return ESP_OK;
-    }
-    /*
-     * Name the actual cause. This used to report "bad offset" for every
-     * failure, including the one that matters most on the bench -- the bus
-     * refusing to come up, which is how an arm attempt fails on an idle
-     * device -- so a real arm failure read as a typo in the query string.
-     */
-    const esp_err_t serr = gen_inhibit_set_mode((gen_inhibit_mode_t)mode,
-                                                offset_us);
-    /*
-     * The worker makes the change (spec 3, 2026-10-16). One it did not take
-     * within 1 s was withdrawn and is never applied, so say that rather than
-     * "cannot arm": the bus was never tried.
-     */
-    if (serr == ESP_ERR_TIMEOUT)
-    {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                            "mode change not taken by the gen_inhibit worker "
-                            "within 1 s; withdrawn, not applied");
-        return ESP_OK;
-    }
-    /* Spec 8.1 row 12: an OTA upload holds the bus. */
-    if (serr == ESP_ERR_NOT_ALLOWED)
-    {
-        httpd_resp_send_err(req, HTTPD_403_FORBIDDEN,
-                            "bus is down for a firmware update");
-        return ESP_OK;
-    }
-    /* Another change held the one slot for the whole second. */
-    if (serr == ESP_ERR_NOT_FINISHED)
-    {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                            "another mode change was still in progress for 1 s; "
-                            "this one was not posted, not applied");
-        return ESP_OK;
-    }
-    if (serr != ESP_OK)
-    {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                            serr == ESP_ERR_INVALID_ARG
-                                ? "bad offset (max 4000 us)"
-                                : "cannot arm: bus would not come up, or "
-                                  "OBSERVE could not be made listen-only");
-        return ESP_OK;
-    }
-
-    static char out[GI_STATUS_PAGE_CAP];    /* D10, as above */
-    int n = gen_inhibit_get_stats_json(out, sizeof(out));
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, out, n);
-    return ESP_OK;
-}
-
-static const httpd_uri_t gen_inhibit_uri = {
-    .uri = "/gen_inhibit", .method = HTTP_GET,
-    .handler = gen_inhibit_get_handler, .user_ctx = NULL
-};
-static const httpd_uri_t gen_inhibit_set_uri = {
-    .uri = "/gen_inhibit_set", .method = HTTP_POST,
-    .handler = gen_inhibit_set_handler, .user_ctx = NULL
-};
 
 /* URI handler for uploading files to server */
 static const httpd_uri_t file_upload = {
@@ -2526,11 +2399,9 @@ static httpd_handle_t config_server_init(void)
 
     // Start the httpd server
 	config.max_uri_handlers = 21;
-#if GI_TEST_RESTART_QUIESCE
-	/* Registered last, below, so a full table cannot displace an existing
-	 * handler -- but the table is sized for them so that it is not full. */
-	config.max_uri_handlers += GI_RESTART_TEST_URI_COUNT;
-#endif
+	/* Stock's 21 plus the slots the project registered with its URI hook
+	 * (SPEC.md W8). */
+	config.max_uri_handlers += wican_uri_slots();
 	config.stack_size = 5120;
     ESP_LOGI(TAG, "Starting server on port: '%d'", config.server_port);
     if (httpd_start(&server, &config) == ESP_OK)
@@ -2545,11 +2416,8 @@ static httpd_handle_t config_server_init(void)
         httpd_register_uri_handler(server, &ws);
         httpd_register_uri_handler(server, &file_upload);
         /* OTA endpoint is live -- the channel we would recover through. */
-        httpd_register_uri_handler(server, &gen_inhibit_uri);
-        httpd_register_uri_handler(server, &gen_inhibit_set_uri);
-#if GI_INSTRUMENT_TXABORT
-        gi_txabort_register(server);
-#endif
+        /* The project's URIs (SPEC.md W8), at the first start. */
+        wican_uri_hook_call(server, false);
         ota_health_report(OTA_HEALTH_HTTPD);
 		httpd_register_uri_handler(server, &system_reboot);
 		httpd_register_uri_handler(server, &store_canflt_uri);
@@ -2565,9 +2433,6 @@ static httpd_handle_t config_server_init(void)
 		httpd_register_uri_handler(server, &store_car_data_uri);
 #if WICAN_FEATURE_AUTOPID
 		httpd_register_uri_handler(server, &scan_available_pids_uri);
-#endif
-#if GI_TEST_RESTART_QUIESCE
-		gi_restart_test_register(server);
 #endif
         #if CONFIG_EXAMPLE_BASIC_AUTH
         httpd_register_basic_auth(server);
@@ -2594,11 +2459,8 @@ void config_server_restart(void)
         httpd_register_uri_handler(server, &ws);
         httpd_register_uri_handler(server, &file_upload);
         /* OTA endpoint is live -- the channel we would recover through. */
-        httpd_register_uri_handler(server, &gen_inhibit_uri);
-        httpd_register_uri_handler(server, &gen_inhibit_set_uri);
-#if GI_INSTRUMENT_TXABORT
-        gi_txabort_register(server);
-#endif
+        /* The project's URIs (SPEC.md W8), at a restart. */
+        wican_uri_hook_call(server, true);
         ota_health_report(OTA_HEALTH_HTTPD);
 		httpd_register_uri_handler(server, &system_reboot);
 		httpd_register_uri_handler(server, &store_canflt_uri);
@@ -2999,10 +2861,9 @@ void config_server_set_ble_config(uint8_t b)
 	 * reachable the moment anyone wires it up. Guarding a dead function costs
 	 * nothing and stops it becoming the one unguarded writer later.
 	 */
-	if(gen_inhibit_owns_bus())
+	if(wican_owns_bus())
 	{
-		ESP_LOGE(TAG, "BLE config write refused: gen_inhibit owns the bus "
-		              "(spec 5.1 item 3)");
+		ESP_LOGE(TAG, "BLE config write refused: the bus is owned");
 		return;
 	}
 

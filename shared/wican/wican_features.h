@@ -2,11 +2,12 @@
  * STOCK FEATURES, OFF IN THIS PRODUCT (spec 3.2 and 12.3 item 3, user
  * 2026-10-16).
  *
- * main/CMakeLists.txt defines each switch to 1, the shared code's default, or
- * to 0, on every file of the component; the top-level CMakeLists.txt sets all
- * four to 0 for gen-inhibit. With a switch at 0 its feature's source file is
- * not in the build, and its call sites elsewhere are under #if on the same
- * switch, so none of its code is compiled.
+ * The component's CMakeLists.txt defines each switch to 1, the shared code's
+ * default, or to 0, on every file of the component (SPEC.md W6, W7); a
+ * project sets one off in its top-level CMakeLists.txt. With a feature switch
+ * at 0 its feature's source file is not in the build, and its call sites
+ * elsewhere are under #if on the same switch, so none of its code is compiled.
+ * WICAN_SLCAN_COMMANDS at 0 leaves no call to the SLCAN command parser.
  *
  * A file that tests a switch includes this header, so a build that left a
  * definition out fails here. Without it `#if WICAN_FEATURE_MQTT` would read an
@@ -17,7 +18,10 @@
 
 #if !defined(WICAN_FEATURE_MQTT) || !defined(WICAN_FEATURE_ELM327) \
     || !defined(WICAN_FEATURE_AUTOPID) || !defined(WICAN_FEATURE_REALDASH)
-#error "WICAN_FEATURE_MQTT, _ELM327, _AUTOPID and _REALDASH must each be defined to 0 or 1 (main/CMakeLists.txt)"
+#error "WICAN_FEATURE_MQTT, _ELM327, _AUTOPID and _REALDASH must each be defined to 0 or 1 (vtrux/wican's CMakeLists.txt)"
+#endif
+#if !defined(WICAN_SLCAN_COMMANDS)
+#error "WICAN_SLCAN_COMMANDS must be defined to 0 or 1 (vtrux/wican's CMakeLists.txt)"
 #endif
 
 /*

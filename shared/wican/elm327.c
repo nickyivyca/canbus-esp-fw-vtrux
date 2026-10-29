@@ -18,8 +18,8 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include <ctype.h>
-/* Spec 3.2: bus-state changes are refused while the inhibitor owns it. */
-#include "gen_inhibit.h"
+/* Bus-state changes are refused while the bus is owned (SPEC.md W5). */
+#include "wican.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include  "freertos/queue.h"
@@ -503,10 +503,9 @@ static char* elm327_set_protocol(const char* command_str)
 	 * OK, because a scan tool that gets an error here retries and the refusal
 	 * is about the BUS, not about the command being malformed.
 	 */
-	if(gen_inhibit_owns_bus())
+	if(wican_owns_bus())
 	{
-		ESP_LOGW(__func__, "ATSP bitrate change refused: gen_inhibit owns the "
-				 "bus (spec 3.2)");
+		ESP_LOGW(__func__, "ATSP bitrate change refused: the bus is owned");
 		return (char*)ok_str;
 	}
 

@@ -19,6 +19,11 @@
  */
 
 
+/*
+ * THE CAN FUNCTIONS ARE THE PROJECT'S (SPEC.md W3), until port step 1b's
+ * can_port. This component declares here the ones its files call and does
+ * not implement them; the project supplies them in its own files.
+ */
 #ifndef __CAN_H__
 #define __CAN_H__
 #include "driver/twai.h"
