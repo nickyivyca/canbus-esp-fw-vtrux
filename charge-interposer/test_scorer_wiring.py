@@ -777,6 +777,122 @@ def listen_only_diag_cases():
           "_diag_check passes both logs through -> %s" % why)
 
 
+
+def vehicle_stop_diag_cases():
+    """The last 0x7F4 on a board run, outside listen-only, is judged against
+    the board's state when vehicle_sim stopped (user, 2026-10-28), not its
+    final state: run 6019's restart-after-standby read SAFE at the end,
+    after the a=10 trip the stop caused, with the last 0x7F4 OVERRIDE."""
+    import inspect
+    rows = []
+    t = 1708200.0
+    while t <= 1708316.966 + 1e-9:
+        for fid in R.VEH_BMS_IDS:
+            rows.append((round(t, 3), round(t, 3), fid, bytes(8)))
+        t += 0.1
+    rows += [(1708316.966, 1708316.966, fid, bytes(8))
+             for fid in R.VEH_BMS_IDS]
+    rows.append((1708317.476, 1708317.476, 0x7F4,
+                 bytes([4, 9, 5, 10, 0xdf, 255, 0, 0])))
+    stamped = [
+        (1708313.777858, "diag st=OVERRIDE trip=0 flags=0xff ilim=16.0"),
+        (1708313.781560, "t=1205s state=OVERRIDE    vmax=3379mV"),
+        (1708316.776939, "diag st=OVERRIDE trip=0 flags=0xff ilim=16.0"),
+        (1708317.476091, "[1208925] SAFE         TRIP a=10 b=1040 c=0"),
+        (1708317.776607, "diag st=SAFE trip=10 flags=0xdf ilim=-"),
+        (1708318.777827, "t=1210s state=SAFE        vmax=3380mV"),
+        (1708318.79, "final state=SAFE"),
+    ]
+    at = R.board_state_at_vehicle_stop(stamped, rows)
+    check(at is not None and at[0] == "OVERRIDE" and "1708316.966" in at[1],
+          "6019's shape: the board was OVERRIDE when vehicle_sim's last "
+          "0x410-0x440 left (host 1708316.966), SAFE only after -> %s"
+          % (at,))
+    over = _diag(state=2)
+    ok, why = R._diag_frames_ok(over, "SAFE", at_stop=at)
+    check(ok and "when the vehicle sim stopped" in why,
+          "last 0x7F4 OVERRIDE, the board OVERRIDE at the stop, SAFE at the "
+          "end: passes -> %s" % why[:150])
+    ok, why = R._diag_frames_ok(over, "SAFE")
+    check(not ok and "at the end of the run" in why,
+          "...and fails judged against the final state (the rule before "
+          "2026-10-28) -> %s" % why)
+    tripped = stamped[:3] + [(1708316.85, "[1208000] SAFE         TRIP a=8 "
+                              "b=0 c=0")]
+    at2 = R.board_state_at_vehicle_stop(tripped, rows)
+    check(at2 is not None and at2[0] == "SAFE",
+          "a TRIP line before the stop sets the state at the stop -> %s"
+          % (at2,))
+    ok, why = R._diag_frames_ok(over, "SAFE", at_stop=at2)
+    check(not ok and "the core was SAFE when the vehicle sim stopped" in why,
+          "can-fail: last 0x7F4 OVERRIDE with the board SAFE at the stop "
+          "FAILS -> %s" % why[:150])
+    ok, why = R._diag_frames_ok(_diag(state=5), "SAFE", at_stop=at)
+    check(not ok and "the core was OVERRIDE when the vehicle sim stopped"
+          in why,
+          "can-fail: last 0x7F4 SAFE with the board OVERRIDE at the stop "
+          "FAILS, though SAFE is the final state -> %s" % why[:150])
+    check(R.board_state_at_vehicle_stop(stamped, [r for r in rows
+                                                  if r[2] == 0x7F4]) is None,
+          "no 0x410-0x440 on the witness: no stop, so the final state")
+    check(R.board_state_at_vehicle_stop(stamped[3:], rows) is None,
+          "no state line at or before the stop: None, so the final state")
+    to_listen = ("10:30:00 intp VPORT listen-only: no charger frame for 2010 "
+                 "ms at sim t=1800.000s (core state SAFE)\n")
+    ok, why = R._diag_frames_ok(_diag(state=5), "PASSTHROUGH",
+                                intp=to_listen, at_stop=at)
+    check(ok and "when the port went listen-only" in why,
+          "a run ending in listen-only keeps the fall-back's state, at_stop "
+          "or not -> %s" % why[:150])
+    fake = R.Scenario("x", "", vehicle=[], interposer=[])
+    ok, why = R._diag_check(fake, over, "SAFE", at_stop=at)
+    check(ok and "when the vehicle sim stopped" in why,
+          "_diag_check passes at_stop through -> %s" % why[:110])
+    src = inspect.getsource(R.evaluate)
+    check("board_state_at_vehicle_stop(" in src and "at_stop=at_stop" in src,
+          "evaluate() gives a board run's diag check the state at the stop")
+
+    # evaluate() itself, on 6019's shape: a board run (a stamped log and
+    # the witness rows) passes, the same logs without the witness are
+    # judged at the end of the run and fail
+    import shutil
+    import tempfile
+    tmp = Path(tempfile.mkdtemp(dir=str(Path(__file__).resolve().parent)))
+    try:
+        v, c, i = (tmp / n for n in ("v.log", "c.log", "i.log"))
+        v.write_text("16:58:56 veh diagframe t=1196.8 id=0x7F4 "
+                     "data=04090200ffa0dc00\n"
+                     "16:58:59 veh diagframe t=1199.8 id=0x7F5 "
+                     "data=340d3075a40ca083\n"
+                     "16:58:59 veh diagframe t=1199.8 id=0x7F6 "
+                     "data=f10a000028000100\n"
+                     "16:58:59 veh diagframe t=1199.8 id=0x7F7 "
+                     "data=14676d7509000414\n")
+        c.write_text("")
+        i.write_text("".join(ln + "\n" for _h, ln in stamped))
+        Path(str(i) + ".stamped").write_text(
+            "".join("%.6f\t%s\n" % (h, ln) for h, ln in stamped))
+        sc = R.Scenario("x", "test", vehicle=[])
+        sc.expect = [R.diag_frames_ok()]
+
+        def diag_line(**kw):
+            r = R.evaluate(sc, v, c, i, timed_out=False, **kw)
+            return [(ok, why) for ok, why in r["results"]
+                    if why.startswith("diag frames")]
+        got = diag_line(wrows=rows)
+        check(len(got) == 1 and got[0][0]
+              and "when the vehicle sim stopped" in got[0][1],
+              "evaluate(), a board run with the witness: PASS -> %s"
+              % (got[0][1][:120] if got else got))
+        got = diag_line()
+        check(len(got) == 1 and not got[0][0]
+              and "SAFE at the end of the run" in got[0][1],
+              "evaluate(), the same logs with no witness: the final state, "
+              "FAIL -> %s" % (got[0][1][:120] if got else got))
+    finally:
+        shutil.rmtree(str(tmp), ignore_errors=True)
+
+
 def leader_release_cases():
     """Spec 5.1 / 9 (47c31278, user 2026-10-10): the release is on the
     leader (vmax >= 3585 mV); the high-cell scenarios also release before
@@ -853,6 +969,7 @@ def main():
     print("\nspec 9 (c383868a): a declared --bypass is exempt, nothing else")
     bypass_diag_cases()
     listen_only_diag_cases()
+    vehicle_stop_diag_cases()
 
     print("\nspec 5.1 / 9 (47c31278): the release on the leader, before "
           "SoC 100 on the high-cell scenarios")
