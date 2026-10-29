@@ -33,8 +33,14 @@ starting `$REVERSE_IT_DIR` are in reverse-it and not yet moved.
 
 - The WiCAN tree, `gen-inhibit/firmware/`, except the tester's
   `vtrux_checks.json` there. `gen-inhibit/firmware/README.md` describes it.
+  Since port step 1a the stock WiCAN code is not in it: it is the shared
+  component `vtrux/wican` (`shared/wican/` on `shared/main`, owned per file
+  in its `README.md`), which this project pins. `firmware/main/` holds
+  gen-inhibit's own code, its hooks into the stock code among it
+  (`gi_wican.c`/`.h`, spec 3.3).
 - Unit tests: `gen-inhibit/test/gen_inhibit_sched/`,
-  `gen-inhibit/test/gen_inhibit_shim/`.
+  `gen-inhibit/test/gen_inhibit_shim/` (its `wican_ref.py` finds the stock
+  code in the pinned `../shared-<tag>/` checkout).
 - The Python reference in `gen-inhibit/tools/`: `sync.py`, `inhibit.py`,
   `models.py`, `test_core.py`, `vehicle_runner.py`,
   `test_vehicle_runner_root.py` (the implementor's self-test of
@@ -105,13 +111,14 @@ starting `$REVERSE_IT_DIR` are in reverse-it and not yet moved.
   `release_profile`, the options for shared/tools R18, each value citing its
   spec line; `build_switches`, the switch table for shared/tools R20, also
   read by `gen-inhibit/test/build_checks/build_switches.py` and
-  `build_output.py`; `board`, the WiCAN's board data for shared/tools R21
-  (`target`, `partition_table`, the path of the reference table, and
-  `flash_size`), checked against the spec by
-  `gen-inhibit/test/build_checks/test_board_data.py`; and `inert_triggers`,
+  `build_output.py`; `stock_files_using_pins`, the project's list for
+  shared/tools R30; and `inert_triggers`,
   the triggers the spec 12.4 inert row's bench rigs send (reviewer,
   2026-10-24). The implementor's `vtrux_build.json` holds only `project` and
-  `shared_components`.
+  `shared_components`. The board's data is the board component's own
+  (`shared/boards` B4), which `gen-inhibit/test/build_checks/test_board_data.py`
+  checks against the spec; the stock code's switch table is `vtrux/wican`'s
+  own (shared/tools R20).
 - `gen-inhibit/test/gen_inhibit_spec_shim/`: the spec 12.4 requirement tests
   on the mock-HAL shim. They build against the implementor's
   `gen-inhibit/test/gen_inhibit_shim/` fakes and add their own fault
