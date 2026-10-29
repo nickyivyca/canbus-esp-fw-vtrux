@@ -15,7 +15,8 @@
                                     and the target against the board's data
     python -B -m vtrux_checks pins --build DIR
                                     R30: no project object read the board's
-                                    board_pins.h unless it is on the project's list
+                                    board_pins.h unless it is on the project's list,
+                                    nor a shared component's unless on its own list
 
 Exit 0 when the check passes, 1 when it fails or cannot read the build, 2 on
 a usage error.
@@ -43,7 +44,8 @@ def main(argv=None):
     w.add_argument("--build", required=True, help="the build folder of a release build (<project>/build)")
     b = sub.add_parser("board", help="R21: partition table, slot and target against the board data")
     b.add_argument("--build", required=True, help="the build folder of a release build (<project>/build)")
-    n = sub.add_parser("pins", help="R30: project objects that read the board's board_pins.h against the project's list")
+    n = sub.add_parser("pins", help="R30: project and shared-component objects that read the board's board_pins.h "
+                                   "against their lists")
     n.add_argument("--build", required=True, help="the build folder of a release build (<project>/build)")
     args = ap.parse_args(argv)
     return {"scope": scope, "options": options, "switches": switches, "board": board, "pins": pins}[args.cmd].main(args)

@@ -800,3 +800,40 @@ it, under `$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/runs/`:
 |---|---|---|
 | R17 on a real release build | PASS | Supersedes the entry above's FAIL: F1 and F2 no longer reported, on the fixture and on gen-inhibit's own bench build; the planted cases each named, both ways. |
 | R17, git components | PASS | Supersedes the entry above's FAIL: pinned at a lightweight tag (the real one) and at an annotated tag (`s3_pass`); the planted git cases judged, not VOID. |
+
+## R30, a shared component's own list (gen-inhibit step 1a, the stock code's move, 2026-10-29)
+
+**SPEC:** shared/main `1b4ab4d`: R30 amended (no object compiled from another shared component
+read the board's `include/board_pins.h` unless its source is on that component's own list, read
+from `managed_components/`), with `../boards/SPEC.md` B6 (amended) and `../wican/SPEC.md` W10,
+approved by the user 2026-10-29. **Check:** `vtrux_checks/pins.py` on `shared/tools/wican-pin-list`
+at `c0c57c0` (from `1b4ab4d`), written from SPEC. The list's form was agreed with the gen-inhibit
+implementor, who writes it in `vtrux/wican` (2026-10-29): `pins.json` in the component's folder,
+`{"files_using_pins": [...]}`, paths from that folder with `/`; a component without one has an
+empty list. A shared component is a `dependencies.lock` entry from git whose path is exactly
+`shared/<name>` (`shared/boards/*` stays the board); one from a local folder whose path ends in
+`shared/<name>`, or one not in `managed_components/`, is refused. **Unit tests:** `test_pins.py`
+20 (11 before), each new rule shown failing on a planted input and passing on a faithful one: a
+component's reader off its list, in the app's and the bootloader's folder; no `pins.json`, which
+fails a reader and passes when none reads; the project's list not covering a component's file
+nor a component's list a project file; a listed file reading none, printed; a bad `pins.json`
+(10 forms); a component from a local folder, by `path` or `override_path`, or not downloaded; the
+board not taken for a shared component; a managed component that is not shared not judged. The
+11 tests from before still pass, and every `vtrux_checks` test file passes (200 tests). 10
+mutants of the change each fail them; so does `1b4ab4d`'s `pins.py`, though every test errors
+there on the new names, so the mutants are the substantive kill. **Cases:** `verification/pins_cases.py`
+at `c0c57c0` gains `comp_unlisted`, `comp_no_list`, `comp_listed_absent` and `comp_listed_twice`,
+on `release_pass`'s build with the component's `pins.json` changed and put back; each is VOID
+unless a shared component's file reads pins. What they expect comes from ninja's `-t deps` and
+`-t query`, and the shared components from the lock's text, not the check's readers. `unlisted`
+and `listed_twice` take the project's first listed reader instead of `main/main.c`, which
+leaves the project's list at the move. `--self-test` passes, and covers the new readers, and the
+list cases' changes, expected failures or marks, VOIDs and undoing on a small project. 18
+mutants of the cases each fail it. **Host:** NICKY-XPS, Python 3.14. **Run files:**
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/runs/r30_complist_c0c57c0_20261029/`
+(`SHA256SUMS` `7520c618...1d7c`, 8 files): the unit tests, every `vtrux_checks` test file, the
+self-test, both mutant runs and their scripts.
+
+| Req | Result | What was tested |
+|---|---|---|
+| R30, a shared component's own list | **unit tests only** | Not yet on a real build: that needs a project taking `vtrux/wican` with its `pins.json` (gen-inhibit's step 1a C). Its real-build cases above run in gen-inhibit's 1a acceptance run. |
