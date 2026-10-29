@@ -255,8 +255,11 @@ unless the image changes, which the reproducible test (R19) shows.
 - **R30. Pins stay in the board.** From ninja's dependency records, no
   object compiled from the project root read the board's
   `include/board_pins.h` unless its source file is on the project's list of
-  stock files that still use pins (`shared/boards/SPEC.md` B6). The list is
-  per-project data (R22). Like R18, the check runs on the finished release
+  stock files that still use pins, and no object compiled from another
+  shared component read it unless its source file is on that component's
+  own list (`shared/boards/SPEC.md` B6). The project's list is per-project
+  data (R22); a component's list is in the component, read from
+  `managed_components/`. Like R18, the check runs on the finished release
   build; bench and dev builds are not checked.
 - **R26. No eFuse-burning features in a release build.** Every release
   build has `CONFIG_SECURE_BOOT`, `CONFIG_SECURE_FLASH_ENC_ENABLED` and
