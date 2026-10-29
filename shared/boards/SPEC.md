@@ -8,7 +8,8 @@ again that day, after the gen-inhibit tester's reading of a real build and
 the gen-inhibit implementor's first build of `wican_v3`; section 2's
 console members listed 2026-10-27, after the charge-interposer reviewer's
 read. The `x2` section (3) is
-drafted by the charge-interposer reviewer and ruled in its session. As a
+drafted by the charge-interposer reviewer and ruled in its session; its
+console members listed 2026-10-28. As a
 shared component's spec this follows port plan goal 20: the reviewer whose
 project needs a section drafts it, the user rules in that reviewer's
 session, and the other project's reviewer reads it before it merges into
@@ -176,7 +177,16 @@ session.
     controller sends dominant bits in listen-only mode when it sees an
     error.
 - **Required of the project:**
-  - the console;
+  - the console: ESP-IDF's pick-one "Channel for console output"
+    (esp_system Kconfig), with members `CONFIG_ESP_CONSOLE_UART_DEFAULT`,
+    `CONFIG_ESP_CONSOLE_USB_CDC`, `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG`,
+    `CONFIG_ESP_CONSOLE_UART_CUSTOM` and `CONFIG_ESP_CONSOLE_NONE` on the
+    S3;
+  - the secondary console: ESP-IDF's pick-one "Channel for console
+    secondary output", with members `CONFIG_ESP_CONSOLE_SECONDARY_NONE`
+    and `CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG`. A USB-Serial/JTAG
+    primary forces it to none; any other primary leaves it open, so it is
+    required;
   - the watchdogs' behaviour on a hang: `CONFIG_BOOTLOADER_WDT_DISABLE_IN_USER_CODE`
     and `CONFIG_ESP_TASK_WDT_PANIC`;
   - Bluetooth on or off: `CONFIG_BT_ENABLED`;
