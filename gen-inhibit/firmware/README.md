@@ -20,6 +20,10 @@ the project's R30 list include `board_pins.h` (shared/tools SPEC R30):
 `main/main.c` (LEDs, Bluetooth-enable input) and `main/gi_restart_test.c`
 (test build only).
 
+**`dependencies.lock` is committed as LF.** On Windows the Component Manager
+writes it with CRLF line endings whenever a reconfigure updates it, so
+convert it to LF before committing it (AGENTS.md "Files and folders").
+
 Not from upstream:
 
 - `shared_pins.json`: the project's pins of shared tooling, read by the
