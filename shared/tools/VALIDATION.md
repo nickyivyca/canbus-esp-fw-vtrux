@@ -381,6 +381,15 @@ same folder. The interposer's test evidence is
     the project's repository; a branch or a commit hash fails, even one
     naming the lock's commit. The dependency's `git` URL is not checked:
     the lock's commit must still be the tag's commit in this repository.
+  - **Annotated tags** (user, 2026-10-28, in the gen-inhibit reviewer's
+    session, raised by the gen-inhibit tester's real-build run
+    `c1a_realbuild_475f4cc_20261028`): pinned at an annotated tag, IDF
+    v5.4.1's Component Manager writes the tag object's hash in
+    `dependencies.lock`, not the commit's, so the clause as worded failed a
+    build that downloaded exactly the tag's commit. The lock's hash is
+    followed to its commit (option a of two). Requiring shared/main's tags
+    to be lightweight (R25) was turned down. Every tag cut so far is
+    lightweight.
 - **Git's record of the checkout** (user, 2026-10-28, in the gen-inhibit
   reviewer's session, raised by the gen-inhibit tester's real builds, F1 in
   shared/tools VERIFICATION.md "Real builds of gen-inhibit's step 1a C"):
