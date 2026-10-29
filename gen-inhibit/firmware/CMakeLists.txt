@@ -10,8 +10,8 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 # its board by its one shared/boards/* dependency, vtrux/wican_v3 in
 # main/idf_component.yml, and nowhere else: the pins and per-model values come
 # from the board's headers, the hardware name from board_hw_name(), and the
-# model numbers project_hardware_rev holds are in main/hw_config.h. The
-# partition table is the board's, through sdkconfig.
+# model numbers project_hardware_rev holds are in the stock code's hw_config.h
+# (vtrux/wican). The partition table is the board's, through sdkconfig.
 
 # THE VERSION IS ESP-IDF'S OWN (spec 12.3 item 3, port step 0c; shared/tools
 # R4). Nothing here sets PROJECT_VER, there is no version.txt and project()
@@ -26,22 +26,27 @@ set(PROJECT_PREF "wican-fw")
 # The image name's model part, "obd" as stock names its OBD builds. It is
 # fixed here, not taken from the board: project() below runs before the
 # Component Manager fetches the board, and the name is this product's label,
-# which the build checks and records read (shared/tools R6). main.c reads
-# "usb" or "hv210" in it to set project_hardware_rev; "obd" gives WICAN_V300.
+# which the build checks and records read (shared/tools R6). The stock
+# start-up (vtrux/wican's wican.c) reads "usb" or "hv210" in it to set
+# project_hardware_rev; "obd" gives WICAN_V300.
 set(HW_PREF "obd")   # must match the board dependency, vtrux/wican_v3 in main/idf_component.yml
 
-# STOCK FEATURES, OFF IN THIS PRODUCT (spec 3.2 and 12.3 item 3, user
-# 2026-10-16). main/CMakeLists.txt is the shared code and defaults each switch
-# ON; gen-inhibit's build turns all four OFF here, so their code is not
-# compiled into this product. CACHE, so `idf.py -D<switch>=ON` still overrides
-# it. That also means a build directory once configured ON stays ON until it
-# is deleted. A release build's image carrying a stock feature's code is
-# refused by the shared build tooling's build-switch check (shared/tools SPEC
-# R20, rows in vtrux_checks.json), which judges the image, not the flag.
+# STOCK FEATURES, OFF IN THIS PRODUCT (spec 3.2, 3.3 and 12.3 item 3, user
+# 2026-10-16 and 2026-10-29). They are the shared stock code's switches,
+# CMake options of vtrux/wican that default ON (shared/wican W6, W7);
+# gen-inhibit's build turns all five OFF here, so their code is not compiled
+# into this product: the SLCAN command parser on every channel, and the four
+# features that changed bus state from outside gen_inhibit. CACHE, so
+# `idf.py -D<switch>=ON` still overrides it. That also means a build directory
+# once configured ON stays ON until it is deleted. A release build's image
+# carrying a stock feature's code is refused by the shared build tooling's
+# build-switch check (shared/tools SPEC R20, rows in vtrux_checks.json), which
+# judges the image, not the flag.
+set(WICAN_SLCAN_COMMANDS   OFF CACHE BOOL "the SLCAN command parser, every channel (slcan.c); off in gen-inhibit, spec 3.2")
 set(WICAN_FEATURE_MQTT     OFF CACHE BOOL "MQTT CAN logging and transmit (mqtt.c); off in gen-inhibit, spec 3.2")
 set(WICAN_FEATURE_ELM327   OFF CACHE BOOL "ELM327 command path (elm327.c); off in gen-inhibit, spec 3.2")
 set(WICAN_FEATURE_AUTOPID  OFF CACHE BOOL "AutoPID (autopid.c), needs ELM327 and MQTT; off in gen-inhibit, spec 3.2")
-set(WICAN_FEATURE_REALDASH OFF CACHE BOOL "RealDash boot branch (main.c); off in gen-inhibit, spec 3.2")
+set(WICAN_FEATURE_REALDASH OFF CACHE BOOL "RealDash boot branch (wican.c); off in gen-inhibit, spec 3.2")
 
 # Form the project binary name
 #
@@ -86,6 +91,10 @@ endif()
 # things to deploy, so a bare name is ambiguous between two live options; a
 # fault-injected image must never ship, so absence means "an ordinary build" and
 # is ambiguous between nothing.
+#
+# Only the name is set here. The switch itself, the define that ota_health.c's
+# hook reads, is vtrux/wican's (shared/wican SPEC.md W7): its CMakeLists.txt
+# forwards the same cache variable.
 if(OTA_HEALTH_FAULT_INJECT)
     set(GI_FAULT_SUFFIX "_flt")
 else()

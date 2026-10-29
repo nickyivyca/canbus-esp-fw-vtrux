@@ -1,8 +1,9 @@
 # `firmware/`
 
 The generator inhibitor's firmware: the upstream MeatPi WiCAN tree, laid out
-as upstream lays it out, with the inhibitor in its `main/` component. This
-folder is the ESP-IDF build root (`CMakeLists.txt`, `sdkconfig`,
+as upstream lays it out, with the inhibitor in its `main/` component. The
+stock WiCAN code itself is not here any more: it is the shared component
+`vtrux/wican` (below). This folder is the ESP-IDF build root (`CMakeLists.txt`, `sdkconfig`,
 `dependencies.lock`), so bench and dev builds run here,
 e.g. `ninja -C gen-inhibit/firmware/build -j 1` from the repo root (AGENTS.md
 "Builds during wall-clock tests"). Upstream's own README is the repo root's
@@ -13,23 +14,47 @@ e.g. `ninja -C gen-inhibit/firmware/build -j 1` from the repo root (AGENTS.md
 tag `main/idf_component.yml` names, into `managed_components/vtrux__wican_v3/`.
 Every build takes it there, dev builds included; never through
 `override_path`. It brings the pins (`board_pins.h`), the board calls and the
-per-model values (`board.h`, which `main/hw_config.h` includes), the hardware
-name, and the partition table, which `sdkconfig` names by its path in
-`managed_components/`. Stock WiCAN's `HARDWARE_VER` is gone. Only the files on
-the project's R30 list include `board_pins.h` (shared/tools SPEC R30):
-`main/main.c` (LEDs, Bluetooth-enable input) and `main/gi_restart_test.c`
-(test build only).
+per-model values (`board.h`, which the stock code's `hw_config.h` includes),
+the hardware name, and the partition table, which `sdkconfig` names by its
+path in `managed_components/`. Stock WiCAN's `HARDWARE_VER` is gone. Only the
+files on the project's R30 list include `board_pins.h` (shared/tools SPEC
+R30): `main/gi_restart_test.c` (test build only). The stock start-up, which
+drives the LEDs and reads the Bluetooth-enable input by pin, is on the stock
+component's own list, its `pins.json`.
+
+**The stock WiCAN code is a dependency too** (shared/wican SPEC W1, spec
+3.3, port step 1a): `vtrux/wican`, with `vtrux/debug_logs`, from git at the
+`shared/main` tag `main/idf_component.yml` names, beside the board. `main/`
+holds only gen-inhibit's own code: `app_main` in `main.c` (the hooks, then
+`wican_init()`, `gen_inhibit_init()`, `wican_start()`), the CAN functions the
+stock code calls (`can.c`, W3), the inhibitor, and its hooks into the stock
+code (`gi_wican.c`: the bus-owner callbacks, the two endpoints, the probe and
+restart-test registrations). The stock code's switches are set off in the
+top-level `CMakeLists.txt`: `WICAN_SLCAN_COMMANDS` and the four feature
+switches (spec 3.2). The rollback rehearsal's fault hook,
+`OTA_HEALTH_FAULT_INJECT`, is the stock component's switch too (W7), given on
+the command line; the top-level file only puts `_flt` in such an image's
+name. `main/Kconfig.projbuild` is upstream's and unused; it stays so
+`sdkconfig` does not change.
 
 **`dependencies.lock` is committed as LF.** On Windows the Component Manager
 writes it with CRLF line endings whenever a reconfigure updates it, so
 convert it to LF before committing it (AGENTS.md "Files and folders").
+
+**To move a git dependency to another tag, delete `dependencies.lock` and its
+`managed_components/` folders first.** With the lock in place, a changed
+`version:` in `main/idf_component.yml` can be solved to the commit the lock
+already holds, and the reconfigure keeps the old code without a word.
+Reconfigure, then check that the lock's `version:` for each `vtrux/*`
+dependency is the new tag's commit.
 
 Not from upstream:
 
 - `shared_pins.json`: the project's pins of shared tooling, read by the
   release launcher `../vtrux_tools.py` and the pinned tooling.
 - `vtrux_build.json`: the project's build data for the release tooling
-  (`project`, `shared_components`: the board, `vtrux/wican_v3`).
+  (`project`, `shared_components`: the board, `vtrux/wican_v3`, and the
+  stock code, `vtrux/wican` and `vtrux/debug_logs`).
 - `vtrux_checks.json`: the project's data for the shared build checks, the
   tester's.
 
