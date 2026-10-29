@@ -21,8 +21,20 @@ line and judges its exit code and whether its output names the planted file.
     git_tag_absent    the pinned tag deleted from the project's repository
     git_tag_branch    the tag deleted and a branch of its name made at its commit
     git_own_version   the downloaded board's own idf_component.yml given a version
+  R17's annotated tags (shared/main b21cb87, ruled 2026-10-28), the same way but with the
+  lock's board version replaced by an annotated tag's own hash, made in the project's
+  repository; the trigger is the tag's chain of objects read with git cat-file, not
+  rev-parse's peel (clean_release is the lightweight-tag pass: the real tag is lightweight):
+    git_lock_tag_other  an annotated tag on the tag commit's parent: fails both ways, naming
+                        managed_components/vtrux__wican_v3:
+    git_lock_tag_same   another annotated tag on the tag's commit: passes both
+    git_lock_tag_of_tag an annotated tag of such a tag: passes both
     outside_header    a bench build whose main.c includes a header from outside the
                       project root: fails --bench and --release, naming the header
+    detached_worktree a bench build in a detached linked worktree of the fixture clone, which
+                      reads the clone's HEAD beside its own (R17's git folder, ruled
+                      2026-10-28): passes both; VOID unless its CMakeFiles/git-data/head-ref
+                      holds the clone's HEAD and the worktree's own HEAD is a commit
     shared_override   a bench build taking the fx-r16 shared component by override_path
                       from a ../shared-fx/shared/ checkout: passes --bench, fails --release
     other_override    the same from ../elsewhere/, not a shared/ folder: fails both
@@ -81,6 +93,16 @@ def self_test():
                               ("crashes", (2, "Traceback", 0), "ERROR")):
         v = judge(*args)[0]
         print("  %s %s: %s" % ("ok  " if v == want else "FAIL", label, v))
+        ok &= v == want
+    sha, ref = b"0123456789abcdef0123456789abcdef01234567\n", b"ref: refs/heads/fixture\n"
+    for label, args, want in (("the clone's HEAD copied, the worktree detached", (sha, ref, ref), True),
+                              ("head-ref is the worktree's own HEAD", (sha, ref, sha), False),
+                              ("no head-ref", (sha, ref, None), False),
+                              ("the worktree on a branch", (ref, ref, ref), False),
+                              ("the clone detached at the same commit", (sha, sha, sha), False),
+                              ("no clone HEAD", (sha, None, ref), False)):
+        v = detached_read_clone_head(*args)[0]
+        print("  %s detached trigger, %s: %s" % ("ok  " if v == want else "FAIL", label, v))
         ok &= v == want
     ok &= self_test_git(RC.I.scratch("scope-cases-selftest-git"))
     print("\nself-test: %s" % ("every broken input caught" if ok else "FAILED"))
@@ -225,22 +247,31 @@ def self_test_git(d):
     real_two, real_report = two, RC.report
     reports = []
     two = lambda ctx, name, p, log, want, names=(): calls.append((name, board_facts(ctx), open(
-        os.path.join(md, "idf_component.yml")).read(), RC.ref(proj, "refs/heads/2026.10.27")))
+        os.path.join(md, "idf_component.yml")).read(), RC.ref(proj, "refs/heads/2026.10.27"), want, list(names)))
     RC.report = lambda name, v, detail, log: reports.append((name, v))
     try:
         before = board_facts(C)
         files = (open(os.path.join(proj, "dependencies.lock"), "rb").read(), open(os.path.join(md, "idf_component.yml"), "rb").read())
-        for fn, shows in ((c_git_lock_commit, lambda f, m, b: f[3] != f[1] and f[3] == RC.git(proj, "rev-parse", "HEAD~2")),
-                          (c_git_tag_absent, lambda f, m, b: f[1] == "" and b == ""),
-                          (c_git_tag_branch, lambda f, m, b: f[1] == "" and b == c1),
-                          (c_git_own_version, lambda f, m, b: m.startswith('version: "2026.10.27"'))):
+        c0 = RC.git(proj, "rev-parse", "HEAD~2")
+
+        def lock_tag(chain_types, commit):
+            return lambda f, m, b: (f[1] == c1 and f[3] not in (c1, f[2]) and [t for _, t in tag_chain(proj, f[3])]
+                                    == chain_types and tag_chain(proj, f[3])[-1][0] == commit)
+        for fn, shows, want in ((c_git_lock_commit, lambda f, m, b: f[3] != f[1] and f[3] == c0, 1),
+                                (c_git_tag_absent, lambda f, m, b: f[1] == "" and b == "", 1),
+                                (c_git_tag_branch, lambda f, m, b: f[1] == "" and b == c1, 1),
+                                (c_git_own_version, lambda f, m, b: m.startswith('version: "2026.10.27"'), 1),
+                                (c_git_lock_tag_other, lock_tag(["tag", "commit"], c0), 1),
+                                (c_git_lock_tag_same, lock_tag(["tag", "commit"], c1), 0),
+                                (c_git_lock_tag_of_tag, lock_tag(["tag", "tag", "commit"], c1), 0)):
             del calls[:], reports[:]
             fn(C, os.path.join(d, "case.log"))
             after = board_facts(C)
             same = after == before and files == (open(os.path.join(proj, "dependencies.lock"), "rb").read(),
                                                   open(os.path.join(md, "idf_component.yml"), "rb").read()) \
-                and RC.ref(proj, "refs/heads/2026.10.27") == ""
-            good = len(calls) == 1 and shows(*calls[0][1:]) and same and not reports
+                and RC.ref(proj, "refs/heads/2026.10.27") == "" and RC.git(proj, "tag", "-l", "r17-*") == ""
+            good = (len(calls) == 1 and shows(*calls[0][1:4]) and calls[0][4] == {"release": want, "bench": want}
+                    and calls[0][5] == (["managed_components/vtrux__wican_v3:"] if want else []) and same and not reports)
             print("  %s %s: the change shown to the check (%s), undone after: %s" % (
                 "ok  " if good else "FAIL", fn.__name__, calls[0][1] if calls else reports, same))
             ok &= good
@@ -280,11 +311,11 @@ def board_facts(ctx):
             str((lock.get(BOARD) or {}).get("version")))
 
 
-def git_case(ctx, log, name, change, undo):
+def git_case(ctx, log, name, change, undo, want=1):
     """clean_release's build with the board's git facts changed by change(facts) -> trigger shown
     (else VOID), undone by undo(facts) whatever happens: R17 fails both ways, naming the board's
-    managed folder. VOID unless clean_release passed both ways, since only then does naming the
-    folder show the change was seen."""
+    managed folder (want 1), or passes both (want 0). VOID unless clean_release passed both ways,
+    since only then does naming the folder show the change was seen."""
     if not getattr(ctx, "clean_built", False):
         RC.report(name, "VOID", "needs clean_release in the same batch", ctx.log)
         return
@@ -303,7 +334,8 @@ def git_case(ctx, log, name, change, undo):
         if not shown:
             RC.report(name, "VOID", "the change did not show: %s" % (board_facts(ctx),), ctx.log)
         else:
-            two(ctx, name, ctx.p1, log, {"release": 1, "bench": 1}, names=["managed_components/vtrux__wican_v3:"])
+            two(ctx, name, ctx.p1, log, {"release": want, "bench": want},
+                names=["managed_components/vtrux__wican_v3:"] if want else ())
     finally:
         undo(f)
         with open(log, "a") as fx:
@@ -382,6 +414,50 @@ def c_outside_header(ctx, log):
     RC.reset(ctx.p1, "fixture")
 
 
+def detached_read_clone_head(own_head, clone_head, head_ref):
+    """(read, why): the build copied the clone's HEAD (its CMakeFiles/git-data/head-ref holds
+    the clone's HEAD bytes) while the worktree's own HEAD is detached (a commit, not a ref)."""
+    own, clone, got = [(b or b"").strip() for b in (own_head, clone_head, head_ref)]
+    if not re.fullmatch(rb"[0-9a-f]{40}", own):
+        return False, "the worktree's HEAD is not a detached commit: %r" % own[:60]
+    if clone == own:
+        return False, "the clone's HEAD is the worktree's, so a copy proves nothing"
+    if got != clone:
+        return False, "head-ref %r is not the clone's HEAD %r" % (got[:60], clone[:60])
+    return True, "head-ref is the clone's HEAD %r; the worktree's is %s" % (clone[:60].decode(errors="replace"),
+                                                                        own.decode())
+
+
+def c_detached_worktree(ctx, log):
+    RC.reset(ctx.p1, "fixture")
+    wt = os.path.join(ctx.root, "wtd")
+    RC.rmtree(wt)
+    RC.git(ctx.repo_p1, "worktree", "prune")
+    RC.git(ctx.repo_p1, "worktree", "add", "-q", "--detach", wt, "fixture")
+    try:
+        proj = RC.in_sub(wt, ctx.sub)
+        rc = bench_build(ctx, proj, log)
+        gd = RC.git(proj, "rev-parse", "--absolute-git-dir")
+        common = RC.git(proj, "rev-parse", "--path-format=absolute", "--git-common-dir")
+
+        def raw(*p):
+            try:
+                with open(os.path.join(*p), "rb") as f:
+                    return f.read()
+            except OSError:
+                return None
+        read, why = detached_read_clone_head(raw(gd, "HEAD"), raw(common, "HEAD"),
+                                             raw(proj, "build", "CMakeFiles", "git-data", "head-ref"))
+        with open(log, "a") as f:
+            f.write("detached worktree %s: git dir %s, clone's %s; build exit %d; %s\n" % (wt, gd, common, rc, why))
+        if rc or not read:
+            RC.report("detached_worktree", "VOID", "build exit %d; %s" % (rc, why), ctx.log)
+        else:
+            two(ctx, "detached_worktree", proj, log, {"release": 0, "bench": 0})
+    finally:
+        RC.git(ctx.repo_p1, "worktree", "remove", "--force", wt)
+
+
 def override(ctx, log, name, folder, want):
     """fx-r16 with its shared component copied to folder and taken from there by override_path."""
     RC.reset(ctx.p1, "fx-r16")
@@ -409,6 +485,63 @@ def override(ctx, log, name, folder, want):
     RC.rmtree(os.path.join(ctx.p1, "build"))
 
 
+def tag_chain(repo, obj):
+    """[(object, type)] from obj through each annotated tag's target, read with git cat-file (not
+    rev-parse's peel, which is the check's own reader), ending at the first object not a tag."""
+    out = []
+    while len(out) < 10:
+        t = RC.git(repo, "cat-file", "-t", obj)
+        out.append((obj, t))
+        if t != "tag":
+            break
+        obj = RC.git(repo, "cat-file", "-p", obj).splitlines()[0].split()[1]   # "object <hash>"
+    return out
+
+
+LOCK_TAGS = ("r17-lock-tag", "r17-lock-tag-of-tag")
+
+
+def lock_tag_case(ctx, log, name, onto, of_tag, want):
+    """The lock's board version replaced by the hash of an annotated tag made in the project's
+    repository on onto(facts) (of_tag: then a tag of that tag), shown by tag_chain."""
+    lp = os.path.join(ctx.p1, "dependencies.lock")
+
+    def change(f):
+        target = onto(f)
+        RC.git(ctx.p1, "tag", "-a", "-m", name, LOCK_TAGS[0], target)
+        top = LOCK_TAGS[0]
+        if of_tag:
+            RC.git(ctx.p1, "tag", "-a", "-m", name, LOCK_TAGS[1], LOCK_TAGS[0])
+            top = LOCK_TAGS[1]
+        obj = RC.git(ctx.p1, "rev-parse", "refs/tags/" + top)
+        text = open(lp, newline="").read()
+        if text.count("version: %s" % f[3]) != 1:
+            return False
+        with open(lp, "w", newline="") as fh:
+            fh.write(text.replace("version: %s" % f[3], "version: %s" % obj))
+        chain = tag_chain(ctx.p1, obj)
+        return (board_facts(ctx)[3] == obj and obj not in (f[1], f[2]) and chain[-1] == (target, "commit")
+                and [t for _, t in chain] == ["tag"] * (2 if of_tag else 1) + ["commit"])
+
+    def undo(f):
+        RC.git(ctx.p1, "checkout", "-q", "--", "dependencies.lock")
+        for t in LOCK_TAGS:
+            RC.run(["git", "-C", ctx.p1, "tag", "-d", t])
+    git_case(ctx, log, name, change, undo, want)
+
+
+def c_git_lock_tag_other(ctx, log):
+    lock_tag_case(ctx, log, "git_lock_tag_other", lambda f: RC.git(ctx.p1, "rev-parse", f[1] + "^"), False, 1)
+
+
+def c_git_lock_tag_same(ctx, log):
+    lock_tag_case(ctx, log, "git_lock_tag_same", lambda f: f[1], False, 0)
+
+
+def c_git_lock_tag_of_tag(ctx, log):
+    lock_tag_case(ctx, log, "git_lock_tag_of_tag", lambda f: f[1], True, 0)
+
+
 def c_shared_override(ctx, log):
     override(ctx, log, "shared_override", os.path.join(ctx.root, "shared-fx", "shared", SC), {"release": 1, "bench": 0})
 
@@ -420,7 +553,10 @@ def c_other_override(ctx, log):
 CASES = [("clean_release", c_clean_release), ("version_edited", c_version_edited),
          ("managed_unlisted", c_managed_unlisted), ("git_lock_commit", c_git_lock_commit),
          ("git_tag_absent", c_git_tag_absent), ("git_tag_branch", c_git_tag_branch),
-         ("git_own_version", c_git_own_version), ("outside_header", c_outside_header),
+         ("git_own_version", c_git_own_version), ("git_lock_tag_other", c_git_lock_tag_other),
+         ("git_lock_tag_same", c_git_lock_tag_same), ("git_lock_tag_of_tag", c_git_lock_tag_of_tag),
+         ("outside_header", c_outside_header),
+         ("detached_worktree", c_detached_worktree),
          ("shared_override", c_shared_override), ("other_override", c_other_override)]
 
 

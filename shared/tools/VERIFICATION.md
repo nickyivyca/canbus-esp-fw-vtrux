@@ -709,3 +709,94 @@ under test, and they refused to start. They were run again at `ccdd525`.
 | R29, by folder and choices | PASS | On real release builds that take `wican_v3`. |
 | R30 | PASS | On real release builds compiling `board_pins.h` from the component. |
 | R21, the board the build downloaded | PASS | Both targets. |
+
+## R17 fixed: the pins of git components, git's folder and annotated tags, on real builds (gen-inhibit step 1a, 2026-10-28)
+
+**SPEC:** shared/main `b21cb87`. R17 as ruled 2026-10-28 (user, in the gen-inhibit reviewer's
+session), on top of the git clause of the 2026-10-27 entry above: any file in the git folder of the
+repository holding the project root counts as in scope, both the worktree's own (`--git-dir`) and
+the clone's (`--git-common-dir`), other worktrees' records included, while another worktree's
+checked-out files do not (`642b4ae`, which replaced `d23964b`'s narrower reading: `HEAD` and the
+branch file it names); and the lock records what git resolved, the commit or an annotated tag
+naming it, whose commit must be the one the pinned tag names (`b21cb87`, merging
+`shared/tools/r17-annotated-tag` `642b4ae..b61c859`). **Check:** `vtrux_checks/scope.py` on
+`shared/tools/scope-git-pin` at `af899da` (from shared/main `a2887ab`, merging `d23964b`,
+`642b4ae` and `b21cb87` as they were ruled), three changes written from SPEC:
+- `7960cd7` (F2 of the entry above): the components the build used were keyed by name, so the
+  bootloader build's own `main` (IDF's bootloader subproject) replaced the project's `main/`, and
+  the pin in its `idf_component.yml` was never read. They are now keyed by build folder and name.
+- `475f4cc` (F1): the files under the repository's two git folders, as `git rev-parse` names them
+  from the project root, are in scope. (`23b57b1` accepted `d23964b`'s two files only; superseded
+  by the ruling before its run finished.)
+- `af899da`: the lock's `version`, when a full hash, is followed to its commit by `git rev-parse
+  <hash>^{commit}` from the project root, through any tags of tags, and that commit is compared with
+  the pinned tag's. Anything else in the lock (a short hash, a branch's name, a tree, an unknown
+  object) fails.
+
+**Unit tests:** `test_scope.py`, 18 tests at `7960cd7`, 21 at `475f4cc`, 23 at `af899da`. Each
+step's new tests fail on the step before's `scope.py`: 1 FAIL at `7960cd7`; 2 FAIL and 1 ERROR at
+`23b57b1`; 5 ERRORs at `475f4cc` (the reader the test calls is missing, so the mutant ignoring the
+git folders is the substantive one); 2 FAIL and 2 ERROR at `af899da`. The annotated-tag reader is
+tested on a real repository pinned at an annotated and at a lightweight tag: the commit, the pinned
+tag, another annotated tag on the same commit, a tag of a tag and the hash in upper case pass;
+another commit, an annotated tag or a tag of a tag on it, a branch's name, a short hash, a tree, an
+unknown hash and no version fail. 16 mutants of `scope.py` (3 for the pins, 7 for the git folders,
+6 for the lock's hash) each fail them. Every unit test file of `vtrux_checks` passes at each step
+(191 tests at `af899da`). **The real tree:** R17 on the tester's bench build of gen-inhibit
+`b6bee3f` passes at `475f4cc` and at `af899da` (lock commit `77e114f`, the real tag being
+lightweight), where it failed on F1 and F2 at `77e114f`.
+
+**Cases:** `verification/scope_cases.py` at `af899da` gains `detached_worktree` (`475f4cc`: a bench
+build in a detached linked worktree of the fixture's clone, which reads the clone's `HEAD`; VOID
+unless that is shown) and three annotated-tag cases (`af899da`), the lock's board version replaced
+by the hash of an annotated tag made in the project's repository and shown by its chain of objects
+read with `git cat-file`: `git_lock_tag_other` on the tag commit's parent fails both ways naming
+the board's folder; `git_lock_tag_same` (another tag on the tag's commit) and `git_lock_tag_of_tag`
+pass both. `git_case` now takes the outcome wanted. `--self-test` passes, and covers the new cases'
+changes, wanted outcome and undoing (lock restored, tags deleted); 6 mutants of those cases each fail
+it. The real lightweight tag is `clean_release`'s pass; the annotated one is `board_cases`'
+`s3_pass`, whose esp32s3 board repository is tagged with `git tag -a`.
+
+**Builds:** release builds by the tooling at `af899da` of `release_cases.py`'s fixture made from
+gen-inhibit `8b7558e` (`gen-inhibit/main`, which holds `b6bee3f`), and `board_cases.py`'s esp32s3
+minimal project, `--board ../shared-2026.10.27/shared/boards/wican_v3`. **Host:** NICKY-XPS, IDF
+v5.4.1 with its Python 3.11.9, Idle priority and `--jobs 1`; bench lock free, "No builds" clear and
+no simulator running at the start. **Run files**, each with a `SHA256SUMS` hashing every file in
+it, under `$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/runs/`:
+- `c1a_realbuild_af899da_b_20261028/` (`e6bef5b0...32dd`): the run this entry rests on, 20:28:19 to
+  21:36:53, on a fresh root. `s3_lock_tag_chain.txt` shows `s3_pass`'s lock recording the annotated
+  tag's own hash, `e0bc87d...`, the one that failed at `475f4cc` below.
+- `c1a_realbuild_af899da_20261028/` (`63db65c9...266b`): the first run at `af899da`, 20:02:59 to
+  20:25:17, stopped by the harness's own guard when the interposer's emulated suite started
+  (`version_edited` and `s3_pass` STOPPED, naming the running simulators). Not evidence.
+- `r17_annotated_af899da_20261028/` (`ba449853...371b`), `f1_gitfolder_475f4cc_20261028/`
+  (`1009ab58...ea43`), `f1_gitrecord_23b57b1_20261028/` (`360f5a1d...1f04`) and
+  `f2_scopepin_7960cd7_20261028/` (`c056eb1f...277a`): each
+  step's old-code and fixed unit tests, mutants, all `vtrux_checks` tests and the real tree; the
+  `23b57b1` folder also holds the configure of a detached worktree behind the git-folder ruling.
+- `c1a_realbuild_475f4cc_20261028/` (`87dd9df6...a771`): the run at `475f4cc`, 15:11:58 to 16:19:29: release
+  2/2, scope 22/22 and `s3_pass` PASS, and R17 on `s3_pass` FAIL, `dependencies.lock records commit
+  e0bc87d..., but tag 2026.10.28 names 9a4fbc4...` (`board_s3_pass.log`): IDF v5.4.1's component
+  manager writes an annotated tag's own hash in the lock, the observation behind `b21cb87`. Before
+  `7960cd7` the pin was not read and this was hidden behind F2.
+- `c1a_realbuild_23b57b1_20261028/` (`a7fe049a...cff7`): the run at `23b57b1`, stopped in `shared_override`
+  when the git-folder ruling superseded it. Not evidence.
+
+| Case | Result | What was tested |
+|---|---|---|
+| `release_cases` `pre_unset_ri`, `a_release` | PASS | The fixture's release build: refused with `REVERSE_IT_DIR` unset; built and recorded (record `b4e8fa6350185bc4`). |
+| scope `clean_release` | PASS | The fixture's clean release build, `--release` and `--bench`: exit 0, F1 and F2 no longer reported. |
+| scope `version_edited`, `managed_unlisted` | PASS | Exit 1 both ways, naming `espressif__mdns` and the planted component. |
+| scope `git_lock_commit`, `git_tag_absent`, `git_tag_branch`, `git_own_version` | PASS | Exit 1 both ways, naming `managed_components/vtrux__wican_v3:`; judged, not VOID, `clean_release` having passed. |
+| scope `git_lock_tag_other` | PASS | An annotated tag on the tag commit's parent in the lock: exit 1 both ways, naming `managed_components/vtrux__wican_v3:`. |
+| scope `git_lock_tag_same`, `git_lock_tag_of_tag` | PASS | Another annotated tag on the tag's commit, and a tag of such a tag: exit 0 both ways. |
+| scope `outside_header`, `other_override` | PASS | Exit 1 both ways, naming the planted file. |
+| scope `detached_worktree` | PASS | A bench build in a detached linked worktree of the fixture's clone, shown to read the clone's `HEAD`: exit 0 both ways. |
+| scope `shared_override` | PASS | `--release` exit 1 naming the override; `--bench` exit 0, as R17 allows a bench build. |
+| board `s3_pass` | PASS | The minimal project on esp32s3, its board `vtrux/s3fx` from git at an annotated tag: exit 0, prefix `xtensa-esp32s3-elf-`. |
+| board `s3_pass`, R17 scope | PASS | `scope --release` on that build, whose lock records the annotated tag's own hash: exit 0. |
+
+| Req | Result | What was tested |
+|---|---|---|
+| R17 on a real release build | PASS | Supersedes the entry above's FAIL: F1 and F2 no longer reported, on the fixture and on gen-inhibit's own bench build; the planted cases each named, both ways. |
+| R17, git components | PASS | Supersedes the entry above's FAIL: pinned at a lightweight tag (the real one) and at an annotated tag (`s3_pass`); the planted git cases judged, not VOID. |
