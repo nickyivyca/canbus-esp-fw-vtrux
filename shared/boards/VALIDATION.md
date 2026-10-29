@@ -66,7 +66,8 @@ gen-inhibit's spec is
   2026-10-27). The secondary console is a second required choice on
   `wican_v3` (user, 2026-10-27, raised by the charge-interposer reviewer):
   only a USB-Serial/JTAG primary forces it to none, and a UART primary
-  would leave it to ESP-IDF's default.
+  would leave it to ESP-IDF's default. The same on `x2` (user, 2026-10-28,
+  in the charge-interposer reviewer's session).
 - **Status:** complete.
 
 ### B4. `board.json`
@@ -163,6 +164,14 @@ gen-inhibit's spec is
     `wican_v3`, plus PSRAM, which the module carries, and the core dump,
     for which the table has a partition (user, 2026-10-27). The charge
     interposer's spec sets them at its port step 2a;
+  - the console members: both choices with every S3 member listed, the
+    secondary required as on `wican_v3` (user, 2026-10-28, in the
+    charge-interposer reviewer's session), from ESP-IDF v5.4.1
+    `components/esp_system/Kconfig` (`CONFIG_ESP_CONSOLE_USB_CDC` is S2 and
+    S3 only, and absent when TinyUSB is used; the secondary choice exists
+    on chips with USB-Serial/JTAG). The interposer's PlatformIO build today
+    has UART0 as the primary and USB-Serial/JTAG as the secondary, which is
+    how its output reaches the USB connector;
   - pins and crystal: the port plan's Layer 1, the interposer's board
     wiring in `firmware/src/main.cpp` and `port_mcp2515.h`, arduino-esp32's
     `aslcanx2` variant, and the Autosport Labs wiki for INT on GPIO3, which
