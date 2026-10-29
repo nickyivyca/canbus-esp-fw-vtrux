@@ -1,0 +1,807 @@
+/*
+ * This file is part of the WiCAN project.
+ *
+ * Copyright (C) 2022  Meatpi Electronics.
+ * Written by Ali Slim <ali@meatpi.com>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+#include <inttypes.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include  "freertos/queue.h"
+#include "freertos/event_groups.h"
+#include "esp_wifi.h"
+#include "esp_system.h"
+#include "esp_event.h"
+#include "nvs_flash.h"
+#include "driver/gpio.h"
+#include "esp_log.h"
+#include <string.h>
+#include "esp_timer.h"
+#include "comm_server.h"
+#include "lwip/sockets.h"
+#include "driver/twai.h"
+#include "ver.h"
+#include "types.h"
+#include "config_server.h"
+#include "slcan.h"
+#include "can.h"
+#include "wifi_network.h"
+#include "esp_mac.h"
+#include "esp_ota_ops.h"
+#include "nvs.h"
+#include "nvs_flash.h"
+#include "sleep_mode.h"
+#include "wc_uart.h"
+#include "elm327.h"
+#include "mqtt.h"
+#include "esp_mac.h"
+#include "autopid.h"
+#include "wc_mdns.h"
+#include "hw_config.h"
+/* The LEDs and the Bluetooth-enable input below still go by pin, so this file
+ * is on this component's list of files that use pins, pins.json (SPEC.md
+ * W10; shared/tools SPEC R30, shared/boards B6). The CAN port goes through
+ * board.h. */
+#include "board_pins.h"
+#include "dev_status.h"
+#include "ota_health.h"
+#include "wican.h"
+#include "wican_features.h"
+#include "debug_logs.h"
+#include "debug_logs_config.h"
+
+#define TAG 		__func__
+
+#define GPIO_OUTPUT_PIN_SEL  ((1ULL<<CONNECTED_LED_GPIO_NUM) | (1ULL<<ACTIVE_LED_GPIO_NUM) | (1ULL<<PWR_LED_GPIO_NUM))
+#define BLE_EN_PIN_SEL		(1ULL<<BLE_EN_PIN_NUM)
+#define BLE_Enabled()		(!gpio_get_level(BLE_EN_PIN_NUM))
+
+static QueueHandle_t xMsg_Tx_Queue, xMsg_Rx_Queue, xmsg_ws_tx_queue, xmsg_uart_tx_queue;
+#if WICAN_FEATURE_ELM327
+static QueueHandle_t xmsg_obd_rx_queue;
+#endif
+#if WICAN_FEATURE_MQTT
+static QueueHandle_t xmsg_mqtt_rx_queue;
+#endif
+static xdev_buffer ucTCP_RX_Buffer;
+static xdev_buffer ucTCP_TX_Buffer;
+
+static uint8_t protocol = SLCAN;
+/* The configured bitrate: wican_init() reads it, wican_start()'s protocol
+ * branches use it. */
+static int8_t can_datarate = -1;
+
+uint8_t project_hardware_rev;
+int FTP_TASK_FINISH_BIT = BIT2;
+EventGroupHandle_t xEventTask;
+#if WICAN_FEATURE_MQTT
+static uint8_t mqtt_elm327_log_en = 0;
+#endif
+static uint8_t derived_mac_addr[6] = {0};
+static uint8_t uid[16];
+static uint8_t ble_uid[33];
+static char hardware_version[16];
+static char firmware_version[10];
+// Wrapper so we can provide a function pointer for network readiness
+static bool dbg_net_ready(void) { return wifi_network_is_connected(); }
+
+/*
+ * THE PROJECT'S HOOKS (SPEC.md W5, W8), registered before wican_init(). Where
+ * a project registers none, each accessor below gives upstream's behaviour:
+ * the bus is never owned, an OTA always proceeds, nothing is told, and no
+ * URIs are added.
+ */
+static wican_bus_owner_t s_owner;
+static wican_uri_hook_t s_uri_hook;
+static size_t s_uri_slots;
+
+void wican_register_bus_owner(const wican_bus_owner_t *owner)
+{
+	if(owner != NULL)
+	{
+		s_owner = *owner;
+	}
+	else
+	{
+		memset(&s_owner, 0, sizeof(s_owner));
+	}
+}
+
+void wican_register_uris(wican_uri_hook_t hook, size_t slots)
+{
+	s_uri_hook = hook;
+	s_uri_slots = (hook != NULL) ? slots : 0;
+}
+
+bool wican_owns_bus(void)
+{
+	return s_owner.owns_bus != NULL && s_owner.owns_bus();
+}
+
+wican_ota_answer_t wican_ota_begin(void)
+{
+	return (s_owner.ota_begin != NULL) ? s_owner.ota_begin() : WICAN_OTA_GO;
+}
+
+void wican_ota_failed(void)
+{
+	if(s_owner.ota_failed != NULL)
+	{
+		s_owner.ota_failed();
+	}
+}
+
+void wican_command_refused(void)
+{
+	if(s_owner.command_refused != NULL)
+	{
+		s_owner.command_refused();
+	}
+}
+
+/* The refusal bodies are the project's; these stand in where it gave none. */
+const char *wican_flash_write_refused_body(void)
+{
+	return (s_owner.flash_write_refused_body != NULL)
+		? s_owner.flash_write_refused_body
+		: "the bus is owned; a flash write would stall CAN receive";
+}
+
+const char *wican_ota_refused_body(void)
+{
+	return (s_owner.ota_refused_body != NULL)
+		? s_owner.ota_refused_body
+		: "OTA refused by the bus owner";
+}
+
+const char *wican_ota_no_answer_body(void)
+{
+	return (s_owner.ota_no_answer_body != NULL)
+		? s_owner.ota_no_answer_body
+		: "the bus owner did not answer; nothing touched";
+}
+
+void wican_uri_hook_call(httpd_handle_t server, bool restart)
+{
+	if(s_uri_hook != NULL)
+	{
+		s_uri_hook(server, restart);
+	}
+}
+
+size_t wican_uri_slots(void)
+{
+	return s_uri_slots;
+}
+
+#if WICAN_FEATURE_MQTT && WICAN_FEATURE_ELM327
+static void log_can_to_mqtt(twai_message_t *frame, uint8_t type)
+{
+	static mqtt_can_message_t mqtt_msg;
+
+	mqtt_msg.frame.extd = frame->extd;
+	mqtt_msg.frame.rtr = frame->rtr;
+	mqtt_msg.frame.ss = frame->ss;
+	mqtt_msg.frame.self = frame->self;
+	mqtt_msg.frame.dlc_non_comp = frame->dlc_non_comp;
+	mqtt_msg.frame.identifier = frame->identifier;
+	mqtt_msg.frame.data_length_code = frame->data_length_code;
+
+	mqtt_msg.frame.data[0] = frame->data[0];
+	mqtt_msg.frame.data[1] = frame->data[1];
+	mqtt_msg.frame.data[2] = frame->data[2];
+	mqtt_msg.frame.data[3] = frame->data[3];
+	mqtt_msg.frame.data[4] = frame->data[4];
+	mqtt_msg.frame.data[5] = frame->data[5];
+	mqtt_msg.frame.data[6] = frame->data[6];
+	mqtt_msg.frame.data[7] = frame->data[7];
+
+	mqtt_msg.type = type;
+	xQueueSend( xmsg_mqtt_rx_queue, ( void * ) &mqtt_msg, pdMS_TO_TICKS(0) );
+}
+#endif
+static void process_led(bool state)
+{
+	static bool current_state;
+	static int64_t last_change;
+
+	if(!can_is_enabled())
+	{
+		gpio_set_level(ACTIVE_LED_GPIO_NUM, 1);
+		current_state = 0;
+		last_change = esp_timer_get_time();
+	}
+
+	if(esp_timer_get_time() - last_change < 20*1000)
+	{
+		return;
+	}
+	if(current_state != state)
+	{
+		last_change = esp_timer_get_time();
+		current_state = state;
+	}
+	else
+	{
+		return;
+	}
+	if(state == 1)
+	{
+		gpio_set_level(ACTIVE_LED_GPIO_NUM, 0);
+	}
+	else
+	{
+		gpio_set_level(ACTIVE_LED_GPIO_NUM, 1);
+	}
+}
+
+//TODO: make this pretty?
+void send_to_host(char* str, uint32_t len, QueueHandle_t *q)
+{
+	static xdev_buffer xsend_buffer;
+
+	if(len == 0)
+	{
+		xsend_buffer.usLen = strlen(str);
+	}
+	else
+	{
+		xsend_buffer.usLen = len;
+	}
+	memcpy(xsend_buffer.ucElement, str, xsend_buffer.usLen);
+	xQueueSend( *q, ( void * ) &xsend_buffer, portMAX_DELAY );
+
+//	ESP_LOG_BUFFER_HEX(TAG, ucTCP_TX_Buffer.ucElement, xsend_buffer.usLen);
+	memset(xsend_buffer.ucElement, 0, sizeof(xsend_buffer.ucElement));
+	xsend_buffer.usLen = 0;
+//	ESP_LOGI(TAG, "%s", str);
+}
+
+static void can_tx_task(void *pvParameters)
+{
+	while(1)
+	{
+		twai_message_t tx_msg;
+
+		memset(ucTCP_RX_Buffer.ucElement,0, DEV_BUFFER_LENGTH);
+		xQueueReceive(xMsg_Rx_Queue, &ucTCP_RX_Buffer, portMAX_DELAY);
+
+		dev_status_wait_for_bits(DEV_AWAKE_BIT, portMAX_DELAY);
+
+		ESP_LOGI(TAG, "----------");
+		ESP_LOG_BUFFER_HEXDUMP(TAG, ucTCP_RX_Buffer.ucElement, ucTCP_RX_Buffer.usLen, ESP_LOG_INFO);
+		ESP_LOGI(TAG, "----------");
+		uint8_t* msg_ptr = ucTCP_RX_Buffer.ucElement;
+		int temp_len = ucTCP_RX_Buffer.usLen;
+
+		/* SLCAN COMMANDS ARE A BUILD SWITCH (SPEC.md W6). On, as upstream, every
+		 * channel reaches the parser; off, no call to it is compiled. */
+#if WICAN_SLCAN_COMMANDS
+		if(config_server_ws_connected())
+		{
+			if(ucTCP_RX_Buffer.dev_channel == DEV_WIFI_WS)
+			{
+				slcan_parse_str(msg_ptr, temp_len, &tx_msg, &xmsg_ws_tx_queue);
+			}
+		}
+		if(protocol == SLCAN)
+		{
+			if(ucTCP_RX_Buffer.dev_channel == DEV_WIFI)
+			{
+				slcan_parse_str(msg_ptr, temp_len, &tx_msg, &xMsg_Tx_Queue);
+			}
+			else if(ucTCP_RX_Buffer.dev_channel == DEV_UART)
+			{
+				if(!config_server_mqtt_en_config())
+				{
+					slcan_parse_str(msg_ptr, temp_len, &tx_msg, &xmsg_uart_tx_queue);
+				}
+			}
+		}
+#else
+		/*
+		 * SPEC 3.2 (review A3): THE SLCAN COMMAND PARSER IS DISABLED ON EVERY
+		 * CHANNEL.
+		 *
+		 * Section 1 goal 2 -- a non-zero torque command must be structurally
+		 * impossible -- is a property of the WHOLE FIRMWARE, not of
+		 * gen_inhibit alone. slcan_parse_str() lets any client transmit an
+		 * arbitrary frame, including a 0x051 carrying real torque, and also
+		 * open or close the bus, switch silent/loopback and change the
+		 * bitrate. On a truck unit that auto-arms at wake, nobody is watching.
+		 *
+		 * THREE CHANNELS, NOT ONE, which is the part that is easy to get
+		 * wrong: the TCP port only when protocol == SLCAN, UART likewise, but
+		 * the WEB UI WEBSOCKET WHATEVER THE PROTOCOL SETTING. Reading the
+		 * config and concluding "we are not in SLCAN mode, so the parser is
+		 * unreachable" is false.
+		 *
+		 * Measured hazards this closes (2026-09-22): an SLCAN `C` called
+		 * can_disable(), which quiesced the worker and forced mode OFF with no
+		 * event and no diag -- and common SLCAN clients send `C` when they
+		 * OPEN a session, so an auto-armed unit would have been disarmed for
+		 * the rest of the power cycle by someone merely connecting. Loopback
+		 * (`Y`) made client-sent frames self-received by the worker, which
+		 * would have answered an injected 0x051 as though it were the VCM's.
+		 *
+		 * RECEIVE-ONLY MONITORING IS UNAFFECTED: frames still flow outward to
+		 * a connected client. What is gone is the inbound command path.
+		 *
+		 * Refused, not silently dropped (spec 3.2), but rate-limited: a client
+		 * that retries in a loop must not turn the log into the incident.
+		 */
+		{
+			/*
+			 * Spec 3.2's counter (user, 2026-10-12), and it counts the
+			 * attempts the disable actually suppressed -- the ones that
+			 * would have reached slcan_parse_str() in the block below.
+			 *
+			 * NARROWER THAN THE LOG ABOVE IT ON PURPOSE. That log fires for
+			 * every inbound buffer on every channel, an ELM327 command
+			 * included, which as a log is merely noisy; as a count it would
+			 * be wrong, because an ELM327 command is not a refused SLCAN
+			 * attempt. The conditions below mirror the parser calls above exactly
+			 * (WICAN_SLCAN_COMMANDS on) and must be changed with them.
+			 */
+			const bool slcan_would_have_run =
+				(config_server_ws_connected()
+				 && ucTCP_RX_Buffer.dev_channel == DEV_WIFI_WS)
+				|| (protocol == SLCAN
+					&& ucTCP_RX_Buffer.dev_channel == DEV_WIFI)
+				|| (protocol == SLCAN
+					&& ucTCP_RX_Buffer.dev_channel == DEV_UART
+					&& !config_server_mqtt_en_config());
+			if(slcan_would_have_run)
+			{
+				wican_command_refused();
+			}
+
+			static int64_t s_last_refusal_log;
+			const int64_t now_us = esp_timer_get_time();
+			if (now_us - s_last_refusal_log > 5000000 || s_last_refusal_log == 0)
+			{
+				s_last_refusal_log = now_us;
+				ESP_LOGW(__func__, "SLCAN command refused on channel %d "
+						 "(%d bytes): WICAN_SLCAN_COMMANDS is off",
+						 (int)ucTCP_RX_Buffer.dev_channel, temp_len);
+			}
+		}
+		if(protocol == SLCAN)
+		{
+			/* refused above: no call to the parser is compiled (W6), so its
+			 * arguments are not used */
+			(void)msg_ptr;
+			(void)tx_msg;
+		}
+#endif
+#if WICAN_FEATURE_ELM327
+		else if(protocol == OBD_ELM327)
+		{
+			if(ucTCP_RX_Buffer.dev_channel == DEV_WIFI)
+			{
+				elm327_process_cmd(msg_ptr, temp_len, &tx_msg, &xMsg_Tx_Queue);
+			}
+		}
+#endif
+	}
+}
+#define HEAP_CAPS   (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
+static void can_rx_task(void *pvParameters)
+{
+//	static uint32_t num_msg = 0;
+	static int64_t time_old = 0;
+//	float bvoltage = 0;
+//	time_old = esp_timer_get_time();
+	while(1)
+	{
+        static twai_message_t rx_msg;
+//        esp_err_t ret = 0xFF;
+
+
+//    	time_old = esp_timer_get_time();
+//    	if((esp_timer_get_time() - time_old) > 1000000)
+//    	{
+//    		sleep_mode_get_voltage(&bvoltage);
+//    		time_old = esp_timer_get_time();
+//
+//    		ESP_LOGI(TAG, "bvoltage: %f", bvoltage);
+//    	}
+        process_led(0);
+        // static uint32_t min_heap = UINT32_MAX;
+        // static uint32_t max_heap = 0;
+        // uint32_t free_heap = heap_caps_get_free_size(HEAP_CAPS);
+        
+        // // Track min/max on every loop iteration
+        // min_heap = (free_heap < min_heap) ? free_heap : min_heap;
+        // max_heap = (free_heap > max_heap) ? free_heap : max_heap;
+
+        // // Print only every second
+        // if(esp_timer_get_time() - time_old > 1000*1000)
+        // {
+        //     time_old = esp_timer_get_time();
+        //     ESP_LOGI(TAG, "heap current: %lu min: %lu max: %lu", free_heap, min_heap, max_heap);
+        // }
+		
+		dev_status_wait_for_bits(DEV_AWAKE_BIT, portMAX_DELAY);
+
+        if(wican_owns_bus())
+        {
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+
+        while(can_receive(&rx_msg, 0) ==  ESP_OK)
+        {
+//        	num_msg++;
+
+        	process_led(1);
+
+        	if(config_server_ws_connected())
+        	{
+        		ucTCP_TX_Buffer.usLen = slcan_parse_frame(ucTCP_TX_Buffer.ucElement, &rx_msg);
+				if(config_server_ws_connected())
+				{
+					xQueueSend( xmsg_ws_tx_queue, ( void * ) &ucTCP_TX_Buffer, pdMS_TO_TICKS(0) );
+				}
+        	}
+        	//TODO: optimize, useless ifs
+			/* spec 3.2: each stock feature's share of this test is compiled
+			 * only with its switch (wican_features.h) */
+			if(tcp_port_open() || project_hardware_rev == WICAN_USB_V100
+#if WICAN_FEATURE_MQTT
+			   || mqtt_connected()
+#endif
+#if WICAN_FEATURE_AUTOPID
+			   || protocol == AUTO_PID
+#endif
+			   )
+			{
+				memset(ucTCP_TX_Buffer.ucElement, 0, sizeof(ucTCP_TX_Buffer.ucElement));
+				ucTCP_TX_Buffer.usLen = 0;
+
+				if(protocol == SLCAN)
+				{
+					ucTCP_TX_Buffer.usLen = slcan_parse_frame(ucTCP_TX_Buffer.ucElement, &rx_msg);
+				}
+#if WICAN_FEATURE_ELM327
+				else if(protocol == OBD_ELM327
+#if WICAN_FEATURE_AUTOPID
+				        || protocol == AUTO_PID
+#endif
+				        )
+				{
+					// Let elm327.c decide which messages to process
+					if(elm327_ready_to_receive())
+					{
+						xQueueSend( xmsg_obd_rx_queue, ( void * ) &rx_msg, pdMS_TO_TICKS(0) );
+					}
+				}
+#endif
+
+				if(ucTCP_TX_Buffer.usLen != 0)
+				{
+					if(tcp_port_open())
+					{
+						xQueueSend( xMsg_Tx_Queue, ( void * ) &ucTCP_TX_Buffer, pdMS_TO_TICKS(0) );
+					}
+					if(project_hardware_rev == WICAN_USB_V100)
+					{
+						if(!config_server_mqtt_en_config())
+						{
+							xQueueSend( xmsg_uart_tx_queue, ( void * ) &ucTCP_TX_Buffer, pdMS_TO_TICKS(0) );
+						}
+					}
+				}
+			}
+#if WICAN_FEATURE_MQTT
+			if(mqtt_connected())
+			{
+				static mqtt_can_message_t mqtt_rx_msg;
+				if(mqtt_elm327_log_en == 0)
+				{
+					mqtt_rx_msg.frame.extd = rx_msg.extd;
+					mqtt_rx_msg.frame.rtr = rx_msg.rtr;
+					mqtt_rx_msg.frame.ss = rx_msg.ss;
+					mqtt_rx_msg.frame.self = rx_msg.self;
+					mqtt_rx_msg.frame.dlc_non_comp = rx_msg.dlc_non_comp;
+					mqtt_rx_msg.frame.identifier = rx_msg.identifier;
+					mqtt_rx_msg.frame.data_length_code = rx_msg.data_length_code;
+
+					mqtt_rx_msg.frame.data[0] = rx_msg.data[0];
+					mqtt_rx_msg.frame.data[1] = rx_msg.data[1];
+					mqtt_rx_msg.frame.data[2] = rx_msg.data[2];
+					mqtt_rx_msg.frame.data[3] = rx_msg.data[3];
+					mqtt_rx_msg.frame.data[4] = rx_msg.data[4];
+					mqtt_rx_msg.frame.data[5] = rx_msg.data[5];
+					mqtt_rx_msg.frame.data[6] = rx_msg.data[6];
+					mqtt_rx_msg.frame.data[7] = rx_msg.data[7];
+
+					mqtt_rx_msg.type = MQTT_CAN;
+					xQueueSend( xmsg_mqtt_rx_queue, ( void * ) &mqtt_rx_msg, pdMS_TO_TICKS(0) );
+				}
+			}
+#endif
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+	}
+}
+
+void wican_init(void)
+{
+	dev_status_init();
+	dev_status_set_bits(DEV_AWAKE_BIT);
+	ota_health_init();
+    ESP_ERROR_CHECK(nvs_flash_init());
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    gpio_config_t io_conf = {};
+    //disable interrupt
+    io_conf.intr_type = GPIO_INTR_DISABLE;
+    //set as output mode
+    io_conf.mode = GPIO_MODE_OUTPUT;
+    //bit mask of the pins that you want to set,e.g.GPIO18/19
+    io_conf.pin_bit_mask = GPIO_OUTPUT_PIN_SEL;
+    //disable pull-down mode
+    io_conf.pull_down_en = 0;
+    //disable pull-up mode
+    io_conf.pull_up_en = 0;
+    //configure GPIO with the given settings
+    gpio_config(&io_conf);
+
+	gpio_set_level(CONNECTED_LED_GPIO_NUM, 1);
+	gpio_set_level(ACTIVE_LED_GPIO_NUM, 1);
+
+    /* The CAN port's standby line, an output in standby until can_enable()
+     * (shared/boards B5). "Not supported" is a board with no standby line. */
+    (void)board_can_init(0);
+
+    xMsg_Rx_Queue = xQueueCreate(16, sizeof( xdev_buffer) );
+    xMsg_Tx_Queue = xQueueCreate(16, sizeof( xdev_buffer) );
+    xmsg_ws_tx_queue = xQueueCreate(8, sizeof( xdev_buffer) );
+
+	/* Moved: the image is now marked valid only once the recovery channel
+	 * is proven up. See ota_health.c. */
+//    xmsg_obd_rx_queue = xQueueCreate(100, sizeof( twai_message_t) );
+
+    ESP_ERROR_CHECK(esp_read_mac(derived_mac_addr, ESP_MAC_WIFI_SOFTAP));
+    sprintf((char *)ble_uid,"WiC_%02x%02x%02x%02x%02x%02x",
+            derived_mac_addr[0], derived_mac_addr[1], derived_mac_addr[2],
+            derived_mac_addr[3], derived_mac_addr[4], derived_mac_addr[5]);
+    sprintf((char *)uid,"%02x%02x%02x%02x%02x%02x",
+            derived_mac_addr[0], derived_mac_addr[1], derived_mac_addr[2],
+            derived_mac_addr[3], derived_mac_addr[4], derived_mac_addr[5]);
+	
+	config_server_start(&xmsg_ws_tx_queue, &xMsg_Rx_Queue, CONNECTED_LED_GPIO_NUM, (char*)&uid[0]);
+	slcan_init(&send_to_host);
+
+	can_datarate = config_server_get_can_rate();
+	(can_datarate != -1) ? can_init(can_datarate):can_init(CAN_500K);
+	ota_health_report(OTA_HEALTH_CAN);
+
+	if(can_datarate == -1)
+	{
+		ESP_LOGE(TAG, "error going to default CAN_500K");
+	}
+}
+
+void wican_start(void)
+{
+	protocol = config_server_protocol();
+//	protocol = OBD_ELM327;
+
+	/*
+	 * SPEC 3.2, STOCK FEATURES OFF IN THIS PRODUCT (user, 2026-10-16). Each
+	 * branch below brought the bus up at boot from outside gen_inhibit. The
+	 * branches are compiled only with their feature's switch, which is on in
+	 * the shared code and off in this product's build (wican_features.h).
+	 * Separate ifs rather than the stock else-if chain, so that a branch
+	 * switched out cannot leave its else attached to the next one; protocol
+	 * holds one value, so at most one of the first three runs, as before.
+	 */
+#if WICAN_FEATURE_REALDASH
+	if(protocol == REALDASH)
+	{
+//		int can_datarate = config_server_get_can_rate();
+		if(can_datarate != -1)
+		{
+			can_set_bitrate(can_datarate);
+		}
+		else
+		{
+			ESP_LOGE(TAG, "error going to default CAN_500K");
+			can_set_bitrate(CAN_500K);
+		}
+
+		can_enable();
+	}
+#endif
+#if WICAN_FEATURE_ELM327
+	if(protocol == OBD_ELM327)
+	{
+//		can_init(CAN_500K);
+		can_set_bitrate(can_datarate);
+		can_enable();
+		xmsg_obd_rx_queue = xQueueCreate(32, sizeof( twai_message_t) );
+		
+#if WICAN_FEATURE_MQTT
+		if(config_server_mqtt_en_config() && config_server_mqtt_elm327_log())
+		{
+			mqtt_elm327_log_en = config_server_mqtt_elm327_log();
+			elm327_init(&send_to_host, &xmsg_obd_rx_queue, log_can_to_mqtt);
+		}
+		else
+#endif
+		{
+			elm327_init(&send_to_host, &xmsg_obd_rx_queue, NULL);
+		}
+	}
+#endif
+#if WICAN_FEATURE_AUTOPID
+	if(protocol == AUTO_PID)
+	{
+		can_set_bitrate(can_datarate);
+		can_enable();
+		xmsg_obd_rx_queue = xQueueCreate(32, sizeof( twai_message_t) );
+		
+		elm327_init(&autopid_parser, &xmsg_obd_rx_queue, NULL);
+		autopid_init((char*)&uid[0]);
+	}
+#endif
+
+#if WICAN_FEATURE_MQTT
+	if(config_server_mqtt_en_config())
+	{
+		can_set_bitrate(can_datarate);
+		xmsg_mqtt_rx_queue = xQueueCreate(32, sizeof(mqtt_can_message_t) );
+		can_enable();
+		mqtt_init((char*)&uid[0], CONNECTED_LED_GPIO_NUM, &xmsg_mqtt_rx_queue);
+	}
+#endif
+//	else if(protocol == MQTT)
+//	{
+//		xmsg_mqtt_rx_queue = xQueueCreate(100, sizeof( twai_message_t) );
+//		can_init(CAN_500K);
+//		can_enable();
+//
+//		mqtt_init((char*)&uid[0], CONNECTED_LED_GPIO_NUM, &xmsg_mqtt_rx_queue);
+//	}
+
+
+	wifi_network_init(NULL, NULL);
+	int32_t port = config_server_get_port();
+
+	if(port == -1)
+	{
+		port = 3333;
+	}
+
+	if(protocol != AUTO_PID)
+	{
+		if(config_server_get_port_type() == UDP_PORT)
+		{
+			tcp_server_init(port, &xMsg_Tx_Queue, &xMsg_Rx_Queue, CONNECTED_LED_GPIO_NUM, 1);
+		}
+		else
+		{
+			tcp_server_init(port, &xMsg_Tx_Queue, &xMsg_Rx_Queue, CONNECTED_LED_GPIO_NUM, 0);
+		}
+	}
+	
+
+
+
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    esp_app_desc_t running_app_info;
+	uint32_t firmware_ver_minor, firmware_ver_major;
+    ESP_LOGI(TAG, "Running partition type %d subtype %d (offset 0x%08lx)",
+             running->type, running->subtype, running->address);
+    if (esp_ota_get_partition_description(running, &running_app_info) == ESP_OK)
+    {
+        ESP_LOGI(TAG, "Running firmware version: %s", running_app_info.version);
+        ESP_LOGI(TAG, "Project Name: %s", running_app_info.project_name);
+
+		if (sscanf(running_app_info.version, "v%ld.%ld", &firmware_ver_major, &firmware_ver_minor) == 2) 
+		{
+			sprintf(firmware_version, "%ld.%ld", firmware_ver_major, firmware_ver_minor);
+			ESP_LOGI(TAG, "Firmware version: %s", firmware_version);
+		} 
+		else 
+		{
+			ESP_LOGI(TAG, "Failed to extract firmware version");
+		}
+		snprintf(hardware_version, sizeof(hardware_version), "WiCAN-%s", board_hw_name());
+		ESP_LOGI(TAG, "Hardware version: %s", hardware_version);
+
+        if(strstr(running_app_info.project_name, "usb") != 0)
+        {
+        	project_hardware_rev = WICAN_USB_V100;
+        	ESP_LOGI(TAG, "project_hardware_rev: USB");
+        	if(!config_server_mqtt_en_config())
+        	{
+        	    xmsg_uart_tx_queue = xQueueCreate(32, sizeof( xdev_buffer) );
+        		wc_uart_init(&xmsg_uart_tx_queue, &xMsg_Rx_Queue, CONNECTED_LED_GPIO_NUM);
+        	}
+
+        }
+        else
+        {
+        	ESP_LOGI(TAG, "project_hardware_rev: OBD");
+            if(strstr(running_app_info.project_name, "hv210") != 0)
+            {
+            	project_hardware_rev = WICAN_V210;
+            }
+            else
+            {
+            	project_hardware_rev = WICAN_V300;
+            }
+        }
+    }
+	wc_mdns_init((char*)uid, hardware_version, firmware_version);
+    xTaskCreate(can_rx_task, "can_rx_task", 1024*3, (void*)AF_INET, 5, NULL);
+    xTaskCreate(can_tx_task, "can_tx_task", 1024*3, (void*)AF_INET, 5, NULL);
+
+    if(project_hardware_rev != WICAN_V210)
+    {
+		if(config_server_get_sleep_config())
+		{
+			float sleep_voltage = 0;
+
+			if(config_server_get_sleep_volt(&sleep_voltage) != -1)
+			{
+				sleep_mode_init(1, sleep_voltage);
+			}
+			else
+			{
+				sleep_mode_init(0, 13.1f);
+			}
+		}
+		else
+		{
+			sleep_mode_init(0, 13.1f);
+		}
+    }
+    else
+    {
+    	sleep_mode_init(0, 13.1f);
+    }
+
+    gpio_set_level(PWR_LED_GPIO_NUM, 1);
+    
+
+	// xEventTask = xEventGroupCreate();
+	// xEventGroupWaitBits( xEventTask,
+	// FTP_TASK_FINISH_BIT, /* The bits within the event group to wait for. */
+	// pdTRUE, /* BIT_0 should be cleared before returning. */
+	// pdFALSE, /* Don't wait for both bits, either bit will do. */
+	// portMAX_DELAY);/* Wait forever. */  
+	esp_log_level_set("*", ESP_LOG_NONE);
+	// esp_log_level_set("autopid_parser", ESP_LOG_ERROR);
+	// esp_log_level_set("autopid_task", ESP_LOG_ERROR);
+	// esp_log_level_set("elm327_process_cmd", ESP_LOG_ERROR);
+	// esp_log_level_set("can_rx_task", ESP_LOG_INFO);
+	// esp_log_level_set("read_ss_adc_voltage", ESP_LOG_NONE);
+
+//     esp_log_level_set("MQTT_CLIENT", ESP_LOG_VERBOSE);
+//     esp_log_level_set("transport_base", ESP_LOG_VERBOSE);
+//     esp_log_level_set("esp-tls", ESP_LOG_VERBOSE);
+//     esp_log_level_set("transport", ESP_LOG_VERBOSE);
+//     esp_log_level_set("outbox", ESP_LOG_VERBOSE);
+
+	// debug_logs_init(dbg_net_ready);
+	// DEBUG_LOGI("INIT", "debug_logs initialized (UDP %s:%d) waiting for WiFi", DEBUG_LOGS_UDP_DEST_IP, DEBUG_LOGS_UDP_PORT);`
+}
+

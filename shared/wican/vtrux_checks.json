@@ -1,0 +1,85 @@
+{
+  "build_switches": {
+    "WICAN_SLCAN_COMMANDS": {
+      "class": "stock feature off in this product",
+      "reason": "W6: the SLCAN command parser's calls in wican.c's send task, which can open, close, reconfigure or transmit on the bus; gen-inhibit spec 3.2 and 12.3 item 3",
+      "refusal": [
+        {"elf_symbols_absent": ["slcan_parse_str"]}
+      ]
+    },
+    "WICAN_FEATURE_MQTT": {
+      "class": "stock feature off in this product",
+      "reason": "W7: MQTT CAN logging and transmit (mqtt.c), and its can_enable() before a transmit and at boot",
+      "refusal": [
+        {"bin_strings_absent": ["MQTT_EVENTS", "esp_mqtt_client_init", "mqtt_parse_data"]},
+        {"elf_symbols_absent": ["mqtt_init", "mqtt_publish", "mqtt_connected"]},
+        {"elf_symbol_prefixes_absent": ["esp_mqtt_client_", "mqtt_msg_"]}
+      ]
+    },
+    "WICAN_FEATURE_ELM327": {
+      "class": "stock feature off in this product",
+      "reason": "W7: the ELM327 command path (elm327.c): ATSP's can_disable/can_enable, the receive-queue flush, can_send",
+      "refusal": [
+        {"bin_strings_absent": ["ELM327 v1.3a", "elm327_process_cmd", "elm327_set_protocol"]},
+        {"elf_symbols_absent": ["elm327_init", "elm327_process_cmd", "elm327_ready_to_receive", "elm327_get_identifier", "elm327_can_log"]}
+      ]
+    },
+    "WICAN_FEATURE_AUTOPID": {
+      "class": "stock feature off in this product",
+      "reason": "W7: AutoPID (autopid.c), which drives ELM327 and publishes over MQTT and cannot be built without both",
+      "refusal": [
+        {"bin_strings_absent": ["autopid_task", "/autopid_data", "Autopid Task Started"]},
+        {"elf_symbols_absent": ["autopid_init", "autopid_parser", "autopid_data_handler", "autopid_find_standard_pid"]}
+      ]
+    },
+    "WICAN_FEATURE_REALDASH": {
+      "class": "stock feature off in this product",
+      "reason": "W7: the RealDash boot branch in wican.c's wican_start(), a boot-time can_enable(); no symbol of its own",
+      "refusal": [
+        {"project_row": "no boot-time bus enable at start-up"}
+      ]
+    },
+    "OTA_HEALTH_FAULT_INJECT": {
+      "class": "test-only",
+      "reason": "W7: the rollback-rehearsal build; ota_health.c suppresses a health report, so the image fails its gate and rolls back after every boot",
+      "refusal": [
+        {"bin_strings_absent": ["FAULT INJECT: suppressing report of"]}
+      ]
+    },
+    "OTA_HEALTH_TIMEOUT_MS": {
+      "class": "not a switch",
+      "reason": "#ifndef default (60000 ms) for the health gate's window, in ota_health.h",
+      "kind": "default value"
+    },
+    "ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED": {
+      "class": "not a switch",
+      "reason": "ESP-IDF ADC calibration capability (soc caps), not a CONFIG_ option; sleep_mode.c",
+      "kind": "library macro"
+    },
+    "ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED": {
+      "class": "not a switch",
+      "reason": "ESP-IDF ADC calibration capability (soc caps), not a CONFIG_ option; sleep_mode.c",
+      "kind": "library macro"
+    },
+    "__cplusplus": {
+      "class": "not a switch",
+      "reason": "compiler-defined; the extern \"C\" wrappers in headers",
+      "kind": "library macro"
+    },
+    "c_dir": {
+      "class": "not a switch",
+      "reason": "CMakeLists.txt's board search: each build component's COMPONENT_DIR, from idf_component_get_property() inside the loop (W9)",
+      "kind": "computed value"
+    },
+    "wican_board_count": {
+      "class": "not a switch",
+      "reason": "CMakeLists.txt's board search: list(LENGTH) of the components with include/board_pins.h, which must be 1 (W9)",
+      "kind": "computed value"
+    },
+    "sw": {
+      "class": "not a switch",
+      "reason": "CMakeLists.txt's foreach() over the five switches above, forwarding each as 1 or 0 (W6, W7)",
+      "kind": "loop variable"
+    }
+  }
+}

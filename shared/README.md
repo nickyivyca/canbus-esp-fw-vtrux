@@ -24,5 +24,6 @@ charge interposer.
 |---|---|
 | `bench/` | The shared bench toolkit (`vtrux_bench`). See `bench/README.md`. |
 | `boards/` | The board layer: one ESP-IDF component per board, to `boards/SPEC.md`. See `boards/README.md`. |
+| `debug_logs/` | Stock WiCAN's UDP debug log, as its own ESP-IDF component, used by `wican/`. See `debug_logs/README.md`. |
 | `tools/` | The shared build tooling (`vtrux_build`): the image library, the release build and its record, to `tools/SPEC.md`. See `tools/README.md`. |
 | `wican/` | The stock WiCAN code, as one ESP-IDF component, to `wican/SPEC.md`. See `wican/README.md`. |
