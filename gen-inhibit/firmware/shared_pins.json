@@ -1,7 +1,7 @@
 {
   "shared/tools": {
-    "tag": "2026.10.28",
-    "commit": "9eb1ba4664f2d807b6418a2f13e48968b77589de",
-    "digest": "f6246fe55589f1c5986440650f55486949474dc59e608122d03d77a78553ed8b"
+    "tag": "2026.10.29",
+    "commit": "828ed934f19b3432f797bf3d07931bbb19900c01",
+    "digest": "e44a6c159b924c43317e85d10b3d2f8beac6cac3c34a99253c6dd2b769b7ab9a"
   }
 }

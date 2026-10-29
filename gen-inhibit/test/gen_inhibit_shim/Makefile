@@ -9,10 +9,25 @@
 
 CC      ?= gcc
 COREDIR ?= ../../firmware/main
-CFLAGS  ?= -std=c11 -O1 -g -Wall -Wextra -Wno-unused-parameter \
-           -I. -Imock -I$(COREDIR)
-LDFLAGS ?= -pthread
 PYTHON  ?= python3
+
+# THE STOCK HEADERS ARE THE SHARED COMPONENT'S (shared/wican W3, port step
+# 1a). can.c and gen_inhibit.c include can.h and comm_server.h, which are
+# vtrux/wican's now, so the shim compiles against the version gen-inhibit pins:
+# its read-only checkout ../shared-<tag>/ beside the worktree root, found by
+# wican_ref.py. Give WICANDIR, on the command line or in the environment, where
+# that checkout is elsewhere -- in a copy of the project folder, as mutate.py
+# makes, or on another machine.
+ifneq ($(MAKECMDGOALS),clean)
+WICANDIR ?= $(shell $(PYTHON) wican_ref.py)
+ifeq ($(strip $(WICANDIR)),)
+$(error no vtrux/wican headers: see wican_ref.py's message above, or give WICANDIR=<folder>)
+endif
+endif
+
+CFLAGS  ?= -std=c11 -O1 -g -Wall -Wextra -Wno-unused-parameter \
+           -I. -Imock -I$(COREDIR) -I$(WICANDIR)
+LDFLAGS ?= -pthread
 
 # main/can.c is compiled AS SHIPPED, not reimplemented: the reviewing session
 # mutated the spec 3.2 refusal out of the real file and every case stayed green,
