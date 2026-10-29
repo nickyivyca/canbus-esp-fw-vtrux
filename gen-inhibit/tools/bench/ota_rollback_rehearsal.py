@@ -5,7 +5,8 @@ proved ESP-IDF bootloader rollback end to end -- `rollback_capture.txt` has a
 fault-injected image booting PENDING_VERIFY, the gate timing out, and the
 bootloader returning to ota_0. That was on the BENCH BOARD: its own firmware,
 its own `/status`, its own `rollback_bench` SoftAP, a 30 s timeout. What has
-never been exercised is the gate in `main/ota_health.c` on the WiCAN, on the
+never been exercised is the gate in `ota_health.c` (`main/` until port step
+1a, vtrux/wican's since) on the WiCAN, on the
 image that is a candidate to go on the truck. That is gap 6.
 
 USER AUTHORISATION, 2026-10-04: the full rehearsal including the deliberate

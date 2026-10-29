@@ -36,11 +36,13 @@ NM_CANDIDATES = (
 # Symbols that must NOT be linked in, with the reason and what to do about it.
 FORBIDDEN = (
     ("slcan_parse_str",
-     "spec 3.2 / review A3: the SLCAN COMMAND PARSER. Its only callers are the "
-     "three disabled branches in main.c, and the linker drops it with "
-     "-ffunction-sections -Wl,--gc-sections. If it is back, a branch was "
-     "re-enabled -- any client could transmit an arbitrary 0x051 and open or "
-     "close the bus."),
+     "spec 3.2 / review A3: the SLCAN COMMAND PARSER. Its callers are compiled "
+     "only with the stock code's WICAN_SLCAN_COMMANDS on (vtrux/wican, shared/wican "
+     "W6; three disabled branches in main.c before port step 1a), which this "
+     "product's build sets off, and the linker drops it with "
+     "-ffunction-sections -Wl,--gc-sections. If it is back, the switch is on or "
+     "a caller escaped it -- any client could transmit an arbitrary 0x051 and "
+     "open or close the bus."),
 )
 
 
@@ -167,8 +169,8 @@ def main():
         print("%d forbidden symbol(s) linked in" % bad)
     else:
         print("no forbidden symbol is linked in")
-        print("NEGATIVE CONTROL: re-enable one of main.c's disabled SLCAN")
-        print("branches and rebuild; slcan_parse_str must come back.")
+        print("NEGATIVE CONTROL: build with -DWICAN_SLCAN_COMMANDS=ON")
+        print("(idf.py -B <another build dir>); slcan_parse_str must come back.")
     return 1 if bad else 0
 
 

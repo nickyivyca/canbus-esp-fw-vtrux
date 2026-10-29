@@ -297,6 +297,76 @@ def check_image(path):
 
 # ------------------------------------------------------------ partition table --
 
+def project_path(build_dir):
+    """The project a build directory belongs to: project_description.json's
+    project_path, else REPO."""
+    try:
+        with open(os.path.join(build_dir, "project_description.json"), encoding="utf-8") as fh:
+            return json.load(fh).get("project_path") or REPO
+    except (OSError, ValueError):
+        return REPO
+
+
+BUILD_FILE = "vtrux_build.json"      # the project's shared components, shared/tools R20
+
+
+def shared_folders(project):
+    """{name: folder} for the shared components the project's vtrux_build.json
+    names, each the copy the build downloaded, managed_components/<a__b>/ (the
+    component manager's name for a/b). {} with no file or no list."""
+    try:
+        with open(os.path.join(project, BUILD_FILE), encoding="utf-8") as fh:
+            names = json.load(fh).get("shared_components") or []
+    except (OSError, ValueError, AttributeError):
+        return {}
+    return {n: os.path.join(project, "managed_components", n.replace("/", "__"))
+            for n in names if isinstance(n, str)}
+
+
+def shipping_sources(build_dir, run=subprocess.run):
+    """(files, why): the shipping source, {label: path} -- every .c and .h file
+    under main/ (on disk, compiled or not), and every file the build's compiles
+    read (its own record, `ninja -t deps` in the build directory and each CMake
+    build folder below it, valid records only) from a shared component's copy in
+    managed_components/. A label is the path from the project, `/`-separated.
+
+    Since port step 1a the stock code is compiled from managed_components/
+    (vtrux/wican, vtrux/debug_logs), so a scan of main/ alone no longer covers
+    what ships (gen-inhibit reviewer, 2026-10-29). Other managed components
+    (ESP-IDF's, espressif/mdns) are not this project's source.
+    files is None, with why, when the record cannot be read: the scan would then
+    say nothing about the shared code, and must not pass on main/ alone."""
+    import build_switches as BS
+    project = project_path(build_dir)
+    out = {}
+    main_dir = os.path.join(project, "main")
+    for f in sorted(os.listdir(main_dir)) if os.path.isdir(main_dir) else ():
+        if f.endswith((".c", ".h")):
+            out["main/" + f] = os.path.join(main_dir, f)
+    shared = shared_folders(project)
+    if not shared:
+        return None, "%s names no shared component" % os.path.join(project, BUILD_FILE)
+    ninja = BS.cache_value(build_dir, "CMAKE_MAKE_PROGRAM") or "ninja"
+    seen = set()
+    for folder in BS.build_folders(build_dir):
+        try:
+            d = run([ninja, "-t", "deps"], cwd=folder, capture_output=True, text=True)
+        except OSError as e:
+            return None, "cannot run ninja: %s" % e
+        if d.returncode != 0:
+            return None, "ninja -t deps in %s failed" % folder
+        for p in BS.parse_deps(d.stdout):
+            a = os.path.normpath(os.path.join(folder, p))
+            for name, comp in shared.items():
+                if BS._inside(a, comp) and a.endswith((".c", ".h")):
+                    out[os.path.relpath(a, project).replace(os.sep, "/")] = a
+                    seen.add(name)
+    missing = sorted(set(shared) - seen)
+    if missing:
+        return None, "the build's record names no file compiled from %s" % ", ".join(missing)
+    return out, None
+
+
 def check_partitions(build_dir=None):
     """The table the image's OWN build produced, against stock.
 
@@ -314,11 +384,7 @@ def check_partitions(build_dir=None):
     if build_dir is None:
         build_dir = os.path.join(REPO, "build")
     built = os.path.join(build_dir, "partition_table", "partition-table.bin")
-    try:
-        with open(os.path.join(build_dir, "project_description.json"), encoding="utf-8") as fh:
-            project = json.load(fh).get("project_path") or REPO
-    except (OSError, ValueError):
-        project = REPO
+    project = project_path(build_dir)
     try:
         _board, stock = board_ref.read(board_ref.managed_folder(project))
     except board_ref.BoardRefError as e:
@@ -673,7 +739,8 @@ def check_not_rollback_rehearsal(path):
     subsystem's health report so the gate times out and the image rolls back,
     which is exactly right on a bench and catastrophic on a truck: the image
     would roll back 60 s after every boot, forever, and with no console record
-    of why (main.c:623 silences all logging at the end of app_main, so the
+    of why (the stock start-up silences all logging at its end -- app_main until
+    port step 1a, vtrux/wican's wican_start() since -- so the
     gate's own UNHEALTHY and "rolling back" lines never appear -- measured).
 
     It is a SEPARATE row from "no measurement instrument" rather than a fourth
@@ -842,7 +909,12 @@ STOCK_IMAGE_MARKERS = (
     ("WICAN_FEATURE_AUTOPID", "no AutoPID feature in the image",
      (b"autopid_task", b"/autopid_data", b"Autopid Task Started")),
 )
-REALDASH_ROW = "no boot-time bus enable in app_main"
+REALDASH_ROW = "no boot-time bus enable at start-up"
+# The start-up's functions (spec 3.3, shared/wican W4): app_main, which calls
+# wican_init(), gen_inhibit_init() and wican_start(). Before port step 1a the stock
+# boot branches were in app_main; since, they are in wican_start(). The row's name
+# is the one vtrux/wican's switch table names for WICAN_FEATURE_REALDASH.
+STARTUP = ("app_main", "wican_init", "wican_start")
 BUS_STATE_ROW = "bus state changed only by gen_inhibit and the OTA handler (ELF call sites)"
 # Spec 3.2: in every mode only gen_inhibit and the OTA handler bring the bus up or
 # down or flush it, and the OTA handler takes it only through the worker (8.1 rows 4
@@ -923,10 +995,12 @@ def stock_rows(defined, sites):
                     "product" % (", ".join(hits[:6]) + (" and %d more" % (len(hits) - 6) if len(hits) > 6 else ""),
                                  flag) if hits else "none of %s's %d symbols%s are defined"
                     % (flag, len(syms), (" or %s* names" % "/".join(prefixes)) if prefixes else "")))
-    n = sites.get("can_enable", {}).get("app_main", 0)
-    out.append((REALDASH_ROW, n == 0,
-                "app_main calls can_enable at %d site(s) -- a boot-time bus enable (the RealDash, "
-                "MQTT, ELM327 or AutoPID boot branch)" % n if n else "app_main never calls can_enable"))
+    at = {f: k for f, k in sites.get("can_enable", {}).items() if f in STARTUP}
+    out.append((REALDASH_ROW, not at,
+                "%s call%s can_enable (%s) -- a boot-time bus enable (the RealDash, MQTT, ELM327 "
+                "or AutoPID boot branch)" % (" and ".join(sorted(at)), "s" if len(at) == 1 else "",
+                                             ", ".join("%d in %s" % (at[f], f) for f in sorted(at)))
+                if at else "none of %s calls can_enable" % ", ".join(STARTUP)))
     bad = []
     for fn, allowed in sorted(BUS_STATE_CALLERS.items()):
         for caller, k in sorted(sites.get(fn, {}).items()):
@@ -949,8 +1023,9 @@ def check_no_stock_features(path):
     Judged from the image's bytes (STOCK_IMAGE_MARKERS) and the ELF beside it --
     its symbols and the call sites objdump finds -- never from the switches, so a switch set off but not wired to its code
     is still caught. RealDash has no symbol of its own; its boot branch is a
-    can_enable() call in app_main, so its row counts those call sites (0 in the
-    product, one per enabled boot branch: implementor's objdump, e3d9437).
+    can_enable() call in the start-up, so its row counts those call sites in
+    STARTUP's functions (0 in the product, one per enabled boot branch:
+    implementor's objdump, e3d9437, when they were in app_main).
     """
     try:
         img = open(path, "rb").read()
@@ -1158,14 +1233,14 @@ def write_project_rows(path):
     return out
 
 
-def _count_calls(rel, needle):
-    """How many times `needle(` is called in main/<rel>, comments excluded.
+def _count_calls(p, needle):
+    """How many times `needle(` is called in the file at p, comments excluded,
+    or None with no file.
 
     Crude on purpose. A real parser would be better and is not available here; what
     matters is that the count is CONSERVATIVE -- a commented-out call is skipped, so
     the row cannot pass because a real call hid behind a comment marker.
     """
-    p = os.path.join(REPO, "main", rel)
     if not os.path.exists(p):
         return None
     n = 0
@@ -1177,7 +1252,12 @@ def _count_calls(rel, needle):
     return n
 
 
-def check_one_transmit_owner():
+# The instrument-only abort probe: never in a flight build, refused by the
+# integrity check (spec 3.2's exemption).
+PROBE = "main/gi_txabort_probe.c"
+
+
+def check_one_transmit_owner(build_dir=None, run=subprocess.run):
     """Spec 5.2 item 1: one transmit owner, asserted in the source.
 
     The image cannot show this -- a call is a call -- so it lives with the other
@@ -1194,38 +1274,43 @@ def check_one_transmit_owner():
                    frame went out only because nothing else can be queued behind it.
       gen_inhibit.c the scheduler's device HAL, the single site item 1 names.
 
-    A third caller anywhere would break trip 7 silently, which is why this is a
-    check and not a comment.
+    A third caller anywhere in the shipping source (shipping_sources(): main/
+    and, since port step 1a, the shared components the build compiled) would
+    break trip 7 silently, which is why this is a check and not a comment.
     """
-    allowed = {"can.c": 1, "gen_inhibit.c": 1}
+    name = "one transmit owner (spec 5.2 item 1)"
+    files, why = shipping_sources(build_dir or os.path.join(REPO, "build"), run)
+    if files is None:
+        row(name, None, "the shipping source cannot be listed: %s" % why, ref_missing=True)
+        return
+    allowed = {"main/can.c": 1, "main/gen_inhibit.c": 1}
     bad = []
     total = 0
     for rel, limit in sorted(allowed.items()):
-        n = _count_calls(rel, "twai_transmit")
+        n = _count_calls(files.get(rel, ""), "twai_transmit")
         if n is None:
-            row("one transmit owner", None, "main/%s is missing" % rel,
-                ref_missing=True)
+            row(name, None, "%s is missing" % rel, ref_missing=True)
             return
         total += n
         if n > limit:
             bad.append("%s has %d (at most %d)" % (rel, n, limit))
 
-    # Anything else under main/ must not call it at all.
-    for f in sorted(os.listdir(os.path.join(REPO, "main"))):
-        if not f.endswith(".c") or f in allowed or f == "gi_txabort_probe.c":
+    # Anything else in the shipping source must not call it at all.
+    for rel in sorted(files):
+        if rel in allowed or rel == PROBE:
             continue
-        n = _count_calls(f, "twai_transmit")
+        n = _count_calls(files[rel], "twai_transmit")
         if n:
-            bad.append("%s calls it %d time(s) and must not" % (f, n))
+            bad.append("%s calls it %d time(s) and must not" % (rel, n))
             total += n
 
-    row("one transmit owner (spec 5.2 item 1)", not bad,
+    row(name, not bad,
         "; ".join(bad) if bad else
         "twai_transmit is called only by can_send() and the scheduler's device "
-        "HAL (%d call sites)" % total)
+        "HAL (%d call sites in %d files)" % (total, len(files)))
 
 
-def check_private_abort_confined():
+def check_private_abort_confined(build_dir=None, run=subprocess.run):
     """The private HAL abort appears at most ONCE, and only in gen_inhibit.c.
 
     twai_ll_set_cmd_abort_tx() is below the public driver API. Spec 5.2 items 4 and
@@ -1235,15 +1320,21 @@ def check_private_abort_confined():
     the no-instrument rows say nothing about it.
 
     One site, in gen_inhibit.c, inside the critical section that makes the read and
-    the write indivisible. Anywhere else is a finding.
+    the write indivisible. Anywhere else in the shipping source (shipping_sources())
+    is a finding.
     """
+    name = "the private TWAI abort is confined"
+    files, why = shipping_sources(build_dir or os.path.join(REPO, "build"), run)
+    if files is None:
+        row(name, None, "the shipping source cannot be listed: %s" % why, ref_missing=True)
+        return
     hits = []
-    for f in sorted(os.listdir(os.path.join(REPO, "main"))):
-        if not f.endswith(".c") or f == "gi_txabort_probe.c":
+    for rel in sorted(files):
+        if rel == PROBE:
             continue
-        n = _count_calls(f, "twai_ll_set_cmd_abort_tx")
+        n = _count_calls(files[rel], "twai_ll_set_cmd_abort_tx")
         if n:
-            hits.append((f, n))
+            hits.append((rel, n))
 
     # IS THE SCHEDULER WIRED IN? Keyed on gen_inhibit.c including gi_sched.h,
     # because that is what makes the abort site mandatory rather than merely
@@ -1251,7 +1342,7 @@ def check_private_abort_confined():
     # mean the abort had been LOST -- an inhibit that can never preempt telemetry,
     # which is the whole point of section 5.2. So the requirement flips with the
     # integration instead of needing someone to remember to tighten it.
-    gi = os.path.join(REPO, "main", "gen_inhibit.c")
+    gi = files.get("main/gen_inhibit.c", "")
     wired = False
     if os.path.exists(gi):
         for line in open(gi, encoding="utf-8", errors="replace"):
@@ -1261,7 +1352,7 @@ def check_private_abort_confined():
 
     if not wired:
         ok = (len(hits) == 0)
-        row("the private TWAI abort is confined", ok,
+        row(name, ok,
             "no shipping source calls twai_ll_set_cmd_abort_tx, and the scheduler "
             "is not wired in yet" if ok else
             "called from %s, but gen_inhibit.c does not include gi_sched.h -- the "
@@ -1269,8 +1360,8 @@ def check_private_abort_confined():
             % ", ".join("%s x%d" % h for h in hits))
         return
 
-    ok = (len(hits) == 1 and hits[0][0] == "gen_inhibit.c" and hits[0][1] == 1)
-    row("the private TWAI abort is confined", ok,
+    ok = (len(hits) == 1 and hits[0][0] == "main/gen_inhibit.c" and hits[0][1] == 1)
+    row(name, ok,
         "exactly one site, in gen_inhibit.c (the scheduler's device HAL)" if ok
         else ("the scheduler IS wired in but NOTHING calls "
               "twai_ll_set_cmd_abort_tx -- the abort has been lost, so an inhibit "
@@ -1492,7 +1583,10 @@ def check_prod_record(path, folder=None):
         % (h[:16], (rec.get("commit") or "?")[:7], tooling.get("tag") or "?"))
 
 
-def check_source():
+WICAN = "vtrux/wican"     # the shared stock code (shared/wican), since port step 1a
+
+
+def check_source(build_dir=None):
     """Spec 5.1 items 1 and 3: two facts that live only in the source.
 
     Neither can be read from the image, and both are things the host suite is
@@ -1512,11 +1606,15 @@ def check_source():
     WIFI STORAGE. Spec 5.1 item 3's argument that no flash write happens while
     the inhibitor owns the bus depends on the WiFi driver keeping its
     configuration in RAM -- the spec says "asserted, not assumed". This asserts
-    it.
+    it. Since port step 1a the WiFi start-up is the stock code's, wifi_network.c
+    in vtrux/wican, read from the copy the image's build downloaded
+    (shared_folders()), as the partition row reads the board's.
     """
     can_c = os.path.join(REPO, "main", "can.c")
     ms_py = os.path.join(PROJECT, "test", "gen_inhibit_host", "make_scenarios.py")
-    wifi_c = os.path.join(REPO, "main", "wifi_network.c")
+    wican = shared_folders(project_path(build_dir or os.path.join(REPO, "build"))).get(WICAN)
+    wifi_c = os.path.join(wican, "wifi_network.c") if wican else None
+    wifi_rel = "%s's wifi_network.c" % WICAN
 
     fw_depth = None
     if os.path.exists(can_c):
@@ -1572,9 +1670,10 @@ def check_source():
             "make_scenarios.RX_DEPTH=%d, CAN_RX_QUEUE_LEN=%d"
             % (model_depth, fw_depth))
 
-    if not os.path.exists(wifi_c):
+    if wifi_c is None or not os.path.exists(wifi_c):
         row("WiFi storage is RAM-only", None,
-            "no main/wifi_network.c", ref_missing=True)
+            "no %s: %s" % (wifi_rel, "%s is not a shared component in %s" % (WICAN, BUILD_FILE)
+                           if wifi_c is None else "no file at %s" % wifi_c), ref_missing=True)
     else:
         text = open(wifi_c, encoding="utf-8", errors="replace").read()
         # Called, not merely mentioned: the argument must be WIFI_STORAGE_RAM and
@@ -1588,7 +1687,7 @@ def check_source():
                 hit = s
                 break
         row("WiFi storage is RAM-only", hit is not None,
-            "main/wifi_network.c calls %s" % hit if hit else
+            "%s calls %s" % (wifi_rel, hit) if hit else
             "no live esp_wifi_set_storage(WIFI_STORAGE_RAM) call found, so spec "
             "5.1 item 3's claim that the WiFi driver writes no NVS is unbacked")
 
@@ -1730,11 +1829,11 @@ def main():
     check_diag(dbc)
     check_schema_doc(doc)
     check_fw_version(doc)
-    check_source()
-    check_one_transmit_owner()
+    check_source(build_dir)
+    check_one_transmit_owner(build_dir)
     check_lateness_has_a_detector()
     check_abort_reason_parity(dbc)
-    check_private_abort_confined()
+    check_private_abort_confined(build_dir)
     check_switches_classified(build_dir)
     if b is not None:
         check_no_instrument(b)

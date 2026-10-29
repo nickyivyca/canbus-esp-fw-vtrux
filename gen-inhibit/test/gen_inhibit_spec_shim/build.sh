@@ -12,8 +12,13 @@ LAYER=${SPEC_LAYER:-spec_layer.c}
 TEST=${NN_TEST:-nonode_test.c}
 JUDGE=${NN_JUDGE:-nonode_judge.c}
 CC=${CC:-gcc}
+# The stock headers that can.c and gen_inhibit.c include (can.h, comm_server.h)
+# are vtrux/wican's since port step 1a: the pinned version's read-only checkout,
+# found by the implementor's ../gen_inhibit_shim/wican_ref.py, or WICANDIR where
+# that is elsewhere (a copy of the project folder, another machine).
+WICANDIR=${WICANDIR:-$(${PYTHON:-python3} ../gen_inhibit_shim/wican_ref.py)}
 $CC -std=c11 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable "$@" \
-    -I. -I../gen_inhibit_shim -I../gen_inhibit_shim/mock -I../../firmware/main \
+    -I. -I../gen_inhibit_shim -I../gen_inhibit_shim/mock -I../../firmware/main -I"$WICANDIR" \
     -o "$OUT" "$TEST" "$JUDGE" "$LAYER" \
     ../gen_inhibit_shim/fake_twai.c ../gen_inhibit_shim/fake_can.c \
     ../../firmware/main/gen_inhibit.c ../../firmware/main/gen_inhibit_core.c ../../firmware/main/gi_sched.c ../../firmware/main/can.c \

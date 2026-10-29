@@ -248,6 +248,28 @@ def refused(fn):
     return None
 
 
+STOCK_SWITCHES = ("WICAN_SLCAN_COMMANDS", "WICAN_FEATURE_MQTT", "WICAN_FEATURE_ELM327",
+                  "WICAN_FEATURE_AUTOPID", "WICAN_FEATURE_REALDASH")
+
+
+def wican_table():
+    """(vtrux/wican's switches at the version gen-inhibit pins, or None; why), from its
+    read-only checkout, found by the shim's wican_ref.py (WICANDIR overrides)."""
+    folder = os.environ.get("WICANDIR")
+    if not folder:
+        sys.path.insert(0, os.path.join(HERE, "..", "gen_inhibit_shim"))
+        import wican_ref
+        try:
+            tag = wican_ref.pinned_tag(open(wican_ref.MANIFEST, encoding="utf-8").read())
+        except OSError as e:
+            return None, str(e)
+        folder = os.path.join(os.path.dirname(wican_ref.WORKTREE), "shared-%s" % tag, "shared", "wican")
+    try:
+        return B.load_table(os.path.join(folder, "vtrux_checks.json"))[0], ""
+    except (OSError, ValueError) as e:
+        return None, "no vtrux/wican table: %s" % e
+
+
 def main():
     build_tree()
     build = os.path.join(REPO, "build")
@@ -304,6 +326,7 @@ def main():
     PRB = {"probes": (("GET", "/x"),)}
     TRG = {"B": PRB}
     at = found.get
+    wican, wican_why = wican_table()
     checks = [
         ("the scan finds exactly the expected symbols", got == EXPECT,
          "missing %s, extra %s" % (sorted(EXPECT - got), sorted(got - EXPECT))),
@@ -456,11 +479,16 @@ def main():
         ("classify: a stock feature with a trigger is malformed (it has no test trigger)",
          len(B.classify({"S": []}, {"S": (B.STOCK, None, "why", ROW)}, {"S": PRB})[2]) == 1, ""),
         ("the real table loads from vtrux_checks.json and is well-formed",
-         len(B.SWITCHES) > 20 and B.classify({k: [] for k in B.SWITCHES})[1:] == ([], []), ""),
-        ("the real table: the four spec 3.2 feature switches are stock features with rows",
-         all((B.SWITCHES.get(s) or (None,))[0] == B.STOCK and B.SWITCHES[s][3]
-             for s in ("WICAN_FEATURE_MQTT", "WICAN_FEATURE_ELM327", "WICAN_FEATURE_AUTOPID",
-                       "WICAN_FEATURE_REALDASH")), ""),
+         len(B.SWITCHES) >= 10 and B.classify({k: [] for k in B.SWITCHES})[1:] == ([], []), ""),
+        # Since port step 1a the stock code, and the switches it tests, are vtrux/wican's
+        # (shared/tools R20: a component's switches are in its own table; gen-inhibit
+        # reviewer, 2026-10-29), so they are in that table at the version gen-inhibit
+        # pins and not in the project's.
+        ("the real table: the spec 3.2 stock switches are not the project's",
+         not [s for s in STOCK_SWITCHES if s in B.SWITCHES], ""),
+        ("vtrux/wican's table at the pinned version: the spec 3.2 stock switches are stock features with rows",
+         wican is not None and all((wican.get(s) or (None,))[0] == B.STOCK and wican[s][3] for s in STOCK_SWITCHES),
+         wican_why),
         ("classify: an unknown class is malformed",
          len(B.classify({"A": []}, {"A": ("maybe", None, "why", None)}, {})[2]) == 1, ""),
     ]

@@ -23,6 +23,12 @@ A NO REF anywhere is a failure of the proof, not a pass: a missing ELF proves no
 
 The rows per switch are the ones build_output.py writes for it. A switch missing from
 ROWS fails the run, so a new test-only switch can't be skipped here by omission.
+
+The switches are the test-only and stock-feature entries of the project's table and,
+since port step 1a, of each shared component's own table (shared/tools R20): the stock
+features are vtrux/wican's. The component tables are read from the copies the --off
+image's build downloaded (build_output.shared_folders()); a shared component with no
+copy there fails the run, since its switches would otherwise drop out unseen.
 """
 
 import os
@@ -46,8 +52,8 @@ ROWS = {
                                  "project name is not a restart test build"), False),
     # Stock features, off in this product (2026-10-16). The three with symbols and
     # strings name their switch in the detail, image and ELF; RealDash's row counts
-    # app_main's can_enable call sites, which any boot branch adds to, so its detail
-    # cannot name it, and it has no image row.
+    # the start-up's can_enable call sites, which any boot branch adds to, so its
+    # detail cannot name it, and it has no image row.
     "WICAN_FEATURE_MQTT": (BO.check_no_stock_features,
                            ("no MQTT feature in the image", "no MQTT feature in the ELF"), True),
     "WICAN_FEATURE_ELM327": (BO.check_no_stock_features,
@@ -59,6 +65,32 @@ ROWS = {
 # switch -> the switches its --control image must carry: their rows must FAIL on it,
 # naming them, so the product image (which passes AutoPID's rows too) cannot stand in.
 NEEDS_CONTROL = {"WICAN_FEATURE_AUTOPID": ("WICAN_FEATURE_MQTT", "WICAN_FEATURE_ELM327")}
+
+
+def table_switches(off):
+    """({switch: class} of every test-only and stock-feature entry, the project's table's
+    and each shared component's, from the copies the build of `off` downloaded;
+    [problems])."""
+    out = {s: e[0] for s, e in BS.SWITCHES.items() if e[0] in (BS.TEST, BS.STOCK)}
+    problems = []
+    project = BO.project_path(os.path.dirname(os.path.abspath(off)))
+    shared = BO.shared_folders(project)
+    if not shared:
+        problems.append("%s names no shared component" % os.path.join(project, BO.BUILD_FILE))
+    for name, folder in sorted(shared.items()):
+        p = os.path.join(folder, os.path.basename(BS.TABLE_FILE))
+        if not os.path.isdir(folder):
+            problems.append("no copy of %s at %s" % (name, folder))
+            continue
+        if not os.path.isfile(p):
+            continue                      # a component that tests no switch has no table
+        try:
+            sw, _tr = BS.load_table(p)
+        except (OSError, ValueError) as e:
+            problems.append("%s: %s" % (p, e))
+            continue
+        out.update({s: e[0] for s, e in sw.items() if e[0] in (BS.TEST, BS.STOCK)})
+    return out, problems
 
 
 def run(fn, path):
@@ -75,7 +107,9 @@ def main():
     ons = [args[k + 1].split("=", 1) for k, a in enumerate(args) if a == "--on"]
     controls = [args[k + 1].split("=", 1) for k, a in enumerate(args) if a == "--control"]
     checks = []
-    tests = sorted(s for s, e in BS.SWITCHES.items() if e[0] in (BS.TEST, BS.STOCK))
+    classes, problems = table_switches(off)
+    checks.append(("every shared component's table could be read", not problems, "; ".join(problems)))
+    tests = sorted(classes)
     checks.append(("every test-only switch and stock feature in the table has rows here",
                    [s for s in tests if s not in ROWS] == [], "missing %s" % [s for s in tests if s not in ROWS]))
     for sw, path in ons:

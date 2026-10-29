@@ -47,7 +47,8 @@ BC = os.path.abspath(os.environ.get("BUILD_CHECKS_DIR") or HERE)    # the folder
 ALLOWED = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(BC))), "scratch")
 SKIP = {"test_scratch_only.py", "test_refusal_pairs.py", "test_reference_paths_mutants.py"}
 MUST_WRITE = {"test_build_switches.py", "test_flt_row.py", "test_fw_version_row.py", "test_partition_row.py",
-              "test_switch_rows.py", "test_image_rows.py", "test_prod_record.py"}
+              "test_switch_rows.py", "test_image_rows.py", "test_prod_record.py", "test_source_rows.py",
+              "test_refusal_tables.py"}
 FAILS = []
 
 # Run in the child: install the hook, run the target as __main__, write what was seen.

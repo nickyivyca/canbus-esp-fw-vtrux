@@ -261,7 +261,8 @@ def stock_checks():
     nm = "42000100 T apply_mode\n42000200 t gen_inhibit_task\n         U printf\n"
     out.append(("defined_symbols: defined names only", BO.defined_symbols(nm) == {"apply_mode", "gen_inhibit_task"}))
 
-    base = {"apply_mode", "gen_inhibit_task", "upload_post_handler", "can_enable", "can_disable", "app_main"}
+    base = {"apply_mode", "gen_inhibit_task", "upload_post_handler", "can_enable", "can_disable", "app_main",
+            "wican_init", "wican_start"}
 
     def rows(defined=(), sites=None):
         return {n: (ok, det) for n, ok, det in BO.stock_rows(base | set(defined), sites or PRODUCT_SITES)}
@@ -278,10 +279,16 @@ def stock_checks():
         for p in prefixes:
             r = rows({p + "init"})
             out.append(("stock_rows: a %s* name fails %r" % (p, name), r[name][0] is False))
-    sites = dict(PRODUCT_SITES, can_enable={"apply_mode": 1, "app_main": 1})
-    r = rows(sites=sites)
-    out.append(("stock_rows: app_main calling can_enable fails the boot-enable row", r[BO.REALDASH_ROW][0] is False))
-    out.append(("stock_rows: ... and the bus-state row", r[BO.BUS_STATE_ROW][0] is False))
+    # the start-up's functions (spec 3.3): app_main, and since port step 1a the stock
+    # boot branches in vtrux/wican's wican_init()/wican_start()
+    for fn in ("app_main", "wican_init", "wican_start"):
+        sites = dict(PRODUCT_SITES, can_enable={"apply_mode": 1, fn: 1})
+        r = rows(sites=sites)
+        out.append(("stock_rows: %s calling can_enable fails the boot-enable row, naming it" % fn,
+                    r[BO.REALDASH_ROW][0] is False and fn in r[BO.REALDASH_ROW][1]))
+        out.append(("stock_rows: ... and the bus-state row", r[BO.BUS_STATE_ROW][0] is False))
+    out.append(("stock_rows: the boot-enable row is the name vtrux/wican's table gives RealDash",
+                BO.REALDASH_ROW == "no boot-time bus enable at start-up"))
     for fn, caller in (("can_disable", "elm327_set_protocol"), ("can_enable", "mqtt_parse_data"),
                        ("can_enable", "upload_post_handler")):
         sites = dict(PRODUCT_SITES, **{fn: dict(PRODUCT_SITES[fn], **{caller: 1})})

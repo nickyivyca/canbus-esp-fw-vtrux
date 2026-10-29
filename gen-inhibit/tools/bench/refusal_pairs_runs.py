@@ -70,7 +70,7 @@ def main():
         ("the product image as AutoPID's ON", argv(t, on={AP: "man"}),
          "WICAN_FEATURE_AUTOPID ON: 'no AutoPID feature in the image' fails"),
         ("the product image as RealDash's ON", argv(t, on={"WICAN_FEATURE_REALDASH": "man"}),
-         "WICAN_FEATURE_REALDASH ON: 'no boot-time bus enable in app_main' fails"),
+         "WICAN_FEATURE_REALDASH ON: 'no boot-time bus enable at start-up' fails"),
         ("a stock-feature image (MQTT) as OFF", argv(t, off="fmqtt"), "OFF: 'no MQTT feature in the ELF' passes"),
         ("an instrument image (rxq) as OFF", argv(t, off="rxq"), "OFF: 'no instrument symbols in the ELF' passes"),
         ("the fault-injection image as OFF", argv(t, off="flt"), "OFF: 'no OTA fault injection in the image' passes"),
