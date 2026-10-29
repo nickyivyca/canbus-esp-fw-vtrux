@@ -148,6 +148,13 @@ def copy_tree(d):
     shutil.copytree(HERE, os.path.join(d, "test", "gen_inhibit_spec_shim"),
                     ignore=shutil.ignore_patterns("__pycache__"))
     os.makedirs(os.path.join(d, "tmp"))
+    # the copy is not beside the worktree root, so build.sh's wican_ref.py would not
+    # find the pinned vtrux/wican checkout from it: give it this tree's (port step 1a)
+    if "WICANDIR" not in os.environ:
+        r = subprocess.run([sys.executable, os.path.join(REPO, "test", "gen_inhibit_shim", "wican_ref.py")],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            os.environ["WICANDIR"] = r.stdout.strip()
     return os.path.join(d, "test", "gen_inhibit_spec_shim")
 
 
