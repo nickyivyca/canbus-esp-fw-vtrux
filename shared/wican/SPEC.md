@@ -2,7 +2,8 @@
 
 **Status:** approved by the user on 2026-10-29, in the gen-inhibit
 reviewer's session, and drafted that day by the gen-inhibit reviewer for
-gen-inhibit's port step 1a. As
+gen-inhibit's port step 1a; W7 amended 2026-10-29, for the rollback
+rehearsal's fault hook. As
 a shared component's spec this follows port plan goal 20: the reviewer whose
 project needs a change drafts it, the user rules in that reviewer's session,
 and the other project's reviewer reads it before it merges into
@@ -83,7 +84,9 @@ Requirements are numbered W1 to W11. The numbers are stable.
   and `_REALDASH` are CMake options of the component, on by default, with
   `wican_features.h`, under today's rules: off takes the feature's source
   out of the component and its call sites out of the build. A project sets
-  them in its top-level `CMakeLists.txt`.
+  them in its top-level `CMakeLists.txt`. `OTA_HEALTH_FAULT_INJECT`, the
+  fault hook in `ota_health.c` that a rollback rehearsal builds with, is a
+  CMake option of the component too: off by default, and test-only.
 - **W8. Project URIs.** A project may register one URI hook and the number
   of handler slots it needs. The server's handler table is stock's 21 plus
   that number. The hook is called where gen-inhibit's endpoints are
