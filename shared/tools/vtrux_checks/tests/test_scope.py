@@ -45,7 +45,7 @@ def facts(**kw):
                    j(TOOL, "riscv32-esp-elf", "include", "stdio.h"), j(CMR, "Modules", "CMakeDetermineSystem.cmake")],
          "lock": {"espressif/mdns": {"version": "1.4.0", "source": {"type": "service"}},
                   "idf": {"version": "5.4.1", "source": {"type": "idf"}}},
-         "managed": {"espressif__mdns": "1.4.0"}, "pins": {}, "tags": {}, "folders": [j(PROJ, "build")],
+         "managed": {"espressif__mdns": "1.4.0"}, "pins": {}, "tags": {}, "lock_commits": {}, "folders": [j(PROJ, "build")],
          "git_folders": [GITD, j(GITD, "worktrees", "proj")]}
     f.update(kw)
     return f
@@ -55,6 +55,7 @@ GITD = j(ROOT, "w", "anchor", ".git")      # the clone's git folder; PROJ is a l
 
 
 SHA = "0123456789abcdef0123456789abcdef01234567"
+TAGOBJ = "abcdef0123456789abcdef0123456789abcdef01"    # an annotated tag's own hash
 TAG = "2026.10.28"
 
 
@@ -62,7 +63,7 @@ def git_facts(**kw):
     """facts() with a board taken from git at a tag, as R17 wants it."""
     lock = dict(facts()["lock"], **{"vtrux/b": {"version": SHA, "source": {"type": "git", "path": "shared/boards/b"}}})
     f = facts(lock=lock, managed={"espressif__mdns": "1.4.0", "vtrux__b": None},
-              pins={"vtrux/b": [("main/idf_component.yml", TAG)]}, tags={TAG: SHA})
+              pins={"vtrux/b": [("main/idf_component.yml", TAG)]}, tags={TAG: SHA}, lock_commits={"vtrux/b": SHA})
     f.update(kw)
     return f
 
@@ -106,6 +107,13 @@ class Judge(unittest.TestCase):
         self.assertEqual(S.judge(git_facts(), "release"), [])
         self.assertEqual(S.judge(git_facts(tags={TAG: SHA.upper()}), "release"), [])
 
+    def test_git_lock_annotated_tag_passes(self):
+        """The lock holds an annotated tag's hash, which git follows to the pinned tag's commit."""
+        f = git_facts()
+        f["lock"]["vtrux/b"] = dict(f["lock"]["vtrux/b"], version=TAGOBJ)
+        self.assertEqual(S.judge(f, "release"), [])
+        self.assertEqual(S.judge(f, "bench"), [])
+
     def test_git_each_fails(self):
         two = [("main/idf_component.yml", TAG), ("components/x/idf_component.yml", "2026.10.29")]
         for label, kw, want in (
@@ -113,7 +121,11 @@ class Judge(unittest.TestCase):
                 ("pinned nowhere", {"pins": {"vtrux/b": []}}, "no idf_component.yml of the project pins vtrux/b"),
                 ("pinned twice, apart", {"pins": {"vtrux/b": two}}, "pin vtrux/b at 2 versions"),
                 ("not a tag", {"tags": {TAG: None}}, "which is not a tag"),
-                ("another commit", {"tags": {TAG: "f" * 40}}, "records commit %s, but tag %s names %s" % (SHA, TAG, "f" * 40))):
+                ("another commit", {"tags": {TAG: "f" * 40}}, "records commit %s, but tag %s names %s" % (SHA, TAG, "f" * 40)),
+                ("names no commit", {"lock_commits": {"vtrux/b": None}},
+                 "records %s, which names no commit in the project's repository (tag %s names %s)" % (SHA, TAG, SHA)),
+                ("names another commit", {"lock_commits": {"vtrux/b": "f" * 40}},
+                 "records %s, which names commit %s, but tag %s names %s" % (SHA, "f" * 40, TAG, SHA))):
             got = S.judge(git_facts(**kw), "release")
             self.assertEqual(rules(got), ["version"], label)
             self.assertEqual(len(got), 1, (label, got))
@@ -212,6 +224,48 @@ class Readers(unittest.TestCase):
         self.write("proj/main/idf_component.yml", "dependencies:\n  vtrux/b: {version: x}\n")
         with self.assertRaises(S.ScopeError):
             S.git_pins(proj, comps, lock)
+
+    def test_lock_commits(self):
+        """A lock hash followed to its commit on a real repository, and the clause judged with it:
+        the commit, an annotated tag on it (the pinned one, another, a tag of a tag) pass; another
+        commit, a tag on another commit, a branch's name, a short hash, a tree, an unknown hash fail."""
+        proj = os.path.join(self.d, "proj")
+        subprocess.run(["git", "init", "-q", "-b", "fixture", proj], check=True)
+
+        def g(*args):
+            return subprocess.run(["git", "-C", proj, "-c", "user.name=t", "-c", "user.email=t@t"] + list(args),
+                                  capture_output=True, text=True, check=True).stdout.strip()
+        g("commit", "-q", "--allow-empty", "-m", "c0")
+        c0 = g("rev-parse", "HEAD")
+        g("commit", "-q", "--allow-empty", "-m", "c1")
+        c1 = g("rev-parse", "HEAD")
+        g("tag", "-a", "-m", "pinned", TAG)
+        g("tag", "light")
+        g("tag", "-a", "-m", "same commit", "other-same")
+        g("tag", "-a", "-m", "tag of a tag", "tagtag", TAG)
+        g("tag", "-a", "-m", "other commit", "other-c0", c0)
+        g("tag", "-a", "-m", "tag of a tag, other commit", "tagtag-c0", "other-c0")
+        obj = {t: g("rev-parse", "refs/tags/" + t) for t in (TAG, "other-same", "tagtag", "other-c0", "tagtag-c0")}
+        self.assertEqual(g("cat-file", "-t", obj["tagtag"]), "tag")
+        self.assertIn("type tag", g("cat-file", "-p", obj["tagtag"]))   # a tag of the pinned tag
+        cases = (("commit", c1, c1, True), ("pinned annotated tag", obj[TAG], c1, True),
+                 ("another annotated tag, same commit", obj["other-same"], c1, True),
+                 ("tag of a tag", obj["tagtag"], c1, True), ("upper case", c1.upper(), c1, True),
+                 ("another commit", c0, c0, False), ("annotated tag on another commit", obj["other-c0"], c0, False),
+                 ("tag of a tag on another commit", obj["tagtag-c0"], c0, False),
+                 ("branch name", "fixture", None, False), ("short hash", c1[:12], None, False),
+                 ("tree", g("rev-parse", "HEAD^{tree}"), None, False), ("unknown hash", "e" * 40, None, False),
+                 ("no version", None, None, False))
+        for pin in (TAG, "light"):
+            for label, held, want, passes in cases:
+                lock = {"vtrux/b": {"version": held, "source": {"type": "git"}},
+                        "espressif/mdns": {"version": "1.4.0", "source": {"type": "service"}}}
+                got = S.lock_commits(proj, lock)
+                self.assertEqual(got, {"vtrux/b": want}, label)
+                bad = S.judge_git("vtrux/b", None, lock["vtrux/b"], {"vtrux/b": [("main/idf_component.yml", pin)]},
+                                  {pin: c1}, got["vtrux/b"])
+                self.assertEqual(bad == [], passes, (pin, label, bad))
+        self.assertEqual(S.lock_commits(proj, None), {})
 
     def test_git_folders(self):
         def git(*a):
@@ -313,6 +367,7 @@ class Readers(unittest.TestCase):
                 else "main/idf_component.yml"
             self.assertEqual(f["pins"], {"vtrux/b": [(want, TAG)]}, label)
             self.assertEqual(f["tags"], {TAG: head}, label)
+            self.assertEqual(f["lock_commits"], {"vtrux/b": head}, label)
             self.assertEqual([b for b in S.judge(f, "bench") if b[0] == "version"], [], label)
 
     def test_build_folders(self):

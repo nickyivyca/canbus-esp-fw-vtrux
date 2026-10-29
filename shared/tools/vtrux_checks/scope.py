@@ -39,7 +39,11 @@ dependency's `version` in the idf_component.yml of the project's own
 components (those the build used from the project root, not from
 managed_components/); they must name one, and agree. It must be a tag in the
 project's repository (refs/tags/, resolved to its commit by git from the
-project root): a branch or a commit named there is not a tag.
+project root): a branch or a commit named there is not a tag. The lock may
+hold the commit or an annotated tag naming it (shared/main b21cb87, user
+2026-10-28): its hash is followed to its commit by git from the project root
+(<hash>^{commit}, all the way, so a tag of a tag resolves too) before the
+two are compared. A lock version that is not a full hash names no commit.
 
 A build whose records name no files fails: an empty list proves nothing.
 """
@@ -54,6 +58,7 @@ from vtrux_build.builddir import BuildDir, BuildDirError
 
 _COMPILER = re.compile(r'^set\(CMAKE_([A-Z]+)_COMPILER "([^"]+)"\)', re.M)
 _VERSION = re.compile(r"""^version:\s*['"]?([^'"\s#]+)""", re.M)
+_HASH = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
 SHOW = 20
 
 
@@ -158,6 +163,21 @@ def git_pins(project, components, lock):
     return pins, tags
 
 
+def lock_commits(project, lock):
+    """{lock name: the commit its version names, or None} for each git component in the lock: a
+    full hash followed by git from the project root to its commit (<hash>^{commit}: a commit is
+    itself, an annotated tag the commit it names, through any tags of tags); None for anything
+    else, or a hash naming no commit in the project's repository."""
+    out = {}
+    for n, e in sorted((lock or {}).items()):
+        if e.get("source", {}).get("type") != "git":
+            continue
+        v = str(e.get("version") or "")
+        c = _git(project, "rev-parse", "--verify", "--quiet", "%s^{commit}" % v) if _HASH.match(v) else None
+        out[n] = c.strip().lower() if c and c.strip() else None
+    return out
+
+
 def collect(build):
     """The facts judge() needs, all from the build's own records."""
     folders = build_folders(build)
@@ -190,7 +210,8 @@ def collect(build):
     pins, tags = git_pins(project, components, lock)
     return {"project": norm(project), "idf": norm(idf), "toolchains": tools, "cmake_roots": sorted(croots),
             "shared": shared_roots(project), "git_folders": git_folders(project), "files": sorted(files),
-            "lock": lock, "managed": managed, "pins": pins, "tags": tags, "folders": folders}
+            "lock": lock, "lock_commits": lock_commits(project, lock), "managed": managed, "pins": pins, "tags": tags,
+            "folders": folders}
 
 
 def judge(facts, kind):
@@ -217,7 +238,8 @@ def judge(facts, kind):
             bad.append(("version", "managed_components/%s: no entry in dependencies.lock" % name))
         elif lock[entries[0]].get("source", {}).get("type") == "git":
             bad += [("version", "managed_components/%s: %s" % (name, why))
-                    for why in judge_git(entries[0], version, lock[entries[0]], facts["pins"], facts["tags"])]
+                    for why in judge_git(entries[0], version, lock[entries[0]], facts["pins"], facts["tags"],
+                                         facts["lock_commits"].get(entries[0]))]
         elif version is None:
             bad.append(("version", "managed_components/%s: no version in its idf_component.yml" % name))
         elif lock[entries[0]].get("version") != version:
@@ -226,9 +248,9 @@ def judge(facts, kind):
     return bad
 
 
-def judge_git(name, version, entry, pins, tags):
+def judge_git(name, version, entry, pins, tags, lock_commit):
     """A git component's version clause: [reason]. version: its own manifest's; entry: its
-    lock entry; pins, tags: git_pins()'s."""
+    lock entry; pins, tags: git_pins()'s; lock_commit: lock_commits()'s for it."""
     bad = []
     if version is not None:
         bad.append("taken from git, but its idf_component.yml has a version of its own (%s)" % version)
@@ -244,8 +266,13 @@ def judge_git(name, version, entry, pins, tags):
     tag, commit = pinned[0], tags.get(pinned[0])
     if commit is None:
         bad.append("%s pins %s at %s, which is not a tag in the project's repository" % (found[0][0], name, tag))
-    elif (entry.get("version") or "").lower() != commit.lower():
-        bad.append("dependencies.lock records commit %s, but tag %s names %s" % (entry.get("version"), tag, commit))
+    elif lock_commit is None:
+        bad.append("dependencies.lock records %s, which names no commit in the project's repository (tag %s names %s)"
+                   % (entry.get("version"), tag, commit))
+    elif lock_commit != commit.lower():
+        held = str(entry.get("version")).lower()
+        bad.append("dependencies.lock records %s, but tag %s names %s" % (
+            "commit " + held if held == lock_commit else "%s, which names commit %s" % (held, lock_commit), tag, commit))
     return bad
 
 
@@ -271,8 +298,9 @@ def main(args):
     for name, v in sorted(facts["managed"].items()):
         print("  managed       %s %s" % (name, v))
     for name, found in sorted(facts["pins"].items()):
-        print("  git           %s, lock commit %s; pinned %s" % (
-            name, facts["lock"][name].get("version"),
+        held, c = facts["lock"][name].get("version"), facts["lock_commits"].get(name)
+        print("  git           %s, lock %s; pinned %s" % (
+            name, "commit %s" % held if c == str(held).lower() else "%s (commit %s)" % (held, c or "none"),
             ", ".join("%s in %s (tag %s)" % (v, m, facts["tags"].get(v) or "none") for m, v in found) or "nowhere"))
     for rule in ("records", "outside", "shared", "version"):
         hits = [d for r, d in bad if r == rule]
