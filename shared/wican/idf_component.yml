@@ -1,0 +1,9 @@
+## vtrux/wican: the stock WiCAN code (SPEC.md W1). A project takes it from git
+## at a pinned tag of shared/main, with its board and vtrux/debug_logs at the
+## same tag. No version here: the tag is its version, and dependencies.lock
+## records the commit the tag marks.
+description: "The stock WiCAN firmware code, as one component"
+dependencies:
+  idf: ">=5.4"
+  # wc_mdns.c, the mDNS advertisement.
+  espressif/mdns: "*"
