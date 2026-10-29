@@ -1,0 +1,39 @@
+{
+  "build_switches": {
+    "DEBUG_LOGS_ENABLE": {
+      "class": "not a switch",
+      "reason": "#ifndef default (1) in debug_logs_config.h; also gates debug_logs.c's code",
+      "kind": "default value"
+    },
+    "DEBUG_LOGS_QUEUE_LEN": {
+      "class": "not a switch",
+      "reason": "#ifndef default in debug_logs_config.h",
+      "kind": "default value"
+    },
+    "DEBUG_LOGS_MAX_MESSAGE": {
+      "class": "not a switch",
+      "reason": "#ifndef default in debug_logs_config.h",
+      "kind": "default value"
+    },
+    "DEBUG_LOGS_UDP_PORT": {
+      "class": "not a switch",
+      "reason": "#ifndef default in debug_logs_config.h",
+      "kind": "default value"
+    },
+    "DEBUG_LOGS_UDP_DEST_IP": {
+      "class": "not a switch",
+      "reason": "#ifndef default in debug_logs_config.h",
+      "kind": "default value"
+    },
+    "DEBUG_LOGS_LEVEL": {
+      "class": "not a switch",
+      "reason": "#ifndef default in debug_logs_config.h",
+      "kind": "default value"
+    },
+    "__cplusplus": {
+      "class": "not a switch",
+      "reason": "compiler-defined; the extern \"C\" wrappers in headers",
+      "kind": "library macro"
+    }
+  }
+}
