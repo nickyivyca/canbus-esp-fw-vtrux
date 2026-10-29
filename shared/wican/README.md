@@ -39,7 +39,7 @@ writing a file first does not make a project its owner.
 | `ftp.c`/`.h`, `gvret.c`/`.h`, `realdash.c`/`.h`, `led.c`/`.h`, `homepage_full.html` | files stock does not build; kept, still not built (W1) | the same |
 | `CMakeLists.txt`, `idf_component.yml`, `README.md` | the component itself: its sources, its switches as CMake options, finding the project's board (W9) | the same |
 | `pins.json` | the component's list of files that include the board's `board_pins.h` (W10), which `shared/tools` R30 checks | the same |
-| `vtrux_checks.json` | the build-switch table (R20) | the tester of the project that needs the change (W11) |
+| `vtrux_checks.json` | the component's build-switch table (`shared/tools` R20) | the tester of the project that needs the change (W11) |
 
 ## Taking it into a project
 

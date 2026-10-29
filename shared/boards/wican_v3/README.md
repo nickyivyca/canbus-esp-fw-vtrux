@@ -16,6 +16,7 @@ The board component for the MeatPi WiCAN OBD, hardware v3: an ESP32-C3 with
 | `CMakeLists.txt`, `idf_component.yml`, `README.md` | the component itself | the same |
 | `board.json` | the checks' data (B4): target, flash size, the reference table's path, the settings required of the project, the hardware name | the tester of the project that needs the change |
 | `stock-v4.13-partition-table.bin` | the reference partition table, extracted from the stock MeatPi v4.13 release: what `partitions.csv` must build to (B4, `shared/tools` R21) | the same |
+| `vtrux_checks.json` | the component's build-switch table (`shared/tools` R20) | the same |
 
 gen-inhibit's implementor and tester wrote them first, at gen-inhibit's port
 step 1a. Writing a file first does not make a project its owner.
