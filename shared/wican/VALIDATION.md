@@ -91,6 +91,21 @@ readings of gen-inhibit's code below are of `gen-inhibit/main` at `0b03841`,
 - **Basis:** gen-inhibit spec 3.2 and 12.3 item 3 (user, 2026-10-16), the
   four switches, on in the shared code and off in gen-inhibit's build;
   switches located with the code they own (user, 2026-10-25).
+- **The fault hook** (user, 2026-10-29, in the gen-inhibit reviewer's
+  session, raised by the gen-inhibit implementor): `OTA_HEALTH_FAULT_INJECT`
+  gates code in `ota_health.c`, which is now the component's, so under
+  `shared/tools` R20 the switch is the component's and its table lists it.
+  The other option was gen-inhibit's top-level CMake file setting the
+  define for every component; the component's source would still test the
+  symbol, so its table would list it either way.
+- **Context, a known limit** (the gen-inhibit reviewer's reading,
+  2026-10-29, raised by the gen-inhibit tester): under `shared/tools` R20
+  the component's switches are classified in its own table, which applies
+  in every release build that takes it. The feature switches and
+  `WICAN_SLCAN_COMMANDS` are classed there as stock features off, with
+  refusal rows, as gen-inhibit's table had them. A project that turns one
+  on, such as the charge interposer in its stage (b), needs R20 to give
+  that class per project first.
 - **Status:** complete.
 
 ### W8. Project URIs
