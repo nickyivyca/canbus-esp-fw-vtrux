@@ -158,9 +158,9 @@ unless the image changes, which the reproducible test (R19) shows.
   comes from the project root, IDF or `managed_components/`, and each
   managed component is at the version `dependencies.lock` records: its own
   manifest's `version` is the lock's. For a component taken from git, the
-  lock records a commit, not a version: that commit is the one the tag the
-  project pins names, and the component's manifest has no `version` of its
-  own. IDF here is `IDF_PATH` plus exactly
+  lock records what git resolved, not a version: the commit, or an
+  annotated tag naming it. That commit is the one the tag the project pins
+  names, and the component's manifest has no `version` of its own. IDF here is `IDF_PATH` plus exactly
   two folders named by the build's own record: the install folder of the
   toolchain whose compiler CMake chose (`CMake<LANG>Compiler.cmake`), and
   CMake's own `CMAKE_ROOT` (`CMakeCache.txt`). Nothing else beside them in
