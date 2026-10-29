@@ -10,6 +10,7 @@ from git at the same pinned tag as `vtrux/wican`, which needs it.
 |---|---|---|
 | `src/debug_logs.c`, `include/debug_logs.h`, `include/debug_logs_config.h` | the logger: lines queued to a UDP destination once the network is up | the implementor of the project that needs the change |
 | `CMakeLists.txt`, `Kconfig`, `README.md` | the component itself | the same |
+| `vtrux_checks.json` | the build-switch table (R20) | the tester of the project that needs the change |
 
 It has no `pins.json`: none of its files includes the board's `board_pins.h`
 (`shared/tools` R30).
