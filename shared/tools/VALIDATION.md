@@ -634,6 +634,10 @@ same folder. The interposer's test evidence is
   in a separate header, with a listed exception for stock files that still
   use them (`shared/boards/VALIDATION.md` B6). The dependency records are
   the ones R17 reads, so the check sees every header an object read.
+- **A shared component's own list** (user, 2026-10-29, in the gen-inhibit
+  reviewer's session): listed and checked, for the stock code in
+  `shared/wican/` (`shared/wican/VALIDATION.md` W10). Listed only, with no
+  check, was the other option.
 - **Status:** complete.
 
 ### R26. No eFuse-burning features in a release build

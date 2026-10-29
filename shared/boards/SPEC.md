@@ -7,7 +7,8 @@ and drafted that day by the gen-inhibit reviewer; B3 and B5 amended there
 again that day, after the gen-inhibit tester's reading of a real build and
 the gen-inhibit implementor's first build of `wican_v3`; section 2's
 console members listed 2026-10-27, after the charge-interposer reviewer's
-read. The `x2` section (3) is
+read; B6 amended 2026-10-29, for the stock code's own list of files that
+use pins (`shared/wican/SPEC.md` W10). The `x2` section (3) is
 drafted by the charge-interposer reviewer and ruled in its session; its
 console members listed 2026-10-28. As a
 shared component's spec this follows port plan goal 20: the reviewer whose
@@ -90,8 +91,9 @@ Requirements in section 1 are numbered B1 to B7. The numbers are stable.
 - **B6. Pins live in `include/board_pins.h`.** `board.c` includes it, and so
   may test equipment such as gen-inhibit's X2 jammer. A project file may
   include it only if it is on that project's list of stock files that still
-  use pins (`shared/tools` R30). A file leaves the list when it moves to
-  board calls. Boards of one family, such as the WiCANs, give their pins
+  use pins, and a file of a shared component only if it is on that
+  component's own list (`shared/tools` R30). A file leaves its list when it
+  moves to board calls. Boards of one family, such as the WiCANs, give their pins
   the same names, so stock code builds for any of them.
 - **B7. Ownership** is recorded per file in each board's `README.md`.
   `board.c`, `include/board.h`, `include/board_pins.h`, `sdkconfig.board`

@@ -106,6 +106,12 @@ gen-inhibit's spec is
   across a family: upstream WiCAN builds one tree for every WiCAN by giving
   each model the same pin names (`hw_config.h`), which the WiCAN boards
   keep.
+- **A shared component's own list** (user, 2026-10-29, in the gen-inhibit
+  reviewer's session): when the stock code moves into `shared/wican/`, its
+  start-up still drives the LEDs and reads the Bluetooth-enable input by
+  pin, and its objects are no longer compiled from the project root, so
+  the project's list could not cover them (`shared/wican/VALIDATION.md`
+  W10).
 - **Status:** complete.
 
 ### B7. Ownership
