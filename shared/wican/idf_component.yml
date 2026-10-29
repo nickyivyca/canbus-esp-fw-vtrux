@@ -5,5 +5,7 @@
 description: "The stock WiCAN firmware code, as one component"
 dependencies:
   idf: ">=5.4"
-  # wc_mdns.c, the mDNS advertisement.
-  espressif/mdns: "*"
+  # wc_mdns.c, the mDNS advertisement. Upstream's manifest asks for "*"; the
+  # version is the one its lock held, which gen-inhibit built with until the
+  # move (W2), so a project that takes this component gets the same.
+  espressif/mdns: "==1.4.0"
