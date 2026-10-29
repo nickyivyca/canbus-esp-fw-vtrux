@@ -54,10 +54,16 @@ if(NOT WICAN_FEATURE_AUTOPID)
     list(REMOVE_ITEM srcs "autopid.c")
 endif()
 
+# THE CAN FUNCTIONS ARE THE PROJECT'S (W3): can.h declares them, the project's
+# main component defines them. PRIV_REQUIRES main puts main's library after
+# this one on the link line as well as before it, so the linker finds them
+# whichever order the libraries come in. Without it they resolve only when
+# something earlier has already pulled main's object in.
 idf_component_register(
     SRCS "${srcs}"
     INCLUDE_DIRS "."
     REQUIRES "${requires}"
+    PRIV_REQUIRES main
     EMBED_FILES "homepage.html"
 )
 

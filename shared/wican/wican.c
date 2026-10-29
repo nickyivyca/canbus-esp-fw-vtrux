@@ -381,7 +381,10 @@ static void can_tx_task(void *pvParameters)
 		}
 		if(protocol == SLCAN)
 		{
-			/* refused above: no call to the parser is compiled (W6) */
+			/* refused above: no call to the parser is compiled (W6), so its
+			 * arguments are not used */
+			(void)msg_ptr;
+			(void)tx_msg;
 		}
 #endif
 #if WICAN_FEATURE_ELM327
