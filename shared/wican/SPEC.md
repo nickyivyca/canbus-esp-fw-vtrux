@@ -3,7 +3,8 @@
 **Status:** approved by the user on 2026-10-29, in the gen-inhibit
 reviewer's session, and drafted that day by the gen-inhibit reviewer for
 gen-inhibit's port step 1a; W7 amended 2026-10-29, for the rollback
-rehearsal's fault hook, and 2026-10-30, for its symbol. As
+rehearsal's fault hook, and 2026-10-30, for its symbol; W1 amended
+2026-10-30, for `debug_logs`'s link cycle. As
 a shared component's spec this follows port plan goal 20: the reviewer whose
 project needs a change drafts it, the user rules in that reviewer's session,
 and the other project's reviewer reads it before it merges into
@@ -31,7 +32,10 @@ Requirements are numbered W1 to W11. The numbers are stable.
   start-up (W4), and the files stock does not build (`ftp.c`, `gvret.c`,
   `realdash.c`, `led.c`, `homepage_full.html`), still not built.
   `debug_logs` is its own component, `shared/debug_logs/`
-  (`vtrux/debug_logs`), unchanged.
+  (`vtrux/debug_logs`), unchanged but for one line of its
+  `CMakeLists.txt`: it no longer requires `main`, which none of its files
+  uses. That line closed a link cycle that left AutoPID's calls into it
+  unresolved.
 - **W2. It starts as a move.** The component's files start as the files of
   `gen-inhibit/main` at the commit the move is made from, byte for byte,
   and change only as W3 to W10 say. **Stock behaviour** in this spec means
