@@ -8,6 +8,9 @@ as three boots.
 
 The mutation step swaps in boots() variants that each drop one rule and
 requires every variant to get at least one case wrong, so each rule is tested.
+boot_count_note (port step 1a2): ROM banner lines alone make the count a lower
+bound, said in the run file and printed as a WARNING; a log-tick, reason or uptime
+line each takes it away. Its three mutants are each caught.
 
   py -3.14 gen-inhibit/tools/bench/test_reset_matrix.py
 """
@@ -199,8 +202,56 @@ def power_cases():
     return out
 
 
+def note_cases(fn=None):
+    """boot_count_note (port step 1a2): a capture with only ROM banner lines (an image at
+    log level none, a bootloader at error) says the count is a lower bound; any log-tick,
+    reason or uptime line, each on its own, takes the note away."""
+    fn = fn or M.boot_count_note
+    out = []
+    none_level = timed(ROM, POR)
+    n = fn(M.boot_signs(none_level))
+    out.append(("ROM banners only: the count is said to be a lower bound",
+                bool(n) and "LOWER BOUND" in n and "4 ROM banner line(s)" in n))
+    for label, extra in (("a log-tick line", tick(281, "boot: ...")), ("a reason line", [reason("USB", 11)]),
+                         ("an uptime line", ups(1, "USB", 11))):
+        out.append(("ROM banners and %s: no note" % label, fn(M.boot_signs(timed(ROM + extra, POR))) is None))
+    out.append(("an empty capture: the note too (nothing seen is no boot count)", bool(fn(M.boot_signs([])))))
+    if fn is M.boot_count_note:
+        import inspect
+        src = inspect.getsource(M.main)
+        out.append(("main records the note in the run file",
+                    'rec["boot_count_note"] = boot_count_note(rec["boot_signs"])' in src))
+        out.append(("main prints it as a WARNING", 'print("WARNING: " + rec["boot_count_note"])' in src))
+    return out
+
+
+def note_mutant(rule):
+    """boot_count_note with one rule removed, built by editing its own source."""
+    import inspect
+    src = inspect.getsource(M.boot_count_note)
+    repl = {
+        "tick-ignored": ('if signs["reason"] or signs["uptime"] or signs["tick"]:',
+                         'if signs["reason"] or signs["uptime"]:'),
+        "never-said": ('    return ("BOOT COUNT', '    return None and ("BOOT COUNT'),
+        "said-always": ('if signs["reason"] or signs["uptime"] or signs["tick"]:', 'if False:'),
+    }[rule]
+    assert src.count(repl[0]) == 1, rule
+    ns = dict(vars(M))
+    exec(src.replace(repl[0], repl[1]), ns)
+    return ns["boot_count_note"]
+
+
 def main():
     failures = run(M.boots, True)
+    for label, ok in note_cases():
+        print("  %-4s %s" % ("ok" if ok else "FAIL", label))
+        if not ok:
+            failures.append(label)
+    for rule in ("tick-ignored", "never-said", "said-always"):
+        caught = [l for l, ok in note_cases(note_mutant(rule)) if not ok]
+        print("  %-4s note mutant %-14s gets %d case(s) wrong" % ("ok" if caught else "FAIL", rule, len(caught)))
+        if not caught:
+            failures.append("note mutant %s not caught" % rule)
     for label, ok in power_cases():
         print("  %-4s %s" % ("ok" if ok else "FAIL", label))
         if not ok:

@@ -118,11 +118,11 @@
     },
     "OTA_HEALTH_FAULT_INJECT": {
       "class": "test-only",
-      "reason": "rollback-rehearsal build; fails its health gate and rolls back 60 s after every boot",
+      "reason": "rollback-rehearsal build; fails its health gate and rolls back 60 s after every boot. The content marker is the hook's own function, ota_health_fault_inject_suppress() (shared/wican W7); its log string \"FAULT INJECT: suppressing report of\" did not survive at release log levels (shared/tools R28) and was dropped",
       "refusal": [
         {
-          "bin_strings_absent": [
-            "FAULT INJECT: suppressing report of"
+          "elf_symbols_absent": [
+            "ota_health_fault_inject_suppress"
           ]
         },
         {

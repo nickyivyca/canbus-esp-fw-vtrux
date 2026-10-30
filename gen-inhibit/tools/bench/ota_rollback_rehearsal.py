@@ -52,6 +52,28 @@ test anything, so the specific console lines are required and their absence is
 a FAIL. The engagement conditions are listed per phase in PHASES below and
 checked in `judge_*`.
 
+LOG LEVEL NONE, FROM PORT STEP 1a2 (gen-inhibit reviewer, 2026-10-30). The
+release and bench _man images log nothing (app none, bootloader error: shared/
+tools R28), and the unit runs whatever bootloader was last flashed serially. On
+the good image neither the bootloader's `Loaded app from partition` nor
+ota_health's `gate armed`, `subsystem up` or `marking image valid` appears. So:
+  - a BOOT is found from the ROM banner (`ESP-ROM:` and `rst:0x..`), which the
+    chip's ROM prints whatever the bootloader and the app are built at. The
+    bootloader's slot line is recorded when the console carries it, never
+    required;
+  - the GOOD image's gate is judged by its effect, from /gen_inhibit's
+    elf_sha256, never the console: the new boot runs the good image, has been
+    up past the gate's timeout, and after a reboot (wican_reboot.py) is still
+    the running image, so it was marked valid. An image left PENDING_VERIFY is
+    rolled back by the bootloader at that reboot;
+  - the FAULT phase's rollback is shown the same way, back on the good image
+    afterwards, with the 55-75 s gap timed between ROM banners. The _flt image
+    is built at info (its sdkconfig layering), so its own lines -- gate armed
+    PENDING_VERIFY, FAULT INJECT, HTTPD up and WIFI_AP not -- are still read
+    and required;
+  - the bootloader phase records the unit's bootloader: the sha256 of its image
+    in flash, and the log level its strings show.
+
 WHICH SLOT, FROM THREE PATHS -- and the first draft of this paragraph named two
 that do not exist. The bootloader prints `Loaded app from partition at offset`
 (NOT "Loading app partition at offset", which is what the parser first looked
@@ -66,30 +88,39 @@ all. What actually works:
       firmware at all.
 
 They must agree, and in this run they did. Path 3 is the one that caught a bug
-in path 3's own interpreter -- see `parse_otadata`.
+in path 3's own interpreter -- see `parse_otadata`. From port step 1a2 paths 1
+and 2 are silent on the good image, and the slot is no longer judged: the image
+is (LOG LEVEL NONE, above).
 
 PHASES
 
   images    offline. Verify the good and faulty images are the pair we think:
-            size, md5, esp_app_desc.project_name, and whether the binary
-            contains the "FAULT INJECT" format string at all. The last is the
-            direct static proof the fault is compiled in -- with the mask at 0
-            the `if (0 & bits)` body is dead code and the string is dropped.
+            size, md5, esp_app_desc.project_name, and whether the ELF beside
+            each defines the fault hook, ota_health_fault_inject_suppress
+            (shared/wican W7). The last is the direct static proof the fault
+            is compiled in. Until port step 1a2 it was the "FAULT INJECT"
+            format string, which a build at release log levels (shared/tools
+            R28) drops whatever the switch; the faulty image (info level)
+            must still carry it, for the fault phase's line.
   baseline  HTTP /gen_inhibit, and the connected AP's BSSID against the expected
             unit (value-blind). Refuses to continue unless it is the unit and the
             device is in mode 0 and not live. Never /check_status (2026-10-25).
   otadata   esptool read of the otadata partition, parsed. Needs COM4 free and
             RESETS the device; run it only between phases.
-  control   OTA the GOOD image. Engagement: gate armed with state
-            PENDING_VERIFY, then "marking image valid, rollback cancelled".
-  fault     OTA the FAULTY image. Engagement: gate armed PENDING_VERIFY, a
-            FAULT INJECT line, HTTPD reporting while WIFI_AP does not, a SECOND
-            boot on a DIFFERENT slot 55-75 s later, and no FAULT INJECT line
-            after it. It does NOT require `UNHEALTHY` or `rolling back`: those
-            are emitted 60 s in, after logging is off, so requiring them would
-            fail a working rollback. See the note above RE_GATE_ARMED.
+  control   OTA the GOOD image onto a device running another. Engagement: one
+            boot (ROM banner); the page names the good image, up past the
+            gate's timeout; a reboot; the page still names it.
+  fault     OTA the FAULTY image onto the good one. Engagement, from the _flt
+            image's own lines: gate armed PENDING_VERIFY, a FAULT INJECT line,
+            HTTPD reporting while WIFI_AP does not; then a SECOND boot (ROM
+            banner) 55-75 s later with no FAULT INJECT line, and the page back
+            on the good image. It does NOT require `UNHEALTHY` or `rolling
+            back`: those are emitted 60 s in, after logging is off, so
+            requiring them would fail a working rollback. See the note above
+            RE_GATE_ARMED.
   restore   OTA the GOOD image into the slot the faulty one used, so both slots
-            end holding a good image.
+            end holding a good image. Judged as control, except that the device
+            already runs the good image, so the page cannot show the OTA took.
   verify    End state from HTTP, including the 60 s wait that bring-up row 1.5b
             turns on.
   bootloader  WHICH bootloader is in flash -- this project's or MeatPi's --
@@ -98,7 +129,8 @@ PHASES
             that it cannot be tested directly, and on a serially flashed unit
             that is not so: `idf.py flash` writes bootloader.bin at 0x0. Either
             answer is a legitimate state, so this phase RECORDS rather than
-            passing or failing the device.
+            passing or failing the device. Since port step 1a2 it also records
+            the device bootloader's sha256 and the log level its strings show.
 
     py -3.14 gen-inhibit/tools/bench/ota_rollback_rehearsal.py \
         --phase images
@@ -188,6 +220,9 @@ OTA_STATE = {0: "NEW", 1: "PENDING_VERIFY", 2: "VALID", 3: "INVALID",
              4: "ABORTED", 0xFFFFFFFF: "UNDEFINED"}
 
 GATE_TIMEOUT_MS = 60000
+# The good image must have been up this long before the control's reboot: the gate
+# arms a few seconds into the boot and resolves GATE_TIMEOUT_MS after that.
+GATE_SETTLED_MS = GATE_TIMEOUT_MS + 15000
 
 
 # ---------------------------------------------------------------- plumbing
@@ -234,6 +269,16 @@ def save(phase, record):
 FAULT_MARKER = b"FAULT INJECT"
 
 
+def fault_hook(path):
+    """(defined, why): whether the ELF beside image `path` defines the fault-injection hook
+    (build_output.FAULT_HOOK_SYM, shared/wican W7), read with nm by build_output's own
+    elf_symbols_beside(); defined is None, with the reason, when there is nothing to judge by."""
+    sys.path.insert(0, os.path.join(gi_paths.project_root(), "test", "build_checks"))
+    import build_output
+    defined, why = build_output.elf_symbols_beside(path)
+    return (None if defined is None else build_output.FAULT_HOOK_SYM in defined), why
+
+
 def image_facts(path):
     """Everything about an image that can be established without flashing it."""
     if not os.path.exists(path):
@@ -248,6 +293,7 @@ def image_facts(path):
         version, elf = desc["version"], desc["elf_sha256"]
     except ValueError:
         version = elf = None
+    hook, hook_why = fault_hook(path)
     return {
         "path": path,
         "exists": True,
@@ -257,6 +303,8 @@ def image_facts(path):
         "version": version,
         "elf_sha256": elf,
         "has_fault_string": FAULT_MARKER in data,
+        "has_fault_symbol": hook,
+        "fault_symbol_why": hook_why,
     }
 
 
@@ -266,9 +314,19 @@ def judge_images(good, faulty):
     md5 alone would do for telling two FILES apart, but the one that survives
     into the device is project_name, and the one that proves the fault is
     actually COMPILED IN rather than merely requested on a command line is the
-    format string. `idf.py -D` sets a CMake cache variable, so a fault build
-    that was asked for and not wired produces a byte-for-byte ordinary image --
-    which is the failure this row exists to catch.
+    hook's symbol in the ELF. `idf.py -D` sets a CMake cache variable, so a fault
+    build that was asked for and not wired produces a byte-for-byte ordinary
+    image -- which is the failure this row exists to catch.
+
+    The good image's row was "good has NO fault string" until port step 1a2
+    (gen-inhibit reviewer, 2026-10-30, ruling 4). The good image is built at
+    release log levels (shared/tools R28), where the fault branch's log string
+    compiles to nothing even with the switch on, so that row passed on any good
+    image. Both images are now judged by the hook's own function
+    (build_output.FAULT_HOOK_SYM), defined only with the switch on, in the ELF
+    beside each; no ELF or no nm fails both rows. The faulty image keeps its
+    string row as well: a test-only build is at info level, and the fault phase
+    reads its FAULT INJECT line.
     """
     rows = []
     rows.append(("good image present", bool(good.get("exists"))))
@@ -278,7 +336,8 @@ def judge_images(good, faulty):
     rows.append(("md5 differs", good["md5"] != faulty["md5"]))
     rows.append(("project_name differs",
                  good["project_name"] != faulty["project_name"]))
-    rows.append(("good has NO fault string", not good["has_fault_string"]))
+    rows.append(("good ELF does NOT define the fault hook", good.get("has_fault_symbol") is False))
+    rows.append(("faulty ELF defines the fault hook", faulty.get("has_fault_symbol") is True))
     rows.append(("faulty HAS fault string", faulty["has_fault_string"]))
     rows.append(("faulty name carries _flt",
                  bool(faulty["project_name"]
@@ -407,6 +466,12 @@ RE_UNHEALTHY = re.compile(
     r"need 0x([0-9a-fA-F]+) \(missing 0x([0-9a-fA-F]+)\)")
 RE_FAULT = re.compile(r"FAULT INJECT: suppressing report of 0x([0-9a-fA-F]+)")
 RE_SUBSYS = re.compile(r"subsystem up: 0x([0-9a-fA-F]+)")
+# The ROM's banner, printed on every boot whatever the bootloader and the app are
+# built at (port step 1a2): "ESP-ROM:esp32c3-api1-20210207", then "rst:0x.. (..)".
+RE_ROM = re.compile(r"ESP-ROM:")
+# A bootloader log line, "I (31) boot: ...", colour codes allowed: counted per boot,
+# as a sign of the level the unit's bootloader logs at.
+RE_BOOTLOG = re.compile(r"^(?:\x1b\[[0-9;]*m)?[EWI] \(\d+\) boot")
 
 
 def slot_map(lines):
@@ -457,6 +522,9 @@ def console_events(lines):
             ev.append({"t": t, "kind": "fault_inject",
                        "mask": int(m.group(1), 16)})
             continue
+        if RE_ROM.search(text):
+            ev.append({"t": t, "kind": "rom"})
+            continue
         m = RE_RST.search(text)
         if m:
             ev.append({"t": t, "kind": "reset", "code": m.group(1),
@@ -472,6 +540,9 @@ def console_events(lines):
         if m:
             ev.append({"t": t, "kind": "subsystem_up",
                        "bits": int(m.group(1), 16)})
+            continue
+        if RE_BOOTLOG.search(text):
+            ev.append({"t": t, "kind": "bootloader_log"})
             continue
         if "marking image valid, rollback cancelled" in text:
             ev.append({"t": t, "kind": "marked_valid"})
@@ -489,27 +560,44 @@ def of_kind(ev, kind):
 
 
 def boots(ev):
-    """Group events into boots, keyed on `Loaded app from partition`.
+    """Group events into boots, keyed on the ROM banner (port step 1a2).
 
-    One dict per boot: which slot it loaded, what the gate saw, which
-    subsystems reported, whether the fault fired, and how the gate resolved.
-    Judging per-boot rather than over a flat event list is what makes "the
-    second boot is a different slot and has no fault line" expressible at all.
+    One dict per boot: its banner lines, the reset reason, which slot the
+    bootloader said it loaded (when it said), how many bootloader lines it
+    printed, what the gate saw, which subsystems reported, whether the fault
+    fired, and how the gate resolved. Judging per boot rather than over a flat
+    event list is what makes "the second boot has no fault line" expressible.
+
+    A boot starts at an `ESP-ROM:` line, or at an `rst:0x..` line unless the
+    current boot began with an `ESP-ROM:` line and has no `rst:` yet (the two
+    lines of one banner). So a boot whose `ESP-ROM:` line was lost still counts,
+    and one banner is one boot. Until 1a2 a boot started at the bootloader's
+    `Loaded app from partition`, which a bootloader built at error never prints.
     """
     out = []
     cur = None
     for e in ev:
-        if e["kind"] == "boot_load":
-            cur = {"t": e["t"], "offset": e["offset"], "slot": e["slot"],
+        k = e["kind"]
+        if k == "rom" or (k == "reset" and not (cur and cur["banner"] == ["rom"])):
+            cur = {"t": e["t"], "banner": [], "rst": None, "offset": None, "slot": None,
+                   "bootloader_lines": 0,
                    "gate": None, "subsystems": [], "fault_masks": [],
                    "marked_valid": False, "already_valid": False,
                    "unhealthy": None, "rolling_back": False}
             out.append(cur)
-            continue
         if cur is None:
             continue
-        k = e["kind"]
-        if k == "gate_armed":
+        if k == "rom":
+            cur["banner"].append("rom")
+        elif k == "reset":
+            cur["banner"].append("rst")
+            cur["rst"] = "0x%s %s" % (e["code"].lower(), e["reason"])
+        elif k == "boot_load":
+            cur["offset"], cur["slot"] = e["offset"], e["slot"]
+            cur["bootloader_lines"] += 1
+        elif k == "bootloader_log":
+            cur["bootloader_lines"] += 1
+        elif k == "gate_armed":
             cur["gate"] = {"slot": e["slot"], "state": e["state"],
                            "timeout_ms": e["timeout_ms"], "need": e["need"]}
         elif k == "subsystem_up":
@@ -706,9 +794,10 @@ def phase_images(args):
     log("=== images ===")
     for k, v in (("good", good), ("faulty", faulty)):
         if v.get("exists"):
-            log("  %-6s %-30s %8d  %s  fault_string=%s"
+            log("  %-6s %-30s %8d  %s  fault_string=%s  fault_symbol=%s%s"
                 % (k, v["project_name"], v["size"], v["md5"],
-                   v["has_fault_string"]))
+                   v["has_fault_string"], v["has_fault_symbol"],
+                   " (%s)" % v["fault_symbol_why"] if v["fault_symbol_why"] else ""))
         else:
             log("  %-6s MISSING %s" % (k, v["path"]))
     fails = [n for n, ok in rows if not ok]
@@ -721,13 +810,19 @@ def phase_images(args):
     return 0 if not fails else 1
 
 
-def esptool_mac(stdout):
-    """The MAC esptool printed, or None. Returns (mac, matches_expected)."""
-    m = RE_ESPTOOL_MAC.search(stdout or "")
+def esptool_unit(res):
+    """(seen, matches): whether esptool printed a MAC, and whether it is EXPECT_MAC; None
+    when it printed none. Value-blind (2026-10-30): the MAC is the unit's serial number,
+    so neither value is printed or recorded, and the MAC is cut out of the esptool output
+    kept in res (stdout, stderr) before anything saves it. Until then the otadata and
+    bootloader phases printed both MACs and recorded them in the run file."""
+    m = RE_ESPTOOL_MAC.search(res.get("stdout") or "")
+    for k in ("stdout", "stderr"):
+        if res.get(k):
+            res[k] = RE_ESPTOOL_MAC.sub("MAC: <redacted>", res[k])
     if not m:
-        return None, None
-    mac = m.group(1).lower()
-    return mac, mac == EXPECT_MAC
+        return False, None
+    return True, m.group(1).lower() == EXPECT_MAC
 
 
 def connected_bssid(run=subprocess.run):
@@ -843,22 +938,20 @@ def phase_otadata(args):
             log("  then: --phase otadata --otadata-file " + out_bin)
             save("otadata", {"esptool": res, "verdict": "NOT_RUN"})
             return 2
+    seen, mac_ok = esptool_unit(res)
     if not os.path.exists(out_bin):
         log("  FAIL: no otadata dump at %s" % out_bin)
         save("otadata", {"esptool": res, "verdict": "FAIL"})
         return 1
-    mac, mac_ok = esptool_mac(res.get("stdout"))
-    if mac is None:
+    if not seen:
         log("  esptool printed no MAC, so the unit is unconfirmed for this read")
     else:
-        log("  esptool MAC %s (expected %s): %s"
-            % (mac, EXPECT_MAC, "MATCH" if mac_ok else "MISMATCH"))
-    if mac is not None and not mac_ok:
+        log("  esptool MAC: %s the expected unit's" % ("MATCHES" if mac_ok else "DOES NOT MATCH"))
+    if seen and not mac_ok:
         # Hard stop: a wrong --port most likely means COM3, which is another
         # session's interposer, and closing its port resets it mid-run.
         log("  FAIL: this is not the expected unit. Check --port.")
-        save("otadata", {"esptool": res, "esptool_mac": mac,
-                         "mac_matches": False, "verdict": "FAIL"})
+        save("otadata", {"esptool": res, "mac_matches": False, "verdict": "FAIL"})
         return 1
     parsed = parse_otadata(open(out_bin, "rb").read())
     for s in parsed["sectors"]:
@@ -867,17 +960,39 @@ def phase_otadata(args):
                s.get("ota_state_name"), s.get("crc_ok")))
     log("  boot: %s" % parsed["boot"])
     save("otadata", {"esptool": res, "dump": out_bin, "parsed": parsed,
-                     "esptool_mac": mac, "mac_matches": mac_ok,
-                     "expected_mac": EXPECT_MAC, "verdict": "RECORDED"})
+                     "mac_matches": mac_ok, "verdict": "RECORDED"})
     return 0
 
 
-def _do_ota(args, label, image, watch_s):
+def reboot_check(label, good_sha):
+    """Reboot the device with wican_reboot.py, wanting the good image, and return its
+    record (verdict, found_sha, checks: a new boot seen from the page's uptime, reset
+    reason SW, mode 0). It is how the control and restore phases show the gate marked
+    the image valid without the console (port step 1a2): a PENDING_VERIFY image is
+    rolled back by the bootloader at this reboot."""
+    if not (isinstance(good_sha, str) and len(good_sha) == 64):
+        return {"verdict": "FAIL", "found_sha": None, "detail": "no elf_sha256 for the good image"}
+    import wican_reboot
+    out = os.path.join(RUNS, "rollback_%s_reboot_%s.json" % (label, ts()))
+    wican_reboot.main(["--label", "rollback_%s" % label, "--out", out,
+                       "--known", "good=%s" % good_sha, "--want", "good"])
+    try:
+        with open(out, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError) as e:
+        return {"verdict": "FAIL", "found_sha": None, "detail": "no reboot record: %s" % e}
+
+
+def _do_ota(args, label, image, watch_s, good_sha=None, reboot=False):
     """Shared body of the control, fault and restore phases.
 
     Serial is opened BEFORE the POST and stays open across the reboot. The
     device starts its restart timer before replying, so a capture attached
     afterwards misses the boot -- which is the whole event.
+
+    good_sha is the good image's elf_sha256, which the judges compare the page
+    with. With reboot, the device is rebooted after the watch window (reboot_check)
+    and the record keeps what that found.
     """
     facts = image_facts(image)
     if not facts.get("exists"):
@@ -932,8 +1047,9 @@ def _do_ota(args, label, image, watch_s):
     ev = console_events(lines)
     log("  console: %d lines, %d events" % (len(lines), len(ev)))
     for e in ev:
-        log("    [%7s] %s" % ("%.1f" % e["t"] if e["t"] is not None else "-",
-                              json.dumps(e, sort_keys=True)))
+        if e["kind"] != "bootloader_log":
+            log("    [%7s] %s" % ("%.1f" % e["t"] if e["t"] is not None else "-",
+                                  json.dumps(e, sort_keys=True)))
 
     after = None
     for _ in range(24):
@@ -942,11 +1058,19 @@ def _do_ota(args, label, image, watch_s):
             break
         except Exception:
             time.sleep(5.0)
+    log("  after  elf_sha256=%s uptime_ms=%s"
+        % (((after or {}).get("elf_sha256") or "")[:16], (after or {}).get("uptime_ms")))
+
+    rb = None
+    if reboot and after is not None:
+        rb = reboot_check(label, good_sha)
+        log("  reboot %s, found %s" % (rb.get("verdict"), (rb.get("found_sha") or "")[:16]))
 
     bs = boots(ev)
-    log("  boots: %s" % [b["slot"] for b in bs])
-    return ({"image": facts, "before": before, "after": after,
-             "push": push, "serial": os.path.relpath(serial_path, "."),
+    log("  boots (ROM banners): %d, at %s, slots said %s, bootloader lines %s"
+        % (len(bs), [b["t"] for b in bs], [b["slot"] for b in bs], [b["bootloader_lines"] for b in bs]))
+    return ({"image": facts, "good_elf_sha256": good_sha, "before": before, "after": after,
+             "reboot": rb, "push": push, "serial": os.path.relpath(serial_path, "."),
              "events": ev, "boots": bs}, 0)
 
 
@@ -954,40 +1078,45 @@ HTTPD_BIT = 0x02
 WIFI_AP_BIT = 0x01
 
 
-def judge_control(rec):
-    """The gate must have ARMED on a PENDING_VERIFY image and MARKED IT VALID.
+def judge_control(rec, require_change=True):
+    """The gate must have passed the GOOD image: judged by its effect (port step 1a2).
 
-    `already_valid` is a FAIL, not a pass: it means the image was not pending
-    when the gate looked, so the mark-valid path never ran and the control
-    established nothing about it. That is the whole point of the phase -- it
-    exists to show the gate PASSES a good image, so that the fault phase's
-    rollback means "the gate judged this image" rather than "the gate trips on
-    everything".
+    The good image logs nothing (app none), so its gate lines are gone, and the
+    gate is judged from the page instead (gen-inhibit reviewer, 2026-10-30):
+    one boot (ROM banner); the page names the good image, up past the gate's
+    timeout; after a reboot it still does. An image the gate never marked valid
+    is still PENDING_VERIFY at that reboot, and the bootloader rolls it back,
+    so the page would name the other slot's image. That is the whole point of
+    the phase -- it shows the gate PASSES a good image, so that the fault
+    phase's rollback means "the gate judged this image" rather than "the gate
+    trips on everything".
 
-    One boot, one slot change. The OTA's destination is not readable from the
-    console (the handler's lines are logged after app_main silenced logging),
-    so the slot that matters is the one the single new boot loaded, and it is
-    cross-checked against otadata in its own phase.
+    require_change (control): the device ran another image before the OTA, so
+    the page can show the OTA took. The restore phase OTAs the good image onto
+    itself and cannot show that; its record keeps the before image.
+
+    Until 1a2 the rows were the gate's own lines: armed on PENDING_VERIFY,
+    waiting for 0x03, both subsystems up, "marking image valid", not the
+    "already VALID" branch, and the boot's slot.
     """
     ev = rec.get("events") or []
     bs = rec.get("boots") or boots(ev)
-    rows = [
-        ("exactly one boot in the window", len(bs) == 1),
-        ("the boot named its slot", bool(bs) and bs[0]["slot"] is not None),
-        ("gate armed", bool(bs) and bs[0]["gate"] is not None),
-        ("gate armed on a PENDING_VERIFY image",
-         bool(bs) and bool(bs[0]["gate"])
-         and bs[0]["gate"]["state"] == "PENDING_VERIFY"),
-        ("gate was waiting for 0x03",
-         bool(bs) and bool(bs[0]["gate"]) and bs[0]["gate"]["need"] == 0x03),
-        ("WIFI_AP reported",
-         bool(bs) and WIFI_AP_BIT in bs[0]["subsystems"]),
-        ("HTTPD reported", bool(bs) and HTTPD_BIT in bs[0]["subsystems"]),
-        ("gate marked the image VALID", bool(bs) and bs[0]["marked_valid"]),
-        ("not the 'already VALID, nothing to do' branch",
-         bool(bs) and not bs[0]["already_valid"]),
+    good = rec.get("good_elf_sha256") or (rec.get("image") or {}).get("elf_sha256")
+    before = rec.get("before") or {}
+    after = rec.get("after") or {}
+    rb = rec.get("reboot") or {}
+    rows = [("exactly one boot in the window (ROM banner)", len(bs) == 1)]
+    if require_change:
+        rows.append(("the device ran another image before the OTA (page elf_sha256)",
+                     bool(good) and bool(before.get("elf_sha256")) and before.get("elf_sha256") != good))
+    rows += [
+        ("the new boot runs the good image (page elf_sha256)", bool(good) and after.get("elf_sha256") == good),
+        ("it was up past the gate's timeout before the reboot (page uptime_ms >= %d)" % GATE_SETTLED_MS,
+         (after.get("uptime_ms") or 0) >= GATE_SETTLED_MS),
+        ("the reboot passed: a new boot, reset reason SW, mode 0 (wican_reboot.py)", rb.get("verdict") == "PASS"),
+        ("after the reboot the page still names the good image, so the gate marked it valid",
+         bool(good) and rb.get("found_sha") == good),
         ("no fault-inject line", bool(bs) and not bs[0]["fault_masks"]),
-        ("no rollback", bool(bs) and not bs[0]["rolling_back"]),
         ("device answered afterwards", rec.get("after") is not None),
     ]
     return rows
@@ -1016,6 +1145,13 @@ def judge_fault(rec, expect_mask=1):
 
     The 60 s wait survives as the interval between the two boots. A rollback
     that happened in 2 s did not happen because the gate timed out.
+
+    PORT STEP 1a2 (gen-inhibit reviewer, 2026-10-30): the boots are the ROM
+    banners, timed between banners, and the good image it rolls back to logs
+    nothing. So the second boot's slot and its gate line ("a DIFFERENT slot",
+    "not PENDING_VERIFY") are no longer read; the rollback is shown by the page
+    naming the good image afterwards, after naming it before the OTA. The first
+    boot's rows are the _flt image's own lines, still logged at info.
     """
     ev = rec.get("events") or []
     bs = rec.get("boots") or boots(ev)
@@ -1023,10 +1159,17 @@ def judge_fault(rec, expect_mask=1):
     b2 = bs[-1] if len(bs) >= 2 else None
     gap = (b2["t"] - b1["t"]) if (b1 and b2 and b1["t"] is not None
                                   and b2["t"] is not None) else None
+    good = rec.get("good_elf_sha256")
+    faulty = (rec.get("image") or {}).get("elf_sha256")
+    before = rec.get("before") or {}
+    after = rec.get("after") or {}
 
     rows = [
-        ("booted exactly twice", len(bs) == 2),
-        ("first boot named its slot", bool(b1) and b1["slot"] is not None),
+        ("booted exactly twice (ROM banners)", len(bs) == 2),
+        ("the faulty image is not the good one (descriptors' elf_sha256)",
+         bool(good) and bool(faulty) and good != faulty),
+        ("the device ran the good image before the OTA (page elf_sha256)",
+         bool(good) and before.get("elf_sha256") == good),
         ("first boot's gate armed on PENDING_VERIFY",
          bool(b1) and bool(b1["gate"])
          and b1["gate"]["state"] == "PENDING_VERIFY"),
@@ -1042,32 +1185,32 @@ def judge_fault(rec, expect_mask=1):
         ("first boot did not mark itself valid",
          bool(b1) and not b1["marked_valid"]),
         ("second boot exists", b2 is not None),
-        ("second boot is a DIFFERENT slot",
-         bool(b1) and bool(b2) and b1["slot"] is not None
-         and b2["slot"] is not None and b1["slot"] != b2["slot"]),
         ("no fault-inject line on the second boot",
          bool(b2) and not b2["fault_masks"]),
-        ("second boot's image is not PENDING_VERIFY",
-         bool(b2) and bool(b2["gate"])
-         and b2["gate"]["state"] != "PENDING_VERIFY"),
-        ("the two boots are 55-75 s apart",
+        ("the two boots are 55-75 s apart (ROM banners)",
          gap is not None and 55.0 <= gap <= 75.0),
+        ("back on the good image afterwards (page elf_sha256)",
+         bool(good) and after.get("elf_sha256") == good),
         ("device answered afterwards", rec.get("after") is not None),
     ]
     return rows, {
         "boot_gap_s": round(gap, 2) if gap is not None else None,
         "boot_slots": [b["slot"] for b in bs],
+        "boot_rst": [b["rst"] for b in bs],
+        "bootloader_lines": [b["bootloader_lines"] for b in bs],
         "note": "UNHEALTHY and 'rolling back' are absent BY DESIGN -- "
                 "main.c:623 runs esp_log_level_set(\"*\", ESP_LOG_NONE) at the "
                 "end of app_main, and the gate resolves 60 s later. Their "
-                "absence is not evidence of anything; the slot flip and the "
-                "otadata state are.",
+                "absence is not evidence of anything; the boot gap and the "
+                "page's image before and after are (the slot is not read "
+                "since port step 1a2: the good image logs nothing).",
     }
 
 
 def run_ota_phase(args, label, image, watch_s, judger, expect_mask=1):
     log("=== %s ===" % label)
-    rec, rc = _do_ota(args, label, image, watch_s)
+    good_sha = image_facts(args.good).get("elf_sha256")
+    rec, rc = _do_ota(args, label, image, watch_s, good_sha=good_sha, reboot=judger is judge_control)
     if rc:
         save(label, rec)
         return rc
@@ -1075,7 +1218,7 @@ def run_ota_phase(args, label, image, watch_s, judger, expect_mask=1):
     if judger is judge_fault:
         rows, extra = judge_fault(rec, expect_mask)
     else:
-        rows = judger(rec)
+        rows = judger(rec, require_change=label == "control")
     fails = [n for n, ok in rows if not ok]
     for n, ok in rows:
         log("  %-4s %s" % ("ok" if ok else "FAIL", n))
@@ -1087,6 +1230,48 @@ def run_ota_phase(args, label, image, watch_s, judger, expect_mask=1):
                              "" if not fails else "  (%d)" % len(fails)))
     save(label, rec)
     return 0 if not fails else 1
+
+
+# One string per log level that a bootloader image holds only when built at that level or
+# a more verbose one (ESP-IDF v5.4, bootloader_support/src/bootloader_utility.c: an
+# ESP_LOGI, an ESP_LOGW, an ESP_LOGE). Port step 1a2 records the level the unit's
+# bootloader shows (gen-inhibit reviewer, 2026-10-30); another IDF's bootloader may word
+# them differently, and then the level reads "none of the markers".
+BOOTLOADER_LEVEL_MARKERS = (
+    ("info", b"Loaded app from partition at offset"),
+    ("warn", b"Falling back to test app as only bootable partition"),
+    ("error", b"No bootable app partitions in the partition table"),
+)
+
+
+def esp_image_length(data):
+    """Length of the ESP image at the start of data (header, segments, the checksum at
+    the next 16-byte boundary, the appended sha256 when the header says so), or None
+    when data does not hold a whole one."""
+    if len(data) < 24 or data[0] != 0xE9:
+        return None
+    off = 24
+    for _ in range(data[1]):
+        if off + 8 > len(data):
+            return None
+        off += 8 + int.from_bytes(data[off + 4:off + 8], "little")
+    off += 15 - off % 16 + 1
+    if data[23] == 1:
+        off += 32
+    return off if off <= len(data) else None
+
+
+def bootloader_facts(data):
+    """The bootloader image in a 0x0..0x8000 read: its length and sha256, and the most
+    verbose log level whose marker string it holds."""
+    n = esp_image_length(data)
+    if n is None:
+        return {"image_bytes": None, "sha256": None, "level": None, "markers": [],
+                "why": "no whole ESP image at 0x0"}
+    img = data[:n]
+    found = [lvl for lvl, s in BOOTLOADER_LEVEL_MARKERS if s in img]
+    return {"image_bytes": n, "sha256": hashlib.sha256(img).hexdigest(),
+            "level": (found[0] if found else "none of the markers"), "markers": found}
 
 
 def phase_bootloader(args):
@@ -1137,20 +1322,22 @@ def phase_bootloader(args):
                                 "verdict": "NOT_RUN"})
             return 2
 
-    mac, mac_ok = esptool_mac(res.get("stdout"))
-    if mac is not None:
-        log("  esptool MAC %s (expected %s): %s"
-            % (mac, EXPECT_MAC, "MATCH" if mac_ok else "MISMATCH"))
+    seen, mac_ok = esptool_unit(res)
+    if seen:
+        log("  esptool MAC: %s the expected unit's" % ("MATCHES" if mac_ok else "DOES NOT MATCH"))
         if not mac_ok:
             log("  FAIL: this is not the expected unit. Check --port.")
-            save("bootloader", {"esptool": res, "esptool_mac": mac,
-                                "mac_matches": False, "verdict": "FAIL"})
+            save("bootloader", {"esptool": res, "mac_matches": False, "verdict": "FAIL"})
             return 1
 
     rows = []
-    rec = {"esptool": res, "dump": out_bin, "built": built,
-           "esptool_mac": mac, "mac_matches": mac_ok,
-           "expected_mac": EXPECT_MAC}
+    rec = {"esptool": res, "dump": out_bin, "built": built, "mac_matches": mac_ok}
+    if os.path.exists(out_bin):
+        # the unit's bootloader, whatever it is (port step 1a2): its sha256 and level
+        dev = bootloader_facts(open(out_bin, "rb").read())
+        rec["device_bootloader"] = dev
+        log("  device bootloader: %s bytes, sha256 %s, log level shown: %s (markers %s)"
+            % (dev["image_bytes"], dev["sha256"], dev["level"], dev["markers"]))
     if not os.path.exists(built):
         log("  FAIL: no built bootloader at %s" % built)
         rows.append(("built bootloader present", False))
@@ -1232,7 +1419,7 @@ def rejudge(args, label):
     if label == "fault":
         rows, extra = judge_fault(rec, args.fault_mask)
     else:
-        rows = judge_control(rec)
+        rows = judge_control(rec, require_change=label == "control")
     fails = [n for n, ok in rows if not ok]
     for n, ok in rows:
         log("  %-4s %s" % ("ok" if ok else "FAIL", n))
