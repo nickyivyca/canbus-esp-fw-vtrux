@@ -9,8 +9,8 @@ report a FAIL. test_refusal_pairs.py is tested against real images instead (its
 negative runs, recorded in the evidence doc).
 
 With --pairs, everything after it is passed to test_refusal_pairs.py (real images,
-each with its .elf), which then runs in every mutant's copy too: a FAIL line that
-the unmutated copy does not print also kills. That is how the rows that need a real
+each with its .elf), which then runs in every mutant's copy too: a FAIL line from
+it also kills. That is how the rows that need a real
 image (check_no_stock_features writing them at all) are covered.
 
     GI_FW=<project folder> py -3.14 gen-inhibit/tools/bench/build_checks_stock_mutants.py --tree <WiCAN tree>
@@ -22,6 +22,11 @@ passes for its positive run. One of the pairs is required: "the image rows never
 written" is killed only by them, so a run without real images refuses to start
 rather than report it SURVIVED (harness-defects row, 2026-10-24). The arguments
 used are printed first.
+
+The unmutated copy runs first, as the control (2026-10-30): if it prints a FAIL line or
+crashes, no mutant is judged and the run exits 1. Until then its FAIL lines were only
+subtracted from each mutant's, and a traceback from test_refusal_pairs.py counted as a
+kill; a crash is not a kill.
 """
 import os
 import shutil
@@ -71,16 +76,17 @@ MUTANTS = [
 
 
 def fails_in(d, pairs):
-    out = []
+    """The FAIL lines of the tests run in d, and whether any of them crashed."""
+    out, crashed = [], False
     for t in TESTS:
         r = subprocess.run([sys.executable, "-B", t], capture_output=True, text=True, cwd=d, timeout=300)
         out += ["%s: %s" % (t, l.strip()) for l in r.stdout.splitlines() if l.strip().startswith("FAIL")]
-    if pairs is not None:
-        r = subprocess.run([sys.executable, "-B", "test_refusal_pairs.py"] + pairs, capture_output=True,
-                           text=True, cwd=d, timeout=900)
-        out += ["test_refusal_pairs.py: %s" % l.strip() for l in (r.stdout + r.stderr).splitlines()
-                if l.strip().startswith(("FAIL", "Traceback"))]
-    return out
+        crashed = crashed or "Traceback" in r.stderr
+    r = subprocess.run([sys.executable, "-B", "test_refusal_pairs.py"] + pairs, capture_output=True,
+                       text=True, cwd=d, timeout=900)
+    out += ["test_refusal_pairs.py: %s" % l.strip() for l in r.stdout.splitlines() if l.strip().startswith("FAIL")]
+    crashed = crashed or "Traceback" in r.stdout + r.stderr
+    return out, crashed
 
 
 def main():
@@ -98,30 +104,35 @@ def main():
               "the real-image pairs are the only kill for 'the image rows never written'")
         return 2
     print("pairs: %s" % " ".join(pairs))
-    known = set()
-    if pairs is not None:
-        d = os.path.join(base, "m0")
-        shutil.rmtree(d, ignore_errors=True)
-        shutil.copytree(SRC, d, ignore=shutil.ignore_patterns("__pycache__", "_test_*_tmp", "reference"))
-        known = set(fails_in(d, pairs))
-        print("unmutated: %d FAIL line(s)" % len(known))
-        for k in sorted(known):
-            print("    " + k[:140])
-    for n, (fname, name, old, new) in enumerate(MUTANTS, 1):
-        src = open(os.path.join(SRC, fname), encoding="utf-8").read()
-        if src.count(old) != 1:
-            print("ERROR    m%d %s: edit matched %d times" % (n, name, src.count(old)))
-            errors += 1
-            continue
+    # the unmutated copy runs first as the control (2026-10-30): where the tests cannot pass,
+    # every mutant would read killed; and a crash is not a kill
+    for n, (fname, name, old, new) in enumerate([(None, "the control: the unmutated copy", None, None)] + MUTANTS):
         d = os.path.join(base, "m%d" % n)
         shutil.rmtree(d, ignore_errors=True)
         shutil.copytree(SRC, d, ignore=shutil.ignore_patterns("__pycache__", "_test_*_tmp", "reference"))
-        open(os.path.join(d, fname), "w", encoding="utf-8", newline="").write(src.replace(old, new))
-        fails = [f for f in fails_in(d, pairs) if f not in known]
-        killed += bool(fails)
-        print("%s m%d %s%s" % ("KILLED  " if fails else "SURVIVED", n, name, ("; " + fails[0][:100]) if fails else ""))
+        if old is not None:
+            src = open(os.path.join(SRC, fname), encoding="utf-8").read()
+            if src.count(old) != 1:
+                print("ERROR    m%d %s: edit matched %d times" % (n, name, src.count(old)))
+                errors += 1
+                continue
+            open(os.path.join(d, fname), "w", encoding="utf-8", newline="").write(src.replace(old, new))
+        fails, crashed = fails_in(d, pairs)
+        if old is None:
+            ok = not fails and not crashed
+            print("%s m0 %s  (%d FAIL%s%s)" % ("PASS    " if ok else "FAILED  ", name, len(fails),
+                                              ", CRASHED" if crashed else "", ("; " + fails[0][:100]) if fails else ""))
+            if not ok:
+                shutil.rmtree(base, ignore_errors=True)
+                print("\nthe control FAILS: no mutant is judged, so none is killed")
+                return 1
+            continue
+        dead = bool(fails) and not crashed
+        killed += dead
+        print("%s m%d %s%s%s" % ("KILLED  " if dead else "SURVIVED", n, name, ", CRASHED" if crashed else "",
+                                ("; " + fails[0][:100]) if fails else ""))
     shutil.rmtree(base, ignore_errors=True)
-    print("\n%d of %d killed by a check, %d errors" % (killed, len(MUTANTS), errors))
+    print("\n%d of %d killed by a check, %d errors; the control passes" % (killed, len(MUTANTS), errors))
     return 0 if killed == len(MUTANTS) and not errors else 1
 
 

@@ -7,6 +7,9 @@ edit that does not apply is an error.
 
 Each mutant is a copy of the two tools in the worktree's scratch/, one edit applied to
 one of them, run through DEVICE_READS_DIR. Gen-inhibit tester, 2026-10-25.
+
+The unmutated copy runs first, as the control (2026-10-30): if it fails, no mutant is
+judged and the run exits 1.
 """
 import os
 import shutil
@@ -46,8 +49,10 @@ def main():
     base = gi_paths.scratch("mutants-device_page_reads")
     srcs = {f: open(os.path.join(HERE, f), encoding="utf-8", newline="").read() for f in FILES}
     killed = errors = 0
-    for n, (name, target, old, new) in enumerate(MUTANTS, 1):
-        if srcs[target].count(old) != 1:
+    # the unmutated copy runs first as the control (2026-10-30): where the test cannot pass,
+    # every mutant would read killed
+    for n, (name, target, old, new) in enumerate([("the control: the unmutated copy", None, None, None)] + MUTANTS):
+        if old is not None and srcs[target].count(old) != 1:
             print("ERROR    m%d %s: edit matched %d times in %s" % (n, name, srcs[target].count(old), target))
             errors += 1
             continue
@@ -60,13 +65,23 @@ def main():
                            capture_output=True, text=True, timeout=300)
         fails = [l.strip() for l in r.stdout.splitlines() if l.startswith("FAIL ")]
         crashed = "Traceback" in r.stderr or "ran without raising" in r.stdout
+        if old is None:
+            ok = r.returncode == 0 and not fails and not crashed
+            print("%s m0 %s  (exit %d, %d FAIL%s%s)" % ("PASS    " if ok else "FAILED  ", name, r.returncode,
+                                                       len(fails), ", CRASHED" if crashed else "",
+                                                       ("; " + fails[0][:100]) if fails else ""))
+            if not ok:
+                shutil.rmtree(base, ignore_errors=True)
+                print("\nthe control FAILS: no mutant is judged, so none is killed")
+                return 1
+            continue
         dead = bool(fails) and not crashed
         killed += dead
         print("%s m%d %s  (exit %d, %d FAIL%s%s)" % (
             "KILLED  " if dead else "SURVIVED", n, name, r.returncode, len(fails),
             ", CRASHED" if crashed else "", ("; " + fails[0][:100]) if fails else ""))
     shutil.rmtree(base, ignore_errors=True)
-    print("\n%d of %d killed by a check, %d errors" % (killed, len(MUTANTS), errors))
+    print("\n%d of %d killed by a check, %d errors; the control passes" % (killed, len(MUTANTS), errors))
     return 0 if killed == len(MUTANTS) and not errors else 1
 
 
