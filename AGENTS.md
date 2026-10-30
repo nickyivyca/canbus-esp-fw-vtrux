@@ -49,6 +49,18 @@ tree.
 
 Nothing from reverse-it is committed here unless it passes the pre-push check.
 
+## can-tools: the CAN adapter package
+
+`canbench`, the package both projects use to detect and open real CAN
+adapters, comes from the can-tools repo, cloned once on each machine. Its
+path on this machine is in `$CAN_TOOLS_DIR` and in `local-paths.md`. Both
+projects resolve it the same way: no default, and refused if it is unset or
+holds no `canbench/`. They load `canbench` from `$CAN_TOOLS_DIR/canbench` and
+refuse one already imported from anywhere else, and they put neither the
+clone nor reverse-it on `sys.path` for it. reverse-it's `canbench/` mirror
+is never read. Setup, and the `.pth` file reverse-it's own scripts use, are
+in `$REVERSE_IT_DIR/tools-reference.md`, "can-tools" (user, 2026-10-30).
+
 ## Worktrees and branches
 
 Each machine has one clone, and a worktree per role beside it, in one plain
