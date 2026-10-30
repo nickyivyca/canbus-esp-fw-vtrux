@@ -2680,9 +2680,10 @@ static void case_skips_are_since_arming(void)
  * would be pinned to the number of clock reads in the mock rather than to anything
  * the firmware guarantees, it would break on any unrelated edit that adds a read,
  * and it would be believed while it did. THE PROPERTY IS TESTABLE ON THE BENCH, not
- * here: the Kvaser hardware-timestamps the probe on the wire, and
- * wican_timing_bench.py already saves its raw frames per arm so the device's figure
- * can be checked against a clock that is not the device's.
+ * here: the Kvaser hardware-timestamps the probe on the wire, so a capture of it
+ * checks the device's figure against a clock that is not the device's.
+ * (wican_timing_bench.py, which saved its raw frames per arm for that, was retired
+ * on 2026-10-25.)
  */
 static void case_respond_figure_matches_its_offset(void)
 {

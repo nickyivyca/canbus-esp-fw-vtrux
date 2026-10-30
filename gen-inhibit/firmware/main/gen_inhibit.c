@@ -90,7 +90,7 @@ _Static_assert(GEN_INHIBIT_PROBE_ID == GI_PROBE_ID, "id drift");
  * 2 is the first build in which a latched section 6 release clears
  * inhibit_live, which is visible on the wire as diag_flags byte3 0x27 -> 0x07.
  * A bench log that cannot tell rev 1 from rev 2 cannot tell whether it is
- * looking at the bug or the fix, and diag_git_hash alone puts that behind a
+ * looking at the bug or the fix, and the 0x7F3 hash alone puts that behind a
  * lookup.
  *
  * 3 is the first build with the spec 7.1 key-state rules: transmission gated
