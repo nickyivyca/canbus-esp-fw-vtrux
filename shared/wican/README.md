@@ -29,7 +29,7 @@ writing a file first does not make a project its owner.
 | `elm327.c`/`.h`, `autopid.c`/`.h`, `mqtt.c`/`.h` | three stock features, each with its switch (W7); ELM327's `ATSP` is refused while the bus is owned (W5) | the same |
 | `expression_parser.c`/`.h`, `std_pid.h`, `obd2_standard_pids.h` | AutoPID's parser and PID tables | the same |
 | `sleep_mode.c`/`.h` | the battery voltage sampler (the sleep state machine is removed) | the same |
-| `ota_health.c`/`.h` | the rollback gate: marks the image valid once Wi-Fi and the OTA endpoint are up; its fault hook for a rollback rehearsal is a test-only switch (W7) | the same |
+| `ota_health.c`/`.h` | the rollback gate: marks the image valid once Wi-Fi and the OTA endpoint are up; its fault hook for a rollback rehearsal is a test-only switch (W7), and `ota_health_fault_inject_suppress()`, its out-of-line function, is in the ELF only when the switch is on | the same |
 | `wifi_network.c`/`.h`, `wc_mdns.c`/`.h` | Wi-Fi, the hotspot (its address from the board's `board.h`), mDNS | the same |
 | `dev_status.c`/`.h`, `wc_timer.c`/`.h`, `wc_uart.c`/`.h` | device status bits, timers, the UART channel | the same |
 | `hw_config.c`/`.h` | stock's model numbers and the device id; includes the board's `board.h` | the same |

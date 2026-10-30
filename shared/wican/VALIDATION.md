@@ -25,6 +25,22 @@ readings of gen-inhibit's code below are of `gen-inhibit/main` at `0b03841`,
 - **Reading:** `ftp.c`, `gvret.c`, `realdash.c`, `led.c` and
   `homepage_full.html` are not in the build of `main/CMakeLists.txt`;
   RealDash's live code is its boot branch in `main.c`.
+- **`debug_logs`'s one changed line** (user, 2026-10-30, in the gen-inhibit
+  reviewer's session, from gen-inhibit's port step 1a2): a build with
+  AutoPID on, and MQTT and ELM327 with it, failed to link, with every
+  undefined reference from `autopid.c` to `debug_logs_get_level` and
+  `debug_logs_log` (the gen-inhibit tester's builds, at `c48e05b` and at
+  `abf755b`). The cause (the gen-inhibit implementor's reading of the
+  build's link line, 2026-10-30): `debug_logs` required `main`, `main`
+  takes `vtrux/wican` and `vtrux/debug_logs`, and `vtrux/wican` requires
+  `main` privately (W3), so the three are one cycle, which CMake lists
+  twice; `app_main` pulls `wican.c`, and so `autopid.c`, from the second
+  copy of `vtrux/wican`, after the last copy of `debug_logs`. In stock,
+  `autopid.c` was in `main`, so the order did not matter. `debug_logs.c`
+  includes nothing of `main`'s, its config header is its own, so the
+  requirement was unused and was dropped. The other option was a
+  link-order workaround in `vtrux/wican`'s `CMakeLists.txt`, leaving the
+  cycle.
 - **Status:** complete.
 
 ### W2. It starts as a move
@@ -98,6 +114,18 @@ readings of gen-inhibit's code below are of `gen-inhibit/main` at `0b03841`,
   The other option was gen-inhibit's top-level CMake file setting the
   define for every component; the component's source would still test the
   symbol, so its table would list it either way.
+- **The fault hook's symbol** (user, 2026-10-30, in the gen-inhibit
+  reviewer's session, from gen-inhibit's port step 1a2): at the release
+  log levels of `shared/tools` R28 (none), the switch left nothing in the
+  image or the ELF that a refusal row could judge. Its only string was
+  the `ESP_LOGW` format, compiled out at none, and the rest was a few
+  instructions inside `ota_health_report()`, which exists either way
+  (the gen-inhibit implementor's reading of `2026.10.29`, 2026-10-30).
+  R20's row judges the image and the ELF, never the flag, so the hook's
+  code became a function of its own, out of line, whose symbol is
+  present only with the switch on. The other option was to record the
+  component's row as not catching the switch at log level none, leaving
+  each project its own guard (gen-inhibit's `_flt` image name).
 - **Context, a known limit** (the gen-inhibit reviewer's reading,
   2026-10-29, raised by the gen-inhibit tester): under `shared/tools` R20
   the component's switches are classified in its own table, which applies
