@@ -782,13 +782,19 @@ def phase_images(args):
     return 0 if not fails else 1
 
 
-def esptool_mac(stdout):
-    """The MAC esptool printed, or None. Returns (mac, matches_expected)."""
-    m = RE_ESPTOOL_MAC.search(stdout or "")
+def esptool_unit(res):
+    """(seen, matches): whether esptool printed a MAC, and whether it is EXPECT_MAC; None
+    when it printed none. Value-blind (2026-10-30): the MAC is the unit's serial number,
+    so neither value is printed or recorded, and the MAC is cut out of the esptool output
+    kept in res (stdout, stderr) before anything saves it. Until then the otadata and
+    bootloader phases printed both MACs and recorded them in the run file."""
+    m = RE_ESPTOOL_MAC.search(res.get("stdout") or "")
+    for k in ("stdout", "stderr"):
+        if res.get(k):
+            res[k] = RE_ESPTOOL_MAC.sub("MAC: <redacted>", res[k])
     if not m:
-        return None, None
-    mac = m.group(1).lower()
-    return mac, mac == EXPECT_MAC
+        return False, None
+    return True, m.group(1).lower() == EXPECT_MAC
 
 
 def connected_bssid(run=subprocess.run):
@@ -904,22 +910,20 @@ def phase_otadata(args):
             log("  then: --phase otadata --otadata-file " + out_bin)
             save("otadata", {"esptool": res, "verdict": "NOT_RUN"})
             return 2
+    seen, mac_ok = esptool_unit(res)
     if not os.path.exists(out_bin):
         log("  FAIL: no otadata dump at %s" % out_bin)
         save("otadata", {"esptool": res, "verdict": "FAIL"})
         return 1
-    mac, mac_ok = esptool_mac(res.get("stdout"))
-    if mac is None:
+    if not seen:
         log("  esptool printed no MAC, so the unit is unconfirmed for this read")
     else:
-        log("  esptool MAC %s (expected %s): %s"
-            % (mac, EXPECT_MAC, "MATCH" if mac_ok else "MISMATCH"))
-    if mac is not None and not mac_ok:
+        log("  esptool MAC: %s the expected unit's" % ("MATCHES" if mac_ok else "DOES NOT MATCH"))
+    if seen and not mac_ok:
         # Hard stop: a wrong --port most likely means COM3, which is another
         # session's interposer, and closing its port resets it mid-run.
         log("  FAIL: this is not the expected unit. Check --port.")
-        save("otadata", {"esptool": res, "esptool_mac": mac,
-                         "mac_matches": False, "verdict": "FAIL"})
+        save("otadata", {"esptool": res, "mac_matches": False, "verdict": "FAIL"})
         return 1
     parsed = parse_otadata(open(out_bin, "rb").read())
     for s in parsed["sectors"]:
@@ -928,8 +932,7 @@ def phase_otadata(args):
                s.get("ota_state_name"), s.get("crc_ok")))
     log("  boot: %s" % parsed["boot"])
     save("otadata", {"esptool": res, "dump": out_bin, "parsed": parsed,
-                     "esptool_mac": mac, "mac_matches": mac_ok,
-                     "expected_mac": EXPECT_MAC, "verdict": "RECORDED"})
+                     "mac_matches": mac_ok, "verdict": "RECORDED"})
     return 0
 
 
@@ -1291,20 +1294,16 @@ def phase_bootloader(args):
                                 "verdict": "NOT_RUN"})
             return 2
 
-    mac, mac_ok = esptool_mac(res.get("stdout"))
-    if mac is not None:
-        log("  esptool MAC %s (expected %s): %s"
-            % (mac, EXPECT_MAC, "MATCH" if mac_ok else "MISMATCH"))
+    seen, mac_ok = esptool_unit(res)
+    if seen:
+        log("  esptool MAC: %s the expected unit's" % ("MATCHES" if mac_ok else "DOES NOT MATCH"))
         if not mac_ok:
             log("  FAIL: this is not the expected unit. Check --port.")
-            save("bootloader", {"esptool": res, "esptool_mac": mac,
-                                "mac_matches": False, "verdict": "FAIL"})
+            save("bootloader", {"esptool": res, "mac_matches": False, "verdict": "FAIL"})
             return 1
 
     rows = []
-    rec = {"esptool": res, "dump": out_bin, "built": built,
-           "esptool_mac": mac, "mac_matches": mac_ok,
-           "expected_mac": EXPECT_MAC}
+    rec = {"esptool": res, "dump": out_bin, "built": built, "mac_matches": mac_ok}
     if os.path.exists(out_bin):
         # the unit's bootloader, whatever it is (port step 1a2): its sha256 and level
         dev = bootloader_facts(open(out_bin, "rb").read())

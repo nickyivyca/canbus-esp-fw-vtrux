@@ -55,6 +55,10 @@ MUTANTS = [
     ("no checksum alignment", "    off += 15 - off % 16 + 1\n", "    off += 1\n"),
     ("phase_bootloader records no device bootloader", '        rec["device_bootloader"] = dev\n',
      "        pass\n"),
+    ("the esptool output keeps the MAC", '            res[k] = RE_ESPTOOL_MAC.sub("MAC: <redacted>", res[k])\n',
+     "            pass\n"),
+    ("any MAC esptool prints is the unit's", "    return True, m.group(1).lower() == EXPECT_MAC\n",
+     "    return True, True\n"),
 ]
 
 

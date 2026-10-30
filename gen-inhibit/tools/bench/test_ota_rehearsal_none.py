@@ -25,6 +25,9 @@ Made-up identities and images only, in this worktree's scratch/:
   bootloader      bootloader_facts on fake images: the length (segments, the checksum at
                   the 16-byte boundary, the appended hash), the sha256 of the image only,
                   the level from the markers; phase_bootloader records them
+  esptool MAC     the otadata and bootloader phases compare esptool's MAC value-blind: a
+                  fake esptool printing a made-up MAC; neither MAC printed or in the run
+                  file, the match recorded, another unit fails (2026-10-30)
 
     py -3.14 -B gen-inhibit/tools/bench/test_ota_rehearsal_none.py
 Mutants: test_ota_rehearsal_none_mutants.py (REHEARSAL_DIR runs another copy).
@@ -351,6 +354,40 @@ def bootloader_cases(R):
         R.RUNS, R.log = real
 
 
+def mac_cases(R):
+    """The otadata and bootloader phases compare esptool's MAC with the expected unit's
+    value-blind: neither MAC printed or in the run file (the esptool output kept there has
+    it cut out); a match goes on, another unit fails. A fake esptool, a made-up MAC."""
+    other_mac = "00:00:5e:00:53:99"
+    img = fake_bootloader(b"E (%lu) boot: No bootable app partitions in the partition table\x00")
+    real = (R.RUNS, R.log, R.subprocess)
+    runs = os.path.join(SCRATCH, "runs_mac")
+    for phase, blob in (("bootloader", img + b"\xff" * (0x8000 - len(img))), ("otadata", b"\xff" * 0x2000)):
+        for label, mac, want_rc in (("the expected unit", BASE_MAC, 0), ("another unit", other_mac, 1)):
+            shutil.rmtree(runs, ignore_errors=True)
+            os.makedirs(runs)
+            logged = []
+
+            def run(cmd, **kw):
+                open(cmd[-1], "wb").write(blob)
+                return types.SimpleNamespace(returncode=0, stderr="",
+                                             stdout="esptool.py v4.8\nChip is ESP32-C3\nMAC: %s\nRead done\n" % mac)
+            try:
+                R.RUNS, R.log = runs, logged.append
+                R.subprocess = types.SimpleNamespace(run=run, SubprocessError=Exception)
+                args = types.SimpleNamespace(fw=os.path.join(SCRATCH, "fw"), bootloader_file=None, otadata_file=None)
+                rc = R.phase_bootloader(args) if phase == "bootloader" else R.phase_otadata(args)
+            finally:
+                R.RUNS, R.log, R.subprocess = real
+            recs = sorted(f for f in os.listdir(runs) if f.startswith("rollback_%s_2" % phase))
+            rec = open(os.path.join(runs, recs[-1]), encoding="utf-8").read() if recs else ""
+            seen = [m for m in (BASE_MAC, other_mac, BASE_MAC.replace(":", "")) if m in rec + "\n".join(logged)]
+            check("%s phase, %s: exit %d" % (phase, label, want_rc), rc == want_rc, rc)
+            check("%s phase, %s: no MAC printed or in the run file" % (phase, label), recs and not seen, seen or recs)
+            check("%s phase, %s: the run file says whether it matched" % (phase, label),
+                  ('"mac_matches": %s' % ("true" if want_rc == 0 else "false")) in rec, rec[:200])
+
+
 def main():
     shutil.rmtree(SCRATCH, ignore_errors=True)
     try:
@@ -359,7 +396,7 @@ def main():
         check("the module loads", False, "%s: %s" % (type(e).__name__, e))
         print("\nFAIL, %d FAIL" % len(FAILS))
         return 1
-    for part in (boot_cases, control_cases, fault_cases, wiring_cases, bootloader_cases):
+    for part in (boot_cases, control_cases, fault_cases, wiring_cases, bootloader_cases, mac_cases):
         try:
             part(R)
         except Exception as e:      # noqa: BLE001  a crash is this part's FAIL
