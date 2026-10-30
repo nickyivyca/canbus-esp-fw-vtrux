@@ -3,7 +3,7 @@
 **Status:** approved by the user on 2026-10-29, in the gen-inhibit
 reviewer's session, and drafted that day by the gen-inhibit reviewer for
 gen-inhibit's port step 1a; W7 amended 2026-10-29, for the rollback
-rehearsal's fault hook. As
+rehearsal's fault hook, and 2026-10-30, for its symbol. As
 a shared component's spec this follows port plan goal 20: the reviewer whose
 project needs a change drafts it, the user rules in that reviewer's session,
 and the other project's reviewer reads it before it merges into
@@ -86,7 +86,10 @@ Requirements are numbered W1 to W11. The numbers are stable.
   out of the component and its call sites out of the build. A project sets
   them in its top-level `CMakeLists.txt`. `OTA_HEALTH_FAULT_INJECT`, the
   fault hook in `ota_health.c` that a rollback rehearsal builds with, is a
-  CMake option of the component too: off by default, and test-only.
+  CMake option of the component too: off by default, and test-only. The
+  fault hook's code is a function of its own, kept out of line, so an
+  image built with the switch on carries its symbol at any log level, and
+  the component's refusal row judges that symbol (`shared/tools` R20).
 - **W8. Project URIs.** A project may register one URI hook and the number
   of handler slots it needs. The server's handler table is stock's 21 plus
   that number. The hook is called where gen-inhibit's endpoints are
