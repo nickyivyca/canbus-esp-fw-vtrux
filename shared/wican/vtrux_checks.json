@@ -26,7 +26,7 @@
     },
     "WICAN_FEATURE_AUTOPID": {
       "class": "stock feature off in this product",
-      "reason": "W7: AutoPID (autopid.c), which drives ELM327 and publishes over MQTT and cannot be built without both",
+      "reason": "W7: AutoPID (autopid.c), which drives ELM327 and publishes over MQTT and cannot be built without both. All three bin strings survive at release log levels (shared/tools R28), so none was dropped",
       "refusal": [
         {"bin_strings_absent": ["autopid_task", "/autopid_data", "Autopid Task Started"]},
         {"elf_symbols_absent": ["autopid_init", "autopid_parser", "autopid_data_handler", "autopid_find_standard_pid"]}
@@ -41,9 +41,9 @@
     },
     "OTA_HEALTH_FAULT_INJECT": {
       "class": "test-only",
-      "reason": "W7: the rollback-rehearsal build; ota_health.c suppresses a health report, so the image fails its gate and rolls back after every boot",
+      "reason": "W7: the rollback-rehearsal build; ota_health.c suppresses a health report, so the image fails its gate and rolls back after every boot. The marker is the hook's own function, ota_health_fault_inject_suppress(), kept out of line so its name is in the ELF (W7); its log string did not survive at release log levels (shared/tools R28) and was dropped",
       "refusal": [
-        {"bin_strings_absent": ["FAULT INJECT: suppressing report of"]}
+        {"elf_symbols_absent": ["ota_health_fault_inject_suppress"]}
       ]
     },
     "OTA_HEALTH_TIMEOUT_MS": {
