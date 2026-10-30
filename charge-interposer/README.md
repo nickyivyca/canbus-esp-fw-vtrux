@@ -7,8 +7,7 @@ of the powertrain bus. The simulation bench is described in `SIMULATOR.md`.
 
 This file is the project's file map: who owns each file. It belongs to the
 charge-interposer reviewer, who decides ownership when it is unclear and
-records it here (the repo's `AGENTS.md`, "Who owns what", once it is on this
-branch; until then reverse-it's `firmware/esp-development.md`). Paths starting
+records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 `$REVERSE_IT_DIR` are in reverse-it and not yet moved.
 
 ## Spec and paperwork, in reverse-it
