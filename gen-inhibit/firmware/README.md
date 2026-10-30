@@ -39,7 +39,23 @@ name. `main/Kconfig.projbuild` is upstream's and unused; it stays so
 
 **`dependencies.lock` is committed as LF.** On Windows the Component Manager
 writes it with CRLF line endings whenever a reconfigure updates it, so
-convert it to LF before committing it (AGENTS.md "Files and folders").
+convert it to LF before committing it (AGENTS.md "Files and folders"). A
+reconfigure that changes `sdkconfig` writes it as CRLF too.
+
+**Log levels** (spec 12.3 item 3, shared/tools R28; port step 1a2). The
+committed `sdkconfig` has the release levels: ESP-IDF default and maximum
+none, bootloader error. Release and bench builds take it as it is, so a
+bench `_man` or `_auto` image prints only the ROM's reset banner and panic
+output. Test-only builds keep info: with any test-only switch on, the
+top-level `CMakeLists.txt` builds from an sdkconfig of its own in the build
+directory, layered from `sdkconfig` and then `sdkconfig.log_info`, and made
+afresh at every configure. A dev build that wants info layers the same files
+on the command line, from this folder:
+
+    idf.py -B build-dev -DSDKCONFIG=build-dev/sdkconfig "-DSDKCONFIG_DEFAULTS=sdkconfig;sdkconfig.log_info" build
+
+Its `build-dev/sdkconfig` is made once; delete it to take a later change to
+the committed `sdkconfig`.
 
 **To move a git dependency to another tag, delete `dependencies.lock` and its
 `managed_components/` folders first.** With the lock in place, a changed
@@ -57,6 +73,8 @@ Not from upstream:
   stock code, `vtrux/wican` and `vtrux/debug_logs`).
 - `vtrux_checks.json`: the project's data for the shared build checks, the
   tester's.
+- `sdkconfig.log_info`: info-level logging, layered over `sdkconfig` for
+  test-only and dev builds (above).
 
 `tools/wican-log-viewer/` is upstream's Rust log viewer, not part of the
 generator inhibitor and not maintained here. `docs/`, `sch/`,
