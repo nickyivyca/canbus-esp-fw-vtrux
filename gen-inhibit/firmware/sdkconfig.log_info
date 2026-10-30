@@ -1,0 +1,11 @@
+# Info-level logging, layered over the committed sdkconfig for test-only and
+# dev builds (spec 12.3 item 3; port step 1a2). The committed sdkconfig has
+# the release levels of shared/tools R28: ESP-IDF default and maximum none,
+# bootloader error. A test-only build keeps info, so the rollback rehearsal
+# reads its log lines: CMakeLists.txt layers this file for every test-only
+# switch. A dev build layers it on the command line (README.md). Log levels
+# only: anything else here would make a test build differ from the image it
+# stands in for.
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_MAXIMUM_EQUALS_DEFAULT=y
+CONFIG_BOOTLOADER_LOG_LEVEL_INFO=y
