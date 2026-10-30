@@ -274,6 +274,37 @@ def vcm_commands_on_wire(mode, cmd_on_wire, tx_ok):
     return cmd_on_wire - ((tx_ok or 0) if mode == MODE_INHIBIT else 0)
 
 
+def attribution_check(mode, ours_on_wire, tx_ok, counted_as):
+    """The witness's count of our frames against the device's tx_ok: (line, void reason
+    or None).
+
+    In INHIBIT `ours` comes from the old trail-window classifier, which provenance
+    replaced as the live classifier on 2026-10-10 (reviewer, tracker row "E4 answer
+    classifier", its figures kept, superseded, "for one cycle"). Since 2026-10-29
+    (gen-inhibit reviewer, from step 1a's acceptance, where it voided 2 of 6 B22 arms
+    on 8982 against 8983 while provenance found 8983 of 8983) its count is printed,
+    labelled, and voids nothing: the provenance check decides. In RESPOND the count is
+    of the 0x7F0 probes, by id, not the trail classifier, and a disagreement still voids
+    the arm."""
+    if ours_on_wire == tx_ok:
+        return ("  wire agrees with the device: %d transmitted, %d seen (%s)"
+                % (tx_ok, ours_on_wire, counted_as)), None
+    if mode != MODE_RESPOND:
+        return ("  superseded trail-window count (voids nothing; provenance decides): the "
+                "device reports tx_ok=%d, the old classifier attributes %d %s frames to us"
+                % (tx_ok, ours_on_wire, counted_as)), None
+    #
+    # The two instruments disagreeing means the attribution is unsound, and every
+    # criterion below is computed from that attribution. Reporting them anyway is
+    # reporting the classifier's opinion as the device's behaviour.
+    #
+    return ("  MISMATCH: the device reports tx_ok=%d but the witness attributes %d %s "
+            "frames to us. One of the two is wrong -- the filter, or a frame that never "
+            "reached the wire." % (tx_ok, ours_on_wire, counted_as),
+            "attribution disagrees with the device: tx_ok=%d, witness attributes %d"
+            % (tx_ok, ours_on_wire))
+
+
 def bus_utilisation(frames, bitrate=BITRATE):
     """Carried load on the wire, as a LOWER BOUND, from the witness's own frames.
 
@@ -1220,23 +1251,10 @@ def run_arm(name, frames, hammer_on, out, mode=3, flood=False,
         arm["wire_vs_device"] = {"ours_on_wire": len(ours_counted),
                                  "device_tx_ok": tx_ok,
                                  "counted_as": counted_as}
-        if len(ours_counted) == tx_ok:
-            print("  wire agrees with the device: %d transmitted, %d seen (%s)"
-                  % (tx_ok, len(ours_counted), counted_as))
-        else:
-            print("  MISMATCH: the device reports tx_ok=%d but the witness "
-                  "attributes %d %s frames to us. One of the two is wrong -- "
-                  "the classifier, or a frame that never reached the wire."
-                  % (tx_ok, len(ours_counted), counted_as))
-            #
-            # The two instruments disagreeing means the attribution is unsound, and
-            # every criterion below is computed from that attribution. Reporting
-            # them anyway is reporting the classifier's opinion as the device's
-            # behaviour.
-            #
-            void_reasons.append(
-                "attribution disagrees with the device: tx_ok=%d, witness "
-                "attributes %d" % (tx_ok, len(ours_counted)))
+        line, reason = attribution_check(mode, len(ours_counted), tx_ok, counted_as)
+        print(line)
+        if reason:
+            void_reasons.append(reason)
         #
         # DID THE STIMULUS ACTUALLY REACH THE WIRE? `refused` counts send()
         # exceptions, and on 2026-09-29 a re-paced arm reported refused 0 while 384
@@ -1624,9 +1642,11 @@ def attach_provenance(path, out):
     """The live classifier since 2026-10-10 (reviewer): provenance_classifier.py, by the
     replay's queue order, judged from this run's own file and witness log. The trail-
     window classifier's figures above it (late_at_wire, double_answers,
-    misattributed_vcm, trail_window_us) stay in the record for one cycle, marked
-    superseded: its window came from the device's max_hold_us, which is stamped when
-    the worker credits a frame, not when it is on the wire."""
+    misattributed_vcm, trail_window_us, and wire_vs_device's ours_on_wire in INHIBIT)
+    stay in the record, marked superseded: its window came from the device's
+    max_hold_us, which is stamped when the worker credits a frame, not when it is on the
+    wire. Since 2026-10-29 (gen-inhibit reviewer) they void no arm and decide no
+    verdict; see attribution_check()."""
     import provenance_classifier as P
     for name, arm in out["arms"].items():
         try:
@@ -1636,7 +1656,8 @@ def attach_provenance(path, out):
             arm["provenance"] = {"verdict": "NOT RUN", "error": "%s: %s" % (type(e).__name__, e)}
         arm["superseded_classifier"] = ("late_at_wire, double_answers, misattributed_vcm and "
                                         "trail_window_us are the old trail-window classifier, "
-                                        "kept for one cycle; the verdict is arm['provenance']")
+                                        "printed and labelled; since 2026-10-29 they void no "
+                                        "arm, and the verdict is arm['provenance']")
         p = arm["provenance"]
         print("  [%s] provenance (live): %s -- replayed %s/%s found, device 0x051 %s (device "
               "says %s), late %s, double %s, ambiguous %s%s"

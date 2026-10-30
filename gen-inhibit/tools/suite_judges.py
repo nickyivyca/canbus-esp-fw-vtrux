@@ -649,25 +649,29 @@ def b22(F):
         t = text(F.one(r"B22_case3_%s_man_%s\.txt" % (C7, arm)))
         p = e4_prov(t)
         r = e4_response(t)
-        w = re.search(r"wire agrees with the device: (\d+) transmitted, (\d+) seen \(zero-torque 0x051\)", t)
         d = re.search(r"device: tx_ok=(\d+) tx_fail=(\d+) ctr_ok=\d+ ctr_bad=(\d+) tx_queued_behind=(\d+)", t)
         e = re.search(r"witness saw \d+ frames \([\d.]+/s\), (\d+) error frames", t)
         ld = re.search(r"carried load >= ([\d.]+)%", t)
+        # The old trail-window classifier's count of our zero-torque frames voids nothing and
+        # decides nothing since 2026-10-29 (gen-inhibit reviewer): provenance decides. A record
+        # whose only void reason is that count (written before) is judged as an unvoided arm.
+        reasons = [x for x in re.findall(r"^       - (.+)$", t, re.M)
+                   if not x.startswith("attribution disagrees with the device:")]
         # An arm the tool voids ("ARM VOID": its figures do not support a verdict) judges
         # nothing, so it makes B22 INCONCLUSIVE, not FAIL (step 1a's acceptance, 2026-10-29),
         # unless what it does show fails: provenance, tx_fail, ctr_bad, queued, error frames.
-        if "---- ARM VOID:" in t:
+        if "---- ARM VOID:" in t and reasons:
             if not (p and d and e) or not prov_ok(p) or any(int(d.group(i)) for i in (2, 3, 4)) or int(e.group(1)):
                 bad.append(arm + " (void) not as before")
             else:
-                void.append(arm + ": void (" + "; ".join(re.findall(r"^       - (.+)$", t, re.M)) + ")")
+                void.append(arm + ": void (" + "; ".join(reasons) + ")")
             continue
-        if not (p and r and w and d and e and ld):
+        if not (p and r and d and e and ld):
             bad.append(arm + ": a line is missing")
             continue
-        if not prov_ok(p) or w.group(1) != w.group(2) or int(d.group(2)) or int(d.group(3)) or int(d.group(4)) or int(e.group(1)):
+        if not prov_ok(p) or int(d.group(2)) or int(d.group(3)) or int(d.group(4)) or int(e.group(1)):
             bad.append(arm + " not as before")
-        figs.update({"ours_%s" % arm: fig(int(w.group(1))), "response_us_max_%s" % arm: fig(r[3], "us"),
+        figs.update({"ours_%s" % arm: fig(p["dev"]), "response_us_max_%s" % arm: fig(r[3], "us"),
                      "response_us_mean_%s" % arm: fig(r[2], "us"), "tx_fail_%s" % arm: fig(int(d.group(2))),
                      "ctr_bad_%s" % arm: fig(int(d.group(3))), "error_frames_%s" % arm: fig(int(e.group(1))),
                      "load_pct_lower_%s" % arm: fig(float(ld.group(1)), "%")})
