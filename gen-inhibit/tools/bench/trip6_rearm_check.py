@@ -255,9 +255,10 @@ def main():
     def flood(name):
         arm = poll_arm(name, 4.0)
         n_err = len(wit.errors)
-        tb = W.burst(a.burst_ms)
+        tb, opened = W.burst(a.burst_ms)      # from the Kvaser's open since 2026-10-29 (recorded only)
         time.sleep(1.0)
         arm["burst_at"] = round(tb - t0, 3)
+        arm["burst_open_s"] = round(opened, 4)
         burst = wit.error_detail[n_err:]
         wire = wire_errors(burst)
         arm["burst_reports"] = len(burst)
