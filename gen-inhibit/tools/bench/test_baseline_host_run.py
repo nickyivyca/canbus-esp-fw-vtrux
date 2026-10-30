@@ -31,8 +31,21 @@ move (c6c7fe4) is refused. The remote script takes the WiCAN sources from firmwa
 where the copy has it, else main/. Needs a gen-inhibit worktree (FW, default this project
 folder, gi_paths.project_root()) for `git archive`.
 
+canre and the stock headers (2026-10-29, found on the step 1a acceptance's first emulated
+run, where every replay regen, the long-arm fixture and the shims failed on them): a commit
+with tools/bench/canre_pin.py ships it, and the remote script runs a canre_install step
+before replays_regen; a commit with the shim's wican_ref.py (port step 1a on,
+GI_TEST_DECODE_COMMIT) ships shared/wican at the tag its idf_component.yml pins, byte for
+byte, at shared-wican/, and the remote script exports WICANDIR to it. A project-layout
+commit before 1a (GI_TEST_PRE1A_COMMIT, default 0b03841) has canre_pin.py and ships no
+headers; the root-layout commit has neither.
+
     py -3.14 -B gen-inhibit/tools/bench/test_baseline_host_run.py
     py -3.14 -B gen-inhibit/tools/bench/test_baseline_host_run.py --mutants
+
+--mutants runs the unmutated copy first, as the control (2026-10-29): if it fails, no
+mutant is judged and the run exits 1. Run it from Git Bash: the checks need Git's bash
+first on PATH, and under a PATH whose bash is WSL's every check fails.
 
 Run from the reverse-it root. Gen-inhibit tester.
 """
@@ -52,6 +65,7 @@ COMMIT = os.environ.get("GI_TEST_COMMIT", "2a1a0f1")
 DECODE_COMMIT = os.environ.get("GI_TEST_DECODE_COMMIT", "HEAD")    # the project layout, with gi_diag.py
 ROOT_COMMIT = os.environ.get("GI_TEST_ROOT_COMMIT", "e7263bb")      # the root layout, with gi_diag.py
 PART_COMMIT = "c6c7fe4"                                             # only the tester's half of the move
+PRE1A_COMMIT = os.environ.get("GI_TEST_PRE1A_COMMIT", "0b03841")    # the project layout, canre pinned, before 1a
 RROOT = "fake-rit-root"
 SPACED = "fake rit/My Libraries"            # spaces, as NICKY-XPS's own root has (relative, made in the tree)
 TILDE = "~/fake-rit"                        # as the settings' gi_host_root is written
@@ -142,6 +156,36 @@ def cfg_step(s, tree):
     return r.stdout + r.stderr, len(keep)
 
 
+def guarded(s, word, tree, home=None, extra=()):
+    """The remote script's one-line `if [ ... ]; then ...; fi` lines naming `word`, run in
+    `tree` with `step` printing its name (HOME set to `home` when given)."""
+    keep = [ln for ln in s.splitlines() if ln.startswith("if [ ") and word in ln]
+    body = "\n".join(["step() { printf 'STEP %s\\n' \"$1\"; }"] + keep + list(extra))
+    e = dict(os.environ)
+    e["MSYS_NO_PATHCONV"] = "1"
+    if home is not None:
+        e["HOME"] = fw(home)
+    r = subprocess.run([BASH, "-c", body], cwd=tree, capture_output=True, text=True, env=e, timeout=60)
+    return r.stdout + r.stderr, len(keep)
+
+
+def git_show(ref):
+    r = subprocess.run(["git", "-C", FW, "show", ref], capture_output=True)
+    return r.stdout if r.returncode == 0 else None
+
+
+def tar_member(tmp, tag, name):
+    import tarfile
+    p = os.path.join(tmp, "archive_%s.tar" % tag)
+    if not os.path.exists(p) or not os.path.getsize(p):
+        return None
+    with tarfile.open(p) as t:
+        for m in t.getmembers():
+            if m.name in (name, "./" + name):
+                return t.extractfile(m).read()
+    return None
+
+
 def fake_root(base, rel):
     """A reverse-it root at base/rel holding the long-arm capture."""
     p = os.path.join(base, *rel.split("/"), *CAPTURE_REL.split("/"))
@@ -182,6 +226,51 @@ def checks(script_dir):
               "firmware/main/gen_inhibit_core.c" in names and "test/gen_inhibit_host/Makefile" in names
               and "test/gen_inhibit_shim/Makefile" in names and not any(n.startswith("main/") for n in names),
               sorted(set("/".join(n.split("/")[:2]) for n in names)))
+        # canre at the pinned commit, and vtrux/wican's headers (2026-10-29)
+        check("a project-layout commit: the copy holds tools/bench/canre_pin.py",
+              "tools/bench/canre_pin.py" in names, [n for n in names if n.startswith("tools/")])
+        check("the canre_install step comes before replays_regen and the long-arm fixture",
+              0 <= s4.find("step canre_install") < s4.find("step replays_regen") < s4.find("step longarm_fixture"),
+              (s4.find("step canre_install"), s4.find("step replays_regen")))
+        empty = os.path.join(tmp, "guard_tree")
+        os.makedirs(os.path.join(empty, "shared-wican"))
+        open(os.path.join(empty, "shared-wican", "can.h"), "w").close()
+        out_c, nc = guarded(s4, "canre_install", empty)
+        check("a commit with canre_pin.py: the canre_install step runs, from the copy's tools/bench/",
+              nc == 1 and out_c.strip() == "STEP canre_install"
+              and "$PY -B tools/bench/canre_pin.py install" in s4.replace("PYTHON", "$PY"), (nc, out_c, s4[-200:]))
+        sys.path.insert(0, os.path.join(FW, "test", "gen_inhibit_shim"))
+        import wican_ref
+        man = git_show("%s:gen-inhibit/firmware/main/idf_component.yml" % DECODE_COMMIT)
+        wtag = wican_ref.pinned_tag(man.decode()) if man else None
+        for h in ("can.h", "comm_server.h"):
+            want_h = git_show("%s:shared/wican/%s" % (wtag, h)) if wtag else None
+            got_h = tar_member(tmp, "decode", "shared-wican/" + h)
+            check("a commit from 1a on: the copy holds shared/wican's %s at the pinned tag (%s), byte for byte" % (h, wtag),
+                  want_h is not None and got_h == want_h, (wtag, got_h is None))
+        home = os.path.join(tmp, "wican home")
+        out_w, nw = guarded(s4, "WICANDIR", empty, home, ['echo "WICANDIR IS $WICANDIR"'])
+        seen_w = [ln[len("WICANDIR IS "):] for ln in out_w.splitlines() if ln.startswith("WICANDIR IS ")]
+        check("a commit from 1a on: WICANDIR is exported as $HOME/<copy>/shared-wican",
+              nw == 1 and seen_w and seen_w[0].endswith("/gi_baseline_%s/shared-wican" % DECODE_COMMIT)
+              and os.path.basename(home) in seen_w[0], (nw, out_w))
+        check("... before the first step", 0 <= s4.find("export WICANDIR") < s4.find("\nstep make "),
+              (s4.find("export WICANDIR"), s4.find("\nstep make ")))
+        rc7, s7, out7 = remote_script(script_dir, tmp, tag="pre1a", commit=PRE1A_COMMIT)
+        names7 = archive_names(tmp, "pre1a")
+        out7w, _ = guarded(s7, "WICANDIR", empty, home, ['echo "WICANDIR IS [$WICANDIR]"'])
+        out7c, _ = guarded(s7, "canre_install", empty)
+        check("a project-layout commit before 1a (%s): runs to the end, ships canre_pin.py and no headers" % PRE1A_COMMIT,
+              rc7 == 0 and s7 and "tools/bench/canre_pin.py" in names7
+              and not any(n.startswith("shared-wican") for n in names7), (rc7, out7[-300:]))
+        check("... the canre_install step runs, and WICANDIR is not set",
+              out7c.strip() == "STEP canre_install" and "WICANDIR IS []" in out7w, (out7c, out7w))
+        names5 = archive_names(tmp, "rootdecode")
+        out5w, _ = guarded(s5, "WICANDIR", empty, home, ['echo "WICANDIR IS [$WICANDIR]"'])
+        out5c, _ = guarded(s5, "canre_install", empty)
+        check("a root-layout commit: no canre_pin.py and no headers shipped, no canre_install step, no WICANDIR",
+              not any(n.endswith("canre_pin.py") or n.startswith("shared-wican") for n in names5)
+              and out5c.strip() == "" and "WICANDIR IS []" in out5w, (out5c, out5w))
         rc6, s6, out6 = remote_script(script_dir, tmp, tag="part", commit=PART_COMMIT)
         check("a commit with only part of the move (%s) is refused, before anything is sent" % PART_COMMIT,
               rc6 == 2 and not s6 and not archive_names(tmp, "part") and "neither layout" in out6, (rc6, out6[-300:]))
@@ -308,6 +397,19 @@ MUTANTS = [
     ("the build-id step not guarded", "if [ -e test_cfg_build_id.py ]; then step test_cfg_build_id $PY test_cfg_build_id.py; fi",
      "step test_cfg_build_id $PY test_cfg_build_id.py"),
     ("the build-id step dropped", "if [ -e test_cfg_build_id.py ]; then step test_cfg_build_id $PY test_cfg_build_id.py; fi\n", ""),
+    # canre and the stock headers (2026-10-29)
+    ("canre_pin.py not shipped",
+     '  git -C "$TOP" show "$C:$BENCH/canre_pin.py" > "$STAGE/$BENCH_AT/canre_pin.py" || exit 2\n', ""),
+    ("the canre_install step dropped",
+     "if [ $CANRE = 1 ]; then step canre_install $PY -B $BENCH_AT/canre_pin.py install; fi\n", ""),
+    ("the canre_install step for every commit", "if [ $CANRE = 1 ]; then step canre_install",
+     "if [ 1 = 1 ]; then step canre_install"),
+    ("the headers shipped for every commit", 'if [ -e "$STAGE/test/gen_inhibit_shim/wican_ref.py" ]; then', "if true; then"),
+    ("the headers from another folder", 'git -C "$TOP" archive "$WTAG:shared/wican" |',
+     'git -C "$TOP" archive "$WTAG:shared/debug_logs" |'),
+    ("WICANDIR not exported", 'export WICANDIR="\\$HOME/$DEST/shared-wican"; ', ""),
+    ("WICANDIR names the copy's root", 'export WICANDIR="\\$HOME/$DEST/shared-wican";',
+     'export WICANDIR="\\$HOME/$DEST";'),
     ("a leading ~/ is quoted as a literal ~", '''  "~/"*) RQ='"$HOME"/'$(printf %q "${RROOT#"~/"}") ;;\n''', ""),
 ]
 
@@ -317,14 +419,18 @@ def main():
         checks(HERE)
         print("%d FAIL" % len(FAILS) if FAILS else "all ok")
         return 1 if FAILS else 0
-    killed = 0
-    for i, (name, old, new) in enumerate(MUTANTS, 1):
+    # the unmutated copy runs first as the control: where the checks cannot pass (on 2026-10-29
+    # a PATH whose bash was WSL's failed all 40), every mutant would read killed
+    killed, control_ok = 0, False
+    for i, (name, old, new) in enumerate([("the control: the unmutated copy", None, None)] + MUTANTS):
         with tempfile.TemporaryDirectory(prefix="gi-host-run-m%d-" % i, dir=gi_paths.scratch("tmp", run=False)) as tmp:
             src = open(os.path.join(HERE, SCRIPT), encoding="utf-8", newline="").read()
-            if src.count(old) != 1:
+            if old is not None and src.count(old) != 1:
                 print("ERROR    m%d %s: the substitution matches %d times" % (i, name, src.count(old)))
                 continue
-            if name == "the exports come after the steps":
+            if old is None:
+                new_src = src
+            elif name == "the exports come after the steps":
                 new_src = src.replace(old, new).replace("step make make -s\n", "step make make -s\n" + old)
             else:
                 new_src = src.replace(old, new)
@@ -334,12 +440,22 @@ def main():
                                capture_output=True, text=True, timeout=600)
             fails = [ln for ln in r.stdout.splitlines() if ln.startswith("FAIL")]
             crashed = r.returncode not in (0, 1) or "Traceback" in r.stderr
+            if old is None:
+                control_ok = r.returncode == 0 and not fails and not crashed
+                print("%s m0 %s  (rc %d, %d FAIL%s)" % ("PASS    " if control_ok else "FAILED  ", name, r.returncode,
+                                                       len(fails), ("; " + fails[0][6:90]) if fails else ""))
+                if not control_ok:
+                    break
+                continue
             if fails and not crashed:
                 killed += 1
                 print("KILLED   m%d %s  (%d FAIL; %s)" % (i, name, len(fails), fails[0][6:90]))
             else:
                 print("%s m%d %s  (rc %d)" % ("CRASHED " if crashed else "SURVIVED", i, name, r.returncode))
-    print("%d of %d killed by a check" % (killed, len(MUTANTS)))
+    if not control_ok:
+        print("the control FAILS: no mutant is judged, so none is killed")
+        return 1
+    print("%d of %d killed by a check; the control passes" % (killed, len(MUTANTS)))
     return 0 if killed == len(MUTANTS) else 1
 
 

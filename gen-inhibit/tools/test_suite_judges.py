@@ -54,6 +54,17 @@ def check(name, fn, info=None):
         FAILS.append(name)
 
 
+# An E4 arm as e4_device_calibration.py prints it when it voids the arm on attribution
+# (B22's arm b, step 1a's re-run, 2026-10-29): the "wire agrees" line gives way to the
+# mismatch, and the void banner comes after the device's figures.
+B22_VOID = [
+    (r"^  wire agrees with the device: 8983 transmitted, 8983 seen \(zero-torque 0x051\)$",
+     "  MISMATCH: the device reports tx_ok=8983 but the witness attributes 8982 zero-torque 0x051 frames to us."),
+    (r"^(  device rx_gap us: .*)$",
+     "\\g<1>\n  ---- ARM VOID: the figures above do not support a verdict ----\n"
+     "       - attribution disagrees with the device: tx_ok=8983, witness attributes 8982"),
+]
+
 # (check, folder, file regex, line regex, replacement, verdict wanted). The regex must
 # match exactly once in that file unless it is marked "all".
 EDITS = [
@@ -75,6 +86,18 @@ EDITS = [
     ("B5", "bench", r"B5_livetrain_p2000_run2\.txt", r"^(arm 0 .*?\| B: )PASS", r"\g<1>FAIL", "FAIL"),
     ("B6", "bench", r"B6_threshold_n10_lead5\.txt", r"^(arm 1 \(replay [\d.]+/s\): )PASS", r"\g<1>FAIL", "FAIL"),
     ("B6", "bench", r"B6_threshold_n9_lead1\.5\.txt", r"^verdict PASS", "verdict FAIL", "FAIL"),
+    # an arm whose stimulus fell short is INCONCLUSIVE, and so is B6 (step 1a, 2026-10-29) ...
+    ("B6", "bench", r"B6_threshold_n10_lead5\.txt",
+     [(r"^(arm 1 \(replay [\d.]+/s\): )PASS ", r"\g<1>INCONCLUSIVE delivery was not one error frame per pulse"),
+      (r"^verdict PASS", "verdict INCONCLUSIVE")], None, "INCONCLUSIVE"),
+    # ... but not when another arm FAILs, or when an arm reads any other word
+    ("B6", "bench", r"B6_threshold_n10_lead5\.txt",
+     [(r"^(arm 1 \(replay [\d.]+/s\): )PASS ", r"\g<1>INCONCLUSIVE delivery was not one error frame per pulse"),
+      (r"^verdict PASS", "verdict INCONCLUSIVE"), (r"^(arm 0 \(replay [\d.]+/s\): )PASS", r"\g<1>FAIL")], None, "FAIL"),
+    ("B6", "bench", r"B6_threshold_n10_lead5\.txt",
+     [(r"^(arm 1 \(replay [\d.]+/s\): )PASS ", r"\g<1>INCONCLUSIVE delivery was not one error frame per pulse"),
+      (r"^verdict PASS", "verdict FAIL")], None, "FAIL"),
+    ("B6", "bench", r"B6_threshold_n10_lead5\.txt", r"^(arm 1 \(replay [\d.]+/s\): )PASS", r"\g<1>VOID", "FAIL"),
     ("B7", "bench", r"B7_busoff_rearm\.txt", r"^arm 1: AS SPECIFIED", "arm 1: NOT AS SPECIFIED", "FAIL"),
     ("B8", "bench", r"B8_busoff\.txt", r"^arm 1 train=True: PASS", "arm 1 train=True: FAIL", "FAIL"),
     ("B8", "bench", r"B8_busoff\.txt", r"^arm 3 train=False: INCONCLUSIVE", "arm 3 train=False: FAIL", "FAIL"),
@@ -124,6 +147,14 @@ EDITS = [
     ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", r"tx_fail=0", "tx_fail=1", "FAIL"),
     ("B22", "bench", r"B22_case3_e3d9437_man_a\.txt", r"\), 0 error frames", "), 4 error frames", "FAIL"),
     ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", r"8983 transmitted, 8983 seen", "8983 transmitted, 8980 seen", "FAIL"),
+    # an arm the tool voids is INCONCLUSIVE, and so is B22 (step 1a, 2026-10-29) ...
+    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID, None, "INCONCLUSIVE"),
+    # ... but not when the void arm shows a failure, or the other arm fails
+    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID + [(r"tx_fail=0", "tx_fail=1")], None, "FAIL"),
+    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID + [(r"\), 0 error frames", "), 4 error frames")], None, "FAIL"),
+    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID + [(r"(provenance \(live\).*?)late 0", r"\g<1>late 1")],
+     None, "FAIL"),
+    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID + [(r"^  \[idle\] provenance \(live\).*\n", "")], None, "FAIL"),
     ("B23", "bench", r"B23_txabort_bench\.txt", r"RETRY LOOP: 78 of 78", "RETRY LOOP: 77 of 78", "FAIL"),
     ("B23", "bench", r"B23_txabort_bench\.txt", r"reached the wire anyway on 0 of 78", "reached the wire anyway on 1 of 78", "FAIL"),
     ("B23", "bench", r"B23_txabort_bench\.txt", r"monotonic: True", "monotonic: False", "FAIL"),

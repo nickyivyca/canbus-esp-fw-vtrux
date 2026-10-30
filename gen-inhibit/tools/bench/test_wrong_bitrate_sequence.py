@@ -16,6 +16,10 @@ Now:
            no clean sample -> None
   record   main() writes pre_burst_window, witness_errors_before_first_burst and
            driver_running_before_slice
+  open     (2026-10-29, step 1a's acceptance) a burst starts when the Kvaser's channel opens,
+           not when the open returns: the fake Kvaser puts an error frame on the witness as it
+           opens, which must be the first burst's and not before it; each burst records the
+           open's time, open_s
 
 main() runs against fakes put in sys.modules: can (PCAN, Kvaser), lowid_flood_skip_bench
 (the device: a log of POSTs and page reads) and skip_method_bench (the Player). About 10 s.
@@ -101,13 +105,26 @@ def fakes(log, running_after):
         def __init__(self, arbitration_id=0, is_extended_id=False, data=b""):
             self.arbitration_id, self.data, self.is_error_frame = arbitration_id, data, False
 
+    wire = []       # error frames the witness (the PCAN) has yet to read
+
     class Bus:
         def __init__(self, interface=None, channel=None, bitrate=None):
             self.interface = interface
             log.add("bus open", interface)
+            if interface == "kvaser":
+                # bus-on at the wrong rate: the witness sees an error frame while the open
+                # is still returning (step 1a's acceptance, 2026-10-29)
+                e = Message()
+                e.is_error_frame = True
+                wire.append(e)
+                time.sleep(0.02)
 
         def recv(self, timeout=None):
-            time.sleep(timeout or 0.01)
+            end = time.perf_counter() + (timeout or 0.01)
+            while time.perf_counter() < end:
+                if self.interface == "pcan" and wire:
+                    return wire.pop(0)
+                time.sleep(0.0005)
             return None
 
         def send(self, msg, timeout=None):
@@ -214,6 +231,11 @@ def order_cases(W):
           w.get("errors") == 0 and isinstance(w.get("from_s"), float) and -1.0 < w["from_s"] < 0, w)
     check("main: witness_errors_before_first_burst recorded", rec.get("witness_errors_before_first_burst") == 0,
           rec.get("witness_errors_before_first_burst"))
+    b = rec.get("bursts") or [{}]
+    check("main: the error frame of the Kvaser's bus-on is the burst's, not before it (2026-10-29)",
+          b[0].get("witness_error_frames") == 1 and rec.get("witness_error_frames") == 1, (b, rec.get("witness_error_frames")))
+    check("main: each burst records how long the open took", isinstance(b[0].get("open_s"), float)
+          and 0.015 <= b[0]["open_s"] < 1.0, b)
     check("main: live_before true with the slice playing on a running driver", rec.get("live_before") is True,
           rec.get("live_before"))
 

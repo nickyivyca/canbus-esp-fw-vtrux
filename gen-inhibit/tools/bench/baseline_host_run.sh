@@ -71,6 +71,38 @@ if tree "$BENCH/gi_diag.py"; then
   for f in gi_diag.py pins.json; do git -C "$TOP" show "$C:$BENCH/$f" > "$STAGE/$BENCH_AT/$f" || exit 2; done
   ${LOCAL_PY:-py -3.14} -B "$TOP/gen-inhibit/tools/bench/gi_diag.py" export "$STAGE/diag_schemas" >/dev/null || exit 2
 fi
+# CANRE AT THE PINNED COMMIT (the canre-pin step, 2026-10-26). From that step from_capture.py
+# (replays_regen, the long-arm fixture) takes canre only from canre_pin.py's install of the
+# commit tools/bench/pins.json pins, in a copy with no git <copy>/scratch/canre/<commit>: the
+# remote script installs it from the public repo (the canre_install step) before anything
+# imports it, and every import checks it. A commit with canre_pin.py ships it beside pins.json;
+# an earlier one imported canre from the project folder. Until 2026-10-29 this script shipped
+# neither, so every replay regen and the long-arm fixture failed on the import (found on the
+# step 1a acceptance's first emulated run).
+CANRE=0
+if tree "$BENCH/canre_pin.py"; then
+  mkdir -p "$STAGE/$BENCH_AT"
+  git -C "$TOP" show "$C:$BENCH/canre_pin.py" > "$STAGE/$BENCH_AT/canre_pin.py" || exit 2
+  CANRE=1
+fi
+# THE STOCK HEADERS (port step 1a, 2026-10-29). From the stock code's move into vtrux/wican the
+# shims compile can.c and gen_inhibit.c against vtrux/wican's headers, which the shim Makefiles
+# find through wican_ref.py (the pinned checkout ../shared-<tag>/ beside the worktree root), or
+# WICANDIR. The copy has no such checkout, so a commit with the shim's wican_ref.py ships
+# shared/wican from git at the tag the commit pins (its own wican_ref.py reads the tag from its
+# idf_component.yml) at shared-wican/ in the copy, and the remote script sets WICANDIR to it.
+WICAN=0
+WTAG=
+if [ -e "$STAGE/test/gen_inhibit_shim/wican_ref.py" ]; then
+  WTAG=$(git -C "$TOP" show "$C:gen-inhibit/firmware/main/idf_component.yml" |
+    ${LOCAL_PY:-py -3.14} -B -c "import sys; sys.path.insert(0, sys.argv[1]); import wican_ref; print(wican_ref.pinned_tag(sys.stdin.read()) or '')" \
+      "$STAGE/test/gen_inhibit_shim")
+  [ -n "$WTAG" ] || { echo "$C pins no vtrux/wican version" >&2; exit 2; }
+  git -C "$TOP" cat-file -e "$WTAG:shared/wican/can.h" 2>/dev/null || { echo "no shared/wican/can.h at $WTAG" >&2; exit 2; }
+  mkdir -p "$STAGE/shared-wican" && git -C "$TOP" archive "$WTAG:shared/wican" | tar -x -C "$STAGE/shared-wican" || exit 2
+  WICAN=1
+  echo "vtrux/wican headers: shared/wican at $WTAG"
+fi
 tar -C "$STAGE" -cf - . | ssh "$REMOTE" "rm -rf ~/$DEST && mkdir -p ~/$DEST && tar xf - -C ~/$DEST"
 
 ssh "$REMOTE" "bash -s" > "$OUT/host_run.log" 2>&1 <<EOF
@@ -90,6 +122,10 @@ RR=$RQ
 export REVERSE_IT_DIR="\$RR" GEN_INHIBIT_REPO="\$RR"
 if [ -e test/gen_inhibit_host/project_dir.py ]; then PDFLAG=--project-dir; else PDFLAG=--repo; fi
 echo "# project folder: \$RR (from_capture \$PDFLAG)"
+# vtrux/wican's headers for the shims, shipped at the tag the commit pins (port step 1a)
+if [ $WICAN = 1 ]; then export WICANDIR="\$HOME/$DEST/shared-wican"; echo "# vtrux/wican headers: $WTAG, can.h sha256 \$(sha256sum < shared-wican/can.h | cut -c1-16)"; fi
+# canre at the pinned commit, before replays_regen and the long-arm fixture import it
+if [ $CANRE = 1 ]; then step canre_install $PY -B $BENCH_AT/canre_pin.py install; fi
 cd test/gen_inhibit_host
 step make make -s
 step make_scenarios $PY make_scenarios.py

@@ -242,9 +242,18 @@ def b6(F):
     files = F.some(r"B6_threshold_n\d+_lead[\d.]+\.txt")
     arms = [v.split()[0] for f in files for _, v in jam_arms(text(f))]
     verdicts = [re.search(r"^verdict (\S+)", text(f), re.M) for f in files]
-    ok = arms and all(a == "PASS" for a in arms) and all(v and v.group(1) == "PASS" for v in verdicts)
-    return [result("B6", "PASS" if ok else "FAIL", {"arms": fig(len(arms)), "passed": fig(arms.count("PASS"))},
-                   "%d of %d arms PASS over %d runs" % (arms.count("PASS"), len(arms), len(files)))]
+    # An INCONCLUSIVE arm is the tool's "delivery was not one error frame per pulse": the
+    # stimulus fell short, so it judges nothing. It makes B6 INCONCLUSIVE, not FAIL (step
+    # 1a's acceptance, 2026-10-29); a FAIL arm or verdict, or any other word, is still FAIL.
+    seen = set(arms) | {v.group(1) if v else None for v in verdicts}
+    if not arms or not seen <= {"PASS", "INCONCLUSIVE"}:
+        verdict = "FAIL"
+    else:
+        verdict = "PASS" if seen == {"PASS"} else "INCONCLUSIVE"
+    n_inc = arms.count("INCONCLUSIVE")
+    return [result("B6", verdict, {"arms": fig(len(arms)), "passed": fig(arms.count("PASS"))},
+                   "%d of %d arms PASS over %d runs%s" % (arms.count("PASS"), len(arms), len(files),
+                                                          ", %d INCONCLUSIVE (stimulus short)" % n_inc if n_inc else ""))]
 
 
 @judge("B7", "B")
@@ -635,7 +644,7 @@ def e4_response(t):
 
 @judge("B22", "B")
 def b22(F):
-    figs, bad = {}, []
+    figs, bad, void = {}, [], []
     for arm in ("a", "b"):
         t = text(F.one(r"B22_case3_%s_man_%s\.txt" % (C7, arm)))
         p = e4_prov(t)
@@ -644,6 +653,15 @@ def b22(F):
         d = re.search(r"device: tx_ok=(\d+) tx_fail=(\d+) ctr_ok=\d+ ctr_bad=(\d+) tx_queued_behind=(\d+)", t)
         e = re.search(r"witness saw \d+ frames \([\d.]+/s\), (\d+) error frames", t)
         ld = re.search(r"carried load >= ([\d.]+)%", t)
+        # An arm the tool voids ("ARM VOID": its figures do not support a verdict) judges
+        # nothing, so it makes B22 INCONCLUSIVE, not FAIL (step 1a's acceptance, 2026-10-29),
+        # unless what it does show fails: provenance, tx_fail, ctr_bad, queued, error frames.
+        if "---- ARM VOID:" in t:
+            if not (p and d and e) or not prov_ok(p) or any(int(d.group(i)) for i in (2, 3, 4)) or int(e.group(1)):
+                bad.append(arm + " (void) not as before")
+            else:
+                void.append(arm + ": void (" + "; ".join(re.findall(r"^       - (.+)$", t, re.M)) + ")")
+            continue
         if not (p and r and w and d and e and ld):
             bad.append(arm + ": a line is missing")
             continue
@@ -653,7 +671,11 @@ def b22(F):
                      "response_us_mean_%s" % arm: fig(r[2], "us"), "tx_fail_%s" % arm: fig(int(d.group(2))),
                      "ctr_bad_%s" % arm: fig(int(d.group(3))), "error_frames_%s" % arm: fig(int(e.group(1))),
                      "load_pct_lower_%s" % arm: fig(float(ld.group(1)), "%")})
-    return [result("B22", "FAIL" if bad else "PASS", figs, "; ".join(bad) or "both arms: provenance clean, 0 tx_fail, 0 error frames")]
+    if bad:
+        return [result("B22", "FAIL", figs, "; ".join(bad + void))]
+    if void:
+        return [result("B22", "INCONCLUSIVE", figs, "; ".join(void))]
+    return [result("B22", "PASS", figs, "both arms: provenance clean, 0 tx_fail, 0 error frames")]
 
 
 B23_OUTCOMES = (

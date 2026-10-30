@@ -142,10 +142,17 @@ def burst(ms):
     after ms, which takes its controller off the bus and ends the retransmission.
     The first version kept the channel open and called flush_tx_buffer(), which does
     not stop a frame the controller is already retransmitting: its first 1 ms burst
-    became ~30,000 error frames and drove the PCAN bus-off (2026-10-10)."""
+    became ~30,000 error frames and drove the PCAN bus-off (2026-10-10).
+
+    The burst starts when the channel opens (2026-10-29): can.Bus() ends with the
+    controller going bus-on at 250 kbit on the 500 kbit segment, and the witness's error
+    frames begin there, before the send. Until then t was taken after can.Bus() returned,
+    and step 1a's acceptance run counted 36 and 43 witness error frames, all within 5 ms
+    before that t, as "before the first burst". Returns (start, seconds the open took)."""
     import can
-    kv = can.Bus(interface="kvaser", channel=0, bitrate=250000)
     t = time.perf_counter()
+    kv = can.Bus(interface="kvaser", channel=0, bitrate=250000)
+    opened = time.perf_counter() - t
     try:
         kv.send(can.Message(arbitration_id=SOURCE_ID, is_extended_id=False, data=bytes(8)),
                 timeout=0.05)
@@ -154,7 +161,7 @@ def burst(ms):
         pass
     finally:
         kv.shutdown()
-    return t
+    return t, opened
 
 
 def main():
@@ -184,7 +191,7 @@ def main():
     rec = {"when": stamp, "cmd": a.cmd, "x2": a.x2, "power": a.power, "build": LF.build_id(),
            "plan": plan, "source": "Kvaser at 250 kbit, id 0x%03X" % SOURCE_ID}
     pc = kv = player = wit = poll = None
-    starts = []
+    starts, opens = [], []
     try:
         stim = LF.build_stimulus()
         pc = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=500000)
@@ -218,7 +225,9 @@ def main():
         for at, ms in plan:
             while time.perf_counter() < base + at:
                 time.sleep(0.001)
-            starts.append((burst(ms), ms))
+            t_b, opened = burst(ms)
+            starts.append((t_b, ms))
+            opens.append(opened)
         time.sleep(a.tail_s)
     finally:
         if poll is not None:
@@ -248,8 +257,9 @@ def main():
     errs = wit.errors
     series = poll.series if poll else []
     t_ref = st[0] if st else 0.0
-    rec["bursts"] = [{"t": round(s - t_ref, 4), "ms": ms, "witness_error_frames": n}
-                     for (s, ms), n in zip(starts, per_burst(st, errs))]
+    # open_s: how long the Kvaser's open took, from the burst's start (2026-10-29)
+    rec["bursts"] = [{"t": round(s - t_ref, 4), "ms": ms, "open_s": round(o, 4), "witness_error_frames": n}
+                     for (s, ms), o, n in zip(starts, opens, per_burst(st, errs))]
     rec["witness_error_frames"] = len(errs)
     rec["pcan_status_end"] = pc_status
     rec["witness_window_max_10s"] = window_max(errs)

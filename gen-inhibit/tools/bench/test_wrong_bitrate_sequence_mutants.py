@@ -39,6 +39,13 @@ MUTANTS = [
     ("the window is not recorded", '    rec["pre_burst_window"] = (', '    rec["pre_burst_window_unused"] = ('),
     ("the driver flag is always true", 'rec["driver_running_before_slice"] = running',
      'rec["driver_running_before_slice"] = True'),
+    # the burst starts at the Kvaser's open (2026-10-29)
+    ("the burst starts after the open, as before",
+     '    t = time.perf_counter()\n    kv = can.Bus(interface="kvaser", channel=0, bitrate=250000)\n'
+     '    opened = time.perf_counter() - t\n',
+     '    kv = can.Bus(interface="kvaser", channel=0, bitrate=250000)\n    t = time.perf_counter()\n'
+     '    opened = 0.0\n'),
+    ("the open's time is not recorded", '"open_s": round(o, 4), ', ''),
 ]
 
 
