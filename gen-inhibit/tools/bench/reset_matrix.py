@@ -37,6 +37,12 @@ uptime counter going backwards. A RESET while armed is read from the page polls
 Port drops are recorded and never counted: a USB-JTAG reset leaves COM4 up
 (console_selftest_20261008T000900), and drops do not map 1:1 to boots
 (implementor, 2026-10-08). A quiet console carries nothing either way.
+Record-only, not in the suite. On an image at log level none with a bootloader at
+error (port step 1a2) the log-tick sign is gone, and off the diag image so are the
+reason and uptime lines: the ROM banner is the only sign left, so the count is a
+lower bound. When the capture holds none of the other signs, the run file's
+boot_count_note says so and the tool prints it as a WARNING (gen-inhibit
+reviewer, 2026-10-30: loudly, rather than undercount).
 
 A HALT is a panic dump line ("Guru Meditation", "abort()", "Backtrace",
 "Core  0 register dump") not followed by a boot within --halt-wait seconds.
@@ -179,6 +185,30 @@ def boots(lines):
     for b in out:
         del b["esp_rom"], b["reason_line"]
     return out
+
+
+def boot_signs(lines):
+    """How many lines of each boot sign the capture holds: {rom, reason, uptime, tick}."""
+    out = {"rom": 0, "reason": 0, "uptime": 0, "tick": 0}
+    for _t, x in lines:
+        out["rom"] += bool(ROM_RE.search(x))
+        out["reason"] += bool(REASON_RE.search(x))
+        out["uptime"] += bool(UPTIME_RE.search(x))
+        out["tick"] += bool(TICK_RE.search(x))
+    return out
+
+
+def boot_count_note(signs):
+    """None, or why the boot count is only a lower bound. Port step 1a2 (gen-inhibit
+    reviewer, 2026-10-30): an image at log level none, with a bootloader at error, prints
+    no log-tick line, and only the diag image prints the reason and uptime lines; then the
+    ROM banner is the only sign left, and a boot whose banner was lost (port down) is not
+    seen. Said loudly rather than undercounted in silence."""
+    if signs["reason"] or signs["uptime"] or signs["tick"]:
+        return None
+    return ("BOOT COUNT IS A LOWER BOUND: the capture holds no log-tick, diag reason or uptime "
+            "line (%d ROM banner line(s)), so a boot whose ROM banner was lost is not seen; "
+            "an image at log level none with a bootloader at error prints nothing else" % signs["rom"])
 
 
 def load_transcript(path):
@@ -527,6 +557,8 @@ def main():
     bs = boots(lines)
     rec["boots"] = [dict({k: v for k, v in b.items() if k != "t"},
                          t_rel_session=rel(b["t"], t_sess)) for b in bs]
+    rec["boot_signs"] = boot_signs(lines)
+    rec["boot_count_note"] = boot_count_note(rec["boot_signs"])
     rec["dumps_rel_session"] = [rel(t, t_sess) for t in dumps(lines)]
     rec["com4_events"] = [(rel(t, t_sess), e) for t, e in cc.events]
     rec["rejoins"] = [(rel(t, t_sess), w) for t, w in state["rejoins"]]
@@ -557,7 +589,9 @@ def main():
         rec["com3_events"] = [(rel(t, t_sess), e) for t, e in cc3.events]
     with open(base + ".json", "x", encoding="ascii", errors="replace") as fh:
         json.dump(rec, fh, indent=1)
-    print("boots on COM4: %d" % len(bs))
+    print("boots on COM4: %d%s" % (len(bs), " (a lower bound, see below)" if rec["boot_count_note"] else ""))
+    if rec["boot_count_note"]:
+        print("WARNING: " + rec["boot_count_note"])
     for b in rec["boots"]:
         print("  %8.3f s  %-22s reason %s (%s) rst %s up_last %s"
               % (b["t_rel_session"], "+".join(b["how"]), b["reason"],
