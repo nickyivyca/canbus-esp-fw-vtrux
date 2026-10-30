@@ -49,26 +49,28 @@ than trusting the log or the file. Follow the process-cleanup rules in
 `AGENTS.md`, "Killing background processes".
 
 **Self-compact.** You have two compaction points:
-- **After you start a build's suite, or another long run, as a background
-  task.** The build's cases are written and committed, and the run is under
-  way: the boards are identified and the first case is running. Write the
-  task id, the run folder and the next steps in your working log first. The
-  resume message names the build and says to wait for the task's
-  notification without polling, then judge the run and report per
-  `VERIFICATION.md`.
+- **After you start a long background task you will wait on,** once it is
+  under way: a build's suite (its cases written and committed, the boards
+  identified and the first case running), a firmware build, or a long local
+  test or mutant run. Write the task id, where its output goes and the next
+  steps in your working log first. The resume message names the task and
+  says to wait for its notification without polling, then carry on: for a
+  suite, judge the run and report per `VERIFICATION.md`.
 - **After you have reported a piece of work,** a build or any other item
   the reviewer assigned, once the reviewer's reply has arrived. If it names
-  your next work, the resume message names that work and the reviewer
-  message it is in, and says to start on it. If it says to wait, for a build
-  message or for another session, the resume message names what you are
-  waiting for and where that is written, and says to wait for it.
+  your next work, compact before you start on it: the resume message names
+  that work and the reviewer message it is in, and says to start on it. If
+  it says to wait, for a build message or for another session, the resume
+  message names what you are waiting for and where that is written, and
+  says to wait for it.
 
 At either point you may run `/self-compact`. Not while you are driving
 hardware steps by hand, not while you hold a bench lock you took by hand,
 not with uncommitted harness changes, and not with a question to the
-reviewer open. A lock that a background runner holds itself doesn't count.
-If you are about to take the lock by hand, compact first and take it after
-the resume.
+reviewer open, unless it is written in your working log, with what each
+answer would change, and the resume message names it as awaited. A lock
+that a background runner holds itself doesn't count. If you are about to
+take the lock by hand, compact first and take it after the resume.
 
 When the idle-compaction hook asks (AGENTS.md, "Compacting your own
 context"), that is a compaction point too, whatever state you are in: an
