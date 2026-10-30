@@ -87,9 +87,10 @@ Requirements are numbered W1 to W11. The numbers are stable.
   them in its top-level `CMakeLists.txt`. `OTA_HEALTH_FAULT_INJECT`, the
   fault hook in `ota_health.c` that a rollback rehearsal builds with, is a
   CMake option of the component too: off by default, and test-only. The
-  fault hook's code is a function of its own, kept out of line, so an
-  image built with the switch on carries its symbol at any log level, and
-  the component's refusal row judges that symbol (`shared/tools` R20).
+  fault hook's code is a function of its own, kept out of line, so the
+  ELF of an image built with the switch on carries its symbol at any log
+  level, and the component's refusal row judges that symbol
+  (`shared/tools` R20).
 - **W8. Project URIs.** A project may register one URI hook and the number
   of handler slots it needs. The server's handler table is stock's 21 plus
   that number. The hook is called where gen-inhibit's endpoints are
