@@ -8,8 +8,9 @@ named ..._man_flt_DIAG and passed the row. The row now looks for "_flt" as a
 whole "_"-delimited token anywhere in the name.
 
 Each case writes a synthetic image with an esp_app_desc_t carrying the given
-project name and no fault-injection format string, so only the name row can
-refuse it. The last step swaps the old endswith() predicate back in and
+project name and no ELF beside it, so the content row (the fault hook's symbol
+since port step 1a2; test_fault_hook_row.py) has no reference and only the name
+row can refuse it. The last step swaps the old endswith() predicate back in and
 requires at least one case to come out wrong, so these assertions can fail.
 
 Run:  python gen-inhibit/test/build_checks/test_flt_row.py   (exit 0 = all pass)

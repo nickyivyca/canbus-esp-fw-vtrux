@@ -7,11 +7,20 @@ passed on any two images. The row is now "same commit in both versions": the app
 descriptors' version fields (shared/tools R4), equal and not empty. Fake images, a valid
 descriptor each (image_elf_sha.read_desc), in this worktree's scratch/, with a made-up
 GI_CHAIN_SETTINGS (the module reads the WiCAN's identity when imported):
-  - the good pair (same version, _flt only on the faulty, the fault string only in it): every
-    row passes, before step 0c's names and after;
+  - the good pair (same version, _flt only on the faulty, the fault string and the fault
+    hook only in it): every row passes, before step 0c's names and after;
   - two versions, with post-0c names: the commit row fails, and only it;
   - no version in either: the commit row fails (empty is not a match);
   - a file with no descriptor: no version, the commit row fails.
+Since port step 1a2 (gen-inhibit reviewer, 2026-10-30, ruling 4) the images are also judged
+by the fault hook, ota_health_fault_inject_suppress (shared/wican W7), in the ELF beside each,
+read through build_output.elf_symbols_beside() with test_fault_hook_row.py's fake nm (it
+lists the words of the fake ELF):
+  - the good ELF defines the hook and the good image has no string (a fault build at release
+    log levels, which the old "good has NO fault string" row passed): only the good hook row
+    fails;
+  - the faulty ELF without the hook: only the faulty hook row fails;
+  - no ELF beside the good, or beside the faulty: that image's hook row fails (fail closed).
 
     py -3.14 -B gen-inhibit/tools/bench/test_ota_rehearsal_images.py [--mutants]
 
@@ -24,6 +33,8 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+BUILD_CHECKS = os.path.normpath(os.path.join(HERE, "..", "..", "test", "build_checks"))
+HOOK = "ota_health_fault_inject_suppress"
 SCRATCH = os.path.normpath(os.path.join(HERE, "..", "..", "..", "scratch", "ota-rehearsal-images"))
 TARGET = "ota_rollback_rehearsal.py"
 ROW = "same commit in both versions"
@@ -36,7 +47,8 @@ def check(name, ok, detail=""):
         FAILS.append(name)
 
 
-def fake_image(path, version, name, fault=False, desc=True):
+def fake_image(path, version, name, fault=False, desc=True, hook=None, elf=True):
+    """hook: whether the fake ELF beside the image defines the fault hook (default: as fault)."""
     d = bytearray(0x400)
     d[0] = 0xE9
     if desc:
@@ -48,6 +60,12 @@ def fake_image(path, version, name, fault=False, desc=True):
     if fault:
         d[0x300:0x30C] = b"FAULT INJECT"
     open(path, "wb").write(bytes(d))
+    elf_path = os.path.splitext(path)[0] + ".elf"
+    if os.path.exists(elf_path):
+        os.remove(elf_path)
+    if elf:
+        words = ["app_main", "ota_health_report"] + ([HOOK] if (fault if hook is None else hook) else [])
+        open(elf_path, "w", encoding="ascii").write(" ".join(words))
     return path
 
 
@@ -74,6 +92,25 @@ def checks(R, t):
     check("no descriptor: no version read", R.image_facts(p("g.bin"))["version"] is None, R.image_facts(p("g.bin")))
     check("no descriptor: the commit row fails", rows.get(ROW) is False, rows)
 
+    good_row, faulty_row = "good ELF does NOT define the fault hook", "faulty ELF defines the fault hook"
+    check("the good string row is gone", "good has NO fault string" not in rows, sorted(rows))
+    rows = pair(fake_image(p("g.bin"), "abc1234", "wican-fw_obd_man", hook=True),
+                fake_image(p("f.bin"), "abc1234", "wican-fw_obd_man_flt", fault=True))
+    check("the good ELF defines the hook (no string): only the good hook row fails",
+          [k for k, v in rows.items() if not v] == [good_row], rows)
+    rows = pair(fake_image(p("g.bin"), "abc1234", "wican-fw_obd_man"),
+                fake_image(p("f.bin"), "abc1234", "wican-fw_obd_man_flt", fault=True, hook=False))
+    check("the faulty ELF without the hook: only the faulty hook row fails",
+          [k for k, v in rows.items() if not v] == [faulty_row], rows)
+    rows = pair(fake_image(p("g.bin"), "abc1234", "wican-fw_obd_man", elf=False),
+                fake_image(p("f.bin"), "abc1234", "wican-fw_obd_man_flt", fault=True))
+    check("no ELF beside the good: only the good hook row fails",
+          [k for k, v in rows.items() if not v] == [good_row], rows)
+    rows = pair(fake_image(p("g.bin"), "abc1234", "wican-fw_obd_man"),
+                fake_image(p("f.bin"), "abc1234", "wican-fw_obd_man_flt", fault=True, elf=False))
+    check("no ELF beside the faulty: only the faulty hook row fails",
+          [k for k, v in rows.items() if not v] == [faulty_row], rows)
+
 
 def fake_settings():
     """The module reads the WiCAN's identity from GI_CHAIN_SETTINGS when imported; a made-up
@@ -84,8 +121,18 @@ def fake_settings():
     os.environ["GI_CHAIN_SETTINGS"] = path
 
 
+def fake_nm():
+    """build_output.elf_symbols_beside() finds test_fault_hook_row.py's fake nm, never a real one."""
+    sys.path.insert(0, BUILD_CHECKS)
+    import test_fault_hook_row as TFH
+    import elf_checks
+    exe = TFH.make_fake_nm(os.path.join(SCRATCH, "nm"))
+    elf_checks.find_nm = lambda: exe
+
+
 def load(folder):
     fake_settings()
+    fake_nm()
     sys.path.insert(0, folder)
     sys.path.insert(1, HERE)
     import importlib.util
@@ -104,6 +151,13 @@ MUTANTS = [
     ("the version not read", '        version, elf = desc["version"], desc["elf_sha256"]', '        version, elf = "x", desc["elf_sha256"]'),
     ("the commit row always passes", 'rows.append(("same commit in both versions",\n                 bool(',
      'rows.append(("same commit in both versions",\n                 True or bool('),
+    # port step 1a2 (2026-10-30): the hook rows
+    ("the good row reads the string again", 'good.get("has_fault_symbol") is False))',
+     'not good["has_fault_string"]))'),
+    ("no ELF passes the good row", 'good.get("has_fault_symbol") is False))', 'not good.get("has_fault_symbol")))'),
+    ("the faulty hook row always passes", 'faulty.get("has_fault_symbol") is True))', 'True))'),
+    ("image_facts never reads the hook", "    hook, hook_why = fault_hook(path)", "    hook, hook_why = False, None"),
+    ("fault_hook reads a prefix", "build_output.FAULT_HOOK_SYM in defined)", 'any(s.startswith("ota_") for s in defined))'),
 ]
 
 

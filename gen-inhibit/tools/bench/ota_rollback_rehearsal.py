@@ -95,10 +95,13 @@ is (LOG LEVEL NONE, above).
 PHASES
 
   images    offline. Verify the good and faulty images are the pair we think:
-            size, md5, esp_app_desc.project_name, and whether the binary
-            contains the "FAULT INJECT" format string at all. The last is the
-            direct static proof the fault is compiled in -- with the mask at 0
-            the `if (0 & bits)` body is dead code and the string is dropped.
+            size, md5, esp_app_desc.project_name, and whether the ELF beside
+            each defines the fault hook, ota_health_fault_inject_suppress
+            (shared/wican W7). The last is the direct static proof the fault
+            is compiled in. Until port step 1a2 it was the "FAULT INJECT"
+            format string, which a build at release log levels (shared/tools
+            R28) drops whatever the switch; the faulty image (info level)
+            must still carry it, for the fault phase's line.
   baseline  HTTP /gen_inhibit, and the connected AP's BSSID against the expected
             unit (value-blind). Refuses to continue unless it is the unit and the
             device is in mode 0 and not live. Never /check_status (2026-10-25).
@@ -266,6 +269,16 @@ def save(phase, record):
 FAULT_MARKER = b"FAULT INJECT"
 
 
+def fault_hook(path):
+    """(defined, why): whether the ELF beside image `path` defines the fault-injection hook
+    (build_output.FAULT_HOOK_SYM, shared/wican W7), read with nm by build_output's own
+    elf_symbols_beside(); defined is None, with the reason, when there is nothing to judge by."""
+    sys.path.insert(0, os.path.join(gi_paths.project_root(), "test", "build_checks"))
+    import build_output
+    defined, why = build_output.elf_symbols_beside(path)
+    return (None if defined is None else build_output.FAULT_HOOK_SYM in defined), why
+
+
 def image_facts(path):
     """Everything about an image that can be established without flashing it."""
     if not os.path.exists(path):
@@ -280,6 +293,7 @@ def image_facts(path):
         version, elf = desc["version"], desc["elf_sha256"]
     except ValueError:
         version = elf = None
+    hook, hook_why = fault_hook(path)
     return {
         "path": path,
         "exists": True,
@@ -289,6 +303,8 @@ def image_facts(path):
         "version": version,
         "elf_sha256": elf,
         "has_fault_string": FAULT_MARKER in data,
+        "has_fault_symbol": hook,
+        "fault_symbol_why": hook_why,
     }
 
 
@@ -298,9 +314,19 @@ def judge_images(good, faulty):
     md5 alone would do for telling two FILES apart, but the one that survives
     into the device is project_name, and the one that proves the fault is
     actually COMPILED IN rather than merely requested on a command line is the
-    format string. `idf.py -D` sets a CMake cache variable, so a fault build
-    that was asked for and not wired produces a byte-for-byte ordinary image --
-    which is the failure this row exists to catch.
+    hook's symbol in the ELF. `idf.py -D` sets a CMake cache variable, so a fault
+    build that was asked for and not wired produces a byte-for-byte ordinary
+    image -- which is the failure this row exists to catch.
+
+    The good image's row was "good has NO fault string" until port step 1a2
+    (gen-inhibit reviewer, 2026-10-30, ruling 4). The good image is built at
+    release log levels (shared/tools R28), where the fault branch's log string
+    compiles to nothing even with the switch on, so that row passed on any good
+    image. Both images are now judged by the hook's own function
+    (build_output.FAULT_HOOK_SYM), defined only with the switch on, in the ELF
+    beside each; no ELF or no nm fails both rows. The faulty image keeps its
+    string row as well: a test-only build is at info level, and the fault phase
+    reads its FAULT INJECT line.
     """
     rows = []
     rows.append(("good image present", bool(good.get("exists"))))
@@ -310,7 +336,8 @@ def judge_images(good, faulty):
     rows.append(("md5 differs", good["md5"] != faulty["md5"]))
     rows.append(("project_name differs",
                  good["project_name"] != faulty["project_name"]))
-    rows.append(("good has NO fault string", not good["has_fault_string"]))
+    rows.append(("good ELF does NOT define the fault hook", good.get("has_fault_symbol") is False))
+    rows.append(("faulty ELF defines the fault hook", faulty.get("has_fault_symbol") is True))
     rows.append(("faulty HAS fault string", faulty["has_fault_string"]))
     rows.append(("faulty name carries _flt",
                  bool(faulty["project_name"]
@@ -767,9 +794,10 @@ def phase_images(args):
     log("=== images ===")
     for k, v in (("good", good), ("faulty", faulty)):
         if v.get("exists"):
-            log("  %-6s %-30s %8d  %s  fault_string=%s"
+            log("  %-6s %-30s %8d  %s  fault_string=%s  fault_symbol=%s%s"
                 % (k, v["project_name"], v["size"], v["md5"],
-                   v["has_fault_string"]))
+                   v["has_fault_string"], v["has_fault_symbol"],
+                   " (%s)" % v["fault_symbol_why"] if v["fault_symbol_why"] else ""))
         else:
             log("  %-6s MISSING %s" % (k, v["path"]))
     fails = [n for n, ok in rows if not ok]
