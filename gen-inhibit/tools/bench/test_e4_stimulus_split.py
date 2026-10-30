@@ -1,12 +1,18 @@
-"""Harness test for e4_device_calibration.vcm_commands_on_wire (the stimulus check).
+"""Harness test for e4_device_calibration.vcm_commands_on_wire (the stimulus check), and
+attribution_check (2026-10-29, gen-inhibit reviewer): the old trail-window count of our
+frames voids no arm in INHIBIT, where provenance decides; the RESPOND probe count still
+does.
 
     py -3.14 gen-inhibit/tools/bench/test_e4_stimulus_split.py
+Mutants: test_e4_attribution_mutants.py (E4_DIR runs another copy of the tool).
 """
 import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+if os.environ.get("E4_DIR"):
+    sys.path.insert(0, os.environ["E4_DIR"])
 import e4_device_calibration as E                               # noqa: E402
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 
@@ -61,6 +67,21 @@ def attach_failure_recorded():
             os.remove(path)
 
 
+def attribution_case(mode, ours, tx_ok, want_reason, want_in_line):
+    line, reason = E.attribution_check(mode, ours, tx_ok, "zero-torque 0x051")
+    return reason == want_reason and want_in_line in line
+
+
+def run_arm_uses_check():
+    """The arm's code calls attribution_check and acts on both halves of its answer (read
+    from the source: run_arm needs the bench)."""
+    import inspect
+    src = inspect.getsource(E.run_arm)
+    i = src.find("attribution_check(")
+    return (i > 0 and "print(line)" in src[i:i + 300] and
+            "if reason:\n            void_reasons.append(reason)" in src[i:i + 300])
+
+
 def main():
     f = E.vcm_commands_on_wire
     checks = [
@@ -88,6 +109,20 @@ def main():
         ("a 1 Hz Hammer polls about once a second and records each answer", poll_rate_ok()),
         ("provenance that cannot run is recorded NOT RUN with the reason, old figures marked "
          "superseded", attach_failure_recorded()),
+        # the old trail-window count voids nothing (gen-inhibit reviewer, 2026-10-29)
+        ("INHIBIT: the trail count 8982 against tx_ok 8983 (step 1a's B22 arms) voids nothing, "
+         "and is printed as superseded", attribution_case(E.MODE_INHIBIT, 8982, 8983, None, "superseded")),
+        ("INHIBIT: a count that agrees prints the wire agreeing and voids nothing",
+         attribution_case(E.MODE_INHIBIT, 8983, 8983, None, "wire agrees")),
+        ("PASSIVE: the trail count voids nothing either",
+         attribution_case(E.MODE_PASSIVE, 0, 5, None, "superseded")),
+        ("RESPOND: the probe count, by id, 2990 against 2999 still voids the arm",
+         attribution_case(E.MODE_RESPOND, 2990, 2999, "attribution disagrees with the device: tx_ok=2999, "
+                          "witness attributes 2990", "MISMATCH")),
+        ("RESPOND: a probe count that agrees voids nothing", attribution_case(E.MODE_RESPOND, 2999, 2999, None,
+                                                                             "wire agrees")),
+        ("run_arm prints attribution_check's line and voids the arm on its reason",
+         run_arm_uses_check()),
     ]
     fails = []
     for label, ok in checks:

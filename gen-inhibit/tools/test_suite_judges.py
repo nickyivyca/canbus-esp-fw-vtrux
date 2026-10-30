@@ -54,15 +54,31 @@ def check(name, fn, info=None):
         FAILS.append(name)
 
 
-# An E4 arm as e4_device_calibration.py prints it when it voids the arm on attribution
-# (B22's arm b, step 1a's re-run, 2026-10-29): the "wire agrees" line gives way to the
-# mismatch, and the void banner comes after the device's figures.
-B22_VOID = [
+# An E4 arm as e4_device_calibration.py printed it before 2026-10-29 when it voided the arm
+# on the old trail-window count (B22's arm b, step 1a's re-run): the "wire agrees" line
+# gives way to the mismatch, and the void banner comes after the device's figures. Since
+# 2026-10-29 (gen-inhibit reviewer) that count voids nothing: such a record is judged as an
+# unvoided arm, on provenance.
+B22_VOID_ATTR = [
     (r"^  wire agrees with the device: 8983 transmitted, 8983 seen \(zero-torque 0x051\)$",
      "  MISMATCH: the device reports tx_ok=8983 but the witness attributes 8982 zero-torque 0x051 frames to us."),
     (r"^(  device rx_gap us: .*)$",
      "\\g<1>\n  ---- ARM VOID: the figures above do not support a verdict ----\n"
      "       - attribution disagrees with the device: tx_ok=8983, witness attributes 8982"),
+]
+# An arm voided for a reason that still voids: replay frames the adapter refused.
+B22_VOID = [
+    (r"^(  device rx_gap us: .*)$",
+     "\\g<1>\n  ---- ARM VOID: the figures above do not support a verdict ----\n"
+     "       - 3 replay frames were refused by the adapter, so the stimulus is incomplete"),
+]
+# Both reasons: the refusal still voids the arm.
+B22_VOID_BOTH = [
+    B22_VOID_ATTR[0],
+    (r"^(  device rx_gap us: .*)$",
+     "\\g<1>\n  ---- ARM VOID: the figures above do not support a verdict ----\n"
+     "       - attribution disagrees with the device: tx_ok=8983, witness attributes 8982\n"
+     "       - 3 replay frames were refused by the adapter, so the stimulus is incomplete"),
 ]
 
 # (check, folder, file regex, line regex, replacement, verdict wanted). The regex must
@@ -146,9 +162,22 @@ EDITS = [
     ("B21", "bench", r"B21_wire_multipart_e3d9437\.txt", r"^(OBSERVE  rep 3 .*? wire )403", r"\g<1>200", "FAIL"),
     ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", r"tx_fail=0", "tx_fail=1", "FAIL"),
     ("B22", "bench", r"B22_case3_e3d9437_man_a\.txt", r"\), 0 error frames", "), 4 error frames", "FAIL"),
-    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", r"8983 transmitted, 8983 seen", "8983 transmitted, 8980 seen", "FAIL"),
+    # the old trail-window count decides nothing (gen-inhibit reviewer, 2026-10-29): a
+    # disagreement in it alone, printed either way, or as the only void reason, is a PASS ...
+    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", r"8983 transmitted, 8983 seen", "8983 transmitted, 8980 seen", "PASS"),
+    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt",
+     r"^  wire agrees with the device: 8983 transmitted, 8983 seen \(zero-torque 0x051\)$",
+     "  superseded trail-window count (voids nothing; provenance decides): the device reports tx_ok=8983, "
+     "the old classifier attributes 8982 zero-torque 0x051 frames to us", "PASS"),
+    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID_ATTR, None, "PASS"),
+    # ... while provenance's own count against the device still decides
+    ("B22", "bench", r"B22_case3_e3d9437_man_a\.txt", r"device 0x051 8983 \(device says 8983\)",
+     "device 0x051 8982 (device says 8983)", "FAIL"),
+    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt",
+     B22_VOID_ATTR + [(r"device 0x051 8983 \(device says 8983\)", "device 0x051 8982 (device says 8983)")], None, "FAIL"),
     # an arm the tool voids is INCONCLUSIVE, and so is B22 (step 1a, 2026-10-29) ...
     ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID, None, "INCONCLUSIVE"),
+    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID_BOTH, None, "INCONCLUSIVE"),
     # ... but not when the void arm shows a failure, or the other arm fails
     ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID + [(r"tx_fail=0", "tx_fail=1")], None, "FAIL"),
     ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID + [(r"\), 0 error frames", "), 4 error frames")], None, "FAIL"),
