@@ -43,6 +43,10 @@ headers; the root-layout commit has neither.
     py -3.14 -B gen-inhibit/tools/bench/test_baseline_host_run.py
     py -3.14 -B gen-inhibit/tools/bench/test_baseline_host_run.py --mutants
 
+--mutants runs the unmutated copy first, as the control (2026-10-29): if it fails, no
+mutant is judged and the run exits 1. Run it from Git Bash: the checks need Git's bash
+first on PATH, and under a PATH whose bash is WSL's every check fails.
+
 Run from the reverse-it root. Gen-inhibit tester.
 """
 import hashlib
@@ -415,14 +419,18 @@ def main():
         checks(HERE)
         print("%d FAIL" % len(FAILS) if FAILS else "all ok")
         return 1 if FAILS else 0
-    killed = 0
-    for i, (name, old, new) in enumerate(MUTANTS, 1):
+    # the unmutated copy runs first as the control: where the checks cannot pass (on 2026-10-29
+    # a PATH whose bash was WSL's failed all 40), every mutant would read killed
+    killed, control_ok = 0, False
+    for i, (name, old, new) in enumerate([("the control: the unmutated copy", None, None)] + MUTANTS):
         with tempfile.TemporaryDirectory(prefix="gi-host-run-m%d-" % i, dir=gi_paths.scratch("tmp", run=False)) as tmp:
             src = open(os.path.join(HERE, SCRIPT), encoding="utf-8", newline="").read()
-            if src.count(old) != 1:
+            if old is not None and src.count(old) != 1:
                 print("ERROR    m%d %s: the substitution matches %d times" % (i, name, src.count(old)))
                 continue
-            if name == "the exports come after the steps":
+            if old is None:
+                new_src = src
+            elif name == "the exports come after the steps":
                 new_src = src.replace(old, new).replace("step make make -s\n", "step make make -s\n" + old)
             else:
                 new_src = src.replace(old, new)
@@ -432,12 +440,22 @@ def main():
                                capture_output=True, text=True, timeout=600)
             fails = [ln for ln in r.stdout.splitlines() if ln.startswith("FAIL")]
             crashed = r.returncode not in (0, 1) or "Traceback" in r.stderr
+            if old is None:
+                control_ok = r.returncode == 0 and not fails and not crashed
+                print("%s m0 %s  (rc %d, %d FAIL%s)" % ("PASS    " if control_ok else "FAILED  ", name, r.returncode,
+                                                       len(fails), ("; " + fails[0][6:90]) if fails else ""))
+                if not control_ok:
+                    break
+                continue
             if fails and not crashed:
                 killed += 1
                 print("KILLED   m%d %s  (%d FAIL; %s)" % (i, name, len(fails), fails[0][6:90]))
             else:
                 print("%s m%d %s  (rc %d)" % ("CRASHED " if crashed else "SURVIVED", i, name, r.returncode))
-    print("%d of %d killed by a check" % (killed, len(MUTANTS)))
+    if not control_ok:
+        print("the control FAILS: no mutant is judged, so none is killed")
+        return 1
+    print("%d of %d killed by a check; the control passes" % (killed, len(MUTANTS)))
     return 0 if killed == len(MUTANTS) else 1
 
 
