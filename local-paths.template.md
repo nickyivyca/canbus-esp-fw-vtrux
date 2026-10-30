@@ -19,8 +19,9 @@ PlatformIO. Source: $REVERSE_IT_DIR/tools-reference.md -->
 
 ## Environment variables
 
-<!-- This machine's values for REVERSE_IT_DIR, VTRUX_PUBLIC_REPO and
-INTERPOSER_CODE, and how they are set (shell profile, user environment). -->
+<!-- This machine's values for REVERSE_IT_DIR, VTRUX_PUBLIC_REPO,
+INTERPOSER_CODE and CAN_TOOLS_DIR, and how they are set (shell profile, user
+environment). -->
 
 ## Other clones
 
