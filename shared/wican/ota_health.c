@@ -39,17 +39,43 @@ static volatile EventBits_t s_pending_bits = 0;
 #define OTA_HEALTH_FAULT_INJECT 0
 #endif
 
+#if OTA_HEALTH_FAULT_INJECT
+/*
+ * THE HOOK IS A FUNCTION OF ITS OWN, KEPT OUT OF LINE (SPEC.md W7). At
+ * shared/tools R28's release log levels the ESP_LOGW below is compiled out,
+ * and the hook was otherwise a few instructions inside ota_health_report(),
+ * so a switch-on image had nothing a refusal row could find. This function's
+ * symbol is in the ELF if and only if the switch is on, at any log level, and
+ * the component's refusal row judges it (shared/tools R20).
+ *
+ * noipa, not noinline alone: GCC's interprocedural passes may still clone a
+ * noinline function (.constprop.0, .isra.0) and call the clone, and
+ * --gc-sections then drops the original, so its exact name would vanish.
+ * noipa keeps one out-of-line copy under this name, called as it is.
+ *
+ * Returns the bits still to report.
+ */
+EventBits_t ota_health_fault_inject_suppress(EventBits_t bits);
+
+__attribute__((noipa)) EventBits_t ota_health_fault_inject_suppress(EventBits_t bits)
+{
+    ESP_LOGW(TAG, "FAULT INJECT: suppressing report of 0x%02x", (unsigned)(bits & OTA_HEALTH_FAULT_INJECT));
+    return bits & ~(EventBits_t)OTA_HEALTH_FAULT_INJECT;
+}
+#endif
+
 void ota_health_report(EventBits_t bits)
 {
+#if OTA_HEALTH_FAULT_INJECT
     if (OTA_HEALTH_FAULT_INJECT & bits)
     {
-        ESP_LOGW(TAG, "FAULT INJECT: suppressing report of 0x%02x", (unsigned)(bits & OTA_HEALTH_FAULT_INJECT));
-        bits &= ~(EventBits_t)OTA_HEALTH_FAULT_INJECT;
+        bits = ota_health_fault_inject_suppress(bits);
         if (bits == 0)
         {
             return;
         }
     }
+#endif
 
     if (s_health_group != NULL)
     {
