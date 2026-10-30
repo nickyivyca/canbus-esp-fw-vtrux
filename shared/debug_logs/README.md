@@ -3,8 +3,12 @@
 Stock WiCAN's UDP debug log, as its own ESP-IDF component, `vtrux/debug_logs`
 (`../wican/SPEC.md` W1). It came from gen-inhibit's tree at port step 1a, byte
 for byte from `gen-inhibit/main` `0b03841`
-(`gen-inhibit/firmware/components/debug_logs/`), unchanged. A project takes it
-from git at the same pinned tag as `vtrux/wican`, which needs it.
+(`gen-inhibit/firmware/components/debug_logs/`), unchanged but for one line
+of `CMakeLists.txt`: it no longer requires `main`, which none of its files
+uses (`../wican/SPEC.md` W1). That requirement put it in a link cycle with
+`main` and `vtrux/wican`, which left AutoPID's calls into it unresolved. A
+project takes it from git at the same pinned tag as `vtrux/wican`, which
+needs it.
 
 | File | What | Owner |
 |---|---|---|
