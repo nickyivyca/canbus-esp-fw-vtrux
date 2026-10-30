@@ -9,18 +9,18 @@
     },
     "WICAN_FEATURE_MQTT": {
       "class": "stock feature off in this product",
-      "reason": "W7: MQTT CAN logging and transmit (mqtt.c), and its can_enable() before a transmit and at boot",
+      "reason": "W7: MQTT CAN logging and transmit (mqtt.c), and its can_enable() before a transmit and at boot. The bin string is one that survives at release log levels (shared/tools R28; the function-name strings did not and were dropped); the symbols carry the rest",
       "refusal": [
-        {"bin_strings_absent": ["MQTT_EVENTS", "esp_mqtt_client_init", "mqtt_parse_data"]},
+        {"bin_strings_absent": ["MQTT_EVENTS"]},
         {"elf_symbols_absent": ["mqtt_init", "mqtt_publish", "mqtt_connected"]},
         {"elf_symbol_prefixes_absent": ["esp_mqtt_client_", "mqtt_msg_"]}
       ]
     },
     "WICAN_FEATURE_ELM327": {
       "class": "stock feature off in this product",
-      "reason": "W7: the ELM327 command path (elm327.c): ATSP's can_disable/can_enable, the receive-queue flush, can_send",
+      "reason": "W7: the ELM327 command path (elm327.c): ATSP's can_disable/can_enable, the receive-queue flush, can_send. The bin string is a constant that survives at release log levels (shared/tools R28; the function-name strings did not and were dropped); the symbols carry the rest",
       "refusal": [
-        {"bin_strings_absent": ["ELM327 v1.3a", "elm327_process_cmd", "elm327_set_protocol"]},
+        {"bin_strings_absent": ["ELM327 v1.3a"]},
         {"elf_symbols_absent": ["elm327_init", "elm327_process_cmd", "elm327_ready_to_receive", "elm327_get_identifier", "elm327_can_log"]}
       ]
     },
