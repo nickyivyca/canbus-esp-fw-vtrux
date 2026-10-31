@@ -277,7 +277,21 @@ the other.
 **Plans, handoffs and working logs** belong to the role session that writes
 them, named on an `**Owner:**` line at the top. A file without one gets an
 owner from the reviewer. A file that holds validation the spec rests on is not
-a working log for this rule; the reviewer rules on it (user, 2026-10-10).
+a working log for this rule; the reviewer rules on it (user, 2026-10-10). A
+file the reviewer rules a **record**, closed to new material, carries this
+header, and its file-map entry uses the same words (user, 2026-10-30):
+
+```
+**Owner:** <role> (<who ruled: the user, or which session>, <date>).
+**Status: record.** Closed to new material, because <one-line reason>.
+**May change:** only dated corrections beside a passage found to be wrong,
+written by the owner (user, 2026-10-30).
+**New material goes to:** <file> (<its owner>).
+**Reopening it:** the user's call.
+```
+
+Don't label a file "frozen" or "locked": the header says who ruled it, what
+may change, and who can reopen it.
 
 **Published-interface documents are spec** (user, 2026-10-07): the diag
 schemas and their decode DBCs that the tester tests against belong to the

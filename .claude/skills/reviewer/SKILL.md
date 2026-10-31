@@ -31,7 +31,8 @@ origin has moved, merge it into `<project>/main` yourself.
 in the tracker, and get them ruled here.
 
 You also decide file ownership when it is unclear, and record it in the file
-map. Changes to the ownership split, the skills or `AGENTS.md` go to the
+map. A file you rule a record gets the header in `AGENTS.md`, "Who owns
+what". Changes to the ownership split, the skills or `AGENTS.md` go to the
 methodology owner.
 
 **Keep the tracker to findings and decisions.** It is not a log of what you did.
