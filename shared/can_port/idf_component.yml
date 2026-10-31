@@ -1,0 +1,7 @@
+## vtrux/can_port: the CAN port interface (SPEC.md C1). A project takes it
+## from git at a pinned tag of shared/main, with vtrux/wican and a backend
+## (vtrux/twai_port) at the same tag. No version here: the tag is its version,
+## and dependencies.lock records the commit the tag marks.
+description: "The CAN port interface: a backend per port, and the stock WiCAN CAN calls on port 0"
+dependencies:
+  idf: ">=5.4"

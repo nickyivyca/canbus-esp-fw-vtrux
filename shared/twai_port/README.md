@@ -12,7 +12,20 @@ the reviewer of the project that needs it and ruled by the user in that
 reviewer's session. `VERIFICATION.md` is the tester's, written when there is
 code to test.
 
-Until port step 1b's code lands, this folder holds only its spec.
+## Files
+
+| File | What |
+|---|---|
+| `include/twai_port.h`, `twai_port.c` | the port: the project's choices (T2), install and teardown (T3, T4), mode changes, receive and the one send (T6), the one alert reader (T5), the counters and status (T7), and its `can_port` backend table, `twai_port_ops` |
+| `twai_port_ll_esp32c3.c` | T8 on the C3: the buffer state and the abort-if-awaiting, register level, checked against ESP-IDF v5.4.1 |
+| `twai_port_ll_unsupported.c` | T8 on any other chip: both report unsupported |
+| `CMakeLists.txt`, `idf_component.yml` | the component: the register file by target, and the project's one board component, found as `vtrux/wican` finds it |
+| `unit/` | the port's unit tests and their scripted stub (`unit/README.md`) |
+
+A project takes it from git at its pinned `shared/main` tag, with
+`vtrux/can_port` and its board, fills a `twai_port_config_t`, calls
+`twai_port_setup()` and registers `twai_port_ops` with `can_port` for the
+port index, all before `wican_init()`.
 
 ## Who owns which file (SPEC T11)
 

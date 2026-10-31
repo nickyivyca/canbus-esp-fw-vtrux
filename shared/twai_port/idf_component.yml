@@ -1,0 +1,10 @@
+## vtrux/twai_port: the TWAI driver behind vtrux/can_port (SPEC.md T1). A
+## project takes it from git at a pinned tag of shared/main, with
+## vtrux/can_port and its board at the same tag. No version here: the tag is
+## its version, and dependencies.lock records the commit the tag marks.
+description: "The driver for the chip's built-in CAN controller (TWAI), behind can_port"
+targets:
+  - esp32c3
+  - esp32s3
+dependencies:
+  idf: ">=5.4"

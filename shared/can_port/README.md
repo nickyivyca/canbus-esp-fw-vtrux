@@ -10,7 +10,15 @@ the reviewer of the project that needs it and ruled by the user in that
 reviewer's session. `VERIFICATION.md` is the tester's, written when there is
 code to test.
 
-Until port step 1b's code lands, this folder holds only its spec.
+## Files
+
+| File | What |
+|---|---|
+| `include/can_port.h`, `can_port.c` | the interface: the backend table per port index (C1), the operations of C2 by port, the status and its counters, the owner hook of C4 |
+| `include/can.h`, `can_stock.c` | the stock WiCAN code's CAN calls on port 0 (C3), with the stock rate-code table, the owner's refusal (C4) and the teardown through the backend (C5); made from gen-inhibit's `can.c`. `can.h` was `vtrux/wican`'s until 1b |
+| `can_port_priv.h` | between the two `.c` files: the stock calls' configure and flush, and the owner hook's two calls |
+| `CMakeLists.txt`, `idf_component.yml` | the component |
+| `unit/` | the unit tests and their scripted backend (`unit/README.md`) |
 
 ## Who owns which file (SPEC C6)
 
