@@ -1,0 +1,6 @@
+#ifndef TWAI_FAKE_HOST_ESP_ATTR_H
+#define TWAI_FAKE_HOST_ESP_ATTR_H
+
+#define IRAM_ATTR
+
+#endif

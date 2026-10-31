@@ -19,6 +19,7 @@ code to test.
 | `can_port_priv.h` | between the two `.c` files: the stock calls' configure and flush, and the owner hook's two calls |
 | `CMakeLists.txt`, `idf_component.yml` | the component |
 | `unit/` | the unit tests and their scripted backend (`unit/README.md`) |
+| `vtrux_checks.json` | the component's build-switch table (`shared/tools` R20) |
 
 ## Who owns which file (SPEC C6)
 
@@ -27,5 +28,6 @@ code to test.
 | `SPEC.md`, `VALIDATION.md` | the component's spec, C1 to C6, and why each requirement is written as it is | the reviewers, as above |
 | the interface's code and its unit tests | C1 to C5 | the implementor of the project that needs the change |
 | `VERIFICATION.md` | test evidence | the tester |
+| `vtrux_checks.json` | the component's build-switch table (`shared/tools` R20) | the tester of the project that needs the change |
 </content>
 </invoke>

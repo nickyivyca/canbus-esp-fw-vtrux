@@ -1,0 +1,24 @@
+{
+  "build_switches": {
+    "__cplusplus": {
+      "class": "not a switch",
+      "reason": "compiler-defined; the extern \"C\" wrapper in include/twai_port.h",
+      "kind": "library macro"
+    },
+    "IDF_TARGET": {
+      "class": "not a switch",
+      "reason": "CMakeLists.txt picks T8's register file by chip: twai_port_ll_esp32c3.c on the C3, twai_port_ll_unsupported.c elsewhere; ESP-IDF sets it from the board's target, which R21 checks",
+      "kind": "a value the build injects"
+    },
+    "c_dir": {
+      "class": "not a switch",
+      "reason": "CMakeLists.txt's board search: each build component's COMPONENT_DIR, from idf_component_get_property() inside the loop (shared/boards B2, B5)",
+      "kind": "computed value"
+    },
+    "twai_port_board_count": {
+      "class": "not a switch",
+      "reason": "CMakeLists.txt's board search: list(LENGTH) of the components with include/board_pins.h, which must be 1 (shared/boards B2, B5)",
+      "kind": "computed value"
+    }
+  }
+}
