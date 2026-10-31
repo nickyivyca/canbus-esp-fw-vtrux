@@ -25,6 +25,20 @@ import os
 import shutil
 import sys
 
+def _bench_dir():
+    """gen-inhibit/tools/bench in this file's worktree, found by walking up to its .git (a
+    copy in scratch/ finds the same one); in a copy with no git, two folders up."""
+    d = here = os.path.dirname(os.path.abspath(__file__))
+    while not os.path.exists(os.path.join(d, ".git")):
+        if os.path.dirname(d) == d:
+            return os.path.normpath(os.path.join(here, "..", "..", "tools", "bench"))
+        d = os.path.dirname(d)
+    return os.path.join(d, "gen-inhibit", "tools", "bench")
+
+
+sys.path.append(_bench_dir())
+import gi_paths  # noqa: E402  remove_tree (AGENTS.md "Removing scratch")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import build_output as B                                        # noqa: E402
@@ -53,7 +67,7 @@ STOCK = {
 
 def project(main=None, stock=None, mdns_call=False, names=("vtrux/wican_v3", "vtrux/wican", "vtrux/debug_logs"),
             build_file=True):
-    shutil.rmtree(TMP, ignore_errors=True)
+    gi_paths.remove_tree(TMP)
     for d in (os.path.join(TMP, "main"), WICAN, MDNS, BUILD, BOARD, LOGS):
         os.makedirs(d)
     for p, text in ((os.path.join(BOARD, "board.h"), "#define BOARD 1\n"),
@@ -239,7 +253,7 @@ def main():
     ok, d, ref = wifi_row()
     case("WiFi row: vtrux/wican not a shared component is NO REF", ok is None and ref, d)
 
-    shutil.rmtree(TMP, ignore_errors=True)
+    gi_paths.remove_tree(TMP)
     fails = 0
     for label, good, detail in checks:
         print("  %-4s %s%s" % ("ok" if good else "FAIL", label, "" if good else "  -- " + str(detail)[:140]))

@@ -250,7 +250,7 @@ def mutants():
         for old, new in edits:
             src = src.replace(old, new)
         d = os.path.join(base, "m%d" % n)
-        shutil.rmtree(d, ignore_errors=True)
+        gi_paths.remove_tree(d)
         os.makedirs(d)
         for f in ("ota_guard_pcap_join.py", "ota_guard_raw_probe.py"):
             shutil.copy(os.path.join(HERE, f), d)
@@ -264,7 +264,7 @@ def mutants():
         print("%s m%d %s%s" % ("KILLED  " if fails else "SURVIVED", n, name,
                                (" (%d FAIL)" % len(fails)) if fails else
                                (", CRASHED" if "Traceback" in r.stderr else "")))
-    shutil.rmtree(base, ignore_errors=True)
+    gi_paths.remove_tree(base)
     print("\n%d of %d killed by a check, %d errors" % (killed, len(MUTANTS), errors))
     return 0 if killed == len(MUTANTS) and not errors else 1
 

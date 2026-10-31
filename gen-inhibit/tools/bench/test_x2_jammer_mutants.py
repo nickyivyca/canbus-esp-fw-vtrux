@@ -33,7 +33,7 @@ MUTANTS = [
 def run(base, label, text):
     """A copy of the tool (text) and the test in base/label; the test's FAIL lines, crash, exit."""
     d = os.path.join(base, label)
-    shutil.rmtree(d, ignore_errors=True)
+    gi_paths.remove_tree(d)
     os.makedirs(d)
     open(os.path.join(d, SRC), "w", encoding="utf-8", newline="").write(text)
     shutil.copy(os.path.join(HERE, TEST), d)
@@ -65,7 +65,7 @@ def main():
             "KILLED  " if fails else "SURVIVED", n, name, rc, len(fails),
             ", CRASHED: " + crash if crash else "",
             ("; " + fails[0][:100]) if fails else ""))
-    shutil.rmtree(base, ignore_errors=True)
+    gi_paths.remove_tree(base)
     print("\n%d of %d killed by a check, %d errors; the control %s"
           % (killed, len(MUTANTS), errors, "passes" if control_ok else "DOES NOT PASS"))
     return 0 if killed == len(MUTANTS) and not errors and control_ok else 1

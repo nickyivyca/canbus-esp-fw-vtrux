@@ -26,6 +26,20 @@ import os
 import shutil
 import sys
 
+def _bench_dir():
+    """gen-inhibit/tools/bench in this file's worktree, found by walking up to its .git (a
+    copy in scratch/ finds the same one); in a copy with no git, two folders up."""
+    d = here = os.path.dirname(os.path.abspath(__file__))
+    while not os.path.exists(os.path.join(d, ".git")):
+        if os.path.dirname(d) == d:
+            return os.path.normpath(os.path.join(here, "..", "..", "tools", "bench"))
+        d = os.path.dirname(d)
+    return os.path.join(d, "gen-inhibit", "tools", "bench")
+
+
+sys.path.append(_bench_dir())
+import gi_paths  # noqa: E402  remove_tree (AGENTS.md "Removing scratch")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import build_output as BO                                          # noqa: E402
@@ -108,12 +122,12 @@ def rule_checks():
         out.append(("rows file: not written for an image with no descriptor",
                     BO.write_project_rows(image("nodesc.bin", b"" * 0x120)) is None))
     finally:
-        shutil.rmtree(TMP, ignore_errors=True)
+        gi_paths.remove_tree(TMP)
     return out
 
 
 def main():
-    shutil.rmtree(TMP, ignore_errors=True)
+    gi_paths.remove_tree(TMP)
     os.makedirs(TMP)
     checks = []
     try:
@@ -134,7 +148,7 @@ def main():
         checks.append(("restart test: an unreadable image is NO REF",
                        missing.get("no restart test feature in the image") is None))
     finally:
-        shutil.rmtree(TMP, ignore_errors=True)
+        gi_paths.remove_tree(TMP)
 
     real_scan, real_table, real_triggers, real_record = BS.scan, BS.SWITCHES, BS.TRIGGERS, BS.read_record
     ok_t = {"A": (BS.SHIP, None, "why", None), "B": (BS.TEST, None, "why", [{"project_row": "row b"}])}

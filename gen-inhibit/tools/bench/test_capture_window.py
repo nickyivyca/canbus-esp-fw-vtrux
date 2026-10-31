@@ -77,7 +77,7 @@ def cw(tmp, name, fake_args, extra=(), stop_after=None, timeout=60):
 
 def main():
     tmp = gi_paths.scratch("capture-window-test")
-    shutil.rmtree(tmp, ignore_errors=True)
+    gi_paths.remove_tree(tmp)
     os.makedirs(tmp)
     open(os.path.join(tmp, "fake.py"), "w").write(FAKE)
     try:
@@ -109,7 +109,7 @@ def main():
     except Exception as e:                      # a crash is reported, never a pass
         check("ran without raising", False, repr(e))
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        gi_paths.remove_tree(tmp)
     print("\n%d ok, %d FAIL" % (oks, len(fails)))
     return 1 if fails else 0
 

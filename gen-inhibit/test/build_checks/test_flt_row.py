@@ -21,6 +21,20 @@ import shutil
 import struct
 import sys
 
+def _bench_dir():
+    """gen-inhibit/tools/bench in this file's worktree, found by walking up to its .git (a
+    copy in scratch/ finds the same one); in a copy with no git, two folders up."""
+    d = here = os.path.dirname(os.path.abspath(__file__))
+    while not os.path.exists(os.path.join(d, ".git")):
+        if os.path.dirname(d) == d:
+            return os.path.normpath(os.path.join(here, "..", "..", "tools", "bench"))
+        d = os.path.dirname(d)
+    return os.path.join(d, "gen-inhibit", "tools", "bench")
+
+
+sys.path.append(_bench_dir())
+import gi_paths  # noqa: E402  remove_tree (AGENTS.md "Removing scratch")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
@@ -41,7 +55,7 @@ def image(project):
 
 
 def mark(project):
-    shutil.rmtree(TMP, ignore_errors=True)
+    gi_paths.remove_tree(TMP)
     os.makedirs(TMP)
     img = os.path.join(TMP, "wican-fw_obd_test.bin")
     with open(img, "wb") as fh:
@@ -90,7 +104,7 @@ def main():
         finally:
             B.FLT_TOKEN = saved
     finally:
-        shutil.rmtree(TMP, ignore_errors=True)
+        gi_paths.remove_tree(TMP)
     print("  old endswith() predicate gets %d case(s) wrong: %s"
           % (len(old_bad), old_bad))
     if not old_bad:

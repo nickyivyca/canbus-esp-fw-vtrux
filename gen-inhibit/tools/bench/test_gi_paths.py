@@ -163,7 +163,7 @@ def autoarm_bench_flash():
 
 def main():
     work = gi_paths.scratch("gi-paths")
-    shutil.rmtree(work, ignore_errors=True)
+    gi_paths.remove_tree(work)
     os.makedirs(work)
     base_env = {k: v for k, v in os.environ.items()
                 if k not in ("REVERSE_IT_DIR", "GI_FW_TOOLS", "GEN_INHIBIT_REPO", "VTRUX_DATA", "REVERSE_IT_ROOT")}
@@ -373,7 +373,7 @@ def main():
             else:
                 check("pin holds: %s" % rel, lambda: gp2.verify(p) == p)
 
-    shutil.rmtree(work, ignore_errors=True)
+    gi_paths.remove_tree(work)
     print("\nFAIL: %d check(s) failed" % len(FAILS) if FAILS else "\nPASS")
     return 1 if FAILS else 0
 

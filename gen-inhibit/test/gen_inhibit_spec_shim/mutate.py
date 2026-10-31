@@ -19,6 +19,20 @@ import os
 import shutil
 import sys
 
+def _bench_dir():
+    """gen-inhibit/tools/bench in this file's worktree, found by walking up to its .git (a
+    copy in scratch/ finds the same one); in a copy with no git, two folders up."""
+    d = here = os.path.dirname(os.path.abspath(__file__))
+    while not os.path.exists(os.path.join(d, ".git")):
+        if os.path.dirname(d) == d:
+            return os.path.normpath(os.path.join(here, "..", "..", "tools", "bench"))
+        d = os.path.dirname(d)
+    return os.path.join(d, "gen-inhibit", "tools", "bench")
+
+
+sys.path.append(_bench_dir())
+import gi_paths  # noqa: E402  remove_tree (AGENTS.md "Removing scratch")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from host_env import describe, host_identity, missing, scratch_dir, sh, wsl_path  # noqa: E402
@@ -111,7 +125,7 @@ def main(argv):
     print(describe(ident))
     if missing(ident):
         print("ERROR    not recorded: %s" % ", ".join(missing(ident)))
-        shutil.rmtree(base, ignore_errors=True)
+        gi_paths.remove_tree(base)
         return 1
     caught = errors = 0
     picked = [(n, m) for n, m in enumerate(MUTANTS, 1) if only is None or n in only]
@@ -150,7 +164,7 @@ def main(argv):
                                     "%d failing line(s)" % len(hits) if ran else "NO RESULT: build or crash",
                                     ("; " + hits[0][:140]) if hits else ""))
         sys.stdout.flush()
-    shutil.rmtree(base, ignore_errors=True)
+    gi_paths.remove_tree(base)
     print("\n%d of %d caught by a check, %d errors" % (caught, len(picked), errors))
     return 0 if caught == len(picked) and not errors else 1
 

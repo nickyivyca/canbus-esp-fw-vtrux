@@ -9,8 +9,9 @@ followed by a made-up schema 8. Schema 8 renames diag_shift_pos to diag_shift_le
 page 0x7FA, so each rule has an input where it matters.
 
   1. The schema set from git: the real repo gives schema 7 at 9c54669, hash
-     7af6adef1d948197, and schema 8 at 564c129, hash 00401e953c405902, at HEAD
-     (port step 0c). A history of 7, 7 (comment only) and 8 gives two
+     7af6adef1d948197, and schema 8 at 50f4f63, hash 00401e953c405902, at HEAD
+     (port step 0c; schema 8 was 564c129 until 50f4f63 reworded bit 5 in the DBC,
+     2026-10-30, the later commit of the same version and layout hash). A history of 7, 7 (comment only) and 8 gives two
      schemas, the later commit of 7, HEAD 8. A version with two layouts, a stated hash
      that is not the DBC's own, a schema signal away from the table's byte and a DBC
      with no schema signal are each refused.
@@ -113,7 +114,7 @@ def comment_only(text):
 def fake_repo(name, texts):
     """A git repo whose DBC history is `texts`, one commit each; -> (path, commits)."""
     d = os.path.join(BASE, name)
-    shutil.rmtree(d, ignore_errors=True)
+    gi_paths.remove_tree(d)
     os.makedirs(os.path.join(d, os.path.dirname(G.DBC_PATH)))
 
     def g(*a):
@@ -146,10 +147,10 @@ SET2 = G.SchemaSet.from_git(R2)
 def t1():
     real = G.SchemaSet.from_git(REPO)
     e, e8 = real.get(7), real.get(8)
-    check("1 the real repo: schema 7 at 9c54669, hash 7af6adef1d948197; schema 8 at 564c129, hash "
+    check("1 the real repo: schema 7 at 9c54669, hash 7af6adef1d948197; schema 8 at 50f4f63, hash "
           "00401e953c405902, at HEAD",
           lambda: (sorted(real.entries), e.commit[:7], e.hash, e8.commit[:7], e8.hash, real.head_version) ==
-          ([7, 8], "9c54669", "7af6adef1d948197", "564c129", "00401e953c405902", 8),
+          ([7, 8], "9c54669", "7af6adef1d948197", "50f4f63", "00401e953c405902", 8),
           (sorted(real.entries), e.commit[:7], e.hash, e8.commit[:7], e8.hash, real.head_version))
     check("1 7, 7 (comment), 8: schemas 7 and 8, HEAD 8",
           lambda: (sorted(SET2.entries), SET2.head_version) == ([7, 8], 8))
@@ -307,7 +308,7 @@ def t4():
 
     def tampered(name, edit_manifest=None, edit_file=None):
         d = os.path.join(BASE, "export_" + name)
-        shutil.rmtree(d, ignore_errors=True)
+        gi_paths.remove_tree(d)
         shutil.copytree(ex, d)
         m = json.loads(json.dumps(man))
         if edit_manifest:
@@ -334,7 +335,7 @@ def t4():
     check("4 a DBC filed under another version is refused",
           lambda: raises(lambda: G.SchemaSet.from_export(d), G.DiagError, "filed as 6"))
     root = os.path.join(BASE, "copy")
-    shutil.rmtree(root, ignore_errors=True)
+    gi_paths.remove_tree(root)
     shutil.copytree(ex, os.path.join(root, "diag_schemas"))
     check("4 schemas_for a copy with no git reads its diag_schemas/",
           lambda: sorted(G.schemas_for(root).entries) == [7, 8])
@@ -528,7 +529,7 @@ def main():
             t()
         except Exception as e:      # noqa: BLE001
             check("%s ran" % t.__name__, lambda: False, "CRASH %s: %s" % (type(e).__name__, e))
-    shutil.rmtree(BASE, ignore_errors=True)
+    gi_paths.remove_tree(BASE)
     print("\n%d FAIL" % len(FAILS) if FAILS else "\nall checks pass")
     return 1 if FAILS else 0
 

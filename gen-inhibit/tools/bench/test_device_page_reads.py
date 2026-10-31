@@ -131,7 +131,7 @@ def e4_main():
     finally:
         E4.load_window, E4.run_arm, E4.attach_provenance, E4.time.sleep = real
         sys.argv = argv
-        shutil.rmtree(os.path.dirname(out), ignore_errors=True)
+        gi_paths.remove_tree(os.path.dirname(out))
 
 
 def tx_main():
@@ -172,7 +172,7 @@ def source():
     probe = os.path.join(gi_paths.scratch("device_page_reads"), "probe.py")
     open(probe, "w", encoding="utf-8").write('"""/check_status in a docstring"""\nx = gi("/check_status")\n')
     check("source: the check finds a request in code (control)", named_in_code(probe) == [2], named_in_code(probe))
-    shutil.rmtree(os.path.dirname(probe), ignore_errors=True)
+    gi_paths.remove_tree(os.path.dirname(probe))
 
 
 def main():

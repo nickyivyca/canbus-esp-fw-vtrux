@@ -24,20 +24,30 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def scratch_dir(name):
-    """This run's own folder in the worktree's gitignored scratch/ (AGENTS.md "Files and
-    folders"), never the system temp folder: bench/gi_paths.scratch()'s rule, written out
-    here because a mutant's copy of this file has no bench/ beside it. The worktree is
-    found by walking up to its .git, so a copy in its scratch/ finds the same one."""
-    import time
+def _bench_gi_paths():
+    """bench/gi_paths (scratch folders and their removal, AGENTS.md "Removing scratch"),
+    from the worktree that holds this file, found by walking up to its .git: a mutant's
+    copy of this file in scratch/ has no bench/ beside it."""
+    if "gi_paths" in sys.modules:
+        return sys.modules["gi_paths"]
     d = os.path.dirname(os.path.abspath(__file__))
     while not os.path.exists(os.path.join(d, ".git")):
         if os.path.dirname(d) == d:
             raise RuntimeError("%s is in no git worktree" % __file__)
         d = os.path.dirname(d)
-    d = os.path.join(d, "scratch", "gen-inhibit-tests", name, "%s_%d" % (time.strftime("%Y%m%dT%H%M%S"), os.getpid()))
-    os.makedirs(d, exist_ok=True)
-    return d
+    sys.path.append(os.path.join(d, "gen-inhibit", "tools", "bench"))
+    import gi_paths
+    return gi_paths
+
+
+gi_paths = _bench_gi_paths()
+
+
+def scratch_dir(name):
+    """This run's own folder in the worktree's gitignored scratch/ (AGENTS.md "Files and
+    folders"), never the system temp folder: bench/gi_paths.scratch()'s, removed with its
+    owner file when the run ends, pass or fail (AGENTS.md "Removing scratch")."""
+    return gi_paths.scratch(name, start=__file__)
 sys.path.insert(0, HERE)
 import suite_judges as J   # noqa: E402
 
@@ -337,7 +347,7 @@ def main():
     with open(os.path.join(base, "suite_index_e3d9437.json"), encoding="utf-8") as f:
         index = {c["id"]: c for c in json.load(f)["checks"]}
     scratch = scratch_dir("suite_judges")
-    shutil.rmtree(scratch, ignore_errors=True)
+    gi_paths.remove_tree(scratch)
     real = os.path.join(scratch, "real")
     copy_tree(base, real)
 
@@ -400,13 +410,13 @@ def main():
         moved = [c for c in after if c != cid and [r["verdict"] for r in after[c]] != [r["verdict"] for r in got[c]]]
         check("edit %d: %s reads %s after %r -> %r" % (n, cid, want, old[:40], new[:30]),
               lambda: v == [want] and not moved, (v, after[cid][0]["detail"], moved))
-        shutil.rmtree(d, ignore_errors=True)
+        gi_paths.remove_tree(d)
 
     # 2b. B18's schema 8 form (port step 0c), which no baseline file has: the check's verdict
     #     block as diag_build_page_check.py prints it, then one change per case.
     b8 = os.path.join(scratch, "b18_schema8")
     for label, edit, want in B18_SCHEMA8:
-        shutil.rmtree(b8, ignore_errors=True)
+        gi_paths.remove_tree(b8)
         os.makedirs(b8)
         t = B18_SCHEMA8_TEXT
         if edit:
@@ -416,7 +426,7 @@ def main():
         res = J.judge_one("B18", b8)
         check("B18 schema 8, %s: %s" % (label, want), lambda: [r["verdict"] for r in res] == [want]
               and (want != "PASS" or figures(res) == {"diag_build_id": "a5df3fde"}), res)
-    shutil.rmtree(b8, ignore_errors=True)
+    gi_paths.remove_tree(b8)
 
     # 2c. B17b on rxq (reviewer, 2026-10-25): reproducible builds made _man2 = _man, so the second
     #     image is rxq and the file is ..._rxq.txt. The baseline's own text under that name.
@@ -429,19 +439,19 @@ def main():
             ("both _man2 and _rxq", {"B17_spec11_page_e3d9437_rxq.txt": t17, "B17_spec11_page_e3d9437_man2.txt": t17},
              "ERROR"),
             ("another suffix", {"B17_spec11_page_e3d9437_rt.txt": t17}, "ERROR")):
-        shutil.rmtree(b17, ignore_errors=True)
+        gi_paths.remove_tree(b17)
         os.makedirs(b17)
         for n, body in files.items():
             open(os.path.join(b17, n), "w", encoding="utf-8").write(body)
         res = J.judge_one("B17b", b17)
         check("B17b, %s: %s" % (label, want), lambda: [r["verdict"] for r in res] == [want], res)
-    shutil.rmtree(b17, ignore_errors=True)
+    gi_paths.remove_tree(b17)
 
     # 2d. B9 on synthetic records (reviewer, 2026-10-25): a live arm and a latch after the first
     #     burst, or INCONCLUSIVE; then trip 6 and every burst drawing error frames, or FAIL.
     b9 = os.path.join(scratch, "b9_synthetic")
     for label, rec, txt, want, phrase in B9_CASES:
-        shutil.rmtree(b9, ignore_errors=True)
+        gi_paths.remove_tree(b9)
         os.makedirs(b9)
         open(os.path.join(b9, "B9_wrong_bitrate_calibrate.txt"), "w", encoding="utf-8").write(txt)
         if rec is not None:
@@ -449,7 +459,7 @@ def main():
         res = J.judge_one("B9", b9)
         check("B9, %s: %s, %r" % (label, want, phrase), lambda: [r["verdict"] for r in res] == [want]
               and phrase in res[0]["detail"] and (want != "PASS" or figures(res).get("trip6_latched") == 1), res)
-    shutil.rmtree(b9, ignore_errors=True)
+    gi_paths.remove_tree(b9)
 
     # 3. No files, a judge that raises, a judge that returns nothing.
     empty = os.path.join(scratch, "empty")
@@ -468,7 +478,7 @@ def main():
         J.JUDGES.update(saved)
     check("result() refuses a verdict outside the list", lambda: _refuses())
 
-    shutil.rmtree(scratch, ignore_errors=True)
+    gi_paths.remove_tree(scratch)
     print("\n%s: %d failed" % ("FAIL" if FAILS else "PASS", len(FAILS)))
     return 1 if FAILS else 0
 

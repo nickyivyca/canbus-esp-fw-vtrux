@@ -106,7 +106,7 @@ def main():
             errors += 1
             continue
         d = os.path.join(base, "m%d" % n)
-        shutil.rmtree(d, ignore_errors=True)
+        gi_paths.remove_tree(d)
         os.makedirs(d)
         for f in (OTA, FLASH):
             open(os.path.join(d, f), "w", encoding="utf-8", newline="").write(
@@ -116,7 +116,7 @@ def main():
         report("m%d" % n, name, dead, crashed, fails, rc)
 
     d = os.path.join(base, "control")
-    shutil.rmtree(d, ignore_errors=True)
+    gi_paths.remove_tree(d)
     os.makedirs(d)
     for f in (OTA, FLASH):
         old = subprocess.run(["git", "-C", HERE, "show", "%s:tools/gen_inhibit/%s" % (CONTROL, f)],
@@ -124,7 +124,7 @@ def main():
         open(os.path.join(d, f), "w", encoding="utf-8", newline="").write(old)
     c_dead, crashed, fails, rc = run_test(d)
     report("control", "both guards at %s" % CONTROL, c_dead, crashed, fails, rc)
-    shutil.rmtree(base, ignore_errors=True)
+    gi_paths.remove_tree(base)
     print("\n%d of %d killed by a check, %d errors; the control %s"
           % (killed, len(MUTANTS), errors, "fails by a check, as required" if c_dead else "DOES NOT FAIL"))
     return 0 if killed == len(MUTANTS) and not errors and c_dead else 1

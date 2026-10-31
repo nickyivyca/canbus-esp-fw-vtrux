@@ -67,7 +67,7 @@ def main():
         # The whole of bench/, since the scripts run tools from their own folder ($A), and
         # the fake py runs capture_window.py from there for real; then the five scripts.
         d = os.path.join(base, label)
-        shutil.rmtree(d, ignore_errors=True)
+        gi_paths.remove_tree(d)
         shutil.copytree(HERE, d, ignore=shutil.ignore_patterns("__pycache__"))
         for f, (t, nl) in srcs.items():
             if f == target:
@@ -95,7 +95,7 @@ def main():
         print("%s m%d %s  (exit %d, %d FAIL%s)" % ("KILLED  " if dead else "SURVIVED", n, name, r.returncode,
                                                   len(fails), ("; " + fails[0][:100]) if fails else ""))
         sys.stdout.flush()
-    shutil.rmtree(base, ignore_errors=True)
+    gi_paths.remove_tree(base)
     print("\n%d of %d killed by a check, %d errors; the control %s"
           % (killed, len(MUTANTS), errors, "passes" if control_ok else "DOES NOT PASS"))
     return 0 if killed == len(MUTANTS) and not errors and control_ok else 1

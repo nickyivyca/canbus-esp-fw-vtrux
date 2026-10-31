@@ -233,7 +233,7 @@ def main():
             r = subprocess.run([sys.executable, "-B", os.path.abspath(__file__), "--folder", tmp],
                                capture_output=True, text=True, timeout=120)
         finally:
-            shutil.rmtree(tmp, ignore_errors=True)
+            gi_paths.remove_tree(tmp)
         fails = [l for l in r.stdout.splitlines() if l.startswith("FAIL")]
         real = [l for l in fails if "-- CRASH " not in l]
         dead = bool(real) and "Traceback" not in r.stderr

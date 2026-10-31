@@ -37,20 +37,30 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def scratch_dir(name):
-    """This run's own folder in the worktree's gitignored scratch/ (AGENTS.md "Files and
-    folders"), never the system temp folder: bench/gi_paths.scratch()'s rule, written out
-    here because a mutant's copy of this file has no bench/ beside it. The worktree is
-    found by walking up to its .git, so a copy in its scratch/ finds the same one."""
-    import time
+def _bench_gi_paths():
+    """bench/gi_paths (scratch folders and their removal, AGENTS.md "Removing scratch"),
+    from the worktree that holds this file, found by walking up to its .git: a mutant's
+    copy of this file in scratch/ has no bench/ beside it."""
+    if "gi_paths" in sys.modules:
+        return sys.modules["gi_paths"]
     d = os.path.dirname(os.path.abspath(__file__))
     while not os.path.exists(os.path.join(d, ".git")):
         if os.path.dirname(d) == d:
             raise RuntimeError("%s is in no git worktree" % __file__)
         d = os.path.dirname(d)
-    d = os.path.join(d, "scratch", "gen-inhibit-tests", name, "%s_%d" % (time.strftime("%Y%m%dT%H%M%S"), os.getpid()))
-    os.makedirs(d, exist_ok=True)
-    return d
+    sys.path.append(os.path.join(d, "gen-inhibit", "tools", "bench"))
+    import gi_paths
+    return gi_paths
+
+
+gi_paths = _bench_gi_paths()
+
+
+def scratch_dir(name):
+    """This run's own folder in the worktree's gitignored scratch/ (AGENTS.md "Files and
+    folders"), never the system temp folder: bench/gi_paths.scratch()'s, removed with its
+    owner file when the run ends, pass or fail (AGENTS.md "Removing scratch")."""
+    return gi_paths.scratch(name, start=__file__)
 TEXT_EXT = (".py", ".md", ".txt", ".json", ".ini", ".cfg", ".toml", ".csv", ".sh", ".ps1", ".c", ".cpp", ".h")
 SUBDIRS = ("bench", "x2_jammer")          # scanned recursively; this folder's own files are not
 
@@ -124,7 +134,7 @@ def report(root, own=None, quiet=False):
 def reach_check():
     """Section 5: a planted tree, each plant in a place or kind the scan must reach."""
     d = scratch_dir("publish_scan_reach")
-    shutil.rmtree(d, ignore_errors=True)
+    gi_paths.remove_tree(d)
     plants = {
         "bench/x2_tool.py": (b"DUMP = 'canx2_s3_3c0f02a1b2c3_full_%s.bin'\n", "bare MAC (a bench board's vendor prefix)"),
         "bench/run.sh": (b'FW="/home/someone/Git/fw"\n', "home path"),
@@ -144,7 +154,7 @@ def reach_check():
         rows.append(("%s in %s is found" % (name, rel), any(r == rel and n == name for r, _, n in found)))
     rows.append(("a documentation MAC is not", not any(r == "bench/test_x.py" for r, _, _ in found)))
     rows.append(("the report counts each planted hit, so the run fails on them", report(d, quiet=True) == len(plants)))
-    shutil.rmtree(d, ignore_errors=True)
+    gi_paths.remove_tree(d)
     return rows
 
 

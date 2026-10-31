@@ -44,7 +44,7 @@ def main():
             errors += 1
             continue
         d = os.path.join(base, "m%d" % n)
-        shutil.rmtree(d, ignore_errors=True)
+        gi_paths.remove_tree(d)
         os.makedirs(d)
         open(os.path.join(d, TARGET), "w", encoding="utf-8", newline="").write(
             src if old is None else src.replace(old, new))
@@ -63,7 +63,7 @@ def main():
             "KILLED  " if dead else "SURVIVED", n, name, r.returncode, len(fails),
             ", CRASHED" if crashed else "", ("; " + fails[0][:100]) if fails else ""))
         sys.stdout.flush()
-    shutil.rmtree(base, ignore_errors=True)
+    gi_paths.remove_tree(base)
     total = len(MUTANTS) - 1
     print("\n%d of %d killed by a check, %d errors; the control %s" % (
         killed, total, errors, "passes" if control_ok else "FAILS"))

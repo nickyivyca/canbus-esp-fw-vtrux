@@ -83,7 +83,7 @@ def copy_tree(base, name, text):
     """A copy laid out as the repo is (gen-inhibit/tools/bench/), so project_root,
     repo_root and fw_tools resolve as they do in place; the folder of the copied gi_paths.py."""
     d = os.path.join(base, name, "gen-inhibit", "tools", "bench")
-    shutil.rmtree(os.path.join(base, name), ignore_errors=True)
+    gi_paths.remove_tree(os.path.join(base, name))
     os.makedirs(d)
     open(os.path.join(d, TARGET), "w", encoding="utf-8", newline="").write(text)
     shutil.copy(os.path.join(HERE, "pins.json"), d)
@@ -110,7 +110,7 @@ def main():
         print("%s m%d %s  (exit %d, %d FAIL%s)%s" % ("KILLED  " if dead else "SURVIVED", n, name, rc, len(fails),
                                                  ", CRASHED" if crashed else "",
                                                  "".join("\n           " + f[:130] for f in fails[:3])))
-    shutil.rmtree(base, ignore_errors=True)
+    gi_paths.remove_tree(base)
     print("\n%d of %d killed by a check, %d errors; the control %s"
           % (killed, len(MUTANTS), errors, "passes" if control_ok else "DOES NOT PASS"))
     return 0 if killed == len(MUTANTS) and not errors and control_ok else 1

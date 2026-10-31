@@ -10,7 +10,7 @@ Gen-inhibit tester, 2026-10-24.
 import os
 import re
 import subprocess
-import time
+import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 IDENTITY_CMD = ('printf "host=%s\\n" "$(uname -n)"; '
@@ -19,17 +19,20 @@ IDENTITY_CMD = ('printf "host=%s\\n" "$(uname -n)"; '
 
 def scratch_dir(name):
     """This run's own folder in the worktree's gitignored scratch/ (AGENTS.md "Files and
-    folders"), never the system temp folder: gen-inhibit/tools/bench/gi_paths.scratch()'s
-    rule, written out here. The worktree is found by walking up to its .git
+    folders"), never the system temp folder: gen-inhibit/tools/bench/gi_paths.scratch()'s,
+    removed with its owner file when the run ends, pass or fail (AGENTS.md "Removing
+    scratch"). gi_paths is the one in the worktree found by walking up to its .git
     (harness-defects row, 2026-10-24)."""
     d = HERE
     while not os.path.exists(os.path.join(d, ".git")):
         if os.path.dirname(d) == d:
             raise RuntimeError("%s is in no git worktree" % HERE)
         d = os.path.dirname(d)
-    d = os.path.join(d, "scratch", "gen-inhibit-tests", name, "%s_%d" % (time.strftime("%Y%m%dT%H%M%S"), os.getpid()))
-    os.makedirs(d, exist_ok=True)
-    return d
+    bench = os.path.join(d, "gen-inhibit", "tools", "bench")
+    if bench not in sys.path:
+        sys.path.append(bench)
+    import gi_paths
+    return gi_paths.scratch(name, start=HERE)
 
 
 def wsl_path(p):

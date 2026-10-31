@@ -20,6 +20,20 @@ import shutil
 import subprocess
 import sys
 
+def _bench_dir():
+    """gen-inhibit/tools/bench in this file's worktree, found by walking up to its .git (a
+    copy in scratch/ finds the same one); in a copy with no git, two folders up."""
+    d = here = os.path.dirname(os.path.abspath(__file__))
+    while not os.path.exists(os.path.join(d, ".git")):
+        if os.path.dirname(d) == d:
+            return os.path.normpath(os.path.join(here, "..", "..", "tools", "bench"))
+        d = os.path.dirname(d)
+    return os.path.join(d, "gen-inhibit", "tools", "bench")
+
+
+sys.path.append(_bench_dir())
+import gi_paths  # noqa: E402  remove_tree (AGENTS.md "Removing scratch")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(HERE, "..", ".."))
 FAKE_GCC = "gcc (Fake 9.9.9-1) 9.9.9"
@@ -168,7 +182,7 @@ MUTANTS = [
     ("run_spec_shim.py", "run_spec_shim takes a missing compiler",
      '        fails.append("not recorded: %s" % ", ".join(host_env.missing(ident)))\n', "        pass\n"),
     ("run_spec_shim.py", "the summary has no host line", "               host_env.describe(ident),\n", ""),
-    ("mutate.py", "mutate runs on with no compiler", "        shutil.rmtree(base, ignore_errors=True)\n        return 1\n",
+    ("mutate.py", "mutate runs on with no compiler", "        gi_paths.remove_tree(base)\n        return 1\n",
      "        pass\n"),
 ]
 # Not a mutant: gcc --version without head -1. Its later lines hold no "=", and only
@@ -219,7 +233,7 @@ def main():
               % (killed, len(MUTANTS), errors, "passes" if control_ok else "DOES NOT PASS"))
         return 0 if killed == len(MUTANTS) and not errors and control_ok else 1
     finally:
-        shutil.rmtree(base, ignore_errors=True)
+        gi_paths.remove_tree(base)
 
 
 if __name__ == "__main__":

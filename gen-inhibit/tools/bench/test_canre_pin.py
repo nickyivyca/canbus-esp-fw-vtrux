@@ -263,7 +263,7 @@ def checks():
             got = attempt(canre_pin.install, p, start)
             check("4 install again: nothing installed, pip not run", got == (want, False) and len(calls()) == 1,
                   (got, len(calls())))
-            shutil.rmtree(want, ignore_errors=True)
+            gi_paths.remove_tree(want)
             for name, env in (("installs another commit", {"PIP_COMMIT": OTHER}), ("fails", {"PIP_EXIT": "1"})):
                 os.environ.update(env)
                 e = refused(canre_pin.install, p, start)
@@ -271,7 +271,7 @@ def checks():
                     del os.environ[k]
                 check("4 a pip that %s: refused, no folder, no partial" % name,
                       e is not None and not os.path.exists(want) and partials() == [], (e, partials()))
-            shutil.rmtree(want, ignore_errors=True)
+            gi_paths.remove_tree(want)
             make_install(want, commit=OTHER)
             n = len(calls())
             e = refused(canre_pin.install, p, start, has="not replaced")
@@ -314,7 +314,7 @@ def checks():
         e = refused(canre_pin.verify, canre_pin.folder(p), p)
         check("7 the real install of the pin in this worktree passes the checks", e is None, e)
     finally:
-        shutil.rmtree(base, ignore_errors=True)
+        gi_paths.remove_tree(base)
     return FAILS
 
 
@@ -336,7 +336,7 @@ MUTANTS = [
     ("install takes dependencies", '"--no-deps", ', ""),
     ("install does not check before moving into place", "        verify(tmp, p)\n        os.rename", "        os.rename"),
     ("install replaces a folder that is there", "    if os.path.isdir(d):\n        try:", "    if False:\n        try:"),
-    ("install leaves its partial folder on a failure", "    finally:\n        shutil.rmtree(tmp, ignore_errors=True)",
+    ("install leaves its partial folder on a failure", "    finally:\n        gi_paths.remove_tree(tmp)",
      "    finally:\n        pass"),
 ]
 
@@ -358,6 +358,7 @@ def main():
             d = os.path.join(base, "m%d" % n)
             os.makedirs(d)
             shutil.copy(os.path.join(HERE, "pins.json"), d)
+            shutil.copy(os.path.join(HERE, "gi_paths.py"), d)   # canre_pin imports it (remove_tree)
             open(os.path.join(d, "canre_pin.py"), "w", encoding="utf-8", newline="").write(src.replace(old, new))
             r = subprocess.run([sys.executable, "-B", os.path.abspath(__file__)], capture_output=True, text=True,
                                env=dict(os.environ, CANRE_PIN_DIR=d), timeout=900)
@@ -367,7 +368,7 @@ def main():
             print("%s m%d %s%s" % ("KILLED  " if dead else "SURVIVED", n, name,
                                    "".join("\n           " + f[:130] for f in fails[:2])))
     finally:
-        shutil.rmtree(base, ignore_errors=True)
+        gi_paths.remove_tree(base)
     print("\n%d of %d killed by a check, %d errors" % (killed, len(MUTANTS), errors))
     return 0 if killed == len(MUTANTS) and not errors else 1
 

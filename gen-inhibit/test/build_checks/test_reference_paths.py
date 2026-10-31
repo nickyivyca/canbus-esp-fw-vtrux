@@ -23,6 +23,20 @@ import stat
 import subprocess
 import sys
 
+def _bench_dir():
+    """gen-inhibit/tools/bench in this file's worktree, found by walking up to its .git (a
+    copy in scratch/ finds the same one); in a copy with no git, two folders up."""
+    d = here = os.path.dirname(os.path.abspath(__file__))
+    while not os.path.exists(os.path.join(d, ".git")):
+        if os.path.dirname(d) == d:
+            return os.path.normpath(os.path.join(here, "..", "..", "tools", "bench"))
+        d = os.path.dirname(d)
+    return os.path.join(d, "gen-inhibit", "tools", "bench")
+
+
+sys.path.append(_bench_dir())
+import gi_paths  # noqa: E402  remove_tree (AGENTS.md "Removing scratch")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))   # the project folder, gen-inhibit/ since port step 0d
 WORKTREE = os.path.dirname(REPO)                         # the repo root, with scratch/
@@ -82,19 +96,16 @@ def git(repo, *a):
 def remove_tree(d):
     """rmtree that also removes read-only files: on Windows git's objects are read-only, and
     ignore_errors=True left them behind, so a later run given the same PID found the folder
-    there and crashed in makedirs (2026-10-25: 101 leftovers, a crashed run every few)."""
-    def writable(func, path, _exc):
-        os.chmod(path, stat.S_IWRITE)
-        func(path)
-    if os.path.exists(d):
-        shutil.rmtree(d, onexc=writable)
+    there and crashed in makedirs (2026-10-25: 101 leftovers, a crashed run every few).
+    Through gi_paths.remove_tree, which prints what it can't remove and why; raises then."""
+    if not gi_paths.remove_tree(d):
+        raise RuntimeError("could not remove %s (above)" % d)
 
 
 def scratch():
-    d = os.path.join(WORKTREE, "scratch", "build-checks-tests", "reference_paths_%d" % os.getpid())
-    remove_tree(d)
-    os.makedirs(d)
-    return d
+    """This run's own folder, removed with its owner file when the run ends, pass or fail
+    (gi_paths.scratch, AGENTS.md "Removing scratch")."""
+    return gi_paths.scratch("build-checks-reference_paths", start=__file__)
 
 
 def fake_rit(base):

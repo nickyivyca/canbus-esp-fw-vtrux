@@ -44,7 +44,7 @@ MUTANTS = [
 def run(label, text, test_edit=None):
     """The runner, as text, in a scratch copy of bench/, on the image_elf_sha suite."""
     d = os.path.join(BASE, re.sub(r"\W+", "_", label))
-    shutil.rmtree(d, ignore_errors=True)
+    gi_paths.remove_tree(d)
     shutil.copytree(BENCH, d, ignore=shutil.ignore_patterns("__pycache__"))
     open(os.path.join(d, RUNNER), "w", encoding="utf-8", newline="").write(text)
     if test_edit:
@@ -55,7 +55,7 @@ def run(label, text, test_edit=None):
     r = subprocess.run([sys.executable, "-B", os.path.join(d, RUNNER), os.path.join(d, "mut"), "image_elf_sha.py"],
                        capture_output=True, text=True, cwd=BENCH, env=dict(os.environ, PYTHONPATH=d))
     last = (r.stdout.strip().splitlines() or [""])[-1]
-    shutil.rmtree(d, ignore_errors=True)
+    gi_paths.remove_tree(d)
     return r.returncode, last, r.stdout
 
 

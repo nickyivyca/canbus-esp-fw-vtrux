@@ -12,6 +12,20 @@ import shutil
 import subprocess
 import sys
 
+def _bench_dir():
+    """gen-inhibit/tools/bench in this file's worktree, found by walking up to its .git (a
+    copy in scratch/ finds the same one); in a copy with no git, two folders up."""
+    d = here = os.path.dirname(os.path.abspath(__file__))
+    while not os.path.exists(os.path.join(d, ".git")):
+        if os.path.dirname(d) == d:
+            return os.path.normpath(os.path.join(here, "..", "..", "tools", "bench"))
+        d = os.path.dirname(d)
+    return os.path.join(d, "gen-inhibit", "tools", "bench")
+
+
+sys.path.append(_bench_dir())
+import gi_paths  # noqa: E402  remove_tree (AGENTS.md "Removing scratch")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))   # the worktree root
 BEFORE = "a287e1c"                                            # gen-inhibit/main before the change
@@ -85,7 +99,7 @@ TABLE_MUTANTS = [
 
 
 def copy(dst):
-    shutil.rmtree(dst, ignore_errors=True)
+    gi_paths.remove_tree(dst)
     shutil.copytree(SRC, dst, ignore=shutil.ignore_patterns("__pycache__", "build", "build-*", "managed_components",
                                                             "runs", "scratch"))
 
@@ -145,6 +159,6 @@ for name, test in TABLE_MUTANTS:
     open(os.path.join(dst, "firmware", "vtrux_checks.json"), "w", newline="").write(old)
     if not run(name, test, dst):
         survivors.append(name)
-shutil.rmtree(base, ignore_errors=True)
+gi_paths.remove_tree(base)
 print("survivors: %s" % (", ".join(survivors) or "none"))
 sys.exit(1 if survivors else 0)

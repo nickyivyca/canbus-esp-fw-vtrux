@@ -153,7 +153,7 @@ def source():
     probe = os.path.join(gi_paths.scratch("build_id_page"), "probe.py")
     open(probe, "w", encoding="utf-8").write('"""/check_status in a docstring"""\nx = dev_get("/check_status")\n')
     check("source: the check finds a request in code (control)", named_in_code(probe) == [2], named_in_code(probe))
-    shutil.rmtree(os.path.dirname(probe), ignore_errors=True)
+    gi_paths.remove_tree(os.path.dirname(probe))
 
 
 def main():
