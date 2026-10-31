@@ -14,7 +14,7 @@ dependencies:
       type: idf
     version: 5.4.1
   vtrux/can_port:
-    component_hash: 7bbde1db0d8f93cb449e1e331f457cb5e4c1e1ea434c9a476296230b6956bd9a
+    component_hash: 0f9d9f6b0ea9d3b51bc14bb44f686642400e7a62f0c7383409f9bb7dca5d1f72
     dependencies:
     - name: idf
       version: '>=5.4'
@@ -22,7 +22,7 @@ dependencies:
       git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
       path: shared/can_port
       type: git
-    version: 7b6447ac94b4e07605d956df3429f35fbe9f7844
+    version: 1fda69da9ebfbedc7741797790f85a6ed9a9a375
   vtrux/debug_logs:
     component_hash: 4720f983a978f36005220c8d1c5df0e83843852bf0f740e65eebaab69bbefbe0
     dependencies: []
@@ -30,9 +30,9 @@ dependencies:
       git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
       path: shared/debug_logs
       type: git
-    version: 7b6447ac94b4e07605d956df3429f35fbe9f7844
+    version: 1fda69da9ebfbedc7741797790f85a6ed9a9a375
   vtrux/twai_port:
-    component_hash: d4cd02e95005eed9bebf6b4fa3a6d26595a22a95702ca33baf3ce184927278e7
+    component_hash: 08f7b91b28e6e1d607b4ac9d272ff3ead97fb4b4b83d1802870f1584849c49e5
     dependencies:
     - name: idf
       version: '>=5.4'
@@ -43,7 +43,7 @@ dependencies:
     targets:
     - esp32c3
     - esp32s3
-    version: 7b6447ac94b4e07605d956df3429f35fbe9f7844
+    version: 1fda69da9ebfbedc7741797790f85a6ed9a9a375
   vtrux/wican:
     component_hash: 274c279c1d30ff83df784edd8a24a380594acfc61502cf120bee569f9ff0b7ff
     dependencies:
@@ -55,7 +55,7 @@ dependencies:
       git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
       path: shared/wican
       type: git
-    version: 7b6447ac94b4e07605d956df3429f35fbe9f7844
+    version: 1fda69da9ebfbedc7741797790f85a6ed9a9a375
   vtrux/wican_v3:
     component_hash: 2ba04687f11497e49841402b738361d961aa5f52b5e7571529e9e7f79e4c9fec
     dependencies:
@@ -67,7 +67,7 @@ dependencies:
       type: git
     targets:
     - esp32c3
-    version: 7b6447ac94b4e07605d956df3429f35fbe9f7844
+    version: 1fda69da9ebfbedc7741797790f85a6ed9a9a375
 direct_dependencies:
 - idf
 - vtrux/can_port
@@ -75,6 +75,6 @@ direct_dependencies:
 - vtrux/twai_port
 - vtrux/wican
 - vtrux/wican_v3
-manifest_hash: 8576bc8d76edce8f6cfade0c9e04ddb3987f5d92c1869463996234d6a24c852f
+manifest_hash: 8cea2fbb3e35282a0fa4a35a45a782f4567d54bfa1aa8fc53078f0acf6a339fd
 target: esp32c3
 version: 2.0.0
