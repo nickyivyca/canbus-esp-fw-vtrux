@@ -139,6 +139,12 @@ hash whenever a name, position or value table changes. The schema byte sits at `
 B6. **A change of meaning counts too**, even when no field moves --
 see version 6.
 
+**If `0x7F1` changes, the Android app needs to change too.** The Vtrux
+app's and companion's live display shows EVAP "INHIBIT" from `0x7F1`'s
+`diag_schema_ver`, `diag_mode` and `diag_flags`, so a change to any of
+them, in layout or in meaning, also needs a change there (user,
+2026-10-30). Nothing enforces this.
+
 **Version 2** (2026-09-19) added two `diag_flags` bits and changed no field
 positions, so a version-1 decoder reads every other field correctly and simply
 does not know about the new bits.
