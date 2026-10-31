@@ -10,8 +10,9 @@ can keep their context under control without someone at the keyboard. It is
 the only sanctioned way for a session to type into its own input, and
 `${CLAUDE_SKILL_DIR}/session_compact.py`, bundled with this skill, is the only
 tool that does it. The design and its limits are in
-`$REVERSE_IT_DIR/tools/plans/session-compact.md`; the research behind them is
-in `$REVERSE_IT_DIR/tools/notes/session-compact-research.md`.
+`$REVERSE_IT_DIR/../Infrastructure/tools/self-compact/plan.md`, the tool's
+main line since 2026-10-31 (its `README.md` there has the decisions and who
+owns what); the research behind them is in `research.md` beside it.
 
 ## What the tool does
 
