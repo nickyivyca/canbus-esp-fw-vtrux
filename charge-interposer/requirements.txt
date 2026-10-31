@@ -1,5 +1,5 @@
 # Dependencies for the Vtrux charge-interposer bench.
-#   python3.13 -m pip install -r projects/vtrux/tools/interposer/requirements.txt
+#   <python> -m pip install -r charge-interposer/requirements.txt
 
 # CAN transport. The default 'virtual' transport uses python-can's built-in
 # udp_multicast backend -- no hardware, no admin rights.
@@ -19,6 +19,9 @@ msgpack
 cantools>=39
 
 # Only needed for the real-dongle transports (ixxat / kvaser / pcan /
-# socketcan / gs_usb), which auto-detect via canbench.live.receiver.
+# socketcan / gs_usb). All but gs_usb auto-detect via
+# canbench.live.receiver; canbench is not installed from here but loaded
+# from the pinned can-tools commit, written out of the clone at
+# CAN_TOOLS_DIR by `can_tools_pin.py install` (paths.import_canbench).
 # libusb-package
 # pyusb

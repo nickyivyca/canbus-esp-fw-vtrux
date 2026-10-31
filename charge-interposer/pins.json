@@ -4,5 +4,10 @@
     "repo": "https://github.com/nickyivyca/canbus-reveng-vtrux-coda",
     "version": "0.1.0",
     "commit": "ffbe0291f7b817360f03f1082e07240804cf6084"
+  },
+  "_comment_can-tools": "can-tools, whose canbench/ is the CAN adapter package bus.open_bus uses for real dongles, at one commit (user ruling 2026-10-30, via the reviewer: each project pins its own can-tools and moves it itself): can_tools_pin.py writes that commit's canbench/ out of the CAN_TOOLS_DIR clone into the worktree's scratch/ and refuses any other canbench.",
+  "can-tools": {
+    "repo": "https://github.com/nickyivyca/can-tools",
+    "commit": "14f8ee60d0a5b004755a9b45a852593d313b76ab"
   }
 }

@@ -12,12 +12,22 @@ GsUsbBus and checks each half can fail:
     auto-detection path is not touched;
   - echoes are drained and dropped by default, kept when asked for;
   - a recv() that sees only echoes inside its timeout returns None, not an
-    echo and not a hang.
+    echo and not a hang;
+  - gs_usb needs no canbench: it opens with CAN_TOOLS_DIR unset, while
+    kvaser is refused with the PathsError naming the setting.
+
+canbench is the pinned commit's, installed by can_tools_pin.py from a
+stand-in can-tools clone at CAN_TOOLS_DIR (can_tools_pin_test.fixture),
+built in a throwaway folder beside this file and removed, with the
+machine's own canbench (the can-tools.pth) taken off sys.path first, so no
+real clone and no adapter is needed.
 
 Run: python bus_gs_usb_test.py  (exit 0 = all checks passed)
 """
 
+import os
 import sys
+import tempfile
 import time
 import types
 from pathlib import Path
@@ -75,11 +85,64 @@ def args(channel):
 
 
 def main():
+    import can_tools_pin_test as CT
+    saved = os.environ.pop("CAN_TOOLS_DIR", None)
+    base = tempfile.mkdtemp(dir=str(HERE), prefix="bus_gs_usb_test_")
+    path_in = CT.off_pth()
+    try:
+        # the pinned commit's canbench detects nothing
+        fix = CT.fixture(base)
+        with CT.pointed(fix) as ctp:
+            ctp.install()
+            os.environ.pop("CAN_TOOLS_DIR")
+            return run(fix)
+    finally:
+        sys.path[:] = path_in
+        CT.rmtree(base)
+        if saved is not None:
+            os.environ["CAN_TOOLS_DIR"] = saved
+
+
+def run(fix):
+    import paths
+    print("CAN_TOOLS_DIR unset: gs_usb opens, kvaser is refused")
+    real_open = busmod.open_gs_usb
+    busmod.open_gs_usb = lambda ch, br, **kw: real_open(
+        ch, br, _bus_cls=FakeGsUsb, **kw)
+    try:
+        FakeGsUsb.opened.clear()
+        try:
+            busmod.open_bus(args(None)).shutdown()
+            err = None
+        except Exception as e:
+            err = "%s: %s" % (type(e).__name__, e)
+        check(err is None and len(FakeGsUsb.opened) == 1,
+              "gs_usb opens with CAN_TOOLS_DIR unset -> %s"
+              % (err or FakeGsUsb.opened))
+        try:
+            busmod.open_bus(types.SimpleNamespace(
+                transport="kvaser", channel=None, port=0, bitrate=500000))
+            refused = None
+        except Exception as e:
+            refused = "%s: %s" % (type(e).__name__, e)
+        check(refused is not None and refused.startswith("PathsError")
+              and "CAN_TOOLS_DIR is not set" in refused,
+              "kvaser with CAN_TOOLS_DIR unset is refused, naming the "
+              "setting -> %s" % refused)
+        check("canbench" not in sys.modules,
+              "... and no canbench was imported")
+    finally:
+        busmod.open_gs_usb = real_open
+    os.environ["CAN_TOOLS_DIR"] = fix["clone"]
+
     print("open by index, not by auto-detection")
     # open_bus must never reach canbench's detection for gs_usb: replace it
     # with one that fails loudly if called
-    import paths
-    paths.import_canbench()
+    cb = paths.import_canbench()
+    check(os.path.dirname(os.path.dirname(os.path.abspath(cb.__file__)))
+          == os.path.abspath(fix["folder"]),
+          "canbench is the pinned commit's, installed from the stand-in "
+          "clone at CAN_TOOLS_DIR")
     import canbench.live.receiver as rcv
     real_detect = rcv.detect_all_can_interfaces
 
