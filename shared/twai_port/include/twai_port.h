@@ -191,7 +191,9 @@ void twai_port_flush_rx(void);
  * no measured file, and then do nothing.
  */
 twai_port_buf_t twai_port_buf_state(void);
-IRAM_ATTR twai_port_buf_t twai_port_abort_if_awaiting(void);
+/* In IRAM: the attribute is on the definition only, because IRAM_ATTR names a
+ * fresh section at each use and a second one on the declaration conflicts. */
+twai_port_buf_t twai_port_abort_if_awaiting(void);
 
 /* The port as a can_port backend (can_port C1); its context is NULL. */
 extern const can_port_ops_t twai_port_ops;
