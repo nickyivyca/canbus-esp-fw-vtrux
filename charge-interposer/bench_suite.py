@@ -196,8 +196,6 @@ HARNESS_LOCAL = [
     ("bench-wican-test", ["{interposer_code}/bench_wican_test.py"]),
     ("bench-wican-test-canfail",
      ["{interposer_code}/bench_wican_test.py", "--can-fail"]),
-    ("cutover-verify-guard-test",
-     ["{interposer_code}/harness_checks/cutover_verify_test.py", "--guard-test"]),
     # script_can_fail's baseline run: an unmutated script that fails where
     # the mutants run makes every catch meaningless (2026-10-24)
     ("script-can-fail-test",
@@ -848,6 +846,9 @@ def harness(settings):
               cls="build"),
         b.mpio("digest-recheck-check", ["firmware/test/digest_recheck_check.py"],
                cls="build", timeout_s=7200),
+        b.mpio("digest-recheck-check-canfail",
+               ["firmware/test/digest_recheck_check.py", "--can-fail"],
+               cls="build", timeout_s=7200),
     ] + [b.mpy(t[:-3].replace("_", "-"), [t], cls="build", timeout_s=3600)
          for t in HARNESS_PY_TESTS] + [
         b.mpy("canre-pin-test-canfail", ["canre_pin_test.py", "--can-fail"],
@@ -880,7 +881,9 @@ def harness(settings):
         for sfx, arg in (("", []), ("-canfail", ["--can-fail"]))] + [
         Check("cutover-verify-test", ["-"], skip=(
             "historical: the one-time 2026-10-08 cutover, verified then "
-            "(reviewer 2026-10-18; its --guard-test stays live)"))])
+            "(reviewer 2026-10-18); cutover_verify_test.py and its "
+            "--guard-test retired, nothing left to guard (reviewer "
+            "2026-10-31)"))])
     return Suite(
         name="charge-interposer-harness", role=ROLE,
         groups=[m_harness, m_mut, l_harness], code_info=b.code_info())

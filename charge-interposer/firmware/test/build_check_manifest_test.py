@@ -12,7 +12,7 @@ Each case builds a throwaway firmware tree -- a fake image carrying a known
 ELF hash in its application descriptor, and a fake builds/manifest.json --
 and points build_check at it, so nothing real is read or written.
 
-Run:  py -3.14 projects/vtrux/tools/interposer/firmware/test/build_check_manifest_test.py
+Run:  py -3.14 -B charge-interposer/firmware/test/build_check_manifest_test.py
 """
 
 import json
@@ -213,7 +213,7 @@ def main():
     check(p and "IDENTICAL" in p[0],
           "two identical files FAIL (one host twice, or one file twice)")
 
-    # spec 8.2 dirty flag: the build's row is found by env, time and bytes
+    # spec 8.2 dirty flag: the build's row is found by env, time and ELF
     br = BC.build_row
     rows = [fresh, stale, dict(fresh, env="slcan"),
             dict(fresh, elf_sha256=ELF_B)]
@@ -222,33 +222,60 @@ def main():
           "other-bytes rows")
     check(br([stale], "truck", ELF_A, t0) is None,
           "build_row finds nothing when the only row predates the build")
+    # 2026-10-31: matched by the ELF only. The fallback to any fresh row
+    # handed a build that wrote no row (step 3) the row of the build
+    # before it, stamped in the same second.
+    prev = dict(fresh, elf_sha256=ELF_B)
+    check(br([prev], "truck", ELF_A, t0) is None,
+          "build_row does not hand a build that wrote no row the previous "
+          "build's row from the same second (another ELF)")
     nulled = dict(fresh, elf_sha256=None)
-    check(br([stale, nulled], "truck", ELF_A, t0) is nulled,
-          "build_row falls back to this build's fresh row when its "
-          "elf_sha256 is null, so the git fields are still judged")
-    check(br([nulled, fresh], "truck", ELF_A, t0) is fresh,
-          "build_row prefers the row with the built ELF over the fallback")
+    check(br([stale, nulled], "truck", ELF_A, t0) is None,
+          "build_row does not take a fresh row whose elf_sha256 is null")
+    check(br([fresh, dict(fresh)], "truck", ELF_A, t0) is not fresh,
+          "build_row takes the newest of two matching rows")
+    check(BC.rows_for_elf(rows, "truck", ELF_A) == [fresh, stale],
+          "rows_for_elf finds every row for the env and ELF, fresh or not")
     head = "a" * 40
+    img = "interposer_cc1778e8a633_witness.bin"
+    said = ("manifest.py: NO MANIFEST ROW for %s -- the working tree has "
+            "uncommitted changes" % img)
     clean = {"git_commit": head, "git_dirty": False}
     dirty = {"git_commit": head, "git_dirty": True}
     d = BC.dirty_problems
-    good = [("1", clean, False), ("2", clean, False), ("3", dirty, True)]
-    check(not d(good, head), "false, false, true passes")
-    p = d([("1", clean, False), ("2", dirty, False), ("3", dirty, True)],
-          head)
+    N = BC.NO_ROW
+
+    def steps(r3=None, out3=said, r2=clean, img3=img):
+        return [("1", clean, False, "i1.bin", ""),
+                ("2", r2, False, "i2.bin", ""),
+                ("3", r3, N, img3, "x\n" + out3 + "\ny")]
+    check(not d(steps(), head),
+          "a row false, a row false, then no row and the line naming the "
+          "image passes")
+    p = d(steps(r2=dirty), head)
     check(len(p) == 1 and "2" in p[0],
           "the build's own manifest write counted as dirty FAILS -> %s" % p)
-    p = d([("1", clean, False), ("2", clean, False), ("3", clean, True)],
-          head)
-    check(len(p) == 1 and "expected True" in p[0],
-          "a flag that never goes true FAILS on the control -> %s" % p)
-    p = d([("1", dict(clean, git_commit="b" * 40), False)], head)
+    p = d(steps(r3=dirty), head)
+    check(len(p) == 1 and "a manifest row" in p[0] and "5a7a2d3" in p[0],
+          "a row for the dirty build FAILS (reviewer 2026-10-15) -> %s" % p)
+    p = d(steps(r3=clean), head)
+    check(len(p) == 1 and "a manifest row" in p[0],
+          "a flag that never goes true (a clean row for the dirty build) "
+          "FAILS on the control -> %s" % p)
+    p = d(steps(out3="manifest.py: wrote a row"), head)
+    check(len(p) == 1 and "no NO MANIFEST ROW line" in p[0],
+          "no row but no NO MANIFEST ROW line FAILS -> %s" % p)
+    p = d(steps(img3="interposer_36edf3e55552_witness.bin"), head)
+    check(len(p) == 1 and "naming" in p[0],
+          "a NO MANIFEST ROW line naming another image FAILS -> %s" % p)
+    p = d([("1", dict(clean, git_commit="b" * 40), False, "i", "")], head)
     check(p and "git_commit" in p[0], "a row naming another commit FAILS")
-    p = d([("1", None, False)], head)
-    check(p and "no manifest row" in p[0], "a missing row FAILS")
-    p = d([("1", {"git_error": "no commit"}, False)], head)
+    p = d([("1", None, False, "i", said)], head)
+    check(p and "no manifest row" in p[0],
+          "a missing row FAILS where one is expected")
+    p = d([("1", {"git_error": "no commit"}, False, "i", "")], head)
     check(p and "git_error" in p[0], "a git_error inside a git clone FAILS")
-    p = d([("1", dict(clean, git_dirty=0), False)], head)
+    p = d([("1", dict(clean, git_dirty=0), False, "i", "")], head)
     check(p and "git_dirty" in p[0], "git_dirty 0 (not a bool) FAILS")
 
     if failures:

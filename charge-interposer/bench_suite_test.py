@@ -282,7 +282,7 @@ def _all():
 
 
 HARNESS_MARKS = ("mutation", "--can-fail", "--self-test", "canfail",
-                 "--guard-test", "--corrupt-pin")
+                 "--corrupt-pin")
 # A harness check that needs the board cannot run without the lock, so it
 # stays in the bench suite, named here.
 BENCH_HARNESS = {"b-bridge/mcp-reset-canfail"}
@@ -350,6 +350,8 @@ def test_suites():
     # 191: canre-pin-test and its -canfail, with the canre pin (2026-10-26)
     # 194: can-tools-pin-test, its -canfail and the local can-tools-pin-check,
     #      with the can-tools pin (2026-10-30)
+    # 194: digest-recheck-check-canfail added and cutover-verify-guard-test
+    #      retired (reviewer, 2026-10-31)
     assert len(seen) == 194, "checks across the suites: %d" % len(seen)
     # madhouse gets the pinned canre beside the code, named by CANRE_DIR
     mad = 0
