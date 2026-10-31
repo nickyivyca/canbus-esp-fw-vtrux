@@ -21,7 +21,10 @@ folder (scratch_dir.run), inside a stand-in worktree there (a folder with a
   4. make() writes the owner file: this pid and its start time. state() is
      live for it, finished for a pid that has exited and for this pid with
      another start time (a pid used again), no-owner without the file,
-     other-host for another machine's.
+     other-host for another machine's and for another platform's (a
+     WSL process on the same machine).
+  9. In a copy with no git, the root is scratch/ beside the copied
+     folder, not inside it.
   5. make() prunes the tool's finished folders only: a live and an unowned
      one stay. A tool name with a separator is refused.
   6. run() removes its folder when the body raises, and the exception still
@@ -237,6 +240,17 @@ def case_owner(base):
     h = os.path.join(base, "otherhost")
     write_owner(h, os.getpid(), o.get("start"), host="some-other-host")
     check(M.state(h) == "other-host", "4. state: other-host for another machine's")
+    w = os.path.join(base, "otherplatform")
+    write_owner(w, os.getpid(), o.get("start"))
+    with open(os.path.join(w, M.OWNER), encoding="utf-8") as f:
+        rec = json.load(f)
+    rec["platform"] = "linux" if sys.platform != "linux" else "win32"
+    with open(os.path.join(w, M.OWNER), "w", encoding="utf-8") as f:
+        json.dump(rec, f)
+    check(M.state(w) == "other-host",
+          "4. state: other-host for another platform's (WSL beside Windows)")
+    check(o.get("platform") == sys.platform,
+          "4. the owner file names this platform -> %s" % o.get("platform"))
 
 
 def case_prune(base):
@@ -268,7 +282,7 @@ def case_run(base):
     try:
         with M.run("r", start=wt) as d:
             seen.append(d)
-            plant(d)
+            plant(d, "run-repo")
             raise KeyError("boom")
     except KeyError:
         seen.append("raised")
@@ -372,8 +386,22 @@ def case_wallclock(base):
           "8. a Python process running charger_sim.py is seen -> %s" % why)
 
 
+def case_nogit(base):
+    code = os.path.join(base, "shipped", "code")
+    os.makedirs(code)
+    keep = M.worktree
+    M.worktree = lambda start=None: None
+    try:
+        r = M.root()
+    finally:
+        M.worktree = keep
+    here = os.path.dirname(os.path.abspath(M.__file__))
+    check(r == os.path.join(os.path.dirname(here), "scratch"),
+          "9. no git: the root is scratch/ beside the code folder -> %s" % r)
+
+
 CASES = [case_git, case_long, case_leftover, case_owner, case_prune,
-         case_run, case_sweep, case_wallclock]
+         case_run, case_sweep, case_wallclock, case_nogit]
 
 
 def test():
@@ -408,6 +436,12 @@ MUTANTS = [
     ("the start time not compared (a reused pid read as live)",
      '    return "live" if start == o["start"] else "finished"',
      '    return "live"'),
+    ("another platform's owner judged here",
+     "            o.get(\"platform\", sys.platform) != sys.platform:",
+     "            False:"),
+    ("no git: scratch/ inside the code folder",
+     "    return os.path.join(wt if wt else os.path.dirname(HERE), \"scratch\")",
+     "    return os.path.join(wt if wt else HERE, \"scratch\")"),
     ("no owner file",
      "        json.dump(owner_record(), f, sort_keys=True)",
      "        pass"),

@@ -41,5 +41,5 @@ a pointer, until nothing reads them. Since the move:
 | `bench_vport.py` | Spec 9's vehicle-port measurements, with the vport_bench image |
 | `reset_check.py` | Step 4 item 5: boot-mid-session's board reset verified on the bench; `--serial-log` names its serial log |
 | `keepalive_probe.py` | Step 4 item 3: where the rx-order keep-alive goes, recorded |
-| `script_can_fail.py` | Runs a driver's self-test against each of its `MUTANTS`, from a copy in the machine temp folder |
+| `script_can_fail.py` | Runs a driver's self-test against each of its `MUTANTS`, from a copy in a `scratch_dir` run folder (removed in a finally; before 2026-10-31, the machine temp folder) |
 | `script_can_fail_test.py` | Test for `script_can_fail.py` |

@@ -48,7 +48,6 @@ import hashlib
 import importlib.util
 import json
 import os
-import shutil
 import subprocess
 import sys
 
@@ -234,10 +233,13 @@ def install(p=None, start=None, c=None):
             raise CanToolsPinError("%s. It is not replaced: delete it by hand "
                                    "and run install again" % e)
         return d, False
+    # here, not at the top: use() must load with only this folder on
+    # sys.path, and only install() removes anything
+    import scratch_dir
     files = tree(c, p)
     tmp = "%s.partial-%d" % (d, os.getpid())
     os.makedirs(os.path.dirname(d), exist_ok=True)
-    shutil.rmtree(tmp, ignore_errors=True)
+    scratch_dir.remove(tmp)
     try:
         for rel, sha in sorted(files.items()):
             rc, data, err = _git(c, ["cat-file", "blob", sha], text=False)
@@ -252,7 +254,7 @@ def install(p=None, start=None, c=None):
         verify(tmp, p, c)
         os.rename(tmp, d)
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        scratch_dir.remove(tmp)
     return d, True
 
 

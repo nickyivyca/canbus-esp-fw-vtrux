@@ -29,18 +29,19 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+import scratch_dir                                        # noqa: E402
 import bench_suite as B                                   # noqa: E402
 from vtrux_bench.run import Result, Verdict               # noqa: E402
 from vtrux_bench.run.model import CheckRun, validate      # noqa: E402
 
-TMP = os.path.join(tempfile.gettempdir(), "interposer-tester",
-                   "bench-suite-test")
+# this run's scratch_dir folder, made by main() and removed in its finally
+# (2026-10-31: before, a fixed folder in the machine temp folder)
+TMP = None
 
 
 class _Chk:
@@ -52,7 +53,7 @@ def _run(log, rc=0, cid="c", files=None, ctx=None):
     """A CheckRun with `log` as its output and `files` in its outdir."""
     d = os.path.join(TMP, "run_%d" % _run.n)
     _run.n += 1
-    shutil.rmtree(d, ignore_errors=True)
+    scratch_dir.remove(d)
     os.makedirs(d)
     lp = os.path.join(d, "check.log")
     with open(lp, "w", encoding="utf-8") as f:
@@ -200,7 +201,7 @@ def test_c12_judge():
 def _code_tree(tests):
     d = os.path.join(TMP, "code")
     hb = os.path.join(d, "firmware", "test", "host_bridge")
-    shutil.rmtree(d, ignore_errors=True)
+    scratch_dir.remove(d)
     os.makedirs(hb)
     for t in tests:
         open(os.path.join(hb, t + ".cpp"), "w").close()
@@ -249,7 +250,7 @@ def _settings():
     manifest's 36edf3e55552 rows for the Arduino images (their bytes are
     checked only at flash time) and stand-in ELFs for the IDF images."""
     d = os.path.join(TMP, "settings")
-    shutil.rmtree(d, ignore_errors=True)
+    scratch_dir.remove(d)
     for name in ("c12_bench", "vport_bench"):
         os.makedirs(os.path.join(d, "images", "idf", name))
         with open(os.path.join(d, "images", "idf", name, name + ".elf"),
@@ -257,7 +258,7 @@ def _settings():
             f.write(name.encode())
     # the WiCAN's sources: bench_wican_test's fake gen-inhibit tree
     import bench_wican_test as WT
-    ws, _root = WT.fixture("for-bench-suite-test")
+    ws, _root = WT.fixture("for-bench-suite-test", TMP)
     return {"interposer_code": HERE,
             "images_dir": os.path.join(d, "images"),
             "images_src": "36edf3e55552", "boot_app0": "boot_app0.bin",
@@ -555,7 +556,7 @@ def _pycache_unignored():
     holding only this repo's .gitignore files on those paths."""
     repo = os.path.dirname(HERE)
     probe = os.path.join(TMP, "pycache-probe")
-    shutil.rmtree(probe, ignore_errors=True)
+    scratch_dir.remove(probe)
     os.makedirs(probe)
     subprocess.run(["git", "init", "-q", probe], check=True)
     ignores, paths = {".gitignore"}, []
@@ -586,7 +587,7 @@ def _pycache_unignored():
     if r.returncode not in (0, 1):
         raise AssertionError("git check-ignore failed: %s" % r.stderr)
     ignored = set(x for x in r.stdout.split("\0") if x)
-    shutil.rmtree(probe, ignore_errors=True)
+    scratch_dir.remove(probe)
     return [p for p in paths if p not in ignored], len(paths)
 
 
@@ -1013,7 +1014,7 @@ def test_can_tools_record():
     can_tools_pin_test.fixture)."""
     import can_tools_pin_test as CT
     base = os.path.join(TMP, "can-tools-pin")
-    CT.rmtree(base)
+    scratch_dir.remove(base)
     try:
         fix = CT.fixture(base)
         with CT.pointed(fix) as ctp:
@@ -1029,7 +1030,7 @@ def test_can_tools_record():
             ct = su["bench"].code_info(None).get("can_tools") or {}
             assert ct.get("commit") == fix["commit"] and "folder" not in ct \
                 and "is not can-tools" in ct.get("error", ""), ct
-            CT.rmtree(fix["folder"])
+            scratch_dir.remove(fix["folder"])
             ct = su["bench"].code_info(None).get("can_tools") or {}
             assert ct.get("commit") == fix["commit"] \
                 and "not installed" in ct.get("error", ""), ct
@@ -1041,7 +1042,7 @@ def test_can_tools_record():
                 and ct.get("commit") == fix["commit"] \
                 and "folder" not in ct, ct
     finally:
-        CT.rmtree(base)
+        scratch_dir.remove(base)
 
 
 TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
@@ -1508,7 +1509,15 @@ MUTANTS = {
 
 
 def main():
-    os.makedirs(TMP, exist_ok=True)
+    global TMP
+    TMP = scratch_dir.make("bench-suite-test")
+    try:
+        _main()
+    finally:
+        scratch_dir.remove(TMP)
+
+
+def _main():
     can_fail = "--can-fail" in sys.argv[1:]
     bad = 0
     for t in TESTS:

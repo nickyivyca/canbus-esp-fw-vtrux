@@ -15,9 +15,9 @@ throwaway folder now takes it from here:
 
 <root> is <worktree>/scratch, the worktree found by walking up to its .git
 (as can_tools_pin.worktree() does). In a copy with no git (the code the
-chain runner ships to madhouse) it is scratch/ inside the copied
-charge-interposer/ folder, as manifest_test.py does (implementor,
-2026-10-31).
+chain runner ships to madhouse) it is scratch/ beside the copied
+charge-interposer/ folder, where a worktree's would be: never inside
+it, where the harness's walks over charge-interposer/ would meet it.
 
   make(tool)    prunes the tool's finished folders (below), then makes a
                 new one and writes its owner file: this process's pid and
@@ -32,7 +32,9 @@ charge-interposer/ folder, as manifest_test.py does (implementor,
                 cannot remove is printed, one LEFTOVER line each with the
                 reason, and returned.
   state(path)   live (the owner is running), finished (it is not, or the
-                pid is now another process's), no-owner, or other-host.
+                pid is now another process's), no-owner, or other-host
+                (another machine's, or another platform's: a WSL
+                process's pid means nothing to Windows).
                 Only a finished folder is ever pruned or swept.
 
 THE SWEEP of the backlog left before this module (report first; the user
@@ -93,9 +95,10 @@ def worktree(start=None):
 
 
 def root(start=None):
-    """<worktree>/scratch, or scratch/ in this folder in a copy with no git."""
+    """<worktree>/scratch, or scratch/ beside this folder in a copy with
+    no git."""
     wt = worktree(start)
-    return os.path.join(wt if wt else HERE, "scratch")
+    return os.path.join(wt if wt else os.path.dirname(HERE), "scratch")
 
 
 def tool_dir(tool, start=None):
@@ -159,7 +162,7 @@ def proc(pid):
 
 def owner_record():
     return {"pid": os.getpid(), "start": proc(os.getpid())[1],
-            "host": socket.gethostname(),
+            "host": socket.gethostname(), "platform": sys.platform,
             "made": datetime.datetime.now().isoformat(timespec="seconds"),
             "argv": [os.path.basename(a) for a in sys.argv[:1]] + sys.argv[1:]}
 
@@ -177,7 +180,8 @@ def state(path):
     o = owner(path)
     if not isinstance(o, dict) or not isinstance(o.get("pid"), int):
         return "no-owner"
-    if o.get("host") != socket.gethostname():
+    if o.get("host") != socket.gethostname() or \
+            o.get("platform", sys.platform) != sys.platform:
         return "other-host"
     alive, start = proc(o["pid"])
     if alive is None:

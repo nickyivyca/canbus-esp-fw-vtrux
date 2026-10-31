@@ -56,7 +56,6 @@ import hashlib
 import importlib
 import json
 import os
-import shutil
 import subprocess
 import sys
 
@@ -225,9 +224,12 @@ def install(p=None, start=None):
             raise CanrePinError("%s. It is not replaced: delete it by hand and "
                                 "run install again" % e)
         return d, False
+    # here, not at the top: use() must load with only this folder on
+    # sys.path, and only install() removes anything
+    import scratch_dir
     tmp = "%s.partial-%d" % (d, os.getpid())
     os.makedirs(os.path.dirname(d), exist_ok=True)
-    shutil.rmtree(tmp, ignore_errors=True)
+    scratch_dir.remove(tmp)
     r = subprocess.run(PIP + ["install", "--no-deps", "--no-compile",
                               "--disable-pip-version-check", "--no-input",
                               "--target", tmp,
@@ -240,7 +242,7 @@ def install(p=None, start=None):
         verify(tmp, p)
         os.rename(tmp, d)
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        scratch_dir.remove(tmp)
     return d, True
 
 

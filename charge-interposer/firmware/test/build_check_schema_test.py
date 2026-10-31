@@ -2,7 +2,8 @@
 2026-10-19: the firmware's schema constant equals the diag DBC's
 DiagSchemaVersion in the same commit).
 
-Runs on copies of the real machine.h and diag DBC in a throwaway folder:
+Runs on copies of the real machine.h and diag DBC in a scratch_dir run
+folder, one per run() and removed in its finally (2026-10-31):
 the unedited pair must pass, and each edit below must fail -- the constant
 or the attribute moved alone, the constant missing, written twice or in
 another form, the attribute missing or a string. Each edit first proves it
@@ -13,17 +14,17 @@ applied, so a text edit that matched nothing cannot pass as a clean run.
 """
 
 import os
-import shutil
 import sys
-import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+# charge-interposer/, for scratch_dir; last, so it shadows nothing
+sys.path.append(os.path.dirname(os.path.dirname(HERE)))
+import scratch_dir                                  # noqa: E402
 
 import build_check as BC                            # noqa: E402
 
-WORK = os.path.join(tempfile.gettempdir(), "interposer-tester",
-                    "build-check-schema")
+WORK = None            # each run()'s scratch_dir folder
 DECL = "static const uint8_t DIAG_SCHEMA_VER = 4;"
 VER = 'BA_ "DiagSchemaVersion" 4;'
 
@@ -73,7 +74,15 @@ def _copy(name, h_edits, dbc_edits):
 
 def run():
     """-> list of failures (empty: the check behaves)."""
-    shutil.rmtree(WORK, ignore_errors=True)
+    global WORK
+    WORK = scratch_dir.make("build-check-schema-test")
+    try:
+        return _run()
+    finally:
+        scratch_dir.remove(WORK)
+
+
+def _run():
     bad = []
     h, dbc = _copy("unedited", [], [])
     probs = BC.check_schema_version(h, dbc)

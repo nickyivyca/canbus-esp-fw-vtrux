@@ -355,10 +355,9 @@ def main():
     check(ok, "score() with the real DBC on clean rows -> %s" % why)
 
     print("run_scenario carries the result")
-    import shutil
-    import tempfile
     import run_scenario as R
-    tmp = Path(tempfile.mkdtemp(dir=str(Path(__file__).resolve().parent)))
+    import scratch_dir
+    tmp = Path(scratch_dir.make("diag-cadence-test"))
     try:
         logs = [tmp / n for n in ("v.log", "c.log", "i.log")]
         for p in logs:
@@ -376,7 +375,7 @@ def main():
                       r["results"]),
               "...and adds none when no witness ran")
     finally:
-        shutil.rmtree(str(tmp), ignore_errors=True)
+        scratch_dir.remove(str(tmp))
 
     print("spec 2.3: the window before the first charger frame, after a "
           "scenario whose charger stopped recently (2026-10-15)")

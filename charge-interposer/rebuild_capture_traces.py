@@ -17,7 +17,8 @@ charge_cmd_filter.sh, window 7000-7600 s, bus 3) is in the repo's
 firmware/README.md.
 
 Each trace is rebuilt with make_golden.py, the bus passed explicitly, into
-the machine temp folder (regenerable output stays out of SeaDrive), and its
+a scratch_dir run folder removed in a finally (regenerable output stays
+out of SeaDrive; 2026-10-31, before, a temp folder never removed), and its
 sha256 compared with capture_pins.TRACE_PINS -- the pin, never the fixture
 file. --can-fail rebuilds each with the window ending 1 s early and with the
 wrong bus, and requires every one of those to MISS its pin.
@@ -32,20 +33,19 @@ import hashlib
 import os
 import subprocess
 import sys
-import tempfile
 
 # this file is in charge-interposer/ itself; paths.code_dir() refuses an
 # INTERPOSER_CODE naming another tree (port step 0, 2026-10-26)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import paths                       # noqa: E402
+import scratch_dir                 # noqa: E402
 CODE = paths.code_dir()
 import capture_pins as CP           # noqa: E402
 
 MAKE_GOLDEN = os.path.join(CODE, "firmware", "test", "host_diff",
                            "make_golden.py")
 LOGS = paths.logs()                 # was relative to the reverse-it root
-OUT = os.path.join(tempfile.gettempdir(), "interposer-tester",
-                   "rebuild_traces")
+OUT = None             # this run's scratch_dir folder, made by main()
 
 # name -> (capture under logs/, bus, end_s or None for the whole capture,
 #          the last frame's time in the pinned trace, ms)
@@ -85,8 +85,16 @@ def rebuild(name, capture, bus, end_s, tag):
 
 
 def main():
+    global OUT
+    OUT = scratch_dir.make("rebuild-capture-traces")
+    try:
+        return _main()
+    finally:
+        scratch_dir.remove(OUT)
+
+
+def _main():
     can_fail = "--can-fail" in sys.argv[1:]
-    os.makedirs(OUT, exist_ok=True)
     bad = 0
     for name, (capture, bus, end_s, last_ms) in RECIPES.items():
         pin = CP.TRACE_PINS[name + ".trace"]

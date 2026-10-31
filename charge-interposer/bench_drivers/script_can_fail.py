@@ -2,9 +2,10 @@
 
 A bench script declares MUTANTS = [(label, old text, new text), ...] and
 calls run(__file__, MUTANTS) from its --can-fail. Each mutant is a copy of
-the script with one text edit, written to the machine temp folder
-(<tempdir>/interposer-tester/mutants/<script>/), and run with --self-test
-from this folder (so its sibling imports resolve). Every mutant must make
+the script with one text edit, written to a scratch_dir run folder
+(scratch/charge-interposer-harness/script-can-fail/, removed in a
+finally, 2026-10-31), and run with --self-test from this folder (so its
+sibling imports resolve). Every mutant must make
 the self-test exit non-zero. An edit applies to the code above the
 script's MUTANTS line only; one whose text is not found there exactly once
 is reported NOT APPLIED and counts as a failure, never as caught.
@@ -19,12 +20,13 @@ Test: script_can_fail_test.py.
 """
 
 import os
-import shutil
 import subprocess
 import sys
-import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# charge-interposer/, for scratch_dir; last, so it shadows nothing
+sys.path.append(os.path.dirname(HERE))
+import scratch_dir                  # noqa: E402
 
 
 def run(script, mutants, timeout_s=300):
@@ -40,10 +42,14 @@ def run(script, mutants, timeout_s=300):
         return 1
     body, tail = src.split(mark)
     tail = mark + tail
-    d = os.path.join(tempfile.gettempdir(), "interposer-tester", "mutants",
-                     os.path.splitext(name)[0])
-    shutil.rmtree(d, ignore_errors=True)
-    os.makedirs(d)
+    d = scratch_dir.make("script-can-fail")
+    try:
+        return _run_in(d, name, src, body, tail, mutants, timeout_s)
+    finally:
+        scratch_dir.remove(d)
+
+
+def _run_in(d, name, src, body, tail, mutants, timeout_s):
     # the copy runs from the temp folder, so it finds its siblings
     # (bench_drivers/) and the code (charge-interposer/) through PYTHONPATH
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONIOENCODING="utf-8",
@@ -64,7 +70,6 @@ def run(script, mutants, timeout_s=300):
         print("FAIL  baseline: the unmutated copy fails its self-test where "
               "the mutants run (rc %d: %s), so a catch there would mean "
               "nothing; no mutant was run" % (r.returncode, last))
-        shutil.rmtree(d, ignore_errors=True)
         return 1
     print("ok    baseline: the unmutated copy passes where the mutants run")
     bad = 0
@@ -82,6 +87,5 @@ def run(script, mutants, timeout_s=300):
                                 ("caught (rc %d: %s)" % (r.returncode, last))
                                 if caught else
                                 "STILL PASSES -- the self-test checks nothing"))
-    shutil.rmtree(d, ignore_errors=True)
     print("\n%d of %d mutants caught" % (len(mutants) - bad, len(mutants)))
     return 1 if bad else 0

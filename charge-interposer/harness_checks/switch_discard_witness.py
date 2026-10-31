@@ -4,7 +4,8 @@ test_l2_bridge's `bridge-ok-switch-discard` is a known FAIL on src
 36edf3e55552: bridged frames discarded at the switch to listen-only are not
 counted, so bridge_ok stays set (spec 2.3 / 8.2). A case that cannot pass for
 some unrelated reason would look exactly like that, so this builds a PASS
-WITNESS: a copy of main.cpp, in the machine temp folder and never in src,
+WITNESS: a copy of main.cpp, in a scratch_dir run folder (removed in a
+finally, 2026-10-31) and never in src,
 that books the bridged frames still queued at a switch to listen-only into
 `veh_bridge_fail`, mirrors excluded as main.cpp's own send-failure booking
 excludes them. The board's own 0x7F4-0x7F7 go out through sendDiag, not
@@ -30,17 +31,16 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 
 # charge-interposer/, found from this file (port step 0, 2026-10-26):
 # paths.code_dir() refuses an INTERPOSER_CODE naming another tree.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import paths                                           # noqa: E402
+import scratch_dir                                     # noqa: E402
 CODE = paths.code_dir()
 HB = os.path.join(CODE, "firmware", "test", "host_bridge")
 SRC = os.path.join(CODE, "firmware", "src")
-WORK = os.path.join(tempfile.gettempdir(), "interposer-tester",
-                    "switch_discard_witness")
+WORK = None            # this run's scratch_dir folder, made by main()
 CASES = ("bridge-ok-switch-discard", "bridge-ok-switch-discard-diag-only")
 SPEC_CHECK = "bridged frames discarded at the switch to listen-only are counted"
 
@@ -92,8 +92,15 @@ def run(binary, case):
 
 
 def main():
-    shutil.rmtree(WORK, ignore_errors=True)
-    os.makedirs(WORK)
+    global WORK
+    WORK = scratch_dir.make("switch-discard-witness")
+    try:
+        return _main()
+    finally:
+        scratch_dir.remove(WORK)
+
+
+def _main():
     wsrc = os.path.join(WORK, "src")
     shutil.copytree(SRC, wsrc)
     mp = os.path.join(wsrc, "main.cpp")

@@ -22,12 +22,13 @@ Run:  py -3.14 charge-interposer/firmware/test/build_check_links_test.py
 
 import copy
 import os
-import shutil
 import sys
-import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+# charge-interposer/, for scratch_dir; last, so it shadows nothing
+sys.path.append(os.path.dirname(os.path.dirname(HERE)))
+import scratch_dir                                  # noqa: E402
 
 import build_check as BC
 
@@ -122,7 +123,7 @@ def ini_variant(edit):
     with open(os.path.join(BC.FW, "platformio.ini"), encoding="utf-8") as f:
         text = f.read()
     new = edit(text)
-    root = tempfile.mkdtemp(prefix="links_", dir=os.path.dirname(BC.FW))
+    root = scratch_dir.make("build-check-links-test")
     try:
         with open(os.path.join(root, "platformio.ini"), "w",
                   encoding="utf-8") as f:
@@ -132,7 +133,7 @@ def ini_variant(edit):
             return [err], None
         return BC.check_build_links(cfg=cfg), cfg
     finally:
-        shutil.rmtree(root, ignore_errors=True)
+        scratch_dir.remove(root)
 
 
 def after_line(marker, line):

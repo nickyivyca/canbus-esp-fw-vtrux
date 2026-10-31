@@ -36,13 +36,15 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FW = os.path.normpath(os.path.join(HERE, ".."))
 sys.path.insert(0, FW)
+# charge-interposer/, for scratch_dir; last, so it shadows nothing
+sys.path.append(os.path.dirname(os.path.dirname(HERE)))
+import scratch_dir                                  # noqa: E402
 
 from build_identity import DIGEST_CHARS, source_digest     # noqa: E402
 
@@ -84,7 +86,7 @@ def restore(path, original_bytes):
 
 def test_sensitivity():
     print("1. the detector is sensitive (on a scratch copy of the tree):")
-    tmp = tempfile.mkdtemp(prefix="digest_sens_")
+    tmp = scratch_dir.make("digest-recheck-check")
     try:
         dst = os.path.join(tmp, "firmware")
         shutil.copytree(FW, dst, ignore=shutil.ignore_patterns(
@@ -117,7 +119,7 @@ def test_sensitivity():
                   "but editing README.md does NOT move it, so the digest "
                   "covers what it claims and nothing else")
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        scratch_dir.remove(tmp)
 
 
 def test_end_to_end():

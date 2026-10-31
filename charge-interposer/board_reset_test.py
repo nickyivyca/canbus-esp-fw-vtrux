@@ -33,16 +33,15 @@ Run: python board_reset_test.py   (exit 0 = all checks passed)
 """
 
 import os
-import shutil
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+import scratch_dir                                        # noqa: E402
 
 import run_scenario as R                                    # noqa: E402
 
@@ -142,7 +141,7 @@ class FakeSerialModule(object):
 
 
 def run_tap(board, reset_after=0.3, run_s=1.6):
-    tmp = Path(tempfile.mkdtemp(dir=str(HERE)))
+    tmp = Path(scratch_dir.make("board-reset-test"))
     try:
         tap = R.SerialTap("FAKE", 115200, tmp / "i.log")
         tap._serial_mod = FakeSerialModule(board)
@@ -153,7 +152,7 @@ def run_tap(board, reset_after=0.3, run_s=1.6):
         rows = R.diag_cadence_rows(tap.stamped_path)
         return tap, rows, (tmp / "i.log").read_text()
     finally:
-        shutil.rmtree(str(tmp), ignore_errors=True)
+        scratch_dir.remove(str(tmp))
 
 
 class FakeDb(object):
@@ -198,7 +197,7 @@ class PiecesModule(object):
 def partial_line_case(R):
     """Takes the module, so the same case can be run against a SerialTap
     from before the change to show it fails there."""
-    tmp = Path(tempfile.mkdtemp(dir=str(HERE)))
+    tmp = Path(scratch_dir.make("board-reset-test"))
     try:
         tap = R.SerialTap("FAKE", 115200, tmp / "i.log")
         tap._serial_mod = PiecesModule(Board())
@@ -211,7 +210,7 @@ def partial_line_case(R):
                    Path(tap.stamped_path).read_text().splitlines()
                    if not x.split("\t", 1)[1].startswith("# wall=")]
     finally:
-        shutil.rmtree(str(tmp), ignore_errors=True)
+        scratch_dir.remove(str(tmp))
     want = ["t=10s state=MONITOR vmax=3400mV",
             "[10001] MONITOR      charge established a=-78 b=0 c=0",
             "diag st=MONITOR trip=0 flags=0xdf txf=0 silent=0 fw=9 schema=4"]
@@ -242,7 +241,7 @@ def diag_line(synth):
 
 def wall_cases(R):
     # the tap writes its wall mark first, in the stamped copy only
-    tmp = Path(tempfile.mkdtemp(dir=str(HERE)))
+    tmp = Path(scratch_dir.make("board-reset-test"))
     try:
         tap = R.SerialTap("FAKE", 115200, tmp / "i.log")
         tap._serial_mod = PiecesModule(Board())
@@ -262,10 +261,10 @@ def wall_cases(R):
               is not None and "charge established" in text,
               "board_text_wall gives the board's lines in HH:MM:SS form")
     finally:
-        shutil.rmtree(str(tmp), ignore_errors=True)
+        scratch_dir.remove(str(tmp))
     # the offset: mark at perf 999 = wall W, a line at perf 1001.5 -> W+2.5
     w = time.mktime((2026, 10, 15, 1, 0, 0, 0, 0, -1))
-    tmp = Path(tempfile.mkdtemp(dir=str(HERE)))
+    tmp = Path(scratch_dir.make("board-reset-test"))
     try:
         p = tmp / "s.stamped"
         p.write_text("999.000000\t# wall=%.6f\n1001.500000\t%s\n"
@@ -280,7 +279,7 @@ def wall_cases(R):
         check(R.board_text_wall(p, w - 999.0).startswith("01:00:02 "),
               "...and an offset given for an older log is used")
     finally:
-        shutil.rmtree(str(tmp), ignore_errors=True)
+        scratch_dir.remove(str(tmp))
     # the board's RELEASE form
     t, state = R._release_event("01:00:02 " + BOARD_RELEASE + "\n")
     check(t == 3602 and state == "HOLD",
@@ -466,7 +465,7 @@ def teardown_cases(R):
           and "prechg_unjudged=prechg" in src,
           "run_one records charger_sim's stop, and the next run reads it as "
           "its witness opens and hands the premise to 8.2's score")
-    tmp = Path(tempfile.mkdtemp(dir=str(HERE)))
+    tmp = Path(scratch_dir.make("board-reset-test"))
     try:
         check(R.read_last_charger(tmp) is None,
               "no file: no previous charger stop")
@@ -474,7 +473,7 @@ def teardown_cases(R):
         check(R.read_last_charger(tmp) == 1234.5,
               "the stop round-trips through %s" % R.LAST_CHARGER_FILE)
     finally:
-        shutil.rmtree(str(tmp), ignore_errors=True)
+        scratch_dir.remove(str(tmp))
     check(R.pre_charger_premise(100.0, 101.9) is not None
           and R.pre_charger_premise(100.0, 102.6) is None,
           "the premise: 1.9 s -> NOT JUDGED, 2.6 s -> judged")

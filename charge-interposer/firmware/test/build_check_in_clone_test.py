@@ -2,7 +2,9 @@
 build-check runs in a real git checkout at exactly the run's commit, from a
 clean tree whose source digest equals the shipped copy's).
 
-Builds a throwaway repo with two commits and a stub build_check.py that
+Builds a throwaway repo, in a scratch_dir run folder removed in a finally
+(2026-10-31; before, a temp folder never removed), with two commits and
+a stub build_check.py that
 only prints that it ran, bundles it, and exports HEAD as the "shipped
 copy". The right commit and copy must run the stub; a plain (non-git) copy
 given as the bundle, an unknown commit, a short SHA, an existing
@@ -17,28 +19,20 @@ import contextlib
 import io
 import os
 import shutil
-import stat
 import subprocess
 import sys
-import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+# charge-interposer/, for scratch_dir; last, so it shadows nothing
+sys.path.append(os.path.dirname(os.path.dirname(HERE)))
+import scratch_dir                                  # noqa: E402
 
 import build_check_in_clone as BCC                  # noqa: E402
 
-WORK = os.path.join(tempfile.gettempdir(), "interposer-tester",
-                    "build-check-in-clone")
+WORK = None            # each run()'s scratch_dir folder
 STUB = ("import sys\n"
         "print('STUB BUILD_CHECK RAN', ' '.join(sys.argv[1:]))\n")
-
-
-def _rmtree(p):
-    def unlock(func, path, _exc):
-        os.chmod(path, stat.S_IWRITE)
-        func(path)
-    if os.path.exists(p):
-        shutil.rmtree(p, onerror=unlock)
 
 
 def _git(repo, *args):
@@ -55,7 +49,6 @@ def _write(path, text):
 
 def fixture():
     """-> dict of paths and the two commits."""
-    _rmtree(WORK)
     repo = os.path.join(WORK, "repo")
     os.makedirs(repo)
     subprocess.run(["git", "init", "-q", repo], check=True)
@@ -97,6 +90,15 @@ def run():
     """-> list of failures (empty: the script behaves). The stub's own
     output goes to the subprocess's stdout, so 'it ran' is judged by its
     exit code 0 against the refusal's 2, and a refusal must say so."""
+    global WORK
+    WORK = scratch_dir.make("build-check-in-clone-test")
+    try:
+        return _run()
+    finally:
+        scratch_dir.remove(WORK)
+
+
+def _run():
     fx = fixture()
     bad = []
     rc, out = call(fx, "good")

@@ -29,6 +29,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+import scratch_dir                                        # noqa: E402
 
 import run_scenario as R
 
@@ -629,8 +630,7 @@ def keep_trace_cases():
     kept with keep=True and deleted without it, on a copy of a small
     differential trace."""
     import shutil
-    import tempfile
-    tmp = tempfile.mkdtemp(dir=str(HERE))
+    tmp = scratch_dir.make("scorer-wiring-test")
     try:
         src = TRACES / "unit_no_trip_control.trace"
         for keep in (True, False):
@@ -642,7 +642,7 @@ def keep_trace_cases():
                   "a clean L1 replay with keep=%s %s the trace -> %s"
                   % (keep, "keeps" if keep else "deletes", why))
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        scratch_dir.remove(tmp)
 
 
 def p3a_cases():
@@ -855,9 +855,7 @@ def vehicle_stop_diag_cases():
     # evaluate() itself, on 6019's shape: a board run (a stamped log and
     # the witness rows) passes, the same logs without the witness are
     # judged at the end of the run and fail
-    import shutil
-    import tempfile
-    tmp = Path(tempfile.mkdtemp(dir=str(Path(__file__).resolve().parent)))
+    tmp = Path(scratch_dir.make("scorer-wiring-test"))
     try:
         v, c, i = (tmp / n for n in ("v.log", "c.log", "i.log"))
         v.write_text("16:58:56 veh diagframe t=1196.8 id=0x7F4 "
@@ -890,7 +888,7 @@ def vehicle_stop_diag_cases():
               "evaluate(), the same logs with no witness: the final state, "
               "FAIL -> %s" % (got[0][1][:120] if got else got))
     finally:
-        shutil.rmtree(str(tmp), ignore_errors=True)
+        scratch_dir.remove(str(tmp))
 
 
 def leader_release_cases():
@@ -1255,8 +1253,7 @@ def main():
           "the shared form with the new text passes -> %s" % why)
 
     # the order comes from the core's own flight trace, one clock
-    import tempfile
-    tmp = tempfile.mkdtemp(dir=str(HERE))
+    tmp = scratch_dir.make("scorer-wiring-test")
     try:
         import protocol as P
         tr = os.path.join(tmp, "x.l1.trace")
@@ -1281,8 +1278,7 @@ def main():
         check(got == (None, 1700), "a trace with no flagged page gives no "
               "flag time (%s)" % (got,))
     finally:
-        import shutil
-        shutil.rmtree(tmp, ignore_errors=True)
+        scratch_dir.remove(tmp)
 
     if failures:
         print("\n%d failure(s)" % failures)

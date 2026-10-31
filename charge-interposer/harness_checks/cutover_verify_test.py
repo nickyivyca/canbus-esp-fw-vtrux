@@ -2,19 +2,19 @@
 missing file and an extra file are each reported (tester, 2026-10-08).
 
 Copies projects/vtrux/tools/interposer/ (less the exclusions) into a
-throwaway folder under <machine temp>/interposer-tester/cutover_test
-(tempfile.gettempdir(), outside SeaDrive: the regenerable-intermediates rule
-in AGENTS.md, 2026-10-16; until then it was made under this artifacts
-folder), runs the comparison against it, mutates
-it three ways, and removes it afterwards. scratch_dir() refuses any folder
-inside the project tree.
+scratch_dir run folder (scratch/charge-interposer-harness/
+cutover-verify-test/; 2026-10-31, AGENTS.md "Removing scratch": before,
+the machine temp folder, and until 2026-10-16 this artifacts folder),
+runs the comparison against it, mutates it three ways, and removes it in
+a finally. scratch_dir() refuses any folder inside the project tree.
 
 Run with REVERSE_IT_DIR set:
   py -3.14 charge-interposer/harness_checks/cutover_verify_test.py
   py -3.14 charge-interposer/harness_checks/cutover_verify_test.py --guard-test
 The second form tests only the scratch-folder guard; it needs no source tree.
 Since the move into git (port step 0, 2026-10-26) the guard also refuses a
-folder inside this git tree, where this file now is.
+folder inside this git tree, where this file now is, except under its
+scratch/ (gitignored; 2026-10-31).
 """
 
 import os
@@ -26,9 +26,9 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 import paths                           # noqa: E402
+import scratch_dir as SD               # noqa: E402
 PROJECT_ROOT = paths.reverse_it_dir()      # the reverse-it root, on SeaDrive
 TREE = os.path.dirname(paths.code_dir())   # this git tree
-SCRATCH = os.path.join(tempfile.gettempdir(), "interposer-tester", "cutover_test")
 sys.path.insert(0, HERE)
 import cutover_verify as CV            # noqa: E402
 
@@ -66,15 +66,20 @@ def inside(path, root):
         return False
 
 
-def scratch_dir(base=SCRATCH):
-    """A fresh throwaway folder under base; refuses one inside the project
-    tree, which is on SeaDrive, or inside this git tree."""
+def scratch_dir(base=None):
+    """A fresh throwaway folder: a scratch_dir run folder, or one under
+    base; refuses one inside the project tree, which is on SeaDrive, or
+    inside this git tree outside its scratch/."""
+    given = base
+    base = SD.root() if base is None else base
     if inside(base, PROJECT_ROOT):
         raise SystemExit("REFUSED: scratch folder %s is inside the project "
                          "tree (SeaDrive); use a folder outside it" % base)
-    if inside(base, TREE):
+    if inside(base, TREE) and not inside(base, os.path.join(TREE, "scratch")):
         raise SystemExit("REFUSED: scratch folder %s is inside the git tree "
                          "%s; use a folder outside it" % (base, TREE))
+    if given is None:
+        return SD.make("cutover-verify-test")
     os.makedirs(base, exist_ok=True)
     return tempfile.mkdtemp(dir=base, prefix="cutover_test_")
 
@@ -92,8 +97,9 @@ def guard_test():
         check(refused, "a scratch base inside the project is refused: %s" % bad)
     t = scratch_dir()
     ok = os.path.isdir(t) and not inside(t, PROJECT_ROOT)
-    shutil.rmtree(t, ignore_errors=True)
-    check(ok, "the default base outside the project is accepted: %s" % SCRATCH)
+    left = SD.remove(t)
+    check(ok and not left, "the default, a scratch_dir run folder outside the "
+          "project, is accepted and removed: %s" % t)
     if failures:
         print("\n%d failure(s)" % failures)
         return 1
@@ -169,7 +175,7 @@ def main():
         rc, out = run(clone)
         check(rc == 0, "and restored again, it agrees")
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        SD.remove(tmp)
 
     if failures:
         print("\n%d failure(s)" % failures)

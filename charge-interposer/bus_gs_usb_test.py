@@ -27,7 +27,6 @@ Run: python bus_gs_usb_test.py  (exit 0 = all checks passed)
 
 import os
 import sys
-import tempfile
 import time
 import types
 from pathlib import Path
@@ -37,6 +36,7 @@ sys.path.insert(0, str(HERE))
 
 import can                                                  # noqa: E402
 import bus as busmod                                        # noqa: E402
+import scratch_dir                                          # noqa: E402
 
 FAILS = []
 
@@ -87,7 +87,7 @@ def args(channel):
 def main():
     import can_tools_pin_test as CT
     saved = os.environ.pop("CAN_TOOLS_DIR", None)
-    base = tempfile.mkdtemp(dir=str(HERE), prefix="bus_gs_usb_test_")
+    base = scratch_dir.make("bus-gs-usb-test")
     path_in = CT.off_pth()
     try:
         # the pinned commit's canbench detects nothing
@@ -98,7 +98,7 @@ def main():
             return run(fix)
     finally:
         sys.path[:] = path_in
-        CT.rmtree(base)
+        scratch_dir.remove(base)
         if saved is not None:
             os.environ["CAN_TOOLS_DIR"] = saved
 

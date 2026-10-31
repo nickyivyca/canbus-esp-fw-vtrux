@@ -5,7 +5,7 @@ pins.json pins, or it is refused.
 Charge-interposer tester, 2026-10-30 (the canbench cutover; user ruling of
 that day via the reviewer: pin can-tools, not just record it). The same
 shape as canre_pin_test.py. A stand-in can-tools clone is a real git repo
-made in a throwaway folder in the machine temp folder, with three commits:
+made in a scratch_dir run folder (2026-10-31), with three commits:
 one with no canbench/, the pinned one, and a later one checked out as HEAD
 with an edit left in its working tree, so a canbench taken from the clone's
 working tree or HEAD instead of the pin is caught. The pinned commit has a
@@ -46,8 +46,8 @@ converts) is told apart from the raw blobs. No network is needed.
   8. On the bench host (CAN_TOOLS_DIR set) the real install of the pin
      passes verify(). Elsewhere (madhouse) it is reported as not checked.
 
-fixture(), pointed(), off_pth() and rmtree() are also used by
-paths_test.py and bus_gs_usb_test.py.
+fixture(), pointed() and off_pth() are also used by paths_test.py,
+bus_gs_usb_test.py and bench_suite_test.py.
 
     py -3.14 -B charge-interposer/can_tools_pin_test.py
     py -3.14 -B charge-interposer/can_tools_pin_test.py --can-fail
@@ -64,12 +64,12 @@ import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.environ.get("CAN_TOOLS_PIN_SRC") or HERE
 sys.path.insert(0, SRC_DIR)
 import can_tools_pin  # noqa: E402
+import scratch_dir  # noqa: E402
 
 REPO = "https://github.com/nickyivyca/can-tools"
 COMMIT = "14f8ee60d0a5b004755a9b45a852593d313b76ab"
@@ -116,14 +116,23 @@ def attempt(fn, *args, **kw):
         return "error: %s: %s" % (type(e).__name__, e)
 
 
-def rmtree(path):
-    """shutil.rmtree that also removes read-only files (git's objects, on
-    Windows), so no stand-in clone is left behind."""
-    def again(fn, p, _exc):
-        os.chmod(p, stat.S_IWRITE)
-        fn(p)
-    if os.path.exists(path):
-        shutil.rmtree(path, onexc=again)
+@contextlib.contextmanager
+def walk_within(mod, base):
+    """The stand-ins are made in a scratch_dir run folder, inside this
+    repo's own worktree (2026-10-31; before, the machine temp folder), so a
+    walk up from them would reach the real .git. For the no-git case the
+    walk sees only what is under base, as if base were the whole disk."""
+    real = mod.worktree
+    top = os.path.normcase(os.path.abspath(base)) + os.sep
+
+    def within(start=None, exists=os.path.exists):
+        return real(start, exists=lambda p: os.path.normcase(
+            os.path.abspath(p)).startswith(top) and exists(p))
+    mod.worktree = within
+    try:
+        yield
+    finally:
+        mod.worktree = real
 
 
 def _write(base, files):
@@ -280,7 +289,7 @@ def reference(fix, dest):
 
 
 def checks():
-    base = tempfile.mkdtemp(prefix="can_tools_pin_test_")
+    base = scratch_dir.make("can-tools-pin-test")
     try:
         # 1. the pin
         p = can_tools_pin.pin()
@@ -462,9 +471,10 @@ def checks():
         check("6 folder: <worktree>/scratch/can-tools/<commit>", got == want, got)
         nogit = os.path.join(base, "nogit", "code")
         os.makedirs(nogit)
-        check("6 folder: no .git anywhere is refused",
-              refused(can_tools_pin.folder, fp, nogit) is not None,
-              attempt(can_tools_pin.folder, fp, nogit))
+        with walk_within(can_tools_pin, base):
+            check("6 folder: no .git anywhere is refused",
+                  refused(can_tools_pin.folder, fp, nogit) is not None,
+                  attempt(can_tools_pin.folder, fp, nogit))
 
         # 7. every importer goes through the pin
         found = importers(HERE)
@@ -497,7 +507,7 @@ def checks():
             print("  --   8 the real install: not checked, CAN_TOOLS_DIR unset "
                   "(not the bench host)")
     finally:
-        rmtree(base)
+        scratch_dir.remove(base)
     return FAILS
 
 
@@ -546,7 +556,7 @@ MUTANTS = [
     ("install replaces a folder that is there",
      "    if os.path.isdir(d):\n        try:", "    if False:\n        try:"),
     ("install leaves its partial folder on a failure",
-     "    finally:\n        shutil.rmtree(tmp, ignore_errors=True)",
+     "    finally:\n        scratch_dir.remove(tmp)",
      "    finally:\n        pass"),
     ("worktree ignores .git", '        if exists(os.path.join(d, ".git")):',
      "        if False:"),
@@ -565,12 +575,11 @@ def main():
         print("\ncan_tools_pin_test: %s" % ("all checks OK" if not got else
                                             "%d FAILED: %s" % (len(got), "; ".join(got))))
         return 1 if got else 0
-    base = tempfile.mkdtemp(prefix="can_tools_pin_mutants_")
+    base = scratch_dir.make("can-tools-pin-mutants")
     src = open(os.path.join(HERE, "can_tools_pin.py"), encoding="utf-8",
                newline="").read()
-    # A copy in the temp folder is in no worktree, so its real install (8)
-    # is named by CAN_TOOLS_PIN_REAL: the folder the unmutated module
-    # resolves here.
+    # The copy's real install (8) is named by CAN_TOOLS_PIN_REAL: the
+    # folder the unmutated module resolves here.
     env = dict(os.environ)
     if env.get("CAN_TOOLS_DIR", "").strip():
         env["CAN_TOOLS_PIN_REAL"] = can_tools_pin.folder()
@@ -604,7 +613,7 @@ def main():
             print("%s m%d %s%s" % ("KILLED  " if dead else "SURVIVED", n, name,
                                    "".join("\n           " + f[:130] for f in fails[:2])))
     finally:
-        rmtree(base)
+        scratch_dir.remove(base)
     print("\ncan_tools_pin_test --can-fail: %d of %d killed by a check, %d errors"
           % (killed, len(MUTANTS), errors))
     return 0 if killed == len(MUTANTS) and not errors else 1
