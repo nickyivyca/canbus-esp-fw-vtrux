@@ -22,7 +22,8 @@ WHAT ROW 22 ASKS FOR, and each is a separate check below:
 Added 2026-09-26 from review, as the source-check half of two spec 12.4 rows
 that nothing implemented:
 
-    11 CAN_RX_QUEUE_LEN >= 64, the override actually applied, and E4's own
+    11 GEN_INHIBIT_RX_QUEUE_LEN >= 64 (gen_inhibit.c since port step 1b; was
+       can.c's CAN_RX_QUEUE_LEN), the override actually applied, and E4's own
        RX_DEPTH equal to it (spec 5.1 item 1)
     12 esp_wifi_set_storage(WIFI_STORAGE_RAM) genuinely called (spec 5.1 item 3)
 
@@ -1265,34 +1266,41 @@ def _count_calls(p, needle):
 # integrity check (spec 3.2's exemption).
 PROBE = "main/gi_txabort_probe.c"
 
+# The shared TWAI port (shared/twai_port), since port step 1b: its files as the
+# shipping source labels them, from the copy the build downloaded.
+TWAI_PORT_C = "managed_components/vtrux__twai_port/twai_port.c"
+TWAI_PORT_LL_C3 = "managed_components/vtrux__twai_port/twai_port_ll_esp32c3.c"
+
 
 def check_one_transmit_owner(build_dir=None, run=subprocess.run):
     """Spec 5.2 item 1: one transmit owner, asserted in the source.
 
     The image cannot show this -- a call is a call -- so it lives with the other
-    source rows. Two callers of twai_transmit() are allowed and no more:
+    source rows. Since port step 1b (spec 5.2 item 1 and 3.3, user, 2026-10-31)
+    one caller of twai_transmit() is allowed and no more:
 
-      can.c        can_send(), the one way any other task can transmit, which is
-                   refused whenever gen_inhibit owns the bus (spec 3.2, review A3).
-                   Stock reached it from SLCAN, ELM327 and MQTT; since 2026-10-16
-                   the SLCAN parser is disabled on every channel and the ELM327
-                   and MQTT CAN paths are given up (spec 3.2), but the refusal
-                   stays whoever calls it.
+      twai_port.c  twai_port_send(), shared/twai_port's send: "only twai_port's
+                   send calls the TWAI transmit API" (twai_port T6). Both of
+                   gen-inhibit's senders reach the driver through it: the
+                   scheduler's device HAL in gen_inhibit.c, and the stock send
+                   (can_port on port 0), which is refused whenever gen_inhibit
+                   owns the bus (spec 3.2; can_port C4).
                    That refusal is ALSO a trip-7 correctness requirement: the
                    inhibit is judged complete from msgs_to_tx == 0, which proves our
                    frame went out only because nothing else can be queued behind it.
-      gen_inhibit.c the scheduler's device HAL, the single site item 1 names.
 
-    A third caller anywhere in the shipping source (shipping_sources(): main/
-    and, since port step 1a, the shared components the build compiled) would
-    break trip 7 silently, which is why this is a check and not a comment.
+    Until step 1b the two callers were main/can.c's can_send() and
+    gen_inhibit.c's device HAL; can.c is gone and gen_inhibit.c now calls the
+    port. A second caller anywhere in the shipping source (shipping_sources():
+    main/ and the shared components the build compiled) would break trip 7
+    silently, which is why this is a check and not a comment.
     """
     name = "one transmit owner (spec 5.2 item 1)"
     files, why = shipping_sources(build_dir or os.path.join(REPO, "build"), run)
     if files is None:
         row(name, None, "the shipping source cannot be listed: %s" % why, ref_missing=True)
         return
-    allowed = {"main/can.c": 1, "main/gen_inhibit.c": 1}
+    allowed = {TWAI_PORT_C: 1}
     bad = []
     total = 0
     for rel, limit in sorted(allowed.items()):
@@ -1315,12 +1323,12 @@ def check_one_transmit_owner(build_dir=None, run=subprocess.run):
 
     row(name, not bad,
         "; ".join(bad) if bad else
-        "twai_transmit is called only by can_send() and the scheduler's device "
-        "HAL (%d call sites in %d files)" % (total, len(files)))
+        "twai_transmit is called only by twai_port's send (%d call sites in %d "
+        "files)" % (total, len(files)))
 
 
 def check_private_abort_confined(build_dir=None, run=subprocess.run):
-    """The private HAL abort appears at most ONCE, and only in gen_inhibit.c.
+    """The private HAL abort appears exactly ONCE, in twai_port's C3 register file.
 
     twai_ll_set_cmd_abort_tx() is below the public driver API. Spec 5.2 items 4 and
     9 sanction its use -- item 4's abort-and-recheck loop is built on it -- so it
@@ -1328,9 +1336,13 @@ def check_private_abort_confined(build_dir=None, run=subprocess.run):
     measurement build existed specifically to keep it OUT of a shipping image, so
     the no-instrument rows say nothing about it.
 
-    One site, in gen_inhibit.c, inside the critical section that makes the read and
-    the write indivisible. Anywhere else in the shipping source (shipping_sources())
-    is a finding.
+    Since port step 1b the register-level code is shared/twai_port's, "in one
+    file per chip" (twai_port T8): one site, in twai_port_ll_esp32c3.c, inside
+    the critical section that makes the read and the write indivisible.
+    Anywhere else in the shipping source (shipping_sources()) is a finding;
+    until step 1b the one site was in gen_inhibit.c. The scheduler reaches it
+    through the port's twai_port_abort_if_awaiting(), so once the scheduler is
+    wired in, gen_inhibit.c must call that, or the abort has been lost.
     """
     name = "the private TWAI abort is confined"
     files, why = shipping_sources(build_dir or os.path.join(REPO, "build"), run)
@@ -1346,38 +1358,38 @@ def check_private_abort_confined(build_dir=None, run=subprocess.run):
             hits.append((rel, n))
 
     # IS THE SCHEDULER WIRED IN? Keyed on gen_inhibit.c including gi_sched.h,
-    # because that is what makes the abort site mandatory rather than merely
-    # permitted. Before integration zero sites is correct; after it, zero would
-    # mean the abort had been LOST -- an inhibit that can never preempt telemetry,
-    # which is the whole point of section 5.2. So the requirement flips with the
-    # integration instead of needing someone to remember to tighten it.
+    # because that is what makes the port's abort mandatory for gen-inhibit rather
+    # than merely available. Wired in, no call would mean the abort had been LOST
+    # -- an inhibit that can never preempt telemetry, which is the whole point of
+    # section 5.2. So the requirement flips with the integration instead of
+    # needing someone to remember to tighten it.
     gi = files.get("main/gen_inhibit.c", "")
-    wired = False
+    wired, port_calls = False, 0
     if os.path.exists(gi):
         for line in open(gi, encoding="utf-8", errors="replace"):
             if line.strip().startswith('#include "gi_sched.h"'):
                 wired = True
                 break
+        port_calls = _count_calls(gi, "twai_port_abort_if_awaiting")
 
-    if not wired:
-        ok = (len(hits) == 0)
-        row(name, ok,
-            "no shipping source calls twai_ll_set_cmd_abort_tx, and the scheduler "
-            "is not wired in yet" if ok else
-            "called from %s, but gen_inhibit.c does not include gi_sched.h -- the "
-            "private abort has no business here yet"
-            % ", ".join("%s x%d" % h for h in hits))
-        return
-
-    ok = (len(hits) == 1 and hits[0][0] == "main/gen_inhibit.c" and hits[0][1] == 1)
-    row(name, ok,
-        "exactly one site, in gen_inhibit.c (the scheduler's device HAL)" if ok
-        else ("the scheduler IS wired in but NOTHING calls "
-              "twai_ll_set_cmd_abort_tx -- the abort has been lost, so an inhibit "
-              "can never preempt telemetry"
-              if not hits else
-              "called from %s -- it may appear ONCE, in gen_inhibit.c, and "
-              "nowhere else" % ", ".join("%s x%d" % h for h in hits)))
+    problems = []
+    if not (len(hits) == 1 and hits[0][0] == TWAI_PORT_LL_C3 and hits[0][1] == 1):
+        problems.append(
+            "no shipping source calls twai_ll_set_cmd_abort_tx: twai_port's C3 file "
+            "has lost it (T8)" if not hits else
+            "called from %s -- it may appear ONCE, in %s, and nowhere else"
+            % (", ".join("%s x%d" % h for h in hits), TWAI_PORT_LL_C3))
+    if wired and not port_calls:
+        problems.append(
+            "the scheduler IS wired in but gen_inhibit.c never calls "
+            "twai_port_abort_if_awaiting -- the abort has been lost, so an inhibit "
+            "can never preempt telemetry")
+    row(name, not problems,
+        "; ".join(problems) if problems else
+        "exactly one site, in twai_port's C3 register file (T8)%s"
+        % (", reached from gen_inhibit.c's device HAL through "
+           "twai_port_abort_if_awaiting (x%d)" % port_calls if wired else
+           "; the scheduler is not wired in"))
 
 
 def check_abort_reason_parity(dbc_path):
@@ -1593,6 +1605,8 @@ def check_prod_record(path, folder=None):
 
 
 WICAN = "vtrux/wican"     # the shared stock code (shared/wican), since port step 1a
+RXQ = "GEN_INHIBIT_RX_QUEUE_LEN"      # gen_inhibit.c, since port step 1b (was can.c's CAN_RX_QUEUE_LEN)
+RXQ_ROW = "%s >= 64" % RXQ
 
 
 def check_source(build_dir=None):
@@ -1607,10 +1621,14 @@ def check_source(build_dir=None):
     source check pins it)". This is the pinning half, and it also closes a gap
     that existed in the other direction: E4's load model carries its own
     RX_DEPTH in make_scenarios.py, independent of the firmware's
-    CAN_RX_QUEUE_LEN, with nothing requiring them to agree. If they drifted, the
+    constant, with nothing requiring them to agree. If they drifted, the
     model would quietly stop describing the device and every E4 result would
     still pass. Review 2026-09-26 confirmed both mutations survived every suite:
-    removing the override line, and setting 32 back to 5.
+    removing the override line, and setting 32 back to 5. Since port step 1b
+    the constant is gen_inhibit.c's GEN_INHIBIT_RX_QUEUE_LEN, which gen-inhibit
+    puts in port 0's twai_port configuration (spec 3.3: "an RX queue of at
+    least 64"); until then it was main/can.c's CAN_RX_QUEUE_LEN. Read from the
+    project the build belongs to (project_path()).
 
     WIFI STORAGE. Spec 5.1 item 3's argument that no flash write happens while
     the inhibitor owns the bus depends on the WiFi driver keeping its
@@ -1619,16 +1637,17 @@ def check_source(build_dir=None):
     in vtrux/wican, read from the copy the image's build downloaded
     (shared_folders()), as the partition row reads the board's.
     """
-    can_c = os.path.join(REPO, "main", "can.c")
+    project = project_path(build_dir or os.path.join(REPO, "build"))
+    gi_c = os.path.join(project, "main", "gen_inhibit.c")
     ms_py = os.path.join(PROJECT, "test", "gen_inhibit_host", "make_scenarios.py")
-    wican = shared_folders(project_path(build_dir or os.path.join(REPO, "build"))).get(WICAN)
+    wican = shared_folders(project).get(WICAN)
     wifi_c = os.path.join(wican, "wifi_network.c") if wican else None
     wifi_rel = "%s's wifi_network.c" % WICAN
 
     fw_depth = None
-    if os.path.exists(can_c):
-        text = open(can_c, encoding="utf-8", errors="replace").read()
-        m = re.search(r"^#define\s+CAN_RX_QUEUE_LEN\s+(\d+)", text, re.M)
+    if os.path.exists(gi_c):
+        text = open(gi_c, encoding="utf-8", errors="replace").read()
+        m = re.search(r"^#define\s+%s\s+(\d+)" % RXQ, text, re.M)
         if m:
             fw_depth = int(m.group(1))
         # The constant existing is not the same as it reaching the driver.
@@ -1645,24 +1664,24 @@ def check_source(build_dir=None):
             s = ln.strip()
             if s.startswith("//") or s.startswith("*") or s.startswith("/*"):
                 continue
-            if re.search(r"rx_queue_len\s*=\s*CAN_RX_QUEUE_LEN", s):
+            if re.search(r"rx_queue_len\s*=\s*%s\b" % RXQ, s):
                 applied = s
                 break
         row("rx_queue_len override applied", applied is not None,
-            "main/can.c assigns %s" % applied if applied else
-            "no live assignment of rx_queue_len from CAN_RX_QUEUE_LEN in "
-            "main/can.c, so the driver gets TWAI_GENERAL_CONFIG_DEFAULT's 5")
+            "main/gen_inhibit.c assigns %s" % applied if applied else
+            "no live assignment of rx_queue_len from %s in main/gen_inhibit.c, so "
+            "port 0's RX depth is twai_port's default, not gen-inhibit's own "
+            "(spec 3.3)" % RXQ)
     else:
         row("rx_queue_len override applied", None,
-            "no main/can.c at %s" % can_c, ref_missing=True)
+            "no main/gen_inhibit.c at %s" % gi_c, ref_missing=True)
 
     if fw_depth is None:
-        row("CAN_RX_QUEUE_LEN >= 64", None,
-            "could not read CAN_RX_QUEUE_LEN from main/can.c", ref_missing=True)
+        row(RXQ_ROW, None,
+            "could not read %s from main/gen_inhibit.c" % RXQ, ref_missing=True)
     else:
-        row("CAN_RX_QUEUE_LEN >= 64", fw_depth >= 64,
-            "CAN_RX_QUEUE_LEN is %d (spec 5.1 item 1 requires at least 64)"
-            % fw_depth)
+        row(RXQ_ROW, fw_depth >= 64,
+            "%s is %d (spec 5.1 item 1 requires at least 64)" % (RXQ, fw_depth))
 
     model_depth = None
     if os.path.exists(ms_py):
@@ -1676,8 +1695,8 @@ def check_source(build_dir=None):
             % (fw_depth, model_depth), ref_missing=True)
     else:
         row("E4 RX_DEPTH matches firmware", model_depth == fw_depth,
-            "make_scenarios.RX_DEPTH=%d, CAN_RX_QUEUE_LEN=%d"
-            % (model_depth, fw_depth))
+            "make_scenarios.RX_DEPTH=%d, %s=%d"
+            % (model_depth, RXQ, fw_depth))
 
     if wifi_c is None or not os.path.exists(wifi_c):
         row("WiFi storage is RAM-only", None,

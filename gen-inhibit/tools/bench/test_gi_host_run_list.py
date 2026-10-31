@@ -21,6 +21,11 @@ run there and its replay files went stale.
      gi_diag at ../../tools/gen_inhibit/bench, which a stale ~/gi_host still had, so a
      wrong path there passes on the stale copy). Control: a planted file pointing at a
      folder that is not shipped is flagged.
+  6. The shared components the shim compiles (port steps 1a and 1b, 2026-10-31): the
+     sync's `-C "$SHARED_ROOT"` section names shared/wican and every shared/<x> the
+     shim's Makefile compiles from $(SHAREDDIR)/<x> (can_port and twai_port since 1b,
+     when they replaced main/can.c), and each is in the pinned checkout wican_ref.py
+     finds. The list in 1-5 is the $FW part only; it ends at the first other -C.
 
     py -3.14 -B gen-inhibit/tools/bench/test_gi_host_run_list.py
     py -3.14 -B gen-inhibit/tools/bench/test_gi_host_run_list.py --mutants
@@ -29,6 +34,7 @@ run there and its replay files went stale.
 the copy). Gen-inhibit tester, 2026-10-26 (reviewer item: the project_dir.py sync gap).
 """
 import ast
+import re
 import os
 import shutil
 import subprocess
@@ -40,6 +46,7 @@ ROOT = gi_paths.project_root()      # the list is relative to $FW, the project f
 SCRIPT = os.environ.get("GI_HOST_RUN_SH") or os.path.join(HERE, "gi_host_run.sh")
 START = 'tar -C "$FW" -czf - \\'
 END = '-C "$EXPORT_PARENT"'
+SHARED_START = '-C "$SHARED_ROOT"'
 FAILS = []
 
 
@@ -59,12 +66,35 @@ def sync_list(text):
     out = []
     for l in lines[i + 1:]:
         s = l.strip()
-        if s.startswith(END) or not s.endswith("\\"):
+        if s.startswith(END) or s.startswith("-C ") or not s.endswith("\\"):
             break
         s = s[:-1].strip()
         if s and not s.startswith("$"):
             out.append(s)
     return out
+
+
+def shared_list(text):
+    """The folders the sync's -C "$SHARED_ROOT" section names, or [] without one."""
+    for l in text.splitlines():
+        s = l.strip()
+        if s.startswith(SHARED_START):
+            return [w for w in s[len(SHARED_START):].rstrip("\\").split() if w]
+    return []
+
+
+def shim_shared_needs():
+    """shared/<x> for every $(SHAREDDIR)/<x> the shim's Makefile compiles, and shared/wican."""
+    mk = open(os.path.join(ROOT, "test", "gen_inhibit_shim", "Makefile"), encoding="utf-8").read()
+    return sorted({"shared/wican"} | {"shared/" + x for x in re.findall(r"\$\(SHAREDDIR\)/(\w+)", mk)})
+
+
+def pinned_shared_root():
+    """The pinned shared checkout (the folder holding shared/), as wican_ref.py finds it."""
+    r = subprocess.run([sys.executable, "-B", "wican_ref.py"], cwd=os.path.join(ROOT, "test", "gen_inhibit_shim"),
+                       capture_output=True, text=True)
+    w = r.stdout.strip()
+    return os.path.normpath(os.path.join(w, "..", "..")) if r.returncode == 0 and w else None
 
 
 def shipped_files(listed, root):
@@ -160,6 +190,14 @@ def checks():
     check("5 shipped files put folders on sys.path (at least run_tests.py's gi_diag)", found >= 1, found)
     bad = bad_path_folders(listed, ROOT)
     check("5 every sys.path folder of a shipped .py is in this tree and shipped", not bad, bad)
+    text = open(SCRIPT, encoding="utf-8").read()
+    shared, need = shared_list(text), shim_shared_needs()
+    check("6 the Makefile's shared folders are read (wican, can_port, twai_port at least)",
+          {"shared/wican", "shared/can_port", "shared/twai_port"} <= set(need), need)
+    check("6 the sync ships every shared folder the shim compiles", set(need) <= set(shared), (need, shared))
+    proot = pinned_shared_root()
+    check("6 each is in the pinned shared checkout", proot is not None
+          and all(os.path.isdir(os.path.join(proot, p)) for p in shared), (proot, shared))
     base = gi_paths.scratch("test_gi_host_run_list")
     try:
         os.makedirs(os.path.join(base, "t"))
@@ -200,6 +238,11 @@ MUTANTS = [
     ("a path in the sync misspelled", "    test/gen_inhibit_host/run_tests.py \\\n", "    test/gen_inhibit_host/run_test.py \\\n"),
     ("gi_diag.py and pins.json not shipped", "    tools/bench/gi_diag.py \\\n    tools/bench/pins.json \\\n", ""),
     ("canre_pin.py not shipped", "    tools/bench/canre_pin.py \\\n", ""),
+    ("gi_paths.py not shipped (the sched mutate.py imports it)", "    tools/bench/gi_paths.py \\\n", ""),
+    ("main/can.c back in the sync (deleted at 1b)", "    firmware/main/gen_inhibit.c \\\n",
+     "    firmware/main/gen_inhibit.c \\\n    firmware/main/can.c \\\n"),
+    ("twai_port not shipped", ' shared/can_port shared/twai_port \\\n', ' shared/can_port \\\n'),
+    ("no shared section", '    -C "$SHARED_ROOT" shared/wican shared/can_port shared/twai_port \\\n', ""),
 ]
 
 

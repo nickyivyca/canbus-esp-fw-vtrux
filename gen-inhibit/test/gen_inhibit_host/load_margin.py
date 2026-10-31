@@ -96,7 +96,8 @@ import make_scenarios as mk                                    # noqa: E402
 
 # The depth the requirement is about is the FIRMWARE's, not whichever depths the
 # sweep happens to be asked for. Taken from make_scenarios.RX_DEPTH because that
-# is what is synced to the machine this runs on; main/can.c's CAN_RX_QUEUE_LEN is
+# is what is synced to the machine this runs on; main/gen_inhibit.c's
+# GEN_INHIBIT_RX_QUEUE_LEN (main/can.c's CAN_RX_QUEUE_LEN until port step 1b) is
 # the real article and test/build_checks/build_output.py pins the two together,
 # which is the only reason reading one here is sound.
 FIRMWARE_DEPTH = mk.RX_DEPTH

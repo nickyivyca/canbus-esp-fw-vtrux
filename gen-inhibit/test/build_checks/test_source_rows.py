@@ -14,9 +14,19 @@ rows that read it had looked only in main/:
   "WiFi storage is RAM-only"
       reads vtrux/wican's wifi_network.c in the build's copy, not main/'s.
 
-Each case builds a project in scratch/: main/, managed_components/vtrux__wican/ and
-espressif__mdns/ (not this project's source), vtrux_build.json, and a build directory
-whose deps record is a fake `ninja -t deps`.
+Port step 1b (2026-10-31): main/can.c is gone and the CAN port is shared/can_port on
+shared/twai_port (spec 3.3, 5.1 item 1, 5.2 item 1; twai_port T6, T8). So:
+
+  the owner row allows one twai_transmit, in vtrux/twai_port's twai_port.c, and no
+      other anywhere -- gen_inhibit.c included, which now sends through the port;
+  the abort row wants the private abort once, in twai_port's C3 register file, and,
+      with the scheduler wired in, gen_inhibit.c calling twai_port_abort_if_awaiting;
+  the RX rows read GEN_INHIBIT_RX_QUEUE_LEN and its live assignment to rx_queue_len
+      in gen_inhibit.c, of the project the build belongs to.
+
+Each case builds a project in scratch/: main/, managed_components/vtrux__wican/,
+vtrux__twai_port/, vtrux__can_port/ and espressif__mdns/ (not this project's source),
+vtrux_build.json, and a build directory whose deps record is a fake `ninja -t deps`.
 
     python3 test_source_rows.py
 """
@@ -35,13 +45,25 @@ WICAN = os.path.join(TMP, "managed_components", "vtrux__wican")
 MDNS = os.path.join(TMP, "managed_components", "espressif__mdns")
 BOARD = os.path.join(TMP, "managed_components", "vtrux__wican_v3")
 LOGS = os.path.join(TMP, "managed_components", "vtrux__debug_logs")
+TPORT = os.path.join(TMP, "managed_components", "vtrux__twai_port")
+CPORT = os.path.join(TMP, "managed_components", "vtrux__can_port")
 
+GI_C = ('#include "gi_sched.h"\n'
+        "#define GEN_INHIBIT_RX_QUEUE_LEN    64\n"
+        "void hal(void) { twai_port_send(0, 0); }\n"
+        "int abort_hal(void) { return twai_port_abort_if_awaiting(); }\n"
+        "void setup(void) {\n    c.rx_queue_len    = GEN_INHIBIT_RX_QUEUE_LEN;\n}\n")
 MAIN = {
-    "can.c": "int can_send(void) { return twai_transmit(0, 0); }\n",
-    "gen_inhibit.c": '#include "gi_sched.h"\nvoid hal(void) { twai_transmit(0, 0); twai_ll_set_cmd_abort_tx(0); }\n',
+    "gen_inhibit.c": GI_C,
     "main.c": "void app_main(void) { wican_init(); wican_start(); }\n",
     "gi_txabort_probe.c": "void probe(void) { twai_transmit(0, 0); twai_ll_set_cmd_abort_tx(0); }\n",
 }
+PORT = {
+    "twai_port.c": "int twai_port_send(void) {\n    /* the only twai_transmit (T6) */\n    return twai_transmit(0, 0);\n}\n",
+    "twai_port_ll_esp32c3.c": "int twai_port_abort_if_awaiting(void) { twai_ll_set_cmd_abort_tx(0); return 0; }\n",
+    "twai_port.h": "int twai_port_send(void);\n",
+}
+CAN_PORT = {"can_port.c": "int can_port_send(void) { return twai_port_send(0, 0); }\n"}
 WIFI_LIVE = "void wifi(void) {\n    esp_wifi_set_storage(WIFI_STORAGE_RAM);\n}\n"
 STOCK = {
     "wican.c": "void wican_start(void) { }\n",
@@ -51,16 +73,20 @@ STOCK = {
 }
 
 
-def project(main=None, stock=None, mdns_call=False, names=("vtrux/wican_v3", "vtrux/wican", "vtrux/debug_logs"),
+NAMES = ("vtrux/wican_v3", "vtrux/wican", "vtrux/debug_logs", "vtrux/can_port", "vtrux/twai_port")
+
+
+def project(main=None, stock=None, port=None, can_port=None, mdns_call=False, names=NAMES,
             build_file=True):
     shutil.rmtree(TMP, ignore_errors=True)
-    for d in (os.path.join(TMP, "main"), WICAN, MDNS, BUILD, BOARD, LOGS):
+    for d in (os.path.join(TMP, "main"), WICAN, MDNS, BUILD, BOARD, LOGS, TPORT, CPORT):
         os.makedirs(d)
     for p, text in ((os.path.join(BOARD, "board.h"), "#define BOARD 1\n"),
                     (os.path.join(LOGS, "debug_logs.c"), "void dl(void) { }\n")):
         with open(p, "w") as fh:
             fh.write(text)
-    for folder, files in ((os.path.join(TMP, "main"), dict(MAIN, **(main or {}))), (WICAN, dict(STOCK, **(stock or {})))):
+    for folder, files in ((os.path.join(TMP, "main"), dict(MAIN, **(main or {}))), (WICAN, dict(STOCK, **(stock or {}))),
+                          (TPORT, dict(PORT, **(port or {}))), (CPORT, dict(CAN_PORT, **(can_port or {})))):
         for f, text in files.items():
             if text is not None:
                 with open(os.path.join(folder, f), "w") as fh:
@@ -105,11 +131,12 @@ def deps(compiled, stale=(), rc=0, fail_in=None):
 
 def product_record(extra=()):
     """The files a product build's compiles read: main/'s compiled files, vtrux/wican's,
-    and mdns's."""
-    m = [os.path.join(TMP, "main", f) for f in ("can.c", "gen_inhibit.c", "main.c")]
+    the two ports', and mdns's."""
+    m = [os.path.join(TMP, "main", f) for f in ("gen_inhibit.c", "main.c")]
     w = [os.path.join(WICAN, f) for f in ("wican.c", "slcan.c", "wifi_network.c", "wican.h")]
-    return m + w + [os.path.join(MDNS, "mdns.c"), os.path.join(BOARD, "board.h"),
-                    os.path.join(LOGS, "debug_logs.c")] + list(extra)
+    p = [os.path.join(TPORT, f) for f in sorted(PORT)] + [os.path.join(CPORT, f) for f in sorted(CAN_PORT)]
+    return m + w + p + [os.path.join(MDNS, "mdns.c"), os.path.join(BOARD, "board.h"),
+                        os.path.join(LOGS, "debug_logs.c")] + list(extra)
 
 
 def rows_of(fn, run):
@@ -131,12 +158,21 @@ def both(run):
     return r
 
 
-def wifi_row():
+APPLIED = "rx_queue_len override applied"
+DEPTH = B.RXQ_ROW
+E4 = "E4 RX_DEPTH matches firmware"
+
+
+def source_rows():
     B.rows.clear()
     B.check_source(BUILD)
     out = {n: (ok, d, ref) for n, ok, d, ref in B.rows}
     B.rows.clear()
-    return out[WIFI]
+    return out
+
+
+def wifi_row():
+    return source_rows()[WIFI]
 
 
 def main():
@@ -149,8 +185,11 @@ def main():
     r = both(deps(product_record()))
     case("product shape: one transmit owner passes", r[OWNER][0] is True and not r[OWNER][2], r[OWNER][1])
     case("product shape: the private abort is confined", r[ABORT][0] is True, r[ABORT][1])
-    case("product shape: the shared components' files are in the scan (10: main/ 4, vtrux/wican 4, board 1, logs 1)",
-         "in 10 files" in r[OWNER][1], r[OWNER][1])
+    case("product shape: the shared components' files are in the scan "
+         "(13: main/ 3, vtrux/wican 4, twai_port 3, can_port 1, board 1, logs 1)",
+         "in 13 files" in r[OWNER][1], r[OWNER][1])
+    case("product shape: the abort row names the port's C3 file and gen_inhibit.c's port call",
+         "C3 register file" in r[ABORT][1] and "twai_port_abort_if_awaiting (x1)" in r[ABORT][1], r[ABORT][1])
 
     project(stock={"slcan.c": "void slcan(void) { twai_transmit(0, 0); }\n"})
     r = both(deps(product_record()))
@@ -178,22 +217,67 @@ def main():
     case("twai_transmit in a main/ file the build did not compile still fails (main/ is scanned whole)",
          r[OWNER][0] is False and "main/extra.c" in r[OWNER][1], r[OWNER][1])
 
-    project(main={"can.c": "int can_send(void) { twai_transmit(0, 0); return twai_transmit(1, 0); }\n"})
+    # port step 1b: the one caller is twai_port's send (T6); gen_inhibit.c sends through it
+    project(main={"gen_inhibit.c": GI_C + "void direct(void) { twai_transmit(0, 0); }\n"})
     r = both(deps(product_record()))
-    case("a second call in main/can.c fails the owner row", r[OWNER][0] is False and "main/can.c has 2" in r[OWNER][1],
-         r[OWNER][1])
-    project(main={"can.c": None})
-    r = both(deps([p for p in product_record() if not p.endswith("can.c")]))
-    case("no main/can.c: the owner row is NO REF", r[OWNER][0] is None and r[OWNER][2], r[OWNER][1])
+    case("twai_transmit called directly in gen_inhibit.c fails the owner row (1b: only the port's send)",
+         r[OWNER][0] is False and "main/gen_inhibit.c calls it 1" in r[OWNER][1], r[OWNER][1])
+    project(main={"can.c": "int can_send(void) { return twai_transmit(0, 0); }\n"})
+    r = both(deps(product_record(extra=[os.path.join(TMP, "main", "can.c")])))
+    case("a main/can.c calling twai_transmit is no longer allowed: fails, naming it",
+         r[OWNER][0] is False and "main/can.c calls it 1" in r[OWNER][1], r[OWNER][1])
+    project(can_port={"can_port.c": "int can_port_send(void) { return twai_transmit(0, 0); }\n"})
+    r = both(deps(product_record()))
+    case("twai_transmit in vtrux/can_port (bypassing twai_port) fails the owner row, naming it",
+         r[OWNER][0] is False and "managed_components/vtrux__can_port/can_port.c" in r[OWNER][1], r[OWNER][1])
+    project(port={"twai_port.c": "int s(void) { twai_transmit(0, 0); return twai_transmit(1, 0); }\n"})
+    r = both(deps(product_record()))
+    case("a second call in twai_port.c fails the owner row",
+         r[OWNER][0] is False and "vtrux__twai_port/twai_port.c has 2" in r[OWNER][1], r[OWNER][1])
+    project(port={"twai_port.c": None})
+    r = both(deps([p for p in product_record() if not p.endswith("twai_port.c")]))
+    case("no twai_port.c (the rest of vtrux/twai_port compiled): the owner row is NO REF, naming it",
+         r[OWNER][0] is None and r[OWNER][2] and "twai_port.c is missing" in r[OWNER][1], r[OWNER][1])
+    project()
+    r = both(deps([p for p in product_record() if not p.startswith(TPORT)]))
+    case("a record with no vtrux/twai_port file: both rows NO REF, naming it",
+         r[OWNER][0] is None and "vtrux/twai_port" in r[OWNER][1] and r[ABORT][0] is None, r[OWNER][1])
 
     project(stock={"wican.c": "void w(void) { twai_ll_set_cmd_abort_tx(0); }\n"})
     r = both(deps(product_record()))
     case("the private abort in a compiled vtrux/wican file fails the abort row, naming it",
          r[ABORT][0] is False and "managed_components/vtrux__wican/wican.c" in r[ABORT][1], r[ABORT][1])
-    project(main={"gen_inhibit.c": '#include "gi_sched.h"\nvoid hal(void) { twai_transmit(0, 0); }\n'})
+    project(main={"gen_inhibit.c": GI_C + "void old(void) { twai_ll_set_cmd_abort_tx(0); }\n"})
     r = both(deps(product_record()))
-    case("the scheduler wired in with no abort site fails the abort row (lost)", r[ABORT][0] is False and
-         "lost" in r[ABORT][1], r[ABORT][1])
+    case("the private abort at its pre-1b site, gen_inhibit.c, fails the abort row, naming it",
+         r[ABORT][0] is False and "main/gen_inhibit.c x1" in r[ABORT][1], r[ABORT][1])
+    project(main={"gen_inhibit.c": GI_C + "void old(void) { twai_ll_set_cmd_abort_tx(0); }\n"},
+            port={"twai_port_ll_esp32c3.c": "int twai_port_abort_if_awaiting(void) { return 0; }\n"})
+    r = both(deps(product_record()))
+    case("... and so does the one abort moved out of the port into gen_inhibit.c (one site, the wrong file)",
+         r[ABORT][0] is False and "main/gen_inhibit.c x1" in r[ABORT][1], r[ABORT][1])
+    project(port={"twai_port_ll_esp32c3.c": "int twai_port_abort_if_awaiting(void) { return 0; }\n"})
+    r = both(deps(product_record()))
+    case("no abort in twai_port's C3 file fails the abort row (lost from the port)",
+         r[ABORT][0] is False and "has lost it" in r[ABORT][1], r[ABORT][1])
+    project(port={"twai_port_ll_esp32c3.c": "void a(void) { twai_ll_set_cmd_abort_tx(0);\n twai_ll_set_cmd_abort_tx(0); }\n"})
+    r = both(deps(product_record()))
+    case("two aborts in twai_port's C3 file fail the abort row", r[ABORT][0] is False and "x2" in r[ABORT][1],
+         r[ABORT][1])
+    project(main={"gen_inhibit.c": GI_C.replace("return twai_port_abort_if_awaiting();", "return 0;")})
+    r = both(deps(product_record()))
+    case("the scheduler wired in, gen_inhibit.c never calling the port's abort: fails (lost)",
+         r[ABORT][0] is False and "lost" in r[ABORT][1] and "gen_inhibit.c never calls" in r[ABORT][1], r[ABORT][1])
+    project(main={"gen_inhibit.c": GI_C.replace("int abort_hal(void) { return twai_port_abort_if_awaiting(); }",
+                                                "// int abort_hal(void) { return twai_port_abort_if_awaiting(); }")})
+    r = both(deps(product_record()))
+    case("... and a commented-out port call does not count", r[ABORT][0] is False and "lost" in r[ABORT][1],
+         r[ABORT][1])
+    project(main={"gen_inhibit.c": GI_C.replace('#include "gi_sched.h"\n', "").replace(
+        "return twai_port_abort_if_awaiting();", "return 0;")})
+    r = both(deps(product_record()))
+    case("the scheduler not wired in, no port call: the abort row passes on the port's one site",
+         r[ABORT][0] is True and "not wired in" in r[ABORT][1], r[ABORT][1])
 
     project()
     r = both(deps(product_record(), rc=1))
@@ -215,7 +299,8 @@ def main():
     r = both(deps(product_record()))
     case("no vtrux_build.json: both rows NO REF", r[OWNER][0] is None and r[ABORT][0] is None, r[OWNER][1])
 
-    project(stock={"slcan.c": "void slcan(void) { twai_transmit(0, 0); }\n"}, names=("vtrux/wican_v3",))
+    project(stock={"slcan.c": "void slcan(void) { twai_transmit(0, 0); }\n"},
+            names=("vtrux/wican_v3", "vtrux/twai_port"))
     r = both(deps(product_record()))
     case("a component vtrux_build.json does not name is not scanned (the list is the project's)",
          r[OWNER][0] is True, r[OWNER][1])
@@ -238,6 +323,36 @@ def main():
     project(names=("vtrux/wican_v3", "vtrux/debug_logs"))
     ok, d, ref = wifi_row()
     case("WiFi row: vtrux/wican not a shared component is NO REF", ok is None and ref, d)
+
+    # port step 1b: the RX depth is gen_inhibit.c's (spec 3.3, 5.1 item 1). make_scenarios.RX_DEPTH
+    # is the real file's (64), so E4's row is read against it.
+    project()
+    r = source_rows()
+    case("RX rows, product shape: 64, assigned live, E4 equal, all pass and name gen_inhibit.c",
+         r[APPLIED][0] is True and r[DEPTH][0] is True and r[E4][0] is True
+         and "main/gen_inhibit.c assigns c.rx_queue_len" in r[APPLIED][1], r[APPLIED][1])
+    project(main={"gen_inhibit.c": GI_C.replace("RX_QUEUE_LEN    64", "RX_QUEUE_LEN    32")})
+    r = source_rows()
+    case("RX rows: a depth of 32 fails the depth row and E4's", r[DEPTH][0] is False and r[E4][0] is False
+         and "is 32" in r[DEPTH][1], r[DEPTH][1])
+    project(main={"gen_inhibit.c": GI_C.replace("    c.rx_queue_len", "    // c.rx_queue_len")})
+    r = source_rows()
+    case("RX rows: a commented-out assignment fails the applied row", r[APPLIED][0] is False, r[APPLIED][1])
+    project(main={"gen_inhibit.c": GI_C.replace("c.rx_queue_len    = GEN_INHIBIT_RX_QUEUE_LEN;",
+                                                "c.rx_queue_len    = 32;")})
+    r = source_rows()
+    case("RX rows: rx_queue_len assigned from something else fails the applied row", r[APPLIED][0] is False,
+         r[APPLIED][1])
+    project(main={"gen_inhibit.c": GI_C.replace("c.rx_queue_len    = GEN_INHIBIT_RX_QUEUE_LEN;",
+                                                "c.rx_queue_len    = GEN_INHIBIT_RX_QUEUE_LEN_MIN;")})
+    r = source_rows()
+    case("RX rows: ... including a longer name that starts with the constant's", r[APPLIED][0] is False,
+         r[APPLIED][1])
+    project(main={"gen_inhibit.c": None,
+                  "can.c": "#define CAN_RX_QUEUE_LEN 64\nvoid c(void) { g_config.rx_queue_len = CAN_RX_QUEUE_LEN; }\n"})
+    r = source_rows()
+    case("RX rows: no gen_inhibit.c is NO REF for all three, and an old can.c does not rescue them",
+         all(r[k][0] is None and r[k][2] for k in (APPLIED, DEPTH, E4)), r[APPLIED][1])
 
     shutil.rmtree(TMP, ignore_errors=True)
     fails = 0

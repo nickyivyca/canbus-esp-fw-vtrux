@@ -1,4 +1,4 @@
 {
   "project": "gen-inhibit",
-  "shared_components": ["vtrux/wican_v3", "vtrux/wican", "vtrux/debug_logs"]
+  "shared_components": ["vtrux/wican_v3", "vtrux/wican", "vtrux/debug_logs", "vtrux/can_port", "vtrux/twai_port"]
 }

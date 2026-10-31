@@ -2506,7 +2506,8 @@ def s_gene_rpm_stale_fb_fresh():
 # ---------------------------------------------------------------------------
 
 # The RX depth the scenarios model is the depth the FIRMWARE installs: spec 5.1
-# item 1, can.c's CAN_RX_QUEUE_LEN. They said 5 while the firmware said 5, and
+# item 1, gen_inhibit.c's GEN_INHIBIT_RX_QUEUE_LEN since port step 1b (can.c's
+# CAN_RX_QUEUE_LEN before). They said 5 while the firmware said 5, and
 # they have to move together or the model stops describing the device. The
 # depth-5 behaviour is not lost -- load_margin.py sweeps depths, which is where
 # a comparison between them belongs.

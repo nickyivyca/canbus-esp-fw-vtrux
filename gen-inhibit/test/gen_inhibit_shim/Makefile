@@ -25,21 +25,40 @@ $(error no vtrux/wican headers: see wican_ref.py's message above, or give WICAND
 endif
 endif
 
-CFLAGS  ?= -std=c11 -O1 -g -Wall -Wextra -Wno-unused-parameter \
-           -I. -Imock -I$(COREDIR) -I$(WICANDIR)
-LDFLAGS ?= -pthread
+# THE CAN PORT IS SHARED TOO (spec 3.3, port step 1b): vtrux/can_port and
+# vtrux/twai_port, beside vtrux/wican in the same pinned checkout, and so is the
+# TWAI driver the shim runs on: twai_port's one host fake (twai_port T10).
+SHAREDDIR = $(WICANDIR)/..
+FAKEDIR   = $(SHAREDDIR)/twai_port/test
 
-# main/can.c is compiled AS SHIPPED, not reimplemented: the reviewing session
-# mutated the spec 3.2 refusal out of the real file and every case stayed green,
-# because the old fake_can.c had its own copy of it.
-# gi_sched.c is compiled AS SHIPPED for the same reason can.c is: spec 5.2 item 8
+# The include order is the fake's wiring (its README.md): the shim's own
+# stand-ins first, then the fake's ESP-IDF TWAI headers, then its minimal host
+# stand-ins for whatever the shim has none of.
+CFLAGS  ?= -std=c11 -O1 -g -Wall -Wextra -Wno-unused-parameter \
+           -I. -Imock -I$(COREDIR) -I$(WICANDIR) \
+           -I$(SHAREDDIR)/can_port/include -I$(SHAREDDIR)/twai_port/include \
+           -I$(FAKEDIR) -I$(FAKEDIR)/include -I$(FAKEDIR)/host
+# --wrap: shim_harness.c sees each install at the call, for the thread that made
+# it (spec 3), which the fake's install log does not record.
+LDFLAGS ?= -pthread -Wl,--wrap=twai_driver_install
+
+# The CAN port is compiled AS SHIPPED, not reimplemented: can_port's stock
+# calls (can_stock.c, which replaced main/can.c at port step 1b) and the real
+# twai_port with its C3 register file, from the pinned shared checkout. The
+# reviewing session once mutated the spec 3.2 refusal out of the real can.c and
+# every case stayed green, because the old fake_can.c had its own copy of it.
+# fake_port.c holds the port's one link stub.
+# gi_sched.c is compiled AS SHIPPED for the same reason: spec 5.2 item 8
 # says the scheduler is platform-free and compiles unchanged on the host, and a
-# reimplementation here would test the copy. mock/hal/twai_ll.h supplies the two
-# private calls its device HAL reaches for, backed by fake_twai's own queue.
-SRC := shim_test.c fake_twai.c fake_can.c \
+# reimplementation here would test the copy. The driver, its controller and the
+# two register calls twai_port's C3 file reaches for are the shared fake's
+# (twai_fake.c); shim_harness.c is the shim's scheduler and clock around it.
+SRC := shim_test.c shim_harness.c fake_can.c fake_port.c \
+       $(FAKEDIR)/twai_fake.c \
        $(COREDIR)/gen_inhibit.c $(COREDIR)/gen_inhibit_core.c \
        $(COREDIR)/gi_sched.c \
-       $(COREDIR)/can.c
+       $(SHAREDDIR)/can_port/can_port.c $(SHAREDDIR)/can_port/can_stock.c \
+       $(SHAREDDIR)/twai_port/twai_port.c $(SHAREDDIR)/twai_port/twai_port_ll_esp32c3.c
 
 all: shim_test shim_test_autoarm
 
@@ -54,14 +73,14 @@ all: shim_test shim_test_autoarm
 longarm:
 	$(PYTHON) build_longarm.py
 
-shim_test: $(SRC) fake_twai.h | longarm
+shim_test: $(SRC) shim_harness.h | longarm
 	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS)
 
 # THE AUTO-ARM BUILD (spec 3.2, "arming comes after it"): the same sources with
 # the boot auto-arm compiled in, running the one case that needs it. The other
 # cases arm by hand and would meet an arm they did not make, so they are not in
 # this binary -- hence -Wno-unused-function.
-shim_test_autoarm: $(SRC) fake_twai.h
+shim_test_autoarm: $(SRC) shim_harness.h
 	$(CC) $(CFLAGS) -Wno-unused-function -DSHIM_AUTOARM_BUILD=1 -DGEN_INHIBIT_AUTOARM_MODE=GEN_INHIBIT_PASSIVE -o $@ $(SRC) $(LDFLAGS)
 
 # The sanitiser build is where a mock-HAL suite earns its keep: it drives the

@@ -33,7 +33,7 @@ typedef enum {
     ESP_RST_CPU_LOCKUP,
 } esp_reset_reason_t;
 
-/* Implemented by fake_twai.c, beside the virtual clock. */
+/* Implemented by shim_harness.c, beside the virtual clock. */
 esp_reset_reason_t esp_reset_reason(void);
 
 #endif

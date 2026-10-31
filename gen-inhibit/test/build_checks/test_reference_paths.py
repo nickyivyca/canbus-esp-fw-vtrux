@@ -36,6 +36,9 @@ ROWS = ("diag references from git", "DBC defines every diag page", "emitted diag
 PROBE = r"""
 import json, os, sys
 sys.path.insert(0, sys.argv[1])
+# the modules build_output imports (board_ref since port step 1a, build_switches), from this
+# folder when the target is a copy elsewhere (--target): the copy's own folder comes first
+sys.path.insert(1, os.environ["REF_TEST_MODULES"])
 import build_output as B
 B.REPO = os.environ["REF_TEST_REPO"]      # this repo's WiCAN tree, also for a copy under test (--target)
 B.WORKTREE = os.environ["REF_TEST_WORKTREE"]    # and its root, where scratch/ is
@@ -122,7 +125,7 @@ def fake_repo(base, name, texts):
 
 def probe(target_dir, ref_repo, rit, extra=None):
     env = dict(os.environ, REVERSE_IT_DIR=rit, REF_TEST_REPO=FIRMWARE, REF_TEST_WORKTREE=WORKTREE,
-               REF_TEST_PROJECT=REPO)
+               REF_TEST_PROJECT=REPO, REF_TEST_MODULES=HERE)
     r = subprocess.run([sys.executable, "-B", "-c", PROBE, target_dir, ref_repo] + ([extra] if extra else []),
                        capture_output=True, text=True, env=env, cwd=target_dir, timeout=300)
     if r.returncode != 0:

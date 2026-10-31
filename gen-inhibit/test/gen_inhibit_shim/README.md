@@ -26,9 +26,16 @@ platform headers in `mock/`. Needs pthreads and Python 3; no ESP-IDF.
 `mock/board.h` stands in for the board component's `board.h` (shared/boards
 SPEC B5), and `fake_can.c` answers as `wican_v3` does: port 0's TWAI pins,
 and its standby line, which `fake_board_standby()` reads back.
-The stock headers `can.c` and `gen_inhibit.c` include, `can.h` and
-`comm_server.h`, are the shared component `vtrux/wican`'s (shared/wican W3,
-port step 1a). The shim compiles against the version gen-inhibit pins: the
+The stock header `gen_inhibit.c` includes, `comm_server.h`, is the shared
+component `vtrux/wican`'s (shared/wican W3, port step 1a). Since port step 1b
+the CAN port is shared too, and compiled as shipped from beside it:
+`vtrux/can_port` (the stock `can.h` calls in `can_stock.c`, which replaced
+`main/can.c`) and `vtrux/twai_port` with its C3 register file, on the TWAI
+driver fake both projects' host builds use, `shared/twai_port/test/`
+(twai_port T10): its `twai_fake.c`, and its ESP-IDF TWAI headers after the
+shim's own stand-ins on the include path. `shim_harness.c` wires the fake to
+the shim (see below), and `fake_port.c` holds the port's one link stub, the
+tick count. The shim compiles against the version gen-inhibit pins: the
 read-only checkout `../shared-<tag>/` beside the worktree root, which
 `wican_ref.py` finds from `firmware/main/idf_component.yml`, and names with
 the command that creates it when it is missing. Where the checkout is
@@ -53,22 +60,36 @@ needs it (spec 3.2, "arming comes after it"); every other case arms by hand.
 
 ## What the model has to get right
 
-`fake_twai.c` is not the ESP32's peripheral and a green run here is **not**
-evidence about hardware. It reproduces the three properties the defects turned
-on, and nothing else:
+The driver model is the shared fake, `shared/twai_port/test/twai_fake.c`, the
+testers' (twai_port T10, T11), merged at port step 1b from this folder's
+`fake_twai.c` and the interposer's fake and checked against ESP-IDF v5.4.1's
+driver source. Its README says what each behaviour rests on. It is not the
+ESP32's peripheral and a green run here is **not** evidence about hardware.
+The properties the shim's defects turned on, which it keeps:
 
 - **alerts are latched bits shared by every frame** — `TWAI_ALERT_TX_SUCCESS`
   says *the previous* transmission succeeded, with no indication of which, and
   reading clears it;
-- **one transmit buffer, FIFO** — so a frame at the head blocks everything
-  behind it, and `msgs_to_tx` is the only attributable completion signal;
-- **completion takes time**, settable per case;
+- **one transmit buffer, with the driver's queue behind it** — so a frame in
+  the buffer holds back everything behind it, and `msgs_to_tx` is the only
+  attributable completion signal;
+- **completion takes time**: 200 us a frame here, settable per case and per ID;
 - **a controller that is not running receives nothing** -- with no driver
   installed, stopped, or bus-off, a delivered frame is dropped and counted
   (`ft_rx_dropped_off()`), and install and start each begin with an empty
   receive queue, as `components/driver/twai/twai.c` does (IDF 5.4.1). Until
   2026-10-16 only bus-off dropped, so frames delivered after a mode 0 queued
   with nothing to take them and `replay_scn()`'s drain never returned.
+
+**What is the shim's own** is `shim_harness.c` and `shim_harness.h`, which were
+`fake_twai.c` and `fake_twai.h` until 1b: the worker scheduler, the virtual
+clock (the fake's clock adapter reads it), the log capture, the task handles
+and notifications, the reset reason, and the wire invariant below, which the
+fake's transmit hooks call. Its `ft_*` calls on the driver are its names for the
+fake's knobs and readings. A fault the fake cannot inject is added to the fake
+by the tester, not modelled here (gen-inhibit reviewer, 2026-10-31). One
+observation the fake does not record, which thread installed the driver, is
+taken at the call through the linker's `--wrap` (Makefile).
 
 Determinism: virtual time, and the worker thread never runs concurrently with
 the test. Two runs of the same script produce the same trace. **It therefore
@@ -233,7 +254,7 @@ completion. The drain used to leave one frame pending deliberately — the only 
 stop the 200 ms clock jump — so `rx_backlog >= 1` at most completions *by
 construction*, and the verified-on-time proportion sat at **7,011 of 29,977** against
 the bench's **8,976 of 8,983**. A blocked receive now advances virtual time no further
-than the turn the test granted it (`g_turn_grant` in `fake_twai.c`), so the drain
+than the turn the test granted it (`g_turn_grant`, now in `shim_harness.c`), so the drain
 empties the queue and the proportion is **29,977 of 29,977**.
 
 **That 100 % is constructed the opposite way, and is not a better result than the
@@ -321,7 +342,8 @@ cases. The copy then got it wrong, and nothing anywhere looked.
   JSON — and simply not obeyed. A value can be validated everywhere and used
   nowhere.
 
-**The fix was one invariant, not five cases.** `fake_twai.c` now checks every
+**The fix was one invariant, not five cases.** `fake_twai.c` then checked, and
+`shim_harness.c` now checks, every
 frame handed to `twai_transmit()`: standard data frame, not extended, not
 self-receiving, not single-shot, DLC 6 for `0x051` and 8 for the diag and probe
 IDs, `B0` at `0x08`, torque bytes `00 80`, and the ID in the set the scenario

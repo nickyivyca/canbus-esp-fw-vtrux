@@ -1,13 +1,14 @@
-# gen-inhibit's own firmware: app_main, the CAN functions the shared stock code
-# calls (can.c, shared/wican W3), the inhibitor and its hooks into the stock
-# code (gi_wican.c, spec 3.3). The stock WiCAN code is the component
-# vtrux/wican, with vtrux/debug_logs and the board, all from main's
+# gen-inhibit's own firmware: app_main, the inhibitor and its hooks into the
+# stock code (gi_wican.c, spec 3.3), port 0's setup among them. The stock
+# WiCAN code is the component vtrux/wican; its CAN calls are vtrux/can_port's
+# on port 0, backed by vtrux/twai_port (spec 3.3, port step 1b; can.c
+# retired). Those, vtrux/debug_logs and the board all come from main's
 # idf_component.yml; a managed dependency of main is one of its requirements
 # without being listed below.
-set(srcs "main.c" "can.c" "gen_inhibit.c" "gen_inhibit_core.c" "gi_sched.c" "gi_restart_quiesce.c" "gi_wican.c")
-# hal and soc: the scheduler reaches the TWAI status register and the abort
-# command through the private HAL (spec 5.2 items 4 and 9, cleared by the user
-# 2026-09-27). E3 confines that call to one site.
+set(srcs "main.c" "gen_inhibit.c" "gen_inhibit_core.c" "gi_sched.c" "gi_restart_quiesce.c" "gi_wican.c")
+# hal and soc: the restart step reads the TWAI controller's registers
+# (gi_restart_quiesce.c). The abort command is twai_port's (T8), which E3
+# confines to its one site.
 set(requires   hal soc esp_timer esp_wifi nvs_flash fatfs vfs driver esp-tls esp_adc esp_eth log app_update esp_http_server spiffs freertos mqtt json)
 
 # TX-ABORT MEASUREMENT BUILD, spec 5.2 item 9 / spec 12.4's C3-abort row.
