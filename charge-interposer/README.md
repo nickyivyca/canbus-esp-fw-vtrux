@@ -42,10 +42,11 @@ records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 | `protocol.py` | The `0x18EFC000` page map and DBC-backed encode/decode for the BMS and charger frames | Tester |
 | `pack.py` | 116-cell LFP pack model, fitted to three real captures | Tester |
 | `bus.py` | Transport factory (virtual `udp_multicast` or a real dongle), `EchoSuppressor` and the segment-isolation guard | Tester |
-| `paths.py` | Resolves the data outside this repo from `REVERSE_IT_DIR`, refusing when it is unset; gives `code_dir()` (refuses an `INTERPOSER_CODE` naming another tree), the pinned canre, and `import_canbench()` (canbench from `REVERSE_IT_DIR`, the root never on `sys.path`) | Tester |
+| `paths.py` | Resolves the data outside this repo from `REVERSE_IT_DIR`, refusing when it is unset; gives `code_dir()` (refuses an `INTERPOSER_CODE` naming another tree), the pinned canre, and `import_canbench()` (the pinned canbench, through `CAN_TOOLS_DIR` and `can_tools_pin.py`; nothing on `sys.path`) | Tester |
 | `paths_test.py` | Offline test for `paths.py` | Tester |
-| `pins.json` | The harness pin file: canre at the pinned public-repo commit (port step 0, reviewer 2026-10-26) | Tester |
+| `pins.json` | The harness pin file: canre at the pinned public-repo commit (port step 0, reviewer 2026-10-26) and can-tools at the pinned commit (user, 2026-10-30: each project owns its can-tools pin) | Tester |
 | `canre_pin.py`, `canre_pin_test.py` | Install and check the pinned canre (`scratch/canre/<commit>`; `CANRE_DIR` on madhouse), and its test | Tester |
+| `can_tools_pin.py`, `can_tools_pin_test.py` | Install and check the pinned can-tools `canbench/` (`scratch/can-tools/<commit>`, from the `CAN_TOOLS_DIR` clone), and its test | Tester |
 | `vehicle_sim.py` | VCU, A123 BMS and the VCM's evap flag (0x649), as a model or a capture replay | Tester |
 | `charger_sim.py` | Bel Fuse charger/inverter, with fault injection | Tester |
 | `interposer_sim.py` | The board as a process: I/O only; the logic is `machine.py` | Tester |
