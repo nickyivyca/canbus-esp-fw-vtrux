@@ -22,6 +22,10 @@ lists the words of the fake ELF):
   - the faulty ELF without the hook: only the faulty hook row fails;
   - no ELF beside the good, or beside the faulty: that image's hook row fails (fail closed).
 
+--mutants edits a copy of ota_rollback_rehearsal.py once per mutant, and this test must fail on
+each BY A CHECK: a crash is not a kill, and an edit that does not apply is an error. The
+unmutated copy runs first, as the control: if it fails, no mutant is judged and the run exits 1.
+
     py -3.14 -B gen-inhibit/tools/bench/test_ota_rehearsal_images.py [--mutants]
 
 Gen-inhibit tester, 2026-10-25.
@@ -175,23 +179,33 @@ def main():
         print("%d FAIL" % len(FAILS) if FAILS else "all ok")
         return 1 if FAILS else 0
     src = open(os.path.join(HERE, TARGET), encoding="utf-8", newline="").read()
-    killed = 0
-    for i, (label, old, new) in enumerate(MUTANTS, 1):
-        if src.count(old) != 1:
+    killed = errors = 0
+    for i, (label, old, new) in enumerate([("the control: the unmutated copy", None, None)] + MUTANTS):
+        if old is not None and src.count(old) != 1:
             print("ERROR    m%d %s: the edit matches %d times" % (i, label, src.count(old)))
+            errors += 1
             continue
         with tempfile.TemporaryDirectory(prefix="m%d-" % i, dir=SCRATCH) as d:
-            open(os.path.join(d, TARGET), "w", encoding="utf-8", newline="").write(src.replace(old, new))
+            open(os.path.join(d, TARGET), "w", encoding="utf-8", newline="").write(
+                src if old is None else src.replace(old, new))
             r = subprocess.run([sys.executable, "-B", os.path.abspath(__file__), "--in-dir", d],
                                capture_output=True, text=True, timeout=300)
         fails = [ln for ln in r.stdout.splitlines() if ln.startswith("FAIL")]
         crashed = "Traceback" in r.stderr
+        if old is None:
+            ok = r.returncode == 0 and not fails and not crashed
+            print("%s m0 %s  (exit %d, %d FAIL%s)" % ("PASS    " if ok else "FAILED  ", label, r.returncode,
+                                                     len(fails), ", CRASHED" if crashed else ""))
+            if not ok:
+                print("\nthe control FAILS: no mutant is judged, so none is killed")
+                return 1
+            continue
         dead = bool(fails) and not crashed
         killed += dead
         print("%s m%d %s%s" % ("KILLED  " if dead else ("CRASHED " if crashed else "SURVIVED"), i, label,
                                "  (%s)" % fails[0][6:90] if fails else ""))
-    print("%d of %d killed by a check" % (killed, len(MUTANTS)))
-    return 0 if killed == len(MUTANTS) else 1
+    print("%d of %d killed by a check, %d errors; the control passes" % (killed, len(MUTANTS), errors))
+    return 0 if killed == len(MUTANTS) and not errors else 1
 
 
 if __name__ == "__main__":
