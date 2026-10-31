@@ -41,7 +41,11 @@ Requirements are numbered C1 to C6. The numbers are stable.
 - **C3. The stock calls are port 0.** The CAN functions the stock WiCAN
   code calls (`shared/wican/can.h`: enable, disable, the setters, receive,
   send, init and the queries) are `can_port`'s, on port 0, with today's
-  behaviour (`shared/wican` W2).
+  behaviour (`shared/wican` W2): the stock enable restarts the device on
+  any failed step, whatever the backend's install-failure choice
+  (`twai_port` T2). A project's own bring-up may use the reporting form of
+  the stock enable, which returns the failure instead of restarting (user,
+  2026-10-31).
 - **C4. The owner's refusal.** A project may register an owner hook. While
   it says the bus is owned, the stock send (C3) refuses: it counts the
   refusal through the project's hook, logs at most once every 5 s, and

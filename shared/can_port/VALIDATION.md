@@ -44,6 +44,15 @@ pending*, saying what is missing.
   stock code passes `CAN_5K` to `CAN_1000K` (`can.h`), and `can.c` maps them
   through its own timing table, so that table is the stock layer's; the
   interposer passes a bitrate. `twai_port` takes bit timing.
+- **The stock enable restarts; a reporting form for the project** (user,
+  2026-10-31, in the gen-inhibit reviewer's session): `can.c`'s
+  `can_enable()` restarted on a failed install or start (`ESP_ERROR_CHECK`),
+  and that stays the stock behaviour. gen-inhibit's spec 8.1 rows 2 and 5
+  and its 12.4 row refuse an arm whose bring-up fails, and the user ruled
+  that every step of gen-inhibit's own bring-up refuses (install, start,
+  alerts): none fails because of the bus, only memory exhaustion or a
+  firmware bug, and tests guard against the bug. gen-inhibit's arm calls
+  the stock enable today, so it needs a form that returns the failure.
 - **Status:** complete.
 
 ### C4. The owner's refusal
