@@ -49,6 +49,7 @@ require the setting; only touching the data does.
 import hashlib
 import json
 import os
+import shutil
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -160,18 +161,257 @@ def worktree_of(path):
         d = up
 
 
-def scratch(name, run=True, start=None):
+def scratch(name, run=True, start=None, keep=None, at_exit=True):
     """A test's or mutant runner's own folder in the worktree's gitignored scratch/
     (AGENTS.md "Files and folders"), never the system temp folder:
     <worktree>/scratch/gen-inhibit-tests/<name>/<time>_<pid> with run, so two runs at
     once never share one; without run, <...>/<name> itself. Created; start is the file
-    whose worktree is meant (default this module's). Harness-defects row, 2026-10-24."""
+    whose worktree is meant (default this module's). Harness-defects row, 2026-10-24.
+
+    A run folder (AGENTS.md "Removing scratch", 2026-10-31) gets an owner file beside it,
+    <time>_<pid>.owner.json (this process's pid and start time), and is removed with it
+    when this process exits, pass or fail: an atexit handler calls finish(), which runs
+    on a normal end, sys.exit and an uncaught exception alike. keep, or GI_KEEP_SCRATCH
+    set, keeps it (finish() says so); at_exit=False leaves the removal to the caller
+    (run_dir). A run killed outright leaves its folder; the next
+    run of the same name removes it, since its owner file then names a finished process
+    (remove_finished_siblings)."""
+    import atexit
     import time
     d = os.path.join(worktree_of(start or HERE), "scratch", "gen-inhibit-tests", name)
     if run:
+        os.makedirs(d, exist_ok=True)
+        remove_finished_siblings(d)
         d = os.path.join(d, "%s_%d" % (time.strftime("%Y%m%dT%H%M%S"), os.getpid()))
+        write_owner(d)                  # before the folder: a folder never lacks one
+        if at_exit:
+            atexit.register(finish, d, keep, None, os.getpid())
     os.makedirs(d, exist_ok=True)
     return d
+
+
+OWNER_SUFFIX = ".owner.json"
+KEEP_ENV = "GI_KEEP_SCRATCH"
+
+
+def long_path(path):
+    """path made absolute and, on Windows, long-path safe (\\\\?\\, or \\\\?\\UNC\\ for a
+    share), so files past MAX_PATH in a deep mutant copy can still be removed."""
+    p = os.path.abspath(path)
+    if os.name != "nt" or p.startswith("\\\\?\\"):
+        return p
+    if p.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + p[2:]
+    return "\\\\?\\" + p
+
+
+def _short(p):
+    """p without a long-path prefix, for printing."""
+    if p.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + p[8:]
+    return p[4:] if p.startswith("\\\\?\\") else p
+
+
+def remove_tree(path, out=None):
+    """Remove path (a folder and everything in it, or a file or link) and return True,
+    or print to out (default stderr) what is left and why and return False; never raise
+    for what it can't remove (AGENTS.md "Removing scratch", 2026-10-31). Each entry that
+    fails has its read-only flag cleared (git for Windows makes .git/objects read-only)
+    and is tried again, then once more after 0.2 s (a scanner holding it briefly). A
+    path that isn't there is already removed. Never shutil.rmtree's ignore_errors,
+    which leaves the folder without a word."""
+    import stat
+    import time
+    out = sys.stderr if out is None else out
+    lp = long_path(path)
+    if not os.path.lexists(lp):
+        return True
+    failed = []
+
+    def again(fn, p, exc):
+        try:
+            os.chmod(p, stat.S_IWRITE)
+        except OSError:
+            pass
+        for wait in (0, 0.2):
+            time.sleep(wait)
+            try:
+                fn(p)
+                return
+            except FileNotFoundError:
+                return
+            except OSError as e:
+                exc = e
+        failed.append((p, exc))
+    if os.path.isdir(lp) and not os.path.islink(lp) and not getattr(os.path, "isjunction", lambda _: False)(lp):
+        shutil.rmtree(lp, onexc=again)
+    else:
+        try:
+            os.remove(lp)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            again(os.remove, lp, e)
+    if not os.path.lexists(lp):
+        return True
+    if not failed:
+        failed.append((lp, "still there after the removal"))
+    print("could not remove %s: %d entr%s failed" % (_short(lp), len(failed), "y" if len(failed) == 1 else "ies"),
+          file=out)
+    for p, e in failed[:10]:
+        print("  %s: %s" % (_short(p), "%s: %s" % (type(e).__name__, e) if isinstance(e, BaseException) else e),
+              file=out)
+    if len(failed) > 10:
+        print("  ... and %d more" % (len(failed) - 10), file=out)
+    return False
+
+
+def process_start(pid):
+    """When process pid started, as a number to compare with an earlier reading; None if
+    no process pid is running; "?" if one is but its start can't be read (another
+    user's). A pid reused by a later process gives another number."""
+    if not isinstance(pid, int) or pid <= 0:
+        return None
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.OpenProcess.restype = wintypes.HANDLE
+        k.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        k.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        k.GetProcessTimes.argtypes = (wintypes.HANDLE,) + (ctypes.POINTER(wintypes.FILETIME),) * 4
+        k.CloseHandle.argtypes = (wintypes.HANDLE,)
+        h = k.OpenProcess(0x1000, False, pid)           # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return "?" if ctypes.get_last_error() == 5 else None     # 5: access denied, so it exists
+        try:
+            code = wintypes.DWORD()
+            if k.GetExitCodeProcess(h, ctypes.byref(code)) and code.value != 259:     # 259: STILL_ACTIVE
+                return None
+            t = [wintypes.FILETIME() for _ in range(4)]
+            if not k.GetProcessTimes(h, *[ctypes.byref(x) for x in t]):
+                return "?"
+            return (t[0].dwHighDateTime << 32) | t[0].dwLowDateTime
+        finally:
+            k.CloseHandle(h)
+    if os.path.isdir("/proc/self"):
+        try:
+            with open("/proc/%d/stat" % pid, encoding="ascii", errors="replace") as fh:
+                s = fh.read()
+        except FileNotFoundError:
+            return None
+        except OSError:
+            return "?"
+        f = s[s.rfind(")") + 2:].split()
+        if f[:1] == ["Z"]:                  # exited, not yet reaped
+            return None
+        try:
+            return int(f[19])               # field 22, starttime
+        except (IndexError, ValueError):
+            return "?"
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return None
+    except OSError:
+        pass
+    return "?"
+
+
+def owner_path(d):
+    """The owner file of run folder d: beside it, so nothing is added inside the folder."""
+    return d.rstrip("/\\") + OWNER_SUFFIX
+
+
+def write_owner(d, keep=False):
+    """Write d's owner file: this process's pid and start time, when, and whether kept."""
+    import time
+    os.makedirs(os.path.dirname(os.path.abspath(d)), exist_ok=True)
+    with open(owner_path(d), "w", encoding="utf-8") as fh:
+        json.dump({"pid": os.getpid(), "start": process_start(os.getpid()),
+                   "made": time.strftime("%Y-%m-%dT%H:%M:%S"), "keep": bool(keep)}, fh)
+
+
+def owner_state(d):
+    """"running", "finished" or "kept" from d's owner file; None if it has none, or one
+    that can't be read (being written, or not ours). Finished: no process with its pid
+    runs, or one does that started at another time (the pid reused)."""
+    try:
+        with open(owner_path(d), encoding="utf-8") as fh:
+            o = json.load(fh)
+        pid, start = int(o["pid"]), o.get("start")
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if o.get("keep"):
+        return "kept"
+    now = process_start(pid)
+    if now is None:
+        return "finished"
+    if now == "?" or start in (None, "?"):
+        return "running"
+    return "running" if now == start else "finished"
+
+
+def remove_finished_siblings(parent, out=None):
+    """Remove each run folder in parent whose owner file says its run has finished, with
+    the owner file; the folders removed. A folder with no owner file is left alone (the
+    one-time sweep's, scratch_sweep.py), and so is a running or kept one."""
+    gone = []
+    try:
+        names = sorted(os.listdir(parent))
+    except FileNotFoundError:
+        return gone
+    for n in names:
+        if not n.endswith(OWNER_SUFFIX):
+            continue
+        d = os.path.join(parent, n[:-len(OWNER_SUFFIX)])
+        if owner_state(d) == "finished" and remove_tree(d, out):
+            _remove_owner(d)
+            gone.append(d)
+    return gone
+
+
+def _remove_owner(d):
+    try:
+        os.remove(owner_path(d))
+    except FileNotFoundError:
+        pass
+
+
+def finish(d, keep=None, out=None, pid=None):
+    """The end of run folder d: remove it and its owner file (True), or print why not
+    (False). keep, or GI_KEEP_SCRATCH set, keeps both instead, marking the owner file
+    kept so later runs leave it, and says so. pid: the process that made d; a forked
+    child that inherited the atexit handler leaves d to it."""
+    out = sys.stderr if out is None else out
+    if pid is not None and pid != os.getpid():
+        return True
+    if keep is None:
+        keep = bool(os.environ.get(KEEP_ENV, "").strip())
+    if keep:
+        if os.path.isdir(d):
+            write_owner(d, keep=True)
+            print("kept %s" % d, file=out)
+        return True
+    if remove_tree(d, out):
+        _remove_owner(d)
+        return True
+    return False
+
+
+def run_dir(name, keep=None, start=None):
+    """scratch(name) for a with-block: the folder is removed when the block ends, pass or
+    fail, not only at exit (for a runner that makes many)."""
+    import contextlib
+
+    @contextlib.contextmanager
+    def cm():
+        d = scratch(name, start=start, at_exit=False)
+        try:
+            yield d
+        finally:
+            finish(d, keep)
+    return cm()
 
 
 def reverse_it_dir():
