@@ -51,7 +51,10 @@ what you tested or what passed.
   lands" message, and your batch or the reviewer's reply already names your
   next work, or says to wait for the next batch. Compact before you start on
   that work. The resume message names that work, or what you are waiting
-  for, and where it is written.
+  for, and where it is written. If you are only waiting, for the next batch
+  or the reviewer's reply, and that is written in your working log, you may
+  use `--compact-only` instead. When in doubt, resume (the skill's "Resume
+  or compact-only").
 - **After you start a long self-check run as a background task,** such as
   the emulated suite, a mutant run or a long build, once it is under way.
   First write in your working log: the task id, where its output goes, what
@@ -62,8 +65,8 @@ what you tested or what passed.
 
 At either point you may run `/self-compact`. Not partway through an edit,
 not with a question to the reviewer open, unless it is written in your
-working log, with what each answer would change, and the resume message
-names it as awaited, and not while you are driving the bench by hand on
+working log, with what each answer would change, and the resume message,
+or with `--compact-only` the compact message, names it as awaited, and not while you are driving the bench by hand on
 loan. A run that a background runner drives on the loaned bench doesn't
 count.
 
@@ -72,7 +75,10 @@ context"), that is a compaction point too, whatever state you are in: an
 hour idle means no work is in progress. Before it, write in your working log
 what is uncommitted, any question to the reviewer still open, and whether
 you hold the bench on loan. The resume message names what you were waiting
-for. At any other time, only when the user asks.
+for. If you are only waiting, for the next batch or the reviewer's reply,
+and that is written in your working log, you may use `--compact-only`
+instead. When in doubt, resume (the skill's "Resume or compact-only"). At
+any other time, only when the user asks.
 
 **Starting up:** check that you are in your worktree, on a
 `$ARGUMENTS/implementor/<topic>` branch (`git branch --show-current`). If

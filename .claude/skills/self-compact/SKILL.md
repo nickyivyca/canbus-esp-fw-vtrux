@@ -21,13 +21,16 @@ owns what); the research behind them is in `research.md` beside it.
 2. It starts a detached waiter and returns.
 3. The waiter waits until this session's transcript records the manual
    compaction. Then it types the resume message and Enter, which starts the
-   next turn.
+   next turn. With `--compact-only` it types nothing: the session stays idle
+   until a message, a task notification or the user arrives.
 4. If no compaction finishes within 60 minutes, it types nothing.
 
 It has no other mode:
 - It cannot type other text, or target another session or window.
-- Both messages are mandatory, each one line of printable ASCII, at most 600
-  characters.
+- The compact message is mandatory. So is the resume message, unless you
+  pass `--compact-only` instead. The two exclude each other, and a missing
+  resume is refused, never taken as compact-only. Each message is one line
+  of printable ASCII, at most 600 characters.
 - The resume message cannot start with `/`, `!` or `#`.
 - It refuses, typing nothing, if its own file is untracked or differs from
   `HEAD`.
@@ -84,6 +87,22 @@ and add nothing.
   The next turn reads it as user input, so it must carry nothing beyond
   what the user or the reviewer actually said.
 
+## Resume or compact-only
+
+The resume is the default (user, 2026-10-31). A session that needed a
+resume and didn't get one stays wedged, which costs more than the ~50-70K
+tokens a needless resume does. Pass `--compact-only` only when you are sure
+nothing more is needed from you until an outside trigger arrives: a
+cross-session message, a background-task notification, or the user. When in
+doubt, resume.
+
+Compact-only fits a session that is only waiting, with what it waits for and
+what it will do next written in its working log and named in the compact
+message, because no resume message will restate it. The clearest case is a
+session that was only waiting for the user, or for a reviewer message, with
+nothing assigned in the meantime. If the next step needs you to start work
+by yourself, resume.
+
 ## Procedure
 
 1. Finish the current piece of work, and write everything worth keeping
@@ -100,19 +119,22 @@ and add nothing.
      loads, so the path above is already written out in full. Copy it
      exactly as shown. The auto-mode allow rule allows the tool only in
      exactly this form: that path, with no variables such as `$PWD` and no
-     flags other than `--compact`, `--resume`, `--check` and `--timeout`.
+     flags other than `--compact`, `--resume` or `--compact-only`, `--check`
+     and `--timeout`. If auto mode blocks it, carry on without compacting,
+     per step 5; don't switch to a resume message to get past the block.
    - Nothing else goes in that Bash call: no `cd`, no `&&`, `;` or pipe, no
      heredoc, no second command. A compound command doesn't fit the rule,
      and auto mode refuses it as self-typing.
 3. Run the same command without `--check`, the same way: a Bash call with
    only this command, sent on its own and not alongside another tool call,
    as the last action of the turn.
-4. End the turn with one line: a compaction is queued, and the step it resumes
-   with.
+4. End the turn with one line: a compaction is queued, and either the step
+   it resumes with or that it is compact-only and what will wake the
+   session.
 5. **If auto mode blocks the call,** do not retry it, reword it or run it
    another way. Carry on without compacting, and tell the user in one line.
-6. **After the resume.** The resume message starts a fresh turn from a
-   summary. Before acting on it, re-read your role skill and the docs the
+6. **After the resume, or whatever wakes a compact-only session.** The
+   next turn starts from a summary. Before acting on it, re-read your role skill and the docs the
    step needs, per AGENTS.md "After a compaction".
 
 ## Platforms
