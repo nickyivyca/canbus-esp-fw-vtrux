@@ -22,13 +22,16 @@ starting `$REVERSE_IT_DIR` are in reverse-it and not yet moved.
   schema 7). The tester's tools decode through
   `gen-inhibit/tools/bench/gi_diag.py`, which reads the DBC from git at a
   commit, never from a working tree (decode rework, merged 2026-10-25); the
-  reverse-it copies are frozen at schema 7 and no longer read.
+  reverse-it copies stay at schema 7 and are no longer read.
 - The review tracker:
   `$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-review-2026-09-22.md`.
-- Validation: `$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-wican-firmware.md`,
-  frozen; the spec cites it, and no one adds to it (reviewer, 2026-10-10),
-  except the reviewer's dated corrections beside a passage found to be wrong
-  (user, 2026-10-30).
+- Validation: `$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-wican-firmware.md`.
+  **Status: record** (the gen-inhibit reviewer session, 2026-10-10). Closed
+  to new material, because the spec cites it as the record of how its early
+  results were obtained. **May change:** only dated corrections beside a
+  passage found to be wrong, written by the owner (user, 2026-10-30). **New
+  material goes to:** `gen-inhibit-test-evidence.md` (gen-inhibit tester).
+  **Reopening it:** the user's call.
 - This file.
 
 ## Implementor: product code
