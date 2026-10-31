@@ -49,8 +49,12 @@ starting `$REVERSE_IT_DIR` are in reverse-it and not yet moved.
 - The Python reference in `gen-inhibit/tools/`: `sync.py`, `inhibit.py`,
   `models.py`, `test_core.py`, `vehicle_runner.py`,
   `test_vehicle_runner_root.py` (the implementor's self-test of where
-  `vehicle_runner.py` takes canbench from, `$CAN_TOOLS_DIR`; not
-  evidence), `HANDOFF.md`,
+  `vehicle_runner.py` takes canbench from; not evidence), gen-inhibit's
+  can-tools pin `can_tools_pin.json` and its tool `can_tools_pin.py`, which
+  writes the pinned commit's canbench to `scratch/can-tools/<commit>/`
+  (AGENTS.md "can-tools"; the pin is the implementor's because
+  `vehicle_runner.py` is its only canbench user, reviewer, 2026-10-30), with
+  `test_can_tools_pin.py` (self-test, not evidence), `HANDOFF.md`,
   `requirements.txt`, and the folder's `README.md`, which the tester's rows
   in it are sent to the implementor to change.
 - `gen-inhibit/vtrux_tools.py`: **starts the shared build tooling**
