@@ -71,8 +71,9 @@ Not from upstream:
 - `shared_pins.json`: the project's pins of shared tooling, read by the
   release launcher `../vtrux_tools.py` and the pinned tooling.
 - `vtrux_build.json`: the project's build data for the release tooling
-  (`project`, `shared_components`: the board, `vtrux/wican_v3`, and the
-  stock code, `vtrux/wican` and `vtrux/debug_logs`).
+  (`project`, `shared_components`: the board, `vtrux/wican_v3`; the
+  stock code, `vtrux/wican` and `vtrux/debug_logs`; and the CAN port,
+  `vtrux/can_port` and `vtrux/twai_port`, since port step 1b).
 - `vtrux_checks.json`: the project's data for the shared build checks, the
   tester's.
 - `sdkconfig.log_info`: info-level logging, layered over `sdkconfig` for
