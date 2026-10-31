@@ -172,6 +172,10 @@ def judge_table_rule(rule, facts, produced, want):
 
 
 def run(fn, path):
+    """{row: (ok, detail)} that fn writes on path; none for a switch proved by its
+    table rules alone (fn None, e.g. WICAN_SLCAN_COMMANDS)."""
+    if fn is None:
+        return {}
     BO.rows.clear()
     fn(path)
     out = {name: (ok, detail) for name, ok, detail, _r in BO.rows}

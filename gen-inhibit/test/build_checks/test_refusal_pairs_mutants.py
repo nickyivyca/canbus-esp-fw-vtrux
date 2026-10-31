@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Mutants of test_refusal_pairs.py's table-rule stage (table_rules, judge_table_rule
-and SLCAN's ROWS entry; known anomaly 8, gen-inhibit tester, 2026-10-30);
+"""Mutants of test_refusal_pairs.py's table-rule stage (table_rules, judge_table_rule,
+and SLCAN's ROWS entry; known anomaly 8, gen-inhibit tester, 2026-10-30;
+and run()'s guard for a switch with no row function, 2026-10-31);
 test_refusal_tables.py must fail on each by a check (a FAIL line, not a crash).
 
     py -3.14 -B gen-inhibit/test/build_checks/test_refusal_pairs_mutants.py
@@ -50,6 +51,8 @@ MUTANTS = [
     ("SLCAN left out of ROWS", '    "WICAN_SLCAN_COMMANDS": (None, (), False),\n', ""),
     ("a 'not a switch' entry proved too", "            if e[0] not in (BS.TEST, BS.STOCK):\n                continue\n",
      ""),
+    ("run() calls a switch's missing row function (the first post-port run's crash)",
+     "    if fn is None:\n        return {}\n    BO.rows.clear()", "    BO.rows.clear()"),
 ]
 
 

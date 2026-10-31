@@ -123,6 +123,14 @@ def main():
                    not any(J(x, on, {}, w)[0] for x in (None, {}, {"a": 1, "b": 2}) for w in (True, False)), ""))
     checks.append(("WICAN_SLCAN_COMMANDS is proved by its table rule alone",
                    P.ROWS.get("WICAN_SLCAN_COMMANDS", (0,))[0] is None, P.ROWS.get("WICAN_SLCAN_COMMANDS")))
+    # main() runs every --on and --control switch's row function through run(); the first
+    # post-port run (2026-10-31) crashed on SLCAN's None there, before any check.
+    try:
+        got, why = P.run(None, OFF), ""
+    except Exception as e:      # noqa: BLE001  a crash here is the failure this checks for
+        got, why = None, "%s: %s" % (type(e).__name__, e)
+    checks.append(("run() with no row function (a table-rule-only switch) gives no rows, not a crash",
+                   got == {}, why or got))
 
     shutil.rmtree(TMP, ignore_errors=True)
     fails = 0
