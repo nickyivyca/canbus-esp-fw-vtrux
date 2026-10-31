@@ -4,6 +4,7 @@
     python3 invariants.py            # every scenario
     python3 invariants.py --only key
     python3 invariants.py -v
+    python3 invariants.py --selftest   # the trace walker, no runner needed
 
 WHY THIS EXISTS, in one number. Four rounds of mutation testing have now been
 run against this component. Of the mutations that were caught, **every single
@@ -258,10 +259,42 @@ def check(name, verbose=False, scn_path=None):
         scn_path = os.path.join(SCN, name + ".scn")
     trace = run(scn_path)
     c = Checker(name, scn_path)
+    walk(c, trace)
 
-    # The trace does not echo received frames, so the scenario's own 0x051 list
-    # is walked alongside it by timestamp. Equal timestamps: the frame is
-    # delivered before anything the core emits in response to it.
+    if c.problems:
+        print("[VIOLATION] %-32s" % name)
+        for p in c.problems[:6]:
+            print("    " + p)
+        if len(c.problems) > 6:
+            print("    ... and %d more" % (len(c.problems) - 6))
+        return False, c.saw_tx, c
+    if verbose:
+        print("[ok        ] %-32s %d inhibit frames checked" % (name, c.saw_tx))
+    return True, c.saw_tx, c
+
+
+def walk(c, trace, same_t_per_reply=True):
+    """Feed one trace, and the scenario's 0x051 list beside it, to a Checker.
+
+    The trace does not echo received frames, so the scenario's own 0x051 list
+    is walked alongside it by timestamp. A frame stamped before a trace line is
+    delivered before it.
+
+    FRAMES SHARING A TIMESTAMP ARE DELIVERED ONE PER INHIBIT REPLY (2026-10-31).
+    A real capture can stamp two 0x051 at the same microsecond: the logger
+    batched them. `vtrux_crankover_bug_investigation` does at 131.236 s,
+    counters 1 and 2, and host_runner answers each in turn, 2 then 3. This
+    walker used to deliver every frame at or before a TX's timestamp first, so
+    it judged the reply to counter 1 against counter 2 and reported a wrong
+    counter and two replies for one frame, against a device doing exactly what
+    spec 4 asks. Now a frame at the TX's own timestamp is handed over just
+    before the inhibit reply, one each, in order. It is not matched on the
+    reply's counter: that would let a reply that skips a counter pick the frame
+    that makes it right. Any frames at that timestamp left over are delivered
+    with the next later line, as before. `--selftest` holds both directions;
+    `same_t_per_reply=False` is the old rule, kept for it to show the case
+    exercises the change.
+    """
     vcm = list(c.vcm)
     vi = 0
 
@@ -293,7 +326,11 @@ def check(name, verbose=False, scn_path=None):
                             int(m.group(5)))))
 
     for i, (t, kind, payload) in enumerate(parsed):
-        while vi < len(vcm) and vcm[vi][0] <= t:
+        while vi < len(vcm) and (vcm[vi][0] < t or
+                                 (not same_t_per_reply and vcm[vi][0] == t)):
+            c.on_vcm_rx(vcm[vi][0], vcm[vi][1]); vi += 1
+        if kind == "TX" and payload[0] == "INHIBIT" \
+                and vi < len(vcm) and vcm[vi][0] == t:
             c.on_vcm_rx(vcm[vi][0], vcm[vi][1]); vi += 1
         if kind == "STATE":
             c.on_state(t, payload)
@@ -312,23 +349,73 @@ def check(name, verbose=False, scn_path=None):
                 c.on_tx_inhibit(t, payload[1], payload[2], payload[3],
                                 payload[4], post)
 
-    if c.problems:
-        print("[VIOLATION] %-32s" % name)
-        for p in c.problems[:6]:
-            print("    " + p)
-        if len(c.problems) > 6:
-            print("    ... and %d more" % (len(c.problems) - 6))
-        return False, c.saw_tx, c
-    if verbose:
-        print("[ok        ] %-32s %d inhibit frames checked" % (name, c.saw_tx))
-    return True, c.saw_tx, c
+
+LIVE = ("%d STATE mode=3 live=1 block= abort= latched=0 disabled=0 dcode= "
+        "susp=0 fb_ever=1 key=1 socv=1 socsince=1")
+
+
+def selftest():
+    """The walker on hand-made traces: no runner and no scenarios/ needed.
+
+    Each case is 0x051 frames (t, counter), trace lines, the walker rule, and
+    whether the Checker must report a problem. The batched pair is the
+    crankover capture's at 131.236 s.
+    """
+    import tempfile
+
+    def tx(t, ctr):
+        return "%d TX INHIBIT id=051 dlc=6 data=080080FF7F%02X ok=1" % (t, ctr)
+
+    cases = [
+        ("batched pair, answered 2 then 3",
+         [(100, 0), (200, 1), (200, 2)],
+         [LIVE % 50, tx(100, 1), tx(200, 2), tx(200, 3)], True, False),
+        ("CONTROL: the same under the old rule is a violation",
+         [(100, 0), (200, 1), (200, 2)],
+         [LIVE % 50, tx(100, 1), tx(200, 2), tx(200, 3)], False, True),
+        ("batched pair, answered 2 then 2",
+         [(100, 0), (200, 1), (200, 2)],
+         [LIVE % 50, tx(100, 1), tx(200, 2), tx(200, 2)], True, True),
+        ("batched pair, the second answer skips a counter (2 then 4)",
+         [(100, 0), (200, 1), (200, 2)],
+         [LIVE % 50, tx(100, 1), tx(200, 2), tx(200, 4)], True, True),
+        ("one frame, two answers",
+         [(100, 0), (200, 1)],
+         [LIVE % 50, tx(100, 1), tx(200, 2), tx(200, 3)], True, True),
+        ("one frame, answered +2",
+         [(100, 0), (200, 1)],
+         [LIVE % 50, tx(100, 1), tx(200, 3)], True, True),
+        ("ordinary frames, each answered +1",
+         [(100, 14), (200, 15), (300, 0)],
+         [LIVE % 50, tx(100, 15), tx(200, 0), tx(300, 1)], True, False),
+    ]
+    bad = 0
+    with tempfile.TemporaryDirectory() as d:
+        for label, frames, lines, rule, want_problem in cases:
+            scn = os.path.join(d, "case.scn")
+            with open(scn, "w") as fh:
+                for t, ctr in frames:
+                    fh.write("f %d 051 6 080080FF7F%02X\n" % (t, ctr))
+            c = Checker("selftest", scn)
+            walk(c, "\n".join(lines) + "\n", same_t_per_reply=rule)
+            got = bool(c.problems)
+            ok = got == want_problem
+            bad += not ok
+            print("%s %s%s" % ("ok  " if ok else "FAIL", label,
+                               "" if ok else "  -- problems: %s" % c.problems))
+    print("%d of %d cases right" % (len(cases) - bad, len(cases)))
+    return 1 if bad else 0
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--only", default="")
     ap.add_argument("-v", "--verbose", action="store_true")
+    ap.add_argument("--selftest", action="store_true",
+                    help="check the trace walker on hand-made traces")
     args = ap.parse_args()
+    if args.selftest:
+        return selftest()
 
     names = sorted(n[:-4] for n in os.listdir(SCN) if n.endswith(".scn"))
     if args.only:
