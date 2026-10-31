@@ -156,9 +156,14 @@ session before acting under it.
 ### Compacting your own context: `/self-compact`
 
 A session can compact its own context and resume without anyone at the
-keyboard, with the `/self-compact` skill. It types `/compact` into this session's terminal and then, once the compaction is done, one resume message
-naming the next step. It is the only sanctioned way for a session to type
-into its own input.
+keyboard, with the `/self-compact` skill. It types `/compact` into this
+session's terminal and then, once the compaction is done, one resume message
+naming the next step. By default it resumes. A session sure that nothing
+more is needed from it until a message, a task notification or the user
+arrives may pass `--compact-only` instead, and then nothing is typed (user,
+2026-10-31: a wedged session costs more than a needless resume, so when in
+doubt, resume). It is the only sanctioned way for a session to type into its
+own input.
 
 - **When:** only when the user asks for it, at the compaction point your
   role skill names, or when the idle-compaction hook asks for it (user,
@@ -174,9 +179,10 @@ into its own input.
   machine's `settings.local.json`, in the guarded form its header gives.
 - **Before it:** write everything worth keeping to its files. The summary
   loses detail; files do not.
-- **After it:** the resume starts a fresh turn from a summary. Re-read your
-  role skill and the docs the step needs before acting, per "After a
-  compaction".
+- **After it:** the next turn starts from a summary, whether the resume
+  message or, after `--compact-only`, whatever wakes the session starts it.
+  Re-read your role skill and the docs the step needs before acting, per
+  "After a compaction".
 - **If auto mode blocks it,** do not retry it, reword it or run it another
   way. Carry on without compacting and tell the user in one line.
 - **Where it works:** in tmux on Linux, and in terminal Claude Code on
