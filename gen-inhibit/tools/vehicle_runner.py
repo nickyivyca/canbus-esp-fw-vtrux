@@ -46,31 +46,57 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 
 
-def reverse_it_dir(environ=None):
-    """SeaDrive's reverse-it root, from REVERSE_IT_DIR: --interface auto finds
-    the dongle with its canbench. gi_paths' rule: no default, and refused if
-    unset or if the folder does not hold canre/ and projects/.
+def can_tools_dir(environ=None):
+    """The can-tools clone, from CAN_TOOLS_DIR: --interface auto finds the
+    dongle with its canbench (AGENTS.md, "can-tools", user 2026-10-30). No
+    default, and refused if unset or if the folder holds no canbench/.
 
-    Until 2026-10-26 this walked up from this file for a canre/, which worked
-    while the file lived in reverse-it and found nothing once it moved into the
-    firmware repo (2026-10-08): it fell back to the filesystem root, and the
-    canbench import failed as a missing module rather than a missing setting.
-    Only --interface auto calls it, so the other interfaces need no setting.
+    Until 2026-10-30 this was reverse_it_dir(), which put SeaDrive's reverse-it
+    root on sys.path[0] and imported the canbench mirror there. That mirror is
+    being retired and is never read now. Only --interface auto calls this, so
+    the other interfaces need no setting.
     """
     environ = os.environ if environ is None else environ
-    v = environ.get("REVERSE_IT_DIR", "").strip()
+    v = environ.get("CAN_TOOLS_DIR", "").strip()
     if not v:
         raise SystemExit(
-            "vehicle_runner: --interface auto needs REVERSE_IT_DIR, SeaDrive's "
-            "reverse-it root on this machine (the folder holding canre/ and "
-            "projects/), for canbench's interface detection. Set it, or name "
-            "the interface with --interface.")
+            "vehicle_runner: --interface auto needs CAN_TOOLS_DIR, the can-tools "
+            "clone on this machine (the folder holding canbench/), for "
+            "canbench's interface detection. Set it, or name the interface "
+            "with --interface.")
     v = os.path.normpath(v)
-    if not (os.path.isdir(os.path.join(v, "canre"))
-            and os.path.isdir(os.path.join(v, "projects"))):
-        raise SystemExit("vehicle_runner: REVERSE_IT_DIR=%s does not hold "
-                         "canre/ and projects/" % v)
+    if not os.path.isfile(os.path.join(v, "canbench", "__init__.py")):
+        raise SystemExit("vehicle_runner: CAN_TOOLS_DIR=%s holds no canbench/"
+                         % v)
     return v
+
+
+def import_canbench(environ=None):
+    """canbench from $CAN_TOOLS_DIR/canbench, loaded by file. Neither the clone
+    nor reverse-it goes on sys.path for it, so no other canbench on the path
+    (reverse-it's mirror, a .pth entry) can stand in for it, and one already
+    imported from anywhere else is refused."""
+    import importlib.util
+    d = os.path.join(can_tools_dir(environ), "canbench")
+    init = os.path.join(d, "__init__.py")
+    have = sys.modules.get("canbench")
+    if have is not None:
+        f = getattr(have, "__file__", None)
+        if not f or (os.path.normcase(os.path.normpath(f))
+                     != os.path.normcase(init)):
+            raise SystemExit("vehicle_runner: canbench is already imported from "
+                             "%s, not %s (CAN_TOOLS_DIR)" % (f, d))
+        return have
+    spec = importlib.util.spec_from_file_location(
+        "canbench", init, submodule_search_locations=[d])
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["canbench"] = mod
+    try:
+        spec.loader.exec_module(mod)
+    except BaseException:
+        del sys.modules["canbench"]
+        raise
+    return mod
 
 
 sys.path.insert(0, str(_HERE))
@@ -421,9 +447,7 @@ class Runner:
         elif a.interface == "auto":
             # Same detection path the rest of the project uses, so a dongle
             # that works for can_logger.py works here.
-            root = reverse_it_dir()
-            if root not in sys.path:
-                sys.path.insert(0, root)
+            import_canbench()
             from canbench.live.receiver import detect_all_can_interfaces
             print("detecting CAN interfaces at %d bps..." % a.bitrate)
             found = detect_all_can_interfaces(a.bitrate)
