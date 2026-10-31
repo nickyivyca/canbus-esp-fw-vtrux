@@ -18,6 +18,7 @@
 #include "esp_log.h"
 
 #include "can.h"
+#include "twai_port.h"
 
 #include <signal.h>
 #include <stdio.h>
@@ -362,12 +363,29 @@ static void invariant_hook(void)
     }
 }
 
+/*
+ * PORT 0, ONCE PER PROGRAM (spec 3.3, port step 1b): app_main sets it up through
+ * gi_wican_register(), which the shim does not compile, before anything arms.
+ * twai_port's setup and can_port's registration are start-up calls, so every
+ * case shares the one port, as every case shared can.c's state before 1b.
+ */
+static void port_once(void)
+{
+    static bool done;
+    if (!done)
+    {
+        gen_inhibit_port_register();
+        done = true;
+    }
+}
+
 static void setup(void)
 {
     ft_reset();
     g_wv_reported = 0;
     ft_set_step_hook(invariant_hook);
     ml_clear();
+    port_once();
     gen_inhibit_init(CAN_500K, 0);  /* can.c's defaults, as the cases always ran */
     ft_start_worker();
     ft_run(1000);
@@ -2134,7 +2152,7 @@ static const char *name_abort(int i)   { return gi_abort_name((gi_abort_t)i); }
 static const char *name_block(int i)   { return gi_block_name((gi_block_t)i); }
 static const char *name_selfoff(int i) { return gi_self_off_name((gi_self_off_t)i); }
 static const char *name_disable(int i) { return gi_disable_name((gi_disable_t)i); }
-static const char *name_drvstate(int i){ return drv_state_name((twai_state_t)i); }
+static const char *name_drvstate(int i){ return drv_state_name((can_port_state_t)i); }
 
 /*
  * How many bytes `"<key>":"<value>"` would grow by if the value were the
@@ -3993,6 +4011,7 @@ static void case_wake_has_a_target_before_the_worker_runs(void)
     ft_set_step_hook(invariant_hook);
     ml_clear();
 
+    port_once();
     gen_inhibit_init(CAN_500K, 0);
     /* Deliberately NOT ft_start_worker() yet: that is the boot ordering. */
 
@@ -5880,6 +5899,75 @@ static void case_build_page_carries_the_build_id(void)
     case_end();
 }
 
+/*
+ * CASE 60 -- A FAILED STEP OF THE BRING-UP REFUSES (spec 3.3, 8.1 rows 2 and 5;
+ * user, 2026-10-31). Port 0 reports an install failure rather than restarting,
+ * so whichever step fails -- the install, the start or the alerts -- the arm or
+ * the mode change is refused, the worker is idle, the bus is down and the driver
+ * uninstalled, and nothing reaches the wire. The next enable brings it up: an
+ * arm after the failure succeeds. Until 1b the install and the start restarted
+ * the device and only the alerts refused; case 13 is the alerts from idle.
+ */
+static void bringup_refused(const char *what)
+{
+    CHECK(json_has("\"worker\":\"idle\"") && json_has("\"mode\":0"),
+          "%s: the refused change did not leave the worker idle in mode 0: %s",
+          what, stats());
+    CHECK(!can_is_enabled(), "%s: the refused change left the bus up", what);
+    CHECK(!twai_port_is_installed(),
+          "%s: the refused change left the driver installed", what);
+}
+
+static void case_bringup_failure_refuses(void)
+{
+    case_begin("case 60: a failed install, start or alerts step refuses the "
+               "arm and leaves the bus down (spec 3.3)");
+    setup();
+    esp_err_t r;
+    const int wire_before = ft_wire_count_id(0x051);
+
+    /* Row 2, each step. */
+    ft_fail_install_next();
+    r = gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
+    ft_run(20000);
+    CHECK(r != ESP_OK, "row 2, install: the arm came back OK: %s", stats());
+    bringup_refused("row 2, install");
+
+    ft_fail_start_next();
+    r = gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
+    ft_run(20000);
+    CHECK(r != ESP_OK, "row 2, start: the arm came back OK: %s", stats());
+    bringup_refused("row 2, start");
+
+    ft_fail_alerts_config(true);
+    r = gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
+    ft_run(20000);
+    ft_fail_alerts_config(false);
+    CHECK(r != ESP_OK, "row 2, alerts: the arm came back OK: %s", stats());
+    bringup_refused("row 2, alerts");
+
+    /* The next enable brings it up. */
+    r = gen_inhibit_set_mode(GEN_INHIBIT_PASSIVE, 500);
+    CHECK(r == ESP_OK && json_has("\"worker\":\"armed\"") && can_is_enabled(),
+          "the arm after the refusals came back %s: %s", esp_err_to_name(r),
+          stats());
+
+    /* Row 5: the reinstall OBSERVE needs fails at its start. */
+    ft_fail_start_next();
+    r = gen_inhibit_set_mode(GEN_INHIBIT_OBSERVE, 500);
+    ft_run(20000);
+    CHECK(r != ESP_OK, "row 5, start: the re-arm came back OK: %s", stats());
+    bringup_refused("row 5, start");
+
+    feed_interlocks(12, 25);
+    CHECK(ft_wire_count_id(0x051) == wire_before,
+          "%d inhibit frame(s) reached the wire around the refused bring-ups",
+          ft_wire_count_id(0x051) - wire_before);
+
+    teardown();
+    case_end();
+}
+
 #if !SHIM_AUTOARM_BUILD
 int main(int argc, char **argv)
 {
@@ -5888,8 +5976,10 @@ int main(int argc, char **argv)
      * the firmware's 64 until 2026-10-03, with a comment claiming they matched, and
      * the only thing that revealed it was replaying a real capture -- synthetic cases
      * never queue enough to notice. Checked here rather than commented, because a
-     * comment is what was wrong.
+     * comment is what was wrong. Port 0 first: since port step 1b the depth is
+     * its setting (spec 3.3), not a constant in can.c.
      */
+    port_once();
     if (ft_rx_queue_depth() != (int)can_rx_queue_len())
     {
         printf("FAIL: the mock receive queue is %d deep and the firmware's is %d. "
@@ -5966,6 +6056,7 @@ int main(int argc, char **argv)
     case_worker_mode_rows();
     case_leaving_armed_withdraws();
     case_build_page_carries_the_build_id();
+    case_bringup_failure_refuses();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
     return g_fail ? 1 : 0;
@@ -5990,6 +6081,7 @@ int main(void)
     ft_set_step_hook(invariant_hook);
     ml_clear();
     ft_autostart_worker(true);
+    port_once();
     gen_inhibit_init(CAN_250K, 1);
     ft_run(10000);
     CHECK(ft_install_count() == 1,

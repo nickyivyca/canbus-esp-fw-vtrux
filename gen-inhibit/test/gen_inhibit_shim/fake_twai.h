@@ -222,6 +222,10 @@ void ft_bus_off(void);
  */
 void ft_fail_install_next(void);
 
+/* The next twai_start() fails, the driver left installed. Cleared by
+ * ft_reset(). */
+void ft_fail_start_next(void);
+
 uint32_t ft_installed_rx_queue_len(void);
 uint32_t ft_installed_acc_code(void);
 uint32_t ft_installed_acc_mask(void);

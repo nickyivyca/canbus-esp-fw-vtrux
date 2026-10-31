@@ -258,6 +258,7 @@ static int      g_max_inflight;     /* item 3's high-water mark, ours only */
 static bool     g_fail_next;
 /* g_installed and g_running are declared above rx_push(), which reads them. */
 static bool     g_fail_install;     /* the next twai_driver_install() fails */
+static bool     g_fail_start;       /* the next twai_start() fails */
 static bool     g_in_receive;       /* a thread is blocked inside the driver */
 static int      g_unsafe_teardowns;
 static int      g_installed_mode = -1;
@@ -510,6 +511,7 @@ int      ft_installed_single_filter(void) { return g_installed_single_filter; }
 void ft_fail_alerts_config(bool fail) { g_fail_alerts_cfg = fail; }
 void ft_bus_off(void) { g_bus_off = true; }
 void ft_fail_install_next(void) { g_fail_install = true; }
+void ft_fail_start_next(void) { g_fail_start = true; }
 
 int              ft_sent_count(void) { return g_nsent; }
 const ft_frame_t *ft_sent(int i) { return &g_sent[i]; }
@@ -1003,11 +1005,12 @@ esp_err_t twai_driver_install(const twai_general_config_t *g,
     if (g_fail_install)
     {
         /*
-         * One install that fails and leaves nothing installed. can.c wraps
-         * the call in ESP_ERROR_CHECK, which the shim defines as a no-op
-         * (mock/freertos/FreeRTOS.h), so here can_enable() carries on as if it
-         * had worked; on the device the same failure aborts. What a case can
-         * check with it is the arm's own test that the controller is running.
+         * One install that fails and leaves nothing installed. Since port step
+         * 1b port 0 reports it (spec 3.3, user, 2026-10-31), so the arm is
+         * refused with the bus left down. The stock can_enable() still wraps
+         * the bring-up in ESP_ERROR_CHECK (can_port C3), which the shim defines
+         * as a no-op (mock/freertos/FreeRTOS.h): on the host a stock enable
+         * carries on where the device would restart.
          */
         g_fail_install = false;
         return ESP_FAIL;
@@ -1066,6 +1069,13 @@ esp_err_t twai_start(void)
 {
     /* No driver, no handle: the real one fails its handle check. */
     if (!g_installed) return ESP_ERR_INVALID_ARG;
+    if (g_fail_start)
+    {
+        /* One start that fails, the driver left installed and stopped, as a
+         * refused twai_start() leaves it. */
+        g_fail_start = false;
+        return ESP_ERR_INVALID_STATE;
+    }
     g_running = true;
     /*
      * twai_start_v2() resets the receive queue (xQueueReset, twai.c:606).
@@ -1523,6 +1533,7 @@ void ft_reset(void)
     g_fail_next = false;
     g_bus_off = false;
     g_fail_install = false;
+    g_fail_start = false;
     g_rx_n = g_rx_dropped = g_rx_dropped_off = 0;
     g_hold_worker = false;
     g_as_task = 0;

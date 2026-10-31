@@ -1,5 +1,6 @@
 /*
- * Platform stubs so the REAL main/can.c compiles and runs here.
+ * Platform stubs so the REAL stock CAN calls compile and run here: main/can.c
+ * until port step 1b, vtrux/can_port's can_stock.c and vtrux/twai_port since.
  *
  * WHY THIS REPLACED A REIMPLEMENTATION. The first version of this file WAS a
  * reimplementation: can_enable/can_disable/can_send written out by hand, with
@@ -8,10 +9,10 @@
  * exercising the copy. A test that passes when the shipped code is deleted is
  * worse than no test: it reports safety it has not checked.
  *
- * So main/can.c is compiled as-is now, and this file provides only what the
- * platform would: an event group, a GPIO, the board, and the queues it
- * declares. If can.c's dependencies grow, add stubs here rather than copying
- * behaviour.
+ * So the shipped code is compiled as-is now, and this file provides only what
+ * the platform would: an event group, a GPIO, the board, and the queues it
+ * declares. If its dependencies grow, add stubs here (or, for the driver,
+ * fake_port.c) rather than copying behaviour.
  */
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"

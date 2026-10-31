@@ -13,6 +13,16 @@ dependencies:
     source:
       type: idf
     version: 5.4.1
+  vtrux/can_port:
+    component_hash: 7bbde1db0d8f93cb449e1e331f457cb5e4c1e1ea434c9a476296230b6956bd9a
+    dependencies:
+    - name: idf
+      version: '>=5.4'
+    source:
+      git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
+      path: shared/can_port
+      type: git
+    version: 7b6447ac94b4e07605d956df3429f35fbe9f7844
   vtrux/debug_logs:
     component_hash: 4720f983a978f36005220c8d1c5df0e83843852bf0f740e65eebaab69bbefbe0
     dependencies: []
@@ -20,9 +30,22 @@ dependencies:
       git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
       path: shared/debug_logs
       type: git
-    version: 92364d6a3466fd65ba58142693dbe40209b79754
+    version: 7b6447ac94b4e07605d956df3429f35fbe9f7844
+  vtrux/twai_port:
+    component_hash: d4cd02e95005eed9bebf6b4fa3a6d26595a22a95702ca33baf3ce184927278e7
+    dependencies:
+    - name: idf
+      version: '>=5.4'
+    source:
+      git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
+      path: shared/twai_port
+      type: git
+    targets:
+    - esp32c3
+    - esp32s3
+    version: 7b6447ac94b4e07605d956df3429f35fbe9f7844
   vtrux/wican:
-    component_hash: 7302bd400d07724709d8e924b0231aad4e5caff5735e39f7f8aff48a6bd4db2a
+    component_hash: 274c279c1d30ff83df784edd8a24a380594acfc61502cf120bee569f9ff0b7ff
     dependencies:
     - name: idf
       version: '>=5.4'
@@ -32,7 +55,7 @@ dependencies:
       git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
       path: shared/wican
       type: git
-    version: 92364d6a3466fd65ba58142693dbe40209b79754
+    version: 7b6447ac94b4e07605d956df3429f35fbe9f7844
   vtrux/wican_v3:
     component_hash: 2ba04687f11497e49841402b738361d961aa5f52b5e7571529e9e7f79e4c9fec
     dependencies:
@@ -44,12 +67,14 @@ dependencies:
       type: git
     targets:
     - esp32c3
-    version: 92364d6a3466fd65ba58142693dbe40209b79754
+    version: 7b6447ac94b4e07605d956df3429f35fbe9f7844
 direct_dependencies:
 - idf
+- vtrux/can_port
 - vtrux/debug_logs
+- vtrux/twai_port
 - vtrux/wican
 - vtrux/wican_v3
-manifest_hash: b014f275eac14ec6f032b1df300f74c946e953902112165864efdb15fdd896f5
+manifest_hash: 8576bc8d76edce8f6cfade0c9e04ddb3987f5d92c1869463996234d6a24c852f
 target: esp32c3
 version: 2.0.0
