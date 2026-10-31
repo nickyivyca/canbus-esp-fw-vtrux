@@ -1,12 +1,21 @@
 """session_compact.py -- a terminal Claude Code session compacts its own context, then resumes.
 
-Plan: $REVERSE_IT_DIR/tools/plans/session-compact.md. Procedure: SKILL.md beside this file.
+Plan: $REVERSE_IT_DIR/../Infrastructure/tools/self-compact/plan.md (mainline; README.md there
+has the decisions). Procedure: SKILL.md beside this file.
 
     <python> <this file's absolute path> --compact "<what to keep>" --resume "<next assigned step>" [--check]
+    <python> <this file's absolute path> --compact "<what to keep>" --compact-only [--check]
+
+The resume is the default (user, 2026-10-31): a session that is not resumed when it needed to
+be stays wedged, which costs more than the ~50-70K tokens a needless resume does.
+--compact-only is an explicit opt-in for a session that is sure nothing more is needed from it
+until an outside trigger arrives (a cross-session message, a background-task notification, or
+the user). A missing or empty --resume is refused; it never silently becomes compact-only.
 
 0. Refuses, typing nothing, if this file is untracked or differs from HEAD in its git worktree.
-1. Validates both messages (mandatory; one line of printable ASCII, at most 600 characters;
-   the resume message cannot start with / ! or #; neither may end in a backslash).
+1. Validates the messages: the compact message, and either a resume message or --compact-only,
+   never both (one line of printable ASCII, at most 600 characters; the resume message cannot
+   start with / ! or #; neither may end in a backslash).
 2. Resolves the target: only the Claude Code process this tool runs under ($CLAUDE_PID, which
    must be in this process's own ancestry). Linux: through $TMUX_PANE only. Windows: through
    that process's own console only. No window, focus or mouse automation, and no option to
@@ -14,11 +23,11 @@ Plan: $REVERSE_IT_DIR/tools/plans/session-compact.md. Procedure: SKILL.md beside
 3. Takes a per-session lock, types "/compact <msg>" and Enter (held by Claude Code until the
    turn ends), starts a detached waiter and returns.
 4. The waiter watches the session transcript for a manual compact_boundary written after the
-   request, then types the resume message and Enter. If none arrives before the timeout it
-   types nothing. The waiter records itself in the lock; a later call clears a lock whose
+   request, then types the resume message and Enter; with --compact-only it types nothing and
+   only releases the lock. If none arrives before the timeout it types nothing. The waiter records itself in the lock; a later call clears a lock whose
    owner is no longer running, or one older than the timeout plus 5 minutes.
 
-Every real call (not --check) is logged to
+Every real call (not --check) is logged, with its mode (resume or compact-only), to
 scratch/session-compact/session_compact_<hostname>.log.jsonl in the worktree (gitignored).
 Output is ASCII only.
 """
@@ -411,7 +420,8 @@ def wait_and_resume(request_path):
     since = datetime.datetime.fromisoformat(req["since"])
     deadline = time.time() + req["timeout"]
     offset, tail = req["offset"], b""
-    base = {"session": sid, "target": target, "resume": req["resume"]}
+    mode = req.get("mode", "resume")
+    base = {"session": sid, "target": target, "mode": mode, "resume": req["resume"]}
     try:
         claim_lock(sid)
         while time.time() < deadline:
@@ -420,6 +430,9 @@ def wait_and_resume(request_path):
                 return
             found, offset, tail = boundary_found(req["transcript"], offset, tail, sid, since)
             if found:
+                if mode == "compact-only":
+                    log(dict(base, outcome="compacted", note="compact-only; nothing typed"))
+                    return
                 time.sleep(SETTLE_S)
                 if not alive(target):
                     log(dict(base, outcome="target-gone", note="after compaction; nothing typed"))
@@ -445,7 +458,11 @@ def wait_and_resume(request_path):
 def main():
     ap = argparse.ArgumentParser(description="Compact this Claude Code session, then resume it.")
     ap.add_argument("--compact", help="instructions for /compact (what the summary must keep)")
-    ap.add_argument("--resume", help="plain-text message typed after the compaction (the next assigned step)")
+    ap.add_argument("--resume", help="plain-text message typed after the compaction (the next assigned step); "
+                    "the default and required unless --compact-only")
+    ap.add_argument("--compact-only", action="store_true",
+                    help="opt-in: compact and type nothing afterwards; only when nothing more is needed from "
+                         "this session until an outside trigger arrives. Excludes --resume")
     ap.add_argument("--check", action="store_true", help="validate and resolve the target; type nothing")
     ap.add_argument("--timeout", type=int, default=TIMEOUT_S,
                     help="seconds to wait for the compaction (at most %d)" % TIMEOUT_S)
@@ -456,11 +473,20 @@ def main():
         wait_and_resume(a._wait)
         return 0
 
-    result = {"compact": a.compact, "resume": a.resume, "check": a.check}
+    mode = "compact-only" if a.compact_only else "resume"
+    result = {"compact": a.compact, "mode": mode, "resume": a.resume, "check": a.check}
     try:
         self_check()
         validate("compact", a.compact, False)
-        validate("resume", a.resume, True)
+        if a.compact_only:
+            if a.resume is not None:
+                raise Refused("--compact-only and --resume are mutually exclusive; pass one of them")
+        else:
+            if a.resume is None or not a.resume.strip():
+                raise Refused("resume message is missing or empty. The resume is the default and is required;"
+                              " to compact without one, pass --compact-only instead, and only when nothing"
+                              " more is needed from this session until an outside trigger arrives")
+            validate("resume", a.resume, True)
         if not 1 <= a.timeout <= TIMEOUT_S:
             raise Refused("--timeout must be 1..%d" % TIMEOUT_S)
         sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
@@ -482,7 +508,7 @@ def main():
             since = now_utc()
             req = {"session_id": sid, "target": target, "transcript": transcript,
                    "offset": os.path.getsize(transcript), "since": since.isoformat(),
-                   "timeout": a.timeout, "resume": a.resume}
+                   "timeout": a.timeout, "mode": mode, "resume": a.resume}
             request_path = os.path.join(STATE_DIR, sid + ".request.json")
             with open(request_path, "w", encoding="ascii") as f:
                 json.dump(req, f)
@@ -492,15 +518,19 @@ def main():
             drop_lock(sid)
             raise
         result["outcome"] = "queued"
-        log({k: result.get(k) for k in ("session", "target", "backend", "compact", "resume", "waiter",
+        log({k: result.get(k) for k in ("session", "target", "backend", "mode", "compact", "resume", "waiter",
                                         "stale_lock_cleared", "outcome")})
         print(json.dumps(result, ensure_ascii=True, indent=1))
-        print("Compaction queued; it runs when this turn ends, then the resume message is typed. End the turn now.")
+        if a.compact_only:
+            print("Compaction queued; it runs when this turn ends. Nothing is typed afterwards: the session"
+                  " stays idle until a message, a task notification or the user arrives. End the turn now.")
+        else:
+            print("Compaction queued; it runs when this turn ends, then the resume message is typed. End the turn now.")
         return 0
     except Refused as e:
         result.update(outcome="refused", reason=str(e))
         if not a.check:
-            log({"compact": a.compact, "resume": a.resume, "outcome": "refused", "reason": str(e)})
+            log({"mode": mode, "compact": a.compact, "resume": a.resume, "outcome": "refused", "reason": str(e)})
         print(json.dumps(result, ensure_ascii=True, indent=1))
         return 2
 
