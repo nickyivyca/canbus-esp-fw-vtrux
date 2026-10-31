@@ -4,7 +4,8 @@
 reviewer's session, and drafted that day by the gen-inhibit reviewer for
 gen-inhibit's port step 1a; W7 amended 2026-10-29, for the rollback
 rehearsal's fault hook, and 2026-10-30, for its symbol; W1 amended
-2026-10-30, for `debug_logs`'s link cycle. As
+2026-10-30, for `debug_logs`'s link cycle; W3 amended 2026-10-31, for
+port step 1b's `can_port`. As
 a shared component's spec this follows port plan goal 20: the reviewer whose
 project needs a change drafts it, the user rules in that reviewer's session,
 and the other project's reviewer reads it before it merges into
@@ -42,10 +43,10 @@ Requirements are numbered W1 to W11. The numbers are stable.
   that code's behaviour, which includes gen-inhibit's changes made before
   the port: the 403 replies, the removed sleep state machine, the
   Bluetooth strip. Any other change is a change to this spec.
-- **W3. The CAN functions are the project's, until `can_port`** (port step
-  1b). The component declares in a header the CAN functions its files call
-  (today's `can.h`) and does not implement them. The project supplies them;
-  gen-inhibit's are in its `can.c`.
+- **W3. The CAN functions are `can_port`'s** (port step 1b). The
+  component's files call the CAN functions declared in `can.h`, and
+  `vtrux/can_port` implements them on port 0 (`shared/can_port` C3). Until
+  1b the project supplied them.
 - **W4. Start-up is two calls.** The project's `app_main` registers its
   callbacks (W5) and URI hook (W8), then calls `wican_init()`, then its own
   start-up, then `wican_start()`.
