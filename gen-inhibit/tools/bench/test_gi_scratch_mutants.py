@@ -15,6 +15,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TARGET = "gi_paths.py"
 MUTANTS = [
     ("remove_tree with ignore_errors", "        shutil.rmtree(lp, onexc=again)", "        shutil.rmtree(lp, ignore_errors=True)"),
+    ("no fallback for an rmtree without onexc (Python < 3.12)", '            if "onexc" not in str(e):\n                raise\n',
+     "            raise\n"),
+    ("the fallback without the retry", "            shutil.rmtree(lp, onerror=lambda fn, p, ei: again(fn, p, ei[1]))",
+     "            shutil.rmtree(lp, onerror=lambda fn, p, ei: fn(p))"),
     ("the read-only flag not cleared", "            os.chmod(p, stat.S_IWRITE)", "            pass"),
     ("no long-path prefix on Windows", '    return "\\\\\\\\?\\\\" + p\n', "    return p\n"),
     ("a failure not printed", '    print("could not remove %s: %d entr%s failed"', '    0 and print("could not remove %s: %d entr%s failed"'),

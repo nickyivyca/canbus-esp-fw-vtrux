@@ -167,6 +167,41 @@ def run(work):
         fh.write("x")
     os.chmod(f, stat.S_IREAD)
     check("a lone read-only file is removed", lambda: gp.remove_tree(f, out=buf) and not os.path.lexists(f))
+    # Python before 3.12 (WSL's 3.10, where the C suites' runners run) has no onexc, only onerror
+    real_rmtree = gp.shutil.rmtree
+
+    def old_rmtree(path, ignore_errors=False, onerror=None, **kw):
+        if kw:
+            raise TypeError("rmtree() got an unexpected keyword argument '%s'" % next(iter(kw)))
+        return real_rmtree(path, ignore_errors, onerror)
+    gp.shutil.rmtree = old_rmtree
+    try:
+        t = tree(os.path.join(work, "rm-old"))
+        buf = io.StringIO()
+        res, err = call(lambda: gp.remove_tree(t, out=buf))
+        check("an rmtree with onerror only (Python < 3.12): the read-only tree is removed, True, nothing printed",
+              lambda: err is None and res is True and not os.path.lexists(t) and buf.getvalue() == "", (res, err))
+        t2 = tree(os.path.join(work, "rm-old2"), ro_dir=False)
+        held2 = os.path.join(t2, "held.txt")
+        open(held2, "w").close()
+        buf = io.StringIO()
+        if os.name == "nt":
+            fh = open(held2)
+            try:
+                res, err = call(lambda: gp.remove_tree(t2, out=buf))
+            finally:
+                fh.close()
+        else:
+            os.chmod(t2, stat.S_IREAD | stat.S_IEXEC)
+            try:
+                res, err = call(lambda: gp.remove_tree(t2, out=buf))
+            finally:
+                os.chmod(t2, stat.S_IRWXU)
+        check("... and what it can't remove is printed with the reason, False, no exception",
+              lambda: err is None and res is False and "held.txt" in buf.getvalue(), (res, err, buf.getvalue()))
+    finally:
+        gp.shutil.rmtree = real_rmtree
+    gp.remove_tree(os.path.join(work, "rm-old2"), out=buf)
     if os.name == "nt":
         deep = os.path.join(work, "deep")
         p = deep
