@@ -22,7 +22,8 @@ FW = os.environ.get("GI_FW") or gi_paths.project_root()   # a project folder (ge
 PAIRS = os.path.join(FW, "test", "build_checks", "test_refusal_pairs.py")
 ON = {"GI_TEST_RESTART_QUIESCE": "rt", "GI_INSTRUMENT_RXQ": "rxq", "GI_INSTRUMENT_TXABORT": "txabort",
       "GI_INSTRUMENT_ABORTWIN": "abortwin", "OTA_HEALTH_FAULT_INJECT": "flt", "WICAN_FEATURE_MQTT": "fmqtt",
-      "WICAN_FEATURE_ELM327": "felm", "WICAN_FEATURE_AUTOPID": "fautopid", "WICAN_FEATURE_REALDASH": "frealdash"}
+      "WICAN_FEATURE_ELM327": "felm", "WICAN_FEATURE_AUTOPID": "fautopid", "WICAN_FEATURE_REALDASH": "frealdash",
+      "WICAN_SLCAN_COMMANDS": "fslcan"}     # vtrux/wican's table's (known anomaly 8, 2026-10-30)
 CONTROL = {"WICAN_FEATURE_AUTOPID": "fmqttelm"}
 AP = "WICAN_FEATURE_AUTOPID"
 

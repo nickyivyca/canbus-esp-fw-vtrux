@@ -7,7 +7,8 @@
 # start/end times and exit code, to <Out>\build_<name>.txt. A build directory
 # that already exists is refused rather than reused (each must be a clean build).
 # Names: man, man2 (a second clean build of the same tree, spec 11's control),
-# rt, rxq, txabort, abortwin, flt. A prod build is the shared tooling's release build (tools/vtrux_tools.py release), not this.
+# rt, rxq, txabort, abortwin, flt, and the stock features' fmqtt, felm, fmqttelm,
+# fautopid, frealdash, fall and fslcan. A prod build is the shared tooling's release build (tools/vtrux_tools.py release), not this.
 param(
     [Parameter(Mandatory=$true)][string]$Tree,
     [Parameter(Mandatory=$true)][string]$Out,
@@ -35,6 +36,9 @@ $defs = @{
     "frealdash" = @("-DWICAN_FEATURE_REALDASH=ON");
     "fall"      = @("-DWICAN_FEATURE_MQTT=ON", "-DWICAN_FEATURE_ELM327=ON", "-DWICAN_FEATURE_AUTOPID=ON",
                     "-DWICAN_FEATURE_REALDASH=ON");
+    # vtrux/wican's fifth stock switch, the SLCAN command parser (shared/wican W6), whose
+    # refusal row is its own table's (known anomaly 8, 2026-10-30).
+    "fslcan"    = @("-DWICAN_SLCAN_COMMANDS=ON");
 }
 
 New-Item -ItemType Directory -Force $Out | Out-Null
