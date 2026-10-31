@@ -130,6 +130,13 @@ static void take_rise(uint32_t raw, uint32_t *base, uint32_t *total)
     }
 }
 
+/* The receive losses' total, from its parts (T7). Lock held. */
+static void sum_rx_lost(void)
+{
+    s_count.rx_lost = s_count.rx_lost_queue_full + s_count.rx_lost_overrun
+                      + s_count.rx_lost_restart;
+}
+
 /* Count a bus-off entry once per episode. Lock held. */
 static void note_bus_off(void)
 {
@@ -156,7 +163,7 @@ static void fold(const twai_status_info_t *st, uint32_t gen)
         take_rise(st->tx_failed_count, &s_raw.tx_failed, &s_count.tx_failed);
         take_rise(st->bus_error_count, &s_raw.bus_error, &s_count.bus_errors);
         take_rise(st->arb_lost_count, &s_raw.arb_lost, &s_count.arb_lost);
-        s_count.rx_lost = s_count.rx_lost_queue_full + s_count.rx_lost_overrun;
+        sum_rx_lost();
         if (st->msgs_to_rx > s_count.rx_high_water)
         {
             s_count.rx_high_water = st->msgs_to_rx;
@@ -591,11 +598,21 @@ esp_err_t twai_port_send(const twai_message_t *m, TickType_t wait)
     return err;
 }
 
+/*
+ * The frames a flush discards are counted, read just before the clear (T7): a
+ * deliberate discard, apart from the losses. can.c's can_flush_rx() cleared
+ * them uncounted, and the stock enable flushes after every bring-up.
+ */
 void twai_port_flush_rx(void)
 {
     if (s_installed)
     {
-        (void)twai_clear_receive_queue();
+        twai_status_info_t st;
+        const bool have = (read_status(&st) == ESP_OK);
+        if (twai_clear_receive_queue() == ESP_OK && have)
+        {
+            count_add(&s_count.rx_flushed, st.msgs_to_rx);
+        }
     }
 }
 
@@ -674,13 +691,20 @@ void twai_port_service(void)
     {
         return;
     }
-    /* Recovery done: the controller waits STOPPED until it is started. */
+    /*
+     * Recovery done: the controller waits STOPPED until it is started. The
+     * start resets the receive queue (IDF v5.4.1 twai_start_v2()), and the
+     * frames waiting in it, read just above with the controller stopped, were
+     * received and never delivered: receive losses, a part of their own (T7).
+     */
     if (s_cfg.recovery == TWAI_PORT_RECOVERY_AUTO
         && st.state == TWAI_STATE_STOPPED)
     {
         if (twai_start() == ESP_OK)
         {
             taskENTER_CRITICAL(&s_lock);
+            s_count.rx_lost_restart += st.msgs_to_rx;
+            sum_rx_lost();
             s_count.bus_off = false;    /* the episode is over */
             taskEXIT_CRITICAL(&s_lock);
         }

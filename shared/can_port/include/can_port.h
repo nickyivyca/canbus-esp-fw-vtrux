@@ -70,13 +70,15 @@ typedef struct {
     uint32_t tx_frames;         /* sends the port queued */
     /*
      * Frames lost on receive, however they were lost: rx_lost is the total,
-     * and the two below are its parts for a backend that can tell them apart.
+     * and the three below are its parts for a backend that can tell them apart.
      * rx_lost_is_bound: the backend cannot count a loss per frame, so rx_lost
      * is a lower bound (one per occurrence), not a tally (C2).
      */
     uint32_t rx_lost;
     uint32_t rx_lost_queue_full;    /* the receive queue was full */
     uint32_t rx_lost_overrun;       /* the controller's FIFO overran */
+    uint32_t rx_lost_restart;       /* waiting when the restart after bus-off
+                                     * recovery reset the receive queue */
     bool rx_lost_is_bound;
     uint32_t tx_dropped;        /* sends refused with the TX queue full */
     uint32_t tx_refused;        /* sends refused for any other reason (C2) */
@@ -87,6 +89,8 @@ typedef struct {
     uint32_t tx_discarded_bus_off;  /* queued frames bus-off recovery discarded */
     uint32_t tx_discarded_teardown; /* TX queue at a teardown (twai_port T4) */
     uint32_t rx_discarded_teardown; /* RX queue at a teardown */
+    uint32_t rx_flushed;        /* waiting when a flush discarded them: a
+                                 * deliberate discard, not a loss */
     uint32_t rx_high_water;     /* the most frames seen waiting at once */
     uint32_t bring_ups;         /* successful bring-ups so far */
 } can_port_status_t;

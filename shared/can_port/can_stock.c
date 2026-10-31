@@ -24,8 +24,9 @@
  * 4020bc8, last changed at c48e05b), with today's behaviour: what the stock
  * code sees through can.h is unchanged. What moved out:
  *
- *   - the driver calls, into port 0's backend (vtrux/twai_port for both
- *     projects): the install, start and teardown, the board's pins and its
+ *   - the driver calls, into port 0's backend, whichever the project registers
+ *     (vtrux/twai_port in gen-inhibit's today): the install, start and
+ *     teardown, the board's pins and its
  *     standby line, and the receive queue's depth, which is now the project's
  *     setting (twai_port T2);
  *   - gen-inhibit's three calls into its own code, which became hooks: the

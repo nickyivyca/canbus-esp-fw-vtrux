@@ -639,13 +639,27 @@ static void case_auto_recovery(void)
     can_port_status_t s = status();
     CHECK(s.tx_discarded_bus_off == 4 && s.bus_off_entries == 1);
 
-    /* Recovered: stopped, so service starts it, and the episode ends. */
+    /* Recovered: stopped, so service starts it, and the episode ends. The
+     * start resets the receive queue: the frames waiting in it are receive
+     * losses, a part of their own (T7). */
     twai_status_info_t stopped = st(TWAI_STATE_STOPPED);
+    stopped.msgs_to_rx = 3;
+    stopped.rx_missed_count = 2;
     stub_status(1, &stopped);
     stub.n_calls = 0;
     twai_port_service();
     CHECK_CALLS("read_alerts status start");
-    CHECK(!status().bus_off);
+    s = status();
+    CHECK(!s.bus_off);
+    CHECK(s.rx_lost_restart == 3 && s.rx_lost_queue_full == 2 && s.rx_lost == 5);
+    CHECK(s.rx_flushed == 0 && s.rx_discarded_teardown == 0);
+
+    /* A start that fails resets nothing, and counts nothing. */
+    stub.start_ret = ESP_ERR_INVALID_STATE;
+    twai_port_service();
+    s = status();
+    CHECK(s.rx_lost_restart == 3 && s.rx_lost == 5);
+    stub.start_ret = ESP_OK;
 
     /* Never recovering: service starts nothing. */
     reset();
@@ -658,15 +672,36 @@ static void case_auto_recovery(void)
     CHECK_CALLS("read_alerts status");
 }
 
+/* T7: a flush counts the frames it discards, read just before the clear,
+ * apart from the losses. */
 static void case_flush(void)
 {
     setup();
     twai_port_flush_rx();
     CHECK(stub.n_calls == 0);
     CHECK(twai_port_install() == ESP_OK);
+    twai_status_info_t waiting = st(TWAI_STATE_RUNNING);
+    waiting.msgs_to_rx = 7;
+    stub_status(1, &waiting);
     stub.n_calls = 0;
     twai_port_flush_rx();
-    CHECK_CALLS("clear_rx");
+    CHECK_CALLS("status clear_rx");
+    can_port_status_t s = status();
+    CHECK(s.rx_flushed == 7 && s.rx_lost == 0);
+
+    /* A clear that fails discards nothing, and counts nothing. */
+    stub.clear_rx_ret = ESP_ERR_INVALID_STATE;
+    twai_port_flush_rx();
+    CHECK(status().rx_flushed == 7);
+    stub.clear_rx_ret = ESP_OK;
+
+    /* A status that will not read: the clear still runs, uncounted. */
+    stub.status_ret[0] = ESP_ERR_INVALID_STATE;
+    stub.n_calls = 0;
+    twai_port_flush_rx();
+    CHECK_CALLS("status clear_rx");
+    stub.status_ret[0] = ESP_OK;
+    CHECK(status().rx_flushed == 7);
 }
 
 static void case_backend_ops(void)
