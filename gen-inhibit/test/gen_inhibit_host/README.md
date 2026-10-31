@@ -166,6 +166,9 @@ time a gate scenario looks fine.
 `stale-fault-aborts` and `replay-rekey-short` are ruling 1's timing moving out
 by the extra half second — in `replay-rekey-short` the device now stays live
 through what used to be an abort at 23.017 s and trips at 25.783 s instead.
+(That fixture, cut from `vtrux_20260403_194203_T2`, is `replay-bench-frame-loss`
+since 2026-10-31; `replay-rekey-short` now has a different source. See "The
+three spec 7.1 replays".)
 
 ### The five new scenarios
 
@@ -270,8 +273,10 @@ python3 from_capture.py $L/vtrux_20260714_112312_T2.log --channel 2 --at 0 --for
         --note 'spec 7.1 key-ON case of trip 3 (decision 2, 2026-09-26): live at 16.2 s, inverter lost 21.0 s latched, cleared at 49.1 s. Do NOT narrow this window: replay-inverter-lost-keyon starts at 20.5 s and misses the event entirely.'
 python3 from_capture.py $L/vtrux_20260802_123318_T0.log --channel 2 --at 0 --for 161 \
         --out scenarios/replay-bus-sleeps.scn
-python3 from_capture.py $L/vtrux_20260403_194203_T2.log --channel 2 --at 0 --for 176 \
+python3 from_capture.py $L/vtrux_crankover_bug_investigation.log --channel 2 --at 0 --for 240 \
         --out scenarios/replay-rekey-short.scn
+python3 from_capture.py $L/vtrux_20260403_194203_T2.log --channel 2 --at 0 --for 176 \
+        --out scenarios/replay-bench-frame-loss.scn
 python3 from_capture.py $L/vtrux_20260513_174225_T4.log --channel 57 --at 0 --for 224 \
         --out scenarios/replay-rekey-long.scn
 python3 from_capture.py $L/vtrux_20260714_112312_T2.log --channel 2 --at 20.5 --for 7.7 \
@@ -331,16 +336,30 @@ Run `projects/vtrux/notes/artifacts/gen-inhibit/bus_epochs.py <capture>`
 first. It prints each epoch, names each channel's physical bus from anchor
 content, and flags both channel shuffles and channels carrying more than one
 bus. Then set `--at`/`--for` to sit **inside a single epoch**. Worked example:
-the planned `replay-rekey-short` uses `vtrux_20260403_194203_T2` epoch 1 only
+`replay-bench-frame-loss` uses `vtrux_20260403_194203_T2` epoch 1 only
 (0-176.44 s), because that file has a 7.7 s total-bus dropout at
-176.44-184.22 s which would otherwise replay as a bus-loss.
+176.44-184.22 s which would otherwise replay as a bus-loss. That capture is a
+bench replay, so the dropout is its replayer's, not a logger's on the truck;
+the rule holds for any capture.
 
 ## `invariants.py` -- the rules as properties, not as blessed traces (E2, D9)
 
 ```sh
 python3 invariants.py        # every scenario, no golden involved
 python3 invariants.py -v
+python3 invariants.py --selftest   # the trace walker on hand-made traces
 ```
+
+**Frames sharing a timestamp are paired one per reply** (2026-10-31). The
+trace does not echo received frames, so `invariants.py` walks the scenario's
+`0x051` list beside it. A real capture can stamp two `0x051` at the same
+microsecond (`replay-rekey-short` does at 131.236 s), and the walker used to
+deliver both before judging the first reply, so it reported a wrong counter and
+two replies for one frame against a device answering each in turn, as spec 4
+asks. Now a frame at a reply's own timestamp is delivered just before it, one
+each, in order, never matched on the reply's counter. `--selftest` has the
+batched pair, the old rule failing it as a control, and four cases that must
+still be violations.
 
 **Why it exists, in one number.** Four rounds of mutation testing have been run
 against this component. Of the mutations that were caught, *every single one was
@@ -553,9 +572,11 @@ The six `key-*` scenarios are the spec 7.1 assertions themselves:
 
 ## Real-capture replays
 
-Eight captures. The five below were the original set; `replay-rekey-short`,
+Nine replays. The five below were the original set; `replay-rekey-short`,
 `replay-rekey-long` and `replay-inverter-lost-keyon` were added for spec 7.1
-and are described after them.
+and are described after them, with `replay-shutdown-at-keyon`. The ninth,
+`replay-bench-frame-loss`, is a bench replay kept as the frame-loss fixture,
+and comes last.
 
 **`replay-genrun-stop`** — 220 s, 93,150 frames, SoC 77.2 %, and the only
 replay that shows the arm gate both holding and releasing:
@@ -727,27 +748,64 @@ Why every one of those events has the pack disconnected is **an open question
 put to the user on 2026-09-24 and not answered**; nothing here should be read as
 a claim about its cause.
 
-**`replay-rekey-short`** — `vtrux_20260403_194203_T2`, channel 2, epoch 1 only
-(0–176.44 s), 41,114 frames. Three key cycles, each about 10.3 s down, each
-one clearing a latch and re-arming. It is the only fixture that exercises rule
-2 repeatedly.
+**`replay-rekey-short`** — `vtrux_crankover_bug_investigation` (2026-05-03),
+channel 2, 0–240 s, 91,915 frames. One epoch, 0–239.68 s, with the powertrain on
+channel 2 throughout (`bus_epochs.py`). Four key-ons and four key-offs, so three
+key cycles, the key off for 23.5, 8.5 and 16.1 s. It is the only fixture that
+exercises rule 2 repeatedly, and the generator inverter (`0x054`) is on the
+bus, so its silence at a key-off counts (spec 7.1's fixture row):
 
-**It is also the suite's only lossy capture, and that has to be read
-correctly.** `ctr_bad=4363` against `ctr_ok=6121` — 42 % of the `0x051`
-counter steps are not +1, `0x051` arrives at 59.6 Hz instead of 100, and
-`0x592` at 5.5 Hz instead of 10. Both IDs are down by the same fraction, so
-this is the **logger** dropping frames, not the truck. The visible consequence
-is the key gate flapping several times a minute in the trace, from freshness
+| key off | last `0x054` | `0x471` stops: `inverter lost`, **latched** | key on: `KEY_CLEAR`, `fb_ever` reset | live again |
+|---|---|---|---|---|
+| — | — | — | 3.862 s (the first) | 5.135 s |
+| 50.328 s | +0.247 s | 51.085 s | **73.832 s** | 75.069 s |
+| 132.848 s | +0.248 s | 133.596 s | **141.349 s** | 142.617 s |
+| 181.147 s | +0.254 s | 181.898 s | **197.261 s** | 198.468 s |
+| 224.171 s | +0.248 s | 224.928 s | — | capture ends latched |
+
+`0x054` has no other gap over 0.5 s, and comes back 0.73–0.80 s after each
+key-on. After each `KEY_CLEAR` the gate waits for the contactors: the SoC-valid
+marker sets 1.19–1.26 s after the key-on, and the device goes live 12.7–14.6 ms
+after that. So a latch shows on cycle 2, and on cycles 3 and 4, and each one is
+cleared by the next key-on.
+
+16,718 inhibit transmits, `ctr_bad=0`, and **none while the key reads 0**: each
+cycle's last transmit is in the key-off tick itself.
+
+**Source replaced 2026-10-31** (user, spec 7.1). Until then this fixture was
+cut from `vtrux_20260403_194203_T2`, a bench replay whose three key cycles were
+the replayer looping one. That capture is `replay-bench-frame-loss` now, below.
+
+## The bench replay kept for frame loss
+
+**`replay-bench-frame-loss`** — `vtrux_20260403_194203_T2`, channel 2, epoch 1
+only (0–176.44 s), 41,114 frames. **Not a truck capture.** It is the `:vtrux`
+app's recording of a desktop replayer looping `generator-on-then-off.log`, all
+three buses merged onto one channel (`android-app/notes/artifacts/vtrux_bench_replay_captures/README.md`
+in the project folder). Its three key cycles, each about 10.3 s down, are the
+loop wrapping, not the truck re-keying. Until 2026-10-31 it was
+`replay-rekey-short`; the golden is unchanged, renamed.
+
+**It is the suite's only lossy capture, and that has to be read correctly.**
+`ctr_bad=4363` against `ctr_ok=6121` — 42 % of the `0x051` counter steps are
+not +1, `0x051` arrives at 59.6 Hz instead of 100, and `0x592` at 5.5 Hz
+instead of 10. Both IDs are down by the same fraction, so frames were being
+lost, not the source changing its rate. They were lost where the replayer's
+transmit queue overflowed (spec 7.1, corrected 2026-10-31, user; this file
+read it as a logger on the truck dropping frames). The visible consequence is
+the key gate flapping several times a minute in the trace, from freshness
 lapses with no change in the key's value.
 
 Do not read that as truck behaviour. Measured across the fixture captures
 (`projects/vtrux/notes/artifacts/gen-inhibit/key_cadence.py`), `0x592` runs at
-**9.97–9.99 Hz with a maximum gap of 0.117 s** on every clean epoch — four
-times inside the 0.5 s freshness window, with zero gaps over it. The flapping
-is this one capture. Keeping it is deliberate: it is the only fixture that
-says what the gate does under frame loss, and the answer is that it degrades
-by transmitting less, never by transmitting wrongly.
+**9.97–9.99 Hz with a maximum gap of 0.150 s** on every clean epoch (spec 7.1;
+it read 0.117 s until 2026-10-31) — over three times inside the 0.5 s freshness
+window, with zero gaps over it. Keeping it is deliberate: it is the only
+fixture that says what the gate does under frame loss, and the answer is that
+it degrades by transmitting less, never by transmitting wrongly.
 
-Across the replays the rolling counter stepped exactly +1 on every transition
-in seven of the eight goldens; `replay-rekey-short` is the exception, for the
-reason above.
+Across the replays, `ctr_bad` is 0 in seven of the nine goldens. The two
+exceptions are `replay-bench-frame-loss` (4,363, for the reason above) and
+`replay-bus-sleeps` (1). (Until 2026-10-31 this line read "+1 on every
+transition in seven of the eight goldens", with only the frame-loss fixture
+excepted.)
