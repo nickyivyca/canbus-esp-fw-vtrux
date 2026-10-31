@@ -20,8 +20,8 @@ Three settings, all environment variables:
                       is no default: unset is a clear error, never a guess.
   CAN_TOOLS_DIR       REQUIRED for a real dongle other than gs_usb. The
                       absolute path of the can-tools clone on this machine
-                      (the folder holding canbench/). No default, as for
-                      REVERSE_IT_DIR.
+                      (the folder holding canbench/), the git source of the
+                      pinned canbench. No default, as for REVERSE_IT_DIR.
   VTRUX_PUBLIC_REPO   Optional. The public canbus-reveng-vtrux-coda clone,
                       which supplies the vehicle DBCs. Default: the sibling
                       directory `../canbus-reveng-vtrux-coda` of this repo.
@@ -37,11 +37,14 @@ and checked by canre_pin.py (port step 0 for the interposer, reviewer,
 2026-10-26). It carries both parser fixes (signed BUSMASTER timestamp
 components and midnight rollover) that kept canre on SeaDrive's copy from
 2026-10-08 until then. SeaDrive's canre is never read. canbench, the
-adapter detection bus.open_bus uses for real dongles, comes from the
-can-tools clone at CAN_TOOLS_DIR, by import_canbench(), which loads that one
-package without putting the clone or the reverse-it root on sys.path
-(AGENTS.md, "can-tools: the CAN adapter package", user 2026-10-30). Until
-then it came from reverse-it's canbench/ mirror, which is never read now.
+adapter detection bus.open_bus uses for real dongles, comes from can-tools
+at the commit pins.json pins (user ruling, 2026-10-30, via the reviewer):
+can_tools_pin.py writes that commit's canbench/ out of the clone at
+CAN_TOOLS_DIR into the worktree's scratch/, checks it, and
+import_canbench() loads it from there by file, putting neither it, the
+clone nor the reverse-it root on sys.path (AGENTS.md, "can-tools: the CAN
+adapter package", user 2026-10-30). Until then it came from reverse-it's
+canbench/ mirror, which is never read now.
 
 The interposer diag DBC is in this repo (diag/), so diag_dbc() needs no
 setting; it is here so that every reader names one path.
@@ -89,22 +92,23 @@ def reverse_it_dir():
     return v
 
 
+def _can_tools_pin():
+    """can_tools_pin.py beside this file."""
+    if _HERE not in sys.path:
+        sys.path.insert(0, _HERE)
+    import can_tools_pin
+    return can_tools_pin
+
+
 def can_tools_dir():
     """The can-tools clone, from CAN_TOOLS_DIR (AGENTS.md, "can-tools: the
-    CAN adapter package", user 2026-10-30)."""
-    v = os.environ.get("CAN_TOOLS_DIR", "").strip()
-    if not v:
-        raise PathsError(
-            "CAN_TOOLS_DIR is not set. Set it to the absolute path of the "
-            "can-tools clone on this machine (canbench/ inside it); "
-            "reverse-it's canbench/ mirror is not read. See "
-            "charge-interposer/paths.py.")
-    v = os.path.normpath(v)
-    if not os.path.isfile(os.path.join(v, "canbench", "__init__.py")):
-        raise PathsError(
-            "CAN_TOOLS_DIR=%s has no canbench/ -- it must be the can-tools "
-            "clone" % v)
-    return v
+    CAN adapter package", user 2026-10-30): the pinned canbench's git
+    source, not what is loaded."""
+    can_tools_pin = _can_tools_pin()
+    try:
+        return can_tools_pin.clone()
+    except can_tools_pin.CanToolsPinError as e:
+        raise PathsError(str(e))
 
 
 def code_dir():
@@ -207,34 +211,17 @@ def add_canre():
 
 
 def import_canbench():
-    """The canbench package (bus.open_bus's adapter detection), imported
-    from CAN_TOOLS_DIR/canbench by file. Neither the clone nor the
-    reverse-it root is put on sys.path (AGENTS.md, "can-tools"): the
-    reverse-it root is how canbench came in before port step 0, and it
+    """The canbench package (bus.open_bus's adapter detection): the pinned
+    can-tools commit's, checked and imported by file (can_tools_pin.use:
+    all four checks). Nothing is put on sys.path (AGENTS.md, "can-tools"):
+    the reverse-it root is how canbench came in before port step 0, and it
     would bring SeaDrive's canre/ with it. A canbench already imported from
-    anywhere else is refused."""
-    import importlib.util
-    d = os.path.join(can_tools_dir(), "canbench")
-    init = os.path.join(d, "__init__.py")
-    have = sys.modules.get("canbench")
-    if have is not None:
-        if os.path.normcase(os.path.normpath(
-                getattr(have, "__file__", "") or "")) \
-                != os.path.normcase(os.path.normpath(init)):
-            raise PathsError("canbench is already imported from %s, not %s "
-                             "(CAN_TOOLS_DIR)"
-                             % (getattr(have, "__file__", None), d))
-        return have
-    spec = importlib.util.spec_from_file_location(
-        "canbench", init, submodule_search_locations=[d])
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["canbench"] = mod
+    anywhere else, the clone through a .pth included, is refused."""
+    can_tools_pin = _can_tools_pin()
     try:
-        spec.loader.exec_module(mod)
-    except BaseException:
-        del sys.modules["canbench"]
-        raise
-    return mod
+        return can_tools_pin.use()
+    except can_tools_pin.CanToolsPinError as e:
+        raise PathsError(str(e))
 
 
 if __name__ == "__main__":

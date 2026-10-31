@@ -16,15 +16,16 @@ GsUsbBus and checks each half can fail:
   - gs_usb needs no canbench: it opens with CAN_TOOLS_DIR unset, while
     kvaser is refused with the PathsError naming the setting.
 
-canbench comes from a fake can-tools clone at CAN_TOOLS_DIR, built in a
-throwaway folder beside this file and removed (AGENTS.md, "can-tools"), so
-no real clone and no adapter is needed.
+canbench is the pinned commit's, installed by can_tools_pin.py from a
+stand-in can-tools clone at CAN_TOOLS_DIR (can_tools_pin_test.fixture),
+built in a throwaway folder beside this file and removed, with the
+machine's own canbench (the can-tools.pth) taken off sys.path first, so no
+real clone and no adapter is needed.
 
 Run: python bus_gs_usb_test.py  (exit 0 = all checks passed)
 """
 
 import os
-import shutil
 import sys
 import tempfile
 import time
@@ -83,34 +84,26 @@ def args(channel):
                                  port=0, bitrate=500000)
 
 
-def fake_clone():
-    """A can-tools clone whose canbench detects nothing."""
-    d = tempfile.mkdtemp(dir=str(HERE), prefix="bus_gs_usb_test_")
-    for rel, text in (
-            ("canbench/__init__.py", ""),
-            ("canbench/live/__init__.py", ""),
-            ("canbench/live/receiver.py",
-             "def detect_all_can_interfaces(bitrate, brands=None):\n"
-             "    return []\n")):
-        p = os.path.join(d, *rel.split("/"))
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-        with open(p, "w") as f:
-            f.write(text)
-    return d
-
-
 def main():
+    import can_tools_pin_test as CT
     saved = os.environ.pop("CAN_TOOLS_DIR", None)
-    clone = fake_clone()
+    base = tempfile.mkdtemp(dir=str(HERE), prefix="bus_gs_usb_test_")
+    path_in = CT.off_pth()
     try:
-        return run(clone)
+        # the pinned commit's canbench detects nothing
+        fix = CT.fixture(base)
+        with CT.pointed(fix) as ctp:
+            ctp.install()
+            os.environ.pop("CAN_TOOLS_DIR")
+            return run(fix)
     finally:
-        shutil.rmtree(clone, ignore_errors=True)
+        sys.path[:] = path_in
+        CT.rmtree(base)
         if saved is not None:
             os.environ["CAN_TOOLS_DIR"] = saved
 
 
-def run(clone):
+def run(fix):
     import paths
     print("CAN_TOOLS_DIR unset: gs_usb opens, kvaser is refused")
     real_open = busmod.open_gs_usb
@@ -140,15 +133,16 @@ def run(clone):
               "... and no canbench was imported")
     finally:
         busmod.open_gs_usb = real_open
-    os.environ["CAN_TOOLS_DIR"] = clone
+    os.environ["CAN_TOOLS_DIR"] = fix["clone"]
 
     print("open by index, not by auto-detection")
     # open_bus must never reach canbench's detection for gs_usb: replace it
     # with one that fails loudly if called
     cb = paths.import_canbench()
     check(os.path.dirname(os.path.dirname(os.path.abspath(cb.__file__)))
-          == os.path.abspath(clone),
-          "canbench is the fake clone's, from CAN_TOOLS_DIR")
+          == os.path.abspath(fix["folder"]),
+          "canbench is the pinned commit's, installed from the stand-in "
+          "clone at CAN_TOOLS_DIR")
     import canbench.live.receiver as rcv
     real_detect = rcv.detect_all_can_interfaces
 

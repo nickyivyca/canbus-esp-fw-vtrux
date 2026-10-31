@@ -60,6 +60,8 @@ Until then they ran from reverse-it's interposer-firmware/ folder (the
 settings interposer_artifacts and reverse_it, now unread), and the run
 record carried their digest as artifacts_sha256; the commit carries them
 now. canre is the pinned install (canre_pin.py), shipped to madhouse.
+canbench is the pinned can-tools commit's (can_tools_pin.py), and the bench
+run records the pin, its folder and the clone it came from.
 """
 
 import glob
@@ -79,6 +81,7 @@ from vtrux_bench.run import (Check, Figure, Group, Image, KnownFail,  # noqa: E4
 import bench_identify  # noqa: E402
 import bench_wican  # noqa: E402
 import canre_pin  # noqa: E402
+import can_tools_pin  # noqa: E402
 sys.path.insert(0, os.path.join(HERE, "firmware"))
 import build_identity  # noqa: E402
 
@@ -135,7 +138,7 @@ HARNESS_PY_TESTS = [
     "test_scorer_wiring.py", "test_hold_wire.py",
     "sims_test.py", "regress_offline_test.py", "capture_pins_test.py",
     "build_lookup_offline_test.py", "paths_test.py", "diag_cadence_test.py",
-    "bus_gs_usb_test.py", "canre_pin_test.py",
+    "bus_gs_usb_test.py", "canre_pin_test.py", "can_tools_pin_test.py",
 ]
 MADHOUSE_PIO_PATH = "{madhouse_pio_dir}:/usr/local/bin:/usr/bin:/bin"
 
@@ -181,6 +184,10 @@ EMULATED_LOCAL = [
 SHARED_BENCH_TESTS = ["test_bench_lock.py", "test_decode.py", "test_run_core.py"]
 
 HARNESS_LOCAL = [
+    # the bench host's own pinned canbench (madhouse has no clone and
+    # opens no dongle): refuses if CAN_TOOLS_DIR is unset or the pin is
+    # not installed and checked
+    ("can-tools-pin-check", ["{interposer_code}/can_tools_pin.py", "check"]),
     ("board-reset-test", ["{interposer_code}/board_reset_test.py"]),
     ("bench-suite-test", ["{interposer_code}/bench_suite_test.py"]),
     ("bench-suite-test-canfail",
@@ -442,28 +449,23 @@ def _stage_git_bundle(code):
 
 
 def can_tools_info():
-    """The can-tools clone the bench's canbench comes from (AGENTS.md,
-    "can-tools", user 2026-10-30): its commit and whether it is dirty,
-    recorded beside the harness commit that carries the canre pin. canbench
-    has no pin of its own yet (reviewer, 2026-10-30), so this records, and
-    gates nothing. CAN_TOOLS_DIR unset or wrong is recorded as the
-    refusal paths.can_tools_dir() gives; the checks that open a dongle
-    other than gs_usb then refuse with it themselves."""
-    import subprocess
-    import paths
+    """The can-tools pin the bench's canbench comes from (pins.json, beside
+    canre's; user ruling 2026-10-30, via the reviewer): its repo and
+    commit, the folder can_tools_pin.py wrote that commit's canbench/ to,
+    and the clone at CAN_TOOLS_DIR it came from, once the folder passes
+    the pin's checks. The clone's own HEAD plays no part. A pin that fails
+    its checks, or CAN_TOOLS_DIR unset, is recorded as the refusal, with
+    the pin still named; the checks that open a dongle other than gs_usb
+    then refuse with it themselves."""
+    p = can_tools_pin.pin()
+    out = {"repo": p["repo"], "commit": p["commit"]}
     try:
-        d = paths.can_tools_dir()
-    except paths.PathsError as e:
-        return {"error": str(e)}
-    head = subprocess.run(["git", "-C", d, "rev-parse", "HEAD"],
-                          capture_output=True, text=True)
-    dirty = subprocess.run(["git", "-C", d, "status", "--porcelain"],
-                           capture_output=True, text=True)
-    if head.returncode or dirty.returncode:
-        return {"dir": d, "error": "not a git clone: %s"
-                % (head.stderr or dirty.stderr).strip()}
-    return {"dir": d, "commit": head.stdout.strip(),
-            "dirty": bool(dirty.stdout.strip())}
+        clone = can_tools_pin.clone()
+        out["folder"] = can_tools_pin.verify(can_tools_pin.folder(p), p, clone)
+        out["clone"] = clone
+    except can_tools_pin.CanToolsPinError as e:
+        out["error"] = str(e)
+    return out
 
 
 # ---- check builders -----------------------------------------------------
@@ -832,7 +834,10 @@ def harness(settings):
     ] + [b.mpy(t[:-3].replace("_", "-"), [t], cls="build", timeout_s=3600)
          for t in HARNESS_PY_TESTS] + [
         b.mpy("canre-pin-test-canfail", ["canre_pin_test.py", "--can-fail"],
-              cls="build", timeout_s=3600)])
+              cls="build", timeout_s=3600),
+        b.mpy("can-tools-pin-test-canfail",
+              ["can_tools_pin_test.py", "--can-fail"], cls="build",
+              timeout_s=3600)])
     def mutant(cid, argv):
         kw = dict(cls="build", timeout_s=7200,
                   judge=globals()[MUTANT_JUDGES.get(cid, "script_judge")])

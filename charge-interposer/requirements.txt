@@ -21,6 +21,7 @@ cantools>=39
 # Only needed for the real-dongle transports (ixxat / kvaser / pcan /
 # socketcan / gs_usb). All but gs_usb auto-detect via
 # canbench.live.receiver; canbench is not installed from here but loaded
-# from the can-tools clone at CAN_TOOLS_DIR (paths.import_canbench).
+# from the pinned can-tools commit, written out of the clone at
+# CAN_TOOLS_DIR by `can_tools_pin.py install` (paths.import_canbench).
 # libusb-package
 # pyusb

@@ -11,9 +11,11 @@ suites (tester, 2026-10-18). No hardware, no runner, no ssh.
            check of its own suite; every skip names its spec item or ruling
   pycache  no __pycache__ in charge-interposer/ or shared/bench/ makes the
            clone dirty (a dirty clone cannot be resumed)
-  record   the bench run records the can-tools clone's commit and dirty
-           state, or the refusal when CAN_TOOLS_DIR is unset; the emulated
-           and harness suites, which open no dongle, do not
+  record   the bench run records the can-tools pin (repo, commit), and the
+           folder and clone once the folder passes the pin's checks, or the
+           refusal (a hand-edited folder, none installed, CAN_TOOLS_DIR
+           unset) with the pin still named; the emulated and harness
+           suites, which open no dongle, do not
 
     py -3.14 charge-interposer/bench_suite_test.py [--can-fail]
 
@@ -338,7 +340,9 @@ def test_suites():
     # 188: bench-wican-test and its -canfail, with the WiCAN board
     # 189: script-can-fail-test, script_can_fail's baseline run (2026-10-24)
     # 191: canre-pin-test and its -canfail, with the canre pin (2026-10-26)
-    assert len(seen) == 191, "checks across the suites: %d" % len(seen)
+    # 194: can-tools-pin-test, its -canfail and the local can-tools-pin-check,
+    #      with the can-tools pin (2026-10-30)
+    assert len(seen) == 194, "checks across the suites: %d" % len(seen)
     # madhouse gets the pinned canre beside the code, named by CANRE_DIR
     mad = 0
     for name in ("emulated", "harness"):
@@ -1001,48 +1005,43 @@ def test_scripts_in_tree():
     assert n >= 150, "only %d scripts checked: the walk is wrong" % n
 
 
-def _can_tools_fixture():
-    """A one-commit git repo holding canbench/: a fake can-tools clone.
-    -> (folder, commit)."""
-    d = os.path.join(TMP, "can-tools")
-    shutil.rmtree(d, ignore_errors=True)
-    os.makedirs(os.path.join(d, "canbench"))
-    open(os.path.join(d, "canbench", "__init__.py"), "w").close()
-    g = ["git", "-C", d, "-c", "user.name=t", "-c", "user.email=t@t"]
-    for a in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "t"]):
-        subprocess.run(g + a, check=True, capture_output=True)
-    head = subprocess.run(g + ["rev-parse", "HEAD"], check=True,
-                          capture_output=True, text=True).stdout.strip()
-    return d, head
-
-
 def test_can_tools_record():
-    """canbench comes from the can-tools clone at CAN_TOOLS_DIR (AGENTS.md,
-    "can-tools", user 2026-10-30), with no pin yet, so the bench run
-    records the clone's commit and whether it was dirty (reviewer,
-    2026-10-30)."""
-    saved = os.environ.get("CAN_TOOLS_DIR")
+    """canbench is the pinned can-tools commit's (can_tools_pin.py; user
+    ruling 2026-10-30, via the reviewer), so the bench run names the pin,
+    the folder it was written to and the clone, and records a refusal
+    with the pin still named (a stand-in clone,
+    can_tools_pin_test.fixture)."""
+    import can_tools_pin_test as CT
+    base = os.path.join(TMP, "can-tools-pin")
+    CT.rmtree(base)
     try:
-        d, head = _can_tools_fixture()
-        os.environ["CAN_TOOLS_DIR"] = d
-        s, su = _all()
-        ct = su["bench"].code_info(None).get("can_tools")
-        assert ct == {"dir": os.path.normpath(d), "commit": head,
-                      "dirty": False}, ct
-        open(os.path.join(d, "stray.txt"), "w").close()
-        ct = su["bench"].code_info(None).get("can_tools")
-        assert ct and ct.get("commit") == head and ct.get("dirty") is True, ct
-        for k in ("emulated", "harness"):
-            assert "can_tools" not in su[k].code_info(None), k
-        os.environ.pop("CAN_TOOLS_DIR")
-        ct = su["bench"].code_info(None).get("can_tools") or {}
-        assert "CAN_TOOLS_DIR is not set" in ct.get("error", "") \
-            and "commit" not in ct, ct
+        fix = CT.fixture(base)
+        with CT.pointed(fix) as ctp:
+            ctp.install()
+            s, su = _all()
+            ct = su["bench"].code_info(None).get("can_tools")
+            assert ct == {"repo": CT.REPO, "commit": fix["commit"],
+                          "folder": fix["folder"],
+                          "clone": os.path.normpath(fix["clone"])}, ct
+            with open(os.path.join(fix["folder"], "canbench",
+                                   "__init__.py"), "a") as fh:
+                fh.write("# by hand\n")
+            ct = su["bench"].code_info(None).get("can_tools") or {}
+            assert ct.get("commit") == fix["commit"] and "folder" not in ct \
+                and "is not can-tools" in ct.get("error", ""), ct
+            CT.rmtree(fix["folder"])
+            ct = su["bench"].code_info(None).get("can_tools") or {}
+            assert ct.get("commit") == fix["commit"] \
+                and "not installed" in ct.get("error", ""), ct
+            for k in ("emulated", "harness"):
+                assert "can_tools" not in su[k].code_info(None), k
+            os.environ.pop("CAN_TOOLS_DIR")
+            ct = su["bench"].code_info(None).get("can_tools") or {}
+            assert "CAN_TOOLS_DIR is not set" in ct.get("error", "") \
+                and ct.get("commit") == fix["commit"] \
+                and "folder" not in ct, ct
     finally:
-        if saved is None:
-            os.environ.pop("CAN_TOOLS_DIR", None)
-        else:
-            os.environ["CAN_TOOLS_DIR"] = saved
+        CT.rmtree(base)
 
 
 TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
@@ -1182,10 +1181,17 @@ _ORIG["SHARED_BENCH_TESTS"] = B.SHARED_BENCH_TESTS
 _ORIG["can_tools_info"] = B.can_tools_info
 
 
-def _ct_never_dirty():
+def _ct_unchecked():
+    """The pin's folder recorded without the pin's checks."""
+    p = B.can_tools_pin.pin()
+    return {"repo": p["repo"], "commit": p["commit"],
+            "folder": B.can_tools_pin.folder(p),
+            "clone": os.path.normpath(os.environ.get("CAN_TOOLS_DIR", ""))}
+
+
+def _ct_no_pin():
     r = _ORIG["can_tools_info"]()
-    if "dirty" in r:
-        r["dirty"] = False
+    r.pop("commit", None)
     return r
 
 
@@ -1464,13 +1470,14 @@ MUTANTS = {
         ("self._PYCACHE_DROP", ("charge-interposer/.gitignore",),
          "charge-interposer without its .gitignore")],
     "test_can_tools_record": [
-        ("can_tools_info", lambda: {}, "the clone's commit not recorded"),
-        ("can_tools_info", _ct_never_dirty,
-         "the clone recorded clean whatever its state"),
+        ("can_tools_info", lambda: {}, "nothing recorded"),
+        ("can_tools_info", _ct_no_pin, "the pin's commit not recorded"),
+        ("can_tools_info", _ct_unchecked,
+         "the folder recorded without the pin's checks"),
         ("can_tools_info", _ct_no_refusal,
-         "CAN_TOOLS_DIR unset recorded without the refusal"),
+         "a refusal not recorded"),
         ("bench", _wrap_suite("bench", _bench_without_can_tools),
-         "the bench record without the clone")],
+         "the bench record without the pin")],
     "test_scripts_in_tree": [
         ("bench", _wrap_suite("bench", _artifacts_script),
          "a bench driver run from {interposer_artifacts}"),
