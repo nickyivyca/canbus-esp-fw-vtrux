@@ -58,6 +58,15 @@ verification"; charge-interposer reviewer, 2026-10-31).
   The interposer installs normal, recovers automatically
   (`TwaiPort::pollAlerts()`), and reports an install failure
   (`TwaiPort::begin()` returns false).
+- **Three modes** (user, 2026-10-31, on the gen-inhibit implementor's
+  question): the IDF 5.4 TWAI driver has three, normal, no-ACK and
+  listen-only, on the C3 and the S3 alike, and a frame is received back by
+  its sender when the send sets the self-reception flag. The chip's loopback
+  is the no-ACK mode with that flag on every send, which is what the
+  interposer's `setSelfTest()` does (`port_twai.cpp`). A separate loopback
+  mode would have nothing under it on either chip. The stock
+  `can_set_loopback()` only records a flag that `can.c` never applies, and
+  keeps doing so (`can_port` C3).
 - **Status:** complete.
 
 ### T3. Teardown
@@ -121,6 +130,11 @@ verification"; charge-interposer reviewer, 2026-10-31).
   COMPONENT", gen-inhibit spec 5.2 item 1), and the stock `can_send()`
   calls it behind the owner refusal. The interposer's `send()` counts a
   full queue as `tx_dropped_`.
+- **`tx_refused`** (user, 2026-10-31, on the gen-inhibit implementor's
+  question): `can_port` C2 counts every send that is not queued, and a send
+  can be refused with the queue not full (the port down, bus-off, an
+  invalid frame). Counting those apart keeps `tx_dropped` the queue-full
+  count the interposer reads it as.
 - **Status:** complete.
 
 ### T7. Counters and status

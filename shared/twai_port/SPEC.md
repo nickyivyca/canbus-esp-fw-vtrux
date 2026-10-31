@@ -1,7 +1,8 @@
 # Shared TWAI port: specification
 
 **Status:** approved by the user on 2026-10-31, in the gen-inhibit
-reviewer's session, and drafted that day by the gen-inhibit reviewer for
+reviewer's session (T2's three modes and T7's `tx_refused` the same day, on
+the implementor's questions), and drafted that day by the gen-inhibit reviewer for
 gen-inhibit's port step 1b, after the charge-interposer reviewer's read. As
 a shared component's spec this follows port plan goal 20: the reviewer whose
 project needs a change drafts it, the user rules in that reviewer's session,
@@ -32,8 +33,9 @@ Requirements are numbered T1 to T11. The numbers are stable.
   - the board's CAN port index, from which the port takes its pins and
     standby line (`shared/boards` B5);
   - the bit timing;
-  - the mode, and the mode it installs in: normal, listen-only, no-ACK
-    self-test or loopback;
+  - the mode, and the mode it installs in: normal, listen-only, or no-ACK
+    self-test (the chip's loopback: no ACK, and each frame sent is also
+    received);
   - the acceptance filter and mask, and single-shot transmission;
   - the RX and TX queue depths;
   - bus-off recovery: never, or automatic;
@@ -67,8 +69,8 @@ Requirements are numbered T1 to T11. The numbers are stable.
   between two polls, so nothing counts events: every count comes from T7.
 - **T6. Every send goes through the port.** The port is the only caller of
   `twai_transmit`. A send waits at most the time its caller gives (zero:
-  enqueue or fail). A send refused because the TX queue is full is counted
-  (T7, `tx_dropped`).
+  enqueue or fail). Every refused send is counted (T7): with the TX queue
+  full as `tx_dropped`, for any other reason as `tx_refused`.
 - **T7. Counters and status.** One status read gives the controller's
   state, the queue depths (frames to transmit, including the one in
   flight; frames waiting to be received), the error counters and these
@@ -77,8 +79,10 @@ Requirements are numbered T1 to T11. The numbers are stable.
   - **frames lost on receive**, however they were lost: the driver's queue
     full, the controller's FIFO overrun, and any ring of the port's own.
     Per frame where the hardware gives it;
-  - sends refused with the TX queue full (`tx_dropped`), apart from
-    transmissions the controller reports failed (`tx_failed`);
+  - sends refused with the TX queue full (`tx_dropped`); sends refused for
+    any other reason, such as the port down, bus-off or an invalid frame
+    (`tx_refused`); both apart from transmissions the controller reports
+    failed (`tx_failed`);
   - bus errors;
   - bus-off as a level and as a count of entries, counted once per episode;
   - frames queued for transmission that bus-off recovery discards, read
