@@ -11,6 +11,16 @@ dependencies:
     git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
     path: shared/debug_logs
     version: "2026.10.30"
+  # Port 0 (spec 3.3, port step 1b): the CAN port interface, whose stock calls
+  # vtrux/wican's files make, and the TWAI port behind it, at the same tag.
+  vtrux/can_port:
+    git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
+    path: shared/can_port
+    version: "2026.10.30"
+  vtrux/twai_port:
+    git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
+    path: shared/twai_port
+    version: "2026.10.30"
   # The board (shared/boards SPEC B1 and B2): the one shared/boards/*
   # component, at the shared/main tag this project pins, from git, never
   # through override_path. sdkconfig names its partition table by this

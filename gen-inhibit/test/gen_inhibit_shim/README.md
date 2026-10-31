@@ -26,9 +26,14 @@ platform headers in `mock/`. Needs pthreads and Python 3; no ESP-IDF.
 `mock/board.h` stands in for the board component's `board.h` (shared/boards
 SPEC B5), and `fake_can.c` answers as `wican_v3` does: port 0's TWAI pins,
 and its standby line, which `fake_board_standby()` reads back.
-The stock headers `can.c` and `gen_inhibit.c` include, `can.h` and
-`comm_server.h`, are the shared component `vtrux/wican`'s (shared/wican W3,
-port step 1a). The shim compiles against the version gen-inhibit pins: the
+The stock header `gen_inhibit.c` includes, `comm_server.h`, is the shared
+component `vtrux/wican`'s (shared/wican W3, port step 1a). Since port step 1b
+the CAN port is shared too, and compiled as shipped from beside it:
+`vtrux/can_port` (the stock `can.h` calls in `can_stock.c`, which replaced
+`main/can.c`) and `vtrux/twai_port` with its C3 register file, which
+`mock/hal/twai_ll.h` backs with `fake_twai.c`'s own queue. `fake_port.c` holds
+the port's two link stubs (`twai_initiate_recovery()`, which port 0 never
+calls, and the tick count). The shim compiles against the version gen-inhibit pins: the
 read-only checkout `../shared-<tag>/` beside the worktree root, which
 `wican_ref.py` finds from `firmware/main/idf_component.yml`, and names with
 the command that creates it when it is missing. Where the checkout is

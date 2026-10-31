@@ -30,6 +30,15 @@
 #define TWAI_ALERT_TX_SUCCESS   0x00000002
 #define TWAI_ALERT_RX_DATA      0x00000004
 #define TWAI_ALERT_TX_FAILED    0x00000400
+/*
+ * The three more the port enables at every install (twai_port T5; port step
+ * 1b), ESP-IDF 5.4.1's values (components/driver/twai/include/driver/twai.h,
+ * lines 66, 68 and 70). The fake raises none of them; they are here so the
+ * real twai_port.c compiles.
+ */
+#define TWAI_ALERT_BUS_ERROR     0x00000200
+#define TWAI_ALERT_RX_QUEUE_FULL 0x00000800
+#define TWAI_ALERT_BUS_OFF       0x00002000
 
 typedef enum
 {
@@ -99,8 +108,18 @@ typedef struct
     int intr_flags;
 } twai_general_config_t;
 
+/*
+ * clk_src and quanta_resolution_hz as ESP-IDF 5.4.1 has them
+ * (components/hal/include/hal/twai_types.h, lines 144-153): twai_port compares
+ * them to tell a reconfigure that changes nothing (T4).
+ */
+typedef int twai_clock_source_t;
+#define TWAI_CLK_SRC_DEFAULT    0
+
 typedef struct
 {
+    twai_clock_source_t clk_src;
+    uint32_t quanta_resolution_hz;
     uint32_t brp;
     uint8_t tseg_1;
     uint8_t tseg_2;
@@ -117,6 +136,10 @@ typedef struct
 
 #define TWAI_GENERAL_CONFIG_DEFAULT(tx, rx, op) {                                 .mode = op, .tx_io = tx, .rx_io = rx,                                         .clkout_io = TWAI_IO_UNUSED, .bus_off_io = TWAI_IO_UNUSED,                    .tx_queue_len = 5, .rx_queue_len = 5,                                         .alerts_enabled = TWAI_ALERT_NONE, .clkout_divider = 0,                       .intr_flags = ESP_INTR_FLAG_LEVEL1 }
 
+/* ESP-IDF 5.4.1's 500 kbit/s timing for the C3 (hal/twai_types.h, line 84):
+ * twai_port's default, which the stock calls replace at every can_enable(). */
+#define TWAI_TIMING_CONFIG_500KBITS() {.clk_src = TWAI_CLK_SRC_DEFAULT, .quanta_resolution_hz = 10000000, .brp = 0, .tseg_1 = 15, .tseg_2 = 4, .sjw = 3, .triple_sampling = false}
+
 #define TWAI_FILTER_CONFIG_ACCEPT_ALL() {                                         .acceptance_code = 0, .acceptance_mask = 0xFFFFFFFF, .single_filter = true }
 
 esp_err_t twai_transmit(const twai_message_t *message, TickType_t ticks);
@@ -131,5 +154,8 @@ esp_err_t twai_driver_install(const twai_general_config_t *g,
                               const twai_filter_config_t *f);
 esp_err_t twai_driver_uninstall(void);
 esp_err_t twai_clear_receive_queue(void);
+/* A link stub in fake_port.c: twai_port links it, and port 0 never recovers
+ * (spec 7), so it is never called here. */
+esp_err_t twai_initiate_recovery(void);
 
 #endif /* MOCK_DRIVER_TWAI_H */

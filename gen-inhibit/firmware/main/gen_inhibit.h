@@ -49,7 +49,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "esp_err.h"
-#include "driver/twai.h"    /* twai_state_t, for drv_state_name() below */
+#include "can_port.h"      /* can_port_state_t, for drv_state_name() below */
 
 #ifdef __cplusplus
 extern "C" {
@@ -154,7 +154,9 @@ void gen_inhibit_note_refused_slcan(void);
 void gen_inhibit_note_refused_can_send(void);
 
 /*
- * THE BACKSTOP (spec 8 and 8.1 rows 9 and 13). can_disable() calls this first,
+ * THE BACKSTOP (spec 8 and 8.1 rows 9 and 13). Port 0's pre-teardown hook, so
+ * every teardown runs it first, the stock can_disable()'s included (twai_port
+ * T2, T3; can_port C5),
  * because uninstalling the driver while the worker is blocked inside
  * twai_receive() frees it under that call. Since 2026-10-16 only gen_inhibit
  * and the OTA handler may change bus state (3.2), so from any other caller
@@ -259,10 +261,18 @@ int gen_inhibit_get_stats_json(char *buf, int buflen);
  * The driver-state name the page's `drv.state` carries. Exported for the same
  * reason: case 26 asks it for its longest value.
  */
-const char *drv_state_name(twai_state_t s);
+const char *drv_state_name(can_port_state_t s);
 
 /* Discard all accumulated samples. */
 void gen_inhibit_reset_stats(void);
+
+/*
+ * Set port 0 up as spec 3.3 says and register it with can_port: its
+ * twai_port settings and hooks, the backend for port 0, and the owner hook of
+ * can_port C4. Call once in app_main, before wican_init() (gi_wican_register()
+ * does). An invalid setting restarts the device.
+ */
+void gen_inhibit_port_register(void);
 
 #ifdef __cplusplus
 }

@@ -204,6 +204,8 @@ static const wican_bus_owner_t s_gi_bus_owner = {
 
 void gi_wican_register(void)
 {
+    /* Port 0 first: the stock code's CAN calls are can_port's on it (spec 3.3). */
+    gen_inhibit_port_register();
     wican_register_bus_owner(&s_gi_bus_owner);
 #if GI_TEST_RESTART_QUIESCE
     wican_register_uris(gi_register_uris, GI_RESTART_TEST_URI_COUNT);

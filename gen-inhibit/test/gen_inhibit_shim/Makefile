@@ -25,21 +25,30 @@ $(error no vtrux/wican headers: see wican_ref.py's message above, or give WICAND
 endif
 endif
 
+# THE CAN PORT IS SHARED TOO (spec 3.3, port step 1b): vtrux/can_port and
+# vtrux/twai_port, beside vtrux/wican in the same pinned checkout.
+SHAREDDIR = $(WICANDIR)/..
+
 CFLAGS  ?= -std=c11 -O1 -g -Wall -Wextra -Wno-unused-parameter \
-           -I. -Imock -I$(COREDIR) -I$(WICANDIR)
+           -I. -Imock -I$(COREDIR) -I$(WICANDIR) \
+           -I$(SHAREDDIR)/can_port/include -I$(SHAREDDIR)/twai_port/include
 LDFLAGS ?= -pthread
 
-# main/can.c is compiled AS SHIPPED, not reimplemented: the reviewing session
-# mutated the spec 3.2 refusal out of the real file and every case stayed green,
-# because the old fake_can.c had its own copy of it.
-# gi_sched.c is compiled AS SHIPPED for the same reason can.c is: spec 5.2 item 8
+# The CAN port is compiled AS SHIPPED, not reimplemented: can_port's stock
+# calls (can_stock.c, which replaced main/can.c at port step 1b) and the real
+# twai_port with its C3 register file, from the pinned shared checkout. The
+# reviewing session once mutated the spec 3.2 refusal out of the real can.c and
+# every case stayed green, because the old fake_can.c had its own copy of it.
+# fake_port.c holds the port's two link stubs.
+# gi_sched.c is compiled AS SHIPPED for the same reason: spec 5.2 item 8
 # says the scheduler is platform-free and compiles unchanged on the host, and a
 # reimplementation here would test the copy. mock/hal/twai_ll.h supplies the two
-# private calls its device HAL reaches for, backed by fake_twai's own queue.
-SRC := shim_test.c fake_twai.c fake_can.c \
+# private calls twai_port's C3 file reaches for, backed by fake_twai's own queue.
+SRC := shim_test.c fake_twai.c fake_can.c fake_port.c \
        $(COREDIR)/gen_inhibit.c $(COREDIR)/gen_inhibit_core.c \
        $(COREDIR)/gi_sched.c \
-       $(COREDIR)/can.c
+       $(SHAREDDIR)/can_port/can_port.c $(SHAREDDIR)/can_port/can_stock.c \
+       $(SHAREDDIR)/twai_port/twai_port.c $(SHAREDDIR)/twai_port/twai_port_ll_esp32c3.c
 
 all: shim_test shim_test_autoarm
 
