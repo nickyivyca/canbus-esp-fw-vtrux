@@ -86,26 +86,17 @@ TARGETS = {
     "build_check_in_clone_test": ("firmware/test/build_check_in_clone_test.py", []),
     "digest_recheck_check": ("firmware/test/digest_recheck_check.py", []),
     "build_check_dirty_flag": ("firmware/test/build_check.py", ["--dirty-flag"]),
-    "cutover_verify_guard": ("harness_checks/cutover_verify_test.py", ["--guard-test"]),
     "monitor_6h_diff": ("harness_checks/monitor_6h_diff.py", []),
     "switch_discard_witness": ("harness_checks/switch_discard_witness.py", []),
 }
 GPP = ("monitor_6h_diff", "switch_discard_witness")
 NAMED_ONLY = GPP + ("build_check_dirty_flag",)
-# Entry points that exit non-zero on charge-interposer/main b423488 too,
-# run there unchanged on 2026-10-31: their exit is reported, not judged
-# here; whether they remove their folders still is.
-# Diagnosed 2026-10-31 as the harness's, both; the fixes wait on the
-# reviewer (the spec-8.2 rules they cite are no longer in the spec text).
-KNOWN = {
-    "digest_recheck_check": "part 2 (a real build edited mid-flight) "
-    "FAILs 'the build FAILED (exit 0)' and 'the digest mismatch' on main "
-    "too: its probe lands at a fixed 2.5 s, before the image name is fixed "
-    "(the link starts ~7.3 s now), so there is no mismatch to find",
-    "build_check_dirty_flag": "step 3 (src/ edited in the clone) records no "
-    "manifest row on main too: since 5a7a2d3 (reviewer, 2026-10-15) a dirty "
-    "tree gets no row, by design, and the step still expects one",
-}
+# Entry points that exit non-zero on charge-interposer/main for a reason
+# of their own: their exit is reported, not judged here; whether they
+# remove their folders still is. None since 2026-10-31, when
+# digest_recheck_check and build_check --dirty-flag were fixed (reviewer,
+# 2026-10-31).
+KNOWN = {}
 MARK = "SCRATCH_DIR_CHECK "
 
 

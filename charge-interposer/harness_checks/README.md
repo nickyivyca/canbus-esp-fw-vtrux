@@ -36,5 +36,4 @@ until nothing reads them. Since the move:
 | `bypass_diag_mutations.py` | Can-fail for spec 9's declared `--bypass` exemption from the diag check |
 | `e5_arming_controls.py` | E5's arming checks (spec 3), shown able to fail |
 | `clamp_frame_cases.py` | Every HOLD page-01 frame that owes a clamp in a trace, listed |
-| `cutover_verify.py` | Verifies the 2026-10-08 git cutover, file by file (historical) |
-| `cutover_verify_test.py` | Its test: only `--guard-test`, which the suite runs, and which refuses a scratch folder in SeaDrive or in this tree outside its `scratch/`. The full mode is retired (2026-10-31): it copied SeaDrive's `tools/interposer/`, emptied after the 2026-10-08 move it checked, so it has failed since; it refuses (exit 2) |
+| `cutover_verify.py` | Verifies the 2026-10-08 git cutover, file by file (historical). Its test, `cutover_verify_test.py`, is retired (reviewer, 2026-10-31): the full mode copied SeaDrive's `tools/interposer/`, emptied after the move it checked, and its `--guard-test` had nothing left to guard; it is in git history |

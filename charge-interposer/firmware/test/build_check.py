@@ -30,7 +30,8 @@ Two checks, and the second needs the first:
    pointed at the wrong file then fails loudly instead of passing twice.
 
 Usage (from the repo root):
-    py -3.11 projects/vtrux/tools/interposer/firmware/test/build_check.py
+    py -3.14 -B charge-interposer/firmware/test/build_check.py
+    ... --dirty-flag   the dirty flag and the no-row rule, in a clone of HEAD
     ... --no-build   check images already in .pio/build
 """
 
@@ -579,13 +580,15 @@ def _sha256_file(path):
 def _build_one(fw_dir, env):
     """Clean, then build `env` in `fw_dir` -> (result or None, why), where
     result = {"elf": sha256, "bin": sha256, "bin_path": path,
-    "row_problem": fresh_row_problem() or None}. A row problem is reported
-    beside the result, not instead of it, so the images are still compared
-    and kept."""
+    "row_problem": fresh_row_problem() or None, "out": the build's
+    output}. A row problem is reported beside the result, not instead of
+    it, so the images are still compared and kept."""
     base = [sys.executable, "-m", "platformio", "run", "-d", fw_dir, "-e", env]
     t0 = time.time()
     for cmd in (base + ["-t", "clean"], base):
-        r = subprocess.run(cmd, capture_output=True, text=True)
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           errors="replace")
+        out = r.stdout + r.stderr
         if r.returncode != 0:
             tail = (r.stdout + r.stderr).splitlines()[-12:]
             return None, "exit %d:\n      %s" % (r.returncode,
@@ -601,7 +604,7 @@ def _build_one(fw_dir, env):
     if binp is None:
         return None, why
     res = {"elf": _sha256_file(elf), "bin": _sha256_file(binp),
-           "bin_path": binp}
+           "bin_path": binp, "out": out}
     res["row_problem"] = fresh_row_problem(_manifest_rows(fw_dir), env,
                                            res["elf"], t0)
     return res, res["row_problem"] or "ok"
@@ -702,26 +705,56 @@ def check_reproducible(envs, workdir, keep_bins=None):
 
 def build_row(rows, env, elf, t0):
     """The manifest row the build of `env` that started at t0 wrote, or
-    None: the newest fresh row for `env` recording ELF `elf`, else the
-    newest fresh row for `env` whatever ELF it records. The fallback keeps
-    the git fields judgeable when a row's elf_sha256 is wrong (null on
-    madhouse-debian, 2026-10-08) -- that is fresh_row_problem's finding,
-    reported separately, not a reason to hide this one."""
-    exact = loose = None
+    None: the newest row for `env` recording ELF `elf` whose built_utc is
+    not before t0. Matched by the ELF only (2026-10-31): the earlier
+    fallback to any fresh row for `env` let a build that wrote no row be
+    handed the previous build's row when both fell in one second of
+    built_utc, which has no fraction. A row whose elf_sha256 is wrong
+    (null on madhouse-debian, 2026-10-08) is fresh_row_problem's finding,
+    reported separately."""
+    found = None
     for r in rows:
         t = _utc_seconds(r.get("built_utc"))
-        if r.get("env") == env and t is not None and t >= int(t0):
-            loose = r
-            if (r.get("elf_sha256") or "").lower() == elf:
-                exact = r
-    return exact or loose
+        if (r.get("env") == env and t is not None and t >= int(t0)
+                and (r.get("elf_sha256") or "").lower() == elf):
+            found = r
+    return found
+
+
+NO_ROW = "no row"
+NO_ROW_LINE = "NO MANIFEST ROW"
+
+
+def rows_for_elf(rows, env, elf):
+    """Every manifest row for `env` recording ELF `elf`, whenever built."""
+    return [r for r in rows if r.get("env") == env
+            and (r.get("elf_sha256") or "").lower() == elf]
 
 
 def dirty_problems(steps, head):
-    """steps: [(label, row or None, expect_dirty)] -> problems. Each row
-    must name `head` as its commit and carry the expected git_dirty."""
+    """steps: [(label, row or None, expect, image, out)] -> problems.
+
+    expect False: a row naming `head` as its commit, with git_dirty
+    false. expect NO_ROW (the reviewer's ruling of 2026-10-15, 5a7a2d3,
+    "no row is better than a wrong row"; tracker 8.2 row): a build of a
+    dirty tree gets no row, and says so with a NO MANIFEST ROW line
+    naming its image; the build itself succeeds, which the caller has
+    already required."""
     problems = []
-    for label, r, want in steps:
+    for label, r, want, image, out in steps:
+        if want == NO_ROW:
+            if r is not None:
+                problems.append(
+                    "dirty flag: %s -- a manifest row (git_commit %r, "
+                    "git_dirty %r) for a build of a dirty tree, which gets "
+                    "none (reviewer 2026-10-15, 5a7a2d3)"
+                    % (label, r.get("git_commit"), r.get("git_dirty")))
+            if not any(NO_ROW_LINE in x and image in x
+                       for x in (out or "").splitlines()):
+                problems.append(
+                    "dirty flag: %s -- no %s line naming %s in the build's "
+                    "output" % (label, NO_ROW_LINE, image))
+            continue
         if r is None:
             problems.append("dirty flag: %s -- no manifest row for this "
                             "build" % label)
@@ -746,20 +779,27 @@ def _git(args, cwd):
 
 
 def check_dirty_flag(workdir, env=None):
-    """Spec 8.2 (user, 2026-10-08): a manifest row records the commit and
-    whether the working tree had uncommitted changes OTHER THAN to
-    builds/manifest.json, which the build itself writes.
+    """A manifest row records the commit and whether the working tree had
+    uncommitted changes OTHER THAN to builds/manifest.json, which the
+    build itself writes (spec 8.2, user, 2026-10-08), and a build of a
+    dirty tree gets no row at all (reviewer, 2026-10-15, 5a7a2d3, "no
+    row is better than a wrong row"; tracker 8.2 row). Both stand until
+    the PlatformIO build and manifest.py retire at port step 2a
+    (reviewer, 2026-10-31), and this check retires with them.
 
     In a clone of this repository's HEAD under `workdir` (never the tree
     itself), three clean, forced builds of `env`:
-      1. nothing edited -> git_dirty false. This build writes
+      1. nothing edited -> a row, git_dirty false. This build writes
          builds/manifest.json, so the clone now has exactly that change,
          which is confirmed with git status before step 2 -- otherwise
          step 2 would not exercise the exclusion;
-      2. nothing else edited -> git_dirty false;
-      3. a line appended to src/machine.cpp -> git_dirty TRUE. The
-         control: a flag that is never true would pass 1 and 2.
-    Every row must name the clone's HEAD."""
+      2. nothing else edited -> a row, git_dirty false;
+      3. a line appended to src/machine.cpp -> the build succeeds, prints
+         a NO MANIFEST ROW line naming its image, and no row records its
+         ELF. The control: a flag that never reads true would pass 1
+         and 2, and give this build a row.
+    Rows are matched by ELF (build_row), and step 1's and 2's must name
+    the clone's HEAD."""
     env = env or CONTROL_ENV
     problems = []
     rc, root = _git(["rev-parse", "--show-toplevel"], FW)
@@ -784,14 +824,23 @@ def check_dirty_flag(workdir, env=None):
                 problems.append("dirty flag: %s -- did not build (%s)"
                                 % (label, why))
                 return
-            r = build_row(_manifest_rows(fw), env, res["elf"], t0)
-            if res["row_problem"]:
+            rows = _manifest_rows(fw)
+            r = build_row(rows, env, res["elf"], t0)
+            if want == NO_ROW:
+                # no row is expected, so the fresh-row proof does not
+                # apply; any row recording this ELF, whenever, is one
+                r = (rows_for_elf(rows, env, res["elf"]) or [None])[-1]
+            elif res["row_problem"]:
                 problems.append("dirty flag: %s -- %s" % (label,
                                                          res["row_problem"]))
-            print("  dirty %-34s git_commit %s  git_dirty %r" % (
-                label, ((r or {}).get("git_commit") or "-")[:12],
-                (r or {}).get("git_dirty")))
-            steps.append((label, r, want))
+            image = os.path.basename(res["bin_path"])
+            said = [x.strip() for x in res["out"].splitlines()
+                    if NO_ROW_LINE in x][:1]
+            print("  dirty %-34s %s" % (label, (
+                "git_commit %s  git_dirty %r" % (
+                    (r.get("git_commit") or "-")[:12], r.get("git_dirty"))
+                if r else "no row" + (": " + said[0][:110] if said else ""))))
+            steps.append((label, r, want, image, res["out"]))
 
         one("1 nothing edited", False)
         _rc, st = _git(["status", "--porcelain"], clone)
@@ -806,13 +855,14 @@ def check_dirty_flag(workdir, env=None):
         one("2 only builds/manifest.json changed", False)
         with open(os.path.join(fw, CONTROL_FILE), "a") as f:
             f.write(CONTROL_LINE)
-        one("3 src/machine.cpp edited (control)", True)
+        one("3 src/machine.cpp edited (control)", NO_ROW)
         problems += dirty_problems(steps, head)
     finally:
         scratch_dir.remove(workdir)
     if not problems:
         print("dirty flag: false, false with only the manifest changed, "
-              "true with src/ edited; every row names %s" % head[:12])
+              "both rows naming %s; with src/ edited the build succeeds "
+              "with no row and says so" % head[:12])
     return problems
 
 
@@ -1254,7 +1304,8 @@ def main():
             for p_ in probs:
                 print("  - " + p_)
             return 1
-        print("\nOK -- dirty flag (spec 8.2)")
+        print("\nOK -- dirty flag (spec 8.2), and no row for a dirty tree "
+              "(reviewer 2026-10-15, 5a7a2d3)")
         return 0
 
     if a.links:
