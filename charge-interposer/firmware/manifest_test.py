@@ -36,6 +36,7 @@ import io
 import json
 import os
 import shutil
+import stat
 import sys
 import tempfile
 
@@ -54,6 +55,41 @@ def check(cond, what):
     print(("  ok  " if cond else "FAIL  ") + what)
     if not cond:
         failures += 1
+
+
+# --- removing the throwaway trees ----------------------------------------
+#
+# Never shutil.rmtree(ignore_errors=True) (AGENTS.md, "Removing scratch").
+# Git for Windows marks .git/objects read-only, rmtree cannot delete a
+# read-only file on Windows, and ignore_errors then leaves the whole tree
+# without a word: 1,085 run folders were found that way on 2026-10-31.
+
+def _long_path(path):
+    """Windows: the \\\\?\\ form, so a deep tree is not cut off at MAX_PATH."""
+    path = os.path.abspath(path)
+    if os.name == "nt" and not path.startswith("\\\\?\\"):
+        path = "\\\\?\\" + path
+    return path
+
+
+def _clear_readonly_and_retry(func, path, exc):
+    """rmtree's error handler: clear the read-only flag, retry once. If the
+    retry fails too, that error propagates to remove_tree."""
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
+def remove_tree(path):
+    """Remove a throwaway tree, pass or fail; print it if it stays."""
+    try:
+        if sys.version_info >= (3, 12):
+            shutil.rmtree(_long_path(path), onexc=_clear_readonly_and_retry)
+        else:
+            shutil.rmtree(_long_path(path),
+                          onerror=lambda func, p, ei:
+                          _clear_readonly_and_retry(func, p, ei[1]))
+    except OSError as e:
+        print("LEFTOVER  %s: %s" % (path, e))
 
 
 # --- the predicate ------------------------------------------------------
@@ -175,7 +211,7 @@ def run_record(identity):
         with io.open(path, encoding="utf-8") as fh:
             return json.load(fh)["builds"], out.getvalue()
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        remove_tree(tmp)
 
 
 print()
@@ -242,7 +278,29 @@ try:
           "a SOURCE DIGEST MISMATCH still RAISES -- the two severities are "
           "not flattened: that image must not reach a flash command")
 finally:
-    shutil.rmtree(tmp, ignore_errors=True)
+    remove_tree(tmp)
+
+
+# --- the cleanup itself ------------------------------------------------
+#
+# A tree laid out as Git for Windows leaves one: a read-only file under
+# .git/objects. The precondition is asserted first, or a fixture the OS
+# let us write would make the removal check pass without testing anything.
+
+print()
+print("the cleanup, remove_tree():")
+tmp = tempfile.mkdtemp(prefix="manifest_test_")
+obj_dir = os.path.join(tmp, ".git", "objects", "ab")
+os.makedirs(obj_dir)
+obj = os.path.join(obj_dir, "cdef0123456789")
+with open(obj, "wb") as fh:
+    fh.write(b"x")
+os.chmod(obj, stat.S_IREAD)
+check(not os.access(obj, os.W_OK),
+      "the fixture's .git object file IS read-only (the precondition)")
+remove_tree(tmp)
+check(not os.path.exists(tmp),
+      "remove_tree removes a tree holding a read-only .git object")
 
 print()
 print("manifest_test: %s" % ("all checks OK" if not failures
