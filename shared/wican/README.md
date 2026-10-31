@@ -22,7 +22,6 @@ writing a file first does not make a project its owner.
 |---|---|---|
 | `SPEC.md`, `VALIDATION.md` | the component's spec, W1 to W11, and why each requirement is written as it is | the reviewers, as above |
 | `wican.c`, `wican.h` | stock `main.c`'s start-up as `wican_init()` and `wican_start()` (W4), the CAN receive and send tasks, the bus-owner callbacks (W5), the SLCAN command switch (W6), the URI hook (W8) | the implementor of the project that needs the change |
-| `can.h` | the CAN functions the component's files call, declared, not implemented: the project supplies them (W3) | the same |
 | `config_server.c`/`.h` | the HTTP server: configuration, status, OTA, the websocket; the flash-write and OTA gates call the bus owner (W5); the project's URIs at the hook (W8) | the same |
 | `comm_server.c`/`.h` | the TCP/UDP port | the same |
 | `slcan.c`/`.h` | SLCAN framing, and the command parser W6 switches | the same |
@@ -43,8 +42,9 @@ writing a file first does not make a project its owner.
 
 ## Taking it into a project
 
-A project takes this component and `vtrux/debug_logs` from git, at a tag of
-`shared/main` it pins, beside its board:
+A project takes this component, `vtrux/debug_logs` and `vtrux/can_port`
+from git, at a tag of `shared/main` it pins, beside its board and the
+backend it registers for port 0 (`vtrux/twai_port` for the TWAI):
 
     dependencies:
       vtrux/wican:
@@ -55,10 +55,22 @@ A project takes this component and `vtrux/debug_logs` from git, at a tag of
         git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
         path: shared/debug_logs
         version: <tag>
+      vtrux/can_port:
+        git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
+        path: shared/can_port
+        version: <tag>
+      vtrux/twai_port:
+        git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
+        path: shared/twai_port
+        version: <tag>
 
 The project then supplies:
 
-- **The CAN functions** `can.h` declares (W3), in its own files.
+- **Port 0's backend** (W3): the CAN functions this component's files call
+  are `vtrux/can_port`'s stock calls on port 0 (its `can.h`), so the
+  project sets up a backend and registers it for port 0
+  (`can_port_register()`) before `wican_init()`. Until port step 1b the
+  project supplied the functions itself.
 - **`app_main`** (W4): register the bus-owner callbacks
   (`wican_register_bus_owner()`) and the URI hook (`wican_register_uris()`),
   if it has them, then `wican_init()`, then its own start-up, then

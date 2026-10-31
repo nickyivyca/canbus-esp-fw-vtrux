@@ -24,6 +24,8 @@ charge interposer.
 |---|---|
 | `bench/` | The shared bench toolkit (`vtrux_bench`). See `bench/README.md`. |
 | `boards/` | The board layer: one ESP-IDF component per board, to `boards/SPEC.md`. See `boards/README.md`. |
+| `can_port/` | The CAN port interface both projects use: a backend per port index, and the stock code's CAN calls on port 0, to `can_port/SPEC.md`. See `can_port/README.md`. |
 | `debug_logs/` | Stock WiCAN's UDP debug log, as its own ESP-IDF component, used by `wican/`. See `debug_logs/README.md`. |
 | `tools/` | The shared build tooling (`vtrux_build`): the image library, the release build and its record, to `tools/SPEC.md`. See `tools/README.md`. |
+| `twai_port/` | The driver for the chip's built-in CAN controller, behind `can_port`, with the one host fake of the TWAI driver, to `twai_port/SPEC.md`. See `twai_port/README.md`. |
 | `wican/` | The stock WiCAN code, as one ESP-IDF component, to `wican/SPEC.md`. See `wican/README.md`. |

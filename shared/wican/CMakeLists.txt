@@ -1,10 +1,11 @@
 # vtrux/wican: the stock WiCAN code as one component (SPEC.md W1). A project
-# takes it at a pinned tag through the Component Manager and supplies, in its
-# own files, the CAN functions can.h declares (W3) and app_main (W4).
+# takes it at a pinned tag through the Component Manager, with vtrux/can_port,
+# whose stock calls on port 0 are the CAN functions this component's files
+# call (W3), and supplies app_main (W4).
 set(srcs "wican.c" "comm_server.c" "config_server.c" "slcan.c" "wifi_network.c" "wc_uart.c" "elm327.c" "mqtt.c" "sleep_mode.c" "autopid.c" "expression_parser.c" "wc_mdns.c" "wc_timer.c" "dev_status.c" "ota_health.c" "hw_config.c")
 # Not built, as in stock: ftp.c, gvret.c, realdash.c, led.c and
 # homepage_full.html (W1).
-set(requires   hal soc esp_timer esp_wifi nvs_flash fatfs vfs driver esp-tls esp_adc esp_eth log app_update esp_http_server spiffs freertos mqtt json debug_logs)
+set(requires   hal soc esp_timer esp_wifi nvs_flash fatfs vfs driver esp-tls esp_adc esp_eth log app_update esp_http_server spiffs freertos mqtt json debug_logs can_port)
 
 # THE SWITCHES (W6, W7) are CMake options of this component, on by default, as
 # upstream. A project sets one off in its top-level CMakeLists.txt, before
@@ -54,16 +55,14 @@ if(NOT WICAN_FEATURE_AUTOPID)
     list(REMOVE_ITEM srcs "autopid.c")
 endif()
 
-# THE CAN FUNCTIONS ARE THE PROJECT'S (W3): can.h declares them, the project's
-# main component defines them. PRIV_REQUIRES main puts main's library after
-# this one on the link line as well as before it, so the linker finds them
-# whichever order the libraries come in. Without it they resolve only when
-# something earlier has already pulled main's object in.
+# THE CAN FUNCTIONS ARE vtrux/can_port's (W3, port step 1b): can.h is its
+# header, and its stock calls run on port 0's backend, which the project
+# registers. Until 1b the project's main component defined them, and this
+# component had PRIV_REQUIRES main to link them.
 idf_component_register(
     SRCS "${srcs}"
     INCLUDE_DIRS "."
     REQUIRES "${requires}"
-    PRIV_REQUIRES main
     EMBED_FILES "homepage.html"
 )
 

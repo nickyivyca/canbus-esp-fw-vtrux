@@ -20,9 +20,10 @@
 
 
 /*
- * THE CAN FUNCTIONS ARE THE PROJECT'S (SPEC.md W3), until port step 1b's
- * can_port. This component declares here the ones its files call and does
- * not implement them; the project supplies them in its own files.
+ * THE STOCK CAN CALLS ARE vtrux/can_port's, ON PORT 0 (can_port SPEC.md C3;
+ * shared/wican W3, port step 1b). vtrux/wican's files call them; can_stock.c
+ * implements them over port 0's backend. Until 1b this header was
+ * vtrux/wican's and the project supplied the functions.
  */
 #ifndef __CAN_H__
 #define __CAN_H__
