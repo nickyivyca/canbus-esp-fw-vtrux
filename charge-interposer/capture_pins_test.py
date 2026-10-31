@@ -10,11 +10,10 @@ Needs no REVERSE_IT_DIR: it works on small files in a temporary folder.
 
 import hashlib
 import os
-import shutil
 import sys
-import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import scratch_dir                                        # noqa: E402
 import capture_pins as CP                                   # noqa: E402
 import machine as M                                         # noqa: E402
 import replay                                               # noqa: E402
@@ -177,11 +176,11 @@ def digest_cases():
 
 
 def main():
-    root = tempfile.mkdtemp(prefix="pins_")
+    root = scratch_dir.make("capture-pins-test")
     try:
         files_cases(root)
     finally:
-        shutil.rmtree(root, ignore_errors=True)
+        scratch_dir.remove(root)
     regress_cases()
     digest_cases()
     if failures:

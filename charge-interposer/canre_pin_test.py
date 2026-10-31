@@ -4,7 +4,7 @@ is refused.
 
 Charge-interposer tester, 2026-10-26 (port step 0 for the interposer), from
 gen-inhibit's test_canre_pin.py (5d85dce), with the interposer's folder rule.
-Stand-in installs are made in a throwaway folder in the machine temp folder,
+Stand-in installs are made in a scratch_dir run folder (2026-10-31),
 laid out as pip lays one out (canre/, a canre-<version>.dist-info with
 METADATA, direct_url.json and a RECORD of sha256s), so no network is needed:
 
@@ -47,18 +47,19 @@ passes only if every one is caught.
 """
 import ast
 import base64
+import contextlib
 import hashlib
 import json
 import os
 import shutil
 import subprocess
 import sys
-import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.environ.get("CANRE_PIN_SRC") or HERE
 sys.path.insert(0, SRC_DIR)
 import canre_pin  # noqa: E402
+import scratch_dir  # noqa: E402
 
 REPO = "https://github.com/nickyivyca/canbus-reveng-vtrux-coda"
 COMMIT = "ffbe0291f7b817360f03f1082e07240804cf6084"
@@ -187,7 +188,7 @@ def importers(root):
 
 
 def checks():
-    base = tempfile.mkdtemp(prefix="canre_pin_test_")
+    base = scratch_dir.make("canre-pin-test")
     try:
         # 1. the pin
         p = canre_pin.pin()
@@ -312,7 +313,7 @@ def checks():
             got = attempt(canre_pin.install, p, start)
             check("4 install again: nothing installed, pip not run",
                   got == (want, False) and len(calls()) == 1, (got, len(calls())))
-            shutil.rmtree(want, ignore_errors=True)
+            scratch_dir.remove(want)
             for name, env in (("installs another commit", {"PIP_COMMIT": OTHER}),
                               ("fails", {"PIP_EXIT": "1"})):
                 os.environ.update(env)
@@ -322,7 +323,7 @@ def checks():
                 check("4 a pip that %s: refused, no folder, no partial" % name,
                       e is not None and not os.path.exists(want) and partials() == [],
                       (e, partials()))
-            shutil.rmtree(want, ignore_errors=True)
+            scratch_dir.remove(want)
             make_install(want, commit=OTHER)
             n = len(calls())
             e = refused(canre_pin.install, p, start, has="not replaced")
@@ -346,7 +347,8 @@ def checks():
               attempt(canre_pin.folder, p, start, environ={}))
         nogit = os.path.join(base, "nogit", "code")
         os.makedirs(nogit)
-        e = refused(canre_pin.folder, p, nogit, environ={}, has="CANRE_DIR")
+        with walk_within(canre_pin, base):
+            e = refused(canre_pin.folder, p, nogit, environ={}, has="CANRE_DIR")
         check("5 folder: no .git anywhere and no CANRE_DIR is refused, naming it",
               e is not None, attempt(canre_pin.folder, p, nogit, environ={}))
         got = attempt(canre_pin.folder, p, nogit, environ={"CANRE_DIR": elsewhere})
@@ -384,8 +386,27 @@ def checks():
               % ("$CANRE_DIR" if os.environ.get("CANRE_DIR") else "this worktree's"),
               e is None, e)
     finally:
-        shutil.rmtree(base, ignore_errors=True)
+        scratch_dir.remove(base)
     return FAILS
+
+
+@contextlib.contextmanager
+def walk_within(mod, base):
+    """The stand-ins are made in a scratch_dir run folder, inside this
+    repo's own worktree (2026-10-31; before, the machine temp folder), so a
+    walk up from them would reach the real .git. For the no-git case the
+    walk sees only what is under base, as if base were the whole disk."""
+    real = mod.worktree
+    top = os.path.normcase(os.path.abspath(base)) + os.sep
+
+    def within(start=None, exists=os.path.exists):
+        return real(start, exists=lambda p: os.path.normcase(
+            os.path.abspath(p)).startswith(top) and exists(p))
+    mod.worktree = within
+    try:
+        yield
+    finally:
+        mod.worktree = real
 
 
 MUTANTS = [
@@ -424,7 +445,7 @@ MUTANTS = [
     ("install replaces a folder that is there",
      "    if os.path.isdir(d):\n        try:", "    if False:\n        try:"),
     ("install leaves its partial folder on a failure",
-     "    finally:\n        shutil.rmtree(tmp, ignore_errors=True)",
+     "    finally:\n        scratch_dir.remove(tmp)",
      "    finally:\n        pass"),
 ]
 
@@ -435,10 +456,10 @@ def main():
         print("\ncanre_pin_test: %s" % ("all checks OK" if not got else
                                         "%d FAILED: %s" % (len(got), "; ".join(got))))
         return 1 if got else 0
-    base = tempfile.mkdtemp(prefix="canre_pin_mutants_")
+    base = scratch_dir.make("canre-pin-mutants")
     src = open(os.path.join(HERE, "canre_pin.py"), encoding="utf-8", newline="").read()
-    # A copy in the temp folder is in no worktree, so its real install (7)
-    # is named by CANRE_DIR: the folder the unmutated module resolves.
+    # The copy's real install (7) is named by CANRE_DIR: the folder the
+    # unmutated module resolves here.
     real = canre_pin.folder()
     killed = errors = 0
     try:
@@ -478,7 +499,7 @@ def main():
             print("%s m%d %s%s" % ("KILLED  " if dead else "SURVIVED", n, name,
                                    "".join("\n           " + f[:130] for f in fails[:2])))
     finally:
-        shutil.rmtree(base, ignore_errors=True)
+        scratch_dir.remove(base)
     print("\ncanre_pin_test --can-fail: %d of %d killed by a check, %d errors"
           % (killed, len(MUTANTS), errors))
     return 0 if killed == len(MUTANTS) and not errors else 1

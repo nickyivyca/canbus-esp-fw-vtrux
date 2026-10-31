@@ -14,12 +14,11 @@ Run:  python charge-interposer/regress_offline_test.py
 """
 
 import os
-import shutil
 import sys
-import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import scratch_dir                                        # noqa: E402
 
 failures = 0
 
@@ -158,7 +157,7 @@ def bus_cases():
 
 
 def main():
-    tmp = tempfile.mkdtemp(dir=HERE, prefix="regress_test_")
+    tmp = scratch_dir.make("regress-offline-test")
     saved = os.environ.get("REVERSE_IT_DIR")
     try:
         os.makedirs(os.path.join(tmp, "projects", "vtrux", "notes",
@@ -192,7 +191,7 @@ def main():
         path_cases(RG)
         states_sampling_cases()
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        scratch_dir.remove(tmp)
         if saved is None:
             os.environ.pop("REVERSE_IT_DIR", None)
         else:

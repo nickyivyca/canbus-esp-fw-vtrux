@@ -27,7 +27,6 @@ with one source edit, and every one must make them fail.
 
 import json
 import os
-import shutil
 import struct
 import subprocess
 import sys
@@ -36,6 +35,7 @@ import traceback
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared", "bench"))
+import scratch_dir                                        # noqa: E402
 
 _MOD = os.environ.get("BENCH_WICAN_MODULE")
 if _MOD:                    # --can-fail: a mutant stands in for the module
@@ -49,9 +49,9 @@ else:
 
 import build_lookup                                       # noqa: E402
 
-# scratch/ at the repo root (AGENTS.md, "Files and folders"; gitignored)
-TMP = os.path.join(os.path.dirname(HERE), "scratch",
-                   "charge-interposer-tests", "bench-wican-test")
+# this run's scratch_dir folder, made by run_tests() and removed in its
+# finally (2026-10-31: before, a fixed scratch/ folder never removed)
+TMP = None
 MAN_SHA = "a1" * 32
 OTHER_SHA = "b2" * 32
 
@@ -119,14 +119,14 @@ def app_bin(path, sha):
         f.write(bytes(head))
 
 
-def fixture(name):
+def fixture(name, base=None):
     """A temp gi_tools (fake wican_reboot.py and page_state.py) and a
     gen-inhibit chain settings JSON whose gi_images holds build-tester-man/
     with the app bin (MAN_SHA) and ota_data_initial.bin beside it, as the
-    real folder does. -> (settings, root). Also usable by
-    bench_suite_test."""
-    root = os.path.join(TMP, name)
-    shutil.rmtree(root, ignore_errors=True)
+    real folder does. -> (settings, root), under base (default TMP).
+    Also usable by bench_suite_test, with its own folder as base."""
+    root = os.path.join(base or TMP, name)
+    scratch_dir.remove(root)
     bench = os.path.join(root, "gi_tools", "bench")
     os.makedirs(bench)
     with open(os.path.join(bench, "page_state.py"), "w") as f:
@@ -409,7 +409,15 @@ MUTANTS = [
 
 
 def run_tests():
-    os.makedirs(TMP, exist_ok=True)
+    global TMP
+    TMP = scratch_dir.make("bench-wican-test")
+    try:
+        return _run_tests()
+    finally:
+        scratch_dir.remove(TMP)
+
+
+def _run_tests():
     bad = 0
     for t in TESTS:
         try:
@@ -423,12 +431,17 @@ def run_tests():
 
 
 def can_fail():
+    d = scratch_dir.make("bench-wican-mutants")
+    try:
+        return _can_fail(d)
+    finally:
+        scratch_dir.remove(d)
+
+
+def _can_fail(d):
     src_path = os.path.join(HERE, "bench_wican.py")
     with open(src_path, encoding="utf-8") as f:
         src = f.read()
-    d = os.path.join(TMP, "mutants")
-    shutil.rmtree(d, ignore_errors=True)
-    os.makedirs(d)
     bad = 0
     for what, old, new in MUTANTS:
         n = src.count(old)
@@ -450,7 +463,6 @@ def can_fail():
         print("%s  %-52s %s" % ("ok  " if caught else "FAIL", what,
                                 "caught by %s" % ", ".join(failed) if caught
                                 else "STILL PASSES"))
-    shutil.rmtree(d, ignore_errors=True)
     print("\n%d of %d mutants caught" % (len(MUTANTS) - bad, len(MUTANTS)))
     return 1 if bad else 0
 

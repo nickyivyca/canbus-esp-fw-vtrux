@@ -17,12 +17,13 @@ Run:  py -3.14 projects/vtrux/tools/interposer/firmware/test/build_check_manifes
 
 import json
 import os
-import shutil
 import sys
-import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+# charge-interposer/, for scratch_dir; last, so it shadows nothing
+sys.path.append(os.path.dirname(os.path.dirname(HERE)))
+import scratch_dir                                  # noqa: E402
 
 import build_check as BC
 
@@ -50,7 +51,7 @@ def fake_bin(path, elf_hex, magic=0xABCD5432):
 
 def run_case(disk_elf, rows, magic=0xABCD5432):
     """-> problems from check_manifest over a fake tree."""
-    root = tempfile.mkdtemp(dir=HERE)
+    root = scratch_dir.make("build-check-manifest-test")
     try:
         os.makedirs(os.path.join(root, "builds"))
         img = os.path.join(root, NAME)
@@ -65,7 +66,7 @@ def run_case(disk_elf, rows, magic=0xABCD5432):
         finally:
             BC.FW, BC.image = saved
     finally:
-        shutil.rmtree(root, ignore_errors=True)
+        scratch_dir.remove(root)
 
 
 def row(elf, name=NAME, git=True):
@@ -100,7 +101,7 @@ def main():
     # evidence that its environment builds (the reused witness image of
     # 2026-10-07).
     import time
-    root = tempfile.mkdtemp(dir=HERE)
+    root = scratch_dir.make("build-check-manifest-test")
     try:
         img = os.path.join(root, NAME)
         fake_bin(img, ELF_A)
@@ -120,7 +121,7 @@ def main():
         finally:
             BC.image = saved
     finally:
-        shutil.rmtree(root, ignore_errors=True)
+        scratch_dir.remove(root)
 
     # spec 8.2 (2026-10-08): the rows for this build carry the git commit
     # and dirty flag, or an explicit git_error -- never neither

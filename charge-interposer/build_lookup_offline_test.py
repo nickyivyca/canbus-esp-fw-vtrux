@@ -192,33 +192,33 @@ def main():
           "one image name on two ELFs resolves to the ELF on the wire")
 
     # elf_sha256_of_bin: the hash out of the image's own bytes.
-    import tempfile
+    import scratch_dir
     head = bytearray(256)
     head[32:36] = (0xABCD5432).to_bytes(4, "little")
     head[176:208] = bytes.fromhex(FULL_A)
-    d = tempfile.mkdtemp(dir=os.path.dirname(os.path.abspath(__file__)))
-    good_p = os.path.join(d, "good.bin")
-    bad_p = os.path.join(d, "badmagic.bin")
-    short_p = os.path.join(d, "short.bin")
-    with open(good_p, "wb") as f:
-        f.write(bytes(head))
-    bad = bytearray(head)
-    bad[32] ^= 0xFF
-    with open(bad_p, "wb") as f:
-        f.write(bytes(bad))
-    with open(short_p, "wb") as f:
-        f.write(bytes(head[:100]))
-    check(bl.elf_sha256_of_bin(good_p) == FULL_A,
-          "elf_sha256_of_bin reads the descriptor's hash at offset 176")
-    check(bl.elf_sha256_of_bin(bad_p) is None,
-          "and refuses (None) when the descriptor magic is wrong")
-    check(bl.elf_sha256_of_bin(short_p) is None,
-          "and on a file too short to hold it")
-    check(bl.elf_sha256_of_bin(os.path.join(d, "missing.bin")) is None,
-          "and on a missing file")
-    for q in (good_p, bad_p, short_p):
-        os.remove(q)
-    os.rmdir(d)
+    d = scratch_dir.make("build-lookup-offline-test")
+    try:
+        good_p = os.path.join(d, "good.bin")
+        bad_p = os.path.join(d, "badmagic.bin")
+        short_p = os.path.join(d, "short.bin")
+        with open(good_p, "wb") as f:
+            f.write(bytes(head))
+        bad = bytearray(head)
+        bad[32] ^= 0xFF
+        with open(bad_p, "wb") as f:
+            f.write(bytes(bad))
+        with open(short_p, "wb") as f:
+            f.write(bytes(head[:100]))
+        check(bl.elf_sha256_of_bin(good_p) == FULL_A,
+              "elf_sha256_of_bin reads the descriptor's hash at offset 176")
+        check(bl.elf_sha256_of_bin(bad_p) is None,
+              "and refuses (None) when the descriptor magic is wrong")
+        check(bl.elf_sha256_of_bin(short_p) is None,
+              "and on a file too short to hold it")
+        check(bl.elf_sha256_of_bin(os.path.join(d, "missing.bin")) is None,
+              "and on a missing file")
+    finally:
+        scratch_dir.remove(d)
 
     if failures:
         print("\n%d failure(s)" % failures)

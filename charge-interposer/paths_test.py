@@ -46,12 +46,12 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import paths as PA                     # noqa: E402
 import canre_pin                       # noqa: E402
+import scratch_dir                     # noqa: E402
 
 failures = 0
 
@@ -256,7 +256,7 @@ def main():
     names = ("REVERSE_IT_DIR", "VTRUX_DATA", "VTRUX_PUBLIC_REPO", "CANRE_DIR",
              "INTERPOSER_CODE", "CAN_TOOLS_DIR")
     saved = {k: os.environ.get(k) for k in names}
-    tmp = tempfile.mkdtemp(dir=HERE, prefix="paths_test_")
+    tmp = scratch_dir.make("paths-test")
     try:
         os.environ.pop("REVERSE_IT_DIR", None)
         os.environ.pop("VTRUX_DATA", None)
@@ -433,8 +433,7 @@ def main():
               "the working-folder scan catches a planted '.' and getcwd(), "
               "and skips them in a comment")
     finally:
-        import can_tools_pin_test as CT
-        CT.rmtree(tmp)          # the stand-in clone's objects are read-only
+        scratch_dir.remove(tmp)  # the stand-in clone's objects are read-only
         for k, v in saved.items():
             if v is None:
                 os.environ.pop(k, None)

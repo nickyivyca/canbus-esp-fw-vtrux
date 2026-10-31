@@ -80,7 +80,6 @@ import re
 import sys
 import struct
 import tempfile
-import shutil
 import threading
 import time
 
@@ -89,6 +88,7 @@ import time
 # the working folder (port step 0, 2026-10-26).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import scratch_dir                  # noqa: E402
 
 BUS_BITRATE = 500000
 NODE_ID = 0x100                  # above 0x649 and 0x7F4 in priority
@@ -1182,12 +1182,6 @@ class _FakeBasic(object):
         return "\n".join(_FAKE_TEXT[b] for b in bits) or "unknown 0x%X" % code
 
 
-def _witness_root():
-    d = os.path.join(tempfile.gettempdir(), "interposer-tester", "witness")
-    os.makedirs(d, exist_ok=True)
-    return d
-
-
 class Witness(object):
     """The PCAN, collecting every row with its device stamp. Opened
     LISTEN-ONLY (state=PASSIVE: no ACK, no error flags) for steps 0, 4, 5
@@ -1205,7 +1199,9 @@ class Witness(object):
         self.acks = acks
         self.mode = mode or WITNESS_READER
         self.stats = None           # the last take's reader_stats
-        self.folder = tempfile.mkdtemp(prefix="w", dir=_witness_root())
+        # a scratch_dir run folder, removed by close(); one a crash
+        # leaves is pruned by the next Witness once this process is gone
+        self.folder = scratch_dir.make("vport-witness")
         ctx = mp.get_context("spawn")
         self.conn, child = ctx.Pipe()
         self.proc = ctx.Process(target=_witness_proc, args=(
@@ -1331,7 +1327,7 @@ class Witness(object):
         if self.proc.is_alive() and hasattr(self.proc, "terminate"):
             self.proc.terminate()
             self.proc.join(2.0)
-        shutil.rmtree(self.folder, ignore_errors=True)
+        scratch_dir.remove(self.folder)
 
     def describe(self):
         return ("PCAN at %d bit/s, %s reader, %s" % (
@@ -3617,7 +3613,7 @@ def self_test():
           "can-fail: edges: missing frames absent after the cut are NOT found")
     el = edge_summary(elog[:-2], erows, [], [], t_wc, t_wc)
     check("0 missing" in el[0], "edges: nothing missing reads 0 missing")
-    ed = tempfile.mkdtemp(prefix="bvst_")
+    ed = scratch_dir.make("vport-selftest")
     try:
         g = globals()
         keep, g["RAW_DIR"] = g["RAW_DIR"], None
@@ -3642,7 +3638,7 @@ def self_test():
               "save_edges: the lines, the send log with its times and the "
               "rows after the cut, beside the window's rows")
     finally:
-        shutil.rmtree(ed, ignore_errors=True)
+        scratch_dir.remove(ed)
     check([a[0] for a in parse_m1_arms(",".join(M1_ARMS))] == list(M1_ARMS)
           and parse_m1_arms("settle-local") == [("settle-local", True, True)]
           and parse_m1_arms("nosettle-run") == [("nosettle-run", False,

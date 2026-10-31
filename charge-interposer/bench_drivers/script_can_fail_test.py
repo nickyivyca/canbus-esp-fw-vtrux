@@ -12,8 +12,8 @@ through the runner's run():
     mutant is reported caught. Without the baseline run, that mutant read
     as caught.
 
-The fakes are written to the machine temp folder, outside SeaDrive, and
-removed.
+The fakes are written to a scratch_dir run folder and removed in a
+finally (2026-10-31).
 
 Run:  py -3.14 -B script_can_fail_test.py
 """
@@ -21,13 +21,12 @@ Run:  py -3.14 -B script_can_fail_test.py
 import contextlib
 import io
 import os
-import shutil
 import sys
-import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import script_can_fail as S  # noqa: E402
+import scratch_dir           # noqa: E402  (charge-interposer/, via S)
 
 TEMPLATE = '''import os
 import sys
@@ -83,9 +82,7 @@ def check(cond, what):
 
 
 def main():
-    root = os.path.join(tempfile.gettempdir(), "interposer-tester",
-                        "script-can-fail-test")
-    shutil.rmtree(root, ignore_errors=True)
+    root = scratch_dir.make("script-can-fail-test")
     try:
         for name, extra, muts, want_rc, want, never in CASES:
             d = os.path.join(root, name)
@@ -113,7 +110,7 @@ def main():
                       "placed: its self-test passes beside its own source, "
                       "so only the runner's place fails it")
     finally:
-        shutil.rmtree(root, ignore_errors=True)
+        scratch_dir.remove(root)
     print("\nscript_can_fail_test: %s"
           % ("all checks OK" if not failures else "%d FAILED" % failures))
     return 1 if failures else 0

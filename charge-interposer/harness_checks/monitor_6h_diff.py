@@ -18,14 +18,16 @@ Each trace is replayed through machine.py (regen_golden.py --stdout) and
 through machine.cpp (host_runner, built here from the clone's src), and
 the two outputs must be byte-identical.
 
-The traces are about 23 MB each. They are regenerable, so they go in the
-machine temp folder (AGENTS.md, 2026-10-16), not the fixtures folder. Their
+The traces are about 23 MB each. They are regenerable, so they go in a
+scratch_dir run folder, removed in a finally (AGENTS.md "Removing
+scratch", 2026-10-31; before, a temp folder never removed), not the
+fixtures folder. Their
 sha256, and their golden's, are pinned in PINS below, so a rebuild is
 checked against the pin as the capture traces are. A pin mismatch FAILS:
 the generator or machine.py moved, and the pin may only change with a
 stated reason, like any other.
 
---can-fail builds a copy of machine.cpp, in the temp folder and never in
+--can-fail builds a copy of machine.cpp, in that folder and never in
 src, whose MONITOR branch applies the 6 h cap. monitor_6h05 must then read
 DIFFERS, and override_6h05 must still be IDENTICAL. --corrupt-pin flips
 one hex digit of each expected trace pin, and both pin checks must FAIL
@@ -41,12 +43,12 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 
 # charge-interposer/, found from this file (port step 0, 2026-10-26):
 # paths.code_dir() refuses an INTERPOSER_CODE naming another tree.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import paths                                           # noqa: E402
+import scratch_dir                                     # noqa: E402
 CODE = paths.code_dir()
 HOST_DIFF = os.path.join(CODE, "firmware", "test", "host_diff")
 SRC = os.path.join(CODE, "firmware", "src")
@@ -56,7 +58,7 @@ import machine as M                 # noqa: E402
 import test_trips as T              # noqa: E402
 import make_unit_traces as U        # noqa: E402
 
-OUT = os.path.join(tempfile.gettempdir(), "interposer-tester", "monitor_6h")
+OUT = None             # this run's scratch_dir folder, made by main()
 STEP_MS = 250
 SPAN_MS = T.CAP_MS + 5 * 60 * 1000          # 6 h 5 min
 
@@ -151,10 +153,18 @@ def first_diff(a, b):
 
 
 def main():
+    global OUT
+    OUT = scratch_dir.make("monitor-6h-diff")
+    try:
+        return _main()
+    finally:
+        scratch_dir.remove(OUT)
+
+
+def _main():
     can_fail = "--can-fail" in sys.argv[1:]
     print_pins = "--print-pins" in sys.argv[1:]
     corrupt = "--corrupt-pin" in sys.argv[1:]
-    os.makedirs(OUT, exist_ok=True)
     bad = 0
 
     traces = {}
@@ -190,7 +200,6 @@ def main():
     src_label = "machine.cpp"
     if can_fail:
         mut_dir = os.path.join(OUT, "mutant_src")
-        shutil.rmtree(mut_dir, ignore_errors=True)
         shutil.copytree(SRC, mut_dir)
         mp = os.path.join(mut_dir, "machine.cpp")
         with open(mp, encoding="utf-8") as f:

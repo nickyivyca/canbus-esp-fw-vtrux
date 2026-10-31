@@ -95,6 +95,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # from the working folder (port step 0, 2026-10-26).
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
+import scratch_dir                  # noqa: E402
 
 INJECT_ID = 0x6A2          # clear of the truck, the WiCAN, the interposer
 PERIOD_S = 0.005           # reviewer: 10 ms or faster
@@ -1257,9 +1258,8 @@ def self_test():
           "usb-host-baseline-noack)")
     check(baseline_boots_rc([{"ok_2p3": True}] * 3) == 0,
           "baseline-boots: three passing 2.3 verdicts PASS")
-    import tempfile as _tf
     import types as _ty
-    tdir = _tf.mkdtemp(prefix="usbhost-selftest-")
+    tdir = scratch_dir.make("usbhost-selftest")
     try:
         bdir, odir = os.path.join(tdir, "baseline"), os.path.join(tdir, "case")
         os.makedirs(bdir)
@@ -1283,8 +1283,7 @@ def self_test():
               os.path.join(odir, "bridge_baseline.json"),
               "bridge: cycles without --baseline-dir reads --out")
     finally:
-        import shutil as _sh
-        _sh.rmtree(tdir, ignore_errors=True)
+        scratch_dir.remove(tdir)
 
     print("\nbench_usb_host self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))

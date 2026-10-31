@@ -44,7 +44,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 
 # REFUSE TO RUN UNDER PYTHON < 3.10, before doing anything else.
@@ -76,6 +75,9 @@ if sys.version_info < (3, 10):
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FW = os.path.normpath(os.path.join(HERE, ".."))
+# charge-interposer/, for scratch_dir; last, so it shadows nothing
+sys.path.append(os.path.dirname(os.path.dirname(HERE)))
+import scratch_dir                                  # noqa: E402
 
 # The environment whose image goes in the truck, and the one it is otherwise
 # identical to. Spec 8.3 and the [env:truck] comment in platformio.ini.
@@ -690,7 +692,7 @@ def check_reproducible(envs, workdir, keep_bins=None):
                         "see a code change, so 'identical' proves nothing"
                         % (CONTROL_FILE, k.upper(), rc[k][:16]))
     finally:
-        shutil.rmtree(workdir, ignore_errors=True)
+        scratch_dir.remove(workdir)
     if not problems:
         print("reproducible: %d environment(s) give identical ELF and .bin "
               "across two folders, each build fresh; the control differs"
@@ -807,7 +809,7 @@ def check_dirty_flag(workdir, env=None):
         one("3 src/machine.cpp edited (control)", True)
         problems += dirty_problems(steps, head)
     finally:
-        shutil.rmtree(workdir, ignore_errors=True)
+        scratch_dir.remove(workdir)
     if not problems:
         print("dirty flag: false, false with only the manifest changed, "
               "true with src/ edited; every row names %s" % head[:12])
@@ -1245,7 +1247,7 @@ def main():
     a = ap.parse_args()
 
     if a.dirty_flag:
-        work = tempfile.mkdtemp(prefix="dirty_", dir=os.path.dirname(FW))
+        work = scratch_dir.make("build-check-dirty")
         probs = check_dirty_flag(work)
         if probs:
             print("\nFAIL -- %d problem(s):" % len(probs))
@@ -1301,7 +1303,7 @@ def main():
         envs = [e for e in a.envs.split(",") if e] or environments()
         # OUTSIDE the firmware tree: a work folder inside it (the first
         # version used test/) makes copytree copy the copies into themselves
-        work = tempfile.mkdtemp(prefix="repro_", dir=os.path.dirname(FW))
+        work = scratch_dir.make("build-check-reproducible")
         probs = check_reproducible(envs, work,
                                    keep_bins=a.keep_bins or None)
         if probs:
