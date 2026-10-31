@@ -53,13 +53,18 @@ Nothing from reverse-it is committed here unless it passes the pre-push check.
 
 `canbench`, the package both projects use to detect and open real CAN
 adapters, comes from the can-tools repo, cloned once on each machine. Its
-path on this machine is in `$CAN_TOOLS_DIR` and in `local-paths.md`. Both
-projects resolve it the same way: no default, and refused if it is unset or
-holds no `canbench/`. They load `canbench` from `$CAN_TOOLS_DIR/canbench` and
-refuse one already imported from anywhere else, and they put neither the
-clone nor reverse-it on `sys.path` for it. reverse-it's `canbench/` mirror
-is never read. Setup, and the `.pth` file reverse-it's own scripts use, are
-in `$REVERSE_IT_DIR/tools-reference.md`, "can-tools" (user, 2026-10-30).
+path on this machine is in `$CAN_TOOLS_DIR` and in `local-paths.md`: no
+default, and refused if unset or if it holds no `canbench/`. Each project
+pins the can-tools commit it uses, as it pins `canre`, and owns its pin: it
+moves the pin without going through the methodology owner (user,
+2026-10-30). The project's pin tool (the interposer's `can_tools_pin.py
+install`) writes the pinned commit's `canbench/` out of the clone into
+`scratch/can-tools/<commit>/`, and the harness loads it from there by file.
+Neither that folder, the clone nor reverse-it goes on `sys.path` for it, and
+a `canbench` already imported from anywhere else is refused. reverse-it's
+`canbench/` mirror is never read. Setup, and the `.pth` file reverse-it's
+own scripts use, are in `$REVERSE_IT_DIR/tools-reference.md`, "can-tools"
+(user, 2026-10-30).
 
 ## Worktrees and branches
 
