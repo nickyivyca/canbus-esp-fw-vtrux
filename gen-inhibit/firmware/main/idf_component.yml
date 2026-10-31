@@ -6,11 +6,11 @@ dependencies:
   vtrux/wican:
     git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
     path: shared/wican
-    version: "2026.10.29"
+    version: "2026.10.30"
   vtrux/debug_logs:
     git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
     path: shared/debug_logs
-    version: "2026.10.29"
+    version: "2026.10.30"
   # The board (shared/boards SPEC B1 and B2): the one shared/boards/*
   # component, at the shared/main tag this project pins, from git, never
   # through override_path. sdkconfig names its partition table by this
@@ -18,7 +18,7 @@ dependencies:
   vtrux/wican_v3:
     git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
     path: shared/boards/wican_v3
-    version: "2026.10.29"
+    version: "2026.10.30"
   ## Required IDF version
   idf:
     version: ">=4.1.0"

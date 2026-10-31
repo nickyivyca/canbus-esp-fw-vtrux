@@ -2,6 +2,28 @@
 # CMakeLists in this exact order for cmake to work correctly
 cmake_minimum_required(VERSION 3.5)
 
+# LOG LEVELS (spec 12.3 item 3, shared/tools R28; port step 1a2). The committed
+# sdkconfig has the release levels: ESP-IDF default and maximum none,
+# bootloader error. Release and bench builds take it as it is. A test-only
+# build keeps info, so the rollback rehearsal reads its log lines: with any
+# test-only switch on (vtrux_checks.json), the build uses its own sdkconfig in
+# its build directory, layered from the committed sdkconfig and then
+# sdkconfig.log_info. It is deleted here at every configure and made afresh,
+# so it follows the committed file, and a menuconfig change to it does not
+# last. Release builds refuse an sdkconfig that is not committed (shared/tools
+# R8), so none takes this path. A dev build that wants info layers the same
+# two files on the command line (README.md). This must come before the
+# include below, which reads SDKCONFIG.
+if(OTA_HEALTH_FAULT_INJECT OR GI_TEST_RESTART_QUIESCE OR GI_INSTRUMENT_TXABORT
+   OR GI_INSTRUMENT_RXQ OR GI_INSTRUMENT_ABORTWIN)
+    set(SDKCONFIG "${CMAKE_BINARY_DIR}/sdkconfig")
+    set(SDKCONFIG_DEFAULTS
+        "${CMAKE_CURRENT_LIST_DIR}/sdkconfig;${CMAKE_CURRENT_LIST_DIR}/sdkconfig.log_info")
+    file(REMOVE "${SDKCONFIG}")
+    message(STATUS "test-only build: sdkconfig ${SDKCONFIG}, layered from "
+                   "sdkconfig and sdkconfig.log_info (info-level logging)")
+endif()
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
 # THE BOARD IS THE DEPENDENCY (shared/boards SPEC B1 and B2; port step 1a).

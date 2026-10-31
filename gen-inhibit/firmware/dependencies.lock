@@ -14,15 +14,15 @@ dependencies:
       type: idf
     version: 5.4.1
   vtrux/debug_logs:
-    component_hash: 94136f99e47d48b5824588d422deb057d9d66da0e8063efb324536f12895b041
+    component_hash: 4720f983a978f36005220c8d1c5df0e83843852bf0f740e65eebaab69bbefbe0
     dependencies: []
     source:
       git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
       path: shared/debug_logs
       type: git
-    version: 828ed934f19b3432f797bf3d07931bbb19900c01
+    version: 92364d6a3466fd65ba58142693dbe40209b79754
   vtrux/wican:
-    component_hash: 505b4a98c01c06df6c2590d383d3ae55981c5731236db4a2619c81d1e5ea749e
+    component_hash: 7302bd400d07724709d8e924b0231aad4e5caff5735e39f7f8aff48a6bd4db2a
     dependencies:
     - name: idf
       version: '>=5.4'
@@ -32,7 +32,7 @@ dependencies:
       git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
       path: shared/wican
       type: git
-    version: 828ed934f19b3432f797bf3d07931bbb19900c01
+    version: 92364d6a3466fd65ba58142693dbe40209b79754
   vtrux/wican_v3:
     component_hash: 2ba04687f11497e49841402b738361d961aa5f52b5e7571529e9e7f79e4c9fec
     dependencies:
@@ -44,12 +44,12 @@ dependencies:
       type: git
     targets:
     - esp32c3
-    version: 828ed934f19b3432f797bf3d07931bbb19900c01
+    version: 92364d6a3466fd65ba58142693dbe40209b79754
 direct_dependencies:
 - idf
 - vtrux/debug_logs
 - vtrux/wican
 - vtrux/wican_v3
-manifest_hash: 41b9f1e4da475a9c09e3ee66afcbffc68bda711cf0820c72ed6bc787aac0cf1d
+manifest_hash: b014f275eac14ec6f032b1df300f74c946e953902112165864efdb15fdd896f5
 target: esp32c3
 version: 2.0.0

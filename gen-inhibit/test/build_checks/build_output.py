@@ -731,6 +731,34 @@ def check_no_instrument(path):
         else "none of the %d instrument symbols are defined" % nsym)
 
 
+# The fault-injection hook (shared/wican W7): defined only in an OTA_HEALTH_FAULT_INJECT build.
+FAULT_HOOK_SYM = "ota_health_fault_inject_suppress"
+
+
+def elf_symbols_beside(path):
+    """(defined, None): the symbols nm says the ELF beside image `path` defines; or (None, why)
+    when there is no reference to judge by -- no ELF, no nm, nm failing, or nm listing nothing
+    (an empty list would make every absence row pass)."""
+    elf = os.path.splitext(path)[0] + ".elf"
+    if not os.path.exists(elf):
+        return None, "no ELF beside the image, so the symbol check has no reference"
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from elf_checks import find_nm
+    except ImportError as e:
+        return None, "cannot import elf_checks.find_nm (%s)" % e
+    exe = find_nm()
+    if exe is None:
+        return None, "no riscv32-esp-elf-nm found, so the symbol check has no reference"
+    r = subprocess.run((exe, "--defined-only", elf), capture_output=True, text=True)
+    if r.returncode != 0:
+        return None, "nm exited %d on %s" % (r.returncode, os.path.basename(elf))
+    defined = {ln.split()[-1] for ln in r.stdout.splitlines() if len(ln.split()) >= 3}
+    if not defined:
+        return None, "nm lists no defined symbol in %s" % os.path.basename(elf)
+    return defined, None
+
+
 def check_not_rollback_rehearsal(path):
     """This image must NOT be the rollback-rehearsal build.
 
@@ -754,34 +782,36 @@ def check_not_rollback_rehearsal(path):
     esp_app_desc.project_name on the device. But the name comes from a CMake
     variable and the behaviour from a preprocessor macro, so a macro reaching
     the compiler by some other route would produce a faulty image with an
-    innocent name. The format string is the check that cannot be fooled that
-    way: with the mask at 0 the `if (0 & bits)` body is dead code and the
-    string is not emitted at all, so its presence means the fault branch is
-    live in this image. Verified on the pair built that day -- the good image
-    does not contain it, the _flt image does.
+    innocent name. The content check is the one that cannot be fooled that way.
 
-    There is deliberately NO symbol check. `ota_health_report` is defined in
-    both builds and nothing on the fault path is a separate symbol, so a symbol
-    row here would pass on a faulty image -- the shape mutation M5 caught in
-    the instrument table, and the reason that table's comment singles out
-    `txab_trial`.
+    THE CONTENT CHECK IS THE HOOK'S SYMBOL, since port step 1a2 (gen-inhibit
+    reviewer, 2026-10-30, ruling 4). Until then it was the format string
+    "FAULT INJECT: suppressing report of", which the fault branch logs. At
+    release log levels (shared/tools R28) that log call compiles to nothing, so
+    a fault build at none carries no string -- measured on the 2026.10.30 tree:
+    absent with the switch on at none, present at info -- and the row passed
+    on exactly the image it exists to refuse: the macro reaching the compiler
+    without the CMake plumbing, which is also what brings in info level. The
+    hook is now its own out-of-line function, `ota_health_fault_inject_suppress`
+    (shared/wican W7, user's choice 4121019), defined only with the switch on:
+    present on at none and at info, absent off. Until then there was
+    deliberately no symbol row, because `ota_health_report` is in both builds
+    and nothing on the fault path was a separate symbol (the shape mutation M5
+    caught in the instrument table). The symbol is read with nm from the ELF
+    beside the image, as the restart-test row reads its symbols.
     """
-    try:
-        img = open(path, "rb").read()
-    except OSError as e:
-        row("no OTA fault injection in the image", None,
-            "cannot read %s (%s)" % (os.path.basename(path), e),
-            ref_missing=True)
-        return
-
-    marker = b"FAULT INJECT: suppressing report of"
-    has_marker = marker in img
-    row("no OTA fault injection in the image", not has_marker,
-        ("image carries %r -- built with OTA_HEALTH_FAULT_INJECT, so it fails "
-         "its health gate and rolls back on every boot; never flash this to "
-         "the truck" % marker.decode("ascii")) if has_marker
-        else "the fault-injection format string is absent, so that branch is "
-             "dead code in this image")
+    name = "no OTA fault injection in the image"
+    defined, why = elf_symbols_beside(path)
+    if defined is None:
+        row(name, None, why, ref_missing=True)
+    else:
+        hit = FAULT_HOOK_SYM in defined
+        row(name, not hit,
+            ("ELF defines %s -- built with OTA_HEALTH_FAULT_INJECT, so it fails "
+             "its health gate and rolls back on every boot; never flash this to "
+             "the truck" % FAULT_HOOK_SYM) if hit
+            else "%s is not defined in the ELF, so the fault hook is not in this "
+                 "image" % FAULT_HOOK_SYM)
 
     d = app_desc(path)
     if d is None:
@@ -847,31 +877,10 @@ def check_no_restart_test(path):
         row("project name is not a restart test build", not rt,
             "project_name=%r%s" % (d[1], "  <-- the _rt suffix marks a restart test build" if rt else ""))
 
-    elf = os.path.splitext(path)[0] + ".elf"
-    if not os.path.exists(elf):
-        row("no restart test symbols in the ELF", None,
-            "no ELF beside the image, so the symbol check has no reference",
-            ref_missing=True)
+    defined, why = elf_symbols_beside(path)
+    if defined is None:
+        row("no restart test symbols in the ELF", None, why, ref_missing=True)
         return
-    try:
-        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-        from elf_checks import find_nm
-    except ImportError as e:
-        row("no restart test symbols in the ELF", None,
-            "cannot import elf_checks.find_nm (%s)" % e, ref_missing=True)
-        return
-    exe = find_nm()
-    if exe is None:
-        row("no restart test symbols in the ELF", None,
-            "no riscv32-esp-elf-nm found, so the symbol check has no reference",
-            ref_missing=True)
-        return
-    r = subprocess.run((exe, "--defined-only", elf), capture_output=True, text=True)
-    if r.returncode != 0:
-        row("no restart test symbols in the ELF", None,
-            "nm exited %d on %s" % (r.returncode, os.path.basename(elf)), ref_missing=True)
-        return
-    defined = {ln.split()[-1] for ln in r.stdout.splitlines() if len(ln.split()) >= 3}
     shits = [s for s in RESTART_TEST_SYMS if s in defined]
     row("no restart test symbols in the ELF", not shits,
         "ELF defines %s" % ", ".join(shits) if shits
