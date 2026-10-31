@@ -53,8 +53,13 @@ readings of gen-inhibit's code below are of `gen-inhibit/main` at `0b03841`,
   inherits them when it takes this component in its stage (b).
 - **Status:** complete.
 
-### W3. The CAN functions are the project's, until `can_port`
-- **Basis:** user, 2026-10-29, in the gen-inhibit reviewer's session.
+### W3. The CAN functions are `can_port`'s
+- **Since port step 1b** (user, 2026-10-31, in the gen-inhibit reviewer's
+  session): `vtrux/can_port` implements the stock calls on port 0
+  (`shared/can_port` C3), with today's behaviour; the project no longer
+  supplies them.
+- **Until then, the basis was:** user, 2026-10-29, in the gen-inhibit
+  reviewer's session.
   Port step 1b replaces `can.c` with `twai_port` and `can_port`; moving it
   at 1a would move it twice and add hooks 1b removes.
 - **Reading:** stock files that call `can.c`: `slcan.c`, `elm327.c`,
