@@ -34,7 +34,7 @@ records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 | `firmware/platformio.ini`, `firmware/build_name.py`, `firmware/build_identity.py`, `firmware/manifest.py`, `firmware/reproducible.py`, `firmware/builds/` | The build; it writes `firmware/builds/manifest.json` | Implementor |
 | `firmware/README.md` | The firmware's README | Implementor |
 | `firmware/test/host_unit/` | Unit tests of the core's internals | Implementor |
-| `firmware/manifest_test.py` | Tests `manifest.py`'s refusal of a row whose git state is dirty or unreadable | Implementor |
+| `firmware/manifest_test.py` | Tests `manifest.py`'s refusal of a row whose git state is dirty or unreadable; its throwaway trees go under `scratch/charge-interposer-manifest-test/` and are removed read-only files included (AGENTS.md, "Removing scratch"), which it also checks | Implementor |
 | `firmware/manifest_offline_test.py` | Offline test for `manifest.py`'s row-identity rule | Implementor |
 | `.gitattributes`, `.gitignore` | Line endings and ignores for the folder | Implementor |
 | `SIMULATOR.md` | The simulation bench write-up | Implementor |
