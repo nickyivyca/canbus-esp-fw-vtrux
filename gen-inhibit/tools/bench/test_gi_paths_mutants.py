@@ -37,7 +37,8 @@ MUTANTS = [
     ("the tree digest skips added names", '            lines.append("%s %s" % (r, sha256_file(p)))',
      '            lines.append(sha256_file(p))\n            lines.sort()'),
     # scratch folders (harness-defects row, 2026-10-24)
-    ("scratch has no per-run part", '    if run:\n        d = os.path.join(d, "%s_%d"', '    if False:\n        d = os.path.join(d, "%s_%d"'),
+    ("scratch has no per-run part", '        d = os.path.join(d, "%s_%d" % (time.strftime("%Y%m%dT%H%M%S"), os.getpid()))\n',
+     '        d = d\n'),
     ("scratch in the system temp folder",
      '    d = os.path.join(worktree_of(start or HERE), "scratch", "gen-inhibit-tests", name)',
      '    d = os.path.join(os.environ.get("TEMP") or "/tmp", "gen-inhibit-tests", name)'),
