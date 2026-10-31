@@ -1,8 +1,9 @@
 # Shared TWAI port: specification
 
 **Status:** approved by the user on 2026-10-31, in the gen-inhibit
-reviewer's session (T2's three modes and T7's `tx_refused` the same day, on
-the implementor's questions), and drafted that day by the gen-inhibit reviewer for
+reviewer's session (T2's three modes, T7's `tx_refused` and its count of
+flushed frames the same day, on the implementor's and the charge-interposer
+reviewer's questions), and drafted that day by the gen-inhibit reviewer for
 gen-inhibit's port step 1b, after the charge-interposer reviewer's read. As
 a shared component's spec this follows port plan goal 20: the reviewer whose
 project needs a change drafts it, the user rules in that reviewer's session,
@@ -88,6 +89,8 @@ Requirements are numbered T1 to T11. The numbers are stable.
   - frames queued for transmission that bus-off recovery discards, read
     before recovery starts;
   - frames in the TX and in the RX queue that a teardown discards (T4);
+  - frames waiting to be received that a flush discards, read just before
+    the flush: a deliberate discard, not a loss;
   - the RX queue's high-water mark.
 
   The counters carry across a reinstall as deltas, so they never go
