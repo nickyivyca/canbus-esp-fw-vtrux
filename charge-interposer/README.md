@@ -48,7 +48,7 @@ records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 | `canre_pin.py`, `canre_pin_test.py` | Install and check the pinned canre (`scratch/canre/<commit>`; `CANRE_DIR` on madhouse), and its test | Tester |
 | `can_tools_pin.py`, `can_tools_pin_test.py` | Install and check the pinned can-tools `canbench/` (`scratch/can-tools/<commit>`, from the `CAN_TOOLS_DIR` clone), and its test | Tester |
 | `scratch_dir.py`, `scratch_dir_test.py` | The harness's throwaway run folders under `scratch/charge-interposer-harness/<tool>/`, each with an owner file, pruned when finished and removed read-only files and long paths included (AGENTS.md, "Removing scratch"); its `sweep` reports old folders before any `--apply`; and its test | Tester |
-| `scratch_dir_check.py` | Runs each harness entry point that makes run folders with a read-only git tree planted in them, and with the read-only handler taken out, and checks nothing is left or the leftover is reported | Tester |
+| `scratch_dir_check.py` | Runs each harness entry point that makes run folders with a read-only git tree planted in them, and with the read-only handler taken out, and checks nothing is left or the leftover is reported, judged after the process exits; `--self-check` proves it on removal in a `finally`, at exit, and none | Tester |
 | `vehicle_sim.py` | VCU, A123 BMS and the VCM's evap flag (0x649), as a model or a capture replay | Tester |
 | `charger_sim.py` | Bel Fuse charger/inverter, with fault injection | Tester |
 | `interposer_sim.py` | The board as a process: I/O only; the logic is `machine.py` | Tester |
