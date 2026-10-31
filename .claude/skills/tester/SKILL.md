@@ -62,13 +62,17 @@ than trusting the log or the file. Follow the process-cleanup rules in
   that work and the reviewer message it is in, and says to start on it. If
   it says to wait, for a build message or for another session, the resume
   message names what you are waiting for and where that is written, and
-  says to wait for it.
+  says to wait for it. If you are only waiting, for the next batch or the
+  reviewer's reply, and that is written in your working log, you may use
+  `--compact-only` instead. When in doubt, resume (the skill's "Resume or
+  compact-only").
 
 At either point you may run `/self-compact`. Not while you are driving
 hardware steps by hand, not while you hold a bench lock you took by hand,
 not with uncommitted harness changes, and not with a question to the
 reviewer open, unless it is written in your working log, with what each
-answer would change, and the resume message names it as awaited. A lock
+answer would change, and the resume message, or with `--compact-only` the
+compact message, names it as awaited. A lock
 that a background runner holds itself doesn't count. If you are about to
 take the lock by hand, compact first and take it after the resume.
 
@@ -77,7 +81,10 @@ context"), that is a compaction point too, whatever state you are in: an
 hour idle means no work is in progress. Before it, write in your working log
 what is uncommitted, any question to the reviewer still open, and any run or
 bench lock you hold, with its task id. The resume message names what you
-were waiting for. The compaction does not release the bench lock. At any
+were waiting for. If you are only waiting, for the next batch or the
+reviewer's reply, and that is written in your working log, you may use
+`--compact-only` instead. When in doubt, resume (the skill's "Resume or
+compact-only"). The compaction does not release the bench lock. At any
 other time, only when the user asks.
 
 **Starting up:** check that you are in your worktree, on a
