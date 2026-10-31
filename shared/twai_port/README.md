@@ -21,6 +21,8 @@ code to test.
 | `twai_port_ll_unsupported.c` | T8 on any other chip: both report unsupported |
 | `CMakeLists.txt`, `idf_component.yml` | the component: the register file by target, and the project's one board component, found as `vtrux/wican` finds it |
 | `unit/` | the port's unit tests and their scripted stub (`unit/README.md`) |
+| `test/` | the one host fake of the TWAI driver (T10), its own tests, and the real port built on it (`test/README.md`) |
+| `vtrux_checks.json` | the component's build-switch table (`shared/tools` R20) |
 
 A project takes it from git at its pinned `shared/main` tag, with
 `vtrux/can_port` and its board, fills a `twai_port_config_t`, calls
@@ -36,5 +38,6 @@ port index, all before `wican_init()`.
 | `unit/`'s scripted stub of the driver API | part of the unit tests: each case sets the driver's returns and checks the port's calls; it models no controller behaviour (no states, alerts or arbitration of its own) | the implementor, as the unit tests (gen-inhibit reviewer, 2026-10-31) |
 | `test/`'s fake of the TWAI driver | T10: what the controller does, in its states, recovery and per-chip behaviour | the tester of the project that needs the change (user, 2026-10-31, in both reviewers' sessions) |
 | `VERIFICATION.md` | test evidence | the tester |
+| `vtrux_checks.json` | the component's build-switch table (`shared/tools` R20) | the tester of the project that needs the change |
 </content>
 </invoke>
