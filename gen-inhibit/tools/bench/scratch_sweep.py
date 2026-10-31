@@ -30,6 +30,7 @@ left: not this sweep's to judge.
                                                   # each judged again just before
 """
 import argparse
+import io
 import os
 import re
 import subprocess
@@ -196,23 +197,30 @@ def main(argv=None):
     for o in outs:
         report(results, quiet_s, o)
     if a.apply:
-        removed = failed = changed = 0
+        removed, failed, changed = [], [], []       # (path, files, bytes); (path, why); (path, why)
         for wt, (runs, _, _) in results:
-            for rel, verdict, _, _, _ in runs or []:
+            for rel, verdict, _, files, size in runs or []:
                 if verdict != "REMOVE":
                     continue
                 p = os.path.normpath(os.path.join(wt, "scratch", rel))
-                if judge(p, time.time(), quiet_s)[0] != "REMOVE":
-                    changed += 1
+                again, why = judge(p, time.time(), quiet_s)
+                if again != "REMOVE":
+                    changed.append((p, why))
                     continue
-                if gi_paths.remove_tree(p):
+                buf = io.StringIO()
+                if gi_paths.remove_tree(p, out=buf):
                     gi_paths._remove_owner(p)
-                    removed += 1
+                    removed.append((p, files, size))
                 else:
-                    failed += 1
+                    failed.append((p, buf.getvalue().strip()))
         for o in outs:
-            print("\napplied: %d removed, %d could not be removed (above), %d judged again and left"
-                  % (removed, failed, changed), file=o)
+            print("\napplied: %d removed (%d files, %s), %d could not be removed, %d judged again and left"
+                  % (len(removed), sum(r[1] for r in removed), mb(sum(r[2] for r in removed)), len(failed),
+                     len(changed)), file=o)
+            for p, why in failed:
+                print("  NOT REMOVED %s" % why.replace("\n", "\n    "), file=o)
+            for p, why in changed:
+                print("  LEFT %s  [judged again: %s]" % (p, why), file=o)
     for o in outs[1:]:
         o.close()
     return 0
