@@ -10,8 +10,8 @@ overtaken by what actually happened.
 
 | | |
 |---|---|
-| What happened on the truck, and what is still open | [`../../notes/gen-inhibit-truck-tests.md`](../../notes/gen-inhibit-truck-tests.md) |
-| How the tool works, the procedure, reading the verdict | [`README.md`](README.md) — see **On the truck** |
+| What happened on the truck, and what is still open | `$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-truck-tests.md` |
+| How the tool works, the rules for a field run and their reasoning, reading the verdict | [`README.md`](README.md) — see **On the truck** |
 
 ## What it got wrong, kept because it is instructive
 
