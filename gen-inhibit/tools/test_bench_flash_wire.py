@@ -33,6 +33,16 @@ def check(label, fn, detail=""):
         FAILS.append(label)
 
 
+def line_of(s):
+    """W.wire_line(s) for a check's detail or a line read by several checks: both are worked out
+    outside the check, so a crash there reads as its text, failing the checks that read it,
+    instead of ending the test (bench_flash_wire mutant m18, 2026-10-30)."""
+    try:
+        return W.wire_line(s)
+    except Exception as e:      # noqa: BLE001
+        return "%s: %s" % (type(e).__name__, e)
+
+
 def pkt(t, src, stream, ack=0, win=0, ln=0, syn=False, ackf=True, fin=False, rst=False, payload=b""):
     return {"t": t, "src": src, "stream": stream, "syn": syn, "ackf": ackf, "fin": fin, "rst": rst,
             "ack": ack, "win": win, "len": ln or len(payload), "payload": payload.hex()}
@@ -90,7 +100,7 @@ def main():
           lambda: abs(s["longest_gap_s"] - 5.3) < 1e-6 and s["gap_after_ack"] == 10000 and abs(s["gap_at_s"] - 0.8) < 1e-6, s)
     check("the upload's end and the device's first reply data, from the SYN",
           lambda: abs(s["upload_end_s"] - 16.49) < 1e-6 and abs(s["device_data_s"] - 112.69) < 1e-6, s)
-    line = W.wire_line(s)
+    line = line_of(s)
     check("the line: stopped reading, with the numbers",
           lambda: line.startswith("wire: the device ACKed 20390 bytes (highest ack 20391)")
           and "advertised 90 bytes, under one 1440-byte segment: the device stopped reading (window closed)" in line
@@ -102,7 +112,7 @@ def main():
     s = W.wire_summary(link_lost(), DEV, T_START, 116.69)
     check("an open window at the last ACK is the link lost",
           lambda: not s["window_closed"] and "the ACKs stopped with the window open (link lost)" in W.wire_line(s),
-          W.wire_line(s))
+          line_of(s))
     for win, closed in ((1440, False), (1439, True)):
         rows = link_lost()
         rows[-1]["win"] = win
@@ -124,16 +134,16 @@ def main():
                 pkt(100.6, DEV, 3, ack=last_ack, win=5760)]
         return rows + ([pkt(100.7, DEV, 3, ack=last_ack, win=5760, payload=status)] if status else [])
     s = W.wire_summary(small(1 + len(h2) + 2000), DEV, T_START, 101.0)
-    line = W.wire_line(s)
+    line = line_of(s)
     check("the whole request ACKed: its own label, with the device's answer",
           lambda: s["whole_acked"] and ("the whole %d-byte request: whole upload acknowledged; device answered HTTP 403"
                                         % (len(h2) + 2000)) in line and "link lost" not in line, line)
     s = W.wire_summary(small(1 + len(h2) + 1990), DEV, T_START, 101.0)
     check("10 bytes short of the whole request is not the whole upload: link lost",
-          lambda: not s["whole_acked"] and "(link lost)" in W.wire_line(s), W.wire_line(s))
+          lambda: not s["whole_acked"] and "(link lost)" in W.wire_line(s), line_of(s))
     s = W.wire_summary(small(1 + len(h2) + 2000, status=None), DEV, T_START, 101.0)
     check("the whole request ACKed and no reply on the wire is said so",
-          lambda: "device answered nothing with a status on the wire" in W.wire_line(s), W.wire_line(s))
+          lambda: "device answered nothing with a status on the wire" in W.wire_line(s), line_of(s))
     check("request_size: no Content-Length, or the header cut short, is unknown",
           lambda: W.request_size(b"POST / HTTP/1.1\r\nHost: x\r\n\r\n") is None
           and W.request_size(HDR[:30]) is None and W.request_size(HDR) == len(HDR) + 1113226)
@@ -144,15 +154,15 @@ def main():
     s = W.wire_summary(rows, DEV, T_START, 116.69)
     check("no SYN in the capture: times from the upload's start, and the line says so",
           lambda: not s["from_syn"] and abs(s["last_ack_s"] - 3.0) < 1e-6
-          and "after the upload's start" in W.wire_line(s), W.wire_line(s))
+          and "after the upload's start" in W.wire_line(s), line_of(s))
     rows = link_lost() + [pkt(103.5, DEV, 3, ack=14401, win=0, rst=True)]
     s = W.wire_summary(rows, DEV, T_START, 116.69)
     check("an RST is named by who sent it, and is not an ACK",
           lambda: s["rst_from"] == ["device"] and s["device_acks"] == 3 and W.wire_line(s).endswith("RST from the device"),
-          W.wire_line(s))
+          line_of(s))
     rows = [pkt(SYN, LAP, 3, syn=True, ackf=False), pkt(100.3, LAP, 3, ln=1440)]
     s = W.wire_summary(rows, DEV, T_START, 105.0)
-    check("no device ACK at all is said so", lambda: W.wire_line(s).startswith("wire: the device sent no ACK"), W.wire_line(s))
+    check("no device ACK at all is said so", lambda: W.wire_line(s).startswith("wire: the device sent no ACK"), line_of(s))
     check("no upload in the capture is said so",
           lambda: W.wire_line(W.wire_summary([], DEV, T_START, 105.0)) == "wire: no upload connection in the capture")
     rows = link_lost() + [pkt(100.0 + 0.1 * k, LAP, 5, ln=1) for k in range(60)]
@@ -161,7 +171,7 @@ def main():
     s = W.wire_summary([pkt(SYN, LAP, 3, syn=True, ackf=False), pkt(100.3, LAP, 3, ln=1440),
                         pkt(100.4, DEV, 3, ack=1441, win=5760)], DEV, T_START, 105.0)
     check("one ACK: no gap, and the line says so", lambda: s["longest_gap_s"] is None
-          and "longest gap between device ACKs none (one ACK)" in W.wire_line(s), W.wire_line(s))
+          and "longest gap between device ACKs none (one ACK)" in W.wire_line(s), line_of(s))
 
     # -- parsing ---------------------------------------------------------------------
     text = ("1760000000.5\t%s\t3\t0\t1\t0\t0\t20391\t90\t0\n"
