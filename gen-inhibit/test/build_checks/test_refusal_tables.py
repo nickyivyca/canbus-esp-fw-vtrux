@@ -8,6 +8,10 @@ proof must take its switches from the project's table and every shared component
 read from the copies the --off image's build downloaded. Otherwise the stock features
 would drop out of the proof with nothing failing.
 
+Since 2026-10-30 (known anomaly 8) it also tests the tables' own rules: table_rules(),
+which collects each switch's rules from every table that lists it, and
+judge_table_rule(), which judges one on an image's facts, on made-up facts.
+
     python3 test_refusal_tables.py
 """
 import json
@@ -78,6 +82,55 @@ def main():
     got, problems = P.table_switches(OFF)
     checks.append(("a component vtrux_build.json does not name is not read", "WICAN_FEATURE_X" not in got
                    and not problems, (sorted(got), problems)))
+
+    # the tables' own rules (known anomaly 8, 2026-10-30)
+    tabs = [("project table", {"A_TEST": (BS.TEST, None, "r", [{"bin_strings_absent": ["AAA"]}]),
+                               "BOTH": (BS.TEST, None, "r", [{"elf_symbols_absent": ["both_fn"]}]),
+                               "NOPE": (BS.NOT, "default value", "r", None)}),
+            ("vtrux/wican table", {"BOTH": (BS.TEST, None, "r", [{"bin_strings_absent": ["BOTH"]},
+                                                                  {"project_row": "row b"}]),
+                                   "BARE": (BS.STOCK, None, "r", [])})]
+    r = P.table_rules(tabs)
+    checks.append(("a switch listed by two tables gets both tables' rules",
+                   [(l, P.rule_label(x)) for l, x in r.get("BOTH", [])] ==
+                   [("project table", "elf_symbols_absent both_fn"), ("vtrux/wican table", "bin_strings_absent BOTH"),
+                    ("vtrux/wican table", "project_row row b")], r.get("BOTH")))
+    checks.append(("a 'not a switch' entry has no rules to prove", "NOPE" not in r, sorted(r)))
+    checks.append(("a stock feature with no rules gets a None rule (so it fails)", r.get("BARE") ==
+                   [("vtrux/wican table", None)], r.get("BARE")))
+    on = (b"..AAA..BOTH..", {"both_fn", "x"}, "gen-inhibit")
+    off = (b"........", {"x"}, "gen-inhibit")
+    J = P.judge_table_rule
+    for rule, what in (({"bin_strings_absent": ["AAA"]}, "a string rule"),
+                       ({"elf_symbols_absent": ["both_fn"]}, "a symbol rule")):
+        checks.append(("%s fails on the ON image and passes on OFF" % what,
+                       J(rule, on, {}, False)[0] and J(rule, off, {}, True)[0], (J(rule, on, {}, False))))
+        checks.append(("%s passing on the ON image is caught" % what, not J(rule, off, {}, False)[0], ""))
+        checks.append(("%s failing on OFF is caught" % what, not J(rule, on, {}, True)[0], ""))
+    checks.append(("no image is no pass either way", not J({"bin_strings_absent": ["AAA"]}, (None, None, None),
+                                                          {}, True)[0]
+                   and not J({"bin_strings_absent": ["AAA"]}, (None, None, None), {}, False)[0], ""))
+    checks.append(("no ELF symbols is no pass either way", not J({"elf_symbols_absent": ["both_fn"]},
+                                                                (b"", None, "p"), {}, True)[0]
+                   and not J({"elf_symbols_absent": ["both_fn"]}, (b"", None, "p"), {}, False)[0], ""))
+    pr = {"project_row": "row b"}
+    checks.append(("a project_row rule fails on ON only if its row was produced FAILING",
+                   J(pr, on, {"row b": False}, False)[0] and not J(pr, on, {"row b": True}, False)[0]
+                   and not J(pr, on, {}, False)[0], ""))
+    checks.append(("a project_row rule passes on OFF only if its row was produced passing",
+                   J(pr, off, {"row b": True}, True)[0] and not J(pr, off, {}, True)[0], ""))
+    checks.append(("no rule, or a malformed one, is no pass either way",
+                   not any(J(x, on, {}, w)[0] for x in (None, {}, {"a": 1, "b": 2}) for w in (True, False)), ""))
+    checks.append(("WICAN_SLCAN_COMMANDS is proved by its table rule alone",
+                   P.ROWS.get("WICAN_SLCAN_COMMANDS", (0,))[0] is None, P.ROWS.get("WICAN_SLCAN_COMMANDS")))
+    # main() runs every --on and --control switch's row function through run(); the first
+    # post-port run (2026-10-31) crashed on SLCAN's None there, before any check.
+    try:
+        got, why = P.run(None, OFF), ""
+    except Exception as e:      # noqa: BLE001  a crash here is the failure this checks for
+        got, why = None, "%s: %s" % (type(e).__name__, e)
+    checks.append(("run() with no row function (a table-rule-only switch) gives no rows, not a crash",
+                   got == {}, why or got))
 
     shutil.rmtree(TMP, ignore_errors=True)
     fails = 0

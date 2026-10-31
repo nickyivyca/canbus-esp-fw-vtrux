@@ -73,8 +73,10 @@ MUTANTS += [
     ("r05_no_build_file_accepted", "test_refusal_pairs.py",
      "    if not shared:\n        problems.append(", "    if False:\n        problems.append(", RT),
     ("r06_project_table_dropped", "test_refusal_pairs.py",
-     "    out = {s: e[0] for s, e in BS.SWITCHES.items() if e[0] in (BS.TEST, BS.STOCK)}",
-     "    out = {}", RT),
+     # the project's table left out of tables(), which table_switches() and the table-rule
+     # stage both read (re-pointed 2026-10-31: e99236e moved the line from table_switches())
+     "    out = [(\"project table\", BS.SWITCHES)]",
+     "    out = []", RT),
 ]
 TABLE_MUTANTS = [
     # the project's table as before the change: the stock switches are back in it

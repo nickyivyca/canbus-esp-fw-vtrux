@@ -9,6 +9,12 @@ Gen-inhibit tester, 2026-10-16 (adds the stock features and the AutoPID control)
 Images are <tree>/build-tester-<name>/wican-fw_obd_<sha>_man[_rt|_flt].bin, the
 names baseline_builds.ps1 gives them. The no-ELF control copies the product image
 alone into the worktree's scratch/.
+
+Since 2026-10-30 (known anomaly 8) the run also proves test_refusal_pairs.py's
+table-rule stage, each switch's own table rules, with five more negatives: the product
+image as SLCAN's ON and the SLCAN image as OFF (vtrux/wican's table's rule), the
+product image as RXQ's ON (a project-table rule), the product image as RealDash's ON
+(a project_row rule) and AutoPID's own image as its control.
 """
 import argparse
 import glob
@@ -22,7 +28,8 @@ FW = os.environ.get("GI_FW") or gi_paths.project_root()   # a project folder (ge
 PAIRS = os.path.join(FW, "test", "build_checks", "test_refusal_pairs.py")
 ON = {"GI_TEST_RESTART_QUIESCE": "rt", "GI_INSTRUMENT_RXQ": "rxq", "GI_INSTRUMENT_TXABORT": "txabort",
       "GI_INSTRUMENT_ABORTWIN": "abortwin", "OTA_HEALTH_FAULT_INJECT": "flt", "WICAN_FEATURE_MQTT": "fmqtt",
-      "WICAN_FEATURE_ELM327": "felm", "WICAN_FEATURE_AUTOPID": "fautopid", "WICAN_FEATURE_REALDASH": "frealdash"}
+      "WICAN_FEATURE_ELM327": "felm", "WICAN_FEATURE_AUTOPID": "fautopid", "WICAN_FEATURE_REALDASH": "frealdash",
+      "WICAN_SLCAN_COMMANDS": "fslcan"}     # vtrux/wican's table's (known anomaly 8, 2026-10-30)
 CONTROL = {"WICAN_FEATURE_AUTOPID": "fmqttelm"}
 AP = "WICAN_FEATURE_AUTOPID"
 
@@ -83,6 +90,17 @@ def main():
         ("a stock feature left out (RealDash)", argv(t, drop=("WICAN_FEATURE_REALDASH",)),
          "every test-only switch and stock feature has an ON image"),
         ("an image without its ELF as OFF", argv(t, off=noelf_bin), "OFF: 'no MQTT feature in the ELF' passes"),
+        # the tables' own rules (known anomaly 8, 2026-10-30)
+        ("the product image as SLCAN's ON", argv(t, on={"WICAN_SLCAN_COMMANDS": "man"}),
+         "WICAN_SLCAN_COMMANDS ON: vtrux/wican table rule elf_symbols_absent slcan_parse_str fails"),
+        ("the SLCAN image as OFF", argv(t, off="fslcan"),
+         "OFF: WICAN_SLCAN_COMMANDS vtrux/wican table rule elf_symbols_absent slcan_parse_str passes"),
+        ("the product image as RXQ's ON (a project-table rule)", argv(t, on={"GI_INSTRUMENT_RXQ": "man"}),
+         "GI_INSTRUMENT_RXQ ON: project table rule elf_symbols_absent"),
+        ("the product image as RealDash's ON (a project_row rule)", argv(t, on={"WICAN_FEATURE_REALDASH": "man"}),
+         "WICAN_FEATURE_REALDASH ON: vtrux/wican table rule project_row no boot-time bus enable at start-up fails"),
+        ("AutoPID's own ON image as its control (its table rules)", argv(t, control={AP: "fautopid"}),
+         "WICAN_FEATURE_AUTOPID CONTROL: vtrux/wican table rule"),
     ]
     out = ["test_refusal_pairs.py on %s, tree %s (names relative to it)" % (args.sha, os.path.basename(t)), ""]
     code, text = run(argv(t))
