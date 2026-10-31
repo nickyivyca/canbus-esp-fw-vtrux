@@ -46,57 +46,30 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 
 
-def can_tools_dir(environ=None):
-    """The can-tools clone, from CAN_TOOLS_DIR: --interface auto finds the
-    dongle with its canbench (AGENTS.md, "can-tools", user 2026-10-30). No
-    default, and refused if unset or if the folder holds no canbench/.
+def import_canbench():
+    """canbench for --interface auto, at the can-tools commit gen-inhibit
+    pins (AGENTS.md, "can-tools", user 2026-10-30): can_tools_pin.use()
+    loads it by file from scratch/can-tools/<commit>/, which
+    `can_tools_pin.py install` writes out of the CAN_TOOLS_DIR clone, and
+    puts nothing on sys.path. Any refusal of its checks (CAN_TOOLS_DIR unset,
+    the pin not installed, a copy that is not the pin's, a canbench already
+    imported from elsewhere) ends the run here.
 
-    Until 2026-10-30 this was reverse_it_dir(), which put SeaDrive's reverse-it
-    root on sys.path[0] and imported the canbench mirror there. That mirror is
-    being retired and is never read now. Only --interface auto calls this, so
-    the other interfaces need no setting.
+    Until 2026-10-30 this loaded $CAN_TOOLS_DIR/canbench itself, and before
+    that it put SeaDrive's reverse-it root on sys.path[0] for the canbench
+    mirror there, which is never read now. Only --interface auto calls it,
+    so the other interfaces need no setting.
     """
-    environ = os.environ if environ is None else environ
-    v = environ.get("CAN_TOOLS_DIR", "").strip()
-    if not v:
-        raise SystemExit(
-            "vehicle_runner: --interface auto needs CAN_TOOLS_DIR, the can-tools "
-            "clone on this machine (the folder holding canbench/), for "
-            "canbench's interface detection. Set it, or name the interface "
-            "with --interface.")
-    v = os.path.normpath(v)
-    if not os.path.isfile(os.path.join(v, "canbench", "__init__.py")):
-        raise SystemExit("vehicle_runner: CAN_TOOLS_DIR=%s holds no canbench/"
-                         % v)
-    return v
-
-
-def import_canbench(environ=None):
-    """canbench from $CAN_TOOLS_DIR/canbench, loaded by file. Neither the clone
-    nor reverse-it goes on sys.path for it, so no other canbench on the path
-    (reverse-it's mirror, a .pth entry) can stand in for it, and one already
-    imported from anywhere else is refused."""
-    import importlib.util
-    d = os.path.join(can_tools_dir(environ), "canbench")
-    init = os.path.join(d, "__init__.py")
-    have = sys.modules.get("canbench")
-    if have is not None:
-        f = getattr(have, "__file__", None)
-        if not f or (os.path.normcase(os.path.normpath(f))
-                     != os.path.normcase(init)):
-            raise SystemExit("vehicle_runner: canbench is already imported from "
-                             "%s, not %s (CAN_TOOLS_DIR)" % (f, d))
-        return have
-    spec = importlib.util.spec_from_file_location(
-        "canbench", init, submodule_search_locations=[d])
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["canbench"] = mod
+    import can_tools_pin
+    assert Path(can_tools_pin.__file__).resolve().parent == _HERE.resolve(), (
+        "can_tools_pin resolved to %s, not the copy beside vehicle_runner.py"
+        % can_tools_pin.__file__)
     try:
-        spec.loader.exec_module(mod)
-    except BaseException:
-        del sys.modules["canbench"]
-        raise
-    return mod
+        return can_tools_pin.use()
+    except can_tools_pin.CanToolsPinError as e:
+        raise SystemExit("vehicle_runner: --interface auto needs canbench at "
+                         "the pinned can-tools commit (or name the interface "
+                         "with --interface): %s" % e)
 
 
 sys.path.insert(0, str(_HERE))

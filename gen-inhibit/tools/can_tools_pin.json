@@ -1,0 +1,7 @@
+{
+  "_comment": "can-tools, whose canbench/ is the CAN adapter package vehicle_runner.py's --interface auto uses, at one commit (AGENTS.md, \"can-tools\"; user, 2026-10-30: each project pins its own can-tools and moves the pin itself). can_tools_pin.py writes that commit's canbench/ out of the CAN_TOOLS_DIR clone into the worktree's scratch/can-tools/<commit>/ and refuses any other canbench.",
+  "can-tools": {
+    "repo": "https://github.com/nickyivyca/can-tools",
+    "commit": "14f8ee60d0a5b004755a9b45a852593d313b76ab"
+  }
+}

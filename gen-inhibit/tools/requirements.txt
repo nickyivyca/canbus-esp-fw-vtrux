@@ -7,8 +7,9 @@
 python-can>=4.0
 
 # Real-dongle auto-detection (--interface auto) goes through
-# canbench.live.receiver, from the can-tools clone that CAN_TOOLS_DIR names
-# (its own requirements.txt lists what it needs). Some brands need extra
+# canbench.live.receiver, at the can-tools commit can_tools_pin.json pins,
+# written out of the CAN_TOOLS_DIR clone by can_tools_pin.py install (the
+# clone's own requirements.txt lists what it needs). Some brands need extra
 # system-level drivers rather than Python packages:
 #   kvaser    Kvaser CANlib
 #   pcan      PEAK PCAN-Basic / kernel module
