@@ -244,7 +244,12 @@ def remove_tree(path, out=None):
                 exc = e
         failed.append((p, exc))
     if os.path.isdir(lp) and not os.path.islink(lp) and not getattr(os.path, "isjunction", lambda _: False)(lp):
-        shutil.rmtree(lp, onexc=again)
+        try:
+            shutil.rmtree(lp, onexc=again)
+        except TypeError as e:          # Python < 3.12 (WSL's 3.10) has onerror, given (type, value, tb)
+            if "onexc" not in str(e):
+                raise
+            shutil.rmtree(lp, onerror=lambda fn, p, ei: again(fn, p, ei[1]))
     else:
         try:
             os.remove(lp)
