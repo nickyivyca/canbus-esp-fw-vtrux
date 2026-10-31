@@ -13,6 +13,9 @@ worktree's scratch/, applies one edit, and runs the test from the current folder
 with this folder on PYTHONPATH for everything else. An edit that
 does not apply is an error, not a kill. Added 2026-10-16 with the fix: with
 the WiCAN's USB unplugged, --reset-wican reset nothing and said nothing.
+
+A kill is a FAIL line with no traceback: a crash is not a kill. The unmutated copy runs
+first, as the control (2026-10-30): if it fails, no mutant is judged and the run exits 1.
 """
 import os
 import shutil
@@ -76,29 +79,40 @@ def main():
     root = os.getcwd()
     base = gi_paths.scratch("mutants-x2_jam_reset_mutants")   # the worktree's scratch/ (AGENTS.md)
     killed = errors = 0
-    for i, (name, old, new) in enumerate(MUTANTS, 1):
+    for i, (name, old, new) in enumerate([("the control: the unmutated copy", None, None)] + MUTANTS):
         d = os.path.join(base, "m%d" % i)
         shutil.rmtree(d, ignore_errors=True)
         os.makedirs(d)
         src = open(os.path.join(HERE, SRC), encoding="utf-8", newline="").read()
         nl = "\r\n" if "\r\n" in src else "\n"
-        o, n = old.replace("\n", nl), new.replace("\n", nl)
-        if src.count(o) != 1:
-            print("ERROR    m%d %s: edit matched %d times" % (i, name, src.count(o)))
-            errors += 1
-            continue
-        open(os.path.join(d, SRC), "w", encoding="utf-8", newline="").write(src.replace(o, n))
+        if old is not None:
+            o, n = old.replace("\n", nl), new.replace("\n", nl)
+            if src.count(o) != 1:
+                print("ERROR    m%d %s: edit matched %d times" % (i, name, src.count(o)))
+                errors += 1
+                continue
+        open(os.path.join(d, SRC), "w", encoding="utf-8", newline="").write(src if old is None else src.replace(o, n))
         shutil.copy(os.path.join(HERE, TEST), d)
         env = dict(os.environ, PYTHONPATH=HERE)
         r = subprocess.run([sys.executable, os.path.join(d, TEST)], cwd=root, env=env,
                            capture_output=True, text=True)
         fails = [l.strip() for l in r.stdout.splitlines() if l.strip().startswith("FAIL")]
-        dead = bool(fails)      # a crash is not a kill (2026-10-16)
+        crashed = "Traceback" in r.stderr
+        if old is None:
+            ok = r.returncode == 0 and not fails and not crashed
+            print("%s m0 %s  (exit %d, %d FAIL%s)" % ("PASS    " if ok else "FAILED  ", name, r.returncode,
+                                                     len(fails), ", CRASHED" if crashed else ""))
+            if not ok:
+                shutil.rmtree(base, ignore_errors=True)
+                print("\nthe control FAILS: no mutant is judged, so none is killed")
+                return 1
+            continue
+        dead = bool(fails) and not crashed      # a crash is not a kill (2026-10-16)
         killed += dead
-        print("%s m%d %s  (exit %d%s)" % ("KILLED  " if dead else "SURVIVED", i, name,
-                                          r.returncode, ("; " + fails[0][:90]) if fails else ""))
+        print("%s m%d %s  (exit %d%s%s)" % ("KILLED  " if dead else "SURVIVED", i, name, r.returncode,
+                                           ", CRASHED" if crashed else "", ("; " + fails[0][:90]) if fails else ""))
     shutil.rmtree(base, ignore_errors=True)
-    print("\n%d of %d killed, %d errors" % (killed, len(MUTANTS), errors))
+    print("\n%d of %d killed by a check, %d errors; the control passes" % (killed, len(MUTANTS), errors))
     return 0 if killed == len(MUTANTS) and not errors else 1
 
 
