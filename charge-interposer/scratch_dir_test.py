@@ -339,6 +339,20 @@ def case_sweep(base):
           % {k: v for k, v in got.items() if v != want[k]})
     check(rc == 0 and "REPORT ONLY" in text and all(os.path.isdir(p) for p in t.values()),
           "7. report only: nothing removed")
+    fin = next((ln for ln in lines if ln.split()[1:2] == [os.path.relpath(
+        t["fin"], wt)]), "")
+    nf, nd = M._count(t["fin"])[:2]
+    check(nf > 3 and nd > 3 and ("%d files" % nf) in fin
+          and ("%d folders" % nd) in fin and " 20" in fin,
+          "7. a row gives files (%d), folders (%d), bytes and date -> %s"
+          % (nf, nd, fin.strip()[:120]))
+    tc = next((ln for ln in lines if ln.startswith("TOTAL candidates")), "")
+    ta = next((ln for ln in lines if ln.startswith("TOTAL everything")), "")
+    want_n = sum(M._count(t[k])[0] for k in ("fin", "old_ct", "partial"))
+    check(" 3 row(s)" in tc and (" %d files" % want_n) in tc and "folders" in tc
+          and "folders" in ta,
+          "7. totals for the candidates (3 rows, %d files) and for everything "
+          "-> %s | %s" % (want_n, tc.strip(), ta.strip()))
     lines = []
     rc = M.sweep([wt], apply=True, guard=lambda: (False, ["busy (test)"]),
                  out=lines.append)
@@ -442,6 +456,10 @@ MUTANTS = [
     ("no git: scratch/ inside the code folder",
      "    return os.path.join(wt if wt else os.path.dirname(HERE), \"scratch\")",
      "    return os.path.join(wt if wt else HERE, \"scratch\")"),
+    ("no folder count",
+     "        folders += len(dirs)\n", "\n"),
+    ("no file count in the totals",
+     "                tot[k][1] += n\n", "\n"),
     ("no owner file",
      "        json.dump(owner_record(), f, sort_keys=True)",
      "        pass"),

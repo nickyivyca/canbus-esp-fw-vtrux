@@ -30,7 +30,10 @@ on madhouse's own disk.
     py -3.14 -B charge-interposer/scratch_dir_check.py --list
 
 The g++ ones (monitor_6h_diff, switch_discard_witness) run where g++ is:
-madhouse, or WSL on NICKY-XPS (python3 -B ... NAME).
+madhouse, or WSL on NICKY-XPS (python3 -B ... NAME). build_check_dirty_flag
+(a real git clone of HEAD, whose objects git marks read-only, and three
+PlatformIO builds) runs only when named, and not while a wall-clock test
+runs (AGENTS.md, "Builds during wall-clock tests").
 """
 
 import json
@@ -70,12 +73,26 @@ TARGETS = {
     "build_check_schema_test": ("firmware/test/build_check_schema_test.py", []),
     "build_check_in_clone_test": ("firmware/test/build_check_in_clone_test.py", []),
     "digest_recheck_check": ("firmware/test/digest_recheck_check.py", []),
+    "build_check_dirty_flag": ("firmware/test/build_check.py", ["--dirty-flag"]),
     "cutover_verify_test": ("harness_checks/cutover_verify_test.py", []),
     "cutover_verify_guard": ("harness_checks/cutover_verify_test.py", ["--guard-test"]),
     "monitor_6h_diff": ("harness_checks/monitor_6h_diff.py", []),
     "switch_discard_witness": ("harness_checks/switch_discard_witness.py", []),
 }
 GPP = ("monitor_6h_diff", "switch_discard_witness")
+NAMED_ONLY = GPP + ("build_check_dirty_flag",)
+# Entry points that exit non-zero on charge-interposer/main b423488 too,
+# run there unchanged on 2026-10-31: their exit is reported, not judged
+# here; whether they remove their folders still is.
+KNOWN = {
+    "digest_recheck_check": "part 2 (a real build edited mid-flight) "
+    "FAILs 'the build FAILED (exit 0)' and 'the digest mismatch' on main too",
+    "cutover_verify_test": "the full mode finds no machine.py in SeaDrive's "
+    "tools/interposer/ (now README.md and firmware/ only) on main too; the "
+    "suite runs only --guard-test",
+    "build_check_dirty_flag": "step 3 (src/ edited in the clone) records no "
+    "manifest row on main too",
+}
 MARK = "SCRATCH_DIR_CHECK "
 
 
@@ -143,7 +160,7 @@ def run_one(name, py):
         why.append("planted run gave no result (rc %d): %s" % (
             pr.returncode, (pr.stdout + pr.stderr).strip()[-300:]))
     else:
-        if p["rc"] != 0:
+        if p["rc"] != 0 and name not in KNOWN:
             why.append("planted run exited %s" % p["rc"])
         if p["made"] < 1:
             why.append("no run folder made in process")
@@ -168,6 +185,8 @@ def run_one(name, py):
               "%s left, LEFTOVER %s" % (n and len(n["left"]),
                                          "yes" if n_left else "no"), nt,
               "".join("\n      - " + w for w in why)), flush=True)
+    if p is not None and p["rc"] != 0 and name in KNOWN:
+        print("      KNOWN: exits %s, as on main: %s" % (p["rc"], KNOWN[name]))
     if why:
         for mode in ("planted", "no-chmod"):
             r = out[mode][2]
@@ -183,7 +202,7 @@ def main(argv):
         for k, (rel, args) in TARGETS.items():
             print("%-28s %s %s" % (k, rel, " ".join(args)))
         return 0
-    names = argv or [k for k in TARGETS if k not in GPP]
+    names = argv or [k for k in TARGETS if k not in NAMED_ONLY]
     unknown = [n for n in names if n not in TARGETS]
     if unknown:
         print("unknown: %s (see --list)" % ", ".join(unknown))

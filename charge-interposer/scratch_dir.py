@@ -42,6 +42,11 @@ sees the report before any --apply, reviewer 2026-10-31):
 
     py -3.14 -B charge-interposer/scratch_dir.py sweep [--apply] [--worktree DIR ...]
 
+Each row gives the folder's files, folders, bytes and newest write, and
+the report ends with totals for the candidates and for everything listed:
+Windows Search chokes on the number of files, not the bytes (user, via
+methodology and the reviewer, 2026-10-31).
+
 It looks only in each worktree's scratch/ (default: the interposer-reviewer,
 -implementor and -tester worktrees beside this one). Candidates are run
 folders only: a finished folder under charge-interposer-harness/, and a
@@ -347,15 +352,34 @@ def run(tool, start=None):
 
 # ---- the sweep ----------------------------------------------------------
 def _count(path):
-    n = size = 0
-    for d, _dirs, files in os.walk(long_path(path)):
-        for f in files:
-            n += 1
+    """(files, folders, bytes, newest mtime) under path, path itself
+    not counted as a folder; a file is (1, 0, its size, its mtime)."""
+    lp = long_path(path)
+    try:
+        st = os.lstat(lp)
+    except OSError:
+        return 0, 0, 0, 0.0
+    if not os.path.isdir(lp):
+        return 1, 0, st.st_size, st.st_mtime
+    n = folders = size = 0
+    newest = st.st_mtime
+    for d, dirs, files in os.walk(lp):
+        folders += len(dirs)
+        for x in dirs + files:
             try:
-                size += os.lstat(os.path.join(d, f)).st_size
+                s = os.lstat(os.path.join(d, x))
             except OSError:
-                pass
-    return n, size
+                continue
+            newest = max(newest, s.st_mtime)
+            if x in files:
+                n += 1
+                size += s.st_size
+    return n, folders, size, newest
+
+
+def _when(t):
+    return datetime.datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M") \
+        if t else "-"
 
 
 def _pins(wt):
@@ -520,7 +544,7 @@ def wallclock_clear():
 def sweep(worktrees, apply=False, guard=wallclock_clear, out=print):
     """Report (and with apply, remove) the candidates. Returns the exit code:
     0 done, 1 something left, 2 refused."""
-    total_n = total_b = 0
+    tot = {"candidate": [0, 0, 0, 0], "all": [0, 0, 0, 0]}
     cands = []
     for wt in worktrees:
         out("== %s" % wt)
@@ -528,14 +552,21 @@ def sweep(worktrees, apply=False, guard=wallclock_clear, out=print):
         if not rows:
             out("   (scratch/ empty or missing)")
         for p, verdict, why in rows:
-            n, b = _count(p) if os.path.isdir(p) else (1, 0)
+            n, f, b, t = _count(p)
             rel = os.path.relpath(p, wt)
-            out("   %-9s %-60s %7d files %10d bytes  %s" % (verdict, rel, n, b, why))
+            out("   %-9s %-60s %8d files %7d folders %12d bytes  %s  %s"
+                % (verdict, rel, n, f, b, _when(t), why))
+            for k in (("candidate", "all") if verdict == "candidate" else ("all",)):
+                tot[k][0] += 1
+                tot[k][1] += n
+                tot[k][2] += f
+                tot[k][3] += b
             if verdict == "candidate":
                 cands.append(p)
-                total_n += n
-                total_b += b
-    out("\n%d candidate folder(s), %d files, %d bytes" % (len(cands), total_n, total_b))
+    out("")
+    for k, label in (("candidate", "candidates"), ("all", "everything listed")):
+        out("TOTAL %-18s %4d row(s) %9d files %8d folders %13d bytes"
+            % (label, *tot[k]))
     if not apply:
         out("REPORT ONLY: nothing removed. --apply removes the candidates.")
         return 0
