@@ -1,5 +1,12 @@
 /*
- * fake_twai -- a TWAI driver model with the properties that actually bit us.
+ * shim_harness -- the shim's harness: the worker scheduler, the virtual clock,
+ * the wire invariant, and its names (ft_*) for the TWAI driver fake's knobs and
+ * readings.
+ *
+ * THE DRIVER IS shared/twai_port/test/'s FAKE (twai_port T10) since port step
+ * 1b, and this header's driver calls are that fake's (shim_harness.c says
+ * which). Until then this file was fake_twai.h, the shim's own driver model,
+ * from which the shared fake was merged. Why a model at all:
  *
  * Review E1. The host suite in ../gen_inhibit_host compiles the pure CORE and
  * cannot see the shim at all, and by 2026-09-25 four defects in a row had
@@ -31,12 +38,13 @@
  * and only the test advances it. Two runs of the same script produce the same
  * trace.
  */
-#ifndef FAKE_TWAI_H
-#define FAKE_TWAI_H
+#ifndef SHIM_HARNESS_H
+#define SHIM_HARNESS_H
 
 #include <stdbool.h>
 #include <stdint.h>
 #include "esp_system.h"
+#include "twai_fake.h"
 
 /* ------------------------------------------------------------ the model -- */
 
@@ -45,8 +53,9 @@ void ft_reset(void);
 /*
  * How long a queued frame takes to complete, in microseconds of virtual time,
  * counted from when the controller starts transmitting it -- which is when it
- * reaches the head of the FIFO, not when it was queued. Default 200 us, about
- * one 8-byte frame's air time at 500 kbit.
+ * reaches the transmit buffer, not when it was queued. Default 200 us, about
+ * one 8-byte frame's air time at 500 kbit, for every frame (shim_harness.c,
+ * SHIM_AIR_TIME_US).
  */
 void ft_set_air_time(int64_t us);
 
@@ -109,18 +118,18 @@ void ft_rx_error_next(int n);
 
 /* ------------------------------------------------------- what went out --- */
 
-typedef struct
-{
-    int64_t  t_queued;
-    int64_t  t_done;        /* -1 while still outstanding */
-    uint32_t id;
-    uint8_t  dlc;
-    uint8_t  data[8];
-    bool     foreign;       /* queued by a task other than the worker */
-    bool     failed;
-
-    /*
-     * THE FRAME FLAGS, recorded because dropping them hid five defects at once.
+/*
+ * One frame the driver accepted or completed: the fake's record of it
+ * (twai_fake.h, twai_fake_frame_t), whose fields the cases read:
+ *
+ *   t_queued, t_done   when twai_transmit() accepted it; completion, or -1
+ *   id, dlc, data
+ *   foreign            queued by a task other than the worker
+ *   failed             completed failed; such a frame is in ft_sent(), never
+ *                      in ft_wire()
+ *   extd, self, rtr, ss
+ *
+ *     THE FRAME FLAGS are recorded because dropping them hid five defects at once.
      *
      * This struct used to keep id, dlc and data and discard everything else, so
      * no test anywhere could see what the driver had actually been handed.
@@ -141,12 +150,8 @@ typedef struct
      *             receive path. The worker reads its own 0x051, cannot tell it
      *             from the VCM's, and answers it with counter + 1 -- a
      *             self-sustaining transmit loop on a live powertrain bus.
-     */
-    bool     extd;
-    bool     self;
-    bool     rtr;
-    bool     ss;
-} ft_frame_t;
+ */
+typedef twai_fake_frame_t ft_frame_t;
 
 /*
  * SPEC 8: was the driver torn down while a thread was inside twai_receive()?
@@ -216,9 +221,10 @@ int ft_installs_off_worker(void);
 void ft_bus_off(void);
 
 /*
- * The next twai_driver_install() fails and installs nothing. Cleared by
- * ft_reset(). See fake_twai.c for what the shim's no-op ESP_ERROR_CHECK means
- * for it.
+ * The next twai_driver_install() fails (ESP_FAIL) and installs nothing.
+ * Cleared by ft_reset(). Port 0 reports it and the arm is refused (spec 3.3);
+ * the stock can_enable() would restart on the device, and on the host the
+ * shim's no-op ESP_ERROR_CHECK (mock/freertos/FreeRTOS.h) carries on instead.
  */
 void ft_fail_install_next(void);
 
@@ -244,8 +250,9 @@ int      ft_installed_single_filter(void);
  * The most OUR frames that were in the driver at once -- item 3's quantity.
  *
  * Item 3 says at most one frame is with the driver at a time, and until this
- * existed nothing counted it: the fake models the driver's real FIFO (depth 16),
- * so a frame handed over while the controller still holds one is ACCEPTED and
+ * existed nothing counted it: the fake models the driver's real queue (port
+ * 0's 5 behind the transmit buffer), so a frame handed over while the
+ * controller still holds one is ACCEPTED and
  * queues behind it. That is the device's behaviour and it is the priority
  * inversion item 3 forbids, and it looked identical to correct operation from
  * every other counter here. The D8 mutation (gs_rearm -> gs_init at a mode
@@ -348,18 +355,15 @@ int              ft_wire_count(void);
 const ft_frame_t *ft_wire(int i);
 
 /*
- * HAVE THE FRAME LOGS STOPPED RECORDING? They hold at most SENTMAX entries and then
- * drop everything after, silently. Any count taken from them is a LOWER BOUND once
+ * HAVE THE FRAME LOGS STOPPED RECORDING? The fake's logs grow as they need to, so
+ * today never; this asks because the old fake's held at most SENTMAX entries and
+ * then dropped everything after, silently. Any count taken from them is a LOWER BOUND once
  * this is true, so a check that compares a device counter against one of them stops
  * being a check -- and is wrong in a fixed direction, because the device's counter
  * keeps rising while the log's ceiling does not. A long arm must consult this before
  * trusting ft_wire_count_id() or ft_sent_count_id().
  */
 bool             ft_logs_saturated(void);
-
-/* The model's receive queue depth, so a test can check it against the firmware's
- * rather than trust a comment. See RXMAX in fake_twai.c. */
-int              ft_rx_queue_depth(void);
 
 /*
  * Frames waiting in the model's receive queue. A replay needs this to know when the
@@ -417,7 +421,7 @@ void ft_hold_worker(bool hold);
 void ft_set_step_hook(void (*fn)(void));
 
 /*
- * Spec 3's wake on a mode change. Read the long note in fake_twai.c before
+ * Spec 3's wake on a mode change. Read the long note in shim_harness.c before
  * writing a case on these: what is modelled is that the wake LATCHES and
  * reaches the worker, NOT that it shortens a sleep in progress. The latter has
  * no observable consequence in this harness and belongs on the bench.
@@ -433,16 +437,19 @@ void    ft_stop_worker(void);
 /*
  * Stage the boot reset reason spec 11's `reset_reason` field reports. Set it
  * BEFORE setup(), which is where gen_inhibit_init() latches it, and put it back
- * afterwards -- ft_reset() does not clear it, and fake_twai.c says why.
+ * afterwards -- ft_reset() does not clear it, and shim_harness.c says why.
  */
 void    ft_set_reset_reason(esp_reset_reason_t r);
 
 /*
- * The controller's cumulative error-frame count (spec 7 trip 6). Cumulative
- * since the driver was installed, so a case models a REINSTALL by setting it
- * back to 0. Not cleared by ft_reset(), for the same reason the reset reason
- * is not: setup() calls ft_reset() first, so a case could not stage it.
+ * The controller's cumulative error-frame count (spec 7 trip 6), as a target:
+ * the driver's count is raised to it now and after every install, where the
+ * fake restarts it at 0 as the driver does. So a case that wants a re-arm to
+ * start clean sets it back to 0 while the driver is down. A target below a
+ * live driver's count stops the run (the fake's count only rises). Not cleared
+ * by ft_reset(), for the same reason the reset reason is not: setup() calls
+ * ft_reset() first, so a case could not stage it.
  */
 void    ft_set_bus_errors(uint32_t n);
 
-#endif /* FAKE_TWAI_H */
+#endif /* SHIM_HARNESS_H */
