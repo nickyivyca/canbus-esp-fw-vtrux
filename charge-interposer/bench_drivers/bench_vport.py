@@ -77,9 +77,9 @@ import datetime
 import hashlib
 import os
 import re
+import shutil
 import sys
 import struct
-import tempfile
 import threading
 import time
 
@@ -1614,7 +1614,7 @@ def parse_bitrate_order(text):
 # The m1 DIAGNOSTIC step (reviewer, 2026-10-25, the user's ruling on item
 # (c)): a big 250k flood, then a 1M idle window, by arm: a settle after
 # BITRATE 1M or none (H1), and the flood window's rows written to the run
-# folder (SeaDrive) or to a local temp folder (H2). In no default --steps;
+# folder (SeaDrive) or to a local scratch folder (H2). In no default --steps;
 # judges nothing; the judged step 2 is unchanged.
 M1_ARMS = ("nosettle-run", "settle-run", "nosettle-local", "settle-local")
 
@@ -2184,11 +2184,36 @@ def run_m1(args, board, wit, node, verdicts):
     """The m1 DIAGNOSTIC step (above M1_ARMS): judges nothing. Each trial
     as the judged step 2 runs 250k then 1M: BITRATE 250k, an idle window,
     the FLOOD 7F4 window, STOP, STATUS, the flood window scored as step 2
-    scores it, BITRATE 1M, the arm's settle, then the 1M idle window."""
+    scores it, BITRATE 1M, the arm's settle, then the 1M idle window.
+    The local arm's rows go to a scratch_dir run folder, vport-m1-local,
+    removed when the step ends, pass or fail: each trial's rows file is
+    removed after its trial anyway, and an edges file there
+    (--edge-diag) is moved into the run folder first. Never the system
+    temp folder (AGENTS.md; reviewer, 2026-10-31)."""
     arms = parse_m1_arms(args.m1_arms)
-    local = os.path.join(tempfile.gettempdir(), "interposer-tester",
-                         "m1-local", os.path.basename(RAW_DIR or "run"))
-    os.makedirs(local, exist_ok=True)
+    local = scratch_dir.make("vport-m1-local")
+    try:
+        _m1_trials(args, board, wit, node, verdicts, arms, local)
+    finally:
+        m1_keep_edges(local, RAW_DIR)
+        scratch_dir.remove(local)
+
+
+def m1_keep_edges(local, raw_dir):
+    """The local arm's NN_edges.txt files -> raw_dir (the run folder),
+    where the run arm's are, so removing the local folder loses only
+    the rows files. -> the names moved."""
+    moved = []
+    if not raw_dir:
+        return moved
+    for n in sorted(os.listdir(local)):
+        if n.endswith("_edges.txt"):
+            shutil.move(os.path.join(local, n), os.path.join(raw_dir, n))
+            moved.append(n)
+    return moved
+
+
+def _m1_trials(args, board, wit, node, verdicts, arms, local):
     print("\n== m1 DIAGNOSTIC (judges nothing): a 250k flood, then a 1M "
           "idle window; %d trial(s), arms in turn %s; settle %.1f s; "
           "windows: 250k idle %.0f s, flood %.0f s, 1M idle %.0f s; local "
@@ -3651,6 +3676,56 @@ def self_test():
         except ValueError:
             ok = True
         check(ok, "can-fail: m1 arms %r refused" % txt)
+    # m1's local arm (reviewer, 2026-10-31): a vport-m1-local run folder,
+    # removed when the step ends, pass or fail, its edges files moved to
+    # the run folder first; never the system temp folder
+    g = globals()
+    keep_raw, keep_trials = g["RAW_DIR"], g["_m1_trials"]
+    raw = scratch_dir.make("vport-selftest")
+    seen = []
+    rows_name = "08_m1_1_settle-local_250k_flood.txt"
+
+    def _trials(args, board, wit, node, verdicts, arms, local):
+        seen.append(local)
+        for n in ("07_edges.txt", rows_name):
+            with open(os.path.join(local, n), "w", encoding="utf-8") as f:
+                f.write("x\n")
+        raise RuntimeError("a trial failed")
+
+    def _norm(p):
+        return os.path.normcase(os.path.realpath(p))
+
+    try:
+        g["RAW_DIR"], g["_m1_trials"] = raw, _trials
+        try:
+            run_m1(argparse.Namespace(m1_arms="settle-local"), None, None,
+                   None, [])
+            raised = "no"
+        except RuntimeError as exc:
+            raised = str(exc)
+        loc = seen[0] if seen else ""
+        td = scratch_dir.tool_dir("vport-m1-local")
+        check(raised == "a trial failed" and bool(loc)
+              and _norm(os.path.dirname(loc)) == _norm(td),
+              "m1: the local arm's folder is a vport-m1-local run folder, "
+              "the trial's error passed on -> %s (%s)" % (loc, raised))
+        check(bool(loc) and not os.path.exists(loc),
+              "m1: the local folder removed when a trial raises -> %s" % loc)
+        check(os.path.isfile(os.path.join(raw, "07_edges.txt"))
+              and not os.path.isfile(os.path.join(raw, rows_name)),
+              "m1: the local arm's edges file moved to the run folder, "
+              "its rows file not")
+        nd = os.path.join(raw, "no-raw")
+        os.makedirs(nd)
+        open(os.path.join(nd, "09_edges.txt"), "w").close()
+        check(m1_keep_edges(nd, None) == []
+              and os.path.isfile(os.path.join(nd, "09_edges.txt")),
+              "m1: no run folder, the edges file left where it is")
+    finally:
+        g["RAW_DIR"], g["_m1_trials"] = keep_raw, keep_trials
+        for x in [raw] + seen:
+            if os.path.isdir(x):
+                scratch_dir.remove(x)
     mrows = ([(0.01 * k, 0, True, b"") for k in range(100)]
              + [(3.0 + 0.01 * k, 0, True, b"") for k in range(500)])
     try:
@@ -4052,6 +4127,18 @@ MUTANTS = [
     ("save_rows: rows_dir ignored",
      "    d = rows_dir or RAW_DIR\n    if not d:\n        return None",
      "    d = RAW_DIR\n    if not d:\n        return None"),
+    ("m1: the local arm's folder outside vport-m1-local",
+     "    local = scratch_dir.make(\"vport-m1-local\")",
+     "    local = scratch_dir.make(\"vport-selftest\")"),
+    ("m1: the local folder left when a trial raises",
+     "    try:\n        _m1_trials(args, board, wit, node, verdicts, arms, "
+     "local)\n    finally:\n        m1_keep_edges(local, RAW_DIR)\n"
+     "        scratch_dir.remove(local)\n",
+     "    _m1_trials(args, board, wit, node, verdicts, arms, local)\n"
+     "    m1_keep_edges(local, RAW_DIR)\n    scratch_dir.remove(local)\n"),
+    ("m1: the local arm's edges files not moved",
+     "        if n.endswith(\"_edges.txt\"):",
+     "        if False:"),
     ("m1: unknown arms accepted",
      "    if bad or not got:\n        raise ValueError(\"--m1-arms",
      "    if False:\n        raise ValueError(\"--m1-arms"),

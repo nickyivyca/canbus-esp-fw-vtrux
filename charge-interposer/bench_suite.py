@@ -64,13 +64,13 @@ canbench is the pinned can-tools commit's (can_tools_pin.py), and the bench
 run records the pin, its folder and the clone it came from.
 """
 
+import atexit
 import glob
 import hashlib
 import json
 import os
 import re
 import sys
-import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -82,6 +82,7 @@ import bench_identify  # noqa: E402
 import bench_wican  # noqa: E402
 import canre_pin  # noqa: E402
 import can_tools_pin  # noqa: E402
+import scratch_dir  # noqa: E402
 sys.path.insert(0, os.path.join(HERE, "firmware"))
 import build_identity  # noqa: E402
 
@@ -426,25 +427,41 @@ def _idf_image(name, settings):
 
 
 # ---- staging for madhouse -----------------------------------------------
+_STAGED = {}                # commit -> its gitb folder, in this process
+
+
+def _remove_at_exit(path):
+    """scratch_dir.remove(path) when this process exits."""
+    atexit.register(scratch_dir.remove, path)
+
+
 def _stage_git_bundle(code):
     """A git bundle of the clone's HEAD, for build-check on madhouse
     (build_check_in_clone.py): the shipped copy has no .git, and a build
     there gets no manifest row (e7d4, 2026-10-19). -> (dir, full commit).
-    One folder per commit in the machine temp folder; reused if present."""
+    The bundle goes in gitb/ of a scratch_dir run folder that this
+    process owns, scratch/charge-interposer-harness/runner-stage/
+    runner-stage-<pid>-<rand>/, made once per commit and removed when
+    the process exits: the runner ships it from there when the m-build
+    group starts, so it lives as long as the run. A folder a killed
+    run left is pruned by the next one. Never the system temp folder
+    (AGENTS.md; reviewer, 2026-10-31: 170 MB there after one day). A
+    bundle takes under a second to make, so none is kept between runs."""
     import subprocess
     repo = os.path.dirname(code)
     commit = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"],
                             capture_output=True, text=True,
                             check=True).stdout.strip()
-    d = os.path.join(tempfile.gettempdir(), "interposer-tester",
-                     "runner-stage", "gitb-" + commit[:12])
-    bundle = os.path.join(d, "repo.bundle")
-    if not os.path.isfile(bundle):
-        os.makedirs(d, exist_ok=True)
-        part = bundle + ".part"
-        subprocess.run(["git", "-C", repo, "bundle", "create", part, "HEAD"],
-                       capture_output=True, check=True)
-        os.replace(part, bundle)
+    if commit in _STAGED:
+        return _STAGED[commit], commit
+    run = scratch_dir.make("runner-stage")
+    _remove_at_exit(run)
+    d = os.path.join(run, "gitb")
+    os.makedirs(d)
+    subprocess.run(["git", "-C", repo, "bundle", "create",
+                    os.path.join(d, "repo.bundle"), "HEAD"],
+                   capture_output=True, check=True)
+    _STAGED[commit] = d
     return d, commit
 
 

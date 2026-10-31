@@ -19,6 +19,17 @@ runs the file as __main__ (runpy) after patching scratch_dir in place:
 Folders made by the entry point's own subprocesses (a can-fail's mutant
 runs) are not patched; their removal is the same call.
 
+What is left is judged once the child process has exited, so a folder
+removed by an exit handler counts as removed (AGENTS.md, "Removing
+scratch": a finally or an exit handler; bench_suite.py's runner-stage
+bundle goes at exit, 2026-10-31). Any LEFTOVER line the handler prints
+at exit is in the output that is read.
+
+--self-check runs the check on three fixture entry points written to a
+scratch_dir run folder: one that removes its folder in a finally and
+one that removes it at exit must pass, and one that never removes it
+must FAIL.
+
 Each run first checks that the fixture bites here: a plain
 shutil.rmtree(ignore_errors=True) must leave a planted repo. On a
 filesystem that removes read-only files anyway (WSL on /mnt/c: found
@@ -28,6 +39,7 @@ on madhouse's own disk.
 
     py -3.14 -B charge-interposer/scratch_dir_check.py [NAME ...]   # default: all
     py -3.14 -B charge-interposer/scratch_dir_check.py --list
+    py -3.14 -B charge-interposer/scratch_dir_check.py --self-check
 
 The g++ ones (monitor_6h_diff, switch_discard_witness) run where g++ is:
 madhouse, or WSL on NICKY-XPS (python3 -B ... NAME). build_check_dirty_flag
@@ -74,7 +86,6 @@ TARGETS = {
     "build_check_in_clone_test": ("firmware/test/build_check_in_clone_test.py", []),
     "digest_recheck_check": ("firmware/test/digest_recheck_check.py", []),
     "build_check_dirty_flag": ("firmware/test/build_check.py", ["--dirty-flag"]),
-    "cutover_verify_test": ("harness_checks/cutover_verify_test.py", []),
     "cutover_verify_guard": ("harness_checks/cutover_verify_test.py", ["--guard-test"]),
     "monitor_6h_diff": ("harness_checks/monitor_6h_diff.py", []),
     "switch_discard_witness": ("harness_checks/switch_discard_witness.py", []),
@@ -84,14 +95,16 @@ NAMED_ONLY = GPP + ("build_check_dirty_flag",)
 # Entry points that exit non-zero on charge-interposer/main b423488 too,
 # run there unchanged on 2026-10-31: their exit is reported, not judged
 # here; whether they remove their folders still is.
+# Diagnosed 2026-10-31 as the harness's, both; the fixes wait on the
+# reviewer (the spec-8.2 rules they cite are no longer in the spec text).
 KNOWN = {
     "digest_recheck_check": "part 2 (a real build edited mid-flight) "
-    "FAILs 'the build FAILED (exit 0)' and 'the digest mismatch' on main too",
-    "cutover_verify_test": "the full mode finds no machine.py in SeaDrive's "
-    "tools/interposer/ (now README.md and firmware/ only) on main too; the "
-    "suite runs only --guard-test",
+    "FAILs 'the build FAILED (exit 0)' and 'the digest mismatch' on main "
+    "too: its probe lands at a fixed 2.5 s, before the image name is fixed "
+    "(the link starts ~7.3 s now), so there is no mismatch to find",
     "build_check_dirty_flag": "step 3 (src/ edited in the clone) records no "
-    "manifest row on main too",
+    "manifest row on main too: since 5a7a2d3 (reviewer, 2026-10-15) a dirty "
+    "tree gets no row, by design, and the step still expects one",
 }
 MARK = "SCRATCH_DIR_CHECK "
 
@@ -117,7 +130,7 @@ def child(mode, rel, args):
     scratch_dir.make = make
     if mode == "no-chmod":
         scratch_dir._writable = lambda p: None
-    path = os.path.join(HERE, *rel.split("/"))
+    path = rel if os.path.isabs(rel) else os.path.join(HERE, *rel.split("/"))
     sys.argv = [path] + args
     sys.path.insert(0, os.path.dirname(path))
     rc = 0
@@ -129,15 +142,23 @@ def child(mode, rel, args):
         print("raised %s: %s" % (type(e).__name__, e))
         rc = 99
     sys.stdout.flush()
-    left = [d for d in made if os.path.exists(scratch_dir.long_path(d))]
-    if mode == "no-chmod":
-        scratch_dir._writable = real_writable
-        for d in left:
-            scratch_dir.remove(d, quiet=True)
-    print("\n" + MARK + json.dumps({"rc": rc, "made": len(made), "left": left,
+    # what is left is judged by the parent, after this process's exit
+    # handlers have run (they still see the patched scratch_dir)
+    print("\n" + MARK + json.dumps({"rc": rc, "made": made,
                                     "bites": bites}),
           flush=True)
     return 0
+
+
+def leftovers(rec, mode):
+    """The child's folders still there now that it has exited (mode:
+    planted or no-chmod). They are then removed here, with the handler."""
+    sys.path.insert(0, HERE)
+    import scratch_dir
+    left = [d for d in rec["made"] if os.path.exists(scratch_dir.long_path(d))]
+    for d in left:
+        scratch_dir.remove(d, quiet=True)
+    return left
 
 
 def run_one(name, py):
@@ -153,6 +174,8 @@ def run_one(name, py):
         for line in r.stdout.splitlines():
             if line.startswith(MARK):
                 rec = json.loads(line[len(MARK):])
+        if rec is not None:
+            rec["left"] = leftovers(rec, mode)
         out[mode] = (rec, "scratch_dir: LEFTOVER" in r.stdout, r, time.time() - t0)
     (p, p_left, pr, pt), (n, n_left, nr, nt) = out["planted"], out["no-chmod"]
     why = []
@@ -162,7 +185,7 @@ def run_one(name, py):
     else:
         if p["rc"] != 0 and name not in KNOWN:
             why.append("planted run exited %s" % p["rc"])
-        if p["made"] < 1:
+        if len(p["made"]) < 1:
             why.append("no run folder made in process")
         if p["left"] or p_left:
             why.append("planted run left %d folder(s)%s" % (
@@ -179,7 +202,7 @@ def run_one(name, py):
     print("%s  %-28s planted: rc %s, %s made, %s left (%3.0fs); no-chmod: %s "
           "(%3.0fs)%s" % (
               "ok  " if not why else "FAIL", name,
-              p and p["rc"], p and p["made"], p and len(p["left"]), pt,
+              p and p["rc"], p and len(p["made"]), p and len(p["left"]), pt,
               "NOT APPLICABLE here: the control shows this filesystem "
               "removes read-only files anyway" if na else
               "%s left, LEFTOVER %s" % (n and len(n["left"]),
@@ -195,9 +218,52 @@ def run_one(name, py):
     return not why, na
 
 
+FIXTURE = '''import atexit
+import sys
+sys.path.insert(0, %r)
+import scratch_dir
+d = scratch_dir.make("scratch-dir-check-fixture")
+open(d + "/x.txt", "w").write("x")
+%s
+'''
+SELF_CHECK = [
+    ("fixture_finally", "try:\n    pass\nfinally:\n    scratch_dir.remove(d)", True),
+    ("fixture_at_exit", "atexit.register(scratch_dir.remove, d)", True),
+    ("fixture_never", "pass", False),
+]
+
+
+def self_check(py):
+    """The check on three fixture entry points: removal in a finally and
+    at exit pass, no removal FAILs."""
+    sys.path.insert(0, HERE)
+    import scratch_dir
+    d = scratch_dir.make("scratch-dir-check-self")
+    bad = []
+    try:
+        for name, tail, want in SELF_CHECK:
+            f = os.path.join(d, name + ".py")
+            with open(f, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(FIXTURE % (HERE, tail))
+            TARGETS[name] = (f, [])
+            ok, _na = run_one(name, py)
+            if ok != want:
+                bad.append(name)
+            print("%s  self-check: %s %s, as it must" % (
+                "ok  " if ok == want else "FAIL", name,
+                "passes" if want else "FAILs"), flush=True)
+    finally:
+        scratch_dir.remove(d)
+    print("\nscratch_dir_check --self-check: %s" % (
+        "all as expected" if not bad else "WRONG for " + ", ".join(bad)))
+    return 1 if bad else 0
+
+
 def main(argv):
     if argv[:1] == ["--child"]:
         return child(argv[1], argv[2], argv[3:])
+    if argv == ["--self-check"]:
+        return self_check([sys.executable, "-B"])
     if argv == ["--list"]:
         for k, (rel, args) in TARGETS.items():
             print("%-28s %s %s" % (k, rel, " ".join(args)))
