@@ -92,6 +92,35 @@ def remove_tree(path):
         print("LEFTOVER  %s: %s" % (path, e))
 
 
+# --- where the throwaway trees go ----------------------------------------
+#
+# scratch/, never the system temp folder (AGENTS.md, "Files and folders").
+# Found from this file's path, never the cwd: the git worktree it is in, as
+# canre_pin.worktree() finds it, or, in a copy with no git (bench_suite's
+# {work}/code on madhouse), the copied charge-interposer/ folder itself.
+
+def tree_root():
+    d = HERE
+    while True:
+        if os.path.exists(os.path.join(d, ".git")):
+            return d
+        up = os.path.dirname(d)
+        if up == d:
+            return os.path.dirname(HERE)
+        d = up
+
+
+SCRATCH = os.path.join(tree_root(), "scratch", "charge-interposer-manifest-test")
+
+
+def make_tree():
+    """A fresh throwaway tree under SCRATCH; the prefix keeps parallel runs
+    apart."""
+    if not os.path.isdir(SCRATCH):
+        os.makedirs(SCRATCH)
+    return tempfile.mkdtemp(prefix="manifest_test_", dir=SCRATCH)
+
+
 # --- the predicate ------------------------------------------------------
 #
 # Every case is asserted in BOTH directions -- the verdict and, when it is a
@@ -177,7 +206,7 @@ def run_record(identity):
     Returns (rows, stdout_text) -- the manifest's rows, or None if the file
     was never created.
     """
-    tmp = tempfile.mkdtemp(prefix="manifest_test_")
+    tmp = make_tree()
     try:
         build_dir = os.path.join(tmp, ".pio", "build", "esp32-can-x2")
         os.makedirs(build_dir)
@@ -254,7 +283,7 @@ check(not raised, "a refused row does NOT fail the build")
 # And the digest guard it sits beside still RAISES, so the two severities
 # have not been flattened into one. Same rig, but the tree hashes to
 # something other than the name the image carries.
-tmp = tempfile.mkdtemp(prefix="manifest_test_")
+tmp = make_tree()
 try:
     build_dir = os.path.join(tmp, ".pio", "build", "esp32-can-x2")
     os.makedirs(build_dir)
@@ -289,7 +318,9 @@ finally:
 
 print()
 print("the cleanup, remove_tree():")
-tmp = tempfile.mkdtemp(prefix="manifest_test_")
+tmp = make_tree()
+check(os.path.dirname(tmp) == SCRATCH,
+      "the tree is made under %s, not the system temp folder" % SCRATCH)
 obj_dir = os.path.join(tmp, ".git", "objects", "ab")
 os.makedirs(obj_dir)
 obj = os.path.join(obj_dir, "cdef0123456789")
