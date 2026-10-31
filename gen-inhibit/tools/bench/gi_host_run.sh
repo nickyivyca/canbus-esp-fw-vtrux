@@ -98,9 +98,12 @@ fi
 # THIS COMMENT USED TO SAY the opposite -- "gen_inhibit.c and the rest of the
 # shim are ESP-IDF-only and would not build here; sending them would invite
 # someone to try" -- and it was wrong by the time E1 existed. The shim
-# (test/gen_inhibit_shim) compiles gen_inhibit.c, can.c and gen_inhibit_core.c on
-# the host against the mock platform headers in its own mock/ directory, which is
-# the whole point of it: main/can.c is built AS SHIPPED rather than reimplemented.
+# (test/gen_inhibit_shim) compiles gen_inhibit.c and gen_inhibit_core.c on the
+# host against the mock platform headers in its own mock/ directory, which is the
+# whole point of it: the CAN code is built AS SHIPPED rather than reimplemented.
+# Since port step 1b that CAN code is the shared components can_port and
+# twai_port, which replaced main/can.c, with twai_port's host fake as the driver;
+# they and vtrux/wican's headers come from the pinned shared checkout (below).
 #
 # Because the shim was outside this sync, ~/gi_host held whatever a previous
 # session had copied by hand. On 2026-09-26 all five of its inputs -- can.c,
@@ -154,14 +157,27 @@ rm -rf "$EXPORT_PARENT"
 mkdir -p "$EXPORT_PARENT"
 $LOCAL_PY -B "$FW/tools/bench/gi_diag.py" export "$EXPORT_PARENT/diag_schemas" >/dev/null
 
+# THE SHARED COMPONENTS THE SHIM COMPILES (port steps 1a and 1b, 2026-10-31).
+# vtrux/wican's headers (can.h, comm_server.h) since 1a, and since 1b can_port
+# (can_port.c, can_stock.c, which replaced main/can.c) and twai_port with its one
+# host fake (twai_port/test/twai_fake.c). They are the version gen-inhibit pins:
+# the read-only checkout ../shared-<tag>/ the shim's wican_ref.py finds. ~/gi_host
+# has no checkout beside it, so the three folders go to ~/$DEST/shared/,
+# replacing the last export, and --shim gives the shim's make WICANDIR there.
+# Before this, --shim had no wican headers on the remote at all (since 1a), and
+# the sync named main/can.c, which 1b deleted, so tar stopped the sync.
+WICAN_LOCAL="$(cd "$FW/test/gen_inhibit_shim" && $LOCAL_PY -B wican_ref.py)"
+[ -n "$WICAN_LOCAL" ] || { echo "no pinned vtrux/wican checkout (wican_ref.py above)" >&2; exit 1; }
+SHARED_ROOT="$(cd "$WICAN_LOCAL/../.." && pwd)"
+
 echo "--- sync $FW -> $REMOTE:~/$DEST"
 tar -C "$FW" -czf - \
     $MAIN_HDRS \
     tools/bench/gi_diag.py \
     tools/bench/pins.json \
     tools/bench/canre_pin.py \
+    tools/bench/gi_paths.py \
     firmware/main/gen_inhibit.c \
-    firmware/main/can.c \
     test/gen_inhibit_shim \
     firmware/main/gen_inhibit_core.c \
     firmware/main/gi_sched.c \
@@ -186,8 +202,9 @@ tar -C "$FW" -czf - \
     test/gen_inhibit_host/test_cfg_build_id.py \
     test/gen_inhibit_host/replay_stimulus_delta.py \
     test/gen_inhibit_host/golden \
+    -C "$SHARED_ROOT" shared/wican shared/can_port shared/twai_port \
     -C "$EXPORT_PARENT" diag_schemas \
-  | ssh "$REMOTE" "mkdir -p ~/$DEST && rm -rf ~/$DEST/diag_schemas && tar xzf - -C ~/$DEST"
+  | ssh "$REMOTE" "mkdir -p ~/$DEST && rm -rf ~/$DEST/diag_schemas ~/$DEST/shared && tar xzf - -C ~/$DEST"
 
 # project_dir.py WAS MISSING UNTIL 2026-10-26: from_capture.py,
 # replay_stimulus_delta.py and test_signals.py import it, so none of them could run
@@ -243,9 +260,10 @@ case "$mode" in
   margin)
     ssh "$REMOTE" "cd ~/$DEST/test/gen_inhibit_host && $PY load_margin.py $*"
     ;;
-  # E1, the shim suite. Builds gen_inhibit.c, can.c and gen_inhibit_core.c on the
-  # host against test/gen_inhibit_shim/mock, so it needs the sync above to have
-  # carried main/ -- which it did not until 2026-09-26.
+  # E1, the shim suite. Builds gen_inhibit.c, gen_inhibit_core.c and gi_sched.c on
+  # the host against test/gen_inhibit_shim/mock, with can_port and twai_port (on its
+  # fake) from ~/$DEST/shared/, so it needs the sync above to have carried main/ --
+  # which it did not until 2026-09-26 -- and the shared folders (2026-10-31).
   #
   # CANRE AT THE PINNED COMMIT (the canre-pin step, 2026-10-26). from_capture.py takes
   # canre only from canre_pin.py's install of the commit pins.json pins, which on the
@@ -258,7 +276,7 @@ case "$mode" in
     ssh "$REMOTE" "$PY -B ~/$DEST/tools/bench/canre_pin.py install"
     ;;
   shim)
-    ssh "$REMOTE" "${RX}$PY -B ~/$DEST/tools/bench/canre_pin.py install && cd ~/$DEST/test/gen_inhibit_shim && make -s clean && make -s && ./shim_test"
+    ssh "$REMOTE" "${RX}$PY -B ~/$DEST/tools/bench/canre_pin.py install && cd ~/$DEST/test/gen_inhibit_shim && make -s clean && make -s WICANDIR=\$HOME/$DEST/shared/wican && ./shim_test"
     ;;
   # The transmit-scheduler cases (spec 5.2 item 10's emulation half), against
   # fake_buf's calibrated buffer model. Needs main/gi_sched.c from the sync.

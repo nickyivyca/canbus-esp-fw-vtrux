@@ -9,6 +9,13 @@
 # (a sibling of gen_inhibit_host, so replay_scn finds the host scenarios) and the
 # probe is built there; the synced tree's own files are not touched.
 #
+# It builds what the shim's Makefile builds, with the probe in shim_test.c's place
+# (the probe #includes it): since port step 1b (2026-10-31) the CAN code is the
+# shared can_port and twai_port, on twai_port's host fake, which replaced
+# main/can.c and the shim's own driver model (fake_twai.c, now shim_harness.c).
+# They come from <tree>/shared/, which gi_host_run.sh syncs from the pinned
+# checkout. main/ is <tree>/firmware/main since port step 0d (2026-10-26).
+#
 # Usage, from the repo root, after gi_host_run.sh --sync-only and --scenarios:
 #   DEST=gi_host_tester_c65c45e bash gen-inhibit/tools/bench/shim_wire_probe.sh \
 #       disable-clears-live-flag rearm-keeps-section6-latch
@@ -27,10 +34,20 @@ rm -rf "$t/gen_inhibit_shim_wireprobe"
 cp -r "$t/gen_inhibit_shim" "$t/gen_inhibit_shim_wireprobe"
 cp "$t/shim_wire_probe.c" "$t/gen_inhibit_shim_wireprobe/"
 cd "$t/gen_inhibit_shim_wireprobe"
-gcc -std=c11 -O1 -g -Wall -Wno-unused-parameter -Wno-unused-function -I. -Imock -I../../main \
-    -o shim_wire_probe shim_wire_probe.c fake_twai.c fake_can.c \
-    ../../main/gen_inhibit.c ../../main/gen_inhibit_core.c ../../main/gi_sched.c ../../main/can.c \
-    -pthread
+M=../../firmware/main
+S="$HOME/$1/shared"
+F="$S/twai_port/test"
+for d in "$M" "$S/wican" "$S/can_port" "$F"; do
+  [ -d "$d" ] || { echo "missing $d: run gi_host_run.sh --sync-only first" >&2; exit 1; }
+done
+gcc -std=c11 -O1 -g -Wall -Wno-unused-parameter -Wno-unused-function \
+    -I. -Imock -I"$M" -I"$S/wican" -I"$S/can_port/include" -I"$S/twai_port/include" \
+    -I"$F" -I"$F/include" -I"$F/host" \
+    -o shim_wire_probe shim_wire_probe.c shim_harness.c fake_can.c fake_port.c "$F/twai_fake.c" \
+    "$M/gen_inhibit.c" "$M/gen_inhibit_core.c" "$M/gi_sched.c" \
+    "$S/can_port/can_port.c" "$S/can_port/can_stock.c" \
+    "$S/twai_port/twai_port.c" "$S/twai_port/twai_port_ll_esp32c3.c" \
+    -pthread -Wl,--wrap=twai_driver_install
 echo "built"
 EOS
 for name in "$@"; do
