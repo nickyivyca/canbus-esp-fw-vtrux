@@ -268,12 +268,13 @@ def main():
     check("scratch without run is the name's own folder",
           lambda: os.path.normcase(gp.scratch("t", run=False, start=tool))
           == os.path.normcase(os.path.join(wt, "scratch", "gen-inhibit-tests", "t")))
-    child = subprocess.run([sys.executable, "-B", "-c", "import sys; sys.path.insert(0, sys.argv[1]); import gi_paths; "
-                            "print(gi_paths.scratch('t', start=sys.argv[2]))", SRC_DIR, tool],
+    child = subprocess.run([sys.executable, "-B", "-c", "import os, sys; sys.path.insert(0, sys.argv[1]); import gi_paths; "
+                            "d = gi_paths.scratch('t', start=sys.argv[2]); print(d, os.path.isdir(d))", SRC_DIR, tool],
                            capture_output=True, text=True, env=base_env)
-    check("another run (process) gets another folder",
-          lambda: child.returncode == 0 and os.path.isdir(child.stdout.strip())
-          and os.path.normcase(child.stdout.strip()) != os.path.normcase(s1), (child.stdout, child.stderr[-200:]))
+    cd, _, made = child.stdout.strip().rpartition(" ")
+    check("another run (process) gets another folder (made while it runs; removed when it ends, test_gi_scratch.py)",
+          lambda: child.returncode == 0 and made == "True"
+          and os.path.normcase(cd) != os.path.normcase(s1), (child.stdout, child.stderr[-200:]))
     own = gp.scratch("t", run=False)
     check("by default, the worktree that holds gi_paths.py itself, never the system temp folder",
           lambda: os.path.normcase(own) == os.path.normcase(os.path.join(gp.worktree_of(gp.HERE), "scratch",

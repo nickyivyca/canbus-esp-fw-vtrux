@@ -77,6 +77,14 @@ firmware/main/ and test/:
 
 import subprocess, shutil, sys, os, re
 BASE = os.path.expanduser(os.environ.get("BASE", "~/gi_review"))
+# THE MUTANTS' COPIES are in this run's own folder in the worktree's scratch/,
+# removed when the run ends, pass or fail (AGENTS.md "Removing scratch",
+# 2026-10-31; gi_paths.scratch()), and each mutant's copy is removed before the
+# next is made. They were in ~/gi_mut, outside the worktree, and cleared with
+# shutil.rmtree's ignore_errors, which leaves what it cannot remove in silence.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "..", "tools", "bench"))
+import gi_paths
 # The four lines dispatch_emits() uses to copy a core frame into a driver
 # frame. The round-6 mutations mostly APPEND to it rather than replace it, so
 # it is named once here instead of being retyped in each entry and drifting
@@ -307,6 +315,7 @@ if _b.returncode:
             print("   ", _l.strip()[:140])
     sys.exit(2)
 print("baseline green")
+RUN = gi_paths.scratch("gen-inhibit-shim-mutants")
 
 # A STALE ANCHOR IS A FAILURE OF THIS FILE, not a skip: a mutation whose
 # pattern no longer matches runs nothing, and until 2026-10-31 thirteen of the
@@ -314,8 +323,9 @@ print("baseline green")
 # end and the run exits 3.
 stale = []
 for name, (f, reps) in MUT.items():
-    d = os.path.expanduser("~/gi_mut")
-    shutil.rmtree(d, ignore_errors=True); shutil.copytree(BASE, d)
+    d = os.path.join(RUN, "gi")
+    if not gi_paths.remove_tree(d): sys.exit("the last mutant's copy is still there (above)")
+    shutil.copytree(BASE, d)
     p = os.path.join(d, f); s = open(p).read()
     ok = True
     for a, b in reps:
