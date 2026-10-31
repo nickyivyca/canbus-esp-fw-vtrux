@@ -154,8 +154,13 @@ does not know about the new bits.
   non-latching**, which is why it is a flag rather than a `diag_disable_reason`
   code: spec 6.3 and 6.4. A reason code that appeared and vanished as the truck
   parked and woke could not be told apart from a past one when reading a log.
-- **bit5 `inhibit_live`** -- the spec 7 arm interlocks are satisfied and the
-  inhibitor is transmitting. Deliberately distinct from `diag_mode` = 3, which
+- **bit5 `inhibit_live`** -- the spec 7 arm gate is satisfied and the
+  inhibit is live. On its own it does not mean the inhibitor is
+  transmitting: it stays set while the device is armed but silent, at a
+  key-off (bit6 clear) and during a 6.3 shutdown suppression (bit4 set). A
+  `0x051` is sent only with bits 5 and 6 set and bits 0, 4 and 7 clear
+  (corrected 2026-10-30, user; it said "and the inhibitor is
+  transmitting"). Deliberately distinct from `diag_mode` = 3, which
   is only what was *requested*: the two differ for the whole time the gate is
   waiting on the bus, and on a device that may auto-arm at truck-wake with
   nobody watching, that gap is the interesting thing to see in a log.
