@@ -147,6 +147,13 @@ verification"; charge-interposer reviewer, 2026-10-31).
   `bridge_ok` is fed from the receive-loss total and from the bus-off
   entry count, so a loss booked elsewhere, or a bus-off begun and ended
   between two reads, would pass it silently (`can_port.h`).
+- **Flushed frames are counted** (charge-interposer reviewer, 2026-10-31;
+  user, 2026-10-31): `can.c`'s `can_flush_rx()` cleared the receive queue
+  uncounted, and the stock enable flushes after every bring-up. Counted
+  apart from the losses, every frame received is in some count. Frames a
+  restart after bus-off recovery discards (IDF 5.4.1 `twai_start_v2()`
+  resets the receive queue) were received and never delivered, so they are
+  losses under "however they were lost".
 - **Per-install figures:** gen-inhibit spec 11's status fields are read per
   install; showing cumulative counts would be a gen-inhibit stage (b) spec
   change (port plan), so gen-inhibit computes them from the counters at its
