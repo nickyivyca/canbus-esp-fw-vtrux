@@ -104,7 +104,9 @@ def build(wt, dead, me):
         "old": mk(os.path.join(T, "b", "20261030T010000_%d" % dead)),
         "recent": mk(os.path.join(T, "b", "20261031T010000_%d" % dead), age_s=60),
         "live": mk(os.path.join(T, "b", "20261031T010001_%d" % me)),
-        "nested": mk(os.path.join(S, "build-checks", "deep", "x_%d" % dead)),
+        "nested": mk(os.path.join(S, "build-checks", "deep", "20261031T030000_%d" % dead)),
+        "mutcopy": mk(os.path.join(S, "build-checks", "deep", "interlock_judge_%d" % dead)),
+        "toolchain": mk(os.path.join(S, "fake_idf", "esp-14.2.0_20241119")),
         "fixed": mk(os.path.join(S, "build-checks", "test_source_rows"), files=3),
         "named": mk(os.path.join(T, "c", "no-pid-in-this-name")),
     }
@@ -155,8 +157,10 @@ def run(work):
           lambda: sorted(v) == sorted(rel(k) for k in want), sorted(v))
     check("the protected folders found and not walked", lambda: sorted(protected) == ["can-tools", "canre", "session-compact"]
           and not any(r.startswith(("can-tools", "canre", "session-compact")) for r in v), protected)
-    check("OTHER: the fixed folder's files under its top folder, and the loose file",
-          lambda: other.get("build-checks", [0])[0] == 3 and other.get("loose.txt", [0])[0] == 1, other)
+    check("OTHER: the fixed folder's files (and the mutant copy's) under their top folder, and the loose file",
+          lambda: other.get("build-checks", [0])[0] == 5 and other.get("loose.txt", [0])[0] == 1, other)
+    check("a name merely ending _<n> (a mutant copy, a toolchain version) is not a run folder: OTHER",
+          lambda: rel("mutcopy") not in v and rel("toolchain") not in v and other.get("fake_idf", [0])[0] == 2, other)
     check("owner files are not OTHER", lambda: "gen-inhibit-tests" not in other, other)
     check("a run folder's file count includes its insides", lambda: [r[3] for r in runs if r[0] == rel("old")] == [4])
     for word in ("REMOVE", "LEAVE", "OTHER", "owner finished", "pid in name running", "changed within 1 h",

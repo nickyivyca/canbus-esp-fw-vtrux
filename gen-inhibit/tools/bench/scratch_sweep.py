@@ -12,8 +12,9 @@ worktrees given with --worktree. Never touched, and not walked: scratch/can-tool
 scratch/canre/ (the pinned installs) and scratch/session-compact/.
 
 What it judges, walking down from each scratch/: a RUN FOLDER is one with an owner file
-beside it (gi_paths.scratch(), since 2026-10-31) or a name ending _<pid>. It does not
-walk into a run folder. For each:
+beside it (gi_paths.scratch(), since 2026-10-31) or a name of the form <yyyymmdd>T<hhmmss>_<pid>
+that scratch() gives (not any name ending _<n>: mutant copies, mkdtemp folders and toolchain
+versions end so too). It does not walk into a run folder. For each:
   REMOVE   its owner file names a finished process (no such pid, or the pid reused);
            or it has no owner file, no process with the pid in its name is running, and
            nothing in it changed in the last hour (--quiet-hours).
@@ -38,7 +39,9 @@ import time
 import gi_paths
 
 PROTECTED = ("can-tools", "canre", "session-compact")
-PID_NAME = re.compile(r"_(\d+)$")
+PID_NAME = re.compile(r"^\d{8}T\d{6}_(\d+)$")    # gi_paths.scratch()'s <time>_<pid>; not any _<n>,
+                                                # which also ends mutant copies (x_0), mkdtemp
+                                                # folders and toolchain versions (esp-14.2.0_20241119)
 
 
 def worktrees(anchor):

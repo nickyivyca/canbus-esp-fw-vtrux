@@ -32,6 +32,8 @@ MUTANTS = [
     ("the report leaves out the protected folders",
      '"; protected, not walked: " + ", ".join(protected) if protected else ""', '""'),
     ("owner files counted as OTHER", "            elif not e.name.endswith(gi_paths.OWNER_SUFFIX):", "            else:"),
+    ("any name ending _<n> taken for a run folder", r'PID_NAME = re.compile(r"^\d{8}T\d{6}_(\d+)$")',
+     r'PID_NAME = re.compile(r"_(\d+)$")'),
     ("a finished owner left", '        return "REMOVE", "owner finished"', '        return "LEAVE", "owner finished"'),
 ]
 
