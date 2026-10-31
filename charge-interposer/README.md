@@ -80,12 +80,12 @@ records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 | `harness_checks/` | Whole directory: the harness suite's mutants, can-fails and controls. Moved from reverse-it (port step 0, reviewer 2026-10-26); `README.md` inside | Tester |
 | `firmware/test/host_diff/` | The reference-vs-port differential | Tester |
 | `firmware/test/host_bridge/` | Whole directory, fakes included | Tester |
-| `firmware/test/build_check.py` | Builds every PlatformIO environment, checks the truck image is silent, and checks the manifest rows and the diag schema version (review item C2b) | Tester |
+| `firmware/test/build_check.py` | Builds every PlatformIO environment, checks the truck image is silent, and checks the manifest rows (a dirty tree gets none, 2026-10-15) and the diag schema version (review item C2b); retires with the PlatformIO build at port step 2a | Tester |
 | `firmware/test/build_check_links_test.py`, `firmware/test/build_check_manifest_test.py`, `firmware/test/build_check_schema_test.py` | Tests for `build_check.py`: the witness and truck envs against the bench env, the manifest check, `DIAG_SCHEMA_VER` against the diag DBC | Tester |
 | `firmware/test/build_check_in_clone.py` | Runs `build_check.py` in a git checkout of the run's commit (user, 2026-10-19) | Tester |
 | `firmware/test/build_check_in_clone_test.py` | Its test | Tester |
 | `firmware/test/hw_mechanics.py` | Says whether a change touches one of spec 10's hardware mechanics, so it needs a bench run (spec 12) | Tester |
-| `firmware/test/digest_recheck_check.py` | Checks that `manifest.py`'s post-link source-digest re-check fails on a stale digest | Tester |
+| `firmware/test/digest_recheck_check.py` | Checks that `manifest.py`'s post-link source-digest re-check fails on a stale digest (edit at the link, premise checked first, `--can-fail`); retires with `manifest.py` at port step 2a | Tester |
 | `firmware/test/c12_bench/` | Whole directory: the standalone ESP-IDF C12 bench Target, not a product image (reviewer, 2026-10-13) | Tester |
 | `firmware/test/vport_bench/` | Whole directory: the standalone ESP-IDF vehicle-port bench image for spec section 9, TWAI only, never on the truck (reviewer, 2026-10-13) | Tester |
 | `firmware/test/README.md` | The harness's own checks and can-fails; the implementor sends it the `host_unit` rows (reviewer, 2026-10-13) | Tester |
