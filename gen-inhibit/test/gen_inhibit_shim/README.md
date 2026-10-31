@@ -152,7 +152,8 @@ to notice a truncated rebuild).
   temporary name and renames it when complete, so an interrupted build does not leave
   a truncated file that looks current. `test_build_longarm.py` is the implementor's
   self-test of this rule (`python3 -B test_build_longarm.py`), on stand-ins in
-  `scratch/build-longarm-test/`; not evidence.
+  `scratch/build-longarm-test/<case>/`, each removed when its case ends (AGENTS.md
+  "Removing scratch"); not evidence.
 - **Which Python:** `python3`, or `make PYTHON=<interpreter>`. The suite builds
   with gcc on Linux or WSL; on Windows a bare `python3` opens the Microsoft Store,
   and the project's `python-executables-reference.md` is the per-machine table.

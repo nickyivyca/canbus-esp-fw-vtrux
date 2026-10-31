@@ -21,11 +21,11 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MAIN = os.path.normpath(os.path.join(HERE, "..", "..", "firmware", "main"))
-# AGENTS.md "Files and folders": this worktree's scratch/, at its root above
-# gen-inhibit/, never the system temp folder. Each mutant gets its own folder
-# in this run's.
-SCRATCH = os.path.normpath(os.path.join(HERE, "..", "..", "..", "scratch",
-                                        "gen-inhibit-sched-mutants"))
+# AGENTS.md "Files and folders" and "Removing scratch": the run's folder is
+# gi_paths.scratch()'s, in this worktree's scratch/, removed when the run ends,
+# pass or fail; each mutant gets its own folder in it, removed after the mutant.
+sys.path.insert(0, os.path.normpath(os.path.join(HERE, "..", "..", "tools", "bench")))
+import gi_paths  # noqa: E402
 
 # (name, file, old, new, the case that must fail)
 MUTATIONS = [
@@ -225,8 +225,7 @@ def main():
         return 2
     print("  baseline passes\n")
 
-    os.makedirs(SCRATCH, exist_ok=True)
-    run = tempfile.mkdtemp(prefix="run-", dir=SCRATCH)
+    run = gi_paths.scratch("gen-inhibit-sched-mutants")
     for name, fname, old, new, expect_case in MUTATIONS:
         tmp = tempfile.mkdtemp(prefix="gsmut_", dir=run)
         try:
@@ -286,8 +285,7 @@ def main():
                 if expect_case is not None and not hit:
                     survived.append(name + " (wrong case caught it)")
         finally:
-            shutil.rmtree(tmp, ignore_errors=True)
-    shutil.rmtree(run, ignore_errors=True)
+            gi_paths.remove_tree(tmp)
 
     print()
     if uncovered:
