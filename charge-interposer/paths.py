@@ -7,7 +7,7 @@ move every file reached its neighbours by counting `..` up the SeaDrive tree
 elsewhere, so every such path goes through this module instead, and nothing
 machine-absolute is committed.
 
-Two settings, both environment variables:
+Three settings, all environment variables:
 
   REVERSE_IT_DIR      REQUIRED for anything that reads data. The absolute
                       path of SeaDrive's reverse-it root on this machine (the
@@ -18,6 +18,10 @@ Two settings, both environment variables:
                       folders (`projects/vtrux/notes/artifacts/
                       interposer-firmware/`, `.../interposer-runs/`). There
                       is no default: unset is a clear error, never a guess.
+  CAN_TOOLS_DIR       REQUIRED for a real dongle other than gs_usb. The
+                      absolute path of the can-tools clone on this machine
+                      (the folder holding canbench/). No default, as for
+                      REVERSE_IT_DIR.
   VTRUX_PUBLIC_REPO   Optional. The public canbus-reveng-vtrux-coda clone,
                       which supplies the vehicle DBCs. Default: the sibling
                       directory `../canbus-reveng-vtrux-coda` of this repo.
@@ -33,9 +37,11 @@ and checked by canre_pin.py (port step 0 for the interposer, reviewer,
 2026-10-26). It carries both parser fixes (signed BUSMASTER timestamp
 components and midnight rollover) that kept canre on SeaDrive's copy from
 2026-10-08 until then. SeaDrive's canre is never read. canbench, the
-adapter detection bus.open_bus uses for real dongles, is not in the public
-repo and still comes from REVERSE_IT_DIR, by import_canbench(), which loads
-that one package without putting the reverse-it root on sys.path.
+adapter detection bus.open_bus uses for real dongles, comes from the
+can-tools clone at CAN_TOOLS_DIR, by import_canbench(), which loads that one
+package without putting the clone or the reverse-it root on sys.path
+(AGENTS.md, "can-tools: the CAN adapter package", user 2026-10-30). Until
+then it came from reverse-it's canbench/ mirror, which is never read now.
 
 The interposer diag DBC is in this repo (diag/), so diag_dbc() needs no
 setting; it is here so that every reader names one path.
@@ -80,6 +86,24 @@ def reverse_it_dir():
         raise PathsError(
             "REVERSE_IT_DIR=%s has no projects/vtrux/notes/artifacts/ -- it "
             "must be SeaDrive's reverse-it root" % v)
+    return v
+
+
+def can_tools_dir():
+    """The can-tools clone, from CAN_TOOLS_DIR (AGENTS.md, "can-tools: the
+    CAN adapter package", user 2026-10-30)."""
+    v = os.environ.get("CAN_TOOLS_DIR", "").strip()
+    if not v:
+        raise PathsError(
+            "CAN_TOOLS_DIR is not set. Set it to the absolute path of the "
+            "can-tools clone on this machine (canbench/ inside it); "
+            "reverse-it's canbench/ mirror is not read. See "
+            "charge-interposer/paths.py.")
+    v = os.path.normpath(v)
+    if not os.path.isfile(os.path.join(v, "canbench", "__init__.py")):
+        raise PathsError(
+            "CAN_TOOLS_DIR=%s has no canbench/ -- it must be the can-tools "
+            "clone" % v)
     return v
 
 
@@ -183,23 +207,24 @@ def add_canre():
 
 
 def import_canbench():
-    """reverse-it's canbench package (bus.open_bus's adapter detection),
-    imported from REVERSE_IT_DIR/canbench by file. The reverse-it root is
-    never put on sys.path: that is how it came in before port step 0, and
-    it would bring SeaDrive's canre/ with it."""
+    """The canbench package (bus.open_bus's adapter detection), imported
+    from CAN_TOOLS_DIR/canbench by file. Neither the clone nor the
+    reverse-it root is put on sys.path (AGENTS.md, "can-tools"): the
+    reverse-it root is how canbench came in before port step 0, and it
+    would bring SeaDrive's canre/ with it. A canbench already imported from
+    anywhere else is refused."""
     import importlib.util
-    d = os.path.join(reverse_it_dir(), "canbench")
+    d = os.path.join(can_tools_dir(), "canbench")
     init = os.path.join(d, "__init__.py")
     have = sys.modules.get("canbench")
     if have is not None:
-        if os.path.normpath(getattr(have, "__file__", "") or "") \
-                != os.path.normpath(init):
-            raise PathsError("canbench is already imported from %s, not %s"
+        if os.path.normcase(os.path.normpath(
+                getattr(have, "__file__", "") or "")) \
+                != os.path.normcase(os.path.normpath(init)):
+            raise PathsError("canbench is already imported from %s, not %s "
+                             "(CAN_TOOLS_DIR)"
                              % (getattr(have, "__file__", None), d))
         return have
-    if not os.path.isfile(init):
-        raise PathsError("no canbench/ at %s (REVERSE_IT_DIR)"
-                         % reverse_it_dir())
     spec = importlib.util.spec_from_file_location(
         "canbench", init, submodule_search_locations=[d])
     mod = importlib.util.module_from_spec(spec)
@@ -214,7 +239,7 @@ def import_canbench():
 
 if __name__ == "__main__":
     for name in ("reverse_it_dir", "data_dir", "fixtures", "runs_dir", "logs", "dbc_dir",
-                 "canre_root"):
+                 "canre_root", "can_tools_dir"):
         try:
             print("%-14s %s" % (name, globals()[name]()))
         except PathsError as e:

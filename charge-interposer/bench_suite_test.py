@@ -11,6 +11,9 @@ suites (tester, 2026-10-18). No hardware, no runner, no ssh.
            check of its own suite; every skip names its spec item or ruling
   pycache  no __pycache__ in charge-interposer/ or shared/bench/ makes the
            clone dirty (a dirty clone cannot be resumed)
+  record   the bench run records the can-tools clone's commit and dirty
+           state, or the refusal when CAN_TOOLS_DIR is unset; the emulated
+           and harness suites, which open no dongle, do not
 
     py -3.14 charge-interposer/bench_suite_test.py [--can-fail]
 
@@ -998,13 +1001,57 @@ def test_scripts_in_tree():
     assert n >= 150, "only %d scripts checked: the walk is wrong" % n
 
 
+def _can_tools_fixture():
+    """A one-commit git repo holding canbench/: a fake can-tools clone.
+    -> (folder, commit)."""
+    d = os.path.join(TMP, "can-tools")
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(os.path.join(d, "canbench"))
+    open(os.path.join(d, "canbench", "__init__.py"), "w").close()
+    g = ["git", "-C", d, "-c", "user.name=t", "-c", "user.email=t@t"]
+    for a in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "t"]):
+        subprocess.run(g + a, check=True, capture_output=True)
+    head = subprocess.run(g + ["rev-parse", "HEAD"], check=True,
+                          capture_output=True, text=True).stdout.strip()
+    return d, head
+
+
+def test_can_tools_record():
+    """canbench comes from the can-tools clone at CAN_TOOLS_DIR (AGENTS.md,
+    "can-tools", user 2026-10-30), with no pin yet, so the bench run
+    records the clone's commit and whether it was dirty (reviewer,
+    2026-10-30)."""
+    saved = os.environ.get("CAN_TOOLS_DIR")
+    try:
+        d, head = _can_tools_fixture()
+        os.environ["CAN_TOOLS_DIR"] = d
+        s, su = _all()
+        ct = su["bench"].code_info(None).get("can_tools")
+        assert ct == {"dir": os.path.normpath(d), "commit": head,
+                      "dirty": False}, ct
+        open(os.path.join(d, "stray.txt"), "w").close()
+        ct = su["bench"].code_info(None).get("can_tools")
+        assert ct and ct.get("commit") == head and ct.get("dirty") is True, ct
+        for k in ("emulated", "harness"):
+            assert "can_tools" not in su[k].code_info(None), k
+        os.environ.pop("CAN_TOOLS_DIR")
+        ct = su["bench"].code_info(None).get("can_tools") or {}
+        assert "CAN_TOOLS_DIR is not set" in ct.get("error", "") \
+            and "commit" not in ct, ct
+    finally:
+        if saved is None:
+            os.environ.pop("CAN_TOOLS_DIR", None)
+        else:
+            os.environ["CAN_TOOLS_DIR"] = saved
+
+
 TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_corrupt_pin_judge, test_c12_judge, test_host_bridge_judge,
          test_suites, test_mutant_wiring, test_identify, test_pycache_ignored,
          test_usb_baselines, test_usb_stops, test_reopen_skip,
          test_script_coverage, test_shared_bench_tests, test_strict_port_off,
          test_vport_split, test_bench_argv, test_wican_board,
-         test_scripts_in_tree]
+         test_scripts_in_tree, test_can_tools_record]
 
 
 # ---- can-fail -----------------------------------------------------------
@@ -1132,6 +1179,30 @@ _ORIG["self._ARGV_PROBE"] = _ARGV_PROBE
 _ORIG["SELF_TESTS"] = B.SELF_TESTS
 _ORIG["CAN_FAILS"] = B.CAN_FAILS
 _ORIG["SHARED_BENCH_TESTS"] = B.SHARED_BENCH_TESTS
+_ORIG["can_tools_info"] = B.can_tools_info
+
+
+def _ct_never_dirty():
+    r = _ORIG["can_tools_info"]()
+    if "dirty" in r:
+        r["dirty"] = False
+    return r
+
+
+def _ct_no_refusal():
+    r = _ORIG["can_tools_info"]()
+    r.pop("error", None)
+    return r
+
+
+def _bench_without_can_tools(s):
+    info = s.code_info
+
+    def no_ct(ctx):
+        out = info(ctx)
+        out.pop("can_tools", None)
+        return out
+    s.code_info = no_ct
 
 
 def _drop_harness_check(cid):
@@ -1392,6 +1463,14 @@ MUTANTS = {
          "shared/bench without its .gitignore (the 20d3 resume refusal)"),
         ("self._PYCACHE_DROP", ("charge-interposer/.gitignore",),
          "charge-interposer without its .gitignore")],
+    "test_can_tools_record": [
+        ("can_tools_info", lambda: {}, "the clone's commit not recorded"),
+        ("can_tools_info", _ct_never_dirty,
+         "the clone recorded clean whatever its state"),
+        ("can_tools_info", _ct_no_refusal,
+         "CAN_TOOLS_DIR unset recorded without the refusal"),
+        ("bench", _wrap_suite("bench", _bench_without_can_tools),
+         "the bench record without the clone")],
     "test_scripts_in_tree": [
         ("bench", _wrap_suite("bench", _artifacts_script),
          "a bench driver run from {interposer_artifacts}"),

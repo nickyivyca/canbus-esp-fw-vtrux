@@ -10,10 +10,14 @@
   - canre is the pinned install (canre_pin.py), with or without
     REVERSE_IT_DIR, and never a canre/ under REVERSE_IT_DIR (port step 0,
     reviewer 2026-10-26; canre_pin_test.py tests the pin itself);
-  - import_canbench() loads REVERSE_IT_DIR/canbench without putting the
-    root on sys.path or making its canre/ importable, shown able to fail
-    on the old way (the root on sys.path), and refuses a missing canbench/
-    or one already imported from elsewhere;
+  - import_canbench() loads canbench from the can-tools clone,
+    CAN_TOOLS_DIR/canbench (AGENTS.md, "can-tools", user 2026-10-30),
+    never from reverse-it's canbench/ mirror, with REVERSE_IT_DIR set or
+    not; it puts neither the clone nor the reverse-it root on sys.path nor
+    makes the root's canre/ importable, both shown able to fail (each put
+    on sys.path); and it refuses CAN_TOOLS_DIR unset, a CAN_TOOLS_DIR with
+    no canbench/, and a canbench already imported from elsewhere (the
+    mirror included);
   - `run_scenario.py --list` runs with REVERSE_IT_DIR unset (only touching
     data needs it);
   - diag_dbc() is the git copy, diag/vtrux-interposer-diag.dbc beside
@@ -134,40 +138,85 @@ def _root_exposed(root):
     return on_path or fake
 
 
+def _on_path(d):
+    """Whether folder d is on sys.path."""
+    r = os.path.normcase(os.path.normpath(d))
+    return any(os.path.normcase(os.path.normpath(p or ".")) == r
+               for p in sys.path)
+
+
 def canbench_checks(root, tmp):
-    """import_canbench(): canbench from REVERSE_IT_DIR, the root never on
-    sys.path (it would bring SeaDrive's canre/ with it, as bus.py's
-    add_canre(required=False) did before port step 0)."""
-    for rel, text in (("canbench/__init__.py", "WHO = 'fake root'\n"),
-                      ("canbench/live/__init__.py", ""),
-                      ("canbench/live/receiver.py", "X = 1\n"),
-                      ("canre/__init__.py", "FAKE = True\n")):
-        p = os.path.join(root, *rel.split("/"))
+    """import_canbench(): canbench from the can-tools clone at CAN_TOOLS_DIR
+    (AGENTS.md, "can-tools: the CAN adapter package", user 2026-10-30),
+    never reverse-it's canbench/ mirror; neither the clone nor the
+    reverse-it root on sys.path (the root would bring SeaDrive's canre/
+    with it, as bus.py's add_canre(required=False) did before port step
+    0). root is the fake reverse-it root, REVERSE_IT_DIR on entry; it gets
+    a mirror canbench/ that must never be the one loaded."""
+    clone = os.path.join(tmp, "can-tools")
+    for base, rel, text in (
+            (clone, "canbench/__init__.py", "WHO = 'clone'\n"),
+            (clone, "canbench/live/__init__.py", ""),
+            (clone, "canbench/live/receiver.py", "X = 1\n"),
+            (root, "canbench/__init__.py", "WHO = 'mirror'\n"),
+            (root, "canbench/live/__init__.py", ""),
+            (root, "canbench/live/receiver.py", "X = 2\n"),
+            (root, "canre/__init__.py", "FAKE = True\n")):
+        p = os.path.join(base, *rel.split("/"))
         os.makedirs(os.path.dirname(p), exist_ok=True)
         with open(p, "w") as f:
             f.write(text)
     path0 = list(sys.path)
     _drop_canbench()
     try:
+        os.environ.pop("CAN_TOOLS_DIR", None)
+        check(raises(PA.import_canbench, "CAN_TOOLS_DIR is not set"),
+              "CAN_TOOLS_DIR unset: a PathsError naming the setting, the "
+              "mirror under REVERSE_IT_DIR not taken instead")
+        check("canbench" not in sys.modules,
+              "... and no canbench is left imported")
+        os.environ["CAN_TOOLS_DIR"] = tmp
+        check(raises(PA.import_canbench, "has no canbench/"),
+              "a CAN_TOOLS_DIR with no canbench/ is refused")
+        check(raises(PA.can_tools_dir, "it must be the can-tools clone"),
+              "... and can_tools_dir() says it must be the clone")
+
+        os.environ["CAN_TOOLS_DIR"] = clone
+        check(os.path.normpath(PA.can_tools_dir()) == os.path.normpath(clone),
+              "can_tools_dir() is CAN_TOOLS_DIR")
         cb = PA.import_canbench()
         import canbench.live.receiver as rcv
-        check(getattr(cb, "WHO", None) == "fake root"
+        check(getattr(cb, "WHO", None) == "clone"
               and getattr(rcv, "X", None) == 1,
-              "import_canbench() loads REVERSE_IT_DIR/canbench, and "
-              "canbench.live.receiver imports from it")
-        check(not _root_exposed(root),
-              "... with the reverse-it root not on sys.path and its canre/ "
-              "not importable")
+              "import_canbench() loads CAN_TOOLS_DIR/canbench, not the "
+              "mirror, and canbench.live.receiver imports from it")
+        check(not _on_path(clone) and not _root_exposed(root),
+              "... with neither the clone nor the reverse-it root on "
+              "sys.path, and the root's canre/ not importable")
         check(PA.import_canbench() is cb, "a second call returns the same "
               "module")
-
-        # the check above can fail: the old way, the root on sys.path
         _drop_canbench()
+        rit = os.environ.pop("REVERSE_IT_DIR")
+        try:
+            check(getattr(PA.import_canbench(), "WHO", None) == "clone",
+                  "import_canbench() needs no REVERSE_IT_DIR")
+        finally:
+            os.environ["REVERSE_IT_DIR"] = rit
+        _drop_canbench()
+
+        # the path checks above can fail: the clone on sys.path, and the
+        # old way, the reverse-it root on sys.path
+        sys.path.insert(0, clone)
+        check(_on_path(clone), "can-fail: the clone put on sys.path is "
+              "caught")
+        sys.path[:] = path0
         sys.path.insert(0, root)
         import canbench                          # noqa: F401
         check(_root_exposed(root),
               "can-fail: the root put on sys.path (the old way) is caught")
         sys.path[:] = path0
+        check(raises(PA.import_canbench, "already imported from"),
+              "a canbench already imported from the mirror is refused")
         _drop_canbench()
 
         other = os.path.join(tmp, "other")
@@ -181,9 +230,9 @@ def canbench_checks(root, tmp):
               "a canbench already imported from elsewhere is refused")
         _drop_canbench()
 
-        shutil.rmtree(os.path.join(root, "canbench"))
-        check(raises(PA.import_canbench, "no canbench/"),
-              "no canbench/ under REVERSE_IT_DIR is a PathsError")
+        shutil.rmtree(os.path.join(clone, "canbench"))
+        check(raises(PA.import_canbench, "has no canbench/"),
+              "a clone with no canbench/ is a PathsError")
     finally:
         sys.path[:] = path0
         _drop_canbench()
@@ -191,7 +240,7 @@ def canbench_checks(root, tmp):
 
 def main():
     names = ("REVERSE_IT_DIR", "VTRUX_DATA", "VTRUX_PUBLIC_REPO", "CANRE_DIR",
-             "INTERPOSER_CODE")
+             "INTERPOSER_CODE", "CAN_TOOLS_DIR")
     saved = {k: os.environ.get(k) for k in names}
     tmp = tempfile.mkdtemp(dir=HERE, prefix="paths_test_")
     try:

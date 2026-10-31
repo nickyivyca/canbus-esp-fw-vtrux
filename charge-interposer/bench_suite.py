@@ -441,6 +441,31 @@ def _stage_git_bundle(code):
     return d, commit
 
 
+def can_tools_info():
+    """The can-tools clone the bench's canbench comes from (AGENTS.md,
+    "can-tools", user 2026-10-30): its commit and whether it is dirty,
+    recorded beside the harness commit that carries the canre pin. canbench
+    has no pin of its own yet (reviewer, 2026-10-30), so this records, and
+    gates nothing. CAN_TOOLS_DIR unset or wrong is recorded as the
+    refusal paths.can_tools_dir() gives; the checks that open a dongle
+    other than gs_usb then refuse with it themselves."""
+    import subprocess
+    import paths
+    try:
+        d = paths.can_tools_dir()
+    except paths.PathsError as e:
+        return {"error": str(e)}
+    head = subprocess.run(["git", "-C", d, "rev-parse", "HEAD"],
+                          capture_output=True, text=True)
+    dirty = subprocess.run(["git", "-C", d, "status", "--porcelain"],
+                           capture_output=True, text=True)
+    if head.returncode or dirty.returncode:
+        return {"dir": d, "error": "not a git clone: %s"
+                % (head.stderr or dirty.stderr).strip()}
+    return {"dir": d, "commit": head.stdout.strip(),
+            "dirty": bool(dirty.stdout.strip())}
+
+
 # ---- check builders -----------------------------------------------------
 class _Build:
     """The check builders and shared pieces the three suites use."""
@@ -528,6 +553,7 @@ class _Build:
                         "dirty": bool(subprocess.run(
                             ["git", "-C", gi, "status", "--porcelain"],
                             capture_output=True, text=True).stdout.strip())}
+                out["can_tools"] = can_tools_info()
             return out
         return info
 
