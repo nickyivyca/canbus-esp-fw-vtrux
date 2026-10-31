@@ -111,11 +111,18 @@ void can_unblock(void)
 }
 
 
-void can_enable(void)
+/*
+ * THE REPORTING FORM OF THE STOCK ENABLE (C3): can_enable() without the
+ * restart. A failed configure or bring-up returns its error and leaves the bus
+ * off, whatever the backend's install-failure choice (twai_port T2); ON_BUS
+ * only on success. For a project's own bring-up, which refuses rather than
+ * restarts (gen-inhibit spec 3.3). ESP_OK if already on.
+ */
+esp_err_t can_port_stock_enable(void)
 {
 	if(can_cfg.bus_state == ON_BUS)
 	{
-		return;
+		return ESP_OK;
 	}
 
 	/*
@@ -137,21 +144,32 @@ void can_enable(void)
 	{
 		/*
 		 * The backend's bring-up: the install, the start, the alerts and the
-		 * transceiver out of standby. A project that chose abort on an install
-		 * failure (twai_port T2) never returns from a failed one, as can.c's
-		 * ESP_ERROR_CHECK did not.
+		 * transceiver out of standby. A backend set to abort on an install
+		 * failure (twai_port T2) does not return from a failed one.
 		 */
 		err = can_port_up(CAN_STOCK_PORT);
 	}
 	if(err != ESP_OK)
 	{
 		ESP_LOGE(TAG, "port 0 would not come up: %s", esp_err_to_name(err));
-		return;
+		return err;
 	}
 
 	can_port_flush_rx(CAN_STOCK_PORT);
 	can_unblock();
 	can_cfg.bus_state = ON_BUS;
+	return ESP_OK;
+}
+
+/*
+ * The stock enable restarts on any failed configure or bring-up, as can.c's
+ * ESP_ERROR_CHECK on the install and the start did (C3, today's behaviour),
+ * whatever the backend's install-failure choice: a backend set to report
+ * returns here, and the restart is this one.
+ */
+void can_enable(void)
+{
+	ESP_ERROR_CHECK(can_port_stock_enable());
 }
 
 void can_disable(void)

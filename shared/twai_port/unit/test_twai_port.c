@@ -319,6 +319,8 @@ static void case_teardown_step_failures(void)
     stub_status(1, &s0);
     stub.uninstall_ret = ESP_ERR_INVALID_STATE;
     CHECK(twai_port_teardown() == ESP_ERR_INVALID_STATE);
+    /* Still installed: out of standby again, as when the stop is refused. */
+    CHECK_CALLS("HOOK status standby_on uninstall standby_off");
     CHECK(twai_port_is_installed());
     CHECK(status().tx_discarded_teardown == 0);     /* booked only once gone */
 

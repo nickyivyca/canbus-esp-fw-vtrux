@@ -407,6 +407,9 @@ esp_err_t twai_port_teardown(void)
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "teardown: uninstall refused: %s", esp_err_to_name(err));
+        /* Still installed, so the transceiver comes back out of standby, as
+         * when the stop is refused. */
+        (void)board_can_standby(s_cfg.board_port, false);
         return err;
     }
 

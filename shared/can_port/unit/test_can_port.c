@@ -26,7 +26,10 @@ static const char *s_case;
 
 int stub_log_e, stub_log_w;
 const char *esp_err_to_name(esp_err_t e) { (void)e; return "err"; }
-void stub_error_check_failed(esp_err_t e) { (void)e; }
+/* The restart: counted, with the error it was for. */
+static int s_restarts;
+static esp_err_t s_restart_err;
+void stub_error_check_failed(esp_err_t e) { s_restarts++; s_restart_err = e; }
 
 static int64_t s_now_us;
 int64_t esp_timer_get_time(void) { return s_now_us; }
@@ -146,6 +149,8 @@ static void reset(void)
     memset(&s_timer, 0, sizeof(s_timer));
     memset(&b, 0, sizeof(b));
     stub_log_e = stub_log_w = 0;
+    s_restarts = 0;
+    s_restart_err = ESP_OK;
 }
 
 /* Port 0 registered, can_init() done, the call log cleared. */
@@ -269,12 +274,15 @@ static void case_enable_settings(void)
     CHECK(can_cfg.loopback == 1);
 }
 
+/* C3: the stock enable restarts on a failed bring-up or configure, whatever
+ * the backend chose, as can.c's ESP_ERROR_CHECK did. */
 static void case_enable_fails(void)
 {
     ready();
-    b.up_ret = ESP_ERR_INVALID_STATE;
+    b.up_ret = ESP_ERR_NO_MEM;
     can_enable();
     CHECK_CALLS("configure up");
+    CHECK(s_restarts == 1 && s_restart_err == ESP_ERR_NO_MEM);
     CHECK(!can_is_enabled() && stub_log_e == 1);
     fire_timer();
     CHECK(!(s_bits & CAN_ENABLE_BIT));
@@ -283,7 +291,46 @@ static void case_enable_fails(void)
     b.configure_ret = ESP_ERR_INVALID_STATE;
     can_enable();
     CHECK_CALLS("configure");
+    CHECK(s_restarts == 1 && s_restart_err == ESP_ERR_INVALID_STATE);
     CHECK(!can_is_enabled());
+
+    /* Success and already-on restart nothing. */
+    reset(); ready();
+    can_enable();
+    can_enable();
+    CHECK(s_restarts == 0 && can_is_enabled());
+}
+
+/* C3's reporting form: the error back, the bus left off, no restart. */
+static void case_stock_enable_reports(void)
+{
+    ready();
+    b.up_ret = ESP_ERR_NO_MEM;
+    CHECK(can_port_stock_enable() == ESP_ERR_NO_MEM);
+    CHECK_CALLS("configure up");
+    CHECK(s_restarts == 0 && !can_is_enabled() && stub_log_e == 1);
+    fire_timer();
+    CHECK(!(s_bits & CAN_ENABLE_BIT));
+
+    /* The setters still take effect: the bus is off. */
+    can_set_silent(1);
+    CHECK(can_is_silent());
+
+    reset(); ready();
+    b.configure_ret = ESP_ERR_INVALID_STATE;
+    CHECK(can_port_stock_enable() == ESP_ERR_INVALID_STATE);
+    CHECK_CALLS("configure");
+    CHECK(s_restarts == 0 && !can_is_enabled());
+
+    /* Success: the stock enable's sequence and state; again, nothing. */
+    reset(); ready();
+    CHECK(can_port_stock_enable() == ESP_OK);
+    CHECK_CALLS("configure up flush_rx");
+    CHECK(can_is_enabled() && s_restarts == 0);
+    fire_timer();
+    CHECK(s_bits & CAN_ENABLE_BIT);
+    b.n = 0;
+    CHECK(can_port_stock_enable() == ESP_OK && b.n == 0);
 }
 
 static void case_disable(void)
@@ -421,6 +468,7 @@ int main(void)
         { "enable", case_enable },
         { "enable_settings", case_enable_settings },
         { "enable_fails", case_enable_fails },
+        { "stock_enable_reports", case_stock_enable_reports },
         { "disable", case_disable },
         { "disable_refused", case_disable_refused },
         { "send", case_send },

@@ -164,6 +164,15 @@ const char *can_port_name(int port);
  */
 void can_port_register_owner(bool (*owns_bus)(void), void (*refused)(void));
 
+/*
+ * THE REPORTING FORM OF THE STOCK ENABLE (C3). can_enable() on port 0 with
+ * the stock settings, but a failed configure or bring-up returns its error and
+ * leaves the bus off instead of restarting, whatever the backend's
+ * install-failure choice. ESP_OK if already on. can_enable() is this call plus
+ * a restart on failure. For a project's own bring-up of port 0.
+ */
+esp_err_t can_port_stock_enable(void);
+
 #ifdef __cplusplus
 }
 #endif

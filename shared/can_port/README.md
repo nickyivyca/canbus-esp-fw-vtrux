@@ -14,8 +14,8 @@ code to test.
 
 | File | What |
 |---|---|
-| `include/can_port.h`, `can_port.c` | the interface: the backend table per port index (C1), the operations of C2 by port, the status and its counters, the owner hook of C4 |
-| `include/can.h`, `can_stock.c` | the stock WiCAN code's CAN calls on port 0 (C3), with the stock rate-code table, the owner's refusal (C4) and the teardown through the backend (C5); made from gen-inhibit's `can.c`. `can.h` was `vtrux/wican`'s until 1b |
+| `include/can_port.h`, `can_port.c` | the interface: the backend table per port index (C1), the operations of C2 by port, the status and its counters, the owner hook of C4, the stock enable's reporting form (C3) |
+| `include/can.h`, `can_stock.c` | the stock WiCAN code's CAN calls on port 0 (C3), with the stock rate-code table, the owner's refusal (C4) and the teardown through the backend (C5); the stock enable restarts on a failed bring-up, and `can_port_stock_enable()` (declared in `can_port.h`) is its reporting form, for a project's own bring-up; made from gen-inhibit's `can.c`. `can.h` was `vtrux/wican`'s until 1b |
 | `can_port_priv.h` | between the two `.c` files: the stock calls' configure and flush, and the owner hook's two calls |
 | `CMakeLists.txt`, `idf_component.yml` | the component |
 | `unit/` | the unit tests and their scripted backend (`unit/README.md`) |
