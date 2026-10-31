@@ -37,4 +37,4 @@ until nothing reads them. Since the move:
 | `e5_arming_controls.py` | E5's arming checks (spec 3), shown able to fail |
 | `clamp_frame_cases.py` | Every HOLD page-01 frame that owes a clamp in a trace, listed |
 | `cutover_verify.py` | Verifies the 2026-10-08 git cutover, file by file (historical) |
-| `cutover_verify_test.py` | Its test; the suite runs only `--guard-test`, which refuses a scratch folder in SeaDrive or in this tree outside its `scratch/`; the full test copies into a `scratch_dir` run folder (2026-10-31; before, the machine temp folder) |
+| `cutover_verify_test.py` | Its test: only `--guard-test`, which the suite runs, and which refuses a scratch folder in SeaDrive or in this tree outside its `scratch/`. The full mode is retired (2026-10-31): it copied SeaDrive's `tools/interposer/`, emptied after the 2026-10-08 move it checked, so it has failed since; it refuses (exit 2) |

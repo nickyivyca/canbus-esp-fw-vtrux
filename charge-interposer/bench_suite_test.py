@@ -11,6 +11,10 @@ suites (tester, 2026-10-18). No hardware, no runner, no ssh.
            check of its own suite; every skip names its spec item or ruling
   pycache  no __pycache__ in charge-interposer/ or shared/bench/ makes the
            clone dirty (a dirty clone cannot be resumed)
+  stage    the build-check bundle is made in a scratch_dir run folder of
+           this process under runner-stage/, once per commit, and
+           registered for removal at exit; a killed run's folder is
+           pruned; never the system temp folder (reviewer, 2026-10-31)
   record   the bench run records the can-tools pin (repo, commit), and the
            folder and clone once the folder passes the pin's checks, or the
            refusal (a hand-edited folder, none installed, CAN_TOOLS_DIR
@@ -24,12 +28,15 @@ passes everything, a suite with its requires dropped, ...) and requires the
 test to fail; exit 0 only if every mutant is caught.
 """
 
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import traceback
+import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -1045,13 +1052,71 @@ def test_can_tools_record():
         scratch_dir.remove(base)
 
 
+def _under(path, top):
+    a, b = (os.path.normcase(os.path.realpath(x)) for x in (path, top))
+    try:
+        return os.path.commonpath([a, b]) == b
+    except ValueError:
+        return False
+
+
+def test_runner_stage():
+    td = scratch_dir.tool_dir("runner-stage")
+    os.makedirs(td, exist_ok=True)
+    # a run killed before its exit handler: this pid with another start
+    killed = tempfile.mkdtemp(prefix="runner-stage-killed-", dir=td)
+    with open(os.path.join(killed, scratch_dir.OWNER), "w",
+              encoding="utf-8") as f:
+        json.dump(dict(scratch_dir.owner_record(), start=-1), f)
+    assert scratch_dir.state(killed) == "finished", killed
+    head = subprocess.run(["git", "-C", os.path.dirname(HERE), "rev-parse",
+                           "HEAD"], capture_output=True, text=True,
+                          check=True).stdout.strip()
+    B._STAGED.pop(head, None)
+    exits = []
+    keep = B.atexit
+    B.atexit = types.SimpleNamespace(
+        register=lambda fn, *a: exits.append((fn, a)))
+    run = None
+    try:
+        d, commit = B._stage_git_bundle(HERE)
+        d2, _c = B._stage_git_bundle(HERE)
+        run = os.path.dirname(d)
+        assert commit == head, (commit, head)
+        assert not _under(d, tempfile.gettempdir()), \
+            "the bundle is in the system temp folder: %s" % d
+        assert os.path.basename(d) == "gitb" and _under(run, td) \
+            and os.path.dirname(os.path.realpath(run)) == os.path.realpath(td), \
+            "the bundle is not in gitb/ of a runner-stage run folder: %s" % d
+        o = scratch_dir.owner(run) or {}
+        assert scratch_dir.state(run) == "live" and o.get("pid") == os.getpid(), \
+            "the run folder is not this process's: %s %s" % (run, o)
+        r = subprocess.run(["git", "-C", os.path.dirname(HERE), "bundle",
+                            "list-heads", os.path.join(d, "repo.bundle")],
+                           capture_output=True, text=True)
+        assert r.returncode == 0 and head in r.stdout, (r.stdout, r.stderr)
+        assert d2 == d, "a second bundle for the same commit: %s, %s" % (d, d2)
+        assert not os.path.isdir(killed), \
+            "a killed run's folder was not pruned: %s" % killed
+        assert exits == [(scratch_dir.remove, (run,))], \
+            "removal at exit not registered once for %s: %s" % (run, exits)
+        exits[0][0](*exits[0][1])
+        assert not os.path.isdir(run), "the exit handler left %s" % run
+    finally:
+        B.atexit = keep
+        B._STAGED.pop(head, None)
+        for x in [killed, run] + [a[0] for _f, a in exits]:
+            if x and os.path.isdir(x):
+                scratch_dir.remove(x)
+
+
 TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_corrupt_pin_judge, test_c12_judge, test_host_bridge_judge,
          test_suites, test_mutant_wiring, test_identify, test_pycache_ignored,
          test_usb_baselines, test_usb_stops, test_reopen_skip,
          test_script_coverage, test_shared_bench_tests, test_strict_port_off,
          test_vport_split, test_bench_argv, test_wican_board,
-         test_scripts_in_tree, test_can_tools_record]
+         test_scripts_in_tree, test_can_tools_record, test_runner_stage]
 
 
 # ---- can-fail -----------------------------------------------------------
@@ -1180,6 +1245,10 @@ _ORIG["SELF_TESTS"] = B.SELF_TESTS
 _ORIG["CAN_FAILS"] = B.CAN_FAILS
 _ORIG["SHARED_BENCH_TESTS"] = B.SHARED_BENCH_TESTS
 _ORIG["can_tools_info"] = B.can_tools_info
+_ORIG["_stage_git_bundle"] = B._stage_git_bundle
+_ORIG["_remove_at_exit"] = B._remove_at_exit
+_ORIG["_STAGED"] = B._STAGED
+_ORIG["scratch_dir.make"] = scratch_dir.make
 
 
 def _ct_unchecked():
@@ -1317,6 +1386,35 @@ def _staged_art(s):
 
 def _missing_script(s):
     _check(s, "l2-mutations").argv[1] = "harness_checks/no_such_mutations.sh"
+
+
+def _stage_kept(code):
+    """The bundle as before 2026-10-31: a plain folder per commit, kept,
+    no owner (here under TMP, not the system temp folder)."""
+    repo = os.path.dirname(code)
+    commit = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"],
+                            capture_output=True, text=True,
+                            check=True).stdout.strip()
+    d = os.path.join(TMP, "runner-stage", "gitb-" + commit[:12])
+    os.makedirs(d, exist_ok=True)
+    subprocess.run(["git", "-C", repo, "bundle", "create",
+                    os.path.join(d, "repo.bundle"), "HEAD"],
+                   capture_output=True, check=True)
+    return d, commit
+
+
+class _NoStore(dict):
+    def __setitem__(self, k, v):
+        pass
+
+
+def _make_no_prune(tool, start=None):
+    d = scratch_dir.tool_dir(tool, start)
+    os.makedirs(d, exist_ok=True)
+    p = tempfile.mkdtemp(prefix="%s-%d-" % (tool, os.getpid()), dir=d)
+    with open(os.path.join(p, scratch_dir.OWNER), "w", encoding="utf-8") as f:
+        json.dump(scratch_dir.owner_record(), f)
+    return p
 
 
 # test -> [(module attribute, replacement, what the mutant does)]
@@ -1488,6 +1586,15 @@ MUTANTS = {
          "the madhouse mutants shipping an art staging"),
         ("harness", _wrap_suite("harness", _missing_script),
          "a madhouse mutant naming a script the tree lacks")],
+    "test_runner_stage": [
+        ("_stage_git_bundle", _stage_kept,
+         "the bundle in a kept per-commit folder outside runner-stage"),
+        ("_remove_at_exit", lambda path: None,
+         "the run folder never removed at exit"),
+        ("_STAGED", _NoStore(),
+         "a new bundle at every call for the same commit"),
+        ("scratch_dir.make", _make_no_prune,
+         "a killed run's folder never pruned")],
     "test_bench_argv": [
         ("bench", _wrap_suite("bench", _flight_silence_a25e),
          "flight-silence gives --pcan a value (the a25e line)"),
