@@ -59,7 +59,7 @@ NOTE_SHUTDOWN_AT_KEYON = (
 REPLAYS = [
     ("replay-genrun-stop", "vtrux_20260719_190019_T4.log", 2, 0, 220, None),
     ("replay-healthy-engine-off", "vtrux_20260323_220148_T0.log", 1, 0, 300, None),
-    ("replay-mmode-genstart", "vtrux_20260322_165622_T1.log", 1, 0, 64, None),
+    ("replay-mmode-genstart", "generator-on-then-off.log", 3, 0, 64, None),
     ("replay-shutdown-at-keyon", "vtrux_20260714_112312_T2.log", 2, 0, 225,
      NOTE_SHUTDOWN_AT_KEYON),
     ("replay-bus-sleeps", "vtrux_20260802_123318_T0.log", 2, 0, 161, None),

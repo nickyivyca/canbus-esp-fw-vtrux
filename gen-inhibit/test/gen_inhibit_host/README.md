@@ -263,7 +263,7 @@ python3 from_capture.py $L/vtrux_20260719_190019_T4.log --channel 2 --at 0 --for
         --out scenarios/replay-genrun-stop.scn
 python3 from_capture.py $L/vtrux_20260323_220148_T0.log --channel 1 --at 0 --for 300 \
         --out scenarios/replay-healthy-engine-off.scn
-python3 from_capture.py $L/vtrux_20260322_165622_T1.log --channel 1 --at 0 --for 64 \
+python3 from_capture.py $L/generator-on-then-off.log --channel 3 --at 0 --for 64 \
         --out scenarios/replay-mmode-genstart.scn
 python3 from_capture.py $L/vtrux_20260714_112312_T2.log --channel 2 --at 0 --for 225 \
         --out scenarios/replay-shutdown-at-keyon.scn \
@@ -597,20 +597,37 @@ synthetically; nothing asserts it on real traffic.
 aborts. This is the one that says the §7 trip set is not hair-triggered
 against real traffic.
 
-**`replay-mmode-genstart`** — 64 s, 24,809 frames, and the most complete
-end-to-end story in the corpus. The driver engages M mode and the generator
-actually starts:
+**`replay-mmode-genstart`** — `generator-on-then-off.log`, channel 3 (the
+powertrain bus), 0–64 s, 26,530 frames, and the most complete end-to-end story
+in the corpus. The driver engages M mode and the generator actually starts:
 
 | t | event | device |
 |---|---|---|
-| 0.006 s | engine off, SoC 43.3 % | goes live |
-| 0.006–39.057 s | normal driving, shifter P/R/N/D | 3,905 transmits |
-| **39.057 s** | `shift_lever_pos` -> 4 (**M mode**) | latches `m_mode`, `inhibit_live` clears, transmission stops |
+| 0 s | engine off, key off, SoC 43.3 % | blocked: `no fresh 0x617`, then `SoC not yet valid (contactors)` from 0.060 s |
+| 8.336 s | key on | still blocked on the contactors |
+| 9.588 s | `bcm_mainc_stat` -> 11 | SoC-valid marker set |
+| **9.600 s** | — | **goes live**; first inhibit 9.605 s |
+| 9.600–39.080 s | normal driving, shifter P/R/N/D | 2,947 inhibit transmits |
+| **39.080 s** | `shift_lever_pos` -> 4 (**M mode**) | latches `m_mode`, `inhibit_live` clears, transmission stops |
 | 46.4 s | **generator cranks and runs** | silent |
 | 53.2 s | M mode released | latch **holds** |
 | 54.4 s | engine coasts down | silent |
+| 62.312 s | key off | latch holds |
 
-**Zero transmits after the latch** — last at 39.054 s, latch at 39.057 s.
+**Zero transmits after the latch** — last at 39.075 s, latch at 39.080 s.
+
+**Rebuilt from its source on 2026-10-31** (user, through the reviewer). Until
+then it was cut from `vtrux_20260322_165622_T1`, channel 1, which is the `:vtrux`
+app's recording of a desktop replay of this log's powertrain bus, not a truck
+capture (`android-app/notes/artifacts/vtrux_bench_replay_captures/README.md` in
+the project folder, quarantined 2026-10-30). Aligned by payload, it was the
+source's channel 3 frame for frame, offset -0.005 s. `generator-on-then-off.log`
+is a desktop Kvaser capture of the truck itself. The rebuild has 4 frames fewer
+(`0x051` -2, `0x639` -2), and `replay_stimulus_delta.py` finds the same 20
+decision events in the same order, timestamps only; `tx_ok` stays 2,947. The
+table above was stale before the rebuild (it said live at 0.006 s and 3,905
+transmits, against the old golden's 9.595 s and 2,947). The device column is now
+read from the rebuilt golden and the full trace with its TX lines.
 This exercises §6.1's entire purpose against a real event rather than a
 synthetic one: the driver demanded the generator, the inhibitor stood down,
 and the generator started. SoC rises 43.3 % -> 54.9 % across the capture,
