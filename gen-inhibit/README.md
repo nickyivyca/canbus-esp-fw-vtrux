@@ -26,7 +26,9 @@ starting `$REVERSE_IT_DIR` are in reverse-it and not yet moved.
 - The review tracker:
   `$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-review-2026-09-22.md`.
 - Validation: `$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-wican-firmware.md`,
-  frozen; the spec cites it, and no one adds to it (reviewer, 2026-10-10).
+  frozen; the spec cites it, and no one adds to it (reviewer, 2026-10-10),
+  except the reviewer's dated corrections beside a passage found to be wrong
+  (user, 2026-10-30).
 - This file.
 
 ## Implementor: product code
