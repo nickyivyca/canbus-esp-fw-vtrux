@@ -28,6 +28,11 @@ REVERSE_IT_DIR they see:
      WICANDIR=$HOME/gi_host/shared/wican (the pinned vtrux/wican, with can_port and
      twai_port beside it). LOCAL_PY's fake answers wican_ref.py with a fake checkout of
      this run holding the three folders.
+  8. The sync replaces what it ships (the step 1b acceptance, 2026-10-31): its remote
+     command is run with the real archive on stdin, HOME a folder of this run whose
+     ~/gi_host holds a file the repo no longer has in each place the sync ships, and files
+     the remote generates. The stale files are gone, the generated ones stay, the shipped
+     ones are there; and into an empty HOME, as a first sync, the shipped ones are there.
 
 The sync is the real one, from this project folder, into the fake ssh; the export goes
 to the worktree's scratch/gi-host-export, which every gi_host_run.sh run replaces.
@@ -73,8 +78,9 @@ def setup(base):
     b = os.path.join(base, "bin")
     os.makedirs(b)
     # ssh: keep the last argument (the remote command) of each call in calls/<n>, drop stdin
+    # and its stdin (the sync's archive) in <calls>.in/<n>
     script(os.path.join(b, "ssh"), 'd="$FAKE_CALLS"; n=$(ls "$d" | wc -l); printf %s "${@: -1}" > "$d/$n"; '
-                                   'cat > /dev/null; exit 0\n')
+                                   'mkdir -p "$d.in"; cat > "$d.in/$n"; exit 0\n')
     # LOCAL_PY: wican_ref.py answers the fake shared checkout; anything else is the gi_diag export
     script(os.path.join(b, "fakepy"), 'case "${@: -1}" in wican_ref.py) printf "%s\\n" "$FAKE_WICAN" ;; '
                                       '*) mkdir -p "${@: -1}" ;; esac\n')
@@ -136,6 +142,46 @@ def remote(base, bindir, home, cmd, py_fails=False, log=None):
     return got, rhome
 
 
+# Item 8, under ~/gi_host: files the repo no longer has, one in each place the sync ships
+# (the first four as the first sync after 1b found them), files the remote generates, and
+# files the sync ships.
+STALE = ["test/gen_inhibit_shim/mock/driver/twai.h", "test/gen_inhibit_shim/fake_twai.c",
+         "firmware/main/can.h", "firmware/main/can.c",
+         "test/gen_inhibit_host/stale_check.py", "test/gen_inhibit_host/golden/stale.golden",
+         "test/gen_inhibit_sched/stale.c", "test/build_checks/stale_check.py", "tools/bench/stale.py",
+         "shared/wican/stale.h", "diag_schemas/stale.dbc"]
+KEPT = ["test/gen_inhibit_shim/scenarios/replay-longarm-300s-all.scn", "test/gen_inhibit_host/scenarios/keep.scn",
+        "test/gen_inhibit_host/host_runner", "scratch/canre/keep"]
+SHIPPED = ["test/gen_inhibit_shim/Makefile", "test/gen_inhibit_shim/mock/freertos/FreeRTOS.h",
+           "firmware/main/gen_inhibit.c", "firmware/main/gi_sched.h", "tools/bench/gi_paths.py",
+           "test/gen_inhibit_host/run_tests.py", "test/gen_inhibit_sched/Makefile", "test/build_checks/config_vs_spec.py",
+           "shared/twai_port/README.md"]
+
+
+def msys(p):
+    """C:/x as /c/x, so that tar -C ~/... is not read as host:path under Git Bash."""
+    p = fwd(p)
+    return "/" + p[0].lower() + p[2:] if os.name == "nt" and p[1:2] == ":" else p
+
+
+def unpack(base, name, cmd, archive, seed):
+    """Run the sync's remote command, HOME a fresh folder holding ~/gi_host/<seed>, with the archive
+    on stdin and Git's own tar and find first on PATH: (exit, every file under ~/gi_host)."""
+    home = os.path.join(base, name)
+    os.makedirs(home)
+    for p in seed:
+        os.makedirs(os.path.dirname(os.path.join(home, "gi_host", p)), exist_ok=True)
+        open(os.path.join(home, "gi_host", p), "w").close()
+    e = {k: v for k, v in os.environ.items() if k != "HOME"}
+    e.update(HOME=msys(home), MSYS_NO_PATHCONV="1",
+             PATH=fwd(os.path.dirname(BASH)) + os.pathsep + os.environ.get("PATH", ""))
+    with open(archive, "rb") as fh:
+        r = subprocess.run([BASH, "-c", cmd], stdin=fh, capture_output=True, env=e, timeout=120)
+    root = os.path.join(home, "gi_host")
+    got = {fwd(os.path.relpath(os.path.join(d, f), root)) for d, _, fs in os.walk(root) for f in fs}
+    return r.returncode, got
+
+
 def checks():
     base = gi_paths.scratch("test_gi_host_run_env")
     try:
@@ -179,6 +225,21 @@ def checks():
         remote(base, bindir, home, cmds[-1] if cmds else "", log=log)
         check("6 --canre: the remote command installs and checks the pinned canre, and does nothing else",
               log == [install], log)
+
+        rc, err, cmds = run_mode(base, bindir, "--sync-only", None)
+        archive = os.path.join(base, "calls_%d_sync-only.in" % len(RUNS), "0")
+        check("8 --sync-only: exit 0, the archive sent", rc == 0 and os.path.isfile(archive), (rc, err[-200:]))
+        rc, got = unpack(base, "rhome8", cmds[0] if cmds else "false", archive, STALE + KEPT)
+        check("8 the sync over a remote with stale files: exit 0", rc == 0, rc)
+        check("8 every file the repo dropped is gone", [p for p in STALE if p in got] == [],
+              [p for p in STALE if p in got])
+        check("8 the generated files stay (scenarios/, scratch/, the host build outputs)",
+              [p for p in KEPT if p not in got] == [], [p for p in KEPT if p not in got])
+        check("8 the shipped files are there", [p for p in SHIPPED if p not in got] == [],
+              [p for p in SHIPPED if p not in got])
+        rc, got = unpack(base, "rhome8b", cmds[0] if cmds else "false", archive, [])
+        check("8 the first sync, into an empty remote: exit 0, the shipped files there",
+              rc == 0 and [p for p in SHIPPED if p not in got] == [], (rc, [p for p in SHIPPED if p not in got]))
     finally:
         gi_paths.remove_tree(base)
     return FAILS
@@ -203,6 +264,14 @@ MUTANTS = [
     ("the last shared export not replaced", "rm -rf ~/$DEST/diag_schemas ~/$DEST/shared && tar", "rm -rf ~/$DEST/diag_schemas && tar"),
     ("--canre checks instead of installing", '    ssh "$REMOTE" "$PY -B ~/$DEST/tools/bench/canre_pin.py install"\n',
      '    ssh "$REMOTE" "$PY -B ~/$DEST/tools/bench/canre_pin.py check"\n'),
+    ("the sync keeps what the repo dropped", "mkdir -p ~/$DEST && $STALE && rm -rf", "mkdir -p ~/$DEST && rm -rf"),
+    ("the goldens not replaced", " ~/$DEST/test/build_checks ~/$DEST/test/gen_inhibit_host/golden\"", " ~/$DEST/test/build_checks\""),
+    ("the shim's scenarios/ dropped too", "-maxdepth 1 ! -name scenarios -exec rm -rf", "-maxdepth 1 -exec rm -rf"),
+    ("the host folder's sources kept", 'STALE="$STALE && find ~/$DEST/test/gen_inhibit_host',
+     ': "$STALE && find ~/$DEST/test/gen_inhibit_host'),
+    ("the host folder's build outputs dropped too", "-maxdepth 1 -type f \\( -name '*.py'", "-maxdepth 1 -type f \\( -name '*'"),
+    ("no folders made for a first sync", 'STALE="mkdir -p ~/$DEST/test/gen_inhibit_shim ~/$DEST/test/gen_inhibit_host"',
+     'STALE="true"'),
 ]
 
 
