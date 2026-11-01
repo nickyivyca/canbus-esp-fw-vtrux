@@ -9,7 +9,8 @@ stops answering HTTP and its SoftAP goes away, so the laptop's WiFi drops off
 it (a reset of a71b90a took ~6 s to rejoin). So every poll records:
 
   - the page (answered or not, mode, drv null),
-  - the laptop's WLAN state and SSID (netsh wlan show interfaces).
+  - the laptop's WLAN state and SSID (netsh wlan show interfaces), and from the same
+    output its signal and receive/transmit rates, numbers only, logged but not judged.
 
 OUTAGE = a maximal run of polls where the page went unanswered, OR the WLAN was
 not connected to the WiCAN's SSID, OR the poll STALLED (took longer than
@@ -91,6 +92,36 @@ def parse_wlan(text, ssid):
     return (state == "connected" and ssid is not None and cur_ssid == ssid), state
 
 
+# Only these three lines of the netsh output are read, and only their numbers are kept:
+# the same output names the SSID and BSSID, which no record may hold (2026-11-01).
+LINK_FIELDS = (("wlan_signal", r"Signal", r"(\d+)\s*%", int),
+               ("wlan_rx_mbps", r"Receive rate \(Mbps\)", r"(\d+(?:\.\d+)?)", float),
+               ("wlan_tx_mbps", r"Transmit rate \(Mbps\)", r"(\d+(?:\.\d+)?)", float))
+
+
+def parse_wlan_link(text):
+    """{wlan_signal (%), wlan_rx_mbps, wlan_tx_mbps} from `netsh wlan show interfaces`
+    output, each None if its line is absent or not a number. Logged per poll, so a stall
+    with the link up can be set beside the link's signal and rate (reviewer, 2026-11-01)."""
+    out = {k: None for k, _, _, _ in LINK_FIELDS}
+    for line in text.splitlines():
+        for k, label, num, conv in LINK_FIELDS:
+            m = re.match(r"\s*%s\s*:\s*%s\s*$" % (label, num), line)
+            if m:
+                out[k] = conv(m.group(1))
+    return out
+
+
+def link_summary(samples):
+    """Min and median of each link field over the polls that read it."""
+    out = {}
+    for k, _, _, _ in LINK_FIELDS:
+        v = sorted(s[k] for s in samples if s.get(k) is not None)
+        out[k] = {"polls": len(v), "min": v[0] if v else None,
+                  "median": v[len(v) // 2] if v else None}
+    return out
+
+
 def outages(samples, stall_s=3.0):
     """Maximal runs of bad polls. samples: [{t, answered, wlan_ok, mode, dur}] in time order.
 
@@ -111,8 +142,12 @@ def _outages(samples, stall_s):
         if bad:
             if cur is None:
                 cur = {"start": s["t"], "end": s["t"], "polls": 0, "unanswered": 0,
-                       "wlan_down": 0, "stalled": 0, "max_dur": 0.0}
+                       "wlan_down": 0, "stalled": 0, "max_dur": 0.0,
+                       "min_signal": None, "min_rx_mbps": None}
                 out.append(cur)
+            for k, f in (("min_signal", "wlan_signal"), ("min_rx_mbps", "wlan_rx_mbps")):
+                if s.get(f) is not None:
+                    cur[k] = s[f] if cur[k] is None else min(cur[k], s[f])
             cur["end"] = s["t"]
             cur["polls"] += 1
             cur["unanswered"] += 0 if s["answered"] else 1
@@ -254,7 +289,7 @@ def judge(samples, stall_s=3.0, unplug_window=15.0):
             "stalled_polls": sum(1 for s in samples if (s.get("dur") or 0.0) > stall_s),
             "unanswered": sum(1 for s in samples if not s["answered"]),
             "wlan_down_polls": sum(1 for s in samples if not s["wlan_ok"]),
-            "outages": o, "not_mode0_at": odd_mode,
+            "outages": o, "not_mode0_at": odd_mode, "wlan_link": link_summary(samples),
             "verdict": "no outage" if not o and not odd_mode else
                        "%d outage(s), %d poll(s) not in mode 0" % (len(o), len(odd_mode))}
 
@@ -314,7 +349,7 @@ def main():
             tq = time.perf_counter()
             p = LF.page() if wlan_ok else None
             s = {"t": round(t, 3), "tq": round(tq - t0, 3), "wlan_ok": wlan_ok,
-                 "wlan_state": state,
+                 "wlan_state": state, **parse_wlan_link(r.stdout),
                  "dur": round(time.perf_counter() - tq, 3), "port": port,
                  "answered": p is not None,
                  "mode": None if p is None else p.get("mode"),
@@ -356,8 +391,11 @@ def main():
           % (j["polls"], j["unanswered"], j["wlan_down_polls"], j["stalled_polls"],
              len(j["outages"]), j["verdict"]))
     for o in j["outages"]:
-        print("  outage %.1f-%.1f s, %d poll(s), max poll %.1f s"
-              % (o["start"], o["end"], o["polls"], o["max_dur"]))
+        print("  outage %.1f-%.1f s, %d poll(s), max poll %.1f s, wlan signal min %s %%, rx min %s Mbps"
+              % (o["start"], o["end"], o["polls"], o["max_dur"], o["min_signal"], o["min_rx_mbps"]))
+    print("wlan link: %s" % ", ".join(
+        "%s min %s median %s (%d polls)" % (k, v["min"], v["median"], v["polls"])
+        for k, v in j["wlan_link"].items()))
     if j["unplug"]:
         u = j["unplug"]
         print("  %s gone at %.1f s; outages before %d, at unplug %d, after %d; idle after %.1f s (%d polls)"

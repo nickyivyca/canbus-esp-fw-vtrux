@@ -2,8 +2,9 @@
 
 A reboot without a console must show as exactly one outage whether the sign is
 an unanswered page, a dropped WLAN, or both in sequence; two separate drops are
-two outages; a clean run is no outage; a poll not in mode 0 is reported. Also
---power is required.
+two outages; a clean run is no outage; a poll not in mode 0 is reported. The
+WLAN signal and rates are read as numbers only, never from the SSID or BSSID
+lines, and are logged without changing the verdict. Also --power is required.
 
   py -3.14 gen-inhibit/tools/bench/test_page_only_baseline.py
 """
@@ -101,6 +102,43 @@ NETSH_DOWN = """
     Name                   : Wi-Fi
     State                  : disconnected
 """
+NETSH_LINK = NETSH_UP + """    Radio type             : 802.11n
+    Receive rate (Mbps)    : 144.4
+    Transmit rate (Mbps)   : 130
+    Signal                 : 87%
+"""
+# SSID and BSSID values shaped like the numbers read: neither may land in the result.
+NETSH_DECOY = """
+    State                  : connected
+    SSID                   : 55%
+    BSSID                  : 77
+    Signal                 : strong
+"""
+
+
+def link_cases():
+    L = P.parse_wlan_link
+    sig = [S(0), S(1, answered=False), S(2, answered=False), S(3)]
+    for s, v in zip(sig, (10, 40, 30, 5)):
+        s.update({"wlan_signal": v, "wlan_rx_mbps": v * 2.0})
+    o = P.outages(sig)
+    none = {"wlan_signal": None, "wlan_rx_mbps": None, "wlan_tx_mbps": None}
+    low = [dict(S(t), wlan_signal=1) for t in range(5)]
+    return [
+        ("link: signal, rx and tx read as numbers",
+         L(NETSH_LINK) == {"wlan_signal": 87, "wlan_rx_mbps": 144.4, "wlan_tx_mbps": 130.0}),
+        ("link: disconnected output gives None for each", L(NETSH_DOWN) == none),
+        ("link: SSID/BSSID lines and a non-number signal give nothing", L(NETSH_DECOY) == none),
+        ("link: the outage's min is over its own polls only",
+         [(x["min_signal"], x["min_rx_mbps"]) for x in o] == [(30, 60.0)]),
+        ("link: an outage with no link readings has None",
+         P.outages([S(0, answered=False)])[0]["min_signal"] is None),
+        ("link: summary min/median/polls, unread polls left out",
+         P.link_summary(sig + [S(4)])["wlan_signal"] == {"polls": 4, "min": 5, "median": 30}
+         and P.link_summary([S(0)])["wlan_tx_mbps"] == {"polls": 0, "min": None, "median": None}),
+        ("link: logged, not judged (signal 1 % still no outage)",
+         P.judge(low)["verdict"] == "no outage" and P.judge(low)["wlan_link"]["wlan_signal"]["min"] == 1),
+    ]
 
 
 def main():
@@ -141,7 +179,7 @@ def main():
         ("netsh connected to ANOTHER SSID -> not ok", P.parse_wlan(NETSH_OTHER, "AP-X")[0] is False),
         ("netsh disconnected -> not ok", P.parse_wlan(NETSH_DOWN, "AP-X") == (False, "disconnected")),
         ("BSSID line is not read as SSID", P.parse_wlan(NETSH_UP, "00:00:5e:00:53:02")[0] is False),
-    ] + uptime_cases()
+    ] + uptime_cases() + link_cases()
     try:
         P.build_parser().parse_args([])
         checks.append(("--power required", False))
