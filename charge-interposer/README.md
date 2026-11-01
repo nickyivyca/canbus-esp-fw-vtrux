@@ -43,7 +43,7 @@ records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 | `pack.py` | 116-cell LFP pack model, fitted to three real captures | Tester |
 | `bus.py` | Transport factory (virtual `udp_multicast` or a real dongle), `EchoSuppressor` and the segment-isolation guard | Tester |
 | `paths.py` | Resolves the data outside this repo from `REVERSE_IT_DIR`, refusing when it is unset; gives `code_dir()` (refuses an `INTERPOSER_CODE` naming another tree), the pinned canre, and `import_canbench()` (the pinned canbench, through `CAN_TOOLS_DIR` and `can_tools_pin.py`; nothing on `sys.path`) | Tester |
-| `paths_test.py` | Offline test for `paths.py` | Tester |
+| `paths_test.py` | Offline test for `paths.py`, with a `--can-fail` mode | Tester |
 | `pins.json` | The harness pin file: canre at the pinned public-repo commit (port step 0, reviewer 2026-10-26) and can-tools at the pinned commit (user, 2026-10-30: each project owns its can-tools pin) | Tester |
 | `canre_pin.py`, `canre_pin_test.py` | Install and check the pinned canre (`scratch/canre/<commit>`; `CANRE_DIR` on madhouse), and its test | Tester |
 | `can_tools_pin.py`, `can_tools_pin_test.py` | Install and check the pinned can-tools `canbench/` (`scratch/can-tools/<commit>`, from the `CAN_TOOLS_DIR` clone), and its test | Tester |
@@ -71,7 +71,7 @@ records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 | `capture_pins.py` | Spec 9.1: hashes held in this repo that pin every capture-derived harness input (tester, 2026-10-08) | Tester |
 | `capture_pins_test.py` | Tests for `capture_pins.py` | Tester |
 | `rebuild_capture_traces.py` | Rebuilds the capture-derived traces against their pins (spec 9.1). Moved from reverse-it (port step 0, reviewer 2026-10-26) | Tester |
-| `bus_gs_usb_test.py` | Test for `bus.open_gs_usb`, the charger segment's adapter; no hardware | Tester |
+| `bus_gs_usb_test.py` | Test for `bus.open_gs_usb`, the charger segment's adapter, and `bus.open_bus` on canbench's `Adapter` detect results; no hardware; with a `--can-fail` mode | Tester |
 | `diag_cadence.py` | Spec 8.2 on the wire: the status-frame cadence and the immediate `0x7F4` | Tester |
 | `diag_cadence_test.py` | Test for `diag_cadence.py`; no hardware | Tester |
 | `bench_suite.py`, `bench_suite_test.py`, `bench_identify.py` | The chain runner's three suites, their test and its identify hook (reviewer, 2026-10-19) | Tester |
