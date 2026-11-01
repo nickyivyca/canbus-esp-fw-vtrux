@@ -36,6 +36,7 @@ port index, all before `wican_init()`.
 | `SPEC.md`, `VALIDATION.md` | the component's spec, T1 to T11, and why each requirement is written as it is | the reviewers, as above |
 | the port's code and its unit tests | T1 to T9 | the implementor of the project that needs the change |
 | `unit/`'s scripted stub of the driver API | part of the unit tests: each case sets the driver's returns and checks the port's calls; it models no controller behaviour (no states, alerts or arbitration of its own) | the implementor, as the unit tests (gen-inhibit reviewer, 2026-10-31) |
+| `unit/mutate.py` | the unit tests' mutants: one behaviour of `twai_port.c` or the C3 register file broken at a time, each of which the unit tests must fail. Not `test/mutate.py`, which mutates the fake | the implementor, as the unit tests (gen-inhibit reviewer, 2026-11-01) |
 | `test/`'s fake of the TWAI driver | T10: what the controller does, in its states, recovery and per-chip behaviour | the tester of the project that needs the change (user, 2026-10-31, in both reviewers' sessions) |
 | `VERIFICATION.md` | test evidence | the tester |
 | `vtrux_checks.json` | the component's build-switch table (`shared/tools` R20) | the tester of the project that needs the change |
