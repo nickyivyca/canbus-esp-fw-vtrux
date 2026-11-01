@@ -16,10 +16,13 @@ fakes disagreed with each other or with the source, the source decides.
 
     make -C shared/twai_port/test run        # the fake's tests, and the port on it (C3 and S3)
     make -C shared/twai_port/test mutants    # every mutant of the fake must fail its tests
+    make -C shared/twai_port/test mutate-test  # mutate.py removes its scratch folder, pass or fail
     make -C shared/twai_port/test cxx        # the fake and cpp/ compiled as C++11
 
 The binaries go to `scratch/twai_port-test/` and the mutants to
-`scratch/twai_fake-mutants/`, at the worktree's root. gcc and g++; the C
+`scratch/twai_fake-mutants/`, at the worktree's root. `mutate.py` makes its
+folder, refuses one that already exists, and removes it when it ends, pass
+or fail (AGENTS.md, "Removing scratch"). gcc and g++; the C
 builds run under ASan and UBSan.
 
 ## Files
@@ -32,6 +35,7 @@ builds run under ASan and UBSan.
 | `cpp/twai_fake.h`, `cpp/twai_fake.cpp` | the interposer's C++ interface to the fake: `namespace twaifake`, `TwaiFake`, `fake()`, as its host_bridge tests call them, each member a call into the model. Its clock adapter is the interposer's `hostclock::micros()` |
 | `test_twai_fake.c` | the fake's own tests: 22 cases, each a driver behaviour from the source |
 | `mutate.py` | 27 mutants of `twai_fake.c`, one behaviour each; the run passes only if the unmutated build passes and every mutant fails |
+| `test_mutate.py` | `mutate.py`'s removal of its scratch folder, with the builds stood in for (no compiler): removed after a pass, a fail and an exception, read-only files and paths past 260 characters included; a folder it cannot remove printed with the reason; an existing `--out` refused and left as it was. `--mutants` breaks the removal nine ways, each of which it must fail by a check (three only fail on Windows) |
 | `test_port_on_fake.c`, `host_platform.c` | the real `twai_port.c`, compiled as shipped, on the fake: built with the C3's register file on the fake's C3 and with the unsupported one on its S3, 14 cases from T2 to T9 each, one process per case. `host_platform.c` is the board, tick and log calls the port makes |
 | `Makefile` | the builds above |
 | `README.md` (here and in `include/`, `host/`, `cpp/`) | this |

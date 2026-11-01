@@ -23,6 +23,7 @@ code to test.
 | `unit/` | the port's unit tests and their scripted stub (`unit/README.md`) |
 | `test/` | the one host fake of the TWAI driver (T10), its own tests, and the real port built on it (`test/README.md`) |
 | `vtrux_checks.json` | the component's build-switch table (`shared/tools` R20) |
+| `.gitignore` | `__pycache__/`, so a host test's bytecode is never committed |
 
 A project takes it from git at its pinned `shared/main` tag, with
 `vtrux/can_port` and its board, fills a `twai_port_config_t`, calls
