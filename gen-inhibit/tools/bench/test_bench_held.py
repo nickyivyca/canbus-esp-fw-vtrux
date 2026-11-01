@@ -124,7 +124,7 @@ def main():
         check("%s: gates before it imports can (its one import of it)" % tool,
               gate is not None and len(imp) == 1 and gate.end() <= imp[0], "%s %s" % (gate and gate.end(), imp))
 
-    shutil.rmtree(d, ignore_errors=True)
+    gi_paths.remove_tree(d)
     print("\n%s, %d ok, %d FAIL" % ("PASS" if not fails else "FAIL", oks, len(fails)))
     return 0 if not fails else 1
 

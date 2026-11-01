@@ -140,7 +140,7 @@ def main():
     # the unmutated copy runs first as the control (2026-10-30): where the tests cannot pass,
     # every mutant would read killed; and a crash is not a kill
     for n, (fname, name, old, new) in enumerate([(None, "the control: the unmutated copy", None, None)] + MUTANTS):
-        shutil.rmtree(os.path.join(base, "m%d" % n), ignore_errors=True)
+        gi_paths.remove_tree(os.path.join(base, "m%d" % n))
         d = copy_project(os.path.join(base, "m%d" % n))
         wicandir = None
         if old is not None:
@@ -163,7 +163,7 @@ def main():
             print("%s m0 %s  (%d FAIL%s%s)" % ("PASS    " if ok else "FAILED  ", name, len(fails),
                                               ", CRASHED" if crashed else "", ("; " + fails[0][:100]) if fails else ""))
             if not ok:
-                shutil.rmtree(base, ignore_errors=True)
+                gi_paths.remove_tree(base)
                 print("\nthe control FAILS: no mutant is judged, so none is killed")
                 return 1
             continue
@@ -171,7 +171,7 @@ def main():
         killed += dead
         print("%s m%d %s%s%s" % ("KILLED  " if dead else "SURVIVED", n, name, ", CRASHED" if crashed else "",
                                 ("; " + fails[0][:100]) if fails else ""))
-    shutil.rmtree(base, ignore_errors=True)
+    gi_paths.remove_tree(base)
     print("\n%d of %d killed by a check, %d errors; the control passes" % (killed, len(MUTANTS), errors))
     return 0 if killed == len(MUTANTS) and not errors else 1
 

@@ -252,7 +252,7 @@ def mutants():
             errors += 1
             continue
         d = os.path.join(base, "m%d" % n)
-        shutil.rmtree(d, ignore_errors=True)
+        gi_paths.remove_tree(d)
         os.makedirs(d)
         for f in ("batch3_bench_judge.py", "ota_armed_bench.py"):
             shutil.copy(os.path.join(HERE, f), d)
@@ -265,7 +265,7 @@ def mutants():
         killed += bool(fails)
         print("%s m%d %s%s" % ("KILLED  " if fails else "SURVIVED", n, name,
                                ("; " + fails[0][:90]) if fails else (", CRASHED" if "Traceback" in r.stderr else "")))
-    shutil.rmtree(base, ignore_errors=True)
+    gi_paths.remove_tree(base)
     print("\n%d of %d killed by a check, %d errors" % (killed, len(MUTANTS), errors))
     return 0 if killed == len(MUTANTS) and not errors else 1
 

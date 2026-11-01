@@ -334,7 +334,7 @@ def bootloader_cases(R):
     # phase_bootloader records them, from a dump given with --bootloader-file
     real = (R.RUNS, R.log)
     runs = os.path.join(SCRATCH, "runs")
-    shutil.rmtree(runs, ignore_errors=True)
+    gi_paths.remove_tree(runs)
     os.makedirs(runs)
     fw = os.path.join(SCRATCH, "fw")
     os.makedirs(os.path.join(fw, "build", "bootloader"), exist_ok=True)
@@ -364,7 +364,7 @@ def mac_cases(R):
     runs = os.path.join(SCRATCH, "runs_mac")
     for phase, blob in (("bootloader", img + b"\xff" * (0x8000 - len(img))), ("otadata", b"\xff" * 0x2000)):
         for label, mac, want_rc in (("the expected unit", BASE_MAC, 0), ("another unit", other_mac, 1)):
-            shutil.rmtree(runs, ignore_errors=True)
+            gi_paths.remove_tree(runs)
             os.makedirs(runs)
             logged = []
 
@@ -389,7 +389,7 @@ def mac_cases(R):
 
 
 def main():
-    shutil.rmtree(SCRATCH, ignore_errors=True)
+    gi_paths.remove_tree(SCRATCH)
     try:
         R = load()
     except Exception as e:      # noqa: BLE001
@@ -401,7 +401,7 @@ def main():
             part(R)
         except Exception as e:      # noqa: BLE001  a crash is this part's FAIL
             check("%s ran without raising" % part.__name__, False, "%s: %s" % (type(e).__name__, e))
-    shutil.rmtree(SCRATCH, ignore_errors=True)
+    gi_paths.remove_tree(SCRATCH)
     print("\n%s, %d FAIL" % ("PASS" if not FAILS else "FAIL", len(FAILS)))
     return 1 if FAILS else 0
 

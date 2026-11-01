@@ -13,10 +13,13 @@ Only a run built on madhouse-debian with its gcc 14.2 counts for VERIFICATION.md
 a WSL build on NICKY-XPS is a self-check (user, 2026-10-24, through the reviewer).
 Writes into --out (which must not exist): identity.json, payloads.txt,
 judge_test.txt, cases.txt, build_id.txt and summary.txt. identity.json and the summary record
-the host and compiler the build shell reported (host_env.py). Exit 0 only when
-both were recorded, main/ is the --base commit's tree, nothing it builds is
-modified, every payload decodes as the cases say, the judge's tests all pass and
-every RESULT line is PASS. The binaries go in this run's own folder in the
+the host and compiler the build shell reported (host_env.py), and since port step
+1b (2026-10-31) the shared checkout build.sh compiled can_port, twai_port and
+twai_port's host fake from. Exit 0 only when both were recorded, main/ is the
+--base commit's tree, nothing it builds is modified, the shared checkout and
+every file it builds are there and the checkout is unmodified, every payload
+decodes as the cases say, the judge's tests all pass and every RESULT line is
+PASS. The binaries go in this run's own folder in the
 worktree's scratch/. Gen-inhibit tester, 2026-10-20; host, compiler, --local and
 the scratch folder 2026-10-24.
 """
@@ -34,12 +37,49 @@ sys.path.insert(0, HERE)
 import host_env  # noqa: E402
 REPO = os.path.normpath(os.path.join(HERE, "..", ".."))   # the project folder, gen-inhibit/ since port step 0d
 MAIN = "firmware/main"                                     # the WiCAN sources, relative to it
-BUILT = [MAIN + "/gen_inhibit.c", MAIN + "/gen_inhibit_core.c", MAIN + "/gi_sched.c", MAIN + "/can.c",
-         "test/gen_inhibit_shim/fake_twai.c", "test/gen_inhibit_shim/fake_can.c"]
+BUILT = [MAIN + "/gen_inhibit.c", MAIN + "/gen_inhibit_core.c", MAIN + "/gi_sched.c",
+         "test/gen_inhibit_shim/shim_harness.c", "test/gen_inhibit_shim/fake_can.c",
+         "test/gen_inhibit_shim/fake_port.c"]
+# Since port step 1b (2026-10-31) main/can.c is gone: build.sh compiles the shared CAN
+# port and twai_port's host fake from the pinned shared checkout (WICANDIR/.., found by
+# the implementor's wican_ref.py), relative to its shared/ folder.
+SHARED_BUILT = ["can_port/can_port.c", "can_port/can_stock.c", "twai_port/twai_port.c",
+                "twai_port/twai_port_ll_esp32c3.c", "twai_port/test/twai_fake.c"]
+WICAN_REF = os.path.join(REPO, "test", "gen_inhibit_shim", "wican_ref.py")
 
 
-def git(*a):
-    return subprocess.run(["git", "-C", REPO] + list(a), capture_output=True, text=True).stdout.strip()
+def git(*a, cwd=REPO):
+    return subprocess.run(["git", "-C", cwd] + list(a), capture_output=True, text=True).stdout.strip()
+
+
+def shared_identity():
+    """The shared checkout build.sh compiles from, as build.sh finds it: WICANDIR, else
+    wican_ref.py. Its folder, the tag the project pins (wican_ref.pinned_tag), its git
+    HEAD and changes where it is a git checkout, and each built file's md5 (None when
+    missing). A record of what was built, not a check of the pin's digest."""
+    sys.path.insert(0, os.path.dirname(WICAN_REF))
+    try:
+        import wican_ref
+    finally:
+        sys.path.pop(0)
+    try:
+        tag = wican_ref.pinned_tag(open(wican_ref.MANIFEST, encoding="utf-8").read()) or ""
+    except OSError:
+        tag = ""
+    w = os.environ.get("WICANDIR", "")
+    if not w:
+        r = subprocess.run([sys.executable, WICAN_REF], capture_output=True, text=True)
+        w = r.stdout.strip() if r.returncode == 0 else ""
+    shared = os.path.normpath(os.path.join(w, "..")) if w else ""
+    md5 = {}
+    for f in SHARED_BUILT:
+        p = os.path.join(shared, f)
+        md5["shared/" + f] = hashlib.md5(open(p, "rb").read()).hexdigest() if shared and os.path.isfile(p) else None
+    is_git = bool(shared) and bool(git("rev-parse", "--git-dir", cwd=shared))
+    return {"shared_dir": shared, "shared_tag": tag,
+            "shared_head": git("rev-parse", "HEAD", cwd=shared) if is_git else "",
+            "shared_modified": git("status", "--porcelain", "--", ".", cwd=shared) if is_git else "",
+            "shared_md5": md5}
 
 
 def main_tree(rev):
@@ -111,6 +151,11 @@ def main():
     ident.update(host_env.host_identity(a.local))
     if host_env.missing(ident):
         fails.append("not recorded: %s" % ", ".join(host_env.missing(ident)))
+    ident.update(shared_identity())
+    if not ident["shared_dir"] or None in ident["shared_md5"].values():
+        fails.append("the shared checkout or a file it builds is missing")
+    if ident["shared_modified"]:
+        fails.append("the shared checkout is modified")
     ident["main_is_base"] = bool(ident["main_tree"]) and ident["main_tree"] == ident["base_main_tree"]
     if not ident["main_is_base"]:
         fails.append("main/ is not %s's tree" % a.base)
@@ -163,6 +208,9 @@ def main():
                    ident["head"][:12], ident["main_tree"][:12], a.base, ident["base_main_tree"][:12],
                    ident["main_is_base"], ident["modified"] or "nothing"),
                "harness modified: %s" % (ident["spec_shim_modified"] or "nothing"),
+               "shared: pinned %s; %s; head %s; modified: %s" % (
+                   ident["shared_tag"] or "NOT FOUND", os.path.basename(os.path.dirname(ident["shared_dir"])) or "NOT FOUND",
+                   ident["shared_head"][:12] or "not a git checkout", ident["shared_modified"] or "nothing"),
                host_env.describe(ident),
                "cases: %s" % ", ".join(cases), ""]
     for r in res:

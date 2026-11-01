@@ -74,7 +74,7 @@ def main():
     with open(os.path.join(base, "suite_index_e3d9437.json"), encoding="utf-8") as f:
         idx = {c["id"]: c for c in json.load(f)["checks"]}
     tmp = gi_paths.scratch("desk-test")
-    shutil.rmtree(tmp, ignore_errors=True)
+    gi_paths.remove_tree(tmp)
     try:
         # 1. the e3d9437 files: each step's output judges as the index says
         for s in steps:
@@ -138,7 +138,7 @@ def main():
             rc, log = desk("B13", [bench, noheld, noheld], os.path.join(tmp, "b13noheld_out"))
             check("B13: no held RESPOND arm exits 2", rc == 2, (rc, log[-200:]))
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        gi_paths.remove_tree(tmp)
     print("\n%s, %d ok, %d FAIL" % ("PASS" if not fails else "FAIL", oks, len(fails)))
     return 0 if not fails else 1
 

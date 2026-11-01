@@ -183,7 +183,7 @@ def run_main(W, running_after):
     saved = {k: sys.modules.get(k) for k in ("can", "lowid_flood_skip_bench", "skip_method_bench")}
     sys.modules.update(fakes(log, running_after))
     runs = os.path.join(SCRATCH, "runs")
-    shutil.rmtree(runs, ignore_errors=True)
+    gi_paths.remove_tree(runs)
     os.makedirs(runs)
     W.RUNS = runs
     argv = sys.argv
@@ -251,14 +251,14 @@ def order_cases(W):
 
 
 def main():
-    shutil.rmtree(SCRATCH, ignore_errors=True)
+    gi_paths.remove_tree(SCRATCH)
     W = load()
     for part in (window_cases, order_cases):
         try:
             part(W)
         except Exception as e:      # noqa: BLE001  a crash is this part's FAIL
             check("%s ran without raising" % part.__name__, False, "%s: %s" % (type(e).__name__, e))
-    shutil.rmtree(SCRATCH, ignore_errors=True)
+    gi_paths.remove_tree(SCRATCH)
     print("\n%s, %d FAIL" % ("PASS" if not FAILS else "FAIL", len(FAILS)))
     return 1 if FAILS else 0
 

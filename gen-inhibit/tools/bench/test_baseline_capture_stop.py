@@ -150,7 +150,7 @@ def windows_ok(name, cap_recs, win_recs, start_key, end_key):
 
 def main():
     tmp = gi_paths.scratch("capture-stop-test")
-    shutil.rmtree(tmp, ignore_errors=True)
+    gi_paths.remove_tree(tmp)
     os.makedirs(os.path.join(tmp, "bin"))
     with open(os.path.join(tmp, "bin", "py"), "w", newline="\n") as f:
         f.write(FAKE_PY)
@@ -229,7 +229,7 @@ def main():
     except Exception as e:                      # a crash is reported, never a pass
         check("ran without raising", False, repr(e))
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        gi_paths.remove_tree(tmp)
     print("\n%d ok, %d FAIL" % (oks, len(fails)))
     return 1 if fails else 0
 

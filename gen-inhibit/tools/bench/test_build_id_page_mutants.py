@@ -5,7 +5,7 @@ that does not apply is an error. The unmutated copy runs first as the control.
 
     py -3.14 -B gen-inhibit/tools/bench/test_build_id_page_mutants.py
 
-Each mutant is a copy of every non-test .py in this folder but gi_paths.py, in the
+Each mutant is a copy of every non-test .py in this folder but gi_paths.py and canre_pin.py, in the
 worktree's scratch/, one edit applied to one file, run through BUILD_ID_DIR. Gen-inhibit tester, 2026-10-25.
 """
 import os
@@ -49,8 +49,10 @@ MUTANTS = [
 
 def main():
     base = gi_paths.scratch("mutants-build_id_page")
-    # gi_paths stays this folder's: a copy would look for pins.json beside itself
-    files = [f for f in os.listdir(HERE) if f.endswith(".py") and not f.startswith("test_") and f != "gi_paths.py"]
+    # gi_paths and canre_pin stay this folder's: a copy of either looks for pins.json beside
+    # itself (canre_pin's, through gi_paths.use_canre, failed every run, the control too)
+    files = [f for f in os.listdir(HERE) if f.endswith(".py") and not f.startswith("test_")
+             and f not in ("gi_paths.py", "canre_pin.py")]
     srcs = {f: open(os.path.join(HERE, f), encoding="utf-8", newline="").read() for f in files}
     killed = errors = 0
     control_ok = False
@@ -60,7 +62,7 @@ def main():
             errors += 1
             continue
         d = os.path.join(base, "m%d" % n)
-        shutil.rmtree(d, ignore_errors=True)
+        gi_paths.remove_tree(d)
         os.makedirs(d)
         for f, s in srcs.items():
             open(os.path.join(d, f), "w", encoding="utf-8", newline="").write(s.replace(old, new) if f == target else s)
@@ -79,7 +81,7 @@ def main():
             "KILLED  " if dead else "SURVIVED", n, name, r.returncode, len(fails),
             ", CRASHED" if crashed else "", ("; " + fails[0][:100]) if fails else ""))
         sys.stdout.flush()
-    shutil.rmtree(base, ignore_errors=True)
+    gi_paths.remove_tree(base)
     total = len(MUTANTS) - 1
     print("\n%d of %d killed by a check, %d errors; the control %s" % (
         killed, total, errors, "passes" if control_ok else "FAILS"))

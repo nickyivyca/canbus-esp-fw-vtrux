@@ -58,7 +58,7 @@ def main():
             check("control: %s in a ${VAR:?message} %s" % (name, "fails to parse" if want_fail else "parses"),
                   (rc != 0) == want_fail, "rc %d %s" % (rc, err))
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        gi_paths.remove_tree(tmp)
     scripts = sorted(glob.glob(os.path.join(SH_DIR, "*.sh")))
     names = [os.path.basename(s) for s in scripts]
     check("the folder's runners are found (baseline_b_hand.sh among them)", "baseline_b_hand.sh" in names,

@@ -193,13 +193,15 @@ def run(work):
           lambda: not os.path.exists(paths["fin"]) and not os.path.exists(gi_paths.owner_path(paths["fin"]))
           and not os.path.exists(paths["nested"]) and not os.path.exists(paths["named"])
           and not os.path.exists(gi_paths.owner_path(paths["named"])))
-    check("the old one, changed before --apply reached it, judged again and left",
-          lambda: os.path.isdir(paths["old"]) and "1 judged again and left" in text, text[-200:])
+    check("the old one, changed before --apply reached it, judged again and left, and listed with the reason",
+          lambda: os.path.isdir(paths["old"]) and "1 judged again and left" in text
+          and ("LEFT %s  [judged again: changed within 1 h]" % os.path.normpath(paths["old"])) in text, text[-300:])
     check("everything else left", lambda: all(os.path.isdir(paths[k]) for k in ("run", "kept", "recent", "live", "fixed"))
           and os.path.isdir(os.path.join(S, "can-tools", "abc1234", "20260101T000000_%d" % dead))
           and os.path.isdir(os.path.join(S, "session-compact", "20260101T000000_%d" % dead))
           and os.path.exists(gi_paths.owner_path(paths["run"])) and os.path.exists(gi_paths.owner_path(paths["kept"])))
-    check("the count says 3 removed", lambda: "applied: 3 removed, 0 could not be removed" in text, text[-200:])
+    check("the count says 3 removed, with their 6 files", lambda: "applied: 3 removed (6 files, 0.0 MB), 0 could not"
+          " be removed" in text, text[-200:])
 
     print("\nFAIL: %d check(s) failed" % len(FAILS) if FAILS else "\nPASS")
     return 1 if FAILS else 0

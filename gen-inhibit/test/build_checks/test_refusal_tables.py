@@ -19,6 +19,20 @@ import os
 import shutil
 import sys
 
+def _bench_dir():
+    """gen-inhibit/tools/bench in this file's worktree, found by walking up to its .git (a
+    copy in scratch/ finds the same one); in a copy with no git, two folders up."""
+    d = here = os.path.dirname(os.path.abspath(__file__))
+    while not os.path.exists(os.path.join(d, ".git")):
+        if os.path.dirname(d) == d:
+            return os.path.normpath(os.path.join(here, "..", "..", "tools", "bench"))
+        d = os.path.dirname(d)
+    return os.path.join(d, "gen-inhibit", "tools", "bench")
+
+
+sys.path.append(_bench_dir())
+import gi_paths  # noqa: E402  remove_tree (AGENTS.md "Removing scratch")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import build_output as BO                                       # noqa: E402
@@ -38,7 +52,7 @@ WICAN_TABLE = {"build_switches": {
 
 def project(names=("vtrux/wican_v3", "vtrux/wican", "vtrux/debug_logs"), folders=None, wican_text=None,
             build_file=True):
-    shutil.rmtree(TMP, ignore_errors=True)
+    gi_paths.remove_tree(TMP)
     os.makedirs(BUILD)
     with open(os.path.join(BUILD, "project_description.json"), "w") as fh:
         json.dump({"project_path": TMP}, fh)
@@ -132,7 +146,7 @@ def main():
     checks.append(("run() with no row function (a table-rule-only switch) gives no rows, not a crash",
                    got == {}, why or got))
 
-    shutil.rmtree(TMP, ignore_errors=True)
+    gi_paths.remove_tree(TMP)
     fails = 0
     for label, ok, detail in checks:
         print("  %-4s %s%s" % ("ok" if ok else "FAIL", label, "" if ok else "  -- " + str(detail)[:140]))

@@ -1,37 +1,52 @@
 /*
- * spec_layer -- the tester's fault behaviour ON TOP OF the implementor's fakes
- * (test/gen_inhibit_shim/fake_twai.c), for the spec 12.4 rows that judge the
- * product: "a bus with no other node, emulated" (added 2026-10-20, user).
+ * spec_layer -- the tester's fault behaviour ON TOP OF the shim's driver, for
+ * the spec 12.4 rows that judge the product: "a bus with no other node,
+ * emulated" (added 2026-10-20, user).
  *
- * WHY A LAYER AND NOT AN EDIT. The fakes are the implementor's, and a test
+ * THE DRIVER IS twai_port's HOST FAKE since port step 1b (2026-10-31):
+ * shared/twai_port/test/twai_fake.c, with the implementor's shim_harness.c
+ * around it (test/gen_inhibit_shim/). Until then it was the implementor's
+ * fake_twai.c, and this layer had its own model of what the fake now models
+ * itself: a frame nobody acknowledges, bus errors, bus-off.
+ *
+ * WHY A LAYER AND NOT AN EDIT. The harness is the implementor's, and a test
  * that judges product code is not written by the implementor (reviewer,
- * 2026-10-20). So nothing here edits them: the layer reaches the driver calls
- * through link-time wraps (-Wl,--wrap=twai_...) and the fakes' own public
- * controls (ft_set_air_time, ft_set_bus_errors, ft_bus_off, ft_set_step_hook).
+ * 2026-10-20). So nothing here edits it, nor the fake: the layer reaches the
+ * driver calls through link-time wraps (-Wl,--wrap=twai_...), the harness's
+ * controls (ft_set_bus_errors, ft_bus_off, ft_set_step_hook) and the fake's
+ * own public knobs (twai_fake_set_acked, twai_fake_set_error_counters).
  *
  * WHAT IT MODELS, AND THAT IT IS A GUESS. With no other node on the bus,
  * nothing acknowledges, so a frame the device queues never completes: the
  * controller retransmits it at once, each attempt ends in an ACK error, and
  * each error is an error frame and a bus-error alert. The layer models that
  * as:
- *   - every frame never completes: the fake's air time is made too long to
- *     elapse, so the head of the queue reads as TRANSMITTING (TS set), which
- *     is how a frame retrying unacknowledged looks on every attempt (reviewer,
- *     2026-10-20: better than ft_stall, which reads as awaiting arbitration);
+ *   - every frame never completes: the fake's ACK is taken away
+ *     (twai_fake_set_acked), so a normal-mode frame is retransmitted for
+ *     ever and the head of the queue reads as TRANSMITTING (TS set), which is
+ *     how a frame retrying unacknowledged looks on every attempt (reviewer,
+ *     2026-10-20: better than a stall, which reads as awaiting arbitration);
  *   - while a frame waits, one error frame per `retry_us`: bus_error_count
- *     (twai_get_status_info) rises by one and TWAI_ALERT_BUS_ERROR is latched;
+ *     (twai_get_status_info) rises by one and the fake latches
+ *     TWAI_ALERT_BUS_ERROR;
  *   - TEC rises 8 per error to 128 (error passive, TWAI_ALERT_ABOVE_ERR_WARN
- *     at 96 and TWAI_ALERT_ERR_PASS at 128) and stays there, since an ACK error
- *     in error-passive does not raise it; REC stays 0;
+ *     at 96 and TWAI_ALERT_ERR_PASS at 128, which the layer raises) and stays
+ *     there, since an ACK error in error-passive does not raise it; REC stays
+ *     0. The status reads them from the fake's counters
+ *     (twai_fake_set_error_counters);
  *   - no frame is received (the test delivers none);
- *   - on request, bus-off (ft_bus_off): no more errors, TWAI_ALERT_BUS_OFF.
+ *   - on request, bus-off (ft_bus_off): no more errors, the fake's
+ *     TWAI_ALERT_BUS_OFF, TEC 256; it ends at the next install.
+ * Every alert, the fake's and the layer's, is latched only if it is enabled
+ * when it occurs, and a reconfigure hands back and clears what is pending, as
+ * in ESP-IDF v5.4.1.
  * ABORTING A FRAME THAT IS RETRYING is also the layer's model (reviewer,
  * 2026-10-20). Between attempts a frame retrying unacknowledged is not on the
  * wire, so the controller's abort can take it out. The answer-stuck case
  * (nonode_test.c) presents the device's answer in that phase: held with the
- * fakes' ft_stall_id(), which reads TS clear (awaiting arbitration), so the
- * fakes' abort removes it and it never completes, before or after the nodes
- * return. Every other frame reads as transmitting, as above.
+ * harness's ft_stall_id(), which reads TS clear (awaiting arbitration), so
+ * the fake's abort removes it and it never completes, before or after the
+ * nodes return. Every other frame reads as transmitting, as above.
  * The retry period and the alert pattern of sl_silence() and
  * sl_silence_tenth_at() are this layer's choice, not a measurement.
  * sl_silence_measured() replays the pattern the bench row ("a bus with no
@@ -46,10 +61,10 @@
  * each return (spec 12.4 row: "once per received frame or per 200 ms receive
  * timeout"; reviewer, 2026-10-20), so these are the check points. Every
  * injected error's time. Every twai_initiate_recovery() call (spec 7: the
- * device starts no bus-off recovery).
+ * device starts no bus-off recovery), counted and then passed to the fake.
  *
  * Alert values are ESP-IDF v5.4.1's (components/driver/twai/include/driver/
- * twai.h); the implementor's mock header names only the four it uses.
+ * twai.h), named here so the cases' checks read as the spec does.
  */
 #ifndef SPEC_LAYER_H
 #define SPEC_LAYER_H
@@ -73,7 +88,8 @@ typedef struct
 } sl_rx_t;
 
 /* Back to a clean bus: no silence, no errors, counters zeroed, the step hook
- * installed (chaining `next`, may be NULL). Call after ft_reset(). */
+ * installed (chaining `next`, may be NULL). Call after ft_reset(), before the
+ * driver is installed (ft_set_bus_errors(0) refuses a live count above it). */
 void sl_reset(void (*next)(void));
 
 /* No other node from now: every frame never completes, and one error frame
@@ -95,8 +111,8 @@ int64_t sl_retry_us(void);
 /* The controller goes bus-off now (ft_bus_off); errors stop. */
 void sl_bus_off(void);
 
-/* The other nodes are back: frames complete again (the fake's default air
- * time), errors stop. */
+/* The other nodes are back: frames are acknowledged and complete again,
+ * errors stop. */
 void sl_nodes_back(void);
 
 /* What happened. */
@@ -112,9 +128,5 @@ uint32_t       sl_alerts_delivered(void);   /* every injected alert bit the devi
 /* The step the layer runs at every fake step boundary; exposed so the
  * harness test can drive it without a worker. */
 void sl_step(void);
-
-/* Not in the implementor's mock: the layer defines it, to count calls. */
-#include "esp_err.h"
-esp_err_t twai_initiate_recovery(void);
 
 #endif

@@ -33,7 +33,7 @@ def parked():
     fake.dev_get = lambda path, timeout=8.0: asked.append(path) or '{"batt_voltage": "14.1V"}'
     saved, real_runs = sys.modules.get("lowid_flood_skip_bench"), B.RUNS
     runs = gi_paths.scratch("batt-voltage-parked")
-    shutil.rmtree(runs, ignore_errors=True)
+    gi_paths.remove_tree(runs)
     os.makedirs(runs)
     sys.modules["lowid_flood_skip_bench"] = fake
     B.RUNS = runs
@@ -50,7 +50,7 @@ def parked():
         else:
             sys.modules["lowid_flood_skip_bench"] = saved
     written = os.listdir(runs)
-    shutil.rmtree(runs, ignore_errors=True)
+    gi_paths.remove_tree(runs)
     text = out.getvalue()
     return [
         ("parked: main() refuses (exit 2)", rc == 2),

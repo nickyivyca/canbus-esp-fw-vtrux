@@ -53,7 +53,7 @@ def main():
         # The same tool with its override taken out must fail the check. It is copied
         # alone, so its own imports of other tools still come from HERE.
         d = os.path.join(scratch, t)
-        shutil.rmtree(d, ignore_errors=True)
+        gi_paths.remove_tree(d)
         os.makedirs(d)
         src = open(os.path.join(HERE, t + ".py"), encoding="utf-8", newline="").read()
         if src.count(LINE) != 1:
@@ -66,8 +66,8 @@ def main():
         killed = not mok and not any(g.startswith("IMPORT FAILED") for g in mgot)
         print("%s %s without the override fails the check%s" % ("ok  " if killed else "FAIL", t, "" if killed else "  -- %s" % (mgot,)))
         fails += not killed
-        shutil.rmtree(d, ignore_errors=True)
-    shutil.rmtree(scratch, ignore_errors=True)
+        gi_paths.remove_tree(d)
+    gi_paths.remove_tree(scratch)
     print("\n%s: %d failed" % ("FAIL" if fails else "PASS", fails))
     return 1 if fails else 0
 

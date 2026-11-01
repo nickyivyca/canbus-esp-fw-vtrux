@@ -19,6 +19,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import lowid_flood_skip_bench as B                              # noqa: E402
+import gi_paths  # noqa: E402  remove_tree (AGENTS.md "Removing scratch")
 
 TMP = os.path.join(B.RUNS, "_test_lowid_flood_out")
 
@@ -51,7 +52,7 @@ def overwriting_writer(out, rec):
 
 def main():
     failures = []
-    shutil.rmtree(TMP, ignore_errors=True)
+    gi_paths.remove_tree(TMP)
     os.makedirs(TMP)
     try:
         # 1. Default path: timestamped, distinct per stamp, under runs/.
@@ -86,7 +87,7 @@ def main():
         check("self-check: assertion 3 FAILS for a writer that overwrites",
               not preserved_after_second_write(overwriting_writer), failures)
     finally:
-        shutil.rmtree(TMP, ignore_errors=True)
+        gi_paths.remove_tree(TMP)
 
     print("\n=== %s ===" % ("PASS" if not failures else
                             "FAIL: " + "; ".join(failures)))

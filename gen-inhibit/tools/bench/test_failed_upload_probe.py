@@ -199,7 +199,7 @@ def mutants():
             errors += 1
             continue
         d = os.path.join(base, "m%d" % n)
-        shutil.rmtree(d, ignore_errors=True)
+        gi_paths.remove_tree(d)
         os.makedirs(d)
         shutil.copy(os.path.join(HERE, "ota_guard_raw_probe.py"), d)
         open(os.path.join(d, "failed_upload_probe.py"), "w", encoding="utf-8").write(src0.replace(old, new))
@@ -215,7 +215,7 @@ def mutants():
         killed += bool(fails)
         print("%s m%d %s%s" % ("KILLED  " if fails else "SURVIVED", n, name,
                                ("; " + fails[0][:90]) if fails else (", CRASHED or hung" if crashed else "")))
-    shutil.rmtree(base, ignore_errors=True)
+    gi_paths.remove_tree(base)
     print("\n%d of %d killed by a check, %d errors" % (killed, len(MUTANTS), errors))
     return 0 if killed == len(MUTANTS) and not errors else 1
 

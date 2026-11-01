@@ -23,6 +23,20 @@ import struct
 import subprocess
 import sys
 
+def _bench_dir():
+    """gen-inhibit/tools/bench in this file's worktree, found by walking up to its .git (a
+    copy in scratch/ finds the same one); in a copy with no git, two folders up."""
+    d = here = os.path.dirname(os.path.abspath(__file__))
+    while not os.path.exists(os.path.join(d, ".git")):
+        if os.path.dirname(d) == d:
+            return os.path.normpath(os.path.join(here, "..", "..", "tools", "bench"))
+        d = os.path.dirname(d)
+    return os.path.join(d, "gen-inhibit", "tools", "bench")
+
+
+sys.path.append(_bench_dir())
+import gi_paths  # noqa: E402  remove_tree (AGENTS.md "Removing scratch")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
@@ -44,7 +58,7 @@ def image(version, project):
 
 
 def run(version, project):
-    shutil.rmtree(TMP, ignore_errors=True)
+    gi_paths.remove_tree(TMP)
     os.makedirs(TMP)
     p = os.path.join(TMP, "wican-fw_obd_test.bin")
     with open(p, "wb") as fh:
@@ -91,7 +105,7 @@ def main():
         for name in ("check_image_identity", "check_sources_older_than_image"):
             check("%s is retired" % name, not hasattr(B, name))
     finally:
-        shutil.rmtree(TMP, ignore_errors=True)
+        gi_paths.remove_tree(TMP)
 
     print("\n=== %s ===" % ("PASS" if not failures else "FAIL: " + "; ".join(failures)))
     return 1 if failures else 0

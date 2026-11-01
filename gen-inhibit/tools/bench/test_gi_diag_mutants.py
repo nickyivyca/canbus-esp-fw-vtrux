@@ -78,7 +78,7 @@ def run_test(d):
 
 def copy(base, name, text):
     d = os.path.join(base, name)
-    shutil.rmtree(d, ignore_errors=True)
+    gi_paths.remove_tree(d)
     os.makedirs(d)
     open(os.path.join(d, TARGET), "w", encoding="utf-8", newline="").write(text)
     shutil.copy(os.path.join(HERE, "pins.json"), d)
@@ -103,7 +103,7 @@ def main():
         print("%s m%d %s  (exit %d, %d FAIL%s)%s" % ("KILLED  " if dead else "SURVIVED", n, name, rc, len(fails),
                                                  ", CRASHED" if crashed else "",
                                                  "".join("\n           " + f[:130] for f in fails[:2])))
-    shutil.rmtree(base, ignore_errors=True)
+    gi_paths.remove_tree(base)
     print("\n%d of %d killed by a check, %d errors; the control %s"
           % (killed, len(MUTANTS), errors, "passes" if control_ok else "DOES NOT PASS"))
     return 0 if killed == len(MUTANTS) and not errors and control_ok else 1

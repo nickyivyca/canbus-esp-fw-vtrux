@@ -117,7 +117,7 @@ def main():
         out += [l.replace(t, "<tree>").replace(noelf, "<temp>") for l in text.splitlines()
                 if l.strip().startswith("FAIL") or "Traceback" in l or "Error" in l]
         out.append("")
-    shutil.rmtree(os.path.dirname(noelf), ignore_errors=True)
+    gi_paths.remove_tree(os.path.dirname(noelf))
     out.append("SUMMARY: positive %s; %d of %d negatives caught on their own check"
                % ("PASS" if ok_pos else "FAIL", len(negatives) - (bad - (0 if ok_pos else 1)), len(negatives)))
     open(args.out, "w", encoding="utf-8").write("\n".join(out) + "\n")

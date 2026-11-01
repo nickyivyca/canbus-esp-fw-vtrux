@@ -45,7 +45,7 @@ def run(d):
 
 def copy(base, name, text):
     d = os.path.join(base, name)
-    shutil.rmtree(d, ignore_errors=True)
+    gi_paths.remove_tree(d)
     os.makedirs(d)
     for f in os.listdir(HERE):
         if f.endswith(".py") and os.path.isfile(os.path.join(HERE, f)):
@@ -72,7 +72,7 @@ def main():
         print("%s m%d %s  (exit %d, %d FAIL%s)%s" % ("KILLED  " if dead else "SURVIVED", n, name, rc, len(fails),
                                                  ", CRASHED" if crashed else "",
                                                  "".join("\n           " + f[:120] for f in fails[:2])))
-    shutil.rmtree(base, ignore_errors=True)
+    gi_paths.remove_tree(base)
     print("\n%d of %d killed by a check, %d errors; the control %s"
           % (killed, len(MUTANTS), errors, "passes" if control_ok else "DOES NOT PASS"))
     return 0 if killed == len(MUTANTS) and not errors and control_ok else 1

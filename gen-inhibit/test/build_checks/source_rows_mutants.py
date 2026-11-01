@@ -1,5 +1,6 @@
 """Mutants of the build checks' port step 1a changes (the stock code in vtrux/wican,
-2026-10-29): each must make its test fail -- test_source_rows.py, test_switch_rows.py,
+2026-10-29) and step 1b's (the CAN port in vtrux/can_port and vtrux/twai_port, can.c gone,
+2026-10-31; m13-m20): each must make its test fail -- test_source_rows.py, test_switch_rows.py,
 test_build_switches.py or test_refusal_tables.py. m00 is build_output.py and t01 the
 project's vtrux_checks.json as they were before the change (gen-inhibit/main a287e1c).
 Controls first: each test passes on an unmutated copy. The copies go under the worktree's
@@ -11,6 +12,20 @@ import os
 import shutil
 import subprocess
 import sys
+
+def _bench_dir():
+    """gen-inhibit/tools/bench in this file's worktree, found by walking up to its .git (a
+    copy in scratch/ finds the same one); in a copy with no git, two folders up."""
+    d = here = os.path.dirname(os.path.abspath(__file__))
+    while not os.path.exists(os.path.join(d, ".git")):
+        if os.path.dirname(d) == d:
+            return os.path.normpath(os.path.join(here, "..", "..", "tools", "bench"))
+        d = os.path.dirname(d)
+    return os.path.join(d, "gen-inhibit", "tools", "bench")
+
+
+sys.path.append(_bench_dir())
+import gi_paths  # noqa: E402  remove_tree (AGENTS.md "Removing scratch")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))   # the worktree root
@@ -35,7 +50,7 @@ MUTANTS = [
      "                if BS._inside(a, comp) and a.endswith(\".c\"):", SR),
     ("m04_main_only_compiled", "build_output.py",
      "        if f.endswith((\".c\", \".h\")):\n            out[\"main/\" + f]",
-     "        if f in (\"can.c\", \"gen_inhibit.c\", \"main.c\") and f.endswith((\".c\", \".h\")):\n            out[\"main/\" + f]", SR),
+     "        if f in (\"gen_inhibit.c\", \"main.c\") and f.endswith((\".c\", \".h\")):\n            out[\"main/\" + f]", SR),
     ("m05_probe_not_exempt", "build_output.py",
      "        if rel in allowed or rel == PROBE:", "        if rel in allowed:", SR),
     ("m06_wifi_from_main", "build_output.py",
@@ -58,6 +73,28 @@ MUTANTS = [
     ("m12_wired_check_on_repo", "build_output.py",
      "    gi = files.get(\"main/gen_inhibit.c\", \"\")",
      "    gi = os.path.join(REPO, \"main\", \"gen_inhibit_none.c\")", SR),
+    # port step 1b
+    ("m13_gen_inhibit_may_transmit", "build_output.py",
+     "    allowed = {TWAI_PORT_C: 1}", "    allowed = {TWAI_PORT_C: 1, \"main/gen_inhibit.c\": 1}", SR),
+    ("m14_owner_limit_dropped", "build_output.py",
+     "        if n > limit:", "        if False:", SR),
+    ("m15_abort_site_anywhere", "build_output.py",
+     "    if not (len(hits) == 1 and hits[0][0] == TWAI_PORT_LL_C3 and hits[0][1] == 1):",
+     "    if not (len(hits) == 1 and hits[0][1] == 1):", SR),
+    ("m16_port_abort_call_not_required", "build_output.py",
+     "    if wired and not port_calls:", "    if False:", SR),
+    ("m17_rx_from_repo", "build_output.py",
+     "    gi_c = os.path.join(project, \"main\", \"gen_inhibit.c\")",
+     "    gi_c = os.path.join(REPO, \"main\", \"gen_inhibit.c\")", SR),
+    ("m18_rx_any_assignment", "build_output.py",
+     r'            if re.search(r"rx_queue_len\s*=\s*%s\b" % RXQ, s):',
+     r'            if re.search(r"rx_queue_len\s*=", s):', SR),
+    ("m19_rx_depth_32", "build_output.py",
+     "        row(RXQ_ROW, fw_depth >= 64,", "        row(RXQ_ROW, fw_depth >= 32,", SR),
+    ("m20_rx_comments_count", "build_output.py",
+     # the RX loop's comment skip dropped (the WiFi loop's, with the same lines, is not)
+     "                continue\n            if re.search(r\"rx_queue_len",
+     "                pass\n            if re.search(r\"rx_queue_len", SR),
 ]
 RT = "test_refusal_tables.py"
 MUTANTS += [
@@ -85,7 +122,7 @@ TABLE_MUTANTS = [
 
 
 def copy(dst):
-    shutil.rmtree(dst, ignore_errors=True)
+    gi_paths.remove_tree(dst)
     shutil.copytree(SRC, dst, ignore=shutil.ignore_patterns("__pycache__", "build", "build-*", "managed_components",
                                                             "runs", "scratch"))
 
@@ -145,6 +182,6 @@ for name, test in TABLE_MUTANTS:
     open(os.path.join(dst, "firmware", "vtrux_checks.json"), "w", newline="").write(old)
     if not run(name, test, dst):
         survivors.append(name)
-shutil.rmtree(base, ignore_errors=True)
+gi_paths.remove_tree(base)
 print("survivors: %s" % (", ".join(survivors) or "none"))
 sys.exit(1 if survivors else 0)

@@ -3,7 +3,7 @@
  * binary", on the mock-HAL shim (port step 0c, diag schema 8; user 2026-10-25).
  *
  * The product (main/gen_inhibit.c and the rest, as shipped) is built against the
- * implementor's fakes, whose app descriptor (mock/esp_app_desc.h) carries a fixed
+ * implementor's fakes (on twai_port's host fake since port step 1b), whose app descriptor (mock/esp_app_desc.h) carries a fixed
  * ELF SHA-256, MOCK_ELF_SHA256: that hash is this test's stimulus. What correct
  * looks like comes from the spec, not the product:
  *   - spec 10: 0x7F3 B0-B3 are diag_build_id, the first four bytes of the image
@@ -21,7 +21,7 @@
  *                                  nonode_test prints them)
  * Built by build.sh with NN_TEST=build_id_test.c. Gen-inhibit tester, 2026-10-25.
  */
-#include "fake_twai.h"
+#include "shim_harness.h"
 #include "gen_inhibit.h"
 #include "driver/twai.h"
 #include "esp_app_desc.h"
@@ -83,6 +83,7 @@ int main(int argc, char **argv)
 
     ft_reset();
     sl_reset(NULL);
+    gen_inhibit_port_register();        /* port 0, as app_main sets it up (spec 3.3, port step 1b) */
     gen_inhibit_init(CAN_500K, 0);
     ft_start_worker();
     ft_run(1000);

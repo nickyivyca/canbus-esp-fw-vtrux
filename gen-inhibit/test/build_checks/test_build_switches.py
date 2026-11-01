@@ -24,6 +24,20 @@ import shutil
 import sys
 import time
 
+def _bench_dir():
+    """gen-inhibit/tools/bench in this file's worktree, found by walking up to its .git (a
+    copy in scratch/ finds the same one); in a copy with no git, two folders up."""
+    d = here = os.path.dirname(os.path.abspath(__file__))
+    while not os.path.exists(os.path.join(d, ".git")):
+        if os.path.dirname(d) == d:
+            return os.path.normpath(os.path.join(here, "..", "..", "tools", "bench"))
+        d = os.path.dirname(d)
+    return os.path.join(d, "gen-inhibit", "tools", "bench")
+
+
+sys.path.append(_bench_dir())
+import gi_paths  # noqa: E402  remove_tree (AGENTS.md "Removing scratch")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import build_switches as B                                         # noqa: E402
@@ -177,7 +191,7 @@ EXCLUDED = {"build/CMakeFiles/git-data/grabRef.cmake", "build/CMakeFiles/3.30.2/
 
 
 def build_tree():
-    shutil.rmtree(TMP, ignore_errors=True)
+    gi_paths.remove_tree(TMP)
     for rel, text in list(FILES.items()) + list(OUTSIDE.items()):
         p = os.path.normpath(os.path.join(REPO, rel))
         os.makedirs(os.path.dirname(p), exist_ok=True)
@@ -318,7 +332,7 @@ def main():
         os.remove(os.path.join(build, "CMakeCache.txt"))
         no_cache = refused(lambda: B.read_record(REPO, build, fake_run(query_text(REPO, build), CMAKE_VARS)))
     finally:
-        shutil.rmtree(TMP, ignore_errors=True)
+        gi_paths.remove_tree(TMP)
 
     ok_entry = (B.NOT, "default value", "a reason", None)
     ROW = [{"project_row": "some row"}]

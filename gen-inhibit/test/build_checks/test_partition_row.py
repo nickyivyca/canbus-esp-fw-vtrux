@@ -28,6 +28,20 @@ import os
 import shutil
 import sys
 
+def _bench_dir():
+    """gen-inhibit/tools/bench in this file's worktree, found by walking up to its .git (a
+    copy in scratch/ finds the same one); in a copy with no git, two folders up."""
+    d = here = os.path.dirname(os.path.abspath(__file__))
+    while not os.path.exists(os.path.join(d, ".git")):
+        if os.path.dirname(d) == d:
+            return os.path.normpath(os.path.join(here, "..", "..", "tools", "bench"))
+        d = os.path.dirname(d)
+    return os.path.join(d, "gen-inhibit", "tools", "bench")
+
+
+sys.path.append(_bench_dir())
+import gi_paths  # noqa: E402  remove_tree (AGENTS.md "Removing scratch")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import board_ref as R                                           # noqa: E402
@@ -39,7 +53,7 @@ BUILD = os.path.join(TMP, "build")
 
 def project(board_folder, board_json=None):
     """TMP as a project with BUILD in it and the board's copy in managed_components/ (None: no board)."""
-    shutil.rmtree(TMP, ignore_errors=True)
+    gi_paths.remove_tree(TMP)
     os.makedirs(os.path.join(BUILD, "partition_table"))
     with open(os.path.join(BUILD, "project_description.json"), "w") as fh:
         json.dump({"project_path": TMP}, fh)
@@ -55,7 +69,7 @@ def project(board_folder, board_json=None):
 
 def run(table_bytes):
     """check_partitions() on BUILD holding `table_bytes` (None = no table)."""
-    shutil.rmtree(os.path.join(BUILD, "partition_table"), ignore_errors=True)
+    gi_paths.remove_tree(os.path.join(BUILD, "partition_table"))
     os.makedirs(os.path.join(BUILD, "partition_table"))
     if table_bytes is not None:
         with open(os.path.join(BUILD, "partition_table", "partition-table.bin"), "wb") as fh:
@@ -110,7 +124,7 @@ def main():
             fails += not good
             print("  %-4s %-48s %s" % ("ok" if good else "FAIL", label, detail[:70]))
     finally:
-        shutil.rmtree(TMP, ignore_errors=True)
+        gi_paths.remove_tree(TMP)
     print("\n=== %s ===" % ("PASS" if not fails else "FAIL"))
     return 1 if fails else 0
 
