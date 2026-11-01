@@ -8,14 +8,56 @@ against the copy. The run passes only if the unmutated build passes and
 every mutant build fails.
 
     python3 shared/twai_port/test/mutate.py [--out DIR] [--cc gcc]
+
+DIR (default scratch/twai_fake-mutants/ at the worktree's root) must not exist:
+the run makes it and removes it when it ends, pass or fail (AGENTS.md,
+"Removing scratch"). A folder it cannot remove is printed with the reason.
 """
 import argparse
 import os
+import shutil
+import stat
 import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", "..", ".."))
+
+
+def long_path(p):
+    """p made absolute, and on Windows in the \\\\?\\ form, which has no 260-character limit."""
+    p = os.path.abspath(p)
+    if os.name == "nt" and not p.startswith("\\\\?\\"):
+        p = "\\\\?\\" + p
+    return p
+
+
+def remove_tree(path):
+    """Remove path and everything in it. A file or folder that will not go is made
+    writable and tried again (Git for Windows' objects are read-only, which
+    shutil.rmtree alone cannot remove on Windows). True if path is gone; otherwise
+    the path and the reason are printed and False is returned."""
+    failed = []
+
+    def again(func, p, exc):
+        try:
+            os.chmod(p, stat.S_IREAD | stat.S_IWRITE | (stat.S_IEXEC if os.path.isdir(p) else 0))
+            func(p)
+        except OSError as e:
+            failed.append((p, e))
+
+    lp = long_path(path)
+    if not os.path.lexists(lp):
+        return True
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(lp, onexc=again)
+    else:
+        shutil.rmtree(lp, onerror=lambda func, p, ei: again(func, p, ei[1]))
+    if os.path.lexists(lp):
+        why = failed[0] if failed else (path, "still there after removal")
+        print("could not remove %s: %s (%s)" % (path, why[1], why[0]), file=sys.stderr)
+        return False
+    return True
 
 # (name, text in twai_fake.c, its replacement). Each text occurs once.
 MUTANTS = [
@@ -118,12 +160,23 @@ def build_and_run(cc, src, out, name):
     return "pass" if run([exe]) == 0 else "fail"
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--out", default=os.path.join(ROOT, "scratch", "twai_fake-mutants"))
     ap.add_argument("--cc", default=os.environ.get("CC", "gcc"))
-    a = ap.parse_args()
-    os.makedirs(a.out, exist_ok=True)
+    a = ap.parse_args(argv)
+    if os.path.lexists(a.out):
+        print("%s already exists: remove it or give another --out (this run removes the folder "
+              "it makes, so it does not run in one it did not make)" % a.out, file=sys.stderr)
+        return 2
+    os.makedirs(a.out)
+    try:
+        return run_mutants(a)
+    finally:
+        remove_tree(a.out)
+
+
+def run_mutants(a):
     with open(os.path.join(HERE, "twai_fake.c"), encoding="utf-8") as f:
         base = f.read()
 

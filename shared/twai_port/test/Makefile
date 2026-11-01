@@ -3,6 +3,7 @@
 #
 #   make -C shared/twai_port/test run        # from the repo root
 #   make -C shared/twai_port/test mutants    # mutate.py: every mutant must fail
+#   make -C shared/twai_port/test mutate-test  # mutate.py removes its scratch folder, pass or fail
 #   make -C shared/twai_port/test cxx        # the fake and cpp/ as C++11, as g++ builds them
 #
 # Binaries go to the worktree's scratch/ (AGENTS.md, "Files and folders");
@@ -46,6 +47,9 @@ run: all
 mutants:
 	$(PYTHON) mutate.py --cc $(CC)
 
+mutate-test:
+	$(PYTHON) test_mutate.py
+
 cxx:
 	mkdir -p $(OUT)
 	$(CXX) -std=c++11 -O1 -Wall -Wextra $(INC) -Icpp -x c++ -c twai_fake.c -o $(OUT)/twai_fake_cxx.o
@@ -55,4 +59,4 @@ clean:
 	rm -f $(OUT)/test_twai_fake $(OUT)/test_port_on_fake_c3 $(OUT)/test_port_on_fake_s3 \
 	    $(OUT)/twai_fake_cxx.o $(OUT)/twai_fake_cpp.o
 
-.PHONY: all run mutants cxx clean
+.PHONY: all run mutants mutate-test cxx clean
