@@ -12,7 +12,8 @@ working tree or HEAD instead of the pin is caught. The pinned commit has a
 `* text eol=crlf` .gitattributes, so a checkout-style export (which
 converts) is told apart from the raw blobs. No network is needed.
 
-  1. pin(): the committed entry is the reviewer's (repo, 14f8ee60...); a
+  1. pin(): the committed entry is the reviewer's (repo, 1cd39420...; it
+     was 14f8ee60... until the pin move of 2026-11-01); a
      pins file with no can-tools entry, a commit that is short or not
      lower-case hex, or no repo, is refused.
   2. clone(): CAN_TOOLS_DIR unset is refused, naming it; a folder with no
@@ -72,7 +73,7 @@ import can_tools_pin  # noqa: E402
 import scratch_dir  # noqa: E402
 
 REPO = "https://github.com/nickyivyca/can-tools"
-COMMIT = "14f8ee60d0a5b004755a9b45a852593d313b76ab"
+COMMIT = "1cd39420181899d5b2dfe8da0aceef9187d29bc5"
 OTHER = "0123456789abcdef0123456789abcdef01234567"
 FAILS = []
 
@@ -293,7 +294,7 @@ def checks():
     try:
         # 1. the pin
         p = can_tools_pin.pin()
-        check("1 pins.json's can-tools entry is the reviewer's (repo, 14f8ee60...)",
+        check("1 pins.json's can-tools entry is the reviewer's (repo, 1cd39420...)",
               p == {"repo": REPO, "commit": COMMIT}, p)
         for name, entry in (("no can-tools entry", None),
                             ("a short commit", dict(p, commit=COMMIT[:7])),

@@ -168,12 +168,14 @@ SELF_TESTS = [
     "bench_innomaker_clock", "bench_switch_loss", "bench_switch_errors",
     "bench_switch_pending", "bench_vport", "bench_c12", "bench_flight_silence",
     "bench_usb_host", "bench_mcp_reset", "bench_hold12", "bench_topology",
+    "bench_canbench_smoke",
 ]
 # Bench drivers whose --can-fail runs their self-test against each of their
 # MUTANTS (script_can_fail.py), run locally (test_script_coverage).
 CAN_FAILS = [
     "bench_c12", "bench_mcp_reset", "bench_powerup_round", "bench_switch_loss",
     "bench_topology", "bench_usb_host", "bench_vport", "bench_hold12",
+    "bench_canbench_smoke",
 ]
 
 # Local scripts (they want pyserial or the Windows side).
@@ -855,6 +857,12 @@ def harness(settings):
               cls="build", timeout_s=3600),
         b.mpy("can-tools-pin-test-canfail",
               ["can_tools_pin_test.py", "--can-fail"], cls="build",
+              timeout_s=3600),
+        b.mpy("bus-gs-usb-test-canfail",
+              ["bus_gs_usb_test.py", "--can-fail"], cls="build",
+              timeout_s=3600),
+        b.mpy("paths-test-canfail",
+              ["paths_test.py", "--can-fail"], cls="build",
               timeout_s=3600)])
     def mutant(cid, argv):
         kw = dict(cls="build", timeout_s=7200,

@@ -352,7 +352,10 @@ def test_suites():
     #      with the can-tools pin (2026-10-30)
     # 194: digest-recheck-check-canfail added and cutover-verify-guard-test
     #      retired (reviewer, 2026-10-31)
-    assert len(seen) == 194, "checks across the suites: %d" % len(seen)
+    # 198: bus-gs-usb-test-canfail, paths-test-canfail,
+    #      st.bench-canbench-smoke and cf.bench-canbench-smoke, with the
+    #      can-tools pin move to 1cd3942 (2026-11-01)
+    assert len(seen) == 198, "checks across the suites: %d" % len(seen)
     # madhouse gets the pinned canre beside the code, named by CANRE_DIR
     mad = 0
     for name in ("emulated", "harness"):
