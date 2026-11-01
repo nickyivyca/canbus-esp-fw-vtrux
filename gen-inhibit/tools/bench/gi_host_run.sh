@@ -170,6 +170,25 @@ WICAN_LOCAL="$(cd "$FW/test/gen_inhibit_shim" && $LOCAL_PY -B wican_ref.py)"
 [ -n "$WICAN_LOCAL" ] || { echo "no pinned vtrux/wican checkout (wican_ref.py above)" >&2; exit 1; }
 SHARED_ROOT="$(cd "$WICAN_LOCAL/../.." && pwd)"
 
+# THE SYNC REPLACES WHAT IT SHIPS (port step 1b acceptance, 2026-10-31). tar only adds
+# and overwrites, so a file the repo dropped stayed in ~/gi_host. At the first sync
+# after 1b the shim folder still held 1a's mock/driver/twai.h, mock/hal/twai_ll.h,
+# fake_twai.c and fake_twai.h, and firmware/main 1b's deleted can.c and 25 headers
+# the repo's main/ no longer has (can.h, comm_server.h ..., vtrux/wican's since 1a). The shim's -I order puts mock/ and
+# $(COREDIR) before the shared folders, so the stale twai.h hid the fake's and --shim
+# stopped compiling twai_port.c -- loudly, this once; a stale can.h whose values
+# still compile would have hidden the pinned one in silence. So before unpacking,
+# the remote drops every folder the sync ships whole (firmware/, tools/, the
+# scheduler suite, build_checks, the goldens), the shim folder's entries but
+# scenarios/, and the host suite folder's top-level sources. Generated files stay:
+# the two scenarios/ folders, scratch/ (the canre install) and the host suite's
+# build outputs; the builds remake the rest. test_gi_host_run_env.py unpacks the
+# real archive over a remote with stale files in each place.
+STALE="mkdir -p ~/$DEST/test/gen_inhibit_shim ~/$DEST/test/gen_inhibit_host"
+STALE="$STALE && rm -rf ~/$DEST/firmware ~/$DEST/tools ~/$DEST/test/gen_inhibit_sched ~/$DEST/test/build_checks ~/$DEST/test/gen_inhibit_host/golden"
+STALE="$STALE && find ~/$DEST/test/gen_inhibit_shim -mindepth 1 -maxdepth 1 ! -name scenarios -exec rm -rf {} +"
+STALE="$STALE && find ~/$DEST/test/gen_inhibit_host -maxdepth 1 -type f \( -name '*.py' -o -name '*.c' -o -name '*.h' -o -name Makefile -o -name '*.md' \) -delete"
+
 echo "--- sync $FW -> $REMOTE:~/$DEST"
 tar -C "$FW" -czf - \
     $MAIN_HDRS \
@@ -204,7 +223,7 @@ tar -C "$FW" -czf - \
     test/gen_inhibit_host/golden \
     -C "$SHARED_ROOT" shared/wican shared/can_port shared/twai_port \
     -C "$EXPORT_PARENT" diag_schemas \
-  | ssh "$REMOTE" "mkdir -p ~/$DEST && rm -rf ~/$DEST/diag_schemas ~/$DEST/shared && tar xzf - -C ~/$DEST"
+  | ssh "$REMOTE" "mkdir -p ~/$DEST && $STALE && rm -rf ~/$DEST/diag_schemas ~/$DEST/shared && tar xzf - -C ~/$DEST"
 
 # project_dir.py WAS MISSING UNTIL 2026-10-26: from_capture.py,
 # replay_stimulus_delta.py and test_signals.py import it, so none of them could run

@@ -1,22 +1,26 @@
 /*
- * spec_layer.c -- see spec_layer.h. Gen-inhibit tester, 2026-10-20.
+ * spec_layer.c -- see spec_layer.h. Gen-inhibit tester, 2026-10-20; onto
+ * twai_port's host fake at port step 1b, 2026-10-31.
  *
  * Linked with -Wl,--wrap= for twai_receive, twai_get_status_info,
- * twai_read_alerts, twai_reconfigure_alerts and twai_driver_install, so the
- * product's calls (main/can.c, main/gen_inhibit.c) reach these first and the
- * implementor's fake_twai.c second. Calls inside fake_twai.c itself are not
- * wrapped, which is what is wanted: the layer sits between the product and the
- * driver model, as the controller's view of the bus would.
+ * twai_read_alerts, twai_reconfigure_alerts and twai_initiate_recovery, so the
+ * product's calls (can_port, twai_port, main/gen_inhibit.c) reach these first
+ * and the shared fake (shared/twai_port/test/twai_fake.c) second. Calls inside
+ * twai_fake.c itself are not wrapped, which is what is wanted: the layer sits
+ * between the product and the driver model, as the controller's view of the
+ * bus would. twai_driver_install is shim_harness.c's wrap, so the layer sees
+ * an install by the fake's count instead (twai_fake_install_count).
  */
 #include "spec_layer.h"
 
-#include "fake_twai.h"
+#include "shim_harness.h"
 #include "driver/twai.h"
 
 #include <string.h>
 
-#define AIR_NEVER  ((int64_t)1 << 50)   /* a frame this long never completes */
-#define AIR_NORMAL 200                  /* the fake's default, us */
+/* The alert bits the layer causes: the fake raises BUS_ERROR (each error) and
+ * BUS_OFF itself, the layer the two TEC thresholds. */
+#define SL_INJECTED (SL_ALERT_BUS_ERROR | SL_ALERT_ABOVE_ERR_WARN | SL_ALERT_ERR_PASS | SL_ALERT_BUS_OFF)
 
 static struct
 {
@@ -29,7 +33,8 @@ static struct
     int      retries_this_wait; /* errors injected since retry_t0 */
     uint32_t base_errors;       /* bus_error_count before this silence */
     uint32_t tec;
-    uint32_t pending, enabled, delivered;
+    uint32_t pending, delivered;
+    int      installs;          /* the fake's install count when last looked */
     int      recovery_calls;
     int      n_rx, n_err;
     sl_rx_t  rx[SL_MAX_RX];
@@ -41,31 +46,58 @@ esp_err_t __real_twai_receive(twai_message_t *m, TickType_t ticks);
 esp_err_t __real_twai_get_status_info(twai_status_info_t *s);
 esp_err_t __real_twai_read_alerts(uint32_t *alerts, TickType_t ticks);
 esp_err_t __real_twai_reconfigure_alerts(uint32_t alerts, uint32_t *prev);
-esp_err_t __real_twai_driver_install(const twai_general_config_t *g,
-                                     const twai_timing_config_t *t,
-                                     const twai_filter_config_t *f);
+esp_err_t __real_twai_initiate_recovery(void);
+
+/* TEC as the status reports it: the fake's own counters, which nothing else
+ * moves (REC stays 0 with nothing received). */
+static void set_tec(uint32_t tec)
+{
+    L.tec = tec;
+    twai_fake_set_error_counters(tec, 0);
+}
+
+/* An alert the layer raises, latched only if enabled when it occurs, as the
+ * driver's are (the fake's raise_alert, twai.c:111). */
+static void raise(uint32_t a)
+{
+    L.pending |= a & twai_fake_alerts_enabled();
+}
 
 static void inject_error(int64_t t)
 {
     if (L.n_err < SL_MAX_ERR) L.err_t[L.n_err] = t;
     L.n_err++;
-    ft_set_bus_errors(L.base_errors + (uint32_t)L.n_err);
-    L.pending |= SL_ALERT_BUS_ERROR;
+    ft_set_bus_errors(L.base_errors + (uint32_t)L.n_err);  /* the fake's count and its BUS_ERROR alert */
     if (L.tec < 128)
     {
         const uint32_t before = L.tec;
-        L.tec += 8;
-        if (before < 96 && L.tec >= 96) L.pending |= SL_ALERT_ABOVE_ERR_WARN;
-        if (L.tec >= 128) L.pending |= SL_ALERT_ERR_PASS;
+        set_tec(L.tec + 8);
+        if (before < 96 && L.tec >= 96) raise(SL_ALERT_ABOVE_ERR_WARN);
+        if (L.tec >= 128) raise(SL_ALERT_ERR_PASS);
+    }
+}
+
+/* An install ends a bus-off: the driver can only be installed again after an
+ * uninstall, which is allowed in bus-off (IDF 5.4.1, twai.c:558). */
+static void see_installs(void)
+{
+    const int n = twai_fake_install_count();
+    if (n == L.installs) return;
+    L.installs = n;
+    if (L.bus_off)
+    {
+        L.bus_off = false;
+        set_tec(L.silent ? L.tec : 0);
     }
 }
 
 void sl_step(void)
 {
+    see_installs();
     if (L.silent && !L.bus_off)
     {
         twai_status_info_t s;
-        __real_twai_get_status_info(&s);
+        twai_fake_driver_status(&s);    /* not a driver call: none counted against the product */
         const int64_t now = ft_now();
         if (L.retry_t0 < 0 && s.msgs_to_tx > 0)
         {
@@ -100,21 +132,23 @@ void sl_reset(void (*next)(void))
     memset(&L, 0, sizeof(L));
     L.retry_t0 = -1;
     L.next = next;
+    L.installs = twai_fake_install_count();
     ft_set_bus_errors(0);
+    set_tec(0);
     ft_set_step_hook(sl_step);
 }
 
 void sl_silence(int64_t retry_us)
 {
     twai_status_info_t s;
-    __real_twai_get_status_info(&s);
+    twai_fake_driver_status(&s);
     L.base_errors = s.bus_error_count - (uint32_t)L.n_err;
     L.silent = true;
     L.retry_us = retry_us;
     L.retry_t0 = -1;
     L.passive_us = 0;
     L.tenth_us = -1;
-    ft_set_air_time(AIR_NEVER);
+    twai_fake_set_acked(false);
 }
 
 void sl_silence_tenth_at(int64_t t_ref, int64_t tenth_us)
@@ -136,9 +170,8 @@ void sl_bus_off(void)
 {
     sl_step();                  /* the errors up to now, then no more */
     L.bus_off = true;
-    L.tec = 256;
-    L.pending |= SL_ALERT_BUS_OFF;
-    ft_bus_off();
+    set_tec(256);
+    ft_bus_off();               /* the fake's state and its BUS_OFF alert */
 }
 
 void sl_nodes_back(void)
@@ -146,7 +179,8 @@ void sl_nodes_back(void)
     sl_step();
     L.silent = false;
     L.retry_t0 = -1;
-    ft_set_air_time(AIR_NORMAL);
+    if (!L.bus_off) set_tec(0);
+    twai_fake_set_acked(true);
 }
 
 /* ------------------------------------------------------------ the wraps -- */
@@ -167,59 +201,46 @@ esp_err_t __wrap_twai_receive(twai_message_t *m, TickType_t ticks)
 esp_err_t __wrap_twai_get_status_info(twai_status_info_t *s)
 {
     sl_step();                  /* the bus as of this instant */
-    const esp_err_t r = __real_twai_get_status_info(s);
-    if (r == ESP_OK && (L.silent || L.bus_off))
-    {
-        s->tx_error_counter = L.tec;
-        s->rx_error_counter = 0;
-    }
-    return r;
+    return __real_twai_get_status_info(s);
 }
 
 esp_err_t __wrap_twai_read_alerts(uint32_t *alerts, TickType_t ticks)
 {
     sl_step();
     uint32_t a = 0;
-    const esp_err_t r = __real_twai_read_alerts(&a, ticks);
-    const uint32_t mine = L.pending & L.enabled;
-    L.pending &= ~mine;
-    L.delivered |= mine;
+    const uint32_t mine = L.pending;
+    /* an alert of the layer's is pending: the driver's semaphore is given, so
+     * the read does not wait */
+    const esp_err_t r = __real_twai_read_alerts(&a, mine ? 0 : ticks);
+    L.pending = 0;
     if (r == ESP_OK || mine)
     {
         *alerts = (r == ESP_OK ? a : 0) | mine;
+        L.delivered |= *alerts & SL_INJECTED;
         return ESP_OK;
     }
     return r;
 }
 
+/* The driver hands back the alerts triggered and not yet read, and clears
+ * them (twai.c:790-797); the layer's with them. */
 esp_err_t __wrap_twai_reconfigure_alerts(uint32_t alerts, uint32_t *prev)
 {
     const esp_err_t r = __real_twai_reconfigure_alerts(alerts, prev);
-    if (r == ESP_OK) L.enabled = alerts;
-    return r;
-}
-
-esp_err_t __wrap_twai_driver_install(const twai_general_config_t *g,
-                                     const twai_timing_config_t *t,
-                                     const twai_filter_config_t *f)
-{
-    const esp_err_t r = __real_twai_driver_install(g, t, f);
-    if (r == ESP_OK && g) L.enabled = g->alerts_enabled;
-    if (r == ESP_OK && L.bus_off)
+    if (r == ESP_OK)
     {
-        /* an install ends a bus-off in the fake, as in IDF 5.4.1 */
-        L.bus_off = false;
-        L.tec = L.silent ? L.tec : 0;
+        if (prev) *prev |= L.pending;
+        L.pending = 0;
     }
     return r;
 }
 
-/* Not in the implementor's mock: defined here so a call is counted, not a
- * link error. Spec 7: the device starts no bus-off recovery. */
-esp_err_t twai_initiate_recovery(void)
+/* Counted, then the fake's own (spec 7: the device starts no bus-off
+ * recovery, so a healthy run never gets here). */
+esp_err_t __wrap_twai_initiate_recovery(void)
 {
     L.recovery_calls++;
-    return ESP_OK;
+    return __real_twai_initiate_recovery();
 }
 
 /* ------------------------------------------------------------ readers -- */
@@ -230,5 +251,5 @@ int            sl_err_count(void)         { return L.n_err; }
 int64_t        sl_err_time(int i)         { return i < SL_MAX_ERR ? L.err_t[i] : -1; }
 uint32_t       sl_tec(void)               { return L.tec; }
 int            sl_recovery_calls(void)    { return L.recovery_calls; }
-uint32_t       sl_alerts_enabled(void)    { return L.enabled; }
+uint32_t       sl_alerts_enabled(void)    { return twai_fake_alerts_enabled(); }
 uint32_t       sl_alerts_delivered(void)  { return L.delivered; }

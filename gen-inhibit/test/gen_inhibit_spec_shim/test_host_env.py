@@ -88,6 +88,35 @@ def pure(he):
     check("the summary line names host and compiler", "madhouse-debian" in d and "14.2.0" in d, d)
 
 
+def shared(folder, tmp):
+    """run_spec_shim.py's record of the shared checkout build.sh compiles from (port step
+    1b, 2026-10-31): found as build.sh finds it, every built file's md5, the pinned tag;
+    and a checkout that is not there gives no md5 (main() then FAILs: real())."""
+    sys.path.insert(0, folder)
+    sys.modules.pop("run_spec_shim", None)
+    old = os.environ.get("WICANDIR")
+    try:
+        import run_spec_shim as rs
+        i = rs.shared_identity()
+        check("shared: the checkout is found", bool(i["shared_dir"]) and os.path.isdir(i["shared_dir"]),
+              i["shared_dir"][-40:])
+        check("shared: every file build.sh compiles from it has an md5",
+              len(i["shared_md5"]) == 5 and None not in i["shared_md5"].values(), i["shared_md5"])
+        check("shared: the twai_port host fake is among them", bool(i["shared_md5"].get("shared/twai_port/test/twai_fake.c")))
+        check("shared: the tag the project pins is recorded", bool(i["shared_tag"]), i["shared_tag"])
+        os.environ["WICANDIR"] = os.path.join(tmp, "no_checkout", "wican")
+        i = rs.shared_identity()
+        check("shared: no checkout there, no md5", list(i["shared_md5"].values()) == [None] * 5, i["shared_md5"])
+    finally:
+        if old is None:
+            os.environ.pop("WICANDIR", None)
+        else:
+            os.environ["WICANDIR"] = old
+        sys.path.remove(folder)
+        sys.modules.pop("run_spec_shim", None)
+        sys.modules.pop("wican_ref", None)
+
+
 def real(he, folder, dbc, tmp):
     env_gcc = dict(os.environ, PATH=toolbin(tmp, True))
     env_none = dict(os.environ, PATH=toolbin(tmp, False))
@@ -127,6 +156,16 @@ def real(he, folder, dbc, tmp):
                                          else "no FAIL about the record"), named == (not want), idj.get("fails"))
         check("run_spec_shim, %s: not exit 0 (the fake builds nothing)" % label, r.returncode != 0, r.returncode)
 
+    out = os.path.join(tmp, "run_no_shared")
+    subprocess.run([sys.executable, "-B", os.path.join(folder, "run_spec_shim.py"), "--local", "--out", out,
+                    "--dbc-dir", dbc], env=dict(env_gcc, WICANDIR=os.path.join(tmp, "no_checkout", "wican")),
+                   capture_output=True, text=True, timeout=600)
+    try:
+        fails = json.load(open(os.path.join(out, "identity.json"))).get("fails", [])
+    except (OSError, ValueError) as e:
+        fails = [repr(e)[:80]]
+    check("run_spec_shim, no shared checkout: a FAIL names it", any("shared checkout" in f for f in fails), fails)
+
     r = subprocess.run([sys.executable, "-B", os.path.join(folder, "mutate.py"), "--local", "--only", "1"],
                        env=env_none, capture_output=True, text=True, timeout=300)
     lines = r.stdout.splitlines()
@@ -144,6 +183,7 @@ def checks(folder, dbc, tmp):
     import host_env as he
     try:
         pure(he)
+        shared(folder, tmp)
         if os.name == "nt":
             print("  ---- the real-shell checks run on Linux only (on Windows a bare bash is WSL's)")
         else:
@@ -184,6 +224,9 @@ MUTANTS = [
     ("run_spec_shim.py", "the summary has no host line", "               host_env.describe(ident),\n", ""),
     ("mutate.py", "mutate runs on with no compiler", "        gi_paths.remove_tree(base)\n        return 1\n",
      "        pass\n"),
+    ("run_spec_shim.py", "the shared files are not recorded", "    for f in SHARED_BUILT:\n", "    for f in SHARED_BUILT[:0]:\n"),
+    ("run_spec_shim.py", "run_spec_shim takes a missing shared checkout",
+     '        fails.append("the shared checkout or a file it builds is missing")\n', "        pass\n"),
 ]
 # Not a mutant: gcc --version without head -1. Its later lines hold no "=", and only
 # key=value lines are read, so the record comes out the same (equivalent).
