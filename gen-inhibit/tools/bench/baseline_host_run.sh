@@ -90,18 +90,38 @@ fi
 # find through wican_ref.py (the pinned checkout ../shared-<tag>/ beside the worktree root), or
 # WICANDIR. The copy has no such checkout, so a commit with the shim's wican_ref.py ships
 # shared/wican from git at the tag the commit pins (its own wican_ref.py reads the tag from its
-# idf_component.yml) at shared-wican/ in the copy, and the remote script sets WICANDIR to it.
+# idf_component.yml) at shared/wican/ in the copy, and the remote script sets WICANDIR to it.
+# THE CAN PORT (port step 1b, 2026-10-31). From 1b main/can.c is gone: the shims compile the
+# shared can_port (can.h is its own now) and twai_port on twai_port's host fake, from beside
+# vtrux/wican (the shim Makefile's $(WICANDIR)/..). So a commit with no firmware/main/can.c
+# also ships shared/can_port and shared/twai_port at the same tag, beside shared/wican, and
+# the source hashes name them in place of can.c. Until this, the copy had shared/wican only
+# (at shared-wican/), and a 1b commit was refused here: its tag has no shared/wican/can.h.
 WICAN=0
 WTAG=
+CANSRC='$M/can.c'
 if [ -e "$STAGE/test/gen_inhibit_shim/wican_ref.py" ]; then
   WTAG=$(git -C "$TOP" show "$C:gen-inhibit/firmware/main/idf_component.yml" |
     ${LOCAL_PY:-py -3.14} -B -c "import sys; sys.path.insert(0, sys.argv[1]); import wican_ref; print(wican_ref.pinned_tag(sys.stdin.read()) or '')" \
       "$STAGE/test/gen_inhibit_shim")
   [ -n "$WTAG" ] || { echo "$C pins no vtrux/wican version" >&2; exit 2; }
-  git -C "$TOP" cat-file -e "$WTAG:shared/wican/can.h" 2>/dev/null || { echo "no shared/wican/can.h at $WTAG" >&2; exit 2; }
-  mkdir -p "$STAGE/shared-wican" && git -C "$TOP" archive "$WTAG:shared/wican" | tar -x -C "$STAGE/shared-wican" || exit 2
+  SHIP="shared/wican"
+  if tree gen-inhibit/firmware/main/can.c; then
+    NEED="shared/wican/can.h shared/wican/comm_server.h"
+  else
+    NEED="shared/wican/comm_server.h shared/can_port/include/can.h shared/can_port/can_port.c shared/can_port/can_stock.c
+          shared/twai_port/twai_port.c shared/twai_port/twai_port_ll_esp32c3.c shared/twai_port/test/twai_fake.c"
+    SHIP="shared/wican shared/can_port shared/twai_port"
+    CANSRC="shared/can_port/can_port.c shared/can_port/can_stock.c shared/twai_port/twai_port.c shared/twai_port/twai_port_ll_esp32c3.c shared/twai_port/test/twai_fake.c"
+  fi
+  for f in $NEED; do
+    git -C "$TOP" cat-file -e "$WTAG:$f" 2>/dev/null || { echo "no $f at $WTAG" >&2; exit 2; }
+  done
+  for d in $SHIP; do
+    mkdir -p "$STAGE/$d" && git -C "$TOP" archive "$WTAG:$d" | tar -x -C "$STAGE/$d" || exit 2
+  done
   WICAN=1
-  echo "vtrux/wican headers: shared/wican at $WTAG"
+  echo "shared components at $WTAG: $SHIP"
 fi
 tar -C "$STAGE" -cf - . | ssh "$REMOTE" "rm -rf ~/$DEST && mkdir -p ~/$DEST && tar xf - -C ~/$DEST"
 
@@ -111,7 +131,7 @@ echo "# baseline host/emulation run: commit $C (git archive), \$(date -Is), \$(h
 echo "# \$(gcc --version | head -1); $PY \$($PY --version 2>&1)"
 M=main; [ -d firmware/main ] && M=firmware/main     # the commit's own layout (port step 0d)
 echo "# layout: $LAYOUT (WiCAN sources in \$M)"
-sha256sum \$M/gen_inhibit_core.c \$M/gen_inhibit.c \$M/gi_sched.c \$M/can.c \
+sha256sum \$M/gen_inhibit_core.c \$M/gen_inhibit.c \$M/gi_sched.c $CANSRC \
   test/gen_inhibit_host/host_runner.c test/gen_inhibit_host/golden/stimulus.sha256
 step() { n="\$1"; shift; echo; echo "=== \$n"; "\$@"; echo "=== exit \$? (\$n)"; }
 # The project folder (methodology, 2026-10-20): \$REVERSE_IT_DIR, and --project-dir on
@@ -122,8 +142,9 @@ RR=$RQ
 export REVERSE_IT_DIR="\$RR" GEN_INHIBIT_REPO="\$RR"
 if [ -e test/gen_inhibit_host/project_dir.py ]; then PDFLAG=--project-dir; else PDFLAG=--repo; fi
 echo "# project folder: \$RR (from_capture \$PDFLAG)"
-# vtrux/wican's headers for the shims, shipped at the tag the commit pins (port step 1a)
-if [ $WICAN = 1 ]; then export WICANDIR="\$HOME/$DEST/shared-wican"; echo "# vtrux/wican headers: $WTAG, can.h sha256 \$(sha256sum < shared-wican/can.h | cut -c1-16)"; fi
+# vtrux/wican's headers for the shims, shipped at the tag the commit pins (port step 1a), and
+# from 1b can_port and twai_port beside them (the source hashes above)
+if [ $WICAN = 1 ]; then export WICANDIR="\$HOME/$DEST/shared/wican"; echo "# shared components: $WTAG, comm_server.h sha256 \$(sha256sum < shared/wican/comm_server.h | cut -c1-16)"; fi
 # canre at the pinned commit, before replays_regen and the long-arm fixture import it
 if [ $CANRE = 1 ]; then step canre_install $PY -B $BENCH_AT/canre_pin.py install; fi
 cd test/gen_inhibit_host

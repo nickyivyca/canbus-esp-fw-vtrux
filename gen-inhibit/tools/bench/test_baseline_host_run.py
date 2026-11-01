@@ -34,11 +34,17 @@ folder, gi_paths.project_root()) for `git archive`.
 canre and the stock headers (2026-10-29, found on the step 1a acceptance's first emulated
 run, where every replay regen, the long-arm fixture and the shims failed on them): a commit
 with tools/bench/canre_pin.py ships it, and the remote script runs a canre_install step
-before replays_regen; a commit with the shim's wican_ref.py (port step 1a on,
-GI_TEST_DECODE_COMMIT) ships shared/wican at the tag its idf_component.yml pins, byte for
-byte, at shared-wican/, and the remote script exports WICANDIR to it. A project-layout
-commit before 1a (GI_TEST_PRE1A_COMMIT, default 0b03841) has canre_pin.py and ships no
-headers; the root-layout commit has neither.
+before replays_regen; a commit with the shim's wican_ref.py (port step 1a on) ships
+shared/wican at the tag its idf_component.yml pins, byte for byte, at shared/wican/, and the
+remote script exports WICANDIR to it. A project-layout commit before 1a
+(GI_TEST_PRE1A_COMMIT, default 0b03841) has canre_pin.py and ships no headers; the
+root-layout commit has neither.
+
+The CAN port (port step 1b, 2026-10-31): a commit with no firmware/main/can.c
+(GI_TEST_DECODE_COMMIT, HEAD) also ships shared/can_port and shared/twai_port at the same
+tag beside shared/wican, the five files the shim compiles from them byte for byte, and its
+source hashes name those five instead of $M/can.c. A 1a commit (GI_TEST_1A_COMMIT, default
+17ec04c) ships shared/wican only, can.h in it, and hashes $M/can.c.
 
     py -3.14 -B gen-inhibit/tools/bench/test_baseline_host_run.py
     py -3.14 -B gen-inhibit/tools/bench/test_baseline_host_run.py --mutants
@@ -66,6 +72,15 @@ DECODE_COMMIT = os.environ.get("GI_TEST_DECODE_COMMIT", "HEAD")    # the project
 ROOT_COMMIT = os.environ.get("GI_TEST_ROOT_COMMIT", "e7263bb")      # the root layout, with gi_diag.py
 PART_COMMIT = "c6c7fe4"                                             # only the tester's half of the move
 PRE1A_COMMIT = os.environ.get("GI_TEST_PRE1A_COMMIT", "0b03841")    # the project layout, canre pinned, before 1a
+ONEA_COMMIT = os.environ.get("GI_TEST_1A_COMMIT", "17ec04c")        # 1a: vtrux/wican, main/can.c still there
+# What the shims compile from the shared checkout at 1b (the shim's Makefile), shipped byte for byte
+SHARED_1B = ["shared/wican/comm_server.h", "shared/can_port/include/can.h", "shared/can_port/can_port.c",
+             "shared/can_port/can_stock.c", "shared/twai_port/twai_port.c", "shared/twai_port/twai_port_ll_esp32c3.c",
+             "shared/twai_port/test/twai_fake.c"]
+HASH_1B = ("sha256sum $M/gen_inhibit_core.c $M/gen_inhibit.c $M/gi_sched.c shared/can_port/can_port.c "
+           "shared/can_port/can_stock.c shared/twai_port/twai_port.c shared/twai_port/twai_port_ll_esp32c3.c "
+           "shared/twai_port/test/twai_fake.c")
+HASH_OLD = "sha256sum $M/gen_inhibit_core.c $M/gen_inhibit.c $M/gi_sched.c $M/can.c"
 RROOT = "fake-rit-root"
 SPACED = "fake rit/My Libraries"            # spaces, as NICKY-XPS's own root has (relative, made in the tree)
 TILDE = "~/fake-rit"                        # as the settings' gi_host_root is written
@@ -233,8 +248,8 @@ def checks(script_dir):
               0 <= s4.find("step canre_install") < s4.find("step replays_regen") < s4.find("step longarm_fixture"),
               (s4.find("step canre_install"), s4.find("step replays_regen")))
         empty = os.path.join(tmp, "guard_tree")
-        os.makedirs(os.path.join(empty, "shared-wican"))
-        open(os.path.join(empty, "shared-wican", "can.h"), "w").close()
+        os.makedirs(os.path.join(empty, "shared", "wican"))
+        open(os.path.join(empty, "shared", "wican", "comm_server.h"), "w").close()
         out_c, nc = guarded(s4, "canre_install", empty)
         check("a commit with canre_pin.py: the canre_install step runs, from the copy's tools/bench/",
               nc == 1 and out_c.strip() == "STEP canre_install"
@@ -243,33 +258,52 @@ def checks(script_dir):
         import wican_ref
         man = git_show("%s:gen-inhibit/firmware/main/idf_component.yml" % DECODE_COMMIT)
         wtag = wican_ref.pinned_tag(man.decode()) if man else None
-        for h in ("can.h", "comm_server.h"):
-            want_h = git_show("%s:shared/wican/%s" % (wtag, h)) if wtag else None
-            got_h = tar_member(tmp, "decode", "shared-wican/" + h)
-            check("a commit from 1a on: the copy holds shared/wican's %s at the pinned tag (%s), byte for byte" % (h, wtag),
-                  want_h is not None and got_h == want_h, (wtag, got_h is None))
+        check("a 1b commit (%s): no firmware/main/can.c in it or in the copy" % DECODE_COMMIT,
+              git_show("%s:gen-inhibit/firmware/main/can.c" % DECODE_COMMIT) is None
+              and "firmware/main/can.c" not in names, "")
+        for f in SHARED_1B:
+            want_f = git_show("%s:%s" % (wtag, f)) if wtag else None
+            got_f = tar_member(tmp, "decode", f)
+            check("a 1b commit: the copy holds %s at the pinned tag (%s), byte for byte" % (f, wtag),
+                  want_f is not None and got_f == want_f, (wtag, got_f is None))
         home = os.path.join(tmp, "wican home")
         out_w, nw = guarded(s4, "WICANDIR", empty, home, ['echo "WICANDIR IS $WICANDIR"'])
         seen_w = [ln[len("WICANDIR IS "):] for ln in out_w.splitlines() if ln.startswith("WICANDIR IS ")]
-        check("a commit from 1a on: WICANDIR is exported as $HOME/<copy>/shared-wican",
-              nw == 1 and seen_w and seen_w[0].endswith("/gi_baseline_%s/shared-wican" % DECODE_COMMIT)
+        check("a commit from 1a on: WICANDIR is exported as $HOME/<copy>/shared/wican (can_port beside it)",
+              nw == 1 and seen_w and seen_w[0].endswith("/gi_baseline_%s/shared/wican" % DECODE_COMMIT)
               and os.path.basename(home) in seen_w[0], (nw, out_w))
         check("... before the first step", 0 <= s4.find("export WICANDIR") < s4.find("\nstep make "),
               (s4.find("export WICANDIR"), s4.find("\nstep make ")))
+        check("a 1b commit: the source hashes name the shared CAN port and the fake, not $M/can.c",
+              HASH_1B in s4 and "$M/can.c" not in s4, [ln for ln in s4.splitlines() if ln.startswith("sha256sum")])
+        rc8, s8, out8 = remote_script(script_dir, tmp, tag="onea", commit=ONEA_COMMIT)
+        names8 = archive_names(tmp, "onea")
+        man8 = git_show("%s:gen-inhibit/firmware/main/idf_component.yml" % ONEA_COMMIT)
+        wtag8 = wican_ref.pinned_tag(man8.decode()) if man8 else None
+        check("a 1a commit (%s): runs to the end, ships shared/wican and not can_port or twai_port" % ONEA_COMMIT,
+              rc8 == 0 and s8 and any(n.startswith("shared/wican/") for n in names8)
+              and not any(n.startswith(("shared/can_port", "shared/twai_port")) for n in names8), (rc8, out8[-300:]))
+        for h in ("can.h", "comm_server.h"):
+            want_h = git_show("%s:shared/wican/%s" % (wtag8, h)) if wtag8 else None
+            check("a 1a commit: the copy holds shared/wican's %s at its tag (%s), byte for byte" % (h, wtag8),
+                  want_h is not None and tar_member(tmp, "onea", "shared/wican/" + h) == want_h, wtag8)
+        check("a 1a commit: the source hashes name $M/can.c", HASH_OLD in s8,
+              [ln for ln in s8.splitlines() if ln.startswith("sha256sum")])
         rc7, s7, out7 = remote_script(script_dir, tmp, tag="pre1a", commit=PRE1A_COMMIT)
         names7 = archive_names(tmp, "pre1a")
         out7w, _ = guarded(s7, "WICANDIR", empty, home, ['echo "WICANDIR IS [$WICANDIR]"'])
         out7c, _ = guarded(s7, "canre_install", empty)
         check("a project-layout commit before 1a (%s): runs to the end, ships canre_pin.py and no headers" % PRE1A_COMMIT,
               rc7 == 0 and s7 and "tools/bench/canre_pin.py" in names7
-              and not any(n.startswith("shared-wican") for n in names7), (rc7, out7[-300:]))
+              and not any(n.startswith("shared") for n in names7), (rc7, out7[-300:]))
         check("... the canre_install step runs, and WICANDIR is not set",
               out7c.strip() == "STEP canre_install" and "WICANDIR IS []" in out7w, (out7c, out7w))
+        check("... and the source hashes name $M/can.c", HASH_OLD in s7, "")
         names5 = archive_names(tmp, "rootdecode")
         out5w, _ = guarded(s5, "WICANDIR", empty, home, ['echo "WICANDIR IS [$WICANDIR]"'])
         out5c, _ = guarded(s5, "canre_install", empty)
         check("a root-layout commit: no canre_pin.py and no headers shipped, no canre_install step, no WICANDIR",
-              not any(n.endswith("canre_pin.py") or n.startswith("shared-wican") for n in names5)
+              not any(n.endswith("canre_pin.py") or n.startswith("shared") for n in names5)
               and out5c.strip() == "" and "WICANDIR IS []" in out5w, (out5c, out5w))
         rc6, s6, out6 = remote_script(script_dir, tmp, tag="part", commit=PART_COMMIT)
         check("a commit with only part of the move (%s) is refused, before anything is sent" % PART_COMMIT,
@@ -284,7 +318,7 @@ def checks(script_dir):
             check("%s: the WiCAN sources are read from %s/" % (label, want),
                   len(keep) == 1 and r.stdout.strip() == "M IS %s" % want, (keep, r.stdout, r.stderr[-200:]))
         check("the source hashes read the WiCAN sources through $M",
-              "sha256sum $M/gen_inhibit_core.c $M/gen_inhibit.c $M/gi_sched.c $M/can.c" in s4, "")
+              "sha256sum $M/gen_inhibit_core.c $M/gen_inhibit.c $M/gi_sched.c " in s4, "")
         has = os.path.join(tmp, "cfg_has")
         hasnt = os.path.join(tmp, "cfg_hasnt")
         os.makedirs(has)
@@ -405,11 +439,17 @@ MUTANTS = [
     ("the canre_install step for every commit", "if [ $CANRE = 1 ]; then step canre_install",
      "if [ 1 = 1 ]; then step canre_install"),
     ("the headers shipped for every commit", 'if [ -e "$STAGE/test/gen_inhibit_shim/wican_ref.py" ]; then', "if true; then"),
-    ("the headers from another folder", 'git -C "$TOP" archive "$WTAG:shared/wican" |',
-     'git -C "$TOP" archive "$WTAG:shared/debug_logs" |'),
-    ("WICANDIR not exported", 'export WICANDIR="\\$HOME/$DEST/shared-wican"; ', ""),
-    ("WICANDIR names the copy's root", 'export WICANDIR="\\$HOME/$DEST/shared-wican";',
+    ("the headers from another folder", '  SHIP="shared/wican"\n', '  SHIP="shared/debug_logs"\n'),
+    ("WICANDIR not exported", 'export WICANDIR="\\$HOME/$DEST/shared/wican"; ', ""),
+    ("WICANDIR names the copy's root", 'export WICANDIR="\\$HOME/$DEST/shared/wican";',
      'export WICANDIR="\\$HOME/$DEST";'),
+    # the CAN port (port step 1b, 2026-10-31)
+    ("a 1b commit ships shared/wican only", '    SHIP="shared/wican shared/can_port shared/twai_port"\n', ""),
+    ("1b told apart by the wrong file", "  if tree gen-inhibit/firmware/main/can.c; then",
+     "  if tree gen-inhibit/firmware/main/gen_inhibit.c; then"),
+    ("a 1b commit's source hashes name can.c", '    CANSRC="shared/can_port/can_port.c', '    CANSRCX="shared/can_port/can_port.c'),
+    ("every commit hashes the shared CAN port", "CANSRC='$M/can.c'\n",
+     "CANSRC='shared/can_port/can_port.c shared/can_port/can_stock.c'\n"),
     ("a leading ~/ is quoted as a literal ~", '''  "~/"*) RQ='"$HOME"/'$(printf %q "${RROOT#"~/"}") ;;\n''', ""),
 ]
 
