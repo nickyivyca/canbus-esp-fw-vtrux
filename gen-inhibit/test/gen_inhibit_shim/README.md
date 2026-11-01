@@ -295,13 +295,15 @@ latches off. The gates cannot be slowed down.
   and an HTTP handler is out of reach.
 - **Real timing.** Virtual clock. The trail measurement is the bench's job.
 
-`main/can.c` and `main/gen_inhibit.c` ARE compiled as shipped, which is the
-point of `fake_can.c` being platform stubs rather than a reimplementation.
+`main/gen_inhibit.c` and the shared CAN port (`vtrux/can_port`'s `can_port.c`
+and `can_stock.c`, which replaced `main/can.c` at port step 1b, and
+`vtrux/twai_port`) ARE compiled as shipped, which is the point of `fake_can.c`
+being platform stubs rather than a reimplementation.
 
 ## The negative control
 
 `mutate.py` is the standing one, adopted from the reviewing session. It applies
-seven mutations one at a time to a scratch copy and reports `rc`. `BASE` is a
+its mutations one at a time to a scratch copy and reports `rc`. `BASE` is a
 copy of the project folder, `gen-inhibit/`, which holds `firmware/main/` and
 `test/`:
 
@@ -309,9 +311,18 @@ copy of the project folder, `gen-inhibit/`, which holds `firmware/main/` and
 BASE=~/gi_review python3 mutate.py
 ```
 
-Six must come back `rc=1`. **M7 is expected to survive** and `gen_inhibit.c`
-says why: with completion decided by `msgs_to_tx == 0`, the pre-queue drain
-only clears a stale `TX_FAILED`, itself unreachable at `ss = 0`.
+Every mutation must come back `rc=1` except the expected survivors, M7, N3,
+K21, V08 and V09, each with its reason at its entry in `mutate.py` (M7's and
+N3's measured on the 1b code, 2026-11-01). A mutation whose anchor does not
+match is listed and the run exits 3.
+
+**Retired at port step 1b** (2026-11-01; `mutate.py`'s RETIRED note has the
+detail). M1 (632af32's alert-based completion) and N2 (`behind` forced false)
+mutated code the gi_sched switchover removed. M3 mutated `main/can.c`'s spec
+3.2 refusal, which is now in `vtrux/can_port`'s `can_stock.c`, outside the copy
+`mutate.py` makes. CAN-side mutants belong in can_port's and twai_port's unit
+mutants (reviewer, 2026-10-31). M7, N1, N3, N7 and V08 were re-anchored on the
+1b code, and N3 and N7 were renamed for what they now mutate.
 
 **Read `rc`, not the text.** The original scraped lines containing `FAIL`,
 which also matches the harness's own `twai_receive failed: ESP_FAIL` logging —
@@ -379,14 +390,15 @@ out than commands came in, counting only frames the **test** delivered, so the
 loop cannot raise its own ceiling. That catches the runaway whatever set the
 bit.
 
-**Where it ended up.** 32 mutations, 28 caught, 4 survivors — and all three
-survivors are **equivalent mutants with the reason written down**, not gaps:
+**Where it ended up** (before port step 1b). 32 mutations, 28 caught, 4
+survivors — and all four survivors were **equivalent mutants with the reason
+written down**, not gaps:
 
 | Survivor | Why it cannot be killed |
 |---|---|
 | `K21` | `disable_monitor()` returns early once a release has latched, so the branch K21 edits cannot run. Spec 6.2's "unconditional on SoC recovering" is enforced one level above it. |
-| `M7` | Completion is decided by `msgs_to_tx == 0`, which no leftover alert affects; and `poll_tx_completion()` runs immediately before `dispatch_emits()` in both worker paths, leaving no window for a stale `TX_FAILED`. At `ss = 0` the bit is never set on the device anyway. |
-| `V08`, `V09` | Each edits an outer guard standing in front of an inner one — `gi_on_tx_result()` returns early for `GI_TX_DIAG` on its own (`gen_inhibit_core.c:1753`), and the worker never calls `gi_tick()` in OFF on its own (`gen_inhibit.c:670`). |
+| `M7` | Completion is decided by `msgs_to_tx == 0`, which no leftover alert affects; and `poll_tx_completion()` runs immediately before `dispatch_emits()` in both worker paths, leaving no window for a stale `TX_FAILED`. At `ss = 0` the bit is never set on the device anyway. (Pre-1b reasoning. On 1b M7 removes the drain of twai_port's held transmit failure and still survives, but the model now has a window: a failed diag or probe frame's held failure would be taken at the next inhibit's completion, and no case does that. Only the `ss = 0` reason holds on 1b; `mutate.py` has the detail.) |
+| `V08`, `V09` | Each edits an outer guard standing in front of an inner one — `gi_on_tx_result()` returns early for `GI_TX_DIAG` on its own (in `gen_inhibit_core.c`), and the worker never calls `gi_tick()` in OFF on its own (its `s_core.mode == GI_OFF` branch in `gen_inhibit.c`). |
 
 The four `W` mutations were added with the 2026-09-25 rulings and all four are
 caught: `0x617`'s window back on `fresh_us`, the evidence test left on the old
