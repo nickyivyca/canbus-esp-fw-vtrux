@@ -29,9 +29,12 @@ check 4 is what covers them.
     py -3.14 -B gen-inhibit/test/build_checks/test_scratch_only.py
     py -3.14 -B gen-inhibit/test/build_checks/test_scratch_only.py --mutants
 
---mutants copies this folder (and firmware/vtrux_checks.json) into a scratch tree once
-per moved test, puts that test's folder back beside it, and runs this test on the copy
-(BUILD_CHECKS_DIR, --only). Gen-inhibit tester, 2026-10-26.
+--mutants copies this folder (with firmware/vtrux_checks.json and
+firmware/main/idf_component.yml) into a scratch tree once per moved test, puts that
+test's folder back beside it, and runs this test on the copy (BUILD_CHECKS_DIR, --only,
+and WICANDIR at the pinned vtrux/wican, which a copy cannot find itself). First, as the
+control, an unmutated copy must pass for all five; if it does not, no mutant is judged.
+Gen-inhibit tester, 2026-10-26; the control and the copy's pins, 2026-11-01.
 """
 import os
 import shutil
@@ -224,26 +227,63 @@ MOVED = [
 ]
 
 
+def wican_dir():
+    """vtrux/wican's folder in the read-only checkout of the version gen-inhibit pins, as
+    test_build_switches finds it from the real tree (WICANDIR, if set, wins). A copy has no
+    gen_inhibit_shim/ and no ../shared-<tag>/ beside it, so its run is given this."""
+    if os.environ.get("WICANDIR"):
+        return os.environ["WICANDIR"]
+    sys.path.insert(0, os.path.join(os.path.dirname(BC), "gen_inhibit_shim"))
+    import wican_ref
+    tag = wican_ref.pinned_tag(open(wican_ref.MANIFEST, encoding="utf-8").read())
+    return os.path.join(os.path.dirname(wican_ref.WORKTREE), "shared-%s" % tag, "shared", "wican")
+
+
+def copy_folder(base, name):
+    """This folder copied to <base>/<name>/gen-inhibit/test/build_checks, with the files its
+    tests read from the project: firmware/vtrux_checks.json and firmware/main/idf_component.yml
+    (the pins board_ref reads; its ../shared-<tag>/ is found from the git worktree, which a
+    copy under scratch/ shares), and the copy's own scratch/, as a worktree has."""
+    os.makedirs(os.path.join(base, name, "scratch"))
+    proj = os.path.join(base, name, "gen-inhibit")
+    d = os.path.join(proj, "test", "build_checks")
+    shutil.copytree(BC, d, ignore=shutil.ignore_patterns("__pycache__"))
+    fw = os.path.join(os.path.dirname(os.path.dirname(BC)), "firmware")
+    os.makedirs(os.path.join(proj, "firmware", "main"))
+    shutil.copy(os.path.join(fw, "vtrux_checks.json"), os.path.join(proj, "firmware"))
+    shutil.copy(os.path.join(fw, "main", "idf_component.yml"), os.path.join(proj, "firmware", "main"))
+    return d
+
+
+def run_copy(d, names, wican):
+    r = subprocess.run([sys.executable, "-B", os.path.abspath(__file__), "--only", ",".join(names)],
+                       capture_output=True, text=True, env=dict(os.environ, BUILD_CHECKS_DIR=d, WICANDIR=wican))
+    return r, [l.strip() for l in r.stdout.splitlines() if l.strip().startswith("FAIL")]
+
+
 def mutants():
     base = own_scratch()
     killed = errors = 0
     try:
+        wican = wican_dir()
+        # the control: the unmutated copy passes every check for the moved tests, so a mutant
+        # that is not killed survived the checks, not a copy its test cannot run in
+        r, fails = run_copy(copy_folder(base, "control"), [f for f, _, _ in MOVED], wican)
+        control = r.returncode == 0 and not fails and "Traceback" not in r.stderr
+        print("%s the unmutated copy%s" % ("PASS    " if control else "FAIL    ",
+                                          "".join("\n           " + f[:150] for f in fails[:5])))
+        if not control:
+            print("\ncontrol failed: no mutant judged")
+            return 1
         for n, (fname, old, new) in enumerate(MOVED, 1):
             src = open(os.path.join(BC, fname), encoding="utf-8", newline="").read()
             if src.count(old) != 1:
                 print("ERROR    m%d %s: edit matched %d times" % (n, fname, src.count(old)))
                 errors += 1
                 continue
-            proj = os.path.join(base, "m%d" % n, "gen-inhibit")
-            d = os.path.join(proj, "test", "build_checks")
-            shutil.copytree(BC, d, ignore=shutil.ignore_patterns("__pycache__"))
-            os.makedirs(os.path.join(proj, "firmware"))
-            shutil.copy(os.path.join(os.path.dirname(os.path.dirname(BC)), "firmware", "vtrux_checks.json"),
-                        os.path.join(proj, "firmware"))
+            d = copy_folder(base, "m%d" % n)
             open(os.path.join(d, fname), "w", encoding="utf-8", newline="").write(src.replace(old, new))
-            r = subprocess.run([sys.executable, "-B", os.path.abspath(__file__), "--only", fname], capture_output=True,
-                               text=True, env=dict(os.environ, BUILD_CHECKS_DIR=d))
-            fails = [l.strip() for l in r.stdout.splitlines() if l.strip().startswith("FAIL")]
+            r, fails = run_copy(d, [fname], wican)
             dead = any("2 %s writes only under scratch/" % fname in f for f in fails) and "Traceback" not in r.stderr
             killed += dead
             print("%s m%d %s's folder beside it again%s" % ("KILLED  " if dead else "SURVIVED", n, fname,
