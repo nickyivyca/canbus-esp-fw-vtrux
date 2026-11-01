@@ -22,9 +22,19 @@
 _Static_assert(CAN_STDBY_GPIO_NUM < 32,
                "board_can_standby writes GPIO_OUT_W1TS/W1TC, GPIO0-31 only");
 
-int board_can_ports(void)
+/*
+ * The restart path calls these two (shared/can_port C7, shared/restart_guard
+ * G3), so IRAM and constants only. No switch: a jump table would be in
+ * flash.
+ */
+int IRAM_ATTR board_can_ports(void)
 {
     return 1;
+}
+
+board_can_kind_t IRAM_ATTR board_can_kind(int port)
+{
+    return port == 0 ? BOARD_CAN_TWAI : BOARD_CAN_NONE;
 }
 
 esp_err_t board_twai_pins(int port, board_twai_pins_t *out)

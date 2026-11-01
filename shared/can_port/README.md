@@ -16,7 +16,8 @@ code to test.
 |---|---|
 | `include/can_port.h`, `can_port.c` | the interface: the backend table per port index (C1), the operations of C2 by port, the status and its counters, the owner hook of C4, the stock enable's reporting form (C3) |
 | `include/can.h`, `can_stock.c` | the stock WiCAN code's CAN calls on port 0 (C3), with the stock rate-code table, the owner's refusal (C4) and the teardown through the backend (C5); the stock enable restarts on a failed bring-up, and `can_port_stock_enable()` (declared in `can_port.h`) is its reporting form, for a project's own bring-up; made from gen-inhibit's `can.c`. `can.h` was `vtrux/wican`'s until 1b |
-| `can_port_priv.h` | between the two `.c` files: the stock calls' configure and flush, and the owner hook's two calls |
+| `can_port_restart.c` | C7, the restart stop: by the board's port kind (`shared/boards` B5), `twai_port`'s restart stop (T12) for a TWAI port, "not supported" for an SPI port and wherever the driver is not in the build; in IRAM, for `shared/restart_guard` (G3). `CMakeLists.txt` finds the board, and `vtrux/twai_port` if the build has it, by their headers |
+| `can_port_priv.h` | between `can_port.c` and `can_stock.c`: the stock calls' configure and flush, and the owner hook's two calls |
 | `CMakeLists.txt`, `idf_component.yml` | the component |
 | `unit/` | the unit tests and their scripted backend (`unit/README.md`) |
 | `vtrux_checks.json` | the component's build-switch table (`shared/tools` R20) |
@@ -26,7 +27,7 @@ code to test.
 | File | What | Owner |
 |---|---|---|
 | `SPEC.md`, `VALIDATION.md` | the component's spec, C1 to C6, and why each requirement is written as it is | the reviewers, as above |
-| the interface's code and its unit tests | C1 to C5 | the implementor of the project that needs the change |
-| `unit/mutate.py` | the unit tests' mutants: one behaviour of `can_port.c` or `can_stock.c` broken at a time, each of which the unit tests must fail, the owner's refusal (C4) among them | the implementor, as the unit tests (gen-inhibit reviewer, 2026-11-01) |
+| the interface's code and its unit tests | C1 to C5, C7 | the implementor of the project that needs the change |
+| `unit/mutate.py` | the unit tests' mutants: one behaviour of `can_port.c`, `can_stock.c` or `can_port_restart.c` broken at a time, each of which the unit tests must fail, the owner's refusal (C4) among them | the implementor, as the unit tests (gen-inhibit reviewer, 2026-11-01) |
 | `VERIFICATION.md` | test evidence | the tester |
 | `vtrux_checks.json` | the component's build-switch table (`shared/tools` R20) | the tester of the project that needs the change |

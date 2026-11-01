@@ -53,6 +53,14 @@ typedef struct {
     /* The abort path: ESP_ERROR_CHECK on a failure jumps here. */
     jmp_buf *abort_to;
     esp_err_t abort_err;
+
+    /* The restart stop (T12). The two system registers REG_READ returns. */
+    uint32_t clk_en0, rst_en0;
+    /* At the status_change_at'th wait (1 for the first; 0 for never) the
+     * status becomes status_after. */
+    int status_change_at;
+    uint32_t status_after;
+    uint32_t delay_us_total;
 } stub_t;
 
 extern stub_t stub;
