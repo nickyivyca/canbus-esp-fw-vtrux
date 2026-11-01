@@ -8,7 +8,8 @@ again that day, after the gen-inhibit tester's reading of a real build and
 the gen-inhibit implementor's first build of `wican_v3`; section 2's
 console members listed 2026-10-27, after the charge-interposer reviewer's
 read; B6 amended 2026-10-29, for the stock code's own list of files that
-use pins (`shared/wican/SPEC.md` W10). The `x2` section (3) is
+use pins (`shared/wican/SPEC.md` W10); B5 amended 2026-11-01 (user), for the
+restart guard's port loop (port step 1c). The `x2` section (3) is
 drafted by the charge-interposer reviewer and ruled in its session; its
 console members listed 2026-10-28. As a
 shared component's spec this follows port plan goal 20: the reviewer whose
@@ -67,6 +68,11 @@ Requirements in section 1 are numbered B1 to B7. The numbers are stable.
 - **B5. Interface.** Project code asks the board for a port, never for a
   pin.
   - `board_can_ports()`: the number of CAN ports.
+  - `board_can_kind(port)`: the port's kind, TWAI or SPI.
+  - `board_can_ports()` and `board_can_kind(port)` are also safe to call
+    from the restart path: in IRAM, no locks, no allocation, no logging,
+    constants only (`shared/can_port` C7, `shared/restart_guard` G3; user,
+    2026-11-01).
   - `board_twai_pins(port)`: the ESP's own TWAI pins, for a TWAI port.
   - `board_spi_can(port)`: the controller, SPI host, pins and crystal, for
     an SPI CAN port.

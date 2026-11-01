@@ -30,5 +30,3 @@ code to test.
 | `unit/mutate.py` | the unit tests' mutants: one behaviour of `can_port.c` or `can_stock.c` broken at a time, each of which the unit tests must fail, the owner's refusal (C4) among them | the implementor, as the unit tests (gen-inhibit reviewer, 2026-11-01) |
 | `VERIFICATION.md` | test evidence | the tester |
 | `vtrux_checks.json` | the component's build-switch table (`shared/tools` R20) | the tester of the project that needs the change |
-</content>
-</invoke>

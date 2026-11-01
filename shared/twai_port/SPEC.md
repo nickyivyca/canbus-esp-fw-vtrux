@@ -4,7 +4,9 @@
 reviewer's session (T2's three modes, T7's `tx_refused` and its count of
 flushed frames the same day, on the implementor's and the charge-interposer
 reviewer's questions), and drafted that day by the gen-inhibit reviewer for
-gen-inhibit's port step 1b, after the charge-interposer reviewer's read. As
+gen-inhibit's port step 1b, after the charge-interposer reviewer's read. T12
+and T13 approved by the user on 2026-11-01, there, and drafted that day by
+the gen-inhibit reviewer for port step 1c. As
 a shared component's spec this follows port plan goal 20: the reviewer whose
 project needs a change drafts it, the user rules in that reviewer's session,
 and the other project's reviewer reads it before it merges into
@@ -20,7 +22,7 @@ and the other project's reviewer reads it before it merges into
   split"), `shared/can_port/SPEC.md` and
   `shared/boards/SPEC.md`.
 
-Requirements are numbered T1 to T11. The numbers are stable.
+Requirements are numbered T1 to T13. The numbers are stable.
 
 - **T1. One component.** `shared/twai_port/` is one ESP-IDF component,
   `vtrux/twai_port`, in C on ESP-IDF APIs only (port plan goal 15). It is
@@ -101,7 +103,7 @@ Requirements are numbered T1 to T11. The numbers are stable.
   abort-if-awaiting: it reads the state and, only if awaiting, issues the
   abort command, in one critical section. Neither touches the interrupt
   register. The abort-if-awaiting is in IRAM and callable from a panic
-  handler (gen-inhibit's restart step calls it, spec 3). This code is
+  handler (the restart stop, T12, calls it). This code is
   register-level, in one file per chip that names the ESP-IDF version it was
   checked against; only the C3's is measured (gen-inhibit spec 5.2 item 4).
   On a chip with no measured file, such as the S3, the component still
@@ -121,7 +123,42 @@ Requirements are numbered T1 to T11. The numbers are stable.
   Each project keeps its own logic-level fakes.
 - **T11. Ownership** is per file in the component's `README.md`: the port's
   code and its unit tests are the implementors'; the fake of T10 is the
-  testers' (user, 2026-10-31, in both reviewers' sessions).
+  testers' (user, 2026-10-31, in both reviewers' sessions). The test app of
+  T13 is the implementors', as the port's code.
+- **T12. The restart stop.** The port gives a call that takes the chip's
+  TWAI controller off the bus from the restart path (`can_port` C7,
+  `shared/restart_guard` G3), with interrupts already off:
+  - if the TWAI clock is on and the peripheral is not held in reset, it
+    waits, bounded at 1 ms in steps of 2 us, for the controller to be
+    neither transmitting nor receiving, running the abort-if-awaiting of T8
+    on every poll, and then puts the controller into reset mode, even if
+    the wait ran out;
+  - otherwise it touches nothing: the controller is then not on the bus.
+
+  It reads the controller's registers, not the driver's state, so it acts
+  whether or not the port was set up in this boot. Nothing takes the
+  controller out of reset mode until the next install. It reports, for the
+  guard's record (`shared/restart_guard` G4): the clock and reset bits,
+  whether the controller was already in reset mode, the status register at
+  entry and as reset mode was entered, the transmit and receive error
+  counters, the time waited, whether the wait ran out, the frames aborted,
+  and whether it entered reset mode. It is in IRAM, takes no lock,
+  allocates nothing and logs nothing. It is register-level, in T8's file
+  per chip; only the C3's is measured (gen-inhibit spec 3). On any other
+  chip it reports "not supported" and touches nothing.
+- **T13. The test app.** `twai_port/test_app/` holds the transmit-abort
+  probe, moved from gen-inhibit's `gi_txabort_probe.c`: a measurement of
+  what the chip's abort command does to a frame awaiting arbitration, to
+  one being transmitted and to an empty buffer, what the driver reports
+  afterwards, and how long the buffer takes to come free (gen-inhibit spec
+  5.2 item 9). It is compiled into a project's image only when the
+  component's build switch `TWAI_PORT_TXABORT_PROBE` is set, and never into
+  a release image (`shared/tools` R20). The project registers it from its
+  URI hook (`shared/wican` W8), passing a check of whether the project owns
+  the bus; the probe refuses while it does. Its URI, `POST /gi_txabort`, its
+  parameters and its answer are unchanged from gen-inhibit's at the move
+  (user, 2026-11-01). Its results are evidence for this component version,
+  citable by both projects.
 
 **Not in this spec** (stage (b)): the interposer's register-level mode switch
 with the driver kept installed, REC handling, and counting frames held or

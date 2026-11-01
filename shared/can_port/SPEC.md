@@ -2,7 +2,9 @@
 
 **Status:** approved by the user on 2026-10-31, in the gen-inhibit
 reviewer's session, and drafted that day by the gen-inhibit reviewer for
-gen-inhibit's port step 1b, after the charge-interposer reviewer's read. As
+gen-inhibit's port step 1b, after the charge-interposer reviewer's read. C7
+approved by the user on 2026-11-01, there, and drafted that day by the
+gen-inhibit reviewer for port step 1c. As
 a shared component's spec this follows port plan goal 20: the reviewer whose
 project needs a change drafts it, the user rules in that reviewer's session,
 and the other project's reviewer reads it before it merges into
@@ -17,7 +19,7 @@ and the other project's reviewer reads it before it merges into
   (`can_port` under Layer 2 of "The split"), `shared/twai_port/SPEC.md` and
   `shared/wican/SPEC.md`.
 
-Requirements are numbered C1 to C6. The numbers are stable.
+Requirements are numbered C1 to C7. The numbers are stable.
 
 - **C1. One interface.** `shared/can_port/` is one ESP-IDF component,
   `vtrux/can_port`, in C: the CAN port interface for both projects. A
@@ -55,3 +57,13 @@ Requirements are numbered C1 to C6. The numbers are stable.
   port 0 down through its backend, so the pre-teardown hook (`twai_port` T2)
   runs first, every time.
 - **C6. Ownership** is per file in the component's `README.md`.
+- **C7. The restart stop.** `can_port` gives one call that takes a port off
+  the bus from the restart path, for any port the board has, whether or not
+  a backend is registered for it in this boot (user, 2026-11-01). It calls
+  the restart stop of the driver for that port's kind (`shared/boards` B5):
+  `twai_port`'s (T12) for a TWAI port, and the SPI CAN driver's for an SPI
+  port. Where that driver has no restart stop or is not in the build, it
+  answers "not supported" and touches nothing. Until `mcp2515_port` exists
+  (stage (b)), an SPI port's answer is "not supported". It is in IRAM,
+  takes no lock, allocates nothing and logs nothing. Its caller is
+  `shared/restart_guard` (G3).
