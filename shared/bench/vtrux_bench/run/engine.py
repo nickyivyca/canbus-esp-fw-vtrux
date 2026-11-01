@@ -177,6 +177,7 @@ import json
 import os
 import socket
 import subprocess
+import sys
 import tarfile
 import threading
 import time
@@ -215,10 +216,62 @@ def read_text(r):
     return "on no image identify knows" if r is None else r
 
 
-# Where _digest_at extracts a commit's tree: None is <temp>/vtrux-bench/digest.
-# Each call makes a folder of its own there and removes it (tests point this at
-# their own scratch folder to see that).
+# Where _digest_at extracts a commit's tree: None is digest_root(repo), in the
+# repo's worktree's scratch/, never the system temp folder (AGENTS.md "Files
+# and folders"; before 2026-11-01 it was <temp>/vtrux-bench/digest). Each call
+# makes a folder of its own there and removes it (tests point this at their
+# own scratch folder to see that).
 DIGEST_ROOT = None
+
+
+def digest_root(repo):
+    """<the worktree holding repo>/scratch/vtrux-bench/digest."""
+    top = subprocess.run(["git", "-C", repo, "rev-parse", "--show-toplevel"],
+                         capture_output=True, text=True, check=True).stdout.strip()
+    return os.path.join(os.path.normpath(top), "scratch", "vtrux-bench", "digest")
+
+
+def long_path(p):
+    """p made absolute, and on Windows in the \\\\?\\ form, which has no
+    260-character limit."""
+    p = os.path.abspath(p)
+    if os.name == "nt" and not p.startswith("\\\\?\\"):
+        p = "\\\\?\\" + p
+    return p
+
+
+def remove_tree(path):
+    """Remove path and everything in it (AGENTS.md "Removing scratch"). A file
+    or folder that will not go is made writable, with its folder, and tried
+    again (Git for Windows' objects are read-only, which shutil.rmtree alone
+    cannot remove on Windows). True if path is gone; otherwise the path and
+    the reason are printed and False is returned."""
+    import shutil
+    import stat
+    failed = []
+
+    def again(func, p, exc):
+        try:
+            os.chmod(os.path.dirname(p), stat.S_IRWXU)
+            os.chmod(p, stat.S_IREAD | stat.S_IWRITE
+                     | (stat.S_IEXEC if os.path.isdir(p) else 0))
+            func(p)
+        except OSError as e:
+            failed.append((p, e))
+
+    lp = long_path(path)
+    if not os.path.lexists(lp):
+        return True
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(lp, onexc=again)
+    else:
+        shutil.rmtree(lp, onerror=lambda func, p, ei: again(func, p, ei[1]))
+    if os.path.lexists(lp):
+        why = failed[0] if failed else (path, "still there after removal")
+        print("could not remove %s: %s (%s)" % (path, why[1], why[0]),
+              file=sys.stderr)
+        return False
+    return True
 
 SHIP_EXCLUDE = {"__pycache__", ".pio", ".git", "build"}
 SSH = ("ssh", "-o", "BatchMode=yes")
@@ -1646,7 +1699,6 @@ class Engine:
         if commit in self._bridged:
             return self._bridged[commit]
         import io
-        import shutil
         import tarfile
         import tempfile
         tar = subprocess.run(["git", "-C", repo, "archive", commit],
@@ -1654,7 +1706,7 @@ class Engine:
         # A folder of this call's own, removed after: two runners digesting
         # the same commit at once never share one (before 2026-10-24 every
         # call wiped and refilled <temp>/vtrux-bench/digest/<commit>).
-        base = DIGEST_ROOT or os.path.join(tempfile.gettempdir(), "vtrux-bench", "digest")
+        base = DIGEST_ROOT or digest_root(repo)
         os.makedirs(base, exist_ok=True)
         work = tempfile.mkdtemp(prefix=commit[:12] + "_", dir=base)
         try:
@@ -1662,7 +1714,7 @@ class Engine:
                 tf.extractall(work, filter="data")
             d = product_digest(work, self.suite.product_files(work))
         finally:
-            shutil.rmtree(work, ignore_errors=True)
+            remove_tree(work)
         self._bridged[commit] = d
         return d
 
