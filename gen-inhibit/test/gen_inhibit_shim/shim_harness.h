@@ -105,6 +105,19 @@ void ft_refuse_id(uint32_t id, int n);
 /* Raise TWAI_ALERT_TX_FAILED when the next completing frame finishes. */
 void ft_fail_next(void);
 
+/*
+ * The same for the next `n` frames of `id` only, for the reason ft_stall_id()
+ * exists: a case that means "the DIAG page failed" has to say so.
+ */
+void ft_fail_id(uint32_t id, int n);
+
+/*
+ * How many frames ft_fail_next() / ft_fail_id() have marked to fail since
+ * ft_reset(). The fake marks a frame when it is queued; it completes failed
+ * after its air time.
+ */
+uint32_t ft_failed_by_rule(void);
+
 /* Queue a frame from ANOTHER task, as any client's can_send() would. Spec 3.2
  * refuses that while the inhibitor owns the bus; the model allows it so a test
  * can show what it costs when the refusal is missing. */

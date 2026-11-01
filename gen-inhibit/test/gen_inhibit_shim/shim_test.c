@@ -5976,6 +5976,58 @@ static void case_bringup_failure_refuses(void)
     case_end();
 }
 
+/*
+ * CASE 61 -- a failed DIAG page does not condemn the next inhibit (spec 7 trip
+ * 7: the "controller reported failed" form is about the inhibit frame).
+ *
+ * Mutation M7 survived without this. Since port step 1b twai_port holds a
+ * TX_FAILED until it is taken (twai_port T5), and sched_advance() takes it only
+ * at an inhibit's completion. A diag page that fails therefore leaves a failure
+ * held for whichever inhibit completes next, and the only thing that drops it
+ * is the drain in dispatch_emits() as each inhibit is queued. Without the drain
+ * a best-effort telemetry frame trips the device.
+ *
+ * On the device this needs a single-shot frame: TWAI_ALERT_TX_FAILED is raised
+ * for single-shot transmission and these frames go out with ss = 0. The model
+ * can fail any frame, so the case is about the attribution, not about the bus.
+ */
+static void case_failed_diag_does_not_trip(void)
+{
+    case_begin("case 61: a failed diag page does not trip the next inhibit");
+    setup();
+    go_live();
+
+    /*
+     * The status page goes out once per rotation, ~1.2 s (section 10), so run
+     * until it has been sent and failed, then long enough for several inhibits
+     * to complete after it.
+     */
+    uint8_t ctr = 0x50;
+    ft_fail_id(GI_DIAG_ID_STATUS, 1);
+    for (int i = 0; i < 40 && ft_failed_by_rule() == 0; i++)
+    {
+        keep_alive(60000, &ctr);
+    }
+    const int wire_before = ft_wire_count_id(0x051);
+    keep_alive(300000, &ctr);
+
+    CHECK(ft_failed_by_rule() == 1,
+          "the status page was not failed (%u marked), so nothing below was "
+          "tested: %s", (unsigned)ft_failed_by_rule(), stats());
+    CHECK(!json_has("\"abort_latched\":true"),
+          "a failed DIAG page latched an abort: its held TX_FAILED was "
+          "reported as an inhibit's: %s", stats());
+    CHECK(json_has("\"inhibit_live\":true"),
+          "the device stopped inhibiting after a failed diag page: %s",
+          stats());
+    CHECK(ft_wire_count_id(0x051) > wire_before + 3,
+          "only %d inhibit frame(s) reached the wire after the failed page, so "
+          "no inhibit completed after it: %s",
+          ft_wire_count_id(0x051) - wire_before, stats());
+    teardown();
+    case_end();
+}
+
 #if !SHIM_AUTOARM_BUILD
 int main(int argc, char **argv)
 {
@@ -6058,6 +6110,7 @@ int main(int argc, char **argv)
     case_leaving_armed_withdraws();
     case_build_page_carries_the_build_id();
     case_bringup_failure_refuses();
+    case_failed_diag_does_not_trip();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
     return g_fail ? 1 : 0;

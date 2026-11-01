@@ -15,19 +15,18 @@ exact defect it was written to catch.
   M7  the pre-queue drain of a held TX_FAILED removed (dispatch_emits(), the
       inhibit branch). Written when the drain read the driver's alerts; since
       port step 1b it polls twai_port's alerts and drops the transmit failure
-      the port holds (twai_port T5). SURVIVES, before 1b and on it, for
-      reasons that changed. Before 1b the frame-completion path consumed a
-      pending TX_FAILED immediately before dispatch_emits() in both worker
-      paths, leaving no window for a stale alert. On 1b there IS a window in
-      the model: the shared fake raises TX_FAILED for a frame it fails, and
-      twai_port holds it until taken, which is only at an inhibit's
-      completion, so without the drain a failed diag or probe frame would be
-      reported as the next inhibit's failure. No case fails one of those
-      frames and then completes an inhibit. What remains is the device:
-      TWAI_ALERT_TX_FAILED is documented "for single shot transmission", and
-      these frames go out with ss = 0, so the bit the drain clears is never
-      set there. The call stays because it would matter if a frame ever went
-      out single-shot.
+      the port holds (twai_port T5). CAUGHT since 2026-11-01, by shim case 61.
+      Before 1b it survived, and was accepted, because the frame-completion
+      path consumed a pending TX_FAILED immediately before dispatch_emits() in
+      both worker paths, leaving no window for a stale alert. On 1b there is a
+      window in the model: the shared fake raises TX_FAILED for a frame it
+      fails, and twai_port holds it until taken, which is only at an
+      inhibit's completion, so without the drain a failed diag page is
+      reported as the next inhibit's failure and trips the device. Case 61
+      fails a status page and expects no trip (reviewer, 2026-11-01). On the
+      device the bit is raised for single-shot transmission only, and these
+      frames go out with ss = 0; the call stays because it would matter if a
+      frame ever went out single-shot.
   N1  completion off-by-one: dev_outstanding(), the scheduler's "is a frame of
       ours still in the controller", reads tx_pending != 0 -> > 1
   N2  RETIRED at the gi_sched switchover (see RETIRED below)
@@ -78,10 +77,10 @@ N6. That is the pattern worth noticing -- each round of "all mutations caught"
 has been followed by a round that found more, so a green mutation run means
 "nothing in THIS set survives", never "the suite is adequate".
 
-M7, N3, K21, V08 and V09 are EXPECTED to survive, each for the reason at its
-entry (M7's and N3's measured on the 1b code, 2026-11-01). Every other mutation
-must come back rc=1, and a survivor that is not one of those five is a
-finding.
+N3, K21, V08 and V09 are EXPECTED to survive, each for the reason at its
+entry (N3's measured on the 1b code, 2026-11-01). Every other mutation must
+come back rc=1, M7 included since case 61 (2026-11-01), and a survivor that is
+not one of those four is a finding.
 
 RETIRED (gen-inhibit implementor, port step 1b, 2026-11-01; reviewer
 2026-10-31: CAN-side mutants of can_port and twai_port belong in those
