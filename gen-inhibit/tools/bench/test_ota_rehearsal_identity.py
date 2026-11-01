@@ -174,7 +174,7 @@ def fake_image(path, elf_hex, version="abc1234"):
 def verify_cases(R):
     real = (R.http_json, R.connected_bssid, R.RUNS, R.log)
     runs = os.path.join(SCRATCH, "runs")
-    shutil.rmtree(runs, ignore_errors=True)
+    gi_paths.remove_tree(runs)
     os.makedirs(runs)
     good = fake_image(os.path.join(SCRATCH, "good.bin"), "c0" * 32)
     try:
@@ -228,7 +228,7 @@ def source(R=None):
 
 
 def main():
-    shutil.rmtree(SCRATCH, ignore_errors=True)
+    gi_paths.remove_tree(SCRATCH)
     try:
         R = load()
     except Exception as e:      # noqa: BLE001
@@ -240,7 +240,7 @@ def main():
             part(R)
         except Exception as e:      # noqa: BLE001  a crash is this part's FAIL
             check("%s ran without raising" % part.__name__, False, "%s: %s" % (type(e).__name__, e))
-    shutil.rmtree(SCRATCH, ignore_errors=True)
+    gi_paths.remove_tree(SCRATCH)
     print("\n%s, %d FAIL" % ("PASS" if not FAILS else "FAIL", len(FAILS)))
     return 1 if FAILS else 0
 

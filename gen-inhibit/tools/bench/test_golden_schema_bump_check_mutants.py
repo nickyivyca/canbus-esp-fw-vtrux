@@ -55,7 +55,7 @@ def main():
         dead = rc == 2 and " FAIL " in st
         killed += dead
         print("%s m%d %s  (exit %d) %s" % ("KILLED  " if dead else "SURVIVED", n, label, rc, (st or err[-150:])[-110:]))
-    shutil.rmtree(base, ignore_errors=True)
+    gi_paths.remove_tree(base)
     print("\n%d of %d killed by the self-test, %d errors; the control %s"
           % (killed, len(MUTANTS), errors, "passes" if control_ok else "DOES NOT PASS"))
     return 0 if killed == len(MUTANTS) and not errors and control_ok else 1

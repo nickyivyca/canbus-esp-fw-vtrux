@@ -21,6 +21,20 @@ import shutil
 import subprocess
 import sys
 
+def _bench_dir():
+    """gen-inhibit/tools/bench in this file's worktree, found by walking up to its .git (a
+    copy in scratch/ finds the same one); in a copy with no git, two folders up."""
+    d = here = os.path.dirname(os.path.abspath(__file__))
+    while not os.path.exists(os.path.join(d, ".git")):
+        if os.path.dirname(d) == d:
+            return os.path.normpath(os.path.join(here, "..", "..", "tools", "bench"))
+        d = os.path.dirname(d)
+    return os.path.join(d, "gen-inhibit", "tools", "bench")
+
+
+sys.path.append(_bench_dir())
+import gi_paths  # noqa: E402  remove_tree (AGENTS.md "Removing scratch")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORKTREE = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
 SRC = "test_refusal_pairs.py"
@@ -61,7 +75,7 @@ def main():
     killed = errors = 0
     for i, (name, old, new) in enumerate([("the control: the unmutated copy", None, None)] + MUTANTS):
         d = os.path.join(base, "m%d" % i)
-        shutil.rmtree(d, ignore_errors=True)
+        gi_paths.remove_tree(d)
         os.makedirs(d)
         src = open(os.path.join(HERE, SRC), encoding="utf-8", newline="").read()
         if old is not None and src.count(old) != 1:
@@ -80,7 +94,7 @@ def main():
             print("%s m0 %s  (exit %d, %d FAIL%s)" % ("PASS    " if ok else "FAILED  ", name, r.returncode,
                                                      len(fails), ", CRASHED" if crashed else ""))
             if not ok:
-                shutil.rmtree(base, ignore_errors=True)
+                gi_paths.remove_tree(base)
                 print("\nthe control FAILS: no mutant is judged, so none is killed")
                 return 1
             continue
@@ -88,7 +102,7 @@ def main():
         killed += dead
         print("%s m%d %s  (exit %d%s%s)" % ("KILLED  " if dead else "SURVIVED", i, name, r.returncode,
                                            ", CRASHED" if crashed else "", ("; " + fails[0][:90]) if fails else ""))
-    shutil.rmtree(base, ignore_errors=True)
+    gi_paths.remove_tree(base)
     print("\n%d of %d killed by a check, %d errors; the control passes" % (killed, len(MUTANTS), errors))
     return 0 if killed == len(MUTANTS) and not errors else 1
 

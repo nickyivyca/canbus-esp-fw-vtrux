@@ -81,7 +81,7 @@ def main():
     killed = errors = 0
     for i, (name, old, new) in enumerate([("the control: the unmutated copy", None, None)] + MUTANTS):
         d = os.path.join(base, "m%d" % i)
-        shutil.rmtree(d, ignore_errors=True)
+        gi_paths.remove_tree(d)
         os.makedirs(d)
         src = open(os.path.join(HERE, SRC), encoding="utf-8", newline="").read()
         nl = "\r\n" if "\r\n" in src else "\n"
@@ -103,7 +103,7 @@ def main():
             print("%s m0 %s  (exit %d, %d FAIL%s)" % ("PASS    " if ok else "FAILED  ", name, r.returncode,
                                                      len(fails), ", CRASHED" if crashed else ""))
             if not ok:
-                shutil.rmtree(base, ignore_errors=True)
+                gi_paths.remove_tree(base)
                 print("\nthe control FAILS: no mutant is judged, so none is killed")
                 return 1
             continue
@@ -111,7 +111,7 @@ def main():
         killed += dead
         print("%s m%d %s  (exit %d%s%s)" % ("KILLED  " if dead else "SURVIVED", i, name, r.returncode,
                                            ", CRASHED" if crashed else "", ("; " + fails[0][:90]) if fails else ""))
-    shutil.rmtree(base, ignore_errors=True)
+    gi_paths.remove_tree(base)
     print("\n%d of %d killed by a check, %d errors; the control passes" % (killed, len(MUTANTS), errors))
     return 0 if killed == len(MUTANTS) and not errors else 1
 

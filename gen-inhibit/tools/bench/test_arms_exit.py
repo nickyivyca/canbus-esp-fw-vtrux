@@ -73,7 +73,7 @@ def case(tmp, label, script, args, arms, fail_at=0, **extra):
 
 def main():
     tmp = gi_paths.scratch("arms-exit-test")
-    shutil.rmtree(tmp, ignore_errors=True)
+    gi_paths.remove_tree(tmp)
     os.makedirs(os.path.join(tmp, "bin"))
     with open(os.path.join(tmp, "bin", "py"), "w", newline="\n") as f:
         f.write(FAKE_PY)
@@ -96,7 +96,7 @@ def main():
         rc, n, text = case(tmp, "B4", "baseline_b_noX2.sh", ["B4"], 0, FAKE_B4_RC="1")
         check("B4: its own exit 1 is not an arm's -> exit 0", rc == 0 and "B4 exit 1" in text, (rc, text))
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        gi_paths.remove_tree(tmp)
     print("\n%d ok, %d FAIL" % (oks, len(fails)))
     return 1 if fails else 0
 

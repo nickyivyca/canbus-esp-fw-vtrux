@@ -82,7 +82,7 @@ def class_checks(C):
         finally:
             C.L.arm_rows = real
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        gi_paths.remove_tree(tmp)
     check("class single: 250 us and both bounds (200, 320 inclusive)", lambda: count(out, "class single") == 3, out)
     check("other single: 199 us, 321 us, another id, no next frame, a frame before the error",
           lambda: count(out, "other single") == 5, out)
@@ -117,7 +117,7 @@ def summary_checks(S):
                   open(os.path.join(tmp, "x2_jam_threshold_20261020T000000_witness.json"), "w"))
         out = run(S.main, tmp)
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        gi_paths.remove_tree(tmp)
     lines = out.splitlines()
     a0 = next((l for l in lines if l.startswith("arm 0:")), "")
     a1 = next((l for l in lines if l.startswith("arm 1:")), "")
@@ -183,7 +183,7 @@ def main():
             r = subprocess.run([sys.executable, "-B", os.path.abspath(__file__), "--folder", tmp],
                                capture_output=True, text=True, timeout=120)
         finally:
-            shutil.rmtree(tmp, ignore_errors=True)
+            gi_paths.remove_tree(tmp)
         fails = [l for l in r.stdout.splitlines() if l.startswith("FAIL")]
         real = [l for l in fails if "-- CRASH " not in l]
         dead = bool(real) and "Traceback" not in r.stderr

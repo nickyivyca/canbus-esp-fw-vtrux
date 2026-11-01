@@ -87,7 +87,7 @@ def cli(folder):
 
 def tests():
     tmp = gi_paths.scratch("capture-stop-check-test")
-    shutil.rmtree(tmp, ignore_errors=True)
+    gi_paths.remove_tree(tmp)
     os.makedirs(tmp)
     try:
         M = load()
@@ -159,7 +159,7 @@ def tests():
     except Exception as e:                      # a crash is reported, never a pass
         check("ran without raising", False, repr(e))
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        gi_paths.remove_tree(tmp)
     print("\n%d ok, %d FAIL" % (oks, len(fails)))
     return 1 if fails else 0
 
@@ -192,7 +192,7 @@ def mutants():
             errors += 1
             continue
         d = os.path.join(base, "m%d" % n)
-        shutil.rmtree(d, ignore_errors=True)
+        gi_paths.remove_tree(d)
         os.makedirs(d)
         path = os.path.join(d, "capture_stop_check.py")
         open(path, "w", encoding="utf-8", newline="").write(src.replace(old, new))
@@ -203,7 +203,7 @@ def mutants():
         killed += dead
         print("%s m%d %s  (exit %d, %d FAIL%s)" % ("KILLED  " if dead else "SURVIVED", n, name, r.returncode,
                                                   len(fl), ("; " + fl[0][:100]) if fl else ""))
-    shutil.rmtree(base, ignore_errors=True)
+    gi_paths.remove_tree(base)
     print("\n%d of %d killed by a check, %d errors" % (killed, len(MUTANTS), errors))
     return 0 if killed == len(MUTANTS) and not errors else 1
 

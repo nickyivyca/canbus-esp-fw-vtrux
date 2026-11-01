@@ -39,6 +39,20 @@ import subprocess
 import sys
 import time
 
+def _bench_dir():
+    """gen-inhibit/tools/bench in this file's worktree, found by walking up to its .git (a
+    copy in scratch/ finds the same one); in a copy with no git, two folders up."""
+    d = here = os.path.dirname(os.path.abspath(__file__))
+    while not os.path.exists(os.path.join(d, ".git")):
+        if os.path.dirname(d) == d:
+            return os.path.normpath(os.path.join(here, "..", "..", "tools", "bench"))
+        d = os.path.dirname(d)
+    return os.path.join(d, "gen-inhibit", "tools", "bench")
+
+
+sys.path.append(_bench_dir())
+import gi_paths  # noqa: E402  remove_tree (AGENTS.md "Removing scratch")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from build_output import WORKTREE                                   # noqa: E402
@@ -103,8 +117,16 @@ def run_audited(target, log, env=None):
     return r.returncode, seen
 
 
+def plain(p):
+    """p without a Windows long-path prefix: \\\\?\\C:\\x is C:\\x, \\\\?\\UNC\\s\\x is \\\\s\\x
+    (gi_paths.remove_tree removes by long-path-safe names, AGENTS.md "Removing scratch")."""
+    if p.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + p[8:]
+    return p[4:] if p.startswith("\\\\?\\") else p
+
+
 def under(p, root):
-    p, root = os.path.normcase(os.path.abspath(p)), os.path.normcase(os.path.abspath(root))
+    p, root = os.path.normcase(os.path.abspath(plain(p))), os.path.normcase(os.path.abspath(root))
     return p.startswith(root + os.sep)
 
 
@@ -133,7 +155,9 @@ PLANTED = {
     "file": 'open(os.path.join(OUT, "f.txt"), "w").close()',
     "folder": 'os.makedirs(os.path.join(OUT, "d"), exist_ok=True)',
     "rmtree": 'shutil.rmtree(os.path.join(OUT, "gone"), ignore_errors=True)',
+    "long-path file": 'open(LONG(os.path.join(OUT, "g.txt")), "w").close()',
 }
+LONG = "LONG = lambda p: '\\\\\\\\?\\\\' + os.path.abspath(p) if os.name == 'nt' else p\n"   # a planted script's long-path form
 
 
 def controls(base):
@@ -141,7 +165,7 @@ def controls(base):
     os.makedirs(inside)
     os.makedirs(out)
     env = dict(os.environ, OUT=out, IN=inside)
-    head = "import os, shutil, subprocess, sys\nOUT, IN = os.environ['OUT'], os.environ['IN']\n"
+    head = "import os, shutil, subprocess, sys\nOUT, IN = os.environ['OUT'], os.environ['IN']\n" + LONG
     for name, line in sorted(PLANTED.items()):
         p = os.path.join(base, "planted", "p_%s.py" % name)
         open(p, "w").write(head + line + "\n")
@@ -150,10 +174,11 @@ def controls(base):
               (rc, seen))
     p = os.path.join(base, "planted", "p_inside.py")
     open(p, "w").write(head + 'os.makedirs(os.path.join(IN, "d"))\nopen(os.path.join(IN, "d", "f"), "w").close()\n'
-                              'shutil.rmtree(os.path.join(IN, "d"))\n')
+                              'shutil.rmtree(os.path.join(IN, "d"))\n'
+                              'open(LONG(os.path.join(IN, "long.txt")), "w").close()\n')
     rc, seen = run_audited(p, os.path.join(base, "planted_inside.log"), env)
-    check("5 control: writes inside the planted scratch/ are seen and not flagged",
-          rc == 0 and len(seen) >= 3 and not outside(seen, inside), (rc, seen))
+    check("5 control: writes inside the planted scratch/ are seen and not flagged, a long-path name too",
+          rc == 0 and len(seen) >= 4 and not outside(seen, inside), (rc, seen))
     p = os.path.join(base, "planted", "p_exit1.py")
     open(p, "w").write("import sys\nsys.exit(1)\n")
     rc, _ = run_audited(p, os.path.join(base, "planted_exit1.log"))
@@ -181,7 +206,7 @@ def checks(only):
         if not only:
             controls(base)
     finally:
-        shutil.rmtree(base, ignore_errors=True)
+        gi_paths.remove_tree(base)
     return FAILS
 
 
@@ -224,7 +249,7 @@ def mutants():
             print("%s m%d %s's folder beside it again%s" % ("KILLED  " if dead else "SURVIVED", n, fname,
                                                             "".join("\n           " + f[:150] for f in fails[:2])))
     finally:
-        shutil.rmtree(base, ignore_errors=True)
+        gi_paths.remove_tree(base)
     print("\n%d of %d killed by a check, %d errors" % (killed, len(MOVED), errors))
     return 0 if killed == len(MOVED) and not errors else 1
 

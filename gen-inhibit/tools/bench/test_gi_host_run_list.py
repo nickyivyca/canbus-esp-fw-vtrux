@@ -229,7 +229,7 @@ def checks():
         got = missing_imports(["t/e.py", "u/lib"], base)
         check("3 control: the same with it listed: not flagged", got == [], got)
     finally:
-        shutil.rmtree(base, ignore_errors=True)
+        gi_paths.remove_tree(base)
     return FAILS
 
 
@@ -270,7 +270,7 @@ def main():
             print("%s m%d %s%s" % ("KILLED  " if dead else "SURVIVED", n, name,
                                    "".join("\n           " + f[:130] for f in fails[:2])))
     finally:
-        shutil.rmtree(base, ignore_errors=True)
+        gi_paths.remove_tree(base)
     print("\n%d of %d killed by a check, %d errors" % (killed, len(MUTANTS), errors))
     return 0 if killed == len(MUTANTS) and not errors else 1
 

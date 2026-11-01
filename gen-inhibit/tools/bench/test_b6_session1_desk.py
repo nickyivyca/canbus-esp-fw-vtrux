@@ -187,7 +187,7 @@ def phase3_checks(S):
         finally:
             S.L.arm_rows = real
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        gi_paths.remove_tree(tmp)
     check("phase3: per build placed, over-counts (delta > 1), class and class over-counts",
           lambda: "e3d9437  placed 4 over 1 class 2 class-over 1" in out and "c65c45e  placed 2 over 1 class 0 class-over 0" in out
           and "_ecc     placed 3 over 0 class 1 class-over 0" in out, out)
@@ -251,7 +251,7 @@ def main():
             r = subprocess.run([sys.executable, "-B", os.path.abspath(__file__), "--folder", tmp],
                                capture_output=True, text=True, timeout=120)
         finally:
-            shutil.rmtree(tmp, ignore_errors=True)
+            gi_paths.remove_tree(tmp)
         fails = [l for l in r.stdout.splitlines() if l.startswith("FAIL")]
         real = [l for l in fails if "-- CRASH " not in l]
         dead = bool(real) and "Traceback" not in r.stderr

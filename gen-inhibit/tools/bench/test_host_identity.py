@@ -141,7 +141,7 @@ def main():
         print("\n%d of %d killed by a check, %d errors" % (killed, len(MUTANTS), errors))
         return 0 if killed == len(MUTANTS) and not errors else 1
     finally:
-        shutil.rmtree(base, ignore_errors=True)
+        gi_paths.remove_tree(base)
 
 
 if __name__ == "__main__":

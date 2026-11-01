@@ -39,7 +39,7 @@ def main():
             errors += 1
             continue
         d = os.path.join(base, "m%d" % n)
-        shutil.rmtree(d, ignore_errors=True)
+        gi_paths.remove_tree(d)
         os.makedirs(d)
         for s in glob.glob(os.path.join(HERE, "*.sh")):
             shutil.copy(s, d)
@@ -55,7 +55,7 @@ def main():
                                                      ", CRASHED" if "Traceback" in r.stderr else "",
                                                      ("; " + fails[0][:110]) if fails else ""))
             if not ok:
-                shutil.rmtree(base, ignore_errors=True)
+                gi_paths.remove_tree(base)
                 print("\nthe control FAILS: no mutant is judged, so none is killed")
                 return 1
             continue
@@ -64,7 +64,7 @@ def main():
         killed += dead
         print("%s m%d %s  (exit %d, %d FAIL)%s" % ("KILLED  " if dead else "SURVIVED", n, name, r.returncode,
                                                len(fails), ("; " + fails[0][:110]) if fails else ""))
-    shutil.rmtree(base, ignore_errors=True)
+    gi_paths.remove_tree(base)
     print("\n%d of %d killed by a check, %d errors; the control passes" % (killed, len(MUTANTS), errors))
     return 0 if killed == len(MUTANTS) and not errors else 1
 

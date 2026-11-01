@@ -91,7 +91,7 @@ class fake_data:
 
     def __exit__(self, *exc):
         gi_paths.data_dir, C.BACKUPS = self.saved
-        shutil.rmtree(FAKE_DATA, ignore_errors=True)
+        gi_paths.remove_tree(FAKE_DATA)
 
 
 def check_dump_cases():
@@ -280,7 +280,7 @@ def main():
         bad += record_path_cases()
         bad += import_refusals()
     finally:
-        shutil.rmtree(WORK, ignore_errors=True)
+        gi_paths.remove_tree(WORK)
     print("\n=== %s ===" % ("PASS" if not bad else "FAIL: " + "; ".join(bad)))
     return 1 if bad else 0
 

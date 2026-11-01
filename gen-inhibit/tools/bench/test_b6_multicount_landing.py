@@ -69,7 +69,7 @@ def make(root):
 
 def main():
     root = gi_paths.scratch("landing-test")
-    shutil.rmtree(root, ignore_errors=True)
+    gi_paths.remove_tree(root)
     os.makedirs(root)
     try:
         M = load()
@@ -106,7 +106,7 @@ def main():
     except Exception as e:                      # a crash is reported, never a pass
         check("ran without raising", False, repr(e))
     finally:
-        shutil.rmtree(root, ignore_errors=True)
+        gi_paths.remove_tree(root)
     print("\n%d ok, %d FAIL" % (oks, len(fails)))
     return 1 if fails else 0
 

@@ -268,7 +268,7 @@ def tests():
                            "arms": mains[:2] + [arm("main", trip="bus lost", latch="NOT AS SPECIFIED: not latched")]}, "r4")
     check("rejudge: an arm NOT AS SPECIFIED stays the verdict, exit 1",
           str(out.get("verdict")).startswith("NOT AS SPECIFIED") and rc == 1, (rc, out.get("verdict")))
-    shutil.rmtree(rj, ignore_errors=True)
+    gi_paths.remove_tree(rj)
     ok_reboot, held = {"rc": 0, "line": "PASS"}, pl % ("recessive", "x")
     check("start: a confirmed reboot and a held X2 start", m.start_refusal({"reboot_start": ok_reboot, "x2_pins_start": held}) is None)
     r = m.start_refusal({"reboot_start": {"rc": 1, "line": "FAIL"}, "x2_pins_start": held})
@@ -364,7 +364,7 @@ def mutants():
             errors += 1
             continue
         d = os.path.join(base, "m%d" % n)
-        shutil.rmtree(d, ignore_errors=True)
+        gi_paths.remove_tree(d)
         os.makedirs(d)
         path = os.path.join(d, "nonode_bench.py")
         open(path, "w", encoding="utf-8", newline="").write(src.replace(old, new))
@@ -376,7 +376,7 @@ def mutants():
         print("%s m%d %s  (exit %d, %d FAIL%s)" % ("KILLED  " if dead else "SURVIVED", n, name, r.returncode, len(fl),
                                                    ("; " + fl[0][:110]) if fl else (r.stderr.strip()[-120:] if r.stderr else "")))
         sys.stdout.flush()
-    shutil.rmtree(base, ignore_errors=True)
+    gi_paths.remove_tree(base)
     print("\n%d of %d killed by a check, %d errors" % (killed, len(MUTANTS), errors))
     return 0 if killed == len(MUTANTS) and not errors else 1
 

@@ -117,7 +117,7 @@ def run(script_src, **env_over):
                     texts[os.path.relpath(os.path.join(dp, f), out_dir)] = open(os.path.join(dp, f)).read()
         return r.returncode, r.stdout + r.stderr, lines, texts
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        gi_paths.remove_tree(tmp)
 
 
 def checks(src):

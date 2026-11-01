@@ -27,6 +27,20 @@ import shutil
 import struct
 import sys
 
+def _bench_dir():
+    """gen-inhibit/tools/bench in this file's worktree, found by walking up to its .git (a
+    copy in scratch/ finds the same one); in a copy with no git, two folders up."""
+    d = here = os.path.dirname(os.path.abspath(__file__))
+    while not os.path.exists(os.path.join(d, ".git")):
+        if os.path.dirname(d) == d:
+            return os.path.normpath(os.path.join(here, "..", "..", "tools", "bench"))
+        d = os.path.dirname(d)
+    return os.path.join(d, "gen-inhibit", "tools", "bench")
+
+
+sys.path.append(_bench_dir())
+import gi_paths  # noqa: E402  remove_tree (AGENTS.md "Removing scratch")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
@@ -70,7 +84,7 @@ def record_for(data, h, **over):
 def run_case(data, record=None, bin_bytes=None, bin_name=None, old_record=False, folder_arg=True, env=None):
     """Write the image, and the records folder: the record unless None (a str is written as is), and
     the .bin beside it (bin_bytes, default the image; False for none). Run the check and classify."""
-    shutil.rmtree(TMP, ignore_errors=True)
+    gi_paths.remove_tree(TMP)
     builds = os.path.join(TMP, "build")
     recs = os.path.join(TMP, "ri", "firmware", "builds", "gen-inhibit")   # R13's folder, written out
     os.makedirs(builds)
@@ -142,7 +156,7 @@ def main():
             if not ok:
                 failures.append(label)
     finally:
-        shutil.rmtree(TMP, ignore_errors=True)
+        gi_paths.remove_tree(TMP)
 
     # The classifier must be able to tell the old behaviour from the new.
     old_style = ("prod-build record present", False, "no record", False)

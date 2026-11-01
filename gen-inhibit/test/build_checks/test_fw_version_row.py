@@ -13,6 +13,20 @@ import os
 import shutil
 import sys
 
+def _bench_dir():
+    """gen-inhibit/tools/bench in this file's worktree, found by walking up to its .git (a
+    copy in scratch/ finds the same one); in a copy with no git, two folders up."""
+    d = here = os.path.dirname(os.path.abspath(__file__))
+    while not os.path.exists(os.path.join(d, ".git")):
+        if os.path.dirname(d) == d:
+            return os.path.normpath(os.path.join(here, "..", "..", "tools", "bench"))
+        d = os.path.dirname(d)
+    return os.path.join(d, "gen-inhibit", "tools", "bench")
+
+
+sys.path.append(_bench_dir())
+import gi_paths  # noqa: E402  remove_tree (AGENTS.md "Removing scratch")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
@@ -51,7 +65,7 @@ def mark(r):
 
 
 def run_case(src_val, doc_text):
-    shutil.rmtree(TMP, ignore_errors=True)
+    gi_paths.remove_tree(TMP)
     os.makedirs(TMP)
     src = os.path.join(TMP, "gen_inhibit.c")
     with open(src, "w", encoding="utf-8") as fh:
@@ -89,7 +103,7 @@ def main():
         if mark(B.rows[0]) != "NO REF":
             failures.append("missing doc is not NO REF")
     finally:
-        shutil.rmtree(TMP, ignore_errors=True)
+        gi_paths.remove_tree(TMP)
     print("\n=== %s ===" % ("PASS" if not failures else "FAIL: %s" % failures))
     return 1 if failures else 0
 

@@ -62,7 +62,7 @@ def main():
             errors += 1
             continue
         d = os.path.join(base, "m%d" % n)
-        shutil.rmtree(d, ignore_errors=True)
+        gi_paths.remove_tree(d)
         os.makedirs(d)
         for f, s in srcs.items():
             open(os.path.join(d, f), "w", encoding="utf-8", newline="").write(s.replace(old, new) if f == target else s)
@@ -77,7 +77,7 @@ def main():
                 ", CRASHED: " + r.stderr.strip().splitlines()[-1][:120] if crashed else "",
                 ("; " + fails[0][:100]) if fails else ""))
             if not ok:
-                shutil.rmtree(base, ignore_errors=True)
+                gi_paths.remove_tree(base)
                 print("\nthe control FAILS: no mutant is judged, so none is killed")
                 return 1
             continue
@@ -87,7 +87,7 @@ def main():
             "KILLED  " if dead else "SURVIVED", n, name, r.returncode, len(fails),
             ", CRASHED: " + r.stderr.strip().splitlines()[-1][:120] if crashed else "",
             ("; " + fails[0][:100]) if fails else ""))
-    shutil.rmtree(base, ignore_errors=True)
+    gi_paths.remove_tree(base)
     print("\n%d of %d killed by a check, %d errors; the control passes" % (killed, len(MUTANTS), errors))
     return 0 if killed == len(MUTANTS) and not errors else 1
 

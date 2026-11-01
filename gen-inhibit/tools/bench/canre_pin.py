@@ -51,6 +51,8 @@ import shutil
 import subprocess
 import sys
 
+import gi_paths  # remove_tree (AGENTS.md "Removing scratch"); gi_paths imports this module only in use_canre
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 PINS_FILE = os.path.join(HERE, "pins.json")
 PACKAGE = "canre"
@@ -193,7 +195,7 @@ def install(p=None, start=None):
         return d, False
     tmp = "%s.partial-%d" % (d, os.getpid())
     os.makedirs(os.path.dirname(d), exist_ok=True)
-    shutil.rmtree(tmp, ignore_errors=True)
+    gi_paths.remove_tree(tmp)
     r = subprocess.run(PIP + ["install", "--no-deps", "--no-compile", "--disable-pip-version-check", "--no-input",
                               "--target", tmp, "git+%s@%s" % (p["repo"], p["commit"])], stdin=subprocess.DEVNULL)
     try:
@@ -202,7 +204,7 @@ def install(p=None, start=None):
         verify(tmp, p)
         os.rename(tmp, d)
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        gi_paths.remove_tree(tmp)
     return d, True
 
 

@@ -156,7 +156,7 @@ def direct():
 
 def tests():
     tmp = gi_paths.scratch("wican-reboot-test")
-    shutil.rmtree(tmp, ignore_errors=True)
+    gi_paths.remove_tree(tmp)
     os.makedirs(tmp)
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fake)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -246,7 +246,7 @@ def tests():
         check("ran without raising", False, repr(e))
     finally:
         srv.shutdown()
-        shutil.rmtree(tmp, ignore_errors=True)
+        gi_paths.remove_tree(tmp)
     print("\n%d ok, %d FAIL" % (oks, len(fails)))
     return 1 if fails else 0
 
@@ -293,7 +293,7 @@ def mutants():
             errors += 1
             continue
         d = os.path.join(base, "m%d" % n)
-        shutil.rmtree(d, ignore_errors=True)
+        gi_paths.remove_tree(d)
         os.makedirs(d)
         shutil.copy(os.path.join(HERE, "page_state.py"), d)
         path = os.path.join(d, "wican_reboot.py")
@@ -306,7 +306,7 @@ def mutants():
         print("%s m%d %s  (exit %d, %d FAIL%s)" % ("KILLED  " if dead else "SURVIVED", n, name, r.returncode,
                                                   len(fl), ("; " + fl[0][:100]) if fl else ""))
         sys.stdout.flush()
-    shutil.rmtree(base, ignore_errors=True)
+    gi_paths.remove_tree(base)
     print("\n%d of %d killed by a check, %d errors" % (killed, len(MUTANTS), errors))
     return 0 if killed == len(MUTANTS) and not errors else 1
 

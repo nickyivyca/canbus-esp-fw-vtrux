@@ -29,6 +29,20 @@ import struct
 import subprocess
 import sys
 
+def _bench_dir():
+    """gen-inhibit/tools/bench in this file's worktree, found by walking up to its .git (a
+    copy in scratch/ finds the same one); in a copy with no git, two folders up."""
+    d = here = os.path.dirname(os.path.abspath(__file__))
+    while not os.path.exists(os.path.join(d, ".git")):
+        if os.path.dirname(d) == d:
+            return os.path.normpath(os.path.join(here, "..", "..", "tools", "bench"))
+        d = os.path.dirname(d)
+    return os.path.join(d, "gen-inhibit", "tools", "bench")
+
+
+sys.path.append(_bench_dir())
+import gi_paths  # noqa: E402  remove_tree (AGENTS.md "Removing scratch")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 WORKTREE = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
@@ -85,7 +99,7 @@ def image(project="wican-fw_obd_man"):
 
 def write_pair(folder, elf_words):
     """An image (no fault string) and, unless elf_words is None, a fake ELF beside it."""
-    shutil.rmtree(folder, ignore_errors=True)
+    gi_paths.remove_tree(folder)
     os.makedirs(folder)
     img = os.path.join(folder, "wican-fw_obd_test.bin")
     with open(img, "wb") as fh:
@@ -168,7 +182,7 @@ MUTANTS = [
 
 
 def main():
-    shutil.rmtree(SCRATCH, ignore_errors=True)
+    gi_paths.remove_tree(SCRATCH)
     nm = make_fake_nm(os.path.join(SCRATCH, "nm"))
     if "--target" in sys.argv[1:]:
         checks(load(sys.argv[sys.argv.index("--target") + 1]), nm)
@@ -178,12 +192,12 @@ def main():
         try:
             checks(load(os.path.join(HERE, "build_output.py")), nm)
         finally:
-            shutil.rmtree(SCRATCH, ignore_errors=True)
+            gi_paths.remove_tree(SCRATCH)
         print("%s: %d failure(s)" % ("PASS" if not FAILS else "FAIL", len(FAILS)))
         return 1 if FAILS else 0
     src = open(os.path.join(HERE, "build_output.py"), encoding="utf-8", newline="").read()
     base = os.path.join(WORKTREE, "scratch", "build-checks", "fault_hook_row_mutants")
-    shutil.rmtree(base, ignore_errors=True)
+    gi_paths.remove_tree(base)
     killed = errors = 0
     for n, (label, old, new) in enumerate([("the control: the unmutated copy", None, None)] + MUTANTS):
         if old is not None and src.count(old) != 1:
@@ -203,7 +217,7 @@ def main():
             print("%s m0 %s  (exit %d, %d FAIL%s)" % ("PASS    " if ok else "FAILED  ", label, r.returncode,
                                                      len(fails), ", CRASHED" if crashed else ""))
             if not ok:
-                shutil.rmtree(base, ignore_errors=True)
+                gi_paths.remove_tree(base)
                 print("\nthe control FAILS: no mutant is judged, so none is killed")
                 return 1
             continue
@@ -211,8 +225,8 @@ def main():
         killed += dead
         print("%s m%d %s%s" % ("KILLED  " if dead else ("CRASHED " if crashed else "SURVIVED"), n, label,
                                "  (%s)" % fails[0][6:100] if fails else ""))
-    shutil.rmtree(base, ignore_errors=True)
-    shutil.rmtree(SCRATCH, ignore_errors=True)
+    gi_paths.remove_tree(base)
+    gi_paths.remove_tree(SCRATCH)
     print("\n%d of %d killed by a check, %d errors; the control passes" % (killed, len(MUTANTS), errors))
     return 0 if killed == len(MUTANTS) and not errors else 1
 
