@@ -97,6 +97,10 @@ gen-inhibit's spec is
   hotspot address by model at compile time (`hw_config.h`,
   `wifi_network.c`). As board data, the WiCAN Pro can later be added with
   no change to project code (goal 5).
+- **Port count and kind on the restart path** (user, 2026-11-01, port step
+  1c): the restart guard stops and puts into standby every port the board
+  has, before any project code may have run in this boot, so it reads the
+  count and each port's kind from the board there (`shared/can_port` C7).
 - **Status:** complete.
 
 ### B6. Pins in `include/board_pins.h`

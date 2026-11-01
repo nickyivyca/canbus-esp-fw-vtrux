@@ -83,4 +83,20 @@ pending*, saying what is missing.
   project; product code is the implementor's of the project that needs
   the change.
 - **Status:** complete.
-</content>
+
+### C7. The restart stop
+- **Basis:** user, 2026-11-01, in the gen-inhibit reviewer's session: the
+  restart guard asks each port's driver, through `can_port`, for a
+  restart-safe stop, so the guard needs no change when an SPI CAN driver
+  gains one. It must work before any backend is registered in this boot,
+  as gen-inhibit's restart step does today: it acts on the registers
+  whether or not a driver is installed (`shared/twai_port` T12), and
+  `call_start_cpu0`'s early-boot failures restart before the project runs.
+  So it goes by the board's port kinds (`shared/boards` B5), not by
+  registration.
+- **SPI ports:** the MCP2515 keeps running through an ESP reset, and the
+  SPI driver needs interrupts and locks the restart path does not have;
+  the plan resets it over SPI at start-up instead (`mcp2515_port`'s
+  `begin()`, stage (b)). Whether an SPI port can be stopped from the
+  restart path is for the interposer's stage (b).
+- **Status:** complete.

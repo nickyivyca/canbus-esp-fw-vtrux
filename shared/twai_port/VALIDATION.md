@@ -206,4 +206,36 @@ verification"; charge-interposer reviewer, 2026-10-31).
   misreading of the hardware pass the host tests. This differs from
   gen-inhibit's `fake_twai.c`, the implementor's until this step.
 - **Status:** complete.
-</content>
+
+### T12. The restart stop
+- **Basis:** gen-inhibit spec 3, "No restart leaves the controller on the
+  bus" (user, 2026-10-13), and the restart guard's steps
+  (`shared/restart_guard` G3). Each port's driver stops its own controller,
+  reached through `can_port` C7 (user, 2026-11-01), so the TWAI register
+  code stays in this component's file per chip with T8's.
+- **Reading** of `gi_restart_quiesce.c` at `6e56289`, whose steps this is,
+  unchanged: the wait of at most 1 ms in 2 us steps for Transmit Status and
+  Receive Status both 0, the abort-if-awaiting on every poll (only an
+  awaiting frame, the only state in which the abort was measured to act,
+  gen-inhibit spec 5.2 item 4), then reset mode even if the wait ran out;
+  nothing done while the TWAI clock is off or the peripheral is held in
+  reset, the state after a power-on or an uninstall. It reads the two bits
+  rather than the driver's state, because a CPU reset from a live state
+  leaves the controller clocked and running with no driver (gen-inhibit
+  reviewer's reading of the trial, 2026-10-13).
+- **Other chips:** as T8: nothing is measured on the S3, so the stop
+  reports "not supported" there rather than running an unmeasured
+  sequence. The interposer measures it in its stage (b), gap fix 3.
+- **Status:** complete for the C3; unsupported elsewhere by design.
+
+### T13. The test app
+- **Basis:** port plan "Layer 2": a test app for each shared component,
+  among them `gi_txabort_probe.c` for the C3 register file, whose results
+  are evidence for that component version, citable by both projects.
+  gen-inhibit spec 5.2 item 9 and 12.4's "abort behaviour of the C3 TWAI"
+  row: the measurement the scheduler's abort model rests on.
+- **Built into a project's image, interface unchanged** (user, 2026-11-01):
+  as `shared/restart_guard` G5. The ownership check is a hook because the
+  probe's refusal while armed is gen-inhibit's rule (spec 3.2, "Exempt"),
+  and the shared probe cannot call gen-inhibit.
+- **Status:** complete.
