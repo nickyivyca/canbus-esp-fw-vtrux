@@ -79,10 +79,18 @@ fi
 # an earlier one imported canre from the project folder. Until 2026-10-29 this script shipped
 # neither, so every replay regen and the long-arm fixture failed on the import (found on the
 # step 1a acceptance's first emulated run).
+# GI_PATHS BESIDE IT (2026-10-31). From the scratch-removal merge (488ef9f) canre_pin.py imports
+# gi_paths (remove_tree), so a commit with both ships gi_paths.py beside canre_pin.py. Until this,
+# the copy had canre_pin.py alone, and at 488ef9f canre_install, every replay regen, the long-arm
+# fixture and the shims' longarm build failed on the import (found on the step 1b acceptance's
+# emulated run).
 CANRE=0
 if tree "$BENCH/canre_pin.py"; then
   mkdir -p "$STAGE/$BENCH_AT"
   git -C "$TOP" show "$C:$BENCH/canre_pin.py" > "$STAGE/$BENCH_AT/canre_pin.py" || exit 2
+  if tree "$BENCH/gi_paths.py"; then
+    git -C "$TOP" show "$C:$BENCH/gi_paths.py" > "$STAGE/$BENCH_AT/gi_paths.py" || exit 2
+  fi
   CANRE=1
 fi
 # THE STOCK HEADERS (port step 1a, 2026-10-29). From the stock code's move into vtrux/wican the
@@ -136,11 +144,12 @@ sha256sum \$M/gen_inhibit_core.c \$M/gen_inhibit.c \$M/gi_sched.c $CANSRC \
 step() { n="\$1"; shift; echo; echo "=== \$n"; "\$@"; echo "=== exit \$? (\$n)"; }
 # The project folder (methodology, 2026-10-20): \$REVERSE_IT_DIR, and --project-dir on
 # from_capture.py, from the commit whose test/gen_inhibit_host/project_dir.py exists.
-# Earlier commits read \$GEN_INHIBIT_REPO and take --repo, so both are set and the flag
-# is chosen by the archive itself.
+# Earlier commits read \$GEN_INHIBIT_REPO and take --repo, and the flag is chosen by the
+# archive itself. GEN_INHIBIT_REPO is set for those commits only, and unset for the others:
+# gi_paths refuses it as retired when imported (2026-10-31, the step 1b acceptance).
 RR=$RQ
-export REVERSE_IT_DIR="\$RR" GEN_INHIBIT_REPO="\$RR"
-if [ -e test/gen_inhibit_host/project_dir.py ]; then PDFLAG=--project-dir; else PDFLAG=--repo; fi
+export REVERSE_IT_DIR="\$RR"
+if [ -e test/gen_inhibit_host/project_dir.py ]; then PDFLAG=--project-dir; unset GEN_INHIBIT_REPO; else PDFLAG=--repo; export GEN_INHIBIT_REPO="\$RR"; fi
 echo "# project folder: \$RR (from_capture \$PDFLAG)"
 # vtrux/wican's headers for the shims, shipped at the tag the commit pins (port step 1a), and
 # from 1b can_port and twai_port beside them (the source hashes above)

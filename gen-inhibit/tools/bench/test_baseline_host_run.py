@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Test baseline_host_run.sh's project-folder lines (methodology, 2026-10-20).
 
-The remote script sets $REVERSE_IT_DIR and $GEN_INHIBIT_REPO to $RROOT, and the
-long-arm fixture step passes the folder to from_capture.py as --project-dir when
-the archive has test/gen_inhibit_host/project_dir.py, else as --repo (the
-commits before the rename).
+The remote script sets $REVERSE_IT_DIR to $RROOT, and the long-arm fixture step
+passes the folder to from_capture.py as --project-dir when the archive has
+test/gen_inhibit_host/project_dir.py, else as --repo (the commits before the
+rename). $GEN_INHIBIT_REPO is $RROOT for those earlier commits only, and unset for
+the others, even when the remote's environment has it: gi_paths refuses it as
+retired on import (2026-10-31, the step 1b acceptance's emulated run).
 
 RROOT reaches the remote script as one quoted word (host-run commit, 2026-10-22):
 a root with spaces is one path in the exports, in from_capture's two arguments and
@@ -45,6 +47,12 @@ The CAN port (port step 1b, 2026-10-31): a commit with no firmware/main/can.c
 tag beside shared/wican, the five files the shim compiles from them byte for byte, and its
 source hashes name those five instead of $M/can.c. A 1a commit (GI_TEST_1A_COMMIT, default
 17ec04c) ships shared/wican only, can.h in it, and hashes $M/can.c.
+
+gi_paths beside canre_pin (2026-10-31, found on the step 1b acceptance's emulated run,
+where canre_install, every replay regen, the long-arm fixture and the shims' longarm
+build failed on the import): a commit with both ships gi_paths.py beside canre_pin.py,
+byte for byte, and canre_pin imports from the copy's tools/bench/ alone, with no
+retired setting in the environment.
 
     py -3.14 -B gen-inhibit/tools/bench/test_baseline_host_run.py
     py -3.14 -B gen-inhibit/tools/bench/test_baseline_host_run.py --mutants
@@ -146,6 +154,7 @@ def run_lines(s, tree, home=None):
                      ['echo "ENV REVERSE_IT_DIR=$REVERSE_IT_DIR GEN_INHIBIT_REPO=$GEN_INHIBIT_REPO"',
                       'echo "HOME IS $HOME"'])
     e = {k: v for k, v in os.environ.items() if k not in ("REVERSE_IT_DIR", "GEN_INHIBIT_REPO")}
+    e["GEN_INHIBIT_REPO"] = "stale-from-the-remote"   # set for earlier commits, unset for the others
     e["MSYS_NO_PATHCONV"] = "1"
     if home is not None:
         e["HOME"] = fw(home)
@@ -244,6 +253,24 @@ def checks(script_dir):
         # canre at the pinned commit, and vtrux/wican's headers (2026-10-29)
         check("a project-layout commit: the copy holds tools/bench/canre_pin.py",
               "tools/bench/canre_pin.py" in names, [n for n in names if n.startswith("tools/")])
+        # gi_paths beside canre_pin (2026-10-31): canre_pin imports it from 488ef9f on
+        want_gp = git_show("%s:gen-inhibit/tools/bench/gi_paths.py" % DECODE_COMMIT)
+        check("a commit with canre_pin.py and gi_paths.py (%s): the copy holds tools/bench/gi_paths.py, byte for byte"
+              % DECODE_COMMIT, want_gp is not None and tar_member(tmp, "decode", "tools/bench/gi_paths.py") == want_gp,
+              [n for n in names if n.startswith("tools/")])
+        bench = os.path.join(tmp, "copy_bench")
+        os.makedirs(bench)
+        for n in ("canre_pin.py", "gi_paths.py", "pins.json"):
+            b = tar_member(tmp, "decode", "tools/bench/" + n)
+            if b is not None:
+                with open(os.path.join(bench, n), "wb") as fh:
+                    fh.write(b)
+        e_imp = {k: v for k, v in os.environ.items()
+                 if k not in ("GI_FW_TOOLS", "GEN_INHIBIT_REPO", "VTRUX_DATA", "REVERSE_IT_ROOT", "PYTHONPATH")}
+        r_imp = subprocess.run([sys.executable, "-B", "-c", "import canre_pin; print('imported')"], cwd=bench,
+                               capture_output=True, text=True, env=e_imp, timeout=60)
+        check("... and canre_pin imports from the copy's tools/bench/ alone",
+              r_imp.returncode == 0 and r_imp.stdout.strip() == "imported", (r_imp.returncode, r_imp.stderr[-300:]))
         check("the canre_install step comes before replays_regen and the long-arm fixture",
               0 <= s4.find("step canre_install") < s4.find("step replays_regen") < s4.find("step longarm_fixture"),
               (s4.find("step canre_install"), s4.find("step replays_regen")))
@@ -344,9 +371,10 @@ def checks(script_dir):
               la_new and (" [--project-dir] [%s] " % RROOT) in la_new[0] and "--repo" not in la_new[0], la_new)
         check("a commit without it: from_capture gets --repo <RROOT>",
               la_old and (" [--repo] [%s] " % RROOT) in la_old[0] and "--project-dir" not in la_old[0], la_old)
-        want = "ENV REVERSE_IT_DIR=%s GEN_INHIBIT_REPO=%s" % (RROOT, RROOT)
-        check("both variables are exported as RROOT, for either kind of commit",
-              want in out_new and want in out_old, (out_new[-200:], out_old[-200:]))
+        check("a commit with project_dir.py: REVERSE_IT_DIR is RROOT and GEN_INHIBIT_REPO unset (gi_paths refuses it)",
+              ("ENV REVERSE_IT_DIR=%s GEN_INHIBIT_REPO=\n" % RROOT) in out_new, out_new[-200:])
+        check("a commit without it: both variables are RROOT",
+              ("ENV REVERSE_IT_DIR=%s GEN_INHIBIT_REPO=%s\n" % (RROOT, RROOT)) in out_old, out_old[-200:])
         check("the log records the folder and the flag",
               ("# project folder: %s (from_capture --project-dir)" % RROOT) in out_new and
               ("# project folder: %s (from_capture --repo)" % RROOT) in out_old, (out_new[-300:], out_old[-300:]))
@@ -366,8 +394,8 @@ def checks(script_dir):
               la and (" [%s/%s] " % (SPACED, CAPTURE_REL)) in la[0], la or out_sp[-300:])
         check("a root with spaces: from_capture gets the folder as one argument after the flag",
               la and (" [--project-dir] [%s] [--channel] " % SPACED) in la[0], la or out_sp[-300:])
-        check("a root with spaces: both variables are exported whole",
-              ("ENV REVERSE_IT_DIR=%s GEN_INHIBIT_REPO=%s" % (SPACED, SPACED)) in out_sp, out_sp[-300:])
+        check("a root with spaces: REVERSE_IT_DIR is exported whole",
+              ("ENV REVERSE_IT_DIR=%s GEN_INHIBIT_REPO=\n" % SPACED) in out_sp, out_sp[-300:])
         check("a root with spaces: the fixture-source hash reads the capture",
               ("fixture source sha256: %s" % want_sha) in out_sp, out_sp[-300:])
 
@@ -386,8 +414,8 @@ def checks(script_dir):
               seen and seen[0].endswith("/" + os.path.basename(home)), seen)
         full = "%s/%s" % (seen[0] if seen else fw(home), TILDE[2:])
         la = [ln for ln in out_tl.splitlines() if ln.startswith("STEP longarm_fixture")]
-        check("a root under ~/: both variables are $HOME/<rest>",
-              ("ENV REVERSE_IT_DIR=%s GEN_INHIBIT_REPO=%s" % (full, full)) in out_tl, out_tl[-300:])
+        check("a root under ~/: REVERSE_IT_DIR is $HOME/<rest>",
+              ("ENV REVERSE_IT_DIR=%s GEN_INHIBIT_REPO=\n" % full) in out_tl, out_tl[-300:])
         check("a root under ~/: from_capture gets $HOME/<rest> for the capture and the folder",
               la and (" [%s/%s] " % (full, CAPTURE_REL)) in la[0] and (" [--project-dir] [%s] " % full) in la[0],
               la or out_tl[-300:])
@@ -395,13 +423,16 @@ def checks(script_dir):
               ("fixture source sha256: %s" % want_sha) in out_tl, out_tl[-300:])
 
 
-EXPORT = 'export REVERSE_IT_DIR="\\$RR" GEN_INHIBIT_REPO="\\$RR"'
+EXPORT = 'export REVERSE_IT_DIR="\\$RR"'
 LONGARM_CAP = '"\\$RR/projects/vtrux/notes/artifacts/gen-inhibit/runs/scottsvalley_armable_300s.log" \\$PDFLAG'
 MUTANTS = [
-    ("REVERSE_IT_DIR is not exported", EXPORT, 'export GEN_INHIBIT_REPO="\\$RR"'),
-    ("GEN_INHIBIT_REPO is not exported (older commits)", EXPORT, 'export REVERSE_IT_DIR="\\$RR"'),
-    ("the flag is always --repo", "then PDFLAG=--project-dir; else", "then PDFLAG=--repo; else"),
-    ("the flag is always --project-dir", "else PDFLAG=--repo; fi", "else PDFLAG=--project-dir; fi"),
+    ("REVERSE_IT_DIR is not exported", EXPORT, 'true'),
+    ("GEN_INHIBIT_REPO is not exported (older commits)", '; export GEN_INHIBIT_REPO="\\$RR"; fi', "; fi"),
+    ("GEN_INHIBIT_REPO exported for every commit (2026-10-31)", "unset GEN_INHIBIT_REPO;",
+     'export GEN_INHIBIT_REPO="\\$RR";'),
+    ("GEN_INHIBIT_REPO left as the remote has it (2026-10-31)", "unset GEN_INHIBIT_REPO; ", ""),
+    ("the flag is always --repo", "then PDFLAG=--project-dir;", "then PDFLAG=--repo;"),
+    ("the flag is always --project-dir", "else PDFLAG=--repo;", "else PDFLAG=--project-dir;"),
     ("the flag is tested on the wrong file", "[ -e test/gen_inhibit_host/project_dir.py ]",
      "[ -e test/gen_inhibit_host/from_capture.py ]"),
     ("the long-arm step keeps --repo", '\\$PDFLAG "\\$RR" --channel 0', '--repo "\\$RR" --channel 0'),
@@ -434,6 +465,8 @@ MUTANTS = [
     # canre and the stock headers (2026-10-29)
     ("canre_pin.py not shipped",
      '  git -C "$TOP" show "$C:$BENCH/canre_pin.py" > "$STAGE/$BENCH_AT/canre_pin.py" || exit 2\n', ""),
+    ("gi_paths.py not shipped beside canre_pin.py (2026-10-31)",
+     '    git -C "$TOP" show "$C:$BENCH/gi_paths.py" > "$STAGE/$BENCH_AT/gi_paths.py" || exit 2\n', ""),
     ("the canre_install step dropped",
      "if [ $CANRE = 1 ]; then step canre_install $PY -B $BENCH_AT/canre_pin.py install; fi\n", ""),
     ("the canre_install step for every commit", "if [ $CANRE = 1 ]; then step canre_install",
