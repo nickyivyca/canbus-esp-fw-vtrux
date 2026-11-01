@@ -20,6 +20,7 @@ import contextlib
 import importlib.util
 import io
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -194,6 +195,34 @@ def tests(M, base):
         check("main: a --out that exists is refused (exit 2), named, and left as it was",
               rc == 2 and out in se and open(keep).read() == "someone else's", (rc, se))
         cleanup(out)
+
+        # with no --out, the run's own <time>_<pid> folder under scratch/twai_fake-mutants/, so
+        # a folder a killed run left (no finally covers a kill) does not stop the next run
+        check("main: the default folders are under the worktree's scratch/twai_fake-mutants/",
+              M.RUNS == os.path.join(M.ROOT, "scratch", "twai_fake-mutants"), M.RUNS)
+        real_runs = M.RUNS
+        M.RUNS = os.path.join(base, "runs")
+        try:
+            left = os.path.join(M.RUNS, "20260101T000000_1", "left.txt")
+            os.makedirs(os.path.dirname(left))
+            with open(left, "w") as f:
+                f.write("a killed run's")
+            seen = {}
+
+            def where(cc, src, d, name):
+                seen.setdefault("d", d)
+                return "pass" if name == "clean" else "fail"
+            M.build_and_run = where
+            rc, so, se = call(M, [])
+            d = seen.get("d", "")
+            check("main: with no --out, a killed run's folder does not stop the run, and is left as it was",
+                  rc == 0 and open(left).read() == "a killed run's", (rc, se))
+            check("main: with no --out, the run's folder is a new <time>_<pid> beside it, gone after the run",
+                  os.path.dirname(d) == M.RUNS and not os.path.lexists(lp(d))
+                  and re.fullmatch(r"\d{8}T\d{6}_%d" % os.getpid(), os.path.basename(d)) is not None,
+                  (d, os.path.lexists(lp(d)) if d else None))
+        finally:
+            M.RUNS = real_runs
     finally:
         M.build_and_run = real
 
@@ -216,6 +245,12 @@ MUTANTS = [
     ("an existing --out is used", "    if os.path.lexists(a.out):\n        print(", "    if False:\n        print(", False),
     ("an existing --out is emptied first", "    if os.path.lexists(a.out):\n        print(",
      "    if os.path.lexists(a.out) and remove_tree(a.out) and False:\n        print(", False),
+    ("the default is one fixed folder",
+     'a.out = os.path.join(RUNS, "%s_%d" % (time.strftime("%Y%m%dT%H%M%S"), os.getpid()))', "a.out = RUNS", False),
+    ("the default folder has no pid", '"%s_%d" % (time.strftime("%Y%m%dT%H%M%S"), os.getpid())',
+     'time.strftime("%Y%m%dT%H%M%S")', False),
+    ("the default folders are not in scratch/twai_fake-mutants/",
+     'RUNS = os.path.join(ROOT, "scratch", "twai_fake-mutants")', 'RUNS = os.path.join(ROOT, "scratch")', False),
 ]
 
 

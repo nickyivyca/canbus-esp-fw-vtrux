@@ -9,9 +9,12 @@ every mutant build fails.
 
     python3 shared/twai_port/test/mutate.py [--out DIR] [--cc gcc]
 
-DIR (default scratch/twai_fake-mutants/ at the worktree's root) must not exist:
-the run makes it and removes it when it ends, pass or fail (AGENTS.md,
-"Removing scratch"). A folder it cannot remove is printed with the reason.
+DIR must not exist: the run makes it and removes it when it ends, pass or fail
+(AGENTS.md, "Removing scratch"). A folder it cannot remove is printed with the
+reason. By default DIR is this run's own folder,
+scratch/twai_fake-mutants/<time>_<pid>/ at the worktree's root, as unit/mutate.py
+does, so a folder left by a killed run (which no finally covers) does not stop
+the next run.
 """
 import argparse
 import os
@@ -19,9 +22,11 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", "..", ".."))
+RUNS = os.path.join(ROOT, "scratch", "twai_fake-mutants")
 
 
 def long_path(p):
@@ -162,9 +167,12 @@ def build_and_run(cc, src, out, name):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--out", default=os.path.join(ROOT, "scratch", "twai_fake-mutants"))
+    ap.add_argument("--out", help="the run's folder, which must not exist (default: a new "
+                    "<time>_<pid> folder under scratch/twai_fake-mutants/)")
     ap.add_argument("--cc", default=os.environ.get("CC", "gcc"))
     a = ap.parse_args(argv)
+    if a.out is None:
+        a.out = os.path.join(RUNS, "%s_%d" % (time.strftime("%Y%m%dT%H%M%S"), os.getpid()))
     if os.path.lexists(a.out):
         print("%s already exists: remove it or give another --out (this run removes the folder "
               "it makes, so it does not run in one it did not make)" % a.out, file=sys.stderr)
