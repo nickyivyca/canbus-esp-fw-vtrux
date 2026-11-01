@@ -311,9 +311,10 @@ copy of the project folder, `gen-inhibit/`, which holds `firmware/main/` and
 BASE=~/gi_review python3 mutate.py
 ```
 
-Every mutation must come back `rc=1` except the expected survivors, M7, N3,
-K21, V08 and V09, each with its reason at its entry in `mutate.py` (M7's and
-N3's measured on the 1b code, 2026-11-01). A mutation whose anchor does not
+Every mutation must come back `rc=1` except the expected survivors, N3, K21,
+V08 and V09, each with its reason at its entry in `mutate.py` (N3's measured
+on the 1b code, 2026-11-01). M7 survived until 2026-11-01 and is caught by
+case 61 since. A mutation whose anchor does not
 match is listed and the run exits 3.
 
 **Retired at port step 1b** (2026-11-01; `mutate.py`'s RETIRED note has the
@@ -397,7 +398,7 @@ written down**, not gaps:
 | Survivor | Why it cannot be killed |
 |---|---|
 | `K21` | `disable_monitor()` returns early once a release has latched, so the branch K21 edits cannot run. Spec 6.2's "unconditional on SoC recovering" is enforced one level above it. |
-| `M7` | Completion is decided by `msgs_to_tx == 0`, which no leftover alert affects; and `poll_tx_completion()` runs immediately before `dispatch_emits()` in both worker paths, leaving no window for a stale `TX_FAILED`. At `ss = 0` the bit is never set on the device anyway. (Pre-1b reasoning. On 1b M7 removes the drain of twai_port's held transmit failure and still survives, but the model now has a window: a failed diag or probe frame's held failure would be taken at the next inhibit's completion, and no case does that. Only the `ss = 0` reason holds on 1b; `mutate.py` has the detail.) |
+| `M7` | Completion is decided by `msgs_to_tx == 0`, which no leftover alert affects; and `poll_tx_completion()` runs immediately before `dispatch_emits()` in both worker paths, leaving no window for a stale `TX_FAILED`. At `ss = 0` the bit is never set on the device anyway. (Pre-1b reasoning, no longer true. On 1b the model has a window: a failed diag page's held transmit failure is taken at the next inhibit's completion, and case 61, added 2026-11-01, catches M7 there.) |
 | `V08`, `V09` | Each edits an outer guard standing in front of an inner one — `gi_on_tx_result()` returns early for `GI_TX_DIAG` on its own (in `gen_inhibit_core.c`), and the worker never calls `gi_tick()` in OFF on its own (its `s_core.mode == GI_OFF` branch in `gen_inhibit.c`). |
 
 The four `W` mutations were added with the 2026-09-25 rulings and all four are

@@ -593,6 +593,8 @@ int ft_max_inflight(void) { return twai_fake_max_inflight(); }
 void ft_refuse_next(int n) { twai_fake_refuse(TWAI_FAKE_ANY_ID, n, ESP_FAIL); }
 void ft_refuse_id(uint32_t id, int n) { twai_fake_refuse(id, n, ESP_FAIL); }
 void ft_fail_next(void) { twai_fake_fail(TWAI_FAKE_ANY_ID, 1); }
+void ft_fail_id(uint32_t id, int n) { twai_fake_fail(id, n); }
+uint32_t ft_failed_by_rule(void) { return twai_fake_failed_by_rule(); }
 void ft_rx_error_next(int n) { twai_fake_rx_error_next(n); }
 
 /* The register model (T8) is the fake's: twai_port's C3 file calls into it. */
