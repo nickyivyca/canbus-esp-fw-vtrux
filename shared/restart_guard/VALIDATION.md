@@ -89,6 +89,13 @@ verification").
 - **IRAM, nothing that needs the cache:** the callers have the cache
   enabled, but the real function disables it, so nothing in the guard may
   depend on where that happens (`gi_restart_quiesce.c`).
+- **A "not supported" port is skipped, not recorded** (user, 2026-11-01,
+  on the gen-inhibit implementor's question at stage A): G3 first said such
+  a port is recorded as such, but G4's unchanged layout has no field for
+  it. The record keeps gen-inhibit's layout, so the port is skipped: its
+  standby bit stays 0, and the controller fields are filled only from a
+  TWAI port's stop that ran, so they read as "clock off" when none did. On
+  `wican_v3` it cannot arise: port 0 is TWAI and its stop is supported.
 - **Status:** complete.
 
 ### G4. The record of the last restart

@@ -2,7 +2,8 @@
 
 **Status:** approved by the user on 2026-11-01, in the gen-inhibit
 reviewer's session, and drafted that day by the gen-inhibit reviewer for
-gen-inhibit's port step 1c. As a shared component's spec this follows port plan
+gen-inhibit's port step 1c; G3's "not supported" wording amended that day
+(user), on the implementor's question. As a shared component's spec this follows port plan
 goal 20: the reviewer whose project needs a change drafts it, the user
 rules in that reviewer's session, and the other project's reviewer reads it
 before it merges into `shared/main`.
@@ -37,7 +38,9 @@ Requirements are numbered G1 to G6. The numbers are stable.
   1. for each CAN port the board has (`shared/boards` B5), in port order:
      the port's restart stop (`can_port` C7), then
      `board_can_standby(port, true)`. A port whose stop or standby answers
-     "not supported" is recorded as such, and the steps go on;
+     "not supported" is skipped, and the steps go on: its standby bit stays
+     0, and the record's controller fields come only from a TWAI port's
+     stop that ran (G4; user, 2026-11-01);
   2. the record (G4);
   3. the real `esp_restart_noos()`.
 
