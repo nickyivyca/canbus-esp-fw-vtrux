@@ -5,6 +5,7 @@
 #   make -C shared/twai_port/test mutants    # mutate.py: every mutant must fail
 #   make -C shared/twai_port/test mutate-test  # mutate.py removes its scratch folder, pass or fail
 #   make -C shared/twai_port/test cxx        # the fake and cpp/ as C++11, as g++ builds them
+#   make -C shared/twai_port/test cxx-test   # cpp/'s own tests (test_cpp_wrapper.cpp)
 #
 # Binaries go to the worktree's scratch/ (AGENTS.md, "Files and folders");
 # give OUT=<folder> to put them elsewhere.
@@ -55,8 +56,12 @@ cxx:
 	$(CXX) -std=c++11 -O1 -Wall -Wextra $(INC) -Icpp -x c++ -c twai_fake.c -o $(OUT)/twai_fake_cxx.o
 	$(CXX) -std=c++11 -O1 -Wall -Wextra $(INC) -Icpp -c cpp/twai_fake.cpp -o $(OUT)/twai_fake_cpp.o
 
+cxx-test: cxx
+	$(CXX) -std=c++11 -O1 -g -Wall -Wextra -fsanitize=address,undefined $(INC) -Icpp 	    -o $(OUT)/test_cpp_wrapper cpp/test_cpp_wrapper.cpp cpp/twai_fake.cpp -x c++ twai_fake.c
+	$(OUT)/test_cpp_wrapper
+
 clean:
 	rm -f $(OUT)/test_twai_fake $(OUT)/test_port_on_fake_c3 $(OUT)/test_port_on_fake_s3 \
-	    $(OUT)/twai_fake_cxx.o $(OUT)/twai_fake_cpp.o
+	    $(OUT)/twai_fake_cxx.o $(OUT)/twai_fake_cpp.o $(OUT)/test_cpp_wrapper
 
-.PHONY: all run mutants mutate-test cxx clean
+.PHONY: all run mutants mutate-test cxx cxx-test clean
