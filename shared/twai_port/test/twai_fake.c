@@ -9,6 +9,9 @@
  */
 #include "twai_fake.h"
 #include "hal/twai_ll.h"
+#include "soc/soc.h"
+#include "soc/system_reg.h"
+#include "esp_rom_sys.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -127,6 +130,13 @@ static qframe_t g_buf;
 static int64_t  g_buf_start;    /* when the frame in the buffer started */
 static fifo_t   g_txq, g_rxq;
 
+/* The peripheral: its clock and reset bits, the one reset-mode entry the
+ * driver does not know about (twai_ll_enter_reset_mode from outside it),
+ * and a frame being received (RS). */
+static bool     g_clk_on, g_rst_held;
+static bool     g_rm_ll;
+static int64_t  g_rx_busy_until;
+
 /* Knobs. */
 static twai_fake_tx_timing_t g_timing;
 static int64_t  g_air_us;
@@ -165,6 +175,10 @@ static twai_mode_t g_inst_mode[INSTLOGMAX];
 static int64_t  g_inst_time[INSTLOGMAX];
 static int      g_n_inst;
 static int      g_ll_aborts, g_ll_aborts_tx, g_ll_removed, g_ll_unmeasured;
+static int      g_ll_rm_entries, g_ll_unclocked;
+static uint32_t g_cut_reset, g_reg_reads, g_reg_unknown;
+static uint32_t g_delay_calls;
+static int64_t  g_delay_total;
 
 /* ---------------------------------------------------------------- time -- */
 
@@ -267,11 +281,12 @@ static bool filter_passes(const twai_fake_frame_t *f)
 }
 
 /* twai.c:131: a frame the controller received goes to the RX queue, or is
- * lost to a full one. Nothing is received unless running. */
+ * lost to a full one. Nothing is received unless running, nor in a reset
+ * mode entered from outside the driver. */
 static void rx_receive(const twai_fake_frame_t *f)
 {
     qframe_t q;
-    if (!g_installed || g_state != TWAI_STATE_RUNNING)
+    if (!g_installed || g_state != TWAI_STATE_RUNNING || g_rm_ll)
     {
         g_rx_not_rx++;
         return;
@@ -384,7 +399,7 @@ static bool buf_can_finish(bool *failed)
  * (INSTANT, and HELD's flush). */
 static void tx_advance(int64_t t, bool ignore_air)
 {
-    while (g_buf_full && g_installed && g_state == TWAI_STATE_RUNNING)
+    while (g_buf_full && g_installed && g_state == TWAI_STATE_RUNNING && !g_rm_ll)
     {
         bool failed;
         int64_t done;
@@ -405,17 +420,18 @@ static void complete_recovery(void)
 static void catch_up(void)
 {
     const int64_t t = twai_fake_now();
-    if (g_state == TWAI_STATE_RECOVERING && g_auto_recovery && t >= g_recovery_done)
+    if (g_state == TWAI_STATE_RECOVERING && g_auto_recovery && !g_rm_ll && t >= g_recovery_done)
     {
         complete_recovery();
     }
     if (g_timing == TWAI_FAKE_TX_TIMED) { tx_advance(t, false); }
 }
 
-/* twai.c:238: bus-off. The state and the alert; queues untouched. */
+/* twai.c:238: bus-off. The state and the alert; queues untouched. A
+ * controller already off the bus in reset mode cannot go bus-off. */
 static void enter_bus_off(void)
 {
-    if (!g_installed || g_state != TWAI_STATE_RUNNING) { return; }
+    if (!g_installed || g_state != TWAI_STATE_RUNNING || g_rm_ll) { return; }
     g_state = TWAI_STATE_BUS_OFF;
     raise_alert(TWAI_ALERT_BUS_OFF);
     if (g_inflight_fails && g_buf_full)
@@ -505,6 +521,13 @@ esp_err_t twai_driver_install(const twai_general_config_t *g,
     g_buf_full = false;
     fifo_size(&g_txq, (int)g->tx_queue_len);
     fifo_size(&g_rxq, (int)g->rx_queue_len);
+    /* twai.c:497-499: the bus clock on and the module reset (pulsed, so not
+     * held); twai_hal.c:27, the controller into reset mode, which STOPPED
+     * gives. */
+    g_clk_on = true;
+    g_rst_held = false;
+    g_rm_ll = false;
+    g_rx_busy_until = 0;
     g_install_n++;
     if (g_n_inst < INSTLOGMAX)
     {
@@ -529,6 +552,8 @@ esp_err_t twai_driver_uninstall(void)
     discard_rx();
     g_installed = false;
     g_state = TWAI_STATE_STOPPED;
+    g_rm_ll = false;
+    g_clk_on = false;                       /* twai.c:568-571 */
     return ESP_OK;
 }
 
@@ -546,6 +571,7 @@ esp_err_t twai_start(void)
     discard_rx();
     discard_tx(&g_disc_start, false, false);
     g_state = TWAI_STATE_RUNNING;
+    g_rm_ll = false;                        /* twai_hal.c:91, out of reset mode */
     return ESP_OK;
 }
 
@@ -763,6 +789,7 @@ esp_err_t twai_initiate_recovery(void)
     /* twai.c:820-828: the TX queue and the count reset, recovery started. */
     discard_tx(&g_disc_recovery, false, false);
     g_state = TWAI_STATE_RECOVERING;
+    g_rm_ll = false;                        /* twai_hal_iram.c:162-165 */
     g_recovery_done = twai_fake_now() + (1408 * twai_fake_bit_ns() + 999) / 1000;
     return ESP_OK;
 }
@@ -831,10 +858,20 @@ esp_err_t twai_clear_receive_queue(void)
  *   frame that has not won arbitration  TBS clear, TS clear  (awaiting)
  *   frame on the wire                   TBS clear, TS set    (transmitting)
  *
+ * The rest of the status register: RS while a frame is being received
+ * (twai_fake_set_receiving), BS while bus-off or recovering, ES while
+ * either error counter is at 96 or more. RS and TS are clear in reset mode.
+ *
  * The abort, as measured on the C3 (2026-09-27, reverse-it
  * projects/vtrux/notes/artifacts/gen-inhibit/runs/txabort_full.json):
  * awaiting, the frame is removed and never reaches the wire, and the
  * driver reports TX_SUCCESS anyway; transmitting, a no-op; empty, nothing.
+ * In reset mode it does nothing (assumed).
+ *
+ * Reset mode (T12) is derived from the driver's state, as ESP-IDF drives
+ * it (twai_fake.h, "The peripheral and reset mode"), plus g_rm_ll for a
+ * twai_ll_enter_reset_mode() the driver does not know about. The frame on
+ * the wire when it is entered is cut and stays in the buffer, never sent.
  */
 static char g_hw_token;
 
@@ -843,28 +880,80 @@ twai_dev_t *twai_fake_ll_hw(int controller_id)
     return controller_id == 0 ? (twai_dev_t *)(void *)&g_hw_token : (twai_dev_t *)0;
 }
 
+static bool in_reset_mode(void)
+{
+    if (g_rm_ll) { return true; }
+    return !(g_installed && (g_state == TWAI_STATE_RUNNING || g_state == TWAI_STATE_RECOVERING));
+}
+
 static bool buf_transmitting(void)
 {
-    return g_buf_full && !g_buf.stalled && g_installed
+    return g_buf_full && !g_buf.stalled && g_installed && !g_rm_ll
            && g_state == TWAI_STATE_RUNNING && twai_fake_now() >= g_buf_start;
+}
+
+static bool receiving(void)
+{
+    return g_installed && g_state == TWAI_STATE_RUNNING && !g_rm_ll
+           && twai_fake_now() < g_rx_busy_until;
+}
+
+/* Every twai_ll call: counted if on the S3, brought up to now, and refused
+ * for another controller, or with the clock off or the reset held. */
+static bool ll_usable(twai_dev_t *hw)
+{
+    if (g_chip != TWAI_FAKE_CHIP_C3) { g_ll_unmeasured++; }
+    catch_up();
+    if (hw != twai_fake_ll_hw(0)) { return false; }
+    if (!g_clk_on || g_rst_held)
+    {
+        g_ll_unclocked++;
+        return false;
+    }
+    return true;
 }
 
 uint32_t twai_ll_get_status(twai_dev_t *hw)
 {
-    if (g_chip != TWAI_FAKE_CHIP_C3) { g_ll_unmeasured++; }
-    catch_up();
-    if (hw != twai_fake_ll_hw(0)) { return 0; }
-    if (!g_buf_full) { return TWAI_LL_STATUS_TBS; }
-    return buf_transmitting() ? (uint32_t)TWAI_LL_STATUS_TS : 0u;
+    uint32_t st = 0;
+    if (!ll_usable(hw)) { return 0; }
+    if (!g_buf_full) { st |= TWAI_LL_STATUS_TBS; }
+    else if (buf_transmitting()) { st |= TWAI_LL_STATUS_TS; }
+    if (receiving()) { st |= TWAI_LL_STATUS_RS; }
+    if (g_installed && (g_state == TWAI_STATE_BUS_OFF || g_state == TWAI_STATE_RECOVERING))
+    {
+        st |= TWAI_LL_STATUS_BS;
+    }
+    if (g_tec >= 96 || g_rec >= 96) { st |= TWAI_LL_STATUS_ES; }
+    return st;
 }
+
+bool twai_ll_is_in_reset_mode(twai_dev_t *hw)
+{
+    if (!ll_usable(hw)) { return false; }
+    return in_reset_mode();
+}
+
+void twai_ll_enter_reset_mode(twai_dev_t *hw)
+{
+    if (!ll_usable(hw)) { return; }
+    if (in_reset_mode()) { return; }
+    if (buf_transmitting()) { g_cut_reset++; }
+    g_rm_ll = true;
+    g_rx_busy_until = 0;
+    g_ll_rm_entries++;
+}
+
+/* The counters themselves, frozen or not: the driver's status reads 0 in
+ * listen-only (fill_status), the registers do not. */
+uint32_t twai_ll_get_tec(twai_dev_t *hw) { return ll_usable(hw) ? g_tec : 0u; }
+uint32_t twai_ll_get_rec(twai_dev_t *hw) { return ll_usable(hw) ? g_rec : 0u; }
 
 void twai_ll_set_cmd_abort_tx(twai_dev_t *hw)
 {
-    if (g_chip != TWAI_FAKE_CHIP_C3) { g_ll_unmeasured++; }
-    catch_up();
-    if (hw != twai_fake_ll_hw(0)) { return; }
+    if (!ll_usable(hw)) { return; }
     g_ll_aborts++;
-    if (!g_buf_full) { return; }
+    if (!g_buf_full || in_reset_mode()) { return; }
     if (buf_transmitting())
     {
         g_ll_aborts_tx++;
@@ -878,6 +967,46 @@ void twai_ll_set_cmd_abort_tx(twai_dev_t *hw)
     load_next(twai_fake_now());
 }
 
+/* REG_READ (soc/soc.h): the TWAI's bit of the two system registers, 0 for
+ * their other bits; any other address is counted and reads 0. */
+uint32_t twai_fake_reg_read(uint32_t addr)
+{
+    if (g_chip != TWAI_FAKE_CHIP_C3) { g_ll_unmeasured++; }
+    if (addr == (uint32_t)SYSTEM_PERIP_CLK_EN0_REG)
+    {
+        g_reg_reads++;
+        return g_clk_on ? (uint32_t)SYSTEM_TWAI_CLK_EN : 0u;
+    }
+    if (addr == (uint32_t)SYSTEM_PERIP_RST_EN0_REG)
+    {
+        g_reg_reads++;
+        return g_rst_held ? (uint32_t)SYSTEM_TWAI_RST : 0u;
+    }
+    g_reg_unknown++;
+    return 0;
+}
+
+/* ----------------------------------------------------------- busy waits -- */
+
+void esp_rom_delay_us(uint32_t us)
+{
+    g_delay_calls++;
+    g_delay_total += us;
+    if (g_clock == NULL)
+    {
+        g_own_now += us;
+    }
+    else if (g_wait != NULL)
+    {
+        const int64_t deadline = twai_fake_now() + (int64_t)us;
+        while (twai_fake_now() < deadline && g_wait(deadline, g_wait_ctx)) { }
+    }
+    catch_up();
+}
+
+uint32_t twai_fake_delay_calls(void) { return g_delay_calls; }
+int64_t  twai_fake_delay_us_total(void) { return g_delay_total; }
+
 /* ------------------------------------------------------------ the knobs -- */
 
 void twai_fake_set_wait_hook(twai_fake_wait_fn fn, void *ctx) { g_wait = fn; g_wait_ctx = ctx; }
@@ -885,6 +1014,13 @@ void twai_fake_set_tx_hook(twai_fake_tx_fn fn, void *ctx) { g_tx_hook = fn; g_tx
 void twai_fake_set_tx_accepted_hook(twai_fake_tx_fn fn, void *ctx) { g_tx_acc_hook = fn; g_tx_acc_hook_ctx = ctx; }
 void twai_fake_set_chip(twai_fake_chip_t chip) { g_chip = chip; }
 void twai_fake_set_receive_yields_first(bool on) { g_yield_first = on; }
+void twai_fake_set_periph(bool clock_on, bool reset_held) { catch_up(); g_clk_on = clock_on; g_rst_held = reset_held; }
+
+void twai_fake_set_receiving(int64_t us)
+{
+    catch_up();
+    g_rx_busy_until = us > 0 ? twai_fake_now() + us : 0;
+}
 
 void twai_fake_set_tx_timing(twai_fake_tx_timing_t t)
 {
@@ -1069,6 +1205,14 @@ int      twai_fake_ll_aborts(void) { return g_ll_aborts; }
 int      twai_fake_ll_aborts_while_tx(void) { return g_ll_aborts_tx; }
 int      twai_fake_ll_removed(void) { return g_ll_removed; }
 int      twai_fake_ll_unmeasured_calls(void) { return g_ll_unmeasured; }
+int      twai_fake_ll_reset_entries(void) { return g_ll_rm_entries; }
+int      twai_fake_ll_unclocked_calls(void) { return g_ll_unclocked; }
+uint32_t twai_fake_tx_cut_by_reset(void) { return g_cut_reset; }
+uint32_t twai_fake_reg_reads(void) { return g_reg_reads; }
+uint32_t twai_fake_reg_unknown_reads(void) { return g_reg_unknown; }
+bool     twai_fake_periph_clock(void) { return g_clk_on; }
+bool     twai_fake_periph_reset_held(void) { return g_rst_held; }
+bool     twai_fake_in_reset_mode(void) { catch_up(); return in_reset_mode(); }
 
 /* --------------------------------------------------------------- reset -- */
 
@@ -1089,6 +1233,9 @@ void twai_fake_reset(void)
     g_buf_full = false;
     g_buf_start = 0;
     g_txq.n = g_rxq.n = 0;
+    g_clk_on = g_rst_held = false;
+    g_rm_ll = false;
+    g_rx_busy_until = 0;
 
     g_timing = TWAI_FAKE_TX_TIMED;
     g_air_us = 0;
@@ -1119,6 +1266,10 @@ void twai_fake_reset(void)
     g_install_n = 0;
     g_n_inst = 0;
     g_ll_aborts = g_ll_aborts_tx = g_ll_removed = g_ll_unmeasured = 0;
+    g_ll_rm_entries = g_ll_unclocked = 0;
+    g_cut_reset = g_reg_reads = g_reg_unknown = 0;
+    g_delay_calls = 0;
+    g_delay_total = 0;
 }
 
 /* --------------------------------------------------- what this rests on -- */
@@ -1181,6 +1332,23 @@ static const twai_fake_assumption_t k_assumptions[] = {
      "twai_fake_set_busoff_inflight_fails() gives the other branch"},
     {TWAI_FAKE_ASSUMED, "ESP32-C3 TRM, acceptance filter, single-filter mode",
      "the filter's bit layout; data bytes a frame does not carry match anything"},
+    {TWAI_FAKE_SOURCE, "twai.c:497-499, :568-571; twai_hal.c:27, :91, :96; twai_hal_iram.c:110, :162-165",
+     "install turns the bus clock on and pulses the module reset, and leaves the "
+     "controller in reset mode; start takes it out; stop, bus-off and a completed "
+     "recovery put it back; recovery takes it out; uninstall turns the clock off"},
+    {TWAI_FAKE_SOURCE, "hal/esp32c3 twai_ll.h; soc/system_reg.h, reg_base.h",
+     "the reset-mode, error-counter and status calls, and the clock-enable and "
+     "reset bits (bit 19 of SYSTEM_PERIP_CLK_EN0_REG and SYSTEM_PERIP_RST_EN0_REG)"},
+    {TWAI_FAKE_ASSUMED, "power-on, before the first install",
+     "the bus clock off and the reset not held; with the clock off or the reset "
+     "held the TWAI registers read 0 and ignore writes"},
+    {TWAI_FAKE_ASSUMED, "reset mode entered from outside the driver",
+     "the frame on the wire is cut and stays in the buffer unsent, nothing is sent "
+     "or received and no bus-off happens until start, recovery or an install; an "
+     "abort in reset mode does nothing"},
+    {TWAI_FAKE_ASSUMED, "status register bit names (hal/twai_ll.h)",
+     "RS while a frame is being received, BS while bus-off or recovering, ES with "
+     "an error counter at 96 or more; RS and TS clear in reset mode"},
     {TWAI_FAKE_NOT_MODELLED, "nothing here raises them",
      "arbitration, error frames, the error counters climbing, error passive and "
      "warning alerts, RECOVERY_IN_PROGRESS, ARB_LOST, dual-filter mode, the "

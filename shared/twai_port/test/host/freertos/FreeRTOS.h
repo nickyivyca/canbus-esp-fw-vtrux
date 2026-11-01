@@ -3,6 +3,7 @@
 #ifndef TWAI_FAKE_HOST_FREERTOS_H
 #define TWAI_FAKE_HOST_FREERTOS_H
 
+#include <stddef.h>     /* as ESP-IDF's FreeRTOS.h includes it */
 #include <stdint.h>
 
 typedef uint32_t TickType_t;

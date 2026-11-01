@@ -1,18 +1,22 @@
 /*
- * hal/twai_ll.h for host builds on the twai_port fake (SPEC.md T8, T10).
+ * hal/twai_ll.h for host builds on the twai_port fake (SPEC.md T8, T10, T12).
  *
  * Only what twai_port's register file reaches for: TWAI_LL_GET_HW(), the
- * status register's bits and twai_ll_get_status(), and
- * twai_ll_set_cmd_abort_tx(). The bit values are ESP-IDF v5.4.1's
+ * status register's bits and twai_ll_get_status(),
+ * twai_ll_set_cmd_abort_tx() (T8), and for the restart stop (T12)
+ * twai_ll_is_in_reset_mode(), twai_ll_enter_reset_mode(), twai_ll_get_tec()
+ * and twai_ll_get_rec(). The bit values and signatures are ESP-IDF v5.4.1's
  * (components/hal/esp32c3/include/hal/twai_ll.h; the S3's file has the same
  * registers). The real calls are static inline register accesses; here
- * they are functions of the fake, which derives the status from its
- * transmit buffer (twai_fake.c, "The register model").
+ * they are functions of the fake, which derives the status and the reset
+ * mode from its model (twai_fake.c, "The register model").
  */
 #ifndef TWAI_FAKE_HAL_TWAI_LL_H
 #define TWAI_FAKE_HAL_TWAI_LL_H
 
+#include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>     /* as ESP-IDF's twai_ll.h includes it */
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,6 +41,10 @@ twai_dev_t *twai_fake_ll_hw(int controller_id);
 
 uint32_t twai_ll_get_status(twai_dev_t *hw);
 void     twai_ll_set_cmd_abort_tx(twai_dev_t *hw);
+bool     twai_ll_is_in_reset_mode(twai_dev_t *hw);
+void     twai_ll_enter_reset_mode(twai_dev_t *hw);
+uint32_t twai_ll_get_tec(twai_dev_t *hw);
+uint32_t twai_ll_get_rec(twai_dev_t *hw);
 
 #ifdef __cplusplus
 }
