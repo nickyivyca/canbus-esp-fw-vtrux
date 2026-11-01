@@ -6,33 +6,50 @@ failure mode is silent greenness and this is the only thing that measures it.
 Four of the seven mutations survived the first version of E1, INCLUDING the
 exact defect it was written to catch.
 
-  M1  632af32's alert-based completion reinstated -- the shipped bug
+  M1  RETIRED at port step 1b (see RETIRED below)
   M2  the core's diag deferral removed
-  M3  the spec 3.2 refusal removed from the REAL main/can.c
+  M3  RETIRED at port step 1b (see RETIRED below)
   M4  the quiesce self_off reason removed
   M5  the receive-error self_off reason removed
   M6  PASSIVE allowed to reach build_inhibit()
-  M7  the pre-queue alert drain removed -- SURVIVES, and accepted. Two reasons,
-      both structural. Completion is decided by msgs_to_tx == 0 since the C1
-      fix, so no leftover alert can affect it; and TWAI_ALERT_TX_FAILED is
-      documented "for single shot transmission", so at ss = 0 the bit the
-      drain clears is never set on the device at all. In the model it can be
-      set, by ft_fail_next() -- but poll_tx_completion() runs immediately
-      before dispatch_emits() in BOTH worker paths (gen_inhibit.c:689 and
-      :742), so a pending TX_FAILED is consumed into s_tx_failed_latched
-      first, and the assignment M7 leaves in place clears that. There is no
-      window between the two in which a stale alert can survive.
-      The call stays because it would matter if the frame ever went out
-      single-shot; gen_inhibit.c:302 says so at the site. Same category as
-      K21: kept as a tripwire on the structure that makes it harmless, not as
-      a coverage gap.
-  N1  completion off-by-one, msgs_to_tx == 0 -> <= 1
-  N2  `behind` forced false, so spec 5's tx_queued_behind never counts
-  N3  a twai_reconfigure_alerts() failure ignored at arm
+  M7  the pre-queue drain of a held TX_FAILED removed (dispatch_emits(), the
+      inhibit branch). Written when the drain read the driver's alerts; since
+      port step 1b it polls twai_port's alerts and drops the transmit failure
+      the port holds (twai_port T5). SURVIVES, before 1b and on it, for
+      reasons that changed. Before 1b the frame-completion path consumed a
+      pending TX_FAILED immediately before dispatch_emits() in both worker
+      paths, leaving no window for a stale alert. On 1b there IS a window in
+      the model: the shared fake raises TX_FAILED for a frame it fails, and
+      twai_port holds it until taken, which is only at an inhibit's
+      completion, so without the drain a failed diag or probe frame would be
+      reported as the next inhibit's failure. No case fails one of those
+      frames and then completes an inhibit. What remains is the device:
+      TWAI_ALERT_TX_FAILED is documented "for single shot transmission", and
+      these frames go out with ss = 0, so the bit the drain clears is never
+      set there. The call stays because it would matter if a frame ever went
+      out single-shot.
+  N1  completion off-by-one: dev_outstanding(), the scheduler's "is a frame of
+      ours still in the controller", reads tx_pending != 0 -> > 1
+  N2  RETIRED at the gi_sched switchover (see RETIRED below)
+  N3  a port 0 bring-up failure ignored at arm. Written for a
+      twai_reconfigure_alerts() failure; since port step 1b the alerts are one
+      step of can_port_stock_enable(), whose failure at any step (the pins,
+      the install, the start or the alerts) refuses the arm (spec 3.3, user
+      2026-10-31), so this ignores that refusal. SURVIVES ON 1b, as an
+      equivalent mutant: a failed bring-up leaves port 0 uninstalled, and
+      apply_mode()'s next two guards, !can_is_enabled() and
+      !controller_running(), refuse the arm with the same
+      ESP_ERR_INVALID_STATE; only the log line differs. Before 1b the alerts
+      were enabled on a bus already up, so this was their only guard. Kept as
+      a tripwire on those inner guards, as V08 and V09 are. A
+      twai_reconfigure_alerts() failure that did not fail the install would be
+      twai_port's defect, for its unit mutants
   N4  OBSERVE not forced listen-only
   N5  the spec 8 quiesce handshake does not wait -- the use-after-free guard
   N6  the probe offset limit relaxed from 4000 to 40000 us
-  N7  the TX_LATE test removed from the core
+  N7  the core ignores the scheduler's skip trip (gi_on_inhibit_skip()). It was
+      the TX_LATE test, which spec 7 trip 7 as amended replaced with "a third
+      skipped inhibit inside a second trips"; this is that trip's core side
   K06 an explicit re-arm no longer clears the section 7 abort latch
   K08 the key-on clear no longer resets rpm_ever -- the BUG 2 class
   K17 the SoC threshold becomes <=, moving the 21.00 % boundary by one count
@@ -61,10 +78,31 @@ N6. That is the pattern worth noticing -- each round of "all mutations caught"
 has been followed by a round that found more, so a green mutation run means
 "nothing in THIS set survives", never "the suite is adequate".
 
-M7 is EXPECTED to survive and that is documented in gen_inhibit.c: with
-completion decided by msgs_to_tx == 0 the drain only clears a stale TX_FAILED,
-which is itself unreachable at ss = 0. Every other mutation must come back
-rc=1.
+M7, N3, K21, V08 and V09 are EXPECTED to survive, each for the reason at its
+entry (M7's and N3's measured on the 1b code, 2026-11-01). Every other mutation
+must come back rc=1, and a survivor that is not one of those five is a
+finding.
+
+RETIRED (gen-inhibit implementor, port step 1b, 2026-11-01; reviewer
+2026-10-31: CAN-side mutants of can_port and twai_port belong in those
+components' unit mutants). Each mutated a line that no longer exists, and
+until 2026-10-31 each ran nothing without the run failing (see "A STALE
+ANCHOR" below):
+  M1  632af32's alert-based completion reinstated -- the shipped bug. The
+      completion test it broke, poll_tx_completion(), went at the gi_sched
+      switchover (spec 5.2): completion is now the scheduler's record of what
+      it handed over, with `outstanding` read through dev_outstanding(). N1
+      mutates that read here; gi_sched's own mutate.py mutates the scheduler's
+      use of it.
+  M3  the spec 3.2 refusal removed from the REAL main/can.c. can.c retired at
+      port step 1b; the refusal is in vtrux/can_port's can_stock.c, which this
+      shim compiles as shipped from the pinned checkout, outside the copy this
+      file mutates. Mutating it is can_port's unit mutants' job.
+  N2  `behind` forced false, so spec 5's tx_queued_behind never counts. Since
+      the gi_sched switchover dispatch_emits() passes `behind` as a literal
+      false (spec 5.2 item 3: the scheduler hands over one frame at a time), so
+      the mutation is the identity. tx_queued_behind staying 0 is asserted by
+      spec 5.2 item 10's full-replay case.
 
 READ rc, NOT THE TEXT. The reviewer's original scraped lines containing "FAIL",
 which also matches the harness's own "twai_receive failed: ESP_FAIL" log lines,
@@ -100,36 +138,9 @@ COPY = """    twai_message_t tx = { 0 };
 PREFIX = "\n    "
 
 MUT = {
- "M1_632af32_alert_completion": ("firmware/main/gen_inhibit.c", [(
-  """    uint32_t alerts = 0;
-    if (twai_read_alerts(&alerts, 0) == ESP_OK
-        && (alerts & TWAI_ALERT_TX_FAILED))
-    {
-        s_tx_failed_latched = true;
-    }
-
-    if (!s_core.tx_pending)
-    {
-        return;
-    }""",
-  """    uint32_t alerts = 0;
-    if (twai_read_alerts(&alerts, 0) != ESP_OK) return;
-    if (!s_core.tx_pending) return;
-    if (alerts & (TWAI_ALERT_TX_SUCCESS | TWAI_ALERT_TX_FAILED))
-    {
-        gi_on_tx_done(&s_core, (alerts & TWAI_ALERT_TX_SUCCESS) != 0, esp_timer_get_time(), ev);
-    }
-    return;
-    if (!s_core.tx_pending)
-    {
-        return;
-    }""")]),
  "M2_no_diag_deferral": ("firmware/main/gen_inhibit_core.c", [(
   "    if (st->tx_pending)\n    {\n        /* fall through to the interlocks; the page goes out next tick */\n    }\n    else if (",
   "    if (0)\n    {\n    }\n    else if (")]),
- "M3_real_can_c_refusal_removed": ("firmware/main/can.c", [(
-  "\tif(gen_inhibit_owns_bus())\n\t{\n\t\tstatic int64_t s_last_refusal_log;",
-  "\tif(0)\n\t{\n\t\tstatic int64_t s_last_refusal_log;")]),
  "M4_quiesce_self_off_removed": ("firmware/main/gen_inhibit.c", [(
   "    s_core.self_off = GI_SELF_OFF_QUIESCE;", "    ")]),
  "M5_rx_error_self_off_removed": ("firmware/main/gen_inhibit_core.c", [(
@@ -137,20 +148,13 @@ MUT = {
  "M6_passive_builds_frame": ("firmware/main/gen_inhibit_core.c", [(
   "            st->would_tx++;\n            return;", "            st->would_tx++;")]),
  "M7_no_predrain": ("firmware/main/gen_inhibit.c", [(
-  "            (void)twai_read_alerts(&stale, 0);", "            (void)stale;")]),
+  "            (void)twai_port_poll_alerts();\n            (void)twai_port_take_tx_failed();",
+  "            ")]),
  "N1_completion_off_by_one": ("firmware/main/gen_inhibit.c", [(
-  "    if (info.msgs_to_tx == 0)", "    if (info.msgs_to_tx <= 1)")]),
- "N2_behind_forced_false": ("firmware/main/gen_inhibit.c", [(
-  "                behind = (before.msgs_to_tx > 0);", "                behind = false;")]),
- "N3_alerts_config_failure_ignored": ("firmware/main/gen_inhibit.c", [(
-  """        if (twai_reconfigure_alerts(TWAI_ALERT_TX_SUCCESS | TWAI_ALERT_TX_FAILED,
-                                    NULL) != ESP_OK)
-        {
-            ESP_LOGE(TAG, "cannot arm: TX alerts would not enable");
-            return ESP_ERR_INVALID_STATE;
-        }""",
-  """        (void)twai_reconfigure_alerts(TWAI_ALERT_TX_SUCCESS | TWAI_ALERT_TX_FAILED,
-                                      NULL);""")]),
+  "    return info.tx_pending != 0;", "    return info.tx_pending > 1;")]),
+ "N3_bringup_failure_ignored": ("firmware/main/gen_inhibit.c", [(
+  "            const esp_err_t up = can_port_stock_enable();\n            if (up != ESP_OK)",
+  "            const esp_err_t up = can_port_stock_enable();\n            if (0 && up != ESP_OK)")]),
  "N4_observe_not_listen_only": ("firmware/main/gen_inhibit.c", [(
   "        const bool want_listen_only = (mode == GEN_INHIBIT_OBSERVE);",
   "        const bool want_listen_only = false;")]),
@@ -159,8 +163,8 @@ MUT = {
   "        if (1)")]),
  "N6_offset_limit_relaxed": ("firmware/main/gen_inhibit.c", [(
   "    if (offset_us > 4000)", "    if (offset_us > 40000)")]),
- "N7_no_tx_late": ("firmware/main/gen_inhibit_core.c", [(
-  "    if (st->tx_pending && st->inhibit_live)", "    if (0)")]),
+ "N7_skip_trip_ignored": ("firmware/main/gen_inhibit_core.c", [(
+  "    if (trip && st->inhibit_live)", "    if (0)")]),
  # Round 3 (reviewing session, 2026-09-25) mutated the CORE. These four were
  # real survivors and now have scenarios; K01 and K12 were judged equivalent and
  # are not here -- K01's reasoning is recorded in bus_alive_since()'s comment.
@@ -226,11 +230,11 @@ MUT = {
  # in front of a standing INNER one, so removing it changes nothing.
  #
  #   V08  dispatch_emits() skips gi_on_tx_result() for a diag frame. Remove
- #        that and gi_on_tx_result() STILL returns early for GI_TX_DIAG, at
- #        gen_inhibit_core.c:1753. Nothing downstream can tell.
+ #        that and gi_on_tx_result() STILL returns early for GI_TX_DIAG, in
+ #        gen_inhibit_core.c. Nothing downstream can tell.
  #   V09  gi_tick() returns immediately in OFF. Remove that and the worker
- #        still never calls gi_tick() in OFF -- it `continue`s at
- #        gen_inhibit.c:670, after parking and releasing the bus.
+ #        still never calls gi_tick() in OFF -- it `continue`s in its
+ #        s_core.mode == GI_OFF branch, after parking and releasing the bus.
  #
  # Kept in the set for the reason K21 is: each is a tripwire on the inner
  # guard. The day the inner one moves, the outer one stops being redundant and
@@ -246,8 +250,11 @@ MUT = {
  # The `continue` that keeps a diag frame's result away from the core. Without
  # it a diag completion is reported as an inhibit's -- the dc571cb
  # mis-crediting class, arriving by a different route.
+ # Since the gi_sched switchover the same `continue` also skips the probe,
+ # which is reported at handover instead, so only the diag half is removed.
  "V08_diag_fed_to_core": ("firmware/main/gen_inhibit.c", [(
-  "        if (f->kind == GI_TX_DIAG)", "        if (0)")]),
+  "        if (f->kind == GI_TX_DIAG || f->kind == GI_TX_PROBE)",
+  "        if (f->kind == GI_TX_PROBE)")]),
 
  # Diag pages emitted in OFF. The device is meant to be silent there, not
  # merely not-inhibiting; caught by the empty allowed set every teardown
