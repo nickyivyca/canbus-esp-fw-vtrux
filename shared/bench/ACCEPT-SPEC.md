@@ -116,12 +116,15 @@ Requirements are numbered A1 to A16. The numbers are stable.
     are under reverse-it's firmware-development trees, which its git publish
     holds entirely (`git-publish.md` ruling 16), and a runs folder the runner
     writes to must stay off any publish path.
-- **A14. It removes what it made.** In a `finally` and an exit handler, the
-  runner removes every tree, mutant copy, bundle, settings file and remote
-  work folder it made, through one shared scratch helper merged from the
-  interposer's `scratch_dir` and gen-inhibit's `gi_paths` (AGENTS.md
-  "Removing scratch"). Whatever it cannot remove is a LEFTOVER line in the
-  record.
+- **A14. It removes what it made, before the close.** The runner removes
+  every tree, mutant copy, bundle, settings file and remote work folder it
+  made, through one shared scratch helper merged from the interposer's
+  `scratch_dir` and gen-inhibit's `gi_paths` (AGENTS.md "Removing scratch"),
+  before it closes the record (A13), so whatever it cannot remove is a
+  LEFTOVER line in the record. A `finally` and an exit handler remove the
+  same on any other way out. Anything that fails only after the close, or in
+  a run that stopped before closing, is printed and reported to the tester,
+  never written into a closed record (user, 2026-11-01).
 
 ## Projects and ownership
 
