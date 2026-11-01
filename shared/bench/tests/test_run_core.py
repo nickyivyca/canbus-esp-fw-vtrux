@@ -1202,6 +1202,118 @@ def test_digest_folder_removed():
         undo()
 
 
+def _under(p, root):
+    p, root = (os.path.normcase(os.path.abspath(x)) for x in (p, root))
+    return p.startswith(root + os.sep)
+
+
+def _unlock(root):
+    """Everything under root made writable again, so a mutant's leftovers
+    can be removed."""
+    import stat
+    for dp, dns, fns in os.walk(root):
+        for n in dns:
+            os.chmod(os.path.join(dp, n), stat.S_IRWXU)
+        for n in fns:
+            os.chmod(os.path.join(dp, n), stat.S_IREAD | stat.S_IWRITE)
+
+
+def test_digest_in_scratch():
+    """With no DIGEST_ROOT, a digest extracts into <the repo's worktree>/
+    scratch/vtrux-bench/digest/, found from any folder of the repo, never
+    into the system temp folder (before 2026-11-01 it was
+    <temp>/vtrux-bench/digest); its folder is gone after."""
+    import tempfile
+    env = Env("digestscratch")
+    gt = GitTree(env)
+    commit = gt.git("rev-parse", "HEAD")
+    emu, _ = _digest_suites(gt)
+    eng = E.Engine(emu, env.settings(), out=lambda *a: None)
+    real, seen = E.product_digest, []
+
+    def spy(work, files):
+        seen.append(work)
+        return real(work, files)
+    saved = (E.DIGEST_ROOT, E.product_digest)
+    E.DIGEST_ROOT, E.product_digest = None, spy
+    try:
+        d = eng._digest_at(gt.root, commit)
+    finally:
+        E.DIGEST_ROOT, E.product_digest = saved
+    root = os.path.join(gt.root, "scratch", "vtrux-bench", "digest")
+    assert d and len(seen) == 1, (d, seen)
+    assert _under(seen[0], root), (seen, root)
+    assert not _under(seen[0], tempfile.gettempdir()), seen
+    assert os.listdir(root) == [], os.listdir(root)
+    sub = E.digest_root(os.path.join(gt.root, "p"))
+    assert os.path.normcase(sub) == os.path.normcase(root), (sub, root)
+
+
+def test_digest_hard_files_removed():
+    """A digest's folder is removed though the tree in it holds a read-only
+    file in a read-only folder and, on Windows, a path past 260 characters
+    (AGENTS.md "Removing scratch": rmtree alone leaves the read-only file,
+    and with ignore_errors says nothing)."""
+    import stat
+    env = Env("digesthard")
+    gt = GitTree(env)
+    commit = gt.git("rev-parse", "HEAD")
+    emu, _ = _digest_suites(gt)
+    eng = E.Engine(emu, env.settings(), out=lambda *a: None)
+    real = E.product_digest
+    made = []
+
+    def spy(work, files):
+        hard = os.path.join(work, "ro")
+        os.makedirs(hard)
+        open(os.path.join(hard, "f"), "w").close()
+        os.chmod(os.path.join(hard, "f"), stat.S_IREAD)
+        os.chmod(hard, stat.S_IREAD | stat.S_IEXEC)
+        made.append(hard)
+        if os.name == "nt":
+            deep = E.long_path(os.path.join(work, *["d" * 60] * 5))
+            os.makedirs(deep)
+            open(os.path.join(deep, "f"), "w").close()
+            made.append(deep)
+        return real(work, files)
+    undo = _digest_spy(env, spy)
+    root = E.DIGEST_ROOT
+    try:
+        d = eng._digest_at(gt.root, commit)
+        left = os.listdir(root)
+    finally:
+        undo()
+        _unlock(root)
+    assert d and made, (d, made)
+    assert left == [], left
+
+
+def test_digest_unremovable_printed():
+    """A digest folder that cannot be removed is printed with the reason,
+    not passed over in silence, and the digest is still given."""
+    import contextlib
+    import io
+    env = Env("digestprint")
+    gt = GitTree(env)
+    commit = gt.git("rev-parse", "HEAD")
+    emu, _ = _digest_suites(gt)
+    eng = E.Engine(emu, env.settings(), out=lambda *a: None)
+    undo = _digest_spy(env, E.product_digest)
+    root = E.DIGEST_ROOT
+    rmtree, err = shutil.rmtree, io.StringIO()
+    shutil.rmtree = lambda *a, **k: None         # nothing can be removed
+    try:
+        with contextlib.redirect_stderr(err):
+            d = eng._digest_at(gt.root, commit)
+    finally:
+        shutil.rmtree = rmtree
+        undo()
+    left = os.listdir(root)
+    assert d and len(left) == 1, (d, left)
+    assert "could not remove" in err.getvalue() and left[0] in err.getvalue(), \
+        err.getvalue()
+
+
 def _fixed_mkdtemp(prefix="", dir=None, **_k):
     """mkdtemp's mutant: one folder per prefix, shared by every call."""
     d = os.path.join(dir, prefix + "fixed")
@@ -2142,6 +2254,8 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_requires_whole, test_subset_mark, test_subset_not_whole,
          test_product_digest, test_digest_bridge,
          test_digest_own_folder, test_digest_folder_removed,
+         test_digest_in_scratch, test_digest_hard_files_removed,
+         test_digest_unremovable_printed,
          test_resume_code,
          test_redact_scope, test_gate, test_skip, test_timeout,
          test_resume, test_carry_finished, test_carry_check_end, test_compare,
@@ -2236,6 +2350,12 @@ MUTANTS = {
     "test_digest_bridge": _rule("digest_bridge"),
     "test_digest_own_folder": _patch(__import__("tempfile"), "mkdtemp", _fixed_mkdtemp),
     "test_digest_folder_removed": _patch(shutil, "rmtree", lambda *a, **k: None),
+    "test_digest_in_scratch": _patch(E, "digest_root",
+                                     lambda repo: os.path.join(repo, "digest")),
+    "test_digest_hard_files_removed": _patch(
+        E, "remove_tree", lambda p: shutil.rmtree(p, ignore_errors=True)),
+    "test_digest_unremovable_printed": _patch(
+        E, "remove_tree", lambda p: shutil.rmtree(p, ignore_errors=True)),
     "test_resume_code": _rule("resume_code"),
     "test_redact_scope": _rule("redact_scope"),
     "test_gate": _rule("gate"),
