@@ -16,13 +16,19 @@
 #include "gen_inhibit_core.h"
 #include "gi_sched.h"
 /*
- * PRIVATE HAL, in the shipping image, sanctioned by spec 5.2 items 4 and 9 and
- * cleared by the user 2026-09-27. twai_ll_set_cmd_abort_tx() is below the public
- * driver API and E3 confines it to exactly one site -- the abort inside
- * dev_abort_if_awaiting() below -- because it is the kind of call that spreads.
+ * PORT 0 IS vtrux/twai_port's, behind vtrux/can_port (spec 3.3, port step 1b,
+ * user 2026-10-31). Every TWAI driver call this file used to make goes through
+ * the port: the one twai_transmit (twai_port T6), the alert read (T5), the
+ * status (T7), and the private abort command, which is twai_port's
+ * abort-if-awaiting (T8; spec 5.2 items 4 and 9, 12.4's confinement row).
  */
-#include "hal/twai_ll.h"
+#include "twai_port.h"
+#include "can_port.h"
 #include "esp_attr.h"
+#if GI_TEST_RESTART_QUIESCE
+/* Restart test build only, spec 12.4 -- see main/CMakeLists.txt. */
+#include "gi_restart_test.h"
+#endif
 
 #include <string.h>
 #include <stdio.h>
@@ -173,6 +179,28 @@ _Static_assert(GEN_INHIBIT_PROBE_ID == GI_PROBE_ID, "id drift");
 /* Receive timeout: 200 ms rather than a full second only so a disarm is
  * acted on promptly; a timeout costs nothing but a loop iteration. */
 #define GEN_INHIBIT_RX_TIMEOUT_MS   200
+
+/*
+ * SPEC 5.1 ITEM 1: the software RX queue holds at least 64 frames whenever the
+ * driver is installed (amended 2026-09-26 from 32, user). Port 0's setting
+ * since port step 1b (gen_inhibit_port_register()); can.c's CAN_RX_QUEUE_LEN
+ * until then, whose comment carried the reasoning below.
+ *
+ * TWAI_GENERAL_CONFIG_DEFAULT gives 5, which is ~2.2 ms of traffic at the
+ * truck's measured ~2250 frames/s -- against a worst measured WiFi preemption
+ * of 2.39 ms. 64 is ~27 ms at 2364 frames/s. THIS IS THE REMEDY THAT MAKES THE
+ * MARGIN POSITIVE rather than smaller: WiFi/lwIP preemption blocks the WORKER
+ * TASK, not the TWAI interrupt, so the ISR keeps moving frames into this queue
+ * while the task is off-CPU, and the queue depth is the buffer that has to
+ * cover preemption x frame rate. A deeper queue turns loss into lateness, and
+ * lateness past the VCM's next 0x051 is caught by section 7 trip 7.
+ *
+ * WHAT IT DOES NOT FIX, and the reason spec 5.1 item 3 exists: while the flash
+ * cache is disabled for a write, the ISR cannot run at all (the ISR is not in
+ * IRAM, section 5), so nothing reaches this queue and only the controller's
+ * hardware FIFO buffers.
+ */
+#define GEN_INHIBIT_RX_QUEUE_LEN    64
 
 /* ------------------------------------------------------------------------- */
 
@@ -485,11 +513,21 @@ esp_err_t gen_inhibit_await_mode(uint32_t ticket)
 }
 
 /*
- * Spec 7 trip 7: TWAI_ALERT_TX_FAILED seen since the current inhibit frame
- * was queued. Carried between polls because the alert can arrive before the
- * frame leaves the controller, and cleared when the next inhibit is queued.
+ * Spec 7 trip 7's "controller reported failed" form: the transmit-failed event
+ * is HELD BY THE PORT until taken (twai_port T5), which is what this file's own
+ * latch did until port step 1b. Carried between polls because the alert can
+ * arrive before the frame leaves the controller; taken by the next inhibit
+ * completion, and cleared when the next inhibit is queued.
  */
-static bool s_tx_failed_latched;
+
+/*
+ * THE COUNTERS AT THIS PROJECT'S OWN INSTALL (twai_port T7). The port's counts
+ * are monotonic across reinstalls; spec 11's `drv` figures and the bus-error
+ * count spec 7 trip 6 reads are per install, so they are the port's counts
+ * minus these. Taken in the install hook, which runs before every install of
+ * port 0 whichever path makes it (port_install_hook()).
+ */
+static can_port_status_t s_at_install;
 
 /*
  * Spec 13 item 1: we put the controller into listen-only for OBSERVE.
@@ -519,20 +557,25 @@ static uint8_t  s_silent_saved;
  */
 /* Non-static: declared in gen_inhibit.h so shim case 26 can ask it for its
  * longest value rather than keeping a second copy of this table. */
-const char *drv_state_name(twai_state_t s)
+const char *drv_state_name(can_port_state_t s)
 {
     switch (s)
     {
-        case TWAI_STATE_STOPPED:    return "stopped";
-        case TWAI_STATE_RUNNING:    return "running";
-        case TWAI_STATE_BUS_OFF:    return "bus_off";
-        case TWAI_STATE_RECOVERING: return "recovering";
-        default:                    return "unknown";
+        case CAN_PORT_STATE_STOPPED:    return "stopped";
+        case CAN_PORT_STATE_RUNNING:    return "running";
+        case CAN_PORT_STATE_BUS_OFF:    return "bus_off";
+        case CAN_PORT_STATE_RECOVERING: return "recovering";
+        default:                        return "unknown";
     }
 }
 
-static int drv_json(const twai_status_info_t *info, bool ok,
-                    char *buf, int buflen)
+/*
+ * `at` is s_at_install as the page copied it: the cumulative fields are this
+ * install's, the port's counts minus their values at it (twai_port T7), as the
+ * driver reported them before port step 1b.
+ */
+static int drv_json(const can_port_status_t *info, const can_port_status_t *at,
+                    bool ok, char *buf, int buflen)
 {
     if (!ok)
     {
@@ -564,15 +607,15 @@ static int drv_json(const twai_status_info_t *info, bool ok,
                     "\"arb_lost\":%lu,\"bus_error\":%lu,\"tx_failed\":%lu,"
                     "\"msgs_to_rx\":%lu,\"msgs_to_tx\":%lu}",
                     drv_state_name(info->state),
-                    (unsigned long)info->tx_error_counter,
-                    (unsigned long)info->rx_error_counter,
-                    (unsigned long)info->rx_missed_count,
-                    (unsigned long)info->rx_overrun_count,
-                    (unsigned long)info->arb_lost_count,
-                    (unsigned long)info->bus_error_count,
-                    (unsigned long)info->tx_failed_count,
-                    (unsigned long)info->msgs_to_rx,
-                    (unsigned long)info->msgs_to_tx);
+                    (unsigned long)info->tec,
+                    (unsigned long)info->rec,
+                    (unsigned long)(info->rx_lost_queue_full - at->rx_lost_queue_full),
+                    (unsigned long)(info->rx_lost_overrun - at->rx_lost_overrun),
+                    (unsigned long)(info->arb_lost - at->arb_lost),
+                    (unsigned long)(info->bus_errors - at->bus_errors),
+                    (unsigned long)(info->tx_failed - at->tx_failed),
+                    (unsigned long)info->rx_waiting,
+                    (unsigned long)info->tx_pending);
 }
 
 /* ------------------------------------------- RX backlog instrument (opt) -- */
@@ -748,8 +791,9 @@ static void rx_backlog_sample(void)
     const bool read_it = needed;
 #endif
 
-    twai_status_info_t info;
-    if (!read_it || twai_get_status_info(&info) != ESP_OK)
+    can_port_status_t info;
+    if (!read_it || twai_port_status(&info) != ESP_OK
+        || info.state == CAN_PORT_STATE_DOWN)
     {
         /*
          * FAILS CLOSED, in both cases. An arm that has not measured has not
@@ -766,13 +810,13 @@ static void rx_backlog_sample(void)
         s_rx_waiting = 1;
         return;
     }
-    rxq_note((uint32_t)info.msgs_to_rx + 1);
-    s_rx_waiting = needed ? (uint32_t)info.msgs_to_rx : 1u;
+    rxq_note(info.rx_waiting + 1);
+    s_rx_waiting = needed ? info.rx_waiting : 1u;
 }
 
 static void bus_snapshot(gi_bus_t *b)
 {
-    twai_status_info_t st;
+    can_port_status_t st;
     memset(b, 0, sizeof(*b));
     b->bus_ours = s_we_enabled_bus;
     /*
@@ -787,11 +831,12 @@ static void bus_snapshot(gi_bus_t *b)
      * The field keeps its old name: renaming it reaches into the host runner,
      * whose owner is not settled. The name is now a misnomer -- asked.
      */
-    if (twai_get_status_info(&st) == ESP_OK)
+    if (twai_port_status(&st) == ESP_OK && st.state != CAN_PORT_STATE_DOWN)
     {
-        b->can_enabled     = (st.state == TWAI_STATE_RUNNING);
+        b->can_enabled     = (st.state == CAN_PORT_STATE_RUNNING);
         b->err_valid       = true;
-        b->bus_error_count = st.bus_error_count;
+        /* Per install, as the driver's own count was (s_at_install). */
+        b->bus_error_count = st.bus_errors - s_at_install.bus_errors;
     }
     /*
      * Spec 7 condition 9 (user, 2026-10-10). NOT st.msgs_to_rx from the read
@@ -959,12 +1004,13 @@ static bool dev_submit(void *ctx, const gi_frame_t *f)
     tx.data_length_code = f->dlc;
     memcpy(tx.data, f->data, 8);
     /*
-     * THE ONLY twai_transmit IN THIS COMPONENT (spec 5.2 item 1, checked by E3's
-     * "one transmit owner" row). Zero timeout: the scheduler hands over only when
-     * the controller is free, so a wait here would mean its own bookkeeping was
-     * wrong and blocking would hide that.
+     * THE SCHEDULER'S ONLY SEND (spec 5.2 item 1): through the port's send, the
+     * one twai_transmit in the firmware (twai_port T6, 12.4's confinement row).
+     * Zero timeout: the scheduler hands over only when the controller is free,
+     * so a wait here would mean its own bookkeeping was wrong and blocking would
+     * hide that.
      */
-    const bool ok = (twai_transmit(&tx, 0) == ESP_OK);
+    const bool ok = (twai_port_send(&tx, 0) == ESP_OK);
 
     /*
      * THE HANDOVER INSTANT, for the probe only (spec 12.1). Read immediately
@@ -982,77 +1028,64 @@ static bool dev_submit(void *ctx, const gi_frame_t *f)
     return ok;
 }
 
-static IRAM_ATTR gs_buf_t buf_from_status(uint32_t st)
+/*
+ * The port's buffer state as the scheduler's (spec 5.2 item 8). The register
+ * read, the TBS/TS decoding and the abort's critical section are twai_port's
+ * T8, in its C3 file, moved there from here at port step 1b.
+ *
+ * UNSUPPORTED reads as TRANSMITTING, the direction in which the scheduler
+ * waits and issues no abort. It is unreachable on the C3, the only chip this
+ * project builds for, which has a measured register file.
+ *
+ * Ifs, not a switch: a switch can compile to a jump table in flash, and this is
+ * on the restart step's path, which may run with the cache off.
+ */
+static IRAM_ATTR gs_buf_t buf_from_port(twai_port_buf_t b)
 {
-    if (st & TWAI_LL_STATUS_TBS) { return GS_BUF_EMPTY; }
-    /*
-     * TS covers the ARBITRATION FIELD as well as the data phase, so this does not
-     * mean the frame is certain to reach the wire -- which is why item 4 waits here
-     * instead of issuing a command that the measurement showed has no effect.
-     */
-    if (st & TWAI_LL_STATUS_TS)  { return GS_BUF_TRANSMITTING; }
-    return GS_BUF_AWAITING;
+    if (b == TWAI_PORT_BUF_EMPTY)    { return GS_BUF_EMPTY; }
+    if (b == TWAI_PORT_BUF_AWAITING) { return GS_BUF_AWAITING; }
+    return GS_BUF_TRANSMITTING;
 }
 
 static gs_buf_t dev_buf_state(void *ctx)
 {
     (void)ctx;
-    return buf_from_status(twai_ll_get_status(TWAI_LL_GET_HW(0)));
+    return buf_from_port(twai_port_buf_state());
 }
 
 /*
- * Read the state and, if AWAITING, issue the abort -- INDIVISIBLY.
- *
- * The controller is independent hardware and does not stop between a read and a
- * write, so doing this as two calls lets it enter arbitration in between and the
- * command then lands at TS = 1, where 7 of 8 measured aborts had no effect at all.
- * One critical section narrows that to a few cycles; it cannot close it, because the
- * controller keeps running, and item 4's loop is what recovers from the residual.
- * This is exactly what gi_txabort_probe.c did for the measurement.
- *
- * The interrupt register is never touched: reading it clears interrupts and would
- * steal them from the driver.
+ * Read the state and, if AWAITING, issue the abort -- indivisibly, in one
+ * critical section, in twai_port's abort-if-awaiting (T8). Why one section, and
+ * why the interrupt register is never touched, is written there.
  *
  * IN IRAM, because the restart step calls it too (gen_inhibit_restart_abort_tx(),
  * below; spec 3 and spec 12.4's confinement row, 2026-10-13). That caller may run
- * from a panic, so this must not depend on the flash cache. What it calls is
- * force-inlined LL or IRAM already: buf_from_status() above, and on this
- * single-core build taskENTER/EXIT_CRITICAL are vPortEnterCritical() and
- * vPortExitCritical() (portmacro.h:530-531), which mask interrupts and keep a
- * nesting count -- no spinlock, so a crash taken inside this same section cannot
- * deadlock the restart on it.
+ * from a panic, so this must not depend on the flash cache: buf_from_port() above
+ * and the port's abort-if-awaiting are in IRAM too.
  */
 static IRAM_ATTR gs_buf_t dev_abort_if_awaiting(void *ctx)
 {
-    twai_dev_t *hw = TWAI_LL_GET_HW(0);
-    gs_buf_t seen;
     (void)ctx;
-
-    taskENTER_CRITICAL(&s_abort_lock);
-    seen = buf_from_status(twai_ll_get_status(hw));
-    if (seen == GS_BUF_AWAITING)
-    {
-        twai_ll_set_cmd_abort_tx(hw);
-    }
-    taskEXIT_CRITICAL(&s_abort_lock);
-    return seen;
+    return buf_from_port(twai_port_abort_if_awaiting());
 }
 
 static bool dev_outstanding(void *ctx)
 {
-    twai_status_info_t info;
+    can_port_status_t info;
     (void)ctx;
-    if (twai_get_status_info(&info) != ESP_OK)
+    if (twai_port_status(&info) != ESP_OK || info.state == CAN_PORT_STATE_DOWN)
     {
         /*
-         * UNKNOWN MEANS YES. If we cannot tell, saying "outstanding" stops the
-         * scheduler handing over another frame, which is the safe direction: two
-         * frames of ours in the controller is the one state under which trip 7's
-         * completion test means nothing.
+         * UNKNOWN MEANS YES, and so does a port that is not installed, as it did
+         * when this read the driver directly and the read failed. If we cannot
+         * tell, saying "outstanding" stops the scheduler handing over another
+         * frame, which is the safe direction: two frames of ours in the
+         * controller is the one state under which trip 7's completion test
+         * means nothing.
          */
         return true;
     }
-    return info.msgs_to_tx != 0;
+    return info.tx_pending != 0;
 }
 
 static const gs_hal_t DEV_HAL = {
@@ -1109,24 +1142,22 @@ static void sched_advance(int64_t now, gi_events_t *ev)
      * cost was missing.
      */
     /*
-     * DRAIN THE ALERTS FIRST, and keep TX_FAILED latched until it is consumed.
+     * POLL THE PORT'S ALERTS FIRST, which holds a transmit failure until it is
+     * taken (twai_port T5; port step 1b). Before 1b this read the driver's alerts
+     * itself and kept its own latch.
      *
      * This is spec 7 trip 7's second form -- "a frame the controller reports as
-     * failed still trips at once" -- and after the switchover this is its ONLY
-     * reader. poll_tx_completion() used to do it; deleting that function without
-     * moving this would have made the form unreachable, and nothing would have
+     * failed still trips at once" -- and this file's ONLY route to it.
+     * poll_tx_completion() used to do it; deleting that function without moving
+     * this would have made the form unreachable, and nothing would have
      * complained for a long time, because IDF documents TX_FAILED as raised for
      * single-shot transmission and these frames go out with ss = 0.
      *
-     * The alert is read HERE and not in the scheduler's HAL on purpose: alerts are
+     * The event is taken HERE and not in the scheduler's HAL on purpose: alerts are
      * latched bits shared by every frame, which is exactly what gi_sched must not
      * have to reason about, and the shim already knows which frame it handed over.
      */
-    uint32_t alerts = 0;
-    if (twai_read_alerts(&alerts, 0) == ESP_OK && (alerts & TWAI_ALERT_TX_FAILED))
-    {
-        s_tx_failed_latched = true;
-    }
+    (void)twai_port_poll_alerts();
 
     gs_tick(&s_sched, now, can_msgs_to_rx());
 
@@ -1178,13 +1209,12 @@ static void sched_advance(int64_t now, gi_events_t *ev)
     {
         s_seen_inh_sent++;
         /*
-         * ok = false makes this trip 7's TX_FAILED form. The latch is consumed
+         * ok = false makes this trip 7's TX_FAILED form. The held event is taken
          * here so one failure reports once rather than condemning every later
          * frame -- the defect the shared-alert-bit comment in the old
          * poll_tx_completion() recorded.
          */
-        gi_on_tx_done(&s_core, !s_tx_failed_latched, now, ev);
-        s_tx_failed_latched = false;
+        gi_on_tx_done(&s_core, !twai_port_take_tx_failed(), now, ev);
     }
     while (s_seen_inh_refused < st->cls[GS_CLASS_INHIBIT].refused)
     {
@@ -1312,13 +1342,13 @@ static void dispatch_emits(const gi_emit_t *em, gi_events_t *ev)
             s_last_inhibit = *f;
             s_have_last_inhibit = true;
             /*
-             * Clear a stale TX_FAILED, as the old path did. Completion is decided
-             * by msgs_to_tx and no leftover alert can affect it, but the bit is
-             * read for trip 7's "controller reported failed" form.
+             * Clear a stale TX_FAILED, as the old path did: poll, then drop the
+             * held event. Completion is decided by msgs_to_tx and no leftover
+             * alert can affect it, but the event is read for trip 7's
+             * "controller reported failed" form.
              */
-            uint32_t stale = 0;
-            (void)twai_read_alerts(&stale, 0);
-            s_tx_failed_latched = false;
+            (void)twai_port_poll_alerts();
+            (void)twai_port_take_tx_failed();
         }
 
         if (f->kind == GI_TX_PROBE)
@@ -1419,25 +1449,25 @@ bool gen_inhibit_owns_bus(void)
 }
 
 /*
- * Is the controller on the bus? The driver's own state, not can.c's bus_state:
- * can.c records ON_BUS when it installs the driver and nothing changes it at a
- * bus-off, so can_is_enabled() stays true for a controller that has left the
- * bus. Unknown (the driver will not say) counts as not running, the direction
- * that reinstalls rather than arms onto a dead controller.
+ * Is the controller on the bus? The port's reading of the driver's state, not
+ * the stock layer's bus_state: that records ON_BUS when it brings the port up
+ * and nothing changes it at a bus-off, so can_is_enabled() stays true for a
+ * controller that has left the bus. Unknown (the port will not say) counts as
+ * not running, the direction that reinstalls rather than arms onto a dead
+ * controller.
  *
- * RECOVERING IS NOT HANDLED, AND MUST BE BEFORE RECOVERY IS EVER ADDED
- * (reviewer, 2026-10-14). It is unreachable while nothing calls
- * twai_initiate_recovery(). If it were reached, the arm's can_disable() would
- * have twai_driver_uninstall() refused (it needs STOPPED or BUS_OFF), can.c
- * would mark OFF_BUS regardless, and the reinstall's twai_driver_install()
- * would fail on the driver still installed and abort through can_enable()'s
- * ESP_ERROR_CHECK. Introducing recovery means revisiting this path first.
+ * RECOVERING is unreachable here: port 0 never recovers from bus-off (spec 7;
+ * spec 3.3's settings). If it were reached, the arm's can_disable() would be
+ * refused by the port (twai_port T3), which keeps the driver installed and
+ * says so, and the stock layer then keeps the bus on (can_port C5); the
+ * reinstall below would not run, and the arm would be refused by the
+ * controller_running() check after it.
  */
 static bool controller_running(void)
 {
-    twai_status_info_t st;
-    return twai_get_status_info(&st) == ESP_OK
-           && st.state == TWAI_STATE_RUNNING;
+    can_port_status_t st;
+    return twai_port_status(&st) == ESP_OK
+           && st.state == CAN_PORT_STATE_RUNNING;
 }
 
 /*
@@ -1521,8 +1551,8 @@ static esp_err_t apply_mode(gen_inhibit_mode_t mode, uint32_t offset_us)
          * into or out of OBSERVE, or mode 0 first, reinstalled it.
          *
          * The check is HERE and not in can_is_enabled(), whose callers read it
-         * as "can.c installed the driver"; and folding it in would not reinstall
-         * anyway, because can_enable() returns at once while bus_state is
+         * as "the stock layer brought port 0 up"; and folding it in would not
+         * reinstall anyway, because the enable returns at once while bus_state is
          * ON_BUS. The teardown is the ordinary can_disable(), which quiesces
          * the worker first. In BUS_OFF its twai_stop() is refused
          * (INVALID_STATE) and ignored, and twai_driver_uninstall() is allowed.
@@ -1575,8 +1605,9 @@ static esp_err_t apply_mode(gen_inhibit_mode_t mode, uint32_t offset_us)
          * SPEC 5.1 ITEM 2: the controller keeps accept-all while we own the bus,
          * and this is where that is made true.
          *
-         * can.c forces accept-all at install time when gen_inhibit_owns_bus(),
-         * which READ CORRECTLY AND DID NOTHING ON THIS PATH. The mode is not
+         * The install forces accept-all when gen_inhibit_owns_bus() (port 0's
+         * install hook since 1b, can.c before), which READ CORRECTLY AND DID
+         * NOTHING ON THIS PATH. The mode is not
          * recorded in the core until gi_set_mode() below, well after
          * can_enable() above, so ownership was still false inside
          * twai_driver_install() and the override could only ever fire on a
@@ -1615,7 +1646,29 @@ static esp_err_t apply_mode(gen_inhibit_mode_t mode, uint32_t offset_us)
             }
             can_set_silent(want_listen_only ? 1 : s_silent_saved);
             s_forced_silent = want_listen_only;
-            can_enable();
+            /*
+             * SPEC 3.3, AN INSTALL FAILURE REFUSES (user, 2026-10-31): the
+             * reporting form of the stock enable, not can_enable(), which
+             * restarts on a failure (can_port C3). Any failed step -- the pins,
+             * the install, the start or the alerts -- refuses the arm or the
+             * mode change with the reason (8.1 rows 2 and 5) and leaves the bus
+             * down until the next enable. Until 1b the install and the start
+             * restarted the device through can.c's ESP_ERROR_CHECK, and only
+             * the alerts refused.
+             *
+             * ESP_ERR_INVALID_STATE whatever the port returned, as the alerts
+             * refusal was: the handler words every other code as the bus not
+             * coming up, but reads INVALID_ARG, which the install can return,
+             * as a bad offset.
+             */
+            const esp_err_t up = can_port_stock_enable();
+            if (up != ESP_OK)
+            {
+                ESP_LOGE(TAG, "cannot arm: port 0 would not come up, step %d: "
+                              "%s (spec 3.3)",
+                         (int)twai_port_last_step(), esp_err_to_name(up));
+                return ESP_ERR_INVALID_STATE;
+            }
             s_we_enabled_bus = true;
         }
         /*
@@ -1646,19 +1699,12 @@ static esp_err_t apply_mode(gen_inhibit_mode_t mode, uint32_t offset_us)
             return ESP_ERR_INVALID_STATE;
         }
         /*
-         * Spec 7 trip 7 (review C1). can.c installs the driver with
-         * TWAI_ALERT_NONE, so twai_read_alerts() would block for the timeout
-         * and report nothing -- every inhibit frame would then look
-         * outstanding and abort on the next 0x051. Turn on exactly the two we
-         * read. Done here rather than in can.c so the stock firmware's
-         * behaviour is untouched when the inhibitor is not armed.
+         * Spec 7 trip 7 (review C1) needs the TX alerts on. Since port step 1b
+         * the port enables them at every install, as a step of the install
+         * (twai_port T4, T5), so an install whose alerts would not enable is
+         * an install failure (spec 3.3). Until 1b this file turned them on
+         * here, at every arm.
          */
-        if (twai_reconfigure_alerts(TWAI_ALERT_TX_SUCCESS | TWAI_ALERT_TX_FAILED,
-                                    NULL) != ESP_OK)
-        {
-            ESP_LOGE(TAG, "cannot arm: TX alerts would not enable");
-            return ESP_ERR_INVALID_STATE;
-        }
         /*
          * Refuse to arm OBSERVE unless the flag that selects g_config_silent
          * is actually set. Note what this does and does not prove: the TWAI
@@ -2050,6 +2096,109 @@ void gen_inhibit_quiesce(void)
     }
 }
 
+/* -------------------------------------------------------------- port 0 -- */
+
+/*
+ * THE PRE-TEARDOWN HOOK (spec 8, the quiesce backstop; twai_port T2 and T3,
+ * can_port C5): every teardown of port 0, the stock can_disable()'s included,
+ * runs gen_inhibit_quiesce() first, which can.c's can_disable() called inline
+ * until port step 1b.
+ */
+static void port_pre_teardown(void *ctx)
+{
+    (void)ctx;
+    gen_inhibit_quiesce();
+}
+
+/*
+ * THE INSTALL HOOK (twai_port T2), run before every install of port 0, with
+ * the filter that install will use.
+ *
+ * SPEC 5.1 ITEM 2: accept-all while the inhibitor owns the bus, forced here,
+ * which can.c did inline. It is not the primary guarantee: apply_mode() clears
+ * a narrowed filter before the bus comes up and refuses to arm if it is still
+ * narrowed, because on the arming path ownership is still false here (the
+ * mode is recorded after the install). What this covers is a re-install while
+ * already owned. Review, 2026-09-26.
+ *
+ * THE COUNTERS AT THIS INSTALL (s_at_install), for the per-install figures.
+ *
+ * And, in the restart test build, the far end of spec 3's "until the driver is
+ * installed again".
+ */
+static void port_install_hook(void *ctx, twai_port_filter_t *f)
+{
+    (void)ctx;
+    if (gen_inhibit_owns_bus()
+        && (f->acceptance_code != 0 || f->acceptance_mask != 0xFFFFFFFF))
+    {
+        ESP_LOGE(TAG, "acceptance filter is narrowed (code 0x%08lX mask 0x%08lX) "
+                      "while the inhibitor owns the bus -- forcing accept-all "
+                      "per spec 5.1 item 2",
+                 (unsigned long)f->acceptance_code,
+                 (unsigned long)f->acceptance_mask);
+        f->acceptance_code = 0;
+        f->acceptance_mask = 0xFFFFFFFF;
+    }
+
+    can_port_status_t now;
+    if (twai_port_status(&now) == ESP_OK)
+    {
+        taskENTER_CRITICAL(&s_abort_lock);
+        s_at_install = now;
+        taskEXIT_CRITICAL(&s_abort_lock);
+    }
+
+#if GI_TEST_RESTART_QUIESCE
+    gi_restart_test_pre_install();
+#endif
+}
+
+static void at_install_copy(can_port_status_t *out)
+{
+    taskENTER_CRITICAL(&s_abort_lock);
+    *out = s_at_install;
+    taskEXIT_CRITICAL(&s_abort_lock);
+}
+
+/*
+ * PORT 0 AS SPEC 3.3 SETS IT UP (port step 1b, user, 2026-10-31): the board's
+ * port 0; the configured bitrate and listen-only from the install for OBSERVE,
+ * both through the stock calls (can_set_bitrate(), can_set_silent()), which
+ * replace the timing and mode below at every can_enable(); accept-all, forced
+ * by the install hook while owned (5.1 item 2); an RX queue of 64 (5.1 item
+ * 1); the TX queue of 5 that can.c's TWAI_GENERAL_CONFIG_DEFAULT gave; no
+ * bus-off recovery (7); an install failure reported, not a restart, so that
+ * apply_mode() can refuse with the reason (user, 2026-10-31; the stock
+ * can_enable() still restarts, can_port C3); the quiesce as the pre-teardown
+ * hook (8). Remote frames are kept and sends are not single-shot,
+ * as before.
+ *
+ * Registered as port 0's backend with can_port, and gen_inhibit_owns_bus() and
+ * the refusal count as its owner hook (can_port C4), which can.c's can_send()
+ * called directly.
+ */
+void gen_inhibit_port_register(void)
+{
+    twai_port_config_t c;
+    twai_port_config_defaults(&c);
+    c.board_port      = 0;
+    c.mode            = CAN_PORT_MODE_NORMAL;
+    c.rx_queue_len    = GEN_INHIBIT_RX_QUEUE_LEN;
+    c.tx_queue_len    = 5;
+    c.recovery        = TWAI_PORT_RECOVERY_NEVER;
+    c.drop_rtr        = false;
+    c.single_shot     = false;
+    c.on_install_fail = TWAI_PORT_INSTALL_FAIL_REPORT;
+    c.pre_teardown    = port_pre_teardown;
+    c.install_hook    = port_install_hook;
+    c.hook_ctx        = NULL;
+    ESP_ERROR_CHECK(twai_port_setup(&c));
+    ESP_ERROR_CHECK(can_port_register(0, &twai_port_ops, NULL));
+    can_port_register_owner(gen_inhibit_owns_bus,
+                            gen_inhibit_note_refused_can_send);
+}
+
 /* ---------------------------------------------------------------- worker -- */
 
 static void gen_inhibit_task(void *arg)
@@ -2135,7 +2284,7 @@ static void gen_inhibit_task(void *arg)
          * ISR-to-task latency rather than wican-fw's 1 ms poll interval. That
          * difference is the whole reason this component exists.
          */
-        esp_err_t rx_err = twai_receive(&rx, pdMS_TO_TICKS(GEN_INHIBIT_RX_TIMEOUT_MS));
+        esp_err_t rx_err = twai_port_receive(&rx, pdMS_TO_TICKS(GEN_INHIBIT_RX_TIMEOUT_MS));
         if (rx_err != ESP_OK)
         {
             /*
@@ -2454,13 +2603,30 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
 
     /*
      * Read OUTSIDE the section, and this is the one value on the page that is not
-     * in the same copy as the rest. twai_get_status_info() takes the TWAI
-     * driver's own spinlock; nesting that inside ours would create a lock
-     * ordering this component does not otherwise have, for counters that are
-     * cumulative since the driver was installed and are terms in no balance.
+     * in the same copy as the rest. The port's status read takes the TWAI
+     * driver's own spinlock and the port's; nesting those inside ours would
+     * create a lock ordering this component does not otherwise have, for
+     * counters that are cumulative since the driver was installed and are terms
+     * in no balance.
+     *
+     * The install's counters go with it, and must be the same install's: the
+     * hook takes them just before an install, so a reading of install N+1 has
+     * bring_ups one above them. A reinstall between the copy and the read is
+     * caught that way and read again (at_install_copy()).
      */
-    twai_status_info_t drv;
-    const bool drv_ok = (twai_get_status_info(&drv) == ESP_OK);
+    can_port_status_t drv;
+    can_port_status_t drv_at;
+    bool drv_ok = false;
+    for (int tries = 0; tries < 2; tries++)
+    {
+        at_install_copy(&drv_at);
+        drv_ok = (twai_port_status(&drv) == ESP_OK
+                  && drv.state != CAN_PORT_STATE_DOWN);
+        if (!drv_ok || drv.bring_ups == drv_at.bring_ups + 1)
+        {
+            break;
+        }
+    }
     /*
      * bus_on is the CONTROLLER's state, not the driver's installation (spec 11,
      * changed 2026-10-06): false when the controller is stopped, bus-off or
@@ -2474,7 +2640,7 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
      * the device sat bus-off and silent on 2026-10-06. Mode switching still
      * keys on the driver being installed; only the reported value changes.
      */
-    const bool bus_on = drv_ok && (drv.state == TWAI_STATE_RUNNING);
+    const bool bus_on = drv_ok && (drv.state == CAN_PORT_STATE_RUNNING);
 
     const int64_t t_snap0 = esp_timer_get_time();
     taskENTER_CRITICAL(&s_abort_lock);
@@ -2752,7 +2918,7 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
      * brace. Anything added here goes BEFORE the brace.
      */
     n = gi_clamp(n + snprintf(buf + n, buflen - n, ",\"inf\"]"), buflen);
-    n = gi_clamp(n + drv_json(&drv, drv_ok, buf + n, buflen - n), buflen);
+    n = gi_clamp(n + drv_json(&drv, &drv_at, drv_ok, buf + n, buflen - n), buflen);
     /*
      * The transmit scheduler's counters (spec 5.2 item 6, section 11): per class
      * queued/sent/aborted/requeued/dropped/refused and the two waits, plus the

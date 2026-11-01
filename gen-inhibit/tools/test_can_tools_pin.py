@@ -3,8 +3,10 @@ can-tools commit can_tools_pin.json pins, or it is refused. Not evidence.
 
     py -3.14 -B gen-inhibit/tools/test_can_tools_pin.py
 
-A stand-in can-tools clone is a real git repo made under
-scratch/can-tools-pin-test/ at this worktree's root, with three commits: one
+A stand-in can-tools clone is a real git repo made in this run's own folder,
+gi_paths.scratch("can-tools-pin-test") under the worktree's scratch/, removed
+when the run ends, pass or fail (AGENTS.md "Removing scratch"), with three
+commits: one
 with no canbench/, the pinned one, and a later one checked out as HEAD with
 an edit left in its working tree, so a canbench taken from the clone's HEAD
 or working tree instead of the pin shows. The pinned commit carries a
@@ -18,16 +20,14 @@ not. fixture() and pointed() are also used by test_vehicle_runner_root.py.
 import contextlib
 import json
 import os
-import shutil
-import stat
 import subprocess
 import sys
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SCRATCH = os.path.join(os.path.dirname(os.path.dirname(HERE)), "scratch",
-                       "can-tools-pin-test")
 sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, "bench"))
+import gi_paths  # noqa: E402
 import can_tools_pin as ctp  # noqa: E402
 
 PINNED_FILES = {
@@ -50,14 +50,23 @@ GIT = ["git", "-c", "core.autocrlf=false", "-c", "user.name=stand-in",
        "-c", "user.email=stand-in@example.invalid", "-c", "commit.gpgsign=false"]
 
 
+_RUN = {}
+
+
+def run_folder(name="can-tools-pin-test"):
+    """This run's own scratch folder for name, made at first use (so importing
+    the fixture makes none) and removed when the run ends, pass or fail."""
+    if name not in _RUN:
+        _RUN[name] = gi_paths.scratch(name)
+    return _RUN[name]
+
+
 def rmtree(path):
-    """shutil.rmtree that also removes read-only files (git's objects on
-    Windows)."""
-    def again(fn, p, _exc):
-        os.chmod(p, stat.S_IWRITE)
-        fn(p)
-    if os.path.exists(path):
-        shutil.rmtree(path, onexc=again)
+    """Remove path through gi_paths.remove_tree() (read-only files, git's
+    objects on Windows, cleared and retried); what it can't remove fails the
+    caller rather than leaving a folder in silence."""
+    if not gi_paths.remove_tree(path):
+        raise RuntimeError("could not remove %s (above)" % path)
 
 
 def write(base, files):
@@ -157,7 +166,7 @@ def files_under(d):
 class PinTool(unittest.TestCase):
 
     def setUp(self):
-        self.fx = fixture(os.path.join(SCRATCH, self.id().rsplit(".", 1)[-1]))
+        self.fx = fixture(os.path.join(run_folder(), self.id().rsplit(".", 1)[-1]))
 
     def refused(self, fn, *words, **kw):
         with self.assertRaises(ctp.CanToolsPinError) as cm:

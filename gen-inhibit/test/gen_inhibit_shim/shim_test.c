@@ -7,10 +7,10 @@
  * this file existing: the host suite's blind spot is not a gap in coverage, it
  * is a whole component.
  *
- * Determinism: virtual time, one runnable thread at a time. See fake_twai.c.
+ * Determinism: virtual time, one runnable thread at a time. See shim_harness.c.
  */
 #define _POSIX_C_SOURCE 200809L     /* alarm(), write(): the budget watchdog */
-#include "fake_twai.h"
+#include "shim_harness.h"
 #include "gen_inhibit.h"
 #include "gen_inhibit_core.h"
 
@@ -18,6 +18,7 @@
 #include "esp_log.h"
 
 #include "can.h"
+#include "twai_port.h"
 
 #include <signal.h>
 #include <stdio.h>
@@ -362,12 +363,29 @@ static void invariant_hook(void)
     }
 }
 
+/*
+ * PORT 0, ONCE PER PROGRAM (spec 3.3, port step 1b): app_main sets it up through
+ * gi_wican_register(), which the shim does not compile, before anything arms.
+ * twai_port's setup and can_port's registration are start-up calls, so every
+ * case shares the one port, as every case shared can.c's state before 1b.
+ */
+static void port_once(void)
+{
+    static bool done;
+    if (!done)
+    {
+        gen_inhibit_port_register();
+        done = true;
+    }
+}
+
 static void setup(void)
 {
     ft_reset();
     g_wv_reported = 0;
     ft_set_step_hook(invariant_hook);
     ml_clear();
+    port_once();
     gen_inhibit_init(CAN_500K, 0);  /* can.c's defaults, as the cases always ran */
     ft_start_worker();
     ft_run(1000);
@@ -1427,7 +1445,7 @@ static void case_probe_waits_for_its_offset(void)
 /*
  * CASE 16 -- the diag page on the wire says what the diag JSON says.
  *
- * WHY A SECOND REPORT IS NEEDED. The wire invariant in fake_twai.c checks the
+ * WHY A SECOND REPORT IS NEEDED. The wire invariant in shim_harness.c checks the
  * bytes the spec fixes -- B0, the torque pair, the probe's sentinel, the
  * schema version. It cannot check the bytes that carry measurements, because
  * every value they can hold is legal. A status page whose soc_x100 was
@@ -2134,7 +2152,7 @@ static const char *name_abort(int i)   { return gi_abort_name((gi_abort_t)i); }
 static const char *name_block(int i)   { return gi_block_name((gi_block_t)i); }
 static const char *name_selfoff(int i) { return gi_self_off_name((gi_self_off_t)i); }
 static const char *name_disable(int i) { return gi_disable_name((gi_disable_t)i); }
-static const char *name_drvstate(int i){ return drv_state_name((twai_state_t)i); }
+static const char *name_drvstate(int i){ return drv_state_name((can_port_state_t)i); }
 
 /*
  * How many bytes `"<key>":"<value>"` would grow by if the value were the
@@ -2353,7 +2371,7 @@ static void case_status_page_fits_the_handler_buffer(void)
  *
  *     queued + carried_in == sent + dropped + depth + held
  *
- * per class. An always-property, checked always, for the reason fake_twai.h's
+ * per class. An always-property, checked always, for the reason shim_harness.h's
  * step-hook comment gives: a window that opens and closes is invisible to a check
  * that only runs at the end, and this is precisely such a window -- a frame is in
  * the controller for a few hundred microseconds out of every cycle.
@@ -2478,7 +2496,7 @@ static void case_status_page_always_balances(void)
      * AND IT MUST BE REAL TRAFFIC, not bare turns on an idle bus. This case used to
      * be 400 x ft_run(1000) and nothing else. That covered 40 s of virtual time only
      * because every step rode the blocked receive's 200 ms deadline jump; when that
-     * jump was bounded to the turn's grant (g_turn_grant in fake_twai.c) the same
+     * jump was bounded to the turn's grant (g_turn_grant in shim_harness.c) the same
      * loop covered 0.81 s, and the number of readings with `held` set went from 395
      * to ZERO. The case still passed, and mutation H1 -- `held` always reported 0 on
      * the page -- went from caught to surviving. Nothing in the suite said so,
@@ -2498,8 +2516,8 @@ static void case_status_page_always_balances(void)
      * every reading above has depth 0.
      *
      * AND THE ABORT-AND-REQUEUE ROUTE DOES NOT EXIST IN THIS HARNESS, which cost two
-     * wrong attempts and is a fact about the mock worth stating. fake_twai's
-     * controller is a FIFO with an air time, NOT a single TX buffer: an inhibit is
+     * wrong attempts and is a fact about the mock worth stating. The driver fake's
+     * controller has a queue behind its TX buffer, as the driver has: an inhibit is
      * handed over and completes regardless of a telemetry frame already in flight.
      * Measured -- with a page held for 20 ms, the inhibit's max_queue_us stayed at
      * 1 us and `aborted` stayed 0. So telemetry cannot block an inhibit here and no
@@ -3181,7 +3199,7 @@ static bool replay_scn(const char *name, scn_result_t *out,
          * proportion sat at 7,011 of 29,977 against the bench's 8,976 of 8,983.
          *
          * A blocked receive now advances the clock no further than the turn the test
-         * granted it (see g_turn_grant in fake_twai.c), so emptying the queue is safe
+         * granted it (see g_turn_grant in shim_harness.c), so emptying the queue is safe
          * and the device is asked the same question the bench asks it.
          */
         while (ft_rx_pending() > 0)
@@ -3303,7 +3321,7 @@ static void pin_stimulus(const char *name, const scn_result_t *r)
  * to leave one frame pending on purpose -- the only way to stop the 200 ms clock jump
  * -- so rx_backlog >= 1 at most completions BY CONSTRUCTION and the proportion sat at
  * 7,011 of 29,977 against the bench's 8,976 of 8,983. Since a blocked receive stops at
- * the turn's grant (g_turn_grant in fake_twai.c) the drain empties the queue and the
+ * the turn's grant (g_turn_grant in shim_harness.c) the drain empties the queue and the
  * proportion is 29,977 of 29,977.
  *
  * READ THAT NUMBER WITH CARE: IT IS NOW CONSTRUCTED THE OPPOSITE WAY. The drain empties
@@ -3551,7 +3569,7 @@ static void case_mode_change_keeps_the_held_frame(void)
     keep_alive(400000, &ctr);
 
     /*
-     * ITEM 3, AND IT IS THE WHOLE CASE. fake_twai models the driver's real FIFO,
+     * ITEM 3, AND IT IS THE WHOLE CASE. The driver fake models the driver's real queue,
      * so a frame handed over while the controller still holds one is ACCEPTED and
      * queues behind it -- no refusal, no lost frame, no wire violation, and the
      * inhibit delayed by the page's air time. The first version of this case
@@ -3676,9 +3694,16 @@ static void case_backlog_reaches_the_scheduler(void)
      * the call ORDER, which I first had backwards. gen_inhibit.c:1234 runs
      * sched_advance(t_rx), and that tick credits the completion, BEFORE
      * gs_command_received at :1257; the comment at :1228 states it outright ("collect a
-     * completion before anything judges the frame"). fake_twai's controller moves only
-     * at turn boundaries, so by the time :1257 runs, `held` is already false and its
-     * completion branch is never entered at all.
+     * completion before anything judges the frame"). fake_twai's controller moved only
+     * at turn boundaries, so by the time :1257 ran, `held` was already false and its
+     * completion branch was never entered at all.
+     *
+     * SINCE PORT STEP 1b THE MODEL IS NOT THAT ONE. The shared driver fake brings its
+     * controller up to the clock's now at every driver call, and the firmware's own
+     * clock reads move the clock (1 us each, shim_harness.c), so a completion between
+     * the two status reads is no longer excluded by the model. Whether this phase now
+     * reaches gs_command_received's completion branch has not been measured on it; the
+     * trace above and the paragraphs below are from fake_twai.
      *
      * So there is no mystery and nothing "frees the frame in the gap" -- there is no
      * gap. An earlier version of this comment said the frame became free between the
@@ -3850,8 +3875,9 @@ static void case_rearm_does_not_trip_on_a_stale_baseline(void)
 
     /*
      * Arming from OFF reinstalls the driver, so its cumulative count restarts
-     * at 0. fake_twai does not model driver instances, so the test states the
-     * fact rather than simulating it.
+     * at 0, which the driver fake does at every install as the driver does.
+     * The 0 is the harness's target, so the install does not raise the count
+     * back to the 1 staged above (ft_set_bus_errors()).
      */
     ft_set_bus_errors(0);
 
@@ -3980,7 +4006,7 @@ static void case_errors_before_live_still_trip(void)
  * of xTaskCreate().
  *
  * What it does NOT show is the sleep being cut short -- see the note on the
- * counters in fake_twai.c. The case asserts the wake was sent and correctly
+ * counters in shim_harness.c. The case asserts the wake was sent and correctly
  * addressed, and then that the device still arms and goes live, so it cannot
  * pass on a device that merely does nothing.
  */
@@ -3993,6 +4019,7 @@ static void case_wake_has_a_target_before_the_worker_runs(void)
     ft_set_step_hook(invariant_hook);
     ml_clear();
 
+    port_once();
     gen_inhibit_init(CAN_500K, 0);
     /* Deliberately NOT ft_start_worker() yet: that is the boot ordering. */
 
@@ -5178,7 +5205,7 @@ static void case_off_controller_receives_nothing(void)
  * worker.
  *
  * WHAT IT CANNOT SHOW: a race. This harness never runs two threads at once (see
- * fake_twai.c), so the defect this fixes -- the worker preempting httpd part-way
+ * shim_harness.c), so the defect this fixes -- the worker preempting httpd part-way
  * through gs_rearm() -- cannot occur here before or after. What it shows is that
  * the changes are made by the worker, at the point the spec names, and that
  * every arm still balances across a stream of them. The race is the bench's.
@@ -5880,24 +5907,88 @@ static void case_build_page_carries_the_build_id(void)
     case_end();
 }
 
+/*
+ * CASE 60 -- A FAILED STEP OF THE BRING-UP REFUSES (spec 3.3, 8.1 rows 2 and 5;
+ * user, 2026-10-31). Port 0 reports an install failure rather than restarting,
+ * so whichever step fails -- the install, the start or the alerts -- the arm or
+ * the mode change is refused, the worker is idle, the bus is down and the driver
+ * uninstalled, and nothing reaches the wire. The next enable brings it up: an
+ * arm after the failure succeeds. Until 1b the install and the start restarted
+ * the device and only the alerts refused; case 13 is the alerts from idle.
+ */
+static void bringup_refused(const char *what)
+{
+    CHECK(json_has("\"worker\":\"idle\"") && json_has("\"mode\":0"),
+          "%s: the refused change did not leave the worker idle in mode 0: %s",
+          what, stats());
+    CHECK(!can_is_enabled(), "%s: the refused change left the bus up", what);
+    CHECK(!twai_port_is_installed(),
+          "%s: the refused change left the driver installed", what);
+}
+
+static void case_bringup_failure_refuses(void)
+{
+    case_begin("case 60: a failed install, start or alerts step refuses the "
+               "arm and leaves the bus down (spec 3.3)");
+    setup();
+    esp_err_t r;
+    const int wire_before = ft_wire_count_id(0x051);
+
+    /* Row 2, each step. */
+    ft_fail_install_next();
+    r = gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
+    ft_run(20000);
+    CHECK(r != ESP_OK, "row 2, install: the arm came back OK: %s", stats());
+    bringup_refused("row 2, install");
+
+    ft_fail_start_next();
+    r = gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
+    ft_run(20000);
+    CHECK(r != ESP_OK, "row 2, start: the arm came back OK: %s", stats());
+    bringup_refused("row 2, start");
+
+    ft_fail_alerts_config(true);
+    r = gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
+    ft_run(20000);
+    ft_fail_alerts_config(false);
+    CHECK(r != ESP_OK, "row 2, alerts: the arm came back OK: %s", stats());
+    bringup_refused("row 2, alerts");
+
+    /* The next enable brings it up. */
+    r = gen_inhibit_set_mode(GEN_INHIBIT_PASSIVE, 500);
+    CHECK(r == ESP_OK && json_has("\"worker\":\"armed\"") && can_is_enabled(),
+          "the arm after the refusals came back %s: %s", esp_err_to_name(r),
+          stats());
+
+    /* Row 5: the reinstall OBSERVE needs fails at its start. */
+    ft_fail_start_next();
+    r = gen_inhibit_set_mode(GEN_INHIBIT_OBSERVE, 500);
+    ft_run(20000);
+    CHECK(r != ESP_OK, "row 5, start: the re-arm came back OK: %s", stats());
+    bringup_refused("row 5, start");
+
+    feed_interlocks(12, 25);
+    CHECK(ft_wire_count_id(0x051) == wire_before,
+          "%d inhibit frame(s) reached the wire around the refused bring-ups",
+          ft_wire_count_id(0x051) - wire_before);
+
+    teardown();
+    case_end();
+}
+
 #if !SHIM_AUTOARM_BUILD
 int main(int argc, char **argv)
 {
     /*
-     * THE MOCK'S RECEIVE QUEUE MUST BE THE DEVICE'S. fake_twai's RXMAX was 10 against
-     * the firmware's 64 until 2026-10-03, with a comment claiming they matched, and
-     * the only thing that revealed it was replaying a real capture -- synthetic cases
-     * never queue enough to notice. Checked here rather than commented, because a
-     * comment is what was wrong.
+     * THE MOCK'S RECEIVE QUEUE IS THE DEVICE'S BY CONSTRUCTION since port step 1b:
+     * the fake sizes it from what twai_driver_install() is handed, port 0's setting
+     * (spec 3.3). Until then this checked fake_twai's own constant against the
+     * firmware's at startup, because its RXMAX was 10 against the firmware's 64
+     * until 2026-10-03 with a comment claiming they matched, and only a replayed
+     * capture revealed it. What the firmware installs is spec 5.1 item 1, and the
+     * cases check it through ft_installed_rx_queue_len().
      */
-    if (ft_rx_queue_depth() != (int)can_rx_queue_len())
-    {
-        printf("FAIL: the mock receive queue is %d deep and the firmware's is %d. "
-               "A shallower model drops frames the device would have buffered, which "
-               "makes every replay case measure the wrong thing.\n",
-               ft_rx_queue_depth(), (int)can_rx_queue_len());
-        return 1;
-    }
+    port_once();
     for (int i = 1; i < argc; i++)
     {
         if (strcmp(argv[i], "--pin-stimulus") == 0)
@@ -5966,6 +6057,7 @@ int main(int argc, char **argv)
     case_worker_mode_rows();
     case_leaving_armed_withdraws();
     case_build_page_carries_the_build_id();
+    case_bringup_failure_refuses();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
     return g_fail ? 1 : 0;
@@ -5990,6 +6082,7 @@ int main(void)
     ft_set_step_hook(invariant_hook);
     ml_clear();
     ft_autostart_worker(true);
+    port_once();
     gen_inhibit_init(CAN_250K, 1);
     ft_run(10000);
     CHECK(ft_install_count() == 1,

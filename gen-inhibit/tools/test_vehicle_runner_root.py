@@ -16,8 +16,9 @@ stands in for the pin. The other interfaces need no setting, and importing
 the file needs none either.
 
 The auto path runs in a child process against test_can_tools_pin.py's
-stand-in clone and planted worktree, under scratch/vehicle-runner-test/ at
-this worktree's root. The pinned commit's canbench.live.receiver detects
+stand-in clone and planted worktree, in this run's own folder,
+gi_paths.scratch("vehicle-runner-test") under the worktree's scratch/, removed
+when the run ends, pass or fail (AGENTS.md "Removing scratch"). The pinned commit's canbench.live.receiver detects
 nothing, so the "no CAN interface detected" exit shows canbench came from
 the pin. The child's environment is built here, so the result is the same
 with CAN_TOOLS_DIR set or unset in the shell. Needs python-can, which the
@@ -32,12 +33,10 @@ import sys
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SCRATCH = os.path.join(os.path.dirname(os.path.dirname(HERE)), "scratch",
-                       "vehicle-runner-test")
 sys.path.insert(0, HERE)
 import vehicle_runner as vr  # noqa: E402,F401
 import can_tools_pin as ctp  # noqa: E402
-from test_can_tools_pin import fixture, pointed, rmtree  # noqa: E402
+from test_can_tools_pin import fixture, pointed, rmtree, run_folder  # noqa: E402
 
 # Points can_tools_pin at the fixture, runs the optional %s preamble, then
 # calls Runner.open_and_identify on a stand-in self, as --interface auto does,
@@ -77,7 +76,8 @@ def norm(p):
 class Root(unittest.TestCase):
 
     def setUp(self):
-        self.d = os.path.join(SCRATCH, self.id().rsplit(".", 1)[-1])
+        self.d = os.path.join(run_folder("vehicle-runner-test"),
+                              self.id().rsplit(".", 1)[-1])
         rmtree(self.d)
         os.makedirs(self.d)
         self.fx = fixture(os.path.join(self.d, "fx"))

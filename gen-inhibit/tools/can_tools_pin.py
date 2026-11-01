@@ -51,7 +51,6 @@ import hashlib
 import importlib.util
 import json
 import os
-import shutil
 import subprocess
 import sys
 
@@ -226,6 +225,20 @@ def use(d=None):
     return mod
 
 
+def _gi_paths():
+    """The bench tools' gi_paths, for removing scratch (AGENTS.md "Removing
+    scratch", 2026-10-31): never shutil.rmtree's ignore_errors. Loaded by file,
+    and only by install(), because this module puts nothing on sys.path
+    (vehicle_runner.py imports it inside --interface auto's call, and its test
+    checks that call leaves sys.path as it was)."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench",
+                        "gi_paths.py")
+    spec = importlib.util.spec_from_file_location("_can_tools_pin_gi_paths", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def install(p=None, start=None, c=None):
     """Write the pinned commit's canbench/ if it is not there. Returns
     (folder, installed now)."""
@@ -242,7 +255,11 @@ def install(p=None, start=None, c=None):
     files = tree(c, p)
     tmp = "%s.partial-%d" % (d, os.getpid())
     os.makedirs(os.path.dirname(d), exist_ok=True)
-    shutil.rmtree(tmp, ignore_errors=True)
+    gi_paths = _gi_paths()
+    if not gi_paths.remove_tree(tmp):
+        raise CanToolsPinError("%s, a partial folder from an earlier run, could "
+                               "not be removed (above): remove it by hand and "
+                               "run install again" % tmp)
     try:
         for rel, sha in sorted(files.items()):
             rc, data, err = _git(c, ["cat-file", "blob", sha], text=False)
@@ -257,7 +274,7 @@ def install(p=None, start=None, c=None):
         verify(tmp, p, c)
         os.rename(tmp, d)
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        gi_paths.remove_tree(tmp)
     return d, True
 
 

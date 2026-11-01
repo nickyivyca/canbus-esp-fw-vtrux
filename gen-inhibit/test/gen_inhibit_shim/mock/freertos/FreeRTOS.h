@@ -30,7 +30,7 @@ typedef uint32_t TickType_t;
  * interrupt so that the status read and the abort command-register write are
  * indivisible -- the controller can otherwise enter arbitration between them and the
  * command lands where the measurement showed it has no effect. This harness cannot
- * reproduce that at all: fake_twai advances only when the test advances virtual time,
+ * reproduce that at all: the harness advances only when the test advances virtual time,
  * so nothing runs "between" two statements and there is no race to exclude.
  *
  * So these are empty rather than modelled, and a shim case must NOT be read as

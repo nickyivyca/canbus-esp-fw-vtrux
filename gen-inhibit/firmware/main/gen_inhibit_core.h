@@ -863,8 +863,8 @@ typedef struct
      *
      * The cost of that choice is that condition 9 is unexercised, not failed,
      * in a harness that leaves the field alone: it can only ever read
-     * "drained" there. fake_twai reports its own queue depth, so the shim
-     * exercises it for real.
+     * "drained" there. The shim's driver fake reports its own queue depth,
+     * so the shim exercises it for real.
      */
     uint32_t rx_waiting;
 } gi_bus_t;

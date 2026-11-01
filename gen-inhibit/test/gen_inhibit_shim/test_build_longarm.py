@@ -7,15 +7,17 @@ Each case runs build_longarm.main() against a scratch tree: a stand-in
 reverse-it root (canre/ and the capture), a stand-in from_capture.py that
 writes its --out file and logs each call, and a stand-in pins.json. The
 output and its stamp go to the scratch tree too, so the real scenarios/ is
-never touched. The scratch tree is scratch/build-longarm-test/ under the
-folder canre_pin.home() names: the git worktree, or the copy gi_host_run.sh
-syncs. No canre install and no capture needed.
+never touched. The scratch tree is scratch/build-longarm-test/<case>/ under
+the folder canre_pin.home() names: the git worktree, or the copy
+gi_host_run.sh syncs (no git there, so not gi_paths.scratch()). Each case's
+folder is removed when the case ends, pass or fail, through
+gi_paths.remove_tree() (AGENTS.md "Removing scratch"). No canre install and no
+capture needed.
 """
 import contextlib
 import io
 import json
 import os
-import shutil
 import sys
 import time
 import unittest
@@ -24,6 +26,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import build_longarm as bl  # noqa: E402
 import canre_pin  # noqa: E402  (build_longarm put tools/bench on the path)
+import gi_paths  # noqa: E402
 
 SCRATCH = os.path.join(canre_pin.home(HERE), "scratch", "build-longarm-test")
 ENTRY = {"repo": "https://example.invalid/canre", "version": "0.1.0",
@@ -41,10 +44,15 @@ CONVERTER = (
 
 class Rebuild(unittest.TestCase):
 
+    def remove(self):
+        self.assertTrue(gi_paths.remove_tree(self.d),
+                        "%s could not be removed (above)" % self.d)
+
     def setUp(self):
         self.d = os.path.join(SCRATCH, self.id().rsplit(".", 1)[-1])
-        if os.path.exists(self.d):
-            shutil.rmtree(self.d)
+        self.assertTrue(gi_paths.remove_tree(self.d),
+                        "an earlier run's %s is still there (above)" % self.d)
+        self.addCleanup(self.remove)
         root = os.path.join(self.d, "reverse-it")
         os.makedirs(os.path.join(root, "canre"))
         self.capture = os.path.join(root, bl.CAPTURE)

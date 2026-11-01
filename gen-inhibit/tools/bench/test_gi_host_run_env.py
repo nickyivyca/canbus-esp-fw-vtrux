@@ -23,6 +23,11 @@ REVERSE_IT_DIR they see:
      when that install fails, nothing after it runs.
   6. --canre, RROOT unset: exit 0, and its remote command runs that install and nothing
      else.
+  7. The shared components (port steps 1a and 1b, 2026-10-31): the sync's remote command
+     replaces ~/gi_host/shared/ before unpacking, and --shim gives the shim's make
+     WICANDIR=$HOME/gi_host/shared/wican (the pinned vtrux/wican, with can_port and
+     twai_port beside it). LOCAL_PY's fake answers wican_ref.py with a fake checkout of
+     this run holding the three folders.
 
 The sync is the real one, from this project folder, into the fake ssh; the export goes
 to the worktree's scratch/gi-host-export, which every gi_host_run.sh run replaces.
@@ -70,8 +75,13 @@ def setup(base):
     # ssh: keep the last argument (the remote command) of each call in calls/<n>, drop stdin
     script(os.path.join(b, "ssh"), 'd="$FAKE_CALLS"; n=$(ls "$d" | wc -l); printf %s "${@: -1}" > "$d/$n"; '
                                    'cat > /dev/null; exit 0\n')
-    script(os.path.join(b, "fakepy"), 'mkdir -p "${@: -1}"\n')                 # LOCAL_PY: gi_diag export
-    script(os.path.join(b, "make"), 'echo make >> "$FAKE_LOG"\n')
+    # LOCAL_PY: wican_ref.py answers the fake shared checkout; anything else is the gi_diag export
+    script(os.path.join(b, "fakepy"), 'case "${@: -1}" in wican_ref.py) printf "%s\\n" "$FAKE_WICAN" ;; '
+                                      '*) mkdir -p "${@: -1}" ;; esac\n')
+    script(os.path.join(b, "make"), 'echo "make $*" >> "$FAKE_LOG"\n')
+    for comp in ("wican", "can_port", "twai_port"):
+        os.makedirs(os.path.join(base, "sharedco", "shared", comp))
+        open(os.path.join(base, "sharedco", "shared", comp, "README.md"), "w").close()
     # $PY: write down REVERSE_IT_DIR and its first argument, log its command line, and
     # fail when FAKE_PY_FAIL is set
     script(os.path.join(b, "sigpy"), 'printf "%s|%s" "${REVERSE_IT_DIR-UNSET}" "$1" > "$FAKE_SEEN"\n'
@@ -87,7 +97,8 @@ def setup(base):
 def env_for(base, bindir, extra):
     e = {k: v for k, v in os.environ.items() if k not in ("REVERSE_IT_DIR", "RROOT", "FW", "REMOTE", "DEST", "PY")}
     e.update(PATH=fwd(bindir) + os.pathsep + os.environ.get("PATH", ""), MSYS_NO_PATHCONV="1",
-             LOCAL_PY="fakepy", PY="sigpy", FW=fwd(gi_paths.project_root()))
+             LOCAL_PY="fakepy", PY="sigpy", FW=fwd(gi_paths.project_root()),
+             FAKE_WICAN=fwd(os.path.join(base, "sharedco", "shared", "wican")))
     e.update(extra)
     return e
 
@@ -155,7 +166,12 @@ def checks():
         _, rhome = remote(base, bindir, home, cmds[-1] if cmds else "", log=log)
         install = "py -B %s/gi_host/tools/bench/canre_pin.py install" % rhome
         check("5 --shim: the pinned canre is installed and checked before make, then the shim runs",
-              rc == 0 and log[:1] == [install] and log[1:] == ["make", "make", "shim_test"], (rc, log))
+              rc == 0 and log[:1] == [install] and [l.split()[0] for l in log[1:]] == ["make", "make", "shim_test"],
+              (rc, log))
+        check("7 --shim: make is given WICANDIR, the synced pinned vtrux/wican",
+              log[1:3] == ["make -s clean", "make -s WICANDIR=%s/gi_host/shared/wican" % rhome], log)
+        check("7 the sync replaces ~/gi_host/shared/ before unpacking",
+              bool(cmds) and "rm -rf ~/gi_host/diag_schemas ~/gi_host/shared && tar xzf" in cmds[0], cmds[:1])
         remote(base, bindir, home, cmds[-1] if cmds else "", py_fails=True, log=log)
         check("5 --shim: when the canre install fails, nothing after it runs", log == [install], log)
         rc, err, cmds = run_mode(base, bindir, "--canre", None)
@@ -183,6 +199,8 @@ MUTANTS = [
     ("--shim builds even when the canre install fails", "canre_pin.py install && cd ~/$DEST/test/gen_inhibit_shim",
      "canre_pin.py install; cd ~/$DEST/test/gen_inhibit_shim"),
     ("--canre not a mode", "  --canre)         mode=canre;     shift ;;\n", ""),
+    ("--shim make without WICANDIR", "make -s WICANDIR=\\$HOME/$DEST/shared/wican && ./shim_test", "make -s && ./shim_test"),
+    ("the last shared export not replaced", "rm -rf ~/$DEST/diag_schemas ~/$DEST/shared && tar", "rm -rf ~/$DEST/diag_schemas && tar"),
     ("--canre checks instead of installing", '    ssh "$REMOTE" "$PY -B ~/$DEST/tools/bench/canre_pin.py install"\n',
      '    ssh "$REMOTE" "$PY -B ~/$DEST/tools/bench/canre_pin.py check"\n'),
 ]

@@ -11,6 +11,9 @@
 typedef void *TaskHandle_t;
 typedef void (*TaskFunction_t)(void *);
 void vTaskDelay(TickType_t ticks);
+/* fake_port.c: twai_port's receive reads it only to shorten a wait after a
+ * dropped remote frame, which port 0 does not drop. */
+TickType_t xTaskGetTickCount(void);
 /*
  * Task notifications, for spec 3's wake on a mode change. Declared with int
  * where the real API uses BaseType_t, which this mock does not define.

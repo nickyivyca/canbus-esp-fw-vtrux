@@ -705,10 +705,11 @@ section changes in the same merge.
   file on Windows. With `ignore_errors=True` it fails without a word, and
   the folder stays (2026-10-31: 1,085 run folders and 472K files left on
   NICKY-XPS, which stalled Windows Search). So a test that writes under
-  `scratch/` removes its own folder in a `finally`, pass or fail, with an
-  error handler that clears the read-only flag and retries, and on Windows
-  with long-path-safe paths (`\\?\`). Never `ignore_errors=True`: a folder
-  it can't remove is printed with the reason.
+  `scratch/` removes its own folder when it ends, pass or fail, in a
+  `finally` or an exit handler, with an error handler that clears the
+  read-only flag and retries, and on Windows with long-path-safe paths
+  (`\\?\`). Never `ignore_errors=True`: a folder it can't remove is printed
+  with the reason.
 - **Explorations that use reverse-it's data** (digging through CAN logs,
   captures, notes) put their scratchpads and results in reverse-it's
   `artifacts/` folders, under its rules (see "Reverse-it").

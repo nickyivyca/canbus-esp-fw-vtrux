@@ -32,7 +32,8 @@ was measured at 6–21 us, written down, and then thrown away with a `(void)` ca
 so an abort freed the buffer inside the same tick that issued it. The scheduler's
 `!aborting` guard — which stops an aborted frame being credited as sent — then had
 no reachable failure, and `mutate.py` showed the guard could be deleted with the
-whole suite still green. This is the trap `fake_twai.h` opens with: a model that
+whole suite still green. This is the trap the shim's `shim_harness.h` (`fake_twai.h`
+until port step 1b) opens with: a model that
 errs in the same direction as the defect proves nothing.
 
 **The mutation harness had the same defect it was built to find.** Its first run

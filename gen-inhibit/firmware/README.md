@@ -24,12 +24,14 @@ component's own list, its `pins.json`.
 
 **The stock WiCAN code is a dependency too** (shared/wican SPEC W1, spec
 3.3, port step 1a): `vtrux/wican`, with `vtrux/debug_logs`, from git at the
-`shared/main` tag `main/idf_component.yml` names, beside the board. `main/`
-holds only gen-inhibit's own code: `app_main` in `main.c` (the hooks, then
-`wican_init()`, `gen_inhibit_init()`, `wican_start()`), the CAN functions the
-stock code calls (`can.c`, W3), the inhibitor, and its hooks into the stock
-code (`gi_wican.c`: the bus-owner callbacks, the two endpoints, the probe and
-restart-test registrations). The stock code's switches are set off in the
+`shared/main` tag `main/idf_component.yml` names, beside the board. So is the
+CAN port since port step 1b: the stock code's CAN calls are `vtrux/can_port`'s
+on port 0 (W3), backed by `vtrux/twai_port`, at the same tag; `can.c`
+retired. `main/` holds only gen-inhibit's own code: `app_main` in `main.c`
+(the hooks, then `wican_init()`, `gen_inhibit_init()`, `wican_start()`), the
+inhibitor, with port 0's setup in `gen_inhibit.c` (spec 3.3), and its hooks
+into the stock code (`gi_wican.c`: port 0's registration, the bus-owner
+callbacks, the two endpoints, the probe and restart-test registrations). The stock code's switches are set off in the
 top-level `CMakeLists.txt`: `WICAN_SLCAN_COMMANDS` and the four feature
 switches (spec 3.2). The rollback rehearsal's fault hook,
 `OTA_HEALTH_FAULT_INJECT`, is the stock component's switch too (W7), given on
@@ -69,8 +71,9 @@ Not from upstream:
 - `shared_pins.json`: the project's pins of shared tooling, read by the
   release launcher `../vtrux_tools.py` and the pinned tooling.
 - `vtrux_build.json`: the project's build data for the release tooling
-  (`project`, `shared_components`: the board, `vtrux/wican_v3`, and the
-  stock code, `vtrux/wican` and `vtrux/debug_logs`).
+  (`project`, `shared_components`: the board, `vtrux/wican_v3`; the
+  stock code, `vtrux/wican` and `vtrux/debug_logs`; and the CAN port,
+  `vtrux/can_port` and `vtrux/twai_port`, since port step 1b).
 - `vtrux_checks.json`: the project's data for the shared build checks, the
   tester's.
 - `sdkconfig.log_info`: info-level logging, layered over `sdkconfig` for

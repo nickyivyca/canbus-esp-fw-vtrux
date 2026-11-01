@@ -77,18 +77,27 @@ firmware/main/ and test/:
 
 import subprocess, shutil, sys, os, re
 BASE = os.path.expanduser(os.environ.get("BASE", "~/gi_review"))
+# THE MUTANTS' COPIES are in this run's own folder in the worktree's scratch/,
+# removed when the run ends, pass or fail (AGENTS.md "Removing scratch",
+# 2026-10-31; gi_paths.scratch()), and each mutant's copy is removed before the
+# next is made. They were in ~/gi_mut, outside the worktree, and cleared with
+# shutil.rmtree's ignore_errors, which leaves what it cannot remove in silence.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "..", "tools", "bench"))
+import gi_paths
 # The four lines dispatch_emits() uses to copy a core frame into a driver
 # frame. The round-6 mutations mostly APPEND to it rather than replace it, so
 # it is named once here instead of being retyped in each entry and drifting
 # from the firmware -- a mutation whose anchor no longer matches does not fail,
 # it silently does nothing, and a control that silently does nothing is the
 # failure this whole file exists to prevent.
-COPY = """        twai_message_t tx = { 0 };
-        tx.identifier = f->id;
-        tx.data_length_code = f->dlc;
-        memcpy(tx.data, f->data, 8);"""
+COPY = """    twai_message_t tx = { 0 };
+    (void)ctx;
+    tx.identifier = f->id;
+    tx.data_length_code = f->dlc;
+    memcpy(tx.data, f->data, 8);"""
 
-PREFIX = "\n        "
+PREFIX = "\n    "
 
 MUT = {
  "M1_632af32_alert_completion": ("firmware/main/gen_inhibit.c", [(
@@ -146,8 +155,8 @@ MUT = {
   "        const bool want_listen_only = (mode == GEN_INHIBIT_OBSERVE);",
   "        const bool want_listen_only = false;")]),
  "N5_quiesce_does_not_wait": ("firmware/main/gen_inhibit.c", [(
-  "    for (int i = 0; i < 100 && !s_parked; i++)",
-  "    for (int i = 0; i < 0 && !s_parked; i++)")]),
+  "        if (served)",
+  "        if (1)")]),
  "N6_offset_limit_relaxed": ("firmware/main/gen_inhibit.c", [(
   "    if (offset_us > 4000)", "    if (offset_us > 40000)")]),
  "N7_no_tx_late": ("firmware/main/gen_inhibit_core.c", [(
@@ -181,7 +190,7 @@ MUT = {
  # deliver our own frame back to us; the worker cannot tell it from the VCM's
  # and answers it, which is received, and answered.
  #
- # They are killed by the wire invariant in fake_twai.c, which checks every
+ # They are killed by the wire invariant in shim_harness.c, which checks every
  # frame handed to twai_transmit(), and -- for V05 -- by the reactive-ratio
  # check in shim_test.c's teardown, which catches the loop by its behaviour
  # rather than by the flag that caused it.
@@ -190,12 +199,12 @@ MUT = {
   COPY, COPY + PREFIX + "tx.rtr = 1;")]),
 
  "V02_dlc_8_not_6": ("firmware/main/gen_inhibit.c", [(
-  "        tx.data_length_code = f->dlc;",
-  "        tx.data_length_code = 8;")]),
+  "    tx.data_length_code = f->dlc;",
+  "    tx.data_length_code = 8;")]),
 
  "V03_memcpy_6_of_8": ("firmware/main/gen_inhibit.c", [(
-  "        memcpy(tx.data, f->data, 8);",
-  "        memcpy(tx.data, f->data, 6);")]),
+  "    memcpy(tx.data, f->data, 8);",
+  "    memcpy(tx.data, f->data, 6);")]),
 
  "V04_extd_set": ("firmware/main/gen_inhibit.c", [(
   COPY, COPY + PREFIX + "tx.extd = 1;")]),
@@ -306,16 +315,25 @@ if _b.returncode:
             print("   ", _l.strip()[:140])
     sys.exit(2)
 print("baseline green")
+RUN = gi_paths.scratch("gen-inhibit-shim-mutants")
 
+# A STALE ANCHOR IS A FAILURE OF THIS FILE, not a skip: a mutation whose
+# pattern no longer matches runs nothing, and until 2026-10-31 thirteen of the
+# thirty-two had gone that way without the run failing. They are listed at the
+# end and the run exits 3.
+stale = []
 for name, (f, reps) in MUT.items():
-    d = os.path.expanduser("~/gi_mut")
-    shutil.rmtree(d, ignore_errors=True); shutil.copytree(BASE, d)
+    d = os.path.join(RUN, "gi")
+    if not gi_paths.remove_tree(d): sys.exit("the last mutant's copy is still there (above)")
+    shutil.copytree(BASE, d)
     p = os.path.join(d, f); s = open(p).read()
     ok = True
     for a, b in reps:
         if s.count(a) != 1: ok = False; print(name, "PATTERN NOT FOUND", s.count(a)); break
         s = s.replace(a, b)
-    if not ok: continue
+    if not ok:
+        stale.append(name)
+        continue
     open(p, "w").write(s)
     t = os.path.join(d, "test/gen_inhibit_shim")
     b = subprocess.run("make -s", shell=True, cwd=t, capture_output=True, text=True)
@@ -346,3 +364,7 @@ for name, (f, reps) in MUT.items():
     fails = [l.strip() for l in out.splitlines() if l.strip().startswith("FAIL:")][:3]
     verdict = ("CAUGHT" if rc else "*** SURVIVED ***")
     print("%-32s rc=%d  %-16s %s" % (name, rc, verdict, " | ".join(fails)))
+
+if stale:
+    print("STALE ANCHORS (%d, nothing run for them): %s" % (len(stale), ", ".join(stale)))
+    sys.exit(3)
