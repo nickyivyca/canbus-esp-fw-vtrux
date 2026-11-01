@@ -18,6 +18,7 @@ fakes disagreed with each other or with the source, the source decides.
     make -C shared/twai_port/test mutants    # every mutant of the fake must fail its tests
     make -C shared/twai_port/test mutate-test  # mutate.py removes its scratch folder, pass or fail
     make -C shared/twai_port/test cxx        # the fake and cpp/ compiled as C++11
+    make -C shared/twai_port/test cxx-test   # cpp/'s own tests
 
 The binaries go to `scratch/twai_port-test/` and the mutants to
 `scratch/twai_fake-mutants/<time>_<pid>/`, at the worktree's root. `mutate.py`
@@ -35,6 +36,7 @@ builds run under ASan and UBSan.
 | `include/driver/twai.h`, `include/hal/twai_ll.h` | the driver's headers for host builds, from ESP-IDF v5.4.1's own (`driver/twai.h`, `hal/twai_types.h`, the C3's `hal/twai_ll.h`): the real types, field order, alert values and initialisers. The `_v2` calls are left out, so a call the fake does not implement fails to link |
 | `host/` | minimal stand-ins for `esp_err.h`, `freertos/FreeRTOS.h`, `freertos/task.h`, `driver/gpio.h`, `esp_attr.h`, `esp_log.h` and `board.h`, for a build with none of its own. A project's own come first on its include path |
 | `cpp/twai_fake.h`, `cpp/twai_fake.cpp` | the interposer's C++ interface to the fake: `namespace twaifake`, `TwaiFake`, `fake()`, as its host_bridge tests call them, each member a call into the model. Its clock adapter is the interposer's `hostclock::micros()` |
+| `cpp/test_cpp_wrapper.cpp` | the interface's own tests, for the members that do more than pass their arguments on (`setBusOffAfterSent`); `cpp/README.md` |
 | `test_twai_fake.c` | the fake's own tests: 22 cases, each a driver behaviour from the source |
 | `mutate.py` | 27 mutants of `twai_fake.c`, one behaviour each; the run passes only if the unmutated build passes and every mutant fails |
 | `test_mutate.py` | `mutate.py`'s removal of its scratch folder, with the builds stood in for (no compiler): removed after a pass, a fail and an exception, read-only files and paths past 260 characters included; a folder it cannot remove printed with the reason; an existing `--out` refused and left as it was; with no `--out`, a new `<time>_<pid>` folder, which a killed run's folder does not stop. `--mutants` breaks these twelve ways, each of which it must fail by a check (three only fail on Windows) |

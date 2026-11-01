@@ -51,15 +51,24 @@ class TwaiFake {
   static uint32_t frameUs(const Frame& f) {
     return (uint32_t)twai_fake_frame_us(f.len, f.ext, f.rtr, 2000);
   }
-  // Frames a stop, a start or an uninstall threw away (the head cut on the
-  // wire apart), as the interposer's fake counted them.
+  // Frames a stop or an uninstall threw away (the head cut on the wire
+  // apart), as the interposer's fake counted them. A start's discards are
+  // added too, but there are never any: nothing can be queued while the
+  // controller is stopped (a transmit is refused unless it is running, and a
+  // recovery empties the queue), so a start finds the queue empty.
   uint32_t txDiscardedByStop() const {
     return twai_fake_tx_discarded_by_stop() + twai_fake_tx_discarded_by_start() +
            twai_fake_tx_discarded_by_uninstall();
   }
   uint32_t txCutByStop() const { return twai_fake_tx_cut_by_stop(); }
   uint32_t txDiscardedByRecovery() const { return twai_fake_tx_discarded_by_recovery(); }
-  void setBusOffAfterSent(int n) { twai_fake_bus_off_after_sent(n == 0 ? 1 : n); }
+  // Bus-off the moment the n-th frame from now has completed; 0 at once (as
+  // the interposer's fake, 0 frames sent >= 0); n < 0 off. Any count
+  // already set is replaced.
+  void setBusOffAfterSent(int n) {
+    twai_fake_bus_off_after_sent(n);
+    if (n == 0) twai_fake_bus_off();
+  }
   void setAutoRecovery(bool yes) { twai_fake_set_auto_recovery(yes); }
   void setBusOffInFlightFails(bool yes) { twai_fake_set_busoff_inflight_fails(yes); }
   uint32_t txFailedInFlightAtBusOff() const { return twai_fake_tx_failed_at_busoff(); }
