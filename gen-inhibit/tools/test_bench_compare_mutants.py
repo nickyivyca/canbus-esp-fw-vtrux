@@ -85,6 +85,23 @@ MUTANTS = [
      'void = [d for d, r in zip(a.runs[:1], recs) if r is None]'),
     ("chain: the re-run repeats the whole selection", 'rc2, second, _ = core_run(a.settings, (), again)',
      'rc2, second, _ = core_run(a.settings, a.group, a.check)'),
+    # the first run's selection (2026-11-01: B2 selected without man_app/B2app)
+    ("chain: the first run is the selection as given", 'rc, first, _ = core_run(a.settings, groups, checks)',
+     'rc, first, _ = core_run(a.settings, a.group, a.check)'),
+    ("first run: what a check reads is not added", 'need = with_reads(picked, reads_map)', 'need = list(picked)'),
+    ("first run: only direct reads are added", 'need = with_reads(picked, reads_map)',
+     'need = picked + [d for p in picked for d in reads_map.get(p, [])]'),
+    ("first run: the --group is kept beside the added checks",
+     'return [], [i for i in all_ids if i in need], added', 'return list(groups), [i for i in all_ids if i in need], added'),
+    ("first run: the checks are in the order found, not the suite's",
+     'return [], [i for i in all_ids if i in need], added', 'return [], need, added'),
+    ("first run: --check globs are matched exactly", 'any(fnmatch.fnmatchcase(i, p) for p in checks)',
+     'any(i == p for p in checks)'),
+    ("first run: --group is not AND-ed", '(not groups or i.split("/", 1)[0] in groups)', 'True'),
+    ("first run: a selection needing nothing is rewritten", '    if not added:\n        return list(groups), list(checks), []',
+     '    if False:\n        return list(groups), list(checks), []'),
+    ("chain: the added checks are not said", '    if added:\n        print("chain: the selection',
+     '    if False:\n        print("chain: the selection'),
 ]
 
 

@@ -19,8 +19,9 @@ from a repeatable one; the reviewer reviews every flagged difference either way.
     py -3.14 -B bench_compare.py chain  --settings <json> [--group G]... [--check C]...
     py -3.14 -B bench_compare.py report --settings <json> <first run dir> [<re-run dir>...]
 
-chain runs the bench suite (vtrux_bench.run run), compares, runs the flagged checks
-again in one more core run (with the checks their desk steps read), and writes
+chain runs the bench suite (vtrux_bench.run run), adding to a --group / --check
+selection any check its desk steps read (it says which), compares, runs the flagged
+checks again in one more core run (with the checks their desk steps read), and writes
 compare_index.txt and compare_index.json into the first run's folder. A run with no
 record.json (killed, or still running) is void and is never compared (user,
 2026-10-20): report prints VOID and exits 2; chain says the run did not finish and
@@ -29,6 +30,7 @@ is held throughout; nothing here takes or releases it. The index is settings.gi_
 Gen-inhibit tester, 2026-10-19.
 """
 import argparse
+import fnmatch
 import json
 import os
 import re
@@ -154,10 +156,9 @@ def compare(index, first, reruns=(), ids_of=None):
     return out
 
 
-def rerun_checks(entries, reads_map):
-    """The checks to run again: each flagged-for-re-run entry's check, and every check
-    its desk steps read, transitively."""
-    todo = sorted({e["check"] for e in entries if e["rerun"] and e["check"]})
+def with_reads(checks, reads_map):
+    """The checks, and every check their desk steps read, transitively."""
+    todo = list(checks)
     seen = []
     while todo:
         f = todo.pop(0)
@@ -165,7 +166,32 @@ def rerun_checks(entries, reads_map):
             continue
         seen.append(f)
         todo += [d for d in reads_map.get(f, []) if d not in seen]
-    return sorted(seen)
+    return seen
+
+
+def rerun_checks(entries, reads_map):
+    """The checks to run again: each flagged-for-re-run entry's check, and every check
+    its desk steps read, transitively."""
+    return sorted(with_reads(sorted({e["check"] for e in entries if e["rerun"] and e["check"]}), reads_map))
+
+
+def first_selection(groups, checks, all_ids, reads_map):
+    """(groups, checks, added) for the first core run. The --group / --check selection as
+    the core makes it (a check must be in a selected group, if any, and match a --check
+    glob, if any), and if a selected check's desk steps read a check outside it, the
+    selection as an explicit --check list of every selected check and what it reads,
+    transitively, in suite order: a desk check run without its inputs has nothing to read
+    (2026-11-01, run 092639_858a: man_held/B2 selected without man_app/B2app gave "B2: no
+    input files"). Otherwise, or if the selection matches nothing (the core refuses it),
+    the arguments unchanged. added: the checks pulled in."""
+    picked = [i for i in all_ids
+              if (not groups or i.split("/", 1)[0] in groups)
+              and (not checks or any(fnmatch.fnmatchcase(i, p) for p in checks))]
+    need = with_reads(picked, reads_map)
+    added = [i for i in all_ids if i in need and i not in picked]
+    if not added:
+        return list(groups), list(checks), []
+    return [], [i for i in all_ids if i in need], added
 
 
 def _fmt(v):
@@ -270,7 +296,11 @@ def main(argv=None):
         sys.stdout.write(report_text(compare(index, recs[0], recs[1:], ids_of),
                                      [os.path.basename(os.path.normpath(d)) for d in a.runs]))
         return 0
-    rc, first, _ = core_run(a.settings, a.group, a.check)
+    groups, checks, added = first_selection(a.group, a.check, list(ids_of), reads_map)
+    if added:
+        print("chain: the selection's desk steps read %s: added, so the first run is --check %s"
+              % (", ".join(added), " ".join(checks)))
+    rc, first, _ = core_run(a.settings, groups, checks)
     rec1 = run_record(first) if first else None
     if rec1 is None:
         print("chain: the core run did not finish (rc %s, %s): no record.json, so it is void; nothing "

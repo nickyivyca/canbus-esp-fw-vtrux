@@ -234,6 +234,15 @@ def test_suites(settings, shas):
     check("reads: a check with no desk inputs reads nothing", rd.get("man_app/B1") == [], rd.get("man_app/B1"))
     check("reads: the eight desk checks, and only they, read folders", len([f for f, v in rd.items() if v]) == 8,
           sorted(f for f, v in rd.items() if v))
+    # bench_compare chain's first run on this suite: run 092639_858a's selection (2026-11-01)
+    # without man_app/B2app gave "B2: no input files"
+    import bench_compare as BC
+    sel = ["man_app/B16", "man_held/B2held", "man_held/B2", "man_held/B9", "man_held/NONODE", "man_slcan/B22"]
+    g1, c1, add1 = BC.first_selection([], sel, ["%s/%s" % (g.name, c.id) for g in bench.groups for c in g.checks], rd)
+    check("chain: 858a's --check selection on this suite gets man_app/B2app added, and only that",
+          add1 == ["man_app/B2app"] and g1 == [] and c1 == ["man_app/B2app", "man_app/B16", "man_held/B2held",
+                                                            "man_held/B2", "man_held/B9", "man_held/NONODE",
+                                                            "man_slcan/B22"], (g1, c1, add1))
 
     # desk inputs: every {run_dir}/<group>/<check> names a check that runs before it
     order = []
