@@ -48,6 +48,23 @@ verification").
   behaviour"), and today `main/CMakeLists.txt` adds the wrap. Moving it into
   the component keeps the step in every build that has the component, with
   nothing for the project to remember.
+- **Known limits** (charge-interposer reviewer's read, 2026-11-01; user,
+  2026-11-01):
+  - G2 holds only where the panic action restarts. With the panic action
+    set to halt or to the GDB stub, a crash never reaches
+    `esp_restart_noos()`: the guard never runs, and the controller stays
+    on the bus.
+  - On a crash the guard does not run first. The panic handler first
+    prints its output and, if the project enables them, writes a core dump
+    or runs other panic-time features. The controller is unguarded for
+    that time. From reading the code, not measured: the controller's clock
+    has not dropped yet at that point (the drop is inside
+    `esp_restart_noos()`, after the guard), so it runs at its normal timing
+    with interrupts off: it keeps acknowledging frames and can still send
+    or retry the frame in its buffer. Each project weighs its panic action,
+    panic output and core-dump choice against this in its own settings.
+  - gen-inhibit's settings today: print and restart, no restart delay, no
+    core dump (`sdkconfig`).
 - **Status:** complete.
 
 ### G3. The steps
