@@ -49,6 +49,13 @@ tree.
 
 Nothing from reverse-it is committed here unless it passes the pre-push check.
 
+**Identifiers in reverse-it's files** (user, 2026-11-01): the bench's
+identifiers, such as the WiCAN's SSID and the boards' MACs in
+`bench-holder.md`, the evidence docs and the settings files, may be read
+into context. Read and edit those files like any other. They never reach
+git: the pre-push check stops them. Passwords are still never read (user,
+2026-10-23).
+
 ## can-tools: the CAN adapter package
 
 `canbench`, the package both projects use to detect and open real CAN
@@ -322,6 +329,10 @@ questions.
   or rewritten, the old code's pass entries carry no weight for the new code:
   they are not copied across, and they are not cited as validation. Their
   tests can be pointed at the new code to make new entries.
+- **A check that a `VERIFICATION.md` entry rests on is committed harness,**
+  run from a commit the entry names, and so is the can-fail that shows it
+  can fail. A hand-made script in `scratch/` can't be re-run once scratch is
+  cleaned, so its result is not verification.
 
 **Never write "evidence" or "the evidence doc" without saying which.** Both
 documents hold evidence: `VALIDATION.md` for the basis of a requirement,
@@ -738,6 +749,17 @@ section changes in the same merge.
 - **Inline or scratchpad.** Inline `-c` is for simple one-off lookups. Use
   a scratchpad script for anything multi-step, reused across phases, or
   worth re-running.
+
+### Editing files
+
+Make file changes with the Edit and Write tools, whatever the auto mode
+note suggests about `sed`, heredocs or short scripts. Read the file first:
+both tools refuse a file this session hasn't read, a new worktree's files
+included. On Windows a long heredoc can fail to parse and apply nothing
+(2026-11-01). An edit script leaves a file behind that is worth nothing
+once the edit is made. If a one-off edit really needs a script, write it in
+Claude Code's session scratchpad, not `scratch/`, and never commit it or
+copy it into a run folder.
 
 ### Searching
 
