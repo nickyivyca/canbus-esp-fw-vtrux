@@ -72,7 +72,8 @@ INDEX = {"checks": [
 ]}
 IDS_OF = {"g/X1": ["X1"], "g/X2": ["X2"], "h/X3": ["X3"], "g/X4X5": ["X4", "X5"], "g/X6": [], "g/D": ["D"],
           "g/arms": [], "g/pre": []}
-READS = {"g/D": ["g/arms"], "g/arms": ["g/pre"]}
+READS = {"g/D": ["g/arms"], "g/arms": ["g/pre"], "h/X3": ["g/X1"]}
+ALL = list(IDS_OF)
 
 
 def res(rid, verdict="PASS", **figs):
@@ -189,6 +190,30 @@ def tests():
     check("a desk check re-runs with what it reads, transitively",
           BC.rerun_checks(E, READS) == ["g/D", "g/arms", "g/pre"], BC.rerun_checks(E, READS))
 
+    # the first run's selection (2026-11-01: B2 selected without its input man_app/B2app)
+    def sel(groups=(), checks=()):
+        return BC.first_selection(list(groups), list(checks), ALL, READS)
+    check("first run: no selection is the whole suite, unchanged", sel() == ([], [], []), sel())
+    check("first run: a desk check selected alone gets what it reads, transitively, as a --check list",
+          sel(checks=["g/D"]) == ([], ["g/D", "g/arms", "g/pre"], ["g/arms", "g/pre"]), sel(checks=["g/D"]))
+    check("first run: a check that reads nothing is passed unchanged",
+          sel(checks=["g/X1"]) == ([], ["g/X1"], []), sel(checks=["g/X1"]))
+    check("first run: a selection holding its inputs already is passed unchanged",
+          sel(checks=["g/pre", "g/D", "g/arms"]) == ([], ["g/pre", "g/D", "g/arms"], []),
+          sel(checks=["g/pre", "g/D", "g/arms"]))
+    check("first run: a --group whose check reads another group's: the --group becomes a --check list, in suite order",
+          sel(groups=["h"]) == ([], ["g/X1", "h/X3"], ["g/X1"]), sel(groups=["h"]))
+    check("first run: --check globs are matched as the core matches them",
+          sel(checks=["g/D*"]) == ([], ["g/D", "g/arms", "g/pre"], ["g/arms", "g/pre"]), sel(checks=["g/D*"]))
+    check("first run: --group and --check are AND-ed as in the core (nothing selected: unchanged)",
+          sel(groups=["g"], checks=["h/X3"]) == (["g"], ["h/X3"], []), sel(groups=["g"], checks=["h/X3"]))
+    check("first run: --group and --check AND-ed, with a cross-group read",
+          sel(groups=["h"], checks=["*/X3"]) == ([], ["g/X1", "h/X3"], ["g/X1"]), sel(groups=["h"], checks=["*/X3"]))
+    check("first run: a selection matching nothing is passed unchanged, for the core to refuse",
+          sel(checks=["zz/q"]) == ([], ["zz/q"], []), sel(checks=["zz/q"]))
+    check("first run: a whole group whose reads stay inside it is passed unchanged",
+          sel(groups=["g"]) == (["g"], [], []), sel(groups=["g"]))
+
     first = record(X1=res("g/X1/X1", t_min=9, t_max=20, n=5))
     again = record(X1=res("g/X1/X1", t_min=11, t_max=20, n=5), X5=res("g/X4X5/X5", "FAIL", c=3))
     E = cmp(first, [again])
@@ -290,6 +315,15 @@ def test_chain():
                 check("chain: the report is in the first run's folder, with the re-run beside it",
                       "first=2  re-run 1=1" in rep, rep)
                 check("chain: a figure that moved is flagged even if the re-run is back (exit 1)", rc == 1)
+        calls.clear()
+        fakes.append(1)
+        BC.core_run = fake(record(), None)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            BC.main(["chain", "--settings", sp, "--check", "g/D"])
+        check("chain: the first run of a desk check selected alone has its inputs, and says so",
+              calls == [([], ["g/D", "g/arms", "g/pre"])] and "read g/arms, g/pre: added" in out.getvalue(),
+              (calls, out.getvalue()))
         calls.clear()
         BC.core_run = lambda *a, **k: (calls.append(1), (2, None, "REFUSED"))[1]
         try:
