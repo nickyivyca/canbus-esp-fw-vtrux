@@ -1,8 +1,9 @@
 /*
  * Spec 12.4, "a bus with no other node, emulated" (added 2026-10-20, user),
  * judged on the mock-HAL shim: main/gen_inhibit.c, gen_inhibit_core.c,
- * gi_sched.c and can.c as shipped, against the implementor's fakes, with the
- * tester's fault behaviour on top (spec_layer.h). Gen-inhibit tester,
+ * gi_sched.c, and since port step 1b the shared can_port and twai_port, as
+ * shipped, against the implementor's harness on twai_port's host fake, with
+ * the tester's fault behaviour on top (spec_layer.h). Gen-inhibit tester,
  * 2026-10-20.
  *
  * The row, as each case judges it (nonode_judge.c):
@@ -33,7 +34,7 @@
  * is one of them (only a key-on clears it, spec 7). Exit 0 only when every
  * line is PASS.
  */
-#include "fake_twai.h"
+#include "shim_harness.h"
 #include "gen_inhibit.h"
 #include "driver/twai.h"
 #include "esp_log.h"
@@ -140,11 +141,14 @@ static int diag_on_wire(void)
     return ft_wire_count_id(0x7F1) + ft_wire_count_id(0x7F2) + ft_wire_count_id(0x7F3) + ft_wire_count_id(0x7F8);
 }
 
+/* Each process runs one case and so one setup(): port 0 is set up once, before
+ * anything arms, as app_main does (spec 3.3, port step 1b). */
 static void setup(void)
 {
     ft_reset();
     sl_reset(NULL);
     ml_clear();
+    gen_inhibit_port_register();
     gen_inhibit_init(CAN_500K, 0);
     ft_start_worker();
     ft_run(1000);
@@ -358,7 +362,10 @@ static void layer_case(void)
     nn_verdict_t v;
     setup();
     if (!live_and_answered(cs, &t_last, &sent_after_answer)) { teardown(); return; }
-    twai_reconfigure_alerts(sl_alerts_enabled() | SL_ALERT_BUS_ERROR | SL_ALERT_ERR_PASS | SL_ALERT_BUS_OFF, NULL);
+    /* ABOVE_ERR_WARN left disabled, so the read below shows an alert is delivered
+     * only where enabled (the layer raises it at TEC 96, on the way to 128) */
+    twai_reconfigure_alerts((sl_alerts_enabled() | SL_ALERT_BUS_ERROR | SL_ALERT_ERR_PASS | SL_ALERT_BUS_OFF) &
+                            ~SL_ALERT_ABOVE_ERR_WARN, NULL);
     uint32_t a = 0;
     while (twai_read_alerts(&a, 0) == ESP_OK) {}            /* clear what is pending */
     sl_silence(1000);
@@ -386,7 +393,7 @@ static void layer_case(void)
     const esp_err_t r2 = twai_read_alerts(&a2, 0);
     snprintf(v.detail, sizeof(v.detail), "first read %d 0x%X, second read %d 0x%X", r1, a, r2, a2 & (SL_ALERT_BUS_ERROR |
              SL_ALERT_ERR_PASS));
-    v.v = (r1 == ESP_OK && (a & SL_ALERT_BUS_ERROR) && (a & SL_ALERT_ERR_PASS) &&
+    v.v = (r1 == ESP_OK && (a & SL_ALERT_BUS_ERROR) && (a & SL_ALERT_ERR_PASS) && !(a & SL_ALERT_ABOVE_ERR_WARN) &&
            !(a2 & (SL_ALERT_BUS_ERROR | SL_ALERT_ERR_PASS))) ? "PASS" : "NOT-AS-SPECIFIED";
     report(cs, "alerts", v);
 

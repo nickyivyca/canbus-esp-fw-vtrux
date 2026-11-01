@@ -83,15 +83,18 @@ MUTANTS = [
     (J, "A5 takes a later diag page that never completed", "diag_handed_after >= 1 && first_done_on_return ? PASS : NAS",
      "diag_handed_after >= 1 ? PASS : NAS"),
     # the layer, caught by a case
-    (L, "errors never reach the product", "    ft_set_bus_errors(L.base_errors + (uint32_t)L.n_err);\n", "\n"),
+    (L, "errors never reach the product", "    ft_set_bus_errors(L.base_errors + (uint32_t)L.n_err);", "    (void)0;"),
     (L, "errors before a frame waits", "if (L.retry_t0 < 0 && s.msgs_to_tx > 0)", "if (L.retry_t0 < 0)"),
-    (L, "frames complete in the silence", "    L.tenth_us = -1;\n    ft_set_air_time(AIR_NEVER);", "    L.tenth_us = -1;\n    ft_set_air_time(AIR_NORMAL);"),
-    (L, "frames never complete after the nodes return", "    L.retry_t0 = -1;\n    ft_set_air_time(AIR_NORMAL);\n}", "    L.retry_t0 = -1;\n}"),
+    (L, "frames complete in the silence", "    L.tenth_us = -1;\n    twai_fake_set_acked(false);", "    L.tenth_us = -1;\n    twai_fake_set_acked(true);"),
+    (L, "frames never complete after the nodes return", "    if (!L.bus_off) set_tec(0);\n    twai_fake_set_acked(true);\n}",
+     "    if (!L.bus_off) set_tec(0);\n}"),
     (L, "the receive log calls every return a timeout", "L.rx[L.n_rx].ok = (r == ESP_OK);", "L.rx[L.n_rx].ok = 0;"),
     (L, "the receive log's times are 50 ms early", "L.rx[L.n_rx].t = ft_now();", "L.rx[L.n_rx].t = ft_now() - 50000;"),
-    (L, "TEC never rises", "        L.tec += 8;\n", "        L.tec += 0;\n"),
-    (L, "no bus-error alert", "    L.pending |= SL_ALERT_BUS_ERROR;\n", "\n"),
-    (L, "reading the alerts does not clear them", "    L.pending &= ~mine;\n", "\n"),
+    (L, "TEC never rises", "        set_tec(L.tec + 8);\n", "        set_tec(L.tec + 0);\n"),
+    (L, "no error-passive alert", "        if (L.tec >= 128) raise(SL_ALERT_ERR_PASS);\n", "\n"),
+    (L, "reading the alerts does not clear them", "ticks);\n    L.pending = 0;\n", "ticks);\n"),
+    (L, "alerts raised whether enabled or not", "L.pending |= a & twai_fake_alerts_enabled();", "L.pending |= a;"),
+    (L, "the status reads no TEC", "    twai_fake_set_error_counters(tec, 0);\n", "\n"),
     (L, "recovery calls not counted", "    L.recovery_calls++;\n", "\n"),
     (L, "errors go on after bus-off", "    if (L.silent && !L.bus_off)\n", "    if (L.silent)\n"),
     (L, "the passive period is never used", "(L.passive_us > 0 && L.tec >= 128) ? L.passive_us : L.retry_us",
@@ -111,6 +114,12 @@ MUTANTS = [
 ]
 # A 5th element is how many places the edit must match (each case that gathers
 # the same observation); without it, exactly one.
+# Not a mutant (port step 1b, 2026-10-31): the layer's read of the alerts waiting for
+# the driver while an alert of its own is pending ("(&a, mine ? 0 : ticks)" made
+# "(&a, ticks)"). It survived every case on WSL (2026-10-31): no case's outcome turns
+# on a read that waits while only an alert of the layer's is pending (each comes in
+# the same step as the fake's own BUS_ERROR). Kept in the layer as the driver's
+# semantics, with no case that turns on it.
 
 
 def main(argv):
