@@ -229,7 +229,9 @@ def test_state(S, work):
 
 def test_prune(S, work):
     """A14: make() first removes the finished folders beside it, with their
-    owner files, and leaves live, unowned and other hosts' folders alone."""
+    owner files, and an owner file left with no folder by a finished run;
+    it leaves live and unowned folders, and a live run's owner file, alone.
+    No owner file is left but the live ones'."""
     parent = os.path.join(work, "pr")
     p = subprocess.Popen([PY, "-c", "pass"])
     p.wait()
@@ -241,11 +243,26 @@ def test_prune(S, work):
     live = S.make(parent, "x")
     bare = os.path.join(parent, "x-bare")
     os.makedirs(bare)
+    # owner files whose folder is gone (a killed removal): a finished one's
+    # goes, a live one's stays
+    orphan = os.path.join(parent, "x-orphan")
+    with open(orphan + ".owner.json", "w", encoding="utf-8") as fh:
+        json.dump(dict(pid=p.pid, start=1, host=socket.gethostname(),
+                       platform=sys.platform), fh)
+    orphan_live = os.path.join(parent, "x-orphan-live")
+    with open(orphan_live + ".owner.json", "w", encoding="utf-8") as fh:
+        json.dump(dict(pid=os.getpid(), start=S.process_start(os.getpid()),
+                       host=socket.gethostname(), platform=sys.platform), fh)
     new = S.make(parent, "x")
     assert not os.path.lexists(old), "a finished folder was kept"
     assert not os.path.lexists(old + ".owner.json"), "its owner file was kept"
+    assert not os.path.lexists(orphan + ".owner.json"), "a finished orphan owner file was kept"
+    assert os.path.isfile(orphan_live + ".owner.json"), "a live orphan owner file was removed"
     for d in (live, bare, new):
         assert os.path.isdir(d), "removed: %s" % d
+    left = sorted(n for n in os.listdir(parent) if n.endswith(".owner.json"))
+    assert left == sorted(os.path.basename(x) + ".owner.json"
+                          for x in (live, new, orphan_live)), left
 
 
 def test_run_finally(S, work):
@@ -337,6 +354,11 @@ MUTANTS = [
     ("prune takes unowned folders", '        if state(p) == "finished":',
      '        if state(p) in ("finished", "no-owner"):'),
     ("make does not prune", "    prune(parent, out=out)\n", ""),
+    ("orphan owner files kept",
+     '            if not os.path.lexists(d) and state(d) == "finished":',
+     '            if False:'),
+    ("remove leaves the owner file", "        own = long_path(owner_path(path))\n",
+     "        own = long_path(owner_path(path)) + '.not'\n"),
     ("run without finally", "    try:\n        yield p\n    finally:\n        remove(p)\n",
      "    yield p\n    remove(p)\n"),
     ("no exit handler", "        atexit.register(self.remove_all)\n", ""),
