@@ -39,6 +39,13 @@
 Fake trees are built in a throwaway folder beside this file and removed.
 
 Run:  python charge-interposer/paths_test.py
+      python charge-interposer/paths_test.py --can-fail
+        runs this test with each mutant of paths.py in MUTANTS (its text in
+        a scratch_dir folder, run in the real module's namespace through
+        PATHS_UNDER_TEST, so paths.py's own location still holds; the file
+        itself is never edited); every mutant must make it fail, and the
+        unmutated text must pass. Committed 2026-11-01 (the pin move): at
+        the cutover it was a scratch script that edited paths.py in place.
 """
 
 import os
@@ -52,6 +59,12 @@ sys.path.insert(0, HERE)
 import paths as PA                     # noqa: E402
 import canre_pin                       # noqa: E402
 import scratch_dir                     # noqa: E402
+
+# --can-fail: the child runs paths.py's mutated text in the real module's
+# namespace (its __file__ unchanged), so every importer of paths sees it.
+if os.environ.get("PATHS_UNDER_TEST"):
+    with open(os.environ["PATHS_UNDER_TEST"], encoding="utf-8") as _f:
+        exec(compile(_f.read(), PA.__file__, "exec"), PA.__dict__)
 
 failures = 0
 
@@ -252,7 +265,84 @@ def canbench_checks(root, tmp):
         _drop_canbench()
 
 
+_USE = "        return can_tools_pin.use()\n"
+
+
+def _by_file(where):
+    """import_canbench's body replaced by a by-file load of where/canbench,
+    with no pin (7d74975's way)."""
+    return ("        import importlib.util\n"
+            "        d = os.path.join(%s, 'canbench')\n"
+            "        spec = importlib.util.spec_from_file_location(\n"
+            "            'canbench', os.path.join(d, '__init__.py'),\n"
+            "            submodule_search_locations=[d])\n"
+            "        mod = importlib.util.module_from_spec(spec)\n"
+            "        sys.modules['canbench'] = mod\n"
+            "        spec.loader.exec_module(mod)\n"
+            "        return mod\n" % where)
+
+
+# (what, text in paths.py, its replacement): each must make this test fail.
+MUTANTS = [
+    ("canbench from the clone's working tree, unpinned (7d74975)",
+     _USE, _by_file("can_tools_dir()")),
+    ("canbench from the mirror (the old way)", _USE, _by_file("reverse_it_dir()")),
+    ("CAN_TOOLS_DIR unchecked",
+     "        return can_tools_pin.clone()\n",
+     "        return os.environ.get('CAN_TOOLS_DIR', '')\n"),
+    ("a canbench imported from elsewhere is taken", _USE,
+     "        if 'canbench' in sys.modules:\n"
+     "            return sys.modules['canbench']\n" + _USE),
+    ("the clone put on sys.path", _USE,
+     "        sys.path.insert(0, can_tools_pin.clone())\n" + _USE),
+    ("the pin's refusal not a PathsError",
+     _USE + "    except can_tools_pin.CanToolsPinError as e:\n"
+     "        raise PathsError(str(e))\n",
+     _USE + "    except KeyError as e:\n"
+     "        raise PathsError(str(e))\n"),
+]
+
+
+def can_fail():
+    with open(os.path.join(HERE, "paths.py"), encoding="utf-8") as f:
+        src = f.read()
+    base = scratch_dir.make("paths-test-canfail")
+    bad = 0
+    try:
+        for i, (what, old, new) in enumerate([("unmutated (must pass)", "", "")]
+                                             + MUTANTS):
+            if old and src.count(old) != 1:
+                print("NOT EXERCISED  %s: its text is not in paths.py once" % what)
+                bad += 1
+                continue
+            p = os.path.join(base, "paths_m%02d.py" % i)
+            with open(p, "w", encoding="utf-8", newline="\n") as f:
+                f.write(src.replace(old, new) if old else src)
+            r = subprocess.run([sys.executable, "-B", os.path.abspath(__file__)],
+                               env=dict(os.environ, PATHS_UNDER_TEST=p),
+                               capture_output=True, text=True, timeout=600)
+            out = (r.stdout + r.stderr).splitlines()
+            fails = [ln.strip() for ln in out if ln.strip().startswith("FAIL")]
+            if not old:
+                good = r.returncode == 0
+                print("%s  %s (rc %d)" % ("ok      " if good else "BROKEN  ",
+                                          what, r.returncode))
+            else:
+                good = r.returncode != 0
+                print("%s  %s: %s" % ("caught  " if good else "SURVIVED", what,
+                                      (fails or out[-1:] or ["no output"])[0][:150]))
+            bad += not good
+    finally:
+        scratch_dir.remove(base)
+    print("\npaths_test --can-fail: %s"
+          % ("all %d mutants caught, the unmutated text passes" % len(MUTANTS)
+             if not bad else "%d FAILED" % bad))
+    return 1 if bad else 0
+
+
 def main():
+    if sys.argv[1:] == ["--can-fail"]:
+        return can_fail()
     names = ("REVERSE_IT_DIR", "VTRUX_DATA", "VTRUX_PUBLIC_REPO", "CANRE_DIR",
              "INTERPOSER_CODE", "CAN_TOOLS_DIR")
     saved = {k: os.environ.get(k) for k in names}

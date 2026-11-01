@@ -23,6 +23,7 @@ a pointer, until nothing reads them. Since the move:
 | File | What |
 |---|---|
 | `bench_c12.py` | C12 and the rest of the MCP2515 conformance sequence on silicon, against the fake's transcript |
+| `bench_canbench_smoke.py` | The can-tools pin on the bench: kvaser and gs_usb opened through `bus.open_bus` with canbench from the pinned commit, the refusal with `CAN_TOOLS_DIR` unset, the four diag pages heard with the charger up, and the X2's build id from 0x7F7; run by hand under a hand take (2026-11-01; a scratch script at the 2026-10-30 cutover) |
 | `bench_charger_silent.py` | Spec 2.2 on the bench, the single-adapter variant |
 | `bench_charger_witness.py` | The charger-side wire witness, and the `Tee` and Innomaker helpers the other drivers import |
 | `bench_flight_silence.py` | Spec 8.3 flight silence on the truck image |
