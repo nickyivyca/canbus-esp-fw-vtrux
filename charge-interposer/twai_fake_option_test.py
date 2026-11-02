@@ -17,7 +17,11 @@ reviewer's order of that day): one run folder under the tree's own
 scratch/charge-interposer-harness/host-bridge/, never the system temp
 folder (the tests set TMPDIR, which must stay empty), removed when run.sh
 ends, pass, fail or refusal, with the tool folders above it, and a folder
-it cannot remove printed.
+it cannot remove printed. And (the reviewer's reply of the same day) that
+another run's cleanup removing the tool folders between run.sh making them
+and making its run folder in them costs a retry, three tries in all, as
+scratch_dir.make's: a stand-in mktemp, also from BASH_ENV, removes them
+first.
 
 run.sh always runs from a copy of host_bridge and src/ at their depth under
 a test folder of its own (tree_copy), so its tree's root, and its scratch/,
@@ -106,6 +110,25 @@ RM_ENV = r"""rm() {
   if [ -n "${STUB_RM_FAIL:-}" ] && [ "${1:-}" = "-rf" ]; then return 1; fi
   command rm "$@"
 }
+# with STUB_MKTEMP_RACE=N, the first N mktemp -d calls for a run folder in
+# host-bridge/ find host-bridge/ and its parent removed just before, as
+# another run's cleanup would remove them, and fail; counted in the file
+# STUB_RACE_COUNT names (mktemp runs in a subshell)
+mktemp() {
+  if [ -n "${STUB_MKTEMP_RACE:-}" ] && [ "${1:-}" = "-d" ]; then
+    case "${2:-}" in
+      */host-bridge/run_*)
+        n="$(cat "$STUB_RACE_COUNT" 2>/dev/null || echo 0)"
+        if [ "$n" -lt "$STUB_MKTEMP_RACE" ]; then
+          echo $((n + 1)) > "$STUB_RACE_COUNT"
+          d="$(dirname "$2")"
+          command rmdir "$d" "$(dirname "$d")"
+        fi
+        ;;
+    esac
+  fi
+  command mktemp "$@"
+}
 """
 
 
@@ -173,10 +196,11 @@ def run_sh(ctx, work, env, args=()):
         f.write(RM_ENV)
     e = dict(os.environ)
     for k in ("TWAI_FAKE", "TWAI_FAKE_DIR", "INTERPOSER_CODE", "STUB_GPP_FAIL",
-              "STUB_RM_FAIL"):
+              "STUB_RM_FAIL", "STUB_MKTEMP_RACE"):
         e.pop(k, None)
     e.update(PATH=bindir + os.pathsep + e.get("PATH", ""), STUB_LOG=fwd(log),
-             TMPDIR=fwd(tmp), L3_STIMULUS="unused", BASH_ENV=fwd(rm_env))
+             TMPDIR=fwd(tmp), L3_STIMULUS="unused", BASH_ENV=fwd(rm_env),
+             STUB_RACE_COUNT=fwd(os.path.join(work, "race_count")))
     e.update(env)
     p = subprocess.run([bash(), fwd(ctx["run_sh"])] + list(args), env=e,
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -341,6 +365,37 @@ def test_leftover_reported(ctx, work):
         assert not left, left
 
 
+def race_count(work):
+    try:
+        with open(os.path.join(work, "race_count"), encoding="utf-8") as f:
+            return int(f.read().strip())
+    except FileNotFoundError:
+        return 0
+
+
+def test_race_retried(ctx, work):
+    """Another run's cleanup removing host-bridge/ and its parent between
+    run.sh's mkdir -p and its mktemp (twice running) costs nothing: both are
+    made again, the third try makes the run folder, the run is as usual,
+    nothing from the failed tries is printed, and nothing is left."""
+    rc, outp, calls, _py, tmp = run_sh(ctx, work, {"STUB_MKTEMP_RACE": "2"})
+    assert race_count(work) == 2, race_count(work)
+    assert rc == 0, (rc, outp[-300:])
+    assert "mktemp" not in outp and "No such file" not in outp, outp[-300:]
+    _check_own(ctx, calls, outp, tmp)
+
+
+def test_race_bounded(ctx, work):
+    """A race lost three times running is a refusal, rc 2 and before any
+    build, after exactly three tries, with the last try's reason printed,
+    and nothing left behind."""
+    rc, outp, calls, _py, tmp = run_sh(ctx, work, {"STUB_MKTEMP_RACE": "9"})
+    assert race_count(work) == 3, race_count(work)
+    assert rc == 2 and not calls, (rc, outp[-300:], len(calls))
+    assert "mktemp" in outp, outp[-300:]
+    all_removed(ctx, tmp)
+
+
 def test_canfail_mode(ctx, work):
     """run.sh --can-fail runs the shared fake's can-fail
     (harness_checks/shared_fake_canfail.py) with python3, and builds
@@ -461,8 +516,8 @@ def env_set(**kw):
 
 
 TESTS = [test_refusals, test_own_default, test_shared_build, test_removed_on_fail,
-         test_leftover_reported, test_canfail_mode, test_canfail_judges,
-         test_canfail_refusals]
+         test_leftover_reported, test_race_retried, test_race_bounded,
+         test_canfail_mode, test_canfail_judges, test_canfail_refusals]
 
 # run.sh mutants: each is the run.sh of the tree copy (tree_copy) the tests
 # then run
@@ -480,8 +535,18 @@ RUN_SH_MUTANTS = [
     ("the binaries in the system temp folder", 'bin="$W/$name"',
      'bin="${TMPDIR:-/tmp}/${name}_$$"'),
     ("the run folder in the system temp folder",
-     'W="$(mktemp -d "$WT/host-bridge/run_XXXXXX")" || exit 2',
-     'W="$(mktemp -d "${TMPDIR:-/tmp}/run_XXXXXX")" || exit 2'),
+     'W="$(mktemp -d "$WT/host-bridge/run_XXXXXX" 2>/dev/null)" && break',
+     'W="$(mktemp -d "${TMPDIR:-/tmp}/run_XXXXXX" 2>/dev/null)" && break'),
+    ("one try only", "for try in 1 2; do", "for try in ; do"),
+    ("tries without end", "for try in 1 2; do", "for try in 1 2 3 4 5 6 7 8 9 10 11 12; do"),
+    ("the tool folders not made again for the last try",
+     '  mkdir -p "$WT/host-bridge" || exit 2\n', ""),
+    ("the failed tries printed",
+     'W="$(mktemp -d "$WT/host-bridge/run_XXXXXX" 2>/dev/null)" && break',
+     'W="$(mktemp -d "$WT/host-bridge/run_XXXXXX")" && break'),
+    ("the last try's reason not printed",
+     '  W="$(mktemp -d "$WT/host-bridge/run_XXXXXX")" || exit 2\n',
+     '  W="$(mktemp -d "$WT/host-bridge/run_XXXXXX" 2>/dev/null)" || exit 2\n'),
     ("the copy outside the run folder", '    T="$W/shared"\n',
      '    T="$(mktemp -d "${TMPDIR:-/tmp}/host_bridge_shared_XXXXXX")" || exit 2\n'),
     ("nothing removed on exit", "trap cleanup EXIT\n", ""),

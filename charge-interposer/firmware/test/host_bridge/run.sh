@@ -33,7 +33,9 @@
 # reviewer, 2026-11-02). Every test binary is built there, and so is
 # TWAI_FAKE=shared's copy. It is removed when run.sh ends, pass, fail or
 # refusal, with the two tool folders above it if that leaves them empty; a
-# folder it cannot remove is printed with its path.
+# folder it cannot remove is printed with its path. The run folder is made
+# with up to three tries, since another run's cleanup can remove the tool
+# folders between making them and making the run folder in them.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SRC="$HERE/../../src"
@@ -45,8 +47,22 @@ esac
 # the tree's root: host_bridge is charge-interposer/firmware/test/host_bridge
 ROOT="$(cd "$HERE/../../../.." && pwd)"
 WT="$ROOT/scratch/charge-interposer-harness"
-mkdir -p "$WT/host-bridge" || exit 2
-W="$(mktemp -d "$WT/host-bridge/run_XXXXXX")" || exit 2
+# Another run's cleanup (below) removes host-bridge/ and its parent once
+# they are empty, and that can fall between this run's mkdir -p and its
+# mktemp. So both are made again, three tries in all, as
+# charge-interposer/scratch_dir.py's make() does (the charge-interposer
+# reviewer, 2026-11-02). The first two tries print nothing; the last one
+# prints its reason.
+W=""
+for try in 1 2; do
+  mkdir -p "$WT/host-bridge" 2>/dev/null &&
+    W="$(mktemp -d "$WT/host-bridge/run_XXXXXX" 2>/dev/null)" && break
+  W=""
+done
+if [ -z "$W" ]; then
+  mkdir -p "$WT/host-bridge" || exit 2
+  W="$(mktemp -d "$WT/host-bridge/run_XXXXXX")" || exit 2
+fi
 cleanup() {
   rm -rf "$W"
   if [ -e "$W" ]; then echo "run.sh: could not remove $W" >&2; fi
