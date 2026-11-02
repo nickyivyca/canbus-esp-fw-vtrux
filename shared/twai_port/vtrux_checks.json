@@ -10,6 +10,25 @@
       "reason": "CMakeLists.txt picks T8's register file by chip: twai_port_ll_esp32c3.c on the C3, twai_port_ll_unsupported.c elsewhere; ESP-IDF sets it from the board's target, which R21 checks",
       "kind": "a value the build injects"
     },
+    "TWAI_PORT_TXABORT_PROBE": {
+      "class": "test-only",
+      "reason": "T13's transmit-abort measurement build: CMakeLists.txt adds test_app/twai_port_txabort_probe.c, which writes the abort command register from outside the driver and answers at /gi_txabort, which a project registers from its URI hook",
+      "refusal": [
+        {
+          "bin_strings_absent": [
+            "\"probe\":\"gi_txabort\"",
+            "/gi_txabort"
+          ]
+        },
+        {
+          "elf_symbols_absent": [
+            "twai_port_txabort_register",
+            "txab_handler",
+            "txab_uri"
+          ]
+        }
+      ]
+    },
     "c_dir": {
       "class": "not a switch",
       "reason": "CMakeLists.txt's board search: each build component's COMPONENT_DIR, from idf_component_get_property() inside the loop (shared/boards B2, B5)",

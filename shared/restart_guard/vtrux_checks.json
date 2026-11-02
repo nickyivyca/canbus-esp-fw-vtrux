@@ -1,0 +1,38 @@
+{
+  "build_switches": {
+    "__cplusplus": {
+      "class": "not a switch",
+      "reason": "compiler-defined; the extern \"C\" wrapper in include/restart_guard.h",
+      "kind": "library macro"
+    },
+    "RESTART_GUARD_TEST": {
+      "class": "test-only",
+      "reason": "G5's restart test build: CMakeLists.txt adds test_app/restart_guard_test.c, the record's reader, the crash trigger and the two snapshots at /gi_quiesce, which a project registers from its URI hook",
+      "refusal": [
+        {
+          "bin_strings_absent": [
+            "/gi_quiesce",
+            "{\"build\":\"restart-test\"",
+            "expected ?crash=illegal|abort"
+          ]
+        },
+        {
+          "elf_symbols_absent": [
+            "restart_guard_test_register",
+            "restart_guard_test_pre_install"
+          ]
+        }
+      ]
+    },
+    "c_dir": {
+      "class": "not a switch",
+      "reason": "CMakeLists.txt's board search: each build component's COMPONENT_DIR, from idf_component_get_property() inside the loop (shared/boards B2, B5)",
+      "kind": "computed value"
+    },
+    "restart_guard_board_count": {
+      "class": "not a switch",
+      "reason": "CMakeLists.txt's board search: list(LENGTH) of the components with include/board_pins.h, which must be 1 (shared/boards B2, B5)",
+      "kind": "computed value"
+    }
+  }
+}

@@ -25,9 +25,8 @@ sets its own link-time wrap (G2).
 | `test_app/` | G5: the restart test, moved from gen-inhibit's `gi_restart_test.c` (`restart_guard_test.c`, `include/restart_guard_test.h`): `GET` and `POST /gi_quiesce`, the snapshot before `app_main` and the pre-install one, `restart_guard_test_pre_install()`, which the project calls just before its first driver install, and `restart_guard_test_register()`, from its URI hook. Compiled in only by `RESTART_GUARD_TEST`. It reads the standby pin from `board_pins.h` (`shared/boards` B6) |
 | `CMakeLists.txt`, `idf_component.yml` | the component: the link-time wrap it sets itself (G2), the test app by its switch, and the project's one board component, found as `vtrux/twai_port` finds it |
 | `unit/` | the guard's unit tests, their stand-ins and their mutants (`unit/README.md`) |
-
-The build-switch table and the list of files that use pins,
-`vtrux_checks.json`, are the tester's, and arrive from it.
+| `vtrux_checks.json` | the build-switch table (`shared/tools` R20): `RESTART_GUARD_TEST` as test-only, refused by the test app's strings and symbols, and the scanned values that are not switches |
+| `pins.json` | the list of files that use pins (`shared/tools` R30, `shared/boards` B6), where R30's check reads a shared component's list: `test_app/restart_guard_test.c` |
 
 ## Who owns which file (SPEC G6)
 
@@ -38,4 +37,5 @@ The build-switch table and the list of files that use pins,
 | `test_app/` | G5: the restart test, compiled in only by `RESTART_GUARD_TEST` | the implementor of the project that needs the change |
 | `unit/mutate.py` | the unit tests' mutants: one behaviour of the guard broken at a time, each of which the unit tests must fail | the implementor, as the unit tests |
 | `VERIFICATION.md` | test evidence | the tester |
-| `vtrux_checks.json` | the component's build-switch table (`shared/tools` R20) and its list of files that use pins (R30) | the tester of the project that needs the change |
+| `vtrux_checks.json` | the component's build-switch table (`shared/tools` R20) | the tester of the project that needs the change |
+| `pins.json` | the component's list of files that use pins (R30) | the tester of the project that needs the change |

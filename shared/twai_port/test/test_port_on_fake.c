@@ -4,21 +4,36 @@
  *
  * Built twice: with the C3's register file on the fake's C3, and with the
  * unsupported register file on the fake's S3 (-DPORT_ON_S3). The cases are
- * written from SPEC.md T2 to T9 and the fake's model of the driver, not
- * from the port's code: they show the port runs on the fake and does what
- * the spec says there. They are harness self-checks. What counts for
+ * written from SPEC.md T2 to T9 and T12 and the fake's model of the driver,
+ * not from the port's code: they show the port runs on the fake and does
+ * what the spec says there. They are harness self-checks. What counts for
  * twai_port's VERIFICATION.md is the acceptance run on a build the
  * reviewer names.
  *
+ * The T12 cases (t12_*, the restart stop) run on the C3 build; the S3
+ * build has t12_unsupported. Built a third time with -DT12_STANDIN, the
+ * T12 cases call the tester's own restart stop (t12_standin.c) in place of
+ * the port's: as written it must pass them, and each of its broken forms
+ * must fail one, which shows the cases can fail.
+ *
  *   make -C shared/twai_port/test run
+ *   make -C shared/twai_port/test t12-standins
  */
 #include "twai_port.h"
 #include "twai_fake.h"
+#include "hal/twai_ll.h"
 
 #include <stdio.h>
 #include <string.h>
 
-extern int host_error_checks, host_standby, host_log_e;
+extern int host_error_checks, host_standby, host_log_e, host_log_w;
+
+#ifdef T12_STANDIN
+esp_err_t t12_standin_restart_stop(can_port_restart_report_t *out);
+#define RESTART_STOP t12_standin_restart_stop
+#else
+#define RESTART_STOP twai_port_restart_stop
+#endif
 
 static int g_fails, g_checks;
 static const char *g_case;
@@ -391,6 +406,250 @@ static void case_install_hook(void)
     CHECK(twai_fake_installed_filter()->acceptance_mask == 0xFFFFFFFFu);
 }
 
+/* --------------------------------------------- T12, the restart stop -- */
+
+#define TS_RS (TWAI_LL_STATUS_TS | TWAI_LL_STATUS_RS)
+
+/* The stop, its report filled beforehand with values it must overwrite:
+ * every flag true, every number 0xA5A5A5A5. */
+static can_port_restart_report_t stop(esp_err_t want)
+{
+    can_port_restart_report_t r;
+    memset(&r, 0xA5, sizeof(r));
+    r.clock_on = r.held_in_reset = r.was_in_reset = r.timed_out = r.entered_reset = true;
+    CHECK(RESTART_STOP(&r) == want);
+    return r;
+}
+
+static void up(twai_port_config_t *cfg)
+{
+    fresh(cfg);
+    CHECK(twai_port_setup(cfg) == ESP_OK);
+    CHECK(twai_port_install() == ESP_OK);
+    twai_fake_set_air_time_us(300);
+}
+
+#ifndef PORT_ON_S3
+/* A stop that touched nothing: every field but the clock and reset bits 0. */
+static bool untouched(const can_port_restart_report_t *r)
+{
+    return !r->was_in_reset && r->status_at_entry == 0 && r->tec == 0 && r->rec == 0
+           && r->status_at_reset == 0 && r->wait_us == 0 && !r->timed_out && r->aborts == 0
+           && !r->entered_reset;
+}
+
+/* The wait: in steps of 2 us, and reported as the time it took. */
+static void waited_in_steps(const can_port_restart_report_t *r, int64_t t0)
+{
+    int64_t took = twai_fake_now() - t0;
+    CHECK(twai_fake_delay_us_total() == 2 * (int64_t)twai_fake_delay_calls());
+    CHECK(took >= (int64_t)r->wait_us - 2 && took <= (int64_t)r->wait_us + 2);
+}
+
+static void case_t12_idle(void)
+{
+    twai_port_config_t cfg;
+    twai_message_t m = msg(0x100);
+    can_port_restart_report_t r;
+    int logs;
+    g_case = "T12: running and idle: reset mode at once, the report filled, nothing logged; "
+             "nothing takes it out until the next install";
+    up(&cfg);
+    twai_fake_set_error_counters(5, 7);
+    logs = host_log_e + host_log_w;
+    r = stop(ESP_OK);
+    CHECK(r.clock_on && !r.held_in_reset && !r.was_in_reset);
+    CHECK(r.entered_reset && !r.timed_out && r.wait_us <= 2 && r.aborts == 0);
+    CHECK(r.tec == 5 && r.rec == 7);
+    CHECK((r.status_at_entry & TS_RS) == 0 && (r.status_at_entry & TWAI_LL_STATUS_TBS) != 0);
+    CHECK(twai_fake_in_reset_mode() && twai_fake_ll_reset_entries() == 1);
+    CHECK(host_log_e + host_log_w == logs);
+    (void)twai_port_poll_alerts();
+    twai_port_service();
+    (void)twai_port_send(&m, 0);
+    twai_fake_advance(5000);
+    (void)twai_port_poll_alerts();
+    twai_port_service();
+    CHECK(twai_fake_in_reset_mode() && twai_fake_wire_count() == 0);
+    CHECK(twai_port_set_mode(CAN_PORT_MODE_LISTEN_ONLY) == ESP_OK);     /* the next install */
+    CHECK(!twai_fake_in_reset_mode() && twai_fake_state() == TWAI_STATE_RUNNING);
+    CHECK(twai_fake_ll_unclocked_calls() == 0 && twai_fake_reg_unknown_reads() == 0);
+}
+
+static void case_t12_transmitting(void)
+{
+    twai_port_config_t cfg;
+    twai_message_t m = msg(0x100);
+    can_port_restart_report_t r;
+    int64_t t0;
+    g_case = "T12: a frame on the wire is let finish, polled every 2 us, then reset mode";
+    up(&cfg);
+    CHECK(twai_port_send(&m, 0) == ESP_OK);
+    twai_fake_advance(100);                         /* 200 us of its 300 left */
+    t0 = twai_fake_now();
+    r = stop(ESP_OK);
+    CHECK((r.status_at_entry & TWAI_LL_STATUS_TS) != 0);
+    CHECK((r.status_at_reset & TS_RS) == 0);
+    CHECK(!r.timed_out && r.entered_reset && r.aborts == 0);
+    CHECK(r.wait_us >= 196 && r.wait_us <= 202);
+    waited_in_steps(&r, t0);
+    CHECK(twai_fake_wire_count() == 1 && twai_fake_tx_cut_by_reset() == 0);
+    CHECK(twai_fake_in_reset_mode());
+}
+
+static void case_t12_receiving(void)
+{
+    twai_port_config_t cfg;
+    can_port_restart_report_t r;
+    int64_t t0;
+    g_case = "T12: a frame being received is let finish, then reset mode";
+    up(&cfg);
+    twai_fake_set_receiving(150);
+    t0 = twai_fake_now();
+    r = stop(ESP_OK);
+    CHECK((r.status_at_entry & TWAI_LL_STATUS_RS) != 0 && (r.status_at_reset & TS_RS) == 0);
+    CHECK(!r.timed_out && r.entered_reset);
+    CHECK(r.wait_us >= 146 && r.wait_us <= 152);
+    waited_in_steps(&r, t0);
+    CHECK(twai_fake_in_reset_mode());
+}
+
+static void case_t12_timeout_rx(void)
+{
+    twai_port_config_t cfg;
+    can_port_restart_report_t r;
+    int64_t t0;
+    g_case = "T12: a reception outlasting 1 ms: the wait runs out at 1 ms, reset mode anyway";
+    up(&cfg);
+    twai_fake_set_receiving(5000);
+    t0 = twai_fake_now();
+    r = stop(ESP_OK);
+    CHECK((r.status_at_entry & TWAI_LL_STATUS_RS) != 0);
+    CHECK(r.timed_out && r.entered_reset);
+    CHECK(r.wait_us >= 998 && r.wait_us <= 1002);
+    waited_in_steps(&r, t0);
+    CHECK(twai_fake_in_reset_mode() && twai_fake_ll_reset_entries() == 1);
+}
+
+static void case_t12_timeout_tx(void)
+{
+    twai_port_config_t cfg;
+    twai_message_t m = msg(0x100);
+    can_port_restart_report_t r;
+    int64_t t0;
+    g_case = "T12: a transmission outlasting 1 ms: the wait runs out, the frame cut by reset mode";
+    up(&cfg);
+    twai_fake_set_air_time_us(5000);
+    CHECK(twai_port_send(&m, 0) == ESP_OK);
+    t0 = twai_fake_now();
+    r = stop(ESP_OK);
+    CHECK((r.status_at_entry & TWAI_LL_STATUS_TS) != 0);
+    CHECK(r.timed_out && r.entered_reset);
+    CHECK(r.wait_us >= 998 && r.wait_us <= 1002);
+    waited_in_steps(&r, t0);
+    CHECK(twai_fake_tx_cut_by_reset() == 1 && twai_fake_in_reset_mode());
+    twai_fake_advance(10000);
+    CHECK(twai_fake_wire_count() == 0);
+}
+
+static void case_t12_awaiting(void)
+{
+    twai_port_config_t cfg;
+    twai_message_t m = msg(0x100);
+    can_port_restart_report_t r;
+    g_case = "T12: a frame awaiting arbitration is aborted by T8's abort-if-awaiting, then reset mode";
+    up(&cfg);
+    twai_fake_stall_next(1);
+    CHECK(twai_port_send(&m, 0) == ESP_OK);
+    r = stop(ESP_OK);
+    CHECK((r.status_at_entry & (TS_RS | TWAI_LL_STATUS_TBS)) == 0);
+    CHECK(r.aborts == 1 && twai_fake_ll_removed() == 1);
+    CHECK(!r.timed_out && r.entered_reset && twai_fake_in_reset_mode());
+    twai_fake_advance(5000);
+    CHECK(twai_fake_wire_count() == 0);
+}
+
+static void case_t12_clock_off(void)
+{
+    twai_port_config_t cfg;
+    can_port_restart_report_t r;
+    g_case = "T12: the TWAI clock off (never installed, then after a teardown): touches nothing";
+    fresh(&cfg);                                    /* the port never set up */
+    r = stop(ESP_OK);
+    CHECK(!r.clock_on && !r.held_in_reset && untouched(&r));
+    CHECK(twai_port_setup(&cfg) == ESP_OK);
+    CHECK(twai_port_install() == ESP_OK);
+    CHECK(twai_port_teardown() == ESP_OK);          /* the uninstall turns the clock off */
+    r = stop(ESP_OK);
+    CHECK(!r.clock_on && !r.held_in_reset && untouched(&r));
+    CHECK(twai_fake_ll_unclocked_calls() == 0 && twai_fake_reg_unknown_reads() == 0);
+    CHECK(twai_fake_ll_reset_entries() == 0);
+}
+
+static void case_t12_reset_held(void)
+{
+    twai_port_config_t cfg;
+    can_port_restart_report_t r;
+    g_case = "T12: the peripheral held in reset: touches nothing";
+    fresh(&cfg);
+    twai_fake_set_periph(true, true);
+    r = stop(ESP_OK);
+    CHECK(r.clock_on && r.held_in_reset && untouched(&r));
+    CHECK(twai_fake_ll_unclocked_calls() == 0 && twai_fake_reg_unknown_reads() == 0);
+}
+
+static void case_t12_no_port(void)
+{
+    twai_port_config_t cfg;
+    const twai_general_config_t g = TWAI_GENERAL_CONFIG_DEFAULT(0, 1, TWAI_MODE_NORMAL);
+    const twai_timing_config_t t = TWAI_TIMING_CONFIG_500KBITS();
+    const twai_filter_config_t f = TWAI_FILTER_CONFIG_ACCEPT_ALL();
+    can_port_restart_report_t r;
+    g_case = "T12: the driver running with the port never set up: it reads the registers and acts";
+    fresh(&cfg);
+    CHECK(twai_driver_install(&g, &t, &f) == ESP_OK && twai_start() == ESP_OK);
+    r = stop(ESP_OK);
+    CHECK(r.clock_on && !r.held_in_reset && !r.was_in_reset && r.entered_reset);
+    CHECK(twai_fake_in_reset_mode() && twai_fake_ll_reset_entries() == 1);
+}
+
+static void case_t12_already_reset(void)
+{
+    twai_port_config_t cfg;
+    can_port_restart_report_t r;
+    g_case = "T12: bus-off, so already in reset mode: reported, and still in reset mode";
+    up(&cfg);
+    twai_fake_bus_off();
+    r = stop(ESP_OK);
+    CHECK(r.clock_on && r.was_in_reset && !r.timed_out && r.wait_us <= 2);
+    CHECK((r.status_at_entry & TWAI_LL_STATUS_BS) != 0);
+    CHECK(twai_fake_in_reset_mode() && twai_fake_ll_unclocked_calls() == 0);
+}
+
+static void case_t12_null(void)
+{
+    twai_port_config_t cfg;
+    g_case = "T12: a NULL report is ESP_ERR_INVALID_ARG and the controller left on the bus";
+    up(&cfg);
+    CHECK(RESTART_STOP(NULL) == ESP_ERR_INVALID_ARG);
+    CHECK(!twai_fake_in_reset_mode() && twai_fake_ll_reset_entries() == 0);
+}
+#else
+static void case_t12_unsupported(void)
+{
+    twai_port_config_t cfg;
+    twai_message_t m = msg(0x100);
+    g_case = "T12: on a chip with no measured file, not supported, touching nothing";
+    up(&cfg);
+    CHECK(twai_port_send(&m, 0) == ESP_OK);
+    (void)stop(ESP_ERR_NOT_SUPPORTED);
+    CHECK(twai_fake_reg_reads() == 0 && twai_fake_ll_unmeasured_calls() == 0);
+    CHECK(!twai_fake_in_reset_mode() && twai_fake_state() == TWAI_STATE_RUNNING);
+    twai_fake_advance(1000);
+    CHECK(twai_fake_wire_count() == 1);
+}
+#endif
+
 static const struct { const char *name; void (*fn)(void); } CASES[] = {
     {"bring_up", case_bring_up},
     {"teardown", case_teardown},
@@ -406,6 +665,21 @@ static const struct { const char *name; void (*fn)(void); } CASES[] = {
     {"flush", case_flush},
     {"receive_wait", case_receive_wait},
     {"install_hook", case_install_hook},
+#ifndef PORT_ON_S3
+    {"t12_idle", case_t12_idle},
+    {"t12_transmitting", case_t12_transmitting},
+    {"t12_receiving", case_t12_receiving},
+    {"t12_timeout_rx", case_t12_timeout_rx},
+    {"t12_timeout_tx", case_t12_timeout_tx},
+    {"t12_awaiting", case_t12_awaiting},
+    {"t12_clock_off", case_t12_clock_off},
+    {"t12_reset_held", case_t12_reset_held},
+    {"t12_no_port", case_t12_no_port},
+    {"t12_already_reset", case_t12_already_reset},
+    {"t12_null", case_t12_null},
+#else
+    {"t12_unsupported", case_t12_unsupported},
+#endif
 };
 #define NCASES ((int)(sizeof(CASES) / sizeof(CASES[0])))
 

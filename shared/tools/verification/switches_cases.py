@@ -31,7 +31,9 @@ rows file) is VOID.
                       `if(R20_OWN_CM)`: fails, naming R20_PLANTED_C and R20_PLANTED_CM only
     on_<switch>       a build with one test-only or stock-off switch on (idf.py -D, a bench
                       build: the check reads any build folder): fails on that switch's refusal
-                      rules. Other entries may be named too, as refusals only, never as a pass
+                      rules, in every table that lists it (on_txabort and on_restart: the
+                      project's and twai_port's or restart_guard's, port step 1c on, so
+                      --base must be from then on). Other entries may be named too, as refusals only, never as a pass
                       (R20 reading (a), gen-inhibit reviewer, 2026-10-24: a row may refuse more
                       images than its own switch's); the detail names them. The R20 "shown
                       failing ... and passing" evidence; release_pass is the image built without
@@ -58,12 +60,17 @@ import release_cases as RC  # noqa: E402
 
 TOOLS = RC.TOOLS
 _FAIL = re.compile(r"^    (.+?): (\S+) (unlisted|stale|refusal|no table): ", re.M)
-SWITCH_ON = {   # case -> (-D defines, the switches whose refusal rules must fail)
+TWAI_PORT, RESTART_GUARD = "vtrux__twai_port", "vtrux__restart_guard"
+SWITCH_ON = {   # case -> (-D defines, the switches whose refusal rules must fail: a name in the
+    #                       project's table, or (scope, name) in a shared component's)
     "on_rxq": (("GI_INSTRUMENT_RXQ=1",), ("GI_INSTRUMENT_RXQ",)),
-    "on_txabort": (("GI_INSTRUMENT_TXABORT=1",), ("GI_INSTRUMENT_TXABORT",)),
+    # port step 1c: the probe and the restart test are the shared components' (twai_port T13,
+    # restart_guard G5), each with its own table; the project still tests the switch itself
+    "on_txabort": (("TWAI_PORT_TXABORT_PROBE=1",),
+                   ("TWAI_PORT_TXABORT_PROBE", (TWAI_PORT, "TWAI_PORT_TXABORT_PROBE"))),
     "on_abortwin": (("GI_INSTRUMENT_ABORTWIN=1",), ("GI_INSTRUMENT_ABORTWIN",)),
     "on_otafault": (("OTA_HEALTH_FAULT_INJECT=1",), ("OTA_HEALTH_FAULT_INJECT",)),
-    "on_restart": (("GI_TEST_RESTART_QUIESCE=1",), ("GI_TEST_RESTART_QUIESCE",)),
+    "on_restart": (("RESTART_GUARD_TEST=1",), ("RESTART_GUARD_TEST", (RESTART_GUARD, "RESTART_GUARD_TEST"))),
     "on_mqtt": (("WICAN_FEATURE_MQTT=ON",), ("WICAN_FEATURE_MQTT",)),
     "on_elm327": (("WICAN_FEATURE_ELM327=ON",), ("WICAN_FEATURE_ELM327",)),
     "on_realdash": (("WICAN_FEATURE_REALDASH=ON",), ("WICAN_FEATURE_REALDASH",)),
@@ -108,7 +115,8 @@ def scope_unlisted(out, scope):
 
 
 def refusals(switches):
-    return sorted((PROJECT, s, "refusal") for s in switches)
+    """(scope, symbol, "refusal") for each: a bare name is the project's."""
+    return sorted((s if isinstance(s, tuple) else (PROJECT, s)) + ("refusal",) for s in switches)
 
 
 def self_test():
@@ -120,6 +128,10 @@ def self_test():
     out2 = ("FAIL R20: 2 failure(s)\n    the project: GI_INSTRUMENT_RXQ refusal: the image carries '\"rxq\":{'\n"
             "    the project: GI_INSTRUMENT_RXQ refusal: the ELF defines rxq_reset\n")
     rd = "    the project: WICAN_FEATURE_REALDASH refusal: project row 'no boot-time bus enable in app_main': FAIL\n"
+    # a switch in two tables, the project's and a shared component's (on_txabort, on_restart)
+    pr = "FAIL R20: 2 failure(s)\n    the project: X_PROBE refusal: the project_name has the token '_x'\n"
+    cr = "    vtrux__twai_port: X_PROBE refusal: the ELF defines txab_handler\n"
+    two = refusals(["X_PROBE", (TWAI_PORT, "X_PROBE")])
     for label, args, want in (
             ("passes as wanted", (0, "R20 ...\nPASS R20\n", []), "PASS"),
             ("fails as wanted", (1, out1, w1), "PASS"),
@@ -145,7 +157,12 @@ def self_test():
                                                      refusals(["GI_INSTRUMENT_RXQ"]), True), "FAIL"),
             ("only the extra, refusals allowed", (1, "FAIL R20: 1\n" + rd, refusals(["GI_INSTRUMENT_RXQ"]), True),
              "FAIL"),
-            ("passes, refusals allowed", (0, "PASS R20\n", refusals(["GI_INSTRUMENT_RXQ"]), True), "FAIL")):
+            ("passes, refusals allowed", (0, "PASS R20\n", refusals(["GI_INSTRUMENT_RXQ"]), True), "FAIL"),
+            ("project's and component's refusal", (1, pr + cr, two), "PASS"),
+            ("the component's refusal missing", (1, pr, two), "FAIL"),
+            ("the project's refusal missing", (1, "FAIL R20: 1\n" + cr, two), "FAIL"),
+            ("the component's under the project's scope", (1, pr + cr.replace("vtrux__twai_port:", "the project:"),
+                                                           two), "FAIL")):
         v = judge(*args)[0]
         print("  %s judge(), %s: %s" % ("ok  " if v == want else "FAIL", label, v))
         ok &= v == want
