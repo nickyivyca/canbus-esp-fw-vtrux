@@ -118,7 +118,7 @@ id = "digest"
 kind = "product_digest_same_as"
 tree = "base"
 commit = "{PREMISE}"
-items = ["calc", "cf"]
+items = ["calc", "cf", "fw"]
 {EXTRA}'''
 
 
@@ -260,16 +260,26 @@ def test_rerun_never_passes():
 
 def test_premise_blocks():
     """A11: a premise that fails makes its items NOT EXERCISED, never PASS
-    or FAIL; they are not run; the acceptance does not pass."""
+    or FAIL; they are not run -- builds included (the charge-interposer
+    reviewer, 2026-11-01: a build is the expensive part) -- and the
+    acceptance does not pass."""
     r = Run(premise_later=True)
     assert r.rc == 1, r.rc
     text = r.read("README.md")
-    assert "NOT EXERCISED check calc" in text and "NOT EXERCISED canfail cf" in text, text[-2000:]
+    for want in ("NOT EXERCISED check calc", "NOT EXERCISED canfail cf",
+                 "NOT EXERCISED build fw"):
+        assert want in text, (want, text[-2000:])
     chain = os.path.join(r.rec, "chain")
     runs = [d for d in os.listdir(chain) if d.startswith("accept-s1")]
     with open(os.path.join(chain, runs[0], "record.json"), encoding="utf-8") as f:
         v = {x["id"]: x["verdict"] for x in json.load(f)["results"]}
     assert v.get("calc/run") == "NOT-RUN" and v.get("calc2/run") == "PASS", v
+    assert not [d for d in os.listdir(chain) if d.startswith("accept-builds")], \
+        "a blocked build ran: %s" % os.listdir(chain)
+    with open(os.path.join(r.rec, "builds", "fw.json"), encoding="utf-8") as f:
+        b = json.load(f)
+    assert b["verdict"] == "NOT-RUN" and "premise" in b.get("skipped", "") \
+        and not b.get("images"), b
 
 
 def test_stopped():
@@ -289,6 +299,7 @@ TESTS = [test_pass, test_adapter_committed, test_rerun_never_passes, test_premis
 MUTANTS = [
     ("adapter_from_commit", test_adapter_committed),
     ("premise_skip", test_premise_blocks),
+    ("premise_skip_builds", test_premise_blocks),
     ("cleanup_finally", test_stopped),
     ("record_first", test_stopped),
 ]

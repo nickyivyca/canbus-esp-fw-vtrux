@@ -11,8 +11,8 @@ In order:
   2. the adapter is loaded from a clean clone at the list's commit, so it is
      committed harness run from a commit the record names (A15)
   3. the list is checked (A2, A3, A8); the trees are made (A4)
-  4. the premises (A11): the items of one that fails are skipped, and NOT
-     EXERCISED
+  4. the premises (A11): the items of one that fails, builds included, are
+     not run, and are NOT EXERCISED
   5. the builds (A5), then the run's settings (A6)
   6. the can-fail mutants (A10), refused before anything runs if one cannot
      be applied
@@ -50,7 +50,7 @@ BENCH = C.BENCH
 # Each is switched off by a mutant in tests/test_accept_run.py, which must
 # then fail.
 RULES = {k: True for k in ("record_first", "adapter_from_commit", "premise_skip",
-                           "cleanup_finally")}
+                           "premise_skip_builds", "cleanup_finally")}
 
 
 def runner_identity():
@@ -132,8 +132,10 @@ def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None):
             if not p["held"]:
                 blocked |= set(p["items"] or all_ids)
         base_env = C.machine_env(adapter)
+        skip = {b["id"]: "a premise did not hold (A11)" for b in alist.builds
+                if b["id"] in blocked} if RULES["premise_skip_builds"] else {}
         builds = B.run_builds(repo, alist, adapter, machine, rec, made, parent, base_env,
-                              trees=trees)
+                              trees=trees, skip=skip)
         spath, s = ST.write_settings(settings_path, adapter, builds, trees, rec, made, parent)
         entries = CF.prepare(repo, alist, trees, adapter, parent, made, rec.say)
         suite = C.compile_suite(alist, trees, adapter, s, base_env, paths={
