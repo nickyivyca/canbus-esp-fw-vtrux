@@ -22,6 +22,8 @@ sys.path.insert(0, HERE)
 import scratch                                           # noqa: E402
 
 WINDOWS = os.name == "nt"
+GIT_ENV = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
+               GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
 
 
 def lp(p):
@@ -34,7 +36,7 @@ def lp(p):
 
 def git(cwd, *args):
     subprocess.run(["git", "-C", cwd] + list(args), check=True,
-                   capture_output=True, text=True)
+                   capture_output=True, text=True, env=GIT_ENV)
 
 
 def repo(name, ignore):
@@ -43,8 +45,6 @@ def repo(name, ignore):
     d = os.path.join(scratch.fresh(name), "repo")
     os.makedirs(d)
     git(d, "init", "-q")
-    git(d, "config", "user.email", "t@example.invalid")
-    git(d, "config", "user.name", "t")
     scratch.write(os.path.join(d, "f.txt"), "x\n")
     if ignore:
         scratch.write(os.path.join(d, ".gitignore"), "/scratch/\n")
