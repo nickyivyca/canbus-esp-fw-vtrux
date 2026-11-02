@@ -32,7 +32,9 @@ taken for the owner), the host and the platform.
                        read-only entry is made writable (on POSIX its folder
                        too) and tried again, then once more after 0.2 s; a
                        \\\\?\\ path on Windows, so a path past 260 characters
-                       is no obstacle; a link or junction is removed as a
+                       is no obstacle; the whole folder is tried again after
+                       waits of 0.05 s doubling to 1.6 s (about 3 s), for a
+                       Windows hold on a fresh folder; a link or junction is removed as a
                        link, never followed. Never ignore_errors: what it
                        cannot remove is returned as [(path, reason)] and
                        printed as LEFTOVER lines.
@@ -59,6 +61,11 @@ import sys
 import time
 
 OWNER_SUFFIX = ".owner.json"
+# remove() tries a folder's whole tree again after each of these waits, about
+# 3 s in all, as tests/_scratch.py does (gen-inhibit tester, 2026-11-01): a
+# Windows hold on a fresh folder (WinError 32) can outlast the handler's own
+# 0.2 s retry
+BACKOFF = tuple(0.05 * 2 ** i for i in range(6))
 
 
 class ScratchError(RuntimeError):
@@ -291,18 +298,24 @@ def remove(path, quiet=False, out=None):
         except OSError as e:
             failed.append((lp, e))
     elif os.path.isdir(lp):
-        # a second pass, after making writable what the first could not
-        # list or remove (a POSIX folder with no read permission)
-        for _ in range(2):
-            failed = []
-            try:
-                _rmtree(lp, _handler(failed))
-            except OSError as e:
-                failed.append((lp, e))
-            if not os.path.lexists(lp) or not failed:
+        # the whole tree again after each wait, for a hold that outlasts the
+        # handler's own retry (Windows Search or Defender on a fresh folder)
+        for wait in (0,) + BACKOFF:
+            time.sleep(wait)
+            # a second pass, after making writable what the first could not
+            # list or remove (a POSIX folder with no read permission)
+            for _ in range(2):
+                failed = []
+                try:
+                    _rmtree(lp, _handler(failed))
+                except OSError as e:
+                    failed.append((lp, e))
+                if not os.path.lexists(lp) or not failed:
+                    break
+                for p, _e in failed:
+                    _writable(p)
+            if not os.path.lexists(lp):
                 break
-            for p, _e in failed:
-                _writable(p)
     else:
         _writable(lp)
         try:
