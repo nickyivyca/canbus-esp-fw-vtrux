@@ -61,7 +61,7 @@ BENCH = C.BENCH
 RULES = {k: True for k in ("record_first", "adapter_from_commit", "premise_skip",
                            "premise_skip_builds", "cleanup_finally", "refuse_dirty",
                            "dev_never_pass", "identity_untracked", "check_verdict",
-                           "not_passed_listed")}
+                           "not_passed_listed", "nested_not_passed")}
 
 DEV_LINE = "DEV RUN, not evidence"
 
@@ -126,6 +126,26 @@ def _group_verdict(chain, group):
     vs = [r["verdict"] for r in chain["results"] if r["group"] == group]
     bad = [v for v in vs if v != "PASS"]
     return (bad[0] if bad else (vs[0] if vs else "absent")), ""
+
+
+def _suite_not_passed(chain, group, n):
+    """A suite run's every result that is not a plain PASS: the outer
+    chain's own for its group (the nested run's process), then, as
+    nested/<id>, every one in the nested record of its first, whole run,
+    where the suite's known fails sit, as KNOWN-FAIL (the charge-interposer
+    reviewer, 2026-11-02). With no nested record, or one that cannot be
+    read, a line says so: the list is then not the whole of it."""
+    out = J.not_passed(chain["results"], group)
+    if not RULES["nested_not_passed"]:
+        return out
+    if not n:
+        return out + [("nested record", "MISSING: the suite run left no nested.json")]
+    try:
+        with open(os.path.join(n["first"]["dir"], "record.json"), encoding="utf-8") as f:
+            results = json.load(f)["results"]
+    except (OSError, KeyError, ValueError) as e:
+        return out + [("nested record", "UNREADABLE: %r" % (e,))]
+    return out + [("nested/" + rid, v) for rid, v in J.not_passed(results)]
 
 
 def _side(name, alist, chain, runs_root, nested):
@@ -214,6 +234,9 @@ def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None, dev=Fals
         for i in items:
             if i["kind"] in ("check", "suite_run") and RULES["not_passed_listed"]:
                 i["not_passed"] = J.not_passed(chain["results"], C.group_name(i["id"]))
+            if i["kind"] == "suite_run" and RULES["not_passed_listed"]:
+                i["not_passed"] = _suite_not_passed(chain, C.group_name(i["id"]),
+                                                    nested.get(i["id"]))
         compares = []
         for c in alist.compares:
             try:
