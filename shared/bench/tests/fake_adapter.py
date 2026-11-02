@@ -68,12 +68,25 @@ def default_shell(path):
         "." + path.rsplit(".", 1)[-1] if "." in path else "")
 
 
-JUDGES = ("exit-code", "known-fails")
+JUDGES = ("exit-code", "known-fails", "sub-lines")
 
 
 def judge(name):
-    from vtrux_bench.run.model import exit_code_judge
-    return exit_code_judge
+    from vtrux_bench.run.model import Result, exit_code_judge
+    if name != "sub-lines":
+        return exit_code_judge
+
+    def sub_lines(run):
+        """one result per log line "SUB <name> <verdict>", in their order"""
+        out = []
+        for ln in run.log_text().splitlines():
+            p = ln.split()
+            if len(p) == 3 and p[0] == "SUB":
+                out.append(Result(p[2], p[1]))
+        return out
+    return sub_lines
+
+
 # the adapter's own comparers (A10), beside the core's (run-records,
 # transcript); each takes (side a, side b, the compare's spec, the adapter)
 # and gives its differences as {"kind", "line"}

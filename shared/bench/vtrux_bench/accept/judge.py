@@ -29,6 +29,14 @@ gave its expected verdict, every comparison held, every can-fail behaved as
 stated (and every build and suite run passed); otherwise each item that did
 not is listed.
 
+A check's verdict is that of all its results, whatever their order
+(check_verdict; the charge-interposer reviewer, 2026-11-02: an ERROR after a
+FAIL had been taken as the FAIL a list expected). PASS when every result is
+PASS, KNOWN-FAIL or NOT-APPLICABLE, as the chain runner counts them, and no
+known FAIL passed. Otherwise the first of these that any result gives: ERROR,
+VOID, NOT-RUN, INCONCLUSIVE, a known FAIL that passed, FAIL. So FAIL only
+when every result that is not a pass is a FAIL.
+
 RULES: each is switched off by a mutant in tests/test_accept_judge.py, which
 must then fail.
 """
@@ -45,7 +53,8 @@ from ..run.engine import product_digest
 RULES = {k: True for k in (
     "count_verdicts", "count_figures", "verdicts_only", "missing_new", "tolerance",
     "listed_exact", "listed_seen", "masks", "adapter_comparer", "premise_equal",
-    "premise_same_as", "not_exercised", "all_items", "expected_verdict", "every_item")}
+    "premise_same_as", "not_exercised", "all_items", "expected_verdict", "every_item",
+    "every_result", "ok_set", "known_passed")}
 
 VERDICT_KINDS = ("verdict", "missing", "new")
 
@@ -198,6 +207,41 @@ def premises(ps, trees, repo, adapter, parent, made):
 
 
 # ---- the verdict ------------------------------------------------------------
+# what a check's results count as (the chain runner's own ok set), and the
+# order in which the others decide its verdict
+CHECK_OK = ("PASS", "KNOWN-FAIL", "NOT-APPLICABLE")
+KNOWN_PASSED = "PASS, a known FAIL passed"
+CHECK_RANK = ("ERROR", "VOID", "NOT-RUN", "INCONCLUSIVE", KNOWN_PASSED, "FAIL")
+
+
+def check_verdict(results, group):
+    """(verdict, detail) of the chain group's results (a list check, a suite
+    run): see the module's text. "absent" if it has none; the detail names
+    each result that is not a pass, up to six."""
+    rs = [r for r in results if r["group"] == group]
+    if not rs:
+        return "absent", ""
+    got = []
+    for r in rs:
+        v = r["verdict"]
+        if RULES["known_passed"] and r.get("known_fail_passed"):
+            v = KNOWN_PASSED
+        ok = (v in CHECK_OK) if RULES["ok_set"] else (v == "PASS")
+        if not ok:
+            rid = r["id"][len(group) + 1:] if r["id"].startswith(group + "/") else r["id"]
+            got.append((rid, v))
+    if not got:
+        return "PASS", ""
+    if RULES["every_result"]:
+        v = min((g[1] for g in got),
+                key=lambda x: CHECK_RANK.index(x) if x in CHECK_RANK else -1)
+    else:
+        v = got[0][1]
+    detail = ", ".join("%s %s" % g for g in got[:6]) + (
+        ", and %d more" % (len(got) - 6) if len(got) > 6 else "")
+    return v, detail
+
+
 def item(kind, item_id, expected, got, detail=""):
     return {"kind": kind, "id": item_id, "expected": expected, "got": got,
             "detail": detail}

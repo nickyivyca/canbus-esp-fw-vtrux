@@ -60,7 +60,7 @@ BENCH = C.BENCH
 # then fail.
 RULES = {k: True for k in ("record_first", "adapter_from_commit", "premise_skip",
                            "premise_skip_builds", "cleanup_finally", "refuse_dirty",
-                           "dev_never_pass", "identity_untracked")}
+                           "dev_never_pass", "identity_untracked", "check_verdict")}
 
 DEV_LINE = "DEV RUN, not evidence"
 
@@ -118,9 +118,13 @@ def load_adapter(path):
 
 
 def _group_verdict(chain, group):
+    """(verdict, detail) of a check or suite run: all its results count,
+    whatever their order (judge.check_verdict, A12)."""
+    if RULES["check_verdict"]:
+        return J.check_verdict(chain["results"], group)
     vs = [r["verdict"] for r in chain["results"] if r["group"] == group]
     bad = [v for v in vs if v != "PASS"]
-    return bad[0] if bad else (vs[0] if vs else "absent")
+    return (bad[0] if bad else (vs[0] if vs else "absent")), ""
 
 
 def _side(name, alist, chain, runs_root, nested):
@@ -199,10 +203,10 @@ def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None, dev=Fals
                     nested[r_["id"]] = json.load(f)
         items = [J.item("build", b["id"], "PASS", br["verdict"])
                  for b in alist.builds for br in [builds[b["id"]]]]
-        items += [J.item("check", c["id"], c["expect"],
-                         _group_verdict(chain, C.group_name(c["id"]))) for c in alist.checks]
+        items += [J.item("check", c["id"], c["expect"], *_group_verdict(
+            chain, C.group_name(c["id"]))) for c in alist.checks]
         items += [J.item("suite_run", r_["id"], "PASS",
-                         _group_verdict(chain, C.group_name(r_["id"])),
+                         _group_verdict(chain, C.group_name(r_["id"]))[0],
                          "the first, whole run decides") for r_ in alist.suite_runs]
         compares = []
         for c in alist.compares:
