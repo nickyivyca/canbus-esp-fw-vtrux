@@ -18,6 +18,13 @@ until nothing reads them. Since the move:
 - Fixtures still come from SeaDrive: `REVERSE_IT_DIR` for the traces and
   goldens, and `L3_STIMULUS` (else the copy under `REVERSE_IT_DIR`) for the
   pinned L3 stimulus, which until the move was looked for beside the script.
+- The `.sh` scripts work in a run folder of their own under the tree's
+  `scratch/`, `scratch/charge-interposer-harness/<tool>/`, from
+  `../scratch_run.sh`, never the system temp folder, removed when the
+  script exits (tester, 2026-11-02, the reviewer's item (B)). Until then
+  they wrote to `$TMPDIR` or `/tmp`, and `busoff_mutations.sh` and
+  `twai_mutations.sh` to one fixed folder each, which two runs at once
+  shared. Tested by `../scratch_run_test.py`.
 
 | File | What |
 |---|---|

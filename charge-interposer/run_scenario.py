@@ -3763,7 +3763,8 @@ def check_invariants(trace_path):
 def check_flight_core(trace_path, keep=False):
     """-> (ok, why). Replay the recorded trace through machine.cpp.
 
-    `diff_one.sh` builds the runner (cached) and diffs both sides, which it
+    `diff_one.sh` builds the runner (each call, in a run folder of its own
+    under the tree's scratch/, since 2026-11-02) and diffs both sides, which it
     generates now -- there is no golden on disk, because a recording is not
     reproducible between runs and a stored one would be stale.
 

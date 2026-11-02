@@ -28,9 +28,11 @@ fi
 FW="$(cd "$CODE/firmware" && pwd)"
 HD="$FW/test/host_diff"
 FIX="$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/interposer-firmware"
-WORK="${TMPDIR:-/tmp}/cadmut_$$"
-rm -rf "$WORK"; mkdir -p "$WORK"
-trap 'rm -rf "$WORK"' EXIT
+# The work folder is this run's own under the tree's scratch/, never the
+# system temp folder, removed when the script exits (scratch_run.sh).
+. "$CODE/scratch_run.sh" || exit 2
+scratch_run hold-cadence-gate-mutation || exit 2
+WORK="$SCRATCH_RUN"
 TRACES="unit_hold_cadence_298_302 unit_hold_cadence_290"
 
 fail=0

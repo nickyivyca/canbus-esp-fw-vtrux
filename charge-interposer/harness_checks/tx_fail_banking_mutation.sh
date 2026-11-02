@@ -28,10 +28,11 @@ if [ -n "${INTERPOSER_CODE:-}" ] && \
   exit 2
 fi
 FW="$(cd "$CODE/firmware" && pwd)"
-WORK="${TMPDIR:-/tmp}/txfail_mut_$$"
-rm -rf "$WORK"
-mkdir -p "$WORK"
-trap 'rm -rf "$WORK"' EXIT
+# The work folder is this run's own under the tree's scratch/, never the
+# system temp folder, removed when the script exits (scratch_run.sh).
+. "$CODE/scratch_run.sh" || exit 2
+scratch_run tx-fail-banking-mutation || exit 2
+WORK="$SCRATCH_RUN"
 
 build_and_run() {   # $1 = tree; prints the case's output; returns its status
   local T="$1" HB="$1/test/host_bridge" SRC="$1/src" bin="$1/l2"
