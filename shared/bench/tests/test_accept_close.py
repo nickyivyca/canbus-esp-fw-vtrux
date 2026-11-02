@@ -36,12 +36,15 @@ class Adapter:
     artifacts README row."""
     PROJECT = "proj"
 
-    def __init__(self, hits=None, scan=True, row_fails=False):
+    def __init__(self, hits=None, scan=True, row_fails=False, scan_fails=False):
         self.hits, self.rows, self.row_fails = hits or [], [], row_fails
+        self.scan_fails = scan_fails
         if not scan:
             self.identifier_scan = None
 
     def identifier_scan(self, folder):
+        if self.scan_fails:
+            raise RuntimeError("the value file is missing")
         return list(self.hits)
 
     def artifacts_row(self, folder, summary):
@@ -177,6 +180,12 @@ def test_identifiers_reported():
     rec2, _s = opened()
     CL.close(rec2, summary(rec2), S.Made(), Adapter(scan=False))
     assert "no identifier scan" in read(rec2, "README.md"), read(rec2, "README.md")
+    # a scan that fails is recorded as failed, and the close still happens
+    rec3, _s = opened()
+    CL.close(rec3, summary(rec3), S.Made(), Adapter(scan_fails=True))
+    assert "identifier scan FAILED: RuntimeError: the value file is missing" in \
+        read(rec3, "README.md"), read(rec3, "README.md")
+    assert os.path.exists(os.path.join(rec3.path, "SHA256SUMS")), "the close did not happen"
 
 
 def test_cleanup_first():
@@ -249,6 +258,7 @@ MUTANTS = [
     ("close_once", test_closed_once),
     ("scan_hits", test_identifiers_reported),
     ("scan_absent", test_identifiers_reported),
+    ("scan_failure", test_identifiers_reported),
     ("cleanup_first", test_cleanup_first),
     ("leftovers_in", test_cleanup_first),
     ("late_outside", test_late_failure),
