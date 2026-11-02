@@ -4,6 +4,26 @@
       "class": "not a switch",
       "reason": "compiler-defined; the extern \"C\" wrapper in include/can_port.h",
       "kind": "library macro"
+    },
+    "CAN_PORT_HAVE_TWAI_PORT": {
+      "class": "not a switch",
+      "reason": "CMakeLists.txt defines it on the component, 1 when the build has the component with include/twai_port.h and 0 when it has none; can_port_restart.c then passes a TWAI port's stop to twai_port or answers \"not supported\" (C7)",
+      "kind": "computed value"
+    },
+    "c_dir": {
+      "class": "not a switch",
+      "reason": "CMakeLists.txt's board and TWAI driver search: each build component's COMPONENT_DIR, from idf_component_get_property() inside the loop (shared/boards B2, B5; C7)",
+      "kind": "computed value"
+    },
+    "can_port_board_count": {
+      "class": "not a switch",
+      "reason": "CMakeLists.txt's board search: list(LENGTH) of the components with include/board_pins.h, which must be 1 (shared/boards B2, B5)",
+      "kind": "computed value"
+    },
+    "can_port_twai_count": {
+      "class": "not a switch",
+      "reason": "CMakeLists.txt's TWAI driver search: list(LENGTH) of the components with include/twai_port.h, at most 1, which sets CAN_PORT_HAVE_TWAI_PORT (C7)",
+      "kind": "computed value"
     }
   }
 }
