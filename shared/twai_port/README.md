@@ -35,7 +35,7 @@ port index, all before `wican_init()`.
 
 | File | What | Owner |
 |---|---|---|
-| `SPEC.md`, `VALIDATION.md` | the component's spec, T1 to T11, and why each requirement is written as it is | the reviewers, as above |
+| `SPEC.md`, `VALIDATION.md` | the component's spec, T1 to T13, and why each requirement is written as it is | the reviewers, as above |
 | the port's code and its unit tests | T1 to T9, T12 | the implementor of the project that needs the change |
 | `test_app/` | T13: the transmit-abort probe | the implementor of the project that needs the change, as the port's code (T11) |
 | `unit/`'s scripted stub of the driver API | part of the unit tests: each case sets the driver's returns and checks the port's calls; it models no controller behaviour (no states, alerts or arbitration of its own) | the implementor, as the unit tests (gen-inhibit reviewer, 2026-10-31) |
