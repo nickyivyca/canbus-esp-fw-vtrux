@@ -48,8 +48,8 @@ def probe_json_run(body='{"probe":"gi_ecc"}'):
 
 def main():
     triggers = T.load_triggers()
-    crash_obs = triggers["GI_TEST_RESTART_QUIESCE"]["observe"]
-    tx_obs = triggers["GI_INSTRUMENT_TXABORT"]["observe"]
+    crash_obs = triggers["RESTART_GUARD_TEST"]["observe"]
+    tx_obs = triggers["TWAI_PORT_TXABORT_PROBE"]["observe"]
     rxq_obs = triggers["GI_INSTRUMENT_RXQ"]["observe"]
     rb_obs = triggers["OTA_HEALTH_FAULT_INJECT"]["observe"]
     inert_crash = {"reset": False, "http_status": {"GET": 404, "POST": 404}, "kept_running": True}

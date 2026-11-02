@@ -569,17 +569,28 @@ def b18(F):
                    "MATCH" if ok else "no match")]
 
 
+# Port step 1c moved the restart test and the TX-abort probe into vtrux/restart_guard and
+# vtrux/twai_port and renamed their switches. A run file from before it names the old
+# switch; the figure is named by the new one either way.
+RENAMED = {"RESTART_GUARD_TEST": "GI_TEST_RESTART_QUIESCE", "TWAI_PORT_TXABORT_PROBE": "GI_INSTRUMENT_TXABORT"}
+
+
 def inert_rows(t):
-    return re.findall(r"^(GI_\w+|OTA_\w+) +(PASS|FAIL) +(.+?) *$", t, re.M)
+    return re.findall(r"^(GI_\w+|OTA_\w+|RESTART_GUARD_\w+|TWAI_PORT_\w+) +(PASS|FAIL) +(.+?) *$", t, re.M)
+
+
+def inert_verdicts(rows, switch):
+    """The verdicts test_only_inert.py printed for switch, under its name or its pre-1c one."""
+    return [r[1] for r in rows if r[0] in (switch, RENAMED.get(switch))]
 
 
 @judge("B19present", "B")
 def b19present(F):
     figs, bad = {}, []
-    for tag, switch in (("rt", "GI_TEST_RESTART_QUIESCE"), ("txabort", "GI_INSTRUMENT_TXABORT"),
+    for tag, switch in (("rt", "RESTART_GUARD_TEST"), ("txabort", "TWAI_PORT_TXABORT_PROBE"),
                         ("abortwin", "GI_INSTRUMENT_ABORTWIN"), ("rxq", "GI_INSTRUMENT_RXQ")):
         rows = inert_rows(text(F.one(r"B19_present_%s\.txt" % tag)))
-        v = [r[1] for r in rows if r[0] == switch]
+        v = inert_verdicts(rows, switch)
         figs[switch] = fig(v[0] if len(v) == 1 else None)
         if v != ["PASS"]:
             bad.append("%s %s" % (switch, v))
@@ -590,12 +601,12 @@ def b19present(F):
 def b19absent(F):
     # GI_INSTRUMENT_RXQ is judged from its own run 30 s after the QUIESCE probe (reviewer, 2026-10-17);
     # straight after it, it read undetermined twice on e3d9437.
-    want = (("GI_TEST_RESTART_QUIESCE", r"B19_absent_prod\.txt"), ("GI_INSTRUMENT_ABORTWIN", r"B19_absent_prod\.txt"),
+    want = (("RESTART_GUARD_TEST", r"B19_absent_prod\.txt"), ("GI_INSTRUMENT_ABORTWIN", r"B19_absent_prod\.txt"),
             ("OTA_HEALTH_FAULT_INJECT", r"B19_absent_prod\.txt"), ("GI_INSTRUMENT_RXQ", r"B19_absent_prod_rxq_gap30\.txt"),
-            ("GI_INSTRUMENT_TXABORT", r"B19_absent_prod_txabort\.txt"))
+            ("TWAI_PORT_TXABORT_PROBE", r"B19_absent_prod_txabort\.txt"))
     figs, bad = {}, []
     for switch, pat in want:
-        v = [r[1] for r in inert_rows(text(F.one(pat))) if r[0] == switch]
+        v = inert_verdicts(inert_rows(text(F.one(pat))), switch)
         figs[switch] = fig(v[0] if len(v) == 1 else None)
         if v != ["PASS"]:
             bad.append("%s %s" % (switch, v))

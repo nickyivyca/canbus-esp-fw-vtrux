@@ -24,6 +24,11 @@ shared/twai_port (spec 3.3, 5.1 item 1, 5.2 item 1; twai_port T6, T8). So:
   the RX rows read GEN_INHIBIT_RX_QUEUE_LEN and its live assignment to rx_queue_len
       in gen_inhibit.c, of the project the build belongs to.
 
+Port step 1c (2026-11-01): the transmit-abort probe, exempt from both rows, moved from
+main/gi_txabort_probe.c to twai_port's test_app/twai_port_txabort_probe.c (T13), compiled
+only in the probe build. The probe build passes with it in the scan; its calls in any other
+file, its old path in main/ included, fail both rows.
+
 Each case builds a project in scratch/: main/, managed_components/vtrux__wican/,
 vtrux__twai_port/, vtrux__can_port/ and espressif__mdns/ (not this project's source),
 vtrux_build.json, and a build directory whose deps record is a fake `ninja -t deps`.
@@ -70,13 +75,17 @@ GI_C = ('#include "gi_sched.h"\n'
 MAIN = {
     "gen_inhibit.c": GI_C,
     "main.c": "void app_main(void) { wican_init(); wican_start(); }\n",
-    "gi_txabort_probe.c": "void probe(void) { twai_transmit(0, 0); twai_ll_set_cmd_abort_tx(0); }\n",
 }
 PORT = {
     "twai_port.c": "int twai_port_send(void) {\n    /* the only twai_transmit (T6) */\n    return twai_transmit(0, 0);\n}\n",
     "twai_port_ll_esp32c3.c": "int twai_port_abort_if_awaiting(void) { twai_ll_set_cmd_abort_tx(0); return 0; }\n",
     "twai_port.h": "int twai_port_send(void);\n",
 }
+# The transmit-abort probe (twai_port T13), main/gi_txabort_probe.c until port step 1c: in
+# twai_port's test_app/, compiled only in the probe build, and exempt from both rows there.
+PROBE_REL = "test_app/twai_port_txabort_probe.c"
+PROBE_C = "void probe(void) { twai_transmit(0, 0); twai_ll_set_cmd_abort_tx(0); }\n"
+PORT_WITH_PROBE = dict(PORT, **{PROBE_REL: PROBE_C})
 CAN_PORT = {"can_port.c": "int can_port_send(void) { return twai_port_send(0, 0); }\n"}
 WIFI_LIVE = "void wifi(void) {\n    esp_wifi_set_storage(WIFI_STORAGE_RAM);\n}\n"
 STOCK = {
@@ -103,6 +112,7 @@ def project(main=None, stock=None, port=None, can_port=None, mdns_call=False, na
                           (TPORT, dict(PORT, **(port or {}))), (CPORT, dict(CAN_PORT, **(can_port or {})))):
         for f, text in files.items():
             if text is not None:
+                os.makedirs(os.path.dirname(os.path.join(folder, f)), exist_ok=True)
                 with open(os.path.join(folder, f), "w") as fh:
                     fh.write(text)
     with open(os.path.join(MDNS, "mdns.c"), "w") as fh:
@@ -195,15 +205,32 @@ def main():
     def case(label, good, detail=""):
         checks.append((label, bool(good), detail))
 
-    project()
+    project(port=PORT_WITH_PROBE)
     r = both(deps(product_record()))
     case("product shape: one transmit owner passes", r[OWNER][0] is True and not r[OWNER][2], r[OWNER][1])
     case("product shape: the private abort is confined", r[ABORT][0] is True, r[ABORT][1])
-    case("product shape: the shared components' files are in the scan "
-         "(13: main/ 3, vtrux/wican 4, twai_port 3, can_port 1, board 1, logs 1)",
-         "in 13 files" in r[OWNER][1], r[OWNER][1])
+    case("product shape: the shared components' files are in the scan, the probe not compiled "
+         "(12: main/ 2, vtrux/wican 4, twai_port 3, can_port 1, board 1, logs 1)",
+         "in 12 files" in r[OWNER][1], r[OWNER][1])
     case("product shape: the abort row names the port's C3 file and gen_inhibit.c's port call",
          "C3 register file" in r[ABORT][1] and "twai_port_abort_if_awaiting (x1)" in r[ABORT][1], r[ABORT][1])
+
+    # port step 1c: the probe build compiles twai_port's test_app/ probe, the one exempt file
+    project(port=PORT_WITH_PROBE)
+    r = both(deps(product_record(extra=[os.path.join(TPORT, PROBE_REL)])))
+    case("the probe build (twai_port's test_app/ probe compiled): both rows pass, the probe in the scan",
+         r[OWNER][0] is True and r[ABORT][0] is True and "in 13 files" in r[OWNER][1], (r[OWNER][1], r[ABORT][1]))
+    other = "test_app/other_probe.c"
+    project(port=dict(PORT, **{other: PROBE_C}))
+    r = both(deps(product_record(extra=[os.path.join(TPORT, other)])))
+    case("the probe's calls in another compiled test_app/ file fail both rows, naming it",
+         r[OWNER][0] is False and "vtrux__twai_port/" + other in r[OWNER][1]
+         and r[ABORT][0] is False and "vtrux__twai_port/" + other in r[ABORT][1], (r[OWNER][1], r[ABORT][1]))
+    project(main={"gi_txabort_probe.c": PROBE_C})
+    r = both(deps(product_record()))
+    case("the probe at its pre-1c path, main/gi_txabort_probe.c, is no longer exempt: fails both rows",
+         r[OWNER][0] is False and "main/gi_txabort_probe.c" in r[OWNER][1] and r[ABORT][0] is False,
+         (r[OWNER][1], r[ABORT][1]))
 
     project(stock={"slcan.c": "void slcan(void) { twai_transmit(0, 0); }\n"})
     r = both(deps(product_record()))

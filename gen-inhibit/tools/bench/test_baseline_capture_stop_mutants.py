@@ -44,14 +44,14 @@ MUTANTS = [
     ("release: the release record's mv unquoted again", "x2_release_identify.sh",
      'mv "${GI_RUNS_DIR:-$DATA/runs}"/x2_hold_release_*.json', 'mv ${GI_RUNS_DIR:-$DATA/runs}/x2_hold_release_*.json'),
     ("otagroup: rt_self back", "baseline_b_otagroup.sh",
-     '      inert rt present --switch GI_TEST_RESTART_QUIESCE\n',
-     '      inert rt present --switch GI_TEST_RESTART_QUIESCE\n      ota rt_self "$(img rt)"\n'),
+     '      inert rt present --switch RESTART_GUARD_TEST\n',
+     '      inert rt present --switch RESTART_GUARD_TEST\n      ota rt_self "$(img rt)"\n'),
     ("otagroup: no page read at the end of rt", "baseline_b_otagroup.sh",
      '      py -3.14 -B $A/page_state.py --label "B12 rt end" --out "$D/B12_rt_end_page.json"; echo "rt end page exit $?"\n', ""),
     ("otagroup: the page read before test_only_inert", "baseline_b_otagroup.sh",
-     '      inert rt present --switch GI_TEST_RESTART_QUIESCE\n',
+     '      inert rt present --switch RESTART_GUARD_TEST\n',
      '      py -3.14 -B $A/page_state.py --label "B12 rt early" --out "$D/B12_rt_end_page.json"\n'
-     '      inert rt present --switch GI_TEST_RESTART_QUIESCE\n'),
+     '      inert rt present --switch RESTART_GUARD_TEST\n'),
 ]
 
 

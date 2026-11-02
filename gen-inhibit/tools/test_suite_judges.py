@@ -313,6 +313,39 @@ B9_CASES = [
     ("no record", None, B9_TEXT, "ERROR", "files"),
 ]
 
+# Port step 1c's switch names (suite_judges.RENAMED): the e3d9437 index's figure name -> today's.
+RENAMED_FROM = {old: new for new, old in J.RENAMED.items()}
+
+# B19 on files test_only_inert.py writes from port step 1c on, the switches by their new names:
+# (label, {file: text}, check, verdict). A pre-1c name still reads (the baseline's files above).
+B19_PRESENT = {"B19_present_rt.txt": "RESTART_GUARD_TEST         PASS  present: ['reset', 'http_status']\n",
+               "B19_present_txabort.txt": "TWAI_PORT_TXABORT_PROBE    PASS  present: ['tagged_frames', 'http_status']\n",
+               "B19_present_abortwin.txt": "GI_INSTRUMENT_ABORTWIN     PASS  present: ['page_key:abortwin']\n",
+               "B19_present_rxq.txt": "GI_INSTRUMENT_RXQ          PASS  present: ['page_key:rxq']\n"}
+B19_ABSENT = {"B19_absent_prod.txt": "RESTART_GUARD_TEST         PASS  absent\nGI_INSTRUMENT_ABORTWIN     PASS  absent\n"
+                                     "OTA_HEALTH_FAULT_INJECT    PASS  absent\n",
+              "B19_absent_prod_rxq_gap30.txt": "GI_INSTRUMENT_RXQ          PASS  absent\n",
+              "B19_absent_prod_txabort.txt": "TWAI_PORT_TXABORT_PROBE    PASS  absent\n"}
+B19_NEW = [
+    ("present, new names", B19_PRESENT, "B19present", "PASS"),
+    ("present, the restart test FAIL",
+     dict(B19_PRESENT, **{"B19_present_rt.txt": B19_PRESENT["B19_present_rt.txt"].replace("PASS", "FAIL")}),
+     "B19present", "FAIL"),
+    ("present, the probe's row under another name",
+     dict(B19_PRESENT, **{"B19_present_txabort.txt": B19_PRESENT["B19_present_txabort.txt"].replace(
+         "TWAI_PORT_TXABORT_PROBE", "TWAI_PORT_OTHER_PROBE  ")}), "B19present", "FAIL"),
+    ("present, the restart test under both names",
+     dict(B19_PRESENT, **{"B19_present_rt.txt": B19_PRESENT["B19_present_rt.txt"]
+                          + "GI_TEST_RESTART_QUIESCE    PASS  present: ['reset']\n"}), "B19present", "FAIL"),
+    ("absent, new names", B19_ABSENT, "B19absent", "PASS"),
+    ("absent, the probe FAIL",
+     dict(B19_ABSENT, **{"B19_absent_prod_txabort.txt": B19_ABSENT["B19_absent_prod_txabort.txt"].replace("PASS", "FAIL")}),
+     "B19absent", "FAIL"),
+    ("absent, the restart test's row missing",
+     dict(B19_ABSENT, **{"B19_absent_prod.txt": B19_ABSENT["B19_absent_prod.txt"].split("\n", 1)[1]}),
+     "B19absent", "FAIL"),
+]
+
 KEEP = (".txt", ".json", ".log")
 
 
@@ -367,9 +400,10 @@ def main():
         check("%s: the verdict is the index's (%s)%s" % (cid, want["verdict"], ", ruled %s since" % wv if cid in RULED else ""),
               lambda: [r["verdict"] for r in res] == [wv], [(r["verdict"], r["detail"]) for r in res])
         f = figures(res)
-        check("%s: every figure is the index's, and no other" % cid, lambda: f == want["figures"],
-              {k: (f.get(k), want["figures"].get(k)) for k in set(f) | set(want["figures"])
-               if f.get(k) != want["figures"].get(k)})
+        # the index names B19's figures by the switches' names at e3d9437; port step 1c renamed two
+        wf = {RENAMED_FROM.get(k, k): v for k, v in want["figures"].items()}
+        check("%s: every figure is the index's, and no other" % cid, lambda: f == wf,
+              {k: (f.get(k), wf.get(k)) for k in set(f) | set(wf) if f.get(k) != wf.get(k)})
 
     # 2. Each judge can fail.
     for n, (cid, sub, frx, old, new, want) in enumerate(EDITS, 1):
@@ -460,6 +494,20 @@ def main():
         check("B9, %s: %s, %r" % (label, want, phrase), lambda: [r["verdict"] for r in res] == [want]
               and phrase in res[0]["detail"] and (want != "PASS" or figures(res).get("trip6_latched") == 1), res)
     gi_paths.remove_tree(b9)
+
+    # 2e. B19 on files with port step 1c's switch names, which no baseline file has.
+    b19 = os.path.join(scratch, "b19_new_names")
+    for label, files, cid, want in B19_NEW:
+        gi_paths.remove_tree(b19)
+        os.makedirs(b19)
+        for n, body in files.items():
+            open(os.path.join(b19, n), "w", encoding="utf-8").write(body)
+        res = J.judge_one(cid, b19)
+        # a pass names its figures by the new names, never the old
+        check("%s, %s: %s" % (cid, label, want), lambda: [r["verdict"] for r in res] == [want]
+              and (want != "PASS" or (set(J.RENAMED) <= set(figures(res))
+                                      and not set(J.RENAMED.values()) & set(figures(res)))), res)
+    gi_paths.remove_tree(b19)
 
     # 3. No files, a judge that raises, a judge that returns nothing.
     empty = os.path.join(scratch, "empty")

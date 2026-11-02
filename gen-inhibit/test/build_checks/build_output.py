@@ -660,16 +660,19 @@ def check_no_instrument(path):
         ("GI_INSTRUMENT_RXQ",
          (b'"rxq":{',),
          ("s_rxq_max", "s_rxq_samples", "rxq_sample", "rxq_reset")),
-        ("GI_INSTRUMENT_TXABORT",
+        # GI_INSTRUMENT_TXABORT until port step 1c, which moved the probe to
+        # shared/twai_port's test_app/ (T13) and renamed its switch and its
+        # register call; the URI and the answer are unchanged.
+        ("TWAI_PORT_TXABORT_PROBE",
          (b'"probe":"gi_txabort"', b"/gi_txabort"),
          # txab_trial is NOT in this list, and the omission is the point: it
          # is static and the compiler inlines it away, so a table containing it
          # would claim coverage it does not have. The reviewer's mutation M5
          # (2026-09-27) proved it -- with only txab_trial left, the row passes on
          # a measurement image. These three are what nm actually reports:
-         # gi_txabort_register (T), txab_handler (t, address taken by the uri
-         # struct), txab_uri (d, registered with the server).
-         ("gi_txabort_register", "txab_handler", "txab_uri")),
+         # twai_port_txabort_register (T), txab_handler (t, address taken by the
+         # uri struct), txab_uri (d, registered with the server).
+         ("twai_port_txabort_register", "txab_handler", "txab_uri")),
         # Added 2026-10-03 with the instrument. `gs_abortwin_note` is non-static
         # precisely so that nm reports it -- see M5 above.
         ("GI_INSTRUMENT_ABORTWIN",
@@ -833,11 +836,14 @@ def check_not_rollback_rehearsal(path):
 
 RT_TOKEN = re.compile(r"_rt(?=_|$)")
 RESTART_TEST_MARKERS = (b"/gi_quiesce", b'{"build":"restart-test"', b"expected ?crash=illegal|abort")
-RESTART_TEST_SYMS = ("gi_restart_test_register", "gi_restart_test_pre_install", "gi_restart_record_get")
+# gi_restart_test_* and gi_restart_record_get until port step 1c, which moved the
+# test to shared/restart_guard's test_app/ (G5) and the record to the guard
+RESTART_TEST_SYMS = ("restart_guard_test_register", "restart_guard_test_pre_install", "restart_guard_record_get")
 
 
 def check_no_restart_test(path):
-    """This image must NOT be the restart test build (GI_TEST_RESTART_QUIESCE).
+    """This image must NOT be the restart test build (RESTART_GUARD_TEST, until
+    port step 1c GI_TEST_RESTART_QUIESCE).
 
     ADDED 2026-10-13 (spec 12.3 item 3, the refusal row for a test-only switch).
     The test build adds GET/POST /gi_quiesce: the restart record, and a crash
@@ -862,7 +868,7 @@ def check_no_restart_test(path):
         return
     hits = [m.decode("latin-1") for m in RESTART_TEST_MARKERS if m in img]
     row("no restart test feature in the image", not hits,
-        "image carries %s -- built with GI_TEST_RESTART_QUIESCE (a crash trigger "
+        "image carries %s -- built with RESTART_GUARD_TEST (a crash trigger "
         "on /gi_quiesce); never flash this to the truck" % ", ".join(repr(h) for h in hits)
         if hits else "none of the %d restart-test markers are in the image"
         % len(RESTART_TEST_MARKERS))
@@ -1263,8 +1269,9 @@ def _count_calls(p, needle):
 
 
 # The instrument-only abort probe: never in a flight build, refused by the
-# integrity check (spec 3.2's exemption).
-PROBE = "main/gi_txabort_probe.c"
+# integrity check (spec 3.2's exemption). main/gi_txabort_probe.c until port
+# step 1c moved it to shared/twai_port's test_app/ (T13).
+PROBE = "managed_components/vtrux__twai_port/test_app/twai_port_txabort_probe.c"
 
 # The shared TWAI port (shared/twai_port), since port step 1b: its files as the
 # shipping source labels them, from the copy the build downloaded.

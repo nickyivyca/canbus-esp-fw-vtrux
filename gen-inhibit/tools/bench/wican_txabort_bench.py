@@ -3,7 +3,8 @@
 
     py -3.11 gen-inhibit/tools/bench/wican_txabort_bench.py
 
-Needs the GI_INSTRUMENT_TXABORT measurement build on the device (build-txabort).
+Needs the TWAI_PORT_TXABORT_PROBE measurement build on the device (build-txabort;
+GI_INSTRUMENT_TXABORT until port step 1c moved the probe to vtrux/twai_port, T13).
 The shipping image has no /gi_txabort endpoint and E3 refuses any image that does.
 
 WHY IT EXISTS. Spec 5.2 specifies a transmit scheduler that preempts a telemetry
@@ -108,7 +109,7 @@ HOST = "192.168.80.1"
 BITRATE = 500000
 SETTLE_S = 2.0
 
-TRIAL_ID = 0x7FE            # matches TXAB_ID in main/gi_txabort_probe.c
+TRIAL_ID = 0x7FE            # matches TXAB_ID in vtrux/twai_port's test_app/twai_port_txabort_probe.c
 TAG_HI = 0xAB
 TAG_TRIAL = 0x7E
 TAG_FOLLOW = 0x7F
@@ -255,7 +256,7 @@ def run_probe(phase, **kw):
                          % (phase, e.code, body))
     except urllib.error.URLError as e:
         raise SystemExit("probe unreachable for phase=%s (%s). Is the "
-                         "GI_INSTRUMENT_TXABORT build flashed?" % (phase, e))
+                         "TWAI_PORT_TXABORT_PROBE build flashed?" % (phase, e))
     try:
         rec = json.loads(b)
     except ValueError:

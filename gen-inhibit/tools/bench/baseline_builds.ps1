@@ -21,9 +21,11 @@ $Builds = @($Builds | ForEach-Object { $_ -split "," } | Where-Object { $_ })
 $defs = @{
     "man"      = @();
     "man2"     = @();
-    "rt"       = @("-DGI_TEST_RESTART_QUIESCE=1");
+    # rt and txabort: vtrux/restart_guard's and vtrux/twai_port's switches since
+    # port step 1c (GI_TEST_RESTART_QUIESCE and GI_INSTRUMENT_TXABORT before).
+    "rt"       = @("-DRESTART_GUARD_TEST=1");
     "rxq"      = @("-DGI_INSTRUMENT_RXQ=1");
-    "txabort"  = @("-DGI_INSTRUMENT_TXABORT=1");
+    "txabort"  = @("-DTWAI_PORT_TXABORT_PROBE=1");
     "abortwin" = @("-DGI_INSTRUMENT_ABORTWIN=1");
     "flt"      = @("-DOTA_HEALTH_FAULT_INJECT=1");
     # Spec 3.2 / 12.3 item 3 (2026-10-16): the stock features, off in this
