@@ -47,3 +47,16 @@ PINS = {}
 
 def shared_pins(repo, commit):
     return dict(PINS)
+
+
+# the product's files in a tree (A4: the product digest), repo-relative
+def product_files(root):
+    return ["proj/check.py", "proj/suite.py"]
+
+
+# where a tree's checkouts go inside its folder (A4): the project's, and
+# each shared component's
+def tree_paths(name, tree):
+    out = {"project": "project"}
+    out.update({c: "shared-%s" % c for c in tree["shared"]})
+    return out
