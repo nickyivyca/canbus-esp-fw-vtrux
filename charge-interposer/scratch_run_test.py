@@ -663,9 +663,13 @@ MUTANTS = [
      '  echo "$(dirname "$_SR_HOME")/scratch"', '  echo "$_SR_HOME/scratch"', None),
     ("the worktree not looked for", SR,
      '    if [ -e "$d/.git" ]; then echo "$d/scratch"; return 0; fi\n', "", None),
-    ("busoff back in its fixed /tmp folder", "harness_checks/busoff_mutations.sh",
+    # in the test's TMPDIR, not a fixed /tmp folder: the writers' case runs
+    # the mutant, and a fixed /tmp/busoff_mut would be made for real (it
+    # was, on both machines, 2026-11-02); the scan sees /tmp either way
+    ("busoff back in the system temp folder", "harness_checks/busoff_mutations.sh",
      '. "$CODE/scratch_run.sh" || exit 2\nscratch_run busoff-mutations || exit 2\n'
-     'WORK="$SCRATCH_RUN"', 'WORK=/tmp/busoff_mut\nrm -rf "$WORK"\nmkdir -p "$WORK"', None),
+     'WORK="$SCRATCH_RUN"', 'WORK="${TMPDIR:-/tmp}/busoff_mut"\nrm -rf "$WORK"\n'
+     'mkdir -p "$WORK"', None),
     ("host_unit's binaries in TMPDIR", "firmware/test/host_unit/run.sh",
      'bin="$SCRATCH_RUN/$name"', 'bin="${TMPDIR:-/tmp}/${name}_$$"', None),
     ("diff_all's runner beside the script", "firmware/test/host_diff/diff_all.sh",
