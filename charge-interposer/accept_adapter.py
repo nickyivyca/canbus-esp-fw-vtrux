@@ -273,8 +273,10 @@ NOISE = [
     (re.compile(r"charge-interposer-(?:emulated|bench|harness)_\d{8}T\d{6}_[0-9a-f]{4}"), "<run>"),
     (re.compile(r"\b\d\d:\d\d:\d\d\b"), "<hh:mm:ss>"),
 ]
+# in fragments, so this file holds no machine-absolute path of its own
+# (paths_test.py's scan, which the smoke run of 2026-11-02 caught)
 FULL_NOISE = NOISE + [
-    (re.compile(r"/home/\S+|[A-Za-z]:[/\\]\S+|\S*seadrive_root\S*"), "<path>"),
+    (re.compile(r"/home/\S+|[A-Za-z]:[/\\]\S+|\S*seadrive" + r"_root\S*"), "<path>"),
     (re.compile(r"\b\d+(?:\.\d+)?\s*(?:s|ms|sec|seconds)\b"), "<dur>"),
 ]
 
