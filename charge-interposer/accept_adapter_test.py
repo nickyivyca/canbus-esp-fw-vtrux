@@ -142,6 +142,43 @@ def test_shells(A, work):
     else:
         raise AssertionError("git-bash with no bash setting was taken")
     assert A.default_shell("x/run.sh") == "git-bash" and A.default_shell("x/t.py") == "python"
+    # on a remote host (ACCEPT-SPEC A4, A7): its own python, -B once; its own
+    # bash, which on a Linux host is plain bash
+    s["hosts"]["madhouse"] = {"python": ["python3", "-B"], "ssh": "m", "workroot": "/w"}
+    assert A.shell_argv("python", s, host="madhouse") == ["python3", "-B"], \
+        A.shell_argv("python", s, host="madhouse")
+    assert A.shell_argv("git-bash", s, host="madhouse") == ["bash"]
+    try:
+        A.shell_argv("powershell", s, host="madhouse")
+    except A.AdapterError:
+        pass
+    else:
+        raise AssertionError("powershell on madhouse was taken")
+
+
+def test_madhouse_entries(A, work):
+    """A8, A15: the checks bench_suite runs on madhouse only are catalogue
+    entries tagged "madhouse", each a committed file in this tree with the
+    suite's arguments, judge and L3_STIMULUS: the host bridge, host unit and
+    host diff, check-port, regress, the madhouse mutants and every sim."""
+    import bench_suite as BS
+    by = {e["id"]: e for e in A.catalogue(REPO, git(REPO, "rev-parse", "HEAD"))}
+    mad = {i: e for i, e in by.items() if "madhouse" in e["tags"]}
+    for i in ("host-bridge", "host-unit", "host-diff", "check-port", "regress-all"):
+        assert i in mad, i
+    assert mad["host-bridge"]["judge"] == "host-bridge" and mad["host-bridge"]["shell"] == "git-bash"
+    assert mad["regress-all"]["args"] == ["--all"], mad["regress-all"]
+    for cid, _argv in BS.MADHOUSE_MUTANTS:
+        assert cid in mad, cid
+    assert mad["monitor-6h-diff-corrupt-pin"]["judge"] == "corrupt-pin"
+    for s in BS.SIM_SCENARIOS:
+        e = mad["sim." + s]
+        assert e["args"][:1] == [s] and "--time-scale" in e["args"] and e["judge"] == "scenario" \
+            and e.get("cls") == "wallclock", e
+    for e in mad.values():
+        assert e["env"].get("L3_STIMULUS") == "{madhouse_artifacts}/l3_stimulus.txt", e
+        assert git(REPO, "cat-file", "-t", "HEAD:" + e["path"]) == "blob", e["path"]
+        assert e["judge"] in A.JUDGES, e
 
 
 def test_identifier_scan(A, work):
@@ -277,8 +314,8 @@ def test_run_logs(A, work):
 
 
 TESTS = [test_identity, test_catalogue, test_list_loads, test_tree_names, test_shells,
-         test_identifier_scan, test_artifacts_row, test_masked_log, test_sim_judged,
-         test_run_logs]
+         test_madhouse_entries, test_identifier_scan, test_artifacts_row, test_masked_log,
+         test_sim_judged, test_run_logs]
 
 MUTANTS = [
     ("suites from another file", '"charge-interposer/bench_suite.py:%s"', '"charge-interposer/suite.py:%s"'),
@@ -308,6 +345,14 @@ MUTANTS = [
     ("carried logs from this run", '    src = r.get("carried_from") or os.path.basename(side["dir"])',
      '    src = os.path.basename(side["dir"])'),
     ("sims by whole log", '        if cid.startswith("m-sims/"):', '        if False:'),
+    ("the local python on a host", 'list(settings["hosts"][host]["python"])',
+     'list(settings["hosts"]["local"]["python"])'),
+    ("a sim's judge dropped", '                        judge="scenario", cls="wallclock")',
+     '                        cls="wallclock")'),
+    ("no L3_STIMULUS on madhouse", '    env = {"L3_STIMULUS": "{madhouse_artifacts}/l3_stimulus.txt"}',
+     '    env = {}'),
+    ("a madhouse mutant dropped", "    for cid, argv in BS.MADHOUSE_MUTANTS:\n",
+     "    for cid, argv in BS.MADHOUSE_MUTANTS[1:]:\n"),
 ]
 
 

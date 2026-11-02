@@ -12,9 +12,12 @@ first, for port step 2a). This first cut gives:
                      runner's product digest and the chain runner's agree
   catalogue          the harness-test catalogue (A8): the suite's own lists
                      -- the Python tests, the bench drivers' self-tests and
-                     can-fails, the local harness checks -- each a committed
-                     file with its arguments, shell, tags and the paths it
-                     covers
+                     can-fails, the local harness checks, and tagged
+                     "madhouse" what the suite runs on madhouse only (the
+                     host bridge, unit and diff suites, check-port, regress,
+                     the madhouse mutants, every sim) -- each a committed
+                     file with its arguments, shell, judge, tags and the
+                     paths it covers
   tree_env,          what names a tree to the code run in it: INTERPOSER_CODE
   tree_settings      (paths.code_dir() refuses any other) and a suite run's
                      interposer_code
@@ -42,10 +45,21 @@ first, for port step 2a). This first cut gives:
                                  one run only, sims (m-sims/) by sim-judged,
                                  the rest by masked-log; a carried result's
                                  log is read from the run it came from
+THE MADHOUSE HOST. A madhouse entry runs from a tree on madhouse (a list's
+[trees.<name>] with host = "madhouse"), which the runner makes under the
+host's workroot in the settings and removes with everything in it there
+that matches what it makes. So acceptance runs use settings of their own
+(accept_settings_<host>.json beside the bench settings in reverse-it's
+interposer-firmware/), whose madhouse workroot is a folder the acceptance
+runner alone uses -- never /tmp/interposer-tester/runner, where the chain
+runner's bench-suite runs leave their folders, nor one holding run folders
+kept by hand (the charge-interposer reviewer, 2026-11-02).
+
 Not yet: build targets (ESP-IDF from port step 2a, whose build commands the
 2a build message gives; the reviewer, 2026-11-01: wait for it), settings
 keys from builds, shared pins (this branch carries its own shared/ until
-its first re-pin), and the madhouse lane (remote trees in the core).
+its first re-pin), and tree_setup (installing the pinned canre and
+can-tools in each tree; the core hook comes first).
 
 Tests: accept_adapter_test.py (with --can-fail), run against the core named
 by ACCEPT_CORE.
@@ -95,6 +109,9 @@ def tree_paths(name, tree):
 
 
 def _code(tree):
+    if tree.get("remote"):                       # a posix host: madhouse
+        import posixpath
+        return posixpath.join(tree["project_dir"], "charge-interposer")
     return os.path.join(tree["project_dir"], "charge-interposer")
 
 
@@ -116,17 +133,24 @@ def default_shell(path):
         os.path.splitext(path)[1])
 
 
-def shell_argv(shell, settings):
+def shell_argv(shell, settings, host="local"):
+    """The command a check's file runs with, on its host: the host's python
+    from the settings (-B once); bash (Git Bash by its full path locally, a
+    bare bash on Windows being WSL's; plain bash on a Linux host);
+    PowerShell locally only."""
     if shell == "python":
-        return list(settings["hosts"]["local"]["python"]) + ["-B"]
+        py = list(settings["hosts"][host]["python"])
+        return py if "-B" in py else py + ["-B"]
     if shell == "git-bash":
+        if host != "local":
+            return ["bash"]
         if not settings.get("bash"):
             raise AdapterError("the settings name no bash: give Git Bash by its full "
                                "path (a bare bash on Windows is WSL's)")
         return [settings["bash"]]
-    if shell == "powershell":
+    if shell == "powershell" and host == "local":
         return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]
-    raise AdapterError("no shell %r" % (shell,))
+    raise AdapterError("no shell %r on host %s" % (shell, host))
 
 
 def judge(name):
@@ -168,7 +192,36 @@ def catalogue(repo, commit):
     for cid, argv in BS.HARNESS_LOCAL:
         path = argv[0].replace("{interposer_code}/", "charge-interposer/")
         out.append(_entry(cid, path, argv[1:], ["harness", "harness-local"]))
+    # what bench_suite runs on madhouse only (Linux: bash scripts, the sims)
+    out.append(_mad("host-bridge", "charge-interposer/firmware/test/host_bridge/run.sh", [],
+                    shell="git-bash", judge="host-bridge"))
+    out.append(_mad("host-unit", "charge-interposer/firmware/test/host_unit/run.sh", [],
+                    shell="git-bash", timeout_s=1800))
+    out.append(_mad("host-diff", "charge-interposer/firmware/test/host_diff/diff_all.sh", [],
+                    shell="git-bash", timeout_s=7200))
+    out.append(_mad("check-port", "charge-interposer/firmware/test/host_diff/check_port.py", []))
+    out.append(_mad("regress-all", "charge-interposer/regress.py", ["--all"], timeout_s=7200))
+    for cid, argv in BS.MADHOUSE_MUTANTS:
+        shell = "python" if argv[0] == "@python" else "git-bash"
+        judge = {"corrupt_pin_judge": "corrupt-pin"}.get(BS.MUTANT_JUDGES.get(cid), "script")
+        out.append(_mad(cid, "charge-interposer/" + argv[1], argv[2:], shell=shell,
+                        judge=judge, timeout_s=7200))
+    for s in BS.SIM_SCENARIOS:
+        out.append(_mad("sim." + s, "charge-interposer/run_scenario.py",
+                        [s, "--time-scale", "1", "--keep-traces", "--outdir", "{outdir}"],
+                        timeout_s=4 * 3600,
+                        judge="scenario", cls="wallclock"))
     return out
+
+
+def _mad(cid, path, args, shell="python", judge="script", cls="build", timeout_s=3600):
+    """A madhouse entry, with the environment bench_suite gives every
+    madhouse check (INTERPOSER_CODE comes from tree_env; canre from the
+    tree's own install)."""
+    env = {"L3_STIMULUS": "{madhouse_artifacts}/l3_stimulus.txt"}
+    e = _entry(cid, path, args, ["madhouse"], timeout_s)
+    e.update(env=env, shell=shell, judge=judge, cls=cls)
+    return e
 
 
 # ---- comparers (A10) --------------------------------------------------------
