@@ -291,6 +291,15 @@ def case_run(base):
     with M.run("r", start=wt) as d:
         pass
     check(not os.path.exists(d), "6. run(): and when it does not")
+    check(not os.path.exists(M.tool_dir("r", start=wt)),
+          "6. the tool's folder goes with its last run folder (reviewer, 2026-11-02)")
+    a, b = M.make("two", start=wt), M.make("two", start=wt)
+    M.remove(a)
+    check(os.path.isdir(b), "6. a tool folder still holding another run's folder stays")
+    M.remove(b)
+    check(not os.path.exists(M.tool_dir("two", start=wt)) and
+          os.path.isdir(os.path.join(M.root(wt), M.HARNESS)),
+          "6. and goes with that one; charge-interposer-harness/ itself stays")
 
 
 def _sweep_tree(base):
@@ -468,6 +477,9 @@ MUTANTS = [
      "        if os.path.isdir(p):"),
     ("make() does not prune",
      "    prune(tool, start)\n", "\n"),
+    ("an empty tool folder left", "        _drop_empty_tool_dir(lp)\n", "        pass\n"),
+    ("the tool folder removed with another run's in it",
+     "        os.rmdir(parent)\n", "        shutil.rmtree(parent)\n"),
     ("run() without the finally",
      "    try:\n        yield p\n    finally:\n        remove(p)",
      "    yield p\n    remove(p)"),

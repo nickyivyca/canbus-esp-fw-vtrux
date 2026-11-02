@@ -30,7 +30,8 @@ it, where the harness's walks over charge-interposer/ would meet it.
                 and tries again, on a \\\\?\\ path on Windows so a path past
                 260 characters is no obstacle. Never ignore_errors: what it
                 cannot remove is printed, one LEFTOVER line each with the
-                reason, and returned.
+                reason, and returned. A run folder's tool folder goes too
+                once nothing else is in it (reviewer, 2026-11-02).
   state(path)   live (the owner is running), finished (it is not, or the
                 pid is now another process's), no-owner, or other-host
                 (another machine's, or another platform's: a WSL
@@ -305,7 +306,23 @@ def remove(path, quiet=False):
         if len(left) > 20:
             print("scratch_dir: LEFTOVER ... and %d more under %s"
                   % (len(left) - 20, _short(lp)), flush=True)
+    if not left:
+        _drop_empty_tool_dir(lp)
     return left
+
+
+def _drop_empty_tool_dir(lp):
+    """Once a run folder is gone, its tool's folder
+    (<root>/charge-interposer-harness/<tool>/) goes too if nothing else is
+    in it (the reviewer, 2026-11-02: 41 empty ones were left on NICKY-XPS).
+    rmdir only: a folder still holding another run's is left as it is."""
+    parent = os.path.dirname(lp)
+    if os.path.basename(os.path.dirname(parent)) != HARNESS:
+        return
+    try:
+        os.rmdir(parent)
+    except OSError:
+        pass                # not empty (another run's folder), or gone already
 
 
 # ---- run folders --------------------------------------------------------
@@ -332,8 +349,16 @@ def make(tool, start=None):
         raise ValueError("tool must be one plain folder name: %r" % (tool,))
     prune(tool, start)
     d = tool_dir(tool, start)
-    os.makedirs(d, exist_ok=True)
-    p = tempfile.mkdtemp(prefix="%s-%d-" % (tool, os.getpid()), dir=d)
+    # another run removing the last folder in d drops d (remove()); made
+    # again if that falls between the two calls
+    for attempt in range(3):
+        os.makedirs(d, exist_ok=True)
+        try:
+            p = tempfile.mkdtemp(prefix="%s-%d-" % (tool, os.getpid()), dir=d)
+            break
+        except FileNotFoundError:
+            if attempt == 2:
+                raise
     with open(os.path.join(p, OWNER), "w", encoding="utf-8", newline="\n") as f:
         json.dump(owner_record(), f, sort_keys=True)
         f.write("\n")
