@@ -63,7 +63,21 @@ JUDGES = ("exit-code", "known-fails")
 def judge(name):
     from vtrux_bench.run.model import exit_code_judge
     return exit_code_judge
-COMPARERS = ("transcript", "run-records")
+# the adapter's own comparers (A10), beside the core's (run-records,
+# transcript); each takes (side a, side b, the compare's spec, the adapter)
+# and gives its differences as {"kind", "line"}
+COMPARERS = ("fake-count",)
+
+
+def comparer(name):
+    def count(a, b, spec, adapter):
+        na, nb = len(a["record"]["results"]), len(b["record"]["results"])
+        return [] if na == nb else [{"kind": "text", "line": "count %d -> %d" % (na, nb)}]
+    return {"fake-count": count}[name]
+
+
+# named masks a transcript comparison may use (A10)
+MASKS = {"tree-root": r"tree-[a-z]+-[0-9]+"}
 SUITES = {"emulated": "proj/suite.py:EMULATED", "bench": "proj/suite.py:BENCH"}
 
 # the committed harness-test catalogue (A8, A15): per entry its path,

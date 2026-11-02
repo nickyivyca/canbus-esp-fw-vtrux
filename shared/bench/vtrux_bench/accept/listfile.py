@@ -39,7 +39,8 @@ Which harness tests a step runs is the list's selector over the adapter's
 committed catalogue, and only that (A8): the runner adds and drops none.
 
 The adapter (A15) gives: PROJECT, TARGETS {name: {"options": [...]}}, SHELLS,
-default_shell(path), JUDGES, COMPARERS, SUITES {name: "<path>:<attr>"},
+default_shell(path), JUDGES, COMPARERS (its own, beside the core's
+run-records and transcript), SUITES {name: "<path>:<attr>"},
 catalogue(repo, commit) -> [entry] and shared_pins(repo, commit) ->
 {component: commit or tag}.
 
@@ -109,6 +110,8 @@ CLS = ("light", "build", "wallclock")
 COMPARE_EXPECT = ("identical", "same-verdicts", "within", "listed")
 CANFAIL_EXPECT = ("new-fail-line", "verdict-flips", "fails")
 PREMISES = ("product_digest_equal", "product_digest_same_as", "board_read")
+# the core's comparers (judge.py), which a list may name beside the adapter's
+BUILTIN_COMPARERS = ("run-records", "transcript")
 
 
 class ListError(Exception):
@@ -474,7 +477,8 @@ def load(repo, spec, adapter):
     for c in compares:
         where = "compare %s" % q(c.get("id"))
         if "comparer" in c:
-            adapter_name(where, "comparer", c["comparer"], adapter.COMPARERS)
+            adapter_name(where, "comparer", c["comparer"],
+                         set(adapter.COMPARERS) | set(BUILTIN_COMPARERS))
         if c.get("expect") not in COMPARE_EXPECT:
             errs.append("%s: expect %s is not one of %s" % (where, q(c.get("expect")),
                                                             ", ".join(COMPARE_EXPECT)))
