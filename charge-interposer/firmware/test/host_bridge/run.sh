@@ -26,6 +26,14 @@
 #           line for line.
 # run.sh --can-fail is the shared fake's can-fail
 # (../../../harness_checks/shared_fake_canfail.py).
+#
+# WHERE IT WORKS: one folder per run, W, under the tree's own scratch/, at
+# scratch/charge-interposer-harness/host-bridge/run_XXXXXX, never the system
+# temp folder (AGENTS.md "Files and folders"; the charge-interposer
+# reviewer, 2026-11-02). Every test binary is built there, and so is
+# TWAI_FAKE=shared's copy. It is removed when run.sh ends, pass, fail or
+# refusal, with the two tool folders above it if that leaves them empty; a
+# folder it cannot remove is printed with its path.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SRC="$HERE/../../src"
@@ -34,6 +42,17 @@ case "${1:-}" in
   --can-fail) exec python3 "$HERE/../../../harness_checks/shared_fake_canfail.py" ;;
   *) echo "usage: run.sh [--can-fail]" >&2; exit 2 ;;
 esac
+# the tree's root: host_bridge is charge-interposer/firmware/test/host_bridge
+ROOT="$(cd "$HERE/../../../.." && pwd)"
+WT="$ROOT/scratch/charge-interposer-harness"
+mkdir -p "$WT/host-bridge" || exit 2
+W="$(mktemp -d "$WT/host-bridge/run_XXXXXX")" || exit 2
+cleanup() {
+  rm -rf "$W"
+  if [ -e "$W" ]; then echo "run.sh: could not remove $W" >&2; fi
+  rmdir "$WT/host-bridge" "$WT" 2>/dev/null || true
+}
+trap cleanup EXIT
 # B: the folder the tests and our fakes are built from
 B="$HERE"
 FAKE_SRCS=()
@@ -48,11 +67,10 @@ case "${TWAI_FAKE:-own}" in
       exit 2
     fi
     # The copy sits at host_bridge's own depth, test/host_bridge under a
-    # throwaway folder T with a copy of src/ beside test/, so a test's
-    # relative #include "../../src/main.cpp" (test_event_layout) reaches
-    # main.cpp as it does from host_bridge itself.
-    T="$(mktemp -d "${TMPDIR:-/tmp}/host_bridge_shared_XXXXXX")" || exit 2
-    trap 'rm -rf "$T"' EXIT
+    # folder T in this run's W, with a copy of src/ beside test/, so a
+    # test's relative #include "../../src/main.cpp" (test_event_layout)
+    # reaches main.cpp as it does from host_bridge itself.
+    T="$W/shared"
     B="$T/test/host_bridge"
     mkdir -p "$B" "$T/src" || exit 2
     cp -R "$SRC/." "$T/src/" || exit 2
@@ -85,7 +103,7 @@ if ! python3 "$HERE/../../../capture_pins.py" --file "$L3_STIMULUS"; then
 fi
 for t in "$B"/test_*.cpp; do
   name="$(basename "$t" .cpp)"
-  bin="${TMPDIR:-/tmp}/${name}_$$"
+  bin="$W/$name"
   # Glob the fakes rather than list them: a hand-kept source list going
   # stale is how the gen-inhibit session built against old headers three
   # times without noticing.

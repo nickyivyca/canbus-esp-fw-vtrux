@@ -28,6 +28,15 @@ the fake's sources, is refused (exit 2) before anything builds. `run.sh
 `../../../twai_fake_option_test.py` (with `--can-fail`); the acceptance
 adapter's catalogue entry is `host-bridge-shared-fake`.
 
+**Where it works** (tester, 2026-11-02, the reviewer's order; AGENTS.md
+"Files and folders"): one folder per run under the tree's own `scratch/`,
+`scratch/charge-interposer-harness/host-bridge/run_XXXXXX`, never the
+system temp folder. Every test binary is built there, and so is
+`TWAI_FAKE=shared`'s copy. `run.sh` removes it when it ends, pass, fail or
+refusal, with the two tool folders above it if that leaves them empty, and
+prints any folder it cannot remove. Tested by the same
+`twai_fake_option_test.py`.
+
 | file | what |
 |---|---|
 | `mcp2515_fake.h` / `.cpp` | Constants, the status table, and the bit-modifiable register set. **The status table is the source of truth for what every L2 result rests on**, and the run-time marking is generated from it |

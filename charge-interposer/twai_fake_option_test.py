@@ -9,12 +9,23 @@ what they were given, and the can-fail is judged on stand-in suite runs.
 Tester, 2026-11-02 (the charge-interposer reviewer's order: port step 1b's
 acceptance E as committed harness, so the acceptance runner can re-run it).
 --can-fail runs every test first unchanged (the control, which must pass),
-then with each of the can-fail's RULES switched off, then on copies of
-host_bridge with run.sh mutated; each must make a test fail.
+then with each of the can-fail's RULES switched off, then with run.sh
+mutated; each must make a test fail.
 
-On Windows bash is Git Bash by its full path (a bare "bash" there is WSL's,
-regress.py); elsewhere bash. Throwaway folders come from scratch_dir.py and
-are removed when the run ends.
+Since 2026-11-02 they also test where run.sh works (the charge-interposer
+reviewer's order of that day): one run folder under the tree's own
+scratch/charge-interposer-harness/host-bridge/, never the system temp
+folder (the tests set TMPDIR, which must stay empty), removed when run.sh
+ends, pass, fail or refusal, with the tool folders above it, and a folder
+it cannot remove printed.
+
+run.sh always runs from a copy of host_bridge and src/ at their depth under
+a test folder of its own (tree_copy), so its tree's root, and its scratch/,
+are that folder's. On Windows bash is Git Bash by its full path (a bare
+"bash" there is WSL's, regress.py); elsewhere bash. Git Bash puts its own
+folders first on PATH, so the stand-in rm is a function from BASH_ENV, not
+a file on PATH. Throwaway folders come from scratch_dir.py and are removed
+when the run ends.
 """
 
 import contextlib
@@ -30,7 +41,8 @@ if HERE not in sys.path:
 
 import scratch_dir                                    # noqa: E402
 
-HB = os.path.join(HERE, "firmware", "test", "host_bridge")
+FW = os.path.join(HERE, "firmware")
+HB = os.path.join(FW, "test", "host_bridge")
 CANFAIL = os.path.join(HERE, "harness_checks", "shared_fake_canfail.py")
 GIT_BASH = r"C:\Program Files\Git\bin\bash.exe"
 
@@ -78,6 +90,8 @@ done
   f="../../src/main.cpp"
   if [ -f "$(dirname "$t")/$f" ]; then printf 'HAS\t%s\n' "$f"; else printf 'NO\t%s\n' "$f"; fi
 } >> "$STUB_LOG"
+# STUB_GPP_FAIL: every build fails
+[ -n "${STUB_GPP_FAIL:-}" ] && exit 1
 printf '#!/bin/sh\nexit 0\n' > "$out"
 chmod +x "$out"
 """
@@ -86,6 +100,53 @@ PY3 = r"""#!/bin/sh
 { printf 'PY'; for a in "$@"; do printf '\t%s' "$a"; done; printf '\n'; } >> "$STUB_LOG"
 exit 0
 """
+# read by bash before run.sh (BASH_ENV): with STUB_RM_FAIL set, rm -rf fails
+# and removes nothing; any other rm is the real one
+RM_ENV = r"""rm() {
+  if [ -n "${STUB_RM_FAIL:-}" ] && [ "${1:-}" = "-rf" ]; then return 1; fi
+  command rm "$@"
+}
+"""
+
+
+def tree_copy(dst, run_sh_text=None):
+    """host_bridge and src/ copied at their depth under dst, as a tree's
+    charge-interposer/firmware/, so run.sh's tree root is dst; run_sh_text,
+    if given, is its run.sh. The copy's run.sh."""
+    fw = os.path.join(dst, "charge-interposer", "firmware")
+    shutil.copytree(os.path.join(FW, "src"), os.path.join(fw, "src"))
+    hb = os.path.join(fw, "test", "host_bridge")
+    shutil.copytree(HB, hb)
+    if run_sh_text is not None:
+        with open(os.path.join(hb, "run.sh"), "w", encoding="utf-8", newline="") as f:
+            f.write(run_sh_text)
+    return os.path.join(hb, "run.sh")
+
+
+def harness(ctx):
+    """run.sh's tool folder in its tree's scratch/"""
+    return os.path.join(ctx["root"], "scratch", "charge-interposer-harness")
+
+
+def run_folders(ctx, calls):
+    """the run folders the builds' outputs went to; each must be in the
+    tree's scratch/charge-interposer-harness/host-bridge/run_*"""
+    base = bash_form(os.path.join(harness(ctx), "host-bridge")) + "/run_"
+    ws = set()
+    for argv, _has in calls:
+        o = bash_form(argv[argv.index("-o") + 1])
+        assert o.startswith(base) and "/" in o[len(base):], (o, base)
+        ws.add(o[:o.index("/", len(base))])
+    return ws
+
+
+def all_removed(ctx, tmp):
+    """nothing left by run.sh: no tool folder in scratch/, nothing in the
+    system temp folder (TMPDIR)"""
+    assert not os.path.exists(harness(ctx)), (harness(ctx), os.listdir(harness(ctx)))
+    sc = os.path.join(ctx["root"], "scratch")
+    assert not os.path.exists(sc) or os.listdir(sc) == [], os.listdir(sc)
+    assert os.listdir(tmp) == [], os.listdir(tmp)
 
 
 def stubs(work):
@@ -107,11 +168,15 @@ def run_sh(ctx, work, env, args=()):
     log = os.path.join(work, "stub.log")
     tmp = os.path.join(work, "tmp")
     os.makedirs(tmp)
+    rm_env = os.path.join(work, "rm_env.sh")
+    with open(rm_env, "w", encoding="utf-8", newline="\n") as f:
+        f.write(RM_ENV)
     e = dict(os.environ)
-    for k in ("TWAI_FAKE", "TWAI_FAKE_DIR", "INTERPOSER_CODE"):
+    for k in ("TWAI_FAKE", "TWAI_FAKE_DIR", "INTERPOSER_CODE", "STUB_GPP_FAIL",
+              "STUB_RM_FAIL"):
         e.pop(k, None)
     e.update(PATH=bindir + os.pathsep + e.get("PATH", ""), STUB_LOG=fwd(log),
-             TMPDIR=fwd(tmp), L3_STIMULUS="unused")
+             TMPDIR=fwd(tmp), L3_STIMULUS="unused", BASH_ENV=fwd(rm_env))
     e.update(env)
     p = subprocess.run([bash(), fwd(ctx["run_sh"])] + list(args), env=e,
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -153,7 +218,7 @@ def fake_dir(work, extra=None):
 def test_refusals(ctx, work):
     """run.sh refuses, rc 2 and before any build: an unknown TWAI_FAKE,
     TWAI_FAKE=shared with no TWAI_FAKE_DIR or one without the fake's
-    sources, and an unknown argument."""
+    sources, and an unknown argument; and leaves nothing behind."""
     fd = fake_dir(work)
     os.remove(os.path.join(fd, "cpp", "twai_fake.cpp"))
     cases = [({"TWAI_FAKE": "bogus"}, ()), ({"TWAI_FAKE": "shared"}, ()),
@@ -161,11 +226,12 @@ def test_refusals(ctx, work):
     for i, (env, args) in enumerate(cases):
         w = os.path.join(work, "r%d" % i)
         os.makedirs(w)
-        rc, outp, calls, _py, _t = run_sh(ctx, w, env, args)
+        rc, outp, calls, _py, tmp = run_sh(ctx, w, env, args)
         assert rc == 2 and not calls, (env, args, rc, outp[-300:], len(calls))
+        all_removed(ctx, tmp)
 
 
-def _check_own(calls, outp):
+def _check_own(ctx, calls, outp, tmp):
     tests = sorted(n for n in os.listdir(HB) if n.startswith("test_") and n.endswith(".cpp"))
     assert len(calls) == len(tests), (len(calls), tests)
     for argv, has in calls:
@@ -178,19 +244,23 @@ def _check_own(calls, outp):
         assert has["twai_fake.h"] and has["driver/twai.h"], has
         assert has["../../src/main.cpp"], has
     assert "TWAI" not in outp, outp
+    assert len(run_folders(ctx, calls)) == 1, run_folders(ctx, calls)
+    all_removed(ctx, tmp)
 
 
 def test_own_default(ctx, work):
     """Today's behaviour is the default: with TWAI_FAKE unset, and with
     TWAI_FAKE=own, every test builds from host_bridge itself, with our own
     twai_fake.cpp, -I host_bridge -I src and nothing more, and nothing
-    extra is printed."""
+    extra is printed; every binary in one run folder under the tree's
+    scratch/charge-interposer-harness/host-bridge/, nothing in the system
+    temp folder, and nothing left when run.sh ends."""
     for i, env in enumerate(({}, {"TWAI_FAKE": "own"})):
         w = os.path.join(work, "o%d" % i)
         os.makedirs(w)
-        rc, outp, calls, _py, _t = run_sh(ctx, w, env)
+        rc, outp, calls, _py, tmp = run_sh(ctx, w, env)
         assert rc == 0, (env, rc, outp[-300:])
-        _check_own(calls, outp)
+        _check_own(ctx, calls, outp, tmp)
 
 
 def test_shared_build(ctx, work):
@@ -199,19 +269,24 @@ def test_shared_build(ctx, work):
     ../../src/main.cpp is reached, without our twai_fake.h, twai_fake.cpp
     and driver/twai.h;
     each test given the shared twai_fake.c and cpp/twai_fake.cpp right after
-    it; -I <copy> -I src -I <fake>/include -I <fake>/host -I <fake>/cpp; the
-    copy removed when run.sh ends; nothing extra printed."""
+    it; -I <copy> -I src -I <fake>/include -I <fake>/host -I <fake>/cpp;
+    the copy and the binaries in one run folder under the tree's
+    scratch/charge-interposer-harness/host-bridge/, nothing in the system
+    temp folder, and nothing left when run.sh ends; nothing extra
+    printed."""
     fd = fwd(fake_dir(work))
     rc, outp, calls, _py, tmp = run_sh(ctx, work, {"TWAI_FAKE": "shared", "TWAI_FAKE_DIR": fd})
     assert rc == 0, (rc, outp[-300:])
     tests = sorted(n for n in os.listdir(HB) if n.startswith("test_") and n.endswith(".cpp"))
     assert len(calls) == len(tests), (len(calls), tests)
+    ws = run_folders(ctx, calls)
+    assert len(ws) == 1, ws
     copies = set()
     for argv, has in calls:
         i = argv.index("-I")
         b = argv[i + 1]
         copies.add(b)
-        assert bash_form(b).startswith(bash_form(tmp) + "/host_bridge_shared_"), (b, tmp)
+        assert bash_form(b) == list(ws)[0] + "/shared/test/host_bridge", (b, ws)
         assert fwd(argv[i + 3]).endswith("/src"), argv
         assert argv[i + 4:i + 10] == ["-I", fd + "/include", "-I", fd + "/host",
                                       "-I", fd + "/cpp"], argv
@@ -231,9 +306,39 @@ def test_shared_build(ctx, work):
         # found test_event_layout not built from a copy without it)
         assert has["../../src/main.cpp"], has
     assert len(copies) == 1, copies
-    left = os.listdir(tmp)
-    assert left == [], left
+    all_removed(ctx, tmp)
     assert "TWAI" not in outp, outp
+
+
+def test_removed_on_fail(ctx, work):
+    """A run whose builds all fail (each "DID NOT BUILD", rc 1) leaves
+    nothing behind either, on our own fake and on the shared one."""
+    fd = fwd(fake_dir(work))
+    tests = sorted(n for n in os.listdir(HB) if n.startswith("test_") and n.endswith(".cpp"))
+    for i, env in enumerate(({}, {"TWAI_FAKE": "shared", "TWAI_FAKE_DIR": fd})):
+        w = os.path.join(work, "f%d" % i)
+        os.makedirs(w)
+        rc, outp, calls, _py, tmp = run_sh(ctx, w, dict(env, STUB_GPP_FAIL="1"))
+        assert rc == 1 and outp.count("DID NOT BUILD") == len(tests), (env, rc, outp[-300:])
+        assert len(calls) == len(tests), (env, len(calls))
+        all_removed(ctx, tmp)
+
+
+def test_leftover_reported(ctx, work):
+    """A run folder run.sh cannot remove is printed with its path, the run's
+    exit code unchanged, and the tool folders above it stay (rmdir only
+    takes empty ones)."""
+    rc, outp, calls, _py, _tmp = run_sh(ctx, work, {"STUB_RM_FAIL": "1"})
+    try:
+        assert rc == 0, (rc, outp[-300:])
+        ws = run_folders(ctx, calls)
+        assert len(ws) == 1, ws
+        w = list(ws)[0]
+        assert "run.sh: could not remove %s" % w in outp, (w, outp[-300:])
+        assert os.path.isdir(harness(ctx)), harness(ctx)
+    finally:
+        left = scratch_dir.remove(harness(ctx))
+        assert not left, left
 
 
 def test_canfail_mode(ctx, work):
@@ -355,11 +460,12 @@ def env_set(**kw):
                 os.environ[k] = v
 
 
-TESTS = [test_refusals, test_own_default, test_shared_build, test_canfail_mode,
-         test_canfail_judges, test_canfail_refusals]
+TESTS = [test_refusals, test_own_default, test_shared_build, test_removed_on_fail,
+         test_leftover_reported, test_canfail_mode, test_canfail_judges,
+         test_canfail_refusals]
 
-# run.sh mutants: each applied to a copy of host_bridge (at the same depth
-# under a copy of charge-interposer/), whose run.sh the tests then run
+# run.sh mutants: each is the run.sh of the tree copy (tree_copy) the tests
+# then run
 RUN_SH_MUTANTS = [
     ("an unknown TWAI_FAKE taken as our own", "  own) ;;\n", "  own|*) ;;\n"),
     ("no fake folder checked",
@@ -371,7 +477,18 @@ RUN_SH_MUTANTS = [
      'srcs=("$t")'),
     ("the shared includes first", '-I "$B" -I "$SRC" ${FAKE_INC[@]+"${FAKE_INC[@]}"}',
      '${FAKE_INC[@]+"${FAKE_INC[@]}"} -I "$B" -I "$SRC"'),
-    ("the copy left behind", "    trap 'rm -rf \"$T\"' EXIT\n", ""),
+    ("the binaries in the system temp folder", 'bin="$W/$name"',
+     'bin="${TMPDIR:-/tmp}/${name}_$$"'),
+    ("the run folder in the system temp folder",
+     'W="$(mktemp -d "$WT/host-bridge/run_XXXXXX")" || exit 2',
+     'W="$(mktemp -d "${TMPDIR:-/tmp}/run_XXXXXX")" || exit 2'),
+    ("the copy outside the run folder", '    T="$W/shared"\n',
+     '    T="$(mktemp -d "${TMPDIR:-/tmp}/host_bridge_shared_XXXXXX")" || exit 2\n'),
+    ("nothing removed on exit", "trap cleanup EXIT\n", ""),
+    ("the run folder left behind", '  rm -rf "$W"\n', ""),
+    ("the tool folders left behind", '  rmdir "$WT/host-bridge" "$WT" 2>/dev/null || true\n', ""),
+    ("a leftover not reported",
+     '  if [ -e "$W" ]; then echo "run.sh: could not remove $W" >&2; fi\n', ""),
     ("the copy not at host_bridge's depth", '    B="$T/test/host_bridge"\n', '    B="$T/hb"\n'),
     ("no src/ beside the copy", '    cp -R "$SRC/." "$T/src/" || exit 2\n', ""),
     ("built from host_bridge itself", 'for t in "$B"/test_*.cpp; do',
@@ -389,7 +506,10 @@ def load_canfail():
     return m
 
 
-def run_all(ctx, base):
+def run_all(ctx, base, run_sh_text=None):
+    """every test, with run.sh from a tree copy of its own under base"""
+    tree = os.path.join(base, "tree")
+    ctx = dict(ctx, run_sh=tree_copy(tree, run_sh_text), root=tree)
     bad = []
     for t in TESTS:
         work = os.path.join(base, t.__name__)
@@ -405,7 +525,7 @@ def run_all(ctx, base):
 
 def main(argv):
     with scratch_dir.run("twai-fake-option-test") as base:
-        ctx = {"run_sh": os.path.join(HB, "run.sh"), "canfail": load_canfail()}
+        ctx = {"canfail": load_canfail()}
         if "--can-fail" not in argv:
             bad = run_all(ctx, os.path.join(base, "tests"))
             print("\n%d of %d passed" % (len(TESTS) - len(bad), len(TESTS)))
@@ -426,7 +546,7 @@ def main(argv):
             print("%s  rule %s off: %s" % ("ok  " if bad else "FAIL", rule,
                                           ("fails " + ", ".join(bad)) if bad else
                                           "STILL PASSES -- nothing checks it"), flush=True)
-        with open(ctx["run_sh"], encoding="utf-8", newline="") as f:
+        with open(os.path.join(HB, "run.sh"), encoding="utf-8", newline="") as f:
             src = f.read()
         for n, (name, old, new) in enumerate(RUN_SH_MUTANTS, 1):
             total += 1
@@ -434,13 +554,8 @@ def main(argv):
                 print("FAIL  m%d %s: NOT APPLIED (the edit matched %d times)"
                       % (n, name, src.count(old)))
                 continue
-            mdir = os.path.join(base, "m%d" % n)
-            hb = os.path.join(mdir, "charge-interposer", "firmware", "test", "host_bridge")
-            shutil.copytree(HB, hb)
-            with open(os.path.join(hb, "run.sh"), "w", encoding="utf-8", newline="") as f:
-                f.write(src.replace(old, new))
             print("-- m%d %s" % (n, name), flush=True)
-            bad = run_all(dict(ctx, run_sh=os.path.join(hb, "run.sh")), os.path.join(mdir, "tests"))
+            bad = run_all(ctx, os.path.join(base, "m%d" % n), src.replace(old, new))
             caught += bool(bad)
             print("%s  m%d %s: %s" % ("ok  " if bad else "FAIL", n, name,
                                       ("fails " + ", ".join(bad)) if bad else
