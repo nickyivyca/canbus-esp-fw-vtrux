@@ -37,10 +37,12 @@ Requirements are numbered G1 to G6. The numbers are stable.
 - **G3. The steps,** in this order, with interrupts off from the start:
   1. for each CAN port the board has (`shared/boards` B5), in port order:
      the port's restart stop (`can_port` C7), then
-     `board_can_standby(port, true)`. A port whose stop or standby answers
-     "not supported" is skipped, and the steps go on: its standby bit stays
-     0, and the record's controller fields come only from a TWAI port's
-     stop that ran (G4; user, 2026-11-01);
+     `board_can_standby(port, true)`. Each of the two answers for itself,
+     and the steps go on (user, 2026-11-01): a stop that answers "not
+     supported" is skipped and the port's standby still runs; a standby
+     that answers "not supported" leaves the port's standby bit 0. The
+     record's controller fields come only from a TWAI port's stop that ran
+     (G4);
   2. the record (G4);
   3. the real `esp_restart_noos()`.
 
