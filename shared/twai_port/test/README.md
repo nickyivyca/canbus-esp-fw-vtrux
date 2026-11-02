@@ -32,13 +32,14 @@ builds run under ASan and UBSan.
 
 | File | What |
 |---|---|
-| `twai_fake.h`, `twai_fake.c` | the model and the driver's entry points: `twai_driver_install` to `twai_clear_receive_queue`, and the two register calls of `hal/twai_ll.h`. C in the common subset of C11 and C++11 |
+| `twai_fake.h`, `twai_fake.c` | the model and the driver's entry points: `twai_driver_install` to `twai_clear_receive_queue`, the six register calls of `hal/twai_ll.h`, `REG_READ` of the TWAI's clock and reset bits, and `esp_rom_delay_us`. C in the common subset of C11 and C++11 |
 | `include/driver/twai.h`, `include/hal/twai_ll.h` | the driver's headers for host builds, from ESP-IDF v5.4.1's own (`driver/twai.h`, `hal/twai_types.h`, the C3's `hal/twai_ll.h`): the real types, field order, alert values and initialisers. The `_v2` calls are left out, so a call the fake does not implement fails to link |
-| `host/` | minimal stand-ins for `esp_err.h`, `freertos/FreeRTOS.h`, `freertos/task.h`, `driver/gpio.h`, `esp_attr.h`, `esp_log.h` and `board.h`, for a build with none of its own. A project's own come first on its include path |
+| `include/soc/soc.h`, `include/soc/reg_base.h`, `include/soc/system_reg.h` | `BIT()`, `REG_READ()` and the TWAI's clock-enable and reset bits of `SYSTEM_PERIP_CLK_EN0_REG` and `SYSTEM_PERIP_RST_EN0_REG`, ESP-IDF v5.4.1's addresses and bits, for the restart stop (T12). `REG_READ()` is a call into the fake |
+| `host/` | minimal stand-ins for `esp_err.h`, `esp_rom_sys.h`, `freertos/FreeRTOS.h`, `freertos/task.h`, `driver/gpio.h`, `esp_attr.h`, `esp_log.h` and `board.h`, for a build with none of its own. A project's own come first on its include path |
 | `cpp/twai_fake.h`, `cpp/twai_fake.cpp` | the interposer's C++ interface to the fake: `namespace twaifake`, `TwaiFake`, `fake()`, as its host_bridge tests call them, each member a call into the model. Its clock adapter is the interposer's `hostclock::micros()` |
 | `cpp/test_cpp_wrapper.cpp` | the interface's own tests, for the members that do more than pass their arguments on (`setBusOffAfterSent`); `cpp/README.md` |
-| `test_twai_fake.c` | the fake's own tests: 22 cases, each a driver behaviour from the source |
-| `mutate.py` | 27 mutants of `twai_fake.c`, one behaviour each; the run passes only if the unmutated build passes and every mutant fails |
+| `test_twai_fake.c` | the fake's own tests: 29 cases, each a driver or register behaviour from the source, or one of the assumptions the table names |
+| `mutate.py` | 53 mutants of `twai_fake.c`, one behaviour each; the run passes only if the unmutated build passes and every mutant fails |
 | `test_mutate.py` | `mutate.py`'s removal of its scratch folder, with the builds stood in for (no compiler): removed after a pass, a fail and an exception, read-only files and paths past 260 characters included; a folder it cannot remove printed with the reason; an existing `--out` refused and left as it was; with no `--out`, a new `<time>_<pid>` folder, which a killed run's folder does not stop. `--mutants` breaks these twelve ways, each of which it must fail by a check (three only fail on Windows) |
 | `test_port_on_fake.c`, `host_platform.c` | the real `twai_port.c`, compiled as shipped, on the fake: built with the C3's register file on the fake's C3 and with the unsupported one on its S3, 14 cases from T2 to T9 each, one process per case. `host_platform.c` is the board, tick and log calls the port makes |
 | `Makefile` | the builds above |
@@ -67,6 +68,18 @@ builds run under ASan and UBSan.
   `twai_transmit()` call before any check, refused or not, and
   `twai_fake_set_tx_accepted_hook()` every frame the driver accepted.
   gen-inhibit's wire invariant goes there.
+- **Busy waits:** `esp_rom_delay_us()` is the fake's, so a project's host
+  build must not define its own. It moves the fake's own clock; with a
+  clock adapter it calls the wait hook up to its deadline, and with no hook
+  it only counts (`twai_fake_delay_calls()`).
+- **The peripheral (T12):** install turns the TWAI's clock on and leaves
+  the controller in reset mode until start, as ESP-IDF does; uninstall
+  turns the clock off. `twai_fake_set_periph()` sets the clock and reset
+  bits to any state the driver did not make, and `twai_fake_set_receiving()`
+  a frame being received (RS). A `twai_ll_*` call with the clock off or the
+  reset held is counted in `twai_fake_ll_unclocked_calls()`, and a
+  `REG_READ()` of any address but the two modelled registers in
+  `twai_fake_reg_unknown_reads()`; a healthy run keeps both at zero.
 - **Each project's defaults:** the fake defaults to timed air time (each
   frame's unstuffed length at the installed bit timing), automatic
   recovery, an ACKing bus and the C3. gen-inhibit's harness sets a 200 us
@@ -92,15 +105,20 @@ off on both, `TWAI_ERRATA_FIX_LISTEN_ONLY_DOM` on both). So nothing in the
 driver is modelled apart. What differs is the evidence: only the C3's
 transmit-buffer register behaviour is measured (T8). On the fake's S3
 (`twai_fake_set_chip(TWAI_FAKE_CHIP_S3)`) the registers behave as the C3's,
-and every `twai_ll_*` call is counted in `twai_fake_ll_unmeasured_calls()`,
-which a healthy S3 run keeps at zero; the port's S3 build makes none.
+and every `twai_ll_*` call and `REG_READ()` is counted in
+`twai_fake_ll_unmeasured_calls()`, which a healthy S3 run keeps at zero; the
+port's S3 build makes none.
 
 ## What it rests on
 
 `twai_fake_assumptions()` (the table at the end of `twai_fake.c`) lists
 each behaviour with its basis: read in the IDF v5.4.1 source (with line
 numbers), measured on the bench (the C3's abort, 2026-09-27), assumed, or
-not modelled. Not modelled: arbitration, error frames, error counters that
+not modelled. Assumed for the restart stop (T12): the clock off before the
+first install; registers that read 0 while unclocked or held in reset; what
+a reset mode entered from outside the driver does to the frame on the wire
+(cut, kept unsent), to reception, to bus-off and to an abort (nothing); and
+the status register's RS, BS and ES bits. Not modelled: arbitration, error frames, error counters that
 climb by themselves, error-passive and warning alerts,
 `RECOVERY_IN_PROGRESS`, `ARB_LOST`, dual-filter mode, the ESP32-only errata
 workarounds, and non-compliant DLCs above 8.
