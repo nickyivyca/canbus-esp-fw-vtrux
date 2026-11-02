@@ -1393,6 +1393,32 @@ def test_skip():
     assert not os.path.exists(marker), "a skipped check ran"
 
 
+def test_base_env():
+    """A local check with base_env starts from that environment, not the
+    runner's own: a variable only in the runner's environment does not reach
+    it, base_env's and env's do. A check without base_env inherits the
+    runner's environment as before (ACCEPT-SPEC A7: an acceptance check's
+    environment is never the operator's shell)."""
+    env = Env("base_env")
+    os.environ["VTRUX_OPERATOR_ONLY"] = "1"
+    try:
+        base = {k: os.environ[k] for k in ("SYSTEMROOT", "PATH", "TEMP", "TMP")
+                if k in os.environ}
+        base["FROM_BASE"] = "b"
+        clean = ("import os, sys; sys.exit(0 if 'VTRUX_OPERATOR_ONLY' not in os.environ "
+                 "and os.environ.get('FROM_BASE') == 'b' and "
+                 "os.environ.get('FROM_ENV') == 'e' else 3)")
+        inherits = ("import os, sys; sys.exit(0 if os.environ.get('VTRUX_OPERATOR_ONLY') "
+                    "== '1' else 3)")
+        s = suite([Group("g", [chk("clean", clean, base_env=base, env={"FROM_ENV": "e"}),
+                               chk("inherits", inherits)])])
+        eng, rec = run(env, s)
+    finally:
+        del os.environ["VTRUX_OPERATOR_ONLY"]
+    v = verdicts(rec)
+    assert v == {"g/clean": "PASS", "g/inherits": "PASS"}, v
+
+
 def test_timeout():
     """Past its timeout a check is killed, child processes included: ERROR."""
     env = Env("timeout")
@@ -2257,7 +2283,7 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_digest_in_scratch, test_digest_hard_files_removed,
          test_digest_unremovable_printed,
          test_resume_code,
-         test_redact_scope, test_gate, test_skip, test_timeout,
+         test_redact_scope, test_gate, test_skip, test_base_env, test_timeout,
          test_resume, test_carry_finished, test_carry_check_end, test_compare,
          test_esptool_flasher,
          test_remote_command,
@@ -2360,6 +2386,7 @@ MUTANTS = {
     "test_redact_scope": _rule("redact_scope"),
     "test_gate": _rule("gate"),
     "test_skip": _rule("skip"),
+    "test_base_env": _rule("base_env"),
     "test_timeout": _rule("timeout"),
     "test_resume": _patch(E.Engine, "_carried", lambda self: {}),
     "test_carry_finished": _rule("carry_finished"),

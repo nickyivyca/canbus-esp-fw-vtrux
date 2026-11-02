@@ -114,6 +114,8 @@ fails when the rule is switched off through RULES):
   timeout         a check past its timeout is killed (whole tree), ERROR
   skip            a check with a skip reason is recorded NOT-RUN with it,
                   and never executed
+  base_env        a local check with Check.base_env starts from that
+                  environment, not the runner's own (ACCEPT-SPEC A7)
   after           a group with `after` waits for those groups, and with
                   after_must_pass runs only if they all passed
   wallclock_guard a wall-clock check starts only when no other wall-clock
@@ -199,7 +201,7 @@ RULES = {k: True for k in (
     "resume_stop_kept", "stop_no_resume",
     "flash_gate", "image_schedule", "identify_after",
     "no_verdict", "known_fail", "stop_pause", "throttle", "redact_scope",
-    "gate", "timeout", "skip", "restore", "identify_error", "after",
+    "gate", "timeout", "skip", "base_env", "restore", "identify_error", "after",
     "wallclock_guard", "requires", "requires_whole", "resume_code",
     "subset_mark", "subset_not_whole", "start_identify", "restore_after_stop",
     "standing_line", "product_digest", "digest_bridge", "board_hooks",
@@ -1103,7 +1105,8 @@ class Engine:
         try:
             if host == "local":
                 rc, to = procs.run_local(argv, cwd, env, timeout_s, log_path,
-                                         throttled, stop_now)
+                                         throttled, stop_now,
+                                         c.base_env if RULES["base_env"] else None)
             else:
                 procs.run_remote(cfg["ssh"], ["mkdir", "-p", ctx["outdir"]],
                                  None, None, 60, log_path)
