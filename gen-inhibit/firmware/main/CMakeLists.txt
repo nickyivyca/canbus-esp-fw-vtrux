@@ -2,47 +2,30 @@
 # stock code (gi_wican.c, spec 3.3), port 0's setup among them. The stock
 # WiCAN code is the component vtrux/wican; its CAN calls are vtrux/can_port's
 # on port 0, backed by vtrux/twai_port (spec 3.3, port step 1b; can.c
-# retired). Those, vtrux/debug_logs and the board all come from main's
+# retired). Every software restart takes port 0 off the bus first through
+# vtrux/restart_guard (spec 3, port step 1c), which sets its own link-time
+# wrap. Those, vtrux/debug_logs and the board all come from main's
 # idf_component.yml; a managed dependency of main is one of its requirements
 # without being listed below.
-set(srcs "main.c" "gen_inhibit.c" "gen_inhibit_core.c" "gi_sched.c" "gi_restart_quiesce.c" "gi_wican.c")
-# hal and soc: the restart step reads the TWAI controller's registers
-# (gi_restart_quiesce.c). The abort command is twai_port's (T8), which E3
-# confines to its one site.
+set(srcs "main.c" "gen_inhibit.c" "gen_inhibit_core.c" "gi_sched.c" "gi_wican.c")
+# hal and soc: the restart step's register reads are twai_port's now (T12),
+# and the abort command with them (T8), which E3 confines to its one site;
+# they stay listed so this component's graph is as it was.
 set(requires   hal soc esp_timer esp_wifi nvs_flash fatfs vfs driver esp-tls esp_adc esp_eth log app_update esp_http_server spiffs freertos mqtt json)
 
-# TX-ABORT MEASUREMENT BUILD, spec 5.2 item 9 / spec 12.4's C3-abort row.
+# THE TWO TEST APPS ARE THE SHARED COMPONENTS' (port step 1c), built in by
+# their own switches, which those components read themselves:
 #
-#   idf.py -B build-txabort -DGI_INSTRUMENT_TXABORT=1 build
+#   idf.py -B build-txabort -DTWAI_PORT_TXABORT_PROBE=1 build       (twai_port T13)
+#   idf.py -B build-restart-test -DRESTART_GUARD_TEST=1 build       (restart_guard G5)
 #
-# The source is ADDED TO THE COMPONENT here rather than compiled always and
-# guarded inside with #if. A guard inside a compiled file leaves the abort
-# command one #define away from a shipping image; a file that is not in the
-# build cannot be linked by accident. `hal` and `soc` are added for the same
-# reason -- twai_ll.h and the TWAI register struct are private headers, and the
-# shipping build's component graph stays exactly as it was without them.
-#
-# Never flash a build configured this way to the truck. E3 refuses it.
-if(GI_INSTRUMENT_TXABORT)
-    list(APPEND srcs "gi_txabort_probe.c")
-    list(APPEND requires "hal" "soc")
-endif()
-
-# RESTART TEST BUILD, for spec 12.4's "no error frames at a restart" row.
-#
-#   idf.py -B build-restart-test -DGI_TEST_RESTART_QUIESCE=1 build
-#
-# Adds a reader for the restart record, a crash trigger and two snapshots of the
-# controller and CAN_STDBY -- see gi_restart_test.h. The step itself is in every
-# build (gi_restart_quiesce.c, below); this adds only what lets a bench see it.
-# The source is added to the component only here, as gi_txabort_probe.c is.
-#
-# Never in a prod build (spec 12.4). The shared build tooling's build-switch
-# check (shared/tools SPEC R20, rows in vtrux_checks.json) refuses a release
-# image carrying the test symbols.
-if(GI_TEST_RESTART_QUIESCE)
-    list(APPEND srcs "gi_restart_test.c")
-endif()
+# The TX-abort probe is spec 5.2 item 9's measurement, for spec 12.4's C3-abort
+# row; the restart test is for spec 12.4's "no error frames at a restart" row.
+# This component only registers them (gi_wican.c) and calls the restart test's
+# pre-install snapshot (gen_inhibit.c), so it takes the same switches as
+# defines below. Never flash a build configured either way to the truck: the
+# shared build tooling's build-switch check (shared/tools SPEC R20, rows in
+# vtrux_checks.json) refuses a release image carrying their symbols.
 
 idf_component_register(
     SRCS "${srcs}"
@@ -66,24 +49,16 @@ if(GI_INSTRUMENT_RXQ)
     message(STATUS "gen_inhibit: RX backlog instrument ENABLED (measurement build)")
 endif()
 
-# EVERY SOFTWARE RESTART TAKES THE CONTROLLER OFF THE BUS FIRST (spec 3, user
-# 2026-10-13). In every build, with no switch. Every caller of
-# esp_restart_noos() -- esp_restart(), panic_restart() and call_start_cpu0's
-# early-boot failures -- is in another object file of esp_system, so --wrap
-# redirects all of them to __wrap_esp_restart_noos in gi_restart_quiesce.c,
-# which reaches the real function as __real_esp_restart_noos.
-target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_restart_noos")
-
-if(GI_TEST_RESTART_QUIESCE)
-    target_compile_definitions(${COMPONENT_LIB} PRIVATE GI_TEST_RESTART_QUIESCE=1)
+if(RESTART_GUARD_TEST)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE RESTART_GUARD_TEST=1)
     message(STATUS "gen_inhibit: RESTART TEST build -- /gi_quiesce and its "
                    "crash trigger are registered")
 endif()
 
-if(GI_INSTRUMENT_TXABORT)
-    target_compile_definitions(${COMPONENT_LIB} PRIVATE GI_INSTRUMENT_TXABORT=1)
-    message(STATUS "gen_inhibit: TX ABORT probe ENABLED (measurement build) -- "
-                   "writes the TWAI abort command register directly")
+if(TWAI_PORT_TXABORT_PROBE)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE TWAI_PORT_TXABORT_PROBE=1)
+    message(STATUS "gen_inhibit: TX ABORT probe registered (measurement build) "
+                   "-- it writes the TWAI abort command register directly")
 endif()
 
 # ABORT-WINDOW MEASUREMENT BUILD.

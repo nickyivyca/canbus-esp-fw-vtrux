@@ -18,8 +18,9 @@ per-model values (`board.h`, which the stock code's `hw_config.h` includes),
 the hardware name, and the partition table, which `sdkconfig` names by its
 path in `managed_components/`. Stock WiCAN's `HARDWARE_VER` is gone. Only the
 files on the project's R30 list include `board_pins.h` (shared/tools SPEC
-R30): `main/gi_restart_test.c` (test build only). The stock start-up, which
-drives the LEDs and reads the Bluetooth-enable input by pin, is on the stock
+R30). Since port step 1c no file in `main/` does: the restart test, which
+did, is `vtrux/restart_guard`'s now. The stock start-up, which drives the
+LEDs and reads the Bluetooth-enable input by pin, is on the stock
 component's own list, its `pins.json`.
 
 **The stock WiCAN code is a dependency too** (shared/wican SPEC W1, spec
@@ -31,7 +32,13 @@ retired. `main/` holds only gen-inhibit's own code: `app_main` in `main.c`
 (the hooks, then `wican_init()`, `gen_inhibit_init()`, `wican_start()`), the
 inhibitor, with port 0's setup in `gen_inhibit.c` (spec 3.3), and its hooks
 into the stock code (`gi_wican.c`: port 0's registration, the bus-owner
-callbacks, the two endpoints, the probe and restart-test registrations). The stock code's switches are set off in the
+callbacks, the two endpoints, the probe and restart-test registrations). Since
+port step 1c every software restart takes port 0 off the bus first through
+`vtrux/restart_guard`, at the same tag, which sets its own link-time wrap of
+`esp_restart_noos()`; the TX-abort probe and the restart test are the test
+apps of `vtrux/twai_port` (T13) and `vtrux/restart_guard` (G5), built in by
+their switches, `-DTWAI_PORT_TXABORT_PROBE=1` and `-DRESTART_GUARD_TEST=1`
+(the latter's image name ends `_rt`). The stock code's switches are set off in the
 top-level `CMakeLists.txt`: `WICAN_SLCAN_COMMANDS` and the four feature
 switches (spec 3.2). The rollback rehearsal's fault hook,
 `OTA_HEALTH_FAULT_INJECT`, is the stock component's switch too (W7), given on
@@ -72,8 +79,9 @@ Not from upstream:
   release launcher `../vtrux_tools.py` and the pinned tooling.
 - `vtrux_build.json`: the project's build data for the release tooling
   (`project`, `shared_components`: the board, `vtrux/wican_v3`; the
-  stock code, `vtrux/wican` and `vtrux/debug_logs`; and the CAN port,
-  `vtrux/can_port` and `vtrux/twai_port`, since port step 1b).
+  stock code, `vtrux/wican` and `vtrux/debug_logs`; the CAN port,
+  `vtrux/can_port` and `vtrux/twai_port`, since port step 1b; and the
+  restart guard, `vtrux/restart_guard`, since port step 1c).
 - `vtrux_checks.json`: the project's data for the shared build checks, the
   tester's.
 - `sdkconfig.log_info`: info-level logging, layered over `sdkconfig` for
