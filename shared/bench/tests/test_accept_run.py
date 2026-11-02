@@ -424,13 +424,20 @@ def test_check_every_result():
     """A12 (the charge-interposer reviewer, 2026-11-02): a check's item is
     judged on all its results, whatever their order: a check whose judge
     gives a FAIL and then an ERROR, with expect FAIL, is not as expected
-    (got ERROR), and the README's line names the ERROR's result."""
+    (got ERROR), and the README's line names the ERROR's result. The
+    README's list of results that are not a pass has the check's every one,
+    from the chain run's own results (the user, 2026-11-02, through the
+    charge-interposer reviewer)."""
     r = Run(extra='\n[[check]]\nid = "subs"\ntree = "base"\nrun = ["proj/check_subs.py"]\n'
                   'judge = "sub-lines"\nexpect = "FAIL"\n')
     assert r.rc == 1, (r.rc, r.rec and r.read("console.txt")[-1500:])
     text = r.read("README.md")
     assert "check subs: expected FAIL, got ERROR" in text, text[-2000:]
     assert "run/built ERROR" in text, text[-2000:]
+    sec = text.split("## Results that are not a pass", 1)[-1].split("\n## ", 1)[0]
+    want = ["- check subs: 2", "  - run/known FAIL", "  - run/built ERROR"]
+    lines = [ln for ln in sec.splitlines() if ln.startswith(("- ", "  - "))]
+    assert want[0] in lines and lines[lines.index(want[0]):][:3] == want, sec
 
 
 TESTS = [test_pass, test_adapter_committed, test_rerun_never_passes, test_premise_blocks,
@@ -447,6 +454,7 @@ MUTANTS = [
     ("dev_never_pass", test_dev_run),
     ("identity_untracked", test_runner_identity),
     ("check_verdict", test_check_every_result),
+    ("not_passed_listed", test_check_every_result),
     ("_stray", test_runner_stays_clean),        # VTRUX_TEST_STRAY: a stray file
 ]
 

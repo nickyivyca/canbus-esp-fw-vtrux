@@ -262,9 +262,25 @@ def test_check_verdict():
     assert cv(many, "g")[1].endswith(", and 3 more"), cv(many, "g")
 
 
+def test_not_passed():
+    """A13 (the user, 2026-11-02, through the charge-interposer reviewer):
+    the record lists every result of a check that is not a plain PASS, in
+    order, all of them, past check_verdict's six: those the verdict counts,
+    and KNOWN-FAIL, NOT-APPLICABLE and a known FAIL that passed, which it
+    does not. Another group's results are not listed."""
+    pairs = ([("p0", "PASS"), ("k", "KNOWN-FAIL"), ("n", "NOT-APPLICABLE"), ("kp", "PASS*")]
+             + [("f%d" % i, "FAIL") for i in range(8)] + [("e", "ERROR"), ("p1", "PASS")])
+    rs = chain_res(*pairs) + chain_res(("x", "FAIL"), group="other")
+    want = [("run/k", "KNOWN-FAIL"), ("run/n", "NOT-APPLICABLE"), ("run/kp", J.KNOWN_PASSED)] + \
+        [("run/f%d" % i, "FAIL") for i in range(8)] + [("run/e", "ERROR")]
+    assert J.not_passed(rs, "g") == want, J.not_passed(rs, "g")
+    assert J.check_verdict(rs, "g")[1].endswith("and 4 more"), J.check_verdict(rs, "g")
+    assert J.not_passed(chain_res(("a", "PASS")), "g") == []
+
+
 TESTS = [test_compare_identical, test_compare_same_verdicts, test_compare_within,
          test_compare_listed, test_transcript, test_adapter_comparer, test_premise_digest,
-         test_not_exercised, test_verdict, test_check_verdict]
+         test_not_exercised, test_verdict, test_check_verdict, test_not_passed]
 
 MUTANTS = [
     ("count_verdicts", test_compare_identical),
@@ -285,6 +301,8 @@ MUTANTS = [
     ("every_result", test_check_verdict),
     ("ok_set", test_check_verdict),
     ("known_passed", test_check_verdict),
+    ("listed_ok_set", test_not_passed),
+    ("listed_known_passed", test_not_passed),
 ]
 
 

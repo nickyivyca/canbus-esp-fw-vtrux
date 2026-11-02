@@ -35,7 +35,8 @@ FAIL had been taken as the FAIL a list expected). PASS when every result is
 PASS, KNOWN-FAIL or NOT-APPLICABLE, as the chain runner counts them, and no
 known FAIL passed. Otherwise the first of these that any result gives: ERROR,
 VOID, NOT-RUN, INCONCLUSIVE, a known FAIL that passed, FAIL. So FAIL only
-when every result that is not a pass is a FAIL.
+when every result that is not a pass is a FAIL. Every result that is not a
+plain PASS is listed in the record, not only the first six (not_passed).
 
 RULES: each is switched off by a mutant in tests/test_accept_judge.py, which
 must then fail.
@@ -54,7 +55,7 @@ RULES = {k: True for k in (
     "count_verdicts", "count_figures", "verdicts_only", "missing_new", "tolerance",
     "listed_exact", "listed_seen", "masks", "adapter_comparer", "premise_equal",
     "premise_same_as", "not_exercised", "all_items", "expected_verdict", "every_item",
-    "every_result", "ok_set", "known_passed")}
+    "every_result", "ok_set", "known_passed", "listed_ok_set", "listed_known_passed")}
 
 VERDICT_KINDS = ("verdict", "missing", "new")
 
@@ -240,6 +241,28 @@ def check_verdict(results, group):
     detail = ", ".join("%s %s" % g for g in got[:6]) + (
         ", and %d more" % (len(got) - 6) if len(got) > 6 else "")
     return v, detail
+
+
+def not_passed(results, group):
+    """Every result of the chain group that is not a plain PASS, in the
+    chain's order, as [(result id within the group, verdict)]: those the
+    verdict counts, and also KNOWN-FAIL, NOT-APPLICABLE and a known FAIL that
+    passed. The record lists them all (check_verdict's detail stops at six),
+    for the tester's VERIFICATION.md entry and the reviewer to check against
+    the known fails: the runner itself has no known-fail machinery (the user,
+    2026-11-02, through the charge-interposer reviewer)."""
+    out = []
+    for r in results:
+        if r["group"] != group:
+            continue
+        v = r["verdict"]
+        if r.get("known_fail_passed") and RULES["listed_known_passed"]:
+            v = KNOWN_PASSED
+        if v == "PASS" or (v in CHECK_OK and not RULES["listed_ok_set"]):
+            continue
+        rid = r["id"][len(group) + 1:] if r["id"].startswith(group + "/") else r["id"]
+        out.append((rid, v))
+    return out
 
 
 def item(kind, item_id, expected, got, detail=""):

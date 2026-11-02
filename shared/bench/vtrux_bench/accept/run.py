@@ -60,7 +60,8 @@ BENCH = C.BENCH
 # then fail.
 RULES = {k: True for k in ("record_first", "adapter_from_commit", "premise_skip",
                            "premise_skip_builds", "cleanup_finally", "refuse_dirty",
-                           "dev_never_pass", "identity_untracked", "check_verdict")}
+                           "dev_never_pass", "identity_untracked", "check_verdict",
+                           "not_passed_listed")}
 
 DEV_LINE = "DEV RUN, not evidence"
 
@@ -208,6 +209,11 @@ def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None, dev=Fals
         items += [J.item("suite_run", r_["id"], "PASS",
                          _group_verdict(chain, C.group_name(r_["id"]))[0],
                          "the first, whole run decides") for r_ in alist.suite_runs]
+        # every result of each that is not a plain PASS, for the record's
+        # full list (judge.not_passed; the item's detail stops at six)
+        for i in items:
+            if i["kind"] in ("check", "suite_run") and RULES["not_passed_listed"]:
+                i["not_passed"] = J.not_passed(chain["results"], C.group_name(i["id"]))
         compares = []
         for c in alist.compares:
             try:
