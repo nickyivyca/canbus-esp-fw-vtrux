@@ -422,7 +422,11 @@ def identifier_scan(folder, values=None):
 
 def artifacts_row(folder, summary):
     """The record's row, put at the top of the runs/ rows of the artifacts
-    README beside the runs folder. Returns the row."""
+    README beside the runs folder. Returns the row; None for a --dev run,
+    which is never evidence and gets no row (its records go to a dev-runs
+    folder of their own: the charge-interposer reviewer, 2026-11-02)."""
+    if summary.get("dev"):
+        return None
     readme = os.path.join(os.path.dirname(os.path.dirname(folder)), "README.md")
     with open(readme, encoding="utf-8", newline="") as f:
         lines = f.read().split("\n")

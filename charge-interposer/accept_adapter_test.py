@@ -263,6 +263,13 @@ def test_artifacts_row(A, work):
     i = lines.index(row)
     assert lines[i + 1].startswith("| `runs/old_1/`") and "accept_s_1" in row \
         and "ACCEPTANCE PASS" in row, lines
+    # a --dev run is never evidence: no row (the charge-interposer reviewer,
+    # 2026-11-02), and the README is left as it was
+    with open(readme, encoding="utf-8") as f:
+        before = f.read()
+    assert A.artifacts_row(os.path.join(runs, "accept_s_1"), dict(summary, dev=True)) is None
+    with open(readme, encoding="utf-8") as f:
+        assert f.read() == before, "a dev run wrote a row"
     with open(readme, "w", encoding="utf-8", newline="\n") as f:
         f.write("# x\n\nno table\n")
     try:
@@ -391,6 +398,7 @@ MUTANTS = [
      "    if True:\n        cmds +="),
     ("no check after the install", '["charge-interposer/canre_pin.py", "check"]',
      '["charge-interposer/canre_pin.py", "where"]'),
+    ("a dev run gets a row", '    if summary.get("dev"):\n        return None\n', ""),
     ("installed read from the install's line", r'r"^canre ([0-9a-f]{40}) checked at (.+)$"',
      r'r"^canre ([0-9a-f]{40}) .*at (.+)$"'),
 ]
