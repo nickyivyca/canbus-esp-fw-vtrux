@@ -160,7 +160,8 @@ def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None, dev=Fals
                                             *adapter_rel.split("/")))
         rec.say("adapter: %s at %s" % (adapter_rel, commit[:12]))
         alist = L.load(repo, spec, adapter)
-        trees = T.make_trees(repo, alist, adapter, parent, made, say=rec.say)
+        trees = T.make_trees(repo, alist, adapter, parent, made, say=rec.say,
+                             remote={"settings": machine, "record_id": rec.id})
         prem = J.premises(alist.premises, trees, repo, adapter, parent, made)
         blocked = set()
         all_ids = ([c["id"] for c in alist.checks] + [r["id"] for r in alist.suite_runs]
@@ -189,7 +190,7 @@ def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None, dev=Fals
                     C.group_name("cf-%s-" % e["canfail"])) for e in entries):
                 for c in g.checks:
                     c.skip = "a premise did not hold (A11)"
-        chain = C.run_suite(suite, s, rec, adapter=adapter)
+        chain = C.run_suite(suite, s, rec, adapter=adapter, made=made)
         nested = {}
         for r_ in alist.suite_runs:
             p = os.path.join(chain["_dir"], C.group_name(r_["id"]), "run", "nested.json")

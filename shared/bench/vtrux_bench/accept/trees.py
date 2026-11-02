@@ -20,8 +20,13 @@ Each tree's record: per checkout the commit, the tree id and the sha256 of
 every tracked file as checked out; and the product digest over the
 adapter's product_files (vtrux_bench.run.engine.product_digest).
 
-Local trees only so far; a tree on a remote host is refused until that part
-is built.
+A tree on a remote host (A4: one the settings name with its ssh and
+workroot) is made locally first, as above, for its record; then each of its
+checkouts goes to the host as a git bundle of its commit (git objects only),
+is cloned there into <workroot>/accept-<record id>/<prefix><name>/, checked
+out detached at the commit and checked there the same way (HEAD, status),
+and the folder is held in the run's Made as a remote one (A14). The tree's
+paths are then the remote ones; "local_dir" keeps the local clone.
 
 RULES: each is switched off by a mutant in tests/test_accept_trees.py,
 which must then fail.
@@ -38,7 +43,7 @@ from ..run.engine import product_digest
 RULES = {k: True for k in (
     "exact_checkout", "shared_checkout", "from_objects", "head_check", "clean_check",
     "untracked_check", "record_tree_id", "record_files", "record_digest", "layout",
-    "made_tracked")}
+    "made_tracked", "remote_exact", "remote_check", "remote_made")}
 
 
 class TreeError(Exception):
@@ -106,19 +111,94 @@ def _overlay_working_copy(repo, dest):
             shutil.copyfile(src, dst)
 
 
-def make_trees(repo, alist, adapter, parent, made, say=print):
+def make_trees(repo, alist, adapter, parent, made, say=print, remote=None):
     """Make every tree of the list under parent. {name: {"dir", "project_dir",
-    "shared_dirs" {component: dir}, "record"}}."""
-    return {name: make_tree(repo, name, t, adapter, parent, made, say)
+    "shared_dirs" {component: dir}, "record"}}; a tree on a remote host also
+    "remote", "host", "local_dir" (see make_tree). remote: {"settings": the
+    run's settings (their hosts), "record_id": the acceptance record's id},
+    needed for remote trees."""
+    return {name: make_tree(repo, name, t, adapter, parent, made, say, remote=remote)
             for name, t in sorted(alist.trees.items())}
 
 
-def make_tree(repo, name, t, adapter, parent, made, say=print, prefix="tree-"):
+def remote_check_tree(ssh_host, rdir, commit):
+    """check_tree() on a remote host, over ssh."""
+    import shlex
+    from ..run import engine as E
+    q = shlex.quote(rdir)
+    r = subprocess.run(list(E.SSH) + [ssh_host, "git -C %s rev-parse HEAD && git -C %s status "
+                                      "--porcelain --untracked-files=all" % (q, q)],
+                       capture_output=True, text=True, timeout=600)
+    lines = r.stdout.strip().splitlines()
+    if r.returncode or not lines:
+        raise TreeError("%s:%s cannot be read: %s" % (ssh_host, rdir, r.stderr.strip()[-200:]))
+    if RULES["remote_check"] and (lines[0].strip() != commit or lines[1:]):
+        raise TreeError("%s:%s is not its commit %s with no change (A4): HEAD %s%s" % (
+            ssh_host, rdir, commit[:12], lines[0][:12],
+            "".join("\n" + ln for ln in lines[1:20])))
+
+
+def _ssh(ssh_host, line, data=None):
+    from ..run import engine as E
+    r = subprocess.run(list(E.SSH) + [ssh_host, line], input=data, capture_output=True,
+                       timeout=1800)
+    if r.returncode:
+        raise TreeError("on %s: %s failed: %s" % (ssh_host, line[:120],
+                                                  r.stderr.decode("utf-8", "replace")[-300:]))
+
+
+def _to_remote(name, t, local, paths, remote, made, say, prefix):
+    """The tree on its host: each checkout sent as a git bundle of its
+    commit, cloned there into <workroot>/accept-<record id>/<prefix><name>/,
+    checked out detached at the commit and checked there (A4)."""
+    import shlex
+    from ..run import engine as E
+    host = t["host"]
+    cfg = ((remote or {}).get("settings") or {}).get("hosts", {}).get(host)
+    if not cfg or not cfg.get("ssh") or not cfg.get("workroot"):
+        raise TreeError("tree %s is on host %s, which the settings do not name with its "
+                        "ssh and workroot" % (name, host))
+    base = "%s/accept-%s/%s%s" % (cfg["workroot"].rstrip("/"), remote["record_id"], prefix, name)
+    if RULES["remote_made"]:
+        made.add_remote(E.SSH, cfg["ssh"], base, cfg["workroot"].rstrip("/"))
+    checkouts = [("project", local["project_dir"], t["project"])] + [
+        (c, local["shared_dirs"][c], v) for c, v in sorted(t["shared"].items())]
+    out = {}
+    for key, ldir, commit in checkouts:
+        rdir = "%s/%s" % (base, paths[key])
+        bundle = os.path.join(local["dir"], "%s.bundle" % key)
+        _git(["bundle", "create", "-q", bundle, "HEAD"], cwd=ldir)
+        with open(bundle, "rb") as f:
+            data = f.read()
+        q, qb = shlex.quote(rdir), shlex.quote(rdir + ".bundle")
+        _ssh(cfg["ssh"], "mkdir -p %s && cat > %s" % (shlex.quote(base), qb), data)
+        line = "git -c core.autocrlf=false clone -q --no-checkout %s %s" % (qb, q)
+        if RULES["remote_exact"]:
+            line += (" && git -C %s -c advice.detachedHead=false checkout -q --detach %s"
+                     % (q, commit))
+        _ssh(cfg["ssh"], line + " && rm -f %s" % qb)
+        remote_check_tree(cfg["ssh"], rdir, commit)
+        out[key] = rdir
+    say("tree %s: on %s at %s" % (name, host, base))
+    rec = dict(local["record"], remote={"host": host, "dir": base})
+    return {"dir": local["dir"], "local_dir": local["project_dir"], "remote": True,
+            "host": host, "remote_base": base, "project_dir": out["project"],
+            "shared_dirs": {c: out[c] for c in t["shared"]}, "record": rec}
+
+
+def make_tree(repo, name, t, adapter, parent, made, say=print, prefix="tree-", remote=None):
     """One tree, t as the list gives it (listfile: "project", "shared",
-    "host"), in a folder <prefix><name>-... of its own under parent."""
-    if t.get("host", "local") != "local":
-        raise TreeError("tree %s is on host %s: remote trees are not built yet"
-                        % (name, t["host"]))
+    "host"), in a folder <prefix><name>-... of its own under parent; on a
+    remote host, also there (_to_remote), its paths the remote ones."""
+    local = _make_local(repo, name, t, adapter, parent, made, say, prefix)
+    if t.get("host", "local") == "local":
+        return local
+    paths = adapter.tree_paths(name, t) if RULES["layout"] else dict(
+        {"project": "p"}, **{c: "s-" + c for c in t["shared"]})
+    return _to_remote(name, t, local, paths, remote, made, say, prefix)
+
+
+def _make_local(repo, name, t, adapter, parent, made, say, prefix):
     d = S.make(parent, prefix + name)
     if RULES["made_tracked"]:
         made.add(d)

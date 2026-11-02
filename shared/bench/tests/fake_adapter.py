@@ -30,10 +30,11 @@ TARGETS = {
 SHELLS = ("python", "git-bash", "powershell")
 
 
-def shell_argv(shell, settings):
-    """The command a shell's file is run with, before the file's path."""
+def shell_argv(shell, settings, host="local"):
+    """The command a shell's file is run with, before the file's path, on
+    a host."""
     if shell == "python":
-        return list(settings["hosts"]["local"]["python"]) + ["-B"]
+        return list(settings["hosts"][host]["python"]) + ["-B"]
     if shell == "git-bash":
         return [settings["bash"]]
     return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]
