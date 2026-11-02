@@ -30,6 +30,7 @@ until nothing reads them. Since the move:
 | `tx_fail_banking_mutation.sh` | Can-fail for `test_l2_bridge`'s tx-fail case |
 | `hold_cadence_gate_mutation.sh` | Can-fail for the two hold-cadence unit traces |
 | `rx_order_prefix_control.sh` | Can-fail control for spec 2's receive-order cases |
+| `shared_fake_canfail.py` | Can-fail for host_bridge on the shared TWAI fake (`TWAI_FAKE=shared`, port step 1b's acceptance E): host_bridge on our own fake against copies of the shared fake in `TWAI_FAKE_DIR`, compared with the acceptance adapter's masked-log comparer; the unchanged copy must compare the same, and each of three mutants from the shared fake's own `mutate.py` must compare different. Run as `run.sh --can-fail`, on madhouse (g++). Its test: `../twai_fake_option_test.py` (tester, 2026-11-02, the reviewer's order) |
 | `switch_discard_witness.py` | Whether the switch-discard case can PASS |
 | `monitor_6h_diff.py` | MONITOR held past 6 h, on `machine.cpp` (spec 6); `--can-fail`, `--corrupt-pin` |
 | `clause1_fall_mutations.py` | Can-fail for clause 1's exemptions in `run_scenario._hold_follows_loads` |

@@ -140,6 +140,7 @@ HARNESS_PY_TESTS = [
     "sims_test.py", "regress_offline_test.py", "capture_pins_test.py",
     "build_lookup_offline_test.py", "paths_test.py", "diag_cadence_test.py",
     "bus_gs_usb_test.py", "canre_pin_test.py", "can_tools_pin_test.py",
+    "twai_fake_option_test.py",
 ]
 MADHOUSE_PIO_PATH = "{madhouse_pio_dir}:/usr/local/bin:/usr/bin:/bin"
 
@@ -863,6 +864,9 @@ def harness(settings):
               timeout_s=3600),
         b.mpy("paths-test-canfail",
               ["paths_test.py", "--can-fail"], cls="build",
+              timeout_s=3600),
+        b.mpy("twai-fake-option-test-canfail",
+              ["twai_fake_option_test.py", "--can-fail"], cls="build",
               timeout_s=3600)])
     def mutant(cid, argv):
         kw = dict(cls="build", timeout_s=7200,

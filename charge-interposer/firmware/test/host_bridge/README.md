@@ -10,6 +10,23 @@ Linux). Builds with `g++ -std=c++11`, globbing the sources rather than
 listing them — a hand-kept source list going stale is how the
 generator-inhibit session built against old headers three times.
 
+**Which TWAI fake: `TWAI_FAKE`** (tester, 2026-11-02, the reviewer's order;
+an option of committed harness so the acceptance runner can re-run port step
+1b's acceptance E). Unset or `own`, the default and the behaviour before the
+option: this folder's `twai_fake.h` / `.cpp` and `driver/twai.h`. `shared`:
+the shared fake (`shared/twai_port/test`, twai_port T10) in the folder
+`TWAI_FAKE_DIR` names, built as E built it -- a copy of this folder without
+those three files (a quoted `#include` looks in the including file's folder
+first, so they would win over any `-I`), each test given the shared
+`twai_fake.c` and `cpp/twai_fake.cpp`, and `-I <fake>/include -I <fake>/host
+-I <fake>/cpp` after this folder and `src/`. It prints nothing extra, so the
+two transcripts compare line for line. Anything else, or `shared` without
+the fake's sources, is refused (exit 2) before anything builds. `run.sh
+--can-fail` runs the shared fake's can-fail,
+`../../../harness_checks/shared_fake_canfail.py`. Both are tested by
+`../../../twai_fake_option_test.py` (with `--can-fail`); the acceptance
+adapter's catalogue entry is `host-bridge-shared-fake`.
+
 | file | what |
 |---|---|
 | `mcp2515_fake.h` / `.cpp` | Constants, the status table, and the bit-modifiable register set. **The status table is the source of truth for what every L2 result rests on**, and the run-time marking is generated from it |

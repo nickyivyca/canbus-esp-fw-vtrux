@@ -7,9 +7,58 @@
 #
 # On Windows run under WSL:
 #   wsl bash "/mnt/c/.../firmware/test/host_bridge/run.sh"
+#
+# WHICH TWAI DRIVER FAKE the tests build against, TWAI_FAKE (tester,
+# 2026-11-02, the reviewer's order: an option of committed harness, so that
+# port step 1b's acceptance E can be re-run by the acceptance runner):
+#   own     the default, as before the option: this folder's twai_fake.h /
+#           .cpp and driver/twai.h.
+#   shared  the shared fake (shared/twai_port/test, twai_port T10), from the
+#           folder TWAI_FAKE_DIR names, built exactly as acceptance E built
+#           it (2026-10-31): a copy of this folder without our twai_fake.h,
+#           twai_fake.cpp and driver/twai.h (a quoted #include looks in the
+#           including file's own folder first, so they would win over any
+#           -I), every test given the shared twai_fake.c and
+#           cpp/twai_fake.cpp, and -I <fake>/include -I <fake>/host
+#           -I <fake>/cpp after this folder and src/. Nothing else changes,
+#           and nothing extra is printed: the two transcripts are compared
+#           line for line.
+# run.sh --can-fail is the shared fake's can-fail
+# (../../../harness_checks/shared_fake_canfail.py).
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SRC="$HERE/../../src"
+case "${1:-}" in
+  "") ;;
+  --can-fail) exec python3 "$HERE/../../../harness_checks/shared_fake_canfail.py" ;;
+  *) echo "usage: run.sh [--can-fail]" >&2; exit 2 ;;
+esac
+# B: the folder the tests and our fakes are built from
+B="$HERE"
+FAKE_SRCS=()
+FAKE_INC=()
+case "${TWAI_FAKE:-own}" in
+  own) ;;
+  shared)
+    SH="${TWAI_FAKE_DIR:-}"
+    if [ -z "$SH" ] || [ ! -f "$SH/twai_fake.c" ] || [ ! -f "$SH/cpp/twai_fake.cpp" ]; then
+      echo "TWAI_FAKE=shared needs TWAI_FAKE_DIR: the shared fake's folder" \
+           "(shared/twai_port/test), with twai_fake.c and cpp/twai_fake.cpp" >&2
+      exit 2
+    fi
+    B="$(mktemp -d "${TMPDIR:-/tmp}/host_bridge_shared_XXXXXX")" || exit 2
+    trap 'rm -rf "$B"' EXIT
+    cp -R "$HERE/." "$B/"
+    rm "$B/twai_fake.h" "$B/twai_fake.cpp" "$B/driver/twai.h"
+    rmdir "$B/driver" 2>/dev/null || true
+    FAKE_SRCS=("$SH/twai_fake.c" "$SH/cpp/twai_fake.cpp")
+    FAKE_INC=(-I "$SH/include" -I "$SH/host" -I "$SH/cpp")
+    ;;
+  *)
+    echo "TWAI_FAKE=$TWAI_FAKE: own (the default) or shared" >&2
+    exit 2
+    ;;
+esac
 # test_l2_bridge replays l3_stimulus.txt, which stays in SeaDrive; its
 # relative candidates in l3_replay.cpp no longer reach it from this repo,
 # so the runner hands it over through L3_STIMULUS (an explicit setting
@@ -26,14 +75,14 @@ fail=0
 if ! python3 "$HERE/../../../capture_pins.py" --file "$L3_STIMULUS"; then
   fail=1
 fi
-for t in "$HERE"/test_*.cpp; do
+for t in "$B"/test_*.cpp; do
   name="$(basename "$t" .cpp)"
   bin="${TMPDIR:-/tmp}/${name}_$$"
   # Glob the fakes rather than list them: a hand-kept source list going
   # stale is how the gen-inhibit session built against old headers three
   # times without noticing.
-  srcs=("$t")
-  for f in "$HERE"/*.cpp; do
+  srcs=("$t" ${FAKE_SRCS[@]+"${FAKE_SRCS[@]}"})
+  for f in "$B"/*.cpp; do
     [ "$f" = "$t" ] && continue
     case "$(basename "$f")" in test_*) continue ;; esac
     srcs+=("$f")
@@ -78,7 +127,7 @@ for t in "$HERE"/test_*.cpp; do
   esac
   # ${defs[@]+...} so an EMPTY array is not an unbound-variable error
   # under `set -u`, which is how most of these tests build.
-  if ! g++ -std=c++11 -O2 -Wall -Wextra -I "$HERE" -I "$SRC" \
+  if ! g++ -std=c++11 -O2 -Wall -Wextra -I "$B" -I "$SRC" ${FAKE_INC[@]+"${FAKE_INC[@]}"} \
        ${defs[@]+"${defs[@]}"} -o "$bin" "${srcs[@]}"; then
     echo "$name DID NOT BUILD"
     fail=1

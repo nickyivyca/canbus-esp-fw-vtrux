@@ -1,0 +1,439 @@
+#!/usr/bin/env python3
+"""Tests of host_bridge's TWAI_FAKE option (firmware/test/host_bridge/run.sh)
+and of its can-fail (harness_checks/shared_fake_canfail.py). No g++, no
+hardware: run.sh is run by bash with stand-in g++ and python3 that record
+what they were given, and the can-fail is judged on stand-in suite runs.
+
+    py -3.14 -B charge-interposer/twai_fake_option_test.py [--can-fail]
+
+Tester, 2026-11-02 (the charge-interposer reviewer's order: port step 1b's
+acceptance E as committed harness, so the acceptance runner can re-run it).
+--can-fail runs every test first unchanged (the control, which must pass),
+then with each of the can-fail's RULES switched off, then on copies of
+host_bridge with run.sh mutated; each must make a test fail.
+
+On Windows bash is Git Bash by its full path (a bare "bash" there is WSL's,
+regress.py); elsewhere bash. Throwaway folders come from scratch_dir.py and
+are removed when the run ends.
+"""
+
+import contextlib
+import os
+import shutil
+import stat
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
+import scratch_dir                                    # noqa: E402
+
+HB = os.path.join(HERE, "firmware", "test", "host_bridge")
+CANFAIL = os.path.join(HERE, "harness_checks", "shared_fake_canfail.py")
+GIT_BASH = r"C:\Program Files\Git\bin\bash.exe"
+
+
+def bash():
+    if os.name == "nt":
+        if not os.path.exists(GIT_BASH):
+            raise SystemExit("REFUSED: no Git Bash at %s" % GIT_BASH)
+        return GIT_BASH
+    return "bash"
+
+
+def fwd(p):
+    return p.replace("\\", "/")
+
+
+def bash_form(p):
+    """p as bash prints it: on Windows Git Bash's /c/... form."""
+    p = fwd(p)
+    if os.name == "nt" and len(p) > 1 and p[1] == ":":
+        p = "/" + p[0].lower() + p[2:]
+    return p
+
+
+# ---- stand-ins --------------------------------------------------------------
+GPP = r"""#!/bin/sh
+# stand-in g++: logs its arguments (tab-separated) and what the first -I
+# folder holds, and writes an output that runs and prints nothing
+out=""; first=""; prev=""
+for a in "$@"; do
+  [ "$prev" = "-o" ] && out="$a"
+  [ "$prev" = "-I" ] && [ -z "$first" ] && first="$a"
+  prev="$a"
+done
+{
+  printf 'CALL'
+  for a in "$@"; do printf '\t%s' "$a"; done
+  printf '\n'
+  for f in twai_fake.h twai_fake.cpp driver/twai.h test_l2_bridge.cpp; do
+    if [ -e "$first/$f" ]; then printf 'HAS\t%s\n' "$f"; else printf 'NO\t%s\n' "$f"; fi
+  done
+} >> "$STUB_LOG"
+printf '#!/bin/sh\nexit 0\n' > "$out"
+chmod +x "$out"
+"""
+PY3 = r"""#!/bin/sh
+# stand-in python3: logs its arguments
+{ printf 'PY'; for a in "$@"; do printf '\t%s' "$a"; done; printf '\n'; } >> "$STUB_LOG"
+exit 0
+"""
+
+
+def stubs(work):
+    d = os.path.join(work, "bin")
+    os.makedirs(d)
+    for name, text in (("g++", GPP), ("python3", PY3)):
+        p = os.path.join(d, name)
+        with open(p, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+        os.chmod(p, os.stat(p).st_mode | stat.S_IEXEC)
+    return d
+
+
+def run_sh(ctx, work, env, args=()):
+    """run.sh (ctx's) under bash with the stand-ins first on PATH; (rc,
+    output, [calls], [python3 calls]): a call is (argv, {file: present in
+    the first -I folder})."""
+    bindir = stubs(work)
+    log = os.path.join(work, "stub.log")
+    tmp = os.path.join(work, "tmp")
+    os.makedirs(tmp)
+    e = dict(os.environ)
+    for k in ("TWAI_FAKE", "TWAI_FAKE_DIR", "INTERPOSER_CODE"):
+        e.pop(k, None)
+    e.update(PATH=bindir + os.pathsep + e.get("PATH", ""), STUB_LOG=fwd(log),
+             TMPDIR=fwd(tmp), L3_STIMULUS="unused")
+    e.update(env)
+    p = subprocess.run([bash(), fwd(ctx["run_sh"])] + list(args), env=e,
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    calls, py = [], []
+    if os.path.exists(log):
+        with open(log, encoding="utf-8") as f:
+            for line in f.read().splitlines():
+                parts = line.split("\t")
+                if parts[0] == "CALL":
+                    calls.append((parts[1:], {}))
+                elif parts[0] in ("HAS", "NO"):
+                    calls[-1][1][parts[1]] = parts[0] == "HAS"
+                elif parts[0] == "PY":
+                    py.append(parts[1:])
+    return p.returncode, p.stdout, calls, py, tmp
+
+
+def fake_dir(work, extra=None):
+    """A stand-in shared fake: twai_fake.c holding each mutant's text once,
+    cpp/twai_fake.cpp, and a mutate.py with MUTANTS."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_sfc", CANFAIL)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    d = os.path.join(work, "fake")
+    os.makedirs(os.path.join(d, "cpp"))
+    muts = [(n, "/* old %d */ x = %d;" % (i, i), "/* new %d */ x = -%d;" % (i, i))
+            for i, n in enumerate(m.NAMES)] + (extra or [])
+    with open(os.path.join(d, "twai_fake.c"), "w", encoding="utf-8", newline="\n") as f:
+        f.write("int x;\n" + "\n".join(o for _n, o, _w in muts[:len(m.NAMES)]) + "\n")
+    with open(os.path.join(d, "cpp", "twai_fake.cpp"), "w", encoding="utf-8", newline="\n") as f:
+        f.write("// fake\n")
+    with open(os.path.join(d, "mutate.py"), "w", encoding="utf-8", newline="\n") as f:
+        f.write("MUTANTS = %r\n" % (muts,))
+    return d
+
+
+# ---- run.sh -----------------------------------------------------------------
+def test_refusals(ctx, work):
+    """run.sh refuses, rc 2 and before any build: an unknown TWAI_FAKE,
+    TWAI_FAKE=shared with no TWAI_FAKE_DIR or one without the fake's
+    sources, and an unknown argument."""
+    fd = fake_dir(work)
+    os.remove(os.path.join(fd, "cpp", "twai_fake.cpp"))
+    cases = [({"TWAI_FAKE": "bogus"}, ()), ({"TWAI_FAKE": "shared"}, ()),
+             ({"TWAI_FAKE": "shared", "TWAI_FAKE_DIR": fwd(fd)}, ()), ({}, ("--x",))]
+    for i, (env, args) in enumerate(cases):
+        w = os.path.join(work, "r%d" % i)
+        os.makedirs(w)
+        rc, outp, calls, _py, _t = run_sh(ctx, w, env, args)
+        assert rc == 2 and not calls, (env, args, rc, outp[-300:], len(calls))
+
+
+def _check_own(calls, outp):
+    tests = sorted(n for n in os.listdir(HB) if n.startswith("test_") and n.endswith(".cpp"))
+    assert len(calls) == len(tests), (len(calls), tests)
+    for argv, has in calls:
+        i = argv.index("-I")
+        assert fwd(argv[i + 1]).endswith("/firmware/test/host_bridge"), argv
+        assert argv[i + 2] == "-I" and fwd(argv[i + 3]).endswith("/src"), argv
+        assert not any("twai_fake.c" == os.path.basename(a) for a in argv), argv
+        assert any(fwd(a).endswith("/host_bridge/twai_fake.cpp") for a in argv), argv
+        assert argv.count("-I") == 2, argv
+        assert has["twai_fake.h"] and has["driver/twai.h"], has
+    assert "TWAI" not in outp, outp
+
+
+def test_own_default(ctx, work):
+    """Today's behaviour is the default: with TWAI_FAKE unset, and with
+    TWAI_FAKE=own, every test builds from host_bridge itself, with our own
+    twai_fake.cpp, -I host_bridge -I src and nothing more, and nothing
+    extra is printed."""
+    for i, env in enumerate(({}, {"TWAI_FAKE": "own"})):
+        w = os.path.join(work, "o%d" % i)
+        os.makedirs(w)
+        rc, outp, calls, _py, _t = run_sh(ctx, w, env)
+        assert rc == 0, (env, rc, outp[-300:])
+        _check_own(calls, outp)
+
+
+def test_shared_build(ctx, work):
+    """TWAI_FAKE=shared builds as acceptance E did: from a copy of
+    host_bridge without our twai_fake.h, twai_fake.cpp and driver/twai.h;
+    each test given the shared twai_fake.c and cpp/twai_fake.cpp right after
+    it; -I <copy> -I src -I <fake>/include -I <fake>/host -I <fake>/cpp; the
+    copy removed when run.sh ends; nothing extra printed."""
+    fd = fwd(fake_dir(work))
+    rc, outp, calls, _py, tmp = run_sh(ctx, work, {"TWAI_FAKE": "shared", "TWAI_FAKE_DIR": fd})
+    assert rc == 0, (rc, outp[-300:])
+    tests = sorted(n for n in os.listdir(HB) if n.startswith("test_") and n.endswith(".cpp"))
+    assert len(calls) == len(tests), (len(calls), tests)
+    copies = set()
+    for argv, has in calls:
+        i = argv.index("-I")
+        b = argv[i + 1]
+        copies.add(b)
+        assert bash_form(b).startswith(bash_form(tmp) + "/host_bridge_shared_"), (b, tmp)
+        assert fwd(argv[i + 3]).endswith("/src"), argv
+        assert argv[i + 4:i + 10] == ["-I", fd + "/include", "-I", fd + "/host",
+                                      "-I", fd + "/cpp"], argv
+        o = argv.index("-o")
+        srcs = argv[o + 2:]
+        # the test itself from the copy too: a test in host_bridge/ would
+        # find our twai_fake.h beside it first
+        assert bash_form(srcs[0]).startswith(bash_form(b) + "/test_"), (srcs[0], b)
+        assert srcs[1:3] == [fd + "/twai_fake.c", fd + "/cpp/twai_fake.cpp"], srcs
+        assert not any(fwd(a).endswith("host_bridge/twai_fake.cpp") or
+                       os.path.basename(a) == "twai_fake.cpp" and not a.startswith(fd)
+                       for a in srcs), srcs
+        assert not has["twai_fake.h"] and not has["twai_fake.cpp"] and \
+            not has["driver/twai.h"] and has["test_l2_bridge.cpp"], has
+    assert len(copies) == 1, copies
+    left = os.listdir(tmp)
+    assert left == [], left
+    assert "TWAI" not in outp, outp
+
+
+def test_canfail_mode(ctx, work):
+    """run.sh --can-fail runs the shared fake's can-fail
+    (harness_checks/shared_fake_canfail.py) with python3, and builds
+    nothing itself."""
+    rc, outp, calls, py, _t = run_sh(ctx, work, {}, ("--can-fail",))
+    assert rc == 0 and not calls, (rc, outp[-300:], calls)
+    assert len(py) == 1 and fwd(py[0][0]).endswith("/harness_checks/shared_fake_canfail.py") \
+        and len(py[0]) == 1, py
+
+
+# ---- the can-fail -----------------------------------------------------------
+def same_runner(changed=(), control_differs=False, record=None):
+    """A stand-in suite run: our own fake prints two ok lines; the shared fake
+    prints the same unless its twai_fake.c differs from the original (then a
+    FAIL line), except for the mutants in changed, whose change it does not
+    see."""
+    def runner(env, log):
+        if record is not None:
+            record.append(dict(env))
+        lines = ["ok one", "ok two"]
+        if env.get("TWAI_FAKE") == "shared":
+            with open(os.path.join(env["TWAI_FAKE_DIR"], "twai_fake.c"), encoding="utf-8") as f:
+                src = f.read()
+            if "/* new " in src and not any("/* new %d */" % i in src for i in changed):
+                lines.append("FAIL a fake behaviour")
+            if control_differs:
+                lines.append("ok extra")
+        with open(log, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        return 1
+    return runner
+
+
+def judge(ctx, work, runner):
+    out = []
+    fd = fake_dir(os.path.join(work, "f"))
+    w = os.path.join(work, "w")
+    os.makedirs(w)
+    rc = ctx["canfail"].judge(fd, w, runner, out.append)
+    return rc, "\n".join(out), fd
+
+
+def test_canfail_judges(ctx, work):
+    """The can-fail passes only when the control (the shared fake
+    unchanged) compares the same as our own fake and every mutant compares
+    different; a mutant the comparison does not see, or a control that
+    differs, is a FAIL. Every shared run is TWAI_FAKE=shared on its own
+    fresh copy of the fake, and the fake itself is never changed."""
+    rec = []
+    rc, out, fd = judge(ctx, os.path.join(work, "a"), same_runner(record=rec))
+    assert rc == 0 and out.count("-- caught") == 3 and "the same" in out, out
+    shared = [e for e in rec if e.get("TWAI_FAKE") != "own"]
+    assert len(rec) == 5 and len(shared) == 4, rec
+    assert all(e["TWAI_FAKE"] == "shared" for e in shared), rec
+    dirs = [e["TWAI_FAKE_DIR"] for e in shared]
+    assert len(set(dirs)) == 4 and fd not in dirs, dirs
+    with open(os.path.join(fd, "twai_fake.c"), encoding="utf-8") as f:
+        assert "/* new " not in f.read()
+    rc, out, _ = judge(ctx, os.path.join(work, "b"), same_runner(changed=(1,)))
+    assert rc == 1 and "NOT CAUGHT" in out, out
+    rc, out, _ = judge(ctx, os.path.join(work, "c"), same_runner(control_differs=True))
+    assert rc == 1 and "NOT THE SAME" in out, out
+
+
+def test_canfail_refusals(ctx, work):
+    """Refused before any run: a mutant name the fake's mutate.py does not
+    hold, a mutant text not found exactly once; and from main(): no
+    TWAI_FAKE_DIR, an argument, INTERPOSER_CODE naming another tree."""
+    C = ctx["canfail"]
+    ran = []
+    fd = fake_dir(os.path.join(work, "a"))
+    p = os.path.join(fd, "mutate.py")
+    with open(p, encoding="utf-8") as f:
+        text = f.read()
+    with open(p, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text.replace(C.NAMES[0], "something else"))
+    try:
+        C.judge(fd, work, lambda e, l: ran.append(e) or 0, lambda s: None)
+    except C.Refused:
+        pass
+    else:
+        raise AssertionError("an unknown mutant name was taken")
+    fd = fake_dir(os.path.join(work, "b"))
+    with open(os.path.join(fd, "twai_fake.c"), "a", encoding="utf-8", newline="\n") as f:
+        f.write("/* old 0 */ x = 0;\n")
+    try:
+        C.judge(fd, work, lambda e, l: ran.append(e) or 0, lambda s: None)
+    except C.Refused:
+        pass
+    else:
+        raise AssertionError("a mutant text found twice was taken")
+    assert not ran, ran
+    with env_set(TWAI_FAKE_DIR=None, INTERPOSER_CODE=None):
+        assert C.main([], runner=lambda e, l: ran.append(e) or 0, out=lambda s: None) == 2
+    with env_set(TWAI_FAKE_DIR=fd, INTERPOSER_CODE=None):
+        assert C.main(["x"], runner=lambda e, l: ran.append(e) or 0, out=lambda s: None) == 2
+    with env_set(TWAI_FAKE_DIR=fd, INTERPOSER_CODE=work):
+        assert C.main([], runner=lambda e, l: ran.append(e) or 0, out=lambda s: None) == 2
+    assert not ran, ran
+
+
+@contextlib.contextmanager
+def env_set(**kw):
+    old = {k: os.environ.get(k) for k in kw}
+    try:
+        for k, v in kw.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        yield
+    finally:
+        for k, v in old.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+TESTS = [test_refusals, test_own_default, test_shared_build, test_canfail_mode,
+         test_canfail_judges, test_canfail_refusals]
+
+# run.sh mutants: each applied to a copy of host_bridge (at the same depth
+# under a copy of charge-interposer/), whose run.sh the tests then run
+RUN_SH_MUTANTS = [
+    ("an unknown TWAI_FAKE taken as our own", "  own) ;;\n", "  own|*) ;;\n"),
+    ("no fake folder checked",
+     '    if [ -z "$SH" ] || [ ! -f "$SH/twai_fake.c" ] || [ ! -f "$SH/cpp/twai_fake.cpp" ]; then',
+     '    if false; then'),
+    ("our fake kept in the copy", '    rm "$B/twai_fake.h" "$B/twai_fake.cpp" "$B/driver/twai.h"\n',
+     ""),
+    ("the shared sources not built", 'srcs=("$t" ${FAKE_SRCS[@]+"${FAKE_SRCS[@]}"})',
+     'srcs=("$t")'),
+    ("the shared includes first", '-I "$B" -I "$SRC" ${FAKE_INC[@]+"${FAKE_INC[@]}"}',
+     '${FAKE_INC[@]+"${FAKE_INC[@]}"} -I "$B" -I "$SRC"'),
+    ("the copy left behind", "    trap 'rm -rf \"$B\"' EXIT\n", ""),
+    ("built from host_bridge itself", 'for t in "$B"/test_*.cpp; do',
+     'for t in "$HERE"/test_*.cpp; do'),
+    ("the mode not the can-fail", '  --can-fail) exec python3 "$HERE/../../../harness_checks/'
+     'shared_fake_canfail.py" ;;', '  --can-fail) ;;'),
+]
+
+
+def load_canfail():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("shared_fake_canfail_under_test", CANFAIL)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def run_all(ctx, base):
+    bad = []
+    for t in TESTS:
+        work = os.path.join(base, t.__name__)
+        os.makedirs(work)
+        try:
+            t(ctx, work)
+            print("ok    %s" % t.__name__, flush=True)
+        except Exception as e:
+            print("FAIL  %s  %s: %s" % (t.__name__, type(e).__name__, str(e)[:240]), flush=True)
+            bad.append(t.__name__)
+    return bad
+
+
+def main(argv):
+    with scratch_dir.run("twai-fake-option-test") as base:
+        ctx = {"run_sh": os.path.join(HB, "run.sh"), "canfail": load_canfail()}
+        if "--can-fail" not in argv:
+            bad = run_all(ctx, os.path.join(base, "tests"))
+            print("\n%d of %d passed" % (len(TESTS) - len(bad), len(TESTS)))
+            return 1 if bad else 0
+        print("-- control", flush=True)
+        bad = run_all(ctx, os.path.join(base, "control"))
+        if bad:
+            print("\nREFUSED: the control fails (%s)" % ", ".join(bad))
+            return 1
+        caught = total = 0
+        for rule in sorted(ctx["canfail"].RULES):
+            total += 1
+            m = load_canfail()
+            m.RULES[rule] = False
+            print("-- rule %s off" % rule, flush=True)
+            bad = run_all(dict(ctx, canfail=m), os.path.join(base, "rule-" + rule))
+            caught += bool(bad)
+            print("%s  rule %s off: %s" % ("ok  " if bad else "FAIL", rule,
+                                          ("fails " + ", ".join(bad)) if bad else
+                                          "STILL PASSES -- nothing checks it"), flush=True)
+        with open(ctx["run_sh"], encoding="utf-8", newline="") as f:
+            src = f.read()
+        for n, (name, old, new) in enumerate(RUN_SH_MUTANTS, 1):
+            total += 1
+            if src.count(old) != 1:
+                print("FAIL  m%d %s: NOT APPLIED (the edit matched %d times)"
+                      % (n, name, src.count(old)))
+                continue
+            mdir = os.path.join(base, "m%d" % n)
+            hb = os.path.join(mdir, "charge-interposer", "firmware", "test", "host_bridge")
+            shutil.copytree(HB, hb)
+            with open(os.path.join(hb, "run.sh"), "w", encoding="utf-8", newline="") as f:
+                f.write(src.replace(old, new))
+            print("-- m%d %s" % (n, name), flush=True)
+            bad = run_all(dict(ctx, run_sh=os.path.join(hb, "run.sh")), os.path.join(mdir, "tests"))
+            caught += bool(bad)
+            print("%s  m%d %s: %s" % ("ok  " if bad else "FAIL", n, name,
+                                      ("fails " + ", ".join(bad)) if bad else
+                                      "STILL PASSES -- nothing checks it"), flush=True)
+        print("\n%d of %d mutants caught" % (caught, total))
+        return 0 if caught == total else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

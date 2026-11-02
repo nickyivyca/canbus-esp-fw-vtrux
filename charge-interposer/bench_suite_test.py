@@ -355,7 +355,9 @@ def test_suites():
     # 198: bus-gs-usb-test-canfail, paths-test-canfail,
     #      st.bench-canbench-smoke and cf.bench-canbench-smoke, with the
     #      can-tools pin move to 1cd3942 (2026-11-01)
-    assert len(seen) == 198, "checks across the suites: %d" % len(seen)
+    # 200: twai-fake-option-test and its -canfail, with host_bridge's
+    #      TWAI_FAKE option (reviewer, 2026-11-02)
+    assert len(seen) == 200, "checks across the suites: %d" % len(seen)
     # madhouse gets the pinned canre beside the code, named by CANRE_DIR
     mad = 0
     for name in ("emulated", "harness"):
