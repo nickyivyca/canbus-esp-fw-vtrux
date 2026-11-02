@@ -19,9 +19,10 @@ folder (the tests set TMPDIR, which must stay empty), removed when run.sh
 ends, pass, fail or refusal, with the tool folders above it, and a folder
 it cannot remove printed. And (the reviewer's reply of the same day) that
 another run's cleanup removing the tool folders between run.sh making them
-and making its run folder in them costs a retry, three tries in all, as
-scratch_dir.make's: a stand-in mktemp, also from BASH_ENV, removes them
-first.
+and making its run folder in them costs a retry, three tries in all, with
+waits of 0.1 s and 0.4 s before the second and third, as scratch_dir.make's:
+a stand-in mktemp, also from BASH_ENV, removes them first, and it and a
+stand-in sleep log the order of tries and waits.
 
 run.sh always runs from a copy of host_bridge and src/ at their depth under
 a test folder of its own (tree_copy), so its tree's root, and its scratch/,
@@ -113,8 +114,16 @@ RM_ENV = r"""rm() {
 # with STUB_MKTEMP_RACE=N, the first N mktemp -d calls for a run folder in
 # host-bridge/ find host-bridge/ and its parent removed just before, as
 # another run's cleanup would remove them, and fail; counted in the file
-# STUB_RACE_COUNT names (mktemp runs in a subshell)
+# STUB_RACE_COUNT names (mktemp runs in a subshell). Each such call, and each
+# sleep, is logged in order to the file STUB_RACE_LOG names.
+sleep() {
+  echo "sleep $*" >> "$STUB_RACE_LOG"
+  command sleep "$@"
+}
 mktemp() {
+  case "${2:-}" in
+    */host-bridge/run_*) echo "mktemp" >> "$STUB_RACE_LOG" ;;
+  esac
   if [ -n "${STUB_MKTEMP_RACE:-}" ] && [ "${1:-}" = "-d" ]; then
     case "${2:-}" in
       */host-bridge/run_*)
@@ -200,7 +209,8 @@ def run_sh(ctx, work, env, args=()):
         e.pop(k, None)
     e.update(PATH=bindir + os.pathsep + e.get("PATH", ""), STUB_LOG=fwd(log),
              TMPDIR=fwd(tmp), L3_STIMULUS="unused", BASH_ENV=fwd(rm_env),
-             STUB_RACE_COUNT=fwd(os.path.join(work, "race_count")))
+             STUB_RACE_COUNT=fwd(os.path.join(work, "race_count")),
+             STUB_RACE_LOG=fwd(os.path.join(work, "race_log")))
     e.update(env)
     p = subprocess.run([bash(), fwd(ctx["run_sh"])] + list(args), env=e,
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -373,24 +383,43 @@ def race_count(work):
         return 0
 
 
+def race_log(work):
+    try:
+        with open(os.path.join(work, "race_log"), encoding="utf-8") as f:
+            return f.read().split("\n")[:-1]
+    except FileNotFoundError:
+        return []
+
+
+# three tries, with scratch_dir.make's waits before the second and third
+THREE_TRIES = ["mktemp", "sleep 0.1", "mktemp", "sleep 0.4", "mktemp"]
+
+
 def test_race_retried(ctx, work):
     """Another run's cleanup removing host-bridge/ and its parent between
     run.sh's mkdir -p and its mktemp (twice running) costs nothing: both are
-    made again, the third try makes the run folder, the run is as usual,
-    nothing from the failed tries is printed, and nothing is left."""
+    made again, after a wait of 0.1 s and then 0.4 s, the third try makes
+    the run folder, the run is as usual, nothing from the failed tries is
+    printed, and nothing is left. With no race: one try, no wait."""
     rc, outp, calls, _py, tmp = run_sh(ctx, work, {"STUB_MKTEMP_RACE": "2"})
     assert race_count(work) == 2, race_count(work)
+    assert race_log(work) == THREE_TRIES, race_log(work)
     assert rc == 0, (rc, outp[-300:])
     assert "mktemp" not in outp and "No such file" not in outp, outp[-300:]
     _check_own(ctx, calls, outp, tmp)
+    w = os.path.join(work, "plain")
+    os.makedirs(w)
+    rc, outp, calls, _py, tmp = run_sh(ctx, w, {})
+    assert rc == 0 and race_log(w) == ["mktemp"], (rc, race_log(w))
 
 
 def test_race_bounded(ctx, work):
     """A race lost three times running is a refusal, rc 2 and before any
-    build, after exactly three tries, with the last try's reason printed,
-    and nothing left behind."""
+    build, after exactly three tries, the same waits between them, with the
+    last try's reason printed, and nothing left behind."""
     rc, outp, calls, _py, tmp = run_sh(ctx, work, {"STUB_MKTEMP_RACE": "9"})
     assert race_count(work) == 3, race_count(work)
+    assert race_log(work) == THREE_TRIES, race_log(work)
     assert rc == 2 and not calls, (rc, outp[-300:], len(calls))
     assert "mktemp" in outp, outp[-300:]
     all_removed(ctx, tmp)
@@ -539,6 +568,10 @@ RUN_SH_MUTANTS = [
      'W="$(mktemp -d "${TMPDIR:-/tmp}/run_XXXXXX" 2>/dev/null)" && break'),
     ("one try only", "for try in 1 2; do", "for try in ; do"),
     ("tries without end", "for try in 1 2; do", "for try in 1 2 3 4 5 6 7 8 9 10 11 12; do"),
+    ("no wait before the second try", '  [ "$try" = 1 ] || sleep 0.1\n', ""),
+    ("no wait before the last try", "  sleep 0.4\n", ""),
+    ("a wait before the first try too", '  [ "$try" = 1 ] || sleep 0.1\n',
+     "  sleep 0.1\n"),
     ("the tool folders not made again for the last try",
      '  mkdir -p "$WT/host-bridge" || exit 2\n', ""),
     ("the failed tries printed",

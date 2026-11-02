@@ -34,8 +34,10 @@ adapter's catalogue entry is `host-bridge-shared-fake`.
 system temp folder. Every test binary is built there, and so is
 `TWAI_FAKE=shared`'s copy. `run.sh` removes it when it ends, pass, fail or
 refusal, with the two tool folders above it if that leaves them empty, and
-prints any folder it cannot remove. Tested by the same
-`twai_fake_option_test.py`.
+prints any folder it cannot remove. Another run's cleanup can remove those
+tool folders while this run is making its own in them, so it is made with
+up to three tries, after waits of 0.1 s and 0.4 s, as `scratch_dir.make`'s.
+Tested by the same `twai_fake_option_test.py`.
 
 | file | what |
 |---|---|

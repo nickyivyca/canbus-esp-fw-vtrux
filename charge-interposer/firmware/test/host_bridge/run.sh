@@ -34,8 +34,9 @@
 # TWAI_FAKE=shared's copy. It is removed when run.sh ends, pass, fail or
 # refusal, with the two tool folders above it if that leaves them empty; a
 # folder it cannot remove is printed with its path. The run folder is made
-# with up to three tries, since another run's cleanup can remove the tool
-# folders between making them and making the run folder in them.
+# with up to three tries, a moment apart, since another run's cleanup can
+# remove the tool folders between making them and making the run folder in
+# them.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SRC="$HERE/../../src"
@@ -51,15 +52,20 @@ WT="$ROOT/scratch/charge-interposer-harness"
 # they are empty, and that can fall between this run's mkdir -p and its
 # mktemp. So both are made again, three tries in all, as
 # charge-interposer/scratch_dir.py's make() does (the charge-interposer
-# reviewer, 2026-11-02). The first two tries print nothing; the last one
-# prints its reason.
+# reviewer, 2026-11-02), with the same waits before the second and third
+# tries, 0.1 s and 0.4 s: on Windows a folder removed while another process
+# holds it stays delete-pending for a moment, and making one in it fails
+# until it is gone. The first two tries print nothing; the last one prints
+# its reason.
 W=""
 for try in 1 2; do
+  [ "$try" = 1 ] || sleep 0.1
   mkdir -p "$WT/host-bridge" 2>/dev/null &&
     W="$(mktemp -d "$WT/host-bridge/run_XXXXXX" 2>/dev/null)" && break
   W=""
 done
 if [ -z "$W" ]; then
+  sleep 0.4
   mkdir -p "$WT/host-bridge" || exit 2
   W="$(mktemp -d "$WT/host-bridge/run_XXXXXX")" || exit 2
 fi
