@@ -321,7 +321,8 @@ def main(argv):
             print("REFUSED: the control fails (%s), so a mutant's failures would "
                   "mean nothing" % ", ".join(control))
             return 1
-        missing = sorted(set(CF.RULES) - {k for k, _t in MUTANTS})
+        # remote_refused's mutant is in test_accept_remote.py
+        missing = sorted(set(CF.RULES) - {k for k, _t in MUTANTS} - {"remote_refused"})
         if missing:
             print("FAIL  rules with no mutant: %s" % ", ".join(missing))
             bad += 1

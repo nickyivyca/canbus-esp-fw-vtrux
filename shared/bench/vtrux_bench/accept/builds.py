@@ -33,11 +33,11 @@ from ..run.engine import Engine
 from ..run.model import Check, Group, Suite
 from .compile import chain_root, resolve_path
 from .settings import masked
-from .trees import make_tree
+from .trees import TreeError, make_tree
 
 RULES = {k: True for k in ("own_tree", "options", "image_sha", "record_file",
                            "build_cls", "chain_in_record", "fail_recorded",
-                           "masked_record")}
+                           "masked_record", "remote_refused")}
 
 
 def _sha256(path):
@@ -66,6 +66,10 @@ def build_suite(repo, alist, adapter, settings, made, parent, base_env, say, tre
     for b in alist.builds:
         if b["id"] in (skip or {}):
             continue
+        host = alist.trees[b["tree"]].get("host", "local")
+        if host != "local" and RULES["remote_refused"]:
+            raise TreeError("build %s: its tree %s is on the remote host %s, and builds on "
+                            "remote trees are not built yet" % (b["id"], b["tree"], host))
         if RULES["own_tree"]:
             t = make_tree(repo, b["id"], alist.trees[b["tree"]], adapter, parent, made,
                           say, prefix="build-")

@@ -375,7 +375,10 @@ MUTANTS = [
 
 
 # rules whose mutant is in another test file, which exercises them
-ELSEWHERE = {ST: {"tree_settings"}}            # test_accept_suite_runs.py
+ELSEWHERE = {ST: {"tree_settings"},           # test_accept_suite_runs.py
+             B: {"remote_refused"},           # test_accept_remote.py, these
+             C: {"remote_paths", "remote_shell", "chain_work_removed",
+                 "remote_suite_refused"}}
 
 
 def outcome_of(t):

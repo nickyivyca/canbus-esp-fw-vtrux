@@ -30,12 +30,13 @@ import os
 import tomllib
 
 from ..run.model import Check, Group
-from .compile import group_name, resolve_path, tree_env
+from .compile import group_name, local_path, resolve_path, shell_argv, tree_env
 from .judge import item
 from .trees import make_tree
 
 RULES = {k: True for k in ("fresh_tree", "exact_once", "known_ids", "fails_all",
-                           "flip_control", "new_line", "mode_arg", "tree_env")}
+                           "flip_control", "new_line", "mode_arg", "tree_env",
+                           "remote_refused")}
 
 
 class CanfailError(Exception):
@@ -55,7 +56,11 @@ def prepare(repo, alist, trees, adapter, parent, made, say=print):
             out.append({"canfail": cf["id"], "mutant": "mode", "mode": m["mode"],
                         "target": tgt, "tree": t, "target_tree": t})
             continue
-        with open(resolve_path(t, m["from"]), "rb") as f:
+        if t.get("remote") and RULES["remote_refused"]:
+            raise CanfailError("canfail %s: its target's tree is on the remote host %s, and "
+                               "mutants from committed text on remote trees are not built "
+                               "yet (a harness's own mode is)" % (cf["id"], t["host"]))
+        with open(local_path(t, m["from"]), "rb") as f:
             muts = {x["id"]: x for x in tomllib.load(f).get("mutant", [])}
         ids = list(m.get("ids") or sorted(muts))
         unknown = [i for i in ids if i not in muts]
@@ -89,7 +94,7 @@ def prepare(repo, alist, trees, adapter, parent, made, say=print):
 def mutant_group(e, adapter, settings, base_env):
     """The chain group that runs the target's command on one mutant."""
     tgt = e["target"]
-    argv = (list(adapter.shell_argv(tgt["shell"], settings))
+    argv = (shell_argv(adapter, tgt["shell"], settings, e["tree"])
             + [resolve_path(e["tree"], tgt["run"][0])] + list(tgt["run"][1:]))
     if "mode" in e and RULES["mode_arg"]:
         argv.append(e["mode"])
