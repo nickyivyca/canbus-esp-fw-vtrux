@@ -63,7 +63,8 @@ from ..run.model import ID_RE, Verdict
 RULES = {k: True for k in (
     "full_commit", "list_sha256", "committed_only", "unknown_keys", "required",
     "committed_files", "shared_at_tree", "exact_commit", "refs", "adapter_names",
-    "project", "selector_only", "empty_selector", "unique_ids", "canfail_form")}
+    "project", "selector_only", "empty_selector", "unique_ids", "canfail_form",
+    "set_judge")}
 
 HEX = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
@@ -408,12 +409,15 @@ def load(repo, spec, adapter):
             picked = list(entries)
         for e in sorted(picked, key=lambda e: e["id"]):
             cid = "%s.%s" % (s["id"], e["id"])
-            add_check("check %s (catalogue entry %s)" % (q(cid), q(e["id"])), dict(
+            entry = dict(
                 id=cid, run=[e["path"]] + list(e.get("args") or []), shell=e.get("shell"),
                 env=dict(e.get("env") or {}), timeout_s=e.get("timeout_s", 3600),
                 cls=e.get("cls", "light"), host=s.get("host", tree.get("host", "local")),
                 after=list(s.get("after") or []), tags=list(e.get("tags") or []),
-                covers=list(e.get("covers") or []), from_set=s["id"]), s["tree"])
+                covers=list(e.get("covers") or []), from_set=s["id"])
+            if e.get("judge") and RULES["set_judge"]:   # the entry's own judge (a sim's)
+                entry["judge"] = e["judge"]
+            add_check("check %s (catalogue entry %s)" % (q(cid), q(e["id"])), entry, s["tree"])
 
     suite_runs = []
     for r_ in data.get("suite_run") or []:

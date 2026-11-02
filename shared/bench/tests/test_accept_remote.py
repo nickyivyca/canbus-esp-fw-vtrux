@@ -66,6 +66,12 @@ FILES = {
         "print('here', here, 'FAKE_TREE', t)\n"
         "sys.exit(0 if t and os.path.samefile(t, here) else 1)\n"),
     "proj/build.py": "pass\n",
+    "proj/setup.py": (
+        "import os\n"
+        "os.makedirs(os.path.join('scratch', 'setup'), exist_ok=True)\n"
+        "open(os.path.join('scratch', 'setup', 'here.txt'), 'w').write("
+        "os.environ.get('FAKE_TREE', ''))\n"),
+    ".gitignore": "/scratch/\n",
     "proj/check.py": "pass\n",
     "proj/suite.py": "pass\n",
     "proj/mutants.toml": '[[mutant]]\nid = "m"\nfile = "proj/check.py"\nold = "pass"\nnew = "x"\n',
@@ -307,8 +313,34 @@ def test_remove_guard():
         os.remove(mark)
 
 
+def test_remote_setup():
+    """A15 (the adapter's tree_setup): on a remote tree the setup runs on
+    that host, in the remote checkout, with the tree's env; what it
+    installs is in the remote tree's scratch/; the record holds it."""
+    import types
+    A = types.ModuleType("remote_setup_adapter")
+    A.__dict__.update({k: v for k, v in vars(FA).items() if not k.startswith("__")})
+    A.tree_setup = lambda tree: [["proj/setup.py"]]
+    with Loop():
+        f = Fixture()
+        f.alist.trees["far"] = dict(f.alist.trees["far"])
+        trees = T.make_trees(f.repo, f.alist, A, f.work, f.made, say=lambda s: None,
+                             remote={"settings": f.settings, "record_id": f.rec.id})
+    t = trees["far"]
+    marker = os.path.join(local_path(t["project_dir"]), "scratch", "setup", "here.txt")
+    assert os.path.isfile(marker), "the setup did not run in the remote checkout"
+    with open(marker) as fh:
+        told = fh.read()                 # Git Bash hands Windows python C:/..., not /c/...
+    assert told and os.path.samefile(told, local_path(t["project_dir"])), \
+        "the setup was not told its own remote tree: %r" % told
+    c = t["record"]["setup"]["commands"]
+    assert c and c[0]["rc"] == 0 and c[0]["argv"] == ["proj/setup.py"], c
+    assert not os.path.exists(os.path.join(t["local_dir"], "scratch", "setup")), \
+        "the setup ran in the local clone"
+
+
 TESTS = [test_remote_tree, test_remote_check_refuses, test_remote_check_runs,
-         test_remote_removed, test_remote_not_yet, test_remove_guard]
+         test_remote_removed, test_remote_not_yet, test_remove_guard, test_remote_setup]
 
 MUTANTS = [
     (T, "remote_exact", test_remote_tree),

@@ -324,6 +324,11 @@ def test_selection():
                                          'select = ["id:sim-*", "tag:fast"]'), "ok2")[0], FA)
     ids2 = sorted(c["id"] for c in got2.checks if c["id"].startswith("unit."))
     assert ids2 == ["unit.sim-c", "unit.unit-a"], ids2
+    # an entry's judge and class come with it (a sim: the scenario judge,
+    # wall-clock); an entry without a judge gets the default
+    sim = next(c for c in got2.checks if c["id"] == "unit.sim-c")
+    assert sim["judge"] == "known-fails" and sim["cls"] == "wallclock", sim
+    assert next(c for c in got2.checks if c["id"] == "unit.unit-a")["judge"] is None
     refused(r, edit(GOOD, 'select = ["tag:unit"]', 'select = ["tag:none"]'), "unit", "tag:none",
             name="sel")
 
@@ -374,6 +379,7 @@ MUTANTS = [
     ("project", test_project),
     ("selector_only", test_selection),
     ("empty_selector", test_selection),
+    ("set_judge", test_selection),
     ("unique_ids", test_ids),
     ("canfail_form", test_canfail_form),
 ]

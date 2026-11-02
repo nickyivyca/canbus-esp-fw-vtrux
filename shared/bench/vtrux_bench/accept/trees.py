@@ -43,7 +43,8 @@ from ..run.engine import product_digest
 RULES = {k: True for k in (
     "exact_checkout", "shared_checkout", "from_objects", "head_check", "clean_check",
     "untracked_check", "record_tree_id", "record_files", "record_digest", "layout",
-    "made_tracked", "remote_exact", "remote_check", "remote_made")}
+    "made_tracked", "remote_exact", "remote_check", "remote_made", "setup_runs",
+    "setup_recorded", "setup_committed", "setup_recheck", "setup_stops")}
 
 
 class TreeError(Exception):
@@ -182,6 +183,7 @@ def _to_remote(name, t, local, paths, remote, made, say, prefix):
     say("tree %s: on %s at %s" % (name, host, base))
     rec = dict(local["record"], remote={"host": host, "dir": base})
     return {"dir": local["dir"], "local_dir": local["project_dir"], "remote": True,
+            "local_shared_dirs": local["shared_dirs"],
             "host": host, "remote_base": base, "project_dir": out["project"],
             "shared_dirs": {c: out[c] for c in t["shared"]}, "record": rec}
 
@@ -189,13 +191,96 @@ def _to_remote(name, t, local, paths, remote, made, say, prefix):
 def make_tree(repo, name, t, adapter, parent, made, say=print, prefix="tree-", remote=None):
     """One tree, t as the list gives it (listfile: "project", "shared",
     "host"), in a folder <prefix><name>-... of its own under parent; on a
-    remote host, also there (_to_remote), its paths the remote ones."""
+    remote host, also there (_to_remote), its paths the remote ones. Then
+    the adapter's tree_setup in it (setup_tree)."""
     local = _make_local(repo, name, t, adapter, parent, made, say, prefix)
     if t.get("host", "local") == "local":
-        return local
-    paths = adapter.tree_paths(name, t) if RULES["layout"] else dict(
-        {"project": "p"}, **{c: "s-" + c for c in t["shared"]})
-    return _to_remote(name, t, local, paths, remote, made, say, prefix)
+        tree = local
+    else:
+        paths = adapter.tree_paths(name, t) if RULES["layout"] else dict(
+            {"project": "p"}, **{c: "s-" + c for c in t["shared"]})
+        tree = _to_remote(name, t, local, paths, remote, made, say, prefix)
+    setup = setup_tree(name, tree, adapter, remote, say)
+    if setup is not None:
+        tree["record"]["setup"] = setup
+    return tree
+
+
+def _committed_in(tree, rel):
+    """rel is a committed file of the tree: in its local clone of the
+    component for shared/<component>/..., else of the project."""
+    parts = rel.split("/")
+    if not rel or rel.startswith("/") or ".." in parts or len(parts) < 2:
+        return False
+    clone = tree.get("local_dir", tree["project_dir"])
+    shared = tree.get("local_shared_dirs", tree["shared_dirs"])
+    if parts[0] == "shared" and len(parts) > 2 and parts[1] in shared:
+        clone = shared[parts[1]]
+    r = subprocess.run(["git", "-C", clone, "cat-file", "-t", "HEAD:" + rel],
+                       capture_output=True, text=True)
+    return r.returncode == 0 and r.stdout.strip() == "blob"
+
+
+def setup_tree(name, tree, adapter, ctx, say=print):
+    """The adapter's tree_setup(tree): commands that make a fresh tree
+    usable (the interposer: install its pinned canre and can-tools into the
+    tree's own scratch/). Each must be a committed file in the tree (A3); it
+    runs in the tree, on its host, with the tree's env; a failure is a
+    TreeError, stopping the run before anything is judged; the tree is
+    checked again after, so setup changed nothing git tracks (A4). None if
+    the adapter has no setup; else {"commands": [{argv, rc, console}],
+    "installed": the adapter's tree_installed(tree, commands)} for the
+    tree's record (the charge-interposer reviewer, 2026-11-02)."""
+    fn = getattr(adapter, "tree_setup", None)
+    if fn is None or not RULES["setup_runs"]:
+        return None
+    import shlex
+    from ..run import engine as E
+    from ..run import procs
+    from .compile import machine_env, resolve_path, shell_argv, tree_env
+    settings = (ctx or {}).get("settings")
+    if settings is None:
+        raise TreeError("tree %s: its setup needs the run's settings" % name)
+    results = []
+    for argv in fn(tree):
+        rel = argv[0] if argv else ""
+        if RULES["setup_committed"] and not _committed_in(tree, rel):
+            raise TreeError("tree %s: setup command %s is not a committed file in the "
+                            "tree (A3: the adapter names committed files only)" % (name, rel))
+        shell = adapter.default_shell(rel)
+        cmd = shell_argv(adapter, shell, settings, tree) + [resolve_path(tree, rel)] + list(argv[1:])
+        env = tree_env(adapter, tree)
+        if tree.get("remote"):
+            ssh_host = settings["hosts"][tree["host"]]["ssh"]
+            line = procs.remote_command(cmd, tree["project_dir"], env, 1800, False)
+            r = subprocess.run(list(E.SSH) + [ssh_host, line], capture_output=True, text=True,
+                               timeout=1900, errors="replace")
+        else:
+            r = subprocess.run(cmd, cwd=tree["project_dir"], env=dict(machine_env(adapter), **env),
+                               capture_output=True, text=True, timeout=1800, errors="replace")
+        out = (r.stdout + r.stderr)[-4000:]
+        results.append({"argv": list(argv), "rc": r.returncode, "console": out})
+        say("tree %s: setup %s: rc %d" % (name, " ".join(shlex.quote(a) for a in argv),
+                                          r.returncode))
+        if r.returncode != 0 and RULES["setup_stops"]:
+            raise TreeError("tree %s: setup %s exited %d: %s" % (
+                name, " ".join(argv), r.returncode, out.strip()[-300:]))
+    if RULES["setup_recheck"]:
+        rec = tree["record"]
+        checkouts = [("project", rec["project"]["commit"])] + [
+            (c, v["commit"]) for c, v in sorted(rec["shared"].items())]
+        try:
+            for key, commit in checkouts:
+                d = tree["project_dir"] if key == "project" else tree["shared_dirs"][key]
+                if tree.get("remote"):
+                    remote_check_tree(settings["hosts"][tree["host"]]["ssh"], d, commit)
+                else:
+                    check_tree(d, commit)
+        except TreeError as e:
+            raise TreeError("tree %s: after its setup: %s" % (name, e))
+    installed = adapter.tree_installed(tree, results) \
+        if getattr(adapter, "tree_installed", None) else {}
+    return {"commands": results if RULES["setup_recorded"] else [], "installed": installed}
 
 
 def _make_local(repo, name, t, adapter, parent, made, say, prefix):

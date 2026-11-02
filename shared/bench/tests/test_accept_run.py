@@ -140,7 +140,8 @@ class Run:
     """Builds the repo and runs one acceptance through run.main()."""
 
     def __init__(self, flaky_passes=True, mutant="sum", premise_later=False, extra="",
-                 dirty_adapter=False, runner_dirty=False, dev=False, runner=None):
+                 dirty_adapter=False, runner_dirty=False, dev=False, runner=None,
+                 setup_fails=False):
         N[0] += 1
         self.dir = os.path.join(BASE, "r%d" % N[0])
         self.repo = os.path.join(self.dir, "repo")
@@ -152,6 +153,10 @@ class Run:
         for rel, text in FILES.items():
             write(self.repo, rel, text)
         write(self.repo, ".gitignore", "/scratch/\n")
+        if setup_fails:                   # the committed adapter names a setup that fails
+            write(self.repo, "proj/accept_adapter.py", ADAPTER + (
+                "\n\ndef tree_setup(tree):\n    return [['proj/setup.py']]\n"))
+            write(self.repo, "proj/setup.py", "import sys\nprint('no pin')\nsys.exit(3)\n")
         c1 = self.commit("C1")
         write(self.repo, "proj/check.py", "pass  # changed\n")      # a product file
         c2 = self.commit("C2")
@@ -311,6 +316,21 @@ def test_stopped():
     assert r.scratch_left() == [], r.scratch_left()
 
 
+def test_setup_failure_stops_run():
+    """A15's tree_setup (the charge-interposer reviewer's condition 4,
+    2026-11-02): a setup command that fails stops the whole run before
+    anything is judged: exit 2, the record left open (no SHA256SUMS), its
+    console saying why, and nothing left in scratch."""
+    r = Run(setup_fails=True)
+    assert r.rc == 2, r.rc
+    console = r.read("console.txt")
+    assert "STOPPED before the close" in console and "proj/setup.py exited 3" in console, \
+        console[-800:]
+    assert not os.path.exists(os.path.join(r.rec, "SHA256SUMS")), "a stopped record was closed"
+    assert not os.path.exists(os.path.join(r.rec, "chain")), "something was judged"
+    assert r.scratch_left() == [], r.scratch_left()
+
+
 def test_dirty_runner_refused():
     """A10, AGENTS.md (evidence is committed harness run from a named
     commit; gen-inhibit's reviewer, 2026-11-01): a runner whose own tree has
@@ -395,8 +415,8 @@ def test_runner_stays_clean():
 
 
 TESTS = [test_pass, test_adapter_committed, test_rerun_never_passes, test_premise_blocks,
-         test_stopped, test_dirty_runner_refused, test_dev_run, test_runner_identity,
-         test_runner_stays_clean]
+         test_stopped, test_setup_failure_stops_run, test_dirty_runner_refused, test_dev_run,
+         test_runner_identity, test_runner_stays_clean]
 
 MUTANTS = [
     ("adapter_from_commit", test_adapter_committed),

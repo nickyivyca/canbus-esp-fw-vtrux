@@ -123,7 +123,8 @@ CATALOGUE = [
     dict(id="unit-b", path="proj/test/b_test.py", args=["--quick"], env={"B": "1"},
          shell="python", timeout_s=60, tags=["unit"], covers=["proj/src/b.c"]),
     dict(id="sim-c", path="proj/test/c_sim.sh", args=[], env={}, shell="git-bash",
-         timeout_s=600, tags=["sim"], covers=["proj/src/a.c", "proj/src/b.c"]),
+         timeout_s=600, tags=["sim"], covers=["proj/src/a.c", "proj/src/b.c"],
+         judge="known-fails", cls="wallclock"),
 ]
 
 
