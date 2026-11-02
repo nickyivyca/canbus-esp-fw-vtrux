@@ -50,9 +50,13 @@ LDFLAGS ?= -pthread -Wl,--wrap=twai_driver_install
 # fake_port.c holds the port's one link stub.
 # gi_sched.c is compiled AS SHIPPED for the same reason: spec 5.2 item 8
 # says the scheduler is platform-free and compiles unchanged on the host, and a
-# reimplementation here would test the copy. The driver, its controller and the
-# two register calls twai_port's C3 file reaches for are the shared fake's
-# (twai_fake.c); shim_harness.c is the shim's scheduler and clock around it.
+# reimplementation here would test the copy. The driver, its controller and
+# what twai_port's C3 file reaches for past the driver are the shared fake's
+# (twai_fake.c): the register calls, and since port step 1c the restart stop's
+# (T12) clock and reset bits and its ROM wait, esp_rom_delay_us(), which the
+# shim must not define itself. shim_harness.c is the shim's scheduler and
+# clock around it. The restart stop itself is not called here: its caller is
+# vtrux/restart_guard, which has its own unit tests.
 SRC := shim_test.c shim_harness.c fake_can.c fake_port.c \
        $(FAKEDIR)/twai_fake.c \
        $(COREDIR)/gen_inhibit.c $(COREDIR)/gen_inhibit_core.c \

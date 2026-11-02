@@ -31,6 +31,19 @@ dependencies:
       path: shared/debug_logs
       type: git
     version: 0a4f1f522f01262b3cbdeb56d3bc3f1bd869592f
+  vtrux/restart_guard:
+    component_hash: 26f5feb915151b916dbed2d7fecd256178eb9d8518f21537262e5c8cc4c9ad27
+    dependencies:
+    - name: idf
+      version: '>=5.4'
+    source:
+      git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
+      path: shared/restart_guard
+      type: git
+    targets:
+    - esp32c3
+    - esp32s3
+    version: 0a4f1f522f01262b3cbdeb56d3bc3f1bd869592f
   vtrux/twai_port:
     component_hash: c316cc0341a89cf0f68d9f80cdcbba7d9527bb6ef2590873e36f3632e6332c78
     dependencies:
@@ -72,9 +85,10 @@ direct_dependencies:
 - idf
 - vtrux/can_port
 - vtrux/debug_logs
+- vtrux/restart_guard
 - vtrux/twai_port
 - vtrux/wican
 - vtrux/wican_v3
-manifest_hash: a19f746f08505557d4b4bfaa9c0d7a156cdd71a710914a58f2a2787ea7015212
+manifest_hash: 57dd1721acf5dc1263ca2ca611cbe581f622069c1ca8585220afb5e16305ba48
 target: esp32c3
 version: 2.0.0

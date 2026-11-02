@@ -14,7 +14,7 @@ cmake_minimum_required(VERSION 3.5)
 # R8), so none takes this path. A dev build that wants info layers the same
 # two files on the command line (README.md). This must come before the
 # include below, which reads SDKCONFIG.
-if(OTA_HEALTH_FAULT_INJECT OR GI_TEST_RESTART_QUIESCE OR GI_INSTRUMENT_TXABORT
+if(OTA_HEALTH_FAULT_INJECT OR RESTART_GUARD_TEST OR TWAI_PORT_TXABORT_PROBE
    OR GI_INSTRUMENT_RXQ OR GI_INSTRUMENT_ABORTWIN)
     set(SDKCONFIG "${CMAKE_BINARY_DIR}/sdkconfig")
     set(SDKCONFIG_DEFAULTS
@@ -127,8 +127,9 @@ endif()
 # the fault build's reason: at the same commit it and the normal manual image
 # would otherwise share a filename, a project_name and a git_version, and the
 # test build's own symbols and strings are the only other thing that tells them
-# apart. Marked by absence, like "_flt", and for the same reason.
-if(GI_TEST_RESTART_QUIESCE)
+# apart. Marked by absence, like "_flt", and for the same reason. The switch
+# is vtrux/restart_guard's (G5, port step 1c); the suffix is this product's.
+if(RESTART_GUARD_TEST)
     set(GI_TEST_SUFFIX "_rt")
 else()
     set(GI_TEST_SUFFIX "")

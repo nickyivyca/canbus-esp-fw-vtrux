@@ -21,6 +21,12 @@ dependencies:
     git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
     path: shared/twai_port
     version: "2026.11.01"
+  # Every software restart takes port 0 off the bus first (spec 3, port step
+  # 1c): the guard sets its own link-time wrap, so depending on it is enough.
+  vtrux/restart_guard:
+    git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
+    path: shared/restart_guard
+    version: "2026.11.01"
   # The board (shared/boards SPEC B1 and B2): the one shared/boards/*
   # component, at the shared/main tag this project pins, from git, never
   # through override_path. sdkconfig names its partition table by this

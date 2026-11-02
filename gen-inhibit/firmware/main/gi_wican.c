@@ -16,10 +16,12 @@
  *     config_server.c before the move.
  *
  * PROJECT URIS (spec 3.3): /gen_inhibit and /gen_inhibit_set at every server
- * start; the abort probe in its instrument build; the restart-test URIs in the
- * restart-test build, at the first start only. The extra handler slots are the
- * restart-test URIs' count in that build, none otherwise: the rest fit in
- * stock's 21, as before the move.
+ * start; the abort probe in its instrument build, with gen_inhibit_owns_bus()
+ * as its check and this project's refusal body; the restart-test URIs in the
+ * restart-test build, at the first start only. Both are the shared
+ * components' test apps since port step 1c (twai_port T13, restart_guard G5).
+ * The extra handler slots are the restart-test URIs' count in that build,
+ * none otherwise: the rest fit in stock's 21, as before the move.
  */
 #include <stdbool.h>
 #include <stdint.h>
@@ -31,15 +33,16 @@
 #include "wican.h"
 #include "gen_inhibit.h"
 #include "gi_wican.h"
-#if GI_INSTRUMENT_TXABORT
-/* Measurement build only, spec 5.2 item 9. The source is not in the component
- * unless the flag is set -- see main/CMakeLists.txt -- so this include and the
- * registration below are the whole of its footprint in shipping code. */
-#include "gi_txabort_probe.h"
+#if TWAI_PORT_TXABORT_PROBE
+/* Measurement build only, spec 5.2 item 9: vtrux/twai_port's test app (T13).
+ * Its source is not in that component unless the switch is set, so this
+ * include and the registration below are the whole of its footprint in
+ * shipping code. */
+#include "twai_port_txabort_probe.h"
 #endif
-#if GI_TEST_RESTART_QUIESCE
-/* Restart test build only, spec 12.4 -- see main/CMakeLists.txt. */
-#include "gi_restart_test.h"
+#if RESTART_GUARD_TEST
+/* Restart test build only, spec 12.4: vtrux/restart_guard's test app (G5). */
+#include "restart_guard_test.h"
 #endif
 
 /* ---- gen_inhibit control --------------------------------------------------
@@ -160,15 +163,18 @@ static void gi_register_uris(httpd_handle_t server, bool restart)
 {
     httpd_register_uri_handler(server, &gen_inhibit_uri);
     httpd_register_uri_handler(server, &gen_inhibit_set_uri);
-#if GI_INSTRUMENT_TXABORT
-    gi_txabort_register(server);
+#if TWAI_PORT_TXABORT_PROBE
+    /* The refusal body is the one the probe gave before it moved. */
+    twai_port_txabort_register(server, gen_inhibit_owns_bus,
+                               "gen_inhibit owns the bus; POST "
+                               "/gen_inhibit_set?mode=0 first");
 #endif
-#if GI_TEST_RESTART_QUIESCE
+#if RESTART_GUARD_TEST
     /* At the first start only. A full table cannot displace an existing
      * handler, and the table has slots for these (gi_wican_register()). */
     if (!restart)
     {
-        gi_restart_test_register(server);
+        restart_guard_test_register(server);
     }
 #else
     (void)restart;
@@ -207,8 +213,8 @@ void gi_wican_register(void)
     /* Port 0 first: the stock code's CAN calls are can_port's on it (spec 3.3). */
     gen_inhibit_port_register();
     wican_register_bus_owner(&s_gi_bus_owner);
-#if GI_TEST_RESTART_QUIESCE
-    wican_register_uris(gi_register_uris, GI_RESTART_TEST_URI_COUNT);
+#if RESTART_GUARD_TEST
+    wican_register_uris(gi_register_uris, RESTART_GUARD_TEST_URI_COUNT);
 #else
     wican_register_uris(gi_register_uris, 0);
 #endif

@@ -25,9 +25,9 @@
 #include "twai_port.h"
 #include "can_port.h"
 #include "esp_attr.h"
-#if GI_TEST_RESTART_QUIESCE
-/* Restart test build only, spec 12.4 -- see main/CMakeLists.txt. */
-#include "gi_restart_test.h"
+#if RESTART_GUARD_TEST
+/* Restart test build only, spec 12.4: vtrux/restart_guard's test app (G5). */
+#include "restart_guard_test.h"
 #endif
 
 #include <string.h>
@@ -1037,8 +1037,9 @@ static bool dev_submit(void *ctx, const gi_frame_t *f)
  * waits and issues no abort. It is unreachable on the C3, the only chip this
  * project builds for, which has a measured register file.
  *
- * Ifs, not a switch: a switch can compile to a jump table in flash, and this is
- * on the restart step's path, which may run with the cache off.
+ * Ifs, not a switch: a switch can compile to a jump table in flash. Until port
+ * step 1c this was on the restart step's path, which may run with the cache
+ * off; it stays in IRAM, so the scheduler's abort runs as it did.
  */
 static IRAM_ATTR gs_buf_t buf_from_port(twai_port_buf_t b)
 {
@@ -1058,10 +1059,11 @@ static gs_buf_t dev_buf_state(void *ctx)
  * critical section, in twai_port's abort-if-awaiting (T8). Why one section, and
  * why the interrupt register is never touched, is written there.
  *
- * IN IRAM, because the restart step calls it too (gen_inhibit_restart_abort_tx(),
- * below; spec 3 and spec 12.4's confinement row, 2026-10-13). That caller may run
- * from a panic, so this must not depend on the flash cache: buf_from_port() above
- * and the port's abort-if-awaiting are in IRAM too.
+ * IN IRAM, as it was while the restart step called it (spec 3, 2026-10-13), so
+ * the scheduler's abort runs as it did. Since port step 1c the restart stop
+ * calls the port's abort-if-awaiting itself (twai_port T12, through
+ * vtrux/restart_guard), which keeps the private abort command at its one site
+ * (spec 12.4's confinement row).
  */
 static IRAM_ATTR gs_buf_t dev_abort_if_awaiting(void *ctx)
 {
@@ -1095,17 +1097,6 @@ static const gs_hal_t DEV_HAL = {
     .outstanding = dev_outstanding,
     .ctx = NULL,
 };
-
-/*
- * THE RESTART STEP'S ABORT GOES THROUGH THE SCHEDULER'S, so the private abort
- * command stays at one site (spec 12.4, "the private TWAI abort is confined";
- * spec 3, "No restart leaves the controller on the bus"). See
- * gi_restart_quiesce.c, which calls this on every poll of its wait.
- */
-IRAM_ATTR bool gen_inhibit_restart_abort_tx(void)
-{
-    return dev_abort_if_awaiting(NULL) == GS_BUF_AWAITING;
-}
 
 /*
  * Turn the scheduler's monotonic counters into the core's events.
@@ -2149,8 +2140,8 @@ static void port_install_hook(void *ctx, twai_port_filter_t *f)
         taskEXIT_CRITICAL(&s_abort_lock);
     }
 
-#if GI_TEST_RESTART_QUIESCE
-    gi_restart_test_pre_install();
+#if RESTART_GUARD_TEST
+    restart_guard_test_pre_install();
 #endif
 }
 
