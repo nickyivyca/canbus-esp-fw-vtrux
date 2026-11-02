@@ -55,6 +55,9 @@ FILES = {
         "if os.environ.get('LIST_ENV') != 'x': bad.append('LIST_ENV missing')\n"
         "if os.environ.get('FAKE_MACHINE_DIR') != 'm': bad.append('machine var missing')\n"
         "if not os.environ.get('PATH'): bad.append('PATH missing')\n"
+        "here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))\n"
+        "t = os.environ.get('FAKE_TREE', '')\n"
+        "if not (t and os.path.samefile(t, here)): bad.append('FAKE_TREE is not my tree: %r' % t)\n"
         "print('envcheck:', bad or 'ok')\n"
         "sys.exit(1 if bad else 0)\n"),
     "proj/fail.py": "import sys\nsys.exit(1)\n",
@@ -282,7 +285,9 @@ def test_settings_no_passwords():
 def test_env():
     """A7: a check's environment comes from the list (and the catalogue)
     and the machine variables, never from the operator's shell: a variable
-    only in the runner's own environment does not reach it."""
+    only in the runner's own environment does not reach it. A15: the
+    adapter's tree_env(tree) names the check's own tree (the interposer's
+    INTERPOSER_CODE, say)."""
     f = Fixture()
     os.environ["VTRUX_OPERATOR_ONLY"] = "1"
     try:
@@ -360,12 +365,17 @@ MUTANTS = [
     (C, "base_env", test_env),
     (C, "list_env", test_env),
     (C, "machine_vars", test_env),
+    (C, "tree_env", test_env),
     (C, "after", test_compile_shape),
     (C, "shared_path", test_compile_shape),
     (C, "cwd_tree", test_compile_shape),
     (C, "chain_in_record", test_chain_run),
     (C, "masked_record", test_chain_run),
 ]
+
+
+# rules whose mutant is in another test file, which exercises them
+ELSEWHERE = {ST: {"tree_settings"}}            # test_accept_suite_runs.py
 
 
 def outcome_of(t):
@@ -396,7 +406,8 @@ def main(argv):
                   "mean nothing" % ", ".join(control))
             return 1
         for mod in (B, ST, C):
-            missing = sorted(set(mod.RULES) - {k for m, k, _t in MUTANTS if m is mod})
+            missing = sorted(set(mod.RULES) - {k for m, k, _t in MUTANTS if m is mod}
+                             - ELSEWHERE.get(mod, set()))
             if missing:
                 print("FAIL  %s rules with no mutant: %s" % (mod.__name__, ", ".join(missing)))
                 bad += 1

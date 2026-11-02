@@ -5,6 +5,9 @@ file (the chain runner's JSON, one per machine, not in git). The keys that
 depend on a build are filled from the build records by the adapter's key
 map, settings_keys(builds, trees), never edited by hand. Its runs_root is
 the acceptance record's runs/, where the nested suite runs' records go (A7).
+Each suite run gets its own settings file too, these with the adapter's
+tree_settings(tree) over them (write_tree_settings), so a suite run in a
+tree is told that tree.
 
 The unmasked file is written to a scratch folder of the run's own (held in
 its Made, so it is removed with the run, A14), never into the record. A
@@ -26,7 +29,7 @@ import re
 from .. import scratch as S
 
 RULES = {k: True for k in ("keymap", "masked", "scratch_only", "no_passwords",
-                           "runs_in_record")}
+                           "runs_in_record", "tree_settings")}
 
 PASSWORD_KEY = re.compile(r"(?i)pass(word|wd|phrase)?|secret|token|psk")
 MAC = re.compile(r"([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}")
@@ -57,6 +60,26 @@ def masked(settings, adapter=None):
     """A masked copy of a settings dict, for every record a run writes (A6:
     the chain runner's record_settings, nested runs' --record-settings)."""
     return json.loads(mask(json.dumps(settings), adapter))
+
+
+def write_tree_settings(s, adapter, item_id, tree, rec, made, parent):
+    """The settings of one suite run (A7): the run's settings, s, with the
+    adapter's tree_settings(tree) over them, the keys that name the tree to
+    the suite run in it (the interposer's interposer_code); unmasked in the
+    run's scratch, masked in the record as settings.<id>.masked.json.
+    (path, masked path)."""
+    s2 = dict(s)
+    fn = getattr(adapter, "tree_settings", None)
+    if fn is not None and RULES["tree_settings"]:
+        s2.update(fn(tree))
+    d = made.add(S.make(parent, "settings-%s" % item_id))
+    path = os.path.join(d, "settings.json")
+    with open(path, "x", encoding="utf-8", newline="\n") as f:
+        json.dump(s2, f, indent=1, sort_keys=True)
+    masked_path = os.path.join(rec.path, "settings.%s.masked.json" % item_id)
+    with open(masked_path, "x", encoding="utf-8", newline="\n") as f:
+        f.write(mask(json.dumps(s2, indent=1, sort_keys=True), adapter))
+    return path, masked_path
 
 
 def write_settings(machine_path, adapter, builds, trees, rec, made, parent):

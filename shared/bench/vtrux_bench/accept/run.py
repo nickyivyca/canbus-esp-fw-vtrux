@@ -138,9 +138,12 @@ def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None):
                               trees=trees, skip=skip)
         spath, s = ST.write_settings(settings_path, adapter, builds, trees, rec, made, parent)
         entries = CF.prepare(repo, alist, trees, adapter, parent, made, rec.say)
+        per_run = {r_["id"]: ST.write_tree_settings(s, adapter, r_["id"], trees[r_["tree"]],
+                                                    rec, made, parent)
+                   for r_ in alist.suite_runs}
         suite = C.compile_suite(alist, trees, adapter, s, base_env, paths={
             "settings": spath, "masked": os.path.join(rec.path, "settings.masked.json"),
-            "record_id": rec.id}, mutants=entries)
+            "record_id": rec.id, "suite_runs": per_run}, mutants=entries)
         for g in suite.groups if RULES["premise_skip"] else []:
             if g.note in blocked or any(e["canfail"] in blocked and g.name.startswith(
                     C.group_name("cf-%s-" % e["canfail"])) for e in entries):

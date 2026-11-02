@@ -30,12 +30,12 @@ import os
 import tomllib
 
 from ..run.model import Check, Group
-from .compile import group_name, resolve_path
+from .compile import group_name, resolve_path, tree_env
 from .judge import item
 from .trees import make_tree
 
 RULES = {k: True for k in ("fresh_tree", "exact_once", "known_ids", "fails_all",
-                           "flip_control", "new_line", "mode_arg")}
+                           "flip_control", "new_line", "mode_arg", "tree_env")}
 
 
 class CanfailError(Exception):
@@ -53,7 +53,7 @@ def prepare(repo, alist, trees, adapter, parent, made, say=print):
         m = cf["mutants"]
         if "mode" in m:
             out.append({"canfail": cf["id"], "mutant": "mode", "mode": m["mode"],
-                        "target": tgt, "tree": t})
+                        "target": tgt, "tree": t, "target_tree": t})
             continue
         with open(resolve_path(t, m["from"]), "rb") as f:
             muts = {x["id"]: x for x in tomllib.load(f).get("mutant", [])}
@@ -82,7 +82,7 @@ def prepare(repo, alist, trees, adapter, parent, made, say=print):
                 f.write(text.replace(mu["old"], mu["new"], 1))
             say("canfail %s: mutant %s applied to %s in its own tree" % (cf["id"], i, mu["file"]))
             out.append({"canfail": cf["id"], "mutant": i, "target": tgt, "tree": mt,
-                        "file": mu["file"]})
+                        "target_tree": t, "file": mu["file"]})
     return out
 
 
@@ -93,7 +93,10 @@ def mutant_group(e, adapter, settings, base_env):
             + [resolve_path(e["tree"], tgt["run"][0])] + list(tgt["run"][1:]))
     if "mode" in e and RULES["mode_arg"]:
         argv.append(e["mode"])
-    chk = Check(id="run", argv=argv, cwd=e["tree"]["project_dir"], env=dict(tgt["env"]),
+    env = dict(tgt["env"])
+    # the mutant's own tree names itself, never the target's
+    env.update(tree_env(adapter, e["tree"] if RULES["tree_env"] else e["target_tree"]))
+    chk = Check(id="run", argv=argv, cwd=e["tree"]["project_dir"], env=env,
                 timeout_s=float(tgt["timeout_s"]), cls=tgt["cls"], base_env=dict(base_env),
                 note="canfail %s, mutant %s" % (e["canfail"], e["mutant"]))
     return Group(name=group_name("cf-%s-%s" % (e["canfail"], e["mutant"])), checks=[chk],
