@@ -243,9 +243,10 @@ def check_verdict(results, group):
     return v, detail
 
 
-def not_passed(results, group):
-    """Every result of the chain group that is not a plain PASS, in the
-    chain's order, as [(result id within the group, verdict)]: those the
+def not_passed(results, group=None):
+    """Every result of the chain group (with group None, of every group: a
+    nested suite run's own record, ids in full) that is not a plain PASS, in
+    the run's order, as [(result id within the group, verdict)]: those the
     verdict counts, and also KNOWN-FAIL, NOT-APPLICABLE and a known FAIL that
     passed. The record lists them all (check_verdict's detail stops at six),
     for the tester's VERIFICATION.md entry and the reviewer to check against
@@ -253,14 +254,16 @@ def not_passed(results, group):
     2026-11-02, through the charge-interposer reviewer)."""
     out = []
     for r in results:
-        if r["group"] != group:
+        if group is not None and r["group"] != group:
             continue
         v = r["verdict"]
         if r.get("known_fail_passed") and RULES["listed_known_passed"]:
             v = KNOWN_PASSED
         if v == "PASS" or (v in CHECK_OK and not RULES["listed_ok_set"]):
             continue
-        rid = r["id"][len(group) + 1:] if r["id"].startswith(group + "/") else r["id"]
+        rid = r["id"]
+        if group is not None and rid.startswith(group + "/"):
+            rid = rid[len(group) + 1:]
         out.append((rid, v))
     return out
 

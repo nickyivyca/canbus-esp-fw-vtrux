@@ -276,6 +276,9 @@ def test_not_passed():
     assert J.not_passed(rs, "g") == want, J.not_passed(rs, "g")
     assert J.check_verdict(rs, "g")[1].endswith("and 4 more"), J.check_verdict(rs, "g")
     assert J.not_passed(chain_res(("a", "PASS")), "g") == []
+    # no group: a nested suite run's own record, every group, ids in full
+    assert J.not_passed(rs) == [("g/" + i, v) for i, v in want] + [("other/run/x", "FAIL")], \
+        J.not_passed(rs)
 
 
 TESTS = [test_compare_identical, test_compare_same_verdicts, test_compare_within,

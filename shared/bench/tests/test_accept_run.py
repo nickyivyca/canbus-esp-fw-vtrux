@@ -61,12 +61,14 @@ FILES = {
         "print('SUB built ERROR')\n"
         "sys.exit(1)\n"),
     "proj/suite.py": (
-        "from vtrux_bench.run.model import Check, Group, Suite\n"
+        "from vtrux_bench.run.model import Check, Group, KnownFail, Suite\n"
         "FLAKY = (\"import os, sys; p = os.path.join(r'{flake_dir}', 'seen'); \"\n"
         "         \"ok = os.path.exists(p); open(p, 'w').close(); sys.exit(0 if ok else 1)\")\n"
         "EMULATED = Suite(name='proj-emu', role='tester (test-suite)', groups=[\n"
         "    Group('a', [Check('ok', ['-c', 'pass'], python=True),\n"
-        "                Check('flaky', ['-c', FLAKY], python=True)])])\n"),
+        "                Check('flaky', ['-c', FLAKY], python=True),\n"
+        "                Check('kf', ['-c', 'import sys; sys.exit(1)'], python=True)])],\n"
+        "    known_fails=[KnownFail('a/kf', 'a recorded known FAIL')])\n"),
     "proj/mutants.toml": ('[[mutant]]\nid = "sum"\nfile = "proj/calc.py"\n'
                           'old = "return a + b"\nnew = "return a - b"\n'),
     "shared/comp/tool.py": "pass\n",
@@ -287,6 +289,29 @@ def test_rerun_never_passes():
     assert "first FAIL, re-run PASS" in r.read("verification_skeleton.md")
 
 
+def test_suite_run_not_passed():
+    """A13 (the charge-interposer reviewer, 2026-11-02): a suite run's list
+    of results that are not a pass holds its nested record's own, where the
+    suite's known fails sit as KNOWN-FAIL, not only the outer chain's one
+    result for the nested run: here a/flaky FAIL (the first, whole run's,
+    not the re-run's) and a/kf KNOWN-FAIL; a/ok, a PASS, is not listed."""
+    r = Run(flaky_passes=False)
+    assert r.rc == 1, r.rc
+    text = r.read("README.md")
+    sec = text.split("## Results that are not a pass", 1)[-1].split("\n## ", 1)[0]
+    lines = [ln for ln in sec.splitlines() if ln.startswith(("- ", "  - "))]
+    at = [n for n, ln in enumerate(lines) if ln.startswith("- suite_run emu: ")]
+    assert at, sec
+    own = []
+    for ln in lines[at[0] + 1:]:
+        if not ln.startswith("  - "):
+            break
+        own.append(ln[4:])
+    assert "nested/a/flaky FAIL" in own and "nested/a/kf KNOWN-FAIL" in own, sec
+    assert not any("a/ok" in ln for ln in own), sec
+    assert lines[at[0]] == "- suite_run emu: %d" % len(own), sec
+
+
 def test_premise_blocks():
     """A11: a premise that fails makes its items NOT EXERCISED, never PASS
     or FAIL; they are not run -- builds included (the charge-interposer
@@ -442,7 +467,8 @@ def test_check_every_result():
 
 TESTS = [test_pass, test_adapter_committed, test_rerun_never_passes, test_premise_blocks,
          test_stopped, test_setup_failure_stops_run, test_dirty_runner_refused, test_dev_run,
-         test_runner_identity, test_runner_stays_clean, test_check_every_result]
+         test_runner_identity, test_runner_stays_clean, test_check_every_result,
+         test_suite_run_not_passed]
 
 MUTANTS = [
     ("adapter_from_commit", test_adapter_committed),
@@ -455,6 +481,7 @@ MUTANTS = [
     ("identity_untracked", test_runner_identity),
     ("check_verdict", test_check_every_result),
     ("not_passed_listed", test_check_every_result),
+    ("nested_not_passed", test_suite_run_not_passed),
     ("_stray", test_runner_stays_clean),        # VTRUX_TEST_STRAY: a stray file
 ]
 
