@@ -6,6 +6,7 @@
 #   make -C shared/twai_port/test mutate-test  # mutate.py removes its scratch folder, pass or fail
 #   make -C shared/twai_port/test cxx        # the fake and cpp/ as C++11, as g++ builds them
 #   make -C shared/twai_port/test cxx-test   # cpp/'s own tests (test_cpp_wrapper.cpp)
+#   make -C shared/twai_port/test t12-standins  # the T12 cases fail on each broken restart stop
 #
 # Binaries go to the worktree's scratch/ (AGENTS.md, "Files and folders");
 # give OUT=<folder> to put them elsewhere.
@@ -46,6 +47,31 @@ run: all
 	    for c in $$($(OUT)/$$b); do $(OUT)/$$b $$c || fail=1; done; \
 	done; test $$fail -eq 0 && echo "test_port_on_fake: every case passed on C3 and S3"
 
+# The T12 cases on the tester's own restart stop (t12_standin.c): as written
+# it must pass every one, and each broken form must fail one by a check (exit
+# 1 with a FAIL line), not by a sanitizer, whose exit codes are moved off 1.
+T12_BROKEN_NAMES := "no wait" "no bound" "no reset on timeout" "no abort" "ignores the clock" \
+                    "ignores reset held" "wrong step" "status not recorded" "counters not read"
+
+$(OUT)/test_port_on_fake_t12: test_port_on_fake.c t12_standin.c $(FAKE) $(PORT) ../twai_port_ll_esp32c3.c
+	mkdir -p $(OUT)
+	$(CC) $(CFLAGS) $(INC) -DT12_STANDIN -o $@ test_port_on_fake.c t12_standin.c twai_fake.c \
+	    host_platform.c ../twai_port.c ../twai_port_ll_esp32c3.c
+
+t12-standins: $(OUT)/test_port_on_fake_t12
+	@ok=1; b=$(OUT)/test_port_on_fake_t12; cases=$$($$b | grep '^t12_'); \
+	export ASAN_OPTIONS=exitcode=99 UBSAN_OPTIONS=halt_on_error=1:exitcode=98; \
+	test -n "$$cases" || { echo "no t12 cases"; ok=0; }; \
+	for c in $$cases; do $$b $$c > /dev/null || { echo "FAIL the standin as written fails $$c"; ok=0; }; done; \
+	for n in $(T12_BROKEN_NAMES); do caught=""; \
+	    for c in $$cases; do out=$$(T12_BROKEN="$$n" $$b $$c); rc=$$?; \
+	        if [ $$rc -eq 1 ] && printf '%s\n' "$$out" | grep -q '^FAIL '; then caught="$$caught $$c"; \
+	        elif [ $$rc -ne 0 ]; then echo "FAIL $$n: $$c exited $$rc, not by a check"; ok=0; fi; \
+	    done; \
+	    if [ -n "$$caught" ]; then echo "CAUGHT  $$n:$$caught"; else echo "MISSED  $$n"; ok=0; fi; \
+	done; \
+	test $$ok -eq 1 && echo "t12-standins: the standin as written passed every T12 case, every broken one caught"
+
 mutants:
 	$(PYTHON) mutate.py --cc $(CC)
 
@@ -64,6 +90,6 @@ cxx-test: cxx
 
 clean:
 	rm -f $(OUT)/test_twai_fake $(OUT)/test_port_on_fake_c3 $(OUT)/test_port_on_fake_s3 \
-	    $(OUT)/twai_fake_cxx.o $(OUT)/twai_fake_cpp.o $(OUT)/test_cpp_wrapper
+	    $(OUT)/test_port_on_fake_t12 $(OUT)/twai_fake_cxx.o $(OUT)/twai_fake_cpp.o $(OUT)/test_cpp_wrapper
 
-.PHONY: all run mutants mutate-test cxx cxx-test clean
+.PHONY: all run t12-standins mutants mutate-test cxx cxx-test clean
