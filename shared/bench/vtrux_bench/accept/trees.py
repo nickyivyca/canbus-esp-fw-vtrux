@@ -159,9 +159,13 @@ def _to_remote(name, t, local, paths, remote, made, say, prefix):
     if not cfg or not cfg.get("ssh") or not cfg.get("workroot"):
         raise TreeError("tree %s is on host %s, which the settings do not name with its "
                         "ssh and workroot" % (name, host))
-    base = "%s/accept-%s/%s%s" % (cfg["workroot"].rstrip("/"), remote["record_id"], prefix, name)
+    root = cfg["workroot"].rstrip("/")
+    rec_dir = "%s/accept-%s" % (root, remote["record_id"])
+    base = "%s/%s%s" % (rec_dir, prefix, name)
+    # what Made removes on the host is the record's own folder there, which
+    # holds every tree of the run on that host (listed once, however many)
     if RULES["remote_made"]:
-        made.add_remote(E.SSH, cfg["ssh"], base, cfg["workroot"].rstrip("/"))
+        made.add_remote(E.SSH, cfg["ssh"], rec_dir, root)
     checkouts = [("project", local["project_dir"], t["project"])] + [
         (c, local["shared_dirs"][c], v) for c, v in sorted(t["shared"].items())]
     out = {}

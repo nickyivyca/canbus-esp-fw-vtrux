@@ -66,7 +66,7 @@ import time
 OWNER_SUFFIX = ".owner.json"
 # switched off by a mutant in tests/test_accept_remote.py, which must fail
 RULES = {k: True for k in ("remote_leftover", "guard_absolute", "guard_normal",
-                           "guard_workroot", "guard_under", "guard_runner")}
+                           "guard_workroot", "guard_under", "guard_runner", "remote_once")}
 # remove() tries a folder's whole tree again after each of these waits, about
 # 3 s in all, as tests/_scratch.py does (gen-inhibit tester, 2026-11-01): a
 # Windows hold on a fresh folder (WinError 32) can outlast the handler's own
@@ -485,8 +485,13 @@ class Made:
 
     def add_remote(self, ssh, host, path, workroot):
         """A folder on a remote host below its workroot, removed over ssh
-        (remove_remote, which refuses a path the runner did not make)."""
-        self.remote.append((tuple(ssh), host, path, workroot))
+        (remove_remote, which refuses a path the runner did not make).
+        Listed once, where it was first added: a folder several of the
+        run's folders sit in (the record's own folder on a host, one per
+        remote tree) is added before them, so it goes after them."""
+        entry = (tuple(ssh), host, path, workroot)
+        if not (RULES["remote_once"] and entry in self.remote):
+            self.remote.append(entry)
         return path
 
     def remove_all(self, out=None):

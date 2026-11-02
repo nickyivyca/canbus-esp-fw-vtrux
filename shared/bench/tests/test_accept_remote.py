@@ -220,8 +220,9 @@ def test_remote_check_runs():
 
 
 def test_remote_removed():
-    """A14: what the run made on a remote host -- its trees and the chain
-    runner's own work folder there -- goes with the run's Made; a remote
+    """A14: what the run made on a remote host -- its trees, the record's
+    own folder they sit in, and the chain runner's own work folder there --
+    goes with the run's Made, leaving the workroot as it was; a remote
     folder that will not go is a LEFTOVER line naming it."""
     with Loop():
         f = Fixture()
@@ -247,6 +248,28 @@ def test_remote_removed():
         assert left == [], left
         assert not os.path.exists(tree_dir) and not os.path.exists(chain_work), \
             os.listdir(f.far)
+        assert os.listdir(f.far) == [], "left in the workroot: %s" % os.listdir(f.far)
+
+
+def test_remote_once():
+    """A14: a remote folder added to Made more than once (the record's own
+    folder on a host, once per remote tree in it) is listed once, where it
+    was first added, so it is removed once and after the folders added
+    after it."""
+    N[0] += 1
+    log = os.path.join(BASE, "ssh_log%d" % N[0])         # this call's own, never a stale one
+    ssh = (PY, "-c", "import sys; open(r'%s', 'a').write(sys.argv[2] + '\\n')" % log)
+    wr = "/w/runner"
+    rec_dir = wr + "/accept-accept_s1_20261102T101500_ab12"
+    made = S.Made()
+    for path in (rec_dir, rec_dir + "/tree-a", rec_dir, rec_dir + "/tree-b"):
+        made.add_remote(ssh, "farhost", path, wr)
+    left = made.remove_all(out=lambda s: None)
+    assert left == [], left
+    with open(log) as fh:
+        lines = fh.read().splitlines()
+    gone = [ln.split()[3].rstrip(";") for ln in lines]      # rm -rf -- <path>; ...
+    assert gone == [rec_dir + "/tree-b", rec_dir + "/tree-a", rec_dir], gone
 
 
 def test_remote_not_yet():
@@ -340,12 +363,14 @@ def test_remote_setup():
 
 
 TESTS = [test_remote_tree, test_remote_check_refuses, test_remote_check_runs,
-         test_remote_removed, test_remote_not_yet, test_remove_guard, test_remote_setup]
+         test_remote_removed, test_remote_once, test_remote_not_yet, test_remove_guard,
+         test_remote_setup]
 
 MUTANTS = [
     (T, "remote_exact", test_remote_tree),
     (T, "remote_check", test_remote_check_refuses),
     (T, "remote_made", test_remote_removed),
+    (S, "remote_once", test_remote_once),
     (C, "remote_paths", test_remote_check_runs),
     (C, "remote_shell", test_remote_check_runs),
     (C, "chain_work_removed", test_remote_removed),
