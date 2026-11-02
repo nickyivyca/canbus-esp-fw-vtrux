@@ -17,7 +17,8 @@
 # expect = "FAIL" alone would also take a test that did not build (the judge's
 # ERROR): the smoke run of 21bf42f, at 71351ff, had test_event_layout not
 # built under TWAI_FAKE=shared, and only e-transcripts caught it (fixed in
-# de11c44).
+# de11c44). Since b3e2395 run.sh works in its tree's scratch/, which on
+# madhouse is inside the runner's tree there.
 
 [step]
 id = "smoke"
@@ -28,10 +29,10 @@ spec = ["none: a smoke run of the acceptance runner"]
 verification = "none (a --dev smoke run is never evidence)"
 
 [trees.local]
-project = "de11c44b68540939d6975488fd8af269162584ed"
+project = "b3e2395e2c3c4c107f3050908cb554627861d692"
 
 [trees.madhouse]
-project = "de11c44b68540939d6975488fd8af269162584ed"
+project = "b3e2395e2c3c4c107f3050908cb554627861d692"
 host = "madhouse"
 shared = { twai_port = "40c0bccddccb8fd949df5f92db906fa302b6ae1b" }
 
