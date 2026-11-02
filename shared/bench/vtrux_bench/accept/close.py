@@ -9,7 +9,8 @@ close(rec, summary, made, adapter), once per record, in this order:
      the record, every hit recorded in the README, the close never refused
      for one (the bench's identifiers may stay in SeaDrive run records,
      never in git: user, 2026-11-01). An adapter that gives no scan is
-     recorded as such.
+     recorded as such, and a scan that fails is recorded as FAILED, with
+     its error, and the close goes on.
   3. README.md: the step, the list's commit and sha256, the runner's
      commit, the trees, the builds, every item with its status, the
      comparisons, the can-fails, the premises, each flagged case's first
@@ -41,7 +42,7 @@ import os
 RULES = {k: True for k in (
     "readme_items", "readme_commits", "sums_all", "console_stops", "close_once",
     "scan_hits", "scan_absent", "cleanup_first", "leftovers_in", "late_outside", "row",
-    "skeleton_reruns", "dev_marked")}
+    "skeleton_reruns", "dev_marked", "scan_failure")}
 
 
 class CloseError(Exception):
@@ -175,7 +176,12 @@ def close(rec, summary, made, adapter, out=None):
     if scan is None and RULES["scan_absent"]:
         hits = None
     else:
-        hits = list(scan(rec.path)) if scan is not None else []
+        try:
+            hits = list(scan(rec.path)) if scan is not None else []
+        except Exception as e:
+            if not RULES["scan_failure"]:
+                raise
+            hits = ["identifier scan FAILED: %s: %s" % (type(e).__name__, e)]
         if not RULES["scan_hits"]:
             hits = []
     _write(rec, "README.md", readme(rec, summary, hits,
