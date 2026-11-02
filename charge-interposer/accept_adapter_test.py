@@ -181,6 +181,39 @@ def test_madhouse_entries(A, work):
         assert e["judge"] in A.JUDGES, e
 
 
+def test_tree_setup(A, work):
+    """A15, the core's tree_setup (the charge-interposer reviewer,
+    2026-11-02): every tree installs and then checks the pinned canre; a
+    local tree also the pinned can-tools canbench (madhouse has no can-tools
+    clone); each command a committed file here. tree_installed reads back
+    the commits and folders as the pin tools' checks verified them."""
+    local = A.tree_setup({"project_dir": "x", "shared_dirs": {}})
+    remote = A.tree_setup({"project_dir": "/w/x", "shared_dirs": {}, "remote": True,
+                           "host": "madhouse"})
+    assert local == [["charge-interposer/canre_pin.py", "install"],
+                     ["charge-interposer/canre_pin.py", "check"],
+                     ["charge-interposer/can_tools_pin.py", "install"],
+                     ["charge-interposer/can_tools_pin.py", "check"]], local
+    assert remote == local[:2], remote
+    for argv in local:
+        assert git(REPO, "cat-file", "-t", "HEAD:" + argv[0]) == "blob", argv
+    c1, c2 = "1" * 40, "2" * 40
+    results = [
+        {"argv": local[0], "rc": 0, "console": "canre %s installed and checked at /a\n" % c1},
+        {"argv": local[1], "rc": 0, "console": "canre %s checked at /w/x/scratch/canre/%s\n"
+                                               % (c1, c1)},
+        {"argv": local[2], "rc": 0, "console": "can-tools %s canbench/ written and checked at /b\n"
+                                               % c2},
+        {"argv": local[3], "rc": 0, "console": "can-tools %s canbench/ checked at "
+                                               "/w/x/scratch/can-tools/%s\n" % (c2, c2)}]
+    got = A.tree_installed({}, results)
+    assert got == {"canre": {"commit": c1, "folder": "/w/x/scratch/canre/" + c1},
+                   "can-tools": {"commit": c2, "folder": "/w/x/scratch/can-tools/" + c2}}, got
+    assert A.tree_installed({}, results[:2]) == {"canre": got["canre"]}
+    # an install's own line is not a check: nothing is recorded as verified
+    assert A.tree_installed({}, results[:1]) == {}, A.tree_installed({}, results[:1])
+
+
 def test_identifier_scan(A, work):
     """A13: the identifier scan is reverse-it's prepush scan (its patterns
     and private value file) over every file of a record: each file's hits
@@ -314,7 +347,8 @@ def test_run_logs(A, work):
 
 
 TESTS = [test_identity, test_catalogue, test_list_loads, test_tree_names, test_shells,
-         test_madhouse_entries, test_identifier_scan, test_artifacts_row, test_masked_log,
+         test_madhouse_entries, test_tree_setup, test_identifier_scan, test_artifacts_row,
+         test_masked_log,
          test_sim_judged, test_run_logs]
 
 MUTANTS = [
@@ -353,6 +387,12 @@ MUTANTS = [
      '    env = {}'),
     ("a madhouse mutant dropped", "    for cid, argv in BS.MADHOUSE_MUTANTS:\n",
      "    for cid, argv in BS.MADHOUSE_MUTANTS[1:]:\n"),
+    ("can-tools on madhouse too", "    if not tree.get(\"remote\"):\n        cmds +=",
+     "    if True:\n        cmds +="),
+    ("no check after the install", '["charge-interposer/canre_pin.py", "check"]',
+     '["charge-interposer/canre_pin.py", "where"]'),
+    ("installed read from the install's line", r'r"^canre ([0-9a-f]{40}) checked at (.+)$"',
+     r'r"^canre ([0-9a-f]{40}) .*at (.+)$"'),
 ]
 
 

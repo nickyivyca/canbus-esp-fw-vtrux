@@ -58,14 +58,20 @@ kept by hand (the charge-interposer reviewer, 2026-11-02).
 Not yet: build targets (ESP-IDF from port step 2a, whose build commands the
 2a build message gives; the reviewer, 2026-11-01: wait for it), settings
 keys from builds, shared pins (this branch carries its own shared/ until
-its first re-pin), and tree_setup (installing the pinned canre and
-can-tools in each tree; the core hook comes first).
+its first re-pin).
+
+  tree_setup,        what each fresh tree needs before its checks: the
+  tree_installed     pinned canre installed and checked (canre_pin.py), and
+                     locally the pinned can-tools canbench/ (can_tools_pin.py),
+                     into the tree's own scratch/; what was installed, as the
+                     pin tools' checks verified it
 
 Tests: accept_adapter_test.py (with --can-fail), run against the core named
 by ACCEPT_CORE.
 """
 
 import os
+import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -125,6 +131,38 @@ def tree_settings(tree):
 
 def settings_keys(builds, trees):
     return {}
+
+
+# ---- tree setup (the core's tree_setup) -------------------------------------
+INSTALLED = (("canre", re.compile(r"^canre ([0-9a-f]{40}) checked at (.+)$", re.M)),
+             ("can-tools", re.compile(r"^can-tools ([0-9a-f]{40}) canbench/ checked at (.+)$",
+                                      re.M)))
+
+
+def tree_setup(tree):
+    """What a fresh tree needs before its checks run: the pinned canre,
+    installed into the tree's own scratch/ from the public repo at the pin
+    and then checked; on a local tree also the pinned can-tools canbench/,
+    written from the CAN_TOOLS_DIR clone and checked (madhouse has no
+    can-tools clone and opens no dongle). Committed files of the tree."""
+    cmds = [["charge-interposer/canre_pin.py", "install"],
+            ["charge-interposer/canre_pin.py", "check"]]
+    if not tree.get("remote"):
+        cmds += [["charge-interposer/can_tools_pin.py", "install"],
+                 ["charge-interposer/can_tools_pin.py", "check"]]
+    return cmds
+
+
+def tree_installed(tree, results):
+    """What the setup installed, as the pin tools' checks verified it:
+    {"canre": {"commit", "folder"}, "can-tools": {...}}."""
+    out = {}
+    for r in results:
+        for name, rx in INSTALLED:
+            m = rx.search(r["console"])         # only a check's line: "<commit> checked at"
+            if m:
+                out[name] = {"commit": m.group(1), "folder": m.group(2).strip()}
+    return out
 
 
 # ---- shells and judges ------------------------------------------------------
@@ -225,9 +263,6 @@ def _mad(cid, path, args, shell="python", judge="script", cls="build", timeout_s
 
 
 # ---- comparers (A10) --------------------------------------------------------
-import json  # noqa: E402
-import re  # noqa: E402
-
 JUDGED = re.compile(r"^\s*\[(PASS|FAIL|KNOWN-FAIL|WARN|SKIP|NOT-RUN)\]\s")
 EVENT = re.compile(r"^\s*\[([A-Z_]+)\]\s")
 NUM = re.compile(r"-?\d+(?:\.\d+)?")
