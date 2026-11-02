@@ -10,7 +10,8 @@ checkouts, so they stay clean.
 The builds run as one chain run of "build" checks, so the chain runner's
 build throttle applies (AGENTS.md "Builds during wall-clock tests"); the
 "No builds" line in bench-holder.md stays the tester's to set by hand. The
-chain record is inside the acceptance record (chain/).
+chain record is inside the acceptance record (chain/), and holds the masked
+settings (A6).
 
 Each build's record, builds/<id>.json in the acceptance record: the build,
 its tree's record (commits, tree ids, file sha256s, product digest), its
@@ -28,10 +29,12 @@ import os
 from ..run.engine import Engine
 from ..run.model import Check, Group, Suite
 from .compile import chain_root, resolve_path
+from .settings import masked
 from .trees import make_tree
 
 RULES = {k: True for k in ("own_tree", "options", "image_sha", "record_file",
-                           "build_cls", "chain_in_record", "fail_recorded")}
+                           "build_cls", "chain_in_record", "fail_recorded",
+                           "masked_record")}
 
 
 def _sha256(path):
@@ -74,7 +77,8 @@ def run_builds(repo, alist, adapter, settings, rec, made, parent, base_env, tree
     suite, ctx = build_suite(repo, alist, adapter, settings, made, parent, base_env,
                              rec.say, trees)
     root = chain_root(rec, settings) if RULES["chain_in_record"] else settings.get("runs_root")
-    eng = Engine(suite, settings, runs_root=root, out=rec.say)
+    eng = Engine(suite, settings, runs_root=root, out=rec.say,
+                 record_settings=masked(settings, adapter) if RULES["masked_record"] else None)
     r = eng.run()
     verdicts = {}
     for res in r["results"]:

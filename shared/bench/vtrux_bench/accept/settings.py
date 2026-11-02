@@ -51,6 +51,12 @@ def mask(text, adapter=None):
     return redact(text) if redact else text
 
 
+def masked(settings, adapter=None):
+    """A masked copy of a settings dict, for every record a run writes (A6:
+    the chain runner's record_settings, nested runs' --record-settings)."""
+    return json.loads(mask(json.dumps(settings), adapter))
+
+
 def write_settings(machine_path, adapter, builds, trees, rec, made, parent):
     """(path of the run's settings file, the settings)."""
     with open(machine_path, encoding="utf-8") as f:

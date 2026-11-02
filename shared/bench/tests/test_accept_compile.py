@@ -210,7 +210,7 @@ def test_build_is_build_work():
     """A5: builds are build work under AGENTS.md "Builds during wall-clock
     tests": each runs as a "build" check of the chain runner, so its
     throttle applies, and its chain record is inside the acceptance
-    record."""
+    record, holding the masked settings (A6)."""
     f = Fixture()
     suite, _ctx = B.build_suite(f.repo, f.alist, FA, f.machine, f.made, f.parent,
                                 f.base_env(), f.rec.say)
@@ -218,7 +218,11 @@ def test_build_is_build_work():
     assert cls == {"build"}, cls
     f.builds()
     chain = os.path.join(f.rec.path, "chain")
-    assert any(n.startswith("accept-builds") for n in os.listdir(chain)), os.listdir(chain)
+    runs = [n for n in os.listdir(chain) if n.startswith("accept-builds")]
+    assert runs, os.listdir(chain)
+    with open(os.path.join(chain, runs[0], "record.json"), encoding="utf-8") as fh:
+        text = fh.read()
+    assert MAC not in text and "<MAC>" in text, "the builds' chain record holds the real settings (A6)"
 
 
 def test_build_failure():
@@ -315,7 +319,7 @@ def test_compile_shape():
 def test_chain_run():
     """A7: the compiled suite runs as an ordinary chain run whose record is
     inside the acceptance record (chain/), every check judged by the chain
-    runner."""
+    runner; the record holds the masked settings (A6)."""
     f = Fixture()
     suite = C.compile_suite(f.alist, f.trees, FA, f.machine, f.base_env())
     rec = C.run_suite(suite, f.machine, f.rec)
@@ -323,6 +327,9 @@ def test_chain_run():
         os.path.join(f.rec.path, "chain")), rec["_dir"]
     v = {r["id"]: r["verdict"] for r in rec["results"]}
     assert v == {"env/run": "PASS", "tool/run": "PASS", "bad/run": "FAIL"}, v
+    with open(os.path.join(rec["_dir"], "record.json"), encoding="utf-8") as fh:
+        text = fh.read()
+    assert MAC not in text and "<MAC>" in text, "the chain record holds the real settings (A6)"
     with open(os.path.join(rec["_dir"], "tool", "run", "check.log"), encoding="utf-8") as fh:
         log = fh.read()
     where = os.path.normcase(f.trees["new"]["shared_dirs"]["comp"])
@@ -342,6 +349,7 @@ MUTANTS = [
     (B, "build_cls", test_build_is_build_work),
     (B, "chain_in_record", test_build_is_build_work),
     (B, "fail_recorded", test_build_failure),
+    (B, "masked_record", test_build_is_build_work),
     (ST, "keymap", test_settings_from_builds),
     (ST, "masked", test_settings_masked_and_removed),
     (ST, "scratch_only", test_settings_masked_and_removed),
@@ -353,6 +361,7 @@ MUTANTS = [
     (C, "shared_path", test_compile_shape),
     (C, "cwd_tree", test_compile_shape),
     (C, "chain_in_record", test_chain_run),
+    (C, "masked_record", test_chain_run),
 ]
 
 

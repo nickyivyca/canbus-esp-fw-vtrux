@@ -16,7 +16,9 @@ the ones AGENTS.md and local-paths.md name), never the operator's shell
 (the chain runner's Check.base_env); the list's or the catalogue's env is
 laid over it.
 
-The chain run's record goes inside the acceptance record, in chain/.
+The chain run's record goes inside the acceptance record, in chain/, and
+holds the masked settings, not the ones the run used (A6; the chain
+runner's record_settings).
 
 RULES: each is switched off by a mutant in tests/test_accept_compile.py,
 which must then fail.
@@ -28,7 +30,8 @@ from ..run.engine import Engine
 from ..run.model import Check, Group, Suite, exit_code_judge
 
 RULES = {k: True for k in ("base_env", "list_env", "machine_vars", "after",
-                           "shared_path", "cwd_tree", "chain_in_record")}
+                           "shared_path", "cwd_tree", "chain_in_record",
+                           "masked_record")}
 
 # what the operating system needs to start a program, nothing of a person's
 OS_VARS_NT = ("SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT", "PATH",
@@ -99,10 +102,13 @@ def chain_root(rec, settings):
         else settings.get("runs_root")
 
 
-def run_suite(suite, settings, rec, **kw):
+def run_suite(suite, settings, rec, adapter=None, **kw):
     """Run the suite with the chain runner; its record, with "_dir" its
-    folder."""
-    eng = Engine(suite, settings, runs_root=chain_root(rec, settings), out=rec.say, **kw)
+    folder. The chain record holds the masked settings (A6)."""
+    from .settings import masked
+    eng = Engine(suite, settings, runs_root=chain_root(rec, settings), out=rec.say,
+                 record_settings=masked(settings, adapter) if RULES["masked_record"] else None,
+                 **kw)
     r = eng.run()
     r["_dir"] = eng.run_dir
     return r
