@@ -265,6 +265,37 @@ def test_prune(S, work):
                           for x in (live, new, orphan_live)), left
 
 
+def test_keep(S, work):
+    """A14, and gen-inhibit's reviewer's watch point (2026-11-01): a folder
+    a tester keeps for inspection is never removed by the helper. keep()
+    marks its owner file; state() says "kept"; make() beside it never
+    prunes it, even once its run has finished; Made.remove_all() leaves it,
+    lists it as kept and does not count it as a LEFTOVER."""
+    parent = os.path.join(work, "kp")
+    p = subprocess.Popen([PY, "-c", "pass"])
+    p.wait()
+    m = S.Made()
+    kept = m.add(S.make(parent, "k"))
+    gone = m.add(S.make(parent, "k"))
+    S.keep(kept, "a failed run, for inspection")
+    with open(kept + ".owner.json", encoding="utf-8") as fh:
+        o = json.load(fh)
+    assert o.get("keep") is True and "inspection" in o.get("kept_why", ""), o
+    assert S.state(kept) == "kept", S.state(kept)
+    o["pid"], o["start"] = p.pid, 1                   # its run has finished
+    with open(kept + ".owner.json", "w", encoding="utf-8") as fh:
+        json.dump(o, fh)
+    assert S.state(kept) == "kept", S.state(kept)
+    S.make(parent, "k")
+    assert os.path.isdir(kept), "make() pruned a kept folder"
+    left = m.remove_all(out=lambda s: None)
+    assert left == [], left
+    assert os.path.isdir(kept) and os.path.isfile(kept + ".owner.json"), "remove_all took a kept folder"
+    assert not os.path.lexists(gone), "remove_all left a folder that was not kept"
+    assert m.kept == [kept], m.kept
+    GOOD.remove(kept, quiet=True)
+
+
 def test_run_finally(S, work):
     """A14: with run(...) removes its folder and owner file when the block
     raises, as when it ends."""
@@ -331,7 +362,7 @@ def test_names(S, work):
 
 TESTS = [test_remove_readonly, test_remove_long_path, test_leftover_reported,
          test_link_not_followed, test_owner_beside, test_state, test_prune,
-         test_run_finally, test_exit_handler, test_names]
+         test_keep, test_run_finally, test_exit_handler, test_names]
 
 MUTANTS = [
     ("no read-only handling",
@@ -357,6 +388,8 @@ MUTANTS = [
     ("orphan owner files kept",
      '            if not os.path.lexists(d) and state(d) == "finished":',
      '            if False:'),
+    ("a kept folder reads as its run's state", '    if o.get("keep"):\n        return "kept"\n', ""),
+    ("remove_all takes kept folders", '            if state(p) == "kept":', '            if False:'),
     ("remove leaves the owner file", "        own = long_path(owner_path(path))\n",
      "        own = long_path(owner_path(path)) + '.not'\n"),
     ("run without finally", "    try:\n        yield p\n    finally:\n        remove(p)\n",
