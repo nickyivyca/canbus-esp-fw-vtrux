@@ -207,9 +207,80 @@ def test_verdict():
         assert any(bad["id"] in ln for ln in v["lines"][1:]), (bad, v["lines"])
 
 
+def chain_res(*pairs, group="g"):
+    out = []
+    for sub, v in pairs:
+        r = {"id": "%s/run/%s" % (group, sub), "group": group, "verdict": v}
+        if v == "PASS*":                       # a known FAIL that passed
+            r.update(verdict="PASS", known_fail_passed=True)
+        out.append(r)
+    return out
+
+
+def test_check_verdict():
+    """A12 (the charge-interposer reviewer, 2026-11-02): a check's verdict
+    is that of all its results, whatever their order. PASS when each is
+    PASS, KNOWN-FAIL or NOT-APPLICABLE and no known FAIL passed; FAIL only
+    when every other result is a FAIL; an ERROR, VOID, NOT-RUN or
+    INCONCLUSIVE anywhere is the verdict, before or after a FAIL (the smoke
+    run of 2026-11-02: test_event_layout's ERROR after two FAILs met an
+    expect of FAIL); a known FAIL that passed is never PASS or FAIL. Another
+    group's results do not count; none at all is "absent"; the detail names
+    the results that are not a pass."""
+    cv = J.check_verdict
+    cases = [
+        ((("a", "PASS"), ("b", "PASS")), "PASS"),
+        ((("a", "PASS"), ("k", "KNOWN-FAIL"), ("n", "NOT-APPLICABLE")), "PASS"),
+        ((("a", "FAIL"), ("b", "PASS"), ("c", "FAIL")), "FAIL"),
+        ((("a", "FAIL"), ("b", "PASS"), ("c", "ERROR")), "ERROR"),
+        ((("c", "ERROR"), ("a", "FAIL")), "ERROR"),
+        ((("a", "FAIL"), ("v", "VOID")), "VOID"),
+        ((("a", "FAIL"), ("i", "INCONCLUSIVE")), "INCONCLUSIVE"),
+        ((("a", "FAIL"), ("r", "NOT-RUN")), "NOT-RUN"),
+        ((("v", "VOID"), ("e", "ERROR")), "ERROR"),
+        ((("a", "PASS"), ("k", "PASS*")), J.KNOWN_PASSED),
+        ((("a", "FAIL"), ("k", "PASS*")), J.KNOWN_PASSED),
+    ]
+    for pairs, want in cases:
+        got, detail = cv(chain_res(*pairs) + chain_res(("x", "ERROR"), group="other"), "g")
+        assert got == want, (pairs, got, want)
+        for sub, v in pairs:
+            if v not in J.CHECK_OK:
+                assert "run/%s" % sub in detail, (pairs, detail)
+    assert cv(chain_res(("x", "PASS"), group="other"), "g") == ("absent", ""), "absent"
+    # the run of 2026-11-02, in its order, against its list's expect FAIL
+    smoke = chain_res(*([("l2.%d" % i, "PASS") for i in range(7)]
+                        + [("l2.bridge-ok-veh-failed", "FAIL"), ("l2.x", "PASS"),
+                           ("l2.bridge-ok-switch-discard", "FAIL")]
+                        + [("test_event_layout", "ERROR"), ("test_twai_port", "PASS")]),
+                      group="hb-shared")
+    got, detail = cv(smoke, "hb-shared")
+    v = J.verdict([J.item("check", "hb-shared", "FAIL", got, detail)], [])
+    assert not v["pass"] and "got ERROR" in v["lines"][1] and \
+        "test_event_layout ERROR" in v["lines"][1], v["lines"]
+    many = chain_res(*[("f%d" % i, "FAIL") for i in range(9)])
+    assert cv(many, "g")[1].endswith(", and 3 more"), cv(many, "g")
+
+
+def test_not_passed():
+    """A13 (the user, 2026-11-02, through the charge-interposer reviewer):
+    the record lists every result of a check that is not a plain PASS, in
+    order, all of them, past check_verdict's six: those the verdict counts,
+    and KNOWN-FAIL, NOT-APPLICABLE and a known FAIL that passed, which it
+    does not. Another group's results are not listed."""
+    pairs = ([("p0", "PASS"), ("k", "KNOWN-FAIL"), ("n", "NOT-APPLICABLE"), ("kp", "PASS*")]
+             + [("f%d" % i, "FAIL") for i in range(8)] + [("e", "ERROR"), ("p1", "PASS")])
+    rs = chain_res(*pairs) + chain_res(("x", "FAIL"), group="other")
+    want = [("run/k", "KNOWN-FAIL"), ("run/n", "NOT-APPLICABLE"), ("run/kp", J.KNOWN_PASSED)] + \
+        [("run/f%d" % i, "FAIL") for i in range(8)] + [("run/e", "ERROR")]
+    assert J.not_passed(rs, "g") == want, J.not_passed(rs, "g")
+    assert J.check_verdict(rs, "g")[1].endswith("and 4 more"), J.check_verdict(rs, "g")
+    assert J.not_passed(chain_res(("a", "PASS")), "g") == []
+
+
 TESTS = [test_compare_identical, test_compare_same_verdicts, test_compare_within,
          test_compare_listed, test_transcript, test_adapter_comparer, test_premise_digest,
-         test_not_exercised, test_verdict]
+         test_not_exercised, test_verdict, test_check_verdict, test_not_passed]
 
 MUTANTS = [
     ("count_verdicts", test_compare_identical),
@@ -227,6 +298,11 @@ MUTANTS = [
     ("all_items", test_not_exercised),
     ("expected_verdict", test_verdict),
     ("every_item", test_verdict),
+    ("every_result", test_check_verdict),
+    ("ok_set", test_check_verdict),
+    ("known_passed", test_check_verdict),
+    ("listed_ok_set", test_not_passed),
+    ("listed_known_passed", test_not_passed),
 ]
 
 

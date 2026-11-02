@@ -11,7 +11,10 @@ the system temp folder. The folder is removed when the process that made it
 exits, pass or fail, read-only files and long paths included, tried again
 while another process holds it for a moment, and one that will not go is
 printed (AGENTS.md "Removing scratch", 2026-11-01); a probe that prints one
-fails its test, though it exits 0. Every test
+fails its test, though it exits 0. The tool folders above it go once empty,
+and another run's exit taking them while a run makes its own costs a retry
+(the charge-interposer reviewer, 2026-11-02); those tests use a stand-in
+worktree (a folder with a .git file) in this run's own folder. Every test
 runs in a subprocess with the _scratch.py under test first on its path, so a
 mutant reaches the three tests' own imports. A mutant is an edited copy of
 _scratch.py in this run's folder; an edit whose text is not found exactly once
@@ -48,6 +51,13 @@ def run_py(code, mdir):
     if r.returncode != 0 or "could not remove" in r.stderr:
         raise AssertionError("the probe failed: %s" % (r.stdout + r.stderr)[-400:])
     return json.loads(r.stdout.strip().splitlines()[-1])
+
+
+def gone(d):
+    """Run folder d removed by this file's own _scratch, never a mutant, with
+    its tool folders once empty."""
+    if _scratch.remove_tree(d):
+        _scratch.drop_empty(d)
 
 
 def under(p, root):
@@ -91,7 +101,7 @@ def test_removed_at_exit(mdir):
         assert under(d, os.path.join(ROOT, "gone")), d
         assert not os.path.lexists(_scratch.long_path(d)), "left behind: %s" % d
     finally:
-        _scratch.remove_tree(d)                 # what a mutant left; this file's own _scratch
+        gone(d)                                 # what a mutant left; this file's own _scratch
 
 
 def test_unremovable_printed(mdir):
@@ -108,7 +118,7 @@ def test_unremovable_printed(mdir):
         assert r.returncode == 0, r.stderr[-400:]
         assert "could not remove %s" % d in r.stderr, r.stderr[-400:]
     finally:
-        _scratch.remove_tree(d)                 # this file's own _scratch, never a mutant
+        gone(d)                                 # this file's own _scratch, never a mutant
 
 
 def test_held_retried(mdir):
@@ -128,7 +138,7 @@ def test_held_retried(mdir):
         assert under(d, os.path.join(ROOT, "held")), d
         assert not os.path.lexists(_scratch.long_path(d)), "left behind: %s" % d
     finally:
-        _scratch.remove_tree(d)                 # what a mutant left; this file's own _scratch
+        gone(d)                                 # what a mutant left; this file's own _scratch
 
 
 def test_walks_up(mdir):
@@ -171,11 +181,81 @@ def test_three_tests(mdir):
             assert not os.path.lexists(_scratch.long_path(p)), "left behind: %s" % p
     finally:
         for p in got:
-            _scratch.remove_tree(p)             # what a mutant left; this file's own _scratch
+            gone(p)                             # what a mutant left; this file's own _scratch
+
+
+def fake_worktree():
+    """A stand-in worktree, a folder with a .git file, in this run's own
+    folder (gone at this process's exit, whatever a mutant left in it)."""
+    w = tempfile.mkdtemp(dir=_scratch.run_dir("fakewt"))
+    open(os.path.join(w, ".git"), "w").close()
+    return w
+
+
+def test_tool_folders_dropped(mdir):
+    """Once its run folder is gone, the run's <name>/ and vtrux-bench-tests/
+    go too when nothing else is in them; another run's folder in <name>/
+    keeps both, with it; another tool's folder keeps vtrux-bench-tests/ only
+    (the charge-interposer reviewer, 2026-11-02: 21 empty tool folders were
+    left)."""
+    w = fake_worktree()
+    root = os.path.join(w, "scratch", "vtrux-bench-tests")
+    code = "import json, _scratch; print(json.dumps(_scratch.run_dir('t', start=%r)))" % w
+
+    def left(p):
+        return os.listdir(p) if os.path.isdir(p) else "gone"
+
+    d = run_py(code, mdir)
+    assert under(d, os.path.join(root, "t")), d
+    assert not os.path.lexists(d), d
+    assert not os.path.lexists(root), left(root)
+    assert os.path.isdir(os.path.join(w, "scratch")), w
+    other = os.path.join(root, "t", "other_1")
+    os.makedirs(other)
+    d = run_py(code, mdir)
+    assert not os.path.lexists(d), d
+    assert os.path.isdir(other), left(os.path.join(root, "t"))
+    os.rmdir(other)
+    os.rmdir(os.path.dirname(other))
+    os.makedirs(os.path.join(root, "u", "other_2"))
+    d = run_py(code, mdir)
+    assert not os.path.lexists(os.path.join(root, "t")), left(os.path.join(root, "t"))
+    assert os.path.isdir(os.path.join(root, "u", "other_2")), left(root)
+
+
+def test_make_retried(mdir):
+    """Another run's exit taking the tool folders while this run makes its
+    own (makedirs: FileNotFoundError) costs a try: two lost still make the
+    folder, on the third try; every try lost is the error, after exactly
+    three (as charge-interposer's scratch_dir.make)."""
+    w = fake_worktree()
+    code = ("import json, os, _scratch\n"
+            "real, n = os.makedirs, [0]\n"
+            "def racy(p, *a, **k):\n"
+            "    if not str(p).endswith('_%%d' %% os.getpid()):\n"
+            "        return real(p, *a, **k)       # makedirs making a parent\n"
+            "    n[0] += 1\n"
+            "    if n[0] <= %d:\n"
+            "        raise FileNotFoundError(2, 'taken by another run', p)\n"
+            "    return real(p, *a, **k)\n"
+            "os.makedirs = racy\n"
+            "try:\n"
+            "    d = _scratch.run_dir('r', start=%r)\n"
+            "    r = [d, os.path.isdir(d), n[0]]\n"
+            "except FileNotFoundError:\n"
+            "    r = ['raised', False, n[0]]\n"
+            "os.makedirs = real\n"
+            "print(json.dumps(r))\n")
+    d, made, n = run_py(code % (2, w), mdir)
+    assert made and n == 3 and under(d, os.path.join(w, "scratch", "vtrux-bench-tests", "r")), \
+        (d, made, n)
+    d, made, n = run_py(code % (99, w), mdir)
+    assert d == "raised" and n == 3, (d, made, n)
 
 
 TESTS = [test_per_run, test_walks_up, test_refuses_outside, test_three_tests,
-         test_removed_at_exit, test_unremovable_printed, test_held_retried]
+         test_removed_at_exit, test_unremovable_printed, test_held_retried,
+         test_tool_folders_dropped, test_make_retried]
 
 # The temp-folder mutant writes to this folder of its own there, removed after it,
 # so no mutant leaves anything outside this run's scratch folder.
@@ -193,7 +273,18 @@ MUTANTS = [
     ("falls back instead of refusing",
      '            raise ScratchError(', '            return os.path.abspath(path)\n            raise ScratchError('),
     ("not removed at exit",
-     "    atexit.register(remove_tree, d)\n", ""),
+     "    atexit.register(_remove_run, d)\n", ""),
+    ("the tool folders kept", "    if remove_tree(d):\n        drop_empty(d)\n",
+     "    remove_tree(d)\n"),
+    # <name>/ only: a mutant taking vtrux-bench-tests/ whole would take this
+    # run's own folder, and the mutant under test with it
+    ("a tool folder taken with what is in it", "            os.rmdir(long_path(p))",
+     "            remove_tree(p) if p == os.path.dirname(d) else os.rmdir(long_path(p))"),
+    ("only <name>/ dropped",
+     "    for p in (os.path.dirname(d), os.path.dirname(os.path.dirname(d))):",
+     "    for p in (os.path.dirname(d),):"),
+    ("one try only", "    for attempt in range(MAKE_TRIES):", "    for attempt in range(1):"),
+    ("tries without end", "MAKE_TRIES = 3\n", "MAKE_TRIES = 50\n"),
     ("rmtree with ignore_errors (Windows only)",
      "        if sys.version_info >= (3, 12):\n            shutil.rmtree(lp, onexc=again)\n"
      "        else:\n"
@@ -253,12 +344,17 @@ def main(argv):
             fh.write(src.replace(old, new))
         print("-- m%d %s" % (n, name))
         before = run_folders()
+        names = set(os.listdir(ROOT))            # ROOT holds this run's own folder
         try:
             bad = run_all(mdir)
         finally:                                 # what the temp-folder mutant wrote
             _scratch.remove_tree(os.path.join(tempfile.gettempdir(), MUTANT_TEMP))
             for left in sorted(run_folders() - before):   # what a mutant left in ROOT
-                _scratch.remove_tree(left)
+                gone(left)
+            # and a <name>/ new since, even one with nothing left in it (the
+            # counting-up mutant made ROOT/scratch/ from a stand-in worktree)
+            for nm in sorted(set(os.listdir(ROOT)) - names):
+                _scratch.remove_tree(os.path.join(ROOT, nm))
         caught += bool(bad)
         print("%s  m%d %s: %s" % ("ok  " if bad else "FAIL", n, name,
                                   ("fails " + ", ".join(bad)) if bad else "STILL PASSES -- nothing checks it"))

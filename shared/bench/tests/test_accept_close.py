@@ -68,12 +68,19 @@ class FakeMade:
         return list(self.left)
 
 
+# the suite run's results that are not a pass: nine, past the item detail's six
+NOT_PASSED = [("a/k", "KNOWN-FAIL")] + [("a/f%d" % i, "FAIL") for i in range(7)] + \
+    [("b/last", "ERROR")]
+
+
 def summary(rec):
     items = [J.item("check", "env", "PASS", "PASS"),
              J.item("suite_run", "emu", "PASS", "FAIL"),
              J.item("compare", "same", "held", "held"),
              J.item("canfail", "cf", "as stated", "as stated"),
              J.item("build", "fw", "PASS", "PASS")]
+    items[0]["not_passed"] = []
+    items[1]["not_passed"] = list(NOT_PASSED)
     v = J.verdict(items, [dict(id="digest", held=True, why="equal", items=[])])
     return {
         "step": {"id": "s1", "project": "proj", "ordered_by": "reviewer",
@@ -140,6 +147,25 @@ def test_readme():
     for want in ("s1", C1, "ab" * 32, C2, "5" * 64, "6" * 64, "7" * 64, "ACCEPTANCE FAIL",
                  "suite_run emu", "compare same", "premise digest", "9.1 Emulation"):
         assert want in text, (want, text)
+
+
+def test_readme_not_passed():
+    """A13 (the user, 2026-11-02, through the charge-interposer reviewer):
+    the README lists every result of each check and suite run that is not a
+    plain PASS, all of them, past the six of the item's detail, in order,
+    and says "none" for one that has none."""
+    rec, _said = opened()
+    CL.close(rec, summary(rec), S.Made(), Adapter())
+    text = read(rec, "README.md")
+    head = "## Results that are not a pass"
+    assert head in text, text
+    sec = text.split(head, 1)[1].split("\n## ", 1)[0]
+    want = ["- suite_run emu: %d" % len(NOT_PASSED)] + \
+        ["  - %s %s" % g for g in NOT_PASSED]
+    lines = [ln for ln in sec.splitlines() if ln.startswith(("- ", "  - "))]
+    assert "- check env: none" in lines, sec
+    i = lines.index(want[0])
+    assert lines[i:i + len(want)] == want, sec
 
 
 def test_sha256sums():
@@ -248,10 +274,12 @@ def test_dev_skeleton():
 
 TESTS = [test_readme, test_sha256sums, test_closed_once, test_identifiers_reported,
          test_cleanup_first, test_late_failure, test_artifacts_row, test_skeleton,
-         test_dev_skeleton]
+         test_dev_skeleton, test_readme_not_passed]
 
 MUTANTS = [
     ("readme_items", test_readme),
+    ("readme_not_passed", test_readme_not_passed),
+    ("not_passed_all", test_readme_not_passed),
     ("readme_commits", test_readme),
     ("sums_all", test_sha256sums),
     ("console_stops", test_closed_once),

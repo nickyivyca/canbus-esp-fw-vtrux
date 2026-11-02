@@ -12,7 +12,11 @@ close(rec, summary, made, adapter), once per record, in this order:
      recorded as such, and a scan that fails is recorded as FAILED, with
      its error, and the close goes on.
   3. README.md: the step, the list's commit and sha256, the runner's
-     commit, the trees, the builds, every item with its status, the
+     commit, the trees, the builds, every item with its status, every
+     result of each check and suite run that is not a plain PASS (all of
+     them: the item's detail stops at six; the user, 2026-11-02, through
+     the charge-interposer reviewer: they are checked against the known
+     fails by hand), the
      comparisons, the can-fails, the premises, each flagged case's first
      and re-run verdicts, the identifier hits, the leftovers, the verdict.
   4. verification_skeleton.md: the facts for the VERIFICATION.md entry,
@@ -42,7 +46,7 @@ import os
 RULES = {k: True for k in (
     "readme_items", "readme_commits", "sums_all", "console_stops", "close_once",
     "scan_hits", "scan_absent", "cleanup_first", "leftovers_in", "late_outside", "row",
-    "skeleton_reruns", "dev_marked", "scan_failure")}
+    "skeleton_reruns", "dev_marked", "scan_failure", "readme_not_passed", "not_passed_all")}
 
 
 class CloseError(Exception):
@@ -106,6 +110,17 @@ def readme(rec, summary, hits, leftovers):
             L.append("| %s | %s | %s | %s | %s | %s |" % (
                 i["kind"], i["id"], i["expected"], i["got"], i["status"],
                 i.get("why") or i.get("detail") or ""))
+        if RULES["readme_not_passed"]:
+            L += ["", "## Results that are not a pass", "",
+                  "Every result of each check and suite run that is not a plain PASS, "
+                  "in the order run, for checking against the known fails.", ""]
+            for i in s["verdict"]["items"]:
+                if "not_passed" not in i:
+                    continue
+                got = i["not_passed"] if RULES["not_passed_all"] else i["not_passed"][:6]
+                L.append("- %s %s: %s" % (i["kind"], i["id"],
+                                          "%d" % len(i["not_passed"]) if got else "none"))
+                L += ["  - %s %s" % (rid, v) for rid, v in got]
         L += ["", "## Comparisons", ""]
         for c in s["compares"]:
             L.append("- compare %s (%s): %s" % (c["id"], c["expect"],
