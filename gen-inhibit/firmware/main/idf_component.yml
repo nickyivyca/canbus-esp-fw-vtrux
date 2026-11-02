@@ -6,27 +6,27 @@ dependencies:
   vtrux/wican:
     git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
     path: shared/wican
-    version: "2026.11.01"
+    version: "2026.11.01.2"
   vtrux/debug_logs:
     git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
     path: shared/debug_logs
-    version: "2026.11.01"
+    version: "2026.11.01.2"
   # Port 0 (spec 3.3, port step 1b): the CAN port interface, whose stock calls
   # vtrux/wican's files make, and the TWAI port behind it, at the same tag.
   vtrux/can_port:
     git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
     path: shared/can_port
-    version: "2026.11.01"
+    version: "2026.11.01.2"
   vtrux/twai_port:
     git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
     path: shared/twai_port
-    version: "2026.11.01"
+    version: "2026.11.01.2"
   # Every software restart takes port 0 off the bus first (spec 3, port step
   # 1c): the guard sets its own link-time wrap, so depending on it is enough.
   vtrux/restart_guard:
     git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
     path: shared/restart_guard
-    version: "2026.11.01"
+    version: "2026.11.01.2"
   # The board (shared/boards SPEC B1 and B2): the one shared/boards/*
   # component, at the shared/main tag this project pins, from git, never
   # through override_path. sdkconfig names its partition table by this
@@ -34,7 +34,7 @@ dependencies:
   vtrux/wican_v3:
     git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
     path: shared/boards/wican_v3
-    version: "2026.11.01"
+    version: "2026.11.01.2"
   ## Required IDF version
   idf:
     version: ">=4.1.0"
