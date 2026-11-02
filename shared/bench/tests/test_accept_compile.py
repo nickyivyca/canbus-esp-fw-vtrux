@@ -235,7 +235,7 @@ def test_build_failure():
 def test_settings_from_builds():
     """A6: the run's settings are the machine's settings, with the keys that
     depend on a build filled from the build records by the adapter's key
-    map, never by hand."""
+    map, never by hand; A7: their runs_root is the record's runs/."""
     f = Fixture()
     builds = f.builds()
     path, s = ST.write_settings(f.machine_path, FA, builds, f.trees, f.rec, f.made, f.parent)
@@ -245,6 +245,8 @@ def test_settings_from_builds():
     assert s["fw_image"] == builds["fw"]["images"]["app"]["path"], s
     assert s["fw_elf_sha256"] == builds["fw"]["elf"]["sha256"], s
     assert s["bench_mac"] == MAC and s["hosts"] == f.machine["hosts"], s
+    # A7: nested suite runs make their records in the acceptance record
+    assert s["runs_root"] == os.path.join(f.rec.path, "runs"), s["runs_root"]
 
 
 def test_settings_masked_and_removed():
@@ -351,6 +353,7 @@ MUTANTS = [
     (B, "fail_recorded", test_build_failure),
     (B, "masked_record", test_build_is_build_work),
     (ST, "keymap", test_settings_from_builds),
+    (ST, "runs_in_record", test_settings_from_builds),
     (ST, "masked", test_settings_masked_and_removed),
     (ST, "scratch_only", test_settings_masked_and_removed),
     (ST, "no_passwords", test_settings_no_passwords),

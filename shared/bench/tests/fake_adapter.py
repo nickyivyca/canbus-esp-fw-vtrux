@@ -46,6 +46,8 @@ MACHINE_VARS = ("FAKE_MACHINE_DIR",)
 
 # the settings keys that depend on a build (A6), filled from the build records
 def settings_keys(builds, trees):
+    if "fw" not in builds:
+        return {}
     return {"fw_image": builds["fw"]["images"]["app"]["path"],
             "fw_elf_sha256": builds["fw"]["elf"]["sha256"]}
 

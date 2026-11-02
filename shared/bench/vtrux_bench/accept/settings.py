@@ -3,7 +3,8 @@
 The runner writes a settings file for the run from the machine's settings
 file (the chain runner's JSON, one per machine, not in git). The keys that
 depend on a build are filled from the build records by the adapter's key
-map, settings_keys(builds, trees), never edited by hand.
+map, settings_keys(builds, trees), never edited by hand. Its runs_root is
+the acceptance record's runs/, where the nested suite runs' records go (A7).
 
 The unmasked file is written to a scratch folder of the run's own (held in
 its Made, so it is removed with the run, A14), never into the record. A
@@ -24,7 +25,8 @@ import re
 
 from .. import scratch as S
 
-RULES = {k: True for k in ("keymap", "masked", "scratch_only", "no_passwords")}
+RULES = {k: True for k in ("keymap", "masked", "scratch_only", "no_passwords",
+                           "runs_in_record")}
 
 PASSWORD_KEY = re.compile(r"(?i)pass(word|wd|phrase)?|secret|token|psk")
 MAC = re.compile(r"([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}")
@@ -70,6 +72,10 @@ def write_settings(machine_path, adapter, builds, trees, rec, made, parent):
                                                                         ", ".join(bad)))
     if RULES["keymap"]:
         s.update(adapter.settings_keys(builds, trees))
+    if RULES["runs_in_record"]:
+        # nested suite runs (A7) make their records inside the acceptance
+        # record, and a suite's `requires` finds this acceptance's own runs
+        s["runs_root"] = os.path.join(rec.path, "runs")
     if RULES["scratch_only"]:
         d = made.add(S.make(parent, "settings"))
         path = os.path.join(d, "settings.json")
