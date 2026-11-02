@@ -46,7 +46,7 @@ MACHINE_VARS = ("FAKE_MACHINE_DIR",)
 
 # the settings keys that depend on a build (A6), filled from the build records
 def settings_keys(builds, trees):
-    if "fw" not in builds:
+    if not (builds.get("fw") or {}).get("images"):      # none, failed or not run
         return {}
     return {"fw_image": builds["fw"]["images"]["app"]["path"],
             "fw_elf_sha256": builds["fw"]["elf"]["sha256"]}
@@ -78,6 +78,30 @@ def comparer(name):
 
 # named masks a transcript comparison may use (A10)
 MASKS = {"tree-root": r"tree-[a-z]+-[0-9]+"}
+
+
+def identifier_scan(folder):
+    """A13: the identifier hits in a record, masked: here, MACs."""
+    import re
+    mac = re.compile(r"([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}")
+    hits = []
+    for d, _dirs, files in os.walk(folder):
+        for n in files:
+            p = os.path.join(d, n)
+            with open(p, encoding="utf-8", errors="replace") as f:
+                for i, ln in enumerate(f, 1):
+                    if mac.search(ln):
+                        hits.append("%s:%d MAC <masked>" % (os.path.relpath(p, folder), i))
+    return hits
+
+
+def artifacts_row(folder, summary):
+    """A13: the record's row in the runs folder's README (the fake's
+    artifacts README)."""
+    row = "| `runs/%s/` | %s |" % (os.path.basename(folder), summary["verdict"]["lines"][0])
+    with open(os.path.join(os.path.dirname(folder), "README.md"), "a", encoding="utf-8") as f:
+        f.write(row + "\n")
+    return row
 SUITES = {"emulated": "proj/suite.py:EMULATED", "bench": "proj/suite.py:BENCH"}
 
 # the committed harness-test catalogue (A8, A15): per entry its path,

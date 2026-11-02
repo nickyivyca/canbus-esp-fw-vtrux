@@ -17,6 +17,9 @@ Each build's record, builds/<id>.json in the acceptance record: the build,
 its tree's record (commits, tree ids, file sha256s, product digest), its
 verdict, and for a build that passed its images with their sha256, the
 ELF's sha256, the variant and the toolchain. A failed build has no images.
+A build a failed premise blocks is not run at all -- no tree, no check -- and
+is recorded NOT-RUN with why (A11; the charge-interposer reviewer,
+2026-11-01: a build is the expensive part).
 
 RULES: each is switched off by a mutant in tests/test_accept_compile.py,
 which must then fail.
@@ -45,10 +48,24 @@ def _sha256(path):
     return h.hexdigest()
 
 
-def build_suite(repo, alist, adapter, settings, made, parent, base_env, say, trees=None):
-    """(the chain Suite of the builds, {build id: what run_builds needs})."""
+def _record(rec, br):
+    """builds/<id>.json in the acceptance record."""
+    if RULES["record_file"]:
+        d = os.path.join(rec.path, "builds")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "%s.json" % br["id"]), "x", encoding="utf-8",
+                  newline="\n") as f:
+            json.dump(br, f, indent=1, sort_keys=True)
+
+
+def build_suite(repo, alist, adapter, settings, made, parent, base_env, say, trees=None,
+                skip=None):
+    """(the chain Suite of the builds, {build id: what run_builds needs});
+    the builds in skip get neither a tree nor a check."""
     groups, ctx = [], {}
     for b in alist.builds:
+        if b["id"] in (skip or {}):
+            continue
         if RULES["own_tree"]:
             t = make_tree(repo, b["id"], alist.trees[b["tree"]], adapter, parent, made,
                           say, prefix="build-")
@@ -69,22 +86,36 @@ def build_suite(repo, alist, adapter, settings, made, parent, base_env, say, tre
                  groups=groups), ctx
 
 
-def run_builds(repo, alist, adapter, settings, rec, made, parent, base_env, trees=None):
+def run_builds(repo, alist, adapter, settings, rec, made, parent, base_env, trees=None,
+               skip=None):
     """Run every build; {build id: its record}, each also written to
-    builds/<id>.json in the acceptance record."""
+    builds/<id>.json in the acceptance record. skip: {build id: why} for
+    builds a failed premise blocks (A11): not run, recorded NOT-RUN with
+    why."""
     if not alist.builds:
         return {}
+    skip = dict(skip or {})
     suite, ctx = build_suite(repo, alist, adapter, settings, made, parent, base_env,
-                             rec.say, trees)
-    root = chain_root(rec, settings) if RULES["chain_in_record"] else settings.get("runs_root")
-    eng = Engine(suite, settings, runs_root=root, out=rec.say,
-                 record_settings=masked(settings, adapter) if RULES["masked_record"] else None)
-    r = eng.run()
-    verdicts = {}
-    for res in r["results"]:
-        verdicts.setdefault(res["group"], []).append(res["verdict"])
+                             rec.say, trees, skip)
+    verdicts, run_id = {}, None
+    if suite.groups:
+        root = chain_root(rec, settings) if RULES["chain_in_record"] else settings.get("runs_root")
+        eng = Engine(suite, settings, runs_root=root, out=rec.say,
+                     record_settings=masked(settings, adapter) if RULES["masked_record"] else None)
+        r = eng.run()
+        run_id = eng.run_id
+        for res in r["results"]:
+            verdicts.setdefault(res["group"], []).append(res["verdict"])
     out = {}
     for b in alist.builds:
+        if b["id"] in skip:
+            br = {"id": b["id"], "tree": b["tree"], "target": b["target"],
+                  "options": dict(b.get("options") or {}), "verdict": "NOT-RUN",
+                  "skipped": skip[b["id"]]}
+            _record(rec, br)
+            rec.say("build %s: NOT-RUN, %s" % (b["id"], skip[b["id"]]))
+            out[b["id"]] = br
+            continue
         c = ctx[b["id"]]
         vs = verdicts.get("build-%s" % b["id"], ["NOT-RUN"])
         verdict = "PASS" if vs and all(v == "PASS" for v in vs) else \
@@ -92,7 +123,7 @@ def run_builds(repo, alist, adapter, settings, rec, made, parent, base_env, tree
         br = {"id": b["id"], "tree": b["tree"], "target": b["target"],
               "options": c["opts"], "tree_dir": c["tree"]["dir"],
               "tree_record": c["tree"]["record"], "verdict": verdict,
-              "chain_run": eng.run_id}
+              "chain_run": run_id}
         if verdict == "PASS" or not RULES["fail_recorded"]:
             o = c["target"]["outputs"](c["out"], c["opts"])
             br["images"] = {n: {"path": p, "sha256": _sha256(p) if RULES["image_sha"] else ""}
@@ -100,12 +131,7 @@ def run_builds(repo, alist, adapter, settings, rec, made, parent, base_env, tree
             br["elf"] = {"path": o["elf"], "sha256": _sha256(o["elf"])}
             br["variant"] = o.get("variant")
             br["toolchain"] = o.get("toolchain")
-        if RULES["record_file"]:
-            d = os.path.join(rec.path, "builds")
-            os.makedirs(d, exist_ok=True)
-            with open(os.path.join(d, "%s.json" % b["id"]), "x", encoding="utf-8",
-                      newline="\n") as f:
-                json.dump(br, f, indent=1, sort_keys=True)
+        _record(rec, br)
         rec.say("build %s: %s%s" % (b["id"], verdict, "".join(
             ", %s %s" % (n, i["sha256"][:12]) for n, i in sorted((br.get("images") or {}).items()))))
         out[b["id"]] = br
