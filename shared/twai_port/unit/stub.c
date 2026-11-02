@@ -1,12 +1,34 @@
 /* The scripted stub; see stub.h. */
 #include "stub.h"
+#include "esp_rom_sys.h"
+#include "soc/soc.h"
+#include "soc/system_reg.h"
 
 #include <stdio.h>
 #include <string.h>
 
 stub_t stub;
 twai_dev_t stub_twai_dev;
+int stub_delays;
 int stub_log_e, stub_log_w;
+
+/* The restart stop's register reads and its 2 us wait (T12). */
+uint32_t stub_reg_read(uint32_t reg)
+{
+    if (reg == SYSTEM_PERIP_CLK_EN0_REG) { return stub.clk_en0; }
+    if (reg == SYSTEM_PERIP_RST_EN0_REG) { return stub.rst_en0; }
+    return 0;
+}
+
+void esp_rom_delay_us(uint32_t us)
+{
+    stub_delays++;
+    stub.delay_us_total += us;
+    if (stub.status_change_at != 0 && stub_delays == stub.status_change_at)
+    {
+        stub_twai_dev.status = stub.status_after;
+    }
+}
 
 static void call(const char *name)
 {
@@ -20,6 +42,7 @@ void stub_reset(void)
 {
     memset(&stub, 0, sizeof(stub));
     memset(&stub_twai_dev, 0, sizeof(stub_twai_dev));
+    stub_delays = 0;
     stub_log_e = stub_log_w = 0;
     stub.pins.tx = 5;
     stub.pins.rx = 4;

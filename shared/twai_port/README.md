@@ -17,10 +17,10 @@ code to test.
 | File | What |
 |---|---|
 | `include/twai_port.h`, `twai_port.c` | the port: the project's choices (T2), install and teardown (T3, T4), mode changes, receive and the one send (T6), the one alert reader (T5), the counters and status (T7), and its `can_port` backend table, `twai_port_ops` |
-| `twai_port_ll_esp32c3.c` | T8 on the C3: the buffer state and the abort-if-awaiting, register level, checked against ESP-IDF v5.4.1; from step 1c, T12's restart stop too |
-| `twai_port_ll_unsupported.c` | T8 on any other chip: both report unsupported; from step 1c, T12 too |
-| `test_app/` | from step 1c, T13: the transmit-abort probe, compiled in only by `TWAI_PORT_TXABORT_PROBE`; the implementor's, as the port's code |
-| `CMakeLists.txt`, `idf_component.yml` | the component: the register file by target, and the project's one board component, found as `vtrux/wican` finds it |
+| `twai_port_ll_esp32c3.c` | T8 on the C3: the buffer state and the abort-if-awaiting, and T12's restart stop, register level, checked against ESP-IDF v5.4.1 |
+| `twai_port_ll_unsupported.c` | T8 and T12 on any other chip: the buffer state, the abort and the restart stop report unsupported |
+| `test_app/` | T13: the transmit-abort probe, `POST /gi_txabort`, moved from gen-inhibit's `gi_txabort_probe.c` (`twai_port_txabort_probe.c`, `include/twai_port_txabort_probe.h`), compiled in only by `TWAI_PORT_TXABORT_PROBE`; the project registers it from its URI hook with its check of whether it owns the bus |
+| `CMakeLists.txt`, `idf_component.yml` | the component: the register file by target, the probe by its switch, and the project's one board component, found as `vtrux/wican` finds it |
 | `unit/` | the port's unit tests and their scripted stub (`unit/README.md`) |
 | `test/` | the one host fake of the TWAI driver (T10), its own tests, and the real port built on it (`test/README.md`) |
 | `vtrux_checks.json` | the component's build-switch table (`shared/tools` R20) |
@@ -36,7 +36,8 @@ port index, all before `wican_init()`.
 | File | What | Owner |
 |---|---|---|
 | `SPEC.md`, `VALIDATION.md` | the component's spec, T1 to T11, and why each requirement is written as it is | the reviewers, as above |
-| the port's code and its unit tests | T1 to T9 | the implementor of the project that needs the change |
+| the port's code and its unit tests | T1 to T9, T12 | the implementor of the project that needs the change |
+| `test_app/` | T13: the transmit-abort probe | the implementor of the project that needs the change, as the port's code (T11) |
 | `unit/`'s scripted stub of the driver API | part of the unit tests: each case sets the driver's returns and checks the port's calls; it models no controller behaviour (no states, alerts or arbitration of its own) | the implementor, as the unit tests (gen-inhibit reviewer, 2026-10-31) |
 | `unit/mutate.py` | the unit tests' mutants: one behaviour of `twai_port.c` or the C3 register file broken at a time, each of which the unit tests must fail. Not `test/mutate.py`, which mutates the fake | the implementor, as the unit tests (gen-inhibit reviewer, 2026-11-01) |
 | `test/`'s fake of the TWAI driver | T10: what the controller does, in its states, recovery and per-chip behaviour | the tester of the project that needs the change (user, 2026-10-31, in both reviewers' sessions) |

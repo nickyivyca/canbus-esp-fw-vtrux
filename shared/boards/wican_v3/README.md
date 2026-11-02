@@ -9,7 +9,7 @@ The board component for the MeatPi WiCAN OBD, hardware v3: an ESP32-C3 with
 | File | What | Owner |
 |---|---|---|
 | `board.c` | the B5 calls for this board | the implementor of the project that needs the change |
-| `include/board.h` | the B5 interface: CAN ports, TWAI pins, SPI CAN, standby, the offered LEDs and input, the hardware name, the per-model values | the same |
+| `include/board.h` | the B5 interface: CAN ports and their kind, TWAI pins, SPI CAN, standby, the offered LEDs and input, the hardware name, the per-model values | the same |
 | `include/board_pins.h` | the pins, by upstream WiCAN's names (B6) | the same |
 | `sdkconfig.board` | the ESP-IDF options the hardware fixes (B3.1) | the same |
 | `partitions.csv` | the partition table, byte-identical to stock WiCAN v4.13 | the same |
@@ -53,6 +53,10 @@ project's spec sets them, and its release profile names them.
 Project code includes `board.h` and asks for a port, never a pin:
 
 - `board_can_ports()`: 1.
+- `board_can_kind(0)`: `BOARD_CAN_TWAI`; any other port is `BOARD_CAN_NONE`.
+  It and `board_can_ports()` are in IRAM and return constants, so the
+  restart path may call them (`shared/can_port` C7, `shared/restart_guard`
+  G3).
 - `board_twai_pins(0, &p)`: TX GPIO0, RX GPIO3.
 - `board_spi_can(0, &s)`: not supported; this board has no SPI CAN.
 - `board_can_init(0)`: makes the standby line, GPIO6, an output and puts the

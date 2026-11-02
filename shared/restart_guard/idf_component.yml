@@ -1,0 +1,11 @@
+## vtrux/restart_guard: every software restart takes the CAN ports off the bus
+## first (SPEC.md G1). A project takes it from git at a pinned tag of
+## shared/main, with vtrux/can_port, its CAN drivers and its board at the same
+## tag. No version here: the tag is its version, and dependencies.lock records
+## the commit the tag marks.
+description: "Takes the CAN ports off the bus at every software restart, a crash included"
+targets:
+  - esp32c3
+  - esp32s3
+dependencies:
+  idf: ">=5.4"
