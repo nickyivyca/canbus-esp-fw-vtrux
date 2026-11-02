@@ -13,7 +13,8 @@ arguments; it runs from the tree's project checkout.
 A [[suite_run]] is one more group, after the checks: a chain check running
 vtrux_bench.accept.nested (this runner's own shared/bench on its path) on the
 project's suite in its tree, a nested run with its own record in the
-acceptance record's runs/ (A7; nested.py).
+acceptance record's runs/ (A7; nested.py). Each can-fail mutant run is one
+more group, after its target (A10; canfail.py).
 
 The environment (A7): a check starts from machine_env(), the variables a
 machine needs (the operating system's own, and the adapter's MACHINE_VARS,
@@ -103,10 +104,12 @@ def suite_run_check(r, tree, adapter, settings, base_env, paths):
                  base_env=dict(base_env), note="suite run %s" % r["id"])
 
 
-def compile_suite(alist, trees, adapter, settings, base_env, name=None, paths=None):
-    """One chain Suite holding every check and suite run of the list.
-    paths (needed for suite runs): {"settings": the run's settings file,
-    "masked": its masked copy, "record_id": the acceptance record's id}."""
+def compile_suite(alist, trees, adapter, settings, base_env, name=None, paths=None,
+                  mutants=None):
+    """One chain Suite holding every check, suite run and can-fail mutant
+    run of the list. paths (needed for suite runs): {"settings": the run's
+    settings file, "masked": its masked copy, "record_id": the acceptance
+    record's id}. mutants: canfail.prepare()'s entries."""
     groups = []
     gnames = {group_name(c["id"]) for c in alist.checks} | \
         {group_name(r["id"]) for r in alist.suite_runs}
@@ -129,6 +132,9 @@ def compile_suite(alist, trees, adapter, settings, base_env, name=None, paths=No
         groups.append(Group(name=group_name(r["id"]), checks=[suite_run_check(
             r, trees[r["tree"]], adapter, settings, base_env, paths or {})],
             after=after if RULES["after"] else [], after_must_pass=False, note=r["id"]))
+    if mutants:
+        from .canfail import mutant_group
+        groups += [mutant_group(e, adapter, settings, base_env) for e in mutants]
     return Suite(name=name or "accept-%s" % alist.step["id"], role=adapter.ROLE,
                  groups=groups)
 
