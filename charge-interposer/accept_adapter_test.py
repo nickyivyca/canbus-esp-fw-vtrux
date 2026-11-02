@@ -159,6 +159,20 @@ def test_identifier_scan(A, work):
     assert any(h.startswith("chain/check.log:") and "ipv4 x2" in h for h in hits), hits
     assert not any("clean.txt" in h for h in hits), hits
     assert not any(planted in h for h in hits), "a hit shows the text it matched"
+    # a value-file value (the charge-interposer reviewer, 2026-11-01): a fake
+    # value file, a fake MAC planted in a record, written bare as a log has it
+    fake = "02:00:00:00:12:34"                       # locally administered, no board's
+    vf = os.path.join(work, "fake_values.txt")
+    with open(vf, "w", encoding="utf-8") as f:
+        f.write("# a fake value file\nmac %s\n" % fake)
+    with open(os.path.join(d, "board.txt"), "w", encoding="utf-8") as f:
+        f.write("chip mac %s\n" % fake.replace(":", ""))
+    hits = A.identifier_scan(d, values=vf)
+    bare = fake.replace(":", "")
+    assert any(h.startswith("board.txt:") and "value:mac" in h and "x1" in h for h in hits), hits
+    for h in hits:
+        assert fake not in h and bare not in h and bare.upper() not in h, \
+            "a hit shows the value it matched: %s" % h
 
 
 def test_artifacts_row(A, work):

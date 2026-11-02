@@ -172,12 +172,14 @@ def _prepush():
     return mod
 
 
-def identifier_scan(folder):
+def identifier_scan(folder, values=None):
     """Each file's identifier hits in the record, as "<file>: <category>
-    x<count>", with reverse-it's prepush scan's patterns and private value
-    file; never the text that matched."""
+    x<count>", with reverse-it's prepush scan's own functions, patterns and
+    private value file (values: another value file, for the test); never
+    the text that matched, nor anything of the value file but a category
+    and the line of the value file it names."""
     P = _prepush()
-    vals = P.load_values(P.DEFAULT_VALUES)
+    vals = P.load_values(values or P.DEFAULT_VALUES)
     out = []
     for d, dirs, files in os.walk(folder):
         dirs.sort()
