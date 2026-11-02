@@ -6,6 +6,14 @@
 # no builds and no lock (the charge-interposer reviewer, 2026-11-02). Its
 # records go to interposer-firmware/dev-runs/, never runs/, and are never
 # evidence.
+#
+# Since 2026-11-02 it also proves host_bridge's TWAI_FAKE option on madhouse
+# with real g++ (the reviewer's order of that day): host_bridge on our own
+# fake and on the shared fake at 40c0bcc, the fake port step 1b's acceptance
+# E ran on, compared with the masked-log comparer (E found the two
+# transcripts identical), and the shared fake's can-fail (run.sh's own
+# --can-fail mode). Both runs expect FAIL: host_bridge carries the two
+# recorded KNOWN FAILs (bridge-ok-veh-failed, bridge-ok-switch-discard).
 
 [step]
 id = "smoke"
@@ -16,11 +24,12 @@ spec = ["none: a smoke run of the acceptance runner"]
 verification = "none (a --dev smoke run is never evidence)"
 
 [trees.local]
-project = "9e1e62d55c92a3466b91b93992e888c309d9bfd0"
+project = "71351ff9710f07939c4172ab261dba3dd722268c"
 
 [trees.madhouse]
-project = "9e1e62d55c92a3466b91b93992e888c309d9bfd0"
+project = "71351ff9710f07939c4172ab261dba3dd722268c"
 host = "madhouse"
+shared = { twai_port = "40c0bccddccb8fd949df5f92db906fa302b6ae1b" }
 
 [[set]]
 id = "harness"
@@ -32,8 +41,43 @@ id = "mad"
 tree = "madhouse"
 select = ["id:host-unit"]
 
+[[check]]
+id = "hb-own"
+tree = "madhouse"
+run = ["charge-interposer/firmware/test/host_bridge/run.sh"]
+shell = "git-bash"
+judge = "host-bridge"
+cls = "build"
+env = { L3_STIMULUS = "{madhouse_artifacts}/l3_stimulus.txt" }
+expect = "FAIL"
+
+[[check]]
+id = "hb-shared"
+tree = "madhouse"
+run = ["charge-interposer/firmware/test/host_bridge/run.sh"]
+shell = "git-bash"
+judge = "host-bridge"
+cls = "build"
+env = { L3_STIMULUS = "{madhouse_artifacts}/l3_stimulus.txt", TWAI_FAKE = "shared" }
+timeout_s = 14400
+expect = "FAIL"
+after = ["hb-own"]
+
+[[compare]]
+id = "e-transcripts"
+comparer = "masked-log"
+a = "hb-own"
+b = "hb-shared"
+expect = "identical"
+
+[[canfail]]
+id = "shared-fake"
+target = "hb-shared"
+mutants = { mode = "--can-fail" }
+expect = "mode-passes"
+
 # the trees' product digest the same as at the first smoke run's commit:
-# 9e1e62d changed only the adapter, no product file
+# 9e1e62d and the harness commits since changed no product file
 [[premise]]
 id = "digest"
 kind = "product_digest_same_as"
