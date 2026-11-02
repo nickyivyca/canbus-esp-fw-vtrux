@@ -11,6 +11,7 @@ runner (vtrux_bench.run).
     nested.py     a suite run as a nested record, and its re-run (A7)
     judge.py      comparisons, premises and the verdict (A10-A12)
     canfail.py    can-fails: mutants in trees of their own (A10)
+    close.py      the cleanup, then the record's close, once (A13, A14)
 
 It needs Python >= 3.11 and refuses to import on an older one: it runs on
 NICKY-XPS or madhouse, and WSL is a check host only (reviewer, 2026-11-01).
