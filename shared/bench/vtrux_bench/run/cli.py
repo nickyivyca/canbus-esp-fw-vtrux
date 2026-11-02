@@ -3,7 +3,7 @@
     python -m vtrux_bench.run plan    --suite <file.py>:<NAME> --settings <json>
     python -m vtrux_bench.run run     --suite ... --settings ... [--group G]...
                                       [--check GLOB]... [--resume RUN_DIR]
-                                      [--keep-lock PID]
+                                      [--keep-lock PID] [--record-settings JSON]
     python -m vtrux_bench.run compare <ref run dir> <new run dir>
 
 --suite names a Python file (or an importable module) and an attribute: a
@@ -65,6 +65,10 @@ def main(argv=None):
         if c == "run":
             p.add_argument("--resume")
             p.add_argument("--run-id")
+            p.add_argument("--record-settings", metavar="JSON",
+                           help="a masked copy of the settings, which the run's "
+                           "record holds in their place (the acceptance runner's "
+                           "nested runs, ACCEPT-SPEC A6)")
             p.add_argument("--keep-lock", type=int, metavar="PID",
                            help="at the end, release the bench log's lock "
                            "and take it again for the suite's role, with no "
@@ -89,10 +93,12 @@ def main(argv=None):
     try:
         settings = load_settings(a.settings)
         suite = load_suite(a.suite, settings)
+        masked = getattr(a, "record_settings", None)
         eng = Engine(suite, settings, groups=a.group, checks=a.check,
                      resume=getattr(a, "resume", None),
                      run_id=getattr(a, "run_id", None),
-                     keep_lock=getattr(a, "keep_lock", None))
+                     keep_lock=getattr(a, "keep_lock", None),
+                     record_settings=load_settings(masked) if masked else None)
         if a.cmd == "plan":
             for ln in eng.plan_lines():
                 print(ln)

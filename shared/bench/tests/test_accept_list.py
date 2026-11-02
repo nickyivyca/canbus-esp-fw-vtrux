@@ -328,6 +328,24 @@ def test_selection():
             name="sel")
 
 
+def test_canfail_form():
+    """A10, A3: a can-fail's mutants are committed mutant text (from) or the
+    harness's own can-fail mode (mode), one of them; expect mode-passes goes
+    with mode and only with it."""
+    r = Repo()
+    m = 'mutants = {{ from = "proj/mutate.txt", ids = ["m1"] }}'
+    refused(r, edit(GOOD, m, 'mutants = {{ from = "proj/mutate.txt", mode = "--can-fail" }}'),
+            "cf", "one of them", name="f1")
+    refused(r, edit(GOOD, m, 'mutants = {{ ids = ["m1"] }}'), "cf", "one of them", name="f2")
+    refused(r, edit(GOOD, m, 'mutants = {{ mode = "--can-fail" }}'), "cf", "mode-passes",
+            name="f3")
+    refused(r, edit(GOOD, 'expect = "new-fail-line"', 'expect = "mode-passes"'), "cf",
+            "mode-passes", name="f4")
+    L.load(r.path, r.list_at(edit(edit(GOOD, m, 'mutants = {{ mode = "--can-fail" }}'),
+                                  'expect = "new-fail-line"', 'expect = "mode-passes"'),
+                             "ok")[0], FA)
+
+
 def test_ids():
     """A3: item ids are unique across the list and safe in paths."""
     r = Repo()
@@ -338,7 +356,7 @@ def test_ids():
 
 TESTS = [test_reads_committed, test_refuses_uncommitted, test_unknown_keys, test_required,
          test_committed_command, test_exact_commits, test_references, test_adapter_names,
-         test_project, test_selection, test_ids]
+         test_project, test_selection, test_canfail_form, test_ids]
 
 # Each mutant: one listfile.RULES entry switched off, and the test that must
 # then fail. Every rule has one.
@@ -357,6 +375,7 @@ MUTANTS = [
     ("selector_only", test_selection),
     ("empty_selector", test_selection),
     ("unique_ids", test_ids),
+    ("canfail_form", test_canfail_form),
 ]
 
 

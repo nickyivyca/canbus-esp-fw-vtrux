@@ -32,12 +32,18 @@ taken for the owner), the host and the platform.
                        read-only entry is made writable (on POSIX its folder
                        too) and tried again, then once more after 0.2 s; a
                        \\\\?\\ path on Windows, so a path past 260 characters
-                       is no obstacle; a link or junction is removed as a
+                       is no obstacle; the whole folder is tried again after
+                       waits of 0.05 s doubling to 1.6 s (about 3 s), for a
+                       Windows hold on a fresh folder; a link or junction is removed as a
                        link, never followed. Never ignore_errors: what it
                        cannot remove is returned as [(path, reason)] and
                        printed as LEFTOVER lines.
-  state(path)          live | finished | no-owner | other-host; unsure is
-                       live. Only a finished folder is ever pruned.
+  keep(path, why)      marks a folder kept (a failed run kept for
+                       inspection): never pruned, never removed by Made;
+                       taking it out is a person's call (gen-inhibit's
+                       reviewer, 2026-11-01).
+  state(path)          kept | live | finished | no-owner | other-host;
+                       unsure is live. Only a finished folder is ever pruned.
 
 Tests: tests/test_scratch_helper.py (with --can-fail).
 """
@@ -55,6 +61,11 @@ import sys
 import time
 
 OWNER_SUFFIX = ".owner.json"
+# remove() tries a folder's whole tree again after each of these waits, about
+# 3 s in all, as tests/_scratch.py does (gen-inhibit tester, 2026-11-01): a
+# Windows hold on a fresh folder (WinError 32) can outlast the handler's own
+# 0.2 s retry
+BACKOFF = tuple(0.05 * 2 ** i for i in range(6))
 
 
 class ScratchError(RuntimeError):
@@ -161,11 +172,29 @@ def _write_owner(d):
     return True
 
 
+def keep(d, why):
+    """Mark d kept (a failed run kept for inspection, say): its owner file
+    says so, with why, and nothing in this module removes it again. Taking
+    it out is a person's call: remove() by hand."""
+    o = owner(d)
+    if not isinstance(o, dict):
+        raise ScratchError("%s has no owner file, so it is not this helper's to "
+                           "keep" % d)
+    o.update(keep=True, kept_why=why,
+             kept_at=datetime.datetime.now().isoformat(timespec="seconds"))
+    with open(owner_path(d), "w", encoding="utf-8", newline="\n") as f:
+        json.dump(o, f, sort_keys=True)
+        f.write("\n")
+
+
 def state(d):
-    """live | finished | no-owner | other-host. Unsure counts as live."""
+    """kept | live | finished | no-owner | other-host. Unsure counts as
+    live."""
     o = owner(d)
     if not isinstance(o, dict) or not isinstance(o.get("pid"), int):
         return "no-owner"
+    if o.get("keep"):
+        return "kept"
     if o.get("host") != socket.gethostname() or \
             o.get("platform", sys.platform) != sys.platform:
         return "other-host"
@@ -269,18 +298,24 @@ def remove(path, quiet=False, out=None):
         except OSError as e:
             failed.append((lp, e))
     elif os.path.isdir(lp):
-        # a second pass, after making writable what the first could not
-        # list or remove (a POSIX folder with no read permission)
-        for _ in range(2):
-            failed = []
-            try:
-                _rmtree(lp, _handler(failed))
-            except OSError as e:
-                failed.append((lp, e))
-            if not os.path.lexists(lp) or not failed:
+        # the whole tree again after each wait, for a hold that outlasts the
+        # handler's own retry (Windows Search or Defender on a fresh folder)
+        for wait in (0,) + BACKOFF:
+            time.sleep(wait)
+            # a second pass, after making writable what the first could not
+            # list or remove (a POSIX folder with no read permission)
+            for _ in range(2):
+                failed = []
+                try:
+                    _rmtree(lp, _handler(failed))
+                except OSError as e:
+                    failed.append((lp, e))
+                if not os.path.lexists(lp) or not failed:
+                    break
+                for p, _e in failed:
+                    _writable(p)
+            if not os.path.lexists(lp):
                 break
-            for p, _e in failed:
-                _writable(p)
     else:
         _writable(lp)
         try:
@@ -365,10 +400,12 @@ def run(parent, name):
 class Made:
     """The folders one run made. remove_all() in the run's finally; the exit
     handler calls it again on any other way out (sys.exit, an uncaught
-    exception), in the process that made it only."""
+    exception), in the process that made it only. A folder marked with
+    keep() is left, and listed in .kept."""
 
     def __init__(self):
         self.paths = []
+        self.kept = []
         self._pid = os.getpid()
         atexit.register(self.remove_all)
 
@@ -377,12 +414,17 @@ class Made:
         return path
 
     def remove_all(self, out=None):
-        """Remove every folder, the newest first. Returns the LEFTOVER
-        (path, reason) pairs; what is left stays listed."""
+        """Remove every folder but the kept ones, the newest first. Returns
+        the LEFTOVER (path, reason) pairs; what is left stays listed."""
         if os.getpid() != self._pid:
             return []
         left = []
         for p in reversed(self.paths):
+            if state(p) == "kept":
+                if p not in self.kept:
+                    self.kept.append(p)
+                continue
             left += remove(p, out=out)
-        self.paths = [p for p in self.paths if os.path.lexists(long_path(p))]
+        self.paths = [p for p in self.paths
+                      if p not in self.kept and os.path.lexists(long_path(p))]
         return left

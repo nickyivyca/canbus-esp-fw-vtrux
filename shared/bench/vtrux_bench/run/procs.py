@@ -48,9 +48,10 @@ def kill_tree(proc):
 
 
 def run_local(argv, cwd, env, timeout_s, log_path, throttled=False,
-              stop_check=None):
+              stop_check=None, base_env=None):
     """Run argv; stdout and stderr to log_path. Returns (rc, timed_out).
-    rc is None if killed. stop_check() returning True kills it early."""
+    rc is None if killed. stop_check() returning True kills it early.
+    The environment is base_env (default this process's), then env."""
     kw = {}
     if WIN:
         flags = CREATE_NEW_PROCESS_GROUP
@@ -61,7 +62,7 @@ def run_local(argv, cwd, env, timeout_s, log_path, throttled=False,
         kw["start_new_session"] = True
         if throttled:
             kw["preexec_fn"] = lambda: os.nice(19)
-    full_env = dict(os.environ)
+    full_env = dict(os.environ if base_env is None else base_env)
     full_env.update(env or {})
     if throttled:
         full_env.update(THROTTLE_ENV)

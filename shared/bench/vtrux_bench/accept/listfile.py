@@ -23,7 +23,9 @@ bytes.
     [[compare]]     id, comparer (the adapter's), a, b (item ids, or
                     "baseline:<id>"), expect, tolerance, differences, mask
     [[canfail]]     id, target, control (checks), mutants = {from = <committed
-                    file in the target's tree>, ids, mode}, expect
+                    mutant file in the target's tree>, ids} or {mode = <the
+                    harness's own can-fail argument>}, expect (fails,
+                    verdict-flips, new-fail-line; mode-passes with mode)
     [[premise]]     id, kind, tree, commit, value, board, expect, items
     [[hand]]        id, text, boards, after
 
@@ -39,7 +41,8 @@ Which harness tests a step runs is the list's selector over the adapter's
 committed catalogue, and only that (A8): the runner adds and drops none.
 
 The adapter (A15) gives: PROJECT, TARGETS {name: {"options": [...]}}, SHELLS,
-default_shell(path), JUDGES, COMPARERS, SUITES {name: "<path>:<attr>"},
+default_shell(path), JUDGES, COMPARERS (its own, beside the core's
+run-records and transcript), SUITES {name: "<path>:<attr>"},
 catalogue(repo, commit) -> [entry] and shared_pins(repo, commit) ->
 {component: commit or tag}.
 
@@ -60,7 +63,7 @@ from ..run.model import ID_RE, Verdict
 RULES = {k: True for k in (
     "full_commit", "list_sha256", "committed_only", "unknown_keys", "required",
     "committed_files", "shared_at_tree", "exact_commit", "refs", "adapter_names",
-    "project", "selector_only", "empty_selector", "unique_ids")}
+    "project", "selector_only", "empty_selector", "unique_ids", "canfail_form")}
 
 HEX = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
@@ -91,7 +94,7 @@ SCHEMA = {
                 "mask": (LIST, False)},
     "canfail": {"id": (STR, True), "target": (STR, True), "control": (STR, False),
                 "mutants": ("a table", True), "expect": (STR, True)},
-    "mutants": {"from": (STR, True), "ids": (LIST, False), "mode": (STR, False)},
+    "mutants": {"from": (STR, False), "ids": (LIST, False), "mode": (STR, False)},
     "premise": {"id": (STR, True), "kind": (STR, True), "tree": (STR, False),
                 "commit": (STR, False), "value": (STR, False), "board": (STR, False),
                 "expect": (STR, False), "items": (LIST, False)},
@@ -107,8 +110,10 @@ TOP = {"step": ("table", "step"), "trees": ("tables", "tree"),
        "hand": ("array", "hand")}
 CLS = ("light", "build", "wallclock")
 COMPARE_EXPECT = ("identical", "same-verdicts", "within", "listed")
-CANFAIL_EXPECT = ("new-fail-line", "verdict-flips", "fails")
+CANFAIL_EXPECT = ("new-fail-line", "verdict-flips", "fails", "mode-passes")
 PREMISES = ("product_digest_equal", "product_digest_same_as", "board_read")
+# the core's comparers (judge.py), which a list may name beside the adapter's
+BUILTIN_COMPARERS = ("run-records", "transcript")
 
 
 class ListError(Exception):
@@ -474,7 +479,8 @@ def load(repo, spec, adapter):
     for c in compares:
         where = "compare %s" % q(c.get("id"))
         if "comparer" in c:
-            adapter_name(where, "comparer", c["comparer"], adapter.COMPARERS)
+            adapter_name(where, "comparer", c["comparer"],
+                         set(adapter.COMPARERS) | set(BUILTIN_COMPARERS))
         if c.get("expect") not in COMPARE_EXPECT:
             errs.append("%s: expect %s is not one of %s" % (where, q(c.get("expect")),
                                                             ", ".join(COMPARE_EXPECT)))
@@ -496,6 +502,14 @@ def load(repo, spec, adapter):
         m = c.get("mutants")
         if isinstance(m, dict):
             _fields(where + " mutants", m, "mutants", errs)
+            if not RULES["canfail_form"]:
+                pass
+            elif ("from" in m) == ("mode" in m):
+                errs.append("%s: mutants gives from (committed mutant text) or mode (the "
+                            "harness's own can-fail mode), one of them" % where)
+            elif ("mode" in m) != (c.get("expect") == "mode-passes"):
+                errs.append("%s: expect mode-passes goes with mutants.mode, and only "
+                            "with it" % where)
             tgt = by_check.get(c.get("target"))
             if "from" in m and tgt is not None:
                 committed_file(where, trees.get(tgt["tree"]), m["from"])

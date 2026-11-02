@@ -109,37 +109,41 @@ def _overlay_working_copy(repo, dest):
 def make_trees(repo, alist, adapter, parent, made, say=print):
     """Make every tree of the list under parent. {name: {"dir", "project_dir",
     "shared_dirs" {component: dir}, "record"}}."""
-    out = {}
-    for name, t in sorted(alist.trees.items()):
-        if t.get("host", "local") != "local":
-            raise TreeError("tree %s is on host %s: remote trees are not built yet"
-                            % (name, t["host"]))
-        d = S.make(parent, "tree-" + name)
-        if RULES["made_tracked"]:
-            made.add(d)
-        if RULES["layout"]:
-            paths = adapter.tree_paths(name, t)
-        else:
-            paths = dict({"project": "p"}, **{c: "s-" + c for c in t["shared"]})
-        pd = os.path.join(d, paths["project"])
-        clone_at(repo, t["project"] if RULES["exact_checkout"] else "HEAD", pd)
-        check_tree(pd, t["project"])
-        if not RULES["from_objects"]:
-            _overlay_working_copy(repo, pd)
-        rec = {"project": checkout_record(repo, pd, t["project"]), "shared": {}}
-        shared_dirs = {}
-        for comp, c in sorted(t["shared"].items()):
-            sd = os.path.join(d, paths[comp])
-            clone_at(repo, c if RULES["shared_checkout"] else t["project"], sd)
-            check_tree(sd, c)
-            rec["shared"][comp] = checkout_record(repo, sd, c)
-            shared_dirs[comp] = sd
-        files = adapter.product_files(pd) if RULES["record_digest"] else list(rec["project"]["files"])
-        rec["product_digest"] = product_digest(pd, files)
-        rec["product_files"] = len(set(files))
-        out[name] = {"dir": d, "project_dir": pd, "shared_dirs": shared_dirs, "record": rec}
-        say("tree %s: project %s%s, product digest %s" % (
-            name, t["project"][:12], "".join(", %s %s" % (c, v[:12]) for c, v in
-                                             sorted(t["shared"].items())),
-            rec["product_digest"][:12]))
-    return out
+    return {name: make_tree(repo, name, t, adapter, parent, made, say)
+            for name, t in sorted(alist.trees.items())}
+
+
+def make_tree(repo, name, t, adapter, parent, made, say=print, prefix="tree-"):
+    """One tree, t as the list gives it (listfile: "project", "shared",
+    "host"), in a folder <prefix><name>-... of its own under parent."""
+    if t.get("host", "local") != "local":
+        raise TreeError("tree %s is on host %s: remote trees are not built yet"
+                        % (name, t["host"]))
+    d = S.make(parent, prefix + name)
+    if RULES["made_tracked"]:
+        made.add(d)
+    if RULES["layout"]:
+        paths = adapter.tree_paths(name, t)
+    else:
+        paths = dict({"project": "p"}, **{c: "s-" + c for c in t["shared"]})
+    pd = os.path.join(d, paths["project"])
+    clone_at(repo, t["project"] if RULES["exact_checkout"] else "HEAD", pd)
+    check_tree(pd, t["project"])
+    if not RULES["from_objects"]:
+        _overlay_working_copy(repo, pd)
+    rec = {"project": checkout_record(repo, pd, t["project"]), "shared": {}}
+    shared_dirs = {}
+    for comp, c in sorted(t["shared"].items()):
+        sd = os.path.join(d, paths[comp])
+        clone_at(repo, c if RULES["shared_checkout"] else t["project"], sd)
+        check_tree(sd, c)
+        rec["shared"][comp] = checkout_record(repo, sd, c)
+        shared_dirs[comp] = sd
+    files = adapter.product_files(pd) if RULES["record_digest"] else list(rec["project"]["files"])
+    rec["product_digest"] = product_digest(pd, files)
+    rec["product_files"] = len(set(files))
+    say("tree %s: project %s%s, product digest %s" % (
+        name, t["project"][:12], "".join(", %s %s" % (c, v[:12]) for c, v in
+                                         sorted(t["shared"].items())),
+        rec["product_digest"][:12]))
+    return {"dir": d, "project_dir": pd, "shared_dirs": shared_dirs, "record": rec}

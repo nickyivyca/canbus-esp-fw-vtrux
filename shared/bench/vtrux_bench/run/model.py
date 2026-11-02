@@ -128,6 +128,11 @@ class Check:
     judge    callable(CheckRun) -> Result or [Result]; returning nothing
              is an ERROR, never a PASS.
     tolerances  per figure name, for compare.
+    base_env the environment a local check starts from, in place of the
+             runner's own (None: the runner's own, as before); the host's
+             env and the check's env are laid over it. The acceptance runner
+             gives it, so a check never sees the operator's shell
+             (ACCEPT-SPEC A7).
     """
     id: str
     argv: List[str]
@@ -142,6 +147,7 @@ class Check:
     tolerances: Dict[str, Tol] = dataclasses.field(default_factory=dict)
     skip: Optional[str] = None
     note: str = ""
+    base_env: Optional[Dict[str, str]] = None
 
 
 @dataclasses.dataclass

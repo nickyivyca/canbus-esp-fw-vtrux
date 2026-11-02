@@ -1393,6 +1393,71 @@ def test_skip():
     assert not os.path.exists(marker), "a skipped check ran"
 
 
+def test_base_env():
+    """A local check with base_env starts from that environment, not the
+    runner's own: a variable only in the runner's environment does not reach
+    it, base_env's and env's do. A check without base_env inherits the
+    runner's environment as before (ACCEPT-SPEC A7: an acceptance check's
+    environment is never the operator's shell)."""
+    env = Env("base_env")
+    os.environ["VTRUX_OPERATOR_ONLY"] = "1"
+    try:
+        base = {k: os.environ[k] for k in ("SYSTEMROOT", "PATH", "TEMP", "TMP")
+                if k in os.environ}
+        base["FROM_BASE"] = "b"
+        clean = ("import os, sys; sys.exit(0 if 'VTRUX_OPERATOR_ONLY' not in os.environ "
+                 "and os.environ.get('FROM_BASE') == 'b' and "
+                 "os.environ.get('FROM_ENV') == 'e' else 3)")
+        inherits = ("import os, sys; sys.exit(0 if os.environ.get('VTRUX_OPERATOR_ONLY') "
+                    "== '1' else 3)")
+        s = suite([Group("g", [chk("clean", clean, base_env=base, env={"FROM_ENV": "e"}),
+                               chk("inherits", inherits)])])
+        eng, rec = run(env, s)
+    finally:
+        del os.environ["VTRUX_OPERATOR_ONLY"]
+    v = verdicts(rec)
+    assert v == {"g/clean": "PASS", "g/inherits": "PASS"}, v
+
+
+def test_record_settings():
+    """With record_settings (the command line's --record-settings FILE) the
+    run's record holds that -- a masked copy -- in place of the settings it
+    ran with, so no value of the real settings reaches record.json; without
+    it the settings are recorded as before (ACCEPT-SPEC A6: every record an
+    acceptance run writes holds the masked settings; reviewer, 2026-11-01)."""
+    from vtrux_bench.run import cli
+    env = Env("record_settings")
+    secret = "02:00:00:00:00:7e"
+    st = env.settings(bench_mac=secret)
+    masked = dict(st, bench_mac="<MAC>")
+    s = suite([Group("g", [chk("ok", "pass")])])
+    eng, rec = run(env, s, settings=st, record_settings=masked)
+    with open(os.path.join(eng.run_dir, "record.json"), encoding="utf-8") as f:
+        text = f.read()
+    assert secret not in text and rec["settings"]["bench_mac"] == "<MAC>", rec["settings"]
+    eng2, rec2 = run(env, s, settings=st)
+    assert rec2["settings"]["bench_mac"] == secret, "the default changed"
+    # the command line
+    sp, mp = os.path.join(env.root, "s.json"), os.path.join(env.root, "m.json")
+    for p, d in ((sp, st), (mp, masked)):
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(d, f)
+    suite_py = os.path.join(env.root, "suite_rs.py")
+    with open(suite_py, "w", encoding="utf-8") as f:
+        f.write("import sys\nfrom vtrux_bench.run.model import Check, Group, Suite\n"
+                "S = Suite(name='rs', role=%r, groups=[Group('g', [Check('ok', "
+                "['-c', 'pass'], python=True)])])\n" % ROLE)
+    before = set(os.listdir(env.runs))
+    rc = cli.main(["run", "--suite", suite_py + ":S", "--settings", sp,
+                   "--record-settings", mp])
+    assert rc == 0, rc
+    new = [d for d in os.listdir(env.runs) if d not in before]
+    assert len(new) == 1, new
+    with open(os.path.join(env.runs, new[0], "record.json"), encoding="utf-8") as f:
+        text = f.read()
+    assert secret not in text and "<MAC>" in text, "the command line recorded the real settings"
+
+
 def test_timeout():
     """Past its timeout a check is killed, child processes included: ERROR."""
     env = Env("timeout")
@@ -2257,7 +2322,8 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_digest_in_scratch, test_digest_hard_files_removed,
          test_digest_unremovable_printed,
          test_resume_code,
-         test_redact_scope, test_gate, test_skip, test_timeout,
+         test_redact_scope, test_gate, test_skip, test_base_env, test_record_settings,
+         test_timeout,
          test_resume, test_carry_finished, test_carry_check_end, test_compare,
          test_esptool_flasher,
          test_remote_command,
@@ -2360,6 +2426,8 @@ MUTANTS = {
     "test_redact_scope": _rule("redact_scope"),
     "test_gate": _rule("gate"),
     "test_skip": _rule("skip"),
+    "test_base_env": _rule("base_env"),
+    "test_record_settings": _rule("record_settings"),
     "test_timeout": _rule("timeout"),
     "test_resume": _patch(E.Engine, "_carried", lambda self: {}),
     "test_carry_finished": _rule("carry_finished"),
