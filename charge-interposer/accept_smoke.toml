@@ -1,0 +1,39 @@
+# The acceptance runner's SMOKE LIST: a fixture of the adapter's tests, not
+# an acceptance list (acceptance lists are the reviewer's, under acceptance/,
+# ACCEPT-SPEC A2). A --dev run of it proves the whole path end to end -- a
+# local tree and a madhouse tree, their setup, a few light harness checks,
+# a premise, the close and the cleanup -- with nothing wall-clock, no bench,
+# no builds and no lock (the charge-interposer reviewer, 2026-11-02). Its
+# records go to interposer-firmware/dev-runs/, never runs/, and are never
+# evidence.
+
+[step]
+id = "smoke"
+project = "charge-interposer"
+ordered_by = "charge-interposer reviewer"
+ordered_on = "2026-11-02"
+spec = ["none: a smoke run of the acceptance runner"]
+verification = "none (a --dev smoke run is never evidence)"
+
+[trees.local]
+project = "5169ea877cca77422831196bc3ceeb8e97661e94"
+
+[trees.madhouse]
+project = "5169ea877cca77422831196bc3ceeb8e97661e94"
+host = "madhouse"
+
+[[set]]
+id = "harness"
+tree = "local"
+select = ["id:paths-test", "id:build-lookup-offline-test"]
+
+[[set]]
+id = "mad"
+tree = "madhouse"
+select = ["id:host-unit"]
+
+[[premise]]
+id = "digest"
+kind = "product_digest_same_as"
+tree = "local"
+commit = "5169ea877cca77422831196bc3ceeb8e97661e94"
