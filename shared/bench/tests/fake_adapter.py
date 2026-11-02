@@ -44,6 +44,16 @@ def shell_argv(shell, settings):
 MACHINE_VARS = ("FAKE_MACHINE_DIR",)
 
 
+# what names a tree to the code run in it (A15): the environment of every
+# check run there, and the settings keys of a suite run there
+def tree_env(tree):
+    return {"FAKE_TREE": tree["project_dir"]}
+
+
+def tree_settings(tree):
+    return {"fake_tree": tree["project_dir"]}
+
+
 # the settings keys that depend on a build (A6), filled from the build records
 def settings_keys(builds, trees):
     if not (builds.get("fw") or {}).get("images"):      # none, failed or not run

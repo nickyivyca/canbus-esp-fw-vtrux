@@ -47,9 +47,12 @@ from vtrux_bench.run.model import Check, Group, Suite
 
 FLAKY = ("import os, sys; p = os.path.join(r'{flake_dir}', 'seen'); "
          "ok = os.path.exists(p); open(p, 'w').close(); sys.exit(0 if ok else 1)")
+TREE = ("import os, sys; sys.exit(0 if os.path.samefile(r'{fake_tree}', os.getcwd()) "
+        "else 1)")
 EMULATED = Suite(name="proj-emu", role="tester (test-suite)", groups=[
     Group("a", [Check("ok", ["-c", "pass"], python=True),
-                Check("flaky", ["-c", FLAKY], python=True)])])
+                Check("flaky", ["-c", FLAKY], python=True),
+                Check("tree", ["-c", TREE], python=True)])])
 '''
 
 LIST = '''
@@ -137,9 +140,11 @@ class Fixture:
         off = ",".join(k for k, v in NS.RULES.items() if not v)
         if off:
             base[OFF_ENV] = off
+        per_run = {"emu": ST.write_tree_settings(s, FA, "emu", trees["base"], self.rec,
+                                                 self.made, work)}
         suite = C.compile_suite(alist, trees, FA, s, base, paths={
             "settings": path, "masked": os.path.join(self.rec.path, "settings.masked.json"),
-            "record_id": self.rec.id})
+            "record_id": self.rec.id, "suite_runs": per_run})
         chk = suite.groups[0].checks[0]
         wrapper = os.path.join(self.dir, "nested_off.py")
         with open(wrapper, "w", encoding="utf-8") as f:
@@ -166,13 +171,18 @@ class Fixture:
 def test_nested_record():
     """A7: a suite run is a nested chain run with its own record inside the
     acceptance record (runs/<record id>-<suite run id>/), of the whole
-    suite; A6: that record holds the masked settings."""
+    suite, with settings of its own naming its tree (the adapter's
+    tree_settings: case a/tree passes only then); A6: that record holds
+    the masked settings, and so does the record's copy of them."""
     f = Fixture(rerun=False)
     text, rec = f.record(f.rid)
     assert MAC not in text and "<MAC>" in text, "the nested record holds the real settings"
     assert rec["subset"] is False, rec["subset"]
     v = {r["id"]: r["verdict"] for r in rec["results"]}
-    assert v == {"a/ok": "PASS", "a/flaky": "FAIL"}, v
+    assert v == {"a/ok": "PASS", "a/flaky": "FAIL", "a/tree": "PASS"}, v
+    with open(os.path.join(f.rec.path, "settings.emu.masked.json"), encoding="utf-8") as fh:
+        m = fh.read()
+    assert "fake_tree" in m and MAC not in m, m
     assert sorted(os.listdir(f.runs)) == [f.rid], os.listdir(f.runs)
 
 
@@ -182,7 +192,7 @@ def test_rerun_new_record():
     f = Fixture(rerun=True)
     _t, first = f.record(f.rid)
     ids = sorted(r["id"] for r in first["results"])
-    assert ids == ["a/flaky", "a/ok"], "the first record changed: %s" % ids
+    assert ids == ["a/flaky", "a/ok", "a/tree"], "the first record changed: %s" % ids
     _t2, second = f.record(f.rid + "-rerun")
     assert second["subset"] is True and second["subset_cases"] == ["a/flaky"], (
         second["subset"], second["subset_cases"])
@@ -207,10 +217,11 @@ def test_first_run_decides():
 TESTS = [test_nested_record, test_rerun_new_record, test_first_run_decides]
 
 MUTANTS = [
-    ("nested_masked", test_nested_record),
-    ("rerun_new_record", test_rerun_new_record),
-    ("rerun_only_flagged", test_rerun_new_record),
-    ("first_decides", test_first_run_decides),
+    (NS, "nested_masked", test_nested_record),
+    (NS, "rerun_new_record", test_rerun_new_record),
+    (NS, "rerun_only_flagged", test_rerun_new_record),
+    (NS, "first_decides", test_first_run_decides),
+    (ST, "tree_settings", test_nested_record),
 ]
 
 
@@ -239,17 +250,17 @@ def main(argv):
             print("REFUSED: the control fails (%s), so a mutant's failures would "
                   "mean nothing" % ", ".join(control))
             return 1
-        missing = sorted(set(NS.RULES) - {k for k, _t in MUTANTS})
+        missing = sorted(set(NS.RULES) - {k for m, k, _t in MUTANTS if m is NS})
         if missing:
             print("FAIL  rules with no mutant: %s" % ", ".join(missing))
             bad += 1
         caught = 0
-        for k, t in MUTANTS:
-            NS.RULES[k] = False
+        for mod, k, t in MUTANTS:
+            mod.RULES[k] = False
             try:
                 out = outcome_of(t)
             finally:
-                NS.RULES[k] = True
+                mod.RULES[k] = True
             print("%s  %-18s off: %-26s %s" % (
                 "ok  " if out else "FAIL", k, t.__name__,
                 ("fails (" + out[:110] + ")") if out else

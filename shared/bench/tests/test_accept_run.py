@@ -140,7 +140,7 @@ class Run:
     """Builds the repo and runs one acceptance through run.main()."""
 
     def __init__(self, flaky_passes=True, mutant="sum", premise_later=False, extra="",
-                 dirty_adapter=False):
+                 dirty_adapter=False, runner_dirty=False, dev=False):
         N[0] += 1
         self.dir = os.path.join(BASE, "r%d" % N[0])
         self.repo = os.path.join(self.dir, "repo")
@@ -179,13 +179,19 @@ class Run:
         real = R_.start
         R_.start = lambda runs, step, out=None, **kw: real(runs, step, out=out,
                                                            ceiling=self.dir, **kw)
+        # The runner these tests run is the working tree under development,
+        # so its identity is given here: a clean commit, or one with changes
+        # (test_runner_identity tests runner_identity() itself).
+        real_ident = RUN.runner_identity
+        RUN.runner_identity = lambda path=None: {"commit": "f" * 40, "dirty": runner_dirty}
         try:
             self.rc = RUN.main(["run", "--repo", self.repo, "--list",
                                 "%s:proj/acceptance/s1.toml" % self.c3,
                                 "--adapter", "proj/accept_adapter.py",
-                                "--settings", self.settings])
+                                "--settings", self.settings] + (["--dev"] if dev else []))
         finally:
             R_.start = real
+            RUN.runner_identity = real_ident
         recs = [d for d in os.listdir(self.runs) if d.startswith("accept_")]
         self.rec = os.path.join(self.runs, recs[0]) if recs else None
 
@@ -293,8 +299,54 @@ def test_stopped():
     assert r.scratch_left() == [], r.scratch_left()
 
 
+def test_dirty_runner_refused():
+    """A10, AGENTS.md (evidence is committed harness run from a named
+    commit; gen-inhibit's reviewer, 2026-11-01): a runner whose own tree has
+    uncommitted changes is refused, before any record is made."""
+    r = Run(runner_dirty=True)
+    assert r.rc == 2 and r.rec is None, (r.rc, r.rec)
+
+
+def test_dev_run():
+    """The same (gen-inhibit's reviewer, 2026-11-01): with --dev a runner
+    with changes runs, and its record's verdict reads "DEV RUN, not
+    evidence", never ACCEPTANCE PASS, in the README and the skeleton,
+    though every item is as expected; it exits 3, never 0."""
+    r = Run(runner_dirty=True, dev=True)
+    assert r.rc == 3, r.rc
+    text = r.read("README.md")
+    assert "DEV RUN, not evidence" in text and "ACCEPTANCE PASS" not in text, text[:1200]
+    sk = r.read("verification_skeleton.md")
+    assert sk.startswith("DEV RUN, not evidence") and "ACCEPTANCE PASS" not in sk, sk[:400]
+
+
+def test_runner_identity():
+    """runner_identity(path): the commit of the runner's tree, and whether
+    it has changes there -- a modified file or an untracked one; no git is
+    no commit, which is refused like changes."""
+    N[0] += 1
+    d = os.path.join(BASE, "ident%d" % N[0])
+    os.makedirs(os.path.join(d, "pkg"))
+    git(d, "init", "-q", "-b", "main")
+    git(d, "config", "user.name", "test")
+    git(d, "config", "user.email", "test@example.invalid")
+    write(d, "pkg/a.py", "x = 1\n")
+    git(d, "add", "-A")
+    git(d, "commit", "-q", "-m", "c")
+    pkg = os.path.join(d, "pkg")
+    i = RUN.runner_identity(pkg)
+    assert i == {"commit": git(d, "rev-parse", "HEAD"), "dirty": False}, i
+    write(d, "pkg/a.py", "x = 2\n")
+    assert RUN.runner_identity(pkg)["dirty"] is True, "a modified file is not a change"
+    git(d, "checkout", "--", "pkg/a.py")
+    write(d, "pkg/new.py", "y = 1\n")
+    assert RUN.runner_identity(pkg)["dirty"] is True, "an untracked file is not a change"
+    root = os.path.abspath(os.sep)                 # the drive's root: in no git repo
+    assert RUN.runner_identity(root)["commit"] is None, RUN.runner_identity(root)
+
+
 TESTS = [test_pass, test_adapter_committed, test_rerun_never_passes, test_premise_blocks,
-         test_stopped]
+         test_stopped, test_dirty_runner_refused, test_dev_run, test_runner_identity]
 
 MUTANTS = [
     ("adapter_from_commit", test_adapter_committed),
@@ -302,6 +354,9 @@ MUTANTS = [
     ("premise_skip_builds", test_premise_blocks),
     ("cleanup_finally", test_stopped),
     ("record_first", test_stopped),
+    ("refuse_dirty", test_dirty_runner_refused),
+    ("dev_never_pass", test_dev_run),
+    ("identity_untracked", test_runner_identity),
 ]
 
 

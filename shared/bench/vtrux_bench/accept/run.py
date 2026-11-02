@@ -23,7 +23,16 @@ and by the exit handler and the finally on any other way out. A run that
 stops before its close prints why and leaves the record open; it is never
 closed with a guess.
 
-Exit: 0 ACCEPTANCE PASS, 1 ACCEPTANCE FAIL, 2 refused or stopped.
+The runner's own tree must be clean at a commit (A10, AGENTS.md: evidence
+is committed harness run from a named commit; gen-inhibit's reviewer,
+2026-11-01), ideally a checkout of a tag, ../shared-<tag>: one with
+uncommitted changes, or in no git checkout, is refused before any record
+is made. --dev runs anyway, for work on the runner itself: its record's
+verdict reads "DEV RUN, not evidence", never ACCEPTANCE PASS, and so does
+its skeleton.
+
+Exit: 0 ACCEPTANCE PASS, 1 ACCEPTANCE FAIL, 2 refused or stopped, 3 a DEV
+RUN (never evidence).
 """
 
 import argparse
@@ -50,18 +59,45 @@ BENCH = C.BENCH
 # Each is switched off by a mutant in tests/test_accept_run.py, which must
 # then fail.
 RULES = {k: True for k in ("record_first", "adapter_from_commit", "premise_skip",
-                           "premise_skip_builds", "cleanup_finally")}
+                           "premise_skip_builds", "cleanup_finally", "refuse_dirty",
+                           "dev_never_pass", "identity_untracked")}
+
+DEV_LINE = "DEV RUN, not evidence"
 
 
-def runner_identity():
-    """The commit of the shared/bench this runner is, and whether its tree
-    has changes there."""
+def runner_identity(path=None):
+    """The commit of the runner's own tree (default this shared/bench), and
+    whether that folder has changes: a modified or an untracked file. No git
+    there gives no commit."""
+    path = path or BENCH
+
     def git(*a):
-        r = subprocess.run(["git", "-C", BENCH] + list(a), capture_output=True, text=True)
+        r = subprocess.run(["git", "-C", path] + list(a), capture_output=True, text=True)
         return r.stdout.strip() if r.returncode == 0 else None
-    return {"commit": git("rev-parse", "HEAD"),
-            "dirty": bool(git("status", "--porcelain", "--", ".")) if git("rev-parse", "HEAD")
-            else None}
+    head = git("rev-parse", "HEAD")
+    if head is None:
+        return {"commit": None, "dirty": None}
+    st = git("status", "--porcelain", "--untracked-files=%s"
+             % ("all" if RULES["identity_untracked"] else "no"), "--", ".")
+    return {"commit": head, "dirty": bool(st)}
+
+
+def runner_refusal(ident, dev):
+    """Why this runner may not give evidence, or None (A10, AGENTS.md: a
+    check an entry rests on is committed harness run from a named commit;
+    gen-inhibit's reviewer, 2026-11-01). --dev runs anyway, as a DEV RUN."""
+    if dev or not RULES["refuse_dirty"]:
+        return None
+    if ident["commit"] is None:
+        return ("the runner is in no git checkout, so no commit names it: run it from a "
+                "clean checkout of a tag (../shared-<tag>), or pass --dev for a run that "
+                "is not evidence")
+    if ident["dirty"]:
+        return ("the runner's own tree (%s) has uncommitted changes at %s: evidence is "
+                "committed harness run from a named commit (A10, AGENTS.md); run it from "
+                "a clean checkout of a tag (../shared-<tag>), or pass --dev for a run "
+                "that is not evidence" % (BENCH, ident["commit"][:12]))
+    return None
 
 
 class AcceptError(Exception):
@@ -101,9 +137,13 @@ def _side(name, alist, chain, runs_root, nested):
             "record": {"results": [r for r in chain["results"] if r["group"] == g]}}
 
 
-def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None):
+def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None, dev=False):
     """The whole acceptance. (exit code, record or None)."""
     say0 = out or (lambda s: print(s, flush=True))
+    ident = runner_identity()
+    why = runner_refusal(ident, dev)
+    if why:
+        raise AcceptError(why)
     with open(settings_path, encoding="utf-8") as f:
         machine = json.load(f)
     commit, path, raw = L.read_list(repo, spec)
@@ -138,9 +178,12 @@ def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None):
                               trees=trees, skip=skip)
         spath, s = ST.write_settings(settings_path, adapter, builds, trees, rec, made, parent)
         entries = CF.prepare(repo, alist, trees, adapter, parent, made, rec.say)
+        per_run = {r_["id"]: ST.write_tree_settings(s, adapter, r_["id"], trees[r_["tree"]],
+                                                    rec, made, parent)
+                   for r_ in alist.suite_runs}
         suite = C.compile_suite(alist, trees, adapter, s, base_env, paths={
             "settings": spath, "masked": os.path.join(rec.path, "settings.masked.json"),
-            "record_id": rec.id}, mutants=entries)
+            "record_id": rec.id, "suite_runs": per_run}, mutants=entries)
         for g in suite.groups if RULES["premise_skip"] else []:
             if g.note in blocked or any(e["canfail"] in blocked and g.name.startswith(
                     C.group_name("cf-%s-" % e["canfail"])) for e in entries):
@@ -174,16 +217,23 @@ def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None):
                                 "; ".join(res["counted"][:3])))
         items += CF.items(alist, entries, chain)
         v = J.verdict(items, prem)
+        if dev and RULES["dev_never_pass"]:
+            v["pass"] = False
+            v["lines"][0] = "%s (the runner: %s%s; the items alone would give %s)" % (
+                DEV_LINE, (ident["commit"] or "no commit")[:12],
+                ", with changes" if ident["dirty"] else "",
+                "a pass" if v["lines"][0].endswith("PASS") else "a fail")
         summary = {"step": alist.step,
                    "list": {"commit": alist.commit, "path": alist.path, "sha256": alist.sha256},
-                   "runner": runner_identity(),
+                   "runner": ident, "dev": dev,
                    "trees": {n: t["record"] for n, t in trees.items()},
                    "builds": builds, "compares": compares, "premises": prem,
                    "reruns": {k: n["flagged"] for k, n in nested.items()},
                    "verdict": v, "earlier": earlier}
         res = CL.close(rec, summary, made, adapter)
         closed = True
-        return (0 if v["pass"] else 1), {"record": rec.path, "verdict": v, "close": res}
+        rc = 3 if dev else (0 if v["pass"] else 1)
+        return rc, {"record": rec.path, "verdict": v, "close": res}
     except Exception as e:
         if not closed:
             rec.say("STOPPED before the close: %s: %s" % (type(e).__name__, e))
@@ -211,9 +261,12 @@ def main(argv=None):
     p.add_argument("--adapter", required=True)
     p.add_argument("--settings", required=True)
     p.add_argument("--earlier")
+    p.add_argument("--dev", action="store_true",
+                   help="run from a runner tree with changes: the record's verdict "
+                   "reads DEV RUN, not evidence, never ACCEPTANCE PASS (exit 3)")
     a = ap.parse_args(argv)
     try:
-        rc, _info = run(a.repo, a.list, a.adapter, a.settings, a.earlier)
+        rc, _info = run(a.repo, a.list, a.adapter, a.settings, a.earlier, dev=a.dev)
     except (AcceptError, L.ListError, R.RecordError, T.TreeError, CF.CanfailError,
             ST.SettingsError, CL.CloseError, S.ScratchError) as e:
         print("REFUSED: %s" % e, file=sys.stderr)

@@ -20,7 +20,9 @@ The environment (A7): a check starts from machine_env(), the variables a
 machine needs (the operating system's own, and the adapter's MACHINE_VARS,
 the ones AGENTS.md and local-paths.md name), never the operator's shell
 (the chain runner's Check.base_env); the list's or the catalogue's env is
-laid over it.
+laid over it, and over that the adapter's tree_env(tree), which names the
+check's own tree to the code run in it (A15; the interposer's
+INTERPOSER_CODE). A suite run and a mutant run get theirs the same way.
 
 The chain run's record goes inside the acceptance record, in chain/, and
 holds the masked settings, not the ones the run used (A6; the chain
@@ -37,7 +39,7 @@ from ..run.model import Check, Group, Suite, exit_code_judge
 
 RULES = {k: True for k in ("base_env", "list_env", "machine_vars", "after",
                            "shared_path", "cwd_tree", "chain_in_record",
-                           "masked_record")}
+                           "masked_record", "tree_env")}
 
 # what the operating system needs to start a program, nothing of a person's
 OS_VARS_NT = ("SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT", "PATH",
@@ -65,6 +67,13 @@ def machine_env(adapter, environ=None):
     return {k: environ[k] for k in names if k in environ}
 
 
+def tree_env(adapter, tree):
+    """What names the tree to the code run in it: the adapter's
+    tree_env(tree), laid over the list's env (A15)."""
+    fn = getattr(adapter, "tree_env", None)
+    return dict(fn(tree)) if fn is not None and RULES["tree_env"] else {}
+
+
 def group_name(item_id):
     """A list id as a chain group name (no "@")."""
     return item_id.replace("@", "__")
@@ -88,10 +97,12 @@ def suite_run_check(r, tree, adapter, settings, base_env, paths):
     """The chain check that runs a [[suite_run]] as a nested run
     (nested.py), with this runner's own shared/bench on its path."""
     file, attr = adapter.SUITES[r["suite"]].rsplit(":", 1)
+    sp, mp = (paths.get("suite_runs") or {}).get(r["id"]) or (paths["settings"],
+                                                              paths["masked"])
     argv = (list(adapter.shell_argv("python", settings))
             + ["-m", "vtrux_bench.accept.nested",
                "--suite", "%s:%s" % (resolve_path(tree, file), attr),
-               "--settings", paths["settings"], "--record-settings", paths["masked"],
+               "--settings", sp, "--record-settings", mp,
                "--run-id", "%s-%s" % (paths["record_id"], r["id"]), "--out", "{outdir}"])
     if r.get("rerun_flagged"):
         argv.append("--rerun-flagged")
@@ -100,7 +111,7 @@ def suite_run_check(r, tree, adapter, settings, base_env, paths):
     for c in r.get("checks") or []:
         argv += ["--check", c]
     return Check(id="run", argv=argv, cwd=tree["project_dir"],
-                 env={"PYTHONPATH": BENCH}, timeout_s=48 * 3600.0,
+                 env=dict(tree_env(adapter, tree), PYTHONPATH=BENCH), timeout_s=48 * 3600.0,
                  base_env=dict(base_env), note="suite run %s" % r["id"])
 
 
@@ -109,7 +120,9 @@ def compile_suite(alist, trees, adapter, settings, base_env, name=None, paths=No
     """One chain Suite holding every check, suite run and can-fail mutant
     run of the list. paths (needed for suite runs): {"settings": the run's
     settings file, "masked": its masked copy, "record_id": the acceptance
-    record's id}. mutants: canfail.prepare()'s entries."""
+    record's id, "suite_runs": {suite run id: (its own settings, their
+    masked copy)} from settings.write_tree_settings}. mutants:
+    canfail.prepare()'s entries."""
     groups = []
     gnames = {group_name(c["id"]) for c in alist.checks} | \
         {group_name(r["id"]) for r in alist.suite_runs}
@@ -119,9 +132,11 @@ def compile_suite(alist, trees, adapter, settings, base_env, name=None, paths=No
                 + [resolve_path(tree, c["run"][0])] + list(c["run"][1:]))
         judge = adapter.judge(c["judge"]) if c.get("judge") else exit_code_judge
         after = [group_name(a) for a in c["after"] if group_name(a) in gnames]
+        env = dict(c["env"]) if RULES["list_env"] else {}
+        env.update(tree_env(adapter, tree))
         chk = Check(id="run", argv=argv,
                     cwd=tree["project_dir"] if RULES["cwd_tree"] else None,
-                    env=dict(c["env"]) if RULES["list_env"] else {},
+                    env=env,
                     timeout_s=float(c["timeout_s"]), cls=c["cls"], judge=judge,
                     base_env=dict(base_env), note=c["id"])
         groups.append(Group(name=group_name(c["id"]), checks=[chk], host=c["host"],

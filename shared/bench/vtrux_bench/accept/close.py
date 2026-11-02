@@ -15,7 +15,8 @@ close(rec, summary, made, adapter), once per record, in this order:
      comparisons, the can-fails, the premises, each flagged case's first
      and re-run verdicts, the identifier hits, the leftovers, the verdict.
   4. verification_skeleton.md: the facts for the VERIFICATION.md entry,
-     which the tester still writes.
+     which the tester still writes; a --dev run's opens "DEV RUN, not
+     evidence".
   5. the console stops, and SHA256SUMS goes over every other file. From
      here the folder never changes; a re-run is a new record naming this
      one (summary["earlier"]).
@@ -40,7 +41,7 @@ import os
 RULES = {k: True for k in (
     "readme_items", "readme_commits", "sums_all", "console_stops", "close_once",
     "scan_hits", "scan_absent", "cleanup_first", "leftovers_in", "late_outside", "row",
-    "skeleton_reruns")}
+    "skeleton_reruns", "dev_marked")}
 
 
 class CloseError(Exception):
@@ -135,8 +136,12 @@ def readme(rec, summary, hits, leftovers):
 def skeleton(rec, summary):
     s = summary
     st = s["step"]
-    L = ["Draft facts for the VERIFICATION.md entry of step %s -- the tester writes the "
-         "entry; nothing here is the entry." % st["id"], "",
+    L = []
+    if s.get("dev") and RULES["dev_marked"]:
+        L += ["DEV RUN, not evidence: the runner ran with --dev, so nothing here goes "
+              "into VERIFICATION.md (gen-inhibit's reviewer, 2026-11-01).", ""]
+    L += ["Draft facts for the VERIFICATION.md entry of step %s -- the tester writes the "
+          "entry; nothing here is the entry." % st["id"], "",
          "- section: %s; spec %s" % (st["verification"], ", ".join(st["spec"])),
          "- acceptance record: %s" % rec.id,
          "- list: %s at %s (sha256 %s)" % (s["list"]["path"], s["list"]["commit"],

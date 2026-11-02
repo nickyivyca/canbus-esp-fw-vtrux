@@ -44,6 +44,11 @@ FILES = {
     "proj/check_calc.py": (
         "import os, sys\n"
         "sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\n"
+        "here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))\n"
+        "t = os.environ.get('FAKE_TREE', '')\n"
+        "if not (t and os.path.samefile(t, here)):\n"
+        "    print('FAIL FAKE_TREE does not name my own tree')\n"
+        "    sys.exit(1)\n"
         "import calc\n"
         "got = calc.add(2, 2)\n"
         "if got != 4:\n"
@@ -230,7 +235,9 @@ def test_exact_once():
 
 def test_fails():
     """A10: "fails": every mutant must make the target check not PASS; a
-    mutant under which it still passes is named."""
+    mutant under which it still passes is named. A15: a mutant run is
+    named by its own tree (tree_env), never the target's: the check refuses
+    to pass otherwise, which would hide the surviving mutant."""
     f = Fixture('target = "calc"\nmutants = { from = "proj/mutants.toml", ids = ["sum"] }\n'
                 'expect = "fails"')
     it = f.run()
@@ -282,6 +289,7 @@ MUTANTS = [
     ("exact_once", test_exact_once),
     ("known_ids", test_exact_once),
     ("fails_all", test_fails),
+    ("tree_env", test_fails),
     ("flip_control", test_flips),
     ("new_line", test_new_fail_line),
     ("mode_arg", test_mode),
