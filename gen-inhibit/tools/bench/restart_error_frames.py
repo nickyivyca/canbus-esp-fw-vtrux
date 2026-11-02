@@ -196,7 +196,7 @@ def main():
     ap.add_argument("--crash-path", default=None, help="POST path of the test-only crash trigger")
     ap.add_argument("--trigger", default=None,
                     help="take the crash path from the firmware repo's trigger table (vtrux_checks.json inert_triggers), "
-                         "e.g. GI_TEST_RESTART_QUIESCE; the folder holding it is $GI_FW_REPO or this repo's gen-inhibit/firmware/")
+                         "e.g. RESTART_GUARD_TEST; the folder holding it is $GI_FW_REPO or this repo's gen-inhibit/firmware/")
     ap.add_argument("--page-keys", default="", help="extra /gen_inhibit fields recorded before and after")
     ap.add_argument("--record-get", default=None, help="a GET path whose JSON is recorded after the restart")
     a = ap.parse_args()

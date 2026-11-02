@@ -81,9 +81,9 @@
         }
       ]
     },
-    "GI_INSTRUMENT_TXABORT": {
+    "TWAI_PORT_TXABORT_PROBE": {
       "class": "test-only",
-      "reason": "TX-abort measurement build; writes the abort register from outside the driver and exposes /gi_txabort",
+      "reason": "TX-abort measurement build (twai_port T13, port step 1c); writes the abort register from outside the driver and exposes /gi_txabort. The project tests it to register the probe from its URI hook; vtrux/twai_port's own table lists it too",
       "refusal": [
         {
           "bin_strings_absent": [
@@ -93,7 +93,7 @@
         },
         {
           "elf_symbols_absent": [
-            "gi_txabort_register",
+            "twai_port_txabort_register",
             "txab_handler",
             "txab_uri"
           ]
@@ -130,9 +130,9 @@
         }
       ]
     },
-    "GI_TEST_RESTART_QUIESCE": {
+    "RESTART_GUARD_TEST": {
       "class": "test-only",
-      "reason": "restart test build (spec 12.4 'no error frames at a restart'): the crash trigger and the restart record",
+      "reason": "restart test build (spec 12.4 'no error frames at a restart'; restart_guard G5, port step 1c): the crash trigger and the restart record. The project tests it for the _rt name and to register the test from its URI hook; vtrux/restart_guard's own table lists it too",
       "refusal": [
         {
           "bin_strings_absent": [
@@ -143,9 +143,9 @@
         },
         {
           "elf_symbols_absent": [
-            "gi_restart_test_register",
-            "gi_restart_test_pre_install",
-            "gi_restart_record_get"
+            "restart_guard_test_register",
+            "restart_guard_test_pre_install",
+            "restart_guard_record_get"
           ]
         },
         {
@@ -173,9 +173,9 @@
       "kind": "library macro"
     }
   },
-  "stock_files_using_pins": ["main/gi_restart_test.c"],
+  "stock_files_using_pins": [],
   "inert_triggers": {
-    "GI_TEST_RESTART_QUIESCE": {
+    "RESTART_GUARD_TEST": {
       "probes": [
         [
           "POST",
@@ -193,7 +193,7 @@
         "http_status"
       ]
     },
-    "GI_INSTRUMENT_TXABORT": {
+    "TWAI_PORT_TXABORT_PROBE": {
       "probes": [
         [
           "POST",

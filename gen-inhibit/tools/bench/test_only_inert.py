@@ -15,11 +15,11 @@ The same code runs in both directions:
                      (the positive control, so a probe that reaches nothing can't pass).
 
 Probes, by the table's "observe":
-  reset          GI_TEST_RESTART_QUIESCE's POST: runs restart_error_frames.py --trigger
+  reset          RESTART_GUARD_TEST's POST (GI_TEST_RESTART_QUIESCE until port step 1c): runs restart_error_frames.py --trigger
                  --restart crash (live INHIBIT under replay, the request at 20 s), the
                  test run's own rig, and reads whether the device reset;
   http_status    each GET/POST in the table: the HTTP status (404 = no such endpoint);
-  tagged_frames  GI_INSTRUMENT_TXABORT: in mode 0 with the PCAN open as the ACKing node
+  tagged_frames  TWAI_PORT_TXABORT_PROBE (GI_INSTRUMENT_TXABORT until 1c): in mode 0 with the PCAN open as the ACKing node
                  and the Kvaser witnessing, POST the request and count frames whose
                  bytes 2-3 are AB 7E or AB 7F (the probe's trial tag) in the 3 s after;
   page_key:<k>   under a replay, arm mode 3 at 5 s, read /gen_inhibit at 12 s while

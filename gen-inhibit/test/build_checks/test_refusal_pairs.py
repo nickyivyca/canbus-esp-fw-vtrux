@@ -53,13 +53,15 @@ INSTR_ROWS = ("no measurement instrument in the image", "no instrument symbols i
 # switch -> (the check function, the rows it must fail, whether the detail must name the switch)
 ROWS = {
     "GI_INSTRUMENT_RXQ": (BO.check_no_instrument, INSTR_ROWS, True),
-    "GI_INSTRUMENT_TXABORT": (BO.check_no_instrument, INSTR_ROWS, True),
+    # port step 1c renamed the probe's and the restart test's switches (twai_port T13,
+    # restart_guard G5), which their components' tables list beside the project's
+    "TWAI_PORT_TXABORT_PROBE": (BO.check_no_instrument, INSTR_ROWS, True),
     "GI_INSTRUMENT_ABORTWIN": (BO.check_no_instrument, INSTR_ROWS, True),
     "OTA_HEALTH_FAULT_INJECT": (BO.check_not_rollback_rehearsal,
                                 ("no OTA fault injection in the image", "project name is not a rehearsal build"), False),
-    "GI_TEST_RESTART_QUIESCE": (BO.check_no_restart_test,
-                                ("no restart test feature in the image", "no restart test symbols in the ELF",
-                                 "project name is not a restart test build"), False),
+    "RESTART_GUARD_TEST": (BO.check_no_restart_test,
+                           ("no restart test feature in the image", "no restart test symbols in the ELF",
+                            "project name is not a restart test build"), False),
     # Stock features, off in this product (2026-10-16). The three with symbols and
     # strings name their switch in the detail, image and ELF; RealDash's row counts
     # the start-up's can_enable call sites, which any boot branch adds to, so its

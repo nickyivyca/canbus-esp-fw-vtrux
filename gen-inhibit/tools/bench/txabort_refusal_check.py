@@ -3,7 +3,8 @@
 
     py -3.11 gen-inhibit/tools/bench/txabort_refusal_check.py
 
-Needs the GI_INSTRUMENT_TXABORT measurement build on the device.
+Needs the TWAI_PORT_TXABORT_PROBE measurement build on the device (GI_INSTRUMENT_TXABORT
+until port step 1c moved the probe to vtrux/twai_port, T13).
 
 WHY THIS IS A SEPARATE SCRIPT FROM THE BENCH. The measurement's argument handling
 had a defect where the guard's bypass path was indistinguishable from the ordinary

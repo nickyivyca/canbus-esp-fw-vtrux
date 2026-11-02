@@ -58,7 +58,7 @@ for s in $STEPS; do
       py -3.14 -B $A/restart_error_frames.py --condition off --cycles 1 --restart reboot \
         --record-get /gi_quiesce --power "$PWR; image $C _man_rt" > "$D/B12_7_off_reboot.txt" 2>&1
       echo "B12 7 off reboot exit $?"
-      inert rt present --switch GI_TEST_RESTART_QUIESCE
+      inert rt present --switch RESTART_GUARD_TEST
       # The page as the rt step leaves it: mode, uptime, latch (reviewer, 2026-10-20).
       # Without rt_self's OTA the next step starts from this state, not a fresh boot.
       py -3.14 -B $A/page_state.py --label "B12 rt end" --out "$D/B12_rt_end_page.json"; echo "rt end page exit $?"
@@ -70,7 +70,7 @@ for s in $STEPS; do
       ;;
     txabort)
       ota txabort "$(img txabort)"
-      inert txabort present --switch GI_INSTRUMENT_TXABORT
+      inert txabort present --switch TWAI_PORT_TXABORT_PROBE
       py -3.14 -B $A/wican_txabort_bench.py --no-ixxat > "$D/B23_txabort_bench.txt" 2>&1; echo "B23 exit $?"
       ;;
     abortwin)
@@ -89,14 +89,14 @@ for s in $STEPS; do
       ;;
     prod)
       ota prod "$(img_in "$P" "")"
-      inert prod absent --switch GI_TEST_RESTART_QUIESCE --switch GI_INSTRUMENT_RXQ \
+      inert prod absent --switch RESTART_GUARD_TEST --switch GI_INSTRUMENT_RXQ \
         --switch GI_INSTRUMENT_ABORTWIN --switch OTA_HEALTH_FAULT_INJECT
-      inert prod_txabort absent --switch GI_INSTRUMENT_TXABORT
+      inert prod_txabort absent --switch TWAI_PORT_TXABORT_PROBE
       py -3.14 -B $A/spec11_page_check.py --image "$(img_in "$P" "")" --other "$(img rxq)" \
         --out "$D/B19_spec11_page_prod.json" > "$D/B19_spec11_page_prod.txt" 2>&1; echo "prod page exit $?"
       ;;
     prod_rxq30)   # RXQ again 30 s after the QUIESCE probe, on prod (reviewer, 2026-10-17; e3d9437 00:58)
-      py -3.14 -B $A/test_only_inert.py --expect absent --switch GI_TEST_RESTART_QUIESCE --switch GI_INSTRUMENT_RXQ \
+      py -3.14 -B $A/test_only_inert.py --expect absent --switch RESTART_GUARD_TEST --switch GI_INSTRUMENT_RXQ \
         --gap-s 30 --power "$PWR; image prod" > "$D/B19_absent_prod_rxq_gap30.txt" 2>&1
       echo "B19 absent prod rxq gap30 exit $?"; tail -3 "$D/B19_absent_prod_rxq_gap30.txt"
       ;;

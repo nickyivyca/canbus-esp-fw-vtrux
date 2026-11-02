@@ -26,7 +26,7 @@ import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 
 FW = os.environ.get("GI_FW") or gi_paths.project_root()   # a project folder (gen-inhibit/ since port step 0d)
 PAIRS = os.path.join(FW, "test", "build_checks", "test_refusal_pairs.py")
-ON = {"GI_TEST_RESTART_QUIESCE": "rt", "GI_INSTRUMENT_RXQ": "rxq", "GI_INSTRUMENT_TXABORT": "txabort",
+ON = {"RESTART_GUARD_TEST": "rt", "GI_INSTRUMENT_RXQ": "rxq", "TWAI_PORT_TXABORT_PROBE": "txabort",
       "GI_INSTRUMENT_ABORTWIN": "abortwin", "OTA_HEALTH_FAULT_INJECT": "flt", "WICAN_FEATURE_MQTT": "fmqtt",
       "WICAN_FEATURE_ELM327": "felm", "WICAN_FEATURE_AUTOPID": "fautopid", "WICAN_FEATURE_REALDASH": "frealdash",
       "WICAN_SLCAN_COMMANDS": "fslcan"}     # vtrux/wican's table's (known anomaly 8, 2026-10-30)

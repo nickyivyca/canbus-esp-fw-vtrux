@@ -142,8 +142,7 @@ def checks(B, nm):
         B.check_not_rollback_rehearsal(img)
         got = verdict(B, ROW)
         check("fault row, %s: %s" % (label, want), got == want, got)
-    for label, words, want in (("a restart symbol defined", ["gi_restart_test_register", "app_main"], "FAIL"),
-                               ("no restart symbol", ["app_main"], "ok"),
+    for label, words, want in (("a restart symbol defined", ["restart_guard_test_register", "app_main"], "FAIL"),                               ("no restart symbol", ["app_main"], "ok"),
                                ("no ELF beside the image", None, "NO REF"),
                                ("nm lists nothing", [], "NO REF")):
         img = write_pair(pairs, words)
