@@ -28,11 +28,24 @@ first, for port step 2a). This first cut gives:
   artifacts_row      the record's row at the top of the runs/ rows of the
                      artifacts README beside the runs folder
                      (projects/vtrux/notes/artifacts/interposer-firmware/)
-Not yet: build targets (the PlatformIO envs now; ESP-IDF from port step 2a,
-whose build commands the 2a build message gives), comparers (port step 0's
-masked check logs and judged sim lines), settings keys from builds, shared
-pins (this branch carries its own shared/ until its first re-pin), and the
-madhouse lane (remote trees in the core).
+  COMPARERS          port step 0's comparison (reverse-it's one-off
+                     port0_compare.py, 2026-10-26), committed (A10):
+                     masked-log  two check logs line by line, with paths,
+                                 run ids, clock times, durations and
+                                 timestamps masked and the runner's echo
+                                 lines dropped
+                     sim-judged  a sim's judged and state lines aligned by
+                                 shape: the same line with other numbers is
+                                 a figure difference with both sides'
+                                 numbers, a line on one side only a text one
+                     run-logs    two runs case by case: verdicts, cases in
+                                 one run only, sims (m-sims/) by sim-judged,
+                                 the rest by masked-log; a carried result's
+                                 log is read from the run it came from
+Not yet: build targets (ESP-IDF from port step 2a, whose build commands the
+2a build message gives; the reviewer, 2026-11-01: wait for it), settings
+keys from builds, shared pins (this branch carries its own shared/ until
+its first re-pin), and the madhouse lane (remote trees in the core).
 
 Tests: accept_adapter_test.py (with --can-fail), run against the core named
 by ACCEPT_CORE.
@@ -54,7 +67,7 @@ SHELLS = ("python", "git-bash", "powershell")
 MACHINE_VARS = ("REVERSE_IT_DIR", "CAN_TOOLS_DIR", "VTRUX_PUBLIC_REPO")
 JUDGES = ("script", "recorded", "c12", "host-bridge", "corrupt-pin", "scenario")
 TARGETS = {}
-COMPARERS = ()
+COMPARERS = ("masked-log", "sim-judged", "run-logs")
 # the folder names the runner's scratch helper gives trees, builds and mutants
 MASKS = {"tree-root": r"(?:tree|build|mutant)-[\w.-]+?-\d+-[0-9a-f]{6}"}
 
@@ -156,6 +169,128 @@ def catalogue(repo, commit):
         path = argv[0].replace("{interposer_code}/", "charge-interposer/")
         out.append(_entry(cid, path, argv[1:], ["harness", "harness-local"]))
     return out
+
+
+# ---- comparers (A10) --------------------------------------------------------
+import json  # noqa: E402
+import re  # noqa: E402
+
+JUDGED = re.compile(r"^\s*\[(PASS|FAIL|KNOWN-FAIL|WARN|SKIP|NOT-RUN)\]\s")
+EVENT = re.compile(r"^\s*\[([A-Z_]+)\]\s")
+NUM = re.compile(r"-?\d+(?:\.\d+)?")
+# timestamps before clock times, so a timestamp is masked whole
+NOISE = [
+    (re.compile(r"\d{4}-\d\d-\d\dT[\d:.+-]+"), "<ts>"),
+    (re.compile(r"/tmp/\S+"), "<tmp>"),
+    (re.compile(r"charge-interposer-(?:emulated|bench|harness)_\d{8}T\d{6}_[0-9a-f]{4}"), "<run>"),
+    (re.compile(r"\b\d\d:\d\d:\d\d\b"), "<hh:mm:ss>"),
+]
+FULL_NOISE = NOISE + [
+    (re.compile(r"/home/\S+|[A-Za-z]:[/\\]\S+|\S*seadrive_root\S*"), "<path>"),
+    (re.compile(r"\b\d+(?:\.\d+)?\s*(?:s|ms|sec|seconds)\b"), "<dur>"),
+]
+
+
+def _masked(s, noise):
+    for rx, rep in noise:
+        s = rx.sub(rep, s)
+    return s
+
+
+def _full_lines(path):
+    """Every line of a check log but the runner's echo lines, masked; None
+    if there is no log."""
+    if not path or not os.path.exists(path):
+        return None
+    out = []
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if line.startswith(("$ ", "# cwd=")):
+                continue
+            out.append(_masked(line.rstrip(), FULL_NOISE))
+    return out
+
+
+def _judged(path):
+    """[(shape, numbers, raw)] of a log's judged and state lines."""
+    if not path or not os.path.exists(path):
+        return None
+    lines = []
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if not (JUDGED.match(line) or EVENT.match(line)):
+                continue
+            if "bench premise" in line or "process priority" in line:
+                continue
+            lines.append((_masked(line.strip(), NOISE), line.strip()))
+    return [(NUM.sub("#", s), NUM.findall(s), raw) for s, raw in lines]
+
+
+def _masked_log_diffs(pa, pb, prefix=""):
+    import difflib
+    a, b = _full_lines(pa), _full_lines(pb)
+    if a is None or b is None:
+        return [{"kind": "text", "line": "%slog missing in %s" % (prefix, "a" if a is None else "b")}]
+    return [{"kind": "text", "line": prefix + x}
+            for x in difflib.unified_diff(a, b, lineterm="", n=0)
+            if x[:1] in "+-" and not x.startswith(("+++", "---"))]
+
+
+def _sim_diffs(pa, pb, prefix=""):
+    from difflib import SequenceMatcher
+    a, b = _judged(pa), _judged(pb)
+    if a is None or b is None:
+        return [{"kind": "text", "line": "%slog missing in %s" % (prefix, "a" if a is None else "b")}]
+    out = []
+    ops = SequenceMatcher(None, [x[0] for x in a], [x[0] for x in b], autojunk=False).get_opcodes()
+    for tag, i1, i2, j1, j2 in ops:
+        if tag == "equal":
+            for k in range(i2 - i1):
+                xa, xb = a[i1 + k], b[j1 + k]
+                if xa[1] != xb[1]:
+                    out.append({"kind": "figure", "name": xa[0],
+                                "line": "%s~ %s: a %s | b %s" % (prefix, xa[0], " ".join(xa[1]),
+                                                                 " ".join(xb[1]))})
+        else:
+            for side, xs in (("a", a[i1:i2]), ("b", b[j1:j2])):
+                for x in xs:
+                    out.append({"kind": "text", "line": "%s%s only: %s" % (prefix, side, x[2])})
+    return out
+
+
+def _case_log(side, r):
+    """A result's check log: in the run it was carried from, if it was."""
+    src = r.get("carried_from") or os.path.basename(side["dir"])
+    rel = r.get("log") or os.path.join(*(r["id"].split("/") + ["check.log"]))
+    return os.path.join(os.path.dirname(side["dir"]), src, rel)
+
+
+def _run_logs(a, b, spec, adapter):
+    ra = {r["id"]: r for r in a["record"]["results"]}
+    rb = {r["id"]: r for r in b["record"]["results"]}
+    out = []
+    for cid in sorted(set(ra) | set(rb)):
+        if cid not in rb:
+            out.append({"kind": "missing", "line": "MISSING in b: %s (was %s)" % (cid, ra[cid]["verdict"])})
+            continue
+        if cid not in ra:
+            out.append({"kind": "new", "line": "NEW in b: %s %s" % (cid, rb[cid]["verdict"])})
+            continue
+        if ra[cid]["verdict"] != rb[cid]["verdict"]:
+            out.append({"kind": "verdict", "line": "VERDICT %s: %s -> %s"
+                        % (cid, ra[cid]["verdict"], rb[cid]["verdict"])})
+        pa, pb = _case_log(a, ra[cid]), _case_log(b, rb[cid])
+        if cid.startswith("m-sims/"):
+            out += _sim_diffs(pa, pb, cid + ": ")
+        else:
+            out += _masked_log_diffs(pa, pb, cid + ": ")
+    return out
+
+
+def comparer(name):
+    return {"masked-log": lambda a, b, spec, ad: _masked_log_diffs(a["log"], b["log"]),
+            "sim-judged": lambda a, b, spec, ad: _sim_diffs(a["log"], b["log"]),
+            "run-logs": _run_logs}[name]
 
 
 # ---- the record (A13) -------------------------------------------------------

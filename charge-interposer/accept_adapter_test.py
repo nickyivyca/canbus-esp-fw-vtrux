@@ -202,8 +202,83 @@ def test_artifacts_row(A, work):
     raise AssertionError("a README with no runs/ rows took the row")
 
 
+def _write(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+
+
+def test_masked_log(A, work):
+    """A10 (port step 0's comparison, committed): two check logs compare
+    line by line with run ids, temp and Windows paths, clock times,
+    durations and timestamps masked and the runner's echo lines dropped;
+    a real change is one difference."""
+    a = os.path.join(work, "a.log")
+    b = os.path.join(work, "b.log")
+    _write(a, "$ py x.py\n# cwd=C:/one throttled=False\nrun charge-interposer-emulated_20261020T075920_d5cd\n"
+              "wrote /tmp/abc123/x.bin at 07:59:20 in 12.5 s, 2026-10-20T07:59:20+01:00\nok 4 cases\n")
+    _write(b, "$ py y.py\n# cwd=C:/two throttled=True\nrun charge-interposer-emulated_20261101T120000_beef\n"
+              "wrote /tmp/zz9/x.bin at 12:00:01 in 9.1 s, 2026-11-01T12:00:01+00:00\nok 4 cases\n")
+    f = A.comparer("masked-log")
+    assert f({"log": a}, {"log": b}, {}, A) == [], f({"log": a}, {"log": b}, {}, A)
+    _write(b, open(b).read().replace("ok 4 cases", "ok 3 cases"))
+    d = f({"log": a}, {"log": b}, {}, A)
+    assert len(d) == 2 and all(x["kind"] == "text" for x in d), d       # -old, +new
+
+
+def test_sim_judged(A, work):
+    """A10: a sim compares its judged and state lines by shape: the same
+    line with other numbers is a figure difference carrying both sides'
+    numbers; a line on one side only is a text difference naming its side;
+    other lines do not count."""
+    a = os.path.join(work, "a.log")
+    b = os.path.join(work, "b.log")
+    _write(a, "noise 1\n[PASS] trip within 120 ms (limit 200)\n[STATE] HOLD a=1 b=2\n"
+              "[PASS] evap released\n")
+    _write(b, "noise 2\n[PASS] trip within 131 ms (limit 200)\n[STATE] HOLD a=1 b=2\n"
+              "[FAIL] evap still held\n")
+    d = A.comparer("sim-judged")({"log": a}, {"log": b}, {}, A)
+    figs = [x for x in d if x["kind"] == "figure"]
+    text = [x for x in d if x["kind"] == "text"]
+    assert len(figs) == 1 and "120" in figs[0]["line"] and "131" in figs[0]["line"], d
+    assert len(text) == 2 and any("a only" in x["line"] and "evap released" in x["line"]
+                                  for x in text), d
+
+
+def test_run_logs(A, work):
+    """A10: two whole runs compare case by case: verdicts, cases in one run
+    only, a sim (m-sims/) by its judged lines, any other case by its masked
+    log; a result carried from an earlier run has its log read there."""
+    runs = os.path.join(work, "runs")
+
+    def run(name, results, logs):
+        d = os.path.join(runs, name)
+        for rel, text in logs.items():
+            _write(os.path.join(d, rel), text)
+        _write(os.path.join(d, "record.json"), json.dumps({"results": results}))
+        return {"kind": "run", "dir": d, "record": {"results": results}}
+    r = lambda i, v, **k: dict({"id": i, "check": i, "verdict": v}, **k)  # noqa: E731
+    run("early", [], {"m-host/host-unit/check.log": "ok all\n"})
+    a = run("a", [r("m-sims/sim.x", "PASS"), r("m-host/host-unit", "PASS"),
+                  r("m-host/gone", "PASS")],
+            {"m-sims/sim.x/check.log": "[PASS] trip in 120 ms\n",
+             "m-host/host-unit/check.log": "ok all\n", "m-host/gone/check.log": "x\n"})
+    b = run("b", [r("m-sims/sim.x", "PASS"), r("m-host/host-unit", "PASS", carried_from="early"),
+                  r("m-host/new", "FAIL")],
+            {"m-sims/sim.x/check.log": "[PASS] trip in 125 ms\n"})
+    d = A.comparer("run-logs")(a, b, {}, A)
+    kinds = sorted((x["kind"], x["line"].split(":")[0]) for x in d)
+    assert ("missing", "MISSING in b") in kinds and ("new", "NEW in b") in kinds, kinds
+    assert any(x["kind"] == "figure" and "m-sims/sim.x" in x["line"] for x in d), d
+    assert not any("host-unit" in x["line"] for x in d), "the carried log was not read from its run"
+    b2 = run("b2", [r("m-sims/sim.x", "FAIL")], {"m-sims/sim.x/check.log": "[FAIL] trip\n"})
+    d2 = A.comparer("run-logs")(a, b2, {}, A)
+    assert any(x["kind"] == "verdict" and "m-sims/sim.x" in x["line"] for x in d2), d2
+
+
 TESTS = [test_identity, test_catalogue, test_list_loads, test_tree_names, test_shells,
-         test_identifier_scan, test_artifacts_row]
+         test_identifier_scan, test_artifacts_row, test_masked_log, test_sim_judged,
+         test_run_logs]
 
 MUTANTS = [
     ("suites from another file", '"charge-interposer/bench_suite.py:%s"', '"charge-interposer/suite.py:%s"'),
@@ -223,6 +298,16 @@ MUTANTS = [
     ("counts not kept", '"%s: %s x%d" % (rel, cat, k)', '"%s: %s" % (rel, cat)'),
     ("the row anywhere", '        raise AdapterError("%s has no runs/ rows',
      '        lines.append(""); first = len(lines)\n        if 0: raise AdapterError("%s has no runs/ rows'),
+    ("run ids not masked", '    (re.compile(r"charge-interposer-(?:emulated|bench|harness)_',
+     '    (re.compile(r"NO-charge-interposer-(?:emulated|bench|harness)_'),
+    ("echo lines kept", '            if line.startswith(("$ ", "# cwd=")):\n                continue\n', ""),
+    ("numbers not masked by shape", '    return [(NUM.sub("#", s), NUM.findall(s), raw)',
+     '    return [(s, NUM.findall(s), raw)'),
+    ("one-side lines dropped", '                    out.append({"kind": "text", "line": "%s%s only: %s"',
+     '                    0 and out.append({"kind": "text", "line": "%s%s only: %s"'),
+    ("carried logs from this run", '    src = r.get("carried_from") or os.path.basename(side["dir"])',
+     '    src = os.path.basename(side["dir"])'),
+    ("sims by whole log", '        if cid.startswith("m-sims/"):', '        if False:'),
 ]
 
 
