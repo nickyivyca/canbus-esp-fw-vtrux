@@ -11,7 +11,9 @@ The rule (user, 2026-10-19, option a; the reviewer's ruling the same day):
   - identity figures (page_elf_sha256, diag_git_hash, and diag_build_id from schema 8)
     change with every image: labelled, not flagged. Their checks must still PASS;
   - part C checks marked stage_a in the index are replaced in stage (a): labelled, not
-    compared.
+    compared;
+  - a baseline figure named by a switch port step 1c renamed (RENAMED) is compared as
+    the new name's, and its row, shown even when the same, names the old one.
 A verdict that differs is flagged and re-run too, so a re-run can tell a one-off FAIL
 from a repeatable one; the reviewer reviews every flagged difference either way.
 
@@ -39,6 +41,11 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 IDENTITY = {"page_elf_sha256", "diag_git_hash", "diag_build_id"}
+# Port step 1c renamed two test-only switches, and B19present / B19absent name a figure
+# by its switch. The e3d9437 baseline index names the old switch, a run the new one. A
+# baseline figure under an old name is compared as the new name's, and the row says so
+# (suite_judges.RENAMED is the same map, new -> old; test_bench_compare checks they agree).
+RENAMED = {"GI_TEST_RESTART_QUIESCE": "RESTART_GUARD_TEST", "GI_INSTRUMENT_TXABORT": "TWAI_PORT_TXABORT_PROBE"}
 NO_RESULT = "-"
 RUN_LINE = re.compile(r"^run (\S+): (.+)index\.txt\s*$", re.M)
 
@@ -91,21 +98,30 @@ def spread(base_figs, name):
 def figure_rows(base, run):
     """[(name, state, rerun, note)]: state same | DIFF | identity."""
     rows = []
+    base, old_name = renamed_base(base)
     for k in sorted(set(base) | set(run)):
         b, r = base.get(k, NO_RESULT), run.get(k, NO_RESULT)
+        was = "the baseline names it %s (renamed at port step 1c)" % old_name[k] if k in old_name else ""
         if k in IDENTITY:
             rows.append((k, "identity", False, "changes with the image; labelled, not flagged"))
         elif b == r:
-            rows.append((k, "same", False, ""))
+            rows.append((k, "same", False, was))
         else:
             sp = spread(base, k)
             if sp and _num(r):
                 inside = sp[0] <= r <= sp[1]
-                rows.append((k, "DIFF", not inside, "%s the baseline spread %s..%s" % (
-                    "inside" if inside else "outside", sp[0], sp[1])))
+                note = "%s the baseline spread %s..%s" % ("inside" if inside else "outside", sp[0], sp[1])
+                rows.append((k, "DIFF", not inside, "; ".join(n for n in (note, was) if n)))
             else:
-                rows.append((k, "DIFF", True, "no baseline spread: any change re-runs"))
+                rows.append((k, "DIFF", True, "; ".join(n for n in ("no baseline spread: any change re-runs", was) if n)))
     return rows
+
+
+def renamed_base(base):
+    """(the baseline's figures with each RENAMED old name under its new one, {new: old}).
+    A baseline that already has the new name keeps both as they are."""
+    old_name = {RENAMED[k]: k for k in base if k in RENAMED and RENAMED[k] not in base}
+    return {RENAMED[k] if RENAMED.get(k) in old_name else k: v for k, v in base.items()}, old_name
 
 
 def compare(index, first, reruns=(), ids_of=None):
@@ -215,9 +231,9 @@ def report_text(entries, run_names):
             for t in x:
                 lines.append("                 %s: %s" % (cols[k + 1], t[:120]))
         for name, state, rerun, note in e["rows"]:
-            if state == "same":
+            if state == "same" and not note:
                 continue
-            vals = [e["base_figures"].get(name)] + [f.get(name) for f in e["figures"]]
+            vals = [renamed_base(e["base_figures"])[0].get(name)] + [f.get(name) for f in e["figures"]]
             lines.append("     %-8s %-30s %s%s%s" % (
                 state, name, "  ".join("%s=%s" % (n, _fmt(v)) for n, v in zip(cols, vals)),
                 "  [%s]" % note if note else "", "  RE-RUN" if rerun else ""))

@@ -27,8 +27,8 @@ MUTANTS = [
     ("a figure outside the spread does not re-run", 'rows.append((k, "DIFF", not inside,', 'rows.append((k, "DIFF", False,'),
     ("the spread's edges are outside it", 'inside = sp[0] <= r <= sp[1]', 'inside = sp[0] < r < sp[1]'),
     ("a figure with no spread does not re-run",
-     'rows.append((k, "DIFF", True, "no baseline spread: any change re-runs"))',
-     'rows.append((k, "DIFF", False, "no baseline spread: any change re-runs"))'),
+     'rows.append((k, "DIFF", True, "; ".join(n for n in ("no baseline spread',
+     'rows.append((k, "DIFF", False, "; ".join(n for n in ("no baseline spread'),
     ("the spread pair is not looked up", 'if not m:\n        return None', 'if True:\n        return None'),
     ("identity figures are flagged", 'if k in IDENTITY:', 'if False:'),
     ("diag_build_id not identity", 'IDENTITY = {"page_elf_sha256", "diag_git_hash", "diag_build_id"}',
@@ -102,6 +102,20 @@ MUTANTS = [
      '    if False:\n        return list(groups), list(checks), []'),
     ("chain: the added checks are not said", '    if added:\n        print("chain: the selection',
      '    if False:\n        print("chain: the selection'),
+    # port step 1c's switch renames (B19present / B19absent figures)
+    ("1c rename: old names not mapped", '    base, old_name = renamed_base(base)\n', '    old_name = {}\n'),
+    ("1c rename: a same row does not name the old one", 'rows.append((k, "same", False, was))',
+     'rows.append((k, "same", False, ""))'),
+    ("1c rename: a DIFF row does not name the old one",
+     '("no baseline spread: any change re-runs", was) if n)',
+     '("no baseline spread: any change re-runs",) if n)'),
+    ("1c rename: mapped even when the baseline has the new name", ' and RENAMED[k] not in base}', '}'),
+    ("1c rename: the report hides a renamed row that is the same", 'if state == "same" and not note:',
+     'if state == "same":'),
+    ("1c rename: the report shows no baseline value for a renamed row",
+     'vals = [renamed_base(e["base_figures"])[0].get(name)]', 'vals = [e["base_figures"].get(name)]'),
+    ("1c rename: the map's new name is wrong", '"GI_INSTRUMENT_TXABORT": "TWAI_PORT_TXABORT_PROBE"}',
+     '"GI_INSTRUMENT_TXABORT": "TWAI_PORT_TXABORT"}'),
 ]
 
 

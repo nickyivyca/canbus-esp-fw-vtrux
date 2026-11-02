@@ -156,6 +156,48 @@ def tests():
           flagged(E) == [] and rows.get("diag_git_hash") == "identity" and rows.get("diag_build_id") == "identity",
           (flagged(E), entry(E, "X2")))
 
+    # Port step 1c: B19present / B19absent name a figure by its switch, and two switches were
+    # renamed. The e3d9437 index has the old names, a run the new ones.
+    def b19_index(**figs):
+        return {"checks": [dict(c, figures=figs) if c["id"] == "X5" else c for c in INDEX["checks"]]}
+    old = b19_index(GI_TEST_RESTART_QUIESCE="PASS", GI_INSTRUMENT_TXABORT="PASS", GI_INSTRUMENT_RXQ="PASS")
+    E = cmp(record(X5=res("g/X4X5/X5", RESTART_GUARD_TEST="PASS", TWAI_PORT_TXABORT_PROBE="PASS",
+                          GI_INSTRUMENT_RXQ="PASS")), index=old)
+    rows = {r[0]: r for r in entry(E, "X5")["rows"]}
+    check("1c rename: old-named baseline figures equal to the run's new-named ones: nothing flagged, nothing re-run",
+          flagged(E) == [] and reran(E) == [] and sorted(rows) == ["GI_INSTRUMENT_RXQ", "RESTART_GUARD_TEST",
+                                                                  "TWAI_PORT_TXABORT_PROBE"], (flagged(E), rows))
+    check("1c rename: each renamed row says the baseline's old name; an unrenamed row says nothing",
+          "GI_TEST_RESTART_QUIESCE" in rows["RESTART_GUARD_TEST"][3]
+          and "GI_INSTRUMENT_TXABORT" in rows["TWAI_PORT_TXABORT_PROBE"][3]
+          and rows["GI_INSTRUMENT_RXQ"][3] == "", rows)
+    t = BC.report_text(E, ["r1"])
+    check("1c rename: the report shows a renamed row even when the same, with the baseline's value",
+          any("RESTART_GUARD_TEST" in ln and "baseline=PASS" in ln and "GI_TEST_RESTART_QUIESCE" in ln
+              for ln in t.splitlines())
+          and not any(ln.split()[1:2] == ["GI_INSTRUMENT_RXQ"] for ln in t.splitlines() if ln.startswith("     ")), t)
+    E = cmp(record(X5=res("g/X4X5/X5", RESTART_GUARD_TEST="FAIL", TWAI_PORT_TXABORT_PROBE="PASS",
+                          GI_INSTRUMENT_RXQ="PASS")), index=old)
+    rows = {r[0]: r for r in entry(E, "X5")["rows"]}
+    check("1c rename: a renamed figure that changes is flagged and re-run, and still names the old one",
+          flagged(E) == ["X5"] and reran(E) == ["X5"] and rows["RESTART_GUARD_TEST"][1] == "DIFF"
+          and "GI_TEST_RESTART_QUIESCE" in rows["RESTART_GUARD_TEST"][3], (flagged(E), rows))
+    E = cmp(record(X5=res("g/X4X5/X5", RESTART_GUARD_TEST="PASS")),
+            index=b19_index(GI_TEST_RESTART_QUIESCE="FAIL", RESTART_GUARD_TEST="PASS"))
+    rows = {r[0]: r for r in entry(E, "X5")["rows"]}
+    check("1c rename: a baseline holding the new name too keeps both as they are (the old one then missing from the run)",
+          rows.get("GI_TEST_RESTART_QUIESCE", ("",) * 4)[1] == "DIFF" and rows["RESTART_GUARD_TEST"][1] == "same"
+          and rows["RESTART_GUARD_TEST"][3] == "", rows)
+    # suite_judges from the worktree (a mutant's copy of this file has none beside it)
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "suite_judges_1c", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(gi_paths.__file__))),
+                                        "suite_judges.py"))
+    SJ = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(SJ)
+    check("1c rename: the map is suite_judges.RENAMED's inverse",
+          BC.RENAMED == {o: n for n, o in SJ.RENAMED.items()}, (BC.RENAMED, SJ.RENAMED))
+
     E = cmp(record(X3=res("h/X3/X3", "FAIL", k=9)))
     check("a stage (a) check is labelled, not compared", flagged(E) == [] and reran(E) == []
           and "stage (a)" in " ".join(entry(E, "X3")["notes"]), entry(E, "X3"))
