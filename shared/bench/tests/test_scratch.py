@@ -8,8 +8,10 @@ The rule (AGENTS.md "Files and folders"; reviewer, 2026-10-24): each run gets
 <worktree>/scratch/vtrux-bench-tests/<name>/<time>_<pid>, the worktree found by
 walking up to the nearest .git; no worktree is a refusal, never a fall-back to
 the system temp folder. The folder is removed when the process that made it
-exits, pass or fail, read-only files and long paths included, and one that
-will not go is printed (AGENTS.md "Removing scratch", 2026-11-01). Every test
+exits, pass or fail, read-only files and long paths included, tried again
+while another process holds it for a moment, and one that will not go is
+printed (AGENTS.md "Removing scratch", 2026-11-01); a probe that prints one
+fails its test, though it exits 0. Every test
 runs in a subprocess with the _scratch.py under test first on its path, so a
 mutant reaches the three tests' own imports. A mutant is an edited copy of
 _scratch.py in this run's folder; an edit whose text is not found exactly once
@@ -38,11 +40,12 @@ ROOT = os.path.join(WORKTREE, "scratch", "vtrux-bench-tests")
 def run_py(code, mdir):
     """code in a fresh interpreter with mdir (the _scratch.py under test) first
     on its path, then the tests folder; its last stdout line parsed as JSON. It runs
-    in mdir, since -c puts the working folder ahead of PYTHONPATH."""
+    in mdir, since -c puts the working folder ahead of PYTHONPATH. A folder the
+    probe could not remove at its exit is a failure, though its exit code is 0."""
     env = dict(os.environ, PYTHONPATH=os.pathsep.join([mdir, HERE, os.path.dirname(HERE)]))
     r = subprocess.run([PY, "-B", "-c", code], capture_output=True, text=True, env=env,
                        cwd=mdir, timeout=120)
-    if r.returncode != 0:
+    if r.returncode != 0 or "could not remove" in r.stderr:
         raise AssertionError("the probe failed: %s" % (r.stdout + r.stderr)[-400:])
     return json.loads(r.stdout.strip().splitlines()[-1])
 
@@ -108,6 +111,26 @@ def test_unremovable_printed(mdir):
         _scratch.remove_tree(d)                 # this file's own _scratch, never a mutant
 
 
+def test_held_retried(mdir):
+    """A folder another process holds for a moment still goes once it is let go:
+    here the first two tries leave it, as a file held open on Windows does."""
+    code = ("import json, _scratch\n"
+            "d = _scratch.run_dir('held')\n"
+            "real, tries = _scratch.shutil.rmtree, []\n"
+            "def held(*a, **k):\n"
+            "    tries.append(1)\n"
+            "    if len(tries) > 2:\n"
+            "        real(*a, **k)\n"
+            "_scratch.shutil.rmtree = held\n"
+            "print(json.dumps(d))\n")
+    d = run_py(code, mdir)
+    try:
+        assert under(d, os.path.join(ROOT, "held")), d
+        assert not os.path.lexists(_scratch.long_path(d)), "left behind: %s" % d
+    finally:
+        _scratch.remove_tree(d)                 # what a mutant left; this file's own _scratch
+
+
 def test_walks_up(mdir):
     """The worktree is found by walking up to .git: from a folder deep inside
     scratch/ (where a pinned export sits) it is the same worktree."""
@@ -137,16 +160,22 @@ def test_refuses_outside(mdir):
 
 def test_three_tests(mdir):
     """test_bench_lock, test_decode and test_run_core each put their files in
-    a run folder of their own name."""
+    a run folder of their own name, gone once the process exits (an empty one
+    was left after 09ebe6b, 2026-11-01)."""
     got = run_py("import json, test_bench_lock as a, test_decode as b, test_run_core as c; "
                  "print(json.dumps([a.SCRATCH, b.SCRATCH, c.SCRATCH]))", mdir)
-    for p, name in zip(got, ("bench_lock", "decode", "run_core")):
-        assert under(p, os.path.join(ROOT, name)), (name, p)
-        assert not under(p, tempfile.gettempdir()), p
+    try:
+        for p, name in zip(got, ("bench_lock", "decode", "run_core")):
+            assert under(p, os.path.join(ROOT, name)), (name, p)
+            assert not under(p, tempfile.gettempdir()), p
+            assert not os.path.lexists(_scratch.long_path(p)), "left behind: %s" % p
+    finally:
+        for p in got:
+            _scratch.remove_tree(p)             # what a mutant left; this file's own _scratch
 
 
 TESTS = [test_per_run, test_walks_up, test_refuses_outside, test_three_tests,
-         test_removed_at_exit, test_unremovable_printed]
+         test_removed_at_exit, test_unremovable_printed, test_held_retried]
 
 # The temp-folder mutant writes to this folder of its own there, removed after it,
 # so no mutant leaves anything outside this run's scratch folder.
@@ -166,9 +195,12 @@ MUTANTS = [
     ("not removed at exit",
      "    atexit.register(remove_tree, d)\n", ""),
     ("rmtree with ignore_errors (Windows only)",
-     "    if sys.version_info >= (3, 12):\n        shutil.rmtree(lp, onexc=again)\n    else:\n"
-     "        shutil.rmtree(lp, onerror=lambda func, p, ei: again(func, p, ei[1]))\n",
-     "    shutil.rmtree(lp, ignore_errors=True)\n"),
+     "        if sys.version_info >= (3, 12):\n            shutil.rmtree(lp, onexc=again)\n"
+     "        else:\n"
+     "            shutil.rmtree(lp, onerror=lambda func, p, ei: again(func, p, ei[1]))\n",
+     "        shutil.rmtree(lp, ignore_errors=True)\n"),
+    ("one try only, none while held",
+     "RETRY_WAITS = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6)", "RETRY_WAITS = ()"),
     ("read-only not retried (Windows only)",
      "os.chmod(p, stat.S_IREAD | stat.S_IWRITE | (stat.S_IEXEC if os.path.isdir(p) else 0))\n"
      "            func(p)",
