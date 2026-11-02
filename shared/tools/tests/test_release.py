@@ -461,8 +461,8 @@ class Release(unittest.TestCase):
 
     def test_r23_missing_checkout(self):
         root, cc = project("rel_r23_nocheckout")
-        shutil.rmtree(os.path.dirname(os.path.dirname(tools_of(root))),
-                      onerror=scratch._writable)
+        self.assertTrue(scratch.remove_tree(
+            os.path.dirname(os.path.dirname(tools_of(root)))))
         self.assertRefused(run(root, cc),
                            ["does not exist", "worktree add --detach"], [])
 
