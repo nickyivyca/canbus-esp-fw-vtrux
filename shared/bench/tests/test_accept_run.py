@@ -140,7 +140,7 @@ class Run:
     """Builds the repo and runs one acceptance through run.main()."""
 
     def __init__(self, flaky_passes=True, mutant="sum", premise_later=False, extra="",
-                 dirty_adapter=False, runner_dirty=False, dev=False):
+                 dirty_adapter=False, runner_dirty=False, dev=False, runner=None):
         N[0] += 1
         self.dir = os.path.join(BASE, "r%d" % N[0])
         self.repo = os.path.join(self.dir, "repo")
@@ -175,6 +175,21 @@ class Run:
                            bench_mac=MAC, flake_dir=flake,
                            bench_holder=os.path.join(self.dir, "bench-holder.md")), f)
         self.said = []
+        args = ["run", "--repo", self.repo, "--list", "%s:proj/acceptance/s1.toml" % self.c3,
+                "--adapter", "proj/accept_adapter.py", "--settings", self.settings] + (
+                    ["--dev"] if dev else [])
+        if runner:
+            # a runner of its own (a clean checkout's shared/bench), in a
+            # process of its own, without -B
+            env = dict(os.environ, PYTHONPATH=runner, GIT_CEILING_DIRECTORIES=self.dir)
+            env.pop("PYTHONDONTWRITEBYTECODE", None)
+            r = subprocess.run([sys.executable, os.path.join(BASE, "runner_wrapper.py")] + args,
+                               env=env, cwd=self.dir, capture_output=True, text=True,
+                               timeout=1800)
+            self.rc, self.out = r.returncode, r.stdout + r.stderr
+            recs = [d for d in os.listdir(self.runs) if d.startswith("accept_")]
+            self.rec = os.path.join(self.runs, recs[0]) if recs else None
+            return
         R_ = __import__("vtrux_bench.accept.record", fromlist=["x"])
         real = R_.start
         R_.start = lambda runs, step, out=None, **kw: real(runs, step, out=out,
@@ -185,10 +200,7 @@ class Run:
         real_ident = RUN.runner_identity
         RUN.runner_identity = lambda path=None: {"commit": "f" * 40, "dirty": runner_dirty}
         try:
-            self.rc = RUN.main(["run", "--repo", self.repo, "--list",
-                                "%s:proj/acceptance/s1.toml" % self.c3,
-                                "--adapter", "proj/accept_adapter.py",
-                                "--settings", self.settings] + (["--dev"] if dev else []))
+            self.rc = RUN.main(args)
         finally:
             R_.start = real
             RUN.runner_identity = real_ident
@@ -345,8 +357,46 @@ def test_runner_identity():
     assert RUN.runner_identity(root)["commit"] is None, RUN.runner_identity(root)
 
 
+# The runner a test starts in a process of its own: run.main(), with the
+# rules VTRUX_TEST_OFF names switched off, and, for the stray-file mutant
+# only (VTRUX_TEST_STRAY), a file left in the runner's tree.
+WRAPPER = '''import os, sys
+from vtrux_bench.accept import run
+for k in filter(None, os.environ.get("VTRUX_TEST_OFF", "").split(",")):
+    run.RULES[k] = False
+rc = run.main(sys.argv[1:])
+if os.environ.get("VTRUX_TEST_STRAY"):
+    open(os.path.join(os.path.dirname(run.__file__), "stray.txt"), "w").close()
+sys.exit(rc)
+'''
+
+
+def test_runner_stays_clean():
+    """gen-inhibit's reviewer (2026-11-01): a clean checkout of the runner
+    stays clean -- runner_identity() reports no changes -- after one whole
+    acceptance run in a process of its own without -B, so nothing the run
+    writes lands in the runner's tree (shared/bench/.gitignore covers its
+    __pycache__/, which is written)."""
+    wt = _scratch.worktree_of(HERE)
+    clone = os.path.join(BASE, "runner%d" % (N[0] + 1))
+    subprocess.run(["git", "clone", "-q", "--shared", "--no-checkout", wt, clone], check=True)
+    git(clone, "checkout", "-q", "--detach", git(wt, "rev-parse", "HEAD"))
+    runner = os.path.join(clone, "shared", "bench")
+    with open(os.path.join(BASE, "runner_wrapper.py"), "w", encoding="utf-8") as f:
+        f.write(WRAPPER)
+    assert RUN.runner_identity(runner)["dirty"] is False, "the clone is not clean to start with"
+    r = Run(runner=runner)
+    assert r.rc == 0, (r.rc, r.out[-1500:])
+    pyc = [d for d, _dirs, _files in os.walk(runner) if os.path.basename(d) == "__pycache__"]
+    assert pyc, "no __pycache__: the run was not without -B"
+    ident = RUN.runner_identity(runner)
+    assert ident["dirty"] is False, "the run left changes in the runner's tree: %s" % git(
+        clone, "status", "--porcelain")
+
+
 TESTS = [test_pass, test_adapter_committed, test_rerun_never_passes, test_premise_blocks,
-         test_stopped, test_dirty_runner_refused, test_dev_run, test_runner_identity]
+         test_stopped, test_dirty_runner_refused, test_dev_run, test_runner_identity,
+         test_runner_stays_clean]
 
 MUTANTS = [
     ("adapter_from_commit", test_adapter_committed),
@@ -357,6 +407,7 @@ MUTANTS = [
     ("refuse_dirty", test_dirty_runner_refused),
     ("dev_never_pass", test_dev_run),
     ("identity_untracked", test_runner_identity),
+    ("_stray", test_runner_stays_clean),        # VTRUX_TEST_STRAY: a stray file
 ]
 
 
@@ -391,11 +442,16 @@ def main(argv):
             bad += 1
         caught = 0
         for k, t in MUTANTS:
-            RUN.RULES[k] = False
+            if k == "_stray":                  # not a rule: the wrapper leaves a file
+                os.environ["VTRUX_TEST_STRAY"] = "1"
+            else:
+                RUN.RULES[k] = False
             try:
                 out = outcome_of(t)
             finally:
-                RUN.RULES[k] = True
+                os.environ.pop("VTRUX_TEST_STRAY", None)
+                if k != "_stray":
+                    RUN.RULES[k] = True
             print("%s  %-20s off: %-26s %s" % (
                 "ok  " if out else "FAIL", k, t.__name__,
                 ("fails (" + out[:110] + ")") if out else
