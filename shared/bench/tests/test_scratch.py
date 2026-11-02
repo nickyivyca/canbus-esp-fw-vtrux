@@ -225,32 +225,36 @@ def test_tool_folders_dropped(mdir):
 
 def test_make_retried(mdir):
     """Another run's exit taking the tool folders while this run makes its
-    own (makedirs: FileNotFoundError) costs a try: two lost still make the
-    folder, on the third try; every try lost is the error, after exactly
-    three (as charge-interposer's scratch_dir.make)."""
+    own costs a try, whether makedirs meets the folder gone
+    (FileNotFoundError) or, on Windows, still delete-pending
+    (PermissionError: gen-inhibit's reviewer, 2026-11-02): two lost still
+    make the folder, on the third try, each try a moment after the last
+    (at least 50 ms); every try lost is that error, after exactly three."""
     w = fake_worktree()
-    code = ("import json, os, _scratch\n"
-            "real, n = os.makedirs, [0]\n"
+    code = ("import json, os, time, _scratch\n"
+            "real, at = os.makedirs, []\n"
             "def racy(p, *a, **k):\n"
             "    if not str(p).endswith('_%%d' %% os.getpid()):\n"
             "        return real(p, *a, **k)       # makedirs making a parent\n"
-            "    n[0] += 1\n"
-            "    if n[0] <= %d:\n"
-            "        raise FileNotFoundError(2, 'taken by another run', p)\n"
+            "    at.append(time.monotonic())\n"
+            "    if len(at) <= %d:\n"
+            "        raise %s(13, 'taken by another run', p)\n"
             "    return real(p, *a, **k)\n"
             "os.makedirs = racy\n"
             "try:\n"
             "    d = _scratch.run_dir('r', start=%r)\n"
-            "    r = [d, os.path.isdir(d), n[0]]\n"
-            "except FileNotFoundError:\n"
-            "    r = ['raised', False, n[0]]\n"
+            "    r = [d, os.path.isdir(d)]\n"
+            "except OSError as e:\n"
+            "    r = ['raised ' + type(e).__name__, False]\n"
             "os.makedirs = real\n"
-            "print(json.dumps(r))\n")
-    d, made, n = run_py(code % (2, w), mdir)
-    assert made and n == 3 and under(d, os.path.join(w, "scratch", "vtrux-bench-tests", "r")), \
-        (d, made, n)
-    d, made, n = run_py(code % (99, w), mdir)
-    assert d == "raised" and n == 3, (d, made, n)
+            "print(json.dumps(r + [len(at), [b - a for a, b in zip(at, at[1:])]]))\n")
+    for exc in ("FileNotFoundError", "PermissionError"):
+        d, made, n, gaps = run_py(code % (2, exc, w), mdir)
+        assert made and n == 3 and under(
+            d, os.path.join(w, "scratch", "vtrux-bench-tests", "r")), (exc, d, made, n)
+        assert min(gaps) >= 0.05, (exc, gaps)
+        d, made, n, gaps = run_py(code % (99, exc, w), mdir)
+        assert d == "raised " + exc and n == 3, (exc, d, made, n)
 
 
 TESTS = [test_per_run, test_walks_up, test_refuses_outside, test_three_tests,
@@ -301,6 +305,11 @@ MUTANTS = [
     # too, so nothing here could fail on it. The test still puts one in the folder.
     ("a folder left is not printed",
      'print("could not remove %s: %s (%s)" % (path, why[1], why[0]), file=sys.stderr)', "pass"),
+    ("a delete-pending folder not retried",
+     "        except (FileNotFoundError, PermissionError):\n",
+     "        except FileNotFoundError:\n"),
+    ("no wait between tries",
+     "            time.sleep(MAKE_WAITS[min(attempt, len(MAKE_WAITS)) - 1])\n", "            pass\n"),
 ]
 
 

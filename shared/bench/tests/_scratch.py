@@ -113,6 +113,8 @@ def _remove_run(d):
 
 
 MAKE_TRIES = 3
+# the wait before each try after the first
+MAKE_WAITS = (0.1, 0.4)
 
 
 def run_dir(name, start=None):
@@ -122,12 +124,18 @@ def run_dir(name, start=None):
     d = os.path.join(worktree_of(start or __file__), "scratch", "vtrux-bench-tests", name,
                      "%s_%d" % (time.strftime("%Y%m%dT%H%M%S"), os.getpid()))
     # another run's exit can take <name>/ or vtrux-bench-tests/ while this one is
-    # making them (drop_empty): they are made again, MAKE_TRIES tries in all
+    # making them (drop_empty): they are made again, MAKE_TRIES tries in all, a
+    # moment apart. On Windows a folder removed while another process holds a
+    # handle on it stays delete-pending for that moment, and making a folder in
+    # it is refused (PermissionError), not FileNotFoundError (gen-inhibit's
+    # reviewer, through the charge-interposer reviewer, 2026-11-02).
     for attempt in range(MAKE_TRIES):
+        if attempt:
+            time.sleep(MAKE_WAITS[min(attempt, len(MAKE_WAITS)) - 1])
         try:
             os.makedirs(d, exist_ok=True)
             break
-        except FileNotFoundError:
+        except (FileNotFoundError, PermissionError):
             if attempt == MAKE_TRIES - 1:
                 raise
     atexit.register(_remove_run, d)
