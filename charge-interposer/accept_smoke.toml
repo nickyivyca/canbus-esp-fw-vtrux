@@ -16,10 +16,10 @@ spec = ["none: a smoke run of the acceptance runner"]
 verification = "none (a --dev smoke run is never evidence)"
 
 [trees.local]
-project = "5169ea877cca77422831196bc3ceeb8e97661e94"
+project = "9e1e62d55c92a3466b91b93992e888c309d9bfd0"
 
 [trees.madhouse]
-project = "5169ea877cca77422831196bc3ceeb8e97661e94"
+project = "9e1e62d55c92a3466b91b93992e888c309d9bfd0"
 host = "madhouse"
 
 [[set]]
@@ -32,6 +32,8 @@ id = "mad"
 tree = "madhouse"
 select = ["id:host-unit"]
 
+# the trees' product digest the same as at the first smoke run's commit:
+# 9e1e62d changed only the adapter, no product file
 [[premise]]
 id = "digest"
 kind = "product_digest_same_as"
