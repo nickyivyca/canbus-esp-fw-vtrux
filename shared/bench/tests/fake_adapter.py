@@ -6,13 +6,48 @@ It gives what the core asks an adapter for. The names are made up; nothing
 here runs a build or touches a board.
 """
 
-PROJECT = "proj"
+import os
 
-# build targets and the options each takes (A5)
-TARGETS = {"fw": {"options": ["variant", "jobs"]}, "host": {"options": []}}
+PROJECT = "proj"
+ROLE = "tester (test-suite)"
+
+# build targets (A5): the options each takes, the committed file it runs in
+# the build's tree, its shell, its arguments, and what it made
+TARGETS = {
+    "fw": {"options": ["variant", "jobs"], "run": "proj/build.py", "shell": "python",
+           "args": lambda o, out: [out, o.get("variant", "dev")],
+           "outputs": lambda out, o: {
+               "images": {"app": os.path.join(out, "app.bin")},
+               "elf": os.path.join(out, "app.elf"),
+               "variant": o.get("variant", "dev"), "toolchain": "fake-cc 1.0"}},
+    "host": {"options": [], "run": "proj/build.py", "shell": "python",
+             "args": lambda o, out: [out, "host"],
+             "outputs": lambda out, o: {"images": {}, "elf": os.path.join(out, "app.elf"),
+                                        "variant": "host", "toolchain": "fake-cc 1.0"}},
+}
 
 # shells a check may name, and the one a path gets when it names none
 SHELLS = ("python", "git-bash", "powershell")
+
+
+def shell_argv(shell, settings):
+    """The command a shell's file is run with, before the file's path."""
+    if shell == "python":
+        return list(settings["hosts"]["local"]["python"]) + ["-B"]
+    if shell == "git-bash":
+        return [settings["bash"]]
+    return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]
+
+
+# the machine variables a check may see beside the operator-neutral ones the
+# core passes (AGENTS.md, local-paths.md)
+MACHINE_VARS = ("FAKE_MACHINE_DIR",)
+
+
+# the settings keys that depend on a build (A6), filled from the build records
+def settings_keys(builds, trees):
+    return {"fw_image": builds["fw"]["images"]["app"]["path"],
+            "fw_elf_sha256": builds["fw"]["elf"]["sha256"]}
 
 
 def default_shell(path):
@@ -21,6 +56,11 @@ def default_shell(path):
 
 
 JUDGES = ("exit-code", "known-fails")
+
+
+def judge(name):
+    from vtrux_bench.run.model import exit_code_judge
+    return exit_code_judge
 COMPARERS = ("transcript", "run-records")
 SUITES = {"emulated": "proj/suite.py:EMULATED", "bench": "proj/suite.py:BENCH"}
 

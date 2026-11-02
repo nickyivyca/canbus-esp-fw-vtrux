@@ -5,6 +5,9 @@ runner (vtrux_bench.run).
     listfile.py   the list: read from git, checked, expanded (A2, A3, A8)
     record.py     the record folder, made first (A13); the Python guard
     trees.py      the trees, from git objects at exact commits (A4)
+    builds.py     the builds, each in a tree of its own, as build work (A5)
+    settings.py   the run's settings, from the machine's and the builds (A6)
+    compile.py    the checks as one chain suite, and its run (A7)
 
 It needs Python >= 3.11 and refuses to import on an older one: it runs on
 NICKY-XPS or madhouse, and WSL is a check host only (reviewer, 2026-11-01).
