@@ -15,8 +15,9 @@ an option of committed harness so the acceptance runner can re-run port step
 1b's acceptance E). Unset or `own`, the default and the behaviour before the
 option: this folder's `twai_fake.h` / `.cpp` and `driver/twai.h`. `shared`:
 the shared fake (`shared/twai_port/test`, twai_port T10) in the folder
-`TWAI_FAKE_DIR` names, built as E built it -- a copy of this folder without
-those three files (a quoted `#include` looks in the including file's folder
+`TWAI_FAKE_DIR` names, built as E built it -- a copy of this folder, at its
+own depth beside a copy of `src/` (so `test_event_layout`'s `#include
+"../../src/main.cpp"` still reaches it), without those three files (a quoted `#include` looks in the including file's folder
 first, so they would win over any `-I`), each test given the shared
 `twai_fake.c` and `cpp/twai_fake.cpp`, and `-I <fake>/include -I <fake>/host
 -I <fake>/cpp` after this folder and `src/`. It prints nothing extra, so the

@@ -57,10 +57,13 @@ def bash_form(p):
 
 # ---- stand-ins --------------------------------------------------------------
 GPP = r"""#!/bin/sh
-# stand-in g++: logs its arguments (tab-separated) and what the first -I
-# folder holds, and writes an output that runs and prints nothing
-out=""; first=""; prev=""
+# stand-in g++: logs its arguments (tab-separated), what the first -I
+# folder holds and whether the first source (the test) reaches
+# ../../src/main.cpp from its own folder, as test_event_layout's #include
+# does; writes an output that runs and prints nothing
+out=""; first=""; prev=""; t=""
 for a in "$@"; do
+  if [ -n "$out" ] && [ -z "$t" ]; then t="$a"; fi
   [ "$prev" = "-o" ] && out="$a"
   [ "$prev" = "-I" ] && [ -z "$first" ] && first="$a"
   prev="$a"
@@ -72,6 +75,8 @@ done
   for f in twai_fake.h twai_fake.cpp driver/twai.h test_l2_bridge.cpp; do
     if [ -e "$first/$f" ]; then printf 'HAS\t%s\n' "$f"; else printf 'NO\t%s\n' "$f"; fi
   done
+  f="../../src/main.cpp"
+  if [ -f "$(dirname "$t")/$f" ]; then printf 'HAS\t%s\n' "$f"; else printf 'NO\t%s\n' "$f"; fi
 } >> "$STUB_LOG"
 printf '#!/bin/sh\nexit 0\n' > "$out"
 chmod +x "$out"
@@ -171,6 +176,7 @@ def _check_own(calls, outp):
         assert any(fwd(a).endswith("/host_bridge/twai_fake.cpp") for a in argv), argv
         assert argv.count("-I") == 2, argv
         assert has["twai_fake.h"] and has["driver/twai.h"], has
+        assert has["../../src/main.cpp"], has
     assert "TWAI" not in outp, outp
 
 
@@ -189,7 +195,9 @@ def test_own_default(ctx, work):
 
 def test_shared_build(ctx, work):
     """TWAI_FAKE=shared builds as acceptance E did: from a copy of
-    host_bridge without our twai_fake.h, twai_fake.cpp and driver/twai.h;
+    host_bridge, at its depth beside a copy of src/ so a test's
+    ../../src/main.cpp is reached, without our twai_fake.h, twai_fake.cpp
+    and driver/twai.h;
     each test given the shared twai_fake.c and cpp/twai_fake.cpp right after
     it; -I <copy> -I src -I <fake>/include -I <fake>/host -I <fake>/cpp; the
     copy removed when run.sh ends; nothing extra printed."""
@@ -218,6 +226,10 @@ def test_shared_build(ctx, work):
                        for a in srcs), srcs
         assert not has["twai_fake.h"] and not has["twai_fake.cpp"] and \
             not has["driver/twai.h"] and has["test_l2_bridge.cpp"], has
+        # the copy at host_bridge's depth, beside a copy of src/: a test's
+        # #include "../../src/main.cpp" reaches it (2026-11-02's smoke run
+        # found test_event_layout not built from a copy without it)
+        assert has["../../src/main.cpp"], has
     assert len(copies) == 1, copies
     left = os.listdir(tmp)
     assert left == [], left
@@ -359,7 +371,9 @@ RUN_SH_MUTANTS = [
      'srcs=("$t")'),
     ("the shared includes first", '-I "$B" -I "$SRC" ${FAKE_INC[@]+"${FAKE_INC[@]}"}',
      '${FAKE_INC[@]+"${FAKE_INC[@]}"} -I "$B" -I "$SRC"'),
-    ("the copy left behind", "    trap 'rm -rf \"$B\"' EXIT\n", ""),
+    ("the copy left behind", "    trap 'rm -rf \"$T\"' EXIT\n", ""),
+    ("the copy not at host_bridge's depth", '    B="$T/test/host_bridge"\n', '    B="$T/hb"\n'),
+    ("no src/ beside the copy", '    cp -R "$SRC/." "$T/src/" || exit 2\n', ""),
     ("built from host_bridge itself", 'for t in "$B"/test_*.cpp; do',
      'for t in "$HERE"/test_*.cpp; do'),
     ("the mode not the can-fail", '  --can-fail) exec python3 "$HERE/../../../harness_checks/'

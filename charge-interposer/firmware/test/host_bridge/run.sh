@@ -15,7 +15,8 @@
 #           .cpp and driver/twai.h.
 #   shared  the shared fake (shared/twai_port/test, twai_port T10), from the
 #           folder TWAI_FAKE_DIR names, built exactly as acceptance E built
-#           it (2026-10-31): a copy of this folder without our twai_fake.h,
+#           it (2026-10-31): a copy of this folder, at the same depth beside
+#           a copy of src/, without our twai_fake.h,
 #           twai_fake.cpp and driver/twai.h (a quoted #include looks in the
 #           including file's own folder first, so they would win over any
 #           -I), every test given the shared twai_fake.c and
@@ -46,9 +47,16 @@ case "${TWAI_FAKE:-own}" in
            "(shared/twai_port/test), with twai_fake.c and cpp/twai_fake.cpp" >&2
       exit 2
     fi
-    B="$(mktemp -d "${TMPDIR:-/tmp}/host_bridge_shared_XXXXXX")" || exit 2
-    trap 'rm -rf "$B"' EXIT
-    cp -R "$HERE/." "$B/"
+    # The copy sits at host_bridge's own depth, test/host_bridge under a
+    # throwaway folder T with a copy of src/ beside test/, so a test's
+    # relative #include "../../src/main.cpp" (test_event_layout) reaches
+    # main.cpp as it does from host_bridge itself.
+    T="$(mktemp -d "${TMPDIR:-/tmp}/host_bridge_shared_XXXXXX")" || exit 2
+    trap 'rm -rf "$T"' EXIT
+    B="$T/test/host_bridge"
+    mkdir -p "$B" "$T/src" || exit 2
+    cp -R "$SRC/." "$T/src/" || exit 2
+    cp -R "$HERE/." "$B/" || exit 2
     rm "$B/twai_fake.h" "$B/twai_fake.cpp" "$B/driver/twai.h"
     rmdir "$B/driver" 2>/dev/null || true
     FAKE_SRCS=("$SH/twai_fake.c" "$SH/cpp/twai_fake.cpp")
