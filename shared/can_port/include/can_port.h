@@ -9,6 +9,9 @@
  * The stock WiCAN code's CAN calls, declared in can.h, are this component's,
  * on port 0 (C3), with the owner's refusal of C4 and the teardown of C5. They
  * are in can_stock.c.
+ *
+ * The restart stop of C7, for the restart path only, is in
+ * can_port_restart.c.
  */
 #ifndef CAN_PORT_H
 #define CAN_PORT_H
@@ -176,6 +179,39 @@ void can_port_register_owner(bool (*owns_bus)(void), void (*refused)(void));
  * a restart on failure. For a project's own bring-up of port 0.
  */
 esp_err_t can_port_stock_enable(void);
+
+/*
+ * What a restart stop found and did (C7; twai_port T12), for the restart
+ * guard's record (shared/restart_guard G4). A stop that touched nothing
+ * leaves every field but the clock and reset bits it read at 0.
+ */
+typedef struct {
+    bool clock_on;              /* the controller's clock was on at entry */
+    bool held_in_reset;         /* the peripheral was held in reset at entry */
+    bool was_in_reset;          /* the controller was already in reset mode */
+    uint32_t status_at_entry;   /* the status register at entry */
+    uint32_t tec;               /* the error counters at entry */
+    uint32_t rec;
+    uint32_t status_at_reset;   /* the status register as reset mode was entered */
+    uint32_t wait_us;           /* time waited for the bus to be between frames */
+    bool timed_out;             /* the wait ran out */
+    uint32_t aborts;            /* frames of ours aborted while awaiting the bus */
+    bool entered_reset;         /* the controller was put into reset mode */
+} can_port_restart_report_t;
+
+/*
+ * THE RESTART STOP (C7). Takes `port` off the bus from the restart path, for
+ * any port the board has, whether or not a backend is registered for it in
+ * this boot: it calls the restart stop of the driver for the port's kind
+ * (shared/boards B5), twai_port's (T12) for a TWAI port. ESP_OK once that
+ * stop has run, with `out` filled; ESP_ERR_NOT_SUPPORTED, touching nothing,
+ * where the driver has no restart stop or is not in the build (an SPI port
+ * until mcp2515_port, stage (b)); ESP_ERR_INVALID_ARG for a port the board
+ * does not have or a NULL `out`. In IRAM, with interrupts already off: no
+ * lock, no allocation, no logging. Its caller is shared/restart_guard (G3).
+ * The attribute is on the definition only, as for twai_port's abort.
+ */
+esp_err_t can_port_restart_stop(int port, can_port_restart_report_t *out);
 
 #ifdef __cplusplus
 }

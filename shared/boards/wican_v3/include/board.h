@@ -27,6 +27,22 @@ extern "C" {
 /* The number of CAN ports, numbered from 0. wican_v3: 1. */
 int board_can_ports(void);
 
+/* A CAN port's kind (B5): which driver takes it off the bus. */
+typedef enum {
+    BOARD_CAN_NONE = 0,     /* a port the board does not have */
+    BOARD_CAN_TWAI,         /* the ESP's own TWAI controller */
+    BOARD_CAN_SPI,          /* a CAN controller on SPI */
+} board_can_kind_t;
+
+/* The port's kind. wican_v3: port 0 is TWAI; any other port is NONE. */
+board_can_kind_t board_can_kind(int port);
+
+/* board_can_ports() and board_can_kind() are safe to call from the restart
+ * path, with interrupts off and the cache disabled: in IRAM, no locks, no
+ * allocation, no logging, constants only (B5). The attribute is on the
+ * definitions only: IRAM_ATTR names a fresh section at each use, and a
+ * second one on the declaration conflicts. */
+
 /* The ESP's own TWAI controller's pins, for a TWAI port. wican_v3: port 0. */
 typedef struct {
     gpio_num_t tx;

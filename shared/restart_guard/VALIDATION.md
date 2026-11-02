@@ -89,6 +89,22 @@ verification").
 - **IRAM, nothing that needs the cache:** the callers have the cache
   enabled, but the real function disables it, so nothing in the guard may
   depend on where that happens (`gi_restart_quiesce.c`).
+- **A "not supported" step is skipped, not recorded** (user, 2026-11-01,
+  on the gen-inhibit implementor's questions at stage A): G3 first said
+  such a port is recorded as such, but G4's unchanged layout has no field
+  for it. The record keeps gen-inhibit's layout, so the step is skipped:
+  the controller fields are filled only from a TWAI port's stop that ran,
+  so they read as "clock off" when none did, and a standby that is not
+  supported leaves the port's bit 0.
+- **Each step answers for itself** (user, 2026-11-01): a port whose stop
+  is not supported still gets standby. Standby does not depend on the
+  controller, and it is then the only protection the port has: on an S3
+  board with a standby line, such as the WiCAN Pro if it is added, the
+  TWAI stop is unsupported until it is measured there; on an SPI CAN port
+  with a standby line, the controller has no restart stop until
+  `mcp2515_port` offers one (C7), if one proves possible (stage (b)). On both of today's boards the two readings behave the same:
+  `wican_v3`'s port 0 is TWAI with a supported stop, and the X2 has no
+  standby line.
 - **Status:** complete.
 
 ### G4. The record of the last restart

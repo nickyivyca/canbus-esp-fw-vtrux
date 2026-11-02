@@ -2,8 +2,10 @@
 """Break can_port one behaviour at a time; its unit tests must fail on each.
 
 The implementor's (SPEC.md C6), beside the unit tests it scores. Each mutant
-below undoes one behaviour in a copy of can_port.c or can_stock.c, the stock
-calls, and builds and runs test_can_port against the copy. The owner's
+below undoes one behaviour in a copy of can_port.c, can_stock.c (the stock
+calls) or can_port_restart.c (C7, the restart stop), and builds and runs
+every unit test binary against the copy: test_can_port and the restart
+stop's two, with and without the TWAI driver. The owner's
 refusal (C4, gen-inhibit spec 3.2) is among them: it moved here from
 gen-inhibit's main/can.c at its port step 1b, and gen-inhibit's shim mutants
 no longer reach it.
@@ -33,6 +35,8 @@ COMPONENTS = ("shared/can_port", "shared/twai_port")   # its stand-ins are twai_
 UNIT = "shared/can_port/unit"
 CS = "shared/can_port/can_stock.c"
 CP = "shared/can_port/can_port.c"
+CR = "shared/can_port/can_port_restart.c"
+BINS = ("test_can_port", "test_can_port_restart_twai", "test_can_port_restart_none")
 
 # (name, file, text, its replacement). Each text occurs once in its file.
 MUTANTS = [
@@ -72,6 +76,18 @@ MUTANTS = [
     ("configure skipped", CS,
      "\tesp_err_t err = can_port_configure(CAN_STOCK_PORT, &s);",
      "\tesp_err_t err = ESP_OK; (void)s;"),
+    # C7, the restart stop.
+    ("restart stop not to the TWAI driver", CR,
+     "    if (kind == BOARD_CAN_TWAI)\n    {\n        return twai_port_restart_stop(out);",
+     "    if (0)\n    {\n        return twai_port_restart_stop(out);"),
+    ("restart stop for any kind to TWAI", CR,
+     "    if (kind == BOARD_CAN_TWAI)\n", "    if (kind != BOARD_CAN_NONE)\n"),
+    ("restart stop report not cleared", CR,
+     "    report_clear(out);\n", "    (void)report_clear;\n"),
+    ("restart stop beyond the board's ports", CR,
+     "    if (port < 0 || port >= board_can_ports())", "    if (port < 0)"),
+    ("restart stop says OK when unsupported", CR,
+     "    (void)kind;\n    return ESP_ERR_NOT_SUPPORTED;", "    (void)kind;\n    return ESP_OK;"),
 ]
 
 
@@ -113,8 +129,11 @@ def score(cc, copy, out):
     rc, _ = run(["make", "-s", "-C", UNIT, "CC=" + cc, "OUT=" + out, "all"], copy)
     if rc != 0:
         return "did not build"
-    rc, _ = run([os.path.join(out, "test_can_port")], copy)
-    return "pass" if rc == 0 else "fail"
+    for b in BINS:
+        rc, _ = run([os.path.join(out, b)], copy)
+        if rc != 0:
+            return "fail"
+    return "pass"
 
 
 def fresh_copy(run_dir):

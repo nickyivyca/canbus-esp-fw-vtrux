@@ -740,6 +740,134 @@ static void case_c3_abort(void)
     CHECK(stub_twai_dev.abort_cmds == 1);
 }
 
+/* ------------------------------------------------- T12: the restart stop -- */
+
+/* The clock on, out of reset, the counters and reset-mode bit to read. */
+static void restart_on_bus(uint32_t status)
+{
+    stub.clk_en0 = SYSTEM_TWAI_CLK_EN;
+    stub.rst_en0 = 0;
+    stub_twai_dev.status = status;
+    stub_twai_dev.tec = 9;
+    stub_twai_dev.rec = 3;
+}
+
+/* A garbage report, so a field the stop forgets to set shows. */
+static can_port_restart_report_t restart_garbage(void)
+{
+    can_port_restart_report_t r;
+    memset(&r, 0xA5, sizeof(r));
+    r.clock_on = r.held_in_reset = r.was_in_reset = true;
+    r.timed_out = r.entered_reset = true;
+    return r;
+}
+
+/* Clock off, or held in reset: nothing touched, the bits reported. It reads
+ * the registers, not the port's state: never set up here. */
+static void case_restart_stop_not_on_bus(void)
+{
+    can_port_restart_report_t r = restart_garbage();
+    stub_twai_dev.status = TWAI_LL_STATUS_TS;
+    CHECK(twai_port_restart_stop(&r) == ESP_OK);
+    CHECK(!r.clock_on && !r.held_in_reset && !r.was_in_reset);
+    CHECK(r.status_at_entry == 0 && r.tec == 0 && r.rec == 0);
+    CHECK(r.status_at_reset == 0 && r.wait_us == 0 && !r.timed_out);
+    CHECK(r.aborts == 0 && !r.entered_reset);
+    CHECK(stub_twai_dev.enter_reset_cmds == 0 && stub_twai_dev.abort_cmds == 0);
+    CHECK(stub_delays == 0);
+
+    restart_on_bus(TWAI_LL_STATUS_TS);
+    stub.rst_en0 = SYSTEM_TWAI_RST;
+    r = restart_garbage();
+    CHECK(twai_port_restart_stop(&r) == ESP_OK);
+    CHECK(r.clock_on && r.held_in_reset && !r.entered_reset && r.tec == 0);
+    CHECK(stub_twai_dev.enter_reset_cmds == 0 && stub_twai_dev.abort_cmds == 0);
+    CHECK(stub_delays == 0);
+
+    CHECK(twai_port_restart_stop(NULL) == ESP_ERR_INVALID_ARG);
+    CHECK(stub_twai_dev.enter_reset_cmds == 0);
+}
+
+/* Between frames already: reset mode at once, the entry state reported. */
+static void case_restart_stop_idle(void)
+{
+    restart_on_bus(TWAI_LL_STATUS_TBS);
+    stub_twai_dev.reset_mode = false;
+    can_port_restart_report_t r = restart_garbage();
+    CHECK(twai_port_restart_stop(&r) == ESP_OK);
+    CHECK(r.clock_on && !r.held_in_reset && !r.was_in_reset);
+    CHECK(r.status_at_entry == TWAI_LL_STATUS_TBS);
+    CHECK(r.tec == 9 && r.rec == 3);
+    CHECK(r.wait_us == 0 && !r.timed_out && r.aborts == 0);
+    CHECK(r.entered_reset && r.status_at_reset == TWAI_LL_STATUS_TBS);
+    CHECK(stub_twai_dev.enter_reset_cmds == 1 && stub_twai_dev.reset_mode);
+    CHECK(stub_twai_dev.abort_cmds == 0 && stub_delays == 0);
+
+    /* Already in reset mode: reported, and reset mode entered all the same. */
+    restart_on_bus(TWAI_LL_STATUS_TBS);
+    stub_twai_dev.reset_mode = true;
+    stub_twai_dev.enter_reset_cmds = 0;
+    r = restart_garbage();
+    CHECK(twai_port_restart_stop(&r) == ESP_OK);
+    CHECK(r.was_in_reset && r.entered_reset && stub_twai_dev.enter_reset_cmds == 1);
+}
+
+/* Another node's frame on the wire (RS): wait for it in 2 us steps, then
+ * reset mode, after the frame and not during it. */
+static void case_restart_stop_waits_for_frame(void)
+{
+    restart_on_bus(TWAI_LL_STATUS_TBS | TWAI_LL_STATUS_RS);
+    stub.status_change_at = 4;
+    stub.status_after = TWAI_LL_STATUS_TBS;
+    can_port_restart_report_t r = restart_garbage();
+    CHECK(twai_port_restart_stop(&r) == ESP_OK);
+    CHECK(r.status_at_entry == (TWAI_LL_STATUS_TBS | TWAI_LL_STATUS_RS));
+    CHECK(stub_delays == 4 && stub.delay_us_total == 8);
+    CHECK(r.wait_us == 8 && !r.timed_out && r.aborts == 0);
+    CHECK(r.entered_reset && r.status_at_reset == TWAI_LL_STATUS_TBS);
+    CHECK(stub_twai_dev.enter_reset_cmds == 1);
+    CHECK(stub_twai_dev.status_at_enter == TWAI_LL_STATUS_TBS);
+    CHECK(stub_twai_dev.delays_at_enter == 4);
+    CHECK(stub_twai_dev.abort_cmds == 0);
+}
+
+/* Our frame transmitting the whole time: the wait runs out at 1 ms, and reset
+ * mode is entered anyway. A transmitting frame is never aborted. */
+static void case_restart_stop_times_out(void)
+{
+    restart_on_bus(TWAI_LL_STATUS_TS);
+    can_port_restart_report_t r = restart_garbage();
+    CHECK(twai_port_restart_stop(&r) == ESP_OK);
+    CHECK(stub_delays == 500 && stub.delay_us_total == 1000);
+    CHECK(r.wait_us == 1000 && r.timed_out);
+    CHECK(r.entered_reset && r.status_at_reset == TWAI_LL_STATUS_TS);
+    CHECK(stub_twai_dev.enter_reset_cmds == 1 && stub_twai_dev.delays_at_enter == 500);
+    CHECK(stub_twai_dev.abort_cmds == 0 && r.aborts == 0);
+}
+
+/* Ours awaiting the bus while another node's frame is on it: the abort on
+ * every poll, counted, until the bus is between frames. */
+static void case_restart_stop_aborts_every_poll(void)
+{
+    restart_on_bus(TWAI_LL_STATUS_RS);      /* TBS 0, TS 0: awaiting */
+    stub.status_change_at = 3;
+    stub.status_after = TWAI_LL_STATUS_TBS;
+    can_port_restart_report_t r = restart_garbage();
+    CHECK(twai_port_restart_stop(&r) == ESP_OK);
+    CHECK(stub_twai_dev.abort_cmds == 3 && r.aborts == 3);
+    CHECK(r.wait_us == 6 && !r.timed_out && r.entered_reset);
+
+    /* Awaiting on an idle bus: aborted on the first poll, no wait. */
+    restart_on_bus(0);
+    stub_delays = 0;
+    stub.status_change_at = 0;
+    stub_twai_dev.abort_cmds = 0;
+    r = restart_garbage();
+    CHECK(twai_port_restart_stop(&r) == ESP_OK);
+    CHECK(stub_twai_dev.abort_cmds == 1 && r.aborts == 1);
+    CHECK(r.wait_us == 0 && stub_delays == 0 && r.entered_reset);
+}
+
 int main(void)
 {
     static const struct { const char *name; void (*fn)(void); } cases[] = {
@@ -764,6 +892,11 @@ int main(void)
         { "flush", case_flush },
         { "backend_ops", case_backend_ops },
         { "c3_abort", case_c3_abort },
+        { "restart_stop_not_on_bus", case_restart_stop_not_on_bus },
+        { "restart_stop_idle", case_restart_stop_idle },
+        { "restart_stop_waits_for_frame", case_restart_stop_waits_for_frame },
+        { "restart_stop_times_out", case_restart_stop_times_out },
+        { "restart_stop_aborts_every_poll", case_restart_stop_aborts_every_poll },
     };
     for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
     {

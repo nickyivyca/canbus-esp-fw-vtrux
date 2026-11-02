@@ -24,13 +24,24 @@
  * that spreads.
  *
  * Both read the controller's registers, so both are for while the driver is
- * installed (the controller's clock on). The restart step checks the clock
+ * installed (the controller's clock on). The restart stop checks the clock
  * before it calls in.
+ *
+ * T12, THE RESTART STOP, from step 1c: moved from gen-inhibit's
+ * gi_restart_quiesce.c (gen-inhibit/main 69d97a2), with the same steps,
+ * bounds and order. Also checked against ESP-IDF v5.4.1: in twai_ll.h,
+ * twai_ll_is_in_reset_mode(), twai_ll_enter_reset_mode(), twai_ll_get_tec(),
+ * twai_ll_get_rec() and TWAI_LL_STATUS_RS; in soc/system_reg.h,
+ * SYSTEM_PERIP_CLK_EN0_REG with SYSTEM_TWAI_CLK_EN and
+ * SYSTEM_PERIP_RST_EN0_REG with SYSTEM_TWAI_RST.
  */
 #include "twai_port.h"
 #include "hal/twai_ll.h"
 #include "esp_attr.h"
+#include "esp_rom_sys.h"
 #include "freertos/FreeRTOS.h"
+#include "soc/soc.h"
+#include "soc/system_reg.h"
 
 static portMUX_TYPE s_abort_lock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -87,4 +98,94 @@ IRAM_ATTR twai_port_buf_t twai_port_abort_if_awaiting(void)
     }
     taskEXIT_CRITICAL(&s_abort_lock);
     return seen;
+}
+
+#define RESTART_WAIT_MAX_US  1000u
+#define RESTART_WAIT_STEP_US 2u
+
+/*
+ * T12, THE RESTART STOP. Why a restart needs it (on the C3, esp_restart_noos()
+ * neither resets nor stops the TWAI peripheral, and drops the CPU clock from
+ * 80 to 40 MHz before the CPU reset) is in shared/restart_guard's
+ * restart_guard.c, which calls this through can_port C7.
+ *
+ * RESET MODE, AFTER THE FRAME ON THE WIRE (if any) HAS FINISHED. Wait,
+ * bounded at 1 ms, for Transmit Status and Receive Status both to read 0, so
+ * for the bus to be between frames, and on EVERY poll abort our frame if it
+ * is still awaiting the bus. Entering reset mode in the middle of our own
+ * frame would cut it off, and every other node would flag that.
+ *
+ * It aborts only an AWAITING frame, the only state in which the command was
+ * measured to act (7 of 8 at TS = 1 had no effect), and on every poll, so a
+ * frame that failed on the wire and dropped back to awaiting its retry is
+ * aborted then, rather than retried into the 1 ms bound. Once nothing of ours
+ * is awaiting, nothing of ours can start: interrupts are off, so the driver
+ * cannot load another frame. If the wait still runs out, another node's frame
+ * is on the wire, and reset mode is entered anyway; the report says so.
+ * Nothing takes the controller out of reset mode again until
+ * twai_driver_install() does (twai.c:497-499), so it stays there through the
+ * CPU reset, the ROM, the bootloader and app_main.
+ *
+ * SKIPPED when the TWAI clock is off or the peripheral is held in reset: the
+ * registers are then unreachable, and the controller is not on the bus. That
+ * is the state after a power-on (clk.c:237) or a twai_driver_uninstall()
+ * (twai.c:566-572). It is NOT the state of a boot that never installed the
+ * driver: a CPU reset from a live state leaves the controller clocked and
+ * running with no driver. So it reads the two bits rather than the port's
+ * state, and acts whether or not the port was set up in this boot.
+ *
+ * IRAM, and what it calls is inline LL, ROM (esp_rom_delay_us) or IRAM (the
+ * abort above). No lock of its own, no allocation, no log.
+ */
+IRAM_ATTR esp_err_t twai_port_restart_stop(can_port_restart_report_t *r)
+{
+    if (r == NULL)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+    r->clock_on        = (REG_READ(SYSTEM_PERIP_CLK_EN0_REG) & SYSTEM_TWAI_CLK_EN) != 0;
+    r->held_in_reset   = (REG_READ(SYSTEM_PERIP_RST_EN0_REG) & SYSTEM_TWAI_RST) != 0;
+    r->was_in_reset    = false;
+    r->status_at_entry = 0;
+    r->tec             = 0;
+    r->rec             = 0;
+    r->status_at_reset = 0;
+    r->wait_us         = 0;
+    r->timed_out       = false;
+    r->aborts          = 0;
+    r->entered_reset   = false;
+
+    if (!r->clock_on || r->held_in_reset)
+    {
+        return ESP_OK;
+    }
+
+    twai_dev_t *hw = TWAI_LL_GET_HW(0);
+    r->was_in_reset    = twai_ll_is_in_reset_mode(hw);
+    r->status_at_entry = twai_ll_get_status(hw);
+    r->tec             = twai_ll_get_tec(hw);
+    r->rec             = twai_ll_get_rec(hw);
+
+    uint32_t waited = 0;
+    for (;;)
+    {
+        if (twai_port_abort_if_awaiting() == TWAI_PORT_BUF_AWAITING)
+        {
+            r->aborts++;
+        }
+        if ((twai_ll_get_status(hw) &
+             (TWAI_LL_STATUS_TS | TWAI_LL_STATUS_RS)) == 0 ||
+            waited >= RESTART_WAIT_MAX_US)
+        {
+            break;
+        }
+        esp_rom_delay_us(RESTART_WAIT_STEP_US);
+        waited += RESTART_WAIT_STEP_US;
+    }
+    r->wait_us         = waited;
+    r->timed_out       = waited >= RESTART_WAIT_MAX_US;
+    r->status_at_reset = twai_ll_get_status(hw);
+    twai_ll_enter_reset_mode(hw);
+    r->entered_reset   = true;
+    return ESP_OK;
 }

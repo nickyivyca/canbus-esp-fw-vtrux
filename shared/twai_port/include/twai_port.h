@@ -195,6 +195,22 @@ twai_port_buf_t twai_port_buf_state(void);
  * fresh section at each use and a second one on the declaration conflicts. */
 twai_port_buf_t twai_port_abort_if_awaiting(void);
 
+/*
+ * T12, THE RESTART STOP, register level, in the chip's file: for the restart
+ * path only (can_port C7, shared/restart_guard G3), with interrupts already
+ * off. If the TWAI clock is on and the peripheral is not held in reset, it
+ * waits, at most 1 ms in steps of 2 us, for the controller to be neither
+ * transmitting nor receiving, running the abort-if-awaiting above on every
+ * poll, then puts the controller into reset mode, even if the wait ran out.
+ * Otherwise it touches nothing. It reads the registers, not the port's
+ * state, so it acts whether or not the port was set up in this boot. ESP_OK
+ * with `out` filled; ESP_ERR_INVALID_ARG for a NULL `out`;
+ * ESP_ERR_NOT_SUPPORTED, touching nothing, on a chip with no measured file.
+ * In IRAM: no lock, no allocation, no logging. Like the abort, the
+ * attribute is on the definition only.
+ */
+esp_err_t twai_port_restart_stop(can_port_restart_report_t *out);
+
 /* The port as a can_port backend (can_port C1); its context is NULL. */
 extern const can_port_ops_t twai_port_ops;
 

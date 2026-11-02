@@ -110,6 +110,60 @@ typedef enum {
 } twai_fake_chip_t;
 void twai_fake_set_chip(twai_fake_chip_t chip);
 
+/* ---------------------------------------- the peripheral and reset mode -- */
+
+/*
+ * The TWAI's bus clock enable and reset bits (soc/system_reg.h, read with
+ * REG_READ), and the controller's reset mode (twai_ll_is_in_reset_mode),
+ * which the restart stop reads (twai_port T12). As ESP-IDF v5.4.1 drives
+ * them:
+ *   power-on (twai_fake_reset)  clock off, reset not held
+ *   twai_driver_install()       clock on, reset pulsed (not held), and the
+ *                               controller in reset mode (twai.c:497-499,
+ *                               twai_hal.c:27)
+ *   twai_start()                out of reset mode (twai_hal.c:91)
+ *   twai_stop()                 reset mode; any transmission halted
+ *                               (twai_hal.c:96-99)
+ *   bus-off                     reset mode, until twai_initiate_recovery()
+ *                               takes it out to recover (twai_hal_iram.c:162-165)
+ *   recovery complete           reset mode (twai_hal_iram.c:110)
+ *   twai_driver_uninstall()     clock off (twai.c:568-571)
+ * Reset mode is derived from those, never kept beside them, except for the
+ * one register write the driver does not know about:
+ * twai_ll_enter_reset_mode() from code outside the driver. That takes the
+ * controller off the bus with the driver still RUNNING: a frame on the wire
+ * is cut (twai_fake_tx_cut_by_reset()), nothing more is sent or received,
+ * and no bus-off can happen, until twai_start(), twai_initiate_recovery()
+ * or the next install takes it out again.
+ *
+ * While the clock is off or the reset held, the registers cannot be used:
+ * every twai_ll_* call is counted in twai_fake_ll_unclocked_calls(), reads
+ * give 0 and writes do nothing. A healthy run keeps that count at zero.
+ */
+void twai_fake_set_periph(bool clock_on, bool reset_held);
+bool twai_fake_periph_clock(void);
+bool twai_fake_periph_reset_held(void);
+bool twai_fake_in_reset_mode(void);
+
+/*
+ * The controller is receiving a frame for the next `us` microseconds: the
+ * status register's RS bit is set, while running and out of reset mode.
+ * Nothing is delivered by it (twai_fake_deliver() does that). Entering
+ * reset mode cuts it. 0 ends it.
+ */
+void twai_fake_set_receiving(int64_t us);
+
+/* ----------------------------------------------------------- busy waits -- */
+
+/*
+ * esp_rom_delay_us() (host/esp_rom_sys.h) is the fake's: a busy wait moves
+ * the fake's own clock by `us`. With a clock adapter it calls the wait
+ * hook with a deadline `us` from now until the clock gets there (the
+ * project's scheduler moves its clock), and with no hook it only counts.
+ */
+uint32_t twai_fake_delay_calls(void);
+int64_t  twai_fake_delay_us_total(void);
+
 /* ------------------------------------------------------- transmit model -- */
 
 /*
@@ -327,7 +381,13 @@ int      twai_fake_unsafe_teardowns(void);
 int      twai_fake_ll_aborts(void);             /* commands issued */
 int      twai_fake_ll_aborts_while_tx(void);    /* on a transmitting buffer */
 int      twai_fake_ll_removed(void);            /* frames an abort removed */
-int      twai_fake_ll_unmeasured_calls(void);   /* any twai_ll call on the S3 */
+int      twai_fake_ll_unmeasured_calls(void);   /* any twai_ll call or REG_READ on the S3 */
+/* The register model (T12). */
+int      twai_fake_ll_reset_entries(void);      /* twai_ll_enter_reset_mode() that took effect */
+int      twai_fake_ll_unclocked_calls(void);    /* twai_ll calls with the clock off or reset held */
+uint32_t twai_fake_tx_cut_by_reset(void);       /* on the wire when reset mode was entered */
+uint32_t twai_fake_reg_reads(void);             /* REG_READ() of the two modelled registers */
+uint32_t twai_fake_reg_unknown_reads(void);     /* REG_READ() of any other address */
 
 /* What a behaviour rests on (README.md has the full table). */
 typedef enum {

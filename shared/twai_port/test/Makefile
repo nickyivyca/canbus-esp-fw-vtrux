@@ -18,7 +18,8 @@ WARN   := -Wall -Wextra -Werror
 CFLAGS ?= -std=c11 -O1 -g $(WARN) -fsanitize=address,undefined -fno-omit-frame-pointer
 INC    := -Iinclude -Ihost -I. -I../include -I../../can_port/include
 
-FAKE := twai_fake.c twai_fake.h include/driver/twai.h include/hal/twai_ll.h
+FAKE := twai_fake.c twai_fake.h include/driver/twai.h include/hal/twai_ll.h \
+        $(wildcard include/soc/*.h) host/esp_rom_sys.h
 PORT := ../twai_port.c ../include/twai_port.h ../../can_port/include/can_port.h \
         $(wildcard host/*.h host/*/*.h) host_platform.c
 
@@ -57,7 +58,8 @@ cxx:
 	$(CXX) -std=c++11 -O1 -Wall -Wextra $(INC) -Icpp -c cpp/twai_fake.cpp -o $(OUT)/twai_fake_cpp.o
 
 cxx-test: cxx
-	$(CXX) -std=c++11 -O1 -g -Wall -Wextra -fsanitize=address,undefined $(INC) -Icpp 	    -o $(OUT)/test_cpp_wrapper cpp/test_cpp_wrapper.cpp cpp/twai_fake.cpp -x c++ twai_fake.c
+	$(CXX) -std=c++11 -O1 -g -Wall -Wextra -fsanitize=address,undefined $(INC) -Icpp \
+	    -o $(OUT)/test_cpp_wrapper cpp/test_cpp_wrapper.cpp cpp/twai_fake.cpp -x c++ twai_fake.c
 	$(OUT)/test_cpp_wrapper
 
 clean:
