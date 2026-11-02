@@ -14,6 +14,10 @@
 # transcripts identical), and the shared fake's can-fail (run.sh's own
 # --can-fail mode). Both runs expect FAIL: host_bridge carries the two
 # recorded KNOWN FAILs (bridge-ok-veh-failed, bridge-ok-switch-discard).
+# expect = "FAIL" alone would also take a test that did not build (the judge's
+# ERROR): the smoke run of 21bf42f, at 71351ff, had test_event_layout not
+# built under TWAI_FAKE=shared, and only e-transcripts caught it (fixed in
+# de11c44).
 
 [step]
 id = "smoke"
@@ -24,10 +28,10 @@ spec = ["none: a smoke run of the acceptance runner"]
 verification = "none (a --dev smoke run is never evidence)"
 
 [trees.local]
-project = "71351ff9710f07939c4172ab261dba3dd722268c"
+project = "de11c44b68540939d6975488fd8af269162584ed"
 
 [trees.madhouse]
-project = "71351ff9710f07939c4172ab261dba3dd722268c"
+project = "de11c44b68540939d6975488fd8af269162584ed"
 host = "madhouse"
 shared = { twai_port = "40c0bccddccb8fd949df5f92db906fa302b6ae1b" }
 
