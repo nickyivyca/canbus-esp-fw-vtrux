@@ -55,6 +55,7 @@ import contextlib
 import datetime
 import json
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -64,7 +65,8 @@ import time
 
 OWNER_SUFFIX = ".owner.json"
 # switched off by a mutant in tests/test_accept_remote.py, which must fail
-RULES = {"remote_leftover": True}
+RULES = {k: True for k in ("remote_leftover", "guard_absolute", "guard_normal",
+                           "guard_workroot", "guard_under", "guard_runner")}
 # remove() tries a folder's whole tree again after each of these waits, about
 # 3 s in all, as tests/_scratch.py does (gen-inhibit tester, 2026-11-01): a
 # Windows hold on a fresh folder (WinError 32) can outlast the handler's own
@@ -401,13 +403,53 @@ def run(parent, name):
         remove(p)
 
 
-def remove_remote(ssh, host, path, quiet=False, out=None):
+# What the runner makes below a remote host's workroot: an acceptance
+# record's folder (accept-<record id>) and a chain run's work folder (its
+# run id, <suite>_<YYYYmmddTHHMMSS>_<hex4>).
+RUNNER_REMOTE = (re.compile(r"^accept-accept_[A-Za-z0-9_.-]+_\d{8}T\d{6}_[0-9a-f]{4}$"),
+                 re.compile(r"^[A-Za-z0-9_.-]+_\d{8}T\d{6}_[0-9a-f]{4}$"))
+
+
+def remote_refusal(path, workroot):
+    """Why rm -rf must not run on path, or None (the charge-interposer
+    reviewer, 2026-11-02): the path absolute, normalised, with no ".." or
+    "~"; the workroot absolute, normalised and not "/"; the path strictly
+    under it; its first part below it one the runner makes."""
+    import posixpath
+    if RULES["guard_absolute"] and not (isinstance(path, str) and path.startswith("/")):
+        return "not an absolute path"
+    parts = path.split("/")
+    if RULES["guard_normal"] and (posixpath.normpath(path) != path or ".." in parts
+                                  or "~" in path):
+        return "not a normal path (.., ~, or doubled or trailing /)"
+    if RULES["guard_workroot"] and not (isinstance(workroot, str) and workroot.startswith("/")
+                                        and posixpath.normpath(workroot) == workroot
+                                        and workroot != "/"):
+        return "the host's workroot %r is empty, not absolute and normal, or /" % (workroot,)
+    root = (workroot or "").rstrip("/")
+    if RULES["guard_under"] and not path.startswith(root + "/"):
+        return "not under the host's workroot %s" % workroot
+    first = path[len(root) + 1:].split("/")[0]
+    if RULES["guard_runner"] and not any(rx.match(first) for rx in RUNNER_REMOTE):
+        return "%s is not a folder the runner makes below the workroot" % first
+    return None
+
+
+def remove_remote(ssh, host, path, workroot, quiet=False, out=None):
     """Remove a folder on a remote host (ssh: the ssh command, host: its
-    ssh name): rm -rf there, then a look that it is gone. [(host:path,
-    reason)] for what is left, printed as a LEFTOVER line unless quiet."""
+    ssh name, workroot: the host's workroot from the settings): rm -rf
+    there, then a look that it is gone. Refused, running nothing, unless
+    remote_refusal() finds nothing wrong. [(host:path, reason)] for what is
+    left, printed as a LEFTOVER line unless quiet."""
     import shlex
     import subprocess
     say = out or (lambda s: print(s, flush=True))
+    why = remote_refusal(path, workroot)
+    if why:
+        left = [("%s:%s" % (host, path), "refused, nothing run: %s" % why)]
+        if not quiet:
+            say("scratch: LEFTOVER %s -- %s" % left[0])
+        return left
     q = shlex.quote(path)
     line = "rm -rf -- %s; if [ -e %s ]; then echo still there; exit 3; fi" % (q, q)
     try:
@@ -441,9 +483,10 @@ class Made:
         self.paths.append(path)
         return path
 
-    def add_remote(self, ssh, host, path):
-        """A folder on a remote host, removed over ssh (remove_remote)."""
-        self.remote.append((tuple(ssh), host, path))
+    def add_remote(self, ssh, host, path, workroot):
+        """A folder on a remote host below its workroot, removed over ssh
+        (remove_remote, which refuses a path the runner did not make)."""
+        self.remote.append((tuple(ssh), host, path, workroot))
         return path
 
     def remove_all(self, out=None):
@@ -461,10 +504,10 @@ class Made:
         self.paths = [p for p in self.paths
                       if p not in self.kept and os.path.lexists(long_path(p))]
         still = []
-        for ssh, host, path in reversed(self.remote):
-            lo = remove_remote(ssh, host, path, out=out)
+        for ssh, host, path, workroot in reversed(self.remote):
+            lo = remove_remote(ssh, host, path, workroot, out=out)
             left += lo
             if lo:
-                still.insert(0, (ssh, host, path))
+                still.insert(0, (ssh, host, path, workroot))
         self.remote = still
         return left

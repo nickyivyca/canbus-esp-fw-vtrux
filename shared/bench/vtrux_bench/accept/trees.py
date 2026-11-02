@@ -160,7 +160,7 @@ def _to_remote(name, t, local, paths, remote, made, say, prefix):
                         "ssh and workroot" % (name, host))
     base = "%s/accept-%s/%s%s" % (cfg["workroot"].rstrip("/"), remote["record_id"], prefix, name)
     if RULES["remote_made"]:
-        made.add_remote(E.SSH, cfg["ssh"], base)
+        made.add_remote(E.SSH, cfg["ssh"], base, cfg["workroot"].rstrip("/"))
     checkouts = [("project", local["project_dir"], t["project"])] + [
         (c, local["shared_dirs"][c], v) for c, v in sorted(t["shared"].items())]
     out = {}

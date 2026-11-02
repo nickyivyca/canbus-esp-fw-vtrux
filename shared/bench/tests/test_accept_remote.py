@@ -269,8 +269,46 @@ def test_remote_not_yet():
         raise AssertionError("a %s on a remote tree was taken" % word)
 
 
+def test_remove_guard():
+    """A14 (the charge-interposer reviewer, 2026-11-02): remove_remote never
+    runs rm -rf on a path it was not made for. It refuses -- running
+    nothing, a LEFTOVER with the reason -- unless the path is absolute,
+    normalised, with no ".." or "~"; strictly under the host's workroot,
+    which itself is absolute and not "/"; and its first part below the
+    workroot is one the runner makes (accept-<record id>, or a chain run's
+    work folder <suite>_<YYYYmmddTHHMMSS>_<hex4>)."""
+    N[0] += 1
+    mark = os.path.join(BASE, "ssh_ran%d" % N[0])        # this call's own, never a stale one
+    ssh = (PY, "-c", "open(r'%s', 'w').close()" % mark)
+    wr = "/w/runner"
+    rec_dir = wr + "/accept-accept_s1_20261102T101500_ab12"
+    cases = [
+        ("relative", "w/runner/accept-accept_s1_20261102T101500_ab12", wr, "absolute"),
+        ("home", "~/accept-accept_s1_20261102T101500_ab12", wr, "absolute"),
+        ("dotdot", rec_dir + "/../../etc", wr, "normal"),
+        ("not normalised", wr + "//accept-accept_s1_20261102T101500_ab12", wr, "normal"),
+        ("the workroot", wr, wr, "under"),
+        ("outside", "/other/accept-accept_s1_20261102T101500_ab12", wr, "under"),
+        ("empty workroot", rec_dir, "", "workroot"),
+        ("root workroot", "/accept-accept_s1_20261102T101500_ab12", "/", "workroot"),
+        ("not the runner's", wr + "/home", wr, "runner"),
+        ("near miss", wr + "/accept-x", wr, "runner"),
+    ]
+    for name, path, root, word in cases:
+        said = []
+        left = S.remove_remote(ssh, "farhost", path, root, out=said.append)
+        assert not os.path.exists(mark), "%s: ssh ran for %r" % (name, path)
+        assert left and word in left[0][1] and "refused" in left[0][1], (name, left)
+        assert said and "LEFTOVER" in said[0], (name, said)
+    # the runner's own folders are taken (ssh runs; here it only marks)
+    for path in (rec_dir + "/tree-far", wr + "/accept-s1_20261102T101501_cd34"):
+        left = S.remove_remote(ssh, "farhost", path, wr, quiet=True)
+        assert os.path.exists(mark), "a runner's folder was refused: %s %s" % (path, left)
+        os.remove(mark)
+
+
 TESTS = [test_remote_tree, test_remote_check_refuses, test_remote_check_runs,
-         test_remote_removed, test_remote_not_yet]
+         test_remote_removed, test_remote_not_yet, test_remove_guard]
 
 MUTANTS = [
     (T, "remote_exact", test_remote_tree),
@@ -280,6 +318,11 @@ MUTANTS = [
     (C, "remote_shell", test_remote_check_runs),
     (C, "chain_work_removed", test_remote_removed),
     (S, "remote_leftover", test_remote_removed),
+    (S, "guard_absolute", test_remove_guard),
+    (S, "guard_normal", test_remove_guard),
+    (S, "guard_under", test_remove_guard),
+    (S, "guard_workroot", test_remove_guard),
+    (S, "guard_runner", test_remove_guard),
     (B, "remote_refused", test_remote_not_yet),
     (CF, "remote_refused", test_remote_not_yet),
     (C, "remote_suite_refused", test_remote_not_yet),

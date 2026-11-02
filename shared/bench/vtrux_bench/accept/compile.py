@@ -205,7 +205,7 @@ def run_suite(suite, settings, rec, adapter=None, made=None, **kw):
             for host in sorted({g.host for g in suite.groups if g.host != "local"}):
                 cfg = (settings.get("hosts") or {}).get(host) or {}
                 if cfg.get("ssh") and cfg.get("workroot"):
-                    made.add_remote(E.SSH, cfg["ssh"], "%s/%s" % (
-                        cfg["workroot"].rstrip("/"), eng.run_id))
+                    root = cfg["workroot"].rstrip("/")
+                    made.add_remote(E.SSH, cfg["ssh"], "%s/%s" % (root, eng.run_id), root)
     r["_dir"] = eng.run_dir
     return r
