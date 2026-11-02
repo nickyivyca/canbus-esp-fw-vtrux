@@ -223,8 +223,23 @@ def test_skeleton():
         assert want in sk, (want, sk)
 
 
+def test_dev_skeleton():
+    """gen-inhibit's reviewer (2026-11-01): a --dev run's skeleton opens
+    "DEV RUN, not evidence", so nothing of it is mistaken for an entry; a
+    run that is not --dev has no such line."""
+    rec, _said = opened()
+    s = summary(rec)
+    s["dev"] = True
+    CL.close(rec, s, S.Made(), Adapter())
+    assert read(rec, "verification_skeleton.md").startswith("DEV RUN, not evidence")
+    rec2, _s = opened()
+    CL.close(rec2, summary(rec2), S.Made(), Adapter())
+    assert "DEV RUN" not in read(rec2, "verification_skeleton.md")
+
+
 TESTS = [test_readme, test_sha256sums, test_closed_once, test_identifiers_reported,
-         test_cleanup_first, test_late_failure, test_artifacts_row, test_skeleton]
+         test_cleanup_first, test_late_failure, test_artifacts_row, test_skeleton,
+         test_dev_skeleton]
 
 MUTANTS = [
     ("readme_items", test_readme),
@@ -239,6 +254,7 @@ MUTANTS = [
     ("late_outside", test_late_failure),
     ("row", test_artifacts_row),
     ("skeleton_reruns", test_skeleton),
+    ("dev_marked", test_dev_skeleton),
 ]
 
 
