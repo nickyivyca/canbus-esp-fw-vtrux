@@ -82,6 +82,9 @@ def test_catalogue(A, work):
         assert by["cf." + s.replace("_", "-")]["args"] == ["--can-fail"]
     for t in BS.HARNESS_PY_TESTS + BS.LOGIC_PY_TESTS:
         assert by[t[:-3].replace("_", "-")]["path"] == "charge-interposer/" + t
+    for t in BS.HARNESS_PY_CANFAILS:
+        e = by[t[:-3].replace("_", "-") + "-canfail"]
+        assert e["path"] == "charge-interposer/" + t and e["args"] == ["--can-fail"], e
     for cid, _argv in BS.HARNESS_LOCAL:
         assert cid in by, cid
     for e in cat:
@@ -384,6 +387,8 @@ MUTANTS = [
     ("self-tests without their flag", '["--self-test"]', "[]"),
     ("a harness check dropped", "    for cid, argv in BS.HARNESS_LOCAL:\n",
      "    for cid, argv in BS.HARNESS_LOCAL[1:]:\n"),
+    ("a harness test's can-fail dropped", "    for t in BS.HARNESS_PY_CANFAILS:\n",
+     "    for t in BS.HARNESS_PY_CANFAILS[:-1]:\n"),
     ("INTERPOSER_CODE not the tree's", 'env = {"INTERPOSER_CODE": _code(tree)}',
      'env = {"INTERPOSER_CODE": HERE}'),
     ("no TWAI_FAKE_DIR", '        env["TWAI_FAKE_DIR"] = fake\n', "        pass\n"),

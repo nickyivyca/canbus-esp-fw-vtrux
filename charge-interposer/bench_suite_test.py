@@ -357,7 +357,9 @@ def test_suites():
     #      can-tools pin move to 1cd3942 (2026-11-01)
     # 200: twai-fake-option-test and its -canfail, with host_bridge's
     #      TWAI_FAKE option (reviewer, 2026-11-02)
-    assert len(seen) == 200, "checks across the suites: %d" % len(seen)
+    # 204: scratch-dir-test, scratch-run-test and each one's -canfail, with
+    #      the run folders in scratch/ (reviewer, 2026-11-02)
+    assert len(seen) == 204, "checks across the suites: %d" % len(seen)
     # madhouse gets the pinned canre beside the code, named by CANRE_DIR
     mad = 0
     for name in ("emulated", "harness"):
@@ -880,6 +882,26 @@ def test_shared_bench_tests():
                 n, " ".join(extra))
 
 
+def test_harness_py_canfails():
+    """Every test in HARNESS_PY_TESTS that takes --can-fail is in
+    HARNESS_PY_CANFAILS, every one listed there takes it, and the harness
+    suite runs each with it (reviewer, 2026-11-02: scratch_dir_test and
+    scratch_run_test had can-fails no suite ran)."""
+    takes = set()
+    for t in B.HARNESS_PY_TESTS:
+        src = open(os.path.join(HERE, t), encoding="utf-8").read()
+        if '"--can-fail"' in src:
+            takes.add(t)
+    assert takes == set(B.HARNESS_PY_CANFAILS), \
+        "can-fails: found %s, listed %s" % (
+            sorted(takes ^ set(B.HARNESS_PY_CANFAILS)), "HARNESS_PY_CANFAILS")
+    s, su = _all()
+    runs = {tuple(str(a) for a in c.argv) for g in su["harness"].groups
+            for c in g.checks if not c.skip}
+    for t in takes:
+        assert (t, "--can-fail") in runs, "harness never runs %s --can-fail" % t
+
+
 def test_reopen_skip():
     """innomaker-rate-runs-reopen stays listed with its argument line, and is
     a skip naming the 2026-10-14 harness defect, so it shows NOT-RUN with
@@ -1121,7 +1143,8 @@ TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_corrupt_pin_judge, test_c12_judge, test_host_bridge_judge,
          test_suites, test_mutant_wiring, test_identify, test_pycache_ignored,
          test_usb_baselines, test_usb_stops, test_reopen_skip,
-         test_script_coverage, test_shared_bench_tests, test_strict_port_off,
+         test_script_coverage, test_shared_bench_tests,
+         test_harness_py_canfails, test_strict_port_off,
          test_vport_split, test_bench_argv, test_wican_board,
          test_scripts_in_tree, test_can_tools_record, test_runner_stage]
 
@@ -1251,6 +1274,7 @@ _ORIG["self._ARGV_PROBE"] = _ARGV_PROBE
 _ORIG["SELF_TESTS"] = B.SELF_TESTS
 _ORIG["CAN_FAILS"] = B.CAN_FAILS
 _ORIG["SHARED_BENCH_TESTS"] = B.SHARED_BENCH_TESTS
+_ORIG["HARNESS_PY_CANFAILS"] = B.HARNESS_PY_CANFAILS
 _ORIG["can_tools_info"] = B.can_tools_info
 _ORIG["_stage_git_bundle"] = B._stage_git_bundle
 _ORIG["_remove_at_exit"] = B._remove_at_exit
@@ -1509,6 +1533,15 @@ MUTANTS = {
          "the harness drops test_decode --can-fail"),
         ("harness", _wrap_suite("harness", _drop_harness_check(
             "sb.test-run-core")), "the harness drops test_run_core")],
+    "test_harness_py_canfails": [
+        ("HARNESS_PY_CANFAILS",
+         [t for t in B.HARNESS_PY_CANFAILS if t != "scratch_run_test.py"],
+         "scratch_run_test's can-fail unlisted"),
+        ("HARNESS_PY_CANFAILS", B.HARNESS_PY_CANFAILS + ["sims_test.py"],
+         "a listed can-fail the test does not have"),
+        ("harness", _wrap_suite("harness", _drop_harness_check(
+            "scratch-dir-test-canfail")),
+         "listed, but the harness never runs it")],
     "test_reopen_skip": [
         ("bench", _wrap_suite("bench", _unskip("innomaker-rate-runs-reopen")),
          "the reopen case runs again (a25e, 4cdb)"),

@@ -14,7 +14,11 @@
 # cached in one fixed TMPDIR file, hr_l1, shared by every run on the machine
 # and rebuilt only when a source was newer than it; a build of host_runner
 # and machine.cpp now comes with each call, which run_scenario.py makes once
-# per scenario, after its simulators have stopped.
+# per scenario, after its simulators have stopped. That build is a build
+# under AGENTS.md, "Builds during wall-clock tests": if a scenario chain runs
+# while another wall-clock test is running on the same machine, it comes
+# under that section's throttle rule like any other build (reviewer,
+# 2026-11-02).
 #
 #   diff_one.sh <trace>        -> exit 0 identical, 1 differs, 2 cannot run
 set -u

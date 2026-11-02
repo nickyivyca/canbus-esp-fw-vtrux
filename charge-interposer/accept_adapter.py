@@ -239,8 +239,7 @@ def catalogue(repo, commit):
     for t in BS.HARNESS_PY_TESTS:
         out.append(_entry(t[:-3].replace("_", "-"), "charge-interposer/" + t, [],
                           ["harness"]))
-    for t in ("canre_pin_test.py", "can_tools_pin_test.py", "bus_gs_usb_test.py",
-              "paths_test.py", "twai_fake_option_test.py"):
+    for t in BS.HARNESS_PY_CANFAILS:
         out.append(_entry(t[:-3].replace("_", "-") + "-canfail", "charge-interposer/" + t,
                           ["--can-fail"], ["harness", "can-fail"]))
     for s in BS.SELF_TESTS:
