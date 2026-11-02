@@ -26,7 +26,6 @@ Gen-inhibit tester, 2026-10-24 (C6f verification).
 import hashlib
 import io
 import os
-import shutil
 import subprocess
 import sys
 import tarfile
@@ -277,7 +276,7 @@ def main(argv):
         print("\n%s" % ("all ok" if not FAILS else "%d FAIL: %s" % (len(FAILS), "; ".join(FAILS))))
         return 1 if FAILS else 0
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        I.remove_tree(tmp)
 
 
 if __name__ == "__main__":

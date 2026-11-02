@@ -326,11 +326,9 @@ def snapshot(folder):
 
 
 def rmtree(p):
-    def onerr(func, path, _exc):
-        os.chmod(path, 0o700)
-        func(path)
-    if os.path.exists(p):
-        shutil.rmtree(p, onerror=onerr)
+    """independent.remove_tree, raising when anything is left: a case must not go on over it."""
+    if not I.remove_tree(p):
+        raise RuntimeError("could not remove %s (the reasons are printed above)" % p)
 
 
 def bench_clear(log):

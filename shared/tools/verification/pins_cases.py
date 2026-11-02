@@ -49,9 +49,7 @@ import json
 import os
 import platform
 import re
-import shutil
 import sys
-import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -245,7 +243,7 @@ def self_test_comp_cases():
     back as it was, or left absent."""
     global check, judge, judge_unreadable
     ok, real = True, (check, judge, judge_unreadable, RC.report)
-    d = tempfile.mkdtemp(prefix="r30st")
+    d = RC.I.scratch("pins-cases-selftest-comp")
     comp = os.path.join(d, "managed_components", "vtrux__wican")
     lp = os.path.join(comp, COMP_FILE)
     seen = {}
@@ -335,7 +333,7 @@ def self_test_comp_cases():
             ok &= good
     finally:
         check, judge, judge_unreadable, RC.report = real
-        shutil.rmtree(d, ignore_errors=True)
+        RC.I.remove_tree(d)
     return ok
 
 
