@@ -18,7 +18,9 @@ again, the whole tree tried again for a few seconds while another process
 holds part of it, long-path-safe on Windows, and a folder that will not go
 printed to stderr with the reason, never ignored. Before 2026-11-01 nothing removed
 them, and a day's runs left 3,359 files. A killed process's folder stays,
-under its own <time>_<pid>, so it never stops the next run.
+under its own <time>_<pid>, so it never stops the next run. Once its run folder
+is gone, its <name>/ and vtrux-bench-tests/ go too if nothing else is in them
+(the charge-interposer reviewer, 2026-11-02: 21 empty tool folders were left).
 """
 
 import atexit
@@ -93,11 +95,40 @@ def remove_tree(path):
     return True
 
 
+def drop_empty(d):
+    """After run folder d is removed: its tool folder <name>/, then
+    vtrux-bench-tests/, each removed if nothing is left in it. Another run's
+    folder keeps them, so os.rmdir, which takes only an empty folder, and its
+    refusal is not an error; nor is a folder another run's exit already took."""
+    for p in (os.path.dirname(d), os.path.dirname(os.path.dirname(d))):
+        try:
+            os.rmdir(long_path(p))
+        except OSError:
+            pass
+
+
+def _remove_run(d):
+    if remove_tree(d):
+        drop_empty(d)
+
+
+MAKE_TRIES = 3
+
+
 def run_dir(name, start=None):
     """This run's own folder for test `name`, created, and removed when this process
-    exits. `start` is a path inside the worktree meant (default this file)."""
+    exits, with the tool folders above it once empty (drop_empty). `start` is a
+    path inside the worktree meant (default this file)."""
     d = os.path.join(worktree_of(start or __file__), "scratch", "vtrux-bench-tests", name,
                      "%s_%d" % (time.strftime("%Y%m%dT%H%M%S"), os.getpid()))
-    os.makedirs(d, exist_ok=True)
-    atexit.register(remove_tree, d)
+    # another run's exit can take <name>/ or vtrux-bench-tests/ while this one is
+    # making them (drop_empty): they are made again, MAKE_TRIES tries in all
+    for attempt in range(MAKE_TRIES):
+        try:
+            os.makedirs(d, exist_ok=True)
+            break
+        except FileNotFoundError:
+            if attempt == MAKE_TRIES - 1:
+                raise
+    atexit.register(_remove_run, d)
     return d
