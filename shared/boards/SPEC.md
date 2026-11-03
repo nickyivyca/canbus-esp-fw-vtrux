@@ -11,7 +11,8 @@ read; B6 amended 2026-10-29, for the stock code's own list of files that
 use pins (`shared/wican/SPEC.md` W10); B5 amended 2026-11-01 (user), for the
 restart guard's port loop (port step 1c). The `x2` section (3) is
 drafted by the charge-interposer reviewer and ruled in its session; its
-console members listed 2026-10-28. As a
+console members listed 2026-10-28, and its SPI host corrected from SPI2 to
+SPI3 2026-11-03. As a
 shared component's spec this follows port plan goal 20: the reviewer whose
 project needs a section drafts it, the user rules in that reviewer's
 session, and the other project's reviewer reads it before it merges into
@@ -204,9 +205,12 @@ session.
     (`CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH`, `_TO_UART` or `_TO_NONE`),
     since the table has a `coredump` partition.
 - **CAN:** two ports. Port 0 is the S3's TWAI, TX on GPIO7 and RX on GPIO6.
-  Port 1 is an MCP2515 on SPI2 (HSPI): CS GPIO10, SCK GPIO12, MISO GPIO13,
-  MOSI GPIO11, INT GPIO3 (active low), with a 16 MHz crystal. The SPI clock
-  is the driver's choice. Neither port has a standby line: both MCP2562
+  Port 1 is an MCP2515 on SPI3 (`SPI3_HOST`, arduino-esp32's `HSPI` on the
+  S3), through the GPIO matrix: CS GPIO10, SCK GPIO12, MISO GPIO13, MOSI
+  GPIO11, INT GPIO3 (active low), with a 16 MHz crystal. These four SPI
+  pins are SPI2's own IO MUX pins, so SPI2 could drive them directly; the
+  port moves to SPI2 after the charge interposer's port step 2a, as its own
+  change (user, 2026-11-03). The SPI clock is the driver's choice. Neither port has a standby line: both MCP2562
   transceivers have STBY hardwired, so `board_can_standby` returns "not
   supported" for both.
 - **Offered:** LED `led1` (GPIO2).

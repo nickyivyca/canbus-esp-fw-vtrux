@@ -187,6 +187,16 @@ gen-inhibit's spec is
     `aslcanx2` variant, and the Autosport Labs wiki for INT on GPIO3, which
     the variant lacks; STBY hardwired: the interposer's `main.cpp` header,
     from the board;
+  - the SPI host: the interposer's code opens the MCP2515's bus as
+    `SPIClass(HSPI)`, and arduino-esp32 3.2.1 defines `HSPI` as 1 on the S3,
+    which is SPI3 (`cores/esp32/esp32-hal-spi.h:36`, and `esp32-hal-spi.c`'s
+    S3 bus table), so every bench result so far ran it on SPI3. The section
+    first said "SPI2 (HSPI)", which holds on the original ESP32 but not on
+    the S3; corrected 2026-11-03 (charge-interposer reviewer, read that day;
+    user, 2026-11-03). GPIO10-13 are SPI2's IO MUX pins on the S3 (ESP-IDF
+    v5.4.1 `components/soc/esp32s3/include/soc/spi_pins.h`:
+    `SPI2_IOMUX_PIN_NUM_CS` 10, `_MOSI` 11, `_CLK` 12, `_MISO` 13), the
+    reason for the later move to SPI2;
   - console hardware: the interposer's first bring-up, 2026-09-10 (UART0
     pins with nothing attached);
   - the LED on GPIO2: the `aslcanx2` variant, and the board itself: a
