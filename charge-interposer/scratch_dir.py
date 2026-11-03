@@ -506,11 +506,14 @@ def default_worktrees():
 
 
 def _bench_lock_free():
-    wt = worktree()
-    if not wt:
-        return False, "no worktree, so no shared/bench to ask the lock"
-    env = dict(os.environ, PYTHONPATH=os.path.join(wt, "shared", "bench"),
-               PYTHONDONTWRITEBYTECODE="1")
+    # the pinned shared/bench (port step 2a: no copy on this branch);
+    # shared_pin sits beside this file, so its folder is on sys.path
+    import shared_pin
+    try:
+        bench = shared_pin.folder("shared/bench")
+    except shared_pin.SharedPinError as e:
+        return False, "no pinned shared/bench to ask the lock: %s" % e
+    env = dict(os.environ, PYTHONPATH=bench, PYTHONDONTWRITEBYTECODE="1")
     try:
         r = subprocess.run([sys.executable, "-B", "-m", "vtrux_bench.bench_lock",
                             "status"], capture_output=True, text=True, env=env,

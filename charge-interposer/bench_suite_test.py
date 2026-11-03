@@ -403,7 +403,10 @@ def test_suites():
     #      TWAI_FAKE option (reviewer, 2026-11-02)
     # 204: scratch-dir-test, scratch-run-test and each one's -canfail, with
     #      the run folders in scratch/ (reviewer, 2026-11-02)
-    assert len(seen) == 204, "checks across the suites: %d" % len(seen)
+    # 232: the pinned shared/bench's 13 further tests (the acceptance runner
+    #      and scratch helpers) and each one's -canfail, and shared-pin-test
+    #      and its -canfail, with the re-pin (port step 2a)
+    assert len(seen) == 232, "checks across the suites: %d" % len(seen)
     # madhouse gets the pinned canre beside the code, named by CANRE_DIR
     mad = 0
     for name in ("emulated", "harness"):
@@ -557,6 +560,17 @@ def _image_name_expect(variant, settings):
     return im
 
 
+def _branch_shared_bench(s):
+    """The shared/bench tests pointed at a copy beside this clone's
+    charge-interposer/ (the pre-2a layout), not the pinned checkout."""
+    for g in s.groups:
+        for c in g.checks:
+            a = [str(x) for x in c.argv]
+            if a and "/shared/bench/tests/" in a[0].replace("\\", "/"):
+                c.argv = ["{interposer_code}/../shared/bench/tests/" +
+                          os.path.basename(a[0])] + a[1:]
+
+
 def _unretire_build_check(s):
     """build-check given back an argv after its 2a retirement."""
     for g in s.groups:
@@ -697,8 +711,12 @@ def test_identify():
 
 # The trees a run imports Python from. Bytecode written there must not make
 # the clone dirty, or --resume refuses it (2026-10-20: 20d3's first resume,
-# refused for shared/bench/vtrux_bench/__pycache__).
-PYCACHE_TREES = ("charge-interposer", "shared/bench")
+# refused for shared/bench/vtrux_bench/__pycache__). From port step 2a
+# shared/bench is the pinned checkout ../shared-<tag>/, not this clone's, and
+# bytecode there changes its R7 digest (which counts every file but .md and
+# .gitignore), so shared_pin refuses the checkout; only this clone's own
+# tree is checked here.
+PYCACHE_TREES = ("charge-interposer",)
 _PYCACHE_DROP = ()      # .gitignore files the check leaves out (mutant hook)
 
 
@@ -994,10 +1012,14 @@ def test_script_coverage():
 
 
 def test_shared_bench_tests():
-    """Every shared/bench/tests/test_*.py is in SHARED_BENCH_TESTS, and the
-    harness suite runs each one plain and with --can-fail (reviewer,
-    2026-10-22: until then no suite ran them)."""
-    tests = os.path.join(os.path.dirname(HERE), "shared", "bench", "tests")
+    """Every shared/bench/tests/test_*.py of the pinned shared/bench is in
+    SHARED_BENCH_TESTS, and the harness suite runs each one plain and with
+    --can-fail, from the pinned checkout (reviewer, 2026-10-22: until then
+    no suite ran them; port step 2a: the pin, not a copy on this branch)."""
+    import shared_pin
+    pinned = shared_pin.folder("shared/bench")
+    assert B.SHARED_BENCH == pinned, (B.SHARED_BENCH, pinned)
+    tests = os.path.join(pinned, "tests")
     found = {n for n in os.listdir(tests)
              if n.startswith("test_") and n.endswith(".py")}
     assert found == set(B.SHARED_BENCH_TESTS), \
@@ -1011,6 +1033,9 @@ def test_shared_bench_tests():
             if c.skip or not argv or "/shared/bench/tests/" not in \
                     argv[0].replace("\\", "/"):
                 continue
+            assert os.path.normcase(os.path.dirname(argv[0])) == \
+                os.path.normcase(tests.replace(os.sep, "/")), \
+                "%s runs from %s, not the pinned %s" % (c.id, argv[0], tests)
             runs.add((os.path.basename(argv[0]), tuple(argv[1:])))
     for n in found:
         for extra in ((), ("--can-fail",)):
@@ -1169,6 +1194,12 @@ def test_scripts_in_tree():
                     assert c.cwd == "{work}/code", "%s/%s cwd %s" % (
                         name, c.id, c.cwd)
                     path = os.path.join(HERE, script)
+                elif g.host != "madhouse" and os.path.normcase(
+                        os.path.dirname(os.path.normpath(script))) == \
+                        os.path.normcase(os.path.join(B.SHARED_BENCH, "tests")):
+                    # the pinned shared/bench's own tests (port step 2a),
+                    # from its read-only checkout, checked by the pin
+                    path = script
                 else:
                     raise AssertionError("%s/%s runs %s, not from this tree"
                                          % (name, c.id, script))
@@ -1403,6 +1434,7 @@ _ORIG["self._ARGV_PROBE"] = _ARGV_PROBE
 _ORIG["SELF_TESTS"] = B.SELF_TESTS
 _ORIG["CAN_FAILS"] = B.CAN_FAILS
 _ORIG["SHARED_BENCH_TESTS"] = B.SHARED_BENCH_TESTS
+_ORIG["SHARED_BENCH"] = B.SHARED_BENCH
 _ORIG["HARNESS_PY_CANFAILS"] = B.HARNESS_PY_CANFAILS
 _ORIG["can_tools_info"] = B.can_tools_info
 _ORIG["_stage_git_bundle"] = B._stage_git_bundle
@@ -1664,7 +1696,12 @@ MUTANTS = {
             "sb.test-decode-canfail")),
          "the harness drops test_decode --can-fail"),
         ("harness", _wrap_suite("harness", _drop_harness_check(
-            "sb.test-run-core")), "the harness drops test_run_core")],
+            "sb.test-run-core")), "the harness drops test_run_core"),
+        ("harness", _wrap_suite("harness", _branch_shared_bench),
+         "the shared/bench tests run from this clone's copy, not the pin"),
+        ("SHARED_BENCH", os.path.join(os.path.dirname(HERE), "shared",
+                                      "bench"),
+         "the suite's shared/bench is this clone's copy, not the pin")],
     "test_harness_py_canfails": [
         ("HARNESS_PY_CANFAILS",
          [t for t in B.HARNESS_PY_CANFAILS if t != "scratch_run_test.py"],
@@ -1744,8 +1781,6 @@ MUTANTS = {
          "the interposer's images expected on ESP-IDF v5.4.1"),
         ("_md5", lambda p: "0" * 32, "md5 not of the file")],
     "test_pycache_ignored": [
-        ("self._PYCACHE_DROP", ("shared/bench/.gitignore",),
-         "shared/bench without its .gitignore (the 20d3 resume refusal)"),
         ("self._PYCACHE_DROP", ("charge-interposer/.gitignore",),
          "charge-interposer without its .gitignore")],
     "test_can_tools_record": [
