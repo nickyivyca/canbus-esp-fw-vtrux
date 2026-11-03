@@ -7,8 +7,8 @@
 //
 // Build (any host compiler, no dependencies beyond the C++ standard library):
 //
-//     g++ -std=c++11 -O2 -I ../../src -o host_runner \
-//         host_runner.cpp ../../src/machine.cpp
+//     g++ -std=c++11 -O2 -I ../../main -o host_runner \
+//         host_runner.cpp ../../main/machine.cpp
 //
 // Run:
 //

@@ -16,12 +16,12 @@
 #   shared  the shared fake (shared/twai_port/test, twai_port T10), from the
 #           folder TWAI_FAKE_DIR names, built exactly as acceptance E built
 #           it (2026-10-31): a copy of this folder, at the same depth beside
-#           a copy of src/, without our twai_fake.h,
+#           a copy of main/, without our twai_fake.h,
 #           twai_fake.cpp and driver/twai.h (a quoted #include looks in the
 #           including file's own folder first, so they would win over any
 #           -I), every test given the shared twai_fake.c and
 #           cpp/twai_fake.cpp, and -I <fake>/include -I <fake>/host
-#           -I <fake>/cpp after this folder and src/. Nothing else changes,
+#           -I <fake>/cpp after this folder and main/. Nothing else changes,
 #           and nothing extra is printed: the two transcripts are compared
 #           line for line.
 # run.sh --can-fail is the shared fake's can-fail
@@ -39,7 +39,10 @@
 # them.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
-SRC="$HERE/../../src"
+# The firmware's sources: the IDF project's main/ component (port step 2a
+# moved them there from src/). main.cpp's board_ports.h includes "board.h",
+# which this folder's host stand-in answers (board.h, board_fake.cpp).
+SRC="$HERE/../../main"
 case "${1:-}" in
   "") ;;
   --can-fail) exec python3 "$HERE/../../../harness_checks/shared_fake_canfail.py" ;;
@@ -89,13 +92,13 @@ case "${TWAI_FAKE:-own}" in
       exit 2
     fi
     # The copy sits at host_bridge's own depth, test/host_bridge under a
-    # folder T in this run's W, with a copy of src/ beside test/, so a
-    # test's relative #include "../../src/main.cpp" (test_event_layout)
+    # folder T in this run's W, with a copy of main/ beside test/, so a
+    # test's relative #include "../../main/main.cpp" (test_event_layout)
     # reaches main.cpp as it does from host_bridge itself.
     T="$W/shared"
     B="$T/test/host_bridge"
-    mkdir -p "$B" "$T/src" || exit 2
-    cp -R "$SRC/." "$T/src/" || exit 2
+    mkdir -p "$B" "$T/main" || exit 2
+    cp -R "$SRC/." "$T/main/" || exit 2
     cp -R "$HERE/." "$B/" || exit 2
     rm "$B/twai_fake.h" "$B/twai_fake.cpp" "$B/driver/twai.h"
     rmdir "$B/driver" 2>/dev/null || true
@@ -141,16 +144,16 @@ for t in "$B"/test_*.cpp; do
   case "$name" in
     test_tx_failed|test_canport_contract|test_mcp2515_busoff|test_tx_throughput|test_sameid_hold) srcs+=("$SRC/port_mcp2515.cpp") ;;
     # The stall trace is the only build that defines INTP_TX_TRACE, which
-    # compiles the per-pass instrumentation into the driver. No PlatformIO
-    # environment defines it, so no firmware image carries it.
+    # compiles the per-pass instrumentation into the driver. No firmware
+    # variant defines it, so no firmware image carries it.
     test_tx_stall_trace)
       srcs+=("$SRC/port_mcp2515.cpp")
       defs+=(-DINTP_TX_TRACE=1)
       ;;
     # Likewise the only host build that defines INTP_ORDER_WITNESS. One
-    # PlatformIO environment defines it, [env:esp32-can-x2-witness] (the
-    # bench's order-witness image); build_check.py allows it there only
-    # and refuses it in any other environment or in [common].
+    # firmware variant defines it, witness (the bench's order-witness
+    # image); the project's build-switch rows (shared/tools R20,
+    # firmware/vtrux_checks.json) refuse it in a release image.
     test_order_witness)
       srcs+=("$SRC/port_mcp2515.cpp")
       defs+=(-DINTP_ORDER_WITNESS=1)

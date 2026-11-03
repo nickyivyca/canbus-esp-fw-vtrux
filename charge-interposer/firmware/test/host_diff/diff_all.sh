@@ -16,7 +16,7 @@ ART="$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/interposer-firmware"
 . "$FW/../scratch_run.sh" || exit 1
 scratch_run host-diff || exit 1
 BIN="$SCRATCH_RUN/hr"
-g++ -std=c++11 -O2 -I "$FW/src" -o "$BIN" "$HERE/host_runner.cpp" "$FW/src/machine.cpp" || exit 1
+g++ -std=c++11 -O2 -I "$FW/main" -o "$BIN" "$HERE/host_runner.cpp" "$FW/main/machine.cpp" || exit 1
 fail=0
 
 # Rev 2 (charge-interposer tester, 2026-10-07). The frame diff below compares

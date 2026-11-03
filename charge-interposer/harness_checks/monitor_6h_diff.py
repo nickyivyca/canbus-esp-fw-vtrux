@@ -51,7 +51,7 @@ import paths                                           # noqa: E402
 import scratch_dir                                     # noqa: E402
 CODE = paths.code_dir()
 HOST_DIFF = os.path.join(CODE, "firmware", "test", "host_diff")
-SRC = os.path.join(CODE, "firmware", "src")
+SRC = os.path.join(CODE, "firmware", "main")
 sys.path.insert(0, CODE)
 sys.path.insert(0, HOST_DIFF)
 import machine as M                 # noqa: E402

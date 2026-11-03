@@ -369,24 +369,19 @@ def test_suites():
                 assert g.ship.get("canre") and os.path.isdir(g.ship["canre"]),                     "%s/%s ships no canre: %s" % (name, g.name, g.ship)
                 for c in g.checks:
                     assert c.env.get("CANRE_DIR") == "{work}/canre",                         "%s/%s has CANRE_DIR %r" % (g.name, c.id, c.env.get("CANRE_DIR"))
-    assert mad == 5, "madhouse groups seen: %d" % mad
-    # build-check runs in a git checkout of HEAD, shipped as a bundle
-    # (user ruling 2026-10-19), never in the shipped copy
+    # m-build is no longer a madhouse group: its checks retired at 2a
+    assert mad == 4, "madhouse groups seen: %d" % mad
+    # retired at port step 2a (Part B): listed with the reason, never run,
+    # so a baseline comparison lists them and counts nothing (2a acceptance
+    # (c)); the same ids as before, so the comparison can pair them
     mb = [g for g in su["emulated"].groups if g.name == "m-build"][0]
-    bc = [c for c in mb.checks if c.id == "build-check"][0]
-    assert bc.argv[0] == "firmware/test/build_check_in_clone.py", bc.argv
-    head = subprocess.run(["git", "-C", os.path.dirname(HERE), "rev-parse",
-                           "HEAD"], capture_output=True, text=True,
-                          check=True).stdout.strip()
-    a = bc.argv
-    assert a[a.index("--commit") + 1] == head, (a, head)
-    assert a[a.index("--bundle") + 1] == "{work}/gitb/repo.bundle", a
-    assert a[a.index("--shipped") + 1] == "{work}/code", a
-    bundle = os.path.join(mb.ship["gitb"], "repo.bundle")
-    r = subprocess.run(["git", "-C", os.path.dirname(HERE), "bundle",
-                        "list-heads", bundle], capture_output=True, text=True)
-    assert r.returncode == 0 and head in r.stdout, (bundle, r.stdout,
-                                                    r.stderr)
+    assert [c.id for c in mb.checks] == [
+        "build-check", "manifest-test", "manifest-offline-test"], mb.checks
+    mh = [g for g in su["harness"].groups if g.name == "m-harness"][0]
+    retired = [c for c in mb.checks + mh.checks if c.skip == B.RETIRED_2A]
+    assert len(retired) == 11, [c.id for c in retired]
+    assert all(c.id.startswith(("build-check", "manifest-", "digest-recheck"))
+               for c in retired), [c.id for c in retired]
     # the product digest (user 2026-10-20): emulated and bench use the
     # component table's split; the harness suite keeps the commit
     assert su["emulated"].product_files is B.product_files
@@ -395,24 +390,31 @@ def test_suites():
     repo = os.path.dirname(HERE)
     pf = set(B.product_files(repo))
     for must in ("charge-interposer/machine.py",
-                 "charge-interposer/firmware/platformio.ini",
-                 "charge-interposer/firmware/build_identity.py",
-                 "charge-interposer/firmware/src/main.cpp",
-                 "charge-interposer/firmware/src/machine.h"):
+                 "charge-interposer/firmware/CMakeLists.txt",
+                 "charge-interposer/firmware/sdkconfig",
+                 "charge-interposer/firmware/dependencies.lock",
+                 "charge-interposer/firmware/main/CMakeLists.txt",
+                 "charge-interposer/firmware/main/idf_component.yml",
+                 "charge-interposer/firmware/main/main.cpp",
+                 "charge-interposer/firmware/main/machine.h",
+                 "charge-interposer/firmware/main/board_ports.h"):
         assert must in pf, must
     for never in ("run_scenario.py", "vehicle_sim.py", "charger_sim.py",
                   "interposer_sim.py", "pack.py", "protocol.py", "bus.py",
                   "replay.py", "regress.py", "bench_suite.py"):
         assert "charge-interposer/" + never not in pf, never
     assert not [p for p in pf if "/test/" in p or p.endswith(".md")], pf
-    # the same files source_digest hashes, plus machine.py
-    import build_identity as BI
+    # every file of main/ but its notes, the root's build files, machine.py
     fw = os.path.join(repo, "charge-interposer", "firmware")
-    n_src = sum(1 for d, _s, fs in os.walk(os.path.join(fw, "src"))
-                for f in fs if f.endswith(BI.SRC_SUFFIXES))
-    n_extra = sum(1 for x in BI.EXTRA_INPUTS
-                  if os.path.exists(os.path.join(fw, x)))
-    assert len(pf) == n_src + n_extra + 1, (len(pf), n_src, n_extra)
+    n_main = sum(1 for d, _s, fs in os.walk(os.path.join(fw, "main"))
+                 for f in fs if not f.endswith(".md"))
+    n_root = sum(1 for x in ("CMakeLists.txt", "sdkconfig", "dependencies.lock")
+                 if os.path.exists(os.path.join(fw, x)))
+    assert n_root == 3, n_root
+    assert len(pf) == n_main + n_root + 1, (len(pf), n_main, n_root)
+    # nothing the build makes or downloads, nor the menuconfig backup
+    assert not [p for p in pf if "/build/" in p or "managed_components" in p
+                or p.endswith("sdkconfig.old")], pf
     # every X2 image names the X2's chip, so a port that reaches another
     # board writes nothing (methodology, 2026-10-20)
     for n, im in su["bench"].images.items():

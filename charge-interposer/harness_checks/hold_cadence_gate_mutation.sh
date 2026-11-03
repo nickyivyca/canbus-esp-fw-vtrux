@@ -38,7 +38,7 @@ TRACES="unit_hold_cadence_298_302 unit_hold_cadence_290"
 fail=0
 for v in control gate300; do
   mkdir -p "$WORK/$v"
-  cp "$FW/src/machine.cpp" "$FW/src/machine.h" "$WORK/$v/"
+  cp "$FW/main/machine.cpp" "$FW/main/machine.h" "$WORK/$v/"
   if [ "$v" = gate300 ]; then
     before="$(md5sum < "$WORK/$v/machine.cpp")"
     sed -i 's|c\.hold_step_min_ms = 280;|c.hold_step_min_ms = 300; /* MUTATION */|' "$WORK/$v/machine.cpp"

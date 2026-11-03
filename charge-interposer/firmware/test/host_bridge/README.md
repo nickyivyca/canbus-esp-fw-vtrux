@@ -16,11 +16,11 @@ an option of committed harness so the acceptance runner can re-run port step
 option: this folder's `twai_fake.h` / `.cpp` and `driver/twai.h`. `shared`:
 the shared fake (`shared/twai_port/test`, twai_port T10) in the folder
 `TWAI_FAKE_DIR` names, built as E built it -- a copy of this folder, at its
-own depth beside a copy of `src/` (so `test_event_layout`'s `#include
-"../../src/main.cpp"` still reaches it), without those three files (a quoted `#include` looks in the including file's folder
+own depth beside a copy of `main/` (so `test_event_layout`'s `#include
+"../../main/main.cpp"` still reaches it), without those three files (a quoted `#include` looks in the including file's folder
 first, so they would win over any `-I`), each test given the shared
 `twai_fake.c` and `cpp/twai_fake.cpp`, and `-I <fake>/include -I <fake>/host
--I <fake>/cpp` after this folder and `src/`. It prints nothing extra, so the
+-I <fake>/cpp` after this folder and `main/`. It prints nothing extra, so the
 two transcripts compare line for line. Anything else, or `shared` without
 the fake's sources, is refused (exit 2) before anything builds. `run.sh
 --can-fail` runs the shared fake's can-fail,
@@ -52,12 +52,13 @@ Tested by the same `twai_fake_option_test.py`.
 | `test_mcp2515_busoff.cpp` | Bus-off on the charger port: the error-mode walk against the chip, and `Mcp2515Port::busOffEvents()` through the driver |
 | `provenance.h` / `.cpp` | The status scale, shared by both fakes so they cannot drift apart |
 | `driver/twai.h`, `esp_app_desc.h` / `.cpp` | Shims that let `main.cpp` itself compile on the host |
-| `test_l2_bridge.cpp` | **The real bridge loop**: `src/main.cpp`'s `setup()`/`loop()` driven against both fakes |
-| `test_event_layout.cpp` | **Spec 8.3's event-line form**, `[t] STATE event a= b= c=` (reviewer-approved scope, 2026-10-15): every state x every event code `EV_ARMED`..`EV_VEHICLE_MODE` (132 lines, extreme t and field values) prints exactly one line in the form with that t, `stateName()`, `eventName()` and the three values; an all-zero event still prints all three fields; several events in one pass print one line each, in order; the code after `EV_VEHICLE_MODE` must have no name, so an appended event fails until the test names it. Reaches main.cpp's static `reportEvents()` and `core` by **#including `src/main.cpp`** (not listed as a source in `run.sh`) and opens the core's private `log()` with a test-side `#define private public` -- **no src edit**. Built **with serial**, into the capturing `Serial` that `Arduino.h` compiles in only under `HOST_SERIAL_CAPTURE`. Can-fails: the judge refuses a field-less line, a missing field, a different name, the wrong STATE, a non-integer field and an unbracketed t; and the whole test FAILS against main.cpp copies mutated to suppress all-zero fields or to print t+1 (run 2026-10-15, SeaDrive `event_layout_mutations.txt`) |
+| `board.h` / `board_fake.cpp` | The board layer for the host (port step 2a: `main.cpp` asks the board for its CAN ports through `main/board_ports.h`). `board.h` is the x2 component's interface at shared tag 2026.11.03, with ESP-IDF's `esp_err_t`, `gpio_num_t` and `spi_host_device_t` as plain C types of the same values, so it builds beside `driver/twai.h` and the shared fake's host headers. `board_fake.cpp` answers as shared/boards SPEC section 3 gives the X2: port 0 the S3's TWAI on TX GPIO7 / RX GPIO6; port 1 an MCP2515 on `SPI3_HOST`, CS 10, SCK 12, MISO 13, MOSI 11, INT 3, 16 MHz; no standby line on either |
+| `test_l2_bridge.cpp` | **The real bridge loop**: `main/main.cpp`'s `setup()`/`loop()` driven against both fakes |
+| `test_event_layout.cpp` | **Spec 8.3's event-line form**, `[t] STATE event a= b= c=` (reviewer-approved scope, 2026-10-15): every state x every event code `EV_ARMED`..`EV_VEHICLE_MODE` (132 lines, extreme t and field values) prints exactly one line in the form with that t, `stateName()`, `eventName()` and the three values; an all-zero event still prints all three fields; several events in one pass print one line each, in order; the code after `EV_VEHICLE_MODE` must have no name, so an appended event fails until the test names it. Reaches main.cpp's static `reportEvents()` and `core` by **#including `main/main.cpp`** (not listed as a source in `run.sh`) and opens the core's private `log()` with a test-side `#define private public` -- **no firmware edit**. Built **with serial**, into the capturing `Serial` that `Arduino.h` compiles in only under `HOST_SERIAL_CAPTURE`. Can-fails: the judge refuses a field-less line, a missing field, a different name, the wrong STATE, a non-integer field and an unbracketed t; and the whole test FAILS against main.cpp copies mutated to suppress all-zero fields or to print t+1 (run 2026-10-15, SeaDrive `event_layout_mutations.txt`) |
 
 ## L2 proper: the whole bridge loop
 
-`test_l2_bridge` compiles **`src/main.cpp` itself** -- its `setup()`, its
+`test_l2_bridge` compiles **`main/main.cpp` itself** -- its `setup()`, its
 `loop()`, its file-static ports, its dispatch and diagnostics -- and drives
 it on the virtual clock. Nothing is reimplemented, which is the point: the
 diagnostic cadence, the spec 2.2 counter and spec 8.2's `bridge_ok` are

@@ -38,7 +38,7 @@
 #include <vector>
 
 #define private public
-#include "../../src/main.cpp"
+#include "../../main/main.cpp"
 #undef private
 
 namespace {

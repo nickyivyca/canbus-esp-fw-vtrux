@@ -136,7 +136,7 @@ def copy_code(src, dst):
         shutil.copy2(os.path.join(src, f), os.path.join(dst, f))
     shutil.copytree(os.path.join(src, "harness_checks"), os.path.join(dst, "harness_checks"),
                     ignore=ign)
-    shutil.copytree(os.path.join(src, "firmware", "src"), os.path.join(dst, "firmware", "src"),
+    shutil.copytree(os.path.join(src, "firmware", "main"), os.path.join(dst, "firmware", "main"),
                     ignore=ign)
     for sub in ("host_bridge", "host_unit", "host_diff"):
         shutil.copytree(os.path.join(src, "firmware", "test", sub),

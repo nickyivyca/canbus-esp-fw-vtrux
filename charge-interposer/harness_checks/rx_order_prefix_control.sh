@@ -36,7 +36,7 @@ if [ -n "${INTERPOSER_CODE:-}" ] && \
   exit 2
 fi
 HB="$(cd "$CODE/firmware/test/host_bridge" && pwd)"
-SRC="$(cd "$HB/../../src" && pwd)"
+SRC="$(cd "$HB/../../main" && pwd)"
 # The fixture stays in SeaDrive (beside this script before the move): the
 # runner's L3_STIMULUS if set, else under REVERSE_IT_DIR.
 L3_STIMULUS="${L3_STIMULUS:-${REVERSE_IT_DIR:?REVERSE_IT_DIR is not set -- the SeaDrive reverse-it root}/projects/vtrux/notes/artifacts/interposer-firmware/l3_stimulus.txt}"

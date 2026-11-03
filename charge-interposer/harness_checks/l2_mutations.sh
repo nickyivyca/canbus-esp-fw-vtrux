@@ -37,7 +37,7 @@ if [ -n "${INTERPOSER_CODE:-}" ] && \
   exit 2
 fi
 HB="$(cd "$CODE/firmware/test/host_bridge" && pwd)"
-SRC="$(cd "$HB/../../src" && pwd)"
+SRC="$(cd "$HB/../../main" && pwd)"
 # The work tree is outside the project, so l3_replay.cpp's relative
 # candidates for its pinned stimulus cannot resolve; it reads this first.
 # The fixture stays in SeaDrive (beside this script before the move): the

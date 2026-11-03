@@ -83,26 +83,33 @@ import bench_wican  # noqa: E402
 import canre_pin  # noqa: E402
 import can_tools_pin  # noqa: E402
 import scratch_dir  # noqa: E402
-sys.path.insert(0, os.path.join(HERE, "firmware"))
-import build_identity  # noqa: E402
+# The ESP-IDF project's own inputs (port step 2a, Part B): every file of its
+# one component, main/ (the sources, main/CMakeLists.txt and
+# main/idf_component.yml), and the project root's build files. The board
+# component and arduino-esp32 come in by dependencies.lock, which names
+# their versions and hashes. Before 2a this was firmware/src plus
+# build_identity.py's DIGEST_INPUTS (platformio.ini and the PlatformIO
+# build scripts), all retired by Part B.
+PRODUCT_MAIN = "main"
+PRODUCT_ROOT_FILES = ("CMakeLists.txt", "sdkconfig", "dependencies.lock")
 
 
 def product_files(root):
     """The interposer's product files in the tree at `root` (a clone root),
     for the runner's product digest (user 2026-10-20). The split is the
-    component table's (reviewer, 2026-10-20): machine.py, plus firmware/src
-    and the build files exactly as build_identity.source_digest takes them
-    (DIGEST_INPUTS). Everything else -- the sims, run_scenario, pack.py,
+    component table's (reviewer, 2026-10-20): machine.py, plus the IDF
+    project's inputs (PRODUCT_MAIN, PRODUCT_ROOT_FILES; .md files are
+    notes, not inputs). Everything else -- the sims, run_scenario, pack.py,
     protocol.py, bus.py, replay.py, regress.py, tests -- is harness."""
     fw = os.path.join(root, "charge-interposer", "firmware")
     out = []
-    for dirpath, dirs, files in os.walk(os.path.join(fw, "src")):
+    for dirpath, dirs, files in os.walk(os.path.join(fw, PRODUCT_MAIN)):
         dirs.sort()
         for f in sorted(files):
-            if f.endswith(build_identity.SRC_SUFFIXES):
+            if not f.endswith(".md"):
                 out.append(os.path.relpath(os.path.join(dirpath, f), root)
                            .replace(os.sep, "/"))
-    for x in build_identity.EXTRA_INPUTS:
+    for x in PRODUCT_ROOT_FILES:
         if os.path.exists(os.path.join(fw, x)):
             out.append("charge-interposer/firmware/" + x)
     out.append("charge-interposer/machine.py")
@@ -221,6 +228,11 @@ HARNESS_LOCAL = [
     ("e5-arming-controls", ["{interposer_code}/harness_checks/e5_arming_controls.py"]),
     ("clamp-frame-cases", ["{interposer_code}/harness_checks/clamp_frame_cases.py"]),
 ]
+
+RETIRED_2A = (
+    "retired at port step 2a: the PlatformIO build, its manifest and the "
+    "build_check / digest_recheck_check family went with Part B "
+    "(reviewer 2026-11-03, Q3); the IDF builds are 2a acceptance (h)")
 
 EMULATED_KNOWN_FAILS = [
     KnownFail("m-host/host-bridge/l2.bridge-ok-veh-failed",
@@ -590,19 +602,14 @@ def emulated(settings):
     """No hardware, no lock: builds, host suites, the 1x sims, the capture
     trace rebuild."""
     b = _Build(settings)
-    # build-check runs in a git checkout of this commit, not the shipped
-    # copy (user ruling, 2026-10-19; build_check_in_clone.py).
-    gitb, commit = _stage_git_bundle(b.code)
-    m_build = Group("m-build", host="madhouse",
-                    ship=dict(b.ship, gitb=gitb), checks=[
-        b.mpio("build-check", [
-            "firmware/test/build_check_in_clone.py",
-            "--bundle", "{work}/gitb/repo.bundle", "--commit", commit,
-            "--shipped", "{work}/code", "--dest", "{work}/clone"],
-            cls="build", timeout_s=7200),
-        b.mpy("manifest-test", ["firmware/manifest_test.py"], cls="build"),
-        b.mpy("manifest-offline-test", ["firmware/manifest_offline_test.py"]),
-    ])
+    # RETIRED at port step 2a (Part B): the PlatformIO build and its
+    # manifest are gone (platformio.ini, manifest.py and its two tests,
+    # build_check's environments), and build_check / digest_recheck_check
+    # retire with them (reviewer, 2026-11-03, Q3). Listed, not counted
+    # (2a acceptance (c)); the IDF builds are checked by acceptance (h).
+    m_build = Group("m-build", checks=[
+        Check(cid, ["-"], skip=RETIRED_2A) for cid in
+        ("build-check", "manifest-test", "manifest-offline-test")])
     m_host = Group("m-host", host="madhouse", ship=b.ship, checks=[
         b.mbash("host-bridge", ["bash", "firmware/test/host_bridge/run.sh"],
                 cls="build", timeout_s=3600, judge=host_bridge_judge),
@@ -839,26 +846,12 @@ def harness(settings):
     and the bench drivers' self-tests. Run when the harness changes."""
     b = _Build(settings)
     m_harness = Group("m-harness", host="madhouse", ship=b.ship, checks=[
-        b.mpio("build-check-links-test",
-               ["firmware/test/build_check_links_test.py"], cls="build",
-               timeout_s=3600),
-        b.mpy("build-check-manifest-test",
-              ["firmware/test/build_check_manifest_test.py"], cls="build"),
-        b.mpy("build-check-schema-test",
-              ["firmware/test/build_check_schema_test.py"], cls="build"),
-        b.mpy("build-check-schema-test-canfail",
-              ["firmware/test/build_check_schema_test.py", "--can-fail"],
-              cls="build"),
-        b.mpy("build-check-in-clone-test",
-              ["firmware/test/build_check_in_clone_test.py"], cls="build"),
-        b.mpy("build-check-in-clone-test-canfail",
-              ["firmware/test/build_check_in_clone_test.py", "--can-fail"],
-              cls="build"),
-        b.mpio("digest-recheck-check", ["firmware/test/digest_recheck_check.py"],
-               cls="build", timeout_s=7200),
-        b.mpio("digest-recheck-check-canfail",
-               ["firmware/test/digest_recheck_check.py", "--can-fail"],
-               cls="build", timeout_s=7200),
+        # retired with build_check / digest_recheck_check (emulated m-build)
+        Check(cid, ["-"], skip=RETIRED_2A) for cid in (
+            "build-check-links-test", "build-check-manifest-test",
+            "build-check-schema-test", "build-check-schema-test-canfail",
+            "build-check-in-clone-test", "build-check-in-clone-test-canfail",
+            "digest-recheck-check", "digest-recheck-check-canfail")
     ] + [b.mpy(t[:-3].replace("_", "-"), [t], cls="build", timeout_s=3600)
          for t in HARNESS_PY_TESTS] + [
         b.mpy(t[:-3].replace("_", "-") + "-canfail", [t, "--can-fail"],
