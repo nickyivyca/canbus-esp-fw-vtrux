@@ -1,0 +1,23 @@
+# x2: what the hardware fixes (shared/boards/SPEC.md B3.1 and section 3).
+# ESP-IDF's own options only (B3). A project's build has these values
+# (shared/tools R29), checked on its release build.
+
+# Target: the ESP32-S3.
+CONFIG_IDF_TARGET="esp32s3"
+
+# Flash: 8 MB, 80 MHz, QIO. ESP-IDF writes DIO into the image headers for QIO
+# and the bootloader switches to quad itself.
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+
+# Partition table: this component's partitions.csv, byte-identical to the
+# table the X2 carries at 0x8000, with its MD5 entry. The path is from the
+# project root, so the project names the dependency vtrux/x2.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="managed_components/vtrux__x2/partitions.csv"
+CONFIG_PARTITION_TABLE_OFFSET=0x8000
+CONFIG_PARTITION_TABLE_MD5=y
+
+# Chip-bug workaround: TWAI sends no dominant bits in listen-only mode.
+CONFIG_TWAI_ERRATA_FIX_LISTEN_ONLY_DOM=y
