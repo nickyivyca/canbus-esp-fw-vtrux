@@ -287,9 +287,9 @@ class Mcp2515Port : public CanPort {
 #ifdef INTP_TX_TRACE
   // ---- L3 STALL INSTRUMENTATION -- NOT FLIGHT CODE -------------------
   //
-  // Compiled only when INTP_TX_TRACE is defined. No PlatformIO
-  // environment defines it, so all five firmware images contain none of
-  // this; `build_check.py` still sees the same binaries.
+  // Compiled only when INTP_TX_TRACE is defined. No build variant
+  // defines it (main/CMakeLists.txt): only the host tests do, so no
+  // firmware image contains any of this.
   //
   // WHY IT HAS TO EXIST. The charger port delivers 540 of 22,314 frames
   // of realistic traffic (2.4%), and the totals cannot say why: aged,
@@ -343,10 +343,10 @@ class Mcp2515Port : public CanPort {
 #ifdef INTP_ORDER_WITNESS
   // ---- BOARD-SIDE COMPLETION-ORDER WITNESS -- NOT FLIGHT CODE -------
   //
-  // Compiled only when INTP_ORDER_WITNESS is defined. No PlatformIO
-  // environment defines it, so all five firmware images contain none of
-  // this; `build_check.py` asserts that the truck image is unchanged by
-  // it. Default footprint is WITNESS_N * 16 bytes = 8 KB of .bss.
+  // Compiled only when INTP_ORDER_WITNESS is defined, which only the
+  // witness variant does (main/CMakeLists.txt), so every other image
+  // contains none of this. Default footprint is WITNESS_N * 16 bytes =
+  // 8 KB of .bss.
   //
   // WHAT IT IS FOR. The spec 12 entry 2 arm checks the ORDER frames
   // reach the charger, read from a sequence number in the payload. That

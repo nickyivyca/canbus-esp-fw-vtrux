@@ -15,8 +15,9 @@
 // NOT the bridge firmware. Do not flash main.cpp with these jumpers fitted: the
 // bridge would forward CAN1 -> CAN2 straight back onto its own wire and storm.
 //
-//     pio run -d projects/vtrux/tools/interposer/firmware -e selftest -t upload
-//     pio device monitor -b 115200
+// The selftest variant: from charge-interposer/firmware/ in an exported
+// ESP-IDF shell (firmware/README.md),
+//     idf.py -B build/selftest -D INTP_VARIANT=selftest build flash monitor
 
 #include <Arduino.h>
 #include <SPI.h>

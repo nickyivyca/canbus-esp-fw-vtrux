@@ -22,7 +22,9 @@
 // symmetry -- raw GPIO for the bit level, and a NO_ACK transmitter paired with
 // a listen-only receiver for the frame level.
 //
-//     pio run -d projects/vtrux/tools/interposer/firmware -e diag -t upload
+// The diag variant: from charge-interposer/firmware/ in an exported ESP-IDF
+// shell (firmware/README.md),
+//     idf.py -B build/diag -D INTP_VARIANT=diag build flash monitor
 
 #include <Arduino.h>
 #include <SPI.h>

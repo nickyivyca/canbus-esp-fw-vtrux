@@ -59,11 +59,14 @@
 // and know whether its own stimulus was complete. python-can leaves the serial
 // port reachable as `bus.serialPortOrig`, which is how the harness sends it.
 //
-// BUILD:  pio run -e slcan -t upload
-// The interposer bridge firmware is NOT in this build (build_src_filter), so
-// flashing this replaces the bridge. Restore it with `pio run -e esp32-can-x2 -t
-// upload`; a byte-exact backup of the flash as it was before this firmware first
-// went on is in notes/artifacts/interposer-firmware/flash-backup/.
+// BUILD: the slcan variant, from charge-interposer/firmware/ in an exported
+// ESP-IDF shell (firmware/README.md):
+//     idf.py -B build/slcan -D INTP_VARIANT=slcan build flash
+// The interposer bridge firmware is NOT in this build (main/CMakeLists.txt),
+// so flashing this replaces the bridge. Restore it with the bridge variant
+// (`-B build/bridge -D INTP_VARIANT=bridge`); a byte-exact backup of the
+// flash as it was before this firmware first went on is in
+// notes/artifacts/interposer-firmware/flash-backup/.
 
 #include <Arduino.h>
 

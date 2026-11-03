@@ -38,8 +38,8 @@
 // builds bound the block to under 2 ms once per stall and then drop, which
 // spec 8.3 requires of them -- see INTP_CDC_TX_TIMEOUT_MS in the #else
 // branch.
-// The truck build compiles the calls OUT under -DINTP_NO_SERIAL
-// ([env:truck]) rather than guarding them at run time, so there is no call
+// The truck build compiles the calls OUT under INTP_NO_SERIAL (the truck
+// variant, main/CMakeLists.txt) rather than guarding them at run time, so there is no call
 // left to block on at all. The spec 8.2 diagnostic frames are unaffected -- 0x7F4-0x7F7 are
 // how the truck build is observed, and `intp_serial` reads 0 there, which is
 // what identifies it as a truck image on the wire.
@@ -272,7 +272,7 @@ uint32_t intpBoundaryLogs() { return core ? core->boundaryLogs() : 0; }
 // SHA-256, read from the ESP-IDF app descriptor.
 //
 // This replaced FNV-1a of a GIT_SHA string, copied from the WiCAN inhibitor.
-// That was never a fingerprint here: platformio.ini does not pass -DGIT_SHA,
+// That was never a fingerprint here: the PlatformIO build never passed -DGIT_SHA,
 // so every build ever flashed reported fnv1a("unknown") = 2608177081. A
 // constant that looks like a hash is worse than no field, because it reads
 // as provenance. There is also no git checkout on the bench machine, so
