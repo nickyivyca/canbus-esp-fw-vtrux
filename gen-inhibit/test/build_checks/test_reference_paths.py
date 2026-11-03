@@ -7,6 +7,9 @@ never $REVERSE_IT_DIR's frozen copies. A working-tree copy with uncommitted chan
 refused as a FAIL row; a repo without them is NO REFERENCE, naming --ref-repo; a DBC
 history that fails gi_diag's checks is a FAIL. The emitted-frames row decodes the
 goldens through gi_diag's schema set from the same refs, and is NO REFERENCE without it.
+A Python without cantools, which gi_diag needs to read the DBC's history, makes the
+references NO REFERENCE naming it, every row still written (2026-11-03; before, a
+traceback): the probe blocks the import as a missing module, and shows that it does.
 
 Each case imports build_output.py afresh in a subprocess, with REVERSE_IT_DIR pointing
 at a fake root holding a different DBC, so a read of the old path would show. The fake
@@ -53,6 +56,16 @@ sys.path.insert(0, sys.argv[1])
 # the modules build_output imports (board_ref since port step 1a, build_switches), from this
 # folder when the target is a copy elsewhere (--target): the copy's own folder comes first
 sys.path.insert(1, os.environ["REF_TEST_MODULES"])
+if os.environ.get("REF_TEST_NO_CANTOOLS"):
+    # a Python without cantools (the IDF venv before 2026-11-02): its import fails as a
+    # missing module does, wherever it is imported from
+    class NoCantools(object):
+        def find_spec(self, name, path=None, target=None):
+            if name.split(".")[0] == "cantools":
+                raise ModuleNotFoundError("No module named %r" % name, name=name)
+    sys.meta_path.insert(0, NoCantools())
+    for m in [m for m in sys.modules if m.split(".")[0] == "cantools"]:
+        del sys.modules[m]
 import build_output as B
 B.REPO = os.environ["REF_TEST_REPO"]      # this repo's WiCAN tree, also for a copy under test (--target)
 B.WORKTREE = os.environ["REF_TEST_WORKTREE"]    # and its root, where scratch/ is
@@ -134,9 +147,12 @@ def fake_repo(base, name, texts):
     return d
 
 
-def probe(target_dir, ref_repo, rit, extra=None):
+def probe(target_dir, ref_repo, rit, extra=None, no_cantools=False):
     env = dict(os.environ, REVERSE_IT_DIR=rit, REF_TEST_REPO=FIRMWARE, REF_TEST_WORKTREE=WORKTREE,
                REF_TEST_PROJECT=REPO, REF_TEST_MODULES=HERE)
+    env.pop("REF_TEST_NO_CANTOOLS", None)
+    if no_cantools:
+        env["REF_TEST_NO_CANTOOLS"] = "1"
     r = subprocess.run([sys.executable, "-B", "-c", PROBE, target_dir, ref_repo] + ([extra] if extra else []),
                        capture_output=True, text=True, env=env, cwd=target_dir, timeout=300)
     if r.returncode != 0:
@@ -252,6 +268,29 @@ def main():
     r = row(res, "emitted diag frames decode")
     check("check_diag on a DBC file refs_from_git did not write: the emitted-frames row is NO REFERENCE",
           r is not None and r[1] is None and r[3], r)
+
+    # 6. A Python without cantools (follow-up (ii), gen-inhibit reviewer, 2026-11-03): gi_diag
+    # reads the DBC's history with it, so the references are NO REFERENCE naming it, and every
+    # row is still written; never a traceback.
+    res = probe(tdir, REPO, rit, no_cantools=True)
+    check("no cantools: the module imports and runs the rows, no traceback", "crash" not in res, res.get("crash"))
+    r = row(res, "diag references from git")
+    check("no cantools: 'diag references from git' is NO REFERENCE, naming cantools",
+          r is not None and r[1] is None and r[3] and "cantools" in (r[2] or ""), r)
+    for name in ("DBC defines every diag ID",) + ROWS[3:]:
+        r = row(res, name)
+        check("no cantools: '%s' is NO REFERENCE, not a pass" % name, r is not None and r[1] is None and r[3], r)
+    check("no cantools: no DBC row passes",
+          not [r for r in res.get("rows", []) if r[1] is True and r[0] not in
+               ("diag schema version readable", "diag IDs readable")],
+          [r[0] for r in res.get("rows", []) if r[1] is True])
+    # the probe's own blocker, without which this case could not fail: with it, cantools is
+    # not importable; without it, it is (else case 1 above could not pass)
+    blk = subprocess.run([sys.executable, "-B", "-c", PROBE.split("import build_output as B")[0]
+                          + "import cantools\n", tdir], capture_output=True, text=True,
+                         env=dict(os.environ, REF_TEST_MODULES=HERE, REF_TEST_NO_CANTOOLS="1"), timeout=120)
+    check("no cantools: the probe's blocker makes 'import cantools' fail as a missing module",
+          blk.returncode != 0 and "ModuleNotFoundError" in blk.stderr, (blk.returncode, blk.stderr[-200:]))
 
     src = open(target, encoding="utf-8").read()
     bad = [m.group(0) for m in re.finditer(r"seadrive_root|nickivyc|My Libraries|NotGit|Seafile|C:[\\/]+Users", src)]

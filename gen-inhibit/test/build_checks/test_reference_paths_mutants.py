@@ -28,6 +28,13 @@ MUTANTS = [
     ("an untracked folder taken up to the worktree around it",
      '        if gi_diag.git(repo, "ls-files", "--", ".").strip() == b"":', "        if False:"),
     ("the reverse-it default is back", "REF_PATHS = (","DEFAULT_DBC = os.path.join(os.environ.get(\"REVERSE_IT_DIR\", \"\"), \"projects\", \"vtrux\", \"x\")\nREF_PATHS = ("),
+    # follow-up (ii), 2026-11-03: a Python without cantools is NO REFERENCE, not a traceback
+    ("a missing cantools is a traceback again (gen-inhibit/main d4424e0's)",
+     "    except ImportError as e:\n        # gi_diag's decode core", "    except ZeroDivisionError as e:\n        # gi_diag's decode core"),
+    ("a missing cantools is not marked NO REFERENCE",
+     'sys.executable, e), ref_missing=True)', 'sys.executable, e), ref_missing=False)'),
+    ("a missing cantools is a FAIL row", "row(name, None, \"cannot read the DBC's history",
+     "row(name, False, \"cannot read the DBC's history"),
 ]
 
 
