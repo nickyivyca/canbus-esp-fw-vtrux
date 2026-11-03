@@ -14,10 +14,10 @@
 // reports both RX flags and all three TXREQ states, so keeping the buffers fed
 // costs one SPI transaction.
 //
-// Board wiring (Autosport Labs ESP32-CAN-X2, variant `aslcanx2`):
-//   CS 10, SCK 12, MISO 13, MOSI 11, IRQ 3, 16 MHz crystal.
-// Note the vendor's own examples poll and never use IRQ; the pin is documented
-// on the wiki but absent from pins_arduino.h, so it is passed in explicitly.
+// Board wiring (Autosport Labs ESP32-CAN-X2): CS 10, SCK 12, MISO 13, MOSI 11,
+// IRQ 3, 16 MHz crystal, as the board layer gives them (vtrux/x2, through
+// board_ports.h). The caller passes CS and IRQ in. Note the vendor's own
+// examples poll and never use IRQ.
 
 #pragma once
 
