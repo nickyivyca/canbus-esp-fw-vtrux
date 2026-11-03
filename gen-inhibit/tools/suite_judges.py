@@ -402,9 +402,38 @@ def b11raw(F):
                        len(passing), verdicts.count("strict FAIL, PASS on ACK"), len(na)))]
 
 
+# The restart record each B12 cycle reads back after the restart (--record-get, record_get_after
+# in the cycle's JSON): the stop the restart hook made before it (gen-inhibit reviewer,
+# 2026-11-03, follow-up (iii)). On _rt the record must be there and read; these three as said.
+B12_LAST_RESTART = (("did_twai", True), ("did_stdby", True), ("timed_out", False))
+
+
+def b12_record(path):
+    """None if the restart record B12's cycle file names reads as specified, else why. Only the
+    record beside the file, by the name its cycle line gives (reviewer, 2026-11-03, reading (a))."""
+    m = re.search(r"^cycle 0 \w+: .*, wrote (restart_error_frames_\S+\.json)$", text(path), re.M)
+    if not m:
+        return "%s names no record" % base(path)
+    name = m.group(1)
+    p = os.path.join(os.path.dirname(path), name)
+    if not os.path.isfile(p):
+        return "%s: its record %s is not beside it" % (base(path), name)
+    try:
+        d = json.loads(text(p))
+    except ValueError as e:
+        return "%s cannot be read (%s)" % (name, e)
+    r = d.get("record_get_after") if isinstance(d, dict) else None
+    lr = r.get("last_restart") if isinstance(r, dict) else None
+    if not isinstance(lr, dict):
+        return "%s: the restart record was not read (record_get_after %s)" % (
+            name, repr(r if not isinstance(r, dict) else {"last_restart": lr})[:80])
+    wrong = ["%s %s" % (k, json.dumps(lr.get(k))) for k, v in B12_LAST_RESTART if lr.get(k) is not v]
+    return "%s: last_restart %s" % (name, ", ".join(wrong)) if wrong else None
+
+
 @judge("B12", "B")
 def b12(F):
-    sw, panic, bad = [], [], []
+    sw, panic, bad, rec_bad = [], [], [], []
     files = F.some(r"B12_\d_(live|off)_(reboot|crash)\.txt", 7)
     for f in files:
         restart = re.search(r"_(reboot|crash)\.txt$", f).group(1)
@@ -417,12 +446,16 @@ def b12(F):
         (sw if want == "SW" else panic).append(float(m.group(2)))
         if m.group(1) != want or int(m.group(3)):
             bad.append("%s reset %s errors %s" % (base(f), m.group(1), m.group(3)))
+        why = b12_record(f)
+        if why:
+            rec_bad.append(why)
     figs = {"cycles": fig(len(sw) + len(panic)), "error_frames": fig(0 if not bad else None)}
     if sw:
         figs.update(sw_boot_s_min=fig(min(sw), "s"), sw_boot_s_max=fig(max(sw), "s"))
     if panic:
         figs.update(panic_boot_s_min=fig(min(panic), "s"), panic_boot_s_max=fig(max(panic), "s"))
-    return [result("B12", "FAIL" if bad else "PASS", figs, "; ".join(bad) or "7 of 7 cycles, 0 error frames")]
+    return [result("B12", "FAIL" if bad or rec_bad else "PASS", figs, "; ".join(bad + rec_bad) or
+                   "7 of 7 cycles, 0 error frames; 7 restart records: did_twai, did_stdby true, timed_out false")]
 
 
 @judge("B13", "B")
