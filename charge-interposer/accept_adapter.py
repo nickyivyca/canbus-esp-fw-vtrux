@@ -56,9 +56,18 @@ host's workroot in the settings and removes with everything in it there
 that matches what it makes. So acceptance runs use settings of their own
 (accept_settings_<host>.json beside the bench settings in reverse-it's
 interposer-firmware/), whose madhouse workroot is a folder the acceptance
-runner alone uses -- never /tmp/interposer-tester/runner, where the chain
+runner alone uses -- never the bench settings' one, where the chain
 runner's bench-suite runs leave their folders, nor one holding run folders
 kept by hand (the charge-interposer reviewer, 2026-11-02).
+
+Both workroots are in the tester's scratch folder on madhouse, not /tmp:
+~/scratch-tester/charge-interposer-harness/accept for acceptance and
+.../runner for the bench settings, which give each as a full path (the
+charge-interposer reviewer, 2026-11-02). That folder already holds the tester's PlatformIO core
+(PLATFORMIO_CORE_DIR). madhouse has no interposer worktree whose scratch/
+AGENTS.md "Files and folders" could mean, and the anchor is nobody's
+working tree. The runner makes the parent folders when it needs them and
+removes only what it makes there (A14).
 
 Not yet: build targets (ESP-IDF from port step 2a, whose build commands the
 2a build message gives; the reviewer, 2026-11-01: wait for it), settings
