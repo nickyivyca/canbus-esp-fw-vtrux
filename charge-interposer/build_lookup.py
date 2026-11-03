@@ -1,70 +1,72 @@
 """Identify the firmware image a board is running, from 0x7F7.
 
 The interposer reports its build in `0x7F7` B0-B3: the first four bytes
-of the application ELF's SHA-256. This maps that back to a row in
-`firmware/builds/manifest.json` -- which image, which environment, and
-in particular whether it is the WITNESS build.
+of the application ELF's SHA-256 (spec 8.2). This maps that back to one of
+the images the caller says may be on the board -- which image, which
+variant, and in particular whether it is the WITNESS build -- by reading
+each image's own ESP-IDF application descriptor (`esp_app_desc_t`): its
+ELF SHA-256 and its project name, `interposer_<variant>` (spec 8.2, from
+port step 2a; shared/tools R1, R4).
+
+PORT STEP 2a: NO MANIFEST. Before 2a this looked the id up in
+`firmware/builds/manifest.json`, which the PlatformIO build wrote and which
+retired with it (reviewer, 2026-11-03). The images carry everything the
+manifest held that identification needs, in their own bytes, so a record
+cannot drift from the file it describes.
 
 WHY A SHARED MODULE AND NOT A SNIPPET PER HARNESS. Every bench arm from
 here on records the looked-up entry before it starts, and any arm that
-needs the witness image asserts the environment rather than assuming
-it. A copy of this logic in each harness would drift, and the drifted
-copy would still return an answer. Import it.
+needs the witness image asserts the variant rather than assuming it. A
+copy of this logic in each harness would drift, and the drifted copy would
+still return an answer. Import it.
 
 EVERY FAILURE IS A REFUSAL WITH ITS OWN REASON, never a warning and
-never a best guess. The four ways this can fail are four different
-problems and must not be collapsed:
+never a best guess. The ways this can fail are different problems and
+must not be collapsed:
 
   NO_PAGES    no 0x7F7 frames were seen at all. The board is silent, or
               not bridging, or the dongle is on the wrong segment. This
               is NOT "unknown build" and must never read as one -- it
               is the commonest bench mistake and the one most easily
               mistaken for a firmware fault.
-  NO_MANIFEST the manifest is missing or empty. Then EVERY lookup would
-              return UNKNOWN_ID, and a bad build-records state would
-              look like a wire problem.
-  UNKNOWN_ID  a build id that is not in the manifest. A real image that
-              nobody recorded -- flashed from somewhere else, or built
-              before the manifest existed.
-  COLLISION   two entries share this 4-byte prefix. The table cannot
-              say which, so it says so instead of picking.
+  NO_IMAGES   the caller named no candidate images, or none of them is an
+              ESP-IDF application image. Then EVERY lookup would return
+              UNKNOWN_ID, and a missing images folder would look like a
+              wire problem.
+  UNKNOWN_ID  a build id that none of the candidate images carries. A real
+              image that is not the one expected -- flashed from somewhere
+              else, or from another commit.
+  COLLISION   two different images share this 4-byte prefix, or one ELF
+              is named as two variants. It cannot say which, so it says
+              so instead of picking.
 
 A caller that wants a verdict should treat anything but OK as a TEST
 FAULT: the stimulus of the measurement -- knowing what is on the board
 -- was not established, so no device verdict is available.
 
-THE IDENTITY IS THE ELF HASH, NOT A MANIFEST ROW (reviewer's ruling,
-2026-10-07; the user ruled the same way for the spec on 2026-10-08 --
-whether two images are the same is decided by the ELF hash, never by the
-source digest). src_digest hashes every source, whole files and comments
-included, while each environment compiles only a subset, so one ELF can
-carry several rows -- the witness ELF 7f197bfd has four src_digests -- and
-one image NAME can carry several ELFs (two clean rebuilds of 111342c1dd0f
-gave c190275a and b1b23f81 under the same filename; reproducible builds
-removed that cause on a single host OS on 2026-10-08, but a build on
-another host OS still does it and the older rows are still in the
-table). Rev 1 returned `hits[0]`,
-so the src_digest it reported depended on row order. An OK result now
-carries every row that matches the full hash (`entries`), and refuses if
-those rows disagree on the environment, which the same bytes cannot.
+THE IDENTITY IS THE ELF HASH (reviewer's ruling, 2026-10-07; the user
+ruled the same way for the spec on 2026-10-08 -- whether two images are
+the same is decided by the ELF hash, never by a file name or a source
+digest). Several candidate files can carry the same ELF (a copy in two
+folders); an OK result carries every one of them (`entries`), and refuses
+if they disagree on the variant, which the same bytes cannot.
 `elf_sha256_of_bin()` reads the hash out of an image file itself, so what
 is about to be flashed can be identified by its bytes, never its name.
 """
 
-import json
 import os
 
 OK = "OK"
 NO_PAGES = "NO_PAGES"
-NO_MANIFEST = "NO_MANIFEST"
+NO_IMAGES = "NO_IMAGES"
 UNKNOWN_ID = "UNKNOWN_ID"
 COLLISION = "COLLISION"
 
 BUILD_PAGE_ID = 0x7F7
-WITNESS_ENV = "esp32-can-x2-witness"
-
-HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_MANIFEST = os.path.join(HERE, "firmware", "builds", "manifest.json")
+# spec 8.2: the image's project name is interposer_<variant>, one of these
+PROJECT_PREFIX = "interposer_"
+VARIANTS = ("bridge", "witness", "truck", "selftest", "diag", "slcan")
+WITNESS_VARIANT = "witness"
 
 
 class Lookup(object):
@@ -88,37 +90,24 @@ class Lookup(object):
     __nonzero__ = __bool__          # py2-style callers, harmless here
 
     @property
-    def env(self):
-        return (self.entry or {}).get("env")
+    def variant(self):
+        return (self.entry or {}).get("variant")
 
     @property
     def is_witness(self):
-        return self.env == WITNESS_ENV
+        return self.variant == WITNESS_VARIANT
 
     def __str__(self):
         if self.reason == OK:
             e = self.entry
-            rows = "; ".join("%s (src %s, built %s)"
-                             % (x.get("image"), x.get("src_digest"),
-                                x.get("built_utc")) for x in self.entries)
-            return ("build %s = ELF %s, env %s, fw_ver %s -- %d manifest "
-                    "row(s): %s"
+            files = "; ".join(x.get("image", "?") for x in self.entries)
+            return ("build %s = ELF %s, %s (variant %s), version %s, %s -- "
+                    "%d file(s): %s"
                     % (self.build_id, (e.get("elf_sha256") or "?")[:16],
-                       e.get("env"), e.get("intp_fw_ver16"),
-                       len(self.entries), rows))
+                       e.get("project_name"), e.get("variant"),
+                       e.get("version"), e.get("idf_ver"),
+                       len(self.entries), files))
         return "%s: %s" % (self.reason, self.detail)
-
-
-def load_manifest(path=None):
-    """Manifest entries, or [] if there is no usable manifest."""
-    path = path or DEFAULT_MANIFEST
-    if not os.path.exists(path):
-        return []
-    try:
-        with open(path, "r") as f:
-            return json.load(f).get("builds", [])
-    except (IOError, ValueError):
-        return []
 
 
 APP_DESC_MAGIC = 0xABCD5432
@@ -128,15 +117,22 @@ APP_DESC_MAGIC = 0xABCD5432
 # then app_elf_sha256[32] -- what `esptool image-info` prints as "ELF file
 # SHA256" and what the board puts in 0x7F7.
 _APP_DESC_AT = 24 + 8
-_ELF_SHA_AT = _APP_DESC_AT + 4 + 4 + 8 + 32 + 32 + 16 + 16 + 32
+_VERSION_AT = _APP_DESC_AT + 4 + 4 + 8
+_PROJECT_AT = _VERSION_AT + 32
+_TIME_AT = _PROJECT_AT + 32
+_DATE_AT = _TIME_AT + 16
+_IDF_VER_AT = _DATE_AT + 16
+_ELF_SHA_AT = _IDF_VER_AT + 32
 
 
-def elf_sha256_of_bin(path):
-    """The ELF SHA-256 an image file carries, as 64 hex chars, or None.
+def _cstr(b):
+    return b.split(b"\0", 1)[0].decode("ascii", "replace")
 
-    For telling what is about to be flashed by its BYTES. The filename is
-    derived from the source digest, so two different binaries can share
-    it; this cannot be fooled that way."""
+
+def app_desc_of_bin(path):
+    """The application descriptor an image file carries, or None if it is
+    not an ESP-IDF application image: {"version", "project_name", "time",
+    "date", "idf_ver", "elf_sha256"} (strings; the hash as 64 hex)."""
     try:
         with open(path, "rb") as f:
             head = f.read(_ELF_SHA_AT + 32)
@@ -148,40 +144,71 @@ def elf_sha256_of_bin(path):
              | (head[_APP_DESC_AT + 2] << 16) | (head[_APP_DESC_AT + 3] << 24))
     if magic != APP_DESC_MAGIC:
         return None
-    return head[_ELF_SHA_AT:_ELF_SHA_AT + 32].hex()
+    return {"version": _cstr(head[_VERSION_AT:_VERSION_AT + 32]),
+            "project_name": _cstr(head[_PROJECT_AT:_PROJECT_AT + 32]),
+            "time": _cstr(head[_TIME_AT:_TIME_AT + 16]),
+            "date": _cstr(head[_DATE_AT:_DATE_AT + 16]),
+            "idf_ver": _cstr(head[_IDF_VER_AT:_IDF_VER_AT + 32]),
+            "elf_sha256": head[_ELF_SHA_AT:_ELF_SHA_AT + 32].hex()}
+
+
+def elf_sha256_of_bin(path):
+    """The ELF SHA-256 an image file carries, as 64 hex chars, or None.
+
+    For telling what is about to be flashed by its BYTES. Two different
+    binaries can share a file name; this cannot be fooled that way."""
+    d = app_desc_of_bin(path)
+    return d["elf_sha256"] if d else None
+
+
+def variant_of(project_name):
+    """`<variant>` of a project name interposer_<variant> (spec 8.2), or
+    None if the name is not one of the interposer's variants."""
+    if not project_name or not project_name.startswith(PROJECT_PREFIX):
+        return None
+    v = project_name[len(PROJECT_PREFIX):]
+    return v if v in VARIANTS else None
+
+
+def image_entry(path):
+    """The entry for one image file, from its own descriptor, or None if
+    the file is not an ESP-IDF application image."""
+    d = app_desc_of_bin(path)
+    if d is None:
+        return None
+    return dict(d, image=os.path.basename(path), path=path,
+                variant=variant_of(d["project_name"]))
+
+
+def entries_of(images):
+    """(entries, files that are not application images)."""
+    entries, bad = [], []
+    for p in images or ():
+        e = image_entry(p)
+        (entries.append(e) if e else bad.append(p))
+    return entries, bad
 
 
 def build_id_from_payload(data):
-    """0x7F7 B0-B3 as the 8 hex characters the manifest stores.
+    """0x7F7 B0-B3 as 8 hex characters, the hash's first four bytes.
 
     B0 IS THE FOURTH BYTE OF THE HASH, NOT THE FIRST. Corrected
     2026-10-06; this function had it backwards and so did its test.
 
-    Trace it through the firmware rather than reasoning from the field
-    name, because the two steps compose in a way the name hides:
+    Spec 8.2: the four bytes are sent as one little-endian 32-bit value
+    whose hexadecimal form reads like the start of the hash, so on the
+    wire B0 is the hash's fourth byte and B3 its first. A board whose
+    hash starts 7f197bfd sends fd 7b 19 7f; reading B0-B3 as a
+    little-endian u32 gives back 7f197bfd.
 
-      main.cpp buildId():   sha[0]<<24 | sha[1]<<16 | sha[2]<<8 | sha[3]
-                            -> the u32 reads 7f197bfd for a hash
-                               beginning 7f 19 7b fd, i.e. the same way
-                               round as `elf_sha256`
-      machine.cpp put32():  little-endian -- p[0]=LSB
-                            -> the WIRE carries fd 7b 19 7f
-
-    So the payload is the hash's first four bytes REVERSED, and the id
-    the manifest stores is recovered by reading B0-B3 as a little-endian
-    u32. `identify_from_bus` never hit this because it decodes through
-    the DBC (`intp_build_id 0|32@1+`, Intel u32), which is correct; this
-    function is the fallback for when the DBC has no 0x7F7 entry, and it
-    returned `fd7b197f` where the manifest holds `7f197bfd`.
-
-    The defect was invisible for the worst possible reason: the old
-    docstring asserted "B0 is the FIRST byte of the hash" and warned
-    that reversing it "would produce a plausible 8-hex string that never
-    matches anything, which would surface as UNKNOWN_ID on a perfectly
-    good board" -- which is precisely what it did. The offline test then
-    asserted the same wrong premise from a hand-written byte list, so
-    18/18 passing certified the bug. Verified against a real board on
-    2026-10-06: DBC path `7f197bfd`, this path `fd7b197f`.
+    `identify_from_bus` decodes through the DBC (`intp_build_id 0|32@1+`,
+    Intel u32), which is correct; this function is the fallback for when
+    the DBC has no 0x7F7 entry. The defect it once had was invisible for
+    the worst possible reason: the old docstring asserted "B0 is the FIRST
+    byte of the hash", and the offline test asserted the same wrong
+    premise from a hand-written byte list, so a passing test certified the
+    bug. Verified against a real board on 2026-10-06: DBC path `7f197bfd`,
+    this path `fd7b197f` before the fix.
     """
     if data is None or len(data) < 4:
         return None
@@ -189,15 +216,18 @@ def build_id_from_payload(data):
     return "%08x" % (b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24))
 
 
-def identify(build_ids, manifest_path=None, entries=None):
-    """Resolve observed 0x7F7 build ids to one manifest entry.
+def identify(build_ids, images=None, entries=None):
+    """Resolve observed 0x7F7 build ids to one of the candidate images.
 
     `build_ids` is every id seen on the wire -- a list, not one value,
     because seeing two different ones means two boards are reporting
-    and the caller must know.
+    and the caller must know. `images` are the image files (.bin) that
+    may be on the board; `entries` (image_entry() dicts) may be given
+    instead.
     """
+    bad = []
     if entries is None:
-        entries = load_manifest(manifest_path)
+        entries, bad = entries_of(images)
 
     ids = [b for b in build_ids if b]
     if not ids:
@@ -215,44 +245,47 @@ def identify(build_ids, manifest_path=None, entries=None):
                              % (", ".join(distinct), BUILD_PAGE_ID))
     bid = distinct[0]
 
-    # Checked AFTER the wire, deliberately. An empty manifest with a
-    # silent bus is a silent bus first: reporting NO_MANIFEST there
-    # would send someone to fix the records when the board is not
-    # talking.
+    # Checked AFTER the wire, deliberately. No candidates with a silent
+    # bus is a silent bus first: reporting NO_IMAGES there would send
+    # someone to fix the images folder when the board is not talking.
     if not entries:
-        return Lookup(NO_MANIFEST, build_id=bid,
-                      detail="manifest is missing or empty (%s), so every "
+        return Lookup(NO_IMAGES, build_id=bid,
+                      detail="no candidate image to compare with%s, so every "
                              "lookup would read as UNKNOWN_ID"
-                             % (manifest_path or DEFAULT_MANIFEST))
+                             % (" (not application images: %s)"
+                                % ", ".join(bad) if bad else ""))
 
     hits = [e for e in entries
             if (e.get("elf_sha256") or "")[:8].lower() == bid.lower()]
     if not hits:
         return Lookup(UNKNOWN_ID, build_id=bid,
-                      detail="build id %s is in no manifest row: this image "
-                             "was not built here, or predates the manifest"
-                             % bid)
+                      detail="build id %s is carried by none of the %d "
+                             "candidate image(s) (%s): this image is not one "
+                             "expected here"
+                             % (bid, len(entries),
+                                ", ".join(sorted(e.get("image", "?")
+                                                 for e in entries))))
     full = set((e.get("elf_sha256") or "").lower() for e in hits)
     if len(full) > 1:
         return Lookup(COLLISION, build_id=bid,
                       detail="build id %s matches %d different images (%s) -- "
-                             "the manifest cannot say which"
+                             "it cannot say which"
                              % (bid, len(hits),
                                 ", ".join(sorted(e.get("image", "?")
                                                  for e in hits))))
-    envs = sorted(set(str(e.get("env")) for e in hits))
-    if len(envs) > 1:
+    variants = sorted(set(str(e.get("variant")) for e in hits))
+    if len(variants) > 1:
         return Lookup(COLLISION, build_id=bid,
-                      detail="ELF %s has rows naming %d environments (%s) -- "
-                             "one binary cannot come from two, so the "
-                             "manifest is wrong and cannot be trusted here"
-                             % (sorted(full)[0][:16], len(envs),
-                                ", ".join(envs)))
+                      detail="ELF %s is named as %d variants (%s) -- one "
+                             "binary cannot be two, so these files cannot be "
+                             "trusted here"
+                             % (sorted(full)[0][:16], len(variants),
+                                ", ".join(variants)))
     return Lookup(OK, entry=hits[0], build_id=bid, entries=hits)
 
 
-def identify_from_bus(bus, dbc_path, seconds=3.0, manifest_path=None):
-    """Listen for 0x7F7 and identify the running image.
+def identify_from_bus(bus, dbc_path, seconds=3.0, images=None):
+    """Listen for 0x7F7 and identify the running image among `images`.
 
     Decoding goes through the DBC with cantools rather than slicing
     bytes here, so a schema change to the build page is picked up in
@@ -286,7 +319,7 @@ def identify_from_bus(bus, dbc_path, seconds=3.0, manifest_path=None):
                 continue
         seen.append(build_id_from_payload(m.data))
 
-    return identify(seen, manifest_path=manifest_path)
+    return identify(seen, images=images)
 
 
 def require_witness(lookup):
@@ -304,5 +337,7 @@ def require_witness(lookup):
     if not lookup.is_witness:
         raise SystemExit("TEST FAULT -- this arm needs the witness build.\n"
                          "  running: %s\n"
-                         "  expected env %s" % (lookup, WITNESS_ENV))
+                         "  expected variant %s (project %s%s)"
+                         % (lookup, WITNESS_VARIANT, PROJECT_PREFIX,
+                            WITNESS_VARIANT))
     return lookup.entry

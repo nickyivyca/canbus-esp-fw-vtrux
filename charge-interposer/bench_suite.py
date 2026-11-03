@@ -39,14 +39,17 @@ Lanes (reviewer's ruling 3): madhouse-debian groups (m-*) and local groups
 one job while any wall-clock test runs on the host.
 
 The X2's images: bridge (the standing image), witness, truck, c12_bench,
-vport_bench. The Arduino images are taken from the manifest at
-settings.images_src -- their md5 must match their manifest row before they
-are flashed, and identify must read their build id back. The two ESP-IDF
-test images are identified by their @HELLO and ELF sha256.
+vport_bench. The interposer's images (port step 2a: ESP-IDF builds) are
+taken from images_dir/<images_src>/<variant>/, as their build's
+flasher_args.json gives them; each application's own descriptor must name
+it (interposer_<variant>, version images_src, ESP-IDF v5.4.2), and
+identify must read its build id, the ELF hash's first four bytes, back
+(_interposer_image). The two test images are identified by their @HELLO
+and ELF sha256.
 
 Settings beyond the core's (see the NICKY-XPS settings JSON in reverse-it
 interposer-firmware/): interposer_code,
-images_dir, images_src, boot_app0, serial_port, pcan_channel, wican_state,
+images_dir, images_src, serial_port, pcan_channel, wican_state,
 madhouse_pio; for the bench suite's WiCAN (bench_wican.py), gi_tools
 (gen-inhibit's tools/gen_inhibit, read-only) and gi_chain_settings
 (gen-inhibit's chain settings JSON, read for its gi_images). The diag DBC
@@ -395,12 +398,6 @@ def scenario_judge(run):
 
 
 # ---- images -------------------------------------------------------------
-def _manifest(code):
-    with open(os.path.join(code, "firmware", "builds", "manifest.json"),
-              encoding="utf-8") as f:
-        return json.load(f)["builds"]
-
-
 # The X2 the esptool flasher must find on the port before it writes
 # (methodology, 2026-10-20: a chip-id mismatch writes nothing, and an image
 # that names no chip is refused). The repo is public, so the MAC is never a
@@ -413,24 +410,70 @@ def _x2_chip(settings):
     return {"type": X2_CHIP_TYPE, "mac": settings.get("x2_mac")}
 
 
-def _arduino_image(name, env, settings):
+# The interposer's images are built with ESP-IDF v5.4.2 (user, 2026-11-03);
+# the bench's own test images (c12_bench, vport_bench) stay on v5.4.1
+# (reviewer, 2026-11-03), so _idf_image does not check this.
+INTERPOSER_IDF = "v5.4.2"
+
+
+def _md5(path):
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for blk in iter(lambda: f.read(1 << 20), b""):
+            h.update(blk)
+    return h.hexdigest()
+
+
+def _interposer_image(variant, settings):
+    """An ESP-IDF image of the interposer (port step 2a), from the folder
+    images_dir/<images_src>/<variant>/, which holds the build's
+    flasher_args.json and the files it names at their paths (the build's
+    bootloader, partition table, otadata and application). Flashed exactly
+    as flasher_args.json gives them, otadata included (the build's
+    ota_data_initial.bin, not PlatformIO's boot_app0.bin).
+
+    The identity is the application's own descriptor (spec 8.2): its
+    project name must be interposer_<variant>, its version the folder's
+    images_src (ESP-IDF's git describe of the commit; never -dirty), its
+    ESP-IDF INTERPOSER_IDF, and identify must read the first four bytes of
+    its ELF hash back from 0x7F7. A folder that does not say so is refused
+    when the suite is built, before anything is flashed."""
+    import build_lookup
     src = settings["images_src"]
-    d = os.path.join(settings["images_dir"], src, env)
-    tag = {"esp32-can-x2": "bridge", "esp32-can-x2-witness": "witness"}.get(env, env)
-    app = os.path.join(d, "interposer_%s_%s.bin" % (src, tag))
-    rows = [r for r in _manifest(settings["interposer_code"])
-            if r["image"] == os.path.basename(app)]
-    if len(rows) != 1:
-        raise ValueError("%s: %d manifest rows" % (os.path.basename(app), len(rows)))
-    row = rows[0]
-    return Image(name, "esptool", board="x2", expect=row["build_id_0x7F7"],
-                 params={"files": [["0x0", os.path.join(d, "bootloader.bin")],
-                                   ["0x8000", os.path.join(d, "partitions.bin")],
-                                   ["0xe000", settings["boot_app0"]],
-                                   ["0x10000", app]],
-                         "md5": {app: row["md5"]}, "chip": _x2_chip(settings)},
-                 note="manifest row %s, elf %s" % (row["image"],
-                                                   row["elf_sha256"][:8]))
+    d = os.path.join(settings["images_dir"], src, variant)
+    fa_path = os.path.join(d, "flasher_args.json")
+    with open(fa_path, encoding="utf-8") as f:
+        fa = json.load(f)
+    app_rel = (fa.get("app") or {}).get("file")
+    files = sorted(((off, os.path.join(d, *rel.split("/")))
+                    for off, rel in (fa.get("flash_files") or {}).items()),
+                   key=lambda x: int(x[0], 16))
+    want_offs = {"0x0", "0x8000", "0xe000", "0x10000"}
+    if set(o for o, _p in files) != want_offs:
+        raise ValueError("%s: flash_files at %s, not the X2's bootloader, "
+                         "partition table, otadata and app (%s)"
+                         % (fa_path, sorted(o for o, _p in files),
+                            sorted(want_offs)))
+    app = os.path.join(d, *(app_rel or "?").split("/"))
+    if dict(files).get("0x10000") != app:
+        raise ValueError("%s: its app is not the file at 0x10000" % fa_path)
+    desc = build_lookup.app_desc_of_bin(app)
+    if desc is None:
+        raise ValueError("%s is not an ESP-IDF application image" % app)
+    project = "interposer_%s" % variant
+    for what, got, want in (("project name", desc["project_name"], project),
+                            ("version", desc["version"], src),
+                            ("ESP-IDF", desc["idf_ver"], INTERPOSER_IDF)):
+        if got != want:
+            raise ValueError("%s: its %s is %r, not %r" % (app, what, got,
+                                                          want))
+    sha = desc["elf_sha256"]
+    return Image(variant, "esptool", board="x2", expect=sha[:8],
+                 params={"files": [[o, p] for o, p in files],
+                         "md5": {p: _md5(p) for _o, p in files},
+                         "chip": _x2_chip(settings)},
+                 note="%s %s, %s, ELF %s" % (project, desc["version"],
+                                             desc["idf_ver"], sha[:16]))
 
 
 def _idf_image(name, settings):
@@ -809,9 +852,9 @@ def bench(settings):
     ])
 
     images = {
-        "bridge": _arduino_image("bridge", "esp32-can-x2", settings),
-        "witness": _arduino_image("witness", "esp32-can-x2-witness", settings),
-        "truck": _arduino_image("truck", "truck", settings),
+        "bridge": _interposer_image("bridge", settings),
+        "witness": _interposer_image("witness", settings),
+        "truck": _interposer_image("truck", settings),
         "c12_bench": _idf_image("c12_bench", settings),
         "vport_bench": _idf_image("vport_bench", settings),
     }
