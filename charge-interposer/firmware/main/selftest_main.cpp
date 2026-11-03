@@ -15,30 +15,28 @@
 // NOT the bridge firmware. Do not flash main.cpp with these jumpers fitted: the
 // bridge would forward CAN1 -> CAN2 straight back onto its own wire and storm.
 //
-//     pio run -d projects/vtrux/tools/interposer/firmware -e selftest -t upload
-//     pio device monitor -b 115200
+// The selftest variant: from charge-interposer/firmware/ in an exported
+// ESP-IDF shell (firmware/README.md),
+//     idf.py -B build/selftest -D INTP_VARIANT=selftest build flash monitor
 
 #include <Arduino.h>
 #include <SPI.h>
 
+#include "board_ports.h"
 #include "port_mcp2515.h"
 #include "port_twai.h"
 
 using namespace interposer;
 
-static const int CAN1_TX_GPIO = 7;
-static const int CAN1_RX_GPIO = 6;
-static const uint8_t MCP_CS = 10;
-static const uint8_t MCP_SCK = 12;
-static const uint8_t MCP_MISO = 13;
-static const uint8_t MCP_MOSI = 11;
-static const uint8_t MCP_INT = 3;
+// The pins are the board layer's (board_ports.h).
+static const VehiclePins VEH = vehiclePins();
+static const ChargerPins CHG = chargerPins();
 
 static const uint32_t BITRATE = 500000UL;
 
 static SPIClass mcp_spi(HSPI);
-static TwaiPort can1(CAN1_TX_GPIO, CAN1_RX_GPIO);
-static Mcp2515Port can2(mcp_spi, MCP_CS, MCP_INT);
+static TwaiPort can1(VEH.tx, VEH.rx);
+static Mcp2515Port can2(mcp_spi, CHG.cs, CHG.irq);
 
 static uint16_t checks_run = 0;
 static uint16_t checks_failed = 0;
@@ -234,9 +232,11 @@ void setup() {
   Serial.println("Requires CAN1H<->CAN2H and CAN1L<->CAN2L jumpers.");
   Serial.printf("bitrate %lu\n\n", (unsigned long)BITRATE);
 
-  mcp_spi.begin(MCP_SCK, MCP_MISO, MCP_MOSI, MCP_CS);
-  check(can1.begin(BITRATE), "CAN1 (TWAI) came up");
-  check(can2.begin(BITRATE), "CAN2 (MCP2515) came up");
+  check(VEH.ok, "the board describes CAN1 as its TWAI port 0");
+  check(CHG.ok, "the board describes CAN2 as an MCP2515 on SPI3, 16 MHz");
+  if (CHG.ok) mcp_spi.begin(CHG.sck, CHG.miso, CHG.mosi, CHG.cs);
+  check(VEH.ok && can1.begin(BITRATE), "CAN1 (TWAI) came up");
+  check(CHG.ok && can2.begin(BITRATE), "CAN2 (MCP2515) came up");
 
   if (checks_failed) {
     Serial.println("\nA port failed to initialise; the rest is meaningless.");

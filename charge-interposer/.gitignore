@@ -1,2 +1,6 @@
-.pio/
 __pycache__/
+# The ESP-IDF build: build folders (firmware/build/<variant>/), the Component
+# Manager's downloads, and menuconfig's backup of the committed sdkconfig.
+firmware/build/
+firmware/managed_components/
+firmware/sdkconfig.old

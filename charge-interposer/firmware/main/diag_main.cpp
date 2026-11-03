@@ -6,9 +6,12 @@
 // connected" and "the controller never reached normal mode" produce IDENTICAL
 // symptoms. This separates them, then narrows the physical case further.
 //
-// Phase 1, internal loopback -- needs no wire at all:
+// Phase 1, self-reception -- needs no jumper, but is not wireless:
 //   MCP2515  CANCTRL REQOP=010, TX routed to RX inside the chip, TXCAN idle
-//   TWAI     TWAI_MODE_NO_ACK + self-reception request
+//   TWAI     TWAI_MODE_NO_ACK + self-reception request. This is not an
+//            internal loopback: the controller drives its TX pin, so every
+//            frame goes out through the transceiver onto CAN1's segment, and
+//            whatever else is on that segment sees it.
 //
 //   loopback PASS, cross-port FAIL  -> drivers are fine, the problem is physical
 //   loopback FAIL                   -> the driver is wrong, ignore the wiring
@@ -19,29 +22,30 @@
 // symmetry -- raw GPIO for the bit level, and a NO_ACK transmitter paired with
 // a listen-only receiver for the frame level.
 //
-//     pio run -d projects/vtrux/tools/interposer/firmware -e diag -t upload
+// The diag variant: from charge-interposer/firmware/ in an exported ESP-IDF
+// shell (firmware/README.md),
+//     idf.py -B build/diag -D INTP_VARIANT=diag build flash monitor
 
 #include <Arduino.h>
 #include <SPI.h>
 
+#include "board_ports.h"
 #include "port_mcp2515.h"
 #include "port_twai.h"
 
 using namespace interposer;
 
-static const int CAN1_TX_GPIO = 7;
-static const int CAN1_RX_GPIO = 6;
-static const uint8_t MCP_CS = 10;
-static const uint8_t MCP_SCK = 12;
-static const uint8_t MCP_MISO = 13;
-static const uint8_t MCP_MOSI = 11;
-static const uint8_t MCP_INT = 3;
+// The pins are the board layer's (board_ports.h).
+static const VehiclePins VEH = vehiclePins();
+static const ChargerPins CHG = chargerPins();
+static const int CAN1_TX_GPIO = VEH.tx;
+static const int CAN1_RX_GPIO = VEH.rx;
 
 static const uint32_t BITRATE = 500000UL;
 
 static SPIClass mcp_spi(HSPI);
 static TwaiPort can1(CAN1_TX_GPIO, CAN1_RX_GPIO);
-static Mcp2515Port can2(mcp_spi, MCP_CS, MCP_INT);
+static Mcp2515Port can2(mcp_spi, CHG.cs, CHG.irq);
 
 static uint16_t checks_run = 0;
 static uint16_t checks_failed = 0;
@@ -217,10 +221,18 @@ void setup() {
   Serial.println("\n\n=== ESP32-CAN-X2 diagnostic (Stage 0a) ===");
   Serial.printf("bitrate %lu\n", (unsigned long)BITRATE);
 
-  mcp_spi.begin(MCP_SCK, MCP_MISO, MCP_MOSI, MCP_CS);
+  check(VEH.ok, "the board describes CAN1 as its TWAI port 0");
+  check(CHG.ok, "the board describes CAN2 as an MCP2515 on SPI3, 16 MHz");
+  if (!VEH.ok || !CHG.ok) {
+    // Phase 2 drives CAN1's pins by hand: never on pins the board did not give.
+    Serial.println("\nThe board's ports are not as this firmware expects; "
+                   "nothing else runs.");
+    return;
+  }
+  mcp_spi.begin(CHG.sck, CHG.miso, CHG.mosi, CHG.cs);
 
   // --- phase 1 ---
-  Serial.println("\n### phase 1: drivers, internal loopback, no wire ###");
+  Serial.println("\n### phase 1: drivers, self-reception (TWAI transmits on CAN1) ###");
   can1.setSelfTest(true);
   can2.setLoopback(true);
   check(can1.begin(BITRATE), "CAN1 (TWAI) began in NO_ACK self-test mode");

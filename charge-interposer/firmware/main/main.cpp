@@ -6,9 +6,8 @@
 // Python reference in the parent folder and knows nothing about this file. This
 // file only moves frames.
 //
-// Pins come from the Arduino variant `aslcanx2` (espressif/arduino-esp32) with
-// one exception: the MCP2515 IRQ on GPIO3 is documented on the Autosport Labs
-// wiki but absent from pins_arduino.h, so it is spelled out here.
+// Pins come from the board layer, the X2's board component vtrux/x2
+// (shared/boards SPEC section 3), through board_ports.h. This file holds none.
 //
 // NO HARDWARE MODS ASSUMED. Both MCP2562 transceivers are hardwired always-on
 // -- pin 8 (STBY) has no GPIO on this board -- so the firmware cannot take
@@ -22,8 +21,8 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <esp_app_desc.h>
-#include <esp_log.h>
 
+#include "board_ports.h"
 #include "bridge_health.h"
 #include "charger_tx_failures.h"
 #include "machine.h"
@@ -39,8 +38,8 @@
 // builds bound the block to under 2 ms once per stall and then drop, which
 // spec 8.3 requires of them -- see INTP_CDC_TX_TIMEOUT_MS in the #else
 // branch.
-// The truck build compiles the calls OUT under -DINTP_NO_SERIAL
-// ([env:truck]) rather than guarding them at run time, so there is no call
+// The truck build compiles the calls OUT under INTP_NO_SERIAL (the truck
+// variant, main/CMakeLists.txt) rather than guarding them at run time, so there is no call
 // left to block on at all. The spec 8.2 diagnostic frames are unaffected -- 0x7F4-0x7F7 are
 // how the truck build is observed, and `intp_serial` reads 0 there, which is
 // what identifies it as a truck image on the wire.
@@ -141,22 +140,17 @@
 
 using namespace interposer;
 
-// --- board wiring ---------------------------------------------------------
-static const int CAN1_TX_GPIO = 7;   // variant: CAN1_TX
-static const int CAN1_RX_GPIO = 6;   // variant: CAN1_RX
-static const uint8_t MCP_CS = 10;    // variant: CS
-static const uint8_t MCP_SCK = 12;   // variant: SCK
-static const uint8_t MCP_MISO = 13;  // variant: MISO
-static const uint8_t MCP_MOSI = 11;  // variant: MOSI
-static const uint8_t MCP_INT = 3;    // wiki only; not in pins_arduino.h
+// --- board wiring: from the board layer (board_ports.h) --------------------
+static const VehiclePins VEH = vehiclePins();
+static const ChargerPins CHG = chargerPins();
 
 static const uint32_t BITRATE = 500000UL;
 static const uint32_t TICK_INTERVAL_MS = 10;
 static const uint32_t STATUS_INTERVAL_MS = 5000;
 
 static SPIClass mcp_spi(HSPI);
-static TwaiPort vehicle(CAN1_TX_GPIO, CAN1_RX_GPIO);
-static Mcp2515Port charger(mcp_spi, MCP_CS, MCP_INT);
+static TwaiPort vehicle(VEH.tx, VEH.rx);
+static Mcp2515Port charger(mcp_spi, CHG.cs, CHG.irq);
 
 static Config cfg;
 static InterposerCore* core = nullptr;
@@ -278,7 +272,7 @@ uint32_t intpBoundaryLogs() { return core ? core->boundaryLogs() : 0; }
 // SHA-256, read from the ESP-IDF app descriptor.
 //
 // This replaced FNV-1a of a GIT_SHA string, copied from the WiCAN inhibitor.
-// That was never a fingerprint here: platformio.ini does not pass -DGIT_SHA,
+// That was never a fingerprint here: the PlatformIO build never passed -DGIT_SHA,
 // so every build ever flashed reported fnv1a("unknown") = 2608177081. A
 // constant that looks like a hash is worse than no field, because it reads
 // as provenance. There is also no git checkout on the bench machine, so
@@ -736,30 +730,12 @@ static void status(uint32_t t_ms) {
 }
 
 void setup() {
-#ifdef INTP_NO_SERIAL
-  // Spec 8.3 (user, 2026-10-13): the flight build prints nothing once the
-  // application has started, FRAMEWORK LOGGING INCLUDED. This firmware's
-  // own prints are compiled out above, and Arduino's log macros go with
-  // CORE_DEBUG_LEVEL=0 on [env:truck] -- but neither reaches an ESP_LOGE()
-  // inside the IDF libraries, because under framework = arduino those are
-  // PREBUILT (esp32-arduino-libs, built from esp-idf release/v5.4
-  // 858a988d6e) and no flag this build passes can remove a call from a
-  // library it does not compile.
-  //
-  // What those libraries can still emit is bounded by their own sdkconfig:
-  // CONFIG_LOG_MAXIMUM_LEVEL=1, so ERROR is the only level that survived
-  // their compilation -- the IDF startup logs (cpu_start, heap_init) are
-  // ESP_LOGI and are already absent. CONFIG_ESP_CONSOLE_UART_DEFAULT=y
-  // with CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y means what an
-  // ESP_LOGE did write would leave by the same USB port as Serial -- the
-  // port a host may be attached to and not reading, which is the whole
-  // reason 8.3 exists. Dropping the default level to NONE leaves nothing
-  // able to write, and costs one call at boot. The ROM banner and the
-  // bootloader are out of scope per the spec.
-  esp_log_level_set("*", ESP_LOG_NONE);
-#endif
+  // Framework logging needs nothing here (spec 8.3): ESP-IDF's and the
+  // Arduino core's log levels are none in the sdkconfig, so their log calls
+  // are compiled out of every build (shared/tools R28), the IDF libraries
+  // included, since this project compiles them. This firmware's own prints
+  // are compiled out of the truck build above (INTP_NO_SERIAL).
   INTP_SERIAL_BEGIN(115200);
-  pinMode(LED_BUILTIN, OUTPUT);
   delay(200);
 
   INTP_PRINTLN("");
@@ -775,15 +751,17 @@ void setup() {
   INTP_PRINTF("bitrate %lu, tick %lu ms\n", (unsigned long)BITRATE,
                 (unsigned long)TICK_INTERVAL_MS);
 
-  mcp_spi.begin(MCP_SCK, MCP_MISO, MCP_MOSI, MCP_CS);
+  // A side the board did not describe as expected is a side that did not
+  // start (board_ports.h): the bridge-down path below, never other pins.
+  if (CHG.ok) mcp_spi.begin(CHG.sck, CHG.miso, CHG.mosi, CHG.cs);
 
-  const bool v_ok = vehicle.begin(BITRATE);
+  const bool v_ok = VEH.ok && vehicle.begin(BITRATE);
   // Spec 2.3: the boot window starts HERE, the moment the vehicle
   // controller is up in normal mode, and ends when the first switch into
   // listen-only completes at the end of setup().
   const uint32_t veh_up_us = micros();
   INTP_PRINTF("CAN1 (vehicle, TWAI)   : %s\n", v_ok ? "up" : "FAILED");
-  const bool c_ok = charger.begin(BITRATE);
+  const bool c_ok = CHG.ok && charger.begin(BITRATE);
   INTP_PRINTF("CAN2 (charger, MCP2515): %s\n", c_ok ? "up" : "FAILED");
 
   healthy = v_ok && c_ok;
@@ -957,7 +935,6 @@ void loop() {
   charger.service(t_ms);
 
   if (!healthy) {
-    digitalWrite(LED_BUILTIN, (t_ms / 100) % 2);  // fast blink = down
     // Spec 2.1 / 8.2 (B-7d), as 2.3 amends it (user, 2026-10-13): the
     // failed start is reported by the ONE round sent at power-up, and the
     // port then stays in listen-only, because no charger frame can arrive
@@ -1018,6 +995,5 @@ void loop() {
   if ((uint32_t)(t_ms - last_status_ms) >= STATUS_INTERVAL_MS) {
     last_status_ms = t_ms;
     status(t_ms);
-    digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
   }
 }

@@ -31,17 +31,22 @@ bench artifacts stayed there when this folder moved into
 
 | Path | What |
 |------|------|
-| `platformio.ini` | Build config. Arduino framework, `esp32-s3-devkitc-1` board (there is no PlatformIO definition for the CAN-X2). Six environments: `esp32-can-x2` (the bench bridge), **`truck`** (the same with serial compiled out, spec 8.3), **`esp32-can-x2-witness`** (the bridge plus completion-order instrumentation), `selftest`, `diag`, `slcan`. **Each one must exclude every other env's `*_main.cpp`** -- `slcan_main.cpp` was added on 2026-09-29 without updating the others, and `esp32-can-x2` did not link at all from then until 2026-10-03. Nothing caught it because nothing built it in between. |
-| `src/machine.h` / `.cpp` | **The state machine.** Pure: no Arduino, no ESP-IDF, integer-only, time as a parameter. The only file whose behaviour matters. |
-| `src/can_port.h` | `CanPort` interface + a fixed-capacity `FrameRing`. Separates "queued" from "on the wire" deliberately. |
-| `src/port_twai.h` / `.cpp` | CAN1, the vehicle segment, on the S3's built-in controller. `setMode()` is spec 2.3's listen-only switch, and it is a driver teardown and reinstall because TWAI fixes the mode at install: it can be refused, and it discards the driver's queues. |
-| `src/port_mcp2515.h` / `.cpp` | CAN2, the charger segment. Hand-written; see below for why. |
-| `src/bridge_health.h` | Spec 8.2's `bridge_ok`: health **since the previous status frame**, not since boot. `sample()` answers and moves the baselines, for a frame; `peek()` answers without moving them, for 8.3's serial line in listen-only where no frame goes out. Pure and header-only, kept out of `main.cpp` so `test/host_unit/` can compile it. |
-| `src/charger_tx_failures.h` | Spec 2.2's `0x7F6` B7 counter: the sum of the charger port's three disjoint tallies (queue full, controller failure, the 100 ms age-out), accrued only while the VCU's flow bit is 1, with a delta that arrives outside a session DISCARDED rather than banked for the next one. Lifted out of `main.cpp` on 2026-10-13 for the same reason as `bridge_health.h`: the rule is the whole of it, and nothing could test it where it was. |
-| `src/main.cpp` | Wiring only. Moves frames, reports losses. Owns spec 2.3's two caller duties: the one round of status frames at power-up, and applying the core's `vehicleListenOnly()` to the port BEFORE dispatching that pass's frames. |
-| `src/slcan_main.cpp` | **Bench only, and not part of the bridge.** Turns the board into a plain SLCAN transmitter on CAN1 so the generator-inhibit bench has a SECOND transmitter on the powertrain segment. Frames queued in one adapter do not arbitrate against each other, so filler from the bench's PCAN delays the replay's `0x051` whatever its CAN priority; from this board's own controller arbitration places it, `0x7E0` loses to every truck id, and it cannot delay a command. Silent until it receives an `O`. Read its header before flashing it -- it lists the protocol subset and four deliberate refusals. |
-| `src/selftest_main.cpp` | Stage 0. Cross-port identity, DLC and throughput over the loopback jumpers. |
-| `src/diag_main.cpp` | Stage 0a. Controller internal loopback + physical-layer probes. Flash this when Stage 0 fails and the cause could be either wiring or driver. |
+| `CMakeLists.txt` | The ESP-IDF project (port step 2a). Defines the variant option `INTP_VARIANT` (bridge, witness, truck, selftest, diag, slcan; spec 8.2), names the project `interposer_<variant>`, and sets the two fixed USB lines on the Arduino component. |
+| `main/CMakeLists.txt` | The `main` component: **each variant's sources and switches**. A variant lists exactly the `*_main.cpp` it links, so no variant can pick up another's `setup()`. The PlatformIO build excluded them instead, and `slcan_main.cpp`, added 2026-09-29 without updating the others, stopped the bridge linking at all until 2026-10-03. |
+| `main/idf_component.yml`, `dependencies.lock` | The dependencies: arduino-esp32 3.2.1 from the Component Manager, five of its own dependencies held at the baseline's versions, the board `vtrux/x2` from git at a `shared/main` tag, ESP-IDF v5.4.2 exactly. The lock records what they resolved to. |
+| `sdkconfig` | The one configuration every variant builds from (spec 9's settings, 8.3's log levels, the X2's fixed values). Committed. |
+| `shared_pins.json`, `vtrux_build.json` | The pin of the shared build tooling, and the project's name and shared components for it (`shared/tools/SPEC.md`). |
+| `main/board_ports.h` | Each port's pins from the board layer (`vtrux/x2`, shared/boards B5), never constants: CAN1 from `board_twai_pins(0)`, CAN2 from `board_spi_can(1)`. A board that does not describe a port as expected makes that port fail to start, which is spec 8.2's bridge-down path, never an abort. |
+| `main/machine.h` / `.cpp` | **The state machine.** Pure: no Arduino, no ESP-IDF, integer-only, time as a parameter. The only file whose behaviour matters. |
+| `main/can_port.h` | `CanPort` interface + a fixed-capacity `FrameRing`. Separates "queued" from "on the wire" deliberately. |
+| `main/port_twai.h` / `.cpp` | CAN1, the vehicle segment, on the S3's built-in controller. `setMode()` is spec 2.3's listen-only switch, and it is a driver teardown and reinstall because TWAI fixes the mode at install: it can be refused, and it discards the driver's queues. |
+| `main/port_mcp2515.h` / `.cpp` | CAN2, the charger segment. Hand-written; see below for why. |
+| `main/bridge_health.h` | Spec 8.2's `bridge_ok`: health **since the previous status frame**, not since boot. `sample()` answers and moves the baselines, for a frame; `peek()` answers without moving them, for 8.3's serial line in listen-only where no frame goes out. Pure and header-only, kept out of `main.cpp` so `test/host_unit/` can compile it. |
+| `main/charger_tx_failures.h` | Spec 2.2's `0x7F6` B7 counter: the sum of the charger port's three disjoint tallies (queue full, controller failure, the 100 ms age-out), accrued only while the VCU's flow bit is 1, with a delta that arrives outside a session DISCARDED rather than banked for the next one. Lifted out of `main.cpp` on 2026-10-13 for the same reason as `bridge_health.h`: the rule is the whole of it, and nothing could test it where it was. |
+| `main/main.cpp` | Wiring only. Moves frames, reports losses. Owns spec 2.3's two caller duties: the one round of status frames at power-up, and applying the core's `vehicleListenOnly()` to the port BEFORE dispatching that pass's frames. |
+| `main/slcan_main.cpp` | **Bench only, and not part of the bridge.** Turns the board into a plain SLCAN transmitter on CAN1 so the generator-inhibit bench has a SECOND transmitter on the powertrain segment. Frames queued in one adapter do not arbitrate against each other, so filler from the bench's PCAN delays the replay's `0x051` whatever its CAN priority; from this board's own controller arbitration places it, `0x7E0` loses to every truck id, and it cannot delay a command. Silent until it receives an `O`. Read its header before flashing it -- it lists the protocol subset and four deliberate refusals. |
+| `main/selftest_main.cpp` | Stage 0. Cross-port identity, DLC and throughput over the loopback jumpers. |
+| `main/diag_main.cpp` | Stage 0a. Controller internal loopback + physical-layer probes. Flash this when Stage 0 fails and the cause could be either wiring or driver. |
 | `datasheets/` | **Not in this repo.** The vendor data sheets (MCP2515 DS20001801J) were deliberately left out of the move and stay in the reverse-it project, at `projects/vtrux/tools/interposer/firmware/datasheets/`. Findings taken from them need both text extraction and the rendered page -- see that folder's `README.md`. |
 | `test/host_diff/make_golden.py` | Freezes what `machine.py` does over a real capture into a trace + golden pair. |
 | `test/host_diff/host_runner.cpp` | Drives `machine.cpp` over the same trace, same output format. |
@@ -50,95 +55,102 @@ bench artifacts stayed there when this folder moved into
 
 ## Build
 
-Six environments.
+An ESP-IDF project since port step 2a: ESP-IDF **v5.4.2** with the Arduino
+core, arduino-esp32 3.2.1, as a component of `main` (user, 2026-11-03:
+arduino-esp32 3.2.1 does not compile on v5.4.1, gen-inhibit's IDF, so this
+project has its own install; `main/idf_component.yml` requires 5.4.2
+exactly). Six variants, each a value of the CMake option `INTP_VARIANT`,
+each in its own build folder, all from the one committed `sdkconfig`.
 
-| Env | Image tag | What it is |
-|---|---|---|
-| `esp32-can-x2` | `bridge` | The bridge, with serial. What the bench runs. |
-| `truck` | `truck` | The same image with serial compiled out (spec 8.3). What goes in the vehicle. |
-| `esp32-can-x2-witness` | `witness` | **Bench only.** The bridge plus the completion-order witness. Keeps serial, because dumping the witness is the point. |
-| `selftest` | `selftest` | Stage 0 board self-test (needs jumpers). |
-| `diag` | `diag` | Stage 0a fault-isolation build. |
-| `slcan` | `slcan` | Bench-only SLCAN transmitter for the generator-inhibit rig (see `src/slcan_main.cpp`). |
+| Variant | What it is |
+|---|---|
+| `bridge` | The bridge, with serial. What the bench runs. |
+| `truck` | The same image with serial compiled out (`INTP_NO_SERIAL`, spec 8.3). What goes in the vehicle. |
+| `witness` | **Bench only.** The bridge plus the completion-order witness (`INTP_ORDER_WITNESS`). Keeps serial, because dumping the witness is the point. |
+| `selftest` | Stage 0 board self-test (needs jumpers). |
+| `diag` | Stage 0a fault-isolation build. |
+| `slcan` | Bench-only SLCAN transmitter for the generator-inhibit rig (see `main/slcan_main.cpp`). |
 
-**Flashing `slcan` or `esp32-can-x2-witness` replaces the bridge**; restore it
-with `-e esp32-can-x2 -t upload`, and there is a byte-exact image of the flash
-as it was before `slcan` first went on in
+**Flashing `slcan` or `witness` replaces the bridge**; restore it by flashing
+the `bridge` variant, and there is a byte-exact image of the flash as it was
+before `slcan` first went on in
 `projects/vtrux/notes/artifacts/interposer-firmware/flash-backup/`.
 
-**The build is reproducible on one host OS** (spec 8.2, 2026-10-08).
-`reproducible.py` is a `pre:` extra_script that fixes `SOURCE_DATE_EPOCH` to a
-constant -- not the commit time, which would make the image depend on when the
-tree was committed -- and adds `-ffile-prefix-map` for the project and package
-directories, in both path spellings and on both SCons environments, since the
-Arduino framework's own sources compile in the default one. `platformio.ini`
-pins the platform to an immutable release-asset URL for the same reason. Read
-that file's header before changing any of it: a prefix map that matches
-nothing fails in a way that looks exactly like success, because the build
-still works and only the embedded strings differ. Across host OSes the flashed
-code is the same and the id is not, which is expected rather than a defect --
-the measurement is in `reproducible.py`.
+**Build identity and release builds follow `shared/tools/SPEC.md`** (spec
+8.2), at the version `shared_pins.json` pins. Each variant's image is
+`build/<variant>/interposer_<variant>.bin`, and `interposer_<variant>` is
+also the app descriptor's `project_name`, so a board carrying measurement
+instrumentation cannot be confused with the bench bridge from the image
+alone. The version is ESP-IDF's own `git describe` of this tree. Reproducible
+builds are ESP-IDF's `CONFIG_APP_REPRODUCIBLE_BUILD`, on in `sdkconfig`
+(shared/tools R12), which replaced the PlatformIO build's `reproducible.py`.
+**No release build is made while the port is under way** (spec 8.2; port
+plan goal 21): everything below is a bench or dev build (shared/tools R14).
 
-**No image is called `firmware.bin`.** Each environment writes
-`interposer_<src_digest>_<tag>.bin`, so six images cannot be told apart only
-by their parent directory -- the same collision the generator-inhibit project
-fixed by tagging its auto-arm build, and a worse one here, because a board
-carrying measurement instrumentation must not be confusable with the bench
-bridge. Every build also records itself in
-[`builds/manifest.json`](builds/README.md), which maps the four bytes the
-board reports in `0x7F7` back to an image. `build_name.py` and `manifest.py`
-do this; `build_identity.py` holds the table both they and `test/build_check.py`
-read.
+`ARDUINO_USB_CDC_ON_BOOT=1` and `ARDUINO_USB_MODE=1` are set on the Arduino
+component and on `main` in every variant (`CMakeLists.txt`,
+`main/CMakeLists.txt`), and they are not optional: arduino-esp32 has no
+Kconfig option for either, and without CDC on boot Arduino `Serial` is UART0
+on GPIO43/44 -- pins with nothing attached on this board. Every
+`Serial.printf` is then lost and the board looks like it crashed on boot.
 
-> **USE `py -3.14 -m platformio`, NOT the `pio` on PATH** (NICKY-XPS,
-> 2026-09-29, interpreter updated 2026-10-04). The `pio` on PATH lives under
-> **Python 3.9** (`/c/Program Files/Python39/Scripts/pio`, Core 6.1.18), and
-> the bundled `tool-esptoolpy`
-> now annotates `_verbosity: str | None`, which Python evaluates at runtime and
-> which 3.9 cannot parse. **Every environment fails, the bridge included**, and
-> the failure names `bootloader.bin` and a `TypeError` rather than anything about
-> Python versions -- the C++ compiles fine first, which makes it read like a
-> toolchain fault. Worth knowing because "rebuild from source" is this board's
-> documented restore path and it was quietly unavailable.
->
-> **Core 6.2.0 is installed under both `py -3.14` and `py -3.11`** (both
-> verified 2026-10-04), so no install is needed either way. `py -3.14` is the
-> machine's primary interpreter since 2026-10-04
-> (`python-executables-reference.md`) and is what `build_check.py` uses to
-> build every environment in `platformio.ini` -- six of them, a list it reads
-> from the file rather than keeping its own copy; **`py -3.11` still works** and is kept because
-> the ESP-IDF venv was built from it. The version on PATH is the only one
-> that does not work.
+**Build from PowerShell, never Git Bash** (`idf_tools.py` refuses under
+`MSYSTEM`), in a shell exported for this project's ESP-IDF. The install, its
+own `IDF_TOOLS_PATH` (so its venv and tools never touch gen-inhibit's) and
+the export lines are per machine, in the worktree's `local-paths.md`. Then,
+from `charge-interposer/firmware/`:
 
-`[common]` sets `-DARDUINO_USB_CDC_ON_BOOT=1`, which is not optional. The
-`esp32-s3-devkitc-1` board definition sets `ARDUINO_USB_MODE=1` but leaves CDC
-on boot at 0, which makes Arduino `Serial` UART0 on GPIO43/44 -- pins with
-nothing attached on this board. Without the flag every `Serial.printf` is lost
-and the board looks like it crashed on boot.
-
-```bash
-py -3.14 -m platformio run -d charge-interposer/firmware     # all
-py -3.14 -m platformio run -d charge-interposer/firmware -e esp32-can-x2 -t upload
-py -3.14 -m platformio run -d charge-interposer/firmware -e slcan -t upload
-py -3.14 -m platformio run -d charge-interposer/firmware -e truck   # no serial
+```powershell
+idf.py -B build/bridge -D INTP_VARIANT=bridge build      # one variant
+idf.py -B build/truck -D INTP_VARIANT=truck build        # no serial
+idf.py -B build/bridge -D INTP_VARIANT=bridge -p COM3 flash
+idf.py -B build/slcan -D INTP_VARIANT=slcan -p COM3 flash
 # BENCH ONLY -- replaces the bridge with the instrumented build:
-py -3.14 -m platformio run -d charge-interposer/firmware -e esp32-can-x2-witness -t upload
-py -3.14 -m platformio device monitor -b 115200
+idf.py -B build/witness -D INTP_VARIANT=witness -p COM3 flash
 ```
 
-| Env | RAM | Flash |
-|-----|-----|-------|
-| `esp32-can-x2` | 7.6 % (24,972 B) | 10.7 % (357,710 B) |
-| `selftest` | 7.1 % (23,388 B) | 10.6 % (354,102 B) |
-| `slcan` | 6.4 % (20,860 B) | 10.1 % (337,158 B) |
+`-D INTP_VARIANT` is stored in the build folder's CMake cache, so a folder
+keeps its variant until it is deleted; give each variant its own `-B`
+folder. COM3 is NICKY-XPS's; resolve the port from the MAC first (below).
+
+**While a wall-clock test is running on the machine,** build throttled
+(AGENTS.md, "Builds during wall-clock tests"): set the shell's priority
+class to Idle, configure with `idf.py`, and build with one job.
+
+```powershell
+(Get-Process -Id $PID).PriorityClass = 'Idle'
+idf.py -B build/bridge -D INTP_VARIANT=bridge reconfigure
+ninja -C build/bridge -j 1
+```
+
+**`sdkconfig` and `dependencies.lock` are committed with LF line endings.**
+On Windows ESP-IDF writes both as CRLF when it regenerates them; save them
+back as LF before committing (the repo's `AGENTS.md`, "Line endings").
+
+Footprint, from `idf.py -B build/<variant> size` on ESP-IDF v5.4.2 with
+arduino-esp32 3.2.1 (2026-11-03, first build of each variant; bytes). The
+app partition is 0x330000 bytes, so every image leaves about 91 % of it
+free. `idf.py size` also reports the 16,384-byte IRAM region as 16,383
+bytes used in every variant.
+
+| Variant | Image | Flash code | Flash data | DIRAM used |
+|---|---|---|---|---|
+| `bridge` | 308,886 | 166,984 | 65,720 | 71,691 (20.98 %) |
+| `truck` | 304,742 | 165,212 | 63,348 | 71,683 (20.97 %) |
+| `witness` | 311,282 | 168,324 | 66,776 | 82,035 (24.0 %) |
+| `selftest` | 300,698 | 160,300 | 64,292 | 69,871 (20.44 %) |
+| `diag` | 301,306 | 160,484 | 64,716 | 69,879 (20.45 %) |
+| `slcan` | 290,402 | 152,600 | 61,728 | 67,135 (19.64 %) |
 
 **After flashing, confirm what is actually on the board rather than assuming.**
-`0x7F7` B0-B3 carries the first four bytes of the image's ELF SHA-256, and
-`../build_lookup.py` resolves that against the manifest. It refuses rather
-than guesses, with a separate reason for an unknown id, no `0x7F7` frames at
-all, an ambiguous prefix, and a missing manifest. Any bench arm that needs the
-witness image should call `require_witness()` instead of trusting that the
-right thing was flashed.
+`0x7F7` B0-B3 carries the first four bytes of the image's ELF SHA-256, as a
+little-endian value (spec 8.2). Before flashing, `esptool --chip esp32s3
+image-info build/<variant>/interposer_<variant>.bin` prints `ELF file
+SHA256`, whose first four bytes are the id the board will report.
+`../build_lookup.py`, the tester's, resolves a reported id back to an image
+and refuses rather than guesses. Any bench arm that needs the witness image
+should call `require_witness()` instead of trusting that the right thing was
+flashed.
 
 ## Two bench hazards that produce confident wrong answers
 
@@ -212,16 +224,16 @@ wiring), nothing else connected. Termination works out by accident: 120 ohm on
 each port in parallel is the 60 ohm a segment wants.
 
 ```bash
-py -3.14 -m platformio run -d charge-interposer/firmware -e selftest -t upload
+idf.py -B build/selftest -D INTP_VARIANT=selftest -p COM3 flash   # PowerShell, exported
 py -3.14 projects/vtrux/notes/artifacts/interposer-firmware/capture_serial.py \
     --port COM3 --out stage0.txt --until "checks,"
 ```
 
-Use `capture_serial.py` rather than `pio device monitor`. The whole test runs
+Use `capture_serial.py` rather than `idf.py monitor`. The whole test runs
 inside `setup()` and is over in 27 s, so a monitor attached after the upload
 misses it; the script opens the port first and only then pulses reset.
 
-> **Never flash the bridge env with those jumpers fitted.** It would forward
+> **Never flash the bridge variant with those jumpers fitted.** It would forward
 > CAN1 -> CAN2 straight back onto its own wire and storm.
 
 This is the step that matters most right now, because **the two port drivers are
@@ -270,7 +282,7 @@ design rationale confirmed on silicon rather than inferred.
 ### Stage 0a -- controller and physical-layer diagnostic
 
 ```bash
-py -3.14 -m platformio run -d charge-interposer/firmware -e diag -t upload
+idf.py -B build/diag -D INTP_VARIANT=diag -p COM3 flash   # PowerShell, exported
 ```
 
 Flash this when Stage 0 fails. On a two-node bus a single break makes **both**
@@ -278,9 +290,11 @@ directions fail identically, because each node needs the other to ACK before
 either reports success -- so a plain cross-port failure cannot tell a dead
 driver from a loose wire. This separates them:
 
-- **Phase 1** puts each controller in its own internal loopback (MCP2515
-  `REQOP=010`; TWAI `NO_ACK` + self-reception). No wire is involved at all, so a
-  pass here means the driver is sound and the fault is physical.
+- **Phase 1** has each controller receive its own frames (MCP2515 internal
+  loopback, `REQOP=010`; TWAI `NO_ACK` + self-reception). It needs no jumper,
+  so a pass here means the driver is sound and the fault is physical. It is
+  not wireless: the MCP2515's loopback keeps TXCAN idle, but the TWAI drives
+  its TX pin, so its frames go out on CAN1's segment.
 - **Phase 2** tests the wire. Raw GPIO on CAN1 TXD/RXD checks that transceiver
   drives and echoes; sampling CAN1 RXD while the MCP2515 retries a frame forever
   checks that bits physically arrive from CAN2; and a `NO_ACK` transmitter
@@ -548,7 +562,7 @@ py -3.12 .../make_golden.py <capture.log> --name NAME --bus 3 \
     --outdir projects/vtrux/notes/artifacts/interposer-firmware
 
 # build and diff (needs g++; on L-EEHTRBPN2 use WSL)
-g++ -std=c++11 -O2 -I src -o /tmp/hr test/host_diff/host_runner.cpp src/machine.cpp
+g++ -std=c++11 -O2 -I main -o /tmp/hr test/host_diff/host_runner.cpp main/machine.cpp
 /tmp/hr <NAME>.trace | diff - <NAME>.golden
 ```
 
@@ -584,13 +598,14 @@ would change without writing.
 py -3.14 .../regen_golden.py <...>/interposer-firmware/*.trace --check
 ```
 
-## Diagnostic instrumentation (compiled out of every image)
+## Diagnostic instrumentation (compiled out of every image but `witness`)
 
 Two measurement facilities live in `port_mcp2515.{h,cpp}` behind compile-time
-gates. **No PlatformIO environment defines either**, so none of the five
-firmware images contains any of it; `test/build_check.py` asserts that, with a
-positive control that fails if the macro it looks for has been renamed away.
-Only the host test runner defines them, one test each.
+gates. **No variant defines `INTP_TX_TRACE`**, which only the host test
+runner sets, and **only the bench-only `witness` variant defines
+`INTP_ORDER_WITNESS`** (`main/CMakeLists.txt`), so the bridge, truck and
+bring-up images contain neither. The host test runner defines each for one
+test.
 
 | Gate | Test | What it records |
 |---|---|---|
@@ -663,7 +678,8 @@ from the witness build.
 
 ## The truck build (spec 8.3)
 
-`[env:truck]` is `[env:esp32-can-x2]` with `-DINTP_NO_SERIAL=1`. Every print
+The `truck` variant is the `bridge` variant with `INTP_NO_SERIAL=1`
+(`main/CMakeLists.txt`). Every print
 in `main.cpp` goes through `INTP_PRINTF` / `INTP_PRINT` / `INTP_PRINTLN`,
 which compile to nothing under that flag, and the `diag` line's whole
 formatting block is `#ifdef`-ed out with it. The calls are removed at compile
@@ -729,7 +745,8 @@ measured and could stop a hole appearing at all. `tx_timeout_ms` is
 unchanged at 1, so what E10 measured for a host that is not reading is
 unchanged.
 
-Verified from the images, not the source (2026-10-03):
+Verified from the PlatformIO images, not the source (2026-10-03; the
+PlatformIO environment `esp32-can-x2` is today's `bridge` variant):
 
 | | `esp32-can-x2` | `truck` |
 |---|---|---|
@@ -1171,9 +1188,9 @@ The Python side's own suites also pass: `test_machine.py` 89 tests,
 refreshed when this file is touched, not on every batch -- `test_machine.py`'s
 own run prints the current one.)
 
-Build footprint: **RAM 7.6 % (24,972 B), Flash 10.7 % (357,710 B)**.
-`pio run` leaves ~23 MB in `.pio/`, which is regenerable -- delete it if the
-SeaDrive sync cost matters.
+Build footprint of the PlatformIO build, before port step 2a: RAM 7.6 %
+(24,972 B), Flash 10.7 % (357,710 B). That was another toolchain's
+accounting; today's figures are in the footprint table under "Build".
 
 Ticks are written into the trace rather than re-derived by each runner, so a
 divergence can only be a real difference in the state machine and not a
@@ -1326,7 +1343,7 @@ record the answer in the flash record -- "touches X", or "touches none".
 
 | # | spec 10 item | touched when the change involves |
 |---|---|---|
-| 1 | flashing and boot | `platformio.ini`, partition or sdkconfig settings, anything in `setup()` |
+| 1 | flashing and boot | the build files (`CMakeLists.txt`, `main/CMakeLists.txt`, `main/idf_component.yml`, `dependencies.lock`), the board component's pin, `sdkconfig` or partition settings, anything in `setup()` |
 | 2 | the real transceivers and the controllers' own behaviour | either port driver, `can_port.h`, bitrate, filters, bus-off or recovery handling |
 | 3 | throughput at real bus load | the bridge loop's drain bounds, the tick or diagnostic cadence, anything that adds work per frame |
 | 4 | reset and brownout | persistence, boot-time state, power handling |
