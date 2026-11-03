@@ -24,6 +24,7 @@
 #include <esp_app_desc.h>
 #include <esp_log.h>
 
+#include "board_ports.h"
 #include "bridge_health.h"
 #include "charger_tx_failures.h"
 #include "machine.h"
@@ -141,22 +142,17 @@
 
 using namespace interposer;
 
-// --- board wiring ---------------------------------------------------------
-static const int CAN1_TX_GPIO = 7;   // variant: CAN1_TX
-static const int CAN1_RX_GPIO = 6;   // variant: CAN1_RX
-static const uint8_t MCP_CS = 10;    // variant: CS
-static const uint8_t MCP_SCK = 12;   // variant: SCK
-static const uint8_t MCP_MISO = 13;  // variant: MISO
-static const uint8_t MCP_MOSI = 11;  // variant: MOSI
-static const uint8_t MCP_INT = 3;    // wiki only; not in pins_arduino.h
+// --- board wiring: from the board layer (board_ports.h) --------------------
+static const VehiclePins VEH = vehiclePins();
+static const ChargerPins CHG = chargerPins();
 
 static const uint32_t BITRATE = 500000UL;
 static const uint32_t TICK_INTERVAL_MS = 10;
 static const uint32_t STATUS_INTERVAL_MS = 5000;
 
 static SPIClass mcp_spi(HSPI);
-static TwaiPort vehicle(CAN1_TX_GPIO, CAN1_RX_GPIO);
-static Mcp2515Port charger(mcp_spi, MCP_CS, MCP_INT);
+static TwaiPort vehicle(VEH.tx, VEH.rx);
+static Mcp2515Port charger(mcp_spi, CHG.cs, CHG.irq);
 
 static Config cfg;
 static InterposerCore* core = nullptr;
@@ -775,15 +771,17 @@ void setup() {
   INTP_PRINTF("bitrate %lu, tick %lu ms\n", (unsigned long)BITRATE,
                 (unsigned long)TICK_INTERVAL_MS);
 
-  mcp_spi.begin(MCP_SCK, MCP_MISO, MCP_MOSI, MCP_CS);
+  // A side the board did not describe as expected is a side that did not
+  // start (board_ports.h): the bridge-down path below, never other pins.
+  if (CHG.ok) mcp_spi.begin(CHG.sck, CHG.miso, CHG.mosi, CHG.cs);
 
-  const bool v_ok = vehicle.begin(BITRATE);
+  const bool v_ok = VEH.ok && vehicle.begin(BITRATE);
   // Spec 2.3: the boot window starts HERE, the moment the vehicle
   // controller is up in normal mode, and ends when the first switch into
   // listen-only completes at the end of setup().
   const uint32_t veh_up_us = micros();
   INTP_PRINTF("CAN1 (vehicle, TWAI)   : %s\n", v_ok ? "up" : "FAILED");
-  const bool c_ok = charger.begin(BITRATE);
+  const bool c_ok = CHG.ok && charger.begin(BITRATE);
   INTP_PRINTF("CAN2 (charger, MCP2515): %s\n", c_ok ? "up" : "FAILED");
 
   healthy = v_ok && c_ok;
