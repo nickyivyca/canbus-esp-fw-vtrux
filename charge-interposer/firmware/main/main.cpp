@@ -6,9 +6,8 @@
 // Python reference in the parent folder and knows nothing about this file. This
 // file only moves frames.
 //
-// Pins come from the Arduino variant `aslcanx2` (espressif/arduino-esp32) with
-// one exception: the MCP2515 IRQ on GPIO3 is documented on the Autosport Labs
-// wiki but absent from pins_arduino.h, so it is spelled out here.
+// Pins come from the board layer, the X2's board component vtrux/x2
+// (shared/boards SPEC section 3), through board_ports.h. This file holds none.
 //
 // NO HARDWARE MODS ASSUMED. Both MCP2562 transceivers are hardwired always-on
 // -- pin 8 (STBY) has no GPIO on this board -- so the firmware cannot take
