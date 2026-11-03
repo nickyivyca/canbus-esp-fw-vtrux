@@ -141,6 +141,16 @@ EDITS = [
      r'\g<1>, "error": "planted"}', "ERROR"),
     ("B12", "bench", r"B12_2_live_crash\.txt", r"reset \['PANIC'\]", "reset ['SW']", "FAIL"),
     ("B12", "bench", r"B12_7_off_reboot\.txt", r"(after POST, )errors 0", r"\g<1>errors 2", "FAIL"),
+    # the restart record each cycle read back (follow-up (iii), reviewer, 2026-11-03)
+    ("B12", "bench", r"restart_error_frames_live_crash_20261016T233733\.json", r'^(   "did_twai": )true', r"\g<1>false", "FAIL"),
+    ("B12", "bench", r"restart_error_frames_live_20261016T233909\.json", r'^(   "did_stdby": )true', r"\g<1>false", "FAIL"),
+    ("B12", "bench", r"restart_error_frames_off_20261016T234133\.json", r'^(   "timed_out": )false', r"\g<1>true", "FAIL"),
+    ("B12", "bench", r"restart_error_frames_live_20261016T233644\.json", r'^(   "did_twai": )true', r"\g<1>1", "FAIL"),
+    ("B12", "bench", r"restart_error_frames_live_crash_20261016T234045\.json", r'^ "record_get_after": \{',
+     ' "record_get_after": "unread: TimeoutError()", "was": {', "FAIL"),
+    ("B12", "bench", r"restart_error_frames_live_20261016T233957\.json", r'^  "last_restart": \{', '  "last_restart_x": {', "FAIL"),
+    ("B12", "bench", r"B12_3_live_crash\.txt", r"wrote restart_error_frames_live_crash_20261016T233821\.json",
+     "wrote restart_error_frames_live_crash_20261016T999999.json", "FAIL"),
     ("B13", "bench", r"B13_passive_analysis\.txt", r'(_arm7\.json", "mode": "passive", "diag_modes": \[4\], "provenance": )"as specified"', r'\g<1>"late"', "FAIL"),
     ("B13", "bench", r"B13_passive_analysis\.txt", r'(_arm7\.json".*?"device_0x051": )0', r"\g<1>3", "FAIL"),
     ("B13", "bench", r"B13_respond_booking_check\.txt", r"^\[PASS        \](   balance: unbooked 7)", r"[FAIL        ]\g<1>", "FAIL"),
@@ -349,14 +359,39 @@ B19_NEW = [
 KEEP = (".txt", ".json", ".log")
 
 
+B12_RECORD = re.compile(r"^cycle 0 \w+: .*, wrote (restart_error_frames_\S+\.json)$", re.M)
+
+
+def b12_records(base):
+    """[(name, path)] of the restart records e3d9437's B12 cycle files name. The cycles wrote
+    them to the runs/ folder, the baseline folder's parent (before GI_RUNS_DIR, 2026-10-18),
+    not beside the cycle files, where the chain's runs have them; B12's judge reads only the
+    record beside each file (reviewer, 2026-11-03, reading (a)), so the copy puts them there.
+    The baseline folder itself is not changed."""
+    out = []
+    bench = os.path.join(base, "bench")
+    for n in sorted(os.listdir(bench)):
+        if re.fullmatch(r"B12_\d_(live|off)_(reboot|crash)\.txt", n):
+            with open(os.path.join(bench, n), encoding="utf-8", errors="replace") as f:
+                for name in B12_RECORD.findall(f.read()):
+                    beside = os.path.join(bench, name)
+                    out.append((name, beside if os.path.isfile(beside) else
+                                os.path.join(os.path.dirname(os.path.abspath(base)), name)))
+    return out
+
+
 def copy_tree(base, dest):
-    """The baseline's text files (no captures, no witness logs), into dest/{bench,host,root}."""
+    """The baseline's text files (no captures, no witness logs), into dest/{bench,host,root},
+    and B12's restart records beside its cycle files (b12_records)."""
     for sub, src in (("bench", os.path.join(base, "bench")), ("host", os.path.join(base, "host")), ("root", base)):
         os.makedirs(os.path.join(dest, sub))
         for n in os.listdir(src):
             p = os.path.join(src, n)
             if os.path.isfile(p) and n.endswith(KEEP):
                 shutil.copy(p, os.path.join(dest, sub, n))
+    for name, p in b12_records(base):
+        if os.path.isfile(p) and not os.path.exists(os.path.join(dest, "bench", name)):
+            shutil.copy(p, os.path.join(dest, "bench", name))
 
 
 def judge_all(root):
@@ -383,6 +418,10 @@ def main():
     gi_paths.remove_tree(scratch)
     real = os.path.join(scratch, "real")
     copy_tree(base, real)
+    recs = b12_records(base)
+    check("B12: the 7 cycle files name 7 restart records, each found and copied beside them",
+          lambda: len(recs) == 7 and all(os.path.isfile(os.path.join(real, "bench", n)) for n, _p in recs),
+          [n for n, _p in recs if not os.path.isfile(os.path.join(real, "bench", n))] or len(recs))
 
     # 1. The judges give the hand-written index.
     got = judge_all(real)
