@@ -1,0 +1,9 @@
+{
+  "build_switches": {
+    "__cplusplus": {
+      "class": "not a switch",
+      "reason": "compiler-defined; the extern \"C\" wrapper in include/board.h",
+      "kind": "library macro"
+    }
+  }
+}
