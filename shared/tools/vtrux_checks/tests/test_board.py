@@ -14,7 +14,6 @@ import glob
 import hashlib
 import json
 import os
-import shutil
 import struct
 import sys
 import unittest
@@ -94,10 +93,7 @@ class Table(unittest.TestCase):
 
 class Data(unittest.TestCase):
     def setUp(self):
-        self.d = scratch()
-
-    def tearDown(self):
-        shutil.rmtree(self.d)
+        self.d = scratch(self)
 
     def test_from_the_board_component(self):
         f = K.board(self.d, K.data(target="esp32c3", flash_size="4MB"))
@@ -147,11 +143,8 @@ class Data(unittest.TestCase):
 
 class Prefix(unittest.TestCase):
     def setUp(self):
-        self.d = scratch()
+        self.d = scratch(self)
         os.makedirs(os.path.join(self.d, "tools", "cmake"))
-
-    def tearDown(self):
-        shutil.rmtree(self.d)
 
     def toolchain(self, target, text):
         with open(os.path.join(self.d, "tools", "cmake", "toolchain-%s.cmake" % target), "w", newline="\n") as f:
@@ -186,12 +179,9 @@ class ImageFormat(unittest.TestCase):
     """The flash size field's values and the header magic, from ESP-IDF's esp_app_format.h."""
 
     def setUp(self):
-        self.d = scratch()
+        self.d = scratch(self)
         self.h = os.path.join(self.d, *B.APP_FORMAT)
         os.makedirs(os.path.dirname(self.h))
-
-    def tearDown(self):
-        shutil.rmtree(self.d)
 
     def header(self, text):
         with open(self.h, "w", newline="\n") as f:
@@ -282,7 +272,7 @@ class Collect(unittest.TestCase):
     """A small release build folder, its project's board data, and a fake ESP-IDF."""
 
     def setUp(self):
-        self.d = scratch()
+        self.d = scratch(self)
         self.p = os.path.join(self.d, "proj")
         self.b = os.path.join(self.p, "build")
         self.idf = os.path.join(self.d, "idf")
@@ -304,9 +294,6 @@ class Collect(unittest.TestCase):
         self.write("build/project_description.json", json.dumps(
             {"project_path": self.p.replace(os.sep, "/"), "idf_path": self.idf.replace(os.sep, "/"), "app_bin": "proj.bin"}))
         self.board()
-
-    def tearDown(self):
-        shutil.rmtree(self.d)
 
     def write(self, rel, data):
         p = os.path.join(self.p, rel)

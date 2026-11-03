@@ -7,7 +7,6 @@ faithful one. Runs alone: python -B shared/tools/vtrux_checks/tests/test_boardda
 
 import json
 import os
-import shutil
 import sys
 import unittest
 
@@ -15,16 +14,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))
 sys.path.insert(0, HERE)
 from vtrux_checks import boarddata as D  # noqa: E402
-from test_scope import scratch  # noqa: E402
+from test_scope import scratch, remove  # noqa: E402
 import boardkit as K  # noqa: E402
 
 
 class Find(unittest.TestCase):
     def setUp(self):
-        self.d = scratch()
-
-    def tearDown(self):
-        shutil.rmtree(self.d)
+        self.d = scratch(self)
 
     def test_one_git_board(self):
         f = K.board(self.d)
@@ -69,7 +65,7 @@ class Find(unittest.TestCase):
 
     def test_not_downloaded(self):
         K.board(self.d)
-        shutil.rmtree(K.folder(self.d))
+        remove(K.folder(self.d))
         with self.assertRaisesRegex(D.BoardError, "not in managed_components"):
             D.find(self.d)
 
@@ -80,10 +76,7 @@ class Find(unittest.TestCase):
 
 class Read(unittest.TestCase):
     def setUp(self):
-        self.d = scratch()
-
-    def tearDown(self):
-        shutil.rmtree(self.d)
+        self.d = scratch(self)
 
     def put(self, obj):
         with open(os.path.join(self.d, D.BOARD_JSON), "w", newline="\n") as f:
@@ -139,10 +132,7 @@ class Read(unittest.TestCase):
 
 class SdkconfigBoard(unittest.TestCase):
     def setUp(self):
-        self.d = scratch()
-
-    def tearDown(self):
-        shutil.rmtree(self.d)
+        self.d = scratch(self)
 
     def put(self, text):
         with open(os.path.join(self.d, D.SDKCONFIG_BOARD), "w", newline="\n") as f:

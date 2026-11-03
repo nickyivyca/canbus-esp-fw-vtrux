@@ -9,7 +9,6 @@ import contextlib
 import io
 import json
 import os
-import shutil
 import sys
 import unittest
 
@@ -20,7 +19,7 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(TOOLS, "tests"))
 from vtrux_checks import pins as P  # noqa: E402
 from vtrux_checks import cli  # noqa: E402
-from test_scope import scratch  # noqa: E402
+from test_scope import scratch, remove  # noqa: E402
 from test_builddir import deps_log  # noqa: E402
 import boardkit as K  # noqa: E402
 
@@ -38,7 +37,7 @@ LOCK = {K.NAME: K.GIT, "vtrux/wican": dict(K.GIT, path="shared/wican"),
 
 class Build(unittest.TestCase):
     def setUp(self):
-        self.d = scratch()
+        self.d = scratch(self)
         self.b = os.path.join(self.d, "build")
         K.board(self.d)
         K.lock(self.d, LOCK)
@@ -61,9 +60,6 @@ class Build(unittest.TestCase):
         self.write_deps()
         self.listed(["main/can.c"])
         self.component_listed(["wican_main.c"])
-
-    def tearDown(self):
-        shutil.rmtree(self.d)
 
     def write(self, rel, data):
         p = os.path.join(self.d, rel)
@@ -259,7 +255,7 @@ class Build(unittest.TestCase):
             self.assertIn("FAIL R30: cannot read", out, label)
             self.assertIn(want, out, label)
         K.lock(self.d, LOCK)
-        shutil.rmtree(os.path.join(self.d, WICAN))
+        remove(os.path.join(self.d, WICAN))
         rc, out = self.run_cli()
         self.assertEqual(rc, 1, out)
         self.assertIn("the shared component vtrux/wican is not in managed_components/", out)
