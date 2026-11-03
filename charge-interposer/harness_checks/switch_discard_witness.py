@@ -39,7 +39,7 @@ import paths                                           # noqa: E402
 import scratch_dir                                     # noqa: E402
 CODE = paths.code_dir()
 HB = os.path.join(CODE, "firmware", "test", "host_bridge")
-SRC = os.path.join(CODE, "firmware", "src")
+SRC = os.path.join(CODE, "firmware", "main")
 WORK = None            # this run's scratch_dir folder, made by main()
 CASES = ("bridge-ok-switch-discard", "bridge-ok-switch-discard-diag-only")
 SPEC_CHECK = "bridged frames discarded at the switch to listen-only are counted"

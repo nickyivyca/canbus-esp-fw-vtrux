@@ -25,17 +25,22 @@ folder (scratch_dir.run), inside a stand-in worktree there (a folder with a
      WSL process on the same machine).
   9. In a copy with no git, the root is scratch/ beside the copied
      folder, not inside it.
+ 10. make() tries again, after a wait, when another run's removal takes
+     the tool folder under it: FileNotFoundError, and PermissionError (a
+     delete-pending folder on Windows); three tries in all, then it raises.
   5. make() prunes the tool's finished folders only: a live and an unowned
      one stay. A tool name with a separator is refused.
   6. run() removes its folder when the body raises, and the exception still
      propagates; and when it does not.
   7. The sweep, on a stand-in worktree: the report lists a finished run
-     folder, an old pin's folder and a dead partial install as candidates;
+     folder, an old pin's folder, a dead partial install and an empty tool
+     folder as candidates;
      the current pins, session-compact/, a live run folder and a
      scratchpad and a running partial install are not, and nothing is
      removed. --apply refuses when the
      wall-clock check says busy, removing nothing; when clear it removes
-     exactly the candidates, read-only git trees included.
+     exactly the candidates, read-only git trees included. An empty tool
+     folder a run started in after the report stays (rmdir only).
   8. The wall-clock check: the "No builds" line cleared ("-- ...") is
      clear and set is not; a Python process running charger_sim.py is
      seen.
@@ -291,6 +296,59 @@ def case_run(base):
     with M.run("r", start=wt) as d:
         pass
     check(not os.path.exists(d), "6. run(): and when it does not")
+    check(not os.path.exists(M.tool_dir("r", start=wt)),
+          "6. the tool's folder goes with its last run folder (reviewer, 2026-11-02)")
+    a, b = M.make("two", start=wt), M.make("two", start=wt)
+    M.remove(a)
+    check(os.path.isdir(b), "6. a tool folder still holding another run's folder stays")
+    M.remove(b)
+    check(not os.path.exists(M.tool_dir("two", start=wt)) and
+          os.path.isdir(os.path.join(M.root(wt), M.HARNESS)),
+          "6. and goes with that one; charge-interposer-harness/ itself stays")
+
+
+def case_make_retried(base):
+    wt = fake_worktree(base, "wt-retry")
+    real = M.tempfile.mkdtemp
+    calls = []
+    errors = [FileNotFoundError(2, "taken by another run (test)"),
+              PermissionError(13, "delete-pending (test)")]
+
+    def racing(*a, **kw):
+        calls.append(time.monotonic())
+        if len(calls) <= len(errors):
+            raise errors[len(calls) - 1]
+        return real(*a, **kw)
+    M.tempfile.mkdtemp = racing
+    try:
+        d = M.make("retry", start=wt)
+    except OSError as e:
+        d = "raised %r" % e
+    finally:
+        M.tempfile.mkdtemp = real
+    gaps = [b - a for a, b in zip(calls, calls[1:])]
+    check(os.path.isdir(d) and len(calls) == 3,
+          "10. make() tries again after FileNotFoundError and after PermissionError "
+          "(Windows' delete-pending folder) -> %d tries, %s" % (len(calls), d))
+    check(len(gaps) == 2 and min(gaps) >= 0.05,
+          "10. with a wait before each further try -> %s"
+          % ["%.3f s" % g for g in gaps])
+    calls[:] = []
+
+    def never(*a, **kw):
+        calls.append(time.monotonic())
+        raise PermissionError(13, "delete-pending (test)")
+    M.tempfile.mkdtemp = never
+    try:
+        M.make("retry", start=wt)
+        raised = False
+    except PermissionError:
+        raised = True
+    finally:
+        M.tempfile.mkdtemp = real
+    check(raised and len(calls) == 3,
+          "10. three tries in all, then the error is raised -> %d tries, raised %s"
+          % (len(calls), raised))
 
 
 def _sweep_tree(base):
@@ -310,10 +368,16 @@ def _sweep_tree(base):
         "notes": os.path.join(s, "my-notes"),
         "fin": os.path.join(s, M.HARNESS, "t", "t-fin"),
         "live": os.path.join(s, M.HARNESS, "t", "t-live"),
+        # empty tool folders: one stays empty, a run starts in the other
+        # between the report and the removal (sweep_guard below)
+        "empty_tool": os.path.join(s, M.HARNESS, "gone"),
+        "raced": os.path.join(s, M.HARNESS, "raced"),
     }
     for k in ("cur_ct", "partial", "livepart", "cur_cr", "compact", "notes"):
         os.makedirs(t[k])
         open(os.path.join(t[k], "f.txt"), "w").close()
+    os.makedirs(t["empty_tool"])
+    os.makedirs(t["raced"])
     plant(t["old_ct"].rsplit(os.sep, 1)[0], os.path.basename(t["old_ct"]))
     write_owner(t["fin"], dead_pid(), 1)
     plant(t["fin"])
@@ -332,6 +396,7 @@ def case_sweep(base):
         if len(parts) > 2 and parts[0] in ("candidate", "kept", "other"):
             verdict[os.path.normpath(os.path.join(wt, parts[1]))] = parts[0]
     want = {"old_ct": "candidate", "partial": "candidate", "fin": "candidate",
+            "empty_tool": "candidate", "raced": "candidate",
             "cur_ct": "kept", "cur_cr": "kept", "compact": "kept",
             "live": "kept", "livepart": "kept", "notes": "other"}
     got = {k: verdict.get(os.path.normpath(t[k])) for k in want}
@@ -349,10 +414,14 @@ def case_sweep(base):
     tc = next((ln for ln in lines if ln.startswith("TOTAL candidates")), "")
     ta = next((ln for ln in lines if ln.startswith("TOTAL everything")), "")
     want_n = sum(M._count(t[k])[0] for k in ("fin", "old_ct", "partial"))
-    check(" 3 row(s)" in tc and (" %d files" % want_n) in tc and "folders" in tc
+    check(" 5 row(s)" in tc and (" %d files" % want_n) in tc and "folders" in tc
           and "folders" in ta,
-          "7. totals for the candidates (3 rows, %d files) and for everything "
+          "7. totals for the candidates (5 rows, %d files) and for everything "
           "-> %s | %s" % (want_n, tc.strip(), ta.strip()))
+    tool_row = next((ln for ln in lines if ln.split()[1:2] == [os.path.relpath(
+        t["empty_tool"], wt)]), "")
+    check(M.EMPTY_TOOL in tool_row and " 0 files" in tool_row,
+          "7. an empty tool folder's row says so -> %s" % tool_row.strip()[:120])
     lines = []
     rc = M.sweep([wt], apply=True, guard=lambda: (False, ["busy (test)"]),
                  out=lines.append)
@@ -360,12 +429,23 @@ def case_sweep(base):
           and "REFUSED" in "\n".join(lines),
           "7. --apply refused when the wall-clock check says busy, nothing removed")
     lines = []
-    rc, text = quietly(M.sweep, [wt], apply=True, guard=lambda: (True, ["clear (test)"]),
-                       out=lines.append)
+
+    def sweep_guard():
+        # a run starts in the raced tool folder after the report
+        open(os.path.join(t["raced"], "started.txt"), "w").close()
+        return True, ["clear (test)"]
+    rc, text = quietly(M.sweep, [wt], apply=True, guard=sweep_guard, out=lines.append)
     gone = sorted(k for k, p in t.items() if not os.path.exists(p))
-    check(rc == 0 and gone == ["fin", "old_ct", "partial"] and "LEFTOVER" not in text,
+    check(rc == 0 and gone == ["empty_tool", "fin", "old_ct", "partial"]
+          and "LEFTOVER" not in text,
           "7. --apply when clear removes exactly the candidates -> gone %s, rc %d"
           % (gone, rc))
+    check(os.path.isfile(os.path.join(t["raced"], "started.txt"))
+          and any("no longer empty" in ln for ln in lines),
+          "7. an empty tool folder a run started in since the report stays, "
+          "and is reported (rmdir only)")
+    check(os.path.isdir(t["live"]),
+          "7. a tool folder still holding a live run's folder stays")
 
 
 def case_wallclock(base):
@@ -415,7 +495,7 @@ def case_nogit(base):
 
 
 CASES = [case_git, case_long, case_leftover, case_owner, case_prune,
-         case_run, case_sweep, case_wallclock, case_nogit]
+         case_run, case_sweep, case_wallclock, case_nogit, case_make_retried]
 
 
 def test():
@@ -468,6 +548,9 @@ MUTANTS = [
      "        if os.path.isdir(p):"),
     ("make() does not prune",
      "    prune(tool, start)\n", "\n"),
+    ("an empty tool folder left", "        _drop_empty_tool_dir(lp)\n", "        pass\n"),
+    ("the tool folder removed with another run's in it",
+     "        os.rmdir(parent)\n", "        shutil.rmtree(parent)\n"),
     ("run() without the finally",
      "    try:\n        yield p\n    finally:\n        remove(p)",
      "    yield p\n    remove(p)"),
@@ -488,6 +571,17 @@ MUTANTS = [
     ("simulators never seen",
      "        if pid.isdigit() and int(pid) != me and \\",
      "        if False and \\"),
+    ("make(): delete-pending (PermissionError) not tried again",
+     "        except (FileNotFoundError, PermissionError):\n            if attempt == MAKE_TRIES",
+     "        except FileNotFoundError:\n            if attempt == MAKE_TRIES"),
+    ("make(): no wait between tries",
+     "            time.sleep(MAKE_WAITS[min(attempt, len(MAKE_WAITS)) - 1])",
+     "            pass"),
+    ("make(): more than three tries", "MAKE_TRIES = 3\n", "MAKE_TRIES = 9\n"),
+    ("the sweep leaves empty tool folders",
+     "                if not names:\n", "                if False:\n"),
+    ("the sweep removes an empty tool folder whole, not rmdir only",
+     "        if empty_tool:\n", "        if False:\n"),
 ]
 
 

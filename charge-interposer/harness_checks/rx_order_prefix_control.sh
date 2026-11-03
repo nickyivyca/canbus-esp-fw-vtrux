@@ -36,18 +36,20 @@ if [ -n "${INTERPOSER_CODE:-}" ] && \
   exit 2
 fi
 HB="$(cd "$CODE/firmware/test/host_bridge" && pwd)"
-SRC="$(cd "$HB/../../src" && pwd)"
+SRC="$(cd "$HB/../../main" && pwd)"
 # The fixture stays in SeaDrive (beside this script before the move): the
 # runner's L3_STIMULUS if set, else under REVERSE_IT_DIR.
 L3_STIMULUS="${L3_STIMULUS:-${REVERSE_IT_DIR:?REVERSE_IT_DIR is not set -- the SeaDrive reverse-it root}/projects/vtrux/notes/artifacts/interposer-firmware/l3_stimulus.txt}"
 export L3_STIMULUS
-WORK="${TMPDIR:-/tmp}/rx_prefix_$$"
-rm -rf "$WORK"
+# The work folder is this run's own under the tree's scratch/, never the
+# system temp folder, removed when the script exits (scratch_run.sh).
+. "$CODE/scratch_run.sh" || exit 2
+scratch_run rx-order-prefix-control || exit 2
+WORK="$SCRATCH_RUN"
 mkdir -p "$WORK/driver" "$WORK/fw"
 cp "$HB"/*.cpp "$HB"/*.h "$WORK"/
 cp "$HB"/driver/*.h "$WORK/driver"/ 2>/dev/null || true
 cp "$SRC"/*.cpp "$SRC"/*.h "$WORK/fw"/
-trap 'rm -rf "$WORK"' EXIT
 cd "$WORK" || exit 2
 
 build() {

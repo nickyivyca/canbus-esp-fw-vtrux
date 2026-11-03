@@ -9,8 +9,14 @@ FW="$HERE/../.."
 # root (see charge-interposer/paths.py). Under WSL: WSLENV=REVERSE_IT_DIR/p.
 : "${REVERSE_IT_DIR:?REVERSE_IT_DIR is not set -- see charge-interposer/paths.py}"
 ART="$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/interposer-firmware"
-BIN="${TMPDIR:-/tmp}/hr_$$"
-g++ -std=c++11 -O2 -I "$FW/src" -o "$BIN" "$HERE/host_runner.cpp" "$FW/src/machine.cpp" || exit 1
+# The runner and every file beside it are built and written in this run's
+# own folder under the tree's scratch/, never the system temp folder,
+# removed when the script exits (charge-interposer/scratch_run.sh; tester,
+# 2026-11-02).
+. "$FW/../scratch_run.sh" || exit 1
+scratch_run host-diff || exit 1
+BIN="$SCRATCH_RUN/hr"
+g++ -std=c++11 -O2 -I "$FW/main" -o "$BIN" "$HERE/host_runner.cpp" "$FW/main/machine.cpp" || exit 1
 fail=0
 
 # Rev 2 (charge-interposer tester, 2026-10-07). The frame diff below compares

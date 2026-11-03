@@ -59,23 +59,28 @@
 // and know whether its own stimulus was complete. python-can leaves the serial
 // port reachable as `bus.serialPortOrig`, which is how the harness sends it.
 //
-// BUILD:  pio run -e slcan -t upload
-// The interposer bridge firmware is NOT in this build (build_src_filter), so
-// flashing this replaces the bridge. Restore it with `pio run -e esp32-can-x2 -t
-// upload`; a byte-exact backup of the flash as it was before this firmware first
-// went on is in notes/artifacts/interposer-firmware/flash-backup/.
+// BUILD: the slcan variant, from charge-interposer/firmware/ in an exported
+// ESP-IDF shell (firmware/README.md):
+//     idf.py -B build/slcan -D INTP_VARIANT=slcan build flash
+// The interposer bridge firmware is NOT in this build (main/CMakeLists.txt),
+// so flashing this replaces the bridge. Restore it with the bridge variant
+// (`-B build/bridge -D INTP_VARIANT=bridge`); a byte-exact backup of the
+// flash as it was before this firmware first went on is in
+// notes/artifacts/interposer-firmware/flash-backup/.
 
 #include <Arduino.h>
 
+#include "board_ports.h"
 #include "port_twai.h"
 
 using interposer::RxFrame;
 using interposer::TwaiPort;
+using interposer::VehiclePins;
+using interposer::vehiclePins;
 
-// CAN1, the vehicle segment. Same pins main.cpp uses, from the Arduino
-// `aslcanx2` variant.
-static const int CAN1_TX_GPIO = 7;
-static const int CAN1_RX_GPIO = 6;
+// CAN1, the vehicle segment: the board's TWAI port, as main.cpp takes it
+// (board_ports.h).
+static const VehiclePins VEH = vehiclePins();
 
 static const uint32_t BITRATE = 500000UL;
 
@@ -83,7 +88,7 @@ static const uint32_t BITRATE = 500000UL;
 // arbitration place them, so the transmit queue is the thing under pressure. 32
 // is the TwaiPort default; 64 costs nothing here and absorbs a USB burst without
 // reporting a drop that is really just a burst.
-static TwaiPort can1(CAN1_TX_GPIO, CAN1_RX_GPIO, 16, 64);
+static TwaiPort can1(VEH.tx, VEH.rx, 16, 64);
 
 static bool g_open = false;      // controller up and allowed to transmit
 static bool g_listen_only = false;
@@ -163,7 +168,7 @@ static void handleLine(char *s, uint8_t n)
         if (g_open) { ok(); break; }
         g_listen_only = (s[0] == 'L');
         can1.setListenOnly(g_listen_only);
-        if (can1.begin(BITRATE)) { g_open = true; ok(); }
+        if (VEH.ok && can1.begin(BITRATE)) { g_open = true; ok(); }
         else                     { err(); }
         break;
 

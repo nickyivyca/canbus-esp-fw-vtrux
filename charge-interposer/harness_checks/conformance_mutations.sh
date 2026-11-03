@@ -31,13 +31,15 @@ if [ -n "${INTERPOSER_CODE:-}" ] && \
   exit 2
 fi
 SRC="$(cd "$CODE/firmware/test/host_bridge" && pwd)"
-WORK="${TMPDIR:-/tmp}/conf_mut_$$"
-rm -rf "$WORK"
+# The work folder is this run's own under the tree's scratch/, never the
+# system temp folder, removed when the script exits (scratch_run.sh).
+. "$CODE/scratch_run.sh" || exit 2
+scratch_run conformance-mutations || exit 2
+WORK="$SCRATCH_RUN"
 mkdir -p "$WORK/driver"
 cp "$SRC"/*.cpp "$SRC"/*.h "$WORK"/
 cp "$SRC"/driver/*.h "$WORK/driver"/ 2>/dev/null || true
 cd "$WORK" || exit 2
-trap 'rm -rf "$WORK"' EXIT
 
 # test_conformance.cpp plus every non-test .cpp in host_bridge, as run.sh
 # builds it (that test needs no firmware source). -> 0 built, 1 not.

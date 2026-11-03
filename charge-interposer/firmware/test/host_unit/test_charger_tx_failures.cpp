@@ -9,7 +9,7 @@
 // plausible number that includes failures from outside the session.
 //
 // Build and run (WSL on Windows; see test/host_unit/run.sh):
-//     g++ -std=c++11 -O2 -I ../../src -o /tmp/tctf test_charger_tx_failures.cpp
+//     g++ -std=c++11 -O2 -I ../../main -o /tmp/tctf test_charger_tx_failures.cpp
 //     /tmp/tctf
 
 #include <cstdio>

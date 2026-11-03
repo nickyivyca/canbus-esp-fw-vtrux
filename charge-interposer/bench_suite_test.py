@@ -252,10 +252,52 @@ def test_host_bridge_judge():
 
 
 # ---- suites -------------------------------------------------------------
+IMG_SRC = "abc1234"          # the stand-in images' version (git describe)
+
+
+def _app_bytes(project, sha, version=IMG_SRC, idf_ver="v5.4.2"):
+    """An application image head with esp_app_desc_t where ESP-IDF puts it
+    (after the 24-byte image header and 8-byte segment header)."""
+    h = bytearray(24 + 8 + 256)
+    a = 32
+    h[a:a + 4] = (0xABCD5432).to_bytes(4, "little")
+    for at, s in ((a + 16, version), (a + 48, project), (a + 112, idf_ver)):
+        h[at:at + len(s)] = s.encode("ascii")
+    h[a + 144:a + 176] = bytes.fromhex(sha)
+    return bytes(h)
+
+
+def _idf_build(images, variant, sha, project=None, version=IMG_SRC,
+               idf_ver="v5.4.2", flash_files=None):
+    """A stand-in of what goes in images/<src>/<variant>/: the build's
+    flasher_args.json and the files it names, at their paths."""
+    d = os.path.join(images, IMG_SRC, variant)
+    app = "interposer_%s.bin" % variant
+    ff = flash_files or {"0x0": "bootloader/bootloader.bin",
+                         "0x10000": app,
+                         "0x8000": "partition_table/partition-table.bin",
+                         "0xe000": "ota_data_initial.bin"}
+    for rel in ff.values():
+        p = os.path.join(d, *rel.split("/"))
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "wb") as f:
+            f.write(_app_bytes(project or "interposer_" + variant, sha,
+                               version, idf_ver)
+                    if rel == app else ("%s %s" % (variant, rel)).encode())
+    with open(os.path.join(d, "flasher_args.json"), "w") as f:
+        json.dump({"flash_files": ff,
+                   "app": {"offset": "0x10000", "file": app}}, f)
+    return d
+
+
+IMG_SHA = {"bridge": "c7c98adc" + "1" * 56, "witness": "a538710a" + "2" * 56,
+           "truck": "5e1f00d0" + "3" * 56}
+
+
 def _settings():
-    """Enough settings to build all three suites, from this clone: the
-    manifest's 36edf3e55552 rows for the Arduino images (their bytes are
-    checked only at flash time) and stand-in ELFs for the IDF images."""
+    """Enough settings to build all three suites, from this clone: stand-in
+    ESP-IDF build folders for the interposer's images (their bytes are
+    checked only at flash time) and stand-in ELFs for the test images."""
     d = os.path.join(TMP, "settings")
     scratch_dir.remove(d)
     for name in ("c12_bench", "vport_bench"):
@@ -263,12 +305,14 @@ def _settings():
         with open(os.path.join(d, "images", "idf", name, name + ".elf"),
                   "wb") as f:
             f.write(name.encode())
+    for v, sha in IMG_SHA.items():
+        _idf_build(os.path.join(d, "images"), v, sha)
     # the WiCAN's sources: bench_wican_test's fake gen-inhibit tree
     import bench_wican_test as WT
     ws, _root = WT.fixture("for-bench-suite-test", TMP)
     return {"interposer_code": HERE,
             "images_dir": os.path.join(d, "images"),
-            "images_src": "36edf3e55552", "boot_app0": "boot_app0.bin",
+            "images_src": IMG_SRC,
             "x2_mac": "02:00:00:00:00:01",
             "gi_tools": ws["gi_tools"],
             "gi_chain_settings": ws["gi_chain_settings"],
@@ -355,7 +399,11 @@ def test_suites():
     # 198: bus-gs-usb-test-canfail, paths-test-canfail,
     #      st.bench-canbench-smoke and cf.bench-canbench-smoke, with the
     #      can-tools pin move to 1cd3942 (2026-11-01)
-    assert len(seen) == 198, "checks across the suites: %d" % len(seen)
+    # 200: twai-fake-option-test and its -canfail, with host_bridge's
+    #      TWAI_FAKE option (reviewer, 2026-11-02)
+    # 204: scratch-dir-test, scratch-run-test and each one's -canfail, with
+    #      the run folders in scratch/ (reviewer, 2026-11-02)
+    assert len(seen) == 204, "checks across the suites: %d" % len(seen)
     # madhouse gets the pinned canre beside the code, named by CANRE_DIR
     mad = 0
     for name in ("emulated", "harness"):
@@ -364,25 +412,22 @@ def test_suites():
                 mad += 1
                 assert g.ship.get("canre") and os.path.isdir(g.ship["canre"]),                     "%s/%s ships no canre: %s" % (name, g.name, g.ship)
                 for c in g.checks:
+                    if c.skip:
+                        continue        # never runs (the 2a retirements)
                     assert c.env.get("CANRE_DIR") == "{work}/canre",                         "%s/%s has CANRE_DIR %r" % (g.name, c.id, c.env.get("CANRE_DIR"))
-    assert mad == 5, "madhouse groups seen: %d" % mad
-    # build-check runs in a git checkout of HEAD, shipped as a bundle
-    # (user ruling 2026-10-19), never in the shipped copy
+    # m-build is no longer a madhouse group: its checks retired at 2a
+    assert mad == 4, "madhouse groups seen: %d" % mad
+    # retired at port step 2a (Part B): listed with the reason, never run,
+    # so a baseline comparison lists them and counts nothing (2a acceptance
+    # (c)); the same ids as before, so the comparison can pair them
     mb = [g for g in su["emulated"].groups if g.name == "m-build"][0]
-    bc = [c for c in mb.checks if c.id == "build-check"][0]
-    assert bc.argv[0] == "firmware/test/build_check_in_clone.py", bc.argv
-    head = subprocess.run(["git", "-C", os.path.dirname(HERE), "rev-parse",
-                           "HEAD"], capture_output=True, text=True,
-                          check=True).stdout.strip()
-    a = bc.argv
-    assert a[a.index("--commit") + 1] == head, (a, head)
-    assert a[a.index("--bundle") + 1] == "{work}/gitb/repo.bundle", a
-    assert a[a.index("--shipped") + 1] == "{work}/code", a
-    bundle = os.path.join(mb.ship["gitb"], "repo.bundle")
-    r = subprocess.run(["git", "-C", os.path.dirname(HERE), "bundle",
-                        "list-heads", bundle], capture_output=True, text=True)
-    assert r.returncode == 0 and head in r.stdout, (bundle, r.stdout,
-                                                    r.stderr)
+    assert [c.id for c in mb.checks] == [
+        "build-check", "manifest-test", "manifest-offline-test"], mb.checks
+    mh = [g for g in su["harness"].groups if g.name == "m-harness"][0]
+    retired = [c for c in mb.checks + mh.checks if c.skip == B.RETIRED_2A]
+    assert len(retired) == 11, [c.id for c in retired]
+    assert all(c.id.startswith(("build-check", "manifest-", "digest-recheck"))
+               for c in retired), [c.id for c in retired]
     # the product digest (user 2026-10-20): emulated and bench use the
     # component table's split; the harness suite keeps the commit
     assert su["emulated"].product_files is B.product_files
@@ -391,24 +436,31 @@ def test_suites():
     repo = os.path.dirname(HERE)
     pf = set(B.product_files(repo))
     for must in ("charge-interposer/machine.py",
-                 "charge-interposer/firmware/platformio.ini",
-                 "charge-interposer/firmware/build_identity.py",
-                 "charge-interposer/firmware/src/main.cpp",
-                 "charge-interposer/firmware/src/machine.h"):
+                 "charge-interposer/firmware/CMakeLists.txt",
+                 "charge-interposer/firmware/sdkconfig",
+                 "charge-interposer/firmware/dependencies.lock",
+                 "charge-interposer/firmware/main/CMakeLists.txt",
+                 "charge-interposer/firmware/main/idf_component.yml",
+                 "charge-interposer/firmware/main/main.cpp",
+                 "charge-interposer/firmware/main/machine.h",
+                 "charge-interposer/firmware/main/board_ports.h"):
         assert must in pf, must
     for never in ("run_scenario.py", "vehicle_sim.py", "charger_sim.py",
                   "interposer_sim.py", "pack.py", "protocol.py", "bus.py",
                   "replay.py", "regress.py", "bench_suite.py"):
         assert "charge-interposer/" + never not in pf, never
     assert not [p for p in pf if "/test/" in p or p.endswith(".md")], pf
-    # the same files source_digest hashes, plus machine.py
-    import build_identity as BI
+    # every file of main/ but its notes, the root's build files, machine.py
     fw = os.path.join(repo, "charge-interposer", "firmware")
-    n_src = sum(1 for d, _s, fs in os.walk(os.path.join(fw, "src"))
-                for f in fs if f.endswith(BI.SRC_SUFFIXES))
-    n_extra = sum(1 for x in BI.EXTRA_INPUTS
-                  if os.path.exists(os.path.join(fw, x)))
-    assert len(pf) == n_src + n_extra + 1, (len(pf), n_src, n_extra)
+    n_main = sum(1 for d, _s, fs in os.walk(os.path.join(fw, "main"))
+                 for f in fs if not f.endswith(".md"))
+    n_root = sum(1 for x in ("CMakeLists.txt", "sdkconfig", "dependencies.lock")
+                 if os.path.exists(os.path.join(fw, x)))
+    assert n_root == 3, n_root
+    assert len(pf) == n_main + n_root + 1, (len(pf), n_main, n_root)
+    # nothing the build makes or downloads, nor the menuconfig backup
+    assert not [p for p in pf if "/build/" in p or "managed_components" in p
+                or p.endswith("sdkconfig.old")], pf
     # every X2 image names the X2's chip, so a port that reaches another
     # board writes nothing (methodology, 2026-10-20)
     for n, im in su["bench"].images.items():
@@ -424,6 +476,94 @@ def test_suites():
               if c.id.startswith("sim.")]
     assert len(e_sims) == 27 and all("--time-scale 1 " in _argv(c) + " "
                                      for c in e_sims), "27 sims at 1x"
+
+
+def test_interposer_images():
+    """Port step 2a: the bridge, witness and truck images are ESP-IDF
+    builds, flashed as their flasher_args.json gives them -- bootloader,
+    partition table, the build's own otadata and the app -- each file's md5
+    pinned, and identified by the app's own descriptor: expect is its ELF
+    hash's first four bytes (spec 8.2), and a folder whose app is not
+    interposer_<variant> at images_src on ESP-IDF v5.4.2, or whose
+    flasher_args.json is not the X2's four files, is refused when the suite
+    is built."""
+    import hashlib
+    s, su = _all()
+    for v, sha in IMG_SHA.items():
+        im = su["bench"].images[v]
+        d = os.path.join(s["images_dir"], IMG_SRC, v)
+        assert im.expect == sha[:8], (v, im.expect)
+        files = im.params["files"]
+        assert [o for o, _p in files] == ["0x0", "0x8000", "0xe000",
+                                          "0x10000"], files
+        assert dict(files)["0xe000"] == os.path.join(d, "ota_data_initial.bin")
+        assert dict(files)["0x10000"] == os.path.join(
+            d, "interposer_%s.bin" % v), files
+        for _o, p in files:
+            with open(p, "rb") as f:
+                assert im.params["md5"][p] == hashlib.md5(f.read()).hexdigest()
+        assert "interposer_%s" % v in im.note and "v5.4.2" in im.note, im.note
+    images = os.path.join(TMP, "img-refusals")
+    scratch_dir.remove(images)
+    t = dict(s, images_dir=images)
+    sha = IMG_SHA["bridge"]
+    no_ota = {"0x0": "bootloader/bootloader.bin",
+              "0x10000": "interposer_bridge.bin",
+              "0x8000": "partition_table/partition-table.bin"}
+    swapped = {"0x0": "interposer_bridge.bin",
+               "0x10000": "bootloader/bootloader.bin",
+               "0x8000": "partition_table/partition-table.bin",
+               "0xe000": "ota_data_initial.bin"}
+    for why, kw in (("the witness in the bridge's folder",
+                     {"project": "interposer_witness"}),
+                    ("another commit's image", {"version": "def5678"}),
+                    ("a dirty tree's image", {"version": IMG_SRC + "-dirty"}),
+                    ("built with ESP-IDF v5.4.1", {"idf_ver": "v5.4.1"}),
+                    ("no otadata", {"flash_files": no_ota}),
+                    ("the app not at 0x10000", {"flash_files": swapped})):
+        scratch_dir.remove(images)
+        _idf_build(images, "bridge", sha, **kw)
+        try:
+            B._interposer_image("bridge", t)
+        except (ValueError, KeyError) as e:
+            continue
+        raise AssertionError("not refused: %s" % why)
+    # an app with no descriptor at all
+    scratch_dir.remove(images)
+    d = _idf_build(images, "bridge", sha)
+    with open(os.path.join(d, "interposer_bridge.bin"), "wb") as f:
+        f.write(b"\0" * 512)
+    try:
+        B._interposer_image("bridge", t)
+        raise AssertionError("an app with no descriptor not refused")
+    except ValueError:
+        pass
+    scratch_dir.remove(images)
+
+
+def _image_never_refuses(variant, settings):
+    try:
+        return _ORIG["_interposer_image"](variant, settings)
+    except (ValueError, KeyError):
+        return B.Image(variant, "esptool", board="x2", expect="00000000",
+                       params={"files": [], "md5": {},
+                               "chip": B._x2_chip(settings)})
+
+
+def _image_name_expect(variant, settings):
+    """expect taken from the file name, not the bytes."""
+    im = _ORIG["_interposer_image"](variant, settings)
+    im.expect = variant[:8]
+    return im
+
+
+def _unretire_build_check(s):
+    """build-check given back an argv after its 2a retirement."""
+    for g in s.groups:
+        for c in g.checks:
+            if c.id == "build-check":
+                c.skip = None
+                c.argv = ["firmware/test/build_check.py"]
 
 
 def test_wican_board():
@@ -878,6 +1018,26 @@ def test_shared_bench_tests():
                 n, " ".join(extra))
 
 
+def test_harness_py_canfails():
+    """Every test in HARNESS_PY_TESTS that takes --can-fail is in
+    HARNESS_PY_CANFAILS, every one listed there takes it, and the harness
+    suite runs each with it (reviewer, 2026-11-02: scratch_dir_test and
+    scratch_run_test had can-fails no suite ran)."""
+    takes = set()
+    for t in B.HARNESS_PY_TESTS:
+        src = open(os.path.join(HERE, t), encoding="utf-8").read()
+        if '"--can-fail"' in src:
+            takes.add(t)
+    assert takes == set(B.HARNESS_PY_CANFAILS), \
+        "can-fails: found %s, listed %s" % (
+            sorted(takes ^ set(B.HARNESS_PY_CANFAILS)), "HARNESS_PY_CANFAILS")
+    s, su = _all()
+    runs = {tuple(str(a) for a in c.argv) for g in su["harness"].groups
+            for c in g.checks if not c.skip}
+    for t in takes:
+        assert (t, "--can-fail") in runs, "harness never runs %s --can-fail" % t
+
+
 def test_reopen_skip():
     """innomaker-rate-runs-reopen stays listed with its argument line, and is
     a skip naming the 2026-10-14 harness defect, so it shows NOT-RUN with
@@ -1117,9 +1277,11 @@ def test_runner_stage():
 
 TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_corrupt_pin_judge, test_c12_judge, test_host_bridge_judge,
-         test_suites, test_mutant_wiring, test_identify, test_pycache_ignored,
+         test_suites, test_interposer_images, test_mutant_wiring,
+         test_identify, test_pycache_ignored,
          test_usb_baselines, test_usb_stops, test_reopen_skip,
-         test_script_coverage, test_shared_bench_tests, test_strict_port_off,
+         test_script_coverage, test_shared_bench_tests,
+         test_harness_py_canfails, test_strict_port_off,
          test_vport_split, test_bench_argv, test_wican_board,
          test_scripts_in_tree, test_can_tools_record, test_runner_stage]
 
@@ -1163,14 +1325,6 @@ def _wrap_suite(name, fn):
 
 def _drop_requires(s):
     s.requires = None
-
-
-def _plain_build_check(s):
-    """The e7d4 form: build_check.py run in the shipped copy."""
-    for g in s.groups:
-        for c in g.checks:
-            if c.id == "build-check":
-                c.argv = ["firmware/test/build_check.py"]
 
 
 def _harness_files(root):
@@ -1249,11 +1403,15 @@ _ORIG["self._ARGV_PROBE"] = _ARGV_PROBE
 _ORIG["SELF_TESTS"] = B.SELF_TESTS
 _ORIG["CAN_FAILS"] = B.CAN_FAILS
 _ORIG["SHARED_BENCH_TESTS"] = B.SHARED_BENCH_TESTS
+_ORIG["HARNESS_PY_CANFAILS"] = B.HARNESS_PY_CANFAILS
 _ORIG["can_tools_info"] = B.can_tools_info
 _ORIG["_stage_git_bundle"] = B._stage_git_bundle
 _ORIG["_remove_at_exit"] = B._remove_at_exit
 _ORIG["_STAGED"] = B._STAGED
 _ORIG["scratch_dir.make"] = scratch_dir.make
+_ORIG["_interposer_image"] = B._interposer_image
+_ORIG["INTERPOSER_IDF"] = B.INTERPOSER_IDF
+_ORIG["_md5"] = B._md5
 
 
 def _ct_unchecked():
@@ -1507,6 +1665,15 @@ MUTANTS = {
          "the harness drops test_decode --can-fail"),
         ("harness", _wrap_suite("harness", _drop_harness_check(
             "sb.test-run-core")), "the harness drops test_run_core")],
+    "test_harness_py_canfails": [
+        ("HARNESS_PY_CANFAILS",
+         [t for t in B.HARNESS_PY_CANFAILS if t != "scratch_run_test.py"],
+         "scratch_run_test's can-fail unlisted"),
+        ("HARNESS_PY_CANFAILS", B.HARNESS_PY_CANFAILS + ["sims_test.py"],
+         "a listed can-fail the test does not have"),
+        ("harness", _wrap_suite("harness", _drop_harness_check(
+            "scratch-dir-test-canfail")),
+         "listed, but the harness never runs it")],
     "test_reopen_skip": [
         ("bench", _wrap_suite("bench", _unskip("innomaker-rate-runs-reopen")),
          "the reopen case runs again (a25e, 4cdb)"),
@@ -1560,14 +1727,22 @@ MUTANTS = {
          "a mutation script in emulated"),
         ("bench", _wrap_suite("bench", _bare_skip),
          "a skip with no spec item or ruling"),
-        ("emulated", _wrap_suite("emulated", _plain_build_check),
-         "build-check in the shipped copy (e7d4)"),
+        ("emulated", _wrap_suite("emulated", _unretire_build_check),
+         "build-check run again after its 2a retirement"),
         ("bench", _wrap_suite("bench", _no_chip),
          "X2 images name no chip"),
         ("product_files", _harness_files, "run_scenario.py counted as product"),
         ("product_files", _no_machine, "machine.py left out of the product"),
         ("harness", _wrap_suite("harness", _product_in_harness),
          "the harness suite gated on the product digest")],
+    "test_interposer_images": [
+        ("_interposer_image", _image_never_refuses,
+         "a folder that does not name its image is flashed anyway"),
+        ("_interposer_image", _image_name_expect,
+         "expect from the name, not the app's ELF hash"),
+        ("INTERPOSER_IDF", "v5.4.1",
+         "the interposer's images expected on ESP-IDF v5.4.1"),
+        ("_md5", lambda p: "0" * 32, "md5 not of the file")],
     "test_pycache_ignored": [
         ("self._PYCACHE_DROP", ("shared/bench/.gitignore",),
          "shared/bench without its .gitignore (the 20d3 resume refusal)"),

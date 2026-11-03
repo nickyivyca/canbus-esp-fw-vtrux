@@ -51,14 +51,24 @@ count_survivors() {
   bench_pids "$1" | wc -l
 }
 
-# The self-test runs the kill and the count on dummies in a fresh temp
+# The self-test and the can-fail work in this run's own folder under the
+# tree's scratch/, never the system temp folder, removed when the script
+# exits (scratch_run.sh; tester, 2026-11-02). A mutant copy, run from that
+# folder, finds scratch_run.sh through SCRATCH_RUN_SH, which can_fail sets.
+use_scratch() {
+  . "${SCRATCH_RUN_SH:-$(cd "$(dirname "$0")" && pwd)/scratch_run.sh}" || return 2
+  scratch_run stop-all || return 2
+}
+
+# The self-test runs the kill and the count on dummies in a fresh
 # directory, with the pattern narrowed to that directory, so no copy of this
 # script (a mutant included) can touch any process but its own dummies. PAT
 # itself is checked against the dummy's path separately.
 self_test() {
   local fails=0 dir py a b n mine
   py=$(command -v python3)
-  dir=$(mktemp -d "${TMPDIR:-/tmp}/stop_all_selftest.XXXXXX")
+  use_scratch || return 2
+  dir="$SCRATCH_RUN/selftest"
   mkdir -p "$dir/charge-interposer"
   mine="$dir/charge-interposer"
   if echo "/srv/x/charge-interposer/run_scenario.py" | grep -Eq "$PAT" &&
@@ -93,7 +103,6 @@ self_test() {
   pkill -9 -P "$b" 2>/dev/null       # its sleep, then the shell itself
   kill -9 "$b" 2>/dev/null
   wait 2>/dev/null
-  rm -rf "$dir"
   if [ "$fails" = 0 ]; then echo "stop_all self-test: all checks OK"; return 0; fi
   echo "stop_all self-test: $fails FAILED"
   return 1
@@ -113,9 +122,11 @@ MUTANTS=(
 
 can_fail() {
   local i bad=0 tmp label rc
+  use_scratch || return 2
+  export SCRATCH_RUN_SH="${SCRATCH_RUN_SH:-$(cd "$(dirname "$0")" && pwd)/scratch_run.sh}"
   for ((i = 0; i < ${#MUTANTS[@]}; i += 2)); do
     label=${MUTANTS[i]}
-    tmp=$(mktemp "${TMPDIR:-/tmp}/stop_all_mutant.XXXXXX")
+    tmp="$SCRATCH_RUN/mutant_$i.sh"
     sed "${MUTANTS[i+1]}" "$0" > "$tmp"
     if cmp -s "$0" "$tmp"; then
       echo "FAIL  $label: the edit matched nothing"

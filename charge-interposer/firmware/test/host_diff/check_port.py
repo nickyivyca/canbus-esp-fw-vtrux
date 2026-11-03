@@ -30,7 +30,7 @@ import re
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_FW_SRC = os.path.normpath(os.path.join(_HERE, "..", "..", "src"))
+_FW_SRC = os.path.normpath(os.path.join(_HERE, "..", "..", "main"))
 _INTERPOSER = os.path.normpath(os.path.join(_HERE, "..", "..", ".."))
 sys.path.insert(0, _INTERPOSER)
 

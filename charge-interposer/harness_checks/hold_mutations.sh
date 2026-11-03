@@ -25,15 +25,17 @@ if [ -n "${INTERPOSER_CODE:-}" ] && \
   exit 2
 fi
 HB="$(cd "$CODE/firmware/test/host_bridge" && pwd)"
-SRC="$(cd "$HB/../../src" && pwd)"
-WORK="${TMPDIR:-/tmp}/hold_mut_$$"
-rm -rf "$WORK"
+SRC="$(cd "$HB/../../main" && pwd)"
+# The work folder is this run's own under the tree's scratch/, never the
+# system temp folder, removed when the script exits (scratch_run.sh).
+. "$CODE/scratch_run.sh" || exit 2
+scratch_run hold-mutations || exit 2
+WORK="$SCRATCH_RUN"
 mkdir -p "$WORK/driver" "$WORK/fw"
 cp "$HB"/*.cpp "$HB"/*.h "$WORK"/
 cp "$HB"/driver/*.h "$WORK/driver"/ 2>/dev/null || true
 cp "$SRC"/*.cpp "$SRC"/*.h "$WORK/fw"/
 cd "$WORK" || exit 2
-trap 'rm -rf "$WORK"' EXIT
 
 # test_sameid_hold as host_bridge/run.sh builds it: every non-test .cpp in
 # host_bridge plus the driver, from fw/ so a mutated fw/ file is compiled.

@@ -1,0 +1,78 @@
+{
+  "release_profile": {
+    "CONFIG_APP_REPRODUCIBLE_BUILD": {
+      "value": true,
+      "spec": "charge-interposer spec 8.2: build identity and release builds follow shared/tools SPEC; shared/tools R12: the release profile has CONFIG_APP_REPRODUCIBLE_BUILD on"
+    },
+    "CONFIG_FREERTOS_HZ": {
+      "value": 1000,
+      "spec": "charge-interposer spec 9, 'FreeRTOS tick at 1000 Hz': CONFIG_FREERTOS_HZ=1000, named in the release profile from port step 2a (shared/tools R27)"
+    },
+    "CONFIG_ESP_CONSOLE_UART_DEFAULT": {
+      "value": true,
+      "spec": "charge-interposer spec 9, 'Settings the X2 board leaves to this project': the console on UART0 (CONFIG_ESP_CONSOLE_UART_DEFAULT) (shared/boards x2, a required choice)"
+    },
+    "CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG": {
+      "value": true,
+      "spec": "charge-interposer spec 9, 'Settings the X2 board leaves to this project': the USB-Serial/JTAG as the secondary console (CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG) (shared/boards x2, a required choice)"
+    },
+    "CONFIG_BOOTLOADER_WDT_DISABLE_IN_USER_CODE": {
+      "value": "unset",
+      "spec": "charge-interposer spec 9, 'Settings the X2 board leaves to this project': CONFIG_BOOTLOADER_WDT_DISABLE_IN_USER_CODE not set"
+    },
+    "CONFIG_ESP_TASK_WDT_PANIC": {
+      "value": true,
+      "spec": "charge-interposer spec 9, 'Settings the X2 board leaves to this project': CONFIG_ESP_TASK_WDT_PANIC set"
+    },
+    "CONFIG_BT_ENABLED": {
+      "value": "unset",
+      "spec": "charge-interposer spec 9, 'Settings the X2 board leaves to this project': CONFIG_BT_ENABLED not set (a change from the baseline)"
+    },
+    "CONFIG_SPIRAM": {
+      "value": "unset",
+      "spec": "charge-interposer spec 9, 'Settings the X2 board leaves to this project': CONFIG_SPIRAM not set (a change from the baseline; user, 2026-10-26)"
+    },
+    "CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH": {
+      "value": true,
+      "spec": "charge-interposer spec 9, 'Settings the X2 board leaves to this project': core dumps to flash (CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH), into the coredump partition (shared/boards x2, a required choice)"
+    }
+  },
+  "build_switches": {
+    "INTP_VARIANT": {
+      "class": "shipping variant",
+      "reason": "the CMake option choosing the image (spec 8.2: bridge, witness, truck, selftest, diag, slcan; project name interposer_<variant>); variants under ESP-IDF are CMake build options (user, 2026-10-25). Only truck is a release image (spec 8.2, 8.3): INTP_NO_SERIAL's name rows refuse the others"
+    },
+    "INTP_NO_SERIAL": {
+      "class": "test-only",
+      "reason": "serial output is a bench and bring-up feature; the release build sets the switch (spec 8.3; user, 2026-10-25). The rows refuse an image that prints: the 8.3 banner, diag line and event-line text absent from the .bin (the bench image is the positive control), and a release image named for any variant but truck (spec 8.2: the flight image is the truck variant; tracker 2a row: a row refusing a release build not named interposer_truck)",
+      "refusal": [
+        {"bin_strings_absent": ["Vtrux charge interposer", "diag st=%s trip=%u flags=0x%02x ilim=", " a=%ld b=%ld c=%ld"]},
+        {"project_name_token_absent": "bridge"},
+        {"project_name_token_absent": "witness"},
+        {"project_name_token_absent": "selftest"},
+        {"project_name_token_absent": "diag"},
+        {"project_name_token_absent": "slcan"}
+      ]
+    },
+    "INTP_ORDER_WITNESS": {
+      "class": "test-only",
+      "reason": "the completion-order witness, compiled into the witness bench image only (user, 2026-10-25). Row: Mcp2515Port's witness members absent from the ELF; not its serial text, which a no-serial image lacks even with the witness compiled in",
+      "refusal": [
+        {"elf_symbols_absent": ["_ZN10interposer11Mcp2515Port4wit_E", "_ZN10interposer11Mcp2515Port10wit_count_E", "_ZN10interposer11Mcp2515Port11witnessNoteEmmh", "_ZN10interposer11Mcp2515Port12witnessResetEv"]}
+      ]
+    },
+    "INTP_TX_TRACE": {
+      "class": "test-only",
+      "reason": "the per-pass TX stall trace, set only by the host test test_tx_stall_trace (user, 2026-10-25); no variant sets it, and a firmware image with it on does not link (its 1 MiB buffer overflows DRAM). Row: Mcp2515Port's trace members absent from the ELF",
+      "refusal": [
+        {"elf_symbols_absent": ["_ZN10interposer11Mcp2515Port6trace_E", "_ZN10interposer11Mcp2515Port12trace_count_E", "_ZN10interposer11Mcp2515Port13trace_passes_E"]}
+      ]
+    },
+    "INTP_WITNESS_N": {
+      "class": "not a switch",
+      "kind": "default value",
+      "reason": "the witness buffer's default size, an #ifndef default read only inside the INTP_ORDER_WITNESS block (user, 2026-10-25)"
+    }
+  },
+  "stock_files_using_pins": []
+}

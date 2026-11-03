@@ -37,15 +37,18 @@ if [ -n "${INTERPOSER_CODE:-}" ] && \
   exit 2
 fi
 HB="$(cd "$CODE/firmware/test/host_bridge" && pwd)"
-SRC="$(cd "$HB/../../src" && pwd)"
+SRC="$(cd "$HB/../../main" && pwd)"
 # The work tree is outside the project, so l3_replay.cpp's relative
 # candidates for its pinned stimulus cannot resolve; it reads this first.
 # The fixture stays in SeaDrive (beside this script before the move): the
 # runner's L3_STIMULUS if set, else under REVERSE_IT_DIR.
 L3_STIMULUS="${L3_STIMULUS:-${REVERSE_IT_DIR:?REVERSE_IT_DIR is not set -- the SeaDrive reverse-it root}/projects/vtrux/notes/artifacts/interposer-firmware/l3_stimulus.txt}"
 export L3_STIMULUS
-WORK="${TMPDIR:-/tmp}/l2_mut_$$"
-rm -rf "$WORK"
+# The work folder is this run's own under the tree's scratch/, never the
+# system temp folder, removed when the script exits (scratch_run.sh).
+. "$CODE/scratch_run.sh" || exit 2
+scratch_run l2-mutations || exit 2
+WORK="$SCRATCH_RUN"
 mkdir -p "$WORK/driver" "$WORK/fw" "$WORK/PRISTINE/fw" "$WORK/PRISTINE/driver"
 cp "$HB"/*.cpp "$HB"/*.h "$WORK"/
 cp "$HB"/driver/*.h "$WORK/driver"/
@@ -54,7 +57,6 @@ cp "$HB"/*.cpp "$HB"/*.h "$WORK/PRISTINE"/
 cp "$HB"/driver/*.h "$WORK/PRISTINE/driver"/
 cp "$SRC"/*.cpp "$SRC"/*.h "$WORK/PRISTINE/fw"/
 cd "$WORK" || exit 2
-trap 'rm -rf "$WORK"' EXIT
 
 # The same source set as host_bridge/run.sh builds test_l2_bridge from:
 # every non-test .cpp in host_bridge (globbed, so a new shim cannot be
