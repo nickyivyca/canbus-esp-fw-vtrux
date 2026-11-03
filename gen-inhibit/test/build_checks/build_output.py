@@ -471,6 +471,13 @@ def refs_from_git(repo):
     except gi_diag.DiagError as e:
         row(name, False, str(e))
         return None, None
+    except ImportError as e:
+        # gi_diag's decode core imports cantools only when it reads a DBC, here. Without it
+        # this was a traceback, and the rows file was never written (switches_cases under
+        # the IDF venv, 2026-11-02): a reference this Python cannot read is NO REFERENCE.
+        row(name, None, "cannot read the DBC's history: %s is not importable in %s (%s)"
+            % (getattr(e, "name", None) or "a module gi_diag needs", sys.executable, e), ref_missing=True)
+        return None, None
     out = os.path.join(WORKTREE, "scratch", "build-output-refs", head[:12])
     os.makedirs(out, exist_ok=True)
     paths = []
