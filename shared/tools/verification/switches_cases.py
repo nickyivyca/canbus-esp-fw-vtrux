@@ -18,7 +18,9 @@ against what the case planted. It never judges wording beyond those names. A cas
 trigger does not show without the check's reader (ninja's deps log, CMakeCache.txt, the
 rows file) is VOID.
 
-    release_pass      a release build of the fixture: passes
+    release_pass      a release build of the fixture: passes. VOID unless every project row
+                      RealDash's refusal names, in the tables the check reads (the project's,
+                      or vtrux/wican's in managed_components/), passes in the rows file
     stale_entry       the same build, the table with an entry nothing tests: fails, naming it
     component_table   the same build, a table planted in managed_components/espressif__mdns/
                       listing all but one symbol the build read there, plus one it does not
@@ -81,6 +83,7 @@ SWITCH_ON = {   # case -> (-D defines, the switches whose refusal rules must fai
 }
 PROJECT = "the project"
 MDNS = "espressif__mdns"
+REALDASH = "WICAN_FEATURE_REALDASH"
 
 
 # ---------- judges (pure; --self-test runs them on fakes) ----------
@@ -119,6 +122,35 @@ def refusals(switches):
     return sorted((s if isinstance(s, tuple) else (PROJECT, s)) + ("refusal",) for s in switches)
 
 
+def realdash_rows(tables):
+    """The project rows RealDash's refusal names, in any table ({where: parsed vtrux_checks.json}):
+    the project's own, or vtrux/wican's in managed_components/ (port step 1a on). Read from the
+    tables the check reads, so a renamed row cannot leave the case asking for the old name."""
+    out = set()
+    for d in tables.values():
+        t = d.get("build_switches") if isinstance(d, dict) else None
+        e = t.get(REALDASH) if isinstance(t, dict) else None
+        for rule in (e.get("refusal") if isinstance(e, dict) else None) or []:
+            if isinstance(rule, dict) and isinstance(rule.get("project_row"), str):
+                out.add(rule["project_row"])
+    return sorted(out)
+
+
+def realdash_ready(tables, rows):
+    """(ok, detail): release_pass's precondition. Every row RealDash's refusal names passes in
+    the rows file; no table naming one, or no rows file, is not ok."""
+    names = realdash_rows(tables)
+    if not names:
+        return False, "no table names a project row for %s" % REALDASH
+    got = rows.get("rows") if isinstance(rows, dict) else None
+    if not isinstance(got, dict):
+        return False, "no rows file, or no rows in it"
+    bad = ["%r: %s" % (n, got.get(n, "absent")) for n in names if got.get(n) != "PASS"]
+    if bad:
+        return False, "the rows file lacks a passing RealDash row: %s" % "; ".join(bad)
+    return True, "RealDash row %s PASS" % "; ".join(repr(n) for n in names)
+
+
 def self_test():
     ok = True
     out1 = ("R20 build switches: build\nFAIL R20: 2 failure(s)\n"
@@ -127,7 +159,7 @@ def self_test():
     w1 = [(MDNS, "MDNS_Y", "stale"), (PROJECT, "R20_X", "unlisted")]
     out2 = ("FAIL R20: 2 failure(s)\n    the project: GI_INSTRUMENT_RXQ refusal: the image carries '\"rxq\":{'\n"
             "    the project: GI_INSTRUMENT_RXQ refusal: the ELF defines rxq_reset\n")
-    rd = "    the project: WICAN_FEATURE_REALDASH refusal: project row 'no boot-time bus enable in app_main': FAIL\n"
+    rd = "    the project: WICAN_FEATURE_REALDASH refusal: project row 'no boot-time bus enable at start-up': FAIL\n"
     # a switch in two tables, the project's and a shared component's (on_txabort, on_restart)
     pr = "FAIL R20: 2 failure(s)\n    the project: X_PROBE refusal: the project_name has the token '_x'\n"
     cr = "    vtrux__twai_port: X_PROBE refusal: the ELF defines txab_handler\n"
@@ -175,6 +207,39 @@ def self_test():
         got = scope_unlisted(out, MDNS)
         print("  %s scope_unlisted(), %s: %s" % ("ok  " if got == want else "FAIL", label, got))
         ok &= got == want
+    # release_pass's precondition: the RealDash row as the tables name it, renamed or not
+    new, old = "no boot-time bus enable at start-up", "no boot-time bus enable in app_main"
+
+    def tbl(row):
+        return {"build_switches": {REALDASH: {"class": "stock feature off in this product",
+                                              "refusal": [{"project_row": row}]}}}
+    proj_only = {"build_switches": {"GI_INSTRUMENT_RXQ": {"class": "test-only", "refusal": []}}}
+    wican = {"the project": proj_only, "vtrux__wican": tbl(new)}
+    for label, tables, rows, want in (
+            ("vtrux/wican's table, the row passing", wican, {"rows": {new: "PASS"}}, True),
+            ("the project's table, the row passing", {"the project": tbl(old)}, {"rows": {old: "PASS"}}, True),
+            ("the harness renamed the row, the table not", {"the project": tbl(old)}, {"rows": {new: "PASS"}}, False),
+            ("the table renamed the row, the harness not", wican, {"rows": {old: "PASS"}}, False),
+            ("the row failing", wican, {"rows": {new: "FAIL"}}, False),
+            ("no table names a row", {"the project": proj_only}, {"rows": {new: "PASS"}}, False),
+            ("no rows file", wican, None, False),
+            ("two tables, one row failing", dict(wican, **{"the project": tbl(old)}),
+             {"rows": {new: "PASS", old: "FAIL"}}, False)):
+        got = realdash_ready(tables, rows)
+        print("  %s realdash_ready(), %s: %s" % ("ok  " if got[0] == want else "FAIL", label, got[1]))
+        ok &= got[0] == want
+    bt = RC.I.scratch("switches-cases-selftest-tables")
+    for rel, text in (("vtrux_checks.json", json.dumps(proj_only)),
+                      (os.path.join("managed_components", "vtrux__wican", "vtrux_checks.json"), json.dumps(tbl(new))),
+                      (os.path.join("managed_components", "broken", "vtrux_checks.json"), "{not json"),
+                      (os.path.join("managed_components", "espressif__mdns", "idf_component.yml"), "")):
+        os.makedirs(os.path.dirname(os.path.join(bt, rel)), exist_ok=True)
+        with open(os.path.join(bt, rel), "w", newline="\n") as f:
+            f.write(text)
+    got = realdash_rows(build_tables(bt))
+    print("  %s build_tables(), vtrux/wican's row read from managed_components/: %s" % (
+        "ok  " if got == [new] else "FAIL", got))
+    ok &= got == [new]
     for label, args, want in (("a -D taken", ("X=1", "X:UNINITIALIZED=1\n"), True),
                               ("a bool ON", ("F=ON", "F:BOOL=ON\n"), True),
                               ("absent", ("X=1", "Y:BOOL=ON\n"), False),
@@ -232,6 +297,21 @@ def project_rows(proj, log):
     return json.load(open(p)) if os.path.exists(p) else None
 
 
+def build_tables(proj):
+    """{where: parsed vtrux_checks.json}: the project's, and each in managed_components/. One
+    that cannot be read is left out, and so names no row."""
+    out = {}
+    mdir = os.path.join(proj, "managed_components")
+    for where, folder in [(PROJECT, proj)] + [(n, os.path.join(mdir, n)) for n in
+                                              (sorted(os.listdir(mdir)) if os.path.isdir(mdir) else [])]:
+        try:
+            with open(os.path.join(folder, "vtrux_checks.json"), encoding="utf-8") as f:
+                out[where] = json.load(f)
+        except (OSError, ValueError):
+            pass
+    return out
+
+
 def deps_files(proj):
     """Project-relative files the build's deps log names (the case's own reading, ninja -t deps)."""
     out = set()
@@ -267,9 +347,9 @@ def c_release_pass(ctx, log):
     if not release_built(ctx, "release_pass", log):
         return
     rows = project_rows(ctx.p1, log)
-    if not rows or rows.get("rows", {}).get("no boot-time bus enable in app_main") != "PASS":
-        RC.report("release_pass", "VOID", "the project's rows file lacks a passing RealDash row: %s" % (
-            (rows or {}).get("rows", {}).get("no boot-time bus enable in app_main")), ctx.log)
+    ready, why = realdash_ready(build_tables(ctx.p1), rows)
+    if not ready:
+        RC.report("release_pass", "VOID", why, ctx.log)
         return
     ctx.pass_built = True
     run_check(ctx, "release_pass", log, [])
