@@ -10,7 +10,7 @@
 #   wsl bash "/mnt/c/.../firmware/test/host_unit/run.sh"
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
-SRC="$HERE/../../src"
+SRC="$HERE/../../main"
 fail=0
 for t in "$HERE"/test_*.cpp; do
   name="$(basename "$t" .cpp)"
