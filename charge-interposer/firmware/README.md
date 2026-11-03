@@ -278,9 +278,11 @@ directions fail identically, because each node needs the other to ACK before
 either reports success -- so a plain cross-port failure cannot tell a dead
 driver from a loose wire. This separates them:
 
-- **Phase 1** puts each controller in its own internal loopback (MCP2515
-  `REQOP=010`; TWAI `NO_ACK` + self-reception). No wire is involved at all, so a
-  pass here means the driver is sound and the fault is physical.
+- **Phase 1** has each controller receive its own frames (MCP2515 internal
+  loopback, `REQOP=010`; TWAI `NO_ACK` + self-reception). It needs no jumper,
+  so a pass here means the driver is sound and the fault is physical. It is
+  not wireless: the MCP2515's loopback keeps TXCAN idle, but the TWAI drives
+  its TX pin, so its frames go out on CAN1's segment.
 - **Phase 2** tests the wire. Raw GPIO on CAN1 TXD/RXD checks that transceiver
   drives and echoes; sampling CAN1 RXD while the MCP2515 retries a frame forever
   checks that bits physically arrive from CAN2; and a `NO_ACK` transmitter

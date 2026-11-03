@@ -6,9 +6,12 @@
 // connected" and "the controller never reached normal mode" produce IDENTICAL
 // symptoms. This separates them, then narrows the physical case further.
 //
-// Phase 1, internal loopback -- needs no wire at all:
+// Phase 1, self-reception -- needs no jumper, but is not wireless:
 //   MCP2515  CANCTRL REQOP=010, TX routed to RX inside the chip, TXCAN idle
-//   TWAI     TWAI_MODE_NO_ACK + self-reception request
+//   TWAI     TWAI_MODE_NO_ACK + self-reception request. This is not an
+//            internal loopback: the controller drives its TX pin, so every
+//            frame goes out through the transceiver onto CAN1's segment, and
+//            whatever else is on that segment sees it.
 //
 //   loopback PASS, cross-port FAIL  -> drivers are fine, the problem is physical
 //   loopback FAIL                   -> the driver is wrong, ignore the wiring
@@ -227,7 +230,7 @@ void setup() {
   mcp_spi.begin(CHG.sck, CHG.miso, CHG.mosi, CHG.cs);
 
   // --- phase 1 ---
-  Serial.println("\n### phase 1: drivers, internal loopback, no wire ###");
+  Serial.println("\n### phase 1: drivers, self-reception (TWAI transmits on CAN1) ###");
   can1.setSelfTest(true);
   can2.setLoopback(true);
   check(can1.begin(BITRATE), "CAN1 (TWAI) began in NO_ACK self-test mode");
