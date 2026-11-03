@@ -470,9 +470,16 @@ def case_refused(base):
 def case_root(base):
     ci = tree(base)
     r = Run(os.path.join(base, "r"))
-    deep = os.path.join(base, "no-git-here", "x", "charge-interposer")
+    # a stand-in worktree of its own, so the case holds in a copy of the
+    # code with no git above it (the harness suite's form on madhouse);
+    # inside a real worktree it is the nearer of the two
+    wt = os.path.join(base, "wt")
+    os.makedirs(wt)
+    with open(os.path.join(wt, ".git"), "w") as f:
+        f.write("gitdir: nowhere\n")
+    deep = os.path.join(wt, "no-git-here", "x", "charge-interposer")
     rc, out = fixture(r, ci, {"FX_HOME": bash_form(deep)}, text=ROOT_FIXTURE)
-    want = bash_form(os.path.join(scratch_dir.worktree(base), "scratch"))
+    want = bash_form(os.path.join(wt, "scratch"))
     check(rc == 0 and out.strip() == want,
           "8. the root is the nearest worktree's scratch/ above the helper -> %s"
           % out.strip())
