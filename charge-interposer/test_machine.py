@@ -2642,7 +2642,7 @@ def test_every_logged_event_name_is_one_the_board_can_return():
     import ast
 
     here = os.path.dirname(os.path.abspath(__file__))
-    cpp_path = os.path.join(here, "firmware", "src", "machine.cpp")
+    cpp_path = os.path.join(here, "firmware", "main", "machine.cpp")
     ok(os.path.isfile(cpp_path),
        "machine.cpp is where this test expects it (%s)" % cpp_path)
     if not os.path.isfile(cpp_path):

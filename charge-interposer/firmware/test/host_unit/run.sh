@@ -14,7 +14,7 @@
 # (charge-interposer/scratch_run.sh; tester, 2026-11-02).
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
-SRC="$HERE/../../src"
+SRC="$HERE/../../main"
 . "$HERE/../../../scratch_run.sh" || exit 2
 scratch_run host-unit || exit 2
 fail=0
