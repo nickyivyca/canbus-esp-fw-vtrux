@@ -1,0 +1,4 @@
+{
+  "project": "charge-interposer",
+  "shared_components": ["vtrux/x2"]
+}

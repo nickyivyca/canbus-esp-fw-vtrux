@@ -1,0 +1,36 @@
+## The interposer's dependencies, recorded in ../dependencies.lock.
+dependencies:
+  # The Arduino core as an ESP-IDF component (port plan goal 1), at the
+  # version the PlatformIO baseline built with, 3.2.1. It stays only in this
+  # project's own layers (goal 15); stage (b) reduces it away.
+  espressif/arduino-esp32:
+    version: "3.2.1"
+  # Five of arduino-esp32's dependencies held at the versions the baseline's
+  # prebuilt Arduino libraries were built with (their dependencies.lock), all
+  # inside arduino-esp32's own ranges. Unheld, the Component Manager takes
+  # the newest in range, so the build would differ from the baseline in code
+  # the port did not choose to change (port stage (a), goal 14).
+  espressif/esp_modem:
+    version: "1.4.0"
+  espressif/esp_secure_cert_mgr:
+    version: "2.5.0"
+  espressif/libsodium:
+    version: "1.0.20~2"
+  espressif/mdns:
+    version: "1.8.2"
+  joltwallet/littlefs:
+    version: "1.20.0"
+  # The board (shared/boards SPEC B1 and B2): the one shared/boards/*
+  # component, at the shared/main tag this project pins, from git, never
+  # through override_path. sdkconfig names its partition table by this
+  # dependency's managed_components/ folder, vtrux__x2.
+  vtrux/x2:
+    git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
+    path: shared/boards/x2
+    version: "2026.11.03"
+  # ESP-IDF v5.4.2 exactly (user, 2026-11-03): arduino-esp32 3.2.1 does not
+  # compile on 5.4.1, gen-inhibit's IDF, and the baseline's prebuilt Arduino
+  # libraries were built on 5.4.2. Exact, so a shell exported for the wrong
+  # IDF stops at the dependency check, not partway through the compile.
+  idf:
+    version: "5.4.2"
