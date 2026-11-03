@@ -312,6 +312,39 @@ def test_suite_run_not_passed():
     assert lines[at[0]] == "- suite_run emu: %d" % len(own), sec
 
 
+def test_nested_wrong_shape():
+    """A13 (gen-inhibit's note, through the charge-interposer reviewer,
+    2026-11-02): a suite run's nested.json or nested record of the wrong
+    shape -- nested.json's "first" or its "dir" null, a record that is not
+    an object, or whose "results" is null or holds a result that is not an
+    object -- gives the list an UNREADABLE line after the outer chain's own
+    results, never an exception that stops the run. A record of the right
+    shape is still listed, as nested/<id>."""
+    N[0] += 1
+    d = os.path.join(BASE, "shape%d" % N[0])
+    os.makedirs(d)
+    chain = {"results": [{"group": "emu", "id": "emu/run", "verdict": "FAIL"}]}
+
+    def listed(nested, record=None):
+        if record is not None:
+            with open(os.path.join(d, "record.json"), "w", encoding="utf-8") as f:
+                json.dump(record, f)
+        return RUN._suite_not_passed(chain, "emu", nested)
+
+    good = {"first": {"dir": d}}
+    got = listed(good, {"results": [{"group": "a", "id": "a/kf", "verdict": "KNOWN-FAIL"}]})
+    assert got == [("run", "FAIL"), ("nested/a/kf", "KNOWN-FAIL")], got
+    for name, nested, record in (("first null", {"first": None}, None),
+                                 ("dir null", {"first": {"dir": None}}, None),
+                                 ("record a list", good, []),
+                                 ("results null", good, {"results": None}),
+                                 ("a result null", good, {"results": [None]})):
+        got = listed(nested, record)
+        assert len(got) == 2 and got[0] == ("run", "FAIL") \
+            and got[1][0] == "nested record" and got[1][1].startswith("UNREADABLE: "), \
+            (name, got)
+
+
 def test_premise_blocks():
     """A11: a premise that fails makes its items NOT EXERCISED, never PASS
     or FAIL; they are not run -- builds included (the charge-interposer
@@ -468,7 +501,7 @@ def test_check_every_result():
 TESTS = [test_pass, test_adapter_committed, test_rerun_never_passes, test_premise_blocks,
          test_stopped, test_setup_failure_stops_run, test_dirty_runner_refused, test_dev_run,
          test_runner_identity, test_runner_stays_clean, test_check_every_result,
-         test_suite_run_not_passed]
+         test_suite_run_not_passed, test_nested_wrong_shape]
 
 MUTANTS = [
     ("adapter_from_commit", test_adapter_committed),
@@ -482,6 +515,7 @@ MUTANTS = [
     ("check_verdict", test_check_every_result),
     ("not_passed_listed", test_check_every_result),
     ("nested_not_passed", test_suite_run_not_passed),
+    ("nested_wrong_shape", test_nested_wrong_shape),
     ("_stray", test_runner_stays_clean),        # VTRUX_TEST_STRAY: a stray file
 ]
 

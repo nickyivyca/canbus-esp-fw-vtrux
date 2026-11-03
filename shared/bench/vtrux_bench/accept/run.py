@@ -61,7 +61,7 @@ BENCH = C.BENCH
 RULES = {k: True for k in ("record_first", "adapter_from_commit", "premise_skip",
                            "premise_skip_builds", "cleanup_finally", "refuse_dirty",
                            "dev_never_pass", "identity_untracked", "check_verdict",
-                           "not_passed_listed", "nested_not_passed")}
+                           "not_passed_listed", "nested_not_passed", "nested_wrong_shape")}
 
 DEV_LINE = "DEV RUN, not evidence"
 
@@ -134,18 +134,24 @@ def _suite_not_passed(chain, group, n):
     nested/<id>, every one in the nested record of its first, whole run,
     where the suite's known fails sit, as KNOWN-FAIL (the charge-interposer
     reviewer, 2026-11-02). With no nested record, or one that cannot be
-    read, a line says so: the list is then not the whole of it."""
+    read, a line says so: the list is then not the whole of it. A nested.json
+    or record.json of the wrong shape (a null where an object or a list
+    belongs) is one that cannot be read, not a crash that stops the run
+    (gen-inhibit's note, through the charge-interposer reviewer,
+    2026-11-02)."""
     out = J.not_passed(chain["results"], group)
     if not RULES["nested_not_passed"]:
         return out
     if not n:
         return out + [("nested record", "MISSING: the suite run left no nested.json")]
+    unreadable = (OSError, KeyError, ValueError) + (
+        (TypeError,) if RULES["nested_wrong_shape"] else ())
     try:
         with open(os.path.join(n["first"]["dir"], "record.json"), encoding="utf-8") as f:
-            results = json.load(f)["results"]
-    except (OSError, KeyError, ValueError) as e:
+            nested = J.not_passed(json.load(f)["results"])
+    except unreadable as e:
         return out + [("nested record", "UNREADABLE: %r" % (e,))]
-    return out + [("nested/" + rid, v) for rid, v in J.not_passed(results)]
+    return out + [("nested/" + rid, v) for rid, v in nested]
 
 
 def _side(name, alist, chain, runs_root, nested):
