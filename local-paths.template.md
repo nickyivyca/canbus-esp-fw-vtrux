@@ -14,8 +14,8 @@ $REVERSE_IT_DIR/python-executables-reference.md -->
 
 ## Builds
 
-<!-- The ESP-IDF install and how to export it in a shell; how to call
-PlatformIO. Source: $REVERSE_IT_DIR/tools-reference.md -->
+<!-- Each ESP-IDF install (one per IDF version in use) and how to export it
+in a shell. Source: $REVERSE_IT_DIR/tools-reference.md -->
 
 ## Environment variables
 

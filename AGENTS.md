@@ -12,7 +12,7 @@ pushed, so every push passes the pre-push check first (see "Pushing").
 | Project | Hardware | Framework | Branch | Code |
 |---|---|---|---|---|
 | Generator inhibitor (`gen-inhibit`) | MeatPi WiCAN OBD, ESP32-C3 | ESP-IDF | `gen-inhibit/main` | the WiCAN tree in `gen-inhibit/firmware/`, with its tooling in `gen-inhibit/tools/` and tests in `gen-inhibit/test/` |
-| Charge interposer (`charge-interposer`) | Autosport Labs ESP32-CAN-X2, ESP32-S3 | PlatformIO / Arduino, porting to ESP-IDF | `charge-interposer/main` | `charge-interposer/` |
+| Charge interposer (`charge-interposer`) | Autosport Labs ESP32-CAN-X2, ESP32-S3 | ESP-IDF, with arduino-esp32 as a component | `charge-interposer/main` | `charge-interposer/` |
 | Shared code | used by both | | `shared/main` | `shared/<component>/` |
 
 `main` is upstream WiCAN. Nobody works on it.
@@ -20,7 +20,7 @@ pushed, so every push passes the pre-push check first (see "Pushing").
 ## Local paths: `local-paths.md`
 
 Anything that differs per machine is in `local-paths.md` at the root of this
-worktree: the Python command, the ESP-IDF install, how to call PlatformIO,
+worktree: the Python command, each ESP-IDF install and how to export it,
 this machine's values for the environment variables the harnesses read, the
 other clones this session works with, and this worktree's role and branch.
 It is gitignored and filled in separately in each worktree, so it is never
@@ -239,8 +239,8 @@ their path under `$REVERSE_IT_DIR`.
 `<project>/README.md`; its firmware build root, `<project>/firmware/`; and
 its host-side tooling and tests, laid out as the file map says.
 gen-inhibit's `firmware/` is the upstream WiCAN tree as upstream lays it
-out. The interposer's ESP-IDF project goes in `charge-interposer/firmware/`
-at port step 2a. **No path in the tree may have a branch's name.** An IDF
+out. The interposer's ESP-IDF project is `charge-interposer/firmware/`,
+since port step 2a. **No path in the tree may have a branch's name.** An IDF
 `main/` directly in a project folder would make `<project>/main` both a
 branch and a path, and git then refuses the bare branch name in `log`,
 `show`, `diff` and `reset`.
@@ -455,11 +455,25 @@ checkout is missing, it refuses and prints the command that creates it. A
 gen-inhibit prod build is such a release build (gen-inhibit spec 12.3 item
 3, user, 2026-10-25), and none is made during the shared-code port.
 gen-inhibit's bench and dev builds stay `idf.py` / `ninja` builds, which
-need not meet the release rules (shared/tools SPEC R14). The interposer
-keeps its own spec's build-identity and build-option rules (user,
-2026-10-13) until its builds move onto the shared tooling at port step 2a;
-this paragraph changes in that merge. The port plan is
+need not meet the release rules (shared/tools SPEC R14). The port plan is
 `$REVERSE_IT_DIR/projects/vtrux/notes/plans/esp-shared-code-port.md`.
+
+The interposer's builds moved onto ESP-IDF at its port step 2a. Its
+project is `charge-interposer/firmware/`, on ESP-IDF v5.4.2 with
+arduino-esp32 3.2.1 as a component (user, 2026-11-03). Its build identity
+follows shared/tools, at the version
+`charge-interposer/firmware/shared_pins.json` pins (interposer spec 8.2).
+Its bench and dev builds are `idf.py` / `ninja` builds, one build folder
+per variant (`-D INTP_VARIANT=<variant>`), and like gen-inhibit's they need
+not meet the release rules. No interposer release build is made during the
+port, since no mid-port build goes on the truck (user, 2026-11-03).
+
+**Two IDF versions until gen-inhibit's port step 1d** (user, 2026-11-03).
+gen-inhibit builds on v5.4.1 and the interposer on v5.4.2, each a separate
+install with its own tools folder. Run a build only in a shell exported for
+its project's IDF. Each machine's recipe is in `local-paths.md` and
+`$REVERSE_IT_DIR/tools-reference.md`. When 1d lands, this paragraph changes
+in that merge.
 
 ### Builds during wall-clock tests
 
@@ -484,21 +498,27 @@ The cause was never isolated (user, 2026-10-15, for all of this section):
    (worst stimulus gap 35 ms, against 8.9 ms with no build). A new project, or
    a new build machine, runs the same trial before its tests allow builds: (a)
    a full-speed control, then (b) throttled, with pass marks set in its test
-   plan.
-3. **The throttled form on `NICKY-XPS`.** From the exported PowerShell, set the
-   shell's priority class to Idle with `(Get-Process -Id $PID).PriorityClass =
-   'Idle'`. Then build: for a gen-inhibit release build,
+   plan. So does a project whose build tool changes. Until the interposer's
+   ESP-IDF build has passed (b), interposer builds wait until no wall-clock
+   test is running (user, 2026-11-03).
+3. **The throttled form on `NICKY-XPS`.** From a PowerShell exported for the
+   project's IDF, set the shell's priority class to Idle with
+   `(Get-Process -Id $PID).PriorityClass = 'Idle'`. Then build: for a
+   gen-inhibit release build,
    `py -3.14 -B gen-inhibit/vtrux_tools.py release --jobs 1` from the repo
    root; for a gen-inhibit bench or dev build,
-   `ninja -C gen-inhibit/firmware/build -j 1`; for the
-   interposer, `$env:PLATFORMIO_RUN_JOBS=1; py -3.14 -m platformio run`. The
-   processes the build starts inherit the class. Idle lowers CPU priority
-   only, not disk priority. It also does not reach Windows Defender, which
-   scans fresh build output in its own process. If (b) still disturbs the
-   test, the next suspect is Defender, and excluding the build folders from
-   it is the user's call. **When a project's build command changes** (the
-   interposer's ESP-IDF cutover will change its), this point changes in the
-   same merge (see "Docs change with the tooling").
+   `ninja -C gen-inhibit/firmware/build -j 1`; for an interposer bench or
+   dev build, from `charge-interposer/firmware/`,
+   `idf.py -B build/<variant> -D INTP_VARIANT=<variant> reconfigure`, then
+   `ninja -C build/<variant> -j 1` (`idf.py build` has no jobs option; the
+   reconfigure gives a fresh build folder its variant and resolves the
+   managed components). The processes the build starts inherit the class.
+   Idle lowers CPU priority only, not disk priority. It also does not reach
+   Windows Defender, which scans fresh build output in its own process. If
+   (b) still disturbs the test, the next suspect is Defender, and excluding
+   the build folders from it is the user's call. **When a project's build
+   command changes,** this point changes in the same merge (see "Docs
+   change with the tooling").
 4. **Testers raise their simulators** to above-normal priority, never High or
    Realtime, which can starve the USB stack the CAN adapters need.
 5. **The tester's own timing checks** still decide whether a run counts. A
