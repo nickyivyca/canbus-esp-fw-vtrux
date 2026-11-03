@@ -755,7 +755,6 @@ void setup() {
   esp_log_level_set("*", ESP_LOG_NONE);
 #endif
   INTP_SERIAL_BEGIN(115200);
-  pinMode(LED_BUILTIN, OUTPUT);
   delay(200);
 
   INTP_PRINTLN("");
@@ -955,7 +954,6 @@ void loop() {
   charger.service(t_ms);
 
   if (!healthy) {
-    digitalWrite(LED_BUILTIN, (t_ms / 100) % 2);  // fast blink = down
     // Spec 2.1 / 8.2 (B-7d), as 2.3 amends it (user, 2026-10-13): the
     // failed start is reported by the ONE round sent at power-up, and the
     // port then stays in listen-only, because no charger frame can arrive
@@ -1016,6 +1014,5 @@ void loop() {
   if ((uint32_t)(t_ms - last_status_ms) >= STATUS_INTERVAL_MS) {
     last_status_ms = t_ms;
     status(t_ms);
-    digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
   }
 }
