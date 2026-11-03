@@ -233,8 +233,11 @@ a change; a registry entry no selected check produced is listed (renamed?).
                      Holder line; set at the cutover (section 7)
     hosts            {"local": {"python": [...], "env": {...}},
                       "<name>": {"ssh": "<alias>", "python": [...],
-                                 "workroot": "/tmp/<project>-tester/runner",
+                                 "workroot": "<home>/scratch-tester/<project>-harness/runner",
                                  "env": {...}}}
+                     a remote host's workroot is an absolute path in the
+                     tester's scratch folder on that host, never the system
+                     temp folder (AGENTS.md "Files and folders")
     esptool          {"argv": [...esptool.py], "port": "COM3", "baud": 921600}
     wallclock_patterns  regexes over process command lines that mark a
                      wall-clock test running (either project's simulators)
