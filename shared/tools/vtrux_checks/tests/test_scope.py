@@ -1,8 +1,15 @@
 """R17 scope check: each rule shown failing on a planted input and passing on
 a faithful one. Runs alone: python -B shared/tools/vtrux_checks/tests/test_scope.py
+
+It also holds the build checks' tests' scratch folders: scratch(test) and remove(path), tested
+in ScratchFolders below.
 """
 
+import contextlib
+import io
 import os
+import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -10,19 +17,42 @@ import unittest
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))
+TOOLS = os.path.dirname(os.path.dirname(HERE))
+sys.path.insert(0, TOOLS)
+sys.path.insert(0, os.path.join(TOOLS, "verification"))
 from vtrux_checks import scope as S  # noqa: E402
+import independent as I  # noqa: E402
 
 
-def scratch():
-    """A folder under the worktree's gitignored scratch/, else the temp folder."""
-    d = HERE
-    while not os.path.exists(os.path.join(d, ".git")) and os.path.dirname(d) != d:
+# ---------- the tests' scratch folders (AGENTS.md "Files and folders", "Removing scratch") ----------
+
+def worktree(start=HERE):
+    """The git worktree holding start. Refused outside one: there is no other place, the
+    system temp folder included."""
+    d = os.path.abspath(start)
+    while not os.path.exists(os.path.join(d, ".git")):
+        if os.path.dirname(d) == d:
+            raise RuntimeError("not in a git worktree, so no scratch/ for the tests: %s" % start)
         d = os.path.dirname(d)
-    base = os.path.join(d, "scratch", "vtrux-checks-tests") if os.path.exists(os.path.join(d, ".git")) else None
-    if base:
-        os.makedirs(base, exist_ok=True)
-    return tempfile.mkdtemp(dir=base)
+    return d
+
+
+def remove(path):
+    """Remove a folder the tests made, with verification/independent.py's remover, which clears
+    read-only flags (Git for Windows sets them on .git/objects), retries and uses \\\\?\\ paths.
+    Anything left fails the test, naming the folder; the remover has printed why."""
+    if not I.remove_tree(path):
+        raise AssertionError("scratch folder left behind: %s" % path)
+
+
+def scratch(test):
+    """A new folder for test under the worktree's gitignored scratch/vtrux-checks-tests/,
+    removed by remove() among test's cleanups, so pass or fail, after its tearDown."""
+    base = os.path.join(worktree(), "scratch", "vtrux-checks-tests")
+    os.makedirs(base, exist_ok=True)
+    d = tempfile.mkdtemp(dir=base)
+    test.addCleanup(remove, d)
+    return d
 
 
 def j(*parts):
@@ -167,7 +197,7 @@ class Judge(unittest.TestCase):
 
 class Readers(unittest.TestCase):
     def setUp(self):
-        self.d = scratch()
+        self.d = scratch(self)
 
     def write(self, rel, text):
         p = os.path.join(self.d, rel)
@@ -406,6 +436,156 @@ class Readers(unittest.TestCase):
         got = S.shared_roots(proj)
         self.assertEqual(got, sorted(S.norm(p) for p in (os.path.join(wt, "shared"),
                                                          os.path.join(self.d, "shared-v2", "shared"))))
+
+
+def _worktree_or_temp(start=HERE, real=worktree):
+    """A fake of worktree() that falls back to the system temp folder, as scratch() once did."""
+    try:
+        return real(start)
+    except RuntimeError:
+        return tempfile.gettempdir()
+
+
+class ScratchFolders(unittest.TestCase):
+    """scratch() and remove() as written pass every check, and each fake below, which breaks one
+    rule of AGENTS.md "Files and folders", fails at least one (a check that cannot fail is not a
+    check). Each check runs a small test of its own and removes what it made, whatever happened."""
+
+    FAKES = {
+        "plain rmtree": ("remove", lambda p: shutil.rmtree(p)),
+        "ignores errors": ("remove", lambda p: shutil.rmtree(p, ignore_errors=True)),
+        "trusts the remover": ("remove", lambda p: (I.remove_tree(p), None)[1]),
+        "removes nothing": ("remove", lambda p: None),
+        "temp folder outside a worktree": ("worktree", _worktree_or_temp),
+    }
+    WINDOWS_ONLY = ("plain rmtree",)     # a read-only file or a long path stops it only on Windows
+
+    @staticmethod
+    def run_inner(body):
+        """body(test, made) run as a test of its own, quietly; (its result, the folders in made)."""
+        made = []
+
+        class Inner(unittest.TestCase):
+            def runTest(self):
+                body(self, made)
+        r = unittest.TestResult()
+        with contextlib.redirect_stdout(io.StringIO()):
+            Inner().run(r)
+        return r, made, "\n".join(t for _c, t in r.errors + r.failures)
+
+    @staticmethod
+    def clean(made):
+        for d in made:
+            for root, dirs, files in os.walk(I.long_path(d)):
+                for n in dirs + files:
+                    os.chmod(os.path.join(root, n), stat.S_IREAD | stat.S_IWRITE | stat.S_IEXEC)
+            I.remove_tree(d)
+
+    def check_hard_folder(self):
+        """A folder holding a read-only file in .git/objects and a path over 260 characters is
+        removed among the test's cleanups, and the test passes."""
+        def body(t, made):
+            d = scratch(t)
+            made.append(d)
+            f = os.path.join(d, ".git", "objects", "ab", "cdef")
+            os.makedirs(os.path.dirname(f))
+            with open(f, "w") as h:
+                h.write("x")
+            os.chmod(f, stat.S_IREAD)
+            deep = I.long_path(os.path.join(d, *(["d" * 60] * 5)))
+            os.makedirs(deep)
+            with open(os.path.join(deep, "f"), "w") as h:
+                h.write("x")
+        r, made, text = self.run_inner(body)
+        try:
+            if not r.wasSuccessful():
+                return "the test failed: %s" % text.strip().splitlines()[-1]
+            if not made:
+                return "no folder made"
+            if os.path.lexists(I.long_path(made[0])):
+                return "left behind"
+        finally:
+            self.clean(made)
+
+    def check_left_behind(self):
+        """A folder that cannot be removed fails the test, and the failure names it."""
+        held = []
+
+        def body(t, made):
+            d = scratch(t)
+            made.append(d)
+            f = os.path.join(d, "held")
+            open(f, "w").close()
+            if os.name == "nt":
+                held.append(open(f))
+            else:
+                os.chmod(d, stat.S_IREAD | stat.S_IEXEC)
+        r, made, text = self.run_inner(body)
+        try:
+            if r.wasSuccessful():
+                return "a folder left behind passed the test"
+            if not made or made[0] not in text:
+                return "the failure does not name the folder: %s" % text.strip().splitlines()[-1]
+        finally:
+            for h in held:
+                h.close()
+            if made and os.name != "nt":
+                os.chmod(made[0], stat.S_IREAD | stat.S_IWRITE | stat.S_IEXEC)
+            self.clean(made)
+
+    def check_where(self):
+        """The folder is a new one in the worktree's scratch/vtrux-checks-tests/, gone afterwards."""
+        r, made, text = self.run_inner(lambda t, made: made.append(scratch(t)))
+        try:
+            if not made:
+                return "no folder made: %s" % text.strip()[-200:]
+            want = os.path.join(worktree(), "scratch", "vtrux-checks-tests")
+            if os.path.dirname(made[0]) != want:
+                return "made in %s, not in %s" % (os.path.dirname(made[0]), want)
+            if os.path.lexists(made[0]):
+                return "left behind"
+        finally:
+            self.clean(made)
+
+    def check_outside(self):
+        """Outside any git worktree there is no scratch folder, temp folder included: refused."""
+        start = os.path.join(os.path.abspath(os.sep), "no-worktree-%d" % os.getpid(), "x")
+        try:
+            got = worktree(start)
+        except RuntimeError:
+            return None
+        return "outside a worktree, got %s" % got
+
+    def problems(self):
+        if os.path.exists(os.path.join(os.path.abspath(os.sep), ".git")):
+            self.skipTest("the filesystem root is a git worktree, so nothing is outside one")
+        if os.name != "nt" and os.geteuid() == 0:
+            self.skipTest("as root a read-only folder can still be emptied")
+        out = {}
+        for name in ("check_hard_folder", "check_left_behind", "check_where", "check_outside"):
+            why = getattr(self, name)()
+            if why:
+                out[name] = why
+        return out
+
+    def test_as_written(self):
+        self.assertEqual(self.problems(), {})
+
+    def test_each_fake_fails_a_check(self):
+        for name, (target, fake) in self.FAKES.items():
+            if name in self.WINDOWS_ONLY and os.name != "nt":
+                continue
+            with self.subTest(name), mock.patch.object(sys.modules[__name__], target, fake):
+                self.assertNotEqual(self.problems(), {}, name)
+
+    def test_no_other_way(self):
+        """No other test file makes or removes a folder another way: each goes through scratch()."""
+        for n in sorted(os.listdir(HERE)):
+            if n.endswith(".py") and n != os.path.basename(__file__):
+                with open(os.path.join(HERE, n), encoding="utf-8") as f:
+                    src = f.read()
+                for word in ("rmtree", "tempfile", "mkdtemp"):
+                    self.assertNotIn(word, src, n)
 
 
 if __name__ == "__main__":

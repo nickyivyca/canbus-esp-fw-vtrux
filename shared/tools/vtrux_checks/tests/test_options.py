@@ -271,7 +271,7 @@ class Defines(unittest.TestCase):
 
 class Profile(unittest.TestCase):
     def setUp(self):
-        self.d = scratch()
+        self.d = scratch(self)
 
     def put(self, data):
         with open(os.path.join(self.d, O.DATA_FILE), "w", newline="") as f:
@@ -342,7 +342,7 @@ class Build(unittest.TestCase):
     """collect() and the command line on a small build tree: build/ and build/bootloader/."""
 
     def setUp(self):
-        self.d = scratch()
+        self.d = scratch(self)
         self.b = os.path.join(self.d, "build")
         self.desc("build", ["main", "freertos"])
         self.write("build/config/sdkconfig.json", APP)

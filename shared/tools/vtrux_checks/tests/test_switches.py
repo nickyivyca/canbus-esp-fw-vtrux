@@ -13,7 +13,6 @@ keywords, variables and comments, and the narrow reading of "set by the file its
 import gc
 import json
 import os
-import shutil
 import struct
 import subprocess
 import sys
@@ -264,10 +263,7 @@ GOOD = {"SHIP_A": {"class": W.SHIP, "reason": "r"},
 
 class Table(unittest.TestCase):
     def setUp(self):
-        self.d = scratch()
-
-    def tearDown(self):
-        shutil.rmtree(self.d)
+        self.d = scratch(self)
 
     def table(self, t, key=W.KEY, raw=None, required=True):
         with open(os.path.join(self.d, W.DATA_FILE), "w") as f:
@@ -356,10 +352,7 @@ class Rules(unittest.TestCase):
 
 class ProjectRows(unittest.TestCase):
     def setUp(self):
-        self.d = scratch()
-
-    def tearDown(self):
-        shutil.rmtree(self.d)
+        self.d = scratch(self)
 
     def rows(self, d=None, raw=None):
         if d is not None or raw is not None:
@@ -477,7 +470,7 @@ class Collect(unittest.TestCase):
     """A small project with a configured build folder, as the release build leaves it."""
 
     def setUp(self):
-        self.d = scratch()
+        self.d = scratch(self)
         self.p = os.path.join(self.d, "proj")
         self.b = os.path.join(self.p, "build")
         self._old = W.builtins_of
@@ -515,7 +508,6 @@ class Collect(unittest.TestCase):
 
     def tearDown(self):
         W.builtins_of = self._old
-        shutil.rmtree(self.d)
 
     def write(self, rel, text):
         p = os.path.join(self.p, rel)
