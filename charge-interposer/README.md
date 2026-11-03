@@ -1,7 +1,8 @@
 # charge-interposer/
 
 The Vtrux charge interposer: firmware for the Autosport Labs ESP32-CAN-X2
-(ESP32-S3), built with PlatformIO / Arduino and porting to ESP-IDF, on branch
+(ESP32-S3), built on ESP-IDF v5.4.2 with arduino-esp32 3.2.1 as a component
+since port step 2a (user, 2026-11-03), on branch
 `charge-interposer/main`. It sits between the Bel Fuse charger and the rest
 of the powertrain bus. The simulation bench is described in `SIMULATOR.md`.
 
@@ -30,12 +31,14 @@ records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 | `diag/interposer_diag_schema.md`, `diag/vtrux-interposer-diag.dbc` | The diag schema and its DBC, from schema 4: published interfaces, so spec (user, 2026-10-19). The reverse-it copies stay until every reader moves, then become pointers | Reviewer |
 | `machine.py` | The state machine: pure, integer arithmetic, time passed in. The reference implementation the board ports | Implementor |
 | `test_machine.py` | Unit tests for the core's decisions | Implementor |
-| `firmware/src/` | The board firmware: `machine.py` ported to C++, plus the two CAN port drivers | Implementor |
-| `firmware/platformio.ini`, `firmware/build_name.py`, `firmware/build_identity.py`, `firmware/manifest.py`, `firmware/reproducible.py`, `firmware/builds/` | The build; it writes `firmware/builds/manifest.json` | Implementor |
+| `firmware/main/` | The board firmware, the IDF project's `main` component: `machine.py` ported to C++, the two CAN port drivers, `board_ports.h` (each port's pins from the board layer), the variants' mains, its `CMakeLists.txt` (each variant's sources and switches) and `idf_component.yml` (the dependencies) | Implementor |
+| `firmware/CMakeLists.txt` | The ESP-IDF project and its variant option `INTP_VARIANT` (port step 2a) | Implementor |
+| `firmware/dependencies.lock` | The resolved components | Implementor |
+| `firmware/sdkconfig` | The committed configuration every variant builds from | Implementor |
+| `firmware/vtrux_build.json` | The project's file for the shared build tooling | Implementor |
+| `firmware/shared_pins.json` | The shared-code pins (shared/tools R23), owned per entry: `shared/tools` the implementor's, the harness's shared entries the tester's; moved only on a reviewer batch (reviewer, 2026-11-03) | Per entry |
 | `firmware/README.md` | The firmware's README | Implementor |
 | `firmware/test/host_unit/` | Unit tests of the core's internals | Implementor |
-| `firmware/manifest_test.py` | Tests `manifest.py`'s refusal of a row whose git state is dirty or unreadable; its throwaway trees go under `scratch/charge-interposer-manifest-test/` and are removed read-only files included (AGENTS.md, "Removing scratch"), which it also checks | Implementor |
-| `firmware/manifest_offline_test.py` | Offline test for `manifest.py`'s row-identity rule | Implementor |
 | `.gitattributes`, `.gitignore` | Line endings and ignores for the folder | Implementor |
 | `SIMULATOR.md` | The simulation bench write-up | Implementor |
 | `requirements.txt` | Python dependencies of the sims and the harness | Tester |
@@ -66,7 +69,7 @@ records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 | `test_repeat_bursts.py` | Harness test: spec 4.1's repeat check | Tester |
 | `test_scorer_wiring.py` | Harness test: each scenario asks for the checks the spec requires | Tester |
 | `test_hold_wire.py` | Harness test: a board run's spec 9 hold judged on the wire, and the vehicle stimulus premise (reviewer, 2026-10-15) | Tester |
-| `build_lookup.py` | Which image the board is running: resolves `0x7F7`'s build id against the manifest, by ELF hash. gen-inhibit imports two names from it (below) | Tester |
+| `build_lookup.py` | Which image the board is running: resolves `0x7F7`'s build id against the candidate images' own app descriptors, by ELF hash (no manifest from port step 2a). gen-inhibit imports two names from it (below) | Tester |
 | `build_lookup_offline_test.py` | Offline test for `build_lookup.py` | Tester |
 | `capture_pins.py` | Spec 9.1: hashes held in this repo that pin every capture-derived harness input (tester, 2026-10-08) | Tester |
 | `capture_pins_test.py` | Tests for `capture_pins.py` | Tester |
@@ -75,17 +78,23 @@ records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 | `diag_cadence.py` | Spec 8.2 on the wire: the status-frame cadence and the immediate `0x7F4` | Tester |
 | `diag_cadence_test.py` | Test for `diag_cadence.py`; no hardware | Tester |
 | `bench_suite.py`, `bench_suite_test.py`, `bench_identify.py` | The chain runner's three suites, their test and its identify hook (reviewer, 2026-10-19) | Tester |
+| `accept_adapter.py`, `accept_adapter_test.py` | The project's adapter for the acceptance runner (shared/bench ACCEPT-SPEC A15), and its test (reviewer, 2026-11-01) | Tester |
+| `accept_smoke.toml` | The adapter's smoke list: a test fixture, not an acceptance list; its records are never evidence (reviewer, 2026-11-02) | Tester |
+| `scratch_run.sh`, `scratch_run_test.py` | The harness's bash scripts' run folders, as `scratch_dir.py` gives the Python ones, and its test (reviewer, 2026-11-02) | Tester |
+| `twai_fake_option_test.py` | Test of `host_bridge`'s `TWAI_FAKE` option and its can-fail (reviewer, 2026-11-02) | Tester |
+| `shared_pin.py`, `shared_pin_test.py` | The harness's shared code from the read-only `../shared-<tag>/` checkout, checked against `firmware/shared_pins.json`, and its test (port step 2a) | Tester |
+| `firmware/vtrux_checks.json` | The release profile and the build-switch table (shared/tools R12, R18, R20, R29) | Tester |
 | `bench_wican.py`, `bench_wican_test.py` | The WiCAN as a board of the bench suite, read and rebooted but never flashed, and its test (reviewer, 2026-10-24) | Tester |
 | `bench_drivers/` | Whole directory: the bench suite's hardware drivers and helpers, `reset_check`, `keepalive_probe`, and `script_can_fail` with its test. Moved from reverse-it (port step 0, reviewer 2026-10-26); `README.md` inside | Tester |
 | `harness_checks/` | Whole directory: the harness suite's mutants, can-fails and controls. Moved from reverse-it (port step 0, reviewer 2026-10-26); `README.md` inside | Tester |
 | `firmware/test/host_diff/` | The reference-vs-port differential | Tester |
 | `firmware/test/host_bridge/` | Whole directory, fakes included | Tester |
-| `firmware/test/build_check.py` | Builds every PlatformIO environment, checks the truck image is silent, and checks the manifest rows (a dirty tree gets none, 2026-10-15) and the diag schema version (review item C2b); retires with the PlatformIO build at port step 2a | Tester |
+| `firmware/test/build_check.py` | Builds every PlatformIO environment, checks the truck image is silent, and checks the manifest rows (a dirty tree gets none, 2026-10-15) and the diag schema version (review item C2b); retired at port step 2a with the PlatformIO build (its checks run as NOT-RUN under the same ids); the tester removes it | Tester |
 | `firmware/test/build_check_links_test.py`, `firmware/test/build_check_manifest_test.py`, `firmware/test/build_check_schema_test.py` | Tests for `build_check.py`: the witness and truck envs against the bench env, the manifest check, `DIAG_SCHEMA_VER` against the diag DBC | Tester |
 | `firmware/test/build_check_in_clone.py` | Runs `build_check.py` in a git checkout of the run's commit (user, 2026-10-19) | Tester |
 | `firmware/test/build_check_in_clone_test.py` | Its test | Tester |
 | `firmware/test/hw_mechanics.py` | Says whether a change touches one of spec 10's hardware mechanics, so it needs a bench run (spec 12) | Tester |
-| `firmware/test/digest_recheck_check.py` | Checks that `manifest.py`'s post-link source-digest re-check fails on a stale digest (edit at the link, premise checked first, `--can-fail`); retires with `manifest.py` at port step 2a | Tester |
+| `firmware/test/digest_recheck_check.py` | Checks that `manifest.py`'s post-link source-digest re-check fails on a stale digest (edit at the link, premise checked first, `--can-fail`); retired with `manifest.py` at port step 2a; the tester removes it | Tester |
 | `firmware/test/c12_bench/` | Whole directory: the standalone ESP-IDF C12 bench Target, not a product image (reviewer, 2026-10-13) | Tester |
 | `firmware/test/vport_bench/` | Whole directory: the standalone ESP-IDF vehicle-port bench image for spec section 9, TWAI only, never on the truck (reviewer, 2026-10-13) | Tester |
 | `firmware/test/README.md` | The harness's own checks and can-fails; the implementor sends it the `host_unit` rows (reviewer, 2026-10-13) | Tester |
