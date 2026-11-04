@@ -69,10 +69,30 @@ AGENTS.md "Files and folders" could mean, and the anchor is nobody's
 working tree. The runner makes the parent folders when it needs them and
 removes only what it makes there (A14).
 
-Not yet: build targets (ESP-IDF from port step 2a, whose build commands the
-2a build message gives; the reviewer, 2026-11-01: wait for it), settings
-keys from builds, shared pins (this branch carries its own shared/ until
-its first re-pin).
+  TARGETS            "idf-build" (option variant): the product's own
+                     charge-interposer/vtrux_tools.py build <variant>, in the
+                     build's own tree, through the "idf" shell. Its outputs
+                     are read inside that tree, from firmware/build/<variant>/
+                     (the launcher's own folder; the charge-interposer
+                     reviewer, 2026-11-04): the app, bootloader and
+                     partition-table images, the ELF, the variant and the
+                     toolchain from project_description.json, which must name
+                     interposer_<variant>
+  shell "idf"        fw_harness/idf_build_shell.py from the list's commit:
+                     exports the interposer's ESP-IDF from the machine's
+                     settings ("idf": idf_path, idf_tools_path, python_dir),
+                     runs the command, then fails the build if it changed a
+                     tracked file of the tree (dependencies.lock: shared/tools
+                     R33); local only
+  shared_pins,       the harness's shared pin, shared/twai_port, from
+  tree_paths         charge-interposer/firmware/shared_pins.json at the tree's
+                     commit; its checkout is named shared-<tag>, the folder
+                     shared_pin.py and vtrux_tools.py look for beside a
+                     worktree's root, so the one checkout of the pinned
+                     commit also serves shared/bench and shared/tools at the
+                     same tag
+
+Not yet: settings keys from builds.
 
   tree_setup,        what each fresh tree needs before its checks: the
   tree_installed     pinned canre installed and checked (canre_pin.py), and
@@ -96,11 +116,11 @@ PROJECT = "charge-interposer"
 ROLE = "tester (charge-interposer)"
 SUITES = {n: "charge-interposer/bench_suite.py:%s" % n
           for n in ("emulated", "bench", "harness")}
-SHELLS = ("python", "git-bash", "powershell")
+SHELLS = ("python", "git-bash", "powershell", "idf")
+IDF_SHELL = os.path.join(HERE, "fw_harness", "idf_build_shell.py")
 # the machine variables a check may see (AGENTS.md, local-paths.md)
 MACHINE_VARS = ("REVERSE_IT_DIR", "CAN_TOOLS_DIR", "VTRUX_PUBLIC_REPO")
 JUDGES = ("script", "recorded", "c12", "host-bridge", "corrupt-pin", "scenario")
-TARGETS = {}
 COMPARERS = ("masked-log", "sim-judged", "run-logs")
 # the folder names the runner's scratch helper gives trees, builds and mutants
 MASKS = {"tree-root": r"(?:tree|build|mutant)-[\w.-]+?-\d+-[0-9a-f]{6}"}
@@ -116,15 +136,55 @@ def product_files(root):
     return bench_suite.product_files(root)
 
 
+PIN_FILE = "charge-interposer/firmware/shared_pins.json"
+# the shared components a tree checks out: the one the harness reads from a
+# tree (host_bridge's TWAI_FAKE=shared fake); shared/bench and shared/tools
+# are read from the same checkout of the pinned commit (tree_paths)
+TREE_SHARED = {"twai_port": "shared/twai_port"}
+PROJECT_DIR = "repo"
+
+
+def _pins(repo, commit):
+    """The pin file at commit; None at a commit from before it (port step
+    2a), whose tree carries its own shared/."""
+    import json
+    import subprocess
+    spec = "%s:%s" % (commit, PIN_FILE)
+    if subprocess.run(["git", "-C", repo, "cat-file", "-e", spec],
+                      capture_output=True).returncode != 0:
+        return None
+    r = subprocess.run(["git", "-C", repo, "show", spec], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise AdapterError("%s at %s could not be read: %s" % (PIN_FILE, commit[:12],
+                                                            r.stderr.strip()))
+    return json.loads(r.stdout)
+
+
 def shared_pins(repo, commit):
-    """None yet: this branch carries its own shared/ until its first re-pin
-    (README, "Shared code")."""
-    return {}
+    """{component: commit} for the trees, from the pin file at commit;
+    none at a commit from before the pin file."""
+    pins = _pins(repo, commit)
+    if pins is None:
+        return {}
+    out = {}
+    for comp, key in TREE_SHARED.items():
+        if key not in pins:
+            raise AdapterError("%s at %s has no %s pin" % (PIN_FILE, commit[:12], key))
+        out[comp] = pins[key]["commit"]
+    return out
 
 
 def tree_paths(name, tree):
-    out = {"project": "repo"}
-    out.update({c: "shared-%s" % c for c in tree["shared"]})
+    """The project in repo/; a shared component at its pinned commit in
+    shared-<tag>/ beside it (the folder shared_pin.py and vtrux_tools.py
+    look for beside a worktree's root), else shared-<component>/."""
+    out = {"project": PROJECT_DIR}
+    pins = {}
+    if tree.get("shared"):
+        pins = _pins(os.path.dirname(HERE), tree["project"]) or {}
+    for c, commit in tree["shared"].items():
+        p = pins.get(TREE_SHARED.get(c, ""), {})
+        out[c] = ("shared-%s" % p["tag"]) if p.get("commit") == commit else ("shared-%s" % c)
     return out
 
 
@@ -221,7 +281,59 @@ def shell_argv(shell, settings, host="local"):
         return [settings["bash"]]
     if shell == "powershell" and host == "local":
         return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]
+    if shell == "idf" and host == "local":
+        idf = settings.get("idf") or {}
+        missing = [k for k in ("idf_path", "idf_tools_path", "python_dir") if not idf.get(k)]
+        if missing:
+            raise AdapterError("the settings' \"idf\" names no %s: the interposer's ESP-IDF "
+                               "export comes from the machine's settings (local-paths.md)"
+                               % ", ".join(missing))
+        return shell_argv("python", settings, host) + [
+            IDF_SHELL, "--idf-path", idf["idf_path"], "--idf-tools-path", idf["idf_tools_path"],
+            "--python-dir", idf["python_dir"], "--"]
     raise AdapterError("no shell %r on host %s" % (shell, host))
+
+
+# ---- build targets (A5) -----------------------------------------------------
+def _build_args(opts, out):
+    return ["build", opts["variant"]]
+
+
+def _build_outputs(out, opts):
+    """What a build made, read in its tree (out's sibling repo/):
+    firmware/build/<variant>/, which project_description.json must name
+    interposer_<variant>."""
+    import json
+    v = opts["variant"]
+    bd = os.path.join(os.path.dirname(out), PROJECT_DIR, "charge-interposer", "firmware",
+                      "build", v)
+    try:
+        with open(os.path.join(bd, "project_description.json"), encoding="utf-8") as f:
+            desc = json.load(f)
+    except (OSError, ValueError) as e:
+        raise AdapterError("build %s: no project description in %s (%s)" % (v, bd, e))
+    if desc.get("project_name") != "interposer_%s" % v:
+        raise AdapterError("build %s: %s describes %r, not interposer_%s"
+                           % (v, bd, desc.get("project_name"), v))
+    images = {"app": os.path.join(bd, desc["app_bin"]),
+              "bootloader": os.path.join(bd, "bootloader", "bootloader.bin"),
+              "partition-table": os.path.join(bd, "partition_table", "partition-table.bin")}
+    elf = os.path.join(bd, desc["app_elf"])
+    for p in list(images.values()) + [elf]:
+        if not os.path.isfile(p):
+            raise AdapterError("build %s: %s is missing" % (v, p))
+    cc = desc.get("c_compiler", "").replace("\\", "/").split("/")
+    i = next((k for k, part in enumerate(cc) if part == "xtensa-esp-elf"), None)
+    return {"images": images, "elf": elf, "variant": v,
+            "toolchain": {"esp_idf": desc.get("git_revision"), "target": desc.get("target"),
+                          "compiler": cc[i + 1] if i is not None and i + 1 < len(cc) else None}}
+
+
+TARGETS = {
+    "idf-build": {"options": ["variant"], "run": "charge-interposer/vtrux_tools.py",
+                  "shell": "idf", "args": _build_args, "outputs": _build_outputs,
+                  "timeout_s": 3 * 3600},
+}
 
 
 def judge(name):
