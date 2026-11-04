@@ -18,6 +18,9 @@ other than version, git, path, override_path and require are ignored.
 What the lock cannot tell: dependencies.lock records an override_path
 dependency as a local `path`, and a git dependency's version as the commit
 it resolved to. The tag pinned and the override are only here.
+
+exact_idf_version() is R33's reading of the main component's manifest: the
+idf dependency names one exact version, 5.4.2 or ==5.4.2.
 """
 
 import re
@@ -108,3 +111,25 @@ def parse(text):
 def read(path):
     with open(path, encoding="utf-8") as f:
         return parse(f.read())
+
+
+# R33: one exact version, X.Y.Z, written bare or after "==". Anything else
+# (a range, a wildcard, a partial or prefixed version, spaces) is not.
+EXACT_IDF = re.compile(r"^(?:==)?(\d+\.\d+\.\d+)$")
+
+
+def exact_idf_version(deps):
+    """R33: the ESP-IDF version a manifest's dependencies ({name: fields},
+    as parse() gives them) name, as X.Y.Z, if the idf dependency names one
+    exact version; else ManifestError saying what it names."""
+    if "idf" not in deps:
+        raise ManifestError("it has no idf dependency, so it names no ESP-IDF "
+                            "version")
+    spec = deps["idf"].get("version")
+    if not spec:
+        raise ManifestError("its idf dependency has no version")
+    m = EXACT_IDF.match(spec)
+    if not m:
+        raise ManifestError("its idf dependency is %r, not one exact version "
+                            "(5.4.2 or ==5.4.2)" % spec)
+    return m.group(1)

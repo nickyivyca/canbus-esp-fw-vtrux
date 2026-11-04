@@ -1,6 +1,6 @@
 """Tests of the release build (vtrux_build.release): SPEC R8, R9, R10, R11,
-R13, R16's override_path clause, R21's one-board refusal and R24, end to end on
-a scratch git project.
+R13, R16's override_path clause, R21's one-board refusal, R24, R32 and R33,
+end to end on a scratch git project.
 
     python -B shared/tools/tests/test_release.py
 
@@ -103,6 +103,16 @@ def ninja_form(path):
 TOOLCHAIN, TC_FILES = fake_idf("fake_idf")
 # The compilers CMake chose (CMake<LANG>Compiler.cmake): the toolchain's own.
 CC_CMAKE, CXX_CMAKE = cmake_form(TC_FILES["gcc"]), cmake_form(TC_FILES["g++"])
+# An environment exported for the fake IDF, as R32 wants it: every release
+# test runs in it unless the test changes it.
+IDF_ENV = {
+    "IDF_PATH": TOOLCHAIN.idf_path,
+    "IDF_TOOLS_PATH": TOOLCHAIN.tools_path,
+    "IDF_PYTHON_ENV_PATH": os.path.join(TOOLCHAIN.tools_path, "python_env",
+                                        "idf5.4_py3.11_env"),
+    "ESP_ROM_ELF_DIR": os.path.join(TOOLCHAIN.tools_path, "tools",
+                                    "esp-rom-elfs", "20241011", ""),
+}
 
 
 def git(root, *args):
@@ -150,7 +160,9 @@ LOCAL_DEP = ("  twai_port:\n"
              "      path: C:/w/shared/components/twai_port\n"
              "      type: local\n"
              "    version: '*'\n")
+# twai_port last: test_r16_override_path_in_manifest adds a field to it.
 MANIFEST = ('dependencies:\n  espressif/m: "1.0.0"\n'
+            '  idf: "5.4.1"\n'
             '  twai_port:\n    version: "twai-v1"\n'
             '    git: https://example.invalid/r.git\n'
             '    path: shared/components/twai_port\n')
@@ -415,6 +427,11 @@ def run(root, cc, edit=None, check_only=False, dest="default", jobs=None):
 @unittest.skipUnless(shutil.which("git"), "needs git")
 class Release(unittest.TestCase):
 
+    def setUp(self):
+        p = mock.patch.dict(os.environ, IDF_ENV)
+        p.start()
+        self.addCleanup(p.stop)
+
     def assertRefused(self, result, words, calls):
         p, idf, why = result
         self.assertIsNone(p)
@@ -542,8 +559,7 @@ class Release(unittest.TestCase):
         out = io.StringIO()
         with mock.patch.dict(os.environ, caller), \
                 contextlib.redirect_stdout(out):
-            want = buildenv.environment(
-                default_tools_path=TOOLCHAIN.tools_path)[0]
+            want = buildenv.environment()[0]
             p, idf, why = run(root, cc)
         self.assertIsNone(why)
         for action in ("reconfigure", "build"):
@@ -563,9 +579,9 @@ class Release(unittest.TestCase):
         root, cc = project("rel_r24_record")
         p, idf, why = run(root, cc)
         self.assertIsNone(why)
-        passed = buildenv.environment(
-            default_tools_path=TOOLCHAIN.tools_path)[1]
+        passed = buildenv.environment()[1]
         self.assertTrue(passed)
+        self.assertIn("IDF_TOOLS_PATH", passed)
         self.assertEqual(record.read(p)["environment_passed"], passed)
         self.assertNotIn(os.environ.get("PATH"),
                          record.read(p)["environment_passed"])
@@ -1058,17 +1074,104 @@ class Release(unittest.TestCase):
                            ["R9", "not one of this IDF's"], ["reconfigure"])
 
     def test_r9_no_idf_toolchain_stops_first(self):
+        """IDF_PATH passes R32 but holds no tools.json: this IDF's toolchain
+        cannot be read, and nothing runs."""
         root, cc = project("rel_r9_noidf")
         idf = FakeIdf(root, cc)
-        with mock.patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("IDF_PATH", None)
+        with mock.patch.dict(os.environ,
+                             {"IDF_PATH": scratch.fresh("rel_r9_noidf_x")}):
             with self.assertRaises(Refused) as cm:
                 release(root, idf=idf, toolchain_run=TC_RUN,
                         dest=records_dir(root), ninja=idf.ninja,
                         tools_root=tools_of(root))
-        self.assertIn("IDF_PATH", str(cm.exception))
+        self.assertIn("tools.json", str(cm.exception))
         self.assertIn("R9", str(cm.exception))
         self.assertEqual(idf.calls, [])
+
+    # R32: the environment the build was started in, before anything is
+    # handed to ESP-IDF; --check-only included.
+
+    def test_r32_refusals(self):
+        tools = TOOLCHAIN.tools_path
+        other = os.path.join(os.path.dirname(tools), "espressif-other")
+        for name, change, word in (
+                ("idf_path_unset", {"IDF_PATH": None}, "IDF_PATH"),
+                ("idf_path_empty", {"IDF_PATH": ""}, "IDF_PATH"),
+                ("tools_unset", {"IDF_TOOLS_PATH": None}, "IDF_TOOLS_PATH"),
+                ("tools_empty", {"IDF_TOOLS_PATH": ""}, "IDF_TOOLS_PATH"),
+                ("tools_blank", {"IDF_TOOLS_PATH": "  "}, "IDF_TOOLS_PATH"),
+                ("venv_unset", {"IDF_PYTHON_ENV_PATH": None},
+                 "IDF_PYTHON_ENV_PATH"),
+                ("rom_unset", {"ESP_ROM_ELF_DIR": None}, "ESP_ROM_ELF_DIR"),
+                ("venv_elsewhere", {"IDF_PYTHON_ENV_PATH": os.path.join(
+                    other, "python_env", "v")}, "IDF_PYTHON_ENV_PATH"),
+                ("rom_elsewhere", {"ESP_ROM_ELF_DIR": os.path.join(
+                    other, "tools", "esp-rom-elfs")}, "ESP_ROM_ELF_DIR"),
+                ("tools_moved", {"IDF_TOOLS_PATH": other}, "not inside")):
+            root, cc = project("rel_r32_" + name)
+            with mock.patch.dict(os.environ, {}):
+                for n, v in change.items():
+                    if v is None:
+                        os.environ.pop(n, None)
+                    else:
+                        os.environ[n] = v
+                for check_only in (False, True):
+                    with self.subTest(name=name, check_only=check_only):
+                        self.assertRefused(run(root, cc, check_only=check_only),
+                                           ["R32", word], [])
+
+    def test_r32_never_defaults_the_tools_path(self):
+        """Unset IDF_TOOLS_PATH is refused as unset, whatever ~/.espressif
+        holds: the refusal is not a failed lookup there."""
+        root, cc = project("rel_r32_nodefault")
+        with mock.patch.dict(os.environ, {}):
+            os.environ.pop("IDF_TOOLS_PATH")
+            p, idf, why = run(root, cc)
+        self.assertRefused((p, idf, why), ["IDF_TOOLS_PATH", "not set"], [])
+        self.assertNotIn("tools.json", why)
+
+    def test_r32_record_and_build_get_the_callers_tools_path(self):
+        root, cc = project("rel_r32_tools")
+        p, idf, why = run(root, cc)
+        self.assertIsNone(why)
+        for action in ("reconfigure", "build"):
+            self.assertEqual(idf.envs[action]["IDF_TOOLS_PATH"],
+                             TOOLCHAIN.tools_path)
+
+    # R33: the project names its IDF version exactly.
+
+    def manifest_with_idf(self, idf_line):
+        return MANIFEST.replace('  idf: "5.4.1"\n', idf_line)
+
+    def test_r33_exact_versions_build(self):
+        for i, line in enumerate(('  idf: "5.4.2"\n', '  idf: "==5.4.2"\n',
+                                  "  idf: '5.4.2'\n", "  idf: 5.4.2\n",
+                                  '  idf:\n    version: "==5.4.2"\n')):
+            root, cc = project("rel_r33_ok%d" % i,
+                               manifest=self.manifest_with_idf(line))
+            p, idf, why = run(root, cc, check_only=True)
+            self.assertIsNone(why, line)
+
+    def test_r33_refusals(self):
+        for i, line in enumerate((
+                "", '  idf: ">=4.1.0"\n', '  idf: "*"\n', '  idf: "^5.4.2"\n',
+                '  idf: "~5.4.2"\n', '  idf: ">=5.4.2,<5.5"\n',
+                '  idf: "5.4"\n', '  idf: "v5.4.2"\n', '  idf: "== 5.4.2"\n',
+                '  idf: "5.4.2.1"\n', '  idf: "5.4.2-beta"\n',
+                '  idf:\n    require: public\n')):
+            root, cc = project("rel_r33_bad%d" % i,
+                               manifest=self.manifest_with_idf(line))
+            for check_only in (False, True):
+                with self.subTest(line=line, check_only=check_only):
+                    self.assertRefused(run(root, cc, check_only=check_only),
+                                       ["R33", "idf_component.yml"], [])
+
+    def test_r33_no_main_manifest(self):
+        root, cc = project("rel_r33_none")
+        git(root, "rm", "-q", os.path.join("main", "idf_component.yml"))
+        git(root, "commit", "-qm", "no manifest")
+        self.assertRefused(run(root, cc, check_only=True),
+                           ["R33", "does not exist"], [])
 
 
 class BoardComponents(unittest.TestCase):
@@ -1364,14 +1467,19 @@ class ToolchainFromEnviron(unittest.TestCase):
         tc = Toolchain.from_environ({"IDF_PATH": idf,
                                      "IDF_TOOLS_PATH": TOOLCHAIN.tools_path})
         self.assertEqual(tc.tools_path, TOOLCHAIN.tools_path)
-        tc = Toolchain.from_environ({"IDF_PATH": idf})
-        self.assertEqual(tc.tools_path, os.path.abspath(
-            os.path.expanduser(os.path.join("~", ".espressif"))))
         self.assertIn(("ccache", "4.10.2", os.path.join(
             tc.tools_path, "tools", "ccache", "4.10.2", "ccache-4.10.2")),
             tc.folders)
         self.assertNotIn("esp-13.2.0_20240530",
                          [v for _, v, _ in tc.folders])
+
+    def test_no_tools_path_is_not_defaulted(self):
+        """R32: unset or empty is an error, never ~/.espressif."""
+        for env in ({"IDF_PATH": TOOLCHAIN.idf_path},
+                    {"IDF_PATH": TOOLCHAIN.idf_path, "IDF_TOOLS_PATH": ""}):
+            with self.assertRaises(ToolchainError) as cm:
+                Toolchain.from_environ(env)
+            self.assertIn("IDF_TOOLS_PATH", str(cm.exception))
 
     def test_no_idf(self):
         with self.assertRaises(ToolchainError):
@@ -1439,9 +1547,44 @@ class Cli(unittest.TestCase):
             self.assertEqual(rel.call_args.kwargs["jobs"], jobs)
 
     def test_jobs_not_a_number(self):
-        with mock.patch("sys.stderr"), self.assertRaises(SystemExit) as cm:
-            cli.main(["release", "--jobs", "x"])
-        self.assertEqual(cm.exception.code, 2)
+        for cmd in ("release", "build"):
+            with mock.patch("sys.stderr"), self.assertRaises(SystemExit) as cm:
+                cli.main([cmd, "--jobs", "x"])
+            self.assertEqual(cm.exception.code, 2)
+
+    def test_build_command(self):
+        """build [VARIANT] [--project DIR] [--jobs N] reaches devbuild.build;
+        a refusal is exit 1."""
+        from vtrux_build import devbuild
+        for argv, want in (
+                (["build", "truck"], (".", "truck", None)),
+                (["build", "bench", "--jobs", "1", "--project", "p"],
+                 ("p", "bench", 1)),
+                (["build"], (".", None, None))):
+            with mock.patch.object(devbuild, "build",
+                                   return_value="b") as b, \
+                    mock.patch("sys.stdout"):
+                self.assertEqual(cli.main(argv), 0)
+            self.assertEqual((b.call_args.args[0], b.call_args.args[1],
+                              b.call_args.kwargs["jobs"]), want)
+        with mock.patch.object(devbuild, "build", side_effect=Refused("no")), \
+                mock.patch("sys.stdout"):
+            self.assertEqual(cli.main(["build", "x"]), 1)
+
+    def test_check_env_command(self):
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, IDF_ENV), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(cli.main(["check-env"]), 0)
+        for name in IDF_ENV:
+            self.assertIn(name, out.getvalue())
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, IDF_ENV), \
+                contextlib.redirect_stdout(out):
+            os.environ.pop("ESP_ROM_ELF_DIR")
+            self.assertEqual(cli.main(["check-env"]), 1)
+        self.assertIn("ESP_ROM_ELF_DIR", out.getvalue())
+        self.assertIn("REFUSED", out.getvalue())
 
 
 if __name__ == "__main__":

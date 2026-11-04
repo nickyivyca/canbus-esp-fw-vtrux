@@ -2,6 +2,9 @@
 
     python -B -m vtrux_build release [--project DIR] [--check-only]
                                      [--jobs N]
+    python -B -m vtrux_build build [VARIANT] [--project DIR] [--jobs N]
+                                              a dev build of one variant (R31)
+    python -B -m vtrux_build check-env        the IDF environment check (R32)
     python -B -m vtrux_build image BIN...     what the image library reads
                                               from each .bin, as JSON
     python -B -m vtrux_build digest DIR...    the R7 digest of each folder
@@ -14,7 +17,7 @@ import argparse
 import json
 import sys
 
-from . import release
+from . import devbuild, release
 from .digest import component_digest
 from .image import AppImage, ImageError
 
@@ -53,6 +56,17 @@ def main(argv=None):
     r.add_argument("--jobs", type=int, metavar="N",
                    help="build with ninja -j N instead of idf.py build "
                         "(--jobs 1 from an Idle shell is the throttled form)")
+    b = sub.add_parser("build", help="a dev build of one variant (R31)")
+    # Optional here so that a missing variant is refused with the list.
+    b.add_argument("variant", nargs="?",
+                   help="one of the variants the project's vtrux_build.json "
+                        "lists")
+    b.add_argument("--project", default=".",
+                   help="the ESP-IDF project root (default: here)")
+    b.add_argument("--jobs", type=int, metavar="N",
+                   help="ninja -j N (--jobs 1 from an Idle shell is the "
+                        "throttled form)")
+    sub.add_parser("check-env", help="the IDF environment check (R32)")
     i = sub.add_parser("image", help="read app images")
     i.add_argument("bins", nargs="+")
     d = sub.add_parser("digest", help="R7 component digests")
@@ -60,6 +74,10 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if args.cmd == "release":
         return release.main(args)
+    if args.cmd == "build":
+        return devbuild.main(args)
+    if args.cmd == "check-env":
+        return devbuild.check_env_main(args)
     if args.cmd == "image":
         return _image(args)
     return _digest(args)

@@ -49,19 +49,19 @@ class Environment(unittest.TestCase):
     def test_posix_is_case_sensitive(self):
         caller = {"PATH": "p", "path": "q", "IDF_PATH": "i", "TMPDIR": "t",
                   "HOME": "h", "LANG": "C"}
-        env, passed, dropped = buildenv.environment(
-            caller, "posix", default_tools_path="/x")
+        env, passed, dropped = buildenv.environment(caller, "posix")
         self.assertEqual(passed, ["IDF_PATH", "PATH", "TMPDIR"])
         self.assertEqual(dropped, ["HOME", "LANG", "path"])
-        self.assertEqual(env["IDF_TOOLS_PATH"], "/x")
+        self.assertEqual(env, {"PATH": "p", "IDF_PATH": "i", "TMPDIR": "t",
+                               "IDF_COMPONENT_STRICT_CHECKSUM": "1",
+                               "SOURCE_DATE_EPOCH": buildenv.EPOCH})
 
     def test_tooling_settings_win(self):
         """The caller's own values for the tooling's settings never reach
         the build: they are not on the list, and the tooling sets its own."""
         caller = {"PATH": "p", "SOURCE_DATE_EPOCH": "5",
                   "IDF_COMPONENT_STRICT_CHECKSUM": "0"}
-        env, passed, dropped = buildenv.environment(
-            caller, "posix", default_tools_path="/x")
+        env, passed, dropped = buildenv.environment(caller, "posix")
         self.assertEqual(env["SOURCE_DATE_EPOCH"], buildenv.EPOCH)
         self.assertEqual(env["IDF_COMPONENT_STRICT_CHECKSUM"], "1")
         self.assertEqual(dropped, ["IDF_COMPONENT_STRICT_CHECKSUM",
@@ -69,36 +69,35 @@ class Environment(unittest.TestCase):
 
     def test_epoch_is_one_fixed_value(self):
         self.assertEqual(buildenv.EPOCH, "1767225600")
-        a = buildenv.environment({}, "posix", default_tools_path="/x")[0]
-        b = buildenv.environment({"PATH": "other"}, "nt",
-                                 default_tools_path="C:/x")[0]
+        a = buildenv.environment({}, "posix")[0]
+        b = buildenv.environment({"PATH": "other"}, "nt")[0]
         self.assertEqual(a["SOURCE_DATE_EPOCH"], b["SOURCE_DATE_EPOCH"])
 
-    def test_tools_path(self):
-        """The caller's IDF_TOOLS_PATH passes; unset or empty, the default
-        is set, so the build looks where R9's toolchain check looked."""
-        for caller, want in (({"IDF_TOOLS_PATH": "/mine"}, "/mine"),
-                             ({"IDF_TOOLS_PATH": ""}, "/default"),
-                             ({}, "/default")):
-            env = buildenv.environment(caller, "posix",
-                                       default_tools_path="/default")[0]
-            self.assertEqual(env["IDF_TOOLS_PATH"], want, caller)
-            self.assertEqual([n for n in env if n == "IDF_TOOLS_PATH"],
-                             ["IDF_TOOLS_PATH"])
-        env = buildenv.environment({"idf_tools_path": ""}, "nt",
-                                   default_tools_path="C:/d")[0]
-        self.assertEqual({n: v for n, v in env.items()
-                          if n.upper() == "IDF_TOOLS_PATH"},
-                         {"IDF_TOOLS_PATH": "C:/d"})
-        env = buildenv.environment({}, "posix")[0]
-        self.assertEqual(env["IDF_TOOLS_PATH"], os.path.join(
-            os.path.expanduser("~"), ".espressif"))
+    def test_tools_path_never_defaulted(self):
+        """R24 as amended (R32): the caller's IDF_TOOLS_PATH passes as it
+        is, empty included; unset, it is not set, never ~/.espressif."""
+        for os_name, caller in (("posix", {"IDF_TOOLS_PATH": "/mine"}),
+                                ("posix", {"IDF_TOOLS_PATH": ""}),
+                                ("nt", {"idf_tools_path": "C:/x"}),
+                                ("nt", {"idf_tools_path": ""})):
+            env = buildenv.environment(caller, os_name)[0]
+            self.assertEqual({n: v for n, v in env.items()
+                              if n.upper() == "IDF_TOOLS_PATH"}, caller)
+        for os_name in ("posix", "nt"):
+            env = buildenv.environment({"PATH": "p"}, os_name)[0]
+            self.assertFalse([n for n in env if n.upper() == "IDF_TOOLS_PATH"])
+            self.assertNotIn(".espressif", " ".join(env.values()))
+
+    def test_no_default_argument(self):
+        """The old default_tools_path argument is gone, so no caller can
+        bring the default back."""
+        with self.assertRaises(TypeError):
+            buildenv.environment({}, "posix", default_tools_path="/x")
 
     def test_names_only(self):
         """passed and dropped hold names, never values."""
         caller = {"PATH": "secret-path", "EXTRA_CFLAGS": "secret-flag"}
-        _, passed, dropped = buildenv.environment(caller, "posix",
-                                                  default_tools_path="/x")
+        _, passed, dropped = buildenv.environment(caller, "posix")
         self.assertNotIn("secret", " ".join(passed + dropped))
 
     def test_default_is_this_process(self):

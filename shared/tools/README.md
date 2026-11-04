@@ -2,8 +2,8 @@
 
 Build tooling shared by the two Vtrux ESP32 projects, to `SPEC.md` beside
 this file. It never enters a firmware image. Python >= 3.10, stdlib only,
-so it runs under ESP-IDF's own Python (3.11 on IDF 5.4.1) as well as the
-machine's.
+so it runs under ESP-IDF's own Python (3.11 on IDF 5.4.1 and 5.4.2) as well
+as the machine's.
 
 - **Why** each requirement is worded as it is: `VALIDATION.md`.
 - **Test evidence** that this tooling meets it: `VERIFICATION.md` (the
@@ -67,8 +67,13 @@ root, with `REVERSE_IT_DIR` set:
     python -B -m vtrux_build release                # a release build
     python -B -m vtrux_build release --check-only   # its pre-build refusals only
     python -B -m vtrux_build release --jobs 1       # built with ninja -j 1
+    python -B -m vtrux_build build <variant> [--jobs N]  # a dev build (R31)
+    python -B -m vtrux_build check-env              # the IDF environment check (R32)
     python -B -m vtrux_build image <file.bin>...    # what an image holds, as JSON
     python -B -m vtrux_build digest <folder>...     # R7 digests
+
+`release` and `build` take `--project DIR`, the ESP-IDF project root, the
+current folder if not given.
 
 `-B` matters: a `__pycache__` written into this folder changes its own
 digest (R7 counts every file but those whose name ends `.md` and those named
@@ -94,12 +99,40 @@ programs: on Windows `SYSTEMROOT`, `PROCESSOR_ARCHITECTURE`, `TEMP` and
 `TMP`, each found by a configure or build that failed without it; on Linux
 only `TMPDIR`, not yet tried on a Linux host. A name the build needs and the
 list lacks fails the build. Then the tooling adds its own settings:
-`IDF_COMPONENT_STRICT_CHECKSUM=1` (R10), `SOURCE_DATE_EPOCH` (R9, below),
-and `IDF_TOOLS_PATH` when the caller's is unset or empty, set to the
-`~/.espressif` default R9's toolchain check read. The build prints the
+`IDF_COMPONENT_STRICT_CHECKSUM=1` (R10) and `SOURCE_DATE_EPOCH` (R9,
+below). It sets no default for a name it passes: a name the caller does
+not set is not set (R24 as amended 2026-11-03). The build prints the
 names it passed and the names it dropped, never values, and the record
 lists the names passed (`environment_passed`). Bench and dev builds are not
 constrained.
+
+## The IDF environment check (R32)
+
+Before a release build or a dev build hands anything to ESP-IDF, the
+environment it was started in is checked (`vtrux_build/idfenv.py`):
+`IDF_PATH` is set; `IDF_TOOLS_PATH` is set and not empty; and
+`IDF_PYTHON_ENV_PATH` and `ESP_ROM_ELF_DIR` are set and inside
+`IDF_TOOLS_PATH`. A failure is a refusal naming the variable. Nothing is
+defaulted: an unset `IDF_TOOLS_PATH` is never replaced by `~/.espressif`,
+which on a machine with two ESP-IDF installs, each with its own tools
+folder, may be the other install's. `check-env` runs the check alone,
+exit 0 or 1; a project whose bench builds do not go through `build` runs
+it before each. An `IDF_PATH` of one version with the other's tools is not
+caught here: the project's exact IDF version (R33) refuses that at
+configure.
+
+## Dev builds (R31)
+
+`build <variant> [--jobs N]` (`vtrux_build/devbuild.py`) makes a bench or
+dev build of one of the variants the project's `vtrux_build.json` lists
+(below). A variant not listed is refused, naming the list; a project that
+lists none has no build command. R32 runs first. Then, in
+`build/<variant>` under the project root, `idf.py -B build/<variant> -D
+<option>=<value>... reconfigure` with the variant's options, and `ninja -C
+build/<variant> all`, with `-j N` when `--jobs` is given (`--jobs 1` from
+an Idle shell is the throttled form). Both run in the caller's environment
+as it is: nothing added, nothing dropped. None of the release build's
+other conditions apply (R14).
 
 `SOURCE_DATE_EPOCH` is one fixed value, `1767225600` (2026-01-01T00:00:00Z),
 for every project and commit (R9): GCC takes `__DATE__` and `__TIME__` from
@@ -133,7 +166,7 @@ be this IDF's own toolchain binary. The build folder's
 `CMAKE_TOOLCHAIN_FILE`, which must be in `$IDF_PATH/tools/cmake/`, names
 each language's compiler. Exactly one tool in `$IDF_PATH/tools/tools.json`,
 at the version it marks recommended and installed under `IDF_TOOLS_PATH`
-(`~/.espressif` if unset, as `idf_tools.py` has it), holds a file of that
+(which R32 requires set; it is never defaulted), holds a file of that
 name. The chosen compiler has that name and, with its links resolved, is a
 file in that tool's folder. It trusts the IDF install itself: a toolchain
 whose own files were replaced is not detected.
@@ -163,6 +196,12 @@ The tooling holds no project facts. A project gives them in
 |---|---|---|
 | `project` | the build script | the record folder's name, `firmware/builds/<project>/` |
 | `shared_components` | the build script | the dependency names of the shared firmware components it pins; R16 and the record use them. `[]` for none |
+| `variants` | the dev build command only (R31) | `{variant: {CMake option: value}}`, e.g. `{"truck": {"INTP_VARIANT": "truck"}}`: each bench and dev build variant and the `-D` options it is configured with. A name is letters, digits, `_` and `-`, since it names the build folder. Absent or `{}`: no build command. A release build does not read it |
+
+The project's ESP-IDF version is not in this file either. It is the `idf`
+dependency of `main/idf_component.yml`, one exact version, `5.4.2` or
+`==5.4.2` (R33), so that a configure under another IDF fails; a release
+build refuses a range or no version.
 
 The build checks' data (the release profile, the switch table and its
 refusal rows) is not in this file. It is in `vtrux_checks.json` in the
@@ -185,7 +224,8 @@ is that component's `board.json`, which the checks read from
 
 `vtrux_build/release.py`, in order, each refusal an exit: the project's
 data; the tooling's pin (R23, and R16's tooling-pin clause; "Running it"
-above); `REVERSE_IT_DIR` set (R13, before anything is built); the IDF
+above); the project's exact IDF version (R33); `REVERSE_IT_DIR` set (R13,
+before anything is built); the IDF environment check (R32); the IDF
 environment, with the Component Manager's overwrite setting
 (`IDF_COMPONENT_OVERWRITE_MANAGED_COMPONENTS`) not set at all (R10); the
 environment ESP-IDF runs in, from an empty one (R24); a
@@ -258,16 +298,18 @@ the module docstring (`RECORD_SCHEMA` 1).
 | `vtrux_build/digest.py` | the component digest: R7 |
 | `vtrux_build/builddir.py` | the build folder readers: R11, and the records the checks read |
 | `vtrux_build/lockfile.py` | `dependencies.lock` reader |
-| `vtrux_build/manifest.py` | `idf_component.yml` dependency reader (the pinned tag, `override_path`) |
+| `vtrux_build/manifest.py` | `idf_component.yml` dependency reader (the pinned tag, `override_path`), and R33's reading of the `idf` dependency |
 | `vtrux_build/components.py` | downloaded components against the lock and, where the registry supplied one, their `CHECKSUMS.json`: R10, with the Component Manager's strict mode doing the re-hash |
-| `vtrux_build/project.py` | a project's `vtrux_build.json`: R22 |
+| `vtrux_build/project.py` | a project's `vtrux_build.json`: R22, and R31's variants |
+| `vtrux_build/idfenv.py` | the IDF environment check: R32 |
+| `vtrux_build/devbuild.py` | the dev build command and the `check-env` command: R31, R32 |
 | `vtrux_build/record.py` | the release record: R13 |
 | `vtrux_build/toolchain.py` | this IDF's toolchain, from its `tools.json` and toolchain file: R9's check that each chosen compiler is the toolchain's own |
-| `vtrux_build/buildenv.py` | a release build's environment, from an empty one: R24, and R9's `SOURCE_DATE_EPOCH` |
+| `vtrux_build/buildenv.py` | a release build's environment, from an empty one, with no defaults: R24, and R9's `SOURCE_DATE_EPOCH` |
 | `vtrux_build/pin.py` | the tooling's own pin in `shared_pins.json`, and the check that the tooling runs from the pinned checkout: R23, R16's tooling-pin clause |
-| `vtrux_build/release.py` | the release build: R8 to R11, R13, R16 (both clauses, the tooling pin through `pin.py`), R21's one-board refusal, R23, R24 |
+| `vtrux_build/release.py` | the release build: R8 to R11, R13, R16 (both clauses, the tooling pin through `pin.py`), R21's one-board refusal, R23, R24, R32 (through `idfenv.py`), R33 |
 | `vtrux_build/cli.py`, `__main__.py`, `__init__.py` | the command line |
-| `tests/test_*.py` | unit tests, one file per module (`toolchain.py`'s are in `test_release.py`, with the check that uses it); each runs alone (`python -B shared/tools/tests/test_image.py`) or all with `python -B -m unittest discover -s shared/tools/tests`. `test_buildenv.py`'s `RealConfigure` runs ESP-IDF itself, two configures of a small project (about 40 s), so it is skipped unless `VTRUX_IDF_TESTS=1` is set in an exported ESP-IDF shell; it is a build for `AGENTS.md` "Builds during wall-clock tests" |
+| `tests/test_*.py` | unit tests, one file per module (`toolchain.py`'s and the command line's are in `test_release.py`, with the check that uses it; `project.py`'s variants are in `test_devbuild.py`); each runs alone (`python -B shared/tools/tests/test_image.py`) or all with `python -B -m unittest discover -s shared/tools/tests`. `test_buildenv.py`'s `RealConfigure` runs ESP-IDF itself, two configures of a small project (about 40 s), so it is skipped unless `VTRUX_IDF_TESTS=1` is set in an exported ESP-IDF shell; it is a build for `AGENTS.md` "Builds during wall-clock tests" |
 | `tests/imagekit.py` | synthetic app images for the tests, so no firmware image is committed |
 | `tests/pinkit.py` | a pinned checkout for the tests: a small tagged repository at `<folder>/shared-<tag>/` and the pin that matches it; `test_release.py` gives every test project one |
 | `tests/scratch.py` | the tests' scratch folders: `<worktree>/scratch/shared-tools-tests/<pid>/`, the run's own, removed when the run ends, pass or fail; refused, with no other place, outside a git worktree or where git does not ignore `scratch/` (`AGENTS.md` "Files and folders"), and so under WSL in a worktree made by Git for Windows, whose `.git` file Linux git cannot follow. Its remover clears read-only flags and retries, uses `\\?\` paths on Windows and prints what it could not remove ("Removing scratch"): a copy of `verification/independent.py`'s, since the unit tests do not import the tester's files. Tested in `tests/test_scratch.py` |

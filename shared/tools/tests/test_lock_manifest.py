@@ -164,5 +164,41 @@ class Manifest(unittest.TestCase):
         self.assertEqual(m, {"y": {"version": "*"}})
 
 
+class ExactIdfVersion(unittest.TestCase):
+    """R33's reading of the idf dependency."""
+
+    def test_exact(self):
+        for spec in ("5.4.2", "==5.4.2", "10.0.11"):
+            self.assertEqual(manifest.exact_idf_version(
+                {"idf": {"version": spec}}), spec.lstrip("="))
+        m = manifest.parse('dependencies:\n  idf:\n    version: "==5.4.2"\n')
+        self.assertEqual(manifest.exact_idf_version(m), "5.4.2")
+
+    def test_not_exact(self):
+        for spec in (">=4.1.0", "*", "^5.4.2", "~5.4.2", "~=5.4.2",
+                     ">=5.4.2,<5.5", "5.4", "5", "v5.4.2", "== 5.4.2",
+                     " 5.4.2", "5.4.2 ", "5.4.2.1", "5.4.2-beta",
+                     "5.4.2+x", "=5.4.2", "!=5.4.2", "5.4.2||5.4.3"):
+            with self.assertRaises(manifest.ManifestError, msg=spec) as cm:
+                manifest.exact_idf_version({"idf": {"version": spec}})
+            self.assertIn(repr(spec), str(cm.exception))
+
+    def test_none(self):
+        for deps, words in (({}, "no idf dependency"),
+                            ({"idf": {}}, "no version"),
+                            ({"idf": {"version": ""}}, "no version"),
+                            ({"espressif/idf": {"version": "5.4.2"}},
+                             "no idf dependency")):
+            with self.assertRaises(manifest.ManifestError) as cm:
+                manifest.exact_idf_version(deps)
+            self.assertIn(words, str(cm.exception))
+
+    def test_gen_inhibit_before_1d(self):
+        """The fixture's >=4.1.0, as gen-inhibit's manifest has it until
+        port step 1d, is a range."""
+        with self.assertRaises(manifest.ManifestError):
+            manifest.exact_idf_version(manifest.parse(MANIFEST))
+
+
 if __name__ == "__main__":
     unittest.main()

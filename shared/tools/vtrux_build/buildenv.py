@@ -12,12 +12,11 @@ Then the tooling adds its own settings, which win over the caller's:
 
     IDF_COMPONENT_STRICT_CHECKSUM=1   R10, the Component Manager's strict mode
     SOURCE_DATE_EPOCH=<EPOCH>         R9, the compile date (see EPOCH)
-    IDF_TOOLS_PATH                    only when the caller's is unset or
-                                      empty: the default ESP-IDF itself
-                                      uses (~/.espressif), resolved here, so
-                                      the build finds the tools R9's
-                                      toolchain check reads without a home
-                                      folder
+
+It sets no default for any name it passes (R24 as amended 2026-11-03). In
+particular an unset IDF_TOOLS_PATH is not replaced by ~/.espressif, which
+may be another ESP-IDF install's tools folder: R32 (idfenv.py) refuses the
+release build before this environment is built.
 
     env, passed, dropped = environment(os.environ)
 
@@ -68,11 +67,10 @@ def pass_list(os_name=None):
     return IDF_NAMES + HOST_NAMES[os_name or os.name]
 
 
-def environment(environ=None, os_name=None, default_tools_path=None):
+def environment(environ=None, os_name=None):
     """(env, passed, dropped) for a release build's ESP-IDF calls.
-    environ is the caller's environment (default: this process's).
-    default_tools_path is IDF_TOOLS_PATH when the caller sets none
-    (default: ~/.espressif, as idf_tools.py has it)."""
+    environ is the caller's environment (default: this process's). A name on
+    the pass list that the caller does not set is not set here either."""
     environ = os.environ if environ is None else environ
     os_name = os_name or os.name
     # Windows names are case-insensitive: compare them upper-cased.
@@ -85,13 +83,6 @@ def environment(environ=None, os_name=None, default_tools_path=None):
             passed.append(name)
         else:
             dropped.append(name)
-    tools = [n for n in env if key(n) == "IDF_TOOLS_PATH"]
-    if not (tools and env[tools[0]]):
-        for n in tools:
-            del env[n]
-        env["IDF_TOOLS_PATH"] = (default_tools_path
-                                 or os.path.join(os.path.expanduser("~"),
-                                                 ".espressif"))
     env[components.STRICT_ENV] = "1"
     env["SOURCE_DATE_EPOCH"] = EPOCH
     return env, sorted(passed, key=key), sorted(dropped, key=key)
