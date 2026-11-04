@@ -471,12 +471,18 @@ refuses a shell not exported for the interposer's IDF. No interposer
 release build is made during the port, since no mid-port build goes on
 the truck (user, 2026-11-03).
 
-**Two IDF versions until gen-inhibit's port step 1d** (user, 2026-11-03).
-gen-inhibit builds on v5.4.1 and the interposer on v5.4.2, each a separate
-install with its own tools folder. Run a build only in a shell exported for
-its project's IDF. Each machine's recipe is in `local-paths.md` and
-`$REVERSE_IT_DIR/tools-reference.md`. When 1d lands, this paragraph changes
-in that merge.
+**One IDF version from gen-inhibit's port step 1d** (user, 2026-11-03).
+Both projects build on ESP-IDF v5.4.2, an install with its own tools
+folder, so `IDF_TOOLS_PATH` is set before the export. Run a build only in a
+shell exported for it. The shared tooling's `check-env` (shared/tools R32)
+checks that. Release builds and the tooling's dev builds (R31) run it
+themselves. gen-inhibit's `idf.py` / `ninja` bench and dev builds run
+`py -3.14 -B gen-inhibit/vtrux_tools.py check-env` first. A bench or dev
+build under another IDF is not refused (R33, R14): the other IDF rewrites
+`dependencies.lock` and builds, so a changed lock in `git status` after a
+configure is the sign (user, 2026-11-04). The v5.4.1 install stays only for
+branches from before 1d (user, 2026-11-04). Each machine's recipe is in
+`local-paths.md` and `$REVERSE_IT_DIR/tools-reference.md`.
 
 ### Builds during wall-clock tests
 
@@ -510,7 +516,8 @@ The cause was never isolated (user, 2026-10-15, for all of this section):
    repo root: for a release build,
    `py -3.14 -B <project>/vtrux_tools.py release --jobs 1` (no interposer
    release build is made during the port); for a gen-inhibit bench or dev
-   build, `ninja -C gen-inhibit/firmware/build -j 1`; for an interposer
+   build, `py -3.14 -B gen-inhibit/vtrux_tools.py check-env`, then
+   `ninja -C gen-inhibit/firmware/build -j 1`; for an interposer
    bench or dev build,
    `py -3.14 -B charge-interposer/vtrux_tools.py build <variant> --jobs 1`,
    which reconfigures `charge-interposer/firmware/build/<variant>` for its
