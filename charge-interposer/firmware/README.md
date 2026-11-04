@@ -101,6 +101,7 @@ the export lines are per machine, in the worktree's `local-paths.md`. Then,
 from `charge-interposer/firmware/`:
 
 ```powershell
+$env:SOURCE_DATE_EPOCH = "1767225600"   # every build; see below
 idf.py -B build/bridge -D INTP_VARIANT=bridge build      # one variant
 idf.py -B build/truck -D INTP_VARIANT=truck build        # no serial
 idf.py -B build/bridge -D INTP_VARIANT=bridge -p COM3 flash
@@ -113,12 +114,25 @@ idf.py -B build/witness -D INTP_VARIANT=witness -p COM3 flash
 keeps its variant until it is deleted; give each variant its own `-B`
 folder. COM3 is NICKY-XPS's; resolve the port from the MAC first (below).
 
-**While a wall-clock test is running on the machine,** build throttled
-(AGENTS.md, "Builds during wall-clock tests"): set the shell's priority
-class to Idle, configure with `idf.py`, and build with one job.
+**Every build sets `SOURCE_DATE_EPOCH` to the release tooling's fixed
+value** (`EPOCH` in the pinned shared/tools' `vtrux_build/buildenv.py`,
+1767225600; reviewer, 2026-11-03). The arduino-esp32 core compiles
+`__DATE__` and `__TIME__` into the image (`cores/esp32/chip-debug-report.cpp`),
+and the code hash (shared/tools R2) does not blank them, so without it each
+build's code hash carries its build time and a bench result cannot carry to
+a release build by code hash (R3). The PlatformIO build's `reproducible.py`
+fixed the date the same way.
+
+**Before any build, check for wall-clock tests** (AGENTS.md, "Builds during
+wall-clock tests"): the bench lock, the "No builds" line and running
+simulators. Until the tester's build trial on this ESP-IDF build has passed,
+an interposer build waits until none is running, throttled or not. The
+throttled form sets the shell's priority class to Idle, configures with
+`idf.py`, and builds with one job:
 
 ```powershell
 (Get-Process -Id $PID).PriorityClass = 'Idle'
+$env:SOURCE_DATE_EPOCH = "1767225600"
 idf.py -B build/bridge -D INTP_VARIANT=bridge reconfigure
 ninja -C build/bridge -j 1
 ```
