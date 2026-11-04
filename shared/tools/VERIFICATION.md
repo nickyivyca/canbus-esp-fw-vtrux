@@ -894,3 +894,74 @@ hashing every file in it:
 | R33, release refusals | PASS | A range, `*` and no IDF are refused. |
 | R33, an exact version accepted | **not judged** | `5.4.2` and `==5.4.2` pass R33's check and reach the reconfigure; no release build is recorded until the minimal project has a board. |
 | R33, "so that a configure under another IDF fails" | **FAIL** (observed vs SPEC) | It holds with no lock in the project. With the lock that the manifest gives, as a project commits it, v5.4.1 configures a project naming `5.4.2` or `==5.4.2`. Sent to the gen-inhibit reviewer. |
+
+**Correction (2026-11-04, gen-inhibit tester).** The four R33 release refusals above did not
+discriminate: the minimal project had no board, so R21 would have refused each of them anyway, and
+a manifest changed without its lock committed would have been refused by R8. They are re-judged in
+the next entry, on branches that differ from `r33_release_eq` only in the version. The R33 FAIL
+went to the user, who ruled on 2026-11-04; R33's text was amended at shared/main `56156653`, and the
+next entry judges the `_locked` cases against it.
+
+## R33 with R8, and the minimal project's board (gen-inhibit step 1d, 2026-11-04)
+
+**SPEC:** shared/main `56156653` (R33 amended, user, 2026-11-04: with the committed lock, the other
+IDF rewrites the lock's `idf` version and configures, and a release build refuses that at R8's
+clean-worktree check after the reconfigure; R32's IDF_PATH "set and not empty"). **Tooling:**
+`shared/tools/r33-wording` `308d7f65` (the implementor's, on `56156653`), merged into
+`shared/tools/env-cases-1d` as `44858aa` and tested there as the fixture's `2000.01.01` checkout.
+Its tooling files are `308d7f65`'s; the later commits change only `verification/`.
+
+**Check:** `verification/env_cases.py` and `verification/release_cases.py` at `4794368`. Both
+`--self-test`s pass, and so does `board_cases.py --self-test`.
+- **`018fd0c`.** The minimal project takes an esp32c3 board, `vtrux/c3fx`, from a scratch git repo
+  at the annotated tag `2026.11.04` (`release_cases.board_repo`, moved from board_cases), so its
+  release builds pass R21 again. The R33 refusal branches keep the board and commit the lock their
+  manifest gives. `release_cases --base` is resolved in the source repository, and a bad name is
+  refused, with self-test lines for both. New cases for R33 with R8 (below).
+- **`4794368`.** It fixes three harness faults found by the first run of `018fd0c`:
+  - R17 lets the lock record "the commit, or an annotated tag naming it". The record judge now
+    takes the annotated tag's object as well as the commit.
+  - `git status --porcelain` is now read past the stripping of the first line.
+  - The `_locked` cases are judged against R33's `56156653` text.
+
+  Each fix has self-test lines:
+  - The record judge rejects any other object for an annotated tag, and rejects for a lightweight
+    tag anything other than its commit.
+  - `modified_files` reads a status line whose leading space was stripped.
+  - `judge_r33_locked` fails a `_locked` copy that the other IDF refuses, and one whose lock is left
+    on this IDF's version.
+
+**Host:** NICKY-XPS, ESP-IDF v5.4.2 with its Python 3.11.9, Normal priority, full speed (no
+wall-clock test running); bench lock free and "No builds" clear. `--other-idf` is v5.4.1's
+exported variables. The release cases ran with no `--base`, so on the default, gen-inhibit/main,
+resolved to `115f907c`. **Run files:** `$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/runs/`:
+- `step1d_r33r8_4794368/`: the run this entry rests on. Its `SHA256SUMS` (`815a269a...9cd0`) hashes
+  all 50 files.
+- `step1d_r33r8_018fd0c/`: the first run, not judged; its README names the three faults. It has no
+  `SHA256SUMS`, and nothing rests on it.
+
+| Case | Result | What was tested |
+|---|---|---|
+| release_cases `r22_mini`, `r13_tooling_dirty`, `r13_lock_crlf` (CRLF, LF), `r9_epoch` (A, B, C), `r24_env` | PASS | Release builds of the minimal project, with its board, are recorded. Each record lists `vtrux/c3fx` at its tag, with the annotated tag's object as its lock version. The CRLF and LF locks give the same lock sha256. The three epoch builds carry one stamp, and the caller's values are not taken. The configure environment is the one R24 names. |
+| release_cases `r10_no_lock` | VOID | The project with no manifest is refused before the reconfigure, naming R33: "main/idf_component.yml does not exist, so the project names no ESP-IDF version". So R10's refusal of a missing lock after the reconfigure is not reached. Asked the gen-inhibit reviewer. |
+| R32's 17 cases, R31's 6 cases | PASS | As in the part A entry, on `308d7f65`. |
+| `r33_release_range`, `_star`, `_narrow`, `_none` | PASS | Release builds refused, no record, for `">=5.4.0"`, `"*"`, `">=5.4.2,<5.4.3"` and no IDF. Each branch has the board and its lock committed, so it differs from `r33_release_eq` only in the version. |
+| `r33_release_eq` | PASS | `==5.4.2`: built and recorded (`release_cases r22_mini` is the bare form's). |
+| `r24_tools_passed` | PASS | The release configure saw the caller's IDF_TOOLS_PATH unchanged. |
+| `r33_other_bare_fresh`, `r33_other_eq_fresh` | PASS | No lock: configure under v5.4.2, refused under v5.4.1 (exit 2). v5.4.1 configures the copy that names its own version. |
+| `r33_other_bare_locked`, `r33_other_eq_locked` | PASS | With the lock v5.4.2 wrote for the manifest: v5.4.1 configured, and the lock's idf became 5.4.1. |
+| `r33_release_other` | PASS | A release build of main as committed, by the tooling under v5.4.1's Python and variables, is refused (exit 1) after the reconfigure, before anything is compiled, naming dependencies.lock. The lock's idf was rewritten to 5.4.1, and the sdkconfig changed too. No record. |
+| `r33_release_other_lockonly` | PASS | The same, on a branch where every tracked file except the lock is as v5.4.1 writes it. The lock is the only file changed. |
+| `r33_release_other_own` (the can-fail) | PASS | Every tracked file, the lock too, as v5.4.1 writes it: nothing is rewritten, and the build is recorded with idf_version v5.4.1. So the two refusals above come from the rewrite. The manifest still names `5.4.2`: sent to the gen-inhibit reviewer as an observation. |
+
+| Req | Result | What was tested |
+|---|---|---|
+| R33, release refusals | PASS | A range, `*` and no IDF are refused. The refusals now discriminate (the correction above). |
+| R33, an exact version accepted | PASS | `5.4.2` and `==5.4.2` release builds are recorded. |
+| R33, no lock: a configure under another IDF fails | PASS | Both forms. |
+| R33, the committed lock: the other IDF rewrites it and configures | PASS | Both forms. |
+| R33 with R8: a release build under the other IDF is refused after the reconfigure | PASS | With main as committed, and with the lock alone rewritten. The can-fail shows it builds when nothing is rewritten. |
+| R24, the configure environment | PASS | `r24_tools_passed`, and release_cases `r24_env`. |
+| R21, R17, R13, R9 on the minimal project | PASS | The release cases above. |
+| R10, no lock after the reconfigure | **not reached** | R33 refuses a project with no manifest first. |
+| R8's sdkconfig clause on gen-inhibit (`r8_sdkconfig_*`) | **not run** | These are fixture cases on gen-inhibit. They wait for part B (gen-inhibit on v5.4.2). |
