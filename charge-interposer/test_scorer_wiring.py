@@ -1039,7 +1039,7 @@ def main():
     # so the schema-4 HOLD fields are judged on what the core emits, before
     # any live scenario runs.
     import subprocess
-    ds = HERE / "firmware" / "test" / "host_diff" / "diag_stream.py"
+    ds = HERE / "fw_harness" / "host_diff" / "diag_stream.py"
     for name in ("syn_override_release", "unit_dense_override_release"):
         res = subprocess.run([sys.executable, str(ds),
                               str(TRACES / ("%s.trace" % name))],

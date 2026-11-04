@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Build and run the spec 9.1 L2 host tests.
 #
-# Separate from ../host_unit/run.sh because these need the fakes compiled
-# alongside them, and because L2 is where the fakes live -- host_unit is for
-# firmware logic pure enough to need no peripheral at all.
+# Separate from ../../firmware/test/host_unit/run.sh because these need the
+# fakes compiled alongside them, and because L2 is where the fakes live --
+# host_unit is for firmware logic pure enough to need no peripheral at all.
 #
 # On Windows run under WSL:
-#   wsl bash "/mnt/c/.../firmware/test/host_bridge/run.sh"
+#   wsl bash "/mnt/c/.../charge-interposer/fw_harness/host_bridge/run.sh"
 #
 # WHICH TWAI DRIVER FAKE the tests build against, TWAI_FAKE (tester,
 # 2026-11-02, the reviewer's order: an option of committed harness, so that
@@ -16,7 +16,7 @@
 #   shared  the shared fake (shared/twai_port/test, twai_port T10), from the
 #           folder TWAI_FAKE_DIR names, built exactly as acceptance E built
 #           it (2026-10-31): a copy of this folder, at the same depth beside
-#           a copy of main/, without our twai_fake.h,
+#           a copy of firmware/main/, without our twai_fake.h,
 #           twai_fake.cpp and driver/twai.h (a quoted #include looks in the
 #           including file's own folder first, so they would win over any
 #           -I), every test given the shared twai_fake.c and
@@ -25,7 +25,7 @@
 #           and nothing extra is printed: the two transcripts are compared
 #           line for line.
 # run.sh --can-fail is the shared fake's can-fail
-# (../../../harness_checks/shared_fake_canfail.py).
+# (../../harness_checks/shared_fake_canfail.py).
 #
 # WHERE IT WORKS: one folder per run, W, under the tree's own scratch/, at
 # scratch/charge-interposer-harness/host-bridge/run_XXXXXX, never the system
@@ -42,14 +42,15 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # The firmware's sources: the IDF project's main/ component (port step 2a
 # moved them there from src/). main.cpp's board_ports.h includes "board.h",
 # which this folder's host stand-in answers (board.h, board_fake.cpp).
-SRC="$HERE/../../main"
+# host_bridge is charge-interposer/fw_harness/host_bridge (port step 2a).
+SRC="$HERE/../../firmware/main"
 case "${1:-}" in
   "") ;;
-  --can-fail) exec python3 "$HERE/../../../harness_checks/shared_fake_canfail.py" ;;
+  --can-fail) exec python3 "$HERE/../../harness_checks/shared_fake_canfail.py" ;;
   *) echo "usage: run.sh [--can-fail]" >&2; exit 2 ;;
 esac
-# the tree's root: host_bridge is charge-interposer/firmware/test/host_bridge
-ROOT="$(cd "$HERE/../../../.." && pwd)"
+# the tree's root
+ROOT="$(cd "$HERE/../../.." && pwd)"
 WT="$ROOT/scratch/charge-interposer-harness"
 # Another run's cleanup (below) removes host-bridge/ and its parent once
 # they are empty, and that can fall between this run's mkdir -p and its
@@ -91,14 +92,15 @@ case "${TWAI_FAKE:-own}" in
            "(shared/twai_port/test), with twai_fake.c and cpp/twai_fake.cpp" >&2
       exit 2
     fi
-    # The copy sits at host_bridge's own depth, test/host_bridge under a
-    # folder T in this run's W, with a copy of main/ beside test/, so a
-    # test's relative #include "../../main/main.cpp" (test_event_layout)
-    # reaches main.cpp as it does from host_bridge itself.
+    # The copy sits at host_bridge's own depth, fw_harness/host_bridge
+    # under a folder T in this run's W, with a copy of main/ at
+    # firmware/main beside fw_harness/, so a test's relative #include
+    # "../../firmware/main/main.cpp" (test_event_layout) reaches main.cpp
+    # as it does from host_bridge itself.
     T="$W/shared"
-    B="$T/test/host_bridge"
-    mkdir -p "$B" "$T/main" || exit 2
-    cp -R "$SRC/." "$T/main/" || exit 2
+    B="$T/fw_harness/host_bridge"
+    mkdir -p "$B" "$T/firmware/main" || exit 2
+    cp -R "$SRC/." "$T/firmware/main/" || exit 2
     cp -R "$HERE/." "$B/" || exit 2
     rm "$B/twai_fake.h" "$B/twai_fake.cpp" "$B/driver/twai.h"
     rmdir "$B/driver" 2>/dev/null || true
@@ -123,7 +125,7 @@ fail=0
 # (charge-interposer/capture_pins.py). l3_replay.cpp's own check compares the
 # body with the hash in the file's header, which a regenerated file carries
 # along with it; this one does not move with the file.
-if ! python3 "$HERE/../../../capture_pins.py" --file "$L3_STIMULUS"; then
+if ! python3 "$HERE/../../capture_pins.py" --file "$L3_STIMULUS"; then
   fail=1
 fi
 for t in "$B"/test_*.cpp; do

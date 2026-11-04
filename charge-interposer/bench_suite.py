@@ -1,8 +1,16 @@
 """The charge interposer's suites, for the shared chain runner.
 
-    PYTHONPATH=shared/bench py -3.14 -B -m vtrux_bench.run plan \\
+    PYTHONPATH=<shared/bench> py -3.14 -B -m vtrux_bench.run plan \\
         --suite charge-interposer/bench_suite.py:emulated --settings <json>
     ... run [--group G]... [--check GLOB]... [--resume RUN_DIR]
+
+<shared/bench> is the pinned one, `py -3.14 -B charge-interposer/shared_pin.py
+where shared/bench` (port step 2a: the harness takes shared code only as the
+tag charge-interposer/firmware/shared_pins.json pins, from its read-only
+checkout ../shared-<tag>/). Loading this file refuses a vtrux_bench imported
+from anywhere else (shared_pin.use_bench), so a run on another copy stops
+before it starts. -B matters: bytecode in the checkout changes its R7 digest,
+and the pin check then refuses it.
 
 Tester, 2026-10-18 (reviewer's item: the chain runner and the baseline).
 The checks as they stand at origin 7891a23 / src 36edf3e55552,
@@ -77,7 +85,11 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared", "bench"))
+import shared_pin  # noqa: E402
+# the pinned shared/bench, first on sys.path; a vtrux_bench from elsewhere
+# already imported (the runner's own, if PYTHONPATH named another copy) is
+# refused here
+SHARED_BENCH = shared_pin.use_bench()
 
 from vtrux_bench.run import (Check, Figure, Group, Image, KnownFail,  # noqa: E402
                              Result, Suite, Verdict)
@@ -151,13 +163,15 @@ HARNESS_PY_TESTS = [
     "build_lookup_offline_test.py", "paths_test.py", "diag_cadence_test.py",
     "bus_gs_usb_test.py", "canre_pin_test.py", "can_tools_pin_test.py",
     "twai_fake_option_test.py", "scratch_dir_test.py", "scratch_run_test.py",
+    "shared_pin_test.py", "hw_mechanics_test.py", "refusal_pairs_test.py",
 ]
 # The ones of those also run with --can-fail, as <name>-canfail. One list
 # for the harness suite and accept_adapter's catalogue, so they can't drift.
 HARNESS_PY_CANFAILS = [
     "canre_pin_test.py", "can_tools_pin_test.py", "bus_gs_usb_test.py",
     "paths_test.py", "twai_fake_option_test.py", "scratch_dir_test.py",
-    "scratch_run_test.py",
+    "scratch_run_test.py", "shared_pin_test.py", "hw_mechanics_test.py",
+    "refusal_pairs_test.py",
 ]
 MADHOUSE_PIO_PATH = "{madhouse_pio_dir}:/usr/local/bin:/usr/bin:/bin"
 
@@ -202,7 +216,16 @@ EMULATED_LOCAL = [
 ]
 # shared/bench's own tests (the decode identity, the chain runner), each run
 # plain and with --can-fail (reviewer, 2026-10-22: no suite ran them).
-SHARED_BENCH_TESTS = ["test_bench_lock.py", "test_decode.py", "test_run_core.py"]
+# From port step 2a they are the pinned shared/bench's (SHARED_BENCH), which
+# holds the acceptance runner's tests and scratch helpers too.
+SHARED_BENCH_TESTS = [
+    "test_accept_canfail.py", "test_accept_close.py", "test_accept_compile.py",
+    "test_accept_judge.py", "test_accept_list.py", "test_accept_record.py",
+    "test_accept_remote.py", "test_accept_run.py", "test_accept_setup.py",
+    "test_accept_suite_runs.py", "test_accept_trees.py", "test_bench_lock.py",
+    "test_decode.py", "test_run_core.py", "test_scratch.py",
+    "test_scratch_helper.py",
+]
 
 HARNESS_LOCAL = [
     # the bench host's own pinned canbench (madhouse has no clone and
@@ -349,7 +372,7 @@ def host_bridge_judge(run):
             out.append(Result(Verdict.ERROR, "l2." + c,
                               detail="case opened but never reported"))
     tests = sorted(os.path.basename(p)[:-4] for p in glob.glob(
-        os.path.join(run.ctx["interposer_code"], "firmware", "test",
+        os.path.join(run.ctx["interposer_code"], "fw_harness",
                      "host_bridge", "test_*.cpp")))
     for t in tests:
         if t == "test_l2_bridge":
@@ -654,13 +677,13 @@ def emulated(settings):
         Check(cid, ["-"], skip=RETIRED_2A) for cid in
         ("build-check", "manifest-test", "manifest-offline-test")])
     m_host = Group("m-host", host="madhouse", ship=b.ship, checks=[
-        b.mbash("host-bridge", ["bash", "firmware/test/host_bridge/run.sh"],
+        b.mbash("host-bridge", ["bash", "fw_harness/host_bridge/run.sh"],
                 cls="build", timeout_s=3600, judge=host_bridge_judge),
         b.mbash("host-unit", ["bash", "firmware/test/host_unit/run.sh"],
                 cls="build", timeout_s=1800),
-        b.mbash("host-diff", ["bash", "firmware/test/host_diff/diff_all.sh"],
+        b.mbash("host-diff", ["bash", "fw_harness/host_diff/diff_all.sh"],
                 cls="build", timeout_s=7200),
-        b.mpy("check-port", ["firmware/test/host_diff/check_port.py"]),
+        b.mpy("check-port", ["fw_harness/host_diff/check_port.py"]),
         b.mpy("regress-all", ["regress.py", "--all"], cls="build", timeout_s=7200),
     ] + [b.mpy(t[:-3].replace("_", "-"), [t], cls="build", timeout_s=3600)
          for t in LOGIC_PY_TESTS])
@@ -919,7 +942,8 @@ def harness(settings):
         for s in CAN_FAILS] + [b.lpy(cid, argv, timeout_s=3600)
                                 for cid, argv in HARNESS_LOCAL] + [
         b.lpy("sb.%s%s" % (t[:-3].replace("_", "-"), sfx),
-              ["{interposer_code}/../shared/bench/tests/%s" % t] + arg,
+              [os.path.join(SHARED_BENCH, "tests", t).replace(os.sep, "/")]
+              + arg,
               timeout_s=3600)
         for t in SHARED_BENCH_TESTS
         for sfx, arg in (("", []), ("-canfail", ["--can-fail"]))] + [

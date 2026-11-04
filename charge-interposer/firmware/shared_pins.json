@@ -3,5 +3,15 @@
     "tag": "2026.11.03",
     "commit": "f4e7578209f7c10b66cd6164b4c77ed74d7f693f",
     "digest": "4c04b286c35ddfe594edd0183dba61bb0efe53b2e0cbb8d12f62cd25854de2c9"
+  },
+  "shared/bench": {
+    "tag": "2026.11.03",
+    "commit": "f4e7578209f7c10b66cd6164b4c77ed74d7f693f",
+    "digest": "6dc03e26ca05d4a1310f07d3dec5f4262233d18d913ce4bf09b8d7d07d4b5e8c"
+  },
+  "shared/twai_port": {
+    "tag": "2026.11.03",
+    "commit": "f4e7578209f7c10b66cd6164b4c77ed74d7f693f",
+    "digest": "a638dc06a77c5d14f83efee9f7b037947b76889392065b392af1beb48ddcd4f2"
   }
 }

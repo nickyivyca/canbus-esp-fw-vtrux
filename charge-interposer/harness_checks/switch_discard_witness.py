@@ -38,7 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import paths                                           # noqa: E402
 import scratch_dir                                     # noqa: E402
 CODE = paths.code_dir()
-HB = os.path.join(CODE, "firmware", "test", "host_bridge")
+HB = os.path.join(CODE, "fw_harness", "host_bridge")
 SRC = os.path.join(CODE, "firmware", "main")
 WORK = None            # this run's scratch_dir folder, made by main()
 CASES = ("bridge-ok-switch-discard", "bridge-ok-switch-discard-diag-only")

@@ -30,7 +30,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 
 def main():
     args = sys.argv[1:]
-    core_dir = os.path.normpath(os.path.join(_HERE, "..", "..", ".."))
+    core_dir = os.path.normpath(os.path.join(_HERE, "..", ".."))
     if len(args) >= 2 and args[0] == "--core-dir":
         core_dir = args[1]
         args = args[2:]

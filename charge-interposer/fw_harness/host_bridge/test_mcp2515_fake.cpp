@@ -7,7 +7,7 @@
 // pointed at it.
 //
 // Build/run: ./run.sh, or by hand with
-//   g++ -std=c++11 -O2 -I . -I ../../src -o /tmp/t test_mcp2515_fake.cpp
+//   g++ -std=c++11 -O2 -I . -I ../../firmware/main -o t test_mcp2515_fake.cpp
 //       mcp2515_fake.cpp mcp2515_fake_chip.cpp
 
 #include <cstdio>

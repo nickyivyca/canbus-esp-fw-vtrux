@@ -23,7 +23,9 @@
 #   diff_one.sh <trace>        -> exit 0 identical, 1 differs, 2 cannot run
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
-FW="$HERE/../.."
+# the IDF project, charge-interposer/firmware (this is
+# charge-interposer/fw_harness/host_diff since port step 2a)
+FW="$HERE/../../firmware"
 
 if [ $# -ne 1 ]; then echo "usage: diff_one.sh <trace>" >&2; exit 2; fi
 TRACE="$1"

@@ -29,9 +29,9 @@
   - nothing under charge-interposer/ holds a machine-absolute path, no
     .py / .sh / .cpp / .h still climbs `..` out of the repo to SeaDrive's
     notes/, no .py / .sh / .cpp / .h other than paths.py and this file
-    still names VTRUX_DATA, no code but paths.py and
-    firmware/test/build_check.py names the diag DBC's file (every other
-    reader goes through diag_dbc()), and no .py puts the working folder
+    still names VTRUX_DATA, no code but paths.py names the diag DBC's file
+    (every other reader goes through diag_dbc(); build_check.py, which
+    also did, retired at port step 2a), and no .py puts the working folder
     ("." or os.getcwd()) on sys.path, which is how the reverse-it root's
     canre/ used to come in with the scripts run from it --
     all five scans proven able to fail on a planted line.
@@ -98,11 +98,11 @@ CLIMB_RE = re.compile(r"\.\.[\"'/\\, ]+\.\..*notes")
 # The retired variable, in fragments so the pattern is not a literal here.
 RETIRED_RE = re.compile("VTRUX" + "_DATA")
 RETIRED_OK = ("paths.py", "paths_test.py")
-# The diag DBC's file name in code. Only paths.py names it, and
-# build_check.py, which reads the same git copy from the tree it checks
-# (and this test, in its docstring).
+# The diag DBC's file name in code. Only paths.py names it (and this test,
+# in its docstring); build_check.py did too until it retired at port step
+# 2a.
 DIAG_RE = re.compile("vtrux-interposer-" + r"diag\.dbc")
-DIAG_OK = ("paths.py", "build_check.py", "paths_test.py")
+DIAG_OK = ("paths.py", "paths_test.py")
 # The working folder put on sys.path: "." or os.getcwd(), in code.
 CWD_RE = re.compile(r"sys\.path\.(insert|append)\([^)]*(['\"]\.['\"]|getcwd)")
 
@@ -485,7 +485,7 @@ def main():
                                 DIAG_RE, True)
                 if not h.startswith(os.path.basename(tmp))
                 and os.path.basename(h.split(":", 1)[0]) not in DIAG_OK]
-        check(not hits, "no code but paths.py and build_check.py names the "
+        check(not hits, "no code but paths.py names the "
               "diag DBC's file: every other reader uses diag_dbc() (%s)"
               % hits[:3])
         hits = [h for h in scan(HERE, (".py",), CWD_RE, True)

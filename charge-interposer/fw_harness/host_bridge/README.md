@@ -5,7 +5,7 @@ L2 covers that nothing else can: the diagnostics cadence and fields, the
 spec 2.2 counters and the 100 ms age-out, a charger segment with nothing
 acknowledging, bus-off, and the bridge-failed status frame.
 
-Run: `wsl bash ".../firmware/test/host_bridge/run.sh"` (plain `bash` on
+Run: `wsl bash ".../charge-interposer/fw_harness/host_bridge/run.sh"` (plain `bash` on
 Linux). Builds with `g++ -std=c++11`, globbing the sources rather than
 listing them — a hand-kept source list going stale is how the
 generator-inhibit session built against old headers three times.
@@ -16,16 +16,16 @@ an option of committed harness so the acceptance runner can re-run port step
 option: this folder's `twai_fake.h` / `.cpp` and `driver/twai.h`. `shared`:
 the shared fake (`shared/twai_port/test`, twai_port T10) in the folder
 `TWAI_FAKE_DIR` names, built as E built it -- a copy of this folder, at its
-own depth beside a copy of `main/` (so `test_event_layout`'s `#include
-"../../main/main.cpp"` still reaches it), without those three files (a quoted `#include` looks in the including file's folder
+own depth beside a copy of `main/` at `firmware/main` (so `test_event_layout`'s `#include
+"../../firmware/main/main.cpp"` still reaches it), without those three files (a quoted `#include` looks in the including file's folder
 first, so they would win over any `-I`), each test given the shared
 `twai_fake.c` and `cpp/twai_fake.cpp`, and `-I <fake>/include -I <fake>/host
 -I <fake>/cpp` after this folder and `main/`. It prints nothing extra, so the
 two transcripts compare line for line. Anything else, or `shared` without
 the fake's sources, is refused (exit 2) before anything builds. `run.sh
 --can-fail` runs the shared fake's can-fail,
-`../../../harness_checks/shared_fake_canfail.py`. Both are tested by
-`../../../twai_fake_option_test.py` (with `--can-fail`); the acceptance
+`../../harness_checks/shared_fake_canfail.py`. Both are tested by
+`../../twai_fake_option_test.py` (with `--can-fail`); the acceptance
 adapter's catalogue entry is `host-bridge-shared-fake`.
 
 **Where it works** (tester, 2026-11-02, the reviewer's order; AGENTS.md

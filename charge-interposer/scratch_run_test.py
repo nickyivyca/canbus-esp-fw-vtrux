@@ -90,12 +90,12 @@ WRITERS = {
     "harness_checks/rx_order_prefix_control.sh": ("rx-order-prefix-control", []),
     "harness_checks/tx_fail_banking_mutation.sh": ("tx-fail-banking-mutation", []),
     "firmware/test/host_unit/run.sh": ("host-unit", []),
-    "firmware/test/host_diff/diff_all.sh": ("host-diff", []),
-    "firmware/test/host_diff/diff_one.sh": ("host-diff-one", ["{trace}"]),
+    "fw_harness/host_diff/diff_all.sh": ("host-diff", []),
+    "fw_harness/host_diff/diff_one.sh": ("host-diff-one", ["{trace}"]),
     "stop_all.sh": ("stop-all", ["--self-test"]),
 }
 # the only .sh files that may call mktemp
-MKTEMP_OK = {"scratch_run.sh", "firmware/test/host_bridge/run.sh"}
+MKTEMP_OK = {"scratch_run.sh", "fw_harness/host_bridge/run.sh"}
 SKIP_DIRS = {"scratch", "__pycache__", ".pio", "build"}
 
 fails = []
@@ -138,9 +138,11 @@ def copy_code(src, dst):
                     ignore=ign)
     shutil.copytree(os.path.join(src, "firmware", "main"), os.path.join(dst, "firmware", "main"),
                     ignore=ign)
-    for sub in ("host_bridge", "host_unit", "host_diff"):
-        shutil.copytree(os.path.join(src, "firmware", "test", sub),
-                        os.path.join(dst, "firmware", "test", sub), ignore=ign)
+    shutil.copytree(os.path.join(src, "firmware", "test", "host_unit"),
+                    os.path.join(dst, "firmware", "test", "host_unit"), ignore=ign)
+    for sub in ("host_bridge", "host_diff"):
+        shutil.copytree(os.path.join(src, "fw_harness", sub),
+                        os.path.join(dst, "fw_harness", sub), ignore=ign)
 
 
 def tree(base, name="tree"):
@@ -679,9 +681,9 @@ MUTANTS = [
      'mkdir -p "$WORK"', None),
     ("host_unit's binaries in TMPDIR", "firmware/test/host_unit/run.sh",
      'bin="$SCRATCH_RUN/$name"', 'bin="${TMPDIR:-/tmp}/${name}_$$"', None),
-    ("diff_all's runner beside the script", "firmware/test/host_diff/diff_all.sh",
+    ("diff_all's runner beside the script", "fw_harness/host_diff/diff_all.sh",
      'BIN="$SCRATCH_RUN/hr"', 'BIN="$HERE/hr"', None),
-    ("diff_one's runner in TMPDIR", "firmware/test/host_diff/diff_one.sh",
+    ("diff_one's runner in TMPDIR", "fw_harness/host_diff/diff_one.sh",
      'BIN="$SCRATCH_RUN/hr_l1"', 'BIN="${TMPDIR:-/tmp}/hr_l1"', None),
     ("stop_all's mutants in TMPDIR", "stop_all.sh",
      '    tmp="$SCRATCH_RUN/mutant_$i.sh"',

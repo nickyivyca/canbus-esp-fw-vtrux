@@ -3773,7 +3773,7 @@ def check_flight_core(trace_path, keep=False):
     still with the user when the 1x run started, so its trace is kept to
     re-score that clause once ruled).
     """
-    script = (HERE / "firmware" / "test" / "host_diff" / "diff_one.sh")
+    script = (HERE / "fw_harness" / "host_diff" / "diff_one.sh")
     if not trace_path.exists():
         return (False, "interposer_sim wrote no trace -- the L1 replay did "
                        "not happen, which is not the same as passing")

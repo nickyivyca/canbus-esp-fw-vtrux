@@ -34,7 +34,8 @@ import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared", "bench"))
+import shared_pin                                         # noqa: E402
+shared_pin.use_bench()      # the pinned shared/bench (port step 2a)
 import scratch_dir                                        # noqa: E402
 
 _MOD = os.environ.get("BENCH_WICAN_MODULE")

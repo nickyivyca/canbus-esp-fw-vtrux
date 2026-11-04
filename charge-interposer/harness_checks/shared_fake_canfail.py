@@ -12,7 +12,7 @@ can-fail as committed harness, run by the acceptance runner as
 host_bridge's own can-fail mode:
 
     TWAI_FAKE=shared TWAI_FAKE_DIR=<shared/twai_port/test> \\
-        bash charge-interposer/firmware/test/host_bridge/run.sh --can-fail
+        bash charge-interposer/fw_harness/host_bridge/run.sh --can-fail
 
 It runs host_bridge (run.sh, with g++: madhouse) on our own fake, then on
 copies of the shared fake in a scratch_dir run folder:
@@ -45,7 +45,7 @@ CODE = os.path.dirname(HERE)
 if CODE not in sys.path:
     sys.path.insert(0, CODE)
 
-RUN_SH = os.path.join(CODE, "firmware", "test", "host_bridge", "run.sh")
+RUN_SH = os.path.join(CODE, "fw_harness", "host_bridge", "run.sh")
 NAMES = ("recovery ends running", "recovery keeps the TX queue",
          "full RX queue not counted")
 FAKE_FILE = "twai_fake.c"

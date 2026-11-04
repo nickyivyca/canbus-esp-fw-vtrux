@@ -26,7 +26,7 @@ if [ -n "${INTERPOSER_CODE:-}" ] && \
 fi
 : "${REVERSE_IT_DIR:?REVERSE_IT_DIR is not set -- the SeaDrive reverse-it root}"
 FW="$(cd "$CODE/firmware" && pwd)"
-HD="$FW/test/host_diff"
+HD="$(cd "$CODE/fw_harness/host_diff" && pwd)"
 FIX="$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/interposer-firmware"
 # The work folder is this run's own under the tree's scratch/, never the
 # system temp folder, removed when the script exits (scratch_run.sh).

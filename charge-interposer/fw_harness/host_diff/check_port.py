@@ -22,7 +22,7 @@ Compares three things:
 each fail.
 
 Usage (from the repo root):
-    py -3.12 projects/vtrux/tools/interposer/firmware/test/host_diff/check_port.py
+    py -3.14 charge-interposer/fw_harness/host_diff/check_port.py
 """
 
 import os
@@ -30,8 +30,9 @@ import re
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_FW_SRC = os.path.normpath(os.path.join(_HERE, "..", "..", "main"))
-_INTERPOSER = os.path.normpath(os.path.join(_HERE, "..", "..", ".."))
+_FW_SRC = os.path.normpath(os.path.join(_HERE, "..", "..", "firmware",
+                                        "main"))
+_INTERPOSER = os.path.normpath(os.path.join(_HERE, "..", ".."))
 sys.path.insert(0, _INTERPOSER)
 
 import machine as M          # noqa: E402
