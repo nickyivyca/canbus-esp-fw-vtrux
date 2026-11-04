@@ -22,8 +22,11 @@ taken by anything but the checkout's own module gives another value.
      same files is refused.
   4. use_bench(), each in a fresh interpreter: vtrux_bench loads from the
      checked folder, first on sys.path, once; a vtrux_bench imported earlier
-     from elsewhere is refused; a failing pin is refused before sys.path
-     changes.
+     is kept if it is the shared/bench of a pinned checkout anywhere, with no
+     checkout beside the worktree (the acceptance runner's core, 2026-11-04),
+     and refused from elsewhere, from a checkout at another commit, or from
+     another folder of a pinned checkout; a failing pin is refused before
+     sys.path changes.
   5. entry(): gives the values folder() then accepts; a checkout whose HEAD
      is not the tag is refused.
   6. main(): check/where exit 0 on the pin, 1 refused, 2 on a bad call.
@@ -279,6 +282,41 @@ def checks():
         check("4 a vtrux_bench imported from elsewhere is refused",
               r.stdout.startswith("REFUSED") and "already imported" in r.stdout,
               r.stdout + r.stderr[-400:])
+        # the acceptance runner's case: its core, imported first, is the
+        # shared/bench of a pinned checkout that is not beside the worktree
+        # (here the sibling is moved away for the run)
+        far = os.path.join(base, "far", "co")
+        git(fx["src"], "worktree", "add", "-q", "--detach", far, "T1")
+        far_bench = os.path.join(far, "shared", "bench")
+        os.rename(co1, co1 + ".away")
+        try:
+            r = child(fx, "sys.path.insert(0, %r); import vtrux_bench\n"
+                          "d = P.use_bench()\n"
+                          "print(vtrux_bench.MARK, P._same(d, %r), sys.path.count(d))\n"
+                          % (far_bench, far_bench))
+        finally:
+            os.rename(co1 + ".away", co1)
+        check("4 a vtrux_bench imported from a pinned checkout elsewhere is kept, with no "
+              "checkout beside the worktree", r.returncode == 0 and
+              r.stdout.split() == ["T1", "True", "1"], r.stdout + r.stderr[-400:])
+        git(far, "checkout", "-q", "--detach", "T2")
+        r = child(fx, "sys.path.insert(0, %r); import vtrux_bench\n"
+                      "try:\n    P.use_bench()\n    print('NOT REFUSED')\n"
+                      "except P.SharedPinError as e:\n    print('REFUSED', e)\n" % far_bench)
+        check("4 one imported from a checkout at another commit is refused",
+              r.stdout.startswith("REFUSED") and "already imported" in r.stdout,
+              r.stdout + r.stderr[-400:])
+        git(far, "checkout", "-q", "--detach", "T1")
+        # inside a pinned checkout but not its shared/bench: the checks pass
+        # on the checkout, and the folder is still not the pinned one
+        stray = os.path.join(far, "x", "y")
+        write(stray, {"vtrux_bench/__init__.py": "MARK = 'stray'\n"})
+        r = child(fx, "sys.path.insert(0, %r); import vtrux_bench\n"
+                      "try:\n    P.use_bench()\n    print('NOT REFUSED')\n"
+                      "except P.SharedPinError as e:\n    print('REFUSED', e)\n" % stray)
+        check("4 one imported from another folder of a pinned checkout is refused",
+              r.stdout.startswith("REFUSED") and "already imported" in r.stdout,
+              r.stdout + r.stderr[-400:])
         set_pins(fx, {"shared/bench": dict(good["shared/bench"], digest="1" * 64)})
         r = child(fx, "before = list(sys.path)\n"
                       "try:\n    P.use_bench()\n    print('NOT REFUSED')\n"
@@ -352,9 +390,13 @@ MUTANTS = [
     ("a short commit accepted", '_COMMIT = re.compile(r"^[0-9a-f]{40}$")',
      '_COMMIT = re.compile(r"^[0-9a-f]{7,40}$")'),
     ("any component accepted", "    if name not in OURS:", "    if False:"),
-    ("an earlier vtrux_bench from elsewhere kept",
-     "        if not getattr(mod, \"__file__\", None) or not _same(where, d):",
-     "        if False:"),
+    ("an earlier vtrux_bench from another folder kept",
+     "        if not _same(where, d):", "        if False:"),
+    ("an earlier vtrux_bench kept unchecked",
+     '            d = _checked(checkout, "shared/bench", pin)\n',
+     "            d = where\n"),
+    ("an earlier pinned vtrux_bench made to need the sibling",
+     "    if mod is None:\n        d = folder(", "    if True:\n        d = folder("),
     ("the folder appended, not first", "        sys.path.insert(0, d)", "        sys.path.append(d)"),
     ("the folder added every call",
      "    if not any(_same(p, d) for p in sys.path if p):\n        sys.path.insert(0, d)",

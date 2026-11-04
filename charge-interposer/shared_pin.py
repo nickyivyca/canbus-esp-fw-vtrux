@@ -40,8 +40,11 @@ pinned one or the harness refuses it, as the build tooling's pin does
   4. the component's folder in it has the pin's R7 digest, computed by that
      checkout's own shared/tools (vtrux_build.digest, loaded by file, with
      no bytecode written into the checkout).
-use_bench() then puts the checked shared/bench on sys.path, and refuses a
-vtrux_bench imported earlier from anywhere else.
+use_bench() then puts the checked shared/bench on sys.path. A vtrux_bench
+imported earlier is kept only if its own checkout passes checks 3 and 4
+against the pin, wherever it is (the acceptance runner's core, started from
+the pinned checkout, loads the harness from a checkout of the list's commit
+with no shared-<tag>/ beside it; 2026-11-04); else it is refused.
 """
 import importlib.util
 import json
@@ -164,6 +167,12 @@ def folder(name, path=None, start=None):
         raise SharedPinError("the pinned checkout %s does not exist. Create it, "
                              "read-only and detached at the pin's tag, with:\n"
                              "    %s" % (checkout, create_command(top, tag)))
+    return _checked(checkout, name, pin)
+
+
+def _checked(checkout, name, pin):
+    """The component folder in checkout, after checks 3 and 4 against pin."""
+    tag = pin["tag"]
     rc, head = _git(checkout, "rev-parse", "--verify", "HEAD")
     if rc != 0 or head != pin["commit"]:
         raise SharedPinError("the checkout %s is at %s, and the %r pin says %s"
@@ -193,16 +202,32 @@ def _same(a, b):
 
 
 def use_bench(path=None, start=None):
-    """Put the checked shared/bench on sys.path, first; refuse a vtrux_bench
-    already imported from anywhere else. Returns the folder."""
-    d = folder("shared/bench", path, start)
+    """Put the checked shared/bench on sys.path, first. Returns the folder.
+
+    A vtrux_bench imported earlier is kept only if it is the shared/bench of
+    a checkout that passes checks 3 and 4 against the pin, wherever that
+    checkout is: the acceptance runner's own core, started from the pinned
+    checkout, loads this harness from a checkout of the list's commit with
+    no shared-<tag>/ beside it (2026-11-04). Anything else imported earlier
+    is refused."""
     mod = sys.modules.get("vtrux_bench")
-    if mod is not None:
-        where = os.path.dirname(os.path.dirname(os.path.abspath(
-            getattr(mod, "__file__", None) or "")))
-        if not getattr(mod, "__file__", None) or not _same(where, d):
+    if mod is None:
+        d = folder("shared/bench", path, start)
+    else:
+        f = getattr(mod, "__file__", None)
+        if not f:
+            raise SharedPinError("vtrux_bench is already imported, from no file")
+        where = os.path.dirname(os.path.dirname(os.path.abspath(f)))
+        checkout = os.path.dirname(os.path.dirname(where))
+        pin = read("shared/bench", path)
+        try:
+            d = _checked(checkout, "shared/bench", pin)
+        except SharedPinError as e:
+            raise SharedPinError("vtrux_bench is already imported from %s, which is not "
+                                 "the pinned shared/bench: %s" % (where, e))
+        if not _same(where, d):
             raise SharedPinError("vtrux_bench is already imported from %s, not "
-                                 "from the pinned %s" % (where or "(no file)", d))
+                                 "from the pinned %s" % (where, d))
     if not any(_same(p, d) for p in sys.path if p):
         sys.path.insert(0, d)
     return d
