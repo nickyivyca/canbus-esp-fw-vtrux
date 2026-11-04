@@ -12,7 +12,8 @@ It was merged at gen-inhibit's port step 1b from gen-inhibit's
 `charge-interposer/firmware/test/host_bridge/twai_fake.cpp` (with its S3
 calibration and recovery, `charge-interposer/main` `5426202`), and checked
 against ESP-IDF v5.4.1's `components/driver/twai/twai.c`. Wherever the two
-fakes disagreed with each other or with the source, the source decides.
+fakes disagreed with each other or with the source, the source decides. It
+follows v5.4.2 since gen-inhibit's port step 1d ("ESP-IDF v5.4.2" below).
 
     make -C shared/twai_port/test run        # the fake's tests, and the port on it (C3 and S3)
     make -C shared/twai_port/test t12-standins  # the T12 cases fail on each broken restart stop
@@ -40,7 +41,7 @@ builds run under ASan and UBSan.
 | `cpp/twai_fake.h`, `cpp/twai_fake.cpp` | the interposer's C++ interface to the fake: `namespace twaifake`, `TwaiFake`, `fake()`, as its host_bridge tests call them, each member a call into the model. Its clock adapter is the interposer's `hostclock::micros()` |
 | `cpp/test_cpp_wrapper.cpp` | the interface's own tests, for the members that do more than pass their arguments on (`setBusOffAfterSent`); `cpp/README.md` |
 | `test_twai_fake.c` | the fake's own tests: 29 cases, each a driver or register behaviour from the source, or one of the assumptions the table names |
-| `mutate.py` | 53 mutants of `twai_fake.c`, one behaviour each; the run passes only if the unmutated build passes and every mutant fails |
+| `mutate.py` | 54 mutants of `twai_fake.c`, one behaviour each; the run passes only if the unmutated build passes and every mutant fails |
 | `test_mutate.py` | `mutate.py`'s removal of its scratch folder, with the builds stood in for (no compiler): removed after a pass, a fail and an exception, read-only files and paths past 260 characters included; a folder it cannot remove printed with the reason; an existing `--out` refused and left as it was; with no `--out`, a new `<time>_<pid>` folder, which a killed run's folder does not stop. `--mutants` breaks these twelve ways, each of which it must fail by a check (three only fail on Windows) |
 | `test_port_on_fake.c`, `host_platform.c` | the real `twai_port.c`, compiled as shipped, on the fake: built with the C3's register file on the fake's C3 and with the unsupported one on its S3, 14 cases from T2 to T9 each, one process per case. For T12, the restart stop, 11 more on the C3: an idle bus (reset mode at once, the report filled, nothing logged, and nothing takes it out of reset mode until the next install), a frame on the wire and one being received let finish, polled every 2 us, a reception and a transmission outlasting 1 ms (the wait runs out at 1 ms, reset mode anyway, the frame cut), a frame awaiting arbitration aborted, the clock off and the reset held (touches nothing, the report 0 but those bits), the driver running with the port never set up, bus-off (already in reset mode), and a NULL report; and 1 on the S3 (not supported, touching nothing). `host_platform.c` is the board, tick and log calls the port makes |
 | `t12_standin.c` | the T12 cases' can-fail: the tester's own restart stop, written from T12 and the fake's register calls. Built with `-DT12_STANDIN`, the T12 cases call it in place of the port's. As written it passes them all; `T12_BROKEN` breaks one rule (9 ways: no wait, no bound, no reset on timeout, no abort, the clock or the reset ignored, 10 us steps, the status or the error counters not reported), and `t12-standins` passes only if each is caught by a check (exit 1 with a FAIL line), never by a sanitizer |
@@ -95,6 +96,33 @@ removed and `run.sh` given the sources and include path above): the same
 transcript, line for line, as on its own fake, its two recorded KNOWN FAILs
 included. That is a self-check; the interposer's tester runs the suite that
 counts.
+
+## ESP-IDF v5.4.2
+
+Re-read for gen-inhibit's port step 1d (gen-inhibit tester, 2026-11-03),
+v5.4.1 against v5.4.2. Byte-identical in v5.4.2: every header `include/`
+copies from (`driver/twai.h`, `hal/twai_types.h`, the C3's and the S3's
+`hal/twai_ll.h`, the C3's `soc/soc.h`, `soc/reg_base.h` and
+`soc/system_reg.h`), `esp_rom_sys.h`, `twai_hal.c`, `twai_hal_iram.c` (the
+interrupt decode, bus-off included), both chips' `soc_caps.h` and
+`Kconfig.twai`. Two changes:
+
+- **`twai.c`'s TX buffer handler loads no next frame while bus-off**
+  (v5.4.2 `twai.c:194-197`): it raises `TX_IDLE`, and the queued frames
+  stay, counted in `msgs_to_tx`, until recovery or uninstall discards them.
+  The decode sets the bus-off flag before the handler runs, so this is the
+  path of a buffer-free event in the bus-off interrupt, the fake's branch a
+  (`twai_fake_set_busoff_inflight_fails()`), which under v5.4.1 loaded the
+  next frame into the buffer. The fake follows v5.4.2: `complete_buf()`
+  raises `TX_IDLE` in bus-off. The case "bus-off branch a, a frame queued"
+  and mutant "bus-off loads the next frame (v5.4.1)" cover it.
+- **`twai_hal_start_bus_recovery()` clears the TX-buffer-occupied flag**
+  (`hal/twai_hal.h`). The fake keeps no such flag apart from its buffer,
+  which recovery already discards, so nothing changes.
+
+The default branch, where the frame in the buffer at bus-off stays counted
+with no report and recovery discards it, is unchanged. Line numbers cited as
+`twai.c:N` are v5.4.1's; from line 196 on, v5.4.2's are N + 2.
 
 ## The C3 and the S3
 
