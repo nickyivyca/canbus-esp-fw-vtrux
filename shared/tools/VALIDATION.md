@@ -367,6 +367,12 @@ same folder. The interposer's test evidence is
   the gen-inhibit tester's question, a wording fix): the check refuses an
   empty `IDF_PATH` as it does an empty `IDF_TOOLS_PATH`; "set" alone read
   narrower in the text than the check.
+- **`IDF_TOOLS_PATH` with no spaces around it** (user, 2026-11-04, in the
+  gen-inhibit reviewer's session). Exposed by: the charge-interposer
+  reviewer's reading of `idfenv.py`, 2026-11-04: the check stripped the
+  value to test it for blank but compared the unstripped value, and ESP-IDF
+  gets it unstripped. The implementor's `308d7f65` refused it ahead of the
+  text; the gen-inhibit tester asked for the text. The ruling writes it in.
 - **Status:** complete. Not covered here: an `IDF_PATH` of one version with
   the other's tools. R33 covers that, as far as it reaches (see R33).
 
@@ -774,10 +780,29 @@ same folder. The interposer's test evidence is
   is left unguarded (R14): its image records the ESP-IDF it was built on,
   and its evidence is of that image's code hash (R3), which a release
   build on the other IDF does not share.
-- **Status:** basis pending: that R8 refuses a release build under another
-  IDF with the committed lock is the gen-inhibit reviewer's reading of
-  `release.py`, not yet shown. The tester's release case under the other
-  install, with the lock, shows it.
+- **The R8 refusal, shown** by the gen-inhibit tester's run
+  `step1d_r33r8_4794368` (shared/tools `VERIFICATION.md`, "R33 with R8, and
+  the minimal project's board", `shared/tools/env-cases-1d` `325b450`, on
+  `308d7f65`): a release build under v5.4.1 of a project committed with
+  v5.4.2's lock was refused after the reconfigure, naming
+  `dependencies.lock`, with no record.
+- **Exposed by:** the same run's can-fail, `r33_release_other_own`: with
+  every tracked file as v5.4.1 writes it, the lock's `idf` 5.4.1 included,
+  nothing is rewritten and the release build under v5.4.1 is recorded with
+  IDF v5.4.1 while the manifest names `==5.4.2`.
+- **The IDF version check, ruled** (user, 2026-11-04, in the gen-inhibit
+  reviewer's session): a release build is also refused unless the IDF it
+  runs under is the manifest's version. Release builds only, as the ruling
+  above; bench and dev builds stay unguarded. The match is exact (user,
+  2026-11-04, on the charge-interposer reviewer's note): `v` and the
+  manifest's version, with no suffix, so a modified IDF tree (`-dirty`) or
+  one past its tag is refused, as R8 wants a clean project worktree; both
+  installs on NICKY-XPS describe as `v5.4.1` and `v5.4.2`. Where it is read
+  (gen-inhibit reviewer, a wording fix on the same note): after the
+  reconfigure, from `project_description.json`'s `git_revision`, the value
+  the record names, so the check and the record cannot disagree and no
+  reading of IDF's version rule is copied into the tooling.
+- **Status:** complete.
 
 ## 6. Running the tooling
 
