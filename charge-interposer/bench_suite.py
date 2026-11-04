@@ -163,15 +163,14 @@ HARNESS_PY_TESTS = [
     "build_lookup_offline_test.py", "paths_test.py", "diag_cadence_test.py",
     "bus_gs_usb_test.py", "canre_pin_test.py", "can_tools_pin_test.py",
     "twai_fake_option_test.py", "scratch_dir_test.py", "scratch_run_test.py",
-    "shared_pin_test.py", "hw_mechanics_test.py", "refusal_pairs_test.py",
+    "hw_mechanics_test.py",
 ]
 # The ones of those also run with --can-fail, as <name>-canfail. One list
 # for the harness suite and accept_adapter's catalogue, so they can't drift.
 HARNESS_PY_CANFAILS = [
     "canre_pin_test.py", "can_tools_pin_test.py", "bus_gs_usb_test.py",
     "paths_test.py", "twai_fake_option_test.py", "scratch_dir_test.py",
-    "scratch_run_test.py", "shared_pin_test.py", "hw_mechanics_test.py",
-    "refusal_pairs_test.py",
+    "scratch_run_test.py", "hw_mechanics_test.py",
 ]
 MADHOUSE_PIO_PATH = "{madhouse_pio_dir}:/usr/local/bin:/usr/bin:/bin"
 
@@ -232,6 +231,15 @@ HARNESS_LOCAL = [
     # opens no dongle): refuses if CAN_TOOLS_DIR is unset or the pin is
     # not installed and checked
     ("can-tools-pin-check", ["{interposer_code}/can_tools_pin.py", "check"]),
+    # these read the pinned checkouts ../shared-<tag>/ beside the git
+    # worktree (shared_pin, vtrux_tools.tools_dir), which madhouse's
+    # shipped copy, with no git, doesn't have (harness run
+    # charge-interposer-harness_20261103T175908_7d3c: all three refused there)
+    ("shared-pin-test", ["{interposer_code}/shared_pin_test.py"]),
+    ("shared-pin-test-canfail", ["{interposer_code}/shared_pin_test.py", "--can-fail"]),
+    ("refusal-pairs-test", ["{interposer_code}/refusal_pairs_test.py"]),
+    ("refusal-pairs-test-canfail",
+     ["{interposer_code}/refusal_pairs_test.py", "--can-fail"]),
     ("board-reset-test", ["{interposer_code}/board_reset_test.py"]),
     ("bench-suite-test", ["{interposer_code}/bench_suite_test.py"]),
     ("bench-suite-test-canfail",
