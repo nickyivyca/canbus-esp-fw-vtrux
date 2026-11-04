@@ -19,6 +19,12 @@ file that tests it. So:
     set-first   the same file with `set(GI_PLANTED_OPTION OFF)` before the test;
                 configured with the same -D           -> the scan PASSES
 
+CHECK-ENV FIRST (port step 1d, 2026-11-03: every gen-inhibit build passes shared/tools
+R32's check, user ruling; through the launcher, gen-inhibit reviewer). Before the
+baseline, `gen-inhibit/vtrux_tools.py check-env` runs in the throwaway worktree, the
+commit's own launcher and so the tooling that commit pins, with this Python and
+environment. If it exits non-zero, nothing is configured and the verdict is REFUSED.
+
 Each configure is also shown to be what the step claims, by an observation
 independent of the scan: the planted file prints a line when its test is true,
 so the planted step must print it (the -D reaches the test: it is a build
@@ -93,6 +99,36 @@ def git(args, cwd):
     return subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True)
 
 
+def launcher_cmd(wt):
+    """shared/tools R32's check-env through the commit's own launcher, gen-inhibit/vtrux_tools.py
+    in the throwaway worktree wt, which runs the tooling that commit pins (port step 1d; the
+    form part B's launcher takes, b2f6fdcf, run there in a v5.4.2 shell under the IDF's
+    Python, 2026-11-04). Run by this Python, as the configure is."""
+    return [sys.executable, "-B", os.path.join(wt, "gen-inhibit", "vtrux_tools.py"), "check-env"]
+
+
+def check_env(wt, log):
+    """(rc, output) of check-env, appended to the log. A launcher that cannot be started is rc -1."""
+    cmd = launcher_cmd(wt)
+    try:
+        r = subprocess.run(cmd, cwd=wt, capture_output=True, text=True)
+        rc, out = r.returncode, r.stdout + r.stderr
+    except OSError as e:
+        rc, out = -1, "%s: %s" % (type(e).__name__, e)
+    with open(log, "a", encoding="utf-8") as fh:
+        fh.write("\n===== check-env (rc %d)\n" % rc)
+        fh.write(out[-30000:])
+    return rc, out
+
+
+def verdict(record):
+    """REFUSED unless check-env passed; then PASS only if all three steps are ok."""
+    if not (record.get("check_env") or {}).get("ok"):
+        return "REFUSED"
+    steps = record["steps"]
+    return "PASS" if len(steps) == 3 and all(s["ok"] for s in steps) else "FAIL"
+
+
 def configure(tree, log, defines=()):
     cmd = [sys.executable, os.path.join(os.environ["IDF_PATH"], "tools", "idf.py")]
     cmd += ["-D%s" % d for d in defines] + ["build"]
@@ -150,46 +186,9 @@ def main():
               "steps": [],
               "started": time.strftime("%Y-%m-%dT%H:%M:%S")}
     try:
-        # baseline
-        rc, out = configure(tree, log)
-        scanned, found, unlisted, stale, bad, err = scan_tree(tree)
-        base = {"step": "baseline", "rc": rc, "record": scanned, "error": err,
-                "unlisted": unlisted, "stale": stale, "malformed": bad,
-                "ok": rc == 0 and err is None}
-        record["steps"].append(base)
-        print("  %-4s %-10s rc %d, %s" % ("ok" if base["ok"] else "FAIL", "baseline", rc,
-                                          err or "scanned %s; unlisted %r, stale %r, malformed %r"
-                                          % (scanned, unlisted, stale, bad)), flush=True)
-
-        # planted
-        os.makedirs(os.path.join(tree, "cmake"), exist_ok=True)
-        with open(os.path.join(tree, PLANTED), "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(PLANTED_TEXT)
-        with open(os.path.join(tree, "CMakeLists.txt"), "a", encoding="utf-8", newline="\n") as fh:
-            fh.write("\n" + INCLUDE)
-        time.sleep(1.1)
-        rc, out = configure(tree, log, ["%s=ON" % NAME])
-        scanned, found, unlisted, stale, bad, err = scan_tree(tree)
-        ok, detail = judge_planted(rc, out, scanned, found, unlisted)
-        record["steps"].append({"step": "planted", "rc": rc, "record": scanned, "error": err,
-                                "said_on": SAYS_ON in out, "where": (found or {}).get(NAME),
-                                "unlisted": unlisted, "ok": ok, "detail": detail})
-        print("  %-4s %-10s %s" % ("ok" if ok else "FAIL", "planted", detail), flush=True)
-
-        # set-first
-        with open(os.path.join(tree, PLANTED), "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(SET_FIRST_TEXT)
-        time.sleep(1.1)
-        rc, out = configure(tree, log, ["%s=ON" % NAME])
-        scanned, found, unlisted, stale, bad, err = scan_tree(tree)
-        ok2, detail2 = judge_set_first(rc, out, scanned, found, unlisted, stale, bad)
-        record["steps"].append({"step": "set-first", "rc": rc, "record": scanned, "error": err,
-                                "said_on": SAYS_ON in out, "unlisted": unlisted, "stale": stale,
-                                "malformed": bad, "ok": ok2, "detail": detail2})
-        print("  %-4s %-10s %s" % ("ok" if ok2 else "FAIL", "set-first", detail2), flush=True)
+        steps(tree, wt, log, record)
     finally:
-        steps = record["steps"]
-        record["verdict"] = ("PASS" if len(steps) == 3 and all(s["ok"] for s in steps) else "FAIL")
+        record["verdict"] = verdict(record)
         record["finished"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         if not a.keep:
             git(["worktree", "remove", "--force", wt], repo)
@@ -198,6 +197,55 @@ def main():
             json.dump(record, fh, indent=1)
     print("%s  (%s)" % (record["verdict"], a.out))
     return 0 if record["verdict"] == "PASS" else 1
+
+
+def steps(tree, wt, log, record):
+    """check-env (port step 1d: every gen-inhibit build passes it first), then the three
+    steps, each added to record. A refused check-env stops it before any configure."""
+    rc, out = check_env(wt, log)
+    record["check_env"] = {"rc": rc, "ok": rc == 0}
+    print("  %-4s %-10s rc %d%s" % ("ok" if rc == 0 else "FAIL", "check-env", rc,
+                                    "" if rc == 0 else ": refused, nothing configured"), flush=True)
+    if rc != 0:
+        return
+
+    # baseline
+    rc, out = configure(tree, log)
+    scanned, found, unlisted, stale, bad, err = scan_tree(tree)
+    base = {"step": "baseline", "rc": rc, "record": scanned, "error": err,
+            "unlisted": unlisted, "stale": stale, "malformed": bad,
+            "ok": rc == 0 and err is None}
+    record["steps"].append(base)
+    print("  %-4s %-10s rc %d, %s" % ("ok" if base["ok"] else "FAIL", "baseline", rc,
+                                      err or "scanned %s; unlisted %r, stale %r, malformed %r"
+                                      % (scanned, unlisted, stale, bad)), flush=True)
+
+    # planted
+    os.makedirs(os.path.join(tree, "cmake"), exist_ok=True)
+    with open(os.path.join(tree, PLANTED), "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(PLANTED_TEXT)
+    with open(os.path.join(tree, "CMakeLists.txt"), "a", encoding="utf-8", newline="\n") as fh:
+        fh.write("\n" + INCLUDE)
+    time.sleep(1.1)
+    rc, out = configure(tree, log, ["%s=ON" % NAME])
+    scanned, found, unlisted, stale, bad, err = scan_tree(tree)
+    ok, detail = judge_planted(rc, out, scanned, found, unlisted)
+    record["steps"].append({"step": "planted", "rc": rc, "record": scanned, "error": err,
+                            "said_on": SAYS_ON in out, "where": (found or {}).get(NAME),
+                            "unlisted": unlisted, "ok": ok, "detail": detail})
+    print("  %-4s %-10s %s" % ("ok" if ok else "FAIL", "planted", detail), flush=True)
+
+    # set-first
+    with open(os.path.join(tree, PLANTED), "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(SET_FIRST_TEXT)
+    time.sleep(1.1)
+    rc, out = configure(tree, log, ["%s=ON" % NAME])
+    scanned, found, unlisted, stale, bad, err = scan_tree(tree)
+    ok2, detail2 = judge_set_first(rc, out, scanned, found, unlisted, stale, bad)
+    record["steps"].append({"step": "set-first", "rc": rc, "record": scanned, "error": err,
+                            "said_on": SAYS_ON in out, "unlisted": unlisted, "stale": stale,
+                            "malformed": bad, "ok": ok2, "detail": detail2})
+    print("  %-4s %-10s %s" % ("ok" if ok2 else "FAIL", "set-first", detail2), flush=True)
 
 
 if __name__ == "__main__":
