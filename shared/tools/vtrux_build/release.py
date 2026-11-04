@@ -18,13 +18,13 @@ In order, each refusal an exit, never a warning:
      tag is refused;
      R33: main/idf_component.yml under the project root names the ESP-IDF
      version as one exact version (5.4.2 or ==5.4.2); a range, or no
-     version, is refused. Under another IDF a lockless configure then
-     fails; with the committed lock the configure rewrites it, and step 5's
-     R8 clean check refuses the build;
+     version, is refused. The ESP-IDF the build is on is checked against
+     it after the reconfigure (step 5);
   2. REVERSE_IT_DIR is set and has a firmware/ folder (R13: the build stops
      if it is unset, before anything is built);
   3. R32: the environment is exported for one ESP-IDF install (idfenv.py):
-     IDF_PATH set, IDF_TOOLS_PATH set and not empty, IDF_PYTHON_ENV_PATH
+     IDF_PATH set and not empty, IDF_TOOLS_PATH set, not empty and with
+     no spaces around it, IDF_PYTHON_ENV_PATH
      and ESP_ROM_ELF_DIR set and inside it; nothing defaulted;
      R10: the Component Manager's
      overwrite setting (IDF_COMPONENT_OVERWRITE_MANAGED_COMPONENTS) is not
@@ -43,6 +43,14 @@ In order, each refusal an exit, never a warning:
      configure on a component whose files no longer match its recorded
      hash. --no-ccache wins over IDF_CCACHE_ENABLE, which the IDF export
      sets wherever ccache is installed (and R24 drops);
+     R33: the ESP-IDF version the configure reports,
+     build/project_description.json's git_revision (the value the record
+     names, R13), is exactly "v" and step 1's version (v5.4.2): a suffix
+     (-dirty, -N-g<hash>), a bare hash, another version, or none, is
+     refused. It runs before R8's checks below, so that under another IDF,
+     whose configure rewrites the committed lock, the refusal names both
+     versions; R8 still sees the rewritten lock. A lock solved under the
+     other IDF and committed is not rewritten, and only this check sees it;
      R9: build/CMakeCache.txt has CCACHE_ENABLE, and off; and, by its
      effect, every compile command CMake wrote into build.ninja starts
      with the compiler CMake chose for its language, not a launcher.
@@ -475,6 +483,34 @@ def check_idf_version(root):
     return version
 
 
+def check_configured_idf(build_dir, version):
+    """R33, after the reconfigure: the ESP-IDF version the configure
+    reports, build/project_description.json's git_revision (the value the
+    record names, R13), is exactly "v" and the manifest's version. A suffix
+    (-dirty, commits past the tag), a bare commit hash, another version, and
+    a missing or empty value are refused."""
+    wanted = "v" + version
+    try:
+        got = BuildDir(build_dir).description().get("git_revision")
+    except BuildDirError as e:
+        raise Refused("after the reconfigure, the ESP-IDF version the "
+                      "configure reports cannot be read: %s (R33)" % e)
+    if not isinstance(got, str) or not got:
+        raise Refused("after the reconfigure, build/project_description.json "
+                      "has no git_revision string (it has %r), so nothing "
+                      "shows which ESP-IDF version this build is on; "
+                      "main/idf_component.yml names %s, and a release build "
+                      "is built on exactly %s (R33)" % (got, version, wanted))
+    if got != wanted:
+        raise Refused("after the reconfigure, the configure reports ESP-IDF "
+                      "%r (build/project_description.json's git_revision), "
+                      "and main/idf_component.yml names %s: a release build "
+                      "is built on exactly %s, with no suffix (R33). Export "
+                      "the shell for that ESP-IDF, at its tag, with no "
+                      "changes" % (got, version, wanted))
+    ok("configured IDF version (R33)", "after the reconfigure, %s" % got)
+
+
 def build_manifests(bd):
     """{component dir: parsed idf_component.yml} for every component the
     build used that has one."""
@@ -594,7 +630,7 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
         raise Refused(str(e))
     ok("tooling pin (R23, R16)", "%s at %s, digest %s"
        % (tooling["tag"], tooling["commit"][:12], tooling["digest"][:12]))
-    check_idf_version(root)
+    idf_version = check_idf_version(root)
 
     try:
         out_dir = dest or record.builds_dir(proj.name)
@@ -637,6 +673,9 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
     if rc != 0:
         raise Refused("idf.py reconfigure failed (exit %d)" % rc)
     ok("reconfigure (R9)")
+    # R33 before R8's checks: under another IDF the configure rewrites the
+    # committed lock, and this names both versions; R8 still sees the lock.
+    check_configured_idf(build_dir, idf_version)
     # The sdkconfig first, so a problem with it is named as one.
     try:
         sdkconfig = BuildDir(build_dir).config_file()

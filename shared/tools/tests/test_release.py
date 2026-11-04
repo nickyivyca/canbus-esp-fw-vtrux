@@ -218,6 +218,10 @@ class FakeIdf:
             if e.get("write_config_file"):
                 # IDF writes the sdkconfig it is given if it is not there.
                 scratch.write(e["config_file"], "CONFIG_X=y\n")
+            if e.get("rewrite_lock"):
+                # Another IDF's configure re-solves the committed lock.
+                with open(lp, "a", encoding="utf-8", newline="\n") as f:
+                    f.write("# re-solved\n")
             if e.get("dirty_reconfigure"):
                 scratch.write(os.path.join(self.root, "sdkconfig"),
                               "CONFIG_X=y\r\n")
@@ -352,7 +356,8 @@ class FakeIdf:
                             "espressif__m").replace("\\", "/")
         desc = {
             "app_bin": "app.bin", "app_elf": "app.elf", "c_compiler": self.cc,
-            "git_revision": "v5.4.1",
+            # IDF_VER, as the configure reports it (R33 reads it).
+            "git_revision": self.edit.get("git_revision", "v5.4.1"),
             # IDF's SDKCONFIG build property: <project>/sdkconfig unless
             # -D SDKCONFIG, a preset or the CMakeLists.txt sets another.
             "config_file": self.edit.get(
@@ -363,6 +368,8 @@ class FakeIdf:
                                      "espressif__m": {"dir": comp}}}
         if self.edit.get("no_config_file"):
             del desc["config_file"]
+        if self.edit.get("no_git_revision"):
+            del desc["git_revision"]
         scratch.write(os.path.join(self.root, "build",
                                    "project_description.json"),
                       json.dumps(desc))
@@ -1172,6 +1179,78 @@ class Release(unittest.TestCase):
         git(root, "commit", "-qm", "no manifest")
         self.assertRefused(run(root, cc, check_only=True),
                            ["R33", "does not exist"], [])
+
+    # R33 after the reconfigure: the ESP-IDF version the configure reports
+    # (project_description.json's git_revision) is exactly "v" + the
+    # manifest's version. MANIFEST names 5.4.1.
+
+    def test_r33_configured_version_builds(self):
+        for i, (line, rev) in enumerate((('  idf: "5.4.1"\n', "v5.4.1"),
+                                         ('  idf: "==5.4.2"\n', "v5.4.2"))):
+            with self.subTest(rev=rev):
+                root, cc = project("rel_r33_conf_ok%d" % i,
+                                   manifest=self.manifest_with_idf(line))
+                p, idf, why = run(root, cc, {"git_revision": rev})
+                self.assertIsNone(why)
+                self.assertEqual(idf.calls, ["reconfigure", "build"])
+                self.assertEqual(record.read(p)["idf_version"]["project"],
+                                 rev)
+
+    def test_r33_configured_version_refusals(self):
+        for i, rev in enumerate((
+                "v5.4.1-dirty",             # tracked changes in the IDF
+                "v5.4.1-3-gabc1234",        # commits past the tag
+                "v5.4.1-3-gabc1234-dirty",
+                "abc1234",                  # a bare hash: no tag reached
+                "v5.4.2",                   # the other IDF
+                "v5.4.10", "v5.4", "5.4.1", "V5.4.1", "v5.4.1 ", " v5.4.1",
+                "v5.4.1\n")):
+            with self.subTest(rev=rev):
+                root, cc = project("rel_r33_conf_bad%d" % i)
+                p, idf, why = run(root, cc, {"git_revision": rev})
+                self.assertRefused((p, idf, why),
+                                   ["R33", repr(rev)[1:-1], "5.4.1",
+                                    "exactly v5.4.1"], ["reconfigure"])
+                self.assertNotIn("(R8)", why)
+                self.assertEqual(os.listdir(records_dir(root))
+                                 if os.path.isdir(records_dir(root)) else [],
+                                 [])
+
+    def test_r33_configured_version_missing(self):
+        for i, edit in enumerate(({"no_git_revision": True},
+                                  {"git_revision": ""},
+                                  {"git_revision": None},
+                                  {"git_revision": 541})):
+            with self.subTest(edit=edit):
+                root, cc = project("rel_r33_conf_none%d" % i)
+                self.assertRefused(run(root, cc, edit),
+                                   ["R33", "no git_revision",
+                                    "exactly v5.4.1"], ["reconfigure"])
+
+    def test_r33_before_r8_on_a_rewritten_lock(self):
+        """The other IDF re-solves the committed lock: the version is
+        refused first, naming both; R8 would refuse the lock too."""
+        root, cc = project("rel_r33_conf_lock",
+                           manifest=self.manifest_with_idf('  idf: "==5.4.2"\n'))
+        p, idf, why = run(root, cc, {"git_revision": "v5.4.1",
+                                     "rewrite_lock": True})
+        self.assertRefused((p, idf, why), ["R33", "v5.4.1", "5.4.2"],
+                           ["reconfigure"])
+        self.assertNotIn("(R8)", why)
+        # R8 as the backstop: the same rewrite with the version right.
+        root, cc = project("rel_r33_conf_lock_r8",
+                           manifest=self.manifest_with_idf('  idf: "==5.4.2"\n'))
+        self.assertRefused(run(root, cc, {"git_revision": "v5.4.2",
+                                          "rewrite_lock": True}),
+                           ["R8", "dependencies.lock"], ["reconfigure"])
+
+    def test_r33_committed_lock_of_the_other_idf(self):
+        """A lock solved under the other IDF and committed is not
+        rewritten, so R8 sees nothing; only the version check refuses."""
+        root, cc = project("rel_r33_conf_own")
+        p, idf, why = run(root, cc, {"git_revision": "v5.4.2"})
+        self.assertRefused((p, idf, why), ["R33", "v5.4.2", "exactly v5.4.1"],
+                           ["reconfigure"])
 
 
 class BoardComponents(unittest.TestCase):
