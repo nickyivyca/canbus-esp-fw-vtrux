@@ -112,6 +112,29 @@ idf.py -B build/witness -D INTP_VARIANT=witness -p COM3 flash
 `-D INTP_VARIANT` is stored in the build folder's CMake cache, so a folder
 keeps its variant until it is deleted; give each variant its own `-B`
 folder. COM3 is NICKY-XPS's; resolve the port from the MAC first (below).
+With no `-D`, the variant is `truck` (user, 2026-11-03): shared/tools'
+`release` passes no `-D`, and truck is the only image released. A dev build
+always names its variant.
+
+**`../vtrux_tools.py`, from the repo root,** does the same dev build with a
+check of the shell first, and starts the shared tooling at the pinned
+version:
+
+```powershell
+py -3.14 -B charge-interposer/vtrux_tools.py build bridge              # dev build, build/bridge
+py -3.14 -B charge-interposer/vtrux_tools.py build bridge --jobs 1     # throttled, from an Idle shell
+py -3.14 -B charge-interposer/vtrux_tools.py release --check-only      # the release refusals only
+py -3.14 -B charge-interposer/vtrux_tools.py image charge-interposer/firmware/build/bridge/interposer_bridge.bin
+```
+
+`build <variant>` runs `idf.py -B build/<variant> -D INTP_VARIANT=<variant>
+reconfigure`, then ninja in that folder. `release` and `build` first refuse a
+shell whose `IDF_TOOLS_PATH` is unset or empty, or whose
+`IDF_PYTHON_ENV_PATH` or `ESP_ROM_ELF_DIR` is not inside it: unset, ESP-IDF
+falls back to `~/.espressif`, gen-inhibit's install. `release` is a release
+build of `truck` with its record (shared/tools section 3); none goes on the
+truck during the port, and the never-flashed stand-in the acceptance items
+use points `REVERSE_IT_DIR` at a stand-in folder for its record.
 
 **Before any build, check for wall-clock tests** (AGENTS.md, "Builds during
 wall-clock tests"): the bench lock, the "No builds" line and running
@@ -125,6 +148,9 @@ throttled form sets the shell's priority class to Idle, configures with
 idf.py -B build/bridge -D INTP_VARIANT=bridge reconfigure
 ninja -C build/bridge -j 1
 ```
+
+or, from the repo root in the same Idle shell, `py -3.14 -B
+charge-interposer/vtrux_tools.py build bridge --jobs 1`.
 
 **`sdkconfig` and `dependencies.lock` are committed with LF line endings.**
 On Windows ESP-IDF writes both as CRLF when it regenerates them; save them
