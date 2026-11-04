@@ -157,8 +157,9 @@ unless the image changes, which the reproducible test (R19) shows.
   are not constrained.
 - **R32. The IDF environment check.** Before a release build or a dev build
   (R31) hands anything to ESP-IDF, the environment it was started in is
-  checked: `IDF_PATH` is set and not empty; `IDF_TOOLS_PATH` is set and
-  not empty; and `IDF_PYTHON_ENV_PATH` and `ESP_ROM_ELF_DIR` are set and
+  checked: `IDF_PATH` is set and not empty; `IDF_TOOLS_PATH` is set, not
+  empty and has no spaces around it, since ESP-IDF gets the value as it
+  is; and `IDF_PYTHON_ENV_PATH` and `ESP_ROM_ELF_DIR` are set and
   inside `IDF_TOOLS_PATH`. A failure is a refusal naming the variable. Nothing is
   defaulted: an unset `IDF_TOOLS_PATH` is never replaced by `~/.espressif`.
   The check is also a command of its own (`check-env`), and a project whose
@@ -313,8 +314,12 @@ unless the image changes, which the reproducible test (R19) shows.
   version. With no `dependencies.lock`, a configure under another IDF then
   fails. With the committed lock, the other IDF rewrites the lock's `idf`
   version and configures, and a release build refuses that at R8's
-  clean-worktree check after the reconfigure. A bench or dev build is not
-  guarded against it (R14); its image records the ESP-IDF it was built on.
+  clean-worktree check after the reconfigure. A release build is also
+  refused, before the reconfigure, unless the ESP-IDF it runs under (the
+  IDF version its record names, R13) is the manifest's version: a lock
+  solved under the other IDF and committed is not rewritten, so R8 does not
+  see it. A bench or dev build is not guarded against it (R14); its image
+  records the ESP-IDF it was built on.
 
 ## 6. Running the tooling
 
