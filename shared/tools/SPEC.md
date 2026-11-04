@@ -313,13 +313,16 @@ unless the image changes, which the reproducible test (R19) shows.
   spec sets. A release build is refused if the manifest names a range or no
   version. With no `dependencies.lock`, a configure under another IDF then
   fails. With the committed lock, the other IDF rewrites the lock's `idf`
-  version and configures, and a release build refuses that at R8's
-  clean-worktree check after the reconfigure. A release build is also
-  refused, before the reconfigure, unless the ESP-IDF it runs under (the
-  IDF version its record names, R13) is the manifest's version: a lock
-  solved under the other IDF and committed is not rewritten, so R8 does not
-  see it. A bench or dev build is not guarded against it (R14); its image
-  records the ESP-IDF it was built on.
+  version and configures. So a release build is refused, after the
+  reconfigure and before anything is compiled, unless the ESP-IDF version
+  the configure reports (`git_revision` in `project_description.json`, the
+  value its record names, R13) is exactly `v` and the manifest's version,
+  such as `v5.4.2`. An IDF with a suffix (`-dirty`, commits past its tag),
+  or with no version, is refused. That also refuses a lock solved under the
+  other IDF and committed, which is not rewritten; R8's clean-worktree
+  check after the reconfigure sees a rewritten lock as well. A bench or dev
+  build is not guarded against it (R14); its image records the ESP-IDF it
+  was built on.
 
 ## 6. Running the tooling
 

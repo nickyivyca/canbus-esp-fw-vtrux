@@ -791,10 +791,17 @@ same folder. The interposer's test evidence is
   nothing is rewritten and the release build under v5.4.1 is recorded with
   IDF v5.4.1 while the manifest names `==5.4.2`.
 - **The IDF version check, ruled** (user, 2026-11-04, in the gen-inhibit
-  reviewer's session): a release build is also refused, before the
-  reconfigure, unless the IDF it runs under is the manifest's version.
-  Release builds only, as the ruling above; bench and dev builds stay
-  unguarded.
+  reviewer's session): a release build is also refused unless the IDF it
+  runs under is the manifest's version. Release builds only, as the ruling
+  above; bench and dev builds stay unguarded. The match is exact (user,
+  2026-11-04, on the charge-interposer reviewer's note): `v` and the
+  manifest's version, with no suffix, so a modified IDF tree (`-dirty`) or
+  one past its tag is refused, as R8 wants a clean project worktree; both
+  installs on NICKY-XPS describe as `v5.4.1` and `v5.4.2`. Where it is read
+  (gen-inhibit reviewer, a wording fix on the same note): after the
+  reconfigure, from `project_description.json`'s `git_revision`, the value
+  the record names, so the check and the record cannot disagree and no
+  reading of IDF's version rule is copied into the tooling.
 - **Status:** complete.
 
 ## 6. Running the tooling
