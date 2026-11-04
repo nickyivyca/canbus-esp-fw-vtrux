@@ -16,9 +16,15 @@ In order, each refusal an exit, never a warning:
      commit; a missing checkout is refused with the command that creates
      it. R16, the tooling-pin clause: a pin naming a commit rather than a
      tag is refused;
+     R33: main/idf_component.yml under the project root names the ESP-IDF
+     version as one exact version (5.4.2 or ==5.4.2), so that a configure
+     under another IDF fails; a range, or no version, is refused;
   2. REVERSE_IT_DIR is set and has a firmware/ folder (R13: the build stops
      if it is unset, before anything is built);
-  3. the ESP-IDF environment is exported, and R10: the Component Manager's
+  3. R32: the environment is exported for one ESP-IDF install (idfenv.py):
+     IDF_PATH set, IDF_TOOLS_PATH set and not empty, IDF_PYTHON_ENV_PATH
+     and ESP_ROM_ELF_DIR set and inside it; nothing defaulted;
+     R10: the Component Manager's
      overwrite setting (IDF_COMPONENT_OVERWRITE_MANAGED_COMPONENTS) is not
      set at all; this IDF's tool list (tools.json) reads, for R9;
      R24: the environment every ESP-IDF call below runs in, built from an
@@ -91,7 +97,7 @@ In order, each refusal an exit, never a warning:
 
 Not done here: the build checks (R17 to R21, the tester's), apart from
 R21's one-board refusal in step 7. A bench or dev build (R14) does not use
-this script.
+this script: R31's build command is devbuild.py.
 """
 
 import glob
@@ -100,7 +106,7 @@ import re
 import shutil
 import subprocess
 
-from . import buildenv, components, lockfile, manifest, pin, record
+from . import buildenv, components, idfenv, lockfile, manifest, pin, record
 from .builddir import BuildDir, BuildDirError
 from .digest import component_digest
 from .image import AppImage, ImageError
@@ -451,6 +457,23 @@ def check_sdkconfig(root, sdkconfig, when):
     ok("sdkconfig committed (R8)", "%s, %s" % (when, rel))
 
 
+def check_idf_version(root):
+    """R33: the project's main component manifest, main/idf_component.yml
+    under root, names one exact ESP-IDF version. Returns it (X.Y.Z)."""
+    path = os.path.join(root, "main", "idf_component.yml")
+    if not os.path.isfile(path):
+        raise Refused("%s does not exist, so the project names no ESP-IDF "
+                      "version (R33)" % path)
+    try:
+        version = manifest.exact_idf_version(manifest.read(path))
+    except (OSError, manifest.ManifestError) as e:
+        raise Refused("%s: %s. A release build needs the project's ESP-IDF "
+                      "version named exactly, so that a configure under "
+                      "another IDF fails (R33)" % (path, e))
+    ok("IDF version named (R33)", version)
+    return version
+
+
 def build_manifests(bd):
     """{component dir: parsed idf_component.yml} for every component the
     build used that has one."""
@@ -570,6 +593,7 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
         raise Refused(str(e))
     ok("tooling pin (R23, R16)", "%s at %s, digest %s"
        % (tooling["tag"], tooling["commit"][:12], tooling["digest"][:12]))
+    check_idf_version(root)
 
     try:
         out_dir = dest or record.builds_dir(proj.name)
@@ -577,6 +601,12 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
         raise Refused(str(e))
     ok("record folder (R13)", out_dir)
 
+    # R32 before anything is handed to ESP-IDF, the test runners included.
+    try:
+        idfenv.check()
+    except idfenv.EnvError as e:
+        raise Refused(str(e))
+    ok("IDF environment (R32)", os.environ["IDF_TOOLS_PATH"])
     if idf is None:
         idf = idf_runner(root)
     ok("ESP-IDF environment", os.environ.get("IDF_PATH", "(test runner)"))
@@ -591,8 +621,7 @@ def release(project_root, check_only=False, idf=None, toolchain_run=None,
             raise Refused("this IDF's toolchain cannot be read: %s (R9)" % e)
     # R24: every ESP-IDF call this run makes gets this environment and no
     # other, with R10's strict mode and R9's SOURCE_DATE_EPOCH in it.
-    env, passed, dropped = buildenv.environment(
-        default_tools_path=toolchain.tools_path)
+    env, passed, dropped = buildenv.environment()
     ok("environment (R24)", "%d passed: %s" % (len(passed), " ".join(passed)))
     say("           %d dropped: %s" % (len(dropped),
                                        " ".join(dropped) or "(none)"))
