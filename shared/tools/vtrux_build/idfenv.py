@@ -18,10 +18,10 @@ other install's Python environment and tools. The two "inside" checks catch
 a shell exported with one IDF_TOOLS_PATH and then given another.
 
 Not covered here: an IDF_PATH of one version with the other's tools folder.
-The project's exact IDF version (R33) covers it as far as it reaches: a
-lockless configure fails; with the committed lock a release build is
-refused at R8 (the configure rewrites the lock, and the worktree is no
-longer clean after it). A bench or dev build is not guarded against it.
+For a release build R33 covers it: after the reconfigure, the ESP-IDF
+version the configure reports (project_description.json's git_revision)
+must be exactly "v" and the version main/idf_component.yml names
+(release.py). A bench or dev build is not guarded against it.
 
 The form is the charge interposer's launcher's check_idf_env
 (charge-interposer/vtrux_tools.py, charge-interposer/main 3c03edf), with

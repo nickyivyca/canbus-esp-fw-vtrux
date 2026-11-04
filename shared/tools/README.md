@@ -110,7 +110,8 @@ constrained.
 
 Before a release build or a dev build hands anything to ESP-IDF, the
 environment it was started in is checked (`vtrux_build/idfenv.py`):
-`IDF_PATH` is set and not empty; `IDF_TOOLS_PATH` is set and not empty; and
+`IDF_PATH` is set and not empty; `IDF_TOOLS_PATH` is set, not empty and has
+no spaces around it, since the value checked is the value ESP-IDF gets; and
 `IDF_PYTHON_ENV_PATH` and `ESP_ROM_ELF_DIR` are set and inside
 `IDF_TOOLS_PATH`. A failure is a refusal naming the variable. Nothing is
 defaulted: an unset `IDF_TOOLS_PATH` is never replaced by `~/.espressif`,
@@ -118,12 +119,9 @@ which on a machine with two ESP-IDF installs, each with its own tools
 folder, may be the other install's. `check-env` runs the check alone,
 exit 0 or 1; a project whose bench builds do not go through `build` runs
 it before each. An `IDF_PATH` of one version with the other's tools is not
-caught here. The project's exact IDF version (R33) covers it as far as it
-reaches: a lockless configure fails; with the committed lock a release
-build is refused at R8, since the configure rewrites the lock and the
-worktree is no longer clean after it. Bench and dev builds are not guarded
-against it. `IDF_TOOLS_PATH` with leading or trailing spaces is refused
-too: the value checked is the value ESP-IDF gets.
+caught here. For a release build the project's exact IDF version (R33,
+below) covers it: the ESP-IDF version the configure reports must be the
+one the project names. Bench and dev builds are not guarded against it.
 
 ## Dev builds (R31)
 
@@ -206,7 +204,17 @@ The project's ESP-IDF version is not in this file either. It is the `idf`
 dependency of `main/idf_component.yml`, one exact version, `5.4.2` or
 `==5.4.2` (R33); a release build refuses a range or no version. Under
 another IDF a lockless configure then fails; with the committed lock the
-configure rewrites it, and a release build is refused at R8 (above).
+configure rewrites it and goes on. So after the reconfigure, before
+anything is compiled, a release build is refused unless the ESP-IDF version
+the configure reports, `git_revision` in `build/project_description.json`
+(the value its record names, R13), is exactly `v` and that version, such
+as `v5.4.2`. A suffix (`-dirty`, `-3-g<hash>` for commits past the tag), a
+bare commit hash, another version, or no value is refused, and the refusal
+names both versions. That also refuses a lock solved under the other IDF
+and committed, which the configure does not rewrite; a rewritten lock is
+seen by R8's clean-worktree check after the reconfigure as well. Only a
+release build runs it: bench and dev builds are not guarded (R14), and
+`check-env`, `image` and `digest` do not run it.
 
 The build checks' data (the release profile, the switch table and its
 refusal rows) is not in this file. It is in `vtrux_checks.json` in the
@@ -236,7 +244,8 @@ environment, with the Component Manager's overwrite setting
 environment ESP-IDF runs in, from an empty one (R24); a
 clean worktree (R8); `idf.py --no-ccache reconfigure` in that environment,
 with `IDF_COMPONENT_STRICT_CHECKSUM=1` and the fixed `SOURCE_DATE_EPOCH`
-(R9, R10); the `sdkconfig` the build
+(R9, R10); the ESP-IDF version the configure reports, exactly the
+project's (R33); the `sdkconfig` the build
 used, inside the project, tracked and not ignored (R8); the worktree still clean and
 HEAD unchanged (R8); `CCACHE_ENABLE` off in `build/CMakeCache.txt` and no compiler
 launcher in its compile commands (R9); a `dependencies.lock` after the
