@@ -2,7 +2,7 @@
 //
 // Separated from main.cpp because the interval rule is the whole of it and
 // the rest of main.cpp cannot be compiled on a host. Pure, no Arduino, no
-// ESP-IDF -- test/host_unit/test_bridge_health.cpp compiles this header
+// ESP-IDF -- host_unit/test_bridge_health.cpp compiles this header
 // directly.
 //
 // The flag is clear when, over the interval just ended, any of these

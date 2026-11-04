@@ -1,26 +1,24 @@
-# firmware/test/
+# host_unit/
 
-The firmware's own C++ unit tests, `host_unit/`. Everything else that was
-here, the tester's harness (`host_bridge/`, `host_diff/`, `c12_bench/`,
-`vport_bench/`, `hw_mechanics.py`), moved to `../../fw_harness/` at port step
-2a (reviewer, 2026-11-03, Q3), and the PlatformIO build checks
-(`build_check*.py`, `digest_recheck_check.py`) retired with the PlatformIO
-build. The tester's harness files and their checks are described in
-`../../fw_harness/README.md`.
-
-## `host_unit/`
+The firmware's own C++ unit tests, the implementor's. They moved here from
+`firmware/test/host_unit/` at port step 2a (reviewer, 2026-11-03, item 7),
+beside the tester's harness in `../fw_harness/`, which moved out of
+`firmware/test/` at the same step; `firmware/test/` is gone. The tester's
+harness files and their checks are described in `../fw_harness/README.md`.
 
 ```
-wsl bash ".../charge-interposer/firmware/test/host_unit/run.sh"
+wsl bash ".../charge-interposer/host_unit/run.sh"
 ```
 
-Builds and runs every `test_*.cpp` in the folder with plain `g++ -std=c++11`,
-and needs no environment set (unlike `host_bridge/run.sh`, which wants
-`REVERSE_IT_DIR`). The binaries go in a run folder of its own under the
-tree's `scratch/` (`../../scratch_run.sh`, tool `host-unit`), never the
-system temp folder, removed when it exits (2026-11-02). Both rules below were kept out of `main.cpp` so they could be
-tested here; the rest of `main.cpp` needs the fake ports of spec 9.1 L2,
-which live in `../../fw_harness/host_bridge/` rather than in this folder.
+Builds and runs every `test_*.cpp` in the folder with plain `g++ -std=c++11`
+against `../firmware/main/`, and needs no environment set (unlike
+`../fw_harness/host_bridge/run.sh`, which wants `REVERSE_IT_DIR`). The
+binaries go in a run folder of its own under the tree's `scratch/`
+(`../scratch_run.sh`, tool `host-unit`), never the system temp folder,
+removed when it exits (2026-11-02). Both rules below were kept out of
+`main.cpp` so they could be tested here; the rest of `main.cpp` needs the
+fake ports of spec 9.1 L2, which live in `../fw_harness/host_bridge/` rather
+than in this folder.
 
 | test | covers |
 |---|---|

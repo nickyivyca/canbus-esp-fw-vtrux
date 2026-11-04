@@ -169,7 +169,7 @@ static bool vehicle_up = false;
 
 // Spec 2.2: failed transmissions TOWARD THE CHARGER, counted only while the
 // VCU's flow bit is 1. The rule itself is in charger_tx_failures.h, which
-// test/host_unit/ compiles -- it used to be the three statements below plus
+// host_unit/ compiles -- it used to be the three statements below plus
 // two file statics here, where no test could reach it (reviewer,
 // 2026-10-13). What stays here is which counters feed it and how often.
 static ChargerTxFailures charger_txf;

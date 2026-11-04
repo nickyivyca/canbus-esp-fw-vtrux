@@ -7,8 +7,8 @@
 // "since boot" behaviour review item B-3 was about. A flag that never
 // clears reports nothing at all.
 //
-// Build and run (WSL on Windows; see test/host_unit/run.sh):
-//     g++ -std=c++11 -O2 -I ../../main -o /tmp/tbh test_bridge_health.cpp
+// Build and run (WSL on Windows; see host_unit/run.sh):
+//     g++ -std=c++11 -O2 -I ../firmware/main -o /tmp/tbh test_bridge_health.cpp
 //     /tmp/tbh
 
 #include <cstdio>
