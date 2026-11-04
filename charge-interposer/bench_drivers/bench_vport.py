@@ -1,7 +1,7 @@
 """What the X2's vehicle port can put on the vehicle segment by itself:
 spec 9's bench measurements, host side (step 4 prep).
 
-The board runs the vport_bench image (charge-interposer/firmware/test/
+The board runs the vport_bench image (charge-interposer/fw_harness/
 vport_bench, a standalone ESP-IDF image that drives the TWAI controller and
 nothing else; never on the truck; reviewer, 2026-10-13). This script
 commands it over its USB console and judges the wire with its own adapters:
@@ -4216,7 +4216,8 @@ def main():
     ap.add_argument("--elf", help="build/vport_bench.elf, checked against the "
                                   "board's @HELLO")
     ap.add_argument("--src-sha", default="(not given)",
-                    help="git log -1 --format=%%h -- firmware/test/vport_bench")
+                    help="git log -1 --format=%%h -- fw_harness/vport_bench "
+                         "(firmware/test/vport_bench before port step 2a)")
     ap.add_argument("--steps", default="listen,bitrate,flood,stall,dominant")
     ap.add_argument("--seconds", type=float, default=10.0,
                     help="each listen / flood window")

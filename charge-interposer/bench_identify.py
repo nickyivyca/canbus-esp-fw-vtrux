@@ -18,7 +18,8 @@ rule 4). Published identities, tried in this order:
      a host opens a channel): a bare CR to clear its line buffer, then "V"
      and "N", answered "V0101" and "NF001". Identity: "slcan:V0101:NF001".
      SLCAN reports no build id, so this names the protocol, not the build;
-     the build is the verified write of its manifest-matched bin.
+     the build is the verified write of its bin, whose own application
+     descriptor names it (port step 2a: no build manifest).
 
 2 and 3 are tried only when the ACKed boot ran, saw no 0x7F7 at all, and
 the board's serial output during it carried none of the product's lines,

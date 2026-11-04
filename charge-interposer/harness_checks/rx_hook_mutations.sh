@@ -26,14 +26,16 @@ if [ -n "${INTERPOSER_CODE:-}" ] && \
   echo "INTERPOSER_CODE=$INTERPOSER_CODE is not this tree's charge-interposer/ ($CODE)" >&2
   exit 2
 fi
-SRC="$(cd "$CODE/firmware/test/host_bridge" && pwd)"
-WORK="${TMPDIR:-/tmp}/rx_hook_mut_$$"
-rm -rf "$WORK"
+SRC="$(cd "$CODE/fw_harness/host_bridge" && pwd)"
+# The work folder is this run's own under the tree's scratch/, never the
+# system temp folder, removed when the script exits (scratch_run.sh).
+. "$CODE/scratch_run.sh" || exit 2
+scratch_run rx-hook-mutations || exit 2
+WORK="$SCRATCH_RUN"
 mkdir -p "$WORK/driver"
 cp "$SRC"/*.cpp "$SRC"/*.h "$WORK"/
 cp "$SRC"/driver/*.h "$WORK/driver"/ 2>/dev/null || true
 cd "$WORK" || exit 2
-trap 'rm -rf "$WORK"' EXIT
 
 build() {
   rm -f "$WORK/run"

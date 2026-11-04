@@ -1,0 +1,90 @@
+# The acceptance runner's SMOKE LIST: a fixture of the adapter's tests, not
+# an acceptance list (acceptance lists are the reviewer's, under acceptance/,
+# ACCEPT-SPEC A2). A --dev run of it proves the whole path end to end -- a
+# local tree and a madhouse tree, their setup, a few light harness checks,
+# a premise, the close and the cleanup -- with nothing wall-clock, no bench,
+# no builds and no lock (the charge-interposer reviewer, 2026-11-02). Its
+# records go to interposer-firmware/dev-runs/, never runs/, and are never
+# evidence.
+#
+# Since 2026-11-02 it also proves host_bridge's TWAI_FAKE option on madhouse
+# with real g++ (the reviewer's order of that day): host_bridge on our own
+# fake and on the shared fake at 40c0bcc, the fake port step 1b's acceptance
+# E ran on, compared with the masked-log comparer (E found the two
+# transcripts identical), and the shared fake's can-fail (run.sh's own
+# --can-fail mode). Both runs expect FAIL: host_bridge carries the two
+# recorded KNOWN FAILs (bridge-ok-veh-failed, bridge-ok-switch-discard).
+# expect = "FAIL" alone would also take a test that did not build (the judge's
+# ERROR): the smoke run of 21bf42f, at 71351ff, had test_event_layout not
+# built under TWAI_FAKE=shared, and only e-transcripts caught it (fixed in
+# de11c44). Since b3e2395 run.sh works in its tree's scratch/, which on
+# madhouse is inside the runner's tree there.
+
+[step]
+id = "smoke"
+project = "charge-interposer"
+ordered_by = "charge-interposer reviewer"
+ordered_on = "2026-11-02"
+spec = ["none: a smoke run of the acceptance runner"]
+verification = "none (a --dev smoke run is never evidence)"
+
+[trees.local]
+project = "b3e2395e2c3c4c107f3050908cb554627861d692"
+
+[trees.madhouse]
+project = "b3e2395e2c3c4c107f3050908cb554627861d692"
+host = "madhouse"
+shared = { twai_port = "40c0bccddccb8fd949df5f92db906fa302b6ae1b" }
+
+[[set]]
+id = "harness"
+tree = "local"
+select = ["id:paths-test", "id:build-lookup-offline-test"]
+
+[[set]]
+id = "mad"
+tree = "madhouse"
+select = ["id:host-unit"]
+
+[[check]]
+id = "hb-own"
+tree = "madhouse"
+run = ["charge-interposer/fw_harness/host_bridge/run.sh"]
+shell = "git-bash"
+judge = "host-bridge"
+cls = "build"
+env = { L3_STIMULUS = "{madhouse_artifacts}/l3_stimulus.txt" }
+expect = "FAIL"
+
+[[check]]
+id = "hb-shared"
+tree = "madhouse"
+run = ["charge-interposer/fw_harness/host_bridge/run.sh"]
+shell = "git-bash"
+judge = "host-bridge"
+cls = "build"
+env = { L3_STIMULUS = "{madhouse_artifacts}/l3_stimulus.txt", TWAI_FAKE = "shared" }
+timeout_s = 14400
+expect = "FAIL"
+after = ["hb-own"]
+
+[[compare]]
+id = "e-transcripts"
+comparer = "masked-log"
+a = "hb-own"
+b = "hb-shared"
+expect = "identical"
+
+[[canfail]]
+id = "shared-fake"
+target = "hb-shared"
+mutants = { mode = "--can-fail" }
+expect = "mode-passes"
+
+# the trees' product digest the same as at the first smoke run's commit:
+# 9e1e62d and the harness commits since changed no product file
+[[premise]]
+id = "digest"
+kind = "product_digest_same_as"
+tree = "local"
+commit = "5169ea877cca77422831196bc3ceeb8e97661e94"

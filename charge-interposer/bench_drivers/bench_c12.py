@@ -1,6 +1,6 @@
 """C12 (and the rest of the MCP2515 conformance sequence) on silicon: host side.
 
-The board runs the c12_bench image (charge-interposer/firmware/test/
+The board runs the c12_bench image (charge-interposer/fw_harness/
 c12_bench, a standalone ESP-IDF image implementing mcpconf::Target over SPI;
 reviewer, 2026-10-13). The sequence is the host suite's conformance.cpp,
 unchanged, so its transcript diffs line for line against the fake's

@@ -42,10 +42,10 @@ on madhouse's own disk.
     py -3.14 -B charge-interposer/scratch_dir_check.py --self-check
 
 The g++ ones (monitor_6h_diff, switch_discard_witness) run where g++ is:
-madhouse, or WSL on NICKY-XPS (python3 -B ... NAME). build_check_dirty_flag
-(a real git clone of HEAD, whose objects git marks read-only, and three
-PlatformIO builds) runs only when named, and not while a wall-clock test
-runs (AGENTS.md, "Builds during wall-clock tests").
+madhouse, or WSL on NICKY-XPS (python3 -B ... NAME). The build_check
+family (build_check_*_test, digest_recheck_check, build_check_dirty_flag)
+retired with the PlatformIO build at port step 2a (reviewer, 2026-11-03,
+Q3), and its files were removed.
 """
 
 import json
@@ -84,22 +84,15 @@ TARGETS = {
                                      ["--can-fail"]),
     "build_lookup_offline_test": ("build_lookup_offline_test.py", []),
     "rebuild_capture_traces": ("rebuild_capture_traces.py", []),
-    "build_check_links_test": ("firmware/test/build_check_links_test.py", []),
-    "build_check_manifest_test": ("firmware/test/build_check_manifest_test.py", []),
-    "build_check_schema_test": ("firmware/test/build_check_schema_test.py", []),
-    "build_check_in_clone_test": ("firmware/test/build_check_in_clone_test.py", []),
-    "digest_recheck_check": ("firmware/test/digest_recheck_check.py", []),
-    "build_check_dirty_flag": ("firmware/test/build_check.py", ["--dirty-flag"]),
+    "hw_mechanics_test": ("hw_mechanics_test.py", []),
     "monitor_6h_diff": ("harness_checks/monitor_6h_diff.py", []),
     "switch_discard_witness": ("harness_checks/switch_discard_witness.py", []),
 }
 GPP = ("monitor_6h_diff", "switch_discard_witness")
-NAMED_ONLY = GPP + ("build_check_dirty_flag",)
+NAMED_ONLY = GPP
 # Entry points that exit non-zero on charge-interposer/main for a reason
 # of their own: their exit is reported, not judged here; whether they
-# remove their folders still is. None since 2026-10-31, when
-# digest_recheck_check and build_check --dirty-flag were fixed (reviewer,
-# 2026-10-31).
+# remove their folders still is. None since 2026-10-31.
 KNOWN = {}
 MARK = "SCRATCH_DIR_CHECK "
 

@@ -22,11 +22,14 @@ if [ -n "${INTERPOSER_CODE:-}" ] && \
   echo "INTERPOSER_CODE=$INTERPOSER_CODE is not this tree's charge-interposer/ ($CODE)" >&2
   exit 2
 fi
-HB="$(cd "$CODE/firmware/test/host_bridge" && pwd)"
-SRC="$(cd "$HB/../../src" && pwd)"
-WORK=/tmp/twai_mut
-rm -rf "$WORK"
-mkdir -p "$WORK"
+HB="$(cd "$CODE/fw_harness/host_bridge" && pwd)"
+SRC="$(cd "$CODE/firmware/main" && pwd)"
+# The work folder is this run's own under the tree's scratch/, never the
+# system temp folder (before 2026-11-02 one fixed /tmp/twai_mut, which two
+# runs at once shared), removed when the script exits (scratch_run.sh).
+. "$CODE/scratch_run.sh" || exit 2
+scratch_run twai-mutations || exit 2
+WORK="$SCRATCH_RUN"
 cp "$HB"/*.cpp "$HB"/*.h "$WORK"/
 mkdir -p "$WORK/driver"
 cp "$HB"/driver/*.h "$WORK/driver"/

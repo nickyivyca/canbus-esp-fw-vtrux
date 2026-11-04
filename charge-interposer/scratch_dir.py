@@ -22,7 +22,8 @@ it, where the harness's walks over charge-interposer/ would meet it.
   make(tool)    prunes the tool's finished folders (below), then makes a
                 new one and writes its owner file: this process's pid and
                 its start time, so a pid used again by another process is
-                not taken for the owner.
+                not taken for the owner. Three tries, a moment apart, when
+                another run's removal takes the tool folder under it.
   run(tool)     make() as a context manager: the folder is removed in a
                 finally, pass or fail.
   remove(path)  shutil.rmtree with an error handler that clears the
@@ -30,7 +31,8 @@ it, where the harness's walks over charge-interposer/ would meet it.
                 and tries again, on a \\\\?\\ path on Windows so a path past
                 260 characters is no obstacle. Never ignore_errors: what it
                 cannot remove is printed, one LEFTOVER line each with the
-                reason, and returned.
+                reason, and returned. A run folder's tool folder goes too
+                once nothing else is in it (reviewer, 2026-11-02).
   state(path)   live (the owner is running), finished (it is not, or the
                 pid is now another process's), no-owner, or other-host
                 (another machine's, or another platform's: a WSL
@@ -51,7 +53,10 @@ It looks only in each worktree's scratch/ (default: the interposer-reviewer,
 -implementor and -tester worktrees beside this one). Candidates are run
 folders only: a finished folder under charge-interposer-harness/, and a
 can-tools/ or canre/ folder for a commit that worktree's pins.json no longer
-pins (or a .partial-<pid> whose pid is not running). Never touched: the
+pins (or a .partial-<pid> whose pid is not running); and an empty tool
+folder under charge-interposer-harness/, removed with rmdir only, so one a
+run has started in since the report stays (the charge-interposer reviewer,
+2026-11-02: 38 were left in the tester's worktree). Never touched: the
 current pins' folders, session-compact/, a live or unowned run folder, and
 anything else in scratch/ (people's scratchpads), which is listed with its
 file count as not a run folder. --apply refuses while the bench lock is
@@ -75,6 +80,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HARNESS = "charge-interposer-harness"
@@ -305,7 +311,23 @@ def remove(path, quiet=False):
         if len(left) > 20:
             print("scratch_dir: LEFTOVER ... and %d more under %s"
                   % (len(left) - 20, _short(lp)), flush=True)
+    if not left:
+        _drop_empty_tool_dir(lp)
     return left
+
+
+def _drop_empty_tool_dir(lp):
+    """Once a run folder is gone, its tool's folder
+    (<root>/charge-interposer-harness/<tool>/) goes too if nothing else is
+    in it (the reviewer, 2026-11-02: 41 empty ones were left on NICKY-XPS).
+    rmdir only: a folder still holding another run's is left as it is."""
+    parent = os.path.dirname(lp)
+    if os.path.basename(os.path.dirname(parent)) != HARNESS:
+        return
+    try:
+        os.rmdir(parent)
+    except OSError:
+        pass                # not empty (another run's folder), or gone already
 
 
 # ---- run folders --------------------------------------------------------
@@ -325,6 +347,10 @@ def prune(tool, start=None, quiet=False):
     return gone
 
 
+MAKE_TRIES = 3
+MAKE_WAITS = (0.1, 0.4)     # the wait before each try after the first
+
+
 def make(tool, start=None):
     """A new run folder for tool, with its owner file, after pruning the
     tool's finished ones."""
@@ -332,8 +358,22 @@ def make(tool, start=None):
         raise ValueError("tool must be one plain folder name: %r" % (tool,))
     prune(tool, start)
     d = tool_dir(tool, start)
-    os.makedirs(d, exist_ok=True)
-    p = tempfile.mkdtemp(prefix="%s-%d-" % (tool, os.getpid()), dir=d)
+    # another run removing the last folder in d drops d (remove()); made
+    # again if that falls between the two calls, MAKE_TRIES tries in all, a
+    # moment apart. On Windows a folder removed while another process holds a
+    # handle on it stays delete-pending for that moment, and making a folder
+    # in it is refused (PermissionError), not FileNotFoundError (gen-inhibit's
+    # reviewer, through the charge-interposer reviewer, 2026-11-02).
+    for attempt in range(MAKE_TRIES):
+        if attempt:
+            time.sleep(MAKE_WAITS[min(attempt, len(MAKE_WAITS)) - 1])
+        try:
+            os.makedirs(d, exist_ok=True)
+            p = tempfile.mkdtemp(prefix="%s-%d-" % (tool, os.getpid()), dir=d)
+            break
+        except (FileNotFoundError, PermissionError):
+            if attempt == MAKE_TRIES - 1:
+                raise
     with open(os.path.join(p, OWNER), "w", encoding="utf-8", newline="\n") as f:
         json.dump(owner_record(), f, sort_keys=True)
         f.write("\n")
@@ -402,6 +442,9 @@ def _partial_pid(name):
     return int(tail) if sep and tail.isdigit() else None
 
 
+EMPTY_TOOL = "an empty tool folder"
+
+
 def survey(wt):
     """[(path, verdict, why)] for one worktree's scratch/: verdict is
     'candidate', 'kept' or 'other' (not a run folder)."""
@@ -422,7 +465,10 @@ def survey(wt):
                 if not os.path.isdir(td):
                     out.append((td, "other", "a file, not a run folder"))
                     continue
-                for n in sorted(os.listdir(td)):
+                names = sorted(os.listdir(td))
+                if not names:
+                    out.append((td, "candidate", EMPTY_TOOL))
+                for n in names:
                     p = os.path.join(td, n)
                     st = state(p) if os.path.isdir(p) else "a file"
                     out.append((p, "candidate" if st == "finished" else "kept",
@@ -460,11 +506,14 @@ def default_worktrees():
 
 
 def _bench_lock_free():
-    wt = worktree()
-    if not wt:
-        return False, "no worktree, so no shared/bench to ask the lock"
-    env = dict(os.environ, PYTHONPATH=os.path.join(wt, "shared", "bench"),
-               PYTHONDONTWRITEBYTECODE="1")
+    # the pinned shared/bench (port step 2a: no copy on this branch);
+    # shared_pin sits beside this file, so its folder is on sys.path
+    import shared_pin
+    try:
+        bench = shared_pin.folder("shared/bench")
+    except shared_pin.SharedPinError as e:
+        return False, "no pinned shared/bench to ask the lock: %s" % e
+    env = dict(os.environ, PYTHONPATH=bench, PYTHONDONTWRITEBYTECODE="1")
     try:
         r = subprocess.run([sys.executable, "-B", "-m", "vtrux_bench.bench_lock",
                             "status"], capture_output=True, text=True, env=env,
@@ -562,7 +611,7 @@ def sweep(worktrees, apply=False, guard=wallclock_clear, out=print):
                 tot[k][2] += f
                 tot[k][3] += b
             if verdict == "candidate":
-                cands.append(p)
+                cands.append((p, why == EMPTY_TOOL))
     out("")
     for k, label in (("candidate", "candidates"), ("all", "everything listed")):
         out("TOTAL %-18s %4d row(s) %9d files %8d folders %13d bytes"
@@ -577,11 +626,28 @@ def sweep(worktrees, apply=False, guard=wallclock_clear, out=print):
         out("REFUSED: --apply is not run during a wall-clock run, or when that "
             "cannot be told")
         return 2
-    left = 0
-    for p in cands:
-        if remove(p):
+    left = kept = 0
+    for p, empty_tool in cands:
+        if empty_tool:
+            # rmdir only: a run started in it since the report keeps it
+            try:
+                os.rmdir(long_path(p))
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                if os.path.isdir(p) and os.listdir(p):
+                    out("   kept %s: no longer empty (a run started in it)" % p)
+                    kept += 1
+                else:
+                    print("scratch_dir: LEFTOVER %s -- %s: %s"
+                          % (p, type(e).__name__, getattr(e, "strerror", None) or e),
+                          flush=True)
+                    left += 1
+        elif remove(p):
             left += 1
-    out("removed %d of %d candidate folder(s)" % (len(cands) - left, len(cands)))
+    out("removed %d of %d candidate folder(s)%s"
+        % (len(cands) - left - kept, len(cands),
+           ", %d kept as no longer empty" % kept if kept else ""))
     return 1 if left else 0
 
 

@@ -3763,7 +3763,8 @@ def check_invariants(trace_path):
 def check_flight_core(trace_path, keep=False):
     """-> (ok, why). Replay the recorded trace through machine.cpp.
 
-    `diff_one.sh` builds the runner (cached) and diffs both sides, which it
+    `diff_one.sh` builds the runner (each call, in a run folder of its own
+    under the tree's scratch/, since 2026-11-02) and diffs both sides, which it
     generates now -- there is no golden on disk, because a recording is not
     reproducible between runs and a stored one would be stale.
 
@@ -3772,7 +3773,7 @@ def check_flight_core(trace_path, keep=False):
     still with the user when the 1x run started, so its trace is kept to
     re-score that clause once ruled).
     """
-    script = (HERE / "firmware" / "test" / "host_diff" / "diff_one.sh")
+    script = (HERE / "fw_harness" / "host_diff" / "diff_one.sh")
     if not trace_path.exists():
         return (False, "interposer_sim wrote no trace -- the L1 replay did "
                        "not happen, which is not the same as passing")

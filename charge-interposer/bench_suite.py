@@ -1,8 +1,16 @@
 """The charge interposer's suites, for the shared chain runner.
 
-    PYTHONPATH=shared/bench py -3.14 -B -m vtrux_bench.run plan \\
+    PYTHONPATH=<shared/bench> py -3.14 -B -m vtrux_bench.run plan \\
         --suite charge-interposer/bench_suite.py:emulated --settings <json>
     ... run [--group G]... [--check GLOB]... [--resume RUN_DIR]
+
+<shared/bench> is the pinned one, `py -3.14 -B charge-interposer/shared_pin.py
+where shared/bench` (port step 2a: the harness takes shared code only as the
+tag charge-interposer/firmware/shared_pins.json pins, from its read-only
+checkout ../shared-<tag>/). Loading this file refuses a vtrux_bench imported
+from anywhere else (shared_pin.use_bench), so a run on another copy stops
+before it starts. -B matters: bytecode in the checkout changes its R7 digest,
+and the pin check then refuses it.
 
 Tester, 2026-10-18 (reviewer's item: the chain runner and the baseline).
 The checks as they stand at origin 7891a23 / src 36edf3e55552,
@@ -39,14 +47,17 @@ Lanes (reviewer's ruling 3): madhouse-debian groups (m-*) and local groups
 one job while any wall-clock test runs on the host.
 
 The X2's images: bridge (the standing image), witness, truck, c12_bench,
-vport_bench. The Arduino images are taken from the manifest at
-settings.images_src -- their md5 must match their manifest row before they
-are flashed, and identify must read their build id back. The two ESP-IDF
-test images are identified by their @HELLO and ELF sha256.
+vport_bench. The interposer's images (port step 2a: ESP-IDF builds) are
+taken from images_dir/<images_src>/<variant>/, as their build's
+flasher_args.json gives them; each application's own descriptor must name
+it (interposer_<variant>, version images_src, ESP-IDF v5.4.2), and
+identify must read its build id, the ELF hash's first four bytes, back
+(_interposer_image). The two test images are identified by their @HELLO
+and ELF sha256.
 
 Settings beyond the core's (see the NICKY-XPS settings JSON in reverse-it
 interposer-firmware/): interposer_code,
-images_dir, images_src, boot_app0, serial_port, pcan_channel, wican_state,
+images_dir, images_src, serial_port, pcan_channel, wican_state,
 madhouse_pio; for the bench suite's WiCAN (bench_wican.py), gi_tools
 (gen-inhibit's tools/gen_inhibit, read-only) and gi_chain_settings
 (gen-inhibit's chain settings JSON, read for its gi_images). The diag DBC
@@ -74,7 +85,11 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared", "bench"))
+import shared_pin  # noqa: E402
+# the pinned shared/bench, first on sys.path; a vtrux_bench from elsewhere
+# already imported (the runner's own, if PYTHONPATH named another copy) is
+# refused here
+SHARED_BENCH = shared_pin.use_bench()
 
 from vtrux_bench.run import (Check, Figure, Group, Image, KnownFail,  # noqa: E402
                              Result, Suite, Verdict)
@@ -83,26 +98,33 @@ import bench_wican  # noqa: E402
 import canre_pin  # noqa: E402
 import can_tools_pin  # noqa: E402
 import scratch_dir  # noqa: E402
-sys.path.insert(0, os.path.join(HERE, "firmware"))
-import build_identity  # noqa: E402
+# The ESP-IDF project's own inputs (port step 2a, Part B): every file of its
+# one component, main/ (the sources, main/CMakeLists.txt and
+# main/idf_component.yml), and the project root's build files. The board
+# component and arduino-esp32 come in by dependencies.lock, which names
+# their versions and hashes. Before 2a this was firmware/src plus
+# build_identity.py's DIGEST_INPUTS (platformio.ini and the PlatformIO
+# build scripts), all retired by Part B.
+PRODUCT_MAIN = "main"
+PRODUCT_ROOT_FILES = ("CMakeLists.txt", "sdkconfig", "dependencies.lock")
 
 
 def product_files(root):
     """The interposer's product files in the tree at `root` (a clone root),
     for the runner's product digest (user 2026-10-20). The split is the
-    component table's (reviewer, 2026-10-20): machine.py, plus firmware/src
-    and the build files exactly as build_identity.source_digest takes them
-    (DIGEST_INPUTS). Everything else -- the sims, run_scenario, pack.py,
+    component table's (reviewer, 2026-10-20): machine.py, plus the IDF
+    project's inputs (PRODUCT_MAIN, PRODUCT_ROOT_FILES; .md files are
+    notes, not inputs). Everything else -- the sims, run_scenario, pack.py,
     protocol.py, bus.py, replay.py, regress.py, tests -- is harness."""
     fw = os.path.join(root, "charge-interposer", "firmware")
     out = []
-    for dirpath, dirs, files in os.walk(os.path.join(fw, "src")):
+    for dirpath, dirs, files in os.walk(os.path.join(fw, PRODUCT_MAIN)):
         dirs.sort()
         for f in sorted(files):
-            if f.endswith(build_identity.SRC_SUFFIXES):
+            if not f.endswith(".md"):
                 out.append(os.path.relpath(os.path.join(dirpath, f), root)
                            .replace(os.sep, "/"))
-    for x in build_identity.EXTRA_INPUTS:
+    for x in PRODUCT_ROOT_FILES:
         if os.path.exists(os.path.join(fw, x)):
             out.append("charge-interposer/firmware/" + x)
     out.append("charge-interposer/machine.py")
@@ -140,6 +162,16 @@ HARNESS_PY_TESTS = [
     "sims_test.py", "regress_offline_test.py", "capture_pins_test.py",
     "build_lookup_offline_test.py", "paths_test.py", "diag_cadence_test.py",
     "bus_gs_usb_test.py", "canre_pin_test.py", "can_tools_pin_test.py",
+    "twai_fake_option_test.py", "scratch_dir_test.py", "scratch_run_test.py",
+    "shared_pin_test.py", "hw_mechanics_test.py", "refusal_pairs_test.py",
+]
+# The ones of those also run with --can-fail, as <name>-canfail. One list
+# for the harness suite and accept_adapter's catalogue, so they can't drift.
+HARNESS_PY_CANFAILS = [
+    "canre_pin_test.py", "can_tools_pin_test.py", "bus_gs_usb_test.py",
+    "paths_test.py", "twai_fake_option_test.py", "scratch_dir_test.py",
+    "scratch_run_test.py", "shared_pin_test.py", "hw_mechanics_test.py",
+    "refusal_pairs_test.py",
 ]
 MADHOUSE_PIO_PATH = "{madhouse_pio_dir}:/usr/local/bin:/usr/bin:/bin"
 
@@ -184,7 +216,16 @@ EMULATED_LOCAL = [
 ]
 # shared/bench's own tests (the decode identity, the chain runner), each run
 # plain and with --can-fail (reviewer, 2026-10-22: no suite ran them).
-SHARED_BENCH_TESTS = ["test_bench_lock.py", "test_decode.py", "test_run_core.py"]
+# From port step 2a they are the pinned shared/bench's (SHARED_BENCH), which
+# holds the acceptance runner's tests and scratch helpers too.
+SHARED_BENCH_TESTS = [
+    "test_accept_canfail.py", "test_accept_close.py", "test_accept_compile.py",
+    "test_accept_judge.py", "test_accept_list.py", "test_accept_record.py",
+    "test_accept_remote.py", "test_accept_run.py", "test_accept_setup.py",
+    "test_accept_suite_runs.py", "test_accept_trees.py", "test_bench_lock.py",
+    "test_decode.py", "test_run_core.py", "test_scratch.py",
+    "test_scratch_helper.py",
+]
 
 HARNESS_LOCAL = [
     # the bench host's own pinned canbench (madhouse has no clone and
@@ -213,6 +254,11 @@ HARNESS_LOCAL = [
     ("e5-arming-controls", ["{interposer_code}/harness_checks/e5_arming_controls.py"]),
     ("clamp-frame-cases", ["{interposer_code}/harness_checks/clamp_frame_cases.py"]),
 ]
+
+RETIRED_2A = (
+    "retired at port step 2a: the PlatformIO build, its manifest and the "
+    "build_check / digest_recheck_check family went with Part B "
+    "(reviewer 2026-11-03, Q3); the IDF builds are 2a acceptance (h)")
 
 EMULATED_KNOWN_FAILS = [
     KnownFail("m-host/host-bridge/l2.bridge-ok-veh-failed",
@@ -326,7 +372,7 @@ def host_bridge_judge(run):
             out.append(Result(Verdict.ERROR, "l2." + c,
                               detail="case opened but never reported"))
     tests = sorted(os.path.basename(p)[:-4] for p in glob.glob(
-        os.path.join(run.ctx["interposer_code"], "firmware", "test",
+        os.path.join(run.ctx["interposer_code"], "fw_harness",
                      "host_bridge", "test_*.cpp")))
     for t in tests:
         if t == "test_l2_bridge":
@@ -375,12 +421,6 @@ def scenario_judge(run):
 
 
 # ---- images -------------------------------------------------------------
-def _manifest(code):
-    with open(os.path.join(code, "firmware", "builds", "manifest.json"),
-              encoding="utf-8") as f:
-        return json.load(f)["builds"]
-
-
 # The X2 the esptool flasher must find on the port before it writes
 # (methodology, 2026-10-20: a chip-id mismatch writes nothing, and an image
 # that names no chip is refused). The repo is public, so the MAC is never a
@@ -393,24 +433,70 @@ def _x2_chip(settings):
     return {"type": X2_CHIP_TYPE, "mac": settings.get("x2_mac")}
 
 
-def _arduino_image(name, env, settings):
+# The interposer's images are built with ESP-IDF v5.4.2 (user, 2026-11-03);
+# the bench's own test images (c12_bench, vport_bench) stay on v5.4.1
+# (reviewer, 2026-11-03), so _idf_image does not check this.
+INTERPOSER_IDF = "v5.4.2"
+
+
+def _md5(path):
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for blk in iter(lambda: f.read(1 << 20), b""):
+            h.update(blk)
+    return h.hexdigest()
+
+
+def _interposer_image(variant, settings):
+    """An ESP-IDF image of the interposer (port step 2a), from the folder
+    images_dir/<images_src>/<variant>/, which holds the build's
+    flasher_args.json and the files it names at their paths (the build's
+    bootloader, partition table, otadata and application). Flashed exactly
+    as flasher_args.json gives them, otadata included (the build's
+    ota_data_initial.bin, not PlatformIO's boot_app0.bin).
+
+    The identity is the application's own descriptor (spec 8.2): its
+    project name must be interposer_<variant>, its version the folder's
+    images_src (ESP-IDF's git describe of the commit; never -dirty), its
+    ESP-IDF INTERPOSER_IDF, and identify must read the first four bytes of
+    its ELF hash back from 0x7F7. A folder that does not say so is refused
+    when the suite is built, before anything is flashed."""
+    import build_lookup
     src = settings["images_src"]
-    d = os.path.join(settings["images_dir"], src, env)
-    tag = {"esp32-can-x2": "bridge", "esp32-can-x2-witness": "witness"}.get(env, env)
-    app = os.path.join(d, "interposer_%s_%s.bin" % (src, tag))
-    rows = [r for r in _manifest(settings["interposer_code"])
-            if r["image"] == os.path.basename(app)]
-    if len(rows) != 1:
-        raise ValueError("%s: %d manifest rows" % (os.path.basename(app), len(rows)))
-    row = rows[0]
-    return Image(name, "esptool", board="x2", expect=row["build_id_0x7F7"],
-                 params={"files": [["0x0", os.path.join(d, "bootloader.bin")],
-                                   ["0x8000", os.path.join(d, "partitions.bin")],
-                                   ["0xe000", settings["boot_app0"]],
-                                   ["0x10000", app]],
-                         "md5": {app: row["md5"]}, "chip": _x2_chip(settings)},
-                 note="manifest row %s, elf %s" % (row["image"],
-                                                   row["elf_sha256"][:8]))
+    d = os.path.join(settings["images_dir"], src, variant)
+    fa_path = os.path.join(d, "flasher_args.json")
+    with open(fa_path, encoding="utf-8") as f:
+        fa = json.load(f)
+    app_rel = (fa.get("app") or {}).get("file")
+    files = sorted(((off, os.path.join(d, *rel.split("/")))
+                    for off, rel in (fa.get("flash_files") or {}).items()),
+                   key=lambda x: int(x[0], 16))
+    want_offs = {"0x0", "0x8000", "0xe000", "0x10000"}
+    if set(o for o, _p in files) != want_offs:
+        raise ValueError("%s: flash_files at %s, not the X2's bootloader, "
+                         "partition table, otadata and app (%s)"
+                         % (fa_path, sorted(o for o, _p in files),
+                            sorted(want_offs)))
+    app = os.path.join(d, *(app_rel or "?").split("/"))
+    if dict(files).get("0x10000") != app:
+        raise ValueError("%s: its app is not the file at 0x10000" % fa_path)
+    desc = build_lookup.app_desc_of_bin(app)
+    if desc is None:
+        raise ValueError("%s is not an ESP-IDF application image" % app)
+    project = "interposer_%s" % variant
+    for what, got, want in (("project name", desc["project_name"], project),
+                            ("version", desc["version"], src),
+                            ("ESP-IDF", desc["idf_ver"], INTERPOSER_IDF)):
+        if got != want:
+            raise ValueError("%s: its %s is %r, not %r" % (app, what, got,
+                                                          want))
+    sha = desc["elf_sha256"]
+    return Image(variant, "esptool", board="x2", expect=sha[:8],
+                 params={"files": [[o, p] for o, p in files],
+                         "md5": {p: _md5(p) for _o, p in files},
+                         "chip": _x2_chip(settings)},
+                 note="%s %s, %s, ELF %s" % (project, desc["version"],
+                                             desc["idf_ver"], sha[:16]))
 
 
 def _idf_image(name, settings):
@@ -582,27 +668,22 @@ def emulated(settings):
     """No hardware, no lock: builds, host suites, the 1x sims, the capture
     trace rebuild."""
     b = _Build(settings)
-    # build-check runs in a git checkout of this commit, not the shipped
-    # copy (user ruling, 2026-10-19; build_check_in_clone.py).
-    gitb, commit = _stage_git_bundle(b.code)
-    m_build = Group("m-build", host="madhouse",
-                    ship=dict(b.ship, gitb=gitb), checks=[
-        b.mpio("build-check", [
-            "firmware/test/build_check_in_clone.py",
-            "--bundle", "{work}/gitb/repo.bundle", "--commit", commit,
-            "--shipped", "{work}/code", "--dest", "{work}/clone"],
-            cls="build", timeout_s=7200),
-        b.mpy("manifest-test", ["firmware/manifest_test.py"], cls="build"),
-        b.mpy("manifest-offline-test", ["firmware/manifest_offline_test.py"]),
-    ])
+    # RETIRED at port step 2a (Part B): the PlatformIO build and its
+    # manifest are gone (platformio.ini, manifest.py and its two tests,
+    # build_check's environments), and build_check / digest_recheck_check
+    # retire with them (reviewer, 2026-11-03, Q3). Listed, not counted
+    # (2a acceptance (c)); the IDF builds are checked by acceptance (h).
+    m_build = Group("m-build", checks=[
+        Check(cid, ["-"], skip=RETIRED_2A) for cid in
+        ("build-check", "manifest-test", "manifest-offline-test")])
     m_host = Group("m-host", host="madhouse", ship=b.ship, checks=[
-        b.mbash("host-bridge", ["bash", "firmware/test/host_bridge/run.sh"],
+        b.mbash("host-bridge", ["bash", "fw_harness/host_bridge/run.sh"],
                 cls="build", timeout_s=3600, judge=host_bridge_judge),
         b.mbash("host-unit", ["bash", "firmware/test/host_unit/run.sh"],
                 cls="build", timeout_s=1800),
-        b.mbash("host-diff", ["bash", "firmware/test/host_diff/diff_all.sh"],
+        b.mbash("host-diff", ["bash", "fw_harness/host_diff/diff_all.sh"],
                 cls="build", timeout_s=7200),
-        b.mpy("check-port", ["firmware/test/host_diff/check_port.py"]),
+        b.mpy("check-port", ["fw_harness/host_diff/check_port.py"]),
         b.mpy("regress-all", ["regress.py", "--all"], cls="build", timeout_s=7200),
     ] + [b.mpy(t[:-3].replace("_", "-"), [t], cls="build", timeout_s=3600)
          for t in LOGIC_PY_TESTS])
@@ -794,9 +875,9 @@ def bench(settings):
     ])
 
     images = {
-        "bridge": _arduino_image("bridge", "esp32-can-x2", settings),
-        "witness": _arduino_image("witness", "esp32-can-x2-witness", settings),
-        "truck": _arduino_image("truck", "truck", settings),
+        "bridge": _interposer_image("bridge", settings),
+        "witness": _interposer_image("witness", settings),
+        "truck": _interposer_image("truck", settings),
         "c12_bench": _idf_image("c12_bench", settings),
         "vport_bench": _idf_image("vport_bench", settings),
     }
@@ -831,39 +912,17 @@ def harness(settings):
     and the bench drivers' self-tests. Run when the harness changes."""
     b = _Build(settings)
     m_harness = Group("m-harness", host="madhouse", ship=b.ship, checks=[
-        b.mpio("build-check-links-test",
-               ["firmware/test/build_check_links_test.py"], cls="build",
-               timeout_s=3600),
-        b.mpy("build-check-manifest-test",
-              ["firmware/test/build_check_manifest_test.py"], cls="build"),
-        b.mpy("build-check-schema-test",
-              ["firmware/test/build_check_schema_test.py"], cls="build"),
-        b.mpy("build-check-schema-test-canfail",
-              ["firmware/test/build_check_schema_test.py", "--can-fail"],
-              cls="build"),
-        b.mpy("build-check-in-clone-test",
-              ["firmware/test/build_check_in_clone_test.py"], cls="build"),
-        b.mpy("build-check-in-clone-test-canfail",
-              ["firmware/test/build_check_in_clone_test.py", "--can-fail"],
-              cls="build"),
-        b.mpio("digest-recheck-check", ["firmware/test/digest_recheck_check.py"],
-               cls="build", timeout_s=7200),
-        b.mpio("digest-recheck-check-canfail",
-               ["firmware/test/digest_recheck_check.py", "--can-fail"],
-               cls="build", timeout_s=7200),
+        # retired with build_check / digest_recheck_check (emulated m-build)
+        Check(cid, ["-"], skip=RETIRED_2A) for cid in (
+            "build-check-links-test", "build-check-manifest-test",
+            "build-check-schema-test", "build-check-schema-test-canfail",
+            "build-check-in-clone-test", "build-check-in-clone-test-canfail",
+            "digest-recheck-check", "digest-recheck-check-canfail")
     ] + [b.mpy(t[:-3].replace("_", "-"), [t], cls="build", timeout_s=3600)
          for t in HARNESS_PY_TESTS] + [
-        b.mpy("canre-pin-test-canfail", ["canre_pin_test.py", "--can-fail"],
-              cls="build", timeout_s=3600),
-        b.mpy("can-tools-pin-test-canfail",
-              ["can_tools_pin_test.py", "--can-fail"], cls="build",
-              timeout_s=3600),
-        b.mpy("bus-gs-usb-test-canfail",
-              ["bus_gs_usb_test.py", "--can-fail"], cls="build",
-              timeout_s=3600),
-        b.mpy("paths-test-canfail",
-              ["paths_test.py", "--can-fail"], cls="build",
-              timeout_s=3600)])
+        b.mpy(t[:-3].replace("_", "-") + "-canfail", [t, "--can-fail"],
+              cls="build", timeout_s=3600)
+        for t in HARNESS_PY_CANFAILS])
     def mutant(cid, argv):
         kw = dict(cls="build", timeout_s=7200,
                   judge=globals()[MUTANT_JUDGES.get(cid, "script_judge")])
@@ -883,7 +942,8 @@ def harness(settings):
         for s in CAN_FAILS] + [b.lpy(cid, argv, timeout_s=3600)
                                 for cid, argv in HARNESS_LOCAL] + [
         b.lpy("sb.%s%s" % (t[:-3].replace("_", "-"), sfx),
-              ["{interposer_code}/../shared/bench/tests/%s" % t] + arg,
+              [os.path.join(SHARED_BENCH, "tests", t).replace(os.sep, "/")]
+              + arg,
               timeout_s=3600)
         for t in SHARED_BENCH_TESTS
         for sfx, arg in (("", []), ("-canfail", ["--can-fail"]))] + [
