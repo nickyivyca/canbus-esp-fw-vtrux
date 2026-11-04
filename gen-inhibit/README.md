@@ -61,10 +61,14 @@ starting `$REVERSE_IT_DIR` are in reverse-it and not yet moved.
   (`shared/tools`, on `shared/main`) at the version this project pins in
   `gen-inhibit/firmware/shared_pins.json`, from its read-only checkout
   `../shared-<tag>/` beside the worktree's root (shared/tools SPEC R23):
-  `release` (a release build and its record, that spec's section 3), `image`
-  and `digest`. Run from the repo root as
-  `py -3.14 -B gen-inhibit/vtrux_tools.py ...`; `release` is given
-  `--project gen-inhibit/firmware` unless it names one (an abbreviation
+  `release` (a release build and its record, that spec's section 3);
+  `build` (a dev build of a variant, R31; refused until gen-inhibit's
+  `vtrux_build.json` lists variants, in stage (b)); `check-env` (the IDF
+  environment check, R32, run before each `idf.py` / `ninja` bench or dev
+  build); `image` and `digest`. Run from the repo root as
+  `py -3.14 -B gen-inhibit/vtrux_tools.py ...`, in a shell exported for
+  ESP-IDF v5.4.2 (since port step 1d); `release` and `build` are given
+  `--project gen-inhibit/firmware` unless they name one (an abbreviation
   counts). A prod build is a `release` at the pinned version (spec 12.3 item
   3); none is made during the shared-code port. It reads only the pin's tag,
   and if the checkout is missing it refuses and prints the command that
@@ -77,9 +81,11 @@ starting `$REVERSE_IT_DIR` are in reverse-it and not yet moved.
   repo is: no pin, a pin with no tag, a pin anywhere but
   `gen-inhibit/firmware/` (not read), a missing checkout (the refusal names
   the command), and a stand-in checkout whose command line gets the
-  arguments and keeps no `__pycache__`; `release` gets `--project` with
-  `gen-inhibit/firmware/` unless it names one, and nothing is added to the
-  other commands. Not evidence.
+  arguments and keeps no `__pycache__`; `release` and `build` get
+  `--project` with `gen-inhibit/firmware/` unless they name one, and
+  nothing is added to the other commands (`check-env`, `image`, `digest`).
+  Its scratch is the run's own folder under `scratch/`, removed at the end.
+  Not evidence.
 - `gen-inhibit/firmware/vtrux_build.json`, the project's build data for the
   tooling (`project`, `shared_components`).
 - `gen-inhibit/firmware/shared_pins.json`, the project's pins of shared
