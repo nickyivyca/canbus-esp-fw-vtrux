@@ -88,7 +88,9 @@ version and nothing is rewritten (VOID otherwise). main is built under it with v
 "v"+M.m.p+"-dirty" (r33_suffix_dirty) and "-3-g0123abc" (r33_suffix_ahead), and with no
 version.txt (r33_suffix_none: git_revision is then the untagged commit's hash, as `git describe
 --always` gives it, no version), each to be refused as above; the can-fail, r33_suffix_exact,
-"v"+M.m.p in the same copy, must build and be recorded with that idf_version. An empty
+"v"+M.m.p in the same copy, must build and be recorded with that idf_version, writing its own
+record: main's records from earlier cases are removed from the fixture first, since an identical
+build finds its record there and writes nothing new (runs/step1d_r33ver_8282b29). An empty
 version.txt is not a case: this IDF's own configure stops on it (build.cmake, IDF_VER with no
 value), before the tooling checks anything (runs/step1d_r33ver_85e9277). The copy is removed
 when the case ends, pass or fail.
@@ -1002,6 +1004,27 @@ def idf_copy_repo(dst):
     return R.git(dst, "describe", "--always", "--tags", "--dirty", "--match=v*.*")
 
 
+def clear_records(recs, commit):
+    """Remove from the fixture's record folder (scratch) every record whose commit is `commit`, and
+    return the file names removed. A record is named by its image hash, so a build identical to an
+    earlier case's finds its record already there and writes nothing new (R13); a can-fail that must
+    be recorded then has to see its own record written."""
+    gone = []
+    if os.path.isdir(recs):
+        for n in sorted(os.listdir(recs)):
+            if not n.endswith(".json"):
+                continue
+            with open(os.path.join(recs, n), encoding="utf-8") as f:
+                if json.load(f).get("commit") != commit:
+                    continue
+            for x in (".bin", ".elf", ".json"):
+                q = os.path.join(recs, n[:-5] + x)
+                if os.path.exists(q):
+                    os.remove(q)
+                    gone.append(n[:-5] + x)
+    return gone
+
+
 def copy_ignore(src):
     """copytree's ignore for the IDF copy: every .git (the tree and each submodule's file), and the
     top level's docs/ and examples/, which no build reads."""
@@ -1051,8 +1074,9 @@ def c_r33_suffix(ctx, log):
     are not rewritten: each refusal can come from git_revision alone. main (manifest naming this
     version) is built under the copy with version.txt "v"+M.m.p+"-dirty" and "-3-g0123abc", and
     with no version.txt (git_revision the commit's hash), each to be refused; the can-fail, the
-    same copy with exactly "v"+M.m.p, must build and be recorded. The copy is removed at the end,
-    pass or fail."""
+    same copy with exactly "v"+M.m.p, must build and be recorded, its own record written (main's
+    records from earlier cases are removed from the fixture first: clear_records). The copy is
+    removed at the end, pass or fail."""
     this_v = R.idf_version()
     src = os.environ["IDF_PATH"]
     dst = os.path.join(ctx.root, "idfc")
@@ -1084,10 +1108,14 @@ def c_r33_suffix(ctx, log):
             for d in ("build", "managed_components"):
                 R.rmtree(os.path.join(ctx.mini, d))
             recs = ctx.records(MINI_PROJECT)
+            gone = clear_records(recs, R.git(ctx.mini, "rev-parse", "HEAD")) if suffix == "" else []
             before = R.snapshot(recs)
             with open(log, "a", encoding="utf-8") as f:
                 f.write("\n=== %s: %s\n" % (name, "no version.txt, git describe %r" % planted if suffix is None
                                                 else "version.txt %r" % planted))
+                if suffix == "":
+                    f.write("records of this commit removed first, so this build must write its own: %s\n" % (
+                        gone or "none there"))
             rc, out = R.release(ctx, ctx.mini, log, jobs=ctx.jobs, base_env=e)
             after = R.snapshot(recs)
             new = sorted(set(after) - set(before))
@@ -1514,6 +1542,18 @@ def self_test():
            R.git(rd, "rev-parse", "HEAD").startswith(bare), True)
     expect("idf_copy_repo: untracked files do not make it -dirty", R.git(rd, "describe", "--always", "--tags",
                                                                         "--dirty", "--match=v*.*"), bare)
+    rec_d = os.path.join(d, "recs")
+    os.makedirs(rec_d)
+    for h, c in (("aa", "c1"), ("bb", "c2")):
+        for x in (".bin", ".elf"):
+            open(os.path.join(rec_d, h + x), "w").write("x")
+        json.dump({"commit": c}, open(os.path.join(rec_d, h + ".json"), "w"))
+    open(os.path.join(rec_d, "notes.txt"), "w").write("x")
+    expect("clear_records: the commit's three files removed", clear_records(rec_d, "c1"), ["aa.bin", "aa.elf", "aa.json"])
+    expect("clear_records: another commit's record and other files kept", sorted(os.listdir(rec_d)),
+           ["bb.bin", "bb.elf", "bb.json", "notes.txt"])
+    expect("clear_records: none of that commit", clear_records(rec_d, "c3"), [])
+    expect("clear_records: no folder", clear_records(os.path.join(d, "nosuch"), "c1"), [])
     src = os.path.join(d, "inst")
     pe = R.idf_env
     try:
