@@ -157,9 +157,9 @@ unless the image changes, which the reproducible test (R19) shows.
   are not constrained.
 - **R32. The IDF environment check.** Before a release build or a dev build
   (R31) hands anything to ESP-IDF, the environment it was started in is
-  checked: `IDF_PATH` is set; `IDF_TOOLS_PATH` is set and not empty; and
-  `IDF_PYTHON_ENV_PATH` and `ESP_ROM_ELF_DIR` are set and inside
-  `IDF_TOOLS_PATH`. A failure is a refusal naming the variable. Nothing is
+  checked: `IDF_PATH` is set and not empty; `IDF_TOOLS_PATH` is set and
+  not empty; and `IDF_PYTHON_ENV_PATH` and `ESP_ROM_ELF_DIR` are set and
+  inside `IDF_TOOLS_PATH`. A failure is a refusal naming the variable. Nothing is
   defaulted: an unset `IDF_TOOLS_PATH` is never replaced by `~/.espressif`.
   The check is also a command of its own (`check-env`), and a project whose
   bench builds do not go through R31 runs it before each.
@@ -308,9 +308,13 @@ unless the image changes, which the reproducible test (R19) shows.
 - **R33. Each project names its IDF version.** Each project's main
   component manifest (`main/idf_component.yml` under the project root)
   names the ESP-IDF version the project builds on as one exact version,
-  written `5.4.2` or `==5.4.2`, so that a configure under another IDF fails. The
-  version is the one the project's own spec sets. A release build is
-  refused if the manifest names a range or no version.
+  written `5.4.2` or `==5.4.2`. The version is the one the project's own
+  spec sets. A release build is refused if the manifest names a range or no
+  version. With no `dependencies.lock`, a configure under another IDF then
+  fails. With the committed lock, the other IDF rewrites the lock's `idf`
+  version and configures, and a release build refuses that at R8's
+  clean-worktree check after the reconfigure. A bench or dev build is not
+  guarded against it (R14); its image records the ESP-IDF it was built on.
 
 ## 6. Running the tooling
 
@@ -327,8 +331,9 @@ unless the image changes, which the reproducible test (R19) shows.
 
 - **R23. From a read-only checkout at the pin.** The build tooling runs from
   the shared checkout `../shared-<tag>/`, relative to the project's worktree
-  root, as the bench toolkit does (goal 20 item 8). It refuses to start
-  unless that checkout's digest (R7) matches the project's committed pin. If
+  root, as the bench toolkit does (goal 20 item 8). A release build refuses
+  to start unless that checkout's digest (R7) matches the project's
+  committed pin. If
   the checkout is missing, it refuses and prints the command that creates
   it.
 - **R25. Tags on `shared/main`.** One sequence of tags covers the whole of

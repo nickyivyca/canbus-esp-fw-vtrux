@@ -1,6 +1,7 @@
 /*
  * The fake's own tests (SPEC.md T10; the harness tests the harness). Each
- * case states a behaviour of ESP-IDF v5.4.1's driver, from its source
+ * case states a behaviour of ESP-IDF v5.4.1's driver, as v5.4.2 keeps it
+ * (or v5.4.2's, where the case says so), from its source
  * (README.md, "What it rests on"), and checks the fake does it. mutate.py
  * then breaks the fake one behaviour at a time and requires this to fail.
  *
@@ -323,6 +324,32 @@ static void case_inflight_branch(void)
     CHECK(twai_get_status_info(&s) == ESP_OK && s.tx_failed_count == 1 && s.msgs_to_tx == 0);
     CHECK(twai_fake_tx_failed_at_busoff() == 1 && twai_fake_wire_count() == 1);
     CHECK(read_alerts() == (TWAI_ALERT_TX_FAILED | TWAI_ALERT_BUS_OFF));
+
+    /* ESP-IDF v5.4.2 twai.c:194-197: while bus-off the handler loads no next
+     * frame and raises TX_IDLE; the queued frame stays counted until
+     * recovery discards it (v5.4.1 loaded it into the buffer, no TX_IDLE). */
+    g_case = "bus-off branch a, a frame queued: none loaded, TX_IDLE, recovery discards it (v5.4.2)";
+    up(TWAI_MODE_NORMAL, 5, 5, TWAI_ALERT_TX_FAILED | TWAI_ALERT_TX_IDLE | TWAI_ALERT_BUS_OFF, true);
+    twai_fake_set_busoff_inflight_fails(true);
+    CHECK(twai_transmit(&m, 0) == ESP_OK);
+    CHECK(twai_transmit(&m, 0) == ESP_OK);
+    CHECK(twai_transmit(&m, 0) == ESP_OK);
+    twai_fake_bus_off_after_sent(1);
+    twai_fake_advance(222);
+    CHECK(twai_fake_state() == TWAI_STATE_BUS_OFF);
+    CHECK(twai_get_status_info(&s) == ESP_OK && s.tx_failed_count == 1 && s.msgs_to_tx == 1);
+    CHECK(twai_fake_tx_failed_at_busoff() == 1 && twai_fake_wire_count() == 1);
+    CHECK(read_alerts() == (TWAI_ALERT_TX_FAILED | TWAI_ALERT_TX_IDLE | TWAI_ALERT_BUS_OFF));
+    twai_fake_advance(10000);
+    CHECK(twai_fake_wire_count() == 1 && twai_fake_total_tx_failed() == 1);
+    CHECK(twai_initiate_recovery() == ESP_OK);
+    CHECK(twai_fake_tx_discarded_by_recovery() == 1);
+    twai_fake_advance(2816);
+    CHECK(twai_fake_state() == TWAI_STATE_STOPPED && twai_start() == ESP_OK);
+    CHECK(twai_get_status_info(&s) == ESP_OK && s.msgs_to_tx == 0);
+    CHECK(twai_transmit(&m, 0) == ESP_OK);
+    twai_fake_advance(222);
+    CHECK(twai_fake_wire_count() == 2);
 }
 
 static void case_ack(void)

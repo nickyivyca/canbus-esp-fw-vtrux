@@ -1,5 +1,6 @@
 /*
- * Host stand-in for ESP-IDF 5.4.1's esp32c3 hal/twai_ll.h: the status register
+ * Host stand-in for ESP-IDF 5.4.1's and 5.4.2's esp32c3 hal/twai_ll.h
+ * (byte-identical in the two): the status register
  * is a value the case sets, and the abort command is recorded. No controller
  * behaviour: writing the command changes nothing the next read returns. For
  * the restart stop (T12): the reset-mode bit, the error counters and the

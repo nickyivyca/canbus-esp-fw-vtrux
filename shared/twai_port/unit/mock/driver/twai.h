@@ -1,5 +1,6 @@
 /*
- * Host stand-in for ESP-IDF 5.4.1's driver/twai.h (with hal/twai_types.h):
+ * Host stand-in for ESP-IDF 5.4.1's and 5.4.2's driver/twai.h (with
+ * hal/twai_types.h; both byte-identical in the two):
  * the types, macros and calls the port uses, with the real field names and
  * alert values. The calls are the scripted stub's (stub.c): each returns what
  * the case set and records that it was made. Nothing here models the

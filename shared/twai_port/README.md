@@ -17,7 +17,7 @@ code to test.
 | File | What |
 |---|---|
 | `include/twai_port.h`, `twai_port.c` | the port: the project's choices (T2), install and teardown (T3, T4), mode changes, receive and the one send (T6), the one alert reader (T5), the counters and status (T7), and its `can_port` backend table, `twai_port_ops` |
-| `twai_port_ll_esp32c3.c` | T8 on the C3: the buffer state and the abort-if-awaiting, and T12's restart stop, register level, checked against ESP-IDF v5.4.1 |
+| `twai_port_ll_esp32c3.c` | T8 on the C3: the buffer state and the abort-if-awaiting, and T12's restart stop, register level, checked against ESP-IDF v5.4.1 and v5.4.2 (the headers it reads are byte-identical in the two) |
 | `twai_port_ll_unsupported.c` | T8 and T12 on any other chip: the buffer state, the abort and the restart stop report unsupported |
 | `test_app/` | T13: the transmit-abort probe, `POST /gi_txabort`, moved from gen-inhibit's `gi_txabort_probe.c` (`twai_port_txabort_probe.c`, `include/twai_port_txabort_probe.h`), compiled in only by `TWAI_PORT_TXABORT_PROBE`; the project registers it from its URI hook with its check of whether it owns the bus |
 | `CMakeLists.txt`, `idf_component.yml` | the component: the register file by target, the probe by its switch, and the project's one board component, found as `vtrux/wican` finds it |

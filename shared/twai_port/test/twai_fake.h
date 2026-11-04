@@ -256,8 +256,9 @@ void twai_fake_set_error_counters(uint32_t tec, uint32_t rec);
  * nothing is received or sent until a recovery or an uninstall.
  * The frame in the buffer at the strike: kept, and discarded with the queue
  * by the recovery (the default), or with `inflight_fails` booked failed
- * (tx_failed_count, TWAI_ALERT_TX_FAILED). Which one the silicon takes is
- * not settled from IDF's source.
+ * (tx_failed_count, TWAI_ALERT_TX_FAILED), then TWAI_ALERT_TX_IDLE with the
+ * queue left as it is (ESP-IDF v5.4.2 loads no next frame while bus-off;
+ * v5.4.1 did). Which one the silicon takes is not settled from IDF's source.
  */
 void twai_fake_bus_off(void);
 void twai_fake_set_busoff_inflight_fails(bool inflight_fails);

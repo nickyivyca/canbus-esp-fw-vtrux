@@ -3,7 +3,12 @@
  * for what each behaviour rests on.
  *
  * Every driver entry point below follows ESP-IDF v5.4.1's
- * components/driver/twai/twai.c (cited as "twai.c" with its line numbers).
+ * components/driver/twai/twai.c (cited as "twai.c" with its line numbers),
+ * re-read against v5.4.2's: the same but for the TX buffer handler, which
+ * loads no next frame while bus-off (v5.4.2 twai.c:194-197; from v5.4.1's
+ * line 196 on, v5.4.2's line numbers are 2 more), and bus recovery clearing
+ * the TX-buffer-occupied flag (hal/twai_hal.h), which the fake has no
+ * state for. The fake follows v5.4.2 (README.md, "ESP-IDF v5.4.2").
  * Where gen-inhibit's fake_twai.c and the interposer's twai_fake.cpp did
  * something different, the source decides, and README.md lists the change.
  */
@@ -343,7 +348,10 @@ static void load_next(int64_t start)
 static void enter_bus_off(void);
 
 /* twai.c:180, twai_handle_tx_buffer_frame(): the frame in the buffer is
- * done, successfully or not; the next one is loaded, or TX_IDLE raised. */
+ * done, successfully or not; the next one is loaded, or TX_IDLE raised.
+ * While bus-off (branch a's halted frame) none is loaded: TX_IDLE, and the
+ * queue stays as it is, counted, until recovery or uninstall (v5.4.2
+ * twai.c:194-197; v5.4.1 loaded it). */
 static void complete_buf(int64_t done, bool failed)
 {
     qframe_t q = g_buf;
@@ -372,7 +380,14 @@ static void complete_buf(int64_t done, bool failed)
             rx_receive(&q.f);
         }
     }
-    load_next(done);
+    if (g_state == TWAI_STATE_BUS_OFF)
+    {
+        raise_alert(TWAI_ALERT_TX_IDLE);
+    }
+    else
+    {
+        load_next(done);
+    }
     if (!failed && g_busoff_after > 0 && ++g_busoff_count >= g_busoff_after)
     {
         g_busoff_after = 0;
@@ -1302,7 +1317,8 @@ static const twai_fake_assumption_t k_assumptions[] = {
     {TWAI_FAKE_SOURCE, "twai.c:131-207, the RX and TX buffer handlers",
      "a full RX queue loses the frame (rx_missed_count, RX_QUEUE_FULL); a "
      "completed frame raises TX_SUCCESS or TX_FAILED (tx_failed_count), then "
-     "the next is loaded or TX_IDLE raised"},
+     "the next is loaded or TX_IDLE raised; while bus-off none is loaded and "
+     "TX_IDLE is raised, the queue kept (v5.4.2 twai.c:194-197)"},
     {TWAI_FAKE_SOURCE, "twai.c:238-245, :808-838",
      "bus-off sets the state and the alert and touches no queue; recovery is "
      "allowed only from bus-off, resets the TX queue, and ends in STOPPED with "
