@@ -83,8 +83,8 @@ healthy over the last interval" -- are unchanged; only the set of things
 that count as unhealthy is wider. A decoder reading schema 3 reads it
 correctly either way.
 
-The rule is `firmware/src/bridge_health.h`, kept out of `main.cpp` so it can
-be compiled and tested on a host; `firmware/test/host_unit/` does that.
+The rule is `firmware/main/bridge_health.h`, kept out of `main.cpp` so it can
+be compiled and tested on a host; `host_unit/` does that.
 
 **A board whose controllers did not both start still sends `0x7F4`** (spec
 2.1 / 8.2, B-7d), once a second, as long as the vehicle-side controller came

@@ -3,7 +3,7 @@
 //
 // Separated from main.cpp for the same reason as bridge_health.h: the rule
 // is the whole of it, and the rest of main.cpp cannot be compiled on a
-// host. Pure, no Arduino, no ESP-IDF -- test/host_unit/
+// host. Pure, no Arduino, no ESP-IDF -- host_unit/
 // test_charger_tx_failures.cpp compiles this header directly. Until it was
 // lifted out, the rule lived in a static function in main.cpp that no test
 // compiles, so the one clause the counter exists for was pinned by reading

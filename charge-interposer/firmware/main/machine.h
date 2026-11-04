@@ -3,7 +3,7 @@
 // This is a direct port of machine.py from the parent folder. That file is the
 // reference implementation and stays the source of truth for behaviour; this
 // one is the source of truth for what runs on the board. They are kept in step
-// by test/host_diff, which drives both over the same captures and diffs every
+// by fw_harness/host_diff, which drives both over the same captures and diffs every
 // emitted frame and state transition. Both implement
 // notes/charge-interposer-spec.md; section numbers below refer to it.
 //
@@ -418,7 +418,7 @@ enum TripReason : uint8_t {
 // dropped it from every image, and nothing checked its strings, so it was a
 // third unverified home for these names. The numbers are `enum TripReason`
 // above, pinned against machine.py's TRIP_KEYS by
-// test/host_diff/check_port.py; the names are the table in
+// fw_harness/host_diff/check_port.py; the names are the table in
 // firmware/README.md.
 const char* eventName(uint8_t c);
 
