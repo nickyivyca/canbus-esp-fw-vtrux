@@ -464,9 +464,11 @@ arduino-esp32 3.2.1 as a component (user, 2026-11-03). Its build identity
 follows shared/tools, at the version
 `charge-interposer/firmware/shared_pins.json` pins (interposer spec 8.2).
 Its bench and dev builds are `idf.py` / `ninja` builds, one build folder
-per variant (`-D INTP_VARIANT=<variant>`), and like gen-inhibit's they need
-not meet the release rules. No interposer release build is made during the
-port, since no mid-port build goes on the truck (user, 2026-11-03).
+per variant, made by `charge-interposer/vtrux_tools.py build <variant>`,
+and like gen-inhibit's they need not meet the release rules. The launcher
+refuses a shell not exported for the interposer's IDF. No interposer
+release build is made during the port, since no mid-port build goes on
+the truck (user, 2026-11-03).
 
 **Two IDF versions until gen-inhibit's port step 1d** (user, 2026-11-03).
 gen-inhibit builds on v5.4.1 and the interposer on v5.4.2, each a separate
@@ -503,22 +505,21 @@ The cause was never isolated (user, 2026-10-15, for all of this section):
    test is running (user, 2026-11-03).
 3. **The throttled form on `NICKY-XPS`.** From a PowerShell exported for the
    project's IDF, set the shell's priority class to Idle with
-   `(Get-Process -Id $PID).PriorityClass = 'Idle'`. Then build: for a
-   gen-inhibit release build,
-   `py -3.14 -B gen-inhibit/vtrux_tools.py release --jobs 1` from the repo
-   root; for a gen-inhibit bench or dev build,
-   `ninja -C gen-inhibit/firmware/build -j 1`; for an interposer bench or
-   dev build, from `charge-interposer/firmware/`,
-   `idf.py -B build/<variant> -D INTP_VARIANT=<variant> reconfigure`, then
-   `ninja -C build/<variant> -j 1` (`idf.py build` has no jobs option; the
-   reconfigure gives a fresh build folder its variant and resolves the
-   managed components). The processes the build starts inherit the class.
-   Idle lowers CPU priority only, not disk priority. It also does not reach
-   Windows Defender, which scans fresh build output in its own process. If
-   (b) still disturbs the test, the next suspect is Defender, and excluding
-   the build folders from it is the user's call. **When a project's build
-   command changes,** this point changes in the same merge (see "Docs
-   change with the tooling").
+   `(Get-Process -Id $PID).PriorityClass = 'Idle'`. Then build, from the
+   repo root: for a release build,
+   `py -3.14 -B <project>/vtrux_tools.py release --jobs 1` (no interposer
+   release build is made during the port); for a gen-inhibit bench or dev
+   build, `ninja -C gen-inhibit/firmware/build -j 1`; for an interposer
+   bench or dev build,
+   `py -3.14 -B charge-interposer/vtrux_tools.py build <variant> --jobs 1`,
+   which reconfigures `charge-interposer/firmware/build/<variant>` for its
+   variant, then runs `ninja -j 1` there. The processes the build starts
+   inherit the class. Idle lowers CPU priority only, not disk priority. It
+   also does not reach Windows Defender, which scans fresh build output in
+   its own process. If (b) still disturbs the test, the next suspect is
+   Defender, and excluding the build folders from it is the user's call.
+   **When a project's build command changes,** this point changes in the
+   same merge (see "Docs change with the tooling").
 4. **Testers raise their simulators** to above-normal priority, never High or
    Realtime, which can starve the USB stack the CAN adapters need.
 5. **The tester's own timing checks** still decide whether a run counts. A
