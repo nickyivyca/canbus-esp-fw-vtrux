@@ -1391,27 +1391,34 @@ assumed-versus-measured list (spec 9.1).
 
 ### The mechanical aid
 
-`../fw_harness/hw_mechanics.py`, the tester's, watches what is a hardware mechanic **by
-construction**, in three ways:
+`../fw_harness/hw_mechanics.py`, the tester's, watches what is a hardware
+mechanic **by construction**, in three ways (paths from this folder):
 
-- **whole files**: both port drivers, `port_*.h`, `can_port.h`,
-  `platformio.ini`;
-- **`setup()`'s body**, extracted by brace matching and hashed with the
-  `INTP_PRINT*` lines removed. The boot path is a mechanic entire -- init
-  order, the controller begin calls, the B-7d failed-start branch -- so a
-  reordered `begin()` is reported while a reworded message is not;
-- **named settings by value**, not by file hash: the pin assignments, the
-  bitrate, the loop timings and the per-iteration drain bounds in
-  `main.cpp`.
+- **whole files**: both port drivers (`main/port_twai.cpp` and `.h`,
+  `main/port_mcp2515.cpp` and `.h`), `main/can_port.h`, `main/board_ports.h`
+  (the pins come from the board component through it),
+  `main/idf_component.yml` and `dependencies.lock` (the board component's,
+  the Arduino core's and ESP-IDF's versions), and the build's
+  `CMakeLists.txt`, `main/CMakeLists.txt` and `sdkconfig`;
+- **`setup()`'s body** in `main/main.cpp`, extracted by brace matching and
+  hashed with the `INTP_PRINT*` lines removed. The boot path is a mechanic
+  entire -- init order, the controller begin calls, the B-7d failed-start
+  branch -- so a reordered `begin()` is reported while a reworded message is
+  not;
+- **named settings by value**, not by file hash, in `main/main.cpp`:
+  `BITRATE`, `TICK_INTERVAL_MS`, `DIAG_INTERVAL_MS`, `STATUS_INTERVAL_MS`
+  and the vehicle and charger drain bounds. The pins are no longer constants
+  there (port step 2a, item 6a).
 
 ```
-py -3.14 charge-interposer/fw_harness/hw_mechanics.py
-py -3.14 .../hw_mechanics.py --record 2026-10-04-truck    # at each truck flash
-py -3.14 .../hw_mechanics.py --list                       # what is watched, and why
+py -3.14 -B charge-interposer/fw_harness/hw_mechanics.py
+py -3.14 -B .../hw_mechanics.py --record 2026-10-04-truck    # at each truck flash
+py -3.14 -B .../hw_mechanics.py --list                       # what is watched, and why
 ```
 
-This folder is not under git, so the baseline is a manifest written at each
-truck flash and kept in
+Its test is `../hw_mechanics_test.py`.
+
+The baseline is a manifest written at each truck flash and kept in
 `projects/vtrux/notes/artifacts/interposer-firmware/flash-manifests/`. Manifests
 are a record of what was flashed: the script refuses to overwrite one.
 
