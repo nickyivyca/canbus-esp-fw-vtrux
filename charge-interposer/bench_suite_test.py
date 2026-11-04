@@ -408,7 +408,9 @@ def test_suites():
     #      and its -canfail, with the re-pin (port step 2a)
     # 234: hw-mechanics-test and its -canfail, with hw_mechanics.py's map
     #      on the IDF project (port step 2a)
-    assert len(seen) == 234, "checks across the suites: %d" % len(seen)
+    # 236: refusal-pairs-test and its -canfail, with shared/tools R20's
+    #      refusal pairs for the interposer (port step 2a)
+    assert len(seen) == 236, "checks across the suites: %d" % len(seen)
     # madhouse gets the pinned canre beside the code, named by CANRE_DIR
     mad = 0
     for name in ("emulated", "harness"):
