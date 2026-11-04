@@ -112,11 +112,27 @@ def judge_record(rec, files, facts):
     comps = rec.get("components") or {}
     for name, d in facts["component_digests"].items():
         want("component %s digest" % name, (comps.get(name) or {}).get("digest"), d)
-    want("shared components", rec.get("shared_components"), facts["shared_components"])
+    want("shared components", rec.get("shared_components"),
+         shared_as_recorded(rec.get("shared_components"), facts["shared_components"]))
     t = rec.get("tooling") or {}
     for k in ("tag", "commit", "dirty", "digest"):
         want("tooling %s" % k, t.get(k), facts["tooling"][k])
     return bad
+
+
+def shared_as_recorded(got, exp):
+    """The shared components the tester expects (expected_shared), in the form R13's record takes:
+    for a git source the lock records what git resolved, "the commit, or an annotated tag naming
+    it" (R17). So where the pinned tag is annotated (lock_version_annotated, the tag object), a
+    record naming that object is as good as one naming the commit; the extra key is dropped."""
+    out = {}
+    for n, d in (exp or {}).items():
+        d = dict(d)
+        alt = d.pop("lock_version_annotated", None)
+        if alt and ((got or {}).get(n) or {}).get("lock_version") == alt:
+            d["lock_version"] = alt
+        out[n] = d
+    return out
 
 
 def judge_again(rc, before, after):
@@ -197,6 +213,26 @@ def self_test():
                         ("tooling tag another", "tooling", dict(rec["tooling"], tag=TAG_OTHER)),
                         ("tooling commit", "tooling", dict(rec["tooling"], commit="u" * 40))):
         ok &= broken(label, rec2=dict(rec, **{k: v}))
+    # R17: a git source's lock records the commit, or an annotated tag naming it
+    board = {"version": "t", "git": "g", "path": "p", "lock_version": "c" * 40}
+    exp_ann = dict(facts, shared_components={"b": dict(board, lock_version_annotated="a" * 40)})
+    exp_light = dict(facts, shared_components={"b": board})
+    for label, lv, fx, want_ok in (("annotated tag: the commit recorded", "c" * 40, exp_ann, True),
+                                   ("annotated tag: the tag object recorded", "a" * 40, exp_ann, True),
+                                   ("annotated tag: another object recorded", "e" * 40, exp_ann, False),
+                                   ("lightweight tag: the commit recorded", "c" * 40, exp_light, True),
+                                   ("lightweight tag: an object the tag is not", "a" * 40, exp_light, False)):
+        r = judge_record(dict(rec, shared_components={"b": dict(board, lock_version=lv)}), files, fx)
+        good = (not r) == want_ok
+        print("  %s shared components, %s: %s" % ("ok  " if good else "FAIL", label, "passes" if not r else r))
+        ok &= good
+    # r33_no_manifest: the refusal names R33
+    for label, out, want in (("names R33", "REFUSED: ... names no ESP-IDF version (R33)", True),
+                             ("R330 is not R33", "REFUSED: (R330)", False),
+                             ("no requirement named", "REFUSED: names no ESP-IDF version", False)):
+        good = names_r33(out) == want
+        print("  %s r33_no_manifest, %s" % ("ok  " if good else "FAIL", label))
+        ok &= good
     ok &= broken("dirty recorded false when the checkout is dirty",
                  facts2=dict(facts, tooling=dict(facts["tooling"], dirty=True)))
     old = {k: v for k, v in rec.items() if k != "dependencies_lock_sha256_lf"}
@@ -276,6 +312,8 @@ def self_test():
     ok &= self_test_epoch_env()
     ok &= self_test_layout(I.scratch("release-cases-selftest-layout"))
     ok &= self_test_shared(I.scratch("release-cases-selftest-shared"))
+    ok &= self_test_base(I.scratch("release-cases-selftest-base"))
+    ok &= self_test_board(I.scratch("release-cases-selftest-board"))
     rc, out = run([sys.executable, "-c", "print('PASS R30'); print('x')"])
     good = rc == 0 and out == "PASS R30\nx\n"
     print("  %s run(): a child's lines end in LF alone, so a judge's ^...$ matches them: %r" % ("ok  " if good else "FAIL", out))
@@ -491,14 +529,18 @@ def make_pin(ctx):
     return pin_of(co, TAG)
 
 
-def release(ctx, proj, log, jobs=None, check_only=False, env=None, watcher=None, tools=None):
+def release(ctx, proj, log, jobs=None, check_only=False, env=None, watcher=None, tools=None, python=None,
+            base_env=None):
+    """The release build of proj, as a user runs it. python and base_env: another interpreter and
+    caller environment (env_cases' runs under the other ESP-IDF install); default this one's."""
     tools = tools or default_tools(ctx, proj)
-    e = idf_env(PYTHONPATH=tools, REVERSE_IT_DIR=ctx.ri)
+    e = dict(base_env) if base_env is not None else idf_env()
+    e.update(PYTHONPATH=tools, REVERSE_IT_DIR=ctx.ri)
     e.update(env or {})
     for k, v in list(e.items()):
         if v is None:
             del e[k]
-    cmd = [sys.executable, "-B", "-m", "vtrux_build", "release", "--project", proj]
+    cmd = [python or sys.executable, "-B", "-m", "vtrux_build", "release", "--project", proj]
     if check_only:
         cmd.append("--check-only")
     if jobs:
@@ -556,13 +598,26 @@ def normalise(ctx, repo, label, fx):
     rmtree(os.path.join(repo, "build"))
 
 
+def resolve_base(me, clone, name):
+    """--base's commit: name resolved in me, this checkout's repository, where a branch name such
+    as gen-inhibit/main is a branch. In the clone it is only origin/<name>, so resolving it there
+    fails (2026-11-04). The commit must be in the clone too (on a branch or tag of me)."""
+    c = ref(me, name)
+    if not c:
+        raise RuntimeError("--base %s does not resolve in %s" % (name, me))
+    if run(["git", "-C", clone, "cat-file", "-e", c + "^{commit}"])[0]:
+        raise RuntimeError("--base %s is %s, which the fixture's clone lacks (on no branch or tag of %s)"
+                           % (name, c[:12], me))
+    return c
+
+
 def make_fixture(ctx):
     me = HERE
     while not os.path.exists(os.path.join(me, ".git")):
         me = os.path.dirname(me)
     run(["git", "clone", "-q", "--no-checkout", me, ctx.repo_src], check=True)
     with open(os.path.join(ctx.out, "fixture.txt"), "w") as fx:
-        base = git(ctx.repo_src, "rev-parse", ctx.base + "^{commit}")
+        base = resolve_base(me, ctx.repo_src, ctx.base)
         fx.write("base: %s (%s)\n" % (base, ctx.base))
         git(ctx.repo_src, "checkout", "-q", "-b", "fixture", base)
         ctx.set_sub(layout_of(ctx.repo_src, base))
@@ -624,7 +679,72 @@ def make_fixture(ctx):
         git(ctx.src, "checkout", "-q", "fixture")
 
 
+def idf_version(idf_path=None):
+    """The version of the ESP-IDF at idf_path (default: the exported one), "M.m.p", read from its
+    tools/cmake/version.cmake, as its build reads it."""
+    p = os.path.join(idf_path or os.environ["IDF_PATH"], "tools", "cmake", "version.cmake")
+    s = open(p).read()
+    parts = [re.search(r"set\(IDF_VERSION_%s\s+(\d+)\)" % k, s) for k in ("MAJOR", "MINOR", "PATCH")]
+    if not all(parts):
+        raise RuntimeError("%s: no IDF_VERSION_MAJOR/MINOR/PATCH" % p)
+    return ".".join(m.group(1) for m in parts)
+
+
+def idf_manifest(version, extra=""):
+    """A main/idf_component.yml naming the IDF version as written (R33: "5.4.2" or "==5.4.2"),
+    with extra dependency lines after it."""
+    return 'dependencies:\n  idf:\n    version: "%s"\n%s' % (version, extra)
+
+
+C3_BOARD = "vtrux/c3fx"     # the mini's board (since 2026-11-04: R21 needs one, 2026-10-27)
+C3_TAG = "2026.11.04"
+_FLASHSIZE = re.compile(r'^#define CONFIG_ESPTOOLPY_FLASHSIZE "([^"]+)"$', re.M)
+
+
+def board_repo(repo, name, target, table, flash_size, tag, table_file, hardware_name, description, msg, tag_msg):
+    """A scratch repository at repo holding shared/boards/<name> at the annotated tag tag
+    (shared/boards B1: a board change is tried at a tag, if need be in a scratch repo): board.json
+    for target with flash_size, table (bytes) as its reference partition table, nothing required,
+    and a component with no sources. Its path."""
+    rmtree(repo)
+    d = os.path.join(repo, "shared", "boards", name)
+    os.makedirs(d)
+    with open(os.path.join(d, "board.json"), "w", newline="\n") as f:
+        json.dump({"target": target, "flash_size": flash_size, "partition_table": table_file, "required": [],
+                   "hardware_name": hardware_name}, f, indent=2)
+    with open(os.path.join(d, table_file), "wb") as f:
+        f.write(table)
+    with open(os.path.join(d, "CMakeLists.txt"), "w", newline="\n") as f:
+        f.write("idf_component_register()\n")
+    with open(os.path.join(d, "idf_component.yml"), "w", newline="\n") as f:
+        f.write('description: "%s"\ntargets:\n  - %s\n' % (description, target))
+    run(["git", "init", "-q", "-b", "main", repo], check=True)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", msg)
+    git(repo, "tag", "-a", "-m", tag_msg, tag)
+    return repo
+
+
+def mini_board_repo(ctx):
+    return os.path.join(os.path.dirname(ctx.mini), "c3board")
+
+
+def mini_board_dep(ctx):
+    """The mini's board as main/idf_component.yml's dependency lines: C3_BOARD from git at C3_TAG.
+    Every manifest a case writes for the mini carries them (R21: exactly one board)."""
+    return '  %s:\n    git: %s\n    path: shared/boards/c3fx\n    version: "%s"\n' % (
+        C3_BOARD, mini_board_repo(ctx).replace(os.sep, "/"), C3_TAG)
+
+
 def make_mini(ctx):
+    """The minimal project, root/mini: ESP-IDF's hello_world on esp32c3, reproducible build on, its
+    manifest naming the exported IDF's version exactly (R33) and taking the board C3_BOARD from git
+    at C3_TAG: a scratch repository root/c3board (board_repo) whose reference is the mini's own
+    default partition table and whose flash size is the mini's, the tag fetched into the mini's
+    repository, where R17 resolves it, and the board listed in vtrux_build.json, as gen-inhibit
+    lists its board. R21 has required exactly one shared/boards/* component since 2026-10-27, so a
+    mini without one is refused after the reconfigure (2026-11-04). The tracked files and the lock
+    are committed as the reconfigure writes them (normalise)."""
     rmtree(ctx.mini)
     shutil.copytree(os.path.join(os.environ["IDF_PATH"], "examples", "get-started", "hello_world"), ctx.mini)
     for x in ("pytest_hello_world.py", "sdkconfig.ci"):
@@ -633,24 +753,40 @@ def make_mini(ctx):
     with open(os.path.join(ctx.mini, ".gitignore"), "w", newline="") as f:
         f.write("build/\nmanaged_components/\n")
     with open(os.path.join(ctx.mini, "vtrux_build.json"), "w", newline="") as f:
-        f.write('{"project": "vtrux-mini-test", "shared_components": []}\n')
+        f.write(json.dumps({"project": "vtrux-mini-test", "shared_components": [C3_BOARD]}) + "\n")
     with open(os.path.join(ctx.mini, PINS), "w", newline="") as f:
         f.write(pins_text(make_pin(ctx)))
-    # a manifest, so the reconfigure writes a dependencies.lock: the tooling refuses a project
-    # without one (whether SPEC allows that is with the reviewer, 2026-10-24)
-    with open(os.path.join(ctx.mini, "main", "idf_component.yml"), "w", newline="") as f:
-        f.write('dependencies:\n  idf:\n    version: ">=5.0"\n')
+    # a manifest, so the reconfigure writes a dependencies.lock (R10), naming the exported IDF's
+    # version exactly (R33, shared/main ceac030: a release build refuses a range); the board
+    # follows once its repository exists
+    manifest = os.path.join(ctx.mini, "main", "idf_component.yml")
+    with open(manifest, "w", newline="") as f:
+        f.write(idf_manifest(idf_version()))
     run(["git", "init", "-q", "-b", "main", ctx.mini], check=True)
-    rc, _ = idf(ctx, ctx.mini, "set-target", "esp32c3")
-    if rc:
-        raise RuntimeError("mini: set-target failed")
+    for args in (("set-target", "esp32c3"), ("partition-table",)):
+        rc, _ = idf(ctx, ctx.mini, *args)
+        if rc:
+            raise RuntimeError("mini: idf.py %s failed" % " ".join(args))
+    with open(os.path.join(ctx.mini, "build", "partition_table", "partition-table.bin"), "rb") as f:
+        table = f.read()
+    fs = _FLASHSIZE.findall(open(os.path.join(ctx.mini, "build", "config", "sdkconfig.h")).read())
+    if len(fs) != 1:
+        raise RuntimeError("mini: %d flash sizes in sdkconfig.h" % len(fs))
+    repo = board_repo(mini_board_repo(ctx), "c3fx", "esp32c3", table, fs[0], C3_TAG, "pt-c3.bin", "C3 fixture",
+                      "release_cases.py esp32c3 fixture board", "c3fx: the esp32c3 mini's board", "c3fx board")
+    git(ctx.mini, "fetch", "-q", repo, "refs/tags/%s:refs/tags/%s" % (C3_TAG, C3_TAG))
+    with open(manifest, "w", newline="") as f:
+        f.write(idf_manifest(idf_version(), mini_board_dep(ctx)))
     set_repro(ctx.mini)
     rmtree(os.path.join(ctx.mini, "build"))
+    rmtree(os.path.join(ctx.mini, "managed_components"))
     git(ctx.mini, "add", "-A")
-    git(ctx.mini, "commit", "-q", "-m", "mini: hello_world, esp32c3, reproducible build on")
+    git(ctx.mini, "commit", "-q", "-m", "mini: hello_world, esp32c3, reproducible build on, the board %s at %s"
+        % (C3_BOARD, C3_TAG))
     with open(os.path.join(ctx.out, "fixture.txt"), "a") as fx:
         normalise(ctx, ctx.mini, "mini", fx)
-        fx.write("mini: %s\n" % git(ctx.mini, "rev-parse", "HEAD"))
+        fx.write("mini: %s; board %s at %s, commit %s\n" % (git(ctx.mini, "rev-parse", "HEAD"), C3_BOARD, C3_TAG,
+                                                           ref(ctx.mini, "refs/tags/" + C3_TAG)))
 
 
 def clones(ctx):
@@ -679,7 +815,9 @@ def expected_shared(proj):
     """R13's shared components, read by the tester: each component the project's vtrux_build.json
     names, with the version, git and path its main/idf_component.yml declares (the pinned tag is
     the version) and, for a git source, the commit that tag names in the project's repository,
-    which is what the lock resolves it to (R17)."""
+    which is what the lock resolves it to (R17). R17 also lets the lock record an annotated tag
+    naming that commit: where the tag is annotated, its object is added as lock_version_annotated,
+    which judge_record accepts in place of the commit (shared_as_recorded)."""
     import yaml
     names = json.load(open(os.path.join(proj, "vtrux_build.json"))).get("shared_components") or []
     p = os.path.join(proj, "main", "idf_component.yml")
@@ -689,8 +827,12 @@ def expected_shared(proj):
         d = deps.get(n)
         d = d if isinstance(d, dict) else {"version": d}
         tag = None if d.get("version") is None else str(d["version"])
-        out[n] = {"version": tag, "git": d.get("git"), "path": d.get("path"),
-                  "lock_version": (ref(proj, "refs/tags/" + tag) or None) if d.get("git") and tag else None}
+        commit = (ref(proj, "refs/tags/" + tag) or None) if d.get("git") and tag else None
+        out[n] = {"version": tag, "git": d.get("git"), "path": d.get("path"), "lock_version": commit}
+        if commit:
+            obj = run(["git", "-C", proj, "rev-parse", "-q", "--verify", "refs/tags/" + tag])[1].strip()
+            if obj and obj != commit:
+                out[n]["lock_version_annotated"] = obj
     return out
 
 
@@ -1124,9 +1266,13 @@ def c_r8_rewrites(ctx, log):
     rmtree(os.path.join(ctx.p1, "build"))
 
 
-def c_r10_no_lock(ctx, log):
-    """A project that downloads nothing and has no manifest, so no dependencies.lock: refused
-    (SPEC R10, 0d2431b)."""
+def c_r33_no_manifest(ctx, log):
+    """A project with no manifest (main/idf_component.yml) and so no dependencies.lock: refused
+    before the reconfigure, the refusal naming R33, since the project names no ESP-IDF version.
+    Until 2026-11-04 this was r10_no_lock (SPEC R10, 0d2431b: refused for the missing lock after the
+    reconfigure). Since R33 (shared/main 56156653) the tooling refuses first, and the gen-inhibit
+    reviewer ruled (2026-11-04) it an R33 case; R10's no-lock clause is not reached with a manifest
+    present, because the Component Manager always writes a lock."""
     if not os.path.exists(os.path.join(ctx.mini, ".git")):
         make_mini(ctx)
     if not git(ctx.mini, "branch", "--list", "nolock"):
@@ -1135,15 +1281,22 @@ def c_r10_no_lock(ctx, log):
         git(ctx.mini, "commit", "-q", "-m", "mini nolock: no manifest, no dependencies.lock")
     reset(ctx.mini, "nolock", "nolock")
     rmtree(os.path.join(ctx.mini, "build"))
+    no_manifest = not os.path.exists(os.path.join(ctx.mini, "main", "idf_component.yml"))
     before = snapshot(ctx.records("vtrux-mini-test"))
     rc, out = release(ctx, ctx.mini, log, jobs=ctx.jobs)
     reconfigured = os.path.exists(os.path.join(ctx.mini, "build", "CMakeCache.txt"))
-    no_lock = not os.path.exists(os.path.join(ctx.mini, "dependencies.lock"))
-    refusal(ctx, "r10_no_lock", ctx.mini, rc, before, project="vtrux-mini-test",
-            extra_ok=reconfigured and no_lock and ninja_lines(ctx.mini) == 0,
-            note="R10: no manifest; after the reconfigure: dependencies.lock %s, ninja log lines %d" % (
-                "absent" if no_lock else "PRESENT", ninja_lines(ctx.mini)))
+    named = names_r33(out)
+    refusal(ctx, "r33_no_manifest", ctx.mini, rc, before, project="vtrux-mini-test", trigger=no_manifest,
+            extra_ok=not reconfigured and named and ninja_lines(ctx.mini) == 0,
+            note="R33: no manifest; %s; the refusal %s R33; ninja log lines %d" % (
+                "RECONFIGURED first" if reconfigured else "not reconfigured", "names" if named else "does NOT name",
+                ninja_lines(ctx.mini)))
     reset(ctx.mini, "main", "main")
+
+
+def names_r33(out):
+    """out names R33 as a whole word (not R330)."""
+    return re.search(r"(?<![A-Za-z0-9])R33(?![0-9])", out or "") is not None
 
 
 def watch_then(cond, act, fired, timeout=3000):
@@ -1469,6 +1622,82 @@ def self_test_shared(d):
     return ok
 
 
+def self_test_base(d):
+    """resolve_base on a small repo and its --no-checkout clone, as make_fixture clones this
+    checkout's: a branch name resolves in the source, not in the clone (the 2026-11-04 failure)."""
+    ok = True
+    me, clone = os.path.join(d, "me"), os.path.join(d, "clone")
+    run(["git", "init", "-q", "-b", "main", me], check=True)
+    git(me, "commit", "-q", "--allow-empty", "-m", "one")
+    git(me, "branch", "x/y")
+    c1 = git(me, "rev-parse", "HEAD")
+    git(me, "commit", "-q", "--allow-empty", "-m", "two")
+    run(["git", "clone", "-q", "--no-checkout", me, clone], check=True)
+    # a local clone copies every object, so a commit the clone lacks is one made after it
+    git(me, "commit", "-q", "--allow-empty", "-m", "three, after the clone")
+    c3 = git(me, "rev-parse", "HEAD")
+
+    def outcome(name):
+        try:
+            return resolve_base(me, clone, name)
+        except RuntimeError as e:
+            return "refused: %s" % e
+    for label, good in (("the clone alone does not resolve the branch name (what failed)", ref(clone, "x/y") == ""),
+                        ("a branch of the source resolves to its commit", outcome("x/y") == c1),
+                        ("a commit on a branch, by hash", outcome(c1) == c1),
+                        ("a name the source lacks is refused", outcome("nosuch").startswith("refused: --base nosuch does")),
+                        ("a commit the clone lacks is refused", "which the fixture's clone lacks" in outcome(c3))):
+        print("  %s resolve_base: %s" % ("ok  " if good else "FAIL", label))
+        ok &= good
+    return ok
+
+
+def self_test_board(d):
+    """board_repo, mini_board_dep and expected_shared for the mini's board, on a fake table."""
+    import yaml
+    ok = True
+
+    class C:
+        mini = os.path.join(d, "mini")
+    table = bytes(range(64)) * 3
+    repo = board_repo(mini_board_repo(C), "c3fx", "esp32c3", table, "2MB", C3_TAG, "pt-c3.bin", "C3 fixture",
+                      "self-test board", "c3fx: self-test", "c3fx board")
+    at = subprocess.run(["git", "-C", repo, "show", "%s:shared/boards/c3fx/pt-c3.bin" % C3_TAG], capture_output=True).stdout
+    bj = json.loads(git(repo, "show", "%s:shared/boards/c3fx/board.json" % C3_TAG))
+    tagged = git(repo, "rev-parse", C3_TAG + "^{commit}")
+    deps = yaml.safe_load(idf_manifest("5.4.2", mini_board_dep(C)))["dependencies"]
+    run(["git", "init", "-q", "-b", "main", C.mini], check=True)
+    os.makedirs(os.path.join(C.mini, "main"))
+    with open(os.path.join(C.mini, "vtrux_build.json"), "w", newline="") as f:
+        f.write(json.dumps({"project": "vtrux-mini-test", "shared_components": [C3_BOARD]}) + "\n")
+    with open(os.path.join(C.mini, "main", "idf_component.yml"), "w", newline="") as f:
+        f.write(idf_manifest("5.4.2", mini_board_dep(C)))
+    git(C.mini, "add", "-A")
+    git(C.mini, "commit", "-q", "-m", "mini")
+    before = expected_shared(C.mini)
+    git(C.mini, "fetch", "-q", repo, "refs/tags/%s:refs/tags/%s" % (C3_TAG, C3_TAG))
+    after = expected_shared(C.mini)
+    tag_obj = git(repo, "rev-parse", "refs/tags/" + C3_TAG)
+    want = {C3_BOARD: {"version": C3_TAG, "git": repo.replace(os.sep, "/"), "path": "shared/boards/c3fx",
+                       "lock_version": tagged, "lock_version_annotated": tag_obj}}
+    for label, good in (
+            ("the reference table at the tag is the table given", at == table),
+            ("board.json at the tag: %s" % json.dumps(bj),
+             bj == {"target": "esp32c3", "flash_size": "2MB", "partition_table": "pt-c3.bin", "required": [],
+                    "hardware_name": "C3 fixture"}),
+            ("the tag is annotated", git(repo, "cat-file", "-t", C3_TAG) == "tag"),
+            ("the manifest: idf exact, the board from git at the tag, in its repo beside the mini",
+             deps.get("idf") == {"version": "5.4.2"} and deps.get(C3_BOARD) == {
+                 "git": repo.replace(os.sep, "/"), "path": "shared/boards/c3fx", "version": C3_TAG}
+             and os.path.dirname(repo) == os.path.dirname(C.mini)),
+            ("expected_shared before the tag is fetched: no lock version", before[C3_BOARD]["lock_version"] is None),
+            ("expected_shared after: the tag's commit, and the annotated tag's object: %s" % json.dumps(after),
+             after == want and tag_obj != tagged)):
+        print("  %s mini board: %s" % ("ok  " if good else "FAIL", label))
+        ok &= good
+    return ok
+
+
 def self_test_r8(d):
     """The R8 sdkconfig helpers on a small repo: what git says is tracked and ignored, config_file, and
     the SDKCONFIG line."""
@@ -1743,8 +1972,10 @@ def c_r9_epoch(ctx, log):
                               (MAIN_C, APP_MAIN, '    printf("%s\\n", r9_stamp);\n')], "r9 case: print the compile date stamp")
     mini_commit(ctx, "r9-b", [(MAIN_C, APP_MAIN, '    printf("r9 commit b\\n");\n')], "r9 case: commit b", base="r9-a")
     git(ctx.mini, "checkout", "-q", "-f", "-B", "r9-c", "r9-a")
+    data = json.loads(git(ctx.mini, "show", "r9-a:vtrux_build.json"))     # keeps the mini's board
+    data["project"] = "vtrux-mini-two"
     with open(os.path.join(ctx.mini, "vtrux_build.json"), "w", newline="") as f:
-        f.write('{"project": "vtrux-mini-two", "shared_components": []}\n')
+        f.write(json.dumps(data) + "\n")
     git(ctx.mini, "commit", "-q", "-am", "r9 case: commit a as another project")
     reset(ctx.mini, "r9-a", "r9-a")
     rc, _out, b = plain_build(ctx, ctx.mini, {"SOURCE_DATE_EPOCH": "12345"}, log)
@@ -2138,7 +2369,7 @@ CASES = [
     ("r9_masquerade", c_r9_masquerade),
     ("r9_masquerade_hardlink", lambda c, l: c_r9_masquerade(c, l, "r9_masquerade_hardlink", hardlink=True)),
     ("r8_reconfigure_rewrites", c_r8_rewrites),
-    ("r10_no_lock", c_r10_no_lock),
+    ("r33_no_manifest", c_r33_no_manifest),
     ("r8_during_reconfigure", c_r8_reconf),
     ("r8_build_untracked", lambda c, l: c_r8_build(c, l, "r8_build_untracked",
                                                    lambda: open(os.path.join(c.p1, "r8_probe.txt"), "w").write("x\n"),
