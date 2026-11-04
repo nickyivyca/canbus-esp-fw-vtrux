@@ -15,8 +15,9 @@ the golden too.
 
 That trade was made deliberately with the user on 2026-09-19. The alternative
 — maintaining an independent Python reference and diffing two implementations,
-the way `projects/vtrux/tools/interposer/firmware/test/host_diff/` does with
-`machine.py` against `machine.cpp` — was considered and declined. We have no
+the way the interposer's `host_diff` differential
+(`charge-interposer/fw_harness/host_diff/` on `charge-interposer/main`) does
+with `machine.py` against `machine.cpp` — was considered and declined. We have no
 1:1 reference for this logic: `gen-inhibit/tools/inhibit.py` is proactive and
 scheduled where this is a reactive trail, so it is related, not an oracle.
 
