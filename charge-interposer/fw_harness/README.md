@@ -6,7 +6,8 @@ bench (moved here from `firmware/test/` at port step 2a; reviewer,
 (`../test_machine.py`, `../test_trips.py`, `../test_invariants.py`) because
 they run against `machine.py`; everything here is about the C++ port or the
 bench images. The firmware's own C++ unit tests, `host_unit/`, are the
-implementor's and stay in `../firmware/test/`.
+implementor's, in `../host_unit/` (moved from `firmware/test/` at the
+same step).
 
 **Retired at port step 2a** (reviewer, 2026-11-03, Q3), with the PlatformIO
 build: `build_check.py`, `build_check_in_clone.py` and their tests

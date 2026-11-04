@@ -277,7 +277,7 @@ def catalogue(repo, commit):
                     "shared/twai_port/test/twai_fake.c",
                     "shared/twai_port/test/cpp/twai_fake.cpp"]
     out.append(e)
-    out.append(_mad("host-unit", "charge-interposer/firmware/test/host_unit/run.sh", [],
+    out.append(_mad("host-unit", "charge-interposer/host_unit/run.sh", [],
                     shell="git-bash", timeout_s=1800))
     out.append(_mad("host-diff", "charge-interposer/fw_harness/host_diff/diff_all.sh", [],
                     shell="git-bash", timeout_s=7200))
