@@ -44,12 +44,24 @@ The writers (WRITERS below):
      nothing left once it exits. stop_all.sh runs (--self-test) only on
      Linux; elsewhere it refuses before making anything, which is checked.
 
+The test itself:
+ 11. When every case has run, no process whose command line names a path
+     under the test's folder is left running; any that is, is killed. The
+     scan is shown to see a planted loop first. (Added 2026-11-04: a
+     case_killed fixture, never told to go when the case failed before its
+     try (under the "no owner file" edit), looped on madhouse-debian for
+     up to a day: four of them, 2026-11-02/03. The fixture's wait is now
+     bounded too, at 120 s.)
+
     py -3.14 -B charge-interposer/scratch_run_test.py [--can-fail]
 
 --can-fail runs the test on copies of the code with one edit each
 (SCRATCH_RUN_CODE names the copy's charge-interposer/), after the unedited
 copy passes there, and passes only if every edit is caught. An edit marked
 for one platform is run only there: its line does nothing on the other.
+After each copy's run it also looks, from outside, for a process left
+under that run's own folder, kills it, and counts the edit as a failure
+(the same scan as check 11).
 
 On Windows bash is Git Bash by its full path (a bare "bash" there is WSL's);
 elsewhere bash. Git Bash puts its own folders first on PATH, so the
@@ -224,7 +236,13 @@ if [ -n "${FX_RO:-}" ]; then
 fi
 if [ -n "${FX_WAIT:-}" ]; then
   echo "$SCRATCH_RUN" > "$FX_WAIT.ready"
-  while [ ! -e "$FX_WAIT.go" ]; do command sleep 0.05; done
+  # bounded: a test that never says go must not leave this looping (it did,
+  # for a day, on madhouse-debian: 2026-11-03)
+  n=0
+  while [ ! -e "$FX_WAIT.go" ]; do
+    n=$((n + 1)); [ "$n" -le 2400 ] || exit 98
+    command sleep 0.05
+  done
 fi
 exit "${FX_RC:-0}"
 """
@@ -374,9 +392,11 @@ def case_killed(base):
     ci = tree(base)
     r = Run(os.path.join(base, "r"))
     p = fixture(r, ci, wait=True)
-    d = wait_ready(r)
-    pid = owner_of(d).get("pid")
+    # everything after the fixture starts is inside the try, so a failure
+    # here (no owner file, say) still tells the fixture to go
     try:
+        d = wait_ready(r)
+        pid = owner_of(d).get("pid")
         os.kill(pid, signal.SIGTERM if WIN else signal.SIGKILL)
         p.communicate(timeout=60)
     finally:
@@ -603,6 +623,86 @@ CASES = [case_made, case_killed, case_readonly, case_removal, case_race,
          case_shared_tool, case_refused, case_root, case_scan, case_writers]
 
 
+# ---- processes left behind --------------------------------------------------
+def _cmdlines():
+    """[(pid, command line)] of every process but this one"""
+    me = os.getpid()
+    out = []
+    if WIN:
+        ps = ("Get-CimInstance Win32_Process | ForEach-Object { "
+              "\"$($_.ProcessId)`t$($_.CommandLine)\" }")
+        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                           capture_output=True, text=True, timeout=120)
+        for ln in r.stdout.splitlines():
+            pid, _, cmd = ln.partition("\t")
+            if pid.strip().isdigit() and int(pid) != me:
+                out.append((int(pid), cmd))
+        return out
+    for e in os.listdir("/proc"):
+        if not e.isdigit() or int(e) == me:
+            continue
+        try:
+            with open("/proc/%s/cmdline" % e, "rb") as f:
+                cmd = f.read().replace(b"\0", b" ").decode("utf-8", "replace")
+        except OSError:
+            continue
+        out.append((int(e), cmd))
+    return out
+
+
+def leftovers(folder):
+    """[(pid, command line)] of the processes whose command line names a
+    path under folder, in either spelling bash or Python gives it"""
+    forms = {fwd(folder).lower().rstrip("/") + "/", bash_form(folder).lower().rstrip("/") + "/"}
+    return [(pid, cmd) for pid, cmd in _cmdlines()
+            if any(f in fwd(cmd).lower() for f in forms)]
+
+
+def kill_all(procs):
+    for pid, _cmd in procs:
+        try:
+            os.kill(pid, signal.SIGTERM if WIN else signal.SIGKILL)
+        except OSError:
+            pass
+
+
+PLANTED = "while :; do command sleep 0.2; done\n"
+
+
+def check_left(base):
+    """11. a planted loop is seen and killed; then nothing of the test's own
+    is left running under its folder, and anything that is gets killed"""
+    d = os.path.join(base, "planted")
+    os.makedirs(d)
+    sh = os.path.join(d, "planted.sh")
+    with open(sh, "w", encoding="utf-8", newline="\n") as f:
+        f.write(PLANTED)
+    p = subprocess.Popen([bash(), fwd(sh)], stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
+    try:
+        seen = []
+        end = time.time() + 30
+        while not seen and time.time() < end:
+            seen = leftovers(d)
+            if not seen:
+                time.sleep(0.2)
+        check(bool(seen), "11. the scan sees a planted loop under the folder -> %s"
+              % [c[:100] for _p, c in seen])
+        kill_all(seen)
+    finally:
+        if p.poll() is None:
+            p.kill()
+        p.wait(timeout=60)
+    end = time.time() + 10
+    left = leftovers(base)
+    while left and time.time() < end:
+        time.sleep(0.2)
+        left = leftovers(base)
+    check(left == [], "11. no process of the test is left running under its folder -> %s"
+          % [c[:160] for _p, c in left])
+    kill_all(left)
+
+
 def test():
     with scratch_dir.run("scratch-run-test") as base:
         for c in CASES:
@@ -612,6 +712,10 @@ def test():
                 c(d)
             except Exception as e:     # noqa: BLE001
                 check(False, "%s raised %s: %s" % (c.__name__, type(e).__name__, e))
+        try:
+            check_left(base)
+        except Exception as e:         # noqa: BLE001
+            check(False, "check_left raised %s: %s" % (type(e).__name__, e))
     print("\nscratch_run_test: %s" % ("all checks OK" if not fails
                                       else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -711,10 +815,29 @@ def can_fail():
                 with open(p, "w", encoding="utf-8", newline="") as fh:
                     fh.write(src.replace(old, new))
             env = dict(os.environ, SCRATCH_RUN_CODE=ci, PYTHONDONTWRITEBYTECODE="1")
-            r = subprocess.run([sys.executable, "-B", os.path.abspath(__file__)],
-                               capture_output=True, text=True, env=env, timeout=3600)
-            return r, 1
-        r, _n = run_copy(0)
+            p = subprocess.Popen([sys.executable, "-B", os.path.abspath(__file__)],
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 text=True, env=env)
+            try:
+                out, err = p.communicate(timeout=3600)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                out, err = p.communicate()
+            r = subprocess.CompletedProcess(p.args, p.returncode, out, err)
+            # the copy's own test run folder: a mutant's run must leave no
+            # process behind either (check 11 runs inside it too; this is
+            # the outside view, after it has exited)
+            mine = os.path.join(scratch_dir.tool_dir("scratch-run-test"),
+                                "scratch-run-test-%d-" % p.pid)
+            left = [(q, c) for q, c in leftovers(os.path.dirname(mine))
+                    if fwd(mine).lower() in fwd(c).lower()
+                    or bash_form(mine).lower() in fwd(c).lower()]
+            kill_all(left)
+            return r, (1 if not left else -len(left))
+        r, n = run_copy(0)
+        if n < 0:
+            print("FAIL  baseline: left %d process(es) running" % -n)
+            return 1
         if r.returncode != 0:
             print("FAIL  baseline: the unedited copy fails (rc %d): %s"
                   % (r.returncode, [ln for ln in r.stdout.splitlines()
@@ -729,6 +852,11 @@ def can_fail():
             r, n = run_copy(i, (f, old, new))
             if r is None:
                 print("FAIL  %-58s NOT APPLIED (found %d times)" % (label, n), flush=True)
+                bad += 1
+                continue
+            if n < 0:
+                print("FAIL  %-58s LEFT %d PROCESS(ES) RUNNING (killed)" % (label, -n),
+                      flush=True)
                 bad += 1
                 continue
             caught = r.returncode != 0
