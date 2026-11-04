@@ -38,6 +38,8 @@ records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 | `firmware/vtrux_build.json` | The project's file for the shared build tooling | Implementor |
 | `firmware/shared_pins.json` | The shared-code pins (shared/tools R23), owned per entry: `shared/tools` the implementor's, the harness's shared entries the tester's; moved only on a reviewer batch (reviewer, 2026-11-03) | Per entry |
 | `firmware/README.md` | The firmware's README | Implementor |
+| `vtrux_tools.py` | The launcher: starts the pinned shared/tools (`release`, `image`, `digest`) and makes dev builds (`build <variant>`); refuses a shell exported against another `IDF_TOOLS_PATH` (release route B, user 2026-11-03) | Implementor |
+| `test_vtrux_tools.py` | Its self-test, with `--can-fail`; not evidence | Implementor |
 | `firmware/test/host_unit/` | Unit tests of the core's internals | Implementor |
 | `.gitattributes`, `.gitignore` | Line endings and ignores for the folder | Implementor |
 | `SIMULATOR.md` | The simulation bench write-up | Implementor |
