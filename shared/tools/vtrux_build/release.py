@@ -17,8 +17,10 @@ In order, each refusal an exit, never a warning:
      it. R16, the tooling-pin clause: a pin naming a commit rather than a
      tag is refused;
      R33: main/idf_component.yml under the project root names the ESP-IDF
-     version as one exact version (5.4.2 or ==5.4.2), so that a configure
-     under another IDF fails; a range, or no version, is refused;
+     version as one exact version (5.4.2 or ==5.4.2); a range, or no
+     version, is refused. Under another IDF a lockless configure then
+     fails; with the committed lock the configure rewrites it, and step 5's
+     R8 clean check refuses the build;
   2. REVERSE_IT_DIR is set and has a firmware/ folder (R13: the build stops
      if it is unset, before anything is built);
   3. R32: the environment is exported for one ESP-IDF install (idfenv.py):
@@ -468,8 +470,7 @@ def check_idf_version(root):
         version = manifest.exact_idf_version(manifest.read(path))
     except (OSError, manifest.ManifestError) as e:
         raise Refused("%s: %s. A release build needs the project's ESP-IDF "
-                      "version named exactly, so that a configure under "
-                      "another IDF fails (R33)" % (path, e))
+                      "version named exactly (R33)" % (path, e))
     ok("IDF version named (R33)", version)
     return version
 
