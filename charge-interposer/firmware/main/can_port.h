@@ -56,7 +56,7 @@ class CanPort {
   // spec 8.2's `bridge_ok` is fed from these, so a frame lost at the
   // chip must appear here or the flag reports a healthy bridge that
   // dropped a frame. Checked for every port by
-  // test/host_bridge/test_canport_contract.cpp, through this interface
+  // fw_harness/host_bridge/test_canport_contract.cpp, through this interface
   // rather than through any concrete class.
   //
   // Per FRAME where the hardware offers it. The MCP2515 gives one flag

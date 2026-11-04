@@ -48,9 +48,9 @@ bench artifacts stayed there when this folder moved into
 | `main/selftest_main.cpp` | Stage 0. Cross-port identity, DLC and throughput over the loopback jumpers. |
 | `main/diag_main.cpp` | Stage 0a. Controller internal loopback + physical-layer probes. Flash this when Stage 0 fails and the cause could be either wiring or driver. |
 | `datasheets/` | **Not in this repo.** The vendor data sheets (MCP2515 DS20001801J) were deliberately left out of the move and stay in the reverse-it project, at `projects/vtrux/tools/interposer/firmware/datasheets/`. Findings taken from them need both text extraction and the rendered page -- see that folder's `README.md`. |
-| `test/host_diff/make_golden.py` | Freezes what `machine.py` does over a real capture into a trace + golden pair. |
-| `test/host_diff/host_runner.cpp` | Drives `machine.cpp` over the same trace, same output format. |
-| `test/host_diff/check_port.py` | Cross-checks every constant against `machine.py`. Needs no compiler. |
+| `../fw_harness/host_diff/make_golden.py` | The tester's. Freezes what `machine.py` does over a real capture into a trace + golden pair. |
+| `../fw_harness/host_diff/host_runner.cpp` | The tester's. Drives `machine.cpp` over the same trace, same output format. |
+| `../fw_harness/host_diff/check_port.py` | The tester's. Cross-checks every constant against `machine.py`. Needs no compiler. |
 | `test/host_unit/` | C++ unit tests for the pure headers above -- plain `g++`, no peripheral fakes. `run.sh` builds and runs every `test_*.cpp`; see that folder and `test/README.md`. |
 
 ## Build
@@ -577,7 +577,7 @@ both most likely and most silent (a mistyped threshold compiles fine and just
 charges to the wrong voltage):
 
 ```bash
-py -3.12 charge-interposer/firmware/test/host_diff/check_port.py
+py -3.12 charge-interposer/fw_harness/host_diff/check_port.py
 ```
 
 > 21 config fields, 22 identifiers, 2 payloads, 15 extractors -- all agree.
@@ -591,7 +591,7 @@ py -3.12 .../make_golden.py <capture.log> --name NAME --bus 3 \
     --outdir projects/vtrux/notes/artifacts/interposer-firmware
 
 # build and diff (needs g++; on L-EEHTRBPN2 use WSL)
-g++ -std=c++11 -O2 -I main -o /tmp/hr test/host_diff/host_runner.cpp main/machine.cpp
+g++ -std=c++11 -O2 -I main -o /tmp/hr ../fw_harness/host_diff/host_runner.cpp main/machine.cpp
 /tmp/hr <NAME>.trace | diff - <NAME>.golden
 ```
 
@@ -1022,7 +1022,7 @@ reading a pre-B-7a log.
 
 **What is pinned here and what is not.** The NUMBERS are `enum TripReason`
 in `machine.h`, matched position for position against `machine.py`'s
-`TRIP_KEYS` by `test/host_diff/check_port.py` -- that check is what stops
+`TRIP_KEYS` by `../fw_harness/host_diff/check_port.py` -- that check is what stops
 this table's codes and the wire drifting apart, and it is the only one. The
 NAMES in this table are pinned by nothing, so they are documentation and
 must be read as such.
@@ -1177,7 +1177,7 @@ the goldens were regenerated from it, and both pairs now diff identical.
 
 ### The older result (2026-09-17) -- all ten byte-identical
 
-`test/host_diff/diff_all.sh` builds the runner and diffs every pair (on
+`../fw_harness/host_diff/diff_all.sh` builds the runner and diffs every pair (on
 L-EEHTRBPN2 run it under WSL with `MSYS_NO_PATHCONV=1`). The goldens now
 include the diagnostic mirror frames (spec 8.1), so both real captures were
 regenerated on 2026-09-17.
@@ -1311,7 +1311,7 @@ collapsed correctly and the two cores agreed. The agreement is real and the
 reason given for it was wrong, which matters because the wrong reason is
 reassuring and the right one is not.
 
-`test/host_diff/event_stream.py` drains the reference's log after every
+`../fw_harness/host_diff/event_stream.py` drains the reference's log after every
 input line -- `del core.events[:]` at its line 60 -- precisely as
 `host_runner` drains `machine.cpp`'s every pass, so that the two sides are
 comparable. Measured on the pre-fix reference over a 20-frame STAND_BY
@@ -1391,7 +1391,7 @@ assumed-versus-measured list (spec 9.1).
 
 ### The mechanical aid
 
-`test/hw_mechanics.py` watches what is a hardware mechanic **by
+`../fw_harness/hw_mechanics.py`, the tester's, watches what is a hardware mechanic **by
 construction**, in three ways:
 
 - **whole files**: both port drivers, `port_*.h`, `can_port.h`,
@@ -1405,7 +1405,7 @@ construction**, in three ways:
   `main.cpp`.
 
 ```
-py -3.14 charge-interposer/firmware/test/hw_mechanics.py
+py -3.14 charge-interposer/fw_harness/hw_mechanics.py
 py -3.14 .../hw_mechanics.py --record 2026-10-04-truck    # at each truck flash
 py -3.14 .../hw_mechanics.py --list                       # what is watched, and why
 ```
