@@ -80,13 +80,22 @@ version and every tracked file is as the other install writes it; it must build 
 with idf_version "v" + the other version.
 
 R33's suffix (r33_release_suffix, no --other-idf needed): a copy of this install under --root
-(no .git, its own empty git init, no top-level docs/ or examples/) with IDF_PATH/version.txt
-planted, which this IDF's build takes as git_revision; its esp_idf_version.h is the install's, so
-the Component Manager's idf stays this version and nothing is rewritten (VOID otherwise). main is
-built under it with version.txt "v"+M.m.p+"-dirty" (r33_suffix_dirty), "-3-g0123abc"
-(r33_suffix_ahead) and empty (r33_suffix_empty), each to be refused as above; the can-fail,
-r33_suffix_exact, "v"+M.m.p in the same copy, must build and be recorded with that idf_version.
-The copy is removed when the case ends, pass or fail.
+(no .git, no top-level docs/ or examples/), made its own git repository with one empty commit
+and no tag (this IDF's configure reads the IDF's git HEAD before version.txt, and stops if the
+repository has no commit), with IDF_PATH/version.txt planted, which this IDF's build takes as
+git_revision; its esp_idf_version.h is the install's, so the Component Manager's idf stays this
+version and nothing is rewritten (VOID otherwise). main is built under it with version.txt
+"v"+M.m.p+"-dirty" (r33_suffix_dirty) and "-3-g0123abc" (r33_suffix_ahead), and with no
+version.txt (r33_suffix_none: git_revision is then the untagged commit's hash, as `git describe
+--always` gives it, no version), each to be refused as above; the can-fail, r33_suffix_exact,
+"v"+M.m.p in the same copy, must build and be recorded with that idf_version. An empty
+version.txt is not a case: this IDF's own configure stops on it (build.cmake, IDF_VER with no
+value), before the tooling checks anything (runs/step1d_r33ver_85e9277). The copy is removed
+when the case ends, pass or fail.
+
+In the version-refusal judge, a reconfigure the tooling started (idf.py's "Executing action:
+reconfigure") that made no build/CMakeCache.txt is VOID: the case's state was never reached. A
+refusal with no reconfigure started is the FAIL above.
 
 Each case judges from outside: exit codes, output names (only that the refusal names the
 variable R32 requires it to), the record folder, the build folder, the process table. It never
@@ -815,15 +824,22 @@ def configured_revision(proj):
         return None
 
 
+def reconfigure_started(out):
+    """Whether the tooling's run got as far as idf.py's reconfigure (idf.py prints this line)."""
+    return "Executing action: reconfigure" in (out or "")
+
+
 def judge_version_refusal(rc, out, recorded, reconfigured, compiled, configured, want_configured, manifest_v,
-                          state_ok=True, state_why=""):
+                          state_ok=True, state_why="", reconfigure_failed=False):
     """R33 at shared/main 39565c2d: a release build is refused after the reconfigure and before
     anything is compiled, with no record, unless the configure's git_revision is exactly "v" and
     the manifest's version. configured: the git_revision the configure wrote; want_configured: the
     one the case planted (VOID if it did not show); state_ok/state_why: the case's own guard on the
     files the reconfigure rewrote. The refusal must name R33 and both versions (the gen-inhibit
     reviewer, 2026-11-04: refused "by the IDF version check, which names both versions"); a
-    refusal before the reconfigure is a FAIL, and so is one by R8 alone (the same ruling)."""
+    refusal before the reconfigure is a FAIL, and so is one by R8 alone (the same ruling).
+    reconfigure_failed: the reconfigure was started but made no CMakeCache.txt (VOID: the case's
+    state was not reached)."""
     if rc == 0:
         return "FAIL", "built and exited 0 with git_revision %r for a manifest naming %s" % (configured, manifest_v)
     if recorded:
@@ -831,6 +847,8 @@ def judge_version_refusal(rc, out, recorded, reconfigured, compiled, configured,
     if crashed(out):
         return "VOID", "a Python traceback (exit %d), not a refusal" % rc
     if not reconfigured:
+        if reconfigure_failed:
+            return "VOID", "the reconfigure was started and failed (exit %d): the case's state was not reached" % rc
         return "FAIL", "refused (exit %d) before the reconfigure; R33 refuses after it" % rc
     if configured != want_configured:
         return "VOID", "the configure reported git_revision %r, not the planted %r" % (configured, want_configured)
@@ -961,17 +979,27 @@ def c_r33_release_other(ctx, log, name, branch):
         v, d = judge_built(rc, len(new) == 3, rec.get("idf_version"), modified, conf, "v" + other_v)
     else:
         ok, shown = other_state(branch, modified, lock_v, other_v)
-        v, d = judge_version_refusal(rc, out, before != after,
-                                     os.path.exists(os.path.join(ctx.mini, "build", "CMakeCache.txt")),
-                                     R.ninja_lines(ctx.mini) > 0, conf, "v" + other_v, this_v, ok, shown)
+        cache = os.path.exists(os.path.join(ctx.mini, "build", "CMakeCache.txt"))
+        v, d = judge_version_refusal(rc, out, before != after, cache, R.ninja_lines(ctx.mini) > 0, conf,
+                                     "v" + other_v, this_v, ok, shown,
+                                     reconfigure_failed=reconfigure_started(out) and not cache)
     R.report(name, v, d, ctx.log)
     R.reset(ctx.mini, "main", "main")
     for d in ("build", "managed_components"):
         R.rmtree(os.path.join(ctx.mini, d))
 
 
-SUFFIXES = (("r33_suffix_dirty", "-dirty"), ("r33_suffix_ahead", "-3-g0123abc"), ("r33_suffix_empty", None),
+SUFFIXES = (("r33_suffix_dirty", "-dirty"), ("r33_suffix_ahead", "-3-g0123abc"), ("r33_suffix_none", None),
             ("r33_suffix_exact", ""))
+
+
+def idf_copy_repo(dst):
+    """Make dst its own git repository with one empty commit and no tag, and return what this
+    IDF's configure takes as git_revision when there is no version.txt: `git describe` with the
+    arguments build.cmake and GetGitRevisionDescription.cmake give it (the commit's hash)."""
+    R.run(["git", "init", "-q", dst], check=True)
+    R.git(dst, "commit", "-q", "--allow-empty", "-m", "env_cases: the IDF copy, no tag")
+    return R.git(dst, "describe", "--always", "--tags", "--dirty", "--match=v*.*")
 
 
 def copy_ignore(src):
@@ -1015,13 +1043,14 @@ def copy_env(src, dst):
 
 def c_r33_suffix(ctx, log):
     """R33's "an IDF with a suffix (-dirty, commits past its tag), or with no version, is refused",
-    without touching an install: a copy of this install under the fixture root (scratch), with no
-    .git (its own empty git init, so git describe gives nothing) and IDF_PATH/version.txt planted,
-    which this IDF's build takes as IDF_VER, the git_revision project_description.json reports
-    (tools/cmake/build.cmake). The copy's esp_idf_version.h is the install's, so the Component
-    Manager's idf stays this version and the lock and sdkconfig are not rewritten: each refusal can
-    come from git_revision alone. main (manifest naming this version) is built under the copy with
-    version.txt "v"+M.m.p+"-dirty", "-3-g0123abc" and empty, each to be refused; the can-fail, the
+    without touching an install: a copy of this install under the fixture root (scratch), without
+    the install's .git, made its own repository with one empty commit and no tag (idf_copy_repo),
+    and IDF_PATH/version.txt planted, which this IDF's build takes as IDF_VER, the git_revision
+    project_description.json reports (tools/cmake/build.cmake). The copy's esp_idf_version.h is
+    the install's, so the Component Manager's idf stays this version and the lock and sdkconfig
+    are not rewritten: each refusal can come from git_revision alone. main (manifest naming this
+    version) is built under the copy with version.txt "v"+M.m.p+"-dirty" and "-3-g0123abc", and
+    with no version.txt (git_revision the commit's hash), each to be refused; the can-fail, the
     same copy with exactly "v"+M.m.p, must build and be recorded. The copy is removed at the end,
     pass or fail."""
     this_v = R.idf_version()
@@ -1031,26 +1060,34 @@ def c_r33_suffix(ctx, log):
     try:
         R.rmtree(dst)
         shutil.copytree(I.long_path(src), I.long_path(dst), ignore=copy_ignore(src))
-        R.run(["git", "init", "-q", dst], check=True)
+        bare = idf_copy_repo(dst)
         hv = header_version(dst)
         with open(log, "a", encoding="utf-8") as f:
-            f.write("idf copy: esp_idf_version.h %s, version.cmake %s\n" % (hv, R.idf_version(dst)))
+            f.write("idf copy: esp_idf_version.h %s, version.cmake %s; git describe %s\n" % (
+                hv, R.idf_version(dst), bare))
         if hv != this_v or R.idf_version(dst) != this_v:
             for name, _s in SUFFIXES:
                 R.report(name, "VOID", "the copy's esp_idf_version.h gives %s, not %s" % (hv, this_v), ctx.log)
             return
         e = copy_env(src, dst)
         for name, suffix in SUFFIXES:
-            planted = "" if suffix is None else "v" + this_v + suffix
-            with open(I.long_path(os.path.join(dst, "version.txt")), "w", newline="") as f:
-                f.write(planted + ("\n" if planted else ""))
+            vt = I.long_path(os.path.join(dst, "version.txt"))
+            if suffix is None:
+                planted = bare
+                if os.path.exists(vt):
+                    os.remove(vt)
+            else:
+                planted = "v" + this_v + suffix
+                with open(vt, "w", newline="") as f:
+                    f.write(planted + "\n")
             R.reset(ctx.mini, "main", "main")
             for d in ("build", "managed_components"):
                 R.rmtree(os.path.join(ctx.mini, d))
             recs = ctx.records(MINI_PROJECT)
             before = R.snapshot(recs)
             with open(log, "a", encoding="utf-8") as f:
-                f.write("\n=== %s: version.txt %r\n" % (name, planted))
+                f.write("\n=== %s: %s\n" % (name, "no version.txt, git describe %r" % planted if suffix is None
+                                                else "version.txt %r" % planted))
             rc, out = R.release(ctx, ctx.mini, log, jobs=ctx.jobs, base_env=e)
             after = R.snapshot(recs)
             new = sorted(set(after) - set(before))
@@ -1064,10 +1101,11 @@ def c_r33_suffix(ctx, log):
                 rec = json.load(open(os.path.join(recs, js[0]))) if len(js) == 1 else {}
                 v, d = judge_built(rc, len(new) == 3, rec.get("idf_version"), modified, conf, planted)
             else:
-                v, d = judge_version_refusal(rc, out, before != after,
-                                             os.path.exists(os.path.join(ctx.mini, "build", "CMakeCache.txt")),
-                                             R.ninja_lines(ctx.mini) > 0, conf, planted, this_v, modified == [],
-                                             "changed: %s" % (", ".join(modified) or "nothing"))
+                cache = os.path.exists(os.path.join(ctx.mini, "build", "CMakeCache.txt"))
+                v, d = judge_version_refusal(rc, out, before != after, cache, R.ninja_lines(ctx.mini) > 0, conf,
+                                             planted, this_v, modified == [],
+                                             "changed: %s" % (", ".join(modified) or "nothing"),
+                                             reconfigure_failed=reconfigure_started(out) and not cache)
             R.report(name, v, d, ctx.log)
     finally:
         R.reset(ctx.mini, "main", "main")
@@ -1399,6 +1437,11 @@ def self_test():
     expect("version refusal: a record written", jvr(recorded=True), "FAIL")
     expect("version refusal: a traceback", jvr(out="Traceback (most recent call last):\n" + ref), "VOID")
     expect("version refusal: before the reconfigure", jvr(reconfigured=False), "FAIL")
+    expect("version refusal: the reconfigure started and failed", jvr(reconfigured=False, reconfigure_failed=True),
+           "VOID")
+    expect("reconfigure_started: idf.py's line", reconfigure_started("x\nExecuting action: reconfigure\n"), True)
+    expect("reconfigure_started: refused before it", reconfigure_started("REFUSED: x (R33)\n"), False)
+    expect("reconfigure_started: no output", reconfigure_started(None), False)
     expect("version refusal: the planted revision did not show", jvr(configured="v5.4.2"), "VOID")
     expect("version refusal: no project_description", jvr(configured=None), "VOID")
     expect("version refusal: the case's state did not hold", jvr(state_ok=False), "VOID")
@@ -1461,6 +1504,16 @@ def self_test():
                  for r, ds, fs in os.walk(os.path.join(d, "copydst")) for n in ds + fs)
     expect("copy_ignore: no .git anywhere, no top docs/examples, a component's docs kept", got,
            ["components", "components/c", "components/c/docs", "components/s", "components/s/a.c"])
+    rd = os.path.join(d, "repo")
+    os.makedirs(rd)
+    open(os.path.join(rd, "version.txt"), "w").write("v5.4.2\n")
+    bare = idf_copy_repo(rd)
+    expect("idf_copy_repo: git describe gives a bare hash, no version", re.fullmatch(r"[0-9a-f]{7,40}", bare)
+           is not None, True)
+    expect("idf_copy_repo: HEAD has a commit (this IDF's configure reads it)",
+           R.git(rd, "rev-parse", "HEAD").startswith(bare), True)
+    expect("idf_copy_repo: untracked files do not make it -dirty", R.git(rd, "describe", "--always", "--tags",
+                                                                        "--dirty", "--match=v*.*"), bare)
     src = os.path.join(d, "inst")
     pe = R.idf_env
     try:
