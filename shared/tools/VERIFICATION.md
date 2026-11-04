@@ -965,3 +965,53 @@ resolved to `115f907c`. **Run files:** `$REVERSE_IT_DIR/projects/vtrux/notes/art
 | R21, R17, R13, R9 on the minimal project | PASS | The release cases above. |
 | R10, no lock after the reconfigure | **not reached** | R33 refuses a project with no manifest first. |
 | R8's sdkconfig clause on gen-inhibit (`r8_sdkconfig_*`) | **not run** | These are fixture cases on gen-inhibit. They wait for part B (gen-inhibit on v5.4.2). |
+
+## R32's padded IDF_TOOLS_PATH, and R33's no-manifest refusal (gen-inhibit step 1d, 2026-11-04)
+
+**SPEC:** R32 as merged at shared/main `39565c2d` from `shared/tools/spec-1d-idfver` `6e21fa50`
+(user, 2026-11-04: IDF_TOOLS_PATH is "set, not empty and has no spaces around it, since ESP-IDF
+gets the value as it is"). R33 "a release build is refused if the manifest names ... no version",
+for a project with no manifest at all (the gen-inhibit reviewer, 2026-11-04: `r10_no_lock` becomes
+an R33 case; R10's no-lock clause stays "not reached"). **Tooling:** `308d7f65`, as in the entry
+above, tested as the fixture's `2000.01.01` checkout of `shared/tools/env-cases-1d` `7c67e75`. Its
+tooling files are `308d7f65`'s. It does not have R33's configured-IDF version check (`0e265f03`,
+shared/main `24f0c6d9`), so the `r33_release_other*` rows below are on the R8 path, as above.
+
+**Check:** `verification/env_cases.py` and `verification/release_cases.py` at `7c67e75`. Both
+`--self-test`s pass.
+- env_cases adds `r32_tools_lead_space`, `_trail_space`, `_lead_tab` and `_trail_newline` to the
+  check-env cases, and `r32_release_tools_padded` and `r32_dev_tools_padded` (a space after it)
+  before a release build and a dev build. Each must be refused naming IDF_TOOLS_PATH, and the
+  child probe must show the padded value, or the case is VOID.
+- Two new bugs in the fake tooling: `padded_ok` strips the value, and `space_only` refuses spaces
+  but not a tab or a newline. The self-test checks that `padded_ok` is caught by exactly the four
+  padded check-env cases and `space_only` only by the tab and newline ones. It also checks that each
+  padded value differs from the caller's and strips to it.
+- release_cases' `r10_no_lock` is now `r33_no_manifest`. It is the same no-manifest branch. It must
+  be refused before the reconfigure, the refusal naming R33 as a whole word, with no ninja log line
+  and no record. Self-test lines: "R33" is named, "R330" is not, and output naming no requirement
+  is not.
+
+**Host:** NICKY-XPS, ESP-IDF v5.4.2 with its Python 3.11.9, Normal priority, full speed (no
+wall-clock test running); bench lock free and "No builds" clear. `--other-idf` is v5.4.1's
+exported variables. The release case ran with no `--base`, so on gen-inhibit/main, resolved to
+`115f907c`. **Run files:** `$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/runs/step1d_r32pad_7c67e75/`.
+Its `SHA256SUMS` (`b4d28ea7...829d`) hashes all 51 files.
+
+| Case | Result | What was tested |
+|---|---|---|
+| release_cases `r33_no_manifest` | PASS | The minimal project with no `main/idf_component.yml`: refused (exit 1) before the reconfigure, naming R33 ("the project names no ESP-IDF version"), no ninja log line, no record. |
+| `r32_tools_lead_space`, `_trail_space`, `_lead_tab`, `_trail_newline` | PASS | check-env refused (exit 1), naming IDF_TOOLS_PATH. The probe saw the padded value each time. |
+| `r32_release_tools_padded`, `r32_dev_tools_padded` | PASS | A space after IDF_TOOLS_PATH: refused naming IDF_TOOLS_PATH, no build folder, no record. |
+| R32's other 13 check-env cases and its 4 other pre-build cases | PASS | As in the part A entry. `r32_control` and `r32_tools_trailing_sep` are accepted. |
+| R31's 6 cases | PASS | As in the part A entry. |
+| `r33_release_range`, `_star`, `_narrow`, `_none`, `r33_release_eq`, `r24_tools_passed`, `r33_other_*` (4) | PASS | As in the entry above. |
+| `r33_release_other`, `_lockonly`, `_own` | PASS | As in the entry above: the R8 path on `308d7f65`. |
+
+| Req | Result | What was tested |
+|---|---|---|
+| R32, IDF_TOOLS_PATH with spaces around it | PASS | A space before it, a space after it, a tab before it and a newline after it are each refused by check-env, naming the variable. A space after it is refused before a release build and before a dev build, with nothing handed to ESP-IDF. The fake-bug can-fails show the cases catch a tooling that strips the value and one that refuses spaces only. |
+| R32, the rest | PASS | As in the part A entry. |
+| R33, a project with no manifest names no version | PASS | Release build refused before the reconfigure, naming R33. |
+| R10, no lock after the reconfigure | **not reached** | R33 refuses a project with no manifest first (the gen-inhibit reviewer, 2026-11-04). |
+| R31, R33 (as in the entry above), R24 | PASS | Re-run on `308d7f65`. |
