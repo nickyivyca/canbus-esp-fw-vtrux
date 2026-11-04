@@ -624,6 +624,23 @@ def make_fixture(ctx):
         git(ctx.src, "checkout", "-q", "fixture")
 
 
+def idf_version(idf_path=None):
+    """The version of the ESP-IDF at idf_path (default: the exported one), "M.m.p", read from its
+    tools/cmake/version.cmake, as its build reads it."""
+    p = os.path.join(idf_path or os.environ["IDF_PATH"], "tools", "cmake", "version.cmake")
+    s = open(p).read()
+    parts = [re.search(r"set\(IDF_VERSION_%s\s+(\d+)\)" % k, s) for k in ("MAJOR", "MINOR", "PATCH")]
+    if not all(parts):
+        raise RuntimeError("%s: no IDF_VERSION_MAJOR/MINOR/PATCH" % p)
+    return ".".join(m.group(1) for m in parts)
+
+
+def idf_manifest(version, extra=""):
+    """A main/idf_component.yml naming the IDF version as written (R33: "5.4.2" or "==5.4.2"),
+    with extra dependency lines after it."""
+    return 'dependencies:\n  idf:\n    version: "%s"\n%s' % (version, extra)
+
+
 def make_mini(ctx):
     rmtree(ctx.mini)
     shutil.copytree(os.path.join(os.environ["IDF_PATH"], "examples", "get-started", "hello_world"), ctx.mini)
@@ -636,10 +653,10 @@ def make_mini(ctx):
         f.write('{"project": "vtrux-mini-test", "shared_components": []}\n')
     with open(os.path.join(ctx.mini, PINS), "w", newline="") as f:
         f.write(pins_text(make_pin(ctx)))
-    # a manifest, so the reconfigure writes a dependencies.lock: the tooling refuses a project
-    # without one (whether SPEC allows that is with the reviewer, 2026-10-24)
+    # a manifest, so the reconfigure writes a dependencies.lock (R10), naming the exported IDF's
+    # version exactly (R33, shared/main ceac030: a release build refuses a range)
     with open(os.path.join(ctx.mini, "main", "idf_component.yml"), "w", newline="") as f:
-        f.write('dependencies:\n  idf:\n    version: ">=5.0"\n')
+        f.write(idf_manifest(idf_version()))
     run(["git", "init", "-q", "-b", "main", ctx.mini], check=True)
     rc, _ = idf(ctx, ctx.mini, "set-target", "esp32c3")
     if rc:

@@ -711,8 +711,8 @@ def s3_mini(ctx, log):
     repo = s3_board_repo(ctx, table, fs[0])
     RC.git(ctx.mini, "fetch", "-q", repo, "refs/tags/%s:refs/tags/%s" % (S3_TAG, S3_TAG))
     with open(os.path.join(ctx.mini, "main", "idf_component.yml"), "w", newline="\n") as f:
-        f.write('dependencies:\n  idf:\n    version: ">=5.0"\n  %s:\n    git: %s\n    path: shared/boards/s3fx\n'
-                '    version: "%s"\n' % (S3_BOARD, repo.replace(os.sep, "/"), S3_TAG))
+        f.write(RC.idf_manifest(RC.idf_version(), '  %s:\n    git: %s\n    path: shared/boards/s3fx\n'
+                                '    version: "%s"\n' % (S3_BOARD, repo.replace(os.sep, "/"), S3_TAG)))
     vb = os.path.join(ctx.mini, "vtrux_build.json")
     data = json.loads(read(vb, "r"))
     data["shared_components"] = [S3_BOARD]
