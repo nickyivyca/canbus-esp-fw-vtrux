@@ -1,5 +1,6 @@
 /* Host stand-in for the esp32c3's soc/system_reg.h: the TWAI clock-enable
- * and reset bits, ESP-IDF 5.4.1's (bit 19 of each). The register addresses
+ * and reset bits, ESP-IDF 5.4.1's and 5.4.2's (bit 19 of each; the header
+ * is byte-identical in the two). The register addresses
  * are tokens stub_reg_read() tells apart. */
 #ifndef MOCK_SOC_SYSTEM_REG_H
 #define MOCK_SOC_SYSTEM_REG_H

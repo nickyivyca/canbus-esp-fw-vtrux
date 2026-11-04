@@ -1,4 +1,5 @@
-/* Host stand-in for esp_err.h: the codes the port uses, ESP-IDF 5.4.1's values. */
+/* Host stand-in for esp_err.h: the codes the port uses, ESP-IDF 5.4.1's and
+ * 5.4.2's values (the header is byte-identical in the two). */
 #ifndef MOCK_ESP_ERR_H
 #define MOCK_ESP_ERR_H
 #include <stdint.h>
