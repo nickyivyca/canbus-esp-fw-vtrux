@@ -1015,3 +1015,81 @@ Its `SHA256SUMS` (`b4d28ea7...829d`) hashes all 51 files.
 | R33, a project with no manifest names no version | PASS | Release build refused before the reconfigure, naming R33. |
 | R10, no lock after the reconfigure | **not reached** | R33 refuses a project with no manifest first (the gen-inhibit reviewer, 2026-11-04). |
 | R31, R33 (as in the entry above), R24 | PASS | Re-run on `308d7f65`. |
+
+## R33's configured-IDF version check, and its suffix cases (gen-inhibit step 1d, 2026-11-04)
+
+**SPEC:** R33 as at shared/main `39565c2d`: a release build is refused after the reconfigure and
+before compiling, unless the configure's IDF version (`build/project_description.json`'s
+`git_revision`) is exactly `v` and the manifest's version. An IDF with a suffix (`-dirty`, commits
+past its tag), or with no version, is refused. **Tooling:** the implementor's
+`shared/tools/idf-version` `0e265f03`, merged to shared/main as `24f0c6d9` and into
+`shared/tools/env-cases-1d` as `f67e952`. It was tested there as the fixture's `2000.01.01` checkout.
+Its tooling files are `24f0c6d9`'s; the later commits change only `verification/`.
+
+**Check:** `verification/env_cases.py` and `verification/release_cases.py`. Both `--self-test`s
+pass at each commit below. These are the gen-inhibit reviewer's (2), 2026-11-04.
+- **`85e9277`.**
+  - `r33_release_other`, `_lockonly` and `_own` are now judged as version refusals. Each must be
+    refused after the reconfigure (`CMakeCache.txt` made) and before compiling (no `.ninja_log`
+    line), with no record, the configure reporting `v` and the other version, and the `REFUSED`
+    line naming R33, that version and the manifest's, each as a whole token. A refusal before the
+    reconfigure, or one naming R8 and not R33, is a FAIL (the gen-inhibit reviewer, 2026-11-04).
+  - A new can-fail, `r33_release_other_match`: the manifest names the other version and every
+    tracked file is as the other install writes it. It must build and be recorded with that
+    version.
+  - The suffix cases, `r33_release_suffix`, run in a copy of this install under the fixture root
+    (scratch). The copy has no `.git` and no top-level `docs/` or `examples/`, and is removed when
+    the case ends, pass or fail.
+    - `IDF_PATH/version.txt` is planted in the copy; this IDF's build takes it as `git_revision`.
+    - **The copy's `esp_idf_version.h` is the install's (5.4.2, as is its `version.cmake`; the case
+      is VOID otherwise).** So the Component Manager's idf stays 5.4.2, the lock and sdkconfig are
+      not rewritten, and each refusal can come from `git_revision` alone.
+- **`8282b29`.** It fixes the suffix fixture, which `85e9277`'s run exposed:
+  - **The copy gets one empty commit (no tag).** This IDF's configure reads the IDF's git HEAD
+    before `version.txt`, and with no commit it stopped before the tooling checked anything.
+  - **`r33_suffix_empty` became `r33_suffix_none`.** An empty `version.txt` stops this IDF's own
+    configure (`build.cmake`, IDF_VER with no value), so it can never reach the tooling's check.
+    `r33_suffix_none` has no `version.txt` and no tag, so `git_revision` is the untagged commit's
+    hash: no version.
+  - A reconfigure the tooling started that made no `CMakeCache.txt` is now VOID, not "refused
+    before the reconfigure".
+  - Self-test lines for each, with a real scratch repository: HEAD has a commit, and `git
+    describe` gives a bare hash.
+- **`c6f3cc36`.** It fixes the suffix can-fail, which `8282b29`'s run exposed. A record is named by
+  its image hash, so the `v5.4.2` build found `r22_mini`'s identical record already there and wrote
+  nothing new (R13). The case now removes that commit's records from the fixture first, so it must
+  write its own. Self-test lines for it. `8282b29..c6f3cc36` changes nothing else.
+
+**Host:** NICKY-XPS, ESP-IDF v5.4.2 with its Python 3.11.9, Normal priority, full speed (no
+wall-clock test running); bench lock free and "No builds" clear. `--other-idf` is v5.4.1's
+exported variables. The release cases ran with no `--base`, so on gen-inhibit/main. **Run files:**
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/runs/`:
+- `step1d_r33ver_8282b29/`: every case except the suffix ones. Its `SHA256SUMS`
+  (`72e7024d...2d34`) hashes all 58 files. Its `r33_suffix_exact` was VOID (the fault `c6f3cc36`
+  fixes), so its suffix verdicts are not used.
+- `step1d_r33ver_c6f3cc3/`: the self-tests, `r22_mini` (to make the fixture) and
+  `r33_release_suffix`. Its `SHA256SUMS` (`e01669c5...b75b`) hashes all 13 files.
+- `step1d_r33ver_85e9277/`: the first run. It is cited only for what it exposed: the copy with no
+  commit, and the empty `version.txt` stopping this IDF's configure. Its suffix verdicts do not
+  count (its README).
+
+| Case | Result | What was tested |
+|---|---|---|
+| release_cases `r22_mini`, `r13_tooling_dirty`, `r13_lock_crlf` (CRLF, LF), `r33_no_manifest`, `r9_epoch` (A, B, C), `r24_env` | PASS | As in the entries above, under the version check: each `==5.4.2` release build of the minimal project is recorded, and the project with no manifest is still refused before the reconfigure, naming R33. |
+| `r33_release_other` | PASS | Main as committed, released by the tooling under v5.4.1's Python and variables: refused (exit 1) after the reconfigure, before compiling, naming R33, `git_revision` `v5.4.1` and the manifest's 5.4.2. No record. The lock and the sdkconfig were rewritten. |
+| `r33_release_other_lockonly` | PASS | The same, with only the lock rewritten. |
+| `r33_release_other_own` | PASS | Every tracked file as v5.4.1 writes it, so nothing was rewritten and R8 had nothing to refuse: the same refusal, naming R33 and both versions. No record. |
+| `r33_release_other_match` (the can-fail) | PASS | The manifest names 5.4.1, every file as v5.4.1 writes it: built and recorded under v5.4.1, idf_version `v5.4.1` (image and project). So the three refusals above come from the version. |
+| `r33_suffix_dirty`, `r33_suffix_ahead` | PASS | In the copy, `version.txt` `v5.4.2-dirty` and `v5.4.2-3-g0123abc`: each refused (exit 1) after the reconfigure, before compiling, naming R33, the planted `git_revision` and 5.4.2. No record, worktree unchanged. |
+| `r33_suffix_none` | PASS | In the copy, no `version.txt` and no tag (`git_revision` `26c2fb2`, the commit's hash): refused the same way. |
+| `r33_suffix_exact` (the can-fail) | PASS | The same copy, `version.txt` `v5.4.2`: the commit's earlier record removed, then built and recorded, idf_version `v5.4.2` (image and project). So the suffix refusals come from `git_revision` alone. |
+| R32's 23 cases, R31's 6, `r33_release_range`, `_star`, `_narrow`, `_none`, `r33_release_eq`, `r24_tools_passed`, `r33_other_*` (4) | PASS | As in the entries above, on `24f0c6d9`'s tooling. |
+
+| Req | Result | What was tested |
+|---|---|---|
+| R33, the configured IDF version must be exactly the manifest's | PASS | Under another IDF, a release build is refused after the reconfigure and before compiling, naming both versions, with the lock and sdkconfig rewritten, with only the lock rewritten, and with nothing rewritten. The can-fail builds when the manifest names that IDF. |
+| R33, a suffix or no version refused | PASS | `-dirty`, commits past the tag, and no version (an untagged commit), with the IDF's own version header left at 5.4.2. The `v5.4.2` can-fail in the same copy builds. An empty `version.txt` is not testable on this IDF: its own configure stops on it. |
+| R33 with R8 (the R8 path of the entry "R33 with R8") | **not reached** | From `24f0c6d9` on, the version check refuses these builds first. `step1d_r33r8_4794368` stays its record, on `308d7f65`. |
+| R33, the rest; R32, R31, R24; R21, R17, R13, R9 on the minimal project | PASS | Re-run on `24f0c6d9`'s tooling. |
+| R10, no lock after the reconfigure | **not reached** | As above. |
+| R8's sdkconfig clause on gen-inhibit (`r8_sdkconfig_*`) | **not run** | They wait for part B (gen-inhibit on v5.4.2). |
