@@ -25,9 +25,9 @@
  * goldens and catches changes; it cannot catch a rule that is wrong here and
  * wrong in the golden too. Accepted deliberately by the user on 2026-09-19:
  * we have no independent reference implementation of this logic to diff
- * against (projects/vtrux/tools/gen_inhibit/inhibit.py is a different
- * architecture -- proactive/scheduled, not a reactive trail -- so it is not a
- * 1:1 oracle). The interposer's firmware/test/host_diff/ IS a true
+ * against (gen-inhibit/tools/inhibit.py is a different architecture --
+ * proactive/scheduled, not a reactive trail -- so it is not a 1:1 oracle).
+ * The interposer's charge-interposer/fw_harness/host_diff/ IS a true
  * differential because machine.py and machine.cpp are independent; do not
  * read this harness as the same kind of evidence.
  *
