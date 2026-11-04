@@ -29,7 +29,8 @@ Requirements are numbered G1 to G6. The numbers are stable.
 - **G2. Every software restart takes the CAN ports off the bus first.**
   Every software restart, a crash included, runs G3's steps before the CPU
   resets. The guard runs at the point every software restart passes
-  through, after the last code that could skip it: on ESP-IDF v5.4.1,
+  through, after the last code that could skip it: on ESP-IDF v5.4.1 and
+  v5.4.2,
   `esp_restart_noos()`, reached through a link-time wrap that the component
   sets itself. A project gets the guard by depending on the component, with
   no switch and no call. Resets that bypass software (watchdog final

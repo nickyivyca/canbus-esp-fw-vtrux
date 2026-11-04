@@ -343,7 +343,29 @@ same folder. The interposer's test evidence is
   refusing only R10's overwrite setting and a cache left on, so a `-D` for a
   test-only switch could reach a release build with no file changed.
 - **Status:** basis complete. The list itself is the implementor's to find,
-  for each host OS.
+  for each host OS. **Amended 2026-11-03** (user, in the gen-inhibit
+  reviewer's session): it sets no default for a variable it passes. See
+  R32.
+
+### R32. The IDF environment check
+- **Basis:** user, 2026-11-03, in the gen-inhibit reviewer's session, on
+  the draft for gen-inhibit's port step 1d: the environment check for
+  release and dev builds, every gen-inhibit build passing it from 1d. The
+  check's form is the charge interposer's launcher's (`check_idf_env` in
+  `charge-interposer/vtrux_tools.py`, `charge-interposer/main` `3c03edf`).
+  Also ruled 2026-11-03 (user, in the methodology session, confirmed in the
+  gen-inhibit reviewer's session): the port unifies the launchers.
+- **Exposed by:** the charge-interposer reviewer's reading, 2026-11-03:
+  `buildenv.py` (R24's environment, `shared/main` `f4e7578`, lines 88-94)
+  defaults an unset `IDF_TOOLS_PATH` to `~/.espressif`. With two ESP-IDF
+  installs on one machine (v5.4.1 for gen-inhibit until its step 1d,
+  v5.4.2 for the interposer, each with its own tools folder; user,
+  2026-11-03), that default builds with the other install's Python
+  environment and tools, and R9 may not catch it while the toolchains
+  match.
+- **Status:** complete. Not covered here: an `IDF_PATH` of one version with
+  the other's tools. R33's exact version is what refuses that, at
+  configure.
 
 ## 4. Checks
 
@@ -726,7 +748,34 @@ same folder. The interposer's test evidence is
   X2 as the interposer does.
 - **Status:** complete.
 
+### R33. Each project names its IDF version
+- **Basis:** user, 2026-11-03, in the gen-inhibit reviewer's session, on
+  the draft for gen-inhibit's port step 1d. While two ESP-IDF installs are
+  in use, a build in a shell exported for the other one must fail, and the
+  Component Manager resolves the manifest's `idf` dependency against the
+  IDF that runs the configure. The charge interposer's manifest already
+  pins `idf: "5.4.2"`; gen-inhibit's names `>=4.1.0` (`gen-inhibit/main`
+  `f2f64b2`), which any IDF meets.
+- **Status:** basis pending: that the Component Manager refuses a
+  configure under another IDF for a bare version (`"5.4.2"`) as for
+  `==5.4.2` is the reviewers' reading, not yet shown. The tester's can-fail
+  for R33 shows it, a configure under the other install.
+
 ## 6. Running the tooling
+
+### R31. Dev builds by the tooling
+- **Basis:** user, 2026-11-03, in the methodology session, confirmed in the
+  gen-inhibit reviewer's session the same day: the port unifies the
+  launchers, and the interposer's dev build moves into `shared/tools`. Its
+  form is that build's (`charge-interposer/vtrux_tools.py build`,
+  `charge-interposer/main` `3c03edf`): one folder per variant, a reconfigure
+  with the variant's options, then ninja, `--jobs` for AGENTS.md "Builds
+  during wall-clock tests" point 3's throttled form. The variant list
+  becomes project data (R22) rather than a line read out of the project's
+  `CMakeLists.txt`. gen-inhibit's bench builds move onto it in its stage
+  (b), with a variant table; until then they pass R32 only (user,
+  2026-11-03).
+- **Status:** complete.
 
 ### R23. From a read-only checkout at the pin
 - **Basis:** port plan goal 20 item 8 (user, 2026-10-23): shared Python

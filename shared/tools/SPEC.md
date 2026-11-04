@@ -19,8 +19,9 @@ other project's reviewer (charge interposer) reads it before it merges into
   spec 12.3 item 3,
   `$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-wican-spec.md`.
 
-Requirements are numbered R1 to R30. The numbers are stable: the two evidence
-documents cite them.
+Requirements are numbered R1 to R33. The numbers are stable: the two evidence
+documents cite them. R31 to R33 were added 2026-11-03 (user, in the
+gen-inhibit reviewer's session), for gen-inhibit's port step 1d.
 
 ## Terms
 
@@ -43,6 +44,7 @@ It covers:
   reproducible test;
 - the image-reading library: the app descriptor parser and the image hash
   read from a `.bin`;
+- the dev build command (R31) and the IDF environment check (R32);
 - the comparison tool of goal 6, which the tester owns. Its requirements are
   not written yet (section 8).
 
@@ -148,9 +150,18 @@ unless the image changes, which the reproducible test (R19) shows.
   an environment the tooling builds from an empty one. It passes through
   from its caller only the variables on its own list, which holds only what
   ESP-IDF needs to find itself and its tools and what the host OS needs to
-  run programs, and it adds its own settings (R9, R10). It prints the names
+  run programs, and it adds its own settings (R9, R10). It sets no default
+  for any variable it passes; R32 refuses an unset one. It prints the names
   it dropped, and the record lists the names it passed. Bench and dev builds
   are not constrained.
+- **R32. The IDF environment check.** Before a release build or a dev build
+  (R31) hands anything to ESP-IDF, the environment it was started in is
+  checked: `IDF_PATH` is set; `IDF_TOOLS_PATH` is set and not empty; and
+  `IDF_PYTHON_ENV_PATH` and `ESP_ROM_ELF_DIR` are set and inside
+  `IDF_TOOLS_PATH`. A failure is a refusal naming the variable. Nothing is
+  defaulted: an unset `IDF_TOOLS_PATH` is never replaced by `~/.espressif`.
+  The check is also a command of its own (`check-env`), and a project whose
+  bench builds do not go through R31 runs it before each.
 
 ## 4. Checks
 
@@ -293,8 +304,25 @@ unless the image changes, which the reproducible test (R19) shows.
   the WiCAN's and the X2's alike. A project with its own project root (the
   interposer, goal 3) supplies its own per-project data and needs no change
   to the tooling.
+- **R33. Each project names its IDF version.** Each project's main
+  component manifest (`main/idf_component.yml` under the project root)
+  names the ESP-IDF version the project builds on as one exact version
+  (for example `==5.4.2`), so that a configure under another IDF fails. The
+  version is the one the project's own spec sets. A release build is
+  refused if the manifest names a range or no version.
 
 ## 6. Running the tooling
+
+- **R31. Dev builds by the tooling.** The tooling makes a project's bench
+  and dev builds of one variant: `build <variant> [--jobs N]`. The variants
+  are the project's data (R22), listed in its `vtrux_build.json`, each
+  naming the CMake options (`-D` name and value) it is configured with. A
+  variant not listed is refused, and the refusal names the list. A project
+  that lists no variants has no build command. Each variant builds in
+  `build/<variant>` under the project root: `idf.py reconfigure` with its
+  options, then ninja there, with `-j N` when `--jobs` is given. Nothing is
+  added to the caller's environment. R32 runs first, and R14 applies: a
+  dev build need not meet the release rules.
 
 - **R23. From a read-only checkout at the pin.** The build tooling runs from
   the shared checkout `../shared-<tag>/`, relative to the project's worktree
