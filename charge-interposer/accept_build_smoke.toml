@@ -1,0 +1,33 @@
+# The acceptance runner's BUILD SMOKE LIST: a fixture of the adapter's
+# build target, not an acceptance list (acceptance lists are the
+# reviewer's, under acceptance/, ACCEPT-SPEC A2). A --dev run of it builds
+# one variant of the 2a product through the adapter's "idf-build" target
+# and "idf" shell (accept_adapter.py; the charge-interposer reviewer,
+# 2026-11-04), in a tree of its own, and records its images, ELF and
+# toolchain: the path the 2a list's six builds take. Its records go to
+# interposer-firmware/dev-runs/, never runs/, and are never evidence.
+# Local only (builds on remote trees are refused); an ESP-IDF build of
+# about a quarter of an hour.
+
+[step]
+id = "build-smoke"
+project = "charge-interposer"
+ordered_by = "charge-interposer reviewer"
+ordered_on = "2026-11-04"
+spec = ["none: a smoke run of the acceptance runner's build target"]
+verification = "none (a --dev smoke run is never evidence)"
+
+# the final 2a product (the reviewer, 2026-11-03)
+[trees.prod]
+project = "cf1b911326d62fc7a7a743be2050ff51bf37f0d6"
+
+[[build]]
+id = "bridge"
+tree = "prod"
+target = "idf-build"
+options = { variant = "bridge" }
+
+[[set]]
+id = "light"
+tree = "prod"
+select = ["id:paths-test"]
