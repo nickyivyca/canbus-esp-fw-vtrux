@@ -4,8 +4,10 @@ Before a release build or a dev build (R31) hands anything to ESP-IDF, the
 environment it was started in must be one exported for a single ESP-IDF
 install:
 
-    IDF_PATH             set
-    IDF_TOOLS_PATH       set and not empty
+    IDF_PATH             set and not empty
+    IDF_TOOLS_PATH       set and not empty, with no leading or trailing
+                         spaces (the value checked is the value ESP-IDF
+                         gets, so it is never stripped)
     IDF_PYTHON_ENV_PATH  set, and inside IDF_TOOLS_PATH
     ESP_ROM_ELF_DIR      set, and inside IDF_TOOLS_PATH
 
@@ -15,8 +17,11 @@ machine, each with its own tools folder, that default would build with the
 other install's Python environment and tools. The two "inside" checks catch
 a shell exported with one IDF_TOOLS_PATH and then given another.
 
-Not covered: an IDF_PATH of one version with the other's tools folder. The
-project's exact IDF version (R33) refuses that, at configure.
+Not covered here: an IDF_PATH of one version with the other's tools folder.
+The project's exact IDF version (R33) covers it as far as it reaches: a
+lockless configure fails; with the committed lock a release build is
+refused at R8 (the configure rewrites the lock, and the worktree is no
+longer clean after it). A bench or dev build is not guarded against it.
 
 The form is the charge interposer's launcher's check_idf_env
 (charge-interposer/vtrux_tools.py, charge-interposer/main 3c03edf), with
@@ -65,6 +70,9 @@ def check(environ=None):
             "never defaulted to ~/.espressif, which may be another install's "
             "(R32)" % (TOOLS, "empty" if TOOLS in environ else "not set",
                        TOOLS))
+    if tools != tools.strip():
+        raise EnvError("%s is %r, with leading or trailing spaces: set it to "
+                       "the tools folder exactly (R32)" % (TOOLS, tools))
     for name in INSIDE_TOOLS:
         value = environ.get(name, "")
         if not value:

@@ -55,6 +55,15 @@ class Check(unittest.TestCase):
     def test_blank_tools_path(self):
         self.refused(env(IDF_TOOLS_PATH="   "), "IDF_TOOLS_PATH")
 
+    def test_spaces_around_the_tools_path(self):
+        """Refused with the plain reason, not passed on unstripped: the value
+        checked is the value ESP-IDF gets (the interposer reviewer's nit,
+        2026-11-04)."""
+        for padded in (" " + TOOLS, TOOLS + " ", "\t" + TOOLS + "\n"):
+            why = self.refused(env(IDF_TOOLS_PATH=padded), "IDF_TOOLS_PATH",
+                               "leading or trailing spaces")
+            self.assertNotIn("not inside", why)
+
     def test_tools_path_never_defaulted(self):
         why = self.refused(env(IDF_TOOLS_PATH=None), "IDF_TOOLS_PATH")
         self.assertIn("never defaulted", why)

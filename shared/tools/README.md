@@ -110,7 +110,7 @@ constrained.
 
 Before a release build or a dev build hands anything to ESP-IDF, the
 environment it was started in is checked (`vtrux_build/idfenv.py`):
-`IDF_PATH` is set; `IDF_TOOLS_PATH` is set and not empty; and
+`IDF_PATH` is set and not empty; `IDF_TOOLS_PATH` is set and not empty; and
 `IDF_PYTHON_ENV_PATH` and `ESP_ROM_ELF_DIR` are set and inside
 `IDF_TOOLS_PATH`. A failure is a refusal naming the variable. Nothing is
 defaulted: an unset `IDF_TOOLS_PATH` is never replaced by `~/.espressif`,
@@ -118,8 +118,12 @@ which on a machine with two ESP-IDF installs, each with its own tools
 folder, may be the other install's. `check-env` runs the check alone,
 exit 0 or 1; a project whose bench builds do not go through `build` runs
 it before each. An `IDF_PATH` of one version with the other's tools is not
-caught here: the project's exact IDF version (R33) refuses that at
-configure.
+caught here. The project's exact IDF version (R33) covers it as far as it
+reaches: a lockless configure fails; with the committed lock a release
+build is refused at R8, since the configure rewrites the lock and the
+worktree is no longer clean after it. Bench and dev builds are not guarded
+against it. `IDF_TOOLS_PATH` with leading or trailing spaces is refused
+too: the value checked is the value ESP-IDF gets.
 
 ## Dev builds (R31)
 
@@ -200,8 +204,9 @@ The tooling holds no project facts. A project gives them in
 
 The project's ESP-IDF version is not in this file either. It is the `idf`
 dependency of `main/idf_component.yml`, one exact version, `5.4.2` or
-`==5.4.2` (R33), so that a configure under another IDF fails; a release
-build refuses a range or no version.
+`==5.4.2` (R33); a release build refuses a range or no version. Under
+another IDF a lockless configure then fails; with the committed lock the
+configure rewrites it, and a release build is refused at R8 (above).
 
 The build checks' data (the release profile, the switch table and its
 refusal rows) is not in this file. It is in `vtrux_checks.json` in the
