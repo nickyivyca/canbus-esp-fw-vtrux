@@ -13,8 +13,8 @@ v5.4.2 since port step 1d, with IDF_TOOLS_PATH set before the export
 (local-paths.md), in this repo's root.
 
 check-env  the IDF environment check (shared/tools R32): IDF_PATH and
-           IDF_TOOLS_PATH set, the IDF's Python environment and ROM ELF
-           folder inside IDF_TOOLS_PATH. release and build run it
+           IDF_TOOLS_PATH set and not empty, the IDF's Python environment
+           and ROM ELF folder inside IDF_TOOLS_PATH. release and build run it
            themselves. gen-inhibit's bench and dev builds are still idf.py
            / ninja builds (firmware/README.md), so run check-env in the
            same shell before each of them (R32).
@@ -22,8 +22,8 @@ release    a release build (that spec's section 3), with REVERSE_IT_DIR
            set; throttled, from an Idle shell, as `release --jobs 1`
            (AGENTS.md "Builds during wall-clock tests").
 build      a dev build of one variant (R31). gen-inhibit's vtrux_build.json
-           lists no variants until port step 1d stage (b), so until then it
-           is refused, naming the empty list.
+           lists no variants until gen-inhibit's stage (b), so until then
+           it is refused, naming the empty list.
 
 The project is gen-inhibit/firmware/, the IDF build root beside this script,
 which holds shared_pins.json and CMakeLists.txt; release and build are given
