@@ -7,7 +7,7 @@ acknowledgement while silent. A change that touches any of them needs a
 bench or truck run whatever the host tests show. Nothing classified a change
 against that list, which is the spec 12 entry this closes.
 
-**This does not replace the written procedure** in `../README.md`, and it
+**This does not replace the written procedure** in `../firmware/README.md`, and it
 cannot: a change anywhere can alter timing, and only a person walking the
 list can say so. What it does is make one specific failure impossible --
 "the driver changed and nobody noticed". That is the one worth automating,
@@ -17,23 +17,28 @@ a change is *about*.
 Two kinds of entry:
 
 * **whole files** whose content is a hardware mechanic by construction (the
-  port drivers, the port interface, the build configuration);
+  port drivers, the port interface, the build configuration, and since port
+  step 2a the pins: `board_ports.h` asks the board component for them, and
+  the board component's version is in `idf_component.yml` and
+  `dependencies.lock`);
 * **named settings** inside files that are mostly not. Hashing all of
-  `main.cpp` would flag every edit to the bridge loop's logging, so the pin
-  assignments, the bitrate, the loop timings and the per-iteration drain
-  bounds are extracted by name and only their VALUES are compared;
+  `main.cpp` would flag every edit to the bridge loop's logging, so the
+  bitrate, the loop timings and the per-iteration drain bounds are
+  extracted by name and only their VALUES are compared;
 * **function bodies** that are a mechanic whole. `setup()` is the boot
   path -- init order, the controller begin calls, the B-7d failed-start
   branch -- so all of it counts, minus the `INTP_PRINT*` lines, which are
   output rather than behaviour.
 
-This folder is not under git, so the baseline is a manifest recorded at each
-truck flash.
+The baseline is a manifest recorded at each truck flash. Paths in the map
+are relative to the IDF project, charge-interposer/firmware (port step 2a;
+before it they named src/ and platformio.ini, so a manifest recorded before
+2a differs in every whole-file and function key, which reads as changed).
 
 Usage (from the repo root):
-    py -3.11 .../test/hw_mechanics.py                 compare against the latest manifest
-    py -3.11 .../test/hw_mechanics.py --record 2026-10-04-truck
-    py -3.11 .../test/hw_mechanics.py --list          show what is mapped, and to which item
+    py -3.14 charge-interposer/fw_harness/hw_mechanics.py                 compare against the latest manifest
+    py -3.14 charge-interposer/fw_harness/hw_mechanics.py --record 2026-10-04-truck
+    py -3.14 charge-interposer/fw_harness/hw_mechanics.py --list          show what is mapped, and to which item
 """
 
 import argparse
@@ -46,46 +51,48 @@ import sys
 import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-FW = os.path.normpath(os.path.join(_HERE, ".."))
-sys.path.insert(0, os.path.normpath(os.path.join(FW, "..")))
+# charge-interposer/firmware, the IDF project (this is
+# charge-interposer/fw_harness/hw_mechanics.py since port step 2a)
+FW = os.path.normpath(os.path.join(_HERE, "..", "firmware"))
+sys.path.insert(0, os.path.normpath(os.path.join(_HERE, "..")))
 import paths                                                # noqa: E402
 
 MANIFESTS = os.path.join(paths.fixtures(), "flash-manifests")
 
 # path -> the spec 10 item it is a mechanic for.
 WHOLE_FILES = {
-    "src/port_twai.cpp": "the CAN controllers' own behaviour (TWAI bus-off "
-                         "recovery); the real transceivers",
-    "src/port_twai.h": "same",
-    "src/port_mcp2515.cpp": "the CAN controllers' own behaviour (MCP2515 "
-                            "transmit-buffer abort, retry and ordering)",
-    "src/port_mcp2515.h": "same",
-    "src/can_port.h": "the port contract both drivers implement",
-    "platformio.ini": "flashing and boot; the build configuration",
+    "main/port_twai.cpp": "the CAN controllers' own behaviour (TWAI bus-off "
+                          "recovery); the real transceivers",
+    "main/port_twai.h": "same",
+    "main/port_mcp2515.cpp": "the CAN controllers' own behaviour (MCP2515 "
+                             "transmit-buffer abort, retry and ordering)",
+    "main/port_mcp2515.h": "same",
+    "main/can_port.h": "the port contract both drivers implement",
+    "main/board_ports.h": "pin assignment: which board port each side "
+                          "takes, and the checks on the board's answer",
+    "main/idf_component.yml": "pin assignment and flashing and boot: the "
+                              "board component's version, the Arduino core, "
+                              "ESP-IDF",
+    "dependencies.lock": "same, as resolved",
+    "CMakeLists.txt": "flashing and boot; the build configuration",
+    "main/CMakeLists.txt": "same: each variant's sources and switches",
+    "sdkconfig": "flashing and boot; the build configuration (partition "
+                 "table, console, the board's values)",
 }
 
 # (file, label, regex) -> the spec 10 item. The regex must capture the value.
 SETTINGS = [
-    ("src/main.cpp", "CAN1_TX_GPIO",
-     r"CAN1_TX_GPIO\s*=\s*(\d+)", "pin assignment"),
-    ("src/main.cpp", "CAN1_RX_GPIO",
-     r"CAN1_RX_GPIO\s*=\s*(\d+)", "pin assignment"),
-    ("src/main.cpp", "MCP_CS", r"MCP_CS\s*=\s*(\d+)", "pin assignment"),
-    ("src/main.cpp", "MCP_SCK", r"MCP_SCK\s*=\s*(\d+)", "pin assignment"),
-    ("src/main.cpp", "MCP_MISO", r"MCP_MISO\s*=\s*(\d+)", "pin assignment"),
-    ("src/main.cpp", "MCP_MOSI", r"MCP_MOSI\s*=\s*(\d+)", "pin assignment"),
-    ("src/main.cpp", "MCP_INT", r"MCP_INT\s*=\s*(\d+)", "pin assignment"),
-    ("src/main.cpp", "BITRATE",
+    ("main/main.cpp", "BITRATE",
      r"BITRATE\s*=\s*(\d+)UL", "the bus the board drives"),
-    ("src/main.cpp", "TICK_INTERVAL_MS",
+    ("main/main.cpp", "TICK_INTERVAL_MS",
      r"TICK_INTERVAL_MS\s*=\s*(\d+)", "bridge loop timing"),
-    ("src/main.cpp", "DIAG_INTERVAL_MS",
+    ("main/main.cpp", "DIAG_INTERVAL_MS",
      r"DIAG_INTERVAL_MS\s*=\s*(\d+)", "bridge loop timing"),
-    ("src/main.cpp", "STATUS_INTERVAL_MS",
+    ("main/main.cpp", "STATUS_INTERVAL_MS",
      r"STATUS_INTERVAL_MS\s*=\s*(\d+)", "bridge loop timing"),
-    ("src/main.cpp", "vehicle drain bound",
+    ("main/main.cpp", "vehicle drain bound",
      r"i\s*<\s*(\d+)\s*&&\s*vehicle\.receive", "throughput at real bus load"),
-    ("src/main.cpp", "charger drain bound",
+    ("main/main.cpp", "charger drain bound",
      r"i\s*<\s*(\d+)\s*&&\s*charger\.receive", "throughput at real bus load"),
 ]
 
@@ -93,7 +100,7 @@ SETTINGS = [
 # (file, function, spec 10 item). The whole body is watched, with the
 # INTP_PRINT* lines dropped.
 FUNCTIONS = [
-    ("src/main.cpp", "setup",
+    ("main/main.cpp", "setup",
      "flashing and boot: init order, the controller begin calls, and the "
      "B-7d failed-start path"),
 ]
@@ -295,7 +302,7 @@ def main():
     name, man = latest_manifest()
     if man is None:
         print("No manifest yet. The baseline is recorded at a truck flash:")
-        print("    py -3.11 %s --record <label>"
+        print("    py -3.14 %s --record <label>"
               % os.path.relpath(__file__))
         print("\nUntil then this cannot say whether anything changed, and "
               "the written procedure in firmware/README.md is the only "

@@ -148,7 +148,7 @@ std::string tagList(const std::vector<uint8_t>& tags) {
 }
 
 // Bit timing, written in Configuration mode before Normal (2026-10-13, for
-// the bench image firmware/test/c12_bench). RESET leaves CNF1-3 at 0, a
+// the bench image fw_harness/c12_bench). RESET leaves CNF1-3 at 0, a
 // timing no real chip can talk at, and nothing here set them because the
 // fake does not model timing. 500 kbit/s from the X2's 16 MHz crystal
 // (bringup notes, "The board"): BRP 0, so TQ = 2 x (BRP + 1) / Fosc =

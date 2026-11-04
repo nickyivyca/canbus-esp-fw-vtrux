@@ -20,7 +20,7 @@ benches run with `arm_delay_ms` 0 and, for the 6 h cap, `override_max_ms`
 reason that is not a port bug.
 
 Usage (from the repo root):
-    py -3.11 projects/vtrux/tools/interposer/firmware/test/host_diff/make_unit_traces.py
+    py -3.14 charge-interposer/fw_harness/host_diff/make_unit_traces.py
     ... --outdir <dir>   default: notes/artifacts/interposer-firmware/
 """
 
@@ -29,7 +29,7 @@ import os
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_INTERPOSER = os.path.normpath(os.path.join(_HERE, "..", "..", ".."))
+_INTERPOSER = os.path.normpath(os.path.join(_HERE, "..", ".."))
 sys.path.insert(0, _INTERPOSER)
 
 import machine as M            # noqa: E402

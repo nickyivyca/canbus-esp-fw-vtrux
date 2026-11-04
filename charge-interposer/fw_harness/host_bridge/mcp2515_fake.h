@@ -136,7 +136,7 @@ static const uint8_t CANCTRL_ABAT = 0x10;
 // 0x04 and reads RXB0's flag with 0x01, and both ran through the 88,000-frame
 // Stage 1 transparency pass of 2026-09-11 where the board's own counters
 // reconciled exactly against an external count
-// (`../../README.md`, "Stage 1"). TXREQ(TXB0) is third from the top of the
+// (`../../firmware/README.md`, "Stage 1"). TXREQ(TXB0) is third from the top of the
 // figure; at 0x04 it is bit 2, which is only consistent with top-to-bottom
 // being bit 0 upward. RX0IF pins the same direction from the other end.
 static const uint8_t ST_RX0IF = 0x01;    // bit 0

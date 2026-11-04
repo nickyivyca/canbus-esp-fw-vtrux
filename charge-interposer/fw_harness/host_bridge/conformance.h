@@ -120,7 +120,7 @@ void run(Target& t, Recorder& rec);
 
 // Run one step by its number ("C1" .. "C12"), or the whole sequence for
 // "all". False, with nothing recorded, for any other name. Added for the
-// bench image (firmware/test/c12_bench, 2026-10-13), which runs C12 on its
+// bench image (fw_harness/c12_bench, 2026-10-13), which runs C12 on its
 // own: the single-adapter C12 the reviewer accepted.
 bool runNamed(Target& t, Recorder& rec, const char* name);
 

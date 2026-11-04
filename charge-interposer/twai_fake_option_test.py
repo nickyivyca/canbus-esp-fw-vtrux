@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests of host_bridge's TWAI_FAKE option (firmware/test/host_bridge/run.sh)
+"""Tests of host_bridge's TWAI_FAKE option (fw_harness/host_bridge/run.sh)
 and of its can-fail (harness_checks/shared_fake_canfail.py). No g++, no
 hardware: run.sh is run by bash with stand-in g++ and python3 that record
 what they were given, and the can-fail is judged on stand-in suite runs.
@@ -24,8 +24,8 @@ waits of 0.1 s and 0.4 s before the second and third, as scratch_dir.make's:
 a stand-in mktemp, also from BASH_ENV, removes them first, and it and a
 stand-in sleep log the order of tries and waits.
 
-run.sh always runs from a copy of host_bridge and main/ at their depth under
-a test folder of its own (tree_copy), so its tree's root, and its scratch/,
+run.sh always runs from a copy of host_bridge and firmware/main/ at their
+depth under a test folder of its own (tree_copy), so its tree's root, and its scratch/,
 are that folder's. On Windows bash is Git Bash by its full path (a bare
 "bash" there is WSL's, regress.py); elsewhere bash. Git Bash puts its own
 folders first on PATH, so the stand-in rm is a function from BASH_ENV, not
@@ -35,6 +35,7 @@ when the run ends.
 
 import contextlib
 import os
+import posixpath
 import shutil
 import stat
 import subprocess
@@ -47,7 +48,9 @@ if HERE not in sys.path:
 import scratch_dir                                    # noqa: E402
 
 FW = os.path.join(HERE, "firmware")
-HB = os.path.join(FW, "test", "host_bridge")
+HB = os.path.join(HERE, "fw_harness", "host_bridge")
+# test_event_layout's #include, from host_bridge's own folder
+MAIN_CPP = "../../firmware/main/main.cpp"
 CANFAIL = os.path.join(HERE, "harness_checks", "shared_fake_canfail.py")
 GIT_BASH = r"C:\Program Files\Git\bin\bash.exe"
 
@@ -64,6 +67,12 @@ def fwd(p):
     return p.replace("\\", "/")
 
 
+def norm(p):
+    """p with forward slashes and its ../ resolved, as a path compares:
+    run.sh hands g++ its main/ as $HERE/../../firmware/main."""
+    return posixpath.normpath(fwd(p))
+
+
 def bash_form(p):
     """p as bash prints it: on Windows Git Bash's /c/... form."""
     p = fwd(p)
@@ -76,7 +85,7 @@ def bash_form(p):
 GPP = r"""#!/bin/sh
 # stand-in g++: logs its arguments (tab-separated), what the first -I
 # folder holds and whether the first source (the test) reaches
-# ../../main/main.cpp from its own folder, as test_event_layout's #include
+# ../../firmware/main/main.cpp from its own folder, as test_event_layout's #include
 # does; writes an output that runs and prints nothing
 out=""; first=""; prev=""; t=""
 for a in "$@"; do
@@ -92,7 +101,7 @@ done
   for f in twai_fake.h twai_fake.cpp driver/twai.h test_l2_bridge.cpp; do
     if [ -e "$first/$f" ]; then printf 'HAS\t%s\n' "$f"; else printf 'NO\t%s\n' "$f"; fi
   done
-  f="../../main/main.cpp"
+  f="../../firmware/main/main.cpp"
   if [ -f "$(dirname "$t")/$f" ]; then printf 'HAS\t%s\n' "$f"; else printf 'NO\t%s\n' "$f"; fi
 } >> "$STUB_LOG"
 # STUB_GPP_FAIL: every build fails
@@ -143,11 +152,12 @@ mktemp() {
 
 def tree_copy(dst, run_sh_text=None):
     """host_bridge and main/ copied at their depth under dst, as a tree's
-    charge-interposer/firmware/, so run.sh's tree root is dst; run_sh_text,
-    if given, is its run.sh. The copy's run.sh."""
-    fw = os.path.join(dst, "charge-interposer", "firmware")
-    shutil.copytree(os.path.join(FW, "main"), os.path.join(fw, "main"))
-    hb = os.path.join(fw, "test", "host_bridge")
+    charge-interposer/fw_harness/host_bridge and charge-interposer/firmware/
+    main, so run.sh's tree root is dst; run_sh_text, if given, is its run.sh.
+    The copy's run.sh."""
+    ci = os.path.join(dst, "charge-interposer")
+    shutil.copytree(os.path.join(FW, "main"), os.path.join(ci, "firmware", "main"))
+    hb = os.path.join(ci, "fw_harness", "host_bridge")
     shutil.copytree(HB, hb)
     if run_sh_text is not None:
         with open(os.path.join(hb, "run.sh"), "w", encoding="utf-8", newline="") as f:
@@ -270,13 +280,14 @@ def _check_own(ctx, calls, outp, tmp):
     assert len(calls) == len(tests), (len(calls), tests)
     for argv, has in calls:
         i = argv.index("-I")
-        assert fwd(argv[i + 1]).endswith("/firmware/test/host_bridge"), argv
-        assert argv[i + 2] == "-I" and fwd(argv[i + 3]).endswith("/main"), argv
+        assert fwd(argv[i + 1]).endswith("/charge-interposer/fw_harness/host_bridge"), argv
+        assert argv[i + 2] == "-I" and \
+            norm(argv[i + 3]).endswith("/charge-interposer/firmware/main"), argv
         assert not any("twai_fake.c" == os.path.basename(a) for a in argv), argv
         assert any(fwd(a).endswith("/host_bridge/twai_fake.cpp") for a in argv), argv
         assert argv.count("-I") == 2, argv
         assert has["twai_fake.h"] and has["driver/twai.h"], has
-        assert has["../../main/main.cpp"], has
+        assert has[MAIN_CPP], has
     assert "TWAI" not in outp, outp
     assert len(run_folders(ctx, calls)) == 1, run_folders(ctx, calls)
     all_removed(ctx, tmp)
@@ -300,7 +311,7 @@ def test_own_default(ctx, work):
 def test_shared_build(ctx, work):
     """TWAI_FAKE=shared builds as acceptance E did: from a copy of
     host_bridge, at its depth beside a copy of main/ so a test's
-    ../../main/main.cpp is reached, without our twai_fake.h, twai_fake.cpp
+    ../../firmware/main/main.cpp is reached, without our twai_fake.h, twai_fake.cpp
     and driver/twai.h;
     each test given the shared twai_fake.c and cpp/twai_fake.cpp right after
     it; -I <copy> -I main -I <fake>/include -I <fake>/host -I <fake>/cpp;
@@ -320,8 +331,9 @@ def test_shared_build(ctx, work):
         i = argv.index("-I")
         b = argv[i + 1]
         copies.add(b)
-        assert bash_form(b) == list(ws)[0] + "/shared/test/host_bridge", (b, ws)
-        assert fwd(argv[i + 3]).endswith("/main"), argv
+        assert bash_form(b) == list(ws)[0] + "/shared/fw_harness/host_bridge", (b, ws)
+        # main itself, not the copy beside host_bridge's copy
+        assert norm(argv[i + 3]).endswith("/charge-interposer/firmware/main"), argv
         assert argv[i + 4:i + 10] == ["-I", fd + "/include", "-I", fd + "/host",
                                       "-I", fd + "/cpp"], argv
         o = argv.index("-o")
@@ -336,9 +348,9 @@ def test_shared_build(ctx, work):
         assert not has["twai_fake.h"] and not has["twai_fake.cpp"] and \
             not has["driver/twai.h"] and has["test_l2_bridge.cpp"], has
         # the copy at host_bridge's depth, beside a copy of main/: a test's
-        # #include "../../main/main.cpp" reaches it (2026-11-02's smoke run
-        # found test_event_layout not built from a copy without it)
-        assert has["../../main/main.cpp"], has
+        # #include "../../firmware/main/main.cpp" reaches it (2026-11-02's
+        # smoke run found test_event_layout not built from a copy without it)
+        assert has[MAIN_CPP], has
     assert len(copies) == 1, copies
     all_removed(ctx, tmp)
     assert "TWAI" not in outp, outp
@@ -587,11 +599,17 @@ RUN_SH_MUTANTS = [
     ("the tool folders left behind", '  rmdir "$WT/host-bridge" "$WT" 2>/dev/null || true\n', ""),
     ("a leftover not reported",
      '  if [ -e "$W" ]; then echo "run.sh: could not remove $W" >&2; fi\n', ""),
-    ("the copy not at host_bridge's depth", '    B="$T/test/host_bridge"\n', '    B="$T/hb"\n'),
-    ("no main/ beside the copy", '    cp -R "$SRC/." "$T/main/" || exit 2\n', ""),
+    ("the copy not at host_bridge's depth", '    B="$T/fw_harness/host_bridge"\n',
+     '    B="$T/hb"\n'),
+    ("no main/ beside the copy", '    cp -R "$SRC/." "$T/firmware/main/" || exit 2\n', ""),
+    ("main/ at the old depth beside the copy",
+     '    mkdir -p "$B" "$T/firmware/main" || exit 2\n'
+     '    cp -R "$SRC/." "$T/firmware/main/" || exit 2\n',
+     '    mkdir -p "$B" "$T/main" || exit 2\n'
+     '    cp -R "$SRC/." "$T/main/" || exit 2\n'),
     ("built from host_bridge itself", 'for t in "$B"/test_*.cpp; do',
      'for t in "$HERE"/test_*.cpp; do'),
-    ("the mode not the can-fail", '  --can-fail) exec python3 "$HERE/../../../harness_checks/'
+    ("the mode not the can-fail", '  --can-fail) exec python3 "$HERE/../../harness_checks/'
      'shared_fake_canfail.py" ;;', '  --can-fail) ;;'),
 ]
 

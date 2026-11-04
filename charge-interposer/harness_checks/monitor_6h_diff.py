@@ -50,7 +50,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import paths                                           # noqa: E402
 import scratch_dir                                     # noqa: E402
 CODE = paths.code_dir()
-HOST_DIFF = os.path.join(CODE, "firmware", "test", "host_diff")
+HOST_DIFF = os.path.join(CODE, "fw_harness", "host_diff")
 SRC = os.path.join(CODE, "firmware", "main")
 sys.path.insert(0, CODE)
 sys.path.insert(0, HOST_DIFF)

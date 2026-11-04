@@ -49,7 +49,7 @@ select = ["id:host-unit"]
 [[check]]
 id = "hb-own"
 tree = "madhouse"
-run = ["charge-interposer/firmware/test/host_bridge/run.sh"]
+run = ["charge-interposer/fw_harness/host_bridge/run.sh"]
 shell = "git-bash"
 judge = "host-bridge"
 cls = "build"
@@ -59,7 +59,7 @@ expect = "FAIL"
 [[check]]
 id = "hb-shared"
 tree = "madhouse"
-run = ["charge-interposer/firmware/test/host_bridge/run.sh"]
+run = ["charge-interposer/fw_harness/host_bridge/run.sh"]
 shell = "git-bash"
 judge = "host-bridge"
 cls = "build"

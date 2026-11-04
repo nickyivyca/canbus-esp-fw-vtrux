@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Build host_runner against machine.cpp and diff every trace/golden pair.
 # Run from anywhere; paths are relative to this script. On Windows use WSL:
-#   wsl bash "/mnt/c/.../firmware/test/host_diff/diff_all.sh"
+#   wsl bash "/mnt/c/.../charge-interposer/fw_harness/host_diff/diff_all.sh"
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
-FW="$HERE/../.."
+# the IDF project, charge-interposer/firmware (this is
+# charge-interposer/fw_harness/host_diff since port step 2a)
+FW="$HERE/../../firmware"
 # The traces and goldens stay in SeaDrive; REVERSE_IT_DIR is its reverse-it
 # root (see charge-interposer/paths.py). Under WSL: WSLENV=REVERSE_IT_DIR/p.
 : "${REVERSE_IT_DIR:?REVERSE_IT_DIR is not set -- see charge-interposer/paths.py}"
@@ -39,7 +41,7 @@ fi
 # held in the repo (charge-interposer/capture_pins.py), and no trace may be
 # capture-derived without one.
 echo "capture pins:"
-if python3 "$HERE/../../../capture_pins.py" --dir "$ART" > "${BIN}.pin" 2>&1; then
+if python3 "$HERE/../../capture_pins.py" --dir "$ART" > "${BIN}.pin" 2>&1; then
   echo "  $(tail -1 "${BIN}.pin")"
 else
   sed 's/^/  /' "${BIN}.pin"

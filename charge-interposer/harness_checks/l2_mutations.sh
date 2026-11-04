@@ -36,8 +36,8 @@ if [ -n "${INTERPOSER_CODE:-}" ] && \
   echo "INTERPOSER_CODE=$INTERPOSER_CODE is not this tree's charge-interposer/ ($CODE)" >&2
   exit 2
 fi
-HB="$(cd "$CODE/firmware/test/host_bridge" && pwd)"
-SRC="$(cd "$HB/../../main" && pwd)"
+HB="$(cd "$CODE/fw_harness/host_bridge" && pwd)"
+SRC="$(cd "$CODE/firmware/main" && pwd)"
 # The work tree is outside the project, so l3_replay.cpp's relative
 # candidates for its pinned stimulus cannot resolve; it reads this first.
 # The fixture stays in SeaDrive (beside this script before the move): the

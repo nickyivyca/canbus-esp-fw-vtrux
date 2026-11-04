@@ -163,14 +163,14 @@ HARNESS_PY_TESTS = [
     "build_lookup_offline_test.py", "paths_test.py", "diag_cadence_test.py",
     "bus_gs_usb_test.py", "canre_pin_test.py", "can_tools_pin_test.py",
     "twai_fake_option_test.py", "scratch_dir_test.py", "scratch_run_test.py",
-    "shared_pin_test.py",
+    "shared_pin_test.py", "hw_mechanics_test.py",
 ]
 # The ones of those also run with --can-fail, as <name>-canfail. One list
 # for the harness suite and accept_adapter's catalogue, so they can't drift.
 HARNESS_PY_CANFAILS = [
     "canre_pin_test.py", "can_tools_pin_test.py", "bus_gs_usb_test.py",
     "paths_test.py", "twai_fake_option_test.py", "scratch_dir_test.py",
-    "scratch_run_test.py", "shared_pin_test.py",
+    "scratch_run_test.py", "shared_pin_test.py", "hw_mechanics_test.py",
 ]
 MADHOUSE_PIO_PATH = "{madhouse_pio_dir}:/usr/local/bin:/usr/bin:/bin"
 
@@ -371,7 +371,7 @@ def host_bridge_judge(run):
             out.append(Result(Verdict.ERROR, "l2." + c,
                               detail="case opened but never reported"))
     tests = sorted(os.path.basename(p)[:-4] for p in glob.glob(
-        os.path.join(run.ctx["interposer_code"], "firmware", "test",
+        os.path.join(run.ctx["interposer_code"], "fw_harness",
                      "host_bridge", "test_*.cpp")))
     for t in tests:
         if t == "test_l2_bridge":
@@ -676,13 +676,13 @@ def emulated(settings):
         Check(cid, ["-"], skip=RETIRED_2A) for cid in
         ("build-check", "manifest-test", "manifest-offline-test")])
     m_host = Group("m-host", host="madhouse", ship=b.ship, checks=[
-        b.mbash("host-bridge", ["bash", "firmware/test/host_bridge/run.sh"],
+        b.mbash("host-bridge", ["bash", "fw_harness/host_bridge/run.sh"],
                 cls="build", timeout_s=3600, judge=host_bridge_judge),
         b.mbash("host-unit", ["bash", "firmware/test/host_unit/run.sh"],
                 cls="build", timeout_s=1800),
-        b.mbash("host-diff", ["bash", "firmware/test/host_diff/diff_all.sh"],
+        b.mbash("host-diff", ["bash", "fw_harness/host_diff/diff_all.sh"],
                 cls="build", timeout_s=7200),
-        b.mpy("check-port", ["firmware/test/host_diff/check_port.py"]),
+        b.mpy("check-port", ["fw_harness/host_diff/check_port.py"]),
         b.mpy("regress-all", ["regress.py", "--all"], cls="build", timeout_s=7200),
     ] + [b.mpy(t[:-3].replace("_", "-"), [t], cls="build", timeout_s=3600)
          for t in LOGIC_PY_TESTS])

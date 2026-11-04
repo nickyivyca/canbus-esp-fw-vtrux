@@ -263,14 +263,14 @@ def catalogue(repo, commit):
         path = argv[0].replace("{interposer_code}/", "charge-interposer/")
         out.append(_entry(cid, path, argv[1:], ["harness", "harness-local"]))
     # what bench_suite runs on madhouse only (Linux: bash scripts, the sims)
-    out.append(_mad("host-bridge", "charge-interposer/firmware/test/host_bridge/run.sh", [],
+    out.append(_mad("host-bridge", "charge-interposer/fw_harness/host_bridge/run.sh", [],
                     shell="git-bash", judge="host-bridge"))
     # the same suite on the shared TWAI fake (port step 1b's acceptance E,
     # re-run by the runner): its tree needs a twai_port checkout, which
     # tree_env names in TWAI_FAKE_DIR; its can-fail is run.sh's own
     # --can-fail mode (harness_checks/shared_fake_canfail.py), which runs
     # the suite five times, under this entry's timeout
-    e = _mad("host-bridge-shared-fake", "charge-interposer/firmware/test/host_bridge/run.sh",
+    e = _mad("host-bridge-shared-fake", "charge-interposer/fw_harness/host_bridge/run.sh",
              [], shell="git-bash", judge="host-bridge", timeout_s=4 * 3600)
     e["env"]["TWAI_FAKE"] = "shared"
     e["covers"] += ["charge-interposer/harness_checks/shared_fake_canfail.py",
@@ -279,9 +279,9 @@ def catalogue(repo, commit):
     out.append(e)
     out.append(_mad("host-unit", "charge-interposer/firmware/test/host_unit/run.sh", [],
                     shell="git-bash", timeout_s=1800))
-    out.append(_mad("host-diff", "charge-interposer/firmware/test/host_diff/diff_all.sh", [],
+    out.append(_mad("host-diff", "charge-interposer/fw_harness/host_diff/diff_all.sh", [],
                     shell="git-bash", timeout_s=7200))
-    out.append(_mad("check-port", "charge-interposer/firmware/test/host_diff/check_port.py", []))
+    out.append(_mad("check-port", "charge-interposer/fw_harness/host_diff/check_port.py", []))
     out.append(_mad("regress-all", "charge-interposer/regress.py", ["--all"], timeout_s=7200))
     for cid, argv in BS.MADHOUSE_MUTANTS:
         shell = "python" if argv[0] == "@python" else "git-bash"

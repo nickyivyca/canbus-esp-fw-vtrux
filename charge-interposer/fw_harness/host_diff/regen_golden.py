@@ -21,8 +21,8 @@ in step with the `record` / state-logging in make_synthetic.py's `write()`:
             S <t_ms> <STATE>                                  a state change
 
 Usage (from the repo root):
-    py -3.11 projects/vtrux/tools/interposer/firmware/test/host_diff/regen_golden.py \\
-        projects/vtrux/notes/artifacts/interposer-firmware/evap80.trace ...
+    py -3.14 charge-interposer/fw_harness/host_diff/regen_golden.py \\
+        $REVERSE_IT_DIR/projects/vtrux/notes/artifacts/interposer-firmware/evap80.trace ...
     ... --check    report what would change without writing; exit 1 if any
                    golden differs from what machine.py produces now
     ... --reason "why"   REQUIRED to write. Appended, with the traces and
@@ -42,7 +42,7 @@ import os
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_INTERPOSER = os.path.normpath(os.path.join(_HERE, "..", "..", ".."))
+_INTERPOSER = os.path.normpath(os.path.join(_HERE, "..", ".."))
 sys.path.insert(0, _INTERPOSER)
 
 import machine as M          # noqa: E402

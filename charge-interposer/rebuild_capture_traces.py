@@ -42,7 +42,7 @@ import scratch_dir                 # noqa: E402
 CODE = paths.code_dir()
 import capture_pins as CP           # noqa: E402
 
-MAKE_GOLDEN = os.path.join(CODE, "firmware", "test", "host_diff",
+MAKE_GOLDEN = os.path.join(CODE, "fw_harness", "host_diff",
                            "make_golden.py")
 LOGS = paths.logs()                 # was relative to the reverse-it root
 OUT = None             # this run's scratch_dir folder, made by main()

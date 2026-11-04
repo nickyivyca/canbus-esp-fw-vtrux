@@ -207,7 +207,7 @@ def test_c12_judge():
 
 def _code_tree(tests):
     d = os.path.join(TMP, "code")
-    hb = os.path.join(d, "firmware", "test", "host_bridge")
+    hb = os.path.join(d, "fw_harness", "host_bridge")
     scratch_dir.remove(d)
     os.makedirs(hb)
     for t in tests:
@@ -406,7 +406,9 @@ def test_suites():
     # 232: the pinned shared/bench's 13 further tests (the acceptance runner
     #      and scratch helpers) and each one's -canfail, and shared-pin-test
     #      and its -canfail, with the re-pin (port step 2a)
-    assert len(seen) == 232, "checks across the suites: %d" % len(seen)
+    # 234: hw-mechanics-test and its -canfail, with hw_mechanics.py's map
+    #      on the IDF project (port step 2a)
+    assert len(seen) == 234, "checks across the suites: %d" % len(seen)
     # madhouse gets the pinned canre beside the code, named by CANRE_DIR
     mad = 0
     for name in ("emulated", "harness"):

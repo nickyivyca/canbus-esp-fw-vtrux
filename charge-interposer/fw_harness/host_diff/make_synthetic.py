@@ -29,7 +29,7 @@ import os
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_INTERPOSER = os.path.normpath(os.path.join(_HERE, "..", "..", ".."))
+_INTERPOSER = os.path.normpath(os.path.join(_HERE, "..", ".."))
 sys.path.insert(0, _INTERPOSER)
 
 import machine as M          # noqa: E402

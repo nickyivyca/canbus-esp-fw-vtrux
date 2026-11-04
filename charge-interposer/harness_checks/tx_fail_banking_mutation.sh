@@ -56,7 +56,7 @@ for v in control banking; do
   T="$WORK/$v"
   mkdir -p "$T/test"
   cp -r "$FW/main" "$T/main"
-  cp -r "$FW/test/host_bridge" "$T/test/host_bridge"
+  cp -r "$CODE/fw_harness/host_bridge" "$T/test/host_bridge"
   H="$T/main/charger_tx_failures.h"
   if [ "$v" = banking ]; then
     before="$(md5sum < "$H")"
