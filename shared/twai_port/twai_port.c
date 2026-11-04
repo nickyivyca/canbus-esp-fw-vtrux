@@ -388,10 +388,10 @@ esp_err_t twai_port_teardown(void)
     /*
      * THE QUEUES A TEARDOWN DISCARDS (T4), counted just before they go.
      * twai_stop() empties the TX queue and twai_driver_uninstall() the RX
-     * queue (IDF v5.4.1 twai.c, twai_stop_v2() and the driver object's free),
-     * so TX is read before the stop and RX after it, when the stopped
-     * controller can receive no more. Booked only once the uninstall has
-     * succeeded.
+     * queue (IDF v5.4.1 and v5.4.2 twai.c, twai_stop_v2() and the driver
+     * object's free), so TX is read before the stop and RX after it, when
+     * the stopped controller can receive no more. Booked only once the
+     * uninstall has succeeded.
      */
     uint32_t tx_gone = st.msgs_to_tx;
     uint32_t rx_gone = st.msgs_to_rx;
@@ -693,9 +693,10 @@ void twai_port_service(void)
     }
     /*
      * Recovery done: the controller waits STOPPED until it is started. The
-     * start resets the receive queue (IDF v5.4.1 twai_start_v2()), and the
-     * frames waiting in it, read just above with the controller stopped, were
-     * received and never delivered: receive losses, a part of their own (T7).
+     * start resets the receive queue (IDF v5.4.1 and v5.4.2 twai_start_v2()),
+     * and the frames waiting in it, read just above with the controller
+     * stopped, were received and never delivered: receive losses, a part of
+     * their own (T7).
      */
     if (s_cfg.recovery == TWAI_PORT_RECOVERY_AUTO
         && st.state == TWAI_STATE_STOPPED)

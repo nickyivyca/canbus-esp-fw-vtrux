@@ -2,10 +2,12 @@
  * vtrux/twai_port, T8 on the ESP32-C3: the transmit buffer's state and the
  * abort-if-awaiting, register level.
  *
- * CHECKED AGAINST ESP-IDF v5.4.1: components/hal/esp32c3/include/hal/
- * twai_ll.h, TWAI_LL_GET_HW(), twai_ll_get_status(), TWAI_LL_STATUS_TBS and
- * TWAI_LL_STATUS_TS, and twai_ll_set_cmd_abort_tx(), all static inline. A
- * project on another IDF version re-checks those before taking this file.
+ * CHECKED AGAINST ESP-IDF v5.4.1 AND v5.4.2: components/hal/esp32c3/include/
+ * hal/twai_ll.h, TWAI_LL_GET_HW(), twai_ll_get_status(), TWAI_LL_STATUS_TBS
+ * and TWAI_LL_STATUS_TS, and twai_ll_set_cmd_abort_tx(), all static inline.
+ * twai_ll.h and the soc headers below are byte-identical in the two (port
+ * step 1d, 2026-11-03). A project on another IDF version re-checks those
+ * before taking this file.
  *
  * MEASURED on the bench C3 (gen-inhibit spec 5.2 item 9, its table of 300
  * trials): an abort awaiting arbitration removes the frame; at TS = 1 it may
@@ -29,11 +31,13 @@
  *
  * T12, THE RESTART STOP, from step 1c: moved from gen-inhibit's
  * gi_restart_quiesce.c (gen-inhibit/main 69d97a2), with the same steps,
- * bounds and order. Also checked against ESP-IDF v5.4.1: in twai_ll.h,
- * twai_ll_is_in_reset_mode(), twai_ll_enter_reset_mode(), twai_ll_get_tec(),
- * twai_ll_get_rec() and TWAI_LL_STATUS_RS; in soc/system_reg.h,
+ * bounds and order. Also checked against ESP-IDF v5.4.1 and v5.4.2: in
+ * twai_ll.h, twai_ll_is_in_reset_mode(), twai_ll_enter_reset_mode(),
+ * twai_ll_get_tec(), twai_ll_get_rec() and TWAI_LL_STATUS_RS; in
+ * soc/system_reg.h (with soc/soc.h and soc/reg_base.h),
  * SYSTEM_PERIP_CLK_EN0_REG with SYSTEM_TWAI_CLK_EN and
- * SYSTEM_PERIP_RST_EN0_REG with SYSTEM_TWAI_RST.
+ * SYSTEM_PERIP_RST_EN0_REG with SYSTEM_TWAI_RST. Line numbers below are
+ * v5.4.1's, with v5.4.2's after the slash where they moved.
  */
 #include "twai_port.h"
 #include "hal/twai_ll.h"
@@ -123,16 +127,17 @@ IRAM_ATTR twai_port_buf_t twai_port_abort_if_awaiting(void)
  * cannot load another frame. If the wait still runs out, another node's frame
  * is on the wire, and reset mode is entered anyway; the report says so.
  * Nothing takes the controller out of reset mode again until
- * twai_driver_install() does (twai.c:497-499), so it stays there through the
- * CPU reset, the ROM, the bootloader and app_main.
+ * twai_driver_install() does (twai.c:497-499 / 499-501), so it stays there
+ * through the CPU reset, the ROM, the bootloader and app_main.
  *
  * SKIPPED when the TWAI clock is off or the peripheral is held in reset: the
  * registers are then unreachable, and the controller is not on the bus. That
- * is the state after a power-on (clk.c:237) or a twai_driver_uninstall()
- * (twai.c:566-572). It is NOT the state of a boot that never installed the
- * driver: a CPU reset from a live state leaves the controller clocked and
- * running with no driver. So it reads the two bits rather than the port's
- * state, and acts whether or not the port was set up in this boot.
+ * is the state after a power-on (clk.c:237 / 240) or a
+ * twai_driver_uninstall() (twai.c:566-572 / 568-574). It is NOT the state of
+ * a boot that never installed the driver: a CPU reset from a live state
+ * leaves the controller clocked and running with no driver. So it reads the
+ * two bits rather than the port's state, and acts whether or not the port
+ * was set up in this boot.
  *
  * IRAM, and what it calls is inline LL, ROM (esp_rom_delay_us) or IRAM (the
  * abort above). No lock of its own, no allocation, no log.
