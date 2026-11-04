@@ -157,8 +157,9 @@ unless the image changes, which the reproducible test (R19) shows.
   are not constrained.
 - **R32. The IDF environment check.** Before a release build or a dev build
   (R31) hands anything to ESP-IDF, the environment it was started in is
-  checked: `IDF_PATH` is set and not empty; `IDF_TOOLS_PATH` is set and
-  not empty; and `IDF_PYTHON_ENV_PATH` and `ESP_ROM_ELF_DIR` are set and
+  checked: `IDF_PATH` is set and not empty; `IDF_TOOLS_PATH` is set, not
+  empty and has no spaces around it, since ESP-IDF gets the value as it
+  is; and `IDF_PYTHON_ENV_PATH` and `ESP_ROM_ELF_DIR` are set and
   inside `IDF_TOOLS_PATH`. A failure is a refusal naming the variable. Nothing is
   defaulted: an unset `IDF_TOOLS_PATH` is never replaced by `~/.espressif`.
   The check is also a command of its own (`check-env`), and a project whose
@@ -312,9 +313,16 @@ unless the image changes, which the reproducible test (R19) shows.
   spec sets. A release build is refused if the manifest names a range or no
   version. With no `dependencies.lock`, a configure under another IDF then
   fails. With the committed lock, the other IDF rewrites the lock's `idf`
-  version and configures, and a release build refuses that at R8's
-  clean-worktree check after the reconfigure. A bench or dev build is not
-  guarded against it (R14); its image records the ESP-IDF it was built on.
+  version and configures. So a release build is refused, after the
+  reconfigure and before anything is compiled, unless the ESP-IDF version
+  the configure reports (`git_revision` in `project_description.json`, the
+  value its record names, R13) is exactly `v` and the manifest's version,
+  such as `v5.4.2`. An IDF with a suffix (`-dirty`, commits past its tag),
+  or with no version, is refused. That also refuses a lock solved under the
+  other IDF and committed, which is not rewritten; R8's clean-worktree
+  check after the reconfigure sees a rewritten lock as well. A bench or dev
+  build is not guarded against it (R14); its image records the ESP-IDF it
+  was built on.
 
 ## 6. Running the tooling
 
