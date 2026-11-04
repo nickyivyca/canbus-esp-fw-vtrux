@@ -40,6 +40,17 @@ verification").
   wrap reaches all of them. On the C3 that function does not reset the
   TWAI peripheral, and drops the CPU clock from 80 to 40 MHz before the CPU
   reset, so a running controller keeps going at half its clock.
+- **Reading of ESP-IDF v5.4.2** (gen-inhibit reviewer, 2026-11-03, against
+  v5.4.1, for gen-inhibit's port step 1d and the interposer's v5.4.2):
+  `esp_system.c` and `cpu_start.c`'s calls of `esp_restart_noos()` are
+  unchanged, and the panic handler still ends in it
+  (`port/panic_handler.c`). On the C3, `esp_restart_noos()` now also resets
+  the crypto peripherals and still does not reset the TWAI. The panic
+  handler's watchdog handling changed: it feeds the watchdogs on entry in
+  single-core builds, and configures the RTC watchdog in a new way where
+  v5.4.1 called `esp_panic_handler_reconfigure_wdts(1000)`. That bears on
+  the unguarded time in the known limits below, and is to be re-read for
+  them, not yet done.
 - **Context (before the move):** on the bench without the step, each live
   restart put 107-139 error frames on the bus (2026-10-12); with it, on the
   trial build `089cd21`, 6 of 6 live restarts put 0 (2026-10-13).
