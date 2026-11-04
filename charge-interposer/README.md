@@ -40,7 +40,7 @@ records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 | `firmware/README.md` | The firmware's README | Implementor |
 | `vtrux_tools.py` | The launcher: starts the pinned shared/tools (`release`, `image`, `digest`) and makes dev builds (`build <variant>`); refuses a shell exported against another `IDF_TOOLS_PATH` (release route B, user 2026-11-03) | Implementor |
 | `test_vtrux_tools.py` | Its self-test, with `--can-fail`; not evidence | Implementor |
-| `firmware/test/host_unit/` | Unit tests of the core's internals | Implementor |
+| `host_unit/` | Unit tests of the core's internals, with its `README.md` (moved from `firmware/test/` at port step 2a) | Implementor |
 | `.gitattributes`, `.gitignore` | Line endings and ignores for the folder | Implementor |
 | `SIMULATOR.md` | The simulation bench write-up | Implementor |
 | `requirements.txt` | Python dependencies of the sims and the harness | Tester |
@@ -99,8 +99,6 @@ records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 | `fw_harness/c12_bench/` | Whole directory: the standalone ESP-IDF C12 bench Target, not a product image (reviewer, 2026-10-13) | Tester |
 | `fw_harness/vport_bench/` | Whole directory: the standalone ESP-IDF vehicle-port bench image for spec section 9, TWAI only, never on the truck (reviewer, 2026-10-13) | Tester |
 | `fw_harness/README.md` | The harness's own checks and can-fails, and the detail of the harness files one level up | Tester |
-| `firmware/test/README.md` | Describes `firmware/test/host_unit/` only (since port step 2a, when the harness moved to `fw_harness/`, reviewer 2026-11-03) | Implementor |
-
 ## Shared code
 
 `shared/bench/` (the chain-runner core, package `vtrux_bench`) was written by
