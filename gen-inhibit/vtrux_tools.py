@@ -12,9 +12,10 @@ Every build runs from a PowerShell exported for gen-inhibit's ESP-IDF,
 v5.4.2 since port step 1d, with IDF_TOOLS_PATH set before the export
 (local-paths.md), in this repo's root.
 
-check-env  the IDF environment check (shared/tools R32): IDF_PATH and
-           IDF_TOOLS_PATH set and not empty, the IDF's Python environment
-           and ROM ELF folder inside IDF_TOOLS_PATH. release and build run it
+check-env  the IDF environment check (shared/tools R32): IDF_PATH set and
+           not empty, IDF_TOOLS_PATH set, not empty and with no spaces
+           around it, the IDF's Python environment and ROM ELF folder
+           inside IDF_TOOLS_PATH. release and build run it
            themselves. gen-inhibit's bench and dev builds are still idf.py
            / ninja builds (firmware/README.md), so run check-env in the
            same shell before each of them (R32).
