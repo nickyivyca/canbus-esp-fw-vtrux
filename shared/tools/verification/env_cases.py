@@ -14,7 +14,8 @@ missing), on branches of their own, with the tooling run from the pinned checkou
 
 R32 (the IDF environment check). check-env with the caller's exported environment passes, and
 with a trailing separator on IDF_TOOLS_PATH. Each of these is refused, naming the variable:
-IDF_PATH unset; IDF_TOOLS_PATH unset (never replaced by ~/.espressif: R24, R32) and empty;
+IDF_PATH unset and empty (empty refused as unset: the gen-inhibit reviewer, 2026-11-03, R32 to
+read "set and not empty"); IDF_TOOLS_PATH unset (never replaced by ~/.espressif: R24, R32) and empty;
 IDF_PYTHON_ENV_PATH and ESP_ROM_ELF_DIR unset, outside IDF_TOOLS_PATH in a folder whose name
 starts like it, and outside through "..", and IDF_PYTHON_ENV_PATH in a sibling ".espressif"
 (the other install's, on a machine with two). Before each, a child process run with the same
@@ -164,6 +165,7 @@ def r32_cases(base):
         ("r32_control", {}, None),
         ("r32_tools_trailing_sep", {"IDF_TOOLS_PATH": t + os.sep}, None),
         ("r32_idf_path_unset", {"IDF_PATH": None}, "IDF_PATH"),
+        ("r32_idf_path_empty", {"IDF_PATH": ""}, "IDF_PATH"),     # refused as unset (reviewer, 2026-11-03)
         ("r32_tools_unset", {"IDF_TOOLS_PATH": None}, "IDF_TOOLS_PATH"),
         ("r32_tools_empty", {"IDF_TOOLS_PATH": ""}, "IDF_TOOLS_PATH"),
         ("r32_pyenv_unset", {"IDF_PYTHON_ENV_PATH": None}, "IDF_PYTHON_ENV_PATH"),
@@ -720,7 +722,7 @@ def main():
     e = os.environ
     if BUG == "crash":
         e["IDF_PATH"]
-    elif BUG != "no_idf_path" and "IDF_PATH" not in e:
+    elif BUG != "no_idf_path" and (("IDF_PATH" not in e) if BUG == "idf_empty_ok" else not e.get("IDF_PATH")):
         return refuse("IDF_PATH")
     t = e.get("IDF_TOOLS_PATH")
     if BUG == "default_tools" and not t:
@@ -739,7 +741,7 @@ def main():
 sys.exit(main())
 '''
 
-FAKE_BUGS = ["default_tools", "no_idf_path", "empty_ok", "no_rom", "prefix", "no_norm", "unnamed", "trailing_sep", "crash"]
+FAKE_BUGS = ["default_tools", "no_idf_path", "idf_empty_ok", "empty_ok", "no_rom", "prefix", "no_norm", "unnamed", "trailing_sep", "crash"]
 
 
 def run_fake(tools, base, d):
@@ -780,10 +782,11 @@ def self_test():
         if want is None:
             for v in ("IDF_PYTHON_ENV_PATH", "ESP_ROM_ELF_DIR"):
                 expect("%s: %s is inside" % (name, v), inside(e[v], e["IDF_TOOLS_PATH"]), True)
+    change_of = {name: change for name, change, _want in r32_cases(base)}
     expect("prefix path starts with the tools path's text",
-           applied(base, dict(r32_cases(base)[6][1]))["IDF_PYTHON_ENV_PATH"].startswith(t), True)
+           applied(base, change_of["r32_pyenv_prefix"])["IDF_PYTHON_ENV_PATH"].startswith(t), True)
     expect("dotdot path starts with the tools path's text",
-           applied(base, dict(r32_cases(base)[7][1]))["IDF_PYTHON_ENV_PATH"].startswith(t), True)
+           applied(base, change_of["r32_pyenv_dotdot"])["IDF_PYTHON_ENV_PATH"].startswith(t), True)
 
     # the R32 cases against fake tooling: the right one passes all, each broken one fails some
     for bug in [""] + FAKE_BUGS:
