@@ -667,25 +667,10 @@ def s3_board_repo(ctx, table, flash_size):
     """A scratch repository beside the mini holding shared/boards/s3fx at the annotated tag S3_TAG
     (shared/boards B1: a board change is tried at a tag, if need be in a scratch repo): board.json
     for the esp32s3 mini, the mini's own default partition table as its reference, and a component
-    with no sources. Its path."""
-    repo = os.path.join(os.path.dirname(ctx.mini), "s3board")
-    RC.rmtree(repo)
-    d = os.path.join(repo, "shared", "boards", "s3fx")
-    os.makedirs(d)
-    with open(os.path.join(d, "board.json"), "w", newline="\n") as f:
-        json.dump({"target": "esp32s3", "flash_size": flash_size, "partition_table": "pt-s3.bin", "required": [],
-                   "hardware_name": "S3 fixture"}, f, indent=2)
-    with open(os.path.join(d, "pt-s3.bin"), "wb") as f:
-        f.write(table)
-    with open(os.path.join(d, "CMakeLists.txt"), "w", newline="\n") as f:
-        f.write("idf_component_register()\n")
-    with open(os.path.join(d, "idf_component.yml"), "w", newline="\n") as f:
-        f.write('description: "board_cases.py esp32s3 fixture board"\ntargets:\n  - esp32s3\n')
-    RC.run(["git", "init", "-q", "-b", "main", repo], check=True)
-    RC.git(repo, "add", "-A")
-    RC.git(repo, "commit", "-q", "-m", "s3fx: the esp32s3 mini's board")
-    RC.git(repo, "tag", "-a", "-m", "s3fx board", S3_TAG)
-    return repo
+    with no sources (release_cases.board_repo, which also makes the mini's own esp32c3 board). Its path."""
+    return RC.board_repo(os.path.join(os.path.dirname(ctx.mini), "s3board"), "s3fx", "esp32s3", table, flash_size,
+                         S3_TAG, "pt-s3.bin", "S3 fixture", "board_cases.py esp32s3 fixture board",
+                         "s3fx: the esp32s3 mini's board", "s3fx board")
 
 
 def s3_mini(ctx, log):

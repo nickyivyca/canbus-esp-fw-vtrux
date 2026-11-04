@@ -9,8 +9,8 @@ checkout's HEAD.
     python -B env_cases.py --self-test          # the judges, and the R32 cases against fake tooling
 
 Like scope_cases.py, it runs in release_cases.py's --root: the fixture repo tags the tooling
-under test, and the cases use release_cases' minimal project (hello_world on esp32c3, made if
-missing), on branches of their own, with the tooling run from the pinned checkout (R23).
+under test, and the cases use release_cases' minimal project (hello_world on esp32c3 with its
+board vtrux/c3fx from git at a tag, made if missing), on branches of their own, with the tooling run from the pinned checkout (R23).
 
 R32 (the IDF environment check). check-env with the caller's exported environment passes, and
 with a trailing separator on IDF_TOOLS_PATH. Each of these is refused, naming the variable:
@@ -51,8 +51,23 @@ that same manifest (_locked: as a project commits it, R10; on 2026-11-04 a copy 
 minimal project's lock configured under v5.4.1, where a changed manifest was refused, so the
 two states are judged apart). A copy whose lock state is not the one planted is VOID. And a
 release build is refused for a manifest naming ">=5.4.0", "*", ">=M.m.p,<M.m.(p+1)" or no IDF;
-one naming "==M.m.p" builds and is recorded (release_cases' r22_mini is the bare form's); its
-branch commits the lock the reconfigure writes for its manifest, as release_cases' fixture does.
+one naming "==M.m.p" builds and is recorded (release_cases' r22_mini is the bare form's). Each
+of these branches keeps the mini's board and commits the lock the reconfigure writes for its
+manifest, as release_cases' fixture does, so the refusals differ from the "==" build only in the
+version (before 2026-11-04 the mini had no board, and R21 or R8 would have refused them anyway).
+
+R33 with R8 (shared/main 56156653, user 2026-11-04: with the committed lock, a release build
+under another IDF is refused at R8's clean check after the reconfigure, which rewrites the lock).
+With --other-idf, release builds of the mini under the other install, the tooling run with that
+install's Python and exported variables: r33_release_other, main as committed (this install's
+lock and sdkconfig), and r33_release_other_lockonly, a branch with every tracked file but the
+lock as the other install's reconfigure writes it (the sdkconfig's header names the IDF too), so
+the lock is the only file to be rewritten. Each must be refused after the reconfigure
+(build/CMakeCache.txt made, nothing compiled: no .ninja_log line), the lock's idf rewritten to the
+other version, the refusal naming dependencies.lock, and no record. The can-fail,
+r33_release_other_own: every tracked file, the lock too, as the other install writes it, so
+nothing is rewritten; it must build and be recorded with the other version, or the refusals
+cannot be put on the rewrite.
 
 Each case judges from outside: exit codes, output names (only that the refusal names the
 variable R32 requires it to), the record folder, the build folder, the process table. It never
@@ -582,10 +597,22 @@ def c_r31_build(ctx, log):
     R.rmtree(os.path.join(ctx.mini, "build"))
 
 
+def mini_manifest(ctx, version):
+    """The mini's main/idf_component.yml naming the IDF as version (None: no idf), with its board."""
+    if version is None:
+        return "dependencies:\n" + R.mini_board_dep(ctx)
+    return R.idf_manifest(version, R.mini_board_dep(ctx))
+
+
 def c_r33_release(ctx, log, name, version):
-    """A release build of the mini with main/idf_component.yml naming version (None: no idf)."""
-    text = R.idf_manifest(version) if version is not None else "dependencies: {}\n"
+    """A release build of the mini with main/idf_component.yml naming version (None: no idf). The
+    branch keeps the board and commits the lock its manifest gives, so it differs from
+    r33_release_eq's, which builds, only in the version: neither R21 (no board) nor R8 (a stale
+    lock rewritten) can refuse it in R33's place (both did before 2026-11-04)."""
+    text = mini_manifest(ctx, version)
     mini_branch(ctx, "r33", {"main/idf_component.yml": text}, "r33 case: the manifest names %s" % version)
+    with open(os.path.join(ctx.out, "fixture.txt"), "a") as fx:
+        R.normalise(ctx, ctx.mini, "r33 %s" % version, fx)
     R.rmtree(os.path.join(ctx.mini, "build"))
     trig = R.git(ctx.mini, "show", "HEAD:main/idf_component.yml") + "\n" == text
     before = R.snapshot(ctx.records(MINI_PROJECT))
@@ -600,7 +627,7 @@ def c_r33_release_eq(ctx, log):
     """A release build naming "==M.m.p" is recorded (R33), and its configure sees the caller's
     IDF_TOOLS_PATH as it is (R24: no default, nothing replaced)."""
     want = "==" + R.idf_version()
-    mini_branch(ctx, "r33-eq", {"main/idf_component.yml": R.idf_manifest(want), "CMakeLists.txt": (None, TOOLS_PROBE)},
+    mini_branch(ctx, "r33-eq", {"main/idf_component.yml": mini_manifest(ctx, want), "CMakeLists.txt": (None, TOOLS_PROBE)},
                 "r33 case: the manifest names %s; the configure prints IDF_TOOLS_PATH" % want)
     # The new manifest makes main's dependencies.lock stale, and the release build's reconfigure
     # would rewrite it, leaving the worktree dirty (R8). A project commits the lock its manifest
@@ -673,7 +700,7 @@ def c_r33_other(ctx, log, name, form, locked):
         try:
             R.run(["git", "clone", "-q", "-b", "main", ctx.mini, d], check=True)
             with open(os.path.join(d, "main", "idf_component.yml"), "w", newline="") as f:
-                f.write(R.idf_manifest(ver))
+                f.write(mini_manifest(ctx, ver))
             lp = os.path.join(d, "dependencies.lock")
             if os.path.exists(lp):
                 os.remove(lp)               # main's lock, written for main's manifest
@@ -697,6 +724,128 @@ def c_r33_other(ctx, log, name, form, locked):
     else:
         v, d = judge_r33(rcs[0], rcs[1], rcs[2], "%s %s" % (form % this_v, state), other_v)
     R.report(name, v, d, ctx.log)
+
+
+def lock_idf(lock):
+    """The idf version a dependencies.lock records, or None."""
+    if lock is None:
+        return None
+    m = re.search(r"(?m)^  idf:\n(?:    .*\n)*?    version: (\S+)$", lock.replace("\r\n", "\n"))
+    return m.group(1) if m else None
+
+
+def judge_release_other(rc, out, recorded, reconfigured, compiled, modified, lock_v, other_v, only_lock):
+    """R33 with R8 (shared/main 56156653): a release build under the other install (v other_v) of a
+    project carrying the lock this install wrote is refused at R8's clean check after the
+    reconfigure, which rewrote the lock's idf to other_v, before anything is compiled, with no
+    record. modified: the tracked files git shows changed after it; only_lock: the case's branch
+    holds every other file as the other install writes it, so the lock must be the only one."""
+    if rc == 0:
+        return "FAIL", "built under v%s and exited 0; R33 says R8 refuses it after the reconfigure" % other_v
+    if recorded:
+        return "FAIL", "exit %d, but the record folder changed" % rc
+    if crashed(out):
+        return "VOID", "a Python traceback under v%s's Python (exit %d), not a refusal" % (other_v, rc)
+    if not reconfigured:
+        return "VOID", "refused (exit %d) before the reconfigure: not the state R33's R8 guard covers" % rc
+    if "dependencies.lock" not in modified or lock_v != other_v:
+        return "VOID", "the reconfigure did not rewrite the lock's idf to %s (lock idf %s; changed %s)" % (
+            other_v, lock_v, modified)
+    if only_lock and modified != ["dependencies.lock"]:
+        return "VOID", "files besides the lock were rewritten too (%s): the lock is not shown alone" % modified
+    if compiled:
+        return "FAIL", "refused (exit %d), but only after compiling; R8 refuses before anything is compiled" % rc
+    if not names(out, "dependencies.lock"):
+        return "VOID", "refused (exit %d) after the reconfigure without naming dependencies.lock: R8 not shown" % rc
+    return "PASS", "refused (exit %d) after the reconfigure, before compiling, naming dependencies.lock; " \
+                   "the lock's idf rewritten to %s; changed: %s; no record" % (rc, other_v, ", ".join(modified))
+
+
+def judge_other_own(rc, recorded, record_idf, modified, other_v):
+    """The can-fail beside it: the same project with every tracked file, the lock too, as the other
+    install writes it. Nothing is rewritten, so nothing stops the build: it must be recorded, made
+    on v other_v. Else the refusals above cannot be put on the rewrite."""
+    if modified:
+        return "VOID", "the reconfigure rewrote %s, so this is not the nothing-rewritten state" % modified
+    if rc or not recorded:
+        return "VOID", "not built and recorded (exit %d): the R8 refusals cannot be put on the rewrite" % rc
+    if other_v not in str(record_idf):
+        return "VOID", "recorded, but the record's idf_version %s is not v%s's" % (record_idf, other_v)
+    return "PASS", "nothing rewritten; built and recorded under v%s (record idf_version %s)" % (other_v, record_idf)
+
+
+def other_branch(ctx, log, branch, keep_lock):
+    """A mini branch on main with the tracked files as the other install's reconfigure writes them;
+    keep_lock: main's lock (this install's) put back. Made once."""
+    if R.ref(ctx.mini, "refs/heads/" + branch):
+        return
+    mini(ctx)
+    R.reset(ctx.mini, "main", "main")
+    R.git(ctx.mini, "checkout", "-q", "-f", "-B", branch, "main")
+    for d in ("build", "managed_components"):
+        R.rmtree(os.path.join(ctx.mini, d))
+    rc, _ = R.run([ctx.other["python"], os.path.join(ctx.other["IDF_PATH"], "tools", "idf.py"), "--no-ccache",
+                   "reconfigure"], cwd=ctx.mini, env=other_env(ctx.other), log=log)
+    if rc:
+        raise RuntimeError("the other install's reconfigure of the mini failed (exit %d)" % rc)
+    if keep_lock:
+        R.git(ctx.mini, "checkout", "main", "--", "dependencies.lock")
+    with open(os.path.join(ctx.out, "fixture.txt"), "a") as fx:
+        fx.write("%s: the other install's reconfigure rewrote: %s%s\n" % (
+            branch, R.git(ctx.mini, "status", "--porcelain").replace("\n", "; ") or "nothing",
+            " (main's lock put back)" if keep_lock else ""))
+    R.git(ctx.mini, "add", "-A")
+    R.git(ctx.mini, "commit", "-q", "--allow-empty", "-m", "r33 case: tracked files as v%s writes them%s" % (
+        R.idf_version(ctx.other["IDF_PATH"]), "; this install's lock" if keep_lock else ""))
+    for d in ("build", "managed_components"):
+        R.rmtree(os.path.join(ctx.mini, d))
+
+
+def c_r33_release_other(ctx, log, name, branch):
+    """A release build of the mini under the other install, the tooling run with that install's
+    Python and exported variables. branch main: as committed, this install's lock and sdkconfig;
+    r33-other-lock: every other tracked file as the other install writes it, this install's lock;
+    r33-other-own (the can-fail): every tracked file, the lock too, as the other install writes it."""
+    if not ctx.other:
+        R.report(name, "SKIPPED", "no --other-idf given", ctx.log)
+        return
+    this_v, other_v = R.idf_version(), R.idf_version(ctx.other["IDF_PATH"])
+    if this_v == other_v:
+        R.report(name, "VOID", "the other install is v%s too" % this_v, ctx.log)
+        return
+    mini(ctx)
+    if branch != "main":
+        other_branch(ctx, log, branch, branch == "r33-other-lock")
+    R.reset(ctx.mini, branch, branch)
+    for d in ("build", "managed_components"):
+        R.rmtree(os.path.join(ctx.mini, d))
+    planted = lock_idf(R.git(ctx.mini, "show", "HEAD:dependencies.lock") + "\n")
+    want_planted = other_v if branch == "r33-other-own" else this_v
+    recs = ctx.records(MINI_PROJECT)
+    before = R.snapshot(recs)
+    rc, out = R.release(ctx, ctx.mini, log, jobs=ctx.jobs, python=ctx.other["python"], base_env=other_env(ctx.other))
+    after = R.snapshot(recs)
+    new = sorted(set(after) - set(before))
+    st = R.git(ctx.mini, "status", "--porcelain")
+    modified = sorted(l[3:] for l in st.splitlines() if l[:2].strip() == "M")
+    lp = os.path.join(ctx.mini, "dependencies.lock")
+    with open(log, "a", encoding="utf-8") as f:
+        f.write("%s: branch %s; committed lock idf %s; after: git status %r\n" % (name, branch, planted, st))
+    if planted != want_planted:
+        v, d = "VOID", "the branch's committed lock records idf %s, not %s" % (planted, want_planted)
+    elif branch == "r33-other-own":
+        js = [n for n in new if n.endswith(".json")]
+        rec = json.load(open(os.path.join(recs, js[0]))) if len(js) == 1 else {}
+        v, d = judge_other_own(rc, len(new) == 3, rec.get("idf_version"), modified, other_v)
+    else:
+        v, d = judge_release_other(rc, out, before != after, os.path.exists(os.path.join(ctx.mini, "build", "CMakeCache.txt")),
+                                   R.ninja_lines(ctx.mini) > 0, modified,
+                                   lock_idf(open(lp, newline="").read() if os.path.exists(lp) else None), other_v,
+                                   branch == "r33-other-lock")
+    R.report(name, v, d, ctx.log)
+    R.reset(ctx.mini, "main", "main")
+    for d in ("build", "managed_components"):
+        R.rmtree(os.path.join(ctx.mini, d))
 
 
 def bump(v):
@@ -732,6 +881,10 @@ CASES += [
                                                       ">=%s,<%s" % (R.idf_version(), bump(R.idf_version())))),
     ("r33_release_none", lambda c, l: c_r33_release(c, l, "r33_release_none", None)),
     ("r33_release_eq", c_r33_release_eq),
+    ("r33_release_other", lambda c, l: c_r33_release_other(c, l, "r33_release_other", "main")),
+    ("r33_release_other_lockonly", lambda c, l: c_r33_release_other(c, l, "r33_release_other_lockonly",
+                                                                    "r33-other-lock")),
+    ("r33_release_other_own", lambda c, l: c_r33_release_other(c, l, "r33_release_other_own", "r33-other-own")),
 ]
 
 
@@ -948,6 +1101,37 @@ def self_test():
                                                                 True, "5.4.2"), False)
     expect("r33 lock: locked, the version is not idf's",
            lock_planted(lk.replace("  idf:", "  other:") % "5.4.2", True, "5.4.2"), False)
+    # R33 with R8: the release build under the other install
+    expect("lock_idf", lock_idf(lk % "5.4.1"), "5.4.1")
+    expect("lock_idf, CRLF", lock_idf((lk % "5.4.1").replace("\n", "\r\n")), "5.4.1")
+    expect("lock_idf, no idf entry", lock_idf(lk.replace("  idf:", "  other:") % "5.4.1"), None)
+    expect("lock_idf, no lock", lock_idf(None), None)
+    good = (2, "R8: the worktree changed: dependencies.lock", False, True, False, ["dependencies.lock", "sdkconfig"],
+            "5.4.1", "5.4.1", False)
+
+    def jro(**kw):
+        a = dict(zip(("rc", "out", "recorded", "reconfigured", "compiled", "modified", "lock_v", "other_v", "only_lock"),
+                     good))
+        a.update(kw)
+        return judge_release_other(**a)[0]
+    expect("release other: refused at R8 after the reconfigure", jro(), "PASS")
+    expect("release other: built", jro(rc=0), "FAIL")
+    expect("release other: refused, but a record written", jro(recorded=True), "FAIL")
+    expect("release other: compiled before the refusal", jro(compiled=True), "FAIL")
+    expect("release other: a traceback", jro(out="Traceback (most recent call last):\n dependencies.lock"), "VOID")
+    expect("release other: refused before the reconfigure", jro(reconfigured=False), "VOID")
+    expect("release other: the lock not rewritten", jro(modified=["sdkconfig"]), "VOID")
+    expect("release other: the lock rewritten to another idf", jro(lock_v="5.4.2"), "VOID")
+    expect("release other: lock alone wanted, sdkconfig too", jro(only_lock=True), "VOID")
+    expect("release other: lock alone wanted and alone", jro(only_lock=True, modified=["dependencies.lock"]), "PASS")
+    expect("release other: the refusal does not name the lock", jro(out="R8: the worktree changed"), "VOID")
+    expect("release other: dependencies.lock2 is not the lock", jro(out="R8: dependencies.lock2"), "VOID")
+    expect("other own: nothing rewritten, recorded on 5.4.1",
+           judge_other_own(0, True, {"image": "v5.4.1", "project": "v5.4.1"}, [], "5.4.1")[0], "PASS")
+    expect("other own: refused", judge_other_own(1, False, None, [], "5.4.1")[0], "VOID")
+    expect("other own: something rewritten", judge_other_own(0, True, {"image": "v5.4.1"}, ["sdkconfig"], "5.4.1")[0],
+           "VOID")
+    expect("other own: recorded on this IDF", judge_other_own(0, True, {"image": "v5.4.2"}, [], "5.4.1")[0], "VOID")
     idf = os.path.join(d, "idfv", "tools", "cmake")
     os.makedirs(idf)
     open(os.path.join(idf, "version.cmake"), "w").write(
@@ -955,6 +1139,14 @@ def self_test():
     expect("idf_version reads version.cmake", R.idf_version(os.path.join(d, "idfv")), "5.4.2")
     expect("bump", bump("5.4.2"), "5.4.3")
     expect("manifest", R.idf_manifest("==5.4.2"), 'dependencies:\n  idf:\n    version: "==5.4.2"\n')
+
+    class C:
+        mini = os.path.join(d, "mini")
+    import yaml
+    for label, version, want_idf in (("exact", "==5.4.2", {"version": "==5.4.2"}), ("no idf", None, None)):
+        deps = yaml.safe_load(mini_manifest(C, version))["dependencies"]
+        expect("mini manifest, %s: idf" % label, deps.get("idf"), want_idf)
+        expect("mini manifest, %s: the board at its tag" % label, (deps.get(R.C3_BOARD) or {}).get("version"), R.C3_TAG)
     print("\nself-test: %s" % ("PASS" if not fails else "FAIL: %s" % fails))
     return 1 if fails else 0
 
