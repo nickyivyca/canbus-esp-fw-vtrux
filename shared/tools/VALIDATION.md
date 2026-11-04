@@ -363,9 +363,12 @@ same folder. The interposer's test evidence is
   2026-11-03), that default builds with the other install's Python
   environment and tools, and R9 may not catch it while the toolchains
   match.
+- **`IDF_PATH` set and not empty** (gen-inhibit reviewer, 2026-11-03, on
+  the gen-inhibit tester's question, a wording fix): the check refuses an
+  empty `IDF_PATH` as it does an empty `IDF_TOOLS_PATH`; "set" alone read
+  narrower in the text than the check.
 - **Status:** complete. Not covered here: an `IDF_PATH` of one version with
-  the other's tools. R33's exact version is what refuses that, at
-  configure.
+  the other's tools. R33 covers that, as far as it reaches (see R33).
 
 ## 4. Checks
 
@@ -756,10 +759,25 @@ same folder. The interposer's test evidence is
   IDF that runs the configure. The charge interposer's manifest already
   pins `idf: "5.4.2"`; gen-inhibit's names `>=4.1.0` (`gen-inhibit/main`
   `f2f64b2`), which any IDF meets.
-- **Status:** basis pending: that the Component Manager refuses a
-  configure under another IDF for a bare version (`"5.4.2"`) as for
-  `==5.4.2` is the reviewers' reading, not yet shown. The tester's can-fail
-  for R33 shows it, a configure under the other install.
+- **Exposed by:** the gen-inhibit tester's run at port step 1d part A
+  (shared/tools `VERIFICATION.md`, "R31, R32, R33 and R24's 'no default':
+  port step 1d part A", run `step1d_partA_06b471c`, v5.4.2 with v5.4.1 as
+  the other install): copies naming `5.4.2` or `==5.4.2` with no
+  `dependencies.lock` were refused under v5.4.1, exit 2; the same copies
+  with the lock v5.4.2 wrote for them configured under v5.4.1, which
+  rewrote the lock's `idf` to 5.4.1, exit 0. So the exact version alone
+  stops a configure under another IDF only where there is no current lock.
+- **What guards it, ruled** (user, 2026-11-04, in the gen-inhibit
+  reviewer's session): only release builds need it. A release build's R8
+  clean-worktree check after the reconfigure sees the rewritten lock, a
+  tracked file, and refuses (`release.py`, R8 again). A bench or dev build
+  is left unguarded (R14): its image records the ESP-IDF it was built on,
+  and its evidence is of that image's code hash (R3), which a release
+  build on the other IDF does not share.
+- **Status:** basis pending: that R8 refuses a release build under another
+  IDF with the committed lock is the gen-inhibit reviewer's reading of
+  `release.py`, not yet shown. The tester's release case under the other
+  install, with the lock, shows it.
 
 ## 6. Running the tooling
 
@@ -782,6 +800,12 @@ same folder. The interposer's test evidence is
   tooling is used from a separate checkout at the pinned tag, with the
   harness checking the checkout's digest against the pin. Applied to the
   build tooling: user, 2026-10-23, in the gen-inhibit reviewer's session.
+- **A release build only** (user, 2026-11-04, in the gen-inhibit reviewer's
+  session, on the gen-inhibit implementor's question at port step 1d part
+  A): what a bench or dev build made is identified by its image's code
+  hash (R3), whichever copy of the tooling made it, so the pin check guards
+  release builds only. `build`, `check-env`, `image` and `digest` do not
+  run it.
 - **Status:** complete.
 
 ### R25. Tags on `shared/main`
