@@ -1,14 +1,27 @@
 # Baseline part C builds (baseline_run_list.md): clean builds of one commit, one
 # build directory each, in a tree nobody else uses. Run from Windows PowerShell:
 #
-#   powershell -ExecutionPolicy Bypass -File baseline_builds.ps1 -Tree <WiCAN tree: a worktree's gen-inhibit/firmware> -Out <log dir> -Builds man,rt,rxq
+#   & <worktree>\gen-inhibit\tools\bench\baseline_builds.ps1 -Tree <WiCAN tree: a worktree's gen-inhibit/firmware> -Out <log dir> -Builds man,rt,rxq
 #
-# Each build: git status and HEAD before, the idf.py command, its full output,
-# start/end times and exit code, to <Out>\build_<name>.txt. A build directory
-# that already exists is refused rather than reused (each must be a clean build).
+# Set IDF_PATH, IDF_TOOLS_PATH (since port step 1d, ESP-IDF v5.4.2's own tools
+# folder; local-paths.md) and GI_IDF_PYTHON first; the script exports ESP-IDF.
+#
+# Each build: git status and HEAD before, the check-env command and its output,
+# the idf.py command, its full output, start/end times and exit code, to
+# <Out>\build_<name>.txt. A build directory that already exists is refused
+# rather than reused (each must be a clean build).
+#
+# check-env (shared/tools R32) before each build, from port step 1d (user,
+# 2026-11-03: every gen-inhibit build passes the check; AGENTS.md "One IDF
+# version from gen-inhibit's port step 1d"): `py -3.14 -B gen-inhibit/vtrux_tools.py
+# check-env`, the tree's own launcher (the one beside -Tree, so the commit under
+# build's), run from that worktree's root in the exported shell. If it exits
+# non-zero, or the launcher is not there, the build is refused: no build
+# directory, idf.py never run, and the script exits 3. A tree from before 1d,
+# whose launcher has no check-env, is refused the same way.
 # Names: man, man2 (a second clean build of the same tree, spec 11's control),
 # rt, rxq, txabort, abortwin, flt, and the stock features' fmqtt, felm, fmqttelm,
-# fautopid, frealdash, fall and fslcan. A prod build is the shared tooling's release build (tools/vtrux_tools.py release), not this.
+# fautopid, frealdash, fall and fslcan. A prod build is the shared tooling's release build (gen-inhibit/vtrux_tools.py release), not this.
 param(
     [Parameter(Mandatory=$true)][string]$Tree,
     [Parameter(Mandatory=$true)][string]$Out,
@@ -54,6 +67,9 @@ New-Item -ItemType Directory -Force $Out | Out-Null
 # Absolute, because the build itself runs from inside $Tree.
 $Out = (Resolve-Path $Out).Path
 $Tree = (Resolve-Path $Tree).Path
+# The tree's own launcher, gen-inhibit/vtrux_tools.py, and its worktree's root.
+$Launcher = Join-Path (Split-Path -Parent $Tree) "vtrux_tools.py"
+$Root = Split-Path -Parent (Split-Path -Parent $Tree)
 $rc = 0
 foreach ($b in $Builds) {
     if (-not $defs.ContainsKey($b)) { Write-Output "unknown build $b"; $rc = 2; continue }
@@ -64,6 +80,22 @@ foreach ($b in $Builds) {
     $st = (git -C $Tree status --porcelain) -join "; "
     $cmd = @("-B", $dir) + $defs[$b] + @("build")
     "git status before: [$st] HEAD $head" | Out-File -Encoding utf8 $log
+    "check-env: py -3.14 -B $Launcher check-env (in $Root)" | Out-File -Encoding utf8 -Append $log
+    if (-not (Test-Path -LiteralPath $Launcher -PathType Leaf)) {
+        "check-env: no launcher at $Launcher; refused, nothing built" | Out-File -Encoding utf8 -Append $log
+        Write-Output "$b : no launcher at $Launcher, check-env refused, nothing built"
+        $rc = 3; continue
+    }
+    Push-Location $Root
+    & py -3.14 -B $Launcher check-env *>&1 | ForEach-Object { "$_" } | Out-File -Encoding utf8 -Append $log
+    $envrc = $LASTEXITCODE
+    Pop-Location
+    "check-env exit: $envrc" | Out-File -Encoding utf8 -Append $log
+    if ($envrc -ne 0) {
+        "check-env refused; nothing built" | Out-File -Encoding utf8 -Append $log
+        Write-Output "$b : check-env refused (exit $envrc), nothing built"
+        $rc = 3; continue
+    }
     "command: idf.py $($cmd -join ' ')" | Out-File -Encoding utf8 -Append $log
     $t0 = Get-Date
     "start: $($t0.ToString('yyyy-MM-dd HH:mm:ss'))" | Out-File -Encoding utf8 -Append $log
@@ -75,6 +107,6 @@ foreach ($b in $Builds) {
     "end: $($t1.ToString('yyyy-MM-dd HH:mm:ss'))  seconds $([int]($t1 - $t0).TotalSeconds)" | Out-File -Encoding utf8 -Append $log
     "idf exit: $code" | Out-File -Encoding utf8 -Append $log
     Write-Output ("{0}: exit {1}, {2} s, {3} to {4}" -f $b, $code, [int]($t1 - $t0).TotalSeconds, $t0.ToString('HH:mm:ss'), $t1.ToString('HH:mm:ss'))
-    if ($code -ne 0) { $rc = 1 }
+    if ($code -ne 0 -and $rc -eq 0) { $rc = 1 }
 }
 exit $rc
