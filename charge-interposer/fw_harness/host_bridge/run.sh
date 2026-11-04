@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build and run the spec 9.1 L2 host tests.
 #
-# Separate from ../../firmware/test/host_unit/run.sh because these need the
+# Separate from ../../host_unit/run.sh because these need the
 # fakes compiled alongside them, and because L2 is where the fakes live --
 # host_unit is for firmware logic pure enough to need no peripheral at all.
 #

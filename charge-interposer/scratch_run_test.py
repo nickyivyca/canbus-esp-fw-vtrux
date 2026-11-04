@@ -89,7 +89,7 @@ WRITERS = {
     "harness_checks/rx_hook_mutations.sh": ("rx-hook-mutations", []),
     "harness_checks/rx_order_prefix_control.sh": ("rx-order-prefix-control", []),
     "harness_checks/tx_fail_banking_mutation.sh": ("tx-fail-banking-mutation", []),
-    "firmware/test/host_unit/run.sh": ("host-unit", []),
+    "host_unit/run.sh": ("host-unit", []),
     "fw_harness/host_diff/diff_all.sh": ("host-diff", []),
     "fw_harness/host_diff/diff_one.sh": ("host-diff-one", ["{trace}"]),
     "stop_all.sh": ("stop-all", ["--self-test"]),
@@ -138,8 +138,8 @@ def copy_code(src, dst):
                     ignore=ign)
     shutil.copytree(os.path.join(src, "firmware", "main"), os.path.join(dst, "firmware", "main"),
                     ignore=ign)
-    shutil.copytree(os.path.join(src, "firmware", "test", "host_unit"),
-                    os.path.join(dst, "firmware", "test", "host_unit"), ignore=ign)
+    shutil.copytree(os.path.join(src, "host_unit"), os.path.join(dst, "host_unit"),
+                    ignore=ign)
     for sub in ("host_bridge", "host_diff"):
         shutil.copytree(os.path.join(src, "fw_harness", sub),
                         os.path.join(dst, "fw_harness", sub), ignore=ign)
@@ -679,7 +679,7 @@ MUTANTS = [
      '. "$CODE/scratch_run.sh" || exit 2\nscratch_run busoff-mutations || exit 2\n'
      'WORK="$SCRATCH_RUN"', 'WORK="${TMPDIR:-/tmp}/busoff_mut"\nrm -rf "$WORK"\n'
      'mkdir -p "$WORK"', None),
-    ("host_unit's binaries in TMPDIR", "firmware/test/host_unit/run.sh",
+    ("host_unit's binaries in TMPDIR", "host_unit/run.sh",
      'bin="$SCRATCH_RUN/$name"', 'bin="${TMPDIR:-/tmp}/${name}_$$"', None),
     ("diff_all's runner beside the script", "fw_harness/host_diff/diff_all.sh",
      'BIN="$SCRATCH_RUN/hr"', 'BIN="$HERE/hr"', None),

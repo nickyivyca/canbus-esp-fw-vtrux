@@ -679,7 +679,7 @@ def emulated(settings):
     m_host = Group("m-host", host="madhouse", ship=b.ship, checks=[
         b.mbash("host-bridge", ["bash", "fw_harness/host_bridge/run.sh"],
                 cls="build", timeout_s=3600, judge=host_bridge_judge),
-        b.mbash("host-unit", ["bash", "firmware/test/host_unit/run.sh"],
+        b.mbash("host-unit", ["bash", "host_unit/run.sh"],
                 cls="build", timeout_s=1800),
         b.mbash("host-diff", ["bash", "fw_harness/host_diff/diff_all.sh"],
                 cls="build", timeout_s=7200),
