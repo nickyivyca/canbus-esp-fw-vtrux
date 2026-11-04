@@ -13,7 +13,8 @@ binary.
     tool folders    for every tool in $IDF_PATH/tools/tools.json, at the
                     version it marks "recommended", each of its export_paths
                     under <IDF_TOOLS_PATH>/tools/<tool>/<version>/
-                    (IDF_TOOLS_PATH unset: ~/.espressif, as idf_tools.py)
+                    (IDF_TOOLS_PATH must be set: R32 defaults nothing, so
+                    an unset one is an error here, never ~/.espressif)
     the compiler    exactly one tool folder holds a file of the name the
                     toolchain file gives (".exe" allowed); the compiler
                     CMake chose (CMake<LANG>Compiler.cmake) has that name,
@@ -68,8 +69,10 @@ class Toolchain:
         idf = env.get("IDF_PATH")
         if not idf:
             raise ToolchainError("IDF_PATH is not set")
-        tools = (env.get("IDF_TOOLS_PATH")
-                 or os.path.expanduser(os.path.join("~", ".espressif")))
+        tools = env.get("IDF_TOOLS_PATH", "")
+        if not tools.strip():
+            raise ToolchainError("IDF_TOOLS_PATH is not set (R32: it is never "
+                                 "defaulted to ~/.espressif)")
         return cls(idf, tools)
 
     def compiler_names(self, toolchain_file):
