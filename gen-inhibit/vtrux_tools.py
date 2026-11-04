@@ -2,17 +2,32 @@
 pins, from its read-only checkout ../shared-<tag>/ beside this worktree's
 root (shared/tools SPEC R23).
 
+    py -3.14 -B gen-inhibit/vtrux_tools.py check-env
     py -3.14 -B gen-inhibit/vtrux_tools.py release [--check-only] [--jobs N]
+    py -3.14 -B gen-inhibit/vtrux_tools.py build <variant> [--jobs N]
     py -3.14 -B gen-inhibit/vtrux_tools.py image <file.bin>...
     py -3.14 -B gen-inhibit/vtrux_tools.py digest <folder>...
 
-A release build runs from an exported ESP-IDF shell, in this repo's root,
-with REVERSE_IT_DIR set; throttled, from an Idle shell, as
-`py -3.14 -B gen-inhibit/vtrux_tools.py release --jobs 1` (AGENTS.md
-"Builds during wall-clock tests"). The project is gen-inhibit/firmware/,
-the IDF build root beside this script, which holds shared_pins.json and
-CMakeLists.txt; release is given it as --project unless the command line
-names one.
+Every build runs from a PowerShell exported for gen-inhibit's ESP-IDF,
+v5.4.2 since port step 1d, with IDF_TOOLS_PATH set before the export
+(local-paths.md), in this repo's root.
+
+check-env  the IDF environment check (shared/tools R32): IDF_PATH and
+           IDF_TOOLS_PATH set, the IDF's Python environment and ROM ELF
+           folder inside IDF_TOOLS_PATH. release and build run it
+           themselves. gen-inhibit's bench and dev builds are still idf.py
+           / ninja builds (firmware/README.md), so run check-env in the
+           same shell before each of them (R32).
+release    a release build (that spec's section 3), with REVERSE_IT_DIR
+           set; throttled, from an Idle shell, as `release --jobs 1`
+           (AGENTS.md "Builds during wall-clock tests").
+build      a dev build of one variant (R31). gen-inhibit's vtrux_build.json
+           lists no variants until port step 1d stage (b), so until then it
+           is refused, naming the empty list.
+
+The project is gen-inhibit/firmware/, the IDF build root beside this script,
+which holds shared_pins.json and CMakeLists.txt; release and build are given
+it as --project unless the command line names one.
 
 It reads only the tag from firmware/shared_pins.json's "shared/tools"
 entry, so that a missing checkout is named before any shared code runs.
@@ -75,10 +90,11 @@ def tools_dir():
 
 
 def _with_project(argv):
-    """argv, with --project ROOT added to a release that names none: the
-    tooling's own default is the current folder, which is the repo root.
-    argparse takes an abbreviation (--proj) as the option, so one counts."""
-    if argv[:1] != ["release"]:
+    """argv, with --project ROOT added to a release or build that names
+    none: the tooling's own default is the current folder, which is the repo
+    root. argparse takes an abbreviation (--proj) as the option, so one
+    counts."""
+    if argv[:1] not in (["release"], ["build"]):
         return argv
     for a in argv[1:]:
         opt = a.split("=", 1)[0]

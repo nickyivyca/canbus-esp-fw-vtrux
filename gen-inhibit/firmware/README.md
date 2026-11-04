@@ -9,6 +9,19 @@ e.g. `ninja -C gen-inhibit/firmware/build -j 1` from the repo root (AGENTS.md
 "Builds during wall-clock tests"). Upstream's own README is the repo root's
 `README.md`; the project's file map is `../README.md`.
 
+**ESP-IDF v5.4.2** (spec 15, port step 1d), named exactly in
+`main/idf_component.yml` (shared/tools R33). Every build runs in a shell
+exported for it, with `IDF_TOOLS_PATH` set to its tools folder before the
+export (`local-paths.md`). The bench and dev builds here are `idf.py` /
+`ninja` builds, not the tooling's `build` command, so each is preceded, in
+the same shell, by `py -3.14 -B gen-inhibit/vtrux_tools.py check-env` from
+the repo root (shared/tools R32); a release build runs that check itself.
+A configure in a shell exported for another IDF rewrites
+`dependencies.lock`'s `idf` version: a release build refuses that (R8),
+but a bench or dev build does not, so `git status` after a configure shows
+it. The bootloader moves with the IDF version, and OTA cannot replace it,
+so a WiCAN moved to v5.4.2 gets its bootloader flashed by USB (spec 15).
+
 **The board is a dependency** (shared/boards SPEC B1 and B2, port step 1a):
 `vtrux/wican_v3`, the board component on `shared/main`, taken from git at the
 tag `main/idf_component.yml` names, into `managed_components/vtrux__wican_v3/`.

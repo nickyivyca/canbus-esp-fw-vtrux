@@ -4,27 +4,33 @@ pinned shared build tooling. Not evidence.
     py -3.14 -B gen-inhibit/test_vtrux_tools.py
 
 A copy of the launcher runs in a scratch worktree, under scratch/
-vtrux-tools-test/ at this worktree's root, laid out as this repo is: the
-launcher in gen-inhibit/, the pin in gen-inhibit/firmware/, the checkout
+vtrux-tools-test/<pid>/ at this worktree's root, laid out as this repo is:
+the launcher in gen-inhibit/, the pin in gen-inhibit/firmware/, the checkout
 beside the worktree. No pin, a pin with no tag, a pin anywhere but
 gen-inhibit/firmware/ (not read), no checkout (the refusal names the
 command), and a stand-in checkout whose cli.main() reports the arguments it
-was given and exits 7: release gets --project gen-inhibit/firmware/ unless it
-names one, and the other commands get nothing added. The stand-in's folder
-must have no __pycache__ afterwards, since one would change the real
-checkout's digest. Needs git.
+was given and exits 7: release and build get --project gen-inhibit/firmware/
+unless they name one, and the other commands (check-env, image, digest) get
+nothing added. The stand-in's folder must have no __pycache__ afterwards,
+since one would change the real checkout's digest. Needs git.
+
+The run's folder is removed when the run ends, pass or fail, clearing
+read-only flags (git's objects) and with \\?\ paths on Windows; anything it
+cannot remove is printed (AGENTS.md "Removing scratch").
 """
 
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LAUNCHER = os.path.join(HERE, "vtrux_tools.py")
-SCRATCH = os.path.join(os.path.dirname(HERE), "scratch", "vtrux-tools-test")
+SCRATCH = os.path.join(os.path.dirname(HERE), "scratch", "vtrux-tools-test",
+                       str(os.getpid()))
 TAG = "2026.01.01"
 GIT_ENV = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
                GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
@@ -44,13 +50,52 @@ def same(a, b):
     return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
 
 
+def long_path(p):
+    p = os.path.abspath(p)
+    return p if os.name != "nt" or p.startswith("\\\\?\\") else "\\\\?\\" + p
+
+
+def remove_tree(path):
+    """Remove path, clearing read-only flags and retrying; print what is
+    left and why. True if nothing is left."""
+    lp = long_path(path)
+    if not os.path.lexists(lp):
+        return True
+    errors = []
+
+    def retry(func, p, exc):
+        try:
+            os.chmod(p, stat.S_IREAD | stat.S_IWRITE | stat.S_IEXEC)
+            func(p)
+        except OSError as e:
+            errors.append("%s: %s" % (p, e))
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(lp, onexc=retry)
+    else:
+        shutil.rmtree(lp, onerror=lambda f, p, x: retry(f, p, x[1]))
+    if not os.path.lexists(lp):
+        return True
+    print("could not remove %s: %s" % (path, "; ".join(errors[:5])
+                                       or "(no error reported)"))
+    return False
+
+
+def tearDownModule():
+    if remove_tree(SCRATCH):
+        parent = os.path.dirname(SCRATCH)
+        try:
+            os.rmdir(parent)        # only if no other run's folder is there
+        except OSError:
+            pass
+
+
 class Launcher(unittest.TestCase):
 
     def setUp(self):
         name = self.id().rsplit(".", 1)[-1]
         self.d = os.path.join(SCRATCH, name)
-        if os.path.exists(self.d):
-            shutil.rmtree(self.d)
+        self.assertTrue(remove_tree(self.d))
         self.wt = os.path.join(self.d, "wt")
         self.gi = os.path.join(self.wt, "gen-inhibit")
         self.proj = os.path.join(self.gi, "firmware")
@@ -151,6 +196,27 @@ class Launcher(unittest.TestCase):
         rc, out = self.run_launcher("digest", "--project")
         self.assertEqual(rc, 7, out)
         self.assertEqual(self.args_seen(out), ["digest", "--project"])
+
+    def test_check_env_gets_nothing_added(self):
+        self.pins({"tag": TAG})
+        self.stand_in()
+        rc, out = self.run_launcher("check-env")
+        self.assertEqual(rc, 7, out)
+        self.assertEqual(self.args_seen(out), ["check-env"])
+
+    def test_build_gets_the_project(self):
+        self.pins({"tag": TAG})
+        self.stand_in()
+        rc, out = self.run_launcher("build", "truck", "--jobs", "1")
+        self.assertEqual(rc, 7, out)
+        seen = self.args_seen(out)
+        self.assertEqual(seen[:5], ["build", "truck", "--jobs", "1",
+                                    "--project"])
+        self.assertEqual(len(seen), 6, seen)
+        self.assertTrue(same(seen[5], self.proj), seen)
+        rc, out = self.run_launcher("build", "truck", "--project=elsewhere")
+        self.assertEqual(self.args_seen(out),
+                         ["build", "truck", "--project=elsewhere"])
 
 
 if __name__ == "__main__":
