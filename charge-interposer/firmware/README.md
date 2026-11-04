@@ -41,17 +41,17 @@ bench artifacts stayed there when this folder moved into
 | `main/can_port.h` | `CanPort` interface + a fixed-capacity `FrameRing`. Separates "queued" from "on the wire" deliberately. |
 | `main/port_twai.h` / `.cpp` | CAN1, the vehicle segment, on the S3's built-in controller. `setMode()` is spec 2.3's listen-only switch, and it is a driver teardown and reinstall because TWAI fixes the mode at install: it can be refused, and it discards the driver's queues. |
 | `main/port_mcp2515.h` / `.cpp` | CAN2, the charger segment. Hand-written; see below for why. |
-| `main/bridge_health.h` | Spec 8.2's `bridge_ok`: health **since the previous status frame**, not since boot. `sample()` answers and moves the baselines, for a frame; `peek()` answers without moving them, for 8.3's serial line in listen-only where no frame goes out. Pure and header-only, kept out of `main.cpp` so `test/host_unit/` can compile it. |
+| `main/bridge_health.h` | Spec 8.2's `bridge_ok`: health **since the previous status frame**, not since boot. `sample()` answers and moves the baselines, for a frame; `peek()` answers without moving them, for 8.3's serial line in listen-only where no frame goes out. Pure and header-only, kept out of `main.cpp` so `../host_unit/` can compile it. |
 | `main/charger_tx_failures.h` | Spec 2.2's `0x7F6` B7 counter: the sum of the charger port's three disjoint tallies (queue full, controller failure, the 100 ms age-out), accrued only while the VCU's flow bit is 1, with a delta that arrives outside a session DISCARDED rather than banked for the next one. Lifted out of `main.cpp` on 2026-10-13 for the same reason as `bridge_health.h`: the rule is the whole of it, and nothing could test it where it was. |
 | `main/main.cpp` | Wiring only. Moves frames, reports losses. Owns spec 2.3's two caller duties: the one round of status frames at power-up, and applying the core's `vehicleListenOnly()` to the port BEFORE dispatching that pass's frames. |
 | `main/slcan_main.cpp` | **Bench only, and not part of the bridge.** Turns the board into a plain SLCAN transmitter on CAN1 so the generator-inhibit bench has a SECOND transmitter on the powertrain segment. Frames queued in one adapter do not arbitrate against each other, so filler from the bench's PCAN delays the replay's `0x051` whatever its CAN priority; from this board's own controller arbitration places it, `0x7E0` loses to every truck id, and it cannot delay a command. Silent until it receives an `O`. Read its header before flashing it -- it lists the protocol subset and four deliberate refusals. |
 | `main/selftest_main.cpp` | Stage 0. Cross-port identity, DLC and throughput over the loopback jumpers. |
 | `main/diag_main.cpp` | Stage 0a. Controller internal loopback + physical-layer probes. Flash this when Stage 0 fails and the cause could be either wiring or driver. |
 | `datasheets/` | **Not in this repo.** The vendor data sheets (MCP2515 DS20001801J) were deliberately left out of the move and stay in the reverse-it project, at `projects/vtrux/tools/interposer/firmware/datasheets/`. Findings taken from them need both text extraction and the rendered page -- see that folder's `README.md`. |
-| `test/host_diff/make_golden.py` | Freezes what `machine.py` does over a real capture into a trace + golden pair. |
-| `test/host_diff/host_runner.cpp` | Drives `machine.cpp` over the same trace, same output format. |
-| `test/host_diff/check_port.py` | Cross-checks every constant against `machine.py`. Needs no compiler. |
-| `test/host_unit/` | C++ unit tests for the pure headers above -- plain `g++`, no peripheral fakes. `run.sh` builds and runs every `test_*.cpp`; see that folder and `test/README.md`. |
+| `../fw_harness/host_diff/make_golden.py` | The tester's. Freezes what `machine.py` does over a real capture into a trace + golden pair. |
+| `../fw_harness/host_diff/host_runner.cpp` | The tester's. Drives `machine.cpp` over the same trace, same output format. |
+| `../fw_harness/host_diff/check_port.py` | The tester's. Cross-checks every constant against `machine.py`. Needs no compiler. |
+| `../host_unit/` | C++ unit tests for the pure headers above -- plain `g++`, no peripheral fakes. `run.sh` builds and runs every `test_*.cpp`; see that folder's `README.md`. |
 
 ## Build
 
@@ -577,7 +577,7 @@ both most likely and most silent (a mistyped threshold compiles fine and just
 charges to the wrong voltage):
 
 ```bash
-py -3.12 charge-interposer/firmware/test/host_diff/check_port.py
+py -3.12 charge-interposer/fw_harness/host_diff/check_port.py
 ```
 
 > 21 config fields, 22 identifiers, 2 payloads, 15 extractors -- all agree.
@@ -591,7 +591,7 @@ py -3.12 .../make_golden.py <capture.log> --name NAME --bus 3 \
     --outdir projects/vtrux/notes/artifacts/interposer-firmware
 
 # build and diff (needs g++; on L-EEHTRBPN2 use WSL)
-g++ -std=c++11 -O2 -I main -o /tmp/hr test/host_diff/host_runner.cpp main/machine.cpp
+g++ -std=c++11 -O2 -I main -o /tmp/hr ../fw_harness/host_diff/host_runner.cpp main/machine.cpp
 /tmp/hr <NAME>.trace | diff - <NAME>.golden
 ```
 
@@ -815,7 +815,7 @@ would have been reported on a serial line nobody may be reading and then been
 nothing else anywhere would differ. What to expect when reading a bench log:
 in listen-only the printed flag stays cleared on every line until a frame
 actually carries it, rather than clearing once and going green.
-`test/host_unit/test_bridge_health.cpp` pins both halves, and its mutation is
+`../host_unit/test_bridge_health.cpp` pins both halves, and its mutation is
 a `peek()` that advances.
 
 **THE ROUND IS WAITED FOR, BECAUSE THE SWITCH USED TO THROW IT AWAY**
@@ -1022,7 +1022,7 @@ reading a pre-B-7a log.
 
 **What is pinned here and what is not.** The NUMBERS are `enum TripReason`
 in `machine.h`, matched position for position against `machine.py`'s
-`TRIP_KEYS` by `test/host_diff/check_port.py` -- that check is what stops
+`TRIP_KEYS` by `../fw_harness/host_diff/check_port.py` -- that check is what stops
 this table's codes and the wire drifting apart, and it is the only one. The
 NAMES in this table are pinned by nothing, so they are documentation and
 must be read as such.
@@ -1177,7 +1177,7 @@ the goldens were regenerated from it, and both pairs now diff identical.
 
 ### The older result (2026-09-17) -- all ten byte-identical
 
-`test/host_diff/diff_all.sh` builds the runner and diffs every pair (on
+`../fw_harness/host_diff/diff_all.sh` builds the runner and diffs every pair (on
 L-EEHTRBPN2 run it under WSL with `MSYS_NO_PATHCONV=1`). The goldens now
 include the diagnostic mirror frames (spec 8.1), so both real captures were
 regenerated on 2026-09-17.
@@ -1311,7 +1311,7 @@ collapsed correctly and the two cores agreed. The agreement is real and the
 reason given for it was wrong, which matters because the wrong reason is
 reassuring and the right one is not.
 
-`test/host_diff/event_stream.py` drains the reference's log after every
+`../fw_harness/host_diff/event_stream.py` drains the reference's log after every
 input line -- `del core.events[:]` at its line 60 -- precisely as
 `host_runner` drains `machine.cpp`'s every pass, so that the two sides are
 comparable. Measured on the pre-fix reference over a 20-frame STAND_BY
@@ -1391,27 +1391,34 @@ assumed-versus-measured list (spec 9.1).
 
 ### The mechanical aid
 
-`test/hw_mechanics.py` watches what is a hardware mechanic **by
-construction**, in three ways:
+`../fw_harness/hw_mechanics.py`, the tester's, watches what is a hardware
+mechanic **by construction**, in three ways (paths from this folder):
 
-- **whole files**: both port drivers, `port_*.h`, `can_port.h`,
-  `platformio.ini`;
-- **`setup()`'s body**, extracted by brace matching and hashed with the
-  `INTP_PRINT*` lines removed. The boot path is a mechanic entire -- init
-  order, the controller begin calls, the B-7d failed-start branch -- so a
-  reordered `begin()` is reported while a reworded message is not;
-- **named settings by value**, not by file hash: the pin assignments, the
-  bitrate, the loop timings and the per-iteration drain bounds in
-  `main.cpp`.
+- **whole files**: both port drivers (`main/port_twai.cpp` and `.h`,
+  `main/port_mcp2515.cpp` and `.h`), `main/can_port.h`, `main/board_ports.h`
+  (the pins come from the board component through it),
+  `main/idf_component.yml` and `dependencies.lock` (the board component's,
+  the Arduino core's and ESP-IDF's versions), and the build's
+  `CMakeLists.txt`, `main/CMakeLists.txt` and `sdkconfig`;
+- **`setup()`'s body** in `main/main.cpp`, extracted by brace matching and
+  hashed with the `INTP_PRINT*` lines removed. The boot path is a mechanic
+  entire -- init order, the controller begin calls, the B-7d failed-start
+  branch -- so a reordered `begin()` is reported while a reworded message is
+  not;
+- **named settings by value**, not by file hash, in `main/main.cpp`:
+  `BITRATE`, `TICK_INTERVAL_MS`, `DIAG_INTERVAL_MS`, `STATUS_INTERVAL_MS`
+  and the vehicle and charger drain bounds. The pins are no longer constants
+  there (port step 2a, item 6a).
 
 ```
-py -3.14 charge-interposer/firmware/test/hw_mechanics.py
-py -3.14 .../hw_mechanics.py --record 2026-10-04-truck    # at each truck flash
-py -3.14 .../hw_mechanics.py --list                       # what is watched, and why
+py -3.14 -B charge-interposer/fw_harness/hw_mechanics.py
+py -3.14 -B .../hw_mechanics.py --record 2026-10-04-truck    # at each truck flash
+py -3.14 -B .../hw_mechanics.py --list                       # what is watched, and why
 ```
 
-This folder is not under git, so the baseline is a manifest written at each
-truck flash and kept in
+Its test is `../hw_mechanics_test.py`.
+
+The baseline is a manifest written at each truck flash and kept in
 `projects/vtrux/notes/artifacts/interposer-firmware/flash-manifests/`. Manifests
 are a record of what was flashed: the script refuses to overwrite one.
 
@@ -1421,23 +1428,36 @@ impossible is the one failure worth automating -- *the driver changed and
 nobody noticed* -- which is silent, and which concerns files a change is
 rarely about.
 
-Three properties it was built to have, each verified by changing the thing
-and watching the output:
+The properties it was built to have:
 
-- a port-driver edit is reported, and the report clears when it is reverted;
-- a **pin assignment** change in `main.cpp` is reported, while a
-  logging-only edit to the same file is not -- the settings are watched by
-  value, so hashing the whole file (which would flag every edit, and so be
-  ignored within a week) was not needed;
-- bringing SPI up **after** the TWAI controller instead of before is
-  reported, while rewording a message inside `setup()` is not -- and
-  deleting a whole branch that contained only a message still is, because
-  its braces go with it;
+- a port-driver edit is reported;
+- a change to a watched **setting** in `main.cpp` (the bitrate, a loop
+  timing, a drain bound) is reported, while a logging-only edit to the same
+  file is not -- the settings are watched by value, so hashing the whole
+  file (which would flag every edit, and so be ignored within a week) was
+  not needed. A pin change is reported as a change to `main/board_ports.h`,
+  or as a new board component version in `main/idf_component.yml` or
+  `dependencies.lock`;
+- a line added to `setup()` is reported, while rewording a message inside
+  it is not;
 - a mapped entry that can no longer be found is a **failure**, not a skip.
-  Rename `MCP_CS`, or `setup()` itself, and the script exits 2 saying that
-  mechanic is no longer being watched. Without that, a rename would quietly
-  drop an item from the map and the script would report "nothing touched"
-  forever after.
+  Rename `BITRATE`, or `setup()` itself, or remove a watched file such as
+  `main/board_ports.h`, and the script exits 2 saying that mechanic is no
+  longer being watched. Without that, a rename would quietly drop an item
+  from the map and the script would report "nothing touched" forever after.
+
+`../hw_mechanics_test.py`, the tester's, checks them on the ESP-IDF tool: one
+byte changed in a whole file changes that file's key alone, and the file
+removed is a problem naming it; a setting's value changed changes its key
+alone, and its pattern not matching is a problem; a line added to `setup()`
+changes its key while an `INTP_PRINT` line does not, and `setup()` renamed
+is a problem; and `--record` then a compare exits 0 unchanged, exits 1
+naming `main/board_ports.h` when it changes, and refuses the same label
+recorded twice. Two more were checked by hand on the PlatformIO-era tool
+only, and not since: a port-driver edit's report clears when it is
+reverted, and bringing SPI up **after** the TWAI controller instead of
+before is reported (as is deleting a whole branch of `setup()` that held
+only a message, because its braces go with it).
 
 ## Before this goes in a truck
 

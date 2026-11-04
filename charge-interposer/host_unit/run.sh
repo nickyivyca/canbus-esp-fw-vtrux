@@ -7,15 +7,15 @@
 # live beside this, not in it.
 #
 # On Windows run under WSL:
-#   wsl bash "/mnt/c/.../firmware/test/host_unit/run.sh"
+#   wsl bash "/mnt/c/.../charge-interposer/host_unit/run.sh"
 #
 # The binaries are built in this run's own folder under the tree's scratch/,
 # never the system temp folder, removed when the script exits
 # (charge-interposer/scratch_run.sh; tester, 2026-11-02).
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
-SRC="$HERE/../../main"
-. "$HERE/../../../scratch_run.sh" || exit 2
+SRC="$HERE/../firmware/main"
+. "$HERE/../scratch_run.sh" || exit 2
 scratch_run host-unit || exit 2
 fail=0
 for t in "$HERE"/test_*.cpp; do

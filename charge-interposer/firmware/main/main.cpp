@@ -169,7 +169,7 @@ static bool vehicle_up = false;
 
 // Spec 2.2: failed transmissions TOWARD THE CHARGER, counted only while the
 // VCU's flow bit is 1. The rule itself is in charger_tx_failures.h, which
-// test/host_unit/ compiles -- it used to be the three statements below plus
+// host_unit/ compiles -- it used to be the three statements below plus
 // two file statics here, where no test could reach it (reviewer,
 // 2026-10-13). What stays here is which counters feed it and how often.
 static ChargerTxFailures charger_txf;
@@ -513,7 +513,7 @@ static void reportEvents() {
     // the TripReason code, and the code-to-name table is in
     // firmware/README.md beside the event and state tables. The numbers are
     // enum TripReason in machine.h, pinned position for position against
-    // machine.py's TRIP_KEYS by test/host_diff/check_port.py -- which is the
+    // machine.py's TRIP_KEYS by fw_harness/host_diff/check_port.py -- which is the
     // only check on them. machine.cpp's tripName() held the same names and
     // was deleted on 2026-10-14 once this line stopped calling it: nothing
     // linked it and nothing checked its strings.
