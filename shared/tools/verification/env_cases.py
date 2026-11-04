@@ -45,9 +45,14 @@ R33 (exact IDF version). The can-fail, with --other-idf (the other install's exp
 variables, written by --dump-env in a shell exported for it): a copy of the minimal project
 naming this IDF's version, as "M.m.p" and as "==M.m.p", must configure under this install and
 must fail to configure under the other; VOID unless the other install configures the same
-project naming its own version. And a release build is refused for a manifest naming
-">=5.4.0", "*", ">=M.m.p,<M.m.(p+1)" or no IDF; one naming "==M.m.p" builds and is recorded
-(release_cases' r22_mini is the bare form's).
+project naming its own version. Each form is run twice: with no dependencies.lock in the copy
+(_fresh: the Component Manager solves the manifest), and with the lock this install wrote for
+that same manifest (_locked: as a project commits it, R10; on 2026-11-04 a copy carrying the
+minimal project's lock configured under v5.4.1, where a changed manifest was refused, so the
+two states are judged apart). A copy whose lock state is not the one planted is VOID. And a
+release build is refused for a manifest naming ">=5.4.0", "*", ">=M.m.p,<M.m.(p+1)" or no IDF;
+one naming "==M.m.p" builds and is recorded (release_cases' r22_mini is the bare form's); its
+branch commits the lock the reconfigure writes for its manifest, as release_cases' fixture does.
 
 Each case judges from outside: exit codes, output names (only that the refusal names the
 variable R32 requires it to), the record folder, the build folder, the process table. It never
@@ -597,6 +602,11 @@ def c_r33_release_eq(ctx, log):
     want = "==" + R.idf_version()
     mini_branch(ctx, "r33-eq", {"main/idf_component.yml": R.idf_manifest(want), "CMakeLists.txt": (None, TOOLS_PROBE)},
                 "r33 case: the manifest names %s; the configure prints IDF_TOOLS_PATH" % want)
+    # The new manifest makes main's dependencies.lock stale, and the release build's reconfigure
+    # would rewrite it, leaving the worktree dirty (R8). A project commits the lock its manifest
+    # gives, so the branch does too, as release_cases' fixture does.
+    with open(os.path.join(ctx.out, "fixture.txt"), "a") as fx:
+        R.normalise(ctx, ctx.mini, "r33-eq", fx)
     R.rmtree(os.path.join(ctx.mini, "build"))
     before = R.snapshot(ctx.records(MINI_PROJECT))
     rc, out = R.release(ctx, ctx.mini, log, jobs=ctx.jobs)
@@ -625,8 +635,23 @@ def other_env(other):
     return e
 
 
-def c_r33_other(ctx, log, name, form):
-    """R33's can-fail: a configure under the other install of a project naming this IDF exactly."""
+def lock_planted(lock, locked, this_v):
+    """The copy configured under the other install has the lock state the case names: none
+    (fresh), or the lock this install wrote for the same manifest, naming this IDF (locked)."""
+    if not locked:
+        return lock is None
+    if lock is None:
+        return False
+    lock = lock.replace("\r\n", "\n")
+    return "manifest_hash:" in lock and re.search(
+        r"(?m)^  idf:\n(?:    .*\n)*?    version: %s$" % re.escape(this_v), lock) is not None
+
+
+def c_r33_other(ctx, log, name, form, locked):
+    """R33's can-fail: a configure under the other install of a project naming this IDF exactly.
+    fresh (locked False): the copy has no dependencies.lock, so the Component Manager solves the
+    manifest. locked: the copy has the lock this install wrote for that manifest, as a project
+    commits it (R10), so the manifest and the lock agree when the other install meets them."""
     if not ctx.other:
         R.report(name, "SKIPPED", "no --other-idf given", ctx.log)
         return
@@ -636,7 +661,7 @@ def c_r33_other(ctx, log, name, form):
         return
     mini(ctx)
     base = os.path.join(ctx.root, "r33")
-    rcs = []
+    rcs, written, planted = [], None, None
     for label, env, idf_py, ver in (
             ("this", R.idf_env(), [sys.executable, os.path.join(os.environ["IDF_PATH"], "tools", "idf.py")], form % this_v),
             ("other", other_env(ctx.other), [ctx.other["python"], os.path.join(ctx.other["IDF_PATH"], "tools", "idf.py")],
@@ -645,15 +670,33 @@ def c_r33_other(ctx, log, name, form):
              form % other_v)):
         d = os.path.join(base, "%s-%s" % (name, label))
         R.rmtree(d)
-        R.run(["git", "clone", "-q", "-b", "main", ctx.mini, d], check=True)
-        with open(os.path.join(d, "main", "idf_component.yml"), "w", newline="") as f:
-            f.write(R.idf_manifest(ver))
-        with open(log, "a", encoding="utf-8") as f:
-            f.write("%s %s: the manifest names %s\n" % (name, label, ver))
-        rc, _ = R.run(idf_py + ["--no-ccache", "reconfigure"], cwd=d, env=env, log=log)
-        rcs.append(rc)
-        R.rmtree(d)
-    R.report(name, *judge_r33(rcs[0], rcs[1], rcs[2], form % this_v, other_v), ctx.log)
+        try:
+            R.run(["git", "clone", "-q", "-b", "main", ctx.mini, d], check=True)
+            with open(os.path.join(d, "main", "idf_component.yml"), "w", newline="") as f:
+                f.write(R.idf_manifest(ver))
+            lp = os.path.join(d, "dependencies.lock")
+            if os.path.exists(lp):
+                os.remove(lp)               # main's lock, written for main's manifest
+            if label == "other" and locked and written is not None:
+                with open(lp, "w", newline="") as f:
+                    f.write(written)
+            if label == "other":
+                planted = open(lp, newline="").read() if os.path.exists(lp) else None
+            with open(log, "a", encoding="utf-8") as f:
+                f.write("%s %s: the manifest names %s; dependencies.lock %s\n" % (
+                    name, label, ver, "this install's, for this manifest" if label == "other" and planted else "none"))
+            rc, _ = R.run(idf_py + ["--no-ccache", "reconfigure"], cwd=d, env=env, log=log)
+            rcs.append(rc)
+            if label == "this" and os.path.exists(lp):
+                written = open(lp, newline="").read()
+        finally:
+            R.rmtree(d)
+    state = "with the lock v%s wrote for it" % this_v if locked else "with no lock"
+    if not lock_planted(planted, locked, this_v):
+        v, d = "VOID", "the copy for v%s did not have the lock state planted (%s)" % (other_v, state)
+    else:
+        v, d = judge_r33(rcs[0], rcs[1], rcs[2], "%s %s" % (form % this_v, state), other_v)
+    R.report(name, v, d, ctx.log)
 
 
 def bump(v):
@@ -679,8 +722,10 @@ CASES += [
     ("r31_unknown_variant", c_r31_unknown),
     ("r31_no_variants", c_r31_none),
     ("r31_build", c_r31_build),
-    ("r33_other_bare", lambda c, l: c_r33_other(c, l, "r33_other_bare", "%s")),
-    ("r33_other_eq", lambda c, l: c_r33_other(c, l, "r33_other_eq", "==%s")),
+    ("r33_other_bare_fresh", lambda c, l: c_r33_other(c, l, "r33_other_bare_fresh", "%s", False)),
+    ("r33_other_eq_fresh", lambda c, l: c_r33_other(c, l, "r33_other_eq_fresh", "==%s", False)),
+    ("r33_other_bare_locked", lambda c, l: c_r33_other(c, l, "r33_other_bare_locked", "%s", True)),
+    ("r33_other_eq_locked", lambda c, l: c_r33_other(c, l, "r33_other_eq_locked", "==%s", True)),
     ("r33_release_range", lambda c, l: c_r33_release(c, l, "r33_release_range", ">=5.4.0")),
     ("r33_release_star", lambda c, l: c_r33_release(c, l, "r33_release_star", "*")),
     ("r33_release_narrow", lambda c, l: c_r33_release(c, l, "r33_release_narrow",
@@ -890,6 +935,19 @@ def self_test():
     expect("r33: accepted under the other", judge_r33(0, 0, 0, "5.4.2", "5.4.1")[0], "FAIL")
     expect("r33: fails here too", judge_r33(1, 1, 0, "5.4.2", "5.4.1")[0], "VOID")
     expect("r33: the other cannot configure it at all", judge_r33(0, 1, 1, "5.4.2", "5.4.1")[0], "VOID")
+    lk = ("dependencies:\n  idf:\n    source:\n      type: idf\n    version: %s\ndirect_dependencies:\n- idf\n"
+          "manifest_hash: 3ddd\ntarget: esp32c3\nversion: 2.0.0\n")
+    expect("r33 lock: fresh, none", lock_planted(None, False, "5.4.2"), True)
+    expect("r33 lock: fresh, but a lock left", lock_planted(lk % "5.4.2", False, "5.4.2"), False)
+    expect("r33 lock: locked, this install's", lock_planted(lk % "5.4.2", True, "5.4.2"), True)
+    expect("r33 lock: locked, this install's, CRLF", lock_planted((lk % "5.4.2").replace("\n", "\r\n"), True,
+                                                                   "5.4.2"), True)
+    expect("r33 lock: locked, none", lock_planted(None, True, "5.4.2"), False)
+    expect("r33 lock: locked, naming the other IDF", lock_planted(lk % "5.4.1", True, "5.4.2"), False)
+    expect("r33 lock: locked, no manifest_hash", lock_planted((lk % "5.4.2").replace("manifest_hash", "x"),
+                                                                True, "5.4.2"), False)
+    expect("r33 lock: locked, the version is not idf's",
+           lock_planted(lk.replace("  idf:", "  other:") % "5.4.2", True, "5.4.2"), False)
     idf = os.path.join(d, "idfv", "tools", "cmake")
     os.makedirs(idf)
     open(os.path.join(idf, "version.cmake"), "w").write(
