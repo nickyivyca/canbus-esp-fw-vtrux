@@ -151,7 +151,8 @@ unless the image changes, which the reproducible test (R19) shows.
   from its caller only the variables on its own list, which holds only what
   ESP-IDF needs to find itself and its tools and what the host OS needs to
   run programs, and it adds its own settings (R9, R10). It sets no default
-  for any variable it passes; R32 refuses an unset one. It prints the names
+  for any variable it passes; R32 refuses a release build in which one of
+  the variables it names is unset. It prints the names
   it dropped, and the record lists the names it passed. Bench and dev builds
   are not constrained.
 - **R32. The IDF environment check.** Before a release build or a dev build
@@ -306,8 +307,8 @@ unless the image changes, which the reproducible test (R19) shows.
   to the tooling.
 - **R33. Each project names its IDF version.** Each project's main
   component manifest (`main/idf_component.yml` under the project root)
-  names the ESP-IDF version the project builds on as one exact version
-  (for example `==5.4.2`), so that a configure under another IDF fails. The
+  names the ESP-IDF version the project builds on as one exact version,
+  written `5.4.2` or `==5.4.2`, so that a configure under another IDF fails. The
   version is the one the project's own spec sets. A release build is
   refused if the manifest names a range or no version.
 
