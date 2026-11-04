@@ -20,9 +20,9 @@ as for a plain ninja build.
 It does not do the checks AGENTS.md asks for before any build (bench_lock status, the
 "No builds" line, the process list): those stay the caller's.
 
-The launcher's check-env comes with port step 1d part B; the form above is the expected
-one, to be confirmed from part B. Until then the launcher has no check-env, and nothing
-is built.
+The launcher's check-env comes with port step 1d part B. The form above is the one part
+B's launcher takes (b2f6fdcf on gen-inhibit/implementor/port-1d, run in a v5.4.2 shell
+under py -3.14 from another folder, 2026-11-04).
 
 Gen-inhibit tester, 2026-11-03 (port step 1d).
 """

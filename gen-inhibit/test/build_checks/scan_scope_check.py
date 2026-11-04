@@ -102,7 +102,8 @@ def git(args, cwd):
 def launcher_cmd(wt):
     """shared/tools R32's check-env through the commit's own launcher, gen-inhibit/vtrux_tools.py
     in the throwaway worktree wt, which runs the tooling that commit pins (port step 1d; the
-    form is to be confirmed from part B). Run by this Python, as the configure is."""
+    form part B's launcher takes, b2f6fdcf, run there in a v5.4.2 shell under the IDF's
+    Python, 2026-11-04). Run by this Python, as the configure is."""
     return [sys.executable, "-B", os.path.join(wt, "gen-inhibit", "vtrux_tools.py"), "check-env"]
 
 
