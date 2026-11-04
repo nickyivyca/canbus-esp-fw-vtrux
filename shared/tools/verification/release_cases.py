@@ -112,11 +112,27 @@ def judge_record(rec, files, facts):
     comps = rec.get("components") or {}
     for name, d in facts["component_digests"].items():
         want("component %s digest" % name, (comps.get(name) or {}).get("digest"), d)
-    want("shared components", rec.get("shared_components"), facts["shared_components"])
+    want("shared components", rec.get("shared_components"),
+         shared_as_recorded(rec.get("shared_components"), facts["shared_components"]))
     t = rec.get("tooling") or {}
     for k in ("tag", "commit", "dirty", "digest"):
         want("tooling %s" % k, t.get(k), facts["tooling"][k])
     return bad
+
+
+def shared_as_recorded(got, exp):
+    """The shared components the tester expects (expected_shared), in the form R13's record takes:
+    for a git source the lock records what git resolved, "the commit, or an annotated tag naming
+    it" (R17). So where the pinned tag is annotated (lock_version_annotated, the tag object), a
+    record naming that object is as good as one naming the commit; the extra key is dropped."""
+    out = {}
+    for n, d in (exp or {}).items():
+        d = dict(d)
+        alt = d.pop("lock_version_annotated", None)
+        if alt and ((got or {}).get(n) or {}).get("lock_version") == alt:
+            d["lock_version"] = alt
+        out[n] = d
+    return out
 
 
 def judge_again(rc, before, after):
@@ -197,6 +213,19 @@ def self_test():
                         ("tooling tag another", "tooling", dict(rec["tooling"], tag=TAG_OTHER)),
                         ("tooling commit", "tooling", dict(rec["tooling"], commit="u" * 40))):
         ok &= broken(label, rec2=dict(rec, **{k: v}))
+    # R17: a git source's lock records the commit, or an annotated tag naming it
+    board = {"version": "t", "git": "g", "path": "p", "lock_version": "c" * 40}
+    exp_ann = dict(facts, shared_components={"b": dict(board, lock_version_annotated="a" * 40)})
+    exp_light = dict(facts, shared_components={"b": board})
+    for label, lv, fx, want_ok in (("annotated tag: the commit recorded", "c" * 40, exp_ann, True),
+                                   ("annotated tag: the tag object recorded", "a" * 40, exp_ann, True),
+                                   ("annotated tag: another object recorded", "e" * 40, exp_ann, False),
+                                   ("lightweight tag: the commit recorded", "c" * 40, exp_light, True),
+                                   ("lightweight tag: an object the tag is not", "a" * 40, exp_light, False)):
+        r = judge_record(dict(rec, shared_components={"b": dict(board, lock_version=lv)}), files, fx)
+        good = (not r) == want_ok
+        print("  %s shared components, %s: %s" % ("ok  " if good else "FAIL", label, "passes" if not r else r))
+        ok &= good
     ok &= broken("dirty recorded false when the checkout is dirty",
                  facts2=dict(facts, tooling=dict(facts["tooling"], dirty=True)))
     old = {k: v for k, v in rec.items() if k != "dependencies_lock_sha256_lf"}
@@ -779,7 +808,9 @@ def expected_shared(proj):
     """R13's shared components, read by the tester: each component the project's vtrux_build.json
     names, with the version, git and path its main/idf_component.yml declares (the pinned tag is
     the version) and, for a git source, the commit that tag names in the project's repository,
-    which is what the lock resolves it to (R17)."""
+    which is what the lock resolves it to (R17). R17 also lets the lock record an annotated tag
+    naming that commit: where the tag is annotated, its object is added as lock_version_annotated,
+    which judge_record accepts in place of the commit (shared_as_recorded)."""
     import yaml
     names = json.load(open(os.path.join(proj, "vtrux_build.json"))).get("shared_components") or []
     p = os.path.join(proj, "main", "idf_component.yml")
@@ -789,8 +820,12 @@ def expected_shared(proj):
         d = deps.get(n)
         d = d if isinstance(d, dict) else {"version": d}
         tag = None if d.get("version") is None else str(d["version"])
-        out[n] = {"version": tag, "git": d.get("git"), "path": d.get("path"),
-                  "lock_version": (ref(proj, "refs/tags/" + tag) or None) if d.get("git") and tag else None}
+        commit = (ref(proj, "refs/tags/" + tag) or None) if d.get("git") and tag else None
+        out[n] = {"version": tag, "git": d.get("git"), "path": d.get("path"), "lock_version": commit}
+        if commit:
+            obj = run(["git", "-C", proj, "rev-parse", "-q", "--verify", "refs/tags/" + tag])[1].strip()
+            if obj and obj != commit:
+                out[n]["lock_version_annotated"] = obj
     return out
 
 
@@ -1624,8 +1659,9 @@ def self_test_board(d):
     before = expected_shared(C.mini)
     git(C.mini, "fetch", "-q", repo, "refs/tags/%s:refs/tags/%s" % (C3_TAG, C3_TAG))
     after = expected_shared(C.mini)
+    tag_obj = git(repo, "rev-parse", "refs/tags/" + C3_TAG)
     want = {C3_BOARD: {"version": C3_TAG, "git": repo.replace(os.sep, "/"), "path": "shared/boards/c3fx",
-                       "lock_version": tagged}}
+                       "lock_version": tagged, "lock_version_annotated": tag_obj}}
     for label, good in (
             ("the reference table at the tag is the table given", at == table),
             ("board.json at the tag: %s" % json.dumps(bj),
@@ -1637,7 +1673,8 @@ def self_test_board(d):
                  "git": repo.replace(os.sep, "/"), "path": "shared/boards/c3fx", "version": C3_TAG}
              and os.path.dirname(repo) == os.path.dirname(C.mini)),
             ("expected_shared before the tag is fetched: no lock version", before[C3_BOARD]["lock_version"] is None),
-            ("expected_shared after: the tag's commit: %s" % json.dumps(after), after == want)):
+            ("expected_shared after: the tag's commit, and the annotated tag's object: %s" % json.dumps(after),
+             after == want and tag_obj != tagged)):
         print("  %s mini board: %s" % ("ok  " if good else "FAIL", label))
         ok &= good
     return ok

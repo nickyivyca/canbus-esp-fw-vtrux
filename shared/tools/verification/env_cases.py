@@ -43,13 +43,15 @@ value.
 
 R33 (exact IDF version). The can-fail, with --other-idf (the other install's exported
 variables, written by --dump-env in a shell exported for it): a copy of the minimal project
-naming this IDF's version, as "M.m.p" and as "==M.m.p", must configure under this install and
-must fail to configure under the other; VOID unless the other install configures the same
-project naming its own version. Each form is run twice: with no dependencies.lock in the copy
-(_fresh: the Component Manager solves the manifest), and with the lock this install wrote for
-that same manifest (_locked: as a project commits it, R10; on 2026-11-04 a copy carrying the
-minimal project's lock configured under v5.4.1, where a changed manifest was refused, so the
-two states are judged apart). A copy whose lock state is not the one planted is VOID. And a
+naming this IDF's version, as "M.m.p" and as "==M.m.p", must configure under this install; VOID
+unless the other install configures the same project naming its own version. Each form is run
+twice. With no dependencies.lock in the copy (_fresh: the Component Manager solves the manifest)
+it must fail to configure under the other. With the lock this install wrote for that same
+manifest (_locked: as a project commits it, R10) it must configure under the other, and the
+lock's idf afterwards must be the other's version (R33 at shared/main 56156653, user
+2026-11-04: the other IDF rewrites the lock's idf version and configures; before, R33 said it
+fails, and these two cases were FAILs). A copy whose lock state is not the one planted is VOID.
+And a
 release build is refused for a manifest naming ">=5.4.0", "*", ">=M.m.p,<M.m.(p+1)" or no IDF;
 one naming "==M.m.p" builds and is recorded (release_cases' r22_mini is the bare form's). Each
 of these branches keeps the mini's board and commits the lock the reconfigure writes for its
@@ -330,6 +332,36 @@ def judge_r33(rc_this, rc_other, rc_control, form, other_v):
         return "FAIL", "a configure under v%s of a manifest naming %s went through; R33 says it fails" % (other_v, form)
     return "PASS", "configured here; under v%s refused (exit %d); v%s's own version configures there" % (
         other_v, rc_other, other_v)
+
+
+def judge_r33_locked(rc_this, rc_other, rc_control, after_v, form, other_v):
+    """R33 at shared/main 56156653 (user, 2026-11-04): with the committed lock, the other IDF
+    rewrites the lock's idf version and configures. after_v: the idf the copy's lock records after
+    the other install's configure."""
+    if rc_this:
+        return "VOID", "the configure under this install failed (exit %d): the manifest does not configure" % rc_this
+    if rc_control:
+        return "VOID", "the other install (v%s) did not configure the project naming its own version (exit %d)" % (
+            other_v, rc_control)
+    if rc_other:
+        return "FAIL", "a configure under v%s of a manifest naming %s failed (exit %d); R33 says the other IDF " \
+                       "rewrites the lock's idf version and configures" % (other_v, form, rc_other)
+    if after_v != other_v:
+        return "FAIL", "configured under v%s, but the lock's idf is %s afterwards; R33 says it is rewritten to %s" % (
+            other_v, after_v, other_v)
+    return "PASS", "under v%s, a manifest naming %s configured and the lock's idf was rewritten to %s" % (
+        other_v, form, other_v)
+
+
+def modified_files(st):
+    """The files `git status --porcelain` output st shows modified (M in either column). R.git strips
+    its output, so the first line may have lost its leading space: " M a" arrives as "M a"."""
+    out = []
+    for line in st.splitlines():
+        m = re.match(r"^([ MADRCU?!]{1,2}) (\S.*)$", line)
+        if m and "M" in m.group(1):
+            out.append(m.group(2))
+    return sorted(out)
 
 
 # ---------- the process table, read while a build runs ----------
@@ -688,7 +720,7 @@ def c_r33_other(ctx, log, name, form, locked):
         return
     mini(ctx)
     base = os.path.join(ctx.root, "r33")
-    rcs, written, planted = [], None, None
+    rcs, written, planted, after = [], None, None, None
     for label, env, idf_py, ver in (
             ("this", R.idf_env(), [sys.executable, os.path.join(os.environ["IDF_PATH"], "tools", "idf.py")], form % this_v),
             ("other", other_env(ctx.other), [ctx.other["python"], os.path.join(ctx.other["IDF_PATH"], "tools", "idf.py")],
@@ -716,11 +748,15 @@ def c_r33_other(ctx, log, name, form, locked):
             rcs.append(rc)
             if label == "this" and os.path.exists(lp):
                 written = open(lp, newline="").read()
+            if label == "other" and os.path.exists(lp):
+                after = open(lp, newline="").read()
         finally:
             R.rmtree(d)
     state = "with the lock v%s wrote for it" % this_v if locked else "with no lock"
     if not lock_planted(planted, locked, this_v):
         v, d = "VOID", "the copy for v%s did not have the lock state planted (%s)" % (other_v, state)
+    elif locked:
+        v, d = judge_r33_locked(rcs[0], rcs[1], rcs[2], lock_idf(after), "%s %s" % (form % this_v, state), other_v)
     else:
         v, d = judge_r33(rcs[0], rcs[1], rcs[2], "%s %s" % (form % this_v, state), other_v)
     R.report(name, v, d, ctx.log)
@@ -827,7 +863,7 @@ def c_r33_release_other(ctx, log, name, branch):
     after = R.snapshot(recs)
     new = sorted(set(after) - set(before))
     st = R.git(ctx.mini, "status", "--porcelain")
-    modified = sorted(l[3:] for l in st.splitlines() if l[:2].strip() == "M")
+    modified = modified_files(st)
     lp = os.path.join(ctx.mini, "dependencies.lock")
     with open(log, "a", encoding="utf-8") as f:
         f.write("%s: branch %s; committed lock idf %s; after: git status %r\n" % (name, branch, planted, st))
@@ -1088,6 +1124,19 @@ def self_test():
     expect("r33: accepted under the other", judge_r33(0, 0, 0, "5.4.2", "5.4.1")[0], "FAIL")
     expect("r33: fails here too", judge_r33(1, 1, 0, "5.4.2", "5.4.1")[0], "VOID")
     expect("r33: the other cannot configure it at all", judge_r33(0, 1, 1, "5.4.2", "5.4.1")[0], "VOID")
+    expect("r33 locked: configured, lock rewritten", judge_r33_locked(0, 0, 0, "5.4.1", "5.4.2", "5.4.1")[0], "PASS")
+    expect("r33 locked: refused under the other", judge_r33_locked(0, 2, 0, "5.4.2", "5.4.2", "5.4.1")[0], "FAIL")
+    expect("r33 locked: configured, lock not rewritten",
+           judge_r33_locked(0, 0, 0, "5.4.2", "5.4.2", "5.4.1")[0], "FAIL")
+    expect("r33 locked: configured, no lock after", judge_r33_locked(0, 0, 0, None, "5.4.2", "5.4.1")[0], "FAIL")
+    expect("r33 locked: fails here too", judge_r33_locked(1, 0, 0, "5.4.1", "5.4.2", "5.4.1")[0], "VOID")
+    expect("r33 locked: the other cannot configure its own", judge_r33_locked(0, 0, 1, "5.4.1", "5.4.2", "5.4.1")[0],
+           "VOID")
+    expect("modified: R.git's stripped first line", modified_files("M dependencies.lock\n M sdkconfig"),
+           ["dependencies.lock", "sdkconfig"])
+    expect("modified: unstripped", modified_files(" M dependencies.lock\n"), ["dependencies.lock"])
+    expect("modified: staged and both", modified_files("M  a\nMM b\nA  c\n?? d\n D e"), ["a", "b"])
+    expect("modified: nothing", modified_files(""), [])
     lk = ("dependencies:\n  idf:\n    source:\n      type: idf\n    version: %s\ndirect_dependencies:\n- idf\n"
           "manifest_hash: 3ddd\ntarget: esp32c3\nversion: 2.0.0\n")
     expect("r33 lock: fresh, none", lock_planted(None, False, "5.4.2"), True)
