@@ -15,13 +15,16 @@ board vtrux/c3fx from git at a tag, made if missing), on branches of their own, 
 R32 (the IDF environment check). check-env with the caller's exported environment passes, and
 with a trailing separator on IDF_TOOLS_PATH. Each of these is refused, naming the variable:
 IDF_PATH unset and empty (empty refused as unset: the gen-inhibit reviewer, 2026-11-03, R32 to
-read "set and not empty"); IDF_TOOLS_PATH unset (never replaced by ~/.espressif: R24, R32) and empty;
+read "set and not empty"); IDF_TOOLS_PATH unset (never replaced by ~/.espressif: R24, R32), empty,
+and with a space before it, a space after it, a tab before it and a newline after it (R32 "has no
+spaces around it": shared/tools/spec-1d-idfver 6e21fa50, user 2026-11-04);
 IDF_PYTHON_ENV_PATH and ESP_ROM_ELF_DIR unset, outside IDF_TOOLS_PATH in a folder whose name
 starts like it, and outside through "..", and IDF_PYTHON_ENV_PATH in a sibling ".espressif"
 (the other install's, on a machine with two). Before each, a child process run with the same
 environment prints what it sees of the four variables; a case whose planted state does not show
 there is VOID. A refusal that is a Python traceback is a FAIL, not a refusal. Then R32 before a
-release build and a dev build (R31): IDF_TOOLS_PATH unset, and ESP_ROM_ELF_DIR outside, must be
+release build and a dev build (R31): IDF_TOOLS_PATH unset, IDF_TOOLS_PATH with a space after it,
+and ESP_ROM_ELF_DIR outside, must be
 refused naming the variable, with no record written and no build folder made (nothing handed to
 ESP-IDF).
 
@@ -190,6 +193,11 @@ def r32_cases(base):
         ("r32_idf_path_empty", {"IDF_PATH": ""}, "IDF_PATH"),     # refused as unset (reviewer, 2026-11-03)
         ("r32_tools_unset", {"IDF_TOOLS_PATH": None}, "IDF_TOOLS_PATH"),
         ("r32_tools_empty", {"IDF_TOOLS_PATH": ""}, "IDF_TOOLS_PATH"),
+        # R32 at shared/tools/spec-1d-idfver 6e21fa50 (user, 2026-11-04): "has no spaces around it"
+        ("r32_tools_lead_space", {"IDF_TOOLS_PATH": " " + t}, "IDF_TOOLS_PATH"),
+        ("r32_tools_trail_space", {"IDF_TOOLS_PATH": t + " "}, "IDF_TOOLS_PATH"),
+        ("r32_tools_lead_tab", {"IDF_TOOLS_PATH": "\t" + t}, "IDF_TOOLS_PATH"),
+        ("r32_tools_trail_newline", {"IDF_TOOLS_PATH": t + "\n"}, "IDF_TOOLS_PATH"),
         ("r32_pyenv_unset", {"IDF_PYTHON_ENV_PATH": None}, "IDF_PYTHON_ENV_PATH"),
         ("r32_pyenv_prefix", {"IDF_PYTHON_ENV_PATH": os.path.join(prefix, py)}, "IDF_PYTHON_ENV_PATH"),
         ("r32_pyenv_dotdot", {"IDF_PYTHON_ENV_PATH": os.path.join(up, py)}, "IDF_PYTHON_ENV_PATH"),
@@ -894,6 +902,11 @@ def outside_rom(env):
     return {"ESP_ROM_ELF_DIR": os.path.join(t + "-r32", os.path.relpath(env["ESP_ROM_ELF_DIR"], t))}
 
 
+def padded_tools(env):
+    """IDF_TOOLS_PATH with a space after it (R32: "has no spaces around it")."""
+    return {"IDF_TOOLS_PATH": env["IDF_TOOLS_PATH"] + " "}
+
+
 CASES = [(n, (lambda n, ch, w: lambda c, l: c_check_env(c, l, n, ch, w))(n, ch, w))
          for n, ch, w in r32_cases(dict(os.environ))] if all(v in os.environ for v in R32_VARS[1:]) else []
 CASES += [
@@ -904,6 +917,9 @@ CASES += [
     ("r32_dev_tools_unset", lambda c, l: c_pre_dev(c, l, "r32_dev_tools_unset", lambda e: {"IDF_TOOLS_PATH": None},
                                                    "IDF_TOOLS_PATH")),
     ("r32_dev_rom_outside", lambda c, l: c_pre_dev(c, l, "r32_dev_rom_outside", outside_rom, "ESP_ROM_ELF_DIR")),
+    ("r32_release_tools_padded", lambda c, l: c_pre_release(c, l, "r32_release_tools_padded", padded_tools,
+                                                            "IDF_TOOLS_PATH")),
+    ("r32_dev_tools_padded", lambda c, l: c_pre_dev(c, l, "r32_dev_tools_padded", padded_tools, "IDF_TOOLS_PATH")),
     ("r31_unknown_variant", c_r31_unknown),
     ("r31_no_variants", c_r31_none),
     ("r31_build", c_r31_build),
@@ -963,6 +979,14 @@ def main():
         t = os.path.expanduser("~/.espressif")
     if (t is None) if BUG == "empty_ok" else not t:
         return refuse("IDF_TOOLS_PATH")
+    if BUG == "padded_ok":
+        t = t.strip()
+    elif BUG == "space_only":
+        if t != t.strip(" "):
+            return refuse("IDF_TOOLS_PATH")
+        t = t.strip()
+    elif t != t.strip():
+        return refuse("IDF_TOOLS_PATH")
     for v in ("IDF_PYTHON_ENV_PATH", "ESP_ROM_ELF_DIR"):
         if BUG == "no_rom" and v == "ESP_ROM_ELF_DIR":
             continue
@@ -975,7 +999,9 @@ def main():
 sys.exit(main())
 '''
 
-FAKE_BUGS = ["default_tools", "no_idf_path", "idf_empty_ok", "empty_ok", "no_rom", "prefix", "no_norm", "unnamed", "trailing_sep", "crash"]
+FAKE_BUGS = ["default_tools", "no_idf_path", "idf_empty_ok", "empty_ok", "padded_ok", "space_only", "no_rom", "prefix",
+             "no_norm", "unnamed", "trailing_sep", "crash"]
+PADDED = ("r32_tools_lead_space", "r32_tools_trail_space", "r32_tools_lead_tab", "r32_tools_trail_newline")
 
 
 def run_fake(tools, base, d):
@@ -1021,6 +1047,10 @@ def self_test():
            applied(base, change_of["r32_pyenv_prefix"])["IDF_PYTHON_ENV_PATH"].startswith(t), True)
     expect("dotdot path starts with the tools path's text",
            applied(base, change_of["r32_pyenv_dotdot"])["IDF_PYTHON_ENV_PATH"].startswith(t), True)
+    for name in PADDED:
+        p = change_of[name]["IDF_TOOLS_PATH"]
+        expect("%s: padded, and the tools folder once stripped" % name, (p != t, p.strip() == t), (True, True))
+    expect("padded_tools: a space after the tools folder", padded_tools(base)["IDF_TOOLS_PATH"], t + " ")
 
     # the R32 cases against fake tooling: the right one passes all, each broken one fails some
     for bug in [""] + FAKE_BUGS:
@@ -1036,6 +1066,11 @@ def self_test():
         else:
             expect("fake tooling, bug %s: caught" % bug, bool(bad), True)
             print("    caught by %s" % bad)
+        if bug == "padded_ok":
+            expect("padded_ok: caught by the four padded cases", bad, sorted(PADDED))
+        if bug == "space_only":
+            expect("space_only: caught by the tab and newline cases", bad,
+                   ["r32_tools_lead_tab", "r32_tools_trail_newline"])
     expect("an unplanted environment is VOID", judge_check_env(1, "refused: IDF_PATH", "IDF_PATH", False)[0], "VOID")
     expect("IDF_TOOLS_PATH does not name IDF_PATH", names("refused: IDF_TOOLS_PATH", "IDF_PATH"), False)
     expect("a traceback naming the variable is FAIL",

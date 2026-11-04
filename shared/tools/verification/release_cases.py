@@ -226,6 +226,13 @@ def self_test():
         good = (not r) == want_ok
         print("  %s shared components, %s: %s" % ("ok  " if good else "FAIL", label, "passes" if not r else r))
         ok &= good
+    # r33_no_manifest: the refusal names R33
+    for label, out, want in (("names R33", "REFUSED: ... names no ESP-IDF version (R33)", True),
+                             ("R330 is not R33", "REFUSED: (R330)", False),
+                             ("no requirement named", "REFUSED: names no ESP-IDF version", False)):
+        good = names_r33(out) == want
+        print("  %s r33_no_manifest, %s" % ("ok  " if good else "FAIL", label))
+        ok &= good
     ok &= broken("dirty recorded false when the checkout is dirty",
                  facts2=dict(facts, tooling=dict(facts["tooling"], dirty=True)))
     old = {k: v for k, v in rec.items() if k != "dependencies_lock_sha256_lf"}
@@ -1259,9 +1266,13 @@ def c_r8_rewrites(ctx, log):
     rmtree(os.path.join(ctx.p1, "build"))
 
 
-def c_r10_no_lock(ctx, log):
-    """A project that downloads nothing and has no manifest, so no dependencies.lock: refused
-    (SPEC R10, 0d2431b)."""
+def c_r33_no_manifest(ctx, log):
+    """A project with no manifest (main/idf_component.yml) and so no dependencies.lock: refused
+    before the reconfigure, the refusal naming R33, since the project names no ESP-IDF version.
+    Until 2026-11-04 this was r10_no_lock (SPEC R10, 0d2431b: refused for the missing lock after the
+    reconfigure). Since R33 (shared/main 56156653) the tooling refuses first, and the gen-inhibit
+    reviewer ruled (2026-11-04) it an R33 case; R10's no-lock clause is not reached with a manifest
+    present, because the Component Manager always writes a lock."""
     if not os.path.exists(os.path.join(ctx.mini, ".git")):
         make_mini(ctx)
     if not git(ctx.mini, "branch", "--list", "nolock"):
@@ -1270,15 +1281,22 @@ def c_r10_no_lock(ctx, log):
         git(ctx.mini, "commit", "-q", "-m", "mini nolock: no manifest, no dependencies.lock")
     reset(ctx.mini, "nolock", "nolock")
     rmtree(os.path.join(ctx.mini, "build"))
+    no_manifest = not os.path.exists(os.path.join(ctx.mini, "main", "idf_component.yml"))
     before = snapshot(ctx.records("vtrux-mini-test"))
     rc, out = release(ctx, ctx.mini, log, jobs=ctx.jobs)
     reconfigured = os.path.exists(os.path.join(ctx.mini, "build", "CMakeCache.txt"))
-    no_lock = not os.path.exists(os.path.join(ctx.mini, "dependencies.lock"))
-    refusal(ctx, "r10_no_lock", ctx.mini, rc, before, project="vtrux-mini-test",
-            extra_ok=reconfigured and no_lock and ninja_lines(ctx.mini) == 0,
-            note="R10: no manifest; after the reconfigure: dependencies.lock %s, ninja log lines %d" % (
-                "absent" if no_lock else "PRESENT", ninja_lines(ctx.mini)))
+    named = names_r33(out)
+    refusal(ctx, "r33_no_manifest", ctx.mini, rc, before, project="vtrux-mini-test", trigger=no_manifest,
+            extra_ok=not reconfigured and named and ninja_lines(ctx.mini) == 0,
+            note="R33: no manifest; %s; the refusal %s R33; ninja log lines %d" % (
+                "RECONFIGURED first" if reconfigured else "not reconfigured", "names" if named else "does NOT name",
+                ninja_lines(ctx.mini)))
     reset(ctx.mini, "main", "main")
+
+
+def names_r33(out):
+    """out names R33 as a whole word (not R330)."""
+    return re.search(r"(?<![A-Za-z0-9])R33(?![0-9])", out or "") is not None
 
 
 def watch_then(cond, act, fired, timeout=3000):
@@ -2351,7 +2369,7 @@ CASES = [
     ("r9_masquerade", c_r9_masquerade),
     ("r9_masquerade_hardlink", lambda c, l: c_r9_masquerade(c, l, "r9_masquerade_hardlink", hardlink=True)),
     ("r8_reconfigure_rewrites", c_r8_rewrites),
-    ("r10_no_lock", c_r10_no_lock),
+    ("r33_no_manifest", c_r33_no_manifest),
     ("r8_during_reconfigure", c_r8_reconf),
     ("r8_build_untracked", lambda c, l: c_r8_build(c, l, "r8_build_untracked",
                                                    lambda: open(os.path.join(c.p1, "r8_probe.txt"), "w").write("x\n"),
