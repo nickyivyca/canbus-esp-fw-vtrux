@@ -31,3 +31,31 @@ options = { variant = "bridge" }
 id = "light"
 tree = "prod"
 select = ["id:paths-test"]
+
+# Since 0fbcdec the pins name two tags: shared/bench at 2026.11.04.2,
+# shared/tools and shared/twai_port at 2026.11.03 (the reviewer's batch,
+# 2026-11-04). A tree at that commit gets a checkout of each beside it, and
+# each component's pin check finds its own. The prod tree above has all
+# three at 2026.11.03, so this list shows both layouts.
+[trees.head]
+project = "0fbcdec678a61a4e9abb6a69031281e4531b2f26"
+
+[[check]]
+id = "pin-bench"
+tree = "head"
+run = ["charge-interposer/shared_pin.py", "check", "shared/bench"]
+
+[[check]]
+id = "pin-twai-port"
+tree = "head"
+run = ["charge-interposer/shared_pin.py", "check", "shared/twai_port"]
+
+# the variant check on the build's own folder against itself: no switch
+# differs, so it must refuse (the reviewer's "a pair with no difference");
+# shows the build_<id> setting reaches a check
+[[check]]
+id = "variant-diff-self-pair"
+tree = "head"
+run = ["charge-interposer/fw_harness/variant_diff.py", "--pair", "{build_bridge}",
+       "{build_bridge}", "--switches", "INTP_ORDER_WITNESS"]
+expect = "FAIL"
