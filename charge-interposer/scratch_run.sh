@@ -16,6 +16,12 @@
 # scratch_dir's DEPTH and LIMIT, or scratch_run refuses (exit 2) before it
 # makes anything, naming the full path and its length.
 #
+# The git ceiling, as scratch_dir's: the run folder goes first in the
+# exported GIT_CEILING_DIRECTORIES (';' between entries on Windows, where it
+# is given in Git for Windows' C:/ form; ':' elsewhere), so git never looks
+# for a repository above it, and a fixture whose own git init failed gets
+# "not a git repository" rather than the enclosing repo.
+#
 #   . "<charge-interposer>/scratch_run.sh" || exit 2
 #   scratch_run <tool> || exit 2      # sets SCRATCH_RUN to the new folder
 #
@@ -134,6 +140,12 @@ scratch_run() {
   SCRATCH_TOOL_DIR="$td"
   trap scratch_run_cleanup EXIT
   printf '%s\n' "$_SR_OWNER" > "$p/.scratch-owner.json" || return 2
+  local ceil="$p" sep=":"
+  if [ -r "/proc/$$/winpid" ]; then
+    ceil="$(cd "$p" && pwd -W)" || return 2
+    sep=";"
+  fi
+  export GIT_CEILING_DIRECTORIES="$ceil${GIT_CEILING_DIRECTORIES:+$sep$GIT_CEILING_DIRECTORIES}"
 }
 
 scratch_run_cleanup() {

@@ -37,6 +37,10 @@ The helper, on a fixture script that sources it:
      the depth exactly on it, the folder is made; one character less and
      scratch_run refuses (rc 2), naming the full path and its length, with
      nothing made.
+ 13. The git ceiling (the charge-interposer reviewer, 2026-11-05): in a
+     stand-in worktree that is a real git repo, git run in a subfolder of
+     the run folder says "not a git repository"; without
+     GIT_CEILING_DIRECTORIES (the control) it finds that repo.
 
 The writers (WRITERS below):
   9. No .sh under charge-interposer/ names TMPDIR or /tmp outside a
@@ -245,6 +249,14 @@ fi
 scratch_run "${FX_TOOL-fixture}" || exit $?
 echo "RUN $SCRATCH_RUN"
 if [ -n "${FX_SECOND:-}" ]; then scratch_run again; echo "SECOND $?"; fi
+if [ -n "${FX_GIT:-}" ]; then
+  # the git ceiling: a subfolder with no .git of its own, with the variable
+  # as scratch_run left it, then without it (the control)
+  mkdir -p "$SCRATCH_RUN/sub" || exit 9
+  git -C "$SCRATCH_RUN/sub" rev-parse --show-toplevel 2>&1; echo "GITRC $?"
+  env -u GIT_CEILING_DIRECTORIES git -C "$SCRATCH_RUN/sub" rev-parse --show-toplevel 2>&1
+  echo "CTLRC $?"
+fi
 if [ -n "${FX_CD:-}" ]; then cd "$SCRATCH_RUN" || exit 9; fi
 if [ -n "${FX_RO:-}" ]; then
   mkdir -p "$SCRATCH_RUN/ro/sub" && echo x > "$SCRATCH_RUN/ro/sub/f" &&
@@ -570,6 +582,30 @@ def case_length(base):
           % (len(full), out[-240:]))
 
 
+def case_ceiling(base):
+    ci = tree(base, "treeg")
+    t = os.path.dirname(ci)
+    os.remove(os.path.join(t, ".git"))
+    subprocess.run(["git", "init", "-q", t], check=True, capture_output=True)
+    r = Run(os.path.join(base, "r"))
+    rc, out = fixture(r, ci, {"FX_GIT": "1"})
+    lines = out.splitlines()
+
+    def after(tag):
+        i = next((n for n, ln in enumerate(lines) if ln.startswith(tag)), None)
+        return lines[i].split()[1] if i is not None else None, \
+            lines[i - 1] if i else ""
+    git_rc, git_out = after("GITRC ")
+    ctl_rc, ctl_out = after("CTLRC ")
+    check(ctl_rc == "0" and os.path.normcase(native(ctl_out.strip()).replace("/", os.sep))
+          == os.path.normcase(t),
+          "13. control: without the variable git finds the enclosing repo -> %s %s"
+          % (ctl_rc, ctl_out[-100:]))
+    check(rc == 0 and git_rc not in (None, "0") and "not a git repository" in git_out,
+          "13. with it, as scratch_run left it: not a git repository -> rc %d, %s %s"
+          % (rc, git_rc, git_out[-100:]))
+
+
 # ---- the writers ------------------------------------------------------------
 def code_lines(text):
     """the lines of a bash script with comments taken out"""
@@ -680,7 +716,7 @@ def case_writers(base):
 
 CASES = [case_made, case_killed, case_readonly, case_removal, case_race,
          case_shared_tool, case_refused, case_root, case_scan, case_writers,
-         case_length]
+         case_length, case_ceiling]
 
 
 # ---- processes left behind --------------------------------------------------
@@ -765,7 +801,9 @@ def check_left(base):
 
 
 def test():
-    with scratch_dir.run("scratch-run-test") as base:
+    # its deepest git is case_shared_tool\tree\.git\config, 33 below the run
+    # folder (measured 2026-11-05), past scratch_dir.DEPTH
+    with scratch_dir.run("scratch-run-test", depth=33) as base:
         for c in CASES:
             d = os.path.join(base, c.__name__)
             os.makedirs(d)
@@ -816,6 +854,11 @@ MUTANTS = [
      "REFUSED the run folder: it is", None),
     ("the refusal without the length", SR, "it is ${#full} characters, and",
      "it is too many characters, and", None),
+    ("no git ceiling", SR,
+     '  export GIT_CEILING_DIRECTORIES="$ceil${GIT_CEILING_DIRECTORIES:+$sep$GIT_CEILING_DIRECTORIES}"\n',
+     "", None),
+    ("the ceiling in bash's /c/ form on Windows", SR,
+     '    ceil="$(cd "$p" && pwd -W)" || return 2\n', "", "nt"),
     ("no owner file", SR,
      "  printf '%s\\n' \"$_SR_OWNER\" > \"$p/.scratch-owner.json\" || return 2\n", "", None),
     ("bash's own pid, not Windows'", SR,

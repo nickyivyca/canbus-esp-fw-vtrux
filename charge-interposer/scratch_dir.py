@@ -40,6 +40,14 @@ still takes finished folders under the old name.
                 PathTooLong naming the full path and its length, before
                 anything is made, so before any fixture's git runs. A tool
                 whose fixtures go deeper passes depth=.
+                THE GIT CEILING: the new folder goes first in this
+                process's GIT_CEILING_DIRECTORIES (os.pathsep-separated),
+                so git, here and in what this process starts, never looks
+                for a repository above it: a fixture whose own git init
+                failed gets "not a git repository" rather than the
+                enclosing repo, which in the acceptance runner is the tree
+                under test (the charge-interposer reviewer, 2026-11-05).
+                remove() takes the folder out of it again.
   run(tool)     make() as a context manager: the folder is removed in a
                 finally, pass or fail.
   remove(path)  shutil.rmtree with an error handler that clears the
@@ -344,6 +352,7 @@ def remove(path, quiet=False):
                   % (len(left) - 20, _short(lp)), flush=True)
     if not left:
         _drop_empty_tool_dir(lp)
+        _ceiling_drop(lp)
     return left
 
 
@@ -431,7 +440,34 @@ def make(tool, start=None, depth=None):
     with open(os.path.join(p, OWNER), "w", encoding="utf-8", newline="\n") as f:
         json.dump(owner_record(), f, sort_keys=True)
         f.write("\n")
+    _ceiling_add(p)
     return p
+
+
+CEILING = "GIT_CEILING_DIRECTORIES"
+
+
+def _ceilings():
+    return [x for x in os.environ.get(CEILING, "").split(os.pathsep) if x]
+
+
+def _ceiling_add(path):
+    """path first in GIT_CEILING_DIRECTORIES (the git ceiling, above)."""
+    full = os.path.abspath(path)
+    have = _ceilings()
+    if full not in have:
+        os.environ[CEILING] = os.pathsep.join([full] + have)
+
+
+def _ceiling_drop(path):
+    full = os.path.abspath(_short(path))
+    have = _ceilings()
+    if full in have:
+        rest = [x for x in have if x != full]
+        if rest:
+            os.environ[CEILING] = os.pathsep.join(rest)
+        else:
+            os.environ.pop(CEILING, None)
 
 
 @contextlib.contextmanager

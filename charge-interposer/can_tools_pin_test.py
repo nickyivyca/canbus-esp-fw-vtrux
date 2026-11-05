@@ -150,7 +150,9 @@ def fixture(base, files=None):
     base. files: the pinned commit's files (default PINNED_FILES). ->
     dict(clone, wt, start, pins, commit, later, empty)."""
     files = PINNED_FILES if files is None else files
-    clone = os.path.join(base, "can-tools")
+    # a short name: bench_suite_test runs this fixture in the acceptance
+    # runner's tree, against Windows' path limit (scratch_dir, 2026-11-05)
+    clone = os.path.join(base, "ct")
     os.makedirs(clone)
     g = ["git", "-C", clone, "-c", "user.name=t", "-c", "user.email=t@t",
          "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false"]
@@ -290,9 +292,9 @@ def reference(fix, dest):
 
 
 def checks():
-    # depth: its deepest git repo, f2\can-tools (13 below the run folder),
-    # + 12 for .git\config (measured 2026-11-05; scratch_dir)
-    base = scratch_dir.make("can-tools-pin-test", depth=25)
+    # depth: its deepest git repo, f2\ct (6 below the run folder), + 12 for
+    # .git\config (measured 2026-11-05 as f2\can-tools; scratch_dir)
+    base = scratch_dir.make("can-tools-pin-test", depth=18)
     try:
         # 1. the pin
         p = can_tools_pin.pin()

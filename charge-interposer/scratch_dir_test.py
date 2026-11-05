@@ -35,6 +35,11 @@ folder (scratch_dir.run), inside a stand-in worktree there (a folder with a
      and its length, with nothing made (no tool folder, no cih/). A
      depth= passed to make() is used in place of DEPTH, at the same
      boundary. LIMIT is 240.
+ 12. The git ceiling (the charge-interposer reviewer, 2026-11-05): in a
+     run folder inside an enclosing real repo, git run in a subfolder with
+     no .git of its own says "not a git repository"; with the variable
+     taken away (the control) it finds the enclosing repo. remove() takes
+     the folder out of GIT_CEILING_DIRECTORIES again.
   5. make() prunes the tool's finished folders only: a live and an unowned
      one stay. A tool name with a separator is refused.
   6. run() removes its folder when the body raises, and the exception still
@@ -422,6 +427,35 @@ def case_length(base):
         M.LIMIT = keep
 
 
+def case_ceiling(base):
+    encl = os.path.join(base, "encl")
+    os.makedirs(encl)
+    subprocess.run(["git", "init", "-q", encl], check=True)
+    d = M.make("t", start=encl)
+    sub = os.path.join(d, "sub")
+    os.makedirs(sub)
+
+    def toplevel(env):
+        r = subprocess.run(["git", "-C", sub, "rev-parse", "--show-toplevel"],
+                           capture_output=True, text=True, env=env)
+        return r.returncode, (r.stdout + r.stderr).strip()
+    bare = {k: v for k, v in os.environ.items() if k != M.CEILING}
+    rc, out = toplevel(bare)
+    check(rc == 0 and os.path.normcase(os.path.normpath(out)) ==
+          os.path.normcase(os.path.normpath(encl)),
+          "12. control: without the variable, git in the run folder finds the "
+          "enclosing repo -> rc %d %s" % (rc, out[-120:]))
+    rc, out = toplevel(dict(os.environ))
+    check(rc != 0 and "not a git repository" in out,
+          "12. with it, as make() left it: not a git repository -> rc %d %s"
+          % (rc, out[-120:]))
+    check(os.path.abspath(d) in os.environ.get(M.CEILING, "").split(os.pathsep),
+          "12. the run folder is in GIT_CEILING_DIRECTORIES")
+    M.remove(d)
+    check(os.path.abspath(d) not in os.environ.get(M.CEILING, "").split(os.pathsep),
+          "12. remove() takes it out again")
+
+
 def _sweep_tree(base):
     wt = fake_worktree(base, "wt-sweep")
     cur_ct, cur_cr = "c" * 40, "d" * 40
@@ -570,7 +604,7 @@ def case_nogit(base):
 
 CASES = [case_git, case_long, case_leftover, case_owner, case_prune,
          case_run, case_sweep, case_wallclock, case_nogit, case_make_retried,
-         case_length]
+         case_length, case_ceiling]
 
 
 def test():
@@ -683,6 +717,8 @@ MUTANTS = [
      '"scratch_dir: REFUSED the run folder %s: it is', '"scratch_dir: REFUSED the run folder %.0s: it is'),
     ("the refusal without the length",
      "it is %d characters, and", "it is %.0s characters, and"),
+    ("no git ceiling", "    _ceiling_add(p)\n    return p\n", "    return p\n"),
+    ("the ceiling left after remove()", "        _ceiling_drop(lp)\n", ""),
 ]
 
 

@@ -121,7 +121,9 @@ def plain_digest(root):
 def fixture(base):
     """{src, wt, a, b, pins}: the stand-in shared repo with tags T1 (a) and
     T2 (b), the project worktree, and its pin file path."""
-    src, wt = os.path.join(base, "src"), os.path.join(base, "wt")
+    # "s": git worktree add runs on it, which git for Windows refuses once
+    # the repo's path passes 214 (scratch_dir, 2026-11-05)
+    src, wt = os.path.join(base, "s"), os.path.join(base, "wt")
     os.makedirs(src)
     git(src, "init", "-q", "-b", "m")
     write(src, {"shared/tools/vtrux_build/digest.py": DIGEST_PY,
@@ -171,9 +173,11 @@ def child(fx, code):
 
 
 def checks():
-    # depth: git worktree add runs on src (4 below the run folder), + 36
-    # for that (measured 2026-11-05; scratch_dir)
-    base = scratch_dir.make("shared-pin-test", depth=40)
+    # depth: git worktree add runs on s (2 below the run folder), + 36 for
+    # that (measured 2026-11-05 as src; scratch_dir). The tool's name is
+    # short for the same reason: in the acceptance runner's tree the run
+    # folder alone is about 180 characters
+    base = scratch_dir.make("spt", depth=38)
     try:
         fx = fixture(base)
         good = pin_values(fx)
