@@ -642,13 +642,65 @@ def test_vport_windows(A, work):
     faulty = _vp_report(windows=(VP_IDLE, "  1M, idle: TEST FAULT: 1M idle: x"))
     c, _d = counted(run(faulty), run(faulty))
     assert len([x for x in c if x.startswith("TEST FAULT in ")]) == 2, c
-    for why, b in (("no report", run(None)),
-                   ("no vport-bitrate result", dict(base, record={"results": []}))):
+    good = _vp_report()
+    drifted = VP_IDLE.replace("error frame(s) in", "errors in").replace(
+        "per burst", "each burst").replace("bursts per minute", "a minute").replace(
+        "got through", "went").replace("queued,", "queued /").replace("backlog", "queue")
+    for why, b, word in (
+            ("no report", run(None), "no %s report" % A.VPORT_REPORT),
+            ("no vport-bitrate result", dict(base, record={"results": []}),
+             "no %s result" % A.VPORT_CHECK),
+            ("no bit-rate step", run(good.replace(A.VP_STEP, "== 2 something else")),
+             "no bit-rate step"),
+            ("no window", run(_vp_report(windows=())), "no window line"),
+            ("a window line that drifted", run(_vp_report(windows=(drifted, VP_FLOOD))),
+             "no figure read"),
+            ("no verdicts section", run(good.replace("== verdicts", "== results")),
+             "no verdicts section")):
         try:
             counted(base, b)
-        except ValueError:
+        except ValueError as e:
+            assert word in str(e), (why, e)
             continue
         raise AssertionError("not refused: %s" % why)
+
+
+VP_REAL = {"6019": "charge-interposer-bench_20261027T132847_6019",
+           "c40b": "charge-interposer-bench_20261022T192854_c40b"}
+
+
+def test_vport_real(A, work):
+    """A10 (the charge-interposer reviewer, 2026-11-04): the parser reads
+    the real format. 6019 (the 2a baseline, a passing run) parses to its
+    four windows, each with all six figure groups, and no arm (a passing
+    run lists none); against itself it holds with nothing counted. c40b
+    parses to its one arm, bitrate/1M/idle FAIL, with that window a TEST
+    FAULT. Read in place under REVERSE_IT_DIR (6019's report names a user
+    profile path, so it is not copied into git); skipped without it."""
+    root = os.path.join(os.environ.get("REVERSE_IT_DIR", ""), "projects", "vtrux", "notes",
+                        "artifacts", "interposer-firmware", "runs")
+    sides = {}
+    for k, name in VP_REAL.items():
+        d = os.path.join(root, name)
+        if not (os.environ.get("REVERSE_IT_DIR") and
+                os.path.isfile(os.path.join(d, "b-vport", "vport-bitrate", A.VPORT_REPORT))):
+            print("skip  test_vport_real: no %s report under REVERSE_IT_DIR" % k)
+            return
+        with open(os.path.join(d, "record.json"), encoding="utf-8") as f:
+            sides[k] = {"kind": "run", "dir": d, "record": json.load(f)}
+    want = {"250k/idle", "250k/flooding 7F4", "1M/idle", "1M/flooding 7F4"}
+    groups = {n for n, _rx in A._VP_FIGURES}
+    v, p = A._vport_read(sides["6019"])
+    assert v == "PASS" and set(p["windows"]) == want, (v, sorted(p["windows"]))
+    for w, figs in p["windows"].items():
+        assert set(figs) == groups, (w, sorted(figs))
+    assert p["arms"] == {} and p["final"] is None and p["faults"] == [], p
+    d = A.comparer("vport-windows")(sides["6019"], sides["6019"], {}, A)
+    assert [x for x in d if x["kind"] in ("verdict", "missing", "new")] == [], d
+    v, p = A._vport_read(sides["c40b"])
+    assert v == "FAIL" and p["arms"] == {"bitrate/1M/idle": "FAIL"}, (v, p["arms"])
+    assert set(p["windows"]) == want and "fault" in p["windows"]["1M/idle"], p["windows"]
+    assert len(p["faults"]) == 1 and "1249" in p["faults"][0], p["faults"]
 
 
 TESTS = [test_identity, test_catalogue, test_list_loads, test_tree_names, test_shells,
@@ -656,7 +708,7 @@ TESTS = [test_identity, test_catalogue, test_list_loads, test_tree_names, test_s
          test_shared_pins,
          test_madhouse_entries, test_tree_setup, test_identifier_scan, test_artifacts_row,
          test_masked_log,
-         test_sim_judged, test_run_logs, test_vport_windows]
+         test_sim_judged, test_run_logs, test_vport_windows, test_vport_real]
 
 MUTANTS = [
     ("suites from another file", '"charge-interposer/bench_suite.py:%s"', '"charge-interposer/suite.py:%s"'),
@@ -758,6 +810,14 @@ MUTANTS = [
     ("vport: a window on one side only not counted",
      '"kind": "missing", "line": "MISSING in b: window', '"kind": "flag", "line": "MISSING in b: window'),
     ("vport: FLAG lines not shown", '        out += [{"kind": "flag"', '        out += [] and [{"kind": "flag"'),
+    ("vport: a report with no bit-rate step taken", '    if VP_STEP not in p["headers"]:',
+     "    if False:"),
+    ("vport: a report with no window taken", '    if not p["windows"]:\n', "    if False:\n"),
+    ("vport: a drifted window line taken", '    if p["unparsed"]:\n', "    if False:\n"),
+    ("vport: a report with no verdicts section taken",
+     '    if "== verdicts" not in p["headers"]:', "    if False:"),
+    ("vport: the window figures misread", r'(\d+) error frame\(s\) in (\d+) burst\(s\) over',
+     r'(\d+) error frame\(s\) in (\d) burst\(s\) over'),
     ("vport: the same TEST FAULT on both sides counted once",
      '    for side, p in (("a", pa), ("b", pb)):\n        for ln in p["faults"]:',
      '    for side, p in (("a", pa),):\n        for ln in p["faults"]:'),

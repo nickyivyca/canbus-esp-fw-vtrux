@@ -33,13 +33,13 @@ tree = "prod"
 select = ["id:paths-test"]
 
 # Since 0fbcdec the pins name two tags (the reviewer's batch, 2026-11-04);
-# since 09d7a6d shared/bench is at 2026.11.04.3, shared/tools and
-# shared/twai_port at 2026.11.03 (the reviewer's batch, 2026-11-04). A tree
+# since c5e07f2 shared/bench is at 2026.11.04.4, shared/tools and
+# shared/twai_port at 2026.11.03 (the reviewer's batches, 2026-11-04). A tree
 # at that commit gets a checkout of each beside it, and each component's pin
 # check finds its own. The prod tree above has all three at 2026.11.03, so
 # this list shows both layouts.
 [trees.head]
-project = "09d7a6dbee1f8701a83d5e78ea26b66d807e7005"
+project = "c5e07f2724c33c9dc703f315182bcf664d4f522b"
 
 [[check]]
 id = "pin-bench"
