@@ -82,6 +82,7 @@ records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 | `bench_suite.py`, `bench_suite_test.py`, `bench_identify.py` | The chain runner's three suites, their test and its identify hook (reviewer, 2026-10-19) | Tester |
 | `accept_adapter.py`, `accept_adapter_test.py` | The project's adapter for the acceptance runner (shared/bench ACCEPT-SPEC A15), and its test (reviewer, 2026-11-01) | Tester |
 | `accept_smoke.toml` | The adapter's smoke list: a test fixture, not an acceptance list; its records are never evidence (reviewer, 2026-11-02) | Tester |
+| `accept_build_smoke.toml` | The adapter's build smoke list: one `idf-build` build of a variant through the runner; a test fixture, not an acceptance list; its records are never evidence (reviewer, 2026-11-04) | Tester |
 | `scratch_run.sh`, `scratch_run_test.py` | The harness's bash scripts' run folders, as `scratch_dir.py` gives the Python ones, and its test (reviewer, 2026-11-02) | Tester |
 | `twai_fake_option_test.py` | Test of `host_bridge`'s `TWAI_FAKE` option and its can-fail (reviewer, 2026-11-02) | Tester |
 | `shared_pin.py`, `shared_pin_test.py` | The harness's shared code from the read-only `../shared-<tag>/` checkout, checked against `firmware/shared_pins.json`, and its test (port step 2a) | Tester |
@@ -95,6 +96,8 @@ records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 | `hw_mechanics_test.py` | Test of `fw_harness/hw_mechanics.py`, with `--can-fail` | Tester |
 | `fw_harness/refusal_pairs.py` | shared/tools R20's refusal pairs for the interposer: each test-only rule passes on the truck stand-in and fails on an image built with its switch on | Tester |
 | `fw_harness/refusal_pairs_runs.py` | Makes the stand-in, R19, fixture and dev builds, then runs the pairs (the bridge-release fixture: a local commit it makes, never on a branch; reviewer, 2026-11-03) | Tester |
+| `fw_harness/idf_build_shell.py` | The acceptance runner's "idf" shell: exports the interposer's ESP-IDF from the machine's settings, runs the adapter's `idf-build` target, refuses a checkout not clean before and fails a build that changed a tracked file (`dependencies.lock`, shared/tools R33); Windows only (reviewer, 2026-11-04) | Tester |
+| `fw_harness/idf_build_shell_test.py` | Test of `idf_build_shell.py` on a stand-in export, with `--can-fail` | Tester |
 | `refusal_pairs_test.py` | Test of `refusal_pairs.py`'s judging and the runner's fixture check, with `--can-fail` | Tester |
 | `fw_harness/c12_bench/` | Whole directory: the standalone ESP-IDF C12 bench Target, not a product image (reviewer, 2026-10-13) | Tester |
 | `fw_harness/vport_bench/` | Whole directory: the standalone ESP-IDF vehicle-port bench image for spec section 9, TWAI only, never on the truck (reviewer, 2026-10-13) | Tester |
