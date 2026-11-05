@@ -363,9 +363,61 @@ def test_chain_run():
                for ln in log.splitlines()), log
 
 
+def test_suite_images():
+    """A9, A5: a suite run with images_from gets its images from the build
+    records this runner wrote, through the adapter's suite_settings, laid
+    over its own settings: the sha256 is the record's, and the adapter
+    works on a copy, so the record stays as written. A build that made no
+    images leaves that suite run not started, saying which; two builds of
+    one variant, or an adapter with no suite_settings, are refused."""
+    f = Fixture()
+    builds = f.builds()
+    fw = builds["fw"]
+    run = {"id": "emu", "images_from": ["fw"]}
+    images, why = ST.suite_images(run, builds, FA)
+    assert why is None and images["fake_images"]["man"] == {
+        "app": fw["images"]["app"]["path"], "elf_sha256": fw["elf"]["sha256"],
+        "build": "fw"}, (images, why)
+    assert ST.suite_images({"id": "emu"}, builds, FA) == ({}, None)
+    path, _m = ST.write_tree_settings(dict(f.machine), FA, "emu", f.trees["base"], f.rec,
+                                      f.made, f.parent, images=images)
+    with open(path, encoding="utf-8") as fh:
+        assert json.load(fh).get("fake_images") == images["fake_images"], "images not laid over"
+
+    class Mutating:
+        @staticmethod
+        def suite_settings(run, records):
+            records[0]["elf"]["sha256"] = "0" * 64
+            return {}
+    before = json.dumps(fw, sort_keys=True)
+    ST.suite_images(run, builds, Mutating)
+    assert json.dumps(fw, sort_keys=True) == before, "the adapter changed the build record"
+
+    failed = dict(builds, fw={"id": "fw", "verdict": "FAIL"})
+    images, why = ST.suite_images(run, failed, FA)
+    assert images is None and why and "not started" in why and "fw (FAIL)" in why, (images, why)
+
+    class Refusing:
+        @staticmethod
+        def suite_settings(run, records):
+            raise ValueError("no build of the truck")
+    for name, bs, ad, word in (
+            ("one variant twice", dict(builds, fw2=dict(fw, id="fw2")), FA, "man"),
+            ("no suite_settings", builds, object(), "suite_settings"),
+            ("the adapter refuses", builds, Refusing, "no build of the truck")):
+        r_ = dict(run, images_from=["fw", "fw2"] if "fw2" in bs else ["fw"])
+        try:
+            ST.suite_images(r_, bs, ad)
+        except ST.SettingsError as e:
+            assert word in str(e), (name, e)
+            continue
+        raise AssertionError("%s: not refused" % name)
+
+
 TESTS = [test_build_record, test_build_is_build_work, test_build_failure,
          test_build_tree_setup, test_settings_from_builds, test_settings_masked_and_removed,
-         test_settings_no_passwords, test_env, test_compile_shape, test_chain_run]
+         test_settings_no_passwords, test_env, test_compile_shape, test_chain_run,
+         test_suite_images]
 
 MUTANTS = [
     (B, "own_tree", test_build_record),
@@ -382,6 +434,11 @@ MUTANTS = [
     (ST, "masked", test_settings_masked_and_removed),
     (ST, "scratch_only", test_settings_masked_and_removed),
     (ST, "no_passwords", test_settings_no_passwords),
+    (ST, "images_built", test_suite_images),
+    (ST, "images_one_variant", test_suite_images),
+    (ST, "images_copy", test_suite_images),
+    (ST, "images_settings", test_suite_images),
+    (ST, "images_refusal", test_suite_images),
     (C, "base_env", test_env),
     (C, "list_env", test_env),
     (C, "machine_vars", test_env),

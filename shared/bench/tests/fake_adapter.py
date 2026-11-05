@@ -63,6 +63,14 @@ def settings_keys(builds, trees):
             "fw_elf_sha256": builds["fw"]["elf"]["sha256"]}
 
 
+# a suite run's images (A9): its images_from builds' records, as the core
+# wrote them, by variant
+def suite_settings(run, records):
+    return {"fake_images": {r["variant"]: {"app": r["images"]["app"]["path"],
+                                           "elf_sha256": r["elf"]["sha256"],
+                                           "build": r["id"]} for r in records}}
+
+
 def default_shell(path):
     return {".py": "python", ".sh": "git-bash", ".ps1": "powershell"}.get(
         "." + path.rsplit(".", 1)[-1] if "." in path else "")

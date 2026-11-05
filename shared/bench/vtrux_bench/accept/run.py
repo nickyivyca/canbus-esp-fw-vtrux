@@ -61,7 +61,8 @@ BENCH = C.BENCH
 RULES = {k: True for k in ("record_first", "adapter_from_commit", "premise_skip",
                            "premise_skip_builds", "cleanup_finally", "refuse_dirty",
                            "dev_never_pass", "identity_untracked", "check_verdict",
-                           "not_passed_listed", "nested_not_passed", "nested_wrong_shape")}
+                           "not_passed_listed", "nested_not_passed", "nested_wrong_shape",
+                           "images_not_started")}
 
 DEV_LINE = "DEV RUN, not evidence"
 
@@ -210,12 +211,23 @@ def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None, dev=Fals
                               trees=trees, skip=skip)
         spath, s = ST.write_settings(settings_path, adapter, builds, trees, rec, made, parent)
         entries = CF.prepare(repo, alist, trees, adapter, parent, made, rec.say)
-        per_run = {r_["id"]: ST.write_tree_settings(s, adapter, r_["id"], trees[r_["tree"]],
-                                                    rec, made, parent)
-                   for r_ in alist.suite_runs}
+        # a suite run flashes the images of the builds it names (A9); one
+        # whose builds made none is not started, and the rest runs
+        per_run, no_images = {}, {}
+        for r_ in alist.suite_runs:
+            images, why = ST.suite_images(r_, builds, adapter)
+            if why:
+                no_images[r_["id"]] = why
+                rec.say("suite run %s: %s" % (r_["id"], why))
+            per_run[r_["id"]] = ST.write_tree_settings(s, adapter, r_["id"], trees[r_["tree"]],
+                                                       rec, made, parent, images=images)
         suite = C.compile_suite(alist, trees, adapter, s, base_env, paths={
             "settings": spath, "masked": os.path.join(rec.path, "settings.masked.json"),
             "record_id": rec.id, "suite_runs": per_run}, mutants=entries)
+        for g in suite.groups if RULES["images_not_started"] else []:
+            if g.note in no_images:
+                for c in g.checks:
+                    c.skip = no_images[g.note]
         for g in suite.groups if RULES["premise_skip"] else []:
             if g.note in blocked or any(e["canfail"] in blocked and g.name.startswith(
                     C.group_name("cf-%s-" % e["canfail"])) for e in entries):
