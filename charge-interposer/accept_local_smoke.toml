@@ -1,0 +1,39 @@
+# The acceptance runner's LOCAL-LANE SMOKE LIST: a fixture of the adapter's
+# tests, not an acceptance list (acceptance lists are the reviewer's, under
+# acceptance/, ACCEPT-SPEC A2). A --dev run of it runs, through the runner
+# and in a runner-made tree, what of the 2a list's suite runs works on this
+# machine's local lane: the emulated suite's local group (l-emulated) and
+# the whole harness suite (its local and madhouse groups). Run 2a f308 failed
+# there on machine settings that named the tester's worktree (INTERPOSER_CODE,
+# PYTHONPATH in hosts.local.env), which a lane-by-lane smoke would have shown
+# before the 18 h madhouse phase (the charge-interposer reviewer, 2026-11-05:
+# run it before the real run; it does not reopen the vp1 ruling, which is
+# about the bench lane). No builds, no bench, no lock. Its records go to
+# interposer-firmware/dev-runs/, never runs/, and are never evidence.
+
+[step]
+id = "local-smoke"
+project = "charge-interposer"
+ordered_by = "charge-interposer reviewer"
+ordered_on = "2026-11-05"
+spec = ["none: a smoke run of the acceptance runner's local lane"]
+verification = "none (a --dev smoke run is never evidence)"
+
+# 41b54cd: the 2a harness (3abe58d1) with the adapter's settings guard
+[trees.harness]
+project = "41b54cd289e8290c1245ab345b85564f2d0fe4ae"
+
+# the emulated suite's local lane only: the rest of it is the madhouse sims
+[[suite_run]]
+id = "emulated-local"
+tree = "harness"
+suite = "emulated"
+groups = ["l-emulated"]
+whole = false
+
+# the harness suite, whole, as the 2a list runs it
+[[suite_run]]
+id = "harness"
+tree = "harness"
+suite = "harness"
+after = ["emulated-local"]
