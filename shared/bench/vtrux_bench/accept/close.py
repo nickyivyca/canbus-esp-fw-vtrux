@@ -17,7 +17,9 @@ close(rec, summary, made, adapter), once per record, in this order:
      them: the item's detail stops at six; the user, 2026-11-02, through
      the charge-interposer reviewer: they are checked against the known
      fails by hand), the
-     comparisons, the can-fails, the premises, each flagged case's first
+     comparisons (each with the differences that count, then every other
+     difference its comparer saw, "seen, not counted"), the can-fails, the
+     premises, each flagged case's first
      and re-run verdicts, the identifier hits, the leftovers, the verdict.
   4. verification_skeleton.md: the facts for the VERIFICATION.md entry,
      which the tester still writes; a --dev run's opens "DEV RUN, not
@@ -46,7 +48,8 @@ import os
 RULES = {k: True for k in (
     "readme_items", "readme_commits", "sums_all", "console_stops", "close_once",
     "scan_hits", "scan_absent", "cleanup_first", "leftovers_in", "late_outside", "row",
-    "skeleton_reruns", "dev_marked", "scan_failure", "readme_not_passed", "not_passed_all")}
+    "skeleton_reruns", "dev_marked", "scan_failure", "readme_not_passed", "not_passed_all",
+    "compare_all")}
 
 
 class CloseError(Exception):
@@ -126,6 +129,12 @@ def readme(rec, summary, hits, leftovers):
             L.append("- compare %s (%s): %s" % (c["id"], c["expect"],
                                                 "held" if c["held"] else "DID NOT HOLD"))
             L += ["  - %s" % d for d in c["counted"]]
+            # every other difference the comparer saw, unjudged figures
+            # included, so both sides' values are in the record (the
+            # charge-interposer reviewer, 2026-11-04)
+            if RULES["compare_all"]:
+                L += ["  - seen, not counted: %s" % d for d in c.get("all") or []
+                      if d not in c["counted"]]
         L += ["", "## Premises", ""]
         for p in s["premises"]:
             L.append("- premise %s: %s -- %s" % (p["id"], "held" if p["held"] else "DID NOT HOLD",

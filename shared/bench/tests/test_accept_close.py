@@ -272,9 +272,28 @@ def test_dev_skeleton():
     assert "DEV RUN" not in read(rec2, "verification_skeleton.md")
 
 
+def test_readme_compare_all():
+    """A13, A10 (the charge-interposer reviewer, 2026-11-04): a comparison's
+    README lines are the differences that count, then every other one its
+    comparer saw, both sides' values, marked as not counted; a counted one
+    is not listed twice."""
+    rec, _said = opened()
+    s = summary(rec)
+    fig = "figure 250k/idle error frames: a 352088 | b 494441"
+    s["compares"] = [{"id": "vp", "expect": "same-verdicts", "held": False,
+                      "counted": ["VERDICT 1M/idle: PASS -> FAIL"],
+                      "all": ["VERDICT 1M/idle: PASS -> FAIL", fig]}]
+    CL.close(rec, s, S.Made(), Adapter())
+    sec = read(rec, "README.md").split("## Comparisons", 1)[1].split("\n## ", 1)[0]
+    lines = [ln for ln in sec.splitlines() if ln.startswith(("- ", "  - "))]
+    assert lines == ["- compare vp (same-verdicts): DID NOT HOLD",
+                     "  - VERDICT 1M/idle: PASS -> FAIL",
+                     "  - seen, not counted: " + fig], sec
+
+
 TESTS = [test_readme, test_sha256sums, test_closed_once, test_identifiers_reported,
          test_cleanup_first, test_late_failure, test_artifacts_row, test_skeleton,
-         test_dev_skeleton, test_readme_not_passed]
+         test_dev_skeleton, test_readme_not_passed, test_readme_compare_all]
 
 MUTANTS = [
     ("readme_items", test_readme),
@@ -293,6 +312,7 @@ MUTANTS = [
     ("row", test_artifacts_row),
     ("skeleton_reruns", test_skeleton),
     ("dev_marked", test_dev_skeleton),
+    ("compare_all", test_readme_compare_all),
 ]
 
 

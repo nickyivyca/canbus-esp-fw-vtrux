@@ -18,7 +18,8 @@ bytes.
                     "tag:<t>", "id:<glob>", "all"), host, after; one check per
                     entry picked, id <set>.<entry>
     [[suite_run]]   id, tree, suite (the adapter's), groups, checks, whole,
-                    rerun_flagged, images_from (a build), after
+                    rerun_flagged, images_from (the builds whose images the
+                    suite flashes: settings.suite_images), after
     [baseline]      <check or suite run id> = <run or record name>
     [[compare]]     id, comparer (the adapter's), a, b (item ids, or
                     "baseline:<id>"), expect, tolerance, differences, mask
@@ -64,7 +65,7 @@ RULES = {k: True for k in (
     "full_commit", "list_sha256", "committed_only", "unknown_keys", "required",
     "committed_files", "shared_at_tree", "exact_commit", "refs", "adapter_names",
     "project", "selector_only", "empty_selector", "unique_ids", "canfail_form",
-    "set_judge")}
+    "set_judge", "images_once")}
 
 HEX = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
@@ -88,7 +89,7 @@ SCHEMA = {
     "suite_run": {"id": (STR, True), "tree": (STR, True), "suite": (STR, True),
                   "groups": (LIST, False), "checks": (LIST, False),
                   "whole": (BOOL, False), "rerun_flagged": (BOOL, False),
-                  "images_from": (STR, False), "after": (LIST, False)},
+                  "images_from": (LIST, False), "after": (LIST, False)},
     "compare": {"id": (STR, True), "comparer": (STR, True), "a": (STR, True),
                 "b": (STR, True), "expect": (STR, True),
                 "tolerance": ("a table", False), "differences": (LIST, False),
@@ -473,9 +474,12 @@ def load(repo, spec, adapter):
         for a in s.get("after") or []:
             ref("set %s" % q(s.get("id")), "after", a, ids)
     for r_ in suite_runs:
-        if "images_from" in r_:
-            ref("suite_run %s" % q(r_.get("id")), "images_from", r_["images_from"],
+        for b_ in r_.get("images_from") or []:
+            ref("suite_run %s" % q(r_.get("id")), "images_from", b_,
                 {b.get("id") for b in builds})
+        if RULES["images_once"] and \
+                len(set(r_.get("images_from") or [])) != len(r_.get("images_from") or []):
+            errs.append("suite_run %s: images_from names a build twice" % q(r_.get("id")))
     for k, v in baseline.items():
         ref("[baseline]", "item", k, check_ids | {r.get("id") for r in suite_runs})
         if not isinstance(v, str):

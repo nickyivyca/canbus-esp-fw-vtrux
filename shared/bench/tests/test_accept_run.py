@@ -498,10 +498,37 @@ def test_check_every_result():
     assert want[0] in lines and lines[lines.index(want[0]):][:3] == want, sec
 
 
+def test_images_from():
+    """A9: a suite run is given the images of the builds it names
+    (images_from), from their records: here emu-fw, whose settings in the
+    record carry fw's ELF sha256 as builds/fw.json holds it. A suite run
+    naming a build that made no images (hb, a target with none) is not
+    started, saying why, and the rest of the run goes on (emu-fw runs)."""
+    r = Run(extra='\n[[build]]\nid = "hb"\ntree = "base"\ntarget = "host"\n'
+                  '\n[[suite_run]]\nid = "emu-hb"\ntree = "base"\nsuite = "emulated"\n'
+                  'images_from = ["hb"]\n'
+                  '\n[[suite_run]]\nid = "emu-fw"\ntree = "base"\nsuite = "emulated"\n'
+                  'images_from = ["fw"]\n')
+    assert r.rc == 1, (r.rc, r.rec and r.read("console.txt")[-1500:])
+    console = r.read("console.txt")
+    assert "suite run emu-hb: not started: its images_from build(s) made no images: " \
+        "hb (PASS)" in console, console[-2000:]
+    chain = os.path.join(r.rec, "chain")
+    runs = [d for d in os.listdir(chain) if d.startswith("accept-s1")]
+    with open(os.path.join(chain, runs[0], "record.json"), encoding="utf-8") as f:
+        v = {x["id"]: x["verdict"] for x in json.load(f)["results"]}
+    assert v.get("emu-hb/run") == "NOT-RUN" and v.get("emu-fw/run") == "PASS", v
+    with open(os.path.join(r.rec, "builds", "fw.json"), encoding="utf-8") as f:
+        fw = json.load(f)
+    s = json.loads(r.read("settings.emu-fw.masked.json"))
+    assert s.get("fake_images", {}).get("man", {}).get("elf_sha256") == fw["elf"]["sha256"], s
+    assert "fake_images" not in json.loads(r.read("settings.emu.masked.json"))
+
+
 TESTS = [test_pass, test_adapter_committed, test_rerun_never_passes, test_premise_blocks,
          test_stopped, test_setup_failure_stops_run, test_dirty_runner_refused, test_dev_run,
          test_runner_identity, test_runner_stays_clean, test_check_every_result,
-         test_suite_run_not_passed, test_nested_wrong_shape]
+         test_suite_run_not_passed, test_nested_wrong_shape, test_images_from]
 
 MUTANTS = [
     ("adapter_from_commit", test_adapter_committed),
@@ -516,6 +543,7 @@ MUTANTS = [
     ("not_passed_listed", test_check_every_result),
     ("nested_not_passed", test_suite_run_not_passed),
     ("nested_wrong_shape", test_nested_wrong_shape),
+    ("images_not_started", test_images_from),
     ("_stray", test_runner_stays_clean),        # VTRUX_TEST_STRAY: a stray file
 ]
 

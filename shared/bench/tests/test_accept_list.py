@@ -359,9 +359,24 @@ def test_ids():
     refused(r, edit(GOOD, 'id = "tool"', 'id = "to ol"'), "to ol", name="i3")
 
 
+def test_images_from():
+    """A9, A5: a suite run's images_from is a list of the list's builds, each
+    named once (settings.suite_images hands their records to the adapter)."""
+    r = Repo()
+    old = 'suite = "emulated"'
+    spec, _c = r.list_at(edit(GOOD, old, old + '\nimages_from = ["fw"]'), name="img")
+    run = [x for x in L.load(r.path, spec, FA).suite_runs if x["id"] == "emu"][0]
+    assert run["images_from"] == ["fw"], run
+    refused(r, edit(GOOD, old, old + '\nimages_from = "fw"'), "images_from must be",
+            name="img-str")
+    refused(r, edit(GOOD, old, old + '\nimages_from = ["nope"]'), "nope", name="img-ref")
+    refused(r, edit(GOOD, old, old + '\nimages_from = ["fw", "fw"]'), "twice",
+            name="img-twice")
+
+
 TESTS = [test_reads_committed, test_refuses_uncommitted, test_unknown_keys, test_required,
          test_committed_command, test_exact_commits, test_references, test_adapter_names,
-         test_project, test_selection, test_canfail_form, test_ids]
+         test_project, test_selection, test_canfail_form, test_ids, test_images_from]
 
 # Each mutant: one listfile.RULES entry switched off, and the test that must
 # then fail. Every rule has one.
@@ -382,6 +397,7 @@ MUTANTS = [
     ("set_judge", test_selection),
     ("unique_ids", test_ids),
     ("canfail_form", test_canfail_form),
+    ("images_once", test_images_from),
 ]
 
 
