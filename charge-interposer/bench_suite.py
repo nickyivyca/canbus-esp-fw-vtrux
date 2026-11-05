@@ -245,6 +245,9 @@ HARNESS_LOCAL = [
     ("idf-build-shell-test", ["{interposer_code}/fw_harness/idf_build_shell_test.py"]),
     ("idf-build-shell-test-canfail",
      ["{interposer_code}/fw_harness/idf_build_shell_test.py", "--can-fail"]),
+    # spec 9 C2b's "differ only by the switch" (2a acceptance (h)), on
+    # stand-in build folders: its judgments and its own can-fail
+    ("variant-diff-self-test", ["{interposer_code}/fw_harness/variant_diff.py", "--self-test"]),
     ("board-reset-test", ["{interposer_code}/board_reset_test.py"]),
     ("bench-suite-test", ["{interposer_code}/bench_suite_test.py"]),
     ("bench-suite-test-canfail",

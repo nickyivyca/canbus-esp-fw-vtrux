@@ -92,7 +92,9 @@ removes only what it makes there (A14).
                      commit also serves shared/bench and shared/tools at the
                      same tag
 
-Not yet: settings keys from builds.
+  settings_keys      for each build that made its images: build_<id> (its
+                     build folder), image_<id> (the app) and elf_<id>, for a
+                     list's checks to name ("{build_bridge}")
 
   tree_setup,        what each fresh tree needs before its checks: the
   tree_installed     pinned canre installed and checked (canre_pin.py), and
@@ -118,6 +120,7 @@ SUITES = {n: "charge-interposer/bench_suite.py:%s" % n
           for n in ("emulated", "bench", "harness")}
 SHELLS = ("python", "git-bash", "powershell", "idf")
 IDF_SHELL = os.path.join(HERE, "fw_harness", "idf_build_shell.py")
+IDF_VERSION = "v5.4.2"     # spec 8.2: the interposer builds on ESP-IDF v5.4.2 (user, 2026-11-03)
 # the machine variables a check may see (AGENTS.md, local-paths.md)
 MACHINE_VARS = ("REVERSE_IT_DIR", "CAN_TOOLS_DIR", "VTRUX_PUBLIC_REPO")
 JUDGES = ("script", "recorded", "c12", "host-bridge", "corrupt-pin", "scenario")
@@ -223,7 +226,19 @@ def tree_settings(tree):
 
 
 def settings_keys(builds, trees):
-    return {}
+    """For each build that made its images: build_<id>, its build folder
+    (where variant_diff.py reads its configuration), image_<id>, its app
+    image, and elf_<id>, its ELF; nothing for a build that failed or did
+    not run."""
+    out = {}
+    for bid, b in sorted(builds.items()):
+        app = ((b.get("images") or {}).get("app") or {}).get("path")
+        if not app:
+            continue
+        out["build_%s" % bid] = os.path.dirname(app)
+        out["image_%s" % bid] = app
+        out["elf_%s" % bid] = b["elf"]["path"]
+    return out
 
 
 # ---- tree setup (the core's tree_setup) -------------------------------------
@@ -315,6 +330,9 @@ def _build_outputs(out, opts):
     if desc.get("project_name") != "interposer_%s" % v:
         raise AdapterError("build %s: %s describes %r, not interposer_%s"
                            % (v, bd, desc.get("project_name"), v))
+    if desc.get("git_revision") != IDF_VERSION:
+        raise AdapterError("build %s: built with ESP-IDF %r, not %s (spec 8.2)"
+                           % (v, desc.get("git_revision"), IDF_VERSION))
     images = {"app": os.path.join(bd, desc["app_bin"]),
               "bootloader": os.path.join(bd, "bootloader", "bootloader.bin"),
               "partition-table": os.path.join(bd, "partition_table", "partition-table.bin")}

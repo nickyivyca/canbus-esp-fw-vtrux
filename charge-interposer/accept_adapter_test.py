@@ -209,7 +209,7 @@ def test_idf_shell(A, work):
         raise AssertionError("idf on madhouse was taken")
 
 
-def _fake_build(work, variant, project=None, drop=()):
+def _fake_build(work, variant, project=None, drop=(), idf="v5.4.2"):
     """A tree as the runner makes it for a build, with what an IDF build of
     variant leaves in firmware/build/<variant>/; its out folder."""
     t = os.path.join(work, "build-%s" % variant)
@@ -224,7 +224,7 @@ def _fake_build(work, variant, project=None, drop=()):
             f.write(rel.encode())
     desc = {"project_name": project or "interposer_%s" % variant,
             "app_bin": "interposer_%s.bin" % variant, "app_elf": "interposer_%s.elf" % variant,
-            "git_revision": "v5.4.2", "target": "esp32s3",
+            "git_revision": idf, "target": "esp32s3",
             "c_compiler": "C:/x/.espressif-5.4.2/tools/xtensa-esp-elf/esp-14.2.0_20241119/"
                           "xtensa-esp-elf/bin/xtensa-esp32s3-elf-gcc.exe"}
     with open(os.path.join(bd, "project_description.json"), "w", encoding="utf-8") as f:
@@ -255,7 +255,8 @@ def test_targets(A, work):
                                 "compiler": "esp-14.2.0_20241119"}, got["toolchain"]
     for name, kw in (("another variant's description", {"project": "interposer_witness"}),
                      ("no bootloader", {"drop": (os.path.join("bootloader", "bootloader.bin"),)}),
-                     ("no ELF", {"drop": ("interposer_diag.elf",)})):
+                     ("no ELF", {"drop": ("interposer_diag.elf",)}),
+                     ("another ESP-IDF", {"idf": "v5.4.1"})):
         v = "diag" if "ELF" in name else "w%d" % len(name)
         o, _ = _fake_build(os.path.join(work, name.replace(" ", "-").replace("'", "")), v, **kw)
         try:
@@ -263,6 +264,20 @@ def test_targets(A, work):
         except A.AdapterError:
             continue
         raise AssertionError("outputs took a build with %s" % name)
+
+
+def test_settings_keys(A, work):
+    """A6: the settings a list's checks name come from the build records:
+    for each build that made its images, build_<id> (its build folder),
+    image_<id> and elf_<id>; none for a failed build."""
+    bd = os.path.join(work, "b", "build", "bridge")
+    builds = {"bridge": {"images": {"app": {"path": os.path.join(bd, "interposer_bridge.bin")},
+                                    "bootloader": {"path": os.path.join(bd, "bl.bin")}},
+                         "elf": {"path": os.path.join(bd, "interposer_bridge.elf")}},
+              "witness": {"verdict": "FAIL"}}
+    assert A.settings_keys(builds, {}) == {
+        "build_bridge": bd, "image_bridge": os.path.join(bd, "interposer_bridge.bin"),
+        "elf_bridge": os.path.join(bd, "interposer_bridge.elf")}, A.settings_keys(builds, {})
 
 
 def test_shared_pins(A, work):
@@ -495,7 +510,8 @@ def test_run_logs(A, work):
 
 
 TESTS = [test_identity, test_catalogue, test_list_loads, test_tree_names, test_shells,
-         test_idf_shell, test_targets, test_shared_pins, test_madhouse_entries, test_tree_setup, test_identifier_scan, test_artifacts_row,
+         test_idf_shell, test_targets, test_settings_keys, test_shared_pins,
+         test_madhouse_entries, test_tree_setup, test_identifier_scan, test_artifacts_row,
          test_masked_log,
          test_sim_judged, test_run_logs]
 
@@ -566,6 +582,12 @@ MUTANTS = [
      '("shared-%s" % c) if'),
     ("a checkout at another commit named by the tag",
      'if p.get("commit") == commit else', 'if p else'),
+    ("another ESP-IDF taken", '    if desc.get("git_revision") != IDF_VERSION:', "    if False:"),
+    ("a failed build's keys given", "        if not app:\n            continue\n",
+     '        if not app:\n            app = "none"\n'),
+    ("the build folder not the image's", '        out["build_%s" % bid] = os.path.dirname(app)',
+     '        out["build_%s" % bid] = app'),
+    ("no ELF key", '        out["elf_%s" % bid] = b["elf"]["path"]\n', ""),
     ("a commit from before the pin file refused", "    if pins is None:\n        return {}\n",
      '    if pins is None:\n        raise AdapterError("no pin file")\n'),
 ]
