@@ -5,6 +5,7 @@ reviewer's acceptance of the plan and its conditions, 2026-11-03).
 
     py -3.14 -B charge-interposer/fw_harness/refusal_pairs_runs.py \
         --commit <product commit> --out <new folder> [--jobs N]
+        [--scratch-from DIR]
 
 Run from this worktree's root, in a PowerShell exported for the interposer's
 ESP-IDF (local-paths.md), and only when no wall-clock test of either project
@@ -43,6 +44,16 @@ prune) when the run ends, pass or fail; a leftover is reported:
 Dev builds have a worktree of their own because a release builds in
 firmware/build/ itself, and shared/tools' checks read every CMake build
 folder under it.
+
+With --scratch-from DIR the worktrees go in a folder of the scratch/ of the
+worktree holding DIR instead (scratch_dir), with a read-only checkout
+shared-<tag> beside them for each tag the product commit's
+shared_pins.json pins, which their vtrux_tools.py needs. An acceptance list
+passes its {clone}: beside a runner's tree the build folders are too deep
+for ESP-IDF on Windows. Either way a build folder over MAX_BUILD_DIR
+characters is refused before anything is made (the charge-interposer
+reviewer, 2026-11-04). The worktrees, the checkouts and the folder are
+removed at the end.
 
 Then refusal_pairs.py (this harness's) on them: the positive run (OFF the
 stand-in, every ON label) must PASS, and each negative must FAIL on its own
@@ -84,6 +95,44 @@ DEV = ("bridge", "witness", "selftest", "diag", "slcan")
 CHECKS = (("switches", []), ("pins", []), ("board", []), ("options", []),
           ("scope", ["--release"]))
 OVERFLOW = "overflowed by"
+PINS_REL = "charge-interposer/firmware/shared_pins.json"
+# The deepest build folder ESP-IDF is let run in (no_led.MAX_BUILD_DIR's
+# reason: deeper, on Windows, idf.py's cmake fails with WinError 267, build
+# smoke 5, 2026-11-04)
+MAX_BUILD_DIR = 200
+
+
+# ---- where the worktrees go (pure; refusal_pairs_test.py tests these) ------
+def worktree_paths(top, base=None):
+    """The run's worktrees: beside this worktree (top), named as the
+    project's extra worktrees are (interposer-tester-<purpose>), or in base
+    by their bare names, which keeps the build folders shallow."""
+    if base:
+        return {k: os.path.join(base, k) for k in WORKTREES}
+    return {k: os.path.join(os.path.dirname(top), "interposer-tester-" + k) for k in WORKTREES}
+
+
+def build_dirs(paths):
+    """Every build folder the run makes: each release's firmware/build, and
+    the dev builds' and the trace build's firmware/build/<variant>."""
+    out = [os.path.join(paths[k], "charge-interposer", "firmware", "build")
+           for k in ("standin", "r19", "relbridge")]
+    out += [os.path.join(paths["pairsdev"], "charge-interposer", "firmware", "build", v)
+            for v in DEV + ("trace",)]
+    return out
+
+
+def too_deep(paths, limit=MAX_BUILD_DIR):
+    """The build folders longer than limit characters."""
+    return [p for p in build_dirs(paths) if len(os.path.abspath(p)) > limit]
+
+
+def shared_tags(pins_text):
+    """The distinct tags a shared_pins.json pins, sorted: one read-only
+    checkout shared-<tag> each, which a worktree's vtrux_tools.py looks for
+    beside it."""
+    import json
+    return sorted({v["tag"] for v in json.loads(pins_text).values()})
 
 
 # ---- the fixture (pure; refusal_pairs_test.py tests these) ----------------
@@ -156,11 +205,6 @@ def git(*args, cwd=None):
                                              if r.returncode else "")
 
 
-def worktree_paths(top):
-    base = os.path.dirname(top)
-    return {k: os.path.join(base, "interposer-tester-" + k) for k in WORKTREES}
-
-
 def remove_worktrees(top, paths, note):
     left = []
     for k, p in paths.items():
@@ -196,6 +240,9 @@ def main(argv=None):
     ap.add_argument("--commit", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--jobs", type=int)
+    ap.add_argument("--scratch-from", metavar="DIR",
+                    help="make the worktrees, and the shared-<tag> checkouts they need, "
+                    "in the scratch/ of the worktree holding DIR, not beside this one")
     a = ap.parse_args(argv)
 
     import vtrux_tools
@@ -215,7 +262,24 @@ def main(argv=None):
         raise SystemExit("refusal_pairs_runs: no commit %r" % a.commit)
     if os.path.exists(a.out):
         raise SystemExit("refusal_pairs_runs: %s exists" % a.out)
-    paths = worktree_paths(top)
+    work, shared = None, {}
+    if a.scratch_from:
+        rc, pins = git("show", "%s:%s" % (commit, PINS_REL), cwd=top)
+        if rc:
+            raise SystemExit("refusal_pairs_runs: no %s at %s" % (PINS_REL, commit[:12]))
+        work = scratch_dir.make("refusal-pairs", a.scratch_from)
+        paths = worktree_paths(top, work)
+        shared = {"shared-" + t: os.path.join(work, "shared-" + t) for t in shared_tags(pins)}
+    else:
+        paths = worktree_paths(top)
+    deep = too_deep(paths)
+    if deep:
+        if work:
+            scratch_dir.remove(work)
+        raise SystemExit("refusal_pairs_runs: a build folder would be %d characters long "
+                         "(%s), over %d: ESP-IDF cannot run a build that deep on Windows. "
+                         "Give --scratch-from a shallower worktree (a list's {clone})"
+                         % (len(os.path.abspath(deep[0])), deep[0], MAX_BUILD_DIR))
     there = [p for p in paths.values() if os.path.exists(p)]
     if there:
         raise SystemExit("refusal_pairs_runs: already there: %s" % there)
@@ -225,8 +289,16 @@ def main(argv=None):
     run.note("product commit %s" % commit)
     run.note("harness commit %s (this worktree, clean)" % harness)
     run.note("jobs %s" % (a.jobs or "(the build's default)"))
+    if work:
+        run.note("worktrees in %s, with the product commit's shared checkouts %s"
+                 % (work, ", ".join(sorted(shared))))
     bad = []
     try:
+        for name, p in sorted(shared.items()):
+            tag = name[len("shared-"):]
+            rc, out = git("worktree", "add", "--detach", p, tag, cwd=top)
+            if rc:
+                raise RuntimeError("git worktree add %s %s: %s" % (p, tag, out))
         for k, p in paths.items():
             rc, out = git("worktree", "add", "--detach", p, commit, cwd=top)
             if rc:
@@ -355,7 +427,13 @@ def main(argv=None):
         run.note("STOPPED: %s: %s" % (type(e).__name__, e))
         bad.append("stopped")
     finally:
-        left = remove_worktrees(top, paths, run.note)
+        left = remove_worktrees(top, dict(paths, **shared), run.note)
+        if work:
+            try:
+                scratch_dir.remove(work)
+            except Exception as e:                   # noqa: BLE001
+                left.append(work)
+                run.note("LEFTOVER %s: %s" % (work, e))
         if left:
             bad.append("leftover worktrees")
         run.note("SUMMARY: %s" % ("PASS" if not bad else "FAIL: " + ", ".join(bad)))
