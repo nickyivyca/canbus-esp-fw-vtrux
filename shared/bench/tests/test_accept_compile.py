@@ -235,6 +235,25 @@ def test_build_failure():
     assert b["verdict"] == "FAIL" and not b.get("images"), b
 
 
+def test_build_tree_setup():
+    """A4, A5: a build's own tree gets the adapter's tree_setup like any
+    other tree, run with the run's settings, and its record holds the
+    setup; the build then runs (the charge-interposer tester, 2026-11-04:
+    an adapter with a tree_setup had every build refused, "its setup needs
+    the run's settings")."""
+    import types
+    f = Fixture()
+    A = types.ModuleType("setup_adapter")
+    A.__dict__.update({k: v for k, v in vars(FA).items() if not k.startswith("__")})
+    A.tree_setup = lambda tree: [["proj/check.py"]]
+    A.tree_installed = lambda tree, results: {}
+    b = B.run_builds(f.repo, f.alist, A, f.machine, f.rec, f.made, f.parent, f.base_env(),
+                     trees=f.trees)["fw"]
+    assert b["verdict"] == "PASS" and b.get("images"), b
+    cmds = b["tree_record"].get("setup", {}).get("commands", [])
+    assert [c["argv"] for c in cmds] == [["proj/check.py"]] and cmds[0]["rc"] == 0, cmds
+
+
 def test_settings_from_builds():
     """A6: the run's settings are the machine's settings, with the keys that
     depend on a build filled from the build records by the adapter's key
@@ -345,7 +364,7 @@ def test_chain_run():
 
 
 TESTS = [test_build_record, test_build_is_build_work, test_build_failure,
-         test_settings_from_builds, test_settings_masked_and_removed,
+         test_build_tree_setup, test_settings_from_builds, test_settings_masked_and_removed,
          test_settings_no_passwords, test_env, test_compile_shape, test_chain_run]
 
 MUTANTS = [
@@ -357,6 +376,7 @@ MUTANTS = [
     (B, "chain_in_record", test_build_is_build_work),
     (B, "fail_recorded", test_build_failure),
     (B, "masked_record", test_build_is_build_work),
+    (B, "setup_settings", test_build_tree_setup),
     (ST, "keymap", test_settings_from_builds),
     (ST, "runs_in_record", test_settings_from_builds),
     (ST, "masked", test_settings_masked_and_removed),
