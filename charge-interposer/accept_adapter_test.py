@@ -124,7 +124,8 @@ def test_list_loads(A, work):
     # harness's shared pin from the pin file at its commit
     assert [b["id"] for b in got.builds] == ["bridge"], got.builds
     pins = json.loads(git(REPO, "show", "%s:charge-interposer/firmware/shared_pins.json" % head))
-    assert got.trees["head"]["shared"] == {"twai_port": pins["shared/twai_port"]["commit"]}, \
+    assert got.trees["head"]["shared"] == {c: pins["shared/" + c]["commit"]
+                                           for c in ("bench", "tools", "twai_port")}, \
         got.trees["head"]
 
 
@@ -287,13 +288,38 @@ def test_shared_pins(A, work):
     shared_pin.py and vtrux_tools.py look), and one at another commit is
     named for its component."""
     head = git(REPO, "rev-parse", "HEAD")
-    pins = json.loads(git(REPO, "show", "%s:charge-interposer/firmware/shared_pins.json" % head))
+    comps = ("bench", "tools", "twai_port")
+
+    def pins_at(c):
+        return json.loads(git(REPO, "show", "%s:charge-interposer/firmware/shared_pins.json" % c))
+
+    def want_paths(pins):
+        """each pinned tag's first component (by name) in shared-<tag>, a
+        second at a taken tag in shared-<component>"""
+        out, taken = {"project": "repo"}, set()
+        for c in comps:
+            d = "shared-%s" % pins["shared/" + c]["tag"]
+            out[c] = d if d not in taken else "shared-%s" % c
+            taken.add(out[c])
+        return out
+
+    pins = pins_at(head)
     tp = pins["shared/twai_port"]
-    assert A.shared_pins(REPO, head) == {"twai_port": tp["commit"]}, A.shared_pins(REPO, head)
-    assert A.tree_paths("x", {"project": head, "shared": {"twai_port": tp["commit"]}}) == {
-        "project": "repo", "twai_port": "shared-%s" % tp["tag"]}
+    got = A.shared_pins(REPO, head)
+    assert got == {c: pins["shared/" + c]["commit"] for c in comps}, got
+    assert A.tree_paths("x", {"project": head, "shared": got}) == want_paths(pins), \
+        A.tree_paths("x", {"project": head, "shared": got})
     assert A.tree_paths("x", {"project": head, "shared": {"twai_port": head}}) == {
         "project": "repo", "twai_port": "shared-twai_port"}
+    # the 2a product commit: every pin at one tag, so one shared-<tag> and
+    # the other two named for themselves; at HEAD shared/bench is at another
+    # tag (2026.11.04.2) than the rest
+    prod = "cf1b911326d62fc7a7a743be2050ff51bf37f0d6"
+    pp = pins_at(prod)
+    assert len({pp["shared/" + c]["tag"] for c in comps}) == 1, pp
+    assert A.tree_paths("x", {"project": prod, "shared": A.shared_pins(REPO, prod)}) == {
+        "project": "repo", "bench": "shared-%s" % pp["shared/bench"]["tag"],
+        "tools": "shared-tools", "twai_port": "shared-twai_port"}
     assert A.tree_paths("x", {"project": head, "shared": {}}) == {"project": "repo"}
     # a commit from before the pin file (port step 2a) carries its own
     # shared/: no pins, and a component the list gives is named for itself
@@ -582,6 +608,11 @@ MUTANTS = [
      '("shared-%s" % c) if'),
     ("a checkout at another commit named by the tag",
      'if p.get("commit") == commit else', 'if p else'),
+    ("only the TWAI fake checked out",
+     'TREE_SHARED = {"bench": "shared/bench", "tools": "shared/tools",\n'
+     '               "twai_port": "shared/twai_port"}',
+     'TREE_SHARED = {"twai_port": "shared/twai_port"}'),
+    ("two components at one tag in one folder", "        if d in taken:\n", "        if False:\n"),
     ("another ESP-IDF taken", '    if desc.get("git_revision") != IDF_VERSION:', "    if False:"),
     ("a failed build's keys given", "        if not app:\n            continue\n",
      '        if not app:\n            app = "none"\n'),

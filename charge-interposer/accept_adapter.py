@@ -84,13 +84,12 @@ removes only what it makes there (A14).
                      runs the command, then fails the build if it changed a
                      tracked file of the tree (dependencies.lock: shared/tools
                      R33); local only
-  shared_pins,       the harness's shared pin, shared/twai_port, from
-  tree_paths         charge-interposer/firmware/shared_pins.json at the tree's
-                     commit; its checkout is named shared-<tag>, the folder
-                     shared_pin.py and vtrux_tools.py look for beside a
-                     worktree's root, so the one checkout of the pinned
-                     commit also serves shared/bench and shared/tools at the
-                     same tag
+  shared_pins,       the shared pins, shared/bench, shared/tools and
+  tree_paths         shared/twai_port, from charge-interposer/firmware/
+                     shared_pins.json at the tree's commit; each pinned tag's
+                     checkout is named shared-<tag>, the folder shared_pin.py
+                     and vtrux_tools.py look for beside a worktree's root (a
+                     second component at the same tag gets shared-<component>)
 
   settings_keys      for each build that made its images: build_<id> (its
                      build folder), image_<id> (the app) and elf_<id>, for a
@@ -140,10 +139,12 @@ def product_files(root):
 
 
 PIN_FILE = "charge-interposer/firmware/shared_pins.json"
-# the shared components a tree checks out: the one the harness reads from a
-# tree (host_bridge's TWAI_FAKE=shared fake); shared/bench and shared/tools
-# are read from the same checkout of the pinned commit (tree_paths)
-TREE_SHARED = {"twai_port": "shared/twai_port"}
+# the shared components a tree checks out, each at its pin: the harness's
+# shared/bench (shared_pin.use_bench) and shared/twai_port (host_bridge's
+# TWAI_FAKE=shared fake), and the build tooling's shared/tools
+# (vtrux_tools.py); each pinned tag's checkout is shared-<tag>/ (tree_paths)
+TREE_SHARED = {"bench": "shared/bench", "tools": "shared/tools",
+               "twai_port": "shared/twai_port"}
 PROJECT_DIR = "repo"
 
 
@@ -180,14 +181,22 @@ def shared_pins(repo, commit):
 def tree_paths(name, tree):
     """The project in repo/; a shared component at its pinned commit in
     shared-<tag>/ beside it (the folder shared_pin.py and vtrux_tools.py
-    look for beside a worktree's root), else shared-<component>/."""
+    look for beside a worktree's root), else shared-<component>/. Pins may
+    name different tags (shared/bench moves alone); a second component at
+    a tag already named gets its own shared-<component>/, the first
+    checkout of the tag's commit serving both."""
     out = {"project": PROJECT_DIR}
     pins = {}
     if tree.get("shared"):
         pins = _pins(os.path.dirname(HERE), tree["project"]) or {}
-    for c, commit in tree["shared"].items():
+    taken = set()
+    for c, commit in sorted(tree["shared"].items()):
         p = pins.get(TREE_SHARED.get(c, ""), {})
-        out[c] = ("shared-%s" % p["tag"]) if p.get("commit") == commit else ("shared-%s" % c)
+        d = ("shared-%s" % p["tag"]) if p.get("commit") == commit else ("shared-%s" % c)
+        if d in taken:
+            d = "shared-%s" % c
+        taken.add(d)
+        out[c] = d
     return out
 
 
