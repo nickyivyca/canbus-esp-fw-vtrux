@@ -415,7 +415,9 @@ def test_suites():
     #      adapter's build target (port step 2a acceptance list)
     # 239: variant-diff-self-test, with 2a acceptance (h)
     # 240: no-led-self-test, with 2a acceptance (j)
-    assert len(seen) == 240, "checks across the suites: %d" % len(seen)
+    # 242: b-bridge/idf-log and b-witness/idf-log, spec 8.3 on the board
+    #      (2a acceptance (j), reviewer 2026-11-04)
+    assert len(seen) == 242, "checks across the suites: %d" % len(seen)
     # madhouse gets the pinned canre beside the code, named by CANRE_DIR
     mad = 0
     for name in ("emulated", "harness"):
@@ -658,6 +660,48 @@ def _image_images_dir(variant, settings):
     s = dict(settings)
     s.pop("interposer_builds", None)
     return _ORIG["_interposer_image"](variant, s)
+
+
+def test_idf_log_checks():
+    """Spec 8.3 from port step 2a (the charge-interposer reviewer,
+    2026-11-04, 2a acceptance (j)): b-bridge and b-witness each run
+    bench_flight_silence.py --idf-log on their image (no --pcan: the image's
+    own lines pass, only framework log forms fail); b-truck keeps the
+    stronger flight-silence, no application byte at all, without --idf-log."""
+    _s, su = _all()
+    g = {x.name: x for x in su["bench"].groups}
+
+    def argv(group, cid):
+        cs = [c for c in g[group].checks if c.id == cid]
+        assert len(cs) == 1 and not cs[0].skip, (group, cid, [c.id for c in g[group].checks])
+        return [str(a) for a in cs[0].argv]
+    for group in ("b-bridge", "b-witness"):
+        a = argv(group, "idf-log")
+        assert a[0].endswith("bench_drivers/bench_flight_silence.py") and "--idf-log" in a \
+            and a[a.index("--port") + 1] == "{serial_port}" and "--pcan" not in a \
+            and a[a.index("--out") + 1].startswith("{outdir}"), (group, a)
+    t = argv("b-truck", "flight-silence")
+    assert "--idf-log" not in t and "--pcan" in t, t
+
+
+def _drop_witness_idf_log(s):
+    for g in s.groups:
+        if g.name == "b-witness":
+            g.checks = [c for c in g.checks if c.id != "idf-log"]
+
+
+def _idf_log_flag_dropped(s):
+    for g in s.groups:
+        for c in g.checks:
+            if c.id == "idf-log":
+                c.argv = [a for a in c.argv if a != "--idf-log"]
+
+
+def _truck_idf_log(s):
+    for g in s.groups:
+        for c in g.checks:
+            if g.name == "b-truck" and c.id == "flight-silence":
+                c.argv = list(c.argv) + ["--idf-log"]
 
 
 def _image_never_refuses(variant, settings):
@@ -1424,7 +1468,8 @@ def test_runner_stage():
 
 TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_corrupt_pin_judge, test_c12_judge, test_host_bridge_judge,
-         test_suites, test_interposer_images, test_list_build_images, test_mutant_wiring,
+         test_suites, test_interposer_images, test_list_build_images, test_idf_log_checks,
+         test_mutant_wiring,
          test_identify, test_pycache_ignored,
          test_usb_baselines, test_usb_stops, test_reopen_skip,
          test_script_coverage, test_shared_bench_tests,
@@ -1889,6 +1934,12 @@ MUTANTS = {
         ("product_files", _no_machine, "machine.py left out of the product"),
         ("harness", _wrap_suite("harness", _product_in_harness),
          "the harness suite gated on the product digest")],
+    "test_idf_log_checks": [
+        ("bench", _wrap_suite("bench", _drop_witness_idf_log), "no idf-log on the witness"),
+        ("bench", _wrap_suite("bench", _idf_log_flag_dropped),
+         "idf-log run without --idf-log (total silence on a printing image)"),
+        ("bench", _wrap_suite("bench", _truck_idf_log),
+         "the truck's flight-silence weakened to --idf-log")],
     "test_list_build_images": [
         ("_interposer_image", _image_folder_pins,
          "the pins recomputed from the build folders, not the records'"),

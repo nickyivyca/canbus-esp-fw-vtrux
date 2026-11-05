@@ -818,6 +818,12 @@ def bench(settings):
         # serial log now goes to the check's own folder
         bpy("reset-check", "reset_check.py",
             ["--serial-log", "{outdir}/reset_check.serial.log"]),
+        # spec 8.3 from port step 2a: no framework log line from the image
+        # (ESP-IDF's esp_log, the Arduino core's log_x), its own lines
+        # allowed; the truck's flight-silence is the stronger form (the
+        # charge-interposer reviewer, 2026-11-04)
+        bpy("idf-log", "bench_flight_silence.py",
+            ["--idf-log", "--port", "{serial_port}", "--out", "{outdir}/idf_log_bridge.txt"]),
         bpy("keepalive-probe", "keepalive_probe.py", [], judge=recorded_judge),
         bpy("usb-host-baseline-ack", "bench_usb_host.py",
             ["--port", "{serial_port}", "--case", "baseline-boots", "--ack",
@@ -890,6 +896,10 @@ def bench(settings):
                   "'Access denied', a harness defect, not fixed (a25e and "
                   "4cdb failed the same way); reviewer 2026-10-22: a skip "
                   "until it reopens in a fresh process")),
+        # spec 8.3, as on the bridge (the output named for the image, so the
+        # two checks' command lines differ, as test_suites asks of any two)
+        bpy("idf-log", "bench_flight_silence.py",
+            ["--idf-log", "--port", "{serial_port}", "--out", "{outdir}/idf_log_witness.txt"]),
         Check("innomaker-replug", ["-"], skip=(
             "plan Step 4 no-hands sheet item 1: the Innomaker replug remedy "
             "needs hands (DEFERRED)")),
