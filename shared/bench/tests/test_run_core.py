@@ -1393,6 +1393,32 @@ def test_skip():
     assert not os.path.exists(marker), "a skipped check ran"
 
 
+def test_missing_setting():
+    """A check whose argv or env names a setting the run does not have is an
+    ERROR naming it, with a check.log; the other checks of its group and of
+    its lane still run and keep their own verdicts (ACCEPT-SPEC A12: the
+    acceptance runner's {build_<id>} after a failed build, 2026-11-04)."""
+    env = Env("missing_setting")
+    s = suite([Group("g", [chk("before", "pass"),
+                           Check("argv", pc("import sys; sys.exit(0)") + ["{no_such_build}"],
+                                 python=True, timeout_s=60),
+                           chk("after", "import sys; sys.exit(1)"),
+                           Check("env", pc("pass"), python=True, timeout_s=60,
+                                 env={"X": "{no_such_env}"})]),
+               Group("h", [chk("other", "pass")])])
+    eng, rec = run(env, s)
+    v = verdicts(rec)
+    assert v == {"g/before": "PASS", "g/argv": "ERROR", "g/after": "FAIL",
+                 "g/env": "ERROR", "h/other": "PASS"}, v
+    by = {r["id"]: r for r in rec["results"]}
+    assert "{no_such_build}" in by["g/argv"]["detail"], by["g/argv"]
+    assert "{no_such_env}" in by["g/env"]["detail"], by["g/env"]
+    log = os.path.join(eng.run_dir, by["g/argv"]["log"])
+    with open(log, encoding="utf-8") as f:
+        assert "{no_such_build}" in f.read()
+    assert "crashed" not in json.dumps(rec["results"]), rec["results"]
+
+
 def test_base_env():
     """A local check with base_env starts from that environment, not the
     runner's own: a variable only in the runner's environment does not reach
@@ -2322,7 +2348,8 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_digest_in_scratch, test_digest_hard_files_removed,
          test_digest_unremovable_printed,
          test_resume_code,
-         test_redact_scope, test_gate, test_skip, test_base_env, test_record_settings,
+         test_redact_scope, test_gate, test_skip, test_missing_setting, test_base_env,
+         test_record_settings,
          test_timeout,
          test_resume, test_carry_finished, test_carry_check_end, test_compare,
          test_esptool_flasher,
@@ -2426,6 +2453,7 @@ MUTANTS = {
     "test_redact_scope": _rule("redact_scope"),
     "test_gate": _rule("gate"),
     "test_skip": _rule("skip"),
+    "test_missing_setting": _rule("missing_setting"),
     "test_base_env": _rule("base_env"),
     "test_record_settings": _rule("record_settings"),
     "test_timeout": _rule("timeout"),

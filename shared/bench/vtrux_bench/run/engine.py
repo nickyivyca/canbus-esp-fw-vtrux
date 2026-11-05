@@ -210,7 +210,7 @@ RULES = {k: True for k in (
     "subset_mark", "subset_not_whole", "start_identify", "restore_after_stop",
     "standing_line", "product_digest", "digest_bridge", "board_hooks",
     "start_hook_stops", "release_line", "end_crash_boards", "carry_finished",
-    "carry_check_end")}
+    "carry_check_end", "missing_setting")}
 
 IDENTIFY_ERROR = "<identify failed>"
 
@@ -283,9 +283,15 @@ SHIP_EXCLUDE = {"__pycache__", ".pio", ".git", "build"}
 SSH = ("ssh", "-o", "BatchMode=yes")
 
 
+class MissingSetting(SuiteError):
+    """A check's argv, env or cwd names {k}, a setting the run does not
+    have: that check is an ERROR, the rest of its lane runs (RULES
+    "missing_setting")."""
+
+
 class _Strict(dict):
     def __missing__(self, k):
-        raise SuiteError("no setting {%s} for formatting" % k)
+        raise MissingSetting("no setting {%s} for formatting" % k)
 
 
 def fmt(s, ctx):
@@ -1094,15 +1100,31 @@ class Engine:
             self._ship(g)
             work = self.remote_work(host)
             ctx.update(work=work, outdir="%s/out/%s/%s" % (work, g.name, c.id))
-        argv = [fmt(a, ctx) for a in c.argv]
+        try:
+            argv = [fmt(a, ctx) for a in c.argv]
+            c_env = {k: fmt(v, ctx) for k, v in c.env.items()}
+            cwd = fmt(c.cwd, ctx) if c.cwd else None
+        except MissingSetting as e:
+            if not RULES["missing_setting"]:
+                raise
+            # this check alone: one missing setting (a build that failed,
+            # so it set no build_<id>) must not hide the other checks' own
+            # results by crashing the lane (ACCEPT-SPEC A12)
+            detail = "not started: its command names %s" % e
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write(detail + "\n")
+            self.rec.result(
+                id=fid, check=fid, group=g.name, verdict=Verdict.ERROR, detail=detail,
+                log=os.path.relpath(log_path, self.run_dir).replace("\\", "/"))
+            self.rec.event("check-end", check=fid, group=g.name, results=1)
+            return False
         if c.python:
             py = cfg.get("python")
             if not py:
                 raise SuiteError("hosts.%s.python is not set" % host)
             argv = list(py) + argv
         env = dict(cfg.get("env") or {})
-        env.update({k: fmt(v, ctx) for k, v in c.env.items()})
-        cwd = fmt(c.cwd, ctx) if c.cwd else None
+        env.update(c_env)
         timeout_s = c.timeout_s if RULES["timeout"] else 10 ** 9
         if c.cls == "wallclock":
             with self._wc_lock:

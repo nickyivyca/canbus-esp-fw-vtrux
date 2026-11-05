@@ -216,7 +216,10 @@ shallow clone is refused.
 `PASS`, `FAIL`, `KNOWN-FAIL` (a FAIL in the suite's registry, with its
 reference), `VOID` (a premise was not met, or the board's image changed
 under the group), `ERROR` (the check could not be judged: crashed, timed
-out, or returned no verdict -- never a PASS), `NOT-RUN` (with the reason),
+out, or returned no verdict -- never a PASS; or its argv, env or cwd names
+a setting the run does not have, such as an acceptance list's
+`{build_<id>}` after that build failed: that check alone is not started and
+says which setting, and the rest of its lane runs), `NOT-RUN` (with the reason),
 `INCONCLUSIVE`, `NOT-APPLICABLE`. `--resume` carries PASS, FAIL,
 KNOWN-FAIL, INCONCLUSIVE and NOT-APPLICABLE results and runs the rest
 again (VOID, ERROR, NOT-RUN). A registry entry that passes is flagged as
