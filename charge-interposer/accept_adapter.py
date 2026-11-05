@@ -644,13 +644,15 @@ def _vport_parse(text):
     """{"windows": {"<rate>/<state>": {figure: [numbers]} or {"fault": line}},
     "arms": {arm: verdict}, "final": line or None, "faults": [lines],
     "flags": [lines]}; board> lines are not read."""
-    out = {"windows": {}, "arms": {}, "final": None, "faults": [], "flags": []}
+    out = {"windows": {}, "arms": {}, "final": None, "faults": [], "flags": [],
+           "headers": set(), "unparsed": []}
     in_verdicts = False
     for ln in text.splitlines():
         if ln.lstrip().startswith("board>"):
             continue
         if ln.startswith("== "):
             in_verdicts = ln.strip() == "== verdicts"
+            out["headers"].add(ln.strip())
             continue
         if "TEST FAULT" in ln:
             out["faults"].append(ln.strip())
@@ -674,14 +676,40 @@ def _vport_parse(text):
                 f = rx.search(body)
                 if f:
                     figs[name] = [float(x) for x in f.groups()]
+            if not figs:
+                out["unparsed"].append(ln.strip())
             out["windows"][w] = figs
     return out
 
 
+VP_STEP = "== 2 wrong bit rate (normal mode, AUTORECOVER on)"
+
+
+def _vport_read(side):
+    """(the check's verdict, the parsed report) of a run side; a report
+    this parser reads as nothing is refused (raises), so a format that
+    drifted is never compared as "the same" (the charge-interposer
+    reviewer, 2026-11-04): no bit-rate step, no window, a window line with
+    no figure that is not a TEST FAULT, or no verdicts section (which is
+    empty in a run that passes: an arm is listed only when it fails or
+    faults)."""
+    verdict, text = _vport_report(side)
+    p = _vport_parse(text)
+    where = "%s's %s" % (side.get("dir"), VPORT_REPORT)
+    if VP_STEP not in p["headers"]:
+        raise ValueError("%s has no bit-rate step (%r)" % (where, VP_STEP))
+    if not p["windows"]:
+        raise ValueError("%s: no window line read" % where)
+    if p["unparsed"]:
+        raise ValueError("%s: a window line with no figure read: %s" % (where, p["unparsed"][0]))
+    if "== verdicts" not in p["headers"]:
+        raise ValueError("%s has no verdicts section" % where)
+    return verdict, p
+
+
 def _vport_windows(a, b, spec, adapter):
-    va, ta = _vport_report(a)
-    vb, tb = _vport_report(b)
-    pa, pb = _vport_parse(ta), _vport_parse(tb)
+    va, pa = _vport_read(a)
+    vb, pb = _vport_read(b)
     out = []
 
     def counted(line):
