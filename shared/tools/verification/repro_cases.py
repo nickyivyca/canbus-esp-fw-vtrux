@@ -26,10 +26,11 @@ the .bin.
     fixture     release_cases.py's fixture commit (reproducible build on): R19 met
     repro_off   the fixture with CONFIG_APP_REPRODUCIBLE_BUILD off: R19 not met, since without
                 reproducible build the absolute paths compiled in give the same code two image
-                hashes (gen-inhibit VALIDATION R5's basis). Until 2026-11-04 this case wanted R19
-                met, as gen-inhibit's own R19 run while it built with reproducible build off
-                (until port step 0b); since 0b that run is gen-inhibit's own (gen-inhibit
-                reviewer, 2026-11-04)
+                hashes (R5's basis in shared/tools VALIDATION.md). Until 2026-11-04 this case
+                wanted R19 met, as gen-inhibit's own R19 run while gen-inhibit built with
+                reproducible build off (until its port step 0b); since 0b gen-inhibit builds
+                with it on, and its own R19 run is a clone-pair run of its release build (its
+                port step 1d, item 1a) (gen-inhibit reviewer, 2026-11-04)
     mini        the minimal project (hello_world, esp32c3, reproducible build on): R19 met
     time_macro  the minimal project printing __DATE__ and __TIME__: R19 met, since the release
                 build sets one fixed SOURCE_DATE_EPOCH (R9)
