@@ -179,6 +179,48 @@ def test_shells(A, work):
         raise AssertionError("powershell on madhouse was taken")
 
 
+def test_settings_tree_vars(A, work):
+    """A7, A15 (the charge-interposer reviewer, 2026-11-05, after run f308):
+    machine settings whose hosts.<host>.env names INTERPOSER_CODE or
+    PYTHONPATH, on any host, are refused at the first shell the runner asks
+    for, naming the host and the key; madhouse's real settings (no such key)
+    and a host with no env pass."""
+    def s():
+        return {"hosts": {"local": {"python": ["py", "-3.14"],
+                                    "env": {"REVERSE_IT_DIR": "C:/r", "PYTHONUTF8": "1"}},
+                          "madhouse": {"python": ["python3", "-B"], "ssh": "m", "workroot": "/w",
+                                       "env": {"PYTHONDONTWRITEBYTECODE": "1",
+                                               "REVERSE_IT_DIR": "/r"}},
+                          "other": {"python": ["python3"]}},
+                "bash": r"C:\bash.exe"}
+    assert A.settings_refusal(s()) is None, A.settings_refusal(s())
+    assert A.shell_argv("python", s()) == ["py", "-3.14", "-B"]
+    assert A.shell_argv("python", s(), host="madhouse") == ["python3", "-B"]
+    for host in ("local", "madhouse"):
+        for key in ("INTERPOSER_CODE", "PYTHONPATH"):
+            t = s()
+            t["hosts"][host]["env"][key] = "C:/somewhere/charge-interposer"
+            why = A.settings_refusal(t)
+            assert why and ("hosts.%s.env names %s" % (host, key)) in why, (host, key, why)
+            for shell, h in (("python", "local"), ("git-bash", "local"),
+                             ("python", "madhouse")):
+                try:
+                    A.shell_argv(shell, t, host=h)
+                except A.AdapterError as e:
+                    assert ("hosts.%s.env names %s" % (host, key)) in str(e), str(e)
+                    continue
+                raise AssertionError("%s on %s taken with hosts.%s.env %s"
+                                     % (shell, h, host, key))
+    # both keys on both hosts: every one named
+    t = s()
+    for host in ("local", "madhouse"):
+        t["hosts"][host]["env"].update(INTERPOSER_CODE="x", PYTHONPATH="y")
+    why = A.settings_refusal(t)
+    for host in ("local", "madhouse"):
+        for key in ("INTERPOSER_CODE", "PYTHONPATH"):
+            assert ("hosts.%s.env names %s" % (host, key)) in why, why
+
+
 def test_idf_shell(A, work):
     """A5, A15: the "idf" shell is the host's python running
     fw_harness/idf_build_shell.py with the machine settings' ESP-IDF
@@ -461,14 +503,18 @@ def test_identifier_scan(A, work):
 
 def test_artifacts_row(A, work):
     """A13: the record's row goes into the artifacts README beside the runs
-    folder, at the top of its runs/ rows; a README with no runs/ rows is a
-    failure the close reports, never a row put anywhere."""
+    folder, at the top of its runs/ folder rows, never beside a row naming
+    a file under runs/ in another table (run f308's row went there,
+    2026-11-05); a README with no runs/ folder rows is a failure the close
+    reports, never a row put anywhere."""
     art = os.path.join(work, "art")
     runs = os.path.join(art, "runs")
     os.makedirs(os.path.join(runs, "accept_s_1"))
     readme = os.path.join(art, "README.md")
     with open(readme, "w", encoding="utf-8", newline="\n") as f:
-        f.write("# x\n\n| Path | What |\n|---|---|\n| `runs/old_1/` | an old run |\n")
+        f.write("# x\n\n## Moved\n\n| Was | Now |\n|---|---|\n"
+                "| `runs/step4_x/reset_check.py` | `charge-interposer/bench_drivers/reset_check.py` |\n"
+                "\n## Runs\n\n| Path | What |\n|---|---|\n| `runs/old_1/` | an old run |\n")
     summary = {"step": {"id": "s", "verification": "9.1"},
                "verdict": {"lines": ["ACCEPTANCE PASS"]}}
     row = A.artifacts_row(os.path.join(runs, "accept_s_1"), summary)
@@ -484,13 +530,15 @@ def test_artifacts_row(A, work):
     assert A.artifacts_row(os.path.join(runs, "accept_s_1"), dict(summary, dev=True)) is None
     with open(readme, encoding="utf-8") as f:
         assert f.read() == before, "a dev run wrote a row"
-    with open(readme, "w", encoding="utf-8", newline="\n") as f:
-        f.write("# x\n\nno table\n")
-    try:
-        A.artifacts_row(os.path.join(runs, "accept_s_1"), summary)
-    except A.AdapterError:
-        return
-    raise AssertionError("a README with no runs/ rows took the row")
+    for text in ("# x\n\nno table\n",
+                 "# x\n\n| Was | Now |\n|---|---|\n| `runs/step4_x/reset_check.py` | `x.py` |\n"):
+        with open(readme, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+        try:
+            A.artifacts_row(os.path.join(runs, "accept_s_1"), summary)
+        except A.AdapterError:
+            continue
+        raise AssertionError("a README with no runs/ folder rows took the row: %r" % text)
 
 
 def _write(path, text):
@@ -704,7 +752,7 @@ def test_vport_real(A, work):
 
 
 TESTS = [test_identity, test_catalogue, test_list_loads, test_tree_names, test_shells,
-         test_idf_shell, test_targets, test_settings_keys, test_suite_settings,
+         test_settings_tree_vars, test_idf_shell, test_targets, test_settings_keys, test_suite_settings,
          test_shared_pins,
          test_madhouse_entries, test_tree_setup, test_identifier_scan, test_artifacts_row,
          test_masked_log,
@@ -735,6 +783,8 @@ MUTANTS = [
     ("counts not kept", '"%s: %s x%d" % (rel, cat, k)', '"%s: %s" % (rel, cat)'),
     ("the row anywhere", '        raise AdapterError("%s has no runs/ rows',
      '        lines.append(""); first = len(lines)\n        if 0: raise AdapterError("%s has no runs/ rows'),
+    ("the row beside any runs/ path", r'RUN_ROW = re.compile(r"^\| `runs/[^`/]+/` \|")',
+     r'RUN_ROW = re.compile(r"^\| `runs/")'),
     ("run ids not masked", '    (re.compile(r"charge-interposer-(?:emulated|bench|harness)_',
      '    (re.compile(r"NO-charge-interposer-(?:emulated|bench|harness)_'),
     ("echo lines kept", '            if line.startswith(("$ ", "# cwd=")):\n                continue\n', ""),
@@ -818,6 +868,15 @@ MUTANTS = [
      '    if "== verdicts" not in p["headers"]:', "    if False:"),
     ("vport: the window figures misread", r'(\d+) error frame\(s\) in (\d+) burst\(s\) over',
      r'(\d+) error frame\(s\) in (\d) burst\(s\) over'),
+    ("settings naming a tree variable taken", "    if why:\n        raise AdapterError(why)\n",
+     "    pass\n"),
+    ("only the local host's env looked at",
+     '    for host, cfg in sorted(((settings or {}).get("hosts") or {}).items()):',
+     '    for host, cfg in [("local", ((settings or {}).get("hosts") or {}).get("local"))]:'),
+    ("PYTHONPATH not refused", 'TREE_VARS = ("INTERPOSER_CODE", "PYTHONPATH")',
+     'TREE_VARS = ("INTERPOSER_CODE",)'),
+    ("the refusal not naming the host and key", '["hosts.%s.env names %s" % (host, k) for k',
+     '["a host env names a tree variable" for k'),
     ("vport: the same TEST FAULT on both sides counted once",
      '    for side, p in (("a", pa), ("b", pb)):\n        for ln in p["faults"]:',
      '    for side, p in (("a", pa),):\n        for ln in p["faults"]:'),

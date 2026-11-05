@@ -29,6 +29,13 @@ first, for port step 2a). This first cut gives:
   SHELLS, shell_argv python (the host's python from the settings), git-bash
                      (the settings' bash by its full path: a bare "bash" on
                      Windows is WSL's), powershell
+  settings_refusal   machine settings whose hosts.<host>.env names
+                     INTERPOSER_CODE or PYTHONPATH, on any host, are refused,
+                     naming the host and the key, at the first shell_argv
+                     (the first tree's setup, before anything runs): the
+                     runner lays a host's env over every check's, so it would
+                     override tree_env (run 2a f308; the charge-interposer
+                     reviewer, 2026-11-05)
   JUDGES, judge      bench_suite's judges by name
   identifier_scan    reverse-it's prepush scan (its patterns and private
                      value file, firmware/prepush-scan/) over a record: each
@@ -333,11 +340,43 @@ def default_shell(path):
         os.path.splitext(path)[1])
 
 
+# Variables that name a tree's code to what runs in it. The chain runner lays
+# a host's settings env (hosts.<host>.env) over every check's own env on that
+# host, a nested suite run's checks included, so one there would override the
+# tree_env the runner gives each tree (A7, A15) and point every check at one
+# fixed checkout. Run 2a f308 failed that way: INTERPOSER_CODE and PYTHONPATH
+# left in hosts.local.env from chain runs made in the tester's worktree (the
+# charge-interposer reviewer, 2026-11-05: refuse it before anything runs).
+TREE_VARS = ("INTERPOSER_CODE", "PYTHONPATH")
+
+
+def settings_refusal(settings):
+    """Why these machine settings are refused, or None: a host whose env
+    (hosts.<host>.env, on any host, madhouse's included) names a TREE_VARS
+    variable. A check's own env, such as the madhouse checks'
+    INTERPOSER_CODE={work}/code, is not the settings' and is not looked at."""
+    bad = []
+    for host, cfg in sorted(((settings or {}).get("hosts") or {}).items()):
+        env = (cfg or {}).get("env") or {}
+        bad += ["hosts.%s.env names %s" % (host, k) for k in TREE_VARS if k in env]
+    if not bad:
+        return None
+    return ("the machine settings are refused: %s. The runner gives each tree its "
+            "own (tree_env); a host's env is laid over every check's on that host, "
+            "so it would point them all at one checkout. Remove it from the settings"
+            % "; ".join(bad))
+
+
 def shell_argv(shell, settings, host="local"):
     """The command a check's file runs with, on its host: the host's python
     from the settings (-B once); bash (Git Bash by its full path locally, a
     bare bash on Windows being WSL's; plain bash on a Linux host);
-    PowerShell locally only."""
+    PowerShell locally only. The runner asks for one first when it sets up
+    its first tree, before anything runs, so the settings are refused here
+    (settings_refusal)."""
+    why = settings_refusal(settings)
+    if why:
+        raise AdapterError(why)
     if shell == "python":
         py = list(settings["hosts"][host]["python"])
         return py if "-B" in py else py + ["-B"]
@@ -792,17 +831,24 @@ def identifier_scan(folder, values=None):
     return out
 
 
+RUN_ROW = re.compile(r"^\| `runs/[^`/]+/` \|")
+
+
 def artifacts_row(folder, summary):
-    """The record's row, put at the top of the runs/ rows of the artifacts
-    README beside the runs folder. Returns the row; None for a --dev run,
-    which is never evidence and gets no row (its records go to a dev-runs
-    folder of their own: the charge-interposer reviewer, 2026-11-02)."""
+    """The record's row, put at the top of the runs/ folder rows of the
+    artifacts README beside the runs folder: the first row naming a folder
+    under runs/ ("| `runs/<name>/` |"), never a row naming a file there,
+    such as the moved-scripts table's runs/step4_nohands_.../reset_check.py,
+    where run f308's row went (2026-11-05). Returns the row; None for a
+    --dev run, which is never evidence and gets no row (its records go to a
+    dev-runs folder of their own: the charge-interposer reviewer,
+    2026-11-02)."""
     if summary.get("dev"):
         return None
     readme = os.path.join(os.path.dirname(os.path.dirname(folder)), "README.md")
     with open(readme, encoding="utf-8", newline="") as f:
         lines = f.read().split("\n")
-    first = next((i for i, ln in enumerate(lines) if ln.startswith("| `runs/")), None)
+    first = next((i for i, ln in enumerate(lines) if RUN_ROW.match(ln)), None)
     if first is None:
         raise AdapterError("%s has no runs/ rows to put the record's row beside" % readme)
     row = ("| `runs/%s/` | Acceptance record of step %s (VERIFICATION.md %s): %s. Its "
