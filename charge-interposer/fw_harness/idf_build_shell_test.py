@@ -8,8 +8,9 @@ git checkout. Windows only, as the shell is.
 
 Each case names what it checks:
   1. the command sees the export: IDF_PATH and IDF_TOOLS_PATH as given,
-     the Python folder first on PATH, what export.ps1 set, and runs in the
-     current folder
+     the Python folder first on PATH, what export.ps1 set (which writes to
+     stderr from a native command, as ESP-IDF's does), no MSYSTEM though
+     the shell had one, and runs in the current folder
   2. the command's exit code is passed on
   3. a tracked file the command changed (dependencies.lock) is a FAIL line
      naming it, exit 3; with the command's own failure, its code is kept
@@ -38,7 +39,9 @@ import scratch_dir                                      # noqa: E402
 
 SHELL = os.path.join(HERE, "idf_build_shell.py")
 
+# as ESP-IDF's export does, a native command writes to stderr on the way
 EXPORT_PS1 = r"""if ($env:STANDIN_EXPORT_FAIL) { throw "the stand-in export failed" }
+$x = cmd /c "echo Activating the stand-in 1>&2"
 if (-not $env:STANDIN_NO_PYENV) {
   $env:IDF_PYTHON_ENV_PATH = Join-Path $env:IDF_TOOLS_PATH "python_env\standin"
 }
@@ -50,6 +53,7 @@ Write-Host "a line the real export prints"
 COMMAND = r"""import json, os, sys
 out = {k: os.environ.get(k, "") for k in ("IDF_PATH", "IDF_TOOLS_PATH",
        "IDF_PYTHON_ENV_PATH", "STANDIN_EXPORTED")}
+out["MSYSTEM"] = os.environ.get("MSYSTEM")
 out["PATH0"] = os.environ.get("PATH", "").split(os.pathsep)[0]
 out["cwd"] = os.getcwd()
 with open(os.environ["STANDIN_SEEN"], "w") as f:
@@ -125,7 +129,7 @@ def same(a, b):
 
 def case_env(w, shell):
     w.reset()
-    rc, out = w.run(shell)
+    rc, out = w.run(shell, env={"MSYSTEM": "MINGW64"})      # as from Git Bash
     g = w.got() or {}
     assert rc == 0, ("rc", rc, out[-400:])
     assert same(g.get("IDF_PATH", ""), w.idf) and same(g.get("IDF_TOOLS_PATH", ""), w.tools), g
@@ -133,6 +137,7 @@ def case_env(w, shell):
     assert g.get("STANDIN_EXPORTED") == "yes", g
     assert same(g.get("IDF_PYTHON_ENV_PATH", ""), os.path.join(w.tools, "python_env", "standin")), g
     assert same(g.get("cwd", ""), w.repo), g
+    assert g.get("MSYSTEM") is None, ("MSYSTEM reached the command", g.get("MSYSTEM"))
 
 
 def case_rc(w, shell):
@@ -187,6 +192,9 @@ CASES = [case_env, case_rc, case_tracked, case_untracked, case_export_fails, cas
 
 S = "idf_build_shell.py"
 MUTANTS = [
+    ("MSYSTEM passed down", '    env.pop("MSYSTEM", None)\n', ""),
+    ("the export under ErrorActionPreference Stop", "EXPORT = (\n",
+     "EXPORT = (\n    \"$ErrorActionPreference = 'Stop'; \"\n"),
     ("tracked changes not failed", "    if rc == 0 and changed:\n        rc = 3\n", ""),
     ("the command's exit code dropped",
      "    rc = subprocess.run([sys.executable, \"-B\"] + cmd, env=env, cwd=here).returncode\n",
