@@ -19,7 +19,12 @@ the build's tree, at the product commit):
    (the Python the export itself calls as "python", local-paths.md) first
    on PATH, dot-sources P/export.ps1 and hands back the environment it
    leaves. Refused (exit 2), with the command not run, if the export fails
-   or leaves no IDF_PYTHON_ENV_PATH.
+   or leaves no IDF_PYTHON_ENV_PATH. The export runs without
+   $ErrorActionPreference = 'Stop', so an export that fails partway but
+   still sets IDF_PYTHON_ENV_PATH gets through this shell; the command's own
+   check refuses it then: vtrux_tools.py build checks the shell is exported
+   for the interposer's IDF before it builds (the charge-interposer
+   reviewer, 2026-11-04).
 2. The command: [this Python, -B, script] + args, in that environment and
    in the current folder (the runner's cwd: the tree's checkout). Its exit
    code is passed on.
