@@ -52,8 +52,10 @@ taken from images_dir/<images_src>/<variant>/, as their build's
 flasher_args.json gives them; each application's own descriptor must name
 it (interposer_<variant>, version images_src, ESP-IDF v5.4.2), and
 identify must read its build id, the ELF hash's first four bytes, back
-(_interposer_image). The two test images are identified by their @HELLO
-and ELF sha256.
+(_interposer_image). In an acceptance run they are the list's own builds
+instead (interposer_builds, from the build records: ACCEPT-SPEC A9), each
+app's sha256 and descriptor ELF hash the record's. The two test images are
+identified by their @HELLO and ELF sha256.
 
 Settings beyond the core's (see the NICKY-XPS settings JSON in reverse-it
 interposer-firmware/): interposer_code,
@@ -466,6 +468,14 @@ def _md5(path):
     return h.hexdigest()
 
 
+def _sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for blk in iter(lambda: f.read(1 << 20), b""):
+            h.update(blk)
+    return h.hexdigest()
+
+
 def _interposer_image(variant, settings):
     """An ESP-IDF image of the interposer (port step 2a), from the folder
     images_dir/<images_src>/<variant>/, which holds the build's
@@ -479,10 +489,33 @@ def _interposer_image(variant, settings):
     images_src (ESP-IDF's git describe of the commit; never -dirty), its
     ESP-IDF INTERPOSER_IDF, and identify must read the first four bytes of
     its ELF hash back from 0x7F7. A folder that does not say so is refused
-    when the suite is built, before anything is flashed."""
+    when the suite is built, before anything is flashed.
+
+    In an acceptance run (shared/bench ACCEPT-SPEC A9, the list's
+    images_from) the settings carry interposer_builds, {variant: {"dir",
+    "build", "elf_sha256", "app_sha256"}}, from the build records the
+    acceptance runner wrote (accept_adapter.suite_settings), and the images
+    are the list's own builds, read from their build folders: a variant
+    none of them gives is refused. The version is then the build's own (any
+    but -dirty), and the record pins the bytes instead: the app's sha256
+    must be the record's, and its descriptor's ELF hash the record's ELF
+    sha256, so the bytes flashed, and the build id identify reads back,
+    are those of the build the acceptance record names (the
+    charge-interposer reviewer, 2026-11-04). The image's note names the
+    build and its ELF sha256, for the nested run's record."""
     import build_lookup
-    src = settings["images_src"]
-    d = os.path.join(settings["images_dir"], src, variant)
+    builds = settings.get("interposer_builds")
+    pin = None
+    if builds is not None:
+        pin = builds.get(variant)
+        if not pin:
+            raise ValueError("the bench suite flashes the %s image, and no build of the "
+                             "acceptance list gives it (its images_from gives %s)"
+                             % (variant, ", ".join(sorted(builds)) or "none"))
+        src, d = None, pin["dir"]
+    else:
+        src = settings["images_src"]
+        d = os.path.join(settings["images_dir"], src, variant)
     fa_path = os.path.join(d, "flasher_args.json")
     with open(fa_path, encoding="utf-8") as f:
         fa = json.load(f)
@@ -506,16 +539,30 @@ def _interposer_image(variant, settings):
     for what, got, want in (("project name", desc["project_name"], project),
                             ("version", desc["version"], src),
                             ("ESP-IDF", desc["idf_ver"], INTERPOSER_IDF)):
-        if got != want:
+        if want is not None and got != want:
             raise ValueError("%s: its %s is %r, not %r" % (app, what, got,
                                                           want))
     sha = desc["elf_sha256"]
+    build_note = ""
+    if pin is not None:
+        if desc["version"].endswith("-dirty"):
+            raise ValueError("%s: its version %r is a dirty tree's"
+                             % (app, desc["version"]))
+        if _sha256(app) != pin["app_sha256"]:
+            raise ValueError("%s: its sha256 is not build %s's record's (%s)"
+                             % (app, pin["build"], pin["app_sha256"][:16]))
+        if sha != pin["elf_sha256"]:
+            raise ValueError("%s: its descriptor's ELF hash %s is not build %s's "
+                             "ELF sha256 %s" % (app, sha[:16], pin["build"],
+                                                pin["elf_sha256"][:16]))
+        build_note = "; list build %s, ELF sha256 %s" % (pin["build"],
+                                                         pin["elf_sha256"])
     return Image(variant, "esptool", board="x2", expect=sha[:8],
                  params={"files": [[o, p] for o, p in files],
                          "md5": {p: _md5(p) for _o, p in files},
                          "chip": _x2_chip(settings)},
-                 note="%s %s, %s, ELF %s" % (project, desc["version"],
-                                             desc["idf_ver"], sha[:16]))
+                 note="%s %s, %s, ELF %s%s" % (project, desc["version"],
+                                               desc["idf_ver"], sha[:16], build_note))
 
 
 def _idf_image(name, settings):
@@ -665,7 +712,13 @@ class _Build:
                    "dirty_files": dirty.splitlines()[:20],
                    "code_hash": None}
             if images:
-                out["images_src"] = settings["images_src"]
+                if settings.get("interposer_builds") is not None:
+                    # an acceptance run's own builds (ACCEPT-SPEC A9)
+                    out["interposer_builds"] = {
+                        v: {"build": b["build"], "elf_sha256": b["elf_sha256"]}
+                        for v, b in sorted(settings["interposer_builds"].items())}
+                else:
+                    out["images_src"] = settings["images_src"]
                 out["images"] = {k: v.note for k, v in images.items()}
                 # gen-inhibit's tree the WiCAN's hooks run from (read-only)
                 gi = settings.get("gi_tools")

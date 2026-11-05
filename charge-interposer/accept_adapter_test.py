@@ -281,6 +281,38 @@ def test_settings_keys(A, work):
         "elf_bridge": os.path.join(bd, "interposer_bridge.elf")}, A.settings_keys(builds, {})
 
 
+def test_suite_settings(A, work):
+    """A9 (the charge-interposer reviewer, 2026-11-04): a suite run's
+    images come from its images_from builds' records, as the core wrote
+    them: each variant's build folder, its id and the recorded ELF and app
+    sha256. A bench suite run missing a variant the bench suite flashes,
+    or naming a build that is not an idf-build, is refused."""
+    def rec(v, elf="e", app="a", target="idf-build"):
+        bd = os.path.join(work, "s", "build", v)
+        return {"id": "b-" + v, "target": target, "variant": v,
+                "images": {"app": {"path": os.path.join(bd, "interposer_%s.bin" % v),
+                                   "sha256": app + v},
+                           "bootloader": {"path": os.path.join(bd, "bl.bin"), "sha256": "x"}},
+                "elf": {"path": os.path.join(bd, "interposer_%s.elf" % v), "sha256": elf + v}}
+    recs = [rec(v) for v in A.BENCH_VARIANTS]
+    got = A.suite_settings({"id": "b", "suite": "bench"}, recs)
+    assert got == {"interposer_builds": {v: {
+        "dir": os.path.join(work, "s", "build", v), "build": "b-" + v,
+        "elf_sha256": "e" + v, "app_sha256": "a" + v} for v in A.BENCH_VARIANTS}}, got
+    # another suite may take what it names
+    assert set(A.suite_settings({"id": "e", "suite": "emulated"}, recs[:1])
+               ["interposer_builds"]) == {"bridge"}
+    for why, run, rs in (("a bench run without the truck", {"id": "b", "suite": "bench"},
+                          recs[:2]),
+                         ("a build that is not idf-build", {"id": "e", "suite": "emulated"},
+                          [rec("bridge", target="other")])):
+        try:
+            A.suite_settings(run, rs)
+        except A.AdapterError:
+            continue
+        raise AssertionError("not refused: %s" % why)
+
+
 def test_shared_pins(A, work):
     """A4, A15: a tree's shared component is the harness's pin,
     shared/twai_port, from charge-interposer/firmware/shared_pins.json at
@@ -535,11 +567,96 @@ def test_run_logs(A, work):
     assert any(x["kind"] == "verdict" and "m-sims/sim.x" in x["line"] for x in d2), d2
 
 
+VP_IDLE = ("  250k, idle: 352088 error frame(s) in 69 burst(s) over 60 s: per burst min 1 / "
+           "p50 2 / max 351940, 69.0 bursts per minute; node frames that got through: 1521 "
+           "of the 6021 it tried to send in the window (25.3 %; 1521 queued, 4500 refused "
+           "for a full queue); 0 frame(s) from earlier windows' backlog also seen, not counted")
+VP_FLOOD = ("  1M, flooding 7F4: 575234 error frame(s) in 8 burst(s) over 60 s: per burst min "
+            "690 / p50 22670 / max 356454, 8.0 bursts per minute; node frames that got "
+            "through: 1556 of the 6028 it tried to send in the window (25.8 %; 1556 queued, "
+            "4472 refused for a full queue); 538 frame(s) from earlier windows' backlog also "
+            "seen, not counted")
+
+
+def _vp_report(windows=(VP_IDLE, VP_FLOOD), arms=(("dominant/witness", "PASS"),),
+               flag="    FLAG: 4 backward stamp step(s) -- the burst count may be off by up to 4"):
+    lines = ["run at 2026-11-04T00:00:00; vehicle port only", "",
+             "== 2 wrong bit rate (normal mode, AUTORECOVER on)",
+             "    board> @STATUS installed=1 state=running tec=0 rec=128"]
+    for w in windows:
+        lines += [w, "    error-frame gaps within 2 ms of the 10 ms burst threshold: 142"]
+    if flag:
+        lines.append(flag)
+    lines += ["", "== verdicts"] + ["  %-28s %s" % a for a in arms]
+    return "\n".join(lines) + "\n"
+
+
+def test_vport_windows(A, work):
+    """A10 (the charge-interposer reviewer, 2026-11-04: port step 2a (f),
+    the vport x3 runs, each against vp1 and against 6019): vport-windows
+    counts the check's verdict, each arm's verdict, a window on one side
+    only and every TEST FAULT on either side; the windows' figures and the
+    FLAG lines are shown with both sides' values, never counted; a run
+    with no report is refused."""
+    runs = os.path.join(work, "vp")
+    n = [0]
+
+    def run(report, verdict="PASS"):
+        n[0] += 1
+        d = os.path.join(runs, "r%d" % n[0])
+        res = [{"id": A.VPORT_CHECK, "check": A.VPORT_CHECK, "verdict": verdict}]
+        if report is not None:
+            _write(os.path.join(d, "b-vport", "vport-bitrate", "vport-bitrate.txt"), report)
+        _write(os.path.join(d, "b-vport", "vport-bitrate", "check.log"), "log\n")
+        _write(os.path.join(d, "record.json"), json.dumps({"results": res}))
+        return {"kind": "run", "dir": d, "record": {"results": res}}
+
+    def counted(a, b):
+        d = A.comparer("vport-windows")(a, b, {}, A)
+        return [x["line"] for x in d if x["kind"] in ("verdict", "missing", "new")], d
+    base = run(_vp_report())
+    c, d = counted(base, run(_vp_report()))
+    assert c == [], c
+    assert [x["kind"] for x in d] == ["flag", "flag"] and "burst count" in d[0]["line"], d
+    # figures only: shown side by side, nothing counted
+    c, d = counted(base, run(_vp_report(windows=(VP_IDLE.replace("352088", "494441"),
+                                                 VP_FLOOD))))
+    assert c == [], c
+    figs = [x for x in d if x["kind"] == "figure"]
+    assert [x["line"] for x in figs] == [
+        "figure 250k/idle error frames, bursts, seconds: a 352088 69 60 | b 494441 69 60"], figs
+    for why, b, word in (
+            ("an arm's verdict changed", run(_vp_report(arms=(("dominant/witness", "FAIL"),))),
+             "VERDICT arm dominant/witness: PASS -> FAIL"),
+            ("the check's verdict changed", run(_vp_report(), verdict="VOID"),
+             "VERDICT %s: PASS -> VOID" % A.VPORT_CHECK),
+            ("a TEST FAULT added", run(_vp_report(windows=(
+                VP_IDLE, "  1M, flooding 7F4: TEST FAULT: 1M flooding 7F4: the witness's "
+                         "receive failed 12 time(s) in the window"))),
+             "TEST FAULT in b: 1M, flooding 7F4: TEST FAULT"),
+            ("a window gone", run(_vp_report(windows=(VP_IDLE,))),
+             "MISSING in b: window 1M/flooding 7F4")):
+        c, _d = counted(base, b)
+        assert any(word in x for x in c), (why, c)
+    # the same TEST FAULT on both sides still counts
+    faulty = _vp_report(windows=(VP_IDLE, "  1M, idle: TEST FAULT: 1M idle: x"))
+    c, _d = counted(run(faulty), run(faulty))
+    assert len([x for x in c if x.startswith("TEST FAULT in ")]) == 2, c
+    for why, b in (("no report", run(None)),
+                   ("no vport-bitrate result", dict(base, record={"results": []}))):
+        try:
+            counted(base, b)
+        except ValueError:
+            continue
+        raise AssertionError("not refused: %s" % why)
+
+
 TESTS = [test_identity, test_catalogue, test_list_loads, test_tree_names, test_shells,
-         test_idf_shell, test_targets, test_settings_keys, test_shared_pins,
+         test_idf_shell, test_targets, test_settings_keys, test_suite_settings,
+         test_shared_pins,
          test_madhouse_entries, test_tree_setup, test_identifier_scan, test_artifacts_row,
          test_masked_log,
-         test_sim_judged, test_run_logs]
+         test_sim_judged, test_run_logs, test_vport_windows]
 
 MUTANTS = [
     ("suites from another file", '"charge-interposer/bench_suite.py:%s"', '"charge-interposer/suite.py:%s"'),
@@ -621,6 +738,29 @@ MUTANTS = [
     ("no ELF key", '        out["elf_%s" % bid] = b["elf"]["path"]\n', ""),
     ("a commit from before the pin file refused", "    if pins is None:\n        return {}\n",
      '    if pins is None:\n        raise AdapterError("no pin file")\n'),
+    ("the ELF sha256 not the record's",
+     '"elf_sha256": r["elf"]["sha256"], "app_sha256"', '"elf_sha256": "", "app_sha256"'),
+    ("the app sha256 not the record's", '"app_sha256": app["sha256"]}', '"app_sha256": ""}'),
+    ("a bench run missing a variant taken", "        if absent:\n", "        if False:\n"),
+    ("any target's build taken", '        if r.get("target") != "idf-build":',
+     "        if False:"),
+    ("the build folder not the app's", '{"dir": os.path.dirname(app["path"]), "build"',
+     '{"dir": app["path"], "build"'),
+    ("vport: an arm's verdict not counted", '        if x != y:\n            counted("VERDICT arm',
+     '        if False:\n            counted("VERDICT arm'),
+    ("vport: the check's verdict not counted", "    if va != vb:\n", "    if False:\n"),
+    ("vport: a TEST FAULT not counted",
+     '            counted("TEST FAULT in %s: %s" % (side, ln))', "            pass"),
+    ("vport: a missing report taken", "    if not os.path.isfile(path):\n",
+     '    if not os.path.isfile(path):\n        return rs[0]["verdict"], ""\n'),
+    ("vport: figures counted", '{"kind": "figure", "name": "%s %s" % (w, name)',
+     '{"kind": "verdict", "name": "%s %s" % (w, name)'),
+    ("vport: a window on one side only not counted",
+     '"kind": "missing", "line": "MISSING in b: window', '"kind": "flag", "line": "MISSING in b: window'),
+    ("vport: FLAG lines not shown", '        out += [{"kind": "flag"', '        out += [] and [{"kind": "flag"'),
+    ("vport: the same TEST FAULT on both sides counted once",
+     '    for side, p in (("a", pa), ("b", pb)):\n        for ln in p["faults"]:',
+     '    for side, p in (("a", pa),):\n        for ln in p["faults"]:'),
 ]
 
 
