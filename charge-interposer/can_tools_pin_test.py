@@ -290,7 +290,9 @@ def reference(fix, dest):
 
 
 def checks():
-    base = scratch_dir.make("can-tools-pin-test")
+    # depth: its deepest git repo, f2\can-tools (13 below the run folder),
+    # + 12 for .git\config (measured 2026-11-05; scratch_dir)
+    base = scratch_dir.make("can-tools-pin-test", depth=25)
     try:
         # 1. the pin
         p = can_tools_pin.pin()

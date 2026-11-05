@@ -188,7 +188,9 @@ def importers(root):
 
 
 def checks():
-    base = scratch_dir.make("canre-pin-test")
+    # depth: its git repo, wt (3 below the run folder), + 12 for
+    # .git\config (measured 2026-11-05; scratch_dir)
+    base = scratch_dir.make("canre-pin-test", depth=15)
     try:
         # 1. the pin
         p = canre_pin.pin()

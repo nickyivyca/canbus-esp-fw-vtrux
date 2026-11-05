@@ -1768,7 +1768,7 @@ class _NoStore(dict):
 def _make_no_prune(tool, start=None):
     d = scratch_dir.tool_dir(tool, start)
     os.makedirs(d, exist_ok=True)
-    p = tempfile.mkdtemp(prefix="%s-%d-" % (tool, os.getpid()), dir=d)
+    p = tempfile.mkdtemp(prefix="%d-" % os.getpid(), dir=d)
     with open(os.path.join(p, scratch_dir.OWNER), "w", encoding="utf-8") as f:
         json.dump(scratch_dir.owner_record(), f)
     return p
@@ -2008,7 +2008,9 @@ MUTANTS = {
 
 def main():
     global TMP
-    TMP = scratch_dir.make("bench-suite-test")
+    # depth: its deepest git repo, can-tools-pin\can-tools (24 below the
+    # run folder), + 12 for .git\config (measured 2026-11-05; scratch_dir)
+    TMP = scratch_dir.make("bench-suite-test", depth=36)
     try:
         _main()
     finally:

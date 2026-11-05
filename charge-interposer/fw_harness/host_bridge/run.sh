@@ -28,9 +28,10 @@
 # (../../harness_checks/shared_fake_canfail.py).
 #
 # WHERE IT WORKS: one folder per run, W, under the tree's own scratch/, at
-# scratch/charge-interposer-harness/host-bridge/run_XXXXXX, never the system
+# scratch/cih/host-bridge/run_XXXXXX, never the system
 # temp folder (AGENTS.md "Files and folders"; the charge-interposer
-# reviewer, 2026-11-02). Every test binary is built there, and so is
+# reviewer, 2026-11-02; cih/, scratch_dir.py's short root, since
+# 2026-11-05). Every test binary is built there, and so is
 # TWAI_FAKE=shared's copy. It is removed when run.sh ends, pass, fail or
 # refusal, with the two tool folders above it if that leaves them empty; a
 # folder it cannot remove is printed with its path. The run folder is made
@@ -51,7 +52,7 @@ case "${1:-}" in
 esac
 # the tree's root
 ROOT="$(cd "$HERE/../../.." && pwd)"
-WT="$ROOT/scratch/charge-interposer-harness"
+WT="$ROOT/scratch/cih"
 # Another run's cleanup (below) removes host-bridge/ and its parent once
 # they are empty, and that can fall between this run's mkdir -p and its
 # mktemp. So both are made again, three tries in all, as

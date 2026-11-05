@@ -14,8 +14,8 @@ mutated; each must make a test fail.
 
 Since 2026-11-02 they also test where run.sh works (the charge-interposer
 reviewer's order of that day): one run folder under the tree's own
-scratch/charge-interposer-harness/host-bridge/, never the system temp
-folder (the tests set TMPDIR, which must stay empty), removed when run.sh
+scratch/cih/host-bridge/ (scratch_dir.py's short root, since 2026-11-05),
+never the system temp folder (the tests set TMPDIR, which must stay empty), removed when run.sh
 ends, pass, fail or refusal, with the tool folders above it, and a folder
 it cannot remove printed. And (the reviewer's reply of the same day) that
 another run's cleanup removing the tool folders between run.sh making them
@@ -167,12 +167,12 @@ def tree_copy(dst, run_sh_text=None):
 
 def harness(ctx):
     """run.sh's tool folder in its tree's scratch/"""
-    return os.path.join(ctx["root"], "scratch", "charge-interposer-harness")
+    return os.path.join(ctx["root"], "scratch", "cih")
 
 
 def run_folders(ctx, calls):
     """the run folders the builds' outputs went to; each must be in the
-    tree's scratch/charge-interposer-harness/host-bridge/run_*"""
+    tree's scratch/cih/host-bridge/run_*"""
     base = bash_form(os.path.join(harness(ctx), "host-bridge")) + "/run_"
     ws = set()
     for argv, _has in calls:
@@ -298,7 +298,7 @@ def test_own_default(ctx, work):
     TWAI_FAKE=own, every test builds from host_bridge itself, with our own
     twai_fake.cpp, -I host_bridge -I main and nothing more, and nothing
     extra is printed; every binary in one run folder under the tree's
-    scratch/charge-interposer-harness/host-bridge/, nothing in the system
+    scratch/cih/host-bridge/, nothing in the system
     temp folder, and nothing left when run.sh ends."""
     for i, env in enumerate(({}, {"TWAI_FAKE": "own"})):
         w = os.path.join(work, "o%d" % i)
@@ -316,7 +316,7 @@ def test_shared_build(ctx, work):
     each test given the shared twai_fake.c and cpp/twai_fake.cpp right after
     it; -I <copy> -I main -I <fake>/include -I <fake>/host -I <fake>/cpp;
     the copy and the binaries in one run folder under the tree's
-    scratch/charge-interposer-harness/host-bridge/, nothing in the system
+    scratch/cih/host-bridge/, nothing in the system
     temp folder, and nothing left when run.sh ends; nothing extra
     printed."""
     fd = fwd(fake_dir(work))

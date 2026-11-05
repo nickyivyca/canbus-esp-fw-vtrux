@@ -30,7 +30,8 @@ adapter's catalogue entry is `host-bridge-shared-fake`.
 
 **Where it works** (tester, 2026-11-02, the reviewer's order; AGENTS.md
 "Files and folders"): one folder per run under the tree's own `scratch/`,
-`scratch/charge-interposer-harness/host-bridge/run_XXXXXX`, never the
+`scratch/cih/host-bridge/run_XXXXXX` (`cih/`, `scratch_dir.py`'s short root,
+since 2026-11-05), never the
 system temp folder. Every test binary is built there, and so is
 `TWAI_FAKE=shared`'s copy. `run.sh` removes it when it ends, pass, fail or
 refusal, with the two tool folders above it if that leaves them empty, and

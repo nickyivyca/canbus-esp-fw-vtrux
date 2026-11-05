@@ -171,7 +171,9 @@ def child(fx, code):
 
 
 def checks():
-    base = scratch_dir.make("shared-pin-test")
+    # depth: git worktree add runs on src (4 below the run folder), + 36
+    # for that (measured 2026-11-05; scratch_dir)
+    base = scratch_dir.make("shared-pin-test", depth=40)
     try:
         fx = fixture(base)
         good = pin_values(fx)

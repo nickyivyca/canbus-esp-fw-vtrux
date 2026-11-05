@@ -3,7 +3,7 @@
 A bench script declares MUTANTS = [(label, old text, new text), ...] and
 calls run(__file__, MUTANTS) from its --can-fail. Each mutant is a copy of
 the script with one text edit, written to a scratch_dir run folder
-(scratch/charge-interposer-harness/script-can-fail/, removed in a
+(scratch/cih/script-can-fail/, removed in a
 finally, 2026-10-31), and run with --self-test from this folder (so its
 sibling imports resolve). Every mutant must make
 the self-test exit non-zero. An edit applies to the code above the
