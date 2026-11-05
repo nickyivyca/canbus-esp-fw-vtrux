@@ -83,6 +83,7 @@ records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 | `accept_adapter.py`, `accept_adapter_test.py` | The project's adapter for the acceptance runner (shared/bench ACCEPT-SPEC A15), and its test (reviewer, 2026-11-01) | Tester |
 | `accept_smoke.toml` | The adapter's smoke list: a test fixture, not an acceptance list; its records are never evidence (reviewer, 2026-11-02) | Tester |
 | `accept_build_smoke.toml` | The adapter's build smoke list: one `idf-build` build of a variant through the runner; a test fixture, not an acceptance list; its records are never evidence (reviewer, 2026-11-04) | Tester |
+| `acceptance/README.md`, `acceptance/<step>.toml` | The acceptance lists, one per port step (shared/bench ACCEPT-SPEC A2): what the runner runs for a step, read from git at a named commit. `2a.toml`: port step 2a, items (a)-(j) of the tracker's 2a row (reviewer, 2026-11-04) | Reviewer |
 | `scratch_run.sh`, `scratch_run_test.py` | The harness's bash scripts' run folders, as `scratch_dir.py` gives the Python ones, and its test (reviewer, 2026-11-02) | Tester |
 | `twai_fake_option_test.py` | Test of `host_bridge`'s `TWAI_FAKE` option and its can-fail (reviewer, 2026-11-02) | Tester |
 | `shared_pin.py`, `shared_pin_test.py` | The harness's shared code from the read-only `../shared-<tag>/` checkout, checked against `firmware/shared_pins.json`, and its test (port step 2a) | Tester |

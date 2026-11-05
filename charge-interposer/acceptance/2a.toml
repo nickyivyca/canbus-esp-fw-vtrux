@@ -1,0 +1,363 @@
+# Port step 2a's acceptance list (shared/bench ACCEPT-SPEC A2; owned by
+# the charge-interposer reviewer). Items (a)-(j) as agreed with the tester
+# on 2026-11-03 and held in the review tracker's 2a row, with the check
+# forms this reviewer ruled on 2026-11-04. Run it with the runner at the
+# shared/bench pin of the harness tree, from <commit>:charge-interposer/acceptance/2a.toml.
+#
+# Trees:
+#   prod      the final 2a product, cf1b911 (the reviewer, 2026-11-03): the
+#             six builds, so each image carries the product commit's version
+#             and (h)'s pairs come from one commit
+#   harness   3abe58d1, charge-interposer/main with the tester's whole 2a
+#             harness: (F) bench_suite flashing the list's builds, the
+#             vport-windows comparer with its guards, no_led.py,
+#             variant_diff.py, refusal_pairs_runs --scratch-from and the
+#             idf-log checks. Every
+#             suite run goes here: a suite run loads the suite from its own
+#             tree, and only from 117bffb6 does bench_suite take
+#             interposer_builds. Its product files are cf1b911's (premise
+#             "digest"); only the shared/bench pin differs, which is not a
+#             product file.
+#   madhouse  the same commit on madhouse, for (b)'s host_bridge runs on
+#             real g++, at the 2a twai_port pin (2026.11.03), the shared
+#             fake (b) is ruled on.
+
+[step]
+id = "2a"
+project = "charge-interposer"
+ordered_by = "charge-interposer reviewer"
+ordered_on = "2026-11-04"
+spec = ["2.3", "8", "8.2", "8.3", "9", "9.1", "12"]
+verification = "the tester's VERIFICATION.md entries for port step 2a, one per item (a)-(j)"
+
+[trees.prod]
+project = "cf1b911326d62fc7a7a743be2050ff51bf37f0d6"
+
+[trees.harness]
+project = "3abe58d16c91fb3d4da64a96195b3697b33fd776"
+
+[trees.madhouse]
+project = "3abe58d16c91fb3d4da64a96195b3697b33fd776"
+host = "madhouse"
+shared = { twai_port = "2026.11.03" }
+
+# The harness tree's product files are the 2a product's (cf1b911)
+[[premise]]
+id = "digest"
+kind = "product_digest_same_as"
+tree = "harness"
+commit = "cf1b911326d62fc7a7a743be2050ff51bf37f0d6"
+
+# ---- (h) C2b: every variant builds ------------------------------------------
+[[build]]
+id = "bridge"
+tree = "prod"
+target = "idf-build"
+options = { variant = "bridge" }
+
+[[build]]
+id = "witness"
+tree = "prod"
+target = "idf-build"
+options = { variant = "witness" }
+
+[[build]]
+id = "truck"
+tree = "prod"
+target = "idf-build"
+options = { variant = "truck" }
+
+[[build]]
+id = "selftest"
+tree = "prod"
+target = "idf-build"
+options = { variant = "selftest" }
+
+[[build]]
+id = "diag"
+tree = "prod"
+target = "idf-build"
+options = { variant = "diag" }
+
+[[build]]
+id = "slcan"
+tree = "prod"
+target = "idf-build"
+options = { variant = "slcan" }
+
+# ---- (h) witness/bridge/truck differ only by their switches -----------------
+# variant_diff: sdkconfig, sources, compile flags and the app link equal but
+# for the named switch (the reviewer, 2026-11-04)
+[[check]]
+id = "vd-witness-bridge"
+tree = "harness"
+run = ["charge-interposer/fw_harness/variant_diff.py", "--pair", "{build_witness}",
+       "{build_bridge}", "--switches", "INTP_ORDER_WITNESS"]
+
+[[check]]
+id = "vd-bridge-truck"
+tree = "harness"
+run = ["charge-interposer/fw_harness/variant_diff.py", "--pair", "{build_bridge}",
+       "{build_truck}", "--switches", "INTP_NO_SERIAL"]
+
+[[canfail]]
+id = "vd"
+target = "vd-witness-bridge"
+mutants = { mode = "--can-fail" }
+expect = "mode-passes"
+
+# ---- (j) spec 8: no LED, form (B) -------------------------------------------
+[[check]]
+id = "no-led-bridge"
+tree = "harness"
+run = ["charge-interposer/fw_harness/no_led.py", "--build", "{build_bridge}"]
+
+[[check]]
+id = "no-led-witness"
+tree = "harness"
+run = ["charge-interposer/fw_harness/no_led.py", "--build", "{build_witness}"]
+
+[[check]]
+id = "no-led-truck"
+tree = "harness"
+run = ["charge-interposer/fw_harness/no_led.py", "--build", "{build_truck}"]
+
+[[check]]
+id = "no-led-selftest"
+tree = "harness"
+run = ["charge-interposer/fw_harness/no_led.py", "--build", "{build_selftest}"]
+
+[[check]]
+id = "no-led-diag"
+tree = "harness"
+run = ["charge-interposer/fw_harness/no_led.py", "--build", "{build_diag}"]
+
+[[check]]
+id = "no-led-slcan"
+tree = "harness"
+run = ["charge-interposer/fw_harness/no_led.py", "--build", "{build_slcan}"]
+
+[[check]]
+id = "no-led-canfail"
+tree = "harness"
+run = ["charge-interposer/fw_harness/no_led.py", "--can-fail", "--build", "{build_bridge}"]
+
+# board_led called in a clone of the tree, built in the "idf" shell, must be
+# caught; its clone goes in {clone}'s scratch/ (a build folder inside the
+# tree is too deep for ESP-IDF on Windows)
+[[check]]
+id = "no-led-mutant"
+tree = "harness"
+shell = "idf"
+run = ["charge-interposer/fw_harness/no_led.py", "--mutant-build", "bridge",
+       "--scratch-from", "{clone}"]
+
+# ---- (e) and (g): the release stand-in, R19 and the refusal pairs -----------
+# Also (j)'s R28 levels and (h)'s no serial in the flight image: the stand-in
+# (the truck release) runs shared/tools' options check (R28) and passes
+# every test-only switch's OFF rule (INTP_NO_SERIAL's bin_strings on the
+# .bin). About nine ESP-IDF builds; its worktrees go in {clone}'s scratch/,
+# since beside the runner's tree the build folders are too deep for ESP-IDF
+# on Windows. The chain runner makes {outdir}; the script refuses an --out
+# that exists.
+[[check]]
+id = "refusal-pairs"
+tree = "harness"
+shell = "idf"
+cls = "build"
+timeout_s = 14400
+run = ["charge-interposer/fw_harness/refusal_pairs_runs.py", "--commit",
+       "cf1b911326d62fc7a7a743be2050ff51bf37f0d6", "--out", "{outdir}/refusal-pairs",
+       "--scratch-from", "{clone}"]
+
+# ---- (b) E's re-run: host_bridge on the shared fake, transcripts identical --
+# Both runs carry the two recorded KNOWN FAILs (bridge-ok-veh-failed,
+# bridge-ok-switch-discard), so each expects FAIL; e-transcripts is what
+# catches a run that did not build. The madhouse tree checks out its pinned
+# twai_port (2026.11.03), and tree_env gives TWAI_FAKE_DIR from it. They
+# build with g++ on madhouse, so they wait for the emulated and harness
+# suites' madhouse wall-clock groups; they then run beside the bench runs,
+# which are NICKY-XPS wall-clock and not disturbed by madhouse builds.
+[[check]]
+id = "hb-own"
+tree = "madhouse"
+run = ["charge-interposer/fw_harness/host_bridge/run.sh"]
+shell = "git-bash"
+judge = "host-bridge"
+cls = "build"
+env = { L3_STIMULUS = "{madhouse_artifacts}/l3_stimulus.txt" }
+expect = "FAIL"
+after = ["emulated", "harness"]
+
+[[check]]
+id = "hb-shared"
+tree = "madhouse"
+run = ["charge-interposer/fw_harness/host_bridge/run.sh"]
+shell = "git-bash"
+judge = "host-bridge"
+cls = "build"
+env = { L3_STIMULUS = "{madhouse_artifacts}/l3_stimulus.txt", TWAI_FAKE = "shared" }
+timeout_s = 14400
+expect = "FAIL"
+after = ["hb-own"]
+
+[[compare]]
+id = "e-transcripts"
+comparer = "masked-log"
+a = "hb-own"
+b = "hb-shared"
+expect = "identical"
+
+[[canfail]]
+id = "shared-fake"
+target = "hb-shared"
+mutants = { mode = "--can-fail" }
+expect = "mode-passes"
+
+# ---- (a) the whole emulated suite at the 2a product -------------------------
+# Whole, in a local tree, and the newest emulated run in the record's runs/
+# before the bench suite runs, so the bench suite's requires finds it. Its
+# failures are checked by hand against the two recorded KNOWN FAILs.
+[[suite_run]]
+id = "emulated"
+tree = "harness"
+suite = "emulated"
+
+# ---- (d) the harness suite and its can-fails at the list commit -------------
+# The bench_suite harness suite, whole (the scope of runs 7d3c and 922a):
+# its can-fails, mutants and self-tests are in it, with its own madhouse
+# groups. It is not an emulated run, so the bench suite's requires still
+# finds "emulated" as the newest.
+[[suite_run]]
+id = "harness"
+tree = "harness"
+suite = "harness"
+after = ["emulated"]
+
+# ---- (f) vport-bitrate judged, three times, then the bench suite ------------
+[[suite_run]]
+id = "vp1"
+tree = "harness"
+suite = "bench"
+checks = ["b-vport/vport-bitrate"]
+images_from = ["bridge", "witness", "truck"]
+after = ["harness"]
+
+[[suite_run]]
+id = "vp2"
+tree = "harness"
+suite = "bench"
+checks = ["b-vport/vport-bitrate"]
+images_from = ["bridge", "witness", "truck"]
+after = ["vp1"]
+
+[[suite_run]]
+id = "vp3"
+tree = "harness"
+suite = "bench"
+checks = ["b-vport/vport-bitrate"]
+images_from = ["bridge", "witness", "truck"]
+after = ["vp2"]
+
+# (i): this run's flashes and identifies are the board evidence: each image
+# is the list's own build, its app and ELF sha256 the build record's, and
+# identify reads its build id back
+[[suite_run]]
+id = "bench"
+tree = "harness"
+suite = "bench"
+images_from = ["bridge", "witness", "truck"]
+after = ["vp3"]
+
+# ---- (c) the baselines -------------------------------------------------------
+# Verdict for verdict (the core's run-records comparer), known fails
+# included. The bench baseline is the newest whole bench suite run on the
+# pre-port product with the bench harness changes since it named; each
+# listed difference is one a committed harness change predicts, its commit
+# beside it. A compare that does not hold is judged line by line in the
+# tester's entry, and the reviewer rules whether (c) closes on it (the
+# reviewer, 2026-11-04).
+[baseline]
+emulated = "charge-interposer-emulated_20261026T191125_487f"
+# the newest whole bench suite run on the pre-port (Arduino) product:
+# 77 results, harness b25b1f3, product digest da2a98d6
+bench = "charge-interposer-bench_20261027T132847_6019"
+vp1 = "charge-interposer-bench_20261027T132847_6019"
+
+# The emulated suite against 928ad26's run 487f: the only differences are
+# the three m-build checks 2a retired (declared skips in the suite)
+[[compare]]
+id = "c-emulated"
+comparer = "run-records"
+a = "baseline:emulated"
+b = "emulated"
+expect = "listed"
+differences = ["VERDICT m-build/build-check: PASS -> NOT-RUN",
+               "VERDICT m-build/manifest-offline-test: PASS -> NOT-RUN",
+               "VERDICT m-build/manifest-test: PASS -> NOT-RUN"]
+
+# The bench suite against 6019. Each listed line is predicted by a committed
+# harness change since 6019's harness b25b1f3:
+#   restart-after-standby  3f51bb8: the diag-frames line judges the last
+#                          0x7F4 at the vehicle sim's stop (6019 re-judged
+#                          from its own logs: PASS)
+#   vport-stall            63a3a6f: the stall step's windows start from the
+#                          command (PASS on the board in run 81d8)
+#   idf-log x2             3abe58d1: the new 8.3 checks in b-bridge and
+#                          b-witness
+# Not listed: b-vport/vport-listen-wrong-rate, VOID in 6019 and 81d8,
+# variance from the known defect; it shows only if it moves.
+[[compare]]
+id = "c-bench"
+comparer = "run-records"
+a = "baseline:bench"
+b = "bench"
+expect = "listed"
+differences = ["VERDICT b-bridge/board.restart-after-standby: FAIL -> PASS",
+               "VERDICT b-vport/vport-stall: FAIL -> PASS",
+               "NEW in b: b-bridge/idf-log PASS",
+               "NEW in b: b-witness/idf-log PASS"]
+
+# (f): the three vport runs, each against the first and against 6019: the
+# same verdicts, no TEST FAULT, no figure tolerance (the reviewer, 2026-11-04)
+[[compare]]
+id = "vp1-vp2"
+comparer = "vport-windows"
+a = "vp1"
+b = "vp2"
+expect = "same-verdicts"
+
+[[compare]]
+id = "vp1-vp3"
+comparer = "vport-windows"
+a = "vp1"
+b = "vp3"
+expect = "same-verdicts"
+
+[[compare]]
+id = "vp1-6019"
+comparer = "vport-windows"
+a = "baseline:vp1"
+b = "vp1"
+expect = "same-verdicts"
+
+[[compare]]
+id = "vp2-6019"
+comparer = "vport-windows"
+a = "baseline:vp1"
+b = "vp2"
+expect = "same-verdicts"
+
+[[compare]]
+id = "vp3-6019"
+comparer = "vport-windows"
+a = "baseline:vp1"
+b = "vp3"
+expect = "same-verdicts"
+
+# ---- (j) spec 8.3: no ESP-IDF line before setup() -----------------------------
+# In the bench suite run: the truck by b-truck/flight-silence (no byte of
+# the application over serial, startup lines included); bridge and witness
+# by b-bridge/idf-log and b-witness/idf-log (bench_flight_silence --idf-log:
+# no ESP-IDF or Arduino framework log line). selftest, diag and slcan are
+# not flashed in this list, so 8.3 on the board is not shown for them.
