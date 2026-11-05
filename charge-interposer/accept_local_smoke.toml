@@ -19,9 +19,10 @@ ordered_on = "2026-11-05"
 spec = ["none: a smoke run of the acceptance runner's local lane"]
 verification = "none (a --dev smoke run is never evidence)"
 
-# 41b54cd: the 2a harness (3abe58d1) with the adapter's settings guard
+# 7ca7c34: the 2a harness (3abe58d1) with the adapter's settings guard
+# (41b54cd) and its artifacts_row fix
 [trees.harness]
-project = "41b54cd289e8290c1245ab345b85564f2d0fe4ae"
+project = "7ca7c34404a1abce5c3efe22635d649a1371aaa5"
 
 # the emulated suite's local lane only: the rest of it is the madhouse sims
 [[suite_run]]
