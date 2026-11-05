@@ -28,6 +28,7 @@ passes everything, a suite with its requires dropped, ...) and requires the
 test to fail; exit 0 only if every mutant is caught.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -550,6 +551,113 @@ def test_interposer_images():
     except ValueError:
         pass
     scratch_dir.remove(images)
+
+
+LIST_VERSION = "v0.0-12-gabc1234"     # a list build's own version (git describe)
+
+
+def _list_builds(s, root, **kw):
+    """Stand-in build folders of an acceptance list's three builds, and the
+    interposer_builds the adapter would hand the suite from their records:
+    the record's app sha256 and ELF sha256 (kw: changes to one variant's
+    pin, {variant: {key: value}}, or a folder's version, version_<v>)."""
+    pins = {}
+    for v, sha in IMG_SHA.items():
+        d = _idf_build(os.path.join(root, "b-" + v), v, sha,
+                       version=kw.get("version_" + v, LIST_VERSION))
+        with open(os.path.join(d, "interposer_%s.bin" % v), "rb") as f:
+            app_sha = hashlib.sha256(f.read()).hexdigest()
+        pins[v] = {"dir": d, "build": "build-" + v, "elf_sha256": sha,
+                   "app_sha256": app_sha}
+        pins[v].update((kw.get("pins") or {}).get(v) or {})
+    # images_src names no folder: the interposer images must not come from
+    # images_dir (the two test images still do, from images_dir/idf/)
+    return dict(s, interposer_builds=pins, images_src="no-such-src")
+
+
+def test_list_build_images():
+    """ACCEPT-SPEC A9 (the charge-interposer reviewer, 2026-11-04): in an
+    acceptance run the bench suite flashes the list's own builds, from
+    interposer_builds: each image from its build's folder, expect its ELF
+    hash's first four bytes, the note and the run's code info naming the
+    build and its ELF sha256, nothing read from images_dir. Refused when
+    the suite is built, before the lock: a variant no listed build gives,
+    an app whose bytes are not the record's, a descriptor ELF hash not the
+    record's, a dirty tree's version."""
+    s = _settings()
+    root = os.path.join(TMP, "list-builds")
+    scratch_dir.remove(root)
+    t = _list_builds(s, root)
+    su = B.bench(t)
+    for v, sha in IMG_SHA.items():
+        im = su.images[v]
+        d = t["interposer_builds"][v]["dir"]
+        assert im.expect == sha[:8], (v, im.expect)
+        assert dict(im.params["files"])["0x10000"] == os.path.join(
+            d, "interposer_%s.bin" % v), im.params["files"]
+        assert all(p.startswith(d) for _o, p in im.params["files"]), im.params["files"]
+        assert "list build build-%s, ELF sha256 %s" % (v, sha) in im.note, im.note
+        assert LIST_VERSION in im.note, im.note
+    info = su.code_info({})
+    assert info.get("interposer_builds") == {
+        v: {"build": "build-" + v, "elf_sha256": sha} for v, sha in IMG_SHA.items()} \
+        and "images_src" not in info, info
+    other = "f" * 64
+    for why, kw in (
+            ("no build of the truck", {"drop": "truck"}),
+            ("the app's bytes not the record's", {"pins": {"bridge": {"app_sha256": other}}}),
+            ("the descriptor's ELF hash not the record's",
+             {"pins": {"witness": {"elf_sha256": other}}}),
+            ("a dirty tree's version", {"version_truck": LIST_VERSION + "-dirty"})):
+        scratch_dir.remove(root)
+        u = _list_builds(s, root, **kw)
+        if kw.get("drop"):
+            del u["interposer_builds"][kw["drop"]]
+        try:
+            B.bench(u)
+        except (ValueError, KeyError) as e:
+            if kw.get("drop"):
+                assert "truck" in str(e) and "acceptance list" in str(e), e
+            continue
+        raise AssertionError("not refused: %s" % why)
+    scratch_dir.remove(root)
+
+
+def _image_folder_pins(variant, settings):
+    """The pins recomputed from the build folders (what the reviewer ruled
+    out): the record's sha256 never reaches the check."""
+    import build_lookup
+    s = dict(settings)
+    if s.get("interposer_builds"):
+        pins = {}
+        for v, p in s["interposer_builds"].items():
+            app = os.path.join(p["dir"], "interposer_%s.bin" % v)
+            with open(app, "rb") as f:
+                app_sha = hashlib.sha256(f.read()).hexdigest()
+            pins[v] = dict(p, app_sha256=app_sha,
+                           elf_sha256=build_lookup.app_desc_of_bin(app)["elf_sha256"])
+        s["interposer_builds"] = pins
+    return _ORIG["_interposer_image"](variant, s)
+
+
+def _image_any_build(variant, settings):
+    """A variant no listed build gives taken from another build's folder."""
+    b = settings.get("interposer_builds")
+    if b and variant not in b:
+        settings = dict(settings, interposer_builds=dict(b, **{variant: next(iter(b.values()))}))
+    try:
+        return _ORIG["_interposer_image"](variant, settings)
+    except ValueError:
+        return B.Image(variant, "esptool", board="x2", expect="00000000",
+                       params={"files": [], "md5": {}, "chip": B._x2_chip(settings)},
+                       note="list build ?")
+
+
+def _image_images_dir(variant, settings):
+    """interposer_builds ignored: the images from images_dir as before."""
+    s = dict(settings)
+    s.pop("interposer_builds", None)
+    return _ORIG["_interposer_image"](variant, s)
 
 
 def _image_never_refuses(variant, settings):
@@ -1316,7 +1424,7 @@ def test_runner_stage():
 
 TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_corrupt_pin_judge, test_c12_judge, test_host_bridge_judge,
-         test_suites, test_interposer_images, test_mutant_wiring,
+         test_suites, test_interposer_images, test_list_build_images, test_mutant_wiring,
          test_identify, test_pycache_ignored,
          test_usb_baselines, test_usb_stops, test_reopen_skip,
          test_script_coverage, test_shared_bench_tests,
@@ -1452,6 +1560,7 @@ _ORIG["scratch_dir.make"] = scratch_dir.make
 _ORIG["_interposer_image"] = B._interposer_image
 _ORIG["INTERPOSER_IDF"] = B.INTERPOSER_IDF
 _ORIG["_md5"] = B._md5
+_ORIG["_sha256"] = B._sha256
 
 
 def _ct_unchecked():
@@ -1780,6 +1889,14 @@ MUTANTS = {
         ("product_files", _no_machine, "machine.py left out of the product"),
         ("harness", _wrap_suite("harness", _product_in_harness),
          "the harness suite gated on the product digest")],
+    "test_list_build_images": [
+        ("_interposer_image", _image_folder_pins,
+         "the pins recomputed from the build folders, not the records'"),
+        ("_interposer_image", _image_any_build,
+         "a variant no listed build gives taken from another"),
+        ("_interposer_image", _image_images_dir,
+         "interposer_builds ignored, images from images_dir"),
+        ("_sha256", lambda p: "0" * 64, "the app's sha256 not of its bytes")],
     "test_interposer_images": [
         ("_interposer_image", _image_never_refuses,
          "a folder that does not name its image is flashed anyway"),

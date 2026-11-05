@@ -50,6 +50,13 @@ first, for port step 2a). This first cut gives:
                                  one run only, sims (m-sims/) by sim-judged,
                                  the rest by masked-log; a carried result's
                                  log is read from the run it came from
+                     vport-windows  two runs' b-vport/vport-bitrate reports
+                                 window by window (port step 2a (f)): the
+                                 check's and each arm's verdict, the final
+                                 line, a window on one side only and any
+                                 TEST FAULT count; figures and FLAG lines
+                                 are shown side by side, never judged; a
+                                 side with no report is refused
 THE MADHOUSE HOST. A madhouse entry runs from a tree on madhouse (a list's
 [trees.<name>] with host = "madhouse"), which the runner makes under the
 host's workroot in the settings and removes with everything in it there
@@ -94,6 +101,11 @@ removes only what it makes there (A14).
   settings_keys      for each build that made its images: build_<id> (its
                      build folder), image_<id> (the app) and elf_<id>, for a
                      list's checks to name ("{build_bridge}")
+  suite_settings     a suite run's images_from (A9): interposer_builds, each
+                     variant's build folder, build id and the core's recorded
+                     ELF and app sha256, which bench_suite flashes and checks
+                     instead of images_dir; a bench suite run must name all
+                     three (BENCH_VARIANTS)
 
   tree_setup,        what each fresh tree needs before its checks: the
   tree_installed     pinned canre installed and checked (canre_pin.py), and
@@ -123,7 +135,7 @@ IDF_VERSION = "v5.4.2"     # spec 8.2: the interposer builds on ESP-IDF v5.4.2 (
 # the machine variables a check may see (AGENTS.md, local-paths.md)
 MACHINE_VARS = ("REVERSE_IT_DIR", "CAN_TOOLS_DIR", "VTRUX_PUBLIC_REPO")
 JUDGES = ("script", "recorded", "c12", "host-bridge", "corrupt-pin", "scenario")
-COMPARERS = ("masked-log", "sim-judged", "run-logs")
+COMPARERS = ("masked-log", "sim-judged", "run-logs", "vport-windows")
 # the folder names the runner's scratch helper gives trees, builds and mutants
 MASKS = {"tree-root": r"(?:tree|build|mutant)-[\w.-]+?-\d+-[0-9a-f]{6}"}
 
@@ -248,6 +260,39 @@ def settings_keys(builds, trees):
         out["image_%s" % bid] = app
         out["elf_%s" % bid] = b["elf"]["path"]
     return out
+
+
+# The interposer images the bench suite flashes (bench_suite.bench): a bench
+# suite run with images_from must get all three from the list's builds.
+BENCH_VARIANTS = ("bridge", "witness", "truck")
+
+
+def suite_settings(run, records):
+    """A suite run's images (ACCEPT-SPEC A9; the core's suite_images): from
+    the records of its images_from builds, as the core wrote them,
+    interposer_builds = {variant: {"dir": its build folder, "build": its
+    id, "elf_sha256", "app_sha256"}}, the sha256s the core recorded, never
+    read again from the folders (the charge-interposer reviewer,
+    2026-11-04). bench_suite._interposer_image checks the bytes against
+    them. Refused: a build that is not this adapter's idf-build, and a
+    bench suite run missing one of the variants it flashes, so the run
+    stops before anything is flashed or the lock taken."""
+    out = {}
+    for r in records:
+        if r.get("target") != "idf-build":
+            raise AdapterError("suite run %s: images_from build %s is a %r build, not "
+                               "idf-build" % (run.get("id"), r.get("id"), r.get("target")))
+        app = r["images"]["app"]
+        out[r["variant"]] = {"dir": os.path.dirname(app["path"]), "build": r["id"],
+                             "elf_sha256": r["elf"]["sha256"], "app_sha256": app["sha256"]}
+    if run.get("suite") == "bench":
+        absent = [v for v in BENCH_VARIANTS if v not in out]
+        if absent:
+            raise AdapterError("suite run %s: the bench suite flashes %s, and its "
+                               "images_from gives no build of %s"
+                               % (run.get("id"), ", ".join(BENCH_VARIANTS),
+                                  ", ".join(absent)))
+    return {"interposer_builds": out}
 
 
 # ---- tree setup (the core's tree_setup) -------------------------------------
@@ -560,10 +605,124 @@ def _run_logs(a, b, spec, adapter):
     return out
 
 
+# ---- vport-windows: the bench's vport-bitrate, run against run ----------------
+# The charge-interposer reviewer, 2026-11-04 (port step 2a (f), the judged
+# vport-bitrate run three times): two runs' vport-bitrate reports compared
+# window by window. What counts, as the core's "verdict" kind: the check's
+# verdict, each arm's verdict in the report's "== verdicts" section and its
+# final FAIL:/VOID: line, a window or arm on one side only, and every TEST
+# FAULT on either side. The windows' figures and the FLAG lines are printed
+# side by side and never judged (no figure tolerance). A side with no report
+# is refused (raises): nothing to compare is not "the same".
+VPORT_CHECK = "b-vport/vport-bitrate"
+VPORT_REPORT = "vport-bitrate.txt"
+_VP_WINDOW = re.compile(r"^  (\d+[kM]), ([^:]+): (.*)$")
+_VP_ARM = re.compile(r"^  (\S+)\s+(PASS|FAIL|VOID \(TEST FAULT\))\s*$")
+_VP_FIGURES = (
+    ("error frames, bursts, seconds",
+     re.compile(r"(\d+) error frame\(s\) in (\d+) burst\(s\) over (\d+) s")),
+    ("per burst min, p50, max", re.compile(r"per burst min (\d+) / p50 (\d+) / max (\d+)")),
+    ("bursts per minute", re.compile(r"([\d.]+) bursts per minute")),
+    ("node frames through, tried", re.compile(r"got through: (\d+) of the (\d+)")),
+    ("queued, refused", re.compile(r"(\d+) queued, (\d+) refused")),
+    ("backlog frames", re.compile(r"(\d+) frame\(s\) from earlier windows' backlog")))
+
+
+def _vport_report(side):
+    """(the check's verdict, the report's text) of a run side."""
+    rs = [r for r in (side.get("record") or {}).get("results") or [] if r["id"] == VPORT_CHECK]
+    if not rs:
+        raise ValueError("%s has no %s result" % (side.get("dir"), VPORT_CHECK))
+    path = os.path.join(os.path.dirname(_case_log(side, rs[0])), VPORT_REPORT)
+    if not os.path.isfile(path):
+        raise ValueError("%s: no %s report at %s" % (VPORT_CHECK, VPORT_REPORT, path))
+    with open(path, encoding="utf-8", errors="replace") as f:
+        return rs[0]["verdict"], f.read()
+
+
+def _vport_parse(text):
+    """{"windows": {"<rate>/<state>": {figure: [numbers]} or {"fault": line}},
+    "arms": {arm: verdict}, "final": line or None, "faults": [lines],
+    "flags": [lines]}; board> lines are not read."""
+    out = {"windows": {}, "arms": {}, "final": None, "faults": [], "flags": []}
+    in_verdicts = False
+    for ln in text.splitlines():
+        if ln.lstrip().startswith("board>"):
+            continue
+        if ln.startswith("== "):
+            in_verdicts = ln.strip() == "== verdicts"
+            continue
+        if "TEST FAULT" in ln:
+            out["faults"].append(ln.strip())
+        if ln.strip().startswith("FLAG:"):
+            out["flags"].append(ln.strip())
+        if ln.startswith(("FAIL:", "VOID:")):
+            out["final"] = ln.strip()
+        m = _VP_ARM.match(ln)
+        if in_verdicts and m:
+            out["arms"][m.group(1)] = m.group(2)
+            continue
+        m = _VP_WINDOW.match(ln)
+        if m:
+            w = "%s/%s" % (m.group(1), m.group(2))
+            body = m.group(3)
+            if body.startswith("TEST FAULT"):
+                out["windows"][w] = {"fault": body}
+                continue
+            figs = {}
+            for name, rx in _VP_FIGURES:
+                f = rx.search(body)
+                if f:
+                    figs[name] = [float(x) for x in f.groups()]
+            out["windows"][w] = figs
+    return out
+
+
+def _vport_windows(a, b, spec, adapter):
+    va, ta = _vport_report(a)
+    vb, tb = _vport_report(b)
+    pa, pb = _vport_parse(ta), _vport_parse(tb)
+    out = []
+
+    def counted(line):
+        out.append({"kind": "verdict", "line": line})
+    if va != vb:
+        counted("VERDICT %s: %s -> %s" % (VPORT_CHECK, va, vb))
+    for side, p in (("a", pa), ("b", pb)):
+        for ln in p["faults"]:
+            counted("TEST FAULT in %s: %s" % (side, ln))
+    for arm in sorted(set(pa["arms"]) | set(pb["arms"])):
+        x, y = pa["arms"].get(arm), pb["arms"].get(arm)
+        if x != y:
+            counted("VERDICT arm %s: %s -> %s" % (arm, x or "(none)", y or "(none)"))
+    if pa["final"] != pb["final"]:
+        counted("FINAL LINE: %s -> %s" % (pa["final"] or "(none)", pb["final"] or "(none)"))
+    for w in sorted(set(pa["windows"]) | set(pb["windows"])):
+        if w not in pb["windows"]:
+            out.append({"kind": "missing", "line": "MISSING in b: window %s" % w})
+            continue
+        if w not in pa["windows"]:
+            out.append({"kind": "new", "line": "NEW in b: window %s" % w})
+            continue
+        fa, fb = pa["windows"][w], pb["windows"][w]
+        for name in [n for n, _rx in _VP_FIGURES]:
+            x, y = fa.get(name), fb.get(name)
+            if x != y:
+                fmt = lambda v: "-" if v is None else " ".join(  # noqa: E731
+                    "%d" % n if float(n).is_integer() else "%g" % n for n in v)
+                out.append({"kind": "figure", "name": "%s %s" % (w, name),
+                            "a": (x or [None])[0], "b": (y or [None])[0],
+                            "line": "figure %s %s: a %s | b %s" % (w, name, fmt(x), fmt(y))})
+    for side, p in (("a", pa), ("b", pb)):
+        out += [{"kind": "flag", "line": "FLAG in %s: %s" % (side, ln[len("FLAG:"):].strip())}
+                for ln in p["flags"]]
+    return out
+
+
 def comparer(name):
     return {"masked-log": lambda a, b, spec, ad: _masked_log_diffs(a["log"], b["log"]),
             "sim-judged": lambda a, b, spec, ad: _sim_diffs(a["log"], b["log"]),
-            "run-logs": _run_logs}[name]
+            "run-logs": _run_logs, "vport-windows": _vport_windows}[name]
 
 
 # ---- the record (A13) -------------------------------------------------------
