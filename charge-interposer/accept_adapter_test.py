@@ -124,7 +124,8 @@ def test_list_loads(A, work):
     # harness's shared pin from the pin file at its commit
     assert [b["id"] for b in got.builds] == ["bridge"], got.builds
     pins = json.loads(git(REPO, "show", "%s:charge-interposer/firmware/shared_pins.json" % head))
-    assert got.trees["head"]["shared"] == {"twai_port": pins["shared/twai_port"]["commit"]}, \
+    assert got.trees["head"]["shared"] == {c: pins["shared/" + c]["commit"]
+                                           for c in ("bench", "tools", "twai_port")}, \
         got.trees["head"]
 
 
@@ -209,7 +210,7 @@ def test_idf_shell(A, work):
         raise AssertionError("idf on madhouse was taken")
 
 
-def _fake_build(work, variant, project=None, drop=()):
+def _fake_build(work, variant, project=None, drop=(), idf="v5.4.2"):
     """A tree as the runner makes it for a build, with what an IDF build of
     variant leaves in firmware/build/<variant>/; its out folder."""
     t = os.path.join(work, "build-%s" % variant)
@@ -224,7 +225,7 @@ def _fake_build(work, variant, project=None, drop=()):
             f.write(rel.encode())
     desc = {"project_name": project or "interposer_%s" % variant,
             "app_bin": "interposer_%s.bin" % variant, "app_elf": "interposer_%s.elf" % variant,
-            "git_revision": "v5.4.2", "target": "esp32s3",
+            "git_revision": idf, "target": "esp32s3",
             "c_compiler": "C:/x/.espressif-5.4.2/tools/xtensa-esp-elf/esp-14.2.0_20241119/"
                           "xtensa-esp-elf/bin/xtensa-esp32s3-elf-gcc.exe"}
     with open(os.path.join(bd, "project_description.json"), "w", encoding="utf-8") as f:
@@ -255,7 +256,8 @@ def test_targets(A, work):
                                 "compiler": "esp-14.2.0_20241119"}, got["toolchain"]
     for name, kw in (("another variant's description", {"project": "interposer_witness"}),
                      ("no bootloader", {"drop": (os.path.join("bootloader", "bootloader.bin"),)}),
-                     ("no ELF", {"drop": ("interposer_diag.elf",)})):
+                     ("no ELF", {"drop": ("interposer_diag.elf",)}),
+                     ("another ESP-IDF", {"idf": "v5.4.1"})):
         v = "diag" if "ELF" in name else "w%d" % len(name)
         o, _ = _fake_build(os.path.join(work, name.replace(" ", "-").replace("'", "")), v, **kw)
         try:
@@ -265,6 +267,20 @@ def test_targets(A, work):
         raise AssertionError("outputs took a build with %s" % name)
 
 
+def test_settings_keys(A, work):
+    """A6: the settings a list's checks name come from the build records:
+    for each build that made its images, build_<id> (its build folder),
+    image_<id> and elf_<id>; none for a failed build."""
+    bd = os.path.join(work, "b", "build", "bridge")
+    builds = {"bridge": {"images": {"app": {"path": os.path.join(bd, "interposer_bridge.bin")},
+                                    "bootloader": {"path": os.path.join(bd, "bl.bin")}},
+                         "elf": {"path": os.path.join(bd, "interposer_bridge.elf")}},
+              "witness": {"verdict": "FAIL"}}
+    assert A.settings_keys(builds, {}) == {
+        "build_bridge": bd, "image_bridge": os.path.join(bd, "interposer_bridge.bin"),
+        "elf_bridge": os.path.join(bd, "interposer_bridge.elf")}, A.settings_keys(builds, {})
+
+
 def test_shared_pins(A, work):
     """A4, A15: a tree's shared component is the harness's pin,
     shared/twai_port, from charge-interposer/firmware/shared_pins.json at
@@ -272,13 +288,38 @@ def test_shared_pins(A, work):
     shared_pin.py and vtrux_tools.py look), and one at another commit is
     named for its component."""
     head = git(REPO, "rev-parse", "HEAD")
-    pins = json.loads(git(REPO, "show", "%s:charge-interposer/firmware/shared_pins.json" % head))
+    comps = ("bench", "tools", "twai_port")
+
+    def pins_at(c):
+        return json.loads(git(REPO, "show", "%s:charge-interposer/firmware/shared_pins.json" % c))
+
+    def want_paths(pins):
+        """each pinned tag's first component (by name) in shared-<tag>, a
+        second at a taken tag in shared-<component>"""
+        out, taken = {"project": "repo"}, set()
+        for c in comps:
+            d = "shared-%s" % pins["shared/" + c]["tag"]
+            out[c] = d if d not in taken else "shared-%s" % c
+            taken.add(out[c])
+        return out
+
+    pins = pins_at(head)
     tp = pins["shared/twai_port"]
-    assert A.shared_pins(REPO, head) == {"twai_port": tp["commit"]}, A.shared_pins(REPO, head)
-    assert A.tree_paths("x", {"project": head, "shared": {"twai_port": tp["commit"]}}) == {
-        "project": "repo", "twai_port": "shared-%s" % tp["tag"]}
+    got = A.shared_pins(REPO, head)
+    assert got == {c: pins["shared/" + c]["commit"] for c in comps}, got
+    assert A.tree_paths("x", {"project": head, "shared": got}) == want_paths(pins), \
+        A.tree_paths("x", {"project": head, "shared": got})
     assert A.tree_paths("x", {"project": head, "shared": {"twai_port": head}}) == {
         "project": "repo", "twai_port": "shared-twai_port"}
+    # the 2a product commit: every pin at one tag, so one shared-<tag> and
+    # the other two named for themselves; at HEAD shared/bench is at another
+    # tag (2026.11.04.2) than the rest
+    prod = "cf1b911326d62fc7a7a743be2050ff51bf37f0d6"
+    pp = pins_at(prod)
+    assert len({pp["shared/" + c]["tag"] for c in comps}) == 1, pp
+    assert A.tree_paths("x", {"project": prod, "shared": A.shared_pins(REPO, prod)}) == {
+        "project": "repo", "bench": "shared-%s" % pp["shared/bench"]["tag"],
+        "tools": "shared-tools", "twai_port": "shared-twai_port"}
     assert A.tree_paths("x", {"project": head, "shared": {}}) == {"project": "repo"}
     # a commit from before the pin file (port step 2a) carries its own
     # shared/: no pins, and a component the list gives is named for itself
@@ -495,7 +536,8 @@ def test_run_logs(A, work):
 
 
 TESTS = [test_identity, test_catalogue, test_list_loads, test_tree_names, test_shells,
-         test_idf_shell, test_targets, test_shared_pins, test_madhouse_entries, test_tree_setup, test_identifier_scan, test_artifacts_row,
+         test_idf_shell, test_targets, test_settings_keys, test_shared_pins,
+         test_madhouse_entries, test_tree_setup, test_identifier_scan, test_artifacts_row,
          test_masked_log,
          test_sim_judged, test_run_logs]
 
@@ -566,6 +608,17 @@ MUTANTS = [
      '("shared-%s" % c) if'),
     ("a checkout at another commit named by the tag",
      'if p.get("commit") == commit else', 'if p else'),
+    ("only the TWAI fake checked out",
+     'TREE_SHARED = {"bench": "shared/bench", "tools": "shared/tools",\n'
+     '               "twai_port": "shared/twai_port"}',
+     'TREE_SHARED = {"twai_port": "shared/twai_port"}'),
+    ("two components at one tag in one folder", "        if d in taken:\n", "        if False:\n"),
+    ("another ESP-IDF taken", '    if desc.get("git_revision") != IDF_VERSION:', "    if False:"),
+    ("a failed build's keys given", "        if not app:\n            continue\n",
+     '        if not app:\n            app = "none"\n'),
+    ("the build folder not the image's", '        out["build_%s" % bid] = os.path.dirname(app)',
+     '        out["build_%s" % bid] = app'),
+    ("no ELF key", '        out["elf_%s" % bid] = b["elf"]["path"]\n', ""),
     ("a commit from before the pin file refused", "    if pins is None:\n        return {}\n",
      '    if pins is None:\n        raise AdapterError("no pin file")\n'),
 ]

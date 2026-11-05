@@ -84,15 +84,16 @@ removes only what it makes there (A14).
                      runs the command, then fails the build if it changed a
                      tracked file of the tree (dependencies.lock: shared/tools
                      R33); local only
-  shared_pins,       the harness's shared pin, shared/twai_port, from
-  tree_paths         charge-interposer/firmware/shared_pins.json at the tree's
-                     commit; its checkout is named shared-<tag>, the folder
-                     shared_pin.py and vtrux_tools.py look for beside a
-                     worktree's root, so the one checkout of the pinned
-                     commit also serves shared/bench and shared/tools at the
-                     same tag
+  shared_pins,       the shared pins, shared/bench, shared/tools and
+  tree_paths         shared/twai_port, from charge-interposer/firmware/
+                     shared_pins.json at the tree's commit; each pinned tag's
+                     checkout is named shared-<tag>, the folder shared_pin.py
+                     and vtrux_tools.py look for beside a worktree's root (a
+                     second component at the same tag gets shared-<component>)
 
-Not yet: settings keys from builds.
+  settings_keys      for each build that made its images: build_<id> (its
+                     build folder), image_<id> (the app) and elf_<id>, for a
+                     list's checks to name ("{build_bridge}")
 
   tree_setup,        what each fresh tree needs before its checks: the
   tree_installed     pinned canre installed and checked (canre_pin.py), and
@@ -118,6 +119,7 @@ SUITES = {n: "charge-interposer/bench_suite.py:%s" % n
           for n in ("emulated", "bench", "harness")}
 SHELLS = ("python", "git-bash", "powershell", "idf")
 IDF_SHELL = os.path.join(HERE, "fw_harness", "idf_build_shell.py")
+IDF_VERSION = "v5.4.2"     # spec 8.2: the interposer builds on ESP-IDF v5.4.2 (user, 2026-11-03)
 # the machine variables a check may see (AGENTS.md, local-paths.md)
 MACHINE_VARS = ("REVERSE_IT_DIR", "CAN_TOOLS_DIR", "VTRUX_PUBLIC_REPO")
 JUDGES = ("script", "recorded", "c12", "host-bridge", "corrupt-pin", "scenario")
@@ -137,10 +139,12 @@ def product_files(root):
 
 
 PIN_FILE = "charge-interposer/firmware/shared_pins.json"
-# the shared components a tree checks out: the one the harness reads from a
-# tree (host_bridge's TWAI_FAKE=shared fake); shared/bench and shared/tools
-# are read from the same checkout of the pinned commit (tree_paths)
-TREE_SHARED = {"twai_port": "shared/twai_port"}
+# the shared components a tree checks out, each at its pin: the harness's
+# shared/bench (shared_pin.use_bench) and shared/twai_port (host_bridge's
+# TWAI_FAKE=shared fake), and the build tooling's shared/tools
+# (vtrux_tools.py); each pinned tag's checkout is shared-<tag>/ (tree_paths)
+TREE_SHARED = {"bench": "shared/bench", "tools": "shared/tools",
+               "twai_port": "shared/twai_port"}
 PROJECT_DIR = "repo"
 
 
@@ -177,14 +181,22 @@ def shared_pins(repo, commit):
 def tree_paths(name, tree):
     """The project in repo/; a shared component at its pinned commit in
     shared-<tag>/ beside it (the folder shared_pin.py and vtrux_tools.py
-    look for beside a worktree's root), else shared-<component>/."""
+    look for beside a worktree's root), else shared-<component>/. Pins may
+    name different tags (shared/bench moves alone); a second component at
+    a tag already named gets its own shared-<component>/, the first
+    checkout of the tag's commit serving both."""
     out = {"project": PROJECT_DIR}
     pins = {}
     if tree.get("shared"):
         pins = _pins(os.path.dirname(HERE), tree["project"]) or {}
-    for c, commit in tree["shared"].items():
+    taken = set()
+    for c, commit in sorted(tree["shared"].items()):
         p = pins.get(TREE_SHARED.get(c, ""), {})
-        out[c] = ("shared-%s" % p["tag"]) if p.get("commit") == commit else ("shared-%s" % c)
+        d = ("shared-%s" % p["tag"]) if p.get("commit") == commit else ("shared-%s" % c)
+        if d in taken:
+            d = "shared-%s" % c
+        taken.add(d)
+        out[c] = d
     return out
 
 
@@ -223,7 +235,19 @@ def tree_settings(tree):
 
 
 def settings_keys(builds, trees):
-    return {}
+    """For each build that made its images: build_<id>, its build folder
+    (where variant_diff.py reads its configuration), image_<id>, its app
+    image, and elf_<id>, its ELF; nothing for a build that failed or did
+    not run."""
+    out = {}
+    for bid, b in sorted(builds.items()):
+        app = ((b.get("images") or {}).get("app") or {}).get("path")
+        if not app:
+            continue
+        out["build_%s" % bid] = os.path.dirname(app)
+        out["image_%s" % bid] = app
+        out["elf_%s" % bid] = b["elf"]["path"]
+    return out
 
 
 # ---- tree setup (the core's tree_setup) -------------------------------------
@@ -315,6 +339,9 @@ def _build_outputs(out, opts):
     if desc.get("project_name") != "interposer_%s" % v:
         raise AdapterError("build %s: %s describes %r, not interposer_%s"
                            % (v, bd, desc.get("project_name"), v))
+    if desc.get("git_revision") != IDF_VERSION:
+        raise AdapterError("build %s: built with ESP-IDF %r, not %s (spec 8.2)"
+                           % (v, desc.get("git_revision"), IDF_VERSION))
     images = {"app": os.path.join(bd, desc["app_bin"]),
               "bootloader": os.path.join(bd, "bootloader", "bootloader.bin"),
               "partition-table": os.path.join(bd, "partition_table", "partition-table.bin")}

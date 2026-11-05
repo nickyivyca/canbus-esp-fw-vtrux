@@ -13,7 +13,9 @@ the build's tree, at the product commit):
     py -3.14 -B idf_build_shell.py --idf-path P --idf-tools-path T
         --python-dir D -- <script.py> [args...]
 
-1. The export: a PowerShell sets IDF_TOOLS_PATH=T and IDF_PATH=P, puts D
+1. The export: with MSYSTEM taken out of the environment (ESP-IDF refuses
+   MSYS, and a runner started from Git Bash passes it down), a PowerShell
+   sets IDF_TOOLS_PATH=T and IDF_PATH=P, puts D
    (the Python the export itself calls as "python", local-paths.md) first
    on PATH, dot-sources P/export.ps1 and hands back the environment it
    leaves. Refused (exit 2), with the command not run, if the export fails
@@ -39,9 +41,12 @@ import os
 import subprocess
 import sys
 
-# the export, and the environment it leaves as JSON on the last line
+# the export, and the environment it leaves as JSON on the last line. Not
+# under $ErrorActionPreference = 'Stop': in Windows PowerShell 5.1 the
+# export's own python, writing "Activating ESP-IDF 5.4" to stderr, would
+# then be a terminating error (the build smoke of 2026-11-04). A throw in
+# the export still ends the command, with no IBS-ENV line.
 EXPORT = (
-    "$ErrorActionPreference = 'Stop'; "
     "$env:IDF_TOOLS_PATH = $env:_IBS_TOOLS; "
     "$env:IDF_PATH = $env:_IBS_IDF; "
     "$env:PATH = $env:_IBS_PY + ';' + $env:PATH; "
@@ -55,6 +60,10 @@ EXPORT = (
 def export(idf_path, tools_path, python_dir):
     """The environment the export leaves; SystemExit(2) if it fails."""
     env = dict(os.environ, _IBS_TOOLS=tools_path, _IBS_IDF=idf_path, _IBS_PY=python_dir)
+    # ESP-IDF refuses to run under MSYS ("MSys/Mingw is not supported"), and
+    # a runner started from Git Bash passes MSYSTEM down: not to the export,
+    # and so not to the command either
+    env.pop("MSYSTEM", None)
     r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
                         "Bypass", "-Command", EXPORT],
                        capture_output=True, text=True, env=env, timeout=600)
