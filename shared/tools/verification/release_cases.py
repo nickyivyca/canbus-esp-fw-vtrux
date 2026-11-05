@@ -1512,6 +1512,13 @@ def append(proj, rel, line):
         f.write("\n" + line + "\n")
 
 
+def exclude_rule(proj, rel):
+    """A .git/info/exclude line matching proj's rel alone. A leading / anchors a rule in that file at
+    the repository's top, not at the project's folder, so the project's prefix goes in front
+    (gen-inhibit's tree has been in SUB since port step 0d; "/sdkconfig" alone matched nothing there)."""
+    return "/" + git(proj, "rev-parse", "--show-prefix").replace("\\", "/") + rel
+
+
 def r8_sdkconfig_refused(ctx, name, log, want_path, note, after=None):
     """Refused, no record; VOID unless the reconfigure ran and config_file names want_path."""
     before = snapshot(ctx.records())
@@ -1569,10 +1576,30 @@ def self_test_layout(d):
     good = ex == os.path.normcase(os.path.join(repo, ".git", "info", "exclude"))
     print("  %s .git/info/exclude found from SUB: %s" % ("ok  " if good else "FAIL", ex))
     ok &= good
+    os.makedirs(os.path.dirname(ex), exist_ok=True)
+    old = open(ex, "rb").read() if os.path.exists(ex) else b""
+    rule = exclude_rule(ctx.src, "CMakeLists.txt")
+    for label, line, want in (("the root-anchored rule misses it (the can-fail)", "/CMakeLists.txt", False),
+                              ("exclude_rule's line %s matches it" % rule, rule, True)):
+        with open(ex, "wb") as f:
+            f.write(old + ("\n%s\n" % line).encode())
+        got = ignored(ctx.src, "CMakeLists.txt")
+        print("  %s .git/info/exclude on SUB's tracked CMakeLists.txt, %s: ignored %s" % (
+            "ok  " if got == want else "FAIL", label, got))
+        ok &= got == want
+    with open(ex, "wb") as f:
+        f.write(old)
+    good = rule == "/" + SUB + "/CMakeLists.txt"
+    print("  %s exclude_rule from SUB: %s" % ("ok  " if good else "FAIL", rule))
+    ok &= good
     git(repo, "checkout", "-q", "-B", "fixture", c1)
     ctx = Ctx(A)
     good = ctx.sub == "" and ctx.src == repo
     print("  %s Ctx on a fixture at the root: sub %r" % ("ok  " if good else "FAIL", ctx.sub))
+    ok &= good
+    rule = exclude_rule(ctx.src, "CMakeLists.txt")
+    good = rule == "/CMakeLists.txt"
+    print("  %s exclude_rule at the root: %s" % ("ok  " if good else "FAIL", rule))
     ok &= good
     return ok
 
@@ -1751,10 +1778,11 @@ def c_r8_sdk_excluded(ctx, log):
     os.makedirs(os.path.dirname(ex), exist_ok=True)
     old = open(ex, "rb").read() if os.path.exists(ex) else None
     try:
+        rule = exclude_rule(ctx.p1, "sdkconfig")
         with open(ex, "ab") as f:
-            f.write(b"\n/sdkconfig\n")
+            f.write(("\n%s\n" % rule).encode())
         if not (tracked(ctx.p1, "sdkconfig") and ignored(ctx.p1, "sdkconfig")):
-            report("r8_sdkconfig_excluded", "VOID", "the exclude rule did not take", ctx.log)
+            report("r8_sdkconfig_excluded", "VOID", "the exclude rule %s did not take" % rule, ctx.log)
             return
         r8_sdkconfig_refused(ctx, "r8_sdkconfig_excluded", log, os.path.join(ctx.p1, "sdkconfig"),
                              "tracked, ignored by .git/info/exclude")
