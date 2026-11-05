@@ -17,6 +17,9 @@ Each build's record, builds/<id>.json in the acceptance record: the build,
 its tree's record (commits, tree ids, file sha256s, product digest), its
 verdict, and for a build that passed its images with their sha256, the
 ELF's sha256, the variant and the toolchain. A failed build has no images.
+A build's tree gets the adapter's tree_setup like any other tree, with the
+run's settings.
+
 A build a failed premise blocks is not run at all -- no tree, no check -- and
 is recorded NOT-RUN with why (A11; the charge-interposer reviewer,
 2026-11-01: a build is the expensive part).
@@ -37,7 +40,7 @@ from .trees import TreeError, make_tree
 
 RULES = {k: True for k in ("own_tree", "options", "image_sha", "record_file",
                            "build_cls", "chain_in_record", "fail_recorded",
-                           "masked_record", "remote_refused")}
+                           "masked_record", "remote_refused", "setup_settings")}
 
 
 def _sha256(path):
@@ -71,8 +74,12 @@ def build_suite(repo, alist, adapter, settings, made, parent, base_env, say, tre
             raise TreeError("build %s: its tree %s is on the remote host %s, and builds on "
                             "remote trees are not built yet" % (b["id"], b["tree"], host))
         if RULES["own_tree"]:
+            # the run's settings, for the adapter's tree_setup, which a
+            # build's tree gets like any other (the charge-interposer
+            # tester, 2026-11-04: without them every build was refused)
             t = make_tree(repo, b["id"], alist.trees[b["tree"]], adapter, parent, made,
-                          say, prefix="build-")
+                          say, prefix="build-",
+                          remote={"settings": settings} if RULES["setup_settings"] else None)
         else:
             t = trees[b["tree"]]
         target = adapter.TARGETS[b["target"]]
