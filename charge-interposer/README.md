@@ -96,6 +96,7 @@ records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 | `hw_mechanics_test.py` | Test of `fw_harness/hw_mechanics.py`, with `--can-fail` | Tester |
 | `fw_harness/refusal_pairs.py` | shared/tools R20's refusal pairs for the interposer: each test-only rule passes on the truck stand-in and fails on an image built with its switch on | Tester |
 | `fw_harness/refusal_pairs_runs.py` | Makes the stand-in, R19, fixture and dev builds, then runs the pairs (the bridge-release fixture: a local commit it makes, never on a branch; reviewer, 2026-11-03) | Tester |
+| `fw_harness/variant_diff.py` | Spec 9 build check C2b: two variants' builds differ only by the named test switches (sdkconfig, source files and compile flags), with `--self-test` and `--can-fail` (reviewer, 2026-11-04) | Tester |
 | `fw_harness/idf_build_shell.py` | The acceptance runner's "idf" shell: exports the interposer's ESP-IDF from the machine's settings, runs the adapter's `idf-build` target, refuses a checkout not clean before and fails a build that changed a tracked file (`dependencies.lock`, shared/tools R33); Windows only (reviewer, 2026-11-04) | Tester |
 | `fw_harness/idf_build_shell_test.py` | Test of `idf_build_shell.py` on a stand-in export, with `--can-fail` | Tester |
 | `refusal_pairs_test.py` | Test of `refusal_pairs.py`'s judging and the runner's fixture check, with `--can-fail` | Tester |
