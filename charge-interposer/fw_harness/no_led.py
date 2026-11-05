@@ -70,6 +70,12 @@ constructor table is never collected), builds <variant> there with
 charge-interposer/vtrux_tools.py build, and requires main.cpp in the build's
 compile commands, board_led in the ELF, and rule 1 failing on it. PASS (exit
 0) means the mutant was caught; the clone and its build are removed after.
+The clone goes in the scratch/ of the worktree holding --scratch-from DIR
+(default the checkout itself): a runner's tree is too deep for an ESP-IDF
+build on Windows, so the list passes its {clone}. A build folder over 200
+characters is refused before anything is cloned.
+
+    py -3.14 -B no_led.py --mutant-build bridge --scratch-from {clone}
 
 --self-test runs the rules and the --can-fail edits on a stand-in build (a
 small ELF written here), for the harness suite where no build exists.
@@ -501,16 +507,38 @@ def _git(args, cwd):
     return r.stdout.strip()
 
 
-def mutant_build(variant, jobs):
-    """0 if the mutant build is caught, 1 if not; Refused if it cannot be made."""
+# Windows: a process's working folder must be shorter than MAX_PATH (260),
+# and idf.py runs cmake in the build folder, whose own files nest about 60
+# characters deeper (WinError 267 inside a runner's tree, the build smoke
+# of 2026-11-04). Refused before anything is cloned or built.
+MAX_BUILD_DIR = 200
+
+
+def mutant_build_dir(repo, variant):
+    return os.path.join(repo, "charge-interposer", "firmware", "build", variant)
+
+
+def check_build_path(build_dir):
+    p = os.path.abspath(build_dir)
+    if len(p) > MAX_BUILD_DIR:
+        raise Refused("the mutant's build folder would be %d characters long (%s), over %d: "
+                      "ESP-IDF cannot run a build that deep on Windows. Give --scratch-from "
+                      "a shallower worktree (the list's {clone})" % (len(p), p, MAX_BUILD_DIR))
+
+
+def mutant_build(variant, jobs, scratch_from=None):
+    """0 if the mutant build is caught, 1 if not; Refused if it cannot be made.
+    The clone goes in the scratch/ of the worktree holding scratch_from
+    (default: the current folder)."""
     import scratch_dir
     here = os.getcwd()
     head = _git(["rev-parse", "HEAD"], here)
     if not os.environ.get("IDF_PYTHON_ENV_PATH"):
         raise Refused("no IDF_PYTHON_ENV_PATH: run it in a shell exported for the interposer's "
                       "ESP-IDF (the runner's \"idf\" shell)")
-    with scratch_dir.run("no-led-mutant") as work:
+    with scratch_dir.run("no-led-mutant", scratch_from or here) as work:
         repo = os.path.join(work, "repo")
+        check_build_path(mutant_build_dir(repo, variant))
         _git(["clone", "--shared", "-q", "--no-checkout", here, repo], work)
         _git(["checkout", "-q", "--detach", head], repo)
         target = os.path.join(repo, *MUTANT_FILE)
@@ -526,7 +554,7 @@ def mutant_build(variant, jobs):
         if rc:
             raise Refused("the mutant did not build (vtrux_tools.py build %s: exit %d)"
                           % (variant, rc))
-        build = os.path.join(repo, "charge-interposer", "firmware", "build", variant)
+        build = mutant_build_dir(repo, variant)
         try:
             with open(os.path.join(build, "compile_commands.json"), encoding="utf-8") as f:
                 files = [_fwd(e.get("file", "")) for e in json.load(f)]
@@ -700,6 +728,14 @@ def self_test():
                  lambda: write_elf(inp["elf"], list(STANDIN_SYMS) + ["board_led"]), True)):
             fn()
             expect(label, mutant_caught(inp["elf"])[0], want)
+    for depth, want in ((10, "ok"), (100, "ok"), (180, "refused")):
+        d = mutant_build_dir(os.path.join("C:\\", *(["d" * 9] * (depth // 10)), "repo"), "bridge")
+        try:
+            check_build_path(d)
+            got = "ok"
+        except Refused:
+            got = "refused"
+        expect("a mutant build folder %d characters long is %s" % (len(d), want), got, want)
     print("\nno_led --self-test: %s" % ("all checks OK" if not bad else "%d FAILED" % bad))
     return 1 if bad else 0
 
@@ -711,12 +747,14 @@ def main(argv):
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("--mutant-build", metavar="VARIANT")
     ap.add_argument("--jobs", type=int)
+    ap.add_argument("--scratch-from", metavar="DIR",
+                    help="the mutant's clone goes in the scratch/ of the worktree holding DIR")
     a = ap.parse_args(argv)
     try:
         if a.self_test:
             return self_test()
         if a.mutant_build:
-            return mutant_build(a.mutant_build, a.jobs)
+            return mutant_build(a.mutant_build, a.jobs, a.scratch_from)
         if not a.build:
             print("no_led: REFUSED: --build <build folder> is needed")
             return 2
