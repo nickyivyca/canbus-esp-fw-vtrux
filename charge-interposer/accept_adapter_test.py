@@ -503,14 +503,18 @@ def test_identifier_scan(A, work):
 
 def test_artifacts_row(A, work):
     """A13: the record's row goes into the artifacts README beside the runs
-    folder, at the top of its runs/ rows; a README with no runs/ rows is a
-    failure the close reports, never a row put anywhere."""
+    folder, at the top of its runs/ folder rows, never beside a row naming
+    a file under runs/ in another table (run f308's row went there,
+    2026-11-05); a README with no runs/ folder rows is a failure the close
+    reports, never a row put anywhere."""
     art = os.path.join(work, "art")
     runs = os.path.join(art, "runs")
     os.makedirs(os.path.join(runs, "accept_s_1"))
     readme = os.path.join(art, "README.md")
     with open(readme, "w", encoding="utf-8", newline="\n") as f:
-        f.write("# x\n\n| Path | What |\n|---|---|\n| `runs/old_1/` | an old run |\n")
+        f.write("# x\n\n## Moved\n\n| Was | Now |\n|---|---|\n"
+                "| `runs/step4_x/reset_check.py` | `charge-interposer/bench_drivers/reset_check.py` |\n"
+                "\n## Runs\n\n| Path | What |\n|---|---|\n| `runs/old_1/` | an old run |\n")
     summary = {"step": {"id": "s", "verification": "9.1"},
                "verdict": {"lines": ["ACCEPTANCE PASS"]}}
     row = A.artifacts_row(os.path.join(runs, "accept_s_1"), summary)
@@ -526,13 +530,15 @@ def test_artifacts_row(A, work):
     assert A.artifacts_row(os.path.join(runs, "accept_s_1"), dict(summary, dev=True)) is None
     with open(readme, encoding="utf-8") as f:
         assert f.read() == before, "a dev run wrote a row"
-    with open(readme, "w", encoding="utf-8", newline="\n") as f:
-        f.write("# x\n\nno table\n")
-    try:
-        A.artifacts_row(os.path.join(runs, "accept_s_1"), summary)
-    except A.AdapterError:
-        return
-    raise AssertionError("a README with no runs/ rows took the row")
+    for text in ("# x\n\nno table\n",
+                 "# x\n\n| Was | Now |\n|---|---|\n| `runs/step4_x/reset_check.py` | `x.py` |\n"):
+        with open(readme, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+        try:
+            A.artifacts_row(os.path.join(runs, "accept_s_1"), summary)
+        except A.AdapterError:
+            continue
+        raise AssertionError("a README with no runs/ folder rows took the row: %r" % text)
 
 
 def _write(path, text):
@@ -777,6 +783,8 @@ MUTANTS = [
     ("counts not kept", '"%s: %s x%d" % (rel, cat, k)', '"%s: %s" % (rel, cat)'),
     ("the row anywhere", '        raise AdapterError("%s has no runs/ rows',
      '        lines.append(""); first = len(lines)\n        if 0: raise AdapterError("%s has no runs/ rows'),
+    ("the row beside any runs/ path", r'RUN_ROW = re.compile(r"^\| `runs/[^`/]+/` \|")',
+     r'RUN_ROW = re.compile(r"^\| `runs/")'),
     ("run ids not masked", '    (re.compile(r"charge-interposer-(?:emulated|bench|harness)_',
      '    (re.compile(r"NO-charge-interposer-(?:emulated|bench|harness)_'),
     ("echo lines kept", '            if line.startswith(("$ ", "# cwd=")):\n                continue\n', ""),

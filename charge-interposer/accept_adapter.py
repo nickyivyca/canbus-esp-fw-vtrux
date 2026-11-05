@@ -831,17 +831,24 @@ def identifier_scan(folder, values=None):
     return out
 
 
+RUN_ROW = re.compile(r"^\| `runs/[^`/]+/` \|")
+
+
 def artifacts_row(folder, summary):
-    """The record's row, put at the top of the runs/ rows of the artifacts
-    README beside the runs folder. Returns the row; None for a --dev run,
-    which is never evidence and gets no row (its records go to a dev-runs
-    folder of their own: the charge-interposer reviewer, 2026-11-02)."""
+    """The record's row, put at the top of the runs/ folder rows of the
+    artifacts README beside the runs folder: the first row naming a folder
+    under runs/ ("| `runs/<name>/` |"), never a row naming a file there,
+    such as the moved-scripts table's runs/step4_nohands_.../reset_check.py,
+    where run f308's row went (2026-11-05). Returns the row; None for a
+    --dev run, which is never evidence and gets no row (its records go to a
+    dev-runs folder of their own: the charge-interposer reviewer,
+    2026-11-02)."""
     if summary.get("dev"):
         return None
     readme = os.path.join(os.path.dirname(os.path.dirname(folder)), "README.md")
     with open(readme, encoding="utf-8", newline="") as f:
         lines = f.read().split("\n")
-    first = next((i for i, ln in enumerate(lines) if ln.startswith("| `runs/")), None)
+    first = next((i for i, ln in enumerate(lines) if RUN_ROW.match(ln)), None)
     if first is None:
         raise AdapterError("%s has no runs/ rows to put the record's row beside" % readme)
     row = ("| `runs/%s/` | Acceptance record of step %s (VERIFICATION.md %s): %s. Its "
