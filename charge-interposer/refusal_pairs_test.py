@@ -278,7 +278,110 @@ def test_fixture_diff(R):
         assert R.fixture_diff_problems(d), why
 
 
-RUNS_TESTS = [test_fixture_text, test_fixture_diff]
+def test_worktree_layout(R):
+    """the worktrees go beside this worktree, or in --scratch-from's folder;
+    every build folder is checked against the 200-character limit, the
+    three releases' and every dev and trace build's; one shared-<tag>
+    checkout per distinct tag of the pins"""
+    top = os.path.join("C:\\", "w", "esp", "interposer-tester")
+    beside = R.worktree_paths(top)
+    assert beside["standin"] == os.path.join("C:\\", "w", "esp", "interposer-tester-standin"), beside
+    work = os.path.join("C:\\", "w", "esp", "interposer-tester", "scratch", "rp")
+    inw = R.worktree_paths(top, work)
+    assert inw == {k: os.path.join(work, k) for k in R.WORKTREES}, inw
+    dirs = R.build_dirs(inw)
+    assert len(dirs) == 3 + len(R.DEV) + 1, dirs
+    want = [os.path.join(inw[k], "charge-interposer", "firmware", "build")
+            for k in ("standin", "r19", "relbridge")] + \
+        [os.path.join(inw["pairsdev"], "charge-interposer", "firmware", "build", v)
+         for v in R.DEV + ("trace",)]
+    assert dirs == want, dirs
+    assert R.too_deep(inw) == [], R.too_deep(inw)
+    # a base that puts the longest build folder at exactly the limit passes,
+    # one character more is refused
+    longest = max(len(os.path.abspath(p)) for p in dirs)
+    edge = work + "x" * (R.MAX_BUILD_DIR - longest)
+    assert R.too_deep(R.worktree_paths(top, edge)) == []
+    deep = R.too_deep(R.worktree_paths(top, edge + "y"))
+    assert len(deep) == 1 and deep[0].endswith("selftest"), deep
+    pins = {"shared/tools": {"tag": "2026.11.03"}, "shared/bench": {"tag": "2026.11.04.4"},
+            "shared/twai_port": {"tag": "2026.11.03"}}
+    assert R.shared_tags(json.dumps(pins)) == ["2026.11.03", "2026.11.04.4"]
+
+
+def test_scratch_from_wiring(R):
+    """main() with --scratch-from: the worktrees, and a shared-<tag> checkout
+    of each tag the product commit pins, are added in the scratch folder of
+    DIR's worktree, and removed with it at the end; a DIR too deep is
+    refused before any worktree is added. git, vtrux_tools and scratch_dir
+    are fakes: nothing is built."""
+    sys.path.insert(0, HERE)
+    import scratch_dir as real_scratch               # the test's own folder, in scratch/
+    calls, made, removed = [], [], []
+    pins = json.dumps({"shared/tools": {"tag": "2026.11.03"},
+                       "shared/bench": {"tag": "2026.11.04.4"}})
+
+    def fake_git(*args, cwd=None):
+        calls.append(args)
+        if args[:2] == ("rev-parse", "--show-toplevel"):
+            return 0, "TOP"
+        if args[:1] == ("show",):
+            return 0, pins
+        if args[:1] == ("status",):
+            return 0, ""
+        return 0, "c" * 40
+    fake_tools = types.ModuleType("vtrux_tools")
+    fake_tools.check_idf_env = lambda: None
+    fake_scratch = types.ModuleType("scratch_dir")
+    fake_scratch.wallclock_clear = lambda: (True, [])
+
+    def make(tool, start):
+        p = os.path.join(start, "scratch", tool)
+        made.append(p)
+        return p
+    fake_scratch.make = make
+    fake_scratch.remove = removed.append
+    saved = {k: sys.modules.get(k) for k in ("vtrux_tools", "scratch_dir")}
+    R.git = fake_git
+    with real_scratch.run("refusal-pairs-test") as tmp:
+        sys.modules.update(vtrux_tools=fake_tools, scratch_dir=fake_scratch)
+        try:
+            # a short DIR (the fake make() creates nothing there), the --out real
+            dir_ = os.path.abspath(os.sep + "c")
+            try:
+                rc = R.main(["--commit", "abc", "--out", os.path.join(tmp, "out"),
+                             "--scratch-from", dir_])
+            except SystemExit as e:
+                raise AssertionError("refused: %s" % e)
+            assert rc == 1, rc                      # stopped at the fixture: no CMakeLists
+            work = os.path.join(dir_, "scratch", "refusal-pairs")
+            adds = [c for c in calls if c[:2] == ("worktree", "add")]
+            assert [(os.path.dirname(c[3]), os.path.basename(c[3]), c[4]) for c in adds] == \
+                [(work, "shared-2026.11.03", "2026.11.03"),
+                 (work, "shared-2026.11.04.4", "2026.11.04.4")] + \
+                [(work, k, "c" * 40) for k in R.WORKTREES], adds
+            assert removed == [work], removed
+            calls.clear()
+            removed.clear()
+            deep = os.path.join(tmp, "d" * 150)
+            try:
+                R.main(["--commit", "abc", "--out", os.path.join(tmp, "out2"),
+                        "--scratch-from", deep])
+                raise AssertionError("a folder too deep was not refused")
+            except SystemExit as e:
+                assert "over 200" in str(e), e
+            assert not [c for c in calls if c[:2] == ("worktree", "add")], calls
+            assert removed == [os.path.join(deep, "scratch", "refusal-pairs")], removed
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = v
+
+
+RUNS_TESTS = [test_fixture_text, test_fixture_diff, test_worktree_layout,
+              test_scratch_from_wiring]
 
 
 def run_all(SW, text=None, quiet=False, runs_text=None):
@@ -346,6 +449,23 @@ RUNS_MUTANTS = [
      '    if "new file mode" in diff or "deleted file mode" in diff or \\\n',
      '    if False and "new file mode" in diff or "deleted file mode" in diff and \\\n'),
     ("the default line replaced however often it occurs", "    if n != 1:\n", "    if n < 1:\n"),
+    ("the worktrees beside this one whatever the base", "    if base:\n        return {k: os.path.join(base, k)",
+     "    if False:\n        return {k: os.path.join(base, k)"),
+    ("the releases' build folders not checked",
+     '           for k in ("standin", "r19", "relbridge")]\n', "           for k in ()]\n"),
+    ("the trace build not checked", '            for v in DEV + ("trace",)]\n',
+     "            for v in DEV]\n"),
+    ("the limit loosened", "len(os.path.abspath(p)) > limit]", "len(os.path.abspath(p)) > limit + 1]"),
+    ("one checkout per component, not per tag",
+     '    return sorted({v["tag"] for v in json.loads(pins_text).values()})',
+     '    return sorted([v["tag"] for v in json.loads(pins_text).values()])'),
+    ("--scratch-from not used for the worktrees", "        paths = worktree_paths(top, work)\n",
+     "        paths = worktree_paths(top)\n"),
+    ("no shared checkouts made", "    for name, p in sorted(shared.items()):\n            tag",
+     "    for name, p in sorted({}.items()):\n            tag"),
+    ("a folder too deep not refused", "    if deep:\n        if work:", "    if False:\n        if work:"),
+    ("the scratch folder not removed", "        if work:\n            try:\n                scratch_dir.remove(work)",
+     "        if False:\n            try:\n                scratch_dir.remove(work)"),
 ]
 
 
