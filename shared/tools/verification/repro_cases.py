@@ -24,16 +24,20 @@ setting in config/sdkconfig.h, and for time_macro and build_path the case's mark
 the .bin.
 
     fixture     release_cases.py's fixture commit (reproducible build on): R19 met
-    repro_off   the fixture with CONFIG_APP_REPRODUCIBLE_BUILD off, which is gen-inhibit as
-                it is until port step 0b: gen-inhibit's own R19 run, so R19 met
+    repro_off   the fixture with CONFIG_APP_REPRODUCIBLE_BUILD off: R19 not met, since without
+                reproducible build the absolute paths compiled in give the same code two image
+                hashes (gen-inhibit VALIDATION R5's basis). Until 2026-11-04 this case wanted R19
+                met, as gen-inhibit's own R19 run while it built with reproducible build off
+                (until port step 0b); since 0b that run is gen-inhibit's own (gen-inhibit
+                reviewer, 2026-11-04)
     mini        the minimal project (hello_world, esp32c3, reproducible build on): R19 met
     time_macro  the minimal project printing __DATE__ and __TIME__: R19 met, since the release
                 build sets one fixed SOURCE_DATE_EPOCH (R9)
     build_path  the minimal project printing a define that holds CMAKE_BINARY_DIR, which
                 differs between the two folders: R19 not met
 
-The case verdict is PASS when R19's result is the one the case wants, so build_path passing
-shows the test can fail.
+The case verdict is PASS when R19's result is the one the case wants (WANT_MET), so
+build_path and repro_off passing show the test can fail.
 
 Before each case it checks the bench lock, the "No builds" line and running simulators, as
 release_cases.py does.
@@ -59,6 +63,10 @@ TIME_LINE = '    printf("%s %%s %%s\\n", __DATE__, __TIME__);\n' % MARK
 PATH_MARK = "r19 build_path in"
 PATH_LINE = '    printf("%s %%s\\n", R19_BUILD_DIR);\n' % PATH_MARK
 PATH_DEFINE = '\ntarget_compile_definitions(${COMPONENT_LIB} PRIVATE "R19_BUILD_DIR=\\"${CMAKE_BINARY_DIR}\\"")\n'
+
+# Whether each case wants R19 met. The two False rows are the can-fails; repro_off was True until
+# 2026-11-04 (see the module docstring).
+WANT_MET = {"fixture": True, "repro_off": False, "mini": True, "time_macro": True, "build_path": False}
 
 
 # ---------- judges (pure; --self-test runs them on fakes) ----------
@@ -145,6 +153,16 @@ def self_test():
         got = premise(a, b) == ""
         print("  %s premise(), %s: %s" % ("ok  " if got == want else "FAIL", label, "ok" if got else "VOID"))
         ok &= got == want
+
+    # every case has a want; the can-fails are build_path and repro_off (repro_off since 2026-11-04)
+    names = [n for n, _ in CASES]
+    good = sorted(WANT_MET) == sorted(names)
+    print("  %s WANT_MET names every case and no other: %s" % ("ok  " if good else "FAIL", sorted(WANT_MET)))
+    ok &= good
+    nots = sorted(n for n, w in WANT_MET.items() if w is False)
+    good = nots == ["build_path", "repro_off"] and all(isinstance(w, bool) for w in WANT_MET.values())
+    print("  %s the cases wanting R19 not met: %s" % ("ok  " if good else "FAIL", nots))
+    ok &= good
 
     # the readers on a synthetic image: the library and the tester's own give its embedded hash
     import vtrux_build.image as LIB
@@ -283,7 +301,7 @@ def run_case(ctx, key, name, log, repo, commit, want_met, want_repro, marker=Non
 
 def c_fixture(ctx, log):
     repo, commit = prep(ctx, "fx", ctx.repo_src, "fixture", sub=ctx.sub)
-    run_case(ctx, "fx", "fixture", log, repo, commit, True, True, sub=ctx.sub)
+    run_case(ctx, "fx", "fixture", log, repo, commit, WANT_MET["fixture"], True, sub=ctx.sub)
 
 
 def c_repro_off(ctx, log):
@@ -292,7 +310,7 @@ def c_repro_off(ctx, log):
         OC.set_line(p, RC.REPRO_ON, RC.REPRO_OFF)
     repo, commit = prep(ctx, "off", ctx.repo_src, "fixture", edit, "r19 case repro_off: reproducible build off",
                         sub=ctx.sub)
-    run_case(ctx, "off", "repro_off", log, repo, commit, True, False, sub=ctx.sub)
+    run_case(ctx, "off", "repro_off", log, repo, commit, WANT_MET["repro_off"], False, sub=ctx.sub)
 
 
 def mini_source(ctx):
@@ -303,7 +321,7 @@ def mini_source(ctx):
 
 def c_mini(ctx, log):
     repo, commit = prep(ctx, "mini", mini_source(ctx), "main")
-    run_case(ctx, "mini", "mini", log, repo, commit, True, True)
+    run_case(ctx, "mini", "mini", log, repo, commit, WANT_MET["mini"], True)
 
 
 def add_print(p, line):
@@ -321,7 +339,7 @@ def c_time_macro(ctx, log):
         RC.git(p, "checkout", "-q", "-b", "r19-time-macro")
         add_print(p, TIME_LINE)
     repo, commit = prep(ctx, "time", mini_source(ctx), "main", edit, "r19 case time_macro: print __DATE__ __TIME__")
-    run_case(ctx, "time", "time_macro", log, repo, commit, True, True, marker=MARK)
+    run_case(ctx, "time", "time_macro", log, repo, commit, WANT_MET["time_macro"], True, marker=MARK)
 
 
 def c_build_path(ctx, log):
@@ -331,7 +349,7 @@ def c_build_path(ctx, log):
         with open(os.path.join(p, "main", "CMakeLists.txt"), "a", newline="") as f:
             f.write(PATH_DEFINE)
     repo, commit = prep(ctx, "path", mini_source(ctx), "main", edit, "r19 case build_path: print CMAKE_BINARY_DIR")
-    run_case(ctx, "path", "build_path", log, repo, commit, False, True, marker=PATH_MARK)
+    run_case(ctx, "path", "build_path", log, repo, commit, WANT_MET["build_path"], True, marker=PATH_MARK)
 
 
 CASES = [("fixture", c_fixture), ("repro_off", c_repro_off), ("mini", c_mini), ("time_macro", c_time_macro),
