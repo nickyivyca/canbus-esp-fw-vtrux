@@ -380,6 +380,15 @@ def b12_records(base):
     return out
 
 
+# (check, folder, the baseline file its judge finds by the short commit): section 2f.
+C7_FILES = [
+    ("B15host", "bench", "B15_diag_decode_check_host_e3d9437.txt"),
+    ("B17a", "bench", "B17_spec11_page_e3d9437_man.txt"),
+    ("B25", "bench", "B25_keystate_rekey-long_e3d9437.txt"),
+    ("C2scan", "root", "scan_scope_check_e3d9437.txt"),
+]
+
+
 def copy_tree(base, dest):
     """The baseline's text files (no captures, no witness logs), into dest/{bench,host,root},
     and B12's restart records beside its cycle files (b12_records)."""
@@ -547,6 +556,25 @@ def main():
               and (want != "PASS" or (set(J.RENAMED) <= set(figures(res))
                                       and not set(J.RENAMED.values()) & set(figures(res)))), res)
     gi_paths.remove_tree(b19)
+
+    # 2f. The short commit in a file name at git's longer abbreviation (port step 1d,
+    #     2026-11-05: git abbreviates this repo's commits to 8 characters now, and the 1d
+    #     runs name their files 7f2d5032). The baseline's own file under an 8-character
+    #     name gets the baseline's verdict; under a 6-character one there is no file.
+    c7 = os.path.join(scratch, "c7_length")
+    for cid, sub, name in C7_FILES:
+        base_v = [r["verdict"] for r in got[cid]]
+        check("%s: the baseline's own %s passes, so the cases below can tell" % (cid, name),
+              lambda: base_v == ["PASS"], base_v)
+        for label, short, want in (("git's 8-character abbreviation", "e3d94370", "PASS"),
+                                   ("6 characters, too short for a commit", "e3d943", "ERROR")):
+            gi_paths.remove_tree(c7)
+            shutil.copytree(os.path.join(real, sub), c7)
+            os.rename(os.path.join(c7, name), os.path.join(c7, name.replace("e3d9437", short)))
+            res = J.judge_one(cid, c7)
+            check("%s, its file named with %s: %s" % (cid, label, want),
+                  lambda: [r["verdict"] for r in res] == [want], [(r["verdict"], r["detail"]) for r in res])
+    gi_paths.remove_tree(c7)
 
     # 3. No files, a judge that raises, a judge that returns nothing.
     empty = os.path.join(scratch, "empty")
