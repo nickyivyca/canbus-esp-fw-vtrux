@@ -111,7 +111,8 @@ def test_list_loads(A, work):
                 'ordered_on = "2026-11-01"\nspec = ["9.1"]\nverification = "9.1"\n\n'
                 '[trees.head]\nproject = "%s"\n\n[[set]]\nid = "st"\ntree = "head"\n'
                 'select = ["tag:self-test"]\n\n[[check]]\nid = "paths"\ntree = "head"\n'
-                'run = ["charge-interposer/paths_test.py"]\n' % head)
+                'run = ["charge-interposer/paths_test.py"]\n\n[[build]]\nid = "bridge"\n'
+                'tree = "head"\ntarget = "idf-build"\noptions = { variant = "bridge" }\n' % head)
     git(clone, "add", "-A")
     git(clone, "commit", "-q", "-m", "list")
     got = L.load(clone, "%s:charge-interposer/acceptance/t.toml"
@@ -119,6 +120,12 @@ def test_list_loads(A, work):
     st = [c for c in got.checks if c.get("from_set") == "st"]
     assert len(st) == len(BS.SELF_TESTS), (len(st), len(BS.SELF_TESTS))
     assert any(c["id"] == "paths" for c in got.checks)
+    # the build target and its option are the adapter's; the tree gets the
+    # harness's shared pin from the pin file at its commit
+    assert [b["id"] for b in got.builds] == ["bridge"], got.builds
+    pins = json.loads(git(REPO, "show", "%s:charge-interposer/firmware/shared_pins.json" % head))
+    assert got.trees["head"]["shared"] == {"twai_port": pins["shared/twai_port"]["commit"]}, \
+        got.trees["head"]
 
 
 def test_tree_names(A, work):
@@ -169,6 +176,118 @@ def test_shells(A, work):
         pass
     else:
         raise AssertionError("powershell on madhouse was taken")
+
+
+def test_idf_shell(A, work):
+    """A5, A15: the "idf" shell is the host's python running
+    fw_harness/idf_build_shell.py with the machine settings' ESP-IDF
+    export (idf_path, idf_tools_path, python_dir), local only; a setting
+    missing is a refusal."""
+    idf = {"idf_path": r"C:\idf", "idf_tools_path": r"C:\tools", "python_dir": r"C:\py311"}
+    s = {"hosts": {"local": {"python": ["py", "-3.14"]},
+                   "madhouse": {"python": ["python3"], "ssh": "m", "workroot": "/w"}},
+         "idf": dict(idf)}
+    want = ["py", "-3.14", "-B", A.IDF_SHELL, "--idf-path", idf["idf_path"],
+            "--idf-tools-path", idf["idf_tools_path"], "--python-dir", idf["python_dir"], "--"]
+    assert A.shell_argv("idf", s) == want, A.shell_argv("idf", s)
+    assert "idf" in A.SHELLS
+    assert os.path.normcase(A.IDF_SHELL).endswith(os.path.normcase(
+        os.path.join("fw_harness", "idf_build_shell.py"))), A.IDF_SHELL
+    assert os.path.isfile(os.path.join(HERE, "fw_harness", "idf_build_shell.py"))
+    for k in idf:
+        t = dict(s, idf={x: v for x, v in idf.items() if x != k})
+        try:
+            A.shell_argv("idf", t)
+        except A.AdapterError:
+            continue
+        raise AssertionError("idf with no %s was taken" % k)
+    try:
+        A.shell_argv("idf", s, host="madhouse")
+    except A.AdapterError:
+        pass
+    else:
+        raise AssertionError("idf on madhouse was taken")
+
+
+def _fake_build(work, variant, project=None, drop=()):
+    """A tree as the runner makes it for a build, with what an IDF build of
+    variant leaves in firmware/build/<variant>/; its out folder."""
+    t = os.path.join(work, "build-%s" % variant)
+    bd = os.path.join(t, "repo", "charge-interposer", "firmware", "build", variant)
+    for rel in ("interposer_%s.bin" % variant, "interposer_%s.elf" % variant,
+                os.path.join("bootloader", "bootloader.bin"),
+                os.path.join("partition_table", "partition-table.bin")):
+        if rel in drop:
+            continue
+        os.makedirs(os.path.dirname(os.path.join(bd, rel)), exist_ok=True)
+        with open(os.path.join(bd, rel), "wb") as f:
+            f.write(rel.encode())
+    desc = {"project_name": project or "interposer_%s" % variant,
+            "app_bin": "interposer_%s.bin" % variant, "app_elf": "interposer_%s.elf" % variant,
+            "git_revision": "v5.4.2", "target": "esp32s3",
+            "c_compiler": "C:/x/.espressif-5.4.2/tools/xtensa-esp-elf/esp-14.2.0_20241119/"
+                          "xtensa-esp-elf/bin/xtensa-esp32s3-elf-gcc.exe"}
+    with open(os.path.join(bd, "project_description.json"), "w", encoding="utf-8") as f:
+        json.dump(desc, f)
+    return os.path.join(t, "out"), bd
+
+
+def test_targets(A, work):
+    """A5, A15: the build target "idf-build" (option variant) runs the
+    product's own charge-interposer/vtrux_tools.py build <variant> through
+    the idf shell; what it made is read in the build's tree, from
+    firmware/build/<variant>/ (reviewer, 2026-11-04): the app, bootloader
+    and partition-table images, the ELF, the variant and the toolchain; a
+    description of another variant, or a file missing, is refused."""
+    t = A.TARGETS["idf-build"]
+    assert t["options"] == ["variant"] and t["shell"] == "idf", t
+    assert t["run"] == "charge-interposer/vtrux_tools.py" and git(
+        REPO, "cat-file", "-t", "HEAD:" + t["run"]) == "blob", t["run"]
+    assert t["args"]({"variant": "bridge"}, "x") == ["build", "bridge"]
+    out, bd = _fake_build(work, "bridge")
+    got = A.TARGETS["idf-build"]["outputs"](out, {"variant": "bridge"})
+    assert got["images"] == {
+        "app": os.path.join(bd, "interposer_bridge.bin"),
+        "bootloader": os.path.join(bd, "bootloader", "bootloader.bin"),
+        "partition-table": os.path.join(bd, "partition_table", "partition-table.bin")}, got
+    assert got["elf"] == os.path.join(bd, "interposer_bridge.elf") and got["variant"] == "bridge"
+    assert got["toolchain"] == {"esp_idf": "v5.4.2", "target": "esp32s3",
+                                "compiler": "esp-14.2.0_20241119"}, got["toolchain"]
+    for name, kw in (("another variant's description", {"project": "interposer_witness"}),
+                     ("no bootloader", {"drop": (os.path.join("bootloader", "bootloader.bin"),)}),
+                     ("no ELF", {"drop": ("interposer_diag.elf",)})):
+        v = "diag" if "ELF" in name else "w%d" % len(name)
+        o, _ = _fake_build(os.path.join(work, name.replace(" ", "-").replace("'", "")), v, **kw)
+        try:
+            A.TARGETS["idf-build"]["outputs"](o, {"variant": v})
+        except A.AdapterError:
+            continue
+        raise AssertionError("outputs took a build with %s" % name)
+
+
+def test_shared_pins(A, work):
+    """A4, A15: a tree's shared component is the harness's pin,
+    shared/twai_port, from charge-interposer/firmware/shared_pins.json at
+    its commit; its checkout is shared-<tag>/ beside repo/ (where
+    shared_pin.py and vtrux_tools.py look), and one at another commit is
+    named for its component."""
+    head = git(REPO, "rev-parse", "HEAD")
+    pins = json.loads(git(REPO, "show", "%s:charge-interposer/firmware/shared_pins.json" % head))
+    tp = pins["shared/twai_port"]
+    assert A.shared_pins(REPO, head) == {"twai_port": tp["commit"]}, A.shared_pins(REPO, head)
+    assert A.tree_paths("x", {"project": head, "shared": {"twai_port": tp["commit"]}}) == {
+        "project": "repo", "twai_port": "shared-%s" % tp["tag"]}
+    assert A.tree_paths("x", {"project": head, "shared": {"twai_port": head}}) == {
+        "project": "repo", "twai_port": "shared-twai_port"}
+    assert A.tree_paths("x", {"project": head, "shared": {}}) == {"project": "repo"}
+    # a commit from before the pin file (port step 2a) carries its own
+    # shared/: no pins, and a component the list gives is named for itself
+    old = git(REPO, "log", "-1", "--format=%H", "--diff-filter=A", "--",
+              "charge-interposer/firmware/shared_pins.json") + "^"
+    old = git(REPO, "rev-parse", old)
+    assert A.shared_pins(REPO, old) == {}, A.shared_pins(REPO, old)
+    assert A.tree_paths("x", {"project": old, "shared": {"twai_port": tp["commit"]}}) == {
+        "project": "repo", "twai_port": "shared-twai_port"}
 
 
 def test_madhouse_entries(A, work):
@@ -376,7 +495,7 @@ def test_run_logs(A, work):
 
 
 TESTS = [test_identity, test_catalogue, test_list_loads, test_tree_names, test_shells,
-         test_madhouse_entries, test_tree_setup, test_identifier_scan, test_artifacts_row,
+         test_idf_shell, test_targets, test_shared_pins, test_madhouse_entries, test_tree_setup, test_identifier_scan, test_artifacts_row,
          test_masked_log,
          test_sim_judged, test_run_logs]
 
@@ -430,6 +549,25 @@ MUTANTS = [
     ("a dev run gets a row", '    if summary.get("dev"):\n        return None\n', ""),
     ("installed read from the install's line", r'r"^canre ([0-9a-f]{40}) checked at (.+)$"',
      r'r"^canre ([0-9a-f]{40}) .*at (.+)$"'),
+    ("the variant not passed", '    return ["build", opts["variant"]]', '    return ["build"]'),
+    ("another variant's build taken",
+     '    if desc.get("project_name") != "interposer_%s" % v:', "    if False:"),
+    ("the bootloader image dropped",
+     '              "bootloader": os.path.join(bd, "bootloader", "bootloader.bin"),\n', ""),
+    ("a missing file taken", "        if not os.path.isfile(p):\n", "        if False:\n"),
+    ("no compiler recorded", "cc[i + 1] if i is not None", "None if i is not None"),
+    ("the idf shell without its tools path",
+     ' "--idf-tools-path", idf["idf_tools_path"],\n', "\n"),
+    ("the idf shell on madhouse", '    if shell == "idf" and host == "local":',
+     '    if shell == "idf":'),
+    ("an idf setting missing, taken", "        if missing:\n", "        if False:\n"),
+    ("no shared pin for the trees", '        out[comp] = pins[key]["commit"]\n', "        pass\n"),
+    ("the pinned checkout not named by its tag", '("shared-%s" % p["tag"]) if',
+     '("shared-%s" % c) if'),
+    ("a checkout at another commit named by the tag",
+     'if p.get("commit") == commit else', 'if p else'),
+    ("a commit from before the pin file refused", "    if pins is None:\n        return {}\n",
+     '    if pins is None:\n        raise AdapterError("no pin file")\n'),
 ]
 
 

@@ -61,7 +61,9 @@ copy passes there, and passes only if every edit is caught. An edit marked
 for one platform is run only there: its line does nothing on the other.
 After each copy's run it also looks, from outside, for a process left
 under that run's own folder, kills it, and counts the edit as a failure
-(the same scan as check 11).
+(the same scan as check 11). Its control: the unedited copy's run leaves a
+bounded loop naming its own run folder (scratch_dir's naming), which that
+scan must see.
 
 On Windows bash is Git Bash by its full path (a bare "bash" there is WSL's);
 elsewhere bash. Git Bash puts its own folders first on PATH, so the
@@ -398,7 +400,19 @@ def case_killed(base):
         d = wait_ready(r)
         pid = owner_of(d).get("pid")
         os.kill(pid, signal.SIGTERM if WIN else signal.SIGKILL)
-        p.communicate(timeout=60)
+        try:
+            p.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            # Git Bash: the kill took the script's shell and not every
+            # process it had made (1 run in 6 here, 2026-11-04: its launcher
+            # never returned and a bash of fx.sh stayed). Kill the rest of
+            # the script's processes, as a kill of its whole group would;
+            # the case judges the folder a killed script leaves
+            rest = leftovers(r.work)
+            print("note  case_killed: the script's launcher was still running 15 s after its "
+                  "shell was killed; killing %d more of its processes" % len(rest), flush=True)
+            kill_all(rest)
+            p.communicate(timeout=60)
     finally:
         go(r)
         if p.poll() is None:
@@ -667,6 +681,7 @@ def kill_all(procs):
 
 
 PLANTED = "while :; do command sleep 0.2; done\n"
+PLANT_ENV = "SCRATCH_RUN_TEST_PLANT_OUTSIDE"
 
 
 def check_left(base):
@@ -716,6 +731,13 @@ def test():
             check_left(base)
         except Exception as e:         # noqa: BLE001
             check(False, "check_left raised %s: %s" % (type(e).__name__, e))
+        if os.environ.get(PLANT_ENV):
+            # --can-fail's control for its outside scan: a loop, bounded
+            # (60 s), that names this run's own folder (scratch_dir's
+            # naming) and outlives this process
+            subprocess.Popen([bash(), "-c", "n=0; while [ $n -lt 300 ]; do command sleep "
+                              "0.2; n=$((n + 1)); done", fwd(os.path.join(base, "outside"))],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     print("\nscratch_run_test: %s" % ("all checks OK" if not fails
                                       else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -815,6 +837,9 @@ def can_fail():
                 with open(p, "w", encoding="utf-8", newline="") as fh:
                     fh.write(src.replace(old, new))
             env = dict(os.environ, SCRATCH_RUN_CODE=ci, PYTHONDONTWRITEBYTECODE="1")
+            env.pop(PLANT_ENV, None)
+            if i == 0:
+                env[PLANT_ENV] = "1"           # the outside scan's control
             p = subprocess.Popen([sys.executable, "-B", os.path.abspath(__file__)],
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                  text=True, env=env)
@@ -835,9 +860,12 @@ def can_fail():
             kill_all(left)
             return r, (1 if not left else -len(left))
         r, n = run_copy(0)
-        if n < 0:
-            print("FAIL  baseline: left %d process(es) running" % -n)
+        if n >= 0:
+            print("FAIL  baseline: the outside scan did not see the loop the copy's run "
+                  "left under its own run folder (its control)")
             return 1
+        print("ok    the outside scan sees the loop the baseline run left under its own "
+              "run folder (%d process(es), killed)" % -n, flush=True)
         if r.returncode != 0:
             print("FAIL  baseline: the unedited copy fails (rc %d): %s"
                   % (r.returncode, [ln for ln in r.stdout.splitlines()
