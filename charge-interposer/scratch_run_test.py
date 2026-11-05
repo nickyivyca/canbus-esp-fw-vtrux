@@ -400,7 +400,19 @@ def case_killed(base):
         d = wait_ready(r)
         pid = owner_of(d).get("pid")
         os.kill(pid, signal.SIGTERM if WIN else signal.SIGKILL)
-        p.communicate(timeout=60)
+        try:
+            p.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            # Git Bash: the kill took the script's shell and not every
+            # process it had made (1 run in 6 here, 2026-11-04: its launcher
+            # never returned and a bash of fx.sh stayed). Kill the rest of
+            # the script's processes, as a kill of its whole group would;
+            # the case judges the folder a killed script leaves
+            rest = leftovers(r.work)
+            print("note  case_killed: the script's launcher was still running 15 s after its "
+                  "shell was killed; killing %d more of its processes" % len(rest), flush=True)
+            kill_all(rest)
+            p.communicate(timeout=60)
     finally:
         go(r)
         if p.poll() is None:
