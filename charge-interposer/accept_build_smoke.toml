@@ -50,12 +50,42 @@ id = "pin-twai-port"
 tree = "head"
 run = ["charge-interposer/shared_pin.py", "check", "shared/twai_port"]
 
+# The harness at d6de923: variant_diff with the app link compared, and
+# no_led.py (2a acceptance (j), as the reviewer ruled it, (B)). Its product
+# files are cf1b911's but for the shared/bench pin (product digest the same).
+[trees.harness]
+project = "d6de923ed0d3d28160178d36a01979e31b5bc089"
+
 # the variant check on the build's own folder against itself: no switch
 # differs, so it must refuse (the reviewer's "a pair with no difference");
-# shows the build_<id> setting reaches a check
+# shows the build_<id> setting reaches a check, and the link read on a real
+# build.ninja
 [[check]]
 id = "variant-diff-self-pair"
-tree = "head"
+tree = "harness"
 run = ["charge-interposer/fw_harness/variant_diff.py", "--pair", "{build_bridge}",
        "{build_bridge}", "--switches", "INTP_ORDER_WITNESS"]
 expect = "FAIL"
+
+# spec 8's no LED on the build, its can-fail on copies of it (with the
+# control: rgbLedWrite present, rule 1 passing), and the mutant build:
+# board_led called in a clone of the tree, built in the "idf" shell, must
+# be caught (an ESP-IDF build of its own). Its clone goes in {clone}'s
+# scratch/: inside this tree the build folder is too deep for ESP-IDF on
+# Windows (build smoke 5, WinError 267)
+[[check]]
+id = "no-led-bridge"
+tree = "harness"
+run = ["charge-interposer/fw_harness/no_led.py", "--build", "{build_bridge}"]
+
+[[check]]
+id = "no-led-canfail"
+tree = "harness"
+run = ["charge-interposer/fw_harness/no_led.py", "--can-fail", "--build", "{build_bridge}"]
+
+[[check]]
+id = "no-led-mutant"
+tree = "harness"
+shell = "idf"
+run = ["charge-interposer/fw_harness/no_led.py", "--mutant-build", "bridge",
+       "--scratch-from", "{clone}"]

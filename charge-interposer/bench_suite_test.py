@@ -413,7 +413,8 @@ def test_suites():
     # 238: idf-build-shell-test and its -canfail, with the acceptance
     #      adapter's build target (port step 2a acceptance list)
     # 239: variant-diff-self-test, with 2a acceptance (h)
-    assert len(seen) == 239, "checks across the suites: %d" % len(seen)
+    # 240: no-led-self-test, with 2a acceptance (j)
+    assert len(seen) == 240, "checks across the suites: %d" % len(seen)
     # madhouse gets the pinned canre beside the code, named by CANRE_DIR
     mad = 0
     for name in ("emulated", "harness"):

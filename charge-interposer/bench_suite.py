@@ -248,6 +248,9 @@ HARNESS_LOCAL = [
     # spec 9 C2b's "differ only by the switch" (2a acceptance (h)), on
     # stand-in build folders: its judgments and its own can-fail
     ("variant-diff-self-test", ["{interposer_code}/fw_harness/variant_diff.py", "--self-test"]),
+    # spec 8's "no LED" (2a acceptance (j)), on a stand-in build: its three
+    # rules, its own can-fail and its control
+    ("no-led-self-test", ["{interposer_code}/fw_harness/no_led.py", "--self-test"]),
     ("board-reset-test", ["{interposer_code}/board_reset_test.py"]),
     ("bench-suite-test", ["{interposer_code}/bench_suite_test.py"]),
     ("bench-suite-test-canfail",

@@ -28,10 +28,21 @@ FAILS, banner-only PASSES, nothing at all is VOID, a bootloader line is not
 app); and on the bench, the same run on a bench image, which prints, must
 FAIL both phases.
 
+--idf-log judges any image, a bench image's own output included, by spec
+8.3's "framework logging is compiled out of every build" (from port step
+2a; user, 2026-10-25), in the form the charge-interposer reviewer accepted
+for the 2a acceptance list (2026-11-04): the same capture and classes, but
+only an app line (or a line before the banner) in a framework log form
+FAILS: ESP-IDF's esp_log, "[EWIDV] (<ms>) <tag>:", colour codes allowed; or
+the Arduino core's log_x, "[<ms>][EWIDV][<file>:<line>] ". The image's
+own lines pass, and the bootloader's are out of scope as before. Without a
+complete ROM banner the phase is VOID. --self-test covers it too.
+
     py -3.14 bench_flight_silence.py --self-test
     py -3.14 bench_flight_silence.py --port COM3 --pcan --out <file.txt>
+    py -3.14 bench_flight_silence.py --idf-log --port COM3 --out <file.txt>
 
-Tester, 2026-10-15.
+Tester, 2026-10-15; --idf-log 2026-11-04.
 """
 
 import argparse
@@ -54,6 +65,9 @@ ROM_END = re.compile(r"^entry 0x[0-9a-fA-F]+")
 BOOT_LINE = re.compile(r"^(\x1b\[[0-9;]*m)?[IWE] \(\d+\) "
                        r"(boot|boot\.esp32s3|esp_image|qio_mode):")
 STATUS_IDS = (0x7F4, 0x7F5, 0x7F6, 0x7F7)
+# --idf-log: the framework log forms (spec 8.3)
+IDF_LOG = re.compile(r"^(\x1b\[[0-9;]*m)?[EWIDV] \(\d+\) [^\s:]+:")
+ARDUHAL_LOG = re.compile(r"^(\x1b\[[0-9;]*m)?\[\s*\d+\]\[[EWIDV]\]\[[^\]]+:\d+\] ")
 
 
 def classify(lines):
@@ -103,6 +117,22 @@ def verdict(c):
             "0 bytes from the application" % (len(c["rom"]), len(c["boot"])))
 
 
+def verdict_idf_log(c):
+    """--idf-log: -> (PASS / FAIL / VOID, why), failing only framework log
+    lines among the app's (spec 8.3)."""
+    logs = [ln for ln in c["pre"] + c["app"] if IDF_LOG.match(ln) or ARDUHAL_LOG.match(ln)]
+    if logs:
+        return ("FAIL", "%d framework log line(s) from the application, first %r"
+                % (len(logs), logs[0][:80]))
+    if not c["rom_end"]:
+        return ("VOID", "no complete ROM banner captured after the reset "
+                "(%d banner line(s)): the capture cannot show the absence"
+                % len(c["rom"]))
+    return ("PASS", "ROM banner captured (%d lines), %d bootloader line(s), "
+            "%d application line(s), none in a framework log form"
+            % (len(c["rom"]), len(c["boot"]), len(c["app"]) + len(c["pre"])))
+
+
 def self_test():
     fails = []
 
@@ -139,6 +169,27 @@ def self_test():
     v, why = verdict(classify(["t=5s state=MONITOR"] + banner))
     check(v == "FAIL", "can-fail: a line read after the reset but before the "
           "banner -> FAIL")
+    # --idf-log (spec 8.3)
+    own = ["Vtrux charge interposer", "t=5s state=MONITOR", "",
+           "frame E (12) seen", "[bridge] up"]
+    for lines, want, what in (
+            (banner + own, "PASS", "a bench image's own lines -> PASS"),
+            (banner + ["I (24) boot: ESP-IDF v5.4.2", "I (31) esp_image: segment 0"] + own,
+             "PASS", "bootloader lines are out of scope -> PASS"),
+            (banner + own + ["E (312) gpio: gpio_set_level(227): GPIO output gpio_num error"],
+             "FAIL", "can-fail: an ESP-IDF error line -> FAIL"),
+            (banner + ["\x1b[0;33mW (55) twai: tx queue full\x1b[0m"], "FAIL",
+             "can-fail: a coloured ESP-IDF warning -> FAIL"),
+            (banner + ["I (300) cpu_start: Pro cpu up."], "FAIL",
+             "can-fail: an app-side ESP-IDF info line (cpu_start) -> FAIL"),
+            (banner + ["[   312][E][esp32-hal-gpio.c:102] __pinMode(): Invalid pin"], "FAIL",
+             "can-fail: an Arduino core log_e line -> FAIL"),
+            (["E (5) spi: before the banner"] + banner, "FAIL",
+             "can-fail: a log line before the banner -> FAIL"),
+            ([], "VOID", "can-fail: nothing at all -> VOID, never PASS"),
+            (banner[:4] + own, "VOID", "a banner cut short -> VOID")):
+        v, why = verdict_idf_log(classify(lines))
+        check(v == want, "--idf-log: %s -> %s -> %s" % (what, v, why))
     print("\nbench_flight_silence self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -174,7 +225,7 @@ def run_phase(hp, rx, kind, a, log):
         time.sleep(a.read_s)
     lines = [s for h, s in hp.stamped if h > t0 and not s.startswith("# ")]
     c = classify(lines)
-    v, why = verdict(c)
+    v, why = (verdict_idf_log if a.idf_log else verdict)(c)
     log("phase %s: reset at host %.6f; %d line(s) after it" %
         (kind, t0, len(lines)))
     for ln in lines[:40]:
@@ -202,6 +253,8 @@ def main():
     ap.add_argument("--drain-s", type=float, default=5.0)
     ap.add_argument("--read-s", type=float, default=30.0)
     ap.add_argument("--out", default=None)
+    ap.add_argument("--idf-log", action="store_true",
+                    help="fail only framework log lines (spec 8.3), for any image")
     a = ap.parse_args()
     if a.self_test:
         return self_test()
@@ -236,7 +289,8 @@ def main():
     overall = ("FAIL" if "FAIL" in verdicts else
                "VOID" if "VOID" in verdicts else "PASS")
     log("serial record: %s" % serial_path)
-    log("8.3 flight silence: %s" % overall)
+    log("8.3 %s: %s" % ("no framework log lines (--idf-log)" if a.idf_log
+                        else "flight silence", overall))
     if out:
         out.close()
     return 0 if overall == "PASS" else 1
