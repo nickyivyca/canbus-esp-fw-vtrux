@@ -802,8 +802,9 @@ def check_left(base):
 
 def test():
     # its deepest git is case_shared_tool\tree\.git\config, 33 below the run
-    # folder (measured 2026-11-05), past scratch_dir.DEPTH
-    with scratch_dir.run("scratch-run-test", depth=33) as base:
+    # folder and its separator, 34 in all (measured 2026-11-05), past
+    # scratch_dir.DEPTH
+    with scratch_dir.run("scratch-run-test", depth=34) as base:
         for c in CASES:
             d = os.path.join(base, c.__name__)
             os.makedirs(d)
