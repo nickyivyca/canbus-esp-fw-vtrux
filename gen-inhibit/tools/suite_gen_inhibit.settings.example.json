@@ -17,7 +17,7 @@
   "bash": "<Git Bash's bash.exe, full path; a bare bash finds WSL's>",
   "gi_tools": "<tester worktree>/gen-inhibit/tools",
   "gi_index": "<reverse-it>/projects/vtrux/notes/artifacts/gen-inhibit/runs/baseline_e3d9437/suite_index_e3d9437.json",
-  "gi_commit": "<short commit>",
+  "gi_commit": "<the commit in the images' app descriptor, character for character: git's short form when they were built, which is 8 hex digits in this repo since 2026-11 (7 before); the suite compares it exactly, so a shorter or longer prefix of the same commit is refused as 'code is not identifiable'. The bench run looks for an emulated run on the same string, so give both runs the same one>",
   "gi_can1_termination": "<where the CAN1 terminators are, as read on the bench by a person; NONODE's --termination>",
   "gi_images": "<WiCAN tree (a worktree's gen-inhibit/firmware/) holding build-tester-man/, -man2/, -rt/, -txabort/, -abortwin/, -rxq/>",
   "gi_prod_dir": "<prod build>/build",
