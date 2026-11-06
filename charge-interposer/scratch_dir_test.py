@@ -457,7 +457,7 @@ def case_ceiling(base):
 
 
 def _sweep_tree(base):
-    wt = fake_worktree(base, "wt-sweep")
+    wt = fake_worktree(base, "w")     # short: the deepest git, see test()
     cur_ct, cur_cr = "c" * 40, "d" * 40
     with open(os.path.join(wt, "charge-interposer", "pins.json"), "w") as f:
         json.dump({"can-tools": {"repo": "x", "commit": cur_ct},
@@ -609,11 +609,13 @@ CASES = [case_git, case_long, case_leftover, case_owner, case_prune,
 
 def test():
     # depth: its deepest git repo, the sweep case's old can-tools pin
-    # (case_sweep\wt-sweep\scratch\can-tools\<40 e>, 79 below the run
-    # folder), + 12 for .git\config (measured 2026-11-05)
-    with REAL.run("scratch-dir-test", depth=91) as base:
-        for c in CASES:
-            d = os.path.join(base, c.__name__)
+    # (<n>\w\scratch\can-tools\<40 e>, 63 below the run folder), + 12 for
+    # .git\config. Each case's folder is its number in CASES, and the sweep's
+    # worktree is w, so that it fits 220 on madhouse in the acceptance
+    # runner's tree (the local-lane smoke of 2026-11-05 refused it at 91)
+    with REAL.run("scratch-dir-test", depth=75) as base:
+        for i, c in enumerate(CASES):
+            d = os.path.join(base, str(i))
             os.makedirs(d)
             try:
                 c(d)
