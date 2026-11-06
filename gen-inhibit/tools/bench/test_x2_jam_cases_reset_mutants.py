@@ -2,7 +2,8 @@
 """Mutants of x2_jam_cases.py's WiCAN reset (reset_to_off and its use in case
 threshold) and of the witness controller state (kvaser_flags,
 witness_state_summary; added 2026-10-16, item 4), and of the trip 6 judge (max_in_window's
-edge, the latch bound; added 2026-10-20); test_x2_jam_cases.py must fail on each.
+edge, the latch bound; added 2026-10-20; the per-pulse delta's poll stamp, added
+2026-11-05); test_x2_jam_cases.py must fail on each.
 
     py -3.14 gen-inhibit/tools/bench/test_x2_jam_cases_reset_mutants.py
 
@@ -72,6 +73,11 @@ MUTANTS = [
     ("the bound reads the answer time, not the request",
      '        late = [t for t, s in before if (s.get("req_start") or t) >= due]',
      '        late = [t for t, s in before if t >= due]'),
+    # The per-pulse delta's poll stamp (2026-11-05, gen-inhibit reviewer: step 1d's
+    # a61f n9_lead5 arm 0, a stalled poll read as a pulse not counted).
+    ("the per-pulse delta without req_start (the old return-time stamp)",
+     '    be = [(t, (s or {}).get("drv_bus_error"), (s or {}).get("req_start")) for t, s in samples\n',
+     '    be = [(t, (s or {}).get("drv_bus_error")) for t, s in samples\n'),
 ]
 
 

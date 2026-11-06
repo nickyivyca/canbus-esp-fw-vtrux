@@ -212,10 +212,22 @@ def per_pulse(err_ts, n_cmd, interval_s, samples=None, slack_s=0.05):
     """Witness error frames per pulse, and the WiCAN's bus_error delta per pulse.
 
     Clock-free attribution: error frames are grouped by gaps > interval/2, one
-    group per delivered pulse. samples: [(t, bus_error or None)] from the
-    WiCAN page, same clock as err_ts; a pulse's delta is the first reading
-    after its group minus the last reading before it, and is None if either
-    reading is missing or another group falls between them.
+    group per delivered pulse. samples: [(t, bus_error or None)] or
+    [(t, bus_error or None, req_start or None)] from the WiCAN page, same
+    clock as err_ts, t when the response arrived and req_start when the
+    request was sent. The page was built somewhere between the two, so a
+    reading is "before" a group only if it RETURNED before the group's first
+    error frame, and "after" it only if it was SENT after the group's last
+    one. A pulse's delta is the first reading after its group minus the last
+    reading before it, and is None if either reading is missing or another
+    group falls between them: the "before" reading sent before the previous
+    group, or the "after" reading returned after the next one.
+    A reading with no req_start is taken as sent at t, the rule before
+    2026-11-05. Then a stalled poll returning after a group showed a page
+    built before it: step 1d's a61f n9_lead5 arm 0, a poll sent 0.64 s
+    before pulse 2's error frame returned 0.50 s after it, and that pulse's
+    delta came out 0 though the device counted it (gen-inhibit reviewer,
+    2026-11-05).
     slack_s: readings within slack_s of a group are not used. The page is
     stamped on the host clock and error frames on the Kvaser's; on
     2026-10-08 01:45 a reading 1.4 ms BEFORE a pulse's stamped error frame
@@ -224,17 +236,20 @@ def per_pulse(err_ts, n_cmd, interval_s, samples=None, slack_s=0.05):
     cl = clusters(err_ts, interval_s / 2.0)
     counts = [len(c) for c in cl]
     deltas = []
-    good = [(t, v) for t, v in (samples or []) if v is not None]
+    good = []    # (returned, bus_error, sent)
+    for s in samples or []:
+        if s[1] is not None:
+            good.append((s[0], s[1], s[2] if len(s) > 2 and s[2] is not None else s[0]))
     for i, c in enumerate(cl):
-        before = [s for s in good if s[0] < c[0] - slack_s]
-        after = [s for s in good if s[0] > c[-1] + slack_s]
+        before = sorted((s for s in good if s[0] < c[0] - slack_s), key=lambda s: s[0])
+        after = sorted((s for s in good if s[2] > c[-1] + slack_s), key=lambda s: s[2])
         if not before or not after:
             deltas.append(None)
             continue
         b, a = before[-1], after[0]
         lo = cl[i - 1][-1] if i > 0 else float("-inf")
         hi = cl[i + 1][0] if i + 1 < len(cl) else float("inf")
-        if b[0] <= lo or a[0] >= hi:
+        if b[2] <= lo or a[0] >= hi:
             deltas.append(None)
             continue
         deltas.append(a[1] - b[1])
@@ -382,11 +397,12 @@ class Witness(threading.Thread):
 def wican_snap():
     sys.path.insert(0, HERE)
     import lowid_flood_skip_bench as LF
+    t0 = time.time()
     p = LF.page()
     if p is None:
         return None
     d = p.get("drv") or {}
-    return {"t": time.time(), "mode": p.get("mode"), "drv_null": p.get("drv") is None,
+    return {"t": time.time(), "req_start": t0, "mode": p.get("mode"), "drv_null": p.get("drv") is None,
             "bus_error": d.get("bus_error"), "tec": d.get("tec"), "rec": d.get("rec"),
             "state": d.get("state"), "bus_on": p.get("bus_on"),
             "tx_ok": p.get("tx_ok")}
@@ -475,7 +491,7 @@ def sub_pulses(a, rec, con, wit):
     ts, clock = wit.times()
     win = [t for t in ts if t0 - 0.3 <= t <= (done[0] if done else time.time()) + 1.0]
     pre = [t for t in ts if t0 - 4.0 <= t < t0 - 0.3]
-    be = [(s["t"], s.get("bus_error")) for s in samples if not s.get("unanswered")]
+    be = [(s["t"], s.get("bus_error"), s.get("req_start")) for s in samples if not s.get("unanswered")]
     rec.update({"ack": ack[1] if ack else None, "done": done[1] if done else None,
                 "clock": clock, "witness_err_frames_pre_4s": len(pre),
                 "per_pulse": per_pulse(win, a.n, a.interval_ms / 1000.0, be),
