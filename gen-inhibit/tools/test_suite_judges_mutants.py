@@ -22,6 +22,8 @@ SRC = "suite_judges.py"
 TEST = "test_suite_judges.py"
 
 MUTANTS = [
+    ("C7: a short commit is exactly 7 characters, as before port step 1d", 'C7 = r"[0-9a-f]{7,40}"', 'C7 = r"[0-9a-f]{7}"'),
+    ("C7: any run of hex digits is a short commit", 'C7 = r"[0-9a-f]{7,40}"', 'C7 = r"[0-9a-f]+"'),
     ("B11: an analysis row's error is ignored", 'return [result("B11", "ERROR" if err else', 'return [result("B11", "ERROR" if False else'),
     ("B11raw: an analysis row's error is ignored", 'return [result("B11raw", "ERROR" if err else', 'return [result("B11raw", "ERROR" if False else'),
     ("B13: an analysis row's error is ignored", 'return [result("B13", "ERROR" if err else', 'return [result("B13", "ERROR" if False else'),

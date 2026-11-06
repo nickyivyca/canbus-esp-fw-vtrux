@@ -28,7 +28,9 @@ import re
 import sys
 
 VERDICTS = ("PASS", "FAIL", "KNOWN-FAIL", "VOID", "ERROR", "NOT-RUN", "INCONCLUSIVE", "NOT-APPLICABLE")
-C7 = r"[0-9a-f]{7}"           # a short commit in a file name
+# A short commit in a file name, at whatever length git abbreviates it: 7 until the repo
+# grew, 8 by port step 1d (2026-11-05: 7f2d5032, and 5f2fe2c became 5f2fe2c4).
+C7 = r"[0-9a-f]{7,40}"
 TS = r"\d{8}T\d{6}"           # a stamp in a file name
 
 
