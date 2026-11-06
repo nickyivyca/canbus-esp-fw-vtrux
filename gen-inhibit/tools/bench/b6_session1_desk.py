@@ -276,7 +276,7 @@ def phase2(arms):
     tot = collections.Counter()
     for p, rec, k, arm, rows, fj, fd, frames, times in arms:
         errs = sorted(arm.get("witness_error_times") or [])
-        be = [(s[0], s[1].get("drv_bus_error")) for s in arm.get("samples") or []]
+        be = [(s[0], s[1].get("drv_bus_error"), s[1].get("req_start")) for s in arm.get("samples") or []]
         pp = XJ.per_pulse(errs, rec["args"]["n"], rec["args"]["interval_ms"] / 1000.0, be)
         deltas = pp["bus_error_delta_per_pulse"]
         cl = XJ.clusters(errs, rec["args"]["interval_ms"] / 2000.0)

@@ -69,7 +69,7 @@ def arm_rows(path):
     for k, arm in enumerate(rec["arms"]):
         errs = sorted(arm.get("witness_error_times") or [])
         samples = arm.get("samples") or []
-        be = [(s[0], s[1].get("drv_bus_error")) for s in samples]
+        be = [(s[0], s[1].get("drv_bus_error"), s[1].get("req_start")) for s in samples]
         iv = a_["interval_ms"] / 1000.0
         pp = XJ.per_pulse(errs, a_["n"], iv, be)
         deltas = pp.get("bus_error_delta_per_pulse") or []

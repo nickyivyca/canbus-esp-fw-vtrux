@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Mutants of x2_jammer.py's sub_id; test_x2_jammer.py must fail on each BY A CHECK.
+"""Mutants of x2_jammer.py's sub_id and per_pulse's poll stamp (added 2026-11-05);
+test_x2_jammer.py must fail on each BY A CHECK.
 A crash is not a kill, and an edit that does not apply is an error.
 
     py -3.14 -B gen-inhibit/tools/bench/test_x2_jammer_mutants.py
@@ -25,6 +26,14 @@ MUTANTS = [
     ("no empty line before ID", '    con.send("")\n', ""),
     ("the empty line after ID", '    con.send("")\n    time.sleep(0.3)\n    t = time.time()\n    con.send("ID")\n',
      '    time.sleep(0.3)\n    t = time.time()\n    con.send("ID")\n    con.send("")\n'),
+    # per_pulse's poll stamp (2026-11-05, gen-inhibit reviewer)
+    ("per_pulse: the old return-time stamp",
+     '            good.append((s[0], s[1], s[2] if len(s) > 2 and s[2] is not None else s[0]))\n',
+     '            good.append((s[0], s[1], s[0]))\n'),
+    ("per_pulse: the before reading bounded by its return",
+     '        if b[2] <= lo or a[0] >= hi:', '        if b[0] <= lo or a[0] >= hi:'),
+    ("per_pulse: the after reading bounded by its request",
+     '        if b[2] <= lo or a[0] >= hi:', '        if b[2] <= lo or a[2] >= hi:'),
 ]
 # Not a mutant: a space instead of the empty line. The firmware's sscanf("%11s") finds no
 # word in " " either and ignores the line, so it behaves the same (equivalent).

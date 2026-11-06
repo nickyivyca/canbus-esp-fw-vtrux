@@ -6,7 +6,9 @@
 Three pulses 1 s apart; the device's bus_error reads +1, +11, +1 over them; frames on
 the wire put an 0x051 260 us after pulse 2's error frame and 6.65 ms before it. The
 script must find one multi-count pulse (pulse 2, delta 11), with those neighbours, and
-two others. LANDING_SCRIPT overrides the script under test (the mutant runner).
+two others. Pulse 3 has a stalled poll, sent before its error frame and returned after
+it with the old count, which must not make its delta 0 (2026-11-05). LANDING_SCRIPT
+overrides the script under test (the mutant runner).
 Scratch goes to the worktree's scratch/. Gen-inhibit tester, 2026-10-20.
 """
 import gzip
@@ -51,8 +53,14 @@ def make(root):
     t = t0 + 9.0
     while t < t0 + 13.5:
         be = 0 if t < errs[0] else (1 if t < errs[1] else (12 if t < errs[2] else 13))
-        samples.append([t, {"drv_bus_error": be, "drv_tec": 0, "drv_rec": 0}])
+        samples.append([t, {"drv_bus_error": be, "drv_tec": 0, "drv_rec": 0, "req_start": t - 0.01}])
         t += 0.1
+    # a stalled poll: sent 0.3 s before pulse 3's error frame, returned 60 ms after it with
+    # the count from before it (step 1d a61f n9_lead5 arm 0); with its req_start passed on it
+    # is not pulse 3's "after" reading, so the delta stays 1 (2026-11-05)
+    samples.append([errs[2] + 0.06, {"drv_bus_error": 12, "drv_tec": 0, "drv_rec": 0,
+                                     "req_start": errs[2] - 0.3}])
+    samples.sort(key=lambda s: s[0])
     frames = [[t0 + 9.0, 0x051, "080080ff7f03"],
               [errs[0] - 0.004, 0x051, "080080ff7f04"], [errs[0] + 0.005, 0x051, "080080ff7f05"],
               [errs[1] - 0.00665, 0x051, "080080ff7f06"], [errs[1] + 0.00026, 0x051, "080080ff7f07"],

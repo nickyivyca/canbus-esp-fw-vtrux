@@ -167,7 +167,7 @@ def judge_threshold(errs, samples, ph, n_cmd, interval_s, window_s=10.0,
         return dict(out, verdict="INCONCLUSIVE",
                     why="%d error frames between the arm and the pulses" % len(early))
     pe = sorted(t for t in errs if p0 - 0.3 <= t <= ph["mode0_posted"])
-    be = [(t, (s or {}).get("drv_bus_error")) for t, s in samples
+    be = [(t, (s or {}).get("drv_bus_error"), (s or {}).get("req_start")) for t, s in samples
           if s is not None and t >= ph["arm_posted"]]
     pp = XJ.per_pulse(pe, n_cmd, interval_s, be)
     n_max, t10 = max_in_window(pe, window_s)
@@ -957,8 +957,8 @@ def case_threshold(a, rec, con, wit):
                                        if ph["arm_posted"] <= t <= ph["mode0_posted"]]
             pe = sorted(t for t in errs if ph["pulses_start"] - 0.3 <= t <= ph["mode0_posted"])
             if a.judge_first:
-                be = [(t, (s or {}).get("drv_bus_error")) for t, s in arm["samples"]
-                      if s is not None and t >= ph["arm_posted"]]
+                be = [(t, (s or {}).get("drv_bus_error"), (s or {}).get("req_start"))
+                      for t, s in arm["samples"] if s is not None and t >= ph["arm_posted"]]
                 arm["judged_first"] = jf
                 arm["all_pulses"] = XJ.per_pulse(pe, a.n, iv, be)
             if a.ecc:

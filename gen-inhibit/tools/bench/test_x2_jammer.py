@@ -221,6 +221,25 @@ def main():
                                        got["bus_error_delta_per_pulse"]))
     if not ok:
         bad.append("straddle")
+    # The poll stamp (2026-11-05, gen-inhibit reviewer): (returned, bus_error, sent). A
+    # reading is "after" a pulse only if sent after it, "before" only if returned before
+    # it; step 1d's a61f n9_lead5 arm 0 had a poll sent 0.64 s before pulse 2's error
+    # frame return 0.50 s after it with the old count, and the delta came out 0.
+    for label, smp, want in (
+            ("a stalled poll, sent before the frame, is not its after reading",
+             [(99.5, 10, 99.48), (100.5, 10, 99.6), (100.7, 11, 100.68), (101.5, 12, 101.48)], [1, 1]),
+            ("a before reading sent before the previous pulse -> None",
+             [(99.5, 10, 99.48), (100.9, 11, 99.9), (101.5, 12, 101.48)], [None, None]),
+            ("an after reading returned after the next pulse -> None",
+             [(99.5, 10, 99.48), (101.2, 11, 100.6), (101.6, 12, 101.58)], [None, None]),
+            ("req_start None is taken as sent at the return",
+             [(99.5, 10, None), (100.5, 11, None), (101.5, 12, None)], [1, 1])):
+        got = X.per_pulse([100.0, 101.0], 2, 1.0, smp)
+        ok = got["bus_error_delta_per_pulse"] == want
+        print("  %-4s pulses   %-60s %s" % ("ok" if ok else "FAIL", label[:60],
+                                           got["bus_error_delta_per_pulse"]))
+        if not ok:
+            bad.append(label)
     # sub_id against the firmware's line discipline, with input an earlier probe left
     # unterminated (bench_identify's slcan "V\r" "N\r" leave "VN"; 2026-10-19)
     for label, pending, want in (("id after a probe left VN pending", "VN", True),

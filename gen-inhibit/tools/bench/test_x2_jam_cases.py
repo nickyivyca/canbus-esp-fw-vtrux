@@ -326,6 +326,18 @@ def main():
                                        got["per_pulse"]["bus_error_delta_per_pulse"]))
     if not ok:
         bad.append("bus_error deltas")
+    # a stalled poll, sent before pulse 3's error frame and returned after it with the
+    # count from before it (step 1d a61f n9_lead5 arm 0, 2026-11-05): the judge passes
+    # req_start on, so it is not that pulse's "after" reading and the delta stays 1
+    ss = [(t, dict(x, drv_bus_error=3, req_start=112.5)) if t == 113.1 else (t, x)
+          for t, x in samples(10, 1.0, latch_at=119.15)]
+    stalled = [x for t, x in ss if x.get("req_start") == 112.5]
+    got = C.judge_threshold(errs(10, 1.0), ss, PH, 10, 1.0)
+    ok = len(stalled) == 1 and got["per_pulse"]["bus_error_delta_per_pulse"] == [1] * 10
+    print("  %-4s judge    %-58s %s" % ("ok" if ok else "FAIL", "a stalled poll is not the pulse's after reading",
+                                       got["per_pulse"]["bus_error_delta_per_pulse"]))
+    if not ok:
+        bad.append("stalled poll")
     st = [(0.0, {"drv_present": True, "drv_state": "running", "bus_on": True}),
           (0.1, {"drv_present": True, "drv_state": "running", "bus_on": True}),
           (0.5, {"drv_present": True, "drv_state": "bus_off", "bus_on": False}),
