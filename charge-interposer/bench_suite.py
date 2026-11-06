@@ -592,8 +592,8 @@ def _stage_git_bundle(code):
     (build_check_in_clone.py): the shipped copy has no .git, and a build
     there gets no manifest row (e7d4, 2026-10-19). -> (dir, full commit).
     The bundle goes in gitb/ of a scratch_dir run folder that this
-    process owns, scratch/charge-interposer-harness/runner-stage/
-    runner-stage-<pid>-<rand>/, made once per commit and removed when
+    process owns, scratch/cih/runner-stage/<pid>-<rand>/, made once per
+    commit and removed when
     the process exits: the runner ships it from there when the m-build
     group starts, so it lives as long as the run. A folder a killed
     run left is pruned by the next one. Never the system temp folder

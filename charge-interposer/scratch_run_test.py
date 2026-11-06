@@ -10,8 +10,8 @@ scratch_dir run folder, in a stand-in worktree (a folder with a .git
 file), so nothing outside it is touched.
 
 The helper, on a fixture script that sources it:
-  1. The run folder is <worktree>/scratch/charge-interposer-harness/<tool>/
-     <tool>-<pid>-XXXXXX, with an owner file scratch_dir reads: its argv,
+  1. The run folder is <worktree>/scratch/cih/<tool>/<pid>-XXXXXX (the
+     short names, 2026-11-05), with an owner file scratch_dir reads: its argv,
      host, platform and pid as Python names them, and on Linux the start
      time scratch_dir.proc() gives (null on Windows); scratch_dir.state()
      is live while the script runs. When it exits the folder goes, and the
@@ -31,6 +31,16 @@ The helper, on a fixture script that sources it:
      folder in one script, are refused.
   8. The root: the nearest .git above the helper, else scratch/ beside
      the code folder.
+ 12. The length guard (the charge-interposer reviewer, 2026-11-05):
+     SCRATCH_RUN_LIMIT and SCRATCH_RUN_DEPTH are scratch_dir.py's LIMIT and
+     DEPTH. With the limit moved to put the run folder's full path plus
+     the depth exactly on it, the folder is made; one character less and
+     scratch_run refuses (rc 2), naming the full path and its length, with
+     nothing made.
+ 13. The git ceiling (the charge-interposer reviewer, 2026-11-05): in a
+     stand-in worktree that is a real git repo, git run in a subfolder of
+     the run folder says "not a git repository"; without
+     GIT_CEILING_DIRECTORIES (the control) it finds that repo.
 
 The writers (WRITERS below):
   9. No .sh under charge-interposer/ names TMPDIR or /tmp outside a
@@ -197,7 +207,7 @@ exit 0
 # can run in a subshell).
 BASH_ENV = r"""mktemp() {
   case "${2:-}" in
-    */charge-interposer-harness/*)
+    */cih/*)
       printf 'MKTEMP\t%s\n' "$2" >> "$STUB_LOG"
       if [ -n "${STUB_MKTEMP_RACE:-}" ]; then
         n="$(cat "$STUB_COUNT.mktemp" 2>/dev/null || echo 0)"
@@ -228,9 +238,25 @@ rm() {
 # sources the helper and takes a run folder; FX_* say what else to do
 FIXTURE = r"""set -u
 . "$FX_SR" || exit 2
+if [ -n "${FX_SLACK:-}" ]; then
+  # the length guard's boundary: the limit put FX_SLACK past the run
+  # folder's full path, as the layout says it is, plus the depth
+  _sr_owner
+  full="$(scratch_root)/cih/${FX_TOOL-fixture}/$_SR_PID-XXXXXX"
+  echo "FULL $full"
+  SCRATCH_RUN_LIMIT=$(( ${#full} + SCRATCH_RUN_DEPTH + FX_SLACK ))
+fi
 scratch_run "${FX_TOOL-fixture}" || exit $?
 echo "RUN $SCRATCH_RUN"
 if [ -n "${FX_SECOND:-}" ]; then scratch_run again; echo "SECOND $?"; fi
+if [ -n "${FX_GIT:-}" ]; then
+  # the git ceiling: a subfolder with no .git of its own, with the variable
+  # as scratch_run left it, then without it (the control)
+  mkdir -p "$SCRATCH_RUN/sub" || exit 9
+  git -C "$SCRATCH_RUN/sub" rev-parse --show-toplevel 2>&1; echo "GITRC $?"
+  env -u GIT_CEILING_DIRECTORIES git -C "$SCRATCH_RUN/sub" rev-parse --show-toplevel 2>&1
+  echo "CTLRC $?"
+fi
 if [ -n "${FX_CD:-}" ]; then cd "$SCRATCH_RUN" || exit 9; fi
 if [ -n "${FX_RO:-}" ]; then
   mkdir -p "$SCRATCH_RUN/ro/sub" && echo x > "$SCRATCH_RUN/ro/sub/f" &&
@@ -361,9 +387,11 @@ def case_made(base):
     p = fixture(r, ci, {"FX_RC": "3", "FX_CD": "1"}, wait=True)
     try:
         d = wait_ready(r)
-        want = bash_form(os.path.join(harness(ci), "fixture")) + "/fixture-"
-        check(d.startswith(want), "1. the run folder is <worktree>/scratch/%s/<tool>/<tool>-"
-              "<pid>-... -> %s" % (scratch_dir.HARNESS, d))
+        want = bash_form(os.path.join(harness(ci), "fixture")) + "/"
+        check(scratch_dir.HARNESS == "cih" and d.startswith(want)
+              and "fixture-" not in d[len(want):],
+              "1. the run folder is <worktree>/scratch/%s/<tool>/<pid>-... -> %s"
+              % (scratch_dir.HARNESS, d))
         try:
             o = owner_of(d)
         except (OSError, ValueError) as e:
@@ -525,6 +553,59 @@ def case_root(base):
           "8. with no git above it, scratch/ beside the code folder -> %s" % out.strip())
 
 
+def case_length(base):
+    import re
+    with open(os.path.join(CODE, "scratch_run.sh"), encoding="utf-8") as f:
+        text = f.read()
+    lim = re.search(r"^SCRATCH_RUN_LIMIT=(\d+)$", text, re.M)
+    dep = re.search(r"^SCRATCH_RUN_DEPTH=(\d+)$", text, re.M)
+    got = (int(lim.group(1)) if lim else None, int(dep.group(1)) if dep else None)
+    check(got == (scratch_dir.LIMIT, scratch_dir.DEPTH),
+          "12. the limit and depth are scratch_dir's (%d, %d) -> %s"
+          % (scratch_dir.LIMIT, scratch_dir.DEPTH, got))
+    ci = tree(base)
+    r = Run(os.path.join(base, "r"))
+    rc, out = fixture(r, ci, {"FX_SLACK": "0"})
+    check(rc == 0 and "RUN " in out and gone(ci),
+          "12. full path plus depth exactly at the limit: made -> rc %d %s" % (rc, out[-200:]))
+    ci = tree(base, "tree2")        # a fresh one: the first run's cih/ stays
+    r = Run(os.path.join(base, "r2"))
+    rc, out = fixture(r, ci, {"FX_SLACK": "-1"})
+    full = next((ln[5:] for ln in out.splitlines() if ln.startswith("FULL ")), "")
+    check(rc == 2 and "REFUSED" in out and "RUN " not in out and r.order() == []
+          and not os.path.exists(harness(ci)),
+          "12. one character past it: refused (rc 2), nothing made -> rc %d %s"
+          % (rc, out[-200:]))
+    check(full and full in out.replace("FULL " + full, "")
+          and ("%d characters" % len(full)) in out,
+          "12. the refusal names the full path and its length (%d) -> %s"
+          % (len(full), out[-240:]))
+
+
+def case_ceiling(base):
+    ci = tree(base, "treeg")
+    t = os.path.dirname(ci)
+    os.remove(os.path.join(t, ".git"))
+    subprocess.run(["git", "init", "-q", t], check=True, capture_output=True)
+    r = Run(os.path.join(base, "r"))
+    rc, out = fixture(r, ci, {"FX_GIT": "1"})
+    lines = out.splitlines()
+
+    def after(tag):
+        i = next((n for n, ln in enumerate(lines) if ln.startswith(tag)), None)
+        return lines[i].split()[1] if i is not None else None, \
+            lines[i - 1] if i else ""
+    git_rc, git_out = after("GITRC ")
+    ctl_rc, ctl_out = after("CTLRC ")
+    check(ctl_rc == "0" and os.path.normcase(native(ctl_out.strip()).replace("/", os.sep))
+          == os.path.normcase(t),
+          "13. control: without the variable git finds the enclosing repo -> %s %s"
+          % (ctl_rc, ctl_out[-100:]))
+    check(rc == 0 and git_rc not in (None, "0") and "not a git repository" in git_out,
+          "13. with it, as scratch_run left it: not a git repository -> rc %d, %s %s"
+          % (rc, git_rc, git_out[-100:]))
+
+
 # ---- the writers ------------------------------------------------------------
 def code_lines(text):
     """the lines of a bash script with comments taken out"""
@@ -613,7 +694,7 @@ def case_writers(base):
         except subprocess.TimeoutExpired:
             rc, out = None, "timed out"
         made = r.lines("MKTEMP")
-        want = bash_form(os.path.join(harness(ci), tool)) + "/" + tool + "-"
+        want = bash_form(os.path.join(harness(ci), tool)) + "/"
         left = os.path.join(harness(ci), tool)
         if linux_only and sys.platform != "linux":
             check(rc == 2 and "REFUSED" in out and not made and not os.path.exists(left)
@@ -634,7 +715,8 @@ def case_writers(base):
 
 
 CASES = [case_made, case_killed, case_readonly, case_removal, case_race,
-         case_shared_tool, case_refused, case_root, case_scan, case_writers]
+         case_shared_tool, case_refused, case_root, case_scan, case_writers,
+         case_length, case_ceiling]
 
 
 # ---- processes left behind --------------------------------------------------
@@ -719,7 +801,10 @@ def check_left(base):
 
 
 def test():
-    with scratch_dir.run("scratch-run-test") as base:
+    # its deepest git is case_shared_tool\tree\.git\config, 33 below the run
+    # folder and its separator, 34 in all (measured 2026-11-05), past
+    # scratch_dir.DEPTH
+    with scratch_dir.run("scratch-run-test", depth=34) as base:
         for c in CASES:
             d = os.path.join(base, c.__name__)
             os.makedirs(d)
@@ -749,8 +834,32 @@ SR = "scratch_run.sh"
 MUTANTS = [
     ("no EXIT trap", SR, "  trap scratch_run_cleanup EXIT\n", "", None),
     ("the run folder in the system temp folder", SR,
-     'td="$(scratch_root)/charge-interposer-harness/$tool"',
-     'td="${TMPDIR:-/tmp}/charge-interposer-harness/$tool"', None),
+     'td="$(scratch_root)/cih/$tool"',
+     'td="${TMPDIR:-/tmp}/cih/$tool"', None),
+    ("the old long root", SR, 'td="$(scratch_root)/cih/$tool"',
+     'td="$(scratch_root)/charge-interposer-harness/$tool"', None),
+    ("the run folder named <tool>-<pid>- again", SR,
+     'p="$(mktemp -d "$td/$_SR_PID-XXXXXX" 2>/dev/null)" && break',
+     'p="$(mktemp -d "$td/$tool-$_SR_PID-XXXXXX" 2>/dev/null)" && break', None),
+    ("no length guard", SR, '  if [ "$n" -gt "$SCRATCH_RUN_LIMIT" ]; then',
+     "  if false; then", None),
+    ("the limit 260", SR, "SCRATCH_RUN_LIMIT=240\n", "SCRATCH_RUN_LIMIT=260\n", None),
+    ("the guard leaves the depth out", SR, "  n=$(( ${#full} + SCRATCH_RUN_DEPTH ))\n",
+     "  n=${#full}\n", None),
+    ("the guard leaves the run folder's own name out", SR,
+     '  local full="$td/$_SR_PID-XXXXXX" n\n', '  local full="$td" n\n', None),
+    ("the guard refuses at the limit itself", SR,
+     '  if [ "$n" -gt "$SCRATCH_RUN_LIMIT" ]; then', '  if [ "$n" -ge "$SCRATCH_RUN_LIMIT" ]; then',
+     None),
+    ("the refusal without the path", SR, "REFUSED the run folder $full: it is",
+     "REFUSED the run folder: it is", None),
+    ("the refusal without the length", SR, "it is ${#full} characters, and",
+     "it is too many characters, and", None),
+    ("no git ceiling", SR,
+     '  export GIT_CEILING_DIRECTORIES="$ceil${GIT_CEILING_DIRECTORIES:+$sep$GIT_CEILING_DIRECTORIES}"\n',
+     "", None),
+    ("the ceiling in bash's /c/ form on Windows", SR,
+     '    ceil="$(cd "$p" && pwd -W)" || return 2\n', "", "nt"),
     ("no owner file", SR,
      "  printf '%s\\n' \"$_SR_OWNER\" > \"$p/.scratch-owner.json\" || return 2\n", "", None),
     ("bash's own pid, not Windows'", SR,
@@ -772,11 +881,11 @@ MUTANTS = [
     ("tries without end", SR, "  for try in 1 2; do\n",
      "  for try in 1 2 3 4 5 6 7 8 9 10 11; do\n", None),
     ("the failed tries printed", SR,
-     'p="$(mktemp -d "$td/$tool-$_SR_PID-XXXXXX" 2>/dev/null)" && break',
-     'p="$(mktemp -d "$td/$tool-$_SR_PID-XXXXXX")" && break', None),
+     'p="$(mktemp -d "$td/$_SR_PID-XXXXXX" 2>/dev/null)" && break',
+     'p="$(mktemp -d "$td/$_SR_PID-XXXXXX")" && break', None),
     ("the last try's reason not printed", SR,
-     '    p="$(mktemp -d "$td/$tool-$_SR_PID-XXXXXX")" || return 2\n',
-     '    p="$(mktemp -d "$td/$tool-$_SR_PID-XXXXXX" 2>/dev/null)" || return 2\n', None),
+     '    p="$(mktemp -d "$td/$_SR_PID-XXXXXX")" || return 2\n',
+     '    p="$(mktemp -d "$td/$_SR_PID-XXXXXX" 2>/dev/null)" || return 2\n', None),
     ("the removal not tried again", SR, '  for w in "${SCRATCH_RUN_WAITS[@]}"; do\n',
      "  for w in ; do\n", None),
     ("not made writable before trying again", SR,
@@ -853,7 +962,7 @@ def can_fail():
             # process behind either (check 11 runs inside it too; this is
             # the outside view, after it has exited)
             mine = os.path.join(scratch_dir.tool_dir("scratch-run-test"),
-                                "scratch-run-test-%d-" % p.pid)
+                                "%d-" % p.pid)
             left = [(q, c) for q, c in leftovers(os.path.dirname(mine))
                     if fwd(mine).lower() in fwd(c).lower()
                     or bash_form(mine).lower() in fwd(c).lower()]

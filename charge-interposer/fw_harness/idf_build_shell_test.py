@@ -232,7 +232,11 @@ def main(argv):
     if os.name != "nt":
         print("REFUSED: idf_build_shell is Windows only (the ESP-IDF export is PowerShell's)")
         return 2
-    with scratch_dir.run("idf-build-shell-test") as base:
+    # depth: its deepest git repo, control\repo (13 below the run folder),
+    # + 12 for .git\config (measured 2026-11-05; scratch_dir). The tool's
+    # name is short (not idf-build-shell-test): in the acceptance runner's
+    # tree the run folder alone is about 180 characters
+    with scratch_dir.run("idf-shell-test", depth=25) as base:
         if "--can-fail" not in argv:
             bad = run_cases(SHELL, os.path.join(base, "t"))
             print("\nidf_build_shell_test: %s" % ("all checks OK" if not bad

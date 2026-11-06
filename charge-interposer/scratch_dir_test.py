@@ -18,7 +18,8 @@ folder (scratch_dir.run), inside a stand-in worktree there (a folder with a
   3. A file that cannot be removed (os.unlink refuses it) is returned and
      printed as a LEFTOVER line naming it and the error; remove() does not
      raise, and once the file can go a second remove() takes it.
-  4. make() writes the owner file: this pid and its start time. state() is
+  4. make() makes <worktree>/scratch/cih/<tool>/<pid>-<random>/ (the short
+     names, 2026-11-05) and writes the owner file: this pid and its start time. state() is
      live for it, finished for a pid that has exited and for this pid with
      another start time (a pid used again), no-owner without the file,
      other-host for another machine's and for another platform's (a
@@ -28,13 +29,25 @@ folder (scratch_dir.run), inside a stand-in worktree there (a folder with a
  10. make() tries again, after a wait, when another run's removal takes
      the tool folder under it: FileNotFoundError, and PermissionError (a
      delete-pending folder on Windows); three tries in all, then it raises.
+ 11. The length guard (the charge-interposer reviewer, 2026-11-05): a run
+     folder whose full path plus DEPTH is exactly LIMIT is made; one
+     character more and make() raises PathTooLong, naming the full path
+     and its length, with nothing made (no tool folder, no cih/). A
+     depth= passed to make() is used in place of DEPTH, at the same
+     boundary. LIMIT is 240.
+ 12. The git ceiling (the charge-interposer reviewer, 2026-11-05): in a
+     run folder inside an enclosing real repo, git run in a subfolder with
+     no .git of its own says "not a git repository"; with the variable
+     taken away (the control) it finds the enclosing repo. remove() takes
+     the folder out of GIT_CEILING_DIRECTORIES again.
   5. make() prunes the tool's finished folders only: a live and an unowned
      one stay. A tool name with a separator is refused.
   6. run() removes its folder when the body raises, and the exception still
      propagates; and when it does not.
   7. The sweep, on a stand-in worktree: the report lists a finished run
-     folder, an old pin's folder, a dead partial install and an empty tool
-     folder as candidates;
+     folder, one under the old charge-interposer-harness/ name, an old
+     pin's folder, a dead partial install and an empty tool folder as
+     candidates;
      the current pins, session-compact/, a live run folder and a
      scratchpad and a running partial install are not, and nothing is
      removed. --apply refuses when the
@@ -228,6 +241,11 @@ def case_owner(base):
     check(os.path.dirname(os.path.dirname(d)) ==
           os.path.join(wt, "scratch", M.HARNESS),
           "4. the folder is <worktree>/scratch/%s/<tool>/..." % M.HARNESS)
+    name = os.path.basename(d)
+    check(M.HARNESS == "cih" and name.startswith("%d-" % os.getpid())
+          and len(name) == len("%d-" % os.getpid()) + M.RANDOM,
+          "4. under cih/, named <pid>-<random>, without the tool's name -> %s"
+          % os.path.relpath(d, wt))
     check(o.get("pid") == os.getpid() and o.get("start") is not None
           and o.get("start") == M.proc(os.getpid())[1],
           "4. the owner file holds this pid and its start time -> %s" % (o,))
@@ -304,7 +322,7 @@ def case_run(base):
     M.remove(b)
     check(not os.path.exists(M.tool_dir("two", start=wt)) and
           os.path.isdir(os.path.join(M.root(wt), M.HARNESS)),
-          "6. and goes with that one; charge-interposer-harness/ itself stays")
+          "6. and goes with that one; cih/ itself stays")
 
 
 def case_make_retried(base):
@@ -351,8 +369,95 @@ def case_make_retried(base):
           % (len(calls), raised))
 
 
+def case_length(base):
+    """The boundary is set from this test's own path (it runs in trees of
+    any depth): LIMIT is moved to put the run folder exactly on it, and
+    LIMIT's real value is checked as a constant."""
+    check(M.LIMIT == 240, "11. LIMIT is 240 -> %s" % M.LIMIT)
+    check(isinstance(M.DEPTH, int) and M.DEPTH > 0,
+          "11. DEPTH is set (the measured depth) -> %s" % M.DEPTH)
+    pid = "%d-%s" % (os.getpid(), "x" * M.RANDOM)
+
+    def would_be(wt):
+        return os.path.abspath(os.path.join(M.tool_dir("t", start=wt), pid))
+    keep = M.LIMIT
+    try:
+        wt = fake_worktree(base, "wt-len1")
+        n = len(would_be(wt))
+        M.LIMIT = n + M.DEPTH
+        try:
+            d = M.make("t", start=wt)
+        except M.PathTooLong as e:
+            d = "refused: %s" % e
+        check(os.path.isdir(d) and len(os.path.abspath(d)) == n,
+              "11. %d characters plus DEPTH %d is LIMIT (%d): made -> %s"
+              % (n, M.DEPTH, M.LIMIT, d[:80]))
+        if os.path.isdir(d):
+            M.remove(d)
+        wt = fake_worktree(base, "wt-len2")
+        full = would_be(wt)
+        M.LIMIT = n + M.DEPTH - 1
+        try:
+            M.make("t", start=wt)
+            why = None
+        except M.PathTooLong as e:
+            why = str(e)
+        check(why is not None, "11. one character more: PathTooLong")
+        check(why is not None and full in why and ("%d characters" % n) in why,
+              "11. the refusal names the full path and its length -> %s"
+              % (why or "")[:160])
+        check(not os.path.exists(os.path.join(wt, "scratch")),
+              "11. nothing made when refused (no scratch/cih/ folder)")
+        wt = fake_worktree(base, "wt-len3")
+        M.LIMIT = n + 33
+        try:
+            d = M.make("t", start=wt, depth=33)
+        except M.PathTooLong as e:
+            d = "refused: %s" % e
+        check(os.path.isdir(d), "11. depth=33 at its boundary: made -> %s" % d[:80])
+        if os.path.isdir(d):
+            M.remove(d)
+        try:
+            M.make("t", start=wt, depth=34)
+            refused = False
+        except M.PathTooLong:
+            refused = True
+        check(refused, "11. depth=34, one more: refused (depth= is used, not DEPTH)")
+    finally:
+        M.LIMIT = keep
+
+
+def case_ceiling(base):
+    encl = os.path.join(base, "encl")
+    os.makedirs(encl)
+    subprocess.run(["git", "init", "-q", encl], check=True)
+    d = M.make("t", start=encl)
+    sub = os.path.join(d, "sub")
+    os.makedirs(sub)
+
+    def toplevel(env):
+        r = subprocess.run(["git", "-C", sub, "rev-parse", "--show-toplevel"],
+                           capture_output=True, text=True, env=env)
+        return r.returncode, (r.stdout + r.stderr).strip()
+    bare = {k: v for k, v in os.environ.items() if k != M.CEILING}
+    rc, out = toplevel(bare)
+    check(rc == 0 and os.path.normcase(os.path.normpath(out)) ==
+          os.path.normcase(os.path.normpath(encl)),
+          "12. control: without the variable, git in the run folder finds the "
+          "enclosing repo -> rc %d %s" % (rc, out[-120:]))
+    rc, out = toplevel(dict(os.environ))
+    check(rc != 0 and "not a git repository" in out,
+          "12. with it, as make() left it: not a git repository -> rc %d %s"
+          % (rc, out[-120:]))
+    check(os.path.abspath(d) in os.environ.get(M.CEILING, "").split(os.pathsep),
+          "12. the run folder is in GIT_CEILING_DIRECTORIES")
+    M.remove(d)
+    check(os.path.abspath(d) not in os.environ.get(M.CEILING, "").split(os.pathsep),
+          "12. remove() takes it out again")
+
+
 def _sweep_tree(base):
-    wt = fake_worktree(base, "wt-sweep")
+    wt = fake_worktree(base, "w")     # short: the deepest git, see test()
     cur_ct, cur_cr = "c" * 40, "d" * 40
     with open(os.path.join(wt, "charge-interposer", "pins.json"), "w") as f:
         json.dump({"can-tools": {"repo": "x", "commit": cur_ct},
@@ -367,6 +472,7 @@ def _sweep_tree(base):
         "compact": os.path.join(s, "session-compact"),
         "notes": os.path.join(s, "my-notes"),
         "fin": os.path.join(s, M.HARNESS, "t", "t-fin"),
+        "oldfin": os.path.join(s, M.OLD_HARNESS, "t", "t-fin"),
         "live": os.path.join(s, M.HARNESS, "t", "t-live"),
         # empty tool folders: one stays empty, a run starts in the other
         # between the report and the removal (sweep_guard below)
@@ -381,6 +487,8 @@ def _sweep_tree(base):
     plant(t["old_ct"].rsplit(os.sep, 1)[0], os.path.basename(t["old_ct"]))
     write_owner(t["fin"], dead_pid(), 1)
     plant(t["fin"])
+    write_owner(t["oldfin"], dead_pid(), 1)
+    plant(t["oldfin"])
     write_owner(t["live"], os.getpid(), M.proc(os.getpid())[1])
     return wt, t
 
@@ -396,7 +504,7 @@ def case_sweep(base):
         if len(parts) > 2 and parts[0] in ("candidate", "kept", "other"):
             verdict[os.path.normpath(os.path.join(wt, parts[1]))] = parts[0]
     want = {"old_ct": "candidate", "partial": "candidate", "fin": "candidate",
-            "empty_tool": "candidate", "raced": "candidate",
+            "oldfin": "candidate", "empty_tool": "candidate", "raced": "candidate",
             "cur_ct": "kept", "cur_cr": "kept", "compact": "kept",
             "live": "kept", "livepart": "kept", "notes": "other"}
     got = {k: verdict.get(os.path.normpath(t[k])) for k in want}
@@ -413,10 +521,10 @@ def case_sweep(base):
           % (nf, nd, fin.strip()[:120]))
     tc = next((ln for ln in lines if ln.startswith("TOTAL candidates")), "")
     ta = next((ln for ln in lines if ln.startswith("TOTAL everything")), "")
-    want_n = sum(M._count(t[k])[0] for k in ("fin", "old_ct", "partial"))
-    check(" 5 row(s)" in tc and (" %d files" % want_n) in tc and "folders" in tc
+    want_n = sum(M._count(t[k])[0] for k in ("fin", "oldfin", "old_ct", "partial"))
+    check(" 6 row(s)" in tc and (" %d files" % want_n) in tc and "folders" in tc
           and "folders" in ta,
-          "7. totals for the candidates (5 rows, %d files) and for everything "
+          "7. totals for the candidates (6 rows, %d files) and for everything "
           "-> %s | %s" % (want_n, tc.strip(), ta.strip()))
     tool_row = next((ln for ln in lines if ln.split()[1:2] == [os.path.relpath(
         t["empty_tool"], wt)]), "")
@@ -436,7 +544,7 @@ def case_sweep(base):
         return True, ["clear (test)"]
     rc, text = quietly(M.sweep, [wt], apply=True, guard=sweep_guard, out=lines.append)
     gone = sorted(k for k, p in t.items() if not os.path.exists(p))
-    check(rc == 0 and gone == ["empty_tool", "fin", "old_ct", "partial"]
+    check(rc == 0 and gone == ["empty_tool", "fin", "old_ct", "oldfin", "partial"]
           and "LEFTOVER" not in text,
           "7. --apply when clear removes exactly the candidates -> gone %s, rc %d"
           % (gone, rc))
@@ -495,13 +603,19 @@ def case_nogit(base):
 
 
 CASES = [case_git, case_long, case_leftover, case_owner, case_prune,
-         case_run, case_sweep, case_wallclock, case_nogit, case_make_retried]
+         case_run, case_sweep, case_wallclock, case_nogit, case_make_retried,
+         case_length, case_ceiling]
 
 
 def test():
-    with REAL.run("scratch-dir-test") as base:
-        for c in CASES:
-            d = os.path.join(base, c.__name__)
+    # depth: its deepest git repo, the sweep case's old can-tools pin
+    # (<n>\w\scratch\can-tools\<40 e>, 63 below the run folder), + 12 for
+    # .git\config. Each case's folder is its number in CASES, and the sweep's
+    # worktree is w, so that it fits 220 on madhouse in the acceptance
+    # runner's tree (the local-lane smoke of 2026-11-05 refused it at 91)
+    with REAL.run("scratch-dir-test", depth=75) as base:
+        for i, c in enumerate(CASES):
+            d = os.path.join(base, str(i))
             os.makedirs(d)
             try:
                 c(d)
@@ -582,6 +696,31 @@ MUTANTS = [
      "                if not names:\n", "                if False:\n"),
     ("the sweep removes an empty tool folder whole, not rmdir only",
      "        if empty_tool:\n", "        if False:\n"),
+    ("the old-name folders not swept",
+     "        elif top in (HARNESS, OLD_HARNESS):", "        elif top == HARNESS:"),
+    ("the run folder named <tool>-<pid>- again",
+     'p = tempfile.mkdtemp(prefix="%d-" % os.getpid(), dir=d)',
+     'p = tempfile.mkdtemp(prefix="%s-%d-" % (tool, os.getpid()), dir=d)'),
+    ("the old long root", 'HARNESS = "cih"\n', 'HARNESS = "charge-interposer-harness"\n'),
+    ("no length guard",
+     "    if why:\n        raise PathTooLong(why)\n",
+     "    if False:\n        raise PathTooLong(why)\n"),
+    ("LIMIT 260", "LIMIT = 240\n", "LIMIT = 260\n"),
+    ("the guard leaves DEPTH out",
+     "DEPTH if depth is None else depth", "0 if depth is None else depth"),
+    ("the guard leaves depth= out",
+     "DEPTH if depth is None else depth", "DEPTH"),
+    ("the guard leaves the run folder's own name out",
+     'why = length_refusal(os.path.join(d, "%d-%s" % (os.getpid(), "x" * RANDOM)),',
+     "why = length_refusal(d,"),
+    ("the guard refuses at the limit itself",
+     "    if len(full) + depth <= LIMIT:", "    if len(full) + depth < LIMIT:"),
+    ("the refusal without the path",
+     '"scratch_dir: REFUSED the run folder %s: it is', '"scratch_dir: REFUSED the run folder %.0s: it is'),
+    ("the refusal without the length",
+     "it is %d characters, and", "it is %.0s characters, and"),
+    ("no git ceiling", "    _ceiling_add(p)\n    return p\n", "    return p\n"),
+    ("the ceiling left after remove()", "        _ceiling_drop(lp)\n", ""),
 ]
 
 

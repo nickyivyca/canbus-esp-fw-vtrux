@@ -6,8 +6,21 @@
 # system temp folder, two of them to one fixed folder that two runs at once
 # would share; AGENTS.md "Files and folders"):
 #
-#     <root>/charge-interposer-harness/<tool>/<tool>-<pid>-XXXXXX/
+#     <root>/cih/<tool>/<pid>-XXXXXX/
 #         .scratch-owner.json   {"argv", "host", "made", "pid", "platform", "start"}
+#
+# The short names, and the length guard, are scratch_dir.py's (the
+# charge-interposer reviewer, 2026-11-05: Windows' path limit in the
+# acceptance runner's trees): the run folder's full path plus
+# SCRATCH_RUN_DEPTH must be at most SCRATCH_RUN_LIMIT, the same numbers as
+# scratch_dir's DEPTH and LIMIT, or scratch_run refuses (exit 2) before it
+# makes anything, naming the full path and its length.
+#
+# The git ceiling, as scratch_dir's: the run folder goes first in the
+# exported GIT_CEILING_DIRECTORIES (';' between entries on Windows, where it
+# is given in Git for Windows' C:/ form; ':' elsewhere), so git never looks
+# for a repository above it, and a fixture whose own git init failed gets
+# "not a git repository" rather than the enclosing repo.
 #
 #   . "<charge-interposer>/scratch_run.sh" || exit 2
 #   scratch_run <tool> || exit 2      # sets SCRATCH_RUN to the new folder
@@ -50,6 +63,10 @@ SCRATCH_RUN=""
 SCRATCH_TOOL_DIR=""
 # the waits before the second and third tries, and the removal's retries
 SCRATCH_RUN_WAITS=(0.1 0.4)
+# the length guard: scratch_dir.py's LIMIT and DEPTH (scratch_run_test
+# checks they agree)
+SCRATCH_RUN_LIMIT=240
+SCRATCH_RUN_DEPTH=12
 
 scratch_root() {
   local d="$_SR_HOME" up
@@ -100,23 +117,35 @@ scratch_run() {
     return 2
   fi
   _sr_owner
-  td="$(scratch_root)/charge-interposer-harness/$tool"
+  td="$(scratch_root)/cih/$tool"
+  local full="$td/$_SR_PID-XXXXXX" n
+  n=$(( ${#full} + SCRATCH_RUN_DEPTH ))
+  if [ "$n" -gt "$SCRATCH_RUN_LIMIT" ]; then
+    echo "scratch_run: REFUSED the run folder $full: it is ${#full} characters, and its fixtures' git goes up to $SCRATCH_RUN_DEPTH below it, $n in all, past the $SCRATCH_RUN_LIMIT that git for Windows needs (it will not make a folder past about 248, core.longpaths or not). Run from a tree with a shorter path" >&2
+    return 2
+  fi
   p=""
   for try in 1 2; do
     [ "$try" = 1 ] || sleep "${SCRATCH_RUN_WAITS[0]}"
     mkdir -p "$td" 2>/dev/null &&
-      p="$(mktemp -d "$td/$tool-$_SR_PID-XXXXXX" 2>/dev/null)" && break
+      p="$(mktemp -d "$td/$_SR_PID-XXXXXX" 2>/dev/null)" && break
     p=""
   done
   if [ -z "$p" ]; then
     sleep "${SCRATCH_RUN_WAITS[1]}"
     mkdir -p "$td" || return 2
-    p="$(mktemp -d "$td/$tool-$_SR_PID-XXXXXX")" || return 2
+    p="$(mktemp -d "$td/$_SR_PID-XXXXXX")" || return 2
   fi
   SCRATCH_RUN="$p"
   SCRATCH_TOOL_DIR="$td"
   trap scratch_run_cleanup EXIT
   printf '%s\n' "$_SR_OWNER" > "$p/.scratch-owner.json" || return 2
+  local ceil="$p" sep=":"
+  if [ -r "/proc/$$/winpid" ]; then
+    ceil="$(cd "$p" && pwd -W)" || return 2
+    sep=";"
+  fi
+  export GIT_CEILING_DIRECTORIES="$ceil${GIT_CEILING_DIRECTORIES:+$sep$GIT_CEILING_DIRECTORIES}"
 }
 
 scratch_run_cleanup() {

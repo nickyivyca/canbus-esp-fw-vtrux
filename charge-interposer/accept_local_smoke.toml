@@ -19,10 +19,14 @@ ordered_on = "2026-11-05"
 spec = ["none: a smoke run of the acceptance runner's local lane"]
 verification = "none (a --dev smoke run is never evidence)"
 
-# 7ca7c34: the 2a harness (3abe58d1) with the adapter's settings guard
-# (41b54cd) and its artifacts_row fix
+# 14d3dd4: main 59ed4dc9 (the 2a harness with the adapter's settings guard
+# and artifacts_row fix), the short scratch run folders with their length
+# guard (9151c68, after c840 failed three git fixtures on Windows' path
+# limit), the run folder in GIT_CEILING_DIRECTORIES with the shorter
+# fixture names (6edbce4), and scratch_dir_test's shorter names (14d3dd4,
+# after d178's guard refused it on madhouse)
 [trees.harness]
-project = "7ca7c34404a1abce5c3efe22635d649a1371aaa5"
+project = "14d3dd4de4a00c488e55f22edf575c314f8bc254"
 
 # the emulated suite's local lane only: the rest of it is the madhouse sims
 [[suite_run]]

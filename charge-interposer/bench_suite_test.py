@@ -885,7 +885,7 @@ def _pycache_unignored():
     folder holding a .py file in PYCACHE_TREES, asked of a scratch repo
     holding only this repo's .gitignore files on those paths."""
     repo = os.path.dirname(HERE)
-    probe = os.path.join(TMP, "pycache-probe")
+    probe = os.path.join(TMP, "pyc")     # short: Windows' path limit (scratch_dir)
     scratch_dir.remove(probe)
     os.makedirs(probe)
     subprocess.run(["git", "init", "-q", probe], check=True)
@@ -1376,7 +1376,7 @@ def test_can_tools_record():
     with the pin still named (a stand-in clone,
     can_tools_pin_test.fixture)."""
     import can_tools_pin_test as CT
-    base = os.path.join(TMP, "can-tools-pin")
+    base = os.path.join(TMP, "ctp")      # short: Windows' path limit (scratch_dir)
     scratch_dir.remove(base)
     try:
         fix = CT.fixture(base)
@@ -1768,7 +1768,7 @@ class _NoStore(dict):
 def _make_no_prune(tool, start=None):
     d = scratch_dir.tool_dir(tool, start)
     os.makedirs(d, exist_ok=True)
-    p = tempfile.mkdtemp(prefix="%s-%d-" % (tool, os.getpid()), dir=d)
+    p = tempfile.mkdtemp(prefix="%d-" % os.getpid(), dir=d)
     with open(os.path.join(p, scratch_dir.OWNER), "w", encoding="utf-8") as f:
         json.dump(scratch_dir.owner_record(), f)
     return p
@@ -2008,7 +2008,10 @@ MUTANTS = {
 
 def main():
     global TMP
-    TMP = scratch_dir.make("bench-suite-test")
+    # depth: its deepest git repo, ctp\ct (7 below the run folder), + 12
+    # for .git\config (measured 2026-11-05 as can-tools-pin\can-tools, then
+    # shortened with pycache-probe to pyc; scratch_dir)
+    TMP = scratch_dir.make("bench-suite-test", depth=19)
     try:
         _main()
     finally:

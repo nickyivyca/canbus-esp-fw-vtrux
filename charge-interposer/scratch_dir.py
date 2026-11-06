@@ -10,7 +10,7 @@ without a word and the folder stayed (1,085 run folders and 472K files on
 NICKY-XPS, which stalled Windows Search). Every harness file that makes a
 throwaway folder now takes it from here:
 
-    <root>/charge-interposer-harness/<tool>/<tool>-<pid>-<random>/
+    <root>/cih/<tool>/<pid>-<random>/
         .scratch-owner.json     {"pid", "start", "host", "made", "argv"}
 
 <root> is <worktree>/scratch, the worktree found by walking up to its .git
@@ -19,11 +19,35 @@ chain runner ships to madhouse) it is scratch/ beside the copied
 charge-interposer/ folder, where a worktree's would be: never inside
 it, where the harness's walks over charge-interposer/ would meet it.
 
+The names are short because of Windows' path limit: in the acceptance
+runner's tree (<worktree>/scratch/vtrux-accept/<record>-<pid>-<hex>/
+tree-<name>-<pid>-<hex>/repo/, about 150 characters) the old
+charge-interposer-harness/<tool>/<tool>-<pid>-<random>/ took three
+fixtures' git paths past what git for Windows will make, core.longpaths
+or not (local-lane smoke accept_local-smoke_20261105T064257_c840; the
+charge-interposer reviewer ruled this layout, 2026-11-05). The sweep
+still takes finished folders under the old name.
+
   make(tool)    prunes the tool's finished folders (below), then makes a
                 new one and writes its owner file: this process's pid and
                 its start time, so a pid used again by another process is
                 not taken for the owner. Three tries, a moment apart, when
                 another run's removal takes the tool folder under it.
+                THE LENGTH GUARD comes first: the run folder's full path,
+                plus its depth (how far below it the fixture's git goes,
+                measured; DEPTH by default), must be at most LIMIT (240),
+                or make() raises
+                PathTooLong naming the full path and its length, before
+                anything is made, so before any fixture's git runs. A tool
+                whose fixtures go deeper passes depth=.
+                THE GIT CEILING: the new folder goes first in this
+                process's GIT_CEILING_DIRECTORIES (os.pathsep-separated),
+                so git, here and in what this process starts, never looks
+                for a repository above it: a fixture whose own git init
+                failed gets "not a git repository" rather than the
+                enclosing repo, which in the acceptance runner is the tree
+                under test (the charge-interposer reviewer, 2026-11-05).
+                remove() takes the folder out of it again.
   run(tool)     make() as a context manager: the folder is removed in a
                 finally, pass or fail.
   remove(path)  shutil.rmtree with an error handler that clears the
@@ -51,10 +75,11 @@ methodology and the reviewer, 2026-10-31).
 
 It looks only in each worktree's scratch/ (default: the interposer-reviewer,
 -implementor and -tester worktrees beside this one). Candidates are run
-folders only: a finished folder under charge-interposer-harness/, and a
+folders only: a finished folder under cih/ (or the old
+charge-interposer-harness/), and a
 can-tools/ or canre/ folder for a commit that worktree's pins.json no longer
 pins (or a .partial-<pid> whose pid is not running); and an empty tool
-folder under charge-interposer-harness/, removed with rmdir only, so one a
+folder under either, removed with rmdir only, so one a
 run has started in since the report stays (the charge-interposer reviewer,
 2026-11-02: 38 were left in the tester's worktree). Never touched: the
 current pins' folders, session-compact/, a live or unowned run folder, and
@@ -83,7 +108,21 @@ import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-HARNESS = "charge-interposer-harness"
+HARNESS = "cih"
+OLD_HARNESS = "charge-interposer-harness"   # before 2026-11-05: swept, never made
+# THE LENGTH GUARD (above). Measured on NICKY-XPS, git 2.52.0.windows.1,
+# core.longpaths on (2026-11-05): git init and commit work while a repo's
+# .git\config is at most about 257 characters (work-tree files deeper are
+# fine), and git worktree add works while the main repo's folder is at most
+# 214. Plain file writes go past 300 (Python's long paths). So a fixture's
+# depth is what its git needs below the run folder: its deepest repo's
+# .git\config (the repo's depth + 12), or for a repo that git worktree add
+# runs on, the repo's depth + 36 (214 + 36 = 250 > 240: 10 to spare).
+# LIMIT 240 leaves 17 under the init ceiling. DEPTH, the default, is 12:
+# one repo right in the run folder, the least any fixture with git needs; a
+# fixture that goes deeper passes depth=, with the path it measured.
+LIMIT = 240
+DEPTH = 12
 OWNER = ".scratch-owner.json"
 NEVER = ("session-compact",)
 PIN_DIRS = {"can-tools": "can-tools", "canre": "canre"}   # scratch dir -> pins.json key
@@ -313,16 +352,17 @@ def remove(path, quiet=False):
                   % (len(left) - 20, _short(lp)), flush=True)
     if not left:
         _drop_empty_tool_dir(lp)
+        _ceiling_drop(lp)
     return left
 
 
 def _drop_empty_tool_dir(lp):
     """Once a run folder is gone, its tool's folder
-    (<root>/charge-interposer-harness/<tool>/) goes too if nothing else is
+    (<root>/cih/<tool>/, or under the old name) goes too if nothing else is
     in it (the reviewer, 2026-11-02: 41 empty ones were left on NICKY-XPS).
     rmdir only: a folder still holding another run's is left as it is."""
     parent = os.path.dirname(lp)
-    if os.path.basename(os.path.dirname(parent)) != HARNESS:
+    if os.path.basename(os.path.dirname(parent)) not in (HARNESS, OLD_HARNESS):
         return
     try:
         os.rmdir(parent)
@@ -349,15 +389,38 @@ def prune(tool, start=None, quiet=False):
 
 MAKE_TRIES = 3
 MAKE_WAITS = (0.1, 0.4)     # the wait before each try after the first
+RANDOM = 8                  # the length of tempfile.mkdtemp's random part
 
 
-def make(tool, start=None):
+class PathTooLong(RuntimeError):
+    """A run folder whose fixtures would pass LIMIT (the length guard)."""
+
+
+def length_refusal(path, depth):
+    """None if path's full form plus depth is within LIMIT; else the
+    refusal, naming the full path and its length."""
+    full = os.path.abspath(path)
+    if len(full) + depth <= LIMIT:
+        return None
+    return ("scratch_dir: REFUSED the run folder %s: it is %d characters, and "
+            "its fixtures' git goes up to %d below it, %d in all, past the %d "
+            "that git for Windows needs (it will not make a folder past about "
+            "248, core.longpaths or not). Run from a tree with a shorter path"
+            % (full, len(full), depth, len(full) + depth, LIMIT))
+
+
+def make(tool, start=None, depth=None):
     """A new run folder for tool, with its owner file, after pruning the
-    tool's finished ones."""
+    tool's finished ones. Refused (PathTooLong) before anything is made when
+    its path plus depth (default DEPTH) would pass LIMIT."""
     if not tool or os.sep in tool or "/" in tool or tool.startswith("."):
         raise ValueError("tool must be one plain folder name: %r" % (tool,))
-    prune(tool, start)
     d = tool_dir(tool, start)
+    why = length_refusal(os.path.join(d, "%d-%s" % (os.getpid(), "x" * RANDOM)),
+                         DEPTH if depth is None else depth)
+    if why:
+        raise PathTooLong(why)
+    prune(tool, start)
     # another run removing the last folder in d drops d (remove()); made
     # again if that falls between the two calls, MAKE_TRIES tries in all, a
     # moment apart. On Windows a folder removed while another process holds a
@@ -369,7 +432,7 @@ def make(tool, start=None):
             time.sleep(MAKE_WAITS[min(attempt, len(MAKE_WAITS)) - 1])
         try:
             os.makedirs(d, exist_ok=True)
-            p = tempfile.mkdtemp(prefix="%s-%d-" % (tool, os.getpid()), dir=d)
+            p = tempfile.mkdtemp(prefix="%d-" % os.getpid(), dir=d)
             break
         except (FileNotFoundError, PermissionError):
             if attempt == MAKE_TRIES - 1:
@@ -377,13 +440,40 @@ def make(tool, start=None):
     with open(os.path.join(p, OWNER), "w", encoding="utf-8", newline="\n") as f:
         json.dump(owner_record(), f, sort_keys=True)
         f.write("\n")
+    _ceiling_add(p)
     return p
 
 
+CEILING = "GIT_CEILING_DIRECTORIES"
+
+
+def _ceilings():
+    return [x for x in os.environ.get(CEILING, "").split(os.pathsep) if x]
+
+
+def _ceiling_add(path):
+    """path first in GIT_CEILING_DIRECTORIES (the git ceiling, above)."""
+    full = os.path.abspath(path)
+    have = _ceilings()
+    if full not in have:
+        os.environ[CEILING] = os.pathsep.join([full] + have)
+
+
+def _ceiling_drop(path):
+    full = os.path.abspath(_short(path))
+    have = _ceilings()
+    if full in have:
+        rest = [x for x in have if x != full]
+        if rest:
+            os.environ[CEILING] = os.pathsep.join(rest)
+        else:
+            os.environ.pop(CEILING, None)
+
+
 @contextlib.contextmanager
-def run(tool, start=None):
+def run(tool, start=None, depth=None):
     """with run(tool) as d: ...  The folder is removed in a finally."""
-    p = make(tool, start)
+    p = make(tool, start, depth)
     try:
         yield p
     finally:
@@ -459,7 +549,7 @@ def survey(wt):
             out.append((tp, "other", "a file, not a run folder"))
         elif top in NEVER:
             out.append((tp, "kept", "never swept"))
-        elif top == HARNESS:
+        elif top in (HARNESS, OLD_HARNESS):
             for tool in sorted(os.listdir(tp)):
                 td = os.path.join(tp, tool)
                 if not os.path.isdir(td):

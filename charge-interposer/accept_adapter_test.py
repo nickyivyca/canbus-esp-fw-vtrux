@@ -105,7 +105,8 @@ def test_list_loads(A, work):
     git(clone, "config", "user.name", "test")
     git(clone, "config", "user.email", "test@example.invalid")
     lst = os.path.join(clone, "charge-interposer", "acceptance", "t.toml")
-    os.makedirs(os.path.dirname(lst))
+    # acceptance/ is in the tree since the reviewer's 2a list (f22c570d)
+    os.makedirs(os.path.dirname(lst), exist_ok=True)
     with open(lst, "w", encoding="utf-8", newline="\n") as f:
         f.write('[step]\nid = "t"\nproject = "charge-interposer"\nordered_by = "test"\n'
                 'ordered_on = "2026-11-01"\nspec = ["9.1"]\nverification = "9.1"\n\n'
