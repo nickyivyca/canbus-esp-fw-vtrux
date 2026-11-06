@@ -9,7 +9,8 @@ One record, three arms of three pulses 1 s apart, page polls every 0.1 s:
   arm 1  the device does not count pulse 2, the polls either side answered at once:
          old 0, new 0 (stands);
   arm 2  every pulse counted once: no row.
-A second record without its witness file is not read. ZERO_SCRIPT overrides the script
+A second record without its witness file is not read; a third, renamed _VOID_noreset after
+the run with its witness file still under the old name (arm 2 again), is. ZERO_SCRIPT overrides the script
 under test (the mutant runner). Scratch goes to the worktree's scratch/. Gen-inhibit
 tester, 2026-11-05.
 """
@@ -78,6 +79,11 @@ def make(root):
         json.dump({"frames": [], "errs": errs}, f)
     with open(os.path.join(root, "x2_jam_threshold_B.json"), "w") as f:   # no witness file
         json.dump(rec, f)
+    # renamed after the run, its witness file still under the old name (c65c45e's VOID records)
+    with open(os.path.join(root, "x2_jam_threshold_C_VOID_noreset.json"), "w") as f:
+        json.dump({"args": rec["args"], "arms": [rec["arms"][2]]}, f)
+    with gzip.open(os.path.join(root, "x2_jam_threshold_C_witness.json.gz"), "wt") as f:
+        json.dump({"frames": [], "errs": errs}, f)
 
 
 def main():
@@ -88,8 +94,9 @@ def main():
         M = load()
         make(root)
         paths = M.records([root])
-        check("only the record with its witness file is read",
-              [os.path.basename(p) for p in paths] == ["x2_jam_threshold_A.json"], paths)
+        check("the records with a witness file are read, a renamed one too",
+              [os.path.basename(p) for p in paths] == ["x2_jam_threshold_A.json",
+                                                       "x2_jam_threshold_C_VOID_noreset.json"], paths)
         rows, st = M.arm_rows(os.path.join(root, "x2_jam_threshold_A.json"))
         got = [(k, i, a, b) for k, i, e, a, b, bef, aft, off in rows]
         check("arm 0 pulse 2: new 1, old 0 (the stalled poll)", (0, 2, 1, 0) in got, got)
@@ -119,7 +126,7 @@ def main():
               and "stands x2_jam_threshold_A.json arm 1 pulse 2: new 0, old 0" in text, text)
         check("the stalled poll is not the after reading under the new rule", "returned +0.060" not in
               text.split("stands")[0].split("after:")[-1], text)
-        check("the summary", "placed 9; delta 0: new 1, old 2" in text and rc == 0, text)
+        check("the summary", "placed 12; delta 0: new 1, old 2" in text and rc == 0, text)
         check("no roots is refused", M.main([]) == 2, "")
     except Exception as e:                      # a crash is reported, never a pass
         check("ran without raising", False, repr(e))

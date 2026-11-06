@@ -7,8 +7,9 @@ Gen-inhibit tester, 2026-11-05, for the gen-inhibit reviewer: re-judge every ear
 landing figure after the poll-stamp fix (x2_jammer.per_pulse, 86dcfee6). A delta of 0 was
 read as an error frame the device did not count; step 1d's two were stalled polls instead.
 
-For every x2_jam_threshold_*.json under the roots that has its witness file (the records
-b6_multicount_landing.py places), every arm, the device's bus_error delta per witness pulse
+For every x2_jam_threshold_*.json under the roots whose witness file
+b6_multicount_landing.witness finds (the records b6_multicount_landing.py places: by the
+record's witness_file, so the five c65c45e records renamed _VOID_noreset count), every arm, the device's bus_error delta per witness pulse
 from x2_jammer.per_pulse twice, as b6_multicount_landing.py feeds it (every page sample):
   new  with each reading's req_start: "after" only if sent after the pulse's error frame,
        "before" only if returned before it (the rule from 86dcfee6);
@@ -33,16 +34,19 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-import x2_jammer as XJ   # noqa: E402
+import b6_multicount_landing as L   # noqa: E402
+import x2_jammer as XJ              # noqa: E402
 
 FAST_S = 0.03            # readings answered within this go into the uptime offset
 
 
 def records(roots):
+    """The threshold records under the roots whose witness file b6_multicount_landing finds
+    (by the record's witness_file, or its own name with any _VOID_noreset dropped)."""
     out = set()
     for r in roots:
         for p in glob.glob(os.path.join(r, "**", "x2_jam_threshold_*.json"), recursive=True):
-            if "_witness" not in p and os.path.exists(p[:-len(".json")] + "_witness.json.gz"):
+            if "_witness" not in p and L.witness(json.load(open(p)), p) is not None:
                 out.add(p)
     return sorted(out)
 
