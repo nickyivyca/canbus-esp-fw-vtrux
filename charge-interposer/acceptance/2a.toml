@@ -8,11 +8,16 @@
 #   prod      the final 2a product, cf1b911 (the reviewer, 2026-11-03): the
 #             six builds, so each image carries the product commit's version
 #             and (h)'s pairs come from one commit
-#   harness   3abe58d1, charge-interposer/main with the tester's whole 2a
+#   harness   81718143, charge-interposer/main with the tester's whole 2a
 #             harness: (F) bench_suite flashing the list's builds, the
 #             vport-windows comparer with its guards, no_led.py,
 #             variant_diff.py, refusal_pairs_runs --scratch-from and the
-#             idf-log checks. Every
+#             idf-log checks (3abe58d1); then, after run f308 was stopped
+#             (2026-11-05), the adapter's guard on tree variables in the
+#             machine settings (59ed4dc9), and the short scratch run
+#             folders with their length guard and git ceiling (81718143),
+#             (local-lane smoke e28f passed on 14d3dd4d; after it only
+#             2467fc10, scratch_run_test's depth 33 -> 34). Every
 #             suite run goes here: a suite run loads the suite from its own
 #             tree, and only from 117bffb6 does bench_suite take
 #             interposer_builds. Its product files are cf1b911's (premise
@@ -34,10 +39,10 @@ verification = "the tester's VERIFICATION.md entries for port step 2a, one per i
 project = "cf1b911326d62fc7a7a743be2050ff51bf37f0d6"
 
 [trees.harness]
-project = "3abe58d16c91fb3d4da64a96195b3697b33fd776"
+project = "81718143bf41c2cde359b6e9fb63ee804588ae90"
 
 [trees.madhouse]
-project = "3abe58d16c91fb3d4da64a96195b3697b33fd776"
+project = "81718143bf41c2cde359b6e9fb63ee804588ae90"
 host = "madhouse"
 shared = { twai_port = "2026.11.03" }
 
