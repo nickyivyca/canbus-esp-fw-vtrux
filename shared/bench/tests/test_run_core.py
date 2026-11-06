@@ -1922,12 +1922,23 @@ def test_lost_record():
 
 
 def _pause_scenario(name, mode="log", during=None, fail_flash=False,
-                    second=None, image=("w1", "x2app"), keep_lock=None):
+                    second=None, image=("w1", "x2app"), keep_lock=None,
+                    gate_delay=0):
     """check 1 writes PAUSE. Another role takes the bench while the run is
     paused (log: once free_paused is in the log; holder: by the Holder
-    line), `during` runs, the PAUSE file goes, and the other role hands the
-    bench back 1.2 s later. check 2 passes only if the lock is the run's
-    own when it starts."""
+    line, once the run's record shows its pause), `during` runs, the PAUSE
+    file goes, and the other role hands the bench back 1.2 s later. check 2
+    passes only if the lock is the run's own when it starts.
+
+    Before 2026-11-05 the holder-mode role took the bench as soon as the
+    PAUSE file existed. When the runner reached its next case boundary more
+    than about 0.1 s after check 1 wrote the file (a loaded machine), the
+    role had already taken the bench and removed the file, so the runner
+    saw no pause under way and another role's Holder: a lost lock, as SPEC
+    section 7 says, and test_pause_own_lock failed in mode "holder". A
+    person waits for the run to stop before editing the Holder line; so
+    does the role now. `gate_delay` makes the runner that slow on purpose:
+    it sleeps that long before each case gate."""
     env, p = log_env(name)
     env.set_holder(CI)
     tb = Hooked(env)
@@ -1950,6 +1961,13 @@ def _pause_scenario(name, mode="log", during=None, fail_flash=False,
                         needs_lock=True, image=list(image))], role=CI)
     st = env.settings(bench_lock_log=p) if mode == "log" else env.settings()
     eng = E.Engine(s, st, out=lambda *a: None, keep_lock=keep_lock)
+    if gate_delay:
+        real_gate = eng.case_gate
+
+        def slow_gate():
+            time.sleep(gate_delay)
+            return real_gate()
+        eng.case_gate = slow_gate
     seen = {}
 
     def other():
@@ -1977,11 +1995,12 @@ def _pause_scenario(name, mode="log", during=None, fail_flash=False,
             time.sleep(0.1)
             if not getattr(eng, "run_dir", None):
                 continue
-            pause = os.path.join(eng.run_dir, "PAUSE")
             if mode == "log":
                 ready = any(e["event"] == "free_paused" for e in log_events(p))
             else:
-                ready = os.path.exists(pause)
+                r = getattr(eng, "rec", None)
+                ready = r is not None and any(
+                    e["kind"] == "pause" for e in list(r.events))
             if ready:
                 break
         else:
@@ -2013,16 +2032,22 @@ def test_pause_own_lock():
     the cutover, the run waits until the PAUSE file is gone and the Holder
     is its role's again; under the log, the runner takes the lock back
     under its PID and run id, waiting while another role holds it. Others'
-    takes and releases in between are not a loss."""
+    takes and releases in between are not a loss. Each mode runs twice,
+    the second time with the runner 0.5 s slow to reach each case gate, the
+    timing that made mode "holder" fail on a loaded machine before
+    2026-11-05 (_pause_scenario)."""
     for mode in ("holder", "log"):
-        env, p, tb, eng, rec, seen = _pause_scenario("ownlock_" + mode, mode)
-        v = verdicts(rec)
-        assert v == {"a/first": "PASS", "a/second": "PASS"}, (mode, v)
-        assert not rec["lock"]["lost"], (mode, rec["lock"])
-        res = [e for e in rec["events"] if e["kind"] == "resume"]
-        assert res and res[0]["t"] >= R.stamp(
-            __import__("datetime").datetime.fromtimestamp(
-                int(seen["back"])).astimezone()), (mode, res, seen)
+        for delay in (0, 0.5):
+            env, p, tb, eng, rec, seen = _pause_scenario(
+                "ownlock_%s_%s" % (mode, delay), mode, gate_delay=delay)
+            v = verdicts(rec)
+            assert v == {"a/first": "PASS", "a/second": "PASS"}, \
+                (mode, delay, v)
+            assert not rec["lock"]["lost"], (mode, delay, rec["lock"])
+            res = [e for e in rec["events"] if e["kind"] == "resume"]
+            assert res and res[0]["t"] >= R.stamp(
+                __import__("datetime").datetime.fromtimestamp(
+                    int(seen["back"])).astimezone()), (mode, delay, res, seen)
 
 
 def test_self_pause():
