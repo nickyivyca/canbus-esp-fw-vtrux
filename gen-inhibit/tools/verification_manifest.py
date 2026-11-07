@@ -22,6 +22,11 @@ its _by_source.txt). Each resolved path is one row, at the line it is first cite
     <sha256>  file     <path under $REVERSE_IT_DIR>  L<line>
     <sha256>  tree     <folder under $REVERSE_IT_DIR>/  L<line>
     -         root     runs/ or runs/chain/: folders that grow, named but never hashed
+    -         living   a document that changes as work goes on (LIVING: bench-holder.md, the
+                       spec, the tracker, the working log, a harness README), named but never
+                       hashed: it is cited for a rule or a description, not as what a verdict
+                       rests on (gen-inhibit reviewer, 2026-11-07); a batch citing another one
+                       adds it to LIVING
     -         absent   one expansion of a cite whose other expansions exist ({1..6} where
                        only some arms ran)
     -         missing  a cite none of whose expansions exists
@@ -41,7 +46,11 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 RUNS_REL = "projects/vtrux/notes/artifacts/gen-inhibit/"
 ROOTS = {RUNS_REL + "runs/", RUNS_REL + "runs/chain/"}     # folders that grow: named, never hashed
-KINDS = ("file", "tree", "root", "absent", "missing", "pattern")
+NOTES = "projects/vtrux/notes/"
+LIVING = {"firmware/bench-holder.md", NOTES + "gen-inhibit-wican-spec.md",
+          NOTES + "gen-inhibit-review-2026-09-22.md", NOTES + "gen-inhibit-wican-firmware.md",
+          RUNS_REL + "README.md", RUNS_REL + "x2_jammer/README.md"}
+KINDS = ("file", "tree", "root", "living", "absent", "missing", "pattern")
 CITE = re.compile(r"`([^`\s]+)`")
 TRAIL = ".,;:)"
 
@@ -142,7 +151,8 @@ def rows(doc_text, ri):
             if not hits:
                 seen.setdefault(("absent" if any_found else "missing", rel), n)
             for h in hits:
-                seen.setdefault(("root" if h in ROOTS else "path", h), n)
+                kind = "root" if h in ROOTS else "living" if h in LIVING else "path"
+                seen.setdefault((kind, h), n)
     out = []
     for (kind, path), n in sorted(seen.items(), key=lambda kv: (kv[0][1], kv[0][0])):
         if kind == "path":

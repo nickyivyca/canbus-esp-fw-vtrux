@@ -47,7 +47,8 @@ DOC = ("# Doc\n"
        "A glob `runs/g_*.log`, a stem `runs/stem_20261107`, a pattern `runs/<run>.json`.\n"
        "Gone: `runs/nothere.json`. Elsewhere `$REVERSE_IT_DIR/firmware/f.md`. Not cited: runs/z.txt.\n"
        "Trailing dot `runs/a.json`. and a chain `runs/chain/` with `x/runs/q.json` not a citation.\n"
-       "A stem cut short with its dot inside: `runs/t_20261107.`\n")
+       "A stem cut short with its dot inside: `runs/t_20261107.`\n"
+       "A living doc `$REVERSE_IT_DIR/firmware/bench-holder.md` and a run's own `runs/b/README.md`.\n")
 
 
 def fixture(root):
@@ -57,7 +58,8 @@ def fixture(root):
              RUNS + "stem_20261107.json": b"sj", RUNS + "stem_20261107_by_source.txt": b"st",
              RUNS + "stem_202611079.json": b"not this stem", RUNS + "z.txt": b"z",
              RUNS + "t_20261107.json": b"t",
-             RUNS + "chain/r1/record.json": b"c", "firmware/f.md": b"F"}
+             RUNS + "chain/r1/record.json": b"c", "firmware/f.md": b"F",
+             "firmware/bench-holder.md": b"holder", RUNS + "b/README.md": b"run readme"}
     for rel, data in files.items():
         put(root, rel, data)
     os.makedirs(os.path.join(root, "canre"), exist_ok=True)
@@ -76,7 +78,8 @@ def main():
     r = row(rows, RUNS + "a.json")
     check("a cited file is one row with its sha256, at its first line",
           r == ["%s  file     %s  L3" % (sha(b"A"), RUNS + "a.json")], r)
-    want_tree = sha(("one.txt %s\nsub/two.txt %s" % (sha(b"1"), sha(b"2"))).encode())
+    want_tree = sha(("README.md %s\none.txt %s\nsub/two.txt %s"
+                     % (sha(b"run readme"), sha(b"1"), sha(b"2"))).encode())
     r = row(rows, RUNS + "b/")
     check("a cited folder is a tree row: sha256 of its sorted 'relpath sha256' lines",
           r == ["%s  tree     %s  L3" % (want_tree, RUNS + "b/")], r)
@@ -101,6 +104,12 @@ def main():
     check("runs/ and runs/chain/ are roots, named but never hashed",
           row(rows, RUNS) == ["-  root     %s  L2" % RUNS] and
           row(rows, RUNS + "chain/") == ["-  root     %s  L7" % (RUNS + "chain/")], (row(rows, RUNS),))
+    check("a living document (bench-holder.md) is named, never hashed",
+          row(rows, "firmware/bench-holder.md") == ["-  living   firmware/bench-holder.md  L9"],
+          row(rows, "firmware/bench-holder.md"))
+    check("... but a run folder's own README stays hashed",
+          row(rows, RUNS + "b/README.md") == ["%s  file     %s  L9" % (sha(b"run readme"), RUNS + "b/README.md")],
+          row(rows, RUNS + "b/README.md"))
     check("an unbackticked path is not a citation", RUNS + "z.txt" not in kinds, kinds)
     check("a backticked path not starting runs/ is not a citation",
           not any("q.json" in k for k in kinds), kinds)
@@ -129,6 +138,11 @@ def main():
     c = subprocess.run(base + ["check", "--doc", doc_p, "--manifest", man_p], capture_output=True, text=True,
                        env=env)
     check("check of a fresh manifest exits 0", c.returncode == 0 and "OK" in c.stdout, (c.returncode, c.stdout))
+    put(root, "firmware/bench-holder.md", b"holder, handed over")
+    c = subprocess.run(base + ["check", "--doc", doc_p, "--manifest", man_p], capture_output=True, text=True,
+                       env=env)
+    check("a living document that changes leaves the manifest current", c.returncode == 0 and "OK" in c.stdout,
+          (c.returncode, c.stdout[-400:]))
     put(root, RUNS + "b/sub/two.txt", b"changed")
     c = subprocess.run(base + ["check", "--doc", doc_p, "--manifest", man_p], capture_output=True, text=True,
                        env=env)

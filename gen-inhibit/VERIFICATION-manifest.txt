@@ -1,10 +1,10 @@
 # The hash manifest of gen-inhibit/VERIFICATION.md: every SeaDrive file or folder it cites, by path under
 # $REVERSE_IT_DIR. Written by gen-inhibit/tools/verification_manifest.py; do not edit.
 # document sha256 c47f4ae7c629051dde11db9f49a7eb5e171112c38213ff030da3fd243a354ff7
-# 174 rows: 155 file, 8 tree, 1 root, 6 absent, 2 missing, 2 pattern
+# 174 rows: 149 file, 8 tree, 1 root, 6 living, 6 absent, 2 missing, 2 pattern
 a439dc8bff895f2384a3a7a6fd73ed6295f8036513fe110db0a2b57aa47c6ad6  file     android-app/notes/artifacts/vtrux_bench_replay_captures/README.md  L2026
-c639c4a8e32abdf59e764c4ac5e5233de65e8e6d2d046ac4f0f4b64a401fe23c  file     firmware/bench-holder.md  L23
-554330f735763d5a202ad913b3dfe24d9fdb7fb34b3b809434ad7009f8fd49a7  file     projects/vtrux/notes/artifacts/gen-inhibit/README.md  L51
+-  living   firmware/bench-holder.md  L23
+-  living   projects/vtrux/notes/artifacts/gen-inhibit/README.md  L51
 50fbd853efdcb8f2ed48a73080a9bc21ec316cc56cc740a8bf03dda10fd903ca  file     projects/vtrux/notes/artifacts/gen-inhibit/ota_rollback_rehearsal.py  L2239
 1d39b9565911d33c5d3ddc7d1a4cafdf0eb63d3cf5d7ab51bc3eb7507a38f82d  file     projects/vtrux/notes/artifacts/gen-inhibit/replay_fixture_review/replay_vs_source.txt  L2029
 -  root     projects/vtrux/notes/artifacts/gen-inhibit/runs/  L18
@@ -170,9 +170,9 @@ fea411d0330e9350c629956ccd8ca86c718ac71fe8063d10957eb276fd6197b6  file     proje
 1994fedb2fd2fa8920f8f94d21ae49a298575e62a26d029988e2da25a7a9d206  file     projects/vtrux/notes/artifacts/gen-inhibit/runs/x2_jammer_id_20261009T093923.json  L1449
 fd240b8fe426516c845c4be0ab58797fb66593a267da3043c4cc6f751ee2ee91  file     projects/vtrux/notes/artifacts/gen-inhibit/runs/x2_jammer_id_20261012T184901.json  L789
 c781c8cb7e4b93c505c7a3170814a0a82599a5fbdfa371dcc5f4a31075ac103a  file     projects/vtrux/notes/artifacts/gen-inhibit/runs/x2_jammer_id_20261014T082240.json  L2178
-f10b5ff84352322ceaf9fe508c4a02a6f8455275d1c26dfbedb0d075416d005c  file     projects/vtrux/notes/artifacts/gen-inhibit/x2_jammer/README.md  L1008
-996004d087e67b47806484a837a36b001ff7445db436c70e4cef1f05d81dd66a  file     projects/vtrux/notes/gen-inhibit-review-2026-09-22.md  L33
-c5a617cb3f18f5f055f37a6c361a33c9b498e6ab679e687087adeabcb7fd8959  file     projects/vtrux/notes/gen-inhibit-wican-firmware.md  L31
-922894f757a813870e0635a99a67bcc11b1bd1ecadcd1eb7faacfc91e953b645  file     projects/vtrux/notes/gen-inhibit-wican-spec.md  L11
+-  living   projects/vtrux/notes/artifacts/gen-inhibit/x2_jammer/README.md  L1008
+-  living   projects/vtrux/notes/gen-inhibit-review-2026-09-22.md  L33
+-  living   projects/vtrux/notes/gen-inhibit-wican-firmware.md  L31
+-  living   projects/vtrux/notes/gen-inhibit-wican-spec.md  L11
 -  pattern  runs/<run>_<arm>_provenance.json  L449
 -  pattern  runs/x2_jam_threshold_<stamp>.json  L1374
