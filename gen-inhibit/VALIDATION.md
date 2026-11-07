@@ -1123,4 +1123,122 @@ was read as a logger on the truck dropping frames).
   unbalance 5.2 item 6's check on its own.
 - **Status:** validated.
 
-<!-- Batch 4 of 5 ends here: sections 12-16 follow in the last batch. -->
+## 12. Bench requirements
+
+- **The full-bus replay:** added 2026-09-24, review A4.
+- **Why an independent witness:** the laptop tool transmitted at half rate
+  for a whole truck session and its own instrument could not see it; an
+  independent logger caught it.
+- **Why hardware timestamps:** host-side receive times on a USB adapter show
+  transfer batching -- physically impossible sub-millisecond gaps and
+  residuals into the tens of milliseconds.
+- **The interposer's presence controlled:** user, 2026-10-04.
+- **Status:** validated.
+
+### 12.1 Reading the result
+- **What the device's own figure measures changed on 2026-09-25** (review
+  C1). Before, `response` was RX to *queueing* the inhibit frame. It is now
+  RX to the device observing completion. It therefore reads higher than
+  every earlier figure by about one frame's air time plus up to one loop
+  iteration of scheduling, so a post-change sweep is not compared with the
+  2026-09-20/22 numbers without allowing for it.
+- **"Queueing" for the probe:** clarified 2026-09-27 (user), with the
+  section 5.2 transmit scheduler: handing the probe to the driver is what it
+  meant when the earlier record was taken (`VERIFICATION.md` 12.1). The
+  scheduler runs immediately after anything is queued, so with an empty
+  transmit buffer the handover is as prompt as the old direct call.
+- **Status:** validated.
+
+### 12.2 Fidelity the simple bench does not have
+- **Batched timestamps** (measured 2026-09-26). The truck logs are
+  BUSMASTER 3.2.2 with a 0.1 ms tick, but frames are stamped in ~1 ms
+  batches: up to 26 frames share one tick, most consecutive gaps are
+  exactly zero, and the commonest nonzero gap is exactly 1.000 ms. Replayed,
+  VCM `0x051` gaps were squeezed to 2.8 ms.
+- **A perfect grid:** the earlier offline bench transmitted on an exact
+  10 ms grid and showed 0.6 ms of phase error where the truck showed
+  2.9-3.9 ms.
+- **The supporting signals:** corrected 2026-09-24, review B2: the list
+  previously named `0x644`, which the firmware never reads -- the laptop
+  tool only displayed it -- and implied `0x471`/`0x054` were required to
+  arm, which section 7 deliberately does not require.
+- **Status:** validated.
+
+### 12.3 Emulation: what must be provable without hardware
+- **Basis:** added 2026-09-24 (review, section E). The goal, in the user's
+  words:
+
+> We should be able to make functional code changes (state machine, etc.)
+> and, as long as they do not change hardware mechanics, flash them on the
+> truck after only an emulation run. This is why we need to expand the
+> emulation to handle as much as reasonably possible -- to limit what would
+> either be a risky flash or require setting up the bench again.
+
+- **Item 1:** trip 7's controller-reported form: changed 2026-10-14 (user).
+  The driver-level fake is shared: user, 2026-10-17. (Until 2026-10-31 the
+  item said the HAL fakes would not share, which the 2026-10-17 ruling had
+  already overtaken.)
+- **Item 2:** goldens cannot catch a rule that is wrong in the golden too --
+  review A1 found exactly that, a false `low_soc` blessed as correct.
+- **Item 3, settings:** the tick, user, 2026-10-25; the release log levels
+  (user, 2026-10-25), adopted at port step 1a2.
+- **Prod builds:** user, 2026-10-05; moved to the shared tooling at port
+  step 0 (user, 2026-10-25). The branch refusal is retired: identity no
+  longer depends on the branch (port plan goal 11), and `prod_build.py`
+  retired with this change. NO REFERENCE rather than FAIL: changed
+  2026-10-07 (user): a bench image is normally built on a dirty tree, so a
+  FAIL would fire on every bench run and mean nothing. **The reason for prod
+  builds:** ESP-IDF fixes the image name, `project_name` and the embedded
+  version when CMake configures, not when it builds. An incremental build
+  after an edit can therefore produce new code under an old, clean-looking
+  name, and no other check catches it if the edits are then reverted
+  (2026-09-29: five edited files rebuilt as `5364648`, overwriting the
+  verified image of that name). Results carry by code hash: shared/tools
+  R3, user, 2026-10-19; no longer by byte comparison against an md5.
+- **During the port:** user, 2026-10-25.
+- **The version and name as labels:** port step 0c; user, 2026-10-19 and
+  2026-10-25; the variant suffixes stay, user, 2026-10-25. This retired two
+  rules of 2026-10-13: "every build names its image from the tree it
+  compiled" (the naming module that re-ran on every build) and "the name
+  enters the build once" (the `0x7F3` hash of the name).
+- **The switch classification:** added 2026-10-13 (user). Taken from the
+  build's own record, changed 2026-10-13 (user): a switch can live in a
+  CMake file with no `#if` at all, as the restart trial's linker wrap did.
+  The third class (not a switch) added the same day (user). The stock
+  feature class added 2026-10-16 (user). CMake build options, never Kconfig:
+  shared/tools R20, user, 2026-10-25; the four stock-feature switches moved
+  with the stock code into `shared/wican` at step 1a (user, 2026-10-25); the
+  SLCAN command switch the same, user, 2026-10-29. What a build option is:
+  added 2026-10-13 (user).
+- **Item 5:** section 5.2, 2026-09-27.
+- **Status:** validated.
+
+### 12.4 Required tests
+- **Basis:** consolidated 2026-09-24 from the review (D1-D9). Each row
+  carries its own ruling's date and the review item it came from.
+- **Status:** validated.
+
+## 13. Known not to be implemented
+
+Section 13 is the spec's status list, and its entries carry their own
+rulings and figures. The 2026-10-04 audit was the reviewing session's,
+user-approved; the trip 6 count entry was added 2026-10-21 (user, tracker
+B6); the mode 3 clarification is the user's, 2026-10-04; the gate not
+cleared is the user's decision, 2026-09-20.
+
+- **Status:** validated.
+
+## 14. Open questions
+
+Questions, not requirements; nothing here binds an implementation. Each
+carries its own date and source.
+
+## 15. Toolchain
+- **Basis:** ESP-IDF v5.4.2 from port step 1d (user, 2026-11-03); the
+  bootloader updated with the app, flashed by USB (user, 2026-11-03, at
+  1d).
+- **Status:** validated.
+
+## 16. Related
+
+A list of files, not requirements.

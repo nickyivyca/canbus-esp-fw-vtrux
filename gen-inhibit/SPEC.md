@@ -1316,7 +1316,7 @@ Whether CAN works is judged after boot by the thing that uses it.
 **How the gate is tested, and the rule that makes the test safe.** The
 mechanism is exercised on a board with USB and a console rather than on the
 WiCAN, using a two-slot app whose partition table copies the WiCAN's slot
-sizes (`firmware/rollback_bench/`), and a build with a deliberately suppressed
+sizes (`$REVERSE_IT_DIR/firmware/rollback_bench/`), and a build with a deliberately suppressed
 subsystem. Required outcome: the faulty image diagnoses which bit is missing,
 rolls back unattended, and the board comes up on the healthy slot as `VALID`.
 It is also rehearsed on the WiCAN itself, which is a bring-up precondition.
@@ -1624,4 +1624,544 @@ live counters. The critical section must stay short enough not to move
 any 5.2 timing bound. "One snapshot" covers every value the page shows,
 not only the scheduler's.
 
-<!-- Batch 4 of 5 ends here: sections 12-16 follow in the last batch. -->
+## 12. Bench requirements
+
+Stated as requirements on the setup, not as a description of one. The exact
+adapters change; what the bench has to be able to do does not. The current
+hardware and its quirks belong in the working log and in reverse-it's
+`tools-reference.md`, not here.
+
+The bench is a single terminated CAN segment carrying the WiCAN under test and
+at least one **USB-to-CAN interface driving that segment** from a host, at the
+truck's bit rate. Minimum capability:
+
+- **Replay a recorded VCM stream onto the segment** so the device under test
+  sees real `0x051` traffic and answers it.
+- **Replay the full powertrain bus**: every ID
+  of a real single-epoch capture at its recorded timing, ~2250 frames/s, not
+  a `0x051`-only stream. Section 5's loss and ordering requirements are only
+  testable this way.
+- **Witness the segment independently of the device under test.** This is not
+  optional and not a convenience. An instrument cannot be trusted to report a
+  fault it is itself causing. In practice this means a second interface, or a
+  separate logger, that is neither the transmitter nor the device under test.
+- **Timestamp at the wire, in hardware.** Host-side receive times on a USB
+  adapter show transfer batching, which will be mistaken for device jitter.
+
+**Full-bus arms are run with the charge interposer's presence controlled**,
+ideally both present and absent in one session so the comparison is not
+across two bench states.
+
+### 12.1 Reading the result
+
+The device reports its own RX-to-TX figures and the witness reports what
+reached the wire. **They must agree, and the way they agree is the check.**
+The witness sits above the device's own figure by about one frame's air time,
+because the device timestamps when it queues the frame and the witness sees it
+after it has been transmitted. A constant one-frame offset across every arm of
+a sweep means neither instrument is lying about the distribution; a varying or
+absent offset means one of them is, and the run is void.
+
+**What the device's own figure measures.** `response` is RX to the
+device *observing completion* -- the driver reporting nothing of ours left to
+transmit, seen at the next loop iteration. The offset to the witness is
+therefore not a clean one-frame constant: expect the witness at or slightly
+*before* the device's figure. Do not compare a sweep against the
+2026-09-20/22 numbers without allowing for this (`VALIDATION.md` 12.1); it
+will look like a regression and is not one.
+RESPOND's probe is still counted at queueing, so probe timing stays
+comparable with the earlier record. "Queueing" means **handing the probe to
+the driver**. It is not the moment the probe enters the
+scheduler's own queue. A probe that waits behind a telemetry frame shows that
+wait in its figure. One RESPOND baseline is re-measured on the bench after the
+switchover, to show comparability rather than assume it.
+
+Every arm must report the rolling-counter check (`ctr_bad`), which must be
+zero. Under load the device is allowed to be **late but never lossy**: the
+driver's receive queue (5.1 item 1) absorbs preemption, and a missed counter
+step is a real defect where a delayed frame is not.
+
+Two more requirements on how runs are conducted:
+
+- **A load arm alongside the idle arm.** Hammering the HTTP server for the
+  duration of a run is an adversarial load rather than a field one, and exists
+  to bound the tail, not to represent normal operation.
+- **Each disable condition tested from a fresh boot**, because the disable
+  latches until reboot (section 6).
+
+### 12.2 Fidelity the simple bench does not have
+
+**Every capture in the corpus has batched timestamps**, so a replay "at
+recorded timing" sends each batch back to back. That saturates the bench bus
+in patches and squeezes VCM `0x051` gaps below the truck's 4.69 ms floor.
+Replay results are harsher than the truck: conservative for receive backlog,
+pessimistic for low-priority transmit timing such as diag. The truck's real
+burst structure and VCM gap distribution under load cannot be measured from
+the corpus; that needs a new capture with a logger that timestamps at the
+wire in hardware.
+
+**A replay on a clean fixed-period grid is not the truck.** The truck's
+`0x051` arrives every 4.69 to 16.4 ms and is jittery. Reactive trail is
+cadence-independent, so the present margin holds regardless, but a perfect-grid
+replay flatters any strategy that is *not* purely reactive.
+
+The items below therefore become requirements the moment lead or bracket
+placement is prototyped (section 14.3), and are otherwise deferred:
+
+- **Two replay modes.** *Verbatim*, replaying recorded inter-frame deltas for
+  maximum fidelity; and *parametric*, sampling from the measured distribution
+  so it is sweepable. Verbatim confirms survival of one recorded day;
+  parametric finds where it breaks.
+- **A frame-acceptance model for the inverter** -- accept-newest,
+  counter-validating, or per-frame. Without one the bench cannot score whether
+  an inhibit actually worked.
+- **The supporting signals** the section 7 arm gate and trips read:
+  `0x051`, `0x440`, `0x411`, `0x617`, `0x639`, `0x592`, and `0x054`/`0x471`
+  where the scenario has an inverter awake. The section 7 list is the
+  authority; this bullet only restates it.
+- **A scripted start** at a configurable offset, using the measured cadence:
+  bus-up to the VCM's crank command ~6.3 s, each attempt 1.09 s then
+  abandoned, retry every 9.59 s with zero variance and no escalation or
+  backoff, and 0.24 s to start once allowed.
+- **Background error frames at a configurable rate.** This is the one fact
+  that invalidated the laptop tool's original abort logic (section 7).
+
+**On rig timing.** A general-purpose host adds its own transmit scheduling
+jitter, of the order of a few milliseconds, which left uncorrected contaminates
+the quantity under test and makes a mishandled jitter indistinguishable from a
+manufactured one. A second microcontroller running a truck emulator avoids it
+entirely.
+
+**Proposal, not a requirement** (2026-09-06, untested and uncosted): drive the
+transmitter from an *intended* schedule and let the hardware-timestamping
+witness record what actually landed, turning rig timing from an open-loop
+requirement into a measured covariate. Two caveats shape it. **The hazard is
+the floor, not the spread** -- what a trailing frame must survive is the VCM's
+next frame arriving early, and host scheduling jitter predominantly *delays*
+frames, so incidental jitter under-produces the hazard that matters while
+over-producing one the truck does not have. And **uncontrolled jitter cannot be
+swept or repeated**. Unverified and worth checking early: whether a
+transmitting USB adapter batches outbound frames, collapsing gaps rather than
+widening them.
+
+### 12.3 Emulation: what must be provable without hardware
+
+The goal is that functional code changes that do not change hardware
+mechanics can be flashed on the truck after only an emulation run
+(`VALIDATION.md` 12.3, the user's words).
+
+So the emulation suite is a requirement, not a convenience, and it has four
+parts:
+
+1. **Mock-HAL host build.** `gen_inhibit.c` with the real `twai_port` and
+   `can_port`, compiled on the host against the shared fake of the TWAI
+   driver (twai_port T10) and fakes of FreeRTOS and `esp_timer`, so the shim -- mode changes, bus bring-up and listen-only
+   forcing, transmit dispatch and its outcome, the receive-error path, the
+   quiesce handshake from a second thread, the JSON -- is exercised, not only
+   the core. It must support **fault injection**: transmit refused / failed /
+   not completed before the next `0x051`, receive errors, queue full, a
+   `can_disable()` racing a blocked receive. This is what covers trip 7's
+   failed-transmit forms; the controller-reported form cannot be produced on
+   this controller (7). Share the Python side
+   (replay, witness, trace format, invariant checker) with the charge
+   interposer's tooling where practical. The driver-level fake is shared;
+   each project keeps its own logic-level fakes.
+2. **Golden-independent invariants**, checked on every trace from every
+   scenario and replay, and over randomised frame sequences. Goldens are a
+   regression record and cannot catch a rule that is wrong in the golden too.
+   For every emitted inhibit frame: ID `0x051`, DLC 6, B0 `0x08`, B1-B2 `00 80`,
+   B5 = the triggering VCM counter + 1; at most one per received `0x051`; key
+   on and fresh; no section 6 or 7 latch; not suppressed; live; SoC-valid
+   marker set. Never an inhibit frame in OBSERVE, RESPOND or PASSIVE. Latches
+   clear only on a key 0 -> 1 reading or an explicit re-arm. **PASSIVE is
+   differential against INHIBIT**: every scenario run in both, and the PASSIVE
+   trace must equal the INHIBIT trace with each inhibit transmit replaced by a
+   would-transmit.
+3. **Build-output checks**, run on the image to be flashed:
+   `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`; secure boot and flash
+   encryption unset; `CONFIG_EFUSE_VIRTUAL` off; `CONFIG_TWAI_ISR_IN_IRAM`
+   unset; watchdog settings as section 9.1 records; the console on the
+   USB-Serial/JTAG, as stock, with no secondary console; Bluetooth on until its held removal (9.4);
+   `CONFIG_FREERTOS_HZ` 1000, a 1 ms tick, which this spec's timings and their bench evidence
+   assume (each project sets its own, shared/tools R27);
+   log levels as shared/tools R28 sets them for every release build (ESP-IDF
+   none, bootloader error); test-only
+   builds keep info, so the rollback rehearsal reads its log lines;
+   partition table byte-identical to stock; image size against the
+   1,781,760-byte slot; `DIAG_FW_VERSION`, the schema doc and the DBC
+   consistent -- diag frames emitted by the host build decoded with cantools
+   against `vtrux-wican-diag.dbc`.
+
+   **Prod builds are release builds of the shared build tooling.** A prod
+   build is any image meant for the truck. It is built
+   only by the shared tooling's release build, at the version this project
+   pins (shared/tools `SPEC.md`, section 3). That build refuses a worktree
+   with uncommitted changes, reconfigures before building, checks the
+   downloaded components against their pinned versions, and writes one
+   record named by the image hash. Identity does not depend on the branch
+   (port plan goal 11).
+
+   An image with no such record is not a prod build. The build-output checks
+   report it as NO REFERENCE ("not a prod build"), not as a failure, and the
+   truck pre-flash checklist refuses it. A build that runs on a clean tree,
+   straight after a reconfigure, cannot carry a stale name or stale code.
+   Bench and development builds are exempt. Their results carry to a prod
+   build by code hash (shared/tools R3).
+
+   **During the shared-code port this is the intent, not yet the practice.**
+   No prod build is made while the port is under way;
+   the shared tooling's release build serves the port's own comparisons. A
+   known anomaly, such as a check a release build does not meet yet, is
+   carried forward through the port without a review cycle of its own,
+   provided the port plan or the review tracker names the step that fixes
+   it. The time goes to reaching that step instead.
+
+   **The image's version and name are ESP-IDF's own, and are labels.** The
+   app descriptor's
+   version is the form shared/tools R4 sets: ESP-IDF's default, from `git
+   describe` at configure, with no override in this project. `project_name`
+   is fixed for each build configuration and carries no commit, so the
+   commit enters the image once (R4). Its variant suffixes stay: `_man` or
+   `_auto` for the arm state, `_flt` for the fault-injection build and
+   `_rt` for the restart test, which the build-output checks read. Both are
+   labels: nothing checks them against the tree
+   (shared/tools R6), and the image is named by its image hash. A release
+   build runs on a clean tree straight after a reconfigure, so its version is
+   its commit. A bench or development build's version can be stale after an
+   incremental build; that no longer matters, because nothing reads it as
+   identity.
+
+   **Every build-time switch is classified, and an unclassified one fails the
+   build checks.** Every preprocessor symbol the
+   product source tests, other than ESP-IDF's `CONFIG_*` and header guards,
+   and every build option tested by a CMake file the build reads from the
+   repo, taken from the build's own record of the files it read, not from a
+   list kept by hand, is listed as a shipping variant (for example
+   auto-arm), test-only, a stock feature off in this product, or not a
+   switch -- a default value, a value the build injects or a library macro --
+   each with its reason. **A stock feature off in this product** is one of
+   the section 3.2 feature switches: on in the shared code, off here. It gets
+   the same image-refusal row as a test-only switch, shown failing with the
+   switch on and passing with it off. It has no test trigger, so it is not in
+   the trigger table of the 12.4 row "test-only features are inert in the
+   build that will fly". They stay CMake build options, never ESP-IDF
+   configuration options, for every project and shared firmware component
+   (shared/tools R20). Each switch lives in the CMake
+   files of the project or shared component whose code it gates (shared/tools
+   R20): gen-inhibit's own switches stay in its CMake files, and the four
+   section 3.2 stock-feature switches are in `shared/wican`, where
+   gen-inhibit sets them off, and the SLCAN command switch is a stock feature
+   off in this product like them, with the same image-refusal row. A build
+   option is a variable that can be set
+   from outside the file that tests it: the CMake cache, a `-D`, or the
+   environment. A variable the file sets itself before testing it, and
+   CMake's built-in variables, are not build options. A test-only switch has
+   a row that refuses an image containing
+   its feature. The row judges the image and the ELF, never the flag, so a
+   switch set to off but not wired to its code is still caught. Each row is
+   shown failing on an image built with the switch on and passing on one
+   built without it. This list is also what keeps the trigger table of the
+   12.4 row "test-only features are inert in the build that will fly"
+   complete.
+
+4. **A bus-load model** in the host runner: full captures at recorded timing
+   through a model of the RX queue at the firmware's depth and the
+   single-buffer FIFO TX with diag interleaved, reporting dropped `0x051` and inhibit frames landing
+   after the VCM's next one. It is a model, calibrated by the section 12
+   full-replay bench run, not a substitute for it.
+
+5. **Transmit scheduler emulation** (section 5.2). The mock-HAL
+   build and the E4 load model run the real scheduler code against a model of
+   the single transmit buffer that distinguishes *awaiting arbitration* from
+   *transmitting*, loses arbitration to higher-priority traffic, and
+   implements abort as measured on the C3 (5.2 item 9). Every case in 5.2
+   item 10's catalogue runs here first, with the same pass criteria it must
+   then meet on hardware.
+
+**What stays hardware-only**, so a change can be classified: TWAI peripheral
+behaviour (ACK, listen-only, error counters and error frames, bus-off), real
+timing and preemption under WiFi load, the transceiver, the MeatPi
+bootloader's rollback, and the OTA handler against a real client. A change
+that touches none of these -- the core, or shim logic the mock-HAL covers --
+may be flashed to the truck on a green emulation run. A change that touches
+any of them needs the matching hardware test below.
+
+### 12.4 Required tests
+
+Each is required on the build that will fly unless marked host-only. The
+section 6.4 list still stands and these are in addition to or sharpen it.
+Each row keeps its ruling's date in the row, as the test list's own record.
+
+| test | where | from |
+|---|---|---|
+| SoC recovering to 22 % after a `low_soc` latch stays latched | host + bench | 6.4, D1 |
+| 21.00 % boundary: 2100 keeps inhibiting, 2099 releases (after debounce) | host + bench | 6.4, D2 |
+| 0x10 suppression, two episodes in one power cycle | host + bench | 6.4, D3 |
+| BMS wake reading does not release; `0x411` before contactor close ignored; never live before close; `replay-rekey-long` does not latch | host + bench | 6.2, A1 |
+| every section 7 trip, including the stale-signal trip for each signal, the short-DLC trip and the end-of-drive ordering (key reads 0 before the stale trip) | host (all) + bench (all a bench can produce) | 7, B3, C2b |
+| gate refuses with the SoC-valid marker set but `0x440` currently reading open (e.g. 13/14 during a key-off with the BMS awake) | host + bench | 6.2, 7 cond. 2 |
+| evidence rule: a whole-bus stop reports trip 2 "bus lost" -- never trip 3 or 5 -- including with `0x617`'s last frame 250 ms before `0x051`'s; a single signal stopping on a live bus trips 3/5 within one `0x051` gap of its expiry | host (+ replay trailing silences) | 7 |
+| whole-bus dropout: ~0.45 s rides through with no abort whatever `0x617`'s phase; ~0.6 s latches and reports trip 2, not a stale `0x617` | host | 7 (`0x617` window) |
+| **a bus with no other node** (added 2026-10-20, user): with the inhibit live, every other node stops transmitting and acknowledging, and the witness stays in listen-only mode. Required: the witness sees the device's frame repeat unacknowledged (otherwise the run is void); the device sends no `0x051` after its answer to the last VCM command; it latches within 0.7 s of that command (`0x051`'s 0.5 s window plus up to one 200 ms receive timeout; corrected 2026-10-20, user); when the nodes return without a key-on it stays latched and its diag pages resume; a key-on then clears the latch (7.1). Recorded, not judged: which trip latched (2 or 6) and when; the device's TEC, REC and driver state throughout; whether it reached bus-off. Part of the before-port suite on `e3d9437`, then of every full bench run, including each build during the port (user, 2026-10-20) | bench | 5, 7 trips 2 and 6, 7.1 |
+| **a bus with no other node, emulated** (added 2026-10-20, user): with the inhibit live, the fake driver stops delivering frames, the device's own frames stay unacknowledged (never complete, error-passive, a bus-error alert per retry), and in a second case the controller goes bus-off. Required: no `0x051` after its answer to the last VCM command; the trips are evaluated once per received frame or per 200 ms receive timeout, and at those points the latch and its reason follow spec 7 for the injected timing: trip 6 if its threshold is met at an earlier check than the one that finds `0x051` stale, otherwise trip 2 (0.5-0.7 s after the last `0x051`; corrected 2026-10-20, user); a stuck diag frame does not block the worker, the status page or the latch; when traffic returns without a key-on the device stays latched and the stuck frame completes; a key-on then clears the latch (7.1); in the bus-off case the device starts no recovery and stays off until a re-arm or reboot (7). Once the bench row has measured the real alert pattern, the fake replays that pattern | host (shim fault injection) | 5, 7 trips 2 and 6, 7.1, 12.3 item 1 |
+| GENE family quiet together (`0x054` and `0x471`) reports trip 3 regardless of which frame arrived last; `0x054` alone stale with `0x471` fresh reports trip 5 | host | 7 trips 3, 5 |
+| SoC debounce: 4 consecutive sub-threshold readings do not release, the 5th does, and one reading at/above the threshold restarts the count | host | 6.2 |
+| error-frame rate trip. One way to test it, not the only one: error frames from a spare adapter at the wrong bit rate, in three regimes (error-active, error-passive, and at the trip threshold), with the device's `state`, TEC and REC, its `bus_error` count and the witness's error-frame count read throughout. The regimes may be split across methods (*user, 2026-10-12*). On the 2026-10-10 bench the wrong bit rate reached only error-passive; error-active and at-threshold were taken with the X2 GPIO jammer (2026-10-09, `VERIFICATION.md` 7) | bench | 7, D4, 14 q8 |
+| **no error frames at a restart** (3; added 2026-10-13, user): a `/system_reboot` and a forced crash, each while live in INHIBIT under replayed traffic, put 0 error frames on the bus per an independent witness, and the restart record shows the step ran. The crash trigger exists only in a test build of the same commit, never in a prod build | bench | 3 |
+| failed transmit, all three forms (not queued, reported failed, late past the next `0x051`) | host mock-HAL | 7, C1 |
+| receive-error self-disarm is reported | host mock-HAL | 7, C2a |
+| quiesce: INHIBIT and PASSIVE -> OBSERVE -> back, under traffic | bench + host mock-HAL | 8, D5 |
+| OTA refused (403) while armed in any non-OFF mode; accepted when OFF; `offset > 4000` rejected; arm refused when the bus will not come up | bench (OTA) + host mock-HAL (rest) | 3, 9.3, D6 |
+| OBSERVE is listen-only **in hardware**: with the WiCAN as the only node able to ACK, the transmitter sees ACK errors; with the WiCAN in RESPOND, it does not. `tx_ok=0` is not evidence | bench (framework rework) | 3, D7 |
+| PASSIVE: never a `0x051` from the device (witness), diag present, would-transmit count matches the VCM frames the witness saw while would-be-live, every release and trip reported as in INHIBIT | host differential + bench | 3.1, B1 |
+| no other transmitter: SLCAN commands on TCP, UART and websocket do nothing to the bus; `can_send()` refused while owned | host mock-HAL + bench | 3.2, A3 |
+| full-replay bus: no dropped `0x051` answer and no inhibit frame after the VCM's next, in normal operation (no heavy WiFi to the device while inhibiting -- the design case, user 2026-09-26), diag active; counted and timed by the witness, which must tell the device's inhibit frames from the VCM's | bench | 5, 12, A4 |
+| receive backlog measured directly: a measurement-only build (never flashed to the truck) records the driver's RX backlog at each dequeue (`msgs_to_rx` + 1) and reports the high-water and how often it is large; on a full-replay bus in the design case it confirms or revises `WORST_PREEMPT_US` (2.39 ms). | bench (measurement build) | 5, 5.1 items 1 and 5 |
+| RX queue depth >= 64 whenever the driver is installed (E1 reads the depth the driver was installed with; E3 or a source check pins it) | host mock-HAL | 5.1 item 1 |
+| **abort behaviour of the C3 TWAI**, measured before the scheduler is built on it: abort removes a frame awaiting arbitration; abort during transmission is a no-op and the frame completes; what the driver reports afterwards (alerts, `msgs_to_tx`, internal count); time to free the buffer. The emulator's abort model is checked against these numbers | bench | 5.2 item 9 |
+| **transmit scheduler case catalogue** (5.2 item 10), every case run in emulation (mock-HAL + E4) and then on the bench against hardware with identical pass criteria | host mock-HAL + E4, then bench | 5.2 |
+| **abort-and-recheck loop** (5.2 item 4): frees the buffer within 1 ms under contention, including when the first abort has no effect; the emulator's abort model reproduces item 9's three TS = 1 outcomes. | bench + host mock-HAL | 5.2 items 4, 9 |
+| **skipped inhibit frames** (5.2 item 5, section 7 trip 7): a frame not on the wire by the VCM's next `0x051` is withdrawn and never sent late; skips are counted on the status page and in a diag page; 3 within 1 s trip 7 and 2 do not (strictly less than 1 s); a frame that went out late, or may have (still in the buffer at the deadline), counts as a skip; TX_FAILED or a driver refusal trips at once; on-time verdicts with a non-empty receive queue are counted as unverified; the bench witness confirms no frame went out late undetected. Bench method (user, 2026-10-04): the stimulus sends VCM N and N+1 back to back, then ~2 ms of filler below `0x051`, so our answer to N loses arbitration and is withdrawn. With no filler it goes out late and must count as a late skip. Three events within 1 s must trip 7 (reason 15); two, or a third at ~1.1 s, must not. The witness classifies each event by wire order, and the device's counts are judged against it on totals: device late >= witness late, and device withdrawn <= witness never on the wire. A frame still in the controller at the deadline is booked late (trip 7), so the device may book as late a frame the witness saw never reach the wire. *(Changed 2026-10-12, user.)* These strict checks verify the implementation tightly; they are not a claim that the truck needs that exact threshold | host (golden) + E1, then bench | 5.2 item 5, 7 trip 7, 10, 11 |
+| **no stale answers on going live** (added 2026-10-10, user): the first inhibit frame after going live answers the VCM's newest `0x051`, never one it has already passed. Run under full-bus replay on every entry into INHIBIT: from OFF, OBSERVE, RESPOND and PASSIVE, and from an auto-arm boot. The witness shows no device `0x051` with a counter the VCM had already passed | host (a case with frames waiting at go-live) + bench | 3 (mode change), 7 condition 9 |
+| **the private TWAI abort is confined**: `twai_ll_set_cmd_abort_tx` appears at exactly one site in the shipping source, `twai_port`'s abort-if-awaiting (twai_port T8), where the status read and the abort run in one critical section, and gen-inhibit reaches it only through the scheduler's device HAL. `twai_transmit` appears only in `twai_port`'s send (user, 2026-09-27; port step 1b, 2026-10-31) | E3 (source rows) | 5.2 items 1, 4, 9 |
+| **per-class counts balance on every reading** (user, 2026-09-29): `queued + carried_in = sent + dropped + withdrawn + depth + held` for every class, including a reading after a withdrawn skip. It must hold with a frame in the controller at the reading, and across a re-arm with a frame still held. A carried-in frame's completion never sets the new arm's longest hold. The bench check applies the same identity to every arm's end-of-arm status | host (sched + E1) + bench (every E4 arm) | 5.2 item 6, section 11 |
+| **a stand-down with an answer pending** (added 2026-10-16, user): an answer queued or still in the controller when a section 6 release or a section 7 trip lands is counted as `standdown`, never as a skip; skips unchanged; diag pages on cadence afterwards (section 10); the balance identity holds. The latch is phase-locked on a `0x051` so the answer is pending. Fails on `c65c45e` | host (sched + shim) + bench (`liveflag-mmode-hold`) | 5.2 items 5 and 6, 10, 11 |
+| **the worker makes every mode change** (added 2026-10-16, user): a second thread issues mode changes against a live replay, and every arm's balance holds; on the bench, repeated 3->3 and 3->4->3 changes on a live bus, each reply correct, the balance and the diag cadence held; a request not taken within 1 s of the setter's call is refused and never applied, and one already taken is finished and reported; a re-arm while an old-arm withdrawal is still running counts it as `standdown` in the new arm; no task but the worker writes the mode (added 2026-10-16, user) | host (second thread + sched) + bench | 3, 5.2 item 6, 8 |
+| **the worker state machine** (added 2026-10-16, user): every row of the 8.1 table, each from its own starting state, including the refusals (rows 2, 8, 12); an OTA while armed is refused by the worker with nothing touched; an OTA that fails returns the worker to IDLE and a later arm works; a teardown by another caller while armed (the backstop) leaves the worker OFF, reported and counted, and one while IDLE or by the OTA handler counts nothing; an auto-arm build installs with the configured bitrate and `can_mode`; no disabled caller (3.2) can change bus state in any mode | host (shim, a second thread) + bench (OTA while armed and while OFF; a failed upload) + build check (3.2 callers) | 3, 3.2, 8.1, 9.3 |
+| **a status reading is one snapshot**: the page is built from a copy taken in one critical section against the worker, never from the live counters | E1 (the page is built during worker activity and every reading balances) | section 11 |
+| **every case whose stimulus comes from a capture is pinned to it** (user, 2026-10-02; widened 2026-10-03 from "every golden"): each golden records a checksum of the scenario it was made from, and a case with no golden (a replay-driven shim case) records it against the case. The suite FAILS when a regenerated stimulus does not match, and when a golden has no scenario. Comment lines are checked separately and only give a notice. Replay scenarios are rebuilt from captures through the project parser and are not in git. On 2026-09-27 a parser fix changed six of them silently, and the goldens stopped reproducing from the repo while a stale local copy kept passing | host (`run_tests.py`, E1) | 12.3 item 2 |
+| **every emulation case declares its transmit-timing configuration** (user, 2026-10-03): the contention flag, air-time overrides and stall settings are reported with the case. A claim about contention can then be read beside the setting that produced it, and a load-dependent case cannot pass unnoticed because a setting was left at its default | host (E1 + sched) | 5.2 item 10 |
+| a TX_LATE abort updates the counter check and `rx_gap` for the frame that triggered it: `ctr_bad` stays 0 and `rx_gap` records no doubled gap when no `0x051` was missed | host (golden) | 11, 7 trip 7 |
+| E4 with the fix: 0 lost / 0 late at the truck rate and worst measured preemption; `tx_behind` = 0 while live; preemption sweep reports first loss at >= 7.2 ms | host (E4) | 5.1 items 1, 4, 5 |
+| diag scheduling: while transmitting inhibits (mode INHIBIT, live, key on, not suppressed), every diag page is queued right after an inhibit completion; normal cadence when not transmitting inhibits (including PASSIVE after a live INHIBIT); the completion record is cleared whenever the device stops transmitting, so the first page after going live again is not held by a stale completion (the 1 s fallback was withdrawn 2026-09-26) | host (E1 + E4) | 5.1 item 4 |
+| flash writes refused while owned: `store_config`, `store_canflt`, `store_auto_data`, `store_car_data`, `upload_car_data` and OTA each return 403 in every non-OFF mode and succeed when OFF; WiFi storage is RAM | bench (+ a source/E3 check for the WiFi storage call) | 5.1 item 3, 9.3 |
+| **auto-arm build**: a test that runs only when `GEN_INHIBIT_AUTOARM_MODE` is built in, covering power-on straight into the gate, waiting for the contactors, going live, and the boot-to-live time; and a reset asserted on the WiCAN in the middle of a log replay with the generator running comes up armed and never goes live (condition 5), with the witness showing no `0x051` beyond what the replay sent; and a **restart timed to a key-on** (*added 2026-10-10, user*): a replayed capture starting at its key-on edge, with the bus silent before it, and a commanded restart (`/system_reboot`) landing at a set of offsets around that edge: before, at and after it. Measure key-on to live, and confirm the first device `0x051` answers the VCM's newest command (condition 9). Use a capture from the 7.7 s cluster of the deadline sweep (`VERIFICATION.md` 7), where the VCM asks for the engine soonest | bench | 7, D8 |
+| golden-independent invariants over every trace and a randomised sequence | host | 12.3, D9 |
+| build-output checks | host (build) | 12.3 |
+| **the page names the binary** (11; added 2026-10-14, user; changed at port step 0c, user, 2026-10-25): `elf_sha256` on the page equals the value in the flashed image file's descriptor, and its first four bytes equal `0x7F3`'s build id | bench | 11 |
+| **`0x7F3` carries the build id** (10; port step 0c, user, 2026-10-25): on the bench, `diag_build_id` decoded from `0x7F3` with the schema 8 DBC, printed as eight hex digits, equals the first four bytes of the flashed image's hash and of the page's `elf_sha256`; on the host, the encoder packs a known hash into B0-B3 in the interposer's `0x7F7` byte order | bench; host (shim) | 10 |
+| **test-only features are inert in the build that will fly** (added 2026-10-13, user): for every test-only build switch, its trigger is sent to the flight image exactly as a test run sends it, and the effect it exists to produce is shown absent on the bus and on the device: no restart, no transmitted frame, no rollback, no extra page field. The same probe is shown to produce the effect on a build with the switch on, so a probe that reaches nothing can't pass. The triggers come from one table that the test rigs also use | bench | 12.3 |
+
+## 13. Known not to be implemented
+
+This is the one place the spec talks about implementation status, and it does
+so in one direction only: these requirements are **known to be missing**. When
+one is implemented, delete its entry -- do not replace it with a note saying it
+is done.
+
+**Known not implemented, from the section 12.4 audit of 2026-10-04**
+(reviewing session, user-approved). Tracker:
+`$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-review-2026-09-22.md`.
+Delete each line as it is implemented.
+
+- **Bench, an existing harness lacks the case:**
+  - SoC back at 22 % stays latched; the 21.00 % boundary; two 0x10
+    episodes in one power cycle; the live flag clearing on a latched
+    release; the 6.2 BMS-wake and pre-close rows (6.4);
+  - gate refusal with `0x440` reading open; trip 5 for each signal;
+    trip 8 (7).
+- **Truck, at bring-up:**
+  - only what a restart skips: the 12 V supply ramp and any start-up that
+    runs only at power-on. In this build, image validation runs on every
+    boot, since no skip-validate option is set in `sdkconfig`. So on the
+    truck, measure power-on to live once and compare it with the bench figure.
+- **Not written** (adopted 2026-10-04, user):
+  - a WiCAN truck bring-up procedure.
+
+**Known to differ from spec 7, trip 6's count** (*added 2026-10-21, user;
+tracker B6*). Trip 6 counts the controller's bus-error interrupts, and these
+do not always match error frames on the bus:
+
+- **One error frame can count as several.** On the bench (B6, jammer pulses
+  1 s apart), 7 of 1,891 pulses were counted 7-12 times each, against one
+  error frame on the witness: 4 of 679 at 10-12 on builds before the port,
+  and 3 of 1,212 at 7-8 on the measurement build. So trip 6 can latch after
+  1-2 real error frames, and the device then stands down until a key-on.
+- **An error frame can go uncounted:** 1 of 1,212 on the measurement build.
+  That delays trip 6 by one error frame.
+- Why the controller sometimes counts one error frame several times is not
+  shown (tracker B6 hypothesis).
+- No change is made until realistic wire faults have been characterised
+  (14 q12). That decides between counting each error frame once, raising the
+  threshold, or leaving it. Delete this entry when trip 6's count or
+  threshold is changed for it.
+
+**Mode 3 is bench-only until the hardware test suite has been run against the
+build that will fly.** Transmitting a real `0x051` onto a live powertrain bus
+waits on that, not on this list. *Clarified 2026-10-04 (user):*
+
+- **Which build:** the latest HEAD at the time of the flash, as a prod
+  build (12.3 item 3).
+- **What carries over:** a build whose firmware is code-identical to a
+  tested one carries that build's results. The suite may be re-run as a
+  formality, but does not have to be. Code-identical means the images
+  differ only in version, project name, build-time, hash (including
+  `git_version`) and checksum bytes.
+- **What does not:** any other change restarts the suite, per 12.3.
+- **Arming:** truck bring-up starts in manual mode, and the auto-arm
+  build is fully tested before it is deployed.
+
+**The gate is NOT cleared.** The user's decision, 2026-09-20: *"will do some
+more re review on this before we do bring up on the truck"*, and that review
+gets a **fresh session** rather than a continuation of the work that produced
+the results -- deliberately, so it is read by someone with no stake in them.
+Meeting the literal condition above is deliberately not treated as
+sufficient -- a gate whose condition an agent may evaluate and then clear
+for itself is not a gate, and this one guards transmitting a real `0x051`
+onto a live powertrain bus.
+
+**To confirm at truck bring-up.** None is expected to be a problem; each is
+cheap to observe on the first runs.
+
+- **The VCM does not fault on a blocked start.** A crank that doesn't
+  catch is routine for it. In 8 natural failed starts in the corpus and 6
+  blocked attempts on 2026-09-06, it retried on the same ~9.5 s cadence
+  with `0x617` normal every time. Bring-up confirms the same with B0 held
+  at `0x08` (4.1), which those 6 attempts did not have because they
+  mirrored B0.
+- **The ECM does not care.** A blocked start gives it less to see than a
+  natural failed start: the engine never turns, so there is no crank
+  signal. A DTC read before and after the first blocked starts confirms
+  nothing is stored (14 q7).
+- **The inverter acts on our frame with B0 held.** The counter steal is
+  required of the device (section 4) and tested on the bench; the truck
+  shows whether the inverter takes ours over
+  the VCM's. It is observable directly: the engine either cranks or does
+  not.
+
+Open, but not a bring-up risk: where the background error frames originate
+(14 q6).
+
+Verification against this spec is tracked in the working log,
+`$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-wican-firmware.md`, and its
+results in `VERIFICATION.md`, not here.
+That is also where anything found to CONTRADICT this spec is recorded -- the
+host test suite is verification work, so its findings are spec findings.
+Section 13 stays a list of things not built; a thing that is built but wrong
+belongs in the log and, once resolved, in the relevant section here.
+
+Nothing is outstanding on power or voltage: the sleep state machine is gone,
+so there is no voltage-driven bus teardown or light-sleep to reason about on
+the vehicle supply, and battery voltage is sampled for telemetry only.
+
+## 14. Open questions
+
+Nothing here binds an implementation.
+
+1. **Gating GPIO6 (transceiver STBY) on lock freshness.** The pin is
+   already wired (the board's `board_pins.h`, shared/boards wican_v3), set high -- standby, transmitter off -- at
+   boot and driven low only on-bus, and on reset it goes high-Z with the
+   transceiver's pull-up returning it to standby, so a crashed MCU stops
+   transmitting with no software involved. **But the transceiver's
+   permanent-dominant protection is structurally blind to the failure that
+   matters here**: per MCP2561/2 DS20005167C, `tPDTR` is typ 100 ns, so any
+   recessive pulse resets the dominant timer and a transmitter emitting
+   well-formed frames never trips the 1.25 ms detection. A transmitter that
+   loses phase lock but keeps sending well-formed zero-torque `0x051` is
+   therefore invisible to it, and unlike noise such a frame is a plausible
+   command. The interlock must be the sync core dropping STBY itself.
+   *Hypothesis, not validated:* the safe state on loss of lock is not
+   transmitting at all rather than holding the last good value, and transmit
+   permission should be the same computed fact as lock freshness rather than a
+   separate interpretation of a phase estimate. `tWAKE` (standby to normal, max
+   40 us) is ~0.85 % of the 4.69 ms guard band, which argues for holding STBY
+   low across a run of good slots rather than cycling per frame.
+2. **WiFi during active inhibit.** Raised 2026-09-10. It pairs naturally
+   with refusing OTA while armed -- both narrow what can perturb a live
+   transmitter -- but the original motivation (the `esp_wifi_stop()`/`start()`
+   reconnect path) is already gone in AP mode, which does not reconnect. So it
+   is belt-and-suspenders isolation rather than a known hazard, and it trades
+   away live read-back during a run.
+3. **Lead or bracket placement.** The device's measured latency
+   (`VERIFICATION.md`, section 5) may make
+   forward placement feasible where the laptop's 1-4 ms latency refused it on
+   every run. Trail already works, so this is an improvement, not a
+   requirement; prototype and measure before adopting.
+4. **Stripping `mqtt`, `elm327` and `autopid`.** Small flash (mqtt
+   ~14.5 KB) and the deepest `config_server.c` coupling, so lower value and
+   higher risk than BLE. It would remove the last uncoordinated `can_disable()`
+   callers. (2026-09-24: section 3.2 now bars those callers functionally while
+   the bus is owned, so this is back to being a flash-space question.)
+5. **Whether the trail deadline should be sized from 4.69 ms rather than the
+   nominal 10 ms period.** Unresolved from the laptop work; no evidence
+   yet links our transmissions to error frames, and the passive error rate was
+   *higher* than the armed one. The device's measured trail
+   (`VERIFICATION.md`, section 5) makes this close to moot for the firmware.
+6. **Where the background error frames originate.** Unlocalised; they
+   appear only with the generator running.
+7. **What the ECM stores after a blocked start.** Not yet read. The MIL
+   did not illuminate and the VCM never raised a fault, but DTCs have not been
+   pulled; `$REVERSE_IT_DIR/projects/vtrux/tools/vtrux_dtc_interrogation.py`
+   exists.
+8. **Can an ESP32's TWAI usefully inject bus error frames?** Needed for
+   the configurable error-frame background in section 12.2. Unknown; it may
+   need a third node or a different approach. Worth checking early, because it
+   shapes what a higher-fidelity rig can be.
+9. **What `0x08` versus `0x0B` actually switches inside the inverter.**
+   Both read OPERATIONAL on `0x053`, so the status field does not distinguish
+   them, yet they differ by roughly 10x in standing power draw (section 4.1).
+   Knowing the mechanism would say whether holding `0x08` fully de-energises
+   the inverter or merely reduces the draw.
+10. **Whether to change either watchdog setting** so that a hung app resets
+   itself (section 9.1). Neither currently does. The counter-argument is that
+   an unattended reset of a device transmitting to a live powertrain bus is its
+   own hazard.
+11. **Is a measured-stimulus host rig good enough to defer emulator
+   firmware?** The proposal at the end of section 12.2. It turns on whether a
+   transmitting USB adapter batches outbound frames, and on whether an intended
+   schedule plus a few milliseconds of host noise reproduces the 4.69 ms floor
+   that actually matters.
+12. **How do wire faults the truck can actually have present to the
+   controller?** (*added 2026-10-21, user*) The B6 jammer's pulse is the full
+   short case. Whether realistic faults also make the controller count one
+   error frame as several, or produce one count per error frame, decides
+   whether trip 6 counts each error frame once, its threshold rises, or
+   neither (13, trip 6's count). Related: where the background error frames
+   originate (q6).
+
+## 15. Toolchain
+
+**Paths differ per machine and are never written here.** Look them up, in
+reverse-it:
+
+| What | Where |
+|---|---|
+| ESP-IDF and tools install paths, per machine | `$REVERSE_IT_DIR/tools-reference.md`, "ESP-IDF"; this repo's `local-paths.md` |
+| Python executable, per machine | `$REVERSE_IT_DIR/python-executables-reference.md`; this repo's `local-paths.md` |
+| Build invocation and Windows gotchas | `$REVERSE_IT_DIR/firmware/README.md` |
+
+Two constraints that are *not* machine-specific and do belong here:
+
+- **ESP-IDF v5.4.2**, the charge interposer's version, from port step 1d;
+  v5.4.1 before it, matching `wican-fw`'s
+  `dependencies.lock`. The project's component manifest names it exactly
+  (`shared/tools` R33). Changing the IDF version changes the bootloader,
+  which is the thing rollback depends on (section 9.1) and the thing OTA
+  cannot replace, so a version change updates the bootloader with the app,
+  flashed by USB.
+- **Native `idf.py`, not PlatformIO.** The stock `sdkconfig` and partition CSV
+  are used as-is. PlatformIO regenerates `sdkconfig` from `platformio.ini`,
+  which is exactly where the partition table could silently drift from stock --
+  and a drifted partition table means the restore image in section 2 no longer
+  matches the device.
+
+## 16. Related
+
+In this folder: `VALIDATION.md` (why each requirement is written as it is),
+`VERIFICATION.md` (test results, current runs only; moved from reverse-it's
+`gen-inhibit-test-evidence.md` 2026-11-07) with its hash manifest
+`VERIFICATION-manifest.txt`, and the file map `README.md`. `notes/` below is
+`$REVERSE_IT_DIR/projects/vtrux/notes/`.
+
+| file | what |
+|---|---|
+| `notes/gen-inhibit-review-2026-09-22.md` | the 2026-09-22/24 external review: every finding, the user's decision, and where it landed in this spec |
+| `notes/gen-inhibit-wican-handoff.md` | handoff to the session implementing section 13 on hardware |
+| `notes/gen-inhibit-wican-firmware.md` | the working log: how each result was obtained (the results themselves are in `VERIFICATION.md`) |
+| `notes/gen-inhibit-truck-tests.md` | the 2026-09-06 truck session that proved the inhibit |
+| `gen-inhibit/tools/` | the laptop Python core and benches; `inhibit.py` is the validated reference |
+| `gen-inhibit/diag/wican_diag_schema.md` (`notes/artifacts/gen-inhibit/wican_diag_schema.md` is the frozen schema 7 copy) | diagnostics layout, source of truth |
+| `notes/artifacts/gen-inhibit/README.md` | every bench harness and run file |
+| `notes/artifacts/gen-inhibit/rollback-test/ota_defect_writeup.md` | the OTA defect evidence |
+| `$REVERSE_IT_DIR/firmware/README.md` | the shared ESP32 firmware tree and the rollback bench |
+| `gen-inhibit/diag/vtrux-wican-diag.dbc` (`$REVERSE_IT_DIR/projects/vtrux/vtrux-wican-diag.dbc` is the frozen schema 7 copy) | decode DBC for `0x7F0`-`0x7F3`, `0x7F8` and `0x7F9` |
