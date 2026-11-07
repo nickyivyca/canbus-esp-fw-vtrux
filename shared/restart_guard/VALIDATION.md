@@ -2,7 +2,7 @@
 
 Why each requirement in `SPEC.md` is written as it is. Test evidence, that
 the component meets them, is in `VERIFICATION.md`, when there is code to
-test. Each entry has a **Basis**, and a **Status**: *complete*, or *basis
+test. Each entry has a **Basis**, and a **Status**: *validated*, or *basis
 pending*, saying what is missing.
 
 **Where things are.** The port plan is
@@ -26,7 +26,7 @@ verification").
   interposer adopts it in its stage (b), as the third of its gap fixes
   (goal 14). Goal 15 (user, 2026-10-17): shared components use ESP-IDF
   APIs only.
-- **Status:** complete.
+- **Status:** validated.
 
 ### G2. Every software restart takes the CAN ports off the bus first
 - **Basis:** gen-inhibit spec 3, "No restart leaves the controller on the
@@ -76,7 +76,7 @@ verification").
     panic output and core-dump choice against this in its own settings.
   - gen-inhibit's settings today: print and restart, no restart delay, no
     core dump (`sdkconfig`).
-- **Status:** complete.
+- **Status:** validated.
 
 ### G3. The steps
 - **Basis:** the order and bounds of `gi_restart_quiesce.c`, unchanged
@@ -116,7 +116,7 @@ verification").
   `mcp2515_port` offers one (C7), if one proves possible (stage (b)). On both of today's boards the two readings behave the same:
   `wican_v3`'s port 0 is TWAI with a supported stop, and the X2 has no
   standby line.
-- **Status:** complete.
+- **Status:** validated.
 
 ### G4. The record of the last restart
 - **Basis:** gen-inhibit spec 12.4, "no error frames at a restart": the
@@ -127,7 +127,7 @@ verification").
   left by an image from before the move reads the same after it. The
   standby field becomes one bit per port; with one port it reads 0 or 1, as
   before.
-- **Status:** complete.
+- **Status:** validated.
 
 ### G5. The test app
 - **Basis:** port plan "Layer 2": a test app for each shared component, in
@@ -148,7 +148,7 @@ verification").
 - **The pin read:** `gi_restart_test.c` reads CAN_STDBY from the GPIO
   registers, which is test equipment's use of `board_pins.h`
   (`shared/boards` B6).
-- **Status:** complete.
+- **Status:** validated.
 
 ### G6. Ownership
 - **Basis:** AGENTS.md, "Who owns what": product code and its unit tests
@@ -156,4 +156,4 @@ verification").
   sources were the implementor's in gen-inhibit (`gen-inhibit/README.md`),
   and the build-switch tables are the testers' (`shared/twai_port`
   README).
-- **Status:** complete.
+- **Status:** validated.

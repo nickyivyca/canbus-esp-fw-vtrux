@@ -2,7 +2,7 @@
 
 Why each requirement in `SPEC.md` is written as it is. Test evidence, that
 the component meets them, is in `VERIFICATION.md`, when there is code to
-test. Each entry has a **Basis**, and a **Status**: *complete*, or *basis
+test. Each entry has a **Basis**, and a **Status**: *validated*, or *basis
 pending*, saying what is missing.
 
 **Where things are.** The port plan is
@@ -38,7 +38,7 @@ verification"; charge-interposer reviewer, 2026-10-31).
 - **Reading:** `port_twai.cpp` includes `Arduino.h` but calls only the IDF
   TWAI API (charge-interposer reviewer, 2026-10-17), so its adoption is a
   merge with `can.c` and a change from C++ to C.
-- **Status:** complete.
+- **Status:** validated.
 
 ### T2. What each project chooses
 - **Basis:** the contract's "left to each project" list, ruled as the
@@ -67,7 +67,7 @@ verification"; charge-interposer reviewer, 2026-10-31).
   mode would have nothing under it on either chip. The stock
   `can_set_loopback()` only records a flag that `can.c` never applies, and
   keeps doing so (`can_port` C3).
-- **Status:** complete.
+- **Status:** validated.
 
 ### T3. Teardown
 - **Basis:** the contract: teardown checks the controller state, refusing
@@ -81,7 +81,7 @@ verification"; charge-interposer reviewer, 2026-10-31).
   (`gen_inhibit.c`, `controller_running()`'s comment: recovery must not be
   added before this path is revisited). `TwaiPort::end()` does what T3
   says.
-- **Status:** complete.
+- **Status:** validated.
 
 ### T4. Mode changes and reinstalls
 - **Basis:** the contract: the mode flag is set only after teardown
@@ -97,7 +97,7 @@ verification"; charge-interposer reviewer, 2026-10-31).
   uncounted, the frames queued toward the vehicle. Reading the depths
   before the uninstall, as T7 does before bus-off recovery, counts them,
   and gives the stage (b) switch counting a starting point.
-- **Status:** complete.
+- **Status:** validated.
 
 ### T5. The one alert reader
 - **Basis:** the contract: the port is the only alert reader and passes
@@ -121,7 +121,7 @@ verification"; charge-interposer reviewer, 2026-10-31).
   from the queue depth, the `tx_failed` delta and the frames bus-off
   recovery discards (`port_twai.h`, `pollAlerts()`); its host fake
   collapses `TX_SUCCESS` per pass, so the collapse is reproducible.
-- **Status:** complete.
+- **Status:** validated.
 
 ### T6. Every send goes through the port
 - **Basis:** the contract: every send goes through the port.
@@ -135,7 +135,7 @@ verification"; charge-interposer reviewer, 2026-10-31).
   can be refused with the queue not full (the port down, bus-off, an
   invalid frame). Counting those apart keeps `tx_dropped` the queue-full
   count the interposer reads it as.
-- **Status:** complete.
+- **Status:** validated.
 
 ### T7. Counters and status
 - **Basis:** the contract's counters (loss counts carried across a
@@ -161,7 +161,7 @@ verification"; charge-interposer reviewer, 2026-10-31).
 - **Reading:** the driver's `rx_missed_count` and `rx_overrun_count` are
   per-frame totals since install, reset by a reinstall; `port_twai.cpp`
   accumulates their delta for that reason.
-- **Status:** complete.
+- **Status:** validated.
 
 ### T8. Transmit abort and buffer state
 - **Basis:** port plan: register-level code (abort, status read) is one
@@ -178,7 +178,7 @@ verification"; charge-interposer reviewer, 2026-10-31).
   where nothing is measured, and does not use the abort. Reporting it
   unsupported there, rather than shipping an unmeasured file, keeps the
   port from claiming behaviour nobody has checked.
-- **Status:** complete for the C3; unsupported elsewhere by design.
+- **Status:** validated for the C3; unsupported elsewhere by design.
 
 ### T9. Rules
 - **Basis:** the contract: every wait inside the port is bounded within
@@ -186,7 +186,7 @@ verification"; charge-interposer reviewer, 2026-10-31).
   that waits on another task, starts no task and calls the project only
   through declared hooks. gen-inhibit spec 8: its worker's receive wait is
   200 ms and a quiesce waits up to 1 s.
-- **Status:** complete.
+- **Status:** validated.
 
 ### T10. One host fake
 - **Basis:** port plan, "One host fake, at the IDF driver level" (user,
@@ -195,7 +195,7 @@ verification"; charge-interposer reviewer, 2026-10-31).
   on it, each project keeps its logic-level fakes, the merge needs a clock
   adapter in place of `millis()` and per-chip behaviour where the C3 and S3
   differ.
-- **Status:** complete.
+- **Status:** validated.
 
 ### T11. Ownership
 - **Basis:** the fake is the testers' and the port's unit tests the
@@ -205,7 +205,7 @@ verification"; charge-interposer reviewer, 2026-10-31).
   and an implementor owning both the port and its fake would let a shared
   misreading of the hardware pass the host tests. This differs from
   gen-inhibit's `fake_twai.c`, the implementor's until this step.
-- **Status:** complete.
+- **Status:** validated.
 
 ### T12. The restart stop
 - **Basis:** gen-inhibit spec 3, "No restart leaves the controller on the
@@ -226,7 +226,7 @@ verification"; charge-interposer reviewer, 2026-10-31).
 - **Other chips:** as T8: nothing is measured on the S3, so the stop
   reports "not supported" there rather than running an unmeasured
   sequence. The interposer measures it in its stage (b), gap fix 3.
-- **Status:** complete for the C3; unsupported elsewhere by design.
+- **Status:** validated for the C3; unsupported elsewhere by design.
 
 ### T13. The test app
 - **Basis:** port plan "Layer 2": a test app for each shared component,
@@ -238,4 +238,4 @@ verification"; charge-interposer reviewer, 2026-10-31).
   as `shared/restart_guard` G5. The ownership check is a hook because the
   probe's refusal while armed is gen-inhibit's rule (spec 3.2, "Exempt"),
   and the shared probe cannot call gen-inhibit.
-- **Status:** complete.
+- **Status:** validated.

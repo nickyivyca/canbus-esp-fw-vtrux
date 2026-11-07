@@ -2,7 +2,7 @@
 
 Why each requirement in `SPEC.md` is written as it is. Test evidence, that a
 board component meets them, is in `VERIFICATION.md`, when there is code to
-test. Each entry has a **Basis**, and a **Status**: *complete*, or *basis
+test. Each entry has a **Basis**, and a **Status**: *validated*, or *basis
 pending*, saying what is missing.
 
 **Where things are.** The port plan is
@@ -25,14 +25,14 @@ gen-inhibit's spec is
   board's `sdkconfig.board`. `CONFIG_PARTITION_TABLE_CUSTOM_FILENAME` can
   name the downloaded `partitions.csv`, and does, so a board has no
   `override_path` form.
-- **Status:** complete.
+- **Status:** validated.
 
 ### B2. A project names its board by its dependency
 - **Basis:** user, 2026-10-26, in the gen-inhibit reviewer's session,
   proposed by the charge-interposer reviewer: the fact is recorded once, so
   it cannot disagree with a second record. The other option was a `board`
   key in the project's build data, checked against the lock.
-- **Status:** complete.
+- **Status:** validated.
 
 ### B3. Three kinds of setting
 - **Basis:** user, 2026-10-26, in the gen-inhibit reviewer's session: "there
@@ -68,7 +68,7 @@ gen-inhibit's spec is
   only a USB-Serial/JTAG primary forces it to none, and a UART primary
   would leave it to ESP-IDF's default. The same on `x2` (user, 2026-10-28,
   in the charge-interposer reviewer's session).
-- **Status:** complete.
+- **Status:** validated.
 
 ### B4. `board.json`
 - **Basis:** `shared/tools` R21 and its readings (2026-10-24): the reference
@@ -77,7 +77,7 @@ gen-inhibit's spec is
   reference table. The project-required settings (B3) and the hardware name
   (B5) are added for the checks of `shared/tools` R29 and for
   `board_hw_name()` (user, 2026-10-26).
-- **Status:** complete.
+- **Status:** validated.
 
 ### B5. Interface
 - **Basis:** port plan goal 5 and Layer 1 (user, 2026-10-16/17): project
@@ -101,7 +101,7 @@ gen-inhibit's spec is
   1c): the restart guard stops and puts into standby every port the board
   has, before any project code may have run in this boot, so it reads the
   count and each port's kind from the board there (`shared/can_port` C7).
-- **Status:** complete.
+- **Status:** validated.
 
 ### B6. Pins in `include/board_pins.h`
 - **Basis:** user, 2026-10-26, in the gen-inhibit reviewer's session: a
@@ -116,7 +116,7 @@ gen-inhibit's spec is
   pin, and its objects are no longer compiled from the project root, so
   the project's list could not cover them (`shared/wican/VALIDATION.md`
   W10).
-- **Status:** complete.
+- **Status:** validated.
 
 ### B7. Ownership
 - **Basis:** AGENTS.md "Who owns what" and "Shared code": product code is
@@ -125,7 +125,7 @@ gen-inhibit's spec is
   The board data and reference table are the tester's today, in
   gen-inhibit's `vtrux_checks.json` and `test/build_checks/reference/`
   (user, 2026-10-26).
-- **Status:** complete.
+- **Status:** validated.
 
 ## 2. `wican_v3`
 
@@ -148,7 +148,7 @@ gen-inhibit's spec is
     `can.c`); the receiver off in standby: gen-inhibit spec section 3;
   - the required settings: B3 (user, 2026-10-26). gen-inhibit's spec sets
     them in 9.1, 9.4 and 12.3 item 3.
-- **Status:** complete.
+- **Status:** validated.
 
 ## 3. `x2`
 
@@ -204,4 +204,4 @@ gen-inhibit's spec is
     user (charge-interposer test evidence, section 9, "BOARD DATA ONLY --
     the X2's LED1 is on GPIO2", 2026-10-27). Its polarity was not
     separated.
-- **Status:** complete.
+- **Status:** validated.

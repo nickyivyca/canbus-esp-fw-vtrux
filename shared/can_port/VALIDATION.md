@@ -2,7 +2,7 @@
 
 Why each requirement in `SPEC.md` is written as it is. Test evidence, that
 the component meets them, is in `VERIFICATION.md`, when there is code to
-test. Each entry has a **Basis**, and a **Status**: *complete*, or *basis
+test. Each entry has a **Basis**, and a **Status**: *validated*, or *basis
 pending*, saying what is missing.
 
 **Where things are.** The port plan is
@@ -25,7 +25,7 @@ pending*, saying what is missing.
   only the interposer's own code drives, and no stock call reaches port 1,
   so a port a project drives directly stays allowed until its backend
   exists.
-- **Status:** complete.
+- **Status:** validated.
 
 ### C2. The operations
 - **Basis:** what `CanPort` gives today (`can_port.h`), which the
@@ -34,7 +34,7 @@ pending*, saying what is missing.
   block, and the counters (charge-interposer reviewer, 2026-10-31). A
   backend that cannot count per frame gives a bound: the MCP2515 gives one
   flag per receive buffer, so at worst one loss per pass (`can_port.h`).
-- **Status:** complete.
+- **Status:** validated.
 
 ### C3. The stock calls are port 0
 - **Basis:** port plan: `can_port` replaces `can.c`'s API, which the stock
@@ -53,7 +53,7 @@ pending*, saying what is missing.
   alerts): none fails because of the bus, only memory exhaustion or a
   firmware bug, and tests guard against the bug. gen-inhibit's arm calls
   the stock enable today, so it needs a form that returns the failure.
-- **Status:** complete.
+- **Status:** validated.
 
 ### C4. The owner's refusal
 - **Basis:** gen-inhibit spec 3.2 (review A3): while gen-inhibit owns the
@@ -69,20 +69,20 @@ pending*, saying what is missing.
 - **Reading:** `can_send()` refuses with `ESP_ERR_INVALID_STATE` while
   `gen_inhibit_owns_bus()`, counts through
   `gen_inhibit_note_refused_can_send()`, and logs at most once every 5 s.
-- **Status:** complete.
+- **Status:** validated.
 
 ### C5. The stock teardown runs the hook
 - **Basis:** gen-inhibit spec 8, the quiesce handshake (backstop): every
   stock `can_disable()` quiesces the worker before the driver is
   uninstalled, since other tasks may call it without knowing about
   gen-inhibit.
-- **Status:** complete.
+- **Status:** validated.
 
 ### C6. Ownership
 - **Basis:** AGENTS.md "Shared code": a shared file has no single owning
   project; product code is the implementor's of the project that needs
   the change.
-- **Status:** complete.
+- **Status:** validated.
 
 ### C7. The restart stop
 - **Basis:** user, 2026-11-01, in the gen-inhibit reviewer's session: the
@@ -99,4 +99,4 @@ pending*, saying what is missing.
   the plan resets it over SPI at start-up instead (`mcp2515_port`'s
   `begin()`, stage (b)). Whether an SPI port can be stopped from the
   restart path is for the interposer's stage (b).
-- **Status:** complete.
+- **Status:** validated.

@@ -12,7 +12,7 @@ the tooling meets them, is in `VERIFICATION.md`.
 - **Context** (where there is one): a measurement made on another toolchain,
   board or code base. It points the same way but is not a basis for this
   requirement.
-- **Status:** *complete*, or *basis pending*, saying what is missing.
+- **Status:** *validated*, or *basis pending*, saying what is missing.
   Validation may be incomplete, but never silently.
 
 A pass recorded against the tooling this replaces (gen-inhibit's
@@ -31,7 +31,7 @@ same folder. The interposer's test evidence is
 
 ### R1. Image hash
 - **Basis:** port plan goal 13 (user, 2026-10-17).
-- **Status:** complete.
+- **Status:** validated.
 
 ### R2. Code hash
 - **Basis:** port plan goal 13, "The code hash covers the flashed image, not
@@ -60,13 +60,13 @@ same folder. The interposer's test evidence is
   hosts (the date and time are zero with the reproducible option on). The
   version is blanked so that a commit that changes no code keeps its code
   hash (R3); the date and time cover a build without the option.
-- **Status:** complete.
+- **Status:** validated.
 
 ### R3. Evidence cites the code hash
 - **Basis:** port plan goal 13 (user, 2026-10-17): a commit that changes no
   code keeps its evidence across branches and merges. gen-inhibit tracker A5
   (user, 2026-10-19): bench results carry to a release build by code hash.
-- **Status:** complete.
+- **Status:** validated.
 
 ### R4. The commit enters the image once
 - **Basis:** port plan goal 13 (user, 2026-10-17). gen-inhibit's `0x7F3`
@@ -96,7 +96,7 @@ same folder. The interposer's test evidence is
   (user, 2026-10-25, in the interposer reviewer's session), moving the
   variant tag from the image's file name into the descriptor. The variant
   is the label inside the image; the image hash is its identity (R6).
-- **Status:** complete.
+- **Status:** validated.
 
 ### R5. Identity independent of branch, clone path and host OS
 - **Basis:** port plan goal 11 (user, 2026-10-17): a feature-branch build
@@ -126,7 +126,7 @@ same folder. The interposer's test evidence is
   of one clone only; across clones, the code hash. Step 0b's two-path
   rebuild (two worktrees of one clone, gen-inhibit tracker, 2026-10-25) is
   within the narrowed bullet.
-- **Status:** complete.
+- **Status:** validated.
 
 ### R6. Identity never rests on the version string or the file name
 - **Basis:** user, 2026-10-23 (requirements list review), following goals 11
@@ -136,7 +136,7 @@ same folder. The interposer's test evidence is
   produced new code under an old clean-looking name: 2026-09-29 (five edited
   files rebuilt as `5364648`, overwriting the verified image of that name)
   and 2026-10-13 (an `idf.py build` over edited `.c` files, named `a3394ca`).
-- **Status:** complete.
+- **Status:** validated.
 
 ### R7. Component digest
 - **Basis:** port plan goal 13 and "The split", Rules (user, 2026-10-17):
@@ -163,7 +163,7 @@ same folder. The interposer's test evidence is
   move to `shared/bench/SPEC.md` (2026-10-23). Under the definition then in
   force, adding `SPEC.md` changed `shared/bench`'s digest, and goal 20 item 6
   puts `VERIFICATION.md` beside the code.
-- **Status:** complete.
+- **Status:** validated.
 
 ## 3. Release builds
 
@@ -204,7 +204,7 @@ same folder. The interposer's test evidence is
   save over a file committed as LF shows as modified, so R8 refuses it
   (shared/tools VERIFICATION.md, "R9, R13 fixes, and R17's shared/ roots";
   AGENTS.md corrected by the methodology owner, 2026-10-24).
-- **Status:** complete.
+- **Status:** validated.
 
 ### R9. Reconfigure first
 - **Basis:** gen-inhibit spec 12.3 item 3 (user, 2026-10-05): ESP-IDF fixes
@@ -224,7 +224,7 @@ same folder. The interposer's test evidence is
   source includes `sdkconfig.h`, so bench and dev builds with other options
   leave nothing a release build can reuse. Ruled off (option A of three).
 - **The fixed `SOURCE_DATE_EPOCH`:** see R19's readings (user, 2026-10-24).
-- **Status:** complete.
+- **Status:** validated.
 
 ### R10. Downloaded components checked after the reconfigure
 - **Basis:** gen-inhibit spec 12.3 item 3 (user, 2026-10-05): the
@@ -265,7 +265,7 @@ same folder. The interposer's test evidence is
   arduino-esp32 comes from the Component Manager. Raised by the gen-inhibit tester's R22 case (IDF's
   hello_world, C6f part A), which was refused with a raw file-not-found
   error.
-- **Status:** complete.
+- **Status:** validated.
 
 ### R11. The image is the one the build names
 - **Basis:** reviewer's reading of gen-inhibit spec 12.3 item 3, 2026-10-21
@@ -274,7 +274,7 @@ same folder. The interposer's test evidence is
 - **Exposed by:** `prod_build.py` recorded the newest `.bin` in `build/`,
   not the image the build named. Fixed in `95aa77a`, closed on tester
   evidence 2026-10-21.
-- **Status:** complete.
+- **Status:** validated.
 
 ### R12. Reproducible build on
 - **Basis:** gen-inhibit tracker A4 (user, 2026-10-19); port plan step 0b
@@ -306,19 +306,19 @@ same folder. The interposer's test evidence is
   Hashing the committed blob instead would tie
   the record to git, which R7 avoids; hashing the bytes on disk would let
   records differ by host.
-- **Status:** complete.
+- **Status:** validated.
 
 ### R14. Bench and dev builds exempt
 - **Basis:** gen-inhibit spec 12.3 item 3 (user, 2026-10-07): a bench image
   is normally built on a dirty tree, so applying the release rules to it
   would fire on every bench run and mean nothing. gen-inhibit tracker A5
   (user, 2026-10-19) for carrying results by code hash.
-- **Status:** complete.
+- **Status:** validated.
 
 ### R15. Bench runs log the code hash
 - **Basis:** gen-inhibit tracker A5 (user, 2026-10-19); port plan, shared
   bench toolkit item 8 (user, 2026-10-17).
-- **Status:** complete.
+- **Status:** validated.
 
 ### R16. Shared code only at a pinned tag
 - **Basis:** port plan goal 12 (user, 2026-10-17): every shared component
@@ -327,7 +327,7 @@ same folder. The interposer's test evidence is
   session): a pin may name a topic commit only on a project's topic branch,
   never on its main branch. The refusal of a build tooling pin that names a
   commit: user, 2026-10-23, in the gen-inhibit reviewer's session.
-- **Status:** complete.
+- **Status:** validated.
 
 ### R24. A release build's environment
 - **Basis:** user, 2026-10-24, in the gen-inhibit reviewer's session: "we
@@ -342,7 +342,7 @@ same folder. The interposer's test evidence is
   tried). The release script passed its caller's environment through,
   refusing only R10's overwrite setting and a cache left on, so a `-D` for a
   test-only switch could reach a release build with no file changed.
-- **Status:** basis complete. The list itself is the implementor's to find,
+- **Status:** validated. The list itself is the implementor's to find,
   for each host OS. **Amended 2026-11-03** (user, in the gen-inhibit
   reviewer's session): it sets no default for a variable it passes. See
   R32.
@@ -373,7 +373,7 @@ same folder. The interposer's test evidence is
   value to test it for blank but compared the unstripped value, and ESP-IDF
   gets it unstripped. The implementor's `308d7f65` refused it ahead of the
   text; the gen-inhibit tester asked for the text. The ruling writes it in.
-- **Status:** complete. Not covered here: an `IDF_PATH` of one version with
+- **Status:** validated. Not covered here: an `IDF_PATH` of one version with
   the other's tools. R33 covers that, as far as it reaches (see R33).
 
 ## 4. Checks
@@ -454,7 +454,7 @@ same folder. The interposer's test evidence is
     records too, under `worktrees/`); another worktree's checked-out
     files, the worktree's uncommitted files and any other outside header
     still fail.
-- **Status:** complete.
+- **Status:** validated.
 
 ### R18. Options
 - **Basis:** port plan goal 13 (user, 2026-10-17).
@@ -483,7 +483,7 @@ same folder. The interposer's test evidence is
   every release build. So an option set to a value must be in the app's
   folder with it, and elsewhere has it where the folder has the option;
   both folders read the same `sdkconfig`.
-- **Status:** complete.
+- **Status:** validated.
 
 ### R19. Reproducible
 - **Basis:** port plan goal 13 (user, 2026-10-17).
@@ -534,7 +534,7 @@ same folder. The interposer's test evidence is
   - **Once per project** (user, 2026-10-24, raised by the interposer
     reviewer): causes in a project's own source, like the date above, show
     only on that project.
-- **Status:** complete.
+- **Status:** validated.
 
 ### R20. Build switches
 - **Basis:** gen-inhibit spec 12.3 item 3, "Every build-time switch is
@@ -602,7 +602,7 @@ same folder. The interposer's test evidence is
     stock-off switches are CMake options its CMake files turn into compile
     definitions, and its `main/Kconfig.projbuild` holds only upstream
     WiCAN's example menu (gen-inhibit/main `0c707e9`, read 2026-10-25).
-- **Status:** complete.
+- **Status:** validated.
 
 ### R21. Board data
 - **Basis:** port plan Layer 0 (user, 2026-10-17): the partition row with
@@ -644,7 +644,7 @@ same folder. The interposer's test evidence is
   once (`shared/boards/VALIDATION.md` B2).
   - Release builds only, like R18 and R20. The bootloader's contents are
     not compared, only the partition table.
-- **Status:** complete. The board values are in `shared/boards/VALIDATION.md`,
+- **Status:** validated. The board values are in `shared/boards/VALIDATION.md`,
   section 2 for the WiCAN and section 3 for the X2 (2026-10-27).
 
 ### R29. Board settings
@@ -658,7 +658,7 @@ same folder. The interposer's test evidence is
   (`shared/boards/VALIDATION.md` B3). Checked in the options check, as R26
   to R28 are, so a committed `sdkconfig` cannot drift from its board, and a
   project cannot leave a required setting to a default.
-- **Status:** complete.
+- **Status:** validated.
 
 ### R30. Pins stay in the board
 - **Basis:** user, 2026-10-26, in the gen-inhibit reviewer's session: pins
@@ -669,7 +669,7 @@ same folder. The interposer's test evidence is
   reviewer's session): listed and checked, for the stock code in
   `shared/wican/` (`shared/wican/VALIDATION.md` W10). Listed only, with no
   check, was the other option.
-- **Status:** complete.
+- **Status:** validated.
 
 ### R26. No eFuse-burning features in a release build
 - **Basis:** user, 2026-10-25, in the interposer reviewer's session: the
@@ -685,7 +685,7 @@ same folder. The interposer's test evidence is
   `esp32s3/sdkconfig`, as installed for its pinned PlatformIO platform
   on NICKY-XPS (read 2026-10-25). It had no release profile before port
   step 2a.
-- **Status:** complete.
+- **Status:** validated.
 
 ### R27. Each project sets its own FreeRTOS tick rate
 - **Basis:** user, 2026-10-25, in the interposer reviewer's session: no
@@ -700,7 +700,7 @@ same folder. The interposer's test evidence is
   names it in 12.3 item 3, setting 6 (1000 Hz, user, 2026-10-25), and its
   release profile does too (`vtrux_checks.json`, from gen-inhibit
   `064d73b`).
-- **Status:** complete.
+- **Status:** validated.
 
 ### R28. One set of log levels for every release build
 - **Basis:** user, 2026-10-25, in the interposer reviewer's session:
@@ -734,7 +734,7 @@ same folder. The interposer's test evidence is
   run; until then its release builds do not meet R28, a known anomaly of
   the port. The value names are ESP-IDF v5.4.1's (`components/log/Kconfig.level`,
   `components/bootloader/Kconfig.log`).
-- **Status:** complete.
+- **Status:** validated.
 
 ## 5. Data, not code
 
@@ -755,7 +755,7 @@ same folder. The interposer's test evidence is
   moves it. The X2 jammer is shared test tooling, alongside the
   bench toolkit, not part of the shared firmware code, and it builds for the
   X2 as the interposer does.
-- **Status:** complete.
+- **Status:** validated.
 
 ### R33. Each project names its IDF version
 - **Basis:** user, 2026-11-03, in the gen-inhibit reviewer's session, on
@@ -802,7 +802,7 @@ same folder. The interposer's test evidence is
   reconfigure, from `project_description.json`'s `git_revision`, the value
   the record names, so the check and the record cannot disagree and no
   reading of IDF's version rule is copied into the tooling.
-- **Status:** complete.
+- **Status:** validated.
 
 ## 6. Running the tooling
 
@@ -818,7 +818,7 @@ same folder. The interposer's test evidence is
   `CMakeLists.txt`. gen-inhibit's bench builds move onto it in its stage
   (b), with a variant table; until then they pass R32 only (user,
   2026-11-03).
-- **Status:** complete.
+- **Status:** validated.
 
 ### R23. From a read-only checkout at the pin
 - **Basis:** port plan goal 20 item 8 (user, 2026-10-23): shared Python
@@ -831,7 +831,7 @@ same folder. The interposer's test evidence is
   hash (R3), whichever copy of the tooling made it, so the pin check guards
   release builds only. `build`, `check-env`, `image` and `digest` do not
   run it.
-- **Status:** complete.
+- **Status:** validated.
 
 ### R25. Tags on `shared/main`
 - **Basis:** port plan goal 12 (user, 2026-10-17) pins shared code at tags,
@@ -849,4 +849,4 @@ same folder. The interposer's test evidence is
     first wording, "the reviewer who merged the change").
   - Never moved or deleted: pins and run records name tags, and a pin's
     digest (R7) would refuse a moved tag anyway.
-- **Status:** complete.
+- **Status:** validated.
