@@ -5,7 +5,9 @@ reviewer's session, and drafted that day by the gen-inhibit reviewer for
 gen-inhibit's port step 1a; W7 amended 2026-10-29, for the rollback
 rehearsal's fault hook, and 2026-10-30, for its symbol; W1 amended
 2026-10-30, for `debug_logs`'s link cycle; W3 amended 2026-10-31, for
-port step 1b's `can_port`. As
+port step 1b's `can_port`; W7 amended and W12 to W14 added 2026-11-07,
+for gen-inhibit's stage (b): the AutoPID upload endpoints and the OTA
+handler's failure paths. As
 a shared component's spec this follows port plan goal 20: the reviewer whose
 project needs a change drafts it, the user rules in that reviewer's session,
 and the other project's reviewer reads it before it merges into
@@ -20,7 +22,7 @@ and the other project's reviewer reads it before it merges into
   (goal 18, and "Stock WiCAN code" under Layer 4 of "The split"), and
   `shared/boards/SPEC.md`.
 
-Requirements are numbered W1 to W11. The numbers are stable.
+Requirements are numbered W1 to W14. The numbers are stable.
 
 - **W1. One component.** `shared/wican/` is one ESP-IDF component,
   `vtrux/wican`, which a project takes at a pinned tag through the
@@ -39,7 +41,7 @@ Requirements are numbered W1 to W11. The numbers are stable.
   unresolved.
 - **W2. It starts as a move.** The component's files start as the files of
   `gen-inhibit/main` at the commit the move is made from, byte for byte,
-  and change only as W3 to W10 say. **Stock behaviour** in this spec means
+  and change only as W3 to W10 and W12 to W14 say. **Stock behaviour** in this spec means
   that code's behaviour, which includes gen-inhibit's changes made before
   the port: the 403 replies, the removed sleep state machine, the
   Bluetooth strip. Any other change is a change to this spec.
@@ -89,7 +91,11 @@ Requirements are numbered W1 to W11. The numbers are stable.
   and `_REALDASH` are CMake options of the component, on by default, with
   `wican_features.h`, under today's rules: off takes the feature's source
   out of the component and its call sites out of the build. A project sets
-  them in its top-level `CMakeLists.txt`. `OTA_HEALTH_FAULT_INJECT`, the
+  them in its top-level `CMakeLists.txt`. The two endpoints that write
+  `car_data.json`, which only AutoPID reads, `/upload/car_data.json` and
+  `/store_car_data`, are registered only with `WICAN_FEATURE_AUTOPID` on,
+  as AutoPID's other guarded endpoints are, and their handlers are
+  compiled only then. `OTA_HEALTH_FAULT_INJECT`, the
   fault hook in `ota_health.c` that a rollback rehearsal builds with, is a
   CMake option of the component too: off by default, and test-only. The
   fault hook's code is a function of its own, kept out of line, so the
@@ -111,3 +117,15 @@ Requirements are numbered W1 to W11. The numbers are stable.
 - **W11. Ownership** is recorded per file in the component's `README.md`:
   its files are product code, owned by the implementor of the project that
   needs the change; a check's data, if any, by that project's tester.
+- **W12. A failed OTA cancels its update.** After `esp_ota_begin()`
+  succeeds, every exit of the OTA handler but the restart into the new
+  image ends the update session: with `esp_ota_abort()`, or with
+  `esp_ota_end()`, which frees the session whether it passes or fails.
+- **W13. A stalled upload is dropped in about 20 s.** The OTA handler
+  drops an upload after 4 receive timeouts in a row, of the server's 5 s
+  each, and the count restarts whenever a chunk arrives. Dropping it is a
+  failed exit under W12.
+- **W14. The slot is erased as it is written.** The update starts in
+  ESP-IDF's sequential-write mode (`OTA_WITH_SEQUENTIAL_WRITES`), which
+  erases each block as the write reaches it, not with `OTA_SIZE_UNKNOWN`,
+  which erases the whole slot before the first byte of the body is read.

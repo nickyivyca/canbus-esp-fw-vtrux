@@ -131,6 +131,19 @@ readings of gen-inhibit's code below are of `gen-inhibit/main` at `0b03841`,
   present only with the switch on. The other option was to record the
   component's row as not catching the switch at log level none, leaving
   each project its own guard (gen-inhibit's `_flt` image name).
+- **The AutoPID upload endpoints** (user, 2026-11-07, in the gen-inhibit
+  reviewer's session, for gen-inhibit's stage (b)). Reading of
+  `shared/main` `2ab5be6d`, `config_server.c`: `upload_car_data_handler`
+  (line 1373) retries a receive timeout forever (1439-1443), the defect
+  gen-inhibit spec 9.2 item 3 fixed in the OTA handler, so a client that
+  vanishes mid-upload holds the single HTTP task until a power cycle.
+  It and `/store_car_data` are registered at the first start (2428,
+  2433) outside the AutoPID guard that covers `/autopid_data`,
+  `/load_car_config` and `/scan_available_pids`. `car_data.json` is
+  read only by `autopid.c` (1467, 1749) and by the read endpoint
+  `/load_auto_pid_car_data` (`config_server.c:591`). gen-inhibit builds
+  with AutoPID off, so it used neither endpoint. The other option was to
+  keep them registered and bound their timeouts as W13 does.
 - **Context, a known limit** (the gen-inhibit reviewer's reading,
   2026-10-29, raised by the gen-inhibit tester): under `shared/tools` R20
   the component's switches are classified in its own table, which applies
@@ -177,4 +190,54 @@ readings of gen-inhibit's code below are of `gen-inhibit/main` at `0b03841`,
 ### W11. Ownership
 - **Basis:** AGENTS.md "Who owns what" and "Shared code", as
   `shared/boards` B7.
+- **Status:** complete.
+
+The readings for W12 to W14 are of `shared/main` `2ab5be6d`,
+`shared/wican/config_server.c`, the OTA handler's body
+`upload_post_body()`.
+
+### W12. A failed OTA cancels its update
+- **Basis:** user, 2026-10-16, in the gen-inhibit reviewer's session: fix
+  it, after the port (gen-inhibit's held list), on the gen-inhibit
+  implementor's code read of `887c000`/`e3d9437` (`config_server.c`
+  1268-1271 there). Wording approved by the user, 2026-11-07, for
+  gen-inhibit's stage (b).
+- **Reading:** the exit for a receive failure other than a timeout, a
+  reset or close in the middle of the body (lines 1255-1258), replies 500
+  and returns without `esp_ota_abort()`, so each such upload leaks the
+  update session. The other exits after `esp_ota_begin()` abort (1247,
+  1307, 1334); a failed `esp_ota_end()` (1340) has already freed it. A
+  failed `esp_ota_begin()` (1206) has no session to end.
+- **Status:** complete.
+
+### W13. A stalled upload is dropped in about 20 s
+- **Basis:** user, 2026-10-16, in the gen-inhibit reviewer's session:
+  tighten it, after the port, to about 20 s (gen-inhibit's held list), on
+  the gen-inhibit implementor's code read and the gen-inhibit tester's
+  observation of 2026-10-16 20:58, about 98 s with no answer from the
+  device after a dropped link. Wording approved by the user, 2026-11-07.
+- **Reading:** `OTA_RECV_MAX_TIMEOUTS` is 20 (line 124) and the check is
+  `++timeouts > OTA_RECV_MAX_TIMEOUTS` (1244), so the 21st timeout in a
+  row drops the upload; the server's receive and send timeouts are
+  `HTTPD_DEFAULT_CONFIG()`'s 5 s each (2259). With the 408 reply's send,
+  that is up to about 110 s in which the single HTTP task, the device's
+  recovery channel, answers nothing. The count is reset on every chunk
+  received (1261), which W13 keeps.
+- **Context:** complete uploads take 13-16 s (gen-inhibit's held list,
+  2026-10-16), so 20 s with no byte received is well clear of
+  a slow but live upload.
+- **Status:** complete.
+
+### W14. The slot is erased as it is written
+- **Basis:** user, 2026-10-17, in the gen-inhibit reviewer's session: keep
+  the push upload (`curl -F`, gen-inhibit spec 9.2) and change to ESP-IDF's
+  sequential-write mode, after the port (gen-inhibit's held list). On the
+  gen-inhibit tester's capture of 2026-10-17 00:21: every good upload (9
+  of 9) paused about 6 s with the receive window closed, and the failed
+  uploads stalled at that pause, though the link was not shown to be the
+  cause. Wording approved by the user, 2026-11-07.
+- **Reading:** the update starts with
+  `esp_ota_begin(update_partition, OTA_SIZE_UNKNOWN, ...)` (line 1206),
+  which erases the whole OTA slot before the handler reads the first byte
+  of the body.
 - **Status:** complete.
