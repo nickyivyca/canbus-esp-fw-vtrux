@@ -3802,3 +3802,4299 @@ test running.
   `runs/step1d_7f2d503_repro_off/` (`README.md`; `SHA256SUMS`
   `74264a65...f5fb`): the `repro_off` rerun.
 
+## 12.4 Required tests
+
+**Quiesce under traffic: INHIBIT / PASSIVE -> OBSERVE -> back -- tester,
+2026-10-10 18:43-18:48, on `cc34c80` `_man`. Result: OBSERVE in effect, no
+panic, PASSIVE re-arms cleanly. The re-arm into INHIBIT is NOT AS SPECIFIED:
+it sends stale inhibit frames, some late, and in 2 of 3 arms uncounted.**
+Spec 8, and the 12.4 row "quiesce under traffic".
+- **Rig:**
+  - `e4_device_calibration.py --post-schedule` (new). The arm's mode is POSTed
+    before the replay; OBSERVE is POSTed 10 s in and the arm's mode again at
+    20 s, each from a thread, with the replay index recorded.
+  - `scottsvalley_armable_300s.log` 35 s, offset 500, unpolled, interleaved
+    I, P, P, I, I, P. PCAN replay, Kvaser witness, X2 app running, 12 V only.
+- **Analysis:** `quiesce_analysis.py`, tested by `test_quiesce_analysis.py`
+  (7 checks, 3 mutants); results in `runs/quiesce_analysis_20261010T184409.jsonl`.
+  - Each POST is placed on the wire by its replay index (provenance).
+  - Per span: the device's `0x051` and other frames.
+  - The driver read uptime and reset reason before and after each arm
+    (`runs/quiesce_uptime_20261010T184409.json`).
+- **No panic:** in all six arms uptime advanced by the wall time (gap within
+  0.03 s) and the reset reason stayed POWERON.
+- **OBSERVE in effect:**
+  - The INHIBIT arms' last frames came 3.9 and 14.3 ms after the OBSERVE POST.
+    After that the device sent nothing until the back-POST: no `0x051`, no
+    diag page.
+  - The PASSIVE arms sent nothing from the OBSERVE POST on.
+  - Listen-only itself is proven by the OBSERVE ACK probe below.
+- **Back to PASSIVE (clean):**
+  - diag resumed 182-214 ms after the POST;
+  - the first `inhibit_live` page came 0.45-1.17 s after it, at page
+    resolution;
+  - 0 device `0x051` by provenance.
+- **Back to INHIBIT: live again 97.7, 65.5 and 90.4 ms after the POST, but
+  the first transmission was a burst of stale frames in all three arms:**
+
+| Arm | Back to live | Burst at re-arm (device frame, behind which VCM command, delay) | Late on the wire | Device: `skips_late` / `late_on_wire`; `rx_missed`; `unverified_max_backlog` |
+|---|---|---|---|---|
+| 1 | +97.7 ms | 06 and 07 behind VCM 08, at +1.45 and +1.96 ms | (stale, not delta 0) | 0 / 0; 35; 37 |
+| 4 | +65.5 ms | 04 behind VCM 04 at +12.2 ms, then 05 | 1 | 1 / 1; 0; 7 |
+| 5 | +90.4 ms | 05, 06 and 07 behind VCM 07; the 07 at +2.99 ms | 1 | 0 / 0; 32; 43 |
+
+  - **Observed against spec 5.2 item 5 and trip 7.** The spec says a frame not
+    on the wire by the VCM's next `0x051` is withdrawn and never sent late, and
+    a frame that went out late, or may have, counts as a skip. The 12.4 row
+    asks the witness to confirm that no frame went out late undetected.
+  - At every re-arm the device answered commands that arrived during the
+    re-arm, after the VCM had moved on.
+  - Arm 4 counted its one late frame. Arms 1 and 5 counted nothing. Those two
+    had a receive-queue overflow at the re-arm (`rx_missed` 35, 32) and a
+    backlog of 37-43; arm 4 had neither.
+  - Entering INHIBIT from OFF into the same kind of traffic (mode-entry arms,
+    section 5) was clean in 3 of 3, so this is particular to leaving OBSERVE.
+  - Not diagnosed; with the implementor through the reviewer. Provenance
+    verdict for arms 1, 4 and 5: NOT as specified (frames in each run file's
+    `provenance`).
+- **`tx_ok` against the wire, per span:** `tx_ok` resets on every arming, so
+  it counts the re-armed span only. Arms 1 and 5 match (1,492; 1,494). Arm 4
+  has 1,496 on the wire against `tx_ok` 1,495.
+- **Not observed:** `self_off` read "" at each arm's end, after the re-arm had
+  cleared it. Whether the setter's own quiesce reports "forced quiesce" while
+  in OBSERVE needs a read inside the OBSERVE span; the arms were unpolled.
+- **Harness note:** provenance's whole-arm count invariant cannot apply
+  across a re-arm. For schedule arms it is skipped there and done per span by
+  `quiesce_analysis.py`.
+- **Run files:** `runs/e4_quiesce_{inhibit,passive}_20261010T184409_arm{1..6}.json`
+  and their witness logs.
+
+**Error frames from an adapter at the wrong bit rate -- tester, 2026-10-10
+19:18-19:21, on `cc34c80` `_man`. Result: only the error-passive regime is
+reachable this way on this bench. Trip 6 latched; the device stayed
+`running`.** The 12.4 error-frame row, with the method it names.
+- **Rig:** `wrong_bitrate_errors.py`, tested by `test_wrong_bitrate_errors.py`
+  (7 checks, 3 mutants).
+  - Only two adapters reach the WiCAN segment, so the PCAN plays the
+    interlock slice (the device armed and live) and also witnesses error
+    frames.
+  - The Kvaser at 250 kbit is the error source.
+  - The X2 was held in ROM download mode (19:18-19:21; `7f197bfd` on the wire
+    before and after).
+  - The status page was polled at 5 Hz: state, TEC, REC, `bus_error`, live,
+    abort.
+- **First calibration** (`runs/wrong_bitrate_calibrate_20261010T191825.json`)
+  was a harness defect.
+  - The burst was ended with `flush_tx_buffer()`, which does not stop a frame
+    the controller is already retransmitting.
+  - The first "1 ms" burst became about 30,000 error frames on the segment.
+    It drove the PCAN (the interlock player and witness) bus-off, so the later
+    bursts read 0.
+  - The bus was quiet again at 19:19 (3 s listen-only: 0 frames, 0 error
+    frames).
+  - Fixed: each burst now opens the Kvaser channel, sends one frame, and closes
+    the channel after the burst length.
+- **Second calibration** (`..._192003`), nine bursts of 1, 5 and 20 ms, 3 s
+  apart:
+  - **2,594-2,907 witness error frames per burst, whatever its length.** The
+    floor is the wrong-rate controller's own on/off episode, not the burst
+    length. With traffic flowing, it destroys frames just by being on the bus.
+  - The WiCAN, read throughout: REC peaked at 128-135 after every burst (error
+    passive), TEC 0, state `running` throughout (never `bus_off`).
+    `bus_error` rose by 22,731 against 33,218 error frames at the witness.
+    Trip 6 latched ("error-frame rate exceeded").
+- **Regimes:**
+  - The method reaches the error-passive regime only: about 270 times the
+    trip threshold in a single episode.
+  - Error-active and at-threshold are not reachable this way with these
+    adapters.
+  - The threshold regime stands on the X2 jammer (bench case C, 2026-10-09,
+    below), as the reviewer ruled; the jammer is also the way to an
+    error-active regime.
+  - A wrong-rate adapter on a bus with no other traffic might yield fewer
+    error frames per episode; not measured.
+- **Note (tester, 2026-10-26; wording approved, user, 2026-10-25): B9's trip 6
+  was never latched by the bursts on a live arm.**
+  - **What every wrong-bit-rate record on file shows:** `live_before` is false,
+    no page sample reads live, and the trip had already latched at the first
+    page sample, about 4 s before the first burst. The records are
+    `wrong_bitrate_calibrate_*.json`: 2026-10-10 on `cc34c80`, the `e3d9437`
+    baseline, `0bfe` and `ec06`, and `cfcd` and `6204` on `6926fb0`.
+  - **Why it read PASS:** B9's judge passed on "error-frame rate exceeded" being
+    among the aborts, so a latch made before the stimulus counted.
+  - **What this changes:** these B9 PASS verdicts are not evidence that the
+    wrong-bit-rate bursts trip a live arm. Under the judge as changed on
+    `gen-inhibit/tester/gi-page-reads` (`6081665`), each reads INCONCLUSIVE.
+  - **What still stands:** the counter readings stand as readings of the
+    device's counters with the arm latched: REC up to 128-135 after each burst,
+    TEC, state `running`, and the witness's error frames per burst.
+  - **Where trip 6 on a live arm rests instead:** the jammer cases (B5
+    livetrain, B6 threshold, B7 busoff-rearm) and B10's flood arms. Their
+    records show the device live with no abort just before the stimulus, no
+    witness error frame before it, and the latch after it.
+  - The "Trip 6 latched" in this entry's result is one of these.
+
+**Trip 6 after a re-arm: the first re-arm trips on an expired burst --
+tester, 2026-10-10 19:22, on `cc34c80` `_man`. Result: NOT AS SPECIFIED.**
+- **Spec 7, "How the window moves"** (decided 2026-10-08, user): "Only a
+  recent burst trips ... After a trip 6 latch, a re-arm can therefore go live
+  once the bus has been free of a qualifying burst for 10 s."
+- **Observed** (`runs/trip6_rearm_check_20261010T192221.json`; PCAN interlock
+  slice, status page every 1 s):
+  - Arm 1 was about 100 s after the last error frame (the second calibration
+    ended about 19:20:41). The re-arm cleared the latch: `abort_reason` "" at
+    t = 0.
+  - At +1.04 s, while `inhibit_live` was still false, trip 6 latched again:
+    "error-frame rate exceeded", with `bus_error` 0 and 0 witness error frames
+    since arming. Spec 7 evaluates the trip only while live, so this latch came
+    before the device was ever live. It never went live in 14 s.
+  - Disarmed and re-armed 2 s later (arm 2): live normally, `tx_ok` 1,420 in
+    14 s, no abort.
+  - The second calibration's own arm shows the same. It was latched at arming,
+    4 s before its first burst, about 75 s after the first calibration's flood
+    had ended.
+- So the first re-arm after a trip 6 latch trips once on a burst that has
+  expired, and the following re-arm goes live. Not diagnosed; with the
+  implementor through the reviewer.
+
+**Trip 6 before going live, after a re-arm -- tester, 2026-10-12 17:25-17:26,
+on `dace947` `_man`. Result: AS SPECIFIED in all three judged arms. A3
+latched at the gate and never went live. The error history on the page read
+as specified before each re-arm, and `err_burst` predicted each arm's
+outcome.** Spec 7, "How the window moves" and "Checked before going live"
+(added 2026-10-10, user), and spec 11, "Trip 6's error history is reported"
+(added 2026-10-12, user). This replaces the `fb61892` entry, which the
+reviewer verified and closed on 2026-10-10 against the earlier text
+("checked once live"). Its run files remain
+(`runs/trip6_rearm_check_20261010T200922.json`, `..._201038`).
+- **Image:** `dace947` `_man`, as in the entry "No stale answers on going
+  live, bench half".
+- **Harness:** `trip6_rearm_check.py`, tested by `test_trip6_rearm_check.py`
+  (34 checks, 14 mutants all caught; `runs/test_trip6_rearm_check_20261012.txt`).
+  - The PCAN plays the interlock slice (key on throughout, so no key-off ->
+    key-on edge can clear the history) only while the WiCAN is armed, and
+    witnesses. The Kvaser at 250 kbit is the error source. Only typed PCAN
+    error frames count as wire errors (the 2026-10-10 fixes). The X2 was held
+    in ROM download mode 17:24:45-17:26:14 and read off the wire as
+    `7f197bfd` before and after
+    (`runs/x2_identify_{before_hold_20261012T1724,after_hold_20261012T1726}.txt`).
+  - Sequence:
+    - A0: arm, go live, burst (trip 6 latches), mode 0.
+    - A1: re-arm 15 s after A0's last error frame. Must go live with no trip.
+    - A2: arm, go live, burst, mode 0.
+    - A3: re-arm 2 s after A2's last error frame. Must latch trip 6 when the
+      gate passes and never go live.
+    - A4: re-arm 15 s after A2's last error frame. Must go live.
+  - The status page is polled at 5 Hz, and read once just before each
+    re-arm.
+  - **History**, from that read: in A1 and A4, `err_burst` false and `err_n`
+    0; in A3, `err_burst` true and `err_n` >= 10. In every arm, `err_age_ms`
+    must be within 0.5 s of the time since the witness's last error frame.
+  - **Prediction:** `err_burst` before the arm must match whether trip 6
+    latched in it.
+
+| Arm | Re-armed after the last error | Before the arm: `err_n`, `err_age_ms`, `err_burst` | Outcome | Arm, history, prediction |
+|---|---|---|---|---|
+| A1 | 15.078 s | 0, 15,121, false | live, no abort; 1,195 device `0x051` | as specified (all three) |
+| A3 | 2.047 s | 16, 2,044, true | trip 6 latched; never live in 54 reads; 0 device `0x051` | as specified (all three) |
+| A4 | 15.043 s | 0, 15,040, false | live, no abort; 1,202 device `0x051` | as specified (all three) |
+
+  - A0 and A2: each burst latched trip 6 on a live arm (2,692 and 2,673 wire
+    error frames). Before A0, with no error since boot, `err_age_ms` read
+    `null`, as spec 11 states.
+  - In every judged arm: 0 wire error frames since arming.
+  - Run file: `runs/trip6_rearm_check_20261012T172500.json`.
+- **A3 compared with `fb61892`:** on `fb61892` one A3 of two sent one inhibit
+  frame before the latch, as the then-current text allowed. On `dace947` A3
+  sent none and never read `inhibit_live`.
+- **Observed, not judged: `err_n` read 16 two seconds after a burst of 2,673
+  wire error frames.** Spec 11 defines `err_n` as "the number of error frames
+  recorded in the 10 s before the reading". Whether "recorded" can be fewer
+  than the frames on the wire is put to the reviewer, not read here.
+- **Positive control on `cc34c80`** (2026-10-10,
+  `runs/trip6_rearm_check_20261010T200306.json`, `..._200520`): A1 latched
+  trip 6 on an expired burst and never went live, NOT as specified, in both
+  runs. The check fails on the defect.
+
+**No stale answers on going live, host half -- tester, 2026-10-12, on
+`099e9da`. Result: AS SPECIFIED on the host. The bench half waits for the
+follow-up commit (reviewer, 2026-10-11: do not run `099e9da` on the
+bench).** Spec 7 gate condition 9, and the 12.4 row "no stale answers on
+going live" (host: "a case with frames waiting at go-live").
+- **Harness** (`wican-fw-vtrux` branch `tester/golive-host`, commit
+  `7d9c20c`):
+  - `host_runner`, with `load` on, sets `gi_bus_t.rx_waiting` at each
+    dequeue to the frames still queued behind the one taken, and prints
+    `RXW n=<k>` when it changes. Before this the runner never set the field,
+    so condition 9 could only read "drained" on the host.
+  - Scenario `golive-backlog-held`: truck load (~2250 fps, RX depth 64).
+    `0x617`, the last gate condition, is withheld until 2.767 s. The worker
+    is preempted from 2.7665 to 2.7758 s (9.3 ms), so the `0x617` comes out
+    of the preemption with two VCM `0x051`s queued behind it.
+  - **The backlog is constructed.** 9.3 ms is longer than the 2.39 ms worst
+    WiFi preemption measured (spec 5). It takes two waiting commands to tell
+    a stale answer from a fresh one, because a single waiting command is
+    still the newest when it is answered.
+  - `drained_check.py` judges it against the spec, with no golden:
+    - the first inhibit frame after going live must carry the counter of the
+      newest `0x051` presented by then, plus one. "Presented" means arrived
+      in the device's receive queue (the scenario's own frame times), not
+      dequeued: judged against dequeued frames, a stale answer would pass by
+      construction. The `fb61892` control failing shows the check uses arrival
+      (reviewer, 2026-10-12);
+    - the `rx_waiting` in force when the device went live must be 0;
+    - with no "receive queue not drained" hold, the case is INCONCLUSIVE.
+    - Self-test 16 cases; 14 mutants, all caught
+      (`runs/test_drained_check_20261012.txt`).
+- **Result on `099e9da`: PASS.** Held on "receive queue not drained" from
+  2.775810 s for 0.80 ms while 21 frames drained. Live at 2.776611 s with
+  `rx_waiting` 0. The first inhibit frame answers the newest `0x051`.
+- **Control, the `fb61892` core** (runner built without the field): **FAIL,
+  as required.** Live on the `0x617` with no hold. The first inhibit frame
+  (2.776170 s) carries counter 1, the counter of the newest `0x051`
+  (2.775470 s), so it answers the older command, which the VCM had already
+  passed.
+- **Shim at `099e9da`** (`runs/shim_099e9da_20261011.txt`): all cases pass,
+  among them case 40 ("the inhibit does not go live while frames are
+  queued"), case 39 ("an arm before the worker's first instruction still has
+  a worker to wake") and case 38 ("a real burst before going live still
+  trips (not over-corrected)").
+- **The rest of the host suite at `099e9da`**
+  (`runs/host_suite_099e9da_20261012.txt`):
+  - 78 goldens pass; 22 scenarios are judged without goldens.
+  - `invariants`, `passive_diff`, `fuzz_sequences` (200 sequences),
+    `load_margin` and `bus_on_check` pass.
+  - The 70 goldens that moved change only `diag_schema_ver`, 6 -> 7. The one
+    exception is `load-preempt-rides-through`, which also gains six `RXW`
+    lines (`runs/golden_schema_bump_099e9da_20261012.txt`).
+- **Re-run on `dace947`, the follow-up commit** (branch
+  `tester/golive-host-dace947`; `runs/host_suite_dace947_20261012.txt`,
+  `madhouse-debian`): the same result. `drained_check` PASS (held 0.801 ms
+  while 21 frames drained, live with `rx_waiting` 0, the first inhibit frame
+  answers the newest `0x051`), and the `fb61892` control FAILs as required.
+  78 goldens pass, `spec_expect_check` passes 21 of 21 rows, and the shim
+  passes every case, 40-45 among them. `passive_diff.py` needed one fix for
+  `dace947` (the 11 status page entry).
+- **The bench half:** the next entry.
+
+**No stale answers on going live, bench half -- tester, 2026-10-12
+17:09-17:24 (entries) and 17:29-18:09 (auto-arm boots), on `dace947`.
+Result: AS SPECIFIED. 20 of 20 entries into INHIBIT from OFF, OBSERVE,
+RESPOND and PASSIVE, and 18 auto-arm boots that went live: 0 stale device
+`0x051`.** Spec 7 condition 9, and the 12.4 row "no stale answers on going
+live" (bench).
+- **Image:** `wican-fw_obd_dace947_man.bin`, 1,277,232 bytes, md5
+  `babaa13ea7365fcfccbd3ea07a31190c`.
+  - Built by the tester from a clean tree at `dace947` (`git status` empty),
+    default configuration: no AUTO-ARM line in the build output
+    (`runs/build_default_dace947_20261012.txt`).
+  - OTA'd at 17:02 (`runs/bench_flash_dace947_20261012T1702.txt`: the device
+    reports `dace947`, and the image embeds `dace947`).
+  - **Bring-up 1.5b passed** (`runs/page_only_baseline_20261012T170310.json`):
+    `git_version` `dace947` at uptime 16.3 s and again at 135.4 s, 120 polls,
+    no outage and no reboot, reset reason `"SW"`, rate 1.00008.
+    - *Condition added 2026-10-13, corrected 2026-10-13 (reviewer):* CAN1 also
+      carried the X2's unacknowledged `0x7F4` retries: 3,697 frames/s on the
+      wire, all `0x7F4`, 0 error frames (tester,
+      `runs/bench_census_20261013T232011`, X2 on `7f197bfd`). The X2 counts
+      them as transmit errors (~3.6k/s, interposer report 2026-10-13). The X2
+      was read off the wire as `7f197bfd` before and after
+      (`runs/x2_identify_after_hold_20261010T2012.txt` and
+      `runs/x2_identify_before_hold_20261012T1724.txt`), and the bench lock
+      records no X2 change between; no CAN adapter was open. The WiCAN's CAN
+      driver was not running: `drv` null on every answered poll (120 of 120),
+      so the result does not depend on the bus traffic. *First written as
+      "`0x7F4`-`0x7F7` retries (~3.6k error frames/s)", from the interposer
+      report alone; the wire reading showed one ID and no error frames.*
+- **Rig:** `e4_device_calibration.py`, full-bus replay of
+  `scottsvalley_armable_300s.log` 0-35 s, offset 500 us, PCAN replay, Kvaser
+  witness, 12 V only.
+  - From OFF: armed into INHIBIT 5 s in.
+  - From OBSERVE, RESPOND and PASSIVE: the run starts in that mode, and mode 3
+    is POSTed 20 s in.
+  - Five rounds, the modes interleaved, so a drift over the batch does not
+    land on one mode (`runs/golive_batch_dace947_20261012T1709.txt`).
+- **Judge:** `golive_stale_check.py`, tested by `test_golive_stale_check.py`
+  (15 checks). A device `0x051` is stale when its counter is one the VCM has
+  already passed: delta 0 or 9-15 against the command in front of it. Only
+  frames after the entry are judged
+  (`runs/golive_stale_check_dace947_20261012.txt`).
+
+| Entry from | Arms | Device `0x051` per arm | Stale | Verdict |
+|---|---|---|---|---|
+| OFF | 5 | 2,985 | 0 | as specified |
+| OBSERVE | 5 | 1,496-1,498 | 0 | as specified |
+| RESPOND | 5 | 1,496-1,499 | 0 | as specified |
+| PASSIVE | 5 | 1,498-1,499 | 0 | as specified |
+
+- In all 20 arms: live in INHIBIT at the end with no abort, `tx_fail` 0, 0
+  witness error frames, and uptime continuous across the batch (no reboot).
+- **Auto-arm boots:** 18 boots went live with provenance resolved: the OTA
+  boot, four `/system_reboot` boots under Scotts Valley (section 7 auto-arm
+  entry), and 13 key-on restarts (next entry). In each, the first device
+  `0x051` answered the VCM's newest command, and no later one was stale.
+- **Observed, not judged: two INHIBIT POSTs left no reply on record.** This
+  was OBSERVE arms 1 and 5, and the device still changed mode (live in
+  INHIBIT, page mode 3). The other 13 POSTs from OBSERVE, RESPOND and PASSIVE
+  were answered 200 in 25-55 ms, and the five arms from OFF in 18-60 ms.
+  *Corrected 2026-10-14: this said "the reply never arrived". The record
+  cannot say that.* The POST ran in a thread that caught OSError only, so a
+  cut or malformed reply would have raised an http.client error (IncompleteRead,
+  BadStatusLine, LineTooLong). That error would have ended the thread with no
+  reply recorded, and the batch's output filter dropped the exception line.
+  The follow-up below records each reply whole.
+- **Desk check of the 10-12 POST client, 2026-10-14 (reviewer's request after
+  the user's ruling (b); no bench time). What the code and the record show.**
+  The script that ran is kept as `runs/e4_device_calibration_golive_20261012.py`
+  (sha256 `2453f0cb...`). Line numbers below are in that file. It differs from
+  today's `e4_device_calibration.py` only by the raw-POST patch of 2026-10-14
+  05:30. No other edit was made between the batch and that patch.
+  - **Thread, join, record.** Each scheduled POST is a `ModePoster`
+    (`daemon=True`, 543-560). The replay loop starts it at the first frame at or
+    after 20 s (718-723). `run()` sets `t_start`, calls `gi(..., method="POST")`
+    and sets `t_end` and `status` only when `gi` returns (557-560). The thread is
+    joined only after the 35 s replay has ended, with `join(timeout=10.0)` (753).
+    The join's result is not checked, and `is_alive()` is not recorded. The
+    arm's `post_schedule` entry copies `t_end` and `status` later still, after
+    the quiet wait and the end read of the page (959-961). So the code allows a
+    record to be written while the thread is still waiting: `t_end` and `http`
+    are then `null`, and a later reply is never seen. For that, the exchange
+    must outlast about 25 s (15 s of replay plus the 10 s join) without any one
+    socket operation going 6 s without data.
+  - **Timeouts.** urllib: 6.0 s, `gi`'s default, which `ModePoster` does not
+    override (266, 559). It applies to each socket operation (connect, each
+    read), not to the whole exchange. When it fires, it raises `TimeoutError`
+    (as `URLError` if it fires at connect). Both are OSError, so `gi` catches
+    them and returns `(None, text)`, and `run()` goes on to set `t_end`. The
+    record then reads `http: null` with `t_end` set. The join timeout is 10.0 s
+    (753), and urllib's is the shorter. When the join times out it returns
+    silently: the thread keeps running and nothing is recorded.
+  - **By exception class** (Python 3.14.6, checked on this host).
+    `urllib.error.HTTPError` is caught, and its status is recorded (273-274).
+    Every other OSError is caught and recorded as `http: null` with `t_end` set
+    (275-276); the exception text is discarded (`self.status, _ = ...`). That
+    covers `TimeoutError`, `URLError`, `ConnectionResetError` and
+    `RemoteDisconnected` (a `ConnectionResetError` and a `BadStatusLine` both).
+    `IncompleteRead`, `BadStatusLine`, `LineTooLong` and any other
+    `HTTPException` are not OSError. urllib re-raises an exception from
+    `getresponse()` unwrapped, so these escape `gi` and `run()`, and the thread
+    ends. So does anything else not caught (`ValueError` and so on). On those
+    paths `t_end` and `status` stay `null`, and the only trace is the
+    traceback on stderr. That record is identical to "still running when
+    recorded".
+  - **Arms 1 and 5 against the other 13 scheduled POSTs and the 5 OFF arms**
+    (`golive_1012_reply_desk_check.py`, `runs/golive_1012_reply_desk_check_20261014.txt`):
+    - The record differs only in `post_s[1]` and `http`, both `null`.
+    - The sends started at 19.9999 and 19.9997 s, at replay frame 47,182.
+      That is the same frame as every OBSERVE and PASSIVE entry, and inside
+      the batch's 19.9997-20.0005 s spread.
+    - The device's first `0x051` came 47.1 ms after the send in arm 1 (after 5
+      VCM commands), and 29.6 ms in arm 5 (after 3). In the other 13 scheduled
+      POSTs it came 14.9-40.7 ms after the send, after 1-4 commands. That is
+      the send placed on the witness clock by the provenance fit (residual p50
+      about 280 us), with device frames told by content. On these files the
+      content rule's premise holds: no adjacent identical `0x051` before any
+      of the 20 sends. Its count is one under provenance's in every arm, the
+      last device frame having no command after it.
+    - Nothing else stands out. Arms 1 and 5 had 1,495 and 1,497 device
+      `0x051` and 0 witness error frames. Their end pages read mode 3 and live.
+      Uptime rises through all 20 arms (`reset_reason` SW, no reboot). Neither
+      arm is VOID. No hammer or filler thread ran (`hammer_requests` 0, no
+      flood).
+    - The batch log has a `Traceback (most recent call last):` line under
+      these two arms' headers and under no other arm's
+      (`runs/golive_batch_dace947_20261012T1709.txt` lines 8 and 89). The
+      batch's filter (`grep -i "...\|Traceback\|Error"`) kept only that line.
+      So no other line of either traceback contained "error" in any case,
+      including its last line, which names the exception. That excludes every
+      exception whose name or message holds it: all OSError subclasses,
+      `URLError`, `HTTPError` and `ValueError`. It leaves `IncompleteRead`,
+      `BadStatusLine`, `LineTooLong` and the bare `HTTPException`.
+  - **Reading, as far as the code and the record go.** The thread never came
+    back from `gi`. The code offers two ways for that.
+    - An escaped non-OSError exception. This fits the `Traceback` line seen in
+      exactly these two arms.
+    - Still waiting when the record was written. This fits nothing in the
+      record: a daemon thread still running at exit prints no traceback.
+    - No other thread could have printed it. The main thread completed and
+      wrote the file, the witness counted a normal number of frames, and no
+      hammer or filler ran. Still, the line's header and last line were
+      filtered out, so the record does not tie it to the POST thread by name.
+    - Every exception left by the filter is http.client rejecting the bytes it
+      received: the connection ended before `Content-Length`, or a status line
+      or header that is not HTTP. None of them is raised on a complete,
+      well-formed reply.
+    - So client-side loss of a complete, well-formed reply finds no route in
+      this code that matches the record. What the record cannot decide is
+      which of those exceptions it was, and so how the received reply was
+      short or malformed.
+    - The 2026-10-14 follow-up below reproduced none of this in 30 POSTs (12
+      OBSERVE -> INHIBIT).
+- **Run files:** `runs/e4_golive_{off,observe,respond,passive}_dace947_20261012T1709_arm{1..5}.json`.
+
+**The missing INHIBIT reply, characterised -- tester, 2026-10-14 07:58-08:17,
+on `e998385` `_man`. Result: not reproduced. All 30 POSTs got a complete
+reply: 200, the body matching `Content-Length`, valid JSON, and parsed by
+http.client. That includes 12 OBSERVE -> INHIBIT entries, the transition that
+failed twice in five on 2026-10-12. No RST, no retransmission and no reboot
+were seen.** Reviewer's request, relayed as the user's bench request of
+2026-10-14.
+- **Closed 2026-10-14 by the reviewer, on the user's ruling (a): not reproduced,
+  test-only.** The record is the desk check under the 10-12 go-live bullet above.
+- **Rig:** as the go-live entry above. The full-bus replay is Scotts Valley
+  0-35 s at offset 500 us on the PCAN, with the Kvaser as witness and the
+  WiCAN on 12 V only. **X2 on `7f197bfd`**, its four pages ~1/s each (35-36
+  per entry; ACKed).
+- **Method:** `e4_device_calibration.py --post-raw-timeout 30`. Each
+  scheduled POST goes over a raw socket with urllib's exact request bytes
+  (`raw_http_probe.py`). It records, against the send:
+  - connect, first byte, completion and end;
+  - every received chunk, and how the connection ended;
+  - the headers, `Content-Length` against the body, and whether the JSON
+    parses;
+  - whether http.client would have parsed the reply, and whether the 10-12
+    `except OSError` would have caught its error;
+  - the host's sockets to the device before and after (netstat), and a
+    follow-up GET if a reply fails.
+
+  tshark captured all host traffic to the device on port 80
+  (`runs/reply_golive_e998385_20261014T0758.pcapng`), and
+  `reply_golive_report.py` joins each POST to its TCP stream and the witness
+  log. The harness is tested by `test_raw_http_probe.py` (95 checks),
+  `test_e4_rawpost.py` (39) and `test_reply_golive_report.py` (25), with 37 of
+  37 mutants killed.
+- **Batch:** four interleaved rounds (`runs/reply_golive_batch_e998385_20261014T0758.txt`,
+  the whole console kept).
+
+| Entry | Arms | POSTs | First byte after the send | Complete after the send | Failed |
+|---|---|---|---|---|---|
+| OBSERVE -> INHIBIT | 12 | 12 | 15.1-42.7 ms (median 21.4) | <= 52.8 ms | 0 |
+| RESPOND -> INHIBIT (control) | 6 | 6 | 4.1-18.1 ms (median 7.6) | <= 22.1 ms | 0 |
+| OBSERVE -> RESPOND (driver reinstall, no go-live) | 4 | 4 | 15.8-20.0 ms | <= 52.9 ms | 0 |
+| INHIBIT -> OFF -> INHIBIT (chained, 2 s apart) | 4 | 8 | 5.6-18.1 ms | <= 24.9 ms | 0 |
+
+- **On the TCP side, from the capture, for all 30 POSTs:**
+  - No RST and 0 retransmissions.
+  - No other stream to the device was open at the send.
+  - The device kept the connection open after the reply. The host closed it
+    after its 2 s wait, and the device's FIN followed 4-22 ms later.
+- **Order against the wire:** in OBSERVE -> INHIBIT the reply's first byte
+  came before the first device `0x051` in 8 of 12 entries and after it in 4.
+  The first device `0x051` came 14.6-45.5 ms after the send.
+- **Observed, not judged:**
+  - `e4`'s own per-arm verdict was VOID on every RESPOND, OBSERVE -> RESPOND
+    and chained entry. In each, its frame attribution disagreed with the
+    device's `tx_ok`. That calibration figure is not used here.
+  - All four OBSERVE -> RESPOND entries show `tx_fail` 3-7 on the page at the
+    end, and every other entry shows 0. **Every count is `sched.cls.probe.dropped`**
+    (desk read 2026-10-14 at the reviewer's request, from the run files, no
+    re-run). Per the implementor's source reading, spot-checked by the
+    reviewer, RESPOND's `tx_fail` is the arm's probe `dropped` plus `refused`.
+    It is reset on every arm. `dropped` counts a probe queue (depth 1) that
+    was still full when the next `0x051` came.
+
+| Entry | `tx_fail` | probe `dropped` | probe `refused` | probe `max_hold_us` | telemetry `max_hold_us` | `tx_refused` | probe `carried_in` | `tx_ok` |
+|---|---|---|---|---|---|---|---|---|
+| arm 1 | 7 | 7 | 0 | 27,811 | 4,125 | 0 | 0 | 1,487 |
+| arm 2 | 4 | 4 | 0 | 27,948 | 199,956 | 0 | 0 | 1,491 |
+| arm 3 | 3 | 3 | 0 | 23,911 | 6,024 | 0 | 0 | 1,491 |
+| arm 4 | 4 | 4 | 0 | 27,115 | 8,664 | 0 | 0 | 1,490 |
+
+- The values are from the last page read, about 15 s after the mode 2
+  POST, with the device still in RESPOND. Telemetry and inhibit
+  `dropped`/`refused` are 0 in all four.
+- **When it moved:** the only earlier page in these files is the mode 2
+  POST's own reply body, read as RESPOND began. In all four it reads every
+  one of these counters 0. So the drops happened within the ~15 s of
+  RESPOND before the last read. The runs polled no page between those two
+  reads (`poll_hz` 0), so no finer time is on record.
+- Arm 2's telemetry `max_hold_us`, 199,956 (about 200 ms), is the outlier
+      against 4-9 ms in the others.
+- **Run files:** `runs/reply_golive_{observe3,respond3,observe2,off3}_e998385_20261014T0758_arm*.json`
+  (each with a witness log) and `runs/reply_golive_report_e998385_20261014T0758.{txt,json}`.
+
+**Auto-arm, restart timed to a key-on -- tester, 2026-10-12 17:34-18:08, on
+`dace947_auto`. Result: AS SPECIFIED at all eight offsets, two or more
+resolved runs each. Live 1.25 s after key-on for a restart up to the key-on
+edge, and 1.85-6.86 s for later restarts. The first engine request was held
+in every live run. A restart at +9 s, after the request, never went live,
+and nor did one at +7 s, 0.39-0.41 s before it, while the device was still
+booting.** The 12.4 auto-arm row, "a restart timed to a key-on" (added
+2026-10-10, user), and the spec 13 line "auto-arm, restart at key-on: the
+time from key-on to live is not measured".
+- **Image:** `dace947_auto`, as in section 7's entry "Auto-arm build:
+  boot-to-live on SW boots", which also covers its removal and the
+  confirmation on the wire.
+- **Capture:** `runs/keyon_drivetrainoverheat_70s.log`
+  (`keyon_replay_prep.py`), from the 7.7 s cluster of the deadline sweep
+  (section 7). It starts at its key-on edge, the bus silent for 2 s before
+  it. The VCM first asks for the engine at 7.741 s, and the gate is closed
+  from there to the end (69.999 s). Its contactors close about 1.24 s after
+  the key-on edge.
+- **Method:** `autoarm_boot_to_live.py --reboot-at <offset>`. `/system_reboot`
+  is POSTed so the restart lands at the offset from the key-on edge.
+  Reviewer-approved offsets: -3, -1, 0, +1, +3, +6, +7 and +9 s, one cycle
+  each, then repeated. Offsets 0 and +1 were run again for a second resolved
+  run.
+  - A live run is as specified when it never goes live inside a gate-closed
+    window, and holds the first request if it is live before it.
+  - A run that never goes live is as specified when no gate-open span longer
+    than 1.0 s follows the boot.
+  - **Two caveats (reviewer, 2026-10-10).** First, the gate-closed windows
+    are computed from the capture for conditions 5 and 6 only. So an open
+    span that starts before the contactors close is overstated by up to
+    1.24 s. Second, the 1.0 s threshold is a chosen bound, taken from the
+    0.41-0.58 s SW boot-to-live measured on `f0d25e5`, not a figure from
+    the spec.
+
+| Offset | Restart measured (s from key-on) | Boot -> live | Key-on -> live | First request (7.741 s) | Runs |
+|---|---|---|---|---|---|
+| -3 s | -2.632, -2.634 | 3.884, 3.886 s | 1.2512 s | held | `autoarm_20261012T173440`, `..._174458` |
+| -1 s | -0.620, -0.637 | 1.871, 1.888 s | 1.2512 s | held | `..._173601`, `..._174619` |
+| **0 s** | 0.354, 0.356, 0.355 | 0.897, 0.895, 0.897 s | **1.2512-1.2513 s** | held | `..._174739`, `..._180432`, `..._180707` |
+| +1 s | 1.357, 1.364 | 0.495, 0.488 s | 1.8517 s | held | `..._174857`, `..._180550` |
+| +3 s | 3.359, 3.327 | 0.494, 0.526 s | 3.853 s | held | `..._175014`, `..._180026` |
+| +6 s | 6.307, 6.346 | 0.552, 0.513 s | 6.859 s | held | `..._174109`, `..._175130` |
+| +7 s | 7.348, 7.330 | -- | never live, as specified | not held: the restart came 0.39-0.41 s before it, and the device was still booting when it came | `..._174225`, `..._175247` |
+| +9 s | 9.328, 9.327 | -- | never live, as specified | not held: the restart came after it | `..._174342`, `..._180142` |
+
+- **The 0 s point: a restart exactly at the key-on edge costs nothing.** The
+  device was live 1.2512 s after key-on, the same as when it was already up
+  (-3 s and -1 s). It restarted 0.35 s after key-on and went live 0.90 s
+  later, against 0.49-0.55 s for the restarts from +1 s on, where the boot is
+  what sets the time.
+- **Finding: a restart that lands within about one boot-to-live (~0.5 s)
+  before an engine request misses that request.** At +7 s the restart was at
+  7.330-7.348 s, 0.39-0.41 s before the 7.741 s request. The device was still
+  booting (boot-to-live 0.49-0.55 s for the restarts from +1 s on) when the
+  request closed the gate, and it never went live. As specified under the
+  1.0 s open-span bound: the open span after the boot was 0.39-0.41 s
+  (reviewer, 2026-10-12).
+- **Every live run held the first request.** The VCM asks at 7.741 s; the
+  latest live time was 6.86 s (+6 s), 0.88 s before it.
+- The restart landed 0.31-0.38 s after the nominal offset (the harness times
+  the POST; the device times the restart). The table gives the measured
+  instant.
+- **UNRESOLVED runs, not counted** (8 of 30 auto-arm runs today, the Scotts
+  Valley ones included):
+  - **Seven, before the rig change:** `..._173300`, `..._173721`,
+    `..._173838`, `..._173954`, `..._175403`, `..._175753` and `..._175910`.
+    Each stalled at the restart: provenance found only 199-47,435 of the
+    replayed frames and refused to judge. The two of them that recorded
+    sends (`..._175753`, `..._175910`) had 164,004 and 161,985 failed sends
+    from the restart on: the PCAN went bus-off at the restart's error frames
+    and stayed off, since python-can's PCAN backend does not reset after a
+    bus-off by default. Fixed in the
+    harness as described in section 7: `auto_reset`, recorded send failures,
+    and provenance judged over the frames sent.
+  - **One after it, `..._180826` (+1 s):** one send was reported failed at
+    1.1251 s. Four more replayed frames before it (capture frames 2229-2232:
+    `0x55C`, `0x052`, `0x400`, `0x596`) never reached the wire, without a
+    reported failure. Their payloads recur later, so the in-order walk
+    matched them to later copies and stopped at frame 2,234. The run's
+    "7,584 device `0x051`" and "0.0044 s boot-to-live" come from that
+    misalignment.
+    - Counting `0x051` as a multiset instead: 7,720 on the wire against 6,998
+      in the capture, so 722 from the device, the same as both resolved +1 s
+      runs.
+    - None of the lost frames was a `0x051`.
+    - Inspected with `autoarm_180826_inspect.py`.
+    - **Harness limitation, recorded:** a recorded send failure does not
+      account for every frame lost at a restart.
+- **Observed, not judged: every restart puts error frames on the bus.** The
+  witness saw 131-138 error frames around each of the seven restarts
+  recorded after the rig change, the first 0.24-0.25 s before the computed
+  boot instant. In the two runs where the PCAN went bus-off it saw 32 and 78.
+
+**Test-only features are inert in the build that will fly -- tester,
+2026-10-13 03:51-04:08, on `63eb50f`. Result: PASS on the flight candidate
+for all five test-only switches. Each probe has a positive control on a
+switch-on image, four of them fresh on the same commit. Auto-arm was shown
+both ways. One probe was wrong at first and was caught by its positive
+control (below).**
+Spec 12.4 row "test-only features are inert in the build that will fly" (added
+2026-10-13, user). The design and its two conditions are the reviewer's:
+- the fault-injection control comes from the 2026-10-04 record, with no
+  deliberate rollback while USB is unplugged;
+- after every negative probe the device must be shown to have kept running.
+- **The flight candidate:** the tester's clean-worktree build of `63eb50f`
+  `_man`, md5 `360f1719...`. No prod build of `63eb50f` exists yet; the result
+  carries to one by byte comparison (section 13).
+- **The trigger table:** `TRIGGERS` in the firmware repo's
+  `test/build_checks/build_switches.py` (`tester/build-switches`, `31f59b8`).
+  - For each test-only switch it gives the request, the device state it is
+    sent in, the effect, and the observable.
+  - The switch check fails a test-only switch with no trigger, and a trigger
+    for anything else. 29 mutants, all caught.
+  - `restart_error_frames.py --trigger` and the inert rig both read it.
+- **The rig:** `test_only_inert.py`. The same code runs both ways: `--expect
+  absent` on the flight image, `--expect present` on a switch-on image.
+  - Any undetermined observable fails in either direction: a deaf witness,
+    a state not reached, or no answer.
+  - Absent also needs the device to have kept running across the probe:
+    uptime advanced by the elapsed time within 1.5 s, and the same reset
+    reason and build.
+  - Tested by `test_test_only_inert.py`: 29 checks, 17 mutants, all caught
+    (`runs/test_test_only_inert_mutants_20261013.txt`).
+
+| Switch | Request, state | Flight `63eb50f` (absent) | Positive control |
+|---|---|---|---|
+| `GI_TEST_RESTART_QUIESCE` | `POST /gi_quiesce?crash=illegal` live in INHIBIT under replay (`restart_error_frames.py --trigger`), then `GET /gi_quiesce` | POST 404, GET 404; device live at the POST; no reset, 0 witness error frames; uptime continuous over 80.8 s, reset reason SW; PASS (`..._absent_20261013T035441.json`, crash run `restart_error_frames_live_crash_20261013T035555.json`) | Today's `63eb50f` `_man_rt` acceptance: the same request in the same state reset the device (PANIC) three times (`restart_error_frames_live_crash_20261013T03{3135,3223,3448}.json`) |
+| `GI_INSTRUMENT_TXABORT` | `POST /gi_txabort?phase=control&reps=2&settle=20`, mode 0, the PCAN as the ACKing node, the Kvaser witnessing | 404; 0 tagged frames, with the witness shown listening (16 frames, the X2's); kept running; PASS (`..._absent_20261013T035441.json`) | TXABORT image `b0508bed...`: 200, a 1,582-byte answer, 2 frames tagged `AB 7E`/`AB 7F` on the witness; PASS (`..._present_20261013T035923.json`) |
+| `GI_INSTRUMENT_RXQ` | `GET /gen_inhibit` while live in INHIBIT under replay; the `"rxq":` token at any depth | live, mode 3, no token; kept running; PASS (`..._absent_20261013T040439.json`) | RXQ image `b74948e5...`: live, token present (top level); PASS (`..._present_20261013T040139.json`) |
+| `GI_INSTRUMENT_ABORTWIN` | the same read; the `"abortwin":` token | live, mode 3, no token; kept running; PASS (`..._absent_20261013T040439.json`) | ABORTWIN image `bb951803...`: live, token present (nested, not top level); PASS (`..._present_20261013T040046.json`) |
+| `OTA_HEALTH_FAULT_INJECT` | the OTA of the image, then 70 s with no request, mode 0 | started 91 s after the OTA, i.e. after the 60 s rollback point: build `63eb50f` before and after (the other slot held `dace947`), first reading uptime 91.2 s (no reboot since the OTA boot), then continuous over 72.3 s, reset reason SW; PASS (`..._absent_20261013T035441.json`) | 2026-10-04 rehearsal, `runs/rollback_fault_20261004_235125.json` (PASS); see below |
+
+- **A probe that read nothing, caught by its positive control:**
+  - The first page-key probe looked for the key at the top level of the
+    page only. On the ABORTWIN image it found nothing (FAIL,
+    `..._present_20261013T035957.json`), because `"abortwin"` lives inside
+    the scheduler object. So the flight image's first "absent" for ABORTWIN
+    (`..._absent_20261013T035441.json`) was vacuous, and it is not used.
+  - The probe now looks for the exact `"<key>":` token at any depth
+    (`page_has_key`, with tests, and a mutant restoring the old behaviour
+    caught).
+  - Both page-key switches were re-run in both directions with it. The RXQ
+    run from before the fix (`..._present_20261013T035840.json`) is
+    superseded by `..._040139`.
+- **The fault-injection control, and what it shows:**
+  - The 2026-10-04 rehearsal predates `63eb50f`: image
+    `wican-fw_obd_b492dee_man_flt.bin`, md5 `37077ef0...`, mask 0x01.
+  - It recorded the faulty image's first boot, then a second boot 60.47 s
+    later on a different slot (`ota_0` -> `ota_1`). The device answered
+    afterwards on `b492dee`, the image it had been on before. Both boots were
+    observed on the console over USB.
+  - This probe judges the build and uptime continuity after the wait. In
+    that rehearsal the faulty and previous images had the same version
+    string (`b492dee`), so the build comparison alone would not have seen
+    that rollback. The reboot 60.47 s after the faulty image's boot is what
+    the uptime-continuity check sees.
+  - The flight image exposes no partition field, so the partition is not
+    read here.
+  - **What carries the flight run (reviewer, 2026-10-13):** the 70 s window
+    began 91 s after the OTA, so it opened after the 60 s rollback point, and
+    uptime continuity over the window does not cover that instant.
+    - What covers it is the build check: the image in the other slot, the
+      one a rollback would return to, was `dace947`, read before the OTA
+      (`runs/autoarm_20261013T035242.json`). It differs from `63eb50f`, and
+      the build read `63eb50f` throughout.
+    - The window's first reading also shows no reboot since the OTA:
+      uptime 91,164 ms at 03:54:41.994, reset reason SW. That puts the boot
+      at 03:53:10.830, within 0.08 s of the post-OTA boot that the OTA run
+      measured on its own (03:53:10.754). So there was no reboot between
+      the OTA boot and the window, which covers the rollback point at about
+      03:54:11.
+  - No deliberate rollback was run today, as ruled.
+- **Auto-arm, a shipping variant, both ways:**
+  - Manual flight image: OTA'd under replay, and the device came up in mode
+    0. `restore_unarmed_check.py --expect 63eb50f`: in mode 0 it sent
+    nothing to 1,500 replayed `0x051`; PASS
+    (`runs/restore_unarmed_check_20261013T035415.json`).
+  - My first try at this used `autoarm_boot_to_live.py --expect-no-live`,
+    whose verdict requires mode 3 after the boot: it is the check for an
+    auto image held off by a generator request, not for a manual image. Its
+    "NOT as specified" (`runs/autoarm_20261013T035242.json`) is that misfit,
+    not a finding. Its data agree with the PASS above: no device `0x051`
+    after the boot, 0 witness error frames.
+  - Auto image `63eb50f` `_auto` (`GEN_INHIBIT_AUTOARM=GEN_INHIBIT_INHIBIT`,
+    md5 `42f2c4bd...`): OTA'd under replay, it came up armed and went live
+    0.476 s after the boot, with 4,441 device `0x051` after it; go-live and
+    provenance as specified (`runs/autoarm_20261013T040526.json`). It was
+    then disarmed by a deliberate mode 0 POST for the restore.
+- **Bench incidents:**
+  - 03:51: the first OTA of the flight image never ran (the image path was
+    not converted for Windows). That run is marked VOID
+    (`runs/autoarm_20261013T035111_VOID_path.json`).
+  - 04:02: an OTA of the flight image failed with "Connection was reset",
+    and the PC's WiFi dropped off the device's AP. On rejoining, the RXQ
+    image was still running with uptime continuous (no reboot), and the
+    retry succeeded.
+- **Restored:** to `dace947` `_man` by OTA at 04:06
+  (`runs/bench_flash_restore_dace947_20261013T0406.txt`). On the wire at
+  04:07, in mode 0 it sent nothing to 1,500 replayed `0x051`
+  (`runs/restore_unarmed_check_20261013T040718.json`, PASS).
+- **Run files:** `runs/test_only_inert_{absent,present}_20261013T0*.json`;
+  logs `runs/test_only_inert_{absent,present}_63eb50f_20261013.txt` and
+  `runs/test_only_inert_pagekey_rerun_63eb50f_20261013.txt`; OTA logs
+  `runs/bench_flash_63eb50f_*_20261013T0*.txt`;
+  `runs/inert_63eb50f_{flight_ota,autoarm}_20261013.txt`.
+
+**No error frames at a restart -- tester, 2026-10-13 03:28-03:37, on
+`63eb50f` `_man_rt` (the restart test build of `gen-inhibit/main`). Result:
+PASS. 3 live `/system_reboot` and 3 live forced crashes, each while live in
+INHIBIT under replayed traffic, put 0 error frames on the witness, and every
+restart record shows the step ran.**
+Spec 12.4 row "no error frames at a restart" (added 2026-10-13, user) and spec 3
+"No restart leaves the controller on the bus". The plan is the reviewer's.
+- **Build:** commit `63eb50f`, built with `-DGI_TEST_RESTART_QUIESCE=1`.
+  - The tester built it from a clean worktree: md5 `87b3662f...`. The
+    implementor's image (`9062cf2c...`) is the same size. It differs only in
+    the compile time and the ELF hash in the app descriptor, and in the image
+    checksum and hash at the end.
+  - The tester's switch-off build of the same commit is md5 `360f1719...`.
+    On it, `build_output.py`'s "the private TWAI abort is confined" row
+    passes (exactly one site, in `gen_inhibit.c`). That row failed on
+    `42a860d` (entry under 12.3).
+- **Control tie:** one live `/system_reboot` on `dace947` `_man` at 03:28,
+  same rig and session, put 135 error frames on the witness
+  (`runs/restart_error_frames_live_20261013T032846.json`). The 089cd21
+  trial's six hook-off restarts gave 132-139.
+- **The way back first:** OTA from `dace947` to the test build (`ota_1`),
+  then a self-OTA through the same path (`ota_0`, uptime reset, record
+  `entries` 1); `runs/bench_flash_63eb50f_rt_20261013T{0329,0331}.txt`.
+- **Rig:** `restart_error_frames.py` as in the trial entry below, with no
+  hook switch. Crashes used `POST /gi_quiesce?crash=illegal`. The record was
+  read with `GET /gi_quiesce` after each restart. One cycle per run, in the
+  order reboot, crash, crash, reboot, reboot, crash, then a mode 0 reboot.
+  12 V only, USB unplugged; the X2 on `7f197bfd`, untouched.
+
+| Restart (`restart_error_frames_...`) | Condition | Entries | `did_twai` / `did_stdby` | `aborts` | `wait_us` / `timed_out` | Status at entry / at reset | Reset reason | Boot after the POST | Error frames | PCAN failed sends | Lost (non-`0x051`) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `live_20261013T033047` | live, reboot | 2 | 1 / 1 | 0 | 110 / 0 | `0x01c` / `0x00d` | SW | 2.349 s | 0 | 0 | 0 |
+| `live_crash_..._033135` | live, panic | 3 | 1 / 1 | 0 | 0 / 0 | `0x00f` / `0x00f` | PANIC | 0.606 s | 0 | 0 | 0 |
+| `live_crash_..._033223` | live, panic | 4 | 1 / 1 | 0 | 94 / 0 | `0x01f` / `0x00f` | PANIC | 0.610 s | 0 | 0 | 0 |
+| `live_..._033311` | live, reboot | 5 | 1 / 1 | 0 | 0 / 0 | `0x00c` / `0x00c` | SW | 2.359 s | 0 | 0 | 0 |
+| `live_..._033359` | live, reboot | 6 | 1 / 1 | 0 | 0 / 0 | `0x00c` / `0x00c` | SW | 2.358 s | 0 | 0 | 0 |
+| `live_crash_..._033448` | live, panic | 7 | 1 / 1 | 0 | 0 / 0 | `0x00f` / `0x00f` | PANIC | 0.606 s | 0 | 0 | 0 |
+| `off_..._033536` | mode 0, reboot | 8 | 1 / 1 | 0 | 42 / 0 | `0x01c` / `0x00c` | SW | 2.342 s | 0 | 0 | 0 |
+
+  - **Witness:** no error frame anywhere in the 40 s of any of the 7 runs.
+    The `0x051` lower bound was 0 in all, and the PCAN's status read OK at
+    the end of every run.
+  - **Records:** the device read live before the POST in all 6 live runs.
+    `entries` moved by exactly 1 per restart. `tec` and `rec` at entry were
+    0 throughout. The build after every restart was `63eb50f`, on `ota_0`.
+  - **`aborts` read 0 in every restart:** no frame of ours was awaiting the
+    bus when the step ran. So the abort path the step goes through was not
+    exercised in these runs.
+- **"Both stay that way until the driver is installed again" (spec 3),
+  recorded:**
+  - `at_app_start` after every one of the 7 restarts: `stdby_out` 1,
+    `stdby_oe` 1, `twai_clk` 1, `twai_rst` 0, `twai_in_reset` 1, `tec` 0.
+  - `pre_install` was null after every restart in the batch. The manual
+    image boots OFF and no driver was installed before the next restart, as
+    the build message says.
+  - To read it once: after the mode 0 reboot, mode 3 was POSTed at uptime
+    49.25 s and mode 0 again 2 s later. `pre_install` (t 49.273 s,
+    immediately before that boot's first driver install) read `stdby_out` 1,
+    `stdby_oe` 1, `twai_in_reset` 1, status `0x01c`, `tec` 0
+    (`runs/quiesce_pre_install_read_63eb50f_20261013.json`).
+- **Every WiCAN frame after the POST** (reviewer's item 4;
+  `runs/restart_device_frames_63eb50f_20261013.{json,txt}`). Ids are taken
+  from `vtrux-wican-diag.dbc`, plus device `0x051` by the equal-B5 rule. The
+  X2's `0x7F4`-`0x7F7` are not counted.
+  - The last WiCAN frame before each restart was a device `0x051`, 222-276 ms
+    before the computed boot: POST +2121 to +2130 ms for reboots (the
+    `dace947` control included), POST +330 to +337 ms for panics.
+  - No WiCAN frame in the 1 s after the computed boot in any run.
+  - The mode 0 run had no WiCAN frame after the POST.
+- **The self-OTA's restart, recorded:** in mode 0 with no driver installed,
+  the record read status `0x05f` (ES set) and `rec` 129 at entry, with
+  `did_twai` 1.
+- **Restored:** to `dace947` `_man` by OTA at 03:37
+  (`runs/bench_flash_restore_dace947_20261013T0337.txt`). On the wire at
+  03:37, in mode 0 it sent nothing to 1,500 replayed `0x051`
+  (`runs/restore_unarmed_check_20261013T033736.json`, PASS). The page reads
+  `dace947`, and `/gi_quiesce` answers 404.
+- **Run files:** `runs/restart_error_frames_{live,live_crash,off}_20261013T03[2-5]*.json`
+  with their witness logs; batch log
+  `runs/restart_quiesce_63eb50f_batch_20261013.txt`; summary
+  `runs/quiesce_63eb50f_summary_20261013.jsonl`.
+
+**Restart-quiesce trial: the hook on and off at a live restart -- tester,
+2026-10-13 00:55-01:07, on the trial image `089cd21` `_man`. Result, observed
+and not judged against a spec section (none governs it yet): with the hook
+on, six live restarts (three `/system_reboot`, three forced panics) put 0
+error frames on the wire and lost no replayed frame. With it off, six
+interleaved live restarts put 132-139 error frames on the wire each, the same
+burst as `dace947`.**
+The user asked (2026-10-13, via the reviewer) for the trial to show this
+before any spec text is written. The plan is the reviewer's.
+- **Build:** commit `089cd21` on `gen-inhibit/trial-restart-quiesce`, off
+  `ad80037`, built with `-DGI_TRIAL_RESTART_QUIESCE=1`.
+  - The tester built it from a clean worktree: md5 `045cfc2d...`. The
+    implementor's image (md5 `b3e92a7c...`) is the same size. It differs in
+    69 bytes: the compile time (offset `0x73`) and the ELF hash (`0xb0`) in
+    the app descriptor, and the image checksum and hash at the end.
+  - Interface from the implementor's build message:
+    - `POST /gi_quiesce?hook=1|0` sets the switch, and the page field
+      `quiesce_hook` reports it;
+    - `quiesce_entries` counts the hook's entries;
+    - `POST /gi_quiesce?crash=illegal` panics 300 ms after answering;
+    - `GET /gi_quiesce` returns the last restart's record and a snapshot
+      taken before `app_main` (`at_app_start`).
+- **The way back, proved first.** The trial went on by OTA from `dace947`
+  (`runs/bench_flash_trial_089cd21_20261013T0055.txt`). It read `089cd21`,
+  `ota_running` `ota_0`, mode 0, `drv` null, `quiesce_entries` 0.
+  - It was then flashed onto itself through the same upload path
+    (`runs/bench_flash_selfota_089cd21_20261013T0056.txt`).
+  - After that it read `ota_1`, uptime 7.7 s, `089cd21`, and
+    `quiesce_entries` 1. The partition change shows the write was real.
+  - Reads: `runs/quiesce_read_after_{trial_ota,selfota}_20261013.json`.
+- **Rig:** `restart_error_frames.py` as in the entry below (the PCAN replays
+  0-40 s with `auto_reset`; the Kvaser witnesses; the page is polled at
+  5 Hz; mode 3 at 5 s for live; the restart at 20 s), with the options added
+  for this trial. Tested by `test_restart_error_frames.py`: 22 checks,
+  15 mutants, all caught (`runs/test_restart_error_frames_hook_20261013.txt`).
+  - `--hook on|off` sets the switch in mode 0 before each cycle. It refuses
+    the cycle unless the page reads it back as requested.
+  - Each cycle is judged by the last readback before the restart POST.
+  - `--restart crash` POSTs the crash trigger instead of `/system_reboot`.
+  - After each restart the cycle records `GET /gi_quiesce`, the build and the
+    reset reasons.
+  - One cycle per run, interleaved:
+    - live reboots: on, off, off, on, on, off;
+    - live crashes: on, off, off, on, on, off;
+    - mode 0 reboots: on, off.
+  - 12 V only, USB unplugged; the X2 on `7f197bfd`, untouched.
+  - The first cycle's `GET /gi_quiesce` failed: Git Bash rewrote the path
+    argument. Its record was read before any further restart
+    (`runs/quiesce_read_after_live_hookon_20261013T005557.json`). The batch
+    then ran with `MSYS_NO_PATHCONV=1`.
+
+| Restart (`restart_error_frames_...`) | Condition | Hook readback | Entries | `did_twai` / `did_stdby` | `wait_us` / `timed_out` | Status at entry / at reset | Reset reason | Boot after the POST | Error frames | First / last relative to the boot | PCAN failed sends | Lost (non-`0x051`) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `live_hookon_20261013T005557` | live, reboot | on | 1 -> 2 | 1 / 1 | 64 / 0 | `0x01c` / `0x00d` | SW | 2.335 s | 0 | -- | 0 | 0 |
+| `live_hookoff_..._005712` | live, reboot | off | 2 -> 3 | 0 / 0 | 0 / 0 | `0x01c` / `0x000` | SW | 2.327 s | 134 | -0.221 / -0.187 s | 0 | 0 |
+| `live_hookoff_..._005801` | live, reboot | off | 3 -> 4 | 0 / 0 | 0 / 0 | `0x00c` / `0x000` | SW | 2.355 s | 135 | -0.220 / -0.192 s | 0 | 0 |
+| `live_hookon_..._005850` | live, reboot | on | 4 -> 5 | 1 / 1 | 50 / 0 | `0x01c` / `0x00d` | SW | 2.342 s | 0 | -- | 0 | 0 |
+| `live_hookon_..._005939` | live, reboot | on | 5 -> 6 | 1 / 1 | 58 / 0 | `0x01c` / `0x00d` | SW | 2.338 s | 0 | -- | 0 | 0 |
+| `live_hookoff_..._010027` | live, reboot | off | 6 -> 7 | 0 / 0 | 0 / 0 | `0x00c` / `0x000` | SW | 2.340 s | 132 | -0.224 / -0.193 s | 0 | 0 |
+| `live_hookon_crash_..._010116` | live, panic | on | 7 -> 8 | 1 / 1 | 0 / 0 | `0x00f` / `0x00f` | PANIC | 0.625 s | 0 | -- | 0 | 0 |
+| `live_hookoff_crash_..._010205` | live, panic | off | 8 -> 9 | 0 / 0 | 0 / 0 | `0x00f` / `0x000` | PANIC | 0.608 s | 138 | -0.220 / -0.187 s | 0 | 0 |
+| `live_hookoff_crash_..._010254` | live, panic | off | 9 -> 10 | 0 / 0 | 0 / 0 | `0x01f` / `0x000` | PANIC | 0.614 s | 132 | -0.224 / -0.197 s | 1, at +0.371 s | 6 |
+| `live_hookon_crash_..._010343` | live, panic | on | 10 -> 11 | 1 / 1 | 0 / 0 | `0x00f` / `0x00f` | PANIC | 0.607 s | 0 | -- | 0 | 0 |
+| `live_hookon_crash_..._010431` | live, panic | on | 11 -> 12 | 1 / 1 | 148 / 0 | `0x01f` / `0x00f` | PANIC | 0.622 s | 0 | -- | 0 | 0 |
+| `live_hookoff_crash_..._010520` | live, panic | off | 12 -> 13 | 0 / 0 | 0 / 0 | `0x01f` / `0x000` | PANIC | 0.606 s | 139 | -0.224 / -0.191 s | 0 | 0 |
+| `off_hookon_..._010609` | mode 0, reboot | on | 13 -> 14 | 1 / 1 | 0 / 0 | `0x00f` / `0x00f` | SW | 2.327 s | 0 | -- | 0 | 0 |
+| `off_hookoff_..._010657` | mode 0, reboot | off | 14 -> 15 | 0 / 0 | 0 / 0 | `0x00c` / `0x000` | SW | 2.338 s | 0 | -- | 0 | 0 |
+
+  - **Entries:** `quiesce_entries` moved by exactly 1 per restart in all 14,
+    on the page and in the record (`entries`). The record's `hook` matched
+    the readback in every cycle.
+  - **Hook state:** every cycle read the hook back as requested before the
+    POST. After every boot it read off: the switch did not persist, as the
+    build message says.
+  - **Error counters:** `tec` and `rec` at entry were 0 in all 14.
+    `timed_out` was 0 in all 14; `wait_us` was 0-148.
+  - **Reset reasons and partition:** SW after every `/system_reboot` and
+    PANIC after every crash (page and record agree). `ota_running` was
+    `ota_1` and the build `089cd21` after every restart.
+  - **Live before every restart:** the device read live before the POST in
+    all 12 live cycles. Every live cycle with the hook on gave no error frame
+    anywhere in the 40 s.
+  - **The bursts with the hook off** have the same timing relative to the
+    boot as on `dace947` (first frame 0.220-0.224 s before the boot, span
+    27.7-34.2 ms, a clump of 128-129 then single frames, except
+    `..._010254`: clumps of 31 and 98).
+  - **Boot timing:** the panics booted 0.606-0.625 s after the POST, against
+    2.326-2.355 s for the reboots. The trigger answers and panics 300 ms
+    later.
+  - **The one loss:** `..._010254` (off, panic) had 1 PCAN failed send at
+    +0.371 s on the send clock. The burst started at +0.390 s on the wire
+    clock. 6 replayed frames other than `0x051` never reached the wire (one
+    each of `052`, `054`, `400`, `440`, `596`, `18FFD4B3`). The `0x051`
+    lower bound was 0 in all 14. `restart_loss_windows.py`'s fixed windows
+    assume a 2.3 s boot, so they do not place a panic's losses, and are not
+    used here. The PCAN's status read OK at the end of every run.
+- **`at_app_start`, the snapshot before `app_main`:**
+  - after every hook-on restart (live or mode 0): `stdby_out` 1, `stdby_oe` 1,
+    `twai_clk` 1, `twai_rst` 0, `twai_in_reset` 1, `tec` 0;
+  - after every live hook-off restart: `stdby_out` 0, `stdby_oe` 1,
+    `twai_in_reset` 0;
+  - after the mode 0 hook-off restart: `stdby_out` 1, `twai_in_reset` 1. Its
+    record shows the controller already in reset at entry
+    (`in_reset_at_entry` 1), which no other cycle shows;
+  - after the OTA from `dace947` (no hook in the restarting image):
+    `stdby_out` 1, `twai_clk` 1, `twai_in_reset` 0, status `0x04f`.
+- **Observed against the reviewer's expectations, as stated in the plan:**
+  - Met:
+    - hook on while live gave `did_twai` 1, `did_stdby` 1, 0 error frames,
+      0 failed sends, and `at_app_start` with `stdby_out` 1, `stdby_oe` 1 and
+      the controller in reset mode;
+    - hook off reproduced the burst, with `did_twai` 0;
+    - no `timed_out`.
+  - Not met: **in mode 0 with the hook on, `did_twai` read 1, not 0.** At
+    entry that cycle read `twai_clk` 1, `twai_rst` 0, `in_reset_at_entry` 0,
+    status `0x00f`. In mode 0 the controller's clock was on and the
+    controller was out of reset at the hook. Both mode 0 restarts gave 0
+    error frames, as on `dace947`.
+  - `quiesce_entries` after the OTA from `dace947` read 0, not null. That
+    boot was a SW reset from an image without the hook, not a power-on.
+- **Not in scope, and not seen:** no failed boot. No reset reason other than
+  the one triggered. No partition change other than the two OTAs.
+- **Restored:** to `dace947` `_man` (md5 `babaa13e...`) by OTA at 01:08
+  (`runs/bench_flash_restore_dace947_20261013T0109.txt`). Confirmed on the
+  wire at 01:09: in mode 0 it sent nothing to 1,500 replayed `0x051`
+  (`runs/restore_unarmed_check_20261013T010852.json`, PASS). The page reads
+  `dace947`, mode 0, `drv` null, and none of the trial's fields.
+- **Run files:** `runs/restart_error_frames_{live,off}_hook{on,off}[_crash]_20261013T*.json`
+  with their witness logs; batch log `runs/restart_quiesce_batch_20261013.txt`;
+  per-cycle summary `runs/quiesce_trial_summary_20261013.jsonl`
+  (`quiesce_trial_summary.py`).
+
+**Error frames at a WiCAN restart, characterised -- tester, 2026-10-12
+19:37-19:42, on `dace947` `_man`. Result, observed and not judged: the burst
+comes only when the controller is active at the restart. Three live INHIBIT
+restarts gave 107-133 error frames each, from about 0.22 s before the
+computed boot instant; three mode 0 restarts (driver not installed) gave 0.**
+The user ruled (2026-10-12, via the reviewer) that the burst first seen in the
+auto-arm runs be characterised before the truck, without changing the image.
+No spec section governs it.
+- **Rig:** `restart_error_frames.py`, tested by `test_restart_error_frames.py`
+  (16 checks; 9 mutants, all caught; `runs/test_restart_error_frames_20261012.txt`).
+  - The PCAN replays `scottsvalley_armable_300s.log` 0-40 s with
+    `auto_reset`, recording every send and every failed send. The Kvaser
+    witnesses, recording error frames by hardware timestamp. The page is
+    polled at 5 Hz.
+  - Live: mode 3 POSTed 5 s in; the device read live before the restart in
+    all three.
+  - `/system_reboot` is POSTed 20 s in. The manual image boots OFF, so the
+    device is silent after every restart.
+  - Boot instant: the median of (read time - `uptime_ms`) over the reads
+    after the restart. The witness clock is tied to the host by the replay.
+  - The six restarts alternated conditions (off, live, off, live, off, live);
+    12 V only, USB unplugged; the X2 on `7f197bfd`, untouched.
+
+| Restart | Condition | Error frames | First / last after the POST | First / last relative to the boot | Span | Clumps (gap > 1 ms) | Largest gap | PCAN failed sends |
+|---|---|---|---|---|---|---|---|---|
+| `restart_error_frames_off_20261012T193749` | mode 0, `drv` null | 0 | -- | -- | -- | -- | -- | 0 |
+| `..._live_20261012T193837` | live INHIBIT | 129 | +2.107 / +2.134 s | -0.221 / -0.194 s | 26.8 ms | 5: 1, 24, 85, 18, 1 | 7.33 ms | 2, at +2.088 and +2.102 s |
+| `..._off_20261012T193925` | mode 0 | 0 | -- | -- | -- | -- | -- | 0 |
+| `..._live_20261012T194014` | live INHIBIT | 133 | +2.101 / +2.126 s | -0.217 / -0.193 s | 24.5 ms | 6: 128 then five single frames | 4.26 ms | 0 |
+| `..._off_20261012T194102` | mode 0 | 0 | -- | -- | -- | -- | -- | 0 |
+| `..._live_20261012T194150` | live INHIBIT | 107 | +2.107 / +2.136 s | -0.220 / -0.191 s | 28.8 ms | 5: 1, 24, 31, 21, 30 | 6.48 ms | 4, +2.088 to +2.114 s |
+
+  - The mode 0 restarts had no error frame anywhere in the 40 s. The live
+    ones had none outside the burst.
+  - The burst begins about 2.10 s after the POST and ends about 0.19 s
+    before the boot instant, so it falls in the restart, not in the boot.
+    The boot came 2.318-2.328 s after the POST in five restarts.
+- **Replayed frames lost, now that the PCAN has `auto_reset`:**
+  - in the two live restarts where sends failed: 45 and 66 frames, other
+    than `0x051`, never reached the wire (an exact count per id and
+    payload);
+  - none in the live restart without failed sends, and none in any mode 0
+    restart;
+  - by the `0x051` lower bound, 0 commands lost in every run. One of the
+    third live run's failed sends was a `0x051`, so it sent 3,999 commands
+    rather than 4,000;
+  - per-window counts (`restart_loss_windows.py`,
+    `runs/restart_loss_windows_20261012.jsonl`) put the net loss between
+    1.5 and 3.5 s after the POST (49 and 72 there, against boundary noise of
+    up to 19 in the clean runs). That is the restart, where the failed sends
+    are. The harness's own "in restart window" field undercounts and is not
+    used: its 0.1 s witness slack lets a repeated payload stand in for a
+    lost one.
+  - The PCAN's status read OK at the end of every run.
+- **Observed, not explained:** the first mode 0 restart computed its boot
+  4.457 s after the POST, against 2.318-2.328 s for the other five. Its
+  reads after the restart are self-consistent (uptime rising at 1.00 s/s,
+  reset reason SW). With the driver not installed there is no wire signal to
+  check it against.
+- **Not done, as ruled:** no stock firmware was flashed for comparison (the
+  WiCAN is on 12 V with USB unplugged, and stock v4.13 has the OTA defects).
+- **Run files:** `runs/restart_error_frames_{off,live}_20261012T19*.json`
+  with their witness logs; batch log `runs/restart_error_frames_batch_20261012.txt`.
+
+**Re-arm into INHIBIT from each mode, and OFF entry -- tester, 2026-10-10
+18:52-19:06, on `cc34c80` `_man` (reviewer's before-and-after set for the
+re-arm finding). Result: the stale burst follows leaving OBSERVE only.**
+- **Rig:** as the quiesce arms (Scotts Valley, 35 s, offset 500), with the
+  source mode armed before the replay.
+  - Re-arm arms: the mode is POSTed into INHIBIT 20 s in, the same timing in
+    every arm (`--post-schedule 20:3`, starting mode OBSERVE, PASSIVE or
+    RESPOND).
+  - RESPOND as the starting mode uses capture 20-55 s; e4 fixes RESPOND's
+    window start.
+  - OFF entries: INHIBIT POSTed 5 s into the replay (`--arm-after 5`).
+  - Two INHIBIT -> OBSERVE -> INHIBIT arms polled the status page at 1 Hz
+    (`--poll-hz 1`, which records `mode` and `self_off` each time), a
+    separate condition.
+  - Two sets, interleaved within each.
+- **No panic** in any of the 18 arms: uptime continuous, POWERON unchanged
+  (`runs/rearm_uptime_20261010T185231.json`, `runs/rearm2_uptime_20261010T185947.json`).
+
+| Into INHIBIT from | Arms | Live after the POST | Stale or late device `0x051` (provenance) | `rx_missed` / `unverified_max_backlog` |
+|---|---|---|---|---|
+| OBSERVE (unpolled) | 5 | 61-87 ms | stale 5/5, late 3/5 | 28, 28, 2, 5, 0 / 29-39 |
+| OBSERVE (I -> O -> I, polled 1 Hz) | 2 | 61, 65 ms | stale 2/2, late 1/2 | 27, 0 / 31, 8 |
+| PASSIVE | 3 | 15.4-15.5 ms | none | 0 / 0-2 |
+| RESPOND | 3 | 21-40 ms | none | 0 / 0 |
+| OFF (POST at 5 s) | 5 | 150.6-150.9 ms | none | 0, 0, 0, 8, 0 / 0-1 |
+
+- **The stale burst is tied to leaving OBSERVE (listen-only).**
+  - Every one of the ten OBSERVE -> INHIBIT re-arms of the day sent stale
+    answers: the three quiesce arms above plus these seven.
+  - A late frame reached the wire in 6 of the 10, and the device counted a
+    late skip for 2 of those 6.
+  - PASSIVE and RESPOND re-armed cleanly, as did OFF.
+- **OFF entry (implementor's prediction, pinned before the run):** "OFF
+  overflows sometimes, but sends no stale answer, because it isn't live until
+  about 150 ms in". Confirmed: it overflowed in 1 of 5 (`rx_missed` 8,
+  `ctr_bad` 1), sent no stale or late answer in any of the 5, and went live
+  150.6-150.9 ms after the POST. The mode-entry arms add 3 of 3 clean.
+- **`self_off` during OBSERVE** (the two polled arms): every sample in the
+  OBSERVE span read mode 1 with `self_off` "". Not a finding (reviewer,
+  2026-10-10): spec 8's report is for a quiesce that forces mode OFF, and a
+  requested OBSERVE is not that, so "" is correct there.
+- **Analysis files:** `runs/rearm_analysis_20261010T185231.jsonl`,
+  `runs/rearm2_analysis_20261010T185947.jsonl`,
+  `runs/rearm2_off_entry_20261010T185947.jsonl`.
+- **Run files:** `runs/e4_rearm_*_20261010T185231_arm{1..9}.json` and
+  `runs/e4_rearm2_*_20261010T185947_arm{1..9}.json`, with their witness logs.
+
+**PASSIVE on the wire -- tester, 2026-10-10 18:35-18:41, on `cc34c80` `_man`.
+Result: as specified.** Spec 3.1, judged against the 12.4 wording as the
+reviewer ruled. Listed in spec 13 as "bench, no harness".
+- **Rig:**
+  - `e4_device_calibration.py --mode passive` (new), PCAN replay, Kvaser
+    witness, X2 app running, 12 V only, offset 500.
+  - Six 30 s arms of `truck_passive2.log` 0-30 s, PASSIVE and INHIBIT
+    interleaved (P, I, I, P, P, I). This window ends with the recorded engine
+    start, so it exercises the engine-turning trip.
+  - One pair on `scottsvalley_armable_300s.log` 0-30 s, which stays live
+    throughout.
+- **Analysis:** `passive_analysis.py`, tested by `test_passive_analysis.py`
+  (6 checks, 4 mutants); results in `runs/passive_analysis_20261010T183526.jsonl`.
+  - The diag pages are decoded off the wire with the DBC.
+  - Within each arm, the counter's rise between consecutive pages is set
+    against the replayed commands the witness saw in that interval (by
+    provenance). The counter is `diag_would_tx` in PASSIVE and `diag_tx_ok` in
+    INHIBIT, so both modes are judged by one method.
+  - Intervals: FULL (rise = commands +/-1), IDLE, PARTIAL (allowed only at the
+    edges of the live span) and OVER (never allowed).
+
+| Arm | Device `0x051` (provenance) | Counter rise in this arm | Intervals: full / idle / partial / over; sum of (rise - commands) over full | First page with `abort_latched`: replay index, s |
+|---|---|---|---|---|
+| PASSIVE tp2 (1) | 0 | would_tx +670 | 4 / 19 / 2 / 0; 0 | 18,112, 7.71 |
+| INHIBIT tp2 (2) | 670 (= `tx_ok`) | tx_ok 670 | 5 / 18 / 1 / 0; 0 | 17,988, 7.66 |
+| INHIBIT tp2 (3) | 670 | tx_ok 670 | 5 / 18 / 1 / 0; 0 | 17,934, 7.64 |
+| PASSIVE tp2 (4) | 0 | would_tx +670 | 5 / 18 / 1 / 0; 0 | 17,014, 7.25 |
+| PASSIVE tp2 (5) | 0 | would_tx +670 | 5 / 18 / 1 / 0; 0 | 16,386, 6.98 |
+| INHIBIT tp2 (6) | 670 | tx_ok 670 | 4 / 19 / 1 / 0; 0 | 16,283, 6.94 |
+| PASSIVE sv (7) | 0 | would_tx +2,985 | 24 / 0 / 0 / 0; 0 | never latched |
+| INHIBIT sv (8) | 2,985 | tx_ok 2,985 | 23 / 0 / 0 / 0; 0 | never latched |
+
+- **Never transmits `0x051`:** 0 device `0x051` in all four PASSIVE arms by
+  provenance, with every replayed frame found. `tx_ok` was 0.
+- **The would-transmit count equals the commands seen while would-be live, in
+  the same arm.**
+  - In every full interval of every PASSIVE arm the rise equalled the
+    commands exactly (sum of the differences 0), with no OVER interval, and
+    partial intervals only where the live span starts or ends.
+  - Each PASSIVE arm added exactly what INHIBIT transmitted on the same
+    window (670; 2,985). That is a cross-arm agreement only, not the
+    criterion.
+- **Releases and trips as INHIBIT reports them:** the same `(arm_block,
+  abort_reason)` sequence in every tp2 arm of both modes.
+  - First block 0 (`GI_BLOCK_NONE`, the gate satisfied). In PASSIVE arm 1 the
+    first page came early enough to catch block 2, "gate not yet evaluated",
+    before it.
+  - Then block 14 (`GI_BLOCK_ABORTED`) with abort 5
+    (`GI_ABORT_ENGINE_TURNING`, "engine turning while armed").
+  - The latch page lands at replay index 16,283-18,112 across both modes. The
+    spread is within one diag page period (about 1.2 s, about 2,800 frames),
+    which is the resolution this method has.
+  - On Scotts Valley, both modes stayed live with no block or abort.
+- **Readable from the frames alone:** `diag_mode` reads 4 in PASSIVE and 3 in
+  INHIBIT on every `0x7F1`. The would-transmits are on `0x7F8`
+  (`diag_would_tx`), separate from `diag_tx_ok`.
+- **Observed, not judged:** `diag_would_tx` is cumulative, never reset. It read
+  670, 1,340 and 2,010 at the end of the successive PASSIVE arms, and 4,995
+  after the Scotts Valley one. It kept its value through the INHIBIT arms in
+  between (the status page read 4,995 at 18:41 in mode 0). The skip counters
+  are documented as resetting on a re-arm; neither spec 3.1 nor the DBC
+  comment says whether this one should.
+  - The reviewer confirmed it in the source: `gi_reset_stats()` clears
+    `tx_ok` and the skips on arming, not `would_tx`. With the spec silent, it
+    is a spec gap for the user.
+  - The result above stands either way: the interval method uses the rise
+    between pages, which a counter that never resets does not affect.
+- **Run files:** `runs/e4_passive_{passive,inhibit}_{tp2,sv}_20261010T183526_arm{1..8}.json`
+  and their witness logs.
+
+**OBSERVE is listen-only in hardware -- tester, 2026-10-10, on `cc34c80`
+`_man`. Result: as specified.** This is the spec 12.4 row; spec 13 lists it
+as "bench, no harness".
+- **Harness:** `observe_ack_probe.py`, tested by
+  `test_observe_ack_probe.py` (12 checks, 5 mutants caught).
+- **Run file:** `runs/observe_ack_probe_20261010T170140.json`.
+- **The WiCAN as the only possible ACKer:**
+  - the Kvaser CLOSED (it ACKs whenever it is open);
+  - the X2 held off the bus (below);
+  - the Innomaker on the X2's CAN2, not this segment;
+  - the PCAN as the transmitter, opened fresh for each arm, sending one
+    `0x6A5` frame and reading its own status 0.5 s later.
+- **Supply:** 12 V only, USB unplugged.
+
+| Arm | Page (mode, `drv.state`) | PCAN status | Verdict |
+|---|---|---|---|
+| mode 0, the control | 0, null | BUSHEAVY (ACK errors) | nothing else ACKs, so the run is valid |
+| OBSERVE | 1, running | BUSHEAVY | as specified |
+| RESPOND | 2, running | OK (ACKed) | as specified |
+| OBSERVE | 1, running | BUSHEAVY | as specified |
+| mode 0, the control | 0, null | BUSHEAVY | still valid |
+
+- **The RESPOND arm also shows the segment was not stuck dominant** while
+  the X2 was held.
+- **After each OBSERVE arm the WiCAN read TEC 0** (`bus_error` 97): it never
+  transmitted.
+- **After the RESPOND arm it read TEC 121, `bus_error` 5,956.** The arm
+  sequencing explains it:
+  - in RESPOND the device sends its diag pages from the moment the mode is
+    set;
+  - for the 1.5 s settle before the PCAN opens nothing can ACK them, so it
+    retransmits back to back and reaches error-passive (TEC 128), where the
+    ACK-error exception stops it rising;
+  - while the PCAN is open it ACKs a few pages, and each success takes TEC
+    down by 1;
+  - `bus_error` 5,956 fits about 1.5 s of continuous retransmission.
+  - Not reconciled exactly: the PCAN counted 4 received frames against the
+    7 implied by 128 -> 121.
+  - The device ended in mode 0.
+- **How the X2 was taken off the bus** (reviewer-approved 2026-10-10):
+  `x2_hold.py`, through COM3.
+  - It was held in ROM download mode 16:58-17:13, with no flash write, so
+    custody of its image is untouched. The only writes were the input-enable
+    bits of GPIO7/GPIO6, in volatile IO_MUX registers in ROM mode, cleared
+    by the reset at release.
+  - Before the hold it read `7f197bfd` on the wire (16:59), and again after
+    the release (17:13:46): `--require-witness`, env `esp32-can-x2-witness`,
+    fw 4 (`runs/x2_identify_{before_hold_20261010T1659,after_hold_20261010T1714}.txt`).
+  - **TX pin while held:**
+    - GPIO_ENABLE bit 7 was 0, so GPIO7 (CAN1 TXD) was not driven, and the
+      IO_MUX showed no pulls.
+    - The ROM leaves input-enable clear on GPIO6/7, so GPIO_IN read 0
+      meaninglessly at first (`runs/x2_hold_hold_20261010T165839.json`).
+    - With input-enable set (one esptool session), GPIO_IN `0x3c0000cd` put
+      GPIO7 = 1 and GPIO6 = 1: TXD idles recessive and the transceiver sees
+      a recessive bus (`runs/x2_hold_enable-inputs_20261010T170115.json`).
+  - `test_x2_hold.py`: 13 checks, 5 mutants caught.
+
+**Host suite, 2026-10-04, on `f363674`:** 78 of 78 scenarios pass with
+freshly regenerated replay scenarios. That includes
+`shutdown-suppress-twice`, the host half of the D3 row: two `0x10` episodes
+in one power cycle, edges at 2/4/6/8 s, live throughout, `tx_ok` 249.
+- **Run:** by the reviewer on madhouse-debian, from `git archive f363674`.
+- **Record:** review tracker, 2026-10-04 ("78 passed, 0 failed, 0 without
+  goldens"). There is no run file, because the run tree was removed
+  afterwards.
+
+The receive-backlog row's result is under section 5, and the
+abort-and-recheck row's is under 5.2.
+
+The error-frame row's "at the trip threshold" regime (tester, 2026-10-08,
+X2 jammer): **FAIL**, see section 7, "Trip 6 at the trip threshold".
+
+**No stale image name -- tester, 2026-10-13, real builds on `NICKY-XPS`.
+Result: PASS on `d74777d` (the naming module), all eleven steps. FAIL on
+`95619b7` (before it) on five steps, as required. The same script ran both
+directions.**
+Spec 12.4 row "no stale image name" and 12.3 item 3, "Every build names its
+image from the tree it compiled" (added 2026-10-13, user). The reviewer's
+readings of the 12.3 text (same day) add the `README.md` steps and the no-git
+step.
+- **The check:** `test/build_checks/stale_name_check.py` (firmware repo,
+  branch `tester/stale-image-name`, `de324d7`, local).
+  - It runs in a throwaway detached worktree of the commit, beside the repo,
+    with `managed_components/` copied from the `63eb50f` tree (the same
+    `dependencies.lock`). Commits land on the detached HEAD only, no branch
+    moves, and the worktree is removed afterwards.
+  - One build directory is rebuilt eleven times. The source edit is a
+    comment appended to `main/gen_inhibit.c`.
+
+    | Step | Change, then build | Must read |
+    |---|---|---|
+    | clean | fresh tree, `idf.py build` | `<C>` |
+    | edit/idf | source edited, `idf.py build` | `<C>-dirty` |
+    | revert/idf | reverted, `idf.py build` | `<C>` |
+    | edit/ninja | the same edit, `ninja -C build` | `<C>-dirty` |
+    | revert/ninja | reverted, `ninja -C build` | `<C>` |
+    | commit/ninja | an edit committed (C1), `ninja` | `<C1>` |
+    | commit/idf | another committed (C2), `idf.py build` | `<C2>` |
+    | readme-edit/ninja | `README.md` edited, `ninja` | `<C2>-dirty` |
+    | readme-revert/ninja | reverted, `ninja` | `<C2>` |
+    | readme-commit/ninja | a `README.md`-only commit (C3), `ninja` | `<C3>` |
+    | nogit/ninja | `.git` moved aside, a source edit, `ninja` | build fails, no image |
+
+  - Each step judges the one image that build wrote: a top-level
+    `build/wican-fw_*.bin` modified during the step. It reads the filename,
+    the `esp_app_desc_t` version (0x10) and its project_name (0x30). Each
+    must name HEAD (an abbreviation of its sha) and carry `-dirty` exactly
+    when the step left the tree dirty, and `git status` must agree with the
+    step.
+  - Undetermined fails: a failed build, no image, two images, or no app
+    descriptor. A step whose naming does not re-run writes no image when
+    nothing compiled changed, and that FAILS ("re-runs the naming before
+    the build", reviewer).
+  - The no-git step first shows git cannot answer in the tree
+    (`GIT_CEILING_DIRECTORIES` stops it looking above). Its source edit
+    means a build that ignored git's failure would recompile and write an
+    image. Then `.git` and the edit are put back.
+  - Names and versions are compared, never md5s: rebuilds of one commit
+    differ (compile time in the image; implementor).
+- **Tests of the check:** `test_stale_name_check.py` covers the parsing, the
+  prefix and dirty match, the step window, every undetermined case and the
+  no-git judgement. 22 mutants, all caught
+  (`runs/test_stale_name_check_mutants_de324d7_20261013.txt`).
+- **Passing half, `d74777d`** (`runs/stale_name_d74777d_20261013T070558.{txt,json,log}`):
+  - Every step PASSES. Each image read its tree: `d74777d`,
+    `d74777d-dirty`, `d74777d`, `d74777d-dirty`, `d74777d`, then the new
+    commits `b08009e`, `1979b37`, `1979b37-dirty`, `1979b37`, `5763866`.
+  - The no-git build failed in 0.3 s (rc 1) and wrote no image. The log
+    shows the naming check stopping it before anything was compiled.
+  - The worktree was removed afterwards.
+- **Failing half, `95619b7`** (`runs/stale_name_95619b7_20261013T073713.{txt,json,log}`):
+  FAIL on five steps.
+  - edit/idf and edit/ninja: the images read `95619b7` in filename, version
+    and project_name, with no `-dirty`. This is the a3394ca trap: new code
+    under the clean name, through `idf.py build` as well as bare `ninja`.
+  - readme-edit/ninja: no image was written, so the tree's change never
+    reached a name. readme-revert/ninja failed the same way, as a
+    consequence: the previous step never wrote a dirty name to replace.
+  - nogit/ninja: with git unable to answer, the build succeeded and wrote
+    `wican-fw_obd_d20e264_man.bin`, an image named for the last commit seen.
+  - Observed, and not a failure: the three commit steps pass on `95619b7`.
+    A new commit was picked up by `idf.py build` and by bare `ninja` alike.
+    Before the module, the trap was uncommitted changes and a missing git.
+  - An earlier ten-step run of the same commit (no no-git step) agrees
+    step for step (`runs/stale_name_95619b7_20261013T064814.txt`).
+- **Voided:** the first run, `runs/stale_name_95619b7_20261013T062844_VOID_window.*`,
+  was a harness defect. The step window opened 1 s before the step, so
+  commit/ninja counted revert/ninja's image as its own and failed for "2
+  images". Fixed in `6fba9dd`, with a test that fails on the old window.
+- **No bench use.** The builds ran in throwaway worktrees only.
+
+**The name enters the build once -- tester, 2026-10-13, real builds on
+`NICKY-XPS`, the shim on `madhouse-debian`, the wire on the bench. Result:
+PASS on `e998385` (the change), every part. FAIL on `d74777d` (before it) on
+the README steps and the module fixture, as required.**
+Spec 12.4 row "the name enters the build once" and 12.3 item 3 "The name
+enters the build once" (added 2026-10-13, user). The row is "host (build); the
+reported hash on the bench" (user, 2026-10-13). Readings (reviewer,
+2026-10-13):
+- **"same as before the change":** the formula is unchanged on both sides. On
+  `d74777d`, `0x7F3` == fnv1a32 of its name. On `e998385`, `0x7F3` ==
+  fnv1a32 of the descriptor version == fnv1a32 of the image name's
+  describe part. fnv1a32 of the descriptor is the host cross-check.
+- **the over-long name:** on the product, the build fails and writes no
+  image, by any guard, recording which guard fired. On the module, a minimal
+  fixture project with no project-name guard: the build must fail with an
+  error that names the version field.
+- **The check:** `test/build_checks/name_once_check.py` (firmware repo,
+  branch `tester/name-once`, `a4b906a` for the runs below, local). It runs
+  in a throwaway local clone (so the tag never reaches the repo's refs),
+  with `managed_components/` copied in. The clone and the fixture are
+  removed afterwards.
+
+  | Step | Change, then `idf.py build` | Must |
+  |---|---|---|
+  | clean | none | one image; filename, descriptor version and project_name name HEAD |
+  | readme-edit | `README.md` edited | an image named `<C>-dirty`; no object whose source is under `main/` or `components/` recompiled |
+  | readme-revert | reverted | an image named `<C>`; none recompiled |
+  | overlong | a 38-character tag on HEAD | the build fails, no image |
+  | module | the fixture, with the commit's `cmake/git_tree_name.cmake`, tagged the same | the build fails, no image, the error names the version field |
+
+  - A recompile is an object in `compile_commands.json` whose mtime changed
+    across the build. Other recompiles are recorded, not judged.
+- **Passing half, `e998385`** (`runs/name_once_e998385_20261013T201654.{json,log}`):
+  every step PASSES.
+  - clean: all three read `e998385`. fnv1a32 of the version and of the name
+    are both `0x1AA2F834`.
+  - readme-edit and readme-revert: the images read `e998385-dirty`, then
+    `e998385`. **0 of 1203 objects** under `main/` or `components/`
+    recompiled. Two others recompiled each time: ESP-IDF's `esp_app_desc.c`,
+    and `project_elf_src_esp32c3.c` under the ELF target's new name.
+    - Observed, not a spec matter: `project_elf_src` also recompiled on the
+      revert, a name already built once in this build directory. The
+      implementor's note said "the first time a given name is built".
+  - overlong: rc 2, no image. **The version-field guard fired**:
+    `git_tree_name.cmake:153`, "'gi-name-once-overlong-0123456789abcdef' is
+    38 characters; esp_app_desc.version holds 31 plus a NUL".
+  - module: the fixture failed the same way, at its own include, and wrote
+    no image.
+- **Failing half, `d74777d`** (`runs/name_once_d74777d_20261013T201202.{json,log}`):
+  FAIL on three steps.
+  - readme-edit and readme-revert: **22 product objects recompiled each
+    time**, all 1203 objects in all. The images were named right
+    (`d74777d-dirty`, then `d74777d`).
+  - module: **the fixture built**, and its descriptor version was **cut to
+    31 characters without a word**: `gi-name-once-overlong-012345678`.
+  - overlong passes here too, as the reviewer predicted. The product's
+    project-name guard fired first (`CMakeLists.txt:164`, project name "55
+    characters").
+  - clean passes: `d74777d`, fnv1a32 `0x7E8B4C8D`.
+- **The name on compile lines** (12.3: "The name is not passed on every
+  compile line"; recorded, not a row criterion; `runs/name_on_compile_lines_d74777d_e998385_20261013.txt`):
+  - `d74777d`: 1203 of 1203 compile lines carry `-DGIT_SHA=\"d74777d\"`;
+  - `e998385`: 1, `esp_app_desc.c`'s `-DPROJECT_VER`.
+  - The runs' own JSON reads 1203 for both. That count matched any line with
+    the sha anywhere, and the clone's directory carries it, so it is void.
+    Fixed in `0dbcd3f`; the figures above come from that fixed match.
+- **The reported hash, on the bench** (`runs/diag_build_page_nameonce_d74777d_20261013T201243.{json,txt}`,
+  `runs/diag_build_page_nameonce_e998385_20261013T201344.{json,txt}`). Flashed
+  by OTA from clean worktree builds: `d74777d` md5 `a1222cc2...`, `e998385`
+  md5 `34e1b53f...` (`runs/bench_flash_nameonce_*_20261013T201[23].txt`).
+  `diag_build_page_check.py` decoded three `0x7F3` pages, the same on the
+  PCAN and the Kvaser, on each:
+  - `d74777d`: `diag_git_hash` `0x7E8B4C8D` = fnv1a32("d74777d"), its name.
+  - `e998385`: `0x1AA2F834` = fnv1a32("e998385"). That is the descriptor
+    version (bench_flash read `e998385` embedded) and the image name's
+    describe part, and it equals the host cross-check above. HTTP
+    `/check_status` `git_version` also reads `e998385`.
+  - On both: `diag_fw_ver16` 7, `diag_schema_ver_build` 7, shipping build
+    (0x7F1 bit3 0).
+  - Restored to `dace947` `_man` and confirmed unarmed on the wire
+    (`runs/restore_unarmed_check_20261013T201453.json`, PASS). Bench lock
+    20:11-20:15.
+- **The shim's 0x7F3, before and after** (reviewer's request;
+  `runs/shim_7f3_probe_d74777d_e998385_20261013.txt`):
+  - The shim suite checks which diag IDs are sent, never the payload. So
+    `shim_7f3_probe.sh` adds one print to a copy of `fake_twai.c` and
+    lists the distinct `0x7F3` payloads.
+  - Both trees: 328 frames, one payload, `b99f759b 07000700`, which is
+    `0x9B759FB9` = fnv1a32("unknown"), the mock's string. Unchanged.
+  - A copy whose mock says "e998385" prints `34f8a21a...` instead, so the
+    probe can show a difference.
+- **The host suite on `e998385`** (`runs/host_suite_e998385_20261013.txt`,
+  `<madhouse-debian home>/gi_host_tester_e998385`; replays and the shim fixture, sha256
+  `43459c48...`, copied from the `3ee47b7` run):
+  - 78 goldens pass, 22 scenarios without goldens;
+  - `passive_diff` 96 identical, 0 differing;
+  - `spec_expect_check` 21 of 21;
+  - the shim and scheduler suites: every case passes;
+  - every mode exits 0.
+- **Tests of the check:** `test_name_once_check.py`. 21 mutants, all caught
+  (`runs/test_name_once_check_mutants_0dbcd3f_20261013.txt`).
+- **Voided:** `runs/name_once_d74777d_20261013T195636_VOID_crash.*`. A
+  harness defect: recording the overlong step passed `name=` to a helper
+  that takes the step's name, and it crashed after the README steps (which
+  failed the same way as above). Fixed in `a4b906a`.
+
+
+**A stand-down with an answer pending -- tester, 2026-10-16. Result: NOT AS
+SPECIFIED on `c65c45e` (the before-fix record); AS SPECIFIED on `c6fdab5`
+(pre-port batch 1) on the bench, and on `887c000` in the host sched and shim
+suites.** Spec 5.2 items 5 and 6, and the 12.4 row "a stand-down with an answer
+pending". X2 on `756d6714`, untouched, in both bench runs.
+- **Rig:** one `interlock_bench.py` `liveflag-mmode-hold` run (PCAN replay,
+  Kvaser witness) with `full_page_recorder.py` reading the whole page at 2 Hz
+  beside it. The M-mode latch (`0x639` position 4) lands 260 us after a VCM
+  `0x051`, with no device answer between them, so an answer is pending.
+- **Judge:** `standdown_pending_judge.py` (reviewer's check):
+  - `sched.standdown` +1 across the latch;
+  - the skips unchanged (`sched.skipped`, `skipped_withdrawn`,
+    `skipped_late`, `skips_withdrawn`, `skips_late`);
+  - every diag id on cadence (none silent > 2.5 s while armed);
+  - `withdrawn + dropped == skipped + standdown` on every page outside 1 s
+    after the latch.
+  Tested by `test_standdown_pending_judge.py` (15 checks; 8 of 8 mutants
+  killed by a check).
+- **`c65c45e` `_man`** (`runs/baseline_c65c45e/bench/standdown_pending_c65c45e_050039.txt`):
+  NOT AS SPECIFIED. The page has no `sched.standdown`. The diag ids go silent
+  for 5.7-6.7 s after the latch. The identity cannot be formed.
+- **`c6fdab5` `_man`** (`72c83f53`;
+  `runs/c6fdab5_checks/standdown_pending_c6fdab5_062201.txt`): AS SPECIFIED.
+  - `standdown` went 0 -> 1, with all five skip counters unchanged.
+  - The largest diag gap was 1.57 s.
+  - The identity held on all 105 pages outside the window, and on the 2 inside
+    it.
+  - `interlock_bench`'s own judge also calls the case AS SPECIFIED (on
+    `c65c45e` it was INCONCLUSIVE, with no pages after the latch).
+- **Host, `887c000`** (`runs/baseline_887c000/host/host_run.log`, git archive,
+  madhouse-debian):
+  - `test/gen_inhibit_sched`: all 35 cases passed, and again under ASan/UBSan.
+  - `test/gen_inhibit_shim`: all 54 cases passed, and again under ASan/UBSan.
+  - The shim's 300 s fixture is 23,241,533 bytes, sha256 `43459c48...`, the
+    same as the `c65c45e` baseline's.
+
+**The worker makes every mode change -- tester, 2026-10-16 06:55 and 06:58,
+on `887c000` `_man` (`a7101836`, pre-port batch 2). Result: AS SPECIFIED, 2 of
+2 runs.** Spec 3 "The worker makes every mode change", 5.2 item 6, and its
+12.4 row. Readings for "each reply correct" and "every arm's balance" are the
+reviewer's (2026-10-16). X2 on `756d6714`, untouched.
+- **Rig:**
+  - `e4_device_calibration.py` on `scottsvalley_armable_300s.log` 0-40 s,
+    PCAN replay, Kvaser witness.
+  - Armed with `--arm-after 1`, then 11 POSTs 3 s apart, chained, over the raw
+    socket: 3->3 x5 and 3->4->3 x3 (sequence 3,3,3,3,4,3,3,4,3,3,4,3).
+  - `full_page_recorder.py` at 4 Hz beside it.
+- **Judge:** `mode_change_judge.py`, tested by `test_mode_change_judge.py`
+  (23 checks; 14 of 14 mutants killed by a check).
+  - Per POST: HTTP 200 with neither 500 text, a reply within 1 s (a later 200
+    is reported as its own category until the user rules), and the mode
+    applied on the next page. *Since the user's ruling on question (a)
+    (2026-10-16) a 200 after 1 s passes and is listed with its timing; the
+    judge was changed for it (24 checks; 15 of 15 mutants killed), and both
+    runs re-judged the same (`..._rejudge_late200.txt`). Neither had a late
+    reply.* A new arm: `tx_ok` out of INHIBIT, or `would_tx`
+    out of PASSIVE, restarts.
+  - At each old arm's end: every class balances (`queued + carried_in == sent
+    + dropped + withdrawn + depth + held`) and so does the inhibit identity.
+  - Over the run: the identity on every page (one short only inside a change's
+    1 s window while `held` is 1; one over never), and the diag cadence across
+    the whole armed time.
+- **Result, both runs** (`runs/887c000_checks/mode_change_judge_887c000_065452.txt`,
+  `..._065748.txt`): 24 of 24 preconditions met (live before every POST).
+  - Every reply 200 and applied.
+  - Every arm restarted: `tx_ok` 276-291 -> 0-16, `would_tx` 287-291 -> 0.
+  - Every class and the identity balance at every arm's end.
+  - The identity held on all 320 and 321 pages. No page read one short or
+    one over.
+  - Diag gaps at most 1.26 s for every id.
+- **Reply latency** (reply complete minus sent): 10.4-26.0 ms (median 13.4)
+  and 7.1-27.6 ms (median 12.2); none after 1 s.
+  - The `--arm-after` POST is untimed in both runs: e4 then kept no raw record
+    for it. The judge checks it for a 200 and applied only. e4 now keeps it
+    (`arm_post_fields`).
+- **e4's own "ARM VOID"** in both runs is its single-arm `tx_ok` comparison
+  meeting a deliberately re-arming run, a harness limitation (accepted,
+  reviewer). Its live provenance is as specified: 94,324 of 94,324 replayed
+  frames found, 0 late, 0 double.
+- **Run 2 overlap:** the tester's judge mutant run (CPU only) overlapped run 2
+  unthrottled. Run 2's stimulus matched run 1's: 0 refused, the longest idle
+  gap 30.4 ms against 44.5 ms, 0 error frames.
+- **Host half, `887c000`:** shim cases 52-54 (mode changes posted by another
+  task during a live 300 s replay, every arm balancing; the 1 s refusal) and
+  the sched re-arm cases are in the passes above.
+
+**Refusals reach the client with no RST -- tester, 2026-10-16 06:24-06:34, on
+`c6fdab5` `_man` (`72c83f53`, pre-port batch 1). Result: AS SPECIFIED, 40 of
+40.** Spec 5.1 item 3 and 9.3; the reviewer's check for the refusal-reply
+change. B21 on the wire. HTTP only; no CAN adapter was used.
+- **Rig:** `ota_guard_raw_probe.py`, 5 reps in each non-OFF mode, with
+  unelevated tshark on the laptop's Wi-Fi. `ota_guard_pcap_join.py
+  --expect=no-rst` joins each request to its connection by client port.
+  Tested by `test_ota_guard_probe.py` (30 checks; 14 of 14 mutants killed by a
+  check).
+- **184-byte body, 20 of 20**
+  (`runs/c6fdab5_checks/B21_wire_multipart_c6fdab5.txt`): the 403 on the
+  wire, read by the client 8-82 ms after the request, and the device closed
+  with FIN, never RST.
+- **Full image, 20 of 20** (1,278,323 bytes, the running image;
+  `B21_wire_image_c6fdab5.txt`): the same. The 403 arrived in 14-37 ms, and
+  the device had read the whole image off by 2.74-2.84 s.
+- Uptime continuous over both runs, and mode 0 after.
+- **Observed; not a finding against the spec** (reviewer, 2026-10-16: no spec
+  text covers connection lifetime, and the control below shows a successful
+  request's connection held the same way): after the 403 the device does not
+  close the connection. It holds it until the client closes, then sends FIN; the client
+  closed first in all 40. The control, 5 x `POST /gen_inhibit_set?mode=0` in
+  mode 0 (`connection_close_control.py`, `connclose_*`), behaved the same after
+  a 200. On `c65c45e` the device ended a refused connection with RST straight
+  after the 403 (B21 addendum).
+
+**The guard benches read /gen_inhibit, never /check_status -- tester,
+2026-10-21. A harness change; no device run.** Spec 5.1 item 3 and 9.3 (B21's
+`bench_flash_guard.py` and `bench_ota_guard.py`, firmware repo
+`tools/gen_inhibit/`). `/check_status` answers with the device's config,
+credentials included (reviewer, 2026-10-20).
+- **What changed** (tester clone, branch `tester/range-20261020b`, `1e4d7e8`,
+  local):
+  - both guards read the record's `device` version from `/check_status`. It is
+    now `device_identity()`: `elf_sha256`, `git_version` and `uptime_ms` from
+    `/gen_inhibit`;
+  - the flash guard's liveness probe after a closed connection in its OFF half
+    asked `/check_status`. It now asks `/gen_inhibit`.
+- **Test:** `test_bench_guards_page.py`, 13 checks, PASS
+  (`runs/test_bench_guards_page_1e4d7e8_20261021.txt`). It runs both guards'
+  `main()` on a fake device whose `/check_status` answers with a made-up
+  value. It checks that `/check_status` is never asked for and that the
+  record's `device` is the page's identity. The flash guard's OFF rows must
+  fail when `/gen_inhibit` stops answering after the probe.
+- **Mutants:** 8 of 8 killed by a check, and the control on both guards at
+  `95aa77a` fails by a check (`runs/test_bench_guards_page_mutants_1e4d7e8_20261021.txt`).
+- **Also:** `test_bench_flash_preflight.py`, `test_bench_flash_outcome.py`,
+  `test_suite_judges.py` (with `GI_BASELINE_DIR` set) and
+  `test_publish_scan.py` still pass.
+- **The "device is in AP mode" precondition, `d526c2a`** (user's ruling,
+  2026-10-21, through the reviewer: `wifi_mode` may be read from `/load_config`
+  as a fourth field, beside `protocol`, `port_type` and `port`).
+  - Until then the OTA guard read it from `/load_config`, which the rule did not
+    allow. The flash guard read it from `/gen_inhibit`, which spec 11 does not
+    put there, and passed when the field was absent.
+  - Both now read it with `bench_ota_guard.wifi_mode()`, which keeps that one
+    value, and print and record only it. Anything but `AP` refuses the run
+    before anything is sent, a missing or unreadable value included.
+  - **Test:** `test_bench_guards_page.py` at `d526c2a`, 47 checks, PASS
+    (`runs/test_bench_guards_page_d526c2a_20261021.txt`). The fake config
+    carries the made-up value in credential-shaped fields.
+    - With `AP`, both guards print and record only `wifi_mode='AP'`.
+    - Seven cases refuse both guards, with exit 2, a FAIL line naming the
+      cause, nothing sent and nothing of the config printed: `APStation`; the
+      field absent; null; a config that is not JSON; not an object; a 500; and
+      a page saying `AP` over a config saying `APStation`.
+  - **Mutants:** 19 of 19 killed by a check, and the control on both guards at
+    `95aa77a` fails by a check
+    (`runs/test_bench_guards_page_mutants_d526c2a_20261021.txt`). The AP-mode
+    ones:
+    - an absent `wifi_mode` read as `AP` (the reviewer asked for this one);
+    - a value not read passing;
+    - non-JSON read as `AP`;
+    - the config printed, recorded, or carried in an error;
+    - either guard's precondition not enforced;
+    - the flash guard back on the page, by either reading;
+    - the flash guard not recording the value.
+  - `test_bench_flash_preflight.py`, `test_bench_flash_outcome.py` and
+    `test_publish_scan.py` still pass.
+  - Neither guard has been run on the device since. B21 can run once this lands
+    (reviewer). Run on the device 2026-10-22 (B21 step 1, next entry).
+
+**B21 step 1, the guard benches on the device -- tester, 2026-10-22
+00:14-00:15, on `e3d9437` `_man` (`25f50ac0...`), harness `d526c2a`. Result:
+AS SPECIFIED.** Spec 5.1 item 3 and 9.3. The first device run of the guards
+since they moved off `/check_status` and read `wifi_mode` from `/load_config`
+(entry above). HTTP only. No CAN adapter or COM port was opened, there was no
+Wi-Fi capture, and the X2 was not touched.
+- **Rig:** `baseline_b21.sh` with `GI_B21_STEPS=guards`: `bench_flash_guard.py
+  --check-accepted` and `bench_ota_guard.py --allow-ota-write`, firmware repo
+  `tools/gen_inhibit/` at `d526c2a` (tester clone, clean tree; the two
+  files' sha256 are in `run_log.txt`). The WiCAN was rebooted by software
+  before and after (`wican_reboot.py --want wican_man`, PASS both).
+- **Preconditions, both guards:** `wifi_mode='AP'`, read from `/load_config`
+  and the only config value printed or recorded. The inhibitor build was
+  present, in mode OFF.
+- **Flash writers, 20 of 20 refused:** the five writers in each of OBSERVE,
+  RESPOND, INHIBIT and PASSIVE, each with a 403 naming `gen_inhibit`.
+- **Reached when OFF, 3 of 3:** `/store_config` and `/store_canflt` closed
+  the connection with the device still answering `/gen_inhibit`, and
+  `/store_auto_data` answered 400. `/store_car_data` and
+  `/upload/car_data.json` were skipped by design (no probe that writes
+  nothing).
+- **OTA, 4 of 4 refused:** a 403 in each non-OFF mode. In OFF the
+  deliberately invalid image got a 500, not a 403, so the guard is not what
+  stops it. Nothing was flashed: the release reboot found the same image.
+- **Records:** both name the image by `elf_sha256` `25f50ac0...` from
+  `/gen_inhibit`. No `/check_status` was asked for.
+- **Run files:** `runs/b21_guards_d526c2a_20261022/` (`B21_bench_flash_guard.txt`,
+  `B21_bench_ota_guard.txt`, the two JSON records, `run_log.txt`, and
+  `wican_reboot_start.*` and `wican_reboot_release.*`).
+- **Steps 2 and 3:** run the same night, next entry. The user ruled on
+  2026-10-22, through the reviewer, that OTA Wi-Fi captures may run.
+
+**B21 steps 2 and 3, refusals on the wire -- tester, 2026-10-22 01:46-01:50,
+on `e3d9437` `_man` (`25f50ac0...`). Result: AS SPECIFIED, 40 of 40.** Spec
+5.1 item 3 and 9.3. The user's ruling (2026-10-22, through the reviewer) lifts
+the hold on Wi-Fi captures during OTAs. HTTP only. No CAN adapter or COM port
+was opened, and the X2 was not touched.
+- **Rig:** `baseline_b21.sh` with `GI_B21_STEPS=probe`:
+  - `ota_guard_raw_probe.py`, 5 reps in each non-OFF mode;
+  - an unelevated dumpcap of the laptop's Wi-Fi (`host 192.168.80.1 and tcp
+    port 80`), stopped by `capture_window.py` 10 s after the probe;
+  - `ota_guard_pcap_join.py --expect=no-rst`.
+  - The scripts' sha256, the image's and dumpcap's version are in
+    `run_log.txt`. The WiCAN was rebooted by software before and after
+    (`wican_reboot.py --want wican_man`, PASS both).
+- **184-byte body, 20 of 20** (`B21_wire_multipart_e3d9437.txt`): a 403 on
+  the wire for every request, and the device closed with FIN, never RST. The
+  client closed first in all 20. The client read the 403 146-189 ms after
+  connecting (on `c6fdab5`, 8-82 ms).
+- **Full image, 20 of 20** (1,113,456 bytes, the running image; body 1,113,619
+  bytes; `B21_wire_image_e3d9437.txt`): the same. The client read the 403
+  156-191 ms after connecting, while it was still sending. The device read the
+  whole body off by 2.52-2.62 s.
+- Every request was in its capture. Both captures stopped on their stop file,
+  cleanly, rc 0. The mode read before each rep matched the mode asked for.
+  There were no send errors.
+- **Device:** uptime continuous within each run (12.1 -> 68.1 s and 83.5 ->
+  187.5 s), and mode 0 after. The release reboot found the same image, so no
+  upload took.
+- **Run files:** `runs/b21_probe_e3d9437_20261022/`: the two pcapng captures
+  (185,556 and 24,813,772 bytes), the probe and join outputs and JSON records,
+  the capture records and windows, `run_log.txt`, and
+  `wican_reboot_start.*` and `wican_reboot_release.*`.
+
+**The worker state machine -- tester, 2026-10-16, on `e3d9437` (pre-port
+batch 3). Result: AS SPECIFIED, host and bench.** Spec 8.1 (rows 4, 8, 9, 11,
+12, 13), 9.3, and the 12.4 row "worker state machine". X2 on `756d6714`,
+untouched, in every bench run.
+- **Host** (`runs/baseline_e3d9437/host/host_run.log`, git archive,
+  madhouse-debian):
+  - `test/gen_inhibit_shim`: all 58 cases pass, plain and under ASan/UBSan. Among them:
+    - case 6: a self-imposed OFF says why;
+    - case 55: an outside quiesce applied by the worker;
+    - case 56: an OTA takes the bus through the worker (rows 4, 8, 11, 12, 13);
+    - case 57: the mode rows from each state (rows 1, 2, 3, 5, 6, 13);
+    - case 58: leaving ARMED withdraws the answer in the controller (rows 5, 6, 9).
+  - `shim_test_autoarm` passes, plain and under ASan/UBSan.
+  - The golden suite: 80 passed, 0 failed, no golden moved.
+- **Bench image:** `e3d9437` `_man` (`elf_sha256` `25f50ac0...`, md5
+  `95977df0...`), the tester's clean build, OTA'd 21:01
+  (`runs/e3d9437_checks/ota_e3d9437_man_retry_20261016T210039.*`, TOOK). The
+  page carries `worker` (`idle` in mode 0) and `bus_violations` (0).
+- **OTA while armed** (21:08). The rig, `ota_armed_bench.py`:
+  - `e4_device_calibration.py` on `scottsvalley_armable_300s.log` 0-40 s, PCAN replay, Kvaser witness;
+  - INHIBIT armed after 1 s, with `full_page_recorder.py` at 4 Hz beside it;
+  - once live, the whole running image uploaded over a raw socket.
+
+  Judge `batch3_bench_judge.py armed` (`runs/e3d9437_checks/judge_ota_armed_20261016.txt`,
+  `runs/ota_armed_20261016T210807.json`): **AS SPECIFIED**.
+  - The 403 with "gen_inhibit is armed; POST /gen_inhibit_set?mode=0 first", 42 ms in.
+  - Every page across the upload reads worker `armed`, mode 3.
+  - The same arm went on (`tx_ok` 340 -> 994).
+  - `elf_sha256` unchanged, uptime continuous, `bus_violations` 0 -> 0.
+  - The device answered the VCM throughout, from the upload's start to 1 s
+    after its end (largest gap 36 ms). No diag id was silent more than 1.27 s.
+- **OTA while OFF:** `_man2` (`f9de9de9...`) TOOK, 21:09
+  (`ota_off_man2_20261016T210930.*`); `_man` back TOOK, 21:11
+  (`ota_back_man_20261016T211129.*`).
+- **Failed uploads, row 11, both kinds.** The rig: `failed_upload_probe.py`,
+  with a second connection reading the page at 4 Hz from before the upload to
+  35 s after; then a 40 s INHIBIT arm under replay. Judged by
+  `batch3_bench_judge.py failed` under the reviewer's two rulings (2026-10-16):
+  - row 11 asks for IDLE with nothing taken, so verdict a1 or b passes either kind, and the reply is recorded as observed;
+  - a read requested before the upload connected is not "inside" it.
+
+  Both kinds are **AS SPECIFIED**
+  (`runs/e3d9437_checks/judge_failed_{short,truncated}_20261016_rejudged.txt`):
+  - **Short body, then a half-close** (`runs/failed_upload_short_20261016T210308.json`):
+    the headers declare 1,113,619 bytes; 556,861 were sent, the connection held
+    open 3 s, then FIN. Observed: "500 Failed to receive file" 16 ms after the
+    FIN, verdict b.
+  - **Truncated image** (`runs/failed_upload_truncated_20261016T210608.json`):
+    a complete request carrying 556,728 of 1,113,456 bytes. Observed: "500
+    esp_ota_end failed", verdict b. Not taken.
+  - After each kind:
+    - every page reads worker `idle`, mode 0;
+    - the image is unchanged and the uptime continuous;
+    - `bus_violations` is 0;
+    - the arm after it answered the VCM 3,884 times, provenance clean
+      (`runs/e3d9437_checks/failed_{short,truncated}_arm_e4_*.json`).
+  - **UPDATING: not observable on the bench (reads queued behind the upload).**
+    - Short: a read sent 0.25 s in was answered at 11.75 s, after the 11.74 s upload.
+    - Truncated: one sent 0.24 s in was answered at 11.21 s, after the 9.17 s upload.
+    - In each kind, one read already in flight at the connect (sent 13-14 ms
+      before it) was answered `idle`, 0.25 s and 0.015 s in. It is listed, not
+      judged.
+- **Tests of the harness:**
+  - `test_batch3_bench_judge.py`: 21 of 21 mutants killed by a check, after the rulings.
+  - `test_failed_upload_probe.py`: 14 of 14, after the rulings
+    (`runs/e3d9437_checks/batch3_rulings_mutants_20261016.txt`).
+  - The probe's order check was flaky: it stamped the half-close after
+    `shutdown()` returned. Fixed: 0 failures in 25 runs, and every kill is by
+    its own check (`runs/baseline_e3d9437/batch3_harness_mutants_20261016.txt`).
+
+**Stock features off in this product -- tester, 2026-10-16, on `e3d9437`
+(pre-port batch 3). Result: AS SPECIFIED.** Spec 3.2 and 12.3 item 3. The
+build checks are the firmware repo's `test/build_checks/` at `0ee2e49` (written
+by the tester, published by the reviewer).
+- **Images** (`runs/baseline_e3d9437/images_e3d9437.json`, `builds/`):
+  - the tester's clean-worktree builds of `e3d9437`: `_man`, `_man2` and the five test-only builds;
+  - the stock-feature builds: MQTT, ELM327, MQTT+ELM327, MQTT+ELM327+AutoPID
+    (AutoPID needs both), RealDash, and all four;
+  - a prod build (`tools/prod_build.py`, fresh clone of `gen-inhibit/main` at
+    `e3d9437`): md5 `76250712...`, `elf_sha256` `f3957789...`, 1,113,456 bytes
+    (`builds_prod.txt`).
+- **The switches** (`build_switches.py` on `_man`'s and prod's own build
+  records, `runs/baseline_e3d9437/tester_rows_e3d9437.txt`):
+  - 40 symbols: 0 unlisted, 0 stale, 0 malformed.
+  - The four `WICAN_FEATURE_*` are the class "stock feature, off in this product", each naming its refusal row.
+  - With the checks as committed at `e3d9437`, the four were UNLISTED. That is
+    the expected result before the tester's table change
+    (`build_checks_light_e3d9437_{man,prod}_committed.txt`). Every other row
+    passes on both images, and `_man` has the expected NO REF for a prod record.
+- **The rows, on `_man` and prod:**
+  - for MQTT, ELM327 and AutoPID: an image row (three strings found only in the
+    switch-on builds) and an ELF row (their symbols);
+  - RealDash: `app_main`'s `can_enable` call sites;
+  - a bus-state row, from objdump call sites.
+
+  All pass on both. `can_enable` is called from `apply_mode` only. `can_disable`
+  is called from `apply_mode`, `gen_inhibit_task` and `upload_post_handler`.
+  `can_flush_rx` and `can_send` are absent.
+- **`app_main` -> `can_enable` call sites**
+  (`runs/baseline_e3d9437/stock_feature_callsites_20261016.txt`):
+  - 0 with every feature off;
+  - 1 with MQTT, ELM327 or RealDash;
+  - 2 with MQTT+ELM327;
+  - 3 with AutoPID;
+  - 4 with all on.
+- **Each row shown failing and passing** (`test_refusal_pairs.py` via
+  `refusal_pairs_runs.py`, `runs/baseline_e3d9437/test_refusal_pairs_e3d9437.txt`):
+  - PASS on all 14 images.
+  - AutoPID's control is MQTT+ELM327: its rows pass there, and MQTT's and ELM327's fail.
+  - 11 negative controls, each caught on the check it targets:
+    - a wrong ON image;
+    - the product image as ON (AutoPID, RealDash);
+    - a stock, an instrument and the fault-injection image as OFF;
+    - AutoPID's own image, or the product image, as its control;
+    - no control;
+    - a switch left out;
+    - an image without its ELF.
+- **Tests of the checks:**
+  - `test_switch_rows.py`, `test_build_switches.py` and the other light `test_*`: all exit 0 (`build_checks_tests_tester_clone.txt`).
+  - `build_checks_stock_mutants.py --pairs`: 16 of 16 mutants killed by a check,
+    one of them by the real-image pairs (`build_checks_stock_mutants_pairs_20261016.txt`).
+- **The prod build's components: NOT AS SPECIFIED on `e3d9437`'s
+  `prod_build.py`** (reviewer's ruling, against 12.3 item 3; fixed in
+  `2df3c17`, tools only).
+  - **The defect:** on a fresh clone, the component check ran before the
+    script's own `idf.py reconfigure` fetched `espressif__mdns`. It printed
+    "managed components: none on disk", so no row covered the component that
+    went into the image.
+  - **This prod image stands:** `prod_build.py --check-only` on the same clone
+    afterwards verified the component: 96 files against `CHECKSUMS.json`, and
+    the hash matches the lock (`prod_check_only_after_build.txt`).
+  - **On `2df3c17`:**
+    - the implementor's `tools/test_prod_build_fetch.py` passes all 3 cases;
+      run against `0ee2e49`'s script, it fails tampered and missing
+      (`runs/e3d9437_checks/test_prod_build_fetch_*.txt`);
+    - the tester's `test_prod_build_refusals.py`: PASS, and its self-test PASS
+      (`test_prod_build_refusals*_2df3c17.txt`).
+  - **Still to run:** a real prod build on a fresh clone of `2df3c17`.
+
+**Observation, open: an OTA upload reset at exactly 128 KiB -- tester,
+2026-10-16.** The reviewer opened this as an observation, not a finding. Nothing
+was changed and nothing was retried in a loop. Every OTA from now on carries an
+unelevated Wi-Fi capture (`ota_pcap.sh`).
+- **20:58, `887c000` `_man` -> `e3d9437` `_man`**
+  (`runs/e3d9437_checks/ota_e3d9437_man_20261016T205817.*`), verdict a1:
+  - curl sent 131,072 of 1,113,456 bytes and got a connection reset 17.64 s
+    after the connect. That is longer than any complete upload on record
+    (13.0-16.2 s).
+  - Page reads 11-96 s after it got no answer.
+  - At 98 s the device answered, still on `887c000`, with its uptime continuous (up about 14 h).
+  - The retry 2 min later took.
+- **03:09, `c65c45e` `_man2` -> prod**
+  (`runs/baseline_c65c45e/bench/bench_flash_c65c45e_prod_20261016T0309.txt`):
+  - curl reported the same reset; that record has no byte count.
+  - The device had been up under about 51 s.
+  - It did not answer for over a minute, and it did not restart.
+- **2026-10-17 00:21, `e3d9437` prod -> `e3d9437` `_man`, with a capture**
+  (`runs/baseline_e3d9437/bench/otagroup_man_back_20261017T002129.*`; the
+  wire summary `..._wire.txt` is from `ota_pcap_stall.sh`), verdict a1. The
+  device had been up about 300 s.
+  - curl again reported 131,072 of 1,113,456 bytes sent and "Connection was
+    reset", 16.49 s after it started.
+  - On the wire the device's highest ACK was 20,391: the 230-byte request
+    header and 20,160 body bytes. The laptop retransmitted three segments at
+    2.79-5.18 s. At 6.10 s the device ACKed 20,391 with a 90-byte window.
+    After that the capture holds nothing on the upload connection until
+    112.69 s: no further data, no zero-window probe and no RST from either
+    side, including at the time curl reported the reset.
+  - At 112.69 s the device sent `HTTP/1.1 408 Request Timeout` and a FIN on
+    the upload connection. It retransmitted them until 158.7 s, with no reply.
+  - bench_flash's page reads from 30 s on opened connections: the device
+    ACKed each GET and sent no reply. From 90.7 s two connections' SYNs got
+    no SYN+ACK. At 112.69 s the device answered the waiting GETs.
+  - The device stayed on prod (`f3957789`), mode 0, worker idle, with its
+    uptime continuous (599 s at 00:31). It was not retried.
+  - **The nine OTAs that took** in the same captures (`otagroup_*`) all paused
+    at the same point. The device ACKed 20,391 with a 90-byte window
+    1.01-1.71 s after the upload's SYN. Its window update came 7.43-7.48 s
+    after the SYN in all nine, and the upload went on from there. That pause
+    is the upload's longest gap between device ACKs (4.9-6.5 s).
+    - In eight of the nine the laptop sent a 90-byte segment in the pause; the
+      rxq capture has none.
+    - In five a zero-window ACK came before the update.
+    - In the failed upload the 90-byte window came at 5.94 s after the SYN,
+      after the three retransmissions. The window was not reopened until the
+      408 at 112.5 s.
+- Every other OTA with a byte count sent the whole image: 24 records, on
+  `c65c45e`, `c6fdab5`, `887c000` and `e3d9437`. The 24th is the reviewer's
+  one restore to `_man` at 01:01, with a capture
+  (`runs/baseline_e3d9437/bench/ota_man_restore_20261017T010044.*`).
+
+**The chained bench run on `e3d9437`, the runner's acceptance -- tester,
+2026-10-19 20:24 to 2026-10-20 01:17**
+
+- **What:** the gen-inhibit bench suite (part B of `baseline_run_list.md`, 38
+  compared checks), run by the chain runner (`bench_compare.py chain`, core
+  `df5d2ec`, tester clone `tools/gen_inhibit/` at `c5ab1e0`) and compared check
+  by check with the accepted `e3d9437` baseline. Code identity: commit
+  `e3d9437`, clean trees. Emulated prerequisite:
+  `runs/chain/gen-inhibit-emulated_20261019T195847_2838` (PASS 5, NOT-RUN 2,
+  nothing flagged).
+- **Boards:** the WiCAN on `e3d9437` `_man` (`25f50ac0...`) and each group's
+  OTA image; the X2 per group on `756d6714` not held, held in ROM, the jammer
+  `a89ece8c` (custody) or the interposer's `slcan`. Each was read off the board
+  by the runner's identify before its group (each run's `progress.jsonl`).
+- **Runs:**
+  - `runs/chain/gen-inhibit-bench_20261019T202410_0bfe` (every group) and its
+    re-run of the flagged checks, `_20261019T224502_ec06`;
+  - `_20261020T001351_0068` (man_jammer and man_slcan) and its re-run,
+    `_20261020T004332_59b0`.
+  - The compare reports are the raw record: `0bfe/compare_index.txt` (flagged
+    14 of 38) and `0068/compare_index.txt` (3 of 38).
+- **Result: the runner is accepted** (reviewer, 2026-10-20).
+  - Every verdict matched the baseline except B6 and B20.
+  - B5, B7, B8 and B22 are taken from 0068; in 0bfe they were NOT-RUN after
+    the harness bug below.
+  - B27 is the declared skip (needs the user at the bench).
+  - Every OTA took at the first attempt.
+- **B20: flaky, needs review.**
+  - FAIL first (27 of 28 AS SPECIFIED), PASS 28 of 28 on the re-run.
+  - The arm was `liveflag-mmode`, INCONCLUSIVE: its precondition "0x7F1 pages
+    between the latch and any mode change" was not met (0 pages).
+  - Reviewer, 2026-10-20: the case's timing, not the device. The judged window,
+    from latch + 1.1 s to the mode-0 POST, is about 0.92 s wide, and 0x7F1 comes
+    every 1.23-1.25 s. The page came 20 ms before the window opened in the
+    first run and just inside it in the re-run. The case is to be changed so
+    page phase cannot make it INCONCLUSIVE.
+- **B6: flaky, needs review.**
+  - PASS first (10 of 10 arms), 8 of 10 on its re-run. The re-run was triggered
+    by B5's figures (B5 to B8 are one check).
+  - Observed vs spec 7, trip 6 (no latch before the 10th error frame in the
+    window): n10 lead 8.5 arm 0 latched 1.108 s after the first pulse, with 2
+    error frames delivered. The witness saw one error frame per pulse; the
+    device's `bus_error` rose by 11 over pulse 2, with TEC 0.
+  - n9 lead 5 arm 0: INCONCLUSIVE (8 of 9 pulses delivered).
+  - 20 more arms on 2026-10-20 counted every pulse once; every multi-count
+    pulse on record is under 7, "One pulse counted 10-12 times".
+- **Harness bug found in the run and fixed.**
+  - What happened: in 0bfe the X2's identify after the jammer flash read
+    nothing, and the runner stopped the bench and left the X2 on the jammer.
+  - Cause: the interposer identify's slcan probe sends `V\r` and `N\r`. The
+    jammer runs a line only on LF and drops CR, so "VN" joined the `ID` line.
+  - Fix: `x2_jammer.py id` now sends an empty line first.
+    `test_x2_jammer.py` 46/46, `test_x2_jammer_mutants.py` 2 of 2 killed.
+    Shown on hardware in 0068 (`jammer:banner`).
+- **Other flagged figures** had unchanged verdicts. Reviewer, 2026-10-20: they
+  are variance. B9 `tec_max` read 94 and 93 against the baseline's 34; a run on
+  `c65c45e` read 93 (corrected 2026-10-20: this said "the run before the
+  baseline").
+- **Note (tester, 2026-10-26; wording approved, user, 2026-10-25): B9's trip 6
+  was never latched by the bursts on a live arm.**
+  - **What every wrong-bit-rate record on file shows:** `live_before` is false,
+    no page sample reads live, and the trip had already latched at the first
+    page sample, about 4 s before the first burst. The records are
+    `wrong_bitrate_calibrate_*.json`: 2026-10-10 on `cc34c80`, the `e3d9437`
+    baseline, `0bfe` and `ec06`, and `cfcd` and `6204` on `6926fb0`.
+  - **Why it read PASS:** B9's judge passed on "error-frame rate exceeded" being
+    among the aborts, so a latch made before the stimulus counted.
+  - **What this changes:** these B9 PASS verdicts are not evidence that the
+    wrong-bit-rate bursts trip a live arm. Under the judge as changed on
+    `gen-inhibit/tester/gi-page-reads` (`6081665`), each reads INCONCLUSIVE.
+  - **What still stands:** the counter readings stand as readings of the
+    device's counters with the arm latched: REC up to 128-135 after each burst,
+    TEC, state `running`, and the witness's error frames per burst.
+  - **Where trip 6 on a live arm rests instead:** the jammer cases (B5
+    livetrain, B6 threshold, B7 busoff-rearm) and B10's flood arms. Their
+    records show the device live with no abort just before the stimulus, no
+    witness error frame before it, and the latch after it.
+
+**The subset run on `e3d9437` after the duration cuts -- tester, 2026-10-20
+03:15 to 04:06**
+
+- **What:** B21, B11raw (its arms and its desk judge), B12 (the rt group) and
+  B5_B8 (the jammer group), chained (`bench_compare.py chain`, core
+  `e37995a`, tester clone `tools/gen_inhibit/` at `590c990`), after the
+  2026-10-20 harness batch: the B21 and B11raw captures stopped by
+  `capture_window.py` a tail after the probe or arm (10 s and 5 s; before, a
+  fixed 600 s and 75 s), `ota rt_self` dropped from B12, `GI_RUNS_DIR` quoted
+  in `baseline_b_jam.sh` and `x2_release_identify.sh`, and `page_state.py` at
+  the end of the rt step. Commit `e3d9437`, clean trees.
+- **Boards:** read by the runner's identify at the start: the WiCAN on
+  `_man` (`25f50ac0...`), the X2 on `756d6714`. The WiCAN went to `_man_rt`
+  (`b5f852ef...`) for B12 and back to `_man`; the X2 to the jammer for B5_B8
+  and back to `756d6714` (04:06, read off the wire).
+- **Run:** `runs/chain/gen-inhibit-bench_20261020T031518_5880`. The compare is `compare_report.txt` in that folder
+  (`bench_compare.py report`; the chain wrapper was stopped before it wrote
+  `compare_index.txt`, below).
+- **Result: 8 of 8 PASS, every verdict as the baseline.** Reviewer,
+  2026-10-20: accepted as evidence that the harness batch changes nothing.
+- **Flagged, 3 of 38, figures only. Reviewed, no re-run** (reviewer,
+  2026-10-20): each figure is inside what earlier `e3d9437` runs read.
+  - B5: `pass_500_per_s` 9 and `inconclusive_500_per_s` 0 (baseline 8 and 1);
+    `0068` and its re-run read 9 and 0.
+  - B11raw: `send_to_first_byte_ms_max` 33.9 (baseline 20.1, spread
+    6.1..20.1); `0bfe` read 19.8 and its re-run `ec06` 30.7. `pass_on_ack` 0
+    (baseline 1); `0bfe` and `ec06` read 0.
+  - B12: `panic_boot_s` 0.583..0.600 (baseline 0.592..0.599) and `sw_boot_s`
+    2.301..2.307 (baseline 2.314..2.353); `0bfe` and `ec06` read
+    0.582..0.600 and 2.297..2.330.
+- **The stopped captures are complete, on hardware.** `capture_stop_check.py`
+  on all 8 (2 B21, 6 B11raw; `capture_stop_check.json`): PASS. tshark read
+  each file to the end with no "cut short"; each window's last client FIN on
+  port 80 was answered by the device with a FIN; each capture stopped on its
+  stop file, cleanly, rc 0, after its window. B21 took 3.5 min (03:22-03:25).
+- **The state the rt step leaves** (`rt/B12/B12_rt_end_page.json`, read at the
+  end of the step): mode 0, `inhibit_live` false, `disabled` false,
+  `arm_block` "not armed", `abort_latched` false, `abort_reason` and
+  `disable_reason` empty, `err_n` 0, worker idle; `uptime_ms` 27217,
+  `reset_reason` PANIC, `elf_sha256` `b5f852ef...`. The boot it reports
+  (epoch 1792492500.085, the read's time less its uptime) is the boot after
+  `inert rt present`'s crash trigger: the POST `/gi_quiesce?crash=illegal` at
+  1792492499.555 and the boot at 1792492500.137 by `restart_error_frames`
+  (`rt/B12/restart_error_frames_live_crash_20261020T033438.json`, PANIC). No
+  other reset between them.
+- **The automatic re-run of the flagged checks did not finish.** It started
+  04:06 (`runs/chain/gen-inhibit-bench_20261020T040615_29a5`) and was stopped
+  about 04:10 by Claude Code's low-memory process reaper, in B11raw arm 4, not
+  by the runner. It has no result. It left the WiCAN in mode 3, latched "bus
+  lost -- no 0x051"; the tester POSTed mode 0 and rebooted it by software
+  (04:12): mode 0, nothing latched, `25f50ac0...` (`page_after_kill.json`,
+  `page_after_disarm.json`, `page_after_reboot.json` in that folder). No
+  process was left running.
+- **Harness tests for the batch:** `test_baseline_capture_stop.py` 37 ok (15
+  of 15 mutants killed by a check), `test_capture_window.py` 10 ok (6 of 6),
+  `test_capture_stop_check.py` 15 ok (10 of 10), `test_page_state.py` 7 ok (7
+  of 7); the mutant runs in `runs/*_20261020.txt`.
+
+**A bus with no other node, emulated -- tester, 2026-10-20, rerun on
+`madhouse-debian` 2026-10-24, on the mock-HAL shim, product `main/` =
+`e3d9437`'s tree. Result: as specified, in all seven cases (64 of 64 verdicts
+PASS).** Spec 12.4 row "a bus with no other node,
+emulated"; spec 7 trips 2 and 6, 7.1; and, for the answer-stuck case, 5.2
+items 5 and 6 (added by the reviewer, 2026-10-20).
+- **Build.** `main/gen_inhibit.c`, `gen_inhibit_core.c`, `gi_sched.c` and
+  `can.c` as checked out at `b341e0d` (gen-inhibit/main), whose `main/` tree
+  (`c7cd9d55`) is `e3d9437`'s, checked by the run, nothing modified (md5s in
+  `identity.json`, the fakes' included). Built with gcc 14.2.0 on
+  `madhouse-debian` against the implementor's fakes `test/gen_inhibit_shim/`
+  (not edited): the 2026-10-24 rerun (user, 2026-10-24, through the reviewer:
+  host C results count only from `madhouse-debian`; NICKY-XPS's WSL gcc 9.4 is
+  for self-checks). The rerun is the commit's own `run_spec_shim.py` with only
+  its `wsl()` and `wsl_path()` replaced by local ones, and its own
+  `mutate.py --local`, from a fresh clone of origin. Its verdicts and detail
+  lines are the same as the 2026-10-20 run's, row for row, and so are
+  `cases.txt`, `payloads.txt`, `judge_test` and every mutant. `identity.json`
+  differs only in its start time. The 2026-10-20 run was built with WSL gcc
+  9.4 on NICKY-XPS; under that ruling it is a self-check.
+- **Rig.** `test/gen_inhibit_spec_shim/` (tester clone, branch
+  `tester/spec-shim`, `c73656f`; design approved by the reviewer
+  2026-10-20). A fault layer over the fakes by link-time wraps: with no other
+  node, every frame never completes (the head reads as transmitting, as a
+  frame retrying unacknowledged does); one error frame per retry period while
+  a frame waits (`bus_error_count` and a latched bus-error alert); TEC to 128
+  (error passive); no frame received; bus-off on request. The layer logs every
+  receive return (the device's check points) and counts recovery calls. **The
+  retry period and alert pattern, and how the controller's abort removes a
+  retrying frame (the answer-stuck case), are the tester's model, not a
+  measurement**, until the bench row measures the real pattern.
+- **Stimulus.** The interlock set (key on, contactors closed, SoC 50 %, VCM
+  fault flag clear, shift position set, a VCM command at its engine-off null
+  with zero torque), each payload decoded with `epri-pt-bus.dbc` and
+  `vtrux-powertrain-experimental.dbc` by the run (`payloads.txt`; `0x617` B7
+  checked as a raw byte, the DBC has no signal for it). Each case goes live,
+  then the other nodes go: after the device's answer to the last `0x051` has
+  completed, or (`answer_stuck`) before it can.
+- **The first frame to wait in the silence**, in the six cases whose answer
+  completed, was queued 200 ms after the last `0x051`, at the first receive
+  timeout, and was not an `0x051` (R1); this run's record does not name its
+  ID. So no error frame came before +200 ms there, and none of them could meet
+  trip 6's threshold at the +200 ms check.
+
+| Case | Injected | 10th error | Expected (spec 7, strictly earlier) | Observed |
+|---|---|---|---|---|
+| `fast` | a retry every 300 us | +203 ms | trip 6 at the +400 ms check | trip 6, latched at +400 ms |
+| `before` | placed | +299 ms | trip 6 at the +400 ms check | trip 6, +400 ms |
+| `tie` | placed | +549 ms (threshold first met at the stale check) | trip 2 at the +600 ms check | trip 2, +600 ms |
+| `slow` | placed | +1.5 s | trip 2 at the +600 ms check | trip 2, +600 ms |
+| `busoff_few` | a retry every 1 ms, bus-off after 5 | none | trip 2 at +600 ms | trip 2, +600 ms |
+| `busoff_many` | a retry every 300 us, bus-off after 12 | +203 ms | trip 6 at +400 ms | trip 6, +400 ms |
+| `answer_stuck` | a retry every 150 ms; the answer stuck | +1.5 s | trip 2 at +600 ms | trip 2, +600 ms |
+
+- **In every case:** no device `0x051` after its answer to the last VCM
+  command (R1); the latch landed at a check point, a receive return within
+  the ~100 us poll bracket (R2); the receive kept returning (9 returns in 2 s)
+  and the status page answered every poll while a frame was stuck (R4); the
+  page's `err_n` rose with the injected errors (up to its 16 cap), so trip 6
+  was reachable.
+- **Traffic back without a key-on** (the five non-bus-off cases): still
+  latched, the stuck frame completed, diag pages on the wire (8 in 1 s; 6 in
+  `answer_stuck`), no `0x051` (R5). **A key-on** (key 0 for 0.3 s, then 1)
+  cleared the latch (R6).
+- **Bus-off** (two cases): no recovery call; through 1.3 s of traffic and a
+  key cycle the device stayed latched, the controller dropped 876 delivered
+  frames and nothing reinstalled the driver. A re-arm made more than 10 s
+  after the last error (spec 7: a re-arm goes live only once the bus has been
+  free of a qualifying burst for 10 s) put it back on the bus: 672 frames
+  received, not latched (R7).
+- **The answer stuck** (5.2 items 5 and 6): the trip withdrew it as a
+  stand-down (`standdown` +1, `skipped` +0); it never reached the wire,
+  traffic back included, and no `0x051` was on the wire after traffic returned;
+  the balance identity held on all 19,417 page reads, every class, and
+  `withdrawn + dropped = skipped + standdown` on all 9,708 reads with no
+  inhibit frame held; a diag page was handed to the driver after the latch,
+  was the stuck frame, and completed when traffic returned.
+- **Re-run on the shim-hang fix's fakes** (gen-inhibit/main `38fd103`, merged
+  into `tester/spec-shim` as `9f968e0`; reviewer, 2026-10-20): the same seven
+  cases, 64 of 64 PASS, `main/` still `e3d9437`'s tree. Of the built files only
+  `test/gen_inhibit_shim/fake_twai.c` changed (md5 `9d22e9f3...` to
+  `54763177...`); `fake_can.c` and the four product files are byte-identical.
+  Rerun on `madhouse-debian` 2026-10-24 with the rest: the same verdicts, row
+  for row, as the 2026-10-20 run, `judge_test` 71 ok, and `mutate.py --local`
+  45 of 45 caught (none had been run at `9f968e0` before)
+  (`runs/spec_shim_madhouse_rerun_20261024/out/spec_shim_nonode_9f968e0_madhouse_20261024T041918/`,
+  `runs/spec_shim_madhouse_rerun_20261024/out/spec_shim_mutants_9f968e0_madhouse_20261024T041918.txt`).
+  The 2026-10-20 run (`runs/spec_shim_nonode_9f968e0_20261020T103233/`) was
+  built through WSL, which its runner requires; it does not record the
+  machine or the compiler.
+- **Run files.** `runs/spec_shim_madhouse_rerun_20261024/out/spec_shim_nonode_c73656f_madhouse_20261024T041746/`
+  (`summary.txt`, `cases.txt`, `identity.json`, `payloads.txt`,
+  `judge_test.txt`, `host.txt`). The folder's `README.md` covers the three
+  reruns and how they were compared. The 2026-10-20 self-check run is
+  `runs/spec_shim_nonode_c73656f_20261020T094736/`.
+- **Harness tests.** `judge_test.c`: every verdict passing and failing on
+  made-up data, 71 ok. A `layer` case checks the layer's own mechanics on a
+  live device (4 PASS). `mutate.py`: 45 of 45 mutants of the judge, the layer
+  and the cases caught by a check, on `madhouse-debian`
+  (`runs/spec_shim_madhouse_rerun_20261024/out/spec_shim_mutants_c73656f_madhouse_20261024T041746.txt`;
+  the same 45 on 2026-10-20, `runs/spec_shim_mutants_c73656f_20261020T094736.txt`,
+  build host not recorded).
+
+**A bus with no other node, on the bench -- tester, 2026-10-20 17:04-17:05,
+WiCAN on `e3d9437` `_man` (`elf_sha256` `25f50ac0...`). Result: as specified
+in all three main arms (verdict PASS; no answer-stuck arm occurred).** Spec
+12.4 row "a bus with no other node"; spec 7 trips 2 and 6, 7.1.
+- **Rig** (`nonode_bench.py`, design approved by the reviewer 2026-10-20). On
+  CAN1: the WiCAN; the Kvaser replaying the interlock slice (key on), which
+  closes to make the silence, since it ACKs whenever open; the PCAN in
+  listen-only mode as the witness throughout; the X2 held in ROM download mode
+  (`x2_hold.py hold` 17:04; `pins` read CAN1 TX "not driven" at the run's start
+  and end), released and read off the wire as `756d6714` at 17:06. The
+  Innomaker (X2's CAN2) was not opened. **Termination**, as recorded: fixed
+  passive resistors, no switched or relay termination on the bench, so closing
+  the Kvaser changes no termination (user, 2026-10-20); locations not given.
+  The WiCAN was rebooted by software before the first arm and at the end
+  (`wican_reboot.py`, both PASS: `_man`, mode 0, not latched).
+- **Each arm:** live for 5 s; the replay stopped just after a VCM `0x051` and
+  the Kvaser closed 6.3-6.7 ms later; 3 s of silence; the Kvaser back for 3 s
+  with the key on; a key-on (`0x592` key 0 for 0.5 s, then 1, encoded with
+  cantools; the decoded key of every `0x592` sent read 0 then 1); the page
+  read at ~20 Hz throughout.
+
+| Arm | Stuck frame on the witness (copies, median gap) | Trip | Latched by (bracket) | Back: latched reads, diag frames | Key-on |
+|---|---|---|---|---|---|
+| 1 | `0x7F3`, 10,693 copies, 262 us | error-frame rate exceeded | 0.425 s (0.354-0.425 s) | 58 of 58, 24 | cleared |
+| 2 | `0x7F2`, 10,226 copies, 274 us | error-frame rate exceeded | 0.490 s (0.367-0.490 s) | 59 of 59, 30 | cleared |
+| 3 | `0x7F2`, 10,226 copies, 274 us | error-frame rate exceeded | 0.408 s (0.313-0.408 s) | 59 of 59, 30 | cleared |
+
+- **In every arm:** the device's answer to the last VCM command was on the
+  wire once, before the close; no other device `0x051` after it; none from the
+  nodes' return to the key-on, on the witness (provenance rule, 0 VCM
+  duplicates excluded) or on the page (`tx_ok` 507 on every read from the
+  first latched one to the key-on, in all three arms); nothing from any other
+  node in the silence; the device went live again after the key-on.
+- **Recorded, not judged:** TEC 0 before the silence and 128 through the rest
+  of the arm, REC 0 throughout; no bus-off; the page's `err_n` reached 16 and
+  `bus_error` 10,282-10,750; the PCAN logged 16 error reports in each arm
+  before the first copy of the stuck frame; arm 3's frame times are 17.6 s
+  after arm 2's (the matching counts are not a copied record). The PCAN's
+  status at the end read OK.
+- **Harness change before the run** (2026-10-20): the X2 gate looked for
+  `x2_hold.py` under `GI_FW_TOOLS` (the firmware repo, which does not hold it),
+  and took any pins line containing "not driven", which a "dominant" verdict
+  ("GPIO7 is not driven but reads 0") also contains and "recessive" does not.
+  It now runs the `x2_hold.py` beside it and passes only the verdicts
+  "recessive" and "not driven, level unreadable"; the start checks are one
+  pure function (`start_refusal`). Test 50 ok; 31 of 31 mutants killed by a
+  check (`runs/test_nonode_bench_20261020_x2gate.txt`,
+  `runs/test_nonode_bench_mutants_20261020_x2gate.txt`).
+- **Run files.** `runs/nonode_bench_20261020T170419.json` (and `_reboot_start`,
+  `_reboot_release`), `runs/nonode_bench_20261020_console.txt`,
+  `runs/x2_hold_hold_20261020T170408.json`,
+  `runs/nonode_bench_20261020T170419_x2/` (release and identify).
+
+**A bus with no other node, emulated, on the bench's measured pattern --
+tester, 2026-10-20 17:14, rerun on `madhouse-debian` (gcc 14.2.0) 2026-10-24,
+the mock-HAL shim, product `main/` = `e3d9437`'s tree. Result: as specified; the shim judges trip 6 for that timing (83 of 83
+verdicts PASS).** Spec 12.4 row "a bus with no other node, emulated", its last
+sentence (the layer replays the pattern the bench measured; reviewer,
+2026-10-20).
+- **The pattern, read from the bench run above** (`runs/nonode_bench_20261020T170419.json`):
+  16 error reports on the witness, 246 us apart (arm 1) or 258 us (arms 2
+  and 3), TEC 0 to 128; then the stuck frame's copies 262 us apart (arm 1) or
+  274 us (arms 2 and 3), the page's `bus_error` rising with them; REC 0; no
+  bus-off.
+- **Rig.** `test/gen_inhibit_spec_shim/` at `e4bc4a7` (tester clone, branch
+  `tester/spec-shim`): `sl_silence_measured(active_us, passive_us)` injects
+  one error frame (a bus-error alert, `bus_error_count` +1) per `active_us`
+  while TEC is below 128, then one per `passive_us`, TEC staying 128, REC 0,
+  no bus-off. Two new cases: `bench_262` (246 then 262 us, arm 1) and
+  `bench_274` (258 then 274 us, arms 2 and 3). Each also checks that the
+  errors it injected follow that pattern. A new layer case, `layer_bench`,
+  checks the layer alone: 77 errors in 20 ms, 15 gaps of 246 us then 262 us,
+  `bus_error_count` 77, TEC 128, REC 0, still running.
+- **Observed, both cases:** the first error 0.34-0.35 ms after the first frame
+  waiting; the 10th error at +202 ms after the last `0x051`; expected (spec 7,
+  strictly earlier) trip 6 at the +400 ms check point; got "error-frame rate
+  exceeded", latched between +400.043 and +400.146 ms, at a check point. No
+  `0x051` after the answer; the receive kept returning and the page answered
+  every poll; traffic back without a key-on: still latched; a key-on cleared
+  it. The other seven cases and the layer case are unchanged (64 verdicts PASS
+  as before).
+- **Run files.** `runs/spec_shim_madhouse_rerun_20261024/out/spec_shim_nonode_e4bc4a7_madhouse_20261024T042048/`
+  (`identity.json`: head `e4bc4a7`, `main/` tree `c7cd9d55` = `e3d9437`'s,
+  nothing modified, harness unmodified; `host.txt`: `madhouse-debian`, gcc
+  14.2.0). `judge_test` 71 ok. `mutate.py --local`: 49 of 49 mutants caught by
+  a check, including the four new ones: no passive period, the passive period
+  from TEC 120, the measured silence without its passive period, and the bench
+  cases on a fixed period
+  (`runs/spec_shim_madhouse_rerun_20261024/out/spec_shim_mutants_e4bc4a7_madhouse_20261024T042048.txt`).
+  The rerun is done the same way as the one in the entry above. Its verdicts
+  and detail lines are the same as the 2026-10-20 run's, row for row, and so
+  are `cases.txt`, `payloads.txt`, `judge_test` and every mutant. That run was
+  built through WSL, which its runner requires, and does not record the
+  machine or the compiler
+  (`runs/spec_shim_nonode_e4bc4a7_20261020T171443/`,
+  `runs/spec_shim_mutants_e4bc4a7_20261020T171443.txt`).
+
+**The goal-20 move's bench subset: B1, B2app and B21 on harness `a24de99`,
+B5_B8 on `e4d1fb2` -- tester, 2026-10-23 17:23-17:41 and 18:51-19:50, on
+`e3d9437` `_man`. Result: B1, B2app, B21, B5, B7 and B8 PASS, every verdict as
+the baseline; B6 FAIL in both runs (9 of 10 arms PASS, the tenth
+INCONCLUSIVE), for the reviewer.** The goal-20 move's bench subset, as the
+reviewer ordered it (tracker row "Tooling move into git").
+- **What:** the chain runner (`bench_compare.py chain`, core `8fdcec5`), each
+  check compared with the accepted `e3d9437` baseline. B1, B2app and B21 are
+  kept from the `a24de99` run (reviewer's ruling); B5_B8 ran alone on
+  `e4d1fb2`, with a fresh X2 dump, after the custody fault below.
+- **Code identity:** product commit `e3d9437`, clean trees; harness
+  (`gi_tools`) `a24de99` clean in the first two runs, `e4d1fb2` clean in the
+  last two (`record.json` of each). Emulated prerequisite, every run:
+  `runs/chain/gen-inhibit-emulated_20261022T201733_6b2c` (a whole run, on
+  `e3d9437`).
+- **Runs:**
+  - `runs/chain/gen-inhibit-bench_20261023T172332_bee0` (17:23-17:41,
+    `a24de99`): B1 PASS (20 of 20 refused and counted), B2app PASS, B21 PASS
+    (both guards hold; raw probe 403 without RST, 20 of 20 each). B5_B8
+    NOT-RUN: the jammer flash failed (below).
+  - `_20261023T174109_1764`: the runner's automatic re-run of B5_B8, the same
+    failure. Compare: `bee0/compare_index.txt`.
+  - `_20261023T185101_a389` (18:51-19:20, `e4d1fb2`): B5_B8, and its
+    automatic re-run `_20261023T192034_ce10` (19:20-19:50). Compare:
+    `a389/compare_index.txt` (flagged 2 of 39, B5 and B6). Log:
+    `tooling_move/bench_subset_e4d1fb2_log.txt`.
+
+| Check | Baseline | a389 | ce10 |
+|---|---|---|---|
+| B5 | PASS; 200/s 3 of 3, 500/s 8 of 9, 1 inconclusive | PASS; 3 of 3, 7 of 9, 2 inconclusive | PASS; 3 of 3, 9 of 9, 0 inconclusive |
+| B6 | PASS, 10 of 10 | FAIL, 9 of 10 | FAIL, 9 of 10 |
+| B7 | PASS, 3 of 3 as specified | PASS, 3 of 3 | PASS, 3 of 3 |
+| B8 | PASS; train 3 of 3, control INCONCLUSIVE | the same | the same |
+
+- **B6, observed.** In both runs the arm short of PASS was in the same
+  configuration, n10 lead 8.5 (a389 arm 1, ce10 arm 0): INCONCLUSIVE,
+  "delivery was not one error frame per pulse". The jammer reported 10 pulses
+  queued (`pulses=10`, end complete); the witness saw 9 error frames in the
+  pulse window, one 1 s slot with none (a389 at +6 s, ce10 at +2 s; each
+  `x2_jam_threshold_*.json`, `witness_error_times`). The device's `bus_error`
+  rose by 1 for each of the 9; no latch. The other 9 arms of each run PASS,
+  one error frame per pulse: each n10 arm latched "error-frame rate
+  exceeded", no n9 arm latched. In a389 the witness saw one more
+  error frame 21.04 s after the first pulse, outside the window, at the arm's
+  mode-0 POST, 17 ms after it. The chained run of 2026-10-19 (above) records
+  B6 as "flaky, needs review"; the INCONCLUSIVE of 2026-10-20 was n9 lead 5 arm 0 (8 of 9
+  pulses delivered).
+- **The custody fault and its fix.** In bee0 and 1764 the custody dump
+  (two reads, matching sha256, app0 carrying `756d6714`) passed, and
+  `x2_flash_custody.py flash-jammer` then stopped with rc 1 before writing
+  anything: `FileNotFoundError` reading the dump back, the path doubled.
+  `sub_dump` recorded the dump's path relative to the script's own folder
+  (since the move, `tools/gen_inhibit/bench/` in the firmware repo, so the
+  path climbs out of the repo with `..`), and the readers resolved it against
+  another base. The X2 was not written: read off the wire as `756d6714` at 17:42 and 17:47.
+  - Fix, `e4d1fb2` (tester clone `wican-fw-vtrux-tester-move`, branch
+    `tester/tooling-move`; pushed by the reviewer): `sub_dump` records the
+    path relative to the data folder (`gi_paths.data_dir()`), and both readers
+    resolve it through one function, `dump_path`, which refuses an absolute
+    path or one with a `..` part.
+  - Tests: `test_x2_flash_custody.py` 23 checks PASS, among them dump ->
+    record -> `_checked_dump`, `restore` and `check-dump` on a fake esptool,
+    and each refusal by both readers; `test_x2_flash_custody_mutants.py` 5 of
+    5 killed by a check (the old base back, an absolute path, the refusal
+    dropped, either reader bypassing it). Run files
+    `runs/test_x2_flash_custody_e4d1fb2.txt`,
+    `runs/test_x2_flash_custody_mutants_e4d1fb2.txt`.
+  - On hardware, a389 and ce10: dump PASS, `flash-jammer` `a89ece8c` done,
+    `jammer:banner` read (18:57:27, 19:27:00); each custody record names its
+    dump relative to the data folder.
+  - In bee0 the end-of-run board state says the X2 was "flashed in this run:
+    True", though nothing was written; recorded, not changed.
+- **Boards:** the WiCAN on `e3d9437` `_man` (`25f50ac0...`) throughout, not
+  flashed, rebooted by software at each run's start and end (`wican_reboot.py`
+  PASS each; the last, 19:50: mode 0, not armed, nothing latched, reset reason
+  SW). The X2 on `756d6714` read off the wire before each jammer flash and
+  after each restore (the runner flashes `x2_app` back, 4 writes verified;
+  read 19:20:23 and 19:49:55). The dumps are in `board-backups/` (sensitive;
+  path and sha256 in each custody record).
+- **Partial runs and the gate** (reviewer, 2026-10-23). The first launch of
+  this subset, on `14062d1`, was refused (`tooling_move/bench_subset_14062d1_log.txt`):
+  the newest emulated record was then `gen-inhibit-emulated_20261022T125137_147f`,
+  the 12:51 run of the `build_checks` group alone (C5_C6_scan, for the move's
+  comparison), and a bench run's `requires=` reads the newest emulated record
+  on the same product code and refuses a partial one. A whole emulated run
+  (`6b2c`) was needed first. **From now on, a partial emulated run is first
+  checked for whether it would become the record a bench run's `requires=`
+  reads.** Only the two bench suites (gen-inhibit and interposer) have
+  `requires=`, and both read emulated records, so a partial bench run gates
+  nothing.
+
+**The shared-core re-pin, `8fdcec5` -> `b9896a0`: harness `1e23b4e`, its host
+tests on both cores, and B1 and B2app on the bench with a manual pause --
+tester, 2026-10-23 21:27-23:27, on `e3d9437` `_man`. Result: every host test
+PASS on both cores, every mutant killed; B1 and B2app PASS in both bench runs,
+every verdict as the baseline; the pause held until both the PAUSE file was
+gone and the Holder line was gen-inhibit's again.** The re-pin of the bench
+core, as the reviewer ordered it (tracker row "Tooling move into git").
+- **What changed:** `1e23b4e` (branch `gen-inhibit/tester/cutover`, on
+  `gen-inhibit/main` `02d6086`) changes the docstrings of
+  `suite_gen_inhibit.py`, `test_suite_gen_inhibit.py` and
+  `test_suite_gen_inhibit_mutants.py` only: the core they are pinned at is
+  `b9896a0` on `charge-interposer/main` (which carries `5fa86c6`'s board
+  steps and the bench lock, `0e6f633`, cleared 2026-10-22), not `8fdcec5`.
+  No code line changed, so the same tests run against either core.
+- **Cores:** each a `git archive` of `shared` and `charge-interposer` at the
+  commit, into the tester worktree's `scratch/gen-inhibit-core/<commit>/`,
+  put on `PYTHONPATH` (`shared/bench`, `charge-interposer`) for the host
+  tests and the bench runs. The run records name the core only by path (the
+  settings' `interposer_code`), not by commit.
+- **Host tests,** at Idle priority, each core in turn, harness `1e23b4e`
+  (run files `runs/repin_1e23b4e/<test>_core<commit>.txt`):
+
+| Test | `b9896a0` | `8fdcec5` (control) |
+|---|---|---|
+| `test_suite_gen_inhibit` | PASS, 283 ok, 0 FAIL | PASS, 283 ok, 0 FAIL |
+| `test_suite_gen_inhibit_mutants` | 72 of 72 killed by a check, 0 errors | 72 of 72 killed by a check, 0 errors |
+| `test_suite_judges` | PASS, 158 ok, 0 failed | PASS, 158 ok, 0 failed |
+| `test_suite_judges_mutants` | 33 of 33 killed by a check, 0 errors | 33 of 33 killed by a check, 0 errors |
+| `test_bench_compare` | PASS, 46 ok, 0 FAIL | PASS, 46 ok, 0 FAIL |
+| `test_bench_compare_mutants` | 34 of 34 killed by a check, 0 errors | 34 of 34 killed by a check, 0 errors |
+
+  - **A void first attempt** (21:25-21:26): `test_suite_judges` on
+    `b9896a0` reported 76 FAIL, every B judge "0 files match", because the old
+    gen-inhibit tester's `test_suite_judges_mutants` was running at the same
+    time and both use the one fixed folder
+    `%TEMP%\gen-inhibit-suite-judges`, emptied at start (its log ends in a
+    `shutil.Error`, files gone mid-copy). Void, kept with that attempt's
+    other two outputs in `runs/repin_1e23b4e/attempt1_2133_judges_collided/`;
+    every test was rerun from 21:27, the judges tests after that load had
+    ended. The fixed
+    temp folders are on the harness-defects row.
+- **Bench, settings:** a copy of `chain_settings_NICKY-XPS.json` with the
+  core paths on the `b9896a0` export and `gi_tools` at a detached worktree of
+  `1e23b4e` (local only: it holds the X2's address). No `bench_lock_log`, so
+  the runner stays on `bench-holder.md`'s Holder line (`lock.source`
+  "holder" in each record). Subset `man_app/B1`, `man_app/B2app`.
+- **Code identity, both runs:** product `e3d9437`, clean (`gi_images`,
+  `gi_prod_dir`); `gi_tools` `1e23b4e`, clean. Emulated prerequisite:
+  `gen-inhibit-emulated_20261022T201733_6b2c` (`requires_met`).
+- **Runs:**
+  - `runs/chain/gen-inhibit-bench_20261023T221639_0be3` (22:16:39-22:26:44):
+    B1 PASS (20 of 20 refused and counted; commands 20, passed 20, fail 0),
+    B2app PASS (rc 0). No pause in this run: the watcher meant to write
+    PAUSE waited for a check-start event, and the runner writes none (a
+    check's folder appears when it starts). Kept as a further B1 and B2app
+    run.
+  - `runs/chain/gen-inhibit-bench_20261023T222808_a18b` (22:28:08-22:39:43):
+    B1 PASS (the same figures), B2app PASS (rc 0), with the pause below.
+  - Compared with the baseline index (`bench_compare.py report`): each
+    "flagged: 0 of 39; re-run: none", B1 PASS against PASS, the other 37
+    not selected; B2app has no index entry of its own (it feeds B2, B24 and
+    B13 at the desk). `runs/repin_1e23b4e/compare_0be3.txt` (sha256
+    `6376619d95f8c264a25bcbcdf0f8c836d067e3f698081ce9f55f4a05ab88d46f`),
+    `compare_a18b.txt`
+    (`ac347e90e377fc412c5c3702e5e0b80f39decaf401e3a5bb0cae81e8c3c95d04`).
+- **The pause, run `a18b`** (`progress.jsonl`; `pause_poll_s` 10 s, the
+  default):
+  - 22:29:45 PAUSE written into the run folder, once `man_app/B1/` existed.
+  - 22:30:22 `pause` event, at B1's end: "PAUSE file present; waiting until
+    it is removed and the Holder is tester (gen-inhibit)".
+  - 22:30:35 Holder set to `free` by hand. At 22:31:10 still waiting, no
+    `man_app/B2app/`.
+  - 22:31:17 PAUSE removed, Holder still `free`. At 22:31:52 still waiting,
+    no `man_app/B2app/`.
+  - 22:32:00 Holder set back to `tester (gen-inhibit)`. 22:32:02 `resume`
+    event, "PAUSE removed and the lock is ours"; B2app started.
+  So neither condition alone ended the wait: removing PAUSE while the
+  Holder was someone else's (here `free`) did not resume the run.
+- **Boards:** the WiCAN on `e3d9437` `_man` (`25f50ac0...`) throughout, not
+  flashed; `wican_reboot.py` PASS at each run's start and end (mode 0, not
+  armed, nothing latched; the last at 22:39:32). The X2 on `756d6714`, read
+  off the wire twice in each run, not flashed. Lock taken 22:16, released
+  22:40 (`bench-holder.md`).
+- **Load during the runs:** the host tests above ran at Idle priority through
+  both bench runs (`test_suite_judges_mutants` on `b9896a0` through `0be3`;
+  `test_suite_gen_inhibit_mutants` on `8fdcec5` through `a18b`, and on
+  through the charge-interposer tester's DIAGNOSTIC run of 22:41-22:57, which
+  judged nothing). No build ran. B1's figures are counts (commands, passed, fail) and B2app reports
+  only its rc; neither has a timing figure.
+
+**The bench lock in log mode, before the cutover: shared/bench's tests at
+`b9896a0`, then two runs on the bench against a scratch log -- tester,
+2026-10-23 23:41 to 2026-10-24 00:06, on `e3d9437` `_man`. Result: every test
+PASS and every mutant caught; on the bench the runner took, paused, resumed
+and released as `shared/bench/SPEC.md` (shared/main) section 6 says, and a
+hand take of its paused run under a session's PID was a lost lock with
+nothing written to the log.** The bench-lock cutover's verification, as the
+reviewer ordered it (2026-10-23): verify first, then switch. Nobody was cut
+over: the runs used a scratch log, and `bench-holder.md`'s Holder line, still
+the lock, was held by hand for the whole session.
+- **shared/bench's own tests at `b9896a0`** (the core gen-inhibit pins,
+  `git archive` export in the tester worktree's `scratch/`), at Idle, each
+  plain and then with `--can-fail`:
+  - `test_bench_lock`: 29 of 29 passed; 130 of 130 mutants caught.
+  - `test_run_core`: 57 of 57 passed; 57 of 57 caught, each with its rule
+    switched off.
+  - `test_decode`: 7 of 7 passed; 33 of 33 caught (cantools 44.1.0; the
+    README names 41.3.1 as the version the golden test passed on).
+  - Nobody else was running them (process list checked first; their scratch
+    folder, a fixed `%TEMP%\vtrux-bench-tests`, was last written
+    2026-10-22). Run files `runs/cutover_b9896a0/<test>_plain.txt`,
+    `_can-fail.txt`.
+- **Bench setup:** settings `chain_settings_scratchlog.json` (local, holds
+  the X2's address): the standing `chain_settings_NICKY-XPS.json` plus
+  `bench_lock_log` naming `scratch/gen-inhibit-cutover/bench-log-scratch.jsonl`
+  in the tester worktree, created by `bench_lock.py init` at 23:46:57
+  (`host` NICKY-XPS, `env` windows). Harness `4de33c9` (gen-inhibit/main),
+  in the clean detached worktree `gen-inhibit-tester-harness`; core
+  `b9896a0`. Subset `man_app/B1`, `man_app/B2app`. Holder line taken by
+  hand 23:47, released 00:06, interposer tester messaged at both.
+- **The standing settings moved** (reviewer, 2026-10-23): from this session
+  `chain_settings_NICKY-XPS.json` names that worktree as `gi_tools` and
+  `gi_checks_clone`, no longer the old clone `wican-fw-vtrux-tester`, and
+  the `b9896a0` export as its core. `gi_images` is unchanged (the interposer
+  reads it for `wican_man`). It names no `bench_lock_log` (that is the
+  switch).
+- **Run 1**, `runs/chain/gen-inhibit-bench_20261023T234744_2116`
+  (23:47:44-00:00:29): PASS 2, B1 20 of 20 refused and counted, B2app rc 0.
+  - 23:47:44 `take`, pid 2680 (the runner's `python.exe`, checked in the
+    process table), run id = the run's.
+  - 23:49:19 PAUSE written once `man_app/B1/` existed; B1 ran to its end
+    (23:49:56).
+  - 23:49:56-23:50:48: both boards identified (WiCAN `25f50ac0...` over
+    HTTP, X2 `756d6714` off the wire 23:50:38) and the end hooks run (the
+    WiCAN release reboot, PASS, mode 0, not latched); 23:50:48
+    `free_paused` with those two reads. `status`: free, the run paused.
+  - 23:51:50, a minute later: still waiting, no `man_app/B2app/`, the log
+    unchanged. PAUSE removed.
+  - 23:51:58 `take`, pid 2680, the same run id, note `resume`; 23:52:09 the
+    start hooks again (WiCAN start reboot PASS), then both boards
+    re-identified (`resume-identify`, 23:52:50, nothing to flash). B2app
+    ran.
+  - 00:00:29, after the end identify and the end hooks: `release` with both
+    reads (WiCAN 23:59:37 and the end reboot, X2 00:00:19).
+- **Run 2**, `runs/chain/gen-inhibit-bench_20261024T000100_b014`
+  (00:01:00-00:05:05): B1 PASS (20 of 20), B2app NOT-RUN, as specified.
+  - 00:01:00 `take`, pid 16768 (not checked in the process table this
+    time), run id = the run's. PAUSE at 00:02:35; `free_paused` 00:04:04
+    with both reads, as in run 1.
+  - 00:04:16 a hand `take --run gen-inhibit-bench_20261024T000100_b014
+    --pid 7804` (7804: this Claude Code session's `claude.exe`), accepted;
+    `status`: held by tester (gen-inhibit), that run, pid 7804. PAUSE
+    removed at once.
+  - 00:04:24 the runner: `lock-lost`, "run ... is no longer paused: held by
+    tester (gen-inhibit), run ..., pid 7804"; its `lost` was refused
+    ("lost names run ..., which holds the lock"), so the log got nothing
+    (still 8 lines). B2app NOT-RUN "LOCK LOST: ...". `index.txt` and
+    `board_state.txt` open with the LOCK LOST line; both end hooks "not run:
+    the lock is not ours"; no restore, no release.
+  - **Observed, for the reviewer:** after the LOCK LOST the runner still
+    identified the WiCAN (over HTTP, 00:04:24) and the X2 (off the wire,
+    00:05:05). Reads only, nothing flashed. Section 6 says a lost lock
+    skips "the end restore and the end hooks' board actions".
+    **Ruled** (user, 2026-10-24, through the reviewer; shared/bench
+    `SPEC.md` section 6, `9aa8924`, on shared/main by merge `d20dada`):
+    board reads after a LOCK LOST are not prevented. When a run's
+    record shows them, the role tells the session that held the bench at
+    the time what was read, how and when. Here that holder was this
+    session's own hand take, so nobody needed telling.
+  - 00:05:41 the scratch lock released by hand under the session, with
+    those two reads.
+- **The scratch log**, 9 lines: `init`; run 1's `take`, `free_paused`,
+  `take` (resume), `release`; run 2's `take`, `free_paused`; the hand
+  `take`; the hand `release`. Copy `runs/cutover_b9896a0/bench-log-scratch.jsonl`
+  (sha256 `9f02eb25...`). `status` at each step:
+  `runs/cutover_b9896a0/<run>_status_{paused,resumed,handtake,end}.txt`.
+- **Boards:** the WiCAN on `e3d9437` `_man` (`25f50ac0...`) throughout, not
+  flashed, rebooted by software at each start, pause, resume and end hook
+  (the last at 00:04:04, run 2's pause), mode 0, not latched each time. The
+  X2 on `756d6714`, identified only, not flashed. No build ran.
+
+**The diag decode rework (port plan toolkit item 10): the e3d9437 baseline
+re-graded through `gi_diag`, the DBCs read from git at `9c54669` -- tester,
+2026-10-25, harness `e9ee61e` for the re-grade and `ebe2c5a` to `7229c06` for its
+own tests (branch `gen-inhibit/tester/decode-rework`).
+Result: every re-gradable check keeps its baseline verdict, with every figure
+computed from the diag frames exact, except B13 arm8's `from_zero` and interval
+figures (accepted, reason below); four checks or tools cannot be re-graded
+and are listed by id; the rest decode no diag page.** The acceptance the
+gen-inhibit reviewer set in the build message of 2026-10-24: re-grade the
+`e3d9437` baseline captures with the new code and get the same verdicts, on the
+diag DBC and schema doc in this repo (`gen-inhibit/diag/` at `9c54669`: schema
+7, `DiagSchemaHash` `7af6adef1d948197`), with the reviewer's readings Q1-Q9
+(2026-10-24/25).
+- **What changed:** every tool, judge and host check that decodes a WiCAN diag
+  page decodes it through `tools/gen_inhibit/bench/gi_diag.py` (on
+  `shared/bench`'s `vtrux_bench.decode` at the suite's pin `b9896a0`, checked
+  by blob id), never from a file path:
+  - the DBC for each frame is picked by its schema byte from
+    `vtrux-wican-diag.dbc`'s git history (`check_history` clean); an unknown
+    schema is refused (Q1);
+  - a live run records `gi_diag.run_identity()` (harness commit, DBC commit,
+    version and hash), and a re-judge refuses a page on another DBC (Q1);
+  - a diag page before a capture's first schema page is undecodable: counted
+    and reported, never decoded with a later schema (Q2). `0x7F0`
+    (`WICAN_Probe`) is outside the schema and decodes anywhere; `gi_diag`
+    refuses a history in which its layout is not the same in every DBC (Q8);
+  - golden traces compare decoded, by signal name, after `RenamedFrom`,
+    without the two schema signals (Q3);
+  - the interposer's DBC is read with `git show` at the pinned
+    `charge-interposer/main` `d83fc87` (Q5); `interlock_judge` raises on an
+    unknown schema and keeps None for other failures (Q6);
+  - the eight hand decoders moved onto `gi_diag` by signal name (Q7):
+    `quiesce_analysis`, `b11_post_latency`, `x2_jam_cases`, `tec_busoff_sweep`,
+    `live_jam_arm`, `diag_flags_trace`, `golden_schema_bump_check` phase 2, and
+    `test/gen_inhibit_host/bus_on_check.py`;
+  - a passive-analysis row's `error` is set only when a judged figure cannot be
+    computed from decodable pages, and the suite's B11, B11raw and B13 judges
+    give ERROR on it (Q9).
+  Commits `5c8c5e1` (the rework), `8e09e73` (`x2_jam_cases` passes the record's
+  identity to its judges in a live run), `e9ee61e` (Q8, Q9), and six fixes
+  the harness's own tests found (below): `a790bc9`, `01db48e`, `6ee0f13`,
+  `107f659`, `1d595e8` and `7229c06`, on `gen-inhibit/main` `b55dd0e`; `ebe2c5a` is the
+  methodology cherry-pick of `4553dc5` and changes no harness file.
+- **Method:** each re-gradable check's desk step or judge re-run over the
+  baseline's stored captures (`runs/baseline_e3d9437/`), with the harness at
+  `e9ee61e`, and again with the pre-rework harness `b55dd0e` (a `git archive`)
+  as the control, so a change from the decode rework shows as a difference
+  between the two, and a difference from anything older shows in both.
+  Compared: the verdict and every figure computed from the frames, exact (Q4).
+  Run folder `runs/decode_regrade_e9ee61e/` (its `README.md` lists the files).
+
+| Check | What was re-run | Result |
+|---|---|---|
+| B11 | `quiesce_analysis` over the 6 arms | same; adds `diag_decode` (0-2 pages per arm before the first schema page, no figure from them) |
+| B11raw | `b11_rawpost_judge`, `quiesce_analysis` | same; the judge's output byte-identical, `quiesce_analysis` as B11 |
+| B13 | `passive_analysis` (8 arms), `respond_booking_check` (B13's PASSIVE arms, B2's RESPOND arms) | booking byte-identical (every probe judged, Q8); passive the same except arm8, below |
+| B20 | `interlock_judge.judge` over the 28 records | 28 of 28 AS SPECIFIED; equal to the control exactly, adding `errors` [] and `diag_decode` (no page undecodable) |
+| B25 | `b25_keystate_judge` on the rekey-long record | byte-identical |
+| B5 | `live_jam_arm.judge` over 12 arms (4 runs) | equal to the stored judgements, 0 differences |
+| B8 | `tec_busoff_sweep.judge_bus_on` over 4 arms, `0x7F1`s from the witness | equal to the stored judgements, 0 differences |
+| B18 | the recorded `0x7F3` payload through `gi_diag` | `diag_git_hash` 803755636 (`0x2FE85674`), `diag_fw_ver16` 7, `diag_schema_ver_build` 7: the record's figures |
+| B15host | `diag_decode_check` on madhouse-debian against the `e3d9437` host build | the same, adding the DBC identity line and two decoder lines |
+| H | `run_tests` (golden compare) and `bus_on_check` on madhouse-debian, the `e3d9437` host build | the same; `run_tests` adds one line naming the export |
+| B2, B3, B24 | their desk steps (no diag decode), as a check on the method | byte-identical |
+| (B11, B3 support) | `b11_post_latency` over the baseline's `e3d9437` arms (6 and 15) | equal to the baseline's lines |
+
+- **B13 arm8 (`B13_e4_passive_sv_inhibit_e3d9437_20261016T215910_arm8`):** its
+  first counter page came before the witness's first schema page, so it is
+  not decoded, and `from_zero` is judged from the first decodable counter page
+  (reviewer, 2026-10-25, Q9: the check's purpose survives, since a count that
+  had not reset on the arm would still exceed the commands since the arm).
+  Before and after: `first_counter` 0 -> 108, `commands_to_first` 0 -> 123,
+  `intervals` 24 -> 23, `partial` 1 -> 0; `from_zero` ok and `intervals` ok
+  true in both. The control gives the baseline's figures, so the change is
+  the rework's.
+- **B20's stored judgements differ from both harnesses in one way:** in 7
+  records (the four `liveflag-*` cases, `low-after-close`, `soc-boundary` and
+  `soc-recovers`) a latch window's page count in a check or precondition detail
+  reads one page more than stored, or the same count with "from +x s" added
+  (for example "4 pages" stored, "5 pages, from +0.64 s" now; 26 details in
+  all). That is the reviewer's 2026-10-20 "caught up" rule
+  (`interlock_judge.latch_and_flag`), which came after the baseline; the
+  control gives the same, so it is not a decode change. Every verdict is
+  unchanged.
+- **Not re-gradable:**
+  - B15: `wican_segment_probe` keeps only decoded values, no raw payloads, and
+    its verdict is the per-id frame counts.
+  - `golden_schema_bump_check`: its runs are on `6771edf` and `099e9da`
+    (schemas 5 and 6), which are not in the DBC's git history, and it has no
+    `e3d9437` run.
+  - `diag_flags_trace`: a live tool that keeps no capture; no baseline run.
+  - `x2_jam_cases.judge_b_busoff`: no case calls it (its test only).
+- **No diag decode** (each checked by its tools' imports and a search for the
+  diag ids): B1, B4 (it records `0x7F9` raw and never decodes it), B6, B7
+  (`judge_busoff_rearm` reads page samples and `0x051`), B9, B10, B12, B14,
+  B16, B17a, B17b, B19present, B19absent, B19page, B21, B22, B23, B26,
+  NONODE; B27 is the declared skip; C1C7, C3, C5, C6, C2scan.
+- **Defects the harness's own tests found, all fixed but one.** None is in a
+  re-grade step. The re-grade at `e9ee61e` stands for `7229c06`: since
+  `e9ee61e` the only change outside the harness's own tests and READMEs is
+  `build_output.py`, and no re-grade step runs it.
+  - `a790bc9`: `5c8c5e1` bound a new module-level name in
+    `test/build_checks/build_output.py` that shadowed the reference folder's
+    path, so its partition-table row raised TypeError on every image.
+    `test_partition_row` fails at `e9ee61e` and passes at `a790bc9` and at
+    `b55dd0e`.
+  - `01db48e`: `5c8c5e1` changed B15host's copy command, and two
+    `test_suite_gen_inhibit_mutants` edits still named the old text. Neither
+    applied: 71 of 73 killed, 2 errors, at `ebe2c5a`.
+  - Three mutant runners killed every mutant whatever its edit, because the
+    unmutated copy they test already failed checks, and none ran that copy as a
+    control. Found when every mutant of `test_suite_gen_inhibit_mutants` at
+    `01db48e` (73 of 73) failed the same six B15host checks. A copy of `gi_diag`
+    in a bare scratch folder finds no git history for the DBC, which it reads
+    from three folders up. Each runner now runs its unmutated copy first, and
+    the run fails if that control fails a check:
+    - `6ee0f13`, `test_suite_gen_inhibit_mutants`: since `5c8c5e1`, B15host
+      exports through `gi_diag`; the control failed 6 checks. The mutants now
+      run in a shared clone of the repo at HEAD, in `scratch/`.
+    - `1d595e8`, `test_baseline_b_desk_mutants`: it copied the script alone,
+      which runs its tools from its own folder, and since `5c8c5e1` its B11,
+      B11raw and B13 tools also decode through `gi_diag`; the control failed
+      B11's index check. It runs in a clone the same way.
+    - `107f659`, `test_baseline_capture_stop_mutants`: it copied the five
+      scripts alone, and they run `capture_window.py` from their own folder;
+      the control failed 5 checks. Each mutant is now a copy of the whole of
+      `bench/`.
+    The suite runner's control passes at `b55dd0e`; the other two fail there as
+    they do at `01db48e`, so those two defects are older than the rework
+    (`runner_controls/`).
+  - `7229c06`, `test_suite_gen_inhibit.py`: with its control passing, the
+    suite runner showed one survivor, "B15host's copy failing is not seen"
+    (no `pipefail`). Since `5c8c5e1`, the test's failing-copy case left out
+    `pins.json`, which `gi_diag`'s export reads, so the export failed before
+    `tar` ran, and the pipefail was never exercised. The case now leaves out
+    `diag_decode_check.py`, in a shared clone so that the export passes, and a
+    new check asserts that the copy reached the host, so it is `tar` that
+    failed.
+  - Every other mutant runner's control passes, run as its own main with one
+    no-op mutant (`scripts/mutant_control.py`). One exception is not fixed:
+    in `test_raw_http_probe_mutants`, `image_elf_sha`'s unmutated copy
+    crashes, because the runner passes a scratch folder as
+    `test_image_elf_sha.py`'s optional image path. All its synthetic checks
+    pass first, so its six kills are by checks.
+  - After the fixes: at `7229c06` (`tests_7229c06/`), `test_suite_gen_inhibit`
+    297 ok and its mutants 73 of 73 killed by a check, `test_baseline_b_desk` 45
+    ok and its mutants 9 of 9; at `107f659` (`tests_107f659/`), the capture-stop
+    mutants 15 of 15. Every control passes, and the kills are spread over the checks the
+    edits aim at, not one shared check.
+- **The harness's own tests:** a sweep of every test file in
+  `tools/gen_inhibit/`, `tools/gen_inhibit/bench/` and `test/build_checks/`
+  (`sweep_rows.txt`), then, at `ebe2c5a`, one at a time with no time cap, the
+  84 that matter here (`tests/`): the sweep's first 50 rows, which ran while
+  the rework's files were still changing, the decode tests, every test that
+  imports `build_output.py`, and three that need `INTERPOSER_CODE`.
+  - In `tests/`, 83 of 84 pass. Among them: `test_gi_diag` (mutants 23 of 23),
+    `test_suite_judges` (36 of 36), `test_suite_gen_inhibit` (296 ok),
+    `test_interlock_judge` (175 checks; with `interlock_bench`'s, the five
+    interlock mutant files kill 27 of 27),
+    `test_x2_jam_cases_decoder` (3 of 3), `test_respond_booking_check`,
+    `test_passive_analysis`, `test_diag_readers`,
+    `test_golden_schema_bump_check_mutants` (6 of 6), `test_reference_paths`
+    (6 of 6), `test_raw_http_probe_mutants` (113 of 113) and
+    `test_partition_row`. The 84th is `test_suite_gen_inhibit_mutants` (71 of
+    73, 2 errors), fixed in `01db48e` (above). Two of the 83, the B-desk and
+    capture-stop mutant runners (9 of 9 and 15 of 15), count for nothing: their
+    controls failed (above). They were re-run after their fixes, in
+    `tests_107f659/` and `tests_7229c06/`.
+  - The sweep's rows 51 onward ran at `e9ee61e`, which differs from
+    `ebe2c5a` in no file they import: 74 of 87 pass, 5 are re-run and pass in
+    `tests/`, and 8 need an argument or a local input.
+  - Not run as tests, since each needs a real build tree, the bench or a local
+    settings file: `build_checks_stock_mutants`, the four `prod_build` tests
+    (`tools/prod_build.py` is retired on `gen-inhibit/main`, known anomaly
+    (3)), `test_refusal_pairs`, `test_chain_settings_chip` and
+    `test_only_inert` (a bench tool). `test_reply_golive_report`, which needs
+    only a scratch folder, passes at `01db48e`.
+- **No hardware:** no board was touched and the bench lock was not taken. The
+  host half ran on madhouse-debian in `<madhouse-debian home>/gi_regrade_e3d9437`, a `git archive`
+  of `e3d9437` with this branch's `run_tests.py`, `bus_on_check.py`,
+  `gi_diag.py`, `pins.json`, `diag_decode_check.py` and `gi_diag`'s export,
+  `e3d9437`'s own two scripts kept beside them as the control.
+
+**Port step 0c, host and shim half: 0x7F3 carries the build id, the host suite
+on schema 8 and its goldens -- tester, 2026-10-25, on `b9a35c3` (main/ =
+`ef553fa`'s). Result: PASS. The bench half (B18 at the tip, and the rest of
+part B decoded with schema 8) is not run yet.** Spec 10 (0x7F3 B0-B3 are
+`diag_build_id`, diag schema 8; user, 2026-10-25), the 12.4 row "0x7F3 carries
+the build id" (host shim half) with "the page names the binary", and the host
+suite (part H) decoded with schema 8. The implementor's range
+`564c129..ef553fa`; the harness `gen-inhibit/tester/step0c` `564c129..6ba7eff`.
+- **Build:** `b9a35c3`, a local merge (on no branch) of `ef553fa` and the
+  tester's branch at `f3f8562`; its `main/` tree (`cfc88b81...`) is
+  `ef553fa`'s, so every result here is about `ef553fa`'s product code.
+- **"0x7F3 carries the build id", host half: PASS**
+  (`runs/step0c_b9a35c3/spec_shim/`, madhouse-debian, gcc 14.2.0, built in
+  its own shell; `main_is_base` true against `ef553fa`, nothing modified).
+  `build_id_test` builds the product as shipped against the fakes, whose app
+  descriptor carries a fixed ELF SHA-256 (`000ff0ff 01234567 ...`). Spec 10's
+  rule (a u32 with the hash's first byte most significant, sent
+  little-endian) gives B0-B3 `ff f0 0f 00`, which the test also works by hand.
+  Over 4 s in INHIBIT, all 3 0x7F3 frames on the wire carry those bytes and 8
+  in B6 (schema 8), and their value printed `%08x` is `000ff0ff`, the hash's
+  first four bytes. The page's `elf_sha256` is the descriptor's hash and starts
+  with that build id ("the page names the binary"). 7 of 7 rows. The test's
+  power: 6 of 6 mutants of the product's build id and page hash, in a scratch
+  copy, are caught (the hash's bytes as a little-endian value, bytes 4-7, a
+  byte dropped, always 0, the config never given it, the page's hash one byte
+  off; WSL self-check). The row "a bus with no other node, emulated" in the
+  same run: every RESULT line PASS.
+- **The host runner's build id:** `cfg build_id <n>` reaches every 0x7F3 as n,
+  decoded with the schema 8 DBC and as B0-B3 little-endian, also with the top
+  bit set; unset it is 0, the goldens' value; the old key `git_hash` is
+  refused (`test_cfg_build_id`, 13 checks, in the host run below; 6 of 6
+  mutants of the runner's cfg line caught, WSL self-check).
+- **Host suite (part H): PASS** (`runs/step0c_b9a35c3/host/host_run.log`,
+  madhouse-debian, gcc 14.2.0, `baseline_host_run.sh`, which now ships
+  `gi_diag` and its DBC export): make, scenarios, replays, `test_signals`,
+  `invariants`, `passive_diff`, `fuzz_sequences --seed 0`, `load_margin`,
+  `spec_expect_check` and `drained_check` (each with its self-test),
+  `bus_on_check`, `test_cfg_build_id`, the long-arm fixture (23,241,533
+  bytes), the shim (E1, ASan, auto-arm, auto-arm ASan), the scheduler (and
+  ASan) and `config_vs_spec` all exit 0. `run_tests` on the old goldens: 8
+  passed, 72 failed, 23 without goldens, every changed line a 0x7F3 page
+  (`diag_git_hash=0` against `diag_build_id=0`): the expected 0c difference.
+- **The goldens, re-blessed for schema 8** (`gen-inhibit/tester/step0c`
+  `6ba7eff`; `runs/step0c_b9a35c3/rebless/`). Blessed in the host run's own
+  copy; after it `run_tests` passes 80 of 80. `golden_schema_bump_check
+  --old-ver 7 --new-ver 8 --same-value diag_git_hash=diag_build_id`: only the
+  schema moved, in all 72 changed goldens (without `--same-value`, the
+  control, it rejects all 72: the DBC has no `RenamedFrom` between the two
+  names, because the meaning changed, not the bytes). Byte level: 547 0x7F1
+  lines B0 07 -> 08 and 516 0x7F3 lines B6 07 -> 08, 0x7F3 B0-B3 `00000000` on
+  both sides, every other line identical; the 8 unchanged goldens are replays
+  with no diag lines. The bless also pinned the 23 scenarios that have no
+  golden on purpose; those goldens and pin lines were dropped, so
+  `stimulus.sha256` is unchanged.
+- **Run files.** `runs/step0c_b9a35c3/` (`host/`, `rebless/`, `spec_shim/`).
+
+**Port step 0c, bench half: part B on `6926fb0`, decoded with schema 8 --
+tester, 2026-10-25 13:23 to 19:03, on `gen-inhibit/main` `6926fb0`. Result:
+every verdict matches the `e3d9437` baseline but B9's, which is flaky, needs
+review (observed vs spec below).** This followed one harness defect, fixed and
+re-run (B20, B25), and one Wi-Fi outage, whose casualties were voided and
+re-run (B3, B11raw, B15). Spec 10 (0x7F3 B0-B3 are `diag_build_id`, diag
+schema 8), the 12.4 row "0x7F3 carries the build id" (bench half, B18), and
+part B decoded with schema 8. Acceptance (reviewer, 2026-10-25): every verdict
+as the baseline, with 0x7F3 B0-B3 the expected difference. Harness:
+`gen-inhibit/tester/step0c-bench` `6926fb0..1f6250d`.
+- **Build.** The part B images were built at `6926fb0` from a detached
+  worktree, with clean trees: `_man` `3639f8b2...`, `_rt` `3c7610cf...`,
+  `_txabort` `64a63148...`, `_abortwin` `f73220f9...`, `_rxq` `a5a0888c...`.
+  `_man2` built to `3639f8b2...`, the same as `_man`: builds are now
+  reproducible.
+  - **Prod: a release build standing in for prod** (reviewer, 2026-10-25): the
+    shared tooling's release build of `6926fb0`, also `3639f8b2...`.
+  - Its release record went to a stand-in reverse-it folder, not
+    `firmware/builds/`.
+  - It is a test image, never flashed to the truck, and not a prod build in
+    spec 12.3 item 3's sense.
+  - Build logs: `runs/step0c_bench_6926fb0/builds/`.
+- **Expected differences from the baseline,** all from those three equal
+  hashes (reviewer ruling, 2026-10-25; harness `f0e29fb`):
+  - the `man2` group retires;
+  - B17a's other image is `_rxq`;
+  - B17b runs in the rxq group (image `_rxq`, other `_man`);
+  - the prod page's other image is `_rxq`.
+- **Identity rows, labelled, not compared:**
+  - B17a page `elf_sha256` `3639f8b2` (baseline `25f50ac0`);
+  - B17b `a5a0888c` (`f9de9de9`);
+  - B19page `3639f8b2` (`f3957789`);
+  - B18 `diag_build_id` `3639f8b2` (baseline schema 7 `diag_git_hash`
+    `0x2FE85674`).
+- **"0x7F3 carries the build id", bench half (B18): PASS.** MATCH, 7 rows ok.
+  `diag_build_id` read off the wire is `3639f8b2`, the first four bytes of the
+  running image's `elf_sha256`.
+- **Emulated prerequisite:** `runs/chain/gen-inhibit-emulated_20261025T123158_ba11`
+  at `6926fb0`. PASS 3 (H, B15host, C2scan); NOT-RUN 2 (C1C7 and C3, by
+  design).
+- **Boards.** Each was read off the board by the runner's identify before
+  every group (each run's `progress.jsonl`).
+  - WiCAN: `_man` `3639f8b2...` and each group's OTA image.
+  - X2: per group, on `756d6714`, held, the jammer (custody dump taken) or
+    `slcan`.
+  - In the first full run, every OTA took at its first attempt: rt, txabort,
+    abortwin, rxq and prod.
+  - The prod group did OTA, from `_rxq` to the stand-in. The ruling's "no
+    OTA" assumed the board was already on that hash, but rxq runs before prod.
+  - In re-run 2, rt's first attempt did not take ("(a1) NO STATUS, NO
+    RESTART"); the second took.
+  - Each run's lock was held by its runner (`$REVERSE_IT_DIR/firmware/bench-log.jsonl`). The
+    one hand take was for the hand OTA below.
+- **Runs** (`runs/chain/`):
+  - `gen-inhibit-bench_20261025T132354_3d53`, at 13:23. **Refused at start:**
+    the WiCAN was on `e3d9437` `_man` (`25f50ac0...`), not a suite image.
+    NOT-RUN 35, nothing flashed.
+    - Then a hand take (13:25:30) and `bench_flash.py --flash` to `6926fb0`
+      `_man`: TOOK, release reboot PASS, released 13:28:02
+      (`runs/step0c_bench_6926fb0/hand_ota_man/`).
+  - `_132810_407a`, at 13:28. **Stopped at start-identify:** the X2 identify
+    refused the run settings' key `interposer_dbc`, retired 2026-10-24.
+    - The X2 was not touched. The key was removed from the run settings only.
+  - `_132956_cfcd`, 13:29:56-15:39:37, every group, harness `f0e29fb`:
+    PASS 35, FAIL 2 (B20, B9), ERROR 2 (B25 and its rc), NOT-RUN 1 (B27, the
+    declared skip).
+  - `_155323_6204`, 15:53:23-16:14:06, re-run 1 of B20, B25 and B9,
+    harness `9b74ba0`: PASS 3.
+  - `_161806_08ea`, 16:18:06-17:49:36, re-run 2 of the other flagged checks,
+    harness `9b74ba0`: PASS 13, FAIL 1 (B15), ERROR 3 (B3, B11raw and its rc),
+    INCONCLUSIVE 1 (NONODE).
+  - `_183925_86b5`, 18:39:25-19:03:05, re-run 3 of B3, B11raw and B15,
+    harness `1f6250d`: PASS 5.
+  - **The comparison:** `cfcd/compare_report.txt` (`bench_compare.py report`,
+    all four runs; flagged 13 of 39). The three-run report it replaces is kept
+    beside it as `compare_report_cfcd_6204_08ea.txt`.
+- **The tester's miss.** `cfcd` was started as a plain `vtrux_bench.run run`,
+  not `bench_compare.py chain`, so the automatic re-run of the flagged checks
+  did not happen. Re-runs 1 and 2 were started by hand, with the check list
+  `bench_compare.rerun_checks` gives, desk reads included.
+- **A harness defect: B20 FAIL and B25 ERROR in `cfcd`; fixed in `9b74ba0`.**
+  - `interlock_bench.py` still gated on `bench-holder.md`'s Holder line,
+    frozen at "free" since the 2026-10-24 lock cutover. After building its 28
+    stimuli, B20 refused ("bench-holder.md names 'free' as the holder") while
+    the runner held the lock in the bench log.
+  - B25 reads B20's output, and had none.
+  - `x2_pins_noreset_check.py` had the same gate; it is not in the suite's
+    verdicts.
+  - `bench_held.py` now asks the bench log through `vtrux_bench.bench_lock`,
+    and fails closed.
+  - Re-run 1: B20 28 of 28 AS SPECIFIED. B25 AS SPECIFIED: `rule1_violations`
+    0 in 18396 frames, gate open 203.478 s and resumed 203.481 s (baseline
+    203.479 and 203.482).
+- **B9: flaky, needs review. Observed vs spec.**
+  - The spec 12.4 row "error-frame rate trip" (spec 7, trip 6). B9 is its
+    wrong-bit-rate method.
+  - `cfcd`: 9 bursts and 32773 witness error frames (2571-2762 a burst). The
+    device read TEC max 0, REC max 135, `bus_error` +22718. **Trip 7 latched,
+    "3 inhibit frames skipped within 1 s"; trip 6 did not.** FAIL.
+  - Re-run 1: 9 bursts and 33520 frames (2600-2890 a burst); TEC max 68, REC
+    134; trip 6 latched. PASS.
+  - The baseline: trip 6, TEC 34, REC 128, 34031 frames. Earlier `e3d9437`
+    runs: trip 6, TEC 93 and 94.
+  - This is the first trip-7 latch in B9 on record. Spec 7 defines both trips
+    and gives no order between them. Sent to the reviewer.
+- **Note (tester, 2026-10-26; wording approved, user, 2026-10-25): B9's trip 6
+  was never latched by the bursts on a live arm.**
+  - **What every wrong-bit-rate record on file shows:** `live_before` is false,
+    no page sample reads live, and the trip had already latched at the first
+    page sample, about 4 s before the first burst. The records are
+    `wrong_bitrate_calibrate_*.json`: 2026-10-10 on `cc34c80`, the `e3d9437`
+    baseline, `0bfe` and `ec06`, and `cfcd` and `6204` on `6926fb0`.
+  - **Why it read PASS:** B9's judge passed on "error-frame rate exceeded" being
+    among the aborts, so a latch made before the stimulus counted.
+  - **What this changes:** these B9 PASS verdicts are not evidence that the
+    wrong-bit-rate bursts trip a live arm. Under the judge as changed on
+    `gen-inhibit/tester/gi-page-reads` (`6081665`), each reads INCONCLUSIVE.
+  - **What still stands:** the counter readings stand as readings of the
+    device's counters with the arm latched: REC up to 128-135 after each burst,
+    TEC, state `running`, and the witness's error frames per burst.
+  - **Where trip 6 on a live arm rests instead:** the jammer cases (B5
+    livetrain, B6 threshold, B7 busoff-rearm) and B10's flood arms. Their
+    records show the device live with no abort just before the stimulus, no
+    witness error frame before it, and the latch after it.
+  - In `cfcd` (trip 7) and `6204` (trip 6) alike, the trip had latched before
+    the first burst, so B9's FAIL-then-PASS says nothing about the device's
+    response to the bursts. Which trip latches first under the pre-arm condition
+    is recorded, not judged.
+- **A Wi-Fi outage voids B3, B11raw and B15 in re-run 2** (reviewer,
+  2026-10-25).
+  - The PC's Wi-Fi link to the WiCAN's AP dropped from 16:33:19 to 16:40:15
+    (Windows WLAN-AutoConfig log): event 11004 at 16:33:19.2; 8003
+    "disconnected by the driver" at 16:33:29.2; 8001, reconnected, at
+    16:40:15.9.
+  - The WiCAN did not reboot: its uptime went from 884214 ms at 16:32:58 to
+    1451308 ms at 16:42:25, 567.1 s over 567 s of wall clock. CAN identify
+    worked through it (16:40:19).
+  - The drop came within about 1 s of B3 observe arm 5's go-live POST.
+  - Casualties:
+    - B3's desk read ERROR (its judge raised on arm 5's empty fields);
+    - every B3arms respond and passive arm exited 2;
+    - all 6 B11raw arms exited 2, their captures empty, so B11raw's desk read
+      ERROR, "no input files";
+    - B15 FAIL, "mode 0 not restored" (its mode-3 POST timed out at 16:39).
+  - Re-run 3: B3 PASS (20 arms, stale 0); B11raw PASS (3 PASS, 0 on ACK, 3
+    not applicable); B15 PASS (3 adapters on the segment).
+  - B3arms and B11rawarms read PASS in re-run 2 though every arm failed. Arms
+    cases have no judge: they are rated on the script's exit code, which was
+    0. Fixed in `1f6250d`.
+- **NONODE: re-judged PASS** (reviewer, 2026-10-25).
+  - In re-run 2, arms 1 and 3 latched trip 6, "error-frame rate exceeded", at
+    0.427 and 0.420 s. Arm 2 latched trip 2, "bus lost", at 0.635 s. Every
+    judged item read PASS in all three.
+  - The record's verdict was FLAKY (the main arms disagree on the trip),
+    which the suite reads as INCONCLUSIVE.
+  - Spec 12.4 row "a bus with no other node": "Recorded, not judged: which
+    trip latched (2 or 6) and when". The 0.7 s bound is met.
+  - `79bada4` drops the trip comparison. `nonode_bench.py --rejudge` on the
+    record gives PASS (`08ea/man_held/NONODE/nonode_bench_20261025T164839_rejudged.json`).
+    The record is unchanged (`d3ada231...`).
+  - 1 of 3 arms latched trip 2, against 6 of 6 latching trip 6 before (the
+    `e3d9437` baseline and `cfcd`).
+  - The comparison report still reads re-run 2's NONODE as INCONCLUSIVE,
+    from the record.
+- **Figures flagged, verdicts unchanged.** Each is given as first run /
+  re-run (baseline):
+  - B2: `respond_probes_x2app` 2992 / 2992 (2994); `respond_probes_x2held`
+    2996 / 2999 (2992).
+  - B3, first run / re-run 3, each a maximum: `first_answer_ms` observe
+    46.3 / 46.8 (36.0); respond 40.5 / 40.5 (34.0); passive 46.3 / 28.7
+    (28.6). Passive minimum 15.4 / 15.4 (15.8); off minimum 150.7 / 150.9
+    (150.9).
+  - B5: `pass_500_per_s` 9 / 9 (8); `inconclusive_500_per_s` 0 / 0 (1).
+  - B11raw, first run / re-run 3: `pass_on_ack` 0 / 0 (1);
+    `send_to_first_byte_ms` 7.6-19.0 / 6.1-28.7 (6.1-20.1).
+  - B12: `sw_boot_s` 2.306-4.349 / 2.306-2.314 (2.314-2.353); `panic_boot_s`
+    minimum 0.586 / 0.582 (0.592).
+  - B15, first run / re-run 3: `frames_pcan` 20938 / 20926 (20930);
+    `frames_gs_usb` 14789 / 14788 (14791).
+  - B22: `response_us_max_a` 1467 / 826 (846); `_b` 918 / 1044 (814).
+  - B23:
+    - contend aborted 61 / 66 (57);
+    - contend no effect 14 / 8 (21);
+    - contend lost-then-aborted 3 / 4 (0);
+    - retry aborted 71 / 74 (69);
+    - retry first abort enough 72 / 74 (69);
+    - retry lost-then-aborted 7 / 4 (9).
+  - B26: `ge2_idle_a` 12 / 5 (15); `ge2_idle_b` 10 / 13 (17); `ge2_loaded`
+    13012 / 12098 (11543); `max_backlog_idle_b` 3 / 3 (4).
+- **Recorded, not judged: B15's non-ACK repeat id.** It was 0x7F8 in re-run
+  3. It was 0x7F9 in the first run and in every earlier B15 on record. The
+  comparison sets the first run's figures against the baseline, not a
+  re-run's, so it does not show this.
+- **`ota_rollback_rehearsal`'s verify phase: NOT RUN** (reviewer,
+  2026-10-25). It reads `/check_status`, which is barred until the WiCAN's
+  factory reset (reviewer, 2026-10-20). Moving it onto `/gen_inhibit` is next
+  on this branch.
+- **`/check_status` is off two suite tools** (`4db69fe`, reviewer,
+  2026-10-25).
+  - `e4_device_calibration.py`, behind the B2, B3, B11, B11raw and B13 arms,
+    asked for `/check_status` first, to name the image. B11raw's Wi-Fi capture
+    of port 80 kept the answer.
+  - `wican_txabort_bench.py` (B23) asked for it before and after.
+  - Both now name the image by `/gen_inhibit`'s `elf_sha256`. e4's record
+    field `device` is now that hash; it was `git_version`.
+  - `cfcd`'s six B11raw captures (`man_app/B11rawarms/*.pcapng`) each hold
+    one `/check_status` request and its answer. They are left untouched, not
+    opened or copied, pending the user (reviewer).
+  - Re-run 3's six B11raw captures hold no `/check_status` request. This is a
+    value-blind count of request lines, made by
+    `check_status_request_count.py` on 2026-10-25.
+- **Harness changes** on `6926fb0..1f6250d`, each with its own test:
+  - `f0e29fb`, the man2 retirement: `test_suite_gen_inhibit` 302 ok, its
+    mutants 76 of 76, `test_suite_judges`;
+  - `4f3cea7`, the tester skill's cherry-pick of methodology `c4fd7d6`;
+  - `9b74ba0`, `bench_held.py`:
+    - `test_bench_held` 19 ok and its mutants 12 of 12;
+    - `test_interlock_judge` 170;
+    - `test_x2_pins_noreset_check` 40 and its mutants 25 of 25;
+    - `test_gi_paths` and its mutants 15 of 15;
+  - `79bada4`, NONODE's trip recorded, not judged, and `--rejudge`:
+    `test_nonode_bench` 67 ok, its mutants 42 of 42;
+  - `4db69fe`, the `/gen_inhibit` reads: `test_device_page_reads` 29 ok, its
+    mutants 11 of 11, `test_e4_rawpost`;
+  - `1f6250d`, the arms scripts exit 1 when an arm does: `test_arms_exit` 22
+    ok, its mutants 11 of 11.
+  - Every test was re-run at `1f6250d` after re-run 3, and all pass
+    (`runs/step0c_bench_6926fb0/harness_tests/`).
+  - The first saved run of `9b74ba0`'s mutants had the bench core missing
+    from the Python path. Every mutant crashed on import, and none was killed.
+    `9b74ba0`'s message says 12 of 12. The run that shows it is the one at
+    `1f6250d`: `bench_held.py`, its tests and the two gated tools are
+    unchanged since `9b74ba0`.
+- **Run files:**
+  - `runs/chain/gen-inhibit-bench_20261025T{132354_3d53,132810_407a,132956_cfcd,155323_6204,161806_08ea,183925_86b5}/`;
+  - `runs/step0c_bench_6926fb0/` (`builds/`, `hand_ota_man/`,
+    `harness_tests/`, with a README and SHA256SUMS).
+
+**The canre pin: the harness takes canre from the public repo at
+`ffbe029`, not from the reverse-it root -- tester, 2026-10-26 17:45-18:06,
+harness `5d85dce`. Result: PASS. (1) The eight replays rebuilt with the pinned
+canre match `golden/stimulus.sha256`, 8 of 8, headers too; the host suite and
+the shim suite pass. (2) Every capture and stimulus is the same with either
+canre, 27 of 27 items.** The canre-pin step, as the reviewer ordered it, with
+check (2) as the user ruled it (2026-10-26, through the reviewer). No product
+code and no spec section changes; this entry verifies the harness that builds
+the spec 12.4 replay stimuli. Harness: `gen-inhibit/tester/canre-pin`
+`0a2346b..5d85dce`.
+- **The two canre versions:**
+  - **Before, the reverse-it root's `canre/`** (SeaDrive; not a git checkout,
+    so named by content hash, `canre_hash.py`): all 43 files as bytes
+    `02f06e343493f948ce499a0608c769f62fd2f98d71bd01ebe1bc7ab303fb8a4f`; the
+    37 `.py` files with LF line endings
+    `1a5739564d8b840f5efce216d898d031043149621bb143509c03e25f617f1aab`. The
+    madhouse-debian copy the host runs used has the same three hashes.
+  - **After, the pin:** canre 0.1.0, `canbus-reveng-vtrux-coda` at
+    `ffbe0291f7b817360f03f1082e07240804cf6084`, in `pins.json`, installed by
+    `canre_pin.py install` (pip `--no-deps --target`) and checked on every use
+    (version, PEP 610 commit and repo, every RECORD hash, no added file). The
+    install: 33 files `b619f72595ab011ed3b83550b561b85a0942edd1c4d7cf8f0d601b669370a9cb`,
+    the 32 `.py` files `bff371e0f8579c970dca51fecc1786ba3be428e250690749ddb1b3cd0bc0a1ad`,
+    the same on both hosts.
+  - They differ in CRLF line endings, the root's `.md` notes and `gui/`, and
+    one comment in `canre/utils/merge.py` (`diff --strip-trailing-cr`).
+- **Harness change, `5d85dce`:** `canre_pin.py` (new) and `pins.json`'s
+  `canre` entry; `gi_paths.use_canre`, `from_capture.py` and
+  `replay_inhibit.py` import canre through it; `gi_host_run.sh` ships it,
+  gains `--canre` (install only), and `--shim` installs before it builds.
+  Its tests, on NICKY-XPS: `test_canre_pin` ok, mutants 16 of 16 (its
+  importer scan flags `from_capture.py` and `replay_inhibit.py` at
+  `0a2346b`); `test_gi_paths` ok, mutants 25 of 25; `test_project_dir` ok,
+  mutants 16 of 16; `test_gi_host_run_env` ok, mutants 10 of 10;
+  `test_gi_host_run_list` ok, mutants 4 of 4; `test_x2_jam_cases_reset_mutants`
+  14 of 14; the 26 bench tests that reach canre, 25 exit 0 and
+  `test_only_inert` (a bench tool) stops at its arguments after its imports.
+  `test_raw_http_probe_mutants` 111 of 113, every control passes; the two
+  not killed ("lock ignores the loan", "lock accepts any loan") edit code no
+  longer in `tools/` and predate this change (reported to the reviewer, not
+  fixed here).
+- **(1) The replays, on madhouse-debian** (`<madhouse-debian home>/gi_host` at `5d85dce`, through
+  `gi_host_run.sh`, gcc 14.2):
+  - `--canre`: installed and checked at `<madhouse-debian home>/gi_host/scratch/canre/ffbe029...`.
+  - `replay_stimulus_delta.py --regen`: all eight rebuilt with the pinned
+    canre, each "BEHAVIOUR: identical to the golden" (frames, first and last
+    us, order, per-id counts).
+  - Stimulus sha256 against `golden/stimulus.sha256`: 8 of 8 MATCH, header
+    sha256 the same for all 8 (`3b_stimulus_vs_pin.log`). A first check,
+    `3_stimulus_vs_pin.log`, is VOID: my checker looked the pins up without
+    `.scn` and read none, so it reported 0 of 8. Fixed, and the regen and the
+    check run again (2b, 3b).
+  - Host suite: 80 passed, 0 failed, 23 without goldens, no stimulus
+    mismatch.
+  - Shim suite (`--shim`): the long-arm fixture rebuilt with the pinned
+    canre (706,283 frames); all shim cases pass.
+- **(2) Every capture and stimulus, both ways,** on madhouse-debian
+  (`accept2_remote.py`; each item in its own interpreter, once with the
+  harness at `0a2346b` and canre from the root, once at `5d85dce` and canre
+  from the pin):
+  - **(a) Frames**, compared frame by frame (timestamp, id, data, channel,
+    and `is_extended`, `dlc`, `is_tx`) by a digest over every frame: the ten
+    `pins.json` and replay source logs and the long-arm source
+    `runs/scottsvalley_armable_300s.log`, 11 of 11 the same (144,319 to
+    24,209,199 frames each). Each run recorded the canre it loaded.
+  - **(b) Stimuli:** `lowid_flood_skip_bench` and `wican_trip_bench`'s
+    interlock slice (5,445 rows each; lowid also equal to its stored cache,
+    wican_trip has none on madhouse), `wican_crank_request_bench`'s 2,000
+    payloads, `bench_link_check`'s 600 0x051 payloads and `replay_inhibit`'s
+    6,424; `cut_replay_window` (Scotts Valley, 1868.34 s, 300 s) and
+    `keyon_replay_prep` (channel 3, 7.741 s), each also byte-equal to the
+    stored file the runs used; `from_capture.py` for the eight replays and
+    the long-arm scenario, each file byte-equal both ways (their stimulus
+    hashes also equal the eight pins). 16 of 16 the same, every tool rc 0.
+- **Run files:** `runs/canre_pin_5d85dce/` (`README.md`, the scripts,
+  `accept1/`, `accept2/`; `SHA256SUMS`
+  `3198971675c7d53b0184cb89542231e26bf70019623c5ca2c310876d303062b5`).
+
+**Port step 1a's acceptance: the spec shim, the emulated suite and part B on
+`bc7d086` -- tester, 2026-10-29 14:25 to 21:49, on `gen-inhibit/main`
+`bc7d086` (product code `7ad8c14`'s). Result: every verdict matches the
+`e3d9437` baseline but B6's and B22's, which read INCONCLUSIVE: in each, an
+arm judged nothing (observed below; no arm failed). B22, re-judged from the
+records under the provenance-only rule (gen-inhibit reviewer, 2026-10-29):
+PASS in all three runs (note below). B9, known anomaly 6:
+PASS on the fixed tool, on a live arm, after a timestamp defect in the tool
+was fixed.** The first two runs' B6 FAIL, B22 FAIL and B9 INCONCLUSIVE were
+harness defects, fixed in `8829425` and re-run. The reviewer's acceptance
+(2026-10-29): the full suite at the baseline's results, with B9 re-run on the
+fixed tool (known anomaly 6). Spec 3.2, 3.3 and part B as a whole, the
+hardware half the step 1a C entry left to this suite; the 12.4 rows "0x7F3 carries the build id" and "a
+bus with no other node, emulated". Harness: `gen-inhibit/tester/wican-move`
+`bc7d086..16ccecb`.
+- **Build:** the images and the release stand-in in 12.3's entry "Port step
+  1a, the rest".
+- **Spec shim: PASS** (`runs/step1a_bc7d086/spec_shim/`, madhouse-debian, gcc
+  14.2.0, from a bundle of `bc7d086`; `main/` tree `27805e64592d`, `bc7d086`'s,
+  nothing modified; `vtrux/wican`'s headers from `git archive` of
+  `2026.10.29`, through `WICANDIR`). Cases `answer_stuck`, `before`,
+  `bench_262`, `bench_274`, `build_id`, `busoff_few`, `busoff_many`, `fast`,
+  `layer`, `layer_bench`, `slow`, `tie`: every row PASS. `build_id`: the rule
+  and the hand calculation agree (`fff00f00`), 3 0x7F3 frames on the wire, 0
+  differ, schema 8 in B6, `diag_build_id` `000ff0ff`, the page's `elf_sha256`
+  the descriptor's.
+- **Emulated suite** (`runs/chain/`):
+  - `gen-inhibit-emulated_20261029T151021_8e4f`: H FAIL, a harness defect:
+    `baseline_host_run.sh` shipped neither `canre_pin.py` (every replay regen
+    and the long-arm fixture failed on its import) nor `vtrux/wican`'s
+    headers (the shims found no `2026.10.29` checkout). B15host PASS, C2scan
+    PASS. Fixed in `9738f8d`.
+  - `_154641_7a07`, harness `9738f8d`, clean: PASS 3 (H, 25 steps, 80
+    goldens passed, 0 failed, 23 without goldens; B15host; C2scan 3 of 3),
+    NOT-RUN 2 (C1C7 and C3, by design).
+- **Boards.** A hand take (15:11:55) and `bench_flash.py --flash` from
+  `6926fb0` `_man` (`3639f8b2...`) to `bc7d086` `_man`: TOOK, release
+  reboot PASS, released 15:14:53 (`runs/step1a_bc7d086/hand_ota_man/`). In
+  each run, the runner's identify read each board before every group (each
+  run's `progress.jsonl`): WiCAN `_man` `71f70ab2...` and each group's OTA
+  image; X2 `756d6714`, held, the jammer (custody dump taken) or `slcan`.
+  Every OTA took at its first attempt, in every run. The prod group had no
+  OTA (prod = `_man`'s hash). Each run's lock was held by its runner.
+- **Runs** (`runs/chain/`):
+  - `gen-inhibit-bench_20261029T160025_9d31` and its automatic re-run
+    `_160129_387c`: **refused at start.** The X2 identify raised on the run
+    settings' key `interposer_dbc`: the Python path's interposer part was a
+    copy whose identify still read that key. Nothing flashed, the X2 not
+    touched (pins read only); the start and end hooks rebooted the WiCAN,
+    PASS. NOT-RUN 35 and 34. Re-launched with the interposer tester's
+    worktree on the path, as at step 0c.
+  - `_160508_9bf7`, 16:05-18:30, every group (`bench_compare.py chain`),
+    harness `9738f8d`: PASS 36, FAIL 1 (B6), INCONCLUSIVE 1 (B9), NOT-RUN 1
+    (B27, the declared skip).
+  - `_183033_8e53`, 18:30-20:22, the chain's automatic re-run of the 12
+    flagged checks (17 cases with their arms), harness `9738f8d`: PASS 17,
+    FAIL 2 (B6, B22), INCONCLUSIVE 1 (B9).
+  - `_211324_880c`, 21:13-21:49, a subset run of B9, the jammer group's
+    `B5_B8` (B5-B8) and B22, harness `8829425`: PASS 4 (B9, B5, B7, B8),
+    INCONCLUSIVE 2 (B6, B22). No OTA; the X2 held, the jammer (custody dump
+    taken) and `slcan`, restored to `756d6714`.
+  - **The comparison:** `9bf7/compare_report.txt` (`bench_compare.py
+    report`, all three runs; flagged 12 of 39), beside the chain's own
+    `compare_index.txt` (the first two). It reads each run's verdicts as the
+    run recorded them, so `9bf7`'s and `8e53`'s B6 and B22 show as the
+    judges then gave them; the re-judged verdicts are below.
+- **Expected differences from the baseline,** as at step 0c: the `man2` group
+  retired, B17a's other image `_rxq`, B17b in the rxq group, and the prod
+  group with no OTA. **Identity rows, labelled, not compared:** B17a page
+  `elf_sha256` `71f70ab2` (baseline `25f50ac0`), B17b `9939e408`
+  (`f9de9de9`), B19page `71f70ab2` (`f3957789`), B18 `diag_build_id`
+  `71f70ab2` (baseline schema 7 `diag_git_hash` `0x2FE85674`). **"0x7F3
+  carries the build id", bench half (B18): PASS.**
+- **B6 FAIL in `9bf7` and `8e53`: a judge defect; fixed in `8829425`.**
+  - No arm failed. 1 of 10 arms in `9bf7` (`n10_lead5` arm 1, 9 pulses) and
+    2 of 10 in `8e53` (`n10_lead1.5` arm 0, 9 pulses; `n9_lead5` arm 0, 8
+    pulses) read INCONCLUSIVE: "delivery was not one error frame per pulse",
+    the jammer delivered fewer pulses than the arm needs, so it judges
+    nothing. The other arms PASS.
+  - The suite's B6 judge rated any arm that was not PASS as FAIL. It now
+    reads INCONCLUSIVE arms as INCONCLUSIVE, and FAIL or any other word as
+    FAIL.
+  - Re-judged on the records: `9bf7` INCONCLUSIVE (9 of 10 PASS, 1
+    INCONCLUSIVE), `8e53` INCONCLUSIVE (8 of 10, 2).
+  - **`880c`: INCONCLUSIVE, observed vs spec.** 9 of 10 arms PASS;
+    `n9_lead1.5` arm 1 INCONCLUSIVE, the same way (8 pulses delivered of 9,
+    one error frame and one `bus_error` each). So B6 has read INCONCLUSIVE in
+    all three runs at `bc7d086`, from 1 or 2 short arms in 10, against the
+    baseline's 10 of 10. No arm on record at `bc7d086` failed. The spec 12.4
+    row "error-frame rate trip" (B6, the threshold) is not shown met or
+    unmet by the arms that judged nothing; the 26 that did judge all PASS.
+- **B22 FAIL in `8e53`: a judge defect; fixed in `8829425`.**
+  - Arm b was voided by its tool: two counts of the witness's frames
+    disagreed by one (the older classifier: VCM 8999, the device's 8982,
+    against the device's `tx_ok` 8983; the total, 17981, the same both
+    ways). The tool's live provenance check, which reads each frame the
+    device sent: as specified, 8983 of 8983 found.
+  - The judge read the missing "wire agrees" line as "b: a line is missing",
+    FAIL. A voided arm now reads INCONCLUSIVE, unless what it does show fails
+    (provenance, `tx_fail`, counter, queued or error-frame lines), which is
+    still FAIL.
+  - Re-judged: `9bf7` PASS, `8e53` INCONCLUSIVE.
+  - **`880c`: INCONCLUSIVE, observed vs spec.** Arm a voided the same way:
+    `tx_ok` 8983, the older classifier attributing 8982 to the device; the
+    live provenance check as specified, 212124 of 212124 replayed frames
+    found, the device's 0x051 8983 (the device says 8983), late 0, double 0,
+    ambiguous 0; `tx_fail` 0, `ctr_bad` 0, 0 error frames. Arm b: the wire
+    agrees, 8983 sent and 8983 seen; provenance as specified. The count that
+    voids the arm is the one the tool's own output labels "old trail-window
+    classifier (SUPERSEDED)"; the live provenance count agrees with the device
+    in every voided arm (2 of 6 arms at `bc7d086`).
+  - **Note, 2026-10-30: re-judged under the provenance-only rule, B22 reads
+    PASS in `9bf7`, `8e53` and `880c`.** The gen-inhibit reviewer's ruling
+    (2026-10-29, after the tracker row "E4 answer classifier", 2026-10-10):
+    B22's tool voids an arm on the provenance check only; the old trail-window
+    count may still be printed, labelled, but voids no arm and decides no
+    verdict. The tool and the judge are changed in `a820269`. Re-judged from
+    the records, with no bench re-run: in `8e53` arm b and `880c` arm a the
+    only void reason was that count's disagreement (8982 against `tx_ok`
+    8983), and each record holds what the rule reads: provenance as specified
+    (212124 of 212124 replayed frames found, the device's 0x051 8983, the
+    device says 8983, late 0, double 0, ambiguous 0), `tx_fail` 0, `ctr_bad`
+    0, `tx_queued_behind` 0, 0 error frames. `suite_judges.py --only B22` at
+    `8d7fb91` on each run's `man_slcan/B22/`: PASS, both arms, `ours` (now
+    provenance's device count) 8983 in every arm, `response_us_max` 1041 /
+    747 (`9bf7`), 1018 / 867 (`8e53`), 804 / 1245 (`880c`), carried load at
+    least 92.5 % (`runs/step1a_bc7d086/b22_rejudge/`). So B22 at `bc7d086`
+    is PASS on all three runs, as the baseline. The tests of `a820269`
+    (`test_suite_judges` 199 ok, 3 of the new edits failing on the judge
+    before; its mutants 55 of 55; `test_e4_stimulus_split` 6 new checks;
+    `test_e4_attribution_mutants` 4 of 4, the control passing) and of
+    `8d7fb91` (the judge mutant runner's control: it passes, 55 of 55; with
+    `GI_BASELINE_DIR` an empty folder it FAILS, exit 1, where the runner
+    before read every mutant killed, exit 0) are in
+    `runs/step1a_bc7d086/harness_tests/b22_provenance/`.
+- **B9 (known anomaly 6) INCONCLUSIVE in `9bf7` and `8e53`: a timestamp
+  defect in the tool; fixed in `8829425`.**
+  - The 12.4 row "error-frame rate trip" (spec 7, trip 6), wrong-bit-rate
+    method, on the tool as fixed in `296b0f9`: the arm is live before the
+    first burst (`live_before` true; clean live samples at -0.205 and +0.001
+    s in `9bf7`, -0.183 and +0.010 s in `8e53`), and trip 6, "error-frame
+    rate exceeded", latched at +0.200 and +0.206 s. 9 bursts each, 24596 and
+    25572 witness error frames (2577-2966 and 2611-3349 a burst), TEC max 0
+    (baseline 34, but the baseline's latch came before the stimulus: see the
+    step 0c note).
+  - The judge did not credit the latch: the window from the last clean live
+    sample to the first burst held 36 and 43 witness error frames. All of
+    them fall within 5 ms before the burst's timestamp.
+  - The tool took that timestamp after its Kvaser's channel had opened at
+    250 kbit on the 500 kbit segment; the open ends with the controller going
+    bus-on, and the witness's error frames begin there. The burst now starts
+    when the open begins, and each burst records the open's time (`open_s`).
+  - Re-judged on the records: INCONCLUSIVE both (the timestamp comes from the
+    tool, so the records can't change).
+  - **`880c`, on `8829425`: PASS.** The arm live before the first burst
+    (`live_before` true, the driver running before the slice); the last
+    clean live sample at -0.173 s, **0 witness error frames from it to the
+    first burst** (and 0 before the first burst); trip 6, "error-frame rate
+    exceeded", latched at +0.23 s, the first latch. 9 bursts (1, 5 and 20 ms,
+    three each), 24639 witness error frames, 2564-3110 a burst; each open
+    took 0.017-0.036 s (`open_s`); TEC max 6. **This is the first
+    wrong-bit-rate record on file whose latch the judge credits to the
+    bursts on a live arm.** Every record before `9bf7` had latched before
+    the stimulus (the step 0c note); `9bf7` and `8e53` were live, but with
+    the bus-on's error frames counted before the burst. Known anomaly 6's
+    re-run on the fixed tool.
+- **Figures flagged, verdicts unchanged.** Each is given as `9bf7` /
+  `8e53` (baseline):
+  - B2: `respond_probes_x2app` 2991 / 2992 (2994); `respond_probes_x2held`
+    2991 / 2988 (2992).
+  - B3, `first_answer_ms`: observe min 15.3 / 15.4 (15.4); off min 150.6 /
+    150.8 (150.9); passive max 53.9 / 28.4 (28.6), min 15.3 / 15.3 (15.8);
+    respond max 33.9 / 60.4 (34.0).
+  - B11raw: `pass_on_ack` 0 / 0 (1); `send_to_first_byte_ms` 4.2-24.9 /
+    4.2-27.1 (6.1-20.1).
+  - B12: `panic_boot_s` 0.583-0.585 / 0.583-0.593 (0.592-0.599);
+    `sw_boot_s` min 2.305 / 2.295 (2.314).
+  - NONODE: `latch_max_s` 0.453 / 0.668 (0.49).
+  - B15: `frames_pcan` 20934 / 21114 (20930); `frames_gs_usb` 14789 / 14788
+    (14791).
+  - B22: `response_us_max_a` 1041 / 1018 (846); `_b` 747 / - (814), 1245
+    in `880c`.
+  - B23: contend aborted 68 / 65 (57); contend no effect 9 / 12 (21);
+    contend lost-then-aborted 1 / 1 (0); retry aborted 72 / 72 (69); retry
+    first abort enough 72 / 71 (69); retry lost-then-aborted 6 / 6 (9).
+  - B25: `gate_open_s` 203.478 / 203.479 (203.479); `resumed_s` 203.481 /
+    203.482 (203.482).
+  - B26: `ge2_idle_a` 10 / 15 (15); `ge2_idle_b` 12 / 15 (17); `ge2_loaded`
+    11856 / 14399 (11543); `max_backlog_idle_a` 4 / 4 (3); `_idle_b` 3 / 4
+    (4); `_loaded` 9 / 8 (8).
+  - B9: `witness_error_frames` 24596 / 25572 / 24639 in `880c` (34031);
+    `tec_max` 0 / 0 / 6 (34).
+- **Harness changes** on `bc7d086..16ccecb`, each with its own test, all
+  re-run at the tip (`runs/step1a_bc7d086/harness_tests/`):
+  - `9738f8d`, `baseline_host_run.sh` ships `canre_pin.py` (and installs the
+    pinned canre before the replays) and `vtrux/wican` at the tag the
+    commit pins (`WICANDIR`): `test_baseline_host_run.py` 10 new checks, 9
+    failing on the script before; `--mutants` 30 of 30.
+  - `8829425`, `suite_judges.py` B6 and B22: `test_suite_judges.py` 194 ok
+    (the judges before fail edits 17, B6, and 66, B22); its mutants 53 of
+    53. `wrong_bitrate_errors.py`'s burst start and `open_s`,
+    `trip6_rearm_check.py` records `burst_open_s`:
+    `test_wrong_bitrate_sequence.py` 22 ok (4 fail on the tool before), its
+    mutants 11 of 11, the control passing; `test_trip6_rearm_check` PASS.
+  - `16ccecb`, `test_baseline_host_run.py --mutants` runs the unmutated copy
+    first as the control, and judges no mutant when it fails. Found
+    re-running the tests for this entry: from a PowerShell with ESP-IDF
+    exported, bash on the PATH was WSL's, all 40 checks failed, and all 30
+    mutants read killed, exit 0. Its test is both environments: from Git
+    Bash 42 ok, the control passing, 30 of 30; on the WSL-bash PATH the
+    control FAILS, no mutant judged, exit 1 (`harness_tests/env_wsl_bash/`).
+- **Run files:**
+  - `runs/chain/gen-inhibit-emulated_20261029T{151021_8e4f,154641_7a07}/`;
+  - `runs/chain/gen-inhibit-bench_20261029T{160025_9d31,160129_387c,160508_9bf7,183033_8e53,211324_880c}/`;
+  - `runs/step1a_bc7d086/` (`README.md`; `SHA256SUMS` `9a97ecf4...f811`
+    hashes every file: `builds/`, `build_checks/`, `hand_ota_man/`,
+    `spec_shim/`, `spec_shim_console.txt`, `harness_tests/`).
+
+**Port step 1a2's acceptance: the spec shim, the emulated suite and part B on
+`17ec04c` -- tester, 2026-10-30 14:52 to 19:41, on `gen-inhibit/main`
+`17ec04c`. Result: the first bench run matches the `e3d9437` baseline in
+every verdict, B6 10 of 10 arms PASS. The chain's automatic re-run of the
+flagged checks reads B6 FAIL, observed vs spec below: one arm latched
+trip 6 with at most 9 error frames in any window. B9 PASS on a live arm and
+B22 PASS on provenance in both runs. R28 PASS on a real release build (12.3,
+"Port step 1a2"). The OTA rollback rehearsal: NOT RUN.** The reviewer's
+acceptance (2026-10-30): the full suite, R28 PASS on a real release build,
+and the rehearsal NOT RUN (console rule), recorded as such, with known
+anomalies carried as before (anomaly 7, B6 short arms; anomaly 5, R28,
+should close here). Spec 3.2, 3.3 and part B as a whole; the 12.4 rows
+"0x7F3 carries the build id" and "a bus with no other node, emulated".
+Harness: `17ec04c`'s (no harness change since the merge).
+- **Build:** the images and the release stand-in in 12.3's entry "Port step
+  1a2".
+- **Spec shim: PASS** (`runs/step1a2_17ec04c/spec_shim/`, madhouse-debian,
+  gcc 14.2.0, from a bundle of `17ec04c`; `main/` tree `55d4b58a0b82`,
+  `17ec04c`'s, nothing modified; `vtrux/wican`'s headers from `git archive`
+  of `2026.10.30`, through `WICANDIR`). Cases `answer_stuck`, `before`,
+  `bench_262`, `bench_274`, `build_id`, `busoff_few`, `busoff_many`, `fast`,
+  `layer`, `layer_bench`, `slow`, `tie`: every row PASS. `build_id`: the rule
+  and the hand calculation agree (`fff00f00`), 3 0x7F3 frames on the wire, 0
+  differ, schema 8 in B6, `diag_build_id` `000ff0ff`, the page's `elf_sha256`
+  the descriptor's.
+- **Emulated suite:** `runs/chain/gen-inhibit-emulated_20261030T145429_cbfb`,
+  code `17ec04c`, clean: PASS 3 (H, 25 steps, 80 goldens passed, 0 failed,
+  23 without goldens; B15host; C2scan 3 of 3), NOT-RUN 2 (C1C7 and C3, by
+  design). The same as at step 1a.
+- **Boards.** A hand take (15:14:34) and `bench_flash.py --flash` from
+  `bc7d086` `_man` (`71f70ab2...`) to `17ec04c` `_man` (`1a07454e...`):
+  TOOK, release reboot PASS, released 15:17:59
+  (`runs/step1a2_17ec04c/hand_ota_man/`). In each run, the runner's identify
+  read each board before every group (each run's `progress.jsonl`): WiCAN
+  `_man` `1a07454e...` and each group's OTA image; X2 `756d6714`, held, the
+  jammer (custody dump taken) or `slcan`. Each run's lock was held by its
+  runner. The prod group had no OTA (prod = `_man`'s hash).
+  - Every OTA in `fb52` took at its first attempt.
+  - In `c68c`, the OTA to `_rxq` read "(a1) NO STATUS, NO RESTART" at its
+    first attempt. The runner restored `_txabort` (TOOK), and the second
+    attempt took (19:01:16). Every other OTA took at its first attempt.
+- **Runs** (`runs/chain/`):
+  - `gen-inhibit-bench_20261030T151900_fb52`, 15:19-17:45, every group
+    (`bench_compare.py chain`): PASS 38, NOT-RUN 1 (B27, the declared skip).
+    The `e3d9437` baseline's verdicts exactly.
+  - `_174526_c68c`, 17:45-19:41, the chain's automatic re-run of the 12
+    flagged checks (17 cases with their arms): PASS 19, FAIL 1 (B6). The
+    runner's end hook passed, and it released the lock at 19:41:36.
+  - **The comparison:** `fb52/compare_report.txt` (`bench_compare.py
+    report`, both runs; flagged 13 of 39), beside the chain's own
+    `compare_index.txt`. B6: "flaky, needs review: PASS first, FAIL on
+    re-run".
+- **Expected differences from the baseline,** as at step 1a: the `man2`
+  group retired, B17a's other image `_rxq`, B17b in the rxq group, and the
+  prod group with no OTA. **Identity rows, labelled, not compared:** B17a
+  page `elf_sha256` `1a07454e` (baseline `25f50ac0`), B17b `ee9b9132`
+  (`f9de9de9`), B19page `1a07454e` (`f3957789`), B18 `diag_build_id`
+  `1a07454e` (baseline schema 7 `diag_git_hash` `0x2FE85674`). **"0x7F3
+  carries the build id", bench half (B18): PASS.**
+- **B6 (spec 7, trip 6; the 12.4 row "error-frame rate trip", the
+  threshold): `fb52` PASS, `c68c` FAIL.**
+  - `fb52`: 10 of 10 arms PASS over 5 runs. No arm was short.
+  - `c68c`: 8 of 10 arms PASS. `n9_lead5` arm 1 INCONCLUSIVE: "delivery was
+    not one error frame per pulse", 8 pulses delivered of 9 (known anomaly
+    7, short arms, as at step 1a).
+  - **`c68c` `n9_lead1.5` arm 1: FAIL, observed vs spec.**
+    - Observed: the witness saw one error frame per pulse, 9 pulses (per
+      pulse `[1, 1, 1, 1, 1, 1, 1, 1, 1]`, at most 9 in any window). The
+      device's `bus_error` deltas were `[1, 1, 1, 1, 1, 1, 11, 1, 1]`, and
+      trip 6, "error-frame rate exceeded", latched 6.608 s after the first
+      pulse.
+    - Spec 7, trip 6: 10 or more error frames within a 10 s window. The
+      wire never carried more than 9 in a window.
+  - Where the counted error frames fell
+    (`runs/step1a2_17ec04c/b6/`, `17ec04c`'s `b6_multicount_landing.py`
+    and `b6_class_count.py` over both runs' 10 threshold records, 192
+    pulses): 190 pulses counted once, 1 had no delta or no error frame, and
+    1 counted more than once. That one was the failing arm's pulse 7
+    (`x2_jam_threshold_20261030T192401`), delta 11. The frame before it on
+    the wire was a 0x051 1280 us earlier, the frame after it a 0x051 10150
+    us later; TEC/REC max 0/5.
+  - Precedent on file: the `e3d9437` acceptance's B6 read "flaky, needs
+    review" with the same shape (one pulse counted 11 times, in an `n10`
+    arm), and the open item "One pulse counted 10-12 times" (spec 7, trip
+    6, above) is not concluded. Whether this FAIL is carried with them is
+    for the reviewer.
+- **B9 (known anomaly 6; spec 7, trip 6, wrong-bit-rate method): PASS in
+  both runs, on a live arm.** The driver running before the slice, 0
+  witness error frames before the first burst and since the last clean live
+  sample (-0.165 s in `fb52`, -0.173 s in `c68c`). Trip 6, "error-frame
+  rate exceeded", latched at +0.25 and +0.23 s. 9 bursts (1, 5 and 20 ms,
+  three each), 25150 and 25345 witness error frames (2622-3210 and
+  2690-3120 a burst), TEC max 0.
+- **B22: PASS in both runs, both arms,** on provenance: as specified,
+  212124 of 212124 replayed frames found, the device's 0x051 8983 (the
+  device says 8983), late 0, double 0, ambiguous 0; `tx_fail` 0, `ctr_bad`
+  0, `tx_queued_behind` 0, 0 error frames.
+- **The OTA rollback rehearsal: NOT RUN.** It needs a WiCAN console capture,
+  and none is taken until the WiCAN's factory reset (console rule). Its
+  harness at R28's levels is tested on the host (12.3, "Port step 1a2").
+- **Figures flagged, verdicts unchanged.** Each is given as `fb52` / `c68c`
+  (baseline):
+  - B2: `respond_probes_x2app` 2991 / 2984 (2994); `respond_probes_x2held`
+    2989 / 2986 (2992).
+  - B3, `first_answer_ms`: off min 149.6 / 149.3 (150.9); passive max 55.5 /
+    28.4 (28.6), min 15.4 / 15.4 (15.8); respond max 40.4 / 33.9 (34.0).
+  - B5: 500/s `pass` 7 / 9 (8), `inconclusive` 2 / 0 (1).
+  - B9: `burst_errors_max` 3210 / 3120 (3087); `witness_error_frames` 25150
+    / 25345 (34031); `tec_max` 0 / 0 (34).
+  - B11raw: `pass_on_ack` 0 / 0 (1); `send_to_first_byte_ms` 4.2-21.1 /
+    6.1-18.8 (6.1-20.1).
+  - B12: `panic_boot_s` 0.584-0.591 / 0.583-0.595 (0.592-0.599);
+    `sw_boot_s` min 2.311 / 2.303 (2.314).
+  - NONODE: `latch_max_s` 0.452 / 0.455 (0.49).
+  - B15: `frames_pcan` 20934 / 21906 (20930); `frames_gs_usb` 14789 / 15420
+    (14791); `non_ack_repeat_id` 0x7F8 / 0x7F1 (0x7F9).
+  - B22: `load_pct_lower_a` 92.3 / 92.5 (92.5); `_b` 92.4 / 92.5 (92.5);
+    `response_us_max_a` 1272 / 1080 (846); `_b` 883 / 934 (814).
+  - B23: contend aborted 62 / 72 (57); contend no effect 12 / 6 (21);
+    contend lost-then-aborted 3 / 0 (0); retry first abort enough 70 / 70
+    (69).
+  - B25: `gate_open_s` 203.478 / 203.478 (203.479); `resumed_s` 203.481 /
+    203.481 (203.482).
+  - B26: `ge2_idle_a` 19 / 16 (15); `ge2_idle_b` 9 / 15 (17); `ge2_loaded`
+    13206 / 13017 (11543); `max_backlog_idle_a` 4 / 5 (3).
+- **Run files:**
+  - `runs/chain/gen-inhibit-emulated_20261030T145429_cbfb/`;
+  - `runs/chain/gen-inhibit-bench_20261030T{151900_fb52,174526_c68c}/`;
+  - `runs/step1a2_17ec04c/` (`README.md`; `SHA256SUMS` `99db7428...4452` hashes every
+    file: `builds/`, `build_checks/`, `hand_ota_man/`, `spec_shim/`,
+    `spec_shim_console.txt`, `b6/`, `r28_fault_rows/`, `harness_tests/`).
+
+**Port step 1b's acceptance: the spec shim on twai_port's host fake, the
+emulated suite, `gi_host_run` and part B on `488ef9f` -- tester,
+2026-10-31 19:19 to 2026-11-01 03:55, on `gen-inhibit/main` `488ef9f`.
+Result: the first bench run matches the `e3d9437` baseline in every verdict
+except B6, which reads INCONCLUSIVE on a short arm (known anomaly 7). The
+chain's automatic re-run reads B6 10 of 10 PASS. It also reads B16 FAIL on
+one stalled poll (observed below) and seven FAIL or ERROR results whose
+requests never reached the device: NICKY-XPS's Wi-Fi link to the WiCAN was
+logged down while they ran. The OTA rollback rehearsal: NOT RUN.** The
+reviewer's 1b acceptance (2026-10-31): the spec shim ported onto the
+twai_port fake, the full suite against the `e3d9437` baseline's verdicts,
+B6 re-run (anomaly 7), and `gi_host_run`'s first madhouse sync with
+`replay_stimulus_delta --regen`. Spec 3.2, 3.3 and part B as a whole; the
+12.4 rows "0x7F3 carries the build id" and "a bus with no other node,
+emulated".
+- **Harness for 1b** (`gen-inhibit/tester/accept-1b`, `488ef9f..8bc82f1`,
+  not yet merged):
+  - `3ad41bf`: the spec shim's layer runs on twai_port's host fake.
+  - `1d4cfdd`: the shim README's `test_host_env` row.
+  - `226ab66` and `7ff1ed6`: `baseline_host_run` ships `can_port`,
+    `twai_port` and `gi_paths.py` for a 1b commit.
+  - `8bc82f1`: `gi_host_run`'s sync removes what it replaces.
+
+  Each change came with its own test (below).
+- **Build:** the images and the release stand-in in 12.3's entry "Port step
+  1b".
+- **Spec shim: PASS** (`runs/step1b_488ef9f/spec_shim/`, madhouse-debian,
+  gcc 14.2.0, from a clone of `226ab66`; `shared-2026.10.31.2` at
+  `1fda69d`, recorded as pinned, nothing modified). 90 PASS lines: 83 case
+  lines and 7 build id. No FAIL or VOID. Every case line is identical to
+  1a2's (`answer_stuck`, `before`, `bench_262`, `bench_274`, `build_id`,
+  `busoff_few`, `busoff_many`, `fast`, `layer`, `layer_bench`, `slow`,
+  `tie`). `mutate.py` killed 51 of 51 mutants. One new mutant, a pending alert
+  waiting for the driver, is not observable and was dropped; the shim's
+  `mutate.py` says so. `test_host_env --mutants`: 10 of 10 killed, the
+  control passing (`spec_shim_console.txt` l.160-570).
+- **Emulated suite:**
+  - `runs/chain/gen-inhibit-emulated_20261031T201452_f825` FAILED on H from
+    a harness defect: `baseline_host_run.sh` shipped `canre_pin.py` without
+    `gi_paths.py`. Fixed in `7ff1ed6`; not a product result.
+  - The rerun `gen-inhibit-emulated_20261031T203000_5173`, code `488ef9f`,
+    clean, harness `7ff1ed6`: PASS 3, NOT-RUN 2 (C1C7 and C3, by design).
+    - H: 25 steps exit 0; 81 goldens passed, 0 failed, 23 without goldens;
+      9 replays identical.
+    - B15host (`modes_with_pages` 2) and C2scan (3 of 3) passed.
+    - Against 1a2, goldens went from 80 to 81 and replays from 8 to 9:
+      `83239a8` added the replay-bench-frame-loss golden on main between
+      `17ec04c` and `488ef9f`. The rest is identical.
+- **`gi_host_run` on madhouse-debian: PASS** (`runs/step1b_488ef9f/gi_host/`,
+  from `8bc82f1`, code `488ef9f`):
+  - All 8 steps exited 0.
+  - The regen (`replay_stimulus_delta --regen`): 9 replays identical to the
+    golden, every delta +0.
+  - Suite: 81 passed, 0 failed, 23 without goldens.
+  - Checks: invariants 104/0, passive_diff 100/0 with 4 skipped, fuzz
+    200/0, load_margin PASS (12.6x), spec_expect 22/22, bus_on 2/2, drained
+    1/1, cfg_build_id PASS.
+  - Sched and the shim: all cases pass.
+  - The first run (`gi_host_run1_stale_sync/`, harness `7ff1ed6`) failed
+    the shim step: the sync only added files, so `<madhouse-debian home>/gi_host` kept pre-1b
+    files, including a stale `twai.h`. That was a harness defect, fixed in
+    `8bc82f1`.
+- **Harness tests at `8bc82f1`** (`runs/step1b_488ef9f/harness_tests/`): 80
+  tests, 70 exit 0. The 10 others:
+  - 7 failed from my driver's environment (WSL's bare `bash`, no `cygpath`,
+    no `INTERPOSER_CODE`, no `GI_CHAIN_SETTINGS`). Rerun with them set
+    (`harness_tests/rerun_env/`), all 10 runs exit 0:
+    - `test_suite_gen_inhibit` 302 ok; its mutants 76 of 76, the control
+      passing;
+    - `bench_image_lookup` 6 of 6, `host_identity` 6 of 6, `b6_ecc_run` 20
+      of 20;
+    - `runs_dir` and `chain_settings_chip` PASS.
+  - `test_refusal_pairs`: NOT RUN. It is the proof over a set of switch
+    images, and the driver gave it none, as at 1a2.
+  - `test_scratch_only --mutants` killed 3 of 5. This is a known follow-up,
+    not a 1b result.
+  - `test_host_env --mutants` killed 5 of 10 on Windows, where its
+    real-shell checks don't run. The counted run is madhouse's 10 of 10
+    (above).
+
+  The 1b changes' own tests:
+  - `test_baseline_host_run`: 57 checks; mutants 37 of 37, the control
+    passing.
+  - `test_gi_host_run_env`: mutants 18 of 18. `test_gi_host_run_list` all
+    ok.
+- **Boards.** A hand take (2026-11-01 00:31:37 PDT) and `bench_flash.py
+  --flash` from `17ec04c` `_man` (`1a07454e...`) to `488ef9f` `_man`
+  (`cbfc683a...`): TOOK in 43 reads. The release reboot PASS. Released
+  00:34:36 (`runs/step1b_488ef9f/hand_ota_man/`). In each run, the runner's
+  identify read each board before every group (each run's
+  `progress.jsonl`): WiCAN `_man` `cbfc683a...` and each group's OTA image;
+  X2 `756d6714`, held, the jammer (custody dump taken) or `slcan`. Each
+  run's lock was held by its runner. Every OTA in both runs took at its
+  first attempt.
+- **Runs** (`runs/chain/`). The clocks fell back at 02:00 PDT during
+  `7bc9`; `progress.jsonl` gives every time with its offset.
+  - `gen-inhibit-bench_20261101T003528_1eb9` and its re-run `_003618_9fe5`
+    were refused at the start, all NOT-RUN, nothing flashed. The X2
+    identify step refused settings that carried `interposer_dbc`, a key
+    retired on 2026-10-24. That was a settings defect, mine; the key was
+    deleted and the chain started again.
+  - `gen-inhibit-bench_20261101T003858_7bc9`, 00:38 PDT to 02:04 PST,
+    every group (`bench_compare.py chain`): PASS 37, INCONCLUSIVE 1 (B6),
+    NOT-RUN 1 (B27, the declared skip). Against the `e3d9437` baseline
+    (PASS 38, NOT-RUN 1), only B6 differs.
+  - `_020455_c6a0`, 02:04-03:55 PST, the chain's automatic re-run of the 13
+    flagged checks (18 cases with their arms): PASS 15, FAIL 3, ERROR 4. The
+    runner's end hook passed, and it released the lock at 03:55:26.
+  - **The comparison:** `7bc9/compare_report.txt` (both runs; flagged 14 of
+    39). "flaky, needs review": B6 (INCONCLUSIVE first, PASS on re-run);
+    B2, B9 and NONODE (PASS first, ERROR on re-run); B16 and B22 (PASS
+    first, FAIL on re-run).
+- **The re-run's Wi-Fi drops: seven results that never reached the
+  device.**
+  - Windows' WLAN-AutoConfig log (event 8003, reason code 0) recorded
+    NICKY-XPS's Wi-Fi link to the WiCAN's AP as "disconnected by the
+    driver" twice:
+    - 02:58:06, reconnected 02:59:57;
+    - 03:48:37, reconnected 03:52:57.
+
+    Every other disconnect in both runs was a rejoin by the harness
+    (reason code 3), connected again within a second.
+  - Both drops began during an X2 flash, to held (ending 02:58:07) and to
+    `slcan` (03:48:16-03:50:10). The first run's X2 flashes had none.
+  - The WiCAN did not reboot through either. Its uptime read before the
+    `_rt` OTA puts its boot near 02:56, and at the end hook near 03:40.
+    Which end dropped the link is not known.
+  - What ran inside the drops:
+    - `man_held` 02:58:07-02:59:48: B2held FAIL (each of its 3 arms:
+      "device did not answer /gen_inhibit ... timed out"); B2 ERROR (the
+      runner script exited 2: "4 arm records, want 6"); B9 ERROR (its first POST timed
+      out); NONODE ERROR ("start reboot not confirmed", no page in 4
+      tries, nothing sent).
+    - B22 03:50:11-03:52:49: FAIL on both arms, with the same timeout before
+      any replay.
+  - None of these reached the device, so they are not observations against
+    the spec. Their first-run results stand: all PASS.
+- **B16 (the idle page-only baseline): `7bc9` PASS, `c6a0` FAIL by the
+  check's rule.**
+  - `7bc9`: 359 polls, no outage.
+  - `c6a0`: 357 polls, 0 unanswered, 0 with the WLAN down, 0 not in mode 0.
+    One poll stalled 4.0 s (130.4-134.4 s into the run, about 02:37), and
+    the check counts any outage as FAIL. No WLAN event falls in that
+    window.
+  - The same run's uptime reads show no reboot: `SW`, uptime continuous
+    from 1790520 to 2150091 ms. The check prints "stall vs uptime:
+    DISAGREE", "outages not a reboot 1".
+  - Observed: one page request took 4.0 s to answer, with no reboot and no
+    mode change. Whether a stall without a reboot fails B16 is for the
+    reviewer.
+- **Expected differences from the baseline,** as at step 1a2. **Identity
+  rows, labelled, not compared:**
+  - B17a page `elf_sha256` `cbfc683a` (baseline `25f50ac0`);
+  - B17b `a6c5365e` (`f9de9de9`);
+  - B19page `cbfc683a` (`f3957789`);
+  - B18 `diag_build_id` `cbfc683a` (baseline schema 7 `diag_git_hash`
+    `0x2FE85674`).
+
+  **"0x7F3 carries the build id", bench half (B18): PASS** ("MATCH, 7 rows
+  ok").
+- **B6 (spec 7, trip 6; the 12.4 row "error-frame rate trip", the
+  threshold): `7bc9` INCONCLUSIVE, `c6a0` PASS.**
+  - `7bc9`: 9 of 10 arms PASS over 5 runs. `n10_lead8.5` arm 0 was
+    INCONCLUSIVE ("delivery was not one error frame per pulse"): 9 pulses
+    were delivered of 10. The device counted each once (`bus_error` deltas
+    `[1, 1, 1, 1, 1, 1, 1, 1, 1]`), at most 9 in a window, no latch. This is
+    known anomaly 7, short arms, as at steps 1a and 1a2.
+  - `c6a0`: 10 of 10 arms PASS over 5 runs.
+  - Where the counted error frames fell (`runs/step1b_488ef9f/b6/`,
+    `8bc82f1`'s `b6_multicount_landing.py` and `b6_class_count.py` over
+    both runs' 10 threshold records, 186 pulses): none counted 5 or more
+    times. By class: single 7, other single 179, no delta or no error frame
+    5. The over-count seen at `e3d9437` and 1a2 (one pulse counted 11 times)
+    did not occur in these runs.
+- **B9 (known anomaly 6; spec 7, trip 6, wrong-bit-rate method): `7bc9`
+  PASS on a live arm.** The driver was running before the slice, with 0
+  witness error frames before the first burst and since the last clean
+  live sample (-0.146 s). Trip 6, "error-frame rate exceeded", latched at
+  +0.25 s. 9 bursts, 24535 witness error frames (2544-3048 a burst), TEC
+  max 0. `c6a0`: never reached the device (above).
+- **NONODE ("a bus with no other node", bench): `7bc9` PASS**, 3 main arms,
+  trip "error-frame rate exceeded", latch max 0.462 s. `c6a0`: never
+  reached the device.
+- **B22: `7bc9` PASS, both arms,** on provenance: as specified, 212124 of
+  212124 replayed frames found, the device's 0x051 8983 (the device says
+  8983), late 0, double 0, ambiguous 0; `tx_fail` 0, `ctr_bad` 0,
+  `tx_queued_behind` 0, 0 error frames. `c6a0`: never reached the device.
+- **The OTA rollback rehearsal: NOT RUN.** It needs a WiCAN console capture,
+  and none is taken until the WiCAN's factory reset (console rule).
+- **Figures flagged, verdicts unchanged unless named above.** Each is given
+  as `7bc9` / `c6a0` (baseline); "-" means not in that run:
+  - B2: `respond_probes_x2app` 2996 / - (2994).
+  - B3, `first_answer_ms`: observe max 46.8 / 34.7 (36.0); off min 150.8 /
+    150.9 (150.9), off max 150.9 / 403.0 (151.0); passive min 4.5 / 4.5
+    (15.8); respond max 41.4 / 36.9 (34.0).
+  - B5: 500/s `pass` 9 / 8 (8), `inconclusive` 0 / 1 (1).
+  - B9: `burst_errors` 2544-3048 / - (2565-3087); `witness_error_frames`
+    24535 / - (34031); `tec_max` 0 / - (34).
+  - B11raw: `pass_on_ack` 0 / 1 (1); `send_to_first_byte_ms` 7.8-24.9 /
+    7.1-39.0 (6.1-20.1).
+  - B12: `panic_boot_s` 0.611-0.723 / 0.584-0.602 (0.592-0.599);
+    `sw_boot_s` 2.300-3.848 / 2.306-2.328 (2.314-2.353).
+  - NONODE: `latch_max_s` 0.462 / - (0.49).
+  - B15: `frames_pcan` 20946 / 22074 (20930); `frames_gs_usb` 14789 / 15676
+    (14791); `non_ack_repeat_id` 0x7F8 / 0x7F3 (0x7F9).
+  - B16: `polls` 359 / 357 (360).
+  - B22: `response_us_max_a` 1279 / - (846); `_b` 981 / - (814).
+  - B23: contend aborted 68 / 71 (57); contend no effect 9 / 7 (21);
+    contend lost-then-aborted 1 / 0 (0); retry aborted 71 / 70 (69); retry
+    first abort enough 72 / 70 (69); retry lost-then-aborted 7 / 8 (9).
+  - B25: `gate_open_s` 203.478 / 203.479 (203.479).
+  - B26: `ge2_idle_a` 20 / 21 (15); `ge2_loaded` 15306 / 14216 (11543);
+    `max_backlog_idle_a` 4 / 3 (3), `_idle_b` 5 / 5 (4), `_loaded` 9 / 9 (8).
+- **Run files:**
+  - `runs/chain/gen-inhibit-emulated_20261031T{201452_f825,203000_5173}/`;
+  - `runs/chain/gen-inhibit-bench_20261101T{003528_1eb9,003618_9fe5}/` (refused);
+  - `runs/chain/gen-inhibit-bench_20261101T{003858_7bc9,020455_c6a0}/`;
+  - `runs/step1b_488ef9f/` (`README.md`; `SHA256SUMS` `21580d1c...c0dd`
+    hashes every file: `builds/`, `build_checks/`, `spec_shim/`,
+    `spec_shim_console.txt`, `gi_host_run1_stale_sync/`, `gi_host/`,
+    `harness_tests/`, `hand_ota_man/`, `b6/`).
+
+**Port step 1b: targeted bench re-run of man_app/B16, man_held and
+man_slcan/B22 -- tester, 2026-11-01 09:26-10:17 PST, on `gen-inhibit/main`
+`488ef9f`. Its own run, not a change to the entry above. Result: PASS on
+every re-run check. B16: PASS, 360 polls, no outage, no stalled poll.**
+The user ruled (2026-11-01, through the reviewer) that the five checks
+`c6a0` never delivered to the device (B2held, B2, B9, NONODE and B22) be
+re-run, and B16 with them, whose reading of `c6a0`'s one stalled poll waits
+on this re-run. Spec 7 (trip 6: B9, NONODE), the 12.4 rows "error-frame
+rate trip" (B9) and "a bus with no other node" (NONODE, bench), and part B's
+B2, B16 and B22.
+- **Harness:** `gen-inhibit/tester/accept-1b` at `49ba306` (`9d611dc..49ba306`,
+  not yet merged), clean in both runs. `49ba306`: `page_only_baseline.py`
+  (B16) also logs the WLAN signal and the receive and transmit rates at each
+  poll, read as numbers only. They are logged, not judged. Its test,
+  `test_page_only_baseline`, has 42 checks, PASS. A parser returning
+  constants fails it, and so does one whose label also matches the SSID
+  line.
+- **Build and settings:** the images of 12.3's entry "Port step 1b" and the
+  same run settings copy.
+- **Load:** "No builds" was set 09:26 and cleared 10:20. No build or other
+  heavy work ran during the chain.
+- **Boards.** The runner's identify read each board before every group
+  (each run's `progress.jsonl`). WiCAN: `_man` `cbfc683a...` throughout,
+  with no OTA. X2: `756d6714`, then held, then `slcan` in each run, restored
+  and read `756d6714` at 10:17:32. Start hooks PASS (mode 0, not latched),
+  end hooks PASS. Each run's lock was held by its runner.
+- **Wi-Fi:** WLAN-AutoConfig logged no disconnect (event 8003) from 09:26 to
+  10:19, only the one connect at 09:26:47
+  (`runs/step1b_488ef9f_rerun/wlan_events.txt`). The four X2 flashes in each
+  run had no drop.
+- **Runs** (`runs/chain/`):
+  - `gen-inhibit-bench_20261101T092639_858a`, 09:26:39-09:51:47, `bench_compare.py chain
+    --check` with the six checks: SUBSET RUN, PASS 5, ERROR 2. Both ERRORs are
+    B2's (`B2` and its `rc`, "B2: no input files"). B2's desk check reads the
+    man_app/B2app and man_held/B2held outputs, and my `--check` list did not
+    select man_app/B2app. A selection error of mine, not a device result.
+  - `_095148_f98b`, 09:51:48-10:17:42, the chain's automatic re-run of the
+    flagged checks, which added man_app/B2app: PASS 6.
+  - **The comparison** with the `e3d9437` baseline:
+    `858a/compare_report.txt` (flagged 4 of 39; every verdict PASS except
+    858a's B2 ERROR above).
+- **B16 (the idle page-only baseline): PASS** (858a). 360 polls, 0
+  unanswered, 0 with the WLAN down, 0 stalled, 0 outages. Uptime: no reboot,
+  one boot (`SW`), 94097 to 453244 ms over 359.2 s, rate 0.99995. "stall vs
+  uptime: agree". WLAN signal 100 % and rx and tx 72.2 Mbit/s at every one of
+  the 360 polls.
+- **B2held: PASS** (858a and f98b). **B2: PASS** (f98b), 6 arms as
+  specified, X2 frames 0 (inhibit 0x051 670 and 670, long arm 29977 and
+  29977, respond probes 2997 and 2996, x2app and x2held).
+- **B9 (known anomaly 6; spec 7, trip 6, wrong-bit-rate method): PASS** in
+  both runs. 858a: 9 bursts, 25090 witness error frames (2671-3161 a burst),
+  TEC max 0, trip 6 latched at +0.24 s. f98b: 25646 (2501-3222), TEC max 0,
+  +0.24 s.
+- **NONODE ("a bus with no other node", bench): PASS** in both runs, 3 main
+  arms, trip "error-frame rate exceeded", latch max 0.46 s and 0.482 s.
+- **B22: PASS** in both runs, both arms: provenance clean, `tx_fail` 0, 0
+  error frames, the device's 0x051 8983.
+- **Figures flagged, verdicts PASS.** Each is given as `858a` / `f98b`
+  (baseline):
+  - B9: `burst_errors` 2671-3161 / 2501-3222 (2565-3087);
+    `witness_error_frames` 25090 / 25646 (34031); `tec_max` 0 / 0 (34).
+  - NONODE: `latch_max_s` 0.46 / 0.482 (0.49).
+  - B22: `response_us_max_a` 919 / 984 (846); `_b` 999 / 1358 (814).
+  - B2: `respond_probes_x2app` - / 2997 (2994), `_x2held` - / 2996 (2992).
+
+  The same B9, NONODE and B22 figures moved the same way in `7bc9` (entry
+  above).
+- **`c6a0`'s B2held, B2, B9, NONODE and B22 results stay as recorded above:**
+  they never reached the device. This run is the device result for those
+  checks at `488ef9f`.
+- **Run files:**
+  - `runs/chain/gen-inhibit-bench_20261101T{092639_858a,095148_f98b}/`;
+  - `runs/step1b_488ef9f_rerun/` (`README.md`, which gives the sha256 of
+    each run's `index.txt` and `progress.jsonl`, 858a's
+    `compare_report.txt` and B16's output; `SHA256SUMS` `cdc48e4d...1d8a`
+    hashes `README.md` and `wlan_events.txt`).
+
+**Port step 1c's acceptance: the spec shim, the T12 fake cases, the
+emulated suite, `gi_host_run` and part B on `5f2fe2c` -- tester,
+2026-11-02 10:16 to 20:11, on `gen-inhibit/main` `5f2fe2c`. Result: the
+first bench runs (`6a84` for `man_app` and `man_held`, `e25d` for the
+other seven groups) match the `e3d9437` baseline in every verdict: PASS 38,
+NOT-RUN 1 (B27, the declared skip). `e25d`'s automatic re-run reads B12,
+B23, B26 and B22 PASS, and B5, B6, B7 and B8 FAIL with 0 arms judged; those
+four never reached the device, because NICKY-XPS's Wi-Fi link to the WiCAN
+was logged down while they ran. `6a84`'s automatic re-run did not run (the
+X2's images were missing). The OTA rollback rehearsal: NOT RUN.** The
+reviewer's 1c acceptance (2026-11-02): the builds and build checks (in
+12.3's entry "Port step 1c"), the harness tests, the emulated chain,
+`gi_host_run` and the spec shim on madhouse, the full bench suite against
+the `e3d9437` baseline's verdicts with B19, the 12.4 restart row and the
+C3-abort probe row, and twai_port's T12 fake cases and `t12-standins` at
+shared/main `2418ed8`. Spec 3.2, 3.3 and part B as a whole; the 12.4 rows
+"0x7F3 carries the build id", "a bus with no other node, emulated" and "no
+error frames at a restart".
+- **Harness for 1c** (`gen-inhibit/tester/accept-1c`, `5f2fe2c..26acc04`,
+  not yet merged): `26acc04`, `bench_compare.py` compares the `e3d9437`
+  index's figures under the old switch names as port step 1c's new ones
+  (`RENAMED`, the inverse of `suite_judges.RENAMED`), and the report row
+  names the old name. Its test: `test_bench_compare` 64 ok (6 new);
+  `test_bench_compare_mutants` 51 of 51 killed, the control passing.
+- **Build:** the images and the release stand-in in 12.3's entry "Port step
+  1c".
+- **Spec shim: PASS** (`runs/step1c_5f2fe2c/spec_shim/`, madhouse-debian,
+  gcc 14.2.0, from a clone of `26acc04`; `shared-2026.11.01.2` at
+  `b33bce5`, recorded as pinned, nothing modified). 90 PASS lines, no FAIL
+  or VOID. The case lines are identical to 1b's. `mutate.py` killed 51 of
+  51 mutants. `test_host_env --mutants`: 10 of 10 killed, the control
+  passing (`madhouse_console.txt`).
+- **T12 fake cases at shared/main `2418ed8`: PASS**
+  (`runs/step1c_5f2fe2c/t12_fake/`, madhouse-debian, gcc 14.2.0): `make
+  run` exit 0, "every case passed on C3 and S3"; `make t12-standins` exit
+  0, the standin as written passing every T12 case and all 9 broken
+  standins caught.
+- **Emulated suite: PASS 3, NOT-RUN 2** (C1C7 and C3, by design):
+  `runs/chain/gen-inhibit-emulated_20261102T111059_7c94`, code `5f2fe2c`
+  and harness `26acc04`, both clean. H: 25 steps exit 0; 81 goldens
+  passed, 0 failed, 23 without goldens; 9 replays identical. B15host and
+  C2scan (3 of 3) passed. The same figures as 1b's `5173`.
+- **`gi_host_run` on madhouse-debian: PASS** (`runs/step1c_5f2fe2c/gi_host/`,
+  from `26acc04`, code `5f2fe2c`): all 8 steps exited 0. The regen: 9
+  replays identical to the golden, every delta +0. Suite: 81 passed, 0
+  failed, 23 without goldens. Checks: invariants 104/0, passive_diff 100/0
+  with 4 skipped, fuzz 200/0, load_margin PASS (12.6x), spec_expect PASS.
+  Sched and the shim: all cases pass. The same as 1b.
+- **Harness tests at `26acc04`** (`runs/step1c_5f2fe2c/harness_tests/`, clean
+  at both ends): 85 tests, run in one environment (Git's `usr/bin` first on
+  PATH, `INTERPOSER_CODE` and `GI_CHAIN_SETTINGS` set), so none needed a
+  rerun this time. 84 exit 0, every mutant set killed with its control
+  passing (`test_suite_gen_inhibit` 303 ok, its mutants 76 of 76). The
+  other: `test_host_env --mutants` killed 5 of 10 on Windows, where its
+  real-shell checks don't run, as at 1b. The counted run is madhouse's 10
+  of 10 (above). `test_refusal_pairs` over real images is in 12.3's entry.
+- **Boards.** A hand take (2026-11-02 16:29 PST) and `bench_flash.py
+  --flash` from `488ef9f` `_man` (`cbfc683a...`) to `5f2fe2c` `_man`
+  (`47e805f1...`): TOOK in 42 reads. The release reboot PASS: SW reset,
+  mode 0, not latched. Released 16:31 (`runs/step1c_5f2fe2c/hand_ota_man/`).
+  In each run, the runner's identify read each board before every group
+  (each run's `progress.jsonl`): WiCAN `_man` `47e805f1...` and each
+  group's OTA image; X2 `756d6714`, held, the jammer or `slcan`. Each run's
+  lock was held by its runner. Every OTA took. The X2's identify ran from
+  the interposer-tester worktree's `charge-interposer/`, at `725b4c4`,
+  clean.
+- **Runs** (`runs/chain/`, settings `chain_settings_step1c_5f2fe2c.json`,
+  code `5f2fe2c` and harness `26acc04`, clean):
+  - `gen-inhibit-bench_20261102T163353_6a84`, 16:33-17:57, every group
+    (`bench_compare.py chain`): `man_app` and `man_held` ran, PASS 25. At
+    the `rt` group's start the X2's restore to `x2_app` failed before any
+    flash: the image files the settings named, under the system temp
+    folder, had been removed that morning by the charge-interposer tester's
+    scratch cleanup, on the user's go. The other ten results NOT-RUN;
+    nothing was written to the X2.
+  - `_175756_e819`, 17:57-17:58, the automatic re-run of `6a84`'s 15
+    flagged checks: all NOT-RUN for the same reason. So the checks `6a84`
+    flagged on their figures (B2, B3, B9, B11raw, NONODE, B15 and B25; and
+    B20, flagged only because `e819` did not run it) have one run each.
+  - The charge-interposer tester rebuilt the X2 images from `4a59647`
+    (digest `36edf3e55552`) into reverse-it's
+    `interposer-firmware/images/36edf3e55552/`. Their md5s matched the
+    settings, and the settings' `x2_images` were pointed there.
+  - `_182409_e25d`, 18:24-19:31, the seven groups `6a84` could not run
+    (`rt`, `txabort`, `abortwin`, `rxq`, `prod`, `man_jammer`,
+    `man_slcan`): PASS 13, NOT-RUN 1 (B27). Its start step restored the X2
+    from held to `x2_app` (read `756d6714`).
+  - `_193155_85e2`, 19:31-20:11, the automatic re-run of `e25d`'s 5
+    flagged checks: PASS 4, FAIL 4 (below). The runner's end hook passed,
+    and it released the lock at 20:11:24.
+  - **The comparisons:** `6a84/compare_report.txt` (with `e819`; flagged
+    20 of 39) and `e25d/compare_report.txt` (with `85e2`; flagged 8 of
+    39). Together, the two first runs give every one of the baseline's 39
+    results: PASS 38 and NOT-RUN 1, as the baseline. "flaky, needs
+    review": B5, B6, B7 and B8 (PASS first, FAIL on re-run).
+- **The re-run's Wi-Fi drop: four results that never reached the device.**
+  - Windows' WLAN-AutoConfig log (event 8003, reason code 0) recorded
+    NICKY-XPS's Wi-Fi link to the WiCAN's AP as "disconnected by the
+    driver" once: 20:00:42, reconnected 20:02:38
+    (`runs/step1c_5f2fe2c/wlan_events_1c.txt`). Every other disconnect in
+    both chains was a rejoin by the harness (reason code 3), connected
+    again within a second.
+  - It began during `man_jammer`'s first case (`B5_livetrain_p5000`,
+    19:59:16), not during a flash. Two arms had passed (trip 6 latched);
+    the next POST setting mode 0 timed out (about 20:00:59). Each later
+    case, 20:01:08-20:02:21, stopped at its precondition, "device must be
+    in mode 0", with 0 arms. So B5, B6, B7 and B8 read FAIL ("0 of 0
+    arms").
+  - Which end dropped the link is not known. The WiCAN answered its page
+    again at 20:03:36 (`man_slcan`'s identify, `47e805f1...`).
+  - None of these reached the device, so they are not observations against
+    the spec. Their first-run results stand: all PASS (below).
+- **Expected differences from the baseline,** as at step 1b. **Identity
+  rows, labelled, not compared:**
+  - B17a page `elf_sha256` `47e805f1` (baseline `25f50ac0`);
+  - B17b `7aac1135` (`f9de9de9`);
+  - B19page `47e805f1` (`f3957789`);
+  - B18 `diag_build_id` `47e805f1` (baseline schema 7 `diag_git_hash`
+    `0x2FE85674`).
+
+  **"0x7F3 carries the build id", bench half (B18): PASS** ("MATCH, 7 rows
+  ok").
+- **B19: PASS** (`e25d`). B19present: all four switches present on their
+  test builds (`RESTART_GUARD_TEST`, `TWAI_PORT_TXABORT_PROBE`,
+  `GI_INSTRUMENT_ABORTWIN`, `GI_INSTRUMENT_RXQ`). B19absent: all five
+  absent on the prod stand-in (those four and `OTA_HEALTH_FAULT_INJECT`).
+  B19page AS SPECIFIED, page `elf_sha256` `47e805f1`.
+  The baseline names two of the switches `GI_TEST_RESTART_QUIESCE` and
+  `GI_INSTRUMENT_TXABORT`; `bench_compare` compares them under the new
+  names and says so on the row ("same", PASS both).
+- **"No error frames at a restart" (B12, the `_rt` image): PASS** in both
+  `e25d` and `85e2`, 7 of 7 cycles, 0 error frames.
+- **The C3-abort probe (B23, the `_txabort` image): PASS** in both runs.
+  `e25d`: contend 66 aborted / 9 no effect / 3 lost-then-aborted; retry 78
+  of 78 free, 0 on the wire. `85e2`: contend 60 / 14 / 4; retry 78 of 78
+  free, 0 on the wire. abortwin (`_abortwin`): PASS (`e25d`, rc 0).
+- **B5-B8 (the jammer), `e25d`: PASS.** B5: 200/s 3 of 3, 500/s 9 of 9, 0
+  inconclusive. B6: 10 of 10 arms PASS over 5 runs. B7: 3 of 3 arms AS
+  SPECIFIED. B8: train 3 of 3 PASS; control INCONCLUSIVE. `85e2`: never
+  reached the device (above).
+- **B9 (known anomaly 6; spec 7, trip 6, wrong-bit-rate method): `6a84`
+  PASS.** 9 bursts, 25343 witness error frames (2562-3143 a burst), TEC
+  max 0. Trip 6 latched at +0.06 s.
+- **NONODE ("a bus with no other node", bench): `6a84` PASS**, 3 main arms,
+  trip "error-frame rate exceeded", latch max 0.466 s.
+- **B16 (the idle page-only baseline): `6a84` PASS**, 360 polls, 0
+  unanswered, 0 stalled, no outage.
+- **B22: PASS** in both `e25d` and `85e2`, both arms: provenance clean,
+  `tx_fail` 0, `ctr_bad` 0, 0 error frames, the device's 0x051 8983.
+- **The OTA rollback rehearsal: NOT RUN.** It needs a WiCAN console capture,
+  and none is taken until the WiCAN's factory reset (console rule).
+- **Figures flagged, verdicts unchanged unless named above.** For
+  `man_app` and `man_held`, each figure is `6a84`'s (baseline), with no
+  re-run. For the rest it is `e25d` / `85e2` (baseline):
+  - B2: `respond_probes_x2held` 2990 (2992).
+  - B3, `first_answer_ms`: observe max 43.7 (36.0); passive min 4.5
+    (15.8); respond 12.0-95.8 (14.8-34.0).
+  - B5: 500/s `pass` 9 / 0 (8), `inconclusive` 0 / 0 (1).
+  - B9: `burst_errors` 2562-3143 (2565-3087); `witness_error_frames` 25343
+    (34031); `tec_max` 0 (34).
+  - B11raw: `pass_on_ack` 0 (1); `send_to_first_byte_ms` 7.0-24.2
+    (6.1-20.1).
+  - B12: `panic_boot_s` 0.583-0.586 / 0.584-0.593 (0.592-0.599);
+    `sw_boot_s` 2.314-4.504 / 2.326-2.333 (2.314-2.353).
+  - NONODE: `latch_max_s` 0.466 (0.49).
+  - B15: `frames_pcan` 22138 (20930); `frames_gs_usb` 15665 (14791);
+    `non_ack_repeat_id` 0x7F1 (0x7F9).
+  - B22: `response_us_max_a` 1010 / 1052 (846); `_b` 1118 / 1001 (814).
+  - B23: contend aborted 66 / 60 (57); contend no effect 9 / 14 (21);
+    contend lost-then-aborted 3 / 4 (0); retry aborted 71 / 73 (69); retry
+    first abort enough 71 / 74 (69); retry lost-then-aborted 7 / 5 (9).
+  - B25: `gate_open_s` 203.478 (203.479); `resumed_s` 203.481 (203.482).
+  - B26: `ge2_idle_b` 10 / 11 (17); `ge2_loaded` 14799 / 13186 (11543);
+    `max_backlog_idle_a` 5 / 5 (3), `_idle_b` 3 / 3 (4).
+- **Run files:**
+  - `runs/chain/gen-inhibit-emulated_20261102T111059_7c94/`;
+  - `runs/chain/gen-inhibit-bench_20261102T{163353_6a84,175756_e819}/`;
+  - `runs/chain/gen-inhibit-bench_20261102T{182409_e25d,193155_85e2}/`;
+  - `runs/step1c_5f2fe2c/` (`README.md`; `SHA256SUMS` `ef7307e0...39e8`
+    hashes every file: `builds/`, `build_checks/`, `verification*/`,
+    `spec_shim/`, `t12_fake/`, `madhouse_console.txt`, `gi_host/`,
+    `harness_tests/`, `hand_ota_man/`, `wlan_events_1c.txt`).
+
+**Port step 1c's targeted bench re-run (the user's option (b)) on
+`5f2fe2c` -- tester, 2026-11-02 21:06 to 23:55. Result: the first run
+PASS 16, every selected check PASS. Its automatic re-run PASS 14, FAIL 2:
+B6 (one `n9` arm latched trip 6 with at most 9 error frames on the wire
+in any window; observed vs spec, below) and B20 (`rekey-long`
+INCONCLUSIVE, a judge precondition not met; every check passed).** The user
+ruled this re-run (2026-11-02, relayed by the reviewer) after the entry
+above: man_jammer B5-B8, whose re-run never reached the device, and the
+checks with one run on file, man_app B3, B11raw, B15, B25 and B20 and
+man_held B2, B9 and NONODE. 1c is accepted once it passes; if anything
+fails, the reviewer takes it to the user before 1c closes. The pinned
+record `runs/step1c_5f2fe2c/` is unchanged. Sections: part B, these nine
+checks, as the entry above.
+- **Run:** `bench_compare.py chain --check` (the nine checks), code
+  `5f2fe2c` and harness `26acc04`, both clean, settings
+  `chain_settings_step1c_5f2fe2c.json`, against the `e3d9437` index. The
+  chain added the desk steps those checks read from (man_app B2app, B3arms,
+  B11rawarms; man_held B2held), 13 cases a run. The runner took and
+  released the lock (released 23:55:19). "No builds" was set for the
+  chain and cleared after its release.
+  - `runs/chain/gen-inhibit-bench_20261102T210609_20c8`, 21:06-22:30: PASS
+    16.
+  - `_223048_0b9a`, 22:30-23:55, the automatic re-run of `20c8`'s 13
+    flagged cases: PASS 14, FAIL 2.
+  - `20c8/compare_report.txt` (with `0b9a`; flagged 10 of 39). "flaky,
+    needs review": B6 and B20 (PASS first, FAIL on re-run).
+- **Boards.** WiCAN `5f2fe2c` `_man` `47e805f1...` throughout, no OTA; each
+  run's start and end hooks PASS (found wican_man, mode 0, not latched),
+  read off the wire last at 23:52:33. X2 `756d6714` at each start, held for
+  `man_held`, the jammer `a89ece8c...` under custody for `man_jammer`,
+  restored to `756d6714` (read 22:30:36 and 23:55:09). Each run's
+  `progress.jsonl` has every identify and flash.
+- **Wi-Fi.** NICKY-XPS's WLAN-AutoConfig log has no connect, disconnect or
+  connecting event (8000/8001/8003) from 21:05 to 23:57 (the same query
+  found 38 over the first chains, 16:29-20:13). It has 84 triplets of
+  11004/11010/11005 (security stopped, started, succeeded), each within a
+  second (`runs/step1c_5f2fe2c_rerun/wlan_events_1c_rerun.txt`).
+- **B5, B7, B8 (the jammer): PASS in both runs.** B5: 200/s 3 of 3, 500/s
+  9 of 9, 0 inconclusive. B7: 3 of 3 arms AS SPECIFIED. B8: train 3 of 3
+  PASS; control INCONCLUSIVE, as in `e25d`.
+- **B6 (spec 7, trip 6; the 12.4 row "error-frame rate trip", the
+  threshold): `20c8` PASS, `0b9a` FAIL.**
+  - `20c8`: 10 of 10 arms PASS over 5 runs.
+  - `0b9a`: 9 of 10 arms PASS. **`n9_lead5` arm 1: FAIL, observed vs
+    spec.**
+    - Observed: the witness saw one error frame per pulse, 9 pulses (per
+      pulse `[1, 1, 1, 1, 1, 1, 1, 1, 1]`, at most 9 in any window). The
+      device's `bus_error` deltas were `[1, 1, 1, 1, 9, 1, 1, 1, 1]`, and
+      trip 6, "error-frame rate exceeded", latched 4.381 s after the first
+      pulse (`x2_jam_threshold_20261102T234504.json`).
+    - Spec 7, trip 6: 10 or more error frames within a 10 s window. The
+      wire never carried more than 9 in a window.
+  - Where the counted error frames fell (`26acc04`'s
+    `b6_multicount_landing.py` and `b6_class_count.py` over both runs' 10
+    threshold records, 192 pulses; `runs/step1c_5f2fe2c_rerun/b6/`): 191
+    pulses counted once, 1 counted more than once: the failing arm's pulse
+    5, delta 9. The frame before its error frame on the wire was a `0x051`
+    2730 us earlier, the frame after it a `0x051` 5300 us later; TEC/REC
+    max 0/0. Class (next frame a `0x051` 200-320 us after): 4 pulses, all
+    single-count; other landings 188, 1 over-count.
+  - Precedent on file: the same shape at the `e3d9437` acceptance (one
+    pulse counted 11 times, an `n10` arm) and at step 1a2 (`c68c`
+    `n9_lead1.5` arm 1, one pulse counted 11 times, FAIL). The open item
+    "One pulse counted 10-12 times" (spec 7, trip 6) is not concluded.
+    This pulse's count, 9, is below that title's range. Whether this FAIL
+    is carried with them is for the reviewer.
+- **B20 (the interlock, bench): `20c8` PASS, 28 of 28 AS SPECIFIED;
+  `0b9a` FAIL, 27 of 28.** `rekey-long` INCONCLUSIVE
+  (`interlock_rekey-long_20261102T230503.json`): all 11 of its checks
+  passed (in both segments: never live before the close, no device `0x051`
+  after the key-off, key 0 before the trip, the trip one the model allows;
+  `emit_refused` never set; diag cadence, largest gap 1.741 s; no `low_soc`
+  release). The precondition "0x051 attribution unambiguous" was not met:
+  2 of 92278 sender-log sends had two candidate wire frames within the
+  residual 0.009249 s (6467 unique matches). Not an observation against
+  the spec; the case has no verdict in `0b9a`. Every other case in both
+  runs AS SPECIFIED.
+- **B2, B3, B9, B11raw, B15, B25, NONODE: PASS in both runs.** Figures
+  flagged, verdicts unchanged; each is `20c8` / `0b9a` (baseline):
+  - B2: `respond_probes_x2held` 2995 / 2996 (2992).
+  - B3, `first_answer_ms`: observe max 47.3 / 35.3 (36.0), observe min
+    15.3 / 15.4 (15.4); passive min 4.5 / 4.5 (15.8).
+  - B5: 500/s `pass` 9 / 9 (8), `inconclusive` 0 / 0 (1).
+  - B9: `burst_errors` 2587-3120 / 2605-3291 (2565-3087);
+    `witness_error_frames` 25648 / 25416 (34031); `tec_max` 0 / 0 (34).
+    Trip 6 latched at +0.24 s in both.
+  - B11raw: `pass_on_ack` 0 / 1 (1); `send_to_first_byte_ms` 8.0-39.0 /
+    8.2-19.6 (6.1-20.1).
+  - NONODE: `latch_max_s` 0.438 / 0.445 (0.49).
+  - B15: `frames_pcan` 20994 / 22230 (20930); `frames_gs_usb` 14781 /
+    16554 (14791); `non_ack_repeat_id` 0x7F8 / 0x7F3 (0x7F9).
+  - B25: `gate_open_s` 203.478 / 203.478 (203.479); `resumed_s` 203.481 /
+    203.481 (203.482).
+- **Run files:**
+  - `runs/chain/gen-inhibit-bench_20261102T{210609_20c8,223048_0b9a}/`;
+  - `runs/step1c_5f2fe2c_rerun/` (`README.md`; `SHA256SUMS`
+    `13a9a208...6514` hashes every file: `wlan_events_1c_rerun.txt`,
+    `b6/`).
+
+**Port step 1c's B12 folders re-judged with the restart-record judge, on
+the desk -- tester, 2026-11-03, harness `4f90d13`. Result: PASS in both
+`e25d` and `85e2`, 7 of 7 restart records as specified.** Follow-up (iii)
+after 1c (gen-inhibit reviewer, 2026-11-03): B12 ("No error frames at a
+restart", the `_rt` image) also judges the restart record each cycle reads
+back. The cycle's JSON, by the name its cycle line gives and only beside
+the cycle file (the reviewer's reading (a)), must hold
+`record_get_after.last_restart` with `did_twai` and `did_stdby` true and
+`timed_out` false, as JSON booleans; a record missing, unread or without
+`last_restart` fails B12. No bench, no device. The pinned record
+`runs/step1c_5f2fe2c/` and the chain run folders are unchanged.
+- **Harness:** gen-inhibit/tester/b12-restart-record `4f90d13`, clean.
+  `test_suite_judges.py` over the `e3d9437` baseline: PASS, 0 failed; the
+  test copies the baseline's 7 records (in `runs/`, before `GI_RUNS_DIR`)
+  beside its cycle files in its scratch copy and checks all 7 are found,
+  and 7 new edits (each field wrong, a truthy `1`, an unread record, a
+  record without `last_restart`, a record not beside its file) each move B12
+  alone to FAIL. `test_suite_judges_mutants.py`: 62 of 62 killed by a
+  check, 0 errors, the control passing; 7 new B12 mutants.
+- **Judged:** `runs/chain/gen-inhibit-bench_20261102T182409_e25d/rt/B12`
+  and `_193155_85e2/rt/B12`, with `suite_judges.judge_one("B12", <folder>)`.
+  Both PASS: "7 of 7 cycles, 0 error frames; 7 restart records: did_twai,
+  did_stdby true, timed_out false". Every cycle's record is beside its file
+  and reads `did_twai` true, `did_stdby` true, `timed_out` false. Figures
+  as in the 1c entry above.
+- **Run files:** `runs/step1c_5f2fe2c_b12_rejudge/` (`README.md`;
+  `SHA256SUMS` `7b01e3e9...d988` hashes every other file: both runs'
+  re-judge JSON, the test and mutant outputs).
+
+**Port step 1d's acceptance: the build-under-load trial, the WiCAN flashed
+with v5.4.2's boot chain, the spec shim, the T12 fake cases, the emulated
+suite, `gi_host_run` and part B on `7f2d5032` -- tester, 2026-11-04 22:10
+to 2026-11-05 14:13, on `gen-inhibit/main` `7f2d5032`. Result: the trial
+PASS ((a) and (b) and both references); the flash PASS; the spec shim, the
+T12 fake cases, `gi_host_run` and the emulated suite PASS, as at 1c. The
+bench chain's first run (`575b`) gives the `e3d9437` baseline's verdict for
+29 of its 32 bench results; the other three: B27 NOT-RUN (the declared
+skip, as the baseline), B20 FAIL 27 of 28 (`rekey-long` INCONCLUSIVE, a
+judge precondition not met; every check passed; 28 of 28 on re-run) and
+B6 INCONCLUSIVE (one arm's stimulus short, in the first run and again in
+its re-run; observed below). The OTA rollback rehearsal: NOT RUN.** Plan:
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/step1d_test_plan.md` items 3, 4 and 5
+(reviewer-confirmed); items 1, 2 and 6 are 12.3's entry "Port step 1d".
+Spec 3.2, 3.3, 9.1 (the boot chain), 15 and part B as a whole; the 12.4
+rows "0x7F3 carries the build id", "a bus with no other node", "no error
+frames at a restart" and "error-frame rate trip".
+- **Harness:** `gen-inhibit/tester/port-1d-bench`. The trial, the madhouse
+  steps, the first emulated run and the first harness tests ran at
+  `77143534` (`gen-inhibit/main` `7f2d5032` merged in, with `5339c16d`:
+  `baseline_builds.ps1` runs R32's `check-env` through the tree's own
+  launcher before each build, with its test). The emulated run counted
+  here and the bench chain ran at `bb09b5f6` (below), clean.
+- **Why `gi_commit` is `7f2d5032` (8 characters), and the earlier runs
+  superseded.** Every 1d image's app descriptor names `7f2d5032`: git's
+  automatic abbreviation in this repo is now 8 characters for every
+  commit (`git rev-parse --short 5f2fe2c` gives `5f2fe2c4`). The suite
+  compares the descriptor with the settings' `gi_commit` exactly (the
+  trees by prefix), and the bench suite needs the newest emulated run on
+  the same code string. So, in order (each in
+  `runs/step1d_7f2d503_suite/consoles/`):
+  - the first chain, with `gi_commit` `7f2d503`, refused at once, "this
+    run's code is not identifiable" (no run folder, no lock taken).
+    `gi_commit` set to `7f2d5032` in the run's settings copy
+    (`chain_settings_step1d_7f2d503.json`; its `_comment` says why);
+  - the second refused at once: the newest emulated run,
+    `gen-inhibit-emulated_20261105T004858_f18d` (`gi_commit` `7f2d503`,
+    PASS 3, NOT-RUN 2), "is on other code". `f18d` stays as the record of
+    the first emulated run, superseded for the pairing;
+  - the emulated suite again, `_090836_049a` (`7f2d5032`, harness
+    `77143534`): H PASS, B15host and C2scan ERROR, "0 files match
+    `..._[0-9a-f]{7}\.txt`" (their files are named `_7f2d5032`). The
+    harness's judges took a short commit in a file name to be exactly 7
+    characters. Fixed in `bb09b5f6` (below); `049a` superseded, kept as
+    record;
+  - `_093208_cabf` at `bb09b5f6`: the emulated run counted (below);
+  - the third chain, `gen-inhibit-bench_20261105T094828_e0f8` (09:48)
+    and its automatic re-run `_094932_7190`: every result NOT-RUN, "could
+    not identify x2". At 1c the X2's identify ran from the
+    interposer-tester worktree's `charge-interposer/` (`725b4c4`, the
+    diag DBC read from git); that worktree is now on the interposer's 2a
+    work with uncommitted changes, so this run's `PYTHONPATH` takes it from
+    the chain core's `b9896a0` archive, whose `bench_identify.py` needs the
+    settings key `interposer_dbc` (the run stopped on `KeyError`). Set to
+    the archive's own `charge-interposer/diag/vtrux-interposer-diag.dbc`
+    (sha256 `3c14042f...`, identical to git's at `b9896a0` and to
+    `charge-interposer/main`'s; the charge-interposer tester agreed).
+    `e0f8` and `7190` superseded, kept as record. Nothing was flashed in
+    either; the WiCAN was read `f515a383...` at `e0f8`'s start.
+- **Harness change `bb09b5f6`** ("suite_judges: a short commit in a file
+  name at git's abbreviation length, 7 to 40"): `suite_judges.C7` from
+  exactly 7 hex digits to 7 to 40. Its test: `test_suite_judges.py`
+  section 2f, on the baseline's B15host, B17a, B25 and C2scan files: the
+  baseline's own verdict PASS; each file renamed with an 8-character
+  commit PASS; with a 6-character one ERROR. Two new mutants (exactly 7;
+  any run of hex digits). The reviewer had no objection (2026-11-05).
+  The committed tests at `bb09b5f6` that use `suite_judges`
+  (`runs/step1d_7f2d503_suite/harness_tests_bb09b5f/`, clean at both
+  ends, at Idle, the same environment, 7200 s each): all six exit 0.
+  `test_suite_judges` PASS, 0 failed; `test_suite_judges_mutants` 64 of
+  64 killed (the 62 of the rerun and the two new ones), the control
+  passing (5669 s); `test_suite_gen_inhibit` PASS, 303 ok, 0 FAIL;
+  `test_suite_gen_inhibit_mutants` 76 of 76; `test_bench_compare` PASS, 64
+  ok, 0 FAIL; `test_bench_compare_mutants` 51 of 51, each control passing.
+- **Item 3, the build-under-load trial (AGENTS.md "Builds during
+  wall-clock tests", point 2; gen-inhibit's build tool changed with
+  v5.4.2): PASS** (`runs/step1d_7f2d503_trial/`, 2026-11-04 22:10-23:06,
+  a hand take; trial runs, not evidence of device behaviour). Stimulus
+  `interlock_bench.py run rekey-long --trial` (92,278 frames, 225 s), the
+  WiCAN on `5f2fe2c` `_man`. Pass marks (reviewer-confirmed, set first):
+  Kvaser worst stimulus gap beyond plan under 0.100 s, and the judge AS
+  SPECIFIED, in every run overlapping the build and both references.
+  - References: worst 0.0013 s and 0.0018 s, AS SPECIFIED.
+  - (a) full speed (`baseline_builds.ps1 -Builds man`, cold, 495 s): 2
+    overlapping runs, worst 0.0124 s and 0.0102 s, both AS SPECIFIED.
+  - (b) throttled (Idle, `bench_build.py --jobs 1`, 1674 s): 7
+    overlapping runs, worst 0.0015-0.0053 s, all AS SPECIFIED.
+  - Every run: 0 witness error frames, 0 sends failed, every ID seen as
+    often as sent; the arm POST 14-26 ms (references 22 and 26 ms); the X2
+    0 frames on CAN1. (b) took 1674 s, not the about 3135 s the plan
+    expected, so it had 7 overlapping runs, not about 14.
+- **Item 4, the WiCAN flashed by USB with v5.4.2's boot chain (spec 9.1,
+  15): PASS** (`runs/step1d_7f2d503_flash/`, 2026-11-05 00:32-00:35, a
+  hand take; the user plugged the USB in for it). The release stand-in's
+  build folder (item 1a, `7f2d5032`, record `f515a383...`) by its
+  `flash_args` with the v5.4.2 venv's esptool 4.12.0; NVS not written.
+  All four writes "Hash of data verified". Bootloader and partition table
+  read back identical to the build's files (sha256 `a2a167d2...`,
+  `98d193a6...`). After the release reboot the page reads `elf_sha256`
+  `f515a383...`: a new boot, reset_reason SW, mode 0, not latched.
+- **Spec shim: PASS** (`runs/step1d_7f2d503_suite/spec_shim/`,
+  madhouse-debian, gcc 14.2.0, from a clone of `77143534`;
+  `shared-2026.11.04` at `181cec94`, recorded as pinned, nothing
+  modified). 90 cases PASS, VERDICT PASS. `mutate.py` killed 51 of 51.
+  `test_host_env --mutants`: 10 of 10 killed, the control passing
+  (`madhouse_console.txt`).
+- **T12 fake cases at `181cec94` (twai_port as at shared/main
+  `569d0031`): PASS** (`runs/step1d_7f2d503_suite/t12_fake/`): `make run`
+  exit 0, "every case passed on C3 and S3"; `make t12-standins` exit 0,
+  the standin as written passing every T12 case and all 9 broken
+  standins caught.
+- **`gi_host_run` on madhouse-debian: PASS**
+  (`runs/step1d_7f2d503_suite/gi_host/`, from `77143534`, code
+  `7f2d5032`): all 8 steps exit 0. The regen: 9 replays identical to the
+  golden. Suite: 81 passed, 0 failed, 23 without goldens. Checks:
+  invariants 104/0, passive_diff 100/0 with 4 skipped, fuzz 200/0,
+  load_margin PASS (12.6x), spec_expect PASS. Sched and the shim: all
+  cases pass. The same as 1c.
+- **Emulated suite: PASS 3, NOT-RUN 2** (C1C7 and C3, by design):
+  `runs/chain/gen-inhibit-emulated_20261105T093208_cabf`, code `7f2d5032`
+  (`gi_fw` the detached worktree `gen-inhibit-tester-images1d`, clean) and
+  harness `bb09b5f6`, clean. H: 25 steps exit 0; 81 goldens passed, 0
+  failed, 23 without goldens. B15host passed; C2scan 4 of 4. The same
+  figures as `f18d` and as 1c's `7c94`.
+- **Harness tests at `77143534`** (`runs/step1d_7f2d503_suite/harness_tests/`,
+  clean at both ends, at Idle, one environment as at 1c): 90 tests (1c's
+  85, plus `scan_scope_check_mutants`, `test_baseline_builds` and
+  `test_bench_build` with their mutants). 85 exit 0. The other five:
+  - `test_host_env --mutants` killed 5 of 10 on Windows, where its
+    real-shell checks don't run, as at 1b and 1c; the counted run is
+    madhouse's 10 of 10 (above).
+  - `test_suite_judges_mutants` and `test_suite_gen_inhibit_mutants`: no
+    result, stopped at the driver's 3600 s timeout (1c: 3225 s and 2800
+    s). `test_e4_stimulus_split`: its 0.55 s wall-clock poll-rate check
+    failed, and the test took 52 s (1 s at 1c);
+    `test_e4_attribution_mutants`: 4 of 4 killed, its control failing the
+    same check. All four ran while the charge-interposer tester's 2a
+    acceptance run built at full speed on NICKY-XPS (its phase 1).
+  - Those four again, on a quiet machine, at `77143534`, clean at both
+    ends (`harness_tests_rerun/`, 7200 s each): all exit 0.
+    `test_suite_judges_mutants` 62 of 62 killed (4846 s),
+    `test_suite_gen_inhibit_mutants` 76 of 76 (3060 s), each control
+    passing; `test_e4_stimulus_split` passed (1 s);
+    `test_e4_attribution_mutants` 4 of 4 killed, the control passing.
+  - `test_refusal_pairs` over real images is in 12.3's entry.
+- **Boards.** WiCAN on 12 V only from 09:05 (the user unplugged its USB
+  for the chain). In each run the runner's identify read each board
+  before every group (each run's `progress.jsonl`): WiCAN `_man`
+  `f515a383...` and each group's OTA image; X2 `756d6714`, held, the
+  jammer `a89ece8c...` (under custody) or `slcan`, restored to
+  `756d6714` (read 12:19:38 and 14:13:11). Every OTA took at attempt 1.
+  Each run's start and end hooks PASS (found `wican_man`). Each run's lock
+  was held by its runner; "No builds" set for the chain and cleared after
+  its release.
+- **Runs** (`runs/chain/`, settings `chain_settings_step1d_7f2d503.json`,
+  code `7f2d5032` and harness `bb09b5f6`, clean, against the `e3d9437`
+  index):
+  - `gen-inhibit-bench_20261105T095243_575b`, 09:52-12:19, every group
+    (`bench_compare.py chain`): PASS 29, FAIL 1 (B20), INCONCLUSIVE 1
+    (B6), NOT-RUN 1 (B27) of the baseline's 32 bench results. H, B15host
+    and C2scan are the emulated run's; C1C7, C3, C5 and C6 were replaced
+    in stage (a) (labelled, not compared), as at 1c.
+  - `_121949_a61f`, 12:19-14:13, the automatic re-run of `575b`'s 13
+    flagged checks (17 cases with their desk steps): every result PASS
+    but B6 INCONCLUSIVE. The runner released the lock at 14:13:21.
+  - `575b/compare_report.txt` (with `a61f`; flagged 14 of 39). "flaky,
+    needs review": B20 (FAIL first, PASS on re-run). B6: "a re-run's
+    verdict is not the baseline's" (INCONCLUSIVE in both).
+- **Wi-Fi** (`runs/step1d_7f2d503_suite/wlan_events_1d.txt`, 09:48-14:15):
+  9 disconnects, each ReasonCode 3 (a new connection the harness asked
+  for), connected again within the second, each just after a group ended
+  and before its OTA. No disconnect by the driver.
+- **Expected differences from the baseline,** as at 1c. **Identity rows,
+  labelled, not compared:** B17a page `elf_sha256` `f515a383` (baseline
+  `25f50ac0`); B17b `ea3c0c05` (`f9de9de9`); B19page `f515a383`
+  (`f3957789`); B18 `diag_build_id` `f515a383` (baseline schema 7
+  `diag_git_hash` `0x2FE85674`).
+
+  **"0x7F3 carries the build id", bench half (B18): PASS** ("MATCH, 7 rows
+  ok").
+- **B19: PASS** (`575b`). B19present: all four switches present on their
+  test builds (`RESTART_GUARD_TEST`, `TWAI_PORT_TXABORT_PROBE`,
+  `GI_INSTRUMENT_ABORTWIN`, `GI_INSTRUMENT_RXQ`). B19absent: all five
+  absent on the prod stand-in (those four and `OTA_HEALTH_FAULT_INJECT`).
+  B19page AS SPECIFIED, page `elf_sha256` `f515a383`. The baseline's two
+  old switch names compared under the new ones ("same", PASS both).
+- **"No error frames at a restart" (B12, the `_rt` image): PASS** in both
+  runs, 7 of 7 cycles, 0 error frames, 7 restart records `did_twai` and
+  `did_stdby` true, `timed_out` false (the restart-record judge, as
+  re-judged for 1c).
+- **The C3-abort probe (B23, the `_txabort` image): PASS** in both runs.
+  `575b`: contend 70 aborted / 8 no effect / 0 lost-then-aborted; retry
+  78 of 78 free, 0 on the wire. `a61f`: 68 / 10 / 0; retry 78 of 78
+  free, 0 on the wire. abortwin (`_abortwin`): PASS (`575b`, rc 0).
+- **B5, B7, B8 (the jammer): PASS in both runs.** B5: 200/s 3 of 3; 500/s
+  9 of 9 (`575b`), 8 of 9 with 1 inconclusive (`a61f`). B7: 3 of 3 arms
+  AS SPECIFIED. B8: train 3 of 3 PASS; control INCONCLUSIVE, as at 1c.
+- **B6 (spec 7, trip 6; the 12.4 row "error-frame rate trip", the
+  threshold): INCONCLUSIVE in both runs, 9 of 10 arms PASS in each.**
+  Each time one arm's stimulus came up short, and the judge gives that arm
+  no verdict ("delivery was not one error frame per pulse"):
+  - `575b` `n10_lead5` arm 0: the witness saw 9 pulses of 10, one error
+    frame each; the device's `bus_error` deltas `[1, 1, 1, 1, 1, 1, 1, 1,
+    1]`; no latch. The same shape as step 1b's known anomaly 7 (a short
+    `n10` arm).
+  - `a61f` `n9_lead5` arm 0: the witness saw 8 pulses of 9, one error
+    frame each (at most 8 in any window). The device's `bus_error` deltas
+    were `[1, 1, 0, 1, 1, 1, 10, 1]`
+    (`x2_jam_threshold_20261105T135659.json`). Trip 6 latched after
+    pulse 7 (corrected 2026-11-05 ~17:3x, after the reviewer's question:
+    first written as "trip 6 did not latch", which was wrong). The arm:
+    the WiCAN rebooted before it (uptime 43594 -> 6810 ms, nothing
+    latched); arm POST 5.30 s before the first pulse ("lead5"), live 0.24
+    s after it; mode 3, live, key on and fresh, the uptime unbroken from
+    then through the last pulse (no re-arm, no reboot, no key change). The
+    page's `drv_bus_error` read 1 to 6 across the first six witness error
+    frames (pulses 0, 1, 2, 4, 5, 6; none seen on the wire for pulse 3),
+    6 at every poll from +6.64 s to +7.61 s, then 16 with
+    `abort_latched` true, "error-frame rate exceeded", at the first poll
+    after pulse 7's error frame (+7.65 s on the wire, poll +7.72 s), and
+    17 after pulse 8. 0x7F8 read `error_rate` / `aborted` from +7.69 s,
+    and 0x7F1's `diag_flags` went from 0x66 to 0xC6 (bit 7
+    abort_latched set, bit 5 inhibit_live clear) at +8.17 s. So the latch
+    came at 16 device counts, from 7 error frames on the wire in 7.7 s.
+    The sampled page fields don't include `err_n` or `err_age_ms`. The
+    judge gives no latch verdict for this arm: it stops at the delivery
+    check.
+  - Where the counted error frames fell (`b6_multicount_landing.py` and
+    `b6_class_count.py` at `bb09b5f6` over both runs' 10 threshold
+    records, 190 pulses; `runs/step1d_7f2d503_suite/b6/`): 187 counted
+    once, 2 not counted (a `0` delta: `a61f`'s `n9_lead5` arm 0 above,
+    and `a61f` `n9_lead1.5` arm 0, which passed), 1 counted more than
+    once. (Corrected 2026-11-05 ~18:0x, after the reviewer's question, from
+    the records, no rerun: those 2 are error frames on the wire that the
+    device did count, so of the 190 error frames on the wire, 189 were
+    counted once, 1 was counted 10 times, and none went uncounted. The suite
+    README's "2 not counted" is the same reading, left as written in
+    the pinned folder. Each `0` is the judge's per-pulse delta
+    (`x2_jammer.per_pulse`), which stamps a page poll with its return time.
+    `n9_lead5` arm 0: the `0` is pulse 2's error frame, on the wire at
+    +2.15 s (pulse 3 had none, and the per-pulse groups are the wire's
+    error frames, so it has no delta). The poll stamped +2.654 s was sent
+    at +1.509 s and, by its `uptime_ms`, built at about +1.51 s, before the
+    frame. The next poll (sent +2.756 s) reads 3, one more, and the
+    page's reads run 1 to 6 over the first six frames. `n9_lead1.5` arm 0:
+    the `0` is pulse 5's error frame at +5.490 s. The poll stamped +5.561
+    s was sent at +5.476 s and built at about +5.495 s, within about 10 ms
+    of the frame. The next poll (sent +5.662 s) reads 6, and the page's
+    total, 9, is the wire's 9.)
+    The frame counted 10 times: `a61f` `n9_lead5` arm 0 pulse 7, delta 10. The frame before its
+    error frame on the wire was a `0x051` 4700 us earlier, the frame after
+    it a `0x051` 1960 us later; TEC/REC max 0/0. Class (next frame a
+    `0x051` 200-320 us after): 10 pulses, all single-count.
+  - Precedent on file: the open item "One pulse counted 10-12 times"
+    (spec 7, trip 6), not concluded; 1c's targeted re-run (`0b9a`, one
+    pulse counted 9 times, that arm latching). Whether this is carried
+    with them is for the reviewer.
+- **B20 (the interlock, bench): `575b` FAIL, 27 of 28 AS SPECIFIED;
+  `a61f` PASS, 28 of 28.** `575b`'s `rekey-long` INCONCLUSIVE
+  (`interlock_rekey-long_20261105T104557.json`): all 11 of its checks
+  passed. The precondition "0x051 attribution unambiguous" was not met: 1
+  of 92278 sender-log sends had two candidate wire frames within the
+  residual 0.009403 s (6512 unique matches). Not an observation against
+  the spec; the case has no verdict in `575b`. The same shape as 1c's
+  `0b9a`, which the user ruled not a finding (2026-11-03). Every other
+  case in both runs AS SPECIFIED.
+- **B9 (known anomaly 6; spec 7, trip 6, wrong-bit-rate method): PASS in
+  both runs.** 9 bursts; trip 6 latched at +0.25 s / +0.22 s.
+- **NONODE ("a bus with no other node", bench): PASS in both runs,** 3
+  main arms, trip "error-frame rate exceeded".
+- **B16 (the idle page-only baseline): `575b` PASS**, 360 polls, 0
+  unanswered, 0 stalled, no outage.
+- **B22: PASS** in both runs, both arms: provenance clean, `tx_fail` 0, 0
+  error frames, the device's 0x051 8983.
+- **The rest of part B: PASS** (`575b`): B1, B4, B10, B11, B13, B14, B21,
+  B24, B26, B17a, B17b; B2, B3, B11raw, B15, B25 in both runs.
+- **B27: NOT-RUN,** deferred by the user, as in the baseline.
+- **The OTA rollback rehearsal on v5.4.2: NOT RUN.** It needs a WiCAN
+  console capture, and none is taken until the WiCAN's factory reset
+  (console rule).
+- **Figures flagged, verdicts unchanged unless named above.** Each is
+  `575b` / `a61f` (baseline):
+  - B2: `respond_probes_x2app` 2965 / 2995 (2994); `_x2held` 2995 / 2994
+    (2992).
+  - B3, `first_answer_ms`: observe max 41.1 / 47.6 (36.0), observe min
+    15.5 / 15.4 (15.4); passive max 28.8 / 15.9 (28.6), passive min 15.9
+    / 4.5 (15.8); respond max 30.2 / 15.7 (34.0); off max 150.9 / 151.0
+    (151.0).
+  - B5: 500/s `pass` 9 / 8 (8), `inconclusive` 0 / 1 (1).
+  - B6: `passed` 9 / 9 (10).
+  - B9: `burst_errors` 2549-2786 / 2553-3290 (2565-3087);
+    `witness_error_frames` 24102 / 25668 (34031); `tec_max` 8 / 0 (34).
+  - B11raw: `pass_on_ack` 0 / 0 (1); `send_to_first_byte_ms` 4.0-11.1 /
+    7.2-24.9 (6.1-20.1).
+  - B12: `panic_boot_s` 0.581-0.598 / 0.581-0.583 (0.592-0.599);
+    `sw_boot_s` 2.303-2.323 / 2.292-2.337 (2.314-2.353).
+  - NONODE: `latch_max_s` 0.437 / 0.451 (0.49).
+  - B15: `frames_pcan` 22102 / 22114 (20930); `frames_gs_usb` 15679 /
+    15672 (14791); `non_ack_repeat_id` 0x7F3 / 0x7F3 (0x7F9).
+  - B20: `as_specified` 27 / 28 (28).
+  - B22: `response_us_max_a` 996 / 1193 (846); `_b` 1191 / 1025 (814).
+  - B23: contend aborted 70 / 68 (57); contend no effect 8 / 10 (21);
+    retry aborted 70 / 71 (69); retry first abort enough 70 / 71 (69);
+    retry lost-then-aborted 8 / 7 (9).
+  - B25: `gate_open_s` 203.478 / 203.478 (203.479); `resumed_s` 203.481
+    / 203.481 (203.482).
+  - B26: `ge2_idle_a` 34 / 14 (15); `ge2_loaded` 15853 / 16786 (11543);
+    `max_backlog_idle_a` 5 / 4 (3); `max_backlog_loaded` 10 / 9 (8).
+- **Run files:**
+  - `runs/step1d_7f2d503_trial/` (`SHA256SUMS` `ae8dfd57...1ef4`);
+  - `runs/step1d_7f2d503_flash/` (`SHA256SUMS` `b4946e45...c812`);
+  - `runs/chain/gen-inhibit-emulated_20261105T093208_cabf/`; superseded,
+    kept: `_004858_f18d/`, `_090836_049a/`;
+  - `runs/chain/gen-inhibit-bench_20261105T{095243_575b,121949_a61f}/`;
+    superseded, kept: `_094828_e0f8/`, `_094932_7190/`;
+  - `runs/step1d_7f2d503_suite/` (`README.md`; `SHA256SUMS` `78b03ea4...7f8f`, 144
+    files, hashes every other file: `spec_shim/`, `t12_fake/`,
+    `madhouse_console.txt`, `gi_host/`, `gi_host_console.txt`,
+    `harness_tests/`, `harness_tests_rerun/`, `harness_tests_bb09b5f/`,
+    `b6/`, `wlan_events_1d.txt`, `consoles/`, `drivers/`).
+
+**B6 per-pulse deltas of 0 re-judged with the new poll stamp, on the desk
+-- tester, 2026-11-05, harness `cc957d51`. Result: of 5 deltas of 0 in
+3,508 placed pulses, 1 stands and 4 were polls stamped by their return.
+The one that stands is the measurement build's (session 2), the figure
+behind spec 13's "An error frame can go uncounted: 1 of 1,212".** Asked by
+the gen-inhibit reviewer after step 1d's two (2026-11-05). Records only,
+no bench; nothing in the runs read was changed.
+- **The fix:** `gen-inhibit/tester/b6-poll-stamp` `86dcfee6`.
+  `x2_jammer.per_pulse` takes a page reading as "after" a pulse only if it
+  was sent after the pulse's error frame, and as "before" only if it
+  returned before it. Until then each reading was stamped by its return,
+  so a stalled poll sent before a pulse and returned after it, with the
+  count from before it, gave that pulse a 0. Its callers pass `req_start`
+  on. Tests at `86dcfee6`, clean: `test_x2_jammer.py` PASS (four
+  poll-stamp cases), mutants 5 of 5; `test_x2_jam_cases.py` PASS (a judge
+  case with a stalled poll), its mutants 15 of 15;
+  `test_b6_multicount_landing.py` 11 ok, mutants 8 of 8; each control
+  passing (`runs/test_*_20261105_pollstamp.txt`).
+- **The tool:** `b6_zero_deltas.py` at `cc957d51`, clean: for every
+  threshold record whose witness file `b6_multicount_landing.py` finds,
+  every arm, the delta per witness pulse under the new rule and the old,
+  and the readings either side, with when each page was built from its
+  `uptime_ms`. Its test 12 ok, mutants 8 of 8, the control passing. Every
+  record read has `req_start` and `uptime_ms` on every reading. (The same
+  run at `57e9fdc8`, `runs/b6_poll_stamp_rejudge_57e9fdc/`, is
+  superseded: its tool looked for a witness file only under the record's
+  own name and missed the five `c65c45e` records renamed `_VOID_noreset`,
+  96 placed pulses with no 0s. Its five rows are the same.)
+- **Per figure** (0s old / new; "pulse" numbered from 1 by witness pulse):
+  - Before the port, 775 placed: `c65c45e` (10 records, 192 placed, the
+    five VOID ones included) and `e3d9437` (the 20 rate arms, the chain
+    runs `0068`, `59b0`, `5880`, and the five 2026-10-16 records; 583
+    placed): 1 / 0. `5880`
+    `x2_jam_threshold_20261020T035309` arm 1 pulse 6: the "after" reading
+    returned 0.233 s after the error frame read 6, one more than the
+    "before". No earlier figure counted it as uncounted.
+  - The measurement build, 1,212 placed:
+    - session 1 (`b6_ecc_20261020T214017`, 577): 1 / 0. Arm 6 pulse 27,
+      already put down to the page's timing in session 1's desk points
+      (the reading after it sent at +0.000 s); the device's isr row is
+      there.
+    - **session 2 (`b6_ecc_20261020T231941`, 579): 1 / 1, stands.**
+      `x2_jam_threshold_20261020T234053` arm 2 pulse 4: the page built
+      0.182 s before the error frame read 3, the one built 0.099 s after
+      it read 3. Session 3's report on it is above: no isr row for it, and
+      the ticks rows either side read `bus_error_count` 3 and 4. So spec
+      13's "1 of 1,212" is an error frame the device did not count, not
+      this artifact.
+    - session 3 (`b6_ecc_20261021T014654`, 56): 0 / 0.
+  - Port steps 1a to 1c (`a389`, `ce10`, `cfcd`, `08ea`, `9bf7`, `8e53`,
+    `880c`, `fb52`, `c68c`, `7bc9`, `c6a0`, `e25d`, `20c8`, `0b9a`; 1,331
+    placed): 0 / 0.
+  - Step 1d (`575b`, `a61f`; 190 placed): 2 / 0, both `a61f`, as
+    corrected in the entry above.
+- **Run files:** `runs/b6_poll_stamp_rejudge_cc957d5/` (`README.md`;
+  `SHA256SUMS` `3fa3ad81...9502` hashes every other file: `by_folder.txt`,
+  `all_runs.txt`, the tool's test and mutant outputs).
+

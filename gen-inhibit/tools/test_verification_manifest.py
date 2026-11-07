@@ -48,7 +48,8 @@ DOC = ("# Doc\n"
        "Gone: `runs/nothere.json`. Elsewhere `$REVERSE_IT_DIR/firmware/f.md`. Not cited: runs/z.txt.\n"
        "Trailing dot `runs/a.json`. and a chain `runs/chain/` with `x/runs/q.json` not a citation.\n"
        "A stem cut short with its dot inside: `runs/t_20261107.`\n"
-       "A living doc `$REVERSE_IT_DIR/firmware/bench-holder.md` and a run's own `runs/b/README.md`.\n")
+       "A living doc `$REVERSE_IT_DIR/firmware/bench-holder.md` and a run's own `runs/b/README.md`.\n"
+       "Optional part `runs/r_{p,q}[_crash]_2026*.json` and a glob class `runs/k[12].txt`.\n")
 
 
 def fixture(root):
@@ -59,7 +60,9 @@ def fixture(root):
              RUNS + "stem_202611079.json": b"not this stem", RUNS + "z.txt": b"z",
              RUNS + "t_20261107.json": b"t",
              RUNS + "chain/r1/record.json": b"c", "firmware/f.md": b"F",
-             "firmware/bench-holder.md": b"holder", RUNS + "b/README.md": b"run readme"}
+             "firmware/bench-holder.md": b"holder", RUNS + "b/README.md": b"run readme",
+             RUNS + "r_p_20261107.json": b"rp", RUNS + "r_p_crash_20261107.json": b"rpc",
+             RUNS + "r_q_20261107.json": b"rq", RUNS + "k1.txt": b"k1"}
     for rel, data in files.items():
         put(root, rel, data)
     os.makedirs(os.path.join(root, "canre"), exist_ok=True)
@@ -110,6 +113,11 @@ def main():
     check("... but a run folder's own README stays hashed",
           row(rows, RUNS + "b/README.md") == ["%s  file     %s  L9" % (sha(b"run readme"), RUNS + "b/README.md")],
           row(rows, RUNS + "b/README.md"))
+    check("a [_x] segment is optional: both forms resolve, and an expansion with no file is absent",
+          kinds.get(RUNS + "r_p_20261107.json") == "file" and kinds.get(RUNS + "r_p_crash_20261107.json") == "file"
+          and kinds.get(RUNS + "r_q_20261107.json") == "file" and
+          kinds.get(RUNS + "r_q_crash_2026*.json") == "absent", kinds)
+    check("... while [12] stays a glob class", kinds.get(RUNS + "k1.txt") == "file", kinds)
     check("an unbackticked path is not a citation", RUNS + "z.txt" not in kinds, kinds)
     check("a backticked path not starting runs/ is not a citation",
           not any("q.json" in k for k in kinds), kinds)

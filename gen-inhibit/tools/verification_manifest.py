@@ -13,7 +13,9 @@ is current, 1 when not (each differing row printed), 2 when nothing could be che
 
 What counts as a citation: a backticked string that starts with `runs/` (the document's rule: run
 files are under $REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/runs/) or with
-`$REVERSE_IT_DIR/`. Shell braces expand ({a,b}, {1..6}), then a `*` or `?` globs; a cite
+`$REVERSE_IT_DIR/`. A bracketed segment starting with `_` is the document's optional part
+(`..._hook{on,off}[_crash]_...`), read as {,_crash}, not a glob class; shell braces expand
+({a,b}, {1..6}), then a `*` or `?` globs; a cite
 holding `<`, `>` or `...` is a pattern, listed without a hash. Trailing `.,;:)` is dropped. A
 path that does not exist, with no glob in it, is read as a run's stem, as the document often
 cites one: the files beside it named <stem>.* or <stem>_* (bench_census_<stamp> is its .json and
@@ -47,12 +49,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RUNS_REL = "projects/vtrux/notes/artifacts/gen-inhibit/"
 ROOTS = {RUNS_REL + "runs/", RUNS_REL + "runs/chain/"}     # folders that grow: named, never hashed
 NOTES = "projects/vtrux/notes/"
-LIVING = {"firmware/bench-holder.md", NOTES + "gen-inhibit-wican-spec.md",
+LIVING = {"firmware/bench-holder.md", "firmware/bench-log.jsonl", NOTES + "gen-inhibit-wican-spec.md",
           NOTES + "gen-inhibit-review-2026-09-22.md", NOTES + "gen-inhibit-wican-firmware.md",
           RUNS_REL + "README.md", RUNS_REL + "x2_jammer/README.md",
           RUNS_REL + "step1d_test_plan.md"}
 KINDS = ("file", "tree", "root", "living", "absent", "missing", "pattern")
 CITE = re.compile(r"`([^`\s]+)`")
+OPTIONAL = re.compile(r"\[(_[^\]\[]+)\]")
 TRAIL = ".,;:)"
 
 
@@ -146,6 +149,7 @@ def rows(doc_text, ri):
             seen.setdefault(("pattern", cite), n)
             continue
         rel0 = cite[len("$REVERSE_IT_DIR/"):] if cite.startswith("$REVERSE_IT_DIR/") else RUNS_REL + cite
+        rel0 = OPTIONAL.sub(lambda m: "{," + m.group(1) + "}", rel0)
         expanded = [(rel, _resolve(rel, ri)) for rel in expand_braces(rel0)]
         any_found = any(hits for _rel, hits in expanded)
         for rel, hits in expanded:

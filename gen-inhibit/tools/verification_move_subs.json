@@ -43,6 +43,22 @@
      "why": "batch 2: a madhouse-debian home path written without ~ (gen-inhibit reviewer, 2026-11-07)"},
     {"line": 3677, "old": "`artifacts/gen-inhibit/",
      "new": "`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/",
-     "why": "batch 2: a SeaDrive path becomes a $REVERSE_IT_DIR citation"}
+     "why": "batch 2: a SeaDrive path becomes a $REVERSE_IT_DIR citation"},
+    {"line": 5161, "old": "`~/", "new": "`<madhouse-debian home>/",
+     "why": "batch 3: a madhouse-debian home path written without ~ (gen-inhibit reviewer, 2026-11-07)"},
+    {"line": 6385, "old": "`~/", "new": "`<madhouse-debian home>/",
+     "why": "batch 3: a madhouse-debian home path written without ~ (gen-inhibit reviewer, 2026-11-07)"},
+    {"line": 6497, "old": "`firmware/bench-log\\.jsonl`",
+     "new": "`$REVERSE_IT_DIR/firmware/bench-log.jsonl`",
+     "why": "batch 3: a SeaDrive path becomes a $REVERSE_IT_DIR citation"},
+    {"line": 6725, "old": "`~/", "new": "`<madhouse-debian home>/",
+     "why": "batch 3: a madhouse-debian home path written without ~ (gen-inhibit reviewer, 2026-11-07)"},
+    {"line": 6727, "old": "`~/", "new": "`<madhouse-debian home>/",
+     "why": "batch 3: a madhouse-debian home path written without ~ (gen-inhibit reviewer, 2026-11-07)"},
+    {"line": 7171, "old": "`~/", "new": "`<madhouse-debian home>/",
+     "why": "batch 3: a madhouse-debian home path written without ~ (gen-inhibit reviewer, 2026-11-07)"},
+    {"line": 7734, "old": "`artifacts/gen-inhibit/",
+     "new": "`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/",
+     "why": "batch 3: a SeaDrive path becomes a $REVERSE_IT_DIR citation"}
   ]
 }
