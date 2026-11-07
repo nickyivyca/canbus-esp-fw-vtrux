@@ -48,12 +48,17 @@ Images are not compared: a switch changes the code.
 --can-fail copies the two folders' five files to this run's scratch folder
 and judges the copy unchanged (it must PASS), then with each of: an extra
 -D on one source file of B; one sdkconfig key changed in B; the named
-switches taken out of B; a source file only in B; a link flag added to B's
+switches taken out of the side that carries them, A or B or both (run 2a
+0d0d: taken out of B only, the mutant left witness/bridge's B, the bridge,
+as it was, since the switch is the witness's, A; the charge-interposer
+reviewer, 2026-11-07); a source file only in B; a link flag added to B's
 app link; a library added to it; an implicit input (a linker script) added
 to it. Each must FAIL.
 --self-test does the same on stand-in folders, with the masks shown at
 work (a hashed object path, a build time, the project name, the folders),
-for the harness suite where no build exists.
+for the harness suite where no build exists. It runs --can-fail on a pair
+with the switch on B and on one with it on A, and shows that the drop from
+B alone (RULES["drop_from_carrier"] off) gets the switch-on-A pair wrong.
 
 Exit 0 PASS, 1 FAIL, 2 refused (an unreadable folder, a bad call).
 """
@@ -71,6 +76,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CODE = os.path.dirname(HERE)
 if CODE not in sys.path:
     sys.path.insert(0, CODE)
+
+# can_fail's switch-drop mutant edits every side whose compile commands
+# carry a named switch; off, it edits B only (the pre-0d0d form, kept for
+# the self-test's proof that the switch-on-A pair needs it)
+RULES = {"drop_from_carrier": True}
 
 PATH_ARGS = ("-o", "-MF", "-MT", "-MQ")
 DATE = re.compile(r"\d{4}-\d\d-\d\d")
@@ -404,6 +414,24 @@ def _drop_switches(cc, switches):
     return cc
 
 
+def _carriers(a_dir, b_dir, switches):
+    """The sides ("A", "B") whose compile_commands.json carry a -D of a
+    named switch; B alone with RULES["drop_from_carrier"] off."""
+    if not RULES["drop_from_carrier"]:
+        return ["B"]
+    out = []
+    for side, d in (("A", a_dir), ("B", b_dir)):
+        with open(os.path.join(d, "compile_commands.json"), encoding="utf-8") as f:
+            cc = json.load(f)
+        for e in cc:
+            k = _cmd_key(e)
+            toks = e[k].split() if k == "command" else list(e[k])
+            if any(_switch_of(_fwd(t), switches) for t in toks):
+                out.append(side)
+                break
+    return out
+
+
 def _one_more_file(cc):
     cc = copy.deepcopy(cc)
     e = copy.deepcopy(cc[0])
@@ -424,6 +452,8 @@ def can_fail(a_dir, b_dir, switches, base):
     """0 if the copy passes and every corruption fails."""
     import scratch_dir
     bad = 0
+    carry = _carriers(a_dir, b_dir, switches)
+    drop = ("compile_commands.json", lambda cc: _drop_switches(cc, switches))
     with scratch_dir.run(base) as work:
         a = os.path.join(work, "a")
         _copy(a_dir, a)
@@ -433,8 +463,9 @@ def can_fail(a_dir, b_dir, switches, base):
                   False),
                  ("one sdkconfig key changed in B",
                   (os.path.join("config", "sdkconfig.json"), _sdk_change), False),
-                 ("the named switches taken out of B",
-                  ("compile_commands.json", lambda cc: _drop_switches(cc, switches)), False),
+                 ("the named switches taken out of %s, the side(s) that carry them"
+                  % (" and ".join(carry) or "neither side"),
+                  ("drop",), False),
                  ("a source file only in B", ("compile_commands.json", _one_more_file), False),
                  ("a link flag added to B's app link",
                   ("link", _link_var_add("LINK_FLAGS", "-Wl,--intp-canfail-flag")), False),
@@ -446,11 +477,19 @@ def can_fail(a_dir, b_dir, switches, base):
         for i, (label, edit, want) in enumerate(cases):
             b = os.path.join(work, "b%d" % i)
             _copy(b_dir, b)
-            if edit and edit[0] == "link":
+            a_i = a
+            if edit and edit[0] == "drop":
+                if "A" in carry:
+                    a_i = os.path.join(work, "a%d" % i)
+                    _copy(a_dir, a_i)
+                    _edit(a_i, *drop)
+                if "B" in carry:
+                    _edit(b, *drop)
+            elif edit and edit[0] == "link":
                 _edit_link(b, edit[1])
             elif edit:
                 _edit(b, edit[0], edit[1])
-            passed = all(ok for ok, _ in judge(load(a), load(b), switches))
+            passed = all(ok for ok, _ in judge(load(a_i), load(b), switches))
             good = passed == want
             bad += not good
             print("%s %s: %s" % ("ok    " if good else "FAIL  ", label,
@@ -568,7 +607,31 @@ def self_test():
                  link_extra="-DINTP_NO_SERIAL=1")
         expect("the named switch's -D in the link too (another folder, the map's path masked)",
                br, lsw, ["INTP_NO_SERIAL"], True)
-        bad += can_fail(br, wi, ["INTP_ORDER_WITNESS"], "variant-diff-self-canfail") != 0
+        # --can-fail on both orders: the switch on B (bridge, witness) and on
+        # A (witness, bridge: 2a's vd-witness-bridge, run 0d0d)
+        for label, x, y in (("the switch on B", br, wi), ("the switch on A", wi, br)):
+            rc = can_fail(x, y, ["INTP_ORDER_WITNESS"], "variant-diff-self-canfail")
+            bad += rc != 0
+            print("%s --can-fail with %s: %s" % ("ok    " if rc == 0 else "FAIL  ", label,
+                                                 "every corruption caught" if rc == 0
+                                                 else "a corruption passed"), flush=True)
+        # and the drop from B alone gets the switch-on-A pair wrong: the
+        # check above can fail (its output held back, so that its lines are
+        # not read as this self-test's)
+        import contextlib
+        import io
+        RULES["drop_from_carrier"] = False
+        try:
+            with contextlib.redirect_stdout(io.StringIO()) as held:
+                rc = can_fail(wi, br, ["INTP_ORDER_WITNESS"], "variant-diff-self-canfail")
+        finally:
+            RULES["drop_from_carrier"] = True
+        wrong = rc != 0 and "taken out of B, the side(s) that carry them: passes" in held.getvalue()
+        bad += not wrong
+        print("%s the drop from B alone, on the switch-on-A pair: %s" % (
+            "ok    " if wrong else "FAIL  ",
+            "its can-fail reports the switch mutant passing" if wrong
+            else "not caught -- wanted its can-fail to report it"), flush=True)
     print("\nvariant_diff --self-test: %s" % ("all checks OK" if not bad else "%d FAILED" % bad))
     return 1 if bad else 0
 
