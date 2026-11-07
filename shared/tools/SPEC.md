@@ -17,7 +17,7 @@ other project's reviewer (charge interposer) reads it before it merges into
   `$REVERSE_IT_DIR/projects/vtrux/notes/plans/esp-shared-code-port.md`
   (goals 6, 11, 12, 13 and 20, and Layer 0 of "The split"), and gen-inhibit's
   spec 12.3 item 3,
-  `$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-wican-spec.md`.
+  `gen-inhibit/SPEC.md` on `gen-inhibit/main` (moved from reverse-it 2026-11-07).
 
 Requirements are numbered R1 to R33. The numbers are stable: the two evidence
 documents cite them. R31 to R33 were added 2026-11-03 (user, in the

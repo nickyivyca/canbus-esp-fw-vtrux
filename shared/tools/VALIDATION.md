@@ -21,11 +21,13 @@ verified that tooling. It is not cited here.
 
 **Where things are.** The port plan is
 `$REVERSE_IT_DIR/projects/vtrux/notes/plans/esp-shared-code-port.md`.
-gen-inhibit's spec, tracker and test evidence are
-`$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-wican-spec.md`,
-`gen-inhibit-review-2026-09-22.md` and `gen-inhibit-test-evidence.md` in the
-same folder. The interposer's test evidence is
-`charge-interposer-test-evidence.md` there.
+gen-inhibit's spec and test evidence are `gen-inhibit/SPEC.md` and
+`gen-inhibit/VERIFICATION.md` on `gen-inhibit/main` (moved from reverse-it
+2026-11-07, with their section numbers kept, so "gen-inhibit test evidence,
+section N" below is that file's section N); its tracker is
+`$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-review-2026-09-22.md`. The
+interposer's test evidence is `charge-interposer-test-evidence.md` in that
+same folder.
 
 ## 2. Identity
 
