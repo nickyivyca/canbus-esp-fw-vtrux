@@ -9,7 +9,7 @@ pending*, saying what is missing.
 `$REVERSE_IT_DIR/projects/vtrux/notes/plans/esp-shared-code-port.md`
 ("Layer 2: shared components", `restart_guard` and the component test
 apps; goal 15). gen-inhibit's spec is
-`$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-wican-spec.md`. The
+`gen-inhibit/SPEC.md` on `gen-inhibit/main` (moved from reverse-it 2026-11-07). The
 readings of gen-inhibit's code are of `gen-inhibit/main` at `6e56289`
 (`gen-inhibit/firmware/main/gi_restart_quiesce.c` and `.h`,
 `gi_restart_test.c` and `.h`, `gen_inhibit.c`, `main/CMakeLists.txt`).

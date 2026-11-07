@@ -8,7 +8,7 @@ pending*, saying what is missing.
 **Where things are.** The port plan is
 `$REVERSE_IT_DIR/projects/vtrux/notes/plans/esp-shared-code-port.md`.
 gen-inhibit's spec is
-`$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-wican-spec.md`.
+`gen-inhibit/SPEC.md` on `gen-inhibit/main` (moved from reverse-it 2026-11-07).
 
 ## 1. Common
 

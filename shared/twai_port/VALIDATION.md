@@ -9,7 +9,7 @@ pending*, saying what is missing.
 `$REVERSE_IT_DIR/projects/vtrux/notes/plans/esp-shared-code-port.md`
 ("Layer 2: shared components", `twai_port` and the host fake; goal 15).
 gen-inhibit's spec is
-`$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-wican-spec.md`. The
+`gen-inhibit/SPEC.md` on `gen-inhibit/main` (moved from reverse-it 2026-11-07). The
 readings of gen-inhibit's code are of `gen-inhibit/main` at `4020bc8`
 (`gen-inhibit/firmware/main/can.c` and `gen_inhibit.c`, both last changed
 at `c48e05b`); the readings of the interposer's are of
