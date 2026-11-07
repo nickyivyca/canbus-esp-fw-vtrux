@@ -36,6 +36,13 @@
      "why": "batch 1: a SeaDrive path becomes a $REVERSE_IT_DIR citation"},
     {"line": 2239, "old": "`artifacts/gen-inhibit/",
      "new": "`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/",
-     "why": "batch 1: a SeaDrive path becomes a $REVERSE_IT_DIR citation"}
+     "why": "batch 1: a SeaDrive path becomes a $REVERSE_IT_DIR citation"},
+    {"line": 2724, "old": "`~/", "new": "`<madhouse-debian home>/",
+     "why": "batch 2: a madhouse-debian home path written without ~ (gen-inhibit reviewer, 2026-11-07: ~ is accepted only in ~/.espressif)"},
+    {"line": 2741, "old": "`~/", "new": "`<madhouse-debian home>/",
+     "why": "batch 2: a madhouse-debian home path written without ~ (gen-inhibit reviewer, 2026-11-07)"},
+    {"line": 3677, "old": "`artifacts/gen-inhibit/",
+     "new": "`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/",
+     "why": "batch 2: a SeaDrive path becomes a $REVERSE_IT_DIR citation"}
   ]
 }

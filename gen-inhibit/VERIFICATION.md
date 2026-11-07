@@ -2570,3 +2570,1235 @@ requires both.
 script and its test against a fake device: `wican_reboot.py`, `test_wican_reboot.py`
 (37 ok; 17 of 17 mutants killed by a check, `runs/test_wican_reboot_mutants_20261020.txt`).
 
+## 12.1 Reading the result
+
+> **Implementor self-test, not tester evidence.** Produced by the implementing session while it was testing its own work, before the tester role existed (user, 2026-10-07). It closes nothing and is expected to go stale; the tester replaces it with its own result.
+
+**RESPOND baseline after the scheduler switchover, 2026-09-27, on `e011b01`.**
+Measured on the 100 Hz timing bench (`3a_respond_baseline_e011b01.json`, with
+the Kvaser raw logs beside it). It is compared with three pre-scheduler runs
+of the same tool **by means**. Medians are not comparable here: the latencies
+sit on a ladder of values ~85 us apart, so a mean shift of tens of us moves
+the median a whole step.
+
+| | this run | earlier three runs |
+|---|---|---|
+| wire, WiFi idle | 756 us | 746-748 us |
+| wire, WiFi load | 897 us | 862-882 us |
+| device, WiFi idle | 503 us | 504 us |
+| device, WiFi load | 553 us | 548-567 us |
+
+**Comparable.** The scheduler costs about +9 us at the wire with WiFi idle,
+which is outside the earlier runs' 2.6 us spread. Under WiFi load the
+difference is within their ~20 us run-to-run variation.
+
+## 12.3 Build-output checks (E3) and prod builds
+
+**Every build-time switch is classified -- tester, 2026-10-13, source at
+`a3394ca`, refusal rows on images of `42a860d` and `a3394ca`. Result: built;
+it FAILS today on one unclassified symbol, `GEN_INHIBIT_SOC_MIN_PCT`, held
+open on purpose until the user decides its class or deletion (reviewer).**
+Spec 12.3 item 3, paragraph "Every build-time switch is classified" (added
+2026-10-13, user, with the "not a switch" class and the `main/CMakeLists.txt`
+scope added the same day). Scope readings by the reviewer: product source is
+`main/` and `components/`, not `managed_components/` or `test/`. Whether the
+top-level `CMakeLists.txt` is in scope is with the user; only
+`main/CMakeLists.txt` is scanned for now.
+- **Check:** `test/build_checks/build_switches.py` (firmware repo, branch
+  `tester/build-switches`, `ee813c3`, local).
+  - It scans every symbol an `#if`/`#ifdef`/`#ifndef`/`#elif` tests (`CONFIG_*`
+    and header guards excluded) and every variable an `if()`/`elseif()` in
+    `main/CMakeLists.txt` tests.
+  - It compares them with a table: shipping variant, test-only (naming its
+    refusal row), or not a switch (default value, injected value, library
+    macro), each with a reason.
+  - `build_output.py` reports four rows: unlisted, stale entries, malformed
+    entries, and "every test-only switch has a refusal row" (the named row
+    must be one the run produced).
+- **The table at `a3394ca`:** 25 symbols, classes as the reviewer ruled.
+  - Shipping variant: `GEN_INHIBIT_AUTOARM`, `GEN_INHIBIT_AUTOARM_MODE`,
+    `GEN_INHIBIT_AUTOARM_OFFSET_US`, `HARDWARE_VER`, `WICAN_PRO`.
+  - Test-only: `GI_INSTRUMENT_RXQ`, `_TXABORT`, `_ABORTWIN` (row "no
+    measurement instrument in the image"), `OTA_HEALTH_FAULT_INJECT` (row "no
+    OTA fault injection in the image"), `GI_TEST_RESTART_QUIESCE` (new row "no
+    restart test feature in the image").
+  - Not a switch: `GIT_SHA`, `DIAG_FW_VERSION`, `OTA_HEALTH_TIMEOUT_MS`,
+    `DEBUG_LOGS_*` (6), `MIN`, `MAX`, `__cplusplus`,
+    `ADC_CALI_SCHEME_{CURVE,LINE}_FITTING_SUPPORTED`.
+  - Unlisted, so FAIL: `GEN_INHIBIT_SOC_MIN_PCT` (`main/gen_inhibit.c:2075`).
+- **The new refusal rows, for `GI_TEST_RESTART_QUIESCE`:**
+  - image: any of `/gi_quiesce`, `{"build":"restart-test"`,
+    `expected ?crash=illegal|abort`;
+  - ELF: `gi_restart_test_register`, `gi_restart_test_pre_install` or
+    `gi_restart_record_get` defined;
+  - name: `_rt` as a whole token in `project_name` (from `a3394ca`).
+  - The markers were picked by comparing images of `42a860d` built by the
+    tester from a clean worktree with and without the switch: 41 strings and
+    19 symbols are only in the switch-on image, and none only in the
+    switch-off image.
+- **Shown failing on the switch-on image and passing without it** (spec's
+  requirement), tester's clean-worktree builds:
+  - `42a860d` (image and ELF rows; both images were named
+    `wican-fw_obd_42a860d_man.bin`): on md5 `11cae294...`, off md5 `4210fdfb...`;
+  - `a3394ca` (image, ELF and name rows): `..._man_rt.bin` md5 `644cabc7...`,
+    `..._man.bin` md5 `9ada877f...`
+    (`runs/test_switch_rows_pair_a3394ca_20261013.txt`).
+  - `63eb50f`, every test-only switch (reviewer, 2026-10-13: the four older
+    rows judge markers the code can drift away from). The tester's six
+    clean-worktree builds: off `360f1719...`, restart test `87b3662f...`,
+    RXQ `b74948e5...`, TXABORT `b0508bed...`, ABORTWIN `bb951803...`,
+    `OTA_HEALTH_FAULT_INJECT=1` `327d9655...`.
+    - `test_refusal_pairs.py` (`cb25931`): each switch's rows fail on its
+      own image, and the instrument rows name that switch. Every refusal
+      row passes on the off image. PASS, 20 checks
+      (`runs/test_refusal_pairs_63eb50f_20261013.txt`).
+    - Negative controls, all caught: TXABORT given the RXQ image, the
+      restart test given the off image, the RXQ or fault-injection image as
+      the off image, ABORTWIN left out, an RXQ image without its ELF
+      (`runs/test_refusal_pairs_negative_controls_63eb50f_20261013.txt`).
+- **Tests of the check:**
+  - `test_build_switches.py` (synthetic trees): a default value shaped like a
+    guard, a guard after an `#include`, a guard symbol tested again later,
+    `defined()`, `#elif`, continuations, comments and string literals, CMake
+    keywords, comments, `${}`, `elseif` and case, scope, and the table rules.
+    25 mutants, all caught (`runs/test_build_switches_mutants_20261013.txt`).
+    One defect in the first version was found this way: an `#ifndef` after an
+    `#include` was taken for a header guard.
+  - `test_switch_rows.py`: each restart-test marker alone fails the row, the
+    `_rt` token is whole-token only, and each scan finding reaches its own row
+    only. 14 mutants on the `a3394ca` pair, all caught; 2 dropped as equivalent
+    (`runs/test_switch_rows_mutants_a3394ca_20261013.txt`).
+- **Observed vs spec, from the same `build_output.py` run on `42a860d`:** the
+  12.4 row "the private TWAI abort is confined" (`twai_ll_set_cmd_abort_tx` at
+  exactly one site, the scheduler's device HAL) FAILS. It is called in
+  `gen_inhibit.c` x1 and `gi_restart_quiesce.c` x1. Reported to the reviewer.
+  On `63eb50f` (the fix) the row passes: exactly one site, in `gen_inhibit.c`.
+- **The 12.4 inert row** is recorded under 12.4 ("Test-only features are inert in the build that will fly").
+- **Re-run on `3ee47b7`, after the user's rulings:** the next entry (PASS).
+
+**Every build-time switch is classified, on `3ee47b7` -- tester, 2026-10-13.
+Result: PASS. 27 symbols tested, all listed; nothing unlisted, stale or
+malformed.**
+Spec 12.3 item 3 as amended 2026-10-13 (user): "every build option the
+project's CMakeLists.txt files test", so the top-level `CMakeLists.txt` is in
+scope. `GEN_INHIBIT_SOC_MIN_PCT` is deleted (user's ruling; implementor,
+`3ee47b7`).
+- **Tree:** `3ee47b7` (`gen-inhibit/main`, local) with `tester/build-switches`
+  `7fb7525` merged. The merge changes `test/build_checks/` only.
+  `GEN_INHIBIT_SOC_MIN_PCT` has no match left in `main/`, `components/` or the
+  top-level `CMakeLists.txt`.
+- **Changes to the check** (`tester/build-switches`, local):
+  - `becc186`: the scan also reads the top-level `CMakeLists.txt` and every
+    `CMakeLists.txt` under `main/` and `components/`. `managed_components/`,
+    `test/` and build directories stay out. Only `components/debug_logs`
+    has one, and it has no `if()`.
+  - `7fb7525`: the three names the wider scan found, classed by the reviewer.
+    - `WICAN_USB_V100`, `WICAN_V210`: shipping variant (board ids
+      `HARDWARE_VER` is compared with, as `WICAN_PRO`).
+    - `PRJ_BIN_LEN`: not a switch, "computed by the build from the project
+      name, used only to refuse a name over 31 characters".
+    - The reviewer reads the spec's three "not a switch" kinds as examples,
+      not a closed list. The check now requires a kind but no longer limits
+      it to those three.
+  - `8a76cc7`, a harness fix: `test_switch_rows.py` failed 3 checks from
+    `31f59b8` (the trigger table) until this commit, because its substituted
+    table did not bring matching triggers. No reported result rested on
+    them. The refusal-pair PASS above came from `test_refusal_pairs.py`.
+- **Result** (`runs/build_switches_3ee47b7_20261013.txt`): 27 symbols, 15 not
+  a switch, 7 shipping variant, 5 test-only; unlisted 0, stale 0, malformed 0.
+- **The rows, on the implementor's image** `wican-fw_obd_3ee47b7_man.bin`, md5
+  `c5fb63ba...` (`runs/build_output_3ee47b7_20261013.txt`):
+  - These pass: the three switch rows, "every test-only switch has a refusal
+    row", and the three restart-test refusal rows.
+  - "Image built from HEAD" FAILS and "sources older than the image" has NO
+    REF. Both come from the run's context, not the image: HEAD is the merge
+    commit, not `3ee47b7`. An addendum in the run file shows the diff.
+  - "Prod-build record present" has NO REF: this is not a prod build.
+- **Tests of the check:**
+  - `test_build_switches.py`: 35 mutants, all caught. Five are new, on the
+    CMake scope, and two on the kind check
+    (`runs/test_build_switches_mutants_7fb7525_20261013.txt`).
+  - `test_switch_rows.py`: 14 of 14 on the `a3394ca` pair
+    (`runs/test_switch_rows_mutants_7fb7525_20261013.txt`).
+- **The host suite on the same commit** (`runs/host_suite_3ee47b7_20261013.txt`,
+  `madhouse-debian`, `<madhouse-debian home>/gi_host_tester_3ee47b7`):
+  - 78 goldens pass, 22 scenarios without goldens;
+  - `invariants` (100 hold), `passive_diff` (96 identical, 0 differing) and
+    `fuzz_sequences` (200 sequences, 0 violations);
+  - `load_margin` PASS, `spec_expect_check` 21 of 21, `bus_on_check` and
+    `drained_check` PASS;
+  - the shim and scheduler suites: every case passes.
+  - **The tree also merges `tester/golive-host-dace947`** (`a4806b2`, on
+    origin), which was never merged into `gen-inhibit/main`. It carries
+    `drained_check.py`, the 10-12 goldens and the `passive_diff` per-arm fix.
+    Without it, `gi_host_run.sh` stops at the sync on the missing
+    `drained_check.py`. With `45375b9` but not the fix, `passive_diff`
+    flags the 8 re-arm scenarios, as it did on 10-12
+    (`runs/host_suite_3ee47b7_attempts_20261013.txt`).
+  - **Generated inputs (not in git)** were copied from the 10-12 `dace947`
+    run's directory: the eight replays, which are the stimulus the goldens
+    are pinned to, and the shim's `replay-longarm-300s-all.scn` (sha256
+    `43459c48...`). In `<madhouse-debian home>/gi_host`, six replays failed as `[STIM]`, a
+    stimulus that is not the one the goldens were blessed from, not a
+    firmware result (same attempts file).
+
+**The switch scan takes its CMake files from the build's record -- tester,
+2026-10-13, real configures on `NICKY-XPS`. Result: PASS, shown both ways,
+on `d74777d` and on `e998385`.**
+Spec 12.3 item 3 as changed 2026-10-13 (user): "every build option tested by a
+CMake file the build reads from the repo, taken from the build's own record of
+the files it read", with a build option defined as "a variable that can be set
+from outside the file that tests it". Spec 13 "Checks, not built". Readings
+(reviewer, 2026-10-13):
+- the record is the inputs of `build.ninja`'s regeneration rule
+  (`ninja -t query build.ninja`), minus the IDF install and the build
+  directory;
+- `managed_components/` is excluded by that exact directory, not by git
+  tracking. The scan prints what it scanned and what it excluded, and fails
+  if the scanned list is empty or lacks the top-level `CMakeLists.txt`;
+- "sets itself" is read narrowly, so the scan errs towards listing: only a
+  file-scope `set(VAR <value>)` with no CACHE or PARENT_SCOPE, before the
+  test, from built-ins or the file's own variables;
+- built-ins are `cmake --help-variable-list` of the recorded cmake.
+  `<PROJECT-NAME>` expands only to the declared project. Other placeholders
+  count only in a pattern with a literal prefix.
+- **The check:** `test/build_checks/build_switches.py` (firmware repo, branch
+  `tester/build-switches`, `2021b3e`, then `46d0863` for `e998385`'s table,
+  local).
+  - It needs a configured build directory (`--repo`, `--build`). It refuses,
+    and fails, when there is no `build.ninja`, when ninja or cmake cannot
+    answer, or when the record is empty or not this tree's. It also refuses
+    when a scanned file is newer than `build.ninja`.
+  - `build_output.py`'s "every build-time switch classified" row reads the
+    record of the image's own build directory. A record it cannot use fails
+    the row, with no fallback.
+- **The record, on both commits** (`runs/build_switches_record_d74777d_20261013.txt`,
+  `runs/build_switches_record_e998385_20261013.txt`):
+  - scanned: `CMakeLists.txt`, `cmake/git_tree_name.cmake`,
+    `components/debug_logs/CMakeLists.txt`, `main/CMakeLists.txt`;
+  - excluded: `managed_components/espressif__mdns/CMakeLists.txt` and seven
+    files under `build/`;
+  - outside the repo: 259 (the IDF install and CMake's modules).
+- **Both ways, on real configures** (`scan_scope_check.py`; `runs/scan_scope_d74777d_20261013T194230.{json,log}`,
+  `runs/scan_scope_e998385_20261013T195848.{json,log}`). Throwaway
+  worktree, `idf.py reconfigure` only. All three steps PASS on each commit:
+  - baseline: the scan is clean (0 unlisted, 0 stale, 0 malformed);
+  - planted: a NEW `cmake/gi_planted_option.cmake`, included from the
+    top-level `CMakeLists.txt`, tests `GI_PLANTED_OPTION`, configured with
+    `-DGI_PLANTED_OPTION=ON`. Its `message()` printed, so the `-D` reached
+    the test: it is a build option. The scan FAILED, naming it unlisted at
+    `cmake/gi_planted_option.cmake:2`. The file was in the record;
+  - set-first: the same file with `set(GI_PLANTED_OPTION OFF)` before the
+    test, the same `-D`. The `message()` did not print, so the file's own
+    set won. The file was still in the record. The scan PASSED and did not
+    report the name.
+- **Classification changes the new definition brought** (the table is the
+  tester's; flagged here for the reviewer):
+  - **dropped:** `WICAN_USB_V100` and `WICAN_V210`. The top-level
+    `CMakeLists.txt` sets both unconditionally before testing them, so they
+    are not build options, and no C source tests them. `HARDWARE_VER` and
+    `WICAN_PRO` stay, tested in C.
+  - **added, "not a switch", kind "module internal"**, each with its reason:
+    ten names `cmake/git_tree_name.cmake` tests, which the narrow reading
+    lists. They are `GTN_DESCRIBE`, `GTN_STAMP`, `_gtn_now`, `_gtn_was`,
+    `res`, `name`, `called`, `git`, `stamp` and `was`: function locals,
+    out-parameters, a find_program result, and the script-mode inputs of
+    the module's own check.
+  - **on `e998385`** (`46d0863`):
+    - `GIT_SHA` dropped as stale: it is no longer a compile define;
+    - `PROJECT_VER` added: "not a switch", kind "guard", the reviewer's
+      pre-ruled reason;
+    - `len` added: a module internal.
+    - With the `d74777d` table, the `e998385` scan reported exactly those
+      three, 2 unlisted and 1 stale.
+- **Tests of the check:** `test_build_switches.py` (the record, every refusal,
+  the narrow reading case by case), `test_switch_rows.py` (an unusable record
+  fails the row), `test_scan_scope_check.py` (every judgement). 66 mutants
+  across `build_switches.py`, `build_output.py`'s row and
+  `scan_scope_check.py`, all caught
+  (`runs/test_build_switches_mutants_2021b3e_20261013.txt`).
+- **No bench use.**
+
+**Prod builds are built on a clean tree -- tester, refusals 2026-10-12 on
+`ad80037`, positive build 2026-10-10 on `ddddfea`. Result: as specified,
+the branch rule (added 2026-10-12, user) included.**
+- **Refusals:** `test/build_checks/test_prod_build_refusals.py` (firmware
+  repo, branch `tester/prod-build-refusals`, `62e641f`).
+  - It runs `tools/prod_build.py --check-only` as committed, in a throwaway
+    tree, with a copy of the verified `managed_components/`.
+  - Since 2026-10-12 the throwaway tree is an isolated local clone with its
+    own `gen-inhibit/main` at the commit, not a `git worktree`. The real
+    branch is checked out elsewhere, and `--self-test` commits fakes, which
+    in a worktree sharing refs would move it. After the runs, the real
+    `gen-inhibit/main` was still at `ad80037`, with no probe branch and no
+    clone left.
+  - The clean tree on `gen-inhibit/main` passes.
+  - Each case must be refused for its own cause (cause phrase, not exact
+    text) and pass again once undone:
+    - tracked: edited, staged, `README.md` deleted, `main/can.c` deleted,
+      `main/gen_inhibit.c` deleted;
+    - untracked file;
+    - component file edited, missing or added;
+    - `.component_hash` off the lock;
+    - **the branch rule** (spec 12.3 item 3, "refuses to build unless HEAD is
+      on `gen-inhibit/main`"): another branch at the same commit; a detached
+      HEAD at the branch's tip; `gen-inhibit/main-old` and
+      `probe/gen-inhibit/main`, against a match on part of the name. Each
+      refusal must name `gen-inhibit/main`.
+    - a dirty tree on another branch, which must name both rules;
+    - the script run from a directory that is not the repo, both as a sibling
+      outside any repo and nested inside a git tree (identity cause).
+  - `--self-test` catches 6 fakes: always passes, always refuses, exits 1
+    silently, refuses a dirty tree by the wrong rule, accepts a branch whose
+    name contains `gen-inhibit/main`, accepts a detached HEAD at the tip
+    (`runs/prod_build_refusals_selftest_ad80037_20261012.txt`).
+  - **`ad80037`: 34 of 34** (`runs/prod_build_refusals_ad80037_20261012.txt`).
+    Each branch refusal names what it found ("HEAD is on
+    tester-probe-other", "HEAD is detached at ad80037") and the rule.
+  - **Control, `dace947`** (before the rule): the five branch cases FAIL, as
+    required. Every other case passes
+    (`runs/prod_build_refusals_dace947_control_20261012.txt`).
+  - Earlier runs: `..._13709ab_20261010.txt` (22/22, with the nested identity
+    case red at `ddddfea`), `..._ddddfea_...` and `..._fab2713_...`.
+- **Positive build:** `prod_build.py` at `ddddfea`, in a throwaway worktree
+  (`runs/prod_build_ddddfea_20261010.txt`). Not re-run at `ad80037`; at
+  `ddddfea` there was no branch rule to pass.
+  - The log opens with "Executing action: reconfigure".
+  - It shows the tree clean, 96 component files verified, exit 0.
+  - Record: commit `ddddfea`, 1,275,920 bytes, md5
+    `e6048490cbc97d01f39b737e830a8dd8`, which matches the image's own md5.
+    `git status` was empty after the build.
+  - Python's buffered prints land after the build output, so the log's line
+    order says nothing about whether the refusal checks ran before the build.
+- **E3 on that image** (`runs/build_output_ddddfea_prod_20261010.txt`):
+  36 ok, "every check with a reference passed". The prod-record row reads
+  "present: built from ddddfea on a clean tree, components verified"; a bench
+  image reads NO REFERENCE there.
+
+**The prod build records the image the build named -- tester, 2026-10-21, on
+`95aa77a`. Result: AS SPECIFIED.** Spec 12.3 item 3 (a prod build "records the
+commit, the image's md5 and its size beside the image"), with the reviewer's
+reading of 2026-10-21: the image is the one `build/project_description.json`
+names as `app_bin`, not the newest `.bin` in `build/`, and a missing name or
+file is a refusal. `95aa77a` changes `tools/prod_build.py` only; the product
+code is still `e3d9437`'s.
+- **Check:** `test/build_checks/test_prod_build_image_real.py` (firmware repo,
+  tester clone, branch `tester/range-20261020b`, `de142aa`, local; run through
+  `prod_image_real_run.ps1`, which logs the harness's sha256).
+  - It runs the clone's own `tools/prod_build.py` as committed: `main()` with
+    every check and the real `idf.py reconfigure` and `idf.py build`.
+  - A hook changes `build/` just after `idf.py build` returns, so the change is
+    in place when the script judges the image. A change made before the run
+    would be undone, because the reconfigure rewrites
+    `project_description.json`.
+  - A spy notes which image the real image judge (`check_image_symbols`) was
+    given. Nothing is replaced.
+  - Cases:
+    - stray: a newer `wican-fw_obd_*.bin` of another name, mtime an hour ahead;
+    - no-desc: `project_description.json` moved out of `build/`;
+    - no-key: `project_description.json` without `app_bin`;
+    - no-file: app_bin's file moved out, with the stray beside it;
+    - plain: no change, run last so the clone keeps its record.
+  - stray and plain must exit 0, judge app_bin's image and write one record for
+    it, whose md5, size and commit match that file and HEAD; the stray gets no
+    record. The other three must exit non-zero, with nothing judged and no
+    record.
+  - Every case must fire the hook exactly once and leave `git status` empty.
+- **Changed from the plan agreed with the reviewer:** the plan ran cases (a)-(d)
+  through `--check-only`. `--check-only` builds nothing ("run the refusals and
+  stop; build nothing"), so it never judges an image. The cases run through a
+  real build instead.
+- **`95aa77a`: 5 of 5** (`runs/prod_image_real_95aa77a_20261021.txt`). A fresh
+  clone of `gen-inhibit/main` at `95aa77a`, clean; run at Idle priority.
+  - Each refusal names its cause:
+    - "build/project_description.json cannot be read ... so which image this
+      build made is unknown";
+    - "has no "app_bin"";
+    - "names wican-fw_obd_95aa77a_man.bin as this build's image, and build/ has
+      no such file".
+  - The record: `wican-fw_obd_95aa77a_man.bin`, 1,113,456 bytes, md5
+    `9db11ebdcbba8a3deba7b56158307c08`, commit `95aa77a`. `git status` was empty
+    after every case.
+  - Run again after the mutants: 5 of 5 again, the record's md5 the same (`..._95aa77a_rerun_20261021.txt`).
+- **Control, the parent `3bec89d`** (before the fix): stray, no-desc, no-key and
+  no-file FAIL, as required; plain passes
+  (`..._3bec89d_control_20261021.txt`, a clone whose `gen-inhibit/main` is
+  `3bec89d`).
+  - stray and no-file: the old script judged the stray. It refused only because
+    no ELF sat beside it.
+  - no-desc and no-key: it built and recorded app_bin's image.
+- **The harness's own checks** (`test_prod_build_image_real_mutants.py`,
+  `..._mutants_95aa77a_20261021.txt`): 3 of 3 mutants killed by a check, each
+  on one real case against `95aa77a`:
+  - the hook fires but changes nothing;
+  - the hook is never installed (killed by "the hook fired 0 time(s)");
+  - a case leaves a file in the tree (killed by "git status empty").
+- **Also at `95aa77a`:**
+  - `test_prod_build_refusals.py`: PASS, 28 checks, and its self-test PASS, 5
+    fakes caught. These are the same checks as the `2df3c17` run
+    (`runs/prod_build_refusals_95aa77a_20261021.txt`,
+    `..._selftest_95aa77a_20261021.txt`).
+  - The implementor's `tools/test_prod_build_image.py` (4 of 4) and
+    `test_prod_build_image_mutants.py` (1 of 1), run unedited. These are
+    implementor self-tests, not evidence (`runs/test_prod_build_image_95aa77a_20261021.txt`,
+    `..._mutants_95aa77a_20261021.txt`).
+- **Not done:** `build_output.py` on this prod image, which is not flashed.
+
+**The E1 shim suite's hang, and its fix -- tester, 2026-10-20, on
+`implementor/shim-hang` `38fd103` (from `b341e0d`). Result: the hang is gone,
+and with its generated scenario built the whole suite passes, 3 of 3.** Spec
+12.3 item 1 (the mock-HAL host build).
+- **The hang.** `test/gen_inhibit_shim/shim_test` at `b341e0d`, built with WSL
+  gcc 9.4 on NICKY-XPS, sat in its case 5 for 17 minutes with its 20 s per-case
+  budget silent, and was stopped by hand.
+- **The fix** (implementor): `51cfd51` enforces the per-case budget while a
+  case runs (exit 2, naming the case); `38fd103` stops the worker without
+  `pthread_cancel()`.
+- **Method.** `shim_hang_verify.py` builds `38fd103` from a `git archive` (so
+  nothing untracked is present) and runs `shim_test` and `shim_test_autoarm`
+  10 times each; then the same tree with `pthread_cancel()` put back in
+  `ft_stop_worker()`, 10 times, as the check that can fail. **WSL only;
+  madhouse-debian was not run** (reviewer, 2026-10-20).
+- **Result.**
+  - No fix run hung: `shim_test` finished in ~1.5 s each time,
+    `shim_test_autoarm` passed 10 of 10.
+  - `shim_test` exited 1 every time, on cases 33 and 53 only: both report
+    `scenarios/replay-longarm-300s-all.scn` missing, a generated file not in
+    git (the harness README gives the line that builds it).
+  - With the cancel back, 10 of 10 runs hung and the new budget stopped each
+    at ~20 s (exit 2, naming the case).
+- **The whole suite** (reviewer, 2026-10-20: cases 33 and 53 must run before
+  the push). In the archive copy, `replay-longarm-300s-all.scn` built with the
+  line `test/gen_inhibit_shim/README.md` gives (`from_capture.py` from
+  `runs/scottsvalley_armable_300s.log`, channel 0, 300 s, `--all-ids`; exit 0,
+  23,241,533 bytes, md5 `51b0a55c...`); then `shim_test` whole 3 times: exit 0
+  each time (77, 78 and 74 s), no FAIL line
+  (`runs/shim_hang_verify_38fd103_whole_20261020T102726/`).
+- **Run files.** `runs/shim_hang_verify_38fd103_20261020T102101/`
+  (`summary.json`, `fix.log`, `cancel.log`); the first run,
+  `..._20261020T101555_tailonly/`, kept only each run's last lines.
+
+**Known anomaly (1) closed: gen-inhibit's release builds pass the options
+check (R18) and the reproducible test (R19) -- tester, 2026-10-25, `0c707e9`,
+shared/tools `2026.10.24`. Result: PASS, both.** The review tracker's known
+anomaly (1): gen-inhibit release builds failed shared/tools R18 and R19
+because `CONFIG_APP_REPRODUCIBLE_BUILD` was off, to be fixed by port step 0b
+(the implementor's `4f65e81`, merged in `a996894`). Spec 12.3 item 3 (a prod
+build is the shared tooling's release build at the pinned version; user,
+2026-10-25) and shared/tools SPEC R18 (options against the project's release
+profile) and R19 (one clean commit, built twice in two folders, gives one
+image hash).
+- **Build:** gen-inhibit/main `0c707e9`, cloned twice into new folders of
+  different length and depth (`scratch/a1/a/gi`, `scratch/a1/b_longer/deeper/gi`),
+  both clean. Each built once by its own launcher, `tools/vtrux_tools.py
+  release`, with the tooling its `shared_pins.json` names: shared/tools
+  `2026.10.24` (`e40f5cb`, digest `2dcbfd89...`), from a checkout
+  `../shared-2026.10.24/` made beside each clone with the command the tooling's
+  README gives. Each record's tooling field names that tag, commit and digest,
+  dirty false. `REVERSE_IT_DIR` was a stand-in folder per clone, so no record
+  reached the real `firmware/builds/` (no prod build during the port). Both
+  builds exit 0 (329 and 321 s). NICKY-XPS, IDF v5.4.1, its Python 3.11.9;
+  full jobs, Idle priority, no wall-clock test running, bench lock free.
+  gen-inhibit/main has since moved to `200a6e4`, which changes only the pin
+  (to `2026.10.25`); these builds were already running.
+- **R19: PASS.** The image hash, read three ways in each build (the record,
+  the pinned library through `tools/vtrux_tools.py image`, and the tester's own
+  reader `independent.py`), is `e7e2282a...0630f` in both; the `.bin` files are
+  byte-identical (sha256 `3ccc7a57...c427`) and the code hash is the same,
+  `7341ad32...ed08`. The premise was checked first: both clones clean at the
+  same commit, no `build/` before, `CONFIG_APP_REPRODUCIBLE_BUILD` on in the
+  config each build used. Judged by the tester's `repro_cases.py` premise and
+  judge.
+- **R18: PASS on both builds.** The pinned `vtrux_checks options` (from the
+  `2026.10.24` checkout) exits 0 on each, reading `build` and
+  `build/bootloader`: all 9 options of `0c707e9`'s release profile
+  (settings 1 to 5 of spec 12.3 item 3, and R12's
+  `CONFIG_APP_REPRODUCIBLE_BUILD`, now true in both folders) at the profile's
+  value. The tester read the same options independently from each folder's
+  `config/sdkconfig.h`: none differs from the profile. Judged by the tester's
+  `options_cases.py` judge.
+- **Not part of the anomaly: the profile's setting 6.** Spec 12.3 item 3's new
+  sixth setting, `CONFIG_FREERTOS_HZ` 1000 (shared/tools R27), is added to
+  `vtrux_checks.json` on `gen-inhibit/tester/freertos-hz` `db58c35`. On build
+  a, the options check of shared/tools `2026.10.25` (`8dd056e`) passes with it
+  (1000 in both folders), and fails naming it with the value 100 or the string
+  `"1000"`. With the entry removed it also passes (exit 0): see the report to
+  the reviewer.
+- **Run files.** `runs/anomaly1_0c707e9/` (`README.md`; `SHA256SUMS`
+  `cf2ab1b1...b3244` hashes every file: `results.json` `b215b8e8...1ea33`,
+  `options_a.log` `6da9ef9f...ff655`, `options_b.log` `21522e98...18b84`,
+  `driver.log` `61eaeccc...383e8`, the build logs, the driver and the setting 6
+  check), and `runs/anomaly1_0c707e9.console.txt`.
+
+**Known anomaly (2) closed, and port step 0c's release-build acceptance: the
+commit enters the image once (shared/tools R4) -- tester, 2026-10-25, `ef553fa`,
+shared/tools `2026.10.25`. Result: PASS, all eight results.** The review
+tracker's known anomaly (2): the commit also sat in `project_name`, so R4 was
+not met, until port step 0c (the implementor's `a17706f`, `ef553fa`). Spec 12.3
+item 3 (a prod build is the shared tooling's release build at the pinned
+version; user, 2026-10-25) and the reviewer's step 0c acceptance: a release
+build at the tip has the version = the bare commit, a `project_name` with no
+commit, and the code hash equal across two worktrees. shared/tools SPEC R4 (the
+version field holds `git describe --always --tags --dirty` run at configure;
+`project_name` carries no commit), with R18 and R19 as for known anomaly (1).
+- **Build:** gen-inhibit/implementor/build-id `ef553fa`, cloned twice into new
+  folders of different length and depth (`scratch/a2/a/gi`,
+  `scratch/a2/b_longer/deeper/gi`), both clean. Each built once by its own
+  launcher, `tools/vtrux_tools.py release`, with the tooling its
+  `shared_pins.json` names: shared/tools `2026.10.25` (`8dd056e`, digest
+  `e16aec27...`), from a checkout `../shared-2026.10.25/` made beside each
+  clone. Each record's tooling field names that tag, commit and digest, dirty
+  false. `REVERSE_IT_DIR` was a stand-in folder per clone, so no record reached
+  the real `firmware/builds/` (no prod build during the port). Both builds exit
+  0 (293 and 287 s). NICKY-XPS, IDF v5.4.1, its Python 3.11.9; full jobs, Idle
+  priority, no wall-clock test running, bench lock free.
+- **R4: PASS on both builds.** Read from each image's app descriptor by the
+  tester's reader (`independent.py`): the version is `ef553fa`, which is what
+  `git describe --always --tags --dirty` gives in that clone (no tag is
+  reachable from the commit) and a bare commit (hex, a prefix of `ef553fa...`,
+  no `-dirty`). `project_name` is `wican-fw_obd_man`: it starts `wican-fw` and
+  has no run of 7 or more hex digits (the reviewer's reading of the project-name
+  row, 2026-10-25). **Control:** the same driver on `0c707e9` (before step 0c)
+  FAILS the project-name row on both clones, `wican-fw_obd_0c707e9_man`
+  (`0c707e9` names a commit). Its version, `0c707e9`, also equals describe and
+  is bare, so the control shows the project-name row failing, not the version
+  row.
+- **Code hash equal across the two clones: PASS.** `f7112b30...93ae` in both,
+  computed by the tester (SPEC R2's blanking) and as each record states it.
+- **R19: PASS.** The image hash, read three ways in each build, is
+  `c7c3a226...d821` in both; the `.bin` files are byte-identical (sha256
+  `e2bb51c4...8d89`).
+- **R18: PASS on both builds.** The pinned `vtrux_checks options` (from the
+  `2026.10.25` checkout) exits 0 on each, reading `build` and
+  `build/bootloader`: all 10 options of `ef553fa`'s release profile (setting 6,
+  `CONFIG_FREERTOS_HZ` 1000, included) at the profile's value; none differs in
+  either folder's `config/sdkconfig.h`.
+- **The image file's name changes with `project_name`:** `wican-fw_obd_man.bin`,
+  with no commit. The bench scripts that named images by the commit are changed
+  on `gen-inhibit/tester/step0c` (`4c8201c`: found with or without the commit in the name).
+- **Run files.** `runs/anomaly2_ef553fa/` (`README.md`; `SHA256SUMS`
+  `da0783fa...6ac6fa` hashes every file: `results.json`, `driver.log`, the
+  build and options logs, the driver, its launcher and maker, the console, and
+  `control_0c707e9/`), and `runs/anomaly2_ef553fa.console.txt`.
+
+**Port step 0d's release-build acceptance: the move into `gen-inhibit/` leaves
+the code hash unchanged (shared/tools R2) -- tester, 2026-10-26, `e7263bb` and
+`60d52f3`, shared/tools `2026.10.25`. Result: PASS, all seven results; R21
+recorded, PASS on both builds.** Port step 0d
+(port plan text, user, 2026-10-26; AGENTS.md "Project layout", `cd63a9d`)
+moves gen-inhibit's tree under `gen-inhibit/`: the WiCAN tree, the IDF build
+root, to `gen-inhibit/firmware/`, the tooling flat to `gen-inhibit/tools/`, the
+tests to `gen-inhibit/test/`, the launcher to `gen-inhibit/vtrux_tools.py`. The
+reviewer's acceptance (revised batch, 2026-10-26): release builds of the commit
+before the move and of the reviewer's merge, on one host, throttled, after the
+bench check, with equal code hashes. No spec section changes and no suite runs
+(the bench and the chain take the new paths at the next run). Spec 12.3 item 3
+(a prod build is the shared tooling's release build at the pinned version;
+user, 2026-10-25); shared/tools SPEC R2 (the code hash), with R4, R18 and R21
+recorded.
+- **Builds.** Before: `gen-inhibit/main` `e7263bb`, the WiCAN tree at the
+  clone's root, built by `py -3.14 -B tools/vtrux_tools.py release --jobs 1`.
+  After: the reviewer's local merge `60d52f3` (parents `69d2c57` = `e7263bb`
+  plus the methodology picks `cd63a9d`, `ba1599c`, `c17f94f`; the implementor's
+  `e7263bb..43f0ae2`; the tester's `e7263bb..143ed89`), not yet pushed, built by
+  `py -3.14 -B gen-inhibit/vtrux_tools.py release --jobs 1` (its `--project`
+  default is `gen-inhibit/firmware/`). Each commit cloned into a new folder of
+  different length and depth (`scratch/m0f/a/gi`, `scratch/m0f/b_longer/deeper/gi`),
+  both clean, each with the tooling its `shared_pins.json` names (at the root
+  before, in `gen-inhibit/firmware/` after; both shared/tools `2026.10.25`,
+  `8dd056e`, digest `e16aec27...`), from a checkout `../shared-2026.10.25/` made
+  beside each clone; each checkout's HEAD is `8dd056e`, and each record's
+  tooling field names that tag, commit and digest, dirty false. `REVERSE_IT_DIR`
+  was a stand-in folder per clone, so no record reached the real
+  `firmware/builds/` (no prod build during the port). Both builds exit 0 (841
+  and 689 s); in each, the image hash read three ways (the record, the
+  library, the tester's reader) agrees. NICKY-XPS, IDF v5.4.1, its Python
+  3.11.9 for the driver; Idle priority and `--jobs 1` (AGENTS.md's throttled
+  form); bench lock free, "No builds" clear, no simulator or build process
+  running.
+- **Code hash equal before and after: PASS.** `f7112b30...93ae` on `e7263bb`,
+  `f7112b30...93ae` on `60d52f3`, computed by the tester (SPEC R2's blanking)
+  and as each record states it. The image hashes differ (`e6ac661c...9831`
+  before, `9287a792...de9b` after) and are not compared: the app descriptor's
+  version holds the commit (R4), which differs by design. Both images are
+  1113360 bytes.
+- **R4: PASS on both builds.** Read from each image's app descriptor by the
+  tester's reader (`independent.py`): the version is `e7263bb` and `60d52f3`,
+  each what `git describe --always --tags --dirty` gives in its clone and a
+  bare commit (hex, a prefix of the commit, no `-dirty`). `project_name` is
+  `wican-fw_obd_man` in both: it starts `wican-fw` and has no run of 7 or more
+  hex digits.
+- **R18: PASS on both builds.** The pinned `vtrux_checks options` (from the
+  `2026.10.25` checkout) exits 0 on each, reading `build` and
+  `build/bootloader`: all 10 options of the release profile at the profile's
+  value; none differs in either folder's `config/sdkconfig.h`.
+- **R21 (recorded, not part of the acceptance): PASS on both builds.** The pinned board
+  check reads `vtrux_checks.json`'s `board.partition_table` relative to the
+  WiCAN tree; since the move it is
+  `../test/build_checks/reference/stock-v4.13-partition-table.bin`.
+  On each build it exits 0: target `esp32c3`, the partition table identical to
+  the reference, the smaller OTA slot 1781760 bytes, the image 1113360 bytes
+  (668400 free), flash size 4MB in the app and bootloader headers, tool prefix
+  `riscv32-esp-elf-`.
+- **The harness at the move** (tester's range `e7263bb..143ed89`: `c6c7fe4`
+  420 renames, all R100; `41868db` the paths; `143ed89` two faults the sweep
+  found in `41868db`, each with a test). Run at a local merge of the tester's
+  and the implementor's ranges (tree equal to `60d52f3`'s `gen-inhibit/`):
+  - host suite on madhouse-debian (gcc 14.2) through `gi_host_run.sh`: 80 pass,
+    0 fail (23 scenarios without goldens); `--checks` PASS, `--sched` PASS; the
+    shim (E1) all cases pass and `test_signals` exit 0, both with
+    `REVERSE_IT_DIR` set by hand (`gi_host_run.sh` does not export it for
+    `--shim` and `--signals`: a harness defect from before the move, to be
+    fixed on its own topic);
+  - spec shim on madhouse-debian: `run_spec_shim --local --base e7263bb`
+    VERDICT PASS (its `main/` tree equal to `e7263bb`'s), `mutate` 49 of 49
+    caught, `test_host_env --mutants` 8 of 8;
+  - the 49 bench, tools and build_checks unit tests and mutant runs the move
+    touches, all PASS, among them `gi_paths` mutants 23 of 23, `gi_diag` 25 of
+    25, `baseline_host_run` 23 of 23, `gi_host_run_list` 3 of 3,
+    `suite_gen_inhibit` 302 ok and mutants 76 of 76, `baseline_b_desk` 45 ok and
+    9 of 9, `reference_paths` 8 of 8 with the control passing;
+  - `golden_schema_bump_check` reads all 80 goldens on both sides of the move.
+- **Old run records keep the paths they were written with** (the harness at the
+  repo root, `tools/gen_inhibit/...`, in a chain record's settings and argv).
+  They are history and stay as written. Nothing reads a harness path back from
+  a record: a re-judge runs the current tree's tools on the record's data, found
+  through `REVERSE_IT_DIR`, and a git path a record names (`gi_diag`'s
+  `dbc_path`) is read at the record's own commit, whose tree the move did not
+  change.
+- **Run files.** `runs/move0d_fw_60d52f3/` (`README.md`; `SHA256SUMS`
+  `8feaeca0...3c2f` hashes every file: `results.json`, `driver.log`, the build,
+  options and board logs, the driver, its launcher and maker, and the console),
+  and `runs/move0d_fw_60d52f3.console.txt`.
+
+**Port step 1a C: the board from its component -- tester, 2026-10-28,
+`gen-inhibit/tester/board-1a` `b6bee3f` (`gen-inhibit/main` `7a91650`, the
+implementor's C, plus the tester's harness), shared/tools `2026.10.27`
+(`77e114f`). Result: the build checks PASS on the bench build; the release
+build's R18, R21, R29 and R30 PASS; R17 FAILS on a clean build (F1, F2,
+observed vs spec below).** The implementor's C (`8919fb3..3e73f65`, merged as
+`7a91650`) takes the board as `vtrux/wican_v3` from git at tag `2026.10.27`
+(lock commit `77e114f`), its partition table from the component, and the image
+name's hardware label `obd` (spec 12.3 item 3); `shared_pins.json` names
+`2026.10.27`. Sections: shared/boards B1, B2, B5, B6 and section 2; shared/tools
+R16, R21, R29, R30, with R17's git clause and R18 by folder (ruled
+2026-10-27); spec 12.3 item 3. Spec 3's restart and standby behaviour is
+hardware: it is not tested here, and goes to the bench suite at step 1a's end.
+- **The harness for C** (`8919fb3..b6bee3f`): `5981e60` takes the board from
+  its component: `vtrux_checks.json` drops its `board` key (R21 reads the
+  board component), and its release profile names the board's required
+  settings (the console on the USB-Serial/JTAG, no secondary console,
+  `CONFIG_BT_ENABLED=y`; spec 12.3 item 3 settings 6 and 7, `CONFIG_FREERTOS_HZ`
+  now setting 8) and R30's `stock_files_using_pins` (`main/main.c`,
+  `main/gi_restart_test.c`, the implementor's list); `board_ref.py` finds the
+  checkout of the tag `main/idf_component.yml` pins the board at, from which
+  `test_board_data.py` reads `board.json`; the stock partition table has one
+  copy, the board's, which `build_output.py`'s partition row reads from the
+  build's `managed_components/`. `f447156` adds two mutants they missed.
+  `3487cab` drops R20's `HARDWARE_VER` and `WICAN_PRO` rows (gen-inhibit
+  reviewer, 2026-10-27). `b6bee3f` merges `gen-inhibit/main` `7a91650`.
+- **Build checks on the bench build of `b6bee3f`: PASS.** `idf.py build` in
+  `gen-inhibit/firmware/` (exit 0, `wican-fw_obd_man.bin`, 1114464 bytes).
+  The 10 `build_checks` unit tests each exit 0 with the real pin
+  (`test_board_data`, `test_partition_row`, `test_image_rows`,
+  `test_prod_record`, `test_flt_row`, `test_fw_version_row`,
+  `test_reference_paths`, `test_build_switches`, `test_switch_rows`,
+  `test_scratch_only`); 13 mutants of `board_ref.py`, `test_board_data.py` and
+  `build_output.py`'s partition row, all caught. `build_output.py` on the
+  image: every row with a reference passes, among them the partition table
+  equal to the board's (sha256 `98d193a6...`), the image in the OTA slot
+  (62.5 %), `project_name` `wican-fw_obd_man`, and every build-time switch
+  classified (24 symbols, no stale entry); the prod-build record row is NO REF,
+  as this is a bench build, not a pass. R20's rows: the committed table is
+  clean, and with `8919fb3`'s two rows put back the scan names both stale
+  (`r20_rows_back`). `elf_checks.py`: no forbidden symbol linked.
+- **Release builds of C (shared/tools `VERIFICATION.md`, entry "Real builds of
+  gen-inhibit's step 1a C", on `shared/tools/fixture-layout` `52d7a9a`).**
+  `release_cases.py`'s fixture made from `b6bee3f`, built by the
+  `2026.10.27` tooling, three times, code hash `ee41cace...` each time. R18 by
+  folder, R29 (the board's fixed and required settings, folder by folder), R30
+  and R21 on the board the build downloaded pass, and each planted case fails
+  naming what was planted. R28 fails on the three log levels, known anomaly 5,
+  unchanged.
+- **Observed vs spec, shared/tools R17**, on the fixture's clean release build
+  and on the tester's bench build of `b6bee3f` alike, `--release` and
+  `--bench`:
+  - **F1.** The build reads the repository's `.git/HEAD` and the checked-out
+    branch's ref, outside the project root (`gen-inhibit/firmware/` since port
+    step 0d), IDF and `managed_components/`, and the check fails on them. R17:
+    every file the build read comes from the project root, IDF or
+    `managed_components/`. Not seen on a minimal project whose `.git` is in its
+    project root.
+  - **F2.** The check reports `vtrux/wican_v3` taken from git and pinned
+    nowhere. `main/idf_component.yml` names it with `git`, `path:
+    shared/boards/wican_v3` and `version: "2026.10.27"`; that tag resolves
+    under `refs/tags/` to `77e114f`, the lock's commit; the downloaded
+    component's manifest has no `version`. R17's git clause: the lock's commit
+    is the one the tag the project pins names, and the manifest has no
+    `version`. The release tooling reports the same component pinned (R16).
+- **Run files**, under `runs/`: `c_board-1a_b6bee3f_20261028/` (`SHA256SUMS`
+  `68593758...e7ec`: the bench build log, the 10 tests, the mutants with their
+  script, `build_output`, `elf_checks`, `r20_rows_back` with its script);
+  `c1a_fixture_80e32a4_20261028/` (`6080e21b...89fd`, the fixture's first
+  release build); `c1a_realbuild_0df0757_20261028/` (`cb3ea1c0...3f49`),
+  `c1a_realbuild_e839370_20261028/` (`343a398c...69f4`) and
+  `c1a_realbuild_ccdd525_20261028/` (`f531f3c0...63e3`, with
+  `realtree_scope_b6bee3f.txt` and `realtree_pin_b6bee3f.txt`). Host
+  NICKY-XPS, IDF v5.4.1; no wall-clock test running, bench check clear.
+
+**Port step 1a, the rest: the stock WiCAN code from `vtrux/wican`, build
+checks and release stand-in -- tester, 2026-10-29, `gen-inhibit/main`
+`bc7d086` (product code the implementor's `7ad8c14`), shared/tools
+`2026.10.29` (`828ed93`). Result: PASS, but for R28, known anomaly 5
+until port step 1a2.** The implementor's C (`0b03841..7ad8c14`, merged as
+`a287e1c`) takes the stock code from `vtrux/wican` and `vtrux/debug_logs` and
+the board `vtrux/wican_v3`, all at tag `2026.10.29` (spec 3.3; shared/wican
+W1-W11). The tester's C (`23118ac`) moves the build checks with it; the
+reviewer merged both as `bc7d086` (tree = `23118ac`'s). Sections: spec 12.3
+item 3 (the `WICAN_SLCAN_COMMANDS` switch, "stock feature off in this
+product", with the same image-refusal row as the four feature switches);
+shared/tools R16, R20 (each shared component's own table), R21, R30 (a shared
+component's own `pins.json`), R28 recorded.
+- **The harness for C, `23118ac`:**
+  - `vtrux_checks.json`: the entries the stock code tests leave the project's
+    table (`WICAN_FEATURE_*` x4, `OTA_HEALTH_TIMEOUT_MS`, `DEBUG_LOGS_*` x6,
+    `ADC_CALI_*` x2), now in `vtrux/wican`'s and `vtrux/debug_logs`' own
+    tables at `2026.10.29`; `OTA_HEALTH_FAULT_INJECT` stays for `_flt`.
+    `stock_files_using_pins` is `main/gi_restart_test.c` only.
+  - `build_output.py`: "one transmit owner" and "the private TWAI abort is
+    confined" scan `main/` and every file the build compiled from a shared
+    component `vtrux_build.json` names (gen-inhibit reviewer, 2026-10-29), NO
+    REF when that record can't be read; "WiFi storage is RAM-only" reads
+    `vtrux/wican`'s `wifi_network.c`; the RealDash row is "no boot-time bus
+    enable at start-up", counting `can_enable` in `app_main`, `wican_init` and
+    `wican_start`.
+  - `test_refusal_pairs.py` takes its switches from the project's and every
+    shared component's table.
+  - The spec shim's `build.sh` puts `vtrux/wican`'s headers on the include
+    path.
+  - Tests, re-run at `8829425` (`runs/step1a_bc7d086/harness_tests/`):
+    `test_source_rows` (new) 24 ok, `test_refusal_tables` (new) 8 ok,
+    `test_switch_rows` 68 ok, `test_build_switches` 78 ok;
+    `source_rows_mutants.py` 20 of 20 killed, 4 controls passing.
+- **Build checks on the release stand-in's build folder (below), with
+  `bc7d086`'s own `build_output.py` and the `2026.10.29` `vtrux_checks`:
+  PASS but for R28.** NICKY-XPS, Idle priority, bench lock free, no
+  simulator running.
+  - `build_output.py` (`--records` the stand-in's record folder): every row
+    `[ ok ]`, 49 rows, no FAIL, no NO REF. Among them: "WiFi storage is
+    RAM-only" from `vtrux/wican`'s `wifi_network.c`; "one transmit owner"
+    (2 call sites in 55 files) and "the private TWAI abort is confined"
+    (one site, `gen_inhibit.c`) over the shipping source; "no boot-time bus
+    enable at start-up" (none of `app_main`, `wican_init`, `wican_start`
+    calls `can_enable`); every build-time switch classified (11 tested, all
+    listed), no stale entry, every test-only switch's refusal rows passing
+    on the image (5); the prod-build record present (`71f70ab2...`, built
+    from `bc7d086` by shared/tools `2026.10.29`, the image beside it
+    identical).
+  - **R20: PASS.** The project's table 11 tested, 11 listed; `vtrux/debug_logs`
+    7 and 7; `vtrux/wican` 13 and 13 (`WICAN_SLCAN_COMMANDS` and the four
+    `WICAN_FEATURE_*` as "stock feature off in this product"); the board
+    `vtrux/wican_v3` 1 and 1; `espressif__mdns` 14 tested, no table, not
+    judged.
+  - **R30: PASS.** The project's list `main/gi_restart_test.c` (reads no
+    pins); `vtrux/wican`'s `pins.json` 1 file, `wican.c`, which the build read
+    it for; `vtrux/debug_logs` 0.
+  - **R21: PASS** (partition table identical to the board's reference, slot
+    1781760 bytes, image 1115088, 666672 free, 4MB, esp32c3). **R17
+    (`scope --release`): PASS**, the three shared components from git at
+    lock commit `828ed934...`, pinned `2026.10.29`. **R18, R26, R27, R29:
+    PASS.**
+  - **R28: FAIL**, the three log levels (`CONFIG_BOOTLOADER_LOG_LEVEL` 3,
+    want 1; `CONFIG_LOG_DEFAULT_LEVEL` and `CONFIG_LOG_MAXIMUM_LEVEL` 3, want
+    0, in `build` and `build/bootloader`): known anomaly 5, unchanged, until
+    port step 1a2 (reviewer, 2026-10-29).
+- **The images and the release stand-in.** Built at `bc7d086` in a detached
+  worktree, clean, NICKY-XPS, IDF v5.4.1, Idle priority, no wall-clock test
+  running: `_man` `71f70ab2...`, `_rt` `4506bc58...`, `_txabort`
+  `dcfc20b0...`, `_abortwin` `0ca48018...`, `_rxq` `9939e408...`, each
+  version `bc7d086`, each exit 0. **Prod: a release build standing in for
+  prod** (as at step 0c): the `2026.10.29` tooling's release build of
+  `bc7d086` in a second clean worktree, exit 0, every row `[ ok ]`: tooling pin
+  (R23, R16) `2026.10.29` at `828ed934f19b`; worktree clean at the start,
+  after the reconfigure and at the end (R8); compiler cache off, no launcher,
+  the toolchain's compilers (R9); `vtrux__debug_logs`, `vtrux__wican` and
+  `vtrux__wican_v3` each matching the lock (R16, pinned); one board (R21);
+  image named by the build (R11). Image hash `71f70ab2...`, the same as the
+  bench `_man` (builds reproducible); code hash `4f9ab365...`. Its record
+  went to a stand-in reverse-it folder, not `firmware/builds/`. A test image,
+  never flashed to the truck, and not a prod build in spec 12.3 item 3's
+  sense.
+- **Run files:** `runs/step1a_bc7d086/` (`README.md`; `SHA256SUMS`
+  `9a97ecf4...f811`): `builds/` (the five image logs, the release log
+  `release_prodstandin.txt`, `driver.log`), `build_checks/`
+  (`build_output_prod1a.txt`, `vtrux_checks_{switches,pins,board,options,scope}.txt`)
+  and `harness_tests/`.
+
+**Port step 1a2: release log levels (R28) and the fault rows -- tester,
+2026-10-30, `gen-inhibit/main` `17ec04c`, shared/tools `2026.10.30`
+(`92364d6`). Result: PASS; R28 PASS, so known anomaly 5 closes.** The
+implementor's `c48e05b` puts gen-inhibit's release and bench builds at
+shared/tools R28's log levels (app none, bootloader error), and test-only
+builds keep info through `sdkconfig.log_info`; `7e9e2a6` re-pins
+`vtrux/wican`, `vtrux/debug_logs`, `vtrux/wican_v3` and shared/tools to
+`2026.10.30`. The tester's harness for it is `fbb3aa7`, `a2bfe92` and
+`fc0274b`, on `gen-inhibit/tester/r28-levels`. The reviewer merged all of
+it as `17ec04c`. Sections: spec 12.3 item 3 (release log levels) and
+shared/tools R28, plus R16, R17, R18, R20, R21, R26, R27, R29 and R30 re-run.
+- **The harness for 1a2:**
+  - `fbb3aa7`: the rollback rehearsal at log level none (gen-inhibit
+    reviewer, 2026-10-30, rulings 1, 2 and 5). It finds boots from the ROM
+    banner; the control is judged by its effect: the page names the good
+    image past the gate's timeout and again after a reboot. The fault phase
+    reads two ROM banners 55-75 s apart. The bootloader phase records the
+    bootloader's sha256 and the log level its strings show. `reset_matrix`
+    notes that a ROM-banner-only capture gives a lower bound on the boot
+    count.
+  - `a2bfe92`: the rehearsal's otadata and bootloader phases compare
+    esptool's MAC value-blind, and keep only `mac_matches`.
+  - `fc0274b`: the fault rows judge the hook's symbol, not its log string
+    (ruling 4). At R28's levels the string "FAULT INJECT: suppressing report
+    of" is not compiled in even with `OTA_HEALTH_FAULT_INJECT` on, so the
+    old rows passed on a fault build. `vtrux_checks.json`'s
+    `OTA_HEALTH_FAULT_INJECT` row is now `elf_symbols_absent` on
+    `ota_health_fault_inject_suppress` (shared/wican W7), keeping
+    `project_name_token_absent` `_flt`. The row in `build_output.py` ("no OTA
+    fault injection in the image") reads the same symbol, and an empty nm
+    listing reads NO REF. `judge_images` in the rehearsal now has "good ELF
+    does NOT define the fault hook" and "faulty ELF defines the fault hook".
+  - **The proof on real builds** (`runs/step1a2_17ec04c/r28_fault_rows/`):
+    three images built at `fc0274b` in a scratch worktree, Idle priority:
+    `_man` (none/none), `_flt` at info, and `_flt` at none (the fault switch
+    on at release levels, with `sdkconfig.log_info` swapped for `sdkconfig`
+    in that build only, restored after; version `fc0274b-dirty`). Each build
+    exited 0.
+    - `build_output.py`'s row: `_man` ok; both `_flt` builds FAIL by the
+      symbol and the `_flt` name. The old string is absent from the `_flt`
+      build at none, so the old row would have passed it.
+    - `judge_images` (`_man`, `_flt` at info): all 10 rows pass. Each
+      swapped pair fails the hook rows.
+    - The `vtrux_checks.json` rule through shared/tools: on FAILS for both
+      `_flt` builds; off passes.
+  - Tests, re-run at `17ec04c` (`runs/step1a2_17ec04c/harness_tests/`):
+    `test_fault_hook_row` 12 ok, `--mutants` 9 of 9, the control passing; `test_flt_row` 6 ok;
+    `test_ota_rehearsal_images` 14 ok, `--mutants` 9 of 9 (this runner has no control run; the unmutated test passes at the same tip); `test_ota_rehearsal_none` 72
+    ok, its mutants 24 of 24, the control passing;
+    `test_ota_rehearsal_identity` 51 ok, its mutants 12 of 12, the control
+    passing;
+    `test_reset_matrix` 46 ok. The build-check tests again:
+    `test_source_rows` 24 ok, `test_refusal_tables` 8, `test_switch_rows`
+    69, `test_build_switches` 79; `source_rows_mutants.py` 20 of 20 killed,
+    4 controls passing.
+- **Build checks on the release stand-in's build folder (below), with
+  `17ec04c`'s own `build_output.py` and the `2026.10.30` `vtrux_checks`:
+  PASS.** NICKY-XPS, Idle priority, bench lock free, no simulator running.
+  - `build_output.py` (`--records` the stand-in's record folder): every row
+    `[ ok ]`, 49 rows, no FAIL, no NO REF. They include "no OTA fault
+    injection in the image" (the hook not defined in the ELF) and the
+    prod-build record (`1a07454e...`, built from `17ec04c` by shared/tools
+    `2026.10.30`, the image beside it identical). Also every build-time
+    switch classified (11 tested, all listed) and every test-only switch's
+    refusal rows passing on the image (5).
+  - **R20: PASS.** The project's table 11 tested, 11 listed;
+    `vtrux/debug_logs` 7 and 7; `vtrux/wican` 13 and 13; the board 1 and 1;
+    `espressif__mdns` 14 tested, no table, not judged.
+  - **R30: PASS.** The project's list `main/gi_restart_test.c` (reads no
+    pins); `vtrux/wican`'s `pins.json` 1 file, `wican.c`; `vtrux/debug_logs`
+    0.
+  - **R21: PASS** (partition table identical to the board's reference, slot
+    1781760 bytes, image 1016208, 765552 free). **R17 (`scope --release`):
+    PASS**, the three shared components from git at lock commit
+    `92364d6a3466...`, pinned `2026.10.30`. **R18, R26, R27, R29: PASS.**
+  - **R28: PASS.** `CONFIG_BOOTLOADER_LOG_LEVEL` 1, want 1;
+    `CONFIG_LOG_DEFAULT_LEVEL` and `CONFIG_LOG_MAXIMUM_LEVEL` 0, want 0; in
+    both `build` and `build/bootloader`. The same check failed at `bc7d086`
+    (12.3, "Port step 1a, the rest"), so it can fail. **Known anomaly 5
+    closes.**
+- **The images and the release stand-in.** Built at `17ec04c` in a detached
+  worktree, clean, NICKY-XPS, IDF v5.4.1, Idle priority, no wall-clock test
+  running: `_man` `1a07454e...`, `_rt` `0802da33...`, `_txabort`
+  `58eed9ba...`, `_abortwin` `26e2f547...`, `_rxq` `ee9b9132...`, each
+  version `17ec04c`, each exit 0. **Prod: a release build standing in for
+  prod** (as at step 1a): the `2026.10.30` tooling's release build of
+  `17ec04c` in a second clean worktree, exit 0, every row `[ ok ]`:
+  - tooling pin (R23, R16) `2026.10.30` at `92364d6a3466`;
+  - worktree clean at the start, after the reconfigure and at the end (R8);
+  - compiler cache off, no launcher, the toolchain's compilers (R9);
+  - `vtrux__debug_logs`, `vtrux__wican` and `vtrux__wican_v3` each matching
+    the lock (R16, pinned);
+  - one board (R21);
+  - image named by the build (R11).
+
+  Image hash `1a07454e...`, the same as the bench `_man` (builds
+  reproducible); code hash `2ab1a707...`. Its record went to a stand-in
+  reverse-it folder, not `firmware/builds/`. This is a test image, never
+  flashed to the truck, and not a prod build in spec 12.3 item 3's sense.
+- **Run files:** `runs/step1a2_17ec04c/` (`README.md`; `SHA256SUMS`
+  `99db7428...4452`): `builds/`, `build_checks/`, `r28_fault_rows/` and
+  `harness_tests/`.
+
+**Known anomaly 8: the refusal-pair proof on post-port images, with
+`WICAN_SLCAN_COMMANDS` -- tester, 2026-10-30/31, `gen-inhibit/main`
+`683502e` (contains `dd8e57f`). Result: PASS.** The reviewer's post-merge
+assignment (2026-10-30). Three parts:
+- an image set with an SLCAN image;
+- the SLCAN entry in the refusal-pair runner;
+- every rule of the project's and the pinned components' tables shown failing
+  on its own switch's image.
+
+Then the refusal-pair run and the `build_checks_stock_mutants.py` reading on
+that set. The harness is on `gen-inhibit/tester/refusal-pairs-postport`,
+`683502e..5d11983`. Sections: spec 12.3 item 3 (test-only builds and the
+stock features off in this product are refused). Also shared/tools R20, whose
+table rules the proof now judges on real images.
+- **The harness:**
+  - `848a149`: `baseline_builds.ps1` gains `fslcan`
+    (`-DWICAN_SLCAN_COMMANDS=ON`), and `refusal_pairs_runs.py`'s `ON` maps
+    the switch to it. New `test_refusal_pairs_runs.py` (11 ok) checks that
+    every test-only switch and stock feature, in the project's table and in
+    each pinned component's table, has an `ON` name and a build that sets it,
+    that every `CONTROL` build leaves its switch off, and that no `ON` entry
+    is stale. Each check is also run on a broken input it must fail. It
+    failed before the `ON` entry was added.
+  - `e99236e`: `test_refusal_pairs.py` also judges each switch's own table
+    rules, from every table that lists it, as shared/tools R20 reads them:
+    - each rule FAILs on the switch's ON image and PASSes on the OFF image
+      and on its control;
+    - a `project_row` rule must name a row the run produced, failing on the
+      ON image;
+    - a switch with no rules fails.
+
+    Until then `WICAN_SLCAN_COMMANDS` had no rows there. No row of
+    `build_output.py` names it; its only refusal rule is vtrux/wican's
+    `elf_symbols_absent slcan_parse_str`. It is in `ROWS` with no row
+    function. Tested by:
+    - `test_refusal_tables.py`, on made-up tables and facts;
+    - `test_refusal_pairs_mutants.py`, with the unmutated copy first as the
+      control;
+    - five more negatives in `refusal_pairs_runs.py`, 16 in all.
+  - `8933e8a`: **a harness defect the first run found.** That run (harness
+    `676db6d`, 2026-10-31) crashed in `test_refusal_pairs.py`'s `main()`
+    before any check: it called SLCAN's row function, which is None. The
+    positive and all 16 negatives died on the same `TypeError`, so nothing
+    was judged. `run()` now gives no rows for a switch with no row function.
+    A new check in `test_refusal_tables.py` covers it, and a ninth mutant
+    that removes the guard is killed by that check.
+  - `9474b60`: `source_rows_mutants.py`'s r06 is re-pointed at
+    `tables()`. `e99236e` had moved the line it edited, so r06 matched
+    nothing at `8933e8a`.
+  - Tests (`harness_tests/`, at `8933e8a`):
+    - `test_refusal_tables` 24 ok;
+    - `test_refusal_pairs_mutants` 9 of 9 killed, the control passing;
+    - `test_refusal_pairs_runs` 11 ok;
+    - `test_switch_rows` 69, `test_build_switches` 79 and `test_source_rows`
+      24 ok;
+    - `test_scratch_only` 44 ok;
+    - `source_rows_mutants` (at `9474b60`) 20 of 20 killed, 4 controls
+      passing.
+- **The images.** 12 builds by `baseline_builds.ps1`, made 2026-10-30 22:13
+  to 23:58:
+  - from a detached worktree of `683502e` made from the anchor, clean;
+  - NICKY-XPS, IDF v5.4.1, Idle priority;
+  - the bench lock free, "No builds" cleared, no simulator running.
+
+  Each build exited 0 with one app image, version `683502e`, and the
+  descriptor's ELF SHA-256 equal to the ELF's (`baseline_images_record.py`).
+  File sha256:
+  - `_man` `8948ca35...`, `_rt` `1f4672e1...`, `_rxq` `7d26d9af...`;
+  - `_txabort` `8ee457d5...`, `_abortwin` `cbb114a6...`, `_flt`
+    `205c2f63...`;
+  - `fmqtt` `de5a9349...`, `felm` `bae874fd...`, `fmqttelm` `42ae937f...`;
+  - `fautopid` `c38a0227...`, `frealdash` `53fa499d...`, `fslcan`
+    `d9612078...`.
+
+  These are test images, never flashed.
+- **The refusal-pair run (`refusal_pairs_runs.py --tree`, harness `8933e8a`):
+  PASS.** The positive run passes 86 checks. 44 of them are the tables' own
+  rules: 21 rules over 11 switches, each failing on its switch's ON image and
+  passing on the OFF image, plus AutoPID's two passing on its control
+  (`fmqttelm`).
+  - The project's table: `GI_INSTRUMENT_ABORTWIN` 2, `GI_INSTRUMENT_RXQ` 2,
+    `GI_INSTRUMENT_TXABORT` 2, `GI_TEST_RESTART_QUIESCE` 3,
+    `OTA_HEALTH_FAULT_INJECT` 2.
+  - vtrux/wican's table: `OTA_HEALTH_FAULT_INJECT` 1,
+    `WICAN_FEATURE_AUTOPID` 2, `WICAN_FEATURE_ELM327` 2,
+    `WICAN_FEATURE_MQTT` 3, `WICAN_FEATURE_REALDASH` 1 (`project_row` "no
+    boot-time bus enable at start-up"), `WICAN_SLCAN_COMMANDS` 1
+    (`slcan_parse_str` defined in `fslcan`'s ELF, not in `_man`'s).
+  - vtrux/debug_logs' and the board's tables list no test-only switch or
+    stock feature.
+
+  **16 of 16 negatives caught on their own check.** Among them:
+  - the product image as SLCAN's ON;
+  - the SLCAN image as OFF;
+  - the product image as RXQ's ON (a project-table rule);
+  - the product image as RealDash's ON (a `project_row` rule);
+  - AutoPID's own image as its control.
+- **`build_checks_stock_mutants.py --tree` on the same images (harness
+  `8933e8a`): the control passes, 16 of 16 killed.** This is its first reading
+  at this harness: on the `e3d9437` images its control failed, and no image
+  set had an SLCAN image.
+- **Run files:** `runs/refusal_pairs_683502e/` (`README.md`; `SHA256SUMS`
+  `83dedcbb...f6af`):
+  - `builds/`, `images_683502e.json`;
+  - `refusal_pairs_683502e{,.console}.txt`;
+  - the crashed first run, `refusal_pairs_683502e_harness676db6d_crash{,.console}.txt`;
+  - `build_checks_stock_mutants_683502e.txt`;
+  - `harness_tests/`.
+
+**Port step 1b: build checks and the release stand-in on `488ef9f` --
+tester, 2026-10-31, `gen-inhibit/main` `488ef9f`, shared/tools and the CAN
+components at `2026.10.31.2` (`1fda69d`). Result: PASS.** At 1b,
+`firmware/main/can.c` is gone. The CAN code is the shared `vtrux/can_port`
+and `vtrux/twai_port`. Sections: spec 12.3 (build-output checks, E3) and
+shared/tools R16, R17, R18, R20, R21, R26, R27, R28, R29 and R30, re-run.
+- **The images and the release stand-in.** Built at `488ef9f` in a detached
+  worktree, clean, NICKY-XPS, IDF v5.4.1, Idle priority, no wall-clock test
+  running. Each exited 0. ELF sha256 (what the page reports): `_man`
+  `cbfc683a...`, `_rt` `786d808a...`, `_txabort` `008f26ff...`,
+  `_abortwin` `1bd5a67f...`, `_rxq` `a6c5365e...`. **Prod: a release build
+  standing in for prod** (as at step 1a2): the `2026.10.31.2` tooling's
+  release build of `488ef9f` in a second clean worktree, exit 0, 27 rows,
+  every row `[ ok ]`. Image hash `cbfc683a...`, the same as the bench
+  `_man` (builds reproducible); code hash `92411a20...`. Its record went
+  to a stand-in reverse-it folder, not `firmware/builds/`. This is a test
+  image, never flashed to the truck, and not a prod build in spec 12.3
+  item 3's sense.
+- **Build checks on the release stand-in's build folder, with `488ef9f`'s
+  own `build_output.py` and the `2026.10.31.2` `vtrux_checks`: PASS.**
+  NICKY-XPS, Idle priority, bench lock free, no simulator running.
+  - `build_output.py` (`--records` the stand-in's record folder): 49 rows,
+    every row `[ ok ]`, no FAIL, no NO REF. The rows are 1a2's, with the
+    renames the port makes: `CAN_RX_QUEUE_LEN` is now
+    `GEN_INHIBIT_RX_QUEUE_LEN`, and its override is no longer in
+    `main/can.c`. The head and the image size changed too.
+  - `vtrux_checks` (checkout at `1fda69d`, clean): `switches`, `pins`,
+    `board`, `options` and `scope`, all with `--release`, each exit 0.
+    R20, R30, R21, R18, R26, R27, R28, R29 and R17 (5775 files): PASS.
+- **Harness:** `gen-inhibit/tester/accept-1b` `8bc82f1`. There are no
+  build-check harness changes for 1b. Its tests, at `8bc82f1`, are in the
+  acceptance entry (12.4, "Port step 1b's acceptance").
+- **Run files:** `runs/step1b_488ef9f/` (`README.md`; `SHA256SUMS`
+  `21580d1c...c0dd`): `builds/` (with the stand-in's record,
+  `prod_standin_ri/`) and `build_checks/`.
+
+**Port step 1c: build checks, the release stand-in and the R20/R30
+can-fails on `5f2fe2c` -- tester, 2026-11-02, `gen-inhibit/main`
+`5f2fe2c`, shared/tools and the six shared dependencies at `2026.11.01.2`
+(`b33bce5`). Result: PASS, with switches `release_pass` VOID from a harness
+name lag (below).** At 1c, gen-inhibit takes shared/main `2026.11.01.2`,
+with the switch names `RESTART_GUARD_TEST` and `TWAI_PORT_TXABORT_PROBE`.
+Sections: spec 12.3 (build-output checks, E3) and shared/tools R16, R17,
+R18, R20, R21, R26, R27, R28, R29 and R30, re-run.
+- **The images and the release stand-in.** Built at `5f2fe2c` in a detached
+  worktree, clean at both ends, NICKY-XPS, IDF v5.4.1, Idle priority, no
+  wall-clock test running. Each exited 0. ELF sha256 (what the page
+  reports): `_man` `47e805f1...`, `_rt` `7a00c4e6...`, `_txabort`
+  `cc18cf02...`, `_abortwin` `e7148cba...`, `_rxq` `7aac1135...`; and the
+  ON images `test_refusal_pairs` proves over: `flt` `e02bf3d1...`, `fmqtt`
+  `8e7c6b8d...`, `felm` `e326ebdd...`, `fmqttelm` `1109f644...`,
+  `fautopid` `8ca28075...`, `frealdash` `51d99d38...`, `fslcan`
+  `8d39119c...`. **Prod: a release build standing in for prod** (as at
+  steps 1a2 and 1b): the `2026.11.01.2` tooling's release build of
+  `5f2fe2c` in a second clean worktree, exit 0, 28 rows, every row
+  `[ ok ]`: 1b's 27 and `vtrux__restart_guard`'s component hash. Image hash
+  `47e805f1...`, the same as the bench `_man` (builds reproducible); code
+  hash `17d448ba...`. Its record went to a stand-in reverse-it folder, not
+  `firmware/builds/`. This is a test image, never flashed to the truck, and
+  not a prod build in spec 12.3 item 3's sense.
+- **Build checks on the release stand-in's build folder, with `5f2fe2c`'s
+  own `build_output.py` and the `2026.11.01.2` `vtrux_checks`: PASS.**
+  NICKY-XPS, Idle priority, bench lock free, no simulator running.
+  - `build_output.py` (`--records` the stand-in's record folder): exit 0,
+    every row `[ ok ]`, "every check with a reference passed".
+  - `vtrux_checks` (checkout at `b33bce5`, clean): `switches`, `pins`,
+    `board`, `options` and `scope`, all with `--release`, each exit 0.
+    R20, R30, R21, R18, R26, R27, R28, R29 and R17: PASS. This is the
+    positive R20.
+  - On the bench build folders: `switches` on `_rt` and on `_txabort`
+    exit 1, FAIL R20, each naming the switch's refusal rules in the project
+    table and in `vtrux__restart_guard`'s or `vtrux__twai_port`'s table.
+    `pins` on each: PASS R30 (on `_rt`, `restart_guard_test.c` reads the
+    pins through `vtrux/restart_guard`). Neither is a committed can-fail
+    mode; they are the checks on real images. The committed can-fails are
+    below.
+- **R20 and R30 can-fails, `2026.11.01.2`'s committed modes**
+  (`shared/tools/verification/`, checkout `b33bce5`, clean at both ends,
+  `--base 5f2fe2c`, under the IDF venv's Python 3.11.9):
+  - **`switches_cases`:** self-test exit 0. `on_restart` PASS and
+    `on_txabort` PASS: exit 1, naming the project's `RESTART_GUARD_TEST`
+    refusal and `vtrux__restart_guard`'s, and the project's
+    `TWAI_PORT_TXABORT_PROBE` refusal and `vtrux__twai_port`'s. These are
+    R20's can-fails.
+  - **`switches_cases` `release_pass`: VOID**, "the project's rows file
+    lacks a passing RealDash row: None". `switches_cases.py` (l.270 at
+    `b33bce5`) looks up the row "no boot-time bus enable in app_main".
+    `build_output.py` has emitted it as "no boot-time bus enable at
+    start-up" since `23118ac` (port step 1a part C), and the self-test's
+    fake uses the old name, so it can't catch the rename. A harness name
+    lag, not a product result (the reviewer, 2026-11-02). The positive R20
+    is the release check above. A shared/tools fix follows as its own
+    range.
+  - **The IDF venv.** `5f2fe2c`'s `build_output.py --bin` imports
+    `cantools` (since `5c8c5e1`), and `switches_cases` runs it under the
+    venv's Python. The first switches run was VOID because the venv lacked
+    it (`verification/`). By the user's ruling (2026-11-02), `cantools`
+    went into `idf5.4_py3.11_env` to stay, at py -3.14's versions:
+    `cantools` 44.1.0, `argparse-addons` 0.12.0, `bitstruct` 8.23.0,
+    `crccheck` 1.3.1, `python-can` 4.6.1, `textparser` 0.26.2, `wrapt`
+    1.17.3; `packaging` 26.3 and `typing_extensions` 4.16.0 were there
+    already. The switches cases then ran again on the same fixture
+    (`verification_switches_cantools/`).
+  - **`pins_cases`:** self-test exit 0. `release_pass` PASS (PASS R30);
+    `comp_unlisted` and `comp_no_list` PASS (exit 1, naming
+    `managed_components/vtrux__wican/wican.c`). `unlisted`: n/a to
+    gen-inhibit, VOID "no file on the project's list reads the board's
+    pins".
+  - An earlier attempt from the shell that had run the builds, with the
+    global 3.11 and no `esp_idf_monitor`, half-made the fixture and counts
+    for nothing (`verification.attempt0_idf_env/`).
+- **`test_refusal_pairs`** (`26acc04`'s `refusal_pairs_runs.py`, `--sha
+  5f2fe2c`, every ON image): "positive PASS; 16 of 16 negatives caught on
+  their own check".
+- **Harness:** `gen-inhibit/tester/accept-1c` `26acc04`. Its one change,
+  to `bench_compare.py`, is in the acceptance entry (12.4, "Port step 1c's
+  acceptance"). No build-check harness changes.
+- **Run files:** `runs/step1c_5f2fe2c/` (`README.md`; `SHA256SUMS`
+  `ef7307e0...39e8`): `builds/` (with the stand-in's record,
+  `prod_standin_ri/`), `build_checks/`, `verification.attempt0_idf_env/`,
+  `verification/` and `verification_switches_cantools/`.
+
+**Port step 1d: R19 on ESP-IDF v5.4.2, the release stand-in, the build
+checks and the R8 sdkconfig cases on `7f2d503` -- tester, 2026-11-04,
+`gen-inhibit/main` `7f2d5032`, shared/tools and the shared dependencies at
+`2026.11.04` (`181cec94`), the verification at shared/main `a3b0f250` and
+its two fixes (below). Result: PASS.** At 1d gen-inhibit moves to ESP-IDF
+v5.4.2, its own install and tools folder, with the venv's Python 3.11.9.
+Plan: `$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/step1d_test_plan.md` items 1, 2 and 6
+(reviewer-confirmed, 2026-11-04). Sections: spec 12.3 (build-output checks,
+E3) and shared/tools R8, R16, R17, R18, R19, R20, R21, R26, R27, R28, R29
+and R30. Every build ran on NICKY-XPS at Idle priority with no wall-clock
+test running.
+- **R19, gen-inhibit's own run (item 1a): PASS.** `7f2d5032` cloned twice
+  under the tester worktree's `scratch/`, into folders of different length
+  and depth, each with its own `../shared-2026.11.04/` beside it, each built
+  once by `py -3.14 -B gen-inhibit/vtrux_tools.py release`, with its records
+  to a stand-in reverse-it folder. Both exit 0, clean before and after, no
+  `build/` before, reproducible build on. Image hash `f515a383...151b` the
+  same three ways (the record, `vtrux_tools.py image`, `a3b0f250`'s
+  `independent.py`) in each build and across the two; the `.bin` files
+  byte-identical (sha256 `68787728...`, 1021520 bytes); code hash
+  `bc49dce0...` in both.
+- **R18 on both builds: PASS.** The pinned `vtrux_checks options` exit 0 on
+  each, judged by `a3b0f250`'s `options_cases`: R18, R26, R27 and R28 PASS,
+  no expected failure, in both build folders (`build`, `build/bootloader`).
+  A first judgement called `options_cases.expected()` in its old form and
+  means nothing (`r19_own/`, kept); `r18_rejudge/` is the judgement.
+- **R19, the tooling's rerun (item 1b): PASS.** `repro_cases.py` from a
+  clean detached checkout of shared/main `a3b0f250` (the `2026.11.04` pin
+  plus R32's padded-path refusal and R33's configured-IDF check), under the
+  v5.4.2 venv, `--base 7f2d5032`: `fixture`, `mini` and `time_macro` PASS
+  (R19 met); `build_path` PASS (R19 not met, the can-fail).
+  - `repro_off` was FAIL at `a3b0f250`: R19 not met, where the case wanted
+    it met. The two `.bin` files differ only in the descriptor's
+    `elf_sha256`, with 0 bytes outside it and R2's blanks, as at `3543457`
+    under v5.4.1. The case's premise, gen-inhibit building with
+    reproducible build off (until its port step 0b), no longer held.
+  - By the gen-inhibit reviewer's ruling (2026-11-04), the case keeps its
+    id and wants R19 not met, a second can-fail beside `build_path` (R5's
+    basis in shared/tools `VALIDATION.md`): `repro_cases.py` at `f231b334`
+    (shared/main `569d0031`). `repro_off` was rerun alone from `1cbe0da5`,
+    whose code is the same as `f231b334`'s (`f231b334` changes only the
+    docstring's and the README's wording). The self-test exit 0, and a
+    mutant with `repro_off` back to wanting R19 met was caught. Then
+    **PASS**: R19 not met, image hashes `c127406e...` and `a56ccff5...`,
+    the `.bin` files differing only in the descriptor's `elf_sha256`.
+  - 1b is judged on `fixture`, `mini`, `time_macro`, `build_path` and this
+    rerun. The first `repro_off` FAIL stays in its folder as a stale
+    premise.
+- **The release stand-in** is 1a's first clone's release build (image hash
+  `f515a383...`), its record in a stand-in folder, not `firmware/builds/`.
+  It is a test image, not a prod build in spec 12.3 item 3's sense. It went
+  on the bench WiCAN for the acceptance (12.4, "Port step 1d's
+  acceptance"), never on the truck.
+- **The 12 images (item 2).** Built at `7f2d5032` by the tester branch's
+  `baseline_builds.ps1` (`check-env` first, exit 0 each) in a clean
+  detached worktree, `gen-inhibit-tester-images1d`, clean at both ends,
+  each exit 0. ELF sha256: `_man` `f515a383...` (the stand-in's image hash),
+  `_rt` `6ab7bc79...`, `_txabort` `ca8fd54a...`, `_abortwin` `6c4047d3...`,
+  `_rxq` `ea3c0c05...`; the ON images `flt` `851837ce...`, `fmqtt`
+  `9e7b4919...`, `felm` `f1fa8829...`, `fmqttelm` `203b556e...`,
+  `fautopid` `04d9c0d7...`, `frealdash` `2ebc0881...`, `fslcan`
+  `2b30f8ac...`. A first attempt built nothing and counts for nothing
+  (`builds/`, kept): its driver exported v5.4.2 and then ran
+  `baseline_builds.ps1`, which exports again, and the second export put the
+  base Python ahead of the venv's, so `idf.py` stopped at once ("No module
+  named esp_idf_monitor").
+- **Build checks on the release stand-in's build folder, with `7f2d5032`'s
+  own `build_output.py` and the `2026.11.04` `vtrux_checks`: PASS.**
+  - `build_output.py` (`--records` the stand-in's record folder): exit 0,
+    "every check with a reference passed".
+  - `vtrux_checks` (checkout at `181cec94`, clean): `switches` PASS R20,
+    `pins` PASS R30, `board` PASS R21, `options` PASS R18, R26, R27, R28
+    and R29, each with `--build build` as at 1c; `scope --release` PASS
+    R17. At `2026.11.04` only `scope` takes `--release` (the plan's "all
+    `--release`" was a slip). The first run of the other four with it
+    stopped on the argument error and counts for nothing (`build_checks/`,
+    kept); `build_checks2/` is the run.
+  - On the bench build folders: `switches` on `_rt` and on `_txabort` exit
+    1, refusing `RESTART_GUARD_TEST` (the project's row and
+    `vtrux__restart_guard`'s) and `TWAI_PORT_TXABORT_PROBE` (the project's
+    and `vtrux__twai_port`'s), plus the `WICAN_FEATURE_REALDASH`
+    project-row line a bench build cannot answer (no
+    `vtrux_project_rows.json`), as at 1c. `pins` on each: PASS R30.
+- **R20, R30 and R8 cases, shared/main `a3b0f250`'s verification**
+  (`shared/tools/verification/`, clean detached checkout, the venv's
+  Python, `--base 7f2d5032`, each script's `--self-test` exit 0 first):
+  - **`switches_cases`:** `release_pass`, `on_restart` and `on_txabort`
+    PASS (`release_pass` was VOID at 1c, from a row-name lag).
+  - **`pins_cases`:** `release_pass`, `comp_unlisted` and `comp_no_list`
+    PASS; `unlisted` n/a to gen-inhibit, VOID "no file on the project's
+    list reads the board's pins", as at 1c.
+  - **`release_cases`, the `r8_sdkconfig_*` cases (item 6)**, on the fixture
+    made from `7f2d5032` (`idf ==5.4.2`, so R33 lets it build): `_ignored`,
+    `_untracked`, `_elsewhere`, `_generated` and `_outside` PASS.
+    `r8_sdkconfig_excluded` was VOID at `a3b0f250`, "the exclude rule did
+    not take": the case wrote `/sdkconfig` to `.git/info/exclude`, where a
+    leading `/` anchors at the repository's top, so with the project in
+    `gen-inhibit/firmware/` it matched nothing. A defect in the case, fixed
+    on `shared/tools/r8-exclude-prefix` `88035115` (shared/main
+    `181ef8eb`): the line carries git's `--show-prefix`. The fix's
+    self-test exit 0, and a mutant writing the old line was caught. Then,
+    from `88035115` on a fresh fixture, `r8_sdkconfig_excluded` **PASS**:
+    refused (exit 1), no record, matched by the prefixed exclude line.
+- **`test_refusal_pairs`** (`77143534`'s `refusal_pairs_runs.py`, `--sha
+  7f2d5032`, every ON image): "positive PASS; 16 of 16 negatives caught on
+  their own check".
+- **v5.4.2's new defaults (item 2): PASS.** `git diff 115f907c 7f2d5032 --
+  gen-inhibit/firmware/sdkconfig` (38+/6-) adds as `y` the BLE 4.2
+  controller options (`BT_BLE_42_DTM_TEST_EN`, `BT_BLE_42_ADV_EN`,
+  `BT_BLE_42_SCAN_EN`, `BT_CTRL_DTM_ENABLE`, `BT_CTRL_BLE_MASTER`,
+  `BT_CTRL_BLE_SCAN`, `BT_CTRL_BLE_SECURITY_ENABLE`, `BT_CTRL_BLE_ADV`),
+  `GPTIMER_OBJ_CACHE_SAFE`, `GDMA_ISR_HANDLER_IN_IRAM`,
+  `GDMA_OBJ_DRAM_SAFE` and `MBEDTLS_SHA1_C`; as `0` the two FATFS
+  free-space options (`FATFS_DONT_TRUST_FREE_CLUSTER_CNT`,
+  `FATFS_DONT_TRUST_LAST_ALLOC`); and, not set, `BT_CTRL_BLE_TEST`,
+  `I2C_SKIP_LEGACY_CONFLICT_CHECK`, `FATFS_USE_DYN_BUFFERS`,
+  `MBEDTLS_ALLOW_WEAK_CERTIFICATE_VERIFICATION` and
+  `SPI_FLASH_FORCE_ENABLE_C6_H2_SUSPEND`. It removes
+  `BT_BLE_HOST_QUEUE_CONG_CHECK` and its legacy name, both not set, and
+  moves `BT_BLE_ESTAB_LINK_CONN_TOUT=30` and `GDMA_ISR_IRAM_SAFE`
+  unchanged. None is one of the release profile's 13 options, the board's
+  9 `sdkconfig.board` options or its 5 required settings, and the options
+  check passes on the stand-in.
+- **Harness:** `gen-inhibit/tester/port-1d-bench` `77143534`, clean
+  throughout. Its build-check change, `5339c16d` (`baseline_builds.ps1`
+  runs R32's `check-env` before each build), and its tests are in the
+  acceptance entry (12.4, "Port step 1d's acceptance").
+- **Run files:** `runs/step1d_7f2d503/` (`README.md`; `SHA256SUMS`
+  `f5a8c380...fe37`): `r19_own/`, `r18_rejudge/`, `standin_ri_a/`,
+  `standin_ri_b/`, `builds/`, `builds2/`, `build_checks/`,
+  `build_checks2/`, `verification/`, `verification_r8x/`.
+  `runs/step1d_7f2d503_repro_off/` (`README.md`; `SHA256SUMS`
+  `74264a65...f5fb`): the `repro_off` rerun.
+

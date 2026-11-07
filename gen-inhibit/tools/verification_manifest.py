@@ -49,7 +49,8 @@ ROOTS = {RUNS_REL + "runs/", RUNS_REL + "runs/chain/"}     # folders that grow: 
 NOTES = "projects/vtrux/notes/"
 LIVING = {"firmware/bench-holder.md", NOTES + "gen-inhibit-wican-spec.md",
           NOTES + "gen-inhibit-review-2026-09-22.md", NOTES + "gen-inhibit-wican-firmware.md",
-          RUNS_REL + "README.md", RUNS_REL + "x2_jammer/README.md"}
+          RUNS_REL + "README.md", RUNS_REL + "x2_jammer/README.md",
+          RUNS_REL + "step1d_test_plan.md"}
 KINDS = ("file", "tree", "root", "living", "absent", "missing", "pattern")
 CITE = re.compile(r"`([^`\s]+)`")
 TRAIL = ".,;:)"
