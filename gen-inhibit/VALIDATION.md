@@ -42,6 +42,14 @@ missing.
   row "The spec move into git, how"). Cleaned up first, per C6: the
   device's id and the pointer to the backup of its configuration, which
   holds credentials, are not carried into git; both stay in SeaDrive.
+- **Seven stale passages fixed after the move** (user, 2026-11-07, the same
+  tracker row, F1-F7), found in it and moved word for word first: the
+  latches of sections 6, 7 and 12.1 named a reboot as their only clear,
+  where 7.1 decision 5 has a key-on clear them too; 6.4 and 7.1 pointed at
+  the reverse-it schema copy and called the 6.3 flag bit unallocated;
+  section 10's table lacked `0x7F9` and its 2026-09-24 additions read as
+  still to come; 12.3 counted four parts of five; section 13 sent findings
+  to the working log, a closed record.
 
 ### The firmware base
 - **Basis:** v4.21 exists and was rejected on 2026-09-19, because it fixes
@@ -1069,6 +1077,8 @@ was read as a logger on the truck dropping frames).
   measurement behind any of them. (The fourth page briefly shipped in
   development as `0x7F4`; review caught the clash before any hardware run,
   2026-09-25.)
+- **The pages' further fields:** required 2026-09-24 (review B1, B3, C1,
+  C2), then still to be allocated; allocated with schema 4's `0x7F8`.
 - **Diag must not delay an inhibit frame:** review A4.
 - **`0x7F3`:** schema 8, port step 0c; user, 2026-10-19 and 2026-10-25.
   `diag_fw_ver` stays until stage (b): user, 2026-10-25.

@@ -696,17 +696,17 @@ holds is a section 12 test on a full-replay bus.
 
 ## 6. Conditions that disable the inhibit
 
-**Two** conditions release the inhibit, and both **latch until the ESP
-reboots** once fired. A third condition (6.3) merely suppresses transmission
+**Two** conditions release the inhibit, and both **latch until a key-on
+(7.1) or a reboot** once fired. A third condition (6.3) merely suppresses transmission
 while it is present and does not latch -- the distinction is that the first two
 mean *the engine is legitimately wanted*, while the third means *the truck is
 parked and already shut down*.
 
 For the two latching conditions, the inhibit must never silently resume once it
 has stood down -- not when the condition goes away, and not when the
-measurement that caused it recovers. The device loses power when the truck
-sleeps (section 2.1), and the latch
-therefore clears for the next drive. That is the only thing that clears it.
+measurement that caused it recovers. A key-off -> key-on transition clears
+it (7.1 rule 2 and decision 5), and so does the reboot when the device loses
+power as the truck sleeps (section 2.1). Nothing else clears it.
 
 Every condition is evaluated on each received frame. For the latching pair the
 transmit path is gated on the latched state, not the live one; for 6.3 it is
@@ -733,7 +733,8 @@ the generator that the truck's own judgement takes precedence over ours.
 **The latch is unconditional on SoC recovering.** If SoC falls to 19 %, the
 engine runs, and SoC climbs back to 22 %, the inhibit does **not** resume. Once
 released for low SoC it stays released, exactly as the M-mode release does
-(section 6.1), and clears only on the reset described in section 6.
+(section 6.1), and clears only as section 6 describes: on a key-on (7.1)
+or a reboot.
 
 **21 % is deliberately a full percentage point above the truck's own 20.0 %
 trigger**, so the inhibitor gets out of the way *before* the VCM asks for the
@@ -796,10 +797,8 @@ facts go out on `0x7F1` (section 10).
 **The 6.3 suppression belongs in the flags, not in `disable_reason`.** That
 field names a latched release. The live state needs a flag bit instead, so
 the two are distinguishable at a
-glance. `diag_flags` on `0x7F1` has bits spare; allocating one is a change to
-`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/wican_diag_schema.md`,
-which is the source of truth for that layout, and needs the on-wire
-`diag_schema_ver` bumped with it.
+glance: `diag_flags` bit4 `shutdown_suppressed` on `0x7F1`. The layout's
+source of truth is `gen-inhibit/diag/wican_diag_schema.md` (section 10).
 
 **A latched release is a stand-down, so the section 7 live flag must clear
 with it.** The flag must
@@ -820,7 +819,7 @@ harness takes
 - the boundary behaves: just above 21.00 % keeps inhibiting, just below
   releases;
 - `shift_lever_pos` = 4 latches `m_mode`, stays latched through a return to
-  Drive, and clears only on reboot;
+  Drive, and clears only on a key-on (7.1) or a reboot;
 - **the shutdown suppression does not latch** (section 6.3): with B0 held at
   `0x10`, transmission stops; when B0 returns to `0x08`, transmission resumes
   and no latched reason is set. Run it twice in one power cycle, because the
@@ -1017,7 +1016,8 @@ asked for.
 **Loss of the CAN link latches the inhibit off.**
 `0x051` at ~100 Hz is the anchor: if it stops arriving for longer than the
 freshness window *while the inhibit is live*, the device treats the powertrain
-connection as lost and releases, latched until reboot. It is framed as **link
+connection as lost and releases, latched until a key-on (7.1), an explicit
+re-arm or a reboot, as every trip is. It is framed as **link
 loss**, not as individual signals going offline.
 
 **It latches deliberately**: it does not stand down and resume when the bus
@@ -1198,8 +1198,8 @@ bench replay.
 
 `diag_flags` **bit6 `key_on`** is the effective gate (value and freshness
 together) and **bit7 `abort_latched`** says a section 7 trip is latched.
-`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/wican_diag_schema.md`
-is the source of truth; `vtrux-wican-diag.dbc` is in sync.
+`gen-inhibit/diag/wican_diag_schema.md` is the source of truth;
+`gen-inhibit/diag/vtrux-wican-diag.dbc` is in sync (section 10).
 
 The `/gen_inhibit` JSON gains `abort_latched`, `key_on` and `key_fresh`. The
 last two are reported apart deliberately: "the key is off" and "we have not
@@ -1403,6 +1403,7 @@ Five standard 11-bit IDs, DLC 8, round-robin at ~1 Hz each while armed:
 | `0x7F2` | COUNTERS | tx_ok (u32), tx_fail, ctr_bad, rx_errors |
 | `0x7F3` | BUILD | build_id (the first four bytes of the image hash), fw_ver, schema_ver |
 | `0x7F8` | STATUS2 (schema 4) | abort reason, arm block, flags2 (SoC-valid marker, tx pending, ...), would-transmit count, queued-behind count -- layout in the schema doc |
+| `0x7F9` | SKIPS (schema 5) | skipped inhibit frames since arming, withdrawn and late (below) -- layout in the schema doc |
 
 Five pages since schema 5 (the skips page, `0x7F9`, below). The pages go
 round-robin at **240 ms**, so each page still repeats about every 1.2 s.
@@ -1433,11 +1434,9 @@ doc is the authority for the `0x7Fx` range, and new WiCAN pages take the next
 free ID from `0x7F9` upward. **That nothing on the truck transmits in
 `0x7F0`-`0x7FF` is measured, not assumed** (`VALIDATION.md` 10).
 
-**Additions required 2026-09-24** (review B1, B3, C1, C2), layout to be
-allocated in the schema doc with a `diag_schema_ver` bump and the DBC in the
-same change:
+**The pages also carry**, with the layout in the schema doc:
 
-- `diag_mode` gains **4 = PASSIVE**.
+- `diag_mode` **4 = PASSIVE**.
 - A **would-transmit** count for PASSIVE (section 3.1). A reader must be able
   to tell a PASSIVE would-transmit from an INHIBIT transmit from the frames
   alone -- either a separate field, or `tx_ok` redefined per mode with the
@@ -1687,7 +1686,7 @@ Two more requirements on how runs are conducted:
   duration of a run is an adversarial load rather than a field one, and exists
   to bound the tail, not to represent normal operation.
 - **Each disable condition tested from a fresh boot**, because the disable
-  latches until reboot (section 6).
+  latches until a key-on (7.1) or a reboot (section 6).
 
 ### 12.2 Fidelity the simple bench does not have
 
@@ -1750,7 +1749,7 @@ The goal is that functional code changes that do not change hardware
 mechanics can be flashed on the truck after only an emulation run
 (`VALIDATION.md` 12.3, the user's words).
 
-So the emulation suite is a requirement, not a convenience, and it has four
+So the emulation suite is a requirement, not a convenience, and it has five
 parts:
 
 1. **Mock-HAL host build.** `gen_inhibit.c` with the real `twai_port` and
@@ -2032,13 +2031,12 @@ cheap to observe on the first runs.
 Open, but not a bring-up risk: where the background error frames originate
 (14 q6).
 
-Verification against this spec is tracked in the working log,
-`$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-wican-firmware.md`, and its
-results in `VERIFICATION.md`, not here.
-That is also where anything found to CONTRADICT this spec is recorded -- the
-host test suite is verification work, so its findings are spec findings.
-Section 13 stays a list of things not built; a thing that is built but wrong
-belongs in the log and, once resolved, in the relevant section here.
+Verification against this spec is recorded in `VERIFICATION.md`, and open
+findings in the review tracker, not here. That is also where anything found
+to CONTRADICT this spec is recorded -- the host test suite is verification
+work, so its findings are spec findings. Section 13 stays a list of things
+not built; a thing that is built but wrong belongs in the tracker and, once
+resolved, in the relevant section here.
 
 Nothing is outstanding on power or voltage: the sleep state machine is gone,
 so there is no voltage-driven bus teardown or light-sleep to reason about on
