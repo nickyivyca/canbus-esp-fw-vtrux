@@ -142,6 +142,13 @@ def test_scenario_judge():
         "the LAST verdict line counts"
     assert _v(j(_run("  -> PASS\n  -> FAIL\n", 0))) == [Verdict.FAIL]
     assert _v(j(_run("no verdict\n", 0))) == [Verdict.ERROR]
+    # a forced_order premise that did not hold: NOT EXERCISED, VOID
+    ne = j(_run("   [NOT EXERCISED] premise, the forced order: x\n"
+                "   -> NOT EXERCISED  (premise: x; 9 s wall, logs in y)\n", 1))
+    assert _v(ne) == [Verdict.VOID] and ne.detail.startswith(
+        "NOT EXERCISED: premise: x"), (ne.verdict, ne.detail)
+    assert _v(j(_run("   -> NOT EXERCISED  (premise: x)\n   -> PASS  (y)\n", 0))) \
+        == [Verdict.PASS], "the LAST verdict line counts"
 
 
 PIN_OK = (
@@ -480,7 +487,16 @@ def test_suites():
     # 240: no-led-self-test, with 2a acceptance (j)
     # 242: b-bridge/idf-log and b-witness/idf-log, spec 8.3 on the board
     #      (2a acceptance (j), reviewer 2026-11-04)
-    assert len(seen) == 242, "checks across the suites: %d" % len(seen)
+    # 248: the two forced-order cases at phases 130 and 270 ms on the board
+    #      (4), and scenario-scope-test with its -canfail (run 2a 0d0d's
+    #      item 4, reviewer 2026-11-07)
+    assert len(seen) == 248, "checks across the suites: %d" % len(seen)
+    phased = sorted(c.id for g in su["bench"].groups for c in g.checks
+                    if ".phase-" in c.id)
+    assert phased == ["board.%s.phase-%dms" % (s, ms) for s in
+                      ("charger-fault-stop-flow-first",
+                       "fault-during-override-flow-first") for ms in (130, 270)] \
+        and phased == sorted(phased), phased
     # madhouse gets the pinned canre beside the code, named by CANRE_DIR
     mad = 0
     for name in ("emulated", "harness"):
@@ -1578,6 +1594,11 @@ def _hb_no_commit(run):
             if x.sub == "test-list" else x for x in _ORIG["host_bridge_judge"](run)]
 
 
+def _scen_not_exercised_fail(run):
+    r = _ORIG["scenario_judge"](run)
+    return Result(Verdict.FAIL, detail=r.detail) if r.verdict == Verdict.VOID else r
+
+
 def _scen_ignores_rc(run):
     r = _ORIG["scenario_judge"](run)
     if r.verdict == Verdict.FAIL and "-> PASS" in r.detail:
@@ -1988,7 +2009,8 @@ MUTANTS = {
     "test_recorded_judge": [("recorded_judge", _pass_all, "passes everything")],
     "test_scenario_judge": [
         ("scenario_judge", _pass_all, "passes everything"),
-        ("scenario_judge", _scen_ignores_rc, "ignores the exit code")],
+        ("scenario_judge", _scen_ignores_rc, "ignores the exit code"),
+        ("scenario_judge", _scen_not_exercised_fail, "NOT EXERCISED judged FAIL")],
     "test_corrupt_pin_judge": [
         ("corrupt_pin_judge", _pass_all, "passes everything"),
         ("corrupt_pin_judge", _ORIG_SCRIPT, "reads exit 1 as FAIL")],

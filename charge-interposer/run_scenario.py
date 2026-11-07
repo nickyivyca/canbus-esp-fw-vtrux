@@ -324,6 +324,41 @@ def fault_or_flow_first(override=False):
     return ("fault_or_flow_first", bool(override))
 
 
+# The VCU's flow drop leads the fault flag on the wire by at least this in
+# a case that forces the flow-first order (the charger-interposer reviewer,
+# 2026-11-07, after run 2a 0d0d's fault-during-override-flow-first got the
+# flag first: VOID, a harness flaw).
+FORCED_ORDER_MIN_GAP_S = 0.150
+
+# The lead the two "-flow-first" cases give charger_sim: the flag raised
+# 0.8 s AFTER the state edge. charger_sim sends 0x18FFD4C0 one page per
+# 100 ms, mux 0 -> 1 -> 2 -> 3, so the edge (mux 0) reaches the wire up to
+# 0.4 s after it is set, and the flag (mux 3) at the first mux-3 slot after
+# it is set; mux-3 slots fall 0.3 s + k x 0.4 s after the edge's mux-0
+# slot. The VCU drops flow 0.45 s after it sees the edge, on its next
+# 50 ms page-00 send (0.454 s in 0d0d, 0.475 s in 6019). A lead of 0.5 s
+# lands the flag in the 0.3 s or the 0.7 s slot by phase: 0d0d flag first
+# by 152.8 ms, 6019 flow first by 226.6 ms. 0.8 s puts it in the 0.7 s
+# slot or later at every phase, 0.1 s clear of the 0.3 s slot: the flow
+# drop leads by 0.7 - r or 1.1 - r, at least 0.15 s with r up to 0.55 s
+# (0.45 s, the page cadence and 50 ms of jitter), 0.225-0.646 s at the
+# measured r. The spec's outcome after a flow drop does not depend on how
+# much later the fault comes (spec 6, A5: transparent, nothing can trip;
+# after the STAND_BY, PASSTHROUGH and not armed).
+FLOW_FIRST_LEAD_S = -0.8
+
+
+def forced_order(first="flow", min_gap_s=FORCED_ORDER_MIN_GAP_S):
+    """A PREMISE for a case that forces which input reaches the core first:
+    `first` ("flow" or "trip") led the other by at least `min_gap_s`, as
+    fault_or_flow_first() reads the order (the PCAN witness on a board, the
+    core's flight trace in emulation), the gap printed. If it did not hold,
+    the case did not exercise what it names, and run_scenario reports it
+    NOT EXERCISED (bench_suite's scenario_judge: VOID), never PASS or FAIL
+    (ACCEPT-SPEC A11; the charge-interposer reviewer, 2026-11-07)."""
+    return ("forced_order", dict(first=first, min_gap_s=float(min_gap_s)))
+
+
 def diag_frames_ok():
     """Spec 8.2: the diagnostics, decoded from the CAN FRAMES.
 
@@ -1245,16 +1280,19 @@ SCENARIOS = [
 
     Scenario(
         "charger-fault-stop-flow-first",
-        "charger-fault-stop with the fault flag raised 0.5 s AFTER the "
+        "charger-fault-stop with the fault flag raised 0.8 s AFTER the "
         "state edge, so the VCU's flow drop (0.45 s, source 3) reaches the "
-        "core first: the minority order (1 of 19 truck endings), forced. "
+        "core first by at least 0.15 s on the wire at any phase of the "
+        "charger's page rotation (FLOW_FIRST_LEAD_S): the minority order "
+        "(1 of 19 truck endings), forced, and checked as a premise. "
         "The core must go transparent on the flow drop, trip on nothing "
         "after it, and end in PASSTHROUGH at the STAND_BY.",
         vehicle=["--soc", "88", "--imbalance", "0.3", "--stop-on-done",
                  "--max-sim-s", "30000"],
-        charger=["--fault-at", "600", "--fault-flag-lead-s", "-0.5"],
+        charger=["--fault-at", "600", "--fault-flag-lead-s", str(FLOW_FIRST_LEAD_S)],
         timeout=750,
-        expect=[no_ev(r"LOW_POWER overridden"),
+        expect=[forced_order("flow"),
+                no_ev(r"LOW_POWER overridden"),
                 no_ev(r"LOW_POWER accepted"),
                 fault_or_flow_first(),
                 ev(FLOW_DROP),
@@ -1384,15 +1422,18 @@ SCENARIOS = [
 
     Scenario(
         "fault-during-override-flow-first",
-        "fault-during-override with the fault flag raised 0.5 s AFTER the "
-        "state edge, so the VCU's flow drop reaches the core first (the "
-        "minority truck order, forced): transparent on the flow drop, no "
-        "trip and no repeat after it, PASSTHROUGH at the STAND_BY.",
+        "fault-during-override with the fault flag raised 0.8 s AFTER the "
+        "state edge, so the VCU's flow drop reaches the core first by at "
+        "least 0.15 s on the wire at any phase of the charger's page "
+        "rotation (FLOW_FIRST_LEAD_S; the minority truck order, forced, and "
+        "checked as a premise): transparent on the flow drop, no trip and "
+        "no repeat after it, PASSTHROUGH at the STAND_BY.",
         vehicle=["--evap", "--soc", "79", "--imbalance", "0.4",
                  "--stop-on-done", "--max-sim-s", "6000"],
-        charger=["--fault-at", "2500", "--fault-flag-lead-s", "-0.5"],
+        charger=["--fault-at", "2500", "--fault-flag-lead-s", str(FLOW_FIRST_LEAD_S)],
         timeout=420,
-        expect=[ev(r"LOW_POWER overridden"),
+        expect=[forced_order("flow"),
+                ev(r"LOW_POWER overridden"),
                 no_ev(r"RELEASE"),
                 fault_or_flow_first(override=True),
                 ev(FLOW_DROP),
@@ -2031,7 +2072,8 @@ def run_one(sc, args, outdir):
                  "--phys-port", str(args.phys_port),
                  "--sp-log", str(sp_log)]
                 + _transport_args(args, "charger")
-                + ts + sc.charger, stdout=f, stderr=subprocess.STDOUT, env=env,
+                + ts + charger_argv(sc, getattr(args, "fault_at_offset_s", 0.0)),
+                stdout=f, stderr=subprocess.STDOUT, env=env,
                 **POPEN_KW)))
 
     def start_interposer():
@@ -3731,6 +3773,47 @@ def _fault_or_flow_first(intp, veh, chg, diag, override, order,
     return (True, why)
 
 
+def _forced_order(order, first, min_gap_s):
+    """-> (held, why) for forced_order(): `order` as _fault_or_flow_first
+    takes it (the witness's dict on a board, the trace's (t_flag, t_drop)
+    ms in emulation, None when neither exists). Held when both inputs were
+    seen and `first` led the other by at least min_gap_s."""
+    if order is None:
+        return (False, "the input order is unknown: neither a flight trace "
+                       "nor a PCAN witness to read it from")
+    if isinstance(order, dict):
+        t_flag, t_drop, src = order["t_flag"], order["t_drop"], order["source"]
+        who = "on %s" % src
+    else:
+        (t_flag, t_drop), who = order, "on the core's own trace"
+    if t_flag is None or t_drop is None:
+        return (False, "%s missing %s, so the order is not known" % (
+            "the fault flag" if t_flag is None else "the flow drop", who))
+    lead_ms = (t_flag - t_drop) if first == "flow" else (t_drop - t_flag)
+    want_ms = min_gap_s * 1000.0
+    seen = ("the flow drop at %.3f s, the fault flag at %.3f s %s: %s first "
+            "by %.1f ms" % (t_drop / 1000.0, t_flag / 1000.0, who,
+                            "the flow drop" if t_drop < t_flag else "the flag",
+                            abs(t_flag - t_drop)))
+    if lead_ms < want_ms:
+        return (False, "the case forces %s first by at least %.0f ms, but %s"
+                % ("the flow drop" if first == "flow" else "the fault flag",
+                   want_ms, seen))
+    return (True, "%s first by at least %.0f ms, as the case forces: %s"
+            % ("the flow drop" if first == "flow" else "the fault flag",
+               want_ms, seen))
+
+
+def verdict_of(res):
+    """-> ("PASS" | "FAIL" | "NOT EXERCISED", why) for a run_one() result:
+    a premise that did not hold makes the case NOT EXERCISED, whatever its
+    results (ACCEPT-SPEC A11); otherwise PASS when every result held."""
+    bad = [why for ok, why in res.get("premises") or [] if not ok]
+    if bad:
+        return ("NOT EXERCISED", "; ".join(bad))
+    return ("PASS" if all(r[0] for r in res["results"]) else "FAIL", "")
+
+
 def check_invariants(trace_path):
     """-> (ok, why). test_invariants.py's rules over THIS scenario's trace.
 
@@ -3878,7 +3961,13 @@ def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
     rel_vmax, rel_vmin = release_vmax_vmin(intp)
 
     results = []
+    # premises (forced_order): what must hold before the results count
+    premises = []
     for kind, val in sc.expect:
+        if kind == "forced_order":
+            ok, why = _forced_order(order, val["first"], val["min_gap_s"])
+            premises.append((ok, "premise, the forced order: %s" % why))
+            continue
         if kind == "intp_event":
             ok = re.search(val, intp) is not None
             results.append((ok, "event matches /%s/" % val))
@@ -4040,7 +4129,8 @@ def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
     if timed_out:
         results.append((False, "vehicle_sim finished within its timeout"))
 
-    return dict(name=sc.name, results=results, soc_end=soc_end, soc_max=soc_max,
+    return dict(name=sc.name, results=results, premises=premises,
+                soc_end=soc_end, soc_max=soc_max,
                 vmax_max=vmax_max, final_state=fstate,
                 events=[l for l in intp.splitlines() if "] " in l and "intp [" in l],
                 logs=(veh_log, int_log))
@@ -4119,7 +4209,28 @@ def build_parser():
     ap.add_argument("--outdir", default=None,
                     help="default: interposer-runs/ under REVERSE_IT_DIR "
                          "(paths.py)")
+    ap.add_argument("--fault-at-offset-s", type=float, default=0.0,
+                    help="move the scenario's charger --fault-at this many "
+                         "seconds later, so the injection falls at another "
+                         "point of charger_sim's 400 ms status-page rotation "
+                         "(the forced-order cases' phases; the charge-"
+                         "interposer reviewer, 2026-11-07). Refused for a "
+                         "scenario with no --fault-at")
     return ap
+
+
+def charger_argv(sc, offset_s=0.0):
+    """sc.charger, with its --fault-at moved offset_s later
+    (--fault-at-offset-s); ValueError if offset_s is not 0 and the scenario
+    has no --fault-at."""
+    a = list(sc.charger)
+    if not offset_s:
+        return a
+    if "--fault-at" not in a:
+        raise ValueError("%s has no charger --fault-at to move" % sc.name)
+    i = a.index("--fault-at")
+    a[i + 1] = "%.3f" % (float(a[i + 1]) + offset_s)
+    return a
 
 
 def main():
@@ -4177,11 +4288,23 @@ def main():
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
+    if args.fault_at_offset_s:
+        for n in names:
+            try:
+                charger_argv(BY_NAME[n], args.fault_at_offset_s)
+            except ValueError as e:
+                print("run_scenario: REFUSED --fault-at-offset-s: %s" % e)
+                return 2
     allok = True
     for n in names:
         sc = BY_NAME[n]
         print("\n=== %s ===" % n)
         print(sc.why)
+        if args.fault_at_offset_s:
+            print("   --fault-at-offset-s %g: charger_sim %s (the injection "
+                  "moved in the charger's page rotation)" % (
+                      args.fault_at_offset_s,
+                      " ".join(charger_argv(sc, args.fault_at_offset_s))))
         t0 = time.time()
         if "p3a" in [k for k, _v in sc.expect]:
             p_ok, p_why = _p3a_check()
@@ -4195,12 +4318,14 @@ def main():
         res = run_one(sc, args, outdir)
         for line in res["events"]:
             print("   " + line.split("intp ", 1)[-1])
-        ok = all(r[0] for r in res["results"])
+        for good, text in res.get("premises") or []:
+            print("   [%s] %s" % ("PASS" if good else "NOT EXERCISED", text))
         for good, text in res["results"]:
             print("   [%s] %s" % ("PASS" if good else "FAIL", text))
-        print("   -> %s  (%.0f s wall, logs in %s)"
-              % ("PASS" if ok else "FAIL", time.time() - t0, outdir))
-        allok = allok and ok
+        verdict, vwhy = verdict_of(res)
+        print("   -> %s  (%s%.0f s wall, logs in %s)"
+              % (verdict, vwhy + "; " if vwhy else "", time.time() - t0, outdir))
+        allok = allok and verdict == "PASS"
 
     print("\n%s" % ("ALL SCENARIOS PASSED" if allok else "SOME SCENARIOS FAILED"))
     return 0 if allok else 1
