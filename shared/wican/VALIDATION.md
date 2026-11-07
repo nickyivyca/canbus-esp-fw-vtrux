@@ -2,7 +2,7 @@
 
 Why each requirement in `SPEC.md` is written as it is. Test evidence, that
 the component meets them, is in `VERIFICATION.md`, when there is code to
-test. Each entry has a **Basis**, and a **Status**: *complete*, or *basis
+test. Each entry has a **Basis**, and a **Status**: *validated*, or *basis
 pending*, saying what is missing.
 
 **Where things are.** The port plan is
@@ -41,7 +41,7 @@ readings of gen-inhibit's code below are of `gen-inhibit/main` at `0b03841`,
   requirement was unused and was dropped. The other option was a
   link-order workaround in `vtrux/wican`'s `CMakeLists.txt`, leaving the
   cycle.
-- **Status:** complete.
+- **Status:** validated.
 
 ### W2. It starts as a move
 - **Basis:** port plan "Stock WiCAN code": stage (a) keeps stock behaviour
@@ -51,7 +51,7 @@ readings of gen-inhibit's code below are of `gen-inhibit/main` at `0b03841`,
   of that code. User, 2026-10-29, in the gen-inhibit reviewer's session,
   approving the draft, which named the consequence: the charge interposer
   inherits them when it takes this component in its stage (b).
-- **Status:** complete.
+- **Status:** validated.
 
 ### W3. The CAN functions are `can_port`'s
 - **Since port step 1b** (user, 2026-10-31, in the gen-inhibit reviewer's
@@ -65,7 +65,7 @@ readings of gen-inhibit's code below are of `gen-inhibit/main` at `0b03841`,
 - **Reading:** stock files that call `can.c`: `slcan.c`, `elm327.c`,
   `mqtt.c`, `config_server.c` (`can_disable`, `can_get_bitrate`),
   `sleep_mode.c` (`can_disable`).
-- **Status:** complete.
+- **Status:** validated.
 
 ### W4. Start-up is two calls
 - **Basis:** user, 2026-10-29, in the gen-inhibit reviewer's session: the
@@ -73,7 +73,7 @@ readings of gen-inhibit's code below are of `gen-inhibit/main` at `0b03841`,
   ("the boot-time configuration stays, and arming comes after it", user,
   2026-10-16) puts `gen_inhibit_init()` after `can_init` and before the
   protocol branches, which is where the split falls.
-- **Status:** complete.
+- **Status:** validated.
 
 ### W5. Bus-owner callbacks
 - **Basis:** port plan "Stock WiCAN code": gen-inhibit's calls into the
@@ -97,7 +97,7 @@ readings of gen-inhibit's code below are of `gen-inhibit/main` at `0b03841`,
   decision away from `owns_bus()` (the plan's "flash write still
   permitted" callback), defaulting so gen-inhibit is unchanged. Until then
   `owns_bus()` covers both.
-- **Status:** complete.
+- **Status:** validated.
 
 ### W6. SLCAN commands are a build switch
 - **Basis:** gen-inhibit spec 3.2 (review A3) and section 1 goal 2: a
@@ -106,7 +106,7 @@ readings of gen-inhibit's code below are of `gen-inhibit/main` at `0b03841`,
   2026-10-29, in the gen-inhibit reviewer's session, approving the draft.
   The build switches of a shared component are CMake options with the code
   they switch (user, 2026-10-25).
-- **Status:** complete.
+- **Status:** validated.
 
 ### W7. Feature switches
 - **Basis:** gen-inhibit spec 3.2 and 12.3 item 3 (user, 2026-10-16), the
@@ -152,7 +152,7 @@ readings of gen-inhibit's code below are of `gen-inhibit/main` at `0b03841`,
   refusal rows, as gen-inhibit's table had them. A project that turns one
   on, such as the charge interposer in its stage (b), needs R20 to give
   that class per project first.
-- **Status:** complete.
+- **Status:** validated.
 
 ### W8. Project URIs
 - **Basis:** port plan "Stock WiCAN code": the project's endpoints move to
@@ -165,7 +165,7 @@ readings of gen-inhibit's code below are of `gen-inhibit/main` at `0b03841`,
   registered at the hook's place, so a restart-test build's order changes;
   the table is sized for them, so no handler is displaced. Flagged to the
   user with the draft.
-- **Status:** complete.
+- **Status:** validated.
 
 ### W9. It names no board
 - **Basis:** `shared/boards` B2 (user, 2026-10-26): a project names its
@@ -176,7 +176,7 @@ readings of gen-inhibit's code below are of `gen-inhibit/main` at `0b03841`,
   boards share pin names (`shared/boards` B6). A board of another family,
   such as `x2`, which offers only `led1`, needs W10's pin users moved to
   board calls first, in the interposer's stage (b).
-- **Status:** complete.
+- **Status:** validated.
 
 ### W10. Pins
 - **Basis:** user, 2026-10-29, in the gen-inhibit reviewer's session:
@@ -185,12 +185,12 @@ readings of gen-inhibit's code below are of `gen-inhibit/main` at `0b03841`,
 - **Reading:** the pin users are `main.c`'s LEDs and Bluetooth-enable
   input; the config server, MQTT and the TCP server take the LED pin as a
   parameter.
-- **Status:** complete.
+- **Status:** validated.
 
 ### W11. Ownership
 - **Basis:** AGENTS.md "Who owns what" and "Shared code", as
   `shared/boards` B7.
-- **Status:** complete.
+- **Status:** validated.
 
 The readings for W12 to W14 are of `shared/main` `2ab5be6d`,
 `shared/wican/config_server.c`, the OTA handler's body
@@ -208,7 +208,7 @@ The readings for W12 to W14 are of `shared/main` `2ab5be6d`,
   update session. The other exits after `esp_ota_begin()` abort (1247,
   1307, 1334); a failed `esp_ota_end()` (1340) has already freed it. A
   failed `esp_ota_begin()` (1206) has no session to end.
-- **Status:** complete.
+- **Status:** validated.
 
 ### W13. A stalled upload is dropped in about 20 s
 - **Basis:** user, 2026-10-16, in the gen-inhibit reviewer's session:
@@ -226,7 +226,7 @@ The readings for W12 to W14 are of `shared/main` `2ab5be6d`,
 - **Context:** complete uploads take 13-16 s (gen-inhibit's held list,
   2026-10-16), so 20 s with no byte received is well clear of
   a slow but live upload.
-- **Status:** complete.
+- **Status:** validated.
 
 ### W14. The slot is erased as it is written
 - **Basis:** user, 2026-10-17, in the gen-inhibit reviewer's session: keep
@@ -240,4 +240,4 @@ The readings for W12 to W14 are of `shared/main` `2ab5be6d`,
   `esp_ota_begin(update_partition, OTA_SIZE_UNKNOWN, ...)` (line 1206),
   which erases the whole OTA slot before the handler reads the first byte
   of the body.
-- **Status:** complete.
+- **Status:** validated.
