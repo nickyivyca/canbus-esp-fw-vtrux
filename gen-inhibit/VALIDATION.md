@@ -919,4 +919,208 @@ was read as a logger on the truck dropping frames).
 
 - **Status:** validated.
 
-<!-- Batch 3 of 5 ends here: sections 8-16 follow in later batches. -->
+## 8. Concurrency: the bus can be torn down under the worker
+
+- **The port's teardown:** port step 1b (user, 2026-10-31); the paragraph
+  described `can.c` before.
+- **Which tasks called it** (re-audited 2026-09-24, review C2c/D5; `gvret`
+  is no longer built): the SLCAN parser on a close (`C`), from TCP, UART or
+  the websocket -- removed by section 3.2; the ELM327 `ATSP` path, only when
+  the ELM327 protocol is configured -- barred while armed by section 3.2;
+  the OTA handler -- refused while armed (9.3), so a no-op; and
+  **`gen_inhibit`'s own HTTP setter** when switching into or out of OBSERVE
+  with the bus up, because the listen-only change needs a driver
+  re-install. After section 3.2 the last was the only realistic trigger on
+  the truck, and it was a deliberate one.
+- **The callers since 2026-10-16** (user): section 3.2 disables every caller
+  but `gen_inhibit` and the OTA handler.
+- **A forced quiesce reported:** it previously happened silently, which on
+  an auto-armed unit is indistinguishable from never having armed.
+- **The bench case:** before 2026-10-16 the setter called `can_disable()`
+  from the httpd task while the worker was inside `twai_receive()`. Without
+  the handshake that sequence is a crash, so it is the regression test that
+  matters most here.
+- **Status:** validated.
+
+### 8.1 The worker state machine
+- **Basis:** added 2026-10-16 (user). **Why:** the worker's ownership of
+  the bus had grown as separate flags set in different places, and each new
+  interaction (a quiesce meeting a pending mode change, an arm landing
+  during an outside caller's teardown) needed its own rule. The OTA refusal
+  and the ELM327 gate were each a check followed by a separate act; row 8
+  makes the OTA refusal the worker's own decision. Lending the bus to other
+  services was dropped rather than specified, because nothing used it on
+  this device and nothing tested it.
+- **The sleep state machine:** it was an uncoordinated caller that could act
+  entirely on its own: on a low battery-voltage reading it called
+  `can_disable()` and then light-slept, automatically and unattended.
+- **Correction, 2026-09-19.** Earlier notes justified the removal by saying
+  a cranking truck drops into the sleep-voltage range. **That is wrong for
+  this vehicle.** The Vtrux has no 12 V starter motor -- the engine is
+  cranked by the HV generator inverter (section 1) -- so cranking does not
+  pull the 12 V system down the way it does on a conventional vehicle. The
+  removal is still correct, but on the grounds in the spec, not on a
+  cranking voltage sag. Do not reason from 12 V behaviour during a crank on
+  this truck.
+- **`wifi_mode` AP:** the `APStation` reconnect path calls
+  `esp_wifi_stop()`/`start()`, which has no place on a device transmitting
+  to a live powertrain bus.
+- **Status:** validated.
+
+## 9. Firmware integrity
+
+### 9.1 The rollback gate
+- **Why a deferred gate:** stock v4.13 sets
+  `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` and makes the valid call at
+  `main.c:401`, immediately after creating three FreeRTOS queues and
+  roughly 100 lines before `config_server_start()` (the recovery channel),
+  `can_init()` and `wifi_network_init()`. A build that fails in the HTTP
+  server or WiFi bring-up is therefore marked valid **and** unreachable --
+  precisely the failure rollback exists to catch.
+- **Why CAN is not gated:** dropped from the gate 2026-09-10. Its report
+  fired after `can_init()`, which only records the bitrate and does not
+  start the driver -- the bit did not mean what its name said -- and a
+  build that brings up the recovery channel but mishandles the bus is still
+  recoverable.
+- Cost 1,680 bytes; the correct behaviour was never a space trade-off.
+- **The WiCAN rehearsal as a bring-up precondition:** user, 2026-10-04. It
+  is postponed until after the port (user, 2026-11-05).
+- **Context, a known limit: what such a test cannot establish.** The bench
+  bootloader is built from the project's own IDF with the rollback flag
+  set. A serially flashed WiCAN runs that same bootloader, because
+  `idf.py flash` writes it at 0x0 (this unit: byte-identical;
+  `VERIFICATION.md` 9.1). A WiCAN that has only ever been updated over the
+  air still runs MeatPi's bootloader. OTA cannot replace it, and it cannot
+  be tested directly, so for that unit a bench pass is a strong inference,
+  never a demonstration.
+- **Context, a known limit: rollback on the v5.4.2 bootloader is not yet
+  demonstrated** (user, 2026-11-03). The bench pass above was on v5.4.1, on
+  the X2's ESP32-S3, and is not re-run. The WiCAN rehearsal, after the
+  factory reset, is what demonstrates it. That ESP-IDF's rollback logic
+  (`bootloader_support/src/bootloader_utility.c`) is the same file in
+  v5.4.1 and v5.4.2 is context, not basis.
+- **The watchdogs:** verified against upstream config and the ESP-IDF
+  watchdog documentation (2026-09-19). An image that boots and then hangs
+  therefore produces no reset from either, no rollback if it has already
+  self-certified, and on a device with no console no visible signal at all.
+- **Status:** validated for the gate; basis pending for rollback on the
+  v5.4.2 bootloader, until the WiCAN rehearsal.
+
+### 9.2 The OTA upload path
+- **Stock v4.13's handler satisfies none of the three properties.** It
+  overruns its scratch buffer on every upload and retries a timeout
+  forever. Those defects, how they were reproduced, and the fixes are
+  recorded in the working log and in
+  `notes/artifacts/gen-inhibit/rollback-test/ota_defect_writeup.md`; they
+  are history, not part of the specification.
+- **Decided 2026-09-19: the handler is patched and stays patched.**
+  Reverting to stock would mean accepting an upload path that corrupts
+  adjacent memory, survivable only while the linker happens to place
+  nothing live after the server's static data, which changes whenever a
+  component is added or removed. It is additionally not a fixed quantity:
+  the overflow size is the multipart preamble length, which the uploading
+  client chooses, so it varies by browser and tool rather than being a
+  property of the firmware.
+- **Status:** validated.
+
+### 9.3 OTA is refused while armed
+- The worker makes the decision since 2026-10-16.
+- **The flash write with the cache off:**
+  `CONFIG_SPI_FLASH_YIELD_DURING_ERASE=y` with `ERASE_YIELD_DURATION_MS=20`
+  disables the instruction cache in blocks of up to 20 ms. On the
+  powertrain bus at 2250 fps that is ~45 unserviced frames and two
+  consecutive missed 10 ms slots, against the at-least-64-frame receive
+  queue of 5.1 item 1.
+- **Status:** validated.
+
+### 9.4 Image budget
+- **Basis:** stock v4.13 occupies 1,644,288 of 1,781,760 bytes, **92 % of
+  its slot**, which is not enough. **Bluetooth is where the space is.** The
+  `bt` component and its libraries are ~373 KB, against ~6.5 KB for all of
+  `ftp`, `gvret` and `realdash` together -- the linker already discards
+  truly dead code, so source line count is a poor proxy for flash. The
+  removal is held: user, 2026-10-17 and 2026-10-26.
+- **Status:** validated.
+
+## 10. Diagnostics
+
+- **Basis:** modelled on the 914 telemetry approach but simpler. The schema
+  and DBC moved from reverse-it 2026-10-24; the reverse-it copies are
+  frozen at schema 7.
+- **The 240 ms step:** user, 2026-09-29. At 300 ms and five pages the
+  repeat became ~1.5 s, and in six host scenarios the reason cleared before
+  its page came round. (Schema 4 had four pages at 300 ms.)
+- **Diag as telemetry-class frames:** 2026-09-27 (user).
+- **The skips page:** user 2026-09-27, confirmed 2026-09-29. Why a CAN page
+  and not only the status page:
+  - a skip means the generator inverter acted on the VCM's real command for
+    one cycle;
+  - the existing pages show only the trip that three skips within 1 s cause
+    (abort reason 15);
+  - isolated skips therefore leave no trace in a truck log, and nobody is
+    connected to the status page during a drive.
+- **The status-page-only counters:** user 2026-09-29. This replaced the
+  2026-09-27 wording, which put all of these on the same page.
+- **Nothing on the truck in `0x7F0`-`0x7FF`:** measured 2026-09-25, all
+  2,204 captures, `notes/artifacts/gen-inhibit/diag_id_allocation.txt`:
+  zero frames in that range, while the same scan finds `0x7DF`, `0x7E0` and
+  `0x7E8` in hundreds of captures. Before that scan the claim had been
+  repeated six times across the two components' documents with no
+  measurement behind any of them. (The fourth page briefly shipped in
+  development as `0x7F4`; review caught the clash before any hardware run,
+  2026-09-25.)
+- **Diag must not delay an inhibit frame:** review A4.
+- **`0x7F3`:** schema 8, port step 0c; user, 2026-10-19 and 2026-10-25.
+  `diag_fw_ver` stays until stage (b): user, 2026-10-25.
+- **Status:** validated.
+
+## 11. Control surface
+
+- **The JSON's additions:** 2026-09-24.
+- **The counter check on the aborting frame:** changed 2026-09-26 (user).
+  The TX_LATE path used to return before this bookkeeping, so the next
+  `0x051` failed the +1 test and `ctr_bad` reported a dropped frame that
+  was never dropped, and `rx_gap` recorded a doubled gap.
+- **`drv`:** added 2026-09-26 (user).
+- **The controller's error state:** added 2026-10-06 (user). The three
+  exist because without them a bus-off reading on the bench is an inference
+  from proxies. The 2026-10-06 bus-off run
+  (`notes/artifacts/gen-inhibit/runs/tec_busoff_sweep.json`) was the first
+  to read the state directly: `state` showed `bus_off` while `bus_on`, then
+  meaning "driver installed", still read `true`.
+- **`bus_on`:** changed 2026-10-06 (user). The reason: in the 2026-10-06
+  bus-off run the device sat bus-off and silent on the bus for 42.1 s while
+  `bus_on` read `true`. The change bumped `diag_schema_ver`: no layout
+  moved, but a decoder holding the old meaning would read the bit correctly
+  and interpret it wrongly. It also bumped `diag_fw_ver` (user,
+  2026-10-07), under the schema doc's rule for a correctly parsed value
+  that must be interpreted differently. The read rule was reworded
+  2026-10-07 (user).
+- **The scheduler counters:** added 2026-09-27 (user); one page for
+  everything, user 2026-09-29; the balance terms and `standdown`, added
+  2026-10-16 (user).
+- **RESPOND's on-time counts:** added 2026-10-12 (user). RESPOND's clock
+  starts after the dequeue, so time a frame spent queued is otherwise
+  invisible in its own figures.
+- **Uptime and reset reason:** added 2026-10-09 (user). With USB unplugged,
+  the only way to see a reboot was a status request that stalled past a
+  time limit (2026-10-09 bench); the truck has neither a stall threshold
+  nor a USB console. `reset_reason` tells a supply event from a firmware
+  one, the question the 2026-10-09 boot loop left open. An unrecognised
+  value as a string: user, 2026-10-12.
+- **A reboot confirmed by uptime:** added 2026-10-14 (user).
+- **`elf_sha256`:** added 2026-10-14 (user). Why: `0x7F3` carries only the
+  hash's first four bytes (section 10), and the page carries all of it, so
+  the page ties a reading to one image file beyond doubt. The image file
+  carries the same value in its descriptor, so the two can be compared.
+- **Trip 6's error history:** added 2026-10-12 (user); `err_n`'s cap added
+  2026-10-14 (user). The reason: on 2026-10-10 a re-arm latched trip 6 with
+  `bus_error` reading 0, and nothing on the page showed the history it
+  acted on.
+- **Refused transmits:** added 2026-10-12 (user).
+- **One snapshot:** added 2026-09-29 (user). Until then nothing stopped a
+  reading from mixing values from before and after one update, which can
+  unbalance 5.2 item 6's check on its own.
+- **Status:** validated.
+
+<!-- Batch 4 of 5 ends here: sections 12-16 follow in the last batch. -->

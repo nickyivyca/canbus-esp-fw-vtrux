@@ -1206,4 +1206,422 @@ last two are reported apart deliberately: "the key is off" and "we have not
 heard `0x592`" gate transmission identically and mean entirely different
 things.
 
-<!-- Batch 3 of 5 ends here: sections 8-16 follow in later batches. -->
+## 8. Concurrency: the bus can be torn down under the worker
+
+The worker spends its life blocked in a receive. The port's teardown
+uninstalls the driver, which frees the structures that blocked call sits on --
+a use-after-free if it runs from another task. gen_inhibit's own disarm is
+safe (only the worker tears the driver down, from its top-of-loop safe point),
+but other subsystems call the stock `can_disable()` from their own tasks
+knowing nothing about gen_inhibit.
+
+**The callers.** Section 3.2 disables every caller
+but `gen_inhibit` and the OTA handler, so the OTA handler is the only other
+task that takes the bus, and it does so through the worker (8.1). The hook
+below stays as a backstop for a caller that was missed.
+
+**The quiesce handshake (backstop).** Every teardown of port 0 calls
+`gen_inhibit_quiesce()` first, as gen-inhibit's pre-teardown hook (twai_port
+T2 and T3; can_port C5). It posts a request to the worker's mailbox
+(section 3, "The worker makes every mode change"), which the worker applies
+itself (8.1 rows 9 and 13), and blocks until
+the worker publishes that it is parked outside `twai_receive()` -- bounded by
+the 200 ms receive timeout, waiting up to 1 s -- and only then does the caller
+tear down. It is a no-op when called from the worker itself or when the worker
+never started. Re-arming clears the quiesce and brings the bus back up.
+**A quiesce that forces mode OFF must be reported** (JSON reason, log line).
+
+**The bench must exercise this**, on the build that will fly: with traffic
+flowing and the device armed in INHIBIT (and separately in PASSIVE), switch it
+to OBSERVE and back through the HTTP setter, whose driver re-install the
+worker makes itself (8.1 row 5). Required outcome:
+no panic, the requested mode actually in effect afterwards (listen-only for
+OBSERVE, proven per section 12), and a clean re-arm. The host mock-HAL
+harness (section 12.3) must also drive a `can_disable()` from a second
+thread against a blocked receive.
+
+### 8.1 The worker state machine
+
+**States.** IDLE: mode OFF, the driver is not `gen_inhibit`'s, and the worker
+is outside it. ARMED(mode): OBSERVE, RESPOND, INHIBIT or PASSIVE; the driver
+is installed by the worker and the worker receives. UPDATING: an OTA upload
+holds the bus. The status page carries the state, why the worker last
+switched itself off, and the violation count (row 13).
+
+**Update point.** The top of each worker pass, and nowhere else: after each
+received frame, after the 200 ms receive timeout, or on a wake while not
+receiving. Other tasks only post requests (section 3: a mode request not
+taken within 1 s of the call is refused and never applied). If more than one
+is waiting at an update point they are taken in this order: a teardown by
+another caller; an OTA starting or ending; a mode request; the core
+switching itself off.
+
+| # | From | Event | Exit actions | Entry actions / reply | To |
+|---|---|---|---|---|---|
+| 1 | IDLE | mode request, not OFF; install succeeds | -- | install the driver (listen-only for OBSERVE), check the controller is running, set its alerts, re-arm the scheduler, set the core's mode; reply OK | ARMED(m) |
+| 2 | IDLE | mode request, not OFF; install fails | -- | reply with the refusal reason | IDLE |
+| 3 | IDLE | mode request OFF | -- | reply OK | IDLE |
+| 4 | IDLE | the OTA handler posts an update request | -- | confirm the worker is outside the driver; the handler then tears down | UPDATING |
+| 5 | ARMED(m) | mode request, another non-OFF mode | withdraw pending answers (stand-downs, 5.2 item 5); reinstall the driver only if the new mode needs other driver settings (OBSERVE listen-only, the filter) | re-arm the scheduler, set the core's mode; reply OK. If the reinstall fails, reply with the reason and go to IDLE, because the old driver is already gone | ARMED(m2) |
+| 6 | ARMED(m) | mode request OFF | withdraw pending answers; release the bus | reply OK | IDLE |
+| 7 | ARMED(m) | the core switches itself off (receive errors, section 7) | withdraw pending answers; release the bus | report why | IDLE |
+| 8 | ARMED(m) | the OTA handler posts an update request | -- | refused; the handler replies 403 (9.3) with nothing touched | ARMED(m) |
+| 9 | ARMED(m) | **backstop**: another caller tears the bus down | withdraw pending answers; mode OFF | report the forced quiesce (JSON reason and log line), count a violation; confirm the worker is outside the driver before the caller goes on | IDLE |
+| 10 | UPDATING | the upload succeeds | -- | restart; the rollback gate (9.1) takes over | (restart) |
+| 11 | UPDATING | the upload fails: every error exit of the handler signals it | -- | nothing; the bus is already down | IDLE |
+| 12 | UPDATING | mode request | -- | refused, "bus is down for a firmware update". Not expected: the web server runs one request at a time and the boot auto-arm cannot coincide with an upload | UPDATING |
+| 13 | IDLE or UPDATING | another caller tears the bus down | -- | count a violation and log it, only if the caller is not the OTA handler and the bus was up; nothing is forced | unchanged |
+
+**Not state changes.** Trips and latches (sections 6 and 7) end a live inhibit
+inside ARMED; the worker stays ARMED until a mode request or row 7.
+
+**The sleep state machine is removed.** Nothing is wanted from it here --
+the relay is its power management (section 2.1). `can_disable()`,
+`wifi_network_deinit()` and `esp_light_sleep_start()` are excised from it;
+the task only samples battery voltage for `/check_status`.
+
+`wifi_mode` stays `AP`, permanently.
+
+## 9. Firmware integrity
+
+### 9.1 The rollback gate
+
+A freshly written image boots in `ESP_OTA_IMG_PENDING_VERIFY` and must call
+`esp_ota_mark_app_valid_cancel_rollback()` to be kept
+(`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`).
+
+**The `ota_health` component defers the decision** until every
+subsystem needed to *replace* the image has reported in, which is WiFi and the
+HTTP server and only those:
+
+| Bit | Subsystem | Reported from |
+|---|---|---|
+| `OTA_HEALTH_WIFI_AP` | SoftAP started | `wifi_network.c` (shared stock code) |
+| `OTA_HEALTH_HTTPD` | OTA endpoint registered | `config_server.c`, both `httpd_start` sites (shared stock code) |
+| `OTA_HEALTH_CAN` | reported for the boot log only, **not gated** | |
+
+Gate outcomes:
+
+- all gated bits + `PENDING_VERIFY` -> `esp_ota_mark_app_valid_cancel_rollback()`
+- timeout + `PENDING_VERIFY` -> `esp_ota_mark_app_invalid_rollback_and_reboot()`
+- timeout + already `VALID` -> **stay up degraded, do not reboot**
+
+The third branch is required: with no rollback target, rebooting yields a boot
+loop harder to recover from than a degraded but reachable device. Reports
+arriving before the gate is armed must be buffered rather than dropped, so the
+call order in `app_main` stays safe after someone reorders it.
+
+Whether CAN works is judged after boot by the thing that uses it.
+
+**How the gate is tested, and the rule that makes the test safe.** The
+mechanism is exercised on a board with USB and a console rather than on the
+WiCAN, using a two-slot app whose partition table copies the WiCAN's slot
+sizes (`firmware/rollback_bench/`), and a build with a deliberately suppressed
+subsystem. Required outcome: the faulty image diagnoses which bit is missing,
+rolls back unattended, and the board comes up on the healthy slot as `VALID`.
+It is also rehearsed on the WiCAN itself, which is a bring-up precondition.
+
+**The injected fault must never be the recovery channel.** A board whose HTTP
+server is suppressed is stranded if rollback fails; a board whose worker is
+suppressed stays reflashable. On the WiCAN the injected fault masks a gated
+subsystem's report, never the subsystem itself, so the recovery channel
+stays up.
+
+**No watchdog will rescue a hung app, so the gate cannot lean on one.**
+The bootloader's 9 s RTC watchdog is *turned off immediately before the
+user's main function*, because `CONFIG_BOOTLOADER_WDT_DISABLE_IN_USER_CODE`
+is not set, so it covers boot only; and the task watchdog has
+`CONFIG_ESP_TASK_WDT_PANIC` unset, so on timeout it prints a warning and a
+backtrace and **continues running**. Changing either setting is a decision,
+not a given: a watchdog that resets a transmitter attached to a live
+powertrain bus has its own hazards.
+
+### 9.2 The OTA upload path
+
+OTA is a plain `multipart/form-data` POST of the image to the stock endpoint,
+field name `ota_file`, as the device's own web UI form declares it. No paced or
+otherwise special-cased uploader is required or wanted; a plain
+`curl -F ota_file=@<image>` is the interface.
+
+Three properties are required of whatever handler is resident:
+
+1. **A read can never write past the end of the receive buffer.** The read
+   target is a fixed buffer start, never a pointer that has been advanced past
+   the multipart preamble.
+2. **The image is written exactly once, in order, with nothing dropped or
+   duplicated.** The write pointer is reset every iteration, not left parked
+   at an offset from the first chunk.
+3. **Timeout retries are bounded**, so a vanished client aborts the upload
+   rather than pinning the single HTTP worker. The device's HTTP server is a
+   recovery channel, and an upload that hangs it costs a power cycle.
+
+**The handler is patched and stays patched.**
+
+### 9.3 OTA is refused while armed
+
+The handler returns **403 if `gen_inhibit_owns_bus()`**. The
+worker makes that decision (8.1 row 8): the handler posts an update request
+and replies 403 when the worker refuses it, with nothing touched. (OTA is one of
+several flash writers; section 5.1 item 3 extends the same refusal to every
+path that writes flash while the bus is owned.)
+Reflashing under an armed transmitter is never wanted, and `can_disable()` at
+the top of the handler would otherwise tear the TWAI driver down under the
+worker (section 8). It also excludes the one case where an IRAM-resident ISR
+would have mattered: a flash write with the instruction cache off.
+
+### 9.4 Image budget
+
+The image must leave enough headroom in its OTA slot that adding to the
+inhibitor never forces a choice between a feature and the ability to flash.
+
+BLE is not used by this device. Its removal is held until
+after the shared-code port, and until then the build keeps
+`CONFIG_BT_ENABLED=y`.
+
+**Any strip is followed by the full regression set** before it is kept: a clean
+boot, the health gate reaching its decision, the inhibitor bench, and an
+end-to-end OTA. A strip that frees space and breaks the recovery channel is a
+net loss.
+
+## 10. Diagnostics
+
+The WiCAN broadcasts its own state so any Android or laptop log of a run is
+self-documenting: which build ran, what mode, whether and why the inhibit was
+disabled, how much it transmitted. Five plain fixed-ID frames, no
+multiplexing, a hand-maintained schema rather than a generator.
+
+**Source of truth for the layout is `gen-inhibit/diag/wican_diag_schema.md`**
+on `gen-inhibit/main` in the firmware repo; the decode DBC is
+`gen-inhibit/diag/vtrux-wican-diag.dbc` beside it. This section states the
+contract, not the byte offsets.
+
+Five standard 11-bit IDs, DLC 8, round-robin at ~1 Hz each while armed:
+
+| ID | name | carries |
+|---|---|---|
+| `0x7F1` | STATUS | schema_ver, fw_ver, mode, flags (disabled / bus_on (controller running, section 11; reads 1 on the wire in practice, since a controller that is not running sends nothing) / bus_ours / autoarm / shutdown_suppressed / inhibit_live / key_on / abort_latched -- bit layout in the schema doc), disable_reason, shift_pos, soc |
+| `0x7F2` | COUNTERS | tx_ok (u32), tx_fail, ctr_bad, rx_errors |
+| `0x7F3` | BUILD | build_id (the first four bytes of the image hash), fw_ver, schema_ver |
+| `0x7F8` | STATUS2 (schema 4) | abort reason, arm block, flags2 (SoC-valid marker, tx pending, ...), would-transmit count, queued-behind count -- layout in the schema doc |
+
+Five pages since schema 5 (the skips page, `0x7F9`, below). The pages go
+round-robin at **240 ms**, so each page still repeats about every 1.2 s.
+**Every page's repeat interval stays at ~1.2 s
+whenever a page is added:** the round-robin step is 1.2 s divided by the
+number of pages. A trip reason which clears quickly
+must still get one turn on `0x7F8` before it clears, because the PASSIVE
+dry run reads the reason from the log.
+
+**Diag pages are telemetry-class frames of the section 5.2 transmit
+scheduler.** They are sent all the time, including while
+inhibiting, and can never delay an inhibit frame beyond 5.2's bound.
+
+**Skipped inhibit frames get a diag page of their own** (5.2 item 5). It
+carries the count since arming, split
+into withdrawn and late. The page is allocated from `0x7F9` upward, with a
+`diag_schema_ver` bump and the DBC in the same change.
+
+**The rest of the scheduler's counters are on the status page only:** the
+per-class telemetry counts, the balance terms of
+5.2 item 6, the on-time counts and the abort-loop figures. They check the
+scheduler on the bench. On the truck, lost or delayed telemetry already
+shows in the CAN log as a gap in the diag pages themselves.
+
+**`0x7F4`-`0x7F7` belong to the charge interposer**, which
+transmits them on the same powertrain bus; the allocation table in the schema
+doc is the authority for the `0x7Fx` range, and new WiCAN pages take the next
+free ID from `0x7F9` upward. **That nothing on the truck transmits in
+`0x7F0`-`0x7FF` is measured, not assumed** (`VALIDATION.md` 10).
+
+**Additions required 2026-09-24** (review B1, B3, C1, C2), layout to be
+allocated in the schema doc with a `diag_schema_ver` bump and the DBC in the
+same change:
+
+- `diag_mode` gains **4 = PASSIVE**.
+- A **would-transmit** count for PASSIVE (section 3.1). A reader must be able
+  to tell a PASSIVE would-transmit from an INHIBIT transmit from the frames
+  alone -- either a separate field, or `tx_ok` redefined per mode with the
+  mode alongside it; the schema doc decides and says which.
+- **The abort reason on the wire.** `diag_flags` bit7 says *that* a section 7
+  trip latched; with trips now numbering eight (section 7) the log must say
+  *which*. The PASSIVE dry run depends on it.
+- The SoC-valid marker of section 6.2, so a log shows when SoC started
+  counting.
+
+**Diag must not delay an inhibit frame** (section 5). The diag
+pages are the lowest-priority frames on the bus and share the controller's
+single TX buffer with the inhibit frame; scheduling them is part of meeting
+section 5's requirement, and the full-replay test (section 12) measures it.
+
+`0x7F0` is the RESPOND probe (section 3) and is not a diagnostic frame.
+`0x7F1`-`0x7F3`, `0x7F8` and `0x7F9` sit in the 0x7Fx range nothing on the
+truck consumes.
+
+**The on-wire `diag_schema_ver` is the decoder's guard**: a decoder holding a
+different DBC version flags the mismatch rather than trusting the fields. Bump
+it on any layout change and update the DBC and the schema doc together. The
+firmware, the DBC and the schema doc are hand-kept in sync.
+
+**`0x7F3` names the binary.** `diag_build_id` is the first four bytes of the
+running image's
+image hash (shared/tools R1: the ELF SHA-256 ESP-IDF embeds in the app
+descriptor), read from the descriptor at run time. It is packed as the
+interposer's `0x7F7` build id, so both projects' diag pages carry it the same
+way: a u32 with the hash's first byte most significant, sent little-endian, so
+the DBC decodes it as an unsigned 32-bit value that, printed as eight hex
+digits, reads as the hash's first four bytes in order. A build id is looked up
+in the release build records and the bench run records, which name each image
+by its full hash: a prefix that matches no record is unknown, and one that
+matches two is ambiguous, never guessed. Builds of one commit give one image
+hash in worktrees of one clone (shared/tools R5), since reproducible builds
+are on (port step 0b). `diag_fw_ver` is a behaviour/capability revision, with
+its bump rule and table in the schema doc. It stays, by hand, until stage (b)
+of the port retires it in the one diag layout both projects share.
+
+Broadcast is best-effort and fails silently in listen-only, so a truly passive
+tap emits none.
+
+## 11. Control surface
+
+```
+GET  /gen_inhibit                      statistics and state as JSON
+POST /gen_inhibit_set?mode=N&offset=N  0 off, 1 observe, 2 respond, 3 inhibit, 4 passive
+```
+
+The JSON carries the would-transmit count (PASSIVE), the SoC-valid
+marker (6.2), the reason for any mode-OFF the device imposed on itself
+(receive-error self-disarm, forced quiesce -- sections 7 and 8), and the
+freshness of each interlock signal. Error responses from the setter must name
+the actual failure (a bus that would not come up is not "bad offset").
+
+The setter is **POST so a browser prefetch cannot start the device
+transmitting**. `/gen_inhibit` reports `bus_on`, `bus_ours`,
+`rx_errors`, `tx_ok`, `tx_fail`, `ctr_bad`, `disabled`, `disable_reason` and
+`soc_x100`, so bus state is visible rather than inferred, and the counters
+confirm the device is actually seeing traffic.
+
+Two histograms are reported: `rx_gap` (`0x051` inter-arrival as the ESP32 sees
+it) and `response` (RX to probe TX), with bucket edges
+50/100/200/400/800/1600/3200/6400/12800 us. The B5 rolling counter is tracked
+as a cheap check that no frames are being dropped.
+
+**Every received `0x051` updates the counter check and `rx_gap`, including
+the one that triggers a section 7 abort.** The abort is still attributed
+to the frame that triggered it. `ctr_bad` counts real missed counter steps
+only.
+
+**The TWAI driver's own counters are reported**,
+as a `drv` object: `rx_missed` (a frame dropped because the driver's
+software receive queue was full), `rx_overrun` (dropped because the
+controller's hardware receive FIFO overran), `arb_lost`, `bus_error`,
+`tx_failed`, and the current `msgs_to_rx` and `msgs_to_tx`, read from
+`twai_get_status_info()` once per page request, never per received frame.
+They are cumulative since the driver was installed, so per-run figures come
+from differencing. `drv` is `null` while the driver is not installed. Together
+with `ctr_bad` they separate a real receive loss, and which buffer lost it,
+from a counting artifact.
+
+**The controller's own error state is reported too.** The `drv` object also
+carries `state` (the `twai_state_t`, as a
+string: `stopped`, `running`, `bus_off`, `recovering`), `tec` (transmit
+error counter) and `rec` (receive error counter), from the same
+`twai_get_status_info()` read. Nothing else on the page stands in for
+them: `bus_on` (below) says only whether the controller is running, and
+`bus_error` counts error *events* without saying whether any of them moved
+the controller towards bus-off. Bus-off keys on TEC, which
+rises only on transmit errors, so `bus_error` alone cannot distinguish a
+device being driven towards bus-off from one merely receiving a corrupted
+bus. Unlike the cumulative counters beside them these three are
+**instantaneous**, so they are read directly and never differenced across a
+run.
+
+**`bus_on` reports whether the controller is on the bus**, not whether the
+driver is installed.
+- It is true only when `twai_get_status_info()` reports
+  `TWAI_STATE_RUNNING`. It is false when the controller is stopped, bus-off
+  or recovering, and false when the driver is not installed.
+- "Driver installed" stays readable as `drv` being non-null, so nothing is
+  lost.
+- The `bus_on` flag bit on `0x7F1` (section 10) has the same meaning.
+- No driver read is added for it: the page uses the read made when it is
+  built, and the `0x7F1` bit uses the per-loop read section 7's error-rate
+  trip already makes. A per-dequeue read of the driver status perturbed
+  transmit completion.
+- Only the reported value changes. Mode switching still keys on the driver
+  being installed.
+
+**Transmit scheduler counters** (section 5.2). The
+status page carries the scheduler's per-class counters from 5.2 item 6. It
+also carries **skipped inhibit frames**: the count since arming, and the
+count in the current 1 s trip-7 window (5.2 item 5, section 7 trip 7). It
+also carries the on-time counts, **verified** (the receive queue was empty)
+and **unverified** (frames were waiting), with the largest backlog seen for
+an unverified one (trip 7, "What the device can see of lateness"). They
+are reported separately and never summed. **All of these are on the status
+page, one page for everything.** This includes the
+balance terms `carried_in`, `held` and `withdrawn`, and the stand-down count
+`standdown` (5.2 items 5 and 6). **Only the skip counts
+also go on the CAN bus**, in their own diag page (section 10).
+
+In RESPOND the on-time counts and the largest unverified backlog are booked
+for **probe** completions, against the same deadline (the VCM's next
+`0x051`), so RESPOND reports the receive backlog behind its timing figures.
+In every other
+mode they count inhibit completions only, and in OBSERVE and PASSIVE they read
+0.
+
+**Uptime and reset reason are reported.**
+- `/gen_inhibit` carries `uptime_ms`: the time since this boot as a whole
+  number of milliseconds, from `esp_timer_get_time()`. It only rises while the
+  device stays up and starts again from zero after any reset.
+  - So a reading lower than the previous one is a reboot, seen directly.
+  - That needs no request-stall threshold and no USB console.
+- It also carries `reset_reason`: the cause of the reset that started this
+  boot, from `esp_reset_reason()`, read once at boot.
+  - It is reported as the enum name without its `ESP_RST_` prefix (`POWERON`,
+    `PANIC`, `INT_WDT`, `BROWNOUT`, and so on).
+  - A value the firmware does not recognise is reported as its number, as a
+    string (`"17"`), so the field is always a string.
+- Both are on the status page only. Neither goes on the CAN bus, so no diag
+  page changes and neither `diag_schema_ver` nor `diag_fw_ver` is bumped.
+- Both are part of the page's one snapshot (below).
+
+**A reboot is confirmed by uptime, not by the reply.** `/system_reboot`
+replies before it reboots and only schedules the
+reboot, so the reply says nothing about whether the device restarted. A reboot
+is confirmed by `uptime_ms` falling and `reset_reason` reading a software
+restart (`SW`).
+
+**The page names the binary it runs.**
+`/gen_inhibit` carries `elf_sha256`, the SHA-256 that ESP-IDF embeds in the
+running image's app descriptor, in hex. It is on the page only, not on CAN.
+
+**Trip 6's error history is reported.**
+`/gen_inhibit` carries:
+- `err_n`: the number of error frames recorded in the 10 s before the reading.
+  `err_n` counts at most 16, the depth of the device's error history, so 16
+  means 16 or more;
+- `err_age_ms`: the time since the newest recorded error frame, or `null` if
+  none has been recorded since key-on;
+- `err_burst`: whether a recent qualifying burst exists at the reading. This
+  is section 7's trip 6 test, evaluated at the time of the reading, so it shows
+  ahead of time that going live would latch trip 6. `err_n` and `err_age_ms`
+  alone do not decide it: a burst that began 15 s ago and ended 5 s ago trips,
+  while most of it falls outside the last 10 s.
+
+These are on the status page only, and part of its one snapshot (below).
+
+**Refused transmits are counted.** The status page
+carries `refused_slcan` and `refused_can_send`, each the number of attempts
+refused under section 3.2 since boot. On the status page only.
+
+**A status reading is one snapshot.** The status
+page is built by the web server task while the CAN worker updates the
+counters at a higher priority. Every counter on the page must come from a
+single consistent copy. The copy is taken in one short critical section
+against the worker, and the page is built from that copy, never from the
+live counters. The critical section must stay short enough not to move
+any 5.2 timing bound. "One snapshot" covers every value the page shows,
+not only the scheduler's.
+
+<!-- Batch 4 of 5 ends here: sections 12-16 follow in the last batch. -->
