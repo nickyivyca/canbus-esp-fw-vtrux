@@ -274,4 +274,199 @@ has no VCM and no inverter:
 - **Status:** validated for holding `0x08` over mirroring; the two risks
   above are open and are truck questions.
 
-<!-- Batch 1 of 5 ends here: sections 5-16 follow in later batches. -->
+## 5. Transmit strategy and timing
+
+### Reactive trail and the deadline
+- **Basis:** the reactive trail matches the truck-validated tool. The
+  4.69 ms is the minimum VCM `0x051` inter-arrival measured on the truck
+  (range 4.69-16.4 ms, median 9.4-10.5 ms, counter `+1` 100 % of the time,
+  unchanged across an engine start).
+- **Status:** validated.
+
+### The IRAM interrupt option
+- **Basis:** measured with the flash and IRAM builds, the flash build's
+  tail sat inside the IRAM build's own spread: the busy-WiFi tail is
+  scheduling contention with WiFi/lwIP, which an IRAM ISR does not
+  address. It *would* matter while flash is written with the cache off,
+  which is why section 9.3 refuses OTA while armed instead.
+- **Status:** validated.
+
+### The design case and the armed rate
+- **Basis:** the design case is the user's, 2026-09-26. ~2386 frames/s is
+  from a full-bus truck capture, 2026-09-26, so section 9.3's ~2250 is
+  about 6 % low rather than high.
+- **Status:** validated.
+
+### The hazards 5.1 fixes
+- **Receive loss.** The driver's default RX queue is 5 frames deep behind an
+  accept-all filter. At truck load (~2250 frames/s, section 9.3) that is
+  ~2.2 ms, against a measured worst WiFi-preemption delay of 2.39 ms, the
+  figure `WORST_PREEMPT_US` stands for. A dropped `0x051` is an unanswered
+  one: the inverter acts on the VCM's torque for that slot.
+- **Transmit ordering.** The controller has one TX buffer and the driver
+  queues first-in-first-out, so a diag frame (the lowest priority on the
+  bus) sitting in the buffer waiting for an idle bus delays an inhibit
+  `0x051` queued behind it.
+- **The E4 load model confirmed both hazards** (2026-09-25): at the measured
+  worst preemption the 5-deep receive queue loses about one frame -- roughly
+  one time in twenty the VCM's `0x051` -- and a diag page queued ahead of an
+  inhibit delays it (`tx_behind` = 2). An intermittent unanswered frame is
+  the kind that gets attributed to anything else.
+- **Status:** validated.
+
+### 5.1 The fix
+- **Basis:** specified 2026-09-26 (user).
+- **Item 1, the queue depth.** Changed 2026-09-26 (user): it was "at least
+  32". 32 met the 3x margin against 2.39 ms, but a device-side stall of at
+  least 6.8 ms was later seen under a WiFi flood (full-bus truck replay,
+  2026-09-26, on `debfeca`). That is outside the design case, and 64 costs
+  about 1 KB of RAM. This is the remedy that makes the margin positive
+  rather than smaller: WiFi/lwIP preemption blocks the *worker task*, not
+  the TWAI interrupt, which keeps moving frames from the controller into
+  this queue, so the queue is the buffer that has to cover preemption x
+  frame rate. Corrected 2026-09-27 (user): the device detects lateness
+  itself only when the receive queue is empty at that moment.
+- **Item 2, no filter narrowing.** Narrowing cannot close the hazard on its
+  own -- the IDs that remain still fill a 5-deep queue in ~2.5 ms -- the
+  C3's single/dual filter masks cannot express the core's ID set exactly,
+  and a mask that drops one of those IDs fails silently (a device that
+  never goes live, or trips stale).
+- **Item 3, no flash write while owned.** `CONFIG_TWAI_ISR_IN_IRAM` stays
+  unset (section 5), so while the flash cache is disabled for a write the
+  TWAI interrupt cannot run and the controller's small hardware FIFO -- a
+  few frames, ~2 ms at truck load -- is the only buffer; a deeper software
+  queue does not help. Section 9.3 already refuses OTA while armed for this
+  reason. OTA is not the only flash writer: audited 2026-09-26, the HTTP
+  handlers `store_config`, `store_canflt`, `store_auto_data`,
+  `store_car_data` and `upload_car_data` all write SPIFFS files.
+- **Item 4, diag placement.** Changed 2026-09-26 (user). This item
+  previously added "and if no inhibit completion has been observed for 1 s
+  the normal cadence resumes". **That 1 s fallback is withdrawn**, and the
+  mode condition and the clearing rule replace it. The reasoning, because
+  the fallback was not pointless when it was written:
+
+  - It was load-bearing for a **defect**, not for the case it names. The
+    implementation tested liveness and the key with no mode term, and
+    `inhibit_live` is set in PASSIVE exactly as in INHIBIT (3.1), so switching
+    a live INHIBIT to PASSIVE left the device waiting for a completion that
+    could never arrive. The 1 s fallback was the only thing that rescued it.
+    Naming the mode fixes the cause instead.
+  - What remained of its job was to stop a **stale** completion timestamp being
+    read as recent -- stale because the record was set in one place and never
+    cleared, so a device went live again carrying a timestamp from before a
+    trip or a key cycle. Clearing the record addresses that directly, and says
+    what it means.
+  - Without it, the worst case is a diag hold from going live to the first
+    completion: one `0x051` gap, 4.69-16.4 ms, or up to about half a second if
+    the device goes live and the bus then stops, bounded by the trip that
+    follows. Not silence.
+
+  **The argument for keeping it, recorded because it is the one that carries
+  weight.** Its value lay exactly in the case where the reachability reasoning
+  above is wrong, and this component has produced two failures of that shape in
+  one week (four bus-blind corpus scans agreeing with each other; two sessions
+  "independently replicating" a witness artefact they had both inherited). It
+  was withdrawn on the ground that the failure it guarded is now bounded at one
+  `0x051` gap rather than being unbounded silence -- not on the ground that the
+  state is provably unreachable.
+
+  Amended 2026-09-27 (user): placement is no longer the safety mechanism.
+  A diag page queued right after a completion still reached the wire after
+  the VCM's next command once in a 300 s full-bus replay (it waited ~10.5 ms
+  for arbitration; 5.2 below). The TWAI controller has a single transmit
+  buffer fed first-in-first-out, so a low-priority frame waiting in it holds
+  back a high-priority one behind it, however it was placed.
+- **Status:** validated.
+
+### 5.2 Transmit scheduler
+- **Basis:** specified 2026-09-27 (user).
+
+**Why.** A 300 s full-bus replay on the shipping build (WiFi idle) produced
+one inhibit frame on the wire *after* the VCM's next command, and a TX_LATE
+abort. The raw witness log shows our diag page `0x7F3` going out 0.17 ms
+ahead of it, having waited ~10.5 ms for arbitration since the completion it
+was queued after (715 diag pages over the arm: p50 1.1, p99 2.7, max
+10.5 ms). The TWAI controller has **one transmit buffer**, fed
+first-in-first-out by the driver, so a lowest-priority frame waiting in it
+blocks a highest-priority frame behind it. The bus would let the inhibit win;
+the controller never offers it. A lowest-priority frame's wait for an idle
+bus has no hard bound. The bench replay made this instance likelier than the
+truck would (section 12.2: batched timestamps squeeze VCM gaps and saturate
+the bus in patches), but the mechanism needs neither.
+
+The user rejected removing diag from the bus while inhibiting: *"the whole
+point of the status messages is that they are around all the time. even if we
+do not have it yet now, we may in the future want to have functionality
+logged during inhibit. So we should structure such that this is easier."*
+And the constraint on the design: *"must be architected so that it can be
+rigorously emulated on the bench. (and the same cases need to pass on
+hardware after emulated)"*.
+
+- **Item 1:** only `twai_port`'s send calls the TWAI transmit API since
+  port step 1b (user, 2026-10-31).
+- **Item 4, the 1 ms bound:** user, 2026-09-27. *Why a loop and not one
+  abort (measured 2026-09-27, item 9).* An abort that lands while our
+  frame is in its arbitration field, where the frame then loses, **has no
+  effect**. The frame stays in the buffer and keeps contending, with no
+  completion event, only ARB_LOST. Under contention a single abort did this
+  to 7 of 78 frames. Once the frame has lost, TS reads 0 until the next
+  start of frame, and an abort then is the awaiting-arbitration case, which
+  worked every time.
+- **Item 5:** measured, 169 of 169 aborted frames that never reached the
+  wire were reported as a successful transmission. The deadline is the
+  user's, 2026-09-27. A late frame counts as a skip: user, 2026-09-27,
+  replacing "trips at once". Stand-downs are not skips: user, 2026-10-16.
+- **Item 6:** the counts are not in a diag page (section 10, user,
+  2026-09-29). The balance identity was added 2026-09-29 (user).
+  - `carried_in`: without it, a carried frame's completion landed in the
+    new arm with nothing queued against it. This happened on 3 bench arms
+    (+1 each).
+  - `held`: corrected 2026-09-29 (user). It first read "the frame in the
+    controller right now"; a bench reading with `held` 1 and the driver's
+    `msgs_to_tx` 0 would have read one short under that wording. Without
+    it, that was 4 bench arms at -1, and it is the one gap "telemetry is
+    never lost silently" cannot leave open.
+  - `withdrawn`: added 2026-09-29 (user). The equality was changed
+    2026-10-16 (user); it read `withdrawn + dropped = skipped`. The first
+    version of the balance identity omitted `withdrawn`, and so did not
+    balance on any reading with a withdrawn skip.
+  - **A stand-down withdrawal ends the wait:** on `c65c45e` it did not: an
+    M-mode release 260 us after a `0x051` left the pages silent until the
+    re-arm (bench B20 `liveflag-mmode`).
+  - **A re-arm while a withdrawal is still running:** added 2026-10-16
+    (user). Without this the new arm books the frame `withdrawn` when the
+    loop removes it, with nothing on the right, and its equality reads one
+    over for the rest of the arm. It is reachable only by timing: a re-arm
+    within about 0.4 ms of the withdrawal starting (implementor's reading
+    of `c6fdab5`).
+  - **The longest hold and wait exclude a carried-in frame:** user,
+    2026-09-29. Booking it into the new arm's longest hold produced figures
+    of 142-310 s on 90 s arms.
+- **Item 9:** the two requirements on the model were added 2026-09-27
+  (user). Measured on the bench C3 (provenance in `VERIFICATION.md`):
+
+  | Abort issued when | Trials | Result |
+  |---|---|---|
+  | awaiting arbitration (TBS = 0, TS = 0) | 162 | removed every time, never on the wire; buffer free in 6-21 us; reported TX_IDLE + TX_SUCCESS |
+  | transmitting, idle bus (TS = 1) | 37 | a no-op: the frame completed on the wire |
+  | TS = 1 under contention, single abort | 8 | 7 **no effect**: frame still in the buffer, ARB_LOST only, no completion. 1 removed, reported TX_IDLE + TX_SUCCESS + ARB_LOST |
+  | the item 4 loop under contention | 78 | 78 freed, none on the wire, 1-2 abort commands, 5/6/36 us (min/median/max) from the first abort to a free buffer |
+  | empty buffer (control) | 5 | no TX alert |
+  | no abort (a genuine completion) | 10 | on the wire, buffer free in 242/249/253 us, TX_IDLE + TX_SUCCESS |
+
+  The abort has been issued by `twai_port`'s abort-if-awaiting since port
+  step 1b.
+- **Item 10:** both halves replay recorded truck traffic (user,
+  2026-10-02). *Why the existing harnesses did not do it:* the replay
+  harness compiled only the core, so replayed traffic never reached the
+  scheduler. A synthetic long run (fixed 10 ms commands) misses the real
+  command timing, the real arm and key transitions, and the dense traffic
+  that wakes the worker on the truck. The whole capture in the default
+  suite, and the emulation half's acceptance list: user, 2026-10-03. The
+  replay reader is where the `83dbec2` shortfall came from; the mock clock
+  was not the cause and is not to be rebuilt (user, 2026-10-03).
+  Emulation replays traffic for its stimulus, not for bus load: user,
+  2026-10-03.
+- **Status:** validated.
+
+<!-- Batch 2 of 5 ends here: sections 6-16 follow in later batches. -->

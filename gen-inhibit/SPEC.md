@@ -357,4 +357,341 @@ command and nothing here needs it.
 Holding `0x08` is a change to the one configuration proven on the vehicle,
 and two risks remain that no bench can close (`VALIDATION.md` 4.1).
 
-<!-- Batch 1 of 5 ends here: sections 5-16 follow in later batches. -->
+## 5. Transmit strategy and timing
+
+**Reactive trail.** Transmit immediately on each `0x051` RX, with
+no forward prediction. This makes the arm
+interlock structural: a reactive trail transmits only in response to a received
+`0x051`, so it cannot transmit into a dead or unknown bus. No TX without a live
+RX.
+
+The deadline is the VCM's *next* frame, and the number that matters is the
+**4.69 ms** minimum inter-arrival measured on the truck.
+
+Decisions:
+
+- **A plain high-priority task is sufficient**, because the worker's overhead
+  is far inside the 4.69 ms guard band (section 12 measures it).
+- **The IRAM interrupt option stays at the stock setting.**
+  `CONFIG_TWAI_ISR_IN_IRAM` is not set.
+- **Trail timing avoids the same-ID collision** a lead or simultaneous
+  strategy would risk.
+
+**Design case: normal truck operation.** The worst-case
+preemption this section designs for, `WORST_PREEMPT_US` = 2.39 ms in the E4
+model, is what the truck normally sees: no heavy WiFi traffic to the device
+while it is inhibiting.
+
+**~2386 frames/s is the rate the armed condition carries.**
+
+#### The hazards 5.1 fixes
+
+Receive loss behind the driver's default 5-deep RX queue, and transmit
+ordering behind the controller's single TX buffer (`VALIDATION.md` 5).
+
+Required: **nothing else the device transmits or receives may cause an inhibit
+frame to be lost or to reach the wire after the VCM's next `0x051`.** That it
+holds is a section 12 test on a full-replay bus.
+
+#### 5.1 The fix
+
+1. **Receive queue depth.** Whenever the TWAI driver is installed, its
+   software RX queue holds **at least 64 frames** -- ~27 ms of truck traffic
+   at ~2386 frames/s, about 11x the design-case worst preemption (2.39 ms).
+   A deeper queue turns loss into lateness. Lateness past the VCM's next
+   `0x051` is handled by section 7 trip 7, as a skip. The device detects it
+   itself only when the receive queue is empty at that
+   moment. Lateness caused by a receive backlog is exactly the case it can
+   miss. Those verdicts are counted as "on time, unverified" (trip 7,
+   section 11), and the bench witness is the check for them.
+2. **No acceptance-filter narrowing.** The controller keeps accept-all.
+   Revisit only together with a test proving every ID the core reads is
+   delivered.
+3. **No flash write while `gen_inhibit` owns the bus** (any non-OFF mode).
+   **Every flash-writing path must be refused while owned**, the 9.3
+   way (HTTP 403 naming the reason, and a log line); the implementation audit
+   must confirm there are no others. Writes during boot, before the inhibitor
+   can arm, are allowed. The WiFi driver's storage stays RAM-only
+   (`esp_wifi_set_storage(WIFI_STORAGE_RAM)`, `wifi_network.c`), so it writes
+   no NVS -- asserted, not assumed. The IRAM decision stands only with this
+   refusal in place.
+4. **Diag is scheduled around the inhibit, not by the clock.** While inhibit
+   frames are being transmitted -- **mode INHIBIT**, live, key on, and not
+   suppressed by 6.3 -- a diag page that falls due is queued only
+   **immediately after an inhibit frame has been observed complete** -- the
+   moment the VCM's next `0x051` is furthest away (>= 4.69 ms), giving the
+   lowest-priority frame on the bus several ms to find an idle slot. At any
+   other moment it waits for the next completion. When no inhibit frames are
+   being transmitted -- not live, key off, PASSIVE, RESPOND -- diag keeps its
+   normal cadence, so a device that has stopped transmitting still reports.
+   **The device's record of the last completion is cleared whenever it stops
+   being able to transmit** (disarm, a section 7 abort, or a change to a mode
+   that does not transmit), so a device that has just gone live has no
+   completion on record and takes the normal cadence until its first one. The
+   existing rule that no diag is queued while an inhibit is outstanding
+   (section 10) is kept.
+
+   **Placement is not the safety mechanism.** **Section 5.2's transmit
+   scheduler is the guarantee.** Placement right after a completion is kept
+   as the scheduler's default slot for telemetry, because it makes an abort
+   rarely necessary.
+5. **Proof, as a margin and not as one clean scenario.** The E4 load model
+   (section 12.3) must show, with this fix: no frame lost and none late at
+   the truck rate with the measured worst preemption; `tx_behind` = 0 while
+   live; and a **preemption sweep** reporting the shortest preemption that
+   loses a frame, which must be **at least 3x the design-case worst
+   preemption (>= 7.2 ms against 2.39 ms)**. The design case is normal truck
+   operation, with no heavy WiFi to the device while inhibiting (section 5).
+   The full-replay bench run and the direct backlog measurement (section
+   12.4) then measure it on hardware.
+
+#### 5.2 Transmit scheduler
+
+**Requirements.**
+
+1. **One transmit owner.** Every frame the device transmits goes through
+   one scheduler: inhibit frames, the RESPOND probe, and telemetry (the diag
+   pages of section 10 and any later logging). Nothing else transmits while
+   the device owns the bus: the stock send is refused (3.2; can_port C4),
+   and only `twai_port`'s send calls the TWAI transmit API (twai_port T6).
+2. **Priority classes: inhibit > probe > telemetry.** Within a class, first
+   in first out. Telemetry is a class, not a list of pages: a later logging
+   feature adds frames to it through the same interface and inherits every
+   guarantee below without touching the inhibit path.
+3. **At most one frame handed to the driver at a time.** The driver's own
+   software queue therefore never holds a telemetry frame ahead of an
+   inhibit. The scheduler hands over the next frame only when the previous
+   one has completed or been aborted.
+4. **Preemption by abort, and recheck.** When an inhibit frame is due and
+   the driver holds a telemetry frame, the scheduler aborts it with the
+   controller's abort-transmission command, **then rechecks the buffer**
+   until it is free. While the controller is not transmitting (TS = 0), it
+   re-issues the abort; while it is transmitting (TS = 1), it waits. The
+   loop is bounded at **1 ms**. The aborted telemetry
+   frame is requeued at the head of the telemetry class. A frame that is
+   really on the wire cannot be aborted (the controller finishes it), and the
+   inhibit waits for it. **The guarantee: telemetry never delays an inhibit
+   frame by more than one telemetry frame already on the wire** (~276 us at
+   DLC 8, 500 kbit/s, worst-case stuffing).
+
+   **If the bound is reached,** the inhibit frame stays queued at the head of
+   its class and the scheduler keeps trying until the deadline in item 5.
+5. **Completion accounting survives the abort.** The driver reports an
+   aborted frame as a **successful transmission**: TX_SUCCESS with TX_IDLE,
+   and msgs_to_tx falling to 0. So the scheduler's own
+   record of which frame it aborted is the **only** way to tell an abort from
+   a completion. It must never credit that completion to an inhibit frame.
+   Order: abort and recheck (item 4) until the buffer is free and
+   msgs_to_tx is 0, then hand over the inhibit. Section 7 trip 7 is judged on
+   the inhibit's own completion only.
+
+   **The inhibit's deadline is the VCM's next `0x051`.**
+   An inhibit frame that is late but still ahead of the VCM's next command
+   is sent: it still wins the counter race. Once the VCM's next `0x051` has
+   been received, the old frame is too late. If it has not reached the wire
+   by then, the scheduler **withdraws it** (the item 4 loop, if it is already
+   in the buffer) and it becomes a **skipped frame**: it is never sent, it is
+   counted, and the device answers the new command normally. For that one
+   cycle the generator inverter acts on the VCM's real command. Skips are
+   reported on the status page and in a diag page (section 10), and they
+   feed trip 7 (3 within 1 s). A frame that went out late, or may have,
+   counts as a skip too. It
+   was either seen to complete only after the VCM's next `0x051` was
+   dequeued, or it was still in the buffer at the deadline. The generator
+   inverter has already acted on the VCM's command with that counter and
+   ignores it. See section 7 trip 7, including what the device can and
+   cannot see of lateness.
+
+   **An answer withdrawn because the inhibit stopped being live is not a
+   skip.** A section 6 release or a section 7 trip that
+   lands while an answer is queued or still in the controller withdraws it
+   on purpose; nothing failed, and it cannot feed trip 7. It is counted as a
+   **stand-down** (item 6), never as a skip, whether or not it reached the
+   wire. A skip means only that a live inhibit missed a cycle.
+6. **Telemetry is never lost silently.** It may be delayed, aborted and
+   requeued, or dropped when its queue is full. Every one of those is
+   counted, per class: queued, sent, aborted, requeued, dropped, and the
+   longest wait. The counts are on the status page (section 11), and not in
+   a diag page (section 10). Placement of telemetry right after an inhibit
+   completion (5.1 item 4) stays as the default slot; it is an optimisation
+   that makes aborts rare, not the guarantee.
+
+   **The counts must balance on every reading, per class and per arm:**
+
+   `queued + carried_in = sent + dropped + withdrawn + depth + held`
+
+   A frame that is aborted and requeued goes back into `depth`, so
+   `aborted` and `requeued` are not terms. A refused frame stays queued.
+   Three terms are new:
+
+   - **`carried_in`**: a frame the controller was still holding when the
+     device was re-armed. Re-arming keeps that frame, deliberately, because
+     the hardware may really still hold it. The per-arm counts are cleared,
+     so without this term its completion lands in the new arm with nothing
+     queued against it.
+   - **`held`**: 0 or 1, with its class. It is a frame handed to the driver
+     whose departure has not yet been credited as sent. That covers a frame
+     still in the controller, and also one that has left it but that the
+     worker has not yet seen go, because completions are noticed only on a
+     worker pass. Without it, a reading taken while a frame is in flight
+     shows one frame short.
+   - **`withdrawn`**: inhibit frames that the
+     scheduler gives up on at the deadline and will never send. There are
+     three routes: purged from the queue at the VCM's next `0x051`,
+     withdrawn when the inhibit stops being live, and given up in the
+     controller by the item 4 loop. The last route includes a frame that
+     **may have reached the wire late**: once the loop is running, the
+     device cannot tell a completion from an abort, so that frame is
+     counted here and as a late skip, never as `sent`. So `withdrawn` does
+     not mean "never on the wire". It is always 0 for the other classes.
+     Every skip is either `withdrawn` or, from a full queue, `dropped`, and
+     so is every **stand-down** (item 5), so
+     `withdrawn + dropped = skipped + standdown` (inhibit class) **once the
+     item 4 loop has finished**. `standdown` counts the answers
+     withdrawn by the second route, from the queue or from the controller.
+     **A stand-down withdrawal ends the device's wait for that answer's
+     completion.** Nothing the device sends afterwards, diag pages included,
+     may wait on it. The skip is counted at the deadline, but a frame
+     given up in the controller is booked `withdrawn` only when the loop
+     removes it. Until then it is still in `held`, which keeps the balance
+     identity closed while this equality reads one short. A check of the
+     equality must not be read mid-withdrawal.
+     **A re-arm while a withdrawal is still running:** if a re-arm lands
+     while the item 4 loop is still removing an
+     inhibit the old arm gave up (as a skip or a stand-down), the new arm
+     counts that answer as `standdown` at the re-arm, as it counts the
+     carried frame in `carried_in`. Each arm's equality then holds on its
+     own.
+
+   **The longest hold and the longest wait both exclude a carried-in
+   frame.** Its hold began in an earlier arm, so the new arm cannot know how
+   long it really was. A carried-in frame that is aborted
+   and requeued keeps its old-arm queue time, so the same applies to its
+   next wait. It is counted in `carried_in` and nowhere
+   else. It is not clamped to the re-arm time either, because that would
+   be a measurement the device did not make.
+7. **The section 10 rule is subsumed.** "No diag while an inhibit is
+   outstanding" becomes a property of the scheduler: nothing is handed to
+   the driver while an inhibit is outstanding.
+8. **Architected for emulation.** The scheduler is platform-free logic,
+   compiled unchanged on the host, driven by a virtual clock, behind a narrow
+   hardware interface: *submit a frame*, *abort if awaiting arbitration*,
+   *buffer state* (empty / awaiting arbitration / transmitting), and
+   *completion events* (completed, aborted, failed). Everything that decides
+   *what* goes next and *when* lives on the host-testable side. Only the
+   calls into the TWAI driver and the abort register live on the device
+   side.
+9. **The hardware's behaviour is measured before it is modelled.** Before
+   the scheduler is built on it, a bench test on the C3 establishes:
+   - that an abort removes a frame awaiting arbitration;
+   - that an abort during transmission is a no-op and the frame completes;
+   - what the driver then reports (TX alerts, `msgs_to_tx`, its internal
+     count);
+   - how long the buffer takes to become free after an abort.
+
+   The abort command is a private HAL call (`twai_ll_set_cmd_abort_tx`,
+   below the public driver API; `twai_clear_transmit_queue` does not touch
+   the buffer). It is issued by `twai_port`'s
+   abort-if-awaiting (twai_port T8). Its interaction with the driver's
+   interrupt handling is exactly what this test must pin. The emulator's model of the buffer and
+   the abort is written from these measurements and checked against them.
+
+   Two requirements on that model:
+   - **It models the driver's reporting, not only the buffer.** An aborted
+     frame is reported as transmission-complete, so the mock driver's model
+     of an abort must reproduce its effect on the TX alert bits and on
+     `msgs_to_tx` as measured, not just remove the frame from the queue.
+     Otherwise the emulator cannot exercise item 5.
+   - **It states what it is calibrated against.** Abort behaviour comes from
+     the direct measurement above. Frame delays and arbitration waits taken
+     from bench replays describe a bus burstier than the truck's (section
+     12.2: batched corpus timestamps), so they are stress cases, not truck
+     rates, and are labelled as such wherever the model uses them.
+
+   **The emulator's model of an abort** (the mock driver and the E4 load
+   model) must reproduce, from the bench C3's measurement (`VALIDATION.md`
+   5.2 item 9):
+   - awaiting arbitration: the frame is removed, TX_IDLE + TX_SUCCESS, and
+     msgs_to_tx falls to 0;
+   - transmitting: any of three outcomes:
+     - the frame completes on the wire;
+     - it is removed and reported as a success;
+     - the abort has no effect and the frame keeps contending, with ARB_LOST
+       only;
+   - empty buffer: no alert.
+
+   A model that knows only the documented no-op would pass cases the
+   hardware fails.
+10. **One case catalogue, two runners.** Each scheduler case is defined once
+    -- stimulus and pass criteria -- and run first in emulation (the mock-HAL
+    build and the E4 load model), then on the bench against hardware, with
+    the same pass criteria read from the witness and the device. A case
+    that exists only in emulation, or only on the bench, does not count
+    toward acceptance. The minimum catalogue:
+    - telemetry waiting in the buffer when a VCM command arrives: aborted,
+      the inhibit on time, the telemetry requeued and later sent;
+    - telemetry already transmitting when a VCM command arrives: not
+      aborted, the inhibit delayed by at most that frame;
+    - sustained bus saturation: no inhibit late, telemetry delayed and
+      counted, never silently lost. **"No inhibit late" is judged as
+      `ontime + ontime_unverified == queued`,** with the bench witness
+      consulted for every unverified one: an unverified completion is one
+      the device could not confirm against an empty receive queue, not a
+      late frame, so `ontime == queued` is not the criterion;
+    - telemetry queue overflow: drops counted;
+    - an abort racing a completion: no double credit, no inhibit credited
+      with a telemetry completion;
+    - an abort that lands in our telemetry frame's arbitration field and has
+      no effect (item 9): the item 4 loop frees the buffer within its bound,
+      and the inhibit is on time;
+    - the inhibit cannot get out before the VCM's next command: it is
+      withdrawn, never reaches the wire late, and is counted as a skip; the
+      next command is answered normally;
+    - 3 skips within 1 s: trip 7; 2 skips within 1 s: no trip;
+    - the inhibit is still in the transmit buffer at the deadline, or its
+      completion is seen only after the next `0x051` is dequeued: counted as
+      a skip, not an immediate trip (trip 7, as amended);
+    - the full-replay long arm (section 12.4): no inhibit after the VCM's
+      next command, `tx_queued_behind` 0, telemetry present throughout.
+      **Both halves replay recorded truck traffic.**
+      - **Emulation:** a real capture through the full shipped firmware,
+        with every ID at its recorded timing: the core, the 5.2 scheduler
+        and the device HAL over the mock driver. Use the same capture the
+        bench long arm uses (`scottsvalley_armable_300s.log`).
+      - **Telemetry "throughout" is judged per window,** never as a total.
+      - **The whole capture runs:** all 300 s, 706,283 frames, in the
+        default suite, not behind a flag. It is also the
+        only emulation case that
+        reaches the verified-on-time path: sparse synthetic traffic has every
+        completion observed together with the next command.
+      - The synthetic long run stays as an additional case.
+      - **The emulation half is accepted when all of these hold:**
+        - the full capture replays with every ID;
+        - commands lost inside the mock: 0;
+        - the verified-on-time path is reached in proportion comparable to
+          the bench's (8,976 of 8,983 in the case 3 arm on `f977d81`);
+        - every existing case still passes;
+        - the latest mutation rounds still catch everything they caught.
+      - **The replay reader delivers every frame of a timestamp burst** (the
+        capture has bursts of up to 12 frames on one timestamp). The mock
+        clock is not to be rebuilt.
+      - **A blocked receive's 200 ms timeout must not push the replay late:** a
+        backlog that then drains with no time passing produces skips the truck
+        cannot.
+
+    **Emulation replays recorded traffic for its stimulus, not for bus
+    load.**
+    - **What a replay gives:** real command timing, real arrival ordering,
+      real arm and key transitions, and the receive-side pressure of dense
+      traffic.
+    - **What it does not give: any bus load.** The mock has no shared
+      medium. It completes one of our frames a fixed air time after that
+      frame reaches the head of our own transmit queue
+      (`controller_advance()` in `fake_twai`), and a frame delivered to the
+      receive path consumes nothing a transmit needs.
+    - **Load enters emulation only as a calibrated dial** (the contention
+      flag and air-time overrides), and the bench is what calibrates it.
+    - **So a load-dependent criterion requires a bench run.** An emulation
+      pass is not evidence for it, however faithful the stimulus.
+
+<!-- Batch 2 of 5 ends here: sections 6-16 follow in later batches. -->
