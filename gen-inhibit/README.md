@@ -5,8 +5,9 @@ built with ESP-IDF on the WiCAN codebase, on branch `gen-inhibit/main`. This
 folder is the project's own (port step 0d, 2026-10-26, AGENTS.md "Project
 layout"): its firmware build root `firmware/`, its host-side tools `tools/`,
 its tests `test/`, its diag interface `diag/` and the release launcher
-`vtrux_tools.py`. Its spec, `VALIDATION.md` and `VERIFICATION.md` can move
-here later.
+`vtrux_tools.py`; and its spec's three documents, `SPEC.md`, `VALIDATION.md`
+and `VERIFICATION.md`, moved here from reverse-it on 2026-11-07 (review
+tracker C6-C6c).
 
 This file is the project's file map: who owns each file. It belongs to the
 gen-inhibit reviewer, who decides ownership when it is unclear and records it
@@ -15,7 +16,10 @@ starting `$REVERSE_IT_DIR` are in reverse-it and not yet moved.
 
 ## Reviewer
 
-- The spec: `$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-wican-spec.md`.
+- The spec: `gen-inhibit/SPEC.md`, and why each requirement is written as it
+  is: `gen-inhibit/VALIDATION.md`. Moved 2026-11-07 from
+  `$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-wican-spec.md`, which
+  now only points here.
 - Published interfaces, which are spec: the diag schema
   `gen-inhibit/diag/wican_diag_schema.md` and its DBC
   `gen-inhibit/diag/vtrux-wican-diag.dbc` (moved from reverse-it 2026-10-24,
@@ -25,12 +29,12 @@ starting `$REVERSE_IT_DIR` are in reverse-it and not yet moved.
   reverse-it copies stay at schema 7 and are no longer read.
 - The review tracker:
   `$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-review-2026-09-22.md`.
-- Validation: `$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-wican-firmware.md`.
+- The working log: `$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-wican-firmware.md`.
   **Status: record** (the gen-inhibit reviewer session, 2026-10-10). Closed
   to new material, because the spec cites it as the record of how its early
   results were obtained. **May change:** only dated corrections beside a
   passage found to be wrong, written by the owner (user, 2026-10-30). **New
-  material goes to:** `gen-inhibit-test-evidence.md` (gen-inhibit tester).
+  material goes to:** `gen-inhibit/VERIFICATION.md` (gen-inhibit tester).
   **Reopening it:** the user's call.
 - This file.
 
@@ -97,8 +101,11 @@ starting `$REVERSE_IT_DIR` are in reverse-it and not yet moved.
 
 ## Tester: harness and verification
 
-- Verification: `$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-test-evidence.md`.
-  Some of its entries are also measurements that a requirement's validation
+- Verification: `gen-inhibit/VERIFICATION.md`, with its generated hash
+  manifest of the SeaDrive files it cites, `gen-inhibit/VERIFICATION-manifest.txt`
+  (port plan goal 20 item 2; user, 2026-11-07). Moved 2026-11-07 from
+  `$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-test-evidence.md`, which
+  now only points here. Some of its entries are also measurements that a requirement's validation
   cites as its basis (for example section 13's cross-host build comparison,
   cited by `shared/tools/VALIDATION.md` R2).
 - In `gen-inhibit/tools/`: `bench_vehicle.py`, `live_bench.py`, `gi_vbus.py`,
@@ -111,7 +118,10 @@ starting `$REVERSE_IT_DIR` are in reverse-it and not yet moved.
   `_mutants` files, and `test_publish_scan_mutants.py`; the chain suite
   `suite_gen_inhibit.py`, `suite_gen_inhibit.settings.example.json`,
   `suite_judges.py`, `bench_compare.py` and their `test_suite_*` and
-  `test_bench_compare*` files (reviewer, 2026-10-23).
+  `test_bench_compare*` files (reviewer, 2026-10-23); the evidence doc's
+  move checker `verification_move.py` with `verification_move_subs.json`,
+  and the manifest tool `verification_manifest.py`, with their `test_` and
+  `_mutants` files (reviewer, 2026-11-07).
 - `gen-inhibit/tools/bench/`: the bench harnesses, judges, runners and rig
   scripts with their tests and mutant runners, moved in from reverse-it by
   `ad0cab3` (port plan goal 20; reviewer, 2026-10-22). This includes the X2
