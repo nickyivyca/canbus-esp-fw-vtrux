@@ -410,6 +410,8 @@ accepted (user, 2026-10-23). So are WiCAN firmware defaults such as its
 hotspot addresses `192.168.80.1` (device) and `192.168.80.2` (laptop), which
 are not home-network details (user, 2026-10-20). So is `~/.espressif`,
 ESP-IDF's default tools folder, as the whole path only (user, 2026-11-03).
+So is bare `madhouse`, in prose and in file names, though it is also a
+bench WiFi SSID (user, 2026-11-07).
 
 **The scan script is an aid to this review, not a replacement for it.**
 Run it first:
