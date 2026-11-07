@@ -19,7 +19,7 @@ measured constraints and the laptop tool's lessons are in
 project's branch (`gen-inhibit/main`, or `gen-inhibit/rollback-fix` before
 it was renamed 2026-10-12) at the time.
 
-**Status** of each entry is *complete* or *basis pending*, with what is
+**Status** of each entry is *validated* or *basis pending*, with what is
 missing.
 
 ## The document
@@ -48,7 +48,7 @@ missing.
   none of the defects in section 9, leaves ~46 KB of OTA slot, and resets
   device configuration on update. The branch was renamed
   `gen-inhibit/main` 2026-10-12 (user); it was `gen-inhibit/rollback-fix`.
-- **Status:** complete.
+- **Status:** validated.
 
 ## 1. Purpose
 
@@ -58,7 +58,7 @@ missing.
   a scheduled disarm.
 - Goal 4 is the reason the firmware work started with rollback rather than
   with the inhibitor.
-- **Status:** complete.
+- **Status:** validated.
 
 ## 2. Target, and why recovery dominates the design
 
@@ -81,19 +81,19 @@ missing.
 - **Not carried into git** (C6): the recovery inventory's row for the
   device's configuration and status backup, which holds WiFi and MQTT
   credentials. It stays in the reverse-it spec's history.
-- **Status:** complete.
+- **Status:** validated.
 
 ### 2.1 Power on the truck
 - **Basis:** added 2026-10-12 (user). USB not connected on the truck, and
   the DC-DC holding 12 V at about 14 V with HV up: user, 2026-10-09.
-- **Status:** complete.
+- **Status:** validated.
 
 ## 3. Modes and ownership of the bus
 
 ### The worker's priority
 - **Basis:** left as is (user, 2026-10-10): on the bench INHIBIT dropped no
   frames under a WiFi flood, on entry into live traffic, or over 300 s.
-- **Status:** complete.
+- **Status:** validated.
 
 ### The mode table and RESPOND
 - The `0x7F0` probe's layout is published in the schema doc (user,
@@ -104,7 +104,7 @@ missing.
 - **Arming brings the bus up itself:** this removed the original soft-lock
   where arming an idle device left the worker busy-waiting on
   `ESP_ERR_INVALID_STATE` at priority 18 and starved httpd.
-- **Status:** complete.
+- **Status:** validated.
 
 ### A mode change takes effect at once
 - **Basis:** added 2026-10-10 (user). Before this, the idle worker checked
@@ -112,7 +112,7 @@ missing.
   the worker looked. About 120 frames arrived for the 64-deep queue on
   every re-arm from OBSERVE, and on 1 in 5 entries from OFF (review
   tracker, re-arm stale frames).
-- **Status:** complete.
+- **Status:** validated.
 
 ### The worker makes every mode change
 - **Basis:** added 2026-10-16 (user). Why: on `c6fdab5` the setter ran in
@@ -121,7 +121,7 @@ missing.
   quiesce wrote the mode and its flags from the caller's task the same
   way. The 1 s rule (user, 2026-10-16) replaced "The setter waits at most
   1 s".
-- **Status:** complete.
+- **Status:** validated.
 
 ### No restart leaves the controller on the bus
 - **Basis:** added 2026-10-13 (user). On the ESP32-C3 a software restart
@@ -135,7 +135,7 @@ missing.
   stages, brown-out, power loss) are read as resetting the controller too,
   which is not measured. What they put on the bus is measured with the
   cold power-on (13).
-- **Status:** complete.
+- **Status:** validated.
 
 ### OBSERVE is silent in hardware
 - **Basis:** rewritten 2026-09-24 (review B1). The earlier text described
@@ -143,7 +143,7 @@ missing.
   stopped doing on 2026-09-19.
 - **Why standby is not a silent tap:** on the MCP2561/2 the STBY pin
   disables the receiver too.
-- **Status:** complete.
+- **Status:** validated.
 
 ### 3.1 PASSIVE
 - **Basis:** added 2026-09-24 (review B1). There was no mode that watches
@@ -152,7 +152,7 @@ missing.
   PASSIVE fills that gap.
 - **The would-transmit count resets on every arm:** added 2026-10-12
   (user); it had counted since boot across every arm.
-- **Status:** complete.
+- **Status:** validated.
 
 ### 3.2 No other transmitter
 - **Basis:** added 2026-09-24 (review A3). The hazard this closes,
@@ -178,14 +178,14 @@ missing.
 - **Refusals counted:** changed 2026-10-12 (user). It previously said
   "logged", but every log is muted after boot, so nothing recorded a
   refusal.
-- **Status:** complete.
+- **Status:** validated.
 
 ### 3.3 Hooks into the shared stock code
 - **Basis:** added 2026-10-29 (user), port step 1a, moving the stock code
   into `shared/wican`; the move changed none of the rules the hooks carry
   out, and the refusal bodies were unchanged by it. The CAN port: port
   step 1b (user, 2026-10-31), including the bring-up failure rule.
-- **Status:** complete.
+- **Status:** validated.
 
 ## 4. The inhibit frame
 
@@ -196,7 +196,7 @@ missing.
   (`notes/artifacts/gen-inhibit/zero_torque_confirm.py`).
 - **Stealing the counter:** the truck experiment confirmed the mechanism
   works whatever the GENE MCU's exact rule.
-- **Status:** complete.
+- **Status:** validated.
 
 ### 4.1 B0 is held at the engine-off state
 
@@ -271,7 +271,7 @@ has no VCM and no inverter:
    when B0 is held rather than mirrored. What the VCM *does* about it is a
    truck question.
 
-- **Status:** complete for holding `0x08` over mirroring; the two risks
+- **Status:** validated for holding `0x08` over mirroring; the two risks
   above are open and are truck questions.
 
 <!-- Batch 1 of 5 ends here: sections 5-16 follow in later batches. -->
