@@ -346,9 +346,13 @@ Rules for `VALIDATION.md`:
 - **A measurement made on a different toolchain, board or code base is not
   the basis for a requirement on this one.** At most it is supporting
   context, labelled as such.
-- **Incomplete validation is allowed, but it must be visible.** A requirement
-  without a basis is marked "basis pending", with what is missing. A
-  requirement that rests on a user ruling cites the ruling and its date.
+- **Each entry's status is "validated" or "basis pending"** (user,
+  2026-11-07). Validated means its basis is recorded and cited. Basis
+  pending means incomplete validation, which is allowed but must be
+  visible: the entry says what is missing. A requirement that rests on a
+  user ruling cites the ruling and its date. Neither status says whether
+  the code meets the requirement; only `VERIFICATION.md` does. Don't write
+  "complete", which reads as "implemented".
 
 ## Pushing
 
