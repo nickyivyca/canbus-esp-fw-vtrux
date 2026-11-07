@@ -469,4 +469,454 @@ hardware after emulated)"*.
   2026-10-03.
 - **Status:** validated.
 
-<!-- Batch 2 of 5 ends here: sections 6-16 follow in later batches. -->
+## 6. Conditions that disable the inhibit
+
+### 6.1 M mode engaged
+- **Basis:** M mode is hill climbing (`notes/evap-cycle-analysis.md`). The
+  value map was confirmed 2026-07-26 against `generator-on-then-off.log`
+  independently of this work. `0x1F5` served only as a time-alignment
+  corroboration.
+- **Status:** validated.
+
+### 6.2 Battery SoC below 21 %
+- **The threshold:** decided 2026-09-19. The cost of 21 % is giving up
+  inhibiting in the 20-21 % band; the benefit is that there is no window in
+  which we are blocking a start the pack genuinely needs.
+- **The source:** `0x411` measured 16.9-20.0 Hz on four clean captures
+  (review B4). `0x596 bms_soc` reads 0 for its first samples at startup.
+
+**`0x411` is wrong for about a second every time the BMS wakes** (review A1,
+2026-09-24). The previous text here called it "valid during startup"; that is
+withdrawn. A corpus scan
+(`notes/artifacts/gen-inhibit/soc_wake_transient_scan.py`, 114 wakes in 83
+captures where the powertrain bus was seen before `0x411` appeared, rig
+sessions excluded) found:
+
+- 113 of 114 wakes open on a wrong value and then step to the real one; 112
+  read **low**, by a median 13.8 % and up to 20.9 %;
+- the correction comes 0.32-1.15 s after the wake, 105 of them at ~1.0 s;
+- the wake value is not the value before the BMS slept (0 of 40), and a raw 0
+  never appears -- so the earlier "0 is the startup sentinel" framing does not
+  describe what the BMS actually does.
+
+It did happen in `vtrux_20260513_174225_T4`: 18.77 % for 1.04 s against a
+real 24.41 %, and the device latched `low_soc` for the rest of the drive.
+
+- **The marker's go-live test:** clarified 2026-09-25 (user): the earlier
+  wording omitted the current-reading test that section 7 states.
+
+Why the contactor rule is correct and costs nothing: **the engine is started
+by the HV generator inverter, so no start is possible before the contactors
+close** -- there is nothing to inhibit until then. And in all 103 scanned
+wakes where the contactors closed, SoC had already corrected *before* the
+first closed state (0 after; smallest margin 0.07 s, typically 0.13 s). The
+correction is not caused by the contactors -- it lands at ~1.03 s even where
+they never close, and in the longer charging close sequence -- so gating on
+the contactors makes the wake reading unusable by construction rather than by
+a timing window, and does not depend on the BMS's ~1 s behaviour staying the
+same (`soc_wake_vs_contactor.py`).
+
+- **The debounce:** decided 2026-09-25, the value the firmware already used,
+  previously stated only in code. Because the release latches for the rest
+  of the run, one spurious sample costs the whole drive's inhibiting.
+
+**The truck's own low-battery trigger is 20.0 % on the high-resolution
+value.** Measured 2026-09-19 across the whole corpus
+(`notes/artifacts/gen-inhibit/engine_start_soc.py` and its output files):
+173 engine starts in 140 sessions, each classified by what was true at the
+moment of the start. The three causes separate cleanly and do not overlap:
+
+| start cause | n | SoC min | median | max |
+|---|---|---|---|---|
+| M mode engaged | 103 | 37.91 % | 54.84 % | 93.27 % |
+| evap cycle active | 33 | 77.20 % | 79.20 % | 81.02 % |
+| neither -- i.e. low battery | 16 | 19.41 % | 20.44 % | 21.00 % |
+
+The three bands do not overlap and there are no stragglers: every low-battery
+start in the corpus lies between 19.41 % and 21.00 %, and every evap start
+between 77.20 % and 81.02 %. (Classification is on a window rather than the
+instant. `shift_lever_pos` can read Drive for a single sample in the middle of
+an M-mode drive, which on the first pass misfiled one 46.56 % start as
+low-battery.)
+
+Isolating the **entries into charge-sustain** -- a start where the engine had
+been off for the previous 300 s and the pack had coasted down through the band
+from above 21.5 %, with no evap cycle and not in M -- leaves only two events in
+the whole corpus, and both fire at the same place:
+
+| session | SoC at start | lowest SoC in the next 15 min |
+|---|---|---|
+| `vtrux_20260618_002023` | **20.02 %** | 19.90 % |
+| `vtruxcurrentlimitingtest` | **20.23 %** | 20.04 % |
+
+So the truck defends a **20.0 % floor**, starting the engine a fraction of a
+percent above it. The wider 19.41-21.00 spread in the table above mixes those
+entries with *restarts under sustained load*, which are a different thing: in
+one heavy session the engine restarted at 19.09, 19.39, 19.60, 19.67 and
+19.96 % while SoC fell to 16.85 % with the engine running, because the
+generator could not keep up with demand. Restart-under-load SoC is not a
+constant and should not be read as a threshold.
+
+**Why `0x411` and not `0x596`.** `bms_soc` (0x596) is a **floor** of the
+high-resolution value, not a round: measured over 15,280 paired samples,
+`floor(hires)` matches in 100.0 % of cases and `round(hires)` in only 46.7 %
+(hires 12.68 reads 12). A reading of N therefore means the real SoC is
+anywhere in [N, N+1). Testing `0x596 <= 20` would fire when the real value
+crosses **21.00 %**, a full percentage point early -- in the one case where
+it is measurable, 21 s before the truck itself acted. The DBC comment
+calling 0x596 "integer-rounded" was wrong and was corrected on 2026-09-19.
+
+**This is why the threshold is 21 % and not 20 %.** At 20 % the inhibitor
+would release at the same instant the truck asks for the engine, or a fraction
+of a percent after it, leaving a window in which we block a start the pack
+genuinely needs. At 21 % the release happens first, with about a percentage
+point of margin, and the truck never has to contend with us on the way down.
+
+- **Status:** validated.
+
+### 6.3 The VCM commands generator shutdown
+- **Basis:** reviewed and accepted 2026-09-19. The original request was for
+  `0x10` to join the latching release list; the Park measurement changed it
+  to a non-latching suppression, and that shape is confirmed. `0x10` maps
+  to **SHTDWN** on the `0x053` state machine, 99.0 % (4.1).
+
+**Why it must not latch, unlike 6.1 and 6.2.** `0x10` is a *parked* state, not
+a statement that the engine is wanted. Measured across four logs covering
+**40,697 frames** of `0x10`:
+
+| | |
+|---|---|
+| frames with the shifter in Park | 40,697 of 40,697, **100 %** |
+| frames with the vehicle moving (`trac_rpm` > 50) | **0** |
+| shortest / longest episode | 0.8 s / 561 s |
+| time since the generator last ran, at entry | 298 s, 381 s, 675 s, or never |
+
+It never occurs while driving, and it does not follow a generator shutdown --
+where the generator had run at all, it was five to eleven minutes earlier.
+What it looks like is the VCM powering the drive system down while parked and
+waking it again, which is why episodes recur: up to four in a single capture.
+
+Two consequences:
+
+1. **Latching would be wrong.** The truck parks, cycles through `0x10`, and
+   then drives again in the same power cycle -- `vtrux_partstruck_driveaftercharge`
+   does exactly that three times. A latching release would stand the inhibitor
+   down for the whole subsequent drive, which is the drive it exists for.
+2. **Suppressing is free.** During `0x10` the truck is parked with the drive
+   system shut down, so there is no start to inhibit and nothing is given up by
+   staying quiet.
+
+It also removes the need for any startup guard. `0x10` is the normal state at
+key-on -- most logs that contain it begin in it and leave for `0x08` within
+about a second -- and a non-latching suppression handles that case by simply
+waiting, with no special rule.
+
+- **Status:** validated.
+
+### 6.4 Reporting
+- **The suppression in the flags:** a value in `disable_reason` that
+  appeared and vanished as the truck parked and woke would make a log
+  harder to read, not easier: a reader seeing it would not be able to tell
+  a current suppression from a past one.
+- **The live flag clears with a latched release:** added 2026-09-19 after
+  the host suite found the flag frozen at `true` for the rest of a run once
+  `m_mode` or `low_soc` latched. The live flag is not merely reported -- it
+  is one of the terms that authorises transmission -- so leaving it set
+  means a control flag reads "authorised to transmit" while transmission is
+  forbidden, and the only thing preventing a transmit is the
+  latched-disable term sitting beside it in the same condition. That is a
+  one-term margin and it depends on the order of a boolean chain.
+- **The bench's wake-reading case:** added 2026-09-24.
+- **Status:** validated.
+
+## 7. Arming
+
+### The interlocks and freshness
+- **Basis:** the interlocks come from the laptop tool, where each fired or
+  would have during real truck testing. Rewritten 2026-09-24 (review B2,
+  B3, C1, C2) as an explicit list, because the earlier bullets said "refuse
+  to arm on stale bus data" while the firmware deliberately permits the GENE
+  family's absence at arm time -- a decision that until then lived only in a
+  code comment.
+- **The windows:** decided 2026-09-25. Measured cadences (review B3/B4, four
+  clean captures): `0x051`, `0x639`, `0x054`, `0x471` ~100 Hz; `0x411` and
+  `0x440` ~17-20 Hz (`0x440` worst in-presence gap 102 ms); `0x592` 10 Hz;
+  `0x617` **4 Hz, worst gap 308 ms**.
+
+**Why `0x617` has its own window.** With one 0.5 s window the slowest signal
+sets the device's tolerance of a brief whole-bus dropout: `0x617` is absent
+for the dropout plus up to 250 ms more, so any dropout over ~0.25-0.5 s
+(depending on its phase) latched the inhibit off until the next key cycle,
+and was reported as "0x617 stale" rather than as the link. At 1.0 s (four
+periods, >3x the worst measured gap) a whole-bus dropout of up to ~0.5 s
+rides through -- bounded by `0x051`'s own 0.5 s window -- and a longer one is
+reported as trip 2, because `0x051` now expires first. The cost is up to
+0.5 s longer before a VCM that has genuinely gone silent is noticed through
+`0x617`; in that case the truck stops anyway, and `0x051`'s own window
+catches a silent VCM first.
+
+- **Status:** validated.
+
+### The arm gate
+- **Condition 9:** added 2026-10-10 (user). The first frames on the wire of
+  a device that went live with a backlog carried stale counters, and the
+  device scored them as on time (trip 7, "What the device can see of
+  lateness"). On the bench this happened in 10 of 10 re-arms from OBSERVE
+  and in 1 of 3 auto-arm boots. Spec 3's wake on a mode change removes
+  those causes. On the truck the condition delays going live by the time
+  the queue takes to drain, a few milliseconds.
+- **The GENE family not required:** measured across bus wakes in the
+  corpus: `0x051` appears within ~0.17 s of the bus waking, the GENE family
+  ~28 s later or not at all. Requiring it would put the inhibit live ~28 s
+  after key-on at best and never at worst, and its silence is positive
+  evidence of an unpowered inverter -- which cannot crank. This was bug 1 of
+  2026-09-19. The VCM never satisfies condition 6 while the generator runs
+  (21,925 real frames at >= 300 rpm, none with the engine-off null and zero
+  torque).
+- **Condition 5 and resets:** review A2, accepted 2026-09-24.
+- **Status:** validated.
+
+### The trips
+- **Trip 3:** firing on never-seen was bug 2 of 2026-09-19.
+- **Trip 4:** from the laptop tool (`vehicle_runner.py --start-abort-rpm`).
+- **Trip 5:** review B3, decided 2026-09-24: option c. The user's reasoning
+  for why a latched abort is the right severity: if the VCM or BMS genuinely
+  goes offline the truck stops, or the inhibitor has lost the truck; either
+  way there is nothing to protect by continuing. Measured: `0x411` stops
+  0.26 s after the key read 0. The GENE family rule: decided 2026-09-25.
+  Without it the reason depended on which of the two frames happened to
+  arrive last: the two identical end-of-drive events in
+  `replay-rekey-long` reported one each.
+- **Trip 7:** review C1. The previous implementation counted "accepted into
+  the driver's queue" as success. Amended 2026-09-27 (user), with the
+  section 5.2 transmit scheduler. A frame that went out late is a skip:
+  user, 2026-09-27, replacing "trips at once" written earlier the same day.
+  The user's reasoning: the generator inverter has already acted on the
+  VCM's command carrying that counter, so it ignores the late frame. The
+  effect is the same as a skip, one real VCM command acted on. "What the
+  device can see of lateness": clarified 2026-09-27 (user).
+- **Trip 8:** review C2b. It was previously counted as `tx_fail` with no
+  abort and no event.
+- **The evidence rule:** decided 2026-09-25. Found by the implementing
+  session on 2026-09-24 with `0x617` (4 Hz, then on a 0.5 s window,
+  stopping up to 250 ms before `0x051`), where a pulled connector would
+  read "VCM fault flag lost". `0x617`'s 1.0 s window removes that
+  particular case, but the same race exists for any signal whose window can
+  expire before `0x051`'s -- `0x471`, `0x054`, `0x639`, `0x411`, `0x440` --
+  so the rule stays. The answered `0x051`: user, 2026-10-16; bench B20 on
+  `c65c45e`: in all seven stale-signal cases the device answered that frame
+  and none after it. At the end of a drive `0x051` continues for a median
+  ~77 s after the BMS stops.
+- **Trip 7's controller-reported form:** added 2026-10-14 (user). The
+  ESP32-C3's TWAI driver (ESP-IDF v5.4.1 and v5.4.2) reports a frame as
+  failed only when its transmit buffer frees without a completed
+  transmission. An abort frees it as a success, and a bus-off frees it with
+  no report.
+- **Bus-off:** added 2026-10-14 (user). Why: a fault in the inhibitor leaves
+  the generator working as it would without one, and a device kept off a
+  faulty bus adds nothing to the fault.
+- **Self-disarm:** review C2a, documenting existing behaviour.
+- **Status:** validated.
+
+### Loss of the CAN link
+- **Basis:** changed 2026-09-19. Framed as link loss because that is the
+  realistic cause -- a pulled connector or a dropped transceiver takes
+  every signal at once, and losing the VCU's and the BCM's data together
+  has no other plausible explanation.
+
+**It latches deliberately.** The tempting alternative is to stand down and
+resume when the bus returns, on the grounds that absence is not a fault. That
+is rejected: if the link is *intermittent*, resuming is the wrong response.
+This device does not merely observe the bus -- it steals the VCM's rolling
+counter and transmits a real `0x051` -- so coming back automatically would mean
+doing that repeatedly across a connection already shown to be unsound, and
+each resume would re-enter through a gate a flapping bus can satisfy. Latching
+turns an intermittent link into one clean stand-down instead of an oscillation.
+
+**Only once live:** a trip that ran on the path *to* going live would latch
+an auto-arm build off during the ordinary pre-key-on wait, every drive,
+before it had ever inhibited anything.
+
+**The dead-man timer.** Every hazard the timer was still covering reduces to
+"the signals that would release us stopped arriving": losing the whole link
+is this trip, and losing one module's signals while the link stays up -- the
+BMS's `0x411`/`0x440` are a different transmitter from the VCM's `0x051`,
+and the BMS LV-connector disconnect test (`projects/vtrux/README.md`, "PT Bus
+Disconnect Test Evidence", T2) shows `0x411` dropping while the VCM keeps
+broadcasting -- is trip 5. (The previous text said there was "no plausible
+way" to lose `0x411` on a healthy link; review B3 corrected that.) The
+release-latching conditions of section 6 handle the cases where the truck
+legitimately wants the engine; these handle the cases where we can no longer
+see what it wants. A timer on top would only add a way for the inhibit to
+stop mid-drive for no observed reason.
+
+- **Status:** validated.
+
+### The error-frame trip
+- **Basis:** the running-generator bus produces 0.07-0.21 error frames/s
+  with the generator running, bursting to 4 in any 10 s, and a background
+  measured with the engine off reads ~0/s and is useless. Aborting on the
+  first error frame ended three consecutive armed runs. The threshold is
+  2.5x headroom over the worst observed burst of 4 in 10 s, while a genuine
+  same-ID collision at 100 Hz exceeds it within a second. It is stated in
+  the spec so a change to either number is a spec change, and so a
+  build-output check has a stated value to compare against (a mutation
+  shrinking the window to 1 s once went undetected by every test).
+- **How the window moves:** decided 2026-10-08 (user). On `aaab89a`, which
+  re-based its count every 10 s, 10 error frames at 1 s spacing tripped
+  from only about 1 start phase in 10 (review tracker, trip 6).
+- **The recorded time:** added 2026-10-20 (user). Found in B6 session 1
+  (`VERIFICATION.md`, lead 1.5 arm 2): ten error frames 9.9999 s apart on
+  the bus were recorded 10.0029 s apart, and the trip came at the 13th.
+- **Only a recent burst:** user, 2026-10-08. As committed in `477171a`, any
+  burst since key-on tripped at every later live check, which made trip 6 a
+  latch until key-on.
+- **Checked before going live:** added 2026-10-10 (user). Before this, the
+  first check came after the first answer, so one inhibit frame went out
+  before the latch (bench `trip6_rearm_check` A3 on `fb61892`; shim case 38).
+- **Status:** validated.
+
+### 7.1 Key state gates transmission, and a key-on clears every latch
+- **Basis:** decided by the user 2026-09-20. Section 7 asks that the device
+  be able to tell "the inverter went away because the key was turned off"
+  from "because we broke it". This is that distinction, and it turned out to
+  be the whole of finding 3: the section 7 inverter-lost trip was measured
+  to fire on the **normal end of every drive**, not on any fault. `0x051`
+  outlives the key by a median 77 s.
+- **The contactor gate through a key-off:** amended 2026-09-24 (review A1,
+  B3). Nothing is lost: the engine cannot be cranked before the contactors
+  close.
+- **Why `0x592`:** the VCM and the HCU are the same module under two names,
+  so this arrives from the **same transmitter as `0x051`**. Key state can
+  therefore never be less *available* than the ~100 Hz anchor the whole
+  design already depends on (though it is sent at 10 Hz, not 100 -- same
+  liveness, not the same rate), and losing it means losing the VCM, which is
+  the link-loss trip's territory rather than a new failure mode.
+- **Context, a known limit: the signal name is not confirmed.**
+  `epri-pt-bus.dbc` carries `IgnitionKeyState` with the comment *"not in
+  plist sampling"* -- the name was inferred from the decompile, not read
+  from the EPRI parameter list. What is measured is the behaviour in the
+  table below. If the bit turns out to mean "powertrain awake" rather than
+  "key", the gate still works and the numbers still hold, but the section's
+  wording would need revisiting.
+
+**What the measurements say.** Epoch-aware over 1943 captures -- see
+`notes/artifacts/gen-inhibit/epoch_aware_rerun.py` and
+`keyoff_spindown_check.py`:
+
+| | |
+|---|---|
+| `0x592` present in PT epochs | **1045 / 1045** |
+| VCM commands the generator (`B0` = `0x0B`) while the key reads 0 | **0 samples** |
+| key-off leads the inverter going silent by | min **+0.034 s**, median **+0.302 s**, **zero negatives** |
+| key-offs that would trip section 7 as it stood | **100 / 100** |
+| longest *confirmed* inverter silence | **35.43 s** |
+| generator turning while the key reads 0 | all **spin-down**, within 0.36 s of a key-off |
+
+The zero in the second row is what makes rule 1 safe: there is no instant in
+the corpus where the inhibit is needed and the key reads off. The last row is
+the engine coasting to a stop -- confirmed independently by the ECM on
+GMLAN `0x0C9`, whose `Engine_Run_Active` drops within 0.01 s of the key-off
+and whose `Engine_Speed` falls below 50 rpm within 0.52-0.75 s.
+
+**Two earlier claims are withdrawn, and neither should be reintroduced.** A
+bus-blind measurement reported 23 samples of the VCM commanding the generator
+with the key reading 0, and a 50-91 ms window in which the VCM asserted before
+the key bit published. Both were artifacts of merging logger epochs -- one
+`.log` can hold several disjoint recording windows in which the same wire
+carries a different channel number. A transmit-gate clause of the form
+*"or `B0` = `0x0B`"* was proposed to close that window; there is no window, and
+it is withdrawn.
+
+- **The trip needs no key awareness:** the key-ON inverter loss is the case
+  worth catching, and the only non-key-off population in the corpus
+  (`vtrux_20260714_112312_T2`, five events, with the amber warning lamp
+  lit).
+
+> **What those five events are** (corrected 2026-09-26, review decision 2).
+> With the key on throughout, the BMS opens the main contactors at 20.1 s
+> (`0x440` 12 -> 14 `ALL_OPEN_SHUTDOWN`); the inverter then drops out and
+> returns five times (~1.1 s on, 0.7 s off) until the key-off at 28.3 s. They
+> are the inverter falling offline *after HV was dropped mid-key-on* -- not a
+> start-up event and not a permanently absent inverter. (A permanently absent
+> one, fuse pulled, is never heard, so trip 3 cannot fire on it by design, and
+> without it nothing can crank.) The device goes live **before** HV drops and
+> stays live through it, so the trip fires on real traffic:
+> `replay-shutdown-at-keyon` (the whole 0-225 s of the capture) goes live at
+> 16.2 s with the contactors closed, trips inverter lost at 21.0 s, latched,
+> and is cleared by the next key cycle at 49.1 s.
+
+- **The fixtures:** `replay-rekey-short`'s source was replaced 2026-10-31
+  (user): the old one, `vtrux_20260403_194203_T2`, is a bench replay whose
+  three key-cycles were the replayer looping one.
+  `replay-inverter-lost-keyon` was changed 2026-09-26 (decision 2); it was
+  "must still trip". `replay-shutdown-at-keyon` was added 2026-09-26
+  (decision 2).
+- **No fixture from a whole multi-epoch file:** `20260403_194203_T2` has an
+  epoch break at 176.44-184.22 s -- a 7.7 s total-bus dropout -- which
+  replayed whole would inject a bus-loss the capture never contained. (That
+  capture is a bench replay, not truck data, and its dropout is the
+  replayer's; the rule stands for any capture. Corrected 2026-10-31, user.)
+  Two of the three fixtures originally proposed were sourced from
+  cross-epoch artifacts.
+- **Status:** validated, but for the arm gate's torque sign, which the spec
+  records as not yet resolved.
+
+#### Five decisions the rules above did not settle
+- **Basis:** all five were put to the user and approved.
+- **1.** This is the one structural change and rule 2 is unimplementable
+  without it: the worker's OFF branch in `gen_inhibit.c` never called
+  `twai_receive()` -- it parked, delayed 50 ms and looped -- so a device
+  that had aborted could not hear the key come back, ever. Before this, an
+  abort stopped diag, and a latched device and a switched-off device were
+  indistinguishable in a log -- both silent.
+- **2.** The probe and the diag pages are IDs nothing on the truck consumes,
+  and silencing the diag heartbeat at key-off would remove the telemetry
+  exactly when the end-of-drive behaviour this rule exists for is happening.
+- **3.** On the truck the cost is not a hypothesis -- `0x592` was present in
+  1045 of 1045 powertrain epochs.
+- **4.** This is what keeps the bus-loss latch meaningful: a key-off takes
+  `0x592` with it, but so does a pulled connector, and if staleness counted
+  as a key-off then every flapping link would clear the very latch that
+  exists because it is flapping.
+- **5.** The justification is that a key cycle is the reboot these latches
+  were always documented to wait for -- section 7's own text says "cleared
+  only by a reboot, which the relay dropping at truck sleep provides", and a
+  re-key quick enough that the relay never opens is that event with the
+  power never interrupted. Neither release survives on evidence either: M
+  mode must be re-selected before `disable_monitor()` can see it again, and
+  a low SoC re-latches after five valid `0x411` frames. Clearing them is a
+  re-evaluation, not an override.
+- **`fb_ever`:** the inverter powers up ~28 s after the bus does, so
+  re-entering the gate with it still set would abort on
+  `GI_ABORT_INVERTER_LOST` the instant the inhibit went live -- bug 2 of
+  2026-09-19 reintroduced through a different door.
+- **Status:** validated.
+
+#### `0x592` cadence
+The first replay built under 7.1 showed the transmit gate flapping, so the
+signal's actual cadence was measured per (epoch, powertrain channel) --
+`notes/artifacts/gen-inhibit/key_cadence.py`:
+
+| | |
+|---|---|
+| `0x592` rate on every clean epoch | **9.97-9.99 Hz** |
+| worst gap | **0.150 s** (`vtrux_20260323_220148_T0`) |
+| gaps exceeding `cfg.fresh_us` (0.5 s) | **zero** |
+
+Over three times inside the window. (The worst gap read 0.117 s until
+2026-10-31, when the tester's re-measurement without the bench replays gave
+0.150 s, the same under the old and the new bus resolver; user,
+2026-10-31.)
+
+The flapping was one capture, `vtrux_20260403_194203_T2`, where `0x592` reads
+5.5 Hz and `0x051` reads 59.6 Hz instead of 100 -- both down by the same
+fraction, so frames were being lost, not the truck changing its rate. It is
+a bench replay, not truck data: the `:vtrux` app recording a desktop
+replayer looping `generator-on-then-off.log`, and the frames were lost where
+the replayer's transmit queue overflowed (corrected 2026-10-31, user; it
+was read as a logger on the truck dropping frames).
+
+- **Status:** validated.
+
+<!-- Batch 3 of 5 ends here: sections 8-16 follow in later batches. -->

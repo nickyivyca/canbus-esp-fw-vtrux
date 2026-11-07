@@ -694,4 +694,516 @@ holds is a section 12 test on a full-replay bus.
     - **So a load-dependent criterion requires a bench run.** An emulation
       pass is not evidence for it, however faithful the stimulus.
 
-<!-- Batch 2 of 5 ends here: sections 6-16 follow in later batches. -->
+## 6. Conditions that disable the inhibit
+
+**Two** conditions release the inhibit, and both **latch until the ESP
+reboots** once fired. A third condition (6.3) merely suppresses transmission
+while it is present and does not latch -- the distinction is that the first two
+mean *the engine is legitimately wanted*, while the third means *the truck is
+parked and already shut down*.
+
+For the two latching conditions, the inhibit must never silently resume once it
+has stood down -- not when the condition goes away, and not when the
+measurement that caused it recovers. The device loses power when the truck
+sleeps (section 2.1), and the latch
+therefore clears for the next drive. That is the only thing that clears it.
+
+Every condition is evaluated on each received frame. For the latching pair the
+transmit path is gated on the latched state, not the live one; for 6.3 it is
+gated on the live state, which is the whole difference.
+
+### 6.1 M mode engaged
+
+In M mode the driver is manually commanding the engine (hill climbing), so
+the engine is wanted.
+
+Source: `0x639 VCM_ShiftPos`, signal `shift_lever_pos`, `B6 bits[6:4]`, DLC 8, on
+the **PT bus** the WiCAN taps. `shift_lever_pos == 4` disables. The value map is
+the DBC's: 0 Park, 1 Reverse, 2 Neutral, 3 Drive, 4 Manual generator mode.
+
+**The firmware must not reference `0x1F5`.** It lives on the OBD/chassis
+bus, never on the PT bus the WiCAN taps.
+
+### 6.2 Battery SoC below 21 %
+
+**The inhibit is released the moment `bms_soc_hires` goes below 21.00 %,
+and the release latches.** Below that point the pack is close enough to needing
+the generator that the truck's own judgement takes precedence over ours.
+
+**The latch is unconditional on SoC recovering.** If SoC falls to 19 %, the
+engine runs, and SoC climbs back to 22 %, the inhibit does **not** resume. Once
+released for low SoC it stays released, exactly as the M-mode release does
+(section 6.1), and clears only on the reset described in section 6.
+
+**21 % is deliberately a full percentage point above the truck's own 20.0 %
+trigger**, so the inhibitor gets out of the way *before* the VCM asks for the
+engine rather than at the same instant.
+
+Source: `0x411 bms_soc_hires`, 14-bit, 0.01 %, ~20 Hz. **Use `0x411`, never
+`0x596`, for the comparison**: `0x596 bms_soc` is a floor of the
+high-resolution value, not a round, and is not used.
+
+**`0x411` is wrong for about a second every time the BMS wakes**, so a wake
+reading is a false low-SoC release waiting to happen.
+
+**The rule: SoC is only evaluated after the main contactors have closed.**
+
+- The device keeps a **SoC-valid marker**. It is **set** when `0x440`
+  `bcm_mainc_stat` reads a closed state (11 `MAIN_PN_CLOSED_DRIVE` or 12
+  `MAIN_P_CLOSED_CHARGE`, `epri-pt-bus.dbc`, decoded per the DBC). It is
+  **cleared** whenever `0x411` or `0x440` stops being fresh (the BMS has gone
+  away, so its next reading is a wake reading), on every key-on latch clear
+  (7.1), and at boot.
+- A `0x411` reading counts toward the low-SoC release only if it was received
+  while the marker is set. Readings received while it is clear are ignored and
+  do not count toward the debounce (and the debounce count restarts when the
+  marker clears).
+- The inhibit may not go live until the marker is set, at least one `0x411`
+  has been received since it was set, **and `0x440` currently reads closed**
+  (section 7 condition 2). The marker alone is not enough: it deliberately
+  survives the contactors opening while the BMS stays awake, and a gate
+  evaluated then (for example an arm during a key-off) must not go live with
+  the contactors open.
+- Once set, the marker is not cleared by the contactors merely opening while
+  the BMS stays awake: no wake has happened, so the readings stay valid.
+
+**Debounce is still required, and the latch makes it matter more.** Never
+release on a single sub-threshold sample: the reading must persist for **5
+consecutive valid `0x411` readings** (~0.25 s at ~20 Hz), and a
+reading at or above the threshold restarts the count. A raw 0 never counts.
+
+### 6.3 The VCM commands generator shutdown (`0x051` B0 = `0x10`)
+
+**Do not transmit while B0 reads `0x10`, and resume when the VCM returns to an
+operating state. This one does not latch.** It is a suppression, not a release,
+and it is deliberately the odd one out in this section.
+
+`0x10` is the VCM commanding the generator subsystem into shutdown. The VCU is
+already asserting a shutdown of its own, so there is nothing to add and no
+reason to hold the bus against it. It is a *parked* state, not a statement
+that the engine is wanted, so latching would be wrong, and suppressing is
+free. A non-latching suppression also handles `0x10` at key-on by simply
+waiting, with no startup guard.
+
+The inhibitor must **never transmit `0x10` itself** (section 4.1). Suppressing
+on it is the opposite of asserting it.
+
+### 6.4 Reporting
+
+`/gen_inhibit` reports `disabled`, `disable_reason` and `soc_x100`; the same
+facts go out on `0x7F1` (section 10).
+
+**The 6.3 suppression belongs in the flags, not in `disable_reason`.** That
+field names a latched release. The live state needs a flag bit instead, so
+the two are distinguishable at a
+glance. `diag_flags` on `0x7F1` has bits spare; allocating one is a change to
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/wican_diag_schema.md`,
+which is the source of truth for that layout, and needs the on-wire
+`diag_schema_ver` bumped with it.
+
+**A latched release is a stand-down, so the section 7 live flag must clear
+with it.** The flag must
+be cleared where the release latches, and `arm_block` must say the device is
+disabled rather than reporting a stale gate reason.
+
+**What the bench must demonstrate** for these conditions, and the shape the
+harness takes
+(`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/wican_disable_bench.py`):
+
+- an SoC=0 startup sentinel, repeated, does **not** release, and transmission
+  keeps climbing through it;
+- a sustained SoC below 21.00 % latches `low_soc` and freezes transmission;
+- **SoC recovering does not un-latch it**: drive SoC below 21 %, confirm the
+  release, then take SoC back up to 22 % and confirm transmission stays frozen
+  and `disable_reason` still reads `low_soc`. This is the case the latch exists
+  for and it must be tested explicitly, not assumed;
+- the boundary behaves: just above 21.00 % keeps inhibiting, just below
+  releases;
+- `shift_lever_pos` = 4 latches `m_mode`, stays latched through a return to
+  Drive, and clears only on reboot;
+- **the shutdown suppression does not latch** (section 6.3): with B0 held at
+  `0x10`, transmission stops; when B0 returns to `0x08`, transmission resumes
+  and no latched reason is set. Run it twice in one power cycle, because the
+  failure this guards against is a latch that survives into the next drive.
+- **the live flag clears when a release latches**: with the inhibit live,
+  drive `m_mode` (and separately `low_soc`) and confirm `inhibit_live` goes
+  false, `diag_flags` bit5 clears, and `arm_block` reports the disable rather
+  than a stale gate reason. Re-arming while latched must not set it again.
+- **the BMS wake reading does not release** (6.2): a wake
+  whose first `0x411` readings are below 21 % and which correct above it
+  before the contactors close must not latch `low_soc`; a genuinely low SoC
+  received after the close must. `0x411` before the close is ignored, and the
+  inhibit never goes live before the close. `replay-rekey-long` is the
+  real-traffic case: under this rule it must **not** latch `low_soc` at
+  202.47 s, and its golden and the host README's description of it as a low
+  pack change accordingly.
+
+## 7. Arming
+
+**Auto-arm is build-time.** `GEN_INHIBIT_AUTOARM_MODE` in
+`gen_inhibit.c` defaults to `GEN_INHIBIT_OFF`: boot idle, arm by hand via
+`POST /gen_inhibit_set`, which is the bench and truck-bring-up setting. For
+deployment it is set to `GEN_INHIBIT_INHIBIT`: the device powers up at
+truck wake (section 2.1), it boots and arms itself, with no human in the
+loop. Auto-arm is safe at any setting because the trail is reactive.
+
+**Arming logs loudly**, and mode 3 is distinct from OBSERVE/RESPOND so the
+real-ID transmit is never reached by accident.
+
+**Freshness** below means received within the signal's freshness window of
+now, never a last-known value, and never-seen is never fresh. The window is
+`fresh_us` (**0.5 s**) for every signal **except `0x617`, which gets 1.0 s**.
+
+#### The arm gate -- every condition must hold for the inhibit to go live
+
+1. `0x051` fresh.
+2. **Main contactors closed**: `0x440` `bcm_mainc_stat` fresh and reading 11
+   or 12, **and at least one `0x411` received since** (section 6.2).
+3. `0x617` fresh, and B7 not `0xCA` (VCM fault active).
+4. `0x639` fresh (so the M-mode release is evaluating a real reading).
+5. Generator not running: if `0x054` is fresh, `GENE_RotSpd` below 300 rpm.
+6. The VCM is not asking for the engine: `gen_rpm_ref` reads its engine-off
+   null (< 0) and `gen_torque_cmd` is zero (7.1 records an unresolved
+   refinement on the torque sign).
+7. Not in the 6.3 shutdown suppression.
+8. No section 6 release and no section 7 abort latched.
+9. **The receive queue is drained**: the frame the worker has just taken was
+   the last one waiting. A device that goes live
+   with frames still queued answers commands the VCM has already passed.
+   This condition is the backstop for a backlog from any cause at that
+   moment, such as WiFi or lwIP preemption. It is checked only for going
+   live. A backlog that builds once live is handled by trip 7 and the
+   unverified count. A device that never drains, for
+   example under heavy WiFi load, does not go live, and `arm_block` says why.
+
+**The GENE family (`0x054`, `0x471`) is deliberately not required to be
+present.** Taking over a *loaded* generator (the load-dump hazard) is
+covered by condition 6.
+
+**Condition 5 is load-bearing for resets.** Every latch is in RAM, and any
+reset -- panic, brownout, config save, a
+connector carrying both power and CAN -- clears them, after which the
+auto-arm build re-arms on boot. That is acceptable **only because the gate
+will not take over an engine that is already running.** Any change to the
+gate must preserve that for a mid-drive reset with the engine turning,
+including the arrival order where `0x051` is seen before `0x054`
+(`arm-gate-order-cmd-first`), where conditions 5 and 6 together are what
+hold.
+
+#### The trips -- each ends a live inhibit and latches (cleared by a key-on, 7.1, or an explicit re-arm)
+
+1. **VCM fault active**: `0x617` B7 = `0xCA`.
+2. **Link loss**: `0x051` not fresh (below).
+3. **Inverter lost**: `0x471` not fresh, **once it has been heard in this arm
+   cycle**, and subject to the evidence rule below. "Stops" presupposes it was
+   going; never-seen is not stopped.
+4. **Engine turning**: `GENE_RotSpd` >= 300 rpm sustained for 0.3 s. It must
+   be debounced, because a momentary crank blip is exactly what a *working*
+   inhibit produces.
+5. **Stale interlock signal.** Any
+   of `0x411`, `0x440`, `0x617`, `0x639` not fresh, and `0x054` not fresh once
+   heard in this arm cycle (the same once-heard rule as trip 3). `0x411` and
+   `0x440` stop shortly after a key-off, so this trip fires at the end of
+   every drive *after* the key
+   has read off, and the next key-on clears it -- the same shape as trip 3.
+   Tests must pin that ordering. Subject to the evidence rule below.
+   **When the GENE family goes quiet together** -- `0x054` and `0x471` both
+   stale -- it is reported as **trip 3, inverter lost**, not as a stale
+   `0x054`. A stale
+   `0x054` is reported as trip 5 only while `0x471` is still fresh.
+6. **Error-frame rate** exceeded (below).
+7. **Failed transmit.** A frame counts as transmitted only when
+   the controller reports it **completed on the wire**. A frame that could
+   not be queued, that the controller reports as failed, or that has not
+   completed by the time the VCM's next `0x051` is received, is a failed
+   transmit -- the last because a frame landing after the VCM's next one
+   loses the counter race, so the VCM's torque is what the inverter acted
+   on. It is unambiguously ours and distinct from a bus error frame.
+
+   With the section 5.2 transmit scheduler, a
+   frame that has not completed by the VCM's next `0x051` does not trip
+   on its own:
+   - **If it never reached the wire,** the scheduler withdraws it. It becomes
+     a **skipped frame** (5.2 item 5): not sent, counted and reported.
+     **3 skipped frames within 1 s trip 7.** A stuck transmit path therefore
+     cannot pass for a working inhibit.
+   - **A frame that went out late, or may have, is also a skip.** This
+     covers two cases:
+     - its completion was seen only after the VCM's next `0x051` had been
+       dequeued;
+     - it was still in the transmit buffer at the deadline, where the device
+       cannot tell a late completion from a successful abort, because both
+       are reported as TX_SUCCESS.
+
+     The 3-in-1 s window still ends the inhibit if the transmitter is
+     persistently late.
+   - **A frame the controller reports as failed, or the driver refuses,**
+     still trips at once.
+
+   The completion test is the inhibit's own completion, never a TX_SUCCESS
+   that may belong to an aborted telemetry frame (5.2 item 5).
+
+   **What the device can see of lateness.** The
+   device judges the deadline when its worker **dequeues** the VCM's next
+   `0x051`, not when that frame arrives, because the driver gives no
+   receive timestamp. So its own detection of a late frame is exact only
+   when the receive queue is empty at the moment it sees the inhibit
+   complete. With frames waiting, the next command may already have arrived,
+   and a frame that was physically late is scored as on time. Such verdicts
+   are counted separately as **on time, unverified**, with the largest
+   backlog seen, on the status page (section 11). The bench witness, which
+   sees both frames on the wire, is the check for them. The device never
+   receives its own frames, so its counter check (`ctr_bad`) cannot see our
+   transmit timing at all. Condition 9 of the gate means the device never
+   goes live with a backlog, so this applies only to a backlog that builds
+   once live.
+8. **Short VCM frame.** A `0x051` received with DLC < 6 while
+   live cannot be answered -- there is no counter to steal. It aborts.
+
+Every trip names itself in the JSON and on the wire (section 10), and the
+state must preserve the distinction between "the truck went away" and "we
+broke it" (below).
+
+**The evidence rule for trips 3 and 5.** A single
+signal going stale counts as trip 3 or 5 **only if a `0x051` has been
+received after that signal's freshness window expired** -- i.e. the bus was
+demonstrably alive at the moment the missing signal should have arrived.
+Without it, a whole-bus loss is reported as whichever signal's window expires
+first rather than as link loss.
+Consequences:
+
+- **Whole-bus loss is reported as trip 2**, as intended: once `0x051` stops it
+  can never arrive after another signal's expiry.
+- **A single signal lost on a live bus still trips**, on the next `0x051`
+  after its window expires -- at most one `0x051` gap (~10-47 ms) later.
+  **That `0x051` may itself be answered; the inhibit stops from the next
+  one.** One more answered command after a signal has been
+  missing for its whole window (0.5 s, or 1.0 s for `0x617`) changes nothing
+  the trip protects.
+- **End of drive is unchanged**: the BMS stops while `0x051` continues, so
+  trip 5 still fires after the key reads 0.
+- No new tunable for the rule itself; it uses each signal's own window.
+
+This rule is about **reporting, not safety**: every trip ends the inhibit
+and latches identically. It matters because the abort reason goes on the
+wire (section 10) and a mid-drive link loss -- a pulled or failing connector,
+contactors closed -- must read as the link, not as one ECU. At the end of a
+drive the contactors are already open when the bus stops, so there it makes
+no difference.
+
+**On this controller trip 7's controller-reported form does not occur.**
+Inhibit frames go out with automatic
+retransmission. The device's reader of that report stays, as defence in
+depth, covered by the host
+mock-HAL test. When the controller is driven to bus-off, the live inhibit is
+ended by trip 6, or by trip 2 if the bus is lost first.
+
+**A bus-off ends the device's part until a re-arm or a reboot.** The device
+does not start bus-off recovery. A controller
+that has gone bus-off stays off the bus, transmitting, receiving and
+acknowledging nothing, so the device sees no key-on and does not re-arm
+itself. The inhibit stays off until a re-arm or a reboot; on the truck, the
+relay drop at truck sleep reboots it.
+
+**Self-disarm on receive errors.** A run of 20 consecutive hard (non-timeout)
+receive errors means
+the driver has gone out from under the worker. The device sets mode OFF
+rather than keep retrying at priority 18. This is a disarm, not a trip: in OFF
+the worker no longer receives, so no key-on can clear it; recovery is a re-arm
+or a reboot. Because OFF also stops the diag heartbeat, it must be **reported
+in the JSON with its reason** so it is never confused with a disarm someone
+asked for.
+
+**Loss of the CAN link latches the inhibit off.**
+`0x051` at ~100 Hz is the anchor: if it stops arriving for longer than the
+freshness window *while the inhibit is live*, the device treats the powertrain
+connection as lost and releases, latched until reboot. It is framed as **link
+loss**, not as individual signals going offline.
+
+**It latches deliberately**: it does not stand down and resume when the bus
+returns.
+
+**It applies only once live.** Before the inhibit goes live an absent bus is
+"not ready", not a fault: the powertrain bus is legitimately silent until
+key-on, and the GENE family for tens of seconds after it.
+
+**This replaces the dead-man timer**, which is removed.
+
+**Error-frame handling must be rate-based**, calibrated to the
+running-generator regime.
+**The threshold:** trip at **10 or more error frames within a 10 s window**.
+**How the window moves:**
+- **It slides.** The trip fires when any 10 error frames fall within 10 s of
+  each other, wherever they fall in time (subject to the recency rule
+  below), and the count is checked on every
+  new error frame. A window of fixed 10 s blocks does not comply: it splits a
+  burst that straddles a block edge.
+- **Exactly 10.0 s counts**, in the times the device records (next bullet).
+  The 1st and 10th error frames may be up to and including 10 s apart, as
+  "within" reads. Trip 7's 1 s window is strict; this one is not.
+- **An error frame's time is when the device records it.** The device reads
+  its bus-error count once per worker
+  pass (8.1: after each received frame, or after the 200 ms receive timeout)
+  and gives each new error frame that pass's time. A recorded time therefore
+  trails the error frame on the bus by up to the gap to the next pass. On a
+  busy bus that is about one frame interval; on a quiet one it is up to
+  200 ms. A burst whose 1st and 10th error frames are within 0.25 s of 10 s
+  apart on the bus may or may not trip at its 10th error frame, and either
+  result complies. A test that judges the 10 s edge takes the span from the
+  device's recorded times. A test that judges from the bus keeps the span at
+  least 0.25 s away from 10 s.
+- **Only a key-on (7.1) clears the error history.** Arming, an explicit
+  re-arm and going live do not. The error rate is a property of the bus, and
+  a history cleared on re-arm would let repeated re-arms hide a real rate. A
+  re-arm still clears the trip's latch, as for every trip; only the history
+  carries over.
+- **Error frames are recorded whenever the device is armed**, not only while
+  the inhibit is live. The trip is also evaluated **before going live**. Each
+  time the arm gate passes, trip 6 is checked first, and if a recent
+  qualifying burst exists it latches there. The device never goes live, and
+  no inhibit frame is sent.
+- **Only a recent burst trips.** A qualifying burst (10
+  error frames within 10 s of each other) trips only while its newest error
+  frame is no more than 10 s before the live check. A burst that has expired
+  in that sense causes no trip: neither one that expired before going live,
+  nor one carried across a re-arm. After a trip 6 latch, a re-arm can
+  therefore go live once the bus has been free of a qualifying burst for 10 s.
+  The two tests are separate on purpose: whether the burst is tight enough
+  compares error frames with each other, and whether it is recent enough
+  compares the newest one with the check, so the inclusive 10.0 s edge above
+  stays exact. A burst that arrives while live trips when its 10th error
+  frame is recorded.
+- **Checked before going live.** The latch, its reason and its clearing are
+  unchanged by this. Trip 6 is the only
+  trip this affects: the gate already covers trips 1-5, and trips 7 and 8 are
+  judged per frame.
+
+And **echo detection must not key on payload content** -- the inhibit frame is
+byte-identical to the VCM's next genuine frame by design, so a payload-keyed
+test discards genuine frames; distinguish by time, or suppress echoes in the
+controller.
+
+**The states must preserve one distinction the laptop tool lost.** It could not
+tell "the inverter went away because the key was turned off" from "because we
+broke it", and reported the alarming reading. Whatever replaces it on the
+WiCAN should be designed so that distinction survives into the disarm reason.
+
+### 7.1 Key state gates transmission, and a key-on clears every latch
+
+**The two rules.**
+
+1. **Transmit only while the key reads on.**
+2. **A key-off -> key-on transition clears any latch**, and the device
+   re-enters the normal arm gate on the way back in.
+
+**The device stays armed through the key-off.** Every arm-gate condition is
+satisfied during a key-off -- `0x051` is fresh (it
+outlives the key), the generator is stopped, `gen_rpm_ref` reads its
+engine-off null (raw `0x7FFF`, which decodes to -1 and so passes the `>= 0`
+test), and torque is zero. So the device arms and sits **armed but silent**.
+The key gates transmission, not arming. On an ordinary re-key there is
+therefore no gate re-entry at all; re-entry happens only where a latch was
+actually set.
+
+That is what makes the user's case work -- key off, the generator inverter
+sleeps, the key comes back before the VCU has fully fallen asleep and cut the
+12 V, and the device must neither latch out nor stop inhibiting.
+
+The arm gate also requires the main contactors closed and a post-close SoC
+reading (section 7 condition 2), which a key-off does not satisfy. So a
+device that is *already live* stays live and silent through a key-off, as
+above; a device that is *not yet live*, or whose latch a key-on has just
+cleared, waits in the gate for the contactors. At the end of a drive the BMS
+goes quiet shortly after the key-off, which fires the section 7 stale-signal
+trip (trip 5) after the key has already read 0; the next key-on clears it --
+the same shape as the inverter-lost trip.
+
+**Key state is `0x592` B0 bit 4** (`EPRI_HCU_Sensor_0592`, `IgnitionKeyState`).
+Freshness applies: check it, do not carry a last-known value. No
+transmit-gate clause of the form *"or `B0` = `0x0B`"* is added
+(`VALIDATION.md` 7.1).
+
+**The trip needs no key awareness of its own.** Key state gates transmission
+and latch-clearing only. A key-off -> key-on transition cannot occur during a
+key-ON inverter loss, so that latch correctly persists.
+`replay-shutdown-at-keyon` is the real-traffic cover for the key-ON inverter
+loss. The variant with the inverter dropping while HV stays up is covered
+synthetically (`inverter-lost`), and no doctored capture is built for it.
+
+**One consequence for the arm gate, not yet resolved.** `arm_gate_ok()`
+refuses while `vcm_torque != 0` and while `vcm_rpm_ref >= 0`. But `B0` `0x0B`
+spans two different states -- in one capture its torque ranges -1492 to +1708
+-- and the **sign** separates them: positive is motoring, i.e. cranking a
+stopped engine, which is exactly the case the inhibitor exists for; negative is
+generating, i.e. a loaded spinning generator, which is the load-dump hazard the
+interlock was written to prevent. The present test blocks both. This only bites
+on the latch-clear path now that the device arms during key-off, but it should
+be resolved rather than left.
+
+**What must be replayed:**
+
+| fixture | source | exercises |
+|---|---|---|
+| `replay-rekey-short` | `vtrux_crankover_bug_investigation` (2026-05-03), 0-240 s, its powertrain channel | three key-cycles, the key off for 23.5, 8.5 and 16.1 s, with the generator inverter (`0x054`) on the bus, so its silence at a key-off can count. Rules 1 and 2, repeated, so a latch shows on cycle 2. |
+| `replay-rekey-long` | `vtrux_20260513_174225_T4`, single epoch | the longest **confirmed** silence, 35.43 s |
+| `replay-inverter-lost-keyon` | `vtrux_20260714_112312_T2`, 20.5-28.2 s, single epoch | **must never go live**: the window starts after the contactors opened at 20.1 s, so HV is down throughout |
+| `replay-shutdown-at-keyon` | `vtrux_20260714_112312_T2`, 0-225 s | **the key-ON inverter loss on real traffic**: live at 16.2 s, inverter lost at 21.0 s latched, cleared by the key cycle at 49.1 s |
+
+**Do not build a fixture from a whole multi-epoch file**: replayed whole, an
+epoch break injects a bus-loss the capture never contained.
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/bus_epochs.py`
+reports the epoch structure of any capture and should be run before a
+capture is used as a fixture.
+
+A fixture names both its time window and its powertrain channel;
+`from_capture.py --channel` enforces it.
+
+#### Five decisions the rules above did not settle
+
+**1. A section 7 abort latches in place instead of setting `mode = GI_OFF`.**
+`inhibit_abort()` sets `abort_latched` and leaves
+the mode alone. Nothing is less latched for it: the gate does not run while
+the flag is set, `inhibit_live` stays false, and the transmit dispatch tests
+both. The latch has the same two exits as the section 6 one it now sits beside
+-- an explicit re-arm, or a key-on. A latched device **says so on the wire**
+for as long as it stays latched: `gi_tick()` emits the diag heartbeat
+whenever the mode is not OFF. **`diag_mode` therefore does not drop to 0 on
+an abort**; read `diag_flags` bit7 instead.
+
+**2. The key gates the real `0x051` only.** Not the `0x7F0` timing probe, not
+the `0x7F1`-`0x7F3` diag pages.
+
+**3. Never-seen reads key-OFF.** The literal rule, and the safe direction, but
+it has a cost worth stating: a bus with no `0x592` produces a device that
+arms, reports `inhibit_live`, and transmits nothing, **with no error
+anywhere**. That is exactly what a partial bench harness presents.
+
+**4. The edge runs on readings, not on freshness.** Only an actual 0 followed
+by an actual 1 clears anything. A stale key gates transmission but clears no
+latch.
+
+**5. "Any latch" includes section 6.** M mode and low SoC clear on a key-on
+too.
+
+One thing that is **not** a decision but a requirement: the key-on clear
+resets `fb_ever`.
+
+##### `0x592` cadence: the 0.5 s freshness window is right, unchanged
+
+**No new tunable, and `fresh_us` is not split.** `vtrux_20260403_194203_T2`,
+a bench replay, is kept as the suite's frame-loss fixture, labelled as a
+bench replay.
+
+##### Reported fields
+
+`diag_flags` **bit6 `key_on`** is the effective gate (value and freshness
+together) and **bit7 `abort_latched`** says a section 7 trip is latched.
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/wican_diag_schema.md`
+is the source of truth; `vtrux-wican-diag.dbc` is in sync.
+
+The `/gen_inhibit` JSON gains `abort_latched`, `key_on` and `key_fresh`. The
+last two are reported apart deliberately: "the key is off" and "we have not
+heard `0x592`" gate transmission identically and mean entirely different
+things.
+
+<!-- Batch 3 of 5 ends here: sections 8-16 follow in later batches. -->
