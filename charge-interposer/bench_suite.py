@@ -150,6 +150,15 @@ BOARD_SCENARIOS = [
     "charger-silence-after-trip",
 ]
 NOT_ON_BOARD = ["evap-bypass", "hard-ceiling-failsafe"]
+# The cases that force which input reaches the core first (run_scenario's
+# forced_order premise) run on the board at two more phases of charger_sim's
+# 400 ms status-page rotation, the injection moved by run_scenario's
+# --fault-at-offset-s, so the order is shown across the rotation, not at
+# whatever phase one run falls on (run 2a 0d0d: VOID by phase; the
+# charge-interposer reviewer, 2026-11-07). The plain board.<case> is offset 0.
+FORCED_ORDER_SCENARIOS = ["charger-fault-stop-flow-first",
+                          "fault-during-override-flow-first"]
+PHASE_OFFSETS_S = (0.13, 0.27)
 SIM_SCENARIOS = BOARD_SCENARIOS + NOT_ON_BOARD
 
 # Python tests in charge-interposer/ that run on madhouse (no pyserial).
@@ -254,6 +263,12 @@ HARNESS_LOCAL = [
     # rules, its own can-fail and its control
     ("no-led-self-test", ["{interposer_code}/fw_harness/no_led.py", "--self-test"]),
     ("board-reset-test", ["{interposer_code}/board_reset_test.py"]),
+    # the forced-order premise, and the scope of its range against c15f8c05
+    # (port step 2a's re-run): it reads that commit from git, so it runs in
+    # the local clone, not madhouse's shipped copy
+    ("scenario-scope-test", ["{interposer_code}/scenario_scope_test.py"]),
+    ("scenario-scope-test-canfail",
+     ["{interposer_code}/scenario_scope_test.py", "--can-fail"]),
     ("bench-suite-test", ["{interposer_code}/bench_suite_test.py"]),
     ("bench-suite-test-canfail",
      ["{interposer_code}/bench_suite_test.py", "--can-fail"]),
@@ -477,10 +492,16 @@ def corrupt_pin_judge(run):
 
 
 def scenario_judge(run):
-    """run_scenario.py: its final '-> PASS' / '-> FAIL' line."""
-    v = _lines(run, r"^\s*-> (PASS|FAIL)")
+    """run_scenario.py: its final '-> PASS' / '-> FAIL' line. '-> NOT
+    EXERCISED' (a forced_order premise that did not hold, ACCEPT-SPEC A11) is
+    VOID, the runner's verdict for a case not judged: never PASS or FAIL (the
+    charge-interposer reviewer, 2026-11-07)."""
+    v = _lines(run, r"^\s*-> (PASS|FAIL|NOT EXERCISED)")
     if not v:
         return Result(Verdict.ERROR, detail="no '-> PASS/FAIL' line (rc=%s)" % run.rc)
+    if "-> NOT EXERCISED" in v[-1]:
+        return Result(Verdict.VOID, detail="NOT EXERCISED: " + v[-1].split(
+            "-> NOT EXERCISED", 1)[1].strip(" (")[:240])
     fails = _lines(run, r"^\s*(FAIL|VOID)\b")
     if "-> PASS" in v[-1] and run.rc == 0:
         return Result(Verdict.PASS, detail=v[-1][:120])
@@ -917,6 +938,12 @@ def bench(settings):
                python=True, cls="wallclock", cwd="{interposer_code}",
                timeout_s=4 * 3600, judge=scenario_judge)
          for s in BOARD_SCENARIOS] + [
+        Check("board.%s.phase-%dms" % (s, round(off * 1000)),
+              ["{interposer_code}/run_scenario.py", s, "--fault-at-offset-s",
+               "%g" % off] + board_args,
+              python=True, cls="wallclock", cwd="{interposer_code}",
+              timeout_s=4 * 3600, judge=scenario_judge)
+        for s in FORCED_ORDER_SCENARIOS for off in PHASE_OFFSETS_S] + [
         Check("board." + s, ["-"], skip=(
             "not runnable on a board as written (plan Step 4 run sheet, "
             "item 4: the scenario disables or bypasses the core in the sim)"))
