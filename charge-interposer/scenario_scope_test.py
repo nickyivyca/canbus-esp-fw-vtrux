@@ -14,6 +14,11 @@ harness commit run 2a 0d0d's bench results stand on for every other case,
 BASE's files are read from git (git show), so this runs in a clone with
 history: the local harness lane.
 
+FOR PORT STEP 2a'S RE-RUN ONLY. It names c15f8c05, the harness 0d0d's
+other bench results stand on, so once 2a is accepted it leaves the harness
+suite (bench_suite.HARNESS_LOCAL) or is re-based on the commit the next
+acceptance stands on (the charge-interposer reviewer, 2026-11-07).
+
     py -3.14 -B charge-interposer/scenario_scope_test.py [--can-fail]
 
 --can-fail runs each test against a mutant (another scenario changed; a
