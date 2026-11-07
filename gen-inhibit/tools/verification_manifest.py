@@ -31,6 +31,9 @@ its _by_source.txt). Each resolved path is one row, at the line it is first cite
                        adds it to LIVING
     -         absent   one expansion of a cite whose other expansions exist ({1..6} where
                        only some arms ran)
+    <sha256>  moved    <path cited> -> <path now>  L<line>: a cited file that has moved, the
+                       document saying so in a dated correction or note beside it (MOVED maps
+                       the cited path to the new one); the hash is the file's at its new place
     -         missing  a cite none of whose expansions exists
     -         pattern  <cite as written>
 
@@ -53,7 +56,18 @@ LIVING = {"firmware/bench-holder.md", "firmware/bench-log.jsonl", NOTES + "gen-i
           NOTES + "gen-inhibit-review-2026-09-22.md", NOTES + "gen-inhibit-wican-firmware.md",
           RUNS_REL + "README.md", RUNS_REL + "x2_jammer/README.md",
           RUNS_REL + "step1d_test_plan.md"}
-KINDS = ("file", "tree", "root", "living", "absent", "missing", "pattern")
+# Cited files that have moved, each with the correction or note beside its citation that says so.
+MOVED = {
+    # The X2 hold's "TX pin while held" passage, in both its copies: the correction of
+    # 2026-11-07 beside each.
+    RUNS_REL + "runs/x2_hold_hold_20261010T165839.json":
+        RUNS_REL + "runs/baseline_c65c45e/bench/x2/x2_hold_hold_20261010T165839.json",
+    # The live-train duplicate's run files: the note of 2026-10-24 beside them ("have since
+    # moved into runs/baseline_c65c45e/bench/").
+    RUNS_REL + "runs/x2_jam_livetrain_20261012T185212.json":
+        RUNS_REL + "runs/baseline_c65c45e/bench/x2_jam_livetrain_20261012T185212.json",
+}
+KINDS = ("file", "tree", "root", "living", "moved", "absent", "missing", "pattern")
 CITE = re.compile(r"`([^`\s]+)`")
 OPTIONAL = re.compile(r"\[(_[^\]\[]+)\]")
 TRAIL = ".,;:)"
@@ -153,7 +167,9 @@ def rows(doc_text, ri):
         expanded = [(rel, _resolve(rel, ri)) for rel in expand_braces(rel0)]
         any_found = any(hits for _rel, hits in expanded)
         for rel, hits in expanded:
-            if not hits:
+            if not hits and rel in MOVED and os.path.isfile(os.path.join(ri, *MOVED[rel].split("/"))):
+                seen.setdefault(("moved", rel), n)
+            elif not hits:
                 seen.setdefault(("absent" if any_found else "missing", rel), n)
             for h in hits:
                 kind = "root" if h in ROOTS else "living" if h in LIVING else "path"
@@ -166,6 +182,9 @@ def rows(doc_text, ri):
                 out.append("%s  tree     %s  L%d" % (tree_digest(full), path, n))
             else:
                 out.append("%s  file     %s  L%d" % (sha256_file(full), path, n))
+        elif kind == "moved":
+            full = os.path.join(ri, *MOVED[path].split("/"))
+            out.append("%s  moved    %s -> %s  L%d" % (sha256_file(full), path, MOVED[path], n))
         else:
             out.append("-  %-7s  %s  L%d" % (kind, path, n))
     return out

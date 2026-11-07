@@ -49,7 +49,8 @@ DOC = ("# Doc\n"
        "Trailing dot `runs/a.json`. and a chain `runs/chain/` with `x/runs/q.json` not a citation.\n"
        "A stem cut short with its dot inside: `runs/t_20261107.`\n"
        "A living doc `$REVERSE_IT_DIR/firmware/bench-holder.md` and a run's own `runs/b/README.md`.\n"
-       "Optional part `runs/r_{p,q}[_crash]_2026*.json` and a glob class `runs/k[12].txt`.\n")
+       "Optional part `runs/r_{p,q}[_crash]_2026*.json` and a glob class `runs/k[12].txt`.\n"
+       "Moved `runs/old.json`, and moved to nowhere `runs/old2.json`.\n")
 
 
 def fixture(root):
@@ -62,7 +63,8 @@ def fixture(root):
              RUNS + "chain/r1/record.json": b"c", "firmware/f.md": b"F",
              "firmware/bench-holder.md": b"holder", RUNS + "b/README.md": b"run readme",
              RUNS + "r_p_20261107.json": b"rp", RUNS + "r_p_crash_20261107.json": b"rpc",
-             RUNS + "r_q_20261107.json": b"rq", RUNS + "k1.txt": b"k1"}
+             RUNS + "r_q_20261107.json": b"rq", RUNS + "k1.txt": b"k1",
+             RUNS + "new/old.json": b"moved here"}
     for rel, data in files.items():
         put(root, rel, data)
     os.makedirs(os.path.join(root, "canre"), exist_ok=True)
@@ -75,6 +77,7 @@ def row(rows, path):
 def main():
     root = os.path.join(_scratch(), "ri")
     fixture(root)
+    M.MOVED = {RUNS + "old.json": RUNS + "new/old.json", RUNS + "old2.json": RUNS + "nowhere/old2.json"}
     rows = M.rows(DOC, root)
     kinds = {r.split()[2]: r.split()[1] for r in rows}
 
@@ -118,6 +121,12 @@ def main():
           and kinds.get(RUNS + "r_q_20261107.json") == "file" and
           kinds.get(RUNS + "r_q_crash_2026*.json") == "absent", kinds)
     check("... while [12] stays a glob class", kinds.get(RUNS + "k1.txt") == "file", kinds)
+    check("a moved file is one row: hashed at its new place, naming both paths",
+          row(rows, RUNS + "old.json") == ["%s  moved    %s -> %s  L11" % (sha(b"moved here"), RUNS + "old.json",
+                                                                         RUNS + "new/old.json")],
+          row(rows, RUNS + "old.json"))
+    check("... and one whose new place does not exist is still missing",
+          row(rows, RUNS + "old2.json") == ["-  missing  %s  L11" % (RUNS + "old2.json")], row(rows, RUNS + "old2.json"))
     check("an unbackticked path is not a citation", RUNS + "z.txt" not in kinds, kinds)
     check("a backticked path not starting runs/ is not a citation",
           not any("q.json" in k for k in kinds), kinds)

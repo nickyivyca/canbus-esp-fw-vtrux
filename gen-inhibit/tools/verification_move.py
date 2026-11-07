@@ -25,6 +25,10 @@ The rules:
   next source line is a "## " heading. --complete requires the whole source.
 Every substitution is checked against the source, in the target's range or not, so a stale entry
 shows before its batch. Gen-inhibit tester, 2026-11-07.
+
+Retired since the merge (gen-inhibit/main 2396b4e3, 2026-11-07): the SeaDrive file is now a pointer
+and VERIFICATION.md takes new material, so a run against them fails by design. The last run, on the
+whole document at 7036d71c, is recorded in reverse-it's runs/verification_move_batch34_7036d71c/.
 """
 import argparse
 import hashlib

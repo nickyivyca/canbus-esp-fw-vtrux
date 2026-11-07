@@ -299,6 +299,10 @@ each a `.json` with its witness log. The recounts are in
       IO_MUX showed no pulls.
     - The ROM leaves input-enable clear on GPIO6/7, so GPIO_IN read 0
       meaninglessly at first (`runs/x2_hold_hold_20261010T165839.json`).
+      - **Correction (tester, 2026-11-07): that file is in the baseline
+        folder now,** `runs/baseline_c65c45e/bench/x2/x2_hold_hold_20261010T165839.json`
+        (sha256 `0f0f10c6...f472`), not in `runs/`. Found when the hash
+        manifest could not resolve the citation.
     - With input-enable set (one esptool session), GPIO_IN `0x3c0000cd` put
       GPIO7 = 1 and GPIO6 = 1: TXD idles recessive and the transceiver sees
       a recessive bus (`runs/x2_hold_enable-inputs_20261010T170115.json`).
@@ -4967,6 +4971,10 @@ as "bench, no harness".
       IO_MUX showed no pulls.
     - The ROM leaves input-enable clear on GPIO6/7, so GPIO_IN read 0
       meaninglessly at first (`runs/x2_hold_hold_20261010T165839.json`).
+      - **Correction (tester, 2026-11-07): that file is in the baseline
+        folder now,** `runs/baseline_c65c45e/bench/x2/x2_hold_hold_20261010T165839.json`
+        (sha256 `0f0f10c6...f472`), not in `runs/`. Found when the hash
+        manifest could not resolve the citation.
     - With input-enable set (one esptool session), GPIO_IN `0x3c0000cd` put
       GPIO7 = 1 and GPIO6 = 1: TXD idles recessive and the transceiver sees
       a recessive bus (`runs/x2_hold_enable-inputs_20261010T170115.json`).
