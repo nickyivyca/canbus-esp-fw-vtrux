@@ -16,3 +16,4 @@ fixtures, not acceptance lists, and stay outside this folder.
 | File | Step |
 |---|---|
 | `2a.toml` | Port step 2a: items (a)-(j) of the review tracker's 2a row, with the check forms ruled 2026-11-04 |
+| `2a-rerun.toml` | Port step 2a's re-run after run 0d0d: the items its harness fixes touch, on the same product, in a record that names 0d0d (ACCEPT-SPEC A13; reviewer, 2026-11-07) |

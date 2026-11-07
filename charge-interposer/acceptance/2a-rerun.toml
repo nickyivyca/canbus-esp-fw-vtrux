@@ -1,0 +1,277 @@
+# Port step 2a's re-run list (shared/bench ACCEPT-SPEC A2, A13; owned by the
+# charge-interposer reviewer). Run 0d0d (runs/accept_2a_20261105T175936_0d0d,
+# from 2a.toml at cd47175e) closed ACCEPTANCE FAIL on 7 items. This list
+# re-runs what those items need, on the same product, in a new acceptance
+# record that names 0d0d (A13). The items 0d0d closed stand on 0d0d (the
+# reviewer, 2026-11-07):
+#   - the host_bridge judge read its test list from a settings key (hb-own,
+#     hb-shared ERROR): fixed at 8361ab51, which also judges the emulated
+#     suite's m-host/host-bridge, so the emulated suite runs again whole;
+#   - the vd can-fail took the switch out of B only (fixed at c15f8c05);
+#   - b-bridge/board.fault-during-override-flow-first VOID by the reviewer's
+#     ruling: the stimulus order rode charger_sim's mux rotation. 0041572d
+#     forces the order (lead -0.8 s), adds a premise on the wire and runs
+#     both flow-first cases at three phases of the rotation. run_scenario.py
+#     is code of every scenario, so the emulated suite runs whole, the harness
+#     suite whole (scenario-scope-test shows every other scenario unchanged
+#     from c15f8c05), and on the board the two flow-first cases at offsets 0,
+#     130 and 270 ms. The other board cases stand on 0d0d.
+#
+# Trees:
+#   prod      cf1b911, the 2a product, as in 2a.toml: the bridge, witness and
+#             truck builds, for (h)'s pairs and the bench images
+#   harness   bb3a291d, charge-interposer/main with the three fixes. Its
+#             product files are cf1b911's (premise "digest").
+#   madhouse  the same commit on madhouse, for (b)'s host_bridge runs, at the
+#             2a twai_port pin (2026.11.03)
+#
+# The host_bridge judge lists its tests from the adapter's checkout, which is
+# this list's commit, not the tree that ran (8361ab51). This list's commit
+# adds only this file on top of bb3a291d, so the two hold the same
+# charge-interposer/fw_harness/host_bridge/ (git diff empty, checked by the
+# reviewer when committing).
+
+[step]
+id = "2a"
+project = "charge-interposer"
+ordered_by = "charge-interposer reviewer"
+ordered_on = "2026-11-07"
+spec = ["2.3", "8", "8.2", "8.3", "9", "9.1", "12"]
+verification = "the tester's VERIFICATION.md entries for port step 2a: (a), (b), (c), (d) and (h)'s can-fail from this re-run, the rest from run 0d0d"
+
+[trees.prod]
+project = "cf1b911326d62fc7a7a743be2050ff51bf37f0d6"
+
+[trees.harness]
+project = "bb3a291dc496db42498547a87ba1d1c35e80b334"
+
+[trees.madhouse]
+project = "bb3a291dc496db42498547a87ba1d1c35e80b334"
+host = "madhouse"
+shared = { twai_port = "2026.11.03" }
+
+[[premise]]
+id = "digest"
+kind = "product_digest_same_as"
+tree = "harness"
+commit = "cf1b911326d62fc7a7a743be2050ff51bf37f0d6"
+
+# ---- builds: (h)'s pairs and the bench images ---------------------------------
+[[build]]
+id = "bridge"
+tree = "prod"
+target = "idf-build"
+options = { variant = "bridge" }
+
+[[build]]
+id = "witness"
+tree = "prod"
+target = "idf-build"
+options = { variant = "witness" }
+
+[[build]]
+id = "truck"
+tree = "prod"
+target = "idf-build"
+options = { variant = "truck" }
+
+# ---- (h) variant_diff and its can-fail (c15f8c05) ------------------------------
+[[check]]
+id = "vd-witness-bridge"
+tree = "harness"
+run = ["charge-interposer/fw_harness/variant_diff.py", "--pair", "{build_witness}",
+       "{build_bridge}", "--switches", "INTP_ORDER_WITNESS"]
+
+[[check]]
+id = "vd-bridge-truck"
+tree = "harness"
+run = ["charge-interposer/fw_harness/variant_diff.py", "--pair", "{build_bridge}",
+       "{build_truck}", "--switches", "INTP_NO_SERIAL"]
+
+[[canfail]]
+id = "vd"
+target = "vd-witness-bridge"
+mutants = { mode = "--can-fail" }
+expect = "mode-passes"
+
+# ---- (b) host_bridge on the shared fake, transcripts identical (8361ab51) -----
+# As in 2a.toml: both carry the two recorded KNOWN FAILs, so each expects FAIL.
+[[check]]
+id = "hb-own"
+tree = "madhouse"
+run = ["charge-interposer/fw_harness/host_bridge/run.sh"]
+shell = "git-bash"
+judge = "host-bridge"
+cls = "build"
+env = { L3_STIMULUS = "{madhouse_artifacts}/l3_stimulus.txt" }
+expect = "FAIL"
+after = ["emulated", "harness"]
+
+[[check]]
+id = "hb-shared"
+tree = "madhouse"
+run = ["charge-interposer/fw_harness/host_bridge/run.sh"]
+shell = "git-bash"
+judge = "host-bridge"
+cls = "build"
+env = { L3_STIMULUS = "{madhouse_artifacts}/l3_stimulus.txt", TWAI_FAKE = "shared" }
+timeout_s = 14400
+expect = "FAIL"
+after = ["hb-own"]
+
+[[compare]]
+id = "e-transcripts"
+comparer = "masked-log"
+a = "hb-own"
+b = "hb-shared"
+expect = "identical"
+
+[[canfail]]
+id = "shared-fake"
+target = "hb-shared"
+mutants = { mode = "--can-fail" }
+expect = "mode-passes"
+
+# ---- (a) the whole emulated suite, at the fixed harness -------------------------
+# Whole, so the bench subset's requires finds it in this record's runs/.
+[[suite_run]]
+id = "emulated"
+tree = "harness"
+suite = "emulated"
+
+# ---- (d) the harness suite, whole --------------------------------------------
+[[suite_run]]
+id = "harness"
+tree = "harness"
+suite = "harness"
+after = ["emulated"]
+
+# ---- (c) the two forced-order cases on the board, at three phases ---------------
+# Offset 0 is the plain board.<case>; the phase checks move the injection 130
+# and 270 ms through charger_sim's 400 ms rotation (0041572d). Each prints its
+# wire gap; a premise that does not hold is NOT EXERCISED, shown as VOID.
+[[suite_run]]
+id = "bench"
+tree = "harness"
+suite = "bench"
+checks = ["b-bridge/board.charger-fault-stop-flow-first",
+          "b-bridge/board.charger-fault-stop-flow-first.phase-130ms",
+          "b-bridge/board.charger-fault-stop-flow-first.phase-270ms",
+          "b-bridge/board.fault-during-override-flow-first",
+          "b-bridge/board.fault-during-override-flow-first.phase-130ms",
+          "b-bridge/board.fault-during-override-flow-first.phase-270ms"]
+images_from = ["bridge", "witness", "truck"]
+after = ["harness"]
+
+# ---- (c) the baselines -------------------------------------------------------
+[baseline]
+emulated = "charge-interposer-emulated_20261026T191125_487f"
+bench = "charge-interposer-bench_20261027T132847_6019"
+
+# The emulated suite against 487f: 2a.toml's three retired m-build checks, and
+# the host_bridge judge's new test-list result (8361ab51)
+[[compare]]
+id = "c-emulated"
+comparer = "run-records"
+a = "baseline:emulated"
+b = "emulated"
+expect = "listed"
+differences = ["VERDICT m-build/build-check: PASS -> NOT-RUN",
+               "VERDICT m-build/manifest-offline-test: PASS -> NOT-RUN",
+               "VERDICT m-build/manifest-test: PASS -> NOT-RUN",
+               "NEW in b: m-host/host-bridge/test-list PASS"]
+
+# The six board runs against 6019. A subset run records only its own checks,
+# and the core's comparer has no filter, so every other 6019 case is listed
+# as MISSING, one by one (generated with the core's compare_records on 6019's
+# record, tester, 2026-11-07): a case of the six that fails to run shows as an
+# unlisted difference. The four phase checks are new (0041572d). The two plain
+# cases are PASS in 6019 and must be PASS here: no line. Board cases carry no
+# figures.
+[[compare]]
+id = "c-bench"
+comparer = "run-records"
+a = "baseline:bench"
+b = "bench"
+expect = "listed"
+differences = [
+  "MISSING in b: b-bridge/board.balance-hold (was PASS)",
+  "MISSING in b: b-bridge/board.boot-mid-session (was PASS)",
+  "MISSING in b: b-bridge/board.charger-fault-stop (was PASS)",
+  "NEW in b: b-bridge/board.charger-fault-stop-flow-first.phase-130ms PASS",
+  "NEW in b: b-bridge/board.charger-fault-stop-flow-first.phase-270ms PASS",
+  "MISSING in b: b-bridge/board.charger-silence-after-trip (was PASS)",
+  "MISSING in b: b-bridge/board.evap-bypass (was NOT-RUN)",
+  "MISSING in b: b-bridge/board.evap-override (was PASS)",
+  "MISSING in b: b-bridge/board.evap-override-16a (was PASS)",
+  "MISSING in b: b-bridge/board.evap-override-above-ceiling (was PASS)",
+  "MISSING in b: b-bridge/board.evap-override-bms-fault (was PASS)",
+  "MISSING in b: b-bridge/board.evap-override-high-cell (was PASS)",
+  "MISSING in b: b-bridge/board.evap-override-high-cell-far (was PASS)",
+  "MISSING in b: b-bridge/board.evap-override-imbalanced (was PASS)",
+  "MISSING in b: b-bridge/board.evap-override-imbalanced-hold (was PASS)",
+  "MISSING in b: b-bridge/board.evap-override-unplug (was PASS)",
+  "MISSING in b: b-bridge/board.fault-during-override (was PASS)",
+  "NEW in b: b-bridge/board.fault-during-override-flow-first.phase-130ms PASS",
+  "NEW in b: b-bridge/board.fault-during-override-flow-first.phase-270ms PASS",
+  "MISSING in b: b-bridge/board.hard-ceiling-failsafe (was NOT-RUN)",
+  "MISSING in b: b-bridge/board.hvil-before-flow-drop (was PASS)",
+  "MISSING in b: b-bridge/board.imbalanced-full (was PASS)",
+  "MISSING in b: b-bridge/board.normal-full (was PASS)",
+  "MISSING in b: b-bridge/board.override-ended-by-vcu (was PASS)",
+  "MISSING in b: b-bridge/board.repeat-replaced-by-trip (was PASS)",
+  "MISSING in b: b-bridge/board.repeat-reset-by-pilot-step (was PASS)",
+  "MISSING in b: b-bridge/board.repeat-superseded-by-vcu (was PASS)",
+  "MISSING in b: b-bridge/board.restart-after-standby (was FAIL)",
+  "MISSING in b: b-bridge/board.restart-no-standby (was PASS)",
+  "MISSING in b: b-bridge/brownout-cold-boot (was NOT-RUN)",
+  "MISSING in b: b-bridge/charger-silent (was PASS)",
+  "MISSING in b: b-bridge/charger-silent-unplugged (was NOT-RUN)",
+  "MISSING in b: b-bridge/keepalive-probe (was PASS)",
+  "MISSING in b: b-bridge/mcp-reset (was PASS)",
+  "MISSING in b: b-bridge/mcp-reset-canfail (was PASS)",
+  "MISSING in b: b-bridge/powerup-round-ack (was PASS)",
+  "MISSING in b: b-bridge/powerup-round-com3 (was PASS)",
+  "MISSING in b: b-bridge/powerup-round-noack (was PASS)",
+  "MISSING in b: b-bridge/reset-check (was PASS)",
+  "MISSING in b: b-bridge/rx-order (was PASS)",
+  "MISSING in b: b-bridge/switch-errors (was PASS)",
+  "MISSING in b: b-bridge/switch-pending (was PASS)",
+  "MISSING in b: b-bridge/usb-host-baseline-ack (was PASS)",
+  "MISSING in b: b-bridge/usb-host-baseline-noack (was PASS)",
+  "MISSING in b: b-bridge/usb-host-bridge-absent (was PASS)",
+  "MISSING in b: b-bridge/usb-host-bridge-cycles (was PASS)",
+  "MISSING in b: b-bridge/usb-host-close-ack (was PASS)",
+  "MISSING in b: b-bridge/usb-host-noread-ack (was PASS)",
+  "MISSING in b: b-bridge/usb-host-noread-noack (was PASS)",
+  "MISSING in b: b-c12/c12-all (was PASS)",
+  "MISSING in b: b-c12/c9-noack (was PASS)",
+  "MISSING in b: b-truck/flight-silence (was PASS)",
+  "MISSING in b: b-truck/hold12-flight (was PASS)",
+  "MISSING in b: b-vport/vport-bitrate (was PASS)",
+  "MISSING in b: b-vport/vport-dominant (was PASS)",
+  "MISSING in b: b-vport/vport-flood (was PASS)",
+  "MISSING in b: b-vport/vport-listen (was PASS)",
+  "MISSING in b: b-vport/vport-listen-wrong-rate (was VOID)",
+  "MISSING in b: b-vport/vport-recstart (was PASS)",
+  "MISSING in b: b-vport/vport-stall (was FAIL)",
+  "MISSING in b: b-witness/hold12 (was PASS)",
+  "MISSING in b: b-witness/innomaker-clock (was PASS)",
+  "MISSING in b: b-witness/innomaker-echo (was PASS)",
+  "MISSING in b: b-witness/innomaker-rate-runs-idle (was PASS)",
+  "MISSING in b: b-witness/innomaker-rate-runs-reopen (was NOT-RUN)",
+  "MISSING in b: b-witness/innomaker-replug (was NOT-RUN)",
+  "MISSING in b: b-witness/sameid-arm-12e2 (was NOT-RUN)",
+  "MISSING in b: b-witness/switch-loss (was KNOWN-FAIL)",
+  "MISSING in b: b-witness/topology (was PASS)",
+  "MISSING in b: truck-only/spec10-item1 (was NOT-RUN)",
+  "MISSING in b: truck-only/spec10-item2 (was NOT-RUN)",
+  "MISSING in b: truck-only/spec10-item3 (was NOT-RUN)",
+  "MISSING in b: truck-only/spec10-item4 (was NOT-RUN)",
+  "MISSING in b: truck-only/spec10-item5 (was NOT-RUN)",
+  "MISSING in b: truck-only/spec10-item6 (was NOT-RUN)",
+  "MISSING in b: truck-only/spec10-item7 (was NOT-RUN)",
+  "MISSING in b: truck-only/spec10-item8 (was NOT-RUN)",
+  "MISSING in b: truck-only/spec10-item9 (was NOT-RUN)",
+  "MISSING in b: truck-only/spec2.1-offline-board (was NOT-RUN)",
+]
